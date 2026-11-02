@@ -148,6 +148,13 @@
       "upstream_paths": [
         "ext-src/swoole_server.cc"
       ]
+    },
+    {
+      "path": "0016-php-server-io.patch",
+      "sha256": "be2fd11a29e462dac15cdabae94912dbe5eaf30aa413ccf8562ad62c0a8d283a",
+      "upstream_paths": [
+        "ext-src/swoole_server.cc"
+      ]
     }
   ]
 }
