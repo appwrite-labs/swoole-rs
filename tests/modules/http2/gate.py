@@ -15,7 +15,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_hybrid import hybrid_tree, module_patches
 from tools.build_upstream import COMMIT as PIN
 
 
@@ -53,18 +53,16 @@ def main():
         return result.stdout
 
     try:
-        manifest = json.loads((ROOT / 'migration/patches/http2/manifest.json').read_text())
-        if manifest['upstream_commit'] != PIN:
-            raise ValueError('Overlay pin mismatch')
+        manifest = module_patches(ROOT / 'migration/patches/http2')
         # The patched side is the hybrid build's fully patched tree, headers included.
         hybrid_source, hybrid_flags = hybrid_tree(args.archive)
         report['hybrid_tree'] = str(hybrid_source)
         scratch = work / 'overlay'
-        for name in manifest['patches'][0]['upstream_paths']:
+        for name in manifest[0]['upstream_paths']:
             path = scratch / name
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(hybrid_source / name, path)
-        report['patched_sources'] = {name: digest(scratch / name) for name in manifest['patches'][0]['upstream_paths']}
+        report['patched_sources'] = {name: digest(scratch / name) for name in manifest[0]['upstream_paths']}
         original = work / 'original.cc'
         name = 'src/protocol/http2.cc'
         original.write_text(run(['git', 'show', f'{PIN}:{name}'], args.source))

@@ -18,7 +18,6 @@ dest='src/network/socket.cc';header='include/swoole_socket.h'
 selected_tree,abi=hybrid(a.archive);hybrid_flags=hybrid_tree(a.archive)[1]
 hybrid_corrected=json.loads((selected_tree.parent/'build-manifest.json').read_text())['inputs']['fix_halfclose']
 fixed=ROOT/'migration/patches/halfclose/0003-send-tls-close-notify.patch'
-fixed_sha=next(e['sha256'] for e in json.loads((fixed.parent/'manifest.json').read_text())['patches'] if e['path']==fixed.name)
 report=dict(assigned_to='@loks0n',scope=__doc__,pin=PIN,hybrid_tree=str(selected_tree),hybrid_corrected=hybrid_corrected,patch_application=[],sources={},syntax=[],commands=[],results=[],passed=False)
 with tempfile.TemporaryDirectory(prefix='swr-iov-owned-') as temporary:
  t=Path(temporary)
@@ -34,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix='swr-iov-owned-') as temporary:
    if not selected:
     shutil.copytree(sdk,tree)
     for path,data in original.items():file=tree/path;file.parent.mkdir(parents=True,exist_ok=True);file.write_bytes(data)
-    if corrected:report['patch_application'].append(dict(variant=name,proof=apply_patch_verified(tree,fixed,[dest],fixed_sha)))
+    if corrected:report['patch_application'].append(dict(variant=name,proof=apply_patch_verified(tree,fixed,[dest])))
    else:tree.mkdir()
    body=(root/dest).read_text();h=(root/header).read_text();report['sources'][name]={'selected':selected,'optional_native_fix':corrected}
    declaration=block(h,h.index('struct IOVector {'))[0]

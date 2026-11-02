@@ -18,7 +18,6 @@ from tools.harness import run_compiler
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True);p.add_argument('--report',type=Path,required=True);p.add_argument('--sanitize',action='store_true');profile=p.add_mutually_exclusive_group();profile.add_argument('--iov-progress',action='store_true',help='Separate genuine IOVector Native-array progression inventory');profile.add_argument('--forwarding',action='store_true',help='Whole file/event forwarding positive source effects; clean Native effects not executed');a=p.parse_args()
 if a.report.exists():raise ValueError('Choose a unique receipt path')
 fixed=ROOT/'migration/patches/halfclose/0003-send-tls-close-notify.patch'
-fixed_sha=next(e['sha256'] for e in json.loads((fixed.parent/'manifest.json').read_text())['patches'] if e['path']==fixed.name)
 dest='src/network/socket.cc'
 selected_tree,abi=hybrid(a.archive);hybrid_flags=hybrid_tree(a.archive)[1]
 hybrid_corrected=json.loads((selected_tree.parent/'build-manifest.json').read_text())['inputs']['fix_halfclose']
@@ -39,7 +38,7 @@ with tempfile.TemporaryDirectory(prefix='swr-output-') as tmp:
    if selected:file=selected_tree/dest;overlaid=selected_tree
    else:
     file=tree/dest;file.parent.mkdir(parents=True);file.write_bytes(source);overlaid=sdk
-    if corrected:report['patch_application'].append(dict(variant=variant,proof=apply_patch_verified(tree,fixed,[dest],fixed_sha)))
+    if corrected:report['patch_application'].append(dict(variant=variant,proof=apply_patch_verified(tree,fixed,[dest])))
    body=file.read_text()
    # Protected Native effects/optional correction are never converted or tested
    # by interruption: attest their exact text/order in each selected composition.

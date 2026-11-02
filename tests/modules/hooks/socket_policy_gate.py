@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Compare actual Socket inline and timeout bodies; native effect/lifetime facades, not real context execution."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -12,6 +11,7 @@ from ordered_gate import block
 
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from tools.build_hybrid import module_patches
 from tools.build_upstream import COMMIT as PIN
 
 def main():
@@ -23,8 +23,8 @@ def main():
     a=p.parse_args()
     header='include/swoole_coroutine_socket.h'
     unit='src/coroutine/socket.cc'
-    manifest=json.loads((ROOT/'migration/patches/hooks/manifest.json').read_text())
-    paths=sorted({path for entry in manifest['patches'] for path in entry['upstream_paths']})
+    manifest=module_patches(ROOT/'migration/patches/hooks')
+    paths=sorted({path for entry in manifest for path in entry['upstream_paths']})
     originals={path:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+path],text=True) for path in paths}
     signatures=['Coroutine *get_bound_co(', 'long get_bound_cid(', 'void check_bound_co(', 'void set_err(const int e)', 'void check_return_value(', 'bool is_available(', 'void set_timeout(const timeval *timeout,']
     methods=['const char *Socket::get_event_str(', 'bool Socket::TimeoutController::has_timedout(']
@@ -32,9 +32,8 @@ def main():
         tree=Path(directory)
         for path,text in originals.items():
             out=tree/path;out.parent.mkdir(parents=True,exist_ok=True);out.write_text(text)
-        for entry in manifest['patches']:
+        for entry in manifest:
             patch=ROOT/'migration/patches/hooks'/entry['path']
-            assert hashlib.sha256(patch.read_bytes()).hexdigest()==entry['sha256']
             subprocess.run(['git','apply',str(patch)],cwd=tree,check=True)
         for variant in ['original','selected']:
             texts=originals if variant=='original' else {path:(tree/path).read_text() for path in paths if (tree/path).exists()}

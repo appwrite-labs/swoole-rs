@@ -2,7 +2,6 @@
 """Real Rust C ABI + native facades versus unchanged pinned protocol bodies."""
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -10,6 +9,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from tools.build_hybrid import module_patches
 from tools.harness import ROOT, run_isolated, write_report
 from tools.harness import run_compiler
 
@@ -41,21 +41,17 @@ def main():
     if args.candidate:
         candidates = {p: (args.candidate / p).read_text() for p in TARGETS}
     else:
-        manifest = json.loads((ROOT / 'migration/patches/protocols/manifest.json').read_text())
-        if manifest['upstream_commit'] != PIN:
-            parser.error('Overlay pin differs')
+        manifest = module_patches(ROOT / 'migration/patches/protocols')
         with tempfile.TemporaryDirectory(prefix='swr-protocols-overlay-') as directory:
             staged = Path(directory)
             subprocess.run(['git', 'init', '-q', directory], check=True)
-            for name in {p for patch in manifest['patches'] for p in patch['upstream_paths']} | set(TARGETS):
+            for name in {p for patch in manifest for p in patch['upstream_paths']} | set(TARGETS):
                 text = sources.get(name) or subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{name}'], text=True)
                 destination = staged / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text(text)
-            for patch in manifest['patches']:
+            for patch in manifest:
                 path = ROOT / 'migration/patches/protocols' / patch['path']
-                if hashlib.sha256(path.read_bytes()).hexdigest() != patch['sha256']:
-                    parser.error('Overlay checksum differs')
                 subprocess.run(['git', '-C', directory, 'apply', '--check', str(path)], check=True)
                 subprocess.run(['git', '-C', directory, 'apply', str(path)], check=True)
             candidates = {p: (staged / p).read_text() for p in TARGETS}

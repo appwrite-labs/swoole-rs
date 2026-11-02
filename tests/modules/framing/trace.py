@@ -7,13 +7,12 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.build_hybrid import hybrid_tree
+from tools.build_hybrid import hybrid_tree, module_patches
 from tools.build_upstream import COMMIT as PIN
 from tools.harness import ROOT, run_isolated, write_report
 
 # The upstream files the framing overlay patches.
-PATHS = [path for patch in json.loads((ROOT / 'migration/patches/framing/manifest.json').read_text())['patches']
-         for path in patch['upstream_paths']]
+PATHS = [path for patch in module_patches(ROOT / 'migration/patches/framing') for path in patch['upstream_paths']]
 
 
 def original(path):

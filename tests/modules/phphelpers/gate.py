@@ -10,6 +10,7 @@ import sys
 import uuid
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
+from tools.build_hybrid import module_patches
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated,write_report
 from tools.build_upstream import COMMIT as PIN
@@ -21,10 +22,8 @@ def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def stage(source,work):
     outputs={}
     environment={**os.environ,'GIT_CEILING_DIRECTORIES':str(work.parent.resolve())}
-    manifest=json.loads((ROOT/'migration/patches/phphelpers/manifest.json').read_text())
-    for patch in manifest['patches']:
+    for patch in module_patches(ROOT/'migration/patches/phphelpers'):
         p=ROOT/'migration/patches/phphelpers'/patch['path']
-        if sha(p)!=patch['sha256']:raise ValueError('Overlay checksum mismatch')
         for name in patch['upstream_paths']:
             raw=subprocess.check_output(['git','-C',str(source),'show',PIN+':'+name])
             path=work/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw)
