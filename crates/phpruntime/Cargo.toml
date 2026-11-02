@@ -1,0 +1,22 @@
+[package]
+name = "swoole-rs-phpruntime"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "PHP Swoole\\Runtime: hook flags and the function-table hooks behind enableCoroutine"
+
+[lib]
+name = "swoole_rs_phpruntime"
+crate-type = ["rlib"]
+
+[features]
+# Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+
+[dependencies]
+swoole-rs-hooks = { path = "../hooks" }
+swoole-rs-zend = { path = "../zend", optional = true }
+
+[lints]
+workspace = true

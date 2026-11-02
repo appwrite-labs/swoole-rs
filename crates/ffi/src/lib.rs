@@ -86,6 +86,9 @@ pub use swoole_rs_wrappers::*;
 #[cfg(feature = "php")]
 pub use swoole_rs_phptimer::*;
 
+#[cfg(feature = "php")]
+pub use swoole_rs_phpswoole::*;
+
 pub use swoole_rs_framing::{
     swr_v1_framing_default, swr_v1_framing_hton64, swr_v1_framing_mime_count,
     swr_v1_framing_mime_entry, swr_v1_framing_mime_fallback, swr_v1_framing_mime_suffix,
@@ -103,6 +106,8 @@ pub use swoole_rs_coroutine::*;
 
 #[cfg(feature = "hooks")]
 pub use swoole_rs_hooks::*;
+#[cfg(feature = "hooks")]
+pub use swoole_rs_phpruntime as phpruntime;
 
 #[cfg(feature = "ossupport")]
 pub use swoole_rs_ossupport::*;
