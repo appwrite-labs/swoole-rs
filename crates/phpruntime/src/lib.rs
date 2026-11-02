@@ -21,10 +21,16 @@
     )
 )]
 
+mod connect;
 mod functions;
+mod putenv;
+mod select;
 mod sleep;
 mod socket;
 mod stream;
+pub use connect::*;
+pub use putenv::*;
+pub use select::*;
 pub use stream::*;
 
 use std::{

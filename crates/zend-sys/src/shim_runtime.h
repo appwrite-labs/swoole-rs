@@ -27,4 +27,16 @@ int swr_zend_runtime_call_handler(zif_handler handler, zend_execute_data *execut
  * coroutines" warnings. */
 void ZEND_FASTCALL swr_zend_runtime_disabled(INTERNAL_FUNCTION_PARAMETERS);
 void ZEND_FASTCALL swr_zend_runtime_unsupported(INTERNAL_FUNCTION_PARAMETERS);
+/* stream_select's ZEND_PARSE_PARAMETERS block (Zend reports a failure): 1 if
+ * the arguments parsed. */
+int swr_zend_runtime_select_args(zend_execute_data *execute_data,
+                                 zval **read,
+                                 zval **write,
+                                 zval **except,
+                                 zend_long *seconds,
+                                 bool *seconds_null,
+                                 zend_long *micros,
+                                 bool *micros_null);
+/* tsrm_env_lock (lock) or tsrm_env_unlock; nothing without ZTS. */
+void swr_zend_runtime_env_lock(bool lock);
 #endif

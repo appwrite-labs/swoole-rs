@@ -34,6 +34,12 @@ void swr_zend_stream_share_context(php_stream *client, const php_stream *server)
 zend_resource *swr_zend_stream_expose(php_stream *stream);
 /* EG(active). */
 bool swr_zend_stream_vm_active(void);
+/* php_stream_from_zval_no_verify: null if not a stream. */
+php_stream *swr_zend_stream_from_zval(zval *value);
+/* stream->writepos - stream->readpos. */
+zend_off_t swr_zend_stream_buffered_bytes(const php_stream *stream);
+/* ZVAL_ARR(value, array). */
+void swr_zend_stream_set_array(zval *value, zend_array *array);
 /* FG(default_socket_timeout). */
 zend_long swr_zend_stream_default_timeout(void);
 /* ZSTR_EMPTY_ALLOC(). */

@@ -76,6 +76,20 @@ bool swr_zend_stream_vm_active(void) {
     return EG(active);
 }
 
+php_stream *swr_zend_stream_from_zval(zval *value) {
+    php_stream *stream;
+    php_stream_from_zval_no_verify(stream, value);
+    return stream;
+}
+
+zend_off_t swr_zend_stream_buffered_bytes(const php_stream *stream) {
+    return stream->writepos - stream->readpos;
+}
+
+void swr_zend_stream_set_array(zval *value, zend_array *array) {
+    ZVAL_ARR(value, array);
+}
+
 zend_long swr_zend_stream_default_timeout(void) {
     return FG(default_socket_timeout);
 }
