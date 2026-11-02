@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body, select_overlay
 
 
@@ -43,8 +44,8 @@ def main():
         for signature in ['bool Client::connect()', 'bool Client::close() const']:
             fragment = body(text, signature)
             methods.append(signature.replace('Client::', '') + '{' + fragment + '}')
-        pieces.append('namespace ' + variant + ' {struct Client:FixtureClient {bool connect();bool close()const;};' +
-                      ''.join('bool Client::' + fragment.removeprefix('bool ') for fragment in methods) + '}')
+        pieces.append((variant, 'namespace ' + variant + ' {struct Client:FixtureClient {bool connect();bool close()const;};' +
+                      ''.join('bool Client::' + fragment.removeprefix('bool ') for fragment in methods) + '}'))
     prelude = r'''
 #include <cstdint>
 namespace swoole {namespace http2 {struct Settings {uint32_t header_table_size=3,enable_push=0,max_concurrent_streams=0,init_window_size=4,max_frame_size=0,max_header_list_size=0;};}}
@@ -70,15 +71,15 @@ struct SocketImpl;
 using Socket=SocketImpl;
 struct zend_object {SocketImpl *socket;};
 struct zval {zend_object *object=nullptr;};
-static std::vector<std::string>effects;
-static unsigned fail_at,throw_at,calls;
-static std::function<void(const std::string&)>mutation;
-static bool effect(const std::string&text){effects.push_back(text);if(mutation)mutation(text);if(throw_at==effects.size())throw std::runtime_error("native effect");return ++calls!=fail_at;}
+inline std::vector<std::string>effects;
+inline unsigned fail_at,throw_at,calls;
+inline std::function<void(const std::string&)>mutation;
+inline bool effect(const std::string&text){effects.push_back(text);if(mutation)mutation(text);if(throw_at==effects.size())throw std::runtime_error("native effect");return ++calls!=fail_at;}
 namespace network {struct Socket{static int convert_to_type(const std::string&host){effect("type:"+host);return 7;}};}
 namespace Http2 {
 using Settings=swoole::http2::Settings;
-static void init_settings(Settings *s){effect("defaults");s->header_table_size=12;s->init_window_size=21;}
-static long get_frame_length(){return 0;}
+inline void init_settings(Settings *s){effect("defaults");s->header_table_size=12;s->init_window_size=21;}
+inline long get_frame_length(){return 0;}
 }
 struct SocketImpl {unsigned id=1;int errCode=71;const char *errMsg="socket error";bool http2=false,open_length_check=false,closed=false,zero=false;unsigned close_count=0;struct Protocol {size_t package_length_size=0,package_length_offset=99,package_body_offset=99;long(*get_package_length)()=nullptr;}protocol;std::function<void(Socket*)>dtor;
  void set_dtor(std::function<void(Socket*)>f){effect("dtor:"+std::to_string(id));dtor=std::move(f);}
@@ -87,20 +88,20 @@ struct SocketImpl {unsigned id=1;int errCode=71;const char *errMsg="socket error
  bool connect(const std::string&host,int port){return effect("connect:"+std::to_string(id)+":"+host+":"+std::to_string(port));}
  bool close(){++close_count;bool result=effect("close:"+std::to_string(id));closed=true;return result;}
 };
-static zend_object created;
-static int swoole_http2_client_coro_ce;
-static zend_object *php_swoole_create_socket(int type){return effect("create:"+std::to_string(type))?&created:nullptr;}
-static void set_object(zval*z,zend_object*object){effect("object");z->object=object;}
+inline zend_object created;
+inline int swoole_http2_client_coro_ce;
+inline zend_object *php_swoole_create_socket(int type){return effect("create:"+std::to_string(type))?&created:nullptr;}
+inline void set_object(zval*z,zend_object*object){effect("object");z->object=object;}
 #define ZVAL_OBJ(z,o) set_object(z,o)
-static SocketImpl *php_swoole_get_socket(zval*z){effect("get_socket");return z->object->socket;}
-static zval setting;
-static zval *sw_zend_read_property_ex(int,zval*,int,int){effect("setting");return &setting;}
-static void php_swoole_socket_set_error_properties(zval*,int code,const char*msg){effect("create_error:"+std::to_string(code)+":"+msg);}
-static int php_nghttp2_mem(){effect("hpack_mem");return 0;}
-static int nghttp2_hd_inflate_new2(void **slot,int){bool ok=effect("inflate");if(ok)*slot=&setting;return ok?0:-31;}
-static int nghttp2_hd_deflate_new2(void **slot,unsigned size,int){bool ok=effect("deflate:"+std::to_string(size));if(ok)*slot=&setting;return ok?0:-32;}
-static void zend_update_property(int,zval*,const char*,size_t,zval*){effect("publish_socket");}
-static void zend_update_property_bool(int,zval*,const char*,size_t,bool connected){effect("connected:"+std::to_string(connected));}
+inline SocketImpl *php_swoole_get_socket(zval*z){effect("get_socket");return z->object->socket;}
+inline zval setting;
+inline zval *sw_zend_read_property_ex(int,zval*,int,int){effect("setting");return &setting;}
+inline void php_swoole_socket_set_error_properties(zval*,int code,const char*msg){effect("create_error:"+std::to_string(code)+":"+msg);}
+inline int php_nghttp2_mem(){effect("hpack_mem");return 0;}
+inline int nghttp2_hd_inflate_new2(void **slot,int){bool ok=effect("inflate");if(ok)*slot=&setting;return ok?0:-31;}
+inline int nghttp2_hd_deflate_new2(void **slot,unsigned size,int){bool ok=effect("deflate:"+std::to_string(size));if(ok)*slot=&setting;return ok?0:-32;}
+inline void zend_update_property(int,zval*,const char*,size_t,zval*){effect("publish_socket");}
+inline void zend_update_property_bool(int,zval*,const char*,size_t,bool connected){effect("connected:"+std::to_string(connected));}
 struct FixtureClient {
  mutable SocketImpl *socket_=nullptr;zval object,zsocket;zval*zobject=&object;std::string host="initial";int port=9501;bool open_ssl=false;unsigned stream_id=13,remote_window_size=17;Http2::Settings local_settings,remote_settings;void *inflater=nullptr,*deflater=nullptr;
  void socket_dtor(){effect("socket_dtor");socket_=nullptr;}
@@ -138,18 +139,8 @@ std::cout<<"{\"passed\":true,\"connection_cases\":"<<count<<"}\n";
 '''
     work = args.output.parent / (args.output.stem + '-artifacts')
     work.mkdir(parents=True, exist_ok=False)
-    cpp = work / 'connection.cpp'
-    cpp.write_text(prelude + '\n'.join(pieces) + driver)
-    executable = work / 'connection'
-    command = ['c++', '-std=c++17', '-O1', '-fsanitize=address,undefined', '-fno-sanitize=alignment',
-               '-fno-omit-frame-pointer', '-I', str(gate.ROOT / 'native/http2'), str(cpp), str(archive), '-o', str(executable)]
-    for cmd in [command, [str(executable)]]:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        report['commands'].append({'command': cmd, 'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr})
-        if result.returncode:
-            break
-        if cmd != command:
-            report.update(json.loads(result.stdout))
+    report['commands'], result = sides.run(work, 'connection', prelude, pieces, driver, source=args.source, archive=archive, includes=args.include)
+    report.update(result or {})
     if gate.digest(header) != core['module_header_sha256']:
         report['passed'] = False
         report['error'] = 'Module header changed during checks'

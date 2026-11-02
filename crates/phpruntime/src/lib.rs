@@ -41,7 +41,7 @@ use swoole_rs_zend::{
     sys::{
         swr_zend_module_loaded, swr_zend_runtime_find_class, zend_class_entry, zend_error,
         zend_execute_data, zend_fcall_info_cache, zend_function_entry,
-        zend_register_class_alias_ex, zend_throw_exception, zif_handler, zval,
+        zend_register_class_alias_ex, zif_handler, zval,
     },
 };
 
@@ -393,9 +393,19 @@ fn class(name: &CStr) -> Option<*mut zend_class_entry> {
 }
 
 /// `zend_throw_exception(swoole_exception_ce, message, code)`.
+#[cfg(not(test))]
 fn throw(message: &Message, code: i64) {
     // SAFETY: a handler's context; Zend copies the message.
-    unsafe { zend_throw_exception(ops().exception, message.as_cstr().as_ptr(), code) };
+    unsafe { swoole_rs_zend::throw_exception(ops().exception, message.as_cstr(), code) };
+}
+
+/// Unit tests link no PHP, so they see the exception as a trace entry.
+#[cfg(test)]
+fn throw(message: &Message, code: i64) {
+    tests::record(format!(
+        "throw:{code}:{}",
+        message.as_cstr().to_string_lossy()
+    ));
 }
 
 fn log_warning(message: &CStr) {
@@ -497,7 +507,7 @@ mod tests {
         static TRACE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    fn record(entry: String) {
+    pub(super) fn record(entry: String) {
         TRACE.with(|trace| trace.borrow_mut().push(entry));
     }
 

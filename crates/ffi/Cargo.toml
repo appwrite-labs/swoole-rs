@@ -11,7 +11,7 @@ crate-type = ["staticlib"]
 [features]
 default = []
 # The graduated modules' PHP classes (Swoole\Timer); every hybrid build has PHP.
-php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php"]
+php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php"]
 
 memory = ["dep:swoole-rs-memory"]
 
@@ -31,7 +31,7 @@ iouring = ["hooks", "swoole-rs-hooks/iouring"]
 
 ossupport = ["dep:swoole-rs-ossupport"]
 tls = ["dep:swoole-rs-tls"]
-process = ["dep:swoole-rs-process", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php"]
+process = ["dep:swoole-rs-process", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-phpthread", "swoole-rs-phpthread/php"]
 clients = ["dep:swoole-rs-clients", "dep:swoole-rs-inflate", "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php"]
 httpbindings = ["dep:swoole-rs-httpbindings", "dep:swoole-rs-phphttp", "swoole-rs-phphttp/php"]
 http2 = ["dep:swoole-rs-http2", "dep:swoole-rs-phphttp2", "swoole-rs-phphttp2/php"]
@@ -55,6 +55,7 @@ swoole-rs-utilities = { path = "../utilities", optional = true }
 swoole-rs-locks = { path = "../locks", optional = true }
 swoole-rs-phplocks = { path = "../phplocks", optional = true }
 swoole-rs-phptimer = { path = "../phptimer", optional = true }
+swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-wrappers = { path = "../wrappers", optional = true }
 swoole-rs-framing = { path = "../framing" }
 swoole-rs-server = { path = "../server" }
@@ -67,6 +68,7 @@ swoole-rs-ossupport = { path = "../ossupport", optional = true }
 swoole-rs-tls = { path = "../tls", optional = true }
 swoole-rs-process = { path = "../process", optional = true }
 swoole-rs-phpprocess = { path = "../phpprocess", optional = true }
+swoole-rs-phpthread = { path = "../phpthread", optional = true }
 swoole-rs-clients = { path = "../clients", optional = true }
 swoole-rs-phpclients = { path = "../phpclients", optional = true }
 swoole-rs-inflate = { path = "../inflate", optional = true }

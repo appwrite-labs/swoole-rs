@@ -7,6 +7,7 @@ import subprocess
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body,select_overlay
 
 
@@ -27,7 +28,7 @@ def main():
         methods=[]
         for signature in ['bool send(const char *buf, size_t len)','void clean_send_queue()']:
             fragment=body(text,signature);methods.append(signature+'{'+fragment+'}')
-        pieces.append('namespace '+variant+' { struct Client: '+('RustFixtureClient' if variant=='rust' else 'NativeFixtureClient')+' {'+''.join(methods)+'};}\n')
+        pieces.append((variant, 'namespace '+variant+' { struct Client: '+('RustFixtureClient' if variant=='rust' else 'NativeFixtureClient')+' {'+''.join(methods)+'};}\n'))
     prelude=r'''
 #include "swoole_http2.h"
 #include "swoole_error.h"
@@ -42,17 +43,17 @@ def main():
 #include <stdexcept>
 #include <type_traits>
 using namespace swoole;
-static std::vector<std::string> effects;
-static unsigned serial,allocation_failure;
+inline std::vector<std::string> effects;
+inline unsigned serial,allocation_failure;
 struct zend_string {std::string bytes;char *val;size_t len;unsigned id;};
-static std::set<zend_string*> live;
-static zend_string *zend_string_init(const char *buf,size_t n,bool persistent){
+inline std::set<zend_string*> live;
+inline zend_string *zend_string_init(const char *buf,size_t n,bool persistent){
  effects.push_back("allocate:"+std::string(buf,n));if(allocation_failure)throw std::runtime_error("native allocation");
  auto s=new zend_string{std::string(buf,n),nullptr,n,serial++};s->val=s->bytes.data();live.insert(s);return s;}
-static void zend_string_release(zend_string*s){effects.push_back("release:"+std::to_string(s->id));if(!live.erase(s))std::abort();delete s;}
-static int swoole_http2_client_coro_exception_ce;
-static bool throw_exception;
-static void zend_throw_exception(int,const char*what,int code){effects.push_back("exception:"+std::to_string(code)+":"+what);if(throw_exception)throw std::runtime_error("native exception");}
+inline void zend_string_release(zend_string*s){effects.push_back("release:"+std::to_string(s->id));if(!live.erase(s))std::abort();delete s;}
+inline int swoole_http2_client_coro_exception_ce;
+inline bool throw_exception;
+inline void zend_throw_exception(int,const char*what,int code){effects.push_back("exception:"+std::to_string(code)+":"+what);if(throw_exception)throw std::runtime_error("native exception");}
 struct FixtureSocket {bool bound=false;unsigned calls=0,fail_call=0,result_kind=0;int errCode=0;std::string errMsg;std::function<void()> reenter;
  bool has_bound(int event){effects.push_back("bound:"+std::to_string(event)+":"+std::to_string(bound));return bound;}
  ssize_t send_all(const char *buf,size_t n){++calls;effects.push_back("send:"+std::string(buf,n));if(reenter)reenter();if(calls==fail_call){if(result_kind==0)return -1;if(result_kind==1)return 0;if(result_kind==2)return ssize_t(n)-1;return ssize_t(n)+1;}return n;}
@@ -110,14 +111,11 @@ for(size_t wanted:{size_t(0),size_t(1),size_t(INTPTR_MAX),size_t(INTPTR_MAX)+1,S
 std::cout<<"{\"passed\":true,\"queue_cases\":"<<count<<",\"native_queue_object_bytes\":"<<sizeof(std::queue<zend_string*>)<<",\"candidate_member_bytes\":"<<sizeof(swoole::http2::RustSendQueue<zend_string>)<<"}\n";
 }
 '''
-    work=a.output.parent/(a.output.stem+'-artifacts');work.mkdir(parents=True,exist_ok=False);cpp=work/'queue.cpp';cpp.write_text(prelude+''.join(pieces)+driver);report['harness_sha256']=gate.digest(cpp)
-    command=['c++','-std=c++17','-O1','-fsanitize=address,undefined','-fno-sanitize=alignment','-fno-omit-frame-pointer','-I',str(gate.ROOT/'native/http2'),'-I',str(a.source/'include')]
-    for include in a.include:command+=['-I',include]
-    command+=[str(cpp),str(archive),'-o',str(work/'queue')]
-    for cmd in [command,[str(work/'queue')]]:
-        r=subprocess.run(cmd,capture_output=True,text=True);report['commands'].append({'command':cmd,'returncode':r.returncode,'stdout':r.stdout,'stderr':r.stderr})
-        if r.returncode:break
-        if cmd!=command:report.update(json.loads(r.stdout))
+    work = a.output.parent / (a.output.stem + '-artifacts')
+    work.mkdir(parents=True, exist_ok=False)
+    report['commands'], result = sides.run(work, 'queue', prelude, pieces, driver, source=a.source, archive=archive, includes=a.include)
+    report.update(result or {})
+    report['harness_sha256'] = {cpp.name: gate.digest(cpp) for cpp in sorted(work.glob('*.cpp'))}
     if gate.digest(header)!=core['module_header_sha256']:
         report['passed']=False;report['error']='Module header changed during queue checks'
     report['native_sanitizers']=['address','undefined except alignment'];report['rust_sanitized']=False

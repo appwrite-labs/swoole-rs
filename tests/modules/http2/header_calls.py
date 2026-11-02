@@ -7,6 +7,7 @@ import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body, select_overlay
 
 
@@ -28,7 +29,7 @@ def main():
             'gaps':['actual PHP/HPACK/zlib runtime','server PHP parser effects','unselected locales','performance','Rust instrumentation']}
     for variant,text in [('native',original),('rust',select_overlay(selected.read_text()))]:
         fragment=body(text,marker)
-        pieces.append('namespace '+variant+' {struct Client: FixtureClient {int parse_header(Stream *stream,int flags,char *in,size_t inlen) const {'+fragment+'}};}\n')
+        pieces.append((variant, 'namespace '+variant+' {struct Client: FixtureClient {int parse_header(Stream *stream,int flags,char *in,size_t inlen) const {'+fragment+'}};}\n'))
     prelude=r'''
 #include "swoole_http2.h"
 #define SW_USE_RUST_HTTP2
@@ -42,20 +43,6 @@ def main():
 #include <stdexcept>
 #include <cctype>
 #include <strings.h>
-// ASan's strcasecmp interceptors fold ASCII only; glibc folds through the current
-// locale, which upstream's comparisons and the Rust side's fold both rely on (the
-// tr_TR case). Define them here with glibc's semantics so sanitized runs agree.
-#ifndef __THROW
-#define __THROW
-#endif
-extern "C" int strncasecmp(const char *a, const char *b, size_t n) __THROW {
-    for (; n; --n, ++a, ++b) {
-        int d = std::tolower((unsigned char) *a) - std::tolower((unsigned char) *b);
-        if (d || !*a) return d;
-    }
-    return 0;
-}
-extern "C" int strcasecmp(const char *a, const char *b) __THROW { return strncasecmp(a, b, (size_t) -1); }
 using namespace swoole;
 namespace Http2=swoole::http2;
 #undef SW_HAVE_ZLIB
@@ -71,30 +58,44 @@ struct zval {int id=0;};
 struct FakeZ {void *(*zalloc)(void*,unsigned,unsigned);void (*zfree)(void*,void*);};
 struct Stream {zval zresponse;int gzip=0;FakeZ gzip_stream{};void *gzip_buffer=nullptr;};
 struct nghttp2_nv {uint8_t *name,*value;size_t namelen,valuelen;};
-static std::vector<std::string> effects;
-static int zresult,decode_error,emit_header,throw_effect,completion_mode,decode_calls;
-static std::string field,value;
-static int swoole_http2_response_ce;
-static void emit(const char *fmt,...){char b[512];va_list v;va_start(v,fmt);vsnprintf(b,sizeof(b),fmt,v);va_end(v);effects.push_back(b);}
+inline std::vector<std::string> effects;
+inline int zresult,decode_error,emit_header,throw_effect,completion_mode,decode_calls;
+inline std::string field,value;
+inline int swoole_http2_response_ce;
+inline void emit(const char *fmt,...){char b[512];va_list v;va_start(v,fmt);vsnprintf(b,sizeof(b),fmt,v);va_end(v);effects.push_back(b);}
 #undef swoole_trace_log
 #define swoole_trace_log(flags,...) emit(__VA_ARGS__)
 #undef swoole_warning
 #define swoole_warning(...) emit(__VA_ARGS__)
-static zval properties[3]={{1},{2},{3}};
-static zval *sw_zend_read_and_convert_property_array(int,zval*,const char *p,size_t n,int){effects.push_back("property:"+std::string(p,n));if(throw_effect==1)throw std::runtime_error("native property");return &properties[p[0]=='h'?0:p[0]=='c'?1:2];}
-namespace zend {static void object_set(zval*,const char*p,size_t n,long v){effects.push_back("set:"+std::string(p,n)+":"+std::to_string(v));if(throw_effect==2)throw std::runtime_error("native set");}}
-static void add_assoc_stringl_ex(zval*z,const char*k,size_t kn,const char*v,size_t vn){effects.push_back("assoc:"+std::to_string(z->id)+":"+std::string(k,kn)+":"+std::string(v,vn));if(throw_effect==3)throw std::runtime_error("native assoc");}
-static void php_swoole_http_parse_set_cookies(const char*v,size_t n,zval*,zval*){effects.push_back("cookie:"+std::string(v,n));if(throw_effect==4)throw std::runtime_error("native cookie");}
-static ssize_t nghttp2_hd_inflate_hd(void*,nghttp2_nv*nv,int*flags,uint8_t*,size_t,int){effects.push_back("inflate");if(decode_error)return -1;*nv={(uint8_t*)field.data(),(uint8_t*)value.data(),field.size(),value.size()};*flags=NGHTTP2_HD_INFLATE_FINAL|(emit_header?NGHTTP2_HD_INFLATE_EMIT:0);if(completion_mode&&decode_calls++==0){*flags=emit_header?NGHTTP2_HD_INFLATE_EMIT:0;return completion_mode==1?1:0;}return 1;}
-static void nghttp2_hd_inflate_end_headers(void*){effects.push_back("end-headers");}
-static void *php_zlib_alloc(void*,unsigned,unsigned){return nullptr;}
-static void php_zlib_free(void*,void*){}
+inline zval properties[3]={{1},{2},{3}};
+inline zval *sw_zend_read_and_convert_property_array(int,zval*,const char *p,size_t n,int){effects.push_back("property:"+std::string(p,n));if(throw_effect==1)throw std::runtime_error("native property");return &properties[p[0]=='h'?0:p[0]=='c'?1:2];}
+namespace zend {inline void object_set(zval*,const char*p,size_t n,long v){effects.push_back("set:"+std::string(p,n)+":"+std::to_string(v));if(throw_effect==2)throw std::runtime_error("native set");}}
+inline void add_assoc_stringl_ex(zval*z,const char*k,size_t kn,const char*v,size_t vn){effects.push_back("assoc:"+std::to_string(z->id)+":"+std::string(k,kn)+":"+std::string(v,vn));if(throw_effect==3)throw std::runtime_error("native assoc");}
+inline void php_swoole_http_parse_set_cookies(const char*v,size_t n,zval*,zval*){effects.push_back("cookie:"+std::string(v,n));if(throw_effect==4)throw std::runtime_error("native cookie");}
+inline ssize_t nghttp2_hd_inflate_hd(void*,nghttp2_nv*nv,int*flags,uint8_t*,size_t,int){effects.push_back("inflate");if(decode_error)return -1;*nv={(uint8_t*)field.data(),(uint8_t*)value.data(),field.size(),value.size()};*flags=NGHTTP2_HD_INFLATE_FINAL|(emit_header?NGHTTP2_HD_INFLATE_EMIT:0);if(completion_mode&&decode_calls++==0){*flags=emit_header?NGHTTP2_HD_INFLATE_EMIT:0;return completion_mode==1?1:0;}return 1;}
+inline void nghttp2_hd_inflate_end_headers(void*){effects.push_back("end-headers");}
+inline void *php_zlib_alloc(void*,unsigned,unsigned){return nullptr;}
+inline void php_zlib_free(void*,void*){}
 #define make_string fixture_make_string
-static void *fixture_make_string(size_t size){effects.push_back("buffer:"+std::to_string(size));return (void*)1;}
-static int inflateInit2(FakeZ*,int window){effects.push_back("zlib:"+std::to_string(window));return zresult;}
+inline void *fixture_make_string(size_t size){effects.push_back("buffer:"+std::to_string(size));return (void*)1;}
+inline int inflateInit2(FakeZ*,int window){effects.push_back("zlib:"+std::to_string(window));return zresult;}
 struct FixtureClient {void *inflater=nullptr;void nghttp2_error(int rc,const char *what) const {effects.push_back("hpack-error:"+std::to_string(rc)+":"+what);}};
 '''
     driver=r'''
+// ASan's strcasecmp interceptors fold ASCII only; glibc folds through the current
+// locale, which upstream's comparisons and the Rust side's fold both rely on (the
+// tr_TR case). Define them once, in the driver, with glibc's semantics so sanitized runs agree.
+#ifndef __THROW
+#define __THROW
+#endif
+extern "C" int strncasecmp(const char *a, const char *b, size_t n) __THROW {
+    for (; n; --n, ++a, ++b) {
+        int d = std::tolower((unsigned char) *a) - std::tolower((unsigned char) *b);
+        if (d || !*a) return d;
+    }
+    return 0;
+}
+extern "C" int strcasecmp(const char *a, const char *b) __THROW { return strncasecmp(a, b, (size_t) -1); }
 static unsigned expected(unsigned role,const std::string&s){const char*p=s.data();size_t n=s.size();
  if(role==0){if(s.size()&&s[0]==':'){p++;n--;if(SW_STRCASEEQ(p,n,"method"))return 1;if(SW_STRCASEEQ(p,n,"path"))return 2;if(SW_STRCASEEQ(p,n,"authority"))return 3;}
  else{if(SW_STRCASEEQ(p,n,"content-type"))return 4;if(SW_STRCASEEQ(p,n,"cookie"))return 5;if(SW_STRCASEEQ(p,n,"content-length"))return 6;if(SW_STRCASEEQ(p,n,"accept-encoding"))return 7;}}
@@ -133,17 +134,10 @@ for(int mode:{1,2})for(int emission:{0,1})for(size_t input_len:{size_t(1),size_t
 std::cout<<"{\"passed\":true,\"header_cases\":"<<count<<",\"zlib_enabled\":"<<TEST_ZLIB<<",\"locales\":[";for(size_t i=0;i<locales.size();++i){if(i)std::cout<<",";std::cout<<"\""<<locales[i]<<"\"";}std::cout<<"],\"unavailable_locales\":[";for(size_t i=0;i<unavailable_locales.size();++i){if(i)std::cout<<",";std::cout<<"\""<<unavailable_locales[i]<<"\"";}std::cout<<"]}\n";
 }
 '''
-    work=args.output.parent/(args.output.stem+'-artifacts');work.mkdir(parents=True,exist_ok=False);cpp=work/'headers.cpp';cpp.write_text(prelude+''.join(pieces)+driver)
-    report['variants']=[]
-    for zlib in [0,1]:
-        executable=work/f'headers-{zlib}'
-        cmd=['c++','-std=c++17','-O1','-fsanitize=address,undefined','-fno-sanitize=alignment','-fno-omit-frame-pointer',f'-DTEST_ZLIB={zlib}','-I',str(gate.ROOT/'native/http2'),'-I',str(args.source/'include')]
-        for include in args.include:cmd+=['-I',include]
-        cmd+=[str(cpp),str(archive),'-o',str(executable)]
-        for command in [cmd,[str(executable)]]:
-            result=subprocess.run(command,capture_output=True,text=True);report['commands'].append({'command':command,'returncode':result.returncode,'stdout':result.stdout,'stderr':result.stderr})
-            if result.returncode:break
-            if command!=cmd:report['variants'].append(json.loads(result.stdout))
+    work = args.output.parent / (args.output.stem + '-artifacts')
+    work.mkdir(parents=True, exist_ok=False)
+    commands, report['variants'] = sides.variants(work, 'headers', prelude, pieces, driver, source=args.source, archive=archive, includes=args.include, define='TEST_ZLIB')
+    report['commands'] += commands
     report['passed']=len(report['variants'])==2 and all(r['passed'] for r in report['variants']);report['native_sanitizers']=['address','undefined except alignment'];report['rust_sanitized']=False
     args.output.write_text(json.dumps(report,indent=2)+'\n');print(json.dumps({'passed':report['passed'],'report':str(args.output)}));return 0 if report['passed'] else 1
 

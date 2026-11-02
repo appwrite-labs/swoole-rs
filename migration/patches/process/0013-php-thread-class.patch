@@ -1,0 +1,775 @@
+diff --git a/ext-src/php_swoole_thread.h b/ext-src/php_swoole_thread.h
+index a609e10..5717c83 100644
+--- a/ext-src/php_swoole_thread.h
++++ b/ext-src/php_swoole_thread.h
+@@ -45,3 +45,2 @@ ThreadResource *php_swoole_thread_atomic_cast(const zval *zobject);
+ ThreadResource *php_swoole_thread_atomic_long_cast(const zval *zobject);
+-ThreadResource *php_swoole_thread_barrier_cast(const zval *zobject);
+ 
+@@ -50,3 +49,2 @@ void php_swoole_thread_atomic_create(zval *return_value, ThreadResource *resourc
+ void php_swoole_thread_atomic_long_create(zval *return_value, ThreadResource *resource);
+-void php_swoole_thread_barrier_create(zval *return_value, ThreadResource *resource);
+ 
+diff --git a/ext-src/swoole_thread.cc b/ext-src/swoole_thread.cc
+index 52f0f34..fe51f21 100644
+--- a/ext-src/swoole_thread.cc
++++ b/ext-src/swoole_thread.cc
+@@ -30,4 +30,5 @@ END_EXTERN_C()
+ 
++// The class, its objects and every method are Rust (crates/phpthread);
++// the thread body, request bootstrap and stdio stay here.
+ zend_class_entry *swoole_thread_ce;
+-static zend_object_handlers swoole_thread_handlers;
+ 
+@@ -46,22 +47,2 @@ using swoole::Thread;
+ 
+-struct PhpThread {
+-    std::shared_ptr<Thread> thread;
+-    bool constructed = false;
+-
+-    PhpThread() : thread(std::make_shared<Thread>()) {}
+-
+-    bool join() const {
+-        if (!thread->joinable()) {
+-            return false;
+-        }
+-        thread->join();
+-        return true;
+-    }
+-};
+-
+-struct ThreadObject {
+-    PhpThread *pt;
+-    zend_object std;
+-};
+-
+ static void thread_register_stdio_file_handles(bool no_close);
+@@ -76,54 +57,22 @@ static std::atomic<size_t> thread_num(1);
+ 
+-static sw_inline ThreadObject *thread_fetch_object(zend_object *obj) {
+-    return reinterpret_cast<ThreadObject *>(reinterpret_cast<char *>(obj) - swoole_thread_handlers.offset);
+-}
+-
+-static sw_inline ThreadObject *thread_fetch_object(const zval *zobj) {
+-    return thread_fetch_object(Z_OBJ_P(zobj));
+-}
+-
+-static sw_inline PhpThread *thread_get_php_thread(zend_object *obj) {
+-    return thread_fetch_object(obj)->pt;
+-}
+-
+-static sw_inline PhpThread *thread_get_php_thread(const zval *zobj) {
+-    return thread_fetch_object(zobj)->pt;
+-}
+-
+-static void thread_free_object(zend_object *object) {
+-    auto pt = thread_get_php_thread(object);
+-    pt->join();
+-    delete pt;
+-    zend_object_std_dtor(object);
+-}
+-
+-static zend_object *thread_create_object(zend_class_entry *ce) {
+-    auto to = static_cast<ThreadObject *>(zend_object_alloc(sizeof(ThreadObject), ce));
+-    zend_object_std_init(&to->std, ce);
+-    object_properties_init(&to->std, ce);
+-    to->pt = new PhpThread();
+-    to->std.handlers = &swoole_thread_handlers;
+-    return &to->std;
+-}
+-
+ SW_EXTERN_C_BEGIN
+-static PHP_METHOD(swoole_thread, __construct);
+-static PHP_METHOD(swoole_thread, isAlive);
+-static PHP_METHOD(swoole_thread, join);
+-static PHP_METHOD(swoole_thread, joinable);
+-static PHP_METHOD(swoole_thread, getExitStatus);
+-static PHP_METHOD(swoole_thread, detach);
+-static PHP_METHOD(swoole_thread, getArguments);
+-static PHP_METHOD(swoole_thread, getId);
+-static PHP_METHOD(swoole_thread, getInfo);
+-static PHP_METHOD(swoole_thread, activeCount);
+-static PHP_METHOD(swoole_thread, yield);
+-static PHP_METHOD(swoole_thread, setName);
++PHP_METHOD(swoole_thread, __construct);
++PHP_METHOD(swoole_thread, isAlive);
++PHP_METHOD(swoole_thread, join);
++PHP_METHOD(swoole_thread, joinable);
++PHP_METHOD(swoole_thread, getExitStatus);
++PHP_METHOD(swoole_thread, detach);
++PHP_METHOD(swoole_thread, getArguments);
++PHP_METHOD(swoole_thread, getId);
++PHP_METHOD(swoole_thread, getInfo);
++PHP_METHOD(swoole_thread, activeCount);
++PHP_METHOD(swoole_thread, yield);
++PHP_METHOD(swoole_thread, setName);
+ #ifdef HAVE_CPU_AFFINITY
+-static PHP_METHOD(swoole_thread, setAffinity);
+-static PHP_METHOD(swoole_thread, getAffinity);
++PHP_METHOD(swoole_thread, setAffinity);
++PHP_METHOD(swoole_thread, getAffinity);
+ #endif
+-static PHP_METHOD(swoole_thread, setPriority);
+-static PHP_METHOD(swoole_thread, getPriority);
+-static PHP_METHOD(swoole_thread, getNativeId);
++PHP_METHOD(swoole_thread, setPriority);
++PHP_METHOD(swoole_thread, getPriority);
++PHP_METHOD(swoole_thread, getNativeId);
+ SW_EXTERN_C_END
+@@ -155,329 +104,2 @@ static const zend_function_entry swoole_thread_methods[] = {
+ 
+-#ifdef SWOOLE_SOCKETS_SUPPORT
+-void php_swoole_thread_php_socket_create(zval *return_value, zend_long sockfd);
+-
+-static int thread_host_php_socket_cast(zval *zvalue) {
+-    php_socket *php_sock = SW_Z_SOCKET_P(zvalue);
+-    if (php_sock->bsd_socket == -1) {
+-        zend_throw_exception(swoole_exception_ce, "invalid socket fd", EBADF);
+-        return -2;
+-    }
+-    int fd = dup(php_sock->bsd_socket);
+-    if (fd == -1) {
+-        zend_throw_exception(swoole_exception_ce, "failed to dup socket fd", errno);
+-    }
+-    return fd;
+-}
+-#endif
+-
+-// What crates/phpthread reaches of C++: serialization, sockets, and the Lock,
+-// Atomic and Barrier resources a container may hold.
+-static swr_v1_phpthread_host thread_host = {
+-    nullptr,
+-    [](zval *value, bool *bailed) -> zend_string * {
+-        zend_string *result = nullptr;
+-        *bailed = false;
+-        zend_try {
+-            result = php_swoole_serialize(value);
+-        }
+-        zend_catch {
+-            *bailed = true;
+-        }
+-        zend_end_try();
+-        return result;
+-    },
+-    [](const char *data, size_t length, zval *out) -> bool {
+-        bool bailed = false;
+-        zend_string *serialized = zend_string_init(data, length, false);
+-        zend_try {
+-            php_swoole_unserialize(serialized, out);
+-        }
+-        zend_catch {
+-            bailed = true;
+-        }
+-        zend_end_try();
+-        zend_string_release(serialized);
+-        return bailed;
+-    },
+-    [](zval *zvalue) -> uint32_t {
+-        if (sw_zval_is_co_socket(zvalue)) {
+-            return IS_CO_SOCKET;
+-        }
+-#ifdef SWOOLE_SOCKETS_SUPPORT
+-        if (sw_zval_is_php_socket(zvalue)) {
+-            return IS_PHP_SOCKET;
+-        }
+-#endif
+-        zend_class_entry *ce = Z_OBJCE_P(zvalue);
+-        if (instanceof_function(ce, swoole_thread_lock_ce)) {
+-            return IS_LOCK;
+-        } else if (instanceof_function(ce, swoole_thread_atomic_ce)) {
+-            return IS_ATOMIC;
+-        } else if (instanceof_function(ce, swoole_thread_atomic_long_ce)) {
+-            return IS_ATOMIC_LONG;
+-        } else if (instanceof_function(ce, swoole_thread_barrier_ce)) {
+-            return IS_BARRIER;
+-        }
+-        return 0;
+-    },
+-    [](zval *zvalue, uint32_t kind) -> void * {
+-        switch (kind) {
+-        case IS_LOCK:
+-            return php_swoole_thread_lock_cast(zvalue);
+-        case IS_ATOMIC:
+-            return php_swoole_thread_atomic_cast(zvalue);
+-        case IS_ATOMIC_LONG:
+-            return php_swoole_thread_atomic_long_cast(zvalue);
+-        default:
+-            return php_swoole_thread_barrier_cast(zvalue);
+-        }
+-    },
+-    [](zval *return_value, uint32_t kind, void *resource) {
+-        auto r = static_cast<ThreadResource *>(resource);
+-        switch (kind) {
+-        case IS_LOCK:
+-            php_swoole_thread_lock_create(return_value, r);
+-            break;
+-        case IS_ATOMIC:
+-            php_swoole_thread_atomic_create(return_value, r);
+-            break;
+-        case IS_ATOMIC_LONG:
+-            php_swoole_thread_atomic_long_create(return_value, r);
+-            break;
+-        default:
+-            php_swoole_thread_barrier_create(return_value, r);
+-            break;
+-        }
+-    },
+-    [](void *resource) { static_cast<ThreadResource *>(resource)->add_ref(); },
+-    [](void *resource) { static_cast<ThreadResource *>(resource)->del_ref(); },
+-    php_swoole_thread_stream_cast,
+-    [](zval *zvalue, int *type) -> int {
+-        swSocketType socket_type{};
+-        int fd = php_swoole_thread_co_socket_cast(zvalue, &socket_type);
+-        *type = socket_type;
+-        return fd;
+-    },
+-#ifdef SWOOLE_SOCKETS_SUPPORT
+-    thread_host_php_socket_cast,
+-#else
+-    nullptr,
+-#endif
+-    [](zval *return_value, int64_t fd) { php_swoole_thread_stream_create(return_value, fd); },
+-    [](zval *return_value, int64_t fd, int type) {
+-        php_swoole_thread_co_socket_create(return_value, fd, (swSocketType) type);
+-    },
+-#ifdef SWOOLE_SOCKETS_SUPPORT
+-    [](zval *return_value, int64_t fd) { php_swoole_thread_php_socket_create(return_value, fd); },
+-#else
+-    nullptr,
+-#endif
+-    [](int error) { swoole_set_last_error(error); },
+-    [](bool list) {
+-        if (list) {
+-            swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first");
+-        } else {
+-            php_swoole_fatal_error(E_ERROR, "must call constructor first");
+-        }
+-    },
+-};
+-
+-void php_swoole_thread_minit(int module_number) {
+-    SW_INIT_CLASS_ENTRY(swoole_thread, "Swoole\\Thread", nullptr, swoole_thread_methods);
+-    swoole_thread_ce->ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
+-    SW_SET_CLASS_CLONEABLE(swoole_thread, sw_zend_class_clone_deny);
+-    SW_SET_CLASS_UNSET_PROPERTY_HANDLER(swoole_thread, sw_zend_class_unset_property_deny);
+-    SW_SET_CLASS_CUSTOM_OBJECT(swoole_thread, thread_create_object, thread_free_object, ThreadObject, std);
+-
+-    zend_declare_property_long(swoole_thread_ce, ZEND_STRL("id"), 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
+-    zend_declare_class_constant_long(
+-        swoole_thread_ce, ZEND_STRL("HARDWARE_CONCURRENCY"), std::thread::hardware_concurrency());
+-    zend_declare_class_constant_string(swoole_thread_ce, ZEND_STRL("API_NAME"), tsrm_api_name());
+-
+-    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_OTHER"), SCHED_OTHER);
+-    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_FIFO"), SCHED_FIFO);
+-    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_RR"), SCHED_RR);
+-#ifdef SCHED_BATCH
+-    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_BATCH"), SCHED_BATCH);
+-#endif
+-#ifdef SCHED_ISO
+-    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_ISO"), SCHED_ISO);
+-#endif
+-#ifdef SCHED_IDLE
+-    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_IDLE"), SCHED_IDLE);
+-#endif
+-#ifdef SCHED_DEADLINE
+-    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_DEADLINE"), SCHED_DEADLINE);
+-#endif
+-
+-    SW_INIT_CLASS_ENTRY_DATA_OBJECT(swoole_thread_error, "Swoole\\Thread\\Error");
+-    thread_host.exception = swoole_exception_ce;
+-    swr_v1_phpthread_minit(&thread_host);
+-    zend_declare_property_long(swoole_thread_error_ce, ZEND_STRL("code"), 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
+-}
+-
+-static PHP_METHOD(swoole_thread, __construct) {
+-    char *script_file;
+-    size_t l_script_file;
+-    zval *args;
+-    int argc = 0;
+-    ZendArray *argv = nullptr;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, -1)
+-    Z_PARAM_STRING(script_file, l_script_file)
+-    Z_PARAM_VARIADIC('+', args, argc)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto pt = thread_get_php_thread(ZEND_THIS);
+-    if (pt->constructed) {
+-        zend_throw_error(nullptr, "Constructor of %s can only be called once", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
+-        return;
+-    }
+-
+-    if (l_script_file < 1) {
+-        zend_throw_exception(swoole_exception_ce, "exec file name is empty", SW_ERROR_INVALID_PARAMS);
+-        return;
+-    }
+-
+-    zend_string *file = zend_string_init(script_file, l_script_file, true);
+-
+-    if (argc > 0) {
+-        argv = ZendArray::create();
+-        for (int i = 0; i < argc; i++) {
+-            argv->append(&args[i]);
+-        }
+-    }
+-
+-    try {
+-        pt->thread->start([file, argv, pt]() { php_swoole_thread_start(pt->thread, file, argv); });
+-    } catch (const std::exception &e) {
+-        zend_throw_exception(swoole_exception_ce, e.what(), SW_ERROR_SYSTEM_CALL_FAIL);
+-        return;
+-    }
+-
+-    pt->constructed = true;
+-    zend::object_set(ZEND_THIS, ZEND_STRL("id"), (zend_long) pt->thread->get_id());
+-}
+-
+-static PHP_METHOD(swoole_thread, isAlive) {
+-    auto pt = thread_get_php_thread(ZEND_THIS);
+-    RETURN_BOOL(pt->thread->is_alive());
+-}
+-
+-static PHP_METHOD(swoole_thread, join) {
+-    auto pt = thread_get_php_thread(ZEND_THIS);
+-    RETURN_BOOL(pt->join());
+-}
+-
+-static PHP_METHOD(swoole_thread, joinable) {
+-    auto pt = thread_get_php_thread(ZEND_THIS);
+-    RETURN_BOOL(pt->thread->joinable());
+-}
+-
+-static PHP_METHOD(swoole_thread, detach) {
+-    auto pt = thread_get_php_thread(ZEND_THIS);
+-    if (!pt->thread->joinable()) {
+-        RETURN_FALSE;
+-    }
+-    pt->thread->detach();
+-    RETURN_TRUE;
+-}
+-
+-static PHP_METHOD(swoole_thread, getArguments) {
+-    if (Z_TYPE(thread_argv) == IS_ARRAY) {
+-        RETURN_ZVAL(&thread_argv, 1, 0);
+-    }
+-}
+-
+-static PHP_METHOD(swoole_thread, getId) {
+-    RETURN_LONG((zend_long) pthread_self());
+-}
+-
+-static PHP_METHOD(swoole_thread, getExitStatus) {
+-    auto pt = thread_get_php_thread(ZEND_THIS);
+-    RETURN_LONG(pt->thread->get_exit_status());
+-}
+-
+-static PHP_METHOD(swoole_thread, setName) {
+-    char *name;
+-    size_t l_name;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_STRING(name, l_name)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    RETURN_BOOL(swoole_thread_set_name(name));
+-}
+-
+-#ifdef HAVE_CPU_AFFINITY
+-static PHP_METHOD(swoole_thread, setAffinity) {
+-    zval *array;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_ARRAY(array)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    cpu_set_t cpu_set;
+-    if (!php_swoole_array_to_cpu_set(array, &cpu_set)) {
+-        RETURN_FALSE;
+-    }
+-
+-    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set), &cpu_set) != 0) {
+-        php_swoole_error(E_WARNING, "pthread_setaffinity_np() failed");
+-        RETURN_FALSE;
+-    }
+-    RETURN_TRUE;
+-}
+-
+-static PHP_METHOD(swoole_thread, getAffinity) {
+-    cpu_set_t cpu_set;
+-    if (pthread_getaffinity_np(pthread_self(), sizeof(cpu_set), &cpu_set) < 0) {
+-        php_swoole_error(E_WARNING, "pthread_getaffinity_np() failed");
+-        RETURN_FALSE;
+-    }
+-    php_swoole_cpu_set_to_array(return_value, &cpu_set);
+-}
+-#endif
+-
+-static PHP_METHOD(swoole_thread, setPriority) {
+-    zend_long priority, policy = -1;
+-    ZEND_PARSE_PARAMETERS_START(1, 2)
+-    Z_PARAM_LONG(priority)
+-    Z_PARAM_OPTIONAL
+-    Z_PARAM_LONG(policy)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    struct sched_param param;
+-    int sched_policy = policy;
+-    if (policy == -1) {
+-        pthread_getschedparam(pthread_self(), &sched_policy, &param);
+-    }
+-
+-    param.sched_priority = priority;
+-    int retval = pthread_setschedparam(pthread_self(), sched_policy, &param);
+-    if (retval == 0) {
+-        RETURN_TRUE;
+-    } else {
+-        php_swoole_sys_error(E_WARNING, "pthread_setschedparam() failed");
+-        RETURN_FALSE;
+-    }
+-}
+-
+-static PHP_METHOD(swoole_thread, getPriority) {
+-    struct sched_param param;
+-    int policy;
+-    if (pthread_getschedparam(pthread_self(), &policy, &param) != 0) {
+-        php_swoole_error(E_WARNING, "pthread_getschedparam() failed");
+-        RETURN_FALSE;
+-    }
+-
+-    array_init(return_value);
+-    add_assoc_long_ex(return_value, ZEND_STRL("policy"), policy);
+-    add_assoc_long_ex(return_value, ZEND_STRL("priority"), param.sched_priority);
+-}
+-
+-static PHP_METHOD(swoole_thread, getNativeId) {
+-    RETURN_LONG((zend_long) swoole_thread_get_native_id());
+-}
+-
+ void php_swoole_thread_rinit() {
+@@ -589,5 +211,8 @@ static void thread_unregister_stdio_file_handles() {
+ 
+-void php_swoole_thread_start(std::shared_ptr<Thread> thread, zend_string *file, ZendArray *argv) {
++// The body of a PHP thread: Swoole\Thread's (Rust starts the OS thread) and a
++// thread-mode Server's workers. `enter` and `exit` report its life to the owner.
++static void thread_run(
++    zend_string *file, ZendArray *argv, void (*entered)(void *), void (*left)(void *, int), void *context) {
+     thread_num.fetch_add(1);
+-    thread->enter();
++    entered(context);
+     ts_resource(0);
+@@ -649,3 +274,3 @@ _startup_error:
+     zend_string_release(file);
+-    thread->exit(EG(exit_status));
++    left(context, EG(exit_status));
+     ts_free_thread();
+@@ -655,2 +280,11 @@ _startup_error:
+ 
++void php_swoole_thread_start(std::shared_ptr<Thread> thread, zend_string *file, ZendArray *argv) {
++    thread_run(
++        file,
++        argv,
++        [](void *context) { static_cast<Thread *>(context)->enter(); },
++        [](void *context, int status) { static_cast<Thread *>(context)->exit(status); },
++        thread.get());
++}
++
+ size_t sw_active_thread_count() {
+@@ -740,15 +374,167 @@ void php_swoole_thread_php_socket_create(zval *return_value, zend_long sockfd) {
+ 
+-static PHP_METHOD(swoole_thread, getInfo) {
+-    array_init(return_value);
+-    add_assoc_bool(return_value, "is_main_thread", tsrm_is_main_thread());
+-    add_assoc_bool(return_value, "is_shutdown", tsrm_is_shutdown());
+-    add_assoc_long(return_value, "thread_num", thread_num.load());
++#ifdef SWOOLE_SOCKETS_SUPPORT
++static int thread_host_php_socket_cast(zval *zvalue) {
++    php_socket *php_sock = SW_Z_SOCKET_P(zvalue);
++    if (php_sock->bsd_socket == -1) {
++        zend_throw_exception(swoole_exception_ce, "invalid socket fd", EBADF);
++        return -2;
++    }
++    int fd = dup(php_sock->bsd_socket);
++    if (fd == -1) {
++        zend_throw_exception(swoole_exception_ce, "failed to dup socket fd", errno);
++    }
++    return fd;
+ }
++#endif
+ 
+-static PHP_METHOD(swoole_thread, activeCount) {
+-    RETURN_LONG(thread_num.load());
+-}
++// What crates/phpthread reaches of C++: serialization, sockets, and the Lock,
++// Atomic resources a container may hold, and the thread body.
++static swr_v1_phpthread_host thread_host = {
++    nullptr,
++    [](zval *value, bool *bailed) -> zend_string * {
++        zend_string *result = nullptr;
++        *bailed = false;
++        zend_try {
++            result = php_swoole_serialize(value);
++        }
++        zend_catch {
++            *bailed = true;
++        }
++        zend_end_try();
++        return result;
++    },
++    [](const char *data, size_t length, zval *out) -> bool {
++        bool bailed = false;
++        zend_string *serialized = zend_string_init(data, length, false);
++        zend_try {
++            php_swoole_unserialize(serialized, out);
++        }
++        zend_catch {
++            bailed = true;
++        }
++        zend_end_try();
++        zend_string_release(serialized);
++        return bailed;
++    },
++    [](zval *zvalue) -> uint32_t {
++        if (sw_zval_is_co_socket(zvalue)) {
++            return IS_CO_SOCKET;
++        }
++#ifdef SWOOLE_SOCKETS_SUPPORT
++        if (sw_zval_is_php_socket(zvalue)) {
++            return IS_PHP_SOCKET;
++        }
++#endif
++        zend_class_entry *ce = Z_OBJCE_P(zvalue);
++        if (instanceof_function(ce, swoole_thread_lock_ce)) {
++            return IS_LOCK;
++        } else if (instanceof_function(ce, swoole_thread_atomic_ce)) {
++            return IS_ATOMIC;
++        } else if (instanceof_function(ce, swoole_thread_atomic_long_ce)) {
++            return IS_ATOMIC_LONG;
++        }
++        return 0;
++    },
++    [](zval *zvalue, uint32_t kind) -> void * {
++        switch (kind) {
++        case IS_LOCK:
++            return php_swoole_thread_lock_cast(zvalue);
++        case IS_ATOMIC:
++            return php_swoole_thread_atomic_cast(zvalue);
++        default:
++            return php_swoole_thread_atomic_long_cast(zvalue);
++        }
++    },
++    [](zval *return_value, uint32_t kind, void *resource) {
++        auto r = static_cast<ThreadResource *>(resource);
++        switch (kind) {
++        case IS_LOCK:
++            php_swoole_thread_lock_create(return_value, r);
++            break;
++        case IS_ATOMIC:
++            php_swoole_thread_atomic_create(return_value, r);
++            break;
++        default:
++            php_swoole_thread_atomic_long_create(return_value, r);
++            break;
++        }
++    },
++    [](void *resource) { static_cast<ThreadResource *>(resource)->add_ref(); },
++    [](void *resource) { static_cast<ThreadResource *>(resource)->del_ref(); },
++    php_swoole_thread_stream_cast,
++    [](zval *zvalue, int *type) -> int {
++        swSocketType socket_type{};
++        int fd = php_swoole_thread_co_socket_cast(zvalue, &socket_type);
++        *type = socket_type;
++        return fd;
++    },
++#ifdef SWOOLE_SOCKETS_SUPPORT
++    thread_host_php_socket_cast,
++#else
++    nullptr,
++#endif
++    [](zval *return_value, int64_t fd) { php_swoole_thread_stream_create(return_value, fd); },
++    [](zval *return_value, int64_t fd, int type) {
++        php_swoole_thread_co_socket_create(return_value, fd, (swSocketType) type);
++    },
++#ifdef SWOOLE_SOCKETS_SUPPORT
++    [](zval *return_value, int64_t fd) { php_swoole_thread_php_socket_create(return_value, fd); },
++#else
++    nullptr,
++#endif
++    [](int error) { swoole_set_last_error(error); },
++    [](bool list) {
++        if (list) {
++            swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first");
++        } else {
++            php_swoole_fatal_error(E_ERROR, "must call constructor first");
++        }
++    },
++    [](const char *file, size_t length, void *argv, void *context, void (*entered)(void *), void (*left)(void *, int)) {
++        thread_run(zend_string_init(file, length, true), static_cast<ZendArray *>(argv), entered, left, context);
++    },
++    [](zval *return_value) {
++        if (Z_TYPE(thread_argv) == IS_ARRAY) {
++            RETURN_ZVAL(&thread_argv, 1, 0);
++        }
++    },
++    [](zval *return_value) {
++        array_init(return_value);
++        add_assoc_bool(return_value, "is_main_thread", tsrm_is_main_thread());
++        add_assoc_bool(return_value, "is_shutdown", tsrm_is_shutdown());
++        add_assoc_long(return_value, "thread_num", thread_num.load());
++    },
++    []() -> size_t { return thread_num.load(); },
++    [](const char *name) -> bool { return swoole_thread_set_name(name); },
++    []() -> int64_t { return swoole_thread_get_native_id(); },
++    [](int level, const char *message) { php_swoole_error(level, "%s", message); },
++    [](int level, const char *message) { php_swoole_sys_error(level, "%s", message); },
++};
+ 
+-static PHP_METHOD(swoole_thread, yield) {
+-    std::this_thread::yield();
++void php_swoole_thread_minit(int module_number) {
++    thread_host.exception = swoole_exception_ce;
++    swr_v1_phpthread_minit(&thread_host);
++    swoole_thread_ce = swr_v1_phpthread_thread_minit(swoole_thread_methods);
++    zend_declare_class_constant_long(
++        swoole_thread_ce, ZEND_STRL("HARDWARE_CONCURRENCY"), std::thread::hardware_concurrency());
++    zend_declare_class_constant_string(swoole_thread_ce, ZEND_STRL("API_NAME"), tsrm_api_name());
++
++    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_OTHER"), SCHED_OTHER);
++    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_FIFO"), SCHED_FIFO);
++    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_RR"), SCHED_RR);
++#ifdef SCHED_BATCH
++    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_BATCH"), SCHED_BATCH);
++#endif
++#ifdef SCHED_ISO
++    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_ISO"), SCHED_ISO);
++#endif
++#ifdef SCHED_IDLE
++    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_IDLE"), SCHED_IDLE);
++#endif
++#ifdef SCHED_DEADLINE
++    zend_declare_class_constant_long(swoole_thread_ce, ZEND_STRL("SCHED_DEADLINE"), SCHED_DEADLINE);
++#endif
++
++    SW_INIT_CLASS_ENTRY_DATA_OBJECT(swoole_thread_error, "Swoole\\Thread\\Error");
++    zend_declare_property_long(swoole_thread_error_ce, ZEND_STRL("code"), 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
+ }
+diff --git a/ext-src/swoole_thread_barrier.cc b/ext-src/swoole_thread_barrier.cc
+index 712d8aa..89bad1e 100644
+--- a/ext-src/swoole_thread_barrier.cc
++++ b/ext-src/swoole_thread_barrier.cc
+@@ -18,3 +18,2 @@
+ #include "php_swoole_thread.h"
+-#include "swoole_lock.h"
+ 
+@@ -26,72 +25,8 @@ END_EXTERN_C()
+ 
+-using swoole::Barrier;
+-
+ zend_class_entry *swoole_thread_barrier_ce;
+-static zend_object_handlers swoole_thread_barrier_handlers;
+-
+-struct BarrierResource : ThreadResource {
+-    Barrier barrier_;
+-    explicit BarrierResource(int count) {
+-        barrier_.init(false, count);
+-    }
+-    void wait() {
+-        barrier_.wait();
+-    }
+-    ~BarrierResource() override {
+-        barrier_.destroy();
+-    }
+-};
+-
+-struct BarrierObject {
+-    BarrierResource *barrier;
+-    zend_object std;
+-};
+-
+-static sw_inline BarrierObject *barrier_fetch_object(zend_object *obj) {
+-    return reinterpret_cast<BarrierObject *>(reinterpret_cast<char *>(obj) - swoole_thread_barrier_handlers.offset);
+-}
+-
+-static BarrierResource *barrier_get_ptr(const zval *zobject) {
+-    return barrier_fetch_object(Z_OBJ_P(zobject))->barrier;
+-}
+-
+-static BarrierResource *barrier_get_and_check_ptr(const zval *zobject) {
+-    BarrierResource *barrier = barrier_get_ptr(zobject);
+-    if (UNEXPECTED(!barrier)) {
+-        swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first");
+-    }
+-    return barrier;
+-}
+-
+-static void barrier_free_object(zend_object *object) {
+-    auto bo = barrier_fetch_object(object);
+-    if (bo->barrier) {
+-        bo->barrier->del_ref();
+-        bo->barrier = nullptr;
+-    }
+-    zend_object_std_dtor(object);
+-}
+-
+-static zend_object *barrier_create_object(zend_class_entry *ce) {
+-    auto bo = static_cast<BarrierObject *>(zend_object_alloc(sizeof(BarrierObject), ce));
+-    zend_object_std_init(&bo->std, ce);
+-    object_properties_init(&bo->std, ce);
+-    bo->std.handlers = &swoole_thread_barrier_handlers;
+-    return &bo->std;
+-}
+-
+-ThreadResource *php_swoole_thread_barrier_cast(const zval *zobject) {
+-    return barrier_fetch_object(Z_OBJ_P(zobject))->barrier;
+-}
+-
+-void php_swoole_thread_barrier_create(zval *return_value, ThreadResource *resource) {
+-    auto obj = barrier_create_object(swoole_thread_barrier_ce);
+-    auto bo = barrier_fetch_object(obj);
+-    bo->barrier = dynamic_cast<BarrierResource *>(resource);
+-    ZVAL_OBJ(return_value, obj);
+-}
+ 
++// The class, its objects and every method are Rust (crates/phpthread).
+ SW_EXTERN_C_BEGIN
+-static PHP_METHOD(swoole_thread_barrier, __construct);
+-static PHP_METHOD(swoole_thread_barrier, wait);
++PHP_METHOD(swoole_thread_barrier, __construct);
++PHP_METHOD(swoole_thread_barrier, wait);
+ SW_EXTERN_C_END
+@@ -108,35 +43,3 @@ static constexpr zend_function_entry swoole_thread_barrier_methods[] =
+ void php_swoole_thread_barrier_minit(int module_number) {
+-    SW_INIT_CLASS_ENTRY(swoole_thread_barrier, "Swoole\\Thread\\Barrier", nullptr, swoole_thread_barrier_methods);
+-    swoole_thread_barrier_ce->ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
+-    SW_SET_CLASS_CLONEABLE(swoole_thread_barrier, sw_zend_class_clone_deny);
+-    SW_SET_CLASS_UNSET_PROPERTY_HANDLER(swoole_thread_barrier, sw_zend_class_unset_property_deny);
+-    SW_SET_CLASS_CUSTOM_OBJECT(swoole_thread_barrier, barrier_create_object, barrier_free_object, BarrierObject, std);
+-}
+-
+-static PHP_METHOD(swoole_thread_barrier, __construct) {
+-    auto bo = barrier_fetch_object(Z_OBJ_P(ZEND_THIS));
+-    if (bo->barrier != nullptr) {
+-        zend_throw_error(nullptr, "Constructor of %s can only be called once", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
+-        return;
+-    }
+-
+-    zend_long count;
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_LONG(count)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    if (count < 2) {
+-        zend_throw_exception(
+-            swoole_exception_ce, "The parameter $count must be greater than 1", SW_ERROR_INVALID_PARAMS);
+-        return;
+-    }
+-
+-    bo->barrier = new BarrierResource(count);
+-}
+-
+-static PHP_METHOD(swoole_thread_barrier, wait) {
+-    BarrierResource *barrier = barrier_get_and_check_ptr(ZEND_THIS);
+-    if (barrier) {
+-        barrier->wait();
+-    }
++    swoole_thread_barrier_ce = swr_v1_phpthread_barrier_minit(swoole_thread_barrier_methods);
+ }
