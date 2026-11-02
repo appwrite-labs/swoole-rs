@@ -15,6 +15,7 @@ struct _zend_class_entry;
 struct _zend_execute_data;
 struct _zend_fcall_info_cache;
 struct _zval_struct;
+struct _zend_array;
 
 /* The globals and server state the frontend reads (bits of `flags`). */
 enum {
@@ -107,6 +108,18 @@ struct swr_v1_phpcoroutines_ops {
     /* PHP 8.4+ exit(): the original handler (0 if none), and its fallback */
     uint8_t (*exit_original)(struct _zend_execute_data *execute_data, struct _zval_struct *return_value);
     void (*exit_fallback)(const char *message, size_t length, long status);
+    /* Swoole\Coroutine\Scheduler and Co::set(): php_swoole_reactor_init(),
+     * php_swoole_event_wait(), php_swoole_set_global_option(), the coroutine
+     * stack size (php_swoole_parse_to_size), a name resolver, the DNS cache and
+     * the reactor's user exit condition (a callable, or anything else to clear it) */
+    int (*reactor_init)(void);
+    void (*event_wait)(void);
+    void (*set_global_option)(struct _zend_array *options);
+    void (*set_stack_size)(struct _zval_struct *size);
+    void (*add_name_resolver)(struct _zval_struct *resolver);
+    void (*set_dns_cache_expire)(long expire);
+    void (*set_dns_cache_capacity)(long capacity);
+    void (*set_exit_condition)(struct _zval_struct *condition);
 };
 
 /* MINIT: the classes, constants, opcode handlers and the autoload hook. */
@@ -139,6 +152,12 @@ long swr_v1_phpcoroutines_cid(void);
 /* PHPCoroutine::config */
 uint32_t swr_v1_phpcoroutines_hook_flags(void);
 void swr_v1_phpcoroutines_set_hook_flags(uint32_t flags);
+/* PHPCoroutine::set_hook_flags: the flags, recorded in the options too. */
+void swr_v1_phpcoroutines_set_hook_option(uint32_t flags);
+/* php_swoole_set_coroutine_option. */
+void swr_v1_phpcoroutines_set_option(struct _zend_array *options);
+/* Swoole\Coroutine\Scheduler, at MINIT. */
+void swr_v1_phpcoroutines_scheduler_minit(const struct _zend_function_entry *methods);
 void swr_v1_phpcoroutines_set_max_num(uint64_t max);
 void swr_v1_phpcoroutines_set_deadlock_check(uint8_t enable);
 void swr_v1_phpcoroutines_set_preemptive(uint8_t enable);

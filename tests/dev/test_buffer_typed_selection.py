@@ -31,8 +31,8 @@ class TypedBufferSelection(unittest.TestCase):
                 self.assertEqual(command[command.index('--archive')+1],
                                  commands['reactor-flush'][commands['reactor-flush'].index('--archive')+1])
                 compile_command=commands['reactor-buffer-typed-compile']
-                self.assertEqual(compile_command[compile_command.index('--master-patch')+1],
-                                 str(ROOT/'migration/patches/integration/0003-server-static-config.patch'))
+                self.assertEqual(compile_command[compile_command.index('--archive')+1],
+                                 command[command.index('--archive')+1])
             variants.add(dev.build_variant(args))
         self.assertEqual(len(variants), 2)
 

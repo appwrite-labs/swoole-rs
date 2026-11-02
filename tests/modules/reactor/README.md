@@ -12,16 +12,17 @@ Most gates take the pinned upstream source and a Rust FFI archive:
 
 `NAME` is one of `output`, `wait`, `callbacks`, `callback_queues`,
 `initialize`, `builtins`, `backend_storage`, `flush`, `poll_snapshot`,
-`stream_gate` and `iov_owned`. Each extracts the original and patched function
-bodies from upstream after applying `migration/patches/reactor/` (patch
-checksums must match the manifest), compiles them against native facades and the
-archive, and checks that both variants behave the same. `output.py` also takes
+`stream_gate` and `iov_owned`. Each extracts the original function bodies from
+the pin and the patched ones from the archive's hybrid tree (`hybrid_tree`, #796;
+some older gates still apply `migration/patches/reactor/` to the pin), compiles
+them against native facades and the archive, and checks that both variants
+behave the same. `output.py` also takes
 `--iov-progress` or `--forwarding`.
 
-Gates that need no upstream source:
+Compile and declaration gates:
 
-- `compile_gate.py --source S --report R`: original and patched backend translation units compile as C++14.
-- `buffer_typed_compile.py --source S --master-patch P --report R`: typed Buffer compositions compile.
+- `compile_gate.py --source S --archive A --report R`: original and hybrid backend translation units compile as C++14.
+- `buffer_typed_compile.py --source S --archive A --report R`: the hybrid tree's typed Buffer callers compile.
 - `declarations.py --archive A --report R`: every `swr_v1_reactor_*`/`swr_v1_stream_*` declaration in the header is defined in the archive.
 
 

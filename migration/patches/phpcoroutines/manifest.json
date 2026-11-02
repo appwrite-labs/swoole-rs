@@ -9,6 +9,15 @@
         "ext-src/swoole_coroutine.cc",
         "ext-src/swoole_tracer.cc"
       ]
+    },
+    {
+      "path": "0002-swoole_coroutine_scheduler.patch",
+      "sha256": "c9bb8ef034fe12087864db9354f7f3a3a2583ec4104dbd8a9952d9598297ceb6",
+      "upstream_paths": [
+        "ext-src/php_swoole_coroutine.h",
+        "ext-src/swoole_coroutine.cc",
+        "ext-src/swoole_coroutine_scheduler.cc"
+      ]
     }
   ]
 }
