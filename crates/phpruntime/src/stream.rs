@@ -830,8 +830,7 @@ fn accept(
         }
         return FAILURE;
     };
-    // Upstream fills the peer's name from this never-written address; zeroed,
-    // its family is unset, so the text address is left alone.
+    // The peer's name, as upstream reports it: from an empty address.
     // SAFETY: an all-zero sockaddr_storage is valid.
     let mut peer: sockaddr_storage = unsafe { std::mem::zeroed() };
     #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
