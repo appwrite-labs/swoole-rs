@@ -203,6 +203,14 @@
         "ext-src/swoole_thread_map.cc",
         "ext-src/swoole_thread_queue.cc"
       ]
+    },
+    {
+      "path": "0021-arginfo-server.patch",
+      "sha256": "656539b3f3fd8003f37d60750d153b2b78040b841ddf36b17cd9355dffccebe8",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_server_arginfo.h",
+        "ext-src/swoole_server.cc"
+      ]
     }
   ]
 }

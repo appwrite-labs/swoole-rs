@@ -23,6 +23,7 @@ mod parse;
 mod request;
 mod response;
 mod send;
+mod server_coro;
 mod state;
 
 pub use context::{swr_v1_phphttp_context, swr_v1_phphttp_set_context};

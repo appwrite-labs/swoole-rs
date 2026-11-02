@@ -14,6 +14,14 @@
       "upstream_paths": [
         "ext-src/swoole_server_port.cc"
       ]
+    },
+    {
+      "path": "0003-arginfo.patch",
+      "sha256": "e57b822336212b4ab52c380e19c5908591693d6956d288868be72bfa37d33cb0",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_server_port_arginfo.h",
+        "ext-src/swoole_server_port.cc"
+      ]
     }
   ]
 }
