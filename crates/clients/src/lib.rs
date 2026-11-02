@@ -10,12 +10,9 @@
 pub mod address;
 pub mod async_client;
 pub mod connect;
-pub mod coro_client;
 pub mod dns;
 pub mod handlers;
-pub mod http_connection;
 pub mod http_format;
-pub mod http_response;
 pub mod ip;
 pub mod object;
 pub mod pool;
@@ -195,39 +192,6 @@ pub unsafe extern "C" fn swr_v1_clients_cookie(data: *const u8, length: usize) -
             .iter()
             .position(|&b| b == b';')
             .unwrap_or(length - value_offset),
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ExecPlan {
-    pub action: u32,
-    pub stage: u32,
-    pub iteration: u32,
-}
-
-/// Native caller-stack cursor only:0 loop/send,1 defer/receive,2 retry/close.
-/// Actions0 failure,1 send,2 receive,3 close/reset,4 success.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_http_exec(
-    stage: u32,
-    iteration: u32,
-    retries: u8,
-    deferred: u8,
-    status: u16,
-) -> ExecPlan {
-    let (action, next_stage, next_iteration) = match stage {
-        0 if iteration < u32::from(retries) + 1 => (1, 1, iteration),
-        1 if deferred != 0 => (4, 1, iteration),
-        1 => (2, 2, iteration),
-        2 if retries > 0 && matches!(status, 502 | 503) => (3, 0, iteration.wrapping_add(1)),
-        2 => (4, 2, iteration),
-        _ => (0, stage, iteration),
-    };
-    ExecPlan {
-        action,
-        stage: next_stage,
-        iteration: next_iteration,
     }
 }
 
