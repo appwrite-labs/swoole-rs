@@ -92,7 +92,7 @@ void swr_v1_bus_pop(swr_bus *);
 /* On SWR_BUS_ALLOCATE: allocate state->size bytes, adopt them, call again. */
 ssize_t swr_v1_bus_read(swr_bus *, int fd, bool dgram, bool *nobufs, swr_bus_read *state);
 void swr_v1_bus_adopt(swr_bus *, void *data, size_t size, const void *allocator);
-bool swr_v1_bus_write(swr_bus *, void *socket, void *info, const char *data,
+bool swr_v1_bus_write(swr_bus *, void *socket, void *head, const char *data,
                       ssize_t (*send)(void *socket, const struct iovec *, size_t),
                       bool (*reduce)(void *socket));
 #ifdef __cplusplus
