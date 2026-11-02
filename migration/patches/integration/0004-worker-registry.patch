@@ -1,13 +1,13 @@
 diff --git a/include/swoole_server.h b/include/swoole_server.h
-index 240e226..83dc71b 100644
+index 240e226..fd9af41 100644
 --- a/include/swoole_server.h
 +++ b/include/swoole_server.h
-@@ -1053,2 +1053,5 @@ class Server {
-     std::unordered_set<pid_t> detached_processes;
+@@ -1043,2 +1043,5 @@ class Server {
+     EventData *task_results = nullptr;
 +    // Rust-owned pid -> Worker* lookup; see crates/process/src/worker_registry.rs.
 +    // A swr_v1_process_worker_registry*, created in create(), freed in destroy().
 +    void *worker_registry = nullptr;
-     /**
+ 
 diff --git a/src/server/master.cc b/src/server/master.cc
 index 188990f..16ab1be 100644
 --- a/src/server/master.cc
