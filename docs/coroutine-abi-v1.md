@@ -34,10 +34,10 @@ Channel:
   matching entries before resume. After a wait, the timer is deleted before
   checking cancellation, timeout and close; cancellation wins.
 - Pop may drain buffered data after close.
-- With the module selected, the data FIFO and both waiter lists are three
-  native-owned opaque Rust `VecDeque` handles of tokens. Rust never dereferences
-  or frees payloads. Allocation is fallible; native raises `bad_alloc`. This
-  changes the Channel class layout.
+- The channel's state and queues are one Rust-owned handle; pop/push/close are
+  whole Rust operations calling C++ for the timer, yield and resume. Rust never
+  dereferences or frees payloads. Allocation is fallible; native raises
+  `bad_alloc`. Channel is no longer copyable.
 
 `context.cc`: stack marker initialization and stack-usage sampling are in Rust
 (original marker bytes and placement; `<=` on init versus `<` on query). Stack
