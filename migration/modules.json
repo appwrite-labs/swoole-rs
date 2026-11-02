@@ -252,7 +252,8 @@
       ],
       "phpt_families": [
         "swoole_process",
-        "swoole_process_pool"
+        "swoole_process_pool",
+        "swoole_server"
       ],
       "upstream_patch_targets": [
         "src/server/worker.cc",

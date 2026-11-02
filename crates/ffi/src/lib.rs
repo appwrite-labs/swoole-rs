@@ -148,7 +148,7 @@ pub use swoole_rs_phphttp2::*;
 #[cfg(feature = "ports")]
 pub use swoole_rs_ports as ports;
 
-#[cfg(feature = "ports")]
+#[cfg(any(feature = "ports", feature = "process"))]
 pub use swoole_rs_phpserver::*;
 
 #[cfg(feature = "phphelpers")]
