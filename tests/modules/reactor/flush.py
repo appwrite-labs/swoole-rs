@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 from ordered_gate import ROOT, PIN, block, apply_patch_verified
-from poll_snapshot import digest
+from tools.build_hybrid import module_patches
 
 
 def main():
@@ -21,8 +21,8 @@ def main():
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--sanitize', action='store_true')
     args = parser.parse_args()
-    manifest = ROOT/'migration/patches/reactor/manifest.json'
-    entries = json.loads(manifest.read_text())['patches']
+    overlay = ROOT/'migration/patches/reactor'
+    entries = module_patches(overlay)
     original = subprocess.check_output(['git','-C',str(args.source),'show',PIN+':src/reactor/base.cc'],text=True)
     with tempfile.TemporaryDirectory(prefix='swr-flush-') as temporary:
         tree = Path(temporary)
@@ -34,8 +34,7 @@ def main():
                     path.write_bytes(subprocess.check_output(['git','-C',str(args.source),'show',PIN+':'+name]))
         patches = []
         for entry in entries:
-            patch = manifest.parent/entry['path']
-            if digest(patch) != entry['sha256']: raise ValueError('Overlay checksum mismatch')
+            patch = overlay/entry['path']
             application = apply_patch_verified(tree, patch, entry['upstream_paths'], entry['sha256'])
             patches.append(dict(path=entry['path'],application=application))
         selected = (tree/'src/reactor/base.cc').read_text()

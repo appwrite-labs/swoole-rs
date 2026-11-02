@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 from ordered_gate import ROOT,PIN,block
-from poll_snapshot import digest
+from tools.build_hybrid import module_patches
 sys.path.insert(0,str(ROOT))
 from tools.harness import run_isolated
 from tools.harness import run_compiler
@@ -25,7 +25,7 @@ p.add_argument('--report',type=Path,required=True)
 p.add_argument('--sanitize',action='store_true')
 a=p.parse_args()
 if a.report.exists():raise ValueError('Choose a unique new receipt path')
-manifest=ROOT/'migration/patches/reactor/manifest.json';entries=json.loads(manifest.read_text())['patches']
+overlay=ROOT/'migration/patches/reactor';entries=module_patches(overlay)
 report=dict(scope=__doc__,pin=PIN,patch_application=[],commands=[],results=[],passed=False)
 with tempfile.TemporaryDirectory(prefix='swr-callbacks-') as temporary:
     tree=Path(temporary);original={}
@@ -35,8 +35,7 @@ with tempfile.TemporaryDirectory(prefix='swr-callbacks-') as temporary:
             if not path.exists():
                 data=subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name]);path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data);original[name]=data.decode()
     for entry in entries:
-        patch=manifest.parent/entry['path']
-        if digest(patch)!=entry['sha256']:raise ValueError('Overlay checksum differs')
+        patch=overlay/entry['path']
         report['patch_application'].append(apply_patch_verified(tree,patch,entry['upstream_paths'],entry['sha256']))
     try:
         for variant in ['original','selected']:

@@ -198,50 +198,49 @@ def output(command, cwd=ROOT):
     return subprocess.check_output(command, cwd=cwd, text=True).strip()
 
 
-def patches_for(modules, *, root=None, read_bytes=None):
-    """Each module's patches, checked against its manifest and the upstream pin."""
-    root = (Path(root) if root is not None else ROOT).resolve()
-    read_bytes = read_bytes or (lambda path: path.read_bytes())
+def module_patches(directory):
+    """A patch directory's patches in application order, which is filename order: older ones are
+    numbered (0001-topic.patch), newer ones timestamped (20261102T153012-topic.patch), so adding
+    one never renames another. Each row is its file name, sha256 and the upstream files its diff
+    headers name."""
+    rows = []
+    for path in sorted(Path(directory).glob('*.patch'), key=lambda path: path.name):
+        body = path.read_bytes()
+        actual = []
+        line_delta = 0
+        for line in body.decode().splitlines():
+            if line.startswith('diff --git '):
+                line_delta = 0
+                fields = shlex.split(line)
+                if len(fields) != 4 or not fields[2].startswith('a/') or fields[2][2:] != fields[3][2:]:
+                    raise ValueError('Renames or malformed patch headers require review')
+                target = fields[2][2:]
+                if Path(target).is_absolute() or '..' in Path(target).parts:
+                    raise ValueError(f'Unsafe patch target: {target}')
+                actual.append(target)
+            elif line.startswith('@@ '):
+                hunk = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
+                if not hunk:
+                    raise ValueError(f'Malformed overlay hunk: {path}')
+                old, removed, new, added = [int(value) if value is not None else 1 for value in hunk.groups()]
+                if new - bool(added) != old - bool(removed) + line_delta:
+                    raise ValueError(f'Overlay new-line offset differs: {path}: {line}')
+                line_delta += added - removed
+        if not actual:
+            raise ValueError(f'Patch names no upstream file: {path}')
+        rows.append({'path': path.name, 'sha256': hashlib.sha256(body).hexdigest(), 'upstream_paths': actual})
+    return rows
+
+
+def patches_for(modules):
+    """Each module's patches, in application order, with paths relative to the checkout."""
     collected = []
     # A native repair (halfclose) applies before the Rust patches whose context includes it.
     for module in sorted(modules, key=lambda item: not item.get('applies_first')):
-        directories = [root / path for path in module['owned_paths'] if path.startswith('migration/patches/')]
+        directories = [path.rstrip('/') for path in module['owned_paths'] if path.startswith('migration/patches/')]
         if len(directories) != 1:
             raise ValueError(f'A module must own exactly one patch directory: {module["id"]}')
-        directory = directories[0]
-        manifest = json.loads(read_bytes(directory / 'manifest.json'))
-        if manifest['upstream_commit'] != COMMIT:
-            raise ValueError(f'{module["id"]}: patch upstream pin differs')
-        for patch in manifest['patches']:
-            path = (directory / patch['path']).resolve()
-            if directory.resolve() not in path.parents:
-                raise ValueError(f'Invalid patch path/checksum: {path}')
-            body = read_bytes(path)
-            if hashlib.sha256(body).hexdigest() != patch['sha256']:
-                raise ValueError(f'Invalid patch path/checksum: {path}')
-            actual = []
-            line_delta = 0
-            for line in body.decode().splitlines():
-                if line.startswith('diff --git '):
-                    line_delta = 0
-                    fields = shlex.split(line)
-                    if len(fields) != 4 or not fields[2].startswith('a/') or fields[2][2:] != fields[3][2:]:
-                        raise ValueError('Renames or malformed patch headers require review')
-                    target = fields[2][2:]
-                    if Path(target).is_absolute() or '..' in Path(target).parts:
-                        raise ValueError(f'Unsafe patch target: {target}')
-                    actual.append(target)
-                elif line.startswith('@@ '):
-                    hunk = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
-                    if not hunk:
-                        raise ValueError(f'Malformed overlay hunk: {path}')
-                    old, removed, new, added = [int(value) if value is not None else 1 for value in hunk.groups()]
-                    if new - bool(added) != old - bool(removed) + line_delta:
-                        raise ValueError(f'Overlay new-line offset differs: {path}: {line}')
-                    line_delta += added - removed
-            if not actual or set(actual) != set(patch['upstream_paths']):
-                raise ValueError(f'Patch destination declaration differs: {path}')
-            collected.append({'path': str(path.relative_to(root)), 'sha256': patch['sha256'], 'upstream_paths': actual})
+        collected += [{**row, 'path': f'{directories[0]}/{row["path"]}'} for row in module_patches(ROOT / directories[0])]
     return collected
 
 
@@ -263,8 +262,8 @@ def overlay_hybrid_tree(archive, tree):
     one staged with upstream's core-tests). Returns the CMake lines that give the tree's existing
     targets hybrid_tree's switches and include directories."""
     source, flags = hybrid_tree(archive)
-    for manifest in (ROOT / 'migration/patches').glob('*/manifest.json'):
-        for patch in json.loads(manifest.read_text())['patches']:
+    for directory in (ROOT / 'migration/patches').iterdir():
+        for patch in module_patches(directory):
             for name in patch['upstream_paths']:
                 if (source / name).read_bytes() != (Path(tree) / name).read_bytes():
                     shutil.copyfile(source / name, Path(tree) / name)

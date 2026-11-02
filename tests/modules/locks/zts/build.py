@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Build isolated reference/scoped Rust locks ZTS extensions from immutable pin."""
-import hashlib
 import io
 import json
 import os
@@ -11,6 +10,7 @@ import tarfile
 ROOT=Path('/work')
 import sys
 sys.path.insert(0, str(ROOT))
+from tools.build_hybrid import module_patches
 from tools.build_upstream import COMMIT as PIN
 source=Path('/reference')
 record=json.loads((ROOT/'target/linux-dev/target/hybrid/dev-rust-locks/build-manifest.json').read_text())
@@ -20,7 +20,7 @@ base=ROOT/'target/zts-build'
 base.mkdir(parents=True,exist_ok=True)
 packed=subprocess.check_output(['git','-C',str(source),'archive',PIN])
 report={'pin':PIN,'php':subprocess.check_output(['php','-v'],text=True),'engines':[],'passed':False}
-manifests={name:json.loads((ROOT/'migration/patches'/name/'manifest.json').read_text()) for name in ['integration','locks']}
+manifests={name:module_patches(ROOT/'migration/patches'/name) for name in ['integration','locks']}
 try:
     for name in ['reference','rust']:
         tree=base/name;tree.mkdir(exist_ok=True)
@@ -34,9 +34,8 @@ try:
         if name=='rust':
             subprocess.run(['git','init','-q',str(tree)],check=True)
             for module,manifest in manifests.items():
-                for patch in manifest['patches']:
+                for patch in manifest:
                     path=ROOT/'migration/patches'/module/patch['path']
-                    assert hashlib.sha256(path.read_bytes()).hexdigest()==patch['sha256']
                     subprocess.run(['git','apply','--check',str(path)],cwd=tree,check=True)
                     subprocess.run(['git','apply',str(path)],cwd=tree,check=True)
         env={**os.environ}

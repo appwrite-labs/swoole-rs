@@ -14,7 +14,7 @@ import sys
 import tarfile
 import uuid
 from gate import ROOT,PIN,sha,body
-from tools.build_hybrid import hybrid_tree
+from tools.build_hybrid import hybrid_tree, module_patches
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated,write_report
 
@@ -116,8 +116,7 @@ def main():
         headers={engine:mirror/'ext-src/php_swoole_cxx.h' for engine,mirror in mirrors.items()}
         # entrypoint.py checks this against the pinned public header ABI.
         report['mirror_sha256']={'ext-src/php_swoole_cxx.h':sha(headers['native'])}
-        manifest=json.loads((ROOT/'migration/patches/phphelpers/manifest.json').read_text())
-        report['sources']=sorted(name for patch in manifest['patches'] for name in patch['upstream_paths'])
+        report['sources']=sorted(name for patch in module_patches(ROOT/'migration/patches/phphelpers') for name in patch['upstream_paths'])
         report['declaration_surface']=facade_surface(headers['native'].read_text(),headers['hybrid'].read_text())
         includes=shlex.split(subprocess.check_output([a.php_config,'--includes'],text=True))
         report['php_version']=subprocess.check_output([a.php_config,'--version'],text=True).strip()

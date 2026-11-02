@@ -897,7 +897,7 @@ class ChangedModules(unittest.TestCase):
         self.assertEqual(self.changed('.github/workflows/pr.yml', 'tests/dev/test_tooling.py'), [])
         self.assertEqual(self.changed('crates/ffi/src/lib.rs'), sorted(dev.MODULES))
         self.assertEqual(self.changed('crates/oracle/build.rs', 'fuzz/src/lib.rs'), [])
-        self.assertEqual(self.changed('migration/patches/halfclose/manifest.json'), sorted(dev.MODULES))
+        self.assertEqual(self.changed('migration/patches/halfclose/0003-send-tls-close-notify.patch'), sorted(dev.MODULES))
 
     def test_selection_adds_the_modules_a_module_cannot_build_without(self):
         # build_hybrid.py refuses phpcollections without memory (TableV2 storage).

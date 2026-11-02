@@ -1,6 +1,4 @@
 """No compiler/runtime: current M14 staging must change declared destinations."""
-import hashlib
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -23,8 +21,6 @@ class OverlayTests(unittest.TestCase):
         destination.write_text('native\n')
         patch_path = root / 'demo.patch'
         patch_path.write_text('diff --git a/src/demo.cc b/src/demo.cc\n--- a/src/demo.cc\n+++ b/src/demo.cc\n@@ -1 +1 @@\n-native\n+selected\n')
-        entry = dict(path=patch_path.name, sha256=hashlib.sha256(patch_path.read_bytes()).hexdigest(), upstream_paths=['src/demo.cc'])
-        (root / 'manifest.json').write_text(json.dumps(dict(patches=[entry])))
         return source, destination, patch_path
 
     def test_nested_git_stages_actual_destination(self):
@@ -37,14 +33,6 @@ class OverlayTests(unittest.TestCase):
             result = apply_owned(source, patch_path)
             self.assertEqual(destination.read_text(), 'selected\n')
             self.assertNotEqual(result['before'], result['after'])
-
-    def test_changed_patch_rejected_before_mutation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source, destination, patch_path = self.fixture(directory)
-            patch_path.write_text(patch_path.read_text() + '\n')
-            with self.assertRaisesRegex(ValueError, 'changed before'):
-                apply_owned(source, patch_path)
-            self.assertEqual(destination.read_text(), 'native\n')
 
     def test_successful_noop_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

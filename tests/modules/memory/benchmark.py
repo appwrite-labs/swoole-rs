@@ -39,15 +39,7 @@ def main():
                 if sha(snapshot / path) != digest:
                     raise ValueError(f'Frozen build input changed: {path}')
         else:
-            # Compatibility with the first measurement recipes, before snapshots.
-            if sha(ROOT / 'migration/patches/memory/manifest.json') != manifest['patch_manifest_sha256']:
-                raise ValueError('Overlay changed since preparation')
-            for patch in manifest['patch_manifest']['patches']:
-                if sha(ROOT / 'migration/patches/memory' / patch['path']) != patch['sha256']:
-                    raise ValueError('Prepared patch changed')
-            for path, digest in manifest['source_sha256'].items():
-                if sha(ROOT / path) != digest:
-                    raise ValueError(f'Prepared source changed: {path}')
+            raise ValueError('Preparation predates frozen inputs; prepare again')
         for variant in manifest['variants'].values():
             if sha(variant['binary']) != variant['sha256']:
                 raise ValueError('Prepared binary changed')

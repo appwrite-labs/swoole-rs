@@ -20,6 +20,7 @@ sys.path[:0] = [str(ROOT), str(Path(__file__).parent)]
 from coherent_sdk import stage
 from rust_asan import inspect as inspect_rust_asan
 from tools.build_hybrid import hybrid_tree
+from tools.build_upstream import COMMIT as PIN
 from tools.harness import run_isolated, write_report
 
 
@@ -65,7 +66,6 @@ def main():
             if not args.native_ubsan_only:
                 sanitizer += ['-fno-sanitize-link-runtime']
             runtime_link = [str(runtime), '-Wl,-rpath,' + str(runtime.parent)]
-        manifest = json.loads((ROOT / 'migration/patches/utilities/manifest.json').read_text())
         hybrid, hybrid_flags = hybrid_tree(args.archive)
         for engine in ['native', 'selected']:
             directory = work / engine
@@ -74,7 +74,7 @@ def main():
                 headers = ['-I' + str(directory / 'include')]
                 source = directory / 'src/core/log.cc'
                 source.parent.mkdir(parents=True, exist_ok=True)
-                source.write_bytes(subprocess.check_output(['git', '-C', str(args.source), 'show', manifest['upstream_commit'] + ':src/core/log.cc']))
+                source.write_bytes(subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':src/core/log.cc']))
             else:
                 # The hybrid build's log.cc, headers and config.h.
                 directory.mkdir(parents=True)

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Generate the two reserved port overlays from pinned objects; never edit reference."""
 import difflib
-import hashlib
-import json
 from pathlib import Path
 import subprocess
 import textwrap
@@ -11,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / 'target/upstream/src'
 import sys
 sys.path.insert(0, str(ROOT))
+from tools.build_hybrid import module_patches
 from tools.build_upstream import COMMIT as PIN
 
 
@@ -710,14 +709,11 @@ def main():
     """Rewrite 0002 (swoole_server_port.cc). 0001 (port.cc) has been edited with
     tools/patches.py since (#764, #780), so its generator here is stale and it is kept."""
     directory = ROOT / 'migration/patches/ports'
-    manifest = json.loads((directory / 'manifest.json').read_text())
     path = 'ext-src/swoole_server_port.cc'
     text = generated()[path]
     raw = (f'diff --git a/{path} b/{path}\n' + ''.join(difflib.unified_diff(original(path).splitlines(True), text.splitlines(True), fromfile='a/'+path, tofile='b/'+path, n=1))).replace('\n \n', '\n\n').encode()
-    entry = next(patch for patch in manifest['patches'] if patch['upstream_paths'] == [path])
+    entry = next(patch for patch in module_patches(directory) if patch['upstream_paths'] == [path])
     (directory / entry['path']).write_bytes(raw)
-    entry['sha256'] = hashlib.sha256(raw).hexdigest()
-    (directory / 'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
 
 
 if __name__ == '__main__':

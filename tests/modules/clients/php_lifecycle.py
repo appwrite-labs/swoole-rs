@@ -13,6 +13,8 @@ import sys
 
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
+from tools.build_hybrid import module_patches
+from tools.build_upstream import COMMIT
 from tools.harness import parse_engines,run_isolated,write_report
 
 
@@ -38,13 +40,12 @@ def main():
         if not a.native_only:
             if not a.build_manifest:raise ValueError('Selected lifecycle proof requires --build-manifest')
             manifest=json.loads(a.build_manifest.read_text())
-            expected=json.loads((ROOT/'migration/patches/clients/manifest.json').read_text())
             patch=next(item for item in manifest['inputs']['patches'] if item['path']=='migration/patches/clients/0001-rust-address-client-policy.patch')
             selected=next(identity for identity in report['engines'] if identity['rust_feature_bits']&1048576)
             report['build_attestation']=dict(path=str(a.build_manifest),extension_sha256=manifest['extension_sha256'],patch=patch)
             if manifest['extension_sha256']!=selected['sha256']:raise ValueError('Manifest extension identity mismatch')
-            if patch['sha256']!=expected['patches'][0]['sha256']:raise ValueError('Manifest clients overlay does not match lifecycle source under test')
-            if manifest['inputs']['upstream_commit']!=expected['upstream_commit']:raise ValueError('Manifest pinned upstream mismatch')
+            if patch['sha256']!=module_patches(ROOT/'migration/patches/clients')[0]['sha256']:raise ValueError('Manifest clients overlay does not match lifecycle source under test')
+            if manifest['inputs']['upstream_commit']!=COMMIT:raise ValueError('Manifest pinned upstream mismatch')
         summaries={mode:[] for mode in ['connect','receive']}
         for engine,identity in zip(engines,report['engines']):
             for mode in summaries:
