@@ -13,7 +13,8 @@ python3 tests/modules/coroutine/core.py --source PINNED_TREE --config CONFIG_H -
 
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
-`core.py` builds full native reference and coroutine-only libraries and runs the
+`core.py` builds the full native reference and the archive's hybrid tree (every
+module's patches, `overlay_hybrid_tree`, #796) and runs the
 33 unchanged GoogleTests (32 before v6.2.4 added `coroutine_base.expired_origin`), plus three supplemental real-context tests from
 `lifetime.cpp`, each in its own process group. `--ucontext` derives a private
 config selecting ucontext. `--rust-asan` requires ASan imports in the archive;
@@ -23,16 +24,17 @@ ASan stack-switch warnings yield `warned`, not `passed`. On macOS pass
 ## Source-body and ABI gates
 
 ```
-python3 tests/modules/coroutine/compile_gate.py --source PINNED_TREE [--timing] [--stack-usage] \
+python3 tests/modules/coroutine/compile_gate.py --source PINNED_TREE --archive ARCHIVE [--timing] [--stack-usage] \
   [--backend asm|ucontext|thread] [--standard c++14|c++17] --report OUT.json
 python3 tests/modules/coroutine/rust_asan.py --report OUT.json
 python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --source-ref REF \
   --selected-export SELECTED/export.json --native-export NATIVE/export.json --output OUT.json
 ```
 
-- `compile_gate.py` compiles original, patched and disabled `base`, `channel`,
-  `context` and `thread_context` translation units; the disabled overlay must
-  fail closed with its guard message.
+- `compile_gate.py` compiles `base`, `channel`, `context` and `thread_context`
+  from the pin (original) and from the archive's hybrid tree with its switches
+  (patched, `hybrid_tree`); without `SWOOLE_RS_COROUTINE` (disabled) `base` and
+  `channel` must fail closed with their guard message.
 - `rust_asan.py` runs crates/coroutine's unit tests under Rust ASan (the plain
   run is `coroutine-unit`).
 - The scheduler, coroutine state, Channel and stacks (crates/coroutine) are
