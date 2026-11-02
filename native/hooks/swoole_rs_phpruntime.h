@@ -92,7 +92,7 @@ struct _php_stream *swr_v1_phpruntime_socket_create(const char *proto,
                                                     const char *persistent_id,
                                                     struct _php_stream_context *context,
                                                     uint8_t *bailout);
-struct _php_stream *swr_v1_phpruntime_stream_from_socket(int fd, int domain, int type, int protocol);
+struct _php_stream *swr_v1_phpruntime_stream_from_socket(int fd, int domain, int kind, int protocol);
 /* stream_socket_pair: 1 if a bailout was trapped. */
 uint8_t swr_v1_phpruntime_socket_pair(struct _zend_execute_data *frame, struct _zval_struct *value);
 /* stream_select: 1 if a bailout was trapped. */
