@@ -254,6 +254,18 @@ def hybrid_tree(archive):
     return source, [*('-D' + name for name in switches), '-I' + str(source / 'include'), '-I' + str(abi)]
 
 
+def overlay_hybrid_tree(archive, tree):
+    """Copy every file the archive's hybrid build patched over `tree`, a pinned checkout (such as
+    one staged with upstream's core-tests). Returns hybrid_tree's compiler flags."""
+    source, flags = hybrid_tree(archive)
+    for manifest in (ROOT / 'migration/patches').glob('*/manifest.json'):
+        for patch in json.loads(manifest.read_text())['patches']:
+            for name in patch['upstream_paths']:
+                if (source / name).read_bytes() != (Path(tree) / name).read_bytes():
+                    shutil.copyfile(source / name, Path(tree) / name)
+    return flags
+
+
 def apply_patch_verified(source, patch, targets, expected_sha256=None):
     """Apply inside a private tree and prove every declared destination changed."""
     source, patch = Path(source).resolve(), Path(patch).resolve()

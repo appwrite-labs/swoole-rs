@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.harness import ROOT, run_isolated, write_report
 
 from tools.build_upstream import COMMIT as PIN
+from tools.build_hybrid import overlay_hybrid_tree
 ASSERTIONS = ['core-tests/src/protocol/base.cpp', 'core-tests/src/protocol/mime_type.cpp']
 SELECTED = ['core-tests/src/main.cpp', *ASSERTIONS]
 
@@ -60,7 +61,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--config', type=Path, help='Read-only configured Linux baseline config.h')
-    parser.add_argument('--archive', type=Path, help='Release Linux framing static archive')
+    parser.add_argument('--archive', type=Path, help='Rust archive of the hybrid build under test')
     parser.add_argument('--build-root', type=Path, help='Private writable cache outside reference/repository')
     parser.add_argument('--inventory-only', action='store_true')
     parser.add_argument('--jobs', type=int, default=2)
@@ -83,7 +84,7 @@ def main():
             parser.error('Build root must be outside the reference')
         build_root.mkdir(parents=True, exist_ok=True)
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'upstream_pin': PIN,
-              'scope': 'Unchanged original native M18 GoogleTests; isolated full native reference vs framing-only overlay. No PHP, combined-module, sanitizer or performance claim.',
+              'scope': 'Unchanged original native M18 GoogleTests; isolated full native reference vs the hybrid build\'s patched tree. No PHP, sanitizer or performance claim.',
               'native_assertions_enabled': True,
               'inventory': [], 'engines': [], 'results': [], 'execution_status': 'running', 'passed': False}
     artifacts = args.output.resolve().with_name(args.output.stem + '-artifacts')
@@ -102,18 +103,10 @@ def main():
                 archive = args.archive.resolve(strict=True)
                 # Freeze mutable input once.
                 config = args.config.read_bytes()
-                manifest = json.loads((ROOT / 'migration/patches/framing/manifest.json').read_text())
-                if manifest['upstream_commit'] != PIN:
-                    raise ValueError('Overlay pin differs')
-                report.update(patch_manifest=manifest)
                 for engine in ['upstream', 'rust']:
                     if engine == 'rust':
-                        for patch in manifest['patches']:
-                            path = ROOT / 'migration/patches/framing' / patch['path']
-                            if sha(path) != patch['sha256']:
-                                raise ValueError('Overlay checksum differs')
-                            subprocess.run(['git', '-C', str(staged), 'apply', '--check', str(path)], check=True)
-                            subprocess.run(['git', '-C', str(staged), 'apply', str(path)], check=True)
+                        # Every module's patches, as the hybrid build applied them (#796).
+                        flags = overlay_hybrid_tree(archive, staged)
                     tree = build_root / ('core-' + engine)
                     for path in staged.rglob('*'):
                         if path.is_file() and '.git' not in path.relative_to(staged).parts:
@@ -125,7 +118,7 @@ def main():
                         raise ValueError('Original core target selection changed')
                     cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(SELECTED) + ')')
                     if engine == 'rust':
-                        cmake += f'\ninclude_directories("{ROOT / "native/framing"}")\ntarget_link_libraries(lib-swoole "{archive}")\n'
+                        cmake += f'\nadd_compile_options({' '.join(flags)})\ntarget_link_libraries(lib-swoole "{archive}")\n'
                     write_changed(tree / 'CMakeLists.txt', cmake.encode())
                     logs = artifacts / engine
                     logs.mkdir(parents=True, exist_ok=True)
