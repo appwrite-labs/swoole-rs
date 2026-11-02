@@ -14,15 +14,17 @@ use std::{
     ptr,
 };
 use swoole_rs_error::swr_v1_error_strerror;
+use swoole_rs_phpstubs::client_coro;
 use swoole_rs_zend::{
     Call, Class, Object, declare_bool, declare_long, declare_string, set_object, string,
     sys::{
         IS_ARRAY, IS_OBJECT, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, get_active_class_name,
-        get_active_function_name, zend_class_entry, zend_function_entry, zend_object,
-        zend_object_handlers, zend_string, zend_type_error, zval, zval_ptr_dtor,
+        get_active_function_name, zend_class_entry, zend_object, zend_object_handlers, zend_string,
+        zend_type_error, zval, zval_ptr_dtor,
     },
     type_of, unset_property_deny, value,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_FLAG_ASYNC`, `SW_FLAG_SYNC`, `SW_FLAG_KEEP` and `SW_SOCK_SSL`: flags a
 /// client type carries besides its socket type.
@@ -79,18 +81,40 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
     ClientObject::install(entry, handlers, create, free);
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_client_coro___construct, &client_coro::arginfo_class_Swoole_Coroutine_Client___construct, z::ZEND_ACC_PUBLIC;
+        c"__destruct" => zim_swoole_client_coro___destruct, &client_coro::arginfo_class_Swoole_Coroutine_Client___destruct, z::ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_client_coro_set, &client_coro::arginfo_class_Swoole_Coroutine_Client_set, z::ZEND_ACC_PUBLIC;
+        c"connect" => zim_swoole_client_coro_connect, &client_coro::arginfo_class_Swoole_Coroutine_Client_connect, z::ZEND_ACC_PUBLIC;
+        c"recv" => zim_swoole_client_coro_recv, &client_coro::arginfo_class_Swoole_Coroutine_Client_recv, z::ZEND_ACC_PUBLIC;
+        c"peek" => zim_swoole_client_coro_peek, &client_coro::arginfo_class_Swoole_Coroutine_Client_peek, z::ZEND_ACC_PUBLIC;
+        c"send" => zim_swoole_client_coro_send, &client_coro::arginfo_class_Swoole_Coroutine_Client_send, z::ZEND_ACC_PUBLIC;
+        c"sendfile" => zim_swoole_client_coro_sendfile, &client_coro::arginfo_class_Swoole_Coroutine_Client_sendfile, z::ZEND_ACC_PUBLIC;
+        c"sendto" => zim_swoole_client_coro_sendto, &client_coro::arginfo_class_Swoole_Coroutine_Client_sendto, z::ZEND_ACC_PUBLIC;
+        c"recvfrom" => zim_swoole_client_coro_recvfrom, &client_coro::arginfo_class_Swoole_Coroutine_Client_recvfrom, z::ZEND_ACC_PUBLIC;
+        c"enableSSL" => zim_swoole_client_coro_enableSSL, &client_coro::arginfo_class_Swoole_Coroutine_Client_enableSSL, z::ZEND_ACC_PUBLIC;
+        c"getPeerCert" => zim_swoole_client_coro_getPeerCert, &client_coro::arginfo_class_Swoole_Coroutine_Client_getPeerCert, z::ZEND_ACC_PUBLIC;
+        c"verifyPeerCert" => zim_swoole_client_coro_verifyPeerCert, &client_coro::arginfo_class_Swoole_Coroutine_Client_verifyPeerCert, z::ZEND_ACC_PUBLIC;
+        c"isConnected" => zim_swoole_client_coro_isConnected, &client_coro::arginfo_class_Swoole_Coroutine_Client_isConnected, z::ZEND_ACC_PUBLIC;
+        c"getsockname" => zim_swoole_client_coro_getsockname, &client_coro::arginfo_class_Swoole_Coroutine_Client_getsockname, z::ZEND_ACC_PUBLIC;
+        c"getpeername" => zim_swoole_client_coro_getpeername, &client_coro::arginfo_class_Swoole_Coroutine_Client_getpeername, z::ZEND_ACC_PUBLIC;
+        c"close" => zim_swoole_client_coro_close, &client_coro::arginfo_class_Swoole_Coroutine_Client_close, z::ZEND_ACC_PUBLIC;
+        c"exportSocket" => zim_swoole_client_coro_exportSocket, &client_coro::arginfo_class_Swoole_Coroutine_Client_exportSocket, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT, as `php_swoole_client_coro_minit` did.
 /// # Safety
 /// Called once, at MINIT, with upstream's static method table and a writable
 /// class-entry slot.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpclients_client_minit(
-    methods: *const zend_function_entry,
     shortname: bool,
     client_class: *mut *mut zend_class_entry,
 ) {
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { CLIENT.register(c"Swoole\\Coroutine\\Client", methods, configure) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { CLIENT.register(c"Swoole\\Coroutine\\Client", METHODS.as_ptr(), configure) };
     if shortname {
         // SAFETY: MINIT, after `register`.
         unsafe { CLIENT.alias(c"Co\\Client") };

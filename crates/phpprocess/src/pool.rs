@@ -12,18 +12,20 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_phpstubs::process_pool;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object, class_name, handlers, long_zval, message, object_of,
     sys::{
         IS_ARRAY, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, object_init_ex,
         swr_zend_array_init, swr_zend_is_true, swr_zval_try_addref, zend_array, zend_class_entry,
-        zend_declare_property_bool, zend_function_entry, zend_hash_index_find,
-        zend_hash_index_update, zend_hash_str_find, zend_object, zend_object_handlers,
-        zend_read_property, zend_update_property_bool, zval, zval_ptr_dtor,
+        zend_declare_property_bool, zend_hash_index_find, zend_hash_index_update,
+        zend_hash_str_find, zend_object, zend_object_handlers, zend_read_property,
+        zend_update_property_bool, zval, zval_ptr_dtor,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of, unset_property_deny,
     update_property_long,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 const IPC_NONE: i64 = 0;
 const IPC_UNIXSOCK: i64 = 1;
@@ -178,18 +180,32 @@ unsafe extern "C" fn free(object: *mut zend_object) {
     unsafe { Object_::dtor(object) };
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_process_pool___construct, &process_pool::arginfo_class_Swoole_Process_Pool___construct, z::ZEND_ACC_PUBLIC;
+        c"__destruct" => zim_swoole_process_pool___destruct, &process_pool::arginfo_class_Swoole_Process_Pool___destruct, z::ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_process_pool_set, &process_pool::arginfo_class_Swoole_Process_Pool_set, z::ZEND_ACC_PUBLIC;
+        c"on" => zim_swoole_process_pool_on, &process_pool::arginfo_class_Swoole_Process_Pool_on, z::ZEND_ACC_PUBLIC;
+        c"getProcess" => zim_swoole_process_pool_getProcess, &process_pool::arginfo_class_Swoole_Process_Pool_getProcess, z::ZEND_ACC_PUBLIC;
+        c"listen" => zim_swoole_process_pool_listen, &process_pool::arginfo_class_Swoole_Process_Pool_listen, z::ZEND_ACC_PUBLIC;
+        c"write" => zim_swoole_process_pool_write, &process_pool::arginfo_class_Swoole_Process_Pool_write, z::ZEND_ACC_PUBLIC;
+        c"sendMessage" => zim_swoole_process_pool_sendMessage, &process_pool::arginfo_class_Swoole_Process_Pool_sendMessage, z::ZEND_ACC_PUBLIC;
+        c"detach" => zim_swoole_process_pool_detach, &process_pool::arginfo_class_Swoole_Process_Pool_detach, z::ZEND_ACC_PUBLIC;
+        c"start" => zim_swoole_process_pool_start, &process_pool::arginfo_class_Swoole_Process_Pool_start, z::ZEND_ACC_PUBLIC;
+        c"stop" => zim_swoole_process_pool_stop, &process_pool::arginfo_class_Swoole_Process_Pool_stop, z::ZEND_ACC_PUBLIC;
+        c"shutdown" => zim_swoole_process_pool_shutdown, &process_pool::arginfo_class_Swoole_Process_Pool_shutdown, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: register `Swoole\Process\Pool` as `php_swoole_process_pool_minit` did.
 /// # Safety
 /// Called once, at MINIT, after the Process MINIT, with the static method
 /// table and a host table that lives for the process.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpprocess_pool_minit(
-    methods: *const zend_function_entry,
-    table: *const PoolHost,
-) {
+pub unsafe extern "C" fn swr_v1_phpprocess_pool_minit(table: *const PoolHost) {
     HOST.store(table.cast_mut(), Ordering::Release);
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { POOL.register(c"Swoole\\Process\\Pool", methods, configure) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { POOL.register(c"Swoole\\Process\\Pool", METHODS.as_ptr(), configure) };
     for name in [c"master_pid", c"workerPid", c"workerId"] {
         // SAFETY: MINIT, after `register`.
         unsafe { POOL.property_long(name, -1) };

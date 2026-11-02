@@ -183,6 +183,26 @@
       "upstream_paths": [
         "ext-src/swoole_server.cc"
       ]
+    },
+    {
+      "path": "0020-arginfo.patch",
+      "sha256": "5ea881b236b28749aea2a204d1e969914b338100fd2bd2b8c21e790ab575d896",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_process_arginfo.h",
+        "ext-src/stubs/php_swoole_process_pool_arginfo.h",
+        "ext-src/stubs/php_swoole_thread_arginfo.h",
+        "ext-src/stubs/php_swoole_thread_arraylist_arginfo.h",
+        "ext-src/stubs/php_swoole_thread_barrier_arginfo.h",
+        "ext-src/stubs/php_swoole_thread_map_arginfo.h",
+        "ext-src/stubs/php_swoole_thread_queue_arginfo.h",
+        "ext-src/swoole_process.cc",
+        "ext-src/swoole_process_pool.cc",
+        "ext-src/swoole_thread.cc",
+        "ext-src/swoole_thread_arraylist.cc",
+        "ext-src/swoole_thread_barrier.cc",
+        "ext-src/swoole_thread_map.cc",
+        "ext-src/swoole_thread_queue.cc"
+      ]
     }
   ]
 }

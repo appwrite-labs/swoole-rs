@@ -10,7 +10,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-struct _zend_function_entry;
 struct _zend_class_entry;
 struct swr_v1_phptimer_node {
     int64_t exec_msec;
@@ -36,7 +35,7 @@ struct swr_v1_phptimer_ops {
     void (*fatal_warning)(const char *message);
     void (*warning)(const char *message);
 };
-void swr_v1_phptimer_minit(const struct _zend_function_entry *methods, int32_t module_number,
+void swr_v1_phptimer_minit(int32_t module_number,
                            struct _zend_class_entry *array_iterator, const struct swr_v1_phptimer_ops *ops);
 uint8_t swr_v1_phptimer_call(void *callable);
 uint8_t swr_v1_phptimer_free(void *callable);

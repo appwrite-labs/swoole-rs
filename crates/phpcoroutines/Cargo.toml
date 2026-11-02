@@ -8,10 +8,11 @@ description = "PHP coroutines: each coroutine's PHP context and VM swap, activat
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php"]
 
 [dependencies]
 swoole-rs-zend = { path = "../zend", optional = true }
+swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 
 [lints]
 workspace = true

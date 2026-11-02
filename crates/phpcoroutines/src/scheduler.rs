@@ -8,6 +8,7 @@ use std::{
     ffi::{CStr, c_long, c_void},
     mem, ptr,
 };
+use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::{
     Call, Callable, Class, E_WARNING, Object,
     bailout::{self, Bailout},
@@ -15,11 +16,12 @@ use swoole_rs_zend::{
     sys::{
         IS_ARRAY, IS_ARRAY_EX, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
         swr_zend_array_init, swr_zend_callable, swr_zval_get_long, swr_zval_is_true, zend_array,
-        zend_array_destroy, zend_array_dup, zend_class_entry, zend_function_entry, zend_hash_merge,
-        zend_hash_str_find, zend_object, zend_object_handlers, zval, zval_add_ref, zval_ptr_dtor,
+        zend_array_destroy, zend_array_dup, zend_class_entry, zend_hash_merge, zend_hash_str_find,
+        zend_object, zend_object_handlers, zval, zval_add_ref, zval_ptr_dtor,
     },
     unset_property_deny, value,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 per_thread! {
     /// `PHPCoroutine::options`: what `Co::set()` was given.
@@ -43,14 +45,24 @@ type SchedulerObject = Object<Scheduler>;
 
 static SCHEDULER: Class = Class::new();
 
+method_table! {
+    static METHODS = [
+        c"add" => zim_swoole_coroutine_scheduler_add, &coroutine_scheduler::arginfo_class_Swoole_Coroutine_Scheduler_add, z::ZEND_ACC_PUBLIC;
+        c"parallel" => zim_swoole_coroutine_scheduler_parallel, &coroutine_scheduler::arginfo_class_Swoole_Coroutine_Scheduler_parallel, z::ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_coroutine_scheduler_set, &coroutine_scheduler::arginfo_class_Swoole_Coroutine_Scheduler_set, z::ZEND_ACC_PUBLIC;
+        c"getOptions" => zim_swoole_coroutine_scheduler_getOptions, &coroutine_scheduler::arginfo_class_Swoole_Coroutine_Scheduler_getOptions, z::ZEND_ACC_PUBLIC;
+        c"start" => zim_swoole_coroutine_scheduler_start, &coroutine_scheduler::arginfo_class_Swoole_Coroutine_Scheduler_start, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: `Swoole\Coroutine\Scheduler` (`Co\Scheduler`), final, not
 /// serializable, clone and unset denied.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated table.
+/// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_scheduler_minit(methods: *const zend_function_entry) {
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { SCHEDULER.register(c"Swoole\\Coroutine\\Scheduler", methods, configure) };
+pub unsafe extern "C" fn swr_v1_phpcoroutines_scheduler_minit() {
+    // SAFETY: MINIT, with a static table.
+    unsafe { SCHEDULER.register(c"Swoole\\Coroutine\\Scheduler", METHODS.as_ptr(), configure) };
     if host::flag(host::SHORTNAME) {
         // SAFETY: MINIT, after registration.
         unsafe { SCHEDULER.alias(c"Co\\Scheduler") };

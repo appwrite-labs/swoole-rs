@@ -35,6 +35,18 @@ impl<const N: usize> Methods<N> {
     pub const fn as_ptr(&'static self) -> *const zend_function_entry {
         self.0.as_ptr()
     }
+
+    /// The table without the rows named in `skip`, leaked for the process: for
+    /// an upstream `#ifdef` only C++ can test, decided once at MINIT.
+    #[must_use]
+    pub fn without(&'static self, skip: &[&CStr]) -> *const zend_function_entry {
+        let keep = |row: &&zend_function_entry| {
+            // SAFETY: a row's name is a static C string; only `END`'s is null.
+            row.fname.is_null() || !skip.contains(&unsafe { CStr::from_ptr(row.fname) })
+        };
+        let rows: Vec<zend_function_entry> = self.0.iter().filter(keep).copied().collect();
+        Box::leak(rows.into_boxed_slice()).as_ptr()
+    }
 }
 
 /// A Zend handler (`zif_handler`).
@@ -262,21 +274,28 @@ pub const fn arg_class_mask(
 }
 
 /// A static `Methods` table, upstream's `PHP_ME` rows in upstream's order (the
-/// order reflection lists them in), `PHP_FE_END` appended:
+/// order reflection lists them in), `PHP_FE_END` appended. A row under an
+/// upstream `#ifdef` takes the matching `#[cfg]`:
 ///
 /// ```ignore
 /// method_table! {
 ///     static METHODS = [
 ///         c"lock" => zim_swoole_lock_lock, &lock::arginfo_class_Swoole_Lock_lock, ZEND_ACC_PUBLIC;
+///         #[cfg(target_os = "linux")]
+///         c"setAffinity" => zim_swoole_process_setAffinity, &process::arginfo_..., ZEND_ACC_PUBLIC;
 ///     ];
 /// }
 /// ```
 #[macro_export]
 macro_rules! method_table {
-    ($vis:vis static $table:ident = [$($name:literal => $handler:path, $arginfo:expr, $flags:expr;)*];) => {
-        $vis static $table: $crate::arginfo::Methods<{ [$($name),*].len() + 1 }> =
+    (
+        $vis:vis static $table:ident = [
+            $($(#[$row:meta])* $name:literal => $handler:path, $arginfo:expr, $flags:expr;)*
+        ];
+    ) => {
+        $vis static $table: $crate::arginfo::Methods<{ [$($(#[$row])* $name),*].len() + 1 }> =
             $crate::arginfo::Methods([
-                $($crate::arginfo::entry($name, $handler, $arginfo, $flags),)*
+                $($(#[$row])* $crate::arginfo::entry($name, $handler, $arginfo, $flags),)*
                 $crate::arginfo::END,
             ]);
     };
