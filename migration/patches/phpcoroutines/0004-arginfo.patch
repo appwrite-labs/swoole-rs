@@ -233,7 +233,7 @@ index 1f44abc..0000000
 -ZEND_END_ARG_INFO()
 -
 diff --git a/ext-src/swoole_coroutine.cc b/ext-src/swoole_coroutine.cc
-index 83084f3..3cad35e 100644
+index 83084f3..5853157 100644
 --- a/ext-src/swoole_coroutine.cc
 +++ b/ext-src/swoole_coroutine.cc
 @@ -31,4 +31,2 @@ BEGIN_EXTERN_C()
@@ -343,7 +343,16 @@ index 83084f3..3cad35e 100644
 -// clang-format on
 -
  static bool catch_exception() {
-@@ -358,5 +265,3 @@ static const swr_v1_phpcoroutines_ops coroutine_ops = {
+@@ -217,3 +124,7 @@ static const swr_v1_phpcoroutines_ops coroutine_ops = {
+                set(SWR_PHPCOROUTINES_FATAL,
+-                   [] { return php_swoole_is_fatal_error() || (sw_reactor() && sw_reactor()->bailout); });
++                   [] { return php_swoole_is_fatal_error() || (sw_reactor() && sw_reactor()->bailout); }) |
++#ifdef SW_CORO_TIME
++               (mask & SWR_PHPCOROUTINES_CORO_TIME) |
++#endif
++               0;
+     },
+@@ -358,5 +269,3 @@ static const swr_v1_phpcoroutines_ops coroutine_ops = {
  void php_swoole_coroutine_minit(int module_number) {
 -    swr_v1_phpcoroutines_minit(swoole_coroutine_methods,
 -                               swoole_exit_exception_methods,

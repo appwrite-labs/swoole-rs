@@ -81,6 +81,7 @@ method_table! {
         c"listCoroutines" => crate::methods::zim_swoole_coroutine_list, &coroutine::arginfo_class_Swoole_Coroutine_listCoroutines, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         c"enableScheduler" => crate::methods::zim_swoole_coroutine_enableScheduler, &coroutine::arginfo_class_Swoole_Coroutine_enableScheduler, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         c"disableScheduler" => crate::methods::zim_swoole_coroutine_disableScheduler, &coroutine::arginfo_class_Swoole_Coroutine_disableScheduler, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        // SW_CORO_TIME builds only; MINIT drops it from the others.
         c"getExecuteTime" => crate::methods::zim_swoole_coroutine_getExecuteTime, &coroutine::arginfo_class_Swoole_Coroutine_getExecuteTime, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         c"gethostbyname" => crate::system::zif_swoole_coroutine_gethostbyname, &coroutine_system::arginfo_class_Swoole_Coroutine_System_gethostbyname, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         c"dnsLookup" => crate::system::zif_swoole_async_dns_lookup_coro, &coroutine_system::arginfo_class_Swoole_Coroutine_System_dnsLookup, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
@@ -126,8 +127,13 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
             unsafe { class.alias(name) };
         }
     };
-    // SAFETY: MINIT, with a static table.
-    unsafe { COROUTINE.register_static(c"Swoole\\Coroutine", COROUTINE_METHODS.as_ptr()) };
+    let methods = if host::flag(host::CORO_TIME) {
+        COROUTINE_METHODS.as_ptr()
+    } else {
+        COROUTINE_METHODS.without(&[c"getExecuteTime"])
+    };
+    // SAFETY: MINIT, with a table that lives for the process.
+    unsafe { COROUTINE.register_static(c"Swoole\\Coroutine", methods) };
     alias(&COROUTINE, c"Co");
     // SAFETY: MINIT; SPL registers ArrayIterator and ArrayObject first.
     unsafe {

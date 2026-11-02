@@ -28,7 +28,7 @@
     },
     {
       "path": "0004-arginfo.patch",
-      "sha256": "4ed6eb4375e689e122be11e32ce44064f5eed0d5d36a3c06bfc9234f3cfecad7",
+      "sha256": "7c7bf864d537a54625b802abd959a1c967e45e21c2a87c73fed1358d55d0b69d",
       "upstream_paths": [
         "ext-src/php_swoole_coroutine_system.h",
         "ext-src/stubs/php_swoole_coroutine_arginfo.h",

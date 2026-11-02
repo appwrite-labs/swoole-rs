@@ -29,6 +29,7 @@ enum {
     SWR_PHPCOROUTINES_SERVER_STARTED = 64,
     SWR_PHPCOROUTINES_MAIN_THREAD = 128,
     SWR_PHPCOROUTINES_FATAL = 256,
+    SWR_PHPCOROUTINES_CORO_TIME = 512, /* built with SW_CORO_TIME */
 };
 
 struct swr_v1_phpcoroutines_stats {
