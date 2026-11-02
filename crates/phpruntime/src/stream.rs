@@ -25,15 +25,15 @@ use swoole_rs_zend::{
         IS_ARRAY, IS_NULL, add_assoc_bool_ex, add_assoc_long_ex, add_assoc_string_ex,
         add_assoc_zval_ex, add_next_index_resource, php_stream, php_stream_context, php_stream_ops,
         php_stream_statbuf, php_stream_xport_crypto_param, php_stream_xport_param, sockaddr,
-        swr_zend_array_init, swr_zend_efree, swr_zend_stream_alloc, swr_zend_stream_avoid_blocking,
-        swr_zend_stream_buffered, swr_zend_stream_close, swr_zend_stream_context,
-        swr_zend_stream_context_options, swr_zend_stream_crypto_op,
+        swr_zend_array_init, swr_zend_efree, swr_zend_is_true, swr_zend_stream_alloc,
+        swr_zend_stream_avoid_blocking, swr_zend_stream_buffered, swr_zend_stream_close,
+        swr_zend_stream_context, swr_zend_stream_context_options, swr_zend_stream_crypto_op,
         swr_zend_stream_default_timeout, swr_zend_stream_empty_string, swr_zend_stream_eof,
         swr_zend_stream_expose, swr_zend_stream_option, swr_zend_stream_progress,
         swr_zend_stream_set_eof, swr_zend_stream_set_option, swr_zend_stream_share_context,
         swr_zend_stream_vm_active, swr_zend_stream_xport_flags, swr_zend_stream_xport_op,
         swr_zval_try_addref, timeval, zend_array, zend_hash_next_index_insert, zend_hash_str_find,
-        zend_is_true, zend_string, zval, zval_ptr_dtor,
+        zend_string, zval, zval_ptr_dtor,
     },
     type_of,
     value::table,
@@ -191,7 +191,7 @@ fn context_option(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> Optio
 /// `zval_is_true` of a context option, false when unset.
 fn option_true(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> bool {
     // SAFETY: a live option value.
-    context_option(stream, wrapper, name).is_some_and(|value| unsafe { zend_is_true(value) })
+    context_option(stream, wrapper, name).is_some_and(|value| unsafe { swr_zend_is_true(value) })
 }
 
 /// `php_swoole_array_get_value_ex`: the entry, unless missing or null.
@@ -1065,7 +1065,7 @@ unsafe fn create(
     let proto = unsafe { std::slice::from_raw_parts(proto.cast::<u8>(), protolen) };
     let proto = proto.strip_prefix(b"async.").unwrap_or(proto);
     // SAFETY: a NUL-terminated resource name.
-    let tcp = if unsafe { *resourcename } == b'['.cast_signed() {
+    let tcp = if unsafe { *resourcename.cast::<u8>() } == b'[' {
         kind::TCP6
     } else {
         kind::TCP
