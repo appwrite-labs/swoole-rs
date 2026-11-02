@@ -77,7 +77,8 @@ int64_t swoole_client_coro_type_property(struct _zend_object *object);
 bool swoole_client_coro_connect(void *socket, const char *host, int64_t port, double timeout, int64_t flags);
 void swoole_client_coro_rdwr_timeout(void *socket, double timeout);
 bool swoole_client_coro_close(void *socket);
-bool swoole_client_coro_is_tcp(void *socket);
+/* The coroutine socket's network::Socket record (get_socket()), or null. */
+struct swr_v1_socket *swoole_client_coro_socket_record(void *socket);
 int swoole_client_coro_type(void *socket);
 bool swoole_client_coro_packet_mode(void *socket);
 bool swoole_client_coro_is_connected(void *socket);
@@ -116,8 +117,6 @@ void swoole_http_client_coro_resolve_free(void *context);
 void swoole_http_client_coro_configure(void *socket, double timeout, void *resolve, void *conn);
 bool swoole_http_client_coro_connect(void *socket, const char *host, size_t length, int port);
 bool swoole_http_client_coro_close(void *socket);
-void swoole_http_client_coro_close_wait(void *socket);
-bool swoole_http_client_coro_closing(void *socket);
 void swoole_http_client_coro_check_bound(void *socket, int event);
 void swoole_http_client_coro_set_err(void *socket, int code);
 int swoole_http_client_coro_last_error(void);

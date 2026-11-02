@@ -145,7 +145,10 @@ unsafe extern "C" {
     /// `set_timeout(timeout, SW_TIMEOUT_RDWR)`.
     pub(crate) fn swoole_client_coro_rdwr_timeout(socket: Socket, timeout: f64);
     pub(crate) fn swoole_client_coro_close(socket: Socket) -> bool;
-    pub(crate) fn swoole_client_coro_is_tcp(socket: Socket) -> bool;
+    /// The coroutine socket's `network::Socket` record (`get_socket()`), or null.
+    pub(crate) fn swoole_client_coro_socket_record(
+        socket: Socket,
+    ) -> *mut swoole_rs_reactor::SocketRecord;
     pub(crate) fn swoole_client_coro_type(socket: Socket) -> c_int;
     /// `open_length_check || open_eof_check`.
     pub(crate) fn swoole_client_coro_packet_mode(socket: Socket) -> bool;
@@ -324,4 +327,16 @@ pub(crate) enum Transfer {
     RecvWithBuffer = 4,
     Send = 5,
     SendAll = 6,
+}
+
+/// The record of `socket`, a live coroutine socket, read fresh on every use: it
+/// changes when the socket is reinitialised.
+///
+/// # Safety
+/// `socket` is live, and nothing else touches its record while the borrow lasts.
+pub(crate) unsafe fn record<'a>(socket: Socket) -> Option<&'a mut swoole_rs_reactor::SocketRecord> {
+    // SAFETY: as the caller promises.
+    let record = unsafe { swoole_client_coro_socket_record(socket) };
+    // SAFETY: as above.
+    unsafe { record.as_mut() }
 }

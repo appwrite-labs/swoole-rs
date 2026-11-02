@@ -260,7 +260,7 @@ fn write(stream: *mut php_stream, buf: *const c_char, count: usize) -> Result<is
         written = -1;
         let code = socket.error();
         if code != libc::ETIMEDOUT {
-            if socket.catch_error(true, code) == SW_WAIT {
+            if socket.catch_error(code) == SW_WAIT {
                 written = 0;
             } else {
                 let reason = socket
@@ -309,7 +309,7 @@ fn read(stream: *mut php_stream, buf: *mut c_char, count: usize) -> Result<isize
         progress(stream, read)?;
     }
     if read < 0 && socket.error() != libc::ETIMEDOUT {
-        if socket.catch_error(false, socket.error()) == SW_WAIT {
+        if socket.catch_error(socket.error()) == SW_WAIT {
             read = 0;
         } else {
             set_eof(stream);

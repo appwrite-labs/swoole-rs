@@ -117,7 +117,8 @@ void swoole_runtime_socket_free(void *socket);
 int swoole_runtime_socket_fd(void *socket);
 int swoole_runtime_socket_domain(void *socket);
 int swoole_runtime_socket_type(void *socket);
-bool swoole_runtime_socket_inet(void *socket);
+/* The coroutine socket's network::Socket record (get_socket()), or null. */
+struct swr_v1_socket *swoole_runtime_socket_record(void *socket);
 /* errCode, with errMsg in *message when message is not null. */
 int swoole_runtime_socket_error(void *socket, const char **message);
 /* set_err(code). */
@@ -127,15 +128,12 @@ void swoole_runtime_socket_set_error_code(void *socket, int code);
 /* op: 0 send_sync, 1 recv_sync, 2 send_all, 3 send_once, 4 recv, 5 recv_once,
  * 6 peek, 7 send. */
 ssize_t swoole_runtime_socket_io(void *socket, int op, char *buf, size_t length);
-/* catch_write_error (write) or catch_read_error of code. */
-int swoole_runtime_socket_catch_error(void *socket, bool write, int code);
 ssize_t swoole_runtime_socket_recvfrom(
     void *socket, char *buf, size_t length, struct sockaddr *addr, socklen_t *addrlen);
 bool swoole_runtime_socket_close(void *socket);
 /* setsockopt(level, name, value); logged: the coroutine socket's, which logs
  * a failure. */
 void swoole_runtime_socket_option(void *socket, int level, int name, int value, bool logged);
-void swoole_runtime_socket_nodelay(void *socket, int value);
 void swoole_runtime_socket_zero_copy(void *socket);
 void swoole_runtime_socket_timeout(void *socket, double timeout, int type);
 bool swoole_runtime_socket_bind(void *socket, const char *host, int port);
@@ -146,8 +144,6 @@ bool swoole_runtime_socket_shutdown(void *socket, int how);
 bool swoole_runtime_socket_check_liveness(void *socket);
 bool swoole_runtime_socket_ssl_enabled(void *socket);
 bool swoole_runtime_socket_ssl_available(void *socket);
-/* The connection's SSL *, or null. */
-void *swoole_runtime_socket_ssl(void *socket);
 void swoole_runtime_socket_ssl_encrypt(void *socket);
 bool swoole_runtime_socket_ssl_handshake(void *socket);
 void swoole_runtime_socket_ssl_close(void *socket);

@@ -439,7 +439,8 @@ fn sendto(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live socket.
-    if unsafe { native::swoole_client_coro_is_tcp(socket) } && !verify_port(port) {
+    if unsafe { native::record(socket) }.is_some_and(|record| record.is_tcp()) && !verify_port(port)
+    {
         warn(true, "The port is invalid");
         return call.set_bool(false);
     }
