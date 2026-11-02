@@ -10,13 +10,16 @@ crate-type = ["staticlib"]
 
 [features]
 default = []
-# The graduated modules' PHP classes (Swoole\Timer); every hybrid build has PHP.
-php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php"]
+# The PHP classes: Swoole\Timer and each enabled module's php* crate (empty without
+# it). Only the extension's archive has PHP; the native gates' archive leaves it
+# off so it holds no Zend references (docs/zend.md).
+php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php",
+       "swoole-rs-phplocks?/php", "swoole-rs-phpruntime?/php", "swoole-rs-phpserver?/php", "swoole-rs-phpprocess?/php", "swoole-rs-phpthread?/php", "swoole-rs-phpclients?/php", "swoole-rs-phphttp?/php", "swoole-rs-phphttp2?/php", "swoole-rs-phpstdext?/php", "swoole-rs-phpcollections?/php", "swoole-rs-phpevents?/php", "swoole-rs-phpcoroutines?/php"]
 
 memory = ["dep:swoole-rs-memory"]
 
 utilities = ["dep:swoole-rs-utilities"]
-locks = ["dep:swoole-rs-locks", "dep:swoole-rs-phplocks", "swoole-rs-phplocks/php"]
+locks = ["dep:swoole-rs-locks", "dep:swoole-rs-phplocks"]
 wrappers = ["dep:swoole-rs-wrappers"]
 
 reactor = ["dep:swoole-rs-reactor", "dep:swoole-rs-tls"]
@@ -25,21 +28,22 @@ corebase = ["dep:swoole-rs-corebase"]
 
 coroutine = ["dep:swoole-rs-coroutine"]
 
-hooks = ["dep:swoole-rs-hooks", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php"]
+hooks = ["dep:swoole-rs-hooks", "dep:swoole-rs-phpruntime"]
 # Not a module: the hybrid adds it when configured with --enable-iouring.
 iouring = ["hooks", "swoole-rs-hooks/iouring"]
 
 ossupport = ["dep:swoole-rs-ossupport"]
 tls = ["dep:swoole-rs-tls"]
-process = ["dep:swoole-rs-process", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/server", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-phpthread", "swoole-rs-phpthread/php"]
-clients = ["dep:swoole-rs-clients", "dep:swoole-rs-inflate", "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php"]
-httpbindings = ["dep:swoole-rs-httpbindings", "dep:swoole-rs-phphttp", "swoole-rs-phphttp/php"]
-http2 = ["dep:swoole-rs-http2", "dep:swoole-rs-phphttp2", "swoole-rs-phphttp2/php"]
+process = ["dep:swoole-rs-process", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/server", "dep:swoole-rs-phpprocess", "dep:swoole-rs-phpthread"]
+clients = ["dep:swoole-rs-clients", "dep:swoole-rs-inflate", "dep:swoole-rs-phpclients"]
+httpbindings = ["dep:swoole-rs-httpbindings", "dep:swoole-rs-phphttp"]
+http2 = ["dep:swoole-rs-http2", "dep:swoole-rs-phphttp2"]
 ports = ["dep:swoole-rs-ports", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/port"]
-phphelpers = ["dep:swoole-rs-phphelpers", "dep:swoole-rs-phpstdext", "swoole-rs-phpstdext/php"]
-phpcollections = ["dep:swoole-rs-phpcollections", "swoole-rs-phpcollections/php"]
-phpevents = ["dep:swoole-rs-phpevents", "swoole-rs-phpevents/php"]
-phpcoroutines = ["dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php"]
+phphelpers = ["dep:swoole-rs-phphelpers", "dep:swoole-rs-phpstdext"]
+phpcollections = ["dep:swoole-rs-phpcollections"]
+phpevents = ["dep:swoole-rs-phpevents"]
+phpcoroutines = ["dep:swoole-rs-phpcoroutines"]
+
 
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }

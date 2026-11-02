@@ -43,7 +43,7 @@ def main():
         engines = zts['engines']
         if len(engines) != 2 or {r['name'] for r in engines} != {'native', 'selected'}:
             raise ValueError('Exact native/selected ZTS pair required')
-        archive = Path(zts['work']) / 'rust-prefix/lib/libswoole_rs_ffi.a'
+        archive = Path(zts['work']) / 'rust-prefix/lib/libswoole_rs_php.a'
         if sha(archive) != zts['producer']['archive_sha256']:
             raise ValueError('Producer Rust archive changed')
         for row in engines:

@@ -9,6 +9,15 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
+# The PHP extension's archive (tools/build_hybrid.py, immutable builds): calls
+# between module crates inline across crates (#889). Thin and fat LTO measured
+# within 1% of each other on every callgrind workload; thin keeps parallel
+# codegen. The native gates link the Zend-free release archive instead, whose
+# objects they can pull one at a time.
+[profile.release-lto]
+inherits = "release"
+lto = "thin"
+
 # Lint levels live here only; see AGENTS.md "Rust lints".
 [workspace.lints.rust]
 # `pub` only where another crate uses it, so dead_code sees the rest (#159).

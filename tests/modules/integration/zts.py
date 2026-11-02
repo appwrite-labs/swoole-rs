@@ -70,10 +70,10 @@ def main():
         producer_path = a.rust_export.parent / 'build-manifest.json'
         producer = json.loads(producer_path.read_text())
         inputs = producer['inputs']
-        archive = a.rust_export.parent / 'libswoole_rs_ffi.a'
-        artifact = producer['rust_compilation']['artifact']
+        archive = a.rust_export.parent / 'libswoole_rs_php.a'
+        artifact = producer['rust_php_compilation']['artifact']
         if (producer['build_mode'] != 'immutable' or inputs['upstream_commit'] != COMMIT
-                or inputs['fix_halfclose'] or sha(archive) != inputs['rust_archive_sha256']
+                or inputs['fix_halfclose'] or sha(archive) != inputs['rust_php_archive_sha256']
                 or artifact['target']['kind'] != ['staticlib'] or artifact['profile']['opt_level'] != '3'
                 or artifact['profile']['test'] or artifact['profile']['debug_assertions']):
             raise ValueError('Require original-scope immutable optimized Rust producer')
@@ -91,7 +91,7 @@ def main():
         if patches != inputs['patches']:
             raise ValueError('Selected overlay plan differs from producer')
         report['producer'] = dict(source_ref=export['source_ref'], archive_sha256=sha(archive),
-                                 rust_compilation=producer['rust_compilation'],
+                                 rust_compilation=producer['rust_php_compilation'],
                                  scope='Reused exact producer Rust archive; no Rust compilation occurred in this SDK.')
         packed = subprocess.check_output(['git', '-C', str(a.source), 'archive', COMMIT])
         args = SimpleNamespace(jobs=a.jobs, php_config=a.php_config, phpize=a.phpize,
@@ -100,7 +100,7 @@ def main():
         prefix = work / 'rust-prefix'
         (prefix / 'include').mkdir(parents=True)
         (prefix / 'lib').mkdir()
-        shutil.copy2(archive, prefix / 'lib/libswoole_rs_ffi.a')
+        shutil.copy2(archive, prefix / 'lib/libswoole_rs_php.a')
         for header in headers_for(modules):
             shutil.copy2(header, prefix / 'include' / header.name)
         for name in ['native', 'selected']:
@@ -162,7 +162,7 @@ def main():
             if any(sha(row['extension']) != row['extension_sha256'] for row in report['engines']):
                 raise ValueError('ZTS extension changed during consumer execution')
             report['runtime_scope'] = 'Real Linux ZTS build/startup plus defined owned-lock/atomic/barrier consumer only; complete originals, lifetime/sanitizer/performance and other platforms remain unqualified.'
-        if sha(archive) != inputs['rust_archive_sha256']:
+        if sha(archive) != inputs['rust_php_archive_sha256']:
             raise ValueError('Producer archive changed during native build')
         report['passed'] = True
     except Exception as error:

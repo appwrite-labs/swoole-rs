@@ -33,6 +33,9 @@ SELECTABLE = sorted(set(MODULES) - set(GRADUATED))
 BRIDGE_PATCH = 'migration/patches/integration/0001-rust-bridge.patch'
 # Modules a module cannot build without: PHP Table stores rows in memory's TableV2.
 REQUIRES = {'phpcollections': ('memory',)}
+# The build's two Rust archives in rust-prefix/lib, by the input that records each: the
+# Zend-free one the native gates link, and the PHP extension's (with LTO unless --dev, #889).
+ARCHIVES = {'libswoole_rs_ffi.a': 'rust_archive_sha256', 'libswoole_rs_php.a': 'rust_php_archive_sha256'}
 
 
 def profile_suffix(args):
@@ -108,13 +111,12 @@ def export_build(manifest, source, destination, source_ref):
     files = {'swoole.so': source / 'modules/swoole.so', 'config.h': source / 'config.h',
              'Makefile': source / 'Makefile', 'build.log': source.parent / 'build.log',
              'build-manifest.json': manifest}
-    archive_hash = record['inputs'].get('rust_archive_sha256')
-    if archive_hash:
-        files['libswoole_rs_ffi.a'] = source.parent / 'rust-prefix/lib/libswoole_rs_ffi.a'
+    archives = {name: record['inputs'].get(key) for name, key in ARCHIVES.items()}
+    files.update({name: source.parent / 'rust-prefix/lib' / name for name, sha256 in archives.items() if sha256})
     before = {name: digest(path) for name, path in files.items()}
     if (before['build-manifest.json'] != hashlib.sha256(manifest_bytes).hexdigest()
             or before['swoole.so'] != record['extension_sha256']
-            or (archive_hash and before['libswoole_rs_ffi.a'] != archive_hash)):
+            or any(sha256 and before[name] != sha256 for name, sha256 in archives.items())):
         raise ValueError('Completed build artifacts differ from their manifest')
     destination.parent.mkdir(parents=True, exist_ok=True)
     with exclusive(destination.parent / '.export.lock'):
@@ -168,12 +170,13 @@ def rust_sources(modules, extra=()):
     return {str(path.relative_to(ROOT)): digest(path) for path in sorted(files)}
 
 
-def rust_archive(modules, php_config='php-config', extra=()):
+def rust_archive(modules, php_config='php-config', extra=(), *, php=True, profile='release'):
     """Use Cargo's actual static-library output, including configured target directories.
-    zend-sys binds the headers of the PHP the extension is built for (PHP_CONFIG)."""
-    command = ['cargo', 'build', '--locked', '--release', '--no-default-features', '-p', 'swoole-rs-ffi',
+    zend-sys binds the headers of the PHP the extension is built for (PHP_CONFIG). Without
+    `php` the archive holds no Zend references: the native gates link it into executables."""
+    command = ['cargo', 'build', '--locked', *(['--release'] if profile == 'release' else ['--profile', profile]), '--no-default-features', '-p', 'swoole-rs-ffi',
                '--message-format=json-render-diagnostics']
-    if features := [module for module in modules if module not in GRADUATED] + ['php'] + list(extra):
+    if features := [module for module in modules if module not in GRADUATED] + (['php'] if php else []) + list(extra):
         command += ['--features', ','.join(features)]
     result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, text=True,
                             env={**os.environ, 'PHP_CONFIG': php_config})
@@ -335,7 +338,7 @@ def configuration_key(inputs, development=False):
     configuration = inputs
     if development:
         configuration = {key: value for key, value in inputs.items()
-                         if key not in {'patches', 'rust_archive_sha256', 'rust_sources_sha256'}}
+                         if key not in {'patches', 'rust_sources_sha256', *ARCHIVES.values()}}
         # Module-local declarations affect consumer compilation, not configure.
         # Prefix staging below updates their mtimes; native dependency files rebuild callers.
         configuration['headers_sha256'] = {path: value for path, value in inputs.get('headers_sha256', {}).items()
@@ -395,13 +398,24 @@ def build(args, parser):
         # The upstream fallback links no Rust: it takes only the bridge switch, so the
         # sources that call into Rust stay pristine (#801).
         patches = [patch for patch in patches if patch['path'] == BRIDGE_PATCH]
-    archive, rust_inputs, rust_compilation = None, None, None
+    archives, rust_inputs, rust_compilation, rust_php_compilation = {}, None, None, None
     # The Rust io_uring engine replaces upstream's when the build enables io_uring.
     cargo_extra = ['iouring'] if 'hooks' in args.module and '--enable-iouring' in args.configure else []
     if args.backend == 'rust':
         rust_inputs = rust_sources(args.module, cargo_extra)
         cargo_started = time.monotonic()
-        archive, rust_compilation = rust_archive(args.module, args.php_config, cargo_extra)
+        staging = ROOT / 'target/hybrid/.archives'
+        staging.mkdir(parents=True, exist_ok=True)
+        for name, php, profile in [('libswoole_rs_ffi.a', False, 'release'),
+                                   ('libswoole_rs_php.a', True, 'release' if args.dev else 'release-lto')]:
+            archive, compilation = rust_archive(args.module, args.php_config, cargo_extra, php=php, profile=profile)
+            # Both --dev archives are Cargo's one release output: keep each before the next build.
+            archives[name] = staging / name
+            copy_private(archive, archives[name])
+            if php:
+                rust_php_compilation = compilation
+            else:
+                rust_compilation = compilation
         if rust_sources(args.module, cargo_extra) != rust_inputs:
             raise ValueError('Rust sources changed during compilation; refusing to attest the archive')
         timings['cargo'] = round(time.monotonic() - cargo_started, 4)
@@ -413,7 +427,7 @@ def build(args, parser):
               'compiler_cache': compiler_cache_identity(args), 'fix_halfclose': getattr(args, 'fix_halfclose', False), 'modules': args.module, 'builder_sha256': digest(__file__), 'php_builder_sha256': digest(ROOT / 'tools/build_upstream.py'),
               'effective_configure': effective_configure, 'effective_cppflags': effective_env['CPPFLAGS'],
               'upstream_commit': COMMIT, 'backend': args.backend, 'patches': patches,
-              'rust_archive_sha256': digest(archive) if args.backend == 'rust' else None,
+              **{key: digest(archives[name]) if args.backend == 'rust' else None for name, key in ARCHIVES.items()},
               'rust_sources_sha256': rust_inputs,
               'headers_sha256': {str(path.relative_to(ROOT)): digest(path) for path in headers},
               'php': output([args.php_config, '--version']),
@@ -465,9 +479,10 @@ def build(args, parser):
             destination = prefix / 'include' / include.name
             if not destination.exists() or digest(include) != digest(destination):
                 copy_private(include, destination)
-        destination = prefix / 'lib/libswoole_rs_ffi.a'
-        if not destination.exists() or digest(archive) != digest(destination):
-            copy_private(archive, destination)
+        for name, archive in archives.items():
+            destination = prefix / 'lib' / name
+            if not destination.exists() or digest(archive) != digest(destination):
+                copy_private(archive, destination)
         extra = [switch.replace('{BUILD_PREFIX}', str(prefix)) for switch in switches]
     library = source / 'modules/swoole.so'
     record_path = build / 'build-manifest.json'
@@ -487,7 +502,7 @@ def build(args, parser):
         record = {'schema_version': 1, 'created_utc': datetime.now(timezone.utc).isoformat(),
                   'build_mode': 'development' if args.dev else 'immutable',
                   'producer_source_ref': producer_source_ref,
-                  'rust_compilation': rust_compilation,
+                  'rust_compilation': rust_compilation, 'rust_php_compilation': rust_php_compilation,
                   'native_compilation': native_compilation(source, build / 'build.log'),
                   'upstream_version': VERSION, 'inputs': inputs, 'source_diff_sha256': diff_hash,
                   'configure': configure, 'builder_sha256': digest(__file__), 'php_builder_sha256': digest(ROOT / 'tools/build_upstream.py'), 'extension': str(library), 'extension_sha256': digest(library),

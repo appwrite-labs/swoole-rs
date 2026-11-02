@@ -77,7 +77,7 @@ pub use swoole_rs_utilities::*;
 #[cfg(feature = "locks")]
 pub use swoole_rs_locks::*;
 
-#[cfg(feature = "locks")]
+#[cfg(all(feature = "locks", feature = "php"))]
 pub use swoole_rs_phplocks::*;
 
 #[cfg(feature = "wrappers")]
@@ -119,15 +119,15 @@ pub use swoole_rs_tls::*;
 #[cfg(feature = "process")]
 pub use swoole_rs_process::*;
 
-#[cfg(feature = "process")]
+#[cfg(all(feature = "process", feature = "php"))]
 pub use swoole_rs_phpprocess::*;
 
-#[cfg(feature = "process")]
+#[cfg(all(feature = "process", feature = "php"))]
 pub use swoole_rs_phpthread::*;
 
 #[cfg(feature = "clients")]
 pub use swoole_rs_clients as clients;
-#[cfg(feature = "clients")]
+#[cfg(all(feature = "clients", feature = "php"))]
 pub use swoole_rs_phpclients::*;
 // The clients patch calls the HTTP inflate stream in crates/inflate.
 #[cfg(feature = "clients")]
@@ -137,18 +137,18 @@ pub use swoole_rs_inflate as inflate;
 // Keep local Rust type names scoped; C exports retain their no_mangle names.
 pub use swoole_rs_httpbindings as httpbindings;
 
-#[cfg(feature = "httpbindings")]
+#[cfg(all(feature = "httpbindings", feature = "php"))]
 pub use swoole_rs_phphttp::*;
 
 #[cfg(feature = "http2")]
 pub use swoole_rs_http2 as http2;
-#[cfg(feature = "http2")]
+#[cfg(all(feature = "http2", feature = "php"))]
 pub use swoole_rs_phphttp2::*;
 
 #[cfg(feature = "ports")]
 pub use swoole_rs_ports as ports;
 
-#[cfg(any(feature = "ports", feature = "process"))]
+#[cfg(all(any(feature = "ports", feature = "process"), feature = "php"))]
 pub use swoole_rs_phpserver::*;
 
 #[cfg(feature = "phphelpers")]

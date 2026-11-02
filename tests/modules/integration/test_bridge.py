@@ -173,24 +173,6 @@ int main(void) {
             free = shutil.disk_usage(path).free
             self.assertGreaterEqual(free, 4294967296, f'Unchanged 4GiB guard: {path}, free={free}')
 
-    def abi_query_members(self, archive, temporary):
-        queries = {'swr_v1_abi_version', 'swr_v1_feature_bits'}
-        removed, isolated = [], set()
-        for member in run(['ar', 't', str(archive)]).stdout.splitlines():
-            if not member.startswith('swoole_rs_ffi-'):
-                continue
-            scan = temporary / 'scan.o'
-            scan.write_bytes(subprocess.check_output(['ar', 'p', str(archive), member], timeout=120))
-            definitions = {parts[-1].lstrip('_')
-                           for line in run(['nm', '-g', str(scan)]).stdout.splitlines()
-                           if len(parts := line.split()) >= 2 and parts[-2] in {'T', 'D', 'B', 'R', 'S', 'C', 'W', 'V'}}
-            if definitions & queries:
-                self.assertLessEqual(definitions, queries, 'ABI queries share code with another implementation')
-                removed.append(member)
-                isolated.update(definitions)
-        self.assertEqual(isolated, queries, 'Could not isolate both real ABI query objects')
-        return removed
-
     def test_php_rejects_incompatible_archive(self):
         # Ask make for its expanded link recipe without executing any build step.
         # Existing .lo inputs remain read-only; libtool runs inside our scratch tree.
@@ -199,7 +181,7 @@ int main(void) {
         lines = [line for line in recipe.splitlines() if '--mode=link' in line and '-o swoole.la' in line]
         self.assertEqual(len(lines), 1, 'Expected one expanded libtool link recipe: ' + recipe)
         command = shlex.split(lines[0])
-        self.assertEqual(command.count('-lswoole_rs_ffi'), 1, 'Rust archive missing from link recipe')
+        self.assertEqual(command.count('-lswoole_rs_php'), 1, 'Rust archive missing from link recipe')
         cases = [(999, 0, 'Rust bridge ABI mismatch: expected 1, got 999')]
         # Graduated modules are always on, so only selectable modules can be missing.
         for name in SELECTABLE:
@@ -207,18 +189,19 @@ int main(void) {
             if ARGS.feature_bits & bit:
                 label = 'WebSocket kernel' if name == 'websocket' else name
                 cases.append((1, ARGS.feature_bits & ~bit, f'Rust bridge missing {label} feature'))
-        # Discover and remove invariant real query members once. Each case gets
-        # an independent copy of the same real implementation archive.
+        # Hide the real queries once (LTO merges them into objects with other code, so
+        # they cannot be removed as members). Each case gets an independent copy of that real archive.
         with tempfile.TemporaryDirectory(prefix='swoole-rs-abi-preparation-') as directory:
             preparation = Path(directory)
             self.require_space(preparation)
-            removed = self.abi_query_members(ARGS.archive, preparation)
-            prepared = preparation / 'libswoole_rs_ffi.a'
-            copy_private(ARGS.archive, prepared)
-            run(['ar', 'd', str(prepared), *removed])
+            php_archive = ARGS.archive.with_name('libswoole_rs_php.a')
+            prepared = preparation / php_archive.name
+            copy_private(php_archive, prepared)
+            run(['objcopy', '--localize-symbol=swr_v1_abi_version', '--localize-symbol=swr_v1_feature_bits',
+                 str(prepared)])
             command = [str(source / argument) if argument.endswith('.lo') and not Path(argument).is_absolute()
                        else argument for argument in command]
-            archive_index = command.index('-lswoole_rs_ffi')
+            archive_index = command.index('-lswoole_rs_php')
             output_index, rpath_index = command.index('-o') + 1, command.index('-rpath') + 1
             stats_indices = [index for index, argument in enumerate(command) if argument.startswith('CCACHE_STATSLOG=')]
             for abi, bits, message in cases:
@@ -230,7 +213,7 @@ int main(void) {
                         stub.write_text('#include "swoole_rs.h"\n'
                                         f'uint32_t swr_v1_abi_version(void) {{ return {abi}; }}\n'
                                         f'uint64_t swr_v1_feature_bits(void) {{ return {bits}; }}\n')
-                        obj, archive = temporary / 'incompatible.o', temporary / 'libswoole_rs_ffi.a'
+                        obj, archive = temporary / 'incompatible.o', temporary / 'libswoole_rs_php.a'
                         run(shlex.split(os.environ.get('CC', 'cc')) + ['-fPIC', '-I', str(ROOT / 'native/include'),
                             '-c', str(stub), '-o', str(obj)])
                         # Preserve real module initialization/error paths: incomplete
