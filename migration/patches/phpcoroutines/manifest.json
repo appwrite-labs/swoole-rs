@@ -18,6 +18,13 @@
         "ext-src/swoole_coroutine.cc",
         "ext-src/swoole_coroutine_scheduler.cc"
       ]
+    },
+    {
+      "path": "0003-swoole_coroutine_system.patch",
+      "sha256": "8b3f836fef081a4be1840fd6a76556cb073823801939eeef3d3264def2e300dc",
+      "upstream_paths": [
+        "ext-src/swoole_coroutine_system.cc"
+      ]
     }
   ]
 }

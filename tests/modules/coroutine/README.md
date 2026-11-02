@@ -26,7 +26,7 @@ ASan stack-switch warnings yield `warned`, not `passed`. On macOS pass
 python3 tests/modules/coroutine/compile_gate.py --source PINNED_TREE [--timing] [--stack-usage] \
   [--backend asm|ucontext|thread] [--standard c++14|c++17] --report OUT.json
 python3 tests/modules/coroutine/channel_state_gate.py --source PINNED_TREE [--archive ARCHIVE] --report OUT.json
-python3 tests/modules/coroutine/{tokens,stack}.py --source PINNED_TREE --archive ARCHIVE --sanitize --report OUT.json
+python3 tests/modules/coroutine/stack.py --source PINNED_TREE --archive ARCHIVE --sanitize --report OUT.json
 python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --source-ref REF \
   --selected-export SELECTED/export.json --native-export NATIVE/export.json --output OUT.json
 ```
@@ -35,12 +35,11 @@ python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --sourc
   `context` and `thread_context` translation units; the disabled overlay must
   fail closed with its guard message.
 - `channel_state_gate.py` runs the Rust unit tests (ordinary and with Rust ASan),
-  stages the current overlays, runs `tokens.py`, and runs the C11 ABI fixtures
-  (`tokens.c`, `channel_state.c`, `context_cells.c`).
-- `tokens.py` (Channel queue storage) and `stack.py` (stack markers) compare
-  native vs selected source fragments on inert metadata. `--rust-instrumented`
-  (Linux with `--sanitize` only) also requires Rust ASan imports in the archive.
-- The scheduler and coroutine state (crates/coroutine/src/coroutine.rs) are
+  stages the current overlays and runs the C11 ABI fixture `context_cells.c`.
+- `stack.py` (stack markers) compares native vs selected source fragments on
+  inert metadata. `--rust-instrumented` (Linux with `--sanitize` only) also
+  requires Rust ASan imports in the archive.
+- The scheduler, coroutine state and Channel (crates/coroutine) are
   covered by its Rust unit tests and, through real context switches, by
   `core.py`'s upstream GoogleTests and the coroutine PHPT families. The
   coroutine map (`Coroutine::coroutines`, `print_list`, lookups) stays

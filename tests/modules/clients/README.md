@@ -27,7 +27,7 @@ these are whole-TU, live-socket or PHP runtime tests.
 | Gate | Bodies covered |
 |---|---|
 | `gate.py` | Address URL/port policy, Client shutdown, hosts-file lookup (real file IO) |
-| `http_gate.py` | HTTP Set-Cookie parsing and exec retry/defer sequencing |
+| `http_gate.py` | HTTP Set-Cookie parsing |
 | `codec_gate.py` | DNS domain encode/decode and whole query/response callers |
 | `lifecycle_gate.py` | Raw Client close, callback reentry/deletion/exceptions |
 | `write_gate.py` | `Client_onWrite`: drain, low watermark, SOCKS5/HTTP proxy, TLS |
@@ -38,11 +38,7 @@ these are whole-TU, live-socket or PHP runtime tests.
 | `transport_gate.py` | UDP/Unix connect, DTLS on and off, async send backpressure |
 | `pool_gate.py` | Rust persistent pool vs native reference, fork isolation; `--faults` adds allocation-failure cases from a cfg(test) archive |
 | `resolver_gate.py` | PHP resolver cluster lookup, retry, host/port selection |
-| `http_connection_gate.py` | HTTP connect/keepalive/close; `--quick` uses a smaller factorized corpus |
-| `http_response_gate.py` | HTTP receive/parser/result sequencing |
 | `http_format_gate.py` | Request formatting against the pinned `sw_snprintf` |
-| `coro_gate.py` | Coroutine Client setup, connect/send/recv/sendfile |
-| `coro_io_gate.py` | Coroutine Client sendto/recvfrom/peek/getsockname/getpeername/close |
 | `async_gate.py` | Async Client callback names, dispatch, connect/error cleanup |
 | `object_gate.py` | Raw Client construction/destruction |
 | `ip_gate.py` | Numeric Address validation/assignment and loopback against libc |
