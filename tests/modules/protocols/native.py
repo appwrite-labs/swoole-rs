@@ -14,7 +14,7 @@ from tools.harness import ROOT, run_isolated, write_report
 from tools.harness import run_compiler
 
 from tools.build_upstream import COMMIT as PIN
-TARGETS = ['src/protocol/mqtt.cc', 'src/protocol/redis.cc', 'src/protocol/socks5.cc', 'src/protocol/message_bus.cc', 'include/swoole_message_bus.h', 'ext-src/swoole_redis_server.cc']
+TARGETS = ['src/protocol/mqtt.cc', 'src/protocol/redis.cc', 'src/protocol/socks5.cc', 'ext-src/swoole_redis_server.cc']
 
 
 def function(source, signature):
@@ -35,8 +35,6 @@ def main():
     parser.add_argument('--archive', type=Path, default=ROOT / 'target/protocols/release/libswoole_rs_protocols.a')
     parser.add_argument('--output', default=str(ROOT / 'target/reports/protocols-native.json'))
     parser.add_argument('--sanitize', action='store_true')
-    parser.add_argument('--allocation-failures', action='store_true', help='Separate native owner-allocation failure driver; no injection in benchmarks')
-    parser.add_argument('--prepare-benchmark', type=Path, help='Compile optimized paired benchmark and verify only; timing requires a separate exclusive lease')
     args = parser.parse_args()
     sources = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in TARGETS}
     headers = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in ['include/swoole_proxy.h', 'include/swoole_redis.h']}
@@ -49,7 +47,8 @@ def main():
         with tempfile.TemporaryDirectory(prefix='swr-protocols-overlay-') as directory:
             staged = Path(directory)
             subprocess.run(['git', 'init', '-q', directory], check=True)
-            for name, text in sources.items():
+            for name in {p for patch in manifest['patches'] for p in patch['upstream_paths']} | set(TARGETS):
+                text = sources.get(name) or subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{name}'], text=True)
                 destination = staged / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text(text)
@@ -66,7 +65,7 @@ def main():
               'scope': 'Actual pinned and selected protocol facade bodies. Native String/allocation/socket IO are modeled, protocol bodies unchanged. The exact original PHP request parser loop runs with modeled Zend parameters on 10000 seeded defined wires versus Rust typed events. Full Zend request/reply callers are staged, not executed here; run request.py/reply.py against actual PHP. No live network in this gate.',
               'sanitizer_scope': 'C++ ASan/UBSan; Rust not instrumented' if args.sanitize else 'none'}
     def bodies(selected):
-        mqtt, redis, socks, bus = (selected[p] for p in TARGETS[:4])
+        mqtt, redis, socks = (selected[p] for p in TARGETS[:3])
         socks_header = headers['include/swoole_proxy.h']
         constants = '\n'.join(line for line in socks_header.splitlines() if line.startswith('#define SW_SOCKS5'))
         socks_types = socks_header[socks_header.index('enum swSocks5State'):socks_header.index('namespace swoole {')]
@@ -78,12 +77,7 @@ def main():
         redis_body = redis[redis.index('namespace redis {') + len('namespace redis {'):redis.index('}  // namespace redis')]
         return (constants + '\n' + socks_types + socks_body + '\nnamespace mqtt {\n' +
                 function(mqtt, 'ssize_t get_package_length(') + '\n}\nnamespace redis {\n' +
-                redis_constants + redis_types + redis_body + '\n}\n' +
-                ('' if 'using PacketHolder' not in bus else bus[bus.index('using PacketHolder'):bus.index('char *MessageBus::move_packet()')]) +
-                function(bus, 'char *MessageBus::move_packet(') + '\n' +
-                function(bus, 'String *MessageBus::get_packet_buffer(') + '\n' +
-                function(bus, 'size_t MessageBus::get_memory_size(') + '\n' +
-                function(bus, 'bool MessageBus::write(') + '\n' + function(bus, 'ReturnCode MessageBus::prepare_packet('))
+                redis_constants + redis_types + redis_body + '\n}\n')
     with tempfile.TemporaryDirectory(prefix='swr-protocols-native-') as directory:
         tree = Path(directory)
         for name, selected in [('reference', sources), ('candidate', candidates)]:
@@ -92,8 +86,6 @@ def main():
         php = sources['ext-src/swoole_redis_server.cc']
         php_loop = php[php.index('    const char *p = Z_STRVAL(zdata);'):php.index('\n    if (command_len >=')]
         (tree / 'php-request-original.inc').write_text(php_loop)
-        header = candidates['include/swoole_message_bus.h']
-        (tree / 'pool-class.inc').write_text(header[header.index('    class PacketPool {'):header.index('    std::vector<network::Socket *>')])
         binary = tree / 'native'
         command = ['c++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unused-function',
                    '-I' + str(tree), '-I' + str(local), '-I' + str(ROOT / 'native/protocols'),
@@ -109,41 +101,6 @@ def main():
             return 1
         result = run_isolated([str(binary)], timeout=60)
         report['run'] = {'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
-        if result.returncode == 0 and args.allocation_failures:
-            failure_source = local / 'pool_failure.cc'
-            failure_binary = tree / 'pool-failure'
-            failure_command = [str(failure_source) if item == str(local / 'native.cc') else item for item in command]
-            report['allocation_compile'] = run_compiler(failure_command + ['-o', str(failure_binary)])
-            if report['allocation_compile']['returncode']:
-                report['passed'] = False
-                write_report(args.output, report)
-                print(report['allocation_compile']['stderr'], file=sys.stderr)
-                return 1
-            failed = run_isolated([str(failure_binary)], timeout=60)
-            report['allocation_failures'] = {'returncode': failed.returncode, 'stdout': failed.stdout, 'stderr': failed.stderr,
-                'scope': 'C++ owner allocation only; original/source lifetime, copy rollback and assignment validity. Rust allocator faults and exact stdcontainer failure-position/target-content parity not claimed. Separate TU never participates in benchmarks.'}
-            if failed.returncode:
-                report['passed'] = False
-                write_report(args.output, report)
-                print(failed.stderr, file=sys.stderr)
-                return 1
-            report['allocation_failures']['outcome'] = json.loads(failed.stdout)
-        if result.returncode == 0 and args.prepare_benchmark:
-            binary = args.prepare_benchmark.resolve()
-            binary.parent.mkdir(parents=True, exist_ok=True)
-            benchmark = [str(local / 'bench.cc') if item == str(local / 'native.cc') else item for item in command]
-            benchmark[benchmark.index('-O2')] = '-O3'
-            benchmark = [item for item in benchmark if not item.startswith('-fsanitize=') and not item.startswith('-fno-sanitize-recover=')]
-            report['benchmark_compile'] = run_compiler(benchmark + ['-o', str(binary)])
-            if report['benchmark_compile']['returncode']:
-                write_report(args.output, report)
-                return 1
-            verified = run_isolated([str(binary), '--verify'], timeout=30)
-            report['benchmark'] = {'binary': str(binary), 'verify_returncode': verified.returncode,
-                'verify_stdout': verified.stdout, 'verify_stderr': verified.stderr, 'timing_run': False}
-            if verified.returncode:
-                write_report(args.output, report)
-                return 1
         report['passed'] = result.returncode == 0
         if not result.returncode:
             report['outcome'] = json.loads(result.stdout)

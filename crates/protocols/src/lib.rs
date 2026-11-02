@@ -9,13 +9,11 @@
 )]
 mod bus;
 mod mqtt;
-mod pool;
 mod redis;
 mod reply;
 mod socks;
 pub use bus::*;
 pub use mqtt::*;
-pub use pool::*;
 pub use redis::*;
 pub use reply::*;
 pub use socks::*;

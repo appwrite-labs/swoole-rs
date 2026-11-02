@@ -847,7 +847,6 @@ class Lanes(unittest.TestCase):
             first = command.index('--engine')
             self.assertTrue(command[first + 1].startswith('upstream='))
             self.assertEqual(command.count('--engine'), 2)
-        self.assertIn('--allocation-failures', commands['protocols-native'])
         self.assertFalse(any(name.startswith('halfclose-') for name in commands))
 
     def test_native_halfclose_keeps_all_pause_profiles_and_originals(self):

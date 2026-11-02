@@ -12,6 +12,14 @@
         "src/protocol/redis.cc",
         "src/protocol/socks5.cc"
       ]
+    },
+    {
+      "path": "0002-message-bus-rust.patch",
+      "sha256": "3a6bbaa75fbc5c224d418cf0bfbcfb31cd23e2f753a5b57bc2cd76fc63e59b68",
+      "upstream_paths": [
+        "include/swoole_message_bus.h",
+        "src/protocol/message_bus.cc"
+      ]
     }
   ]
 }

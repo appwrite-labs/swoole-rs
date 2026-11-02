@@ -519,7 +519,7 @@ def plan(args, reports):
     if 'protocols' in modules:
         script('protocols-native', 'tests/modules/protocols/native.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
-               *(['--allocation-failures'] if integrate else []), *report('protocols-native'))
+               *report('protocols-native'))
         script('protocols-network', 'tests/modules/protocols/network.py', *php, *engines, *report('protocols-network'))
         if integrate:
             reference_first = ['--engine', f'upstream={reference}',

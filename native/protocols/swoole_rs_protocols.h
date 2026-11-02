@@ -2,6 +2,9 @@
 #define SWOOLE_RS_PROTOCOLS_H
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <sys/types.h>
+#include <sys/uio.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -58,36 +61,40 @@ int32_t swr_v1_resp_receive_range(const uint8_t *, size_t length, size_t capacit
                                 swr_resp_request *, uint8_t *set_offset, uint8_t *range);
 /* After receive action 1: new buffer size, or 0 to keep reading without growth. */
 size_t swr_v1_resp_extend_size(size_t length, size_t size, size_t maximum, size_t page);
-typedef struct { uint32_t remaining, offset, maximum, minimum; uint8_t flags, mode; } swr_bus_writer;
-typedef struct { uint32_t offset, length; uint8_t flags, mode; } swr_bus_chunk;
-int32_t swr_v1_bus_writer_init(uint32_t length, uint32_t maximum, uint32_t minimum,
-                              uint8_t has_payload, uint8_t always, swr_bus_writer *);
-int32_t swr_v1_bus_writer_next(const swr_bus_writer *, swr_bus_chunk *);
-int32_t swr_v1_bus_writer_complete(swr_bus_writer *, uint8_t success, uint8_t reduce);
-uint32_t swr_v1_bus_receive_step(uint16_t count, uint8_t end, uint16_t limit);
-/* Opaque packet index. Tokens remain native-owned; no callback is invoked.
- * insert transfers membership only on 0; take/pop return removed tokens.
- * release refuses a nonempty index. at leaves id unchanged on failure. */
-typedef struct swr_bus_pool swr_bus_pool;
-swr_bus_pool *swr_v1_bus_pool_create(void);
-swr_bus_pool *swr_v1_bus_pool_create_capacity(size_t capacity);
-int32_t swr_v1_bus_pool_release(swr_bus_pool *);
-size_t swr_v1_bus_pool_len(const swr_bus_pool *);
-uintptr_t swr_v1_bus_pool_find(const swr_bus_pool *, uint64_t id);
-/* Borrowed native lookup value, distinct from the owner token. */
-uintptr_t swr_v1_bus_pool_find_value(const swr_bus_pool *, uint64_t id);
-int32_t swr_v1_bus_pool_insert(swr_bus_pool *, uint64_t id, uintptr_t token);
-uintptr_t swr_v1_bus_pool_take(swr_bus_pool *, uint64_t id);
-uintptr_t swr_v1_bus_pool_pop(swr_bus_pool *);
-uintptr_t swr_v1_bus_pool_at(const swr_bus_pool *, size_t index, uint64_t *id);
-typedef struct { uint64_t id; uintptr_t token; } swr_bus_pool_entry;
-int32_t swr_v1_bus_pool_insert_many(swr_bus_pool *, const swr_bus_pool_entry *, size_t length);
-/* Parallel lookup values stay borrowed; success transfers all owner tokens.
- * Existing insert APIs use the owner token as the lookup value. */
-int32_t swr_v1_bus_pool_insert_values(swr_bus_pool *, const swr_bus_pool_entry *, const uintptr_t *lookups, size_t length);
-/* Snapshot borrows tokens; drain removes and transfers them. Both are bounded. */
-size_t swr_v1_bus_pool_snapshot(const swr_bus_pool *, size_t start, swr_bus_pool_entry *, size_t capacity);
-size_t swr_v1_bus_pool_drain(swr_bus_pool *, uintptr_t *, size_t capacity);
+/* MessageBus (crates/protocols/src/bus.rs). The bus owns its packets; the
+ * caller allocates them (the allocator may bail out) and the receive buffer. */
+typedef struct swr_bus swr_bus;
+typedef struct { size_t length; char *data; } swr_bus_packet;
+enum { SWR_BUS_ALLOCATE = 1, SWR_BUS_CLOSED, SWR_BUS_ABNORMAL, SWR_BUS_READV_CLOSED };
+typedef struct {
+    ssize_t received;
+    size_t size;            /* SWR_BUS_ALLOCATE: bytes to allocate */
+    void *data;             /* SWR_BUS_ALLOCATE: block to realloc, or NULL */
+    const void *allocator;  /* SWR_BUS_ALLOCATE with data: its allocator */
+    uint16_t chunks;
+    bool resume;
+    uint8_t event;
+} swr_bus_read;
+swr_bus *swr_v1_bus_create(size_t buffer_size);
+void swr_v1_bus_free(swr_bus *);
+void swr_v1_bus_set_buffer_size(swr_bus *, size_t);
+size_t swr_v1_bus_buffer_size(swr_bus *);
+void swr_v1_bus_set_always_chunked(swr_bus *);
+void swr_v1_bus_set_buffer(swr_bus *, void *buffer);
+void *swr_v1_bus_buffer(swr_bus *);
+size_t swr_v1_bus_count(swr_bus *);
+void swr_v1_bus_clear(swr_bus *);
+size_t swr_v1_bus_memory_size(swr_bus *);
+void swr_v1_bus_pass(swr_bus *, const void *info, const char *data);
+swr_bus_packet swr_v1_bus_packet(swr_bus *);
+char *swr_v1_bus_move_packet(swr_bus *);
+void swr_v1_bus_pop(swr_bus *);
+/* On SWR_BUS_ALLOCATE: allocate state->size bytes, adopt them, call again. */
+ssize_t swr_v1_bus_read(swr_bus *, int fd, bool dgram, bool *nobufs, swr_bus_read *state);
+void swr_v1_bus_adopt(swr_bus *, void *data, size_t size, const void *allocator);
+bool swr_v1_bus_write(swr_bus *, void *socket, void *info, const char *data,
+                      ssize_t (*send)(void *socket, const struct iovec *, size_t),
+                      bool (*reduce)(void *socket));
 #ifdef __cplusplus
 }
 #endif

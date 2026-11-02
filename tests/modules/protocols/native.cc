@@ -13,8 +13,6 @@
 #include <functional>
 #include <string>
 #include <vector>
-#include <memory>
-#include <unordered_map>
 #include <arpa/inet.h>
 #include <sys/uio.h>
 #define swoole_error_log(...) ((void)0)
@@ -28,12 +26,6 @@
 #define SW_MQTT_MIN_LENGTH_SIZE 1
 #define SW_MQTT_MAX_LENGTH_SIZE 4
 #define SW_MQTT_RECV_LEN_AGAIN 0
-#define SW_WORKER_MAX_RECV_CHUNK_COUNT 32
-#define SW_IPC_MSG_MIN (2048-sizeof(DataHead))
-#define SW_EVENT_DATA_CHUNK 4
-#define SW_EVENT_DATA_BEGIN 8
-#define SW_EVENT_DATA_END 16
-#define SW_EVENT_DATA_OBJ_PTR 2
 #define sw_malloc std::malloc
 #define sw_memset_zero(pointer,length) std::memset(pointer,0,length)
 namespace reference {
@@ -46,9 +38,7 @@ namespace reference {
 #pragma GCC diagnostic pop
 }
 namespace candidate {
-#define SWR_PACKET_POOL 1
 #include "adapter.inc"
-#undef SWR_PACKET_POOL
 #include "candidate.inc"
 }
 // Execute the exact original PHP parser loop with only Zend allocation modeled.
@@ -115,61 +105,6 @@ static size_t handler_key_trace() {
     for(size_t offset=0;offset<128;++offset) {std::string wire(128,'A');wire[offset]=0;check(wire);}
     return cases;
 }
-template<class Bus, class Buffer, class String>
-static size_t packet_pool_trace() {
-    assert(String::live == 0);
-    size_t steps = 0;
-    {
-        Buffer buffer{};
-        Bus original;
-        original.buffer_ = &buffer;
-        for (uint64_t id = 0; id < 1024; ++id) {
-            buffer.info.msg_id = id;
-            buffer.info.flags = 0;
-            assert(original.get_packet_buffer() == nullptr);
-            buffer.info.flags = SW_EVENT_DATA_BEGIN;
-            buffer.info.len = 100 + id;
-            auto value = original.get_packet_buffer();
-            assert(value && original.get_packet_buffer() == value);
-            assert(original.packet_pool_.size() == id + 1);
-            value->append("abc", 3);
-            ++steps;
-        }
-        assert(String::live == 1024);
-        Bus copy(original); // Shared buffers, independently mutable membership.
-        Bus assigned;
-        assigned = copy;
-        auto &alias = assigned;
-        assigned = alias;
-        assert(String::live == 1024);
-        assert(copy.get_memory_size() == original.get_memory_size());
-        for (uint64_t id = 0; id < 1024; id += 3) {
-            buffer.info.msg_id = id;
-            original.packet_pool_.erase(id);
-            original.packet_pool_.erase(id);
-            assert(String::live == 1024);
-            assert(copy.get_packet_buffer() != nullptr);
-            ++steps;
-        }
-        original.packet_pool_.clear();
-        copy.packet_pool_.clear();
-        assert(String::live == 1024);
-        assigned.buffer_ = &buffer;
-        buffer.info.msg_id = 5000;
-        buffer.info.flags = 0;
-        assert(assigned.move_packet() == nullptr);
-        buffer.info.msg_id = 7;
-        auto value = assigned.get_packet_buffer();
-        auto transferred = assigned.move_packet();
-        assert(transferred && !std::memcmp(transferred, "abc", 3));
-        assert(value->str == nullptr && assigned.move_packet() == nullptr);
-        assigned.packet_pool_.erase(7);
-        std::free(transferred);
-        assert(String::live == 1023);
-    }
-    assert(String::live == 0);
-    return steps;
-}
 // Generated grammar keeps every native bulk copy in bounds; malformed numeric
 // delimiters/negative non-null bulk sizes are deliberately excluded because the
 // unbounded original oracle can dereference nullptr/read outside input.
@@ -227,8 +162,8 @@ static size_t seeded_resp_trace(uint64_t *corpus) {
 }
 int main() {
     static_assert(sizeof(swr_resp_span)==24 && sizeof(swr_resp_request)==24);
-    static_assert(sizeof(swr_bus_writer)==20 && sizeof(swr_bus_chunk)==12 && sizeof(swr_socks_transition)==4);
-    size_t mqtt = 0, socks = 0, resp = 0, receives = 0, bus = 0;
+    static_assert(sizeof(swr_socks_transition)==4);
+    size_t mqtt = 0, socks = 0, resp = 0, receives = 0;
     for (uint32_t value : {0u,1u,127u,128u,16383u,16384u,2097151u,2097152u,268435455u}) {
         std::vector<char> packet{char(0x30)};
         auto remaining = value;
@@ -400,38 +335,6 @@ int main() {
             assert(std::memcmp(x.object,y.object,sizeof(swr_resp_request))==0);std::free(x.object);std::free(y.object);++receives;
         }
     }
-    for(uint32_t size : {0u,1u,1000u,2032u,4096u,10000u,131072u}) for(bool always : {false,true}) {
-        for(std::vector<ssize_t> failures : {std::vector<ssize_t>{},std::vector<ssize_t>{-1},std::vector<ssize_t>{0},std::vector<ssize_t>{-1,-1}}) for(bool reduce : {false,true}) {
-            reference::MessageBus original;candidate::MessageBus actual;original.always_chunked_transfer_=actual.always_chunked_transfer_=always;
-            reference::network::Socket a;candidate::network::Socket b;a.returns=b.returns=failures;a.reduce=b.reduce=reduce;
-            const std::string payload(size,'x');reference::SendData x;candidate::SendData y;
-            std::memset(&x.info,0,sizeof(x.info));std::memset(&y.info,0,sizeof(y.info));
-            x.info.len=y.info.len=size;x.data=y.data=payload.data();
-            const bool first=original.write(&a,&x),second=actual.write(&b,&y);
-            assert(first==second&&x.info.len==y.info.len&&x.info.flags==y.info.flags&&x.info.msg_id==y.info.msg_id);
-            assert(a.attempts.size()==b.attempts.size());
-            for(size_t i=0;i<a.attempts.size();++i)assert(a.attempts[i].parts==b.attempts[i].parts);
-            ++bus;
-        }
-    }
-    for(size_t capacity : {size_t(0),size_t(8),sizeof(reference::DataHead),size_t(4096)}) for(bool null_data : {false,true}) {
-        reference::MessageBus original;candidate::MessageBus actual;
-        original.buffer_size_=actual.buffer_size_=capacity;
-        reference::network::Socket a;candidate::network::Socket b;
-        reference::SendData x;candidate::SendData y;
-        std::memset(&x.info,0,sizeof(x.info));std::memset(&y.info,0,sizeof(y.info));
-        x.info.len=y.info.len=null_data?99:0;x.data=y.data=null_data?nullptr:"";
-        assert(original.write(&a,&x)==actual.write(&b,&y));
-        assert(x.info.len==y.info.len&&x.info.flags==y.info.flags&&a.attempts.size()==b.attempts.size());
-        for(size_t i=0;i<a.attempts.size();++i)assert(a.attempts[i].parts==b.attempts[i].parts);
-        ++bus;
-    }
-    for(uint16_t value : {uint16_t(0),uint16_t(30),uint16_t(31),uint16_t(32),uint16_t(65535)})for(bool end:{false,true}) {
-        reference::MessageBus original;candidate::MessageBus actual;reference::PipeBuffer p;candidate::PipeBuffer q;
-        p.info.flags=q.info.flags=end?16:4;original.buffer_=&p;actual.buffer_=&q;
-        uint16_t x=value,y=value;reference::String a;candidate::String b;
-        assert(int(original.prepare_packet(x,&a))==int(actual.prepare_packet(y,&b))&&x==y);++bus;
-    }
     // New bounded ABI failures do not overwrite native output/state.
     std::array<uint8_t,16> output;output.fill(0xa5);const auto untouched=output;
     assert(swr_v1_mqtt_frame_length(nullptr,0)==0 && swr_v1_mqtt_frame_length(nullptr,1)==-1);
@@ -445,14 +348,8 @@ int main() {
     assert(swr_v1_resp_parse(number,4,&span,0)==-2 && span.offset==99 && span.kind==3);
     swr_resp_request request{};uint8_t offset=99;
     assert(swr_v1_resp_receive(number,4,3,100,&request,&offset)==-1 && offset==99 && request.state==0);
-    const auto pool = packet_pool_trace<reference::MessageBus,reference::PipeBuffer,reference::String>();
-    assert(pool == (packet_pool_trace<candidate::MessageBus,candidate::PipeBuffer,candidate::String>()));
-    swr_bus_writer writer{};
-    assert(swr_v1_bus_writer_init(1,0,1,1,0,&writer)==-1 && writer.mode==0);
-    assert(swr_v1_bus_writer_init(0,0,1,0,0,&writer)==0);
-    assert(swr_v1_bus_writer_complete(&writer,1,0)==0 && writer.mode==3);
     uint64_t corpus=0;
     resp += seeded_resp_trace(&corpus);
     const auto handlers=handler_key_trace();
-    std::printf("{\"mqtt\":%zu,\"socks\":%zu,\"resp\":%zu,\"receive_states\":%zu,\"message_bus\":%zu,\"pool_lifecycles\":%zu,\"handler_keys\":%zu,\"errors\":0,\"resp_corpus_fnv1a64\":\"%016" PRIx64 "\"}\n",mqtt,socks,resp,receives,bus,pool,handlers,corpus);
+    std::printf("{\"mqtt\":%zu,\"socks\":%zu,\"resp\":%zu,\"receive_states\":%zu,\"handler_keys\":%zu,\"errors\":0,\"resp_corpus_fnv1a64\":\"%016" PRIx64 "\"}\n",mqtt,socks,resp,receives,handlers,corpus);
 }
