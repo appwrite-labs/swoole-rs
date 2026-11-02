@@ -43,7 +43,7 @@ def main():
     }
     signatures['src/reactor/poll.cc'] = ['int16_t translate_events_to_poll(', 'int translate_events_from_poll(']
     manifest = json.loads((ROOT/'migration/patches/hooks/manifest.json').read_text())
-    originals = {path: subprocess.check_output(['git', '-C', str(a.source), 'show', PIN+':'+path], text=True) for path in [*manifest['patches'][0]['upstream_paths'], 'src/reactor/poll.cc']}
+    originals = {path: subprocess.check_output(['git', '-C', str(a.source), 'show', PIN+':'+path], text=True) for path in {*(path for entry in manifest['patches'] for path in entry['upstream_paths']), 'src/reactor/poll.cc'}}
     with tempfile.TemporaryDirectory(prefix='swr-hooks-order-') as temp:
         tree = Path(temp)
         for path, text in originals.items():
