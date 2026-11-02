@@ -23,10 +23,12 @@ mod http_request;
 mod llhttp;
 mod native;
 mod net;
+mod select;
 mod socket;
 
 pub use async_net::*;
 pub use client::*;
 pub use http_client::*;
 pub use net::*;
+pub use select::*;
 pub use socket::*;
