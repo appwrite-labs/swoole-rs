@@ -176,7 +176,7 @@ void swr_v1_phpclients_net_minit(const struct _zend_function_entry *methods,
 void swr_v1_phpclients_async_minit(const struct _zend_function_entry *methods,
                                    struct _zend_class_entry *client_class,
                                    struct _zend_class_entry **async_class);
-void swr_v1_phpclients_async_event(struct _zend_object *object, int event, const char *data, size_t length);
+void swr_v1_phpclients_async_event(struct _zend_object *object, int kind, const char *data, size_t length);
 
 /* Defined by ext-src/swoole_client.cc: network::Client, one call per operation. */
 enum { SWOOLE_CLIENT_ERROR = 0, SWOOLE_CLIENT_ERROR_FATAL = 1, SWOOLE_CLIENT_ERROR_SYS = 2, SWOOLE_CLIENT_ERROR_CORE = 3 };
