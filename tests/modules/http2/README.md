@@ -3,12 +3,12 @@
 Rust (`crates/http2`) owns the settings/frame codecs, role-specific SETTINGS
 decisions, body chunking, window actions, frame header and control payload
 integers, the client send queue container, and next-effect selection for
-several server methods. Native code keeps the settings/window/stream
-stores and all PHP, HPACK, socket, compression, coroutine and destructor effects.
+several server methods. `crates/phphttp2/src/server.rs` drives the server's
+frames and responses over the C++ sessions, streams and contexts, which keep
+the stores, HPACK, socket, compression, coroutine and destructor effects.
 Rust also owns the process-wide default settings. Public headers are unchanged.
-`Swoole\Coroutine\Http2\Client` is Rust (`crates/phphttp2`, #827): the gates below
-compare only server C++ and the Rust lookups the client calls, and the client's
-PHPTs cover the rest of it.
+`Swoole\Coroutine\Http2\Client` is Rust (`crates/phphttp2`, #827); its PHPTs
+cover it.
 The overlay has no native fallback: patched builds define `SW_USE_RUST_HTTP2`.
 
 ## Running
@@ -20,12 +20,11 @@ archive's hybrid build tree (all modules' patches applied):
 ```sh
 python3 tests/modules/http2/gate.py --source /absolute/pinned/swoole \
   --archive /absolute/hybrid/rust-prefix/lib/libswoole_rs_ffi.a --output target/http2/core.json --sanitize
-python3 tests/modules/http2/settings_calls.py --source /absolute/pinned/swoole \
-  --core-report target/http2/core.json --output target/http2/settings.json
+python3 tests/modules/http2/header_calls.py --source /absolute/pinned/swoole \
+  --core-report target/http2/core.json --output target/http2/header.json
 ```
 
-All `*_calls.py` and `response_*.py`
-take the same `--source/--core-report/--output` arguments. Add
+`header_calls.py` takes the same `--source/--core-report/--output` arguments. Add
 `--include /path/to/openssl/include` when the pinned headers need OpenSSL. Each
 output's `-artifacts` directory must not exist yet. `tools/dev.py` registers all
 of these as `http2-*` phases.
@@ -36,41 +35,20 @@ instrumented.
 
 ## Gates
 
-Each gate extracts the actual pinned and patched function bodies, compiles both
-against recording doubles for native effects, and compares effect order, emitted
-bytes, return values and published state. `sides.py` builds the call gates as
-three translation units: the pinned bodies against the pinned headers, the
-patched bodies and the driver against the hybrid build's tree (from the core
-report's archive). Bodies move out of their classes so the driver sees only
-declarations, and fixture state is `inline` so all three share one instance.
+`sides.py` builds the header gate as three translation units: the pinned
+predicates against the pinned headers, the Rust lookups and the driver against
+the hybrid build's tree (from the core report's archive).
 
 - `gate.py`: compiles the original `src/protocol/http2.cc` against the pinned
   headers and the hybrid tree's copy and `core_calls.cpp` against the hybrid
   build's patched headers, runs Rust unit tests, and compares the core codec calls
   (`core_calls.cpp`) with a recording `Socket::send`.
-- `settings_calls.py`: server SETTINGS loop, with HPACK/trace doubles.
-- `control_calls.py`: server WINDOW_UPDATE/RST/GOAWAY bodies with allocation, send and
-  reentry doubles; aligned native header encoding against Rust. PING payload
-  bytes are uninitialized upstream and are not compared.
 - `header_calls.py`: Rust role/media header lookup against the pinned
   locale-sensitive predicates.
-- `server_header_calls.py`: server header parser with HPACK, path, query, cookie,
-  multipart and compression doubles, including reused inflater state and
-  non-final input exhaustion.
-- `window_calls.py`: server parser prefix, WINDOW_UPDATE body and receive-flow
-  fragment, with IO doubles that mutate window state; server and client frame
-  routing against the Rust decoder.
-- `receive_calls.py`: the server DATA case, including buffer-limit rejection,
-  reset/removal, window publication and form/multipart selection.
-- `response_headers.py`: server outgoing-header lambda and CRLF helper, both
-  compression branches.
-- `response_builders.py`: server header and trailer builders with the pinned
-  `HeaderSet`, defaults/date/cookies, content length/encoding and HPACK reuse.
-- `response_lifecycle.py`: response completion against the Rust next-effect
-  controller (header retry, empty DATA, trailers, error close versus removal).
-- `send_calls.py`: server `send_header`/`send_body`,
-  including frame limits, chunk bytes and page-size splits.
-- `file_calls.py`: file/range responses and the shared completion adapter.
+
+The server's frames, responses and request header parser are Rust too
+(`crates/phphttp2/src/server.rs`, #757); its PHPTs cover them, so they have no
+body-extraction gates.
 
 ## Original PHPTs
 

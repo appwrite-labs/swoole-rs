@@ -316,13 +316,8 @@ def plan(args, reports):
                     if sys.platform == 'darwin' else [])
         script('http2-native', 'tests/modules/http2/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *includes, *report('http2-native'))
-        for family, runner in [('settings', 'settings_calls.py'), ('control', 'control_calls.py'), ('header', 'header_calls.py'),
-                               ('window', 'window_calls.py'), ('response-headers', 'response_headers.py'), ('send', 'send_calls.py'),
-                               ('server-header', 'server_header_calls.py'), ('response-builders', 'response_builders.py'),
-                               ('response-lifecycle', 'response_lifecycle.py'), ('file', 'file_calls.py'), ('receive', 'receive_calls.py')]:
-            name = 'http2-' + family
-            script(name, 'tests/modules/http2/' + runner, '--source', ROOT / 'target/upstream/src',
-                   '--core-report', reports / 'http2-native.json', *includes, *report(name))
+        script('http2-header', 'tests/modules/http2/header_calls.py', '--source', ROOT / 'target/upstream/src',
+               '--core-report', reports / 'http2-native.json', *includes, *report('http2-header'))
     if 'clients' in modules:
         for name, runner in [('clients-policy', 'gate.py'), ('clients-http', 'http_gate.py'), ('clients-codec', 'codec_gate.py'),
                              ('clients-lifecycle', 'lifecycle_gate.py'), ('clients-write', 'write_gate.py'), ('clients-read', 'read_gate.py'),
