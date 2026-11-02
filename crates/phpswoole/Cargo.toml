@@ -1,0 +1,19 @@
+[package]
+name = "swoole-rs-phpswoole"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "The swoole module host: global constants, Swoole\\Exception/Error and the global functions"
+
+[features]
+# Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-error", "dep:libc"]
+
+[dependencies]
+swoole-rs-zend = { path = "../zend", optional = true }
+swoole-rs-error = { path = "../error", optional = true }
+libc = { version = "=0.2.191", optional = true }
+
+[lints]
+workspace = true

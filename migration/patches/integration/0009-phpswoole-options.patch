@@ -1,0 +1,178 @@
+diff --git a/ext-src/php_swoole.cc b/ext-src/php_swoole.cc
+index 074ac6d..547eedd 100644
+--- a/ext-src/php_swoole.cc
++++ b/ext-src/php_swoole.cc
+@@ -398,104 +398,8 @@ void php_swoole_register_shutdown_function(const char *function) {
+ void php_swoole_set_global_option(HashTable *vht) {
+-    zval *ztmp;
+-
+-#ifdef SW_DEBUG
+-    if (php_swoole_array_get_value(vht, "debug_mode", ztmp) && zval_is_true(ztmp)) {
+-        swoole_set_log_level(0);
+-    }
+-#endif
+-    // [EventLoop]
+-    // ======================================================================
+-    if (php_swoole_array_get_value(vht, "enable_signalfd", ztmp)) {
+-        SwooleG.enable_signalfd = zval_is_true(ztmp);
+-    }
+-    if (php_swoole_array_get_value(vht, "enable_kqueue", ztmp)) {
+-        SwooleG.enable_kqueue = zval_is_true(ztmp);
+-    }
+-    // [Logger]
+-    // ======================================================================
+-    if (php_swoole_array_get_value(vht, "trace_flags", ztmp)) {
+-        swoole_set_trace_flags(zval_get_long(ztmp));
+-    }
+-    if (php_swoole_array_get_value(vht, "log_file", ztmp)) {
+-        swoole_set_log_file(zend::String(ztmp).val());
+-    }
+-    if (php_swoole_array_get_value(vht, "log_level", ztmp)) {
+-        swoole_set_log_level(zval_get_long(ztmp));
+-    }
+-    if (php_swoole_array_get_value(vht, "log_date_format", ztmp)) {
+-        sw_logger()->set_date_format(zend::String(ztmp).val());
+-    }
+-    if (php_swoole_array_get_value(vht, "log_date_with_microseconds", ztmp)) {
+-        sw_logger()->set_date_with_microseconds(zval_is_true(ztmp));
+-    }
+-    if (php_swoole_array_get_value(vht, "log_rotation", ztmp)) {
+-        sw_logger()->set_rotation(zval_get_long(ztmp));
+-    }
+-    if (php_swoole_array_get_value(vht, "display_errors", ztmp)) {
+-        SWOOLE_G(display_errors) = zval_is_true(ztmp);
+-    }
+-    if (php_swoole_array_get_value(vht, "print_backtrace_on_error", ztmp)) {
+-#if !defined(HAVE_BOOST_STACKTRACE) && !defined(HAVE_EXECINFO)
+-        zend_throw_exception(
+-            swoole_error_ce,
+-            "The `print_backtrace_on_error` option requires `boost stacktrace` or `execinfo.h` to be installed",
+-            SW_ERROR_OPERATION_NOT_SUPPORT);
+-#else
+-        SwooleG.print_backtrace_on_error = zval_is_true(ztmp);
+-#endif
+-    }
+-    // [DNS]
+-    // ======================================================================
+-    if (php_swoole_array_get_value(vht, "dns_server", ztmp)) {
+-        swoole_set_dns_server(zend::String(ztmp).to_std_string());
+-    }
+-    // [Socket]
+-    // ======================================================================
+-    auto timeout_format = [](zval *v) -> double {
+-        double timeout = zval_get_double(v);
+-        if (timeout <= 0 || timeout > INT_MAX) {
+-            return INT_MAX;
+-        } else {
+-            return timeout;
+-        }
+-    };
+-    if (php_swoole_array_get_value(vht, "socket_dns_timeout", ztmp)) {
+-        Socket::default_dns_timeout = timeout_format(ztmp);
+-    }
+-    if (php_swoole_array_get_value(vht, "socket_connect_timeout", ztmp)) {
+-        Socket::default_connect_timeout = timeout_format(ztmp);
+-    }
+-    if (php_swoole_array_get_value(vht, "socket_write_timeout", ztmp) ||
+-        php_swoole_array_get_value(vht, "socket_send_timeout", ztmp)) {
+-        Socket::default_write_timeout = timeout_format(ztmp);
+-    }
+-    if (php_swoole_array_get_value(vht, "socket_read_timeout", ztmp) ||
+-        php_swoole_array_get_value(vht, "socket_recv_timeout", ztmp)) {
+-        Socket::default_read_timeout = timeout_format(ztmp);
+-    }
+-    if (php_swoole_array_get_value(vht, "socket_buffer_size", ztmp)) {
+-        Socket::default_buffer_size = php_swoole_parse_to_size(ztmp);
+-    }
+-    if (php_swoole_array_get_value(vht, "socket_timeout", ztmp)) {
+-        Socket::default_read_timeout = Socket::default_write_timeout = timeout_format(ztmp);
+-    }
+-    // [HTTP2]
+-    // ======================================================================
+-    if (php_swoole_array_get_value(vht, "http2_header_table_size", ztmp)) {
+-        swoole::http2::put_default_setting(SW_HTTP2_SETTING_HEADER_TABLE_SIZE, php_swoole_parse_to_size(ztmp));
+-    }
+-    if (php_swoole_array_get_value(vht, "http2_enable_push", ztmp)) {
+-        swoole::http2::put_default_setting(SW_HTTP2_SETTINGS_ENABLE_PUSH, zval_get_long(ztmp));
+-    }
+-    if (php_swoole_array_get_value(vht, "http2_max_concurrent_streams", ztmp)) {
+-        swoole::http2::put_default_setting(SW_HTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, zval_get_long(ztmp));
+-    }
+-    if (php_swoole_array_get_value(vht, "http2_init_window_size", ztmp)) {
+-        swoole::http2::put_default_setting(SW_HTTP2_SETTINGS_INIT_WINDOW_SIZE, php_swoole_parse_to_size(ztmp));
+-    }
+-    if (php_swoole_array_get_value(vht, "http2_max_frame_size", ztmp)) {
+-        swoole::http2::put_default_setting(SW_HTTP2_SETTINGS_MAX_FRAME_SIZE, php_swoole_parse_to_size(ztmp));
+-    }
+-    if (php_swoole_array_get_value(vht, "http2_max_header_list_size", ztmp)) {
+-        swoole::http2::put_default_setting(SW_HTTP2_SETTINGS_MAX_HEADER_LIST_SIZE, php_swoole_parse_to_size(ztmp));
++    zval *failed;
++    zend_string *error = swr_v1_phpswoole_set_global_option(vht, &failed);
++    if (error) {
++        php_swoole_fatal_error(
++            E_ERROR, "failed to parse '%s' to size, Error: %s", Z_STRVAL_P(failed), ZSTR_VAL(error));
++        zend_string_release(error);
+     }
+@@ -635,2 +539,31 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
+     },
++    [](uint8_t on) { SwooleG.enable_signalfd = on; },
++    [](uint8_t on) { SwooleG.enable_kqueue = on; },
++    [](int64_t flags) { swoole_set_trace_flags(flags); },
++    [](const char *file, size_t) { swoole_set_log_file(file); },
++    [](int64_t level) { swoole_set_log_level(level); },
++    [](const char *format, size_t) { sw_logger()->set_date_format(format); },
++    [](uint8_t on) { sw_logger()->set_date_with_microseconds(on); },
++    [](int64_t rotation) { sw_logger()->set_rotation(rotation); },
++    [](uint8_t on) { SWOOLE_G(display_errors) = on; },
++    [](uint8_t on) {
++#if !defined(HAVE_BOOST_STACKTRACE) && !defined(HAVE_EXECINFO)
++        zend_throw_exception(
++            swoole_error_ce,
++            "The `print_backtrace_on_error` option requires `boost stacktrace` or `execinfo.h` to be installed",
++            SW_ERROR_OPERATION_NOT_SUPPORT);
++#else
++        SwooleG.print_backtrace_on_error = on;
++#endif
++    },
++    [](const char *server, size_t length) { swoole_set_dns_server(std::string(server, length)); },
++    [](int32_t kind, double seconds) {
++        double *timeouts[] = {&Socket::default_dns_timeout,
++                              &Socket::default_connect_timeout,
++                              &Socket::default_read_timeout,
++                              &Socket::default_write_timeout};
++        *timeouts[kind] = seconds;
++    },
++    [](int64_t size) { Socket::default_buffer_size = size; },
++    [](int32_t id, int64_t value) { swoole::http2::put_default_setting((enum swHttp2SettingId) id, value); },
+ };
+@@ -1177,30 +1110,2 @@ void sw_php_exit(int status) {
+ 
+-bool sw_zval_is_serializable(const zval *struc) {
+-again:
+-    switch (Z_TYPE_P(struc)) {
+-    case IS_OBJECT: {
+-        if (Z_OBJCE_P(struc)->ce_flags & ZEND_ACC_NOT_SERIALIZABLE) {
+-            return false;
+-        }
+-        break;
+-    }
+-    case IS_ARRAY: {
+-        zval *elem;
+-        ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(struc), elem) {
+-            if (!sw_zval_is_serializable(elem)) {
+-                return false;
+-            }
+-        }
+-        ZEND_HASH_FOREACH_END();
+-        break;
+-    }
+-    case IS_REFERENCE:
+-        struc = Z_REFVAL_P(struc);
+-        goto again;
+-    default:
+-        break;
+-    }
+-    return true;
+-}
+-
+ PHP_RINIT_FUNCTION(swoole) {
