@@ -19,7 +19,7 @@ use swoole_rs_zend::{
 };
 
 /// `HASH_KEY_IS_STRING`.
-const KEY_IS_STRING: u32 = 1;
+const KEY_IS_STRING: i64 = 1;
 
 /// `Z_PARAM_ARRAY_EX2(dest, 1, 1, 0)`: an array, by reference, or null.
 fn array_or_null(call: &Call, n: u32) -> Result<Option<*mut zval>, Invalid> {
@@ -80,7 +80,7 @@ fn each(array: *mut zval, mut visit: impl FnMut(*mut zend_string, zend_ulong, *m
         };
         // SAFETY: as above.
         unsafe { zend_hash_move_forward_ex(table, &raw mut position) };
-        let key = if kind == KEY_IS_STRING {
+        let key = if i64::from(kind) == KEY_IS_STRING {
             key
         } else {
             ptr::null_mut()
