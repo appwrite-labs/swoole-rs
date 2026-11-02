@@ -3,8 +3,9 @@
 //! `enableCoroutine`, and `PHPCoroutine::enable_hook`: which hook families
 //! change, the function-table hooks (handlers, arginfo copies, the library's
 //! PHP replacements, the classes they graft on) and the sleep family's
-//! replacements. The stream transports, the plain-file and stdio wrappers, the
-//! PDO drivers and the coroutine state stay C++, lent as a table.
+//! replacements, and the coroutine socket streams (`stream`). The transport
+//! registry, the plain-file and stdio wrappers, the PDO drivers, the coroutine
+//! state and the coroutine socket stay C++, lent as a table and as calls.
 //!
 //! A warning can run a user error handler that bails out; when it does from
 //! inside a function here, the jump crosses only frames that own nothing to
@@ -22,6 +23,9 @@
 
 mod functions;
 mod sleep;
+mod socket;
+mod stream;
+pub use stream::*;
 
 use std::{
     ffi::{CStr, c_char, c_void},
