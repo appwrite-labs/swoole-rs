@@ -5,7 +5,7 @@
 
 use swoole_rs_base64::swr_v1_base64_encode;
 
-use crate::sha1;
+use swoole_rs_websocket::sha1;
 
 /// RFC 6455 handshake GUID, appended to the client key before hashing.
 const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
