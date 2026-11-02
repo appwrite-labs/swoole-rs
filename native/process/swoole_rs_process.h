@@ -159,6 +159,78 @@ typedef struct {
     swr_v1_process_reload_warn warn;
 } swr_v1_process_reap_host;
 void swr_v1_process_reap_loop(const swr_v1_process_reap_host *host);
+/* ProcessPool's IPC (crates/process/src/pool.rs): the stream listener, its
+ * connection, the reply and packet buffers, the worker loops and dispatch. */
+typedef struct swr_v1_process_pool_ipc swr_v1_process_pool_ipc;
+typedef struct {
+    void *pool;
+    void *worker;
+    void *socket;
+    void *data;
+    size_t length;
+    int flags;
+    ptrdiff_t result;
+    int error;
+} swr_v1_pool_call;
+typedef void (*swr_v1_pool_step)(void *call);
+typedef struct {
+    bool (*running)(void *pool, void *worker);
+    swr_v1_pool_step end;
+    swr_v1_pool_step queue_pop;
+    swr_v1_pool_step queue_push;
+    swr_v1_pool_step accept;
+    swr_v1_pool_step recv;
+    swr_v1_pool_step send;
+    void (*close)(void *socket);
+    swr_v1_pool_step pipe_read;
+    swr_v1_pool_step pipe_wait;
+    swr_v1_pool_step bus_read;
+    swr_v1_pool_step bus_deliver;
+    swr_v1_pool_step task;
+    swr_v1_pool_step message;
+    void (*shutdown)(void *worker);
+    swr_v1_pool_step pipe_write;
+    void (*warn)(void *pool, void *worker, int kind, int64_t a, int64_t b);
+} swr_v1_pool_hooks;
+typedef struct {
+    const swr_v1_pool_hooks *hooks;
+    swr_v1_process_pool_ipc *ipc;
+    void *pool;
+    void *worker;
+    uint32_t worker_id;
+    uint8_t ipc_mode;
+    bool schedule_by_sysvmsg;
+    uint32_t max_packet_size;
+    size_t event_size;
+} swr_v1_pool_loop;
+enum {
+    SWR_POOL_WARN_MSGRCV = 1,
+    SWR_POOL_WARN_ACCEPT = 2,
+    SWR_POOL_WARN_READ = 3,
+    SWR_POOL_WARN_BAD_PACKET = 4,
+    SWR_POOL_WARN_TASK_FAILED = 5,
+    SWR_POOL_WARN_PIPE = 6,
+    SWR_POOL_TRACE_POP = 7,
+    SWR_POOL_WARN_SEND = 8,
+    SWR_POOL_TRACE_PUSH = 9,
+};
+#define SWR_POOL_BAILED 1
+void swr_v1_process_set_bailout(int (*trap)(void (*body)(void *), void *arg), void (*raise)(void));
+void swr_v1_process_bailout(void);
+swr_v1_process_pool_ipc *swr_v1_process_pool_ipc_new(bool listener);
+void swr_v1_process_pool_ipc_free(swr_v1_process_pool_ipc *ipc, void (*close)(void *socket));
+bool swr_v1_process_pool_ipc_address(swr_v1_process_pool_ipc *ipc, const char *host, int port);
+void swr_v1_process_pool_ipc_set_listener(swr_v1_process_pool_ipc *ipc, void *socket);
+void *swr_v1_process_pool_ipc_listener(const swr_v1_process_pool_ipc *ipc);
+const char *swr_v1_process_pool_ipc_address_of(const swr_v1_process_pool_ipc *ipc, int *port);
+void *swr_v1_process_pool_ipc_connection(const swr_v1_process_pool_ipc *ipc);
+bool swr_v1_process_pool_ipc_respond(swr_v1_process_pool_ipc *ipc, const uint8_t *data, uint32_t length);
+char *swr_v1_process_pool_ipc_prepare(swr_v1_process_pool_ipc *ipc, uint32_t max_packet_size);
+char *swr_v1_process_pool_ipc_packet(swr_v1_process_pool_ipc *ipc);
+int swr_v1_process_pool_run(const swr_v1_pool_loop *loop, int protocol);
+uint32_t swr_v1_process_pool_schedule(const swr_v1_worker_record *workers, uint32_t count, uint32_t *round_id, uint8_t *warning);
+ptrdiff_t swr_v1_process_worker_send(const swr_v1_pool_hooks *hooks, void *pool, void *pipe, bool queue, uint32_t worker_id, const uint8_t *data, size_t length, int flags);
+bool swr_v1_process_pool_dispatch(const swr_v1_pool_hooks *hooks, void *pool, swr_v1_worker_record *workers, uint32_t count, uint16_t start_id, uint32_t *round_id, uint8_t *warning, bool schedule_by_sysvmsg, bool queue, int *worker_id, const uint8_t *event, uint32_t size, bool blocking);
 #ifdef __cplusplus
 }
 #endif

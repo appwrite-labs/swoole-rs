@@ -183,6 +183,16 @@
       "upstream_paths": [
         "ext-src/swoole_server.cc"
       ]
+    },
+    {
+      "path": "0020-pool-ipc.patch",
+      "sha256": "cf27d4d8d049b21fa815afda8a0f7b98d749481efcc04ad06344a9270746ed10",
+      "upstream_paths": [
+        "ext-src/swoole_process_pool.cc",
+        "include/swoole_process_pool.h",
+        "src/os/process_pool.cc",
+        "src/server/task_worker.cc"
+      ]
     }
   ]
 }
