@@ -4,7 +4,8 @@ use super::{Call, Invalid, coerce, type_of};
 use crate::{
     string::bytes,
     sys::{
-        _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_STRING_OR_LONG,
+        _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_PATH,
+        _zend_expected_type_Z_EXPECTED_STRING_OR_LONG,
         _zend_expected_type_Z_EXPECTED_STRING_OR_NULL, IS_ARRAY, IS_LONG, IS_NULL, IS_STRING,
         swr_zend_try_parse_str, swr_zend_try_parse_str_or_long, swr_zval_copy, zend_string, zval,
     },
@@ -49,6 +50,22 @@ impl Call {
             arg,
             _zend_expected_type_Z_EXPECTED_STRING_OR_NULL,
         ))
+    }
+
+    /// `Z_PARAM_PATH` of argument `n`: as [`Call::string`], refusing NUL bytes.
+    /// # Errors
+    /// As `string`, or the path holds a NUL byte; Zend has thrown.
+    #[inline]
+    pub fn path<'a>(&self, n: u32, default: &'a [u8]) -> Result<&'a [u8], Invalid> {
+        let path = self.string(n, default)?;
+        if path.contains(&0) {
+            return Err(Self::wrong(
+                n,
+                self.arg(n),
+                _zend_expected_type_Z_EXPECTED_PATH,
+            ));
+        }
+        Ok(path)
     }
 
     /// The frame Zend passed (`execute_data`), to pass on to another handler.
