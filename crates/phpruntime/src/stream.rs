@@ -354,8 +354,9 @@ pub unsafe extern "C" fn swr_v1_phpruntime_socket_read(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpruntime_socket_close(
     stream: *mut php_stream,
-    _close_handle: c_int,
+    close_handle: c_int,
 ) -> c_int {
+    let _ = close_handle;
     let net = net(stream);
     if net.is_null() {
         return FAILURE;
@@ -370,7 +371,8 @@ pub unsafe extern "C" fn swr_v1_phpruntime_socket_close(
 
 /// The stream's `flush`: nothing is buffered.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpruntime_socket_flush(_stream: *mut php_stream) -> c_int {
+pub extern "C" fn swr_v1_phpruntime_socket_flush(stream: *mut php_stream) -> c_int {
+    let _ = stream;
     0
 }
 
