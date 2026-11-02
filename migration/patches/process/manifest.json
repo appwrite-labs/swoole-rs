@@ -236,6 +236,13 @@
         "include/swoole_server.h",
         "src/server/task_worker.cc"
       ]
+    },
+    {
+      "path": "0025-signal-kqueue.patch",
+      "sha256": "f5419fae52908a28b5dd4d46cb5510d6b29a4ab1c24f465726587c2d3dfd870e",
+      "upstream_paths": [
+        "src/os/signal.cc"
+      ]
     }
   ]
 }

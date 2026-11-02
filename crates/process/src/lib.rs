@@ -11,6 +11,14 @@ pub mod pool;
 pub mod reaper;
 pub mod reload_task;
 pub mod signal;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+pub mod signal_kqueue;
 #[cfg(target_os = "linux")]
 pub mod signalfd;
 pub mod task_file;
