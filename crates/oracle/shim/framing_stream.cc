@@ -6,10 +6,12 @@
 // length function and onPackage are the facade's, the same for both engines.
 #include <cassert>
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <functional>
 #include <string>
 #include <sys/types.h>
@@ -153,10 +155,11 @@ struct Socket {
 };
 }  // namespace network
 
+// Upstream's leading field order: the candidate reads them in place.
 struct Protocol {
+    bool split_by_eof;
     char package_eof[8];
     uint8_t package_eof_len;
-    uint8_t split_by_eof;
     char package_length_type;
     uint8_t package_length_size;
     uint16_t package_length_offset;

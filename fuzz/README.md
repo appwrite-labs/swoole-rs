@@ -60,8 +60,8 @@ For packet framing (`open_length_check`), `framing_unpack` compares
 any received bytes. Outside the compared domain, Rust's -1 only has to match an upstream error.
 `framing_stream` runs the receive loops (`recv_with_length_protocol`,
 `recv_with_eof_protocol`, `recv_split_by_eof`) from the pinned base.cc and from it
-after `migration/patches/framing/0001-base.patch` (a step loop over the Rust
-framing state machine) over the same stream, delivered in fuzzer-chosen chunks:
+after `migration/patches/framing/0001-base.patch` (the Rust receive loop with
+native effects) over the same stream, delivered in fuzzer-chosen chunks:
 every call's result, every packet and the final buffer must match.
 
 For the clients, `clients_url` compares `Address::assign(url)` from the pinned

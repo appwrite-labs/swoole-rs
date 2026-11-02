@@ -17,9 +17,7 @@ int main(int argc, char **) {
         auto *p = new uint8_t[1]{0}; int64_t result;
         return swr_v1_framing_unpack('C', p + 1, 1, &result);
     }
-    CHECK(sizeof(SwrFramingState) == 32);
-    CHECK(sizeof(SwrFramingSnapshot) == 72);
-    CHECK(sizeof(SwrFramingAction) == 16);
+    CHECK(sizeof(SwrFramingIo) == 32);
     CHECK(swr_v1_framing_width('?') == 0);
     int64_t out = 918;
     uint8_t data[16]{};
@@ -68,11 +66,17 @@ int main(int argc, char **) {
             }
         }
     }
-    CHECK(swr_v1_framing_step(nullptr, nullptr).status == -1);
-    SwrFramingState state{}; SwrFramingSnapshot input{};
-    input.len = 2; input.cap = 1;
-    CHECK(swr_v1_framing_step(&state, &input).status == -1);
-    input.len = 0; input.cap = 1; input.length_offset = 3;
-    CHECK(swr_v1_framing_step(&state, &input).status == -1);
+    // Null receives and a buffer longer than its allocation fail before any effect.
+    static size_t effects;
+    SwrFramingCall count = [](void *, uint32_t, uint64_t) -> int64_t { ++effects; return 0; };
+    CHECK(swr_v1_framing_recv(nullptr, nullptr, count) == -1);
+    struct { size_t length, size; int64_t offset; char *str; } buffer{2, 1, 0, nullptr};
+    uint8_t protocol[20]{};
+    SwrFramingIo io{protocol, &buffer, SWR_FRAMING_MODE_LENGTH, 1, 0};
+    CHECK(swr_v1_framing_recv(&io, nullptr, nullptr) == -1);
+    CHECK(swr_v1_framing_recv(&io, nullptr, count) == -1);
+    // A receive larger than the remaining allocation is refused.
+    buffer.length = 0; protocol[12] = 3;
+    CHECK(swr_v1_framing_recv(&io, nullptr, count) == -1 && effects == 0);
     std::cout << "{\"checks\":" << checks << ",\"passed\":true}\n";
 }

@@ -372,8 +372,8 @@ fn cpp() -> cc::Build {
 }
 
 /// The stream receive loops from the pinned base.cc (upstream) and from it with
-/// the framing overlay patch applied (candidate, a step loop over the Rust
-/// exports), with String's split and reduce from the pinned string.cc, copied
+/// the framing overlay patch applied (candidate, the Rust receive with its
+/// native effects), with String's split and reduce from the pinned string.cc, copied
 /// unchanged for `shim/framing_stream.cc`.
 fn framing_stream() {
     let patch = "../../migration/patches/framing/0001-base.patch";
@@ -390,8 +390,11 @@ fn framing_stream() {
     ];
     for (name, text) in [("upstream", &upstream), ("candidate", &candidate)] {
         let mut parts = Vec::new();
-        if text.contains("static int drive(") {
-            parts.push(definition(text, "static int drive("));
+        if text.contains("namespace {\nstruct Recv {") {
+            parts.push(
+                slice(text, "static_assert(offsetof(String", "}  // namespace\n")
+                    + "}  // namespace\n",
+            );
         }
         parts.extend(methods.iter().map(|signature| definition(text, signature)));
         fs::write(
