@@ -1123,7 +1123,9 @@ impl Client {
                 return false;
             }
             // SAFETY: as above.
-            if unsafe { native::swoole_http_client_coro_closing(socket) } {
+            if unsafe { crate::native::record(socket) }
+                .is_some_and(|record| record.output.close_wait != 0)
+            {
                 break;
             }
             if self.parser.error != llhttp::OK {
@@ -1373,7 +1375,9 @@ impl Client {
         }
         if self.in_callback {
             // SAFETY: a live socket.
-            unsafe { native::swoole_http_client_coro_close_wait(socket) };
+            if let Some(record) = unsafe { crate::native::record(socket) } {
+                record.output.close_wait = 1;
+            }
             return true;
         }
         props::bool(self.object, c"connected", false);

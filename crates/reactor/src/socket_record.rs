@@ -174,6 +174,39 @@ impl SocketRecord {
         socket
     }
 
+    /// `Socket::is_tcp`: a TCP stream over IPv4 or IPv6.
+    #[must_use]
+    pub fn is_tcp(&self) -> bool {
+        matches!(self.socket_type, 1 | 3)
+    }
+
+    /// `Socket::is_inet`: IPv4 or IPv6, stream, datagram or raw.
+    #[must_use]
+    pub fn is_inet(&self) -> bool {
+        matches!(self.socket_type, 1..=4 | 7 | 8)
+    }
+
+    /// `Socket::catch_error` (`catch_read_error`, `catch_write_error`).
+    pub fn catch_error(&mut self, error: c_int) -> c_int {
+        // SAFETY: the record's own flag.
+        unsafe { crate::swr_v1_socket_catch_error(error, &raw mut self.kernel_nobufs) }
+    }
+
+    /// `Socket::set_tcp_nodelay`.
+    pub fn set_tcp_nodelay(&mut self, nodelay: c_int) -> bool {
+        if !crate::swr_v1_socket_tcp_nodelay(self.fd, nodelay) {
+            return false;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "upstream assigns the int to its flag"
+        )]
+        let flag = nodelay as u8;
+        self.tcp_nodelay = flag;
+        true
+    }
+
     fn into_raw(self) -> *mut Self {
         let socket = swr_v1_socket_alloc();
         // SAFETY: fresh, suitably aligned storage for one record.
@@ -352,6 +385,23 @@ mod tests {
         assert_eq!(socket.timeouts.read, 60.0);
         assert_eq!(socket.fd, 0);
         assert!(socket.object.is_null() && socket.output.out_buffer.is_null());
+    }
+
+    #[test]
+    fn inet_types_are_ipv4_and_ipv6() {
+        let mut socket = SocketRecord::new();
+        for (kind, inet) in [
+            (1, true),
+            (4, true),
+            (5, false),
+            (6, false),
+            (7, true),
+            (8, true),
+        ] {
+            socket.socket_type = kind;
+            assert_eq!(socket.is_inet(), inet, "type {kind}");
+            assert_eq!(socket.is_tcp(), kind == 1, "type {kind}");
+        }
     }
 
     #[test]

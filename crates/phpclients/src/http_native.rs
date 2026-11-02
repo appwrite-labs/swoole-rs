@@ -37,9 +37,6 @@ unsafe extern "C" {
         port: c_int,
     ) -> bool;
     pub(crate) fn swoole_http_client_coro_close(socket: Socket) -> bool;
-    /// `get_socket()->close_wait = 1`, and whether it is set.
-    pub(crate) fn swoole_http_client_coro_close_wait(socket: Socket);
-    pub(crate) fn swoole_http_client_coro_closing(socket: Socket) -> bool;
     /// `check_bound_co(event)`: a fatal error if another coroutine holds it.
     pub(crate) fn swoole_http_client_coro_check_bound(socket: Socket, event: c_int);
     pub(crate) fn swoole_http_client_coro_set_err(socket: Socket, code: c_int);

@@ -4,6 +4,7 @@
 //! `native/hooks/swoole_rs_phpruntime.h`).
 use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};
 use std::{ffi::CStr, ptr::NonNull};
+use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{bailout::Bailout, sys::zval};
 
 unsafe extern "C" {
@@ -18,7 +19,7 @@ unsafe extern "C" {
     fn swoole_runtime_socket_fd(socket: *mut c_void) -> c_int;
     fn swoole_runtime_socket_domain(socket: *mut c_void) -> c_int;
     fn swoole_runtime_socket_type(socket: *mut c_void) -> c_int;
-    fn swoole_runtime_socket_inet(socket: *mut c_void) -> bool;
+    fn swoole_runtime_socket_record(socket: *mut c_void) -> *mut SocketRecord;
     fn swoole_runtime_socket_error(socket: *mut c_void, message: *mut *const c_char) -> c_int;
     fn swoole_runtime_socket_set_error(socket: *mut c_void, code: c_int);
     fn swoole_runtime_socket_set_error_code(socket: *mut c_void, code: c_int);
@@ -28,7 +29,6 @@ unsafe extern "C" {
         buf: *mut c_char,
         length: size_t,
     ) -> ssize_t;
-    fn swoole_runtime_socket_catch_error(socket: *mut c_void, write: bool, code: c_int) -> c_int;
     fn swoole_runtime_socket_recvfrom(
         socket: *mut c_void,
         buf: *mut c_char,
@@ -44,7 +44,6 @@ unsafe extern "C" {
         value: c_int,
         logged: bool,
     );
-    fn swoole_runtime_socket_nodelay(socket: *mut c_void, value: c_int);
     fn swoole_runtime_socket_zero_copy(socket: *mut c_void);
     fn swoole_runtime_socket_timeout(socket: *mut c_void, timeout: f64, kind: c_int);
     fn swoole_runtime_socket_bind(socket: *mut c_void, host: *const c_char, port: c_int) -> bool;
@@ -56,7 +55,6 @@ unsafe extern "C" {
     fn swoole_runtime_socket_check_liveness(socket: *mut c_void) -> bool;
     fn swoole_runtime_socket_ssl_enabled(socket: *mut c_void) -> bool;
     fn swoole_runtime_socket_ssl_available(socket: *mut c_void) -> bool;
-    fn swoole_runtime_socket_ssl(socket: *mut c_void) -> *mut c_void;
     fn swoole_runtime_socket_ssl_encrypt(socket: *mut c_void);
     fn swoole_runtime_socket_ssl_handshake(socket: *mut c_void) -> bool;
     fn swoole_runtime_socket_ssl_close(socket: *mut c_void);
@@ -193,9 +191,21 @@ impl Socket {
         unsafe { swoole_runtime_socket_type(self.raw()) }
     }
 
-    pub(crate) fn is_inet(&self) -> bool {
+    /// The coroutine socket's `network::Socket` record (`get_socket()`), or null.
+    /// It changes when the socket is reinitialised, so it is read on every use.
+    fn with_record<T>(&self, absent: T, f: impl FnOnce(&mut SocketRecord) -> T) -> T {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_inet(self.raw()) }
+        let record = unsafe { swoole_runtime_socket_record(self.raw()) };
+        // SAFETY: the record, when set, is live, and only this thread touches it
+        // while `f` runs.
+        match unsafe { record.as_mut() } {
+            Some(record) => f(record),
+            None => absent,
+        }
+    }
+
+    pub(crate) fn is_inet(&self) -> bool {
+        self.with_record(false, |record| record.is_inet())
     }
 
     /// `errCode`.
@@ -233,10 +243,9 @@ impl Socket {
         unsafe { swoole_runtime_socket_io(self.raw(), op as c_int, buf, length) }
     }
 
-    /// `catch_write_error` (`write`) or `catch_read_error` of `code`.
-    pub(crate) fn catch_error(&self, write: bool, code: i32) -> i32 {
-        // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_catch_error(self.raw(), write, code) }
+    /// `catch_write_error`/`catch_read_error` of `code`, which are one rule.
+    pub(crate) fn catch_error(&self, code: i32) -> i32 {
+        self.with_record(0, |record| record.catch_error(code))
     }
 
     /// `recvfrom(buf, length, addr, addrlen)`.
@@ -266,8 +275,7 @@ impl Socket {
     }
 
     pub(crate) fn set_nodelay(&self, value: i32) {
-        // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_nodelay(self.raw(), value) };
+        self.with_record(false, |record| record.set_tcp_nodelay(value));
     }
 
     pub(crate) fn set_zero_copy(&self) {
@@ -336,8 +344,7 @@ impl Socket {
 
     /// The connection's `SSL *`, or null.
     pub(crate) fn ssl(&self) -> *mut openssl_sys::SSL {
-        // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_ssl(self.raw()) }.cast()
+        self.with_record(std::ptr::null_mut(), |record| record.ssl.cast())
     }
 
     pub(crate) fn ssl_encrypt(&self) {

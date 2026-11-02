@@ -18,6 +18,7 @@ php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:openssl-sys"
 libc = { version = "=0.2.191", optional = true }
 openssl-sys = { version = "=0.9.117", optional = true }
 swoole-rs-hooks = { path = "../hooks" }
+swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 
