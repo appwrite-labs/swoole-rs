@@ -30,6 +30,8 @@ use swoole_rs_zend::{
 
 static SERVER: Class = Class::new();
 static EXCEPTION: AtomicPtr<zend_class_entry> = AtomicPtr::new(ptr::null_mut());
+/// `SW_HAVE_COMPRESSION`.
+static COMPRESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// `struct HttpServerObject { HttpServer *server; zend_object std; }`.
 type Holder = Object<*mut c_void>;
@@ -115,6 +117,23 @@ unsafe extern "C" {
     fn swr_hsc_request_data(context: *mut Context, buffer: *mut Buffer, length: usize);
     fn swr_hsc_closed(connection: *mut zval) -> bool;
     fn swr_hsc_stream_reset(stream: *mut c_void);
+    fn swr_hsc_accept_callable(
+        object: *mut zval,
+        frame: *mut z::zend_execute_data,
+        out: *mut *mut c_void,
+    ) -> c_int;
+    fn swr_hsc_accept_free(callable: *mut c_void);
+    fn swr_hsc_set_protocol(socket: *mut c_void, settings: *mut zval) -> bool;
+    fn swr_hsc_strerror(code: c_int) -> *const c_char;
+    fn swr_hsc_accept_errors(errors: *mut swoole_rs_httpbindings::AcceptErrors);
+    fn swr_hsc_accept(socket: *mut c_void, callable: *mut c_void, connected: *mut bool) -> i64;
+    fn swr_hsc_sleep();
+    fn swr_hsc_setting(
+        server: *mut c_void,
+        kind: u32,
+        settings: *mut z::HashTable,
+        value: *mut zval,
+    ) -> c_int;
     fn llhttp_should_keep_alive(parser: *const crate::state::Llhttp) -> c_int;
 }
 
@@ -127,11 +146,6 @@ method_table! {
         c"start" => zim_swoole_http_server_coro_start, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_start, z::ZEND_ACC_PUBLIC;
         c"shutdown" => zim_swoole_http_server_coro_shutdown, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_shutdown, z::ZEND_ACC_PUBLIC;
     ];
-}
-
-// `start` stays C++.
-unsafe extern "C" {
-    fn zim_swoole_http_server_coro_start(frame: *mut z::zend_execute_data, value: *mut zval);
 }
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
@@ -165,8 +179,10 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
 pub unsafe extern "C" fn swr_v1_phphttp_server_coro_minit(
     exception: *mut zend_class_entry,
     short_name: bool,
+    compression: bool,
 ) -> *mut zend_class_entry {
     EXCEPTION.store(exception, Relaxed);
+    COMPRESSION.store(compression, Relaxed);
     // SAFETY: MINIT, with a static table.
     unsafe {
         SERVER.register(
@@ -197,18 +213,6 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_coro_minit(
     // SAFETY: as above.
     unsafe { declare_string(ce, c"errMsg", c"", ZEND_ACC_PUBLIC) };
     ce
-}
-
-/// The server of a `Swoole\Coroutine\Http\Server` (null before `__construct`),
-/// for `start`.
-/// # Safety
-/// `object` is a live object of the class.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_server_coro_server(
-    object: *mut zend_object,
-) -> *mut c_void {
-    // SAFETY: per the caller.
-    unsafe { *Holder::data(object) }
 }
 
 fn server_of(call: &Call) -> *mut c_void {
@@ -317,6 +321,145 @@ fn construct(call: &Call) {
     if run().is_none() {
         call.set_bool(false);
     }
+}
+
+/// `swr_hsc_setting`/`swr_hsc_accept_callable` results: done, `false`, no
+/// return value, bailed out.
+const DONE: c_int = 0;
+const REFUSED: c_int = 1;
+const BAILED: c_int = -1;
+/// `SWR_HTTPBINDINGS_SETTING_*`.
+const SETTING_LOOKUP: u32 = 1;
+const SETTING_DONE: u32 = 11;
+
+/// `start`'s `onAccept` callable and its cache (C++'s), released on drop.
+struct Accept(*mut c_void);
+
+impl Drop for Accept {
+    fn drop(&mut self) {
+        // SAFETY: the callable `swr_hsc_accept_callable` made, freed once.
+        unsafe { swr_hsc_accept_free(self.0) };
+    }
+}
+
+/// `start`: apply the settings, then accept connections, each served by
+/// `onAccept` in its own coroutine, until `shutdown`.
+fn start(call: &Call) {
+    match run_start(call) {
+        Ok(Some(done)) => call.set_bool(done),
+        Ok(None) => {}
+        Err(bailout) => bailout.defer(),
+    }
+}
+
+fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
+    use swoole_rs_httpbindings::{
+        Action, SettingsCursor, swr_v1_httpbindings_accept, swr_v1_httpbindings_settings,
+    };
+    let object = call.this();
+    let server = server_of(call);
+    // SAFETY: a live server.
+    let socket = unsafe { swr_hsc_listener(server) };
+    let mut callable = ptr::null_mut();
+    // SAFETY: `$this`, this method's frame and a local output; C++ traps the
+    // E_CORE_ERROR of an uncallable `onAccept`.
+    match unsafe { swr_hsc_accept_callable(call.this_zval(), call.frame(), &raw mut callable) } {
+        BAILED => return Err(bailout::Bailout),
+        DONE => {}
+        _ => return Ok(None),
+    }
+    let accept = Accept(callable);
+    // SAFETY: a live object; the shim converts `settings` to an array.
+    let settings =
+        unsafe { z::swr_zend_property_array(SERVER.entry(), object, c"settings".as_ptr(), 8) };
+    // SAFETY: a live socket and the settings array.
+    if !unsafe { swr_hsc_set_protocol(socket, settings) } {
+        // SAFETY: a live object of the class.
+        unsafe { update_long(SERVER.entry(), object, c"errCode", EINVAL) };
+        // SAFETY: Swoole's static message for a code.
+        let message = unsafe { swr_hsc_strerror(22) };
+        // SAFETY: as above, NUL-terminated.
+        let message = unsafe { CStr::from_ptr(message) };
+        // SAFETY: a live object of the class.
+        unsafe { value::update_string(SERVER.entry(), object, c"errMsg", message) };
+        set_running(server, false);
+        return Ok(Some(false));
+    }
+    // SAFETY: the live settings array.
+    let table = unsafe { value::table(settings) };
+    let mut cursor = SettingsCursor::default();
+    let mut found = 0;
+    let mut value = ptr::null_mut();
+    let compression = u32::from(COMPRESSION.load(Relaxed));
+    loop {
+        let mut action = Action::default();
+        // SAFETY: a local cursor and output.
+        if unsafe {
+            swr_v1_httpbindings_settings(&raw mut cursor, compression, found, &raw mut action)
+        } != 0
+        {
+            return Ok(None);
+        }
+        match action.kind {
+            SETTING_LOOKUP => {
+                // SAFETY: a live table and the action's key bytes.
+                value = unsafe {
+                    z::zend_hash_str_find(table, action.text.data.cast(), action.text.length)
+                };
+                // SAFETY: a found entry is live.
+                found = u32::from(!value.is_null() && unsafe { type_of(value) } != z::IS_NULL);
+            }
+            SETTING_DONE => break,
+            // SAFETY: a live server, the settings and the value just found.
+            kind => match unsafe { swr_hsc_setting(server, kind, table, value) } {
+                DONE => {}
+                BAILED => return Err(bailout::Bailout),
+                REFUSED => return Ok(Some(false)),
+                _ => return Ok(None),
+            },
+        }
+    }
+    set_running(server, true);
+    // SAFETY: a zeroed policy table C++ fills with the platform's errno values.
+    let mut errors = unsafe { std::mem::zeroed() };
+    // SAFETY: a local output.
+    unsafe { swr_hsc_accept_errors(&raw mut errors) };
+    while running(server) {
+        let mut connected = false;
+        // SAFETY: a live listener and the accept callable.
+        let cid = unsafe { swr_hsc_accept(socket, accept.0, &raw mut connected) };
+        let mut message = ptr::null();
+        let error = if connected {
+            0
+        } else {
+            // SAFETY: a live socket and a local output.
+            unsafe { swr_hsc_error(socket, &raw mut message) }
+        };
+        // SAFETY: the local policy table.
+        match unsafe {
+            swr_v1_httpbindings_accept(u32::from(connected), cid, error, &raw const errors)
+        } {
+            0 => {}
+            // SAFETY: a coroutine runs `start`.
+            1 => unsafe { swr_hsc_sleep() },
+            2 => {
+                set_error(object, socket);
+                break;
+            }
+            _ => {
+                let code = set_error(object, socket);
+                // SAFETY: the socket's NUL-terminated message.
+                let text = unsafe { CStr::from_ptr(message) }
+                    .to_string_lossy()
+                    .into_owned();
+                host::fatal(&format!("accept failed, Error: {text}[{code}]"));
+                // Keep-alive connections stop once the listener cannot accept.
+                set_running(server, false);
+                return Ok(Some(false));
+            }
+        }
+    }
+    Ok(Some(true))
 }
 
 /// `%s` of a ZPP string: up to its first NUL.
@@ -710,6 +853,7 @@ handlers! {
     zim_swoole_http_server_coro_handle => handle;
     zim_swoole_http_server_coro_onAccept => on_accept;
     zim_swoole_http_server_coro_shutdown => shutdown;
+    zim_swoole_http_server_coro_start => start;
 }
 
 /// `http2_server_onRequest`: an HTTP/2 stream's request, with the HTTP/1

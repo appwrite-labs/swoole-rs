@@ -110,7 +110,7 @@
     },
     {
       "path": "0015-coro-server.patch",
-      "sha256": "963c6f4e9a5c1b05a884baffc1586baefa9731a4ad3b5f7de05f8e54ef45f282",
+      "sha256": "2614c35dcd492250888bdf485277ea26804259f59be7b3af348e898615852417",
       "upstream_paths": [
         "ext-src/swoole_http_server_coro.cc"
       ]

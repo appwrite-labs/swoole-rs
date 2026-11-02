@@ -87,10 +87,10 @@ struct _zval_struct;
 struct _zend_class_entry *swr_v1_phphttp_request_minit(void);
 struct _zend_class_entry *swr_v1_phphttp_response_minit(void);
 /* Swoole\Coroutine\Http\Server (crates/phphttp/src/server_coro.rs): MINIT
- * registers it and returns the class; `start` (C++) reads the object's
- * HttpServer; the HTTP/2 session's request handler calls the dispatch. */
-struct _zend_class_entry *swr_v1_phphttp_server_coro_minit(struct _zend_class_entry *exception, bool short_name);
-void *swr_v1_phphttp_server_coro_server(struct _zend_object *object);
+ * registers it and returns the class; the HTTP/2 session's request handler
+ * calls the dispatch. */
+struct _zend_class_entry *swr_v1_phphttp_server_coro_minit(struct _zend_class_entry *exception, bool short_name,
+    bool compression);
 void swr_v1_phphttp_server_coro_http2_request(void *context, void *http1, void *server, void *stream);
 /* What it asks of swoole::coroutine::HttpServer (`server`), its coroutine
  * sockets (`sock`), a socket's read buffer (`buffer`, a swoole::String) and
@@ -133,6 +133,20 @@ void swr_hsc_http2(void *server, void *context);
 void swr_hsc_request_data(void *context, void *buffer, size_t length);
 bool swr_hsc_closed(struct _zval_struct *connection);
 void swr_hsc_stream_reset(void *stream);
+/* `start`: the `onAccept` callable (0, 1 not callable, -1 bailed out), the
+ * protocol settings, a setting by SWR_HTTPBINDINGS_SETTING_* kind (0 applied,
+ * 1 refused, 2 no return value, -1 bailed out), and accepting a connection
+ * into a new coroutine (its cid). */
+struct _zend_execute_data;
+struct _zend_array;
+int swr_hsc_accept_callable(struct _zval_struct *object, struct _zend_execute_data *frame, void **callable);
+void swr_hsc_accept_free(void *callable);
+bool swr_hsc_set_protocol(void *sock, struct _zval_struct *settings);
+const char *swr_hsc_strerror(int code);
+void swr_hsc_accept_errors(swr_v1_httpbindings_accept_errors *errors);
+int64_t swr_hsc_accept(void *sock, void *callable, bool *connected);
+void swr_hsc_sleep(void);
+int swr_hsc_setting(void *server, uint32_t kind, struct _zend_array *settings, struct _zval_struct *value);
 void *swr_v1_phphttp_context(const struct _zend_object *object);
 void swr_v1_phphttp_set_context(struct _zend_object *object, void *context);
 
