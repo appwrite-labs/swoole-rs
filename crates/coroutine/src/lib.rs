@@ -15,5 +15,3 @@ mod coroutine;
 pub use coroutine::*;
 mod stack;
 pub use stack::*;
-mod context;
-pub use context::*;

@@ -289,13 +289,7 @@ def plan(args, reports):
                    '--selected-export', selected_export / 'export.json',
                    '--native-export', native_export / 'export.json', *report('coroutine-production-stack'))
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.
-        script('coroutine-stack', 'tests/modules/coroutine/stack.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
-               '--report', reports / 'coroutine-stack.json')
-        script('coroutine-channel-state', 'tests/modules/coroutine/channel_state_gate.py',
-               '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               '--report', reports / 'coroutine-channel-state.json')
+        script('coroutine-rust-asan', 'tests/modules/coroutine/rust_asan.py', '--report', reports / 'coroutine-rust-asan.json')
         script('coroutine-compile', 'tests/modules/coroutine/compile_gate.py', '--source', ROOT / 'target/upstream/src',
                '--report', reports / 'coroutine-compile.json')
         script('coroutine-stack-compile', 'tests/modules/coroutine/compile_gate.py',
