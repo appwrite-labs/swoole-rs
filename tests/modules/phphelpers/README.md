@@ -67,8 +67,7 @@ inline bodies and 10 verbatim macros against the pinned header. Missing optional
 packages (for example libpq) keep their error but do not drop other flags. Its
 report (per-command dependency hashes, `selected_header_sha256`, the native public
 header hash) is the input for `entrypoint.py`, `facade_runtime.py`,
-`async_optional_sdk.py`, `prepare_php_benchmark.py` and
-`tests/modules/phpcoroutines/sdk.py`.
+`async_optional_sdk.py` and `prepare_php_benchmark.py`.
 
 `async_optional_sdk.py --source PINNED --sdk-report SDK.json --provider sqlite|odbc
 --output UNIQUE.json` compiles the unchanged optional SQLite or ODBC consumer TU

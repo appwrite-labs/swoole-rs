@@ -1,267 +1,455 @@
-//! System frontend path admission and platform-provided file mode selection.
+//! `Swoole\Coroutine\System` (`swoole_coroutine_system.cc`): argument
+//! parsing, validation and results in Rust; the coroutine-aware system calls
+//! stay the C++ `swoole::coroutine::System` the hooks module owns, lent as
+//! `swr_v1_phpcoroutines_system_ops`.
+use crate::host;
+use std::{
+    ffi::{CStr, c_char, c_int, c_long},
+    mem, ptr,
+    sync::OnceLock,
+};
+use swoole_rs_zend::{
+    Call, Class, E_WARNING,
+    sys::{IS_ARRAY, zend_array, zend_function_entry, zend_string, zend_value_error, zval},
+    type_of, value,
+};
+
+/// The system operations and the platform constants they take.
 #[repr(C)]
-pub(crate) struct FileConfig {
-    pub lock: i32,
-    pub append_mask: i32,
-    pub base_open: i32,
-    pub append_open: i32,
-    pub truncate_open: i32,
+pub struct SystemOps {
+    pub(crate) af_inet: c_long,
+    pub(crate) af_inet6: c_long,
+    pub(crate) sock_stream: c_long,
+    pub(crate) ipproto_tcp: c_long,
+    pub(crate) event_read: c_long,
+    sleep: unsafe extern "C" fn(f64) -> c_int,
+    read_file: unsafe extern "C" fn(*const c_char, c_long, *mut zval) -> u8,
+    write_file: unsafe extern "C" fn(*const c_char, *const c_char, usize, c_long) -> isize,
+    gethostbyname: unsafe extern "C" fn(*const c_char, usize, c_long, f64, *mut zval) -> u8,
+    clear_dns_cache: unsafe extern "C" fn(),
+    getaddrinfo: unsafe extern "C" fn(
+        *const c_char,
+        c_long,
+        c_long,
+        c_long,
+        *const c_char,
+        f64,
+        *mut zval,
+    ) -> u8,
+    statvfs: unsafe extern "C" fn(*const c_char, *mut [c_long; 11]),
+    exec: unsafe extern "C" fn(
+        *const c_char,
+        u8,
+        *mut c_int,
+        *mut c_int,
+        *mut *mut zend_string,
+    ) -> u8,
+    main_thread: unsafe extern "C" fn() -> u8,
+    wait: unsafe extern "C" fn(c_long, f64, *mut c_int, *mut c_int) -> c_long,
+    wait_signal: unsafe extern "C" fn(*const c_long, usize, f64) -> c_int,
+    convert_to_fd: unsafe extern "C" fn(*mut zval) -> c_int,
+    wait_event: unsafe extern "C" fn(c_int, c_long, f64) -> c_long,
 }
 
-#[repr(C)]
-pub(crate) struct FilePlan {
-    pub accepted: u8,
-    pub lock: i32,
-    pub open: i32,
+static OPS: OnceLock<&'static SystemOps> = OnceLock::new();
+static SYSTEM: Class = Class::new();
+
+fn ops() -> &'static SystemOps {
+    // Methods run only after MINIT stored the table.
+    OPS.get().copied().unwrap_or_else(|| std::process::abort())
 }
 
+/// MINIT: `Swoole\Coroutine\System` (`Co\System`), not instantiable.
 /// # Safety
-/// `config` is readable for this call. It carries this native platform's constants.
+/// Called once, at MINIT, with a static `PHP_FE_END`-terminated table and a
+/// static operations table.
 #[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phpcoroutines_system_file(
-    nonempty: u8,
-    flags: i64,
-    config: *const FileConfig,
-) -> FilePlan {
-    // SAFETY: per this function's `# Safety` contract, `config` is live, aligned and initialized.
-    let config = unsafe { &*config };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "flags masked by the native int lock"
-    )]
-    let lock = (flags & i64::from(config.lock)) as i32;
-    FilePlan {
-        accepted: u8::from(nonempty != 0),
-        lock,
-        open: config.base_open
-            | if flags & i64::from(config.append_mask) != 0 {
-                config.append_open
-            } else {
-                config.truncate_open
-            },
+pub unsafe extern "C" fn swr_v1_phpcoroutines_system_minit(
+    methods: *const zend_function_entry,
+    ops: *const SystemOps,
+) {
+    // SAFETY: per the caller, a static table.
+    if let Some(ops) = unsafe { ops.as_ref() } {
+        OPS.get_or_init(|| ops);
+    }
+    // SAFETY: MINIT, with the caller's table.
+    unsafe { SYSTEM.register_static(c"Swoole\\Coroutine\\System", methods) };
+    if host::flag(host::SHORTNAME) {
+        // SAFETY: MINIT, after registration.
+        unsafe { SYSTEM.alias(c"Co\\System") };
     }
 }
 
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn swr_v1_phpcoroutines_system_sleep(seconds: f64, minimum: f64) -> u8 {
-    // Preserve the original comparison, including its unordered (NaN) behavior.
-    u8::from(seconds >= minimum || seconds.is_nan() || minimum.is_nan())
+swoole_rs_zend::handlers! {
+    zim_swoole_coroutine_system_sleep => sleep;
+    zim_swoole_coroutine_system_readFile => read_file;
+    zim_swoole_coroutine_system_writeFile => write_file;
+    zif_swoole_coroutine_gethostbyname => gethostbyname;
+    zif_swoole_clear_dns_cache => clear_dns_cache;
+    zim_swoole_coroutine_system_getaddrinfo => getaddrinfo;
+    zim_swoole_coroutine_system_statvfs => statvfs;
+    zim_swoole_coroutine_system_exec => exec;
+    zim_swoole_coroutine_system_wait => wait;
+    zim_swoole_coroutine_system_waitPid => wait_pid;
+    zim_swoole_coroutine_system_waitSignal => wait_signal;
+    zim_swoole_coroutine_system_waitEvent => wait_event;
 }
 
-/// Ordered hostname/family admission; platform address-family values stay native.
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn swr_v1_phpcoroutines_system_address(
-    length: usize,
-    family: i64,
-    ipv4: i64,
-    ipv6: i64,
-) -> u32 {
-    if length == 0 {
-        1
-    } else if family != ipv4 && family != ipv6 {
-        2
-    } else {
-        0
-    }
-}
+/// `SW_TIMER_MIN_SEC`.
+const TIMER_MIN_SEC: f64 = 0.001;
 
-#[repr(C)]
-pub(crate) struct ResultState {
-    pub index: usize,
-    pub started: u8,
-}
-#[repr(C)]
-pub(crate) struct ResultPlan {
-    pub action: u32,
-    pub key: *const std::ffi::c_char,
-    pub index: usize,
-    pub value: i64,
-}
-
-/// Whole ordinary System result selection/publication order. Native payloads and
-/// platform stat fields stay native; only copied status/size facts enter Rust.
-/// # Safety
-/// For cursor kinds (4..=9), state is exclusive zero-initialized POD.
-/// For scalar kinds (0..=3), state may be null. Facts are refreshed after each
-/// requested native effect. No native payload pointer enters Rust.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phpcoroutines_system_complete(
-    kind: u32,
-    state: *mut ResultState,
-    result: i64,
-    count: usize,
-) -> ResultPlan {
-    let mut plan = ResultPlan {
-        action: 0,
-        key: std::ptr::null(),
-        index: 0,
-        value: result,
+/// `sleep(float $seconds)`.
+fn sleep(call: &Call) {
+    let Ok(seconds) = call.arity(1, 1).and_then(|()| call.double(1, 0.0)) else {
+        call.set_bool(false);
+        return;
     };
-    match kind {
-        0 => {
-            plan.action = 2;
-            plan.value = i64::from(result == 0);
-        }
-        1 => plan.action = if result != 0 { 4 } else { 1 },
-        2 => plan.action = if result < 0 { 1 } else { 3 },
-        3 => plan.action = if count == 0 { 1 } else { 4 },
-        4 | 5 => {
-            // SAFETY: per this function's `# Safety` contract, `state` is live, aligned and exclusive.
-            let state = unsafe { &mut *state };
-            if state.started == 0 {
-                state.started = 1;
-                plan.action = if kind == 4 && count == 0 { 1 } else { 5 };
-            } else if kind == 4 && state.index < count {
-                plan.action = 6;
-                plan.index = state.index;
-                state.index += 1;
-            } else if kind == 5 {
-                const KEYS: [&[u8]; 11] = [
-                    b"bsize\0",
-                    b"frsize\0",
-                    b"blocks\0",
-                    b"bfree\0",
-                    b"bavail\0",
-                    b"files\0",
-                    b"ffree\0",
-                    b"favail\0",
-                    b"fsid\0",
-                    b"flag\0",
-                    b"namemax\0",
-                ];
-                if let Some(key) = KEYS.get(state.index) {
-                    plan.action = 7;
-                    plan.index = state.index;
-                    plan.key = key.as_ptr().cast();
-                    state.index += 1;
-                }
-            }
-        }
-        6..=9 => {
-            // SAFETY: per this function's `# Safety` contract, `state` is live, aligned and exclusive.
-            let state = unsafe { &mut *state };
-            let phase = state.index;
-            state.index = phase.saturating_add(1);
-            match kind {
-                6 | 7 => match phase {
-                    0 if kind == 6 => plan.action = if result == 0 { 1 } else { 8 },
-                    0 => plan.action = if result < 0 { 9 } else { 10 },
-                    1 => plan.action = if kind == 7 && result <= 0 { 1 } else { 5 },
-                    2..=4 => {
-                        const EXEC: [&[u8]; 3] = [b"code\0", b"signal\0", b"output\0"];
-                        const WAIT: [&[u8]; 3] = [b"pid\0", b"code\0", b"signal\0"];
-                        plan.action = 7;
-                        plan.index = phase - 2;
-                        let keys = if kind == 6 { EXEC } else { WAIT };
-                        plan.key = keys
-                            .get(plan.index)
-                            .map_or(std::ptr::null(), |key| key.as_ptr().cast());
-                    }
-                    _ => {}
-                },
-                8 => match phase {
-                    0 => plan.action = if result == -1 { 13 } else { 3 },
-                    1 if result != 0 => {
-                        state.index = 3;
-                        plan.action = 11;
-                    }
-                    1 => plan.action = 14,
-                    2 if result != 0 => plan.action = 12,
-                    2 => {
-                        state.index = 4;
-                        plan.action = 15;
-                    }
-                    3 => plan.action = 15,
-                    4 => plan.action = 1,
-                    _ => {}
-                },
-                9 => match phase {
-                    0 => plan.action = if result < 0 { 17 } else { 16 },
-                    1 => plan.action = if result < 0 { 1 } else { 3 },
-                    _ => {}
-                },
-                _ => unreachable!(),
-            }
-        }
-        _ => plan.action = 1,
+    if seconds < TIMER_MIN_SEC {
+        host::fatal_error(E_WARNING, c"Timer must be greater than or equal to 0.001");
+        call.set_bool(false);
+        return;
     }
-    plan
+    // SAFETY: C++ sleeps the running coroutine.
+    call.set_bool(unsafe { (ops().sleep)(seconds) } == 0);
 }
 
-#[cfg(test)]
-mod control_tests {
-    use super::*;
-    fn next(kind: u32, state: &mut ResultState, fact: i64) -> ResultPlan {
-        unsafe { swr_v1_phpcoroutines_system_complete(kind, state, fact, 0) }
-    }
-    fn state() -> ResultState {
-        ResultState {
-            index: 0,
-            started: 0,
-        }
-    }
+/// `zend_value_error(message)`, then false.
+fn value_error(call: &Call, message: &CStr) {
+    // SAFETY: a NUL-terminated message without format directives.
+    unsafe { zend_value_error(message.as_ptr()) };
+    call.set_bool(false);
+}
 
-    #[test]
-    fn native_signal_error_short_circuit_and_fresh_final_errno() {
-        // Only -1 takes the native error path. -2 and zero are published longs.
-        for value in [-2, 0, 1, i64::from(i32::MAX)] {
-            assert_eq!(next(8, &mut state(), value).action, 3);
-        }
-        for (busy, invalid, actions) in [
-            (true, false, vec![13, 11, 15, 1]),
-            (false, true, vec![13, 14, 12, 15, 1]),
-            (false, false, vec![13, 14, 15, 1]),
-        ] {
-            let mut state = state();
-            let mut fact = -1;
-            let mut actual = Vec::new();
-            loop {
-                let plan = next(8, &mut state, fact);
-                actual.push(plan.action);
-                match plan.action {
-                    13 => fact = i64::from(busy),
-                    14 => fact = i64::from(invalid),
-                    1 => break,
-                    // Warning and final errno actions do not carry/cache an
-                    // error value; native code obtains it freshly afterward.
-                    _ => fact = 901,
-                }
-            }
-            assert_eq!(actual, actions);
-        }
+/// `readFile(string $filename, int $flag = 0)`.
+fn read_file(call: &Call) {
+    let parsed = call
+        .arity(1, 2)
+        .and_then(|()| Ok((call.path(1, b"")?, call.long(2, 0)?)));
+    let Ok((path, flags)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
+    if path.is_empty() {
+        value_error(call, c"Filename cannot be empty");
+        return;
     }
+    // SAFETY: a NUL-terminated path argument and the return slot.
+    if unsafe { (ops().read_file)(path.as_ptr().cast(), flags, call.return_value()) } == 0 {
+        call.set_bool(false);
+    }
+}
 
-    #[test]
-    fn wait_and_exec_publication_and_event_boundaries() {
-        for (kind, first, accepted, keys) in [
-            (6, 1, 8, [c"code", c"signal", c"output"]),
-            (7, -1, 9, [c"pid", c"code", c"signal"]),
-            (7, 1, 10, [c"pid", c"code", c"signal"]),
-        ] {
-            let mut state = state();
-            assert_eq!(next(kind, &mut state, first).action, accepted);
-            assert_eq!(next(kind, &mut state, 74).action, 5);
-            for (index, key) in keys.into_iter().enumerate() {
-                let field = next(kind, &mut state, 74);
-                assert_eq!(field.action, 7);
-                assert_eq!(field.index, index);
-                assert_eq!(unsafe { std::ffi::CStr::from_ptr(field.key) }, key);
-            }
-            assert_eq!(next(kind, &mut state, 74).action, 0);
-        }
-        assert_eq!(next(6, &mut state(), 0).action, 1);
-        for pid in [0, -1] {
-            let mut state = state();
-            assert_eq!(next(7, &mut state, -1).action, 9);
-            assert_eq!(next(7, &mut state, pid).action, 1);
-        }
-        assert_eq!(next(9, &mut state(), -1).action, 17);
-        for result in [-1, 0, i64::MAX] {
-            let mut state = state();
-            assert_eq!(next(9, &mut state, 0).action, 16);
-            let plan = next(9, &mut state, result);
-            assert_eq!(plan.action, if result < 0 { 1 } else { 3 });
-            assert_eq!(plan.value, result);
-        }
+/// `writeFile(string $filename, string $fileContent, int $flags = 0)`.
+fn write_file(call: &Call) {
+    let parsed = call
+        .arity(2, 3)
+        .and_then(|()| Ok((call.path(1, b"")?, call.string(2, b"")?, call.long(3, 0)?)));
+    let Ok((path, data, flags)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
+    if path.is_empty() {
+        value_error(call, c"Filename cannot be empty");
+        return;
+    }
+    // SAFETY: a NUL-terminated path and the data's bytes.
+    let written = unsafe {
+        (ops().write_file)(
+            path.as_ptr().cast(),
+            data.as_ptr().cast(),
+            data.len(),
+            flags,
+        )
+    };
+    if written < 0 {
+        call.set_bool(false);
+    } else {
+        call.set_long(i64::try_from(written).unwrap_or(i64::MAX));
+    }
+}
+
+fn family_ok(family: c_long) -> bool {
+    family == ops().af_inet || family == ops().af_inet6
+}
+
+/// `gethostbyname(string $domain, int $family = AF_INET, float $timeout = -1)`.
+fn gethostbyname(call: &Call) {
+    host::current_safe();
+    let parsed = call.arity(1, 3).and_then(|()| {
+        Ok((
+            call.string(1, b"")?,
+            call.long(2, ops().af_inet)?,
+            call.double(3, -1.0)?,
+        ))
+    });
+    let Ok((domain, family, timeout)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
+    if domain.is_empty() {
+        host::fatal_error(E_WARNING, c"domain name is empty");
+        call.set_bool(false);
+        return;
+    }
+    if !family_ok(family) {
+        host::fatal_error(
+            E_WARNING,
+            c"unknown protocol family, must be AF_INET or AF_INET6",
+        );
+        call.set_bool(false);
+        return;
+    }
+    // SAFETY: the domain's bytes and the return slot.
+    let found = unsafe {
+        (ops().gethostbyname)(
+            domain.as_ptr().cast(),
+            domain.len(),
+            family,
+            timeout,
+            call.return_value(),
+        )
+    };
+    if found == 0 {
+        call.set_bool(false);
+    }
+}
+
+/// `swoole_clear_dns_cache()`.
+fn clear_dns_cache(_: &Call) {
+    // SAFETY: C++ clears the cache.
+    unsafe { (ops().clear_dns_cache)() };
+}
+
+/// `getaddrinfo(string $domain, int $family = AF_INET, int $socktype = SOCK_STREAM,
+/// int $protocol = IPPROTO_TCP, ?string $service = null, float $timeout = -1)`.
+fn getaddrinfo(call: &Call) {
+    let ops = ops();
+    let parsed = call.arity(1, 6).and_then(|()| {
+        Ok((
+            call.string(1, b"")?,
+            call.long(2, ops.af_inet)?,
+            call.long(3, ops.sock_stream)?,
+            call.long(4, ops.ipproto_tcp)?,
+            call.string(5, b"\0")?,
+            call.double(6, -1.0)?,
+        ))
+    });
+    let Ok((host_name, family, socktype, protocol, service, timeout)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
+    if host_name.is_empty() {
+        host::fatal_error(E_WARNING, c"hostname is empty");
+        call.set_bool(false);
+        return;
+    }
+    if !family_ok(family) {
+        host::fatal_error(
+            E_WARNING,
+            c"unknown protocol family, must be AF_INET or AF_INET6",
+        );
+        call.set_bool(false);
+        return;
+    }
+    // SAFETY: NUL-terminated strings and the return slot.
+    let found = unsafe {
+        (ops.getaddrinfo)(
+            host_name.as_ptr().cast(),
+            family,
+            socktype,
+            protocol,
+            service.as_ptr().cast(),
+            timeout,
+            call.return_value(),
+        )
+    };
+    if found == 0 {
+        call.set_bool(false);
+    }
+}
+
+/// `statvfs(string $path)`.
+fn statvfs(call: &Call) {
+    let Ok(path) = call.arity(1, 1).and_then(|()| call.path(1, b"")) else {
+        call.set_bool(false);
+        return;
+    };
+    if path.is_empty() {
+        value_error(call, c"Path cannot be empty");
+        return;
+    }
+    let mut fields: [c_long; 11] = [0; 11];
+    // SAFETY: a NUL-terminated path and a writable array.
+    unsafe { (ops().statvfs)(path.as_ptr().cast(), &raw mut fields) };
+    call.set_array();
+    let names = [
+        c"bsize", c"frsize", c"blocks", c"bfree", c"bavail", c"files", c"ffree", c"favail",
+        c"fsid", c"flag", c"namemax",
+    ];
+    for (name, value) in names.into_iter().zip(fields) {
+        call.add_assoc_long(name, value);
+    }
+}
+
+/// `exec(string $command, bool $get_error_stream = false)`.
+fn exec(call: &Call) {
+    let parsed = call
+        .arity(1, 2)
+        .and_then(|()| Ok((call.string(1, b"")?, call.bool(2, false)?)));
+    let Ok((command, errors)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
+    let (mut code, mut signal, mut output) = (0, 0, ptr::null_mut());
+    // SAFETY: a NUL-terminated command and writable outputs.
+    let ran = unsafe {
+        (ops().exec)(
+            command.as_ptr().cast(),
+            u8::from(errors),
+            &raw mut code,
+            &raw mut signal,
+            &raw mut output,
+        )
+    };
+    if ran == 0 {
+        call.set_bool(false);
+        return;
+    }
+    call.set_array();
+    call.add_assoc_long(c"code", code.into());
+    call.add_assoc_long(c"signal", signal.into());
+    // SAFETY: all-zero is IS_UNDEF, then the output string.
+    let mut data: zval = unsafe { mem::zeroed() };
+    // SAFETY: the zval takes the new string's reference.
+    unsafe { value::set_str(&raw mut data, output) };
+    // SAFETY: the return array takes the string.
+    unsafe {
+        swoole_rs_zend::sys::add_assoc_zval_ex(
+            call.return_value(),
+            c"output".as_ptr(),
+            6,
+            &raw mut data,
+        );
+    }
+}
+
+/// `SW_MUST_BE_MAIN_THREAD()`: off the main thread, the method returns true.
+fn main_thread(call: &Call) -> bool {
+    // SAFETY: C++ checks the thread and sets the last error.
+    let main = unsafe { (ops().main_thread)() } != 0;
+    if !main {
+        call.set_bool(true);
+    }
+    main
+}
+
+/// `swoole_coroutine_system_wait`.
+fn wait_for(call: &Call, pid: c_long, timeout: f64) {
+    host::current_safe();
+    let (mut code, mut signal) = (0, 0);
+    // SAFETY: C++ waits in the running coroutine.
+    let pid = unsafe { (ops().wait)(pid, timeout, &raw mut code, &raw mut signal) };
+    if pid <= 0 {
+        call.set_bool(false);
+        return;
+    }
+    call.set_array();
+    call.add_assoc_long(c"pid", pid);
+    call.add_assoc_long(c"code", code.into());
+    call.add_assoc_long(c"signal", signal.into());
+}
+
+/// `wait(float $timeout = -1)`.
+fn wait(call: &Call) {
+    if !main_thread(call) {
+        return;
+    }
+    let Ok(timeout) = call.arity(0, 1).and_then(|()| call.double(1, -1.0)) else {
+        call.set_bool(false);
+        return;
+    };
+    wait_for(call, -1, timeout);
+}
+
+/// `waitPid(int $pid, float $timeout = -1)`.
+fn wait_pid(call: &Call) {
+    if !main_thread(call) {
+        return;
+    }
+    let parsed = call
+        .arity(1, 2)
+        .and_then(|()| Ok((call.long(1, 0)?, call.double(2, -1.0)?)));
+    let Ok((pid, timeout)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
+    wait_for(call, pid, timeout);
+}
+
+/// `waitSignal(int|array $signals, float $timeout = -1)`.
+fn wait_signal(call: &Call) {
+    if !main_thread(call) {
+        return;
+    }
+    let Ok(timeout) = call.arity(1, 2).and_then(|()| call.double(2, -1.0)) else {
+        call.set_bool(false);
+        return;
+    };
+    let given = call.zval(1);
+    let mut signals = Vec::new();
+    // SAFETY: a passed argument.
+    if unsafe { type_of(given) } == IS_ARRAY {
+        // SAFETY: an array argument.
+        let table: *const zend_array = unsafe { value::table(given) };
+        let mut each = |item: *mut zval| {
+            // SAFETY: a live element.
+            signals.push(unsafe { value::get_long(item) });
+            true
+        };
+        // SAFETY: the array is live and the closure does not modify it.
+        unsafe { swoole_rs_zend::each_value(table, &mut each) };
+    } else {
+        // SAFETY: a passed argument.
+        signals.push(unsafe { value::get_long(given) });
+    }
+    if swoole_rs_zend::bailout::pending() {
+        return;
+    }
+    // Held as a raw box while the coroutine waits, so no frame here owns a drop
+    // if a fatal error ends the wait.
+    let signals = Box::into_raw(signals.into_boxed_slice());
+    // SAFETY: C++ waits for one of the signals; on failure it warns and sets errno.
+    let signo = unsafe { (ops().wait_signal)(signals.cast::<c_long>(), signals.len(), timeout) };
+    // SAFETY: boxed above, not used again.
+    drop(unsafe { Box::from_raw(signals) });
+    if signo == -1 {
+        call.set_bool(false);
+    } else {
+        call.set_long(signo.into());
+    }
+}
+
+/// `waitEvent(mixed $socket, int $events = SWOOLE_EVENT_READ, float $timeout = -1)`.
+fn wait_event(call: &Call) {
+    let parsed = call
+        .arity(1, 3)
+        .and_then(|()| Ok((call.long(2, ops().event_read)?, call.double(3, -1.0)?)));
+    let Ok((events, timeout)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
+    // SAFETY: a passed argument.
+    let fd = unsafe { (ops().convert_to_fd)(call.zval(1)) };
+    if fd < 0 {
+        host::fatal_error(E_WARNING, c"unknown fd type");
+        call.set_bool(false);
+        return;
+    }
+    // SAFETY: C++ waits on the descriptor.
+    let events = unsafe { (ops().wait_event)(fd, events, timeout) };
+    if events < 0 {
+        call.set_bool(false);
+    } else {
+        call.set_long(events);
     }
 }

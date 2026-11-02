@@ -3,10 +3,12 @@
 //! `Server::get_worker_by_pid`'s event-worker scan and user-map branch and the
 //! `kill_event_workers` / `kill_user_workers` loops. Native registers a worker when
 //! it spawns and unregisters it when it is reaped or detached; fork, signalling and
-//! every `Worker` field stay native. Task workers live in the task pool, not here,
-//! and the detached-process set stays C++ for now (see the follow-ups).
+//! every `Worker` field stay native. A `ProcessPool` (the task pool, or a
+//! `Swoole\Process\Pool`) keeps its own registry of its workers. Each registry also
+//! holds the detached set: pids of workers that asked to be replaced before exiting,
+//! which the manager reaps without restarting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_int, c_void};
 
 // `category` is an opaque tag the registry only groups by; its values are the
@@ -22,6 +24,7 @@ struct Entry {
 #[derive(Default)]
 pub struct WorkerRegistry {
     workers: HashMap<c_int, Entry>,
+    detached: HashSet<c_int>,
 }
 
 /// Create an empty registry. Native frees it with [`swr_v1_process_worker_registry_free`].
@@ -89,6 +92,37 @@ pub unsafe extern "C" fn swr_v1_process_worker_registry_lookup(
         .workers
         .get(&pid)
         .map_or(std::ptr::null_mut(), |entry| entry.worker)
+}
+
+/// Detach the worker at `pid`: it has been replaced and exits on its own, so it
+/// leaves the lookup and its exit is later reaped by
+/// [`swr_v1_process_worker_registry_reap_detached`].
+///
+/// # Safety
+/// `registry` is a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_detach(
+    registry: *mut WorkerRegistry,
+    pid: c_int,
+) {
+    // SAFETY: the caller lends a live registry handle.
+    let registry = unsafe { &mut *registry };
+    registry.workers.remove(&pid);
+    registry.detached.insert(pid);
+}
+
+/// Reap a detached worker's exit. Returns false when `pid` was never detached.
+///
+/// # Safety
+/// `registry` is a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_reap_detached(
+    registry: *mut WorkerRegistry,
+    pid: c_int,
+) -> bool {
+    // SAFETY: the caller lends a live registry handle.
+    let registry = unsafe { &mut *registry };
+    registry.detached.remove(&pid)
 }
 
 /// Terminate every worker of `category`: send `signo` to each, then wait for each.
@@ -224,6 +258,22 @@ mod tests {
             swr_v1_process_worker_registry_free(reg);
         }
         assert_eq!(WARNED.with(|w| w.borrow().clone()), vec![30]);
+    }
+
+    #[test]
+    fn detached_workers_leave_the_lookup_and_are_reaped_once() {
+        let reg = registry();
+        let mut w = 0u8;
+        let p = std::ptr::from_mut(&mut w).cast::<c_void>();
+        unsafe {
+            swr_v1_process_worker_registry_register(reg, 40, p, CATEGORY_EVENT);
+            swr_v1_process_worker_registry_detach(reg, 40);
+            assert!(swr_v1_process_worker_registry_lookup(reg, 40).is_null());
+            assert!(!swr_v1_process_worker_registry_reap_detached(reg, 41));
+            assert!(swr_v1_process_worker_registry_reap_detached(reg, 40));
+            assert!(!swr_v1_process_worker_registry_reap_detached(reg, 40));
+            swr_v1_process_worker_registry_free(reg);
+        }
     }
 
     #[test]

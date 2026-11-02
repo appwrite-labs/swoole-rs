@@ -26,10 +26,7 @@ ASan stack-switch warnings yield `warned`, not `passed`. On macOS pass
 python3 tests/modules/coroutine/compile_gate.py --source PINNED_TREE [--timing] [--stack-usage] \
   [--backend asm|ucontext|thread] [--standard c++14|c++17] --report OUT.json
 python3 tests/modules/coroutine/channel_state_gate.py --source PINNED_TREE [--archive ARCHIVE] --report OUT.json
-python3 tests/modules/coroutine/channel_state_sdk.py --source PINNED_TREE --sdk-export SELECTED/export.json \
-  --native-export NATIVE/export.json [--backend B] --report OUT.json
-python3 tests/modules/coroutine/{tokens,stack,timing,scheduler}.py --source PINNED_TREE --archive ARCHIVE --sanitize --report OUT.json
-python3 tests/modules/coroutine/{creation,entry}.py --source PINNED_TREE --archive ARCHIVE --report OUT.json
+python3 tests/modules/coroutine/stack.py --source PINNED_TREE --archive ARCHIVE --sanitize --report OUT.json
 python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --source-ref REF \
   --selected-export SELECTED/export.json --native-export NATIVE/export.json --output OUT.json
 ```
@@ -38,22 +35,15 @@ python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --sourc
   `context` and `thread_context` translation units; the disabled overlay must
   fail closed with its guard message.
 - `channel_state_gate.py` runs the Rust unit tests (ordinary and with Rust ASan),
-  stages the current overlays, runs `tokens.py`, `creation.py` and
-  `entry.py`, and runs the C11/C++ ABI fixtures (`tokens.c`,
-  `channel_state.c`, `status.c`, `context_cells.c`, `identity.c`, `creation.c`,
-  `entry.c`, `swap.c`, `bailout.c`).
-- `channel_state_sdk.py` compiles five complete core/PHP translation units in
-  native, disabled, M06-only and combined SDK profiles under C++14/17 (30 rows),
-  checks Rust imports in each object, and compares Channel/Coroutine/Context
-  layouts. The disabled preprocessed classes must equal native.
-- `tokens.py` (Channel queue storage), `stack.py` (stack markers), `timing.py`,
-  and `scheduler.py` compare native vs selected source fragments on inert metadata.
-  `--rust-instrumented` (Linux with `--sanitize` only) also requires Rust ASan
-  imports in the archive.
-- `creation.py` and `entry.py` compare complete pinned vs selected
-  registration and entry-wrapper bodies with inert effects. The coroutine map
-  itself (`Coroutine::coroutines`, `print_list`, lookups) is upstream's
-  `std::unordered_map`: its iteration order is unspecified upstream (#357).
+  stages the current overlays and runs the C11 ABI fixture `context_cells.c`.
+- `stack.py` (stack markers) compares native vs selected source fragments on
+  inert metadata. `--rust-instrumented` (Linux with `--sanitize` only) also
+  requires Rust ASan imports in the archive.
+- The scheduler, coroutine state and Channel (crates/coroutine) are
+  covered by its Rust unit tests and, through real context switches, by
+  `core.py`'s upstream GoogleTests and the coroutine PHPT families. The
+  coroutine map (`Coroutine::coroutines`, `print_list`, lookups) stays
+  upstream's `std::unordered_map`: `Coroutine::list()` exposes its order (#357).
 - `production_stack.py` builds the Context constructor/destructor/query into a
   private PHP addon against each engine's SDK and checks marker observations.
 
@@ -75,11 +65,7 @@ verifies the prepared binary/library hashes and runs alternating timed trials.
   native SIGSEGV in `_setcontext`. Assembly contexts pass on macOS and Linux.
 - `production_stack.cc` still models the old protected Context fields and direct
   imports, so it does not match the current overlays.
-- `channel_state_sdk.py --backend ucontext` fails on the native unused-`sp`
-  `-Werror` warning.
 - Optional thread-context is unsupported; `core.py` rejects a config defining
   `SW_USE_THREAD_CONTEXT`.
-- Not covered: real Coroutine creation/switching through Rust paths, callbacks,
-  lifetime and allocation failure, ZTS, Linux runtime, and performance.
 
 The C ABI contract is [native/coroutine/contract.md](../../../native/coroutine/contract.md).

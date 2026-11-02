@@ -11,28 +11,19 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from ordered_gate import ROOT,PIN,block
-from poll_snapshot import digest
+from ordered_gate import ROOT,PIN,block,hybrid
 sys.path.insert(0,str(ROOT))
 from tools.harness import run_isolated
 from tools.harness import run_compiler
 from tools.build_upstream import require_build_space
-from tools.build_hybrid import apply_patch_verified
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True)
 p.add_argument('--report',type=Path,required=True);p.add_argument('--sanitize',action='store_true');a=p.parse_args()
 if a.report.exists():raise ValueError('Choose a new receipt path')
-report=dict(scope=__doc__,pin=PIN,patch_application=[],results=[],commands=[],passed=False)
+report=dict(scope=__doc__,pin=PIN,results=[],commands=[],passed=False)
 with tempfile.TemporaryDirectory(prefix='swr-initialize-') as tmp:
-    t=Path(tmp);m=ROOT/'migration/patches/reactor/manifest.json';entries=json.loads(m.read_text())['patches'];original={}
-    for e in entries:
-        for name in e['upstream_paths']:
-            if name not in original:
-                data=subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name]);original[name]=data.decode();path=t/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
-    for e in entries:
-        patch=m.parent/e['path']
-        if digest(patch)!=e['sha256']:raise ValueError('Overlay checksum differs')
-        report['patch_application'].append(apply_patch_verified(t,patch,e['upstream_paths'],e['sha256']))
+    t=Path(tmp);selected_tree,abi=hybrid(a.archive);report['hybrid_tree']=str(selected_tree)
+    original={name:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name]).decode() for name in ['include/swoole_reactor.h','src/reactor/base.cc']}
     header=original['include/swoole_reactor.h']
     enums='\n'.join(block(header,header.index('enum '+name))[0]+';' for name in ['Type','EndCallback','ExitCondition'])
     cls='''class Reactor {public:ENUMS
@@ -51,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix='swr-initialize-') as tmp:
     (t/'initialize-class.inc').write_text(cls)
     try:
         for variant in ['original','selected']:
-            base=original['src/reactor/base.cc'] if variant=='original' else (t/'src/reactor/base.cc').read_text()
+            base=original['src/reactor/base.cc'] if variant=='original' else (selected_tree/'src/reactor/base.cc').read_text()
             helpers=''
             if variant=='selected' and 'static void swr_reactor_run_defer(' in base:
                 helpers='\n'.join(block(base,base.index(sig))[0] for sig in ['static void swr_reactor_run_defer(','static void swr_reactor_run_task(','static void swr_reactor_try_exit(','static bool swr_reactor_exit_predicate('])+'\n'
@@ -61,7 +52,7 @@ with tempfile.TemporaryDirectory(prefix='swr-initialize-') as tmp:
             for caps in range(4):
                 for trim in range(2):
                     label=f'{variant}-{caps}-{trim}';binary=t/label
-                    cmd=['c++','-std=c++14','-O1','-g','-I'+str(t),'-I'+str(ROOT/'native/reactor'),str(ROOT/'tests/modules/reactor/initialize.cc'),str(a.archive.resolve()),'-lpthread','-o',str(binary)]
+                    cmd=['c++','-std=c++14','-O1','-g','-I'+str(t),abi,str(ROOT/'tests/modules/reactor/initialize.cc'),str(a.archive.resolve()),'-lpthread','-o',str(binary)]
                     if caps&1:cmd+=['-DHAVE_EPOLL']
                     if caps&2:cmd+=['-DHAVE_KQUEUE']
                     if trim:cmd+=['-DSW_USE_MALLOC_TRIM']

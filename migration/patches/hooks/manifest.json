@@ -24,6 +24,28 @@
       "upstream_paths": [
         "ext-src/swoole_runtime.cc"
       ]
+    },
+    {
+      "path": "0003-socket-streams.patch",
+      "sha256": "70a91ebe3b8ab39c22d927092caf454035769d1a01c30a263e0e358086f6dae8",
+      "upstream_paths": [
+        "ext-src/swoole_runtime.cc"
+      ]
+    },
+    {
+      "path": "0004-stream-select.patch",
+      "sha256": "3fc15947321645d56feea022efdf93952b1ac2b6bdb9db46350efbe4bf67c430",
+      "upstream_paths": [
+        "ext-src/swoole_runtime.cc"
+      ]
+    },
+    {
+      "path": "0005-coroutine-socket.patch",
+      "sha256": "7c0de43c3e86edf33d6c37cad912179343874c3d916c2f1a758f13eab15eef4d",
+      "upstream_paths": [
+        "include/swoole_coroutine_socket.h",
+        "src/coroutine/socket.cc"
+      ]
     }
   ]
 }

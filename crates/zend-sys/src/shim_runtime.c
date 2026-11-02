@@ -106,3 +106,34 @@ void ZEND_FASTCALL swr_zend_runtime_unsupported(INTERNAL_FUNCTION_PARAMETERS) {
     (void) return_value;
     zend_error(E_WARNING, "%s() is not supported in Swoole coroutines", get_active_function_name());
 }
+
+int swr_zend_runtime_select_args(zend_execute_data *execute_data,
+                                 zval **read,
+                                 zval **write,
+                                 zval **except,
+                                 zend_long *seconds,
+                                 bool *seconds_null,
+                                 zend_long *micros,
+                                 bool *micros_null) {
+    ZEND_PARSE_PARAMETERS_START(4, 5)
+    Z_PARAM_ARRAY_EX2(*read, 1, 1, 1)
+    Z_PARAM_ARRAY_EX2(*write, 1, 1, 1)
+    Z_PARAM_ARRAY_EX2(*except, 1, 1, 1)
+    Z_PARAM_LONG_OR_NULL(*seconds, *seconds_null)
+    Z_PARAM_OPTIONAL
+    Z_PARAM_LONG_OR_NULL(*micros, *micros_null)
+    ZEND_PARSE_PARAMETERS_END_EX(return 0);
+    return 1;
+}
+
+void swr_zend_runtime_env_lock(bool lock) {
+#ifdef ZTS
+    if (lock) {
+        tsrm_env_lock();
+    } else {
+        tsrm_env_unlock();
+    }
+#else
+    (void) lock;
+#endif
+}

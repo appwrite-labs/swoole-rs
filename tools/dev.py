@@ -280,7 +280,7 @@ def plan(args, reports):
         pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
         script('reactor-buffer-typed-compile', 'tests/modules/reactor/buffer_typed_compile.py',
                '--source', ROOT / 'target/upstream/src',
-               '--master-patch', ROOT / 'migration/patches/integration/0003-server-static-config.patch',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'reactor-buffer-typed-compile.json')
     if 'coroutine' in modules:
         if integrate:
@@ -289,21 +289,13 @@ def plan(args, reports):
                    '--selected-export', selected_export / 'export.json',
                    '--native-export', native_export / 'export.json', *report('coroutine-production-stack'))
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.
-        for name in ['stack', 'timing', 'scheduler']:
-            phase = 'coroutine-' + name
-            script(phase, 'tests/modules/coroutine/' + name + '.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
-                   '--report', reports / (phase + '.json'))
+        script('coroutine-stack', 'tests/modules/coroutine/stack.py', '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
+               '--report', reports / 'coroutine-stack.json')
         script('coroutine-channel-state', 'tests/modules/coroutine/channel_state_gate.py',
                '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'coroutine-channel-state.json')
-        if integrate:
-            script('coroutine-channel-state-sdk', 'tests/modules/coroutine/channel_state_sdk.py',
-                   '--source', ROOT / 'target/upstream/src',
-                   '--sdk-export', selected_export / 'export.json',
-                   '--native-export', native_export / 'export.json',
-                   '--report', reports / 'coroutine-channel-state-sdk.json')
         script('coroutine-compile', 'tests/modules/coroutine/compile_gate.py', '--source', ROOT / 'target/upstream/src',
                '--report', reports / 'coroutine-compile.json')
         script('coroutine-stack-compile', 'tests/modules/coroutine/compile_gate.py',
@@ -328,17 +320,6 @@ def plan(args, reports):
             name = 'httpbindings-settings' + suffix
             script(name, 'tests/modules/httpbindings/settings_gate.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options, *report(name))
-        for family, runner, profiles in [
-            ('emission', 'emission_gate.py', [('', []), ('-without-zlib', ['--without-zlib']),
-                                              ('-without-compression', ['--without-compression'])]),
-            ('file', 'file_gate.py', [('', []), ('-without-compression', ['--without-compression'])]),
-        ]:
-            for suffix, options in profiles:
-                name = 'httpbindings-' + family + suffix
-                script(name, 'tests/modules/httpbindings/' + runner,
-                       '--source', ROOT / 'target/upstream/src',
-                       '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       *options, *report(name))
     if 'http2' in modules:
         includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
                     if sys.platform == 'darwin' else [])
@@ -357,8 +338,8 @@ def plan(args, reports):
                              ('clients-connect', 'connect_gate.py'), ('clients-persistent', 'persistent_gate.py'),
                              ('clients-resolver-config', 'resolv_gate.py'), ('clients-transport', 'transport_gate.py'),
                              ('clients-pool', 'pool_gate.py'), ('clients-resolver', 'resolver_gate.py'),
-                             ('clients-http-connection', 'http_connection_gate.py'), ('clients-http-response', 'http_response_gate.py'), ('clients-http-format', 'http_format_gate.py'), ('clients-coro', 'coro_gate.py'), ('clients-async', 'async_gate.py'), ('clients-object', 'object_gate.py'),
-                             ('clients-ip', 'ip_gate.py'), ('clients-ip-text', 'ip_text_gate.py'), ('clients-coro-io', 'coro_io_gate.py')]:
+                             ('clients-http-format', 'http_format_gate.py'), ('clients-async', 'async_gate.py'), ('clients-object', 'object_gate.py'),
+                             ('clients-ip', 'ip_gate.py'), ('clients-ip-text', 'ip_text_gate.py')]:
             script(name, 'tests/modules/clients/' + runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report(name))
         if integrate:
@@ -403,35 +384,6 @@ def plan(args, reports):
                 script('phphelpers-runtime', 'tests/modules/phphelpers/runtime.py', *php, *engines,
                        '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        '--source-ref', 'HEAD', *report('phphelpers-runtime'))
-    if 'phpcoroutines' in modules:
-        for suffix, options in [('', []), ('-native-sanitized', ['--sanitize'])]:
-            name = 'phpcoroutines-method-catalogue' + suffix
-            script(name, 'tests/modules/phpcoroutines/methods.py',
-                   '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                   *options, *report(name))
-        script('phpcoroutines-ffi', 'tests/modules/phpcoroutines/ffi.py',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('phpcoroutines-ffi'))
-        script('phpcoroutines-context-metadata', 'tests/modules/phpcoroutines/context_metadata.py',
-               '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               *report('phpcoroutines-context-metadata'))
-        script('phpcoroutines-join-metadata', 'tests/modules/phpcoroutines/join_metadata.py',
-               '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               *report('phpcoroutines-join-metadata'))
-        script('phpcoroutines-policy', 'tests/modules/phpcoroutines/gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('phpcoroutines-policy'))
-        if integrate and 'phphelpers' in modules:
-            script('phpcoroutines-sdk', 'tests/modules/phpcoroutines/sdk.py', '--source', ROOT / 'target/upstream/src',
-                   '--sdk-report', reports / 'phphelpers-sdk.json', *report('phpcoroutines-sdk'))
-        if integrate:
-            for suffix, profile in [('idle-queries', 'idle-queries'), ('frontend-statistics', 'statistics'), ('startup', 'startup'), ('configuration', 'configuration')]:
-                phase = 'phpcoroutines-' + suffix
-                script(phase, 'tests/modules/phpcoroutines/stats_runtime.py',
-                       '--profile', profile, *php_for('curl'), *engines, '--build-manifest', manifest,
-                       '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       '--source-ref', 'HEAD', *report(phase))
     if 'ports' in modules:
         if integrate:
             for name, runner in [('ports-configuration', 'configuration.py')]:

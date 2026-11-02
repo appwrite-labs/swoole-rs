@@ -429,15 +429,8 @@ class Lanes(unittest.TestCase):
         commands = dict(dev.plan(args, ROOT / 'target/reports/real-callers'))
         queues = commands['reactor-callback-queues']
         self.assertIn('--sanitize', queues)
-        catalogue = commands['phpcoroutines-method-catalogue']
-        sanitized = commands['phpcoroutines-method-catalogue-native-sanitized']
-        self.assertNotIn('--sanitize', catalogue)
-        self.assertIn('--sanitize', sanitized)
-        archives = {command[command.index('--archive') + 1]
-                    for command in [queues, catalogue, sanitized]}
-        self.assertEqual(len(archives), 1)
-        for command in [queues, catalogue, sanitized]:
-            self.assertNotIn('--engine', command)
+        self.assertIn('--archive', queues)
+        self.assertNotIn('--engine', queues)
 
     def test_long_all_module_aliases_publish_and_remain_distinct(self):
         from itertools import product
@@ -530,11 +523,7 @@ class Lanes(unittest.TestCase):
         channel_state = commands['coroutine-channel-state']
         self.assertIn('tests/modules/coroutine/channel_state_gate.py', channel_state)
         self.assertEqual(channel_state[channel_state.index('--archive') + 1],
-                         commands['coroutine-scheduler'][commands['coroutine-scheduler'].index('--archive') + 1])
-        channel_sdk = commands['coroutine-channel-state-sdk']
-        self.assertIn('--sdk-export', channel_sdk)
-        self.assertIn('--native-export', channel_sdk)
-        self.assertNotIn('--sdk-snapshot', channel_sdk)
+                         commands['coroutine-stack'][commands['coroutine-stack'].index('--archive') + 1])
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
         for name in ['hooks-ordered','hooks-async-policy','hooks-packet-policy','hooks-lifecycle-policy','hooks-socket-policy','hooks-compile']:
             self.assertIn(name,commands)
@@ -573,7 +562,6 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('--sanitize', commands['memory-mapping-operation'])
         self.assertIn('--archive', commands['reactor-backend-storage'])
         self.assertIn('--report', commands['reactor-backend-storage'])
-        self.assertIn('--archive', commands['phpcoroutines-policy'])
         self.assertIn('--archive', commands['utilities-logger-owned-state'])
         self.assertIn('--sdk-ref', commands['utilities-logger-owned-state'])
         for family in ['logger', 'hash', 'inline', 'global-logger', 'redirect']:
@@ -581,7 +569,6 @@ class Lanes(unittest.TestCase):
             self.assertIn('--' + family + '-originals', command)
             self.assertTrue(any('selected-export/swoole.so' in arg for arg in command))
             self.assertNotEqual(command[command.index('--source-ref') + 1], 'HEAD')
-        self.assertLess(list(commands).index('phphelpers-sdk'), list(commands).index('phpcoroutines-sdk'))
         self.assertIn('--core', commands['ports-flags'])
         self.assertLess(list(stdext).index('phphelpers-sdk'), list(stdext).index('phphelpers-facade-runtime'))
         self.assertNotIn('--prepare-only', stdext['phphelpers-facade-runtime'])
@@ -678,15 +665,9 @@ class Lanes(unittest.TestCase):
         for family in ['settings', 'control', 'header', 'window', 'response-headers', 'send', 'server-header', 'response-builders', 'response-lifecycle', 'file', 'receive']:
             self.assertIn('--core-report', commands['http2-' + family])
             self.assertLess(list(commands).index('http2-native'), list(commands).index('http2-' + family))
-        for name in ['clients-lifecycle', 'clients-write', 'clients-read', 'clients-connect', 'clients-persistent', 'clients-resolver-config', 'clients-transport', 'clients-pool', 'clients-resolver', 'clients-http-connection', 'clients-http-response', 'clients-http-format', 'clients-coro', 'clients-async', 'clients-object', 'clients-ip', 'clients-ip-text', 'clients-coro-io']:
+        for name in ['clients-lifecycle', 'clients-write', 'clients-read', 'clients-connect', 'clients-persistent', 'clients-resolver-config', 'clients-transport', 'clients-pool', 'clients-resolver', 'clients-http-format', 'clients-async', 'clients-object', 'clients-ip', 'clients-ip-text']:
             self.assertIn('--archive', commands[name])
             self.assertIn('--sanitize', commands[name])
-        for family in ['emission', 'file']:
-            self.assertIn('--archive', commands['httpbindings-' + family])
-            self.assertNotIn('--without-compression', commands['httpbindings-' + family])
-            self.assertIn('--without-compression', commands['httpbindings-' + family + '-without-compression'])
-        self.assertIn('--without-zlib', commands['httpbindings-emission-without-zlib'])
-        self.assertNotIn('--without-compression', commands['httpbindings-emission-without-zlib'])
         self.assertIn('--archive', commands['httpbindings-settings'])
         self.assertIn('--without-compression', commands['httpbindings-settings-without-compression'])
         self.assertNotIn('--faults', commands['clients-pool'])

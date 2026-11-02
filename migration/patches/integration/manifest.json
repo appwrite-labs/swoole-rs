@@ -25,7 +25,7 @@
     },
     {
       "path": "0004-worker-registry.patch",
-      "sha256": "eacdaec3fc3edba6ce887144094f1db9a7999733541438b150b216a373446f6b",
+      "sha256": "08db94739fd134c08219009159e448c33b1fb0e7c3d647b27765b7e2fc79ee6c",
       "upstream_paths": [
         "include/swoole_server.h",
         "src/server/master.cc"

@@ -6,19 +6,20 @@ network or performance probes.
 """
 import argparse,io,json,subprocess,sys,tarfile,tempfile,shutil
 from pathlib import Path
-from ordered_gate import ROOT,PIN,block
+from ordered_gate import ROOT,PIN,block,hybrid
 sys.path.insert(0,str(ROOT))
-from tools.build_hybrid import apply_patch_verified
+from tools.build_hybrid import apply_patch_verified,hybrid_tree
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated
 from tools.harness import run_compiler
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True);p.add_argument('--report',type=Path,required=True);p.add_argument('--sanitize',action='store_true');a=p.parse_args()
 if a.report.exists():raise ValueError('Choose a unique immutable receipt')
-manifest=ROOT/'migration/patches/reactor/manifest.json';entries=json.loads(manifest.read_text())['patches'];dest='src/network/socket.cc';header='include/swoole_socket.h'
-patches=[next(e for e in entries if e['upstream_paths']==[name]) for name in [dest,header]]
+dest='src/network/socket.cc';header='include/swoole_socket.h'
+selected_tree,abi=hybrid(a.archive);hybrid_flags=hybrid_tree(a.archive)[1]
+hybrid_corrected=json.loads((selected_tree.parent/'build-manifest.json').read_text())['inputs']['fix_halfclose']
 fixed=ROOT/'migration/patches/halfclose/0003-send-tls-close-notify.patch'
 fixed_sha=next(e['sha256'] for e in json.loads((fixed.parent/'manifest.json').read_text())['patches'] if e['path']==fixed.name)
-report=dict(assigned_to='@loks0n',scope=__doc__,pin=PIN,patch_application=[],sources={},syntax=[],commands=[],results=[],passed=False)
+report=dict(assigned_to='@loks0n',scope=__doc__,pin=PIN,hybrid_tree=str(selected_tree),hybrid_corrected=hybrid_corrected,patch_application=[],sources={},syntax=[],commands=[],results=[],passed=False)
 with tempfile.TemporaryDirectory(prefix='swr-iov-owned-') as temporary:
  t=Path(temporary)
  try:
@@ -28,37 +29,29 @@ with tempfile.TemporaryDirectory(prefix='swr-iov-owned-') as temporary:
    for member in archive:
     if member.isfile():path=sdk/member.name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(archive.extractfile(member).read())
   original={name:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name]) for name in [dest,header]}
-  for name,corrected,selected in [('native',False,False),('native-corrected',True,False),('rust',False,True),('rust-corrected',True,True)]:
-   tree=t/name
-   shutil.copytree(sdk,tree)
-   for path,data in original.items():file=tree/path;file.parent.mkdir(parents=True,exist_ok=True);file.write_bytes(data)
-   if corrected:report['patch_application'].append(dict(variant=name,proof=apply_patch_verified(tree,fixed,[dest],fixed_sha)))
-   if selected:
-    for entry in patches:report['patch_application'].append(dict(variant=name,proof=apply_patch_verified(tree,manifest.parent/entry['path'],entry['upstream_paths'],entry['sha256'])))
-   body=(tree/dest).read_text();h=(tree/header).read_text();report['sources'][name]={'selected':selected,'optional_native_fix':corrected}
-   # Every unrelated public header byte must remain identical. Remove only the
-   # exact IOVector declaration + known module-include guard before comparison.
+  for name,corrected,selected in [('native',False,False),('native-corrected',True,False),('rust',hybrid_corrected,True)]:
+   tree=t/name;root=selected_tree if selected else tree
+   if not selected:
+    shutil.copytree(sdk,tree)
+    for path,data in original.items():file=tree/path;file.parent.mkdir(parents=True,exist_ok=True);file.write_bytes(data)
+    if corrected:report['patch_application'].append(dict(variant=name,proof=apply_patch_verified(tree,fixed,[dest],fixed_sha)))
+   else:tree.mkdir()
+   body=(root/dest).read_text();h=(root/header).read_text();report['sources'][name]={'selected':selected,'optional_native_fix':corrected}
    declaration=block(h,h.index('struct IOVector {'))[0]
    if selected:
-    guard='''\n#ifndef SWOOLE_RS_REACTOR
-#error "Owned IOVector capability requires --enable-swoole-rs-reactor"
-#endif
-#include "swoole_rs_reactor.h"
-'''
+    # The public IOVector getters, layout and fields are frozen; only length's body may differ.
     pinned=original[header].decode();old_decl=block(pinned,pinned.index('struct IOVector {'))[0]
-    if h.replace(guard,'',1).replace(declaration,old_decl,1)!=pinned:raise ValueError('Unrelated public header bytes changed')
-    # Getters/layout/field declarations are frozen. Only length body may differ.
     old_length=block(old_decl,old_decl.index('size_t length()'))[0];new_length=block(declaration,declaration.index('size_t length()'))[0]
     if declaration.replace(new_length,old_length,1)!=old_decl:raise ValueError('Unrelated IOVector public bytes changed')
    options=['-DSWOOLE_RS_REACTOR'] if selected else []
    for ssl in [False,True]:
-    cmd=['c++','-std=c++14','-fsyntax-only',*options,*(['-DSW_USE_OPENSSL'] if ssl else []),'-I'+str(tree/'include'),'-I'+str(tree),'-I'+str(ROOT/'native/reactor'),*subprocess.check_output(['pkg-config','--cflags','openssl'],text=True).split(),str(tree/dest)]
+    cmd=['c++','-std=c++14','-fsyntax-only',*(hybrid_flags if selected else []),*(['-DSW_USE_OPENSSL'] if ssl else []),'-I'+str(root/'include'),'-I'+str(root),*subprocess.check_output(['pkg-config','--cflags','openssl'],text=True).split(),str(root/dest)]
     r=run_isolated(cmd,cwd=t,timeout=60);report['syntax'].append(dict(variant=name,ssl=ssl,command=cmd,exit=r.returncode,stdout=r.stdout,stderr=r.stderr))
     if r.returncode or r.stderr:raise RuntimeError(name+' complete SDK syntax failed/warned')
    (tree/'iov_owned.inc').write_text(declaration+';\n'+'\n'.join(block(body,body.index(signature))[0] for signature in ['IOVector::IOVector(','IOVector::~IOVector(','void IOVector::update_iterator(']))
    for standard in ['c++14','c++17','c++20']:
     require_build_space(ROOT);require_build_space(t)
-    binary=tree/('consumer-'+standard);cmd=['c++','-std='+standard,'-Werror','-O1','-g',*options,'-I'+str(tree),'-I'+str(ROOT/'native/reactor'),str(ROOT/'tests/modules/reactor/iov_owned.cc'),str(a.archive.resolve()),'-lpthread','-o',str(binary)]
+    binary=tree/('consumer-'+standard);cmd=['c++','-std='+standard,'-Werror','-O1','-g',*options,'-I'+str(tree),abi,str(ROOT/'tests/modules/reactor/iov_owned.cc'),str(a.archive.resolve()),'-lpthread','-o',str(binary)]
     if a.sanitize:cmd+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
     if sys.platform.startswith('linux'):cmd+=['-ldl','-lm']
     for stage,command in [('compile',cmd),('execute',[str(binary)])]:

@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from ordered_gate import ROOT, PIN, block, apply_patch_verified
+from ordered_gate import ROOT, PIN, block, hybrid
 
 
 def digest(path):
@@ -25,26 +25,15 @@ def main():
     p.add_argument('--report', type=Path, required=True)
     p.add_argument('--sanitize', action='store_true')
     a = p.parse_args()
-    manifest = ROOT / 'migration/patches/reactor/manifest.json'
-    entries = json.loads(manifest.read_text())['patches']
-    original = subprocess.check_output(['git', '-C', str(a.source), 'show', PIN+':src/reactor/poll.cc'], text=True)
-    patches = []
+    original = {name: subprocess.check_output(['git', '-C', str(a.source), 'show', PIN+':'+name], text=True)
+                for name in ['src/reactor/poll.cc', 'include/swoole_reactor.h']}
+    selected_tree, abi = hybrid(a.archive)
     with tempfile.TemporaryDirectory(prefix='swr-poll-snapshot-') as tmp:
         tree = Path(tmp)
-        for entry in entries:
-            patch = manifest.parent / entry['path']
-            if digest(patch) != entry['sha256']:
-                raise ValueError('Overlay checksum mismatch')
-            for name in entry['upstream_paths']:
-                path = tree / name
-                if not path.exists():
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(subprocess.check_output(['git', '-C', str(a.source), 'show', PIN+':'+name]))
-            application = apply_patch_verified(tree, patch, entry['upstream_paths'], entry['sha256'])
-            patches.append(dict(path=entry['path'], application=application))
-        selected = (tree/'src/reactor/poll.cc').read_text()
+        selected = {name: (selected_tree/name).read_text() for name in original}
         fragments = []
-        for label, source in [('Original', original), ('Selected', selected)]:
+        for label, sources in [('Original', original), ('Selected', selected)]:
+            source = sources['src/reactor/poll.cc']
             name = 'Snapshot' + label
             fields = ('swr_v1_reactor_poll_snapshot *snapshot_;\n' if label == 'Selected' else '') + 'pollfd *events_; Socket **event_sockets_; int max_events_;'
             methods = []
@@ -55,19 +44,21 @@ def main():
                     method = method.replace('reactor_->get_sockets()', 'reactor_->registry')
                 methods.append(method)
             fragments.append('struct '+name+' : ReactorImpl { '+fields+'\n'+name+'(Reactor*, int); ~'+name+'(); int set_events() const; };\n'+'\n'.join(methods))
+            # Upstream defines the translations in poll.cc; the hybrid header inlines its Rust calls.
             for signature in ['int16_t translate_events_to_poll(', 'int translate_events_from_poll(']:
-                method, _ = block(source, source.index(signature))
+                text = next(text for text in sources.values() if signature in text)
+                method, _ = block(text, text.index(signature))
                 method = method.replace('translate_events_to_poll(', 'translate_events_to_poll_'+label.lower()+'(').replace('translate_events_from_poll(', 'translate_events_from_poll_'+label.lower()+'(')
                 fragments.append(method)
         (tree/'poll-snapshot.inc').write_text('\n'.join(fragments))
         executable = tree/'snapshot'
-        cmd = ['c++', '-std=c++14', '-O1', '-g', '-I'+str(tree), '-I'+str(ROOT/'native/reactor'), str(ROOT/'tests/modules/reactor/poll_snapshot.cc'), str(a.archive.resolve()), '-lpthread', '-o', str(executable)]
+        cmd = ['c++', '-std=c++14', '-O1', '-g', '-I'+str(tree), abi, str(ROOT/'tests/modules/reactor/poll_snapshot.cc'), str(a.archive.resolve()), '-lpthread', '-o', str(executable)]
         if a.sanitize:
             cmd += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
         if sys.platform.startswith('linux'):
             cmd += ['-ldl', '-lm']
         result = subprocess.run(cmd, capture_output=True, text=True)
-        report = dict(pin=PIN, patches=patches, compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0], command=cmd, compile_returncode=result.returncode, compile_stdout=result.stdout, compile_stderr=result.stderr, scope='exact constructor/destructor/set_events/translation bodies; original over a std map, selected over the Rust registry; actual libc pipe/poll; not full reactor or callback qualification')
+        report = dict(pin=PIN, hybrid_tree=str(selected_tree), compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0], command=cmd, compile_returncode=result.returncode, compile_stdout=result.stdout, compile_stderr=result.stderr, scope='exact constructor/destructor/set_events/translation bodies; original over a std map, selected over the Rust registry; actual libc pipe/poll; not full reactor or callback qualification')
         if result.returncode == 0:
             result = subprocess.run([str(executable)], capture_output=True, text=True)
             report.update(returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
