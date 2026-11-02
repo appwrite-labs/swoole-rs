@@ -17,3 +17,6 @@ libz-sys = { version = "1.1.20", default-features = false, features = ["libc"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+swoole-rs-inflate = { path = "../inflate" }
