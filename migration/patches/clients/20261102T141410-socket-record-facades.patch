@@ -1,12 +1,12 @@
 diff --git a/ext-src/swoole_client_coro.cc b/ext-src/swoole_client_coro.cc
-index 630761b..81cda64 100644
+index 630761b..958c636 100644
 --- a/ext-src/swoole_client_coro.cc
 +++ b/ext-src/swoole_client_coro.cc
 @@ -152,4 +152,4 @@ bool swoole_client_coro_close(void *socket) {
  
 -bool swoole_client_coro_is_tcp(void *socket) {
 -    return client_socket_of(socket)->get_socket()->is_tcp();
-+swr_v1_socket *swoole_client_coro_socket_record(void *socket) {
++void *swoole_client_coro_socket_record(void *socket) {
 +    return client_socket_of(socket)->get_socket();
  }
 diff --git a/ext-src/swoole_http_client_coro.cc b/ext-src/swoole_http_client_coro.cc

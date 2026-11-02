@@ -1,12 +1,12 @@
 diff --git a/ext-src/swoole_runtime.cc b/ext-src/swoole_runtime.cc
-index 31cd871..defb9ef 100644
+index 31cd871..4b40304 100644
 --- a/ext-src/swoole_runtime.cc
 +++ b/ext-src/swoole_runtime.cc
 @@ -244,4 +244,4 @@ int swoole_runtime_socket_type(void *socket) {
  
 -bool swoole_runtime_socket_inet(void *socket) {
 -    return SOCK(socket)->get_socket()->is_inet();
-+swr_v1_socket *swoole_runtime_socket_record(void *socket) {
++void *swoole_runtime_socket_record(void *socket) {
 +    return SOCK(socket)->get_socket();
  }
 @@ -285,7 +285,2 @@ ssize_t swoole_runtime_socket_io(void *socket, int op, char *buf, size_t length)
