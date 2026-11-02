@@ -2,7 +2,7 @@
 """Edit a module's upstream patches as a Git branch: one commit per patch file.
 
   patches.py checkout MODULE   clone the pin to target/patches/MODULE and commit each patch
-  patches.py export MODULE     write each commit back to migration/patches/MODULE
+  patches.py export MODULE     write each commit back to migration/patches/MODULE (new ones as <timestamp>-<subject>.patch)
   patches.py rehash OLD [NEW]  rewrite recorded hashes of upstream files changed from OLD to NEW (default: the pin)
 """
 import argparse

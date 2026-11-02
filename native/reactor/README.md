@@ -18,8 +18,8 @@ Warnings stay in their original Native method so `__SW_FUNC__` is unchanged.
 | 0001-readiness-policy | `include/swoole_reactor.h`, `src/reactor/{poll,epoll,kqueue}.cc` |
 | 0002-write-policy | `src/reactor/base.cc` |
 | 0003-stream-framing | `src/network/stream.cc` |
+| 0004-iov-owned | `include/swoole_socket.h` |
 | 0004-socket-output | `src/network/socket.cc` |
-| 0005-iov-owned | `include/swoole_socket.h` |
 | 0007-server-buffer-typed | `src/server/base.cc`, `src/server/reactor_thread.cc` |
 
 The optional M15 half-close patches apply first when requested and stay

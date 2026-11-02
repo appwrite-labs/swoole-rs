@@ -1,7 +1,6 @@
 """A successful Git exit is insufficient evidence that selected source changed."""
 from pathlib import Path
 import os
-import json
 import subprocess
 import tempfile
 import unittest
@@ -13,9 +12,9 @@ PATCH = 'diff --git a/value.cc b/value.cc\n--- a/value.cc\n+++ b/value.cc\n@@ -1
 
 
 class VerifiedPatch(unittest.TestCase):
-    def test_committed_integration_patch_hunks_parse_with_declared_destinations(self):
+    def test_committed_integration_patch_destinations_match_git(self):
         folder = build_hybrid.ROOT / 'migration/patches/integration'
-        for entry in json.loads((folder / 'manifest.json').read_text())['patches']:
+        for entry in build_hybrid.module_patches(folder):
             result = subprocess.run(['git', 'apply', '--numstat', str(folder / entry['path'])],
                                     cwd=build_hybrid.ROOT, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)

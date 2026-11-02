@@ -19,8 +19,8 @@ v6.2.4, commit `c7e514509451beafd4d70ce5b78943d51e76381c`, fetched at
 `python3 tools/check_migration.py` checks for duplicate IDs, unknown
 prerequisites and dependency cycles, and prints the resulting waves.
 
-Each module's patches live in `migration/patches/<module>/` with a
-`manifest.json` declaring patch hashes and upstream destinations.
+Each module's patches live in `migration/patches/<module>/` and apply in
+file-name order; their destinations are read from their diff headers.
 `tools/build_hybrid.py` applies them to a fresh clone of the pinned reference
 (see [hybrid build](hybrid-build.md)). Selecting a module with `--module NAME`
 sets its feature bit in `swr_v1_feature_bits()`. Leaving it out keeps the

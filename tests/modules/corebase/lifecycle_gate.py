@@ -11,6 +11,7 @@ import uuid
 from prepare_benchmark import ROOT, clean_environment, sha
 from supervisor import cooperative_signals, run_tool
 from tools.native_core import library_identity
+from tools.build_hybrid import module_patches
 
 
 def main():
@@ -46,11 +47,9 @@ def main():
                 or selected['config_sha256'] != native['config_sha256']
                 or selected['archive_sha256'] != report['archive_sha256']):
             raise ValueError('Require exact selected FFI, corebase-only callers and original same-config comparator')
-        manifest = json.loads((ROOT / 'migration/patches/corebase/manifest.json').read_text())
-        expected = [{'path': 'migration/patches/corebase/' + row['path'],
-                     'sha256': sha(ROOT / 'migration/patches/corebase' / row['path']),
-                     'upstream_paths': row['upstream_paths']} for row in manifest['patches']]
-        if selected['patches'] != expected or any(a['sha256'] != b['sha256'] for a,b in zip(expected,manifest['patches'])):
+        expected = [{**row, 'path': 'migration/patches/corebase/' + row['path']}
+                    for row in module_patches(ROOT / 'migration/patches/corebase')]
+        if selected['patches'] != expected:
             raise ValueError('Selected full DSO was not built with current owned overlay')
         if selected['headers']['swoole_rs_corebase.h'] != sha(ROOT / 'native/corebase/swoole_rs_corebase.h'):
             raise ValueError('Selected full DSO has a different lifecycle contract')

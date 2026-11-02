@@ -19,7 +19,7 @@ file named after it:
 ```sh
 python3 tools/patches.py checkout phphelpers   # target/patches/phphelpers, branch patches/phphelpers
 # edit, then amend or fixup the commit for that patch
-python3 tools/patches.py export phphelpers     # rewrites the patch files and manifest.json
+python3 tools/patches.py export phphelpers     # rewrites the patch files
 rm -rf target/patches/phphelpers
 ```
 
@@ -27,6 +27,13 @@ Upstream changes then surface as ordinary rebase conflicts. Export keeps the
 bytes of every patch whose commit diff is unchanged, writes the others as
 `git diff` output and drops patch files that no longer have a commit; add a
 commit to add a patch.
+
+Patches apply in file-name order. Older ones are numbered (`0001-topic.patch`);
+export names a new commit `<author time, UTC>-<subject>.patch`
+(`20261102T153012-buffer-handle.patch`), which sorts after them, so two branches
+adding patches to one module never conflict. There is no manifest: each patch's
+sha256 and upstream destinations come from the file itself
+(`tools.build_hybrid.module_patches`).
 
 ## Following an upstream release
 
