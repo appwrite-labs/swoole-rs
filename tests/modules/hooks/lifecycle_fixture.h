@@ -41,6 +41,7 @@ struct Socket {
  static void timer_callback(){}
  struct TimerController {
   TimerController(void *,double,Socket *,void(*)()){record("timer:new");}
+  TimerController(Socket *,int,double){record("timer:new");}
   ~TimerController(){record("timer:destroy");}
   bool start(){record("timer:start");return timer_ok;}
  };

@@ -3,7 +3,7 @@
 //! save/set/restore of the selected timeouts, and `connect(addr)`'s whole loop:
 //! the `connect(2)` retries, the wait for writability and the `SO_ERROR` check.
 use crate::shutdown::{SocketState, swr_v1_hook_socket_connect};
-use crate::{swr_v1_hook_connect_action, swr_v1_hook_connect_option};
+use crate::swr_v1_hook_connect_action;
 use core::ffi::{c_int, c_void};
 
 const EVENT_READ: u32 = 1 << 9;
@@ -115,17 +115,16 @@ pub unsafe extern "C" fn swr_v1_hook_timeouts(
 pub struct ConnectAddrOps {
     pub socket: *mut c_void,
     pub state: *mut SocketState,
-    /// The socket's descriptor.
+    /// The socket's descriptor, and `connect(2)` (native code passes `::connect`).
     pub fd: c_int,
-    /// `is_available(SW_EVENT_RDWR)`, `set_err(code)` and `is_closed()`.
+    pub syscall: unsafe extern "C" fn(c_int, *const libc::sockaddr, libc::socklen_t) -> c_int,
+    /// `is_available(SW_EVENT_RDWR)` and `set_err(code)`.
     pub available: unsafe extern "C" fn(*mut c_void) -> bool,
     pub set_err: unsafe extern "C" fn(*mut c_void, c_int),
-    pub closed: unsafe extern "C" fn(*mut c_void) -> bool,
-    /// Waits to write under the connect timeout.
+    /// Waits to write under the connect timeout and, within the timer, settles the
+    /// attempt: false after `ECONNABORTED` for a socket closed meanwhile or the
+    /// error [`swr_v1_hook_connect_option`] finds in `SO_ERROR`, true when connected.
     pub wait: unsafe extern "C" fn(*mut c_void) -> bool,
-    /// `get_option(SOL_SOCKET, SO_ERROR)` into `errCode`, and `errCode`.
-    pub so_error: unsafe extern "C" fn(*mut c_void) -> c_int,
-    pub error: unsafe extern "C" fn(*mut c_void) -> c_int,
     /// `get_name()`.
     pub name: unsafe extern "C" fn(*mut c_void),
 }
@@ -152,7 +151,7 @@ pub unsafe extern "C" fn swr_v1_hook_connect_addr(
     }
     let action = loop {
         // SAFETY: the caller's descriptor and address.
-        let result = unsafe { libc::connect(ops.fd, addr, length) };
+        let result = unsafe { (ops.syscall)(ops.fd, addr, length) };
         let error = errno();
         let action = swr_v1_hook_connect_action(
             result,
@@ -171,20 +170,6 @@ pub unsafe extern "C" fn swr_v1_hook_connect_addr(
     if action > 0 {
         // SAFETY: the live socket's wait.
         if !unsafe { (ops.wait)(ops.socket) } {
-            // SAFETY: the live socket.
-            if unsafe { (ops.closed)(ops.socket) } {
-                // SAFETY: the live socket's error.
-                unsafe { (ops.set_err)(ops.socket, libc::ECONNABORTED) };
-            }
-            return false;
-        }
-        // SAFETY: the live socket's pending error.
-        let result = unsafe { (ops.so_error)(ops.socket) };
-        // SAFETY: the live socket's error code.
-        let error = unsafe { (ops.error)(ops.socket) };
-        if swr_v1_hook_connect_option(result, if result < 0 { 0 } else { error }) {
-            // SAFETY: the live socket's error.
-            unsafe { (ops.set_err)(ops.socket, error) };
             return false;
         }
     }
@@ -300,7 +285,6 @@ mod tests {
     thread_local! {
         static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static WAIT: RefCell<bool> = const { RefCell::new(true) };
-        static ERROR: RefCell<c_int> = const { RefCell::new(0) };
     }
 
     unsafe extern "C" fn available(_: *mut c_void) -> bool {
@@ -309,18 +293,9 @@ mod tests {
     unsafe extern "C" fn set_err(_: *mut c_void, code: c_int) {
         LOG.with(|l| l.borrow_mut().push(format!("err {code}")));
     }
-    unsafe extern "C" fn closed(_: *mut c_void) -> bool {
-        true
-    }
     unsafe extern "C" fn wait(_: *mut c_void) -> bool {
         LOG.with(|l| l.borrow_mut().push("wait".into()));
         WAIT.with(|w| *w.borrow())
-    }
-    unsafe extern "C" fn so_error(_: *mut c_void) -> c_int {
-        0
-    }
-    unsafe extern "C" fn error(_: *mut c_void) -> c_int {
-        ERROR.with(|e| *e.borrow())
     }
     unsafe extern "C" fn name(_: *mut c_void) {
         LOG.with(|l| l.borrow_mut().push("name".into()));
@@ -333,12 +308,10 @@ mod tests {
             socket: std::ptr::null_mut(),
             state,
             fd,
+            syscall: libc::connect,
             available,
             set_err,
-            closed,
             wait,
-            so_error,
-            error,
             name,
         };
         // SAFETY: a local table and address.
@@ -381,7 +354,7 @@ mod tests {
         assert_eq!(log, [format!("err {}", libc::EBADF)]);
         // SAFETY: the socket made above.
         unsafe { libc::close(fd) };
-        // A nonblocking socket waits; a failed wait on a closed socket is ECONNABORTED.
+        // A nonblocking socket waits; a failed wait fails the connect.
         // SAFETY: a new TCP socket made nonblocking.
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         // SAFETY: as above.
@@ -391,10 +364,7 @@ mod tests {
         WAIT.with(|w| *w.borrow_mut() = true);
         if log.first().is_some_and(|e| e == "wait") {
             assert!(!ok);
-            assert_eq!(
-                log,
-                ["wait".to_owned(), format!("err {}", libc::ECONNABORTED)]
-            );
+            assert_eq!(log, ["wait"]);
         }
         // SAFETY: the socket made above.
         unsafe { libc::close(fd) };
