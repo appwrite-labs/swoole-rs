@@ -354,7 +354,8 @@ fn start(call: &Call) {
 
 fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     use swoole_rs_httpbindings::{
-        Action, SettingsCursor, swr_v1_httpbindings_accept, swr_v1_httpbindings_settings,
+        AcceptHost, Action, SettingsCursor, swr_v1_httpbindings_accept_loop,
+        swr_v1_httpbindings_settings,
     };
     let object = call.this();
     let server = server_of(call);
@@ -424,42 +425,70 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let mut errors = unsafe { std::mem::zeroed() };
     // SAFETY: a local output.
     unsafe { swr_hsc_accept_errors(&raw mut errors) };
-    while running(server) {
-        let mut connected = false;
-        // SAFETY: a live listener and the accept callable.
-        let cid = unsafe { swr_hsc_accept(socket, accept.0, &raw mut connected) };
-        let mut message = ptr::null();
-        let error = if connected {
-            0
-        } else {
-            // SAFETY: a live socket and a local output.
-            unsafe { swr_hsc_error(socket, &raw mut message) }
-        };
-        // SAFETY: the local policy table.
-        match unsafe {
-            swr_v1_httpbindings_accept(u32::from(connected), cid, error, &raw const errors)
-        } {
-            0 => {}
-            // SAFETY: a coroutine runs `start`.
-            1 => unsafe { swr_hsc_sleep() },
-            2 => {
-                set_error(object, socket);
-                break;
-            }
-            _ => {
-                let code = set_error(object, socket);
-                // SAFETY: the socket's NUL-terminated message.
-                let text = unsafe { CStr::from_ptr(message) }
-                    .to_string_lossy()
-                    .into_owned();
-                host::fatal(&format!("accept failed, Error: {text}[{code}]"));
-                // Keep-alive connections stop once the listener cannot accept.
-                set_running(server, false);
-                return Ok(Some(false));
-            }
-        }
-    }
-    Ok(Some(true))
+    let mut start = Start {
+        object,
+        server,
+        socket,
+        accept: accept.0,
+    };
+    let host = AcceptHost {
+        data: (&raw mut start).cast(),
+        running: start_running,
+        accept: start_accept,
+        error: start_error,
+        sleep: start_sleep,
+        set_error: start_set_error,
+        fail: start_fail,
+    };
+    // SAFETY: the host below and the local policy table.
+    let accepted = unsafe { swr_v1_httpbindings_accept_loop(&raw const host, &raw const errors) };
+    Ok(Some(accepted == 1))
+}
+
+/// The `start` frame the accept loop's host callbacks read (`AcceptHost::data`).
+struct Start {
+    object: *mut zend_object,
+    server: *mut c_void,
+    socket: *mut c_void,
+    accept: *mut c_void,
+}
+
+fn start_of<'a>(data: *mut c_void) -> &'a Start {
+    // SAFETY: `run_start` passes its live `Start` for the loop.
+    unsafe { &*data.cast::<Start>() }
+}
+
+unsafe extern "C" fn start_running(data: *mut c_void) -> bool {
+    running(start_of(data).server)
+}
+
+unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i64 {
+    let start = start_of(data);
+    // SAFETY: a live listener, the accept callable and the loop's output.
+    unsafe { swr_hsc_accept(start.socket, start.accept, connected) }
+}
+
+unsafe extern "C" fn start_error(data: *mut c_void, message: *mut *const c_char) -> c_int {
+    // SAFETY: a live socket and the loop's output.
+    unsafe { swr_hsc_error(start_of(data).socket, message) }
+}
+
+unsafe extern "C" fn start_sleep(_: *mut c_void) {
+    // SAFETY: a coroutine runs `start`.
+    unsafe { swr_hsc_sleep() };
+}
+
+unsafe extern "C" fn start_set_error(data: *mut c_void) {
+    let start = start_of(data);
+    set_error(start.object, start.socket);
+}
+
+unsafe extern "C" fn start_fail(data: *mut c_void, warning: swoole_rs_httpbindings::Text) {
+    // SAFETY: the loop lends the warning's UTF-8 bytes for the call.
+    let warning = unsafe { std::slice::from_raw_parts(warning.data, warning.length) };
+    host::fatal(std::str::from_utf8(warning).unwrap_or_default());
+    // Keep-alive connections stop once the listener cannot accept.
+    set_running(start_of(data).server, false);
 }
 
 /// `%s` of a ZPP string: up to its first NUL.
