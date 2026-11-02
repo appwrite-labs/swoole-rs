@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,11 +17,11 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from tools.build_hybrid import hybrid_tree
 from tools.harness import parse_engines, run_isolated, write_report
 from tools.hybrid_identity import attest
 from bytes_gate import SIGNATURES, body
 from coherent_sdk import stage
-from overlay import apply_owned
 from storage_summary import compare
 
 from tools.build_upstream import COMMIT as PIN
@@ -29,6 +30,12 @@ HEADER = '3e6dd302ac18d32f9a173dcbfca0680f16b9682a5f5031456099cda5b1bbb180'
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def public(*prefixes, count=None):
+    """A placeholder for the lines of an engine's own swoole.h that start with prefixes,
+    filled in per engine when the originals config is written."""
+    return '@@' + json.dumps([prefixes, count]) + '@@\n'
 
 
 def main():
@@ -62,13 +69,15 @@ def main():
     report = dict(passed=False, created_utc=datetime.now(timezone.utc).isoformat(), work=str(work),
                   scope=__doc__, fixture=fixture, engines=[], results=[])
     try:
+        # The selected side's sources, headers and config.h are the hybrid build's.
+        hybrid, hybrid_flags = hybrid_tree(args.archive)
+        report['hybrid_tree'] = str(hybrid)
         for name in [fixture + '.cc', fixture + '.php', 'storage_summary.py'] + (['logger_layout.cc'] if fixture == 'storage' else []) + ['coherent_sdk.py'] + (['child_assertions.h', 'terminal_stdout.py'] if redirect else []):
             path = Path(__file__).with_name(name)
             (work / name).write_bytes(path.read_bytes())
         header = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole_log.h'])
         if hashlib.sha256(header).hexdigest() != HEADER:
             raise ValueError('Public Logger header differs from pinned class')
-        (work / 'swoole_log.h').write_bytes(header)
         if originals:
             original = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/src/core/log.cpp'])
             (work / 'pinned-log.cpp').write_bytes(original)
@@ -81,22 +90,15 @@ def main():
                 excerpt = rotation + excerpt + stream
                 expected += ['log.rotation', 'log.set_stream']
                 declaration = original[original.index(b'const char *file ='):original.index(b'TEST(log, level)')]
-                public = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole.h'], text=True)
-                macro = next(line for line in public.splitlines() if line.startswith('#define SW_STRL('))
-                config = '#define M14_PRIVATE_LOG_FILE 1\n' + macro + '\n' + declaration.decode()
+                config = '#define M14_PRIVATE_LOG_FILE 1\n' + public('#define SW_STRL(', count=1) + declaration.decode()
             config += '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
             if args.hash_originals:
                 original = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/src/core/hash.cpp'])
                 (work / 'pinned-hash.cpp').write_bytes(original)
                 excerpt = original[original.index(b'static const int hash_count'):]
                 expected = ['hash.php', 'hash.jenkins']
-                public = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole.h'], text=True)
-                declarations = [line for line in public.splitlines() if line.startswith(('uint64_t swoole_random_int(', 'size_t swoole_random_bytes(', '#define SW_LOOP_N('))]
-                if len(declarations) != 3:
-                    raise ValueError('Pinned original random declarations/loop macro changed')
-                header = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole_hash.h'])
-                (work / 'swoole_hash.h').write_bytes(header)
-                config = '#include "swoole_hash.h"\n' + '\n'.join(declarations) + '\n#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
+                declarations = public('uint64_t swoole_random_int(', 'size_t swoole_random_bytes(', '#define SW_LOOP_N(', count=3)
+                config = '#include "swoole_hash.h"\n' + declarations + '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
                 report['limits'] = 'Two unchanged hash originals PHP/Jenkins with real random input provider,8192originalsizes andassertions. Austin signedbinary undefined-shift original andCRC32 unselected/unqualified. No fullgroup/39original inventory, worldbuild, sanitizer, fault/crash/OOM/lifetime or performance claim.'
             if args.inline_originals:
                 original = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/src/core/string.cpp'])
@@ -105,24 +107,12 @@ def main():
                 fragments = [body(original.decode(), 'TEST(string, ' + name + ')') for name in names]
                 excerpt = ('using namespace std;\n' + '\n'.join(fragments)).encode()
                 expected = ['string.' + name for name in names]
-                patch = ROOT / 'migration/patches/utilities/0003-inline-bytes.patch'
-                report['inline_patch_sha256'] = sha(patch)
-                with tempfile.TemporaryDirectory(prefix='m14-original-headers-') as temporary:
-                    tree = Path(temporary)
-                    sources = {}
-                    for name in SIGNATURES:
-                        content = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':' + name])
-                        path = tree / name
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(content)
-                        sources[name] = content.decode()
-                    report['inline_overlay_application'] = apply_owned(tree, patch)
-                    for name, signatures in SIGNATURES.items():
-                        for variant, content in [('native', sources[name]), ('selected', (tree / name).read_text())]:
-                            (work / (variant + '-' + Path(name).name + '.inc')).write_text('\n'.join(body(content, signature) for signature in signatures))
-                (work / 'swoole_rs_utilities.h').write_bytes((ROOT / 'native/utilities/swoole_rs_utilities.h').read_bytes())
-                macros = '\n'.join(line for line in sources['include/swoole.h'].splitlines() if line.startswith(('#define SW_STRL(', '#define sw_likely(')))
-                config = '#include <cassert>\n#include <cctype>\n#include <sys/types.h>\n#include <strings.h>\n' + macros + '\n'
+                # Native bodies from the pin, selected bodies from the hybrid build's headers.
+                for name, signatures in SIGNATURES.items():
+                    pinned = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':' + name]).decode()
+                    for variant, content in [('native', pinned), ('selected', (hybrid / name).read_text())]:
+                        (work / (variant + '-' + Path(name).name + '.inc')).write_text('\n'.join(body(content, signature) for signature in signatures))
+                config = '#include <cassert>\n#include <cctype>\n#include <sys/types.h>\n#include <strings.h>\n' + public('#define SW_STRL(', '#define sw_likely(')
                 for index, variant in enumerate(['selected', 'native']):
                     config += ('#ifdef M14_SELECTED_INLINE\n#include "swoole_rs_utilities.h"\n' if index == 0 else '#else\n')
                     config += 'namespace swoole {\n#include "' + variant + '-swoole_util.h.inc"\n}\n#include "' + variant + '-swoole.h.inc"\n'
@@ -153,7 +143,18 @@ def main():
                 config += 'namespace swoole { namespace test {\n' + helpers + '\n}}\n'
                 config += 'TEST(m14_observer, child_failure) { ASSERT_EQ(test::spawn_exec_and_wait([]() { ADD_FAILURE() << "observer negative control"; }), 0); }\n'
                 config += '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
-            (work / 'logger-originals-config.h').write_text(config)
+            # Each engine's config takes its declarations from its own swoole.h.
+            headers = {'native': subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole.h'], text=True),
+                       'selected': (hybrid / 'include/swoole.h').read_text()}
+            for name, text in headers.items():
+                def declared(match):
+                    prefixes, count = json.loads(match.group(1))
+                    lines = [line for line in text.splitlines() if line.startswith(tuple(prefixes))]
+                    if count is not None and len(lines) != count:
+                        raise ValueError(f'{name} swoole.h declarations changed: {prefixes}')
+                    return ''.join(line + '\n' for line in lines)
+                (work / (name + '-config')).mkdir()
+                (work / (name + '-config/logger-originals-config.h')).write_text(re.sub(r'@@(.*?)@@\n', declared, config))
             (work / 'pretty_originals.inc').write_bytes(excerpt)
             report['expected_original_cases'] = expected
         if args.pretty:
@@ -167,11 +168,8 @@ def main():
         selected = next(row for row in report['engines'] if row['rust_feature_bits'] & 512)
         report['source_attestation'] = attest(args.build_manifest, args.archive, selected, args.source_ref, 512)
         manifest = json.loads(args.build_manifest.read_text())
-        if args.inline_originals and not any(row['sha256'] == report['inline_patch_sha256'] and row['path'].endswith('utilities/0003-inline-bytes.patch') for row in manifest['inputs']['patches']):
-            raise ValueError('Selected inline patch differs from staged wrapper bodies')
-        # ABI2 changes object layout: every helper gets its exact engine SDK.
+        # Every helper gets its own engine's headers: the pinned SDK, or the hybrid build's.
         logger_layout = any('include/swoole_log.h' in row.get('upstream_paths', []) for row in manifest['inputs']['patches'])
-        separate_sdk = coherent or logger_layout
         version = subprocess.check_output([args.php_config, '--version'], text=True).strip()
         if any(row['php'] != version for row in report['engines']):
             raise ValueError('PHP SDK differs from loaded runtime version')
@@ -195,19 +193,22 @@ def main():
                                          pkg_config_flags=google_raw, flags=google, libraries=[str(p.resolve()) for p in library.glob('libgtest.*') if p.is_file()])
             if not report['google_test']['libraries']:
                 raise ValueError('GoogleTest library identity unavailable')
-        sdk_flags = []
-        if separate_sdk:
-            (work / 'swoole_log.h').unlink()
-            report['coherent_sdk'] = {}
-            for name, identity in [('native', next(row for row in report['engines'] if not row['rust_feature_bits'] & 512)), ('selected', selected)]:
-                export = Path(identity['extension']).parent
-                report['coherent_sdk'][name] = stage(work / name, export, args.source, args.source_ref, ROOT)
-            sdk_flags = ['-DHAVE_CONFIG_H', '-I' + str(work / 'native/include'), *shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))]
-            if coherent and report['coherent_sdk']['native']['string_header_sha256'] == report['coherent_sdk']['selected']['string_header_sha256']:
-                raise ValueError('Selected SDK lacks actual String overlay')
-        command = ['c++', '-std=c++17' if originals else '-std=c++14', '-O2', '-pthread', '-Wall', '-Wextra', '-Werror', *includes, *sdk_flags, '-I' + str(work),
-                   *(['-bundle', '-undefined', 'dynamic_lookup'] if sys.platform == 'darwin' else ['-shared', '-fPIC']),
-                   '-MD', '-MF', str(work / 'storage.d'), str(work / (fixture + '.cc')), *google, '-o', str(helper)]
+        native_identity = next(row for row in report['engines'] if not row['rust_feature_bits'] & 512)
+        report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parent, args.source, args.source_ref, ROOT),
+                                  'selected': dict(hybrid_tree=str(hybrid), flags=hybrid_flags,
+                                                   string_header_sha256=sha(hybrid / 'include/swoole_string.h'))}
+        (work / 'selected').mkdir()
+        shutil.copyfile(hybrid / 'config.h', work / 'selected/config.h')
+        sdk_headers = {'native': ['-I' + str(work / 'native/include')], 'selected': ['-I' + str(work / 'selected'), *hybrid_flags]}
+        openssl = shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))
+        if coherent and report['coherent_sdk']['native']['string_header_sha256'] == report['coherent_sdk']['selected']['string_header_sha256']:
+            raise ValueError('Selected SDK lacks actual String overlay')
+        def helper_command(engine, output):
+            return ['c++', '-std=c++17' if originals else '-std=c++14', '-O2', '-pthread', '-Wall', '-Wextra', '-Werror', *includes,
+                    '-DHAVE_CONFIG_H', *sdk_headers[engine], *openssl, *(['-I' + str(work / (engine + '-config'))] if originals else []),
+                    '-I' + str(work), *(['-bundle', '-undefined', 'dynamic_lookup'] if sys.platform == 'darwin' else ['-shared', '-fPIC']),
+                    '-MD', '-MF', str(work / (engine + '.d')), str(work / (fixture + '.cc')), *google, '-o', str(output)]
+        command = helper_command('native', helper)
         result = run_isolated(command, timeout=60)
         report['compilation'] = dict(command=command, exit=result.returncode, stdout=result.stdout,
                                      stderr=result.stderr, php_sdk=version)
@@ -232,28 +233,24 @@ def main():
                 raise ValueError('Native inline helper unexpectedly imports Rust utilities')
         if symbols.returncode or any(name not in symbols.stdout for name in required):
             raise ValueError('Helper lacks required imported production Logger methods')
-        inline_helper = None
-        if args.inline_originals or separate_sdk:
-            inline_helper = work / 'm14_inline_selected.so'
-            selected_command = command[:-2] + ['-DM14_SELECTED_INLINE', '-o', str(inline_helper)]
-            if separate_sdk:
-                selected_command = [arg.replace(str(work / 'native/include'), str(work / 'selected/include')) for arg in selected_command]
-            selected_command[selected_command.index('-MF') + 1] = str(work / 'selected.d')
-            result = run_isolated(selected_command, timeout=60)
-            report['selected_inline_compilation'] = dict(command=selected_command, exit=result.returncode, stdout=result.stdout, stderr=result.stderr)
-            if result.returncode:
-                raise ValueError('Selected inline helper compilation failed')
-            symbols = run_isolated(['nm', '-u', str(inline_helper)], timeout=15)
-            report['selected_inline_imports'] = dict(exit=symbols.returncode, stdout=symbols.stdout, stderr=symbols.stderr)
-            required = (['swr_v1_string_'] if coherent else ['swr_v2_utils_ltrim', 'swr_v2_utils_rtrim', 'swr_v2_utils_search', 'swr_v1_utils_compare', 'swr_v1_utils_partition'] if args.inline_originals else [])
-            if logger_layout and args.backtrace:
-                required += ['swr_v1_utils_log_state_scalar_set']
-            if symbols.returncode or any(name not in symbols.stdout for name in required):
-                raise ValueError('Selected inline helper lacks required Rust utility imports')
-            exports = run_isolated(['nm', *(['-D'] if sys.platform.startswith('linux') else []), '-g', selected['extension']], timeout=30)
-            report['selected_inline_exports'] = {name: re.findall(r'^.*\b[TW]\s+_?' + name + (r'\w+$' if name.endswith('_') else r'$'), exports.stdout, re.M) for name in required}
-            if exports.returncode or not all(report['selected_inline_exports'].values()):
-                raise ValueError('Actual selected DSO lacks required defined inline utility exports')
+        inline_helper = work / 'm14_inline_selected.so'
+        selected_command = helper_command('selected', inline_helper)
+        selected_command[-2:-2] = ['-DM14_SELECTED_INLINE']
+        result = run_isolated(selected_command, timeout=60)
+        report['selected_inline_compilation'] = dict(command=selected_command, exit=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        if result.returncode:
+            raise ValueError('Selected inline helper compilation failed')
+        symbols = run_isolated(['nm', '-u', str(inline_helper)], timeout=15)
+        report['selected_inline_imports'] = dict(exit=symbols.returncode, stdout=symbols.stdout, stderr=symbols.stderr)
+        required = (['swr_v1_string_'] if coherent else ['swr_v2_utils_ltrim', 'swr_v2_utils_rtrim', 'swr_v2_utils_search', 'swr_v1_utils_compare', 'swr_v1_utils_partition'] if args.inline_originals else [])
+        if logger_layout and args.backtrace:
+            required += ['swr_v1_utils_log_state_scalar_set']
+        if symbols.returncode or any(name not in symbols.stdout for name in required):
+            raise ValueError('Selected inline helper lacks required Rust utility imports')
+        exports = run_isolated(['nm', *(['-D'] if sys.platform.startswith('linux') else []), '-g', selected['extension']], timeout=30)
+        report['selected_inline_exports'] = {name: re.findall(r'^.*\b[TW]\s+_?' + name + (r'\w+$' if name.endswith('_') else r'$'), exports.stdout, re.M) for name in required}
+        if exports.returncode or not all(report['selected_inline_exports'].values()):
+            raise ValueError('Actual selected DSO lacks required defined inline utility exports')
         layouts = None
         if fixture == 'storage':
             layouts = {}
@@ -261,10 +258,9 @@ def main():
             report['layout_probes'] = {}
             for identity in report['engines']:
                 name = identity['name']
-                sdk = work / ('selected' if identity['rust_feature_bits'] & 512 else 'native') / 'include' if separate_sdk else work
                 binary = work / ('layout-' + name)
                 layout_command = ['c++', '-std=c++14', '-O2', '-Wall', '-Wextra', '-Werror',
-                                  '-I' + str(sdk), str(layout_source), '-o', str(binary)]
+                                  *sdk_headers['selected' if identity['rust_feature_bits'] & 512 else 'native'], str(layout_source), '-o', str(binary)]
                 compiled = run_isolated(layout_command, timeout=60)
                 probe = dict(command=layout_command, compile_exit=compiled.returncode,
                              compile_stdout=compiled.stdout, compile_stderr=compiled.stderr)
@@ -281,7 +277,7 @@ def main():
         report['stdout_environment'] = 'terminal with raw output processing; libc line buffering inherited by fork' if redirect else 'pipe'
         for engine, identity in zip(engines, report['engines']):
             with tempfile.TemporaryDirectory(prefix='m14-storage-') as directory:
-                engine_helper = inline_helper if inline_helper and identity['rust_feature_bits'] & 512 else helper
+                engine_helper = inline_helper if identity['rust_feature_bits'] & 512 else helper
                 result = run_isolated(launch + engine.command('-d', 'extension=' + str(engine_helper), str(work / (fixture + '.php')), directory,
                                                      *([str(len(expected))] if originals else [])),
                                       timeout=30, env={**os.environ, 'TZ': 'UTC0', 'LC_ALL': 'C'})

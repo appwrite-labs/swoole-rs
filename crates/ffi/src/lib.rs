@@ -117,6 +117,9 @@ pub use swoole_rs_process::*;
 #[cfg(feature = "process")]
 pub use swoole_rs_phpprocess::*;
 
+#[cfg(feature = "process")]
+pub use swoole_rs_phpthread::*;
+
 #[cfg(feature = "clients")]
 pub use swoole_rs_clients as clients;
 #[cfg(feature = "clients")]
@@ -134,12 +137,16 @@ pub use swoole_rs_phphttp::*;
 
 #[cfg(feature = "http2")]
 pub use swoole_rs_http2 as http2;
+#[cfg(feature = "http2")]
+pub use swoole_rs_phphttp2::*;
 
 #[cfg(feature = "ports")]
 pub use swoole_rs_ports as ports;
 
 #[cfg(feature = "phphelpers")]
 pub use swoole_rs_phphelpers as phphelpers;
+#[cfg(feature = "phphelpers")]
+pub use swoole_rs_phpstdext as phpstdext;
 
 #[cfg(feature = "phpcollections")]
 pub use swoole_rs_phpcollections as phpcollections;

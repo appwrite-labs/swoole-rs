@@ -56,11 +56,15 @@ def main():
                 raise ValueError('Installed ODBC SDK flags unavailable')
             vendor_flags = shlex.split(probe.stdout) + ['-DPDO_ODBC_TYPE="unixODBC"']
             extra_config = ''.join('#undef '+name+'\n#define '+name+' 1\n' for name in ['HAVE_SQL_H', 'HAVE_SQLTYPES_H', 'HAVE_SQLEXT_H'])
-        unit = work / ('swoole_' + provider + '.cc')
-        unit.write_bytes(subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':ext-src/' + unit.name]))
-        if unit.read_text().count('php_swoole_async(') != len(expected):
-            raise ValueError('Pinned optional async caller inventory changed')
-        for engine in ['native', 'rust', 'combined']:
+        name = 'ext-src/swoole_' + provider + '.cc'
+        for engine in ['native', 'hybrid']:
+            # Native compiles the pinned caller, hybrid the one in the SDK's hybrid build tree.
+            unit = work / engine / Path(name).name
+            unit.parent.mkdir()
+            unit.write_bytes(subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':' + name]) if engine == 'native'
+                             else (Path(sdk['hybrid_source']) / name).read_bytes())
+            if unit.read_text().count('php_swoole_async(') != len(expected):
+                raise ValueError('Optional async caller inventory changed: ' + engine)
             for standard in ['c++14', 'c++17']:
                 row = next(item for item in sdk['commands'] if item['engine'] == engine and item['cpp_standard'] == standard and not item['stdext_enabled'] and item['unit'].endswith('php_swoole_cxx.cc'))
                 old_profile = Path(sdk['work']) / (engine + '-profile-False')
@@ -99,7 +103,7 @@ def main():
                                     defined_symbols=defined.stdout, defined_wrappers=wrappers,
                                     all_async_wrappers_compiled=defined.returncode == 0 and not defined.stderr and set(expected).issubset(wrappers))
                 write_report(output, report)
-        report['passed'] = len(report['commands']) == 6 and all(row['exit'] == 0 and row.get('expected_async_import') and row.get('all_async_wrappers_compiled') for row in report['commands'])
+        report['passed'] = len(report['commands']) == 4 and all(row['exit'] == 0 and row.get('expected_async_import') and row.get('all_async_wrappers_compiled') for row in report['commands'])
     except Exception as error:
         report['passed'] = False
         report['error'] = str(error)

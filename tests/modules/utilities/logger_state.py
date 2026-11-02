@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Normal public Logger behavior through separate exact-layout class DSOs.
 
-Uses attested production SDK prerequisites, then applies the current M14 header
-and actual log.cc overlay. This is module integration, not a rebuilt PHP world.
+The native side uses attested production SDK prerequisites and pinned log.cc; the
+selected side compiles the hybrid build's log.cc against that build's headers and
+config.h. This is module integration, not a rebuilt PHP world.
 """
 import argparse
 import json
@@ -18,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(Path(__file__).parent)]
 from coherent_sdk import stage
 from rust_asan import inspect as inspect_rust_asan
-from tools.build_hybrid import apply_patch_verified
+from tools.build_hybrid import hybrid_tree
 from tools.harness import run_isolated, write_report
 
 
@@ -26,7 +27,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--native-export', type=Path, required=True)
-    parser.add_argument('--selected-export', type=Path, required=True)
     parser.add_argument('--sdk-ref', required=True, help='Frozen prerequisite SDK source, not current Logger source')
     parser.add_argument('--archive', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -65,26 +65,25 @@ def main():
             if not args.native_ubsan_only:
                 sanitizer += ['-fno-sanitize-link-runtime']
             runtime_link = [str(runtime), '-Wl,-rpath,' + str(runtime.parent)]
-        manifest_path = ROOT / 'migration/patches/utilities/manifest.json'
-        manifest = json.loads(manifest_path.read_text())
-        for engine, export in [('native', args.native_export), ('selected', args.selected_export)]:
+        manifest = json.loads((ROOT / 'migration/patches/utilities/manifest.json').read_text())
+        hybrid, hybrid_flags = hybrid_tree(args.archive)
+        for engine in ['native', 'selected']:
             directory = work / engine
-            sdk_receipt = stage(directory, export, args.source, args.sdk_ref, ROOT)
-            sdk = directory / 'include'
-            source = directory / 'src/core/log.cc'
-            source.parent.mkdir(parents=True, exist_ok=True)
-            source.write_bytes(subprocess.check_output(['git', '-C', str(args.source), 'show', manifest['upstream_commit'] + ':src/core/log.cc']))
-            if engine == 'selected':
-                # Header reconstructed from the pinned reference, then exactly
-                # the current M14 patch; do not stack an older Logger overlay.
-                (sdk / 'swoole_log.h').write_bytes(subprocess.check_output(['git', '-C', str(args.source), 'show', manifest['upstream_commit'] + ':include/swoole_log.h']))
-                for entry in manifest['patches']:
-                    if entry['upstream_paths'] in [['src/core/log.cc'], ['include/swoole_log.h']]:
-                        patch = ROOT / 'migration/patches/utilities' / entry['path']
-                        apply_patch_verified(directory, patch, entry['upstream_paths'], entry['sha256'])
-                shutil.copyfile(ROOT / 'native/utilities/swoole_rs_utilities.h', sdk / 'swoole_rs_utilities.h')
-                assert b'#define SWOOLE_RS_LOGGER_STATE_ABI 2' in (sdk / 'swoole_log.h').read_bytes()
-            common = ['c++', '-std=c++14', '-O2', '-pthread', '-Wall', '-Wextra', '-Werror', '-DHAVE_CONFIG_H', '-I' + str(sdk), *shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))]
+            if engine == 'native':
+                sdk_receipt = stage(directory, args.native_export, args.source, args.sdk_ref, ROOT)
+                headers = ['-I' + str(directory / 'include')]
+                source = directory / 'src/core/log.cc'
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(subprocess.check_output(['git', '-C', str(args.source), 'show', manifest['upstream_commit'] + ':src/core/log.cc']))
+            else:
+                # The hybrid build's log.cc, headers and config.h.
+                directory.mkdir(parents=True)
+                shutil.copyfile(hybrid / 'config.h', directory / 'config.h')
+                sdk_receipt = dict(hybrid_tree=str(hybrid), flags=hybrid_flags)
+                headers = ['-I' + str(directory), *hybrid_flags]
+                source = hybrid / 'src/core/log.cc'
+                assert b'#define SWOOLE_RS_LOGGER_STATE_ABI 2' in (hybrid / 'include/swoole_log.h').read_bytes()
+            common = ['c++', '-std=c++14', '-O2', '-pthread', '-Wall', '-Wextra', '-Werror', '-DHAVE_CONFIG_H', *headers, *shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))]
             common += sanitizer
             obj = directory / 'log.o'
             run(common + ['-fPIC', '-MD', '-MF', str(directory / 'log.d'), '-c', str(source), '-o', str(obj)])
@@ -102,7 +101,7 @@ def main():
                 c_object = directory / 'path-c.o'
                 c_binary = directory / 'path-c'
                 run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-UNDEBUG',
-                     '-I' + str(sdk), *sanitizer, '-c', str(c_fixture), '-o', str(c_object)])
+                     *headers, *sanitizer, '-c', str(c_fixture), '-o', str(c_object)])
                 run(['c++', *sanitizer, str(c_object), str(args.archive.resolve()), *runtime_link,
                      '-pthread', '-lm', *(['-ldl'] if sys.platform.startswith('linux') else []), '-o', str(c_binary)])
                 observations = json.loads(run([str(c_binary)]).stdout)

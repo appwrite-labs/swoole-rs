@@ -34,7 +34,7 @@ def build_helper(sdk_path, work, report, profile="native"):
     for path, digest in row['dependencies_sha256'].items():
         if sha(path) != digest:
             raise ValueError('SDK dependency changed: ' + path)
-    native_header = Path(sdk['work']) / 'headers/ext-src/php_swoole_cxx.h'
+    native_header = Path(sdk['work']) / 'headers-native/ext-src/php_swoole_cxx.h'
     if sdk['pin'] != PIN or sdk['mirror_sha256']['ext-src/php_swoole_cxx.h'] != PUBLIC_HEADER_SHA256 or sha(native_header) != PUBLIC_HEADER_SHA256:
         raise ValueError('Native public C++ header differs from pinned ABI')
     consumed=[Path(path) for path in row['dependencies_sha256'] if Path(path).name=='php_swoole_cxx.h']

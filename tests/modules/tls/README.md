@@ -40,7 +40,9 @@ python3 tests/modules/tls/differential.py --reference PINNED_GIT \
   events and fork.
 - `--allocation` (`allocation.cc`): replaceable C++ `operator new` failures
   through the DTLS `BIO_ctrl` callback's native warning (SSLContext's warnings
-  are formatted in Rust).
+  are formatted in Rust). Each side's trace is checked against its own recorded
+  profile (`ALLOCATION_PROFILES` in `differential.py`): upstream's warning makes
+  three C++ allocations, the hybrid's (whose logger is utilities' Rust) one.
 - `--crypto-allocation --crypto-operation client-ca|dhparam|curve|dtls-init`
   (`crypto_allocation.cc`): OpenSSL allocator-hook single-failure sweep.
 - `--benchmark-check` (`benchmark.cc`): prepares six fixed optimized

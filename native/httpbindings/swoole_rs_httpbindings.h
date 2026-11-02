@@ -121,7 +121,7 @@ bool swr_http_host_request_create(struct _zval_struct *return_value, struct _zva
  * callbacks over swoole::http::ContextState, whose layout state.rs mirrors.
  * `context` is a swoole::http::Context. MINIT passes the codecs built in
  * (1 zlib, 2 brotli, 4 zstd, 8 any). */
-enum { SWR_PHPHTTP_PARSE_SIZE = 144, SWR_PHPHTTP_STATE_SIZE = 544 };
+enum { SWR_PHPHTTP_PARSE_SIZE = 144, SWR_PHPHTTP_STATE_SIZE = 680 };
 void swr_v1_phphttp_parse_minit(uint32_t codecs);
 size_t swr_v1_phphttp_parse(void *context, const char *data, size_t length);
 void swr_v1_phphttp_parse_free(void *context);
@@ -138,6 +138,21 @@ int swr_http_host_websocket_connection(void *context);
 const char *swr_http_host_upload_tmp_dir(const void *context);
 int swr_http_host_tmpfile(char *path);
 const char *swr_http_host_http2_data(void *context, size_t *length);
+
+/* The response header, trailer and body compression (crates/phphttp/src/header.rs).
+ * The header and trailer are Rust's thread-local bytes until the next call. */
+const char *swr_v1_phphttp_build_header(void *context, const char *body, size_t length, size_t *header_length);
+const char *swr_v1_phphttp_build_trailer(const void *context, size_t *length);
+bool swr_v1_phphttp_compress(void *context, const char *data, size_t length);
+/* What they ask of the context: brotli/zstd (1 done, 0 failed, -1 not built),
+ * the zlib_buffer, whether a content type is compressible (a null type asks
+ * whether the server lists types) and the cached Date. */
+int swr_http_host_compress_other(void *context, int method, const char *data, size_t length);
+char *swr_http_host_compression_buffer(void *context, size_t size);
+void swr_http_host_compressed(void *context, size_t length);
+size_t swr_http_host_compressed_length(const void *context);
+bool swr_http_host_compression_type(const void *context, const char *type, size_t length);
+struct _zend_string *swr_http_host_date(void);
 /* Calls that can run user code (a value's __toString while building the
  * response, exit() in it) trap a Zend bailout in C++: request_create,
  * response_free, write, end, redirect and push return true, send_file and

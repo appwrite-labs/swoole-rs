@@ -29,7 +29,7 @@ def main():
     report = dict(passed=False, work=str(work), commands=[], scope=__doc__,
                   runtime_executed=False, measurement_performed=False,
                   limits=['Compilation and import/layout observations only; no PHP/callback/original execution.',
-                          'Captured native and M26-enabled headers, not a new combined extension build.'])
+                          'Captured native (pinned) and hybrid-build headers; phpcoroutines-only is the pinned profile with this module\'s overlay.'])
     try:
         header_source = (args.source / HEADER_DEST).read_text()
         selected_header = header_selected(header_source)
@@ -48,9 +48,9 @@ def main():
         if not sdk['passed'] or not sdk['layout_matched']:
             raise ValueError('SDK prerequisite did not pass')
         rows = [row for row in sdk['commands'] if row['unit'] == 'ext-src/php_swoole_cxx.cc'
-                and not row['stdext_enabled'] and row['engine'] in ('native', 'combined')]
+                and not row['stdext_enabled'] and row['engine'] in ('native', 'hybrid')]
         if {(row['engine'], row['cpp_standard']) for row in rows} != {
-                (engine, std) for engine in ('native', 'combined') for std in ('c++14', 'c++17')}:
+                (engine, std) for engine in ('native', 'hybrid') for std in ('c++14', 'c++17')}:
             raise ValueError('Incomplete captured SDK profiles')
         dependencies = {name: digest for row in rows for name, digest in row['dependencies_sha256'].items()}
         for name, digest in dependencies.items():
@@ -68,12 +68,13 @@ def main():
                 exports |= {'swr_v1_phpcoroutines_callback_control'}
             if destination.endswith('swoole_coroutine.cc'):
                 exports |= {'swr_v1_phpcoroutines_context_route', 'swr_v1_phpcoroutines_context_query', 'swr_v1_phpcoroutines_trace', 'swr_v1_phpcoroutines_interrupt', 'swr_v1_phpcoroutines_stack_step', 'swr_v1_phpcoroutines_fiber', 'swr_v1_phpcoroutines_scheduler_phase', 'swr_v1_phpcoroutines_exit', 'swr_v1_phpcoroutines_metadata', 'swr_v1_phpcoroutines_repeat'} | {'swr_v1_phpcoroutines_join_' + suffix for suffix in ('try_new', 'clone', 'drop', 'try_insert', 'erase_empty', 'empty', 'next', 'release_membership', 'cancel', 'can_resume')}
-            for feature in ('native', 'phpcoroutines-only', 'combined'):
+            for feature in ('native', 'phpcoroutines-only', 'hybrid'):
                 profile = work / Path(destination).stem / feature
                 profile.mkdir(parents=True)
                 source = profile / Path(destination).name
                 # Pointer type changes preserve every SchedulerObject field position.
-                source.write_text((original if feature == 'native' else selected) + ('''
+                text = original if feature == 'native' else selected if feature == 'phpcoroutines-only' else (Path(sdk['hybrid_source']) / destination).read_text()
+                source.write_text(text + ('''
     struct OriginalSchedulerObjectLayout { void *list; bool started; zend_object std; };
     static_assert(sizeof(SchedulerObject) == sizeof(OriginalSchedulerObjectLayout), "SchedulerObject size");
     static_assert(alignof(SchedulerObject) == alignof(OriginalSchedulerObjectLayout), "SchedulerObject alignment");
@@ -127,13 +128,14 @@ static_assert(offsetof(AutoloadQueue, queue) == offsetof(OriginalAutoloadQueueLa
 #endif
 """)
                 for standard in ('c++14', 'c++17'):
-                    row = next(row for row in rows if row['engine'] == ('combined' if feature == 'combined' else 'native')
+                    row = next(row for row in rows if row['engine'] == ('hybrid' if feature == 'hybrid' else 'native')
                                and row['cpp_standard'] == standard)
                     captured_cxx = [Path(name) for name in row['dependencies_sha256'] if name.endswith('/ext-src/php_swoole_cxx.h')]
                     if len(captured_cxx) != 1:
                         raise ValueError('Ambiguous captured header root')
                     captured_headers = captured_cxx[0].parent.parent
-                    staged_headers = work / ('headers-' + feature + '-' + standard)
+                    # The hybrid mirror already holds the hybrid build's headers.
+                    staged_headers = captured_headers if feature == 'hybrid' else work / ('headers-' + feature + '-' + standard)
                     if not staged_headers.exists():
                         require_build_space(ROOT)
                         shutil.copytree(captured_headers, staged_headers)
@@ -155,7 +157,7 @@ static_assert(offsetof(AutoloadQueue, queue) == offsetof(OriginalAutoloadQueueLa
                     command[command.index('-MF') + 1] = str(dep)
                     command[-1] = str(source)
                     command[command.index('-I' + str(config.parent))] = '-I' + str(profile)
-                    command += ['-O2', '-Wall', '-Werror', '-I' + str(ROOT / 'native/phpcoroutines'), '-o', str(obj)]
+                    command += ['-O2', '-Wall', '-Werror', *([] if feature == 'hybrid' else ['-I' + str(ROOT / 'native/phpcoroutines')]), '-o', str(obj)]
                     unit_exports = set(exports)
                     capabilities = None
                     if destination == 'ext-src/swoole_coroutine.cc':

@@ -15,7 +15,6 @@ use crate::{
         swoole_socket_coro_sendfile, swoole_socket_coro_unconstructed,
     },
     socket::socket_of,
-    table::{self, Owned},
 };
 use libc::{c_char, c_int, c_void};
 use std::{
@@ -29,6 +28,7 @@ use std::{
 };
 use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_inflate::Inflate;
+use swoole_rs_phptable::{self as table, Owned};
 use swoole_rs_zend::{
     Call, Class, Object, declare_bool, declare_long, declare_string, register_long_constant,
     set_object, string,

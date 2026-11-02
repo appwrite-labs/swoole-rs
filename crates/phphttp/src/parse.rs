@@ -232,7 +232,7 @@ const HEADER_KEYS: [Key; 8] = [
 static KEYS: [AtomicPtr<zend_string>; 17] = [const { AtomicPtr::new(ptr::null_mut()) }; 17];
 /// `Swoole\Http\Request`'s `get`, `post`, `cookie`, `files` and `tmpfiles` slots.
 static OFFSETS: [AtomicU32; 5] = [const { AtomicU32::new(0) }; 5];
-static CAPABILITIES: AtomicU32 = AtomicU32::new(0);
+pub(crate) static CAPABILITIES: AtomicU32 = AtomicU32::new(0);
 
 fn key(key: Key) -> *mut zend_string {
     KEYS[key as usize].load(Relaxed)

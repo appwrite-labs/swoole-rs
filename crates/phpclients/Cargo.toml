@@ -8,7 +8,7 @@ description = "PHP client classes (Swoole\\Coroutine\\Socket, Swoole\\Coroutine\
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:libc", "dep:swoole-rs-error", "dep:swoole-rs-clients", "dep:swoole-rs-inflate", "dep:swoole-rs-base64", "dep:swoole-rs-zend", "swoole-rs-zend/php"]
+php = ["dep:libc", "dep:swoole-rs-error", "dep:swoole-rs-clients", "dep:swoole-rs-inflate", "dep:swoole-rs-base64", "dep:swoole-rs-phptable", "swoole-rs-phptable/php", "dep:swoole-rs-zend", "swoole-rs-zend/php"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
@@ -16,6 +16,7 @@ swoole-rs-error = { path = "../error", optional = true }
 swoole-rs-clients = { path = "../clients", optional = true }
 swoole-rs-inflate = { path = "../inflate", optional = true }
 swoole-rs-base64 = { path = "../base64", optional = true }
+swoole-rs-phptable = { path = "../phptable", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
 
 [lints]

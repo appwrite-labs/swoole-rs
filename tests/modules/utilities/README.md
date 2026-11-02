@@ -55,12 +55,12 @@ Unavailable locales (for example Linux `en_US.UTF-8`) are unqualified.
 
 ```sh
 python3 tests/modules/utilities/logger_state.py --source /pinned/reference \
-  --native-export NATIVE_EXPORT --selected-export SELECTED_EXPORT --sdk-ref COMMIT \
-  --archive /inputs/libswoole_rs_ffi.a --output target/logger-state.json
+  --native-export NATIVE_EXPORT --sdk-ref COMMIT \
+  --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --output target/logger-state.json
 ```
 
-Compiles the actual native and selected `log.cc` into separate DSOs against each
-export's SDK (`coherent_sdk.py`), then runs `logger_state_public.cc` against each:
+Compiles pinned `log.cc` against the native export's SDK (`coherent_sdk.py`) and
+the hybrid build's `log.cc` against that build's headers into separate DSOs, then runs `logger_state_public.cc` against each:
 30 public checks (defaults/clamping, file/reopen/close paths, unowned streams,
 reset/backtrace retention, rotation, descriptor redirection), stream replacement,
 1,024 records during 128 concurrent reopens and 42 filename values. The selected

@@ -66,6 +66,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_response_minit(
         // SAFETY: as above.
         unsafe { declare_null(ce, name) };
     }
+    crate::header::minit(ce);
     ce
 }
 

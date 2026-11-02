@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body, select_overlay
 
 
@@ -41,7 +42,7 @@ def main():
     pieces = []
     for variant, text in [('native', original), ('rust', select_overlay(selected.read_text()))]:
         fragment = body(text, 'static bool http2_server_respond(HttpContext *ctx, const String *body) {')
-        pieces.append('namespace ' + variant + ' {using String=BufferValue;bool respond(HttpContext*ctx,const BufferValue*body){' + fragment + '}}')
+        pieces.append((variant, 'namespace ' + variant + ' {using String=BufferValue;bool respond(HttpContext*ctx,const BufferValue*body){' + fragment + '}}'))
     prelude = r'''
 #include "swoole_http2.h"
 #define SW_USE_RUST_HTTP2
@@ -63,14 +64,14 @@ using namespace swoole;
 struct zval {unsigned length;};
 struct BufferValue {size_t length=0;};
 struct HttpContext {int fd=1;unsigned stream_id=3,end_=0,send_header_=0,send_chunked=0,content_compressed=0;struct Response {zval*zobject;}response;std::unique_ptr<BufferValue>zlib_buffer;unsigned closes=0;void close(HttpContext*);};
-static std::vector<std::string>effects;
-static std::function<void(const std::string&)> mutate;
-static unsigned throw_at,failure;
-static void event(std::string text){effects.push_back(text);if(mutate)mutate(text);if(throw_at==effects.size())throw std::runtime_error("native effect");}
-static zval trailer_property;
-static int swoole_http_response_ce;
-static zval*sw_zend_read_property_ex(int,zval*,int,int){event("property");return &trailer_property;}
-static size_t php_swoole_array_length_safe(zval*z){event("length");return z->length;}
+inline std::vector<std::string>effects;
+inline std::function<void(const std::string&)> mutate;
+inline unsigned throw_at,failure;
+inline void event(std::string text){effects.push_back(text);if(mutate)mutate(text);if(throw_at==effects.size())throw std::runtime_error("native effect");}
+inline zval trailer_property;
+inline int swoole_http_response_ce;
+inline zval*sw_zend_read_property_ex(int,zval*,int,int){event("property");return &trailer_property;}
+inline size_t php_swoole_array_length_safe(zval*z){event("length");return z->length;}
 struct Http2Session;
 struct FixtureStream {unsigned id=3;HttpContext*ctx;
  bool send_header(const BufferValue*body,bool end){event("header:"+std::to_string(end)+":"+std::to_string(body->length)+":"+std::to_string(ctx->end_));return !(failure&1);}
@@ -82,8 +83,8 @@ struct Http2Session {bool shutting_down=false;std::map<unsigned,std::shared_ptr<
  std::shared_ptr<FixtureStream>get_stream(unsigned id){event("get:"+std::to_string(id));return streams.at(id);}
  bool remove_stream(unsigned id){event("remove:"+std::to_string(id));return streams.erase(id)>0;}
 };
-static std::map<int,std::shared_ptr<Http2Session>>http2_sessions;
-void HttpContext::close(HttpContext*){event("close:"+std::to_string(end_));++closes;}
+inline std::map<int,std::shared_ptr<Http2Session>>http2_sessions;
+inline void HttpContext::close(HttpContext*){event("close:"+std::to_string(end_));++closes;}
 '''
     driver = r'''
 struct Result {std::vector<std::string>events;bool returned=false,shutdown=false;unsigned end=0,header=0,chunked=0,compressed=0,closes=0,trailer=0;size_t streams=0,body=0,zlib=0;std::string exception;};
@@ -109,23 +110,8 @@ std::cout<<"{\"passed\":true,\"response_lifecycle_cases\":"<<count<<",\"compress
 '''
     work = args.output.parent / (args.output.stem + '-artifacts')
     work.mkdir(parents=True, exist_ok=False)
-    cpp = work / 'lifecycle.cpp'
-    cpp.write_text(prelude + '\n'.join(pieces) + driver)
-    report['variants'] = []
-    for enabled in [0, 1]:
-        command = ['c++', '-std=c++17', '-O1', '-fsanitize=address,undefined', '-fno-sanitize=alignment',
-                   '-fno-omit-frame-pointer', f'-DTEST_COMPRESSION={enabled}', '-I', str(gate.ROOT / 'native/http2'), '-I', str(args.source / 'include')]
-        for include in args.include:
-            command += ['-I', include]
-        executable = work / ('lifecycle-' + str(enabled))
-        command += [str(cpp), str(archive), '-o', str(executable)]
-        for cmd in [command, [str(executable)]]:
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            report['commands'].append({'command': cmd, 'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr})
-            if result.returncode:
-                break
-            if cmd != command:
-                report['variants'].append(json.loads(result.stdout))
+    commands, report['variants'] = sides.variants(work, 'lifecycle', prelude, pieces, driver, source=args.source, archive=archive, includes=args.include, define='TEST_COMPRESSION')
+    report['commands'] += commands
     report['passed'] = len(report['variants']) == 2 and all(r['passed'] for r in report['variants'])
     report['native_sanitizers'] = ['address', 'undefined except alignment']
     report['rust_sanitized'] = False

@@ -110,3 +110,7 @@ void swr_zend_sensitive_parameter(zend_class_entry *ce, const char *lcname, size
 void swr_zend_separate_array(zval *array) {
     SEPARATE_ARRAY(array);
 }
+
+bool swr_zend_instanceof(const zend_class_entry *ce, const zend_class_entry *parent) {
+    return instanceof_function(ce, parent);
+}

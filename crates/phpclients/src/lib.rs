@@ -21,7 +21,6 @@ mod http_request;
 mod llhttp;
 mod native;
 mod socket;
-mod table;
 
 pub use client::*;
 pub use http_client::*;

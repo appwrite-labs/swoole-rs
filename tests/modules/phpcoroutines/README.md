@@ -49,7 +49,7 @@ applies them to the pinned sources for the source-shape tests and `gate.py`; the
   ASan/UBSan.
 - `sdk.py --source PINNED --sdk-report PHPHELPERS_SDK.json --output OUT.json`
   reuses the captured phphelpers SDK profiles to compile all three selected TUs
-  in C++14/C++17, checks the Rust imports of each object (none for native), and
+  (native, phpcoroutines-only over the pin, and the hybrid build tree's) in C++14/C++17, checks the Rust imports of each object (none for native), and
   asserts `PHPContext`, `SchedulerObject` and autoload-owner layouts match native.
 - `stats_runtime.py --profile statistics|idle-queries|startup|configuration
   --engine native=SO --engine selected=SO --build-manifest JSON --archive ARCHIVE

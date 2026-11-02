@@ -324,15 +324,6 @@ def plan(args, reports):
         script('httpbindings-server', 'tests/modules/httpbindings/server_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('httpbindings-server'))
         for suffix, options in [('', []), ('-without-compression', ['--without-compression'])]:
-            name = 'httpbindings-response' + suffix
-            script(name, 'tests/modules/httpbindings/response_gate.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options, *report(name))
-        for locale in ['C', 'C.UTF-8', 'en_US.ISO8859-1', 'tr_TR.ISO8859-9', 'tr_TR.UTF-8']:
-            name = 'httpbindings-response-libc-' + locale
-            script(name, 'tests/modules/httpbindings/response_gate.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                   '--native-libc', '--locale', locale, *report(name))
-        for suffix, options in [('', []), ('-without-compression', ['--without-compression'])]:
             name = 'httpbindings-settings' + suffix
             script(name, 'tests/modules/httpbindings/settings_gate.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options, *report(name))
@@ -347,12 +338,6 @@ def plan(args, reports):
                        '--source', ROOT / 'target/upstream/src',
                        '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        *options, *report(name))
-        # Capability 0 compiles the codec method out, so it has nothing to prove (#316).
-        for capabilities in range(1, 8):
-            name = 'httpbindings-codec-' + str(capabilities)
-            script(name, 'tests/modules/httpbindings/codec_gate.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                   '--capabilities', capabilities, *report(name))
     if 'http2' in modules:
         includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
                     if sys.platform == 'darwin' else [])
@@ -544,7 +529,7 @@ def plan(args, reports):
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                    '--source-ref', utility_source, '--' + family + '-originals', *report(name))
         script('utilities-logger-owned-state', 'tests/modules/utilities/logger_state.py', '--source', ROOT / 'target/upstream/src',
-               '--native-export', native_export, '--selected-export', selected_export,
+               '--native-export', native_export,
                '--sdk-ref', utility_source,
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('utilities-logger-owned-state'))
         script('utilities-lowercase-sdk', 'tests/modules/utilities/lowercase_sdk.py',

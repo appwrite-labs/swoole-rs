@@ -31,6 +31,9 @@ size_t swr_zend_url_decode(char *data, size_t length);
 /* php_swoole_http_build_query: http_build_query($data) as RFC 1738, or NULL. */
 zend_string *swr_zend_http_build_query(zval *data);
 
+/* instanceof_function(ce, parent). */
+bool swr_zend_instanceof(const zend_class_entry *ce, const zend_class_entry *parent);
+
 /* SEPARATE_ARRAY. */
 void swr_zend_separate_array(zval *array);
 

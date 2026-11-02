@@ -55,3 +55,8 @@ void swr_zend_http_upload(zval *tmpfiles, const char *file, size_t length) {
     zend_hash_add_ptr(SG(rfc1867_uploaded_files), path, path);
     zend_string_release(path);
 }
+
+void swr_zend_http_get_string(void *arg) {
+    swr_zend_http_string *string = arg;
+    string->result = zval_get_string(string->value);
+}

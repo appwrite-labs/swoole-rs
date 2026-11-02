@@ -1,0 +1,17 @@
+[package]
+name = "swoole-rs-phpstdext"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Swoole's experimental stdext: typed arrays and methods on arrays, strings and streams"
+
+[features]
+# Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+
+[dependencies]
+swoole-rs-zend = { path = "../zend", optional = true }
+
+[lints]
+workspace = true

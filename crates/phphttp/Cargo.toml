@@ -8,10 +8,11 @@ description = "PHP Swoole\\Http classes over the zend crates and the httpbinding
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-httpbindings", "dep:swoole-rs-http", "dep:libc"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-httpbindings", "dep:swoole-rs-http", "dep:swoole-rs-deflate", "dep:libc"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
+swoole-rs-deflate = { path = "../deflate", optional = true }
 swoole-rs-http = { path = "../http", optional = true }
 swoole-rs-httpbindings = { path = "../httpbindings", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }

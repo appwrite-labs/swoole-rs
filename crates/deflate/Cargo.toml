@@ -1,0 +1,19 @@
+[package]
+name = "swoole-rs-deflate"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "HTTP response body compression (gzip/deflate) over the system zlib"
+
+# Its own crate so only the code that compresses links zlib (#439 decision 2).
+[lib]
+name = "swoole_rs_deflate"
+crate-type = ["rlib"]
+
+[dependencies]
+# System zlib (the same libz the PHP build links), per #439's -sys decision.
+libz-sys = { version = "1.1.20", default-features = false, features = ["libc"] }
+
+[lints]
+workspace = true

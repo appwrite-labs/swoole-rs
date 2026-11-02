@@ -1,0 +1,1760 @@
+diff --git a/ext-src/php_swoole_thread.h b/ext-src/php_swoole_thread.h
+index 4331609..a609e10 100644
+--- a/ext-src/php_swoole_thread.h
++++ b/ext-src/php_swoole_thread.h
+@@ -23,2 +23,3 @@
+ #include "swoole_thread.h"
++#include "swoole_rs_phpthread.h"
+ 
+@@ -41,5 +42,2 @@ void php_swoole_thread_bailout();
+ 
+-ThreadResource *php_swoole_thread_arraylist_cast(const zval *zobject);
+-ThreadResource *php_swoole_thread_map_cast(const zval *zobject);
+-ThreadResource *php_swoole_thread_queue_cast(const zval *zobject);
+ ThreadResource *php_swoole_thread_lock_cast(const zval *zobject);
+@@ -49,5 +47,2 @@ ThreadResource *php_swoole_thread_barrier_cast(const zval *zobject);
+ 
+-void php_swoole_thread_arraylist_create(zval *return_value, ThreadResource *resource);
+-void php_swoole_thread_map_create(zval *return_value, ThreadResource *resource);
+-void php_swoole_thread_queue_create(zval *return_value, ThreadResource *resource);
+ void php_swoole_thread_lock_create(zval *return_value, ThreadResource *resource);
+@@ -102,213 +97,27 @@ class ThreadResource {
+ 
+-struct ArrayItem {
+-    uint32_t type = IS_UNDEF;
+-    zend_string *key = nullptr;
+-    union {
+-        zend_string *str;
+-        zend_long lval;
+-        double dval;
+-        struct {
+-            int fd;
+-            swSocketType type;
+-        } socket;
+-        zend_string *serialized_object;
+-        ThreadResource *resource;
+-    } value;
+-
+-    explicit ArrayItem(zval *zvalue) {
+-        value = {};
+-        store(zvalue);
+-    }
+-
+-    void setKey(zend::String &_key) {
+-        key = zend_string_init(_key.val(), _key.len(), true);
+-    }
+-
+-    void setKey(const zend_string *_key) {
+-        key = zend_string_init(ZSTR_VAL(_key), ZSTR_LEN(_key), true);
+-    }
+-
+-    void store(zval *zvalue);
+-    void fetch(zval *return_value) const;
+-    void release();
+-    bool equals(const zval *zvalue) const;
+-
+-    static int compare(Bucket *a, Bucket *b);
+-
+-    ~ArrayItem() {
+-        if (value.str) {
+-            release();
+-        }
+-        if (key) {
+-            zend_string_release(key);
+-        }
+-    }
+-};
+-
+-class ZendArray : public ThreadResource {
+-  protected:
+-    swoole::RWLock lock_;
+-    zend_array ht;
+-
+-    static void item_dtor(zval *pDest) {
+-        auto item = static_cast<ArrayItem *>(Z_PTR_P(pDest));
+-        delete item;
+-    }
+-
++// A table shared between threads: Rust (crates/phpthread), which also owns
++// Thread\Map, ArrayList and Queue. Swoole\Thread passes its arguments as one.
++class ZendArray {
+   public:
+-    ZendArray() : lock_(false) {
+-        zend_hash_init(&ht, 0, NULL, item_dtor, 1);
+-    }
+-
+-    ~ZendArray() override {
+-        zend_hash_destroy(&ht);
++    ZendArray() = delete;
++    static ZendArray *create() {
++        return static_cast<ZendArray *>(swr_v1_phpthread_array_new());
+     }
+-
+-    void clean() {
+-        lock_.lock();
+-        zend_hash_clean(&ht);
+-        lock_.unlock();
++    static ZendArray *from(zend_array *ht) {
++        return static_cast<ZendArray *>(swr_v1_phpthread_array_from(ht));
+     }
+-
+-    void append(zval *zvalue);
+-
+-    void add(const zend_string *skey, zval *zvalue) {
+-        auto item = new ArrayItem(zvalue);
+-        item->setKey(skey);
+-        zend_hash_add_ptr(&ht, item->key, item);
++    void append(zval *zvalue) {
++        swr_v1_phpthread_array_append(this, zvalue);
+     }
+-
+-    void add(zend::String &skey, zval *zvalue) {
+-        auto item = new ArrayItem(zvalue);
+-        item->setKey(skey);
+-        zend_hash_add_ptr(&ht, item->key, item);
+-    }
+-
+-    void add(zend_long index, zval *zvalue) {
+-        auto item = new ArrayItem(zvalue);
+-        zend_hash_index_add_ptr(&ht, index, item);
+-    }
+-
+-    bool index_exists(zend_long index) const {
+-        return index < (zend_long) zend_hash_num_elements(&ht);
+-    }
+-
+-    bool strkey_exists(zend::String &skey) const {
+-        return zend_hash_find_ptr(&ht, skey.get()) != nullptr;
++    void to_array(zval *return_value) {
++        swr_v1_phpthread_array_to_array(this, return_value);
+     }
+-
+-    bool intkey_exists(zend_long index) const {
+-        return zend_hash_index_find_ptr(&ht, index) != nullptr;
+-    }
+-
+-    void strkey_offsetGet(zval *zkey, zval *return_value) {
+-        zend::String skey(zkey);
+-        lock_.lock_rd();
+-        auto item = static_cast<ArrayItem *>(zend_hash_find_ptr(&ht, skey.get()));
+-        if (item) {
+-            item->fetch(return_value);
+-        }
+-        lock_.unlock();
+-    }
+-
+-    void strkey_offsetExists(zval *zkey, zval *return_value) {
+-        zend::String skey(zkey);
+-        lock_.lock_rd();
+-        RETVAL_BOOL(strkey_exists(skey));
+-        lock_.unlock();
+-    }
+-
+-    void strkey_offsetUnset(zval *zkey) {
+-        zend::String skey(zkey);
+-        lock_.lock();
+-        zend_hash_del(&ht, skey.get());
+-        lock_.unlock();
+-    }
+-
+-    void strkey_offsetSet(zval *zkey, zval *zvalue) {
+-        zend::String skey(zkey);
+-        auto item = new ArrayItem(zvalue);
+-        item->setKey(skey);
+-        lock_.lock();
+-        zend_hash_update_ptr(&ht, item->key, item);
+-        lock_.unlock();
+-    }
+-
+-    void strkey_incr(zval *zkey, zval *zvalue, zval *return_value);
+-    void intkey_incr(zend_long index, zval *zvalue, zval *return_value);
+-    void strkey_decr(zval *zkey, zval *zvalue, zval *return_value);
+-    void intkey_decr(zend_long index, zval *zvalue, zval *return_value);
+-    bool index_incr(zval *zkey, zval *zvalue, zval *return_value);
+-    bool index_decr(zval *zkey, zval *zvalue, zval *return_value);
+-
+-    void strkey_add(zval *zkey, zval *zvalue, zval *return_value);
+-    void intkey_add(zend_long index, zval *zvalue, zval *return_value);
+-    void strkey_update(zval *zkey, zval *zvalue, zval *return_value);
+-    void intkey_update(zend_long index, zval *zvalue, zval *return_value);
+-
+-    void count(zval *return_value) {
+-        lock_.lock_rd();
+-        RETVAL_LONG(zend_hash_num_elements(&ht));
+-        lock_.unlock();
+-    }
+-
+-    void keys(zval *return_value);
+-    void values(zval *return_value);
+-    void to_array(zval *return_value);
+-    void find(const zval *search, zval *return_value);
+-    void sort(bool renumber);
+-
+-    void intkey_offsetGet(zend_long index, zval *return_value) {
+-        lock_.lock_rd();
+-        auto item = static_cast<ArrayItem *>(zend_hash_index_find_ptr(&ht, index));
+-        if (item) {
+-            item->fetch(return_value);
+-        }
+-        lock_.unlock();
+-    }
+-
+-    void intkey_offsetExists(zend_long index, zval *return_value) {
+-        lock_.lock_rd();
+-        RETVAL_BOOL(intkey_exists(index));
+-        lock_.unlock();
+-    }
+-
+-    void intkey_offsetUnset(zend_long index) {
+-        lock_.lock();
+-        zend_hash_index_del(&ht, index);
+-        lock_.unlock();
++    void add_ref() {
++        swr_v1_phpthread_array_add_ref(this);
+     }
+-
+-    void intkey_offsetSet(zend_long index, zval *zvalue) {
+-        auto item = new ArrayItem(zvalue);
+-        lock_.lock();
+-        zend_hash_index_update_ptr(&ht, index, item);
+-        lock_.unlock();
++    void del_ref() {
++        swr_v1_phpthread_array_release(this);
+     }
+-
+-    bool index_offsetGet(zend_long index, zval *return_value);
+-    bool index_offsetSet(zend_long index, zval *zvalue);
+-    void index_offsetUnset(zend_long index);
+-    void index_offsetExists(zend_long index, zval *return_value);
+-
+-    static void incr_update(ArrayItem *item, zval *zvalue, zval *return_value);
+-    static ArrayItem *incr_create(zval *zvalue, zval *return_value);
+-    static ZendArray *from(zend_array *ht);
+ };
+ 
+-#define INIT_ARRAY_INCR_PARAMS                                                                                         \
+-    zval *zkey;                                                                                                        \
+-    zval zvalue_, *zvalue = NULL;                                                                                      \
+-                                                                                                                       \
+-    ZEND_PARSE_PARAMETERS_START(1, 2)                                                                                  \
+-    Z_PARAM_ZVAL(zkey)                                                                                                 \
+-    Z_PARAM_OPTIONAL                                                                                                   \
+-    Z_PARAM_ZVAL(zvalue)                                                                                               \
+-    ZEND_PARSE_PARAMETERS_END();                                                                                       \
+-                                                                                                                       \
+-    if (!zvalue) {                                                                                                     \
+-        zvalue = &zvalue_;                                                                                             \
+-        ZVAL_LONG(zvalue, 1);                                                                                          \
+-    }
+-
+ #endif
+diff --git a/ext-src/swoole_thread.cc b/ext-src/swoole_thread.cc
+index 2995a72..52f0f34 100644
+--- a/ext-src/swoole_thread.cc
++++ b/ext-src/swoole_thread.cc
+@@ -155,2 +155,131 @@ static const zend_function_entry swoole_thread_methods[] = {
+ 
++#ifdef SWOOLE_SOCKETS_SUPPORT
++void php_swoole_thread_php_socket_create(zval *return_value, zend_long sockfd);
++
++static int thread_host_php_socket_cast(zval *zvalue) {
++    php_socket *php_sock = SW_Z_SOCKET_P(zvalue);
++    if (php_sock->bsd_socket == -1) {
++        zend_throw_exception(swoole_exception_ce, "invalid socket fd", EBADF);
++        return -2;
++    }
++    int fd = dup(php_sock->bsd_socket);
++    if (fd == -1) {
++        zend_throw_exception(swoole_exception_ce, "failed to dup socket fd", errno);
++    }
++    return fd;
++}
++#endif
++
++// What crates/phpthread reaches of C++: serialization, sockets, and the Lock,
++// Atomic and Barrier resources a container may hold.
++static swr_v1_phpthread_host thread_host = {
++    nullptr,
++    [](zval *value, bool *bailed) -> zend_string * {
++        zend_string *result = nullptr;
++        *bailed = false;
++        zend_try {
++            result = php_swoole_serialize(value);
++        }
++        zend_catch {
++            *bailed = true;
++        }
++        zend_end_try();
++        return result;
++    },
++    [](const char *data, size_t length, zval *out) -> bool {
++        bool bailed = false;
++        zend_string *serialized = zend_string_init(data, length, false);
++        zend_try {
++            php_swoole_unserialize(serialized, out);
++        }
++        zend_catch {
++            bailed = true;
++        }
++        zend_end_try();
++        zend_string_release(serialized);
++        return bailed;
++    },
++    [](zval *zvalue) -> uint32_t {
++        if (sw_zval_is_co_socket(zvalue)) {
++            return IS_CO_SOCKET;
++        }
++#ifdef SWOOLE_SOCKETS_SUPPORT
++        if (sw_zval_is_php_socket(zvalue)) {
++            return IS_PHP_SOCKET;
++        }
++#endif
++        zend_class_entry *ce = Z_OBJCE_P(zvalue);
++        if (instanceof_function(ce, swoole_thread_lock_ce)) {
++            return IS_LOCK;
++        } else if (instanceof_function(ce, swoole_thread_atomic_ce)) {
++            return IS_ATOMIC;
++        } else if (instanceof_function(ce, swoole_thread_atomic_long_ce)) {
++            return IS_ATOMIC_LONG;
++        } else if (instanceof_function(ce, swoole_thread_barrier_ce)) {
++            return IS_BARRIER;
++        }
++        return 0;
++    },
++    [](zval *zvalue, uint32_t kind) -> void * {
++        switch (kind) {
++        case IS_LOCK:
++            return php_swoole_thread_lock_cast(zvalue);
++        case IS_ATOMIC:
++            return php_swoole_thread_atomic_cast(zvalue);
++        case IS_ATOMIC_LONG:
++            return php_swoole_thread_atomic_long_cast(zvalue);
++        default:
++            return php_swoole_thread_barrier_cast(zvalue);
++        }
++    },
++    [](zval *return_value, uint32_t kind, void *resource) {
++        auto r = static_cast<ThreadResource *>(resource);
++        switch (kind) {
++        case IS_LOCK:
++            php_swoole_thread_lock_create(return_value, r);
++            break;
++        case IS_ATOMIC:
++            php_swoole_thread_atomic_create(return_value, r);
++            break;
++        case IS_ATOMIC_LONG:
++            php_swoole_thread_atomic_long_create(return_value, r);
++            break;
++        default:
++            php_swoole_thread_barrier_create(return_value, r);
++            break;
++        }
++    },
++    [](void *resource) { static_cast<ThreadResource *>(resource)->add_ref(); },
++    [](void *resource) { static_cast<ThreadResource *>(resource)->del_ref(); },
++    php_swoole_thread_stream_cast,
++    [](zval *zvalue, int *type) -> int {
++        swSocketType socket_type{};
++        int fd = php_swoole_thread_co_socket_cast(zvalue, &socket_type);
++        *type = socket_type;
++        return fd;
++    },
++#ifdef SWOOLE_SOCKETS_SUPPORT
++    thread_host_php_socket_cast,
++#else
++    nullptr,
++#endif
++    [](zval *return_value, int64_t fd) { php_swoole_thread_stream_create(return_value, fd); },
++    [](zval *return_value, int64_t fd, int type) {
++        php_swoole_thread_co_socket_create(return_value, fd, (swSocketType) type);
++    },
++#ifdef SWOOLE_SOCKETS_SUPPORT
++    [](zval *return_value, int64_t fd) { php_swoole_thread_php_socket_create(return_value, fd); },
++#else
++    nullptr,
++#endif
++    [](int error) { swoole_set_last_error(error); },
++    [](bool list) {
++        if (list) {
++            swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first");
++        } else {
++            php_swoole_fatal_error(E_ERROR, "must call constructor first");
++        }
++    },
++};
++
+ void php_swoole_thread_minit(int module_number) {
+@@ -184,2 +313,4 @@ void php_swoole_thread_minit(int module_number) {
+     SW_INIT_CLASS_ENTRY_DATA_OBJECT(swoole_thread_error, "Swoole\\Thread\\Error");
++    thread_host.exception = swoole_exception_ce;
++    swr_v1_phpthread_minit(&thread_host);
+     zend_declare_property_long(swoole_thread_error_ce, ZEND_STRL("code"), 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
+@@ -213,3 +344,3 @@ static PHP_METHOD(swoole_thread, __construct) {
+     if (argc > 0) {
+-        argv = new ZendArray();
++        argv = ZendArray::create();
+         for (int i = 0; i < argc; i++) {
+@@ -624,626 +755,2 @@ static PHP_METHOD(swoole_thread, yield) {
+ 
+-#define CAST_OBJ_TO_RESOURCE(_name, _type)                                                                             \
+-    else if (instanceof_function(Z_OBJCE_P(zvalue), swoole_thread_##_name##_ce)) {                                     \
+-        value.resource = php_swoole_thread_##_name##_cast(zvalue);                                                     \
+-        value.resource->add_ref();                                                                                     \
+-        type = _type;                                                                                                  \
+-        break;                                                                                                         \
+-    }
+-
+-void ArrayItem::store(zval *zvalue) {
+-    type = Z_TYPE_P(zvalue);
+-    switch (type) {
+-    case IS_LONG:
+-        value.lval = zval_get_long(zvalue);
+-        break;
+-    case IS_DOUBLE:
+-        value.dval = zval_get_double(zvalue);
+-        break;
+-    case IS_STRING: {
+-        value.str = zend_string_init(Z_STRVAL_P(zvalue), Z_STRLEN_P(zvalue), true);
+-        break;
+-    }
+-    case IS_TRUE:
+-    case IS_FALSE:
+-    case IS_NULL:
+-        break;
+-    case IS_RESOURCE: {
+-        value.socket.fd = php_swoole_thread_stream_cast(zvalue);
+-        type = IS_STREAM_SOCKET;
+-        if (value.socket.fd == -1) {
+-            zend_throw_exception(swoole_exception_ce, "failed to convert to socket fd", errno);
+-        }
+-        break;
+-    }
+-    case IS_ARRAY: {
+-        type = zend_array_is_list(Z_ARRVAL_P(zvalue)) ? IS_ARRAYLIST : IS_MAP;
+-        value.resource = ZendArray::from(Z_ARRVAL_P(zvalue));
+-        break;
+-    }
+-    case IS_OBJECT: {
+-        if (sw_zval_is_co_socket(zvalue)) {
+-            value.socket.fd = php_swoole_thread_co_socket_cast(zvalue, &value.socket.type);
+-            type = IS_CO_SOCKET;
+-            if (value.socket.fd == -1) {
+-                zend_throw_exception(swoole_exception_ce, "failed to convert to socket fd", errno);
+-            }
+-            break;
+-        }
+-#ifdef SWOOLE_SOCKETS_SUPPORT
+-        else if (sw_zval_is_php_socket(zvalue)) {
+-            php_socket *php_sock = SW_Z_SOCKET_P(zvalue);
+-            if (php_sock->bsd_socket == -1) {
+-                zend_throw_exception(swoole_exception_ce, "invalid socket fd", EBADF);
+-                break;
+-            }
+-            value.socket.fd = dup(php_sock->bsd_socket);
+-            if (value.socket.fd == -1) {
+-                zend_throw_exception(swoole_exception_ce, "failed to dup socket fd", errno);
+-            }
+-            type = IS_PHP_SOCKET;
+-            break;
+-        }
+-#endif
+-        CAST_OBJ_TO_RESOURCE(arraylist, IS_ARRAYLIST)
+-        CAST_OBJ_TO_RESOURCE(map, IS_MAP)
+-        CAST_OBJ_TO_RESOURCE(queue, IS_QUEUE)
+-        CAST_OBJ_TO_RESOURCE(lock, IS_LOCK)
+-        CAST_OBJ_TO_RESOURCE(atomic, IS_ATOMIC)
+-        CAST_OBJ_TO_RESOURCE(atomic_long, IS_ATOMIC_LONG)
+-        CAST_OBJ_TO_RESOURCE(barrier, IS_BARRIER)
+-    }
+-    /* no break */
+-    default: {
+-        auto _serialized_object = php_swoole_serialize(zvalue);
+-        if (!_serialized_object) {
+-            type = IS_UNDEF;
+-            break;
+-        } else {
+-            type = IS_SERIALIZED_OBJECT;
+-            value.serialized_object = _serialized_object;
+-        }
+-        break;
+-    }
+-    }
+-}
+-
+-bool ArrayItem::equals(const zval *zvalue) const {
+-    if (Z_TYPE_P(zvalue) != type) {
+-        return false;
+-    }
+-    switch (type) {
+-    case IS_LONG:
+-        return Z_LVAL_P(zvalue) == value.lval;
+-    case IS_DOUBLE:
+-        return Z_DVAL_P(zvalue) == value.dval;
+-    case IS_TRUE:
+-    case IS_FALSE:
+-    case IS_NULL:
+-        return true;
+-    case IS_STRING:
+-        return zend_string_equals(value.str, Z_STR_P(zvalue));
+-    default:
+-        return false;
+-    }
+-}
+-
+-#define TYPE_PAIR(t1, t2) (((t1) << 4) | (t2))
+-#define ITEM_TYPE(item) (item->type)
+-#define ITEM_LVAL(item) (item->value.lval)
+-#define ITEM_DVAL(item) (item->value.dval)
+-#define ITEM_STR(item) (item->value.str)
+-
+-static int compare_long_to_string(zend_long lval, const zend_string *str) /* {{{ */
+-{
+-    zend_long str_lval;
+-    double str_dval;
+-    zend_uchar type = is_numeric_string(ZSTR_VAL(str), ZSTR_LEN(str), &str_lval, &str_dval, false);
+-
+-    if (type == IS_LONG) {
+-        return lval > str_lval ? 1 : lval < str_lval ? -1 : 0;
+-    }
+-
+-    if (type == IS_DOUBLE) {
+-        double diff = (double) lval - str_dval;
+-        return ZEND_NORMALIZE_BOOL(diff);
+-    }
+-
+-    zend_string *lval_as_str = zend_long_to_str(lval);
+-    int cmp_result = zend_binary_strcmp(ZSTR_VAL(lval_as_str), ZSTR_LEN(lval_as_str), ZSTR_VAL(str), ZSTR_LEN(str));
+-    zend_string_release(lval_as_str);
+-    return ZEND_NORMALIZE_BOOL(cmp_result);
+-}
+-/* }}} */
+-
+-static int compare_double_to_string(double dval, const zend_string *str) /* {{{ */
+-{
+-    zend_long str_lval;
+-    double str_dval;
+-    zend_uchar type = is_numeric_string(ZSTR_VAL(str), ZSTR_LEN(str), &str_lval, &str_dval, false);
+-
+-    if (type == IS_LONG) {
+-        double diff = dval - (double) str_lval;
+-        return ZEND_NORMALIZE_BOOL(diff);
+-    }
+-
+-    if (type == IS_DOUBLE) {
+-        if (dval == str_dval) {
+-            return 0;
+-        }
+-        return ZEND_NORMALIZE_BOOL(dval - str_dval);
+-    }
+-
+-    zend_string *dval_as_str = zend_double_to_str(dval);
+-    int cmp_result = zend_binary_strcmp(ZSTR_VAL(dval_as_str), ZSTR_LEN(dval_as_str), ZSTR_VAL(str), ZSTR_LEN(str));
+-    zend_string_release(dval_as_str);
+-    return ZEND_NORMALIZE_BOOL(cmp_result);
+-}
+-/* }}} */
+-
+-int ArrayItem::compare(Bucket *a, Bucket *b) {
+-    const ArrayItem *op1 = static_cast<ArrayItem *>(Z_PTR(a->val));
+-    const ArrayItem *op2 = static_cast<ArrayItem *>(Z_PTR(b->val));
+-
+-    switch (TYPE_PAIR(ITEM_TYPE(op1), ITEM_TYPE(op2))) {
+-    case TYPE_PAIR(IS_LONG, IS_LONG):
+-        return ITEM_LVAL(op1) > ITEM_LVAL(op2) ? 1 : (ITEM_LVAL(op1) < ITEM_LVAL(op2) ? -1 : 0);
+-
+-    case TYPE_PAIR(IS_DOUBLE, IS_LONG):
+-        return ZEND_NORMALIZE_BOOL(ITEM_DVAL(op1) - (double) ITEM_LVAL(op2));
+-
+-    case TYPE_PAIR(IS_LONG, IS_DOUBLE):
+-        return ZEND_NORMALIZE_BOOL((double) ITEM_LVAL(op1) - ITEM_DVAL(op2));
+-
+-    case TYPE_PAIR(IS_DOUBLE, IS_DOUBLE):
+-        if (ITEM_DVAL(op1) == ITEM_DVAL(op2)) {
+-            return 0;
+-        } else {
+-            return ZEND_NORMALIZE_BOOL(ITEM_DVAL(op1) - ITEM_DVAL(op2));
+-        }
+-
+-    case TYPE_PAIR(IS_NULL, IS_NULL):
+-    case TYPE_PAIR(IS_NULL, IS_FALSE):
+-    case TYPE_PAIR(IS_FALSE, IS_NULL):
+-    case TYPE_PAIR(IS_FALSE, IS_FALSE):
+-    case TYPE_PAIR(IS_TRUE, IS_TRUE):
+-        return 0;
+-
+-    case TYPE_PAIR(IS_NULL, IS_TRUE):
+-        return -1;
+-
+-    case TYPE_PAIR(IS_TRUE, IS_NULL):
+-        return 1;
+-
+-    case TYPE_PAIR(IS_STRING, IS_STRING):
+-        if (ITEM_STR(op1) == ITEM_STR(op2)) {
+-            return 0;
+-        }
+-        return zendi_smart_strcmp(ITEM_STR(op1), ITEM_STR(op2));
+-
+-    case TYPE_PAIR(IS_NULL, IS_STRING):
+-        return Z_STRLEN_P(op2) == 0 ? 0 : -1;
+-
+-    case TYPE_PAIR(IS_STRING, IS_NULL):
+-        return Z_STRLEN_P(op1) == 0 ? 0 : 1;
+-
+-    case TYPE_PAIR(IS_LONG, IS_STRING):
+-        return compare_long_to_string(ITEM_LVAL(op1), ITEM_STR(op2));
+-
+-    case TYPE_PAIR(IS_STRING, IS_LONG):
+-        return -compare_long_to_string(ITEM_LVAL(op2), ITEM_STR(op1));
+-
+-    case TYPE_PAIR(IS_DOUBLE, IS_STRING):
+-        if (zend_isnan(ITEM_DVAL(op1))) {
+-            return 1;
+-        }
+-        return compare_double_to_string(ITEM_DVAL(op1), ITEM_STR(op2));
+-
+-    case TYPE_PAIR(IS_STRING, IS_DOUBLE):
+-        if (zend_isnan(ITEM_DVAL(op2))) {
+-            return 1;
+-        }
+-        return -compare_double_to_string(ITEM_DVAL(op2), ITEM_STR(op1));
+-
+-    case TYPE_PAIR(IS_OBJECT, IS_NULL):
+-        return 1;
+-
+-    case TYPE_PAIR(IS_NULL, IS_OBJECT):
+-        return -1;
+-
+-    default:
+-        zend_throw_error(nullptr, "Unsupported operand types");
+-        return 1;
+-    }
+-}
+-
+-void ArrayItem::fetch(zval *return_value) const {
+-    switch (type) {
+-    case IS_LONG:
+-        RETVAL_LONG(value.lval);
+-        break;
+-    case IS_DOUBLE:
+-        RETVAL_DOUBLE(value.dval);
+-        break;
+-    case IS_TRUE:
+-        RETVAL_TRUE;
+-        break;
+-    case IS_FALSE:
+-        RETVAL_FALSE;
+-        break;
+-    case IS_STRING:
+-        RETVAL_NEW_STR(zend_string_init(ZSTR_VAL(value.str), ZSTR_LEN(value.str), 0));
+-        break;
+-    case IS_ARRAYLIST:
+-        value.resource->add_ref();
+-        php_swoole_thread_arraylist_create(return_value, value.resource);
+-        break;
+-    case IS_QUEUE:
+-        value.resource->add_ref();
+-        php_swoole_thread_queue_create(return_value, value.resource);
+-        break;
+-    case IS_LOCK:
+-        value.resource->add_ref();
+-        php_swoole_thread_lock_create(return_value, value.resource);
+-        break;
+-    case IS_MAP:
+-        value.resource->add_ref();
+-        php_swoole_thread_map_create(return_value, value.resource);
+-        break;
+-    case IS_BARRIER:
+-        value.resource->add_ref();
+-        php_swoole_thread_barrier_create(return_value, value.resource);
+-        break;
+-    case IS_ATOMIC:
+-        value.resource->add_ref();
+-        php_swoole_thread_atomic_create(return_value, value.resource);
+-        break;
+-    case IS_ATOMIC_LONG:
+-        value.resource->add_ref();
+-        php_swoole_thread_atomic_long_create(return_value, value.resource);
+-        break;
+-    case IS_STREAM_SOCKET:
+-        php_swoole_thread_stream_create(return_value, value.socket.fd);
+-        break;
+-    case IS_CO_SOCKET:
+-        php_swoole_thread_co_socket_create(return_value, value.socket.fd, value.socket.type);
+-        break;
+-#ifdef SWOOLE_SOCKETS_SUPPORT
+-    case IS_PHP_SOCKET:
+-        php_swoole_thread_php_socket_create(return_value, value.socket.fd);
+-        break;
+-#endif
+-    case IS_SERIALIZED_OBJECT:
+-        php_swoole_unserialize(value.serialized_object, return_value);
+-        break;
+-    default:
+-        break;
+-    }
+-}
+-
+-void ArrayItem::release() {
+-    if (type == IS_STRING) {
+-        zend_string_release(value.str);
+-        value.str = nullptr;
+-    } else if (type == IS_STREAM_SOCKET || type == IS_CO_SOCKET || type == IS_PHP_SOCKET) {
+-        close(value.socket.fd);
+-        value.socket.fd = -1;
+-    } else if (type == IS_SERIALIZED_OBJECT) {
+-        zend_string_release(value.serialized_object);
+-        value.serialized_object = nullptr;
+-    } else if (type >= IS_ARRAYLIST && type <= IS_ATOMIC_LONG) {
+-        value.resource->del_ref();
+-        value.resource = nullptr;
+-    }
+-}
+-
+-#define INIT_DECR_VALUE(v)                                                                                             \
+-    zval rvalue = *v;                                                                                                  \
+-    if (Z_TYPE_P(v) == IS_DOUBLE) {                                                                                    \
+-        rvalue.value.dval = -rvalue.value.dval;                                                                        \
+-    } else {                                                                                                           \
+-        ZVAL_LONG(&rvalue, -zval_get_long(v));                                                                         \
+-    }
+-
+-void ZendArray::incr_update(ArrayItem *item, zval *zvalue, zval *return_value) {
+-    if (item->type == IS_DOUBLE) {
+-        item->value.dval += zval_get_double(zvalue);
+-        RETVAL_DOUBLE(item->value.dval);
+-    } else {
+-        item->value.lval += zval_get_long(zvalue);
+-        RETVAL_LONG(item->value.lval);
+-    }
+-}
+-
+-ArrayItem *ZendArray::incr_create(zval *zvalue, zval *return_value) {
+-    zval rvalue = *zvalue;
+-    if (Z_TYPE_P(zvalue) == IS_DOUBLE) {
+-        RETVAL_DOUBLE(rvalue.value.dval);
+-    } else {
+-        ZVAL_LONG(&rvalue, zval_get_long(zvalue));
+-        RETVAL_LONG(rvalue.value.lval);
+-    }
+-    return new ArrayItem(&rvalue);
+-}
+-
+-void ZendArray::strkey_incr(zval *zkey, zval *zvalue, zval *return_value) {
+-    zend::String skey(zkey);
+-
+-    lock_.lock();
+-    auto *item = static_cast<ArrayItem *>(zend_hash_find_ptr(&ht, skey.get()));
+-    if (item) {
+-        incr_update(item, zvalue, return_value);
+-    } else {
+-        item = incr_create(zvalue, return_value);
+-        item->setKey(skey);
+-        zend_hash_update_ptr(&ht, item->key, item);
+-    }
+-    lock_.unlock();
+-}
+-
+-void ZendArray::intkey_incr(zend_long index, zval *zvalue, zval *return_value) {
+-    lock_.lock();
+-    auto item = static_cast<ArrayItem *>(zend_hash_index_find_ptr(&ht, index));
+-    if (item) {
+-        incr_update(item, zvalue, return_value);
+-    } else {
+-        item = incr_create(zvalue, return_value);
+-        item = new ArrayItem(zvalue);
+-        zend_hash_index_update_ptr(&ht, index, item);
+-    }
+-    lock_.unlock();
+-}
+-
+-void ZendArray::strkey_decr(zval *zkey, zval *zvalue, zval *return_value) {
+-    INIT_DECR_VALUE(zvalue);
+-    strkey_incr(zkey, &rvalue, return_value);
+-}
+-
+-void ZendArray::intkey_decr(zend_long index, zval *zvalue, zval *return_value) {
+-    INIT_DECR_VALUE(zvalue);
+-    intkey_incr(index, &rvalue, return_value);
+-}
+-
+-void ZendArray::strkey_add(zval *zkey, zval *zvalue, zval *return_value) {
+-    zend::String skey(zkey);
+-    lock_.lock();
+-    if (strkey_exists(skey)) {
+-        RETVAL_FALSE;
+-    } else {
+-        add(skey, zvalue);
+-        RETVAL_TRUE;
+-    }
+-    lock_.unlock();
+-}
+-
+-void ZendArray::intkey_add(zend_long index, zval *zvalue, zval *return_value) {
+-    lock_.lock();
+-    if (intkey_exists(index)) {
+-        RETVAL_FALSE;
+-    } else {
+-        add(index, zvalue);
+-        RETVAL_TRUE;
+-    }
+-    lock_.unlock();
+-}
+-
+-void ZendArray::strkey_update(zval *zkey, zval *zvalue, zval *return_value) {
+-    zend::String skey(zkey);
+-    lock_.lock();
+-    if (!strkey_exists(skey)) {
+-        RETVAL_FALSE;
+-    } else {
+-        auto item = new ArrayItem(zvalue);
+-        item->setKey(skey);
+-        zend_hash_update_ptr(&ht, item->key, item);
+-        RETVAL_TRUE;
+-    }
+-    lock_.unlock();
+-}
+-
+-void ZendArray::intkey_update(zend_long index, zval *zvalue, zval *return_value) {
+-    lock_.lock();
+-    if (!intkey_exists(index)) {
+-        RETVAL_FALSE;
+-    } else {
+-        auto item = new ArrayItem(zvalue);
+-        zend_hash_index_update_ptr(&ht, index, item);
+-        RETVAL_TRUE;
+-    }
+-    lock_.unlock();
+-}
+-
+-bool ZendArray::index_offsetGet(zend_long index, zval *return_value) {
+-    bool out_of_range = true;
+-    lock_.lock_rd();
+-    if (index_exists(index)) {
+-        out_of_range = false;
+-        auto item = static_cast<ArrayItem *>(zend_hash_index_find_ptr(&ht, index));
+-        if (item) {
+-            item->fetch(return_value);
+-        }
+-    }
+-    lock_.unlock();
+-    return !out_of_range;
+-}
+-
+-bool ZendArray::index_offsetSet(zend_long index, zval *zvalue) {
+-    auto item = new ArrayItem(zvalue);
+-    bool success = true;
+-    lock_.lock();
+-    if (index > zend_hash_num_elements(&ht)) {
+-        success = false;
+-        delete item;
+-    } else if (index == -1 || index == zend_hash_num_elements(&ht)) {
+-        zend_hash_next_index_insert_ptr(&ht, item);
+-    } else {
+-        zend_hash_index_update_ptr(&ht, index, item);
+-    }
+-    lock_.unlock();
+-    return success;
+-}
+-
+-void ZendArray::append(zval *zvalue) {
+-    zend_hash_next_index_insert_ptr(&ht, new ArrayItem(zvalue));
+-}
+-
+-bool ZendArray::index_incr(zval *zkey, zval *zvalue, zval *return_value) {
+-    zend_long index = ZVAL_IS_NULL(zkey) ? -1 : zval_get_long(zkey);
+-
+-    bool success = true;
+-    lock_.lock();
+-    if (index > zend_hash_num_elements(&ht)) {
+-        success = false;
+-    } else if (index == -1 || index == zend_hash_num_elements(&ht)) {
+-        auto item = incr_create(zvalue, return_value);
+-        zend_hash_next_index_insert_ptr(&ht, item);
+-    } else {
+-        auto item = static_cast<ArrayItem *>(zend_hash_index_find_ptr(&ht, index));
+-        incr_update(item, zvalue, return_value);
+-    }
+-    lock_.unlock();
+-    return success;
+-}
+-
+-void ZendArray::index_offsetExists(zend_long index, zval *return_value) {
+-    lock_.lock_rd();
+-    RETVAL_BOOL(index_exists(index));
+-    lock_.unlock();
+-}
+-
+-void ZendArray::index_offsetUnset(zend_long index) {
+-    lock_.lock();
+-    zend_long i = index;
+-    zend_long n = zend_hash_num_elements(&ht);
+-    HT_FLAGS(&ht) |= HASH_FLAG_PACKED | HASH_FLAG_STATIC_KEYS;
+-    auto item = static_cast<ArrayItem *>(zend_hash_index_find_ptr(&ht, index));
+-    delete item;
+-    while (i < n - 1) {
+-        Z_PTR(ht.arPacked[i]) = Z_PTR(ht.arPacked[i + 1]);
+-        i++;
+-    }
+-    ht.nNumUsed--;
+-    ht.nNumOfElements--;
+-    ht.nNextFreeElement--;
+-    lock_.unlock();
+-}
+-
+-bool ZendArray::index_decr(zval *zkey, zval *zvalue, zval *return_value) {
+-    INIT_DECR_VALUE(zvalue);
+-    return index_incr(zkey, &rvalue, return_value);
+-}
+-
+-void ZendArray::keys(zval *return_value) {
+-    lock_.lock_rd();
+-    zend_ulong elem_count = zend_hash_num_elements(&ht);
+-    array_init_size(return_value, elem_count);
+-    zend_hash_real_init_packed(Z_ARRVAL_P(return_value));
+-    zend_ulong num_idx;
+-    zend_string *str_idx;
+-    zval *entry;
+-    ZEND_HASH_FILL_PACKED(Z_ARRVAL_P(return_value)) {
+-        if (HT_IS_PACKED(&ht) && HT_IS_WITHOUT_HOLES(&ht)) {
+-            /* Optimistic case: range(0..n-1) for vector-like packed array */
+-            zend_ulong lval = 0;
+-
+-            for (; lval < elem_count; ++lval) {
+-                ZEND_HASH_FILL_SET_LONG(lval);
+-                ZEND_HASH_FILL_NEXT();
+-            }
+-        } else {
+-            /* Go through input array and add keys to the return array */
+-            ZEND_HASH_FOREACH_KEY_VAL(&ht, num_idx, str_idx, entry) {
+-                if (str_idx) {
+-                    ZEND_HASH_FILL_SET_STR(zend_string_init(str_idx->val, str_idx->len, 0));
+-                } else {
+-                    ZEND_HASH_FILL_SET_LONG(num_idx);
+-                }
+-                ZEND_HASH_FILL_NEXT();
+-            }
+-            ZEND_HASH_FOREACH_END();
+-        }
+-        (void) entry;
+-    }
+-    ZEND_HASH_FILL_END();
+-    lock_.unlock();
+-}
+-
+-void ZendArray::values(zval *return_value) {
+-    lock_.lock_rd();
+-    zend_ulong elem_count = zend_hash_num_elements(&ht);
+-    array_init_size(return_value, elem_count);
+-    void *tmp;
+-    ZEND_HASH_FOREACH_PTR(&ht, tmp) {
+-        zval value;
+-        auto item = static_cast<ArrayItem *>(tmp);
+-        item->fetch(&value);
+-        zend_hash_next_index_insert_new(Z_ARR_P(return_value), &value);
+-    }
+-    ZEND_HASH_FOREACH_END();
+-    lock_.unlock();
+-}
+-
+-void ZendArray::to_array(zval *return_value) {
+-    lock_.lock_rd();
+-    zend_ulong elem_count = zend_hash_num_elements(&ht);
+-    array_init_size(return_value, elem_count);
+-    zend_string *key;
+-    zend_ulong index;
+-    void *tmp;
+-    ZEND_HASH_FOREACH_KEY_PTR(&ht, index, key, tmp) {
+-        zval value;
+-        const auto item = static_cast<ArrayItem *>(tmp);
+-        item->fetch(&value);
+-        if (key) {
+-            zend_hash_str_add(Z_ARR_P(return_value), ZSTR_VAL(key), ZSTR_LEN(key), &value);
+-        } else {
+-            zend_hash_index_add(Z_ARR_P(return_value), index, &value);
+-        }
+-    }
+-    ZEND_HASH_FOREACH_END();
+-    lock_.unlock();
+-}
+-
+-void ZendArray::find(const zval *search, zval *return_value) {
+-    lock_.lock_rd();
+-    zend_string *key;
+-    zend_ulong index;
+-    void *tmp;
+-    ZEND_HASH_FOREACH_KEY_PTR(&ht, index, key, tmp) {
+-        const auto item = static_cast<ArrayItem *>(tmp);
+-        if (item->equals(search)) {
+-            if (key) {
+-                RETVAL_STRINGL(ZSTR_VAL(key), ZSTR_LEN(key));
+-            } else {
+-                RETVAL_LONG(index);
+-            }
+-            break;
+-        }
+-    }
+-    ZEND_HASH_FOREACH_END();
+-    lock_.unlock();
+-}
+-
+-void ZendArray::sort(bool renumber) {
+-    lock_.lock();
+-    zend_hash_sort(&ht, ArrayItem::compare, renumber);
+-    lock_.unlock();
+-}
+-
+-ZendArray *ZendArray::from(zend_array *src) {
+-    zend_string *key;
+-    zend_ulong index;
+-    zval *tmp;
+-    auto *result = new ZendArray();
+-    ZEND_HASH_FOREACH_KEY_VAL(src, index, key, tmp) {
+-        ZVAL_DEREF(tmp);
+-        if (key) {
+-            result->add(key, tmp);
+-        } else {
+-            result->add(index, tmp);
+-        }
+-    }
+-    ZEND_HASH_FOREACH_END();
+-    return result;
+-}
+-
+ #endif
+diff --git a/ext-src/swoole_thread_arraylist.cc b/ext-src/swoole_thread_arraylist.cc
+index 0eacd33..51e32d0 100644
+--- a/ext-src/swoole_thread_arraylist.cc
++++ b/ext-src/swoole_thread_arraylist.cc
+@@ -26,65 +26,19 @@ SW_EXTERN_C_END
+ zend_class_entry *swoole_thread_arraylist_ce;
+-static zend_object_handlers swoole_thread_arraylist_handlers;
+-
+-struct ThreadArrayListObject {
+-    ZendArray *list;
+-    zend_object std;
+-};
+ 
++// The class, its objects and every method are Rust (crates/phpthread).
+ SW_EXTERN_C_BEGIN
+-static PHP_METHOD(swoole_thread_arraylist, __construct);
+-static PHP_METHOD(swoole_thread_arraylist, offsetGet);
+-static PHP_METHOD(swoole_thread_arraylist, offsetExists);
+-static PHP_METHOD(swoole_thread_arraylist, offsetSet);
+-static PHP_METHOD(swoole_thread_arraylist, offsetUnset);
+-static PHP_METHOD(swoole_thread_arraylist, find);
+-static PHP_METHOD(swoole_thread_arraylist, count);
+-static PHP_METHOD(swoole_thread_arraylist, incr);
+-static PHP_METHOD(swoole_thread_arraylist, decr);
+-static PHP_METHOD(swoole_thread_arraylist, clean);
+-static PHP_METHOD(swoole_thread_arraylist, toArray);
+-static PHP_METHOD(swoole_thread_arraylist, sort);
++PHP_METHOD(swoole_thread_arraylist, __construct);
++PHP_METHOD(swoole_thread_arraylist, offsetGet);
++PHP_METHOD(swoole_thread_arraylist, offsetExists);
++PHP_METHOD(swoole_thread_arraylist, offsetSet);
++PHP_METHOD(swoole_thread_arraylist, offsetUnset);
++PHP_METHOD(swoole_thread_arraylist, find);
++PHP_METHOD(swoole_thread_arraylist, count);
++PHP_METHOD(swoole_thread_arraylist, incr);
++PHP_METHOD(swoole_thread_arraylist, decr);
++PHP_METHOD(swoole_thread_arraylist, clean);
++PHP_METHOD(swoole_thread_arraylist, toArray);
++PHP_METHOD(swoole_thread_arraylist, sort);
+ SW_EXTERN_C_END
+ 
+-static sw_inline ThreadArrayListObject *arraylist_fetch_object(zend_object *obj) {
+-    return reinterpret_cast<ThreadArrayListObject *>(reinterpret_cast<char *>(obj) -
+-                                                     swoole_thread_arraylist_handlers.offset);
+-}
+-
+-static void arraylist_free_object(zend_object *object) {
+-    auto ao = arraylist_fetch_object(object);
+-    if (ao->list) {
+-        ao->list->del_ref();
+-        ao->list = nullptr;
+-    }
+-    zend_object_std_dtor(object);
+-}
+-
+-static zend_object *arraylist_create_object(zend_class_entry *ce) {
+-    auto ao = static_cast<ThreadArrayListObject *>(zend_object_alloc(sizeof(ThreadArrayListObject), ce));
+-    zend_object_std_init(&ao->std, ce);
+-    object_properties_init(&ao->std, ce);
+-    ao->std.handlers = &swoole_thread_arraylist_handlers;
+-    return &ao->std;
+-}
+-
+-static ThreadArrayListObject *arraylist_fetch_object_check(const zval *zobject) {
+-    auto ao = arraylist_fetch_object(Z_OBJ_P(zobject));
+-    if (!ao->list) {
+-        swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first");
+-    }
+-    return ao;
+-}
+-
+-ThreadResource *php_swoole_thread_arraylist_cast(const zval *zobject) {
+-    return arraylist_fetch_object_check(zobject)->list;
+-}
+-
+-void php_swoole_thread_arraylist_create(zval *return_value, ThreadResource *resource) {
+-    auto obj = arraylist_create_object(swoole_thread_arraylist_ce);
+-    auto ao = arraylist_fetch_object(obj);
+-    ao->list = dynamic_cast<ZendArray *>(resource);
+-    ZVAL_OBJ(return_value, obj);
+-}
+-
+ // clang-format off
+@@ -108,133 +62,3 @@ static const zend_function_entry swoole_thread_arraylist_methods[] = {
+ void php_swoole_thread_arraylist_minit(int module_number) {
+-    SW_INIT_CLASS_ENTRY(swoole_thread_arraylist, "Swoole\\Thread\\ArrayList", nullptr, swoole_thread_arraylist_methods);
+-    swoole_thread_arraylist_ce->ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
+-    SW_SET_CLASS_CLONEABLE(swoole_thread_arraylist, sw_zend_class_clone_deny);
+-    SW_SET_CLASS_UNSET_PROPERTY_HANDLER(swoole_thread_arraylist, sw_zend_class_unset_property_deny);
+-    SW_SET_CLASS_CUSTOM_OBJECT(
+-        swoole_thread_arraylist, arraylist_create_object, arraylist_free_object, ThreadArrayListObject, std);
+-
+-    zend_class_implements(swoole_thread_arraylist_ce, 2, zend_ce_arrayaccess, zend_ce_countable);
+-    zend_declare_property_long(swoole_thread_arraylist_ce, ZEND_STRL("id"), 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, __construct) {
+-    zend_array *array = nullptr;
+-    ZEND_PARSE_PARAMETERS_START(0, 1)
+-    Z_PARAM_OPTIONAL
+-    Z_PARAM_ARRAY_HT_OR_NULL(array)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto ao = arraylist_fetch_object(Z_OBJ_P(ZEND_THIS));
+-    if (ao->list != nullptr) {
+-        zend_throw_error(nullptr, "Constructor of %s can only be called once", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
+-        return;
+-    }
+-
+-    if (array) {
+-        if (!zend_array_is_list(array)) {
+-            zend_throw_error(nullptr, "the parameter $array must be an array of type list");
+-            return;
+-        }
+-        ao->list = ZendArray::from(array);
+-    } else {
+-        ao->list = new ZendArray();
+-    }
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, offsetGet) {
+-    zend_long index;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_LONG(index)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    if (!ao->list->index_offsetGet(index, return_value)) {
+-        zend_throw_exception(swoole_exception_ce, "out of range", -1);
+-    }
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, offsetExists) {
+-    zend_long index;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_LONG(index)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    ao->list->index_offsetExists(index, return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, offsetSet) {
+-    zval *zkey;
+-    zval *zvalue;
+-
+-    ZEND_PARSE_PARAMETERS_START(2, 2)
+-    Z_PARAM_ZVAL(zkey)
+-    Z_PARAM_ZVAL(zvalue)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    zend_long index = ZVAL_IS_NULL(zkey) ? -1 : zval_get_long(zkey);
+-    if (!ao->list->index_offsetSet(index, zvalue)) {
+-        zend_throw_exception(swoole_exception_ce, "out of range", -1);
+-    }
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, incr) {
+-    INIT_ARRAY_INCR_PARAMS
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    if (!ao->list->index_incr(zkey, zvalue, return_value)) {
+-        zend_throw_exception(swoole_exception_ce, "out of range", -1);
+-    }
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, decr) {
+-    INIT_ARRAY_INCR_PARAMS
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    if (!ao->list->index_decr(zkey, zvalue, return_value)) {
+-        zend_throw_exception(swoole_exception_ce, "out of range", -1);
+-    }
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, offsetUnset) {
+-    zend_long index;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_LONG(index)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    ao->list->index_offsetUnset(index);
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, find) {
+-    zval *zvalue;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_ZVAL(zvalue)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    ao->list->find(zvalue, return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, count) {
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    ao->list->count(return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, clean) {
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    ao->list->clean();
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, toArray) {
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    ao->list->to_array(return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_arraylist, sort) {
+-    auto ao = arraylist_fetch_object_check(ZEND_THIS);
+-    ao->list->sort(true);
++    swoole_thread_arraylist_ce = swr_v1_phpthread_arraylist_minit(swoole_thread_arraylist_methods);
+ }
+diff --git a/ext-src/swoole_thread_map.cc b/ext-src/swoole_thread_map.cc
+index 2de07e8..f360cb0 100644
+--- a/ext-src/swoole_thread_map.cc
++++ b/ext-src/swoole_thread_map.cc
+@@ -26,66 +26,21 @@ SW_EXTERN_C_END
+ zend_class_entry *swoole_thread_map_ce;
+-static zend_object_handlers swoole_thread_map_handlers;
+-
+-struct ThreadMapObject {
+-    ZendArray *map;
+-    zend_object std;
+-};
+-
+-static sw_inline ThreadMapObject *map_fetch_object(zend_object *obj) {
+-    return reinterpret_cast<ThreadMapObject *>(reinterpret_cast<char *>(obj) - swoole_thread_map_handlers.offset);
+-}
+-
+-static void map_free_object(zend_object *object) {
+-    auto mo = map_fetch_object(object);
+-    if (mo->map) {
+-        mo->map->del_ref();
+-        mo->map = nullptr;
+-    }
+-    zend_object_std_dtor(object);
+-}
+-
+-static zend_object *map_create_object(zend_class_entry *ce) {
+-    auto mo = static_cast<ThreadMapObject *>(zend_object_alloc(sizeof(ThreadMapObject), ce));
+-    zend_object_std_init(&mo->std, ce);
+-    object_properties_init(&mo->std, ce);
+-    mo->std.handlers = &swoole_thread_map_handlers;
+-    return &mo->std;
+-}
+-
+-static ThreadMapObject *map_fetch_object_check(const zval *zobject) {
+-    ThreadMapObject *map = map_fetch_object(Z_OBJ_P(zobject));
+-    if (!map->map) {
+-        php_swoole_fatal_error(E_ERROR, "must call constructor first");
+-    }
+-    return map;
+-}
+-
+-ThreadResource *php_swoole_thread_map_cast(const zval *zobject) {
+-    return map_fetch_object(Z_OBJ_P(zobject))->map;
+-}
+-
+-void php_swoole_thread_map_create(zval *return_value, ThreadResource *resource) {
+-    auto obj = map_create_object(swoole_thread_map_ce);
+-    auto mo = map_fetch_object(obj);
+-    mo->map = dynamic_cast<ZendArray *>(resource);
+-    ZVAL_OBJ(return_value, obj);
+-}
+ 
++// The class, its objects and every method are Rust (crates/phpthread).
+ SW_EXTERN_C_BEGIN
+-static PHP_METHOD(swoole_thread_map, __construct);
+-static PHP_METHOD(swoole_thread_map, offsetGet);
+-static PHP_METHOD(swoole_thread_map, offsetExists);
+-static PHP_METHOD(swoole_thread_map, offsetSet);
+-static PHP_METHOD(swoole_thread_map, offsetUnset);
+-static PHP_METHOD(swoole_thread_map, find);
+-static PHP_METHOD(swoole_thread_map, count);
+-static PHP_METHOD(swoole_thread_map, keys);
+-static PHP_METHOD(swoole_thread_map, values);
+-static PHP_METHOD(swoole_thread_map, incr);
+-static PHP_METHOD(swoole_thread_map, decr);
+-static PHP_METHOD(swoole_thread_map, add);
+-static PHP_METHOD(swoole_thread_map, update);
+-static PHP_METHOD(swoole_thread_map, clean);
+-static PHP_METHOD(swoole_thread_map, toArray);
+-static PHP_METHOD(swoole_thread_map, sort);
++PHP_METHOD(swoole_thread_map, __construct);
++PHP_METHOD(swoole_thread_map, offsetGet);
++PHP_METHOD(swoole_thread_map, offsetExists);
++PHP_METHOD(swoole_thread_map, offsetSet);
++PHP_METHOD(swoole_thread_map, offsetUnset);
++PHP_METHOD(swoole_thread_map, find);
++PHP_METHOD(swoole_thread_map, count);
++PHP_METHOD(swoole_thread_map, keys);
++PHP_METHOD(swoole_thread_map, values);
++PHP_METHOD(swoole_thread_map, incr);
++PHP_METHOD(swoole_thread_map, decr);
++PHP_METHOD(swoole_thread_map, add);
++PHP_METHOD(swoole_thread_map, update);
++PHP_METHOD(swoole_thread_map, clean);
++PHP_METHOD(swoole_thread_map, toArray);
++PHP_METHOD(swoole_thread_map, sort);
+ SW_EXTERN_C_END
+@@ -115,197 +70,3 @@ static const zend_function_entry swoole_thread_map_methods[] = {
+ void php_swoole_thread_map_minit(int module_number) {
+-    SW_INIT_CLASS_ENTRY(swoole_thread_map, "Swoole\\Thread\\Map", nullptr, swoole_thread_map_methods);
+-    swoole_thread_map_ce->ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
+-    SW_SET_CLASS_CLONEABLE(swoole_thread_map, sw_zend_class_clone_deny);
+-    SW_SET_CLASS_UNSET_PROPERTY_HANDLER(swoole_thread_map, sw_zend_class_unset_property_deny);
+-    SW_SET_CLASS_CUSTOM_OBJECT(swoole_thread_map, map_create_object, map_free_object, ThreadMapObject, std);
+-
+-    zend_class_implements(swoole_thread_map_ce, 2, zend_ce_arrayaccess, zend_ce_countable);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, __construct) {
+-    zend_array *array = nullptr;
+-    ZEND_PARSE_PARAMETERS_START(0, 1)
+-    Z_PARAM_OPTIONAL
+-    Z_PARAM_ARRAY_HT_OR_NULL(array)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto mo = map_fetch_object(Z_OBJ_P(ZEND_THIS));
+-    if (mo->map != nullptr) {
+-        zend_throw_error(nullptr, "Constructor of %s can only be called once", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
+-        return;
+-    }
+-
+-    if (array) {
+-        mo->map = ZendArray::from(array);
+-    } else {
+-        mo->map = new ZendArray();
+-    }
+-}
+-
+-static int handle_array_key(const zval *key, zend_ulong *idx) {
+-    switch (Z_TYPE_P(key)) {
+-    case IS_STRING:
+-        return _zend_handle_numeric_str(Z_STRVAL_P(key), Z_STRLEN_P(key), idx) ? IS_LONG : IS_STRING;
+-    case IS_LONG:
+-        *idx = Z_LVAL_P(key);
+-        return IS_LONG;
+-    case IS_NULL:
+-        return IS_NULL;
+-    case IS_DOUBLE:
+-        *idx = zend_dval_to_lval_safe(Z_DVAL_P(key));
+-        return IS_LONG;
+-    case IS_FALSE:
+-        *idx = 0;
+-        return IS_LONG;
+-    case IS_TRUE:
+-        *idx = 1;
+-        return IS_LONG;
+-    case IS_RESOURCE:
+-        zend_use_resource_as_offset(key);
+-        *idx = Z_RES_HANDLE_P(key);
+-        return IS_LONG;
+-    default:
+-        zend_argument_type_error(1, "Illegal offset type");
+-        return IS_UNDEF;
+-    }
+-}
+-
+-#define ZEND_ARRAY_CALL_METHOD(array, method, zkey, ...)                                                               \
+-    zend_ulong idx;                                                                                                    \
+-    int type_of_key = handle_array_key(zkey, &idx);                                                                    \
+-    if (type_of_key == IS_LONG) {                                                                                      \
+-        array->intkey_##method(idx, ##__VA_ARGS__);                                                                    \
+-    } else if (type_of_key == IS_STRING) {                                                                             \
+-        array->strkey_##method(zkey, ##__VA_ARGS__);                                                                   \
+-    } else if (type_of_key == IS_NULL) {                                                                               \
+-        zval empty_str;                                                                                                \
+-        ZVAL_EMPTY_STRING(&empty_str);                                                                                 \
+-        array->strkey_##method(&empty_str, ##__VA_ARGS__);                                                             \
+-    } else {                                                                                                           \
+-        zend_type_error("Illegal offset type");                                                                        \
+-    }
+-
+-static PHP_METHOD(swoole_thread_map, offsetGet) {
+-    zval *zkey;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_ZVAL(zkey)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    ZEND_ARRAY_CALL_METHOD(mo->map, offsetGet, zkey, return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, offsetExists) {
+-    zval *zkey;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_ZVAL(zkey)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    ZEND_ARRAY_CALL_METHOD(mo->map, offsetExists, zkey, return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, offsetSet) {
+-    zval *zkey;
+-    zval *zvalue;
+-
+-    ZEND_PARSE_PARAMETERS_START(2, 2)
+-    Z_PARAM_ZVAL(zkey)
+-    Z_PARAM_ZVAL(zvalue)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    ZEND_ARRAY_CALL_METHOD(mo->map, offsetSet, zkey, zvalue);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, incr) {
+-    INIT_ARRAY_INCR_PARAMS
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    ZEND_ARRAY_CALL_METHOD(mo->map, incr, zkey, zvalue, return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, decr) {
+-    INIT_ARRAY_INCR_PARAMS
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    ZEND_ARRAY_CALL_METHOD(mo->map, decr, zkey, zvalue, return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, add) {
+-    zval *zkey;
+-    zval *zvalue;
+-
+-    ZEND_PARSE_PARAMETERS_START(2, 2)
+-    Z_PARAM_ZVAL(zkey)
+-    Z_PARAM_ZVAL(zvalue)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    ZEND_ARRAY_CALL_METHOD(mo->map, add, zkey, zvalue, return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, update) {
+-    zval *zkey;
+-    zval *zvalue;
+-
+-    ZEND_PARSE_PARAMETERS_START(2, 2)
+-    Z_PARAM_ZVAL(zkey)
+-    Z_PARAM_ZVAL(zvalue)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    ZEND_ARRAY_CALL_METHOD(mo->map, update, zkey, zvalue, return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, offsetUnset) {
+-    zval *zkey;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_ZVAL(zkey)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    ZEND_ARRAY_CALL_METHOD(mo->map, offsetUnset, zkey);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, find) {
+-    zval *zvalue;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 1)
+-    Z_PARAM_ZVAL(zvalue)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    mo->map->find(zvalue, return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, count) {
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    mo->map->count(return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, keys) {
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    mo->map->keys(return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, values) {
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    mo->map->values(return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, toArray) {
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    mo->map->to_array(return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_map, clean) {
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    mo->map->clean();
+-}
+-
+-static PHP_METHOD(swoole_thread_map, sort) {
+-    auto mo = map_fetch_object_check(ZEND_THIS);
+-    mo->map->sort(false);
++    swoole_thread_map_ce = swr_v1_phpthread_map_minit(swoole_thread_map_methods);
+ }
+diff --git a/ext-src/swoole_thread_queue.cc b/ext-src/swoole_thread_queue.cc
+index 394d449..afc7b7c 100644
+--- a/ext-src/swoole_thread_queue.cc
++++ b/ext-src/swoole_thread_queue.cc
+@@ -20,151 +20,14 @@
+ #include "php_swoole_thread.h"
+-#include "stubs/php_swoole_thread_queue_arginfo.h"
+ 
+-#include <queue>
+-#include <condition_variable>
++#include "stubs/php_swoole_thread_queue_arginfo.h"
+ 
+ zend_class_entry *swoole_thread_queue_ce;
+-static zend_object_handlers swoole_thread_queue_handlers;
+-
+-struct Queue : ThreadResource {
+-    std::queue<ArrayItem *> queue;
+-    std::mutex lock_;
+-    std::condition_variable cv_;
+-
+-    enum {
+-        NOTIFY_NONE = 0,
+-        NOTIFY_ONE = 1,
+-        NOTIFY_ALL = 2,
+-    };
+-
+-    Queue() = default;
+-
+-    ~Queue() override {
+-        clean();
+-    }
+-
+-    void push(zval *zvalue) {
+-        auto item = new ArrayItem(zvalue);
+-        lock_.lock();
+-        queue.push(item);
+-        lock_.unlock();
+-    }
+-
+-    void pop(zval *return_value) {
+-        ArrayItem *item = nullptr;
+-        lock_.lock();
+-        if (!queue.empty()) {
+-            item = queue.front();
+-            queue.pop();
+-        }
+-        lock_.unlock();
+-        if (item) {
+-            item->fetch(return_value);
+-            delete item;
+-        }
+-    }
+-
+-    void push_notify(zval *zvalue, bool notify_all) {
+-        push(zvalue);
+-        if (notify_all) {
+-            cv_.notify_all();
+-        } else {
+-            cv_.notify_one();
+-        }
+-    }
+-
+-    void pop_wait(zval *return_value, double timeout) {
+-        ArrayItem *item = nullptr;
+-        std::unique_lock<std::mutex> _lock(lock_);
+-
+-        if (timeout > 0) {
+-            cv_.wait_for(_lock, std::chrono::duration<double>(timeout), [this] { return !queue.empty(); });
+-        } else {
+-            cv_.wait(_lock, [this] { return !queue.empty(); });
+-        }
+-
+-        if (!queue.empty()) {
+-            item = queue.front();
+-            queue.pop();
+-        } else {
+-            // All threads have been awakened,
+-            // but the data has already been acquired by other thread, returning NULL.
+-            RETVAL_NULL();
+-            swoole_set_last_error(SW_ERROR_NO_PAYLOAD);
+-        }
+-
+-        if (item) {
+-            item->fetch(return_value);
+-            delete item;
+-        }
+-    }
+-
+-    void count(zval *return_value) {
+-        lock_.lock();
+-        RETVAL_LONG(queue.size());
+-        lock_.unlock();
+-    }
+-
+-    void clean() {
+-        lock_.lock();
+-        while (!queue.empty()) {
+-            const ArrayItem *item = queue.front();
+-            delete item;
+-            queue.pop();
+-        }
+-        lock_.unlock();
+-    }
+-};
+-
+-struct ThreadQueueObject {
+-    Queue *queue;
+-    zend_object std;
+-};
+-
+-static sw_inline ThreadQueueObject *queue_fetch_object(zend_object *obj) {
+-    return reinterpret_cast<ThreadQueueObject *>(reinterpret_cast<char *>(obj) - swoole_thread_queue_handlers.offset);
+-}
+-
+-static void queue_free_object(zend_object *object) {
+-    ThreadQueueObject *qo = queue_fetch_object(object);
+-    if (qo->queue) {
+-        qo->queue->del_ref();
+-        qo->queue = nullptr;
+-    }
+-    zend_object_std_dtor(object);
+-}
+-
+-static zend_object *queue_create_object(zend_class_entry *ce) {
+-    const auto qo = static_cast<ThreadQueueObject *>(zend_object_alloc(sizeof(ThreadQueueObject), ce));
+-    zend_object_std_init(&qo->std, ce);
+-    object_properties_init(&qo->std, ce);
+-    qo->std.handlers = &swoole_thread_queue_handlers;
+-    return &qo->std;
+-}
+-
+-ThreadQueueObject *queue_fetch_object_check(const zval *zobject) {
+-    ThreadQueueObject *qo = queue_fetch_object(Z_OBJ_P(zobject));
+-    if (!qo->queue) {
+-        php_swoole_fatal_error(E_ERROR, "must call constructor first");
+-    }
+-    return qo;
+-}
+-
+-ThreadResource *php_swoole_thread_queue_cast(const zval *zobject) {
+-    return queue_fetch_object(Z_OBJ_P(zobject))->queue;
+-}
+-
+-void php_swoole_thread_queue_create(zval *return_value, ThreadResource *resource) {
+-    auto obj = queue_create_object(swoole_thread_queue_ce);
+-    auto qo = queue_fetch_object(obj);
+-    qo->queue = dynamic_cast<Queue *>(resource);
+-    ZVAL_OBJ(return_value, obj);
+-}
+ 
++// The class, its objects and every method are Rust (crates/phpthread).
+ SW_EXTERN_C_BEGIN
+-static PHP_METHOD(swoole_thread_queue, __construct);
+-static PHP_METHOD(swoole_thread_queue, push);
+-static PHP_METHOD(swoole_thread_queue, pop);
+-static PHP_METHOD(swoole_thread_queue, count);
+-static PHP_METHOD(swoole_thread_queue, clean);
++PHP_METHOD(swoole_thread_queue, __construct);
++PHP_METHOD(swoole_thread_queue, push);
++PHP_METHOD(swoole_thread_queue, pop);
++PHP_METHOD(swoole_thread_queue, count);
++PHP_METHOD(swoole_thread_queue, clean);
+ SW_EXTERN_C_END
+@@ -183,67 +46,4 @@ static const zend_function_entry swoole_thread_queue_methods[] = {
+ void php_swoole_thread_queue_minit(int module_number) {
+-    SW_INIT_CLASS_ENTRY(swoole_thread_queue, "Swoole\\Thread\\Queue", nullptr, swoole_thread_queue_methods);
+-    swoole_thread_queue_ce->ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
+-    SW_SET_CLASS_CLONEABLE(swoole_thread_queue, sw_zend_class_clone_deny);
+-    SW_SET_CLASS_UNSET_PROPERTY_HANDLER(swoole_thread_queue, sw_zend_class_unset_property_deny);
+-    SW_SET_CLASS_CUSTOM_OBJECT(swoole_thread_queue, queue_create_object, queue_free_object, ThreadQueueObject, std);
+-
+-    zend_class_implements(swoole_thread_queue_ce, 1, zend_ce_countable);
+-
+-    zend_declare_class_constant_long(swoole_thread_queue_ce, ZEND_STRL("NOTIFY_ONE"), Queue::NOTIFY_ONE);
+-    zend_declare_class_constant_long(swoole_thread_queue_ce, ZEND_STRL("NOTIFY_ALL"), Queue::NOTIFY_ALL);
+-}
+-
+-static PHP_METHOD(swoole_thread_queue, __construct) {
+-    auto qo = queue_fetch_object(Z_OBJ_P(ZEND_THIS));
+-    if (qo->queue != nullptr) {
+-        zend_throw_error(nullptr, "Constructor of %s can only be called once", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
+-        return;
+-    }
+-    qo->queue = new Queue();
++    swoole_thread_queue_ce = swr_v1_phpthread_queue_minit(swoole_thread_queue_methods);
+ }
+-
+-static PHP_METHOD(swoole_thread_queue, push) {
+-    zval *zvalue;
+-    zend_long notify_which = 0;
+-
+-    ZEND_PARSE_PARAMETERS_START(1, 2)
+-    Z_PARAM_ZVAL(zvalue)
+-    Z_PARAM_OPTIONAL
+-    Z_PARAM_LONG(notify_which)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto qo = queue_fetch_object_check(ZEND_THIS);
+-    if (notify_which > 0) {
+-        qo->queue->push_notify(zvalue, notify_which == Queue::NOTIFY_ALL);
+-    } else {
+-        qo->queue->push(zvalue);
+-    }
+-}
+-
+-static PHP_METHOD(swoole_thread_queue, pop) {
+-    double timeout = 0;
+-
+-    ZEND_PARSE_PARAMETERS_START(0, 1)
+-    Z_PARAM_OPTIONAL
+-    Z_PARAM_DOUBLE(timeout)
+-    ZEND_PARSE_PARAMETERS_END();
+-
+-    auto qo = queue_fetch_object_check(ZEND_THIS);
+-    if (timeout == 0) {
+-        qo->queue->pop(return_value);
+-    } else {
+-        qo->queue->pop_wait(return_value, timeout);
+-    }
+-}
+-
+-static PHP_METHOD(swoole_thread_queue, count) {
+-    auto qo = queue_fetch_object_check(ZEND_THIS);
+-    qo->queue->count(return_value);
+-}
+-
+-static PHP_METHOD(swoole_thread_queue, clean) {
+-    auto qo = queue_fetch_object_check(ZEND_THIS);
+-    qo->queue->clean();
+-}
+-
+ #endif

@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body, select_overlay
 
 
@@ -44,7 +45,7 @@ def main():
         method = body(text, 'ReturnCode Client::parse_frame(')
         marker = '    bool end = (flags &' if variant == 'native' else '    SwRsHttp2Response response_plan;'
         suffix = method[method.index(marker):]
-        pieces.append('namespace ' + variant + ' {struct Client: FixtureClient {int publish(unsigned type, unsigned flags, unsigned _stream_id, bool pipeline_read){Stream *stream=&value;' + suffix + '}};}')
+        pieces.append((variant, 'namespace ' + variant + ' {struct Client: FixtureClient {int publish(unsigned type, unsigned flags, unsigned _stream_id, bool pipeline_read){Stream *stream=&value;' + suffix + '}};}'))
     prelude = r'''
 #include "swoole_http2.h"
 #define SW_USE_RUST_HTTP2
@@ -54,26 +55,26 @@ def main():
 #include <iostream>
 #include <stdexcept>
 using namespace swoole;
-static std::vector<std::string> effects;
-static unsigned throw_at, mutation;
+inline std::vector<std::string> effects;
+inline unsigned throw_at, mutation;
 struct zval {unsigned identity=19;};
 struct FixtureBuffer {char str[8]={'a',0,'b','c',0,0,0,0};size_t length=0;
  void clear();};
 struct Stream {unsigned flags=0;zval zresponse;FixtureBuffer *buffer=nullptr;};
-static Stream *current;
-static void effect(std::string text){effects.push_back(text);if(mutation&1)current->flags^=15;if(mutation&2)current->zresponse.identity+=3;if(throw_at==effects.size())throw std::runtime_error("native effect");}
-void FixtureBuffer::clear(){effect("clear:"+std::to_string(length));length=0;}
-static int swoole_http2_response_ce;
+inline Stream *current;
+inline void effect(std::string text){effects.push_back(text);if(mutation&1)current->flags^=15;if(mutation&2)current->zresponse.identity+=3;if(throw_at==effects.size())throw std::runtime_error("native effect");}
+inline void FixtureBuffer::clear(){effect("clear:"+std::to_string(length));length=0;}
+inline int swoole_http2_response_ce;
 #define ZEND_STRL(x) x,sizeof(x)-1
 #define SW_Z8_OBJ_P(x) (x)
 #define SW_READY 2
 #define SW_CONTINUE 0
 #define HTTP_ESTATUS_SERVER_RESET -3
-static void zend_update_property_stringl(int,zval*z,const char*k,size_t n,const char*v,size_t len){effect("string:"+std::string(k,n)+":"+std::to_string(z->identity)+":"+std::string(v,len));}
-static void zend_update_property_bool(int,zval*z,const char*k,size_t n,int value){effect("bool:"+std::string(k,n)+":"+std::to_string(z->identity)+":"+std::to_string(value));}
-static void zend_update_property_long(int,zval*z,const char*k,size_t n,unsigned value){effect("long:"+std::string(k,n)+":"+std::to_string(z->identity)+":"+std::to_string(value));}
-static void object_init_ex(zval*z,int){effect("object:"+std::to_string(z->identity));z->identity=71;}
-namespace zend {static void object_set(zval*z,const char*k,size_t n,int value){effect("set:"+std::string(k,n)+":"+std::to_string(z->identity)+":"+std::to_string(value));}}
+inline void zend_update_property_stringl(int,zval*z,const char*k,size_t n,const char*v,size_t len){effect("string:"+std::string(k,n)+":"+std::to_string(z->identity)+":"+std::string(v,len));}
+inline void zend_update_property_bool(int,zval*z,const char*k,size_t n,int value){effect("bool:"+std::string(k,n)+":"+std::to_string(z->identity)+":"+std::to_string(value));}
+inline void zend_update_property_long(int,zval*z,const char*k,size_t n,unsigned value){effect("long:"+std::string(k,n)+":"+std::to_string(z->identity)+":"+std::to_string(value));}
+inline void object_init_ex(zval*z,int){effect("object:"+std::to_string(z->identity));z->identity=71;}
+namespace zend {inline void object_set(zval*z,const char*k,size_t n,int value){effect("set:"+std::string(k,n)+":"+std::to_string(z->identity)+":"+std::to_string(value));}}
 struct FixtureClient {Stream value;bool deleted=false;int returned_identity=-1;int stream_error=42;
  void retval(zval*z,bool copy,int destruct){effect("return:"+std::to_string(z->identity)+":"+std::to_string(copy)+":"+std::to_string(destruct));returned_identity=z->identity;}
  void delete_stream(unsigned id){effect("delete:"+std::to_string(id));deleted=true;}
@@ -98,20 +99,8 @@ std::cout<<"{\"passed\":true,\"publication_cases\":"<<count<<"}\n";
 '''
     work = args.output.parent / (args.output.stem + '-artifacts')
     work.mkdir(parents=True, exist_ok=False)
-    cpp = work / 'publication.cpp'
-    cpp.write_text(prelude + '\n'.join(pieces) + driver)
-    command = ['c++', '-std=c++17', '-O1', '-fsanitize=address,undefined', '-fno-sanitize=alignment',
-               '-fno-omit-frame-pointer', '-I', str(gate.ROOT / 'native/http2'), '-I', str(args.source / 'include')]
-    for include in args.include:
-        command += ['-I', include]
-    command += [str(cpp), str(archive), '-o', str(work / 'publication')]
-    for cmd in [command, [str(work / 'publication')]]:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        report['commands'].append({'command': cmd, 'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr})
-        if result.returncode:
-            break
-        if cmd != command:
-            report.update(json.loads(result.stdout))
+    report['commands'], result = sides.run(work, 'publication', prelude, pieces, driver, source=args.source, archive=archive, includes=args.include)
+    report.update(result or {})
     report['native_sanitizers'] = ['address', 'undefined except alignment']
     report['rust_sanitized'] = False
     args.output.write_text(json.dumps(report, indent=2) + '\n')

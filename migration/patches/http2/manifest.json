@@ -9,6 +9,13 @@
         "ext-src/swoole_http2_server.cc",
         "src/protocol/http2.cc"
       ]
+    },
+    {
+      "path": "0002-swoole_http2_client_coro.patch",
+      "sha256": "44239f53951982b9a16a4a1dcba6246dd81cadfe63b6c24876a0864dbaac4ae1",
+      "upstream_paths": [
+        "ext-src/swoole_http2_client_coro.cc"
+      ]
     }
   ]
 }

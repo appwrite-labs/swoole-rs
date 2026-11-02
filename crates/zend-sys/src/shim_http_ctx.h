@@ -21,4 +21,11 @@ zend_long swr_zend_http_max_input_vars(void);
 /* Append `file` to the request's `tmpfiles` and register it in
  * SG(rfc1867_uploaded_files) for is_uploaded_file()/move_uploaded_file(). */
 void swr_zend_http_upload(zval *tmpfiles, const char *file, size_t length);
+/* zval_get_string, as a zend::bailout::trap body (it may run __toString):
+ * `arg` is a swr_zend_http_string. */
+typedef struct {
+    zval *value;
+    zend_string *result;
+} swr_zend_http_string;
+void swr_zend_http_get_string(void *arg);
 #endif

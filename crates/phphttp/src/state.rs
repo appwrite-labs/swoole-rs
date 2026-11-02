@@ -109,11 +109,32 @@ pub(crate) struct State {
     pub(crate) accept_compression: u8,
     pub(crate) compression_method: i8,
     pub(crate) parse: Parse,
+    pub(crate) response: Response,
+    pub(crate) compression_min_length: u32,
+    pub(crate) compression_level: i8,
+    pub(crate) send_chunked: u8,
+    pub(crate) upgrade: u8,
+    pub(crate) send_header: u8,
+    pub(crate) content_compressed: u8,
+}
+
+/// `swoole::http::Response`.
+#[repr(C)]
+pub(crate) struct Response {
+    method: c_int,
+    version: c_int,
+    pub(crate) status: c_int,
+    pub(crate) reason: *mut c_char,
+    pub(crate) zobject: Slot,
+    zheader: Slot,
+    zcookie: Slot,
+    ztrailer: Slot,
 }
 
 /// `SWR_PHPHTTP_PARSE_SIZE` and `SWR_PHPHTTP_STATE_SIZE`.
 const _: () = assert!(size_of::<Parse>() == 144, "ext-src/php_swoole_http.h");
-const _: () = assert!(size_of::<State>() == 544, "ext-src/php_swoole_http.h");
+const _: () = assert!(size_of::<State>() == 680, "ext-src/php_swoole_http.h");
+const _: () = assert!(size_of::<Response>() == 120, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Llhttp>() == 96, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Request>() == 272, "ext-src/php_swoole_http.h");
 const _: () = assert!(

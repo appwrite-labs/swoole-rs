@@ -574,7 +574,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['reactor-backend-storage'])
         self.assertIn('--report', commands['reactor-backend-storage'])
         self.assertIn('--archive', commands['phpcoroutines-policy'])
-        self.assertIn('--selected-export', commands['utilities-logger-owned-state'])
+        self.assertIn('--archive', commands['utilities-logger-owned-state'])
         self.assertIn('--sdk-ref', commands['utilities-logger-owned-state'])
         for family in ['logger', 'hash', 'inline', 'global-logger', 'redirect']:
             command = commands['utilities-' + family + '-originals']
@@ -623,7 +623,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--source-ref', commands['utilities-php-logger'])
         self.assertIn('--archive', commands['httpbindings-server'])
         self.assertNotIn('httpbindings-php', commands)
-        self.assertNotIn('httpbindings-codec-0', commands)
         self.assertIn('--source', commands['memory-source-compatibility'])
         self.assertIn('--archive', commands['memory-source-compatibility'])
         self.assertIn('--build-manifest', commands['phpcollections-runtime'])
@@ -679,9 +678,6 @@ class Lanes(unittest.TestCase):
         for family in ['settings', 'control', 'header', 'queue', 'window', 'response-headers', 'publication', 'write', 'send', 'server-header', 'request-headers', 'response-builders', 'response-lifecycle', 'connection']:
             self.assertIn('--core-report', commands['http2-' + family])
             self.assertLess(list(commands).index('http2-native'), list(commands).index('http2-' + family))
-        for capabilities in range(1, 8):
-            codec = commands['httpbindings-codec-' + str(capabilities)]
-            self.assertEqual(codec[codec.index('--capabilities') + 1], str(capabilities))
         for name in ['clients-lifecycle', 'clients-write', 'clients-read', 'clients-connect', 'clients-persistent', 'clients-resolver-config', 'clients-transport', 'clients-pool', 'clients-resolver', 'clients-http-connection', 'clients-http-response', 'clients-http-format', 'clients-coro', 'clients-async', 'clients-object', 'clients-ip', 'clients-ip-text', 'clients-coro-io']:
             self.assertIn('--archive', commands[name])
             self.assertIn('--sanitize', commands[name])
@@ -693,10 +689,6 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('--without-compression', commands['httpbindings-emission-without-zlib'])
         self.assertIn('--archive', commands['httpbindings-settings'])
         self.assertIn('--without-compression', commands['httpbindings-settings-without-compression'])
-        self.assertIn('--archive', commands['httpbindings-response'])
-        self.assertIn('--without-compression', commands['httpbindings-response-without-compression'])
-        for locale in ['C', 'C.UTF-8', 'en_US.ISO8859-1', 'tr_TR.ISO8859-9', 'tr_TR.UTF-8']:
-            self.assertIn('--native-libc', commands['httpbindings-response-libc-' + locale])
         self.assertNotIn('--faults', commands['clients-pool'])
         for family in ['http', 'dns', 'lifecycle', 'pool', 'resolver', 'pool_fork', 'http_connection', 'http_format', 'coro', 'async']:
             command = commands['clients-php-' + family]

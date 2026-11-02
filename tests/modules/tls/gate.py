@@ -220,11 +220,7 @@ def main():
                 if instrumented:
                     raise PreconditionError('Ordinary C++ allocation requires an uninstrumented native control; supply --allocation-native-report with an attested same-config control. Sanitized allocation coverage cannot replace the ordinary interposition profile.')
             child=attempt/(name+'.json')
-            # The allocation profile counts the C++ allocations of BIO_ctrl's native warning.
-            # The logger formatting it belongs to utilities, whose hybrid logger allocates
-            # in Rust, so both sides keep the same (pinned) logger and only the TLS TUs differ.
-            child_hybrid=child_library if name=='allocation' else hybrid
-            command=[sys.executable,ROOT/'tests/modules/tls/differential.py','--reference',args.source,'--source',headers,'--library',child_library,'--hybrid-library',child_hybrid,'--openssl',control['openssl'],'--archive',archive,'--output',child,*extra]
+            command=[sys.executable,ROOT/'tests/modules/tls/differential.py','--reference',args.source,'--source',headers,'--library',child_library,'--hybrid-library',hybrid,'--openssl',control['openssl'],'--archive',archive,'--output',child,*extra]
             result=run(command);row=json.loads(child.read_text()) if child.is_file() else {'passed':False,'error':'Child receipt absent'}
             report['gates'][name]={'passed':result.returncode==0 and row.get('passed') is True,'report':str(child)}
             if not report['gates'][name]['passed']: raise RuntimeError('TLS '+name+' failed; first child receipt/logs retained')

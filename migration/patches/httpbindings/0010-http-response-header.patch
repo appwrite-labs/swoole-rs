@@ -1,0 +1,510 @@
+diff --git a/ext-src/php_swoole_http.h b/ext-src/php_swoole_http.h
+index 612a101..a222593 100644
+--- a/ext-src/php_swoole_http.h
++++ b/ext-src/php_swoole_http.h
+@@ -161,2 +161,10 @@ struct ContextState {
+     alignas(8) unsigned char parse_[SWR_PHPHTTP_PARSE_SIZE];
++    // The response header and compression are Rust too (crates/phphttp/src/header.rs).
++    Response response;
++    uint32_t compression_min_length;
++    int8_t compression_level;
++    uchar send_chunked;
++    uchar upgrade;
++    uchar send_header_;
++    uchar content_compressed;
+ };
+@@ -166,10 +174,4 @@ struct Context : ContextState {
+     uchar end_ : 1;
+-    uchar send_header_ : 1;
+-#ifdef SW_HAVE_COMPRESSION
+-    uchar content_compressed : 1;
+-#endif
+-    uchar send_chunked : 1;
+     uchar send_trailer_ : 1;
+     uchar websocket_compression : 1;
+-    uchar upgrade : 1;
+     uchar detached : 1;
+@@ -182,4 +184,2 @@ struct Context : ContextState {
+ #ifdef SW_HAVE_COMPRESSION
+-    int8_t compression_level;
+-    uint32_t compression_min_length;
+     std::shared_ptr<std::unordered_set<std::string>> compression_types;
+@@ -191,4 +191,2 @@ struct Context : ContextState {
+ 
+-    Response response;
+-
+     std::string upload_tmp_dir;
+@@ -271,3 +269,5 @@ struct Context : ContextState {
+     const char *get_content_encoding() const;
+-    bool compress(const char *data, size_t length);
++    bool compress(const char *data, size_t length) {
++        return swr_v1_phphttp_compress(this, data, length);
++    }
+ #endif
+@@ -278,4 +278,20 @@ struct Context : ContextState {
+   private:
+-    void build_header(String *http_buffer, const char *body, size_t length);
+-    ssize_t build_trailer(String *http_buffer) const;
++    // Null: a header value's __toString bailed out; Rust has returned, so
++    // re-raise it here (docs/zend.md).
++    void build_header(String *http_buffer, const char *body, size_t length) {
++        size_t header_length;
++        const char *header = swr_v1_phphttp_build_header(this, body, length, &header_length);
++        if (!header) {
++            zend_bailout();
++        }
++        http_buffer->append(header, header_length);
++    }
++    void build_trailer(String *http_buffer) const {
++        size_t trailer_length;
++        const char *trailer = swr_v1_phphttp_build_trailer(this, &trailer_length);
++        if (!trailer) {
++            zend_bailout();
++        }
++        http_buffer->append(trailer, trailer_length);
++    }
+     void send_trailer(zval *return_value);
+diff --git a/ext-src/swoole_http_response.cc b/ext-src/swoole_http_response.cc
+index e7c7e1a..e3cc64e 100644
+--- a/ext-src/swoole_http_response.cc
++++ b/ext-src/swoole_http_response.cc
+@@ -224,6 +224,2 @@ bool swr_http_host_write(void *context, zend_string *sdata, zval *return_value)
+ 
+-static int http_response_parse_header_name(const char *key, size_t keylen) {
+-    return swr_v1_httpbindings_response_header({reinterpret_cast<const uint8_t *>(key), keylen});
+-}
+-
+ zend_string *php_swoole_http_get_date() {
+@@ -240,224 +236,2 @@ zend_string *php_swoole_http_get_date() {
+ 
+-static void http_response_set_date_header(String *response) {
+-    auto date_str = php_swoole_http_get_date();
+-    response->append(ZEND_STRL("Date: "));
+-    response->append(ZSTR_VAL(date_str), ZSTR_LEN(date_str));
+-    response->append(ZEND_STRL("\r\n"));
+-}
+-
+-static void http_response_add_custom_header(String *http_buffer, const char *key, size_t l_key, zval *value) {
+-    if (ZVAL_IS_NULL(value)) {
+-        return;
+-    }
+-
+-    zend::String str_value(value);
+-    str_value.rtrim();
+-    if (swoole_http_has_crlf(str_value.val(), str_value.len())) {
+-        return;
+-    }
+-
+-    http_buffer->append(key, l_key);
+-    http_buffer->append(SW_STRL(": "));
+-    http_buffer->append(str_value.val(), str_value.len());
+-    http_buffer->append(SW_STRL("\r\n"));
+-}
+-
+-void HttpContext::build_header(String *http_buffer, const char *body, size_t length) {
+-    assert(send_header_ == 0);
+-
+-    // http status line
+-    http_buffer->append(ZEND_STRL("HTTP/1.1 "));
+-    if (response.reason) {
+-        http_buffer->append(response.status);
+-        http_buffer->append(ZEND_STRL(" "));
+-        http_buffer->append(response.reason, strlen(response.reason));
+-    } else {
+-        const char *status = HttpServer::get_status_message(response.status);
+-        http_buffer->append((char *) status, strlen(status));
+-    }
+-    http_buffer->append(ZEND_STRL("\r\n"));
+-
+-    // http headers
+-    uint32_t header_flags = 0x0;
+-    zval *zheader =
+-        sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, SW_ZSTR_KNOWN(SW_ZEND_STR_HEADER), 0);
+-    if (ZVAL_IS_ARRAY(zheader)) {
+-#ifdef SW_HAVE_COMPRESSION
+-        zend_string *content_type = nullptr;
+-#endif
+-        zval *zvalue;
+-        zend_string *string_key;
+-        zend_ulong num_key;
+-
+-        ZEND_HASH_FOREACH_KEY_VAL(Z_ARRVAL_P(zheader), num_key, string_key, zvalue) {
+-            if (!string_key) {
+-                string_key = zend_long_to_str(num_key);
+-            } else {
+-                zend_string_addref(string_key);
+-            }
+-            zend::String key(string_key, false);
+-
+-            int key_header = http_response_parse_header_name(ZSTR_VAL(string_key), ZSTR_LEN(string_key));
+-
+-            if (key_header > 0) {
+-#ifdef SW_HAVE_COMPRESSION
+-                if (key_header == HTTP_HEADER_CONTENT_TYPE && accept_compression && compression_types) {
+-                    content_type = zval_get_string(zvalue);
+-                }
+-                if (key_header == HTTP_HEADER_CONTENT_ENCODING && ZVAL_IS_STRING(zvalue)) {
+-                    accept_compression = 0;
+-                }
+-                // https://github.com/swoole/swoole-src/issues/4857
+-                // https://github.com/swoole/swoole-src/issues/5026
+-                if (key_header == HTTP_HEADER_CONTENT_LENGTH && accept_compression) {
+-                    swoole_error_log(SW_LOG_WARNING,
+-                                     SW_ERROR_HTTP_CONFLICT_HEADER,
+-                                     "The client has set 'Accept-Encoding', 'Content-Length' will be ignored");
+-                    continue;
+-                }
+-#endif
+-                // https://github.com/swoole/swoole-src/issues/4857
+-                // https://github.com/swoole/swoole-src/issues/5026
+-                if (key_header == HTTP_HEADER_CONTENT_LENGTH && send_chunked) {
+-                    swoole_error_log(SW_LOG_WARNING,
+-                                     SW_ERROR_HTTP_CONFLICT_HEADER,
+-                                     "You have set 'Transfer-Encoding', 'Content-Length' will be ignored");
+-                    continue;
+-                }
+-
+-                header_flags |= key_header;
+-                if (ZVAL_IS_STRING(zvalue) && Z_STRLEN_P(zvalue) == 0) {
+-                    continue;
+-                }
+-            }
+-            if (ZVAL_IS_ARRAY(zvalue)) {
+-                zval *zvalue_2;
+-                SW_HASHTABLE_FOREACH_START(Z_ARRVAL_P(zvalue), zvalue_2) {
+-                    http_response_add_custom_header(http_buffer, ZSTR_VAL(string_key), ZSTR_LEN(string_key), zvalue_2);
+-                }
+-                SW_HASHTABLE_FOREACH_END();
+-            } else {
+-                http_response_add_custom_header(http_buffer, ZSTR_VAL(string_key), ZSTR_LEN(string_key), zvalue);
+-            }
+-        }
+-        ZEND_HASH_FOREACH_END();
+-
+-#ifdef SW_HAVE_COMPRESSION
+-        if (accept_compression && compression_types) {
+-            std::string str_content_type = content_type ? std::string(ZSTR_VAL(content_type), ZSTR_LEN(content_type))
+-                                                        : std::string(ZEND_STRL(SW_HTTP_DEFAULT_CONTENT_TYPE));
+-            accept_compression = compression_types->find(str_content_type) != compression_types->end();
+-        }
+-        if (content_type) {
+-            zend_string_release(content_type);
+-        }
+-#endif
+-    }
+-
+-    // http cookies
+-    zval *zcookie =
+-        sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, SW_ZSTR_KNOWN(SW_ZEND_STR_COOKIE), 0);
+-    if (ZVAL_IS_ARRAY(zcookie)) {
+-        zval *zvalue;
+-        SW_HASHTABLE_FOREACH_START(Z_ARRVAL_P(zcookie), zvalue) {
+-            if (Z_TYPE_P(zvalue) != IS_STRING || swoole_http_has_crlf(Z_STRVAL_P(zvalue), Z_STRLEN_P(zvalue))) {
+-                continue;
+-            }
+-            http_buffer->append(ZEND_STRL("Set-Cookie: "));
+-            http_buffer->append(Z_STRVAL_P(zvalue), Z_STRLEN_P(zvalue));
+-            http_buffer->append(ZEND_STRL("\r\n"));
+-        }
+-        SW_HASHTABLE_FOREACH_END();
+-    }
+-
+-    if (!(header_flags & HTTP_HEADER_SERVER)) {
+-        http_buffer->append(ZEND_STRL("Server: " SW_HTTP_SERVER_SOFTWARE "\r\n"));
+-    }
+-
+-    if (!(header_flags & HTTP_HEADER_DATE)) {
+-        http_response_set_date_header(http_buffer);
+-    }
+-
+-    // websocket protocol (subsequent header info is unnecessary)
+-    if (upgrade == 1) {
+-        http_buffer->append(ZEND_STRL("\r\n"));
+-        send_header_ = 1;
+-        return;
+-    }
+-    if (!(header_flags & HTTP_HEADER_CONNECTION)) {
+-        if (keepalive) {
+-            http_buffer->append(ZEND_STRL("Connection: keep-alive\r\n"));
+-        } else {
+-            http_buffer->append(ZEND_STRL("Connection: close\r\n"));
+-        }
+-    }
+-    if (!(header_flags & HTTP_HEADER_CONTENT_TYPE)) {
+-        http_buffer->append(ZEND_STRL("Content-Type: " SW_HTTP_DEFAULT_CONTENT_TYPE "\r\n"));
+-    }
+-    if (send_chunked) {
+-        SW_ASSERT(length == 0);
+-        if (!(header_flags & HTTP_HEADER_TRANSFER_ENCODING)) {
+-            http_buffer->append(ZEND_STRL("Transfer-Encoding: chunked\r\n"));
+-        }
+-    }
+-    // Content-Length
+-    else if (length > 0 || parser.method != HTTP_HEAD) {
+-#ifdef SW_HAVE_COMPRESSION
+-        if (compress(body, length)) {
+-            length = zlib_buffer->length;
+-            const char *content_encoding = get_content_encoding();
+-            http_buffer->append(ZEND_STRL("Content-Encoding: "));
+-            http_buffer->append((char *) content_encoding, strlen(content_encoding));
+-            http_buffer->append(ZEND_STRL("\r\n"));
+-        }
+-#endif
+-        if (!(header_flags & HTTP_HEADER_CONTENT_LENGTH)) {
+-            http_buffer->append(ZEND_STRL("Content-Length: "));
+-
+-            char result[128];
+-            int convert_result = swoole_itoa(result, length);
+-            http_buffer->append(result, convert_result);
+-            http_buffer->append(ZEND_STRL("\r\n"));
+-        }
+-    }
+-
+-    http_buffer->append(ZEND_STRL("\r\n"));
+-    send_header_ = 1;
+-}
+-
+-ssize_t HttpContext::build_trailer(String *http_buffer) const {
+-    char *buf = sw_tg_buffer()->str;
+-    size_t l_buf = sw_tg_buffer()->size;
+-    ssize_t ret = 0;
+-
+-    zval *ztrailer =
+-        sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, SW_ZSTR_KNOWN(SW_ZEND_STR_TRAILER), 0);
+-    uint32_t size = php_swoole_array_length_safe(ztrailer);
+-
+-    if (size > 0) {
+-        const char *key;
+-        uint32_t keylen;
+-        int type;
+-        zval *zvalue;
+-
+-        SW_HASHTABLE_FOREACH_START2(Z_ARRVAL_P(ztrailer), key, keylen, type, zvalue) {
+-            if (UNEXPECTED(!key || ZVAL_IS_NULL(zvalue))) {
+-                continue;
+-            }
+-
+-            if (!ZVAL_IS_NULL(zvalue)) {
+-                zend::String str_value(zvalue);
+-                size_t n = sw_snprintf(
+-                    buf, l_buf, "%.*s: %.*s\r\n", (int) keylen, key, (int) str_value.len(), str_value.val());
+-                http_buffer->append(buf, n);
+-                ret += n;
+-            }
+-        }
+-        SW_HASHTABLE_FOREACH_END();
+-        (void) type;
+-    }
+-    http_buffer->append(ZEND_STRL("\r\n"));
+-
+-    return ret;
+-}
+ 
+@@ -483,61 +257,32 @@ void php_brotli_free(void *opaque, void *address) {
+ 
+-#ifdef SW_HAVE_COMPRESSION
+-bool HttpContext::compress(const char *data, size_t length) {
+-#ifdef SW_HAVE_ZLIB
+-    int encoding = 0;
+-#endif
+-
+-    uint32_t capabilities = 0;
+-#ifdef SW_HAVE_ZLIB
+-    capabilities |= 1u;
+-    static_assert(Z_NO_COMPRESSION == 0 && Z_DEFAULT_COMPRESSION == -1 &&
+-                  Z_BEST_SPEED == 1 && Z_BEST_COMPRESSION == 9, "Zlib level mapping changed");
+-#endif
+-#ifdef SW_HAVE_BROTLI
+-    capabilities |= 2u;
+-#endif
+-#ifdef SW_HAVE_ZSTD
+-    capabilities |= 4u;
+-#endif
+-    int method = swr_v1_httpbindings_codec(compression_method, capabilities, accept_compression, length, compression_min_length);
+-    if (method == 0) return false;
+-    if (method < 0) {
+-        swoole_warning("Unknown compression method");
+-        return false;
+-    }
+-#ifdef SW_HAVE_ZLIB
+-    // gzip: 0x1f
+-    if (method == HTTP_COMPRESS_GZIP) {
+-        encoding = 0x1f;
+-    }
+-    else if (method == HTTP_COMPRESS_DEFLATE) {
+-        encoding = SW_ZLIB_ENCODING_DEFLATE;
+-    }
+-#endif
++// What crates/phphttp/src/header.rs asks of the context to build the header
++// and compress the body. zlib is Rust's; brotli and zstd, which every pinned
++// build disables, stay here: 1 compressed, 0 failed, -1 not built.
++int swr_http_host_compress_other(void *context, int method, const char *data, size_t length) {
++    char message[SW_ERROR_MSG_SIZE];
++    auto *ctx = static_cast<HttpContext *>(context);
++    (void) ctx;
++    (void) message;
+ #ifdef SW_HAVE_BROTLI
+     if (method == HTTP_COMPRESS_BR) {
+-        compression_level = swr_v1_httpbindings_codec_level(method, compression_level, BROTLI_MIN_QUALITY, BROTLI_MAX_QUALITY);
++        ctx->compression_level =
++            swr_v1_httpbindings_codec_level(method, ctx->compression_level, BROTLI_MIN_QUALITY, BROTLI_MAX_QUALITY);
+ 
+         size_t memory_size = BrotliEncoderMaxCompressedSize(length);
+-        zlib_buffer = std::make_shared<String>(memory_size);
++        ctx->zlib_buffer = std::make_shared<String>(memory_size);
+ 
+-        size_t input_size = length;
+-        const auto *input_buffer = reinterpret_cast<const uint8_t *>(data);
+-        size_t encoded_size = zlib_buffer->size;
+-        auto *encoded_buffer = reinterpret_cast<uint8_t *>(zlib_buffer->str);
+-
+-        if (BROTLI_TRUE != BrotliEncoderCompress(compression_level,
++        size_t encoded_size = ctx->zlib_buffer->size;
++        if (BROTLI_TRUE != BrotliEncoderCompress(ctx->compression_level,
+                                                  BROTLI_DEFAULT_WINDOW,
+                                                  BROTLI_DEFAULT_MODE,
+-                                                 input_size,
+-                                                 input_buffer,
++                                                 length,
++                                                 reinterpret_cast<const uint8_t *>(data),
+                                                  &encoded_size,
+-                                                 encoded_buffer)) {
+-            swoole_warning("BrotliEncoderCompress() failed");
+-            return false;
+-        } else {
+-            zlib_buffer->length = encoded_size;
+-            content_compressed = 1;
+-            return true;
++                                                 reinterpret_cast<uint8_t *>(ctx->zlib_buffer->str))) {
++            swr_http_host_log(SW_LOG_WARNING, 0, "Context::compress", "BrotliEncoderCompress() failed");
++            return 0;
+         }
++        ctx->zlib_buffer->length = encoded_size;
++        ctx->content_compressed = 1;
++        return 1;
+     }
+@@ -546,60 +291,76 @@ bool HttpContext::compress(const char *data, size_t length) {
+     if (method == HTTP_COMPRESS_ZSTD) {
+-        int zstd_compress_level = compression_level;
+-        int zstd_max_level = ZSTD_maxCLevel();
+-        int zstd_min_level = ZSTD_minCLevel();
+-        zstd_compress_level = swr_v1_httpbindings_codec_level(method, zstd_compress_level, zstd_min_level, zstd_max_level);
++        int zstd_compress_level = swr_v1_httpbindings_codec_level(
++            method, ctx->compression_level, ZSTD_minCLevel(), ZSTD_maxCLevel());
+ 
+         size_t compress_size = ZSTD_compressBound(length);
+-        zlib_buffer = std::make_shared<String>(compress_size);
+-        size_t zstd_compress_result =
+-            ZSTD_compress((void *) zlib_buffer->str, compress_size, (void *) data, length, zstd_compress_level);
+-
+-        if (ZSTD_isError(zstd_compress_result)) {
+-            swoole_warning("ZSTD_compress() failed, Error: [%s]", ZSTD_getErrorName(zstd_compress_result));
+-            return false;
+-        }
+-
+-        zlib_buffer->length = zstd_compress_result;
+-        content_compressed = 1;
+-        return true;
++        ctx->zlib_buffer = std::make_shared<String>(compress_size);
++        size_t result =
++            ZSTD_compress((void *) ctx->zlib_buffer->str, compress_size, (void *) data, length, zstd_compress_level);
++        if (ZSTD_isError(result)) {
++            sw_snprintf(message, sizeof(message), "ZSTD_compress() failed, Error: [%s]", ZSTD_getErrorName(result));
++            swr_http_host_log(SW_LOG_WARNING, 0, "Context::compress", message);
++            return 0;
++        }
++        ctx->zlib_buffer->length = result;
++        ctx->content_compressed = 1;
++        return 1;
+     }
+ #endif
+-#ifdef SW_HAVE_ZLIB
+-    compression_level = swr_v1_httpbindings_codec_level(method, compression_level, 0, 0);
+-
+-    size_t memory_size = ((size_t)((double) length * (double) 1.015)) + 10 + 8 + 4 + 1;
+-    zlib_buffer = std::make_shared<String>(memory_size);
+-
+-    z_stream zstream = {};
+-
+-    zstream.zalloc = php_zlib_alloc;
+-    zstream.zfree = php_zlib_free;
+-
+-    int status =
+-        deflateInit2(&zstream, compression_level, Z_DEFLATED, encoding, SW_ZLIB_DEF_MEM_LEVEL, Z_DEFAULT_STRATEGY);
+-    if (status != Z_OK) {
+-        swoole_warning("deflateInit2() failed, Error: [%d]", status);
+-        return false;
+-    }
++    (void) method;
++    (void) data;
++    (void) length;
++    return -1;
++}
+ 
+-    zstream.next_in = (Bytef *) data;
+-    zstream.avail_in = length;
+-    zstream.next_out = (Bytef *) zlib_buffer->str;
+-    zstream.avail_out = zlib_buffer->size;
++char *swr_http_host_compression_buffer(void *context, size_t size) {
++#ifdef SW_HAVE_COMPRESSION
++    auto *ctx = static_cast<HttpContext *>(context);
++    ctx->zlib_buffer = std::make_shared<String>(size);
++    return ctx->zlib_buffer->str;
++#else
++    (void) context;
++    (void) size;
++    return nullptr;
++#endif
++}
+ 
+-    status = deflate(&zstream, Z_FINISH);
+-    deflateEnd(&zstream);
+-    if (status != Z_STREAM_END) {
+-        swoole_warning("deflate() failed, Error: [%d]", status);
+-        return false;
+-    }
++void swr_http_host_compressed(void *context, size_t length) {
++#ifdef SW_HAVE_COMPRESSION
++    auto *ctx = static_cast<HttpContext *>(context);
++    ctx->zlib_buffer->length = length;
++    ctx->zlib_buffer->offset = 0;
++#else
++    (void) context;
++    (void) length;
++#endif
++}
+ 
+-    zlib_buffer->length = zstream.total_out;
+-    zlib_buffer->offset = 0;
+-    content_compressed = 1;
+-    return true;
++size_t swr_http_host_compressed_length(const void *context) {
++#ifdef SW_HAVE_COMPRESSION
++    return static_cast<const HttpContext *>(context)->zlib_buffer->length;
++#else
++    (void) context;
++    return 0;
+ #endif
+-    return false;
+ }
++
++bool swr_http_host_compression_type(const void *context, const char *type, size_t length) {
++#ifdef SW_HAVE_COMPRESSION
++    // A null `type` asks whether the server lists compression types at all.
++    auto *ctx = static_cast<const HttpContext *>(context);
++    if (!type || !ctx->compression_types) {
++        return bool(ctx->compression_types);
++    }
++    return ctx->compression_types->find(std::string(type, length)) != ctx->compression_types->end();
++#else
++    (void) context;
++    (void) type;
++    (void) length;
++    return false;
+ #endif
++}
++
++zend_string *swr_http_host_date(void) {
++    return php_swoole_http_get_date();
++}
+ 

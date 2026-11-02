@@ -166,6 +166,15 @@ impl Inflate {
         }
     }
 
+    /// A gzip-only decompressor (`inflateInit2(MAX_WBITS + 16)`), which never
+    /// falls back to raw deflate: the HTTP/2 client's.
+    #[must_use]
+    pub fn gzip_only() -> Self {
+        let mut inflate = Self::new(true);
+        inflate.first_chunk = false;
+        inflate
+    }
+
     /// Inflate one body chunk: the bytes it produced, or None on an empty
     /// input or a decompression error, as the pinned method.
     pub fn decode(&mut self, input: &[u8]) -> Option<&[u8]> {

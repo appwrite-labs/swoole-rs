@@ -19,6 +19,26 @@ from tools.native_core import library_identity, verify_loader_output, test_outco
 from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import COMMIT
 
+# C++ operator-new sizes of one DTLS BIO_ctrl unknown-command warning in allocation.cc,
+# measured on Linux/libstdc++. The sides deliberately differ: upstream's warning makes three
+# C++ allocations, while the hybrid's logger belongs to utilities, which formats and writes it
+# in Rust, so only the first (60 bytes) remains. Each side is checked against its own profile.
+ALLOCATION_PROFILES = {'original': [60, 32, 23], 'rust': [60]}
+
+
+def allocation_trace(sizes):
+    """allocation.cc's stdout (logger prefix normalized) for a per-warning allocation profile:
+    failing allocation 1..len(sizes) throws before the warning is written; fail_at 0 and the
+    ones past the profile log it and make every allocation."""
+    lines = []
+    for fail_at in range(7):
+        threw = 1 <= fail_at <= len(sizes)
+        calls = fail_at if threw else len(sizes)
+        if not threw:
+            lines.append('WARNING\tdtls::BIO_ctrl(): unknown cmd: -12345')
+        lines.append(f'native-new 4 {fail_at} 0 {int(threw)} 71 {calls} ' + ''.join(f'{size},' for size in sizes[:calls]))
+    return ''.join(line + '\n' for line in lines)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -219,7 +239,11 @@ def main():
         report['warning_prefix_normalization'] = 'Only native logger [timestamp PID] prefix; exact payload/count and all data rows compared, raw outputs retained'
         report['unknown_warning_counts'] = {k: v.count('WARNING\tdtls::BIO_ctrl(): unknown cmd: -12345') for k,v in normalized.items()}
         if not args.peers and not args.allocation and not args.crypto_allocation and not args.benchmark_check and set(report['unknown_warning_counts'].values()) != {4}: raise ValueError('Missing/extra expected unknown-command warnings')
-        if normalized['original']!=normalized['rust']: raise ValueError('Actual TU result mismatch; both outputs retained')
+        if args.allocation:
+            report['allocation_profiles']=ALLOCATION_PROFILES
+            for label,sizes in ALLOCATION_PROFILES.items():
+                if normalized[label]!=allocation_trace(sizes): raise ValueError(label+' allocation trace differs from its recorded profile; output retained')
+        elif normalized['original']!=normalized['rust']: raise ValueError('Actual TU result mismatch; both outputs retained')
         report['native_library_after']={label: library_identity(path) for label, path in libraries.items()}
         if report['native_library_after']!=expected: raise ValueError('Native library changed')
         if args.benchmark_check:

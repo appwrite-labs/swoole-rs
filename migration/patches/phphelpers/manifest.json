@@ -10,7 +10,7 @@
     },
     {
       "path": "0002-swoole_stdext.patch",
-      "sha256": "504860c8968ac33035f3ca9f010eefb328d42541af2fbb4b3dad953f9149f791",
+      "sha256": "a6d3f7da59a1ea9ac07d3040237babce06fee13cef264d4967e9b0bbf07f16ea",
       "upstream_paths": [
         "ext-src/swoole_stdext.cc"
       ]
