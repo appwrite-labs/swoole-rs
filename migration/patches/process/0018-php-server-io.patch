@@ -1,5 +1,5 @@
 diff --git a/ext-src/swoole_server.cc b/ext-src/swoole_server.cc
-index 2ccaa57..832949e 100644
+index 3b75045..79c2e25 100644
 --- a/ext-src/swoole_server.cc
 +++ b/ext-src/swoole_server.cc
 @@ -23,2 +23,3 @@
@@ -197,7 +197,7 @@ index 2ccaa57..832949e 100644
 +    };
 +    swr_v1_phpserver_io_init(&io);
      swoole_server_ce = classes.server;
-@@ -2307,109 +2408,2 @@ static PHP_METHOD(swoole_server, set) {
+@@ -2314,109 +2415,2 @@ static PHP_METHOD(swoole_server, set) {
  
 -static PHP_METHOD(swoole_server, on) {
 -    Server *serv = php_swoole_server_get_and_check_server(ZEND_THIS);
@@ -307,7 +307,7 @@ index 2ccaa57..832949e 100644
 -}
 -
  extern Worker *php_swoole_process_get_and_check_worker(const zval *zobject);
-@@ -2624,155 +2618,2 @@ static PHP_METHOD(swoole_server, start) {
+@@ -2631,155 +2625,2 @@ static PHP_METHOD(swoole_server, start) {
  
 -static PHP_METHOD(swoole_server, send) {
 -    Server *serv = php_swoole_server_get_and_check_server(ZEND_THIS);
@@ -463,7 +463,7 @@ index 2ccaa57..832949e 100644
 -}
 -
  static PHP_METHOD(swoole_server, taskwait) {
-@@ -3103,77 +2944,2 @@ static PHP_METHOD(swoole_server, command) {
+@@ -3110,77 +2951,2 @@ static PHP_METHOD(swoole_server, command) {
  
 -static PHP_METHOD(swoole_server, sendMessage) {
 -    Server *serv = php_swoole_server_get_and_check_server(ZEND_THIS);

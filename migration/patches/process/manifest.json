@@ -170,8 +170,8 @@
       ]
     },
     {
-      "path": "0016-php-server-io.patch",
-      "sha256": "be2fd11a29e462dac15cdabae94912dbe5eaf30aa413ccf8562ad62c0a8d283a",
+      "path": "0018-php-server-io.patch",
+      "sha256": "d242e26b7caf9577e19d369c502c5394870d8cf9fc994325dcf223a174b7b803",
       "upstream_paths": [
         "ext-src/swoole_server.cc"
       ]
