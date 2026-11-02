@@ -18,7 +18,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.harness import ROOT, run_isolated, write_report
-from tools.build_hybrid import hybrid_tree
+from tools.build_hybrid import hybrid_tree, module_patches
 
 from tools.build_upstream import COMMIT as PIN
 SOURCES = ['src/core/heap.cc', 'src/core/channel.cc', 'src/memory/fixed_pool.cc', 'src/memory/global_memory.cc', 'src/memory/ring_buffer.cc', 'src/memory/shared_memory.cc', 'src/memory/table.cc']
@@ -72,10 +72,8 @@ def main():
             report['archive'] = str(archive)
             hybrid, hybrid_flags = hybrid_tree(archive)
             report['hybrid_tree'] = str(hybrid)
-            overlay = json.loads((ROOT / 'migration/patches/memory/manifest.json').read_text())
+            overlay = module_patches(ROOT / 'migration/patches/memory')
             report['patch_manifest'] = overlay
-            if overlay['upstream_commit'] != PIN:
-                raise ValueError('Overlay pin mismatch')
             raw = subprocess.check_output(['git', '-C', str(args.source), 'archive', PIN, 'include', *SOURCES])
             with tarfile.open(fileobj=io.BytesIO(raw)) as bundle:
                 for member in bundle:
@@ -92,7 +90,7 @@ def main():
                     # Preserve every original assertion expression/count. Rust status
                     # checks add validation; they cannot substitute for native witnesses.
                     assertions = {}
-                    for source in sorted({*SOURCES, *[path for patch in overlay['patches'] for path in patch['upstream_paths']]}):
+                    for source in sorted({*SOURCES, *[path for patch in overlay for path in patch['upstream_paths']]}):
                         def expressions(path):
                             return Counter(re.sub(r'\s+', '', value) for value in re.findall(r'\bassert\s*\((.*?)\);', path.read_text(), re.S))
                         original = expressions(directory / 'upstream' / source)
@@ -192,8 +190,7 @@ def main():
                 # Freeze the exact build inputs so later source edits need not
                 # wait for a timing lease. Reject changes during preparation.
                 frozen_hashes = dict(source_hashes)
-                frozen_hashes['migration/patches/memory/manifest.json'] = sha(ROOT / 'migration/patches/memory/manifest.json')
-                for patch in overlay['patches']:
+                for patch in overlay:
                     frozen_hashes['migration/patches/memory/' + patch['path']] = patch['sha256']
                 snapshot = args.prepare_benchmark.resolve() / 'source'
                 for relative, digest in frozen_hashes.items():

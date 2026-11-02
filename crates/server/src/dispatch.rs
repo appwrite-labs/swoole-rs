@@ -333,7 +333,8 @@ pub(crate) fn base_finish<H: Host>(h: &mut H) -> bool {
     if !h.is(OP_SESSION_FOREIGN) {
         return h.signed(OP_SEND_HERE) == SW_OK;
     }
-    h.get(TRACE_FORWARD);
+    // 1: logged as `BaseFactory::finish`, not `BaseFactory::end`.
+    h.op(TRACE_FORWARD, 1);
     if h.is(OP_SEND_KIND_OK) {
         h.is(OP_FORWARD_SEND)
     } else {

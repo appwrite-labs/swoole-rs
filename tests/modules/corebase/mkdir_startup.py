@@ -14,6 +14,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.harness import parse_engines, run_isolated
+from tools.build_upstream import COMMIT
 
 
 def main():
@@ -27,7 +28,7 @@ def main():
                   scope='Actual PHP MINIT sys_temp_dir -> set_task_tmpdir -> recursive mkdir; real native logging/last_error, private paths only. No fixed-path full-core case/performance claim.')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     report['php_command'] = str(Path(shutil.which(args.php) or args.php).resolve())
-    report['upstream_commit'] = json.loads((ROOT / 'migration/patches/corebase/manifest.json').read_text())['upstream_commit']
+    report['upstream_commit'] = COMMIT
     code = r'''
 $path = $argv[1]; clearstatcache(true, $path); $exists = is_dir($path);
 echo "\nM19_STARTUP ", json_encode(['exists' => $exists, 'last_error' => swoole_last_error(),

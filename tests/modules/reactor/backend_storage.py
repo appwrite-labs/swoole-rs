@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 from ordered_gate import ROOT, PIN, block, apply_patch_verified
-from poll_snapshot import digest
+from tools.build_hybrid import module_patches
 
 
 def main():
@@ -25,8 +25,8 @@ def main():
     native='ReactorEpoll' if backend=='epoll' else 'ReactorKqueue'
     path='src/reactor/'+backend+'.cc'
     original=subprocess.check_output(['git','-C',str(args.source),'show',PIN+':'+path],text=True)
-    manifest=ROOT/'migration/patches/reactor/manifest.json'
-    entries=json.loads(manifest.read_text())['patches']
+    overlay=ROOT/'migration/patches/reactor'
+    entries=module_patches(overlay)
     with tempfile.TemporaryDirectory(prefix='swr-backend-storage-') as temporary:
         tree=Path(temporary)
         for entry in entries:
@@ -37,8 +37,7 @@ def main():
                     output.write_bytes(subprocess.check_output(['git','-C',str(args.source),'show',PIN+':'+name]))
         patches=[]
         for entry in entries:
-            patch=manifest.parent/entry['path']
-            if digest(patch)!=entry['sha256']: raise ValueError('Overlay checksum mismatch')
+            patch=overlay/entry['path']
             application = apply_patch_verified(tree, patch, entry['upstream_paths'], entry['sha256'])
             patches.append(dict(path=entry['path'],application=application))
         selected=(tree/path).read_text()

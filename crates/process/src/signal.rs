@@ -1,8 +1,8 @@
 //! `src/os/signal.cc`'s handler table and its sigaction path: registering a handler,
 //! the two async-signal handlers, dispatching triggered signals from a safe context,
 //! looking a handler up, clearing the table and blocking every signal.
-//! The signalfd and kqueue paths are still native and share the table through
-//! `swr_v1_signals`, laid out as `swoole::Signal`.
+//! The signalfd and kqueue paths (`signalfd.rs`, `signal_kqueue.rs`) share the
+//! table, `swr_v1_signals`, laid out as `swoole::Signal`.
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
 

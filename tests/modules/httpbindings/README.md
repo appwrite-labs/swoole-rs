@@ -38,7 +38,7 @@ build's fully patched tree, the upstream side from the pin.
 
 | Gate | Checks | Extra flags |
 |---|---|---|
-| `server_gate.py` | coroutine handler routing, whole accept loop | |
+| `server_gate.py` | coroutine handler routing, whole accept loop (the Rust loop over the hybrid's `swr_hsc_*` effects) | |
 | `settings_gate.py` | coroutine server startup settings body: alias order, null/false fallthrough, level clamp | `--without-compression` |
 
 Preserved native quirks (asserted by independent witnesses, not fixed): the

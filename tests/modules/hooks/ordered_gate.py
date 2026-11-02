@@ -5,7 +5,6 @@ This checks policy and native operation ordering, not real reactor/context/libur
 or PHP engine execution. Full translation-unit and original suites are separate.
 """
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -14,6 +13,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[3]
 import sys
 sys.path.insert(0, str(ROOT))
+from tools.build_hybrid import module_patches
 from tools.build_upstream import COMMIT as PIN
 
 
@@ -42,17 +42,16 @@ def main():
         'src/coroutine/socket.cc': ['ssize_t Socket::recvmsg(', 'ssize_t Socket::sendmsg(', 'ssize_t Socket::sendto(', 'ssize_t Socket::recvfrom(void *_buf, size_t _n, sockaddr *', 'ssize_t Socket::recv(', 'ssize_t Socket::send(', 'ssize_t Socket::read(', 'ssize_t Socket::write(', 'ssize_t Socket::readv(', 'ssize_t Socket::writev(', 'ssize_t Socket::recv_all(', 'ssize_t Socket::send_all(', 'bool Socket::TimerController::start()', 'Socket::TimerController::~TimerController()'],
     }
     signatures['src/reactor/poll.cc'] = ['int16_t translate_events_to_poll(', 'int translate_events_from_poll(']
-    manifest = json.loads((ROOT/'migration/patches/hooks/manifest.json').read_text())
-    originals = {path: subprocess.check_output(['git', '-C', str(a.source), 'show', PIN+':'+path], text=True) for path in {*(path for entry in manifest['patches'] for path in entry['upstream_paths']), 'src/reactor/poll.cc'}}
+    manifest = module_patches(ROOT/'migration/patches/hooks')
+    originals = {path: subprocess.check_output(['git', '-C', str(a.source), 'show', PIN+':'+path], text=True) for path in {*(path for entry in manifest for path in entry['upstream_paths']), 'src/reactor/poll.cc'}}
     with tempfile.TemporaryDirectory(prefix='swr-hooks-order-') as temp:
         tree = Path(temp)
         for path, text in originals.items():
             output = tree/path
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(text)
-        for entry in manifest['patches']:
+        for entry in manifest:
             patch = ROOT/'migration/patches/hooks'/entry['path']
-            assert hashlib.sha256(patch.read_bytes()).hexdigest() == entry['sha256']
             subprocess.run(['git', 'apply', str(patch)], cwd=tree, check=True)
         for variant in ['original', 'selected']:
             bodies = []

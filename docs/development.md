@@ -63,6 +63,10 @@ phase timings and whether make/relink/configure ran.
 
 Use immutable (non-`--dev`) builds for comparisons that must be reproduced.
 
+Patches apply in file-name order, and `tools/patches.py export` names a new one
+`<UTC timestamp>-<subject>.patch`, so adding a patch never conflicts with
+another branch; see [hybrid build](hybrid-build.md#editing-patches).
+
 `tools.build_hybrid.apply_patch_verified(tree, patch, targets, expected_sha256=None)`
 applies a patch inside its own Git boundary, checks that every declared target
 changed, and returns before/after hashes. An apply that leaves a target

@@ -14,13 +14,13 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import apply_patch_verified
+from tools.build_hybrid import apply_patch_verified, module_patches
 from tools.build_upstream import COMMIT as PIN
 
 
 
 def overlay_manifest():
-    return json.loads((ROOT/'migration/patches/clients/manifest.json').read_text())['patches'][0]
+    return module_patches(ROOT/'migration/patches/clients')[0]
 
 
 def apply_overlay(scratch, output):
