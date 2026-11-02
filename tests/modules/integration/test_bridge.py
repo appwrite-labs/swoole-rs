@@ -189,8 +189,8 @@ int main(void) {
             if ARGS.feature_bits & bit:
                 label = 'WebSocket kernel' if name == 'websocket' else name
                 cases.append((1, ARGS.feature_bits & ~bit, f'Rust bridge missing {label} feature'))
-        # Hide the real queries once (the LTO archive is one object, so they cannot be
-        # removed as members). Each case gets an independent copy of that real archive.
+        # Hide the real queries once (LTO merges them into objects with other code, so
+        # they cannot be removed as members). Each case gets an independent copy of that real archive.
         with tempfile.TemporaryDirectory(prefix='swoole-rs-abi-preparation-') as directory:
             preparation = Path(directory)
             self.require_space(preparation)

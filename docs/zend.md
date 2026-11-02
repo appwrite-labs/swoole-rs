@@ -24,7 +24,7 @@ All three sit behind a `php` feature and are empty without it, so the
 workspace builds without PHP. The module's `crates/ffi` feature adds the crate
 and re-exports it; `crates/ffi`'s `php` feature turns on `<crate>?/php`. The
 hybrid build makes two archives: `libswoole_rs_php.a` with `php` for the
-extension (fat LTO outside `--dev`), and the Zend-free `libswoole_rs_ffi.a`
+extension (thin LTO outside `--dev`), and the Zend-free `libswoole_rs_ffi.a`
 without it, which the native gates link into executables.
 
 ## The pattern
