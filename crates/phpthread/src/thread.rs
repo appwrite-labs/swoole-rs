@@ -99,9 +99,9 @@ method_table! {
         c"yield" => zim_swoole_thread_yield, &thread::arginfo_class_Swoole_Thread_yield, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         c"setName" => zim_swoole_thread_setName, &thread::arginfo_class_Swoole_Thread_setName, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        c"setAffinity" => zim_swoole_thread_setAffinity, &thread::arginfo_class_Swoole_Thread_setAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"setAffinity" => thread_affinity::zim_swoole_thread_setAffinity, &thread::arginfo_class_Swoole_Thread_setAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        c"getAffinity" => zim_swoole_thread_getAffinity, &thread::arginfo_class_Swoole_Thread_getAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getAffinity" => thread_affinity::zim_swoole_thread_getAffinity, &thread::arginfo_class_Swoole_Thread_getAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         c"setPriority" => zim_swoole_thread_setPriority, &thread::arginfo_class_Swoole_Thread_setPriority, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         c"getPriority" => zim_swoole_thread_getPriority, &thread::arginfo_class_Swoole_Thread_getPriority, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         c"getNativeId" => zim_swoole_thread_getNativeId, &thread::arginfo_class_Swoole_Thread_getNativeId, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;

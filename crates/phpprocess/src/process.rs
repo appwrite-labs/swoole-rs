@@ -171,9 +171,9 @@ method_table! {
         c"kill" => zim_swoole_process_kill, &process::arginfo_class_Swoole_Process_kill, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         c"daemon" => zim_swoole_process_daemon, &process::arginfo_class_Swoole_Process_daemon, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        c"setAffinity" => zim_swoole_process_setAffinity, &process::arginfo_class_Swoole_Process_setAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"setAffinity" => crate::affinity::zim_swoole_process_setAffinity, &process::arginfo_class_Swoole_Process_setAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        c"getAffinity" => zim_swoole_process_getAffinity, &process::arginfo_class_Swoole_Process_getAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getAffinity" => crate::affinity::zim_swoole_process_getAffinity, &process::arginfo_class_Swoole_Process_getAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
         c"setPriority" => zim_swoole_process_setPriority, &process::arginfo_class_Swoole_Process_setPriority, z::ZEND_ACC_PUBLIC;
         c"getPriority" => zim_swoole_process_getPriority, &process::arginfo_class_Swoole_Process_getPriority, z::ZEND_ACC_PUBLIC;
         c"set" => zim_swoole_process_set, &process::arginfo_class_Swoole_Process_set, z::ZEND_ACC_PUBLIC;
