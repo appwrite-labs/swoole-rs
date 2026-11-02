@@ -122,7 +122,7 @@ reported, and the handler's last step, `bailout::finish()`, raises it
 an error, or it returns the bailout as a flag to its C++ trampoline). Never
 call `php_error_docref`, `zend_error` or a C++ reporter directly from Rust.
 
-`tests/modules/zend/error_handler_bailout.php` checks this per family against
+`tests/modules/zend/run.py` (`error_handler_bailout.php`) checks this per family against
 upstream: an error handler that `exit()`s, and one that raises a fatal error,
 on a Rust-raised warning.
 
