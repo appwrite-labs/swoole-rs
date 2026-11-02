@@ -93,6 +93,16 @@ impl Conn {
         ClientCall::new(self.cli, op)
     }
 
+    /// Run an IO call: a sync client raises no callbacks, so only an async
+    /// one needs the `zend_try` frame.
+    fn run(&self, call: &mut ClientCall) -> Result<i64, Bailout> {
+        if self.flag(state::ASYNC) {
+            call.run()
+        } else {
+            Ok(call.run_plain())
+        }
+    }
+
     pub(crate) fn fd(&self) -> c_int {
         // SAFETY: a live client with a socket.
         unsafe { native::swoole_client_fd(self.cli) }
@@ -501,7 +511,7 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
                 let ce = unsafe { (*object).ce };
                 // SAFETY: as above.
                 unsafe {
-                    value::update_long(ce, object, c"reuseCount", i64::from(pooled.reuse_count))
+                    value::update_long(ce, object, c"reuseCount", i64::from(pooled.reuse_count));
                 };
             } else {
                 bailed(pooled.call(Op::Close).run())?;
@@ -727,7 +737,7 @@ fn send(call: &Call) {
     send.data = data.as_ptr().cast();
     send.length = data.len();
     send.a = flags;
-    let Some(sent) = bailed(send.run()) else {
+    let Some(sent) = bailed(conn.run(&mut send)) else {
         return call.set_bool(false);
     };
     if sent < 0 {
@@ -772,7 +782,7 @@ fn sendto(call: &Call) {
     #[expect(clippy::cast_possible_wrap, reason = "a string's length")]
     let length = data.len() as i64;
     send.b = length;
-    let Some(result) = bailed(send.run()) else {
+    let Some(result) = bailed(conn.run(&mut send)) else {
         return call.set_bool(false);
     };
     if result < 0 {
@@ -805,7 +815,7 @@ fn sendfile(call: &Call) {
     send.data = file.as_ptr().cast();
     send.a = offset;
     send.b = length;
-    let Some(result) = bailed(send.run()) else {
+    let Some(result) = bailed(conn.run(&mut send)) else {
         return call.set_bool(false);
     };
     if result < 0 {
@@ -825,7 +835,7 @@ fn receive(conn: &Conn, buffer: *mut u8, length: usize, flags: i64) -> Result<i6
     recv.buffer = buffer.cast();
     recv.length = length;
     recv.a = flags;
-    recv.run()
+    conn.run(&mut recv)
 }
 
 /// `recv()` failed (`error`): warn, errCode and false.
@@ -964,7 +974,7 @@ fn recv_length(
         )]
         // SAFETY: Swoole's logger.
         unsafe {
-            native::swoole_client_package_too_big(length as c_int)
+            native::swoole_client_package_too_big(length as c_int);
         };
         call.set_empty_string();
         return None;
@@ -1174,6 +1184,7 @@ fn close(call: &Call) {
     // SAFETY: a live client.
     if force
         || !conn.keep
+        // SAFETY: a live client.
         || unsafe { native::swoole_client_catch_error(conn.cli, last_error()) } == CLOSE
     {
         let Some(result) = bailed(conn.call(Op::Close).run()) else {

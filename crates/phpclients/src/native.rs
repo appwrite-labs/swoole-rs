@@ -302,6 +302,14 @@ impl ClientCall {
         }?;
         Ok(self.result)
     }
+
+    /// Run a call that cannot reach PHP code (a sync client's send or plain
+    /// receive), without the `zend_try` frame.
+    pub(crate) fn run_plain(&mut self) -> i64 {
+        // SAFETY: as in `run`; the caller rules out callbacks and errors.
+        unsafe { swoole_client_run(std::ptr::from_mut(self).cast()) };
+        self.result
+    }
 }
 
 /// What `swoole_socket_coro_transfer` does.
