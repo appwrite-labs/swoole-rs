@@ -2,6 +2,7 @@
 #define SWOOLE_RS_HTTPBINDINGS_H
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 #ifndef __cplusplus
 #include <stdbool.h>
 #endif
@@ -85,9 +86,67 @@ struct _zend_string;
 struct _zval_struct;
 struct _zend_class_entry *swr_v1_phphttp_request_minit(void);
 struct _zend_class_entry *swr_v1_phphttp_response_minit(void);
-/* Coroutine\Http\Server's method table; its class and handlers stay C++. */
-struct _zend_function_entry;
-const struct _zend_function_entry *swr_v1_phphttp_server_coro_methods(void);
+/* Swoole\Coroutine\Http\Server (crates/phphttp/src/server_coro.rs): MINIT
+ * registers it and returns the class; the HTTP/2 session's request handler
+ * calls the dispatch. */
+struct _zend_class_entry *swr_v1_phphttp_server_coro_minit(struct _zend_class_entry *exception, bool short_name,
+    bool compression);
+void swr_v1_phphttp_server_coro_http2_request(void *context, void *http1, void *server, void *stream);
+/* What it asks of swoole::coroutine::HttpServer (`server`), its coroutine
+ * sockets (`sock`), a socket's read buffer (`buffer`, a swoole::String) and
+ * the contexts it creates. swr_hsc_call is 1 called, 0 failed, -1 bailed out. */
+typedef struct {
+    struct _zend_string *remote_addr;
+    struct _zend_string *server_addr;
+    int remote_port;
+    int server_port;
+} swr_hsc_peer_t;
+void *swr_hsc_new(const char *host, size_t length);
+void swr_hsc_delete(void *server);
+void *swr_hsc_listener(void *server);
+bool *swr_hsc_running(void *server);
+struct _zval_struct *swr_hsc_clients(void *server);
+bool swr_hsc_set_handler(void *server, const char *pattern, size_t length, struct _zval_struct *callable);
+void *swr_hsc_handler(void *server, void *context);
+int swr_hsc_call(void *callable, struct _zval_struct *args, bool coroutine);
+void swr_hsc_track(void *server, int64_t cid, struct _zval_struct *connection);
+void swr_hsc_untrack(void *server, int64_t cid);
+void swr_hsc_cancel(void *sock);
+bool swr_hsc_recv_waiting(void *sock);
+int64_t swr_hsc_cid(void);
+bool swr_hsc_bind(void *sock, const char *host, size_t length, int64_t port, bool reuse_port);
+bool swr_hsc_listen(void *sock, bool ssl);
+void swr_hsc_socket_info(void *sock, int *fd, int *port);
+int swr_hsc_error(void *sock, const char **message);
+void *swr_hsc_connection(struct _zval_struct *connection);
+void *swr_hsc_connection_buffer(void *sock);
+bool swr_hsc_ssl_handshake(void *sock);
+void swr_hsc_peer(void *server, void *sock, swr_hsc_peer_t *peer);
+ssize_t swr_hsc_recv(void *sock, void *buffer);
+void swr_hsc_recv_wait(void *sock, bool waiting);
+size_t swr_hsc_package_max_length(void *sock);
+void swr_hsc_extend(void *buffer, size_t size);
+void swr_hsc_send_all(void *sock, const char *data, size_t length);
+void *swr_hsc_context(void *server, void *sock, struct _zval_struct *connection);
+void swr_hsc_add_server(void *context, swr_hsc_peer_t *peer);
+void swr_hsc_http2(void *server, void *context);
+void swr_hsc_request_data(void *context, void *buffer, size_t length);
+bool swr_hsc_closed(struct _zval_struct *connection);
+void swr_hsc_stream_reset(void *stream);
+/* `start`: the `onAccept` callable (0, 1 not callable, -1 bailed out), the
+ * protocol settings, a setting by SWR_HTTPBINDINGS_SETTING_* kind (0 applied,
+ * 1 refused, 2 no return value, -1 bailed out), and accepting a connection
+ * into a new coroutine (its cid). */
+struct _zend_execute_data;
+struct _zend_array;
+int swr_hsc_accept_callable(struct _zval_struct *object, struct _zend_execute_data *frame, void **callable);
+void swr_hsc_accept_free(void *callable);
+bool swr_hsc_set_protocol(void *sock, struct _zval_struct *settings);
+const char *swr_hsc_strerror(int code);
+void swr_hsc_accept_errors(swr_v1_httpbindings_accept_errors *errors);
+int64_t swr_hsc_accept(void *sock, void *callable, bool *connected);
+void swr_hsc_sleep(void);
+int swr_hsc_setting(void *server, uint32_t kind, struct _zend_array *settings, struct _zval_struct *value);
 void *swr_v1_phphttp_context(const struct _zend_object *object);
 void swr_v1_phphttp_set_context(struct _zend_object *object, void *context);
 
@@ -157,22 +216,58 @@ bool swr_http_host_compression_type(const void *context, const char *type, size_
 struct _zend_string *swr_http_host_date(void);
 /* Calls that can run user code (a value's __toString while building the
  * response, exit() in it) trap a Zend bailout in C++: request_create,
- * response_free, redirect and push return true, upgrade -1, when one
- * happened, and Rust re-raises it (docs/zend.md). */
+ * response_free and redirect return true when one happened, and Rust
+ * re-raises it (docs/zend.md). */
 bool swr_http_host_response_free(void *context);
 void swr_http_host_response_create(struct _zval_struct *object, int64_t fd, struct _zval_struct *return_value);
 struct _zval_struct *swr_http_host_response_property(void *context, int which);
 bool swr_http_host_redirect(void *context, struct _zval_struct *url, struct _zval_struct *code, struct _zval_struct *return_value);
 void swr_http_host_status(void *context, int64_t status, const char *reason, size_t reason_length);
 bool swr_http_host_set_header(void *context, const char *key, size_t key_length, struct _zval_struct *value, bool format);
-void swr_http_host_disconnect(void *context, int64_t code, struct _zend_string *reason, struct _zval_struct *return_value);
-bool swr_http_host_push(void *context, struct _zval_struct *data, int64_t opcode, struct _zval_struct *flags,
-    struct _zval_struct *return_value);
 void swr_http_host_ping(void *context, struct _zend_string *data, struct _zval_struct *return_value);
 bool swr_http_host_goaway(void *context, int64_t code, struct _zend_string *debug);
-int swr_http_host_upgrade(void *context);
 bool swr_http_host_close(void *context);
 void swr_http_host_recv(void *context, double timeout, struct _zval_struct *return_value);
+
+/* Swoole\WebSocket\Server, Frame and CloseFrame (crates/phphttp/src/websocket.rs).
+ * MINIT registers them and the constants, returning the server class and
+ * filling `frame`. The C++ entry points (onMessage, onHandshake, the default
+ * onRequest) and FrameObject's members call the rest; each raises a bailout it
+ * trapped once its Rust frames are done. `object` is a swoole::websocket::FrameObject. */
+struct _zend_class_entry *swr_v1_phphttp_websocket_minit(int module_number, struct _zend_class_entry *http_server,
+    bool serializable, bool zlib, struct _zend_class_entry **frame);
+int swr_v1_phphttp_websocket_message(void *server, void *request, int64_t fd, int server_fd, uint16_t ext_flags);
+bool swr_v1_phphttp_websocket_handshake(void *context, bool open);
+void swr_v1_phphttp_websocket_request(void *context);
+void swr_v1_phphttp_websocket_frame(struct _zval_struct *frame, int64_t opcode, struct _zval_struct *payload, uint8_t flags);
+void swr_v1_phphttp_websocket_frame_object(void *object, struct _zval_struct *data, int64_t opcode, int64_t flags,
+    int64_t code);
+struct _zend_string *swr_v1_phphttp_websocket_pack(const void *object);
+bool swr_v1_phphttp_websocket_uncompress(struct _zval_struct *payload, const char *data, size_t length);
+/* What it asks of the Server (`server` is a swoole::Server, `context` a
+ * swoole::http::Context): the checked server of `$this` (true when the check
+ * bailed out), a connection's WebSocket state, sending (`wait`: yield on a
+ * full buffer as Server::send does in a coroutine), closing, a port's frame
+ * settings (close | ping << 1 | pong << 2, -1 without a port) and subprotocol,
+ * the received data, and calling the server's callback for an event. */
+typedef struct { int status; int server_fd; bool compression; bool closed; } swr_ws_connection;
+enum { SWR_WS_ON_BEFORE_HANDSHAKE_RESPONSE = 0, SWR_WS_ON_OPEN = 1, SWR_WS_ON_MESSAGE = 2 };
+enum { SWR_WS_CALL_BAILED = -1, SWR_WS_CALL_DONE = 0, SWR_WS_CALL_FAILED = 1, SWR_WS_CALL_NONE = 2 };
+bool swr_ws_host_server(struct _zval_struct *object, void **server);
+bool swr_ws_host_started(void *server);
+bool swr_ws_host_connection(void *server, int64_t fd, bool verify, swr_ws_connection *out);
+void swr_ws_host_set_status(void *server, int64_t fd, int64_t status);
+bool swr_ws_host_send(void *server, int64_t fd, const char *data, size_t length, bool wait);
+bool swr_ws_host_close(void *server, int64_t fd, bool reset);
+int swr_ws_host_port_settings(void *server, int64_t fd);
+const char *swr_ws_host_protocol(void *server, int server_fd, size_t *length);
+void swr_ws_host_recv_data(void *server, void *request, struct _zval_struct *data);
+int swr_ws_host_call(void *server, int server_fd, int event, uint32_t argc, struct _zval_struct *args);
+struct _zval_struct *swr_ws_host_server_zval(void *server);
+void *swr_ws_host_context_server(void *context);
+bool swr_ws_host_context_compression(void *context);
+void swr_ws_host_co_protocol(void *context);
+bool swr_ws_host_set_header(void *context, const char *key, size_t key_length, const char *value, size_t length);
 #ifdef __cplusplus
 }
 #endif

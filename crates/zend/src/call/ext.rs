@@ -153,6 +153,23 @@ impl Call {
         Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_ARRAY))
     }
 
+    /// `Z_PARAM_OBJECT` of passed argument `n`.
+    /// # Errors
+    /// The argument is not an object; Zend has thrown.
+    #[inline]
+    pub fn object(&self, n: u32) -> Result<*mut zval, Invalid> {
+        let arg = self.zval_deref(n);
+        // SAFETY: `arg` is a passed, live zval.
+        if unsafe { type_of(arg) } == crate::sys::IS_OBJECT {
+            return Ok(arg);
+        }
+        Err(Self::wrong(
+            n,
+            arg,
+            crate::sys::_zend_expected_type_Z_EXPECTED_OBJECT,
+        ))
+    }
+
     /// `RETVAL_ZVAL(value, 1, 0)`: a new reference to `value`.
     /// # Safety
     /// `value` is a live zval.

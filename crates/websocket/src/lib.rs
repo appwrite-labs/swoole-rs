@@ -9,7 +9,47 @@
 )]
 
 mod codec;
+pub mod sha1;
 pub use codec::*;
+
+/// RFC 6455's handshake GUID (`SW_WEBSOCKET_GUID`).
+const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+/// `Sec-WebSocket-Accept` for a `Sec-WebSocket-Key`: base64(SHA-1(key + GUID)),
+/// as the server handshake computes it (every byte of the key, NULs included).
+#[must_use]
+pub fn accept(key: &[u8]) -> [u8; 28] {
+    let mut input = Vec::with_capacity(key.len() + GUID.len());
+    input.extend_from_slice(key);
+    input.extend_from_slice(GUID);
+    let digest = sha1::digest(&input);
+    // 4 * ceil(20 / 3) = 28 characters and the encoder's trailing NUL.
+    let mut encoded = [0u8; 29];
+    // SAFETY: 20 readable bytes and a disjoint 29-byte output, as the encoder needs.
+    unsafe {
+        swoole_rs_base64::swr_v1_base64_encode(digest.as_ptr(), digest.len(), encoded.as_mut_ptr())
+    };
+    let mut accept = [0u8; 28];
+    accept.copy_from_slice(&encoded[..28]);
+    accept
+}
+
+/// `php_swoole_sha1`: the 20-byte digest of `length` bytes at `data`.
+/// # Safety
+/// `data` covers `length` readable bytes (null only when 0); `digest` 20
+/// writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_ws_sha1(data: *const u8, length: usize, digest: *mut u8) {
+    let input = if length == 0 {
+        &[][..]
+    } else {
+        // SAFETY: per the caller.
+        unsafe { std::slice::from_raw_parts(data, length) }
+    };
+    let hash = sha1::digest(input);
+    // SAFETY: per the caller, 20 writable bytes disjoint from the local digest.
+    unsafe { std::ptr::copy_nonoverlapping(hash.as_ptr(), digest, hash.len()) };
+}
 
 /// Query header plus payload length, preserving upstream's incremental output.
 ///
@@ -163,4 +203,17 @@ pub unsafe extern "C" fn swr_v1_ws_mask(data: *mut u8, length: usize, key: *cons
         *byte ^= mask[index & 3];
     }
     0
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    #[test]
+    fn accept_matches_rfc_6455() {
+        // RFC 6455 section 1.3's example.
+        assert_eq!(
+            &super::accept(b"dGhlIHNhbXBsZSBub25jZQ=="),
+            b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+            "the RFC's accept"
+        );
+    }
 }

@@ -326,7 +326,9 @@ def refresh_dev_sources(reference, source, previous, patches):
             apply_patch_verified(staged, ROOT / patch['path'], patch['upstream_paths'], patch.get('sha256'))
         for target in targets:
             path = source / target
-            if path.read_bytes() != (staged / target).read_bytes():
+            if not (staged / target).exists():
+                path.unlink(missing_ok=True)
+            elif not path.exists() or path.read_bytes() != (staged / target).read_bytes():
                 shutil.copyfile(staged / target, path)
 
 

@@ -125,6 +125,15 @@ pub unsafe extern "C" fn swr_v1_worker_set_pid(worker: *mut WorkerRecord, pid: c
     unsafe { (*worker).pid = pid };
 }
 
+/// The master's end of the worker's pipe (a native socket), or null.
+///
+/// # Safety
+/// `worker` points to a live `Worker`/`WorkerRecord`.
+pub(crate) unsafe fn pipe_master(worker: *const WorkerRecord) -> *mut c_void {
+    // SAFETY: the caller lends a live worker record; only the field is read.
+    unsafe { (*worker).pipe_master }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

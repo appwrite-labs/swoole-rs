@@ -7,12 +7,14 @@
     )
 )]
 pub mod affinity;
+pub mod pool;
 pub mod reaper;
 pub mod reload_task;
 pub mod signal;
 #[cfg(target_os = "linux")]
 pub mod signalfd;
 pub mod task_file;
+pub mod task_sync;
 pub mod wait;
 pub mod worker_record;
 pub mod worker_registry;

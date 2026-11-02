@@ -13,6 +13,15 @@ allocation, timer/reactor operations, context switches, callbacks, exceptions an
 Zend escapes. Signedness, width, casts, wrapping, errno and last_error match
 upstream. Exceptions: Rust makes the syscalls of worker CPU pinning, of reading a task's temporary file and of the signal table's sigaction and signalfd paths.
 
+`ProcessPool`'s IPC is Rust (`crates/process/src/pool.rs`): the stream
+listener's address, its accepted connection, the reply and packet buffers live
+behind `ProcessPool::ipc_`, and the three worker loops (task, stream, message
+protocols), round-robin scheduling and dispatch to a worker's pipe or queue run
+in Rust over native hooks (`swr_v1_pool_hooks`) for the queue, the sockets, the
+message bus, timers and callbacks. Hooks that can reach PHP run inside the
+extension's `zend_try` trap; a bailout ends the loop, and its native caller
+re-raises it once no Rust frame is left (`swr_v1_process_bailout`).
+
 There is one native store each for workers, PIDs, reload snapshots, task results,
 connections/sessions, signals, waiters and child status, and one IPC transport.
 No Rust registry, scheduler, signal queue, async pool, message reassembler,
