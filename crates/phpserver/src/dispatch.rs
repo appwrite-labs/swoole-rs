@@ -148,8 +148,11 @@ fn call(cb: *mut c_void, args: &mut [zval], coroutine: bool, event: &str) -> Cal
                 // SAFETY: a live object.
                 let name = unsafe { class_name(object) };
                 let text = message!("{}->{event} handler error", name.to_string_lossy());
-                // SAFETY: a warning, from a callback Zend runs.
-                unsafe { php_error(E_WARNING, text.as_cstr()) };
+                // SAFETY: a warning, from a callback Zend runs. A user error
+                // handler that bails out ends the event there, as upstream.
+                if unsafe { php_error(E_WARNING, text.as_cstr()) }.is_err() {
+                    return Called::Bailout;
+                }
             }
             Called::Failed
         }
