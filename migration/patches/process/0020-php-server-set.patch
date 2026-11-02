@@ -1,17 +1,17 @@
 diff --git a/ext-src/swoole_server.cc b/ext-src/swoole_server.cc
-index 41c3035..f209d4f 100644
+index 79c2e25..0b9a646 100644
 --- a/ext-src/swoole_server.cc
 +++ b/ext-src/swoole_server.cc
 @@ -22,2 +22,3 @@
  #include "swoole_rs_phpserver_server.h"
 +#include "swoole_rs_phpserver_settings.h"
- #include "swoole_msg_queue.h"
-@@ -313,3 +314,3 @@ static PHP_METHOD(swoole_server, __construct);
+ #include "swoole_rs_phpserver_dispatch.h"
+@@ -290,3 +291,3 @@ static PHP_METHOD(swoole_server, __construct);
  static PHP_METHOD(swoole_server, __destruct);
 -static PHP_METHOD(swoole_server, set);
 +PHP_METHOD(swoole_server, set);
- static PHP_METHOD(swoole_server, on);
-@@ -700,2 +701,228 @@ bool server_call(void *server, int which, zval *argument, zval *retval) {
+ PHP_METHOD(swoole_server, on);
+@@ -849,2 +850,228 @@ void *io_task_server(zend_object *task) {
  
 +
 +#ifdef HAVE_CPU_AFFINITY
@@ -240,8 +240,8 @@ index 41c3035..f209d4f 100644
 +}
 +
  void php_swoole_server_minit(int module_number) {
-@@ -739,2 +966,11 @@ void php_swoole_server_minit(int module_number) {
-                            thread, module_number, &classes);
+@@ -908,2 +1135,11 @@ void php_swoole_server_minit(int module_number) {
+     swr_v1_phpserver_io_init(&io);
 +    static const swr_v1_phpserver_settings_host settings = {
 +        settings_get, settings_set, settings_set_double, settings_text, settings_rewrite, settings_parse_size,
 +        settings_global_options, settings_dispatch_func, settings_cpu_affinity_ignore, settings_create_dir,
@@ -252,7 +252,7 @@ index 41c3035..f209d4f 100644
 +                  "constants crates/phpserver's set() uses");
 +    swr_v1_phpserver_settings_init(&settings);
      swoole_server_ce = classes.server;
-@@ -2172,416 +2408,2 @@ static bool php_swoole_server_set_cpu_affinity_ignore(Server *serv, zval *zignor
+@@ -2001,416 +2237,2 @@ static bool php_swoole_server_set_cpu_affinity_ignore(Server *serv, zval *zignor
  
 -static PHP_METHOD(swoole_server, set) {
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(ZEND_THIS));
@@ -668,4 +668,4 @@ index 41c3035..f209d4f 100644
 -    RETURN_TRUE;
 -}
 -
- static PHP_METHOD(swoole_server, on) {
+ extern Worker *php_swoole_process_get_and_check_worker(const zval *zobject);

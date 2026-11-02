@@ -16,6 +16,8 @@
         "crates/server/",
         "crates/zend-sys/",
         "crates/zend/",
+        "crates/phpstubs/",
+        "tools/arginfo.py",
         "native/include/",
         "native/integration/",
         "migration/patches/integration/",

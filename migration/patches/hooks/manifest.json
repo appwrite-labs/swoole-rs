@@ -41,10 +41,12 @@
     },
     {
       "path": "0005-coroutine-socket.patch",
-      "sha256": "7c0de43c3e86edf33d6c37cad912179343874c3d916c2f1a758f13eab15eef4d",
+      "sha256": "5a6cfca31ad5dd1499148cb504dc0146e2aebba67d4e3029384dc6396f993458",
       "upstream_paths": [
         "include/swoole_coroutine_socket.h",
-        "src/coroutine/socket.cc"
+        "include/swoole_uring_socket.h",
+        "src/coroutine/socket.cc",
+        "src/coroutine/uring_socket.cc"
       ]
     }
   ]

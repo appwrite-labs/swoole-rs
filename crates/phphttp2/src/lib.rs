@@ -2,7 +2,8 @@
 //! `Swoole\Http2\Response` in Rust over the zend crate: registration, the
 //! client's connection, settings, flow control, stream table and send queue,
 //! frame parsing, request building and every method. The coroutine socket and
-//! nghttp2's HPACK codec stay C++ (`native`). See docs/zend.md.
+//! nghttp2's HPACK codec stay C++ (`native`). `server` is the HTTP/2
+//! server's frames and responses over C++'s sessions. See docs/zend.md.
 //!
 //! Without the `php` feature the crate is empty.
 #![cfg(feature = "php")]
@@ -16,5 +17,7 @@
 
 mod client;
 mod native;
+mod server;
 
 pub use client::*;
+pub use server::*;

@@ -21,10 +21,22 @@ mod port;
 pub use port::*;
 
 #[cfg(feature = "server")]
+mod dispatch;
+
+#[cfg(feature = "server")]
+mod io;
+
+#[cfg(feature = "server")]
 mod server;
 
 #[cfg(feature = "server")]
 mod settings;
+
+#[cfg(feature = "server")]
+pub use dispatch::*;
+
+#[cfg(feature = "server")]
+pub use io::*;
 
 #[cfg(feature = "server")]
 pub use server::*;

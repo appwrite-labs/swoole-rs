@@ -58,13 +58,13 @@ jobs:
         run: |
           changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           echo "$changed"
-          if echo "$changed" | grep -qE '^(migration/patches/|native/|tools/build_(hybrid|upstream)\.py$|\.github/|\.devcontainer/)'; then
+          if echo "$changed" | grep -qE '^(migration/patches/|native/|tools/(build_(hybrid|upstream)|arginfo)\.py$|crates/phpstubs/|\.github/|\.devcontainer/)'; then
             echo hybrid=true >> "$GITHUB_OUTPUT"
           fi
           if echo "$changed" | grep -qE '^(migration/patches/hooks/|crates/(hooks|uring[^/]*)/|\.github/workflows/iouring\.yml$|\.devcontainer/install\.sh$)'; then
             echo iouring=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/(locks/|[^/]+/[^/]*thread)|crates/(phplocks|phpthread|zend[^/]*)/|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php-zts)\.sh$)'; then
+          if echo "$changed" | grep -qE '^(migration/patches/(locks/|[^/]+/[^/]*thread)|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php-zts)\.sh$)'; then
             echo zts=true >> "$GITHUB_OUTPUT"
           fi
 
@@ -93,6 +93,8 @@ jobs:
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - if: steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
+      # crates/phpstubs is current, and says what the pin's gen_stub.php headers say.
+      - run: python3 tools/arginfo.py --check
       - uses: actions/cache/restore@v4
         with:
           path: .ccache

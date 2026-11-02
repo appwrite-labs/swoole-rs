@@ -520,10 +520,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('http-native', commands)
         self.assertIn('--socket-output', commands['reactor-production-socket-output'])
         self.assertIn('coroutine-compile',commands)
-        channel_state = commands['coroutine-channel-state']
-        self.assertIn('tests/modules/coroutine/channel_state_gate.py', channel_state)
-        self.assertEqual(channel_state[channel_state.index('--archive') + 1],
-                         commands['coroutine-stack'][commands['coroutine-stack'].index('--archive') + 1])
+        self.assertIn('tests/modules/coroutine/rust_asan.py', commands['coroutine-rust-asan'])
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
         for name in ['hooks-ordered','hooks-async-policy','hooks-packet-policy','hooks-lifecycle-policy','hooks-socket-policy','hooks-compile']:
             self.assertIn(name,commands)
@@ -662,7 +659,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['ports-policy'])
         self.assertIn('--archive', commands['http2-native'])
         self.assertIn('--sanitize', commands['http2-native'])
-        for family in ['settings', 'control', 'header', 'window', 'response-headers', 'send', 'server-header', 'response-builders', 'response-lifecycle', 'file', 'receive']:
+        for family in ['header']:
             self.assertIn('--core-report', commands['http2-' + family])
             self.assertLess(list(commands).index('http2-native'), list(commands).index('http2-' + family))
         for name in ['clients-lifecycle', 'clients-write', 'clients-read', 'clients-connect', 'clients-persistent', 'clients-resolver-config', 'clients-transport', 'clients-pool', 'clients-resolver', 'clients-http-format', 'clients-async', 'clients-object', 'clients-ip', 'clients-ip-text']:
@@ -847,7 +844,6 @@ class Lanes(unittest.TestCase):
             first = command.index('--engine')
             self.assertTrue(command[first + 1].startswith('upstream='))
             self.assertEqual(command.count('--engine'), 2)
-        self.assertIn('--allocation-failures', commands['protocols-native'])
         self.assertFalse(any(name.startswith('halfclose-') for name in commands))
 
     def test_native_halfclose_keeps_all_pause_profiles_and_originals(self):

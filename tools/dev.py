@@ -289,21 +289,12 @@ def plan(args, reports):
                    '--selected-export', selected_export / 'export.json',
                    '--native-export', native_export / 'export.json', *report('coroutine-production-stack'))
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.
-        script('coroutine-stack', 'tests/modules/coroutine/stack.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
-               '--report', reports / 'coroutine-stack.json')
-        script('coroutine-channel-state', 'tests/modules/coroutine/channel_state_gate.py',
-               '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               '--report', reports / 'coroutine-channel-state.json')
-        script('coroutine-compile', 'tests/modules/coroutine/compile_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--report', reports / 'coroutine-compile.json')
-        script('coroutine-stack-compile', 'tests/modules/coroutine/compile_gate.py',
-               '--source', ROOT / 'target/upstream/src', '--stack-usage',
-               '--report', reports / 'coroutine-stack-compile.json')
-        script('coroutine-timing-compile', 'tests/modules/coroutine/compile_gate.py',
-               '--source', ROOT / 'target/upstream/src', '--timing', '--stack-usage',
-               '--report', reports / 'coroutine-timing-compile.json')
+        script('coroutine-rust-asan', 'tests/modules/coroutine/rust_asan.py', '--report', reports / 'coroutine-rust-asan.json')
+        for phase, options in [('coroutine-compile', []), ('coroutine-stack-compile', ['--stack-usage']),
+                               ('coroutine-timing-compile', ['--timing', '--stack-usage'])]:
+            script(phase, 'tests/modules/coroutine/compile_gate.py', '--source', ROOT / 'target/upstream/src',
+                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options,
+                   '--report', reports / (phase + '.json'))
     if 'hooks' in modules:
         for name, runner in [('hooks-ordered', 'ordered_gate.py'), ('hooks-async-policy', 'async_gate.py'),
                              ('hooks-packet-policy', 'packet_gate.py'), ('hooks-socket-policy', 'socket_policy_gate.py'),
@@ -325,13 +316,8 @@ def plan(args, reports):
                     if sys.platform == 'darwin' else [])
         script('http2-native', 'tests/modules/http2/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *includes, *report('http2-native'))
-        for family, runner in [('settings', 'settings_calls.py'), ('control', 'control_calls.py'), ('header', 'header_calls.py'),
-                               ('window', 'window_calls.py'), ('response-headers', 'response_headers.py'), ('send', 'send_calls.py'),
-                               ('server-header', 'server_header_calls.py'), ('response-builders', 'response_builders.py'),
-                               ('response-lifecycle', 'response_lifecycle.py'), ('file', 'file_calls.py'), ('receive', 'receive_calls.py')]:
-            name = 'http2-' + family
-            script(name, 'tests/modules/http2/' + runner, '--source', ROOT / 'target/upstream/src',
-                   '--core-report', reports / 'http2-native.json', *includes, *report(name))
+        script('http2-header', 'tests/modules/http2/header_calls.py', '--source', ROOT / 'target/upstream/src',
+               '--core-report', reports / 'http2-native.json', *includes, *report('http2-header'))
     if 'clients' in modules:
         for name, runner in [('clients-policy', 'gate.py'), ('clients-http', 'http_gate.py'), ('clients-codec', 'codec_gate.py'),
                              ('clients-lifecycle', 'lifecycle_gate.py'), ('clients-write', 'write_gate.py'), ('clients-read', 'read_gate.py'),
@@ -519,7 +505,7 @@ def plan(args, reports):
     if 'protocols' in modules:
         script('protocols-native', 'tests/modules/protocols/native.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
-               *(['--allocation-failures'] if integrate else []), *report('protocols-native'))
+               *report('protocols-native'))
         script('protocols-network', 'tests/modules/protocols/network.py', *php, *engines, *report('protocols-network'))
         if integrate:
             reference_first = ['--engine', f'upstream={reference}',

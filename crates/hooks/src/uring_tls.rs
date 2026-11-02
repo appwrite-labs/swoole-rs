@@ -38,6 +38,7 @@ pub struct TlsHost {
 }
 
 /// One TLS operation's view of a `UringSocket`.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Tls {
     pub host: *const TlsHost,
