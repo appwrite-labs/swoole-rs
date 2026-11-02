@@ -98,12 +98,13 @@ const LOG_WARNING: c_int = 4;
 /// `swr_ws_host_call`'s events and results.
 const ON_BEFORE_HANDSHAKE_RESPONSE: c_int = 0;
 const ON_OPEN: c_int = 1;
-const ON_MESSAGE: c_int = 2;
 const CALL_FAILED: c_int = 1;
 const CALL_BAILED: c_int = -1;
 
 /// `SW_OK`/`SW_ERR`.
 const OK: c_int = 0;
+/// `swr_v1_phphttp_websocket_message`: native code calls `onMessage`.
+const MESSAGE_DISPATCH: c_int = 1;
 const ERR: c_int = -1;
 
 /// `swoole::Server`, opaque.
@@ -981,28 +982,62 @@ fn server_zval(server: *mut Server) -> zval {
     unsafe { *object }
 }
 
-/// `swoole_websocket_onMessage`: a frame `Server::dispatch_frame` delivered.
+/// `swoole_websocket_onMessage` up to the `onMessage` call: a frame
+/// `Server::dispatch_frame` delivered. Returns `MESSAGE_DISPATCH` with the server
+/// and the Frame in `args` and the payload reference in `data`; native code then
+/// calls `onMessage` itself, so a bailout in it crosses no Rust frame, and hands
+/// the outcome to [`swr_v1_phphttp_websocket_message_done`]. Otherwise the
+/// handler's `SW_OK`/`SW_ERR`.
 /// # Safety
-/// `server` and `request` are the live server and its `RecvData`.
+/// `server` and `request` are the live server and its `RecvData`; `args` has room
+/// for two zvals and `data` for one.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp_websocket_message(
     server: *mut c_void,
     request: *mut c_void,
     fd: i64,
-    server_fd: c_int,
     ext_flags: u16,
+    args: *mut zval,
+    data: *mut zval,
 ) -> c_int {
-    let result = message(server, request, fd, server_fd, ext_flags);
+    let result = message(server, request, fd, ext_flags, args, data);
     bailout::finish();
     result
+}
+
+/// After `onMessage`: a failed call warns and closes `fd`; then the references
+/// [`swr_v1_phphttp_websocket_message`] made are released.
+/// # Safety
+/// `server` is live; `args` and `data` are what `swr_v1_phphttp_websocket_message`
+/// filled for this frame.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_websocket_message_done(
+    server: *mut c_void,
+    fd: i64,
+    failed: bool,
+    args: *mut zval,
+    data: *mut zval,
+) {
+    if failed {
+        host::notice("Swoole\\WebSocket\\Server->onMessage handler error");
+        // SAFETY: a live server.
+        unsafe { swr_ws_host_close(server.cast(), fd, false) };
+    }
+    // SAFETY: the payload reference `message` made.
+    unsafe { zval_ptr_dtor(data) };
+    // SAFETY: `args` holds two zvals.
+    let frame = unsafe { args.add(1) };
+    // SAFETY: the Frame `message` made.
+    unsafe { zval_ptr_dtor(frame) };
 }
 
 fn message(
     server: *mut Server,
     request: *mut c_void,
     fd: zend_long,
-    server_fd: c_int,
     ext_flags: u16,
+    args: *mut zval,
+    out: *mut zval,
 ) -> c_int {
     // SAFETY: a live server.
     let Ok(settings) = u8::try_from(unsafe { swr_ws_host_port_settings(server, fd) }) else {
@@ -1039,25 +1074,18 @@ fn message(
         }
         data = plain;
     }
-    // SAFETY: zvals are plain data.
-    let mut args: [zval; 2] = [server_zval(server), unsafe { std::mem::zeroed() }];
-    construct(
-        &raw mut args[1],
-        zend_long::from(opcode),
-        &raw mut data,
-        flags,
-    );
+    // SAFETY: the caller's room for two zvals.
+    unsafe { args.write(server_zval(server)) };
+    // SAFETY: as above, the second.
+    let frame_zval = unsafe { args.add(1) };
+    construct(frame_zval, zend_long::from(opcode), &raw mut data, flags);
     // SAFETY: the Frame just built.
-    let frame = unsafe { obj_of(&raw const args[1]) };
+    let frame = unsafe { obj_of(frame_zval) };
     // SAFETY: as above.
     unsafe { value::update_long(FRAME.entry(), frame, c"fd", fd) };
-    let called = dispatch(server, server_fd, ON_MESSAGE, &mut args, fd);
-    // SAFETY: the references made here.
-    unsafe { zval_ptr_dtor(&raw mut data) };
-    // SAFETY: as above.
-    unsafe { zval_ptr_dtor(&raw mut args[1]) };
-    bailout::defer(called);
-    OK
+    // SAFETY: the caller's room for one zval; it now owns the payload reference.
+    unsafe { out.write(data) };
+    MESSAGE_DISPATCH
 }
 
 /// `swoole_websocket_handshake`, and for the async server (`open`) what
