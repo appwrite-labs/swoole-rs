@@ -238,7 +238,14 @@
       ]
     },
     {
-      "path": "0025-signal-kqueue.patch",
+      "path": "0025-finish-connection.patch",
+      "sha256": "b90e3a975b887504663c9751c1323fe861559a6dd307ed11946e531af2a7e3d3",
+      "upstream_paths": [
+        "src/server/task_worker.cc"
+      ]
+    },
+    {
+      "path": "0026-signal-kqueue.patch",
       "sha256": "f5419fae52908a28b5dd4d46cb5510d6b29a4ab1c24f465726587c2d3dfd870e",
       "upstream_paths": [
         "src/os/signal.cc"

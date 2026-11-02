@@ -107,6 +107,13 @@
         "ext-src/swoole_http_response.cc",
         "ext-src/swoole_websocket_server.cc"
       ]
+    },
+    {
+      "path": "0015-coro-server.patch",
+      "sha256": "2614c35dcd492250888bdf485277ea26804259f59be7b3af348e898615852417",
+      "upstream_paths": [
+        "ext-src/swoole_http_server_coro.cc"
+      ]
     }
   ]
 }
