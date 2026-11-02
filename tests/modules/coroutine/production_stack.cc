@@ -42,7 +42,7 @@ PHP_FUNCTION(swr_context_markers) {
         add_assoc_long(return_value,"class_size",sizeof(swoole::coroutine::Context));
         add_assoc_long(return_value,"class_alignment",alignof(swoole::coroutine::Context));
 #ifdef SWOOLE_RS_COROUTINE
-        Dl_info info{};void *address=dlsym(RTLD_DEFAULT,"swr_v1_context_stack_mark");
+        Dl_info info{};void *address=dlsym(RTLD_DEFAULT,"swr_v1_context_stack_alloc");
         if(!address||!dladdr(address,&info))throw std::runtime_error("Rust marker symbol missing");
         add_assoc_string(return_value,"marker_image",const_cast<char*>(info.dli_fname));
 #endif

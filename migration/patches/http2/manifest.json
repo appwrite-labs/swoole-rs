@@ -18,7 +18,14 @@
       ]
     },
     {
-      "path": "0003-arginfo.patch",
+      "path": "0003-http2-server.patch",
+      "sha256": "2ae7592cbc3b43ec9c87c275d05a482081e717cdb4d6cbc5c18fca88f5f1a8c8",
+      "upstream_paths": [
+        "ext-src/swoole_http2_server.cc"
+      ]
+    },
+    {
+      "path": "0004-arginfo.patch",
       "sha256": "764e10d6f965b8a0ec10029dfe893bffa0aa464f4147b3782d37960b76758cae",
       "upstream_paths": [
         "ext-src/stubs/php_swoole_http2_client_coro_arginfo.h",

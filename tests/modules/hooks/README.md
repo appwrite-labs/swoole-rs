@@ -24,7 +24,7 @@ and kernel IO are faked; these are policy/order checks, not runtime proof.
 - `ordered_gate.py` (2021 cases): hook guard short circuit; flock routing,
   retry, cancel and invalid precedence; socket partial reads/writes, barrier
   wait/error/EOF/timer failure and retry policy; recvmsg/sendmsg/sendto/recvfrom
-  paths; UringSocket partial IO and io_uring submission; system poll
+  paths; io_uring submission; system poll
   error-to-read/write mapping; wait/poll and `System::wait_event`;
   TimerController start/destructor; 121 requested/installed hook flag pairs
   including the native/PHP curl conflict; all 19 stream/transport/PDO/function

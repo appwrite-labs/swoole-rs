@@ -105,6 +105,38 @@ bool swr_v1_uring_tls_prepare(swr_v1_uring_tls tls);
 bool swr_v1_uring_tls_perform(swr_v1_uring_tls tls, int rc, const char *function);
 ssize_t swr_v1_uring_tls_recv(swr_v1_uring_tls tls, void *buf, size_t n);
 ssize_t swr_v1_uring_tls_send(swr_v1_uring_tls tls, const void *buf, size_t n);
+/* UringSocket's operations, whole (crates/hooks/src/uring_socket.rs): availability, the current
+ * coroutine bound to the direction, the request (TLS when tls.ssl is set), the result check. */
+typedef struct swr_v1_hook_socket_state swr_v1_hook_socket_state;
+typedef struct {
+    void *socket;
+    swr_v1_hook_socket_state *state;
+    swr_v1_uring_tls tls;
+    double connect_timeout;
+    bool (*available)(void *, uint32_t event);
+    void (*check)(void *, ssize_t retval);
+    void (*set_err)(void *, int code);
+    void (*name)(void *);
+} swr_v1_hook_uring_socket;
+/* A network::IOVector: its current iovec with the remaining count, and advancing it. */
+typedef struct {
+    void *vector;
+    const struct iovec *(*current)(void *, int *count);
+    void (*update)(void *, ssize_t n);
+} swr_v1_hook_io_vector;
+enum { SWR_URING_READ, SWR_URING_WRITE, SWR_URING_RECV, SWR_URING_SEND, SWR_URING_RECVMSG, SWR_URING_SENDMSG,
+       SWR_URING_RECVFROM };
+/* op SWR_URING_*: extra is the msghdr (with flags) or recvfrom's address (with extra_length). */
+ssize_t swr_v1_hook_uring_io(const swr_v1_hook_uring_socket *ops, int op, void *buf, size_t n, void *extra,
+                             socklen_t *extra_length, int flags);
+/* recv_all (write false) or send_all. */
+ssize_t swr_v1_hook_uring_io_all(const swr_v1_hook_uring_socket *ops, bool write, void *buf, size_t n);
+/* readv/writev, or with all readv_all/writev_all. */
+ssize_t swr_v1_hook_uring_vector(const swr_v1_hook_uring_socket *ops, const swr_v1_hook_io_vector *vector, bool write,
+                                 bool all);
+bool swr_v1_hook_uring_connect(const swr_v1_hook_uring_socket *ops, const struct sockaddr *addr, socklen_t length);
+/* poll(event) for the poll(2) events within timeout seconds. */
+bool swr_v1_hook_uring_poll(const swr_v1_hook_uring_socket *ops, uint32_t event, short events, double timeout);
 #ifdef __cplusplus
 }
 #endif

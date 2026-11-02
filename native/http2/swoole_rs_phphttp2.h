@@ -83,6 +83,91 @@ void swoole_http2_client_coro_warning(const char *message);
 /* Upstream's logs: 0 unknown stream (notice), 1 decompress failed, 2 inflateInit2 failed. */
 void swoole_http2_client_coro_log(int what, uint32_t stream_id);
 
+
+/* The HTTP/2 server (crates/phphttp2/src/server.rs): frames, the response and
+ * the request header block. `ctx` is a swoole::http::Context, `session` and
+ * `stream` point at the std::shared_ptr that holds one. A bailout in user code
+ * (a header's __toString, onRequest) is trapped and re-raised before return. */
+int swr_v1_phphttp2_server_parse(const void *session, const char *buf);
+bool swr_v1_phphttp2_server_respond(void *ctx, const char *data, size_t length);
+bool swr_v1_phphttp2_server_write(void *ctx, const char *data, size_t length);
+bool swr_v1_phphttp2_server_ping(void *ctx);
+bool swr_v1_phphttp2_server_goaway(void *ctx, int64_t code, const char *data, size_t length);
+void swr_v1_phphttp2_server_reset(void *ctx, uint32_t stream_id, uint32_t code);
+/* A file response's header: -1 if it was not sent, else whether a trailer follows. */
+int swr_v1_phphttp2_server_begin_file(void *ctx, const char *content_type, size_t type_length, size_t length);
+bool swr_v1_phphttp2_server_send_body(void *ctx, const char *data, size_t length, bool end_stream);
+bool swr_v1_phphttp2_server_finish_file(void *ctx, bool trailer, bool error);
+
+/* What it asks of C++, defined by ext-src/swoole_http2_server.cc. */
+struct swr_h2s_session {
+    uint32_t *local_settings; /* swoole::http2::Settings, six uint32_t */
+    uint32_t *remote_settings;
+    uint32_t *remote_window_size;
+    uint32_t *local_window_size;
+    uint32_t *last_stream_id;
+    bool *shutting_down;
+    void **inflater;
+    void **deflater;
+    uint32_t max_body_size;
+    bool is_coro;
+    void *default_ctx;
+};
+struct swr_h2s_stream {
+    void *ctx;
+    uint32_t id;
+    uint32_t *remote_window_size;
+    uint32_t *local_window_size;
+};
+enum swr_h2s_field {
+    SWR_H2S_END,
+    SWR_H2S_SEND_HEADER,
+    SWR_H2S_SEND_CHUNKED,
+    SWR_H2S_STATUS,
+    SWR_H2S_PARSE_BODY,
+    SWR_H2S_FORM,
+    SWR_H2S_MULTIPART,
+    SWR_H2S_CO_SOCKET,
+    SWR_H2S_ACCEPT_COMPRESSION,
+    SWR_H2S_ENABLE_COMPRESSION,
+    SWR_H2S_CONTENT_COMPRESSED,
+    SWR_H2S_COMPRESSION_TYPES,
+    SWR_H2S_STREAM_ID,
+};
+enum swr_h2s_value { SWR_H2S_SERVER, SWR_H2S_HEADER, SWR_H2S_RESPONSE, SWR_H2S_GET, SWR_H2S_POST, SWR_H2S_COOKIE };
+void *swr_h2s_session_hold(void *ctx);
+void swr_h2s_session_release(void *session);
+void swr_h2s_session_view(const void *session, struct swr_h2s_session *view);
+bool swr_h2s_session_idle(const void *session);
+bool swr_h2s_session_handle(const void *session, const void *stream);
+void *swr_h2s_stream_hold(const void *session, uint32_t stream_id, bool create);
+void swr_h2s_stream_release(void *stream);
+bool swr_h2s_stream_remove(const void *session, uint32_t stream_id);
+void swr_h2s_stream_view(const void *stream, struct swr_h2s_stream *view);
+void swr_h2s_stream_wait(const void *stream);
+void swr_h2s_stream_wake(const void *stream);
+bool swr_h2s_send(void *ctx, const char *data, size_t length);
+bool swr_h2s_close(void *ctx);
+uint32_t swr_h2s_get(void *ctx, int field);
+void swr_h2s_set(void *ctx, int field, uint32_t value);
+struct _zval_struct *swr_h2s_zval(void *ctx, int which);
+const char *swr_h2s_data(void *ctx, bool create, size_t *length);
+void swr_h2s_data_append(void *ctx, const char *data, size_t length);
+bool swr_h2s_body(void *ctx, bool multipart);
+void swr_h2s_query(struct _zval_struct *array, const char *query, size_t length);
+void swr_h2s_path(void *ctx, const char *path, size_t length);
+void swr_h2s_cookie(struct _zval_struct *array, const char *cookie, size_t length);
+bool swr_h2s_multipart(void *ctx, const char *value, size_t length);
+void swr_h2s_set_header(void *ctx, const char *name, size_t name_length, const char *value, size_t length);
+struct _zend_string *swr_h2s_date(void);
+void swr_h2s_compression_method(void *ctx, const char *value, size_t length);
+bool swr_h2s_compressible(void *ctx, const char *type, size_t length);
+const char *swr_h2s_compress(void *ctx, const char *data, size_t length, size_t *compressed);
+const char *swr_h2s_compressed(void *ctx, size_t *length);
+bool swr_h2s_in_coroutine(void);
+void swr_h2s_log(int level, int error, const char *func, const char *message);
+void swr_h2s_error(int code, int always, const char *message);
+
 #ifdef __cplusplus
 }
 #endif

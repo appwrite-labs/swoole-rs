@@ -11,7 +11,7 @@
     },
     {
       "path": "0003-context-stack-markers.patch",
-      "sha256": "fcee7fd5fc8c863f36120acff04d25e80885cd9241abe9f8afef97c6ceb33344",
+      "sha256": "ef18323455d4e831b2cf93928fe8910c18312d9f50d8ba18e00201b0a7d26c57",
       "upstream_paths": [
         "src/coroutine/context.cc"
       ]
@@ -25,11 +25,10 @@
       ]
     },
     {
-      "path": "0005-context-bookkeeping.patch",
-      "sha256": "debae750339c02a08116fa1de5bcb4b904b5098f6390677c367fa7b07a7de2e3",
+      "path": "0005-context-asan-fibers.patch",
+      "sha256": "01731b9c81cfb34f63af4f35854088ea72252d5f7c07d075192fecc999066f42",
       "upstream_paths": [
-        "include/swoole_coroutine_context.h",
-        "src/coroutine/thread_context.cc"
+        "include/swoole_coroutine_context.h"
       ]
     }
   ]
