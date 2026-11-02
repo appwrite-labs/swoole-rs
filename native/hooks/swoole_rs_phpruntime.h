@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #ifdef __cplusplus
 extern "C" {
@@ -94,6 +95,21 @@ struct _php_stream *swr_v1_phpruntime_socket_create(const char *proto,
 struct _php_stream *swr_v1_phpruntime_stream_from_socket(int fd, int domain, int kind, int protocol);
 /* stream_socket_pair: 1 if a bailout was trapped. */
 uint8_t swr_v1_phpruntime_socket_pair(struct _zend_execute_data *frame, struct _zval_struct *value);
+/* stream_select: 1 if a bailout was trapped. */
+uint8_t swr_v1_phpruntime_stream_select(struct _zend_execute_data *frame, struct _zval_struct *value);
+/* php_async_socket_connect_to_host: the connected coroutine socket's fd, or -1. */
+struct _zend_string;
+int swr_v1_phpruntime_connect_to_host(const char *host,
+                                      unsigned short port,
+                                      struct timeval *timeout,
+                                      struct _zend_string **error_string,
+                                      int *error_code,
+                                      const char *bindto,
+                                      unsigned short bindport,
+                                      long sockopts,
+                                      uint8_t *bailout);
+/* php_async_socket_poll. */
+int swr_v1_phpruntime_socket_poll(int fd, int events, int timeout);
 
 /* Defined by ext-src/swoole_runtime.cc for those streams: the coroutine socket
  * (a SocketImpl *) is still C++, so each operation is one call. */
@@ -147,6 +163,21 @@ uint8_t swoole_runtime_x509_read(const char *pem, size_t length, struct _zval_st
  * 1 php_swoole_error, 2 php_swoole_fatal_error, of level and "%s" message. */
 uint8_t swoole_runtime_error(int kind, int level, const char *message);
 void swoole_runtime_check_reactor(void);
+/* The coroutine socket of a hooked fd, or null; *holder keeps it alive until
+ * swoole_runtime_fd_socket_release. */
+void *swoole_runtime_fd_socket(int fd, void **holder);
+void swoole_runtime_fd_socket_release(void *holder);
+/* poll(SW_EVENT_WRITE or SW_EVENT_READ, timeout). */
+bool swoole_runtime_socket_poll(void *socket, bool write, double timeout);
+const char *swoole_runtime_strerror(int code);
+/* Coroutine::get_current_safe() inside zend_try: 1 if it bailed out. */
+uint8_t swoole_runtime_coroutine_check(void);
+/* php_swoole_convert_to_fd(value) into *fd inside zend_try: 1 if it bailed out. */
+uint8_t swoole_runtime_convert_to_fd(struct _zval_struct *value, int *fd);
+/* System::socket_poll of count (fd, events) rows, merged by fd as stream_select
+ * merges them; the polled fds and their revents in the poll set's order. */
+bool swoole_runtime_poll(
+    const int *fds, const int *events, size_t count, double timeout, int *ready, int *revents, size_t *size);
 #ifdef __cplusplus
 }
 #endif

@@ -120,7 +120,7 @@ fn errno() -> i32 {
 }
 
 /// Report a trapped bailout through `flag`; `failed` stands in for the result.
-fn reraise<T>(flag: *mut u8, result: Result<T, Bailout>, failed: T) -> T {
+pub(crate) fn reraise<T>(flag: *mut u8, result: Result<T, Bailout>, failed: T) -> T {
     result.unwrap_or_else(|Bailout| {
         // SAFETY: the C++ entry lends its flag.
         unsafe { *flag = 1 };
@@ -173,7 +173,7 @@ fn set_eof(stream: *mut php_stream) {
 }
 
 /// The seconds of a `timeval`, as Swoole's `set_timeout(timeval *)`.
-fn seconds(time: *const timeval) -> f64 {
+pub(crate) fn seconds(time: *const timeval) -> f64 {
     let (mut seconds, mut micros) = (0.0, 0.0);
     // SAFETY: Zend lends a live timeval.
     unsafe { swr_zend_stream_timeval(time, &raw mut seconds, &raw mut micros) };
