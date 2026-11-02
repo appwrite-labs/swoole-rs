@@ -52,14 +52,7 @@ def main():
     manifest_path = ROOT / 'migration/patches/coroutine/manifest.json'
     manifest = json.loads(manifest_path.read_text())
     paths = [Path(__file__), Path(__file__).with_name('channel_state.c'), Path(__file__).with_name('tokens.c'),
-             Path(__file__).with_name('status.c'),
              Path(__file__).with_name('context_cells.c'),
-             Path(__file__).with_name('identity.c'), Path(__file__).with_name('make_coroutine_identity.py'),
-             Path(__file__).with_name('swap.c'), Path(__file__).with_name('make_coroutine_swap.py'),
-             Path(__file__).with_name('make_coroutine_creation.py'),
-             Path(__file__).with_name('entry.c'), Path(__file__).with_name('entry.cc'), Path(__file__).with_name('entry.py'), Path(__file__).with_name('make_coroutine_entry.py'),
-             Path(__file__).with_name('bailout.c'), Path(__file__).with_name('make_coroutine_bailout.py'),
-             Path(__file__).with_name('creation.c'), Path(__file__).with_name('creation.cc'), Path(__file__).with_name('creation.py'),
              Path(__file__).with_name('tokens.py'), Path(__file__).with_name('tokens.cc'), manifest_path,
              *[manifest_path.parent / entry['path'] for entry in manifest['patches']],
              *sorted((ROOT / 'native/coroutine').glob('*.h')),
@@ -105,41 +98,17 @@ def main():
             receipt = work / ('actual-header-' + str(sanitize) + '.json')
             run(['python3', Path(__file__).with_name('tokens.py'), '--source', args.source, '--archive', archive, '--report', receipt, *(['--sanitize'] if sanitize else [])])
             report.setdefault('actual_header_reports', []).append(dict(path=str(receipt), result=json.loads(receipt.read_text())))
-        for fixture in ['tokens.c', 'channel_state.c', 'status.c', 'context_cells.c', 'identity.c', 'creation.c', 'entry.c']:
+        for fixture in ['tokens.c', 'channel_state.c', 'context_cells.c']:
             obj = work / (fixture + '.o')
             binary = work / (fixture + '-abi')
             command = ['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-UNDEBUG',
                        '-I' + str(ROOT / 'native/coroutine'), '-I' + str(ROOT / 'native/include'),
                        '-c', Path(__file__).with_name(fixture), '-o', obj]
-            if args.archive and fixture in ['channel_state.c', 'status.c', 'context_cells.c', 'identity.c', 'creation.c']:
+            if args.archive and fixture in ['channel_state.c', 'context_cells.c']:
                 command.append('-DSWR_CHANNEL_FFI')
             run(command)
             run(['c++', obj, archive, '-lpthread', *(['-ldl', '-lm'] if sys.platform.startswith('linux') else []), '-o', binary])
             run([binary])
-        # Typed function identities/descriptors only; no callback is invoked.
-        report['swap_abi_profiles'] = []
-        for fixture in ['swap', 'bailout']:
-          for standard in ['c11', 'c++14', 'c++17']:
-            for sanitized in [False, True]:
-                binary = work / (fixture + '-' + standard + '-' + str(sanitized))
-                obj = binary.with_suffix('.o')
-                sanitizer = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all'] if sanitized else []
-                run(['cc' if standard == 'c11' else 'c++', '-x', 'c' if standard == 'c11' else 'c++',
-                     '-std=' + standard, '-O2', '-Wall', '-Wextra', '-Werror', '-UNDEBUG',
-                     '-I' + str(ROOT / 'native/coroutine'), *sanitizer, '-c', Path(__file__).with_name(fixture + '.c'), '-o', obj])
-                run(['c++', obj, archive, '-lpthread', *(['-ldl', '-lm'] if sys.platform.startswith('linux') else []), *sanitizer, '-o', binary])
-                run([binary])
-                report['swap_abi_profiles'].append(dict(fixture=fixture, standard=standard, native_sanitized=sanitized,
-                    rust_instrumented=False, callback_invoked=False))
-        creation_receipt = work / 'creation-exact-bodies.json'
-        run(['python3', Path(__file__).with_name('creation.py'), '--source', args.source,
-             '--archive', archive, '--report', creation_receipt])
-        report['creation_exact_bodies'] = dict(path=str(creation_receipt),
-                                              result=json.loads(creation_receipt.read_text()))
-        entry_receipt = work / 'entry-exact-bodies.json'
-        run(['python3', Path(__file__).with_name('entry.py'), '--source', args.source,
-             '--archive', archive, '--report', entry_receipt])
-        report['entry_exact_bodies'] = dict(path=str(entry_receipt), result=json.loads(entry_receipt.read_text()))
         if any(sha(path) != digest for path, digest in inputs.items()):
             raise ValueError('Owned or supplied archive input changed')
         report['passed'] = True

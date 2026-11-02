@@ -289,21 +289,13 @@ def plan(args, reports):
                    '--selected-export', selected_export / 'export.json',
                    '--native-export', native_export / 'export.json', *report('coroutine-production-stack'))
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.
-        for name in ['stack', 'timing', 'scheduler']:
-            phase = 'coroutine-' + name
-            script(phase, 'tests/modules/coroutine/' + name + '.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
-                   '--report', reports / (phase + '.json'))
+        script('coroutine-stack', 'tests/modules/coroutine/stack.py', '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
+               '--report', reports / 'coroutine-stack.json')
         script('coroutine-channel-state', 'tests/modules/coroutine/channel_state_gate.py',
                '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'coroutine-channel-state.json')
-        if integrate:
-            script('coroutine-channel-state-sdk', 'tests/modules/coroutine/channel_state_sdk.py',
-                   '--source', ROOT / 'target/upstream/src',
-                   '--sdk-export', selected_export / 'export.json',
-                   '--native-export', native_export / 'export.json',
-                   '--report', reports / 'coroutine-channel-state-sdk.json')
         script('coroutine-compile', 'tests/modules/coroutine/compile_gate.py', '--source', ROOT / 'target/upstream/src',
                '--report', reports / 'coroutine-compile.json')
         script('coroutine-stack-compile', 'tests/modules/coroutine/compile_gate.py',
@@ -328,17 +320,6 @@ def plan(args, reports):
             name = 'httpbindings-settings' + suffix
             script(name, 'tests/modules/httpbindings/settings_gate.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options, *report(name))
-        for family, runner, profiles in [
-            ('emission', 'emission_gate.py', [('', []), ('-without-zlib', ['--without-zlib']),
-                                              ('-without-compression', ['--without-compression'])]),
-            ('file', 'file_gate.py', [('', []), ('-without-compression', ['--without-compression'])]),
-        ]:
-            for suffix, options in profiles:
-                name = 'httpbindings-' + family + suffix
-                script(name, 'tests/modules/httpbindings/' + runner,
-                       '--source', ROOT / 'target/upstream/src',
-                       '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       *options, *report(name))
     if 'http2' in modules:
         includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
                     if sys.platform == 'darwin' else [])

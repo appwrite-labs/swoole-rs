@@ -6,97 +6,33 @@ exactly. Headers: `swoole_rs_coroutine.h`, `swoole_rs_channel_tokens.h`.
 
 | Patch | Upstream files |
 | --- | --- |
-| 0001-scheduler-channel-policy | `src/coroutine/base.cc`, `src/coroutine/channel.cc` |
+| 0001-channel-policy | `src/coroutine/channel.cc` |
 | 0002-channel-owned-tokens | `include/swoole_coroutine_channel.h` |
 | 0003-context-stack-markers | `src/coroutine/context.cc` |
-| 0004-timing-header | `include/swoole_coroutine.h` |
-| 0005-context-bookkeeping | `include/swoole_coroutine_context.h`, `src/coroutine/thread_context.cc` |
+| 0004-coroutine-core | `include/swoole_coroutine.h`, `src/coroutine/base.cc` |
+| 0005-context-bookkeeping | `include/swoole_coroutine_channel.h`, `include/swoole_coroutine_context.h`, `src/coroutine/channel.cc`, `src/coroutine/thread_context.cc` |
 
-Rules for every entry point: Rust stores only opaque Native identities and
-scalar state; it never interprets a whole Coroutine, Context, Channel or task.
-Every Rust frame and borrow ends before Native callbacks, context switches,
-clocks, timers, allocation, printing or destruction. Exported functions do not
-call other exported functions internally; they share private kernels.
-Selected builds change protected field types (layout sizes stay the same unless
-stated), so selected SDK consumers must rebuild; old SDK source/binary
-compatibility is not provided.
+Rust frames never span a swap callback, context switch, timer, allocation,
+print or destructor: C++ runs those between calls.
 
-## Coroutine state transitions
+## Scheduler and coroutine state
 
-`swr_v1_coroutine_transition` takes a copied operation, boolean fact mask and
-Native resume code and returns a 16-byte plan by value. State `-1` and resume
-code `INT32_MIN` mean "preserve". Its error values are policy results, not
-Swoole error numbers; callers translate them. It never changes errno. Cancel
-copies its Native function before clearing the object and does not touch the
-object after invoking the copy.
+`crates/coroutine/src/coroutine.rs` owns two `repr(C)` records:
+`swr_v1_coroutine_scheduler` (current coroutine, last and socket-bound ids, peak
+count, stack size, the three swap callbacks, activation) and `swr_v1_coroutine`
+(id, state, resume code, task, cancel function, the origin tree and timing).
+C++ stores the scheduler in upstream's `SW_THREAD_LOCAL` scope (a plain global
+in NTS builds, so `get_current()` stays one load) and embeds one record in each
+`swoole::Coroutine`, whose `native` field points back at it. C++ getters read
+fields inline; every write is a Rust call.
 
-The State/ResumeCode pair is one constant-seeded 8-byte C POD (align 4; state
-at 0, code at 4) owned by Rust; Native keeps no mirror. Stage 0 decides without
-mutation; stage 1 publishes at the original barrier: RUN after current/origin/
-clock effects; cancellation after the function copy and clear; timeout before
-resume; YIELD/RESUME/CLOSE before their callbacks. Post-wait timeout precedes
-timer deletion, then a fresh code read checks cancellation. Coroutine stays
-144 B / align 8 with unchanged member offsets.
-
-## Identity cells
-
-`current`, `origin`, `task` and the cancel-function pointer are
-`swr_v1_coroutine_identity` cells at the original offsets. `current` keeps its
-`SW_THREAD_LOCAL` scope and null seed. `swr_v1_coroutine_identity_route`:
-ENTER does `origin=current` then `current=this`; LEAVE re-reads origin and
-restores current. Run enters before its clock/state publication; resume enters
-after the resume callback; yield and close leave after their callback/trace.
-Cancellation observes admission, copies the function, clears the identity,
-publishes canceled status, then returns the function's result. Pinned `gdbinit`
-uses `current->cid` directly and is not updated.
-
-## Swap callbacks and dispatch
-
-`on_yield`, `on_resume` and `on_close` are `swr_v1_coroutine_swap_callback`
-cells with their original names, TLS scope and null seed; the public
-`SwapCallback` alias and setters are unchanged. C++ compilers must prove the
-alias equals the C-seam function pointer type; the pointer is never converted
-through an integer or `void *`. `swr_v1_coroutine_dispatch` reads the cell and
-task identity, publishes the lifecycle plan and returns a plan/function/task
-descriptor; Native invokes the function afterwards. Resume bailout skips the
-callback/task reads; an absent function skips the task read.
-
-## Bailout walk
-
-`swr_v1_coroutine_bailout_step` saves current before observing the supplied
-function. A null function returns the default callback effect without reading
-the function or offset. After the Native `std::function` assignment succeeds,
-Native passes the forward offset of the `origin` member. Rust reads only that
-`repr(C)` identity cell from each allocation: two fresh parent reads per
-nonterminal hop, one for the final null test. Contract: cells are live, aligned
-and initialized, every reached object has the same offset, arithmetic stays in
-bounds, the chain terminates, and access is serialized. The ABI cannot verify
-provenance or bounds.
-
-## Entry
-
-`swr_v1_coroutine_entry_step` owns `coroutine::run` and C create: availability/
-init admission, activate/create/wait/deactivate sequencing and Boolean versus
-CID return. The run frontend always initializes; an already-available C create
-skips activation/wait/deactivation. Init failure returns before activation; the
-create result is saved across wait/cleanup and normalized only for the Boolean
-frontend. Native keeps the raw function pointer type until the real
-`Coroutine::create`, preserving `std::function` conversion timing.
-
-## Scheduler statics
-
-Stack size, last ID, socket-bound ID, peak count and activation form one
-constant-seeded `repr(C)` record in the original global/TLS scope. Rust owns
-limit/alignment, ID, registration and publication policy; Native keeps the
-registry and effects. Registration reads the count twice only on the
-peak-update branch; activation reads its flag separately after peak publication.
-
-## Timing
-
-A private inline `repr(C)` three-`long` record. Native seeds Timer milliseconds
-then monotonic microseconds before Context construction and samples each clock
-before calling Rust. Rust accumulates and answers elapsed-time queries,
-handling the yield/resume same-record alias in the original update order.
+`swoole::Coroutine` is a facade: run, resume, yield and close call
+`enter`/`wake`/`suspend`/`leave`/`end`/`release` around the callback and the
+switch, in upstream's order (the resume callback still sees the old current;
+yield clears the resume code before its callback). `release` restores current,
+orphans the coroutines this one resumed and unlinks it from its origin. Cancel
+copies the `std::function` before `swr_v1_coroutine_cancel` clears it. The
+bailout callback, `on_bailout`, stays a C++ `std::function`.
 
 ## Context stack
 
