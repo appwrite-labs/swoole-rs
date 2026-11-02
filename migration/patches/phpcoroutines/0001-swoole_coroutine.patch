@@ -268,7 +268,7 @@ index ae8a1a1..bf0e9ec 100644
 +        return swr_v1_phpcoroutines_activated();
      }
 diff --git a/ext-src/swoole_coroutine.cc b/ext-src/swoole_coroutine.cc
-index daecf43..6b43155 100644
+index daecf43..c0ecac3 100644
 --- a/ext-src/swoole_coroutine.cc
 +++ b/ext-src/swoole_coroutine.cc
 @@ -35,17 +35,9 @@ END_EXTERN_C()
@@ -1031,7 +1031,7 @@ index daecf43..6b43155 100644
 +            sw_zend_fci_cache_discard(&defer_fci->fci_cache);
 +            efree(defer_fci);
          }
-@@ -822,270 +183,176 @@ void PHPCoroutine::main_func(void *_args) {
+@@ -822,270 +183,177 @@ void PHPCoroutine::main_func(void *_args) {
      zend_end_try();
 -    destroy_context(ctx);
 +    swr_v1_phpcoroutines_close(ctx);
@@ -1112,18 +1112,19 @@ index daecf43..6b43155 100644
 +}
 +
 +static const swr_v1_phpcoroutines_ops coroutine_ops = {
-+    []() -> uint32_t {
-+        uint32_t flags = 0;
-+        flags |= SWOOLE_G(cli) ? SWR_PHPCOROUTINES_CLI : 0;
-+        flags |= SWOOLE_G(use_shortname) ? SWR_PHPCOROUTINES_SHORTNAME : 0;
-+        flags |= SWOOLE_G(enable_library) ? SWR_PHPCOROUTINES_LIBRARY : 0;
-+        flags |= SWOOLE_G(enable_fiber_mock) ? SWR_PHPCOROUTINES_FIBER_MOCK : 0;
-+        flags |= SWOOLE_G(enable_preemptive_scheduler) ? SWR_PHPCOROUTINES_PREEMPTIVE : 0;
-+        flags |= SWOOLE_G(req_status) == PHP_SWOOLE_CALL_USER_SHUTDOWNFUNC_BEGIN ? SWR_PHPCOROUTINES_SHUTDOWN_FUNCTIONS : 0;
-+        flags |= sw_server() && sw_server()->is_started() ? SWR_PHPCOROUTINES_SERVER_STARTED : 0;
-+        flags |= sw_is_main_thread() ? SWR_PHPCOROUTINES_MAIN_THREAD : 0;
-+        flags |= php_swoole_is_fatal_error() || (sw_reactor() && sw_reactor()->bailout) ? SWR_PHPCOROUTINES_FATAL : 0;
-+        return flags;
++    [](uint32_t mask) -> uint32_t {
++        auto set = [mask](uint32_t flag, auto &&test) -> uint32_t { return (mask & flag) && test() ? flag : 0; };
++        return set(SWR_PHPCOROUTINES_CLI, [] { return SWOOLE_G(cli); }) |
++               set(SWR_PHPCOROUTINES_SHORTNAME, [] { return SWOOLE_G(use_shortname); }) |
++               set(SWR_PHPCOROUTINES_LIBRARY, [] { return SWOOLE_G(enable_library); }) |
++               set(SWR_PHPCOROUTINES_FIBER_MOCK, [] { return SWOOLE_G(enable_fiber_mock); }) |
++               set(SWR_PHPCOROUTINES_PREEMPTIVE, [] { return SWOOLE_G(enable_preemptive_scheduler); }) |
++               set(SWR_PHPCOROUTINES_SHUTDOWN_FUNCTIONS,
++                   [] { return SWOOLE_G(req_status) == PHP_SWOOLE_CALL_USER_SHUTDOWNFUNC_BEGIN; }) |
++               set(SWR_PHPCOROUTINES_SERVER_STARTED, [] { return sw_server() && sw_server()->is_started(); }) |
++               set(SWR_PHPCOROUTINES_MAIN_THREAD, [] { return sw_is_main_thread(); }) |
++               set(SWR_PHPCOROUTINES_FATAL,
++                   [] { return php_swoole_is_fatal_error() || (sw_reactor() && sw_reactor()->bailout); });
 +    },
 +    []() -> void * { return Coroutine::get_current(); },
 +    []() -> void * { return Coroutine::get_current_safe(); },
@@ -1461,12 +1462,12 @@ index daecf43..6b43155 100644
 +                               spl_ce_ArrayObject,
 +                               &coroutine_ops);
  }
-@@ -1093,3 +360,3 @@ void php_swoole_coroutine_minit(int module_number) {
+@@ -1093,3 +361,3 @@ void php_swoole_coroutine_minit(int module_number) {
  void php_swoole_coroutine_rinit() {
 -    PHPCoroutine::init_main_context();
 +    swr_v1_phpcoroutines_rinit();
  }
-@@ -1097,452 +364,33 @@ void php_swoole_coroutine_rinit() {
+@@ -1097,452 +365,33 @@ void php_swoole_coroutine_rinit() {
  void php_swoole_coroutine_rshutdown() {
 -    if (SWOOLE_G(in_autoload)) {
 -        zend_hash_destroy(SWOOLE_G(in_autoload));
@@ -1939,7 +1940,7 @@ index daecf43..6b43155 100644
 -    }
 +    swr_v1_phpcoroutines_set_hook_flags(flags);
  }
-@@ -1561,63 +409,5 @@ void sw_php_print_backtrace_impl(int skip_last, int options, int limit, bool inc
+@@ -1561,63 +410,5 @@ void sw_php_print_backtrace_impl(int skip_last, int options, int limit, bool inc
  void sw_php_print_backtrace(zend_long cid, zend_long options, zend_long limit, zval *return_value) {
 -    if (!cid || cid == PHPCoroutine::get_cid()) {
 -        sw_php_print_backtrace_impl(1, options, limit);

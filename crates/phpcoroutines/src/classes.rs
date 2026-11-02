@@ -6,6 +6,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
     ffi::{CStr, c_int, c_long, c_void},
+    hash::{BuildHasherDefault, DefaultHasher},
     mem, ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -345,9 +346,10 @@ struct Loading {
     waiters: VecDeque<*mut Waiter>,
 }
 
-thread_local! {
+per_thread! {
     /// Classes being autoloaded, by lowercase name (`SWOOLE_G(in_autoload)`).
-    static AUTOLOADING: RefCell<HashMap<Vec<u8>, Loading>> = RefCell::new(HashMap::new());
+    static AUTOLOADING: RefCell<HashMap<Vec<u8>, Loading, BuildHasherDefault<DefaultHasher>>> =
+        RefCell::new(HashMap::with_hasher(BuildHasherDefault::new()));
 }
 
 /// Run Zend's autoloader, trapping its bailouts.

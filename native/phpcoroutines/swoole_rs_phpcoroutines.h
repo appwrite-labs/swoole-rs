@@ -46,7 +46,8 @@ struct swr_v1_phpcoroutines_stats {
 };
 
 struct swr_v1_phpcoroutines_ops {
-    uint32_t (*flags)(void);
+    /* the flags among `mask` that are set */
+    uint32_t (*flags)(uint32_t mask);
     /* Coroutine statics */
     void *(*current)(void);
     /* get_current_safe(): a fatal error outside a coroutine */

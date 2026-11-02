@@ -131,8 +131,8 @@ pub(crate) unsafe fn at<'a>(ctx: *mut Context) -> &'a mut Context {
     unsafe { &mut *ctx }
 }
 
-thread_local! {
-    static MAIN: UnsafeCell<Context> = const { UnsafeCell::new(Context::EMPTY) };
+per_thread! {
+    static MAIN: UnsafeCell<Context> = UnsafeCell::new(Context::EMPTY);
 }
 
 /// The thread's main context, live as long as the thread.

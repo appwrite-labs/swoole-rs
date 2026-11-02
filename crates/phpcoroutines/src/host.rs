@@ -30,7 +30,7 @@ type Co = *mut c_void;
 /// `swr_v1_phpcoroutines_ops`; see the native header for each entry.
 #[repr(C)]
 pub struct Ops {
-    pub(crate) flags: unsafe extern "C" fn() -> u32,
+    pub(crate) flags: unsafe extern "C" fn(u32) -> u32,
     pub(crate) current: unsafe extern "C" fn() -> Co,
     pub(crate) current_safe: unsafe extern "C" fn() -> Co,
     pub(crate) current_task: unsafe extern "C" fn() -> *mut c_void,
@@ -117,7 +117,7 @@ pub(crate) fn ops() -> &'static Ops {
 #[inline]
 pub(crate) fn flag(bit: u32) -> bool {
     // SAFETY: C++ reads its globals.
-    unsafe { (ops().flags)() & bit != 0 }
+    unsafe { (ops().flags)(bit) != 0 }
 }
 
 pub(crate) fn set_last_error(code: c_int) {

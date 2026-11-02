@@ -48,18 +48,17 @@ struct Interrupt {
     thread: JoinHandle<()>,
 }
 
-thread_local! {
-    static ACTIVATED: Cell<bool> = const { Cell::new(false) };
-    static CONFIG: Config = const {
+per_thread! {
+    static ACTIVATED: Cell<bool> = Cell::new(false);
+    static CONFIG: Config =
         Config {
             max_num: Cell::new(DEFAULT_MAX_NUM.unsigned_abs()),
             hook_flags: Cell::new(0),
             preemptive: Cell::new(false),
             deadlock_check: Cell::new(true),
-        }
-    };
-    static INTERRUPT_RUNNING: Cell<bool> = const { Cell::new(false) };
-    static INTERRUPT: RefCell<Option<Interrupt>> = const { RefCell::new(None) };
+        };
+    static INTERRUPT_RUNNING: Cell<bool> = Cell::new(false);
+    static INTERRUPT: RefCell<Option<Interrupt>> = RefCell::new(None);
 }
 
 /// The interrupt function Zend ran before activation (process-global, as

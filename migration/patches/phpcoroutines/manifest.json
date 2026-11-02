@@ -3,7 +3,7 @@
   "patches": [
     {
       "path": "0001-swoole_coroutine.patch",
-      "sha256": "8c91aa3a5331e4701df45993552b6a0429928af2aeff98ea0fd8c3f085533219",
+      "sha256": "f72b4ecc35b6313be882e1b2fb9dc9d8905557086148260f6a7aa707d6267840",
       "upstream_paths": [
         "ext-src/php_swoole_coroutine.h",
         "ext-src/swoole_coroutine.cc",

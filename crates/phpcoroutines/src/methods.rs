@@ -14,6 +14,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     ffi::{c_long, c_void},
+    hash::{BuildHasherDefault, Hasher},
     mem, ptr,
     rc::Rc,
 };
@@ -134,9 +135,30 @@ fn exists(call: &Call) {
     call.set_bool(!unsafe { (host::ops().by_cid)(cid) }.is_null());
 }
 
-thread_local! {
+per_thread! {
     /// Coroutines suspended by `Co::yield()`, by id (`user_yield_coros`).
-    static YIELDED: RefCell<HashMap<c_long, *mut c_void>> = RefCell::new(HashMap::new());
+    static YIELDED: RefCell<HashMap<c_long, *mut c_void, BuildHasherDefault<CidHasher>>> =
+        RefCell::new(HashMap::with_hasher(BuildHasherDefault::new()));
+}
+
+/// Coroutine ids hash to themselves, as `std::hash<long>` does.
+#[derive(Default)]
+struct CidHasher(u64);
+
+impl Hasher for CidHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 << 8) | u64::from(byte);
+        }
+    }
+
+    fn write_i64(&mut self, value: i64) {
+        self.0 = value.cast_unsigned();
+    }
 }
 
 /// `Co::yield()`/`Co::suspend()`.

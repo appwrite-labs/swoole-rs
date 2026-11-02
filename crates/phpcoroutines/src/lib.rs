@@ -18,6 +18,39 @@
     )
 )]
 
+/// Per-thread state, as Swoole's `SW_THREAD_LOCAL`: thread-local on a
+/// thread-safe PHP, plain process state otherwise (one PHP thread, and no
+/// TLS lookup on the coroutine switch path).
+macro_rules! per_thread {
+    ($($(#[$meta:meta])* static $name:ident: $ty:ty = $init:expr;)*) => {
+        #[cfg(zts)]
+        thread_local! { $($(#[$meta])* static $name: $ty = const { $init };)* }
+        $(
+            $(#[$meta])*
+            #[cfg(not(zts))]
+            static $name: crate::Process<$ty> = crate::Process($init);
+        )*
+    };
+}
+
+/// A process-wide value with `LocalKey::with`'s interface, for a
+/// non-thread-safe PHP.
+#[cfg(not(zts))]
+pub(crate) struct Process<T>(pub(crate) T);
+
+// SAFETY: a non-thread-safe PHP runs PHP on one thread; the interrupt thread
+// touches none of this state.
+#[cfg(not(zts))]
+unsafe impl<T> Sync for Process<T> {}
+
+#[cfg(not(zts))]
+impl<T> Process<T> {
+    #[inline]
+    pub(crate) fn with<R>(&'static self, f: impl FnOnce(&T) -> R) -> R {
+        f(&self.0)
+    }
+}
+
 mod classes;
 pub use classes::*;
 mod context;
