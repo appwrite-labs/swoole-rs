@@ -21,7 +21,7 @@ const END: u8 = 1 << 4;
 const OBJ_PTR: u8 = 1 << 5;
 /// `SW_WORKER_MAX_RECV_CHUNK_COUNT`.
 const MAX_RECV_CHUNKS: u16 = 32;
-const HEAD: usize = size_of::<DataHead>();
+const HEAD: usize = size_of::<BusHead>();
 /// `SW_IPC_MSG_MIN`.
 const IPC_MSG_MIN: u32 = 2048 - 40;
 const _: () = assert!(HEAD == 40, "sizeof(DataHead)");
@@ -39,7 +39,7 @@ pub const BUS_READV_CLOSED: u8 = 4;
 /// `swoole::DataHead`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct DataHead {
+pub struct BusHead {
     pub fd: i64,
     pub msg_id: u64,
     pub len: u32,
@@ -130,7 +130,7 @@ impl Hasher for IdHasher {
 }
 
 pub struct Bus {
-    buffer: *mut DataHead,
+    buffer: *mut BusHead,
     buffer_size: usize,
     always_chunked: bool,
     packets: HashMap<u64, Packet, BuildHasherDefault<IdHasher>>,
@@ -163,7 +163,7 @@ impl Bus {
         }
     }
 
-    fn head(&self) -> DataHead {
+    fn head(&self) -> BusHead {
         // SAFETY: reads only run on a bus whose buffer is set.
         unsafe { self.buffer.read() }
     }
@@ -205,7 +205,7 @@ impl Bus {
         }
     }
 
-    fn pass(&self, info: &DataHead, data: *const c_char) {
+    fn pass(&self, info: &BusHead, data: *const c_char) {
         let mut head = *info;
         if info.len > 0 {
             head.flags = PTR;
@@ -386,7 +386,7 @@ impl Bus {
     unsafe fn write(
         &self,
         socket: *mut c_void,
-        head: &mut DataHead,
+        head: &mut BusHead,
         data: *const u8,
         send: BusSend,
         reduce: BusReduce,
@@ -598,7 +598,7 @@ pub unsafe extern "C" fn swr_v1_bus_set_buffer(bus: *mut Bus, buffer: *mut c_voi
     bus.buffer = buffer.cast();
     if !buffer.is_null() {
         // SAFETY: the caller lends a buffer that starts with a writable header.
-        unsafe { bus.buffer.write(DataHead::default()) };
+        unsafe { bus.buffer.write(BusHead::default()) };
     }
 }
 
@@ -641,11 +641,7 @@ pub unsafe extern "C" fn swr_v1_bus_memory_size(bus: *mut Bus) -> usize {
 /// # Safety
 /// As `bus`, with the buffer set; `info` is readable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_pass(
-    bus: *mut Bus,
-    info: *const DataHead,
-    data: *const c_char,
-) {
+pub unsafe extern "C" fn swr_v1_bus_pass(bus: *mut Bus, info: *const BusHead, data: *const c_char) {
     // SAFETY: the caller's contract.
     let bus = unsafe { self::bus(bus) };
     // SAFETY: the caller lends a readable header.
@@ -729,7 +725,7 @@ pub unsafe extern "C" fn swr_v1_bus_adopt(
 pub unsafe extern "C" fn swr_v1_bus_write(
     bus: *mut Bus,
     socket: *mut c_void,
-    head: *mut DataHead,
+    head: *mut BusHead,
     data: *const c_char,
     send: BusSend,
     reduce: BusReduce,
@@ -802,11 +798,11 @@ mod tests {
             Self { bus, buffer, fds }
         }
         fn write(&self, id: u64, payload: &[u8]) -> bool {
-            let mut head = DataHead {
+            let mut head = BusHead {
                 msg_id: id,
                 len: u32::try_from(payload.len()).unwrap(),
                 fd: 7,
-                ..DataHead::default()
+                ..BusHead::default()
             };
             let data = if payload.is_empty() {
                 ptr::null()
@@ -936,11 +932,11 @@ mod tests {
     #[test]
     fn unknown_chunks_and_closed_pipes_are_reported() {
         let mut pipe = Pipe::new(libc::SOCK_DGRAM, 4096, true);
-        let head = DataHead {
+        let head = BusHead {
             msg_id: 3,
             len: 10,
             flags: CHUNK | END,
-            ..DataHead::default()
+            ..BusHead::default()
         };
         let sent = unsafe { libc::send(pipe.fds[0], ptr::from_ref(&head).cast(), HEAD, 0) };
         assert_eq!(sent.cast_unsigned(), HEAD);
@@ -954,10 +950,10 @@ mod tests {
         let mut bus = Bus::new(128);
         bus.buffer = buffer.as_mut_ptr().cast();
         let data = b"hello";
-        let info = DataHead {
+        let info = BusHead {
             len: 5,
             fd: 3,
-            ..DataHead::default()
+            ..BusHead::default()
         };
         bus.pass(&info, data.as_ptr().cast());
         let packet = bus.packet();
@@ -984,6 +980,6 @@ mod tests {
         assert_eq!(writer.complete(false, true), -1);
         assert_eq!(writer.complete(true, false), 0);
         assert_eq!(writer.mode, COMPLETE);
-        assert_eq!(size_of::<DataHead>(), 40);
+        assert_eq!(size_of::<BusHead>(), 40);
     }
 }
