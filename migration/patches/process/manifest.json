@@ -236,6 +236,13 @@
         "include/swoole_server.h",
         "src/server/task_worker.cc"
       ]
+    },
+    {
+      "path": "0024-finish-connection.patch",
+      "sha256": "b90e3a975b887504663c9751c1323fe861559a6dd307ed11946e531af2a7e3d3",
+      "upstream_paths": [
+        "src/server/task_worker.cc"
+      ]
     }
   ]
 }
