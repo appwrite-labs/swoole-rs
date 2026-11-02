@@ -150,9 +150,9 @@ dependencies = [
 
 [[package]]
 name = "libz-sys"
-version = "1.1.30"
+version = "1.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f710a23e6dbf193214fd46ca56a9d6864e550abe86202184532ae7275e46de19"
+checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
 dependencies = [
  "cc",
  "libc",
@@ -400,7 +400,9 @@ dependencies = [
  "swoole-rs-phphttp2",
  "swoole-rs-phplocks",
  "swoole-rs-phpprocess",
+ "swoole-rs-phpruntime",
  "swoole-rs-phpstdext",
+ "swoole-rs-phpswoole",
  "swoole-rs-phpthread",
  "swoole-rs-phptimer",
  "swoole-rs-ports",
@@ -551,9 +553,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-phpruntime"
+version = "0.1.0"
+dependencies = [
+ "swoole-rs-hooks",
+ "swoole-rs-zend",
+]
+
+[[package]]
 name = "swoole-rs-phpstdext"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-zend",
+]
+
+[[package]]
+name = "swoole-rs-phpswoole"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-error",
  "swoole-rs-zend",
 ]
 

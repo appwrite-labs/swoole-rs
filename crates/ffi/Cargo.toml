@@ -11,7 +11,7 @@ crate-type = ["staticlib"]
 [features]
 default = []
 # The graduated modules' PHP classes (Swoole\Timer); every hybrid build has PHP.
-php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php"]
+php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php"]
 
 memory = ["dep:swoole-rs-memory"]
 
@@ -25,7 +25,7 @@ corebase = ["dep:swoole-rs-corebase"]
 
 coroutine = ["dep:swoole-rs-coroutine"]
 
-hooks = ["dep:swoole-rs-hooks"]
+hooks = ["dep:swoole-rs-hooks", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php"]
 # Not a module: the hybrid adds it when configured with --enable-iouring.
 iouring = ["hooks", "swoole-rs-hooks/iouring"]
 
@@ -55,6 +55,7 @@ swoole-rs-utilities = { path = "../utilities", optional = true }
 swoole-rs-locks = { path = "../locks", optional = true }
 swoole-rs-phplocks = { path = "../phplocks", optional = true }
 swoole-rs-phptimer = { path = "../phptimer", optional = true }
+swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-wrappers = { path = "../wrappers", optional = true }
 swoole-rs-framing = { path = "../framing" }
 swoole-rs-server = { path = "../server" }
@@ -62,6 +63,7 @@ swoole-rs-reactor = { path = "../reactor", optional = true }
 swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-coroutine = { path = "../coroutine", optional = true }
 swoole-rs-hooks = { path = "../hooks", optional = true }
+swoole-rs-phpruntime = { path = "../phpruntime", optional = true }
 swoole-rs-ossupport = { path = "../ossupport", optional = true }
 swoole-rs-tls = { path = "../tls", optional = true }
 swoole-rs-process = { path = "../process", optional = true }
