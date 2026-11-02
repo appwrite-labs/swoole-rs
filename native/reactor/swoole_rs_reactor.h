@@ -256,11 +256,11 @@ bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
 bool swr_v1_socket_kernel_timeout(int fd, bool send, double timeout);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
  * write_timeout), embedded in this order (Socket static_asserts it). set_timeout
- * writes timeout into each SW_TIMEOUT_* bit of type unless timeout is 0;
+ * writes timeout into each SW_TIMEOUT_* bit of kind unless timeout is 0;
  * swr_v1_socket_timeout is the slot one SW_TIMEOUT_* value names, else NULL. */
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
-void swr_v1_socket_set_timeout(swr_v1_socket_timeouts *timeouts, double timeout, int type);
-const double *swr_v1_socket_timeout(const swr_v1_socket_timeouts *timeouts, int type);
+void swr_v1_socket_set_timeout(swr_v1_socket_timeouts *timeouts, double timeout, int kind);
+const double *swr_v1_socket_timeout(const swr_v1_socket_timeouts *timeouts, int kind);
 bool swr_v1_socket_listen(int fd, int backlog, int default_backlog);
 /* network::Socket's descriptor I/O. status 0 ready; 1 timed out (wait) or
  * EINPROGRESS (connect); 2 failed with errno `error`. */
