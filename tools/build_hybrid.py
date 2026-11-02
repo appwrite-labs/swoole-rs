@@ -257,14 +257,18 @@ def hybrid_tree(archive):
 
 def overlay_hybrid_tree(archive, tree):
     """Copy every file the archive's hybrid build patched over `tree`, a pinned checkout (such as
-    one staged with upstream's core-tests). Returns hybrid_tree's compiler flags."""
+    one staged with upstream's core-tests). Returns the CMake lines that give the tree's existing
+    targets hybrid_tree's switches and include directories."""
     source, flags = hybrid_tree(archive)
     for manifest in (ROOT / 'migration/patches').glob('*/manifest.json'):
         for patch in json.loads(manifest.read_text())['patches']:
             for name in patch['upstream_paths']:
                 if (source / name).read_bytes() != (Path(tree) / name).read_bytes():
                     shutil.copyfile(source / name, Path(tree) / name)
-    return flags
+    # add_definitions and include_directories reach targets defined before them; add_compile_options does not.
+    defines = ' '.join(flag for flag in flags if flag.startswith('-D'))
+    includes = ' '.join(f'"{flag[2:]}"' for flag in flags if flag.startswith('-I'))
+    return f'add_definitions({defines})\ninclude_directories({includes})\n'
 
 
 def apply_patch_verified(source, patch, targets, expected_sha256=None):

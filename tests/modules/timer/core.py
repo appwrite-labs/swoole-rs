@@ -92,7 +92,7 @@ def main():
             identity = {name: sha(tree / name) for name in [ORIGINAL, *SUPPORT]}
             if engine == 'rust':
                 # Every module's patches, as the hybrid build applied them (#796).
-                flags = overlay_hybrid_tree(archive, tree)
+                hybrid_cmake = overlay_hybrid_tree(archive, tree)
             config = args.config.read_bytes()
             if args.ucontext_timers:
                 if re.search(rb'^#define SW_USE_THREAD_CONTEXT\b', config, re.M):
@@ -105,7 +105,7 @@ def main():
                 raise ValueError('Original CMake selection changed')
             cmake = cmake.replace(selector, 'set(core_test_files core-tests/src/main.cpp ' + ORIGINAL + ')')
             if engine == 'rust':
-                cmake += f'\nadd_compile_options({" ".join(flags)})\ntarget_link_libraries(lib-swoole "{archive}")\n'
+                cmake += f'\n{hybrid_cmake}target_link_libraries(lib-swoole "{archive}")\n'
             put(tree / 'CMakeLists.txt', cmake.encode())
             if identity != {name: sha(tree / name) for name in identity}:
                 raise ValueError('Original assertion or support source modified')

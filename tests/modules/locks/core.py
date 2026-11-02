@@ -106,7 +106,7 @@ def main():
                 for engine in ['upstream', 'rust']:
                     if engine == 'rust':
                         # Every module's patches, as the hybrid build applied them (#796).
-                        flags = overlay_hybrid_tree(archive, staged)
+                        hybrid_cmake = overlay_hybrid_tree(archive, staged)
                     tree = build_root / ('core-' + engine)
                     for path in staged.rglob('*'):
                         if path.is_file() and '.git' not in path.relative_to(staged).parts:
@@ -118,7 +118,7 @@ def main():
                         raise ValueError('Original core target selection changed')
                     cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(SELECTED) + ')')
                     if engine == 'rust':
-                        cmake += f'\nadd_compile_options({" ".join(flags)})\ntarget_link_libraries(lib-swoole "{archive}")\n'
+                        cmake += f'\n{hybrid_cmake}target_link_libraries(lib-swoole "{archive}")\n'
                     write_changed(tree / 'CMakeLists.txt', cmake.encode())
                     logs = artifacts / engine
                     logs.mkdir(parents=True, exist_ok=True)
