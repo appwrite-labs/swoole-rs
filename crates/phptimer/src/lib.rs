@@ -40,8 +40,8 @@ pub struct Ops {
     stats: unsafe extern "C" fn(count: *mut usize, round: *mut u64),
     /// Up to `capacity` timer ids into `ids`: how many it copied.
     ids: unsafe extern "C" fn(ids: *mut i64, capacity: usize) -> usize,
-    /// `swoole_timer_del(swoole_timer_get(id))`.
-    del: unsafe extern "C" fn(id: i64) -> u8,
+    /// `swoole_timer_del` of a node `get` returned.
+    del: unsafe extern "C" fn(handle: *mut c_void) -> u8,
     /// `php_swoole_timer_clear_all()`.
     clear_all: unsafe extern "C" fn() -> u8,
     /// `zend::Function::call(nullptr, php_swoole_is_enable_coroutine())` of an
@@ -55,7 +55,6 @@ pub struct Ops {
 
 /// A `TimerNode`'s fields (`swr_v1_phptimer_node`).
 #[repr(C)]
-#[derive(Default)]
 pub struct Node {
     exec_msec: i64,
     exec_count: u64,
@@ -64,6 +63,8 @@ pub struct Node {
     /// `type == TimerNode::TYPE_PHP`.
     php: u8,
     removed: u8,
+    /// The `TimerNode` itself, for `del`: looked up once, as upstream's `clear`.
+    handle: *mut c_void,
 }
 
 /// One call of a timer's callable (`swr_v1_phptimer_invocation`).
@@ -194,7 +195,15 @@ fn available() -> bool {
 }
 
 fn node(id: i64) -> Option<Node> {
-    let mut node = Node::default();
+    let mut node = Node {
+        exec_msec: 0,
+        exec_count: 0,
+        interval: 0,
+        round: 0,
+        php: 0,
+        removed: 0,
+        handle: ptr::null_mut(),
+    };
     // SAFETY: a writable node.
     (unsafe { (ops().get)(id, &raw mut node) } != 0).then_some(node)
 }
@@ -361,12 +370,12 @@ fn clear(call: &Call) {
         return;
     }
     let Some(id) = id(call) else { return };
-    if node(id).is_none_or(|node| node.php == 0) {
+    let Some(node) = node(id).filter(|node| node.php != 0) else {
         call.set_bool(false);
         return;
-    }
-    // SAFETY: C++'s removal.
-    call.set_bool(unsafe { (ops().del)(id) } != 0);
+    };
+    // SAFETY: C++'s removal of the live node `get` just returned.
+    call.set_bool(unsafe { (ops().del)(node.handle) } != 0);
 }
 
 fn clear_all(call: &Call) {

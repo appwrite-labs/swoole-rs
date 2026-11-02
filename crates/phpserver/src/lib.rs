@@ -30,6 +30,9 @@ mod io;
 mod server;
 
 #[cfg(feature = "server")]
+mod settings;
+
+#[cfg(feature = "server")]
 pub use dispatch::*;
 
 #[cfg(feature = "server")]
@@ -37,3 +40,6 @@ pub use io::*;
 
 #[cfg(feature = "server")]
 pub use server::*;
+
+#[cfg(feature = "server")]
+pub use settings::*;

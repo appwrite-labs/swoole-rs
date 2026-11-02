@@ -213,7 +213,14 @@
       ]
     },
     {
-      "path": "0022-pool-ipc.patch",
+      "path": "0022-php-server-set.patch",
+      "sha256": "2acc0c5db09e357e68d945bef96b1687adfb9334650c3044412b6ab85ad3cefd",
+      "upstream_paths": [
+        "ext-src/swoole_server.cc"
+      ]
+    },
+    {
+      "path": "0023-pool-ipc.patch",
       "sha256": "978da46231a2f1349cd51f757241b510d886171d259e4a88f281329b95fca3f5",
       "upstream_paths": [
         "ext-src/swoole_process_pool.cc",
