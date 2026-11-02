@@ -19,6 +19,7 @@ use swoole_rs_http2::{
     sw_rs_http2_stream_update, sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::Inflate;
+use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_phptable::{self as table, Owned};
 use swoole_rs_zend::{
     Call, Class, Object, declare_bool, declare_long, declare_string, register_long_constant,
@@ -27,11 +28,12 @@ use swoole_rs_zend::{
         _zval_struct__bindgen_ty_1, IS_NULL, IS_OBJECT, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         add_assoc_long_ex, add_assoc_stringl_ex, add_assoc_zval_ex, object_init_ex,
         swr_zend_http_build_query, swr_zend_instanceof, swr_zend_property_merge,
-        swr_zval_try_addref, zend_class_entry, zend_function_entry, zend_object,
-        zend_object_handlers, zend_wrong_parameter_class_error, zval, zval_ptr_dtor,
+        swr_zval_try_addref, zend_class_entry, zend_object, zend_object_handlers,
+        zend_wrong_parameter_class_error, zval, zval_ptr_dtor,
     },
     throw_constructed_twice, throw_exception, type_of, unset_property_deny, value,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_HTTP2_*` frame sizes and the client preface.
 const FRAME_HEADER: usize = 9;
@@ -1365,22 +1367,39 @@ const CONSTANTS: [(&CStr, i64); 24] = [
     (c"SWOOLE_HTTP2_ERROR_HTTP_1_1_REQUIRED", 13),
 ];
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_http2_client_coro___construct, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client___construct, z::ZEND_ACC_PUBLIC;
+        c"__destruct" => zim_swoole_http2_client_coro___destruct, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client___destruct, z::ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_http2_client_coro_set, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_set, z::ZEND_ACC_PUBLIC;
+        c"connect" => zim_swoole_http2_client_coro_connect, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_connect, z::ZEND_ACC_PUBLIC;
+        c"stats" => zim_swoole_http2_client_coro_stats, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_stats, z::ZEND_ACC_PUBLIC;
+        c"isStreamExist" => zim_swoole_http2_client_coro_isStreamExist, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_isStreamExist, z::ZEND_ACC_PUBLIC;
+        c"send" => zim_swoole_http2_client_coro_send, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_send, z::ZEND_ACC_PUBLIC;
+        c"write" => zim_swoole_http2_client_coro_write, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_write, z::ZEND_ACC_PUBLIC;
+        c"recv" => zim_swoole_http2_client_coro_recv, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_recv, z::ZEND_ACC_PUBLIC;
+        c"read" => zim_swoole_http2_client_coro_read, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_read, z::ZEND_ACC_PUBLIC;
+        c"goaway" => zim_swoole_http2_client_coro_goaway, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_goaway, z::ZEND_ACC_PUBLIC;
+        c"ping" => zim_swoole_http2_client_coro_ping, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_ping, z::ZEND_ACC_PUBLIC;
+        c"close" => zim_swoole_http2_client_coro_close, &http2_client_coro::arginfo_class_Swoole_Coroutine_Http2_Client_close, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT, as `php_swoole_http2_client_coro_minit` did.
 /// # Safety
 /// Called once, at MINIT of module `module`, with upstream's static method
 /// table and Swoole's exception class.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp2_client_minit(
-    methods: *const zend_function_entry,
     exception: *mut zend_class_entry,
     shortname: bool,
     module: c_int,
 ) {
-    // SAFETY: MINIT, with the caller's table.
+    // SAFETY: MINIT, with a static table.
     unsafe {
         CLIENT.register(
             c"Swoole\\Coroutine\\Http2\\Client",
-            methods,
+            METHODS.as_ptr(),
             |entry, handlers| {
                 deny(entry, handlers);
                 ClientObject::install(entry, handlers, create, free);
@@ -1404,7 +1423,7 @@ pub unsafe extern "C" fn swr_v1_phphttp2_client_minit(
         // SAFETY: as above.
         unsafe { EXCEPTION.alias(c"Co\\Http2\\Client\\Exception") };
     }
-    // SAFETY: MINIT, without methods.
+    // SAFETY: MINIT, without METHODS.as_ptr().
     unsafe {
         REQUEST.register(c"Swoole\\Http2\\Request", ptr::null(), |entry, handlers| {
             deny(entry, handlers);

@@ -8,14 +8,13 @@ use std::{
     ptr,
     sync::{Arc, Barrier},
 };
+use swoole_rs_phpstubs::thread_barrier;
 use swoole_rs_zend::{
     Call, Class, Object, set_object,
-    sys::{
-        ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_function_entry,
-        zend_object, zval,
-    },
+    sys::{ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_object, zval},
     throw_constructed_twice, throw_exception, unset_property_deny, value,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 static BARRIER: Class = Class::new();
 
@@ -40,21 +39,30 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     unsafe { BarrierObject::dtor(std) };
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_thread_barrier___construct, &thread_barrier::arginfo_class_Swoole_Thread_Barrier___construct, z::ZEND_ACC_PUBLIC;
+        c"wait" => zim_swoole_thread_barrier_wait, &thread_barrier::arginfo_class_Swoole_Thread_Barrier_wait, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// `php_swoole_thread_barrier_minit`.
 /// # Safety
 /// MINIT, after `swr_v1_phpthread_minit`, with a static method table.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_barrier_minit(
-    methods: *const zend_function_entry,
-) -> *mut zend_class_entry {
-    // SAFETY: MINIT, with the caller's table.
+pub unsafe extern "C" fn swr_v1_phpthread_barrier_minit() -> *mut zend_class_entry {
+    // SAFETY: MINIT, with a static table.
     unsafe {
-        BARRIER.register(c"Swoole\\Thread\\Barrier", methods, |entry, handlers| {
-            entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
-            handlers.clone_obj = None;
-            handlers.unset_property = Some(unset_property_deny);
-            BarrierObject::install(entry, handlers, create, free);
-        });
+        BARRIER.register(
+            c"Swoole\\Thread\\Barrier",
+            METHODS.as_ptr(),
+            |entry, handlers| {
+                entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
+                handlers.clone_obj = None;
+                handlers.unset_property = Some(unset_property_deny);
+                BarrierObject::install(entry, handlers, create, free);
+            },
+        );
     }
     BARRIER.entry()
 }

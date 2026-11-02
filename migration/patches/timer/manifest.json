@@ -35,6 +35,14 @@
       "upstream_paths": [
         "src/os/timer.cc"
       ]
+    },
+    {
+      "path": "0006-arginfo.patch",
+      "sha256": "9f15d89aceaa4ae7a0095d970b951368818080895e22d70a61ac7fd6560430dc",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_timer_arginfo.h",
+        "ext-src/swoole_timer.cc"
+      ]
     }
   ]
 }

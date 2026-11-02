@@ -8,11 +8,13 @@ use std::{
     mem, ptr,
     sync::OnceLock,
 };
+use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_zend::{
     Call, Class, E_WARNING,
-    sys::{IS_ARRAY, zend_array, zend_function_entry, zend_string, zend_value_error, zval},
+    sys::{IS_ARRAY, zend_array, zend_string, zend_value_error, zval},
     type_of, value,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// The system operations and the platform constants they take.
 #[repr(C)]
@@ -59,21 +61,42 @@ fn ops() -> &'static SystemOps {
     OPS.get().copied().unwrap_or_else(|| std::process::abort())
 }
 
+// `swoole_async_dns_lookup_coro()`, still C++ (swoole_async_coro.cc).
+unsafe extern "C" {
+    pub(crate) fn zif_swoole_async_dns_lookup_coro(
+        frame: *mut z::zend_execute_data,
+        value: *mut z::zval,
+    );
+}
+
+method_table! {
+    static METHODS = [
+        c"gethostbyname" => zif_swoole_coroutine_gethostbyname, &coroutine_system::arginfo_class_Swoole_Coroutine_System_gethostbyname, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"dnsLookup" => zif_swoole_async_dns_lookup_coro, &coroutine_system::arginfo_class_Swoole_Coroutine_System_dnsLookup, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"exec" => zim_swoole_coroutine_system_exec, &coroutine_system::arginfo_class_Swoole_Coroutine_System_exec, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"sleep" => zim_swoole_coroutine_system_sleep, &coroutine_system::arginfo_class_Swoole_Coroutine_System_sleep, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getaddrinfo" => zim_swoole_coroutine_system_getaddrinfo, &coroutine_system::arginfo_class_Swoole_Coroutine_System_getaddrinfo, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"statvfs" => zim_swoole_coroutine_system_statvfs, &coroutine_system::arginfo_class_Swoole_Coroutine_System_statvfs, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"readFile" => zim_swoole_coroutine_system_readFile, &coroutine_system::arginfo_class_Swoole_Coroutine_System_readFile, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"writeFile" => zim_swoole_coroutine_system_writeFile, &coroutine_system::arginfo_class_Swoole_Coroutine_System_writeFile, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"wait" => zim_swoole_coroutine_system_wait, &coroutine_system::arginfo_class_Swoole_Coroutine_System_wait, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"waitPid" => zim_swoole_coroutine_system_waitPid, &coroutine_system::arginfo_class_Swoole_Coroutine_System_waitPid, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"waitSignal" => zim_swoole_coroutine_system_waitSignal, &coroutine_system::arginfo_class_Swoole_Coroutine_System_waitSignal, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"waitEvent" => zim_swoole_coroutine_system_waitEvent, &coroutine_system::arginfo_class_Swoole_Coroutine_System_waitEvent, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+    ];
+}
+
 /// MINIT: `Swoole\Coroutine\System` (`Co\System`), not instantiable.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated table and a
-/// static operations table.
+/// Called once, at MINIT, with a static operations table.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_system_minit(
-    methods: *const zend_function_entry,
-    ops: *const SystemOps,
-) {
+pub unsafe extern "C" fn swr_v1_phpcoroutines_system_minit(ops: *const SystemOps) {
     // SAFETY: per the caller, a static table.
     if let Some(ops) = unsafe { ops.as_ref() } {
         OPS.get_or_init(|| ops);
     }
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { SYSTEM.register_static(c"Swoole\\Coroutine\\System", methods) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { SYSTEM.register_static(c"Swoole\\Coroutine\\System", METHODS.as_ptr()) };
     if host::flag(host::SHORTNAME) {
         // SAFETY: MINIT, after registration.
         unsafe { SYSTEM.alias(c"Co\\System") };

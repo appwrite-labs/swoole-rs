@@ -17,10 +17,9 @@ symbol is excluded from production artifacts.
 | DNS codec | `domain_encode`, `domain_decode` | Bounded label encoding/decoding with native `char` signedness |
 | Raw lifecycle | `shutdown`, `close_next`, `object_next` | Shutdown, close and constructor/destructor order |
 | Raw transport | `write_next`, `read_next`, `connect_next`, `transport_next`, `datagram_send` | Proxy/TLS/connect/read/write/datagram decisions and result narrowing |
-| Persistent clients | `persistent_next`; `pool_create`, `pool_destroy`, `pool_push`, `pool_state`, `pool_take`, `pool_remove_empty` | Acquire/release decisions and private pool storage |
+| Persistent clients | `pool_create`, `pool_destroy`, `pool_push`, `pool_state`, `pool_take`, `pool_remove_empty` | Private pool storage (crates/phpclients keeps the connections) |
 | PHP resolver | `resolver_next` | Lookup/cluster retry/result/context publication order |
 | HTTP | `cookie`, `http_format` | Set-Cookie spans; bounded output formatting |
-| Async Client | `async_meta`, `async_event`, `async_next` | Immutable names/slots, prefix matching, freeing/connect/callback selection |
 
 ## Common rules
 
@@ -39,7 +38,9 @@ parsers, crypto, descriptors and callbacks stay native.
 
 ## Persistent pool
 
-A private native RAII facade owns one lazily created opaque Rust pool handle.
+`Swoole\Client` (crates/phpclients) holds one lazily created pool handle and
+calls the pool directly; `swoole_rs_clients_pool.h` is the RAII adapter the
+pool gate drives.
 Rust stores binary keys and FIFO queues of opaque Client tokens using a
 deterministic hasher and fallible allocation; there is no C++ map/queue. Only
 native code closes or deletes Client tokens; dropping the Rust container never

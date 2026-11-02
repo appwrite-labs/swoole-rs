@@ -28,6 +28,7 @@ use std::{
 };
 use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_inflate::Inflate;
+use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_phptable::{self as table, Owned};
 use swoole_rs_zend::{
     Call, Class, Object, bailout, declare_bool, declare_long, declare_string,
@@ -37,11 +38,12 @@ use swoole_rs_zend::{
         add_assoc_str_ex, add_assoc_string_ex, add_assoc_zval_ex, add_next_index_stringl,
         php_url_encode, swr_zend_http_build_query, swr_zend_property_merge,
         swr_zend_sensitive_parameter, swr_zend_url_decode, swr_zval_empty_string,
-        swr_zval_try_addref, zend_class_entry, zend_function_entry, zend_object,
-        zend_object_handlers, zend_string, zval, zval_ptr_dtor,
+        swr_zval_try_addref, zend_class_entry, zend_object, zend_object_handlers, zend_string,
+        zval, zval_ptr_dtor,
     },
     throw_constructed_twice, throw_exception, type_of, unset_property_deny, value,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `swHttpErrorStatusCode`.
 const CONNECT_FAILED: i64 = -1;
@@ -1727,6 +1729,52 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
     ClientObject::install(entry, handlers, create, free);
 }
 
+// C++ trampolines over the `calling!` bodies below, which re-raise a bailout
+// from the `write_func` callback once the Rust frames are gone.
+unsafe extern "C" {
+    fn zim_swoole_http_client_coro_execute(frame: *mut z::zend_execute_data, value: *mut zval);
+    fn zim_swoole_http_client_coro_get(frame: *mut z::zend_execute_data, value: *mut zval);
+    fn zim_swoole_http_client_coro_post(frame: *mut z::zend_execute_data, value: *mut zval);
+    fn zim_swoole_http_client_coro_download(frame: *mut z::zend_execute_data, value: *mut zval);
+    fn zim_swoole_http_client_coro_upgrade(frame: *mut z::zend_execute_data, value: *mut zval);
+    fn zim_swoole_http_client_coro_recv(frame: *mut z::zend_execute_data, value: *mut zval);
+}
+
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_http_client_coro___construct, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client___construct, z::ZEND_ACC_PUBLIC;
+        c"__destruct" => zim_swoole_http_client_coro___destruct, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client___destruct, z::ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_http_client_coro_set, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_set, z::ZEND_ACC_PUBLIC;
+        c"getDefer" => zim_swoole_http_client_coro_getDefer, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_getDefer, z::ZEND_ACC_PUBLIC;
+        c"setDefer" => zim_swoole_http_client_coro_setDefer, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_setDefer, z::ZEND_ACC_PUBLIC;
+        c"setMethod" => zim_swoole_http_client_coro_setMethod, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_setMethod, z::ZEND_ACC_PUBLIC;
+        c"setHeaders" => zim_swoole_http_client_coro_setHeaders, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_setHeaders, z::ZEND_ACC_PUBLIC;
+        c"setBasicAuth" => zim_swoole_http_client_coro_setBasicAuth, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_setBasicAuth, z::ZEND_ACC_PUBLIC;
+        c"setCookies" => zim_swoole_http_client_coro_setCookies, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_setCookies, z::ZEND_ACC_PUBLIC;
+        c"setData" => zim_swoole_http_client_coro_setData, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_setData, z::ZEND_ACC_PUBLIC;
+        c"addFile" => zim_swoole_http_client_coro_addFile, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_addFile, z::ZEND_ACC_PUBLIC;
+        c"addData" => zim_swoole_http_client_coro_addData, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_addData, z::ZEND_ACC_PUBLIC;
+        c"execute" => zim_swoole_http_client_coro_execute, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_execute, z::ZEND_ACC_PUBLIC;
+        c"getpeername" => zim_swoole_http_client_coro_getpeername, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_getpeername, z::ZEND_ACC_PUBLIC;
+        c"getsockname" => zim_swoole_http_client_coro_getsockname, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_getsockname, z::ZEND_ACC_PUBLIC;
+        c"get" => zim_swoole_http_client_coro_get, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_get, z::ZEND_ACC_PUBLIC;
+        c"post" => zim_swoole_http_client_coro_post, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_post, z::ZEND_ACC_PUBLIC;
+        c"download" => zim_swoole_http_client_coro_download, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_download, z::ZEND_ACC_PUBLIC;
+        c"getBody" => zim_swoole_http_client_coro_getBody, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_getBody, z::ZEND_ACC_PUBLIC;
+        c"getHeaders" => zim_swoole_http_client_coro_getHeaders, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_getHeaders, z::ZEND_ACC_PUBLIC;
+        c"getCookies" => zim_swoole_http_client_coro_getCookies, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_getCookies, z::ZEND_ACC_PUBLIC;
+        c"getStatusCode" => zim_swoole_http_client_coro_getStatusCode, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_getStatusCode, z::ZEND_ACC_PUBLIC;
+        c"getHeaderOut" => zim_swoole_http_client_coro_getHeaderOut, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_getHeaderOut, z::ZEND_ACC_PUBLIC;
+        c"getPeerCert" => zim_swoole_http_client_coro_getPeerCert, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_getPeerCert, z::ZEND_ACC_PUBLIC;
+        c"upgrade" => zim_swoole_http_client_coro_upgrade, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_upgrade, z::ZEND_ACC_PUBLIC;
+        c"push" => zim_swoole_http_client_coro_push, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_push, z::ZEND_ACC_PUBLIC;
+        c"recv" => zim_swoole_http_client_coro_recv, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_recv, z::ZEND_ACC_PUBLIC;
+        c"close" => zim_swoole_http_client_coro_close, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_close, z::ZEND_ACC_PUBLIC;
+        c"ping" => zim_swoole_http_client_coro_ping, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_ping, z::ZEND_ACC_PUBLIC;
+        c"disconnect" => zim_swoole_http_client_coro_disconnect, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client_disconnect, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT, as `php_swoole_http_client_coro_minit` did: the class (and short
 /// name), the `SensitiveParameter` on `setBasicAuth`'s password, the
 /// properties, the exception class and the error-status constants.
@@ -1735,15 +1783,20 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
 /// table and Swoole's exception class.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpclients_http_client_minit(
-    methods: *const zend_function_entry,
     exception: *mut zend_class_entry,
     shortname: bool,
     module: c_int,
     features: u32,
 ) {
     FEATURES.store(features, Ordering::Relaxed);
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { CLIENT.register(c"Swoole\\Coroutine\\Http\\Client", methods, configure) };
+    // SAFETY: MINIT, with a static table.
+    unsafe {
+        CLIENT.register(
+            c"Swoole\\Coroutine\\Http\\Client",
+            METHODS.as_ptr(),
+            configure,
+        );
+    }
     if shortname {
         // SAFETY: MINIT, after `register`.
         unsafe { CLIENT.alias(c"Co\\Http\\Client") };
