@@ -125,7 +125,7 @@ fn host() -> &'static ServerHost {
 }
 
 pub(crate) static SERVER: Class = Class::new();
-static TASK: Class = Class::new();
+pub(crate) static TASK: Class = Class::new();
 /// `Event`, `Packet`, `PipeMessage`, `StatusInfo` and `TaskResult`.
 pub(crate) static DATA: [Class; 5] = [
     Class::new(),
@@ -336,10 +336,10 @@ method_table! {
         c"confirm" => zim_swoole_server_resume, &server::arginfo_class_Swoole_Server_resume, z::ZEND_ACC_PUBLIC;
         c"pause" => zim_swoole_server_pause, &server::arginfo_class_Swoole_Server_pause, z::ZEND_ACC_PUBLIC;
         c"resume" => zim_swoole_server_resume, &server::arginfo_class_Swoole_Server_resume, z::ZEND_ACC_PUBLIC;
-        c"task" => zim_swoole_server_task, &server::arginfo_class_Swoole_Server_task, z::ZEND_ACC_PUBLIC;
-        c"taskwait" => zim_swoole_server_taskwait, &server::arginfo_class_Swoole_Server_taskwait, z::ZEND_ACC_PUBLIC;
-        c"taskWaitMulti" => zim_swoole_server_taskWaitMulti, &server::arginfo_class_Swoole_Server_taskWaitMulti, z::ZEND_ACC_PUBLIC;
-        c"taskCo" => zim_swoole_server_taskCo, &server::arginfo_class_Swoole_Server_taskCo, z::ZEND_ACC_PUBLIC;
+        c"task" => crate::task::zim_swoole_server_task, &server::arginfo_class_Swoole_Server_task, z::ZEND_ACC_PUBLIC;
+        c"taskwait" => crate::task::zim_swoole_server_taskwait, &server::arginfo_class_Swoole_Server_taskwait, z::ZEND_ACC_PUBLIC;
+        c"taskWaitMulti" => crate::task::zim_swoole_server_taskWaitMulti, &server::arginfo_class_Swoole_Server_taskWaitMulti, z::ZEND_ACC_PUBLIC;
+        c"taskCo" => crate::task::zim_swoole_server_taskCo, &server::arginfo_class_Swoole_Server_taskCo, z::ZEND_ACC_PUBLIC;
         c"finish" => crate::io::zim_swoole_server_finish, &server::arginfo_class_Swoole_Server_finish, z::ZEND_ACC_PUBLIC;
         c"reload" => zim_swoole_server_reload, &server::arginfo_class_Swoole_Server_reload, z::ZEND_ACC_PUBLIC;
         c"shutdown" => zim_swoole_server_shutdown, &server::arginfo_class_Swoole_Server_shutdown, z::ZEND_ACC_PUBLIC;
@@ -386,8 +386,8 @@ method_table! {
 method_table! {
     static TASK_METHODS = [
         c"finish" => crate::io::zim_swoole_server_task_finish, &server::arginfo_class_Swoole_Server_Task_finish, z::ZEND_ACC_PUBLIC;
-        c"pack" => zim_swoole_server_task_pack, &server::arginfo_class_Swoole_Server_Task_pack, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
-        c"unpack" => zim_swoole_server_task_unpack, &server::arginfo_class_Swoole_Server_Task_unpack, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"pack" => crate::task::zim_swoole_server_task_pack, &server::arginfo_class_Swoole_Server_Task_pack, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"unpack" => crate::task::zim_swoole_server_task_unpack, &server::arginfo_class_Swoole_Server_Task_unpack, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
     ];
 }
 
@@ -400,12 +400,6 @@ unsafe extern "C" {
     fn zim_swoole_server_addProcess(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zim_swoole_server_command(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zim_swoole_server_start(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_task(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_taskCo(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_taskWaitMulti(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_task_pack(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_task_unpack(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_taskwait(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_last_error(frame: *mut z::zend_execute_data, value: *mut z::zval);
 }
 

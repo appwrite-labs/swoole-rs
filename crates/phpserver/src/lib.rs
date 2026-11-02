@@ -33,6 +33,9 @@ mod server;
 mod settings;
 
 #[cfg(feature = "server")]
+mod task;
+
+#[cfg(feature = "server")]
 pub use dispatch::*;
 
 #[cfg(feature = "server")]
@@ -43,3 +46,6 @@ pub use server::*;
 
 #[cfg(feature = "server")]
 pub use settings::*;
+
+#[cfg(feature = "server")]
+pub use task::*;

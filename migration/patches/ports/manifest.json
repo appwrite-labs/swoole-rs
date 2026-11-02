@@ -22,6 +22,13 @@
         "ext-src/stubs/php_swoole_server_port_arginfo.h",
         "ext-src/swoole_server_port.cc"
       ]
+    },
+    {
+      "path": "0004-log-origin.patch",
+      "sha256": "217cb944163e6c559de34fb2e73049b04f6b64524a3fc2570f6b054126fae50d",
+      "upstream_paths": [
+        "src/server/port.cc"
+      ]
     }
   ]
 }

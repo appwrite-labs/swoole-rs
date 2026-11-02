@@ -140,6 +140,14 @@
         "src/reactor/base.cc",
         "src/reactor/poll.cc"
       ]
+    },
+    {
+      "path": "0018-log-origin.patch",
+      "sha256": "ad59750fdac0b0096c5b73c01265bd5d86a6a2709bf4cb452f286ff33cd2b4bf",
+      "upstream_paths": [
+        "src/server/base.cc",
+        "src/server/reactor_thread.cc"
+      ]
     }
   ]
 }
