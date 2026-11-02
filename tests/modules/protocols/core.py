@@ -95,7 +95,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--config', type=Path, required=True, help='Configured Linux baseline config.h (read only)')
-    parser.add_argument('--archive', type=Path, required=True, help='Optimized protocols static archive')
+    parser.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test (<build>/rust-prefix/lib/libswoole_rs_ffi.a)')
     parser.add_argument('--build-root', type=Path, required=True, help='Private writable build/cache directory')
     parser.add_argument('--node-modules', type=Path, help='Original JS fixture dependencies; mqtt4.3.8/pino6.14.0 validated')
     parser.add_argument('--jobs', type=int, default=2)
@@ -147,7 +147,7 @@ def main():
                     raise ValueError('Original core target selection changed')
                 cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(SELECTED) + ')')
                 if engine == 'rust':
-                    cmake += f'\nadd_compile_options({' '.join(flags)})\ntarget_link_libraries(lib-swoole "{archive}")\n'
+                    cmake += f'\nadd_compile_options({" ".join(flags)})\ntarget_link_libraries(lib-swoole "{archive}")\n'
                 write_changed(tree / 'CMakeLists.txt', cmake.encode())
                 engine_artifacts = artifacts / engine
                 engine_artifacts.mkdir(parents=True, exist_ok=True)

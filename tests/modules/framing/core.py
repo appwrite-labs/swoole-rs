@@ -118,7 +118,7 @@ def main():
                         raise ValueError('Original core target selection changed')
                     cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(SELECTED) + ')')
                     if engine == 'rust':
-                        cmake += f'\nadd_compile_options({' '.join(flags)})\ntarget_link_libraries(lib-swoole "{archive}")\n'
+                        cmake += f'\nadd_compile_options({" ".join(flags)})\ntarget_link_libraries(lib-swoole "{archive}")\n'
                     write_changed(tree / 'CMakeLists.txt', cmake.encode())
                     logs = artifacts / engine
                     logs.mkdir(parents=True, exist_ok=True)

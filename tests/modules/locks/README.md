@@ -39,7 +39,7 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
 ## Other gates
 
 - `core.py --source S --config CONFIG_H --archive A --build-root DIR --output R`:
-  builds upstream and locks-only native trees (Linux) and runs the 14 unchanged
+  builds the upstream tree and the archive's hybrid tree (Linux) and runs the 14 unchanged
   lock GTests one process each.
 - `state.py --engine ... [--require-zts]` (`locks-state`, integrate lane): paired PHP witness (`state.php`) for
   integer wrap, CAS, lock behaviour and coroutine mutual exclusion; under ZTS

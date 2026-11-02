@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.harness import ROOT, run_isolated, write_report
+from tools.build_hybrid import overlay_hybrid_tree
 
 from tools.build_upstream import COMMIT as PIN
 ORIGINAL = 'core-tests/src/os/timer.cpp'
@@ -48,7 +49,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--config', type=Path, required=True, help='Read-only configured Linux reference config.h')
-    parser.add_argument('--archive', type=Path, required=True, help='Linux Rust timer static archive')
+    parser.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test (<build>/rust-prefix/lib/libswoole_rs_ffi.a)')
     parser.add_argument('--build-root', type=Path, required=True, help='Private build/cache directory')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--timeout', type=int, default=10)
@@ -70,12 +71,9 @@ def main():
     directory = args.build_root.resolve()
     if directory == source or source in directory.parents or ROOT == directory:
         parser.error('Private build root must be separate from reference and repository root')
-    manifest = json.loads((ROOT / 'migration/patches/timer/manifest.json').read_text())
-    if manifest['upstream_commit'] != PIN:
-        parser.error('Overlay pin mismatch')
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'upstream_pin': PIN,
         'scope': 'Unchanged original timer.cpp and main.cpp with real GoogleTest and full native runtime. Each original runs in its own process. Native ASan/UBSan only when selected; Rust archive uninstrumented. No PHP or performance claim.',
-        'patch_manifest': manifest, 'native_sanitized': args.sanitize, 'rust_asan_declared': args.rust_asan, 'results': [], 'engines': [], 'passed': False,
+        'native_sanitized': args.sanitize, 'rust_asan_declared': args.rust_asan, 'results': [], 'engines': [], 'passed': False,
         'timed_lock_results': [], 'ucontext_results': [], 'ucontext_requested': args.ucontext_timers}
     if args.rust_asan:
         report['scope'] = 'Unchanged original timer.cpp/main.cpp, real GoogleTest/full native runtime ASan/UBSan and separately instrumented Rust timer ASan. Precompiled Rust standard library uninstrumented. Each original runs in its own process. No PHP/performance claim.'
@@ -93,11 +91,8 @@ def main():
             report['inventory'] = inventory
             identity = {name: sha(tree / name) for name in [ORIGINAL, *SUPPORT]}
             if engine == 'rust':
-                for patch in manifest['patches']:
-                    path = ROOT / 'migration/patches/timer' / patch['path']
-                    if sha(path) != patch['sha256']:
-                        raise ValueError('Overlay checksum mismatch')
-                    subprocess.run(['git', 'apply', '--unsafe-paths', '--directory=' + str(tree), str(path)], check=True, cwd='/')
+                # Every module's patches, as the hybrid build applied them (#796).
+                flags = overlay_hybrid_tree(archive, tree)
             config = args.config.read_bytes()
             if args.ucontext_timers:
                 if re.search(rb'^#define SW_USE_THREAD_CONTEXT\b', config, re.M):
@@ -110,7 +105,7 @@ def main():
                 raise ValueError('Original CMake selection changed')
             cmake = cmake.replace(selector, 'set(core_test_files core-tests/src/main.cpp ' + ORIGINAL + ')')
             if engine == 'rust':
-                cmake += f'\ninclude_directories("{ROOT / "native/include"}" "{ROOT / "native/timer"}")\nadd_definitions(-DSWOOLE_RS_TIMER=1)\ntarget_link_libraries(lib-swoole "{archive}")\n'
+                cmake += f'\nadd_compile_options({" ".join(flags)})\ntarget_link_libraries(lib-swoole "{archive}")\n'
             put(tree / 'CMakeLists.txt', cmake.encode())
             if identity != {name: sha(tree / name) for name in identity}:
                 raise ValueError('Original assertion or support source modified')
