@@ -245,6 +245,7 @@
       "owned_paths": [
         "crates/process/",
         "crates/phpprocess/",
+        "crates/phpthread/",
         "native/process/",
         "migration/patches/process/"
       ],
@@ -269,7 +270,13 @@
         "ext-src/swoole_process_pool.cc",
         "include/swoole_server.h",
         "ext-src/swoole_process.cc",
-        "ext-src/swoole_admin_server.cc"
+        "ext-src/swoole_admin_server.cc",
+        "ext-src/php_swoole_thread.h",
+        "ext-src/swoole_thread.cc",
+        "ext-src/swoole_thread_arraylist.cc",
+        "ext-src/swoole_thread_barrier.cc",
+        "ext-src/swoole_thread_map.cc",
+        "ext-src/swoole_thread_queue.cc"
       ],
       "abi_contract": "docs/process-abi-v1.md",
       "feature_bit_reserved": 524288

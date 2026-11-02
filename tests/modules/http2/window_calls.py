@@ -12,6 +12,7 @@ import subprocess
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body,select_overlay
 
 
@@ -34,7 +35,7 @@ def main():
                 labels.append(label)
         if len(set(labels))!=len(labels):raise ValueError('Duplicate native type routing labels')
         cases=''.join('case SW_HTTP2_TYPE_'+label+': return SW_RS_HTTP2_'+mapping[label]+';' for label in labels)
-        oracles.append('static unsigned '+role+'_route(unsigned type,unsigned flags){auto action=[&](){switch(type){'+cases+'default:return SW_RS_HTTP2_OTHER;}}();if(action==SW_RS_HTTP2_SETTINGS&&(flags&SW_HTTP2_FLAG_ACK))return SW_RS_HTTP2_SETTINGS_ACK;if(action==SW_RS_HTTP2_PING_REPLY&&(flags&SW_HTTP2_FLAG_ACK))return SW_RS_HTTP2_PING_ACK;return action;}\n')
+        oracles.append('inline unsigned '+role+'_route(unsigned type,unsigned flags){auto action=[&](){switch(type){'+cases+'default:return SW_RS_HTTP2_OTHER;}}();if(action==SW_RS_HTTP2_SETTINGS&&(flags&SW_HTTP2_FLAG_ACK))return SW_RS_HTTP2_SETTINGS_ACK;if(action==SW_RS_HTTP2_PING_REPLY&&(flags&SW_HTTP2_FLAG_ACK))return SW_RS_HTTP2_PING_ACK;return action;}\n')
         for variant,text in [('native',original),('rust',select_overlay(selected.read_text()))]:
             parser=body(text,marker);prefix=parser[:parser.index('    switch (type)' if variant=='native' else '    switch (frame_action)')];remote=body(parser,'case '+('SW_HTTP2_TYPE_WINDOW_UPDATE' if variant=='native' else 'SW_RS_HTTP2_WINDOW_UPDATE'))
             start=parser.index('// flow control' if role=='server' else '// now we control the connection flow')
@@ -53,7 +54,7 @@ def main():
             route='frame_action' if variant=='rust' else role+'_route(type, flags)'
             prefix_method=prefix_signature+'{'+prefix_setup+prefix+'out[0]=type;out[1]=flags;out[2]='+id_variable+';out[3]=length;return '+route+';}'
             lookup='Stream *get_stream(uint32_t id){return Base::get_stream(id).get();}' if role=='client' else ''
-            pieces.append('namespace '+role+'_'+variant+' {struct State: Base {'+lookup+prefix_method+remote_signature+'{'+remote_prefix+'do{'+remote+'}while(false);return SW_SUCCESS;}'+flow_signature+'{'+flow_prefix+flow+'return SW_SUCCESS;}};}\n')
+            pieces.append((variant, 'namespace '+role+'_'+variant+' {struct State: Base {'+lookup+prefix_method+remote_signature+'{'+remote_prefix+'do{'+remote+'}while(false);return SW_SUCCESS;}'+flow_signature+'{'+flow_prefix+flow+'return SW_SUCCESS;}};}\n'))
     prelude=r'''
 #include "swoole_http2.h"
 #include "swoole_error.h"
@@ -68,8 +69,8 @@ def main():
 #include <cstdarg>
 using namespace swoole;
 namespace Http2=swoole::http2;
-static std::vector<std::string> effects;
-static void emit(const char*fmt,...){char b[256];va_list v;va_start(v,fmt);vsnprintf(b,sizeof(b),fmt,v);va_end(v);effects.push_back(b);}
+inline std::vector<std::string> effects;
+inline void emit(const char*fmt,...){char b[256];va_list v;va_start(v,fmt);vsnprintf(b,sizeof(b),fmt,v);va_end(v);effects.push_back(b);}
 #undef swoole_http2_frame_trace_log
 #define swoole_http2_frame_trace_log(...) emit(__VA_ARGS__)
 #undef swoole_error_log
@@ -84,7 +85,7 @@ struct Base {FixtureSocket *socket_=nullptr;uint32_t last_stream_id=0;bool shutt
  bool send_window_update(uint32_t id,uint32_t amount){++calls;effects.push_back("send:"+std::to_string(id)+":"+std::to_string(amount));if(id==0&&(scenario&1)){local_settings.init_window_size=19;if(live)live->local_window_size=0;local_window_size=71;}return !((scenario&2)&&calls==1)&&!((scenario&4)&&calls==2);}
 };
 struct HttpContext {Base *state;};
-static void http2_server_send_window_update(HttpContext *ctx,uint32_t id,uint32_t amount){ctx->state->send_window_update(id,amount);}
+inline void http2_server_send_window_update(HttpContext *ctx,uint32_t id,uint32_t amount){ctx->state->send_window_update(id,amount);}
 '''
     driver=r'''
 struct Result {std::vector<std::string> events;uint32_t local,remote,stream_local,stream_remote,initial;bool live;int code;unsigned calls;};
@@ -121,14 +122,10 @@ for(unsigned type=0;type<256;++type)for(unsigned flags=0;flags<256;++flags)for(u
 std::cout<<"{\"passed\":true,\"window_routing_cases\":"<<count<<"}\n";
 }
 '''
-    work=a.output.parent/(a.output.stem+'-artifacts');work.mkdir(parents=True,exist_ok=False);cpp=work/'windows.cpp';cpp.write_text(prelude+''.join(oracles)+''.join(pieces)+driver)
-    cmd=['c++','-std=c++17','-O1','-fsanitize=address,undefined','-fno-sanitize=alignment','-fno-omit-frame-pointer','-I',str(gate.ROOT/'native/http2'),'-I',str(a.source/'include')]
-    for include in a.include:cmd+=['-I',include]
-    cmd+=[str(cpp),str(archive),'-o',str(work/'windows')]
-    for command in [cmd,[str(work/'windows')]]:
-        r=subprocess.run(command,capture_output=True,text=True);report['commands'].append({'command':command,'returncode':r.returncode,'stdout':r.stdout,'stderr':r.stderr})
-        if r.returncode:break
-        if command!=cmd:report.update(json.loads(r.stdout))
+    work = a.output.parent / (a.output.stem + '-artifacts')
+    work.mkdir(parents=True, exist_ok=False)
+    report['commands'], result = sides.run(work, 'windows', prelude + ''.join(oracles), pieces, driver, source=a.source, archive=archive, includes=a.include)
+    report.update(result or {})
     report['native_sanitizers']=['address','undefined except alignment'];report['rust_sanitized']=False;a.output.write_text(json.dumps(report,indent=2)+'\n');print(json.dumps({'passed':report['passed'],'report':str(a.output)}));return 0 if report['passed'] else 1
 
 if __name__=='__main__':raise SystemExit(main())

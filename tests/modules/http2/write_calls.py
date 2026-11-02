@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body, select_overlay
 
 
@@ -46,7 +47,7 @@ def main():
         received = body(body(text, 'ReturnCode Client::parse_frame('), marker)
         received = received[:received.index('        if (length > 0)')]
         request = body(text, 'uint32_t Client::send_request(')
-        pieces.append('namespace ' + variant + ' {struct Client: FixtureClient {bool write_data(uint32_t _stream_id,zval *zdata,bool end){' + fragment + '}void receive_flags(uint32_t flags){auto stream=&value;' + received + '}uint32_t send_request(zval *zrequest){' + request + '}};}')
+        pieces.append((variant, 'namespace ' + variant + ' {struct Client: FixtureClient {bool write_data(uint32_t _stream_id,zval *zdata,bool end){' + fragment + '}void receive_flags(uint32_t flags){auto stream=&value;' + received + '}uint32_t send_request(zval *zrequest){' + request + '}};}'))
     prelude = r'''
 #include "swoole_http2.h"
 #define SW_USE_RUST_HTTP2
@@ -59,20 +60,20 @@ def main():
 #include <cstdio>
 using namespace swoole;
 namespace Http2 = swoole::http2;
-static std::vector<std::string> effects;
-static unsigned throw_at, mutation, query_failure, allocated;
+inline std::vector<std::string> effects;
+inline unsigned throw_at, mutation, query_failure, allocated;
 struct zval {bool array=false;std::string bytes;bool scalar=false,truth=false;};
 struct Stream {unsigned flags=0,stream_id=0;};
-static Stream *current;
-static void effect(std::string text,bool may_throw=true){effects.push_back(text);if(mutation&1)current->flags^=15;if(mutation&2)current->flags^=128;if(may_throw&&throw_at==effects.size())throw std::runtime_error("native effect");}
+inline Stream *current;
+inline void effect(std::string text,bool may_throw=true){effects.push_back(text);if(mutation&1)current->flags^=15;if(mutation&2)current->flags^=128;if(may_throw&&throw_at==effects.size())throw std::runtime_error("native effect");}
 struct smart_str {char *s=nullptr;};
-static char *php_swoole_http_build_query(zval*z,size_t*n,smart_str*s){effect("query");if(query_failure)return nullptr;*n=z->bytes.size();s->s=z->bytes.data();++allocated;return s->s;}
-static void smart_str_free(smart_str*s){effect("free",false);if(s->s){s->s=nullptr;--allocated;}}
+inline char *php_swoole_http_build_query(zval*z,size_t*n,smart_str*s){effect("query");if(query_failure)return nullptr;*n=z->bytes.size();s->s=z->bytes.data();++allocated;return s->s;}
+inline void smart_str_free(smart_str*s){effect("free",false);if(s->s){s->s=nullptr;--allocated;}}
 #define ZVAL_IS_ARRAY(z) ((z)->array)
 #define E_WARNING 2
-static void php_swoole_error(int,const char*what){effect(what);}
+inline void php_swoole_error(int,const char*what){effect(what);}
 namespace zend {class String {zval *value=nullptr;public:String(){effect("string:default");}String &operator=(zval*z){effect("string:assign");value=z;return *this;}explicit String(zval*z):value(z){effect("string:new");}~String(){effect("string:drop",false);}char *val(){effect("string:val");return value->bytes.data();}size_t len(){effect("string:len");return value->bytes.size();}};}
-namespace std_string {static std::string format(const char*pattern,unsigned id){char buf[128];std::snprintf(buf,sizeof(buf),pattern,id);return buf;}}
+namespace std_string {inline std::string format(const char*pattern,unsigned id){char buf[128];std::snprintf(buf,sizeof(buf),pattern,id);return buf;}}
 #undef swoole_trace_log
 #define swoole_trace_log(...) ((void)0)
 #undef swoole_http2_send_trace_log
@@ -87,17 +88,17 @@ namespace std_string {static std::string format(const char*pattern,unsigned id){
 #define IS_STRING 1
 #define Z_TYPE_P(z) ((z)->array?2:((z)->scalar?3:IS_STRING))
 #define Z_STRLEN_P(z) ((z)->bytes.size())
-static zval request_headers,request_data,request_pipeline,request_read;
-static int swoole_http2_request_ce;
-static bool zval_is_true(zval*z){effect("truth");return z->array?!z->bytes.empty():(z->scalar?z->truth:(!z->bytes.empty()&&z->bytes!="0"));}
-static zval *sw_zend_read_and_convert_property_array(int,zval*,const char*,size_t,int){effect("property:headers");return &request_headers;}
-static zval *sw_zend_read_property_ex(int,zval*,int property,int){effect("property:"+std::to_string(property));return property==1?&request_data:&request_pipeline;}
-static zval *zend_read_property_ex(int,zval*,int,bool,zval*){effect("property:read");return &request_read;}
-static void add_assoc_stringl_ex(zval*,const char*,size_t,char*,size_t){effect("add:content-type");}
+inline zval request_headers,request_data,request_pipeline,request_read;
+inline int swoole_http2_request_ce;
+inline bool zval_is_true(zval*z){effect("truth");return z->array?!z->bytes.empty():(z->scalar?z->truth:(!z->bytes.empty()&&z->bytes!="0"));}
+inline zval *sw_zend_read_and_convert_property_array(int,zval*,const char*,size_t,int){effect("property:headers");return &request_headers;}
+inline zval *sw_zend_read_property_ex(int,zval*,int property,int){effect("property:"+std::to_string(property));return property==1?&request_data:&request_pipeline;}
+inline zval *zend_read_property_ex(int,zval*,int,bool,zval*){effect("property:read");return &request_read;}
+inline void add_assoc_stringl_ex(zval*,const char*,size_t,char*,size_t){effect("add:content-type");}
 struct ScratchBuffer {char str[1024];};
-static ScratchBuffer scratch;
+inline ScratchBuffer scratch;
 #define sw_tg_buffer fixture_tg_buffer
-static ScratchBuffer *sw_tg_buffer(){effect("scratch");return &scratch;}
+inline ScratchBuffer *sw_tg_buffer(){effect("scratch");return &scratch;}
 struct FixtureClient {Stream value;bool exists=true;unsigned stream_id=55,calls=0,fail_call=0;ssize_t header_result=5;bool created=false;zval object;zval*zobject=&object;
  ssize_t build_header(zval*,zval*,char*buffer){effect("build-header");if(header_result>0)std::memset(buffer,'H',header_result);return header_result;}
  Stream *create_stream(uint32_t id,uint8_t flags){effect("create:"+std::to_string(id)+":"+std::to_string(flags));value.flags=flags;value.stream_id=id;created=true;return &value;}
@@ -142,20 +143,8 @@ std::cout<<"{\"passed\":true,\"write_cases\":"<<count<<",\"request_cases\":"<<re
 '''
     work = args.output.parent / (args.output.stem + '-artifacts')
     work.mkdir(parents=True, exist_ok=False)
-    cpp = work / 'write.cpp'
-    cpp.write_text(prelude + '\n'.join(pieces) + driver)
-    command = ['c++', '-std=c++17', '-O1', '-fsanitize=address,undefined', '-fno-sanitize=alignment',
-               '-fno-omit-frame-pointer', '-I', str(gate.ROOT / 'native/http2'), '-I', str(args.source / 'include')]
-    for include in args.include:
-        command += ['-I', include]
-    command += [str(cpp), str(archive), '-o', str(work / 'write')]
-    for cmd in [command, [str(work / 'write')]]:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        report['commands'].append({'command': cmd, 'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr})
-        if result.returncode:
-            break
-        if cmd != command:
-            report.update(json.loads(result.stdout))
+    report['commands'], result = sides.run(work, 'write', prelude, pieces, driver, source=args.source, archive=archive, includes=args.include)
+    report.update(result or {})
     report['native_sanitizers'] = ['address', 'undefined except alignment']
     report['rust_sanitized'] = False
     args.output.write_text(json.dumps(report, indent=2) + '\n')

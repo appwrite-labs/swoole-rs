@@ -35,7 +35,11 @@ instrumented.
 
 Each gate extracts the actual pinned and patched function bodies, compiles both
 against recording doubles for native effects, and compares effect order, emitted
-bytes, return values and published state.
+bytes, return values and published state. `sides.py` builds the call gates as
+three translation units: the pinned bodies against the pinned headers, the
+patched bodies and the driver against the hybrid build's tree (from the core
+report's archive). Bodies move out of their classes so the driver sees only
+declarations, and fixture state is `inline` so all three share one instance.
 
 - `gate.py`: compiles the original `src/protocol/http2.cc` against the pinned
   headers and the hybrid tree's copy and `core_calls.cpp` against the hybrid

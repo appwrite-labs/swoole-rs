@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body, select_overlay
 
 
@@ -49,7 +50,7 @@ def main():
             if 'complete_file' in signature:
                 signature = 'static bool http2_server_complete_file(HttpContext*ctx,const std::shared_ptr<Http2Stream>&stream,const std::shared_ptr<Http2Session>&client,bool trailer,bool error,bool range){'
             methods.append(signature + fragment + '}')
-        pieces.append('namespace ' + variant + ' {' + ''.join(methods) + '}')
+        pieces.append((variant, 'namespace ' + variant + ' {' + ''.join(methods) + '}'))
     prelude = r'''
 #include "swoole_http2.h"
 #define SW_USE_RUST_HTTP2
@@ -75,28 +76,28 @@ def main():
 #define ZSTR_LEN(z) ((z)->bytes.size())
 struct zval{unsigned length=0;bool contains=false;};
 struct zend_string{std::string bytes="fixture.data";};
-static std::vector<std::string>effects;
-static unsigned fail_at,throw_at,read_mode,serial;
-static std::function<void(const std::string&)>mutate;
-static bool effect(std::string what,bool throwing=true){effects.push_back(what);if(mutate)mutate(what);if(throwing&&throw_at==effects.size())throw std::runtime_error("native effect");return fail_at!=effects.size();}
+inline std::vector<std::string>effects;
+inline unsigned fail_at,throw_at,read_mode,serial;
+inline std::function<void(const std::string&)>mutate;
+inline bool effect(std::string what,bool throwing=true){effects.push_back(what);if(mutate)mutate(what);if(throwing&&throw_at==effects.size())throw std::runtime_error("native effect");return fail_at!=effects.size();}
 struct String {size_t length=0;char*str=nullptr;std::string bytes;unsigned id;
  String():id(++serial){effect("string:new:"+std::to_string(id));}
  String(const char*data,size_t n):length(n),bytes(data,n),id(++serial){str=bytes.data();effect("string:copy:"+std::to_string(id)+":"+bytes);}
  explicit String(const std::string&data):String(data.data(),data.size()){}
  ~String(){effect("string:drop:"+std::to_string(id),false);}
 };
-static zval trailer_property,header_property;
-static int swoole_http_response_ce;
-static zval*sw_zend_read_property_ex(int,zval*,int,int){effect("trailer");return &trailer_property;}
-static size_t php_swoole_array_length_safe(zval*z){effect("trailer_length");return z->length;}
-static zval*sw_zend_read_and_convert_property_array(int,zval*,const char*,size_t,int){effect("header");return &header_property;}
-static bool zend_hash_str_exists(zval*z,const char*,size_t){effect("contains");return z->contains;}
-namespace swoole {namespace mime_type {static const std::string&get(const std::string&name){static const std::string value="mime";effect("mime:"+name);return value;}}}
-static bool coroutine;
-static bool swoole_coroutine_is_in(){effect("coroutine");return coroutine;}
-static std::map<void*,size_t>allocations;
-static void*emalloc(size_t n){effect("allocate:"+std::to_string(n));auto p=std::malloc(n?n:1);if(!p)throw std::bad_alloc();std::memset(p,'?',n);allocations[p]=n;return p;}
-static void efree(void*p){effect("free:"+std::to_string(allocations.at(p)),false);allocations.erase(p);std::free(p);}
+inline zval trailer_property,header_property;
+inline int swoole_http_response_ce;
+inline zval*sw_zend_read_property_ex(int,zval*,int,int){effect("trailer");return &trailer_property;}
+inline size_t php_swoole_array_length_safe(zval*z){effect("trailer_length");return z->length;}
+inline zval*sw_zend_read_and_convert_property_array(int,zval*,const char*,size_t,int){effect("header");return &header_property;}
+inline bool zend_hash_str_exists(zval*z,const char*,size_t){effect("contains");return z->contains;}
+namespace swoole {namespace mime_type {inline const std::string&get(const std::string&name){static const std::string value="mime";effect("mime:"+name);return value;}}}
+inline bool coroutine;
+inline bool swoole_coroutine_is_in(){effect("coroutine");return coroutine;}
+inline std::map<void*,size_t>allocations;
+inline void*emalloc(size_t n){effect("allocate:"+std::to_string(n));auto p=std::malloc(n?n:1);if(!p)throw std::bad_alloc();std::memset(p,'?',n);allocations[p]=n;return p;}
+inline void efree(void*p){effect("free:"+std::to_string(allocations.at(p)),false);allocations.erase(p);std::free(p);}
 struct File {off_t offset=0;
  File(const char*name,int){effect("file:new:"+std::string(name));}
  ~File(){effect("file:drop",false);}
@@ -121,7 +122,7 @@ struct Http2Session {std::shared_ptr<Http2Stream>stream=std::make_shared<Http2St
  std::shared_ptr<Http2Stream>get_stream(unsigned id){effect("get:"+std::to_string(id));return stream;}
  bool remove_stream(unsigned id){return effect("remove:"+std::to_string(id));}
 };
-static std::map<int,std::shared_ptr<Http2Session>>http2_sessions;
+inline std::map<int,std::shared_ptr<Http2Session>>http2_sessions;
 struct StaticHandler {struct Task{off_t offset;size_t length;const char*part_header;};std::vector<Task>tasks;size_t content=11;
  const std::string&get_content_type(){static const std::string value="range-mime";effect("content_type");return value;}
  size_t get_content_length(){effect("content_length");return content;}
@@ -152,23 +153,8 @@ std::cout<<"{\"passed\":true,\"file_cases\":"<<count<<",\"compression_enabled\":
 '''
     work = args.output.parent / (args.output.stem + '-artifacts')
     work.mkdir(parents=True, exist_ok=False)
-    cpp = work / 'files.cpp'
-    cpp.write_text(prelude + '\n'.join(pieces) + driver)
-    report['variants'] = []
-    for enabled in [0, 1]:
-        executable = work / f'files-{enabled}'
-        command = ['c++', '-std=c++17', '-O1', '-fsanitize=address,undefined', '-fno-sanitize=alignment',
-                   '-fno-omit-frame-pointer', f'-DTEST_COMPRESSION={enabled}', '-I', str(gate.ROOT / 'native/http2'), '-I', str(args.source / 'include')]
-        for include in args.include:
-            command += ['-I', include]
-        command += [str(cpp), str(archive), '-o', str(executable)]
-        for cmd in [command, [str(executable)]]:
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            report['commands'].append({'command': cmd, 'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr})
-            if result.returncode:
-                break
-            if cmd != command:
-                report['variants'].append(json.loads(result.stdout))
+    commands, report['variants'] = sides.variants(work, 'files', prelude, pieces, driver, source=args.source, archive=archive, includes=args.include, define='TEST_COMPRESSION')
+    report['commands'] += commands
     report['passed'] = len(report['variants']) == 2 and all(v['passed'] for v in report['variants'])
     if gate.digest(header) != core['module_header_sha256']:
         report['passed'] = False

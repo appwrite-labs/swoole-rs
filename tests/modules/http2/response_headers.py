@@ -7,6 +7,7 @@ import subprocess
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body,select_overlay
 
 
@@ -24,7 +25,7 @@ def main():
     pieces=[]
     for variant,text in [('native',original),('rust',select_overlay(selected.read_text()))]:
         fragment=body(text,'[ctx, &content_type]')
-        pieces.append('namespace '+variant+' {void add(Ctx *ctx,Http2::HeaderSet &headers,const char *key,size_t l_key,zval *value,uint32_t &header_flags,zend_string *&content_type){'+fragment+'}}\n')
+        pieces.append((variant, 'namespace '+variant+' {void add(Ctx *ctx,Http2::HeaderSet &headers,const char *key,size_t l_key,zval *value,uint32_t &header_flags,zend_string *&content_type){'+fragment+'}}\n'))
     warning_body=body(php_header,'static sw_inline bool swoole_http_has_crlf(')
     flags=body(php_header,'enum swHttpHeaderFlag')
     prelude=r'''
@@ -47,15 +48,15 @@ namespace Http2=swoole::http2;
 #define SW_HAVE_COMPRESSION
 #endif
 #define E_WARNING 2
-static std::vector<std::string> effects;
-static unsigned throwing;
-static std::function<void()> conversion,capture;
-static void php_swoole_error(int,const char *what){effects.push_back("warning:"+std::string(what));if(throwing==3)throw std::runtime_error("native warning");}
+inline std::vector<std::string> effects;
+inline unsigned throwing;
+inline std::function<void()> conversion,capture;
+inline void php_swoole_error(int,const char *what){effects.push_back("warning:"+std::string(what));if(throwing==3)throw std::runtime_error("native warning");}
 struct zend_string {std::string bytes;size_t length;};
 struct zval {bool null=false;zend_string str;};
 #define ZVAL_IS_NULL(v) ((v)->null)
-static std::vector<std::unique_ptr<zend_string>> strings;
-static zend_string *zval_get_string(zval*v){effects.push_back("capture:"+v->str.bytes.substr(0,v->str.length));if(capture)capture();if(throwing==4)throw std::runtime_error("native capture");strings.push_back(std::make_unique<zend_string>(v->str));return strings.back().get();}
+inline std::vector<std::unique_ptr<zend_string>> strings;
+inline zend_string *zval_get_string(zval*v){effects.push_back("capture:"+v->str.bytes.substr(0,v->str.length));if(capture)capture();if(throwing==4)throw std::runtime_error("native capture");strings.push_back(std::make_unique<zend_string>(v->str));return strings.back().get();}
 namespace zend {struct String {zval *value;
  String(zval*v):value(v){effects.push_back("convert");if(conversion)conversion();if(throwing==1)throw std::runtime_error("native conversion");}
  ~String(){effects.push_back("string-release");}
@@ -65,7 +66,7 @@ namespace zend {struct String {zval *value;
 struct Ctx {bool accept_compression;void *compression_types;};
 namespace swoole {namespace http2 {struct HeaderSet {void add(const char*k,size_t kn,const char*v,size_t vn){effects.push_back("add:"+std::string(k,kn)+":"+std::string(v,vn));if(throwing==5)throw std::runtime_error("native add");}};}}
 '''
-    prelude+='enum swHttpHeaderFlag {'+flags+'};\nstatic bool swoole_http_has_crlf(const char *value,size_t length){'+warning_body+'}\n'
+    prelude+='enum swHttpHeaderFlag {'+flags+'};\ninline bool swoole_http_has_crlf(const char *value,size_t length){'+warning_body+'}\n'
     driver=r'''
 struct Result {std::vector<std::string> events;std::string exception,captured,remaining;uint32_t flags;bool accept,types;};
 static Result execute(bool rust,const std::string &key,const std::string &bytes,bool null,bool accept,bool types,uint32_t flags,unsigned scenario,unsigned fault){
@@ -88,15 +89,10 @@ for(int64_t parsed:{INT64_MIN,int64_t(-1),int64_t(0),int64_t(1),int64_t(UINT32_M
 std::cout<<"{\"passed\":true,\"response_header_cases\":"<<count<<",\"compression_enabled\":"<<TEST_COMPRESSION<<",\"locales\":[";for(size_t i=0;i<locales.size();++i){if(i)std::cout<<",";std::cout<<"\""<<locales[i]<<"\"";}std::cout<<"],\"unavailable_locales\":[";for(size_t i=0;i<missing.size();++i){if(i)std::cout<<",";std::cout<<"\""<<missing[i]<<"\"";}std::cout<<"]}\n";
 }
 '''
-    work=a.output.parent/(a.output.stem+'-artifacts');work.mkdir(parents=True,exist_ok=False);cpp=work/'response.cpp';cpp.write_text(prelude+''.join(pieces)+driver);report['variants']=[]
-    for enabled in [0,1]:
-        executable=work/f'response-{enabled}';cmd=['c++','-std=c++17','-O1','-fsanitize=address,undefined','-fno-sanitize=alignment','-fno-omit-frame-pointer',f'-DTEST_COMPRESSION={enabled}','-I',str(gate.ROOT/'native/http2'),'-I',str(a.source/'include')]
-        for include in a.include:cmd+=['-I',include]
-        cmd+=[str(cpp),str(archive),'-o',str(executable)]
-        for command in [cmd,[str(executable)]]:
-            r=subprocess.run(command,capture_output=True,text=True);report['commands'].append({'command':command,'returncode':r.returncode,'stdout':r.stdout,'stderr':r.stderr})
-            if r.returncode:break
-            if command!=cmd:report['variants'].append(json.loads(r.stdout))
+    work = a.output.parent / (a.output.stem + '-artifacts')
+    work.mkdir(parents=True, exist_ok=False)
+    commands, report['variants'] = sides.variants(work, 'response', prelude, pieces, driver, source=a.source, archive=archive, includes=a.include, define='TEST_COMPRESSION')
+    report['commands'] += commands
     report['passed']=len(report['variants'])==2 and all(r['passed'] for r in report['variants']);report['native_sanitizers']=['address','undefined except alignment'];report['rust_sanitized']=False;a.output.write_text(json.dumps(report,indent=2)+'\n');print(json.dumps({'passed':report['passed'],'report':str(a.output)}));return 0 if report['passed'] else 1
 
 if __name__=='__main__':raise SystemExit(main())
