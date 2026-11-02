@@ -3,7 +3,7 @@
   "patches": [
     {
       "path": "0001-base.patch",
-      "sha256": "308651c39d2d88ef8b4f0fce470b32a9cddd6375f92b100c921b29dfb96e8c0a",
+      "sha256": "4566ff119c4ca05d9902edc3ac2e021a4b4f85f127b65409f2c2601d85e29131",
       "upstream_paths": [
         "src/protocol/base.cc"
       ]

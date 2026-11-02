@@ -1,8 +1,8 @@
 diff --git a/src/protocol/base.cc b/src/protocol/base.cc
-index cc8a1e5..7461451 100644
+index cc8a1e5..28528f8 100644
 --- a/src/protocol/base.cc
 +++ b/src/protocol/base.cc
-@@ -21,418 +21,129 @@
+@@ -21,418 +21,142 @@
  #include "swoole_protocol.h"
 -
 +#include "swoole_rs_framing.h"
@@ -158,12 +158,11 @@ index cc8a1e5..7461451 100644
 -
 -    recv_n = socket->recv(buffer->str + buffer->length, recv_size, 0);
 -    if (recv_n < 0) {
-+int64_t effect(Recv *r, uint32_t op, uint64_t arg) {
++// The effects a receive rarely needs, kept out of `call`'s frame.
++__attribute__((noinline)) int64_t rare(Recv *r, uint32_t op, uint64_t arg) {
 +    const Protocol *p = r->p; network::Socket *socket = r->socket; String *buffer = r->buffer;
 +    switch (op) {
-+    case SWR_FRAMING_OP_RECV: {
-+        ssize_t n = socket->recv(buffer->str + buffer->length, arg, 0);
-+        if (n >= 0) { return n; }
++    case SWR_FRAMING_OP_RECV:
          switch (socket->catch_read_error(errno)) {
          case SW_ERROR:
 -            swoole_sys_warning("recv(%d, %d) failed", socket->fd, recv_size);
@@ -172,7 +171,12 @@ index cc8a1e5..7461451 100644
 -            return SW_ERR;
 -        default:
 -            return SW_OK;
--        }
++            if (r->io.mode == SWR_FRAMING_MODE_LENGTH) { swoole_sys_warning("recv(%d, %d) failed", socket->fd, (uint32_t) arg); }
++            else { swoole_sys_warning("recv from socket#%d failed", socket->fd); }
++            return SWR_FRAMING_RECV_DONE;
++        case SW_CLOSE: return SWR_FRAMING_RECV_CLOSE;
++        default: return SWR_FRAMING_RECV_DONE;
+         }
 -    } else if (recv_n == 0) {
 -        return SW_ERR;
 -    } else {
@@ -202,7 +206,27 @@ index cc8a1e5..7461451 100644
 -                goto _do_recv;
 -            }
 -            return SW_OK;
--        } else {
++    case SWR_FRAMING_OP_REDUCE: buffer->reduce(arg); return 0;
++    case SWR_FRAMING_OP_SPLIT:
++        return buffer->split(p->package_eof, p->package_eof_len, [&](const char *data, size_t len) {
++            RecvData packet{}; packet.info.len = len; packet.data = data;
++            return p->onPackage(p, socket, &packet) >= 0 && !socket->removed;
++        });
++    case SWR_FRAMING_OP_SSL_PENDING: return SSL_pending(socket->ssl);
++    case SWR_FRAMING_OP_CLEAR_SKIP: socket->skip_recv = 0; return 0;
++    case SWR_FRAMING_OP_PAGE: return swoole_pagesize();
++    case SWR_FRAMING_OP_LOG_MALFORMED: {
++        proto_error(socket, SW_ERROR_PACKAGE_MALFORMED_DATA, "received %zu bytes of malformed data, remote_addr=", buffer->length);
++        return 0;
++    }
++    case SWR_FRAMING_OP_LOG_NO_LENGTH:
++        swoole_error_log(SW_LOG_WARNING, SW_ERROR_PACKAGE_LENGTH_NOT_FOUND,
++                         "bad request, no length found in %zu bytes, remote_addr=", buffer->length);
++        return 0;
++    case SWR_FRAMING_OP_LOG_TOO_LARGE: {
++        if (r->io.mode == SWR_FRAMING_MODE_LENGTH) {
++            proto_error(socket, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, "the received packet length %ld is too large, remote_addr=", (long) arg);
+         } else {
 -        _do_get_length:
 -            pl.buf = buffer->str;
 -            pl.buf_size = buffer->length;
@@ -249,12 +273,9 @@ index cc8a1e5..7461451 100644
 -                    goto _do_recv;
 -                }
 -            }
-+            if (r->io.mode == SWR_FRAMING_MODE_LENGTH) { swoole_sys_warning("recv(%d, %d) failed", socket->fd, (uint32_t) arg); }
-+            else { swoole_sys_warning("recv from socket#%d failed", socket->fd); }
-+            return SWR_FRAMING_RECV_DONE;
-+        case SW_CLOSE: return SWR_FRAMING_RECV_CLOSE;
-+        default: return SWR_FRAMING_RECV_DONE;
++            proto_error(socket, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, "The received data packet is too large, length=%lu", (unsigned long) buffer->length);
          }
++        return 0;
      }
 -    return SW_OK;
 -}
@@ -274,29 +295,7 @@ index cc8a1e5..7461451 100644
 -
 -    if (buf_size > SW_BUFFER_SIZE_STD) {
 -        buf_size = SW_BUFFER_SIZE_STD;
-+    case SWR_FRAMING_OP_GET_LENGTH: {
-+        PacketLength pl{}; pl.buf = buffer->str; pl.buf_size = buffer->length;
-+        return p->get_package_length(p, socket, &pl);
-+    }
-+    case SWR_FRAMING_OP_EXTEND: buffer->extend(arg); return 0;
-+    case SWR_FRAMING_OP_WAIT: socket->recv_wait = arg != 0; return 0;
-+    case SWR_FRAMING_OP_DISPATCH: {
-+        RecvData data{}; data.info.len = arg; data.data = buffer->str;
-+        return p->onPackage(p, socket, &data);
-+    }
-+    case SWR_FRAMING_OP_REDUCE: buffer->reduce(arg); return 0;
-+    case SWR_FRAMING_OP_CLEAR: buffer->clear(); return 0;
-+    case SWR_FRAMING_OP_SPLIT:
-+        return buffer->split(p->package_eof, p->package_eof_len, [&](const char *data, size_t len) {
-+            RecvData packet{}; packet.info.len = len; packet.data = data;
-+            return p->onPackage(p, socket, &packet) >= 0 && !socket->removed;
-+        });
-+    case SWR_FRAMING_OP_SSL_PENDING: return SSL_pending(socket->ssl);
-+    case SWR_FRAMING_OP_CLEAR_SKIP: socket->skip_recv = 0; return 0;
-+    case SWR_FRAMING_OP_PAGE: return swoole_pagesize();
-+    case SWR_FRAMING_OP_LOG_MALFORMED: {
-+        proto_error(socket, SW_ERROR_PACKAGE_MALFORMED_DATA, "received %zu bytes of malformed data, remote_addr=", buffer->length);
-+        return 0;
++    default: abort();
      }
 -
 -    ssize_t n = socket->recv(buf_ptr, buf_size, 0);
@@ -317,7 +316,22 @@ index cc8a1e5..7461451 100644
 -
 -        if (buffer->length < package_eof_len) {
 -            return SW_OK;
--        }
++}
++// One effect. Rust's recv_wait is applied before it and the socket's flags read back
++// after it. Exceptions never unwind through Rust: the first one is kept and rethrown
++// after it returns.
++int64_t call(void *context, uint32_t op, uint64_t arg) noexcept {
++    auto *r = static_cast<Recv *>(context);
++    const Protocol *p = r->p; network::Socket *socket = r->socket; String *buffer = r->buffer;
++    socket->recv_wait = (r->io.flags & SWR_FRAMING_WAIT) != 0;
++    int64_t result = 0;
++    try {
++        switch (op) {
++        case SWR_FRAMING_OP_RECV: {
++            ssize_t n = socket->recv(buffer->str + buffer->length, arg, 0);
++            result = n >= 0 ? n : rare(r, op, arg);
++            break;
+         }
 -
 -        if (split_by_eof) {
 -            int retval = recv_split_by_eof(socket, buffer);
@@ -343,7 +357,11 @@ index cc8a1e5..7461451 100644
 -                goto _recv_data;
 -            }
 -            return SW_OK;
--        }
++        case SWR_FRAMING_OP_GET_LENGTH: {
++            PacketLength pl{}; pl.buf = buffer->str; pl.buf_size = buffer->length;
++            result = p->get_package_length(p, socket, &pl);
++            break;
+         }
 -
 -        // over max length, will discard
 -        if (buffer->length == package_max_length) {
@@ -352,7 +370,12 @@ index cc8a1e5..7461451 100644
 -                        "The received data packet is too large, length=%lu",
 -                        (ulong_t) buffer->length);
 -            return SW_ERR;
--        }
++        case SWR_FRAMING_OP_EXTEND: buffer->extend(arg); break;
++        case SWR_FRAMING_OP_DISPATCH: {
++            RecvData data{}; data.info.len = arg; data.data = buffer->str;
++            result = p->onPackage(p, socket, &data);
++            break;
+         }
 -
 -        // buffer is full, may have not read data
 -        if (buffer->length == buffer->size) {
@@ -364,35 +387,17 @@ index cc8a1e5..7461451 100644
 -                }
 -                buffer->extend(extend_size);
 -            }
--        }
++        case SWR_FRAMING_OP_CLEAR: buffer->clear(); break;
++        default: result = rare(r, op, arg);
+         }
 -        // no eof
 -        if (recv_again) {
 -            goto _recv_data;
-+    case SWR_FRAMING_OP_LOG_NO_LENGTH:
-+        swoole_error_log(SW_LOG_WARNING, SW_ERROR_PACKAGE_LENGTH_NOT_FOUND,
-+                         "bad request, no length found in %zu bytes, remote_addr=", buffer->length);
-+        return 0;
-+    case SWR_FRAMING_OP_LOG_TOO_LARGE: {
-+        if (r->io.mode == SWR_FRAMING_MODE_LENGTH) {
-+            proto_error(socket, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, "the received packet length %ld is too large, remote_addr=", (long) arg);
-+        } else {
-+            proto_error(socket, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, "The received data packet is too large, length=%lu", (unsigned long) buffer->length);
-         }
-+        return 0;
-+    }
-+    default: abort();
-     }
+-        }
+-    }
 -    return SW_OK;
- }
--
--}  // namespace swoole
--
-+// Exceptions never unwind through Rust: the first one is kept and rethrown after it returns.
-+int64_t call(void *context, uint32_t op, uint64_t arg) noexcept {
-+    auto *r = static_cast<Recv *>(context);
-+    int64_t result;
-+    try { result = effect(r, op, arg); } catch (...) { r->error = std::current_exception(); result = SWR_FRAMING_THROWN; }
-+    r->io.flags = socket_flags(r->socket);
++    } catch (...) { r->error = std::current_exception(); result = SWR_FRAMING_THROWN; }
++    r->io.flags = socket_flags(socket);
 +    return result;
 +}
 +int receive(const Protocol *p, network::Socket *socket, String *buffer, uint32_t mode) {
@@ -402,6 +407,7 @@ index cc8a1e5..7461451 100644
 +        r.io.flags |= (socket->skip_recv ? SWR_FRAMING_SKIP : 0) | (p->get_package_length_size ? SWR_FRAMING_DYNAMIC : 0);
 +    }
 +    int status = swr_v1_framing_recv(&r.io, &r, call);
++    socket->recv_wait = (r.io.flags & SWR_FRAMING_WAIT) != 0;
 +    if (r.error) { std::rethrow_exception(r.error); }
 +    return status;
 +}
@@ -409,7 +415,10 @@ index cc8a1e5..7461451 100644
 +int Protocol::recv_split_by_eof(network::Socket *s, String *b) const { return receive(this, s, b, SWR_FRAMING_MODE_SPLIT); }
 +int Protocol::recv_with_length_protocol(network::Socket *s, String *b) const { return receive(this, s, b, SWR_FRAMING_MODE_LENGTH); }
 +int Protocol::recv_with_eof_protocol(network::Socket *s, String *b) const { return receive(this, s, b, SWR_FRAMING_MODE_EOF); }
-+}
+ }
+-
+-}  // namespace swoole
+-
  int64_t swoole_unpack(char type, const void *data) {
 -    switch (type) {
 -    /*-------------------------8bit-----------------------------*/

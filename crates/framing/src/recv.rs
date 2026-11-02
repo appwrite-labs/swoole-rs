@@ -20,23 +20,21 @@ pub(crate) const OP_RECV: u32 = 1;
 /// `get_package_length` over the whole buffer.
 pub(crate) const OP_GET_LENGTH: u32 = 2;
 pub(crate) const OP_EXTEND: u32 = 3;
-/// `socket->recv_wait = arg`.
-pub(crate) const OP_WAIT: u32 = 4;
 /// `onPackage` of arg bytes from the buffer start.
-pub(crate) const OP_DISPATCH: u32 = 5;
-pub(crate) const OP_REDUCE: u32 = 6;
-pub(crate) const OP_CLEAR: u32 = 7;
+pub(crate) const OP_DISPATCH: u32 = 4;
+pub(crate) const OP_REDUCE: u32 = 5;
+pub(crate) const OP_CLEAR: u32 = 6;
 /// `buffer->split` on the EOF, each part to `onPackage`.
-pub(crate) const OP_SPLIT: u32 = 8;
-pub(crate) const OP_SSL_PENDING: u32 = 9;
+pub(crate) const OP_SPLIT: u32 = 7;
+pub(crate) const OP_SSL_PENDING: u32 = 8;
 /// `socket->skip_recv = 0`.
-pub(crate) const OP_CLEAR_SKIP: u32 = 10;
+pub(crate) const OP_CLEAR_SKIP: u32 = 9;
 /// `swoole_pagesize()`.
-pub(crate) const OP_PAGE: u32 = 11;
-pub(crate) const OP_LOG_MALFORMED: u32 = 12;
-pub(crate) const OP_LOG_NO_LENGTH: u32 = 13;
+pub(crate) const OP_PAGE: u32 = 10;
+pub(crate) const OP_LOG_MALFORMED: u32 = 11;
+pub(crate) const OP_LOG_NO_LENGTH: u32 = 12;
 /// arg: the packet length (length protocol).
-pub(crate) const OP_LOG_TOO_LARGE: u32 = 14;
+pub(crate) const OP_LOG_TOO_LARGE: u32 = 13;
 
 /// `OP_RECV`: the connection closes (`SW_ERR`).
 pub(crate) const RECV_CLOSE: i64 = -1;
@@ -46,7 +44,8 @@ pub(crate) const RECV_DONE: i64 = -2;
 pub(crate) const THROWN: i64 = i64::MIN;
 
 /// [`SwrFramingIo::flags`] bits: `socket->removed`, `recv_wait`, `ssl != nullptr`,
-/// and, at entry only, `skip_recv` and a dynamic `get_package_length_size`.
+/// and, at entry only, `skip_recv` and a dynamic `get_package_length_size`. Rust
+/// sets `recv_wait` here; native code applies it before each effect and on return.
 pub(crate) const FLAG_REMOVED: u32 = 1;
 pub(crate) const FLAG_WAIT: u32 = 2;
 pub(crate) const FLAG_TLS: u32 = 4;
@@ -95,7 +94,7 @@ pub struct SwrFramingIo {
 struct Thrown;
 
 struct Recv {
-    io: *const SwrFramingIo,
+    io: *mut SwrFramingIo,
     protocol: *const Protocol,
     buffer: *mut Buffer,
     context: *mut c_void,
@@ -116,6 +115,16 @@ impl Recv {
         // SAFETY: `io` is live for this receive; native code writes it only inside `op`.
         let flags = unsafe { (*self.io).flags };
         flags & bit != 0
+    }
+    /// `socket->recv_wait = wait`, applied by native code before its next effect.
+    fn set_wait(&self, wait: bool) {
+        // SAFETY: as in `flag`; no reference to `io` is live.
+        let flags = unsafe { &mut (*self.io).flags };
+        *flags = if wait {
+            *flags | FLAG_WAIT
+        } else {
+            *flags & !FLAG_WAIT
+        };
     }
     fn length(&self) -> usize {
         // SAFETY: `buffer` is the live String for this receive; native code changes it only inside `op`.
@@ -246,7 +255,7 @@ impl Recv {
                     if usize::try_from(packet).map_or(true, |packet| self.size() < packet) {
                         self.op(OP_EXTEND, packet.unsigned_abs())?;
                     }
-                    self.op(OP_WAIT, 1)?;
+                    self.set_wait(true);
                     self.set_offset(packet);
                     if self.complete() {
                         At::Dispatch
@@ -262,7 +271,7 @@ impl Recv {
                     if self.flag(FLAG_REMOVED) {
                         return Ok(SW_OK);
                     }
-                    self.op(OP_WAIT, 0)?;
+                    self.set_wait(false);
                     let offset = self.offset();
                     if usize::try_from(offset).is_ok_and(|offset| self.length() > offset) {
                         self.op(OP_REDUCE, offset.unsigned_abs())?;
@@ -373,7 +382,7 @@ impl Recv {
 /// op it returns at once; native code rethrows.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_framing_recv(
-    io: *const SwrFramingIo,
+    io: *mut SwrFramingIo,
     context: *mut c_void,
     call: Option<FramingCall>,
 ) -> i32 {
@@ -496,10 +505,6 @@ mod tests {
                     self.buffer.str = self.storage.as_mut_ptr();
                     0
                 }
-                OP_WAIT => {
-                    self.wait = arg != 0;
-                    0
-                }
                 OP_DISPATCH => {
                     let packet = String::from_utf8_lossy(&self.storage[..arg]).into_owned();
                     self.events.push(format!("package:{packet}"));
@@ -543,15 +548,18 @@ mod tests {
     unsafe extern "C" fn call(context: *mut c_void, op: u32, arg: u64) -> i64 {
         // SAFETY: tests pass their live `Native` as the context.
         let native = unsafe { &mut *context.cast::<Native>() };
+        native.wait = native.io.flags & FLAG_WAIT != 0;
         let result = native.effect(op, arg);
         native.io.flags = u32::from(native.removed) | if native.wait { FLAG_WAIT } else { 0 };
         result
     }
 
     fn run(native: &mut Native) -> i32 {
-        let io = &raw const native.io;
+        let io = &raw mut native.io;
         // SAFETY: `io` and the context are the same live fake.
-        unsafe { swr_v1_framing_recv(io, ptr::from_mut(native).cast(), Some(call)) }
+        let status = unsafe { swr_v1_framing_recv(io, ptr::from_mut(native).cast(), Some(call)) };
+        native.wait = native.io.flags & FLAG_WAIT != 0;
+        status
     }
 
     #[test]
@@ -598,7 +606,7 @@ mod tests {
         native.events.clear();
         native.protocol.package_max_length = 4;
         assert_eq!(run(&mut native), SW_ERR);
-        assert_eq!(native.events, ["recv:1", "length:1", "op14:17"]);
+        assert_eq!(native.events, ["recv:1", "length:1", "op13:17"]);
     }
 
     #[test]
@@ -654,7 +662,7 @@ mod tests {
     #[test]
     fn rejects_null_and_overrun() {
         // SAFETY: null is accepted.
-        let result = unsafe { swr_v1_framing_recv(ptr::null(), ptr::null_mut(), Some(call)) };
+        let result = unsafe { swr_v1_framing_recv(ptr::null_mut(), ptr::null_mut(), Some(call)) };
         assert_eq!(result, SW_ERR);
         let mut native = Native::new(MODE_EOF, 2, vec![]);
         native.buffer.length = 3;
