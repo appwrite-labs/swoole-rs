@@ -106,6 +106,8 @@ pub use swoole_rs_coroutine::*;
 
 #[cfg(feature = "hooks")]
 pub use swoole_rs_hooks::*;
+#[cfg(feature = "hooks")]
+pub use swoole_rs_phpruntime as phpruntime;
 
 #[cfg(feature = "ossupport")]
 pub use swoole_rs_ossupport::*;
