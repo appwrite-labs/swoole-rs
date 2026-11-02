@@ -1,8 +1,14 @@
 diff --git a/include/swoole_coroutine_socket.h b/include/swoole_coroutine_socket.h
-index 803879e..99d6bb3 100644
+index 803879e..c2171cd 100644
 --- a/include/swoole_coroutine_socket.h
 +++ b/include/swoole_coroutine_socket.h
-@@ -491,13 +491,2 @@ class Socket {
+@@ -412,5 +412,2 @@ class Socket {
+ 
+-    TimerNode *read_timer = nullptr;
+-    TimerNode *write_timer = nullptr;
+-
+     const Allocator *buffer_allocator = nullptr;
+@@ -491,17 +488,8 @@ class Socket {
  
 -    bool socks5_handshake();
 -
@@ -15,12 +21,43 @@ index 803879e..99d6bb3 100644
 -
 -    bool http_proxy_handshake();
 -
++    // A timer in the Rust-owned slot for event's direction, firing timer_callback.
      class TimerController {
+       public:
+-        TimerController(TimerNode **_timer_pp, double _timeout, Socket *_socket, TimerCallback _callback)
+-            : timer_pp(_timer_pp), timeout(_timeout), socket_(_socket), callback(std::move(_callback)) {}
++        TimerController(Socket *_socket, EventType event, double _timeout)
++            : timer_pp(reinterpret_cast<TimerNode **>(swr_v1_hook_socket_timer(_socket->state_, event))), timeout(_timeout),
++              socket_(_socket) {}
+         bool start();
+@@ -514,3 +502,2 @@ class Socket {
+         Socket *socket_;
+-        TimerCallback callback;
+     };
 diff --git a/src/coroutine/socket.cc b/src/coroutine/socket.cc
-index 2862827..57f6074 100644
+index 2862827..bc26e30 100644
 --- a/src/coroutine/socket.cc
 +++ b/src/coroutine/socket.cc
-@@ -153,68 +153,2 @@ swr_v1_hook_wait_ops Socket::wait_ops() {
+@@ -39,2 +39,3 @@ TimeoutType Socket::timeout_type_list[4] = {SW_TIMEOUT_DNS, SW_TIMEOUT_CONNECT,
+ 
++// Rust owns the timer slots: it clears the expired one and names the waiting direction.
+ void Socket::timer_callback(Timer *timer, TimerNode *tnode) {
+@@ -42,11 +43,7 @@ void Socket::timer_callback(Timer *timer, TimerNode *tnode) {
+     socket->set_err(ETIMEDOUT);
+-    if (sw_likely(tnode == socket->read_timer)) {
+-        socket->read_timer = nullptr;
+-        socket->event_co(SW_EVENT_READ)->resume();
+-    } else if (tnode == socket->write_timer) {
+-        socket->write_timer = nullptr;
+-        socket->event_co(SW_EVENT_WRITE)->resume();
+-    } else {
++    const uint32_t event = swr_v1_hook_socket_timeout(socket->state_, tnode);
++    if (event == 0) {
+         abort();
+     }
++    socket->event_co(event)->resume();
+ }
+@@ -153,68 +150,2 @@ swr_v1_hook_wait_ops Socket::wait_ops() {
  
 -bool Socket::socks5_handshake() {
 -    Socks5Proxy *ctx = socks5_proxy.get();
@@ -89,7 +126,64 @@ index 2862827..57f6074 100644
 -}
 -
  void Socket::init_sock_type(SocketType _type) {
-@@ -470,96 +404,60 @@ bool Socket::connect(const sockaddr *addr, socklen_t addrlen) {
+@@ -434,132 +365,84 @@ void Socket::set_http_proxy(const std::string &host, int port, const std::string
+ 
++// The connect loop, its wait and the SO_ERROR check are Rust's (crates/hooks/src/timers.rs).
+ bool Socket::connect(const sockaddr *addr, socklen_t addrlen) {
+-    if (sw_unlikely(!is_available(SW_EVENT_RDWR))) {
+-        return false;
+-    }
+-    int retval, action;
+-    do {
+-        retval = ::connect(sock_fd, addr, addrlen);
+-        action = swr_v1_hook_connect_action(retval, retval < 0 && errno == EINTR,
+-                                           retval < 0 && errno == EINPROGRESS);
+-    } while (action == 1);
+-    if (action != 0) {
+-        if (action < 0) {
+-            set_err(errno);
+-            return false;
+-        } else {
+-            TimerController timer(&write_timer, socket->connect_timeout, this, timer_callback);
+-            if (!timer.start() || !wait_event(SW_EVENT_WRITE)) {
+-                if (is_closed()) {
+-                    set_err(ECONNABORTED);
+-                }
+-                return false;
+-            } else {
+-                int option_result = socket->get_option(SOL_SOCKET, SO_ERROR, &errCode);
+-                if (swr_v1_hook_connect_option(option_result, option_result < 0 ? 0 : errCode)) {
+-                    set_err(errCode);
+-                    return false;
+-                }
+-            }
+-        }
+-    }
+-    swr_v1_hook_socket_connect(state_);
+-    socket->get_name();
+-    set_err(0);
+-    return true;
++    const swr_v1_hook_connect_addr_ops ops{
++        this,
++        state_,
++        sock_fd,
++        [](void *s) { return static_cast<Socket *>(s)->is_available(SW_EVENT_RDWR); },
++        [](void *s, int error) { static_cast<Socket *>(s)->set_err(error); },
++        [](void *s) { return static_cast<Socket *>(s)->is_closed(); },
++        [](void *s) {
++            auto *sock = static_cast<Socket *>(s);
++            TimerController timer(sock, SW_EVENT_WRITE, sock->socket->connect_timeout);
++            return timer.start() && sock->wait_event(SW_EVENT_WRITE);
++        },
++        [](void *s) {
++            auto *sock = static_cast<Socket *>(s);
++            return sock->socket->get_option(SOL_SOCKET, SO_ERROR, &sock->errCode);
++        },
++        [](void *s) { return static_cast<Socket *>(s)->errCode; },
++        [](void *s) { static_cast<Socket *>(s)->socket->get_name(); },
++    };
++    return swr_v1_hook_connect_addr(&ops, addr, addrlen);
+ }
  
 +// The sequence is Rust's (crates/hooks/src/connect.rs); these are the socket's effects.
  bool Socket::connect(const std::string &_host, int _port, int flags) {
@@ -237,7 +331,7 @@ index 2862827..57f6074 100644
 +            ctx->resolve->timeout = ctx->socket->socket->dns_timeout;
 +            return ctx->address.assign(ctx->socket->type, ctx->socket->connect_host, ctx->socket->connect_port, false);
          },
-@@ -568,32 +466,94 @@ bool Socket::connect(const std::string &_host, int _port, int flags) {
+@@ -568,32 +451,94 @@ bool Socket::connect(const std::string &_host, int _port, int flags) {
              auto *ctx = static_cast<Context *>(c);
 -            return (*ctx->resolve)(ctx->socket->sock_domain);
 +            auto *sock = ctx->socket;
@@ -269,7 +363,7 @@ index 2862827..57f6074 100644
 +            }
 +            sock->connect_host = addr;
 +            return true;
-+        },
+         },
 +        [](void *c) {
 +            auto *ctx = static_cast<Context *>(c);
 +            return ctx->socket->connect(&ctx->address.addr.ss, ctx->address.len);
@@ -320,7 +414,7 @@ index 2862827..57f6074 100644
 +                *accepted = sock->http_proxy->handshake(recv_buffer);
 +            }
 +            return n;
-         },
++        },
 +        [](void *c, bool received) {
 +            auto *sock = static_cast<Context *>(c)->socket;
 +            if (received) {
@@ -360,7 +454,64 @@ index 2862827..57f6074 100644
 -    return true;
 +    return swr_v1_hook_connect_host(&ops, _host.c_str(), _host.length(), _port);
  }
-@@ -967,59 +927,50 @@ bool Socket::ssl_create(SSLContext *ssl_context) {
+@@ -621,3 +566,2 @@ bool Socket::poll(EventType _type, double timeout) {
+     }
+-    TimerNode **timer_pp = _type == SW_EVENT_READ ? &read_timer : &write_timer;
+     if (timeout == 0) {
+@@ -625,3 +569,3 @@ bool Socket::poll(EventType _type, double timeout) {
+     }
+-    TimerController timer(timer_pp, timeout, this, timer_callback);
++    TimerController timer(this, _type, timeout);
+     if (timer.start() && wait_event(_type)) {
+@@ -643,6 +587,3 @@ ssize_t Socket::transfer(EventType event, const void *buf, size_t n, int flags,
+     bool write = event == SW_EVENT_WRITE;
+-    TimerController timer(write ? &write_timer : &read_timer,
+-                          write ? socket->write_timeout : socket->read_timeout,
+-                          this,
+-                          timer_callback);
++    TimerController timer(this, event, write ? socket->write_timeout : socket->read_timeout);
+     struct Context {
+@@ -755,3 +696,3 @@ ssize_t Socket::readv_all(network::IOVector *io_vector) {
+     }
+-    TimerController timer(&read_timer, socket->read_timeout, this, timer_callback);
++    TimerController timer(this, SW_EVENT_READ, socket->read_timeout);
+     return vector_all(io_vector, &timer, false);
+@@ -767,3 +708,3 @@ ssize_t Socket::writev_all(network::IOVector *io_vector) {
+     }
+-    TimerController timer(&write_timer, socket->write_timeout, this, timer_callback);
++    TimerController timer(this, SW_EVENT_WRITE, socket->write_timeout);
+     return vector_all(io_vector, &timer, true);
+@@ -840,3 +781,3 @@ struct Socket::Setup {
+     Call *call;
+-    TimerNode **timer;
++    EventType timer;
+     double timeout;
+@@ -857,3 +798,3 @@ struct Socket::Setup {
+                 auto *setup = static_cast<Setup *>(c);
+-                TimerController timer(setup->timer, setup->timeout, setup->socket, timer_callback);
++                TimerController timer(setup->socket, setup->timer, setup->timeout);
+                 return timer.start() && setup->socket->wait_event(static_cast<EventType>(event));
+@@ -868,3 +809,3 @@ bool Socket::bind(const sockaddr *sa, socklen_t len) {
+     auto call = [this, sa, len](int) { return socket->bind(sa, len); };
+-    Setup<decltype(call)> setup{this, &call, nullptr, 0};
++    Setup<decltype(call)> setup{this, &call, SW_EVENT_NULL, 0};
+     auto ops = setup.ops();
+@@ -881,3 +822,3 @@ bool Socket::bind(const std::string &address, const int port) {
+     };
+-    Setup<decltype(call)> setup{this, &call, nullptr, 0};
++    Setup<decltype(call)> setup{this, &call, SW_EVENT_NULL, 0};
+     auto ops = setup.ops();
+@@ -888,3 +829,3 @@ bool Socket::listen(int backlog) {
+     auto call = [this](int backlog) { return socket->listen(backlog); };
+-    Setup<decltype(call)> setup{this, &call, nullptr, 0};
++    Setup<decltype(call)> setup{this, &call, SW_EVENT_NULL, 0};
+     auto ops = setup.ops();
+@@ -909,3 +850,3 @@ Socket *Socket::accept(double timeout) {
+     };
+-    Setup<decltype(call)> setup{this, &call, &read_timer, timeout == 0 ? socket->read_timeout : timeout};
++    Setup<decltype(call)> setup{this, &call, SW_EVENT_READ, timeout == 0 ? socket->read_timeout : timeout};
+     auto ops = setup.ops();
+@@ -967,59 +908,50 @@ bool Socket::ssl_create(SSLContext *ssl_context) {
  
 +// The sequence, its steps and waits are Rust's (crates/hooks/src/connect.rs).
  bool Socket::ssl_handshake() {
@@ -390,7 +541,7 @@ index 2862827..57f6074 100644
 -            if (socket->ssl_connect() < 0) {
 -                set_err();
 -                return false;
-+    TimerController timer(&read_timer, socket ? socket->read_timeout : 0, this, timer_callback);
++    TimerController timer(this, SW_EVENT_READ, socket ? socket->read_timeout : 0);
 +    struct Context {
 +        Socket *socket;
 +        TimerController *timer;
@@ -429,7 +580,7 @@ index 2862827..57f6074 100644
 +            auto *ctx = static_cast<Context *>(c);
 +            auto *sock = ctx->socket;
 +            if (fresh) {
-+                TimerController timer(&sock->read_timer, sock->socket->read_timeout, sock, timer_callback);
++                TimerController timer(sock, SW_EVENT_READ, sock->socket->read_timeout);
 +                return timer.start() && sock->wait_event(SW_EVENT_READ);
              }
 -        }
@@ -463,3 +614,55 @@ index 2862827..57f6074 100644
      ssl_handshaked = true;
 -
      return true;
+@@ -1074,3 +1006,3 @@ bool Socket::sendfile(const char *filename, off_t offset, size_t length) {
+     // The send loop is Rust's (crates/hooks/src/sendfile.rs); these are its effects.
+-    TimerController timer(&write_timer, socket->write_timeout, this, timer_callback);
++    TimerController timer(this, SW_EVENT_WRITE, socket->write_timeout);
+     struct Context {
+@@ -1187,3 +1119,3 @@ ssize_t Socket::recv_packet(double timeout) {
+ 
+-    TimerController timer(&read_timer, timeout == 0 ? socket->read_timeout : timeout, this, timer_callback);
++    TimerController timer(this, SW_EVENT_READ, timeout == 0 ? socket->read_timeout : timeout);
+     if (sw_unlikely(!timer.start())) {
+@@ -1376,3 +1308,3 @@ bool Socket::TimerController::start() {
+     if (actions & SWR_HOOK_TIMER_ADD) {
+-        *timer_pp = swoole_timer_add(timeout, false, callback, socket_);
++        *timer_pp = swoole_timer_add(timeout, false, timer_callback, socket_);
+         return *timer_pp != nullptr;
+@@ -1397,15 +1329,11 @@ Socket::TimerController::~TimerController() {
+ 
++// Rust saves, sets and restores each selected timeout (crates/hooks/src/timers.rs).
++static const swr_v1_hook_timeout_ops timeout_ops{
++    [](void *s, int type) { return static_cast<Socket *>(s)->get_timeout(static_cast<TimeoutType>(type)); },
++    [](void *s, double timeout, int type) { static_cast<Socket *>(s)->set_timeout(timeout, type); },
++};
++
+ Socket::TimeoutSetter::TimeoutSetter(Socket *socket, double _timeout, TimeoutType _type)
+     : socket_(socket), timeout(_timeout), type(_type) {
+-    if (_timeout == 0) {
+-        return;
+-    }
+-    for (uint8_t i = 0; i < SW_ARRAY_SIZE(timeout_type_list); i++) {
+-        if (_type & timeout_type_list[i]) {
+-            original_timeout[i] = socket->get_timeout(timeout_type_list[i]);
+-            if (_timeout != original_timeout[i]) {
+-                socket->set_timeout(_timeout, timeout_type_list[i]);
+-            }
+-        }
+-    }
++    swr_v1_hook_timeouts(&timeout_ops, socket, _timeout, _type, original_timeout, false);
+ }
+@@ -1413,12 +1341,3 @@ Socket::TimeoutSetter::TimeoutSetter(Socket *socket, double _timeout, TimeoutTyp
+ Socket::TimeoutSetter::~TimeoutSetter() {
+-    if (timeout == 0) {
+-        return;
+-    }
+-    for (uint8_t i = 0; i < SW_ARRAY_SIZE(timeout_type_list); i++) {
+-        if (type & timeout_type_list[i]) {
+-            if (timeout != original_timeout[i]) {
+-                socket_->set_timeout(original_timeout[i], timeout_type_list[i]);
+-            }
+-        }
+-    }
++    swr_v1_hook_timeouts(&timeout_ops, socket_, timeout, type, original_timeout, true);
+ }
