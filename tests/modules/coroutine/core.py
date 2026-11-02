@@ -151,7 +151,7 @@ def main():
                     write_changed(frozen, data)
                     patch_inputs.append(frozen)
                 # Every header the coroutine patches include, not just the module header.
-                for header in ['swoole_rs_coroutine.h', 'swoole_rs_channel_tokens.h']:
+                for header in ['swoole_rs_coroutine.h']:
                     write_changed(staged / '.frozen-headers' / header, (ROOT / 'native/coroutine' / header).read_bytes())
                 for engine in ['upstream', 'rust']:
                     patch_proofs = []
