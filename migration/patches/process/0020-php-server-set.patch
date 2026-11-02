@@ -1,5 +1,5 @@
 diff --git a/ext-src/swoole_server.cc b/ext-src/swoole_server.cc
-index 41c3035..3dd96e6 100644
+index 41c3035..f209d4f 100644
 --- a/ext-src/swoole_server.cc
 +++ b/ext-src/swoole_server.cc
 @@ -22,2 +22,3 @@
@@ -11,8 +11,12 @@ index 41c3035..3dd96e6 100644
 -static PHP_METHOD(swoole_server, set);
 +PHP_METHOD(swoole_server, set);
  static PHP_METHOD(swoole_server, on);
-@@ -700,2 +701,224 @@ bool server_call(void *server, int which, zval *argument, zval *retval) {
+@@ -700,2 +701,228 @@ bool server_call(void *server, int which, zval *argument, zval *retval) {
  
++
++#ifdef HAVE_CPU_AFFINITY
++static bool php_swoole_server_set_cpu_affinity_ignore(Server *serv, zval *zignore);
++#endif
 +
 +// Server::set(): the fields crates/phpserver's settings.rs sets by id.
 +static int64_t settings_get(void *server, uint32_t id) {
@@ -236,7 +240,7 @@ index 41c3035..3dd96e6 100644
 +}
 +
  void php_swoole_server_minit(int module_number) {
-@@ -739,2 +962,11 @@ void php_swoole_server_minit(int module_number) {
+@@ -739,2 +966,11 @@ void php_swoole_server_minit(int module_number) {
                             thread, module_number, &classes);
 +    static const swr_v1_phpserver_settings_host settings = {
 +        settings_get, settings_set, settings_set_double, settings_text, settings_rewrite, settings_parse_size,
@@ -248,7 +252,7 @@ index 41c3035..3dd96e6 100644
 +                  "constants crates/phpserver's set() uses");
 +    swr_v1_phpserver_settings_init(&settings);
      swoole_server_ce = classes.server;
-@@ -2172,416 +2404,2 @@ static bool php_swoole_server_set_cpu_affinity_ignore(Server *serv, zval *zignor
+@@ -2172,416 +2408,2 @@ static bool php_swoole_server_set_cpu_affinity_ignore(Server *serv, zval *zignor
  
 -static PHP_METHOD(swoole_server, set) {
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(ZEND_THIS));
