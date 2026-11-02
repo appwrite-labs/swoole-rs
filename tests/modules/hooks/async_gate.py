@@ -23,7 +23,7 @@ def main():
     a=p.parse_args()
     unit='src/coroutine/system.cc'
     manifest=json.loads((ROOT/'migration/patches/hooks/manifest.json').read_text())
-    paths=manifest['patches'][0]['upstream_paths']
+    paths=sorted({path for entry in manifest['patches'] for path in entry['upstream_paths']})
     originals={path:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+path],text=True) for path in paths}
     signatures=['static void async_task_completed(', 'bool async(async::Handler handler,', 'struct AsyncLambdaTask {', 'static void async_lambda_handler(', 'static void async_lambda_callback(', 'bool async(const std::function<void()> &fn)', 'int System::sleep(', 'std::string gethostbyname_impl_with_async(', 'std::vector<std::string> System::getaddrinfo(']
     with tempfile.TemporaryDirectory(prefix='swr-hooks-async-') as directory:
@@ -35,7 +35,7 @@ def main():
             assert hashlib.sha256(patch.read_bytes()).hexdigest()==entry['sha256']
             subprocess.run(['git','apply',str(patch)],cwd=tree,check=True)
         for variant in ['original','selected']:
-            texts=originals if variant=='original' else {path:(tree/path).read_text() for path in paths}
+            texts=originals if variant=='original' else {path:(tree/path).read_text() for path in paths if (tree/path).exists()}
             bodies=[block(texts[unit],signature)+(';' if signature.startswith('struct ') else '') for signature in signatures]
             (tree/(variant+'-async.inc')).write_text('\n'.join(bodies))
         command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/async_gate.cc'),str(a.archive.resolve()),'-lpthread','-o',str(tree/'async')]

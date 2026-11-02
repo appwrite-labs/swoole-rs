@@ -30,7 +30,7 @@ def main():
     p.add_argument('--report', type=Path, required=True)
     a = p.parse_args()
     manifest = json.loads((ROOT/'migration/patches/hooks/manifest.json').read_text())
-    paths = manifest['patches'][0]['upstream_paths']
+    paths = sorted({path for entry in manifest['patches'] for path in entry['upstream_paths']})
     config = a.config.read_bytes()
     baseline_config = re.sub(rb'^#define SWOOLE_RS_HOOKS[^\n]*\n', b'', config, flags=re.MULTILINE)
     rows = []
