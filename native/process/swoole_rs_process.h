@@ -227,7 +227,7 @@ void *swr_v1_process_pool_ipc_connection(const swr_v1_process_pool_ipc *ipc);
 bool swr_v1_process_pool_ipc_respond(swr_v1_process_pool_ipc *ipc, const uint8_t *data, uint32_t length);
 char *swr_v1_process_pool_ipc_prepare(swr_v1_process_pool_ipc *ipc, uint32_t max_packet_size);
 char *swr_v1_process_pool_ipc_packet(swr_v1_process_pool_ipc *ipc);
-int swr_v1_process_pool_run(const swr_v1_pool_loop *loop, int protocol);
+int swr_v1_process_pool_run(const swr_v1_pool_loop *pool_loop, int protocol);
 uint32_t swr_v1_process_pool_schedule(const swr_v1_worker_record *workers, uint32_t count, uint32_t *round_id, uint8_t *warning);
 ptrdiff_t swr_v1_process_worker_send(const swr_v1_pool_hooks *hooks, void *pool, void *pipe, bool queue, uint32_t worker_id, const uint8_t *data, size_t length, int flags);
 bool swr_v1_process_pool_dispatch(const swr_v1_pool_hooks *hooks, void *pool, swr_v1_worker_record *workers, uint32_t count, uint16_t start_id, uint32_t *round_id, uint8_t *warning, bool schedule_by_sysvmsg, bool queue, int *worker_id, const uint8_t *event, uint32_t size, bool blocking);
