@@ -75,7 +75,18 @@ int32_t swr_v1_httpbindings_settings(swr_v1_httpbindings_settings_cursor *, uint
 uint32_t swr_v1_httpbindings_server_level(int64_t);
 int32_t swr_v1_httpbindings_handler(swr_v1_httpbindings_text, swr_v1_httpbindings_text);
 typedef struct {int32_t per_process,system,timeout,bad_ssl,canceled;} swr_v1_httpbindings_accept_errors;
-int32_t swr_v1_httpbindings_accept(uint32_t,int64_t,int32_t,const swr_v1_httpbindings_accept_errors *);
+/* Upstream's Coroutine\Http\Server::start accept loop over its host's effects:
+ * 1 is RETURN_TRUE, 0 RETURN_FALSE after a failed accept. */
+typedef struct {
+    void *data;
+    bool (*running)(void *);
+    int64_t (*accept)(void *, bool *);
+    int32_t (*error)(void *, const char **);
+    void (*sleep)(void *);
+    void (*set_error)(void *);
+    void (*fail)(void *, swr_v1_httpbindings_text);
+} swr_v1_httpbindings_accept_host;
+int32_t swr_v1_httpbindings_accept_loop(const swr_v1_httpbindings_accept_host *, const swr_v1_httpbindings_accept_errors *);
 
 /* PHP Swoole\Http\Request and Swoole\Http\Response (crates/phphttp). MINIT
  * registers each with its Rust method table and returns the class; both
