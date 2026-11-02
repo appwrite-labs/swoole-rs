@@ -323,7 +323,7 @@ method_table! {
         c"addlistener" => crate::io::zim_swoole_server_listen, &server::arginfo_class_Swoole_Server_listen, z::ZEND_ACC_PUBLIC;
         c"on" => crate::io::zim_swoole_server_on, &server::arginfo_class_Swoole_Server_on, z::ZEND_ACC_PUBLIC;
         c"getCallback" => crate::io::zim_swoole_server_getCallback, &server::arginfo_class_Swoole_Server_getCallback, z::ZEND_ACC_PUBLIC;
-        c"set" => zim_swoole_server_set, &server::arginfo_class_Swoole_Server_set, z::ZEND_ACC_PUBLIC;
+        c"set" => crate::settings::zim_swoole_server_set, &server::arginfo_class_Swoole_Server_set, z::ZEND_ACC_PUBLIC;
         c"start" => zim_swoole_server_start, &server::arginfo_class_Swoole_Server_start, z::ZEND_ACC_PUBLIC;
         c"send" => crate::io::zim_swoole_server_send, &server::arginfo_class_Swoole_Server_send, z::ZEND_ACC_PUBLIC;
         c"sendto" => crate::io::zim_swoole_server_sendto, &server::arginfo_class_Swoole_Server_sendto, z::ZEND_ACC_PUBLIC;
@@ -399,7 +399,6 @@ unsafe extern "C" {
     fn zim_swoole_server_addCommand(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zim_swoole_server_addProcess(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zim_swoole_server_command(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_set(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zim_swoole_server_start(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zim_swoole_server_task(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zim_swoole_server_taskCo(frame: *mut z::zend_execute_data, value: *mut z::zval);
