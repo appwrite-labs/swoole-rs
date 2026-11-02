@@ -70,6 +70,21 @@ unsafe extern "C" {
     fn swoole_runtime_x509_read(pem: *const c_char, length: size_t, retval: *mut zval) -> u8;
     fn swoole_runtime_error(kind: c_int, level: c_int, message: *const c_char) -> u8;
     fn swoole_runtime_check_reactor();
+    fn swoole_runtime_fd_socket(fd: c_int, holder: *mut *mut c_void) -> *mut c_void;
+    fn swoole_runtime_fd_socket_release(holder: *mut c_void);
+    fn swoole_runtime_socket_poll(socket: *mut c_void, write: bool, timeout: f64) -> bool;
+    fn swoole_runtime_strerror(code: c_int) -> *const c_char;
+    fn swoole_runtime_coroutine_check() -> u8;
+    fn swoole_runtime_convert_to_fd(value: *mut zval, fd: *mut c_int) -> u8;
+    fn swoole_runtime_poll(
+        fds: *const c_int,
+        events: *const c_int,
+        count: size_t,
+        timeout: f64,
+        ready: *mut c_int,
+        revents: *mut c_int,
+        size: *mut size_t,
+    ) -> bool;
 }
 
 /// `SW_SOCK_*`.
@@ -105,13 +120,21 @@ pub(crate) enum Io {
 /// `SW_WAIT`.
 pub(crate) const SW_WAIT: i32 = 2;
 
-/// An owned `SocketImpl *`, deleted on drop.
-pub(crate) struct Socket(NonNull<c_void>);
+/// A `SocketImpl *`: owned (deleted on drop), or a hooked fd's, kept alive
+/// by a `shared_ptr` the drop releases.
+pub(crate) struct Socket {
+    socket: NonNull<c_void>,
+    holder: Option<NonNull<c_void>>,
+}
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        // SAFETY: the socket is owned and live.
-        unsafe { swoole_runtime_socket_free(self.raw()) };
+        match self.holder {
+            // SAFETY: the holder `swoole_runtime_fd_socket` made, released once.
+            Some(holder) => unsafe { swoole_runtime_fd_socket_release(holder.as_ptr()) },
+            // SAFETY: the socket is owned and live.
+            None => unsafe { swoole_runtime_socket_free(self.raw()) },
+        }
     }
 }
 
@@ -126,18 +149,33 @@ impl Socket {
     pub(crate) fn from_fd(fd: i32, domain: i32, kind: i32, protocol: i32) -> Option<Self> {
         // SAFETY: plain construction; the socket owns the fd.
         let socket = unsafe { swoole_runtime_socket_from_fd(fd, domain, kind, protocol) };
-        NonNull::new(socket).map(Self)
+        Self::wrap(socket, None)
+    }
+
+    /// The coroutine socket of hooked `fd`, if any.
+    pub(crate) fn of_fd(fd: i32) -> Option<Self> {
+        let mut holder = std::ptr::null_mut();
+        // SAFETY: a lookup; the holder keeps the socket alive until dropped.
+        let socket = unsafe { swoole_runtime_fd_socket(fd, &raw mut holder) };
+        Self::wrap(socket, Some(NonNull::new(holder)?))
+    }
+
+    fn wrap(socket: *mut c_void, holder: Option<NonNull<c_void>>) -> Option<Self> {
+        Some(Self {
+            socket: NonNull::new(socket)?,
+            holder,
+        })
     }
 
     /// Own `socket`, a fresh `SocketImpl *` or null; `None` when it is null or
     /// has no fd.
     fn owned(socket: *mut c_void) -> Option<Self> {
-        let socket = Self(NonNull::new(socket)?);
+        let socket = Self::wrap(socket, None)?;
         (socket.fd() >= 0).then_some(socket)
     }
 
     fn raw(&self) -> *mut c_void {
-        self.0.as_ptr()
+        self.socket.as_ptr()
     }
 
     pub(crate) fn fd(&self) -> i32 {
@@ -260,12 +298,23 @@ impl Socket {
     /// `accept()`: the connection, if any.
     pub(crate) fn accept(&self) -> Option<Self> {
         // SAFETY: a live socket; the connection is new and owned.
-        NonNull::new(unsafe { swoole_runtime_socket_accept(self.raw()) }).map(Self)
+        Self::wrap(unsafe { swoole_runtime_socket_accept(self.raw()) }, None)
     }
 
     pub(crate) fn shutdown(&self, how: i32) -> bool {
         // SAFETY: a live socket.
         unsafe { swoole_runtime_socket_shutdown(self.raw(), how) }
+    }
+
+    /// `poll(SW_EVENT_WRITE or SW_EVENT_READ, timeout)`.
+    pub(crate) fn poll(&self, write: bool, timeout: f64) -> bool {
+        // SAFETY: a live socket.
+        unsafe { swoole_runtime_socket_poll(self.raw(), write, timeout) }
+    }
+
+    /// `get_err()`: `swoole_strerror(errCode)`.
+    pub(crate) fn strerror(&self) -> &'static CStr {
+        strerror(self.error())
     }
 
     pub(crate) fn check_liveness(&self) -> bool {
@@ -377,4 +426,62 @@ pub(crate) fn report(kind: Report, level: i32, message: &CStr) -> Result<(), Bai
 pub(crate) fn check_reactor() {
     // SAFETY: called while PHP runs.
     unsafe { swoole_runtime_check_reactor() };
+}
+
+/// `swoole_strerror(code)`.
+pub(crate) fn strerror(code: i32) -> &'static CStr {
+    // SAFETY: a lookup.
+    let message = unsafe { swoole_runtime_strerror(code) };
+    // SAFETY: Swoole's static message table or strerror's text.
+    unsafe { CStr::from_ptr(message) }
+}
+
+/// `Coroutine::get_current_safe()`: outside a coroutine Swoole raises a fatal
+/// error.
+/// # Errors
+/// The fatal error bailed out.
+pub(crate) fn coroutine_check() -> Result<(), Bailout> {
+    // SAFETY: called while PHP runs.
+    if unsafe { swoole_runtime_coroutine_check() } != 0 {
+        return Err(Bailout);
+    }
+    Ok(())
+}
+
+/// `php_swoole_convert_to_fd(value)`: an fd, or negative after a warning.
+/// # Errors
+/// The warning's error handler bailed out.
+/// # Safety
+/// `value` is a live zval.
+pub(crate) unsafe fn convert_to_fd(value: *mut zval) -> Result<i32, Bailout> {
+    let mut fd = -1;
+    // SAFETY: per the caller.
+    if unsafe { swoole_runtime_convert_to_fd(value, &raw mut fd) } != 0 {
+        return Err(Bailout);
+    }
+    Ok(fd)
+}
+
+/// `System::socket_poll` of `(fd, events)` rows merged by fd, in the order
+/// `stream_select` added them: `None` on a timeout or failure, else each polled
+/// fd and its revents in the poll set's order.
+pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>> {
+    let fds: Vec<c_int> = rows.iter().map(|row| row.0).collect();
+    let events: Vec<c_int> = rows.iter().map(|row| row.1).collect();
+    let mut ready = vec![0; rows.len()];
+    let mut revents = vec![0; rows.len()];
+    let mut size = 0;
+    // SAFETY: each buffer holds `rows.len()` entries, at least the poll set.
+    let polled = unsafe {
+        swoole_runtime_poll(
+            fds.as_ptr(),
+            events.as_ptr(),
+            rows.len(),
+            timeout,
+            ready.as_mut_ptr(),
+            revents.as_mut_ptr(),
+            &raw mut size,
+        )
+    };
+    polled.then(|| ready.into_iter().zip(revents).take(size).collect())
 }
