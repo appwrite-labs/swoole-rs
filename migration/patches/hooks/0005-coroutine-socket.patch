@@ -34,6 +34,24 @@ index 803879e..c2171cd 100644
          Socket *socket_;
 -        TimerCallback callback;
      };
+diff --git a/include/swoole_uring_socket.h b/include/swoole_uring_socket.h
+index 7f49cb6..ccb2d89 100644
+--- a/include/swoole_uring_socket.h
++++ b/include/swoole_uring_socket.h
+@@ -39,12 +39,6 @@ class UringSocket : public Socket {
+     }
++    swr_v1_hook_uring_socket io();
+ #endif
+ 
+-    ssize_t ssl_readv(network::IOVector *io_vector);
+-    ssize_t ssl_writev(network::IOVector *io_vector);
+     ssize_t ssl_sendfile(const File &file, off_t *offset, size_t size);
+-
+-    ssize_t uring_send(const void *_buf, size_t _n);
+-    ssize_t uring_recv(void *_buf, size_t _n);
+-    ssize_t uring_readv(const struct iovec *iovec, int count);
+-    ssize_t uring_writev(const struct iovec *iovec, int count);
+     ssize_t uring_sendfile(const File &file, off_t *offset, size_t size);
 diff --git a/src/coroutine/socket.cc b/src/coroutine/socket.cc
 index 2862827..bc26e30 100644
 --- a/src/coroutine/socket.cc
@@ -666,3 +684,447 @@ index 2862827..bc26e30 100644
 -    }
 +    swr_v1_hook_timeouts(&timeout_ops, socket_, timeout, type, original_timeout, true);
  }
+diff --git a/src/coroutine/uring_socket.cc b/src/coroutine/uring_socket.cc
+index fc7ab8f..baac8da 100644
+--- a/src/coroutine/uring_socket.cc
++++ b/src/coroutine/uring_socket.cc
+@@ -35,20 +35,28 @@ namespace swoole {
+ namespace coroutine {
+-bool UringSocket::connect(const sockaddr *addr, socklen_t addrlen) {
+-    if (sw_unlikely(!is_available(SW_EVENT_RDWR))) {
+-        return false;
+-    }
+-
+-    bind_co(SW_EVENT_RDWR, Coroutine::get_current_safe());
+-    int retval = Iouring::connect(socket->get_fd(), addr, addrlen, socket->connect_timeout);
+-    bind_co(SW_EVENT_RDWR, nullptr);
+-    if (retval < 0) {
+-        return false;
+-    }
+-
+-    swr_v1_hook_socket_connect(state_);
+-    socket->get_name();
+-    set_err(0);
+-    return true;
++// Each operation is one Rust call (crates/hooks/src/uring_socket.rs); these are the socket's effects.
++swr_v1_hook_uring_socket UringSocket::io() {
++    return {this,
++            state_,
++            tls(),
++            socket->connect_timeout,
++            [](void *s, uint32_t event) { return static_cast<UringSocket *>(s)->is_available(static_cast<EventType>(event)); },
++            [](void *s, ssize_t retval) { static_cast<UringSocket *>(s)->check_return_value(retval); },
++            [](void *s, int error) { static_cast<UringSocket *>(s)->set_err(error); },
++            [](void *s) { static_cast<UringSocket *>(s)->socket->get_name(); }};
++}
++
++static swr_v1_hook_io_vector vector_ops(network::IOVector *vector) {
++    return {vector,
++            [](void *v, int *count) -> const iovec * {
++                auto *io = static_cast<network::IOVector *>(v);
++                *count = io->get_remain_count();
++                return io->get_iterator();
++            },
++            [](void *v, ssize_t n) { static_cast<network::IOVector *>(v)->update_iterator(n); }};
+ }
+ 
++bool UringSocket::connect(const sockaddr *addr, socklen_t addrlen) {
++    auto ops = io();
++    return swr_v1_hook_uring_connect(&ops, addr, addrlen);
++}
+ UringSocket *UringSocket::accept(double timeout) {
+@@ -102,18 +110,2 @@ NetSocket *UringSocket::uring_accept(double timeout) {
+ 
+-ssize_t UringSocket::uring_send(const void *_buf, size_t _n) {
+-    return Iouring::send(socket->get_fd(), _buf, _n, 0, socket->write_timeout);
+-}
+-
+-ssize_t UringSocket::uring_recv(void *_buf, size_t _n) {
+-    return Iouring::recv(socket->get_fd(), _buf, _n, 0, socket->read_timeout);
+-}
+-
+-ssize_t UringSocket::uring_readv(const struct iovec *iovec, int count) {
+-    return Iouring::readv(socket->get_fd(), iovec, count, socket->read_timeout);
+-}
+-
+-ssize_t UringSocket::uring_writev(const struct iovec *iovec, int count) {
+-    return Iouring::writev(socket->get_fd(), iovec, count, socket->write_timeout);
+-}
+-
+ ssize_t UringSocket::uring_sendfile(const File &file, off_t *offset, size_t size) {
+@@ -123,56 +115,21 @@ ssize_t UringSocket::uring_sendfile(const File &file, off_t *offset, size_t size
+ ssize_t UringSocket::read(void *_buf, size_t _n) {
+-    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
+-        return -1;
+-    }
+-    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
+-    ssize_t retval = Iouring::read(socket->get_fd(), _buf, _n, socket->read_timeout);
+-    bind_co(SW_EVENT_READ, nullptr);
+-    check_return_value(retval);
+-    return retval;
++    auto ops = io();
++    return swr_v1_hook_uring_io(&ops, SWR_URING_READ, _buf, _n, nullptr, nullptr, 0);
+ }
+-
+ ssize_t UringSocket::write(const void *_buf, size_t _n) {
+-    if (sw_unlikely(!is_available(SW_EVENT_WRITE))) {
+-        return -1;
+-    }
+-    bind_co(SW_EVENT_WRITE, Coroutine::get_current_safe());
+-    ssize_t retval = Iouring::write(socket->get_fd(), _buf, _n, socket->write_timeout);
+-    bind_co(SW_EVENT_WRITE, nullptr);
+-    check_return_value(retval);
+-    return retval;
++    auto ops = io();
++    return swr_v1_hook_uring_io(&ops, SWR_URING_WRITE, const_cast<void *>(_buf), _n, nullptr, nullptr, 0);
+ }
+-
+ ssize_t UringSocket::recvmsg(msghdr *msg, int flags) {
+-    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
+-        return -1;
+-    }
+-    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
+-    ssize_t retval = Iouring::recvmsg(socket->get_fd(), msg, flags, socket->read_timeout);
+-    bind_co(SW_EVENT_READ, nullptr);
+-    check_return_value(retval);
+-    return retval;
++    auto ops = io();
++    return swr_v1_hook_uring_io(&ops, SWR_URING_RECVMSG, nullptr, 0, msg, nullptr, flags);
+ }
+-
+ ssize_t UringSocket::sendmsg(const msghdr *msg, int flags) {
+-    if (sw_unlikely(!is_available(SW_EVENT_WRITE))) {
+-        return -1;
+-    }
+-    bind_co(SW_EVENT_WRITE, Coroutine::get_current_safe());
+-    ssize_t retval = Iouring::sendmsg(socket->get_fd(), msg, flags, socket->write_timeout);
+-    bind_co(SW_EVENT_WRITE, nullptr);
+-    check_return_value(retval);
+-    return retval;
++    auto ops = io();
++    return swr_v1_hook_uring_io(&ops, SWR_URING_SENDMSG, nullptr, 0, const_cast<msghdr *>(msg), nullptr, flags);
+ }
+-
+ ssize_t UringSocket::recvfrom(void *_buf, size_t _n, sockaddr *_addr, socklen_t *_socklen) {
+-    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
+-        return -1;
+-    }
+-    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
+-    ssize_t retval = Iouring::recvfrom(socket->get_fd(), _buf, _n, _addr, _socklen, socket->read_timeout);
+-    bind_co(SW_EVENT_READ, nullptr);
+-    check_return_value(retval);
+-    return retval;
++    auto ops = io();
++    return swr_v1_hook_uring_io(&ops, SWR_URING_RECVFROM, _buf, _n, _addr, _socklen, 0);
+ }
+-
+ ssize_t UringSocket::sendto(const std::string &host, int port, const void *_buf, size_t _n) {
+@@ -217,89 +174,21 @@ ssize_t UringSocket::sendto(const std::string &host, int port, const void *_buf,
+ ssize_t UringSocket::recv(void *_buf, size_t _n) {
+-    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
+-        return -1;
+-    }
+-
+-    ssize_t retval;
+-    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
+-    if (is_ssl()) {
+-        retval = swr_v1_uring_tls_recv(tls(), _buf, _n);
+-    } else {
+-        retval = uring_recv(_buf, _n);
+-    }
+-    bind_co(SW_EVENT_READ, nullptr);
+-
+-    check_return_value(retval);
+-    return retval;
++    auto ops = io();
++    return swr_v1_hook_uring_io(&ops, SWR_URING_RECV, _buf, _n, nullptr, nullptr, 0);
+ }
+-
+ ssize_t UringSocket::send(const void *_buf, size_t _n) {
+-    if (sw_unlikely(!is_available(SW_EVENT_WRITE))) {
+-        return -1;
+-    }
+-
+-    ssize_t retval;
+-    bind_co(SW_EVENT_WRITE, Coroutine::get_current_safe());
+-    if (is_ssl()) {
+-        retval = swr_v1_uring_tls_send(tls(), _buf, _n);
+-    } else {
+-        retval = uring_send(_buf, _n);
+-    }
+-    bind_co(SW_EVENT_WRITE, nullptr);
+-
+-    check_return_value(retval);
+-    return retval;
++    auto ops = io();
++    return swr_v1_hook_uring_io(&ops, SWR_URING_SEND, const_cast<void *>(_buf), _n, nullptr, nullptr, 0);
+ }
+-
+ ssize_t UringSocket::recv_all(void *_buf, size_t _n) {
+-    ssize_t retval = 0;
+-    size_t total_bytes = 0;
+-
+-    do {
+-        retval = recv((char *) _buf + total_bytes, _n - total_bytes);
+-        auto plan = swr_v1_hook_transfer(retval, total_bytes, _n, false);
+-        total_bytes = plan.total;
+-        if (!plan.again) {
+-            break;
+-        }
+-    } while (true);
+-
+-    check_return_value(retval);
+-    return swr_v1_hook_transfer_result(retval, total_bytes);
++    auto ops = io();
++    return swr_v1_hook_uring_io_all(&ops, false, _buf, _n);
+ }
+-
+ ssize_t UringSocket::send_all(const void *_buf, size_t _n) {
+-    ssize_t retval = 0;
+-    size_t total_bytes = 0;
+-
+-    do {
+-        retval = send((char *) _buf + total_bytes, _n - total_bytes);
+-        auto plan = swr_v1_hook_transfer(retval, total_bytes, _n, false);
+-        total_bytes = plan.total;
+-        if (!plan.again) {
+-            break;
+-        }
+-    } while (true);
+-
+-    check_return_value(retval);
+-    return swr_v1_hook_transfer_result(retval, total_bytes);
++    auto ops = io();
++    return swr_v1_hook_uring_io_all(&ops, true, const_cast<void *>(_buf), _n);
+ }
+-
+ bool UringSocket::poll(EventType _type, double timeout) {
+-    if (sw_unlikely(!is_available(_type))) {
+-        return false;
+-    }
+-
+-    struct pollfd fds[1];
+-    fds[0].events = translate_events_to_poll(_type);
+-    fds[0].fd = socket->get_fd();
+-    fds[0].revents = 0;
+-
+-    int rc = Iouring::poll(fds, 1, timeout > 0 ? timeout * 1000 : timeout);
+-    if (rc != 1) {
+-        set_err(rc == 0 ? ETIMEDOUT : errno);
+-        return false;
+-    }
+-    return true;
++    auto ops = io();
++    return swr_v1_hook_uring_poll(&ops, _type, translate_events_to_poll(_type), timeout);
+ }
+-
+ bool UringSocket::sendfile(const char *filename, off_t offset, size_t length) {
+@@ -341,75 +230,21 @@ bool UringSocket::sendfile(const char *filename, off_t offset, size_t length) {
+ ssize_t UringSocket::readv(network::IOVector *io_vector) {
+-    ssize_t retval;
+-    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
+-        return -1;
+-    }
+-
+-    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
+-    do {
+-        if (is_ssl()) {
+-            retval = ssl_readv(io_vector);
+-        } else {
+-            retval = uring_readv(io_vector->get_iterator(), io_vector->get_remain_count());
+-        }
+-        io_vector->update_iterator(retval);
+-    } while (retval < 0 && errno == EINTR);
+-    bind_co(SW_EVENT_READ, nullptr);
+-
+-    check_return_value(retval);
+-    return retval;
++    auto ops = io();
++    auto vector = vector_ops(io_vector);
++    return swr_v1_hook_uring_vector(&ops, &vector, false, false);
+ }
+-
+ ssize_t UringSocket::writev(network::IOVector *io_vector) {
+-    ssize_t retval;
+-    if (sw_unlikely(!is_available(SW_EVENT_WRITE))) {
+-        return -1;
+-    }
+-
+-    bind_co(SW_EVENT_WRITE, Coroutine::get_current_safe());
+-    do {
+-        if (is_ssl()) {
+-            retval = ssl_writev(io_vector);
+-        } else {
+-            retval = uring_writev(io_vector->get_iterator(), io_vector->get_remain_count());
+-        }
+-        io_vector->update_iterator(retval);
+-    } while (retval < 0 && errno == EINTR);
+-    bind_co(SW_EVENT_WRITE, nullptr);
+-
+-    check_return_value(retval);
+-    return retval;
++    auto ops = io();
++    auto vector = vector_ops(io_vector);
++    return swr_v1_hook_uring_vector(&ops, &vector, true, false);
+ }
+-
+ ssize_t UringSocket::readv_all(network::IOVector *io_vector) {
+-    ssize_t retval = 0;
+-    size_t total_bytes = 0;
+-
+-    do {
+-        retval = readv(io_vector);
+-        if (retval <= 0) {
+-            break;
+-        }
+-        total_bytes += retval;
+-    } while (retval > 0 && io_vector->get_remain_count() > 0);
+-
+-    check_return_value(retval);
+-    return swr_v1_hook_transfer_result(retval, total_bytes);
++    auto ops = io();
++    auto vector = vector_ops(io_vector);
++    return swr_v1_hook_uring_vector(&ops, &vector, false, true);
+ }
+-
+ ssize_t UringSocket::writev_all(network::IOVector *io_vector) {
+-    ssize_t retval = 0;
+-    size_t total_bytes = 0;
+-
+-    do {
+-        retval = writev(io_vector);
+-        if (retval <= 0) {
+-            break;
+-        }
+-        total_bytes += retval;
+-    } while (retval > 0 && io_vector->get_remain_count() > 0);
+-
+-    check_return_value(retval);
+-    return swr_v1_hook_transfer_result(retval, total_bytes);
++    auto ops = io();
++    auto vector = vector_ops(io_vector);
++    return swr_v1_hook_uring_vector(&ops, &vector, true, true);
+ }
+-
+ const swr_v1_uring_tls_host UringSocket::tls_host = {
+@@ -447,80 +282,48 @@ void UringSocket::ssl_bio_perform(void *_socket, const char *fn, int error, unsi
+ 
++// The sequence is Rust's (crates/hooks/src/connect.rs); each step runs the handshake through the ring.
+ bool UringSocket::ssl_handshake() {
+-    if (ssl_handshaked) {
+-        set_err(SW_ERROR_WRONG_OPERATION);
+-        return false;
+-    }
+-    if (sw_unlikely(!is_available(SW_EVENT_RDWR))) {
+-        return false;
+-    }
+-
+-    /**
+-     * If the ssl_context is empty, it indicates that this socket was not a connection
+-     * returned by a server socket accept, and a new ssl_context needs to be created.
+-     */
+-    if (ssl_context->context == nullptr && !ssl_context_create()) {
+-        return false;
+-    }
+-    if (!ssl_create(get_ssl_context())) {
++    const swr_v1_hook_tls_ops ops{
++        this,
++        2,
++        ssl_handshaked,
++        ssl_context && ssl_context->context != nullptr,
++        ssl_context && ssl_context->verify_peer,
++        [](void *s) { return static_cast<UringSocket *>(s)->is_available(SW_EVENT_RDWR); },
++        [](void *s, int error) { static_cast<UringSocket *>(s)->set_err(error); },
++        [](void *s) { return static_cast<UringSocket *>(s)->ssl_context_create(); },
++        [](void *s) {
++            auto *sock = static_cast<UringSocket *>(s);
++            if (!sock->ssl_create(sock->get_ssl_context())) {
++                return false;
++            }
++            sock->rbio = BIO_new(BIO_s_mem());
++            sock->wbio = BIO_new(BIO_s_mem());
++            SSL_set_bio(sock->socket->ssl, sock->rbio, sock->wbio);
++            if (sock->ssl_is_server) {
++                SSL_set_accept_state(sock->socket->ssl);
++            } else {
++                SSL_set_connect_state(sock->socket->ssl);
++            }
++            return true;
++        },
++        [](void *s) -> int {
++            auto *sock = static_cast<UringSocket *>(s);
++            auto rs = SSL_do_handshake(sock->socket->ssl);
++            if (rs == 1) {
++                return 1;
++            }
++            return swr_v1_uring_tls_perform(sock->tls(), rs, sock->ssl_is_server ? "ssl_accept" : "ssl_connect") ? 0 : -1;
++        },
++        [](void *, bool) { return false; },
++        [](void *s) {
++            auto *sock = static_cast<UringSocket *>(s);
++            return sock->ssl_verify(sock->ssl_context->allow_self_signed);
++        },
++    };
++    if (!swr_v1_hook_ssl_handshake(&ops)) {
+         return false;
+     }
+-    rbio = BIO_new(BIO_s_mem());
+-    wbio = BIO_new(BIO_s_mem());
+-    SSL_set_bio(socket->ssl, rbio, wbio);
+-
+-    const char *fn;
+-    if (ssl_is_server) {
+-        fn = "ssl_accept";
+-        SSL_set_accept_state(socket->ssl);
+-    } else {
+-        fn = "ssl_connect";
+-        SSL_set_connect_state(socket->ssl);
+-    }
+-
+-    while (true) {
+-        auto rs = SSL_do_handshake(socket->ssl);
+-        if (rs == 1) {
+-            break;
+-        }
+-        if (swr_v1_uring_tls_perform(tls(), rs, fn)) {
+-            continue;
+-        } else {
+-            return false;
+-        }
+-    }
+-
+-    if (ssl_context->verify_peer) {
+-        if (!ssl_verify(ssl_context->allow_self_signed)) {
+-            return false;
+-        }
+-    }
+     ssl_handshaked = true;
+-
+     return true;
+ }
+-
+-ssize_t UringSocket::ssl_readv(network::IOVector *io_vector) {
+-    ssize_t retval, total_bytes = 0;
+-
+-    do {
+-        retval = swr_v1_uring_tls_recv(tls(), io_vector->get_iterator()->iov_base, io_vector->get_iterator()->iov_len);
+-        total_bytes += retval > 0 ? retval : 0;
+-        io_vector->update_iterator(retval);
+-    } while (retval > 0 && io_vector->get_remain_count() > 0);
+-
+-    return total_bytes > 0 ? total_bytes : retval;
+-}
+-
+-ssize_t UringSocket::ssl_writev(network::IOVector *io_vector) {
+-    ssize_t retval, total_bytes = 0;
+-
+-    do {
+-        retval = swr_v1_uring_tls_send(tls(), io_vector->get_iterator()->iov_base, io_vector->get_iterator()->iov_len);
+-        total_bytes += retval > 0 ? retval : 0;
+-        io_vector->update_iterator(retval);
+-    } while (retval > 0 && io_vector->get_remain_count() > 0);
+-
+-    return total_bytes > 0 ? total_bytes : retval;
+-}
+-
+ ssize_t UringSocket::ssl_sendfile(const File &file, off_t *offset, size_t size) {
