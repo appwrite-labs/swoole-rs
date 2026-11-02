@@ -15,7 +15,6 @@ uint32_t swr_v1_process_task_action(bool pipe, bool shutdown, bool command);
 uint32_t swr_v1_process_finish_error(bool pipe, bool no_reply);
 int32_t swr_v1_process_result_flags(int32_t flags, bool callback, bool coroutine, int32_t callback_flag, int32_t coroutine_flag);
 uint32_t swr_v1_process_reload_action(bool all, bool task);
-uint32_t swr_v1_process_reload_kill(bool failed, bool no_child, bool no_process);
 /* Manager::signal_handler action: 0 none, 1 stop, 2 reload all, 3 reload workers,
  * 4 read message, 5 force-kill if armed, 6 reopen logger. */
 uint32_t swr_v1_process_manager_signal_action(int signo);
@@ -78,6 +77,8 @@ void swr_v1_process_worker_registry_free(swr_v1_process_worker_registry *);
 void swr_v1_process_worker_registry_register(swr_v1_process_worker_registry *, int pid, void *worker, int category);
 bool swr_v1_process_worker_registry_unregister(swr_v1_process_worker_registry *, int pid);
 void *swr_v1_process_worker_registry_lookup(const swr_v1_process_worker_registry *, int pid);
+void swr_v1_process_worker_registry_detach(swr_v1_process_worker_registry *, int pid);
+bool swr_v1_process_worker_registry_reap_detached(swr_v1_process_worker_registry *, int pid);
 /* Send signo to every worker of category, then wait for each. kill_fn/wait_fn are
  * swoole_kill / swoole_waitpid; warn_fn reports a wait failure. */
 void swr_v1_process_worker_registry_terminate(const swr_v1_process_worker_registry *, int category, int signo,
@@ -124,6 +125,40 @@ int swr_v1_worker_pid(const swr_v1_worker_record *);
 void swr_v1_worker_set_pid(swr_v1_worker_record *, int pid);
 uint32_t swr_v1_worker_id(const swr_v1_worker_record *);
 void swr_v1_worker_set_id(swr_v1_worker_record *, uint32_t id);
+typedef struct swr_v1_process_reload_task swr_v1_process_reload_task;
+#define SWR_RELOAD_WARN_KILL_ALL_FAILED 1
+#define SWR_RELOAD_WARN_FORCE_KILL 2
+#define SWR_RELOAD_WARN_KILL_ONE_FAILED 3
+typedef void (*swr_v1_process_reload_warn)(int kind, int pid, uint32_t worker_id);
+swr_v1_process_reload_task *swr_v1_process_reload_task_new(void);
+void *swr_v1_process_reload_task_free(swr_v1_process_reload_task *);
+void swr_v1_process_reload_task_set_timer(swr_v1_process_reload_task *, void *timer);
+void swr_v1_process_reload_task_add_workers(swr_v1_process_reload_task *, const swr_v1_worker_record *workers, size_t count);
+bool swr_v1_process_reload_task_remove(swr_v1_process_reload_task *, int pid);
+bool swr_v1_process_reload_task_completed(const swr_v1_process_reload_task *);
+void swr_v1_process_reload_task_kill_all(swr_v1_process_reload_task *, int signo, swr_v1_process_reload_warn warn);
+void swr_v1_process_reload_task_kill_one(swr_v1_process_reload_task *, int signo, swr_v1_process_reload_warn warn);
+/* The manager reap loop (crates/process/src/reaper.rs); start_reload returns one of: */
+#define SWR_RELOAD_NONE 0
+#define SWR_RELOAD_KILL_ONE 1
+#define SWR_RELOAD_SKIP 2
+#define SWR_RELOAD_SIGNALLED 3
+typedef struct {
+    void *ctx;
+    bool leave_when_stopped;
+    bool skip_no_child;
+    bool (*running)(void *ctx);
+    bool (*reload_requested)(void *ctx);
+    swr_v1_process_reload_task *(*reload_task)(void *ctx);
+    int (*wait)(void *ctx, bool nonblock, int *status, int *error);
+    void (*service)(void *ctx);
+    void (*wait_failed)(void *ctx);
+    uint32_t (*start_reload)(void *ctx);
+    bool (*reap)(void *ctx, int pid, int status);
+    void (*finish_reload)(void *ctx);
+    swr_v1_process_reload_warn warn;
+} swr_v1_process_reap_host;
+void swr_v1_process_reap_loop(const swr_v1_process_reap_host *host);
 #ifdef __cplusplus
 }
 #endif

@@ -141,6 +141,34 @@
       "upstream_paths": [
         "ext-src/swoole_server.cc"
       ]
+    },
+    {
+      "path": "0015-reload-task.patch",
+      "sha256": "24985f08de21e4d2e7539d9c64faca7f0ff6b3b9bc099f8362dda03dce792d32",
+      "upstream_paths": [
+        "include/swoole_process_pool.h",
+        "include/swoole_server.h",
+        "src/os/process_pool.cc",
+        "src/server/manager.cc",
+        "src/server/master.cc"
+      ]
+    },
+    {
+      "path": "0016-reap-loop.patch",
+      "sha256": "30a7dfa9e03716a79b57d9abc27e4374969174cfa853a8f367aa10a329cad5d9",
+      "upstream_paths": [
+        "include/swoole_process_pool.h",
+        "src/os/process_pool.cc",
+        "src/server/manager.cc"
+      ]
+    },
+    {
+      "path": "0017-reload-log-names.patch",
+      "sha256": "1b460a6f94333ed654326d1b22f48f3dcf466f30f51afef577f8b0b3217394da",
+      "upstream_paths": [
+        "include/swoole_process_pool.h",
+        "src/os/process_pool.cc"
+      ]
     }
   ]
 }
