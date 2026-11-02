@@ -1,0 +1,29 @@
+/* Errors raised from Rust, each inside zend_try. A user error handler
+ * (set_error_handler) runs PHP code, and that code can bail out (a fatal
+ * error, exit() with no PHP frame below): the bailout is caught here and
+ * reported as 1, so it never longjmps over a Rust frame. */
+#ifndef SWOOLE_RS_ZEND_SHIM_ERRORS_H
+#define SWOOLE_RS_ZEND_SHIM_ERRORS_H
+#include "shim.h"
+
+/* php_error_docref(NULL, level, "%s", message). */
+int swr_zend_try_error(int level, const char *message);
+
+/* A C or C++ reporter (Swoole's php_swoole_*error macros live in C++). */
+int swr_zend_try_report(void (*report)(const char *message), const char *message);
+int swr_zend_try_report_level(void (*report)(int level, const char *message), int level,
+                              const char *message);
+int swr_zend_try_report_length(void (*report)(const char *text, int length), const char *text,
+                               int length);
+int swr_zend_try_report_code(void (*report)(int code, int flag, const char *message), int code,
+                             int flag, const char *message);
+int swr_zend_try_report_flag(void (*report)(int level, bool flag, const char *message), int level,
+                             bool flag, const char *message);
+
+/* zend_parse_arg_*_slow: coercions raise deprecations (null to a scalar,
+ * float to int), which run the user error handler. *parsed is the result. */
+int swr_zend_try_parse_long(zval *arg, zend_long *out, uint32_t number, bool *parsed);
+int swr_zend_try_parse_bool(zval *arg, bool *out, uint32_t number, bool *parsed);
+int swr_zend_try_parse_double(zval *arg, double *out, uint32_t number, bool *parsed);
+int swr_zend_try_parse_str(zval *arg, zend_string **out, uint32_t number, bool *parsed);
+#endif

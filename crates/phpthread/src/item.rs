@@ -2,12 +2,7 @@
 //! thread can read it back. Strings and serialized objects are copied, arrays
 //! become shared tables, containers and thread resources are shared by
 //! reference, and sockets by a duplicated descriptor.
-use crate::{
-    array::Array,
-    barrier, classes,
-    host::{Pending, defer, host},
-    queue::Queue,
-};
+use crate::{array::Array, barrier, classes, host::host, queue::Queue};
 use std::{
     cmp::Ordering,
     ffi::{c_int, c_void},
@@ -15,6 +10,7 @@ use std::{
     sync::Arc,
 };
 use swoole_rs_zend::{
+    bailout::Bailout,
     string::bytes,
     sys::{
         _zval_struct__bindgen_ty_1, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT,
@@ -232,7 +228,7 @@ impl Item {
         // SAFETY: a live zval; C++ traps a bailout of `__serialize`.
         let serialized = unsafe { (host().serialize)(value, &raw mut bailed) };
         if bailed {
-            defer(Pending::Bailout);
+            Bailout.defer();
         }
         if serialized.is_null() {
             return bare(IS_UNDEF);
@@ -290,7 +286,7 @@ impl Item {
             Value::Serialized(data) => {
                 // SAFETY: per the caller; C++ traps a bailout of `__unserialize`.
                 if unsafe { (host.unserialize)(data.as_ptr().cast(), data.len(), out) } {
-                    defer(Pending::Bailout);
+                    Bailout.defer();
                 }
             }
         }

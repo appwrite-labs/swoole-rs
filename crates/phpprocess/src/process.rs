@@ -367,6 +367,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
     }
     // SAFETY: the callable made above.
     unsafe { (host.callable_free)(callable) };
+    swoole_rs_zend::bailout::finish();
     // SAFETY: equivalent to exit: Zend unwinds to its bailout point; this frame
     // owns nothing that needs a drop.
     unsafe { _zend_bailout(c"crates/phpprocess/src/process.rs".as_ptr(), line!()) }

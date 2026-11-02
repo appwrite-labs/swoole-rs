@@ -46,7 +46,8 @@ pub use swoole_rs_zend_sys as sys;
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for
 /// methods, `zif_<function>` for functions) so upstream's tables name them
-/// unchanged; each runs `body(&Call)`.
+/// unchanged; each runs `body(&Call)`, then raises a bailout it deferred
+/// ([`bailout::finish`]).
 #[macro_export]
 macro_rules! handlers {
     ($($name:ident => $body:path;)*) => {$(
@@ -60,6 +61,7 @@ macro_rules! handlers {
         ) {
             // SAFETY: per Zend's handler contract.
             $body(&unsafe { $crate::Call::new(frame, value) });
+            $crate::bailout::finish();
         }
     )*};
 }

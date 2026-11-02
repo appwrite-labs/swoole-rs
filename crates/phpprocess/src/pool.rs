@@ -318,6 +318,7 @@ unsafe extern "C" fn on_worker_start(pool: Pool, worker: *mut c_void) {
     let term = !this.on_message.is_null() || this.enable_coroutine;
     // SAFETY: C++ installs the handler for unset signals.
     unsafe { (host().worker_signals)(term, on_signal) };
+    swoole_rs_zend::bailout::finish();
 }
 
 unsafe extern "C" fn on_message(pool: Pool, message: *mut c_void) {
@@ -347,6 +348,7 @@ unsafe extern "C" fn on_message(pool: Pool, message: *mut c_void) {
     unsafe { (host.worker_busy)(false) };
     // SAFETY: the string argument this callback owns.
     unsafe { zval_ptr_dtor(&raw mut args[1]) };
+    swoole_rs_zend::bailout::finish();
 }
 
 fn worker_stopped(pool: Pool, worker: *mut c_void, exit: bool) {
@@ -366,10 +368,12 @@ fn worker_stopped(pool: Pool, worker: *mut c_void, exit: bool) {
 
 unsafe extern "C" fn on_worker_stop(pool: Pool, worker: *mut c_void) {
     worker_stopped(pool, worker, false);
+    swoole_rs_zend::bailout::finish();
 }
 
 unsafe extern "C" fn on_worker_exit(pool: Pool, worker: *mut c_void) {
     worker_stopped(pool, worker, true);
+    swoole_rs_zend::bailout::finish();
 }
 
 unsafe extern "C" fn on_start(pool: Pool) {
@@ -381,6 +385,7 @@ unsafe extern "C" fn on_start(pool: Pool) {
     if !this.on_start.is_null() {
         dispatch(this.on_start, object, None, false, "onStart");
     }
+    swoole_rs_zend::bailout::finish();
 }
 
 unsafe extern "C" fn on_shutdown(pool: Pool) {
@@ -390,6 +395,7 @@ unsafe extern "C" fn on_shutdown(pool: Pool) {
     if !this.on_shutdown.is_null() {
         dispatch(this.on_shutdown, object, None, false, "onShutdown");
     }
+    swoole_rs_zend::bailout::finish();
 }
 
 fn construct(call: &Call) {

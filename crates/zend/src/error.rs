@@ -1,5 +1,6 @@
 //! Throwing from a handler; the handler then returns and Zend unwinds.
 use crate::{
+    bailout::{self, Bailout},
     class_name,
     sys::{zend_class_entry, zend_long, zend_object, zend_throw_error, zend_throw_exception},
 };
@@ -86,15 +87,19 @@ macro_rules! message {
     }};
 }
 
-/// `php_error_docref(NULL, level, "%s", message)`.
+/// `php_error_docref(NULL, level, "%s", message)` inside `zend_try`: a user
+/// error handler runs PHP code, which can bail out (as `E_ERROR` always
+/// does). Nothing is reported while a bailout is pending.
+/// # Errors
+/// It bailed out; defer it ([`crate::bailout::defer`]) or return it.
 /// # Safety
-/// Called from a handler or a callback Zend runs. `E_ERROR` does not return:
-/// Zend longjmps out, so the caller's frames must own nothing that needs a drop.
-pub unsafe fn php_error(level: i32, message: &CStr) {
-    // SAFETY: per the caller; "%s" takes the NUL-terminated message.
-    unsafe {
-        crate::sys::php_error_docref(ptr::null(), level, c"%s".as_ptr(), message.as_ptr());
+/// Called from a handler or a callback Zend runs.
+pub unsafe fn php_error(level: i32, message: &CStr) -> Result<(), Bailout> {
+    if bailout::pending() {
+        return Err(Bailout);
     }
+    // SAFETY: per the caller; the shim formats "%s" with the NUL-terminated message.
+    bailout::trapped(unsafe { crate::sys::swr_zend_try_error(level, message.as_ptr()) })
 }
 
 /// Swoole's "Constructor of %s can only be called once" `Error`.

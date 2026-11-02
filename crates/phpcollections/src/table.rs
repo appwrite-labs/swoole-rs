@@ -17,7 +17,7 @@ use swoole_rs_memory::{
     table_records::{Column, Records},
 };
 use swoole_rs_zend::{
-    Call, Class, Object,
+    Call, Class, Object, bailout,
     sys::{
         _zval_struct__bindgen_ty_1, E_ERROR, E_WARNING, HashPosition, IS_DOUBLE, IS_NULL,
         ZEND_ACC_NOT_SERIALIZABLE, add_assoc_double_ex, add_assoc_long_ex, add_assoc_stringl_ex,
@@ -177,10 +177,20 @@ fn this(call: &Call) -> &'static mut *mut c_void {
 
 fn fatal(level: u32, message: &CStr) {
     #[expect(clippy::cast_possible_wrap, reason = "E_ERROR and E_WARNING")]
-    // SAFETY: a NUL-terminated message.
-    unsafe {
-        (ops().fatal)(level as i32, message.as_ptr());
-    }
+    // SAFETY: C++'s reporter, from a handler.
+    bailout::defer(unsafe { bailout::report_level(ops().fatal, level as i32, message) });
+}
+
+/// A C++ reporter of Zend's NUL-terminated string bytes; true if a user error
+/// handler bailed out (deferred: the method stops).
+fn report(reporter: unsafe extern "C" fn(*const c_char), text: &[u8]) -> bool {
+    // SAFETY: Zend's string bytes are NUL-terminated.
+    let text = unsafe { CStr::from_ptr(text.as_ptr().cast()) };
+    // SAFETY: C++'s reporter, from a handler.
+    let reported = unsafe { bailout::report(reporter, text) };
+    let bailed = reported.is_err();
+    bailout::defer(reported);
+    bailed
 }
 
 /// `table_get_and_check_ptr`: the table, or Swoole's fatal error (which exits).
@@ -439,9 +449,9 @@ fn set(call: &Call) {
         return;
     }
     let ops = ops();
-    if key.len() >= KEY_SIZE {
-        // SAFETY: Zend's string bytes are NUL-terminated.
-        unsafe { (ops.key_too_long)(key.as_ptr().cast()) };
+    if key.len() >= KEY_SIZE && report(ops.key_too_long, key) {
+        call.set_bool(false);
+        return;
     }
     let (mut lock, mut flags) = (ptr::null_mut(), 0);
     // SAFETY: a created table; writable outputs.
@@ -464,7 +474,9 @@ fn set(call: &Call) {
         )]
         let length = key.len() as i32;
         // SAFETY: the key's bytes, as `%*s` reads them.
-        unsafe { (ops.set_failed)(key.as_ptr().cast(), length) };
+        bailout::defer(unsafe {
+            bailout::report_length(ops.set_failed, key.as_ptr().cast(), length)
+        });
         call.set_bool(false);
         return;
     }
@@ -545,8 +557,7 @@ fn update(call: &Call, subtract: bool) {
     let records = records(table);
     let Some(column) = records.column(name) else {
         unlock();
-        // SAFETY: Zend's string bytes are NUL-terminated.
-        unsafe { (ops.no_column)(name.as_ptr().cast()) };
+        report(ops.no_column, name);
         call.set_bool(false);
         return;
     };

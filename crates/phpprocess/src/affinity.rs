@@ -25,6 +25,15 @@ pub unsafe extern "C" fn swr_v1_phpprocess_array_to_cpu_set(
     set: *mut c_void,
 ) -> bool {
     // SAFETY: per the caller.
+    let valid = unsafe { array_to_cpu_set(array, set) };
+    swoole_rs_zend::bailout::finish();
+    valid
+}
+
+/// # Safety
+/// As `swr_v1_phpprocess_array_to_cpu_set`.
+unsafe fn array_to_cpu_set(array: *const zval, set: *mut c_void) -> bool {
+    // SAFETY: per the caller.
     let value = unsafe { (*array).value };
     // SAFETY: an array zval holds its table.
     let table = unsafe { value.arr };
