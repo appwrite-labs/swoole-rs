@@ -31,9 +31,9 @@ use swoole_rs_zend::{
         swr_zend_stream_default_timeout, swr_zend_stream_empty_string, swr_zend_stream_eof,
         swr_zend_stream_expose, swr_zend_stream_option, swr_zend_stream_progress,
         swr_zend_stream_set_eof, swr_zend_stream_set_option, swr_zend_stream_share_context,
-        swr_zend_stream_vm_active, swr_zend_stream_xport_flags, swr_zend_stream_xport_op,
-        swr_zval_try_addref, timeval, zend_array, zend_hash_next_index_insert, zend_hash_str_find,
-        zend_string, zval, zval_ptr_dtor,
+        swr_zend_stream_timeval, swr_zend_stream_vm_active, swr_zend_stream_xport_flags,
+        swr_zend_stream_xport_op, swr_zval_try_addref, timeval, zend_array,
+        zend_hash_next_index_insert, zend_hash_str_find, zend_string, zval, zval_ptr_dtor,
     },
     type_of,
     value::table,
@@ -174,11 +174,10 @@ fn set_eof(stream: *mut php_stream) {
 
 /// The seconds of a `timeval`, as Swoole's `set_timeout(timeval *)`.
 pub(crate) fn seconds(time: *const timeval) -> f64 {
+    let (mut seconds, mut micros) = (0.0, 0.0);
     // SAFETY: Zend lends a live timeval.
-    let time = unsafe { *time };
-    #[expect(clippy::cast_precision_loss, reason = "upstream's (double) casts")]
-    #[expect(clippy::cast_lossless, reason = "tv_usec's width differs per platform")]
-    swr_v1_hook_timeval(time.tv_sec as f64, time.tv_usec as f64)
+    unsafe { swr_zend_stream_timeval(time, &raw mut seconds, &raw mut micros) };
+    swr_v1_hook_timeval(seconds, micros)
 }
 
 /// A context option of the stream, if set.

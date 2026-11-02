@@ -32,6 +32,8 @@ zend_array *swr_zend_stream_context_options(php_stream_context *context);
 void swr_zend_stream_share_context(php_stream *client, const php_stream *server);
 /* php_stream_auto_cleanup(stream), then stream->res. */
 zend_resource *swr_zend_stream_expose(php_stream *stream);
+/* (double) time->tv_sec and (double) time->tv_usec. */
+void swr_zend_stream_timeval(const struct timeval *time, double *seconds, double *micros);
 /* EG(active). */
 bool swr_zend_stream_vm_active(void);
 /* php_stream_from_zval_no_verify: null if not a stream. */

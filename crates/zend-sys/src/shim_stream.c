@@ -72,6 +72,11 @@ zend_resource *swr_zend_stream_expose(php_stream *stream) {
     return stream->res;
 }
 
+void swr_zend_stream_timeval(const struct timeval *time, double *seconds, double *micros) {
+    *seconds = (double) time->tv_sec;
+    *micros = (double) time->tv_usec;
+}
+
 bool swr_zend_stream_vm_active(void) {
     return EG(active);
 }
