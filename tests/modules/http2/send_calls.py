@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body, select_overlay
 
 
@@ -54,7 +55,7 @@ def main():
                              'bool send_body(const BufferValue *body,bool end_stream,const std::shared_ptr<FixtureSession>&session,off_t offset,size_t length)' if 'send_body' in marker else
                              'bool send_data(uint32_t _stream_id,const char*p,size_t len,int flag)')
                 methods.append(signature + '{' + fragment + '}')
-            pieces.append('namespace ' + role + '_' + variant + ' {struct State: ' + ('ServerFixture' if role == 'server' else 'ClientFixture') + ' {using String=BufferValue;using Coroutine=FixtureCoroutine;' + ''.join(methods) + '};}')
+            pieces.append((variant, 'namespace ' + role + '_' + variant + ' {struct State: ' + ('ServerFixture' if role == 'server' else 'ClientFixture') + ' {using String=BufferValue;using Coroutine=FixtureCoroutine;' + ''.join(methods) + '};}'))
     prelude = r'''
 #include "swoole_http2.h"
 #define SW_USE_RUST_HTTP2
@@ -67,10 +68,10 @@ def main():
 #include <stdexcept>
 using namespace swoole;
 namespace Http2=swoole::http2;
-static std::vector<std::string> effects;
-static unsigned throw_at,change,send_calls,fail_call,page_size=8;
-static std::function<void()> mutate;
-static void effect(std::string text){effects.push_back(text);if(throw_at==effects.size())throw std::runtime_error("native effect");}
+inline std::vector<std::string> effects;
+inline unsigned throw_at,change,send_calls,fail_call,page_size=8;
+inline std::function<void()> mutate;
+inline void effect(std::string text){effects.push_back(text);if(throw_at==effects.size())throw std::runtime_error("native effect");}
 struct BufferValue {char storage[256]{};char*str=storage;size_t length=0;
  void clear(){effect("clear");length=0;}
  void append(const char*p,size_t n){effect("append:"+std::string(p,n));if(length+n>sizeof(storage))std::abort();std::memcpy(storage+length,p,n);length+=n;}
@@ -80,23 +81,22 @@ struct FixtureContext {BufferValue write;bool co_socket=false;unsigned end_=0,se
  bool is_co_socket(){effect("co-socket");return co_socket;}
  bool send(FixtureContext*,const char*p,size_t n){effect("send:"+std::string(p,n));if(mutate)mutate();return ++send_calls!=fail_call;}
 };
-struct FixtureCoroutine {std::function<void()> resume;static FixtureCoroutine *active;
+struct FixtureCoroutine {std::function<void()> resume;inline static FixtureCoroutine *active;
  static FixtureCoroutine *get_current(){effect("get-current");return active;}
  void yield(){effect("yield");if(resume)resume();}
 };
-FixtureCoroutine *FixtureCoroutine::active;
 struct FixtureSession {swoole::http2::Settings local_settings{};uint32_t remote_window_size=0;};
-static bool coroutine_in;
+inline bool coroutine_in;
 #define swoole_coroutine_is_in fixture_coroutine_is_in
-static bool fixture_coroutine_is_in(){effect("coroutine-in");return coroutine_in;}
+inline bool fixture_coroutine_is_in(){effect("coroutine-in");return coroutine_in;}
 #define swoole_pagesize fixture_pagesize
-static size_t fixture_pagesize(){effect("pagesize");return page_size;}
+inline size_t fixture_pagesize(){effect("pagesize");return page_size;}
 #undef swoole_warning
 #define swoole_warning(...) effect("warning")
 #undef swoole_trace_log
 #define swoole_trace_log(...) ((void)0)
-static ssize_t header_result;
-static ssize_t http2_server_build_header(FixtureContext*,unsigned char*p,const BufferValue*){effect("header-build");if(header_result>0)std::memset(p,'H',header_result);return header_result;}
+inline ssize_t header_result;
+inline ssize_t http2_server_build_header(FixtureContext*,unsigned char*p,const BufferValue*){effect("header-build");if(header_result>0)std::memset(p,'H',header_result);return header_result;}
 struct ServerFixture {FixtureContext *ctx;uint32_t id=3,remote_window_size=0;FixtureCoroutine *waiting_coroutine=nullptr;};
 struct ClientFixture {swoole::http2::Settings local_settings{};
  bool send(const char*p,size_t n){effect("send:"+std::string(p,n));if(mutate)mutate();return ++send_calls!=fail_call;}
@@ -139,20 +139,8 @@ std::cout<<"{\"passed\":true,\"send_cases\":"<<count<<"}\n";
 '''
     work = args.output.parent / (args.output.stem + '-artifacts')
     work.mkdir(parents=True, exist_ok=False)
-    cpp = work / 'send.cpp'
-    cpp.write_text(prelude + '\n'.join(pieces) + driver)
-    command = ['c++', '-std=c++17', '-O1', '-fsanitize=address,undefined', '-fno-sanitize=alignment',
-               '-fno-omit-frame-pointer', '-I', str(gate.ROOT / 'native/http2'), '-I', str(args.source / 'include')]
-    for include in args.include:
-        command += ['-I', include]
-    command += [str(cpp), str(archive), '-o', str(work / 'send')]
-    for cmd in [command, [str(work / 'send')]]:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        report['commands'].append({'command': cmd, 'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr})
-        if result.returncode:
-            break
-        if cmd != command:
-            report.update(json.loads(result.stdout))
+    report['commands'], result = sides.run(work, 'send', prelude, pieces, driver, source=args.source, archive=archive, includes=args.include)
+    report.update(result or {})
     report['native_sanitizers'] = ['address', 'undefined except alignment']
     report['rust_sanitized'] = False
     args.output.write_text(json.dumps(report, indent=2) + '\n')

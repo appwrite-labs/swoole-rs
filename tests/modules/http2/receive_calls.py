@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body, select_overlay
 
 
@@ -41,7 +42,7 @@ def main():
     for variant, text in [('native', original), ('rust', select_overlay(selected.read_text()))]:
         marker = 'case ' + ('SW_HTTP2_TYPE_DATA' if variant == 'native' else 'SW_RS_HTTP2_DATA') + ': {'
         fragment = body(text, marker)
-        pieces.append('namespace ' + variant + ' {int receive(const std::shared_ptr<Session>&client,int flags,uint32_t stream_id,ssize_t length,const char*buf){switch(0){case 0:{' + fragment + '}}return SW_OK;}}')
+        pieces.append((variant, 'namespace ' + variant + ' {int receive(const std::shared_ptr<Session>&client,int flags,uint32_t stream_id,ssize_t length,const char*buf){switch(0){case 0:{' + fragment + '}}return SW_OK;}}'))
     prelude = r'''
 #include "swoole_http2.h"
 #include "swoole_error.h"
@@ -63,36 +64,37 @@ namespace Http2=swoole::http2;
 #define swoole_http2_frame_trace_log(...) ((void)0)
 #undef swoole_error_log
 #define swoole_error_log(level,code,format,id) event("warning:"+std::to_string(code)+":"+std::to_string(id))
-static std::vector<std::string>effects;
-static unsigned throw_at;
-static bool multipart_failure;
-static std::function<void(const std::string&)>mutate;
-static void event(const std::string&what,bool throwing=true){effects.push_back(what);if(mutate)mutate(what);if(throwing&&throw_at==effects.size())throw std::runtime_error("native effect");}
+inline std::vector<std::string>effects;
+inline unsigned throw_at;
+inline bool multipart_failure;
+inline std::function<void(const std::string&)>mutate;
+inline void event(const std::string&what,bool throwing=true){effects.push_back(what);if(mutate)mutate(what);if(throwing&&throw_at==effects.size())throw std::runtime_error("native effect");}
 struct String{std::string bytes;size_t length=0;char*str=nullptr;void set(const std::string&s){bytes=s;length=s.size();str=bytes.data();}void append(const char*data,size_t n){event("append:"+std::to_string(n));bytes.append(data,n);length=bytes.size();str=bytes.data();}};
 struct zval{};
 struct Session;
-static int parser_marker;
+inline int parser_marker;
 struct HttpContext{unsigned end_=0,parse_body=0;void*mt_parser=nullptr;Session*client;String first,second;String*active=nullptr;unsigned gets=0;struct Request{unsigned post_form_urlencoded=0;zval object;zval*zobject=&object,*zpost=nullptr;}request;
  String*get_http2_data_buffer(){event("buffer:"+std::to_string(++gets));if(!active){event("buffer:new");active=&first;}return active;}
  size_t get_http2_data_length(){event("length");return active?active->length:0;}
  bool parse_multipart_data(const char*data,size_t n){event("multipart:"+std::string(data,n));return !multipart_failure;}
 };
-static unsigned final_stream_window;
+inline unsigned final_stream_window;
 struct Stream{HttpContext*ctx;uint32_t local_window_size=0;~Stream(){final_stream_window=local_window_size;event("stream:drop",false);}};
 struct Session{std::shared_ptr<Stream>slot;uint32_t max_body_size=0,local_window_size=0;Http2::Settings local_settings{};
  std::shared_ptr<Stream>get_stream(unsigned id){event("get:"+std::to_string(id));return slot;}
  void remove_stream(unsigned id){event("remove:"+std::to_string(id));slot.reset();}
  void handle(const std::shared_ptr<Session>&,const std::shared_ptr<Stream>&){event("handle");}
 };
-static void http2_server_send_rst_stream(HttpContext*,unsigned code){event("reset:"+std::to_string(code));}
-static void http2_server_send_window_update(HttpContext*,unsigned id,unsigned increment){event("window:"+std::to_string(id)+":"+std::to_string(increment));}
-static int swoole_http_request_ce;
-static zval post;
-static zval*swoole_http_init_and_read_property(int,zval*,zval**slot,const char*,size_t){event("post");*slot=&post;return *slot;}
-static std::map<char*,size_t>allocations;
-static char*estrndup(const char*bytes,size_t n){event("duplicate:"+std::to_string(n));char*p=(char*)std::malloc(n+1);if(!p)throw std::bad_alloc();std::memcpy(p,bytes,n);p[n]=0;allocations[p]=n;return p;}
-static void treat_data(int,char*bytes,zval*){event("treat:"+std::string(bytes));allocations.erase(bytes);std::free(bytes);}
-struct SapiModule{void(*treat_data)(int,char*,zval*);}sapi_module{treat_data};
+inline void http2_server_send_rst_stream(HttpContext*,unsigned code){event("reset:"+std::to_string(code));}
+inline void http2_server_send_window_update(HttpContext*,unsigned id,unsigned increment){event("window:"+std::to_string(id)+":"+std::to_string(increment));}
+inline int swoole_http_request_ce;
+inline zval post;
+inline zval*swoole_http_init_and_read_property(int,zval*,zval**slot,const char*,size_t){event("post");*slot=&post;return *slot;}
+inline std::map<char*,size_t>allocations;
+inline char*estrndup(const char*bytes,size_t n){event("duplicate:"+std::to_string(n));char*p=(char*)std::malloc(n+1);if(!p)throw std::bad_alloc();std::memcpy(p,bytes,n);p[n]=0;allocations[p]=n;return p;}
+inline void treat_data(int,char*bytes,zval*){event("treat:"+std::string(bytes));allocations.erase(bytes);std::free(bytes);}
+struct SapiModule{void(*treat_data)(int,char*,zval*);};
+inline SapiModule sapi_module{treat_data};
 '''
     driver = r'''
 struct Result{std::vector<std::string>events;std::string first,second,exception;int returned=999;unsigned ended=0,parse=0,form=0,window=0,initial=0,stream_window=0,gets=0,active=0;bool multipart=false,live=false;size_t remnants=0;};
@@ -122,21 +124,8 @@ std::cout<<"{\"passed\":true,\"receive_cases\":"<<count<<"}\n";
 '''
     work = args.output.parent / (args.output.stem + '-artifacts')
     work.mkdir(parents=True, exist_ok=False)
-    cpp = work / 'receive.cpp'
-    cpp.write_text(prelude + '\n'.join(pieces) + driver)
-    executable = work / 'receive'
-    command = ['c++', '-std=c++17', '-O1', '-fsanitize=address,undefined', '-fno-sanitize=alignment',
-               '-fno-omit-frame-pointer', '-I', str(gate.ROOT / 'native/http2'), '-I', str(args.source / 'include')]
-    for include in args.include:
-        command += ['-I', include]
-    command += [str(cpp), str(archive), '-o', str(executable)]
-    for cmd in [command, [str(executable)]]:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        report['commands'].append({'command': cmd, 'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr})
-        if result.returncode:
-            break
-        if cmd != command:
-            report.update(json.loads(result.stdout))
+    report['commands'], result = sides.run(work, 'receive', prelude, pieces, driver, source=args.source, archive=archive, includes=args.include)
+    report.update(result or {})
     if gate.digest(header) != core['module_header_sha256']:
         report['passed'] = False
         report['error'] = 'Module header changed during checks'
