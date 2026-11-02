@@ -4,13 +4,16 @@ Feature value 32768 (`--module coroutine`). Upstream targets:
 `src/coroutine/{base,context,thread_context,channel}.cc` and their headers.
 Follows the [policy/effect split](abi-v1.md#policyeffect-split).
 
-Rust owns transition, fairness and error-order policy through a caller-local POD
-cursor and typed next actions. The native Coroutine registry, public fields and
-stack `TimeoutMessage` stay authoritative. No second executor, registry or timer
-queue. Context switches, timer operations, callbacks, container changes,
-allocation, diagnostics and unwinding run natively after Rust returns; Rust has
-returned before `swap_in`/`swap_out`, bailout, `on_resume`/`on_yield`/`on_close`
-and waking channel waiters.
+Rust owns the scheduler (current coroutine, ids, peak, stack size, swap
+callbacks, activation) and each coroutine's state (id, state, resume code, task,
+cancel function, origin tree, timing) as `repr(C)` records that C++ stores in
+upstream's scopes and reads inline; `swoole::Coroutine` is a facade whose writes
+are Rust calls. The coroutine map (`Coroutine::coroutines`, whose iteration
+order `Coroutine::list()` exposes) and the stack `TimeoutMessage` stay native.
+Context switches, timer operations, callbacks, allocation, diagnostics and
+unwinding run natively between Rust calls; Rust has returned before
+`swap_in`/`swap_out`, bailout, `on_resume`/`on_yield`/`on_close` and waking
+channel waiters.
 
 Sequence points kept exactly:
 
@@ -41,9 +44,8 @@ Channel:
 allocation, page protection, valgrind registration and the context-switch ABI are
 native. Rust only touches bounded native-owned marker spans.
 
-Execution-time accounting (`seed`, `get_init_msec`, `get_execute_usec`,
-`calc_execute_usec` and the inline three-`long` timing record) is in Rust; clocks
-are read natively in the original order.
+Execution-time accounting (`get_execute_usec`, `calc_execute_usec`) is in Rust;
+C++ reads the clocks and passes them in.
 
 Not validated: `SW_USE_THREAD_CONTEXT` (its cross-owner `std::mutex` hand-off is
 not a valid Rust ownership model) and macOS ucontext. Original inventory: 130
