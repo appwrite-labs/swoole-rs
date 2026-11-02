@@ -15,8 +15,6 @@ pub(crate) const SEND_CHUNKED: u32 = 1 << 4;
 pub(crate) const CO_SOCKET: u32 = 1 << 5;
 pub(crate) const UPGRADE: u32 = 1 << 6;
 pub(crate) const WEBSOCKET: u32 = 1 << 7;
-/// `swr_http_host_mark`'s second flag (`SWR_PHPHTTP_SEND_TRAILER`).
-pub(crate) const SEND_TRAILER: u32 = 256;
 
 /// `swr_http_host_response_property`'s properties.
 pub(crate) const HEADER: c_int = 0;
@@ -26,6 +24,7 @@ pub(crate) const TRAILER: c_int = 2;
 /// Swoole error codes (`include/swoole_error.h`; ext-src asserts them).
 pub(crate) const PHP_FATAL_ERROR: c_int = 503;
 pub(crate) const PHP_RUNTIME_NOTICE: c_int = 510;
+pub(crate) const NO_PAYLOAD: c_int = 550;
 pub(crate) const SESSION_CLOSED: c_int = 1004;
 pub(crate) const HTTP_CONTEXT_UNAVAILABLE: c_int = 7106;
 pub(crate) const SERVER_IS_NOT_REGULAR_FILE: c_int = 9013;
@@ -58,22 +57,42 @@ unsafe extern "C" {
     );
     pub(crate) fn swr_http_host_response_property(context: *mut Context, which: c_int)
     -> *mut zval;
-    pub(crate) fn swr_http_host_write(
+    pub(crate) fn swr_http_host_after(context: *mut Context) -> bool;
+    pub(crate) fn swr_http_host_buffer(
         context: *mut Context,
-        data: *mut zend_string,
-        return_value: *mut zval,
-    ) -> bool;
-    pub(crate) fn swr_http_host_end(
+        head: *const c_char,
+        head_length: usize,
+        body: *const c_char,
+        body_length: usize,
+        tail: *const c_char,
+        tail_length: usize,
+    );
+    pub(crate) fn swr_http_host_flush(context: *mut Context) -> bool;
+    pub(crate) fn swr_http_host_send(
         context: *mut Context,
-        data: *mut zend_string,
-        return_value: *mut zval,
+        data: *const c_char,
+        length: usize,
     ) -> bool;
-    pub(crate) fn swr_http_host_send_file(
+    pub(crate) fn swr_http_host_sendfile(
         context: *mut Context,
         file: *mut zend_string,
-        offset: zend_long,
-        length: zend_long,
+        offset: i64,
+        length: usize,
+    ) -> bool;
+    pub(crate) fn swr_http_host_compressed_body(
+        context: *const Context,
+        length: *mut usize,
+    ) -> *const c_char;
+    pub(crate) fn swr_http_host_http2(
+        context: *mut Context,
+        op: c_int,
+        data: *mut zend_string,
+        offset: i64,
+        length: usize,
     ) -> c_int;
+    pub(crate) fn swr_http_host_file_type(context: *mut Context, file: *mut zend_string);
+    pub(crate) fn swr_http_host_websocket_accept(context: *mut Context);
+    pub(crate) fn swr_http_host_websocket_handshaked(context: *mut Context);
     pub(crate) fn swr_http_host_redirect(
         context: *mut Context,
         url: *mut zval,
