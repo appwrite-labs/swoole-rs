@@ -122,10 +122,10 @@ fn host() -> &'static ServerHost {
     unsafe { &*HOST.load(Ordering::Acquire) }
 }
 
-static SERVER: Class = Class::new();
+pub(crate) static SERVER: Class = Class::new();
 static TASK: Class = Class::new();
 /// `Event`, `Packet`, `PipeMessage`, `StatusInfo` and `TaskResult`.
-static DATA: [Class; 5] = [
+pub(crate) static DATA: [Class; 5] = [
     Class::new(),
     Class::new(),
     Class::new(),
