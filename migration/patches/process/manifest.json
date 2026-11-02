@@ -253,7 +253,7 @@
       ]
     },
     {
-      "path": "0024-php-server-task.patch",
+      "path": "0027-php-server-task.patch",
       "sha256": "35fa9a03447cd2ba747dbc7909966e9c6d0604294410d90acd0f30c11935928f",
       "upstream_paths": [
         "ext-src/php_swoole_server.h",
