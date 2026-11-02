@@ -4,8 +4,9 @@ use super::{Call, Invalid, type_of};
 use crate::{
     string::bytes,
     sys::{
-        _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_STRING_OR_NULL,
-        IS_ARRAY, IS_NULL, IS_STRING, swr_zval_copy, zend_parse_arg_str_slow, zend_string, zval,
+        _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_STRING_OR_LONG,
+        _zend_expected_type_Z_EXPECTED_STRING_OR_NULL, IS_ARRAY, IS_LONG, IS_NULL, IS_STRING,
+        swr_zval_copy, zend_parse_arg_str_or_long_slow, zend_parse_arg_str_slow, zend_string, zval,
     },
 };
 use std::ptr;
@@ -47,6 +48,50 @@ impl Call {
             n,
             arg,
             _zend_expected_type_Z_EXPECTED_STRING_OR_NULL,
+        ))
+    }
+
+    /// The frame Zend passed (`execute_data`), to pass on to another handler.
+    #[must_use]
+    #[inline]
+    pub fn frame(&self) -> *mut crate::sys::zend_execute_data {
+        self.frame
+    }
+
+    /// `Z_PARAM_STR_OR_LONG` of argument `n`: `Ok(None)` when not passed,
+    /// else the string (`Err` side of the inner result) or the int.
+    /// # Errors
+    /// The argument is neither under the caller's typing mode; Zend has thrown.
+    #[inline]
+    pub fn str_or_long(&self, n: u32) -> Result<Option<Result<i64, *mut zend_string>>, Invalid> {
+        let Some(arg) = self.passed(n) else {
+            return Ok(None);
+        };
+        // SAFETY: `arg` is a passed, live zval.
+        let kind = unsafe { type_of(arg) };
+        // SAFETY: as above.
+        let value = unsafe { (*arg).value };
+        if kind == IS_STRING {
+            // SAFETY: an IS_STRING zval holds `str_`.
+            return Ok(Some(Err(unsafe { value.str_ })));
+        }
+        if kind == IS_LONG {
+            // SAFETY: an IS_LONG zval holds `lval`.
+            return Ok(Some(Ok(unsafe { value.lval })));
+        }
+        let (mut string, mut long) = (ptr::null_mut(), 0);
+        // SAFETY: `arg` is live and the outputs are writable locals.
+        if unsafe { zend_parse_arg_str_or_long_slow(arg, &raw mut string, &raw mut long, n) } {
+            return Ok(Some(if string.is_null() {
+                Ok(long)
+            } else {
+                Err(string)
+            }));
+        }
+        Err(Self::wrong(
+            n,
+            arg,
+            _zend_expected_type_Z_EXPECTED_STRING_OR_LONG,
         ))
     }
 

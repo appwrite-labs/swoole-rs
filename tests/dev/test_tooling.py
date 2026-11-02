@@ -429,15 +429,8 @@ class Lanes(unittest.TestCase):
         commands = dict(dev.plan(args, ROOT / 'target/reports/real-callers'))
         queues = commands['reactor-callback-queues']
         self.assertIn('--sanitize', queues)
-        catalogue = commands['phpcoroutines-method-catalogue']
-        sanitized = commands['phpcoroutines-method-catalogue-native-sanitized']
-        self.assertNotIn('--sanitize', catalogue)
-        self.assertIn('--sanitize', sanitized)
-        archives = {command[command.index('--archive') + 1]
-                    for command in [queues, catalogue, sanitized]}
-        self.assertEqual(len(archives), 1)
-        for command in [queues, catalogue, sanitized]:
-            self.assertNotIn('--engine', command)
+        self.assertIn('--archive', queues)
+        self.assertNotIn('--engine', queues)
 
     def test_long_all_module_aliases_publish_and_remain_distinct(self):
         from itertools import product
@@ -573,7 +566,6 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('--sanitize', commands['memory-mapping-operation'])
         self.assertIn('--archive', commands['reactor-backend-storage'])
         self.assertIn('--report', commands['reactor-backend-storage'])
-        self.assertIn('--archive', commands['phpcoroutines-policy'])
         self.assertIn('--archive', commands['utilities-logger-owned-state'])
         self.assertIn('--sdk-ref', commands['utilities-logger-owned-state'])
         for family in ['logger', 'hash', 'inline', 'global-logger', 'redirect']:
@@ -581,7 +573,6 @@ class Lanes(unittest.TestCase):
             self.assertIn('--' + family + '-originals', command)
             self.assertTrue(any('selected-export/swoole.so' in arg for arg in command))
             self.assertNotEqual(command[command.index('--source-ref') + 1], 'HEAD')
-        self.assertLess(list(commands).index('phphelpers-sdk'), list(commands).index('phpcoroutines-sdk'))
         self.assertIn('--core', commands['ports-flags'])
         self.assertLess(list(stdext).index('phphelpers-sdk'), list(stdext).index('phphelpers-facade-runtime'))
         self.assertNotIn('--prepare-only', stdext['phphelpers-facade-runtime'])

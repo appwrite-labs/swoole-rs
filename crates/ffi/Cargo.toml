@@ -39,7 +39,7 @@ ports = ["dep:swoole-rs-ports"]
 phphelpers = ["dep:swoole-rs-phphelpers", "dep:swoole-rs-phpstdext", "swoole-rs-phpstdext/php"]
 phpcollections = ["dep:swoole-rs-phpcollections", "swoole-rs-phpcollections/php"]
 phpevents = ["dep:swoole-rs-phpevents", "swoole-rs-phpevents/php"]
-phpcoroutines = ["dep:swoole-rs-phpcoroutines"]
+phpcoroutines = ["dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php"]
 
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }
