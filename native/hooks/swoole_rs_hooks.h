@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <poll.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/types.h>
 #ifdef __cplusplus
@@ -262,6 +263,33 @@ typedef struct {
     bool (*verify)(void *);
 } swr_v1_hook_tls_ops;
 bool swr_v1_hook_ssl_handshake(const swr_v1_hook_tls_ops *ops);
+/* The socket's read and write timer slots (crates/hooks/src/timers.rs): the slot for event's
+ * direction (SW_EVENT_READ, else write), and on expiry the cleared slot's event, or 0 for neither. */
+void **swr_v1_hook_socket_timer(swr_v1_hook_socket_state *state, uint32_t event);
+uint32_t swr_v1_hook_socket_timeout(swr_v1_hook_socket_state *state, void *node);
+/* TimeoutSetter: save and set (restore false), or restore, each SW_TIMEOUT_* type in types;
+ * original holds timeout_type_list's four entries. */
+typedef struct {
+    double (*get)(void *, int type);
+    void (*set)(void *, double timeout, int type);
+} swr_v1_hook_timeout_ops;
+void swr_v1_hook_timeouts(const swr_v1_hook_timeout_ops *ops, void *socket, double timeout, int types, double *original,
+                          bool restore);
+/* Socket::connect(addr, addrlen): connect(2) on fd, waiting to write when in progress; so_error
+ * reads SO_ERROR into errCode, error returns errCode. */
+typedef struct {
+    void *context;
+    swr_v1_hook_socket_state *state;
+    int fd;
+    bool (*available)(void *);
+    void (*set_err)(void *, int code);
+    bool (*closed)(void *);
+    bool (*wait)(void *);
+    int (*so_error)(void *);
+    int (*error)(void *);
+    void (*name)(void *);
+} swr_v1_hook_connect_addr_ops;
+bool swr_v1_hook_connect_addr(const swr_v1_hook_connect_addr_ops *ops, const struct sockaddr *addr, socklen_t length);
 /* The coroutine bound for reading or writing (event SW_EVENT_READ/WRITE; bind accepts both bits).
    bound_co follows get_bound_co; event_name returns 0 reading, 1 writing, 2 reading or writing. */
 void *swr_v1_hook_socket_co(const swr_v1_hook_socket_state *state, uint32_t event);

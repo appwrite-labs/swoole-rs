@@ -28,6 +28,8 @@ pub struct SocketState {
     pub(crate) want: u32,
     /// The barriers installed for the read and the write wait, with their state.
     pub(crate) barriers: [Option<(Barrier, *mut c_void)>; 2],
+    /// The native `TimerNode` timing the read and the write wait, or null.
+    pub(crate) timers: [*mut c_void; 2],
 }
 
 /// A new socket's state: not connected, nothing shut, no coroutine bound.
@@ -39,6 +41,7 @@ pub extern "C" fn swr_v1_hook_socket_state_new() -> *mut SocketState {
         write_co: core::ptr::null_mut(),
         want: 0,
         barriers: [None; 2],
+        timers: [core::ptr::null_mut(); 2],
     }))
 }
 
