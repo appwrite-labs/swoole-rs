@@ -40,7 +40,7 @@
     },
     {
       "path": "0005-swoole_client.patch",
-      "sha256": "8ee77ba5ef34235773957033170e2bb360c6b39217058e0978a01d4c5bc8bd43",
+      "sha256": "6716843e427f0a23fec272b313dc0f546e3d83c3e34fec1ff84f6fa553f03e9f",
       "upstream_paths": [
         "ext-src/php_swoole_client.h",
         "ext-src/swoole_client.cc",
