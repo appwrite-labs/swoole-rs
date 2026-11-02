@@ -13,16 +13,18 @@ use crate::{
 use libc::{c_char, c_int, c_void};
 use std::{ffi::CStr, ptr};
 use swoole_rs_clients::{state, swr_v1_clients_port};
+use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
     Call, Class, E_ERROR,
     bailout::{self, Bailout},
     class_name, declare_property_null, set_object, string,
     sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, zend_class_entry, zend_function_entry,
-        zend_object, zend_object_handlers, zval, zval_ptr_dtor,
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, zend_class_entry, zend_object,
+        zend_object_handlers, zval, zval_ptr_dtor,
     },
     throw_error, throw_exception, unset_property_deny, update_property, value,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 static ASYNC: Class = Class::new();
 
@@ -69,6 +71,22 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
     handlers.unset_property = Some(unset_property_deny);
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_client_async___construct, &client_async::arginfo_class_Swoole_Async_Client___construct, z::ZEND_ACC_PUBLIC;
+        c"__destruct" => zim_swoole_client_async___destruct, &client_async::arginfo_class_Swoole_Async_Client___destruct, z::ZEND_ACC_PUBLIC;
+        c"connect" => zim_swoole_client_async_connect, &client_async::arginfo_class_Swoole_Async_Client_connect, z::ZEND_ACC_PUBLIC;
+        c"sleep" => zim_swoole_client_async_sleep, &client_async::arginfo_class_Swoole_Async_Client_sleep, z::ZEND_ACC_PUBLIC;
+        c"wakeup" => zim_swoole_client_async_wakeup, &client_async::arginfo_class_Swoole_Async_Client_wakeup, z::ZEND_ACC_PUBLIC;
+        c"pause" => zim_swoole_client_async_sleep, &client_async::arginfo_class_Swoole_Async_Client_sleep, z::ZEND_ACC_PUBLIC;
+        c"resume" => zim_swoole_client_async_wakeup, &client_async::arginfo_class_Swoole_Async_Client_wakeup, z::ZEND_ACC_PUBLIC;
+        c"enableSSL" => zim_swoole_client_async_enableSSL, &client_async::arginfo_class_Swoole_Async_Client_enableSSL, z::ZEND_ACC_PUBLIC;
+        c"isConnected" => zim_swoole_client_async_isConnected, &client_async::arginfo_class_Swoole_Async_Client_isConnected, z::ZEND_ACC_PUBLIC;
+        c"close" => zim_swoole_client_async_close, &client_async::arginfo_class_Swoole_Async_Client_close, z::ZEND_ACC_PUBLIC;
+        c"on" => zim_swoole_client_async_on, &client_async::arginfo_class_Swoole_Async_Client_on, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT, as `php_swoole_client_async_minit` did: objects come from the
 /// parent's `create_object`, which Zend inherits.
 /// # Safety
@@ -76,12 +94,18 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
 /// table and a writable class-entry slot.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpclients_async_minit(
-    methods: *const zend_function_entry,
     client_class: *mut zend_class_entry,
     async_class: *mut *mut zend_class_entry,
 ) {
-    // SAFETY: MINIT, with the caller's table and the registered parent.
-    unsafe { ASYNC.register_child(c"Swoole\\Async\\Client", methods, client_class, configure) };
+    // SAFETY: MINIT, with a static table and the registered parent.
+    unsafe {
+        ASYNC.register_child(
+            c"Swoole\\Async\\Client",
+            METHODS.as_ptr(),
+            client_class,
+            configure,
+        );
+    }
     let ce = ASYNC.entry();
     for name in [
         c"onConnect",

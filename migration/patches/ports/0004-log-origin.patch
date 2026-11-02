@@ -1,5 +1,5 @@
 diff --git a/src/server/port.cc b/src/server/port.cc
-index 65f4745..3b23bae 100644
+index c26280f..c307da2 100644
 --- a/src/server/port.cc
 +++ b/src/server/port.cc
 @@ -82,3 +82,6 @@ static uint64_t port_run_call(void *context, uint32_t op, uint64_t arg) {
@@ -52,11 +52,11 @@ index 65f4745..3b23bae 100644
              break;
 -        default: swoole_error_log(SW_LOG_WARNING, EINVAL, "the socket[%d] is not a listening socket", c.fd); break;
          }
-@@ -417,2 +434,3 @@ struct PortRead {
-     String *buffer;
+@@ -418,2 +435,3 @@ struct PortRead {
+     Server *serv;
 +    uint32_t kind;
- };
-@@ -433,3 +451,11 @@ static uint64_t port_read_call(void *context, uint32_t op, uint64_t arg) {
+     String *buffer() const {
+@@ -464,3 +482,11 @@ static uint64_t port_read_call(void *context, uint32_t op, uint64_t arg) {
      case SWR_PORTS_OP_CATCH: return c.socket->catch_read_error(errno);
 -    case SWR_PORTS_OP_WARN_RECV: swoole_sys_warning("recv from connection#%d failed", c.event->fd); return 0;
 +    case SWR_PORTS_OP_WARN_RECV:
@@ -69,7 +69,7 @@ index 65f4745..3b23bae 100644
 +        }
 +        return 0;
      case SWR_PORTS_OP_CLOSE_ERRNO: c.conn->close_errno = errno; return 0;
-@@ -537,51 +563,92 @@ static uint64_t port_read_call(void *context, uint32_t op, uint64_t arg) {
+@@ -561,51 +587,92 @@ static uint64_t port_read_call(void *context, uint32_t op, uint64_t arg) {
      case SWR_PORTS_LOG_UNKNOWN_PROTOCOL:
 -        swoole_error_log(SW_LOG_TRACE, SW_ERROR_HTTP_INVALID_PROTOCOL,
 -                         "Bad Request: unknown protocol" CLIENT_INFO_FMT, CLIENT_INFO_ARGS);
@@ -190,8 +190,8 @@ index 65f4745..3b23bae 100644
          return 0;
 -    case SWR_PORTS_TRACE_CLOSE: swoole_trace("Close Event.FD=%d|From=%d", c.event->fd, c.event->reactor_id); return 0;
      default: abort();
-@@ -592,3 +659,3 @@ static int port_read(Reactor *reactor, ListenPort *port, Event *event, uint32_t
-     auto *conn = static_cast<Connection *>(event->socket->object);
--    PortRead context{reactor, port, event, event->socket, conn, static_cast<Server *>(reactor->ptr), nullptr};
-+    PortRead context{reactor, port, event, event->socket, conn, static_cast<Server *>(reactor->ptr), nullptr, kind};
-     return swr_v1_ports_on_read(kind, &context, port_read_call);
+@@ -617,3 +684,3 @@ static int port_read(Reactor *reactor, ListenPort *port, Event *event, uint32_t
+     auto *serv = static_cast<Server *>(reactor->ptr);
+-    PortRead context{{}, reactor, port, event, event->socket, conn, serv};
++    PortRead context{{}, reactor, port, event, event->socket, conn, serv, kind};
+     if (kind == SWR_PORTS_ON_READ_HTTP) {

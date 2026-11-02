@@ -6,6 +6,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_phpstubs::server;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Object, declare_bool, declare_long, declare_property_null,
     declare_string, php_error, register_long_constant,
@@ -13,11 +14,12 @@ use swoole_rs_zend::{
         _zend_bailout, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE,
         ZEND_ACC_PUBLIC, add_assoc_double_ex, add_assoc_stringl_ex, add_next_index_long,
         zend_ce_arrayaccess, zend_ce_countable, zend_ce_iterator, zend_class_entry,
-        zend_class_implements, zend_declare_property_double, zend_function_entry, zend_object,
-        zend_object_handlers, zval,
+        zend_class_implements, zend_declare_property_double, zend_object, zend_object_handlers,
+        zval,
     },
     throw_error, unset_property_deny,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// Swoole error codes (`include/swoole_error.h`).
 const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
@@ -313,25 +315,122 @@ const SERVER_PROPERTIES: &[Property] = &[
     Null(c"admin_server"),
 ];
 
+method_table! {
+    static SERVER_METHODS = [
+        c"__construct" => zim_swoole_server___construct, &server::arginfo_class_Swoole_Server___construct, z::ZEND_ACC_PUBLIC;
+        c"__destruct" => zim_swoole_server___destruct, &server::arginfo_class_Swoole_Server___destruct, z::ZEND_ACC_PUBLIC;
+        c"listen" => crate::io::zim_swoole_server_listen, &server::arginfo_class_Swoole_Server_listen, z::ZEND_ACC_PUBLIC;
+        c"addlistener" => crate::io::zim_swoole_server_listen, &server::arginfo_class_Swoole_Server_listen, z::ZEND_ACC_PUBLIC;
+        c"on" => crate::io::zim_swoole_server_on, &server::arginfo_class_Swoole_Server_on, z::ZEND_ACC_PUBLIC;
+        c"getCallback" => crate::io::zim_swoole_server_getCallback, &server::arginfo_class_Swoole_Server_getCallback, z::ZEND_ACC_PUBLIC;
+        c"set" => crate::settings::zim_swoole_server_set, &server::arginfo_class_Swoole_Server_set, z::ZEND_ACC_PUBLIC;
+        c"start" => zim_swoole_server_start, &server::arginfo_class_Swoole_Server_start, z::ZEND_ACC_PUBLIC;
+        c"send" => crate::io::zim_swoole_server_send, &server::arginfo_class_Swoole_Server_send, z::ZEND_ACC_PUBLIC;
+        c"sendto" => crate::io::zim_swoole_server_sendto, &server::arginfo_class_Swoole_Server_sendto, z::ZEND_ACC_PUBLIC;
+        c"sendwait" => zim_swoole_server_sendwait, &server::arginfo_class_Swoole_Server_sendwait, z::ZEND_ACC_PUBLIC;
+        c"exists" => zim_swoole_server_exists, &server::arginfo_class_Swoole_Server_exists, z::ZEND_ACC_PUBLIC;
+        c"exist" => zim_swoole_server_exists, &server::arginfo_class_Swoole_Server_exists, z::ZEND_ACC_PUBLIC;
+        c"protect" => zim_swoole_server_protect, &server::arginfo_class_Swoole_Server_protect, z::ZEND_ACC_PUBLIC;
+        c"sendfile" => crate::io::zim_swoole_server_sendfile, &server::arginfo_class_Swoole_Server_sendfile, z::ZEND_ACC_PUBLIC;
+        c"close" => zim_swoole_server_close, &server::arginfo_class_Swoole_Server_close, z::ZEND_ACC_PUBLIC;
+        c"confirm" => zim_swoole_server_resume, &server::arginfo_class_Swoole_Server_resume, z::ZEND_ACC_PUBLIC;
+        c"pause" => zim_swoole_server_pause, &server::arginfo_class_Swoole_Server_pause, z::ZEND_ACC_PUBLIC;
+        c"resume" => zim_swoole_server_resume, &server::arginfo_class_Swoole_Server_resume, z::ZEND_ACC_PUBLIC;
+        c"task" => zim_swoole_server_task, &server::arginfo_class_Swoole_Server_task, z::ZEND_ACC_PUBLIC;
+        c"taskwait" => zim_swoole_server_taskwait, &server::arginfo_class_Swoole_Server_taskwait, z::ZEND_ACC_PUBLIC;
+        c"taskWaitMulti" => zim_swoole_server_taskWaitMulti, &server::arginfo_class_Swoole_Server_taskWaitMulti, z::ZEND_ACC_PUBLIC;
+        c"taskCo" => zim_swoole_server_taskCo, &server::arginfo_class_Swoole_Server_taskCo, z::ZEND_ACC_PUBLIC;
+        c"finish" => crate::io::zim_swoole_server_finish, &server::arginfo_class_Swoole_Server_finish, z::ZEND_ACC_PUBLIC;
+        c"reload" => zim_swoole_server_reload, &server::arginfo_class_Swoole_Server_reload, z::ZEND_ACC_PUBLIC;
+        c"shutdown" => zim_swoole_server_shutdown, &server::arginfo_class_Swoole_Server_shutdown, z::ZEND_ACC_PUBLIC;
+        c"stop" => zim_swoole_server_stop, &server::arginfo_class_Swoole_Server_stop, z::ZEND_ACC_PUBLIC;
+        c"getLastError" => zif_swoole_last_error, &server::arginfo_class_Swoole_Server_getLastError, 0;
+        c"heartbeat" => zim_swoole_server_heartbeat, &server::arginfo_class_Swoole_Server_heartbeat, z::ZEND_ACC_PUBLIC;
+        c"getClientInfo" => zim_swoole_server_getClientInfo, &server::arginfo_class_Swoole_Server_getClientInfo, z::ZEND_ACC_PUBLIC;
+        c"getClientList" => zim_swoole_server_getClientList, &server::arginfo_class_Swoole_Server_getClientList, z::ZEND_ACC_PUBLIC;
+        c"getWorkerId" => zim_swoole_server_getWorkerId, &server::arginfo_class_Swoole_Server_getWorkerId, z::ZEND_ACC_PUBLIC;
+        c"getWorkerPid" => zim_swoole_server_getWorkerPid, &server::arginfo_class_Swoole_Server_getWorkerPid, z::ZEND_ACC_PUBLIC;
+        c"getWorkerStatus" => zim_swoole_server_getWorkerStatus, &server::arginfo_class_Swoole_Server_getWorkerStatus, z::ZEND_ACC_PUBLIC;
+        c"getManagerPid" => zim_swoole_server_getManagerPid, &server::arginfo_class_Swoole_Server_getManagerPid, z::ZEND_ACC_PUBLIC;
+        c"getMasterPid" => zim_swoole_server_getMasterPid, &server::arginfo_class_Swoole_Server_getMasterPid, z::ZEND_ACC_PUBLIC;
+        c"connection_info" => zim_swoole_server_getClientInfo, &server::arginfo_class_Swoole_Server_getClientInfo, z::ZEND_ACC_PUBLIC;
+        c"connection_list" => zim_swoole_server_getClientList, &server::arginfo_class_Swoole_Server_getClientList, z::ZEND_ACC_PUBLIC;
+        c"sendMessage" => crate::io::zim_swoole_server_sendMessage, &server::arginfo_class_Swoole_Server_sendMessage, z::ZEND_ACC_PUBLIC;
+        c"command" => zim_swoole_server_command, &server::arginfo_class_Swoole_Server_command, z::ZEND_ACC_PUBLIC;
+        c"addCommand" => zim_swoole_server_addCommand, &server::arginfo_class_Swoole_Server_addCommand, z::ZEND_ACC_PUBLIC;
+        c"addProcess" => zim_swoole_server_addProcess, &server::arginfo_class_Swoole_Server_addProcess, z::ZEND_ACC_PUBLIC;
+        c"stats" => zim_swoole_server_stats, &server::arginfo_class_Swoole_Server_stats, z::ZEND_ACC_PUBLIC;
+        // SWOOLE_SOCKETS_SUPPORT builds only; MINIT drops it from the others.
+        c"getSocket" => zim_swoole_server_getSocket, &server::arginfo_class_Swoole_Server_getSocket, z::ZEND_ACC_PUBLIC;
+        c"bind" => zim_swoole_server_bind, &server::arginfo_class_Swoole_Server_bind, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
+method_table! {
+    static ITERATOR_METHODS = [
+        c"__construct" => zim_swoole_connection_iterator___construct, &server::arginfo_class_Swoole_Connection_Iterator___construct, z::ZEND_ACC_PUBLIC;
+        c"__destruct" => zim_swoole_connection_iterator___destruct, &server::arginfo_class_Swoole_Connection_Iterator___destruct, z::ZEND_ACC_PUBLIC;
+        c"rewind" => zim_swoole_connection_iterator_rewind, &server::arginfo_class_Swoole_Connection_Iterator_rewind, z::ZEND_ACC_PUBLIC;
+        c"next" => zim_swoole_connection_iterator_next, &server::arginfo_class_Swoole_Connection_Iterator_next, z::ZEND_ACC_PUBLIC;
+        c"current" => zim_swoole_connection_iterator_current, &server::arginfo_class_Swoole_Connection_Iterator_current, z::ZEND_ACC_PUBLIC;
+        c"key" => zim_swoole_connection_iterator_key, &server::arginfo_class_Swoole_Connection_Iterator_key, z::ZEND_ACC_PUBLIC;
+        c"valid" => zim_swoole_connection_iterator_valid, &server::arginfo_class_Swoole_Connection_Iterator_valid, z::ZEND_ACC_PUBLIC;
+        c"count" => zim_swoole_connection_iterator_count, &server::arginfo_class_Swoole_Connection_Iterator_count, z::ZEND_ACC_PUBLIC;
+        c"offsetExists" => zim_swoole_connection_iterator_offsetExists, &server::arginfo_class_Swoole_Connection_Iterator_offsetExists, z::ZEND_ACC_PUBLIC;
+        c"offsetGet" => zim_swoole_connection_iterator_offsetGet, &server::arginfo_class_Swoole_Connection_Iterator_offsetGet, z::ZEND_ACC_PUBLIC;
+        c"offsetSet" => zim_swoole_connection_iterator_offsetSet, &server::arginfo_class_Swoole_Connection_Iterator_offsetSet, z::ZEND_ACC_PUBLIC;
+        c"offsetUnset" => zim_swoole_connection_iterator_offsetUnset, &server::arginfo_class_Swoole_Connection_Iterator_offsetUnset, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
+method_table! {
+    static TASK_METHODS = [
+        c"finish" => crate::io::zim_swoole_server_task_finish, &server::arginfo_class_Swoole_Server_Task_finish, z::ZEND_ACC_PUBLIC;
+        c"pack" => zim_swoole_server_task_pack, &server::arginfo_class_Swoole_Server_Task_pack, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"unpack" => zim_swoole_server_task_unpack, &server::arginfo_class_Swoole_Server_Task_unpack, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+    ];
+}
+
+// The handlers that stay C++, and `swoole_last_error()` (crates/phpswoole),
+// which `getLastError()` aliases.
+unsafe extern "C" {
+    fn zim_swoole_server___construct(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server___destruct(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server_addCommand(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server_addProcess(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server_command(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server_start(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server_task(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server_taskCo(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server_taskWaitMulti(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server_task_pack(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server_task_unpack(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_server_taskwait(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zif_swoole_last_error(frame: *mut z::zend_execute_data, value: *mut z::zval);
+}
+
 /// MINIT, as `php_swoole_server_minit` did.
 /// # Safety
-/// Called once, at MINIT, with static `PHP_FE_END`-terminated method tables,
-/// a host table that lives for the process and a writable `classes`.
+/// Called once, at MINIT, with a host table that lives for the process and a
+/// writable `classes`; `sockets` is `SWOOLE_SOCKETS_SUPPORT`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpserver_minit(
-    server_methods: *const zend_function_entry,
-    iterator_methods: *const zend_function_entry,
-    task_methods: *const zend_function_entry,
     table: *const ServerHost,
     thread: bool,
+    sockets: bool,
     module: c_int,
     classes: *mut ServerClasses,
 ) {
     HOST.store(table.cast_mut(), Ordering::Release);
     let host = host();
-    // SAFETY: MINIT, with the caller's tables.
+    let methods = if sockets {
+        SERVER_METHODS.as_ptr()
+    } else {
+        SERVER_METHODS.without(&[c"getSocket"])
+    };
+    // SAFETY: MINIT, with tables that live for the process.
     unsafe {
-        SERVER.register(c"Swoole\\Server", server_methods, |entry, handlers| {
+        SERVER.register(c"Swoole\\Server", methods, |entry, handlers| {
             entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
             deny(handlers);
             Object::<ServerData>::install(entry, handlers, host.server_create, host.server_free);
@@ -339,12 +438,16 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
     }
     // SAFETY: as above.
     unsafe {
-        TASK.register(c"Swoole\\Server\\Task", task_methods, |entry, handlers| {
-            entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
-            deny(handlers);
-            Object::<ServerData>::install(entry, handlers, host.task_create, host.task_free);
-            handlers.offset = c_int::try_from(host.task_offset).unwrap_or(c_int::MAX);
-        });
+        TASK.register(
+            c"Swoole\\Server\\Task",
+            TASK_METHODS.as_ptr(),
+            |entry, handlers| {
+                entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
+                deny(handlers);
+                Object::<ServerData>::install(entry, handlers, host.task_create, host.task_free);
+                handlers.offset = c_int::try_from(host.task_offset).unwrap_or(c_int::MAX);
+            },
+        );
     }
     // SAFETY: MINIT, with the class just registered.
     unsafe { declare(TASK.entry(), TASK_PROPERTIES) };
@@ -356,11 +459,11 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
         // SAFETY: MINIT, with the class just registered.
         unsafe { declare(*entry, properties) };
     }
-    // SAFETY: MINIT, with the caller's table.
+    // SAFETY: MINIT, with a static table.
     unsafe {
         ITERATOR.register(
             c"Swoole\\Connection\\Iterator",
-            iterator_methods,
+            ITERATOR_METHODS.as_ptr(),
             |entry, handlers| {
                 entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
                 deny(handlers);

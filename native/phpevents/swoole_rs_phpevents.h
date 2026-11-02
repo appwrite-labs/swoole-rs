@@ -12,7 +12,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-struct _zend_function_entry;
 struct _zval_struct;
 struct swr_v1_phpevents_invocation {
     void *callable;
@@ -45,7 +44,7 @@ struct swr_v1_phpevents_ops {
     void (*fatal_warning)(const char *message);
     void (*warning)(const char *message);
 };
-void swr_v1_phpevents_minit(const struct _zend_function_entry *methods, const struct swr_v1_phpevents_ops *ops);
+void swr_v1_phpevents_minit(const struct swr_v1_phpevents_ops *ops);
 /* Reactor read (0) or write (1) handler of a user socket: SW_OK, SW_ERR, or 1
  * when the callback bailed out. */
 int32_t swr_v1_phpevents_ready(void *socket, uint8_t write);

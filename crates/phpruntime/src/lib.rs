@@ -40,16 +40,17 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
+use swoole_rs_phpstubs::runtime;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Message,
     bailout::Bailout,
     message, register_long_constant,
     sys::{
         swr_zend_module_loaded, swr_zend_runtime_find_class, zend_class_entry, zend_execute_data,
-        zend_fcall_info_cache, zend_function_entry, zend_register_class_alias_ex, zif_handler,
-        zval,
+        zend_fcall_info_cache, zend_register_class_alias_ex, zif_handler, zval,
     },
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `PHPCoroutine::HOOK_*`.
 pub mod flags {
@@ -192,23 +193,33 @@ const CONSTANTS: [(&CStr, u32); 22] = {
     ]
 };
 
+method_table! {
+    static METHODS = [
+        c"enableCoroutine" => zim_swoole_runtime_enableCoroutine, &runtime::arginfo_class_Swoole_Runtime_enableCoroutine, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getHookFlags" => zim_swoole_runtime_getHookFlags, &runtime::arginfo_class_Swoole_Runtime_getHookFlags, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"setHookFlags" => zim_swoole_runtime_setHookFlags, &runtime::arginfo_class_Swoole_Runtime_setHookFlags, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+    ];
+}
+
+// The handlers that stay C++.
+unsafe extern "C" {
+    fn zim_swoole_runtime_enableCoroutine(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_runtime_setHookFlags(frame: *mut z::zend_execute_data, value: *mut z::zval);
+}
+
 /// MINIT: `Swoole\Runtime` (not instantiable) and the `SWOOLE_HOOK_*`
 /// constants, as `php_swoole_runtime_minit` registered them.
 /// # Safety
 /// Called once, at MINIT, with upstream's static method table and a static
 /// operations table.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_minit(
-    methods: *const zend_function_entry,
-    module_number: i32,
-    ops: *const Ops,
-) {
+pub unsafe extern "C" fn swr_v1_phpruntime_minit(module_number: i32, ops: *const Ops) {
     // SAFETY: per the caller, a static table.
     if let Some(ops) = unsafe { ops.as_ref() } {
         OPS.get_or_init(|| ops);
     }
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { RUNTIME.register_static(c"Swoole\\Runtime", methods) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { RUNTIME.register_static(c"Swoole\\Runtime", METHODS.as_ptr()) };
     let features = self::ops().features;
     let all = flags::all(features & flags::NATIVE_CURL != 0);
     for (name, value) in CONSTANTS.into_iter().chain([(c"SWOOLE_HOOK_ALL", all)]) {

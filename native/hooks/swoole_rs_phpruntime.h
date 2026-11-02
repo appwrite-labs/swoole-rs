@@ -17,7 +17,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-struct _zend_function_entry;
 struct _zend_class_entry;
 struct _zend_execute_data;
 struct _zval_struct;
@@ -54,8 +53,7 @@ struct swr_v1_phpruntime_ops {
     swr_v1_phpruntime_handler exit;
     swr_v1_phpruntime_handler putenv;
 };
-void swr_v1_phpruntime_minit(const struct _zend_function_entry *methods,
-                             int32_t module_number,
+void swr_v1_phpruntime_minit(int32_t module_number,
                              const struct swr_v1_phpruntime_ops *ops);
 /* enableCoroutine (min 0) and setHookFlags (min 1) after the CLI check: 1 if a
  * bailout was trapped. */

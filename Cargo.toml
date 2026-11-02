@@ -8,6 +8,10 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+# One codegen unit across every crate: Rust-to-Rust calls between module crates
+# (phphttp → http, phpcoroutines → coroutine …) inline like calls within one (#853).
+lto = "fat"
+codegen-units = 1
 
 # Lint levels live here only; see AGENTS.md "Rust lints".
 [workspace.lints.rust]

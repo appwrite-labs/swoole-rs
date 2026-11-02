@@ -7,6 +7,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_phpstubs::server_port;
 use swoole_rs_ports::{
     swr_v1_ports_callback_hook, swr_v1_ports_callback_property, swr_v1_ports_class_property,
     swr_v1_ports_event,
@@ -18,11 +19,11 @@ use swoole_rs_zend::{
         _zend_bailout, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
         swr_zend_string_release, swr_zval_copy, swr_zval_get_string, zend_array, zend_class_entry,
         zend_declare_property_bool, zend_declare_property_long, zend_declare_property_null,
-        zend_function_entry, zend_object, zend_object_handlers, zend_read_property,
-        zend_update_property, zval,
+        zend_object, zend_object_handlers, zend_read_property, zend_update_property, zval,
     },
     throw_error, type_of, unset_property_deny,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `PHP_SWOOLE_SERVER_PORT_CALLBACK_NUM`.
 const CALLBACKS: usize = 12;
@@ -99,18 +100,35 @@ fn configure(
     Port::install(entry, handlers, create, free);
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_server_port___construct, &server_port::arginfo_class_Swoole_Server_Port___construct, z::ZEND_ACC_PRIVATE;
+        c"__destruct" => zim_swoole_server_port___destruct, &server_port::arginfo_class_Swoole_Server_Port___destruct, z::ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_server_port_set, &server_port::arginfo_class_Swoole_Server_Port_set, z::ZEND_ACC_PUBLIC;
+        c"on" => zim_swoole_server_port_on, &server_port::arginfo_class_Swoole_Server_Port_on, z::ZEND_ACC_PUBLIC;
+        c"getCallback" => zim_swoole_server_port_getCallback, &server_port::arginfo_class_Swoole_Server_Port_getCallback, z::ZEND_ACC_PUBLIC;
+        // SWOOLE_SOCKETS_SUPPORT builds only; MINIT drops it from the others.
+        c"getSocket" => zim_swoole_server_port_getSocket, &server_port::arginfo_class_Swoole_Server_Port_getSocket, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: register the class as `php_swoole_server_port_minit` did.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated method table
-/// and a host table that lives for the process.
+/// Called once, at MINIT, with a host table that lives for the process;
+/// `sockets` is `SWOOLE_SOCKETS_SUPPORT`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpserver_port_minit(
-    methods: *const zend_function_entry,
     table: *const PortHost,
     not_serializable: bool,
+    sockets: bool,
 ) -> *mut zend_class_entry {
     HOST.store(table.cast_mut(), Ordering::Release);
-    // SAFETY: MINIT, with the caller's table.
+    let methods = if sockets {
+        METHODS.as_ptr()
+    } else {
+        METHODS.without(&[c"getSocket"])
+    };
+    // SAFETY: MINIT, with a table that lives for the process.
     unsafe {
         PORT.register(c"Swoole\\Server\\Port", methods, |entry, handlers| {
             configure(entry, handlers, not_serializable);

@@ -1,9 +1,8 @@
 #ifndef SWOOLE_RS_PHPSERVER_SERVER_H
 #define SWOOLE_RS_PHPSERVER_SERVER_H
 /* PHP Swoole\Server and its data classes (crates/phpserver, server.rs). C++
- * keeps upstream's method tables, built from the stubs' arginfo, the Server
- * objects (ServerObject, ServerTaskObject: created and freed by C++) and the
- * Server they wrap; Rust registers the classes and runs the methods it owns,
+ * keeps the Server objects (ServerObject, ServerTaskObject: created and freed by C++) and the
+ * Server they wrap; Rust registers the classes with their method tables and runs the methods it owns,
  * reaching that C++ state through `host`. Swoole\Connection\Iterator objects
  * are Rust's, laid out as `struct { ConnectionIterator iterator; zend_object std; }`. */
 #include <stdbool.h>
@@ -12,7 +11,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-struct _zend_function_entry;
 struct _zend_class_entry;
 struct _zend_object;
 struct _zval_struct;
@@ -119,11 +117,9 @@ typedef struct {
 } swr_phpserver_classes;
 
 /* MINIT: register the classes, properties and constants. */
-void swr_v1_phpserver_minit(const struct _zend_function_entry *server_methods,
-                            const struct _zend_function_entry *iterator_methods,
-                            const struct _zend_function_entry *task_methods,
-                            const swr_v1_phpserver_host *table,
+void swr_v1_phpserver_minit(const swr_v1_phpserver_host *table,
                             bool thread,
+                            bool sockets,
                             int module,
                             swr_phpserver_classes *classes);
 #ifdef __cplusplus

@@ -1,8 +1,8 @@
 diff --git a/ext-src/swoole_server.cc b/ext-src/swoole_server.cc
-index 0b9a646..d35cca5 100644
+index 54fab2a..1f46767 100644
 --- a/ext-src/swoole_server.cc
 +++ b/ext-src/swoole_server.cc
-@@ -607,3 +607,3 @@ void server_heartbeat(void *server, bool close_connection, void (*each)(void *,
+@@ -475,3 +475,3 @@ void server_heartbeat(void *server, bool close_connection, void (*each)(void *,
          }
 -        swoole_trace("heartbeat check fd=%d", conn->fd);
 +        swoole_log_as("zim_swoole_server_heartbeat", swoole_trace("heartbeat check fd=%d", conn->fd));
