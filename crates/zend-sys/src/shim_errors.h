@@ -6,8 +6,9 @@
 #define SWOOLE_RS_ZEND_SHIM_ERRORS_H
 #include "shim.h"
 
-/* php_error_docref(NULL, level, "%s", message). */
+/* php_error_docref(NULL, level, "%s", message), and zend_error(level, "%s", message). */
 int swr_zend_try_error(int level, const char *message);
+int swr_zend_try_zend_error(int level, const char *message);
 
 /* A C or C++ reporter (Swoole's php_swoole_*error macros live in C++). */
 int swr_zend_try_report(void (*report)(const char *message), const char *message);

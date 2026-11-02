@@ -16,6 +16,10 @@ int swr_zend_try_error(int level, const char *message) {
     SWR_TRAP(php_error_docref(NULL, level, "%s", message));
 }
 
+int swr_zend_try_zend_error(int level, const char *message) {
+    SWR_TRAP(zend_error(level, "%s", message));
+}
+
 int swr_zend_try_report(void (*report)(const char *message), const char *message) {
     SWR_TRAP(report(message));
 }

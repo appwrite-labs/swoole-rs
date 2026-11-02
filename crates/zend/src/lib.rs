@@ -35,6 +35,7 @@ pub use class::{
 };
 pub use error::{
     E_ERROR, E_WARNING, Message, php_error, throw_constructed_twice, throw_error, throw_exception,
+    zend_error,
 };
 pub use function::create_object_deny;
 pub use helpers::{

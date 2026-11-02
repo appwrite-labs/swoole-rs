@@ -102,6 +102,19 @@ pub unsafe fn php_error(level: i32, message: &CStr) -> Result<(), Bailout> {
     bailout::trapped(unsafe { crate::sys::swr_zend_try_error(level, message.as_ptr()) })
 }
 
+/// `zend_error(level, "%s", message)` (no function prefix), as [`php_error`].
+/// # Errors
+/// It bailed out.
+/// # Safety
+/// As [`php_error`].
+pub unsafe fn zend_error(level: i32, message: &CStr) -> Result<(), Bailout> {
+    if bailout::pending() {
+        return Err(Bailout);
+    }
+    // SAFETY: per the caller.
+    bailout::trapped(unsafe { crate::sys::swr_zend_try_zend_error(level, message.as_ptr()) })
+}
+
 /// Swoole's "Constructor of %s can only be called once" `Error`.
 /// # Safety
 /// Called from a handler, with a live object.
