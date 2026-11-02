@@ -485,7 +485,7 @@ pub(crate) fn trailer<R>(state: &State, f: impl FnOnce(&[u8]) -> R) -> Result<R,
     })
 }
 
-unsafe extern "C" fn zalloc(_: *mut c_void, items: u32, size: u32) -> *mut c_void {
+pub(crate) unsafe extern "C" fn zalloc(_: *mut c_void, items: u32, size: u32) -> *mut c_void {
     // `safe_emalloc(items, size, 0)`; an overflow fails the allocation.
     let Some(bytes) = (items as usize).checked_mul(size as usize) else {
         return ptr::null_mut();
@@ -494,7 +494,7 @@ unsafe extern "C" fn zalloc(_: *mut c_void, items: u32, size: u32) -> *mut c_voi
     unsafe { swr_zend_emalloc(bytes) }
 }
 
-unsafe extern "C" fn zfree(_: *mut c_void, address: *mut c_void) {
+pub(crate) unsafe extern "C" fn zfree(_: *mut c_void, address: *mut c_void) {
     // SAFETY: memory `zalloc` returned.
     unsafe { swr_zend_efree(address) };
 }

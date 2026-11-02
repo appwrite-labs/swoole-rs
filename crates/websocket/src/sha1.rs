@@ -1,7 +1,8 @@
-//! SHA-1 (FIPS 180-4), the one hash the WebSocket client handshake needs.
+//! SHA-1 (FIPS 180-4), the one hash the WebSocket handshake needs.
 //!
 //! RFC 6455 mandates SHA-1 for the `Sec-WebSocket-Accept` token, so this is a
-//! protocol constant, not a security choice. The only caller is [`crate::ws`].
+//! protocol constant, not a security choice: the server handshake ([`crate::accept`])
+//! and the client's check of it (`swoole_rs_clients::ws`).
 
 /// Initial hash state (FIPS 180-4 §5.3.1).
 const INIT: [u32; 5] = [
@@ -13,7 +14,8 @@ const INIT: [u32; 5] = [
 ];
 
 /// Compute the 20-byte SHA-1 digest of `data`.
-pub(crate) fn digest(data: &[u8]) -> [u8; 20] {
+#[must_use]
+pub fn digest(data: &[u8]) -> [u8; 20] {
     let mut h = INIT;
     let mut schedule = [0u32; 80];
 

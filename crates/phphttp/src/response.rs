@@ -6,13 +6,11 @@ use crate::{
         self, CO_SOCKET, COOKIE, Context, DETACHED, END, HEADER, HEADER_KEY_SIZE,
         HTTP_CONTEXT_UNAVAILABLE, HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED,
         TRAILER, UPGRADE, WEBSOCKET, swr_http_host_after, swr_http_host_close,
-        swr_http_host_disconnect, swr_http_host_goaway, swr_http_host_mark, swr_http_host_ping,
-        swr_http_host_push, swr_http_host_recv, swr_http_host_redirect,
-        swr_http_host_response_create, swr_http_host_response_free,
+        swr_http_host_goaway, swr_http_host_mark, swr_http_host_ping, swr_http_host_recv,
+        swr_http_host_redirect, swr_http_host_response_create, swr_http_host_response_free,
         swr_http_host_response_property, swr_http_host_set_header, swr_http_host_status,
-        swr_http_host_upgrade,
     },
-    send,
+    send, websocket,
 };
 use std::{ffi::CStr, mem::MaybeUninit, ptr};
 use swoole_rs_httpbindings::swr_v1_httpbindings_file_range;
@@ -405,8 +403,7 @@ fn disconnect(call: &Call) {
             .arity(0, 2)
             .and_then(|()| Ok((call.long(1, CLOSE_NORMAL)?, call.str(2)?)));
         let (code, reason) = parsed.ok()?;
-        // SAFETY: a live context, the optional reason and the return slot.
-        unsafe { swr_http_host_disconnect(ctx, code, nullable(reason), call.return_value()) };
+        call.set_bool(websocket::response_disconnect(ctx, code, nullable(reason)));
         Some(())
     };
     or_false(call, run());
@@ -497,10 +494,9 @@ fn upgrade(call: &Call) {
             host::fatal("async server dose not support protocol upgrade");
             return None;
         }
-        // SAFETY: a live coroutine-socket context.
-        let upgraded = unsafe { swr_http_host_upgrade(ctx) };
-        bailed = upgraded < 0;
-        call.set_bool(upgraded > 0);
+        let upgraded = websocket::upgrade(ctx);
+        bailed = upgraded.is_err();
+        call.set_bool(upgraded.unwrap_or(false));
         Some(())
     };
     let done = run();
@@ -509,8 +505,7 @@ fn upgrade(call: &Call) {
 }
 
 fn push(call: &Call) {
-    let mut bailed = false;
-    let mut run = || -> Option<()> {
+    let run = || -> Option<()> {
         let ctx = websocket(call)?;
         let parsed = call.arity(1, 3).and_then(|()| {
             Ok((
@@ -522,21 +517,11 @@ fn push(call: &Call) {
         let (Some(data), opcode, flags) = parsed.ok()? else {
             return None;
         };
-        // SAFETY: a live context, this call's arguments and its return slot.
-        bailed = unsafe {
-            swr_http_host_push(
-                ctx,
-                data,
-                opcode,
-                flags.unwrap_or(ptr::null_mut()),
-                call.return_value(),
-            )
-        };
+        call.set_bool(websocket::response_push(ctx, data, opcode, flags));
         Some(())
     };
     let done = run();
     or_false(call, done);
-    host::raise(bailed);
 }
 
 fn close(call: &Call) {
