@@ -134,6 +134,13 @@
         "ext-src/swoole_thread.cc",
         "ext-src/swoole_thread_barrier.cc"
       ]
+    },
+    {
+      "path": "0014-php-server-methods.patch",
+      "sha256": "7c4a38dfcbce28729525e068063550af879aab6d173b2b33793d6b4471f2bea4",
+      "upstream_paths": [
+        "ext-src/swoole_server.cc"
+      ]
     }
   ]
 }

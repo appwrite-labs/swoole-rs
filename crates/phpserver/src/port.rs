@@ -52,7 +52,7 @@ const PROPERTY_BOOL: u32 = 3;
 
 /// `swr_v1_phpserver_port_host`: what the methods ask of C++.
 #[repr(C)]
-pub struct Host {
+pub struct PortHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
     deref: unsafe extern "C" fn(*mut zend_object),
     started: unsafe extern "C" fn(*mut c_void) -> bool,
@@ -65,10 +65,10 @@ pub struct Host {
     socket: unsafe extern "C" fn(*mut c_void, *mut zval),
 }
 
-static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
+static HOST: AtomicPtr<PortHost> = AtomicPtr::new(ptr::null_mut());
 static PORT: Class = Class::new();
 
-fn host() -> &'static Host {
+fn host() -> &'static PortHost {
     // SAFETY: MINIT stores C++'s static table before any object or method exists.
     unsafe { &*HOST.load(Ordering::Acquire) }
 }
@@ -106,7 +106,7 @@ fn configure(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpserver_port_minit(
     methods: *const zend_function_entry,
-    table: *const Host,
+    table: *const PortHost,
     not_serializable: bool,
 ) -> *mut zend_class_entry {
     HOST.store(table.cast_mut(), Ordering::Release);
