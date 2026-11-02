@@ -9,3 +9,6 @@ crate-type = ["rlib", "staticlib"]
 
 [lints]
 workspace = true
+
+[dependencies]
+libc = "=0.2.191"
