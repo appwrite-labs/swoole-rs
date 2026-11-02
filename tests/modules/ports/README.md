@@ -9,7 +9,14 @@ listener option sequencing, socket-creation decisions, the init_protocol plan,
 `get_connection_num` summation, EOF/length/stream setter normalization,
 constructor defaults, callback getter/hook selection, flag/buffer/packet/option
 plans, TLS/SNI frontend metadata, class-property declarations and the receive
-callbacks (`read.rs`, unit-tested with `cargo test -p swoole-rs-ports`). Native
+callbacks (`read.rs`, unit-tested with `cargo test -p swoole-rs-ports`). The PHP
+class `Swoole\Server\Port` (registration, objects, every method) is
+`crates/phpserver`; its `set()` reaches the ListenPort/TLS block that stays C++
+(`port_apply_settings`) through `native/ports/swoole_rs_phpserver.h`. The
+`flags`, `options`, `packet_settings` and `tls_settings` gates extract that block;
+`callback_property` compares the original getter with the Rust one's body.
+`overlay.py` regenerates 0002 only: 0001 has been edited with `tools/patches.py`
+since (#764, #780). Native
 code keeps allocation, Zend storage and conversions, syscalls, callbacks,
 warnings, cleanup, crypto, the HTTP request parser and request destruction.
 

@@ -751,6 +751,7 @@
       ],
       "owned_paths": [
         "crates/ports/",
+        "crates/phpserver/",
         "native/ports/",
         "migration/patches/ports/",
         "tests/modules/ports/"
