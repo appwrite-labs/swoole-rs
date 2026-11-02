@@ -138,6 +138,27 @@ bool swr_v1_process_reload_task_remove(swr_v1_process_reload_task *, int pid);
 bool swr_v1_process_reload_task_completed(const swr_v1_process_reload_task *);
 void swr_v1_process_reload_task_kill_all(swr_v1_process_reload_task *, int signo, swr_v1_process_reload_warn warn);
 void swr_v1_process_reload_task_kill_one(swr_v1_process_reload_task *, int signo, swr_v1_process_reload_warn warn);
+/* The manager reap loop (crates/process/src/reaper.rs); start_reload returns one of: */
+#define SWR_RELOAD_NONE 0
+#define SWR_RELOAD_KILL_ONE 1
+#define SWR_RELOAD_SKIP 2
+#define SWR_RELOAD_SIGNALLED 3
+typedef struct {
+    void *ctx;
+    bool leave_when_stopped;
+    bool skip_no_child;
+    bool (*running)(void *ctx);
+    bool (*reload_requested)(void *ctx);
+    swr_v1_process_reload_task *(*reload_task)(void *ctx);
+    int (*wait)(void *ctx, bool nonblock, int *status, int *error);
+    void (*service)(void *ctx);
+    void (*wait_failed)(void *ctx);
+    uint32_t (*start_reload)(void *ctx);
+    bool (*reap)(void *ctx, int pid, int status);
+    void (*finish_reload)(void *ctx);
+    swr_v1_process_reload_warn warn;
+} swr_v1_process_reap_host;
+void swr_v1_process_reap_loop(const swr_v1_process_reap_host *host);
 #ifdef __cplusplus
 }
 #endif
