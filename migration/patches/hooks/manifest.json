@@ -41,7 +41,7 @@
     },
     {
       "path": "0005-coroutine-socket.patch",
-      "sha256": "1f1c424ca582c69577b3a2db44266f795e934a1766d503646624157637e0a790",
+      "sha256": "c6521e7836368b4d4961142bb0d599eac21caace7d665409e7dba3428c7b63f4",
       "upstream_paths": [
         "include/swoole_coroutine_socket.h",
         "src/coroutine/socket.cc"
