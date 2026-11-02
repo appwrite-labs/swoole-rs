@@ -100,6 +100,32 @@ static void timer_callback(Timer *timer, TimerNode *tnode) {
 
 `zend::bailout::parse_func` is `Z_PARAM_FUNC` (Zend's own callback errors).
 
+### Errors raised from Rust
+
+A warning or notice runs the user error handler (`set_error_handler`), which
+is PHP code: a fatal error in it, or `exit()` with no PHP frame below (a
+reactor or timer callback), bails out. So every error Rust raises goes through
+`shim_errors.c`, which runs it inside `zend_try`:
+
+- `zend::php_error(level, message)`: `php_error_docref`.
+- `zend::bailout::report*(reporter, ...)`: a C++ reporter (Swoole's
+  `php_swoole_error`/`_fatal_error`/`_sys_error` live in C++), one function per
+  argument shape.
+- `Call`'s ZPP slow paths (null-to-scalar and float-to-int deprecations) and
+  `zend::value::get_long`/`get_double`/`get_string` (`zval_get_*`: an object or
+  array warns, `__toString` runs PHP).
+
+Each returns (or, for the converters, defers) a `Bailout`. The usual owner is
+`bailout::defer`: the bailout waits in a thread-local, nothing more is
+reported, and the handler's last step, `bailout::finish()`, raises it
+(`zend::handlers!` does this; so must every export C/C++ calls that can raise
+an error, or it returns the bailout as a flag to its C++ trampoline). Never
+call `php_error_docref`, `zend_error` or a C++ reporter directly from Rust.
+
+`tests/modules/zend/error_handler_bailout.php` checks this per family against
+upstream: an error handler that `exit()`s, and one that raises a fatal error,
+on a Rust-raised warning.
+
 ## Checks
 
 - `cargo clippy --workspace --all-targets --all-features` and `cargo test

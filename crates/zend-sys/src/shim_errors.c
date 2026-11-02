@@ -50,3 +50,18 @@ SWR_TRY_PARSE(swr_zend_try_parse_long, zend_long, zend_parse_arg_long_slow)
 SWR_TRY_PARSE(swr_zend_try_parse_bool, bool, zend_parse_arg_bool_slow)
 SWR_TRY_PARSE(swr_zend_try_parse_double, double, zend_parse_arg_double_slow)
 SWR_TRY_PARSE(swr_zend_try_parse_str, zend_string *, zend_parse_arg_str_slow)
+
+int swr_zend_try_get_long(zval *value, zend_long *out) {
+    *out = 0;
+    SWR_TRAP(*out = zval_get_long(value));
+}
+
+int swr_zend_try_get_double(zval *value, double *out) {
+    *out = 0.0;
+    SWR_TRAP(*out = zval_get_double(value));
+}
+
+int swr_zend_try_get_string(zval *value, zend_string **out) {
+    *out = ZSTR_EMPTY_ALLOC();
+    SWR_TRAP(*out = zval_get_string(value));
+}

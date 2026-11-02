@@ -26,4 +26,11 @@ int swr_zend_try_parse_long(zval *arg, zend_long *out, uint32_t number, bool *pa
 int swr_zend_try_parse_bool(zval *arg, bool *out, uint32_t number, bool *parsed);
 int swr_zend_try_parse_double(zval *arg, double *out, uint32_t number, bool *parsed);
 int swr_zend_try_parse_str(zval *arg, zend_string **out, uint32_t number, bool *parsed);
+
+/* zval_get_long/double/string: an object or array warns (or runs
+ * __toString), which runs the user error handler. A bailout leaves 0, 0.0 or
+ * the empty string. */
+int swr_zend_try_get_long(zval *value, zend_long *out);
+int swr_zend_try_get_double(zval *value, double *out);
+int swr_zend_try_get_string(zval *value, zend_string **out);
 #endif

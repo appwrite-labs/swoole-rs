@@ -25,8 +25,7 @@ use swoole_rs_zend::{
         zend_ce_iterator, zend_class_entry, zend_class_implements, zend_function_entry,
         zend_hash_get_current_data_ex, zend_hash_get_current_key_ex,
         zend_hash_internal_pointer_reset_ex, zend_hash_move_forward_ex, zend_hash_str_find,
-        zend_object, zend_object_handlers, zend_string, zend_value, zval, zval_get_double_func,
-        zval_get_long_func, zval_get_string_func,
+        zend_object, zend_object_handlers, zend_string, zend_value, zval,
     },
     throw_constructed_twice, throw_exception, unset_property_deny,
 };
@@ -375,7 +374,7 @@ fn store(row: *mut Row, column: &Column, value: *mut zval, initialize: bool) {
     match column.kind {
         TYPE_STRING => {
             // SAFETY: a live zval; `zval_get_string`.
-            let string = unsafe { zval_get_string_func(value) };
+            let string = unsafe { swoole_rs_zend::value::get_string(value) };
             // SAFETY: a live string.
             let bytes = unsafe { string_bytes(string) };
             if bytes.len() > column.width as usize - 4 {
@@ -389,13 +388,13 @@ fn store(row: *mut Row, column: &Column, value: *mut zval, initialize: bool) {
         }
         TYPE_FLOAT => {
             // SAFETY: a live zval; `zval_get_double`.
-            let number = unsafe { zval_get_double_func(value) };
+            let number = unsafe { swoole_rs_zend::value::get_double(value) };
             // SAFETY: as above.
             unsafe { set_value(row, column, (&raw const number).cast(), 0) };
         }
         _ => {
             // SAFETY: a live zval; `zval_get_long`.
-            let number = unsafe { zval_get_long_func(value, false) };
+            let number = unsafe { swoole_rs_zend::value::get_long(value) };
             // SAFETY: as above.
             unsafe { set_value(row, column, (&raw const number).cast(), 0) };
         }
@@ -589,7 +588,7 @@ fn update(call: &Call, subtract: bool) {
                 1.0
             } else {
                 // SAFETY: a passed argument.
-                unsafe { zval_get_double_func(by) }
+                unsafe { swoole_rs_zend::value::get_double(by) }
             };
             let current = f64::from_bits(bits());
             let value = if subtract { current - by } else { current + by };
@@ -603,7 +602,7 @@ fn update(call: &Call, subtract: bool) {
                 1
             } else {
                 // SAFETY: a passed argument.
-                unsafe { zval_get_long_func(by, false) }
+                unsafe { swoole_rs_zend::value::get_long(by) }
             };
             #[expect(clippy::cast_possible_wrap, reason = "the column's 8 bytes as a long")]
             let current = bits() as i64;
