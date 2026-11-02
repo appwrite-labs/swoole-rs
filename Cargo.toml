@@ -9,6 +9,15 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
+# The PHP extension's archive (tools/build_hybrid.py, immutable builds): one
+# codegen unit across every crate, so calls between module crates inline (#889).
+# The native gates link the Zend-free release archive instead, whose objects
+# they can pull one at a time.
+[profile.release-lto]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 # Lint levels live here only; see AGENTS.md "Rust lints".
 [workspace.lints.rust]
 # `pub` only where another crate uses it, so dead_code sees the rest (#159).

@@ -19,7 +19,7 @@ class ZtsOriginals(unittest.TestCase):
         ]:
             with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
                 work = Path(directory)
-                archive = work / 'rust-prefix/lib/libswoole_rs_ffi.a'
+                archive = work / 'rust-prefix/lib/libswoole_rs_php.a'
                 archive.parent.mkdir(parents=True)
                 archive.write_bytes(b'changed archive')
                 receipt, output = work / 'producer.json', work / 'result.json'
