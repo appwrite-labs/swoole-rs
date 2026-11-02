@@ -401,6 +401,7 @@ dependencies = [
  "swoole-rs-phplocks",
  "swoole-rs-phpprocess",
  "swoole-rs-phpstdext",
+ "swoole-rs-phpswoole",
  "swoole-rs-phpthread",
  "swoole-rs-phptimer",
  "swoole-rs-ports",
@@ -554,6 +555,15 @@ dependencies = [
 name = "swoole-rs-phpstdext"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-zend",
+]
+
+[[package]]
+name = "swoole-rs-phpswoole"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-error",
  "swoole-rs-zend",
 ]
 
