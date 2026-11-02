@@ -275,18 +275,17 @@ typedef struct {
 } swr_v1_hook_timeout_ops;
 void swr_v1_hook_timeouts(const swr_v1_hook_timeout_ops *ops, void *socket, double timeout, int types, double *original,
                           bool restore);
-/* Socket::connect(addr, addrlen): connect(2) on fd, waiting to write when in progress; so_error
- * reads SO_ERROR into errCode, error returns errCode. */
+/* Socket::connect(addr, addrlen): syscall (connect(2)) on fd, waiting to write when in progress.
+ * wait settles an in-progress attempt within its timer: false after ECONNABORTED (closed
+ * meanwhile) or SO_ERROR's error, true once connected. */
 typedef struct {
     void *context;
     swr_v1_hook_socket_state *state;
     int fd;
+    int (*syscall)(int, const struct sockaddr *, socklen_t);
     bool (*available)(void *);
     void (*set_err)(void *, int code);
-    bool (*closed)(void *);
     bool (*wait)(void *);
-    int (*so_error)(void *);
-    int (*error)(void *);
     void (*name)(void *);
 } swr_v1_hook_connect_addr_ops;
 bool swr_v1_hook_connect_addr(const swr_v1_hook_connect_addr_ops *ops, const struct sockaddr *addr, socklen_t length);
