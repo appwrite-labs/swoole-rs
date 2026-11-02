@@ -29,7 +29,7 @@ const CALLBACKS: usize = 12;
 
 /// `swoole::ServerPortProperty`: pointers only, so Rust lays it out as C++ does.
 #[repr(C)]
-pub struct Property {
+pub struct PortProperty {
     callbacks: [*mut c_void; CALLBACKS],
     serv: *mut c_void,
     port: *mut c_void,
@@ -38,12 +38,12 @@ pub struct Property {
 
 /// `ServerPortObject` without its `zend_object`: the `ListenPort` and property.
 #[repr(C)]
-pub struct Data {
+pub struct PortData {
     port: *mut c_void,
-    property: Property,
+    property: PortProperty,
 }
 
-type Port = Object<Data>;
+type Port = Object<PortData>;
 
 /// `swr_ports_property_kind` (`native/ports/swoole_rs_ports.h`).
 const PROPERTY_END: u32 = 0;
@@ -149,7 +149,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_port_minit(
     ce
 }
 
-fn data<'a>(call: &Call) -> &'a mut Data {
+fn data<'a>(call: &Call) -> &'a mut PortData {
     // SAFETY: the class's methods are non-static, so `$this` is one of ours.
     unsafe { Port::data(call.this()) }
 }
@@ -300,7 +300,11 @@ mod tests {
     #[test]
     fn the_object_mirrors_server_port_object() {
         // `struct ServerPortObject { ListenPort *port; ServerPortProperty property; zend_object std; }`
-        assert_eq!(size_of::<Data>(), 16 * size_of::<*mut c_void>());
-        assert_eq!(Port::OFFSET, size_of::<Data>(), "std follows the property");
+        assert_eq!(size_of::<PortData>(), 16 * size_of::<*mut c_void>());
+        assert_eq!(
+            Port::OFFSET,
+            size_of::<PortData>(),
+            "std follows the property"
+        );
     }
 }
