@@ -20,16 +20,14 @@ pub const ERROR_CANCELED: i32 = -3;
 /// An operation could not allocate; C++ raises `std::bad_alloc` after return.
 pub const ALLOCATION_REFUSED: i32 = -5;
 
-type Token = *mut c_void;
-
 #[derive(Default)]
 pub struct Channel {
     capacity: usize,
     closed: bool,
     error: i32,
-    data: VecDeque<Token>,
-    producers: VecDeque<Token>,
-    consumers: VecDeque<Token>,
+    data: VecDeque<*mut c_void>,
+    producers: VecDeque<*mut c_void>,
+    consumers: VecDeque<*mut c_void>,
 }
 
 #[repr(C)]
@@ -48,7 +46,7 @@ pub struct ChannelView {
 pub struct Effects {
     pub ctx: *mut c_void,
     /// The current coroutine, queued as a waiter.
-    pub current: Token,
+    pub current: *mut c_void,
     /// Arms the timeout timer (only called for a positive timeout).
     pub arm_timer: unsafe extern "C" fn(*mut c_void),
     /// Deletes the timer if it is still armed.
@@ -57,7 +55,7 @@ pub struct Effects {
     /// canceled or timed out. Returns `CANCELED` and/or `TIMEDOUT` bits.
     pub suspend: unsafe extern "C" fn(*mut c_void, u32) -> u32,
     /// Resumes a waiter just taken from the `role` queue.
-    pub resume: unsafe extern "C" fn(*mut c_void, u32, Token),
+    pub resume: unsafe extern "C" fn(*mut c_void, u32, *mut c_void),
     /// Trace points: `PUSHED` with the new length, `CLOSED`.
     pub trace: unsafe extern "C" fn(*mut c_void, u32, usize),
 }
@@ -72,11 +70,11 @@ pub struct Outcome {
     /// `ERROR_OK`, a negative `ERROR_*` or `ALLOCATION_REFUSED`.
     pub status: i32,
     /// The popped item.
-    pub data: Token,
+    pub data: *mut c_void,
 }
 
 impl Channel {
-    fn queue(&mut self, role: u32) -> &mut VecDeque<Token> {
+    fn queue(&mut self, role: u32) -> &mut VecDeque<*mut c_void> {
         // Upstream's enqueue/dequeue test for PRODUCER; removal tests for CONSUMER.
         if role == PRODUCER {
             &mut self.producers
@@ -85,7 +83,7 @@ impl Channel {
         }
     }
 
-    fn remove(&mut self, role: u32, co: Token) {
+    fn remove(&mut self, role: u32, co: *mut c_void) {
         let queue = if role == CONSUMER {
             &mut self.consumers
         } else {
@@ -108,7 +106,7 @@ impl Channel {
     }
 }
 
-fn push_back(queue: &mut VecDeque<Token>, token: Token) -> bool {
+fn push_back(queue: &mut VecDeque<*mut c_void>, token: *mut c_void) -> bool {
     queue.try_reserve(1).is_ok() && {
         queue.push_back(token);
         true
@@ -190,7 +188,7 @@ unsafe fn pop(ch: *mut Channel, fx: &Effects, timeout: bool) -> Outcome {
 
 /// # Safety
 /// As for [`pop`].
-unsafe fn push(ch: *mut Channel, fx: &Effects, timeout: bool, data: Token) -> i32 {
+unsafe fn push(ch: *mut Channel, fx: &Effects, timeout: bool, data: *mut c_void) -> i32 {
     {
         // SAFETY: live; the borrow ends before the next effect.
         let c = unsafe { &mut *ch };
@@ -282,7 +280,7 @@ pub unsafe extern "C" fn swr_v1_channel_read(ch: *const Channel) -> ChannelView 
 /// # Safety
 /// `ch` is live and unborrowed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_channel_pop_data(ch: *mut Channel) -> Token {
+pub unsafe extern "C" fn swr_v1_channel_pop_data(ch: *mut Channel) -> *mut c_void {
     // SAFETY: the caller lends a live channel exclusively.
     unsafe { &mut *ch }
         .data
@@ -294,7 +292,7 @@ pub unsafe extern "C" fn swr_v1_channel_pop_data(ch: *mut Channel) -> Token {
 /// # Safety
 /// `ch` is live and unborrowed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_channel_remove(ch: *mut Channel, role: u32, co: Token) {
+pub unsafe extern "C" fn swr_v1_channel_remove(ch: *mut Channel, role: u32, co: *mut c_void) {
     // SAFETY: the caller lends a live channel exclusively.
     unsafe { &mut *ch }.remove(role, co);
 }
@@ -320,7 +318,7 @@ pub unsafe extern "C" fn swr_v1_channel_pop(
 pub unsafe extern "C" fn swr_v1_channel_push(
     ch: *mut Channel,
     positive_timeout: bool,
-    data: Token,
+    data: *mut c_void,
     fx: *const Effects,
 ) -> i32 {
     // SAFETY: the caller passes valid effects.
@@ -372,7 +370,7 @@ mod tests {
         }
         LOG.with(|l| l.borrow().flags)
     }
-    unsafe extern "C" fn resume(_: *mut c_void, role: u32, co: Token) {
+    unsafe extern "C" fn resume(_: *mut c_void, role: u32, co: *mut c_void) {
         event(format!("resume {role} {}", co as usize));
     }
     unsafe extern "C" fn trace(_: *mut c_void, what: u32, n: usize) {
@@ -382,7 +380,7 @@ mod tests {
     fn fx(current: usize) -> Effects {
         Effects {
             ctx: core::ptr::null_mut(),
-            current: current as Token,
+            current: current as *mut c_void,
             arm_timer: arm,
             delete_timer: delete,
             suspend,
@@ -395,8 +393,8 @@ mod tests {
         LOG.with(|l| std::mem::take(&mut l.borrow_mut().events))
     }
 
-    fn tok(n: usize) -> Token {
-        n as Token
+    fn tok(n: usize) -> *mut c_void {
+        n as *mut c_void
     }
 
     #[test]
