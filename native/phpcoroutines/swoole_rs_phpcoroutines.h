@@ -2,6 +2,7 @@
 #define SWOOLE_RS_PHPCOROUTINES_H
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,6 +17,7 @@ struct _zend_execute_data;
 struct _zend_fcall_info_cache;
 struct _zval_struct;
 struct _zend_array;
+struct _zend_string;
 
 /* The globals and server state the frontend reads (bits of `flags`). */
 enum {
@@ -156,6 +158,35 @@ void swr_v1_phpcoroutines_set_hook_flags(uint32_t flags);
 void swr_v1_phpcoroutines_set_hook_option(uint32_t flags);
 /* php_swoole_set_coroutine_option. */
 void swr_v1_phpcoroutines_set_option(struct _zend_array *options);
+/* Swoole\Coroutine\System: the platform constants its defaults use and
+ * swoole::coroutine::System's operations. Results that are C++ strings or
+ * lists are written into the return slot by C++. */
+struct swr_v1_phpcoroutines_system_ops {
+    long af_inet;
+    long af_inet6;
+    long sock_stream;
+    long ipproto_tcp;
+    long event_read;
+    int (*sleep)(double seconds);
+    uint8_t (*read_file)(const char *path, long flags, struct _zval_struct *return_value);
+    ssize_t (*write_file)(const char *path, const char *data, size_t length, long flags);
+    uint8_t (*gethostbyname)(const char *domain, size_t length, long family, double timeout,
+                             struct _zval_struct *return_value);
+    void (*clear_dns_cache)(void);
+    uint8_t (*getaddrinfo)(const char *host, long family, long socktype, long protocol, const char *service,
+                           double timeout, struct _zval_struct *return_value);
+    void (*statvfs)(const char *path, long (*fields)[11]);
+    uint8_t (*exec)(const char *command, uint8_t errors, int *code, int *signal, struct _zend_string **output);
+    /* SW_MUST_BE_MAIN_THREAD: 0 (with the last error set) off the main thread */
+    uint8_t (*main_thread)(void);
+    long (*wait)(long pid, double timeout, int *code, int *signal);
+    /* -1 after warning and setting errno */
+    int (*wait_signal)(const long *signals, size_t count, double timeout);
+    int (*convert_to_fd)(struct _zval_struct *fd);
+    long (*wait_event)(int fd, long events, double timeout);
+};
+void swr_v1_phpcoroutines_system_minit(const struct _zend_function_entry *methods,
+                                       const struct swr_v1_phpcoroutines_system_ops *ops);
 /* Swoole\Coroutine\Scheduler, at MINIT. */
 void swr_v1_phpcoroutines_scheduler_minit(const struct _zend_function_entry *methods);
 void swr_v1_phpcoroutines_set_max_num(uint64_t max);

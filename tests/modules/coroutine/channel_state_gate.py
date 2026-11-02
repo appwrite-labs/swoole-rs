@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Ordinary inline Channel metadata/opaque-queue proof; never Native runtime.
-
-Existing actual-header assertions remain unchanged. Rust ASan and Native C++
-sanitation are separate profiles, never an unqualified mixed-runtime link.
+"""crates/coroutine's unit tests, ordinary and under Rust ASan, the overlays
+applied to the pin, and the C ABI fixture for the context cells. No Native
+runtime; the switches run in coroutine-native-originals and the PHPTs.
 """
 import argparse
 import hashlib
@@ -51,9 +50,9 @@ def main():
     work.mkdir(parents=True)
     manifest_path = ROOT / 'migration/patches/coroutine/manifest.json'
     manifest = json.loads(manifest_path.read_text())
-    paths = [Path(__file__), Path(__file__).with_name('channel_state.c'), Path(__file__).with_name('tokens.c'),
+    paths = [Path(__file__),
              Path(__file__).with_name('context_cells.c'),
-             Path(__file__).with_name('tokens.py'), Path(__file__).with_name('tokens.cc'), manifest_path,
+             manifest_path,
              *[manifest_path.parent / entry['path'] for entry in manifest['patches']],
              *sorted((ROOT / 'native/coroutine').glob('*.h')),
              *sorted((ROOT / 'crates/coroutine/src').glob('*.rs'))]
@@ -95,16 +94,13 @@ def main():
                 report['positive_rust_asan_report_imports'] = sorted({line.strip() for line in symbols.splitlines() if '__asan_report_' in line})
                 if not report['positive_rust_asan_report_imports']:
                     raise ValueError('Owned Rust instructions not instrumented')
-            receipt = work / ('actual-header-' + str(sanitize) + '.json')
-            run(['python3', Path(__file__).with_name('tokens.py'), '--source', args.source, '--archive', archive, '--report', receipt, *(['--sanitize'] if sanitize else [])])
-            report.setdefault('actual_header_reports', []).append(dict(path=str(receipt), result=json.loads(receipt.read_text())))
-        for fixture in ['tokens.c', 'channel_state.c', 'context_cells.c']:
+        for fixture in ['context_cells.c']:
             obj = work / (fixture + '.o')
             binary = work / (fixture + '-abi')
             command = ['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-UNDEBUG',
                        '-I' + str(ROOT / 'native/coroutine'), '-I' + str(ROOT / 'native/include'),
                        '-c', Path(__file__).with_name(fixture), '-o', obj]
-            if args.archive and fixture in ['channel_state.c', 'context_cells.c']:
+            if args.archive:
                 command.append('-DSWR_CHANNEL_FFI')
             run(command)
             run(['c++', obj, archive, '-lpthread', *(['-ldl', '-lm'] if sys.platform.startswith('linux') else []), '-o', binary])
