@@ -1,0 +1,615 @@
+//! `Swoole\Async\Client`: a `Swoole\Client` whose `network::Client` runs on
+//! the reactor and raises PHP callbacks. It shares the parent's object
+//! ([`Data`]); the callbacks are `zend::Callable`s by slot, and the events the
+//! client raises arrive through `swr_v1_phpclients_async_event`.
+use crate::{
+    native::{self, ClientCall, ErrorKind, Op},
+    net::{
+        self, CONNECT_TIMEOUT, Conn, INVALID_PARAMS, SOCK_TCP, SOCK_TCP6, bailed, check_type,
+        destructing, errno, last_error, report, set_err_code, set_last_error, socket_type,
+        strerror, type_property, warn, warn_sys,
+    },
+};
+use libc::{c_char, c_int, c_void};
+use std::{ffi::CStr, ptr};
+use swoole_rs_clients::{state, swr_v1_clients_port};
+use swoole_rs_zend::{
+    Call, Class, E_ERROR,
+    bailout::{self, Bailout},
+    class_name, declare_property_null, set_object, string,
+    sys::{
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, zend_class_entry, zend_function_entry,
+        zend_object, zend_object_handlers, zval, zval_ptr_dtor,
+    },
+    throw_error, throw_exception, unset_property_deny, update_property, value,
+};
+
+static ASYNC: Class = Class::new();
+
+/// Callback slots (`CLIENT_CB_*` less one) and their property names.
+const CONNECT: usize = 0;
+const RECEIVE: usize = 1;
+const CLOSE: usize = 2;
+const ERROR: usize = 3;
+const BUFFER_FULL: usize = 4;
+const BUFFER_EMPTY: usize = 5;
+const SSL_READY: usize = 6;
+const NAMES: [&CStr; 7] = [
+    c"onConnect",
+    c"onReceive",
+    c"onClose",
+    c"onError",
+    c"onBufferFull",
+    c"onBufferEmpty",
+    c"onSSLReady",
+];
+/// The names `on()` accepts, by slot, matched as upstream's `strncasecmp`.
+const EVENTS: [&[u8]; 6] = [
+    b"connect",
+    b"receive",
+    b"close",
+    b"error",
+    b"bufferfull",
+    b"bufferempty",
+];
+
+/// `SWOOLE_CLIENT_ON_*`: the event a client raises.
+const ON_CONNECT: c_int = 1;
+const ON_RECEIVE: c_int = 2;
+const ON_CLOSE: c_int = 3;
+const ON_ERROR: c_int = 4;
+const ON_BUFFER_FULL: c_int = 5;
+const ON_BUFFER_EMPTY: c_int = 6;
+/// `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
+const DNS_RESOLVE_FAILED: c_int = 711;
+
+fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
+    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
+    handlers.clone_obj = None;
+    handlers.unset_property = Some(unset_property_deny);
+}
+
+/// MINIT, as `php_swoole_client_async_minit` did: objects come from the
+/// parent's `create_object`, which Zend inherits.
+/// # Safety
+/// Called once, at MINIT, after the parent's, with upstream's static method
+/// table and a writable class-entry slot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpclients_async_minit(
+    methods: *const zend_function_entry,
+    client_class: *mut zend_class_entry,
+    async_class: *mut *mut zend_class_entry,
+) {
+    // SAFETY: MINIT, with the caller's table and the registered parent.
+    unsafe { ASYNC.register_child(c"Swoole\\Async\\Client", methods, client_class, configure) };
+    let ce = ASYNC.entry();
+    for name in [
+        c"onConnect",
+        c"onError",
+        c"onReceive",
+        c"onClose",
+        c"onBufferFull",
+        c"onBufferEmpty",
+        c"onSSLReady",
+    ] {
+        // SAFETY: MINIT, with the class just registered.
+        unsafe { declare_property_null(ce, name, ZEND_ACC_PRIVATE) };
+    }
+    // SAFETY: per the caller, a writable slot.
+    unsafe { *async_class = ce };
+}
+
+fn callbacks<'a>(data: &net::Data) -> Option<&'a mut [*mut c_void; 7]> {
+    // SAFETY: the object owns its callbacks while it holds them.
+    unsafe { data.callbacks.as_mut() }
+}
+
+/// `sw_callable_free`.
+fn callable_free(callable: *mut c_void) -> Result<(), Bailout> {
+    ClientCall::new(callable, Op::CallableFree).run().map(drop)
+}
+
+/// `php_swoole_client_async_free_object`: free every callback.
+pub(crate) fn free_callbacks(object: *mut zend_object) -> Result<(), Bailout> {
+    let data = net::data(object);
+    let slots = data.callbacks;
+    data.callbacks = ptr::null_mut();
+    // SAFETY: allocated by `on()` as a box, released once.
+    let slots = unsafe { Box::from_raw(slots) };
+    for callable in slots.iter().copied().filter(|callable| !callable.is_null()) {
+        callable_free(callable)?;
+    }
+    Ok(())
+}
+
+/// Call `callable` with `argv`: whether the call succeeded.
+fn invoke(callable: *mut c_void, argv: &mut [zval]) -> Result<bool, Bailout> {
+    let mut call = ClientCall::new(callable, Op::Invoke);
+    call.settings = argv.as_mut_ptr();
+    call.a = i64::try_from(argv.len()).unwrap_or(0);
+    Ok(call.run()? != 0)
+}
+
+fn object_zval(object: *mut zend_object) -> zval {
+    let mut zobject = swoole_rs_zend::long_zval(0);
+    // SAFETY: a borrowed copy of the object, as upstream's `args[0] = *zobject`.
+    unsafe { set_object(&raw mut zobject, object) };
+    zobject
+}
+
+/// `client_execute_callback`: run the slot's callback with the object.
+fn execute(object: *mut zend_object, slot: usize) -> Result<(), Bailout> {
+    // SAFETY: a live client object.
+    let class = unsafe { class_name(object) }.to_string_lossy();
+    let name = NAMES[slot].to_string_lossy();
+    let callable = callbacks(net::data(object)).map_or(ptr::null_mut(), |slots| slots[slot]);
+    if callable.is_null() {
+        warn(ErrorKind::Fatal, &format!("{class} has no {name} callback"));
+        return Ok(());
+    }
+    if !invoke(callable, &mut [object_zval(object)])? {
+        warn(ErrorKind::Fatal, &format!("{class}->{name} handler error"));
+    }
+    Ok(())
+}
+
+/// `client_execute_callback_and_dtor`: the callback, then free the connection
+/// and drop the reference `connect()` took.
+fn execute_and_release(object: *mut zend_object, slot: usize) -> Result<(), Bailout> {
+    execute(object, slot)?;
+    let conn = net::data(object).conn;
+    if !conn.is_null() {
+        net::release(object, conn)?;
+    }
+    // SAFETY: `zval_delref_p`: the reference `connect()` took.
+    unsafe { (*object).gc.refcount -= 1 };
+    Ok(())
+}
+
+fn event(
+    object: *mut zend_object,
+    kind: c_int,
+    data: *const c_char,
+    length: usize,
+) -> Result<(), Bailout> {
+    match kind {
+        ON_CONNECT => {
+            // SAFETY: a connected client's object holds its connection.
+            let conn = unsafe { &mut *net::data(object).conn };
+            if conn.ssl_wait {
+                conn.ssl_wait = false;
+                return execute(object, SSL_READY);
+            }
+            execute(object, CONNECT)
+        }
+        ON_RECEIVE => {
+            let callable =
+                callbacks(net::data(object)).map_or(ptr::null_mut(), |slots| slots[RECEIVE]);
+            // SAFETY: the client lends `length` bytes for the call.
+            let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
+            let mut payload = swoole_rs_zend::long_zval(0);
+            // SAFETY: a fresh string; the zval takes its reference.
+            unsafe { value::set_str(&raw mut payload, string::copy(bytes)) };
+            let mut argv = [object_zval(object), payload];
+            let called = invoke(callable, &mut argv);
+            // SAFETY: our reference to the payload.
+            unsafe { zval_ptr_dtor(&raw mut argv[1]) };
+            if !called? {
+                // SAFETY: a live client object.
+                let class = unsafe { class_name(object) }.to_string_lossy();
+                warn(
+                    ErrorKind::Fatal,
+                    &format!("{class}->onReceive handler error"),
+                );
+            }
+            Ok(())
+        }
+        ON_CLOSE => execute_and_release(object, CLOSE),
+        ON_ERROR => {
+            // The error code arrives as the length (`swoole_get_last_error()`).
+            let error = i64::try_from(length).unwrap_or(0);
+            // SAFETY: a live client object.
+            unsafe { value::update_long(ASYNC.entry(), object, c"errCode", error) };
+            execute_and_release(object, ERROR)
+        }
+        ON_BUFFER_FULL => execute(object, BUFFER_FULL),
+        ON_BUFFER_EMPTY => execute(object, BUFFER_EMPTY),
+        _ => std::process::abort(),
+    }
+}
+
+/// An event `network::Client` raised on an async client's object; a PHP
+/// bailout is re-raised as the last step.
+/// # Safety
+/// `object` is the live client object `connect()` bound; `data` holds
+/// `length` bytes for `SWOOLE_CLIENT_ON_RECEIVE`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpclients_async_event(
+    object: *mut zend_object,
+    kind: c_int,
+    data: *const c_char,
+    length: usize,
+) {
+    bailout::raise(event(object, kind, data, length));
+}
+
+/// `__construct(int $type)`.
+fn construct(call: &Call) {
+    let Ok(kind) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
+        // SAFETY: from a handler.
+        unsafe { throw_error(c"socket type param is required") };
+        return call.set_bool(false);
+    };
+    if !check_type(kind) {
+        return call.set_bool(false);
+    }
+    // SAFETY: from a handler.
+    unsafe { native::swoole_rs_check_reactor() };
+    // SAFETY: `$this` is a live client.
+    unsafe { value::update_long(net::CLIENT.entry(), call.this(), c"type", kind) };
+    call.set_bool(true);
+}
+
+/// `__destruct()`: close and free a held connection.
+fn destruct(call: &Call) {
+    if !destructing(call) {
+        return;
+    }
+    let conn = net::this(call).conn;
+    if conn.is_null() {
+        return;
+    }
+    // SAFETY: the object's connection.
+    if !unsafe { &*conn }.flag(state::CLOSED) {
+        // SAFETY: as above.
+        if bailed(unsafe { &*conn }.call(Op::Close).run()).is_none() {
+            return;
+        }
+    }
+    // A close callback may have freed it already.
+    let conn = net::this(call).conn;
+    if !conn.is_null() {
+        bailed(net::release(call.this(), conn));
+    }
+}
+
+/// `php_swoole_client_async_new`: an async client for the object's type.
+fn connection(object: *mut zend_object, port: i64) -> Option<*mut Conn> {
+    let kind = type_property(object, true)?;
+    #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
+    let int_port = port as i32;
+    if matches!(socket_type(kind), SOCK_TCP | SOCK_TCP6) && swr_v1_clients_port(int_port, 1) == 0 {
+        warn(ErrorKind::Fatal, "The port is invalid");
+        set_last_error(INVALID_PARAMS);
+        return None;
+    }
+    let mut error = 0;
+    #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
+    // SAFETY: a socket type within range (checked by the constructor).
+    let cli =
+        unsafe { native::swoole_client_create(socket_type(kind) as c_int, true, &raw mut error) };
+    if cli.is_null() {
+        warn_sys("failed to create client", error);
+        set_err_code(object, error);
+        return None;
+    }
+    let conn = Box::new(Conn::new(cli));
+    // SAFETY: a live client object.
+    let ce = unsafe { (*object).ce };
+    // SAFETY: as above.
+    unsafe { value::update_long(ce, object, c"sock", i64::from(conn.fd())) };
+    let conn = Box::into_raw(conn);
+    // `SW_SOCK_SSL`.
+    if kind & (1 << 9) != 0 {
+        // SAFETY: the connection just made.
+        bailed(unsafe { &*conn }.call(Op::EnableSsl).run())?;
+    }
+    Some(conn)
+}
+
+/// `connect(string $host, int $port = 0, float $timeout = 0.5, int $sock_flag = 0): bool`.
+fn connect(call: &Call) {
+    let parsed = call.arity(1, 4).and_then(|()| {
+        Ok((
+            call.string(1, b"")?,
+            call.long(2, 0)?,
+            call.double(3, CONNECT_TIMEOUT)?,
+            call.long(4, 0)?,
+        ))
+    });
+    let Ok((host, port, timeout, flags)) = parsed else {
+        return call.set_bool(false);
+    };
+    if host.is_empty() {
+        warn(ErrorKind::Fatal, "The host is empty");
+        return call.set_bool(false);
+    }
+    let object = call.this();
+    let data = net::this(call);
+    if !data.conn.is_null() {
+        warn(
+            ErrorKind::Fatal,
+            "connection to the server has already been established",
+        );
+        return call.set_bool(false);
+    }
+    if data.callbacks.is_null() {
+        warn(ErrorKind::Fatal, "async client is not initialized");
+        return call.set_bool(false);
+    }
+    let Some(conn) = connection(object, port) else {
+        return call.set_bool(false);
+    };
+    // SAFETY: the connection just made, not yet the object's.
+    let fresh = unsafe { &mut *conn };
+    if let Some(zset) = net::settings(object) {
+        let mut apply = fresh.call(Op::Settings);
+        apply.settings = zset;
+        if bailed(apply.run()).is_none() {
+            return call.set_bool(false);
+        }
+    }
+    let Some(slots) = callbacks(net::this(call)).map(|slots| *slots) else {
+        return call.set_bool(false);
+    };
+    let set = |slot: usize| !slots[slot].is_null();
+    if !set(RECEIVE) {
+        report(
+            ErrorKind::Fatal,
+            E_ERROR,
+            "no 'onReceive' callback function",
+        );
+        return call.set_bool(false);
+    }
+    let bit = |event: c_int| 1u32 << event;
+    let mut events = bit(ON_RECEIVE);
+    if fresh.is_stream() {
+        for (slot, name) in [
+            (CONNECT, "onConnect"),
+            (ERROR, "onError"),
+            (CLOSE, "onClose"),
+        ] {
+            if !set(slot) {
+                report(
+                    ErrorKind::Fatal,
+                    E_ERROR,
+                    &format!("no '{name}' callback function"),
+                );
+                return call.set_bool(false);
+            }
+        }
+        events |= bit(ON_CONNECT) | bit(ON_CLOSE) | bit(ON_ERROR);
+        if set(BUFFER_FULL) {
+            events |= bit(ON_BUFFER_FULL);
+        }
+        if set(BUFFER_EMPTY) {
+            events |= bit(ON_BUFFER_EMPTY);
+        }
+    } else {
+        for (slot, event) in [(CONNECT, ON_CONNECT), (CLOSE, ON_CLOSE), (ERROR, ON_ERROR)] {
+            if set(slot) {
+                events |= bit(event);
+            }
+        }
+    }
+    // SAFETY: a live client; it raises its events on this object.
+    unsafe { native::swoole_client_async_listen(fresh.cli, object, events) };
+    net::this(call).conn = conn;
+    // SAFETY: `zval_addref_p(ZEND_THIS)`: the client holds the object.
+    unsafe { (*object).gc.refcount += 1 };
+
+    let mut connect = fresh.call(Op::Connect);
+    connect.data = host.as_ptr().cast();
+    connect.a = port;
+    connect.timeout = timeout;
+    connect.b = flags;
+    let Some(result) = bailed(connect.run()) else {
+        return call.set_bool(false);
+    };
+    if result >= 0 {
+        return call.set_bool(true);
+    }
+    let failure = errno();
+    let host = String::from_utf8_lossy(host.split(|&b| b == 0).next().unwrap_or_default());
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "upstream prints (int) port"
+    )]
+    let port = port as i32;
+    if failure == 0 {
+        let error = last_error();
+        if error == DNS_RESOLVE_FAILED {
+            let message = format!(
+                "connect to server[{host}:{port}] failed. Error: {}[{error}]",
+                strerror(error)
+            );
+            warn(ErrorKind::Error, &message);
+        }
+        // SAFETY: a live client object.
+        unsafe { value::update_long(ASYNC.entry(), object, c"errCode", i64::from(error)) };
+    } else {
+        warn_sys(&format!("connect to server[{host}:{port}] failed"), failure);
+        // SAFETY: a live client object.
+        unsafe { value::update_long(ASYNC.entry(), object, c"errCode", i64::from(failure)) };
+    }
+    // SAFETY: the object's connection, if an error callback did not free it.
+    if let Some(remaining) = unsafe { net::this(call).conn.as_ref() }
+        // SAFETY: a live client.
+        && !unsafe { native::swoole_client_has_on_error(remaining.cli) }
+        && bailed(net::release(object, ptr::from_ref(remaining).cast_mut())).is_some()
+    {
+        // SAFETY: the reference taken above.
+        unsafe { (*object).gc.refcount -= 1 };
+    }
+    call.set_bool(false);
+}
+
+/// `close(bool $force = false): bool`: the close callback frees the client.
+fn close(call: &Call) {
+    let Some(conn) = net::conn(call) else {
+        warn(ErrorKind::Fatal, "client is not connected to the server");
+        return call.set_bool(false);
+    };
+    call.set_bool(bailed(conn.call(Op::Close).run()).is_some_and(|result| result >= 0));
+}
+
+/// `on(string $host, callable $callback): bool`.
+fn on(call: &Call) {
+    let Ok(name) = call.arity(2, 2).and_then(|()| call.string(1, b"")) else {
+        return call.set_bool(false);
+    };
+    let zcallback = call.zval(2);
+    let object = call.this();
+    let mut create = ClientCall::new(ptr::null_mut(), Op::Callable);
+    create.settings = zcallback;
+    if bailed(create.run()).is_none() {
+        return call.set_bool(false);
+    }
+    let callable = create.buffer.cast::<c_void>();
+    if callable.is_null() {
+        return call.set_null();
+    }
+    let data = net::this(call);
+    if data.callbacks.is_null() {
+        data.callbacks = Box::into_raw(Box::new([ptr::null_mut(); 7]));
+    }
+    let name = name.split(|&b| b == 0).next().unwrap_or_default();
+    let Some(slot) = event_slot(name) else {
+        let message = format!(
+            "Unknown event callback type name '{}'",
+            String::from_utf8_lossy(name)
+        );
+        warn(ErrorKind::Fatal, &message);
+        bailed(callable_free(callable));
+        return call.set_bool(false);
+    };
+    // SAFETY: `$this` is live; Zend copies the value.
+    unsafe { update_property(ASYNC.entry(), object, NAMES[slot], zcallback) };
+    replace(object, slot, callable);
+    call.set_bool(true);
+}
+
+/// The first event `name` names: upstream's `strncasecmp(event, name, len)`
+/// chain, so a case-insensitive prefix (even an empty one) matches.
+fn event_slot(name: &[u8]) -> Option<usize> {
+    EVENTS.iter().position(|event| {
+        name.len() <= event.len()
+            && name
+                .iter()
+                .zip(event.iter())
+                .all(|(a, b)| a.to_ascii_lowercase() == *b)
+    })
+}
+
+/// Put `callable` in `slot`, freeing what was there.
+fn replace(object: *mut zend_object, slot: usize, callable: *mut c_void) {
+    let Some(slots) = callbacks(net::data(object)) else {
+        return;
+    };
+    let previous = std::mem::replace(&mut slots[slot], callable);
+    if !previous.is_null() {
+        bailed(callable_free(previous));
+    }
+}
+
+/// `sleep()`/`pause()` and `wakeup()`/`resume()`.
+fn pause(call: &Call, op: Op) {
+    let Some(conn) = net::connected(call) else {
+        return call.set_bool(false);
+    };
+    call.set_bool(bailed(conn.call(op).run()).is_some_and(|result| result >= 0));
+}
+
+fn sleep(call: &Call) {
+    pause(call, Op::Sleep);
+}
+
+fn wakeup(call: &Call) {
+    pause(call, Op::Wakeup);
+}
+
+/// `enableSSL(?callable $onSslReady = null): bool`.
+fn enable_ssl(call: &Call) {
+    if call.arity(0, 1).is_err() {
+        return call.set_bool(false);
+    }
+    let zcallback = call.zval(1);
+    if zcallback.is_null() {
+        // SAFETY: from a handler, with Swoole's exception class.
+        unsafe {
+            throw_exception(
+                net::EXCEPTION_PARENT.load(std::sync::atomic::Ordering::Acquire),
+                c"require `onSslReady` callback",
+                i64::from(INVALID_PARAMS),
+            );
+        }
+        return call.set_bool(false);
+    }
+    let Some(conn) = net::connected(call) else {
+        return call.set_bool(false);
+    };
+    if !net::enable_ssl(call, conn) {
+        return call.set_bool(false);
+    }
+    if bailed(conn.call(Op::SslWait).run()).is_none_or(|result| result < 0) {
+        return call.set_bool(false);
+    }
+    let object = call.this();
+    let previous = callbacks(net::this(call)).map_or(ptr::null_mut(), |slots| {
+        std::mem::replace(&mut slots[SSL_READY], ptr::null_mut())
+    });
+    if !previous.is_null() && bailed(callable_free(previous)).is_none() {
+        return call.set_bool(false);
+    }
+    let mut create = ClientCall::new(ptr::null_mut(), Op::Callable);
+    create.settings = zcallback;
+    if bailed(create.run()).is_none() {
+        return call.set_bool(false);
+    }
+    let callable = create.buffer.cast::<c_void>();
+    if callable.is_null() {
+        return call.set_bool(false);
+    }
+    // SAFETY: `$this` is live; Zend copies the value.
+    unsafe { update_property(ASYNC.entry(), object, c"onSSLReady", zcallback) };
+    replace(object, SSL_READY, callable);
+    conn.ssl_wait = true;
+    // SAFETY: a live client with TLS.
+    unsafe { native::swoole_client_ssl_wait_stream(conn.cli) };
+    call.set_bool(true);
+}
+
+swoole_rs_zend::handlers! {
+    zim_swoole_client_async___construct => construct;
+    zim_swoole_client_async___destruct => destruct;
+    zim_swoole_client_async_connect => connect;
+    zim_swoole_client_async_sleep => sleep;
+    zim_swoole_client_async_wakeup => wakeup;
+    zim_swoole_client_async_enableSSL => enable_ssl;
+    zim_swoole_client_async_isConnected => net::is_connected;
+    zim_swoole_client_async_close => close;
+    zim_swoole_client_async_on => on;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(name: &[u8]) -> Option<usize> {
+        event_slot(name)
+    }
+
+    #[test]
+    fn event_names_match_as_strncasecmp_prefixes() {
+        assert_eq!(slot(b"Connect"), Some(CONNECT), "case-insensitive");
+        assert_eq!(slot(b"bufferFull"), Some(BUFFER_FULL), "camel case");
+        assert_eq!(
+            slot(b"buffer"),
+            Some(BUFFER_FULL),
+            "a prefix matches the first event"
+        );
+        assert_eq!(slot(b""), Some(CONNECT), "empty matches the first");
+        assert_eq!(slot(b"connected"), None, "longer than the name");
+        assert_eq!(slot(b"open"), None, "unknown");
+    }
+}
