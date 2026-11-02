@@ -129,6 +129,17 @@
       "upstream_paths": [
         "src/server/base.cc"
       ]
+    },
+    {
+      "path": "0017-socket-timeouts-poll-events.patch",
+      "sha256": "cba80f86964316c5dbdeff4016da5d2cd4ba74f576b2613085311dea3606f115",
+      "upstream_paths": [
+        "include/swoole_reactor.h",
+        "include/swoole_socket.h",
+        "src/network/socket.cc",
+        "src/reactor/base.cc",
+        "src/reactor/poll.cc"
+      ]
     }
   ]
 }

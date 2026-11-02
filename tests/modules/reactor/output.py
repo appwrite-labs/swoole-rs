@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Four exact ordinary Socket output compositions, positive Native effects only.
+"""Exact ordinary Socket output compositions, positive Native effects only.
 
-Baseline Native, optional corrected Native, Rust and corrected Rust retain their
+Baseline Native and optional corrected Native (the pin), and the hybrid build's tree
+(hybrid_tree, #796: corrected when built with --fix-halfclose) retain their
 separate identities. No errors, EINTR, faults, shutdown or lifetime probes run.
 Full Socket syntax checks are independent of body-facade execution; neither is
 loaded production, original-corpus, performance or whole Socket parity proof.
 """
-import argparse,io,json,shutil,subprocess,sys,tarfile,tempfile
+import argparse,io,json,subprocess,sys,tarfile,tempfile
 from pathlib import Path
-from ordered_gate import ROOT,PIN,block
+from ordered_gate import ROOT,PIN,block,hybrid
 sys.path.insert(0,str(ROOT))
-from tools.build_hybrid import apply_patch_verified
+from tools.build_hybrid import apply_patch_verified,hybrid_tree
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated
 from tools.harness import run_compiler
@@ -18,17 +19,11 @@ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Pa
 if a.report.exists():raise ValueError('Choose a unique receipt path')
 fixed=ROOT/'migration/patches/halfclose/0003-send-tls-close-notify.patch'
 fixed_sha=next(e['sha256'] for e in json.loads((fixed.parent/'manifest.json').read_text())['patches'] if e['path']==fixed.name)
-manifest=ROOT/'migration/patches/reactor/manifest.json';dest='src/network/socket.cc'
-# The reactor patches up to the last that touches socket.cc that touch it or the socket
-# header, plus every earlier patch to a file those touch, so each applies on its base.
-entries=json.loads(manifest.read_text())['patches'];last=max(i for i,e in enumerate(entries) if dest in e['upstream_paths'])
-touched={dest,'include/swoole_socket.h'}
-for e in entries[last::-1]:
- if set(e['upstream_paths'])&touched:touched|=set(e['upstream_paths'])
-stack=[e for e in entries[:last+1] if set(e['upstream_paths'])&touched]
-paths=sorted({path for e in stack for path in e['upstream_paths']}|{dest})
+dest='src/network/socket.cc'
+selected_tree,abi=hybrid(a.archive);hybrid_flags=hybrid_tree(a.archive)[1]
+hybrid_corrected=json.loads((selected_tree.parent/'build-manifest.json').read_text())['inputs']['fix_halfclose']
 fixture_name='forwarding' if a.forwarding else 'iov_progress' if a.iov_progress else 'output'
-report=dict(scope=('Whole file/event forwarding positive source effects; clean syntax/pure Rust only, Native clean unexecuted' if a.forwarding else 'Genuine IOVector complete progression; Native vs Rust-owned descriptor storage, unchanged public class; no kernel/loaded production or error/fault/lifetime qualification' if a.iov_progress else __doc__),pin=PIN,patch_application=[],syntax=[],commands=[],results=[],passed=False)
+report=dict(hybrid_tree=str(selected_tree),hybrid_corrected=hybrid_corrected,scope=('Whole file/event forwarding positive source effects; clean syntax/pure Rust only, Native clean unexecuted' if a.forwarding else 'Genuine IOVector complete progression; Native vs Rust-owned descriptor storage, unchanged public class; no kernel/loaded production or error/fault/lifetime qualification' if a.iov_progress else __doc__),pin=PIN,patch_application=[],syntax=[],commands=[],results=[],passed=False)
 with tempfile.TemporaryDirectory(prefix='swr-output-') as tmp:
  t=Path(tmp)
  try:
@@ -39,16 +34,13 @@ with tempfile.TemporaryDirectory(prefix='swr-output-') as tmp:
   with tarfile.open(fileobj=io.BytesIO(headers)) as archive:
    for member in archive:
     if member.isfile():path=sdk/member.name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(archive.extractfile(member).read())
-  for variant,corrected,selected in [('native',False,False),('native-corrected',True,False),('rust',False,True),('rust-corrected',True,True)]:
-   tree=t/variant;file=tree/dest
-   for path in paths:(tree/path).parent.mkdir(parents=True,exist_ok=True);(tree/path).write_bytes(subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+path]))
-   overlays=([(fixed,fixed_sha,[dest])] if corrected else [])+([(manifest.parent/e['path'],e['sha256'],e['upstream_paths']) for e in stack] if selected else [])
-   for overlay,sha,targets in overlays:report['patch_application'].append(dict(variant=variant,proof=apply_patch_verified(tree,overlay,targets,sha)))
+  for variant,corrected,selected in [('native',False,False),('native-corrected',True,False),('rust',hybrid_corrected,True)]:
+   tree=t/variant
+   if selected:file=selected_tree/dest;overlaid=selected_tree
+   else:
+    file=tree/dest;file.parent.mkdir(parents=True);file.write_bytes(source);overlaid=sdk
+    if corrected:report['patch_application'].append(dict(variant=variant,proof=apply_patch_verified(tree,fixed,[dest],fixed_sha)))
    body=file.read_text()
-   # The SDK headers, with this composition's patched ones laid over them.
-   overlaid=tree/'sdk';shutil.copytree(sdk,overlaid)
-   for path in paths:
-    if path.startswith('include/'):shutil.copy(tree/path,overlaid/path)
    # Protected Native effects/optional correction are never converted or tested
    # by interruption: attest their exact text/order in each selected composition.
    shutdown=lambda text:block(text,text.index('bool Socket::ssl_shutdown('))[0]
@@ -59,8 +51,7 @@ with tempfile.TemporaryDirectory(prefix='swr-output-') as tmp:
    prefix+='\n    swoole_trace("rv=%ld|begin=%ld|sendn=%lu|end=%lu", rv, (long) task->begin, sendn, task->end);'
    if prefix not in body:raise ValueError('Native sendfile prefix changed')
    for ssl in [False,True]:
-    command=['c++','-std=c++14','-fsyntax-only','-I'+str(overlaid/'include'),'-I'+str(overlaid),'-I'+str(ROOT/'native/reactor'),*subprocess.check_output(['pkg-config','--cflags','openssl'],text=True).split()]
-    if selected:command+=['-DSWOOLE_RS_REACTOR']
+    command=['c++','-std=c++14','-fsyntax-only',*(hybrid_flags if selected else []),'-I'+str(overlaid/'include'),'-I'+str(overlaid),*subprocess.check_output(['pkg-config','--cflags','openssl'],text=True).split()]
     if ssl:command+=['-DSW_USE_OPENSSL']
     command+=[str(file)];result=run_isolated(command,cwd=t,timeout=60)
     report['syntax'].append(dict(variant=variant,ssl=ssl,command=command,exit=result.returncode,stdout=result.stdout,stderr=result.stderr))
@@ -79,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix='swr-output-') as tmp:
     extracted=declaration+'\n'+'\n'.join(block(body,body.index(sig))[0] for sig in ['IOVector::IOVector(','IOVector::~IOVector(','void IOVector::update_iterator('])
    if a.forwarding:
     extracted='\n'.join(block(body,body.index(sig))[0] for sig in ['ssize_t Socket::sendfile(','ssize_t Socket::send_async(','void Socket::clean(','bool Socket::check_liveness('])
-   (tree/(fixture_name+'.inc')).write_text(extracted);binary=tree/'consumer';command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/reactor'),str(ROOT/('tests/modules/reactor/'+fixture_name+'.cc')),str(a.archive.resolve()),'-lpthread','-o',str(binary)]
+   tree.mkdir(exist_ok=True);(tree/(fixture_name+'.inc')).write_text(extracted);binary=tree/'consumer';command=['c++','-std=c++14','-O1','-g','-I'+str(tree),abi,str(ROOT/('tests/modules/reactor/'+fixture_name+'.cc')),str(a.archive.resolve()),'-lpthread','-o',str(binary)]
    if a.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
    if sys.platform.startswith('linux'):command+=['-ldl','-lm']
    for stage,cmd in [('compile',command),('execute',[str(binary)])]:
@@ -88,7 +79,7 @@ with tempfile.TemporaryDirectory(prefix='swr-output-') as tmp:
     report['commands'].append(dict(variant=variant,stage=stage,command=cmd,exit=result['returncode'],stdout=result['stdout'],stderr=result['stderr'],cache={k:result[k] for k in ['cache_hit','cache_key','cache_reason'] if k in result}))
     if result['returncode'] or result['stderr']:raise RuntimeError(variant+' '+stage+' failed/warned')
    report['results'].append(dict(variant=variant,observations=json.loads(result['stdout'])))
-  if len({json.dumps(row['observations'],sort_keys=True) for row in report['results']})!=1:raise RuntimeError('Four positive observations differ')
+  if len({json.dumps(row['observations'],sort_keys=True) for row in report['results']})!=1:raise RuntimeError('Positive observations differ')
   report['passed']=True
  except Exception as error:report['error']=str(error)
 a.report.parent.mkdir(parents=True,exist_ok=True);a.report.write_text(json.dumps(report,indent=2)+'\n');print(json.dumps({k:report.get(k) for k in ['passed','error','results']}));raise SystemExit(not report['passed'])

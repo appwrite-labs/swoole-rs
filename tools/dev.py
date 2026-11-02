@@ -280,7 +280,7 @@ def plan(args, reports):
         pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
         script('reactor-buffer-typed-compile', 'tests/modules/reactor/buffer_typed_compile.py',
                '--source', ROOT / 'target/upstream/src',
-               '--master-patch', ROOT / 'migration/patches/integration/0003-server-static-config.patch',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'reactor-buffer-typed-compile.json')
     if 'coroutine' in modules:
         if integrate:
