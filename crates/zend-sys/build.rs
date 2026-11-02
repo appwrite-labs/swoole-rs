@@ -40,6 +40,8 @@ mod php {
             .filter(|path| matches!(path.extension().and_then(|e| e.to_str()), Some("c" | "h")))
             .collect();
         sources.sort();
+        // The directory too: a new shim must rerun this.
+        println!("cargo::rerun-if-changed=src");
         for file in &sources {
             println!("cargo::rerun-if-changed={}", file.display());
         }

@@ -101,7 +101,7 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 
 Runs the eight unchanged `redis.*`, `message_bus.*` and `mqtt.echo` GTests (dev.py phase
 `protocols-native-originals`, Linux) against
-upstream and Rust-overlay builds. Build `core.Dockerfile` on the repo dev image
+upstream and the archive's hybrid tree (every module's patches, `overlay_hybrid_tree`). Build `core.Dockerfile` on the repo dev image
 (`dev.py docker` builds it the first time), under one fixed tag so a rebuild replaces it:
 
 ```sh
@@ -115,7 +115,7 @@ Linux config.h at /configured.h:
 
 ```sh
 python3 /repo/tests/modules/protocols/core.py --source /ref \
-  --config /configured.h --archive /work/target/release/libswoole_rs_protocols.a \
+  --config /configured.h --archive /work/target/hybrid/<build>/rust-prefix/lib/libswoole_rs_ffi.a \
   --build-root /work --node-modules /work/node-fixture/node_modules \
   --require-all --output /work/reports/protocols-core.json
 ```

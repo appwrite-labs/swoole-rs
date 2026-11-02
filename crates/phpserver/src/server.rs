@@ -33,7 +33,7 @@ const STATS_COUNT: usize = 33;
 
 /// `swr_phpserver_client`.
 #[repr(C)]
-pub struct Client {
+pub struct ServerClient {
     uid: i64,
     worker_id: i64,
     websocket_status: i64,
@@ -82,7 +82,7 @@ pub struct ServerHost {
     exists: unsafe extern "C" fn(*mut c_void, i64) -> c_int,
     protect: unsafe extern "C" fn(*mut c_void, i64, bool) -> bool,
     bind: unsafe extern "C" fn(*mut c_void, i64, u32) -> c_int,
-    client: unsafe extern "C" fn(*mut c_void, i64, *mut Client) -> bool,
+    client: unsafe extern "C" fn(*mut c_void, i64, *mut ServerClient) -> bool,
     sendwait: unsafe extern "C" fn(*mut c_void, i64, *const c_char, usize) -> bool,
     reload: unsafe extern "C" fn(*mut c_void, bool) -> bool,
     shutdown: unsafe extern "C" fn(*mut c_void) -> bool,
@@ -102,7 +102,7 @@ pub struct ServerHost {
 
 /// `swr_phpserver_classes`: what C++ keeps of the registration.
 #[repr(C)]
-pub struct Classes {
+pub struct ServerClasses {
     server: *mut zend_class_entry,
     task: *mut zend_class_entry,
     event: *mut zend_class_entry,
@@ -325,7 +325,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
     table: *const ServerHost,
     thread: bool,
     module: c_int,
-    classes: *mut Classes,
+    classes: *mut ServerClasses,
 ) {
     HOST.store(table.cast_mut(), Ordering::Release);
     let host = host();
@@ -397,7 +397,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
     let [event, packet, pipe_message, status_info, task_result] = data;
     // SAFETY: the caller's writable out-parameter.
     unsafe {
-        classes.write(Classes {
+        classes.write(ServerClasses {
             server,
             task: TASK.entry(),
             event,
@@ -461,7 +461,9 @@ pub(crate) fn no_payload() {
     // SAFETY: reads a setting.
     if unsafe { (host.display_errors)() } {
         // SAFETY: from a handler; a warning.
-        unsafe { php_error(E_WARNING, c"the data sent must not be empty") };
+        swoole_rs_zend::bailout::defer(unsafe {
+            php_error(E_WARNING, c"the data sent must not be empty")
+        });
     }
 }
 
@@ -469,8 +471,9 @@ pub(crate) fn no_payload() {
 pub(crate) fn fatal(level: i32, message: &CStr) {
     // SAFETY: plain state, then a warning.
     unsafe { (host().set_last_error)(SW_ERROR_PHP_FATAL_ERROR) };
-    // SAFETY: from a handler; an `E_ERROR` does not return, and callers own nothing.
-    unsafe { php_error(level, message) };
+    // SAFETY: from a handler; a bailout (an `E_ERROR`, or a user error handler's
+    // exit) waits for the handler's last step, so callers return after it.
+    swoole_rs_zend::bailout::defer(unsafe { php_error(level, message) });
 }
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)`: an `E_ERROR`, which
@@ -688,7 +691,7 @@ fn get_client_info(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: all-zero is a valid view for C++ to fill.
-    let mut client: Client = unsafe { std::mem::zeroed() };
+    let mut client: ServerClient = unsafe { std::mem::zeroed() };
     // SAFETY: a live server and a writable view.
     if !unsafe { (host().client)(serv, fd, &raw mut client) } {
         return call.set_bool(false);
@@ -786,11 +789,11 @@ fn sendwait(call: &Call) {
     let Ok((fd, data)) = parsed else {
         return call.set_bool(false);
     };
-    let host = host();
     if data.is_empty() {
         no_payload();
         return call.set_bool(false);
     }
+    let host = host();
     // SAFETY: a live server.
     if unsafe { (host.role)(serv, 1) } {
         fatal(

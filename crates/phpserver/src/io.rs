@@ -387,11 +387,12 @@ fn finish(call: &Call) {
     let host = host();
     // SAFETY: a live server.
     if unsafe { (host.task_enable_coroutine)(serv) } {
-        // An `E_ERROR`, which does not return; the frames own nothing.
+        // An `E_ERROR`: its bailout waits for the handler's last step.
         fatal(
             E_ERROR,
             c"please use Swoole\\Server\\Task->finish instead when task_enable_coroutine is enable",
         );
+        return;
     }
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);

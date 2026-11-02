@@ -280,7 +280,9 @@ fn shutdown_begin(call: &Call) {
         call.set_bool(true);
     } else {
         // SAFETY: a handler, with a literal message.
-        unsafe { php_error(E_WARNING, c"can not call this function in user level") };
+        swoole_rs_zend::bailout::defer(unsafe {
+            php_error(E_WARNING, c"can not call this function in user level")
+        });
         call.set_bool(false);
     }
 }
@@ -419,7 +421,7 @@ fn substr_json_decode(call: &Call) {
         Window::Past => c"Offset must be less than the length of the string",
     };
     // SAFETY: a handler, with a literal message.
-    unsafe { php_error(E_WARNING, warning) };
+    swoole_rs_zend::bailout::defer(unsafe { php_error(E_WARNING, warning) });
     call.set_null();
 }
 
