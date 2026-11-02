@@ -82,6 +82,10 @@ pub use socket_sync::*;
 mod socket_types;
 #[cfg(unix)]
 pub use socket_types::*;
+#[cfg(unix)]
+mod socket_record;
+#[cfg(unix)]
+pub use socket_record::*;
 
 const INVALID: i32 = -1;
 /// Encode the stream's four-byte network-order body length. The supplied total

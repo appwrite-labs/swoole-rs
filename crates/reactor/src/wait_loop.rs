@@ -1,5 +1,6 @@
 //! Each backend's whole wait loop in one call (#336, #391). Rust owns the loop and the readiness
 //! order; native code supplies the kernel wait and the effects upstream reaches through `Reactor`.
+use crate::SocketRecord;
 use crate::handlers::{self, Handlers};
 use std::ffi::{c_int, c_void};
 
@@ -29,8 +30,6 @@ pub struct WaitOps {
     pub interrupted: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
     pub interrupt: Option<unsafe extern "C" fn(*mut c_void)>,
     pub wait_failed: unsafe extern "C" fn(*mut c_void),
-    /// The native `Socket` fields the loop reads and writes.
-    pub fields: *const SocketFields,
     pub reactor_id: i16,
     /// The reactor's handler tables; each handler runs as `handler(reactor, event)`.
     pub handlers: *const Handlers,
@@ -50,17 +49,6 @@ pub struct Event {
     pub reactor_id: i16,
     pub fd_type: c_int,
     pub socket: *mut c_void,
-}
-
-/// Accessors for the native `network::Socket` fields the loop uses; `removed` and
-/// `event_hup` are bitfields.
-#[repr(C)]
-pub struct SocketFields {
-    pub fd: unsafe extern "C" fn(*mut c_void) -> c_int,
-    pub fd_type: unsafe extern "C" fn(*mut c_void) -> c_int,
-    pub events: unsafe extern "C" fn(*mut c_void) -> c_int,
-    pub removed: unsafe extern "C" fn(*mut c_void) -> bool,
-    pub set_hangup: unsafe extern "C" fn(*mut c_void),
 }
 
 const SW_EVENT_ONCE: c_int = 1 << 12;
@@ -207,7 +195,7 @@ unsafe fn entry(ops: &WaitOps, index: usize) {
 fn ready(ops: &WaitOps, socket: *mut c_void, fd: c_int, mask: u32) {
     let context = ops.context;
     let fd_type = prepare(ops, socket, fd, mask & HANGUP != 0);
-    let live = || registered(ops, socket);
+    let live = || registered(socket);
     for (kind, bit) in [(0, READ), (1, WRITE)] {
         if mask & bit != 0 && live() && handle(ops, kind, fd_type) < 0 {
             // SAFETY: the native effect accepts `context` and the prepared event.
@@ -242,7 +230,7 @@ fn kqueue(ops: &WaitOps, udata: *mut c_void, filter: c_int) {
     }
     if filter == c_int::from(libc::EVFILT_READ) || filter == c_int::from(libc::EVFILT_WRITE) {
         let fd_type = prepare(ops, udata, -1, false);
-        let live = || registered(ops, udata);
+        let live = || registered(udata);
         if !live() {
             return;
         }
@@ -282,21 +270,16 @@ fn handle(ops: &WaitOps, kind: u32, fd_type: c_int) -> c_int {
 
 /// Fills the event for a ready socket, as each upstream backend did: `fd` is poll's entry
 /// fd (-1: the socket's own), and `hangup` marks `event_hup`. Returns the fd type.
-fn fields(ops: &WaitOps) -> &SocketFields {
-    // SAFETY: the native accessors stay valid while the reactor waits.
-    unsafe { &*ops.fields }
-}
-
 fn prepare(ops: &WaitOps, socket: *mut c_void, fd: c_int, hangup: bool) -> c_int {
-    let fields = fields(ops);
+    let record = socket.cast::<SocketRecord>();
+    // SAFETY: `socket` is a registered socket record; the loop reads single fields.
+    let fd_type = unsafe { (*record).fd_type };
     let fd = if fd < 0 {
-        // SAFETY: `socket` is a registered native socket.
-        unsafe { (fields.fd)(socket) }
+        // SAFETY: as above.
+        unsafe { (*record).fd }
     } else {
         fd
     };
-    // SAFETY: as above.
-    let fd_type = unsafe { (fields.fd_type)(socket) };
     let event = Event {
         fd,
         reactor_id: ops.reactor_id,
@@ -307,20 +290,20 @@ fn prepare(ops: &WaitOps, socket: *mut c_void, fd: c_int, hangup: bool) -> c_int
     unsafe { ops.event.write(event) };
     if hangup {
         // SAFETY: as above.
-        unsafe { (fields.set_hangup)(socket) };
+        unsafe { (*record).event_hup = 1 };
     }
     fd_type
 }
 
 /// Whether `socket` is still registered (`!socket->removed`).
-fn registered(ops: &WaitOps, socket: *mut c_void) -> bool {
+fn registered(socket: *mut c_void) -> bool {
     // SAFETY: `socket` stays live while its handlers run.
-    !unsafe { (fields(ops).removed)(socket) }
+    unsafe { (*socket.cast::<SocketRecord>()).removed == 0 }
 }
 
 fn oneshot(ops: &WaitOps, socket: *mut c_void, live: impl Fn() -> bool) {
     // SAFETY: `socket` stays live until its removal below.
-    if live() && unsafe { (fields(ops).events)(socket) } & SW_EVENT_ONCE != 0 {
+    if live() && unsafe { (*socket.cast::<SocketRecord>()).events } & SW_EVENT_ONCE != 0 {
         // SAFETY: the native effect accepts `context` and the socket.
         unsafe { (ops.remove)(ops.context, socket) };
     }
