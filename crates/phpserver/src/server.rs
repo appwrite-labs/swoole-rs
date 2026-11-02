@@ -454,7 +454,7 @@ const CONSTANTS: &[(&CStr, i64)] = &[
 ];
 
 /// `php_swoole_fatal_error(level, message)`.
-fn fatal(level: i32, message: &CStr) {
+pub(crate) fn fatal(level: i32, message: &CStr) {
     // SAFETY: plain state, then a warning.
     unsafe { (host().set_last_error)(SW_ERROR_PHP_FATAL_ERROR) };
     // SAFETY: from a handler; never `E_ERROR` here.
@@ -463,7 +463,7 @@ fn fatal(level: i32, message: &CStr) {
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)`: an `E_ERROR`, which
 /// does not return, for a Server never constructed. The frames own nothing.
-fn server(call: &Call) -> *mut c_void {
+pub(crate) fn server(call: &Call) -> *mut c_void {
     // SAFETY: `$this` is a Server, which C++ allocated as a `ServerObject`.
     let serv = unsafe { Object::<ServerData>::data(call.this()) }.serv;
     if serv.is_null() {

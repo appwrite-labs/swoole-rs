@@ -24,4 +24,10 @@ pub use port::*;
 mod server;
 
 #[cfg(feature = "server")]
+mod settings;
+
+#[cfg(feature = "server")]
 pub use server::*;
+
+#[cfg(feature = "server")]
+pub use settings::*;
