@@ -5,6 +5,41 @@ use crate::registry::{self, Registry};
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
+const SW_EVENT_READ: c_int = 1 << 9;
+const SW_EVENT_WRITE: c_int = 1 << 10;
+const SW_EVENT_ERROR: c_int = 1 << 11;
+
+/// `translate_events_to_poll`: the poll bits for swoole `events`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_reactor_poll_events_to(events: c_int) -> i16 {
+    let mut poll_events = 0;
+    if events & SW_EVENT_READ != 0 {
+        poll_events |= libc::POLLIN;
+    }
+    if events & SW_EVENT_WRITE != 0 {
+        poll_events |= libc::POLLOUT;
+    }
+    poll_events
+}
+
+/// `translate_events_from_poll`: the swoole events for poll `events`. ERR and HUP
+/// count only without IN or OUT, whose handlers already see them.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_reactor_poll_events_from(events: i16) -> c_int {
+    let mut sw_events = 0;
+    if events & libc::POLLIN != 0 {
+        sw_events |= SW_EVENT_READ;
+    }
+    if events & libc::POLLOUT != 0 {
+        sw_events |= SW_EVENT_WRITE;
+    }
+    if events & (libc::POLLERR | libc::POLLHUP) != 0 && events & (libc::POLLIN | libc::POLLOUT) == 0
+    {
+        sw_events |= SW_EVENT_ERROR;
+    }
+    sw_events
+}
+
 pub struct PollSnapshot {
     entries: Vec<libc::pollfd>,
     sockets: Vec<*mut c_void>,
@@ -89,4 +124,32 @@ pub unsafe extern "C" fn swr_v1_reactor_poll_fill(
     // SAFETY: both buffers hold `limit` entries; the registry is null or live.
     let count = unsafe { registry::poll(registry, events, sockets, limit) };
     c_int::try_from(count).unwrap_or(c_int::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translates_events_like_upstream() {
+        assert_eq!(swr_v1_reactor_poll_events_to(0), 0);
+        assert_eq!(swr_v1_reactor_poll_events_to(SW_EVENT_READ), libc::POLLIN);
+        assert_eq!(
+            swr_v1_reactor_poll_events_to(SW_EVENT_READ | SW_EVENT_WRITE | SW_EVENT_ERROR),
+            libc::POLLIN | libc::POLLOUT
+        );
+        assert_eq!(
+            swr_v1_reactor_poll_events_from(libc::POLLOUT),
+            SW_EVENT_WRITE
+        );
+        assert_eq!(
+            swr_v1_reactor_poll_events_from(libc::POLLHUP),
+            SW_EVENT_ERROR
+        );
+        assert_eq!(
+            swr_v1_reactor_poll_events_from(libc::POLLERR | libc::POLLIN),
+            SW_EVENT_READ
+        );
+        assert_eq!(swr_v1_reactor_poll_events_from(libc::POLLNVAL), 0);
+    }
 }

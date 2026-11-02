@@ -196,6 +196,9 @@ int swr_v1_reactor_kqueue_del(int kq, int fd, void *socket, int events, int *err
 typedef struct swr_v1_reactor_poll_snapshot swr_v1_reactor_poll_snapshot;
 typedef struct { size_t size, alignment, fd, events, revents; } swr_v1_reactor_poll_layout_info;
 swr_v1_reactor_poll_layout_info swr_v1_reactor_poll_layout(void);
+/* translate_events_to_poll / translate_events_from_poll. */
+int16_t swr_v1_reactor_poll_events_to(int events);
+int swr_v1_reactor_poll_events_from(int16_t events);
 swr_v1_reactor_poll_snapshot *swr_v1_reactor_poll_new(size_t);
 void swr_v1_reactor_poll_free(swr_v1_reactor_poll_snapshot *);
 /* Actual target libc pollfd storage, borrowed until owner destruction. */
@@ -251,6 +254,13 @@ swr_v1_socket_option_result swr_v1_socket_cork(int fd, swr_v1_socket_cork_state 
 swr_v1_socket_option_result swr_v1_socket_uncork(int fd, bool enable_tcp_nodelay, swr_v1_socket_cork_state *state);
 bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
 bool swr_v1_socket_kernel_timeout(int fd, bool send, double timeout);
+/* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
+ * write_timeout), embedded in this order (Socket static_asserts it). set_timeout
+ * writes timeout into each SW_TIMEOUT_* bit of type unless timeout is 0;
+ * swr_v1_socket_timeout is the slot one SW_TIMEOUT_* value names, else NULL. */
+typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
+void swr_v1_socket_set_timeout(swr_v1_socket_timeouts *timeouts, double timeout, int type);
+const double *swr_v1_socket_timeout(const swr_v1_socket_timeouts *timeouts, int type);
 bool swr_v1_socket_listen(int fd, int backlog, int default_backlog);
 /* network::Socket's descriptor I/O. status 0 ready; 1 timed out (wait) or
  * EINPROGRESS (connect); 2 failed with errno `error`. */
