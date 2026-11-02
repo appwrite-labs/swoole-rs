@@ -245,7 +245,14 @@
       ]
     },
     {
-      "path": "0026-log-origin.patch",
+      "path": "0026-signal-kqueue.patch",
+      "sha256": "f5419fae52908a28b5dd4d46cb5510d6b29a4ab1c24f465726587c2d3dfd870e",
+      "upstream_paths": [
+        "src/os/signal.cc"
+      ]
+    },
+    {
+      "path": "0027-log-origin.patch",
       "sha256": "dd14edf2a5743d28b6e2e7f78133e0b1159d0f5ad16a430757793cde34aa3570",
       "upstream_paths": [
         "ext-src/swoole_server.cc",
