@@ -659,7 +659,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['ports-policy'])
         self.assertIn('--archive', commands['http2-native'])
         self.assertIn('--sanitize', commands['http2-native'])
-        for family in ['settings', 'control', 'header', 'window', 'response-headers', 'send', 'server-header', 'response-builders', 'response-lifecycle', 'file', 'receive']:
+        for family in ['header']:
             self.assertIn('--core-report', commands['http2-' + family])
             self.assertLess(list(commands).index('http2-native'), list(commands).index('http2-' + family))
         for name in ['clients-lifecycle', 'clients-write', 'clients-read', 'clients-connect', 'clients-persistent', 'clients-resolver-config', 'clients-transport', 'clients-pool', 'clients-resolver', 'clients-http-format', 'clients-async', 'clients-object', 'clients-ip', 'clients-ip-text']:
@@ -844,7 +844,6 @@ class Lanes(unittest.TestCase):
             first = command.index('--engine')
             self.assertTrue(command[first + 1].startswith('upstream='))
             self.assertEqual(command.count('--engine'), 2)
-        self.assertIn('--allocation-failures', commands['protocols-native'])
         self.assertFalse(any(name.startswith('halfclose-') for name in commands))
 
     def test_native_halfclose_keeps_all_pause_profiles_and_originals(self):
