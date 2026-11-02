@@ -207,6 +207,7 @@
       ],
       "owned_paths": [
         "crates/hooks/",
+        "crates/phpruntime/",
         "native/hooks/",
         "migration/patches/hooks/",
         "tests/modules/hooks/"
