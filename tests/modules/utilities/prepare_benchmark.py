@@ -15,6 +15,7 @@ import uuid
 from gate import ROOT, PIN, oracle
 from bytes_gate import SIGNATURES, body
 from tools.harness import run_isolated, write_report
+from tools.build_hybrid import module_patches
 from overlay import apply_owned
 from tools.build_upstream import require_build_space
 
@@ -95,8 +96,7 @@ def main():
             str(path.relative_to(ROOT)) for path in (ROOT/'crates/utilities/src').rglob('*.rs')}
         if {name for name in selected_sources if name.startswith('crates/utilities/')} != required_sources:
             raise ValueError('Require complete current utility source attestation')
-        module = json.loads((ROOT/'migration/patches/utilities/manifest.json').read_text())
-        required_patches = {'migration/patches/utilities/'+row['path'] for row in module['patches']}
+        required_patches = {'migration/patches/utilities/'+row['path'] for row in module_patches(ROOT/'migration/patches/utilities')}
         supplied_patches = [row['path'] for row in build['inputs']['patches']
                             if row['path'].startswith('migration/patches/utilities/')]
         if set(supplied_patches) != required_patches or len(supplied_patches) != len(required_patches):

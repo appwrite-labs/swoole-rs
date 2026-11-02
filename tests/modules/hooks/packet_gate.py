@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Compare actual vector all-transfer and packet length/EOF/dispatch bodies with native buffers and protocol callbacks; no kernel/context proof."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -12,6 +11,7 @@ from ordered_gate import block
 
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from tools.build_hybrid import module_patches
 from tools.build_upstream import COMMIT as PIN
 
 def main():
@@ -22,8 +22,8 @@ def main():
     p.add_argument('--sanitize',action='store_true')
     a=p.parse_args()
     unit='src/coroutine/socket.cc'
-    manifest=json.loads((ROOT/'migration/patches/hooks/manifest.json').read_text())
-    paths=manifest['patches'][0]['upstream_paths']
+    manifest=module_patches(ROOT/'migration/patches/hooks')
+    paths=manifest[0]['upstream_paths']
     originals={path:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+path],text=True) for path in paths}
     # recv_packet and readv_all/writev_all are Rust calls in the selected tree (#443):
     # upstream's runs its two packet helpers, the selected tree its vector_all glue.
@@ -34,9 +34,8 @@ def main():
         tree=Path(directory)
         for path,text in originals.items():
             out=tree/path;out.parent.mkdir(parents=True,exist_ok=True);out.write_text(text)
-        for entry in manifest['patches']:
+        for entry in manifest:
             patch=ROOT/'migration/patches/hooks'/entry['path']
-            assert hashlib.sha256(patch.read_bytes()).hexdigest()==entry['sha256']
             subprocess.run(['git','apply',str(patch)],cwd=tree,check=True)
         for variant in ['original','selected']:
             texts=originals if variant=='original' else {path:(tree/path).read_text() for path in paths}

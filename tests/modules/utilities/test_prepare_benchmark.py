@@ -39,8 +39,7 @@ class PreparationGuards(unittest.TestCase):
     def test_partial_maps_refuse_before_source_preparation_and_full_map_reaches_control(self):
         sources={str(p.relative_to(ROOT)):prepare.sha(p) for p in
                  [ROOT/'crates/utilities/Cargo.toml', *(ROOT/'crates/utilities/src').rglob('*.rs')]}
-        module=json.loads((ROOT/'migration/patches/utilities/manifest.json').read_text())
-        patches=[dict(path='migration/patches/utilities/'+p['path'],sha256=p['sha256']) for p in module['patches']]
+        patches=[dict(path='migration/patches/utilities/'+p['path'],sha256=p['sha256']) for p in prepare.module_patches(ROOT/'migration/patches/utilities')]
         for case in ['missing-source','missing-patch','duplicate-patch','complete']:
             with self.subTest(case=case),tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);archive=root/'selected.a';archive.write_bytes(b'fixture archive')
