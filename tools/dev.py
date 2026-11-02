@@ -335,10 +335,10 @@ def plan(args, reports):
     if 'clients' in modules:
         for name, runner in [('clients-policy', 'gate.py'), ('clients-http', 'http_gate.py'), ('clients-codec', 'codec_gate.py'),
                              ('clients-lifecycle', 'lifecycle_gate.py'), ('clients-write', 'write_gate.py'), ('clients-read', 'read_gate.py'),
-                             ('clients-connect', 'connect_gate.py'), ('clients-persistent', 'persistent_gate.py'),
+                             ('clients-connect', 'connect_gate.py'),
                              ('clients-resolver-config', 'resolv_gate.py'), ('clients-transport', 'transport_gate.py'),
                              ('clients-pool', 'pool_gate.py'), ('clients-resolver', 'resolver_gate.py'),
-                             ('clients-http-format', 'http_format_gate.py'), ('clients-async', 'async_gate.py'), ('clients-object', 'object_gate.py'),
+                             ('clients-http-format', 'http_format_gate.py'), ('clients-object', 'object_gate.py'),
                              ('clients-ip', 'ip_gate.py'), ('clients-ip-text', 'ip_text_gate.py')]:
             script(name, 'tests/modules/clients/' + runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report(name))

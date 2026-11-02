@@ -665,7 +665,7 @@ class Lanes(unittest.TestCase):
         for family in ['settings', 'control', 'header', 'window', 'response-headers', 'send', 'server-header', 'response-builders', 'response-lifecycle', 'file', 'receive']:
             self.assertIn('--core-report', commands['http2-' + family])
             self.assertLess(list(commands).index('http2-native'), list(commands).index('http2-' + family))
-        for name in ['clients-lifecycle', 'clients-write', 'clients-read', 'clients-connect', 'clients-persistent', 'clients-resolver-config', 'clients-transport', 'clients-pool', 'clients-resolver', 'clients-http-format', 'clients-async', 'clients-object', 'clients-ip', 'clients-ip-text']:
+        for name in ['clients-lifecycle', 'clients-write', 'clients-read', 'clients-connect', 'clients-resolver-config', 'clients-transport', 'clients-pool', 'clients-resolver', 'clients-http-format', 'clients-object', 'clients-ip', 'clients-ip-text']:
             self.assertIn('--archive', commands[name])
             self.assertIn('--sanitize', commands[name])
         self.assertIn('--archive', commands['httpbindings-settings'])

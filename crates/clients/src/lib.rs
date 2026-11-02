@@ -8,7 +8,6 @@
 )]
 
 pub mod address;
-pub mod async_client;
 pub mod connect;
 pub mod dns;
 pub mod handlers;
@@ -326,81 +325,6 @@ mod tests {
         assert_eq!(swr_v1_clients_port(0, 0), 1);
         assert_eq!(swr_v1_clients_port(0, 1), 0);
         assert_eq!(swr_v1_clients_port(65536, 0), 0);
-    }
-}
-
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PersistentAction {
-    Advance = 0,
-    Find = 1,
-    Take = 2,
-    Reuse = 3,
-    DropStale = 4,
-    Create = 5,
-    CreateFailed = 6,
-    SetIdentity = 7,
-    PublishSocket = 8,
-    Keep = 9,
-    EnableSsl = 10,
-    Return = 11,
-    DeleteTimer = 12,
-    FreeCallable = 13,
-    ErasePool = 14,
-    DeleteClient = 15,
-    FreeSocketObject = 16,
-    Detach = 17,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PersistentPlan {
-    pub action: PersistentAction,
-    pub stage: u32,
-}
-
-/// Acquire stages start at0, release stages at100. The sole native pool and all
-/// Zend/allocator/destructor effects stay outside Rust; no native pointer enters.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_persistent_next(stage: u32, facts: u32) -> PersistentPlan {
-    use PersistentAction::{
-        Advance, Create, CreateFailed, DeleteClient, DeleteTimer, Detach, DropStale, EnableSsl,
-        ErasePool, Find, FreeCallable, FreeSocketObject, Keep, PublishSocket, Return, Reuse,
-        SetIdentity, Take,
-    };
-    let (action, next) = match stage {
-        0 if facts != 0 => (Find, 1),
-        0 => (Create, 4),
-        1 if facts != 0 => (Take, 2),
-        1 => (Create, 4),
-        2 if facts != 0 => (Reuse, 6),
-        2 => (DropStale, 3),
-        3 => (Create, 4),
-        4 if facts != 0 => (SetIdentity, 6),
-        4 => (CreateFailed, 4),
-        6 => (PublishSocket, 7),
-        7 => (if facts != 0 { Keep } else { Advance }, 8),
-        8 => (if facts != 0 { EnableSsl } else { Return }, 8),
-        100 => (if facts != 0 { DeleteTimer } else { Advance }, 101),
-        101 => (if facts != 0 { FreeCallable } else { Advance }, 102),
-        102 if facts != 0 => (Find, 103),
-        102 => (Advance, 104),
-        103 => (if facts != 0 { ErasePool } else { Advance }, 104),
-        104 => (DeleteClient, 105),
-        105 => (
-            if facts != 0 {
-                FreeSocketObject
-            } else {
-                Advance
-            },
-            106,
-        ),
-        106 => (Detach, 106),
-        _ => (Return, stage),
-    };
-    PersistentPlan {
-        action,
-        stage: next,
     }
 }
 

@@ -142,19 +142,6 @@ typedef struct {
     bool (*fail)(void *);
 } swr_v1_clients_async_connect_ops;
 int32_t swr_v1_clients_connect_async(const swr_v1_clients_async_connect_ops *ops);
-enum swr_v1_clients_persistent_action {
-    SWR_CLIENTS_PERSISTENT_ADVANCE=0, SWR_CLIENTS_PERSISTENT_FIND=1,
-    SWR_CLIENTS_PERSISTENT_TAKE=2, SWR_CLIENTS_PERSISTENT_REUSE=3,
-    SWR_CLIENTS_PERSISTENT_DROP_STALE=4, SWR_CLIENTS_PERSISTENT_CREATE=5,
-    SWR_CLIENTS_PERSISTENT_CREATE_FAILED=6, SWR_CLIENTS_PERSISTENT_SET_IDENTITY=7,
-    SWR_CLIENTS_PERSISTENT_PUBLISH_SOCKET=8, SWR_CLIENTS_PERSISTENT_KEEP=9,
-    SWR_CLIENTS_PERSISTENT_ENABLE_SSL=10, SWR_CLIENTS_PERSISTENT_RETURN=11,
-    SWR_CLIENTS_PERSISTENT_DELETE_TIMER=12, SWR_CLIENTS_PERSISTENT_FREE_CALLABLE=13,
-    SWR_CLIENTS_PERSISTENT_ERASE_POOL=14, SWR_CLIENTS_PERSISTENT_DELETE_CLIENT=15,
-    SWR_CLIENTS_PERSISTENT_FREE_SOCKET_OBJECT=16, SWR_CLIENTS_PERSISTENT_DETACH=17
-};
-struct swr_v1_clients_persistent_plan { uint32_t action, stage; };
-struct swr_v1_clients_persistent_plan swr_v1_clients_persistent_next(uint32_t stage, uint32_t facts);
 struct swr_v1_clients_resolv_line { uint32_t kind; size_t offset, length; };
 struct swr_v1_clients_resolv_line swr_v1_clients_resolv_line(const uint8_t *, size_t);
 struct swr_v1_clients_dns_endpoint { uint32_t has_port; size_t host_length, port_offset; };
@@ -284,11 +271,6 @@ struct swr_v1_clients_format_result { size_t written; uint32_t error; };
 /* Output is disjoint native-owned writable bytes, possibly uninitialized.
  * Required inputs initialized.0 success,1 invalid,2 printf-count overflow. */
 struct swr_v1_clients_format_result swr_v1_clients_http_format(uint32_t kind, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, size_t number, uint8_t *output, size_t capacity);
-struct swr_v1_clients_async_meta { uint32_t slot; const uint8_t *name; size_t length; };
-struct swr_v1_clients_async_meta swr_v1_clients_async_meta(uint32_t slot);
-uint32_t swr_v1_clients_async_event(const uint8_t *folded, size_t length, size_t original_length);
-struct swr_v1_clients_async_plan { uint32_t action, stage; };
-struct swr_v1_clients_async_plan swr_v1_clients_async_next(uint32_t operation, uint32_t stage, uint32_t facts);
 #ifdef __cplusplus
 }
 #endif
