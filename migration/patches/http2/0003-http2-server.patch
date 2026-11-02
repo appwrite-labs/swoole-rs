@@ -1,5 +1,5 @@
 diff --git a/ext-src/swoole_http2_server.cc b/ext-src/swoole_http2_server.cc
-index 695edc6..b261dbe 100644
+index 695edc6..f3ec0fe 100644
 --- a/ext-src/swoole_http2_server.cc
 +++ b/ext-src/swoole_http2_server.cc
 @@ -18,2 +18,3 @@
@@ -662,8 +662,7 @@ index 695edc6..b261dbe 100644
 +bool swoole_http2_server_write(HttpContext *ctx, zend_string *sdata) {
 +    return swr_v1_phphttp2_server_write(ctx, ZSTR_VAL(sdata), ZSTR_LEN(sdata));
 +}
- 
--    return http2_server_complete_file(ctx, stream, client, ztrailer != nullptr, error, false);
++
 +bool swoole_http2_server_ping(HttpContext *ctx) {
 +    return swr_v1_phphttp2_server_ping(ctx);
 +}
@@ -671,11 +670,12 @@ index 695edc6..b261dbe 100644
 +bool swoole_http2_server_goaway(HttpContext *ctx, zend_long error_code, zend_string *sdata) {
 +    return swr_v1_phphttp2_server_goaway(ctx, error_code, sdata ? ZSTR_VAL(sdata) : nullptr, sdata ? ZSTR_LEN(sdata) : 0);
 +}
-+
+ 
+-    return http2_server_complete_file(ctx, stream, client, ztrailer != nullptr, error, false);
 +int swoole_http2_server_parse(const std::shared_ptr<Http2Session> &client, const char *buf) {
 +    return swr_v1_phphttp2_server_parse(&client, buf);
  }
-@@ -940,352 +405,283 @@ static bool http2_server_onBeforeRequest(HttpContext *ctx) {
+@@ -940,352 +405,310 @@ static bool http2_server_onBeforeRequest(HttpContext *ctx) {
  }
 +// What crates/phphttp2/src/server.rs asks of the sessions, streams and
 +// contexts, which stay C++ (native/http2/swoole_rs_phphttp2.h).
@@ -692,45 +692,70 @@ index 695edc6..b261dbe 100644
 +    zend_end_try();
 +    return bailed;
 +}
++
++using StreamRef = std::shared_ptr<Http2Stream>;
++
++static Http2Session *http2_session(const void *session) {
++    return static_cast<const SessionRef *>(session)->get();
++}
  
 -static int http2_server_parse_header(
 -    const std::shared_ptr<Http2Session> &client, HttpContext *ctx, int flags, const char *in, size_t inlen) {
 -    nghttp2_hd_inflater *inflater = client->inflater;
-+using StreamRef = std::shared_ptr<Http2Stream>;
++static Http2Stream *http2_stream(const void *stream) {
++    return static_cast<const StreamRef *>(stream)->get();
++}
  
 -    if (!inflater) {
 -        int ret = nghttp2_hd_inflate_new2(&inflater, php_nghttp2_mem());
 -        if (ret != 0) {
 -            swoole_warning("nghttp2_hd_inflate_new2() failed, Error: %s[%d]", nghttp2_strerror(ret), ret);
 -            return SW_ERR;
--        }
++// The references Rust holds while it works, recycled so a response allocates none.
++template <typename T>
++struct RefPool {
++    std::vector<std::shared_ptr<T> *> spare;
++    ~RefPool() {
++        for (auto *slot : spare) {
++            delete slot;
+         }
 -        client->inflater = inflater;
--    }
-+static Http2Session *http2_session(const void *session) {
-+    return static_cast<const SessionRef *>(session)->get();
-+}
- 
+     }
+-
 -    if (flags & SW_HTTP2_FLAG_PRIORITY) {
 -        // int stream_deps = ntohl(*(int *) (in));
 -        // uint8_t weight = in[4];
 -        in += 5;
 -        inlen -= 5;
--    }
-+static Http2Stream *http2_stream(const void *stream) {
-+    return static_cast<const StreamRef *>(stream)->get();
-+}
++    std::shared_ptr<T> *hold(std::shared_ptr<T> ref) {
++        if (spare.empty()) {
++            return new std::shared_ptr<T>(std::move(ref));
++        }
++        auto *slot = spare.back();
++        spare.pop_back();
++        *slot = std::move(ref);
++        return slot;
+     }
++    void release(void *slot) {
++        auto *ref = static_cast<std::shared_ptr<T> *>(slot);
++        ref->reset();
++        spare.push_back(ref);
++    }
++};
++static SW_THREAD_LOCAL RefPool<Http2Session> http2_session_refs;
++static SW_THREAD_LOCAL RefPool<Http2Stream> http2_stream_refs;
  
 -    zval *zheader = ctx->request.zheader;
 -    zval *zserver = ctx->request.zserver;
 +void *swr_h2s_session_hold(void *ctx) {
-+    return new SessionRef(http2_sessions[static_cast<HttpContext *>(ctx)->fd]);
++    return http2_session_refs.hold(http2_sessions[static_cast<HttpContext *>(ctx)->fd]);
 +}
  
 -    for (;;) {
 -        nghttp2_nv nv;
 -        int inflate_flags = 0;
 +void swr_h2s_session_release(void *session) {
-+    delete static_cast<SessionRef *>(session);
++    http2_session_refs.release(session);
 +}
  
 -        ssize_t rv = nghttp2_hd_inflate_hd(inflater, &nv, &inflate_flags, (uchar *) in, inlen, 1);
@@ -864,7 +889,7 @@ index 695edc6..b261dbe 100644
 +void *swr_h2s_stream_hold(const void *session, uint32_t stream_id, bool create) {
 +    auto *client = http2_session(session);
 +    auto stream = create ? client->create_stream(stream_id) : client->get_stream(stream_id);
-+    return stream ? new StreamRef(stream) : nullptr;
++    return stream ? http2_stream_refs.hold(std::move(stream)) : nullptr;
  }
  
 -int swoole_http2_server_parse(const std::shared_ptr<Http2Session> &client, const char *buf) {
@@ -881,7 +906,7 @@ index 695edc6..b261dbe 100644
 -        return SW_ERR;
 -    }
 +void swr_h2s_stream_release(void *stream) {
-+    delete static_cast<StreamRef *>(stream);
++    http2_stream_refs.release(stream);
 +}
  
 -    ssize_t length = facts.length;

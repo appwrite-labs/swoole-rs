@@ -99,6 +99,8 @@ const MAX_FRAME_SIZE: usize = 4;
 const INFLATE_EMIT: c_int = 2;
 /// `NGHTTP2_NV_FLAG_NO_COPY_NAME | NGHTTP2_NV_FLAG_NO_COPY_VALUE`.
 const NV_NO_COPY: u8 = 0x02 | 0x04;
+/// The largest DATA frame sent from a stack buffer.
+const SMALL_FRAME: usize = 4096;
 /// Swoole error codes and log levels.
 const PHP_FATAL_ERROR: c_int = 503;
 const NO_PAYLOAD: c_int = 550;
@@ -519,23 +521,44 @@ fn bytes<'a>(data: *const c_char, length: usize) -> &'a [u8] {
 
 // --- the response header block ---
 
-/// Upstream's `HeaderSet`: at most `size` headers, names lowercased.
+/// A header block's buffers, kept between responses (`POOL`).
+#[derive(Default)]
+struct Buffers {
+    bytes: Vec<u8>,
+    /// Each header's start, name length and value length in `bytes`.
+    slots: Vec<(usize, usize, usize)>,
+    list: Vec<Header>,
+    /// The frame: nine header bytes, then the HPACK block.
+    frame: Vec<u8>,
+}
+
+thread_local! {
+    /// Buffers no header block is using. A block being built can outlive a
+    /// coroutine switch (`__toString`), so each takes its own.
+    static POOL: std::cell::RefCell<Vec<Buffers>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Upstream's `HeaderSet`: at most `size` headers, names lowercased, in one
+/// byte arena.
 struct Headers {
     size: usize,
-    list: Vec<(Vec<u8>, Vec<u8>)>,
+    buffers: Buffers,
 }
 
 impl Headers {
     fn new(size: usize) -> Self {
-        Self {
-            size,
-            list: Vec::with_capacity(size),
-        }
+        let buffers = POOL.with_borrow_mut(Vec::pop).unwrap_or_default();
+        Self { size, buffers }
     }
 
     fn add(&mut self, name: &[u8], value: &[u8]) {
-        if self.list.len() < self.size {
-            self.list.push((name.to_ascii_lowercase(), value.to_vec()));
+        let buffers = &mut self.buffers;
+        if buffers.slots.len() < self.size {
+            let start = buffers.bytes.len();
+            buffers.bytes.extend_from_slice(name);
+            buffers.bytes[start..].make_ascii_lowercase();
+            buffers.bytes.extend_from_slice(value);
+            buffers.slots.push((start, name.len(), value.len()));
         } else {
             let mut message = b"unexpect http2 header [".to_vec();
             message.extend_from_slice(name);
@@ -544,29 +567,33 @@ impl Headers {
         }
     }
 
-    /// `nghttp2_hd_deflate_hd` of the set, as `func`.
-    fn deflate(&self, session: &Session, func: &CStr) -> Option<Vec<u8>> {
+    /// Encode the set with `nghttp2_hd_deflate_hd` into the frame after its
+    /// nine header bytes, which `seal` fills in (`func` names the caller in logs).
+    fn deflate(mut self, session: &Session, func: &CStr) -> Option<Self> {
         let deflater = session.deflater(func)?;
-        let list: Vec<Header> = self
-            .list
-            .iter()
-            .map(|(name, value)| Header {
-                name: name.as_ptr(),
-                value: value.as_ptr(),
-                name_length: name.len(),
-                value_length: value.len(),
-                flags: NV_NO_COPY,
-            })
-            .collect();
+        let Buffers {
+            bytes,
+            slots,
+            list,
+            frame,
+        } = &mut self.buffers;
+        let base = bytes.as_ptr();
+        list.extend(slots.iter().map(|&(start, name, value)| Header {
+            name: base.wrapping_add(start),
+            value: base.wrapping_add(start + name),
+            name_length: name,
+            value_length: value,
+            flags: NV_NO_COPY,
+        }));
         // SAFETY: a live deflater and the list above.
         let bound =
             unsafe { swoole_http2_client_coro_deflate_bound(deflater, list.as_ptr(), list.len()) };
-        let mut out = vec![0; bound];
-        // SAFETY: as above, into `bound` writable bytes.
+        frame.resize(FRAME_HEADER + bound, 0);
+        // SAFETY: as above, into the `bound` writable bytes after the frame header.
         let written = unsafe {
             swoole_http2_client_coro_deflate(
                 deflater,
-                out.as_mut_ptr(),
+                frame.as_mut_ptr().wrapping_add(FRAME_HEADER),
                 bound,
                 list.as_ptr(),
                 list.len(),
@@ -587,8 +614,27 @@ impl Headers {
             );
             return None;
         };
-        out.truncate(written);
-        Some(out)
+        frame.truncate(FRAME_HEADER + written);
+        Some(self)
+    }
+
+    /// The frame `deflate` built, its header filled in.
+    fn seal(&mut self, kind: u32, flags: u32, stream_id: u32) -> &[u8] {
+        let frame = &mut self.buffers.frame;
+        let header = frame_header(kind, frame.len() - FRAME_HEADER, flags, stream_id);
+        frame[..FRAME_HEADER].copy_from_slice(&header);
+        frame
+    }
+}
+
+impl Drop for Headers {
+    fn drop(&mut self) {
+        let mut buffers = std::mem::take(&mut self.buffers);
+        buffers.bytes.clear();
+        buffers.slots.clear();
+        buffers.list.clear();
+        buffers.frame.clear();
+        POOL.with_borrow_mut(|pool| pool.push(buffers));
     }
 }
 
@@ -619,21 +665,20 @@ fn length_safe(array: *const zval) -> usize {
     }
 }
 
-/// The string-keyed (`None` for an integer key) entries of an array, in order.
-fn entries(array: *const zval) -> Vec<(Option<Vec<u8>>, *mut zval)> {
+/// The entries of an array in order, with their string keys (null for an
+/// integer key), borrowed from the array.
+fn entries(array: *const zval) -> Vec<(*mut zend_string, *mut zval)> {
     unsafe extern "C" fn each(
         _: zend_ulong,
         key: *mut zend_string,
         value: *mut zval,
         out: *mut c_void,
     ) -> bool {
-        // SAFETY: a live key.
-        let key = (!key.is_null()).then(|| unsafe { string::bytes(key) }.to_vec());
         // SAFETY: the vector `entries` lends.
-        unsafe { (*out.cast::<Vec<(Option<Vec<u8>>, *mut zval)>>()).push((key, value)) };
+        unsafe { (*out.cast::<Vec<(*mut zend_string, *mut zval)>>()).push((key, value)) };
         true
     }
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(length_safe(array));
     // SAFETY: a live array.
     let table = unsafe { value::table(array) };
     // SAFETY: a live table; `each` only collects.
@@ -641,18 +686,38 @@ fn entries(array: *const zval) -> Vec<(Option<Vec<u8>>, *mut zval)> {
     out
 }
 
-/// `zval_get_string`'s bytes, `None` once a bailout is pending.
-fn string_of(value: *const zval) -> Option<Vec<u8>> {
-    // SAFETY: a live zval; the copy owns a new reference.
+/// A string key's bytes.
+fn key_of<'a>(key: *mut zend_string) -> &'a [u8] {
+    // SAFETY: a live key of a live array.
+    unsafe { string::bytes(key) }
+}
+
+/// A reference `zval_get_string` returned, released on drop.
+struct Text(*mut zend_string);
+
+impl Text {
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: a live string this holds a reference to.
+        unsafe { string::bytes(self.0) }
+    }
+}
+
+impl Drop for Text {
+    fn drop(&mut self) {
+        // SAFETY: the reference `string_of` took.
+        unsafe { swoole_rs_zend::sys::swr_zend_string_release(self.0) };
+    }
+}
+
+/// `zval_get_string`, `None` once a bailout is pending.
+fn string_of(value: *const zval) -> Option<Text> {
+    // SAFETY: a live zval; the result owns a new reference.
     let string = unsafe { value::get_string(value) };
     if string.is_null() {
         return None;
     }
-    // SAFETY: a live string.
-    let out = unsafe { string::bytes(string) }.to_vec();
-    // SAFETY: the reference above.
-    unsafe { swoole_rs_zend::sys::swr_zend_string_release(string) };
-    (!bailout::pending()).then_some(out)
+    let text = Text(string);
+    (!bailout::pending()).then_some(text)
 }
 
 /// `swoole::rtrim`: trailing `isspace` bytes off.
@@ -683,21 +748,21 @@ fn has_crlf(value: &[u8]) -> bool {
     false
 }
 
-/// `http2_server_build_trailer`: `None` on an error, empty without a trailer.
-fn build_trailer(ctx: *mut c_void, session: &Session) -> Option<Vec<u8>> {
+/// `http2_server_build_trailer`, as an unsealed frame: `None` on an error or
+/// without a trailer.
+fn build_trailer(ctx: *mut c_void, session: &Session) -> Option<Headers> {
     let trailer = property(ctx, c"trailer");
     let size = length_safe(trailer);
     if size == 0 {
-        return Some(Vec::new());
+        return None;
     }
     let mut headers = Headers::new(size);
     for (key, value) in entries(trailer) {
-        let Some(key) = key else { continue };
-        if is(value, IS_NULL) {
+        if key.is_null() || is(value, IS_NULL) {
             continue;
         }
         let value = string_of(value)?;
-        headers.add(&key, &value);
+        headers.add(key_of(key), value.bytes());
     }
     headers.deflate(session, c"http2_server_build_trailer")
 }
@@ -711,7 +776,7 @@ struct Body {
 }
 
 /// `http2_server_build_header`.
-fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Option<Vec<u8>> {
+fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Option<Headers> {
     let zheader = property(ctx, c"header");
     let zcookie = property(ctx, c"cookie");
     let mut headers = Headers::new(32 + length_safe(zheader) + length_safe(zcookie));
@@ -723,7 +788,7 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
     let status = sw_rs_http2_response_status(get(ctx, Field::Status) as i32) as u32;
     set(ctx, Field::Status, status);
     #[expect(clippy::cast_possible_wrap, reason = "the native int status")]
-    headers.add(b":status", (status as i32).to_string().as_bytes());
+    headers.add(b":status", decimal(&mut [0; 20], i64::from(status as i32)));
 
     let mut header_flags = 0;
     if is(zheader, IS_ARRAY) {
@@ -734,8 +799,8 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
             if is(value, IS_NULL) {
                 return Some(());
             }
-            let text = string_of(value)?;
-            let text = rtrim(&text);
+            let owned = string_of(value)?;
+            let text = rtrim(owned.bytes());
             if has_crlf(text) {
                 return Some(());
             }
@@ -751,20 +816,20 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
             Some(())
         };
         for (key, value) in entries(zheader) {
-            let Some(key) = key else { continue };
-            if is(value, IS_NULL) {
+            if key.is_null() || is(value, IS_NULL) {
                 continue;
             }
+            let key = key_of(key);
             if is(value, IS_ARRAY) {
                 for (_, item) in entries(value) {
-                    add(&mut headers, &key, item)?;
+                    add(&mut headers, key, item)?;
                 }
             } else {
-                add(&mut headers, &key, value)?;
+                add(&mut headers, key, value)?;
             }
         }
         if can_capture {
-            let kind = content_type.as_deref().unwrap_or(b"text/html");
+            let kind = content_type.as_ref().map_or(&b"text/html"[..], Text::bytes);
             // SAFETY: a live context with compression types.
             let accept = unsafe { swr_h2s_compressible(ctx, kind.as_ptr().cast(), kind.len()) };
             set(ctx, Field::AcceptCompression, u32::from(accept));
@@ -809,23 +874,29 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
                 unsafe { CStr::from_ptr(encoding) }.to_bytes(),
             );
         }
-        headers.add(b"content-length", content_length.to_string().as_bytes());
+        headers.add(
+            b"content-length",
+            decimal(
+                &mut [0; 20],
+                i64::try_from(content_length).unwrap_or(i64::MAX),
+            ),
+        );
     }
-    let block = headers.deflate(session, c"http2_server_build_header")?;
+    let headers = headers.deflate(session, c"http2_server_build_header")?;
     set(ctx, Field::SendHeader, 1);
-    Some(block)
+    Some(headers)
 }
 
 /// `rust_header_plan`: the header name folded as `std::tolower` does.
 fn header_plan(role: u32, name: &[u8], can_capture: bool) -> Http2HeaderPlan {
-    let folded = fold(name);
+    let (folded, length) = fold(name);
     let mut plan = Http2HeaderPlan::default();
     // SAFETY: the folded prefix and a writable plan.
     unsafe {
         sw_rs_http2_header_plan(
             role,
             folded.as_ptr(),
-            folded.len(),
+            length,
             name.len(),
             u32::from(can_capture),
             &raw mut plan,
@@ -835,8 +906,23 @@ fn header_plan(role: u32, name: &[u8], can_capture: bool) -> Http2HeaderPlan {
 }
 
 /// The first 33 bytes, lowercased (`rust_fold_header`).
-fn fold(text: &[u8]) -> Vec<u8> {
-    text.iter().take(33).map(u8::to_ascii_lowercase).collect()
+fn fold(text: &[u8]) -> ([u8; 33], usize) {
+    let mut folded = [0; 33];
+    let length = text.len().min(33);
+    for (out, byte) in folded.iter_mut().zip(text) {
+        *out = byte.to_ascii_lowercase();
+    }
+    (folded, length)
+}
+
+/// `value` in decimal, written into `buffer` (`swoole_itoa`).
+fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
+    use std::io::Write;
+    let mut cursor = std::io::Cursor::new(&mut buffer[..]);
+    // Twenty bytes hold any i64.
+    write!(cursor, "{value}").unwrap_or_default();
+    let length = usize::try_from(cursor.position()).unwrap_or(0);
+    &buffer[..length]
 }
 
 /// `Stream::send_header`.
@@ -847,7 +933,7 @@ fn send_header(
     body: Option<Body>,
     end_stream: bool,
 ) -> bool {
-    let Some(block) = build_header(ctx, session, body) else {
+    let Some(mut headers) = build_header(ctx, session, body) else {
         return false;
     };
     let empty = body.is_none_or(|body| body.length == 0);
@@ -855,9 +941,7 @@ fn send_header(
     if flags & FLAG_END_STREAM != 0 {
         set(ctx, Field::End, 1);
     }
-    let mut frame = frame_header(TYPE_HEADERS, block.len(), flags, stream.view.id).to_vec();
-    frame.extend_from_slice(&block);
-    if !send(ctx, &frame) {
+    if !send(ctx, headers.seal(TYPE_HEADERS, flags, stream.view.id)) {
         set(ctx, Field::SendHeader, 0);
         return false;
     }
@@ -907,9 +991,18 @@ fn send_body(
         let header = frame_header(TYPE_DATA, send_n, send_flags, stream.view.id);
         let part = &rest[..send_n];
         if send_n < page {
-            let mut frame = header.to_vec();
-            frame.extend_from_slice(part);
-            if !send(ctx, &frame) {
+            // One send of header and payload, on the stack when it fits.
+            let mut small = [0; FRAME_HEADER + SMALL_FRAME];
+            let mut large = Vec::new();
+            let frame = if send_n <= SMALL_FRAME {
+                &mut small[..FRAME_HEADER + send_n]
+            } else {
+                large.resize(FRAME_HEADER + send_n, 0);
+                &mut large[..]
+            };
+            frame[..FRAME_HEADER].copy_from_slice(&header);
+            frame[FRAME_HEADER..].copy_from_slice(part);
+            if !send(ctx, frame) {
                 return false;
             }
         } else if !send(ctx, &header) || !send(ctx, part) {
@@ -935,19 +1028,15 @@ fn send_body(
 
 /// `Stream::send_trailer`.
 fn send_trailer(ctx: *mut c_void, session: &Session, stream_id: u32) -> bool {
-    let block = build_trailer(ctx, session).unwrap_or_default();
-    if block.is_empty() {
+    let Some(mut headers) =
+        build_trailer(ctx, session).filter(|headers| headers.buffers.frame.len() > FRAME_HEADER)
+    else {
         return true;
-    }
-    let mut frame = frame_header(
-        TYPE_HEADERS,
-        block.len(),
-        FLAG_END_HEADERS | FLAG_END_STREAM,
-        stream_id,
+    };
+    send(
+        ctx,
+        headers.seal(TYPE_HEADERS, FLAG_END_HEADERS | FLAG_END_STREAM, stream_id),
     )
-    .to_vec();
-    frame.extend_from_slice(&block);
-    send(ctx, &frame)
 }
 
 /// Whether the response has a trailer.
@@ -1583,9 +1672,9 @@ fn request_header(
     }
     match kind {
         HEADER_CONTENT_TYPE => {
-            let folded = fold(value);
+            let (folded, length) = fold(value);
             // SAFETY: the folded prefix.
-            let media = unsafe { sw_rs_http2_media_kind(folded.as_ptr(), folded.len()) };
+            let media = unsafe { sw_rs_http2_media_kind(folded.as_ptr(), length) };
             if media == MEDIA_URLENCODED {
                 set(ctx, Field::Form, 1);
             } else if media == MEDIA_MULTIPART {
