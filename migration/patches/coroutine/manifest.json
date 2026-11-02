@@ -2,17 +2,11 @@
   "upstream_commit": "c7e514509451beafd4d70ce5b78943d51e76381c",
   "patches": [
     {
-      "path": "0001-channel-policy.patch",
-      "sha256": "d38636be1a9b877fe6ed339cd8730b900439c986e92267f514b867b03e47e364",
+      "path": "0001-channel.patch",
+      "sha256": "88ef8ea564efe8856a7b0b532770e302b54077e571a7583efd90b4fc407a4b7e",
       "upstream_paths": [
+        "include/swoole_coroutine_channel.h",
         "src/coroutine/channel.cc"
-      ]
-    },
-    {
-      "path": "0002-channel-owned-tokens.patch",
-      "sha256": "537133d6630bcc9c704981dbb10e3cb4ededd564de183b11c4614af0ed19ac1c",
-      "upstream_paths": [
-        "include/swoole_coroutine_channel.h"
       ]
     },
     {
@@ -32,11 +26,9 @@
     },
     {
       "path": "0005-context-bookkeeping.patch",
-      "sha256": "5b8f56b94195bfd552cdd58112899b2421dfa904a141d18cd20bf1535437ab50",
+      "sha256": "debae750339c02a08116fa1de5bcb4b904b5098f6390677c367fa7b07a7de2e3",
       "upstream_paths": [
-        "include/swoole_coroutine_channel.h",
         "include/swoole_coroutine_context.h",
-        "src/coroutine/channel.cc",
         "src/coroutine/thread_context.cc"
       ]
     }

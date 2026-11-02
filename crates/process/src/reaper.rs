@@ -155,6 +155,7 @@ pub unsafe extern "C" fn swr_v1_process_reap_loop(host: *const ReapHost) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reload_task::tests::{GONE, task};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -229,13 +230,6 @@ mod tests {
         s.log.push("finish".into());
     }
 
-    /// A pid no process has: a reaped child's.
-    fn gone() -> c_int {
-        let mut child = std::process::Command::new("true").spawn().unwrap();
-        child.wait().unwrap();
-        c_int::try_from(child.id()).unwrap()
-    }
-
     thread_local! {
         static WARNED: RefCell<Vec<c_int>> = const { RefCell::new(Vec::new()) };
     }
@@ -292,14 +286,14 @@ mod tests {
     #[test]
     fn a_reload_signals_one_worker_per_exit_until_complete() {
         // Gone pids: kill_one drops them from the snapshot without a warning.
-        let mut task = ReloadTask::default();
-        let gone = gone();
-        task.add(gone, 1);
+        let mut reload = task();
+        let gone = GONE;
+        reload.add(gone, 1);
         let mut s = Script {
             waits: VecDeque::from([(0, 0), (gone, 0)]),
             reload_requested: true,
             start: VecDeque::from([RELOAD_KILL_ONE]),
-            task: Some(Box::new(task)),
+            task: Some(Box::new(reload)),
             ..Script::default()
         };
         run(&mut s, false, true);
@@ -323,7 +317,7 @@ mod tests {
     fn an_unknown_pid_ends_the_iteration() {
         let mut s = Script {
             waits: VecDeque::from([(13, 0)]),
-            task: Some(Box::new(ReloadTask::default())),
+            task: Some(Box::new(task())),
             ..Script::default()
         };
         run(&mut s, true, false);
@@ -350,18 +344,18 @@ mod tests {
 
     #[test]
     fn pid_zero_is_reaped_only_by_the_pool() {
-        let mut task = ReloadTask::default();
-        task.add(gone(), 1);
+        let mut reload = task();
+        reload.add(GONE, 1);
         let mut manager = Script {
             waits: VecDeque::from([(0, 0)]),
-            task: Some(Box::new(ReloadTask::default())),
+            task: Some(Box::new(task())),
             ..Script::default()
         };
         run(&mut manager, false, true);
         assert!(!manager.log.iter().any(|line| line.starts_with("reap")));
         let mut pool = Script {
             waits: VecDeque::from([(0, 0)]),
-            task: Some(Box::new(task)),
+            task: Some(Box::new(reload)),
             ..Script::default()
         };
         run(&mut pool, true, false);
@@ -371,14 +365,14 @@ mod tests {
     #[test]
     fn the_pool_leaves_on_a_failed_wait_once_stopped() {
         let mut s = Script {
-            task: Some(Box::new(ReloadTask::default())),
+            task: Some(Box::new(task())),
             ..Script::default()
         };
         run(&mut s, true, false);
         assert_eq!(s.log, ["service"]);
         assert!(s.task.is_some());
         let mut manager = Script {
-            task: Some(Box::new(ReloadTask::default())),
+            task: Some(Box::new(task())),
             ..Script::default()
         };
         run(&mut manager, false, true);
