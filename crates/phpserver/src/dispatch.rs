@@ -92,7 +92,6 @@ const ON_MANAGER_START: c_int = 11;
 const ON_MANAGER_STOP: c_int = 12;
 const ON_PIPE_MESSAGE: c_int = 13;
 /// Port-level callbacks.
-const ON_RECEIVE: c_int = 1;
 const ON_PACKET: c_int = 3;
 const ON_BUFFER_FULL: c_int = 10;
 const ON_BUFFER_EMPTY: c_int = 11;
@@ -131,32 +130,36 @@ fn undef() -> zval {
 /// "`<class>->on<event> handler error`" (`php_swoole_error`) when it fails.
 #[inline]
 fn call(cb: *mut c_void, args: &mut [zval], coroutine: bool, event: &str) -> Called {
-    let host = host();
     #[expect(clippy::cast_possible_truncation, reason = "at most five arguments")]
     let argc = args.len() as u32;
     // SAFETY: a live callable and `argc` initialised arguments.
-    match unsafe { (host.call)(cb, argc, args.as_mut_ptr(), coroutine) } {
+    match unsafe { (host().call)(cb, argc, args.as_mut_ptr(), coroutine) } {
         1 => Called::Done,
         2 => Called::Bailout,
-        _ => {
-            // SAFETY: plain state.
-            unsafe { (host.set_last_error)(SW_ERROR_PHP_RUNTIME_NOTICE) };
-            // SAFETY: reads a setting.
-            if unsafe { (host.display_errors)() } {
-                // SAFETY: args[0] is the server object.
-                let object = unsafe { object_of(&raw const args[0]) };
-                // SAFETY: a live object.
-                let name = unsafe { class_name(object) };
-                let text = message!("{}->{event} handler error", name.to_string_lossy());
-                // SAFETY: a warning, from a callback Zend runs. A user error
-                // handler that bails out ends the event there, as upstream.
-                if unsafe { php_error(E_WARNING, text.as_cstr()) }.is_err() {
-                    return Called::Bailout;
-                }
-            }
-            Called::Failed
+        _ => failed(&args[0], event),
+    }
+}
+
+/// The warning of a failed call; a user error handler that bails out ends
+/// the event there, as upstream.
+#[cold]
+fn failed(server: &zval, event: &str) -> Called {
+    let host = host();
+    // SAFETY: plain state.
+    unsafe { (host.set_last_error)(SW_ERROR_PHP_RUNTIME_NOTICE) };
+    // SAFETY: reads a setting.
+    if unsafe { (host.display_errors)() } {
+        // SAFETY: the server object.
+        let object = unsafe { object_of(server) };
+        // SAFETY: a live object.
+        let name = unsafe { class_name(object) };
+        let text = message!("{}->{event} handler error", name.to_string_lossy());
+        // SAFETY: a warning, from a callback Zend runs.
+        if unsafe { php_error(E_WARNING, text.as_cstr()) }.is_err() {
+            return Called::Bailout;
         }
     }
+    Called::Failed
 }
 
 /// `\Swoole\Server\Helper::<name>(...args)` when the library is enabled.
@@ -210,34 +213,32 @@ fn dtor(value: &mut zval) {
     unsafe { zval_ptr_dtor(value) };
 }
 
-/// `php_swoole_server_onReceive`'s body. Hot: one `facts` and one call.
+/// `php_swoole_server_onReceive`'s arguments, after `args[0]`, the server,
+/// which C++ set. The C++ trampoline calls the callback itself: the hot path
+/// needs no `zend_try`, since no Rust frame sits under the call. Returns argc.
 /// # Safety
-/// A live server and its `RecvData` with the given header fields.
+/// A live server and its `RecvData`; `args` has room for four zvals.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_receive(
+pub unsafe extern "C" fn swr_v1_phpserver_receive_args(
     server: *mut c_void,
     request: *mut c_void,
     fd: i64,
     reactor_id: i64,
-    server_fd: c_int,
     time: f64,
-) -> bool {
-    let host = host();
-    // SAFETY: a live server.
-    let cb = unsafe { (host.port_callback)(server, server_fd, ON_RECEIVE) };
-    if cb.is_null() {
-        return false;
-    }
-    let facts = facts(server);
-    let mut args = [zserv(server), undef(), undef(), undef()];
-    let argc = if facts.event_object {
+    event_object: bool,
+    args: *mut zval,
+) -> u32 {
+    // SAFETY: per the caller.
+    let args = unsafe { std::slice::from_raw_parts_mut(args, 4) };
+    let recv_data = host().recv_data;
+    if event_object {
         let (ce, object) = object(&mut args[1], EVENT);
         set_long(ce, object, c"fd", fd);
         set_long(ce, object, c"reactor_id", reactor_id);
         set_double(ce, object, c"dispatch_time", time);
         let mut data = undef();
         // SAFETY: a live server and request; `data` receives the payload.
-        unsafe { (host.recv_data)(server, &raw mut data, request) };
+        unsafe { recv_data(server, &raw mut data, request) };
         // SAFETY: a live object of `ce`; the property takes a reference.
         unsafe { zend_update_property(ce, object, c"data".as_ptr(), 4, &raw mut data) };
         dtor(&mut data);
@@ -246,18 +247,33 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_receive(
         args[1] = long(fd);
         args[2] = long(reactor_id);
         // SAFETY: as above.
-        unsafe { (host.recv_data)(server, &raw mut args[3], request) };
+        unsafe { recv_data(server, &raw mut args[3], request) };
         4
-    };
-    let called = call(cb, &mut args[..argc], facts.enable_coroutine, "onReceive");
-    if called == Called::Bailout {
-        return true;
     }
-    if called == Called::Failed {
+}
+
+/// After the trampoline's call: the warning and close of a failed call, and
+/// the arguments' release. True when the trampoline must re-raise a bailout.
+/// # Safety
+/// The server, and the arguments `swr_v1_phpserver_receive_args` built.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_receive_done(
+    server: *mut c_void,
+    succeeded: bool,
+    fd: i64,
+    args: *mut zval,
+    argc: u32,
+) -> bool {
+    // SAFETY: per the caller.
+    let args = unsafe { std::slice::from_raw_parts_mut(args, argc as usize) };
+    if !succeeded {
+        if failed(&args[0], "onReceive") == Called::Bailout {
+            return true;
+        }
         // SAFETY: a live server.
-        unsafe { (host.close)(server, fd) };
+        unsafe { (host().close)(server, fd) };
     }
-    dtor(&mut args[argc - 1]);
+    dtor(&mut args[args.len() - 1]);
     false
 }
 

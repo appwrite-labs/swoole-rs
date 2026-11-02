@@ -1,5 +1,5 @@
 diff --git a/ext-src/swoole_server.cc b/ext-src/swoole_server.cc
-index 41c3035..2ccaa57 100644
+index 41c3035..3b75045 100644
 --- a/ext-src/swoole_server.cc
 +++ b/ext-src/swoole_server.cc
 @@ -22,2 +22,3 @@
@@ -123,13 +123,12 @@ index 41c3035..2ccaa57 100644
 +            serv, zresult.ptr(), (zend_long) serv->get_task_src_worker_id(req), req->info.time)) {
 +        zend_bailout();
      }
-@@ -1242,43 +1278,6 @@ static void php_swoole_server_onPipeMessage(Server *serv, EventData *req) {
- int php_swoole_server_onReceive(Server *serv, RecvData *req) {
--    auto cb = php_swoole_server_get_callback(serv, req->info.server_fd, SW_SERVER_CB_onReceive);
+@@ -1243,42 +1279,12 @@ int php_swoole_server_onReceive(Server *serv, RecvData *req) {
+     auto cb = php_swoole_server_get_callback(serv, req->info.server_fd, SW_SERVER_CB_onReceive);
 -
--    if (cb) {
+     if (cb) {
 -        zval *zserv = php_swoole_server_zval_ptr(serv);
--        zval args[4];
+         zval args[4];
 -        int argc;
 -
 -        args[0] = *zserv;
@@ -163,14 +162,17 @@ index 41c3035..2ccaa57 100644
 -            zval_ptr_dtor(&args[1]);
 -        } else {
 -            zval_ptr_dtor(&args[3]);
--        }
-+    if (swr_v1_phpserver_on_receive(
-+            serv, req, req->info.fd, req->info.reactor_id, req->info.server_fd, req->info.time)) {
-+        zend_bailout();
++        args[0] = *php_swoole_server_zval_ptr(serv);
++        uint32_t argc = swr_v1_phpserver_receive_args(
++            serv, req, req->info.fd, req->info.reactor_id, req->info.time, serv->event_object, args);
++        bool succeeded = zend::function::call(cb, argc, args, nullptr, serv->enable_coroutine);
++        if (swr_v1_phpserver_receive_done(serv, succeeded, req->info.fd, args, argc)) {
++            zend_bailout();
+         }
      }
 -
      return SW_OK;
-@@ -1287,87 +1286,23 @@ int php_swoole_server_onReceive(Server *serv, RecvData *req) {
+@@ -1287,87 +1293,23 @@ int php_swoole_server_onReceive(Server *serv, RecvData *req) {
  int php_swoole_server_onPacket(Server *serv, RecvData *req) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    zval args[3];
@@ -250,6 +252,11 @@ index 41c3035..2ccaa57 100644
 -    auto cb = php_swoole_server_get_callback(serv, req->info.server_fd, SW_SERVER_CB_onPacket);
 -    if (UNEXPECTED(!zend::function::call(cb, argc, args, nullptr, serv->enable_coroutine))) {
 -        php_swoole_error(E_WARNING, "%s->onPipeMessage handler error", SW_Z_OBJCE_NAME_VAL_P(zserv));
+-    }
+-
+-    zval_ptr_dtor(&args[1]);
+-    if (!serv->event_object) {
+-        zval_ptr_dtor(&args[2]);
 +    swr_phpserver_packet view = {packet->data, (size_t) packet->length, nullptr, -1, -1};
 +    Connection *server_sock = serv->get_connection(req->info.server_fd);
 +    if (server_sock) {
@@ -271,13 +278,8 @@ index 41c3035..2ccaa57 100644
 +        zend_bailout();
      }
 -
--    zval_ptr_dtor(&args[1]);
--    if (!serv->event_object) {
--        zval_ptr_dtor(&args[2]);
--    }
--
      return SW_OK;
-@@ -1540,15 +1475,4 @@ static int php_swoole_server_onFinish(Server *serv, EventData *req) {
+@@ -1540,15 +1482,4 @@ static int php_swoole_server_onFinish(Server *serv, EventData *req) {
  static void php_swoole_server_onStart(Server *serv) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
@@ -295,7 +297,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_lifecycle(serv, SW_SERVER_CB_onStart, 0)) {
 +        zend_bailout();
      }
-@@ -1557,15 +1481,4 @@ static void php_swoole_server_onStart(Server *serv) {
+@@ -1557,15 +1488,4 @@ static void php_swoole_server_onStart(Server *serv) {
  static void php_swoole_server_onManagerStart(Server *serv) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
@@ -313,7 +315,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_lifecycle(serv, SW_SERVER_CB_onManagerStart, 0)) {
 +        zend_bailout();
      }
-@@ -1574,12 +1487,4 @@ static void php_swoole_server_onManagerStart(Server *serv) {
+@@ -1574,12 +1494,4 @@ static void php_swoole_server_onManagerStart(Server *serv) {
  static void php_swoole_server_onManagerStop(Server *serv) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
@@ -328,7 +330,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_lifecycle(serv, SW_SERVER_CB_onManagerStop, 0)) {
 +        zend_bailout();
      }
-@@ -1588,12 +1493,4 @@ static void php_swoole_server_onManagerStop(Server *serv) {
+@@ -1588,12 +1500,4 @@ static void php_swoole_server_onManagerStop(Server *serv) {
  static void php_swoole_server_onBeforeShutdown(Server *serv) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
@@ -343,7 +345,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_lifecycle(serv, SW_SERVER_CB_onBeforeShutdown, 0)) {
 +        zend_bailout();
      }
-@@ -1602,12 +1499,4 @@ static void php_swoole_server_onBeforeShutdown(Server *serv) {
+@@ -1602,12 +1506,4 @@ static void php_swoole_server_onBeforeShutdown(Server *serv) {
  static void php_swoole_server_onShutdown(Server *serv) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
@@ -358,7 +360,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_lifecycle(serv, SW_SERVER_CB_onShutdown, 0)) {
 +        zend_bailout();
      }
-@@ -1616,27 +1505,4 @@ static void php_swoole_server_onShutdown(Server *serv) {
+@@ -1616,27 +1512,4 @@ static void php_swoole_server_onShutdown(Server *serv) {
  static void php_swoole_server_onWorkerStart(Server *serv, Worker *worker) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
@@ -388,7 +390,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_lifecycle(serv, SW_SERVER_CB_onWorkerStart, worker->get_id())) {
 +        zend_bailout();
      }
-@@ -1645,12 +1511,4 @@ static void php_swoole_server_onWorkerStart(Server *serv, Worker *worker) {
+@@ -1645,12 +1518,4 @@ static void php_swoole_server_onWorkerStart(Server *serv, Worker *worker) {
  static void php_swoole_server_onBeforeReload(Server *serv) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
@@ -403,7 +405,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_lifecycle(serv, SW_SERVER_CB_onBeforeReload, 0)) {
 +        zend_bailout();
      }
-@@ -1659,12 +1517,4 @@ static void php_swoole_server_onBeforeReload(Server *serv) {
+@@ -1659,12 +1524,4 @@ static void php_swoole_server_onBeforeReload(Server *serv) {
  static void php_swoole_server_onAfterReload(Server *serv) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
@@ -418,7 +420,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_lifecycle(serv, SW_SERVER_CB_onAfterReload, 0)) {
 +        zend_bailout();
      }
-@@ -1676,17 +1526,4 @@ static void php_swoole_server_onWorkerStop(Server *serv, Worker *worker) {
+@@ -1676,17 +1533,4 @@ static void php_swoole_server_onWorkerStop(Server *serv, Worker *worker) {
      }
 -
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
@@ -438,7 +440,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_lifecycle(serv, SW_SERVER_CB_onWorkerStop, worker->get_id())) {
 +        zend_bailout();
      }
-@@ -1695,16 +1532,4 @@ static void php_swoole_server_onWorkerStop(Server *serv, Worker *worker) {
+@@ -1695,16 +1539,4 @@ static void php_swoole_server_onWorkerStop(Server *serv, Worker *worker) {
  static void php_swoole_server_onWorkerExit(Server *serv, Worker *worker) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
@@ -457,7 +459,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_lifecycle(serv, SW_SERVER_CB_onWorkerExit, worker->get_id())) {
 +        zend_bailout();
      }
-@@ -1733,42 +1558,9 @@ static void php_swoole_server_onUserWorkerStart(Server *serv, Worker *worker) {
+@@ -1733,42 +1565,9 @@ static void php_swoole_server_onUserWorkerStart(Server *serv, Worker *worker) {
  static void php_swoole_server_onWorkerError(Server *serv, Worker *worker, const ExitStatus &exit_status) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
@@ -507,7 +509,7 @@ index 41c3035..2ccaa57 100644
 +                                         exit_status.get_signal())) {
 +        zend_bailout();
      }
-@@ -1781,29 +1573,4 @@ void php_swoole_server_onConnect(Server *serv, DataHead *info) {
+@@ -1781,29 +1580,4 @@ void php_swoole_server_onConnect(Server *serv, DataHead *info) {
      }
 -
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
@@ -539,7 +541,7 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_connection(serv, cb, false, info->fd, info->reactor_id, info->time)) {
 +        zend_bailout();
      }
-@@ -1841,31 +1608,4 @@ void php_swoole_server_onClose(Server *serv, DataHead *info) {
+@@ -1841,31 +1615,4 @@ void php_swoole_server_onClose(Server *serv, DataHead *info) {
      }
 -    if (cb) {
 -        zval *zserv = php_swoole_server_zval_ptr(serv);
@@ -573,7 +575,7 @@ index 41c3035..2ccaa57 100644
 +    if (cb && swr_v1_phpserver_on_connection(serv, cb, true, session_id, info->reactor_id, info->time)) {
 +        zend_bailout();
      }
-@@ -1877,14 +1617,4 @@ void php_swoole_server_onClose(Server *serv, DataHead *info) {
+@@ -1877,14 +1624,4 @@ void php_swoole_server_onClose(Server *serv, DataHead *info) {
  void php_swoole_server_onBufferFull(Server *serv, DataHead *info) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    auto cb = php_swoole_server_get_callback(serv, info->server_fd, SW_SERVER_CB_onBufferFull);
@@ -590,13 +592,13 @@ index 41c3035..2ccaa57 100644
 +    if (swr_v1_phpserver_on_buffer(serv, true, info->fd, info->server_fd)) {
 +        zend_bailout();
      }
-@@ -1971,4 +1701,3 @@ static int php_swoole_server_dispatch_func(Server *serv, Connection *conn, SendD
+@@ -1971,4 +1708,3 @@ static int php_swoole_server_dispatch_func(Server *serv, Connection *conn, SendD
  void php_swoole_server_onBufferEmpty(Server *serv, DataHead *info) {
 -    zval *zserv = php_swoole_server_zval_ptr(serv);
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(zserv));
 +    ServerObject *server_object = server_fetch_object(Z_OBJ_P(php_swoole_server_zval_ptr(serv)));
  
-@@ -1988,12 +1717,4 @@ void php_swoole_server_onBufferEmpty(Server *serv, DataHead *info) {
+@@ -1988,12 +1724,4 @@ void php_swoole_server_onBufferEmpty(Server *serv, DataHead *info) {
  
 -    auto cb = php_swoole_server_get_callback(serv, info->server_fd, SW_SERVER_CB_onBufferEmpty);
 -    if (cb) {

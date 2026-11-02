@@ -59,8 +59,13 @@ typedef struct {
  * events). Every swr_v1_phpserver_on* returns true when the trampoline must
  * re-raise a bailout. */
 void swr_v1_phpserver_dispatch_init(const swr_v1_phpserver_dispatch_host *table);
-bool swr_v1_phpserver_on_receive(void *server, void *request, int64_t fd, int64_t reactor_id, int server_fd,
-                                 double time);
+/* onReceive: args[0] is the server; Rust fills the rest and returns argc.
+ * The trampoline calls the callback itself (no zend_try on the hot path), then
+ * hands the result back. */
+uint32_t swr_v1_phpserver_receive_args(void *server, void *request, int64_t fd, int64_t reactor_id, double time,
+                                       bool event_object, struct _zval_struct *args);
+bool swr_v1_phpserver_receive_done(void *server, bool succeeded, int64_t fd, struct _zval_struct *args,
+                                   uint32_t argc);
 /* onConnect/onClose: `callback` was chosen by C++. */
 bool swr_v1_phpserver_on_connection(void *server, void *cb, bool close, int64_t fd, int64_t reactor_id,
                                     double time);

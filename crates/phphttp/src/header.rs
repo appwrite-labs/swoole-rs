@@ -424,43 +424,28 @@ fn build(
     Ok(())
 }
 
-/// `Context::build_header`: the header's bytes, valid until the next call, or
-/// null after a bailout, which the C++ caller re-raises.
-/// # Safety
-/// `context` is a live context whose response object is live; `body` spans
-/// `length` bytes; `header_length` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_build_header(
-    context: *mut c_void,
+/// `Context::build_header` of a `length`-byte body (compressing it when the
+/// response asks to), then `f(state, header)`. `f` must not yield or re-enter:
+/// the bytes are thread-local.
+/// # Errors
+/// A header value's `__toString` bailed out.
+pub(crate) fn header<R>(
+    state: &mut State,
     body: *const c_char,
     length: usize,
-    header_length: *mut usize,
-) -> *const c_char {
-    // SAFETY: per the caller.
-    let state = unsafe { &mut *context.cast::<State>() };
+    f: impl FnOnce(&mut State, &[u8]) -> R,
+) -> Result<R, bailout::Bailout> {
     OUT.with_borrow_mut(|out| {
-        let built = build(state, body, length, out);
-        // SAFETY: per the caller.
-        unsafe { *header_length = out.len() };
-        if built.is_err() {
-            ptr::null()
-        } else {
-            out.as_ptr().cast()
-        }
+        build(state, body, length, out)?;
+        Ok(f(state, out))
     })
 }
 
-/// `Context::build_trailer`: `name: value` lines and the closing CRLF, or
-/// null after a bailout, which the C++ caller re-raises.
-/// # Safety
-/// As `swr_v1_phphttp_build_header`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_build_trailer(
-    context: *const c_void,
-    length: *mut usize,
-) -> *const c_char {
-    // SAFETY: per the caller.
-    let state = unsafe { &*context.cast::<State>() };
+/// `Context::build_trailer`: `name: value` lines and the closing CRLF, then
+/// `f(trailer)`, as [`header`].
+/// # Errors
+/// A trailer value's `__toString` bailed out.
+pub(crate) fn trailer<R>(state: &State, f: impl FnOnce(&[u8]) -> R) -> Result<R, bailout::Bailout> {
     OUT.with_borrow_mut(|out| {
         out.clear();
         let trailer = property(state, 2);
@@ -494,14 +479,9 @@ pub unsafe extern "C" fn swr_v1_phphttp_build_trailer(
         } else {
             Ok(())
         };
+        built?;
         out.extend_from_slice(b"\r\n");
-        // SAFETY: per the caller.
-        unsafe { *length = out.len() };
-        if built.is_err() {
-            ptr::null()
-        } else {
-            out.as_ptr().cast()
-        }
+        Ok(f(out))
     })
 }
 

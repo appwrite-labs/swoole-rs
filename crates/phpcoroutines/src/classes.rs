@@ -1,0 +1,434 @@
+//! MINIT: `Swoole\Coroutine` and its iterator, context and exception
+//! classes, the constants, `Swoole\ExitException`, the exit and `@` opcode
+//! handlers and the coroutine-aware autoloader.
+use crate::{context, host, runtime};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    ffi::{CStr, c_int, c_long, c_void},
+    hash::{BuildHasherDefault, DefaultHasher},
+    mem, ptr,
+    sync::atomic::{AtomicPtr, Ordering},
+};
+use swoole_rs_zend::{
+    Call, Class, declare_long, register_long_constant,
+    sys::{
+        ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
+        swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_coroutine_set_autoload,
+        swr_zend_error_reporting, swr_zend_exit_status, swr_zval_try_addref, zend_ce_exception,
+        zend_class_entry, zend_execute_data, zend_function_entry, zend_read_property, zend_string,
+        zend_throw_exception, zend_update_property, zend_update_property_long,
+        zend_update_property_str, zval,
+    },
+};
+
+static COROUTINE: Class = Class::new();
+static ITERATOR: Class = Class::new();
+static CONTEXT: Class = Class::new();
+static EXIT: Class = Class::new();
+static CANCELED: Class = Class::new();
+static TIMEOUT: Class = Class::new();
+
+pub(crate) fn iterator() -> *mut zend_class_entry {
+    ITERATOR.entry()
+}
+
+pub(crate) fn context_class() -> *mut zend_class_entry {
+    CONTEXT.entry()
+}
+
+pub(crate) fn canceled() -> *mut zend_class_entry {
+    CANCELED.entry()
+}
+
+pub(crate) fn timeout() -> *mut zend_class_entry {
+    TIMEOUT.entry()
+}
+
+/// `sw_exit_flags`.
+const EXIT_IN_COROUTINE: i64 = 1 << 1;
+const EXIT_IN_SERVER: i64 = 1 << 2;
+/// `Coroutine::MAX_NUM_LIMIT` (`LONG_MAX`).
+const MAX_NUM_LIMIT: i64 = c_long::MAX;
+/// `ZEND_USER_OPCODE_DISPATCH`: run the original handler.
+const DISPATCH: c_int = 2;
+
+/// `php_swoole_coroutine_minit`.
+/// # Safety
+/// Called once, at MINIT, with static `PHP_FE_END`-terminated tables,
+/// registered parent classes and a static operations table.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
+    coroutine_methods: *const zend_function_entry,
+    exit_exception_methods: *const zend_function_entry,
+    module_number: i32,
+    exception: *mut zend_class_entry,
+    array_iterator: *mut zend_class_entry,
+    array_object: *mut zend_class_entry,
+    ops: *const host::Ops,
+) {
+    // SAFETY: per the caller, a static table.
+    if let Some(ops) = unsafe { ops.as_ref() } {
+        host::install(ops);
+    }
+    let shortname = host::flag(host::SHORTNAME);
+    let alias = |class: &Class, name: &CStr| {
+        if shortname {
+            // SAFETY: MINIT, after registration.
+            unsafe { class.alias(name) };
+        }
+    };
+    // SAFETY: MINIT, with the caller's table.
+    unsafe { COROUTINE.register_static(c"Swoole\\Coroutine", coroutine_methods) };
+    alias(&COROUTINE, c"Co");
+    // SAFETY: MINIT; SPL registers ArrayIterator and ArrayObject first.
+    unsafe {
+        ITERATOR.register_child(
+            c"Swoole\\Coroutine\\Iterator",
+            ptr::null(),
+            array_iterator,
+            |_, _| {},
+        );
+    };
+    alias(&ITERATOR, c"Co\\Iterator");
+    // SAFETY: as above.
+    unsafe {
+        CONTEXT.register_child(
+            c"Swoole\\Coroutine\\Context",
+            ptr::null(),
+            array_object,
+            |_, _| {},
+        );
+    };
+    alias(&CONTEXT, c"Co\\Context");
+    let constants: [(&CStr, i64); 6] = [
+        (c"SWOOLE_DEFAULT_MAX_CORO_NUM", runtime::DEFAULT_MAX_NUM),
+        (c"SWOOLE_CORO_MAX_NUM_LIMIT", MAX_NUM_LIMIT),
+        (c"SWOOLE_CORO_INIT", 0),
+        (c"SWOOLE_CORO_WAITING", 1),
+        (c"SWOOLE_CORO_RUNNING", 2),
+        (c"SWOOLE_CORO_END", 3),
+    ];
+    for (name, value) in constants {
+        // SAFETY: MINIT, with the module's number.
+        unsafe { register_long_constant(name, value, module_number) };
+    }
+    // Exit is prohibited in a coroutine: it throws this instead.
+    // SAFETY: MINIT; Swoole\Exception is registered.
+    unsafe {
+        EXIT.register_child(
+            c"Swoole\\ExitException",
+            exit_exception_methods,
+            exception,
+            |_, _| {},
+        );
+    };
+    // SAFETY: MINIT, after registration.
+    unsafe { declare_long(EXIT.entry(), c"flags", 0, ZEND_ACC_PRIVATE) };
+    // SAFETY: as above.
+    unsafe { declare_long(EXIT.entry(), c"status", 0, ZEND_ACC_PRIVATE) };
+    // SAFETY: Zend's Exception, registered before extensions.
+    let parent = unsafe { zend_ce_exception };
+    let final_class = |entry: &mut zend_class_entry, _: &mut _| entry.ce_flags |= ZEND_ACC_FINAL;
+    // SAFETY: MINIT.
+    unsafe {
+        CANCELED.register_child(
+            c"Swoole\\Coroutine\\CanceledException",
+            ptr::null(),
+            parent,
+            final_class,
+        );
+    };
+    // SAFETY: MINIT.
+    unsafe {
+        TIMEOUT.register_child(
+            c"Swoole\\Coroutine\\TimeoutException",
+            ptr::null(),
+            parent,
+            final_class,
+        );
+    };
+    // SAFETY: MINIT, with the module's number.
+    unsafe {
+        register_long_constant(
+            c"SWOOLE_EXIT_IN_COROUTINE",
+            EXIT_IN_COROUTINE,
+            module_number,
+        );
+    };
+    // SAFETY: as above.
+    unsafe { register_long_constant(c"SWOOLE_EXIT_IN_SERVER", EXIT_IN_SERVER, module_number) };
+    if host::flag(host::CLI) {
+        // SAFETY: MINIT; the handlers are static.
+        unsafe {
+            swr_zend_coroutine_opcodes(Some(exit_handler), Some(begin_silence), Some(end_silence));
+        };
+    }
+    // SAFETY: MINIT; restored never, as upstream.
+    let original = unsafe { swr_zend_coroutine_set_autoload(Some(autoload)) };
+    ORIGINAL_AUTOLOAD.store(
+        original.map_or(ptr::null_mut(), |f| f as *mut c_void),
+        Ordering::Relaxed,
+    );
+}
+
+/// `php_swoole_coroutine_rinit`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_phpcoroutines_rinit() {
+    context::init_main();
+}
+
+/// `php_swoole_coroutine_rshutdown`: 1 if deactivation bailed out.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_phpcoroutines_rshutdown() -> u8 {
+    AUTOLOADING.with(|a| a.borrow_mut().clear());
+    u8::from(runtime::shutdown())
+}
+
+/// `exit` in a coroutine or a started server: `SWOOLE_EXIT_*` flags, or 0.
+fn exit_flags() -> i64 {
+    let mut flags = 0;
+    if !host::current().is_null() {
+        flags |= EXIT_IN_COROUTINE;
+    }
+    if host::flag(host::SERVER_STARTED) {
+        flags |= EXIT_IN_SERVER;
+    }
+    flags
+}
+
+/// Throw `Swoole\ExitException` with its flags; the caller sets its status.
+fn throw_exit(
+    message: *const std::ffi::c_char,
+    flags: i64,
+) -> *mut swoole_rs_zend::sys::zend_object {
+    // SAFETY: a NUL-terminated message and the registered class.
+    let object = unsafe { zend_throw_exception(EXIT.entry(), message, 0) };
+    // SAFETY: the new exception; Zend copies the name.
+    unsafe { zend_update_property_long(EXIT.entry(), object, c"flags".as_ptr(), 5, flags) };
+    object
+}
+
+/// `coro_exit_handler` (before PHP 8.4, where `exit` is an opcode).
+unsafe extern "C" fn exit_handler(execute_data: *mut zend_execute_data) -> c_int {
+    let flags = exit_flags();
+    if flags != 0 {
+        // SAFETY: all-zero is IS_UNDEF, then the status.
+        let mut status: zval = unsafe { mem::zeroed() };
+        // SAFETY: the exit opcode's frame.
+        unsafe { swr_zend_exit_status(execute_data, &raw mut status) };
+        let object = throw_exit(c"swoole exit".as_ptr(), flags);
+        // SAFETY: upstream's extra reference, kept as it was.
+        unsafe { swr_zval_try_addref(&raw mut status) };
+        // SAFETY: the new exception; Zend copies the value.
+        unsafe {
+            zend_update_property(EXIT.entry(), object, c"status".as_ptr(), 6, &raw mut status);
+        };
+    }
+    DISPATCH
+}
+
+swoole_rs_zend::handlers! {
+    zif_swoole_exit => exit;
+    zim_swoole_exit_exception_getFlags => get_flags;
+    zim_swoole_exit_exception_getStatus => get_status;
+}
+
+/// `swoole_exit` (PHP 8.4+, where `exit` is a function):
+/// `(string|int $status = 0)`.
+fn exit(call: &Call) {
+    let flags = exit_flags();
+    let Ok(status) = call.arity(0, 1).and_then(|()| call.str_or_long(1)) else {
+        return;
+    };
+    let (message, code): (*mut zend_string, i64) = match status {
+        Some(Err(message)) => (message, 0),
+        Some(Ok(code)) => (ptr::null_mut(), code),
+        None => (ptr::null_mut(), 0),
+    };
+    if flags != 0 {
+        let text = if message.is_null() {
+            c"swoole exit".as_ptr()
+        } else {
+            // SAFETY: a live string argument.
+            swoole_rs_zend::string::val(message).cast_const().cast()
+        };
+        let object = throw_exit(text, flags);
+        if message.is_null() {
+            // SAFETY: the new exception; Zend copies the name.
+            unsafe { zend_update_property_long(EXIT.entry(), object, c"status".as_ptr(), 6, code) };
+        } else {
+            // SAFETY: as above; Zend takes a reference to the string.
+            unsafe {
+                zend_update_property_str(EXIT.entry(), object, c"status".as_ptr(), 6, message);
+            };
+        }
+        return;
+    }
+    // SAFETY: the running frame and its return slot.
+    if unsafe { (host::ops().exit_original)(call.frame(), call.return_value()) } != 0 {
+        return;
+    }
+    let (text, length) = if message.is_null() {
+        (ptr::null(), 0)
+    } else {
+        // SAFETY: as above.
+        let bytes = unsafe { swoole_rs_zend::string::bytes(message) };
+        (bytes.as_ptr().cast(), bytes.len())
+    };
+    // SAFETY: C++ writes the message and exits; nothing here needs a drop.
+    unsafe { (host::ops().exit_fallback)(text, length, code) };
+}
+
+/// `SW_RETURN_PROPERTY(name)` of `$this`.
+fn property(call: &Call, name: &CStr) {
+    let this = call.this();
+    // SAFETY: all-zero is IS_UNDEF, the read's scratch slot.
+    let mut scratch: zval = unsafe { mem::zeroed() };
+    // SAFETY: a live object.
+    let scope = unsafe { (*this).ce };
+    // SAFETY: as above, read in its own class's scope.
+    let value = unsafe {
+        zend_read_property(
+            scope,
+            this,
+            name.as_ptr(),
+            name.count_bytes(),
+            false,
+            &raw mut scratch,
+        )
+    };
+    // SAFETY: the property's live value.
+    unsafe { call.set_copy(value) };
+}
+
+/// `ExitException::getFlags()`.
+fn get_flags(call: &Call) {
+    property(call, c"flags");
+}
+
+/// `ExitException::getStatus()`.
+fn get_status(call: &Call) {
+    property(call, c"status");
+}
+
+/// `coro_begin_silence_handler`: `@` remembers the reporting level a switch
+/// restores.
+unsafe extern "C" fn begin_silence(_: *mut zend_execute_data) -> c_int {
+    // SAFETY: Zend's executor globals.
+    let reporting = unsafe { swr_zend_error_reporting() };
+    // SAFETY: the running context.
+    let task = unsafe { context::at(context::current()) };
+    task.vm.in_silence = true;
+    task.vm.ori_error_reporting = reporting;
+    DISPATCH
+}
+
+/// `coro_end_silence_handler`.
+unsafe extern "C" fn end_silence(_: *mut zend_execute_data) -> c_int {
+    // SAFETY: the running context.
+    unsafe { context::at(context::current()) }.vm.in_silence = false;
+    DISPATCH
+}
+
+/// The autoloader Zend had (`original_zend_autoload`).
+static ORIGINAL_AUTOLOAD: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+
+/// A coroutine waiting for another's autoload of the same class.
+struct Waiter {
+    co: *mut c_void,
+    ce: *mut zend_class_entry,
+}
+
+/// The coroutine autoloading a class, and those waiting for it.
+struct Loading {
+    owner: *mut c_void,
+    waiters: VecDeque<*mut Waiter>,
+}
+
+per_thread! {
+    /// Classes being autoloaded, by lowercase name (`SWOOLE_G(in_autoload)`).
+    static AUTOLOADING: RefCell<HashMap<Vec<u8>, Loading, BuildHasherDefault<DefaultHasher>>> =
+        RefCell::new(HashMap::with_hasher(BuildHasherDefault::new()));
+}
+
+/// Run Zend's autoloader, trapping its bailouts.
+fn load(name: *mut zend_string, lc_name: *mut zend_string) -> Result<*mut zend_class_entry, ()> {
+    let handler = ORIGINAL_AUTOLOAD.load(Ordering::Relaxed);
+    // SAFETY: stored from a `swr_zend_autoload_handler` at MINIT.
+    let handler = unsafe { mem::transmute::<*mut c_void, swr_zend_autoload_handler>(handler) };
+    let mut result = ptr::null_mut();
+    // SAFETY: Zend's autoloader, trapped in C.
+    if unsafe { swr_zend_autoload_try(handler, name, lc_name, &raw mut result) } != 0 {
+        return Err(());
+    }
+    Ok(result)
+}
+
+/// `swoole_coroutine_autoload`: one coroutine loads a class while others
+/// asking for it wait, instead of each running the autoloader.
+unsafe extern "C" fn autoload(
+    name: *mut zend_string,
+    lc_name: *mut zend_string,
+) -> *mut zend_class_entry {
+    let current = host::current();
+    if current.is_null() {
+        let Ok(ce) = load(name, lc_name) else {
+            runtime::raise();
+            return ptr::null_mut();
+        };
+        return ce;
+    }
+    // SAFETY: Zend marked the class as loading.
+    unsafe { swr_zend_autoload_forget(lc_name) };
+    // SAFETY: a live string.
+    let key = unsafe { swoole_rs_zend::string::bytes(lc_name) }.to_vec();
+    let mut waiter = Waiter {
+        co: current,
+        ce: ptr::null_mut(),
+    };
+    let waiting = AUTOLOADING.with(|a| match a.borrow_mut().get_mut(&key) {
+        Some(loading) if loading.owner == current => Some(false),
+        Some(loading) => {
+            loading.waiters.push_back(&raw mut waiter);
+            Some(true)
+        }
+        None => None,
+    });
+    match waiting {
+        Some(false) => return ptr::null_mut(),
+        Some(true) => {
+            drop(key);
+            // SAFETY: the running coroutine; the owner resumes it.
+            unsafe { (host::ops().yield_)(current) };
+            return waiter.ce;
+        }
+        None => {}
+    }
+    AUTOLOADING.with(|a| {
+        a.borrow_mut().insert(
+            key.clone(),
+            Loading {
+                owner: current,
+                waiters: VecDeque::new(),
+            },
+        )
+    });
+    let loaded = load(name, lc_name);
+    let loading = AUTOLOADING.with(|a| a.borrow_mut().remove(&key));
+    drop(key);
+    let Ok(ce) = loaded else {
+        drop(loading);
+        runtime::raise();
+        return ptr::null_mut();
+    };
+    if let Some(loading) = loading {
+        for waiter in loading.waiters {
+            // SAFETY: a waiter suspended on its own stack until resumed.
+            unsafe { (*waiter).ce = ce };
+            // SAFETY: as above.
+            host::resume(unsafe { (*waiter).co });
+        }
+    }
+    ce
+}
