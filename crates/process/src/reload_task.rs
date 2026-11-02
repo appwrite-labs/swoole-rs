@@ -20,11 +20,22 @@ pub const WARN_FORCE_KILL: c_int = 2;
 /// `kill_one` could not signal a worker (a system warning).
 pub const WARN_KILL_ONE_FAILED: c_int = 3;
 
-#[derive(Default)]
 pub struct ReloadTask {
     workers: HashMap<c_int, u32>,
     kill_queue: VecDeque<c_int>,
     timer: Option<std::ptr::NonNull<c_void>>,
+    kill: fn(c_int, c_int) -> Result<(), c_int>,
+}
+
+impl Default for ReloadTask {
+    fn default() -> Self {
+        Self {
+            workers: HashMap::new(),
+            kill_queue: VecDeque::new(),
+            timer: None,
+            kill,
+        }
+    }
 }
 
 /// What a failed `kill` means for the reload: the process is already gone
@@ -52,7 +63,7 @@ impl ReloadTask {
     /// Signal every worker still in the snapshot, then drop the queue.
     fn kill_all(&mut self, signo: c_int, warn: Warn) {
         for (&pid, &id) in &self.workers {
-            match kill(pid, signo) {
+            match (self.kill)(pid, signo) {
                 Err(error) if already_gone(error) => {}
                 Err(_) => warn(WARN_KILL_ALL_FAILED, pid, id),
                 Ok(()) if signo == libc::SIGKILL => warn(WARN_FORCE_KILL, pid, id),
@@ -69,7 +80,7 @@ impl ReloadTask {
             let Some(&id) = self.workers.get(&pid) else {
                 continue;
             };
-            match kill(pid, signo) {
+            match (self.kill)(pid, signo) {
                 Err(error) if already_gone(error) => {
                     self.workers.remove(&pid);
                     continue;
@@ -197,10 +208,34 @@ pub unsafe extern "C" fn swr_v1_process_reload_task_kill_one(
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::process::{Child, Command};
+
+    /// Pids below [`GONE`] are not ours to signal (EPERM); pids from [`GONE`] up to
+    /// [`LIVE`] have exited (ESRCH); pids from [`LIVE`] up are running.
+    pub(crate) const GONE: c_int = 500;
+    pub(crate) const LIVE: c_int = 1000;
 
     thread_local! {
         static WARNED: RefCell<Vec<(c_int, c_int, u32)>> = const { RefCell::new(Vec::new()) };
+        static SIGNALLED: RefCell<Vec<(c_int, c_int)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn fake_kill(pid: c_int, signo: c_int) -> Result<(), c_int> {
+        if pid >= LIVE {
+            SIGNALLED.with(|s| s.borrow_mut().push((pid, signo)));
+            Ok(())
+        } else if pid >= GONE {
+            Err(libc::ESRCH)
+        } else {
+            Err(libc::EPERM)
+        }
+    }
+
+    /// A reload task whose kills are simulated (see [`GONE`] and [`LIVE`]).
+    pub(crate) fn task() -> ReloadTask {
+        ReloadTask {
+            kill: fake_kill,
+            ..ReloadTask::default()
+        }
     }
 
     extern "C" fn record(kind: c_int, pid: c_int, id: u32) {
@@ -211,89 +246,72 @@ mod tests {
         WARNED.with(RefCell::take)
     }
 
-    fn sleeper() -> Child {
-        Command::new("sleep").arg("30").spawn().unwrap()
-    }
-
-    fn pid(child: &Child) -> c_int {
-        c_int::try_from(child.id()).unwrap()
-    }
-
-    /// A pid no process has: reaped children are gone.
-    fn gone() -> c_int {
-        let mut child = Command::new("true").spawn().unwrap();
-        child.wait().unwrap();
-        pid(&child)
+    fn signalled() -> Vec<(c_int, c_int)> {
+        SIGNALLED.with(RefCell::take)
     }
 
     #[test]
     fn kill_one_signals_the_next_live_worker_and_drops_gone_ones() {
-        let mut live = sleeper();
-        let mut task = ReloadTask::default();
-        let dead = gone();
-        task.add(dead, 1);
-        task.add(pid(&live), 2);
+        let mut task = task();
+        task.add(GONE, 1);
+        task.add(LIVE, 2);
         task.kill_one(libc::SIGTERM, record);
         assert_eq!(warned(), vec![]);
-        assert!(!task.workers.contains_key(&dead));
-        assert!(task.workers.contains_key(&pid(&live)));
+        assert_eq!(signalled(), vec![(LIVE, libc::SIGTERM)]);
+        assert!(!task.workers.contains_key(&GONE));
+        assert!(task.workers.contains_key(&LIVE));
         assert!(task.kill_queue.is_empty());
-        assert!(!live.wait().unwrap().success());
     }
 
     #[test]
     fn kill_one_stops_after_one_signal() {
-        let mut first = sleeper();
-        let mut second = sleeper();
-        let mut task = ReloadTask::default();
-        task.add(pid(&first), 1);
-        task.add(pid(&second), 2);
+        let mut task = task();
+        task.add(LIVE, 1);
+        task.add(LIVE + 1, 2);
         task.kill_one(libc::SIGTERM, record);
-        assert_eq!(task.kill_queue, VecDeque::from([pid(&second)]));
-        first.wait().unwrap();
-        second.kill().unwrap();
-        second.wait().unwrap();
+        assert_eq!(signalled(), vec![(LIVE, libc::SIGTERM)]);
+        assert_eq!(task.kill_queue, VecDeque::from([LIVE + 1]));
     }
 
     #[test]
     fn kill_one_skips_removed_workers() {
-        let mut live = sleeper();
-        let mut task = ReloadTask::default();
-        task.add(1, 1);
-        task.add(pid(&live), 2);
-        task.workers.remove(&1);
+        let mut task = task();
+        task.add(LIVE, 1);
+        task.add(LIVE + 1, 2);
+        task.workers.remove(&LIVE);
         task.kill_one(libc::SIGTERM, record);
         assert_eq!(warned(), vec![]);
-        live.wait().unwrap();
+        assert_eq!(signalled(), vec![(LIVE + 1, libc::SIGTERM)]);
     }
 
     #[test]
     fn kill_all_reports_force_kills_and_clears_the_queue() {
-        let mut live = sleeper();
-        let mut task = ReloadTask::default();
-        task.add(pid(&live), 7);
-        task.add(gone(), 8);
+        let mut task = task();
+        task.add(LIVE, 7);
+        task.add(GONE, 8);
         task.kill_all(libc::SIGKILL, record);
-        assert_eq!(warned(), vec![(WARN_FORCE_KILL, pid(&live), 7)]);
+        assert_eq!(warned(), vec![(WARN_FORCE_KILL, LIVE, 7)]);
         assert!(task.kill_queue.is_empty());
         assert_eq!(task.workers.len(), 2);
-        live.wait().unwrap();
     }
 
     #[test]
     fn kill_failures_other_than_gone_are_reported() {
-        // pid 1 exists but is not ours to signal (EPERM), unless the tests run as root.
-        // SAFETY: getuid has no preconditions.
-        if unsafe { libc::getuid() } == 0 {
-            return;
-        }
-        let mut task = ReloadTask::default();
+        let mut task = task();
         task.add(1, 3);
         task.kill_all(libc::SIGTERM, record);
         assert_eq!(warned(), vec![(WARN_KILL_ALL_FAILED, 1, 3)]);
         task.add(1, 3);
         task.kill_one(libc::SIGTERM, record);
         assert_eq!(warned(), vec![(WARN_KILL_ONE_FAILED, 1, 3)]);
+    }
+
+    #[test]
+    fn the_real_kill_reports_errno() {
+        // SAFETY: getpid has no preconditions.
+        let me = unsafe { libc::getpid() };
+        assert_eq!(kill(me, 0), Ok(()));
+        assert_eq!(kill(c_int::MAX, 0), Err(libc::ESRCH));
     }
 
     #[test]
