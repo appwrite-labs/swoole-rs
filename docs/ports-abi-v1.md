@@ -18,12 +18,15 @@ The receive callbacks (`readable_callback_*`: raw, length, EOF, Redis and HTTP)
 are whole Rust operations (`swr_v1_ports_on_read`, `crates/ports/src/read.rs`).
 Rust runs each callback's control flow, including HTTP pipelining, the HTTP/2
 preface, WebSocket handover, multipart uploads, chunked bodies and size limits,
-and asks native code for every fact or effect through one `call(context, op,
-arg)`: `recv`, buffer fields, request getters and parser steps, canned replies,
-logs and dispatch. Native and unchanged: `destroy_http_request`, the request
-parser itself, worker generation and suspended-response handling.
+It reads and writes the receive buffer's and the request's fields in place through
+`SwrPortsShared`, the head of the context (layouts pinned by `static_assert`s),
+and asks native code for every other fact or effect through one `call(context, op,
+arg)`: `recv`, the request's bit-fields and parser steps, canned replies, logs and
+dispatch. Native and unchanged: `destroy_http_request`, the request parser
+itself, worker generation and suspended-response handling.
 
-HTTP RequestV2 (`SWOOLE_RS_HTTP_REQUEST_V2`, off by default): with M04's Rust
+HTTP RequestV2 (`SWOOLE_RS_HTTP_REQUEST_V2`, off by default, and no longer
+compatible: the receive callback reads the legacy request in place): with M04's Rust
 request, the HTTP receive callback's ops and `destroy_http_request` use typed
 allocation/reuse/access/delete. The HTTP/2 stream flag does not choose the deletion type.
 Cleanup keeps multipart and borrowed buffers, and teardown never touches the
