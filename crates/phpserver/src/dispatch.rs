@@ -9,7 +9,9 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
-    E_WARNING, class_name, init_object, message, object_of, php_error,
+    E_WARNING,
+    bailout::Bailout,
+    class_name, init_object, message, object_of, php_error,
     sys::{
         _zval_struct__bindgen_ty_1, IS_LONG, add_assoc_double_ex, add_assoc_long_ex,
         add_assoc_string_ex, swr_zend_array_init, zend_class_entry, zend_object,
@@ -583,6 +585,31 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_worker_error(
         dtor(&mut args[1]);
     }
     false
+}
+
+/// The server's object zval, for task.rs's events.
+pub(crate) fn server_zval(server: *mut c_void) -> zval {
+    zserv(server)
+}
+
+/// `server_object->get_callback(kind)`: a `zend::Callable *`, or null.
+pub(crate) fn server_callback(server: *mut c_void, kind: c_int) -> *mut c_void {
+    // SAFETY: a live server.
+    unsafe { (host().callback)(server, kind) }
+}
+
+/// The "`<class>->on<event> handler error`" warning of a failed call.
+pub(crate) fn handler_error(server: &zval, event: &str) -> Result<(), Bailout> {
+    if failed(server, event) == Called::Bailout {
+        return Err(Bailout);
+    }
+    Ok(())
+}
+
+/// `swoole_set_last_error(code)`.
+pub(crate) fn set_last_error(code: c_int) {
+    // SAFETY: plain state.
+    unsafe { (host().set_last_error)(code) };
 }
 
 #[cfg(test)]

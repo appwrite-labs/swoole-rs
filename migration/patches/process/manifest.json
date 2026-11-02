@@ -258,6 +258,14 @@
         "ext-src/swoole_server.cc",
         "src/server/process.cc"
       ]
+    },
+    {
+      "path": "0028-php-server-task.patch",
+      "sha256": "35fa9a03447cd2ba747dbc7909966e9c6d0604294410d90acd0f30c11935928f",
+      "upstream_paths": [
+        "ext-src/php_swoole_server.h",
+        "ext-src/swoole_server.cc"
+      ]
     }
   ]
 }
