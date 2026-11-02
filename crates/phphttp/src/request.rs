@@ -9,11 +9,13 @@ use crate::{
     state::State,
 };
 use std::ptr;
+use swoole_rs_phpstubs::http_request;
 use swoole_rs_zend::{
     Call, Class, declare_long, declare_null, handlers,
-    sys::{IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_function_entry, zend_object},
+    sys::{IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
     type_of,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 static REQUEST: Class = Class::new();
 
@@ -38,18 +40,32 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     unsafe { Holder::dtor(std) };
 }
 
+method_table! {
+    static METHODS = [
+        c"getContent" => zim_swoole_http_request_getContent, &http_request::arginfo_class_Swoole_Http_Request_getContent, z::ZEND_ACC_PUBLIC;
+        c"rawContent" => zim_swoole_http_request_getContent, &http_request::arginfo_class_Swoole_Http_Request_getContent, z::ZEND_ACC_PUBLIC;
+        c"getData" => zim_swoole_http_request_getData, &http_request::arginfo_class_Swoole_Http_Request_getData, z::ZEND_ACC_PUBLIC;
+        c"create" => zim_swoole_http_request_create, &http_request::arginfo_class_Swoole_Http_Request_create, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"parse" => zim_swoole_http_request_parse, &http_request::arginfo_class_Swoole_Http_Request_parse, z::ZEND_ACC_PUBLIC;
+        c"isCompleted" => zim_swoole_http_request_isCompleted, &http_request::arginfo_class_Swoole_Http_Request_isCompleted, z::ZEND_ACC_PUBLIC;
+        c"getMethod" => zim_swoole_http_request_getMethod, &http_request::arginfo_class_Swoole_Http_Request_getMethod, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: register the class as `php_swoole_http_request_minit` did.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated method table.
+/// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_request_minit(
-    methods: *const zend_function_entry,
-) -> *mut zend_class_entry {
-    // SAFETY: MINIT, with the caller's table.
+pub unsafe extern "C" fn swr_v1_phphttp_request_minit() -> *mut zend_class_entry {
+    // SAFETY: MINIT, with a static table.
     unsafe {
-        REQUEST.register(c"Swoole\\Http\\Request", methods, |entry, handlers| {
-            context::configure(entry, handlers, create, free);
-        });
+        REQUEST.register(
+            c"Swoole\\Http\\Request",
+            METHODS.as_ptr(),
+            |entry, handlers| {
+                context::configure(entry, handlers, create, free);
+            },
+        );
     }
     let ce = REQUEST.entry();
     for name in [c"fd", c"streamId"] {

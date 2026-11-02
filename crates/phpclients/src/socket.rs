@@ -13,18 +13,20 @@ use std::{
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_zend::{
     Call, Class, Invalid, Object, declare_bool, declare_long, declare_string,
     register_long_constant, set_object, string,
     sys::{
         E_WARNING, HashPosition, IS_LONG, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
-        ZEND_ACC_READONLY, module_registry, zend_class_entry, zend_function_entry,
-        zend_get_type_by_const, zend_hash_get_current_data_ex, zend_hash_internal_pointer_reset_ex,
+        ZEND_ACC_READONLY, module_registry, zend_class_entry, zend_get_type_by_const,
+        zend_hash_get_current_data_ex, zend_hash_internal_pointer_reset_ex,
         zend_hash_move_forward_ex, zend_hash_str_find, zend_object, zend_object_handlers,
         zend_string, zval, zval_ptr_dtor,
     },
     throw_constructed_twice, throw_exception, type_of, unset_property_deny, value,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_BUFFER_SIZE_BIG`.
 const BUFFER_SIZE_BIG: i64 = 65536;
@@ -75,6 +77,51 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
     SocketObject::install(entry, handlers, create, free);
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_socket_coro___construct, &socket_coro::arginfo_class_Swoole_Coroutine_Socket___construct, z::ZEND_ACC_PUBLIC;
+        c"bind" => zim_swoole_socket_coro_bind, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_bind, z::ZEND_ACC_PUBLIC;
+        c"listen" => zim_swoole_socket_coro_listen, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_listen, z::ZEND_ACC_PUBLIC;
+        c"accept" => zim_swoole_socket_coro_accept, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_accept, z::ZEND_ACC_PUBLIC;
+        c"connect" => zim_swoole_socket_coro_connect, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_connect, z::ZEND_ACC_PUBLIC;
+        c"checkLiveness" => zim_swoole_socket_coro_checkLiveness, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_checkLiveness, z::ZEND_ACC_PUBLIC;
+        c"getBoundCid" => zim_swoole_socket_coro_getBoundCid, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_getBoundCid, z::ZEND_ACC_PUBLIC;
+        c"peek" => zim_swoole_socket_coro_peek, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_peek, z::ZEND_ACC_PUBLIC;
+        c"recv" => zim_swoole_socket_coro_recv, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_recv, z::ZEND_ACC_PUBLIC;
+        c"recvAll" => zim_swoole_socket_coro_recvAll, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_recvAll, z::ZEND_ACC_PUBLIC;
+        c"recvLine" => zim_swoole_socket_coro_recvLine, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_recvLine, z::ZEND_ACC_PUBLIC;
+        c"recvWithBuffer" => zim_swoole_socket_coro_recvWithBuffer, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_recvWithBuffer, z::ZEND_ACC_PUBLIC;
+        c"recvPacket" => zim_swoole_socket_coro_recvPacket, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_recvPacket, z::ZEND_ACC_PUBLIC;
+        c"send" => zim_swoole_socket_coro_send, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_send, z::ZEND_ACC_PUBLIC;
+        c"readVector" => zim_swoole_socket_coro_readVector, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_readVector, z::ZEND_ACC_PUBLIC;
+        c"readVectorAll" => zim_swoole_socket_coro_readVectorAll, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_readVectorAll, z::ZEND_ACC_PUBLIC;
+        c"writeVector" => zim_swoole_socket_coro_writeVector, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_writeVector, z::ZEND_ACC_PUBLIC;
+        c"writeVectorAll" => zim_swoole_socket_coro_writeVectorAll, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_writeVectorAll, z::ZEND_ACC_PUBLIC;
+        c"sendFile" => zim_swoole_socket_coro_sendFile, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_sendFile, z::ZEND_ACC_PUBLIC;
+        c"sendAll" => zim_swoole_socket_coro_sendAll, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_sendAll, z::ZEND_ACC_PUBLIC;
+        c"recvfrom" => zim_swoole_socket_coro_recvfrom, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_recvfrom, z::ZEND_ACC_PUBLIC;
+        c"sendto" => zim_swoole_socket_coro_sendto, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_sendto, z::ZEND_ACC_PUBLIC;
+        c"getOption" => zim_swoole_socket_coro_getOption, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_getOption, z::ZEND_ACC_PUBLIC;
+        c"setProtocol" => zim_swoole_socket_coro_setProtocol, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_setProtocol, z::ZEND_ACC_PUBLIC;
+        c"setOption" => zim_swoole_socket_coro_setOption, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_setOption, z::ZEND_ACC_PUBLIC;
+        c"sslHandshake" => zim_swoole_socket_coro_sslHandshake, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_sslHandshake, z::ZEND_ACC_PUBLIC;
+        c"shutdown" => zim_swoole_socket_coro_shutdown, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_shutdown, z::ZEND_ACC_PUBLIC;
+        c"cancel" => zim_swoole_socket_coro_cancel, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_cancel, z::ZEND_ACC_PUBLIC;
+        c"close" => zim_swoole_socket_coro_close, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_close, z::ZEND_ACC_PUBLIC;
+        c"getpeername" => zim_swoole_socket_coro_getpeername, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_getpeername, z::ZEND_ACC_PUBLIC;
+        c"getsockname" => zim_swoole_socket_coro_getsockname, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_getsockname, z::ZEND_ACC_PUBLIC;
+        c"isClosed" => zim_swoole_socket_coro_isClosed, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_isClosed, z::ZEND_ACC_PUBLIC;
+        c"import" => zim_swoole_socket_coro_import, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_import, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+    ];
+}
+
+// The handlers that stay C++.
+unsafe extern "C" {
+    fn zim_swoole_socket_coro_getOption(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_socket_coro_import(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zim_swoole_socket_coro_setOption(frame: *mut z::zend_execute_data, value: *mut z::zval);
+}
+
 /// MINIT, as `php_swoole_socket_coro_minit` did: both classes, their short
 /// names when `shortname`, the properties (with the `ext/sockets` bridge ones
 /// when `sockets`), and the socket constants unless `ext/sockets` is loaded
@@ -84,7 +131,6 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
 /// table, Swoole's exception class and a writable class-entry slot.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpclients_socket_minit(
-    methods: *const zend_function_entry,
     exception: *mut zend_class_entry,
     shortname: bool,
     sockets: bool,
@@ -92,8 +138,8 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_minit(
     ai: u32,
     socket_class: *mut *mut zend_class_entry,
 ) {
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { SOCKET.register(c"Swoole\\Coroutine\\Socket", methods, configure) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { SOCKET.register(c"Swoole\\Coroutine\\Socket", METHODS.as_ptr(), configure) };
     let ce = SOCKET.entry();
     if shortname {
         // SAFETY: MINIT, with the class just registered.

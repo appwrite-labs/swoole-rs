@@ -11,19 +11,21 @@ use std::{
     ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
+use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object, add_assoc_long, class_name, declare_property_null,
     each_value, handlers, message, object_of, register_long_constant, set_object,
     sys::{
         _zend_bailout, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, swr_zend_emalloc,
         swr_zend_is_true, swr_zend_module_loaded, swr_zend_object_addref, swr_zend_object_release,
-        swr_zend_string_alloc, swr_zend_string_free, zend_class_entry, zend_function_entry,
-        zend_get_executed_filename, zend_hash_str_find, zend_object, zend_object_handlers,
-        zend_read_property, zend_string, zval,
+        swr_zend_string_alloc, swr_zend_string_free, zend_class_entry, zend_get_executed_filename,
+        zend_hash_str_find, zend_object, zend_object_handlers, zend_read_property, zend_string,
+        zval,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of, unset_property_deny,
     update_property, update_property_long,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `Swoole\Process::IPC_NOWAIT` (`MSGQUEUE_NOWAIT`).
 const IPC_NOWAIT: i64 = 1 << 8;
@@ -154,20 +156,57 @@ unsafe extern "C" fn free(object: *mut zend_object) {
     unsafe { ProcessObject::dtor(object) };
 }
 
+// `swoole_set_process_name()` (php_swoole.cc), which `Process::name()` aliases.
+unsafe extern "C" {
+    fn zif_swoole_set_process_name(frame: *mut z::zend_execute_data, value: *mut z::zval);
+}
+
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_process___construct, &process::arginfo_class_Swoole_Process___construct, z::ZEND_ACC_PUBLIC;
+        c"__destruct" => zim_swoole_process___destruct, &process::arginfo_class_Swoole_Process___destruct, z::ZEND_ACC_PUBLIC;
+        c"wait" => zim_swoole_process_wait, &process::arginfo_class_Swoole_Process_wait, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"signal" => zim_swoole_process_signal, &process::arginfo_class_Swoole_Process_signal, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"alarm" => zim_swoole_process_alarm, &process::arginfo_class_Swoole_Process_alarm, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"kill" => zim_swoole_process_kill, &process::arginfo_class_Swoole_Process_kill, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"daemon" => zim_swoole_process_daemon, &process::arginfo_class_Swoole_Process_daemon, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        c"setAffinity" => crate::affinity::zim_swoole_process_setAffinity, &process::arginfo_class_Swoole_Process_setAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        c"getAffinity" => crate::affinity::zim_swoole_process_getAffinity, &process::arginfo_class_Swoole_Process_getAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"setPriority" => zim_swoole_process_setPriority, &process::arginfo_class_Swoole_Process_setPriority, z::ZEND_ACC_PUBLIC;
+        c"getPriority" => zim_swoole_process_getPriority, &process::arginfo_class_Swoole_Process_getPriority, z::ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_process_set, &process::arginfo_class_Swoole_Process_set, z::ZEND_ACC_PUBLIC;
+        c"setTimeout" => zim_swoole_process_setTimeout, &process::arginfo_class_Swoole_Process_setTimeout, z::ZEND_ACC_PUBLIC;
+        c"setBlocking" => zim_swoole_process_setBlocking, &process::arginfo_class_Swoole_Process_setBlocking, z::ZEND_ACC_PUBLIC;
+        c"useQueue" => zim_swoole_process_useQueue, &process::arginfo_class_Swoole_Process_useQueue, z::ZEND_ACC_PUBLIC;
+        c"statQueue" => zim_swoole_process_statQueue, &process::arginfo_class_Swoole_Process_statQueue, z::ZEND_ACC_PUBLIC;
+        c"freeQueue" => zim_swoole_process_freeQueue, &process::arginfo_class_Swoole_Process_freeQueue, z::ZEND_ACC_PUBLIC;
+        c"start" => zim_swoole_process_start, &process::arginfo_class_Swoole_Process_start, z::ZEND_ACC_PUBLIC;
+        c"write" => zim_swoole_process_write, &process::arginfo_class_Swoole_Process_write, z::ZEND_ACC_PUBLIC;
+        c"close" => zim_swoole_process_close, &process::arginfo_class_Swoole_Process_close, z::ZEND_ACC_PUBLIC;
+        c"read" => zim_swoole_process_read, &process::arginfo_class_Swoole_Process_read, z::ZEND_ACC_PUBLIC;
+        c"push" => zim_swoole_process_push, &process::arginfo_class_Swoole_Process_push, z::ZEND_ACC_PUBLIC;
+        c"pop" => zim_swoole_process_pop, &process::arginfo_class_Swoole_Process_pop, z::ZEND_ACC_PUBLIC;
+        c"exit" => zim_swoole_process_exit, &process::arginfo_class_Swoole_Process_exit, z::ZEND_ACC_PUBLIC;
+        c"exec" => zim_swoole_process_exec, &process::arginfo_class_Swoole_Process_exec, z::ZEND_ACC_PUBLIC;
+        c"exportSocket" => zim_swoole_process_exportSocket, &process::arginfo_class_Swoole_Process_exportSocket, z::ZEND_ACC_PUBLIC;
+        c"name" => zif_swoole_set_process_name, &process::arginfo_class_Swoole_Process_name, 0;
+    ];
+}
+
 /// MINIT: register `Swoole\Process`, its constants and properties, and (when
 /// pcntl is absent) the signal constants, as `php_swoole_process_minit` did.
 /// # Safety
-/// Called once, at MINIT, with the static `PHP_FE_END`-terminated method table
-/// and a host table that lives for the process.
+/// Called once, at MINIT, with a host table that lives for the process.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpprocess_minit(
-    methods: *const zend_function_entry,
     table: *const Host,
     module: c_int,
 ) -> *mut zend_class_entry {
     install(table);
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { PROCESS.register(c"Swoole\\Process", methods, configure) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { PROCESS.register(c"Swoole\\Process", METHODS.as_ptr(), configure) };
     for (name, value) in [
         (c"IPC_NOWAIT", IPC_NOWAIT),
         (c"PIPE_MASTER", 1),

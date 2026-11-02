@@ -117,7 +117,7 @@ fn header_end(input: &[u8], frame: &mut HttpFrame) -> i32 {
     let mut from = 0;
     while let Some(found) = rest
         .get(from..)
-        .and_then(|tail| tail.iter().position(|&b| b == b'\r'))
+        .and_then(|tail| memchr::memchr(b'\r', tail))
     {
         let at = from + found;
         if rest.get(at..at + 4) == Some(b"\r\n\r\n") {

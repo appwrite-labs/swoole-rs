@@ -9,7 +9,6 @@ extern "C" {
  * Channel's and TableV2's operations; Rust registers the classes and its
  * zim_swoole_channel_coro_* and zim_swoole_table_* methods are the tables'
  * handlers. */
-struct _zend_function_entry;
 struct _zend_class_entry;
 struct swr_v1_phpcollections_channel_ops {
     void *(*create)(size_t capacity);
@@ -26,7 +25,7 @@ struct swr_v1_phpcollections_channel_ops {
     size_t (*producers)(void *chan);
     void (*unconstructed)(void);
 };
-void swr_v1_phpcollections_channel_minit(const struct _zend_function_entry *methods, int32_t module_number,
+void swr_v1_phpcollections_channel_minit(int32_t module_number,
                                          uint8_t use_shortname,
                                          const struct swr_v1_phpcollections_channel_ops *ops);
 struct swr_v1_memory_records;
@@ -59,8 +58,7 @@ struct swr_v1_phpcollections_table_ops {
     void (*too_long)(struct swr_v1_memory_table_row *row, const char *field, size_t length);
     void (*log_warning)(const char *message);
 };
-void swr_v1_phpcollections_table_minit(const struct _zend_function_entry *methods,
-                                       struct _zend_class_entry *exception,
+void swr_v1_phpcollections_table_minit(struct _zend_class_entry *exception,
                                        const struct swr_v1_phpcollections_table_ops *ops);
 #ifdef __cplusplus
 }

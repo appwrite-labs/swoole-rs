@@ -491,6 +491,7 @@ dependencies = [
  "swoole-rs-clients",
  "swoole-rs-error",
  "swoole-rs-inflate",
+ "swoole-rs-phpstubs",
  "swoole-rs-phptable",
  "swoole-rs-zend",
 ]
@@ -500,6 +501,7 @@ name = "swoole-rs-phpcollections"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-memory",
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
@@ -507,6 +509,7 @@ dependencies = [
 name = "swoole-rs-phpcoroutines"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
@@ -514,6 +517,7 @@ dependencies = [
 name = "swoole-rs-phpevents"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
@@ -529,6 +533,7 @@ dependencies = [
  "swoole-rs-deflate",
  "swoole-rs-http",
  "swoole-rs-httpbindings",
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
@@ -539,6 +544,7 @@ dependencies = [
  "libc",
  "swoole-rs-http2",
  "swoole-rs-inflate",
+ "swoole-rs-phpstubs",
  "swoole-rs-phptable",
  "swoole-rs-zend",
 ]
@@ -557,6 +563,7 @@ name = "swoole-rs-phpprocess"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
@@ -567,6 +574,7 @@ dependencies = [
  "libc",
  "openssl-sys",
  "swoole-rs-hooks",
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
@@ -574,6 +582,7 @@ dependencies = [
 name = "swoole-rs-phpserver"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-phpstubs",
  "swoole-rs-ports",
  "swoole-rs-zend",
 ]
@@ -614,6 +623,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-phpprocess",
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
@@ -621,6 +631,7 @@ dependencies = [
 name = "swoole-rs-phptimer"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 

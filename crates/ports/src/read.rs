@@ -1,7 +1,8 @@
 //! `ListenPort`'s readable callbacks (raw, length, EOF, Redis and HTTP) as whole
-//! operations. Native code keeps the socket, connection, receive buffer, request
-//! object, logs and dispatch; Rust decides every step and asks native code for each
-//! fact or effect through one `call(context, op, arg)`, reading facts afresh.
+//! operations. Native code keeps the socket, connection, logs and dispatch, and
+//! performs each effect through one `call(context, op, arg)`. The receive buffer and
+//! the HTTP request are read and written in place through [`Shared`], the head of the
+//! context (layouts pinned by native `static_assert`s), as upstream's reader did.
 use core::ffi::c_void;
 
 /// One native fact or effect on the connection in `context`.
@@ -37,14 +38,11 @@ pub const OP_RECV_EOF: u32 = 9;
 pub const OP_RECV_REDIS: u32 = 10;
 /// `Server::dispatch_task` of arg bytes from the buffer start.
 pub const OP_DISPATCH_TASK: u32 = 11;
-/// `http_server::dispatch_request` of arg bytes from the buffer start.
+/// `http_server::dispatch_request` of arg bytes from the buffer start; the
+/// connection's request is read afresh afterwards.
 pub const OP_DISPATCH_REQUEST: u32 = 12;
 /// `conn->active && !socket->removed`.
 pub const OP_ACTIVE: u32 = 13;
-/// `websocket_status >= STATUS_HANDSHAKE`, `http_upgrade`, `http2_stream`.
-pub const OP_WEBSOCKET: u32 = 14;
-pub const OP_UPGRADED: u32 = 15;
-pub const OP_HTTP2_STREAM: u32 = 16;
 /// Sets `websocket_status = STATUS_ACTIVE` and `http_upgrade = 1`.
 pub const OP_WEBSOCKET_ACTIVATE: u32 = 17;
 /// `open_http2_protocol`.
@@ -56,58 +54,49 @@ pub const OP_SKIP_RECV: u32 = 20;
 /// `protocol.package_max_length`, `serv->upload_max_filesize > 0`.
 pub const OP_MAX_LENGTH: u32 = 21;
 pub const OP_UPLOADS: u32 = 22;
-/// `enable_static_handler` and the static handler served the request.
+/// The static handler served the request (asked only when it is enabled).
 pub const OP_STATIC: u32 = 23;
 
 // The current buffer.
-pub const OP_BUF_LENGTH: u32 = 30;
-pub const OP_BUF_SIZE: u32 = 31;
-pub const OP_BUF_OFFSET: u32 = 32;
-pub const OP_BUF_ADD_LENGTH: u32 = 33;
-pub const OP_BUF_SET_LENGTH: u32 = 34;
-pub const OP_BUF_SET_OFFSET: u32 = 35;
 pub const OP_BUF_REDUCE: u32 = 36;
-pub const OP_BUF_CLEAR: u32 = 37;
 pub const OP_BUF_EXTEND: u32 = 38;
 /// The buffer holds `\r\n\r\n`.
 pub const OP_BUF_HEADER_END: u32 = 39;
 
 // The connection's HTTP request.
 /// Creates the request when missing, gives it the receive buffer when it has none,
-/// and makes its buffer current.
+/// and makes it and its buffer current.
 pub const OP_REQ_INIT: u32 = 50;
-/// `port->destroy_http_request(conn)`.
+/// `port->destroy_http_request(conn)`; no request is current after it.
 pub const OP_REQ_DESTROY: u32 = 51;
-pub const OP_REQ_METHOD: u32 = 52;
 /// `get_protocol()`, `get_header_length()`, `get_chunked_body_length()`: `int`s.
 pub const OP_REQ_PROTOCOL: u32 = 53;
 pub const OP_REQ_FIND_HEADER: u32 = 54;
 pub const OP_REQ_FIND_CHUNKED: u32 = 55;
-pub const OP_REQ_EXCEPTED: u32 = 56;
-pub const OP_REQ_HEADER_LENGTH: u32 = 57;
-pub const OP_REQ_HEADER_PARSED: u32 = 58;
 /// `parse_header_info()`, then `set_max_length(package_max_length)`.
 pub const OP_REQ_PARSE_HEADER: u32 = 59;
-pub const OP_REQ_CONTENT_LENGTH: u32 = 60;
-pub const OP_REQ_MAX_LENGTH: u32 = 61;
-pub const OP_REQ_HAS_FORM: u32 = 62;
 /// `init_multipart_parser(serv)`, then its buffer becomes current.
 pub const OP_REQ_MULTIPART_INIT: u32 = 63;
 pub const OP_REQ_DISCARD_FORM: u32 = 64;
-pub const OP_REQ_MULTIPART_HEADER: u32 = 65;
 pub const OP_REQ_MULTIPART_PARSE: u32 = 66;
-pub const OP_REQ_TOO_LARGE: u32 = 67;
-pub const OP_REQ_UNAVAILABLE: u32 = 68;
-pub const OP_REQ_TRIED: u32 = 69;
 /// `destroy_multipart_parser()`, then the request's buffer becomes current.
 pub const OP_REQ_MULTIPART_DESTROY: u32 = 70;
-pub const OP_REQ_NOBODY_CHUNKED: u32 = 71;
-pub const OP_REQ_ADVANCE_HEADER: u32 = 72;
 pub const OP_REQ_MARK_DISPATCHED: u32 = 73;
-pub const OP_REQ_KNOWN_LENGTH: u32 = 74;
-pub const OP_REQ_CHUNKED: u32 = 75;
 pub const OP_REQ_CLEAN: u32 = 76;
 pub const OP_REQ_EXPECT: u32 = 77;
+/// The request's one-bit flags as `FLAG_*` bits.
+pub const OP_REQ_FLAGS: u32 = 78;
+
+/// `OP_REQ_FLAGS` bits.
+pub const FLAG_EXCEPTED: u64 = 1;
+pub const FLAG_TOO_LARGE: u64 = 1 << 1;
+pub const FLAG_UNAVAILABLE: u64 = 1 << 2;
+pub const FLAG_HEADER_PARSED: u64 = 1 << 3;
+pub const FLAG_TRIED: u64 = 1 << 4;
+pub const FLAG_MULTIPART_HEADER: u64 = 1 << 5;
+pub const FLAG_KNOWN_LENGTH: u64 = 1 << 6;
+pub const FLAG_CHUNKED: u64 = 1 << 7;
+pub const FLAG_NOBODY_CHUNKED: u64 = 1 << 8;
 
 // Logs, in upstream's wording; arg is the one number a log needs beyond native state.
 pub const LOG_UNKNOWN_PROTOCOL: u32 = 90;
@@ -118,6 +107,7 @@ pub const LOG_CHUNKED_ERROR: u32 = 94;
 pub const LOG_CHUNKED_TOO_LARGE: u32 = 95;
 pub const LOG_TOO_LARGE: u32 = 96;
 pub const LOG_DISCARD: u32 = 97;
+/// Trace logs, sent only when [`Shared::trace`] is set.
 pub const TRACE_HEADER: u32 = 98;
 pub const TRACE_CHUNKED: u32 = 99;
 pub const TRACE_POST_WAIT: u32 = 100;
@@ -136,21 +126,63 @@ const SW_OK: i32 = 0;
 const SW_ERR: i32 = -1;
 /// `SW_HTTP_PRI`, `SW_HTTP_HEADER_MAX_SIZE`, `sizeof(SW_HTTP2_PRI_STRING) - 1`,
 /// `sizeof(SW_HTTP_CHUNK_EOF) - 1`, `SW_BUFFER_SIZE_BIG`; native asserts each.
-const HTTP_PRI: u64 = 27;
+const HTTP_PRI: u8 = 27;
 const HEADER_MAX_SIZE: u64 = 65536;
 const HTTP2_PREFACE: u64 = 24;
-const CHUNK_EOF: u64 = 5;
+const CHUNK_EOF: u32 = 5;
 const BUFFER_SIZE_BIG: u64 = 65536;
 
+/// `swoole::String`'s fields (`SwrPortsString`).
+#[repr(C)]
+pub struct Buffer {
+    pub length: u64,
+    pub size: u64,
+    pub offset: i64,
+    pub str: *mut u8,
+}
+
+/// `swoole::http_server::Request`'s fields (`SwrPortsRequest`); `flags` holds its
+/// bit-fields, read through `OP_REQ_FLAGS` and written only by native code.
+#[repr(C)]
+pub struct Request {
+    pub method: u8,
+    pub version: u8,
+    pub flags: [u8; 2],
+    pub url_offset: u32,
+    pub url_length: u32,
+    pub max_length: u32,
+    pub request_line_length: u32,
+    pub header_length: u32,
+    pub content_length: u64,
+    pub form_data: *mut c_void,
+    pub buffer: *mut Buffer,
+}
+
+/// The head of every read context (`SwrPortsShared`): the current buffer and request,
+/// which native code repoints as its effects change them, and facts fixed for the call.
+#[repr(C)]
+pub struct Shared {
+    pub buffer: *mut Buffer,
+    pub request: *mut Request,
+    /// `websocket_status >= STATUS_HANDSHAKE`, `http_upgrade`, `http2_stream` at entry.
+    pub websocket: u8,
+    pub upgraded: u8,
+    pub http2_stream: u8,
+    /// `enable_static_handler`.
+    pub static_handler: u8,
+    /// Trace logging is compiled in.
+    pub trace: u8,
+}
+
 struct Native {
-    context: *mut c_void,
+    shared: *mut Shared,
     call: PortsCall,
 }
 
 impl Native {
     fn op(&self, op: u32, arg: u64) -> u64 {
         // SAFETY: a native fact or effect on the live connection in `context`.
-        unsafe { (self.call)(self.context, op, arg) }
+        unsafe { (self.call)(self.shared.cast(), op, arg) }
     }
     fn get(&self, op: u32) -> u64 {
         self.op(op, 0)
@@ -161,19 +193,67 @@ impl Native {
     fn signed(&self, op: u32, arg: u64) -> i64 {
         self.op(op, arg).cast_signed()
     }
+    /// The context's head, borrowed until the next native call.
+    fn shared(&self) -> &Shared {
+        // SAFETY: the context starts with a live `Shared`, which only native
+        // effects, never spanned by the borrow, repoint.
+        unsafe { &*self.shared }
+    }
+    fn trace(&self, op: u32) {
+        if self.shared().trace != 0 {
+            self.get(op);
+        }
+    }
+    /// The current request's `FLAG_*` bits.
+    fn flags(&self) -> u64 {
+        self.get(OP_REQ_FLAGS)
+    }
+    /// The current buffer, borrowed until the next native call.
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "native memory: the borrow never spans a native call"
+    )]
+    fn buffer(&self) -> &mut Buffer {
+        // SAFETY: the current buffer is live and only native effects, which the
+        // borrow never spans, touch it.
+        unsafe { &mut *self.shared().buffer }
+    }
+    /// The current request, borrowed until the next native call.
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "native memory: the borrow never spans a native call"
+    )]
+    fn request(&self) -> &mut Request {
+        // SAFETY: after `OP_REQ_INIT` the connection's request is live and only
+        // native effects, which the borrow never spans, touch it.
+        unsafe { &mut *self.shared().request }
+    }
+    /// `buffer->offset = value`.
+    fn set_offset(&self, value: u64) {
+        self.buffer().offset = value.cast_signed();
+    }
+    /// `buffer->clear()`.
+    fn clear(&self) {
+        let buffer = self.buffer();
+        (buffer.length, buffer.offset) = (0, 0);
+    }
 }
 
 /// `ListenPort::readable_callback_*`: `SW_OK`, or `SW_ERR` when an EOF port has no buffer.
 ///
 /// # Safety
-/// `call` acts on the connection in `context`, live for the call.
+/// `context` starts with a [`Shared`] and `call` acts on the connection in it, live
+/// for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_ports_on_read(
     kind: u32,
     context: *mut c_void,
     call: PortsCall,
 ) -> i32 {
-    let native = Native { context, call };
+    let native = Native {
+        shared: context.cast(),
+        call,
+    };
     match kind {
         ON_READ_RAW => raw(&native),
         ON_READ_LENGTH => framed(&native, OP_RECV_LENGTH, true),
@@ -218,8 +298,8 @@ fn raw(n: &Native) -> i32 {
         return SW_OK;
     }
     let length = received.cast_unsigned();
-    n.op(OP_BUF_SET_OFFSET, length);
-    n.op(OP_BUF_SET_LENGTH, length);
+    n.set_offset(length);
+    n.buffer().length = length;
     i32::try_from(n.signed(OP_DISPATCH_TASK, length)).unwrap_or(SW_ERR)
 }
 
@@ -228,7 +308,7 @@ fn framed(n: &Native, receive: u32, release: bool) -> i32 {
     n.get(OP_RECV_BUFFER);
     if n.signed(receive, 0) < 0 {
         if receive == OP_RECV_LENGTH {
-            n.get(TRACE_CLOSE);
+            n.trace(TRACE_CLOSE);
         }
         n.get(OP_CLOSE_ERRNO);
         n.get(OP_CLOSE);
@@ -263,14 +343,17 @@ enum Step {
 }
 
 fn http(n: &Native) -> i32 {
-    if n.is(OP_WEBSOCKET) {
-        if !n.is(OP_UPGRADED) {
+    let shared = n.shared();
+    let (websocket, upgraded, http2_stream) =
+        (shared.websocket, shared.upgraded, shared.http2_stream);
+    if websocket != 0 {
+        if upgraded == 0 {
             n.get(OP_REQ_DESTROY);
             n.get(OP_WEBSOCKET_ACTIVATE);
         }
         return framed(n, OP_RECV_LENGTH, true);
     }
-    if n.is(OP_HTTP2_STREAM) {
+    if http2_stream != 0 {
         return framed(n, OP_RECV_LENGTH, true);
     }
     n.get(OP_REQ_INIT);
@@ -305,7 +388,7 @@ fn receive(n: &Native) -> Step {
     if received == 0 {
         return Step::Close;
     }
-    n.op(OP_BUF_ADD_LENGTH, received.cast_unsigned());
+    n.buffer().length += received.cast_unsigned();
     Step::Parse
 }
 
@@ -318,51 +401,53 @@ fn parse(n: &Native) -> Step {
     if let Some(step) = head(n) {
         return step;
     }
-    if !n.is(OP_REQ_TRIED)
-        && let Some(step) = bodyless(n)
+    let flags = n.flags();
+    if flags & FLAG_TRIED == 0
+        && let Some(step) = bodyless(n, flags)
     {
         return step;
     }
-    body(n)
+    body(n, flags)
 }
 
 /// The request line, an HTTP/2 preface, the header block and form setup.
 fn head(n: &Native) -> Option<Step> {
-    if n.get(OP_REQ_METHOD) == 0 && n.signed(OP_REQ_PROTOCOL, 0) < 0 {
-        if !n.is(OP_REQ_EXCEPTED) && n.get(OP_BUF_LENGTH) < HEADER_MAX_SIZE {
+    if n.request().method == 0 && n.signed(OP_REQ_PROTOCOL, 0) < 0 {
+        if n.flags() & FLAG_EXCEPTED == 0 && n.buffer().length < HEADER_MAX_SIZE {
             return Some(Step::Done);
         }
         return Some(bad(n, LOG_UNKNOWN_PROTOCOL));
     }
-    let method = n.get(OP_REQ_METHOD);
+    let method = n.request().method;
     if method > HTTP_PRI {
         return Some(bad(n, LOG_UNKNOWN_METHOD));
     }
     if method == HTTP_PRI {
         return Some(preface(n));
     }
-    if n.get(OP_REQ_HEADER_LENGTH) == 0 && n.signed(OP_REQ_FIND_HEADER, 0) < 0 {
-        if n.get(OP_BUF_SIZE) == n.get(OP_BUF_LENGTH) {
+    if n.request().header_length == 0 && n.signed(OP_REQ_FIND_HEADER, 0) < 0 {
+        let buffer = n.buffer();
+        if buffer.size == buffer.length {
             return Some(bad(n, LOG_HEADER_TOO_LARGE));
         }
         return Some(Step::Receive);
     }
-    if !n.is(OP_REQ_HEADER_PARSED) {
+    if n.flags() & FLAG_HEADER_PARSED == 0 {
         n.get(OP_REQ_PARSE_HEADER);
-        n.get(TRACE_HEADER);
-        if n.is(OP_REQ_HAS_FORM) {
-            if n.is(OP_UPLOADS)
-                && n.get(OP_REQ_HEADER_LENGTH)
-                    .wrapping_add(n.get(OP_REQ_CONTENT_LENGTH))
-                    > n.get(OP_REQ_MAX_LENGTH)
-            {
+        n.trace(TRACE_HEADER);
+        if !n.request().form_data.is_null() {
+            if n.is(OP_UPLOADS) && {
+                let request = n.request();
+                u64::from(request.header_length).wrapping_add(request.content_length)
+                    > u64::from(request.max_length)
+            } {
                 n.get(OP_REQ_MULTIPART_INIT);
             } else {
                 n.get(OP_REQ_DISCARD_FORM);
             }
         }
     }
-    if n.is(OP_REQ_HAS_FORM) {
+    if !n.request().form_data.is_null() {
         return form(n);
     }
     None
@@ -373,12 +458,12 @@ fn preface(n: &Native) -> Step {
         return bad(n, LOG_NO_HTTP2);
     }
     n.get(OP_HTTP2_START);
-    if n.get(OP_BUF_LENGTH) == HTTP2_PREFACE {
+    if n.buffer().length == HTTP2_PREFACE {
         n.get(OP_REQ_DESTROY);
-        n.get(OP_BUF_CLEAR);
+        n.clear();
         return Step::Done;
     }
-    n.op(OP_BUF_REDUCE, n.get(OP_BUF_OFFSET));
+    n.op(OP_BUF_REDUCE, n.buffer().offset.cast_unsigned());
     n.get(OP_REQ_DESTROY);
     n.get(OP_SKIP_RECV);
     Step::Length
@@ -386,19 +471,20 @@ fn preface(n: &Native) -> Step {
 
 /// A multipart upload streamed to disk.
 fn form(n: &Native) -> Option<Step> {
-    if !n.is(OP_REQ_MULTIPART_HEADER) && !n.is(OP_BUF_HEADER_END) {
+    if n.flags() & FLAG_MULTIPART_HEADER == 0 && !n.is(OP_BUF_HEADER_END) {
         return Some(Step::Done);
     }
     if !n.is(OP_REQ_MULTIPART_PARSE) {
         return Some(Step::Reply(SEND_BAD_REQUEST));
     }
-    if n.is(OP_REQ_TOO_LARGE) {
+    let flags = n.flags();
+    if flags & FLAG_TOO_LARGE != 0 {
         return Some(Step::Reply(SEND_TOO_LARGE));
     }
-    if n.is(OP_REQ_UNAVAILABLE) {
+    if flags & FLAG_UNAVAILABLE != 0 {
         return Some(Step::Reply(SEND_UNAVAILABLE));
     }
-    if !n.is(OP_REQ_TRIED) {
+    if flags & FLAG_TRIED == 0 {
         return Some(Step::Done);
     }
     n.get(OP_REQ_MULTIPART_DESTROY);
@@ -406,95 +492,97 @@ fn form(n: &Native) -> Option<Step> {
 }
 
 /// The first look at a request: one without a body is served here, pipelined
-/// requests behind it parsed next.
-fn bodyless(n: &Native) -> Option<Step> {
-    if n.is(OP_REQ_NOBODY_CHUNKED) {
-        if n.get(OP_BUF_LENGTH) < n.get(OP_REQ_HEADER_LENGTH).wrapping_add(CHUNK_EOF) {
+/// requests behind it parsed next. `flags` stay valid: only `tried` changes here.
+fn bodyless(n: &Native, flags: u64) -> Option<Step> {
+    if flags & FLAG_NOBODY_CHUNKED != 0 {
+        let header_length = n.request().header_length;
+        if n.buffer().length < u64::from(header_length) + u64::from(CHUNK_EOF) {
             return Some(Step::Receive);
         }
-        n.op(OP_REQ_ADVANCE_HEADER, CHUNK_EOF);
+        n.request().header_length = header_length.wrapping_add(CHUNK_EOF);
     }
     n.get(OP_REQ_MARK_DISPATCHED);
-    let bodyless =
-        n.get(OP_REQ_CONTENT_LENGTH) == 0 && (n.is(OP_REQ_KNOWN_LENGTH) || !n.is(OP_REQ_CHUNKED));
+    let bodyless = n.request().content_length == 0
+        && (flags & FLAG_KNOWN_LENGTH != 0 || flags & FLAG_CHUNKED == 0);
     if !bodyless {
         return None;
     }
-    let header_length = n.get(OP_REQ_HEADER_LENGTH);
-    n.op(OP_BUF_SET_OFFSET, header_length);
-    if !n.is(OP_STATIC) && n.signed(OP_DISPATCH_REQUEST, n.get(OP_REQ_HEADER_LENGTH)) < 0 {
+    let header_length = u64::from(n.request().header_length);
+    n.set_offset(header_length);
+    if !(n.shared().static_handler != 0 && n.is(OP_STATIC))
+        && n.signed(OP_DISPATCH_REQUEST, u64::from(n.request().header_length)) < 0
+    {
         return Some(Step::Close);
     }
     if !n.is(OP_ACTIVE) {
         return Some(Step::Done);
     }
-    let header_length = n.get(OP_REQ_HEADER_LENGTH);
-    if n.get(OP_BUF_LENGTH) > header_length {
+    let header_length = u64::from(n.request().header_length);
+    if n.buffer().length > header_length {
         n.op(OP_BUF_REDUCE, header_length);
         n.get(OP_REQ_CLEAN);
         return Some(Step::Parse);
     }
     n.get(OP_REQ_DESTROY);
-    n.get(OP_BUF_CLEAR);
+    n.clear();
     Some(Step::Done)
 }
 
 /// A request with a body: wait for all of it, then dispatch.
-fn body(n: &Native) -> Step {
+fn body(n: &Native, flags: u64) -> Step {
     let max = n.get(OP_MAX_LENGTH);
     let request_length;
-    if n.is(OP_REQ_CHUNKED) {
+    if flags & FLAG_CHUNKED != 0 {
         if n.signed(OP_REQ_FIND_CHUNKED, 0) < 0 {
-            if n.is(OP_REQ_EXCEPTED) {
+            if n.flags() & FLAG_EXCEPTED != 0 {
                 return bad(n, LOG_CHUNKED_ERROR);
             }
-            let wanted = n.get(OP_BUF_SIZE).wrapping_add(BUFFER_SIZE_BIG);
+            let wanted = n.buffer().size.wrapping_add(BUFFER_SIZE_BIG);
             if wanted > max {
                 n.get(LOG_CHUNKED_TOO_LARGE);
                 return Step::Reply(SEND_TOO_LARGE);
             }
-            if n.get(OP_BUF_LENGTH) == n.get(OP_BUF_SIZE) {
+            let buffer = n.buffer();
+            if buffer.length == buffer.size {
                 n.op(OP_BUF_EXTEND, wanted);
             }
             return Step::Receive;
         }
-        request_length = n
-            .get(OP_REQ_HEADER_LENGTH)
-            .wrapping_add(n.get(OP_REQ_CONTENT_LENGTH));
-        n.get(TRACE_CHUNKED);
+        let request = n.request();
+        request_length = u64::from(request.header_length).wrapping_add(request.content_length);
+        n.trace(TRACE_CHUNKED);
     } else {
-        request_length = n
-            .get(OP_REQ_HEADER_LENGTH)
-            .wrapping_add(n.get(OP_REQ_CONTENT_LENGTH));
+        let request = n.request();
+        request_length = u64::from(request.header_length).wrapping_add(request.content_length);
         if request_length > max {
             n.get(LOG_TOO_LARGE);
             return Step::Reply(SEND_TOO_LARGE);
         }
-        if request_length > n.get(OP_BUF_SIZE) {
+        if request_length > n.buffer().size {
             n.op(OP_BUF_EXTEND, request_length);
         }
-        if n.get(OP_BUF_LENGTH) < request_length {
+        if n.buffer().length < request_length {
             if n.is(OP_REQ_EXPECT) {
                 n.op(OP_SEND, SEND_CONTINUE);
             } else {
-                n.get(TRACE_POST_WAIT);
+                n.trace(TRACE_POST_WAIT);
             }
             return Step::Receive;
         }
     }
-    let length = n.get(OP_BUF_LENGTH);
+    let length = n.buffer().length;
     if length > request_length {
         n.op(LOG_DISCARD, length - request_length);
-        n.op(OP_BUF_SET_LENGTH, request_length);
+        n.buffer().length = request_length;
     }
-    n.op(OP_BUF_SET_OFFSET, request_length);
-    if n.signed(OP_DISPATCH_REQUEST, n.get(OP_BUF_LENGTH)) < 0 {
+    n.set_offset(request_length);
+    if n.signed(OP_DISPATCH_REQUEST, n.buffer().length) < 0 {
         return Step::Close;
     }
     if n.is(OP_ACTIVE) {
         n.get(OP_REQ_DESTROY);
         if !n.is(OP_RELEASE) {
-            n.get(OP_BUF_CLEAR);
+            n.clear();
         }
     }
     Step::Done
@@ -506,17 +594,15 @@ mod tests {
     use std::collections::VecDeque;
 
     /// A scripted connection: chunks to receive (empty: peer closed; none left:
-    /// would block), a receive buffer and a tiny HTTP request parser.
-    #[derive(Default)]
+    /// would block), a receive buffer and a tiny HTTP request parser. It starts with
+    /// the [`Shared`] head, pointing at its own buffer and request.
+    #[repr(C)]
     struct Fake {
+        shared: Shared,
+        buf: Buffer,
+        req: Request,
         incoming: VecDeque<Vec<u8>>,
         bytes: Vec<u8>,
-        length: u64,
-        size: u64,
-        offset: u64,
-        method: u64,
-        header_length: u64,
-        content_length: u64,
         parsed: bool,
         tried: bool,
         request: bool,
@@ -529,10 +615,44 @@ mod tests {
 
     fn fake(chunks: &[&[u8]]) -> Fake {
         Fake {
+            shared: Shared {
+                buffer: core::ptr::null_mut(),
+                request: core::ptr::null_mut(),
+                websocket: 0,
+                upgraded: 0,
+                http2_stream: 0,
+                static_handler: 1,
+                trace: 1,
+            },
+            buf: Buffer {
+                length: 0,
+                size: 64,
+                offset: 0,
+                str: core::ptr::null_mut(),
+            },
+            req: Request {
+                method: 0,
+                version: 0,
+                flags: [0; 2],
+                url_offset: 0,
+                url_length: 0,
+                max_length: 0,
+                request_line_length: 0,
+                header_length: 0,
+                content_length: 0,
+                form_data: core::ptr::null_mut(),
+                buffer: core::ptr::null_mut(),
+            },
             incoming: chunks.iter().map(|c| c.to_vec()).collect(),
-            size: 64,
+            bytes: Vec::new(),
+            parsed: false,
+            tried: false,
+            request: false,
             max: 1024,
-            ..Fake::default()
+            http2: false,
+            dispatched: Vec::new(),
+            effects: Vec::new(),
+            sent: Vec::new(),
         }
     }
 
@@ -542,7 +662,7 @@ mod tests {
 
     impl Fake {
         fn head(&self) -> &[u8] {
-            &self.bytes[..at(self.length)]
+            &self.bytes[..at(self.buf.length)]
         }
         fn find(&self, needle: &[u8]) -> Option<usize> {
             self.head().windows(needle.len()).position(|w| w == needle)
@@ -551,8 +671,8 @@ mod tests {
             let Some(chunk) = self.incoming.pop_front() else {
                 return u64::MAX;
             };
-            let start = if whole { 0 } else { at(self.length) };
-            let n = chunk.len().min(at(self.size) - start);
+            let start = if whole { 0 } else { at(self.buf.length) };
+            let n = chunk.len().min(at(self.buf.size) - start);
             self.bytes.resize(start + n, 0);
             self.bytes[start..].copy_from_slice(&chunk[..n]);
             n as u64
@@ -562,7 +682,7 @@ mod tests {
             let Some(space) = line.iter().position(|&b| b == b' ') else {
                 return u64::MAX;
             };
-            self.method = match &line[..space] {
+            self.req.method = match &line[..space] {
                 b"GET" => 2,
                 b"POST" => 4,
                 b"PRI" => HTTP_PRI,
@@ -574,17 +694,31 @@ mod tests {
             self.parsed = true;
             let text = String::from_utf8_lossy(self.head()).to_string();
             if let Some(value) = text.split("Content-Length: ").nth(1) {
-                self.content_length = value.split("\r\n").next().unwrap().parse().unwrap();
+                self.req.content_length = value.split("\r\n").next().unwrap().parse().unwrap();
             }
         }
         fn clean(&mut self) {
-            (self.method, self.header_length, self.content_length) = (0, 0, 0);
+            (
+                self.req.method,
+                self.req.header_length,
+                self.req.content_length,
+            ) = (0, 0, 0);
             (self.parsed, self.tried) = (false, false);
         }
         fn reduce(&mut self, n: u64) {
             self.bytes.drain(..at(n));
-            self.length -= n;
-            self.offset = 0;
+            self.buf.length -= n;
+            self.buf.offset = 0;
+        }
+        /// Repoints the shared head at this fake's buffer and request, as native
+        /// code does when its effects change them.
+        fn point(&mut self) {
+            self.shared.buffer = &raw mut self.buf;
+            self.shared.request = if self.request {
+                &raw mut self.req
+            } else {
+                core::ptr::null_mut()
+            };
         }
         fn call(&mut self, op: u32, arg: u64) -> u64 {
             let flag = u64::from;
@@ -599,64 +733,46 @@ mod tests {
                 OP_ACTIVE => 1,
                 OP_HTTP2_ENABLED => flag(self.http2),
                 OP_MAX_LENGTH => self.max,
-                OP_BUF_LENGTH => self.length,
-                OP_BUF_SIZE => self.size,
-                OP_BUF_OFFSET => self.offset,
-                OP_BUF_ADD_LENGTH => {
-                    self.length += arg;
-                    0
-                }
-                OP_BUF_SET_LENGTH => {
-                    self.length = arg;
-                    0
-                }
-                OP_BUF_SET_OFFSET => {
-                    self.offset = arg;
-                    0
-                }
                 OP_BUF_REDUCE => {
                     self.reduce(arg);
                     0
                 }
-                OP_BUF_CLEAR => {
-                    (self.length, self.offset) = (0, 0);
-                    0
-                }
                 OP_BUF_EXTEND => {
-                    self.size = arg;
+                    self.buf.size = arg;
                     0
                 }
                 OP_REQ_INIT => {
                     self.request = true;
+                    self.point();
                     0
                 }
                 OP_REQ_DESTROY => {
                     self.request = false;
                     self.clean();
+                    self.point();
                     0
                 }
-                OP_REQ_METHOD => self.method,
                 OP_REQ_PROTOCOL => self.protocol(),
                 OP_REQ_FIND_HEADER => match self.find(b"\r\n\r\n") {
                     Some(end) => {
-                        self.header_length = end as u64 + 4;
+                        self.req.header_length = u32::try_from(end).unwrap() + 4;
                         0
                     }
                     None => u64::MAX,
                 },
-                OP_REQ_HEADER_LENGTH => self.header_length,
-                OP_REQ_HEADER_PARSED => flag(self.parsed),
+                OP_REQ_FLAGS => {
+                    FLAG_KNOWN_LENGTH
+                        | if self.parsed { FLAG_HEADER_PARSED } else { 0 }
+                        | if self.tried { FLAG_TRIED } else { 0 }
+                }
                 OP_REQ_PARSE_HEADER => {
                     self.parse_header();
                     0
                 }
-                OP_REQ_CONTENT_LENGTH => self.content_length,
-                OP_REQ_TRIED => flag(self.tried),
                 OP_REQ_MARK_DISPATCHED => {
                     self.tried = true;
                     0
                 }
-                OP_REQ_KNOWN_LENGTH => 1,
                 OP_REQ_CLEAN => {
                     self.clean();
                     0
@@ -679,7 +795,8 @@ mod tests {
     }
 
     fn run(kind: u32, fake: &mut Fake) -> i32 {
-        // SAFETY: `fake` is live for the call.
+        fake.point();
+        // SAFETY: `fake` is live for the call and starts with its `Shared`.
         unsafe { swr_v1_ports_on_read(kind, (&raw mut *fake).cast(), call) }
     }
 
@@ -691,12 +808,19 @@ mod tests {
         assert_eq!(run(ON_READ_HTTP, &mut f), SW_OK, "status");
         assert_eq!(f.dispatched, [GET.to_vec()], "one dispatch of the header");
         assert!(
-            !f.request && f.length == 0,
+            !f.request && f.buf.length == 0,
             "request destroyed, buffer cleared"
         );
         assert!(
             f.effects.contains(&OP_STATIC),
             "static handler consulted first"
+        );
+        let mut f = fake(&[GET]);
+        f.shared.static_handler = 0;
+        run(ON_READ_HTTP, &mut f);
+        assert!(
+            !f.effects.contains(&OP_STATIC) && f.dispatched.len() == 1,
+            "no static handler: dispatched without asking"
         );
     }
 
@@ -726,6 +850,20 @@ mod tests {
         assert!(
             f.effects.contains(&OP_RELEASE),
             "large buffers released after dispatch"
+        );
+    }
+
+    #[test]
+    fn traces_only_when_compiled_in() {
+        let head = b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\n";
+        let mut f = fake(&[head]);
+        f.shared.trace = 0;
+        run(ON_READ_HTTP, &mut f);
+        assert!(
+            !f.effects
+                .iter()
+                .any(|op| (TRACE_HEADER..=TRACE_CLOSE).contains(op)),
+            "no trace calls"
         );
     }
 
@@ -765,7 +903,7 @@ mod tests {
         f.http2 = true;
         run(ON_READ_HTTP, &mut f);
         assert!(
-            f.effects.contains(&OP_HTTP2_START) && f.length == 0,
+            f.effects.contains(&OP_HTTP2_START) && f.buf.length == 0,
             "preface consumed"
         );
         let mut f = fake(&[&[&preface[..], b"frame"].concat()]);
@@ -779,11 +917,27 @@ mod tests {
     }
 
     #[test]
+    fn upgraded_connections_read_frames() {
+        let mut f = fake(&[]);
+        f.shared.websocket = 1;
+        run(ON_READ_HTTP, &mut f);
+        assert_eq!(
+            f.effects,
+            [OP_WEBSOCKET_ACTIVATE, OP_RECV_LENGTH, OP_RELEASE],
+            "the handshake's request goes, then frames"
+        );
+        let mut f = fake(&[]);
+        f.shared.http2_stream = 1;
+        run(ON_READ_HTTP, &mut f);
+        assert_eq!(f.effects, [OP_RECV_LENGTH, OP_RELEASE], "HTTP/2 frames");
+    }
+
+    #[test]
     fn raw_and_framed_ports() {
         let mut f = fake(&[b"ping"]);
         assert_eq!(run(ON_READ_RAW, &mut f), 0, "dispatch_task's status");
         assert_eq!(
-            (f.dispatched.len(), f.length, f.offset),
+            (f.dispatched.len(), f.buf.length, f.buf.offset),
             (1, 4, 4),
             "whole read dispatched"
         );

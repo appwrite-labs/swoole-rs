@@ -40,13 +40,41 @@
     },
     {
       "path": "0005-swoole_client.patch",
-      "sha256": "8ee77ba5ef34235773957033170e2bb360c6b39217058e0978a01d4c5bc8bd43",
+      "sha256": "6716843e427f0a23fec272b313dc0f546e3d83c3e34fec1ff84f6fa553f03e9f",
       "upstream_paths": [
         "ext-src/php_swoole_client.h",
         "ext-src/swoole_client.cc",
         "ext-src/swoole_client_async.cc",
         "include/swoole_client.h",
         "src/network/client.cc"
+      ]
+    },
+    {
+      "path": "0006-arginfo.patch",
+      "sha256": "522b304328e77aeb501ef0b744193e3f97792950a7288568cdd9ca43ba6259db",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_client_coro_arginfo.h",
+        "ext-src/stubs/php_swoole_http_client_coro_arginfo.h",
+        "ext-src/swoole_client_coro.cc",
+        "ext-src/swoole_http_client_coro.cc"
+      ]
+    },
+    {
+      "path": "0007-arginfo-socket.patch",
+      "sha256": "92ce17d63401fbbc1b2de145d71841040cfca07717d7a4f148bf0e185768d132",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_socket_coro_arginfo.h",
+        "ext-src/swoole_socket_coro.cc"
+      ]
+    },
+    {
+      "path": "0008-arginfo-client.patch",
+      "sha256": "3e560a727da146b84a1357a6563c787ca749f870482fb8613921118772eab3a8",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_client_arginfo.h",
+        "ext-src/stubs/php_swoole_client_async_arginfo.h",
+        "ext-src/swoole_client.cc",
+        "ext-src/swoole_client_async.cc"
       ]
     }
   ]

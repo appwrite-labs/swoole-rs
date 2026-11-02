@@ -16,19 +16,21 @@ use swoole_rs_memory::{
     table::{Row, row_key},
     table_records::{Column, Records},
 };
+use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
     Call, Class, Object, bailout,
     sys::{
         _zval_struct__bindgen_ty_1, E_ERROR, E_WARNING, HashPosition, IS_DOUBLE, IS_NULL,
         ZEND_ACC_NOT_SERIALIZABLE, add_assoc_double_ex, add_assoc_long_ex, add_assoc_stringl_ex,
         swr_zend_array_init, swr_zend_string_init, swr_zend_string_release, zend_ce_countable,
-        zend_ce_iterator, zend_class_entry, zend_class_implements, zend_function_entry,
-        zend_hash_get_current_data_ex, zend_hash_get_current_key_ex,
-        zend_hash_internal_pointer_reset_ex, zend_hash_move_forward_ex, zend_hash_str_find,
-        zend_object, zend_object_handlers, zend_string, zend_value, zval,
+        zend_ce_iterator, zend_class_entry, zend_class_implements, zend_hash_get_current_data_ex,
+        zend_hash_get_current_key_ex, zend_hash_internal_pointer_reset_ex,
+        zend_hash_move_forward_ex, zend_hash_str_find, zend_object, zend_object_handlers,
+        zend_string, zend_value, zval,
     },
     throw_constructed_twice, throw_exception, unset_property_deny,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `swoole::TableV2`'s operations (`swr_v1_phpcollections_table_ops`).
 #[repr(C)]
@@ -121,13 +123,37 @@ unsafe extern "C" fn free_object(std: *mut zend_object) {
     unsafe { TableObject::dtor(std) };
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_table___construct, &table::arginfo_class_Swoole_Table___construct, z::ZEND_ACC_PUBLIC;
+        c"column" => zim_swoole_table_column, &table::arginfo_class_Swoole_Table_column, z::ZEND_ACC_PUBLIC;
+        c"create" => zim_swoole_table_create, &table::arginfo_class_Swoole_Table_create, z::ZEND_ACC_PUBLIC;
+        c"destroy" => zim_swoole_table_destroy, &table::arginfo_class_Swoole_Table_destroy, z::ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_table_set, &table::arginfo_class_Swoole_Table_set, z::ZEND_ACC_PUBLIC;
+        c"get" => zim_swoole_table_get, &table::arginfo_class_Swoole_Table_get, z::ZEND_ACC_PUBLIC;
+        c"count" => zim_swoole_table_count, &table::arginfo_class_Swoole_Table_count, z::ZEND_ACC_PUBLIC;
+        c"del" => zim_swoole_table_del, &table::arginfo_class_Swoole_Table_del, z::ZEND_ACC_PUBLIC;
+        c"delete" => zim_swoole_table_del, &table::arginfo_class_Swoole_Table_del, z::ZEND_ACC_PUBLIC;
+        c"exists" => zim_swoole_table_exists, &table::arginfo_class_Swoole_Table_exists, z::ZEND_ACC_PUBLIC;
+        c"exist" => zim_swoole_table_exists, &table::arginfo_class_Swoole_Table_exists, z::ZEND_ACC_PUBLIC;
+        c"incr" => zim_swoole_table_incr, &table::arginfo_class_Swoole_Table_incr, z::ZEND_ACC_PUBLIC;
+        c"decr" => zim_swoole_table_decr, &table::arginfo_class_Swoole_Table_decr, z::ZEND_ACC_PUBLIC;
+        c"getSize" => zim_swoole_table_getSize, &table::arginfo_class_Swoole_Table_getSize, z::ZEND_ACC_PUBLIC;
+        c"getMemorySize" => zim_swoole_table_getMemorySize, &table::arginfo_class_Swoole_Table_getMemorySize, z::ZEND_ACC_PUBLIC;
+        c"stats" => zim_swoole_table_stats, &table::arginfo_class_Swoole_Table_stats, z::ZEND_ACC_PUBLIC;
+        c"rewind" => zim_swoole_table_rewind, &table::arginfo_class_Swoole_Table_rewind, z::ZEND_ACC_PUBLIC;
+        c"valid" => zim_swoole_table_valid, &table::arginfo_class_Swoole_Table_valid, z::ZEND_ACC_PUBLIC;
+        c"next" => zim_swoole_table_next, &table::arginfo_class_Swoole_Table_next, z::ZEND_ACC_PUBLIC;
+        c"current" => zim_swoole_table_current, &table::arginfo_class_Swoole_Table_current, z::ZEND_ACC_PUBLIC;
+        c"key" => zim_swoole_table_key, &table::arginfo_class_Swoole_Table_key, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: register `Swoole\Table` as `php_swoole_table_minit` did.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated method table,
-/// `swoole_exception_ce` and a static operations table.
+/// Called once, at MINIT, with `swoole_exception_ce` and a static operations table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpcollections_table_minit(
-    methods: *const zend_function_entry,
     exception: *mut zend_class_entry,
     ops: *const TableOps,
 ) {
@@ -136,8 +162,8 @@ pub unsafe extern "C" fn swr_v1_phpcollections_table_minit(
         OPS.get_or_init(|| ops);
     }
     EXCEPTION.get_or_init(|| exception as usize);
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { TABLE.register(c"Swoole\\Table", methods, configure) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { TABLE.register(c"Swoole\\Table", METHODS.as_ptr(), configure) };
     let entry = TABLE.entry();
     // SAFETY: Zend's interfaces are registered before extensions' MINIT.
     let iterator = unsafe { zend_ce_iterator };

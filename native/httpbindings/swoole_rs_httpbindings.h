@@ -25,15 +25,13 @@ enum {
     SWR_HTTPBINDINGS_DONE = 11
 };
 int32_t swr_v1_httpbindings_cookie(const swr_v1_httpbindings_cookie_input *, uint32_t *, swr_v1_httpbindings_action *);
-/* Swoole\Http\Cookie (Rust): MINIT passes upstream's method table, built from
- * the stub's arginfo; the methods are Rust's zim_swoole_http_cookie_* exports.
+/* Swoole\Http\Cookie (Rust): Rust registers the class with its method table
+ * (crates/phpstubs' arginfo); the methods are its zim_swoole_http_cookie_*.
  * `warning` is php_swoole_error(E_WARNING, "%s", message); `unavailable` sets
  * SW_ERROR_HTTP_COOKIE_UNAVAILABLE. */
-struct _zend_function_entry;
 struct _zend_string;
 struct _zval_struct;
-void swr_v1_httpbindings_cookie_minit(const struct _zend_function_entry *methods,
-                                      void (*warning)(const char *message), void (*unavailable)(void));
+void swr_v1_httpbindings_cookie_minit(void (*warning)(const char *message), void (*unavailable)(void));
 /* Response::cookie()'s Set-Cookie line from its arguments, or from a Cookie
  * object (reset when it cannot be sent); null after a warning. */
 struct _zend_string *swr_v1_httpbindings_cookie_line(uint8_t encode, struct _zend_string *name,
@@ -79,15 +77,17 @@ typedef struct {int32_t per_process,system,timeout,bad_ssl,canceled;} swr_v1_htt
 int32_t swr_v1_httpbindings_accept(uint32_t,int64_t,int32_t,const swr_v1_httpbindings_accept_errors *);
 
 /* PHP Swoole\Http\Request and Swoole\Http\Response (crates/phphttp). MINIT
- * passes upstream's method tables and gets the registered class back; both
+ * registers each with its Rust method table and returns the class; both
  * objects hold their swoole::http::Context pointer. */
 struct _zend_class_entry;
-struct _zend_function_entry;
 struct _zend_object;
 struct _zend_string;
 struct _zval_struct;
-struct _zend_class_entry *swr_v1_phphttp_request_minit(const struct _zend_function_entry *methods);
-struct _zend_class_entry *swr_v1_phphttp_response_minit(const struct _zend_function_entry *methods);
+struct _zend_class_entry *swr_v1_phphttp_request_minit(void);
+struct _zend_class_entry *swr_v1_phphttp_response_minit(void);
+/* Coroutine\Http\Server's method table; its class and handlers stay C++. */
+struct _zend_function_entry;
+const struct _zend_function_entry *swr_v1_phphttp_server_coro_methods(void);
 void *swr_v1_phphttp_context(const struct _zend_object *object);
 void swr_v1_phphttp_set_context(struct _zend_object *object, void *context);
 

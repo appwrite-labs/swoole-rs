@@ -7,7 +7,6 @@ use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 unsafe extern "C" {
     fn printf(format: *const c_char, ...) -> c_int;
@@ -211,17 +210,23 @@ pub extern "C" fn swr_v1_corebase_print_backtrace() {
 /// `duration<double>` of the nanosecond `system_clock` count.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_corebase_microtime() -> f64 {
-    let since = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+    // One clock_gettime, as libstdc++'s system_clock::now(); std's SystemTime adds
+    // a checked subtraction on every request (#853).
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a writable timespec; CLOCK_REALTIME cannot fail.
+    unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut now) };
     #[expect(
-        clippy::cast_possible_wrap,
         clippy::cast_precision_loss,
-        reason = "system_clock's signed nanosecond count, converted as libstdc++ does"
+        clippy::useless_conversion,
+        reason = "system_clock's signed nanosecond count, converted as libstdc++ does; \
+                  time_t and c_long are i64 on the 64-bit targets only on some hosts"
     )]
-    let nanos = (since.as_secs() as i64)
+    let nanos = i64::from(now.tv_sec)
         .wrapping_mul(1_000_000_000)
-        .wrapping_add(i64::from(since.subsec_nanos())) as f64;
+        .wrapping_add(i64::from(now.tv_nsec)) as f64;
     nanos / 1e9
 }
 
@@ -399,6 +404,7 @@ pub unsafe extern "C" fn swr_v1_corebase_redirect_stdout(new_fd: c_int, errors: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn rand_covers_the_closed_range_only() {

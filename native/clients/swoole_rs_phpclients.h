@@ -11,17 +11,15 @@
 extern "C" {
 #endif
 
-/* PHP Coroutine\Socket (crates/phpclients). MINIT passes upstream's method
- * table, built from the stub's arginfo; Rust registers the class, its exception,
+/* PHP Coroutine\Socket (crates/phpclients). Rust registers the class with its
+ * method table, its exception,
  * properties and constants, and the methods are its zim_swoole_socket_coro_*
  * exports (getOption, setOption and import stay C++). */
-struct _zend_function_entry;
 struct _zend_class_entry;
 struct _zend_object;
 struct _zval_struct;
 struct _zend_string;
-void swr_v1_phpclients_socket_minit(const struct _zend_function_entry *methods,
-                                    struct _zend_class_entry *exception,
+void swr_v1_phpclients_socket_minit(struct _zend_class_entry *exception,
                                     bool shortname,
                                     bool sockets,
                                     int module,
@@ -67,8 +65,7 @@ bool swoole_socket_coro_set_protocol(void *socket, const struct _zval_struct *se
 
 /* PHP Coroutine\Client (crates/phpclients): MINIT and, from
  * ext-src/swoole_client_coro.cc, what its methods need beyond the socket calls. */
-void swr_v1_phpclients_client_minit(const struct _zend_function_entry *methods,
-                                    bool shortname,
+void swr_v1_phpclients_client_minit(bool shortname,
                                     struct _zend_class_entry **client_class);
 void swoole_rs_check_reactor(void);
 void swoole_rs_set_last_error(int code);
@@ -93,8 +90,7 @@ bool swoole_client_coro_verify_peer(void *socket, bool allow_self_signed);
  * call PHP (the C++ trampolines re-raise a bailout they return), the socket's
  * close hook and the Set-Cookie parser the HTTP/2 client shares. */
 struct _zend_execute_data;
-void swr_v1_phpclients_http_client_minit(const struct _zend_function_entry *methods,
-                                         struct _zend_class_entry *exception,
+void swr_v1_phpclients_http_client_minit(struct _zend_class_entry *exception,
                                          bool shortname,
                                          int module,
                                          uint32_t features);
@@ -169,12 +165,11 @@ enum {
     SWOOLE_CLIENT_ON_BUFFER_FULL = 5,
     SWOOLE_CLIENT_ON_BUFFER_EMPTY = 6,
 };
-void swr_v1_phpclients_net_minit(const struct _zend_function_entry *methods,
-                                 struct _zend_class_entry *exception,
+void swr_v1_phpclients_net_minit(struct _zend_class_entry *exception,
+                                 bool sockets,
                                  int module,
                                  struct _zend_class_entry **client_class);
-void swr_v1_phpclients_async_minit(const struct _zend_function_entry *methods,
-                                   struct _zend_class_entry *client_class,
+void swr_v1_phpclients_async_minit(struct _zend_class_entry *client_class,
                                    struct _zend_class_entry **async_class);
 void swr_v1_phpclients_async_event(struct _zend_object *object, int kind, const char *data, size_t length);
 
@@ -242,6 +237,7 @@ enum {
     SWOOLE_CLIENT_CALLABLE = 17,   /* settings: sw_callable_create, into buffer */
     SWOOLE_CLIENT_CALLABLE_FREE = 18, /* cli: the callable */
     SWOOLE_CLIENT_INVOKE = 19,     /* cli: the callable; settings, a: argv, argc; result: success */
+    SWOOLE_CLIENT_CONVERT_FD = 20, /* settings: php_swoole_convert_to_fd */
 };
 struct swoole_client_call {
     void *cli;
