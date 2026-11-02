@@ -74,8 +74,8 @@ try:
         identity['whole_context_definitions']=[line for line in symbols.splitlines() if any(name in line for name in ['ContextC1','ContextD1','Context15get_stack_usageEv']) and len(line.split())>=3 and line.split()[-2] in ['t','T']]
         if len(identity['whole_context_definitions'])!=3:raise ValueError('Addon lacks whole constructor/destructor/query definitions')
         undefined=subprocess.check_output(['nm','-u',str(addon)],text=True)
-        # The patched Context marks and measures its stack through the one stack step.
-        for symbol in ['swr_v1_context_stack_step']:
+        # The patched Context allocates and marks its stack in Rust.
+        for symbol in ['swr_v1_context_stack_alloc']:
             if (symbol in undefined)!=(label=='selected'):raise ValueError('Whole Context caller does not bind expected Rust symbols')
         result=json.loads(run(engine.command('-d','extension='+str(addon),fixture)))
         if label=='selected' and result['marker_image']!=str(extension):raise ValueError('Marker Rust symbol belongs to another image')

@@ -24,9 +24,12 @@ pub mod shutdown;
 pub mod sleep;
 pub mod socket_wait;
 pub mod stdio;
+pub mod timers;
 pub mod transfer;
 #[cfg(feature = "iouring")]
 pub mod uring;
+#[cfg(feature = "iouring")]
+pub mod uring_socket;
 #[cfg(feature = "iouring")]
 pub mod uring_tls;
 pub mod vector;

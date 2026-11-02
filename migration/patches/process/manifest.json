@@ -169,6 +169,20 @@
         "include/swoole_process_pool.h",
         "src/os/process_pool.cc"
       ]
+    },
+    {
+      "path": "0018-php-server-dispatch.patch",
+      "sha256": "2e70a68b47141900ada4d8651e1f6c2bc1c5bd2973350c92157a9c0c877864ff",
+      "upstream_paths": [
+        "ext-src/swoole_server.cc"
+      ]
+    },
+    {
+      "path": "0019-php-server-io.patch",
+      "sha256": "d242e26b7caf9577e19d369c502c5394870d8cf9fc994325dcf223a174b7b803",
+      "upstream_paths": [
+        "ext-src/swoole_server.cc"
+      ]
     }
   ]
 }

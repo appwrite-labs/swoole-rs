@@ -30,16 +30,12 @@ pull in objects with Zend imports.
 
 What stays C++ in the `ext-src` file (edited through `migration/patches/<module>/`):
 
-- the `stubs/*_arginfo.h` include and upstream's `PHP_ME` tables, unchanged:
-  arginfo and reflection stay byte-identical. The method declarations lose
-  `static`; Rust exports the handlers under Zend's own names
-  (`zim_<class>_<method>`), so the tables need no edit.
-- MINIT: one call into Rust, passing the tables and anything only C++ can
-  reach (here `sw_mem_pool()` alloc/free and `swoole_exception_ce`).
+- MINIT: one call into Rust, passing anything only C++ can reach (here
+  `sw_mem_pool()` alloc/free and `swoole_exception_ce`).
 - C++ types other files still use (here `ThreadResource` subclasses, and the
   class-entry globals `swoole_thread.cc` tests against, which Rust fills).
 
-What moves to Rust: class registration and flags, object handlers
+What moves to Rust: the method tables, class registration and flags, object handlers
 (`create_object`, `free_obj`, clone and unset denial), object layout and every
 method body. Declare the `swr_v1_*` entry points in the module's
 `native/<module>/` header with forward-declared Zend structs; guard ZTS-only ones
@@ -72,6 +68,32 @@ costs Atomic::add about 40 instructions.
 Mirror upstream's ZPP block exactly: the same min/max, defaults and failure
 return value. Errors are Zend's own (`zend_wrong_parameters_count_error`,
 `zend_wrong_parameter_error`), so messages match.
+
+## Arginfo and method tables
+
+`crates/phpstubs` is every upstream stub's arginfo as Rust statics, one module
+per `ext-src/stubs/*.stub.php`, named as gen_stub names them
+(`phpstubs::atomic::arginfo_class_Swoole_Atomic_add`). `tools/arginfo.py`
+generates it from the pin's stubs; `--check` (the PR tier's `hybrid` job) fails
+if it is stale or if the same model, rendered as gen_stub's C, differs by a
+byte from the pin's `*_arginfo.h`. The builders in `zend::arginfo` are one
+`const fn` per Zend macro over the headers' own type bits, so the arrays are
+the macros' on every PHP version.
+
+A family's table is upstream's `PHP_ME` rows, in upstream's order (reflection
+lists methods in table order, which is not always the stub's):
+
+```rust
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_lock___construct, &lock::arginfo_class_Swoole_Lock___construct, ZEND_ACC_PUBLIC;
+        c"lock" => zim_swoole_lock_lock, &lock::arginfo_class_Swoole_Lock_lock, ZEND_ACC_PUBLIC;
+    ];
+}
+```
+
+The patch then deletes the C++ table, the `stubs/*_arginfo.h` include and,
+once nothing includes it, the header itself.
 
 ## Calling PHP: bailouts
 

@@ -3,11 +3,12 @@
 //! reference-count across threads, so C++ makes and releases it.
 use crate::word::{self, Word, methods};
 use std::{ffi::c_void, ptr, sync::OnceLock};
+use swoole_rs_phpstubs::thread_atomic;
 use swoole_rs_zend::{
-    Call, Class, Object, set_object,
+    Call, Class, Object, method_table, set_object,
     sys::{
-        ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_function_entry,
-        zend_object, zend_object_handlers, zval,
+        ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
+        zend_object_handlers, zval,
     },
     throw_constructed_twice, unset_property_deny,
 };
@@ -83,15 +84,37 @@ fn this_word<W>(call: &Call) -> *mut W {
     unsafe { ThreadAtomic::<W>::data(call.this()).word }
 }
 
+method_table! {
+    static ATOMIC_METHODS = [
+        c"__construct" => zim_swoole_thread_atomic___construct, &thread_atomic::arginfo_class_Swoole_Thread_Atomic___construct, ZEND_ACC_PUBLIC;
+        c"add" => zim_swoole_thread_atomic_add, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_add, ZEND_ACC_PUBLIC;
+        c"sub" => zim_swoole_thread_atomic_sub, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_sub, ZEND_ACC_PUBLIC;
+        c"get" => zim_swoole_thread_atomic_get, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_get, ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_thread_atomic_set, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_set, ZEND_ACC_PUBLIC;
+        c"wait" => zim_swoole_thread_atomic_wait, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_wait, ZEND_ACC_PUBLIC;
+        c"wakeup" => zim_swoole_thread_atomic_wakeup, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_wakeup, ZEND_ACC_PUBLIC;
+        c"cmpset" => zim_swoole_thread_atomic_cmpset, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_cmpset, ZEND_ACC_PUBLIC;
+    ];
+}
+
+method_table! {
+    static LONG_METHODS = [
+        c"__construct" => zim_swoole_thread_atomic_long___construct, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_Long___construct, ZEND_ACC_PUBLIC;
+        c"add" => zim_swoole_thread_atomic_long_add, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_Long_add, ZEND_ACC_PUBLIC;
+        c"sub" => zim_swoole_thread_atomic_long_sub, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_Long_sub, ZEND_ACC_PUBLIC;
+        c"get" => zim_swoole_thread_atomic_long_get, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_Long_get, ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_thread_atomic_long_set, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_Long_set, ZEND_ACC_PUBLIC;
+        c"cmpset" => zim_swoole_thread_atomic_long_cmpset, &thread_atomic::arginfo_class_Swoole_Thread_Atomic_Long_cmpset, ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: register both classes as `php_swoole_thread_atomic_minit` did and
 /// publish their entries to C++ (Thread\Map and friends test against them).
 /// # Safety
-/// Called once, at MINIT, with static `PHP_FE_END`-terminated method tables,
-/// the resource functions and writable class-entry slots.
+/// Called once, at MINIT, with the resource functions and writable class-entry
+/// slots.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phplocks_thread_atomic_minit(
-    atomic_methods: *const zend_function_entry,
-    long_methods: *const zend_function_entry,
     create: Option<CreateResource>,
     del_ref: Option<DelRef>,
     atomic_class: *mut *mut zend_class_entry,
@@ -100,13 +123,19 @@ pub unsafe extern "C" fn swr_v1_phplocks_thread_atomic_minit(
     if let (Some(create), Some(del_ref)) = (create, del_ref) {
         RESOURCES.get_or_init(|| Resources { create, del_ref });
     }
-    // SAFETY: MINIT, with the caller's tables.
-    unsafe { ATOMIC.register(c"Swoole\\Thread\\Atomic", atomic_methods, configure::<u32>) };
+    // SAFETY: MINIT, with static tables.
+    unsafe {
+        ATOMIC.register(
+            c"Swoole\\Thread\\Atomic",
+            ATOMIC_METHODS.as_ptr(),
+            configure::<u32>,
+        );
+    }
     // SAFETY: as above.
     unsafe {
         LONG.register(
             c"Swoole\\Thread\\Atomic\\Long",
-            long_methods,
+            LONG_METHODS.as_ptr(),
             configure::<i64>,
         );
     }
