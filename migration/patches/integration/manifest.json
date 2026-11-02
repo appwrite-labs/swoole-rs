@@ -70,7 +70,15 @@
       ]
     },
     {
-      "path": "0010-php-archive.patch",
+      "path": "0010-log-origin.patch",
+      "sha256": "7efd8330880c36890a2ed7aea0b409b48f9a0fb214e2aaf8a62e6f12d96a2a87",
+      "upstream_paths": [
+        "include/swoole.h",
+        "src/server/master.cc"
+      ]
+    },
+    {
+      "path": "0011-php-archive.patch",
       "sha256": "50f6e879a29c2b3892a71ac05c3ab5b3291d53215afb94b180888d7e354256e9",
       "upstream_paths": [
         "config.m4"

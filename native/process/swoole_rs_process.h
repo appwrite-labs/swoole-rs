@@ -41,6 +41,10 @@ bool swr_v1_signal_isset(int signo);
 void swr_v1_signal_reset(void);
 void swr_v1_signal_clear(void);
 void swr_v1_signal_mask_all(bool block, bool *blocking_all);
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+uintptr_t swr_v1_signal_kqueue_set(int kq, int signo, uintptr_t handler, bool *failed);
+void swr_v1_signal_kqueue_clear(int kq, bool available);
+#endif
 typedef struct {
     void *(*current)(void);
     void (*signal_init)(void);

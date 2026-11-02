@@ -243,6 +243,29 @@
       "upstream_paths": [
         "src/server/task_worker.cc"
       ]
+    },
+    {
+      "path": "0026-signal-kqueue.patch",
+      "sha256": "f5419fae52908a28b5dd4d46cb5510d6b29a4ab1c24f465726587c2d3dfd870e",
+      "upstream_paths": [
+        "src/os/signal.cc"
+      ]
+    },
+    {
+      "path": "0027-log-origin.patch",
+      "sha256": "dd14edf2a5743d28b6e2e7f78133e0b1159d0f5ad16a430757793cde34aa3570",
+      "upstream_paths": [
+        "ext-src/swoole_server.cc",
+        "src/server/process.cc"
+      ]
+    },
+    {
+      "path": "0028-php-server-task.patch",
+      "sha256": "35fa9a03447cd2ba747dbc7909966e9c6d0604294410d90acd0f30c11935928f",
+      "upstream_paths": [
+        "ext-src/php_swoole_server.h",
+        "ext-src/swoole_server.cc"
+      ]
     }
   ]
 }
