@@ -1,0 +1,22 @@
+[package]
+name = "swoole-rs-phpserver"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "PHP Swoole\\Server family classes over the zend crates"
+
+[features]
+# Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+# Swoole\Server\Port, over the ports crate (the ports module's patch).
+port = ["php", "dep:swoole-rs-ports"]
+# Swoole\\Server and its data classes (the process module's patch).
+server = ["php"]
+
+[dependencies]
+swoole-rs-ports = { path = "../ports", optional = true }
+swoole-rs-zend = { path = "../zend", optional = true }
+
+[lints]
+workspace = true

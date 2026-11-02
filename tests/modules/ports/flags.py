@@ -5,8 +5,12 @@ import sys
 from count import main,accessor
 
 
+# The hybrid moved set() to crates/phpserver; its ListenPort block stays C++ in this host function.
+SELECTED_SET='static bool port_apply_settings(ListenPort *port, ServerPortProperty *property, HashTable *vht) {'
+
+
 def prefix(text, signature):
-    start=text.index('    // backlog',text.index(signature));end=text.index('    if (port->ssl) {',start)
+    start=text.index('    // backlog',text.index(signature if signature in text else SELECTED_SET));end=text.index('    if (port->ssl) {',start)
     return 'bool set_prefix(ListenPort *port, ServerPortProperty *property, HashTable *vht) {\n    zval *ztmp = nullptr;\n'+text[start:end]+'    return true;\n}\n'
 
 

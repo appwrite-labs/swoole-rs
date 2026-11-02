@@ -2,7 +2,10 @@
 //! (`native/httpbindings/swoole_rs_httpbindings.h`) until the context moves to
 //! Rust. `Context` is that object, opaque here.
 use std::ffi::{CString, c_char, c_int, c_void};
-use swoole_rs_zend::sys::{zend_long, zend_string, zval};
+use swoole_rs_zend::{
+    bailout,
+    sys::{zend_long, zend_string, zval},
+};
 
 pub(crate) type Context = c_void;
 
@@ -15,8 +18,6 @@ pub(crate) const SEND_CHUNKED: u32 = 1 << 4;
 pub(crate) const CO_SOCKET: u32 = 1 << 5;
 pub(crate) const UPGRADE: u32 = 1 << 6;
 pub(crate) const WEBSOCKET: u32 = 1 << 7;
-/// `swr_http_host_mark`'s second flag (`SWR_PHPHTTP_SEND_TRAILER`).
-pub(crate) const SEND_TRAILER: u32 = 256;
 
 /// `swr_http_host_response_property`'s properties.
 pub(crate) const HEADER: c_int = 0;
@@ -26,6 +27,7 @@ pub(crate) const TRAILER: c_int = 2;
 /// Swoole error codes (`include/swoole_error.h`; ext-src asserts them).
 pub(crate) const PHP_FATAL_ERROR: c_int = 503;
 pub(crate) const PHP_RUNTIME_NOTICE: c_int = 510;
+pub(crate) const NO_PAYLOAD: c_int = 550;
 pub(crate) const SESSION_CLOSED: c_int = 1004;
 pub(crate) const HTTP_CONTEXT_UNAVAILABLE: c_int = 7106;
 pub(crate) const SERVER_IS_NOT_REGULAR_FILE: c_int = 9013;
@@ -58,22 +60,42 @@ unsafe extern "C" {
     );
     pub(crate) fn swr_http_host_response_property(context: *mut Context, which: c_int)
     -> *mut zval;
-    pub(crate) fn swr_http_host_write(
+    pub(crate) fn swr_http_host_after(context: *mut Context) -> bool;
+    pub(crate) fn swr_http_host_buffer(
         context: *mut Context,
-        data: *mut zend_string,
-        return_value: *mut zval,
-    ) -> bool;
-    pub(crate) fn swr_http_host_end(
+        head: *const c_char,
+        head_length: usize,
+        body: *const c_char,
+        body_length: usize,
+        tail: *const c_char,
+        tail_length: usize,
+    );
+    pub(crate) fn swr_http_host_flush(context: *mut Context) -> bool;
+    pub(crate) fn swr_http_host_send(
         context: *mut Context,
-        data: *mut zend_string,
-        return_value: *mut zval,
+        data: *const c_char,
+        length: usize,
     ) -> bool;
-    pub(crate) fn swr_http_host_send_file(
+    pub(crate) fn swr_http_host_sendfile(
         context: *mut Context,
         file: *mut zend_string,
-        offset: zend_long,
-        length: zend_long,
+        offset: i64,
+        length: usize,
+    ) -> bool;
+    pub(crate) fn swr_http_host_compressed_body(
+        context: *const Context,
+        length: *mut usize,
+    ) -> *const c_char;
+    pub(crate) fn swr_http_host_http2(
+        context: *mut Context,
+        op: c_int,
+        data: *mut zend_string,
+        offset: i64,
+        length: usize,
     ) -> c_int;
+    pub(crate) fn swr_http_host_file_type(context: *mut Context, file: *mut zend_string);
+    pub(crate) fn swr_http_host_websocket_accept(context: *mut Context);
+    pub(crate) fn swr_http_host_websocket_handshaked(context: *mut Context);
     pub(crate) fn swr_http_host_redirect(
         context: *mut Context,
         url: *mut zval,
@@ -121,16 +143,15 @@ unsafe extern "C" {
     pub(crate) fn swr_http_host_recv(context: *mut Context, timeout: f64, return_value: *mut zval);
 }
 
-/// Re-raise a bailout a host call trapped (`zend_bailout()`). Host calls that
-/// can run user code (a header value's `__toString`, `exit()` in it) trap a
-/// bailout in C++ and report it; the handler finishes, then raises it here as
-/// its last step, so the `longjmp` crosses only the handler's own frames,
-/// which own nothing to drop (docs/zend.md).
+/// Re-raise a bailout a host call trapped. Host calls that can run user code
+/// (a header value's `__toString`, `exit()` in it) trap a bailout in C++ and
+/// report it; the handler finishes, then raises it as its last step
+/// (docs/zend.md).
 pub(crate) fn raise(bailed: bool) {
     if bailed {
-        // SAFETY: Zend's own `zend_bailout()`, from the outermost Rust frame.
-        unsafe { swoole_rs_zend::sys::_zend_bailout(c"phphttp".as_ptr().cast_mut(), 0) };
+        bailout::Bailout.defer();
     }
+    bailout::finish();
 }
 
 /// `swoole_set_last_error(code)`.
@@ -158,8 +179,10 @@ pub(crate) fn report(code: c_int, always: bool, message: impl Into<Vec<u8>>) {
         message.truncate(nul);
     }
     let message = CString::new(message).unwrap_or_default();
-    // SAFETY: a NUL-terminated message, printed through "%s".
-    unsafe { swr_http_host_error(code, c_int::from(always), message.as_ptr()) };
+    // SAFETY: C++'s reporter, printing the message through "%s".
+    bailout::defer(unsafe {
+        bailout::report_code(swr_http_host_error, code, c_int::from(always), &message)
+    });
 }
 
 /// Swoole's log line as `func` would print it: `swoole_error_log(level, error)`

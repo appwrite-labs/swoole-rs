@@ -1,11 +1,11 @@
 //! More of the call frame: optional and nullable parameters as `Option`s, and
 //! byte-slice and copied return values.
-use super::{Call, Invalid, type_of};
+use super::{Call, Invalid, coerce, type_of};
 use crate::{
     string::bytes,
     sys::{
         _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_STRING_OR_NULL,
-        IS_ARRAY, IS_NULL, IS_STRING, swr_zval_copy, zend_parse_arg_str_slow, zend_string, zval,
+        IS_ARRAY, IS_NULL, IS_STRING, swr_zend_try_parse_str, swr_zval_copy, zend_string, zval,
     },
 };
 use std::ptr;
@@ -40,7 +40,7 @@ impl Call {
         }
         let mut out = ptr::null_mut();
         // SAFETY: `arg` is live and `out` is a writable local.
-        if unsafe { zend_parse_arg_str_slow(arg, &raw mut out, n) } {
+        if unsafe { coerce(swr_zend_try_parse_str, arg, &raw mut out, n) }? {
             return Ok(Some(out));
         }
         Err(Self::wrong(

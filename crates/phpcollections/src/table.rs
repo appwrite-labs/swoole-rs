@@ -17,7 +17,7 @@ use swoole_rs_memory::{
     table_records::{Column, Records},
 };
 use swoole_rs_zend::{
-    Call, Class, Object,
+    Call, Class, Object, bailout,
     sys::{
         _zval_struct__bindgen_ty_1, E_ERROR, E_WARNING, HashPosition, IS_DOUBLE, IS_NULL,
         ZEND_ACC_NOT_SERIALIZABLE, add_assoc_double_ex, add_assoc_long_ex, add_assoc_stringl_ex,
@@ -25,8 +25,7 @@ use swoole_rs_zend::{
         zend_ce_iterator, zend_class_entry, zend_class_implements, zend_function_entry,
         zend_hash_get_current_data_ex, zend_hash_get_current_key_ex,
         zend_hash_internal_pointer_reset_ex, zend_hash_move_forward_ex, zend_hash_str_find,
-        zend_object, zend_object_handlers, zend_string, zend_value, zval, zval_get_double_func,
-        zval_get_long_func, zval_get_string_func,
+        zend_object, zend_object_handlers, zend_string, zend_value, zval,
     },
     throw_constructed_twice, throw_exception, unset_property_deny,
 };
@@ -177,10 +176,20 @@ fn this(call: &Call) -> &'static mut *mut c_void {
 
 fn fatal(level: u32, message: &CStr) {
     #[expect(clippy::cast_possible_wrap, reason = "E_ERROR and E_WARNING")]
-    // SAFETY: a NUL-terminated message.
-    unsafe {
-        (ops().fatal)(level as i32, message.as_ptr());
-    }
+    // SAFETY: C++'s reporter, from a handler.
+    bailout::defer(unsafe { bailout::report_level(ops().fatal, level as i32, message) });
+}
+
+/// A C++ reporter of Zend's NUL-terminated string bytes; true if a user error
+/// handler bailed out (deferred: the method stops).
+fn report(reporter: unsafe extern "C" fn(*const c_char), text: &[u8]) -> bool {
+    // SAFETY: Zend's string bytes are NUL-terminated.
+    let text = unsafe { CStr::from_ptr(text.as_ptr().cast()) };
+    // SAFETY: C++'s reporter, from a handler.
+    let reported = unsafe { bailout::report(reporter, text) };
+    let bailed = reported.is_err();
+    bailout::defer(reported);
+    bailed
 }
 
 /// `table_get_and_check_ptr`: the table, or Swoole's fatal error (which exits).
@@ -365,7 +374,7 @@ fn store(row: *mut Row, column: &Column, value: *mut zval, initialize: bool) {
     match column.kind {
         TYPE_STRING => {
             // SAFETY: a live zval; `zval_get_string`.
-            let string = unsafe { zval_get_string_func(value) };
+            let string = unsafe { swoole_rs_zend::value::get_string(value) };
             // SAFETY: a live string.
             let bytes = unsafe { string_bytes(string) };
             if bytes.len() > column.width as usize - 4 {
@@ -379,13 +388,13 @@ fn store(row: *mut Row, column: &Column, value: *mut zval, initialize: bool) {
         }
         TYPE_FLOAT => {
             // SAFETY: a live zval; `zval_get_double`.
-            let number = unsafe { zval_get_double_func(value) };
+            let number = unsafe { swoole_rs_zend::value::get_double(value) };
             // SAFETY: as above.
             unsafe { set_value(row, column, (&raw const number).cast(), 0) };
         }
         _ => {
             // SAFETY: a live zval; `zval_get_long`.
-            let number = unsafe { zval_get_long_func(value, false) };
+            let number = unsafe { swoole_rs_zend::value::get_long(value) };
             // SAFETY: as above.
             unsafe { set_value(row, column, (&raw const number).cast(), 0) };
         }
@@ -439,9 +448,9 @@ fn set(call: &Call) {
         return;
     }
     let ops = ops();
-    if key.len() >= KEY_SIZE {
-        // SAFETY: Zend's string bytes are NUL-terminated.
-        unsafe { (ops.key_too_long)(key.as_ptr().cast()) };
+    if key.len() >= KEY_SIZE && report(ops.key_too_long, key) {
+        call.set_bool(false);
+        return;
     }
     let (mut lock, mut flags) = (ptr::null_mut(), 0);
     // SAFETY: a created table; writable outputs.
@@ -464,7 +473,9 @@ fn set(call: &Call) {
         )]
         let length = key.len() as i32;
         // SAFETY: the key's bytes, as `%*s` reads them.
-        unsafe { (ops.set_failed)(key.as_ptr().cast(), length) };
+        bailout::defer(unsafe {
+            bailout::report_length(ops.set_failed, key.as_ptr().cast(), length)
+        });
         call.set_bool(false);
         return;
     }
@@ -545,8 +556,7 @@ fn update(call: &Call, subtract: bool) {
     let records = records(table);
     let Some(column) = records.column(name) else {
         unlock();
-        // SAFETY: Zend's string bytes are NUL-terminated.
-        unsafe { (ops.no_column)(name.as_ptr().cast()) };
+        report(ops.no_column, name);
         call.set_bool(false);
         return;
     };
@@ -578,7 +588,7 @@ fn update(call: &Call, subtract: bool) {
                 1.0
             } else {
                 // SAFETY: a passed argument.
-                unsafe { zval_get_double_func(by) }
+                unsafe { swoole_rs_zend::value::get_double(by) }
             };
             let current = f64::from_bits(bits());
             let value = if subtract { current - by } else { current + by };
@@ -592,7 +602,7 @@ fn update(call: &Call, subtract: bool) {
                 1
             } else {
                 // SAFETY: a passed argument.
-                unsafe { zval_get_long_func(by, false) }
+                unsafe { swoole_rs_zend::value::get_long(by) }
             };
             #[expect(clippy::cast_possible_wrap, reason = "the column's 8 bytes as a long")]
             let current = bits() as i64;

@@ -61,21 +61,6 @@ int32_t swr_v1_httpbindings_trim_quotes(uint8_t *, size_t, swr_v1_httpbindings_t
 int32_t swr_v1_httpbindings_codec(int32_t, uint32_t, uint32_t, size_t, uint32_t);
 int32_t swr_v1_httpbindings_codec_level(int32_t, int32_t, int32_t, int32_t);
 int32_t swr_v1_httpbindings_response_header(swr_v1_httpbindings_text);
-enum {
- SWR_HTTPBINDINGS_WRITE_HTTP2=1, SWR_HTTPBINDINGS_WRITE_BUFFER,
- SWR_HTTPBINDINGS_WRITE_HEADER, SWR_HTTPBINDINGS_WRITE_READ,
- SWR_HTTPBINDINGS_WRITE_EMPTY, SWR_HTTPBINDINGS_WRITE_CHUNK,
- SWR_HTTPBINDINGS_WRITE_HEADER_FAILED
-};
-int32_t swr_v1_httpbindings_write(uint32_t *, uint32_t);
-enum {
- SWR_HTTPBINDINGS_FILE_HTTP2=40, SWR_HTTPBINDINGS_FILE_READ_HEADERS,
- SWR_HTTPBINDINGS_FILE_MIME, SWR_HTTPBINDINGS_FILE_HEADER,
- SWR_HTTPBINDINGS_FILE_SEND, SWR_HTTPBINDINGS_FILE_HEADER_FAILED,
- SWR_HTTPBINDINGS_FILE_CLOSE_FAILED, SWR_HTTPBINDINGS_FILE_MARK_END,
- SWR_HTTPBINDINGS_FILE_CLOSE_DONE, SWR_HTTPBINDINGS_FILE_DONE
-};
-int32_t swr_v1_httpbindings_file(uint32_t *, uint32_t);
 int32_t swr_v1_httpbindings_file_range(int64_t, int64_t, int64_t, int64_t *);
 int32_t swr_v1_httpbindings_response_key(uint8_t *, size_t);
 typedef struct { uint32_t entry, alias, stage; } swr_v1_httpbindings_settings_cursor;
@@ -108,7 +93,7 @@ void swr_v1_phphttp_set_context(struct _zend_object *object, void *context);
 
 /* What those methods ask of the context, implemented in ext-src over
  * swoole::http::Context until it moves to Rust. */
-enum { SWR_PHPHTTP_DETACHED = 2, SWR_PHPHTTP_SEND_TRAILER = 256 };
+enum { SWR_PHPHTTP_DETACHED = 2 };
 enum { SWR_PHPHTTP_HEADER = 0, SWR_PHPHTTP_COOKIE = 1, SWR_PHPHTTP_TRAILER = 2 };
 void swr_http_host_error(int code, int always, const char *message);
 uint32_t swr_http_host_flags(const void *context);
@@ -139,11 +124,28 @@ const char *swr_http_host_upload_tmp_dir(const void *context);
 int swr_http_host_tmpfile(char *path);
 const char *swr_http_host_http2_data(void *context, size_t *length);
 
-/* The response header, trailer and body compression (crates/phphttp/src/header.rs).
- * The header and trailer are Rust's thread-local bytes until the next call. */
-const char *swr_v1_phphttp_build_header(void *context, const char *body, size_t length, size_t *header_length);
-const char *swr_v1_phphttp_build_trailer(const void *context, size_t *length);
+/* Body compression for the HTTP/2 server (crates/phphttp/src/header.rs). */
 bool swr_v1_phphttp_compress(void *context, const char *data, size_t length);
+/* Context::end (crates/phphttp/src/send.rs): true if a bailout was trapped,
+ * which the caller re-raises. */
+bool swr_v1_phphttp_end(void *context, struct _zend_string *data, struct _zval_struct *return_value);
+/* What send.rs asks of the context: http_response_after (true on a bailout),
+ * the write buffer (cleared, then three parts appended) and sending it, a
+ * direct send or sendfile, the compressed body, the HTTP/2 server's end, write
+ * and send_file (-1 on a bailout), a default Content-Type, and the WebSocket
+ * handshake's compression offer and connection status. */
+enum { SWR_PHPHTTP_HTTP2_END = 0, SWR_PHPHTTP_HTTP2_WRITE = 1, SWR_PHPHTTP_HTTP2_SEND_FILE = 2 };
+bool swr_http_host_after(void *context);
+void swr_http_host_buffer(void *context, const char *head, size_t head_length, const char *body, size_t body_length,
+    const char *tail, size_t tail_length);
+bool swr_http_host_flush(void *context);
+bool swr_http_host_send(void *context, const char *data, size_t length);
+bool swr_http_host_sendfile(void *context, struct _zend_string *file, int64_t offset, size_t length);
+const char *swr_http_host_compressed_body(const void *context, size_t *length);
+int swr_http_host_http2(void *context, int op, struct _zend_string *data, int64_t offset, size_t length);
+void swr_http_host_file_type(void *context, struct _zend_string *file);
+void swr_http_host_websocket_accept(void *context);
+void swr_http_host_websocket_handshaked(void *context);
 /* What they ask of the context: brotli/zstd (1 done, 0 failed, -1 not built),
  * the zlib_buffer, whether a content type is compressible (a null type asks
  * whether the server lists types) and the cached Date. */
@@ -155,14 +157,11 @@ bool swr_http_host_compression_type(const void *context, const char *type, size_
 struct _zend_string *swr_http_host_date(void);
 /* Calls that can run user code (a value's __toString while building the
  * response, exit() in it) trap a Zend bailout in C++: request_create,
- * response_free, write, end, redirect and push return true, send_file and
- * upgrade -1, when one happened, and Rust re-raises it (docs/zend.md). */
+ * response_free, redirect and push return true, upgrade -1, when one
+ * happened, and Rust re-raises it (docs/zend.md). */
 bool swr_http_host_response_free(void *context);
 void swr_http_host_response_create(struct _zval_struct *object, int64_t fd, struct _zval_struct *return_value);
 struct _zval_struct *swr_http_host_response_property(void *context, int which);
-bool swr_http_host_write(void *context, struct _zend_string *data, struct _zval_struct *return_value);
-bool swr_http_host_end(void *context, struct _zend_string *data, struct _zval_struct *return_value);
-int swr_http_host_send_file(void *context, struct _zend_string *file, int64_t offset, int64_t length);
 bool swr_http_host_redirect(void *context, struct _zval_struct *url, struct _zval_struct *code, struct _zval_struct *return_value);
 void swr_http_host_status(void *context, int64_t status, const char *reason, size_t reason_length);
 bool swr_http_host_set_header(void *context, const char *key, size_t key_length, struct _zval_struct *value, bool format);

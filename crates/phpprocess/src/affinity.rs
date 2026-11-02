@@ -7,7 +7,7 @@ use crate::{
 use std::ffi::c_void;
 use swoole_rs_zend::{
     Call, E_WARNING, add_next_index_long, each_value, message,
-    sys::{swr_zend_array_init, swr_zval_get_long, zval},
+    sys::{swr_zend_array_init, zval},
 };
 
 fn cpu_num() -> usize {
@@ -24,6 +24,15 @@ pub unsafe extern "C" fn swr_v1_phpprocess_array_to_cpu_set(
     array: *const zval,
     set: *mut c_void,
 ) -> bool {
+    // SAFETY: per the caller.
+    let valid = unsafe { array_to_cpu_set(array, set) };
+    swoole_rs_zend::bailout::finish();
+    valid
+}
+
+/// # Safety
+/// As `swr_v1_phpprocess_array_to_cpu_set`.
+unsafe fn array_to_cpu_set(array: *const zval, set: *mut c_void) -> bool {
     // SAFETY: per the caller.
     let value = unsafe { (*array).value };
     // SAFETY: an array zval holds its table.
@@ -45,7 +54,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_array_to_cpu_set(
     let mut valid = true;
     let each = |value: *mut zval| {
         // SAFETY: a live element.
-        let cpu = unsafe { swr_zval_get_long(value) };
+        let cpu = unsafe { swoole_rs_zend::value::get_long(value) };
         let index = usize::try_from(cpu).unwrap_or(usize::MAX);
         if index >= limit || index >= libc::CPU_SETSIZE as usize {
             fatal(E_WARNING, &message!("invalid cpu id [{cpu}]"));

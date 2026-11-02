@@ -136,14 +136,10 @@
       ]
     },
     {
-      "path": "0014-reload-task.patch",
-      "sha256": "24985f08de21e4d2e7539d9c64faca7f0ff6b3b9bc099f8362dda03dce792d32",
+      "path": "0014-php-server-methods.patch",
+      "sha256": "f52ee199394a64e06cb80101520b7fd85207e1dea8a4e7bb4469b61124a915e5",
       "upstream_paths": [
-        "include/swoole_process_pool.h",
-        "include/swoole_server.h",
-        "src/os/process_pool.cc",
-        "src/server/manager.cc",
-        "src/server/master.cc"
+        "ext-src/swoole_server.cc"
       ]
     }
   ]

@@ -116,6 +116,10 @@ pub(crate) struct State {
     pub(crate) upgrade: u8,
     pub(crate) send_header: u8,
     pub(crate) content_compressed: u8,
+    /// `end_`: the response is complete.
+    pub(crate) end: u8,
+    /// `send_trailer_`: `trailer()` set one.
+    pub(crate) send_trailer: u8,
 }
 
 /// `swoole::http::Response`.
