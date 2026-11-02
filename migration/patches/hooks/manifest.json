@@ -38,6 +38,14 @@
       "upstream_paths": [
         "ext-src/swoole_runtime.cc"
       ]
+    },
+    {
+      "path": "0005-coroutine-socket.patch",
+      "sha256": "7c0de43c3e86edf33d6c37cad912179343874c3d916c2f1a758f13eab15eef4d",
+      "upstream_paths": [
+        "include/swoole_coroutine_socket.h",
+        "src/coroutine/socket.cc"
+      ]
     }
   ]
 }
