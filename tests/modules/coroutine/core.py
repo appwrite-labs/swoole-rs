@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.harness import ROOT, run_isolated, write_report
 from tools.build_upstream import require_build_space
-from tools.build_hybrid import apply_patch_verified
+from tools.build_hybrid import overlay_hybrid_tree
 
 from tools.build_upstream import COMMIT as PIN
 ASSERTIONS = ['core-tests/src/coroutine/base.cpp', 'core-tests/src/coroutine/channel.cpp']
@@ -137,28 +137,10 @@ def main():
                 if args.ucontext:
                     config = re.sub(rb'^#define SW_USE_ASM_CONTEXT\b[^\n]*', b'#undef SW_USE_ASM_CONTEXT', config, flags=re.M)
                 report['native_context_mode'] = 'asm' if re.search(rb'^#define SW_USE_ASM_CONTEXT\b', config, re.M) else 'ucontext'
-                manifest = json.loads((ROOT / 'migration/patches/coroutine/manifest.json').read_text())
-                if manifest['upstream_commit'] != PIN:
-                    raise ValueError('Overlay pin differs')
-                report['patch_manifest'] = manifest
-                patch_inputs = []
-                for patch in manifest['patches']:
-                    path = ROOT / 'migration/patches/coroutine' / patch['path']
-                    data = path.read_bytes()
-                    if hashlib.sha256(data).hexdigest() != patch['sha256']:
-                        raise ValueError('Overlay checksum differs')
-                    frozen = staged / '.frozen-patches' / patch['path']
-                    write_changed(frozen, data)
-                    patch_inputs.append(frozen)
-                # Every header the coroutine patches include, not just the module header.
-                for header in ['swoole_rs_coroutine.h']:
-                    write_changed(staged / '.frozen-headers' / header, (ROOT / 'native/coroutine' / header).read_bytes())
                 for engine in ['upstream', 'rust']:
-                    patch_proofs = []
                     if engine == 'rust':
-                        for path, patch in zip(patch_inputs, manifest['patches']):
-                            patch_proofs.append(apply_patch_verified(
-                                staged, path, patch['upstream_paths'], patch['sha256']))
+                        # Every module's patches, as the hybrid build applied them (#796).
+                        hybrid_cmake = overlay_hybrid_tree(archive, staged)
                     tree = build_root / ('core-' + engine)
                     for path in staged.rglob('*'):
                         if path.is_file() and '.git' not in path.relative_to(staged).parts:
@@ -172,11 +154,11 @@ def main():
                         raise ValueError('Original core target selection changed')
                     cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(SELECTED) + ')')
                     if engine == 'rust':
-                        cmake += f'\ninclude_directories("{tree / ".frozen-headers"}")\nadd_definitions(-DSWOOLE_RS_COROUTINE)\ntarget_link_libraries(lib-swoole "{frozen_archive}")\n'
+                        cmake += f'\n{hybrid_cmake}target_link_libraries(lib-swoole "{frozen_archive}")\n'
                     write_changed(tree / 'CMakeLists.txt', cmake.encode())
                     logs = artifacts / engine
                     logs.mkdir(parents=True, exist_ok=True)
-                    metadata = {'name': engine, 'patch_proofs': patch_proofs}
+                    metadata = {'name': engine}
                     report['engines'].append(metadata)
                     for case in inventory:
                         if sha(tree / case['path']) != case['sha256']:
