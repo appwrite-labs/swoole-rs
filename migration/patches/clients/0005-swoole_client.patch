@@ -1648,3 +1648,20 @@ index 3c97a4e..6777ff7 100644
      bool open_ssl = false;
 -    bool ssl_wait_handshake = false;
      std::shared_ptr<SSLContext> ssl_context = nullptr;
+diff --git a/src/network/client.cc b/src/network/client.cc
+index 836a5a6..4718743 100644
+--- a/src/network/client.cc
++++ b/src/network/client.cc
+@@ -817,6 +817,8 @@ static int Client_onStreamRead(Reactor *reactor, Event *event) {
+             ctx->protocol_socket = cli->socket;
+-            if (cli->open_eof_check) {
+-                return cli->protocol.recv_with_eof_protocol(ctx->protocol_socket, cli->buffer);
+-            }
+-            return cli->protocol.recv_with_length_protocol(ctx->protocol_socket, cli->buffer);
++            const ssize_t n = cli->open_eof_check
++                                  ? cli->protocol.recv_with_eof_protocol(ctx->protocol_socket, cli->buffer)
++                                  : cli->protocol.recv_with_length_protocol(ctx->protocol_socket, cli->buffer);
++            // A callback that deleted the client (a PHP close frees it) leaves only the
++            // socket, whose free is deferred: nothing of the client may be read after it.
++            return ctx->protocol_socket->object == nullptr ? 0 : n;
+         },
