@@ -205,8 +205,16 @@
       ]
     },
     {
-      "path": "0021-php-server-set.patch",
-      "sha256": "e010afc6b1bab3d985c21f9297619180f9bc9c00184f685272603427c038a18b",
+      "path": "0021-arginfo-server.patch",
+      "sha256": "656539b3f3fd8003f37d60750d153b2b78040b841ddf36b17cd9355dffccebe8",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_server_arginfo.h",
+        "ext-src/swoole_server.cc"
+      ]
+    },
+    {
+      "path": "0022-php-server-set.patch",
+      "sha256": "2acc0c5db09e357e68d945bef96b1687adfb9334650c3044412b6ab85ad3cefd",
       "upstream_paths": [
         "ext-src/swoole_server.cc"
       ]

@@ -12,6 +12,7 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_clients::{pool, state, swr_v1_clients_port};
+use swoole_rs_phpstubs::client;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object,
     bailout::{self, Bailout},
@@ -19,11 +20,12 @@ use swoole_rs_zend::{
     sys::{
         IS_ARRAY, IS_NULL, IS_STRING, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         get_active_class_name, get_active_function_name, swr_zend_property_not_null,
-        swr_zend_property_slot, swr_zval_try_addref, zend_class_entry, zend_function_entry,
-        zend_object, zend_object_handlers, zend_string, zend_type_error, zval, zval_ptr_dtor,
+        swr_zend_property_slot, swr_zval_try_addref, zend_class_entry, zend_object,
+        zend_object_handlers, zend_string, zend_type_error, zval, zval_ptr_dtor,
     },
     throw_error, throw_exception, type_of, unset_property_deny, update_property, value,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_FLAG_ASYNC`, `SW_FLAG_SYNC`, `SW_FLAG_KEEP` and `SW_SOCK_SSL`.
 const FLAG_ASYNC: i64 = 1 << 10;
@@ -162,18 +164,46 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
     ClientObject::install(entry, handlers, create, free);
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_client___construct, &client::arginfo_class_Swoole_Client___construct, z::ZEND_ACC_PUBLIC;
+        c"__destruct" => zim_swoole_client___destruct, &client::arginfo_class_Swoole_Client___destruct, z::ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_client_set, &client::arginfo_class_Swoole_Client_set, z::ZEND_ACC_PUBLIC;
+        c"connect" => zim_swoole_client_connect, &client::arginfo_class_Swoole_Client_connect, z::ZEND_ACC_PUBLIC;
+        c"recv" => zim_swoole_client_recv, &client::arginfo_class_Swoole_Client_recv, z::ZEND_ACC_PUBLIC;
+        c"send" => zim_swoole_client_send, &client::arginfo_class_Swoole_Client_send, z::ZEND_ACC_PUBLIC;
+        c"sendfile" => zim_swoole_client_sendfile, &client::arginfo_class_Swoole_Client_sendfile, z::ZEND_ACC_PUBLIC;
+        c"sendto" => zim_swoole_client_sendto, &client::arginfo_class_Swoole_Client_sendto, z::ZEND_ACC_PUBLIC;
+        c"shutdown" => zim_swoole_client_shutdown, &client::arginfo_class_Swoole_Client_shutdown, z::ZEND_ACC_PUBLIC;
+        c"enableSSL" => zim_swoole_client_enableSSL, &client::arginfo_class_Swoole_Client_enableSSL, z::ZEND_ACC_PUBLIC;
+        c"getPeerCert" => zim_swoole_client_getPeerCert, &client::arginfo_class_Swoole_Client_getPeerCert, z::ZEND_ACC_PUBLIC;
+        c"verifyPeerCert" => zim_swoole_client_verifyPeerCert, &client::arginfo_class_Swoole_Client_verifyPeerCert, z::ZEND_ACC_PUBLIC;
+        c"isConnected" => zim_swoole_client_isConnected, &client::arginfo_class_Swoole_Client_isConnected, z::ZEND_ACC_PUBLIC;
+        c"getsockname" => zim_swoole_client_getsockname, &client::arginfo_class_Swoole_Client_getsockname, z::ZEND_ACC_PUBLIC;
+        c"getpeername" => zim_swoole_client_getpeername, &client::arginfo_class_Swoole_Client_getpeername, z::ZEND_ACC_PUBLIC;
+        c"close" => zim_swoole_client_close, &client::arginfo_class_Swoole_Client_close, z::ZEND_ACC_PUBLIC;
+        // SWOOLE_SOCKETS_SUPPORT builds only; MINIT drops it from the others.
+        c"getSocket" => zim_swoole_client_getSocket, &client::arginfo_class_Swoole_Client_getSocket, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT, as `php_swoole_client_minit` did.
 /// # Safety
-/// Called once, at MINIT, with upstream's static method table, Swoole's
-/// exception class and a writable class-entry slot.
+/// Called once, at MINIT, with Swoole's exception class and a writable
+/// class-entry slot; `sockets` is `SWOOLE_SOCKETS_SUPPORT`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpclients_net_minit(
-    methods: *const zend_function_entry,
     exception: *mut zend_class_entry,
+    sockets: bool,
     module: c_int,
     client_class: *mut *mut zend_class_entry,
 ) {
-    // SAFETY: MINIT, with the caller's table.
+    let methods = if sockets {
+        METHODS.as_ptr()
+    } else {
+        METHODS.without(&[c"getSocket"])
+    };
+    // SAFETY: MINIT, with a table that lives for the process.
     unsafe { CLIENT.register(c"Swoole\\Client", methods, configure) };
     // SAFETY: MINIT; the parent is registered.
     unsafe {

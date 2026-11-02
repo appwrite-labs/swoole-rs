@@ -1,17 +1,16 @@
 diff --git a/ext-src/swoole_server.cc b/ext-src/swoole_server.cc
-index 79c2e25..0b9a646 100644
+index 4ddfc5d..54fab2a 100644
 --- a/ext-src/swoole_server.cc
 +++ b/ext-src/swoole_server.cc
 @@ -22,2 +22,3 @@
  #include "swoole_rs_phpserver_server.h"
 +#include "swoole_rs_phpserver_settings.h"
  #include "swoole_rs_phpserver_dispatch.h"
-@@ -290,3 +291,3 @@ static PHP_METHOD(swoole_server, __construct);
- static PHP_METHOD(swoole_server, __destruct);
--static PHP_METHOD(swoole_server, set);
-+PHP_METHOD(swoole_server, set);
- PHP_METHOD(swoole_server, on);
-@@ -849,2 +850,228 @@ void *io_task_server(zend_object *task) {
+@@ -291,3 +292,2 @@ PHP_METHOD(swoole_server, __construct);
+ PHP_METHOD(swoole_server, __destruct);
+-PHP_METHOD(swoole_server, set);
+ PHP_METHOD(swoole_server, addProcess);
+@@ -718,2 +718,228 @@ void *io_task_server(zend_object *task) {
  
 +
 +#ifdef HAVE_CPU_AFFINITY
@@ -240,7 +239,7 @@ index 79c2e25..0b9a646 100644
 +}
 +
  void php_swoole_server_minit(int module_number) {
-@@ -908,2 +1135,11 @@ void php_swoole_server_minit(int module_number) {
+@@ -781,2 +1007,11 @@ void php_swoole_server_minit(int module_number) {
      swr_v1_phpserver_io_init(&io);
 +    static const swr_v1_phpserver_settings_host settings = {
 +        settings_get, settings_set, settings_set_double, settings_text, settings_rewrite, settings_parse_size,
@@ -252,9 +251,9 @@ index 79c2e25..0b9a646 100644
 +                  "constants crates/phpserver's set() uses");
 +    swr_v1_phpserver_settings_init(&settings);
      swoole_server_ce = classes.server;
-@@ -2001,416 +2237,2 @@ static bool php_swoole_server_set_cpu_affinity_ignore(Server *serv, zval *zignor
+@@ -1874,416 +2109,2 @@ static bool php_swoole_server_set_cpu_affinity_ignore(Server *serv, zval *zignor
  
--static PHP_METHOD(swoole_server, set) {
+-PHP_METHOD(swoole_server, set) {
 -    ServerObject *server_object = server_fetch_object(Z_OBJ_P(ZEND_THIS));
 -    Server *serv = php_swoole_server_get_and_check_server(ZEND_THIS);
 -    if (serv->is_worker_thread()) {
