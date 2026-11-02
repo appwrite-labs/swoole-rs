@@ -3,7 +3,7 @@
 //! `swoole_typed_array`, the `array_push`/`array_unshift`/`array_splice`
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
 use crate::{
-    CONTINUE, DISPATCH, deref, ex_var, invoke::compiled_function, ptr_ptr_var, raise, rt_constant,
+    CONTINUE, DISPATCH, deref, ex_var, invoke::compiled_function, ptr_ptr_var, rt_constant,
 };
 use std::{
     ffi::{CStr, c_char, c_int, c_long, c_void},
@@ -711,7 +711,7 @@ fn typed_array(call: &Call) {
     if let Err(failure) = outcome {
         call.set_null();
         if let Failure::Bailout(bailout) = failure {
-            raise(&Err(bailout));
+            swoole_rs_zend::bailout::raise(Err(bailout));
         }
     }
 }
@@ -859,7 +859,7 @@ fn array_is_typed(call: &Call) {
     // SAFETY: allocated above.
     unsafe { swr_zend_efree(scratch.cast()) };
     if let Err(Failure::Bailout(bailout)) = parsed {
-        raise(&Err(bailout));
+        swoole_rs_zend::bailout::raise(Err(bailout));
     }
 }
 

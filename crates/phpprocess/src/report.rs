@@ -1,7 +1,7 @@
 //! Swoole's PHP error macros (`php_swoole_private.h`).
 use crate::host::host;
 use std::ffi::CStr;
-use swoole_rs_zend::{E_ERROR, Message, php_error};
+use swoole_rs_zend::{E_ERROR, Message, bailout, php_error};
 
 pub(crate) const PHP_FATAL_ERROR: i32 = 503;
 pub(crate) const INVALID_PARAMS: i32 = 505;
@@ -40,7 +40,7 @@ pub(crate) fn set_last_error(error: i32) {
 pub(crate) fn fatal(level: i32, text: &Message) {
     set_last_error(PHP_FATAL_ERROR);
     // SAFETY: from a handler; the message lives on the caller's stack.
-    unsafe { php_error(level, text.as_cstr()) };
+    bailout::defer(unsafe { php_error(level, text.as_cstr()) });
 }
 
 /// `php_swoole_error`: reported when `swoole.display_errors` is on.
@@ -67,6 +67,6 @@ fn report(level: i32, text: &Message) {
     // SAFETY: C++'s reader of an ini flag.
     if level == E_ERROR || unsafe { (host().display_errors)() } {
         // SAFETY: from a handler; the message lives on the caller's stack.
-        unsafe { php_error(level, text.as_cstr()) };
+        bailout::defer(unsafe { php_error(level, text.as_cstr()) });
     }
 }

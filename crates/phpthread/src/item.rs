@@ -2,12 +2,7 @@
 //! thread can read it back. Strings and serialized objects are copied, arrays
 //! become shared tables, containers and thread resources are shared by
 //! reference, and sockets by a duplicated descriptor.
-use crate::{
-    array::Array,
-    barrier, classes,
-    host::{Pending, defer, host},
-    queue::Queue,
-};
+use crate::{array::Array, barrier, classes, host::host, queue::Queue};
 use std::{
     cmp::Ordering,
     ffi::{c_int, c_void},
@@ -15,13 +10,14 @@ use std::{
     sync::Arc,
 };
 use swoole_rs_zend::{
+    bailout::Bailout,
     string::bytes,
     sys::{
         _zval_struct__bindgen_ty_1, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT,
         IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF, swr_zend_array_is_list,
         swr_zend_is_numeric_string, swr_zend_smart_strcmp, swr_zend_string_init,
-        swr_zend_string_release, swr_zval_get_double, swr_zval_get_long, swr_zval_stringl,
-        zend_binary_strcmp, zend_double_to_str, zend_throw_error, zend_value, zval,
+        swr_zend_string_release, swr_zval_stringl, zend_binary_strcmp, zend_double_to_str,
+        zend_throw_error, zend_value, zval,
     },
     throw_exception, type_of, value_of,
 };
@@ -125,9 +121,9 @@ impl Item {
         let payload = unsafe { value_of(value) };
         match kind {
             // SAFETY: per the caller.
-            IS_LONG => Self::long(unsafe { swr_zval_get_long(value) }),
+            IS_LONG => Self::long(unsafe { swoole_rs_zend::value::get_long(value) }),
             // SAFETY: per the caller.
-            IS_DOUBLE => Self::double(unsafe { swr_zval_get_double(value) }),
+            IS_DOUBLE => Self::double(unsafe { swoole_rs_zend::value::get_double(value) }),
             IS_STRING => {
                 // SAFETY: a string zval.
                 let string = unsafe { payload.str_ };
@@ -232,7 +228,7 @@ impl Item {
         // SAFETY: a live zval; C++ traps a bailout of `__serialize`.
         let serialized = unsafe { (host().serialize)(value, &raw mut bailed) };
         if bailed {
-            defer(Pending::Bailout);
+            Bailout.defer();
         }
         if serialized.is_null() {
             return bare(IS_UNDEF);
@@ -290,7 +286,7 @@ impl Item {
             Value::Serialized(data) => {
                 // SAFETY: per the caller; C++ traps a bailout of `__unserialize`.
                 if unsafe { (host.unserialize)(data.as_ptr().cast(), data.len(), out) } {
-                    defer(Pending::Bailout);
+                    Bailout.defer();
                 }
             }
         }
@@ -377,18 +373,18 @@ impl Item {
         match &mut self.value {
             Value::Double(value) => {
                 // SAFETY: per the caller.
-                *value += unsafe { swr_zval_get_double(delta) };
+                *value += unsafe { swoole_rs_zend::value::get_double(delta) };
                 set(out, IS_DOUBLE, zend_value { dval: *value });
             }
             Value::Long(value) | Value::Bare(value) => {
                 // SAFETY: per the caller.
-                *value = value.wrapping_add(unsafe { swr_zval_get_long(delta) });
+                *value = value.wrapping_add(unsafe { swoole_rs_zend::value::get_long(delta) });
                 set(out, IS_LONG, zend_value { lval: *value });
             }
             // Upstream adds to a pointer here; leave the value alone.
             _ => {
                 // SAFETY: per the caller.
-                let sum = unsafe { swr_zval_get_long(delta) };
+                let sum = unsafe { swoole_rs_zend::value::get_long(delta) };
                 set(out, IS_LONG, zend_value { lval: sum });
             }
         }
@@ -406,7 +402,7 @@ impl Item {
             Self::double(unsafe { payload.dval })
         } else {
             // SAFETY: per the caller.
-            Self::long(unsafe { swr_zval_get_long(delta) })
+            Self::long(unsafe { swoole_rs_zend::value::get_long(delta) })
         };
         // SAFETY: `out` is writable; an int or float.
         unsafe { item.fetch(out) };

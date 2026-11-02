@@ -13,9 +13,8 @@ use swoole_rs_zend::{
     string::bytes,
     sys::{
         IS_DOUBLE, IS_LONG, IS_NULL, swr_zend_array_init, swr_zend_hash_foreach_kv,
-        swr_zval_get_long, swr_zval_stringl, zend_array, zend_hash_index_add,
-        zend_hash_next_index_insert_new, zend_hash_str_add, zend_sort, zend_string, zend_ulong,
-        zend_value, zval,
+        swr_zval_stringl, zend_array, zend_hash_index_add, zend_hash_next_index_insert_new,
+        zend_hash_str_add, zend_sort, zend_string, zend_ulong, zend_value, zval,
     },
     type_of, value,
 };
@@ -358,7 +357,7 @@ fn zval_null() -> zval {
     value
 }
 
-/// `zval_get_long`, or -1 for null (`ZVAL_IS_NULL(zkey) ? -1 : zval_get_long(zkey)`).
+/// `zval_get_long`, or -1 for null (`ZVAL_IS_NULL(zkey) ? -1 : swoole_rs_zend::value::get_long(zkey)`).
 /// # Safety
 /// `key` is a live zval.
 pub(crate) unsafe fn list_index(key: *const zval) -> i64 {
@@ -367,7 +366,7 @@ pub(crate) unsafe fn list_index(key: *const zval) -> i64 {
         -1
     } else {
         // SAFETY: per the caller.
-        unsafe { swr_zval_get_long(key) }
+        unsafe { swoole_rs_zend::value::get_long(key) }
     }
 }
 
@@ -384,7 +383,7 @@ pub(crate) unsafe fn negate(delta: *const zval) -> zval {
         set(&raw mut value, IS_DOUBLE, zend_value { dval: negated });
     } else {
         // SAFETY: per the caller.
-        let negated = unsafe { swr_zval_get_long(delta) }.wrapping_neg();
+        let negated = unsafe { swoole_rs_zend::value::get_long(delta) }.wrapping_neg();
         set(&raw mut value, IS_LONG, zend_value { lval: negated });
     }
     value

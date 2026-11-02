@@ -35,6 +35,7 @@ pub use class::{
 };
 pub use error::{
     E_ERROR, E_WARNING, Message, php_error, throw_constructed_twice, throw_error, throw_exception,
+    zend_error,
 };
 pub use function::create_object_deny;
 pub use helpers::{
@@ -46,7 +47,8 @@ pub use swoole_rs_zend_sys as sys;
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for
 /// methods, `zif_<function>` for functions) so upstream's tables name them
-/// unchanged; each runs `body(&Call)`.
+/// unchanged; each runs `body(&Call)`, then raises a bailout it deferred
+/// ([`bailout::finish`]).
 #[macro_export]
 macro_rules! handlers {
     ($($name:ident => $body:path;)*) => {$(
@@ -60,6 +62,7 @@ macro_rules! handlers {
         ) {
             // SAFETY: per Zend's handler contract.
             $body(&unsafe { $crate::Call::new(frame, value) });
+            $crate::bailout::finish();
         }
     )*};
 }
