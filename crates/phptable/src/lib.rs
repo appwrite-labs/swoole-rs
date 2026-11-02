@@ -17,8 +17,7 @@ use swoole_rs_zend::{
     sys::{
         HashPosition, HashTable, IS_ARRAY, IS_NULL, IS_STRING, swr_zend_array_add_or_merge,
         swr_zend_property_array, swr_zend_property_not_null, swr_zend_property_slot,
-        swr_zend_string_release, swr_zval_get_double, swr_zval_get_long, swr_zval_get_string,
-        swr_zval_is_true, zend_class_entry, zend_hash_get_current_data_ex,
+        swr_zend_string_release, swr_zval_is_true, zend_class_entry, zend_hash_get_current_data_ex,
         zend_hash_get_current_key_ex, zend_hash_internal_pointer_reset_ex,
         zend_hash_move_forward_ex, zend_hash_str_find, zend_long, zend_object, zend_string,
         zend_update_property, zend_update_property_null, zend_update_property_stringl, zval,
@@ -33,13 +32,13 @@ const KEY_IS_STRING: i64 = 1;
 pub struct Owned(*mut zend_string);
 
 impl Owned {
-    /// `zval_get_string(value)`: the value as a string, converting as PHP does.
+    /// `swoole_rs_zend::value::get_string(value)`: the value as a string, converting as PHP does.
     /// # Safety
     /// `value` is a live zval.
     #[must_use]
     pub unsafe fn of(value: *mut zval) -> Self {
         // SAFETY: per the caller; Zend returns a new reference.
-        Self(unsafe { swr_zval_get_string(value) })
+        Self(unsafe { swoole_rs_zend::value::get_string(value) })
     }
 
     /// Take over a reference the caller owns.
@@ -76,7 +75,7 @@ pub unsafe fn long(value: *const zval) -> zend_long {
         return unsafe { value::long_of(value) };
     }
     // SAFETY: per the caller.
-    unsafe { swr_zval_get_long(value) }
+    unsafe { swoole_rs_zend::value::get_long(value) }
 }
 
 /// `zval_get_double`.
@@ -85,7 +84,7 @@ pub unsafe fn long(value: *const zval) -> zend_long {
 #[must_use]
 pub unsafe fn double(value: *const zval) -> f64 {
     // SAFETY: per the caller.
-    unsafe { swr_zval_get_double(value) }
+    unsafe { swoole_rs_zend::value::get_double(value) }
 }
 
 /// `zval_is_true`.

@@ -94,6 +94,11 @@ void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler, user_opcode_
  * (ZVAL_DUP), or null when it has none. */
 void swr_zend_exit_status(zend_execute_data *execute_data, zval *status);
 
+/* zend_parse_arg_str_or_long_slow inside zend_try (a __toString may run):
+ * 1 if it bailed out; *parsed says whether it parsed. */
+int swr_zend_try_parse_str_or_long(zval *arg, zend_string **string, zend_long *number_out, uint32_t number,
+                                   bool *parsed);
+
 /* EG(current_execute_data) = frame; returns the previous one. */
 zend_execute_data *swr_zend_coroutine_set_frame(zend_execute_data *frame);
 /* Whether the function that called the running internal function is named

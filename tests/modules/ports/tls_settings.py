@@ -3,11 +3,13 @@
 from pathlib import Path
 import sys
 from count import main,accessor
+from flags import SELECTED_SET
 
 
 def extract(text,signature):
     if signature!='TLS_PORT_OPTIONS':return accessor(text,signature)
-    method=text.index('static PHP_METHOD(swoole_server_port, set) {')
+    signature='static PHP_METHOD(swoole_server_port, set) {'
+    method=text.index(signature if signature in text else SELECTED_SET)
     marker='        // TLS frontend order/conversion only; SNI and crypto algorithms remain native.'
     start=text.index(marker,method)if marker in text else text.index('        if (php_swoole_array_get_value(vht, "ssl_compress", ztmp)) {',method)
     boundary='        // SNI frontend admission only; native iteration/context/crypto remains authoritative.'

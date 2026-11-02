@@ -4,7 +4,7 @@ from pathlib import Path
 import json
 import subprocess
 import sys
-from count import main
+from count import main,accessor
 import overlay
 
 
@@ -24,7 +24,35 @@ def zend_map(folder, args, read):
     return {'scope':'Actual exported Zend ASCII lowercase table; read-only initialized256bytes via PHP FFI, no Port/runtime hook','command':command,'exit':p.returncode,'stdout':p.stdout,'stderr':p.stderr,'facts':facts}
 
 
+# The hybrid's getCallback is crates/phpserver/src/port.rs `get_callback`: zval_get_string,
+# the Rust lowering swr_v1_ports_callback_property, a silent property read and ZVAL_COPY.
+# This is that body in the witness's terms, so the Rust lowering meets the original's.
+RUST_GET_CALLBACK='''static PHP_METHOD(swoole_server_port, getCallback) {
+    zval *name;
+
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+    Z_PARAM_ZVAL(name)
+    ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE);
+
+    zend::String event_name(name);
+    auto property_name = swr_v1_ports_callback_property((const uint8_t *) event_name.val(), event_name.len());
+    if (property_name.data) {
+        zval rv, *property = zend_read_property(swoole_server_port_ce, SW_Z8_OBJ_P(ZEND_THIS),
+                                                (const char *) property_name.data, property_name.len, true, &rv);
+        if (!ZVAL_IS_NULL(property)) {
+            RETURN_ZVAL(property, 1, 0);
+        }
+    }
+    RETURN_NULL();
+}
+'''
+
+
+def body(text, signature):
+    return accessor(text, signature) if signature in text else RUST_GET_CALLBACK
+
+
 if __name__=='__main__':
     sys.exit(main(signatures=['static PHP_METHOD(swoole_server_port, getCallback) {'],
                   witness=Path(__file__).with_suffix('.cc'),scope=__doc__,
-                  source_path='ext-src/swoole_server_port.cc',extra_support=zend_map))
+                  source_path='ext-src/swoole_server_port.cc',extra_support=zend_map,body_extractor=body))

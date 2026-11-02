@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.harness import ROOT, run_isolated, write_report
+from tools.build_hybrid import overlay_hybrid_tree
 
 from tools.build_upstream import COMMIT as PIN
 ASSERTIONS = ['core-tests/src/reactor/base.cpp', 'core-tests/src/os/timer.cpp', 'core-tests/src/server/http_server.cpp']
@@ -62,7 +63,7 @@ def main():
     parser.add_argument('--php-prefix', default='/usr' if sys.platform == 'linux' else subprocess.check_output(['php-config', '--prefix'], text=True).strip(), help='Native PHP prefix for CMake')
     parser.add_argument('--openssl-root', type=Path, help='Match configured native OpenSSL prefix')
     parser.add_argument('--config', type=Path, help='Read-only configured Linux baseline config.h')
-    parser.add_argument('--archive', type=Path, help='Release Linux wrappers static archive')
+    parser.add_argument('--archive', type=Path, help='Rust archive of the hybrid build under test (<build>/rust-prefix/lib/libswoole_rs_ffi.a)')
     parser.add_argument('--build-root', type=Path, help='Private writable cache outside reference/repository')
     parser.add_argument('--library-only', action='store_true', help='Build real native libraries without executing original tests; never original parity')
     parser.add_argument('--inventory-only', action='store_true')
@@ -105,18 +106,10 @@ def main():
                 archive = args.archive.resolve(strict=True)
                 # Freeze mutable input once.
                 config = args.config.read_bytes()
-                manifest = json.loads((ROOT / 'migration/patches/wrappers/manifest.json').read_text())
-                if manifest['upstream_commit'] != PIN:
-                    raise ValueError('Overlay pin differs')
-                report.update(patch_manifest=manifest)
                 for engine in ['upstream', 'rust']:
                     if engine == 'rust':
-                        for patch in manifest['patches']:
-                            path = ROOT / 'migration/patches/wrappers' / patch['path']
-                            if sha(path) != patch['sha256']:
-                                raise ValueError('Overlay checksum differs')
-                            subprocess.run(['git', '-C', str(staged), 'apply', '--check', str(path)], check=True)
-                            subprocess.run(['git', '-C', str(staged), 'apply', str(path)], check=True)
+                        # Every module's patches, as the hybrid build applied them (#796).
+                        hybrid_cmake = overlay_hybrid_tree(archive, staged)
                     tree = build_root / ('core-' + engine)
                     for path in staged.rglob('*'):
                         if path.is_file() and '.git' not in path.relative_to(staged).parts:
@@ -140,7 +133,7 @@ def main():
                         cmake = 'link_directories("' + str(args.openssl_root / 'lib') + '")\n' + cmake
                     cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(SELECTED) + ')')
                     if engine == 'rust':
-                        cmake += f'\ninclude_directories("{ROOT / "native/wrappers"}")\nadd_definitions(-DSWOOLE_RS_WRAPPERS)\ntarget_link_libraries(lib-swoole "{archive}")\n'
+                        cmake += f'\n{hybrid_cmake}target_link_libraries(lib-swoole "{archive}")\n'
                     write_changed(tree / 'CMakeLists.txt', cmake.encode())
                     logs = artifacts / engine
                     logs.mkdir(parents=True, exist_ok=True)

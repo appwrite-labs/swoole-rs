@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.harness import ROOT, run_isolated, stop_process_group, write_report
+from tools.build_hybrid import overlay_hybrid_tree
 
 from tools.build_upstream import COMMIT as PIN
 ASSERTIONS = ['core-tests/src/protocol/redis.cpp', 'core-tests/src/server/message_bus.cpp', 'core-tests/src/server/mqtt.cpp']
@@ -94,7 +95,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--config', type=Path, required=True, help='Configured Linux baseline config.h (read only)')
-    parser.add_argument('--archive', type=Path, required=True, help='Optimized protocols static archive')
+    parser.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test (<build>/rust-prefix/lib/libswoole_rs_ffi.a)')
     parser.add_argument('--build-root', type=Path, required=True, help='Private writable build/cache directory')
     parser.add_argument('--node-modules', type=Path, help='Original JS fixture dependencies; mqtt4.3.8/pino6.14.0 validated')
     parser.add_argument('--jobs', type=int, default=2)
@@ -117,12 +118,9 @@ def main():
         parser.error('Build root must not modify the pinned reference')
     build_root.mkdir(parents=True, exist_ok=True)
     archive = args.archive.resolve(strict=True)
-    manifest = json.loads((ROOT / 'migration/patches/protocols/manifest.json').read_text())
-    if manifest['upstream_commit'] != PIN:
-        parser.error('Overlay pin differs')
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'upstream_pin': PIN,
-        'scope': 'Unchanged original GTest assertions against full standalone native libraries, reference vs M13-only Rust overlay. Not PHP/combined-module validation or performance.',
-        'patch_manifest': manifest, 'require_all': args.require_all, 'engines': [], 'results': [], 'execution_status': 'running'}
+        'scope': 'Unchanged original GTest assertions against full standalone native libraries, reference vs the hybrid build\'s patched tree. Not PHP validation or performance.',
+        'require_all': args.require_all, 'engines': [], 'results': [], 'execution_status': 'running'}
     artifacts = args.output.resolve().with_name(args.output.stem + '-artifacts')
     try:
         with tempfile.TemporaryDirectory(prefix='swr-protocols-core-inputs-') as temporary:
@@ -136,12 +134,8 @@ def main():
             report['inventory'] = inventory
             for engine in ['upstream', 'rust']:
                 if engine == 'rust':
-                    for patch in manifest['patches']:
-                        path = ROOT / 'migration/patches/protocols' / patch['path']
-                        if sha(path) != patch['sha256']:
-                            raise ValueError('Overlay checksum differs')
-                        subprocess.run(['git', '-C', str(staged), 'apply', '--check', str(path)], check=True)
-                        subprocess.run(['git', '-C', str(staged), 'apply', str(path)], check=True)
+                    # Every module's patches, as the hybrid build applied them (#796).
+                    hybrid_cmake = overlay_hybrid_tree(archive, staged)
                 tree = build_root / ('core-' + engine)
                 for path in staged.rglob('*'):
                     if path.is_file() and '.git' not in path.relative_to(staged).parts:
@@ -153,7 +147,7 @@ def main():
                     raise ValueError('Original core target selection changed')
                 cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(SELECTED) + ')')
                 if engine == 'rust':
-                    cmake += f'\ninclude_directories("{ROOT / "native/protocols"}")\nadd_definitions(-DSWOOLE_RS_PROTOCOLS)\ntarget_link_libraries(lib-swoole "{archive}")\n'
+                    cmake += f'\n{hybrid_cmake}target_link_libraries(lib-swoole "{archive}")\n'
                 write_changed(tree / 'CMakeLists.txt', cmake.encode())
                 engine_artifacts = artifacts / engine
                 engine_artifacts.mkdir(parents=True, exist_ok=True)

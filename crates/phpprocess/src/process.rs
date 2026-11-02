@@ -19,7 +19,7 @@ use swoole_rs_zend::{
         swr_zend_is_true, swr_zend_module_loaded, swr_zend_object_addref, swr_zend_object_release,
         swr_zend_string_alloc, swr_zend_string_free, zend_class_entry, zend_function_entry,
         zend_get_executed_filename, zend_hash_str_find, zend_object, zend_object_handlers,
-        zend_read_property, zend_string, zval, zval_get_string_func,
+        zend_read_property, zend_string, zval,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of, unset_property_deny,
     update_property, update_property_long,
@@ -367,6 +367,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
     }
     // SAFETY: the callable made above.
     unsafe { (host.callable_free)(callable) };
+    swoole_rs_zend::bailout::finish();
     // SAFETY: equivalent to exit: Zend unwinds to its bailout point; this frame
     // owns nothing that needs a drop.
     unsafe { _zend_bailout(c"crates/phpprocess/src/process.rs".as_ptr(), line!()) }
@@ -869,7 +870,7 @@ fn exec(call: &Call) {
     let mut next = 1;
     let each = |value: *mut zval| {
         // SAFETY: a live element; the string is leaked, as upstream leaks it.
-        let string = unsafe { zval_get_string_func(value) };
+        let string = unsafe { swoole_rs_zend::value::get_string(value) };
         let slot = argv.wrapping_add(next);
         // SAFETY: at most `count` elements, so `next <= count`.
         unsafe { *slot = string_data(string).cast_const() };

@@ -16,7 +16,7 @@ use std::{
     thread::JoinHandle,
 };
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Message, Object, message,
+    Call, Class, E_WARNING, Message, Object, bailout, message,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
         add_assoc_long_ex, swr_zend_array_init, zend_class_entry, zend_declare_property_long,
@@ -297,8 +297,8 @@ fn set_name(call: &Call) {
 
 /// `php_swoole_error(level, "%s", message)`.
 fn warn(message: &Message) {
-    // SAFETY: in a handler.
-    unsafe { (host().error)(E_WARNING, message.as_cstr().as_ptr()) };
+    // SAFETY: C++'s reporter, in a handler.
+    bailout::defer(unsafe { bailout::report_level(host().error, E_WARNING, message.as_cstr()) });
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -384,8 +384,14 @@ fn set_priority(call: &Call) {
     if unsafe { libc::pthread_setschedparam(me, sched_policy, &raw const param) } == 0 {
         call.set_bool(true);
     } else {
-        // SAFETY: in a handler.
-        unsafe { (host().sys_error)(E_WARNING, c"pthread_setschedparam() failed".as_ptr()) };
+        // SAFETY: C++'s reporter, in a handler.
+        bailout::defer(unsafe {
+            bailout::report_level(
+                host().sys_error,
+                E_WARNING,
+                c"pthread_setschedparam() failed",
+            )
+        });
         call.set_bool(false);
     }
 }

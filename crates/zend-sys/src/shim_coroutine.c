@@ -251,6 +251,20 @@ void swr_zend_exit_status(zend_execute_data *execute_data, zval *status) {
     }
 }
 
+int swr_zend_try_parse_str_or_long(zval *arg, zend_string **string, zend_long *number_out, uint32_t number,
+                                   bool *parsed) {
+    int bailed = 0;
+    *parsed = false;
+    zend_try {
+        *parsed = zend_parse_arg_str_or_long_slow(arg, string, number_out, number);
+    }
+    zend_catch {
+        bailed = 1;
+    }
+    zend_end_try();
+    return bailed;
+}
+
 zend_execute_data *swr_zend_coroutine_set_frame(zend_execute_data *frame) {
     zend_execute_data *previous = EG(current_execute_data);
     EG(current_execute_data) = frame;
