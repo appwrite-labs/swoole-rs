@@ -1,8 +1,7 @@
 #ifndef SWOOLE_RS_PHPTHREAD_H
 #define SWOOLE_RS_PHPTHREAD_H
 /* PHP Swoole\Thread, Thread\Map, ArrayList, Queue and Barrier (crates/phpthread),
- * ZTS builds only. C++ keeps upstream's method tables, built from the stubs'
- * arginfo, the thread body (TSRM, request startup, the script), the thread
+ * ZTS builds only. C++ keeps the thread body (TSRM, request startup, the script), the thread
  * resources (Lock, Atomic) and sockets a container may hold, reached through
  * `host`. Rust registers the classes, starts the threads, owns the shared tables,
  * queues and barriers and runs every method: the zim_swoole_thread_* exports. A
@@ -14,7 +13,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-struct _zend_function_entry;
 struct _zend_class_entry;
 struct _zend_string;
 struct _zend_array;
@@ -57,11 +55,11 @@ typedef struct {
 } swr_v1_phpthread_host;
 
 void swr_v1_phpthread_minit(const swr_v1_phpthread_host *host);
-struct _zend_class_entry *swr_v1_phpthread_map_minit(const struct _zend_function_entry *methods);
-struct _zend_class_entry *swr_v1_phpthread_arraylist_minit(const struct _zend_function_entry *methods);
-struct _zend_class_entry *swr_v1_phpthread_queue_minit(const struct _zend_function_entry *methods);
-struct _zend_class_entry *swr_v1_phpthread_barrier_minit(const struct _zend_function_entry *methods);
-struct _zend_class_entry *swr_v1_phpthread_thread_minit(const struct _zend_function_entry *methods);
+struct _zend_class_entry *swr_v1_phpthread_map_minit(void);
+struct _zend_class_entry *swr_v1_phpthread_arraylist_minit(void);
+struct _zend_class_entry *swr_v1_phpthread_queue_minit(void);
+struct _zend_class_entry *swr_v1_phpthread_barrier_minit(void);
+struct _zend_class_entry *swr_v1_phpthread_thread_minit(void);
 /* A shared table: new, from a PHP array, appended to, copied out as a PHP array,
  * referenced again, released. */
 void *swr_v1_phpthread_array_new(void);

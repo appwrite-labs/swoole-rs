@@ -96,9 +96,13 @@ class PhptGate(unittest.TestCase):
         results = [row('slow', 'hybrid', 'failed', True)]
         # Upstream stops at its first failure; the hybrid until its verdict is settled.
         self.assertEqual(pending(tests, rechecked, 'upstream'), ['steady-failed', 'steady-passing'])
-        self.assertEqual(pending(tests, rechecked, 'hybrid', results), ['flaky-failing', 'steady-passing'])
+        self.assertEqual(pending(tests, rechecked, 'hybrid', results), ['flaky-failing', 'steady-failed', 'steady-passing'])
         self.assertEqual(pending(['flaky-failing'], rechecked + [row('flaky-failing', 'hybrid', 'failed')] * 2,
                                  'hybrid', results), [])
+        # One failed re-run doesn't settle a hybrid on a clean upstream; a pass then does (#862),
+        # and three failures spend the budget.
+        self.assertEqual(pending(['steady-failed'], rechecked + [row('steady-failed', 'hybrid', 'passed')], 'hybrid'), [])
+        self.assertEqual(pending(['steady-failed'], rechecked + [row('steady-failed', 'hybrid', 'failed')] * 2, 'hybrid'), [])
         # A first hybrid failure that timed out gets one re-run; timing out again is a regression.
         self.assertEqual(recheck(['slow'], rechecked), (['slow'], [], [], []))
         self.assertEqual(pending(['slow'], [row('slow', 'upstream', 'failed')], 'hybrid', results), ['slow'])

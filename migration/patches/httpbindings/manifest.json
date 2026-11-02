@@ -77,6 +77,18 @@
         "ext-src/php_swoole_http.h",
         "ext-src/swoole_http_response.cc"
       ]
+    },
+    {
+      "path": "0012-arginfo.patch",
+      "sha256": "509d3eb1be864dedf0f252c6288fe42906185e589127f5dd1bc72613280a4a69",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_http_cookie_arginfo.h",
+        "ext-src/stubs/php_swoole_http_request_arginfo.h",
+        "ext-src/stubs/php_swoole_http_response_arginfo.h",
+        "ext-src/swoole_http_cookie.cc",
+        "ext-src/swoole_http_request.cc",
+        "ext-src/swoole_http_response.cc"
+      ]
     }
   ]
 }

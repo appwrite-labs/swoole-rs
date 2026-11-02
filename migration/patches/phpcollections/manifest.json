@@ -14,6 +14,16 @@
       "upstream_paths": [
         "ext-src/swoole_channel_coro.cc"
       ]
+    },
+    {
+      "path": "0003-arginfo.patch",
+      "sha256": "eb005219f606536393d84b19b77e872787e2fe90c02f8bf090aa697f97789cad",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_channel_coro_arginfo.h",
+        "ext-src/stubs/php_swoole_table_arginfo.h",
+        "ext-src/swoole_channel_coro.cc",
+        "ext-src/swoole_table.cc"
+      ]
     }
   ]
 }

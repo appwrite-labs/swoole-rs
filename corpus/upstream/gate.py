@@ -10,7 +10,8 @@ A flagged test may be re-run (--recheck: up to 3 re-runs per engine, or one hybr
 re-run when the hybrid's first failure timed out). If upstream fails a re-run, the test
 is flaky on upstream only if the hybrid passes one of its re-runs; otherwise it is a
 regression. If upstream passes every re-run, any failed hybrid re-run is a regression
-and passing them all is a pass on re-run. A hybrid that both passed and failed its
+and passing them all is a pass on re-run. The hybrid re-runs until it has both passed and
+failed, so one failed re-run of a test racy on both engines doesn't decide it. A hybrid that both passed and failed its
 re-runs gets more upstream re-runs (up to 9 in all) before that verdict: a test racy
 on both engines then shows an upstream failure too. Only regressions fail the gate, and
 a flagged test without hybrid re-runs stays one.
@@ -129,8 +130,10 @@ def pending(tests, rechecked, engine='upstream', results=()):
     """Flagged tests still worth re-running on `engine`. Upstream stops at its first failed
     re-run; `upstream-extended` continues upstream, to 9 re-runs, for a test the hybrid
     both passed and failed. Another engine stops once its verdict is settled (a pass after an upstream
-    failure, a failure otherwise) or its budget is spent: one re-run if its first failure
-    timed out, else three. Inconclusive re-runs don't use the budget, but each engine stops
+    failure, otherwise both a pass and a failure, which earns those upstream re-runs) or its
+    budget is spent: one re-run if its first failure timed out, else three. A failure alone
+    doesn't settle it: a test racy on both engines (#862) fails a hybrid re-run as often as
+    the first run. Inconclusive re-runs don't use the budget, but each engine stops
     after twice its budget in all."""
     runs = reruns(rechecked)
 
@@ -147,8 +150,9 @@ def pending(tests, rechecked, engine='upstream', results=()):
     left = []
     for test in tests:
         statuses = runs[test].get(engine, [])
-        settled = 'passed' if any(status not in ('passed', 'inconclusive') for status in runs[test].get('upstream', [])) else 'failed'
-        if settled not in statuses and within(statuses, 1 if test in timed_out else RERUNS):
+        upstream_failed = any(status not in ('passed', 'inconclusive') for status in runs[test].get('upstream', []))
+        settled = 'passed' in statuses and (upstream_failed or 'failed' in statuses)
+        if not settled and within(statuses, 1 if test in timed_out else RERUNS):
             left.append(test)
     return left
 
