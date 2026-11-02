@@ -232,6 +232,7 @@ fn deadlock_check() -> Result<(), Bailout> {
 pub(crate) fn shutdown() -> bool {
     let bailed = activated() && deactivate().is_err();
     if !bailed {
+        crate::scheduler::free_options();
         context::free_main();
     }
     bailed

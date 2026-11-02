@@ -4,7 +4,7 @@ use std::{
     ffi::{CStr, c_char, c_int, c_long, c_void},
     sync::OnceLock,
 };
-use swoole_rs_zend::sys::{zend_execute_data, zval};
+use swoole_rs_zend::sys::{zend_array, zend_execute_data, zval};
 
 /// `swr_v1_phpcoroutines_stats`.
 #[repr(C)]
@@ -81,6 +81,14 @@ pub struct Ops {
     pub(crate) error_ex: unsafe extern "C" fn(c_int, c_int, *const c_char),
     pub(crate) exit_original: unsafe extern "C" fn(*mut zend_execute_data, *mut zval) -> u8,
     pub(crate) exit_fallback: unsafe extern "C" fn(*const c_char, usize, c_long),
+    pub(crate) reactor_init: unsafe extern "C" fn() -> c_int,
+    pub(crate) event_wait: unsafe extern "C" fn(),
+    pub(crate) set_global_option: unsafe extern "C" fn(*mut zend_array),
+    pub(crate) set_stack_size: unsafe extern "C" fn(*mut zval),
+    pub(crate) add_name_resolver: unsafe extern "C" fn(*mut zval),
+    pub(crate) set_dns_cache_expire: unsafe extern "C" fn(c_long),
+    pub(crate) set_dns_cache_capacity: unsafe extern "C" fn(c_long),
+    pub(crate) set_exit_condition: unsafe extern "C" fn(*mut zval),
 }
 
 /// `swr_v1_phpcoroutines_*` flag bits.
