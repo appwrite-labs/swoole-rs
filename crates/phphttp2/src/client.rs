@@ -1232,8 +1232,10 @@ impl Drop for Client {
 
 /// `php_swoole_error(E_WARNING, "%s", message)`.
 fn warn(message: &CStr) {
-    // SAFETY: a NUL-terminated message, from a handler.
-    unsafe { native::swoole_http2_client_coro_warning(message.as_ptr()) };
+    // SAFETY: C++'s reporter, from a handler.
+    swoole_rs_zend::bailout::defer(unsafe {
+        swoole_rs_zend::bailout::report(native::swoole_http2_client_coro_warning, message)
+    });
 }
 
 fn read_u32(bytes: &[u8]) -> u32 {

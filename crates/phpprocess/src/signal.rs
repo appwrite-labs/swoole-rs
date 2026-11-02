@@ -47,6 +47,7 @@ unsafe extern "C" fn on_signal(signo: c_int) {
             &message!("Swoole\\Process: signal [{signo}] handler error"),
         );
     }
+    swoole_rs_zend::bailout::finish();
 }
 
 /// `Process::signal(int $signo, ?callable $callback = null): bool`.

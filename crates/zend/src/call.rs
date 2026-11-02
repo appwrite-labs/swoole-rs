@@ -9,10 +9,10 @@ use crate::{
         _zend_expected_type_Z_EXPECTED_DOUBLE, _zend_expected_type_Z_EXPECTED_LONG,
         _zend_expected_type_Z_EXPECTED_STRING, _zval_struct__bindgen_ty_1, IS_ARRAY, IS_DOUBLE,
         IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT_EX, IS_REFERENCE, IS_STRING, IS_TRUE,
-        ZPP_ERROR_WRONG_ARG, add_assoc_long_ex, swr_zend_array_init, swr_zval_empty_array,
-        swr_zval_empty_string, swr_zval_str, zend_execute_data, zend_expected_type, zend_object,
-        zend_parse_arg_bool_slow, zend_parse_arg_double_slow, zend_parse_arg_long_slow,
-        zend_parse_arg_str_slow, zend_string, zend_update_property_long, zend_value,
+        ZPP_ERROR_WRONG_ARG, add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool,
+        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str,
+        swr_zval_empty_array, swr_zval_empty_string, swr_zval_str, zend_execute_data,
+        zend_expected_type, zend_object, zend_string, zend_update_property_long, zend_value,
         zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
     },
 };
@@ -34,9 +34,35 @@ pub unsafe fn type_of(value: *const zval) -> u32 {
     unsafe { zv.u1.type_info & 0xff }
 }
 
-/// The arguments did not parse; Zend has raised the error.
+/// The arguments did not parse; Zend has raised the error (or a user error
+/// handler bailed out of a coercion's deprecation, which is deferred).
 #[derive(Debug)]
 pub struct Invalid;
+
+/// A ZPP slow-path coercion inside `zend_try`: whether it parsed. Coercions
+/// raise deprecations, which run the user error handler.
+/// # Errors
+/// That handler bailed out; the bailout is deferred and nothing more is raised.
+/// # Safety
+/// `arg` is a live argument and `out` a writable slot of `parse`'s type.
+#[cold]
+unsafe fn coerce<T>(
+    parse: unsafe extern "C" fn(*mut zval, *mut T, u32, *mut bool) -> std::ffi::c_int,
+    arg: *mut zval,
+    out: *mut T,
+    n: u32,
+) -> Result<bool, Invalid> {
+    let mut parsed = false;
+    // SAFETY: per the caller; `parsed` is a writable local.
+    let bailed = unsafe { parse(arg, out, n, &raw mut parsed) };
+    match crate::bailout::trapped(bailed) {
+        Ok(()) => Ok(parsed),
+        Err(bailout) => {
+            bailout.defer();
+            Err(Invalid)
+        }
+    }
+}
 
 /// One call of an internal function or method: what Zend passes a handler
 /// (`INTERNAL_FUNCTION_PARAMETERS`).
@@ -116,7 +142,7 @@ impl Call {
         }
         let mut out = 0;
         // SAFETY: `arg` is live and `out` is a writable local.
-        if unsafe { zend_parse_arg_long_slow(arg, &raw mut out, n) } {
+        if unsafe { coerce(swr_zend_try_parse_long, arg, &raw mut out, n) }? {
             return Ok(out);
         }
         Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_LONG))
@@ -141,7 +167,7 @@ impl Call {
         }
         let mut out = false;
         // SAFETY: `arg` is live and `out` is a writable local.
-        if unsafe { zend_parse_arg_bool_slow(arg, &raw mut out, n) } {
+        if unsafe { coerce(swr_zend_try_parse_bool, arg, &raw mut out, n) }? {
             return Ok(out);
         }
         Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_BOOL))
@@ -167,7 +193,7 @@ impl Call {
         }
         let mut out = ptr::null_mut();
         // SAFETY: `arg` is live and `out` is a writable local.
-        if unsafe { zend_parse_arg_str_slow(arg, &raw mut out, n) } {
+        if unsafe { coerce(swr_zend_try_parse_str, arg, &raw mut out, n) }? {
             return Ok(Some(out));
         }
         Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_STRING))
@@ -192,7 +218,7 @@ impl Call {
         }
         let mut out = 0.0;
         // SAFETY: `arg` is live and `out` is a writable local.
-        if unsafe { zend_parse_arg_double_slow(arg, &raw mut out, n) } {
+        if unsafe { coerce(swr_zend_try_parse_double, arg, &raw mut out, n) }? {
             return Ok(out);
         }
         Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_DOUBLE))
@@ -220,7 +246,7 @@ impl Call {
         let mut out: *mut zend_string = ptr::null_mut();
         // SAFETY: `arg` is live and `out` is a writable local; Zend leaves the
         // converted string in the argument slot, so it lives for the call.
-        if unsafe { zend_parse_arg_str_slow(arg, &raw mut out, n) } {
+        if unsafe { coerce(swr_zend_try_parse_str, arg, &raw mut out, n) }? {
             // SAFETY: as above.
             return Ok(unsafe { bytes(out) });
         }

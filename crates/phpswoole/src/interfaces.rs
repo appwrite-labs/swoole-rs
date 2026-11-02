@@ -28,7 +28,7 @@ fn sys_warning(what: &str) {
     let reason = unsafe { CStr::from_ptr(reason) };
     let text = message!("{what}, Error: {}[{code}]", reason.to_string_lossy());
     // SAFETY: a handler, with a NUL-terminated message.
-    unsafe { php_error(E_WARNING, text.as_cstr()) };
+    swoole_rs_zend::bailout::defer(unsafe { php_error(E_WARNING, text.as_cstr()) });
 }
 
 /// The host's interfaces (`getifaddrs`), freed on drop.
@@ -257,11 +257,11 @@ fn local_mac(call: &Call) {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn local_mac(call: &Call) {
     // SAFETY: a handler, with a literal message.
-    unsafe {
+    swoole_rs_zend::bailout::defer(unsafe {
         php_error(
             E_WARNING,
             c"swoole_get_local_mac is not supported on this platform",
         )
-    };
+    });
     call.set_bool(false);
 }

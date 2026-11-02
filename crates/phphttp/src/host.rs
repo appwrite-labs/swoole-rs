@@ -2,7 +2,10 @@
 //! (`native/httpbindings/swoole_rs_httpbindings.h`) until the context moves to
 //! Rust. `Context` is that object, opaque here.
 use std::ffi::{CString, c_char, c_int, c_void};
-use swoole_rs_zend::sys::{zend_long, zend_string, zval};
+use swoole_rs_zend::{
+    bailout,
+    sys::{zend_long, zend_string, zval},
+};
 
 pub(crate) type Context = c_void;
 
@@ -121,16 +124,15 @@ unsafe extern "C" {
     pub(crate) fn swr_http_host_recv(context: *mut Context, timeout: f64, return_value: *mut zval);
 }
 
-/// Re-raise a bailout a host call trapped (`zend_bailout()`). Host calls that
-/// can run user code (a header value's `__toString`, `exit()` in it) trap a
-/// bailout in C++ and report it; the handler finishes, then raises it here as
-/// its last step, so the `longjmp` crosses only the handler's own frames,
-/// which own nothing to drop (docs/zend.md).
+/// Re-raise a bailout a host call trapped. Host calls that can run user code
+/// (a header value's `__toString`, `exit()` in it) trap a bailout in C++ and
+/// report it; the handler finishes, then raises it as its last step
+/// (docs/zend.md).
 pub(crate) fn raise(bailed: bool) {
     if bailed {
-        // SAFETY: Zend's own `zend_bailout()`, from the outermost Rust frame.
-        unsafe { swoole_rs_zend::sys::_zend_bailout(c"phphttp".as_ptr().cast_mut(), 0) };
+        bailout::Bailout.defer();
     }
+    bailout::finish();
 }
 
 /// `swoole_set_last_error(code)`.
@@ -158,8 +160,10 @@ pub(crate) fn report(code: c_int, always: bool, message: impl Into<Vec<u8>>) {
         message.truncate(nul);
     }
     let message = CString::new(message).unwrap_or_default();
-    // SAFETY: a NUL-terminated message, printed through "%s".
-    unsafe { swr_http_host_error(code, c_int::from(always), message.as_ptr()) };
+    // SAFETY: C++'s reporter, printing the message through "%s".
+    bailout::defer(unsafe {
+        bailout::report_code(swr_http_host_error, code, c_int::from(always), &message)
+    });
 }
 
 /// Swoole's log line as `func` would print it: `swoole_error_log(level, error)`

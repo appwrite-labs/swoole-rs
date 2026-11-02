@@ -239,10 +239,15 @@ fn sync(call: &Call, socket: Socket) {
 pub(crate) fn warn(fatal: bool, message: &str) {
     let message = CString::new(message).unwrap_or_default();
     #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
-    // SAFETY: a NUL-terminated message, reported from a handler.
-    unsafe {
-        native::swoole_rs_php_error(E_WARNING as c_int, fatal, message.as_ptr());
-    }
+    // SAFETY: C++'s reporter, from a handler.
+    swoole_rs_zend::bailout::defer(unsafe {
+        swoole_rs_zend::bailout::report_flag(
+            native::swoole_rs_php_error,
+            E_WARNING as c_int,
+            fatal,
+            &message,
+        )
+    });
 }
 
 /// `zend_throw_exception_ex(swoole_socket_coro_exception_ce, code, ...)`.
