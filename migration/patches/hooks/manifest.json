@@ -17,6 +17,13 @@
         "src/coroutine/system.cc",
         "src/coroutine/uring_socket.cc"
       ]
+    },
+    {
+      "path": "0002-php-runtime.patch",
+      "sha256": "9b40990589319145e46bd8ebc92c87292b020b54d69449e7d633a40c83750592",
+      "upstream_paths": [
+        "ext-src/swoole_runtime.cc"
+      ]
     }
   ]
 }

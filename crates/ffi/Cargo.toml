@@ -25,7 +25,7 @@ corebase = ["dep:swoole-rs-corebase"]
 
 coroutine = ["dep:swoole-rs-coroutine"]
 
-hooks = ["dep:swoole-rs-hooks"]
+hooks = ["dep:swoole-rs-hooks", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php"]
 # Not a module: the hybrid adds it when configured with --enable-iouring.
 iouring = ["hooks", "swoole-rs-hooks/iouring"]
 
@@ -63,6 +63,7 @@ swoole-rs-reactor = { path = "../reactor", optional = true }
 swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-coroutine = { path = "../coroutine", optional = true }
 swoole-rs-hooks = { path = "../hooks", optional = true }
+swoole-rs-phpruntime = { path = "../phpruntime", optional = true }
 swoole-rs-ossupport = { path = "../ossupport", optional = true }
 swoole-rs-tls = { path = "../tls", optional = true }
 swoole-rs-process = { path = "../process", optional = true }

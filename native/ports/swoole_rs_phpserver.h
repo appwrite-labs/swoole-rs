@@ -40,7 +40,7 @@ typedef struct {
 } swr_v1_phpserver_port_host;
 
 struct _zend_class_entry *swr_v1_phpserver_port_minit(const struct _zend_function_entry *methods,
-                                                      const swr_v1_phpserver_port_host *host,
+                                                      const swr_v1_phpserver_port_host *table,
                                                       bool not_serializable);
 #ifdef __cplusplus
 }
