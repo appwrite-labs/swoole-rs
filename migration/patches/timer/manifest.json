@@ -43,6 +43,13 @@
         "ext-src/stubs/php_swoole_timer_arginfo.h",
         "ext-src/swoole_timer.cc"
       ]
+    },
+    {
+      "path": "0007-timer-clear-once.patch",
+      "sha256": "99d4d2674007de9f1671d6dc99df9a2b009d976b10531da75df6dd2e8bbfea6f",
+      "upstream_paths": [
+        "ext-src/swoole_timer.cc"
+      ]
     }
   ]
 }

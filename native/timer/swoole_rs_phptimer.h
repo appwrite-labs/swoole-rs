@@ -18,6 +18,7 @@ struct swr_v1_phptimer_node {
     uint64_t round;
     uint8_t php;
     uint8_t removed;
+    void *handle; /* the TimerNode, for del */
 };
 struct swr_v1_phptimer_invocation {
     void *callable;
@@ -29,7 +30,7 @@ struct swr_v1_phptimer_ops {
     uint8_t (*get)(int64_t id, struct swr_v1_phptimer_node *node);
     void (*stats)(size_t *count, uint64_t *round);
     size_t (*ids)(int64_t *ids, size_t capacity);
-    uint8_t (*del)(int64_t id);
+    uint8_t (*del)(void *handle);
     uint8_t (*clear_all)(void);
     void (*call)(void *invocation);
     void (*fatal_warning)(const char *message);
