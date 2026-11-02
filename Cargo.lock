@@ -638,6 +638,10 @@ dependencies = [
 [[package]]
 name = "swoole-rs-protocols"
 version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-reactor",
+]
 
 [[package]]
 name = "swoole-rs-reactor"

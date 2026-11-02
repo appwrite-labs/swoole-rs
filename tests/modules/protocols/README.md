@@ -8,9 +8,9 @@ membership. The feature is opt-in (bit 128); the C contract is
 ## Boundaries and compatibility
 
 Rust owns packet membership, protocol decisions and bounded encoding/decoding.
-Native code owns Socket/Address execution, String/shared_ptr allocation and
-lifetime, shared-memory/header layouts, logging and Zend execution. No native
-allocation, destructor, PHP conversion or callback runs beneath a Rust frame.
+Native code owns Socket/Address execution, String allocation, shared-memory/header
+layouts, logging and Zend execution. No native allocation, PHP conversion or
+callback that can bail out runs beneath a Rust frame.
 
 - MQTT keeps incremental/nonminimal remaining lengths and four-byte overflow
   termination; packet type is not newly validated.
@@ -31,11 +31,15 @@ allocation, destructor, PHP conversion or callback runs beneath a Rust frame.
   status/error differs from missing; PHP empty bulk emits `$0` while the primitive
   formatter writes nothing. Embedded-NUL status/key truncation, unsigned numeric
   map keys and 32-bit map-count wrapping remain.
-- MessageBus keeps direct/chunk flags, retry after minimum-size reduction, legacy
-  nonnegative chunk-write success and uint16 fairness wrapping (including buffered
-  receive's double increment). End wins over the fairness threshold.
-- Packet owner tokens remain native-disposed; duplicate insertion rolls membership
-  back and transfers no ownership.
+- MessageBus: Rust owns the receive buffer's bookkeeping, the packets being
+  reassembled and both read loops and the write loop. It keeps direct/chunk flags,
+  retry after minimum-size reduction, legacy nonnegative chunk-write success and
+  uint16 fairness wrapping (including buffered receive's double increment). End
+  wins over the fairness threshold. The read returns to native code to allocate a
+  packet (the allocator may be Zend's, which can bail out) and to log; it calls
+  the packet allocator's `free`, and the write calls native `send`, neither of
+  which bails out. `cargo test -p swoole-rs-protocols` round-trips packets over
+  real socketpairs; upstream's `message_bus` GoogleTests run through `core.py`.
 
 Undefined legacy overreads/overflows are not replayed: empty MQTT asks for more,
 invalid/truncated RESP fails, oversized SOCKS output is rejected before overflow.
@@ -54,14 +58,9 @@ python3 tests/modules/protocols/native.py --source /pinned/reference \
 
 `native.py` compiles unchanged pinned function bodies and the patched overlay
 bodies (`adapter.inc`, `native.cc`) with modeled String allocation/socket I/O and
-compares MQTT, SOCKS, RESP, receive traces, MessageBus decisions and pool
-lifecycle steps. A seeded 10,000-wire RESP corpus also runs the exact original PHP
+compares MQTT, SOCKS, RESP and receive traces. A seeded 10,000-wire RESP corpus also runs the exact original PHP
 request-parser loop with modeled Zend parameters against Rust typed events. C++
 ASan/UBSan does not instrument Rust. Failing cases print trial/seed.
-
-`--allocation-failures` also builds `pool_failure.cc`, which injects C++ allocation
-exceptions around copy/assignment at pool sizes 0/1/31/32/33/97 and checks original
-validity, shared buffers and holder cleanup. Rust allocator faults are not injected.
 
 ## Actual PHP checks
 
@@ -122,12 +121,3 @@ python3 /repo/tests/modules/protocols/core.py --source /ref \
 
 It needs an isolated network (Redis 6379, MQTT 9501) and refuses an existing
 Redis service. Without Node, `mqtt.echo` is unsupported and `--require-all` exits 1.
-
-## Benchmark
-
-`native.py --prepare-benchmark /absolute/binary` builds optimized matched bodies
-from `bench.cc` and verifies checksums without timing. Run `/absolute/binary --time`
-only on an otherwise idle host. The last measurement (before the borrowed-value
-and PHP reply changes) showed RESP faster at every size, but the packet pool
-5-13% slower at sizes 1-1024 in every pair. The pool regression and the three
-original SOCKS skips block default activation.
