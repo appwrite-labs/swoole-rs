@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Re-run the PHPT gate's flagged tests up to three times per engine, upstream first. Upstream
 # stops at a test's first failed re-run; the hybrid then re-runs every flagged test until its
-# verdict is settled, once only when its first failure timed out (gate.py --print-pending).
+# verdict is settled (a pass, and also a failure unless upstream failed), once only when its
+# first failure timed out (gate.py --print-pending).
 # An inconclusive re-run (the #200 runner abort) is replaced, up to six attempts in all.
 # A test the hybrid both passed and failed then gets more upstream re-runs (up to 9 in all),
 # so a test racy on both engines isn't counted as a hybrid regression.
