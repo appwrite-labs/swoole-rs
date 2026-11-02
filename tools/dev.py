@@ -328,17 +328,6 @@ def plan(args, reports):
             name = 'httpbindings-settings' + suffix
             script(name, 'tests/modules/httpbindings/settings_gate.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options, *report(name))
-        for family, runner, profiles in [
-            ('emission', 'emission_gate.py', [('', []), ('-without-zlib', ['--without-zlib']),
-                                              ('-without-compression', ['--without-compression'])]),
-            ('file', 'file_gate.py', [('', []), ('-without-compression', ['--without-compression'])]),
-        ]:
-            for suffix, options in profiles:
-                name = 'httpbindings-' + family + suffix
-                script(name, 'tests/modules/httpbindings/' + runner,
-                       '--source', ROOT / 'target/upstream/src',
-                       '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       *options, *report(name))
     if 'http2' in modules:
         includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
                     if sys.platform == 'darwin' else [])

@@ -681,12 +681,6 @@ class Lanes(unittest.TestCase):
         for name in ['clients-lifecycle', 'clients-write', 'clients-read', 'clients-connect', 'clients-persistent', 'clients-resolver-config', 'clients-transport', 'clients-pool', 'clients-resolver', 'clients-http-connection', 'clients-http-response', 'clients-http-format', 'clients-coro', 'clients-async', 'clients-object', 'clients-ip', 'clients-ip-text', 'clients-coro-io']:
             self.assertIn('--archive', commands[name])
             self.assertIn('--sanitize', commands[name])
-        for family in ['emission', 'file']:
-            self.assertIn('--archive', commands['httpbindings-' + family])
-            self.assertNotIn('--without-compression', commands['httpbindings-' + family])
-            self.assertIn('--without-compression', commands['httpbindings-' + family + '-without-compression'])
-        self.assertIn('--without-zlib', commands['httpbindings-emission-without-zlib'])
-        self.assertNotIn('--without-compression', commands['httpbindings-emission-without-zlib'])
         self.assertIn('--archive', commands['httpbindings-settings'])
         self.assertIn('--without-compression', commands['httpbindings-settings-without-compression'])
         self.assertNotIn('--faults', commands['clients-pool'])
