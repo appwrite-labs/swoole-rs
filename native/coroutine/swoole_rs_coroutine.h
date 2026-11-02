@@ -79,30 +79,13 @@ void swr_v1_channel_remove(swr_v1_channel *, uint32_t role, void *co);
 swr_v1_channel_outcome swr_v1_channel_pop(swr_v1_channel *, bool positive_timeout, const swr_v1_channel_effects *);
 int32_t swr_v1_channel_push(swr_v1_channel *, bool positive_timeout, void *data, const swr_v1_channel_effects *);
 bool swr_v1_channel_close(swr_v1_channel *, const swr_v1_channel_effects *);
-/* Typed same-layout Context cells. Raw initialization is performed only at the
- * original publication points; no reference to uninitialized fields is formed. */
-typedef struct { void *pointer; } swr_v1_context_stack_cell;
-typedef struct { uint32_t size; } swr_v1_context_extent;
-typedef struct { uint8_t value; } swr_v1_context_completion;
-typedef struct { void *pointer, *top; size_t size; uint8_t present; } swr_v1_context_stack_view;
-enum { SWR_CTX_STACK_ADMIT = 0, SWR_CTX_STACK_READ = 1, SWR_CTX_STACK_TOP = 2,
-       SWR_CTX_STACK_CLEAR = 3, SWR_CTX_STACK_MARK = 4, SWR_CTX_STACK_USAGE = 5 };
-swr_v1_context_extent swr_v1_context_extent_new(size_t requested);
-/* First constructor statement seeds completion; thread backend has null extent. */
-size_t swr_v1_context_prepare(swr_v1_context_completion *, const swr_v1_context_extent *);
-void swr_v1_context_finish(swr_v1_context_completion *);
-uint8_t swr_v1_context_completed(const swr_v1_context_completion *);
-swr_v1_context_stack_view swr_v1_context_stack_read(const swr_v1_context_stack_cell *, const swr_v1_context_extent *);
-/* ADMIT follows Native allocation, CLEAR follows Native free without another
- * observation. READ/TOP refresh after Native effects; MARK uses original full
- * requested size, USAGE uses stored truncated extent. Payload marker access
- * requires the same live allocation/initialized spans as frozen marker exports.
- * No Native resource/context/function/thread effects occur inside Rust. */
-swr_v1_context_stack_view swr_v1_context_stack_step(swr_v1_context_stack_cell *,
-    const swr_v1_context_extent *, uint32_t operation, void *allocation, size_t requested);
-/* Native-owned stack bytes, no retained pointer or native effects. Only marker
- * spans are written/read; usage requires those spans already initialized. */
-void swr_v1_context_stack_mark(uint8_t *stack, size_t size);
+/* Coroutine stacks (crates/coroutine/src/stack.rs). PROTECT maps the stack and
+ * makes its lowest page inaccessible (SW_CONTEXT_PROTECT_STACK_PAGE); MARK
+ * writes the usage markers (SW_CONTEXT_DETECT_STACK_USAGE). Free with the same
+ * size and flags. alloc returns null when out of memory. */
+enum { SWR_CTX_STACK_PROTECT = 1, SWR_CTX_STACK_MARK = 2 };
+void *swr_v1_context_stack_alloc(size_t size, uint32_t flags);
+void swr_v1_context_stack_free(void *stack, size_t size, uint32_t flags);
 size_t swr_v1_context_stack_usage(const uint8_t *stack, size_t size);
 #ifdef __cplusplus
 }
