@@ -203,12 +203,17 @@ const char *swr_v1_server_local_addr(const swr_v1_server_local_addrs *addrs, boo
  * the global functions are its zif_swoole_* exports. C++ lends what only it can
  * reach: Swoole's error, logger and MIME state and the module globals.
  */
-enum {
-    SWR_PHPSWOOLE_DEBUG = 1 << 0, SWR_PHPSWOOLE_SHORTNAME = 1 << 1, SWR_PHPSWOOLE_COMPRESSION = 1 << 2,
-    SWR_PHPSWOOLE_ZLIB = 1 << 3, SWR_PHPSWOOLE_BROTLI = 1 << 4, SWR_PHPSWOOLE_TLS1_1 = 1 << 5,
-    SWR_PHPSWOOLE_TLS1_2 = 1 << 6, SWR_PHPSWOOLE_TLS1_3 = 1 << 7, SWR_PHPSWOOLE_DTLS = 1 << 8,
-    SWR_PHPSWOOLE_SSL3 = 1 << 9, SWR_PHPSWOOLE_IOURING = 1 << 10,
-};
+#define SWR_PHPSWOOLE_DEBUG (1u << 0)
+#define SWR_PHPSWOOLE_SHORTNAME (1u << 1)
+#define SWR_PHPSWOOLE_COMPRESSION (1u << 2)
+#define SWR_PHPSWOOLE_ZLIB (1u << 3)
+#define SWR_PHPSWOOLE_BROTLI (1u << 4)
+#define SWR_PHPSWOOLE_TLS1_1 (1u << 5)
+#define SWR_PHPSWOOLE_TLS1_2 (1u << 6)
+#define SWR_PHPSWOOLE_TLS1_3 (1u << 7)
+#define SWR_PHPSWOOLE_DTLS (1u << 8)
+#define SWR_PHPSWOOLE_SSL3 (1u << 9)
+#define SWR_PHPSWOOLE_IOURING (1u << 10)
 struct _zval_struct;
 struct _zend_array;
 struct _zend_class_entry;
