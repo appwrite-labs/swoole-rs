@@ -24,7 +24,7 @@ def main():
     header='include/swoole_coroutine_socket.h'
     unit='src/coroutine/socket.cc'
     manifest=module_patches(ROOT/'migration/patches/hooks')
-    paths=manifest[0]['upstream_paths']
+    paths=sorted({path for entry in manifest for path in entry['upstream_paths']})
     originals={path:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+path],text=True) for path in paths}
     signatures=['Coroutine *get_bound_co(', 'long get_bound_cid(', 'void check_bound_co(', 'void set_err(const int e)', 'void check_return_value(', 'bool is_available(', 'void set_timeout(const timeval *timeout,']
     methods=['const char *Socket::get_event_str(', 'bool Socket::TimeoutController::has_timedout(']
@@ -36,7 +36,7 @@ def main():
             patch=ROOT/'migration/patches/hooks'/entry['path']
             subprocess.run(['git','apply',str(patch)],cwd=tree,check=True)
         for variant in ['original','selected']:
-            texts=originals if variant=='original' else {path:(tree/path).read_text() for path in paths}
+            texts=originals if variant=='original' else {path:(tree/path).read_text() for path in paths if (tree/path).exists()}
             # The selected header's bound-coroutine accessors over its Rust state (#439).
             selected_inline=['Coroutine *event_co(', 'void bind_co('] if variant=='selected' else []
             (tree/(variant+'-inline.inc')).write_text('\n'.join(block(texts[header],signature) for signature in signatures+selected_inline))

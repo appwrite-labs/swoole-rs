@@ -23,7 +23,7 @@ def main():
     a=p.parse_args()
     unit='src/coroutine/socket.cc'
     manifest=module_patches(ROOT/'migration/patches/hooks')
-    paths=manifest[0]['upstream_paths']
+    paths=sorted({path for entry in manifest for path in entry['upstream_paths']})
     originals={path:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+path],text=True) for path in paths}
     signatures=['bool Socket::shutdown(', 'bool Socket::cancel(', 'bool Socket::close()', 'bool Socket::connect(const sockaddr *', 'bool Socket::check_liveness()', 'const char *Socket::get_event_str(']
     inline=['bool is_closed() const', 'bool is_connected() const', 'Coroutine *get_bound_co(', 'bool has_bound(', 'void set_err(const int e)', 'bool is_available(', 'void check_bound_co(', 'long get_bound_cid(']
@@ -35,7 +35,7 @@ def main():
             patch=ROOT/'migration/patches/hooks'/entry['path']
             subprocess.run(['git','apply',str(patch)],cwd=tree,check=True)
         for variant in ['original','selected']:
-            texts=originals if variant=='original' else {path:(tree/path).read_text() for path in paths}
+            texts=originals if variant=='original' else {path:(tree/path).read_text() for path in paths if (tree/path).exists()}
             # cancel/close are Rust calls in the selected tree (#443); its lifecycle_ops passes the effects.
             selected_only=['swr_v1_hook_socket_ops Socket::lifecycle_ops('] if variant=='selected' else []
             bodies=[block(texts[unit],signature)+(';' if signature.startswith('struct ') else '') for signature in signatures+selected_only]
