@@ -39,7 +39,18 @@
       ]
     },
     {
-      "path": "0005-arginfo.patch",
+      "path": "0005-swoole_client.patch",
+      "sha256": "8ee77ba5ef34235773957033170e2bb360c6b39217058e0978a01d4c5bc8bd43",
+      "upstream_paths": [
+        "ext-src/php_swoole_client.h",
+        "ext-src/swoole_client.cc",
+        "ext-src/swoole_client_async.cc",
+        "include/swoole_client.h",
+        "src/network/client.cc"
+      ]
+    },
+    {
+      "path": "0006-arginfo.patch",
       "sha256": "522b304328e77aeb501ef0b744193e3f97792950a7288568cdd9ca43ba6259db",
       "upstream_paths": [
         "ext-src/stubs/php_swoole_client_coro_arginfo.h",
