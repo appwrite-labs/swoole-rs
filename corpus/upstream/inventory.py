@@ -24,7 +24,7 @@ def shard(paths, index, count):
 
 
 # Outside tests/, but named by tests/include/config.php.
-FIXTURES = ['examples/test.jpg', 'docs/swoole-logo.svg', 'examples/www']
+FIXTURES = ['README.md', 'examples/test.jpg', 'docs/swoole-logo.svg', 'examples/www']
 
 
 def blobs(source):

@@ -39,10 +39,10 @@ Channel:
   dereferences or frees payloads. Allocation is fallible; native raises
   `bad_alloc`. Channel is no longer copyable.
 
-`context.cc`: stack marker initialization and stack-usage sampling are in Rust
-(original marker bytes and placement; `<=` on init versus `<` on query). Stack
-allocation, page protection, valgrind registration and the context-switch ABI are
-native. Rust only touches bounded native-owned marker spans.
+`context.cc`: stack allocation, the guard page, marker initialization and
+stack-usage sampling are in Rust (original marker bytes and placement; `<=` on
+init versus `<` on query). Valgrind registration, the ASan fiber annotations and
+the context-switch ABI (boost.context asm or ucontext) are native.
 
 Execution-time accounting (`get_execute_usec`, `calc_execute_usec`) is in Rust;
 C++ reads the clocks and passes them in.
