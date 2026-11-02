@@ -14,6 +14,13 @@
       "upstream_paths": [
         "ext-src/swoole_server_port.cc"
       ]
+    },
+    {
+      "path": "0003-log-origin.patch",
+      "sha256": "35a217673258893d6f9c507654f87938793af42aba8953fc9c994f9df058be98",
+      "upstream_paths": [
+        "src/server/port.cc"
+      ]
     }
   ]
 }

@@ -210,6 +210,14 @@
       "upstream_paths": [
         "ext-src/swoole_server.cc"
       ]
+    },
+    {
+      "path": "0022-log-origin.patch",
+      "sha256": "6178fd63ece050678108a593067c020e4558f9168a85214a692c4e53da9839a7",
+      "upstream_paths": [
+        "ext-src/swoole_server.cc",
+        "src/server/process.cc"
+      ]
     }
   ]
 }

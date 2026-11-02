@@ -68,6 +68,14 @@
       "upstream_paths": [
         "ext-src/php_swoole.cc"
       ]
+    },
+    {
+      "path": "0010-log-origin.patch",
+      "sha256": "7efd8330880c36890a2ed7aea0b409b48f9a0fb214e2aaf8a62e6f12d96a2a87",
+      "upstream_paths": [
+        "include/swoole.h",
+        "src/server/master.cc"
+      ]
     }
   ]
 }
