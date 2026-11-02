@@ -17,7 +17,6 @@ pub mod ip;
 pub mod object;
 pub mod pool;
 pub mod resolver;
-mod sha1;
 pub mod state;
 pub mod transport;
 pub mod ws;

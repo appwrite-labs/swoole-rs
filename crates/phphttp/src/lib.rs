@@ -24,6 +24,7 @@ mod request;
 mod response;
 mod send;
 mod state;
+mod websocket;
 
 pub use context::{swr_v1_phphttp_context, swr_v1_phphttp_set_context};
 pub use cookie::*;
@@ -36,3 +37,4 @@ pub use parse::{
 pub use request::*;
 pub use response::*;
 pub use send::swr_v1_phphttp_end;
+pub use websocket::*;

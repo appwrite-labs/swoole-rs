@@ -115,19 +115,6 @@ unsafe extern "C" {
         value: *mut zval,
         format: bool,
     ) -> bool;
-    pub(crate) fn swr_http_host_disconnect(
-        context: *mut Context,
-        code: zend_long,
-        reason: *mut zend_string,
-        return_value: *mut zval,
-    );
-    pub(crate) fn swr_http_host_push(
-        context: *mut Context,
-        data: *mut zval,
-        opcode: zend_long,
-        flags: *mut zval,
-        return_value: *mut zval,
-    ) -> bool;
     pub(crate) fn swr_http_host_ping(
         context: *mut Context,
         data: *mut zend_string,
@@ -138,7 +125,6 @@ unsafe extern "C" {
         code: zend_long,
         debug: *mut zend_string,
     ) -> bool;
-    pub(crate) fn swr_http_host_upgrade(context: *mut Context) -> c_int;
     pub(crate) fn swr_http_host_close(context: *mut Context) -> bool;
     pub(crate) fn swr_http_host_recv(context: *mut Context, timeout: f64, return_value: *mut zval);
 }

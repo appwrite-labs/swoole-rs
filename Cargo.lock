@@ -338,6 +338,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
+ "swoole-rs-websocket",
 ]
 
 [[package]]
@@ -368,6 +369,7 @@ name = "swoole-rs-deflate"
 version = "0.1.0"
 dependencies = [
  "libz-sys",
+ "swoole-rs-inflate",
 ]
 
 [[package]]
@@ -529,6 +531,9 @@ dependencies = [
  "swoole-rs-deflate",
  "swoole-rs-http",
  "swoole-rs-httpbindings",
+ "swoole-rs-inflate",
+ "swoole-rs-phpstubs",
+ "swoole-rs-websocket",
  "swoole-rs-zend",
 ]
 
@@ -691,6 +696,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-websocket"
 version = "0.1.0"
+dependencies = [
+ "swoole-rs-base64",
+]
 
 [[package]]
 name = "swoole-rs-wrappers"

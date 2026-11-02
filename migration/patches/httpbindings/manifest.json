@@ -77,6 +77,15 @@
         "ext-src/php_swoole_http.h",
         "ext-src/swoole_http_response.cc"
       ]
+    },
+    {
+      "path": "0012-websocket-server.patch",
+      "sha256": "0eb309afea924bd1a52063cb72588f9d0589030f92630904436252c796c7e5a3",
+      "upstream_paths": [
+        "ext-src/php_swoole_websocket.h",
+        "ext-src/swoole_http_response.cc",
+        "ext-src/swoole_websocket_server.cc"
+      ]
     }
   ]
 }

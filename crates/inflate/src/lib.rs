@@ -14,7 +14,7 @@
 
 use std::ffi::c_int;
 
-use libz_sys::{inflate, inflateEnd, inflateInit2_, z_stream, zlibVersion};
+use libz_sys::{inflate, inflateEnd, inflateInit2_, uInt, z_stream, zlibVersion};
 
 // swoole's SW_ZLIB_ENCODING_* window-bits (ext-src/php_swoole_http.h).
 const ENCODING_GZIP: c_int = 0x1f;
@@ -31,6 +31,7 @@ const OUT_GROW: usize = 16384;
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut std::ffi::c_void;
     fn free(ptr: *mut std::ffi::c_void);
+    fn zError(status: c_int) -> *const std::ffi::c_char;
 }
 
 // zlib's `zalloc`/`zfree` are non-nullable in libz-sys, so a zeroed z_stream is
@@ -244,6 +245,73 @@ pub unsafe extern "C" fn swr_v1_clients_http_inflate_free(handle: *mut Inflate) 
     // SAFETY: the caller lends a live handle previously leaked by `_new`;
     // dropping it ends its stream.
     drop(unsafe { Box::from_raw(handle) });
+}
+
+/// Why [`message`] failed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MessageFailure {
+    /// `inflateInit2() failed by %s`.
+    Init(c_int),
+    /// `inflate() failed, Error: %s[%d]`.
+    Inflate(c_int),
+}
+
+/// `swoole::websocket::message_uncompress`: a permessage-deflate payload (RFC
+/// 7692, raw deflate) inflated with sync flushes into a buffer that starts at
+/// `input.len() + 1024` bytes and doubles whenever less than 4096 are free.
+/// # Errors
+/// `inflateInit2` or `inflate` failed; the status says which.
+pub fn message(input: &[u8]) -> Result<Vec<u8>, MessageFailure> {
+    /// `SW_BUFFER_SIZE_STD / 2`.
+    const HEADROOM: usize = 4096;
+    let mut stream = fresh_stream();
+    let size = c_int::try_from(size_of::<z_stream>()).unwrap_or(c_int::MAX);
+    // SAFETY: zlibVersion returns a static version string.
+    let version = unsafe { zlibVersion() };
+    // SAFETY: a fresh stream, the running zlib's version and the struct size.
+    let status = unsafe { inflateInit2_(&raw mut stream, ENCODING_RAW, version, size) };
+    if status != Z_OK {
+        return Err(MessageFailure::Init(status));
+    }
+    stream.next_in = input.as_ptr().cast_mut();
+    stream.avail_in = uInt::try_from(input.len()).unwrap_or(uInt::MAX);
+    let mut out = vec![0_u8; input.len() + 1024];
+    let mut length = 0;
+    let status = loop {
+        stream.avail_out = uInt::try_from(out.len() - length).unwrap_or(uInt::MAX);
+        // SAFETY: `length <= out.len()`, so this is inside or one past `out`.
+        stream.next_out = unsafe { out.as_mut_ptr().add(length) };
+        // SAFETY: an initialized stream over the live input and output.
+        let status = unsafe { inflate(&raw mut stream, Z_SYNC_FLUSH) };
+        if status >= 0 {
+            length = usize::try_from(stream.total_out).unwrap_or(usize::MAX);
+        }
+        if status == Z_STREAM_END || (status == Z_OK && stream.avail_in == 0) {
+            break Z_OK;
+        }
+        if status != Z_OK {
+            break status;
+        }
+        if length + HEADROOM >= out.len() {
+            out.resize(out.len() * 2, 0);
+        }
+    };
+    // SAFETY: an initialized stream, ended once.
+    unsafe { inflateEnd(&raw mut stream) };
+    if status != Z_OK {
+        return Err(MessageFailure::Inflate(status));
+    }
+    out.truncate(length);
+    Ok(out)
+}
+
+/// zlib's message for a status (`zError`).
+#[must_use]
+pub fn error(status: c_int) -> &'static std::ffi::CStr {
+    // SAFETY: zError has no preconditions.
+    let message = unsafe { zError(status) };
+    // SAFETY: zError returns a static, NUL-terminated string for any status.
+    unsafe { std::ffi::CStr::from_ptr(message) }
 }
 
 #[cfg(test)]
