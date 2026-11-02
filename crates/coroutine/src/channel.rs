@@ -1,15 +1,33 @@
-//! Coupled inline Channel state and authoritative queue operations. Native owns
-//! every token pointee, timer, trace, callback and context effect after return.
-use crate::{ChannelCursor, ChannelTokens, channel_step};
-use std::ffi::c_void;
-use std::ptr;
+// SPDX-License-Identifier: Apache-2.0
+//! `swoole::coroutine::Channel`: capacity, closed flag, last error, the data
+//! FIFO and both waiter queues, and pop/push/close as whole operations.
+//!
+//! C++ supplies the effects through [`Effects`]: arming and deleting the timeout
+//! timer, suspending the current coroutine (with its cancel function) and
+//! resuming a waiter. No Rust reference to the channel lives across an effect:
+//! other coroutines use the channel while this one is suspended, and a resumed
+//! waiter may delete it, so an operation never touches it after a resume that
+//! ends it.
+use core::ffi::c_void;
+use std::collections::VecDeque;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ChannelState {
-    pub capacity: usize,
-    pub closed: u8,
-    pub error: i32,
+pub const PRODUCER: u32 = 1;
+pub const CONSUMER: u32 = 2;
+pub const ERROR_OK: i32 = 0;
+pub const ERROR_TIMEOUT: i32 = -1;
+pub const ERROR_CLOSED: i32 = -2;
+pub const ERROR_CANCELED: i32 = -3;
+/// An operation could not allocate; C++ raises `std::bad_alloc` after return.
+pub const ALLOCATION_REFUSED: i32 = -5;
+
+#[derive(Default)]
+pub struct Channel {
+    capacity: usize,
+    closed: bool,
+    error: i32,
+    data: VecDeque<*mut c_void>,
+    producers: VecDeque<*mut c_void>,
+    consumers: VecDeque<*mut c_void>,
 }
 
 #[repr(C)]
@@ -18,790 +36,470 @@ pub struct ChannelView {
     pub producers: usize,
     pub consumers: usize,
     pub error: i32,
-    pub closed: u8,
-    pub full: u8,
-    pub empty: u8,
+    pub closed: bool,
+    pub full: bool,
+    pub empty: bool,
 }
 
+/// C++ effects for one operation; `ctx` is its per-call state.
 #[repr(C)]
-pub struct OwnedChannelCursor {
-    pub step: ChannelCursor,
-    pub pending: u32,
-}
-
-#[repr(C)]
-pub struct ChannelAction {
-    pub action: i32,
-    pub token: *mut c_void,
-}
-
-#[repr(C)]
-pub struct ChannelWaiter {
-    pub status: i32,
-    pub role: u32,
-    pub token: *mut c_void,
-}
-
-/// Whole waiter role selection and FIFO mutation. Original enqueue/pop treat
-/// PRODUCER as special; original removal treats CONSUMER as special instead.
-/// Native alone traces, yields, resumes and owns all pointed-to objects.
-/// # Safety
-/// Both queues are distinct live exclusive owners. Tokens are opaque. No borrow
-/// survives return; the caller performs Native effects only after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_channel_waiter(
-    producers: *mut ChannelTokens,
-    consumers: *mut ChannelTokens,
-    operation: u32,
-    role: u32,
-    token: *mut c_void,
-) -> ChannelWaiter {
-    let producer = if operation == 1 { role != 2 } else { role == 1 };
-    let mut result = ChannelWaiter {
-        status: 0,
-        role: if producer { 1 } else { 2 },
-        token: ptr::null_mut(),
-    };
-    // Reject an unknown operation before observing either queue.
-    if operation > 2 {
-        result.status = -4;
-        return result;
-    }
-    // SAFETY: per this function's `# Safety` contract, `if` is live, aligned and exclusive.
-    let queue = unsafe { &mut *if producer { producers } else { consumers } };
-    match operation {
-        0 => {
-            if queue.try_push(token).is_err() {
-                result.status = -5;
-            }
-        }
-        1 => queue.0.retain(|&entry| entry != token),
-        _ => match queue.0.pop_front() {
-            Some(token) => result.token = token,
-            None => result.status = -4,
-        },
-    }
-    result
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_channel_state_new(capacity: usize) -> ChannelState {
-    ChannelState {
-        capacity,
-        closed: 0,
-        error: 0,
-    }
-}
-
-/// # Safety
-/// State and all three token owners are live initialized readable storage with
-/// serialized access. Native copies this POD only, never its Native pointees.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_channel_view_read(
-    state: *const ChannelState,
-    data: *const ChannelTokens,
-    producers: *const ChannelTokens,
-    consumers: *const ChannelTokens,
-) -> ChannelView {
-    // SAFETY: per this function's `# Safety` contract, `state` is live, aligned and initialized.
-    let state = unsafe { &*state };
-    // SAFETY: per this function's `# Safety` contract, `data` is live, aligned and initialized.
-    let length = unsafe { &*data }.0.len();
-    ChannelView {
-        length,
-        // SAFETY: per this function's `# Safety` contract, `producers` is live, aligned and initialized.
-        producers: unsafe { &*producers }.0.len(),
-        // SAFETY: per this function's `# Safety` contract, `consumers` is live, aligned and initialized.
-        consumers: unsafe { &*consumers }.0.len(),
-        error: state.error,
-        closed: state.closed,
-        full: u8::from(length == state.capacity),
-        empty: u8::from(length == 0),
-    }
-}
-
-/// Whole optional data removal. A stored null and absent data both return null,
-/// as the original public `pop_data` method does; no Native payload is destroyed.
-/// # Safety
-/// Data is a live exclusive token owner; no borrow survives this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_channel_pop_data(data: *mut ChannelTokens) -> *mut c_void {
-    // SAFETY: per this function's `# Safety` contract, `data` is live, aligned and exclusive.
-    unsafe { &mut *data }
-        .0
-        .pop_front()
-        .unwrap_or(ptr::null_mut())
-}
-
-/// Whole queue-aware operation, with the legacy phase/error/fairness algorithm.
-/// Pending publication means Native must first execute the requested close trace.
-/// Allocation refusal returns -5; Native raises only after Rust returns.
-/// # Safety
-/// Cursor is independent exclusive initialized zeroed storage, state is a live
-/// initialized inline POD, and queues are live distinct module-owned handles.
-/// Shared observations and selected queue mutations end before Native effects.
-/// Op remains fixed. External facts are freshly copied timer/cancel/timeout bits.
-/// Tokens are opaque identities; Native owns every pointee and effect/lifetime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_channel_owned_step(
-    cursor: *mut OwnedChannelCursor,
-    state: *mut ChannelState,
-    data: *mut ChannelTokens,
-    producers: *mut ChannelTokens,
-    consumers: *mut ChannelTokens,
-    op: u32,
-    external: u32,
-    input: *mut c_void,
-) -> ChannelAction {
-    // SAFETY: per this function's `# Safety` contract, `cursor` is live, aligned and exclusive.
-    let cursor = unsafe { &mut *cursor };
-    // SAFETY: per this function's `# Safety` contract, `state` is live, aligned and exclusive.
-    let state = unsafe { &mut *state };
-    if cursor.pending != 0 {
-        state.closed = 1;
-        cursor.pending = 0;
-    }
-    // SAFETY: per this function's `# Safety` contract, `data` is live, aligned and initialized.
-    let empty = unsafe { &*data }.0.is_empty();
-    // SAFETY: per this function's `# Safety` contract, `data` is live, aligned and initialized.
-    let full = unsafe { &*data }.0.len() == state.capacity;
-    // SAFETY: per this function's `# Safety` contract, `producers` is live, aligned and initialized.
-    let waiting_producers = !unsafe { &*producers }.0.is_empty();
-    // SAFETY: per this function's `# Safety` contract, `consumers` is live, aligned and initialized.
-    let waiting_consumers = !unsafe { &*consumers }.0.is_empty();
-    let facts = (u32::from(state.closed != 0) * crate::CLOSED)
-        | (u32::from(empty) * crate::EMPTY)
-        | (u32::from(full) * crate::FULL)
-        | (u32::from(waiting_producers) * crate::PRODUCERS)
-        | (u32::from(waiting_consumers) * crate::CONSUMERS)
-        | (external
-            & (crate::POSITIVE_TIMEOUT | crate::HAS_TIMER | crate::CANCELED | crate::TIMEDOUT));
-    let action = channel_step(&mut cursor.step, op, facts);
-    let mut result = ChannelAction {
-        action,
-        token: ptr::null_mut(),
-    };
-    match action {
-        crate::PUBLISH_CLOSED => cursor.pending = 1,
-        crate::TRANSFER if op == 0 => {
-            // SAFETY: per this function's `# Safety` contract, `data` is live, aligned and exclusive.
-            if unsafe { &mut *data }.try_push(input).is_err() {
-                result.action = -5;
-            }
-        }
-        crate::TRANSFER => {
-            // SAFETY: per this function's `# Safety` contract, `data` is live, aligned and exclusive.
-            if let Some(token) = unsafe { &mut *data }.0.pop_front() {
-                result.token = token;
-            } else {
-                result.action = -4;
-            }
-        }
-        crate::WAKE_PRODUCER => {
-            // SAFETY: per this function's `# Safety` contract, `producers` is live, aligned and exclusive.
-            if let Some(token) = unsafe { &mut *producers }.0.pop_front() {
-                result.token = token;
-            } else {
-                result.action = -4;
-            }
-        }
-        crate::WAKE_CONSUMER => {
-            // SAFETY: per this function's `# Safety` contract, `consumers` is live, aligned and exclusive.
-            if let Some(token) = unsafe { &mut *consumers }.0.pop_front() {
-                result.token = token;
-            } else {
-                result.action = -4;
-            }
-        }
-        -3..=-1 if op != 2 => state.error = action,
-        _ => {}
-    }
-    result
-}
-
-/// Native primitives a whole `pop`/`push`/`close` calls back into: the timer,
-/// the coroutine suspend/resume and the current fact snapshot. `suspend` enqueues
-/// the current coroutine as a waiter and yields, returning `SWR_CH_ALLOCATION_REFUSED`
-/// (-5) instead of raising, so no native exception unwinds through this frame; the
-/// caller raises after the whole operation returns. `query` returns the fresh
-/// `CANCELED`/`TIMEDOUT` bits. Every pointee, trace and context lifetime stays native.
-#[repr(C)]
-pub struct ChannelEffects {
+pub struct Effects {
     pub ctx: *mut c_void,
-    pub query: extern "C" fn(*mut c_void) -> u32,
-    pub arm_timer: extern "C" fn(*mut c_void),
-    pub delete_timer: extern "C" fn(*mut c_void),
-    pub suspend: extern "C" fn(*mut c_void) -> i32,
-    pub resume: extern "C" fn(*mut c_void, *mut c_void),
+    /// The current coroutine, queued as a waiter.
+    pub current: *mut c_void,
+    /// Arms the timeout timer (only called for a positive timeout).
+    pub arm_timer: unsafe extern "C" fn(*mut c_void),
+    /// Deletes the timer if it is still armed.
+    pub delete_timer: unsafe extern "C" fn(*mut c_void),
+    /// Yields the current coroutine, queued under `role`, until it is resumed,
+    /// canceled or timed out. Returns `CANCELED` and/or `TIMEDOUT` bits.
+    pub suspend: unsafe extern "C" fn(*mut c_void, u32) -> u32,
+    /// Resumes a waiter just taken from the `role` queue.
+    pub resume: unsafe extern "C" fn(*mut c_void, u32, *mut c_void),
+    /// Trace points: `PUSHED` with the new length, `CLOSED`.
+    pub trace: unsafe extern "C" fn(*mut c_void, u32, usize),
 }
 
-/// Outcome of a whole channel operation. `status` 0 succeeded (`data` is the popped
-/// token for a pop), a negative `SWR_CH_ERROR_*` failed, and -5 means the caller must
-/// raise `bad_alloc`. Native maps this to pop's pointer / push's and close's bool.
+pub const CANCELED: u32 = 1;
+pub const TIMEDOUT: u32 = 2;
+pub const TRACE_PUSHED: u32 = 0;
+pub const TRACE_CLOSED: u32 = 1;
+
 #[repr(C)]
-pub struct ChannelOutcome {
+pub struct Outcome {
+    /// `ERROR_OK`, a negative `ERROR_*` or `ALLOCATION_REFUSED`.
     pub status: i32,
+    /// The popped item.
     pub data: *mut c_void,
 }
 
-/// Drive the owned step machine to completion as one operation, performing each
-/// native effect through `effects`. Mirrors the pinned C++ driver loops exactly;
-/// the step logic and queue mutations remain [`swr_v1_channel_owned_step`].
-///
-/// # Safety
-/// `state` and the three token owners meet [`swr_v1_channel_owned_step`]'s contract;
-/// `effects` is a live `ChannelEffects` whose callbacks are valid for `effects.ctx`
-/// for the duration of the call.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the channel's state, three token queues and op mirror the step machine's FFI surface"
-)]
-unsafe fn channel_run(
-    state: *mut ChannelState,
-    data: *mut ChannelTokens,
-    producers: *mut ChannelTokens,
-    consumers: *mut ChannelTokens,
-    op: u32,
-    positive_timeout: bool,
-    input: *mut c_void,
-    effects: &ChannelEffects,
-) -> ChannelOutcome {
-    const CLOSE: u32 = 2;
-    const ALLOCATION_REFUSED: i32 = -5;
-    let mut cursor = OwnedChannelCursor {
-        step: crate::ChannelCursor { phase: 0 },
-        pending: 0,
-    };
-    let mut armed = false;
-    let mut token = ptr::null_mut();
-    loop {
-        let external = if op == CLOSE {
-            0
+impl Channel {
+    fn queue(&mut self, role: u32) -> &mut VecDeque<*mut c_void> {
+        // Upstream's enqueue/dequeue test for PRODUCER; removal tests for CONSUMER.
+        if role == PRODUCER {
+            &mut self.producers
         } else {
-            (u32::from(positive_timeout) * crate::POSITIVE_TIMEOUT)
-                | (u32::from(armed) * crate::HAS_TIMER)
-                | ((effects.query)(effects.ctx) & (crate::CANCELED | crate::TIMEDOUT))
+            &mut self.consumers
+        }
+    }
+
+    fn remove(&mut self, role: u32, co: *mut c_void) {
+        let queue = if role == CONSUMER {
+            &mut self.consumers
+        } else {
+            &mut self.producers
         };
-        // SAFETY: the caller's state and queues satisfy the step machine's contract.
-        let plan = unsafe {
-            swr_v1_channel_owned_step(
-                &raw mut cursor,
-                state,
-                data,
-                producers,
-                consumers,
-                op,
-                external,
-                input,
-            )
-        };
-        match plan.action {
-            crate::ARM_TIMER => {
-                (effects.arm_timer)(effects.ctx);
-                armed = true;
-            }
-            crate::YIELD => {
-                if (effects.suspend)(effects.ctx) == ALLOCATION_REFUSED {
-                    return ChannelOutcome {
-                        status: ALLOCATION_REFUSED,
-                        data: ptr::null_mut(),
-                    };
-                }
-            }
-            crate::DELETE => (effects.delete_timer)(effects.ctx),
-            crate::TRANSFER => {
-                if op == 1 {
-                    token = plan.token;
-                }
-            }
-            crate::PUBLISH_CLOSED => {}
-            crate::WAKE_PRODUCER | crate::WAKE_CONSUMER => {
-                (effects.resume)(effects.ctx, plan.token);
-                if op != CLOSE {
-                    return ChannelOutcome {
-                        status: 0,
-                        data: token,
-                    };
-                }
-            }
-            crate::DONE => {
-                return ChannelOutcome {
-                    status: 0,
-                    data: token,
-                };
-            }
-            other => {
-                return ChannelOutcome {
-                    status: other,
-                    data: ptr::null_mut(),
-                };
-            }
+        queue.retain(|&entry| entry != co);
+    }
+
+    #[must_use]
+    pub fn view(&self) -> ChannelView {
+        ChannelView {
+            length: self.data.len(),
+            producers: self.producers.len(),
+            consumers: self.consumers.len(),
+            error: self.error,
+            closed: self.closed,
+            full: self.data.len() == self.capacity,
+            empty: self.data.is_empty(),
         }
     }
 }
 
-/// Whole `Channel::pop`: returns the popped token, or null on timeout/cancel/close
-/// (or an allocation-refused outcome the caller raises on).
+fn push_back(queue: &mut VecDeque<*mut c_void>, token: *mut c_void) -> bool {
+    queue.try_reserve(1).is_ok() && {
+        queue.push_back(token);
+        true
+    }
+}
+
+/// Queues the current coroutine as a `role` waiter and suspends it. Returns the
+/// error to report, `ERROR_OK` to proceed, or `ALLOCATION_REFUSED`.
 ///
 /// # Safety
-/// As [`channel_run`]: the state and queues are live module handles and `effects`
-/// is valid for its context.
+/// `ch` is live and unborrowed; `fx` holds valid C++ effects.
+unsafe fn wait(ch: *mut Channel, fx: &Effects, role: u32, timeout: bool) -> i32 {
+    if timeout {
+        // SAFETY: a valid C++ effect.
+        unsafe { (fx.arm_timer)(fx.ctx) };
+    }
+    // SAFETY: live; the borrow ends before the next effect.
+    if !push_back(unsafe { (*ch).queue(role) }, fx.current) {
+        // SAFETY: a valid C++ effect.
+        unsafe { (fx.delete_timer)(fx.ctx) };
+        return ALLOCATION_REFUSED;
+    }
+    // SAFETY: a valid C++ effect.
+    let flags = unsafe { (fx.suspend)(fx.ctx, role) };
+    // SAFETY: a valid C++ effect.
+    unsafe { (fx.delete_timer)(fx.ctx) };
+    if flags & CANCELED != 0 {
+        ERROR_CANCELED
+    } else if flags & TIMEDOUT != 0 {
+        ERROR_TIMEOUT
+    } else {
+        ERROR_OK
+    }
+}
+
+/// # Safety
+/// As for [`wait`]. After the final resume the channel is not touched.
+unsafe fn pop(ch: *mut Channel, fx: &Effects, timeout: bool) -> Outcome {
+    let mut out = Outcome {
+        status: ERROR_OK,
+        data: core::ptr::null_mut(),
+    };
+    {
+        // SAFETY: live; the borrow ends before the next effect.
+        let c = unsafe { &mut *ch };
+        if c.closed && c.data.is_empty() {
+            c.error = ERROR_CLOSED;
+            out.status = ERROR_CLOSED;
+            return out;
+        }
+        if c.data.is_empty() || !c.consumers.is_empty() {
+            // SAFETY: forwarded from the caller.
+            let mut status = unsafe { wait(ch, fx, CONSUMER, timeout) };
+            if status == ALLOCATION_REFUSED {
+                out.status = status;
+                return out;
+            }
+            // SAFETY: live again after the suspension.
+            let c = unsafe { &mut *ch };
+            if status == ERROR_OK && c.closed && c.data.is_empty() {
+                status = ERROR_CLOSED;
+            }
+            if status != ERROR_OK {
+                c.error = status;
+                out.status = status;
+                return out;
+            }
+        }
+    }
+    // SAFETY: live; the borrow ends before the resume.
+    let c = unsafe { &mut *ch };
+    out.data = c.data.pop_front().unwrap_or(core::ptr::null_mut());
+    if let Some(co) = c.producers.pop_front() {
+        // SAFETY: a valid C++ effect; the channel is not touched afterwards.
+        unsafe { (fx.resume)(fx.ctx, PRODUCER, co) };
+    }
+    out
+}
+
+/// # Safety
+/// As for [`pop`].
+unsafe fn push(ch: *mut Channel, fx: &Effects, timeout: bool, data: *mut c_void) -> i32 {
+    {
+        // SAFETY: live; the borrow ends before the next effect.
+        let c = unsafe { &mut *ch };
+        if c.closed {
+            c.error = ERROR_CLOSED;
+            return ERROR_CLOSED;
+        }
+        if c.data.len() == c.capacity || !c.producers.is_empty() {
+            // SAFETY: forwarded from the caller.
+            let mut status = unsafe { wait(ch, fx, PRODUCER, timeout) };
+            if status == ALLOCATION_REFUSED {
+                return status;
+            }
+            // SAFETY: live again after the suspension.
+            let c = unsafe { &mut *ch };
+            if status == ERROR_OK && c.closed {
+                status = ERROR_CLOSED;
+            }
+            if status != ERROR_OK {
+                c.error = status;
+                return status;
+            }
+        }
+    }
+    // SAFETY: live; the borrow ends before the trace.
+    let c = unsafe { &mut *ch };
+    if !push_back(&mut c.data, data) {
+        return ALLOCATION_REFUSED;
+    }
+    let length = c.data.len();
+    // SAFETY: a valid C++ effect.
+    unsafe { (fx.trace)(fx.ctx, TRACE_PUSHED, length) };
+    // SAFETY: live; the borrow ends before the resume.
+    if let Some(co) = unsafe { (*ch).consumers.pop_front() } {
+        // SAFETY: a valid C++ effect; the channel is not touched afterwards.
+        unsafe { (fx.resume)(fx.ctx, CONSUMER, co) };
+    }
+    ERROR_OK
+}
+
+/// # Safety
+/// As for [`pop`]; the channel stays alive until close returns.
+unsafe fn close(ch: *mut Channel, fx: &Effects) -> bool {
+    // SAFETY: live.
+    if unsafe { (*ch).closed } {
+        return false;
+    }
+    // SAFETY: a valid C++ effect.
+    unsafe { (fx.trace)(fx.ctx, TRACE_CLOSED, 0) };
+    // SAFETY: live.
+    unsafe { (*ch).closed = true };
+    for role in [PRODUCER, CONSUMER] {
+        // Re-read the queue after each resume: the woken waiter may change it.
+        // SAFETY: live; the borrow ends before the resume.
+        while let Some(co) = unsafe { (*ch).queue(role).pop_front() } {
+            // SAFETY: a valid C++ effect.
+            unsafe { (fx.resume)(fx.ctx, role, co) };
+        }
+    }
+    true
+}
+
+/// A new channel, or null when allocation fails.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_channel_new(capacity: usize) -> *mut Channel {
+    Box::into_raw(Box::new(Channel {
+        capacity,
+        ..Channel::default()
+    }))
+}
+
+/// # Safety
+/// `ch` came from [`swr_v1_channel_new`] and is freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_channel_free(ch: *mut Channel) {
+    // SAFETY: the caller transfers ownership back.
+    drop(unsafe { Box::from_raw(ch) });
+}
+
+/// # Safety
+/// `ch` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_channel_read(ch: *const Channel) -> ChannelView {
+    // SAFETY: the caller passes a live channel.
+    unsafe { &*ch }.view()
+}
+
+/// Removes and returns the oldest item, or null when empty.
+/// # Safety
+/// `ch` is live and unborrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_channel_pop_data(ch: *mut Channel) -> *mut c_void {
+    // SAFETY: the caller lends a live channel exclusively.
+    unsafe { &mut *ch }
+        .data
+        .pop_front()
+        .unwrap_or(core::ptr::null_mut())
+}
+
+/// Drops every queued `co` waiter of `role`: a timeout or cancel before resume.
+/// # Safety
+/// `ch` is live and unborrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_channel_remove(ch: *mut Channel, role: u32, co: *mut c_void) {
+    // SAFETY: the caller lends a live channel exclusively.
+    unsafe { &mut *ch }.remove(role, co);
+}
+
+/// # Safety
+/// `ch` is live and unborrowed; `fx` is valid and its effects uphold the
+/// module contract.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_channel_pop(
-    state: *mut ChannelState,
-    data: *mut ChannelTokens,
-    producers: *mut ChannelTokens,
-    consumers: *mut ChannelTokens,
+    ch: *mut Channel,
     positive_timeout: bool,
-    effects: *const ChannelEffects,
-) -> ChannelOutcome {
-    // SAFETY: the caller lends a live ChannelEffects.
-    let effects = unsafe { &*effects };
-    // SAFETY: the caller lends the usual live channel handles.
-    unsafe {
-        channel_run(
-            state,
-            data,
-            producers,
-            consumers,
-            1,
-            positive_timeout,
-            ptr::null_mut(),
-            effects,
-        )
-    }
+    fx: *const Effects,
+) -> Outcome {
+    // SAFETY: the caller passes valid effects.
+    let fx = unsafe { &*fx };
+    // SAFETY: forwarded from the caller.
+    unsafe { pop(ch, fx, positive_timeout) }
 }
 
-/// Whole `Channel::push`: `status` 0 pushed, negative failed, -5 raise.
-///
 /// # Safety
-/// As [`swr_v1_channel_pop`]; `input` is the opaque token to enqueue.
+/// As for [`swr_v1_channel_pop`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_channel_push(
-    state: *mut ChannelState,
-    data: *mut ChannelTokens,
-    producers: *mut ChannelTokens,
-    consumers: *mut ChannelTokens,
+    ch: *mut Channel,
     positive_timeout: bool,
-    input: *mut c_void,
-    effects: *const ChannelEffects,
-) -> ChannelOutcome {
-    // SAFETY: the caller lends a live ChannelEffects.
-    let effects = unsafe { &*effects };
-    // SAFETY: the caller lends the usual live channel handles.
-    unsafe {
-        channel_run(
-            state,
-            data,
-            producers,
-            consumers,
-            0,
-            positive_timeout,
-            input,
-            effects,
-        )
-    }
+    data: *mut c_void,
+    fx: *const Effects,
+) -> i32 {
+    // SAFETY: the caller passes valid effects.
+    let fx = unsafe { &*fx };
+    // SAFETY: forwarded from the caller.
+    unsafe { push(ch, fx, positive_timeout, data) }
 }
 
-/// Whole `Channel::close`: wakes every waiter, then `status` 0, or -2 if already
-/// closed. Only `resume` of `effects` is used.
-///
 /// # Safety
-/// As [`swr_v1_channel_pop`].
+/// As for [`swr_v1_channel_pop`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_channel_close(
-    state: *mut ChannelState,
-    data: *mut ChannelTokens,
-    producers: *mut ChannelTokens,
-    consumers: *mut ChannelTokens,
-    effects: *const ChannelEffects,
-) -> ChannelOutcome {
-    // SAFETY: the caller lends a live ChannelEffects.
-    let effects = unsafe { &*effects };
-    // SAFETY: the caller lends the usual live channel handles.
-    unsafe {
-        channel_run(
-            state,
-            data,
-            producers,
-            consumers,
-            2,
-            false,
-            ptr::null_mut(),
-            effects,
-        )
-    }
+pub unsafe extern "C" fn swr_v1_channel_close(ch: *mut Channel, fx: *const Effects) -> bool {
+    // SAFETY: the caller passes valid effects.
+    let fx = unsafe { &*fx };
+    // SAFETY: forwarded from the caller.
+    unsafe { close(ch, fx) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        swr_v1_channel_tokens_free, swr_v1_channel_tokens_new, swr_v1_channel_tokens_push,
-    };
+    use std::cell::RefCell;
 
-    struct Fixture {
-        state: ChannelState,
-        queues: [*mut ChannelTokens; 3],
+    /// Records effects; `suspend` runs a scripted closure standing in for the
+    /// other coroutines that run while this one waits.
+    #[derive(Default)]
+    struct Log {
+        events: Vec<String>,
+        on_suspend: Option<Box<dyn FnMut()>>,
+        flags: u32,
     }
-    impl Fixture {
-        fn new(capacity: usize) -> Self {
-            let queues = std::array::from_fn(|_| swr_v1_channel_tokens_new());
-            assert!(queues.iter().all(|p| !p.is_null()));
-            Self {
-                state: swr_v1_channel_state_new(capacity),
-                queues,
-            }
-        }
-        fn step(
-            &mut self,
-            cursor: &mut OwnedChannelCursor,
-            op: u32,
-            facts: u32,
-            input: *mut c_void,
-        ) -> ChannelAction {
-            unsafe {
-                swr_v1_channel_owned_step(
-                    cursor,
-                    &raw mut self.state,
-                    self.queues[0],
-                    self.queues[1],
-                    self.queues[2],
-                    op,
-                    facts,
-                    input,
-                )
-            }
-        }
-        fn view(&self) -> ChannelView {
-            unsafe {
-                swr_v1_channel_view_read(
-                    &raw const self.state,
-                    self.queues[0],
-                    self.queues[1],
-                    self.queues[2],
-                )
-            }
-        }
+
+    thread_local! { static LOG: RefCell<Log> = RefCell::default(); }
+
+    fn event(e: String) {
+        LOG.with(|l| l.borrow_mut().events.push(e));
     }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            for queue in self.queues {
-                unsafe { swr_v1_channel_tokens_free(queue) };
-            }
+    unsafe extern "C" fn arm(_: *mut c_void) {
+        event("arm".into());
+    }
+    unsafe extern "C" fn delete(_: *mut c_void) {
+        event("delete".into());
+    }
+    unsafe extern "C" fn suspend(_: *mut c_void, role: u32) -> u32 {
+        event(format!("suspend {role}"));
+        let mut f = LOG.with(|l| l.borrow_mut().on_suspend.take());
+        if let Some(f) = f.as_mut() {
+            f();
+        }
+        LOG.with(|l| l.borrow().flags)
+    }
+    unsafe extern "C" fn resume(_: *mut c_void, role: u32, co: *mut c_void) {
+        event(format!("resume {role} {}", co as usize));
+    }
+    unsafe extern "C" fn trace(_: *mut c_void, what: u32, n: usize) {
+        event(format!("trace {what} {n}"));
+    }
+
+    fn fx(current: usize) -> Effects {
+        Effects {
+            ctx: core::ptr::null_mut(),
+            current: current as *mut c_void,
+            arm_timer: arm,
+            delete_timer: delete,
+            suspend,
+            resume,
+            trace,
         }
     }
-    fn cursor() -> OwnedChannelCursor {
-        OwnedChannelCursor {
-            step: ChannelCursor { phase: 0 },
-            pending: 0,
-        }
+
+    fn take() -> Vec<String> {
+        LOG.with(|l| std::mem::take(&mut l.borrow_mut().events))
+    }
+
+    fn tok(n: usize) -> *mut c_void {
+        n as *mut c_void
     }
 
     #[test]
-    fn waiter_role_branches_fifo_and_remove_all_preserve_opaque_identity() {
-        let f = Fixture::new(1);
-        let mut bytes = [11_u8, 22];
-        let a = ptr::from_mut(&mut bytes[0]).cast();
-        let b = ptr::from_mut(&mut bytes[1]).cast();
-        let call = |op, role, token| unsafe {
-            swr_v1_channel_waiter(f.queues[1], f.queues[2], op, role, token)
-        };
-        for role in [1, 2, 0] {
-            let selected = if role == 1 { 1 } else { 2 };
-            for token in [a, ptr::null_mut(), b, a] {
-                let out = call(0, role, token);
-                assert_eq!((out.status, out.role), (0, selected));
-            }
-            // Removal's OTHER branch differs from enqueue/pop. Preserve it,
-            // including all duplicates, without interpreting a token pointee.
-            let remove_role = if selected == 1 { 0 } else { 2 };
-            let removed = call(1, remove_role, a);
-            assert_eq!((removed.status, removed.role), (0, selected));
-            for token in [ptr::null_mut(), b] {
-                let out = call(2, role, ptr::null_mut());
-                assert_eq!((out.status, out.role, out.token), (0, selected, token));
-            }
-            assert_eq!((f.view().producers, f.view().consumers), (0, 0));
-        }
-        assert_eq!(bytes, [11, 22]);
-    }
-
-    #[test]
-    fn direct_fifo_null_capacity_zero_and_passive_copy_remain_exact() {
-        let mut zero = Fixture::new(0);
-        assert_eq!((zero.view().empty, zero.view().full), (1, 1));
-        assert_eq!(
-            zero.step(&mut cursor(), 0, 0, ptr::null_mut()).action,
-            crate::YIELD
-        );
-        let mut f = Fixture::new(2);
-        let mut byte = 7u8;
-        let token = (&raw mut byte).cast();
-        for input in [ptr::null_mut(), token] {
-            let mut c = cursor();
-            assert_eq!(f.step(&mut c, 0, 0, input).action, crate::TRANSFER);
-            assert_eq!(f.step(&mut c, 0, 0, input).action, crate::DONE);
-        }
-        assert_eq!((f.view().length, f.view().full), (2, 1));
-        let copy = f.state;
-        assert_eq!((copy.capacity, copy.closed, copy.error), (2, 0, 0));
-        for expected in [ptr::null_mut(), token] {
-            let mut c = cursor();
-            let plan = f.step(&mut c, 1, 0, ptr::null_mut());
-            assert_eq!((plan.action, plan.token), (crate::TRANSFER, expected));
-            assert_eq!(f.step(&mut c, 1, 0, ptr::null_mut()).action, crate::DONE);
-        }
-        assert_eq!((f.view().length, f.view().empty, f.view().error), (0, 1, 0));
-        assert_eq!(byte, 7);
-    }
-
-    #[test]
-    fn close_publication_and_role_order_keep_sticky_error() {
-        let mut f = Fixture::new(1);
-        let mut tokens = [1u8, 2, 3];
-        let ptrs = tokens
-            .iter_mut()
-            .map(|p| std::ptr::from_mut::<u8>(p).cast())
-            .collect::<Vec<_>>();
+    fn push_then_pop_transfers_without_waiting() {
+        let ch = swr_v1_channel_new(1);
+        // SAFETY: `ch` is live until freed below.
         unsafe {
-            assert_eq!(swr_v1_channel_tokens_push(f.queues[1], ptrs[0]), 0);
-            assert_eq!(swr_v1_channel_tokens_push(f.queues[1], ptrs[1]), 0);
-            assert_eq!(swr_v1_channel_tokens_push(f.queues[2], ptrs[2]), 0);
+            assert_eq!(push(ch, &fx(1), false, tok(7)), ERROR_OK);
+            assert!((*ch).view().full);
+            let out = pop(ch, &fx(1), false);
+            assert_eq!((out.status, out.data), (ERROR_OK, tok(7)));
+            swr_v1_channel_free(ch);
         }
-        let mut c = cursor();
+        assert_eq!(take(), ["trace 0 1"]);
+    }
+
+    #[test]
+    fn pop_waits_until_a_producer_pushes() {
+        let ch = swr_v1_channel_new(1);
+        let addr = ch as usize;
+        LOG.with(|l| {
+            l.borrow_mut().on_suspend = Some(Box::new(move || {
+                let ch = addr as *mut Channel;
+                // SAFETY: the test's channel is live.
+                assert_eq!(unsafe { push(ch, &fx(2), false, tok(9)) }, ERROR_OK);
+            }));
+        });
+        // SAFETY: live until freed.
+        unsafe {
+            let out = pop(ch, &fx(1), true);
+            assert_eq!((out.status, out.data), (ERROR_OK, tok(9)));
+            swr_v1_channel_free(ch);
+        }
         assert_eq!(
-            f.step(&mut c, 2, 0, ptr::null_mut()).action,
-            crate::PUBLISH_CLOSED
+            take(),
+            ["arm", "suspend 2", "trace 0 1", "resume 2 1", "delete"]
         );
-        assert_eq!(f.state.closed, 0); // Native trace must finish first.
-        for (action, token) in [
-            (crate::WAKE_PRODUCER, ptrs[0]),
-            (crate::WAKE_PRODUCER, ptrs[1]),
-            (crate::WAKE_CONSUMER, ptrs[2]),
-        ] {
-            let plan = f.step(&mut c, 2, 0, ptr::null_mut());
-            assert_eq!((plan.action, plan.token), (action, token));
-            assert_eq!(f.state.closed, 1);
+    }
+
+    #[test]
+    fn waits_report_cancel_before_timeout_and_close() {
+        let ch = swr_v1_channel_new(1);
+        LOG.with(|l| l.borrow_mut().flags = CANCELED | TIMEDOUT);
+        // SAFETY: live until freed.
+        unsafe {
+            (*ch).closed = false;
+            assert_eq!(pop(ch, &fx(1), false).status, ERROR_CANCELED);
+            assert_eq!((*ch).error, ERROR_CANCELED);
+            LOG.with(|l| l.borrow_mut().flags = TIMEDOUT);
+            assert_eq!(pop(ch, &fx(1), false).status, ERROR_TIMEOUT);
+            LOG.with(|l| l.borrow_mut().flags = 0);
+            (*ch).closed = true;
+            // Closed and empty fails before waiting; the waiter queue is untouched.
+            assert_eq!(pop(ch, &fx(1), false).status, ERROR_CLOSED);
+            swr_v1_channel_free(ch);
         }
-        assert_eq!(f.step(&mut c, 2, 0, ptr::null_mut()).action, crate::DONE);
-        assert_eq!(f.view().error, 0);
-        assert_eq!(f.step(&mut cursor(), 0, 0, ptr::null_mut()).action, -2);
-        assert_eq!(f.view().error, -2);
-        assert_eq!(f.step(&mut cursor(), 2, 0, ptr::null_mut()).action, -2);
-        assert_eq!(f.view().error, -2); // Already-closed close never changes error.
-        assert_eq!(tokens, [1, 2, 3]);
+        take();
     }
 
-    struct Probe {
-        data: *mut ChannelTokens,
-        log: std::cell::RefCell<Vec<&'static str>>,
-        suspend_result: i32,
-        wake_token: *mut c_void,
-        query_bits: u32,
-    }
-    extern "C" fn p_query(ctx: *mut c_void) -> u32 {
-        // SAFETY: ctx is a live &Probe for the whole channel_run call.
-        let p = unsafe { &*ctx.cast::<Probe>() };
-        p.log.borrow_mut().push("query");
-        p.query_bits
-    }
-    extern "C" fn p_arm(ctx: *mut c_void) {
-        // SAFETY: ctx is a live &Probe.
-        unsafe { &*ctx.cast::<Probe>() }
-            .log
-            .borrow_mut()
-            .push("arm");
-    }
-    extern "C" fn p_del(ctx: *mut c_void) {
-        // SAFETY: ctx is a live &Probe.
-        unsafe { &*ctx.cast::<Probe>() }
-            .log
-            .borrow_mut()
-            .push("del");
-    }
-    extern "C" fn p_suspend(ctx: *mut c_void) -> i32 {
-        // SAFETY: ctx is a live &Probe.
-        let p = unsafe { &*ctx.cast::<Probe>() };
-        p.log.borrow_mut().push("suspend");
-        if !p.wake_token.is_null() {
-            // SAFETY: the test's data queue is live for the call.
-            unsafe { swr_v1_channel_tokens_push(p.data, p.wake_token) };
+    #[test]
+    fn closed_pop_still_drains_data() {
+        let ch = swr_v1_channel_new(2);
+        // SAFETY: live until freed.
+        unsafe {
+            push(ch, &fx(1), false, tok(3));
+            assert!(close(ch, &fx(1)));
+            assert!(!close(ch, &fx(1)));
+            assert_eq!(push(ch, &fx(1), false, tok(4)), ERROR_CLOSED);
+            assert_eq!(pop(ch, &fx(1), false).data, tok(3));
+            assert_eq!(pop(ch, &fx(1), false).status, ERROR_CLOSED);
+            swr_v1_channel_free(ch);
         }
-        p.suspend_result
+        take();
     }
-    extern "C" fn p_resume(ctx: *mut c_void, _co: *mut c_void) {
-        // SAFETY: ctx is a live &Probe.
-        unsafe { &*ctx.cast::<Probe>() }
-            .log
-            .borrow_mut()
-            .push("resume");
-    }
-    fn effects(probe: &Probe) -> ChannelEffects {
-        ChannelEffects {
-            ctx: std::ptr::from_ref::<Probe>(probe)
-                .cast::<c_void>()
-                .cast_mut(),
-            query: p_query,
-            arm_timer: p_arm,
-            delete_timer: p_del,
-            suspend: p_suspend,
-            resume: p_resume,
+
+    #[test]
+    fn close_wakes_producers_then_consumers() {
+        let ch = swr_v1_channel_new(0);
+        // SAFETY: live until freed.
+        unsafe {
+            (*ch).producers.extend([tok(1), tok(2)]);
+            (*ch).consumers.push_back(tok(3));
+            assert!(close(ch, &fx(9)));
+            swr_v1_channel_free(ch);
         }
-    }
-
-    #[test]
-    fn whole_push_and_pop_transfer_without_suspending() {
-        let mut f = Fixture::new(2);
-        let mut byte = 9u8;
-        let token = (&raw mut byte).cast::<c_void>();
-        let probe = Probe {
-            data: f.queues[0],
-            log: std::cell::RefCell::new(Vec::new()),
-            suspend_result: 0,
-            wake_token: ptr::null_mut(),
-            query_bits: 0,
-        };
-        let eff = effects(&probe);
-        // SAFETY: live state/queues and a live effects table.
-        let out = unsafe {
-            swr_v1_channel_push(
-                &raw mut f.state,
-                f.queues[0],
-                f.queues[1],
-                f.queues[2],
-                false,
-                token,
-                &raw const eff,
-            )
-        };
-        assert_eq!(out.status, 0);
-        assert_eq!(f.view().length, 1);
-        assert!(
-            probe.log.borrow().iter().all(|&c| c == "query"),
-            "a direct push arms no timer and never suspends or resumes"
-        );
-        // SAFETY: as above.
-        let out = unsafe {
-            swr_v1_channel_pop(
-                &raw mut f.state,
-                f.queues[0],
-                f.queues[1],
-                f.queues[2],
-                false,
-                &raw const eff,
-            )
-        };
-        assert_eq!((out.status, out.data), (0, token));
-        assert_eq!(f.view().length, 0);
-    }
-
-    #[test]
-    fn whole_pop_on_empty_suspends_then_transfers_the_woken_token() {
-        let mut f = Fixture::new(1);
-        let mut byte = 3u8;
-        let token = (&raw mut byte).cast::<c_void>();
-        let probe = Probe {
-            data: f.queues[0],
-            log: std::cell::RefCell::new(Vec::new()),
-            suspend_result: 0,
-            wake_token: token, // a producer "arrives" during the suspend
-            query_bits: 0,
-        };
-        let eff = effects(&probe);
-        // SAFETY: live state/queues and effects.
-        let out = unsafe {
-            swr_v1_channel_pop(
-                &raw mut f.state,
-                f.queues[0],
-                f.queues[1],
-                f.queues[2],
-                false,
-                &raw const eff,
-            )
-        };
-        assert_eq!((out.status, out.data), (0, token));
-        let log = probe.log.borrow();
-        assert_eq!(log.iter().filter(|&&c| c == "suspend").count(), 1);
-        assert!(!log.contains(&"arm"), "no timer without a positive timeout");
-    }
-
-    #[test]
-    fn whole_pop_reports_allocation_refused_from_suspend() {
-        let mut f = Fixture::new(1);
-        let probe = Probe {
-            data: f.queues[0],
-            log: std::cell::RefCell::new(Vec::new()),
-            suspend_result: -5,
-            wake_token: ptr::null_mut(),
-            query_bits: 0,
-        };
-        let eff = effects(&probe);
-        // SAFETY: live state/queues and effects.
-        let out = unsafe {
-            swr_v1_channel_pop(
-                &raw mut f.state,
-                f.queues[0],
-                f.queues[1],
-                f.queues[2],
-                false,
-                &raw const eff,
-            )
-        };
-        assert_eq!((out.status, out.data), (-5, ptr::null_mut()));
-    }
-
-    #[test]
-    fn whole_pop_on_closed_empty_channel_errors_without_suspending() {
-        let mut f = Fixture::new(1);
-        f.state.closed = 1;
-        let probe = Probe {
-            data: f.queues[0],
-            log: std::cell::RefCell::new(Vec::new()),
-            suspend_result: 0,
-            wake_token: ptr::null_mut(),
-            query_bits: 0,
-        };
-        let eff = effects(&probe);
-        // SAFETY: live state/queues and effects.
-        let out = unsafe {
-            swr_v1_channel_pop(
-                &raw mut f.state,
-                f.queues[0],
-                f.queues[1],
-                f.queues[2],
-                false,
-                &raw const eff,
-            )
-        };
-        assert_eq!(out.status, -2);
-        assert!(!probe.log.borrow().contains(&"suspend"));
-    }
-
-    #[test]
-    fn copied_wait_facts_keep_timer_cancel_precedence_and_success_sticky_error() {
-        let mut f = Fixture::new(1);
         assert_eq!(
-            f.step(&mut cursor(), 0, 0, ptr::null_mut()).action,
-            crate::TRANSFER
+            take(),
+            ["trace 1 0", "resume 1 1", "resume 1 2", "resume 2 3"]
         );
-        let mut wait = cursor();
-        for (facts, expected) in [
-            (crate::POSITIVE_TIMEOUT, crate::ARM_TIMER),
-            (crate::HAS_TIMER, crate::YIELD),
-            (crate::HAS_TIMER, crate::DELETE),
-            (crate::CANCELED | crate::TIMEDOUT, -3),
-        ] {
-            assert_eq!(
-                f.step(&mut wait, 0, facts, ptr::null_mut()).action,
-                expected
-            );
+    }
+
+    #[test]
+    fn remove_drops_every_entry_of_a_waiter() {
+        let ch = swr_v1_channel_new(1);
+        // SAFETY: live until freed.
+        unsafe {
+            (*ch).consumers.extend([tok(1), tok(2), tok(1)]);
+            (*ch).producers.push_back(tok(1));
+            swr_v1_channel_remove(ch, CONSUMER, tok(1));
+            assert_eq!((*ch).view().consumers, 1);
+            // Any role but CONSUMER removes from the producers.
+            swr_v1_channel_remove(ch, 0, tok(1));
+            assert_eq!((*ch).view().producers, 0);
+            assert_eq!(swr_v1_channel_pop_data(ch), core::ptr::null_mut());
+            swr_v1_channel_free(ch);
         }
-        assert_eq!((f.view().length, f.view().error), (1, -3));
-        assert_eq!(
-            f.step(&mut cursor(), 1, 0, ptr::null_mut()).action,
-            crate::TRANSFER
-        );
-        assert_eq!((f.view().length, f.view().error), (0, -3));
     }
 }

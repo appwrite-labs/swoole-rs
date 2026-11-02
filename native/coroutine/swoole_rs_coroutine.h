@@ -48,57 +48,37 @@ void swr_v1_coroutine_cancel(swr_v1_coroutine *);
 void swr_v1_coroutine_timeout(swr_v1_coroutine *);
 void swr_v1_coroutine_switch_time(swr_v1_coroutine *yielding, swr_v1_coroutine *resuming, long now);
 long swr_v1_coroutine_execute_usec(const swr_v1_coroutine *, long now);
-
-/* Caller-local cursor. Native publishes one action and refreshes facts after
- * every timer/queue/callback operation. No borrow crosses native execution. */
-typedef struct { uint32_t phase; } swr_v1_channel_cursor;
-enum swr_channel_operation { SWR_CH_PUSH = 0, SWR_CH_POP = 1, SWR_CH_CLOSE = 2 };
-enum swr_channel_fact {
-    SWR_CH_CLOSED = 1, SWR_CH_EMPTY = 2, SWR_CH_FULL = 4,
-    SWR_CH_PRODUCERS = 8, SWR_CH_CONSUMERS = 16, SWR_CH_POSITIVE_TIMEOUT = 32,
-    SWR_CH_TIMER = 64, SWR_CH_CANCELED = 128, SWR_CH_TIMEDOUT = 256
-};
-enum swr_channel_action {
-    SWR_CH_DONE = 0, SWR_CH_ARM_TIMER = 1, SWR_CH_YIELD = 2,
-    SWR_CH_DELETE_TIMER = 3, SWR_CH_TRANSFER = 4, SWR_CH_WAKE_PRODUCER = 5,
-    SWR_CH_WAKE_CONSUMER = 6, SWR_CH_PUBLISH_CLOSED = 7,
-    SWR_CH_ERROR_TIMEOUT = -1, SWR_CH_ERROR_CLOSED = -2,
-    SWR_CH_ERROR_CANCELED = -3, SWR_CH_INVALID = -4
-};
-int32_t swr_v1_channel_step(swr_v1_channel_cursor *, uint32_t op, uint32_t facts);
-/* Sole pointer-token FIFOs. Native owns payloads and translates allocation
- * failures after return. Each call requires a live, exclusively accessed owner. */
-typedef struct swr_v1_channel_tokens swr_v1_channel_tokens;
-swr_v1_channel_tokens *swr_v1_channel_tokens_new(void);
-swr_v1_channel_tokens *swr_v1_channel_tokens_clone(const swr_v1_channel_tokens *);
-void swr_v1_channel_tokens_free(swr_v1_channel_tokens *);
-size_t swr_v1_channel_tokens_len(const swr_v1_channel_tokens *);
-int32_t swr_v1_channel_tokens_push(swr_v1_channel_tokens *, void *);
-int32_t swr_v1_channel_tokens_front(const swr_v1_channel_tokens *, void **);
-void swr_v1_channel_tokens_pop(swr_v1_channel_tokens *);
-void swr_v1_channel_tokens_remove(swr_v1_channel_tokens *, void *);
-/* Whole inline Channel metadata; passive initialized POD copy is allowed.
- * Native Channel prefix/queue offsets are statically qualified in its header.
- * State/three queue handles are disjoint and initialized; no pointee or effect
- * enters Rust. All borrows end before Native logging/timer/yield/resume. */
-typedef struct { size_t capacity; uint8_t closed; int32_t error; } swr_v1_channel_state;
-typedef struct { size_t length, producers, consumers; int32_t error;
-                 uint8_t closed, full, empty; } swr_v1_channel_view;
-typedef struct { swr_v1_channel_cursor step; uint32_t pending; } swr_v1_channel_owned_cursor;
-typedef struct { int32_t action; void *token; } swr_v1_channel_owned_action;
+/* swoole::coroutine::Channel (crates/coroutine/src/channel.rs): an owned
+ * handle with whole pop/push/close operations that call back into C++ for the
+ * timer, yield and resume. Rust never touches a channel after a resume that ends
+ * its operation, and holds no reference to it across an effect. */
+typedef struct swr_v1_channel swr_v1_channel;
+typedef struct {
+    size_t length, producers, consumers;
+    int32_t error;
+    bool closed, full, empty;
+} swr_v1_channel_view;
+enum { SWR_CH_CANCELED = 1, SWR_CH_TIMEDOUT = 2 };
+enum { SWR_CH_TRACE_PUSHED = 0, SWR_CH_TRACE_CLOSED = 1 };
 enum { SWR_CH_ALLOCATION_REFUSED = -5 };
-swr_v1_channel_state swr_v1_channel_state_new(size_t capacity);
-swr_v1_channel_view swr_v1_channel_view_read(const swr_v1_channel_state *,
-    const swr_v1_channel_tokens *data, const swr_v1_channel_tokens *producers,
-    const swr_v1_channel_tokens *consumers);
-void *swr_v1_channel_pop_data(swr_v1_channel_tokens *data);
-/* Complete waiter operation: enqueue/pop select producer only for role1;
- * remove selects consumer only for role2. Removal erases ALL matching identities.
- * Native retains tracing, timers, callbacks, yield/resume and bad_alloc effects. */
-typedef struct { int32_t status; uint32_t role; void *token; } swr_v1_channel_waiter_result;
-enum { SWR_CH_WAITER_ENQUEUE = 0, SWR_CH_WAITER_REMOVE = 1, SWR_CH_WAITER_POP = 2 };
-swr_v1_channel_waiter_result swr_v1_channel_waiter(swr_v1_channel_tokens *producers,
-    swr_v1_channel_tokens *consumers, uint32_t operation, uint32_t role, void *token);
+typedef struct {
+    void *ctx;
+    void *current;
+    void (*arm_timer)(void *);
+    void (*delete_timer)(void *);
+    uint32_t (*suspend)(void *, uint32_t role); /* returns SWR_CH_CANCELED | SWR_CH_TIMEDOUT */
+    void (*resume)(void *, uint32_t role, void *co);
+    void (*trace)(void *, uint32_t what, size_t length);
+} swr_v1_channel_effects;
+typedef struct { int32_t status; void *data; } swr_v1_channel_outcome;
+swr_v1_channel *swr_v1_channel_new(size_t capacity);
+void swr_v1_channel_free(swr_v1_channel *);
+swr_v1_channel_view swr_v1_channel_read(const swr_v1_channel *);
+void *swr_v1_channel_pop_data(swr_v1_channel *);
+void swr_v1_channel_remove(swr_v1_channel *, uint32_t role, void *co);
+swr_v1_channel_outcome swr_v1_channel_pop(swr_v1_channel *, bool positive_timeout, const swr_v1_channel_effects *);
+int32_t swr_v1_channel_push(swr_v1_channel *, bool positive_timeout, void *data, const swr_v1_channel_effects *);
+bool swr_v1_channel_close(swr_v1_channel *, const swr_v1_channel_effects *);
 /* Typed same-layout Context cells. Raw initialization is performed only at the
  * original publication points; no reference to uninitialized fields is formed. */
 typedef struct { void *pointer; } swr_v1_context_stack_cell;
@@ -120,45 +100,11 @@ swr_v1_context_stack_view swr_v1_context_stack_read(const swr_v1_context_stack_c
  * No Native resource/context/function/thread effects occur inside Rust. */
 swr_v1_context_stack_view swr_v1_context_stack_step(swr_v1_context_stack_cell *,
     const swr_v1_context_extent *, uint32_t operation, void *allocation, size_t requested);
-/* Cursor zero-seeded, fixed operation; only external timer/cancel/timeout bits.
- * PUBLISH_CLOSED requests Native trace, then next entry publishes closed before
- * queue observation. Terminal wake must never reenter or access Channel again.
- * Allocation refusal is translated to Native bad_alloc only after return. */
-swr_v1_channel_owned_action swr_v1_channel_owned_step(swr_v1_channel_owned_cursor *,
-    swr_v1_channel_state *, swr_v1_channel_tokens *data,
-    swr_v1_channel_tokens *producers, swr_v1_channel_tokens *consumers,
-    uint32_t op, uint32_t external, void *input);
-/* Whole pop/push/close, driving the step machine to completion and performing
- * each Native effect through `effects`: `query` returns fresh CANCELED/TIMEDOUT
- * bits, `suspend` enqueues the current coroutine and yields (returning
- * SWR_CH_ALLOCATION_REFUSED instead of raising), `arm_timer`/`delete_timer` drive
- * the timeout, and `resume` wakes a token. `status` 0 succeeded (`data` is the
- * popped token for a pop), negative is a SWR_CH_ERROR_*, and -5 means Native must
- * raise bad_alloc after return. close uses only `resume`. */
-typedef struct {
-    void *ctx;
-    uint32_t (*query)(void *);
-    void (*arm_timer)(void *);
-    void (*delete_timer)(void *);
-    int32_t (*suspend)(void *);
-    void (*resume)(void *, void *);
-} swr_v1_channel_effects;
-typedef struct { int32_t status; void *data; } swr_v1_channel_outcome;
-swr_v1_channel_outcome swr_v1_channel_pop(swr_v1_channel_state *, swr_v1_channel_tokens *data,
-    swr_v1_channel_tokens *producers, swr_v1_channel_tokens *consumers,
-    bool positive_timeout, const swr_v1_channel_effects *);
-swr_v1_channel_outcome swr_v1_channel_push(swr_v1_channel_state *, swr_v1_channel_tokens *data,
-    swr_v1_channel_tokens *producers, swr_v1_channel_tokens *consumers,
-    bool positive_timeout, void *input, const swr_v1_channel_effects *);
-swr_v1_channel_outcome swr_v1_channel_close(swr_v1_channel_state *, swr_v1_channel_tokens *data,
-    swr_v1_channel_tokens *producers, swr_v1_channel_tokens *consumers,
-    const swr_v1_channel_effects *);
 /* Native-owned stack bytes, no retained pointer or native effects. Only marker
  * spans are written/read; usage requires those spans already initialized. */
 void swr_v1_context_stack_mark(uint8_t *stack, size_t size);
 size_t swr_v1_context_stack_usage(const uint8_t *stack, size_t size);
 #ifdef __cplusplus
 }
-static_assert(sizeof(swr_v1_channel_cursor) == 4, "channel cursor ABI");
 #endif
 #endif

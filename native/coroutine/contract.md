@@ -2,15 +2,14 @@
 
 Implements `docs/coroutine-abi-v1.md`. Selected with `SWOOLE_RS_COROUTINE`
 (`--enable-swoole-rs-coroutine`); disabled selection keeps the original source
-exactly. Headers: `swoole_rs_coroutine.h`, `swoole_rs_channel_tokens.h`.
+exactly. Header: `swoole_rs_coroutine.h`.
 
 | Patch | Upstream files |
 | --- | --- |
-| 0001-channel-policy | `src/coroutine/channel.cc` |
-| 0002-channel-owned-tokens | `include/swoole_coroutine_channel.h` |
+| 0001-channel | `include/swoole_coroutine_channel.h`, `src/coroutine/channel.cc` |
 | 0003-context-stack-markers | `src/coroutine/context.cc` |
 | 0004-coroutine-core | `include/swoole_coroutine.h`, `src/coroutine/base.cc` |
-| 0005-context-bookkeeping | `include/swoole_coroutine_channel.h`, `include/swoole_coroutine_context.h`, `src/coroutine/channel.cc`, `src/coroutine/thread_context.cc` |
+| 0005-context-bookkeeping | `include/swoole_coroutine_context.h`, `src/coroutine/thread_context.cc` |
 
 Rust frames never span a swap callback, context switch, timer, allocation,
 print or destructor: C++ runs those between calls.
@@ -65,43 +64,20 @@ The ucontext-derived SDK fails to build under `-Werror` because of an unused
 
 ## Channel
 
-`swr_v1_channel_step` borrows an aligned caller-local four-byte cursor for one
-call (null is invalid; aliasing cannot be checked). Operations: push 0, pop 1,
-close 2. Facts are copied fresh on each return. Actions: timer, queue transfer,
-yield, wake or closed publication; negative errors match Channel errors. Phase
-6 is terminal; invalid operation/phase returns -4. The operation is fixed for a
-cursor's lifetime. Rust owns wait/fairness/error precedence and
-producer-before-consumer close order. A Native timer delete completes before
-cancellation state is re-read; a timed-out yield returns before deleting its
-expired timer. Successes leave `error_` untouched.
-
-A push/pop WAKE is terminal: Native returns the captured result right after
-resume without touching the Channel, because the resumed waiter may delete it.
-Close wakes are nonterminal; the Channel must stay alive through the next queue
-check.
-
-Storage: the data FIFO and both waiter lists are three opaque Rust handles, each
-one `VecDeque` of pointer identities (null payloads allowed; front status
-distinguishes empty). Construction, clone and growth are fallible; Native throws
-`std::bad_alloc` after return. Implicit copy construction/assignment copy
-identities into independent queues. Capacity/closed/error live in one
-initialized POD prefix (16 B, align 8); selected Channel is 40 B with handles at
-16/24/32 (Native 112 B). Capacity 0 is not normalized, success keeps sticky
-errors, and closing an already-closed channel keeps its previous error.
-
-`swr_v1_channel_owned_step` runs the same phase/fairness kernel directly on the
-Rust queues; only fresh timer/cancel/timeout flags cross in. Close returns
-PUBLISH_CLOSED first; Native traces before the next call publishes closure.
-Rust removes a waiter before returning its identity. Allocation refusal returns
--5 at the original transfer point. `swr_v1_channel_pop_data` removes an optional
-token in one call (a stored null still counts as data).
-
-`swr_v1_channel_waiter`: enqueue and pop use the producer queue only for role 1;
-removal uses the consumer queue only for role 2 (preserving the original
-asymmetric else branches). Removal erases all equal identities. `Channel::yield`
-enqueues before the trace and cancel-closure construction; cancellation removes
-before resume. The timer callback publishes `msg.error=true`, then
-`msg.timer=nullptr`, removes, then re-reads `msg.co` for resume.
+`swr_v1_channel` is an owned Rust handle (capacity, closed flag, last error,
+the data FIFO and both waiter queues of opaque pointers); `swoole::coroutine::Channel`
+holds it and is not copyable. pop/push/close are whole Rust operations that call
+`swr_v1_channel_effects` for the timeout timer, the yield (C++ builds the cancel
+function and returns the canceled/timed-out bits), waking a waiter and the
+trace points. Upstream's order holds: a waiter is queued before it yields and
+removed (every entry, by the timer callback or cancel function) before it
+resumes; after a wait the timer is deleted, then cancellation wins over timeout
+over close; pop drains data after close; close wakes producers, then consumers,
+re-reading each queue after every resume. A push/pop wake ends the operation:
+the woken coroutine may delete the channel. Enqueue picks the producer queue
+only for PRODUCER, removal the consumer queue only for CONSUMER (upstream's
+asymmetric else branches). Allocation failure returns -5 and C++ throws
+`std::bad_alloc`.
 
 ## Coroutine map
 
