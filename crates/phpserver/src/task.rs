@@ -517,7 +517,7 @@ fn pack_method(call: &Call) {
     // RETURN_STRINGL: `size` bytes of the buffer, copied.
     // SAFETY: the return slot and the buffer's bytes.
     unsafe {
-        swoole_rs_zend::sys::swr_zval_stringl(call.return_value(), buf.0.as_ptr().cast(), size)
+        swoole_rs_zend::sys::swr_zval_stringl(call.return_value(), buf.0.as_ptr().cast(), size);
     };
 }
 
