@@ -55,9 +55,19 @@ fn kill(pid: c_int, signo: c_int) -> Result<(), c_int> {
 }
 
 impl ReloadTask {
-    fn add(&mut self, pid: c_int, worker_id: u32) {
+    pub(crate) fn add(&mut self, pid: c_int, worker_id: u32) {
         self.workers.insert(pid, worker_id);
         self.kill_queue.push_back(pid);
+    }
+
+    /// Drop `pid` from the snapshot once it has exited. Returns whether it was there.
+    pub(crate) fn remove(&mut self, pid: c_int) -> bool {
+        self.workers.remove(&pid).is_some()
+    }
+
+    /// Whether every snapshot worker has exited.
+    pub(crate) fn completed(&self) -> bool {
+        self.workers.is_empty()
     }
 
     /// Signal every worker still in the snapshot, then drop the queue.
@@ -75,7 +85,7 @@ impl ReloadTask {
 
     /// Signal the next queued worker still in the snapshot; workers that are already
     /// gone leave the snapshot and the next one is tried.
-    fn kill_one(&mut self, signo: c_int, warn: Warn) {
+    pub(crate) fn kill_one(&mut self, signo: c_int, warn: Warn) {
         while let Some(pid) = self.kill_queue.pop_front() {
             let Some(&id) = self.workers.get(&pid) else {
                 continue;
@@ -163,7 +173,7 @@ pub unsafe extern "C" fn swr_v1_process_reload_task_remove(
 ) -> bool {
     // SAFETY: the caller lends a live handle.
     let task = unsafe { &mut *task };
-    task.workers.remove(&pid).is_some()
+    task.remove(pid)
 }
 
 /// Whether every snapshot worker has exited.
@@ -173,7 +183,7 @@ pub unsafe extern "C" fn swr_v1_process_reload_task_remove(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_process_reload_task_completed(task: *const ReloadTask) -> bool {
     // SAFETY: the caller lends a live handle.
-    unsafe { &*task }.workers.is_empty()
+    unsafe { &*task }.completed()
 }
 
 /// Send `signo` to every snapshot worker and clear the queue.
@@ -205,7 +215,7 @@ pub unsafe extern "C" fn swr_v1_process_reload_task_kill_one(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
 

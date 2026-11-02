@@ -7,6 +7,7 @@
     )
 )]
 pub mod affinity;
+pub mod reaper;
 pub mod reload_task;
 pub mod signal;
 #[cfg(target_os = "linux")]

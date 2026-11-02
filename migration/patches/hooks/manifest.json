@@ -24,6 +24,13 @@
       "upstream_paths": [
         "ext-src/swoole_runtime.cc"
       ]
+    },
+    {
+      "path": "0003-socket-streams.patch",
+      "sha256": "70a91ebe3b8ab39c22d927092caf454035769d1a01c30a263e0e358086f6dae8",
+      "upstream_paths": [
+        "ext-src/swoole_runtime.cc"
+      ]
     }
   ]
 }

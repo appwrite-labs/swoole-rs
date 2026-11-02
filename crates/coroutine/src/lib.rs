@@ -1,5 +1,6 @@
-//! Coroutine policy and sole channel token storage. Native code owns payloads
-//! and executes callbacks, stack switches, timers and destructors after return.
+//! The coroutine scheduler and per-coroutine state, Channel queues and policy,
+//! and context stack bookkeeping. C++ runs the effects: swap callbacks, stack
+//! switches, timers and destructors.
 #![cfg_attr(
     not(test),
     deny(
@@ -12,117 +13,12 @@ mod tokens;
 pub use tokens::*;
 mod channel;
 pub use channel::*;
-mod scheduler;
-pub use scheduler::*;
-mod timing;
-pub use timing::*;
+mod coroutine;
+pub use coroutine::*;
 mod stack;
 pub use stack::*;
-mod status;
-pub use status::*;
 mod context;
 pub use context::*;
-mod identity;
-pub use identity::*;
-mod swap;
-pub use swap::*;
-mod creation;
-pub use creation::*;
-mod bailout;
-pub use bailout::*;
-mod entry;
-pub use entry::*;
-
-const PROCEED: u32 = 1;
-const CALL: u32 = 2;
-const CLEAR_CANCEL: u32 = 4;
-const DELETE_TIMER: u32 = 8;
-const DESTROY: u32 = 16;
-const CALL_BAILOUT: u32 = 32;
-const BAILOUT: u32 = 1;
-const CALLBACK: u32 = 2;
-const TASK: u32 = 4;
-const CANCELABLE: u32 = 8;
-const ENDED: u32 = 16;
-const TIMER: u32 = 32;
-
-#[repr(C)]
-#[derive(Debug, PartialEq, Eq)]
-pub struct Plan {
-    pub actions: u32,
-    /// -1 preserves the native state/code; other values are native enum values.
-    pub state: i32,
-    pub resume_code: i32,
-    /// 0 success; -1 timeout, -2 canceled, -3 cannot cancel, -4 invalid operation.
-    pub error: i32,
-}
-
-/// Pure copied-fact decisions. Native execution order is part of the facade's
-/// contract; in particular cancel copies its native function BEFORE applying
-/// this plan and never accesses the object after invoking that function.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_coroutine_transition(op: u32, facts: u32, code: i32) -> Plan {
-    coroutine_transition(op, facts, code)
-}
-
-fn coroutine_transition(op: u32, facts: u32, code: i32) -> Plan {
-    let mut plan = Plan {
-        actions: 0,
-        state: -1,
-        resume_code: i32::MIN,
-        error: 0,
-    };
-    match op {
-        0 | 1 | 2 | 4 => {
-            if op == 1 && facts & BAILOUT != 0 {
-                return plan;
-            }
-            plan.actions = PROCEED;
-            plan.state = match op {
-                2 => 1,
-                4 => 3,
-                _ => 2,
-            };
-            if op == 2 {
-                plan.resume_code = 0;
-            }
-            if op != 0 && facts & (CALLBACK | TASK) == CALLBACK | TASK {
-                plan.actions |= CALL;
-            }
-        }
-        3 => {
-            if facts & CANCELABLE == 0 {
-                plan.error = -3;
-            } else {
-                plan.actions = PROCEED | CLEAR_CANCEL;
-                plan.resume_code = -2;
-            }
-        }
-        5 => {
-            plan.actions = if facts & ENDED != 0 {
-                DESTROY
-            } else if facts & BAILOUT != 0 {
-                CALL_BAILOUT
-            } else {
-                0
-            };
-        }
-        6 => {
-            if code == -1 {
-                plan.error = -1;
-            } else if facts & TIMER != 0 {
-                plan.actions = DELETE_TIMER;
-            }
-        }
-        7 => {
-            if code == -2 {
-                plan.error = -2;
-            }
-        }
-        _ => plan.error = -4,
-    }
-    plan
-}
 
 #[repr(C)]
 pub struct ChannelCursor {
@@ -272,23 +168,6 @@ fn channel_step(cursor: &mut ChannelCursor, op: u32, facts: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn scheduler_precedence() {
-        assert_eq!(
-            swr_v1_coroutine_transition(1, BAILOUT | CALLBACK | TASK, 0).actions,
-            0
-        );
-        assert_eq!(
-            swr_v1_coroutine_transition(5, ENDED | BAILOUT, 0).actions,
-            DESTROY
-        );
-        assert_eq!(swr_v1_coroutine_transition(6, TIMER, -1).actions, 0);
-        assert_eq!(
-            swr_v1_coroutine_transition(6, TIMER, -2).actions,
-            DELETE_TIMER
-        );
-        assert_eq!(swr_v1_coroutine_transition(7, 0, -2).error, -2);
-    }
     #[test]
     fn channel_fifo_and_cancel_precedence() {
         for (op, facts) in [(0, PRODUCERS), (1, CONSUMERS)] {
