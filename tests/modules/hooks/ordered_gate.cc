@@ -70,7 +70,6 @@ int sock_fd=77,type=4,sock_domain=AF_INET;NativeSocket native;NativeSocket *sock
  ssize_t recv(void *,size_t);ssize_t send(const void *,size_t);ssize_t read(void *,size_t);ssize_t write(const void *,size_t);ssize_t readv(network::IOVector *);ssize_t writev(network::IOVector *); \
  ssize_t recv_all(void *,size_t);ssize_t send_all(const void *,size_t); \
  enum {TRANSFER_ALL=1,TRANSFER_EINTR=2,TRANSFER_CHECKED=4};template <class Call> ssize_t transfer(EventType,const void *,size_t,int,Call);}; \
-struct UringSocket {ssize_t recv(void *,size_t n){return io("uring-recv",n);}ssize_t send(const void *,size_t n){return io("uring-send",n);}void check_return_value(ssize_t r){record("check:"+std::to_string(r));}ssize_t recv_all(void *,size_t);ssize_t send_all(const void *,size_t);}; \
 static void swoole_timer_del(void *){record("poll:timer-del");} \
 struct Reactor {std::vector<std::function<void(void*)>> callbacks;void defer(void(*)(void*),void*){record("poll:defer");}void defer(const std::function<void(void*)> &fn){record("event:defer");callbacks.push_back(fn);}};struct EventWaiter {Coroutine *co;uint32_t revents;int error_;EventWaiter(Coroutine *p,uint32_t bits):co(p),revents(bits),error_(0){}};static int16_t translate_events_to_poll(int);static int translate_events_from_poll(int16_t); \
 }
@@ -91,7 +90,8 @@ static std::vector<std::string> run_##NS(int scenario){using namespace NS;trace.
  else if(scenario<28){} \
  else if(scenario<44){int k=scenario-28;std::vector<std::vector<ssize_t>> cases={{0},{8},{-EINVAL},{-EAGAIN,3,5},{2,3,3},{2,-EAGAIN,-ECONNRESET},{2,0},{-EAGAIN,0}};io_results=cases[k%8];Socket s;char b[16]={};ssize_t r=k<8?s.recv_all(b,8):s.send_all(b,8);record("result:"+std::to_string(r));} \
  else if(scenario<50){Socket s;char b[8]={};io_results={2};int k=scenario-44;available=k%3!=0;timer_ok=k%3!=1;wake_ok=k%3!=2;ssize_t r=k<3?s.recv_all(b,8):s.send_all(b,8);record("result:"+std::to_string(r));} \
- else if(scenario<62){int k=scenario-50;std::vector<std::vector<ssize_t>> cases={{0},{8},{-EINVAL},{3,5},{3,-EINTR},{3,0}};io_results=cases[k%6];UringSocket s;char b[16]={};ssize_t r=k<6?s.recv_all(b,8):s.send_all(b,8);record("result:"+std::to_string(r));} \
+ /* 50..61: UringSocket::recv_all/send_all moved to Rust (crates/hooks/src/uring_socket.rs). */ \
+ else if(scenario<62){} \
  else if(scenario<72){} \
  /* 72..643 and 1876..2021: Runtime::enableCoroutine's hook_* families moved to Rust (crates/phpruntime). */ \
  /* 643..931: socket_poll_trigger_event moved to Rust (crates/hooks/src/poll.rs, ported_trigger_matrix). */ \
