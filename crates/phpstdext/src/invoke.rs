@@ -6,7 +6,7 @@
 use crate::{
     CONTINUE, DISPATCH,
     aliases::{self, Receiver},
-    deref, ex_var, raise, rt_constant,
+    deref, ex_var, rt_constant,
 };
 use std::{
     ffi::{CStr, c_int},
@@ -187,7 +187,7 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
     unsafe { swr_zend_efree(info.cast()) };
     // SAFETY: a live frame.
     unsafe { (*frame).run_time_cache = ptr::null_mut() };
-    raise(&outcome);
+    swoole_rs_zend::bailout::raise(outcome);
 }
 
 /// # Safety
@@ -279,7 +279,7 @@ unsafe fn forward(
     // SAFETY: both hold `count` zvals.
     unsafe { move_first(args, argv, count, position) };
     // SAFETY: a registered core function and `argv` from `zvals`.
-    raise(&unsafe { call(target, value, argv, count) });
+    swoole_rs_zend::bailout::raise(unsafe { call(target, value, argv, count) });
 }
 
 macro_rules! wrappers {

@@ -69,6 +69,14 @@
         "ext-src/php_swoole_http.h",
         "ext-src/swoole_http_response.cc"
       ]
+    },
+    {
+      "path": "0011-http-context-send.patch",
+      "sha256": "8b892262435596f88af4b2a2ca21b1687fb5b24043c317e9d805b8efea562777",
+      "upstream_paths": [
+        "ext-src/php_swoole_http.h",
+        "ext-src/swoole_http_response.cc"
+      ]
     }
   ]
 }

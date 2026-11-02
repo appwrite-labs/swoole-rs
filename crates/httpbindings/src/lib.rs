@@ -8,14 +8,12 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-mod emission;
 mod file;
 mod payload;
 mod request;
 mod response;
 mod server;
 mod settings;
-pub use emission::*;
 pub use file::*;
 pub use payload::*;
 pub use request::*;

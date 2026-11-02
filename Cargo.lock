@@ -401,6 +401,7 @@ dependencies = [
  "swoole-rs-phplocks",
  "swoole-rs-phpprocess",
  "swoole-rs-phpruntime",
+ "swoole-rs-phpserver",
  "swoole-rs-phpstdext",
  "swoole-rs-phpswoole",
  "swoole-rs-phpthread",
@@ -559,6 +560,14 @@ dependencies = [
  "libc",
  "openssl-sys",
  "swoole-rs-hooks",
+ "swoole-rs-zend",
+]
+
+[[package]]
+name = "swoole-rs-phpserver"
+version = "0.1.0"
+dependencies = [
+ "swoole-rs-ports",
  "swoole-rs-zend",
 ]
 

@@ -63,11 +63,20 @@ pub(crate) fn sub<W: Word>(call: &Call, word: *mut W) {
     fetch(call, word, SUB_FETCH);
 }
 
+/// `ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE)`, then raise a bailout a user
+/// error handler left in a coercion (the hot path skips the check; no frame
+/// here owns anything that needs a drop).
+#[cold]
+fn failed(call: &Call) {
+    call.set_bool(false);
+    swoole_rs_zend::bailout::finish();
+}
+
 fn fetch<W: Word>(call: &Call, word: *mut W, op: u32) {
     match call.arity(0, 1).and_then(|()| call.long(1, 1)) {
         // SAFETY: see above.
         Ok(value) => call.set_long(unsafe { W::apply(word, op, value, 0) }),
-        Err(_) => call.set_bool(false),
+        Err(_) => failed(call),
     }
 }
 
@@ -84,7 +93,7 @@ pub(crate) fn set<W: Word>(call: &Call, word: *mut W) {
             // SAFETY: see above.
             unsafe { W::apply(word, STORE, value, 0) };
         }
-        Err(_) => call.set_bool(false),
+        Err(_) => failed(call),
     }
 }
 
@@ -99,7 +108,7 @@ pub(crate) fn cmpset<W: Word>(call: &Call, word: *mut W) {
             let swapped = unsafe { W::apply(word, COMPARE_SET, value, expected) };
             call.set_bool(swapped != 0);
         }
-        Err(_) => call.set_bool(false),
+        Err(_) => failed(call),
     }
 }
 
@@ -108,7 +117,7 @@ pub(crate) fn wait(call: &Call, word: *mut u32) {
     match call.arity(0, 1).and_then(|()| call.double(1, 1.0)) {
         // SAFETY: see above.
         Ok(timeout) => call.set_bool(unsafe { futex::wait(word, timeout) } >= 0),
-        Err(_) => call.set_bool(false),
+        Err(_) => failed(call),
     }
 }
 
@@ -121,7 +130,7 @@ pub(crate) fn wakeup(call: &Call, word: *mut u32) {
         )]
         // SAFETY: see above.
         Ok(count) => call.set_bool(unsafe { futex::wakeup(word, count as i32) } >= 0),
-        Err(_) => call.set_bool(false),
+        Err(_) => failed(call),
     }
 }
 

@@ -45,9 +45,9 @@ use swoole_rs_zend::{
     bailout::Bailout,
     message, register_long_constant,
     sys::{
-        swr_zend_module_loaded, swr_zend_runtime_find_class, zend_class_entry, zend_error,
-        zend_execute_data, zend_fcall_info_cache, zend_function_entry,
-        zend_register_class_alias_ex, zif_handler, zval,
+        swr_zend_module_loaded, swr_zend_runtime_find_class, zend_class_entry, zend_execute_data,
+        zend_fcall_info_cache, zend_function_entry, zend_register_class_alias_ex, zif_handler,
+        zval,
     },
 };
 
@@ -305,7 +305,7 @@ fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     requested = transports(requested, installed);
     wrappers(requested, installed);
     functions::hook_all(requested, installed)?;
-    mongodb(requested, installed);
+    mongodb(requested, installed)?;
 
     // SAFETY: as above.
     unsafe { (ops.call_hook)(1, &raw mut requested) };
@@ -370,25 +370,24 @@ fn wrappers(requested: u32, installed: u32) {
 }
 
 /// `hook_mongodb`: alias `MongoDB\Client` to the library's class.
-fn mongodb(requested: u32, installed: u32) {
+fn mongodb(requested: u32, installed: u32) -> Result<(), Bailout> {
     const ALIAS: &CStr = c"MongoDB\\Client";
     if transition(requested, installed, flags::MONGODB) != Some(true) || class(ALIAS).is_some() {
-        return;
+        return Ok(());
     }
     let Some(ce) = class(c"Swoole\\MongoDB\\Client") else {
-        return;
+        return Ok(());
     };
     // SAFETY: a registered class and a NUL-terminated name.
     if unsafe { zend_register_class_alias_ex(ALIAS.as_ptr(), ALIAS.count_bytes(), ce, true) } != 0 {
-        // SAFETY: a printf format whose `%s` takes the NUL-terminated name.
-        unsafe {
-            zend_error(
-                E_WARNING,
-                c"Cannot declare class %s, because the name is already in use".as_ptr(),
-                ALIAS.as_ptr(),
-            );
-        }
+        let text = swoole_rs_zend::message!(
+            "Cannot declare class {}, because the name is already in use",
+            ALIAS.to_string_lossy()
+        );
+        // SAFETY: from a handler.
+        unsafe { swoole_rs_zend::zend_error(E_WARNING, text.as_cstr()) }?;
     }
+    Ok(())
 }
 
 /// A class already declared (no autoloading).
