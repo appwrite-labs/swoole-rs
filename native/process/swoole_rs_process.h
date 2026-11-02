@@ -15,7 +15,6 @@ uint32_t swr_v1_process_task_action(bool pipe, bool shutdown, bool command);
 uint32_t swr_v1_process_finish_error(bool pipe, bool no_reply);
 int32_t swr_v1_process_result_flags(int32_t flags, bool callback, bool coroutine, int32_t callback_flag, int32_t coroutine_flag);
 uint32_t swr_v1_process_reload_action(bool all, bool task);
-uint32_t swr_v1_process_reload_kill(bool failed, bool no_child, bool no_process);
 /* Manager::signal_handler action: 0 none, 1 stop, 2 reload all, 3 reload workers,
  * 4 read message, 5 force-kill if armed, 6 reopen logger. */
 uint32_t swr_v1_process_manager_signal_action(int signo);
@@ -78,6 +77,8 @@ void swr_v1_process_worker_registry_free(swr_v1_process_worker_registry *);
 void swr_v1_process_worker_registry_register(swr_v1_process_worker_registry *, int pid, void *worker, int category);
 bool swr_v1_process_worker_registry_unregister(swr_v1_process_worker_registry *, int pid);
 void *swr_v1_process_worker_registry_lookup(const swr_v1_process_worker_registry *, int pid);
+void swr_v1_process_worker_registry_detach(swr_v1_process_worker_registry *, int pid);
+bool swr_v1_process_worker_registry_reap_detached(swr_v1_process_worker_registry *, int pid);
 /* Send signo to every worker of category, then wait for each. kill_fn/wait_fn are
  * swoole_kill / swoole_waitpid; warn_fn reports a wait failure. */
 void swr_v1_process_worker_registry_terminate(const swr_v1_process_worker_registry *, int category, int signo,
@@ -124,6 +125,19 @@ int swr_v1_worker_pid(const swr_v1_worker_record *);
 void swr_v1_worker_set_pid(swr_v1_worker_record *, int pid);
 uint32_t swr_v1_worker_id(const swr_v1_worker_record *);
 void swr_v1_worker_set_id(swr_v1_worker_record *, uint32_t id);
+typedef struct swr_v1_process_reload_task swr_v1_process_reload_task;
+#define SWR_RELOAD_WARN_KILL_ALL_FAILED 1
+#define SWR_RELOAD_WARN_FORCE_KILL 2
+#define SWR_RELOAD_WARN_KILL_ONE_FAILED 3
+typedef void (*swr_v1_process_reload_warn)(int kind, int pid, uint32_t worker_id);
+swr_v1_process_reload_task *swr_v1_process_reload_task_new(void);
+void *swr_v1_process_reload_task_free(swr_v1_process_reload_task *);
+void swr_v1_process_reload_task_set_timer(swr_v1_process_reload_task *, void *timer);
+void swr_v1_process_reload_task_add_workers(swr_v1_process_reload_task *, const swr_v1_worker_record *workers, size_t count);
+bool swr_v1_process_reload_task_remove(swr_v1_process_reload_task *, int pid);
+bool swr_v1_process_reload_task_completed(const swr_v1_process_reload_task *);
+void swr_v1_process_reload_task_kill_all(swr_v1_process_reload_task *, int signo, swr_v1_process_reload_warn warn);
+void swr_v1_process_reload_task_kill_one(swr_v1_process_reload_task *, int signo, swr_v1_process_reload_warn warn);
 #ifdef __cplusplus
 }
 #endif
