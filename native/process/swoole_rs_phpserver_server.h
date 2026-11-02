@@ -122,7 +122,7 @@ typedef struct {
 void swr_v1_phpserver_minit(const struct _zend_function_entry *server_methods,
                             const struct _zend_function_entry *iterator_methods,
                             const struct _zend_function_entry *task_methods,
-                            const swr_v1_phpserver_host *host,
+                            const swr_v1_phpserver_host *table,
                             bool thread,
                             int module,
                             swr_phpserver_classes *classes);

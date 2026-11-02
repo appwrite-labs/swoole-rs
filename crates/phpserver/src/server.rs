@@ -22,7 +22,7 @@ use swoole_rs_zend::{
 /// Swoole error codes (`include/swoole_error.h`).
 const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
 const SW_ERROR_NO_PAYLOAD: c_int = 550;
-const SW_ERROR_SESSION_NOT_EXIST: c_int = 1004;
+const SW_ERROR_SESSION_NOT_EXIST: c_int = 1005;
 /// `SW_MAX_FIND_COUNT`.
 const MAX_FIND_COUNT: i64 = 100;
 /// `SWR_PHPSERVER_STATS_*`.

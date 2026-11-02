@@ -137,7 +137,7 @@
     },
     {
       "path": "0014-php-server-methods.patch",
-      "sha256": "7c4a38dfcbce28729525e068063550af879aab6d173b2b33793d6b4471f2bea4",
+      "sha256": "f52ee199394a64e06cb80101520b7fd85207e1dea8a4e7bb4469b61124a915e5",
       "upstream_paths": [
         "ext-src/swoole_server.cc"
       ]
