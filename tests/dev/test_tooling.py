@@ -666,7 +666,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['ports-policy'])
         self.assertIn('--archive', commands['http2-native'])
         self.assertIn('--sanitize', commands['http2-native'])
-        for family in ['settings', 'control', 'header', 'queue', 'window', 'response-headers', 'publication', 'write', 'send', 'server-header', 'request-headers', 'response-builders', 'response-lifecycle', 'connection']:
+        for family in ['settings', 'control', 'header', 'window', 'response-headers', 'send', 'server-header', 'response-builders', 'response-lifecycle', 'file', 'receive']:
             self.assertIn('--core-report', commands['http2-' + family])
             self.assertLess(list(commands).index('http2-native'), list(commands).index('http2-' + family))
         for name in ['clients-lifecycle', 'clients-write', 'clients-read', 'clients-connect', 'clients-persistent', 'clients-resolver-config', 'clients-transport', 'clients-pool', 'clients-resolver', 'clients-http-connection', 'clients-http-response', 'clients-http-format', 'clients-coro', 'clients-async', 'clients-object', 'clients-ip', 'clients-ip-text', 'clients-coro-io']:

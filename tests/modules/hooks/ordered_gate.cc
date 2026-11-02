@@ -27,26 +27,6 @@ using EventType=uint32_t;
 #define SW_FILE_LOCK_DEFAULT_SECOND .001
 #define SW_FILE_LOCK_MAX_SECOND .1
 #define SW_IOURING_SQE_BATCH_SIZE 16
-#define SW_USE_CURL 1
-#define SW_USE_PGSQL 1
-#define SW_USE_ODBC 1
-#define SW_USE_ORACLE 1
-#define SW_USE_SQLITE 1
-#define SW_USE_FIREBIRD 1
-#define SUCCESS 0
-#define ZEND_FETCH_CLASS_NO_AUTOLOAD 8
-#define SW_HOOK_FUNC(x) record("hook:" #x)
-#define SW_UNHOOK_FUNC(x) record("restore:" #x)
-#define SW_HOOK_WITH_PHP_FUNC(x) record("php:" #x)
-#define SW_HOOK_WITH_NATIVE_FUNC(x) record("native:" #x)
-#define ZEND_STRL(x) x, sizeof(x)-1
-#define PHP_FN(x) 0
-#define E_WARNING 1
-static void hook_func(const char *name,size_t,int) { record(std::string("func:")+name); }
-static void inherit_class(const char *a,size_t,const char *b,size_t) { record(std::string("inherit:")+a+":"+b); }
-static void detach_parent_class(const char *a) { record(std::string("detach:")+a); }
-static std::function<void()> warning_hook;
-static void php_swoole_fatal_error(int,const char *) { record("curl-conflict-warning");if(warning_hook)warning_hook(); }
 static void swoole_sys_error(const char *) { record("submit:error"); }
 
 static std::function<ssize_t(const char *,size_t)> syscall_io;
@@ -91,21 +71,8 @@ int sock_fd=77,type=4,sock_domain=AF_INET;NativeSocket native;NativeSocket *sock
  ssize_t recv_all(void *,size_t);ssize_t send_all(const void *,size_t); \
  enum {TRANSFER_ALL=1,TRANSFER_EINTR=2,TRANSFER_CHECKED=4};template <class Call> ssize_t transfer(EventType,const void *,size_t,int,Call);}; \
 struct UringSocket {ssize_t recv(void *,size_t n){return io("uring-recv",n);}ssize_t send(const void *,size_t n){return io("uring-send",n);}void check_return_value(ssize_t r){record("check:"+std::to_string(r));}ssize_t recv_all(void *,size_t);ssize_t send_all(const void *,size_t);}; \
-struct PHPCoroutine {enum :uint32_t {HOOK_TCP=1<<1,HOOK_UDP=1<<2,HOOK_UNIX=1<<3,HOOK_UDG=1<<4,HOOK_SSL=1<<5,HOOK_TLS=1<<6,HOOK_FILE=1<<8,HOOK_STDIO=1<<15,HOOK_PDO_PGSQL=1<<16,HOOK_PDO_ODBC=1<<17,HOOK_PDO_ORACLE=1<<18,HOOK_PDO_SQLITE=1<<19,HOOK_PDO_FIREBIRD=1<<20,HOOK_STREAM_FUNCTION=1<<7,HOOK_SLEEP=1<<9,HOOK_PROC=1<<10,HOOK_SOCKETS=1<<14,HOOK_NATIVE_CURL=1<<12,HOOK_CURL=1<<11,HOOK_NET_FUNCTION=1<<21,HOOK_MONGODB=1<<22};}; \
 static void swoole_timer_del(void *){record("poll:timer-del");} \
 struct Reactor {std::vector<std::function<void(void*)>> callbacks;void defer(void(*)(void*),void*){record("poll:defer");}void defer(const std::function<void(void*)> &fn){record("event:defer");callbacks.push_back(fn);}};struct EventWaiter {Coroutine *co;uint32_t revents;int error_;EventWaiter(Coroutine *p,uint32_t bits):co(p),revents(bits),error_(0){}};static int16_t translate_events_to_poll(int);static int translate_events_from_poll(int16_t); \
-static bool alias_exists=false,class_found=true;static int alias_result=SUCCESS; \
-static bool class_exists(const char *name){record(std::string("class-exists:")+name);return alias_exists;} \
-namespace zend {struct String {const char *value;String(const char *v):value(v){record(std::string("class-string:")+v);}const char *get(){return value;}};} \
-static void *zend_lookup_class_ex(const char *name,void *,int flags){record(std::string("class-lookup:")+name+":"+std::to_string(flags));return class_found?(void*)1:nullptr;} \
-static int zend_register_class_alias(const char *name,void *){record(std::string("class-alias:")+name);if(alias_result==SUCCESS)alias_exists=true;return alias_result;} \
-static void zend_error(int,const char *,const char *name){record(std::string("class-error:")+name);} \
-static uint32_t runtime_hook_flags=0; \
-static std::string transport_failure;using Transport=void *;static struct {Transport tcp=(void*)1,udp=(void*)2,_unix=(void*)3,udg=(void*)4,ssl=(void*)5,tls=(void*)6;}ori_factory;static Transport socket_create=(void*)77; \
-static int php_stream_xport_register(const char *name,Transport handler){record(std::string("transport:")+name+":"+std::to_string((uintptr_t)handler));return transport_failure==name?-1:SUCCESS;} \
-static void php_stream_xport_unregister(const char *name){record(std::string("unregister:")+name);}static void hook_stream_throw_exception(const char *name){record(std::string("exception:")+name);} \
-static int php_plain_files_wrapper=1,sw_php_plain_files_wrapper=2,ori_php_plain_files_wrapper=3,php_stream_stdio_ops=4,sw_php_stream_stdio_ops=5,ori_php_stream_stdio_ops=6;static void memcpy(int *dst,const int *src,size_t){record("copy:"+std::to_string(*src));*dst=*src;} \
-static void swoole_pgsql_set_blocking(bool b){record("pgsql:"+std::to_string(b));}static void swoole_odbc_set_blocking(bool b){record("odbc:"+std::to_string(b));}static void swoole_oracle_set_blocking(bool b){record("oracle:"+std::to_string(b));}static void swoole_sqlite_set_blocking(bool b){record("sqlite:"+std::to_string(b));}static void swoole_firebird_set_blocking(bool b){record("firebird:"+std::to_string(b));} \
 }
 FIXTURE(original)
 FIXTURE(selected)
@@ -119,15 +86,14 @@ namespace selected {
 
 #define CASES(NS) \
 static std::vector<std::string> run_##NS(int scenario){using namespace NS;trace.clear();errno=0;last_error=0;Coroutine co;Coroutine::current=&co;SwooleTG.reactor=&co; \
- warning_hook=nullptr;alias_exists=false;class_found=true;alias_result=SUCCESS;syscall_io=io;datagram=true;dns_result="resolved";System::canceled=false;io_index=0;throw_io=false;available=true;timer_ok=true;wake_ok=true; \
+ syscall_io=io;datagram=true;dns_result="resolved";System::canceled=false;io_index=0;throw_io=false;available=true;timer_ok=true;wake_ok=true; \
  if(scenario<4){SwooleTG.reactor=scenario&1?&co:nullptr;Coroutine::current=scenario&2?&co:nullptr;record("no-coro:"+std::to_string(is_no_coro()));} \
  else if(scenario<28){} \
  else if(scenario<44){int k=scenario-28;std::vector<std::vector<ssize_t>> cases={{0},{8},{-EINVAL},{-EAGAIN,3,5},{2,3,3},{2,-EAGAIN,-ECONNRESET},{2,0},{-EAGAIN,0}};io_results=cases[k%8];Socket s;char b[16]={};ssize_t r=k<8?s.recv_all(b,8):s.send_all(b,8);record("result:"+std::to_string(r));} \
  else if(scenario<50){Socket s;char b[8]={};io_results={2};int k=scenario-44;available=k%3!=0;timer_ok=k%3!=1;wake_ok=k%3!=2;ssize_t r=k<3?s.recv_all(b,8):s.send_all(b,8);record("result:"+std::to_string(r));} \
  else if(scenario<62){int k=scenario-50;std::vector<std::vector<ssize_t>> cases={{0},{8},{-EINVAL},{3,5},{3,-EINTR},{3,0}};io_results=cases[k%6];UringSocket s;char b[16]={};ssize_t r=k<6?s.recv_all(b,8):s.send_all(b,8);record("result:"+std::to_string(r));} \
  else if(scenario<72){} \
- else if(scenario<193){uint32_t words[]={0,UINT32_MAX,1u<<7,1u<<9,1u<<10,1u<<14,1u<<12,1u<<11,1u<<21,(1u<<11)|(1u<<12),0x80000000u};int k=scenario-72;runtime_hook_flags=words[k/11];uint32_t requested=words[k%11];hook_all_func(requested);record("outer-requested:"+std::to_string(requested));record("installed:"+std::to_string(runtime_hook_flags));} \
- if(scenario>=193 && scenario<643){int k=scenario-193;uint32_t words[]={0,UINT32_MAX,1u<<1,1u<<2,1u<<3,1u<<4,1u<<5,1u<<6,1u<<8,1u<<15,1u<<16,1u<<17,1u<<18,1u<<19,1u<<20};runtime_hook_flags=words[(k/15)%15];uint32_t requested=words[k%15];transport_failure=k>=225?"ssl":"";hook_stream_factory(&requested);hook_stream_ops(requested);hook_pdo_driver(requested);record("requested:"+std::to_string(requested));} \
+ /* 72..643 and 1876..2021: Runtime::enableCoroutine's hook_* families moved to Rust (crates/phpruntime). */ \
  /* 643..931: socket_poll_trigger_event moved to Rust (crates/hooks/src/poll.rs, ported_trigger_matrix). */ \
  if(scenario>=931 && scenario<1003){int k=scenario-931;double times[]={-1,0,.002};int state=(k/3)%3;TimerNode *node=state==1?new TimerNode:state==2?reinterpret_cast<TimerNode*>(-1):nullptr;Socket sock;timer_ok=(k/9)%2;{Socket::TimerController timer(&node,times[k%3],&sock,Socket::timer_callback);timer.enabled=(k/18)%2;record("timer-result:"+std::to_string(timer.start()));record("enabled:"+std::to_string(timer.enabled));record("node:"+std::to_string(node==nullptr?0:node==reinterpret_cast<TimerNode*>(-1)?2:1));if((k/36)%2)record("timer-result-again:"+std::to_string(timer.start()));}record("after-node:"+std::to_string(node==nullptr?0:node==reinterpret_cast<TimerNode*>(-1)?2:1));if(node && node!=reinterpret_cast<TimerNode*>(-1))delete node;} \
  if(scenario>=1003 && scenario<1023){int k=scenario-1003;int calls=0;bool rv=wait_for([&](){record("callback:"+std::to_string(calls));if(k>=10 && calls==k-10)System::canceled=true;return ++calls>k%10+14;});record("wait-result:"+std::to_string(rv));} \
@@ -138,12 +104,10 @@ static std::vector<std::string> run_##NS(int scenario){using namespace NS;trace.
  if(scenario>=1434 && scenario<1440){int method=scenario-1434;io_results={-EAGAIN,8};throw_io=true;Socket sock;char buf[16]={};network::IOVector vec;try{ssize_t result=method==0?sock.recv(buf,8):method==1?sock.send(buf,8):method==2?sock.read(buf,8):method==3?sock.write(buf,8):method==4?sock.readv(&vec):sock.writev(&vec);record("unexpected:"+std::to_string(result));}catch(const std::runtime_error &){record("io:exception");}} \
  if(scenario>=1440 && scenario<1872){int k=scenario-1440;int method=k%4;int mode=(k/4)%18;int failure=k/72;std::vector<std::vector<ssize_t>> results={{0},{8},{-EINVAL},{-EINTR,8},{-EINTR,-EINTR,0},{-EINTR,-EAGAIN,3},{-EAGAIN,-EINTR,8},{-EAGAIN,8},{-EAGAIN,-EAGAIN,0},{-EAGAIN,-ECONNRESET},{-EAGAIN,-EAGAIN,-EINVAL},{-EINTR,-EINTR,-EINVAL},{-EINTR,-EAGAIN,-EAGAIN,8},{-EINTR,8},{-EINTR,8},{8},{8},{8}};io_results=results[mode];if(failure==1)available=false;if(failure==2)timer_ok=false;if(failure==3)wake_ok=false;if(failure==4)datagram=false;if(failure==5)dns_result="";std::string host=mode==13?"needs-dns":mode==14?"invalid":"local";Socket sock;char buf[16]={};msghdr message{};sockaddr_storage addr{};socklen_t length=sizeof(addr);ssize_t result=method==0?sock.recvmsg(&message,MSG_PEEK):method==1?sock.sendmsg(&message,MSG_DONTWAIT):method==2?sock.sendto(host,9602,buf,8):sock.recvfrom(buf,8,reinterpret_cast<sockaddr*>(&addr),&length);record("result:"+std::to_string(result));record("errno:"+std::to_string(errno));} \
  if(scenario>=1872 && scenario<1876){int method=scenario-1872;io_results={-EAGAIN,8};throw_io=true;Socket sock;char buf[16]={};msghdr message{};sockaddr_storage addr{};socklen_t length=sizeof(addr);try{ssize_t result=method==0?sock.recvmsg(&message,0):method==1?sock.sendmsg(&message,0):method==2?sock.sendto("local",9602,buf,8):sock.recvfrom(buf,8,reinterpret_cast<sockaddr*>(&addr),&length);record("unexpected:"+std::to_string(result));}catch(const std::runtime_error &){record("io:exception");}} \
- if(scenario>=1876 && scenario<1957){int k=scenario-1876;uint32_t installed[]={0,PHPCoroutine::HOOK_NATIVE_CURL,PHPCoroutine::HOOK_CURL};uint32_t requested[]={0,PHPCoroutine::HOOK_NATIVE_CURL,PHPCoroutine::HOOK_NATIVE_CURL|PHPCoroutine::HOOK_CURL};runtime_hook_flags=installed[(k/3)%3];int mode=k/9;if(mode<3)warning_hook=[&](){runtime_hook_flags=installed[mode];record("warning:installed:"+std::to_string(runtime_hook_flags));};else if(mode<6)warning_hook=[&](){hook_all_func(installed[mode-3]);runtime_hook_flags=installed[mode-3];record("warning:reentered");};else warning_hook=[](){throw std::runtime_error("native-warning");};uint32_t flags=requested[k%3];try{hook_all_func(flags);record("outer-flags:"+std::to_string(flags));}catch(const std::runtime_error &){record("warning:exception");}record("installed:"+std::to_string(runtime_hook_flags));} \
- if(scenario>=1957 && scenario<2021){int k=scenario-1957;uint32_t flags=k&1?PHPCoroutine::HOOK_MONGODB:0;runtime_hook_flags=k&2?PHPCoroutine::HOOK_MONGODB:0;alias_exists=k&4;class_found=k&8;alias_result=k&16?SW_ERR:SUCCESS;hook_mongodb(flags);record("alias:"+std::to_string(alias_exists));record("installed:"+std::to_string(runtime_hook_flags));if(k&32)hook_mongodb(flags);} \
  return trace;}
 CASES(original)
 CASES(selected)
 int main(){
- for(int scenario=0;scenario<2021;++scenario){auto a=run_original(scenario),b=run_selected(scenario);if(a!=b){std::fprintf(stderr,"mismatch scenario %d\n",scenario);for(auto &s:a)std::fprintf(stderr,"original %s\n",s.c_str());for(auto &s:b)std::fprintf(stderr,"selected %s\n",s.c_str());return 1;}}
- std::puts("2021 actual pinned/selected ordered native scenarios passed (facade execution, no real runtime claim)");
+ for(int scenario=0;scenario<1876;++scenario){auto a=run_original(scenario),b=run_selected(scenario);if(a!=b){std::fprintf(stderr,"mismatch scenario %d\n",scenario);for(auto &s:a)std::fprintf(stderr,"original %s\n",s.c_str());for(auto &s:b)std::fprintf(stderr,"selected %s\n",s.c_str());return 1;}}
+ std::puts("1876 actual pinned/selected ordered native scenarios passed (facade execution, no real runtime claim)");
 }
