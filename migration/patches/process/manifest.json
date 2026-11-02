@@ -230,7 +230,7 @@
       ]
     },
     {
-      "path": "0023-task-sync.patch",
+      "path": "0024-task-sync.patch",
       "sha256": "b46f9f8397922968860dad9860f08dc09561fca7e0cd0b1d37955698305749e4",
       "upstream_paths": [
         "include/swoole_server.h",
