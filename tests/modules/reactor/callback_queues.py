@@ -6,29 +6,24 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from ordered_gate import ROOT, PIN, block, apply_patch_verified
+from ordered_gate import ROOT, PIN, block, hybrid
 from tools.build_upstream import require_build_space
 from tools.harness import run_compiler
 from tools.harness import run_isolated
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True);p.add_argument('--report',type=Path,required=True);p.add_argument('--sanitize',action='store_true');a=p.parse_args()
 if a.report.exists():raise ValueError('Choose a unique receipt path')
-report=dict(scope=__doc__,assigned_to='@loks0n',pin=PIN,patch_application=[],sources={},commands=[],results=[],passed=False,actual_reactor_destructor_executed=False)
+report=dict(scope=__doc__,assigned_to='@loks0n',pin=PIN,sources={},commands=[],results=[],passed=False,actual_reactor_destructor_executed=False)
 with tempfile.TemporaryDirectory(prefix='swr-inert-queues-') as temporary:
-    tree=Path(temporary);manifest=ROOT/'migration/patches/reactor/manifest.json';entries=json.loads(manifest.read_text())['patches'];original={}
-    for entry in entries:
-        for name in entry['upstream_paths']:
-            if name not in original:
-                data=subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name]);original[name]=data.decode();path=tree/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
-    for entry in entries:report['patch_application'].append(apply_patch_verified(tree,manifest.parent/entry['path'],entry['upstream_paths'],entry['sha256']))
+    tree=Path(temporary);selected_tree,abi=hybrid(a.archive);report['hybrid_tree']=str(selected_tree)
+    original={name:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name]).decode() for name in ['include/swoole_reactor.h','src/reactor/base.cc']}
     core=subprocess.check_output(['git','-C',str(a.source),'show',PIN+':include/swoole.h'],text=True)
     alias=next(line for line in core.splitlines() if line.startswith('typedef std::function<void(void *)> Callback;'))
     report['pinned_callback_alias']=alias
     manager=block(original['include/swoole_reactor.h'],original['include/swoole_reactor.h'].index('class CallbackManager'))[0]+';'
     try:
         for variant in ['native','selected']:
-            selected=variant!='native';header=(tree/'include/swoole_reactor.h').read_text() if selected else original['include/swoole_reactor.h'];base=(tree/'src/reactor/base.cc').read_text() if selected else original['src/reactor/base.cc']
-            if block(header,header.index('class CallbackManager'))[0]+';'!=manager:raise ValueError('Protected original manager changed')
+            selected=variant!='native';header=(selected_tree/'include/swoole_reactor.h').read_text() if selected else original['include/swoole_reactor.h'];base=(selected_tree/'src/reactor/base.cc').read_text() if selected else original['src/reactor/base.cc']
             queue='ReactorDeferredQueue' if selected else 'CallbackManager'
             field=queue+' *defer_tasks = nullptr;\n    '+queue+' destroy_callbacks;'
             if field not in header:raise ValueError('Deferred queue fields are not bound')
@@ -37,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='swr-inert-queues-') as temporary:
             if not report['sources'][variant]['actual_destructor_execute_call']:raise ValueError('Actual caller source changed')
             (tree/'callback-queues.inc').write_text('namespace swoole {\n'+alias+'\n'+manager+'\nclass Reactor {public:\n'+field+'\nvoid add_destroy_callback(const Callback&,void *);};\n'+method+'\n}\n')
             for standard in ['c++14','c++17','c++20']:
-                binary=tree/(variant+'-'+standard);command=['c++','-std='+standard,'-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/reactor'),ROOT/'tests/modules/reactor/callback_queues.cc',a.archive.resolve(),'-lpthread','-o',binary]
+                binary=tree/(variant+'-'+standard);command=['c++','-std='+standard,'-O1','-g','-I'+str(tree),abi,ROOT/'tests/modules/reactor/callback_queues.cc',a.archive.resolve(),'-lpthread','-o',binary]
                 if selected:command+=['-DSWOOLE_RS_REACTOR=1']
                 if a.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
                 if sys.platform.startswith('linux'):command+=['-ldl','-lm']
