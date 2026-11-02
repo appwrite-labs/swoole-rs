@@ -11,6 +11,7 @@
 
 pub mod address;
 pub mod buffered;
+pub mod connect;
 pub mod dns_cache;
 pub mod flock;
 pub mod lifecycle;

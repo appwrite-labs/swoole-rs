@@ -59,6 +59,9 @@ pub use wait::*;
 mod flush;
 pub use flush::*;
 
+mod socket_timeouts;
+pub use socket_timeouts::*;
+
 #[cfg(unix)]
 mod socket_options;
 #[cfg(unix)]

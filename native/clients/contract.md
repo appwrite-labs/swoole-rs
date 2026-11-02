@@ -19,8 +19,7 @@ symbol is excluded from production artifacts.
 | Raw transport | `write_next`, `read_next`, `connect_next`, `transport_next`, `datagram_send` | Proxy/TLS/connect/read/write/datagram decisions and result narrowing |
 | Persistent clients | `persistent_next`; `pool_create`, `pool_destroy`, `pool_push`, `pool_state`, `pool_take`, `pool_remove_empty` | Acquire/release decisions and private pool storage |
 | PHP resolver | `resolver_next` | Lookup/cluster retry/result/context publication order |
-| HTTP | `cookie`, `http_exec`, `http_connection_next`, `http_response_next`, `http_format` | Header spans; exec/retry/connection/response order; bounded output formatting |
-| Coroutine Client | `coro_next` | Setup, stream/datagram IO, peek, metadata and close decisions |
+| HTTP | `cookie`, `http_format` | Set-Cookie spans; bounded output formatting |
 | Async Client | `async_meta`, `async_event`, `async_next` | Immutable names/slots, prefix matching, freeing/connect/callback selection |
 
 ## Common rules

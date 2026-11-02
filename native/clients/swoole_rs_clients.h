@@ -47,9 +47,6 @@ struct swr_v1_clients_host_match { uint32_t found; size_t offset, length; };
 struct swr_v1_clients_host_match swr_v1_clients_hosts_match(const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *spaces);
 struct swr_v1_clients_cookie_plan { size_t key_length, value_offset, value_length; };
 struct swr_v1_clients_cookie_plan swr_v1_clients_cookie(const uint8_t *, size_t);
-struct swr_v1_clients_exec_plan { uint32_t action, stage, iteration; };
-/* Stages0 send/1 defer-receive/2 retry-close; actions0 fail/1 send/2 receive/3 close/4 success. */
-struct swr_v1_clients_exec_plan swr_v1_clients_http_exec(uint32_t stage, uint32_t iteration, uint8_t retries, uint8_t deferred, uint16_t status);
 /* WebSocket client handshake: 1 if base64(SHA-1(key + GUID)) equals accept.
  * Zend header extraction and the Upgrade/Connection token checks stay native. */
 uint8_t swr_v1_clients_ws_accept_valid(const uint8_t *key, size_t key_len, const uint8_t *accept, size_t accept_len);
@@ -282,54 +279,11 @@ enum swr_v1_clients_resolver_action {
 };
 struct swr_v1_clients_resolver_plan { uint32_t action, stage; };
 struct swr_v1_clients_resolver_plan swr_v1_clients_resolver_next(uint32_t stage, uint32_t facts);
-enum swr_v1_clients_http_connection_action {
-    SWR_CLIENTS_HC_ADVANCE=0, SWR_CLIENTS_HC_TRUE=1, SWR_CLIENTS_HC_FALSE=2,
-    SWR_CLIENTS_HC_ALLOC_BODY=3, SWR_CLIENTS_HC_CREATE_SOCKET=4,
-    SWR_CLIENTS_HC_NOMEM=5, SWR_CLIENTS_HC_ERRNO=6, SWR_CLIENTS_HC_PUBLISH_SOCKET=7,
-    SWR_CLIENTS_HC_SSL=8, SWR_CLIENTS_HC_SOCKET_ERROR_CLOSE=9,
-    SWR_CLIENTS_HC_APPLY=10, SWR_CLIENTS_HC_RESET_CONNECTION=11,
-    SWR_CLIENTS_HC_CONFIGURE=12, SWR_CLIENTS_HC_CONNECT=13,
-    SWR_CLIENTS_HC_PUBLISH_PROPERTIES=14, SWR_CLIENTS_HC_LIVENESS=15,
-    SWR_CLIENTS_HC_CLOSE_DEAD=16, SWR_CLIENTS_HC_RETRY_CONNECT=17,
-    SWR_CLIENTS_HC_DEFER_CLOSE=18, SWR_CLIENTS_HC_DISCONNECTED=19,
-    SWR_CLIENTS_HC_CLOSE=20, SWR_CLIENTS_HC_SAVED_ERROR=21, SWR_CLIENTS_HC_RESET=22
-};
-struct swr_v1_clients_http_connection_plan { uint32_t action, stage, iteration; };
-struct swr_v1_clients_http_connection_plan swr_v1_clients_http_connection_next(uint32_t kind, uint32_t stage, uint32_t facts, uint32_t iteration, uint8_t retries);
-enum swr_v1_clients_http_response_action {
-    SWR_CLIENTS_HR_ADVANCE=0, SWR_CLIENTS_HR_FALSE=1, SWR_CLIENTS_HR_FAIL=2,
-    SWR_CLIENTS_HR_RECV=3, SWR_CLIENTS_HR_EOF_ERROR=4, SWR_CLIENTS_HR_FINISH=5,
-    SWR_CLIENTS_HR_HEADER_APPEND=6, SWR_CLIENTS_HR_HEADER_COMPLETE=7,
-    SWR_CLIENTS_HR_PARSE=8, SWR_CLIENTS_HR_HEADER_ERROR=9,
-    SWR_CLIENTS_HR_HEADER_CONTINUE=10, SWR_CLIENTS_HR_PROTOCOL_ERROR=11,
-    SWR_CLIENTS_HR_UPGRADE_BUFFER=12, SWR_CLIENTS_HR_WEBSOCKET=13,
-    SWR_CLIENTS_HR_CLOSE_SUCCESS=14, SWR_CLIENTS_HR_RESET_SUCCESS=15
-};
-struct swr_v1_clients_http_response_plan { uint32_t action, stage; size_t offset; };
-struct swr_v1_clients_http_response_plan swr_v1_clients_http_response_next(uint32_t stage, uint32_t facts, size_t size, size_t parsed, size_t websocket_header);
 struct swr_v1_clients_format_span { const uint8_t *data; size_t length; };
 struct swr_v1_clients_format_result { size_t written; uint32_t error; };
 /* Output is disjoint native-owned writable bytes, possibly uninitialized.
  * Required inputs initialized.0 success,1 invalid,2 printf-count overflow. */
 struct swr_v1_clients_format_result swr_v1_clients_http_format(uint32_t kind, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, size_t number, uint8_t *output, size_t capacity);
-enum swr_v1_clients_coro_action {
-    SWR_CLIENTS_CC_ADVANCE=0, SWR_CLIENTS_CC_TRUE=1, SWR_CLIENTS_CC_FALSE=2,
-    SWR_CLIENTS_CC_ERROR_FALSE=3, SWR_CLIENTS_CC_ERROR_LONG=4,
-    SWR_CLIENTS_CC_LONG=5, SWR_CLIENTS_CC_EMPTY=6, SWR_CLIENTS_CC_STRING=7,
-    SWR_CLIENTS_CC_PACKET=8, SWR_CLIENTS_CC_RAW=9, SWR_CLIENTS_CC_POP=10,
-    SWR_CLIENTS_CC_NOMEM=11, SWR_CLIENTS_CC_FETCH=12, SWR_CLIENTS_CC_FREE=13,
-    SWR_CLIENTS_CC_EISCONN=14, SWR_CLIENTS_CC_READ_TYPE=15,
-    SWR_CLIENTS_CC_VERIFY_PORT=16, SWR_CLIENTS_CC_CREATE=17,
-    SWR_CLIENTS_CC_PUBLISH=18, SWR_CLIENTS_CC_APPLY=19, SWR_CLIENTS_CC_SOCKET=20,
-    SWR_CLIENTS_CC_PORT_WARNING=21, SWR_CLIENTS_CC_HOST_WARNING=22,
-    SWR_CLIENTS_CC_DATA_WARNING=23, SWR_CLIENTS_CC_FILE_WARNING=24,
-    SWR_CLIENTS_CC_GET_SOCKET=25, SWR_CLIENTS_CC_CONNECT_TIMEOUT=26,
-    SWR_CLIENTS_CC_CONNECT=27, SWR_CLIENTS_CC_RDWR_TIMEOUT=28,
-    SWR_CLIENTS_CC_CONNECT_ERROR=29, SWR_CLIENTS_CC_CONNECTED=30,
-    SWR_CLIENTS_CC_DGRAM_FILE=31
-};
-struct swr_v1_clients_coro_plan { uint32_t action, stage; };
-struct swr_v1_clients_coro_plan swr_v1_clients_coro_next(uint32_t operation, uint32_t stage, uint32_t facts, intptr_t result, size_t length);
 struct swr_v1_clients_async_meta { uint32_t slot; const uint8_t *name; size_t length; };
 struct swr_v1_clients_async_meta swr_v1_clients_async_meta(uint32_t slot);
 uint32_t swr_v1_clients_async_event(const uint8_t *folded, size_t length, size_t original_length);

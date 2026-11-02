@@ -7,6 +7,8 @@
     )
 )]
 pub mod affinity;
+pub mod reaper;
+pub mod reload_task;
 pub mod signal;
 #[cfg(target_os = "linux")]
 pub mod signalfd;
@@ -142,21 +144,6 @@ pub extern "C" fn swr_v1_process_reload_action(all: bool, task: bool) -> u32 {
         0
     }
 }
-/// Reload kill result:0 finish this attempt,1 erase stale PID and continue,2 warn then stop.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_process_reload_kill(
-    failed: bool,
-    no_child: bool,
-    no_process: bool,
-) -> u32 {
-    if !failed {
-        0
-    } else if no_child || no_process {
-        1
-    } else {
-        2
-    }
-}
 /// SIGRTMIN is a runtime value on Linux and undefined elsewhere (upstream guards
 /// it with `#ifdef SIGRTMIN`).
 #[cfg(target_os = "linux")]
@@ -271,16 +258,6 @@ mod tests {
                 swr_v1_process_reload_action(a, b),
                 if a { 1 } else { u32::from(b) * 2 }
             );
-            assert_eq!(
-                swr_v1_process_reload_kill(a, b, c),
-                if !a {
-                    0
-                } else if b || c {
-                    1
-                } else {
-                    2
-                }
-            );
         }
     }
     #[test]
@@ -369,6 +346,5 @@ mod tests {
         assert_eq!(swr_v1_process_task_action(true, true, true), 1);
         assert_eq!(swr_v1_process_reload_action(true, true), 1);
         assert_eq!(swr_v1_process_reload_action(false, true), 2);
-        assert_eq!(swr_v1_process_reload_kill(false, true, true), 0);
     }
 }

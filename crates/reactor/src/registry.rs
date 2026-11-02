@@ -6,9 +6,6 @@ use std::collections::HashMap;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
-const SW_EVENT_READ: c_int = 1 << 9;
-const SW_EVENT_WRITE: c_int = 1 << 10;
-
 pub struct Registry {
     sockets: HashMap<c_int, (*mut c_void, c_int)>,
 }
@@ -156,16 +153,9 @@ pub(crate) unsafe fn poll(
     };
     let mut count = 0;
     for (&fd, &(socket, registered_events)) in registered.iter().take(limit) {
-        let mut poll_events = 0;
-        if registered_events & SW_EVENT_READ != 0 {
-            poll_events |= libc::POLLIN;
-        }
-        if registered_events & SW_EVENT_WRITE != 0 {
-            poll_events |= libc::POLLOUT;
-        }
         let entry = libc::pollfd {
             fd,
-            events: poll_events,
+            events: crate::swr_v1_reactor_poll_events_to(registered_events),
             revents: 0,
         };
         // SAFETY: `count < limit`, within the caller's `events`.
@@ -180,6 +170,9 @@ pub(crate) unsafe fn poll(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SW_EVENT_READ: c_int = 1 << 9;
+    const SW_EVENT_WRITE: c_int = 1 << 10;
 
     unsafe extern "C" fn collect(context: *mut c_void, fd: c_int, socket: *mut c_void) {
         let seen = unsafe { &mut *context.cast::<Vec<(c_int, usize)>>() };
