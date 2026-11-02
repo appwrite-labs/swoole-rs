@@ -13,6 +13,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <memory>
 #include <arpa/inet.h>
 #include <sys/uio.h>
 #define swoole_error_log(...) ((void)0)
