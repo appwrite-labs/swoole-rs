@@ -30,7 +30,7 @@ use std::{
 };
 use swoole_rs_zend::{
     Call, Class,
-    bailout::{Bailout, trap},
+    bailout::{self, Bailout, trap},
     sys::{IS_NULL, swr_zend_zval_release, swr_zval_try_addref, zend_function_entry, zval},
 };
 
@@ -176,7 +176,9 @@ impl Message {
 
 fn fatal_warning(message: *const c_char) {
     // SAFETY: a NUL-terminated message.
-    unsafe { (ops().fatal_warning)(message) };
+    let message = unsafe { CStr::from_ptr(message) };
+    // SAFETY: C++'s reporter.
+    bailout::defer(unsafe { bailout::report(ops().fatal_warning, message) });
 }
 
 fn fd(zsocket: *mut zval) -> i32 {
@@ -208,15 +210,6 @@ fn callable(zfn: *mut zval, name: Option<&CStr>, allow_null: bool) -> *mut c_voi
     let name = name.map_or(ptr::null(), CStr::as_ptr);
     // SAFETY: a live zval or null, as `sw_callable_create_ex` takes.
     unsafe { (ops().callable)(zfn, name, u8::from(allow_null)) }
-}
-
-/// Re-raise a bailout from a handler, the outermost Rust frame, which owns
-/// nothing to drop.
-fn raise(bailout: &Result<(), Bailout>) {
-    if bailout.is_err() {
-        // SAFETY: Zend's own `zend_bailout()`; see the module note.
-        unsafe { swoole_rs_zend::sys::_zend_bailout(c"swoole_event".as_ptr().cast_mut(), 0) };
-    }
 }
 
 /// `add(mixed $fd, ?callable $read = null, ?callable $write = null, int $events = SWOOLE_EVENT_READ)`.
@@ -258,7 +251,7 @@ fn add(call: &Call) {
         missing(fd, "writable");
         if !readable.is_null() {
             // SAFETY: the callable just made; nothing else holds it.
-            raise(&unsafe { trap(ops.callable_free, readable) });
+            bailout::raise(unsafe { trap(ops.callable_free, readable) });
         }
         call.set_bool(false);
         return;
@@ -281,7 +274,7 @@ fn add(call: &Call) {
         unsafe { (ops.socket_free)(socket, 0) };
         // SAFETY: the object made above, which nothing else holds.
         let freed = unsafe { swr_v1_phpevents_free(object) };
-        raise(&if freed == 0 { Ok(()) } else { Err(Bailout) });
+        bailout::raise(if freed == 0 { Ok(()) } else { Err(Bailout) });
         call.set_bool(false);
         return;
     }
@@ -550,6 +543,7 @@ pub unsafe extern "C" fn swr_v1_phpevents_ready(socket: *mut c_void, write: u8) 
             unsafe { (ops.defer_object)(object) };
             // SAFETY: per the caller.
             unsafe { (ops.socket_del)(socket) };
+            bailout::finish();
             -1
         }
     }
@@ -585,12 +579,17 @@ pub unsafe extern "C" fn swr_v1_phpevents_deferred(callable: *mut c_void) -> u8 
     match invoke(callable, ptr::null_mut(), 0) {
         Err(_) => 1,
         Ok(ok) => {
-            if !ok {
-                // SAFETY: a NUL-terminated message.
-                unsafe { (ops.warning)(c"Swoole\\Event::defer callback handler error".as_ptr()) };
-            }
+            let warned = if ok {
+                Ok(())
+            } else {
+                // SAFETY: C++'s reporter.
+                unsafe {
+                    bailout::report(ops.warning, c"Swoole\\Event::defer callback handler error")
+                }
+            };
             // SAFETY: per the caller.
-            u8::from(unsafe { trap(ops.callable_free, callable) }.is_err())
+            let freed = unsafe { trap(ops.callable_free, callable) };
+            u8::from(warned.is_err() || freed.is_err())
         }
     }
 }
@@ -602,13 +601,12 @@ pub unsafe extern "C" fn swr_v1_phpevents_deferred(callable: *mut c_void) -> u8 
 pub unsafe extern "C" fn swr_v1_phpevents_cycle(callable: *mut c_void) -> u8 {
     match invoke(callable, ptr::null_mut(), 0) {
         Err(_) => 1,
-        Ok(ok) => {
-            if !ok {
-                // SAFETY: a NUL-terminated message.
-                unsafe { (ops().warning)(c"Swoole\\Event::end callback handler error".as_ptr()) };
-            }
-            0
-        }
+        Ok(true) => 0,
+        // SAFETY: C++'s reporter.
+        Ok(false) => u8::from(
+            unsafe { bailout::report(ops().warning, c"Swoole\\Event::end callback handler error") }
+                .is_err(),
+        ),
     }
 }
 

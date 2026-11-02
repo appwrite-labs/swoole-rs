@@ -7,7 +7,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_zend::sys::{_zend_bailout, zend_class_entry, zend_string, zval};
+use swoole_rs_zend::sys::{zend_class_entry, zend_string, zval};
 
 /// Field for field the C struct.
 #[repr(C)]
@@ -72,8 +72,6 @@ pub(crate) fn host() -> &'static Host {
 /// released: a longjmp may never cross a Rust frame that owns anything.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Pending {
-    /// PHP code (`__serialize`, `__unserialize`) bailed out inside C++'s trap.
-    Bailout,
     /// An unconstructed container was stored: upstream's fatal error.
     Unconstructed { list: bool },
 }
@@ -91,18 +89,15 @@ pub(crate) fn defer(pending: Pending) {
     });
 }
 
-/// Raise what was deferred. Called last by every handler and export, whose
-/// frame owns nothing by then.
+/// Raise what was deferred: a bailout PHP code (`__serialize`,
+/// `__unserialize`, a user error handler) left, then the fatal error. Called
+/// last by every handler and export, whose frame owns nothing by then.
 pub(crate) fn finish() {
-    match PENDING.with(Cell::take) {
-        None => {}
-        // SAFETY: Zend's own bailout from the outermost Rust frame, which owns
+    swoole_rs_zend::bailout::finish();
+    if let Some(Pending::Unconstructed { list }) = PENDING.with(Cell::take) {
+        // SAFETY: C++'s fatal error, from the outermost Rust frame, which owns
         // nothing that needs a drop.
-        Some(Pending::Bailout) => unsafe {
-            _zend_bailout(c"crates/phpthread".as_ptr().cast_mut(), line!());
-        },
-        // SAFETY: C++'s fatal error, as above.
-        Some(Pending::Unconstructed { list }) => unsafe { (host().unconstructed)(list) },
+        unsafe { (host().unconstructed)(list) };
     }
 }
 
@@ -136,7 +131,7 @@ mod tests {
     #[test]
     fn the_first_deferred_raise_wins() {
         defer(Pending::Unconstructed { list: true });
-        defer(Pending::Bailout);
+        defer(Pending::Unconstructed { list: false });
         assert_eq!(
             PENDING.with(Cell::take),
             Some(Pending::Unconstructed { list: true }),

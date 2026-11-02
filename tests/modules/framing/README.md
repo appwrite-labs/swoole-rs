@@ -31,7 +31,8 @@ python3 tests/modules/framing/gate.py --archive target/libframing.a \
   that a one-past read in the invalid caller is detected.
 - `core.py --source S --config config.h --archive A --build-root DIR --output R`
   needs Linux with CMake, GTest and PHP. It builds the unchanged pinned native
-  GoogleTests for the reference and the framing overlay, and runs each test
+  GoogleTests for the reference and for the archive's hybrid tree (every
+  module's patches, `overlay_hybrid_tree`), and runs each test
   separately. Any error, skip or missing outcome fails. `--inventory-only`
   lists the tests without building.
 - Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).

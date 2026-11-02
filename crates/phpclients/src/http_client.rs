@@ -30,8 +30,8 @@ use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_inflate::Inflate;
 use swoole_rs_phptable::{self as table, Owned};
 use swoole_rs_zend::{
-    Call, Class, Object, declare_bool, declare_long, declare_string, register_long_constant,
-    set_object, string,
+    Call, Class, Object, bailout, declare_bool, declare_long, declare_string,
+    register_long_constant, set_object, string,
     sys::{
         E_WARNING, IS_OBJECT, IS_REFERENCE, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         add_assoc_str_ex, add_assoc_string_ex, add_assoc_zval_ex, add_next_index_stringl,
@@ -184,10 +184,16 @@ fn c_bytes(bytes: &[u8]) -> CString {
 /// `php_swoole_error(E_WARNING, ...)`, or with `fatal` `php_swoole_fatal_error`.
 fn warn(fatal: bool, message: &CStr) {
     #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
-    // SAFETY: a NUL-terminated message, reported from a handler.
-    unsafe {
-        swoole_rs_php_error(E_WARNING as c_int, fatal, message.as_ptr());
-    }
+    // SAFETY: C++'s reporter, from a handler.
+    bailout::defer(unsafe {
+        bailout::report_flag(swoole_rs_php_error, E_WARNING as c_int, fatal, message)
+    });
+}
+
+/// `php_swoole_sys_error(E_WARNING, "%s", message)`.
+fn sys_error(message: &CStr) {
+    // SAFETY: C++'s reporter, from a handler; errno is the failed call's.
+    bailout::defer(unsafe { bailout::report(native::swoole_http_client_coro_sys_error, message) });
 }
 
 fn ce() -> *mut zend_class_entry {
@@ -1990,8 +1996,7 @@ fn add_file(call: &Call) {
     // SAFETY: a NUL-terminated path and a writable stat buffer.
     if unsafe { libc::stat(c_path.as_ptr(), stat.as_mut_ptr()) } < 0 {
         let message = [&b"stat("[..], c_path.to_bytes(), b") failed"].concat();
-        // SAFETY: a NUL-terminated message; errno is stat's.
-        unsafe { native::swoole_http_client_coro_sys_error(c_bytes(&message).as_ptr()) };
+        sys_error(&c_bytes(&message));
         return call.set_bool(false);
     }
     // SAFETY: stat filled it.
@@ -1999,8 +2004,7 @@ fn add_file(call: &Call) {
     if size == 0 {
         let shown = filename.map_or(&b"(null)"[..], |filename| filename);
         let message = [&b"cannot send empty file["[..], shown, b"]"].concat();
-        // SAFETY: as above.
-        unsafe { native::swoole_http_client_coro_sys_error(c_bytes(&message).as_ptr()) };
+        sys_error(&c_bytes(&message));
         return call.set_bool(false);
     }
     if size <= offset {
@@ -2010,12 +2014,7 @@ fn add_file(call: &Call) {
     }
     if length > size - offset {
         let message = format!("parameter $length[{length}] exceeds the file size");
-        // SAFETY: as above.
-        unsafe {
-            native::swoole_http_client_coro_sys_error(
-                CString::new(message).unwrap_or_default().as_ptr(),
-            );
-        };
+        sys_error(&CString::new(message).unwrap_or_default());
         return call.set_bool(false);
     }
     if length == 0 {

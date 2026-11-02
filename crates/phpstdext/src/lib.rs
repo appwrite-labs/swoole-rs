@@ -33,11 +33,7 @@ pub use typed::{
 
 use std::ffi::c_int;
 use swoole_rs_zend::{
-    bailout::Bailout,
-    sys::{
-        _zend_bailout, IS_INDIRECT, IS_REFERENCE, zend_execute_data, zend_op, zend_reference,
-        znode_op, zval,
-    },
+    sys::{IS_INDIRECT, IS_REFERENCE, zend_execute_data, zend_op, zend_reference, znode_op, zval},
     type_of,
 };
 
@@ -116,12 +112,4 @@ unsafe fn deref(value: *mut zval) -> *mut zval {
             .cast();
     }
     value
-}
-
-/// Re-raise a trapped bailout: a handler's last act, when it owns nothing.
-fn raise(bailout: &Result<(), Bailout>) {
-    if bailout.is_err() {
-        // SAFETY: Zend's own `zend_bailout()`; see the crate note.
-        unsafe { _zend_bailout(c"swoole_stdext".as_ptr().cast_mut(), 0) };
-    }
 }

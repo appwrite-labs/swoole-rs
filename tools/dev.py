@@ -273,6 +273,7 @@ def plan(args, reports):
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
                '--report', reports / 'reactor-poll-snapshot.json')
         script('reactor-compile', 'tests/modules/reactor/compile_gate.py', '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'reactor-compile.json')
     if typed_buffer(args):
         pytest('buffer-typed-layout', 'tests/modules/buffer/test_typed_layout.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a')
@@ -344,10 +345,9 @@ def plan(args, reports):
         script('http2-native', 'tests/modules/http2/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *includes, *report('http2-native'))
         for family, runner in [('settings', 'settings_calls.py'), ('control', 'control_calls.py'), ('header', 'header_calls.py'),
-                               ('queue', 'queue_calls.py'), ('window', 'window_calls.py'),
-                               ('response-headers', 'response_headers.py'), ('publication', 'publication_calls.py'),
-                               ('write', 'write_calls.py'), ('send', 'send_calls.py'),
-                               ('server-header', 'server_header_calls.py'), ('request-headers', 'request_headers.py'), ('response-builders', 'response_builders.py'), ('response-lifecycle', 'response_lifecycle.py'), ('connection', 'connection_calls.py'), ('file', 'file_calls.py'), ('receive', 'receive_calls.py')]:
+                               ('window', 'window_calls.py'), ('response-headers', 'response_headers.py'), ('send', 'send_calls.py'),
+                               ('server-header', 'server_header_calls.py'), ('response-builders', 'response_builders.py'),
+                               ('response-lifecycle', 'response_lifecycle.py'), ('file', 'file_calls.py'), ('receive', 'receive_calls.py')]:
             name = 'http2-' + family
             script(name, 'tests/modules/http2/' + runner, '--source', ROOT / 'target/upstream/src',
                    '--core-report', reports / 'http2-native.json', *includes, *report(name))

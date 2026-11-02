@@ -107,12 +107,12 @@ fn time_sleep_until(call: &Call) {
         }
         WARN => {
             // SAFETY: a handler's context.
-            unsafe {
+            swoole_rs_zend::bailout::defer(unsafe {
                 php_error(
                     E_WARNING,
                     c"Argument #1 ($timestamp) must be greater than or equal to the current time",
-                );
-            }
+                )
+            });
             call.set_bool(false);
         }
         _ => call.set_bool(true),
