@@ -16,13 +16,15 @@ use std::{
     ptr,
     sync::OnceLock,
 };
+use swoole_rs_phpstubs::timer;
 use swoole_rs_zend::{
     Call, Callable, Class, register_double_constant, register_long_constant,
     sys::{
         add_next_index_long, object_init_ex, swr_zend_array_init, zend_call_method,
-        zend_class_entry, zend_function_entry, zval, zval_ptr_dtor,
+        zend_class_entry, zval, zval_ptr_dtor,
     },
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `swoole::Timer`'s operations (`swr_v1_phptimer_ops`).
 #[repr(C)]
@@ -38,8 +40,8 @@ pub struct Ops {
     stats: unsafe extern "C" fn(count: *mut usize, round: *mut u64),
     /// Up to `capacity` timer ids into `ids`: how many it copied.
     ids: unsafe extern "C" fn(ids: *mut i64, capacity: usize) -> usize,
-    /// `swoole_timer_del(swoole_timer_get(id))`.
-    del: unsafe extern "C" fn(id: i64) -> u8,
+    /// `swoole_timer_del` of a node `get` returned.
+    del: unsafe extern "C" fn(handle: *mut c_void) -> u8,
     /// `php_swoole_timer_clear_all()`.
     clear_all: unsafe extern "C" fn() -> u8,
     /// `zend::Function::call(nullptr, php_swoole_is_enable_coroutine())` of an
@@ -53,7 +55,6 @@ pub struct Ops {
 
 /// A `TimerNode`'s fields (`swr_v1_phptimer_node`).
 #[repr(C)]
-#[derive(Default)]
 pub struct Node {
     exec_msec: i64,
     exec_count: u64,
@@ -62,6 +63,8 @@ pub struct Node {
     /// `type == TimerNode::TYPE_PHP`.
     php: u8,
     removed: u8,
+    /// The `TimerNode` itself, for `del`: looked up once, as upstream's `clear`.
+    handle: *mut c_void,
 }
 
 /// One call of a timer's callable (`swr_v1_phptimer_invocation`).
@@ -96,15 +99,26 @@ const ALIASES: [(&CStr, &CStr); 8] = [
     (c"clearAll", c"swoole_timer_clear_all"),
 ];
 
+method_table! {
+    static METHODS = [
+        c"tick" => zif_swoole_timer_tick, &timer::arginfo_swoole_timer_tick, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"after" => zif_swoole_timer_after, &timer::arginfo_swoole_timer_after, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"exists" => zif_swoole_timer_exists, &timer::arginfo_swoole_timer_exists, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"info" => zif_swoole_timer_info, &timer::arginfo_swoole_timer_info, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"stats" => zif_swoole_timer_stats, &timer::arginfo_swoole_timer_stats, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"list" => zif_swoole_timer_list, &timer::arginfo_swoole_timer_list, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"clear" => zif_swoole_timer_clear, &timer::arginfo_swoole_timer_clear, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"clearAll" => zif_swoole_timer_clear_all, &timer::arginfo_swoole_timer_clear_all, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+    ];
+}
+
 /// MINIT: `Swoole\Timer` (not instantiable), `Swoole\Timer\Iterator` (an
 /// `ArrayIterator`), the `swoole_timer_*` functions and the `SWOOLE_TIMER_*`
 /// constants, as `php_swoole_timer_minit` registered them.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated method table,
-/// SPL's `ArrayIterator` and a static operations table.
+/// Called once, at MINIT, with SPL's `ArrayIterator` and a static operations table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phptimer_minit(
-    methods: *const zend_function_entry,
     module_number: i32,
     array_iterator: *mut zend_class_entry,
     ops: *const Ops,
@@ -113,8 +127,8 @@ pub unsafe extern "C" fn swr_v1_phptimer_minit(
     if let Some(ops) = unsafe { ops.as_ref() } {
         OPS.get_or_init(|| ops);
     }
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { TIMER.register_static(c"Swoole\\Timer", methods) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { TIMER.register_static(c"Swoole\\Timer", METHODS.as_ptr()) };
     // SAFETY: MINIT; SPL registers ArrayIterator first.
     unsafe {
         ITERATOR.register_child(
@@ -125,7 +139,7 @@ pub unsafe extern "C" fn swr_v1_phptimer_minit(
         );
     }
     // SAFETY: MINIT, after registration, with the class's own table.
-    unsafe { TIMER.function_aliases(methods, &ALIASES) };
+    unsafe { TIMER.function_aliases(METHODS.as_ptr(), &ALIASES) };
     // SAFETY: MINIT, with the module's number.
     unsafe { register_long_constant(c"SWOOLE_TIMER_MIN_MS", MIN_MS, module_number) };
     // SAFETY: as above.
@@ -181,7 +195,15 @@ fn available() -> bool {
 }
 
 fn node(id: i64) -> Option<Node> {
-    let mut node = Node::default();
+    let mut node = Node {
+        exec_msec: 0,
+        exec_count: 0,
+        interval: 0,
+        round: 0,
+        php: 0,
+        removed: 0,
+        handle: ptr::null_mut(),
+    };
     // SAFETY: a writable node.
     (unsafe { (ops().get)(id, &raw mut node) } != 0).then_some(node)
 }
@@ -348,12 +370,12 @@ fn clear(call: &Call) {
         return;
     }
     let Some(id) = id(call) else { return };
-    if node(id).is_none_or(|node| node.php == 0) {
+    let Some(node) = node(id).filter(|node| node.php != 0) else {
         call.set_bool(false);
         return;
-    }
-    // SAFETY: C++'s removal.
-    call.set_bool(unsafe { (ops().del)(id) } != 0);
+    };
+    // SAFETY: C++'s removal of the live node `get` just returned.
+    call.set_bool(unsafe { (ops().del)(node.handle) } != 0);
 }
 
 fn clear_all(call: &Call) {

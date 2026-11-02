@@ -79,10 +79,31 @@
       ]
     },
     {
-      "path": "0012-websocket-server.patch",
-      "sha256": "0eb309afea924bd1a52063cb72588f9d0589030f92630904436252c796c7e5a3",
+      "path": "0012-arginfo.patch",
+      "sha256": "509d3eb1be864dedf0f252c6288fe42906185e589127f5dd1bc72613280a4a69",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_http_cookie_arginfo.h",
+        "ext-src/stubs/php_swoole_http_request_arginfo.h",
+        "ext-src/stubs/php_swoole_http_response_arginfo.h",
+        "ext-src/swoole_http_cookie.cc",
+        "ext-src/swoole_http_request.cc",
+        "ext-src/swoole_http_response.cc"
+      ]
+    },
+    {
+      "path": "0013-arginfo-server-coro.patch",
+      "sha256": "7975601b1de4fc9e14261062f61afee0e62ffe211bcc343cded27d5f630bd670",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_http_server_coro_arginfo.h",
+        "ext-src/swoole_http_server_coro.cc"
+      ]
+    },
+    {
+      "path": "0014-websocket-server.patch",
+      "sha256": "111df19073c506889b40ddc5df2ca08d46f297b3e310b1373e34a61d59a0f1b4",
       "upstream_paths": [
         "ext-src/php_swoole_websocket.h",
+        "ext-src/stubs/php_swoole_websocket_arginfo.h",
         "ext-src/swoole_http_response.cc",
         "ext-src/swoole_websocket_server.cc"
       ]

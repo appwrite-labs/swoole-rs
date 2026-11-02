@@ -48,6 +48,14 @@
         "src/coroutine/socket.cc",
         "src/coroutine/uring_socket.cc"
       ]
+    },
+    {
+      "path": "0006-arginfo.patch",
+      "sha256": "913a3f97d6843bc899ce5d4bd25583d46abca497599888c2b0c4f534faabd3ff",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_runtime_arginfo.h",
+        "ext-src/swoole_runtime.cc"
+      ]
     }
   ]
 }

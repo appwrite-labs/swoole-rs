@@ -9,6 +9,9 @@ use crate::{
     table::Key,
 };
 use std::{ffi::c_void, ptr, sync::Arc};
+use swoole_rs_phpstubs::thread_arraylist;
+use swoole_rs_phpstubs::thread_map;
+use swoole_rs_phpstubs::thread_queue;
 use swoole_rs_zend::{
     Call, Class, Invalid, Object, set_object,
     string::bytes,
@@ -18,13 +21,14 @@ use swoole_rs_zend::{
         ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, ZPP_ERROR_WRONG_ARG, swr_zend_array_is_list,
         swr_zend_dval_to_lval_safe, swr_zend_handle_numeric_str, swr_zend_resource_handle,
         zend_argument_type_error, zend_array, zend_ce_arrayaccess, zend_ce_countable,
-        zend_class_entry, zend_class_implements, zend_declare_property_long, zend_function_entry,
-        zend_object, zend_object_handlers, zend_type_error, zend_ulong,
-        zend_use_resource_as_offset, zend_wrong_parameter_error, zval,
+        zend_class_entry, zend_class_implements, zend_declare_property_long, zend_object,
+        zend_object_handlers, zend_type_error, zend_ulong, zend_use_resource_as_offset,
+        zend_wrong_parameter_error, zval,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of, unset_property_deny, value,
     value_of,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 static MAP: Class = Class::new();
 static LIST: Class = Class::new();
@@ -100,18 +104,37 @@ unsafe fn implements(class: &Class, array_access: bool) {
     unsafe { zend_class_implements(class.entry(), 1, interface) };
 }
 
+method_table! {
+    static MAP_METHODS = [
+        c"__construct" => zim_swoole_thread_map___construct, &thread_map::arginfo_class_Swoole_Thread_Map___construct, z::ZEND_ACC_PUBLIC;
+        c"offsetGet" => zim_swoole_thread_map_offsetGet, &thread_map::arginfo_class_Swoole_Thread_Map_offsetGet, z::ZEND_ACC_PUBLIC;
+        c"offsetExists" => zim_swoole_thread_map_offsetExists, &thread_map::arginfo_class_Swoole_Thread_Map_offsetExists, z::ZEND_ACC_PUBLIC;
+        c"offsetSet" => zim_swoole_thread_map_offsetSet, &thread_map::arginfo_class_Swoole_Thread_Map_offsetSet, z::ZEND_ACC_PUBLIC;
+        c"offsetUnset" => zim_swoole_thread_map_offsetUnset, &thread_map::arginfo_class_Swoole_Thread_Map_offsetUnset, z::ZEND_ACC_PUBLIC;
+        c"find" => zim_swoole_thread_map_find, &thread_map::arginfo_class_Swoole_Thread_Map_find, z::ZEND_ACC_PUBLIC;
+        c"count" => zim_swoole_thread_map_count, &thread_map::arginfo_class_Swoole_Thread_Map_count, z::ZEND_ACC_PUBLIC;
+        c"incr" => zim_swoole_thread_map_incr, &thread_map::arginfo_class_Swoole_Thread_Map_incr, z::ZEND_ACC_PUBLIC;
+        c"decr" => zim_swoole_thread_map_decr, &thread_map::arginfo_class_Swoole_Thread_Map_decr, z::ZEND_ACC_PUBLIC;
+        c"add" => zim_swoole_thread_map_add, &thread_map::arginfo_class_Swoole_Thread_Map_add, z::ZEND_ACC_PUBLIC;
+        c"update" => zim_swoole_thread_map_update, &thread_map::arginfo_class_Swoole_Thread_Map_update, z::ZEND_ACC_PUBLIC;
+        c"clean" => zim_swoole_thread_map_clean, &thread_map::arginfo_class_Swoole_Thread_Map_clean, z::ZEND_ACC_PUBLIC;
+        c"keys" => zim_swoole_thread_map_keys, &thread_map::arginfo_class_Swoole_Thread_Map_keys, z::ZEND_ACC_PUBLIC;
+        c"values" => zim_swoole_thread_map_values, &thread_map::arginfo_class_Swoole_Thread_Map_values, z::ZEND_ACC_PUBLIC;
+        c"toArray" => zim_swoole_thread_map_toArray, &thread_map::arginfo_class_Swoole_Thread_Map_toArray, z::ZEND_ACC_PUBLIC;
+        c"sort" => zim_swoole_thread_map_sort, &thread_map::arginfo_class_Swoole_Thread_Map_sort, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// `php_swoole_thread_map_minit`.
 /// # Safety
 /// MINIT, after `swr_v1_phpthread_minit`, with a static method table.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_map_minit(
-    methods: *const zend_function_entry,
-) -> *mut zend_class_entry {
-    // SAFETY: MINIT, with the caller's table.
+pub unsafe extern "C" fn swr_v1_phpthread_map_minit() -> *mut zend_class_entry {
+    // SAFETY: MINIT, with a static table.
     unsafe {
         MAP.register(
             c"Swoole\\Thread\\Map",
-            methods,
+            MAP_METHODS.as_ptr(),
             configure(create_map, free_array),
         );
     };
@@ -120,18 +143,33 @@ pub unsafe extern "C" fn swr_v1_phpthread_map_minit(
     MAP.entry()
 }
 
+method_table! {
+    static ARRAYLIST_METHODS = [
+        c"__construct" => zim_swoole_thread_arraylist___construct, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList___construct, z::ZEND_ACC_PUBLIC;
+        c"offsetGet" => zim_swoole_thread_arraylist_offsetGet, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_offsetGet, z::ZEND_ACC_PUBLIC;
+        c"offsetExists" => zim_swoole_thread_arraylist_offsetExists, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_offsetExists, z::ZEND_ACC_PUBLIC;
+        c"offsetSet" => zim_swoole_thread_arraylist_offsetSet, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_offsetSet, z::ZEND_ACC_PUBLIC;
+        c"offsetUnset" => zim_swoole_thread_arraylist_offsetUnset, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_offsetUnset, z::ZEND_ACC_PUBLIC;
+        c"find" => zim_swoole_thread_arraylist_find, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_find, z::ZEND_ACC_PUBLIC;
+        c"incr" => zim_swoole_thread_arraylist_incr, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_incr, z::ZEND_ACC_PUBLIC;
+        c"decr" => zim_swoole_thread_arraylist_decr, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_decr, z::ZEND_ACC_PUBLIC;
+        c"clean" => zim_swoole_thread_arraylist_clean, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_clean, z::ZEND_ACC_PUBLIC;
+        c"count" => zim_swoole_thread_arraylist_count, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_count, z::ZEND_ACC_PUBLIC;
+        c"toArray" => zim_swoole_thread_arraylist_toArray, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_toArray, z::ZEND_ACC_PUBLIC;
+        c"sort" => zim_swoole_thread_arraylist_sort, &thread_arraylist::arginfo_class_Swoole_Thread_ArrayList_sort, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// `php_swoole_thread_arraylist_minit`.
 /// # Safety
 /// As `swr_v1_phpthread_map_minit`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_arraylist_minit(
-    methods: *const zend_function_entry,
-) -> *mut zend_class_entry {
-    // SAFETY: MINIT, with the caller's table.
+pub unsafe extern "C" fn swr_v1_phpthread_arraylist_minit() -> *mut zend_class_entry {
+    // SAFETY: MINIT, with a static table.
     unsafe {
         LIST.register(
             c"Swoole\\Thread\\ArrayList",
-            methods,
+            ARRAYLIST_METHODS.as_ptr(),
             configure(create_list, free_array),
         );
     }
@@ -151,18 +189,26 @@ pub unsafe extern "C" fn swr_v1_phpthread_arraylist_minit(
     LIST.entry()
 }
 
+method_table! {
+    static QUEUE_METHODS = [
+        c"__construct" => zim_swoole_thread_queue___construct, &thread_queue::arginfo_class_Swoole_Thread_Queue___construct, z::ZEND_ACC_PUBLIC;
+        c"push" => zim_swoole_thread_queue_push, &thread_queue::arginfo_class_Swoole_Thread_Queue_push, z::ZEND_ACC_PUBLIC;
+        c"pop" => zim_swoole_thread_queue_pop, &thread_queue::arginfo_class_Swoole_Thread_Queue_pop, z::ZEND_ACC_PUBLIC;
+        c"clean" => zim_swoole_thread_queue_clean, &thread_queue::arginfo_class_Swoole_Thread_Queue_clean, z::ZEND_ACC_PUBLIC;
+        c"count" => zim_swoole_thread_queue_count, &thread_queue::arginfo_class_Swoole_Thread_Queue_count, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// `php_swoole_thread_queue_minit`.
 /// # Safety
 /// As `swr_v1_phpthread_map_minit`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_queue_minit(
-    methods: *const zend_function_entry,
-) -> *mut zend_class_entry {
-    // SAFETY: MINIT, with the caller's table.
+pub unsafe extern "C" fn swr_v1_phpthread_queue_minit() -> *mut zend_class_entry {
+    // SAFETY: MINIT, with a static table.
     unsafe {
         QUEUE.register(
             c"Swoole\\Thread\\Queue",
-            methods,
+            QUEUE_METHODS.as_ptr(),
             configure(create_queue, free_queue),
         );
     }

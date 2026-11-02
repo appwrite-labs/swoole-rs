@@ -988,7 +988,7 @@ fn server_zval(server: *mut Server) -> zval {
 pub unsafe extern "C" fn swr_v1_phphttp_websocket_message(
     server: *mut c_void,
     request: *mut c_void,
-    fd: zend_long,
+    fd: i64,
     server_fd: c_int,
     ext_flags: u16,
 ) -> c_int {
@@ -1279,7 +1279,7 @@ pub(crate) fn upgrade(context: *mut Context) -> Result<bool, bailout::Bailout> {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp_websocket_frame(
     frame: *mut zval,
-    opcode: zend_long,
+    opcode: i64,
     payload: *mut zval,
     flags: u8,
 ) {
@@ -1293,9 +1293,9 @@ pub unsafe extern "C" fn swr_v1_phphttp_websocket_frame(
 pub unsafe extern "C" fn swr_v1_phphttp_websocket_frame_object(
     object: *mut FrameObject,
     data: *mut zval,
-    opcode: zend_long,
-    flags: zend_long,
-    code: zend_long,
+    opcode: i64,
+    flags: i64,
+    code: i64,
 ) {
     let frame = FrameObject::new(data, opcode, flags, code);
     // SAFETY: per the caller.

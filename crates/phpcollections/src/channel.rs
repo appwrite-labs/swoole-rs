@@ -2,15 +2,17 @@
 //! method. The queue is the coroutine module's C++ `Channel`, which C++ hands
 //! over as a table of operations; values cross it as emalloc'd zval copies.
 use std::{ffi::c_void, ptr, sync::OnceLock};
+use swoole_rs_phpstubs::channel_coro;
 use swoole_rs_zend::{
     Call, Class, Object, register_long_constant,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree, swr_zend_emalloc, swr_zval_try_addref,
-        swr_zval_try_delref, zend_class_entry, zend_function_entry, zend_object,
-        zend_object_handlers, zend_objects_destroy_object, zval, zval_ptr_dtor,
+        swr_zval_try_delref, zend_class_entry, zend_object, zend_object_handlers,
+        zend_objects_destroy_object, zval, zval_ptr_dtor,
     },
     unset_property_deny,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// `swoole::coroutine::Channel`'s operations (`swr_v1_phpcollections_channel_ops`).
 #[repr(C)]
@@ -96,15 +98,26 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     unsafe { ChannelObject::dtor(std) };
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_channel_coro___construct, &channel_coro::arginfo_class_Swoole_Coroutine_Channel___construct, z::ZEND_ACC_PUBLIC;
+        c"push" => zim_swoole_channel_coro_push, &channel_coro::arginfo_class_Swoole_Coroutine_Channel_push, z::ZEND_ACC_PUBLIC;
+        c"pop" => zim_swoole_channel_coro_pop, &channel_coro::arginfo_class_Swoole_Coroutine_Channel_pop, z::ZEND_ACC_PUBLIC;
+        c"isEmpty" => zim_swoole_channel_coro_isEmpty, &channel_coro::arginfo_class_Swoole_Coroutine_Channel_isEmpty, z::ZEND_ACC_PUBLIC;
+        c"isFull" => zim_swoole_channel_coro_isFull, &channel_coro::arginfo_class_Swoole_Coroutine_Channel_isFull, z::ZEND_ACC_PUBLIC;
+        c"close" => zim_swoole_channel_coro_close, &channel_coro::arginfo_class_Swoole_Coroutine_Channel_close, z::ZEND_ACC_PUBLIC;
+        c"stats" => zim_swoole_channel_coro_stats, &channel_coro::arginfo_class_Swoole_Coroutine_Channel_stats, z::ZEND_ACC_PUBLIC;
+        c"length" => zim_swoole_channel_coro_length, &channel_coro::arginfo_class_Swoole_Coroutine_Channel_length, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: register the class, its properties and constants as
 /// `php_swoole_channel_coro_minit` did, with `Co\Channel` and `Chan` when
 /// short names are on.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated method table
-/// and a static operations table.
+/// Called once, at MINIT, with a static operations table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpcollections_channel_minit(
-    methods: *const zend_function_entry,
     module_number: i32,
     use_shortname: u8,
     ops: *const Ops,
@@ -113,8 +126,8 @@ pub unsafe extern "C" fn swr_v1_phpcollections_channel_minit(
     if let Some(ops) = unsafe { ops.as_ref() } {
         OPS.get_or_init(|| ops);
     }
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { CHANNEL.register(c"Swoole\\Coroutine\\Channel", methods, configure) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { CHANNEL.register(c"Swoole\\Coroutine\\Channel", METHODS.as_ptr(), configure) };
     if use_shortname != 0 {
         // SAFETY: MINIT, after registration.
         unsafe { CHANNEL.alias(c"Co\\Channel") };

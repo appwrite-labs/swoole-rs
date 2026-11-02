@@ -274,6 +274,7 @@ pub(crate) enum Op {
     Callable = 17,
     CallableFree = 18,
     Invoke = 19,
+    ConvertFd = 20,
 }
 
 impl ClientCall {

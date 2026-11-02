@@ -14,15 +14,14 @@ use crate::{
 };
 use std::{ffi::CStr, mem::MaybeUninit, ptr};
 use swoole_rs_httpbindings::swr_v1_httpbindings_file_range;
+use swoole_rs_phpstubs::http_response;
 use swoole_rs_zend::{
     Call, Class, Invalid, declare_long, declare_null, handlers, push_string, set_key,
-    sys::{
-        IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_function_entry, zend_object,
-        zend_string,
-    },
+    sys::{IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_object, zend_string},
     type_of, value_of,
 };
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
+use swoole_rs_zend::{method_table, sys as z};
 
 static RESPONSE: Class = Class::new();
 
@@ -45,18 +44,49 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     host::raise(bailed);
 }
 
+method_table! {
+    static METHODS = [
+        c"initHeader" => zim_swoole_http_response_initHeader, &http_response::arginfo_class_Swoole_Http_Response_initHeader, z::ZEND_ACC_PUBLIC;
+        c"isWritable" => zim_swoole_http_response_isWritable, &http_response::arginfo_class_Swoole_Http_Response_isWritable, z::ZEND_ACC_PUBLIC;
+        c"cookie" => zim_swoole_http_response_cookie, &http_response::arginfo_class_Swoole_Http_Response_cookie, z::ZEND_ACC_PUBLIC;
+        c"setCookie" => zim_swoole_http_response_cookie, &http_response::arginfo_class_Swoole_Http_Response_cookie, z::ZEND_ACC_PUBLIC;
+        c"rawcookie" => zim_swoole_http_response_rawcookie, &http_response::arginfo_class_Swoole_Http_Response_cookie, z::ZEND_ACC_PUBLIC;
+        c"setRawCookie" => zim_swoole_http_response_rawcookie, &http_response::arginfo_class_Swoole_Http_Response_cookie, z::ZEND_ACC_PUBLIC;
+        c"status" => zim_swoole_http_response_status, &http_response::arginfo_class_Swoole_Http_Response_status, z::ZEND_ACC_PUBLIC;
+        c"setStatusCode" => zim_swoole_http_response_status, &http_response::arginfo_class_Swoole_Http_Response_status, z::ZEND_ACC_PUBLIC;
+        c"header" => zim_swoole_http_response_header, &http_response::arginfo_class_Swoole_Http_Response_header, z::ZEND_ACC_PUBLIC;
+        c"setHeader" => zim_swoole_http_response_header, &http_response::arginfo_class_Swoole_Http_Response_header, z::ZEND_ACC_PUBLIC;
+        c"trailer" => zim_swoole_http_response_trailer, &http_response::arginfo_class_Swoole_Http_Response_trailer, z::ZEND_ACC_PUBLIC;
+        c"ping" => zim_swoole_http_response_ping, &http_response::arginfo_class_Swoole_Http_Response_ping, z::ZEND_ACC_PUBLIC;
+        c"goaway" => zim_swoole_http_response_goaway, &http_response::arginfo_class_Swoole_Http_Response_goaway, z::ZEND_ACC_PUBLIC;
+        c"write" => zim_swoole_http_response_write, &http_response::arginfo_class_Swoole_Http_Response_write, z::ZEND_ACC_PUBLIC;
+        c"end" => zim_swoole_http_response_end, &http_response::arginfo_class_Swoole_Http_Response_end, z::ZEND_ACC_PUBLIC;
+        c"sendfile" => zim_swoole_http_response_sendfile, &http_response::arginfo_class_Swoole_Http_Response_sendfile, z::ZEND_ACC_PUBLIC;
+        c"redirect" => zim_swoole_http_response_redirect, &http_response::arginfo_class_Swoole_Http_Response_redirect, z::ZEND_ACC_PUBLIC;
+        c"detach" => zim_swoole_http_response_detach, &http_response::arginfo_class_Swoole_Http_Response_detach, z::ZEND_ACC_PUBLIC;
+        c"create" => zim_swoole_http_response_create, &http_response::arginfo_class_Swoole_Http_Response_create, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"upgrade" => zim_swoole_http_response_upgrade, &http_response::arginfo_class_Swoole_Http_Response_upgrade, z::ZEND_ACC_PUBLIC;
+        c"push" => zim_swoole_http_response_push, &http_response::arginfo_class_Swoole_Http_Response_push, z::ZEND_ACC_PUBLIC;
+        c"recv" => zim_swoole_http_response_recv, &http_response::arginfo_class_Swoole_Http_Response_recv, z::ZEND_ACC_PUBLIC;
+        c"close" => zim_swoole_http_response_close, &http_response::arginfo_class_Swoole_Http_Response_close, z::ZEND_ACC_PUBLIC;
+        c"disconnect" => zim_swoole_http_response_disconnect, &http_response::arginfo_class_Swoole_Http_Response_disconnect, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: register the class as `php_swoole_http_response_minit` did.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated method table.
+/// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_response_minit(
-    methods: *const zend_function_entry,
-) -> *mut zend_class_entry {
-    // SAFETY: MINIT, with the caller's table.
+pub unsafe extern "C" fn swr_v1_phphttp_response_minit() -> *mut zend_class_entry {
+    // SAFETY: MINIT, with a static table.
     unsafe {
-        RESPONSE.register(c"Swoole\\Http\\Response", methods, |entry, handlers| {
-            context::configure(entry, handlers, create, free);
-        });
+        RESPONSE.register(
+            c"Swoole\\Http\\Response",
+            METHODS.as_ptr(),
+            |entry, handlers| {
+                context::configure(entry, handlers, create, free);
+            },
+        );
     }
     let ce = RESPONSE.entry();
     // SAFETY: MINIT, with the class just registered.

@@ -25,6 +25,19 @@
       "upstream_paths": [
         "ext-src/swoole_coroutine_system.cc"
       ]
+    },
+    {
+      "path": "0004-arginfo.patch",
+      "sha256": "7c7bf864d537a54625b802abd959a1c967e45e21c2a87c73fed1358d55d0b69d",
+      "upstream_paths": [
+        "ext-src/php_swoole_coroutine_system.h",
+        "ext-src/stubs/php_swoole_coroutine_arginfo.h",
+        "ext-src/stubs/php_swoole_coroutine_scheduler_arginfo.h",
+        "ext-src/stubs/php_swoole_coroutine_system_arginfo.h",
+        "ext-src/swoole_coroutine.cc",
+        "ext-src/swoole_coroutine_scheduler.cc",
+        "ext-src/swoole_coroutine_system.cc"
+      ]
     }
   ]
 }

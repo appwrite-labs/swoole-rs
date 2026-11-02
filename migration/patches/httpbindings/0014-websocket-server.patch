@@ -10,11 +10,59 @@ index 6051a57..a88d965 100644
 -#endif
 -
  struct FrameObject {
+diff --git a/ext-src/stubs/php_swoole_websocket_arginfo.h b/ext-src/stubs/php_swoole_websocket_arginfo.h
+deleted file mode 100644
+index f9da42d..0000000
+--- a/ext-src/stubs/php_swoole_websocket_arginfo.h
++++ /dev/null
+@@ -1,42 +0,0 @@
+-/* This is a generated file, edit the .stub.php file instead.
+- * Stub hash: d7b75f2efbda42013e5b8a83aa0dab8ab761e127 */
+-
+-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Swoole_WebSocket_Server_push, 0, 2, _IS_BOOL, 0)
+-	ZEND_ARG_TYPE_INFO(0, fd, IS_LONG, 0)
+-	ZEND_ARG_OBJ_TYPE_MASK(0, data, Swoole\\WebSocket\\Frame, MAY_BE_STRING, NULL)
+-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, opcode, IS_LONG, 0, "WEBSOCKET_OPCODE_TEXT")
+-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, flags, IS_LONG, 0, "SWOOLE_WEBSOCKET_FLAG_FIN")
+-ZEND_END_ARG_INFO()
+-
+-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Swoole_WebSocket_Server_isEstablished, 0, 1, _IS_BOOL, 0)
+-	ZEND_ARG_TYPE_INFO(0, fd, IS_LONG, 0)
+-ZEND_END_ARG_INFO()
+-
+-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Swoole_WebSocket_Server_pack, 0, 1, IS_STRING, 0)
+-	ZEND_ARG_OBJ_TYPE_MASK(0, data, Swoole\\WebSocket\\Frame, MAY_BE_STRING, NULL)
+-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, opcode, IS_LONG, 0, "WEBSOCKET_OPCODE_TEXT")
+-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, flags, IS_LONG, 0, "SWOOLE_WEBSOCKET_FLAG_FIN")
+-ZEND_END_ARG_INFO()
+-
+-ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Swoole_WebSocket_Server_unpack, 0, 1, Swoole\\WebSocket\\Frame, 0)
+-	ZEND_ARG_TYPE_INFO(0, data, IS_STRING, 0)
+-ZEND_END_ARG_INFO()
+-
+-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Swoole_WebSocket_Server_disconnect, 0, 1, _IS_BOOL, 0)
+-	ZEND_ARG_TYPE_INFO(0, fd, IS_LONG, 0)
+-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, code, IS_LONG, 0, "SWOOLE_WEBSOCKET_CLOSE_NORMAL")
+-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, reason, IS_STRING, 0, "\"\"")
+-ZEND_END_ARG_INFO()
+-
+-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Swoole_WebSocket_Server_ping, 0, 1, _IS_BOOL, 0)
+-	ZEND_ARG_TYPE_INFO(0, fd, IS_LONG, 0)
+-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, data, IS_STRING, 0, "\"\"")
+-ZEND_END_ARG_INFO()
+-
+-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Swoole_WebSocket_Frame___toString, 0, 0, IS_STRING, 0)
+-ZEND_END_ARG_INFO()
+-
+-#define arginfo_class_Swoole_WebSocket_Frame_pack arginfo_class_Swoole_WebSocket_Server_pack
+-
+-#define arginfo_class_Swoole_WebSocket_Frame_unpack arginfo_class_Swoole_WebSocket_Server_unpack
+-
 diff --git a/ext-src/swoole_http_response.cc b/ext-src/swoole_http_response.cc
-index daa91b4..e0e5145 100644
+index bb38b79..94899ea 100644
 --- a/ext-src/swoole_http_response.cc
 +++ b/ext-src/swoole_http_response.cc
-@@ -526,36 +526,2 @@ bool swr_http_host_set_header(void *context, const char *k, size_t klen, zval *z
+@@ -461,36 +461,2 @@ bool swr_http_host_set_header(void *context, const char *k, size_t klen, zval *z
  
 -// A frame for the coroutine socket: false when it cannot be packed.
 -static bool http_response_send_frame(HttpContext *ctx, FrameObject &frame, zval *return_value) {
@@ -51,7 +99,7 @@ index daa91b4..e0e5145 100644
 -}
 -
  void swr_http_host_ping(void *context, zend_string *zdata, zval *return_value) {
-@@ -580,9 +546,2 @@ bool swr_http_host_goaway(void *context, zend_long error_code, zend_string *debu
+@@ -515,9 +481,2 @@ bool swr_http_host_goaway(void *context, zend_long error_code, zend_string *debu
  
 -int swr_http_host_upgrade(void *context) {
 -    bool upgraded = false;
