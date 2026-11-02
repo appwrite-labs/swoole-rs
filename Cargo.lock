@@ -503,6 +503,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-phpcoroutines"
 version = "0.1.0"
+dependencies = [
+ "swoole-rs-zend",
+]
 
 [[package]]
 name = "swoole-rs-phpevents"
@@ -557,6 +560,8 @@ dependencies = [
 name = "swoole-rs-phpruntime"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "openssl-sys",
  "swoole-rs-hooks",
  "swoole-rs-zend",
 ]
