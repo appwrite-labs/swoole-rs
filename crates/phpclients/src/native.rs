@@ -2,7 +2,7 @@
 //! (declared in `native/clients/swoole_rs_phpclients.h`): the coroutine
 //! `Socket` class (`SocketImpl`) is still C++, so each operation a method needs
 //! is one call over its opaque pointer, plus Swoole's PHP error reporting.
-use libc::{c_char, c_int, iovec, size_t, ssize_t};
+use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
 use swoole_rs_zend::sys::{zend_object, zend_string, zval};
 
 /// A `SocketImpl *`.
@@ -159,6 +159,149 @@ unsafe extern "C" {
     pub(crate) fn swoole_client_coro_verify_peer(socket: Socket, allow_self_signed: bool) -> bool;
     /// `php_swoole_socket_set_protocol(socket, settings)`.
     pub(crate) fn swoole_socket_coro_set_protocol(socket: Socket, settings: *const zval) -> bool;
+}
+
+unsafe extern "C" {
+    /// `php_swoole_error`, `_fatal_error`, `_sys_error` or `_core_error`
+    /// (`kind`, [`ErrorKind`]) of `level` with `"%s"` and `message`.
+    pub(crate) fn swoole_client_php_error(kind: c_int, level: c_int, message: *const c_char);
+    /// `swoole_error_log(SW_LOG_WARNING, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, ...)`,
+    /// named as upstream's `recv`.
+    pub(crate) fn swoole_client_package_too_big(length: c_int);
+    /// `new Client(type, async)`; null, with errno in `error`, without a socket.
+    pub(crate) fn swoole_client_create(kind: c_int, is_async: bool, error: *mut c_int) -> Cli;
+    pub(crate) fn swoole_client_fd(cli: Cli) -> c_int;
+    /// The client's `ClientState` (crates/clients).
+    pub(crate) fn swoole_client_state(cli: Cli) -> *mut c_void;
+    pub(crate) fn swoole_client_has_socket(cli: Cli) -> bool;
+    pub(crate) fn swoole_client_socket_type(cli: Cli) -> c_int;
+    pub(crate) fn swoole_client_has_ssl(cli: Cli) -> bool;
+    pub(crate) fn swoole_client_check_liveness(cli: Cli) -> bool;
+    /// `getsockopt(SO_ERROR)`: whether it succeeded.
+    pub(crate) fn swoole_client_socket_error(cli: Cli, error: *mut c_int) -> bool;
+    /// `socket->catch_error(error)`.
+    pub(crate) fn swoole_client_catch_error(cli: Cli, error: c_int) -> c_int;
+    pub(crate) fn swoole_client_framing(cli: Cli, framing: *mut Framing);
+    /// getsockname: the address, the port in `port`; null on failure.
+    pub(crate) fn swoole_client_sockname(cli: Cli, port: *mut c_int) -> *const c_char;
+    pub(crate) fn swoole_client_peername(
+        cli: Cli,
+        address: *mut c_char,
+        size: size_t,
+        port: *mut c_int,
+    ) -> bool;
+    pub(crate) fn swoole_client_peer_cert(cli: Cli) -> *mut zend_string;
+    /// `php_swoole_convert_to_socket(fd)` into `zsocket`.
+    pub(crate) fn swoole_client_export_socket(cli: Cli, zsocket: *mut zval) -> bool;
+    /// Merge `settings` into the `setting` property.
+    pub(crate) fn swoole_client_merge_setting(object: *mut zend_object, settings: *const zval);
+    /// Install the async callbacks in `events`, raised on `object`.
+    pub(crate) fn swoole_client_async_listen(cli: Cli, object: *mut zend_object, events: u32);
+    pub(crate) fn swoole_client_has_on_error(cli: Cli) -> bool;
+    /// `socket->ssl_state = SW_SSL_STATE_WAIT_STREAM`.
+    pub(crate) fn swoole_client_ssl_wait_stream(cli: Cli);
+    /// `swoole_get_last_error()`.
+    pub(crate) fn swoole_client_last_error() -> c_int;
+    /// Run one [`ClientCall`]; a `bailout::trap` body.
+    pub(crate) fn swoole_client_run(call: *mut c_void);
+}
+
+/// A `network::Client *`.
+pub(crate) type Cli = *mut c_void;
+
+/// crates/clients' per-client state.
+pub(crate) type ClientState = swoole_rs_clients::state::ClientState;
+
+/// `struct swoole_client_framing`.
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct Framing {
+    pub(crate) eof_check: bool,
+    pub(crate) length_check: bool,
+    pub(crate) eof_length: u8,
+    pub(crate) eof: [u8; 8],
+    pub(crate) max_length: u32,
+    pub(crate) length_offset: u16,
+    pub(crate) length_size: u8,
+}
+
+/// `SWOOLE_CLIENT_ERROR*`: which reporter `swoole_client_php_error` uses.
+#[derive(Clone, Copy)]
+#[repr(i32)]
+pub(crate) enum ErrorKind {
+    Error = 0,
+    Fatal = 1,
+    Sys = 2,
+    Core = 3,
+}
+
+/// `struct swoole_client_call`: one operation for `swoole_client_run`.
+#[repr(C)]
+pub(crate) struct ClientCall {
+    pub(crate) cli: *mut c_void,
+    pub(crate) op: Op,
+    pub(crate) data: *const c_char,
+    pub(crate) length: size_t,
+    pub(crate) buffer: *mut c_char,
+    pub(crate) a: i64,
+    pub(crate) b: i64,
+    pub(crate) timeout: f64,
+    pub(crate) settings: *const zval,
+    pub(crate) result: i64,
+}
+
+/// `SWOOLE_CLIENT_CONNECT` ...: what a [`ClientCall`] does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub(crate) enum Op {
+    Connect = 0,
+    Send = 1,
+    Sendto = 2,
+    Sendfile = 3,
+    Recv = 4,
+    PackageLength = 5,
+    Shutdown = 6,
+    Close = 7,
+    Sleep = 8,
+    Wakeup = 9,
+    Settings = 10,
+    EnableSsl = 11,
+    SslHandshake = 12,
+    SslVerify = 13,
+    SslWait = 14,
+    Destroy = 15,
+    Destruct = 16,
+    Callable = 17,
+    CallableFree = 18,
+    Invoke = 19,
+}
+
+impl ClientCall {
+    pub(crate) fn new(cli: *mut c_void, op: Op) -> Self {
+        Self {
+            cli,
+            op,
+            data: std::ptr::null(),
+            length: 0,
+            buffer: std::ptr::null_mut(),
+            a: 0,
+            b: 0,
+            timeout: 0.0,
+            settings: std::ptr::null(),
+            result: 0,
+        }
+    }
+
+    /// Run the call inside `zend_try`.
+    /// # Errors
+    /// PHP code it ran bailed out.
+    pub(crate) fn run(&mut self) -> Result<i64, swoole_rs_zend::bailout::Bailout> {
+        // SAFETY: a C++ body that reads and writes only this call.
+        unsafe {
+            swoole_rs_zend::bailout::trap(swoole_client_run, std::ptr::from_mut(self).cast())
+        }?;
+        Ok(self.result)
+    }
 }
 
 /// What `swoole_socket_coro_transfer` does.
