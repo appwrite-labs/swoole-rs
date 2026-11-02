@@ -13,10 +13,11 @@ use swoole_rs_locks::{
     swr_v1_locks_align, swr_v1_locks_init, swr_v1_locks_lock, swr_v1_locks_size,
     swr_v1_locks_unlock,
 };
+use swoole_rs_phpstubs::lock;
 use swoole_rs_zend::{
-    Call, Class, Object, register_long_constant,
+    Call, Class, Object, method_table, register_long_constant,
     sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_function_entry, zend_object,
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
         zend_object_handlers,
     },
     throw_constructed_twice, throw_exception, unset_property_deny,
@@ -83,13 +84,20 @@ fn constructed(call: &Call) -> Option<&'static mut Held> {
     Some(held)
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_lock___construct, &lock::arginfo_class_Swoole_Lock___construct, ZEND_ACC_PUBLIC;
+        c"lock" => zim_swoole_lock_lock, &lock::arginfo_class_Swoole_Lock_lock, ZEND_ACC_PUBLIC;
+        c"unlock" => zim_swoole_lock_unlock, &lock::arginfo_class_Swoole_Lock_unlock, ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: register the class and its constants as `php_swoole_lock_minit` did.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated method table,
-/// Swoole's exception class and the global pool's allocator.
+/// Called once, at MINIT, with Swoole's exception class and the global pool's
+/// allocator.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phplocks_lock_minit(
-    methods: *const zend_function_entry,
     module_number: i32,
     kinds: u32,
     capabilities: u32,
@@ -106,8 +114,8 @@ pub unsafe extern "C" fn swr_v1_phplocks_lock_minit(
         });
     }
     EXCEPTION.store(exception, Ordering::Relaxed);
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { LOCK.register(c"Swoole\\Lock", methods, configure) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { LOCK.register(c"Swoole\\Lock", METHODS.as_ptr(), configure) };
     let types = [
         (c"MUTEX", c"SWOOLE_MUTEX", MUTEX),
         (c"RWLOCK", c"SWOOLE_RWLOCK", RW_LOCK),

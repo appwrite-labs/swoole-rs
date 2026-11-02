@@ -9,9 +9,10 @@ use std::{
         atomic::{AtomicPtr, Ordering},
     },
 };
+use swoole_rs_phpstubs::atomic;
 use swoole_rs_zend::{
-    Call, Class, Object,
-    sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_function_entry, zend_object},
+    Call, Class, Object, method_table,
+    sys::{ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
     throw_exception, unset_property_deny,
 };
 
@@ -90,14 +91,36 @@ fn this_word<W>(call: &Call) -> *mut W {
     unsafe { *Atomic::<W>::data(call.this()) }
 }
 
+method_table! {
+    static ATOMIC_METHODS = [
+        c"__construct" => zim_swoole_atomic___construct, &atomic::arginfo_class_Swoole_Atomic___construct, ZEND_ACC_PUBLIC;
+        c"add" => zim_swoole_atomic_add, &atomic::arginfo_class_Swoole_Atomic_add, ZEND_ACC_PUBLIC;
+        c"sub" => zim_swoole_atomic_sub, &atomic::arginfo_class_Swoole_Atomic_sub, ZEND_ACC_PUBLIC;
+        c"get" => zim_swoole_atomic_get, &atomic::arginfo_class_Swoole_Atomic_get, ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_atomic_set, &atomic::arginfo_class_Swoole_Atomic_set, ZEND_ACC_PUBLIC;
+        c"wait" => zim_swoole_atomic_wait, &atomic::arginfo_class_Swoole_Atomic_wait, ZEND_ACC_PUBLIC;
+        c"wakeup" => zim_swoole_atomic_wakeup, &atomic::arginfo_class_Swoole_Atomic_wakeup, ZEND_ACC_PUBLIC;
+        c"cmpset" => zim_swoole_atomic_cmpset, &atomic::arginfo_class_Swoole_Atomic_cmpset, ZEND_ACC_PUBLIC;
+    ];
+}
+
+method_table! {
+    static LONG_METHODS = [
+        c"__construct" => zim_swoole_atomic_long___construct, &atomic::arginfo_class_Swoole_Atomic_Long___construct, ZEND_ACC_PUBLIC;
+        c"add" => zim_swoole_atomic_long_add, &atomic::arginfo_class_Swoole_Atomic_Long_add, ZEND_ACC_PUBLIC;
+        c"sub" => zim_swoole_atomic_long_sub, &atomic::arginfo_class_Swoole_Atomic_Long_sub, ZEND_ACC_PUBLIC;
+        c"get" => zim_swoole_atomic_long_get, &atomic::arginfo_class_Swoole_Atomic_Long_get, ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_atomic_long_set, &atomic::arginfo_class_Swoole_Atomic_Long_set, ZEND_ACC_PUBLIC;
+        c"cmpset" => zim_swoole_atomic_long_cmpset, &atomic::arginfo_class_Swoole_Atomic_Long_cmpset, ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: register both classes as `php_swoole_atomic_minit` did.
 /// # Safety
-/// Called once, at MINIT, with static `PHP_FE_END`-terminated method tables,
-/// Swoole's exception class and the global pool's allocator.
+/// Called once, at MINIT, with Swoole's exception class and the global pool's
+/// allocator.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phplocks_atomic_minit(
-    atomic_methods: *const zend_function_entry,
-    long_methods: *const zend_function_entry,
     exception: *mut zend_class_entry,
     alloc: Option<unsafe extern "C" fn(size: u32) -> *mut c_void>,
     release: Option<unsafe extern "C" fn(word: *mut c_void)>,
@@ -106,10 +129,16 @@ pub unsafe extern "C" fn swr_v1_phplocks_atomic_minit(
         POOL.get_or_init(|| Pool { alloc, release });
     }
     EXCEPTION.store(exception, Ordering::Relaxed);
-    // SAFETY: MINIT, with the caller's tables.
-    unsafe { ATOMIC.register(c"Swoole\\Atomic", atomic_methods, configure::<u32>) };
+    // SAFETY: MINIT, with static tables.
+    unsafe { ATOMIC.register(c"Swoole\\Atomic", ATOMIC_METHODS.as_ptr(), configure::<u32>) };
     // SAFETY: as above.
-    unsafe { LONG.register(c"Swoole\\Atomic\\Long", long_methods, configure::<i64>) };
+    unsafe {
+        LONG.register(
+            c"Swoole\\Atomic\\Long",
+            LONG_METHODS.as_ptr(),
+            configure::<i64>,
+        );
+    }
 }
 
 /// `SW_SET_CLASS_NOT_SERIALIZABLE`, clone and unset denied, custom object.

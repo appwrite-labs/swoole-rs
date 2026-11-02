@@ -548,6 +548,7 @@ name = "swoole-rs-phplocks"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-locks",
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
@@ -579,6 +580,13 @@ dependencies = [
 
 [[package]]
 name = "swoole-rs-phpstdext"
+version = "0.1.0"
+dependencies = [
+ "swoole-rs-zend",
+]
+
+[[package]]
+name = "swoole-rs-phpstubs"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-zend",

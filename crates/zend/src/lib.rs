@@ -14,6 +14,7 @@
 )]
 
 mod access;
+pub mod arginfo;
 pub mod bailout;
 mod call;
 mod callable;
