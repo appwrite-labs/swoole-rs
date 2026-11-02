@@ -165,12 +165,11 @@ enum {
     SWOOLE_CLIENT_ON_BUFFER_FULL = 5,
     SWOOLE_CLIENT_ON_BUFFER_EMPTY = 6,
 };
-void swr_v1_phpclients_net_minit(const struct _zend_function_entry *methods,
-                                 struct _zend_class_entry *exception,
+void swr_v1_phpclients_net_minit(struct _zend_class_entry *exception,
+                                 bool sockets,
                                  int module,
                                  struct _zend_class_entry **client_class);
-void swr_v1_phpclients_async_minit(const struct _zend_function_entry *methods,
-                                   struct _zend_class_entry *client_class,
+void swr_v1_phpclients_async_minit(struct _zend_class_entry *client_class,
                                    struct _zend_class_entry **async_class);
 void swr_v1_phpclients_async_event(struct _zend_object *object, int kind, const char *data, size_t length);
 
