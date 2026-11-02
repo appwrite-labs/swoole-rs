@@ -123,7 +123,7 @@ index 9b549eb..0000000
 -ZEND_END_ARG_INFO()
 -
 diff --git a/ext-src/swoole_client.cc b/ext-src/swoole_client.cc
-index d690aea..a1dfbe1 100644
+index 96c8c99..5c53f97 100644
 --- a/ext-src/swoole_client.cc
 +++ b/ext-src/swoole_client.cc
 @@ -27,6 +27,2 @@
@@ -133,10 +133,9 @@ index d690aea..a1dfbe1 100644
 -END_EXTERN_C()
 -
  using swoole::PacketLength;
-@@ -41,28 +37,4 @@ zend_class_entry *swoole_client_ce;
- 
--// The class, its object and every method are Rust (crates/phpclients); the
--// handlers keep their zim_ names so this table, built from the stub's arginfo,
+@@ -42,55 +38,10 @@ zend_class_entry *swoole_client_ce;
+ // The class, its object, every method and swoole_client_select() are Rust
+-// (crates/phpclients); the handlers keep their zim_/zif_ names so this table, built from the stub's arginfo,
 -// stays upstream's.
 -SW_EXTERN_C_BEGIN
 -PHP_METHOD(swoole_client, __construct);
@@ -161,11 +160,6 @@ index d690aea..a1dfbe1 100644
 -#endif
 -SW_EXTERN_C_END
 -
-+// The class, its object and every method are Rust (crates/phpclients), with
-+// the method tables over crates/phpstubs' arginfo.
- static uint32_t client_poll_add(const zval *sock_array, uint32_t index, pollfd *fds, int maxevents, int event);
-@@ -70,30 +42,9 @@ static int client_poll_wait(zval *sock_array, const pollfd *fds, int maxevents,
- 
 -// clang-format off
 -static const zend_function_entry swoole_client_methods[] =
 -{
@@ -185,6 +179,7 @@ index d690aea..a1dfbe1 100644
 -    PHP_ME(swoole_client, getsockname, arginfo_class_Swoole_Client_getsockname, ZEND_ACC_PUBLIC)
 -    PHP_ME(swoole_client, getpeername, arginfo_class_Swoole_Client_getpeername, ZEND_ACC_PUBLIC)
 -    PHP_ME(swoole_client, close,       arginfo_class_Swoole_Client_close,       ZEND_ACC_PUBLIC)
++// (crates/phpclients), with the method table.
 +void php_swoole_client_minit(int module_number) {
  #ifdef SWOOLE_SOCKETS_SUPPORT
 -    PHP_ME(swoole_client, getSocket, arginfo_class_Swoole_Client_getSocket, ZEND_ACC_PUBLIC)

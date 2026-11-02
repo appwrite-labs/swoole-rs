@@ -237,6 +237,7 @@ enum {
     SWOOLE_CLIENT_CALLABLE = 17,   /* settings: sw_callable_create, into buffer */
     SWOOLE_CLIENT_CALLABLE_FREE = 18, /* cli: the callable */
     SWOOLE_CLIENT_INVOKE = 19,     /* cli: the callable; settings, a: argv, argc; result: success */
+    SWOOLE_CLIENT_CONVERT_FD = 20, /* settings: php_swoole_convert_to_fd */
 };
 struct swoole_client_call {
     void *cli;
