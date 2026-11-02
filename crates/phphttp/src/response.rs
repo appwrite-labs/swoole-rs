@@ -4,18 +4,18 @@ use crate::{
     context::{self, Holder},
     host::{
         self, CO_SOCKET, COOKIE, Context, DETACHED, END, HEADER, HEADER_KEY_SIZE,
-        HTTP_CONTEXT_UNAVAILABLE, HTTP2, SEND_CHUNKED, SEND_TRAILER, SERVER_IS_NOT_REGULAR_FILE,
-        SESSION_CLOSED, TRAILER, UPGRADE, WEBSOCKET, swr_http_host_close, swr_http_host_disconnect,
-        swr_http_host_end, swr_http_host_goaway, swr_http_host_mark, swr_http_host_ping,
+        HTTP_CONTEXT_UNAVAILABLE, HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED,
+        TRAILER, UPGRADE, WEBSOCKET, swr_http_host_after, swr_http_host_close,
+        swr_http_host_disconnect, swr_http_host_goaway, swr_http_host_mark, swr_http_host_ping,
         swr_http_host_push, swr_http_host_recv, swr_http_host_redirect,
         swr_http_host_response_create, swr_http_host_response_free,
-        swr_http_host_response_property, swr_http_host_send_file, swr_http_host_set_header,
-        swr_http_host_status, swr_http_host_upgrade, swr_http_host_write,
+        swr_http_host_response_property, swr_http_host_set_header, swr_http_host_status,
+        swr_http_host_upgrade,
     },
+    send,
 };
 use std::{ffi::CStr, mem::MaybeUninit, ptr};
 use swoole_rs_httpbindings::swr_v1_httpbindings_file_range;
-use swoole_rs_zend::string::bytes;
 use swoole_rs_zend::{
     Call, Class, Invalid, declare_long, declare_null, handlers, push_string, set_key,
     sys::{
@@ -24,6 +24,7 @@ use swoole_rs_zend::{
     },
     type_of, value_of,
 };
+use swoole_rs_zend::{bailout::Bailout, string::bytes};
 
 static RESPONSE: Class = Class::new();
 
@@ -138,32 +139,47 @@ fn is_writable(call: &Call) {
     call.set_bool(!ctx.is_null() && host::flags(ctx) & (END | DETACHED) == 0);
 }
 
+/// A send's result as the method's return value; a bailout is raised last.
+fn sent(call: &Call, result: &Result<bool, Bailout>) {
+    match result {
+        Ok(done) => call.set_bool(*done),
+        Err(_) => host::raise(true),
+    }
+}
+
 fn write(call: &Call) {
-    let mut bailed = false;
-    let mut run = || -> Option<()> {
+    let run = || -> Option<Result<bool, Bailout>> {
         let data = call.arity(1, 1).and_then(|()| call.str(1)).ok()??;
         let ctx = checked(call)?;
-        // SAFETY: a live context, the argument and this call's return slot.
-        bailed = unsafe { swr_http_host_write(ctx, data, call.return_value()) };
-        Some(())
+        // Compressing a chunked body would compress the chunks, not the stream.
+        send::state(ctx).accept_compression = 0;
+        Some(send::write(ctx, data))
     };
-    let done = run();
-    or_false(call, done);
-    host::raise(bailed);
+    match run() {
+        Some(result) => sent(call, &result),
+        None => call.set_bool(false),
+    }
+}
+
+/// `http_response_after`: the server's and the hooks' after-response step.
+fn after(ctx: *mut Context) -> Result<(), Bailout> {
+    // SAFETY: a live context; C++ traps a bailout.
+    if unsafe { swr_http_host_after(ctx) } {
+        return Err(Bailout);
+    }
+    Ok(())
 }
 
 fn end(call: &Call) {
-    let mut bailed = false;
-    let mut run = || -> Option<()> {
+    let run = || -> Option<Result<bool, Bailout>> {
         let ctx = checked(call)?;
         let data = call.arity(0, 1).and_then(|()| call.str_or_null(1)).ok()?;
-        // SAFETY: a live context, the optional argument and the return slot.
-        bailed = unsafe { swr_http_host_end(ctx, nullable(data), call.return_value()) };
-        Some(())
+        Some(after(ctx).and_then(|()| send::end(ctx, nullable(data))))
     };
-    let done = run();
-    or_false(call, done);
-    host::raise(bailed);
+    match run() {
+        Some(result) => sent(call, &result),
+        None => call.set_bool(false),
+    }
 }
 
 /// `stat(2)` of a file name, as `php_swoole_sys_error` reports its failure.
@@ -196,8 +212,7 @@ fn stat(file: *mut zend_string) -> Result<libc::stat, ()> {
 }
 
 fn send_file(call: &Call) {
-    let mut bailed = false;
-    let mut run = || -> Option<()> {
+    let run = || -> Option<Result<bool, Bailout>> {
         let ctx = checked(call)?;
         if host::flags(ctx) & SEND_CHUNKED != 0 {
             host::fatal("can't use sendfile when HTTP chunk is enabled");
@@ -243,15 +258,13 @@ fn send_file(call: &Call) {
             }
             _ => return None,
         }
-        // SAFETY: a live context and the checked file range.
-        let sent = unsafe { swr_http_host_send_file(ctx, file, offset, length) };
-        bailed = sent < 0;
-        call.set_bool(sent > 0);
-        Some(())
+        let length = usize::try_from(length).unwrap_or_default();
+        Some(after(ctx).and_then(|()| send::send_file(ctx, file, offset, length)))
     };
-    let done = run();
-    or_false(call, done);
-    host::raise(bailed);
+    match run() {
+        Some(result) => sent(call, &result),
+        None => call.set_bool(false),
+    }
 }
 
 /// `http_response_set_cookie`: `cookie` encodes the value, `rawcookie` not.
@@ -403,8 +416,7 @@ fn trailer(call: &Call) {
         let key = key.to_ascii_lowercase();
         // SAFETY: the trailer property is a live array.
         unsafe { set_key(property(ctx, TRAILER), &key, value) };
-        // SAFETY: a live context.
-        unsafe { swr_http_host_mark(ctx, SEND_TRAILER) };
+        send::state(ctx).send_trailer = 1;
         call.set_bool(true);
         Some(())
     };

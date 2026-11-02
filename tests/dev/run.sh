@@ -17,27 +17,6 @@ for test in \
     tests/modules/memory/test_benchmark.py \
     tests/modules/phpcollections/test_prepare_benchmark.py \
     tests/modules/phpcollections/test_runtime.py \
-    tests/modules/phpcoroutines/test_activated_boundary.py \
-    tests/modules/phpcoroutines/test_bootstrap_fallback.py \
-    tests/modules/phpcoroutines/test_config_boundary.py \
-    tests/modules/phpcoroutines/test_config_identity.py \
-    tests/modules/phpcoroutines/test_exit_boundary.py \
-    tests/modules/phpcoroutines/test_fiber_boundary.py \
-    tests/modules/phpcoroutines/test_gate_identity.py \
-    tests/modules/phpcoroutines/test_header_boundary.py \
-    tests/modules/phpcoroutines/test_interrupt_owner_boundary.py \
-    tests/modules/phpcoroutines/test_join_boundary.py \
-    tests/modules/phpcoroutines/test_metadata_boundary.py \
-    tests/modules/phpcoroutines/test_method_catalogue_boundary.py \
-    tests/modules/phpcoroutines/test_queries_identity.py \
-    tests/modules/phpcoroutines/test_query_fallback.py \
-    tests/modules/phpcoroutines/test_scheduler_control_boundary.py \
-    tests/modules/phpcoroutines/test_scheduler_phase_boundary.py \
-    tests/modules/phpcoroutines/test_scheduler_slot_boundary.py \
-    tests/modules/phpcoroutines/test_startup_identity.py \
-    tests/modules/phpcoroutines/test_statistics_identity.py \
-    tests/modules/phpcoroutines/test_system_boundary.py \
-    tests/modules/phpcoroutines/test_system_control_boundary.py \
     tests/modules/phphelpers/test_entrypoint.py \
     tests/modules/phphelpers/test_facade_identity.py \
     tests/modules/phphelpers/test_gate.py \

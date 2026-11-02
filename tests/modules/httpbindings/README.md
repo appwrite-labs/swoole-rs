@@ -31,7 +31,7 @@ python3 tests/modules/httpbindings/settings_gate.py --source /readonly/pinned/gi
 
 All gates take `--source`, `--output` and either `--archive PATH` or
 `--rust-sanitize` (Linux: build an ASan Rust archive privately; std stays
-uninstrumented). `server_gate.py` needs `--archive` from a hybrid build, as does `emission_gate.py`
+uninstrumented). `server_gate.py` needs `--archive` from a hybrid build
 (with `--rust-sanitize` it links a private ASan archive instead): their candidate side,
 including the `swoole.h`/`swoole_util.h` helpers they inline, comes from that
 build's fully patched tree, the upstream side from the pin.
@@ -40,8 +40,6 @@ build's fully patched tree, the upstream side from the pin.
 |---|---|---|
 | `server_gate.py` | coroutine handler routing, whole accept loop | |
 | `settings_gate.py` | coroutine server startup settings body: alias order, null/false fallthrough, level clamp | `--without-compression` |
-| `emission_gate.py` | `HttpContext::write`/`end` chunk/trailer packetization and split sends | `--without-compression`, `--without-zlib` |
-| `file_gate.py` | `send_file` packetization and signed range validation | `--without-compression` |
 
 Preserved native quirks (asserted by independent witnesses, not fixed): the
 pointer-size token fast path, shrinking quote-trim bound, leading-hyphen key

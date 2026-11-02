@@ -155,8 +155,11 @@ pub unsafe extern "C" fn swr_v1_phptimer_call(callable: *mut c_void) -> u8 {
         return 1;
     }
     if invocation.ok == 0 {
-        // SAFETY: a NUL-terminated message.
-        unsafe { (ops.warning)(c"Swoole\\Timer->onTimeout handler error".as_ptr()) };
+        // SAFETY: C++'s reporter, from the trampoline's frame.
+        let reported = unsafe {
+            swoole_rs_zend::bailout::report(ops.warning, c"Swoole\\Timer->onTimeout handler error")
+        };
+        return u8::from(reported.is_err());
     }
     0
 }
@@ -184,8 +187,10 @@ fn node(id: i64) -> Option<Node> {
 }
 
 fn fatal_warning(message: &CStr) {
-    // SAFETY: a NUL-terminated message.
-    unsafe { (ops().fatal_warning)(message.as_ptr()) };
+    // SAFETY: C++'s reporter, from a handler.
+    swoole_rs_zend::bailout::defer(unsafe {
+        swoole_rs_zend::bailout::report(ops().fatal_warning, message)
+    });
 }
 
 /// `after()` and `tick()`: `(int $ms, callable $callback, mixed ...$params)`.

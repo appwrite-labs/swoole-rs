@@ -1,30 +1,19 @@
 # PHP coroutine frontend boundary (M29)
 
 Feature value 134217728 (`--module phpcoroutines`, `SWOOLE_RS_PHPCOROUTINES`).
-Upstream targets: `ext-src/swoole_coroutine.cc`,
-`ext-src/swoole_coroutine_system.cc`, `ext-src/swoole_coroutine_scheduler.cc`,
-`ext-src/php_swoole_coroutine.h`, `ext-src/swoole_tracer.cc`. Public headers,
-arginfo, stubs and `PHPContext` layout are unchanged. Follows the
-[policy/effect split](abi-v1.md#policyeffect-split).
+Follows [docs/zend.md](zend.md).
 
-Scope: frontend API catalog, argument/control/result policy, System
-option/path/family/timeout policy, Scheduler configuration and task ordering.
-Zend values, callbacks, refcounts, GC, exceptions, bailout, context/fiber/thread
-switches, interruption, yield/resume and filesystem/DNS/process/signal/IO effects
-stay native.
+`crates/phpcoroutines` is upstream's `PHPCoroutine` and `swoole_coroutine.cc`:
+each coroutine's PHP context and its VM swap (executor, output and serializer
+globals, through `crates/zend-sys/src/shim_coroutine.c`), activation and
+configuration, the deadlock check, the preemptive scheduler's interrupt thread,
+`Swoole\Coroutine`'s methods, `go()`/`defer()`, `Swoole\ExitException`, the
+exit and `@` opcode handlers and the coroutine-aware autoloader.
 
-Implemented:
+C++ keeps the arginfo method tables, the coroutine core's operations (lent as
+`swr_v1_phpcoroutines_ops`) and the coroutine's entry function, which runs the
+user callable and its defer tasks inside `zend_first_try` so a bailout never
+crosses a Rust frame. `PHPCoroutine` remains as the entry points other C++
+calls (`create`, hook flags, the scheduler's configuration).
 
-- **Scheduler**: queue, ordering and signed count storage are in Rust, with the
-  real `add`/`parallel`/`start`/free callers, over four C exports.
-- **Configuration**: `PHPCoroutine::config` is one inline `repr(C)` value under
-  the original `SW_THREAD_LOCAL` scope (or the global fallback), initialized only
-  from the compile-time default (`preemptive=false`, `deadlock=true`). No dynamic
-  initializer, Rust TLS, heap, destructor or lock. Accessors `get_max_num`,
-  `set_max_num`, `set_deadlock_check`, `get_hook_flags` and
-  `enable_preemptive_scheduler` use it. Public `Config`'s four fields and all
-  signatures are unchanged; the static's type changes, so rebuild the SDK.
-- **Activation**: `activated` and `is_activated()` are a Rust-managed inline byte with the same TLS/global initialization.
-
-Other Coroutine and System bodies are still C++. Original inventory: 130 Coroutine,
-18 System and 27 Scheduler PHPTs.
+`swoole_coroutine_scheduler.cc` and `swoole_coroutine_system.cc` are upstream's.

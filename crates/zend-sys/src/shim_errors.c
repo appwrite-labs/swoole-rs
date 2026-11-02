@@ -1,0 +1,71 @@
+#include "shim_errors.h"
+
+/* Run `statement` inside zend_try; 1 if it bailed out. */
+#define SWR_TRAP(statement)                                                                \
+    volatile int bailed = 0;                                                               \
+    zend_try {                                                                             \
+        statement;                                                                         \
+    }                                                                                      \
+    zend_catch {                                                                           \
+        bailed = 1;                                                                        \
+    }                                                                                      \
+    zend_end_try();                                                                        \
+    return bailed
+
+int swr_zend_try_error(int level, const char *message) {
+    SWR_TRAP(php_error_docref(NULL, level, "%s", message));
+}
+
+int swr_zend_try_zend_error(int level, const char *message) {
+    SWR_TRAP(zend_error(level, "%s", message));
+}
+
+int swr_zend_try_report(void (*report)(const char *message), const char *message) {
+    SWR_TRAP(report(message));
+}
+
+int swr_zend_try_report_level(void (*report)(int level, const char *message), int level,
+                              const char *message) {
+    SWR_TRAP(report(level, message));
+}
+
+int swr_zend_try_report_length(void (*report)(const char *text, int length), const char *text,
+                               int length) {
+    SWR_TRAP(report(text, length));
+}
+
+int swr_zend_try_report_code(void (*report)(int code, int flag, const char *message), int code,
+                             int flag, const char *message) {
+    SWR_TRAP(report(code, flag, message));
+}
+
+int swr_zend_try_report_flag(void (*report)(int level, bool flag, const char *message), int level,
+                             bool flag, const char *message) {
+    SWR_TRAP(report(level, flag, message));
+}
+
+#define SWR_TRY_PARSE(name, type, slow)                                                    \
+    int name(zval *arg, type *out, uint32_t number, bool *parsed) {                      \
+        *parsed = false;                                                                   \
+        SWR_TRAP(*parsed = slow(arg, out, number));                                        \
+    }
+
+SWR_TRY_PARSE(swr_zend_try_parse_long, zend_long, zend_parse_arg_long_slow)
+SWR_TRY_PARSE(swr_zend_try_parse_bool, bool, zend_parse_arg_bool_slow)
+SWR_TRY_PARSE(swr_zend_try_parse_double, double, zend_parse_arg_double_slow)
+SWR_TRY_PARSE(swr_zend_try_parse_str, zend_string *, zend_parse_arg_str_slow)
+
+int swr_zend_try_get_long(zval *value, zend_long *out) {
+    *out = 0;
+    SWR_TRAP(*out = zval_get_long(value));
+}
+
+int swr_zend_try_get_double(zval *value, double *out) {
+    *out = 0.0;
+    SWR_TRAP(*out = zval_get_double(value));
+}
+
+int swr_zend_try_get_string(zval *value, zend_string **out) {
+    *out = ZSTR_EMPTY_ALLOC();
+    SWR_TRAP(*out = zval_get_string(value));
+}

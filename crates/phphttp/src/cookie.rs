@@ -12,7 +12,7 @@ use swoole_rs_httpbindings::{
     FORMAT_DATE, FREE_DATE, FREE_ENCODED, READ_AGE, Text, WARN, swr_v1_httpbindings_cookie,
 };
 use swoole_rs_zend::{
-    Call, Class, Object,
+    Call, Class, Object, bailout,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, add_assoc_bool_ex, add_assoc_long_ex, add_assoc_str_ex,
         add_assoc_string_ex, php_format_date, php_time, php_url_encode, swr_zend_string_copy,
@@ -156,7 +156,9 @@ impl Cookie {
                 WARN => {
                     if let Some(native) = NATIVE.get() {
                         // SAFETY: a NUL-terminated static message.
-                        unsafe { (native.warning)(action.text.data.cast()) };
+                        let message = unsafe { CStr::from_ptr(action.text.data.cast()) };
+                        // SAFETY: C++'s reporter.
+                        bailout::defer(unsafe { bailout::report(native.warning, message) });
                     }
                     break ptr::null_mut();
                 }

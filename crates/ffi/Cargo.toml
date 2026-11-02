@@ -31,15 +31,15 @@ iouring = ["hooks", "swoole-rs-hooks/iouring"]
 
 ossupport = ["dep:swoole-rs-ossupport"]
 tls = ["dep:swoole-rs-tls"]
-process = ["dep:swoole-rs-process", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-phpthread", "swoole-rs-phpthread/php"]
+process = ["dep:swoole-rs-process", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/server", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-phpthread", "swoole-rs-phpthread/php"]
 clients = ["dep:swoole-rs-clients", "dep:swoole-rs-inflate", "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php"]
 httpbindings = ["dep:swoole-rs-httpbindings", "dep:swoole-rs-phphttp", "swoole-rs-phphttp/php"]
 http2 = ["dep:swoole-rs-http2", "dep:swoole-rs-phphttp2", "swoole-rs-phphttp2/php"]
-ports = ["dep:swoole-rs-ports"]
+ports = ["dep:swoole-rs-ports", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/port"]
 phphelpers = ["dep:swoole-rs-phphelpers", "dep:swoole-rs-phpstdext", "swoole-rs-phpstdext/php"]
 phpcollections = ["dep:swoole-rs-phpcollections", "swoole-rs-phpcollections/php"]
 phpevents = ["dep:swoole-rs-phpevents", "swoole-rs-phpevents/php"]
-phpcoroutines = ["dep:swoole-rs-phpcoroutines"]
+phpcoroutines = ["dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php"]
 
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }
@@ -77,6 +77,7 @@ swoole-rs-phphttp = { path = "../phphttp", optional = true }
 swoole-rs-http2 = { path = "../http2", optional = true }
 swoole-rs-phphttp2 = { path = "../phphttp2", optional = true }
 swoole-rs-ports = { path = "../ports", optional = true }
+swoole-rs-phpserver = { path = "../phpserver", optional = true }
 swoole-rs-phphelpers = { path = "../phphelpers", optional = true }
 swoole-rs-phpstdext = { path = "../phpstdext", optional = true }
 swoole-rs-phpcollections = { path = "../phpcollections", optional = true }

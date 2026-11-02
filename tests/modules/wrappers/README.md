@@ -32,7 +32,7 @@ for the gates; edit the patches with `tools/patches.py`.
 ## Other gates
 
 - `core.py --source S --config CONFIG_H --archive A --build-root DIR --output R [--library-only] [--openssl-root P]`:
-  builds upstream and wrappers-only native trees with CMake and runs the
+  builds the upstream tree and the archive's hybrid tree with CMake and runs the
   unchanged reactor/timer GTests and the four HTTP wrapper tests (parser1,
   parser2, upload, max_request_size) one process each. `--library-only` builds
   the libraries without running tests (used by the next three scripts).

@@ -3,8 +3,9 @@
 //! `enableCoroutine`, and `PHPCoroutine::enable_hook`: which hook families
 //! change, the function-table hooks (handlers, arginfo copies, the library's
 //! PHP replacements, the classes they graft on) and the sleep family's
-//! replacements. The stream transports, the plain-file and stdio wrappers, the
-//! PDO drivers and the coroutine state stay C++, lent as a table.
+//! replacements, and the coroutine socket streams (`stream`). The transport
+//! registry, the plain-file and stdio wrappers, the PDO drivers, the coroutine
+//! state and the coroutine socket stay C++, lent as a table and as calls.
 //!
 //! A warning can run a user error handler that bails out; when it does from
 //! inside a function here, the jump crosses only frames that own nothing to
@@ -22,6 +23,9 @@
 
 mod functions;
 mod sleep;
+mod socket;
+mod stream;
+pub use stream::*;
 
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -35,9 +39,9 @@ use swoole_rs_zend::{
     bailout::Bailout,
     message, register_long_constant,
     sys::{
-        swr_zend_module_loaded, swr_zend_runtime_find_class, zend_class_entry, zend_error,
-        zend_execute_data, zend_fcall_info_cache, zend_function_entry,
-        zend_register_class_alias_ex, zif_handler, zval,
+        swr_zend_module_loaded, swr_zend_runtime_find_class, zend_class_entry, zend_execute_data,
+        zend_fcall_info_cache, zend_function_entry, zend_register_class_alias_ex, zif_handler,
+        zval,
     },
 };
 
@@ -295,7 +299,7 @@ fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     requested = transports(requested, installed);
     wrappers(requested, installed);
     functions::hook_all(requested, installed)?;
-    mongodb(requested, installed);
+    mongodb(requested, installed)?;
 
     // SAFETY: as above.
     unsafe { (ops.call_hook)(1, &raw mut requested) };
@@ -360,25 +364,24 @@ fn wrappers(requested: u32, installed: u32) {
 }
 
 /// `hook_mongodb`: alias `MongoDB\Client` to the library's class.
-fn mongodb(requested: u32, installed: u32) {
+fn mongodb(requested: u32, installed: u32) -> Result<(), Bailout> {
     const ALIAS: &CStr = c"MongoDB\\Client";
     if transition(requested, installed, flags::MONGODB) != Some(true) || class(ALIAS).is_some() {
-        return;
+        return Ok(());
     }
     let Some(ce) = class(c"Swoole\\MongoDB\\Client") else {
-        return;
+        return Ok(());
     };
     // SAFETY: a registered class and a NUL-terminated name.
     if unsafe { zend_register_class_alias_ex(ALIAS.as_ptr(), ALIAS.count_bytes(), ce, true) } != 0 {
-        // SAFETY: a printf format whose `%s` takes the NUL-terminated name.
-        unsafe {
-            zend_error(
-                E_WARNING,
-                c"Cannot declare class %s, because the name is already in use".as_ptr(),
-                ALIAS.as_ptr(),
-            );
-        }
+        let text = swoole_rs_zend::message!(
+            "Cannot declare class {}, because the name is already in use",
+            ALIAS.to_string_lossy()
+        );
+        // SAFETY: from a handler.
+        unsafe { swoole_rs_zend::zend_error(E_WARNING, text.as_cstr()) }?;
     }
+    Ok(())
 }
 
 /// A class already declared (no autoloading).
