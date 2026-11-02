@@ -303,13 +303,19 @@ mod tests {
             let word = Arc::clone(&word);
             std::thread::spawn(move || wait(&word, 5.0))
         };
-        let mut notified = 0;
-        while notified == 0 {
+        // Wake only once the waiter has registered: a token published before
+        // it starts would be taken by its fast path, leaving nobody to notify.
+        let registry = unsafe { &*REGISTRY.load(Ordering::SeqCst) };
+        let registered = || {
+            let locked = registry.lock();
+            registry
+                .entry(&locked, word.as_ptr() as usize, false)
+                .is_some_and(|entry| entry.waiters.load(R) > 0)
+        };
+        while !registered() {
             std::thread::sleep(Duration::from_millis(1));
-            word.store(0, Ordering::SeqCst);
-            notified = wakeup(&word, 3).0;
         }
-        assert_eq!(notified, 1, "only the one registered waiter");
+        assert_eq!(wakeup(&word, 3), (1, 0), "only the one registered waiter");
         assert_eq!(waiter.join().unwrap(), (0, 0));
         assert_eq!(word.load(Ordering::SeqCst), 0, "the waiter took the token");
     }
