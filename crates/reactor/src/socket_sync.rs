@@ -53,7 +53,7 @@ fn errno() -> c_int {
     Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-fn set_errno(value: c_int) {
+pub(crate) fn set_errno(value: c_int) {
     #[cfg(target_os = "linux")]
     // SAFETY: this thread's errno slot.
     let slot = unsafe { libc::__errno_location() };

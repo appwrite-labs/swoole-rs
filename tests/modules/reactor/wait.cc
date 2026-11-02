@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <poll.h>
@@ -28,7 +29,9 @@ constexpr int EVFILT_READ=-1,EVFILT_WRITE=-2,EVFILT_SIGNAL=-6;
 #define swoole_print_backtrace_on_error() assert(false && "unexpected backtrace in positive wait profile")
 #define swoole_trace(...) do {} while(false)
 #define swoole_trace_log(...) do {} while(false)
-struct Socket { int fd=7,fd_type=2,events=0; bool removed=false,event_hup=false; };
+// The leading fields of the socket record (swoole_rs_socket.h), which Rust's loop reads in place.
+struct Socket { int fd=7,fd_type=2,socket_type=0,events=0; bool nodelay=false,nobufs=false,removed=false; uint8_t flags[14]{}; bool event_hup=false; uint8_t rest[262]{}; };
+static_assert(offsetof(Socket,events)==12&&offsetof(Socket,removed)==18&&offsetof(Socket,event_hup)==33,"socket record offsets");
 // swoole::Event's layout: the selected bodies have Rust fill it.
 struct Event { int fd=0; int16_t reactor_id=0; int type=0; Socket *socket=nullptr; };
 struct Signal { bool activated=false; void (*handler)(int)=nullptr; int signo=0; };
@@ -63,16 +66,6 @@ struct Reactor {
     }();
     ~Reactor() { swr_v1_reactor_handlers_free(handlers); }
     const swr_v1_reactor_handlers *get_handlers() const { return handlers; }
-    static const swr_v1_reactor_socket_fields *socket_fields() {
-        static const swr_v1_reactor_socket_fields fields{
-            [](void *s) { return static_cast<Socket *>(s)->fd; },
-            [](void *s) { return static_cast<Socket *>(s)->fd_type; },
-            [](void *s) { return static_cast<Socket *>(s)->events; },
-            [](void *s) { return static_cast<Socket *>(s)->removed; },
-            [](void *s) { static_cast<Socket *>(s)->event_hup = true; },
-        };
-        return &fields;
-    }
     void _del(Socket *s) { effects.emplace_back("delete");s->removed=true; }
 };
 #ifdef __APPLE__

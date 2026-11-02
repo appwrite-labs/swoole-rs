@@ -20,10 +20,6 @@ int original_get_type_color(int);
 static std::vector<char> emitted;
 static ssize_t send_result;
 namespace swoole { namespace network {
-double Socket::default_dns_timeout = 0;
-double Socket::default_connect_timeout = 0;
-double Socket::default_read_timeout = 0;
-double Socket::default_write_timeout = 0;
 ssize_t Socket::send(const void *bytes, size_t size, int flags) {
     if (flags != 0) std::abort();
     emitted.assign((const char *)bytes, (const char *)bytes + size);
