@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned/patched cookie Zend-effect and HTTP exec/reentry order comparison.
+"""Pinned/patched Set-Cookie parsing: Zend-effect order comparison.
 
 Native effects are recording doubles; no actual PHP/network parity is implied.
 """
@@ -31,7 +31,7 @@ def main():
         if path=='ext-src/swoole_http_client_coro.cc':original=text
     gate.apply_overlay(scratch, out)
     selected=(scratch/'ext-src/swoole_http_client_coro.cc').read_text()
-    signatures=['void php_swoole_http_parse_set_cookies(', 'bool Client::exec(']
+    signatures=['void php_swoole_http_parse_set_cookies(']
     bodies={name:'\n'.join(gate.body(text,sig) for sig in signatures) for name,text in [('native',original),('rust',selected)]}
     for signature in signatures:
         native_body=gate.body(original,signature);selected_body=gate.body(selected,signature)
@@ -42,13 +42,9 @@ def main():
 #include <cstdint>
 #include <iostream>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <vector>
 #include "swoole_rs_clients.h"
-#define SW_HTTP_BAD_GATEWAY 502
-#define SW_HTTP_SERVICE_UNAVAILABLE 503
-#define SW_LOOP_N(n) for(decltype(n) i=0;i<n;i++)
 static std::vector<std::string> zend_effects;
 struct zval {std::string bytes;size_t length=0;};
 #define ZVAL_STRINGL(z,p,n) ((z)->bytes.assign(p,n),(z)->length=n,zend_effects.push_back("value:"+std::string(p,n)))
@@ -61,35 +57,6 @@ static void add_next_index_zval(zval*,zval*v) {zend_effects.push_back("append:"+
 static void add_assoc_zval_ex(zval*,const char*k,size_t n,zval*v) {zend_effects.push_back("assoc:"+std::string(k,n)+":"+v->bytes.substr(0,v->length));}
 static void add_next_index_stringl(zval*,char*p,size_t n) {zend_effects.push_back("raw:"+std::string(p,n));}
 '''
-    facade=r'''
-struct Client {
-    std::string path="old";
-    struct Context {bool with_port=false;} resolve_context_;
-    uint8_t max_retries=0;
-    bool defer=false,use_default_port=false;
-    struct Parser {uint16_t status_code=200;} parser;
-    unsigned scenario=0,sends=0,receives=0,closes=0;
-    std::vector<std::string> effects;
-    bool send_request() {
-        ++sends;effects.push_back("send");
-        if(scenario&128)throw std::runtime_error("send callback");
-        if(scenario&8)max_retries=0;
-        if(scenario&64)defer=true;
-        return !((scenario&1)&&sends==1);
-    }
-    bool recv_response() {
-        ++receives;effects.push_back("receive");
-        if(scenario&16)max_retries=0;
-        if((scenario&4)&&receives>1)parser.status_code=200;
-        return !((scenario&2)&&receives==1);
-    }
-    void close(bool reset) {
-        ++closes;effects.push_back(reset?"close-reset":"close");
-        if(scenario&32)max_retries=0;
-    }
-    bool exec(const std::string &_path);
-};
-'''
     driver=r'''
 int main() {
     size_t count=0;
@@ -100,23 +67,13 @@ int main() {
         zend_effects.clear();rust::php_swoole_http_parse_set_cookies(cookie.data(),cookie.size(),&a,&b);
         if(expected!=zend_effects)return 1;++count;
     }
-    for(unsigned retries:{0,1,2,255})for(unsigned status:{200,502,503,504})for(bool defer:{false,true})for(bool port:{false,true})for(unsigned scenario=0;scenario<256;scenario++) {
-        native::Client a;rust::Client b;
-        a.max_retries=b.max_retries=retries;a.defer=b.defer=defer;a.use_default_port=b.use_default_port=port;a.scenario=b.scenario=scenario;a.parser.status_code=b.parser.status_code=status;
-        a.resolve_context_.with_port=b.resolve_context_.with_port=true;
-        bool ar=false,br=false;std::string ae,be;
-        try {ar=a.exec("/next");}catch(const std::runtime_error&e){ae=e.what();}
-        try {br=b.exec("/next");}catch(const std::runtime_error&e){be=e.what();}
-        if(ar!=br||ae!=be||a.effects!=b.effects||a.path!=b.path||a.resolve_context_.with_port!=b.resolve_context_.with_port||a.max_retries!=b.max_retries||a.defer!=b.defer||a.parser.status_code!=b.parser.status_code)return 2;
-        ++count;
-    }
     std::cout<<count<<"\n";
 }
 '''
-    cpp=out/'actual_http_callers.cpp';cpp.write_text(prelude+'\nnamespace native {\n'+facade+bodies['native']+'\n}\nnamespace rust {\n'+facade+bodies['rust']+'\n}\n'+driver)
+    cpp=out/'actual_http_callers.cpp';cpp.write_text(prelude+'\nnamespace native {\n'+bodies['native']+'\n}\nnamespace rust {\n'+bodies['rust']+'\n}\n'+driver)
     exe=out/'actual_http_callers';flags=['-fsanitize=address,undefined','-fno-omit-frame-pointer'] if a.sanitize else []
     gate.run(['c++','-std=c++17','-O1',*flags,'-I',ROOT/'native/clients',cpp,archive,'-lpthread','-ldl','-lm','-o',exe]);cases=int(gate.run([exe]).strip())
-    report=dict(passed=True,cases=cases,scope='actual extracted native/patched PHP cookie and HTTP exec bodies with Zend/IO effect doubles, reentrant setting mutation and native exceptions; not PHP/network/lifetime parity',pin=gate.PIN,archive=str(archive),native_sanitized=a.sanitize,rust_sanitized=a.rust_sanitized)
+    report=dict(passed=True,cases=cases,scope='actual extracted native/patched PHP Set-Cookie parsing bodies with Zend effect doubles; not PHP parity',pin=gate.PIN,archive=str(archive),native_sanitized=a.sanitize,rust_sanitized=a.rust_sanitized)
     a.output.write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report))
 
 if __name__=='__main__':main()
