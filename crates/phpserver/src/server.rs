@@ -122,10 +122,10 @@ fn host() -> &'static ServerHost {
     unsafe { &*HOST.load(Ordering::Acquire) }
 }
 
-static SERVER: Class = Class::new();
+pub(crate) static SERVER: Class = Class::new();
 static TASK: Class = Class::new();
 /// `Event`, `Packet`, `PipeMessage`, `StatusInfo` and `TaskResult`.
-static DATA: [Class; 5] = [
+pub(crate) static DATA: [Class; 5] = [
     Class::new(),
     Class::new(),
     Class::new(),
@@ -453,17 +453,32 @@ const CONSTANTS: &[(&CStr, i64)] = &[
     (c"SWOOLE_WORKER_EXIT", 3),
 ];
 
+/// `php_swoole_error_ex(E_WARNING, SW_ERROR_NO_PAYLOAD, "the data sent must not be empty")`.
+pub(crate) fn no_payload() {
+    let host = host();
+    // SAFETY: plain state.
+    unsafe { (host.set_last_error)(SW_ERROR_NO_PAYLOAD) };
+    // SAFETY: reads a setting.
+    if unsafe { (host.display_errors)() } {
+        // SAFETY: from a handler; a warning.
+        swoole_rs_zend::bailout::defer(unsafe {
+            php_error(E_WARNING, c"the data sent must not be empty")
+        });
+    }
+}
+
 /// `php_swoole_fatal_error(level, message)`.
-fn fatal(level: i32, message: &CStr) {
+pub(crate) fn fatal(level: i32, message: &CStr) {
     // SAFETY: plain state, then a warning.
     unsafe { (host().set_last_error)(SW_ERROR_PHP_FATAL_ERROR) };
-    // SAFETY: from a handler; never `E_ERROR` here.
+    // SAFETY: from a handler; a bailout (an `E_ERROR`, or a user error handler's
+    // exit) waits for the handler's last step, so callers return after it.
     swoole_rs_zend::bailout::defer(unsafe { php_error(level, message) });
 }
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)`: an `E_ERROR`, which
 /// does not return, for a Server never constructed. The frames own nothing.
-fn server(call: &Call) -> *mut c_void {
+pub(crate) fn server(call: &Call) -> *mut c_void {
     // SAFETY: `$this` is a Server, which C++ allocated as a `ServerObject`.
     let serv = unsafe { Object::<ServerData>::data(call.this()) }.serv;
     if serv.is_null() {
@@ -475,7 +490,7 @@ fn server(call: &Call) -> *mut c_void {
 
 /// `server(call)`, or `None` with a warning and `false` returned when the
 /// server is not running.
-fn running(call: &Call) -> Option<*mut c_void> {
+pub(crate) fn running(call: &Call) -> Option<*mut c_void> {
     let serv = server(call);
     // SAFETY: a live server.
     if unsafe { (host().started)(serv) } {
@@ -774,19 +789,11 @@ fn sendwait(call: &Call) {
     let Ok((fd, data)) = parsed else {
         return call.set_bool(false);
     };
-    let host = host();
     if data.is_empty() {
-        // SAFETY: plain state.
-        unsafe { (host.set_last_error)(SW_ERROR_NO_PAYLOAD) };
-        // SAFETY: reads a setting.
-        if unsafe { (host.display_errors)() } {
-            // SAFETY: from a handler; a warning.
-            swoole_rs_zend::bailout::defer(unsafe {
-                php_error(E_WARNING, c"the data sent must not be empty")
-            });
-        }
+        no_payload();
         return call.set_bool(false);
     }
+    let host = host();
     // SAFETY: a live server.
     if unsafe { (host.role)(serv, 1) } {
         fatal(

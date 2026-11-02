@@ -9,7 +9,7 @@ exactly. Header: `swoole_rs_coroutine.h`.
 | 0001-channel | `include/swoole_coroutine_channel.h`, `src/coroutine/channel.cc` |
 | 0003-context-stack-markers | `src/coroutine/context.cc` |
 | 0004-coroutine-core | `include/swoole_coroutine.h`, `src/coroutine/base.cc` |
-| 0005-context-bookkeeping | `include/swoole_coroutine_context.h`, `src/coroutine/thread_context.cc` |
+| 0005-context-asan-fibers | `include/swoole_coroutine_context.h` |
 
 Rust frames never span a swap callback, context switch, timer, allocation,
 print or destructor: C++ runs those between calls.
@@ -35,32 +35,18 @@ bailout callback, `on_bailout`, stays a C++ `std::function`.
 
 ## Context stack
 
-The stack pointer, `uint32` extent and completion byte are inline Rust cells
-with the original widths, alignment and offsets. Context is 80 B / align 8
-(128 B with the thread backend; Coroutine 192 B there).
-
-- Extent conversion stays at its field initialization after `fn` is moved.
-- `swr_v1_context_prepare` raw-writes completion at the first constructor
-  statement, then reads the extent for allocation; the thread backend uses a
-  null extent. ADMIT writes the pointer only after allocation (original
-  null-only check).
-- The requested size and the stored `uint32` extent differ: `uc_stack.ss_size`
-  and marker initialization use the full argument; allocation, top and query use
-  the extent.
-- Destruction: observe pointer, Native logging/valgrind, re-read pointer/size for
-  Native free, then CLEAR writes null and reads nothing more. The getcontext-error
-  free path still has no clear (upstream behavior).
-- Function entry is followed by completion publication, then swap/unlock.
-
-Stack markers: `swr_v1_context_stack_mark` writes the original magic bytes;
-`swr_v1_context_stack_usage` reads only initialized marker spans, never a slice
-over the uninitialized allocation. Initialization includes the sample at
-`offset == size`; queries exclude it (original `<=` vs `<`). The initial 64 KiB
-estimate and the doubled last changed sample (which can exceed the allocation)
-are kept.
-
-The ucontext-derived SDK fails to build under `-Werror` because of an unused
-`sp` in unchanged Native code.
+`swr_v1_context_stack_alloc(size, flags)` allocates a coroutine stack with
+`malloc`, or with `SWR_CTX_STACK_PROTECT` (`SW_CONTEXT_PROTECT_STACK_PAGE`) as an
+anonymous mapping (plus `MAP_STACK` on OpenBSD) whose lowest page is made
+inaccessible; it returns null on failure, which C++ reports as upstream does.
+`SWR_CTX_STACK_MARK` (`SW_CONTEXT_DETECT_STACK_USAGE`) writes upstream's magic
+markers before the context is made: at `size - offset + 31` for each doubling
+`offset` from 64 KiB while `offset <= size`. `swr_v1_context_stack_usage`
+samples them while `offset < size` and reports twice the last changed offset,
+or 64 KiB. `swr_v1_context_stack_free` takes the same size and flags. The
+Context fields, the switch (boost.context asm or ucontext), valgrind
+registration and the ASan fiber annotations stay C++. The thread backend is
+upstream's, unchanged.
 
 ## Channel
 

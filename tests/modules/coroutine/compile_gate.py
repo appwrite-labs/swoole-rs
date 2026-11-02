@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Compile unchanged and selected full coroutine translation units as C++14."""
+"""Compile unchanged and hybrid coroutine translation units.
+
+original: the pinned tree. patched: the hybrid build's tree with its switches and
+headers (hybrid_tree, #796). disabled: the same tree without SWOOLE_RS_COROUTINE;
+base and channel must refuse to compile, context and thread_context still build.
+"""
 from pathlib import Path
 import argparse
 import io
-import hashlib
 import json
 import subprocess
 import sys
@@ -12,69 +16,53 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import apply_patch_verified
-from tools.build_upstream import require_build_space
-from tools.build_upstream import COMMIT as PIN
+from tools.build_hybrid import hybrid_tree  # noqa: E402
+from tools.build_upstream import COMMIT as PIN  # noqa: E402
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--source', type=Path, required=True)
+p.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test')
 p.add_argument('--report', type=Path, required=True)
-p.add_argument('--stack-usage', action='store_true', help='Compile actual optional stack-marker callers')
-p.add_argument('--timing', action='store_true', help='Compile actual optional Coroutine timing callers')
-p.add_argument('--standard', choices=['c++14','c++17'], default='c++14')
+p.add_argument('--stack-usage', action='store_true', help='Compile the optional stack-usage callers')
+p.add_argument('--timing', action='store_true', help='Compile the optional Coroutine timing callers')
+p.add_argument('--standard', choices=['c++14', 'c++17'], default='c++14')
 p.add_argument('--backend', choices=['header-default', 'asm', 'ucontext', 'thread'], default='header-default',
-               help='Compile the requested Native backend; no switching or runtime execution')
+               help='Compile the requested context backend; no switching or runtime execution')
 a = p.parse_args()
+hybrid_source, hybrid_flags = hybrid_tree(a.archive)
+units = ['base', 'channel', 'context', 'thread_context']
 rows = []
-compiler = None
-def save():
-    a.report.parent.mkdir(parents=True, exist_ok=True)
-    a.report.write_text(json.dumps(dict(pin=PIN, compiler=compiler, backend=a.backend, standard=a.standard, full_gate_passed=False, rows=rows), indent=2)+'\n')
 with tempfile.TemporaryDirectory(prefix='swr-coroutine-compile-') as tmp:
     tree = Path(tmp)
-    data = subprocess.check_output(['git', '-C', str(a.source), 'archive', PIN, 'include', 'src/coroutine/base.cc', 'src/coroutine/channel.cc', 'src/coroutine/context.cc', 'src/coroutine/thread_context.cc', 'thirdparty/multipart_parser.h'])
+    data = subprocess.check_output(['git', '-C', str(a.source), 'archive', PIN, 'include', 'thirdparty',
+                                    *['src/coroutine/' + name + '.cc' for name in units]])
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:
         for member in archive:
             if member.isfile():
                 out = tree / member.name
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_bytes(archive.extractfile(member).read())
-    flags = ['-std='+a.standard, '-O1', '-g', '-DSWOOLE_RS_COROUTINE', '-I'+str(tree/'include'), '-I'+str(tree), '-I'+str(ROOT/'native/coroutine'), *subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True).split()]
-    if a.backend == 'asm':
-        flags += ['-DSW_USE_ASM_CONTEXT']
-    elif a.backend == 'thread':
-        flags += ['-DSW_USE_THREAD_CONTEXT']
-    if a.stack_usage:
-        flags += ['-DSW_CONTEXT_DETECT_STACK_USAGE']
-    if a.timing:
-        flags += ['-DSW_CORO_TIME']
-    linux = sys.platform.startswith('linux')
-    backends = ['base', 'channel', 'context', 'thread_context']
-    flags += ['-DHAVE_EPOLL'] if linux else ['-DHAVE_KQUEUE']
-    for variant in ['original', 'patched', 'disabled']:
-        if variant == 'patched':
-            manifest = json.loads((ROOT/'migration/patches/coroutine/manifest.json').read_text())
-            for entry in manifest['patches']:
-                patch = ROOT/'migration/patches/coroutine'/entry['path']
-                if hashlib.sha256(patch.read_bytes()).hexdigest() != entry['sha256']:
-                    raise ValueError('Patch checksum differs')
-                apply_patch_verified(tree, patch, entry['upstream_paths'], entry['sha256'])
-        for name in backends:
-            selected_flags = [flag for flag in flags if variant != 'disabled' or flag not in ['-DSWOOLE_RS_COROUTINE']]
-            cmd = ['c++', *selected_flags, '-c', str(tree/('src/coroutine/'+name+'.cc')), '-o', str(tree/(variant+'-'+name+'.o'))]
-            try:
-                require_build_space(tree)
-            except RuntimeError as error:
-                rows.append(dict(variant=variant, backend=name, command=cmd,
-                                 returncode=None, passed=False, blocked=True,
-                                 compiler_started=False, error=str(error)))
-                save()
-                raise SystemExit(1)
-            if compiler is None:
-                compiler = subprocess.check_output(['c++', '--version'], text=True).splitlines()[0]
+    common = ['-std=' + a.standard, '-O1', '-g', '-DHAVE_EPOLL' if sys.platform.startswith('linux') else '-DHAVE_KQUEUE',
+              *subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True).split()]
+    common += {'asm': ['-DSW_USE_ASM_CONTEXT'], 'thread': ['-DSW_USE_THREAD_CONTEXT']}.get(a.backend, [])
+    common += ['-DSW_CONTEXT_DETECT_STACK_USAGE'] if a.stack_usage else []
+    common += ['-DSW_CORO_TIME'] if a.timing else []
+    trees = {'original': (tree, ['-I' + str(tree / 'include'), '-I' + str(tree)]),
+             'patched': (hybrid_source, [*hybrid_flags, '-I' + str(hybrid_source)]),
+             'disabled': (hybrid_source, [flag for flag in hybrid_flags if flag != '-DSWOOLE_RS_COROUTINE']
+                          + ['-I' + str(hybrid_source)])}
+    for variant, (root, flags) in trees.items():
+        for name in units:
+            cmd = ['c++', *common, *flags, '-c', str(root / ('src/coroutine/' + name + '.cc')),
+                   '-o', str(tree / (variant + '-' + name + '.o'))]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            passed = result.returncode == 0 if variant != 'disabled' or name in ['context', 'thread_context'] else (result.returncode != 0 and 'Coroutine overlay requires --enable-swoole-rs-coroutine' in result.stderr)
+            refuses = variant == 'disabled' and name in ['base', 'channel']
+            passed = (result.returncode != 0 and 'Coroutine overlay requires --enable-swoole-rs-coroutine' in result.stderr
+                      if refuses else result.returncode == 0)
             print(variant, name, result.returncode, 'PASS' if passed else 'FAIL', flush=True)
-            rows.append(dict(variant=variant, backend=name, command=cmd, returncode=result.returncode, passed=passed, compiler_started=True, stderr=result.stderr))
-            save()
-save()
+            rows.append(dict(variant=variant, backend=name, command=cmd, returncode=result.returncode, passed=passed,
+                             stderr=result.stderr))
+a.report.parent.mkdir(parents=True, exist_ok=True)
+a.report.write_text(json.dumps(dict(pin=PIN, hybrid_tree=str(hybrid_source), backend=a.backend, standard=a.standard,
+                                    compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0],
+                                    rows=rows), indent=2) + '\n')
 raise SystemExit(any(not row['passed'] for row in rows))

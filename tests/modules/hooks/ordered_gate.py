@@ -40,7 +40,6 @@ def main():
         'src/coroutine/hook.cc': ['static sw_inline bool is_no_coro()'],
         'src/coroutine/system.cc': ['bool wait_for(', 'static inline void event_waiter_callback('],
         'src/coroutine/socket.cc': ['ssize_t Socket::recvmsg(', 'ssize_t Socket::sendmsg(', 'ssize_t Socket::sendto(', 'ssize_t Socket::recvfrom(void *_buf, size_t _n, sockaddr *', 'ssize_t Socket::recv(', 'ssize_t Socket::send(', 'ssize_t Socket::read(', 'ssize_t Socket::write(', 'ssize_t Socket::readv(', 'ssize_t Socket::writev(', 'ssize_t Socket::recv_all(', 'ssize_t Socket::send_all(', 'bool Socket::TimerController::start()', 'Socket::TimerController::~TimerController()'],
-        'src/coroutine/uring_socket.cc': ['ssize_t UringSocket::recv_all(', 'ssize_t UringSocket::send_all('],
     }
     signatures['src/reactor/poll.cc'] = ['int16_t translate_events_to_poll(', 'int translate_events_from_poll(']
     manifest = json.loads((ROOT/'migration/patches/hooks/manifest.json').read_text())

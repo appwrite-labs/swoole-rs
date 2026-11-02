@@ -351,6 +351,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-coroutine"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "swoole-rs-crc32"
