@@ -48,19 +48,20 @@ pub const fn entry<const N: usize>(
     arginfo: &'static ArgInfo<N>,
     flags: u32,
 ) -> zend_function_entry {
+    // SAFETY: all-null, as PHP_ME leaves PHP 8.4's frameless and doc-comment fields.
+    let mut entry: zend_function_entry = unsafe { mem::zeroed() };
+    entry.fname = name.as_ptr();
+    entry.handler = Some(handler);
+    entry.arg_info = arginfo.0.as_ptr();
     #[expect(
         clippy::cast_possible_truncation,
         reason = "arginfo has a handful of slots"
     )]
-    zend_function_entry {
-        fname: name.as_ptr(),
-        handler: Some(handler),
-        arg_info: arginfo.0.as_ptr(),
-        num_args: (N - 1) as u32,
-        flags,
-        // SAFETY: PHP 8.4's frameless and doc-comment fields; PHP_ME zeroes them.
-        ..unsafe { mem::zeroed() }
+    {
+        entry.num_args = (N - 1) as u32;
     }
+    entry.flags = flags;
+    entry
 }
 
 /// `PHP_FE_END`.
