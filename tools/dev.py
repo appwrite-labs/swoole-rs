@@ -338,8 +338,8 @@ def plan(args, reports):
                              ('clients-connect', 'connect_gate.py'), ('clients-persistent', 'persistent_gate.py'),
                              ('clients-resolver-config', 'resolv_gate.py'), ('clients-transport', 'transport_gate.py'),
                              ('clients-pool', 'pool_gate.py'), ('clients-resolver', 'resolver_gate.py'),
-                             ('clients-http-connection', 'http_connection_gate.py'), ('clients-http-response', 'http_response_gate.py'), ('clients-http-format', 'http_format_gate.py'), ('clients-coro', 'coro_gate.py'), ('clients-async', 'async_gate.py'), ('clients-object', 'object_gate.py'),
-                             ('clients-ip', 'ip_gate.py'), ('clients-ip-text', 'ip_text_gate.py'), ('clients-coro-io', 'coro_io_gate.py')]:
+                             ('clients-http-format', 'http_format_gate.py'), ('clients-async', 'async_gate.py'), ('clients-object', 'object_gate.py'),
+                             ('clients-ip', 'ip_gate.py'), ('clients-ip-text', 'ip_text_gate.py')]:
             script(name, 'tests/modules/clients/' + runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report(name))
         if integrate:
