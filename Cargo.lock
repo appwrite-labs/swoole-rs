@@ -517,6 +517,7 @@ dependencies = [
 name = "swoole-rs-phpevents"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
@@ -573,6 +574,7 @@ dependencies = [
  "libc",
  "openssl-sys",
  "swoole-rs-hooks",
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
@@ -580,6 +582,7 @@ dependencies = [
 name = "swoole-rs-phpserver"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-phpstubs",
  "swoole-rs-ports",
  "swoole-rs-zend",
 ]

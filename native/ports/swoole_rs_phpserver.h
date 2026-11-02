@@ -1,8 +1,7 @@
 #ifndef SWOOLE_RS_PHPSERVER_H
 #define SWOOLE_RS_PHPSERVER_H
-/* PHP Swoole\Server\Port (crates/phpserver). C++ keeps upstream's method table,
- * built from the stub's arginfo, and the ListenPort and Server it configures;
- * Rust registers the class, owns its objects and runs every method, reaching
+/* PHP Swoole\Server\Port (crates/phpserver). C++ keeps the ListenPort and Server
+ * it configures; Rust registers the class with its method table, owns its objects and runs every method, reaching
  * that C++ state through `host`. The methods are Rust's
  * zim_swoole_server_port_* exports. The object is laid out as
  * `struct { ListenPort *port; ServerPortProperty property; zend_object std; }`. */
@@ -11,7 +10,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-struct _zend_function_entry;
 struct _zend_class_entry;
 struct _zend_object;
 struct _zval_struct;
@@ -39,9 +37,8 @@ typedef struct {
     void (*socket)(void *port, struct _zval_struct *return_value);
 } swr_v1_phpserver_port_host;
 
-struct _zend_class_entry *swr_v1_phpserver_port_minit(const struct _zend_function_entry *methods,
-                                                      const swr_v1_phpserver_port_host *table,
-                                                      bool not_serializable);
+struct _zend_class_entry *swr_v1_phpserver_port_minit(const swr_v1_phpserver_port_host *table,
+                                                      bool not_serializable, bool sockets);
 #ifdef __cplusplus
 }
 #endif

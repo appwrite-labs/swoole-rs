@@ -7,6 +7,14 @@
       "upstream_paths": [
         "ext-src/swoole_event.cc"
       ]
+    },
+    {
+      "path": "0002-arginfo.patch",
+      "sha256": "78ea4296e7c38e1351e05ff7a50ab46a8c458a5bce3827d1f758b73d7750d07c",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_event_arginfo.h",
+        "ext-src/swoole_event.cc"
+      ]
     }
   ]
 }

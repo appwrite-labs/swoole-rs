@@ -28,11 +28,13 @@ use std::{
     ptr,
     sync::OnceLock,
 };
+use swoole_rs_phpstubs::event;
 use swoole_rs_zend::{
     Call, Class,
     bailout::{self, Bailout, trap},
-    sys::{IS_NULL, swr_zend_zval_release, swr_zval_try_addref, zend_function_entry, zval},
+    sys::{IS_NULL, swr_zend_zval_release, swr_zval_try_addref, zval},
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// The reactor, socket and callable operations (`swr_v1_phpevents_ops`).
 #[repr(C)]
@@ -137,24 +139,44 @@ const ALIASES: [(&CStr, &CStr); 11] = [
     (c"rshutdown", c"swoole_event_rshutdown"),
 ];
 
+method_table! {
+    static METHODS = [
+        c"add" => zif_swoole_event_add, &event::arginfo_swoole_event_add, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"del" => zif_swoole_event_del, &event::arginfo_swoole_event_del, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"set" => zif_swoole_event_set, &event::arginfo_swoole_event_set, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"isset" => zif_swoole_event_isset, &event::arginfo_swoole_event_isset, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"dispatch" => zif_swoole_event_dispatch, &event::arginfo_swoole_event_dispatch, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"defer" => zif_swoole_event_defer, &event::arginfo_swoole_event_defer, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"cycle" => zif_swoole_event_cycle, &event::arginfo_swoole_event_cycle, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"write" => zif_swoole_event_write, &event::arginfo_swoole_event_write, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"wait" => zif_swoole_event_wait, &event::arginfo_swoole_event_wait, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"rshutdown" => zif_swoole_event_rshutdown, &event::arginfo_swoole_event_rshutdown, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"exit" => zif_swoole_event_exit, &event::arginfo_swoole_event_exit, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+    ];
+}
+
+// The handlers that stay C++.
+unsafe extern "C" {
+    fn zif_swoole_event_dispatch(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zif_swoole_event_exit(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zif_swoole_event_rshutdown(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    fn zif_swoole_event_wait(frame: *mut z::zend_execute_data, value: *mut z::zval);
+}
+
 /// MINIT: `Swoole\Event` (not instantiable) and the `swoole_event_*` functions,
 /// as `php_swoole_event_minit` registered them.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated method table
-/// and a static operations table.
+/// Called once, at MINIT, with a static operations table.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpevents_minit(
-    methods: *const zend_function_entry,
-    ops: *const Ops,
-) {
+pub unsafe extern "C" fn swr_v1_phpevents_minit(ops: *const Ops) {
     // SAFETY: per the caller, a static table.
     if let Some(ops) = unsafe { ops.as_ref() } {
         OPS.get_or_init(|| ops);
     }
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { EVENT.register_static(c"Swoole\\Event", methods) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { EVENT.register_static(c"Swoole\\Event", METHODS.as_ptr()) };
     // SAFETY: MINIT, after registration, with the class's own table.
-    unsafe { EVENT.function_aliases(methods, &ALIASES) };
+    unsafe { EVENT.function_aliases(METHODS.as_ptr(), &ALIASES) };
 }
 
 /// A NUL-terminated message on the stack.

@@ -8,7 +8,7 @@ description = "PHP Swoole\\Server family classes over the zend crates"
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php"]
 # Swoole\Server\Port, over the ports crate (the ports module's patch).
 port = ["php", "dep:swoole-rs-ports"]
 # Swoole\\Server and its data classes (the process module's patch).
@@ -17,6 +17,7 @@ server = ["php"]
 [dependencies]
 swoole-rs-ports = { path = "../ports", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
+swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 
 [lints]
 workspace = true

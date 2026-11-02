@@ -47,6 +47,14 @@
         "ext-src/swoole_client_coro.cc",
         "ext-src/swoole_http_client_coro.cc"
       ]
+    },
+    {
+      "path": "0006-arginfo.patch",
+      "sha256": "92ce17d63401fbbc1b2de145d71841040cfca07717d7a4f148bf0e185768d132",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_socket_coro_arginfo.h",
+        "ext-src/swoole_socket_coro.cc"
+      ]
     }
   ]
 }

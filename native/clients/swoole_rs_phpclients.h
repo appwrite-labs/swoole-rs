@@ -11,17 +11,15 @@
 extern "C" {
 #endif
 
-/* PHP Coroutine\Socket (crates/phpclients). MINIT passes upstream's method
- * table, built from the stub's arginfo; Rust registers the class, its exception,
+/* PHP Coroutine\Socket (crates/phpclients). Rust registers the class with its
+ * method table, its exception,
  * properties and constants, and the methods are its zim_swoole_socket_coro_*
  * exports (getOption, setOption and import stay C++). */
-struct _zend_function_entry;
 struct _zend_class_entry;
 struct _zend_object;
 struct _zval_struct;
 struct _zend_string;
-void swr_v1_phpclients_socket_minit(const struct _zend_function_entry *methods,
-                                    struct _zend_class_entry *exception,
+void swr_v1_phpclients_socket_minit(struct _zend_class_entry *exception,
                                     bool shortname,
                                     bool sockets,
                                     int module,
