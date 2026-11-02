@@ -85,6 +85,9 @@ struct _zend_string;
 struct _zval_struct;
 struct _zend_class_entry *swr_v1_phphttp_request_minit(void);
 struct _zend_class_entry *swr_v1_phphttp_response_minit(void);
+/* Coroutine\Http\Server's method table; its class and handlers stay C++. */
+struct _zend_function_entry;
+const struct _zend_function_entry *swr_v1_phphttp_server_coro_methods(void);
 void *swr_v1_phphttp_context(const struct _zend_object *object);
 void swr_v1_phphttp_set_context(struct _zend_object *object, void *context);
 
