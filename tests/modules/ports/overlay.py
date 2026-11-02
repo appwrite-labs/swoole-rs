@@ -264,6 +264,154 @@ def class_properties(php):
     }''' + php[end:]
 
 
+def method(php, name):
+    """The text of `static PHP_METHOD(swoole_server_port, NAME) {...}` and its span."""
+    start = php.index(f'static PHP_METHOD(swoole_server_port, {name}) {{')
+    opening = php.index('{', start)
+    depth, end = 1, opening + 1
+    while depth:
+        depth += (php[end] == '{') - (php[end] == '}')
+        end += 1
+    return start, end
+
+
+def rust_frontend(php):
+    """crates/phpserver owns the class, its objects and every method body; C++ keeps
+    the method table, ListenPort accessors Server uses, the length callback, and the
+    ListenPort/TLS effects of set() as `port_apply_settings`, reached through a host
+    table (native/ports/swoole_rs_phpserver.h)."""
+    php = replace(php, '#include "swoole_rs_ports.h"', '#include "swoole_rs_ports.h"\n#include "swoole_rs_phpserver.h"')
+    # set(): its ListenPort/TLS block becomes a C++ host function, upstream's text unchanged
+    # except that its early exits return false (RETURN_FALSE) instead of writing return_value.
+    start, end = method(php, 'set')
+    text = php[start:end]
+    block = text[text.index('    // backlog'):text.index('    if (SWOOLE_G(enable_library)) {')]
+    block = block.replace('RETURN_FALSE;', 'return false;').replace('                    return;\n', '                    return false;\n')
+    settings = ('static bool port_apply_settings(ListenPort *port, ServerPortProperty *property, HashTable *vht) {\n'
+                '    zval *ztmp;\n' + block + '    return true;\n}\n')
+    php = php[:start] + settings + php[end:]
+    for name in ['__construct', '__destruct', 'on', 'getCallback']:
+        start, end = method(php, name)
+        php = php[:start] + php[end:].lstrip('\n')
+    start, end = method(php, 'getSocket')
+    php = php[:start] + php[end:].lstrip('\n')
+    php = replace(php, '#ifdef SWOOLE_SOCKETS_SUPPORT\n#endif', '')
+    # Methods are Rust's zim_* exports under Zend's own names.
+    php = php.replace('static PHP_METHOD(swoole_server_port, ', 'PHP_METHOD(swoole_server_port, ')
+    # Objects: Rust creates and frees them; C++ finds them by the struct's own layout.
+    php = replace(php, 'static zend_object_handlers swoole_server_port_handlers;\n', '')
+    php = replace(php, '(ServerPortObject *) ((char *) obj - swoole_server_port_handlers.offset)',
+                  '(ServerPortObject *) ((char *) obj - offsetof(ServerPortObject, std))')
+    start = php.index('static void php_swoole_server_port_free_object(')
+    end = php.index('SW_EXTERN_C_BEGIN', start)
+    php = php[:start] + php[end:]
+    start = php.index('static ServerPortProperty *php_swoole_server_port_get_and_check_property(')
+    end = php.index('// Dereference from server object', start)
+    php = php[:start] + php[end:]
+    start = php.index('void php_swoole_server_port_minit(int module_number) {')
+    end = php.index('\n}\n', start) + 3
+    minit = '''static bool port_apply_settings(ListenPort *port, ServerPortProperty *property, HashTable *vht);
+
+namespace {
+void port_invalid(zend_object *object) {
+    php_swoole_fatal_error(E_ERROR, "Invalid instance of %s", ZSTR_VAL(object->ce->name));
+}
+bool port_started(void *server) {
+    auto *serv = static_cast<Server *>(server);
+    return !serv->is_worker_thread() && serv->is_started();
+}
+void port_warn(int kind, const char *name) {
+    if (kind == 0) {
+        php_swoole_fatal_error(E_WARNING, "can't register event callback function after server started");
+    } else {
+        php_swoole_error(E_WARNING, "unknown event types[%s]", name);
+    }
+}
+void *port_callable_create(zval *callable) {
+    return sw_callable_create(callable);
+}
+void port_callable_free(void *callable) {
+    sw_callable_free(callable);
+}
+void port_hook(void *server, uint32_t hook) {
+    auto *serv = static_cast<Server *>(server);
+    switch (hook) {
+    case SWR_PORTS_HOOK_CONNECT:
+        if (!serv->onConnect) serv->onConnect = php_swoole_server_onConnect;
+        break;
+    case SWR_PORTS_HOOK_PACKET:
+        if (!serv->onPacket) serv->onPacket = php_swoole_server_onPacket;
+        break;
+    case SWR_PORTS_HOOK_CLOSE:
+        if (!serv->onClose) serv->onClose = php_swoole_server_onClose;
+        break;
+    case SWR_PORTS_HOOK_BUFFER_FULL:
+        if (!serv->onBufferFull) serv->onBufferFull = php_swoole_server_onBufferFull;
+        break;
+    case SWR_PORTS_HOOK_BUFFER_EMPTY:
+        if (!serv->onBufferEmpty) serv->onBufferEmpty = php_swoole_server_onBufferEmpty;
+        break;
+    default: break;
+    }
+}
+bool port_settings(void *port, void *property, zend_array *vht) {
+    return port_apply_settings(static_cast<ListenPort *>(port), static_cast<ServerPortProperty *>(property), vht);
+}
+bool port_finish(zend_object *object, zval *zset, void *property) {
+    bool bailout = false;
+    zend_try {
+        if (SWOOLE_G(enable_library)) {
+            zval params[1] = {
+                *zset,
+            };
+            zend::function::call(R"(\\Swoole\\Server\\Helper::checkOptions)", 1, params);
+        }
+        zval zobject;
+        ZVAL_OBJ(&zobject, object);
+        zval *zsetting = sw_zend_read_and_convert_property_array(swoole_server_port_ce, &zobject, ZEND_STRL("setting"), 0);
+        SEPARATE_ARRAY(zsetting);
+        php_array_merge(Z_ARRVAL_P(zsetting), Z_ARRVAL_P(zset));
+        static_cast<ServerPortProperty *>(property)->zsetting = zsetting;
+    } zend_catch {
+        bailout = true;
+    } zend_end_try();
+    return bailout;
+}
+void port_socket(void *port, zval *return_value) {
+#ifdef SWOOLE_SOCKETS_SUPPORT
+    php_socket *socket_object = php_swoole_convert_to_socket(static_cast<ListenPort *>(port)->get_fd());
+    if (!socket_object) {
+        RETURN_FALSE;
+    }
+    SW_ZVAL_SOCKET(return_value, socket_object);
+    zval *zsocket = sw_zval_dup(return_value);
+    Z_TRY_ADDREF_P(zsocket);
+#else
+    (void) port;
+    RETURN_FALSE;
+#endif
+}
+}  // namespace
+
+void php_swoole_server_port_minit(int module_number) {
+    static_assert(offsetof(ServerPortObject, property) == sizeof(void *) &&
+                  offsetof(ServerPortObject, std) == 16 * sizeof(void *), "crates/phpserver port layout");
+    static const swr_v1_phpserver_port_host host = {
+        port_invalid, php_swoole_server_port_deref, port_started, port_warn, port_callable_create,
+        port_callable_free, port_hook, port_settings, port_finish, port_socket,
+    };
+#ifndef SW_THREAD
+    const bool not_serializable = true;
+#else
+    const bool not_serializable = false;
+#endif
+    swoole_server_port_ce = swr_v1_phpserver_port_minit(swoole_server_port_methods, &host, not_serializable);
+}
+'''
+    php = php[:start] + minit + php[end:]
+    return php
+
+
 def generated():
     native = replace(original('src/server/port.cc'), '#include "swoole_server.h"', '#include "swoole_server.h"\n#include "swoole_rs_ports.h"')
     native = replace(native, 'namespace swoole {', '''namespace swoole {
@@ -553,20 +701,23 @@ static_assert(SW_SERVER_CB_onConnect == 0 && SW_SERVER_CB_onReceive == 1 && SW_S
     php = sni_admission(php)
     php = callback_hooks(php)
     php = class_properties(php)
+    php = rust_frontend(php)
     native = request_v2_callers(native)
     return {'src/server/port.cc': native, 'ext-src/swoole_server_port.cc': php}
 
 
 def main():
+    """Rewrite 0002 (swoole_server_port.cc). 0001 (port.cc) has been edited with
+    tools/patches.py since (#764, #780), so its generator here is stale and it is kept."""
     directory = ROOT / 'migration/patches/ports'
-    directory.mkdir(parents=True, exist_ok=True)
-    patches = []
-    for n, (path, text) in enumerate(generated().items(), 1):
-        name = f'{n:04}-{Path(path).stem}.patch'
-        raw = (f'diff --git a/{path} b/{path}\n' + ''.join(difflib.unified_diff(original(path).splitlines(True), text.splitlines(True), fromfile='a/'+path, tofile='b/'+path, n=1))).replace('\n \n', '\n\n').encode()
-        (directory / name).write_bytes(raw)
-        patches.append({'path': name, 'sha256': hashlib.sha256(raw).hexdigest(), 'upstream_paths': [path]})
-    (directory / 'manifest.json').write_text(json.dumps({'upstream_commit': PIN, 'patches': patches}, indent=2)+'\n')
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    path = 'ext-src/swoole_server_port.cc'
+    text = generated()[path]
+    raw = (f'diff --git a/{path} b/{path}\n' + ''.join(difflib.unified_diff(original(path).splitlines(True), text.splitlines(True), fromfile='a/'+path, tofile='b/'+path, n=1))).replace('\n \n', '\n\n').encode()
+    entry = next(patch for patch in manifest['patches'] if patch['upstream_paths'] == [path])
+    (directory / entry['path']).write_bytes(raw)
+    entry['sha256'] = hashlib.sha256(raw).hexdigest()
+    (directory / 'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
 
 
 if __name__ == '__main__':

@@ -10,7 +10,7 @@
     },
     {
       "path": "0002-swoole_server_port.patch",
-      "sha256": "69aff23fe05850768283ffc0ee4f1723e1a5901ab8e7a9856f778b048fa216d3",
+      "sha256": "ff14d63d56ef0781fa724be8c8c34862cc4a5b03576cedeaae41e16bcbfc4955",
       "upstream_paths": [
         "ext-src/swoole_server_port.cc"
       ]
