@@ -56,6 +56,18 @@
       "upstream_paths": [
         "ext-src/swoole_lock.cc"
       ]
+    },
+    {
+      "path": "0009-arginfo.patch",
+      "sha256": "3d3440c303d702ec16954d845ca5c79de5ea9753a0ba7325262ce8aace4b3424",
+      "upstream_paths": [
+        "ext-src/stubs/php_swoole_atomic_arginfo.h",
+        "ext-src/stubs/php_swoole_lock_arginfo.h",
+        "ext-src/stubs/php_swoole_thread_atomic_arginfo.h",
+        "ext-src/swoole_atomic.cc",
+        "ext-src/swoole_lock.cc",
+        "ext-src/swoole_thread_atomic.cc"
+      ]
     }
   ]
 }

@@ -54,7 +54,7 @@ mod php {
             .allowlist_function("(_?zend_|object_properties_init|object_init_ex|php_error_docref|php_url_encode|php_format_date|php_time|swr_zend_|swr_zval_|zval_|get_active_|add_assoc_|add_next_index_|add_index_).*")
             .allowlist_type("(_?zend_|_?zval).*")
             .allowlist_var(
-                "(std_object_handlers|module_registry|zend_ce_.*|ZEND_ACC_.*|IS_.*|_IS_BOOL|E_.*|ZPP_ERROR_.*|CONST_.*)",
+                "(std_object_handlers|module_registry|zend_ce_.*|ZEND_ACC_.*|IS_.*|_IS_BOOL|E_.*|ZPP_ERROR_.*|CONST_.*|MAY_BE_.*|_ZEND_(TYPE|IS|SEND)_.*)",
             )
             // PHP 8.5's tail-call VM types opcode handlers preserve_none, which
             // bindgen cannot express; every VM kind but SWITCH stores a pointer,

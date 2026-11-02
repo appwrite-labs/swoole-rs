@@ -64,9 +64,10 @@ wraps at `u32`/`i64` width. CAS returns 0/1 and leaves the word unchanged on
 failure. Callers keep the storage live and exclude concurrent destruction.
 
 PHP Atomic, Atomic\Long and their Thread counterparts are Rust classes
-(`crates/phplocks`, `swr_v1_phplocks_*`). C++ supplies the method tables, the
-global-pool words (Atomic) and the `ThreadResource`s that hold Thread words;
-Rust owns registration, objects and methods (see `docs/zend.md`).
+(`crates/phplocks`, `swr_v1_phplocks_*`). C++ supplies the global-pool words
+(Atomic) and the `ThreadResource`s that hold Thread words; Rust owns the method
+tables (over `crates/phpstubs`' arginfo), registration, objects and methods
+(see `docs/zend.md`).
 
 `swr_v1_locks_wait` / `swr_v1_locks_wakeup` exist on Linux only and implement
 the `HAVE_FUTEX` path: CAS token consumption, a single futex syscall (no hidden
