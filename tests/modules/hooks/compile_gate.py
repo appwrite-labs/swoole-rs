@@ -66,7 +66,8 @@ def main():
                 for entry in manifest:
                     patch = ROOT/'migration/patches/hooks'/entry['path']
                     subprocess.run(['git', 'apply', str(patch)], cwd=tree, check=True)
-            for path in paths:
+            # Translation units only: the patches also touch headers (stubs), which the units include.
+            for path in (path for path in paths if path.endswith(".cc")):
                 command = ['c++', *flags, '-fsyntax-only', str(tree/path)]
                 result = subprocess.run(command, capture_output=True, text=True)
                 passed = result.returncode == 0 if variant != 'disabled' else result.returncode != 0 and 'Hooks overlay requires --enable-swoole-rs-hooks' in result.stderr
