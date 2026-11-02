@@ -221,6 +221,14 @@
         "src/os/process_pool.cc",
         "src/server/task_worker.cc"
       ]
+    },
+    {
+      "path": "0023-task-sync.patch",
+      "sha256": "b46f9f8397922968860dad9860f08dc09561fca7e0cd0b1d37955698305749e4",
+      "upstream_paths": [
+        "include/swoole_server.h",
+        "src/server/task_worker.cc"
+      ]
     }
   ]
 }

@@ -231,6 +231,35 @@ int swr_v1_process_pool_run(const swr_v1_pool_loop *pool_loop, int protocol);
 uint32_t swr_v1_process_pool_schedule(const swr_v1_worker_record *workers, uint32_t count, uint32_t *round_id, uint8_t *warning);
 ptrdiff_t swr_v1_process_worker_send(const swr_v1_pool_hooks *hooks, void *pool, void *pipe, bool queue, uint32_t worker_id, const uint8_t *data, size_t length, int flags);
 bool swr_v1_process_pool_dispatch(const swr_v1_pool_hooks *hooks, void *pool, swr_v1_worker_record *workers, uint32_t count, uint16_t start_id, uint32_t *round_id, uint8_t *warning, bool schedule_by_sysvmsg, bool queue, int *worker_id, const uint8_t *event, uint32_t size, bool blocking);
+/* Server::task and Server::task_sync (crates/process/src/task_sync.rs). Each
+ * hook takes a swr_v1_pool_call whose pool is the Server and worker the MultiTask. */
+typedef struct {
+    swr_v1_pool_step dispatch;
+    swr_v1_pool_step pipe_clean;
+    swr_v1_pool_step pipe_timeout;
+    swr_v1_pool_step pipe_read;
+    swr_v1_pool_step lock;
+    swr_v1_pool_step pack;
+    swr_v1_pool_step unpack;
+    swr_v1_pool_step fail;
+    swr_v1_pool_step contents;
+    swr_v1_pool_step release;
+    void (*warn)(int kind);
+} swr_v1_task_hooks;
+typedef struct {
+    const swr_v1_task_hooks *hooks;
+    void *server;
+    void *mtask;
+    uint32_t *tasking_num;
+    int64_t *task_count;
+    uint8_t *result;
+    size_t result_size;
+} swr_v1_task_server;
+enum { SWR_TASK_WARN_PACK = 1, SWR_TASK_WARN_DISPATCH = 2 };
+#define SWR_TASK_NONE_DISPATCHED 2
+int swr_v1_process_task(const swr_v1_task_server *task_server, uint8_t *task, int *worker_id, bool blocking, bool *ok);
+int swr_v1_process_task_sync(const swr_v1_task_server *task_server, uint8_t *task, int *worker_id, double timeout, bool *ok);
+int swr_v1_process_task_sync_many(const swr_v1_task_server *task_server, uint16_t count, double timeout, const char *path, size_t event_size, int *ok);
 #ifdef __cplusplus
 }
 #endif

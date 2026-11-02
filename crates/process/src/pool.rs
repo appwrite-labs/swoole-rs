@@ -82,7 +82,7 @@ pub struct PoolCall {
 }
 
 impl PoolCall {
-    fn new(pool: *mut c_void, worker: *mut c_void) -> Self {
+    pub(crate) fn new(pool: *mut c_void, worker: *mut c_void) -> Self {
         Self {
             pool,
             worker,
@@ -165,7 +165,7 @@ static TRAP: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static RAISE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 /// The hook bailed out.
-struct Bailed;
+pub(crate) struct Bailed;
 
 fn set_errno(value: c_int) {
     #[cfg(target_os = "linux")]
@@ -184,7 +184,7 @@ fn fatal(error: c_int) -> bool {
 }
 
 /// Run `step` over `call`, inside the trap when one is installed.
-fn run(step: Step, call: &mut PoolCall) -> Result<(), Bailed> {
+pub(crate) fn run(step: Step, call: &mut PoolCall) -> Result<(), Bailed> {
     let arg = ptr::from_mut(call).cast::<c_void>();
     let trap = TRAP.load(Ordering::Acquire);
     if trap.is_null() {
