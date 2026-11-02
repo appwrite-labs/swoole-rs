@@ -7,13 +7,16 @@ framing feature; the module is opt-in.
 
 ## Packet framing
 
-- Rust makes the receive/length/EOF dispatch decisions in a stack-local scalar
-  state machine. Each call borrows only the current snapshot's data and delimiter
-  bytes and keeps no pointer.
-- Rust returns before native receives, errors, SSL calls, buffer
-  allocate/resize/reduce, length callbacks or package callbacks run. Snapshots are
-  refreshed after each native action. Exceptions, including String allocation
-  failure, unwind only through native frames.
+- `swr_v1_framing_recv` runs one whole length, EOF or split-by-EOF receive. It
+  reads and writes the `swoole::String` head (`length`, `size`, `offset`, `str`) and
+  reads the `Protocol`'s leading fields in place; native `static_assert`s pin both
+  layouts. Native code performs each effect (receive and read-error handling,
+  length and package callbacks, extend/reduce/clear/split, `SSL_pending`, logs)
+  through one `call(context, op, arg)` and refreshes the socket's
+  removed/recv_wait/ssl flags after it.
+- A native exception (for example String allocation failure) is caught in the
+  call, Rust returns at once, and native code rethrows it; nothing unwinds
+  through a Rust frame.
 - Kept from upstream: callback removal/failure order, recursive entry, captured
   dynamic header size, partial packets, sticky EOF retry and always growing to the
   next page.

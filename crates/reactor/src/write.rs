@@ -14,6 +14,7 @@ const SW_WAIT: c_int = 2;
 
 /// `network::Socket`'s write-path fields, in the order and types it embeds them.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct SocketOutput {
     /// `Buffer *out_buffer`, created and owned natively.
     pub out_buffer: *mut c_void,

@@ -1,10 +1,14 @@
 diff --git a/src/protocol/base.cc b/src/protocol/base.cc
+index cc8a1e5..28528f8 100644
 --- a/src/protocol/base.cc
 +++ b/src/protocol/base.cc
-@@ -21,418 +21,102 @@
+@@ -21,418 +21,142 @@
  #include "swoole_protocol.h"
 -
 +#include "swoole_rs_framing.h"
++#include <cstddef>
++#include <cstdlib>
++#include <exception>
 +static_assert(sizeof(int) == 4 && sizeof(size_t) == 8 && SW_BUFFER_SIZE_STD == 8192, "framing platform ABI");
  namespace swoole {
 -#define proto_error(_sock, _error, _fmt, ...)                                                                          \
@@ -26,19 +30,7 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -    if (package_length_size == 0) {
 -        // protocol error
 -        return SW_ERR;
-+#define proto_error(_sock, _error, _fmt, ...) \
-+    network::Address _remote_addr; \
-+    if (_sock->get_peer_name(&_remote_addr) < 0) { _remote_addr = _sock->info; } \
-+    swoole_error_log(SW_LOG_WARNING, _error, _fmt "<%s:%d>", ##__VA_ARGS__, _remote_addr.get_addr(), _remote_addr.get_port())
-+ssize_t Protocol::default_length_func(const Protocol *p, network::Socket *socket, PacketLength *pl) {
-+    uint16_t offset = p->package_length_offset;
-+    uint8_t size = p->get_package_length_size ? p->get_package_length_size(socket) : p->package_length_size;
-+    int64_t value = 0;
-+    int result = swr_v1_framing_default(p->package_length_type, (const uint8_t *) pl->buf, pl->buf_size,
-+                                      offset, size, p->package_body_offset, &value);
-+    if (result == -2) {
-+        swoole_error_log(SW_LOG_ERROR, SW_ERROR_INVALID_PARAMS, "Invalid format specifier '%c'", p->package_length_type);
-     }
+-    }
 -    /**
 -     * no have length field, wait more data
 -     */
@@ -57,6 +49,19 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -
 -    // total package length
 -    return protocol->package_body_offset + body_length;
++#define proto_error(_sock, _error, _fmt, ...) \
++    network::Address _remote_addr; \
++    if (_sock->get_peer_name(&_remote_addr) < 0) { _remote_addr = _sock->info; } \
++    swoole_error_log(SW_LOG_WARNING, _error, _fmt "<%s:%d>", ##__VA_ARGS__, _remote_addr.get_addr(), _remote_addr.get_port())
++ssize_t Protocol::default_length_func(const Protocol *p, network::Socket *socket, PacketLength *pl) {
++    uint16_t offset = p->package_length_offset;
++    uint8_t size = p->get_package_length_size ? p->get_package_length_size(socket) : p->package_length_size;
++    int64_t value = 0;
++    int result = swr_v1_framing_default(p->package_length_type, (const uint8_t *) pl->buf, pl->buf_size,
++                                      offset, size, p->package_body_offset, &value);
++    if (result == -2) {
++        swoole_error_log(SW_LOG_ERROR, SW_ERROR_INVALID_PARAMS, "Invalid format specifier '%c'", p->package_length_type);
++    }
 +    if (result < 0) { return SW_ERR; }
 +    if (result == 0) { pl->header_len = value; return 0; }
 +    swoole_debug("length=%ld", value);
@@ -76,36 +81,10 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -        rdata.data = data;
 -        if (onPackage(this, socket, &rdata) < 0) {
 -            return false;
-+static int drive(const Protocol *p, network::Socket *socket, String *buffer, uint32_t mode) {
-+    SwrFramingState state{}; state.mode = mode;
-+    if (mode == 0) { state.head = p->get_package_length_size ? p->get_package_length_size(socket) : p->package_length_size; }
-+    int64_t result = 0;
-+    while (true) {
-+        uint32_t flags = (socket->removed ? 1 : 0) | (socket->recv_wait ? 2 : 0) | (socket->skip_recv ? 4 : 0)
-+                       | (socket->ssl ? 8 : 0) | (p->split_by_eof ? 16 : 0) | (p->get_package_length_size ? 32 : 0);
-+        SwrFramingSnapshot input{buffer->length, buffer->size, buffer->offset, result,
-+            (const uint8_t *) buffer->str, (const uint8_t *) p->package_eof, p->package_eof_len,
-+            p->package_max_length, p->package_length_offset, (uint32_t) swoole_pagesize(), flags};
-+        auto action = swr_v1_framing_step(&state, &input);
-+        switch (action.kind) {
-+        case 0: return action.status;
-+        case 1: result = socket->recv(buffer->str + buffer->length, action.value, 0); break;
-+        case 2: result = socket->catch_read_error(errno); break;
-+        case 3:
-+            if (action.value > buffer->size - buffer->length) { return SW_ERR; }
-+            buffer->length += action.value; break;
-+        case 4: {
-+            PacketLength pl{}; pl.buf = buffer->str; pl.buf_size = buffer->length;
-+            result = p->get_package_length(p, socket, &pl); break;
-         }
+-        }
 -        if (socket->removed) {
 -            return false;
-+        case 5: buffer->extend(action.value); break;
-+        case 6: socket->recv_wait = 1; buffer->offset = action.value; break;
-+        case 7: {
-+            RecvData data{}; data.info.len = action.value; data.data = buffer->str;
-+            result = p->onPackage(p, socket, &data); break;
-         }
+-        }
 -        return true;
 -    });
 -
@@ -127,7 +106,23 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -    }
 -
 -    return SW_OK;
--}
++// Rust reads and writes the String head and these Protocol fields in place.
++static_assert(offsetof(String, length) == 0 && offsetof(String, size) == 8 && offsetof(String, offset) == 16 &&
++              offsetof(String, str) == 24 && sizeof(off_t) == 8, "SwrFramingIo buffer layout");
++static_assert(offsetof(Protocol, split_by_eof) == 0 && offsetof(Protocol, package_eof) == 1 &&
++              offsetof(Protocol, package_eof_len) == 9 && offsetof(Protocol, package_length_offset) == 12 &&
++              offsetof(Protocol, package_max_length) == 16 && sizeof(bool) == 1, "SwrFramingIo protocol layout");
++namespace {
++struct Recv {
++    SwrFramingIo io;
++    const Protocol *p;
++    network::Socket *socket;
++    String *buffer;
++    std::exception_ptr error;
++};
++uint32_t socket_flags(network::Socket *s) {
++    return (s->removed ? SWR_FRAMING_REMOVED : 0) | (s->recv_wait ? SWR_FRAMING_WAIT : 0) | (s->ssl ? SWR_FRAMING_TLS : 0);
+ }
 -
 -/**
 - * @return SW_ERR: close the connection
@@ -163,34 +158,24 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -
 -    recv_n = socket->recv(buffer->str + buffer->length, recv_size, 0);
 -    if (recv_n < 0) {
--        switch (socket->catch_read_error(errno)) {
--        case SW_ERROR:
++// The effects a receive rarely needs, kept out of `call`'s frame.
++__attribute__((noinline)) int64_t rare(Recv *r, uint32_t op, uint64_t arg) {
++    const Protocol *p = r->p; network::Socket *socket = r->socket; String *buffer = r->buffer;
++    switch (op) {
++    case SWR_FRAMING_OP_RECV:
+         switch (socket->catch_read_error(errno)) {
+         case SW_ERROR:
 -            swoole_sys_warning("recv(%d, %d) failed", socket->fd, recv_size);
 -            return SW_OK;
 -        case SW_CLOSE:
 -            return SW_ERR;
 -        default:
 -            return SW_OK;
-+        case 8: socket->recv_wait = 0; break;
-+        case 9: buffer->reduce(action.value); break;
-+        case 10: buffer->clear(); break;
-+        case 11:
-+            if (mode == 2) {
-+                result = buffer->split(p->package_eof, p->package_eof_len, [&](const char *data, size_t len) {
-+                    RecvData packet{}; packet.info.len = len; packet.data = data;
-+                    return p->onPackage(p, socket, &packet) >= 0 && !socket->removed;
-+                });
-+            } else { result = p->recv_split_by_eof(socket, buffer); }
-+            break;
-+        case 12: buffer->offset = action.value; break;
-+        case 13: result = SSL_pending(socket->ssl); break;
-+        case 14:
-+            if (mode == 0) { swoole_sys_warning("recv(%d, %d) failed", socket->fd, (uint32_t) action.value); }
++            if (r->io.mode == SWR_FRAMING_MODE_LENGTH) { swoole_sys_warning("recv(%d, %d) failed", socket->fd, (uint32_t) arg); }
 +            else { swoole_sys_warning("recv from socket#%d failed", socket->fd); }
-+            break;
-+        case 15: {
-+            proto_error(socket, SW_ERROR_PACKAGE_MALFORMED_DATA, "received %zu bytes of malformed data, remote_addr=", buffer->length);
-+            break;
++            return SWR_FRAMING_RECV_DONE;
++        case SW_CLOSE: return SWR_FRAMING_RECV_CLOSE;
++        default: return SWR_FRAMING_RECV_DONE;
          }
 -    } else if (recv_n == 0) {
 -        return SW_ERR;
@@ -216,21 +201,32 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -                } else {
 -                    buffer->clear();
 -                }
-+        case 16:
-+            swoole_error_log(SW_LOG_WARNING, SW_ERROR_PACKAGE_LENGTH_NOT_FOUND,
-+                            "bad request, no length found in %zu bytes, remote_addr=", buffer->length);
-+            break;
-+        case 17: {
-+            if (mode == 0) {
-+                proto_error(socket, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, "the received packet length %ld is too large, remote_addr=", (long) action.value);
-+            } else {
-+                proto_error(socket, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, "The received data packet is too large, length=%lu", (unsigned long) buffer->length);
-             }
+-            }
 -            if (socket->ssl) {
 -                goto _do_recv;
 -            }
 -            return SW_OK;
--        } else {
++    case SWR_FRAMING_OP_REDUCE: buffer->reduce(arg); return 0;
++    case SWR_FRAMING_OP_SPLIT:
++        return buffer->split(p->package_eof, p->package_eof_len, [&](const char *data, size_t len) {
++            RecvData packet{}; packet.info.len = len; packet.data = data;
++            return p->onPackage(p, socket, &packet) >= 0 && !socket->removed;
++        });
++    case SWR_FRAMING_OP_SSL_PENDING: return SSL_pending(socket->ssl);
++    case SWR_FRAMING_OP_CLEAR_SKIP: socket->skip_recv = 0; return 0;
++    case SWR_FRAMING_OP_PAGE: return swoole_pagesize();
++    case SWR_FRAMING_OP_LOG_MALFORMED: {
++        proto_error(socket, SW_ERROR_PACKAGE_MALFORMED_DATA, "received %zu bytes of malformed data, remote_addr=", buffer->length);
++        return 0;
++    }
++    case SWR_FRAMING_OP_LOG_NO_LENGTH:
++        swoole_error_log(SW_LOG_WARNING, SW_ERROR_PACKAGE_LENGTH_NOT_FOUND,
++                         "bad request, no length found in %zu bytes, remote_addr=", buffer->length);
++        return 0;
++    case SWR_FRAMING_OP_LOG_TOO_LARGE: {
++        if (r->io.mode == SWR_FRAMING_MODE_LENGTH) {
++            proto_error(socket, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, "the received packet length %ld is too large, remote_addr=", (long) arg);
+         } else {
 -        _do_get_length:
 -            pl.buf = buffer->str;
 -            pl.buf_size = buffer->length;
@@ -277,14 +273,12 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -                    goto _do_recv;
 -                }
 -            }
-+            break;
-+        }
-+        case 18: socket->skip_recv = 0; break;
-+        default: return SW_ERR;
++            proto_error(socket, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, "The received data packet is too large, length=%lu", (unsigned long) buffer->length);
          }
++        return 0;
      }
 -    return SW_OK;
- }
+-}
 -
 -/**
 - * @return SW_ERR: close the connection
@@ -301,14 +295,7 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -
 -    if (buf_size > SW_BUFFER_SIZE_STD) {
 -        buf_size = SW_BUFFER_SIZE_STD;
-+int Protocol::recv_split_by_eof(network::Socket *s, String *b) const { return drive(this, s, b, 2); }
-+int Protocol::recv_with_length_protocol(network::Socket *s, String *b) const { return drive(this, s, b, 0); }
-+int Protocol::recv_with_eof_protocol(network::Socket *s, String *b) const { return drive(this, s, b, 1); }
-+}
-+int64_t swoole_unpack(char type, const void *data) {
-+    int64_t value = -1;
-+    if (swr_v1_framing_unpack(type, (const uint8_t *) data, swr_v1_framing_width(type), &value) == -1) {
-+        swoole_error_log(SW_LOG_ERROR, SW_ERROR_INVALID_PARAMS, "Invalid format specifier '%c'", type);
++    default: abort();
      }
 -
 -    ssize_t n = socket->recv(buf_ptr, buf_size, 0);
@@ -329,7 +316,22 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -
 -        if (buffer->length < package_eof_len) {
 -            return SW_OK;
--        }
++}
++// One effect. Rust's recv_wait is applied before it and the socket's flags read back
++// after it. Exceptions never unwind through Rust: the first one is kept and rethrown
++// after it returns.
++int64_t call(void *context, uint32_t op, uint64_t arg) noexcept {
++    auto *r = static_cast<Recv *>(context);
++    const Protocol *p = r->p; network::Socket *socket = r->socket; String *buffer = r->buffer;
++    socket->recv_wait = (r->io.flags & SWR_FRAMING_WAIT) != 0;
++    int64_t result = 0;
++    try {
++        switch (op) {
++        case SWR_FRAMING_OP_RECV: {
++            ssize_t n = socket->recv(buffer->str + buffer->length, arg, 0);
++            result = n >= 0 ? n : rare(r, op, arg);
++            break;
+         }
 -
 -        if (split_by_eof) {
 -            int retval = recv_split_by_eof(socket, buffer);
@@ -355,7 +357,11 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -                goto _recv_data;
 -            }
 -            return SW_OK;
--        }
++        case SWR_FRAMING_OP_GET_LENGTH: {
++            PacketLength pl{}; pl.buf = buffer->str; pl.buf_size = buffer->length;
++            result = p->get_package_length(p, socket, &pl);
++            break;
+         }
 -
 -        // over max length, will discard
 -        if (buffer->length == package_max_length) {
@@ -364,7 +370,12 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -                        "The received data packet is too large, length=%lu",
 -                        (ulong_t) buffer->length);
 -            return SW_ERR;
--        }
++        case SWR_FRAMING_OP_EXTEND: buffer->extend(arg); break;
++        case SWR_FRAMING_OP_DISPATCH: {
++            RecvData data{}; data.info.len = arg; data.data = buffer->str;
++            result = p->onPackage(p, socket, &data);
++            break;
+         }
 -
 -        // buffer is full, may have not read data
 -        if (buffer->length == buffer->size) {
@@ -376,19 +387,39 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -                }
 -                buffer->extend(extend_size);
 -            }
--        }
++        case SWR_FRAMING_OP_CLEAR: buffer->clear(); break;
++        default: result = rare(r, op, arg);
+         }
 -        // no eof
 -        if (recv_again) {
 -            goto _recv_data;
 -        }
 -    }
 -    return SW_OK;
-+    return value;
++    } catch (...) { r->error = std::current_exception(); result = SWR_FRAMING_THROWN; }
++    r->io.flags = socket_flags(socket);
++    return result;
++}
++int receive(const Protocol *p, network::Socket *socket, String *buffer, uint32_t mode) {
++    Recv r{{p, buffer, mode, 0, socket_flags(socket)}, p, socket, buffer, nullptr};
++    if (mode == SWR_FRAMING_MODE_LENGTH) {
++        r.io.head = p->get_package_length_size ? p->get_package_length_size(socket) : p->package_length_size;
++        r.io.flags |= (socket->skip_recv ? SWR_FRAMING_SKIP : 0) | (p->get_package_length_size ? SWR_FRAMING_DYNAMIC : 0);
++    }
++    int status = swr_v1_framing_recv(&r.io, &r, call);
++    socket->recv_wait = (r.io.flags & SWR_FRAMING_WAIT) != 0;
++    if (r.error) { std::rethrow_exception(r.error); }
++    return status;
++}
++}  // namespace
++int Protocol::recv_split_by_eof(network::Socket *s, String *b) const { return receive(this, s, b, SWR_FRAMING_MODE_SPLIT); }
++int Protocol::recv_with_length_protocol(network::Socket *s, String *b) const { return receive(this, s, b, SWR_FRAMING_MODE_LENGTH); }
++int Protocol::recv_with_eof_protocol(network::Socket *s, String *b) const { return receive(this, s, b, SWR_FRAMING_MODE_EOF); }
  }
 -
 -}  // namespace swoole
 -
--int64_t swoole_unpack(char type, const void *data) {
+ int64_t swoole_unpack(char type, const void *data) {
 -    switch (type) {
 -    /*-------------------------8bit-----------------------------*/
 -    case 'c':  // signed char
@@ -486,10 +517,12 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -#endif
 -    }
 -    default: {
--        swoole_error_log(SW_LOG_ERROR, SW_ERROR_INVALID_PARAMS, "Invalid format specifier '%c'", type);
++    int64_t value = -1;
++    if (swr_v1_framing_unpack(type, (const uint8_t *) data, swr_v1_framing_width(type), &value) == -1) {
+         swoole_error_log(SW_LOG_ERROR, SW_ERROR_INVALID_PARAMS, "Invalid format specifier '%c'", type);
 -        return -1;
 -    }
--    }
+     }
 -}
 -
 -uint64_t swoole_hton64(uint64_t value) {
@@ -504,8 +537,8 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 -#if SW_BYTE_ORDER == SW_LITTLE_ENDIAN
 -    return swoole_swap_endian64(value);
 -#else
--    return value;
+     return value;
 -#endif
--}
+ }
 +uint64_t swoole_hton64(uint64_t value) { return swr_v1_framing_hton64(value); }
 +uint64_t swoole_ntoh64(uint64_t value) { return swr_v1_framing_hton64(value); }

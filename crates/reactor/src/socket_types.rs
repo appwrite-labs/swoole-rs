@@ -98,8 +98,8 @@ pub unsafe extern "C" fn swr_v1_socket_host_type(host: *const u8, length: usize)
 }
 
 /// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
-const NONBLOCK: c_int = 1 << 2;
-const CLOEXEC: c_int = 1 << 3;
+pub(crate) const NONBLOCK: c_int = 1 << 2;
+pub(crate) const CLOEXEC: c_int = 1 << 3;
 
 /// `swoole::socket`: socket(2) with `SW_SOCK_NONBLOCK`/`SW_SOCK_CLOEXEC` applied,
 /// atomically where the platform has `SOCK_NONBLOCK`/`SOCK_CLOEXEC`, else by fcntl.
