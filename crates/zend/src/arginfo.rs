@@ -261,21 +261,28 @@ pub const fn arg_class_mask(
 }
 
 /// A static `Methods` table, upstream's `PHP_ME` rows in upstream's order (the
-/// order reflection lists them in), `PHP_FE_END` appended:
+/// order reflection lists them in), `PHP_FE_END` appended. A row under an
+/// upstream `#ifdef` takes the matching `#[cfg]`:
 ///
 /// ```ignore
 /// method_table! {
 ///     static METHODS = [
 ///         c"lock" => zim_swoole_lock_lock, &lock::arginfo_class_Swoole_Lock_lock, ZEND_ACC_PUBLIC;
+///         #[cfg(target_os = "linux")]
+///         c"setAffinity" => zim_swoole_process_setAffinity, &process::arginfo_..., ZEND_ACC_PUBLIC;
 ///     ];
 /// }
 /// ```
 #[macro_export]
 macro_rules! method_table {
-    ($vis:vis static $table:ident = [$($name:literal => $handler:path, $arginfo:expr, $flags:expr;)*];) => {
-        $vis static $table: $crate::arginfo::Methods<{ [$($name),*].len() + 1 }> =
+    (
+        $vis:vis static $table:ident = [
+            $($(#[$row:meta])* $name:literal => $handler:path, $arginfo:expr, $flags:expr;)*
+        ];
+    ) => {
+        $vis static $table: $crate::arginfo::Methods<{ [$($(#[$row])* $name),*].len() + 1 }> =
             $crate::arginfo::Methods([
-                $($crate::arginfo::entry($name, $handler, $arginfo, $flags),)*
+                $($(#[$row])* $crate::arginfo::entry($name, $handler, $arginfo, $flags),)*
                 $crate::arginfo::END,
             ]);
     };

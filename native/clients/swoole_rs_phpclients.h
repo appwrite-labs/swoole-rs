@@ -67,8 +67,7 @@ bool swoole_socket_coro_set_protocol(void *socket, const struct _zval_struct *se
 
 /* PHP Coroutine\Client (crates/phpclients): MINIT and, from
  * ext-src/swoole_client_coro.cc, what its methods need beyond the socket calls. */
-void swr_v1_phpclients_client_minit(const struct _zend_function_entry *methods,
-                                    bool shortname,
+void swr_v1_phpclients_client_minit(bool shortname,
                                     struct _zend_class_entry **client_class);
 void swoole_rs_check_reactor(void);
 void swoole_rs_set_last_error(int code);
@@ -93,8 +92,7 @@ bool swoole_client_coro_verify_peer(void *socket, bool allow_self_signed);
  * call PHP (the C++ trampolines re-raise a bailout they return), the socket's
  * close hook and the Set-Cookie parser the HTTP/2 client shares. */
 struct _zend_execute_data;
-void swr_v1_phpclients_http_client_minit(const struct _zend_function_entry *methods,
-                                         struct _zend_class_entry *exception,
+void swr_v1_phpclients_http_client_minit(struct _zend_class_entry *exception,
                                          bool shortname,
                                          int module,
                                          uint32_t features);

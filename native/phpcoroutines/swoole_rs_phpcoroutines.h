@@ -11,7 +11,6 @@ extern "C" {
  * methods, go()/defer(), the exit and silence handlers and the autoload hook.
  * C++ lends the coroutine core's operations; Rust's zim_swoole_coroutine_* and
  * zif_* are the handlers its tables name. A coroutine's context is opaque. */
-struct _zend_function_entry;
 struct _zend_class_entry;
 struct _zend_execute_data;
 struct _zend_fcall_info_cache;
@@ -125,8 +124,7 @@ struct swr_v1_phpcoroutines_ops {
 };
 
 /* MINIT: the classes, constants, opcode handlers and the autoload hook. */
-void swr_v1_phpcoroutines_minit(const struct _zend_function_entry *coroutine_methods,
-                                const struct _zend_function_entry *exit_exception_methods, int32_t module_number,
+void swr_v1_phpcoroutines_minit(int32_t module_number,
                                 struct _zend_class_entry *exception, struct _zend_class_entry *array_iterator,
                                 struct _zend_class_entry *array_object,
                                 const struct swr_v1_phpcoroutines_ops *ops);
@@ -185,10 +183,9 @@ struct swr_v1_phpcoroutines_system_ops {
     int (*convert_to_fd)(struct _zval_struct *fd);
     long (*wait_event)(int fd, long events, double timeout);
 };
-void swr_v1_phpcoroutines_system_minit(const struct _zend_function_entry *methods,
-                                       const struct swr_v1_phpcoroutines_system_ops *ops);
+void swr_v1_phpcoroutines_system_minit(const struct swr_v1_phpcoroutines_system_ops *ops);
 /* Swoole\Coroutine\Scheduler, at MINIT. */
-void swr_v1_phpcoroutines_scheduler_minit(const struct _zend_function_entry *methods);
+void swr_v1_phpcoroutines_scheduler_minit(void);
 void swr_v1_phpcoroutines_set_max_num(uint64_t max);
 void swr_v1_phpcoroutines_set_deadlock_check(uint8_t enable);
 void swr_v1_phpcoroutines_set_preemptive(uint8_t enable);

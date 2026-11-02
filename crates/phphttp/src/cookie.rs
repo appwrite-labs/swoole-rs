@@ -11,16 +11,18 @@ use swoole_rs_httpbindings::{
     APPEND, APPEND_AGE, APPEND_DATE, APPEND_ENCODED, Action, CookieInput, DONE, ENCODE,
     FORMAT_DATE, FREE_DATE, FREE_ENCODED, READ_AGE, Text, WARN, swr_v1_httpbindings_cookie,
 };
+use swoole_rs_phpstubs::http_cookie;
 use swoole_rs_zend::{
     Call, Class, Object, bailout,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, add_assoc_bool_ex, add_assoc_long_ex, add_assoc_str_ex,
         add_assoc_string_ex, php_format_date, php_time, php_url_encode, swr_zend_string_copy,
-        swr_zend_string_init, swr_zend_string_release, zend_class_entry, zend_function_entry,
-        zend_object, zend_object_handlers, zend_string, zval,
+        swr_zend_string_init, swr_zend_string_release, zend_class_entry, zend_object,
+        zend_object_handlers, zend_string, zval,
     },
     throw_constructed_twice, unset_property_deny,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 /// What only C++ can reach, fixed at MINIT.
 struct Native {
@@ -290,12 +292,30 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     unsafe { CookieObject::dtor(std) };
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_http_cookie___construct, &http_cookie::arginfo_class_Swoole_Http_Cookie___construct, z::ZEND_ACC_PUBLIC;
+        c"withName" => zim_swoole_http_cookie_withName, &http_cookie::arginfo_class_Swoole_Http_Cookie_withName, z::ZEND_ACC_PUBLIC;
+        c"withValue" => zim_swoole_http_cookie_withValue, &http_cookie::arginfo_class_Swoole_Http_Cookie_withValue, z::ZEND_ACC_PUBLIC;
+        c"withExpires" => zim_swoole_http_cookie_withExpires, &http_cookie::arginfo_class_Swoole_Http_Cookie_withExpires, z::ZEND_ACC_PUBLIC;
+        c"withPath" => zim_swoole_http_cookie_withPath, &http_cookie::arginfo_class_Swoole_Http_Cookie_withPath, z::ZEND_ACC_PUBLIC;
+        c"withDomain" => zim_swoole_http_cookie_withDomain, &http_cookie::arginfo_class_Swoole_Http_Cookie_withDomain, z::ZEND_ACC_PUBLIC;
+        c"withSecure" => zim_swoole_http_cookie_withSecure, &http_cookie::arginfo_class_Swoole_Http_Cookie_withSecure, z::ZEND_ACC_PUBLIC;
+        c"withHttpOnly" => zim_swoole_http_cookie_withHttpOnly, &http_cookie::arginfo_class_Swoole_Http_Cookie_withHttpOnly, z::ZEND_ACC_PUBLIC;
+        c"withSameSite" => zim_swoole_http_cookie_withSameSite, &http_cookie::arginfo_class_Swoole_Http_Cookie_withSameSite, z::ZEND_ACC_PUBLIC;
+        c"withPriority" => zim_swoole_http_cookie_withPriority, &http_cookie::arginfo_class_Swoole_Http_Cookie_withPriority, z::ZEND_ACC_PUBLIC;
+        c"withPartitioned" => zim_swoole_http_cookie_withPartitioned, &http_cookie::arginfo_class_Swoole_Http_Cookie_withPartitioned, z::ZEND_ACC_PUBLIC;
+        c"toString" => zim_swoole_http_cookie_toString, &http_cookie::arginfo_class_Swoole_Http_Cookie_toString, z::ZEND_ACC_PUBLIC;
+        c"toArray" => zim_swoole_http_cookie_toArray, &http_cookie::arginfo_class_Swoole_Http_Cookie_toArray, z::ZEND_ACC_PUBLIC;
+        c"reset" => zim_swoole_http_cookie_reset, &http_cookie::arginfo_class_Swoole_Http_Cookie_reset, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// MINIT: register the class as `php_swoole_http_cookie_minit` did.
 /// # Safety
-/// Called once, at MINIT, with a static `PHP_FE_END`-terminated method table.
+/// Called once, at MINIT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_httpbindings_cookie_minit(
-    methods: *const zend_function_entry,
     warning: Option<unsafe extern "C" fn(message: *const c_char)>,
     unavailable: Option<unsafe extern "C" fn()>,
 ) {
@@ -305,8 +325,8 @@ pub unsafe extern "C" fn swr_v1_httpbindings_cookie_minit(
             unavailable,
         });
     }
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { COOKIE.register(c"Swoole\\Http\\Cookie", methods, configure) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { COOKIE.register(c"Swoole\\Http\\Cookie", METHODS.as_ptr(), configure) };
 }
 
 /// Not serializable, clone and unset denied, custom object.

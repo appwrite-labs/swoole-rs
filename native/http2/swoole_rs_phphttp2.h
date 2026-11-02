@@ -11,16 +11,14 @@ extern "C" {
 #endif
 
 /* PHP Coroutine\Http2\Client, Http2\Request and Http2\Response (crates/phphttp2).
- * MINIT passes upstream's method table; Rust registers the classes, their
+ * Rust registers the classes with their method table, their
  * properties and the HTTP/2 constants, and the methods are its
  * zim_swoole_http2_client_coro_* exports. */
-struct _zend_function_entry;
 struct _zend_class_entry;
 struct _zend_object;
 struct _zval_struct;
 struct _zend_string;
-void swr_v1_phphttp2_client_minit(const struct _zend_function_entry *methods,
-                                  struct _zend_class_entry *exception,
+void swr_v1_phphttp2_client_minit(struct _zend_class_entry *exception,
                                   bool shortname,
                                   int module);
 /* The socket's close hook. */

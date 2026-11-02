@@ -10,17 +10,18 @@ use std::{
     mem, ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
     Call, Class, declare_long, register_long_constant,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
         swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_coroutine_set_autoload,
         swr_zend_error_reporting, swr_zend_exit_status, swr_zval_try_addref, zend_ce_exception,
-        zend_class_entry, zend_execute_data, zend_function_entry, zend_read_property, zend_string,
-        zend_throw_exception, zend_update_property, zend_update_property_long,
-        zend_update_property_str, zval,
+        zend_class_entry, zend_execute_data, zend_read_property, zend_string, zend_throw_exception,
+        zend_update_property, zend_update_property_long, zend_update_property_str, zval,
     },
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 static COROUTINE: Class = Class::new();
 static ITERATOR: Class = Class::new();
@@ -53,14 +54,61 @@ const MAX_NUM_LIMIT: i64 = c_long::MAX;
 /// `ZEND_USER_OPCODE_DISPATCH`: run the original handler.
 const DISPATCH: c_int = 2;
 
+method_table! {
+    static COROUTINE_METHODS = [
+        c"create" => crate::methods::zif_swoole_coroutine_create, &coroutine::arginfo_class_Swoole_Coroutine_create, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"defer" => crate::methods::zif_swoole_coroutine_defer, &coroutine::arginfo_class_Swoole_Coroutine_defer, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"set" => crate::scheduler::zim_swoole_coroutine_scheduler_set, &coroutine::arginfo_class_Swoole_Coroutine_set, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getOptions" => crate::scheduler::zim_swoole_coroutine_scheduler_getOptions, &coroutine::arginfo_class_Swoole_Coroutine_getOptions, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"exists" => crate::methods::zim_swoole_coroutine_exists, &coroutine::arginfo_class_Swoole_Coroutine_exists, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"yield" => crate::methods::zim_swoole_coroutine_yield, &coroutine::arginfo_class_Swoole_Coroutine_yield, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"cancel" => crate::methods::zim_swoole_coroutine_cancel, &coroutine::arginfo_class_Swoole_Coroutine_cancel, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"join" => crate::methods::zim_swoole_coroutine_join, &coroutine::arginfo_class_Swoole_Coroutine_join, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"isCanceled" => crate::methods::zim_swoole_coroutine_isCanceled, &coroutine::arginfo_class_Swoole_Coroutine_isCanceled, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"setTimeLimit" => crate::methods::zim_swoole_coroutine_setTimeLimit, &coroutine::arginfo_class_Swoole_Coroutine_setTimeLimit, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"suspend" => crate::methods::zim_swoole_coroutine_yield, &coroutine::arginfo_class_Swoole_Coroutine_suspend, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"resume" => crate::methods::zim_swoole_coroutine_resume, &coroutine::arginfo_class_Swoole_Coroutine_resume, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"stats" => crate::methods::zim_swoole_coroutine_stats, &coroutine::arginfo_class_Swoole_Coroutine_stats, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getCid" => crate::methods::zim_swoole_coroutine_getCid, &coroutine::arginfo_class_Swoole_Coroutine_getCid, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getuid" => crate::methods::zim_swoole_coroutine_getCid, &coroutine::arginfo_class_Swoole_Coroutine_getuid, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getPcid" => crate::methods::zim_swoole_coroutine_getPcid, &coroutine::arginfo_class_Swoole_Coroutine_getPcid, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getContext" => crate::methods::zim_swoole_coroutine_getContext, &coroutine::arginfo_class_Swoole_Coroutine_getContext, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getBackTrace" => crate::methods::zim_swoole_coroutine_getBackTrace, &coroutine::arginfo_class_Swoole_Coroutine_getBackTrace, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"printBackTrace" => crate::methods::zim_swoole_coroutine_printBackTrace, &coroutine::arginfo_class_Swoole_Coroutine_printBackTrace, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getElapsed" => crate::methods::zim_swoole_coroutine_getElapsed, &coroutine::arginfo_class_Swoole_Coroutine_getElapsed, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getStackUsage" => crate::methods::zim_swoole_coroutine_getStackUsage, &coroutine::arginfo_class_Swoole_Coroutine_getStackUsage, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"list" => crate::methods::zim_swoole_coroutine_list, &coroutine::arginfo_class_Swoole_Coroutine_list, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"listCoroutines" => crate::methods::zim_swoole_coroutine_list, &coroutine::arginfo_class_Swoole_Coroutine_listCoroutines, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"enableScheduler" => crate::methods::zim_swoole_coroutine_enableScheduler, &coroutine::arginfo_class_Swoole_Coroutine_enableScheduler, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"disableScheduler" => crate::methods::zim_swoole_coroutine_disableScheduler, &coroutine::arginfo_class_Swoole_Coroutine_disableScheduler, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getExecuteTime" => crate::methods::zim_swoole_coroutine_getExecuteTime, &coroutine::arginfo_class_Swoole_Coroutine_getExecuteTime, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"gethostbyname" => crate::system::zif_swoole_coroutine_gethostbyname, &coroutine_system::arginfo_class_Swoole_Coroutine_System_gethostbyname, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"dnsLookup" => crate::system::zif_swoole_async_dns_lookup_coro, &coroutine_system::arginfo_class_Swoole_Coroutine_System_dnsLookup, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"exec" => crate::system::zim_swoole_coroutine_system_exec, &coroutine_system::arginfo_class_Swoole_Coroutine_System_exec, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"sleep" => crate::system::zim_swoole_coroutine_system_sleep, &coroutine_system::arginfo_class_Swoole_Coroutine_System_sleep, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getaddrinfo" => crate::system::zim_swoole_coroutine_system_getaddrinfo, &coroutine_system::arginfo_class_Swoole_Coroutine_System_getaddrinfo, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"statvfs" => crate::system::zim_swoole_coroutine_system_statvfs, &coroutine_system::arginfo_class_Swoole_Coroutine_System_statvfs, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"readFile" => crate::system::zim_swoole_coroutine_system_readFile, &coroutine_system::arginfo_class_Swoole_Coroutine_System_readFile, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"writeFile" => crate::system::zim_swoole_coroutine_system_writeFile, &coroutine_system::arginfo_class_Swoole_Coroutine_System_writeFile, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"wait" => crate::system::zim_swoole_coroutine_system_wait, &coroutine_system::arginfo_class_Swoole_Coroutine_System_wait, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"waitPid" => crate::system::zim_swoole_coroutine_system_waitPid, &coroutine_system::arginfo_class_Swoole_Coroutine_System_waitPid, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"waitSignal" => crate::system::zim_swoole_coroutine_system_waitSignal, &coroutine_system::arginfo_class_Swoole_Coroutine_System_waitSignal, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"waitEvent" => crate::system::zim_swoole_coroutine_system_waitEvent, &coroutine_system::arginfo_class_Swoole_Coroutine_System_waitEvent, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+    ];
+}
+
+method_table! {
+    static EXIT_EXCEPTION_METHODS = [
+        c"getFlags" => zim_swoole_exit_exception_getFlags, &coroutine::arginfo_class_Swoole_ExitException_getFlags, z::ZEND_ACC_PUBLIC;
+        c"getStatus" => zim_swoole_exit_exception_getStatus, &coroutine::arginfo_class_Swoole_ExitException_getStatus, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// `php_swoole_coroutine_minit`.
 /// # Safety
-/// Called once, at MINIT, with static `PHP_FE_END`-terminated tables,
-/// registered parent classes and a static operations table.
+/// Called once, at MINIT, with registered parent classes and a static operations table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
-    coroutine_methods: *const zend_function_entry,
-    exit_exception_methods: *const zend_function_entry,
     module_number: i32,
     exception: *mut zend_class_entry,
     array_iterator: *mut zend_class_entry,
@@ -78,8 +126,8 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
             unsafe { class.alias(name) };
         }
     };
-    // SAFETY: MINIT, with the caller's table.
-    unsafe { COROUTINE.register_static(c"Swoole\\Coroutine", coroutine_methods) };
+    // SAFETY: MINIT, with a static table.
+    unsafe { COROUTINE.register_static(c"Swoole\\Coroutine", COROUTINE_METHODS.as_ptr()) };
     alias(&COROUTINE, c"Co");
     // SAFETY: MINIT; SPL registers ArrayIterator and ArrayObject first.
     unsafe {
@@ -118,7 +166,7 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
     unsafe {
         EXIT.register_child(
             c"Swoole\\ExitException",
-            exit_exception_methods,
+            EXIT_EXCEPTION_METHODS.as_ptr(),
             exception,
             |_, _| {},
         );

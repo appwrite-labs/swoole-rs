@@ -15,15 +15,17 @@ use std::{
     },
     thread::JoinHandle,
 };
+use swoole_rs_phpstubs::thread;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Message, Object, bailout, message,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
         add_assoc_long_ex, swr_zend_array_init, zend_class_entry, zend_declare_property_long,
-        zend_function_entry, zend_object,
+        zend_object,
     },
     throw_constructed_twice, throw_exception, unset_property_deny,
 };
+use swoole_rs_zend::{method_table, sys as z};
 
 static THREAD: Class = Class::new();
 
@@ -82,16 +84,38 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     unsafe { ThreadObject::dtor(std) };
 }
 
+method_table! {
+    static METHODS = [
+        c"__construct" => zim_swoole_thread___construct, &thread::arginfo_class_Swoole_Thread___construct, z::ZEND_ACC_PUBLIC;
+        c"isAlive" => zim_swoole_thread_isAlive, &thread::arginfo_class_Swoole_Thread_isAlive, z::ZEND_ACC_PUBLIC;
+        c"join" => zim_swoole_thread_join, &thread::arginfo_class_Swoole_Thread_join, z::ZEND_ACC_PUBLIC;
+        c"joinable" => zim_swoole_thread_joinable, &thread::arginfo_class_Swoole_Thread_joinable, z::ZEND_ACC_PUBLIC;
+        c"getExitStatus" => zim_swoole_thread_getExitStatus, &thread::arginfo_class_Swoole_Thread_getExitStatus, z::ZEND_ACC_PUBLIC;
+        c"detach" => zim_swoole_thread_detach, &thread::arginfo_class_Swoole_Thread_detach, z::ZEND_ACC_PUBLIC;
+        c"getArguments" => zim_swoole_thread_getArguments, &thread::arginfo_class_Swoole_Thread_getArguments, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getId" => zim_swoole_thread_getId, &thread::arginfo_class_Swoole_Thread_getId, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getInfo" => zim_swoole_thread_getInfo, &thread::arginfo_class_Swoole_Thread_getInfo, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"activeCount" => zim_swoole_thread_activeCount, &thread::arginfo_class_Swoole_Thread_activeCount, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"yield" => zim_swoole_thread_yield, &thread::arginfo_class_Swoole_Thread_yield, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"setName" => zim_swoole_thread_setName, &thread::arginfo_class_Swoole_Thread_setName, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        c"setAffinity" => zim_swoole_thread_setAffinity, &thread::arginfo_class_Swoole_Thread_setAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        c"getAffinity" => zim_swoole_thread_getAffinity, &thread::arginfo_class_Swoole_Thread_getAffinity, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"setPriority" => zim_swoole_thread_setPriority, &thread::arginfo_class_Swoole_Thread_setPriority, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getPriority" => zim_swoole_thread_getPriority, &thread::arginfo_class_Swoole_Thread_getPriority, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"getNativeId" => zim_swoole_thread_getNativeId, &thread::arginfo_class_Swoole_Thread_getNativeId, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+    ];
+}
+
 /// `php_swoole_thread_minit`'s class registration; C++ adds the constants.
 /// # Safety
 /// MINIT, after `swr_v1_phpthread_minit`, with a static method table.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_thread_minit(
-    methods: *const zend_function_entry,
-) -> *mut zend_class_entry {
-    // SAFETY: MINIT, with the caller's table.
+pub unsafe extern "C" fn swr_v1_phpthread_thread_minit() -> *mut zend_class_entry {
+    // SAFETY: MINIT, with a static table.
     unsafe {
-        THREAD.register(c"Swoole\\Thread", methods, |entry, handlers| {
+        THREAD.register(c"Swoole\\Thread", METHODS.as_ptr(), |entry, handlers| {
             entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
             handlers.clone_obj = None;
             handlers.unset_property = Some(unset_property_deny);
