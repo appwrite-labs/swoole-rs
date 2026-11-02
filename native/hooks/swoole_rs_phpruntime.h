@@ -118,7 +118,7 @@ int swoole_runtime_socket_fd(void *socket);
 int swoole_runtime_socket_domain(void *socket);
 int swoole_runtime_socket_type(void *socket);
 /* The coroutine socket's network::Socket record (get_socket()), or null. */
-struct swr_v1_socket *swoole_runtime_socket_record(void *socket);
+void *swoole_runtime_socket_record(void *socket);
 /* errCode, with errMsg in *message when message is not null. */
 int swoole_runtime_socket_error(void *socket, const char **message);
 /* set_err(code). */

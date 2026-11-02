@@ -78,7 +78,7 @@ bool swoole_client_coro_connect(void *socket, const char *host, int64_t port, do
 void swoole_client_coro_rdwr_timeout(void *socket, double timeout);
 bool swoole_client_coro_close(void *socket);
 /* The coroutine socket's network::Socket record (get_socket()), or null. */
-struct swr_v1_socket *swoole_client_coro_socket_record(void *socket);
+void *swoole_client_coro_socket_record(void *socket);
 int swoole_client_coro_type(void *socket);
 bool swoole_client_coro_packet_mode(void *socket);
 bool swoole_client_coro_is_connected(void *socket);
