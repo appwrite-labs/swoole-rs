@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
+import sides
 
 
 def select_overlay(text):
@@ -80,8 +81,8 @@ def main():
                 method = 'int apply(const char *buf, ssize_t length) { uint16_t id=0;uint32_t value=0;auto client=this;while(length>0){' + fragment + '}return SW_SUCCESS;}'
             else:
                 method = 'ReturnCode apply(uint16_t id,uint32_t value){' + fragment + '}'
-            pieces.append(('\n#define SW_USE_RUST_HTTP2\n' if variant == 'rust' else '\n#undef SW_USE_RUST_HTTP2\n') +
-                          'namespace ' + role + '_' + variant + ' { struct State: Shared {' + method + '};}\n')
+            pieces.append((variant, ('\n#define SW_USE_RUST_HTTP2\n' if variant == 'rust' else '\n#undef SW_USE_RUST_HTTP2\n') +
+                          'namespace ' + role + '_' + variant + ' { struct State: Shared {' + method + '};}\n'))
     prelude = r'''
 #include "swoole_http2.h"
 #define SW_USE_RUST_HTTP2
@@ -93,19 +94,19 @@ def main():
 #include <stdexcept>
 using namespace swoole;
 namespace Http2=swoole::http2;
-static std::vector<std::string> effects;
-static int hp_result;
-static bool fail_throw;
-static void emit(const char *fmt,...) {char b[512];va_list args;va_start(args,fmt);vsnprintf(b,sizeof(b),fmt,args);va_end(args);effects.push_back(b);}
+inline std::vector<std::string> effects;
+inline int hp_result;
+inline bool fail_throw;
+inline void emit(const char *fmt,...) {char b[512];va_list args;va_start(args,fmt);vsnprintf(b,sizeof(b),fmt,args);va_end(args);effects.push_back(b);}
 #undef swoole_http2_frame_trace_log
 #define swoole_http2_frame_trace_log(...) emit(__VA_ARGS__)
 #undef swoole_trace_log
 #define swoole_trace_log(flag,...) emit(__VA_ARGS__)
 #undef swoole_warning
 #define swoole_warning(...) emit(__VA_ARGS__)
-static const char* nghttp2_strerror(int) {return "controlled-error";}
-static int nghttp2_hd_deflate_change_table_size(void *p,uint32_t v) {emit("hpack:%d:%u",p!=nullptr,v);if(fail_throw)throw std::runtime_error("native effect");return hp_result;}
-static void nghttp2_error(int rc,const char *message){emit("client-error:%d:%s",rc,message);}
+inline const char* nghttp2_strerror(int) {return "controlled-error";}
+inline int nghttp2_hd_deflate_change_table_size(void *p,uint32_t v) {emit("hpack:%d:%u",p!=nullptr,v);if(fail_throw)throw std::runtime_error("native effect");return hp_result;}
+inline void nghttp2_error(int rc,const char *message){emit("client-error:%d:%s",rc,message);}
 struct Shared { Http2::Settings remote_settings{};uint32_t remote_window_size=91;void *deflater=nullptr;};
 '''
     driver = r'''
@@ -135,21 +136,8 @@ std::cout<<"{\"passed\":true,\"settings_cases\":"<<cases<<"}\n";
 '''
     work = args.output.parent / (args.output.stem + '-artifacts')
     work.mkdir(parents=True, exist_ok=False)
-    cpp = work / 'settings.cpp'
-    cpp.write_text(prelude + ''.join(pieces) + driver)
-    flags = ['-fsanitize=address,undefined', '-fno-sanitize=alignment', '-fno-omit-frame-pointer']
-    command = ['c++', '-std=c++17', '-O1', *flags, '-I', str(gate.ROOT / 'native/http2'), '-I', str(args.source / 'include')]
-    for include in args.include:
-        command += ['-I', include]
-    command += [str(cpp), str(archive), '-o', str(work / 'settings')]
-    report['commands'] = []
-    for cmd in [command, [str(work / 'settings')]]:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        report['commands'].append({'command': cmd, 'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr})
-        if result.returncode:
-            break
-        if cmd != command:
-            report.update(json.loads(result.stdout))
+    report['commands'], result = sides.run(work, 'settings', prelude, pieces, driver, source=args.source, archive=archive, includes=args.include)
+    report.update(result or {})
     report['native_sanitizers'] = ['address', 'undefined except alignment']
     report['rust_sanitized'] = False
     args.output.write_text(json.dumps(report, indent=2) + '\n')

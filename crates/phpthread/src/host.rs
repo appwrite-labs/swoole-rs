@@ -30,6 +30,25 @@ pub struct Host {
     pub php_socket_create: Option<unsafe extern "C" fn(return_value: *mut zval, fd: i64)>,
     pub set_last_error: unsafe extern "C" fn(error: c_int),
     pub unconstructed: unsafe extern "C" fn(list: bool),
+    /// Swoole\Thread's body on the new thread (`php_swoole_thread_start`):
+    /// TSRM, request startup and the script; `enter` and `exit` report its life.
+    pub thread_run: unsafe extern "C" fn(
+        file: *const c_char,
+        length: usize,
+        argv: *mut c_void,
+        context: *mut c_void,
+        enter: extern "C" fn(*mut c_void),
+        exit: extern "C" fn(*mut c_void, c_int),
+    ),
+    pub thread_arguments: unsafe extern "C" fn(return_value: *mut zval),
+    pub thread_info: unsafe extern "C" fn(return_value: *mut zval),
+    pub thread_count: unsafe extern "C" fn() -> usize,
+    pub thread_set_name: unsafe extern "C" fn(name: *const c_char) -> bool,
+    pub thread_native_id: unsafe extern "C" fn() -> i64,
+    /// `php_swoole_error(level, "%s", message)`.
+    pub error: unsafe extern "C" fn(level: c_int, message: *const c_char),
+    /// `php_swoole_sys_error(level, "%s", message)`.
+    pub sys_error: unsafe extern "C" fn(level: c_int, message: *const c_char),
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());

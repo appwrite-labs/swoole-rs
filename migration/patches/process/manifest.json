@@ -125,6 +125,15 @@
         "ext-src/swoole_thread_map.cc",
         "ext-src/swoole_thread_queue.cc"
       ]
+    },
+    {
+      "path": "0013-php-thread-class.patch",
+      "sha256": "deb282b6b4cabdd21d61eede68098216425ed60780b890f40997c4d7e2826383",
+      "upstream_paths": [
+        "ext-src/php_swoole_thread.h",
+        "ext-src/swoole_thread.cc",
+        "ext-src/swoole_thread_barrier.cc"
+      ]
     }
   ]
 }

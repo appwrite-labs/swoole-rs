@@ -4,15 +4,16 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "Apache-2.0"
-description = "PHP Swoole\\Thread\\Map, ArrayList and Queue: values shared between threads"
+description = "PHP Swoole\\Thread and its Map, ArrayList, Queue and Barrier"
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
+swoole-rs-phpprocess = { path = "../phpprocess", optional = true }
 
 [lints]
 workspace = true

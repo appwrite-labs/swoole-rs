@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
+import sides
 from settings_calls import body, select_overlay
 
 
@@ -48,7 +49,7 @@ def main():
                 ('static ssize_t http2_server_build_trailer(', 'ssize_t build_trailer(const HttpContext*ctx,uchar*buffer)')]:
             fragment = body(text, marker)
             fragments.append(signature + '{' + fragment + '}')
-        pieces.append('namespace ' + variant + ' {using String=BufferValue;' + ''.join(fragments) + '}')
+        pieces.append((variant, 'namespace ' + variant + ' {using String=BufferValue;' + ''.join(fragments) + '}'))
     warning_body = body(php_header, 'static sw_inline bool swoole_http_has_crlf(')
     flags = body(php_header, 'enum swHttpHeaderFlag')
     prelude = r'''
@@ -77,21 +78,21 @@ namespace Http2=swoole::http2;
 #define NGHTTP2_NV_FLAG_NO_COPY_VALUE 2
 #define E_WARNING 2
 struct nghttp2_nv {unsigned char*name=nullptr,*value=nullptr;size_t namelen=0,valuelen=0;unsigned char flags=0;};
-static std::vector<std::string> effects;
-static std::map<void*,unsigned> allocations;
-static unsigned serial,throw_at,mutation,encoding_fail;
+inline std::vector<std::string> effects;
+inline std::map<void*,unsigned> allocations;
+inline unsigned serial,throw_at,mutation,encoding_fail;
 #undef SW_HAVE_COMPRESSION
 #if TEST_COMPRESSION
 #define SW_HAVE_COMPRESSION
 #endif
-static std::function<void(const std::string&)> mutate;
-static void event(std::string text,bool may_throw=true){effects.push_back(text);if(mutate)mutate(text);if(may_throw&&throw_at==effects.size())throw std::runtime_error("native effect");}
-static void*allocate(size_t bytes,bool zero){event(std::string(zero?"calloc:":"malloc:")+std::to_string(bytes));void*p=zero?std::calloc(1,bytes?bytes:1):std::malloc(bytes?bytes:1);if(!p)std::abort();allocations[p]=serial++;return p;}
-static void*ecalloc(size_t n,size_t size){return allocate(n*size,true);}
-static void*emalloc(size_t size){return allocate(size,false);}
-static void efree(void*p){if(!p)return;auto it=allocations.find(p);if(it==allocations.end())std::abort();event("free:"+std::to_string(it->second),false);allocations.erase(it);std::free(p);}
-static char*zend_str_tolower_dup(const char*p,size_t n){event("lower:"+std::string(p,n));auto out=(char*)emalloc(n+1);for(size_t i=0;i<n;++i)out[i]=(p[i]>='A'&&p[i]<='Z')?p[i]+32:p[i];out[n]=0;return out;}
-static void php_swoole_fatal_error(int,const char*,int,const char*){throw std::runtime_error("native header bound");}
+inline std::function<void(const std::string&)> mutate;
+inline void event(std::string text,bool may_throw=true){effects.push_back(text);if(mutate)mutate(text);if(may_throw&&throw_at==effects.size())throw std::runtime_error("native effect");}
+inline void*allocate(size_t bytes,bool zero){event(std::string(zero?"calloc:":"malloc:")+std::to_string(bytes));void*p=zero?std::calloc(1,bytes?bytes:1):std::malloc(bytes?bytes:1);if(!p)std::abort();allocations[p]=serial++;return p;}
+inline void*ecalloc(size_t n,size_t size){return allocate(n*size,true);}
+inline void*emalloc(size_t size){return allocate(size,false);}
+inline void efree(void*p){if(!p)return;auto it=allocations.find(p);if(it==allocations.end())std::abort();event("free:"+std::to_string(it->second),false);allocations.erase(it);std::free(p);}
+inline char*zend_str_tolower_dup(const char*p,size_t n){event("lower:"+std::string(p,n));auto out=(char*)emalloc(n+1);for(size_t i=0;i<n;++i)out[i]=(p[i]>='A'&&p[i]<='Z')?p[i]+32:p[i];out[n]=0;return out;}
+inline void php_swoole_fatal_error(int,const char*,int,const char*){throw std::runtime_error("native header bound");}
 #undef swoole_trace_log
 #define swoole_trace_log(...) ((void)0)
 '''
@@ -121,36 +122,36 @@ struct zval {int kind=1;std::string bytes;std::vector<Entry> entries;};
 #define SW_HASHTABLE_FOREACH_START2(table,out_key,out_len,out_type,out_value) for(auto&entry:(table)->entries) if(((out_key=entry.key?entry.key->bytes.data():nullptr),(out_len=entry.key?entry.key->length:0),(out_type=0),(out_value=entry.value),true))
 #define SW_HASHTABLE_FOREACH_START(table,out_value) for(auto&entry:(table)->entries) if(((out_value=entry.value),true))
 #define SW_HASHTABLE_FOREACH_END()
-static int swoole_http_response_ce;
-static zval properties[3];
-static zval*sw_zend_read_property_ex(int,zval*,int field,int){event("property:"+std::to_string(field));return &properties[field];}
-static size_t php_swoole_array_length_safe(zval*z){event("array-length");return ZVAL_IS_ARRAY(z)?z->entries.size():0;}
+inline int swoole_http_response_ce;
+inline zval properties[3];
+inline zval*sw_zend_read_property_ex(int,zval*,int field,int){event("property:"+std::to_string(field));return &properties[field];}
+inline size_t php_swoole_array_length_safe(zval*z){event("array-length");return ZVAL_IS_ARRAY(z)?z->entries.size():0;}
 namespace zend {struct String {std::string value;explicit String(zval*z):value(z->bytes){event("convert:"+value);}~String(){event("string-drop",false);}void rtrim(){event("trim");value.resize(swoole::rtrim(value.data(),value.size()));}char*val(){return value.data();}size_t len(){return value.size();}};}
-static std::set<zend_string*> captures;
-static zend_string*zval_get_string(zval*z){event("capture:"+z->bytes);auto s=new zend_string{z->bytes,z->bytes.size()};captures.insert(s);return s;}
-static void zend_string_release(zend_string*z){event("release:"+z->bytes,false);if(!captures.erase(z))std::abort();delete z;}
-static void php_swoole_error(int,const char*what){event("warning:"+std::string(what));}
+inline std::set<zend_string*> captures;
+inline zend_string*zval_get_string(zval*z){event("capture:"+z->bytes);auto s=new zend_string{z->bytes,z->bytes.size()};captures.insert(s);return s;}
+inline void zend_string_release(zend_string*z){event("release:"+z->bytes,false);if(!captures.erase(z))std::abort();delete z;}
+inline void php_swoole_error(int,const char*what){event("warning:"+std::string(what));}
 struct BufferValue {char storage[64];char*str=storage;size_t length=0;};
 struct HttpContext {struct Response {zval*zobject;int status=0;}response;unsigned send_header_=0;int fd=1;bool accept_compression=false;std::set<std::string>*compression_types=nullptr;BufferValue*zlib_buffer;bool compression_result=false;
  bool compress(const char*p,size_t n){event("compress:"+std::string(p,n));return compression_result;}
  const char*get_content_encoding(){event("encoding");return "gzip";}
 };
-static zend_string date_value{"date",4};
-static zend_string*php_swoole_http_get_date(){event("date");return &date_value;}
-template<class T>static int fixture_itoa(char*p,T value){event("integer");auto text=std::to_string(value);if(text.size()>=16)std::abort();std::memcpy(p,text.data(),text.size());return text.size();}
+inline zend_string date_value{"date",4};
+inline zend_string*php_swoole_http_get_date(){event("date");return &date_value;}
+template<class T>inline int fixture_itoa(char*p,T value){event("integer");auto text=std::to_string(value);if(text.size()>=16)std::abort();std::memcpy(p,text.data(),text.size());return text.size();}
 #define swoole_itoa fixture_itoa
 struct Http2Session {void*deflater=nullptr;swoole::http2::Settings remote_settings{};};
-static std::map<int,std::shared_ptr<Http2Session>> http2_sessions;
-static unsigned new_error,deflate_error;
-static void*php_nghttp2_mem(){event("memory");return nullptr;}
-static int nghttp2_hd_deflate_new2(void**out,unsigned size,void*){event("new-deflater:"+std::to_string(size));*out=(void*)1;return new_error?-1:0;}
-static const char*nghttp2_strerror(int){return "native-error";}
+inline std::map<int,std::shared_ptr<Http2Session>> http2_sessions;
+inline unsigned new_error,deflate_error;
+inline void*php_nghttp2_mem(){event("memory");return nullptr;}
+inline int nghttp2_hd_deflate_new2(void**out,unsigned size,void*){event("new-deflater:"+std::to_string(size));*out=(void*)1;return new_error?-1:0;}
+inline const char*nghttp2_strerror(int){return "native-error";}
 #undef swoole_warning
 #define swoole_warning(...) event("native-warning")
-static size_t nghttp2_hd_deflate_bound(void*,nghttp2_nv*values,size_t n){event("bound:"+std::to_string(n));for(size_t i=0;i<n;++i)event("nv:"+std::to_string(i)+":"+std::string((char*)values[i].name,values[i].namelen)+":"+std::string((char*)values[i].value,values[i].valuelen));return 128;}
-static ssize_t nghttp2_hd_deflate_hd(void*,unsigned char*buffer,size_t bound,nghttp2_nv*,size_t n){event("deflate:"+std::to_string(bound)+":"+std::to_string(n));if(deflate_error)return -1;std::memset(buffer,'C',7);return 7;}
+inline size_t nghttp2_hd_deflate_bound(void*,nghttp2_nv*values,size_t n){event("bound:"+std::to_string(n));for(size_t i=0;i<n;++i)event("nv:"+std::to_string(i)+":"+std::string((char*)values[i].name,values[i].namelen)+":"+std::string((char*)values[i].value,values[i].valuelen));return 128;}
+inline ssize_t nghttp2_hd_deflate_hd(void*,unsigned char*buffer,size_t bound,nghttp2_nv*,size_t n){event("deflate:"+std::to_string(bound)+":"+std::to_string(n));if(deflate_error)return -1;std::memset(buffer,'C',7);return 7;}
 '''
-    prelude += 'enum swHttpHeaderFlag {' + flags + '};\nstatic bool swoole_http_has_crlf(const char*value,size_t length){' + warning_body + '}\n'
+    prelude += 'enum swHttpHeaderFlag {' + flags + '};\ninline bool swoole_http_has_crlf(const char*value,size_t length){' + warning_body + '}\n'
     driver = r'''
 struct Result {std::vector<std::string>events;ssize_t returned=-2;unsigned remaining=0,captures_left=0,sent=0;int status=0;bool accept=false,types=false,deflater=false;std::string exception,output;};
 template<bool rust>Result execute(bool trailer,int status,unsigned pattern,bool body,unsigned compression,unsigned failure,unsigned change,unsigned throw_index){
@@ -179,23 +180,8 @@ std::cout<<"{\"passed\":true,\"response_builder_cases\":"<<count<<",\"compressio
 '''
     work = args.output.parent / (args.output.stem + '-artifacts')
     work.mkdir(parents=True, exist_ok=False)
-    cpp = work / 'request_headers.cpp'
-    cpp.write_text(prelude + '\n'.join(pieces) + driver)
-    report['variants'] = []
-    for enabled in [0, 1]:
-        command = ['c++', '-std=c++17', '-O1', '-fsanitize=address,undefined', '-fno-sanitize=alignment',
-                   '-fno-omit-frame-pointer', f'-DTEST_COMPRESSION={enabled}', '-I', str(gate.ROOT / 'native/http2'), '-I', str(args.source / 'include')]
-        for include in args.include:
-            command += ['-I', include]
-        executable = work / ('response-' + str(enabled))
-        command += [str(cpp), str(archive), '-o', str(executable)]
-        for cmd in [command, [str(executable)]]:
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            report['commands'].append({'command': cmd, 'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr})
-            if result.returncode:
-                break
-            if cmd != command:
-                report['variants'].append(json.loads(result.stdout))
+    commands, report['variants'] = sides.variants(work, 'response', prelude, pieces, driver, source=args.source, archive=archive, includes=args.include, define='TEST_COMPRESSION')
+    report['commands'] += commands
     report['passed'] = len(report['variants']) == 2 and all(r['passed'] for r in report['variants'])
     report['native_sanitizers'] = ['address', 'undefined except alignment']
     report['rust_sanitized'] = False

@@ -4,7 +4,7 @@
 //! reference, and sockets by a duplicated descriptor.
 use crate::{
     array::Array,
-    classes,
+    barrier, classes,
     host::{Pending, defer, host},
     queue::Queue,
 };
@@ -51,7 +51,9 @@ pub(crate) enum Value {
     /// An `ArrayList` (`IS_ARRAYLIST`) or Map (`IS_MAP`).
     Array(Arc<Array>),
     Queue(Arc<Queue>),
-    /// A C++ `ThreadResource` (Lock, Atomic, Atomic\Long, Barrier); null when
+    /// A Barrier; `None` when stored unconstructed.
+    Barrier(Option<Arc<std::sync::Barrier>>),
+    /// A C++ `ThreadResource` (Lock, Atomic, Atomic\Long); null when
     /// stored unconstructed.
     Resource(*mut c_void),
     /// A duplicated descriptor and, for coroutine sockets, its socket type.
@@ -198,7 +200,7 @@ impl Item {
                     };
                 }
             }
-            IS_LOCK | IS_ATOMIC | IS_ATOMIC_LONG | IS_BARRIER => {
+            IS_LOCK | IS_ATOMIC | IS_ATOMIC_LONG => {
                 // SAFETY: an object of that class.
                 let resource = unsafe { (host.resource_cast)(value, foreign) };
                 if !resource.is_null() {
@@ -214,6 +216,10 @@ impl Item {
         }
         // SAFETY: a live object zval.
         if let Some(shared) = unsafe { classes::shared(value) } {
+            return shared;
+        }
+        // SAFETY: a live object zval.
+        if let Some(shared) = unsafe { barrier::shared(value) } {
             return shared;
         }
         // SAFETY: a live zval.
@@ -260,6 +266,8 @@ impl Item {
             Value::Array(array) => unsafe { classes::array_object(out, self.kind, array) },
             // SAFETY: per the caller.
             Value::Queue(queue) => unsafe { classes::queue_object(out, queue) },
+            // SAFETY: per the caller.
+            Value::Barrier(shared) => unsafe { barrier::object(out, shared.as_ref()) },
             Value::Resource(resource) => {
                 if !resource.is_null() {
                     // SAFETY: the item's live resource; the object takes the new reference.
@@ -338,6 +346,7 @@ impl Item {
             Value::Resource(resource) => resource.addr() as u64,
             Value::Array(array) => Arc::as_ptr(array).addr() as u64,
             Value::Queue(queue) => Arc::as_ptr(queue).addr() as u64,
+            Value::Barrier(shared) => shared.as_ref().map_or(0, |b| Arc::as_ptr(b).addr() as u64),
             Value::Str(text) | Value::Serialized(text) => text.as_ptr().addr() as u64,
         }
     }

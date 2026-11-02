@@ -1,4 +1,4 @@
-//! PHP `Swoole\Thread\Map`, `Swoole\Thread\ArrayList` and `Swoole\Thread\Queue`
+//! PHP `Swoole\Thread`, `Swoole\Thread\Map`, `ArrayList`, `Queue` and `Barrier`
 //! (ZTS builds): values copied out of one thread's request memory into tables
 //! and queues every thread shares, and copied back into PHP values on read.
 //! Upstream's `ArrayItem` and `ZendArray` live here; C++ keeps the method
@@ -17,12 +17,16 @@
 )]
 
 mod array;
+mod barrier;
 mod classes;
 mod host;
 mod item;
 mod queue;
 mod table;
+mod thread;
 
 pub use array::*;
+pub use barrier::*;
 pub use classes::*;
 pub use host::swr_v1_phpthread_minit;
+pub use thread::*;

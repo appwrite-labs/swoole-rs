@@ -392,7 +392,7 @@ pub(crate) unsafe fn negate(delta: *const zval) -> zval {
 
 // Shared tables for Swoole\Thread's arguments (C++ holds them as `ZendArray *`).
 
-fn handle(array: Arc<Array>) -> *mut c_void {
+pub(crate) fn handle(array: Arc<Array>) -> *mut c_void {
     Arc::into_raw(array).cast_mut().cast()
 }
 

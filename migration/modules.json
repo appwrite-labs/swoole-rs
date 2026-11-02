@@ -274,6 +274,7 @@
         "ext-src/php_swoole_thread.h",
         "ext-src/swoole_thread.cc",
         "ext-src/swoole_thread_arraylist.cc",
+        "ext-src/swoole_thread_barrier.cc",
         "ext-src/swoole_thread_map.cc",
         "ext-src/swoole_thread_queue.cc"
       ],
