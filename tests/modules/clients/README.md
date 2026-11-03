@@ -29,7 +29,6 @@ these are whole-TU, live-socket or PHP runtime tests.
 | `gate.py` | Address URL/port policy, hosts-file lookup (real file IO) |
 | `http_gate.py` | HTTP Set-Cookie parsing |
 | `codec_gate.py` | DNS domain encode/decode and whole query/response callers |
-| `resolv_gate.py` | Resolver configuration file and endpoint parsing |
 | `pool_gate.py` | Rust persistent pool vs native reference, fork isolation; `--faults` adds allocation-failure cases from a cfg(test) archive |
 | `resolver_gate.py` | PHP resolver cluster lookup, retry, host/port selection |
 | `http_format_gate.py` | Request formatting against the pinned `sw_snprintf` |

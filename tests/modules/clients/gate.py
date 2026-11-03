@@ -14,7 +14,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import apply_patch_verified, module_patches
+from tools.build_hybrid import apply_patch_verified, hybrid_tree, module_patches
 from tools.build_upstream import COMMIT as PIN
 
 
@@ -126,6 +126,7 @@ def main():
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <iostream>
 #include <fstream>
@@ -138,6 +139,9 @@ def main():
 #include "swoole_rs_clients.h"
 #define SW_PATH_HOSTS "/nonexistent-readiness-hosts"
 struct { std::string dns_hosts_path; } SwooleG;
+static void assign_text(void *out, const uint8_t *text, size_t length) {
+    static_cast<std::string *>(out)->assign(reinterpret_cast<const char *>(text), length);
+}
 #define SW_ERR -1
 #define SW_OK 0
 #define SW_LOG_NOTICE 0
@@ -159,7 +163,9 @@ struct Address {
     funcs = [('address', 'bool Address::verify_port('), ('address', 'bool Address::assign(const std::string &url)'), ('dns', 'std::string get_ip_by_hosts(')]
     extracted = {}
     for engine in ['native', 'rust']:
-        texts = originals if engine == 'native' else {n:(scratch/f'src/network/{n}.cc').read_text() for n in originals}
+        # The selected side is the archive's own patched tree (every clients patch).
+        selected = hybrid_tree(a.archive)[0] if a.archive else scratch
+        texts = originals if engine == 'native' else {n:(selected/f'src/network/{n}.cc').read_text() for n in originals}
         extracted[engine] = '\n'.join(body(texts[name], sig) for name, sig in funcs)
     for index, (_, signature) in enumerate(funcs):
         native_body = body(extracted['native'], signature)
@@ -177,6 +183,7 @@ static std::string trace(const std::string &url, bool accept) {
 int main(int argc, char **argv) {
     if(argc!=2)return 5;
     SwooleG.dns_hosts_path=argv[1];
+    swr_v1_clients_set_hosts_path(reinterpret_cast<const uint8_t *>(argv[1]), std::strlen(argv[1]));
     std::vector<std::string> urls={"", "unix:///", "unix:////", "udg:///a", "tcp://a:0", "tcp://a:65536", "tcp://a:999999999999999999999", "tcp://[::1]:80", "tcp://[]:80", "tcp://a:01", "tcp://a:+1", "tcp://a:1\n", "unix:///a?b", "unix:///a#b", "udp://]:80", std::string("tcp://a\0b:80",12)};
     const std::vector<std::string> protocols={"tcp://","udp://","unix://","udg://","TCP://",""};
     const std::vector<std::string> hosts={"a","", "[::1]", "[a]", "[", "]", "a:b", "a[b", "/", "//", "/a", "/a?", "/a#", "a\nb", "a b", std::string("a\0b",3)};
