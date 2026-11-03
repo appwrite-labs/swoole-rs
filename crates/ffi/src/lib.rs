@@ -170,3 +170,6 @@ pub use swoole_rs_pgsql as pgsql;
 
 #[cfg(feature = "odbc")]
 pub use swoole_rs_odbc as odbc;
+
+#[cfg(feature = "firebird")]
+pub use swoole_rs_firebird as firebird;

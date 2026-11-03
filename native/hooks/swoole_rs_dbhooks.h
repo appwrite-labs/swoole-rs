@@ -4,10 +4,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* The database hooks (Rust, crates/pgsql and crates/odbc): the coroutine
- * libpq and ODBC calls of Swoole's bundled PDO drivers. Rust exports them
- * under upstream's names (php_swoole_pgsql.h, php_swoole_odbc.h); C++ lends
- * the coroutine waits at MINIT. */
+/* The database hooks (Rust, crates/pgsql, crates/odbc and crates/firebird):
+ * the coroutine libpq, ODBC and Firebird calls of Swoole's bundled PDO
+ * drivers. Rust exports them under upstream's names (php_swoole_pgsql.h,
+ * php_swoole_odbc.h, php_swoole_firebird.h); C++ lends the coroutine waits
+ * at MINIT. */
 
 #ifdef SW_USE_PGSQL
 struct pg_conn;
@@ -31,6 +32,15 @@ struct swr_v1_odbc_ops {
     bool (*in_coroutine)(void);
 };
 void swr_v1_odbc_init(const struct swr_v1_odbc_ops *ops);
+#endif
+
+#ifdef SW_USE_FIREBIRD
+/* As swr_v1_odbc_ops, for the Firebird calls. */
+struct swr_v1_firebird_ops {
+    void (*run_async)(void (*job)(void *), void *context);
+    bool (*in_coroutine)(void);
+};
+void swr_v1_firebird_init(const struct swr_v1_firebird_ops *ops);
 #endif
 #ifdef __cplusplus
 }
