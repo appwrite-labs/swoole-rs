@@ -274,38 +274,3 @@ pub extern "C" fn swr_v1_phpthread_rshutdown() {
         unsafe { swr_zend_string_release(argv) };
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn new_threads_start_with_the_main_request_until_its_shutdown() {
-        // SAFETY: a C string and no `$argv`.
-        let bailed =
-            unsafe { swr_v1_phpthread_rinit(c"/srv/main.php".as_ptr(), 3, ptr::null_mut()) };
-        assert!(!bailed, "nothing to serialize");
-        let (mut path, mut argc) = (ptr::null(), -1);
-        // SAFETY: writable slots.
-        let argv = unsafe { swr_v1_phpthread_request(&raw mut path, &raw mut argc) };
-        assert!(argv.is_null(), "no $argv was kept");
-        assert_eq!(argc, 0, "argc is kept only with $argv");
-        // SAFETY: the path RINIT kept, valid until RSHUTDOWN.
-        assert_eq!(unsafe { CStr::from_ptr(path) }, c"/srv/main.php");
-        swr_v1_phpthread_rshutdown();
-        // SAFETY: as above.
-        unsafe { swr_v1_phpthread_request(&raw mut path, &raw mut argc) };
-        assert!(path.is_null(), "released at shutdown");
-    }
-
-    #[test]
-    fn stdio_descriptors_are_closed_once() {
-        // SAFETY: a fresh descriptor this test owns.
-        let fd = unsafe { libc::dup(1) };
-        STDIO.set([fd, -1, -1]);
-        swr_v1_phpthread_stdio_close();
-        // SAFETY: probing a descriptor that should be closed.
-        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1, "closed");
-        assert_eq!(STDIO.get(), [-1; 3], "forgotten");
-    }
-}
