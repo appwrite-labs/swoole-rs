@@ -11,6 +11,7 @@
 
 pub mod address;
 pub mod buffered;
+pub mod co_socket;
 pub mod connect;
 pub mod dns_cache;
 pub mod flock;
