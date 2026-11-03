@@ -110,7 +110,9 @@ pub struct SettingsHost {
     parse_size: unsafe extern "C" fn(*mut zval) -> i64,
     global_options: unsafe extern "C" fn(*mut c_void) -> bool,
     dispatch_func: unsafe extern "C" fn(*mut c_void, *mut zval) -> bool,
-    cpu_affinity_ignore: unsafe extern "C" fn(*mut c_void, *mut zval) -> c_int,
+    cpu_affinity: unsafe extern "C" fn(*mut c_int, usize, *mut c_int) -> c_int,
+    set_cpu_affinity: unsafe extern "C" fn(*mut c_void, *const c_int, usize),
+    strerror: unsafe extern "C" fn(c_int) -> *const c_char,
     create_dir: unsafe extern "C" fn(*const c_char, usize) -> c_int,
     msgqueue_key_valid: unsafe extern "C" fn(i64) -> bool,
     thread_options: unsafe extern "C" fn(*mut zend_object, *mut c_void) -> bool,
@@ -402,7 +404,6 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
 /// The task, worker and connection options.
 fn workers(s: &Settings) -> Step {
     use field as f;
-    let host = host();
     s.flag(c"discard_timeout_request", f::DISCARD_TIMEOUT_REQUEST);
     s.flag(c"enable_unsafe_event", f::ENABLE_UNSAFE_EVENT);
     s.flag(c"enable_delay_receive", f::ENABLE_DELAY_RECEIVE);
@@ -474,20 +475,70 @@ fn workers(s: &Settings) -> Step {
     s.flag(c"open_cpu_affinity", f::OPEN_CPU_AFFINITY);
     if s.fact(f::HAVE_CPU_AFFINITY) != 0
         && let Some(value) = s.get(c"cpu_affinity_ignore")
+        && !cpu_affinity_ignore(s, value)?
     {
-        {
-            // SAFETY: a live server and setting: 0 false, 1 true, 2 a trapped bailout.
-            match unsafe { (host.cpu_affinity_ignore)(s.serv, value) } {
-                1 => {}
-                2 => {
-                    bailout::defer(Err(bailout::Bailout));
-                    return Err(Stop);
-                }
-                _ => return Err(Stop),
-            }
-        }
+        return Err(Stop);
     }
     Ok(())
+}
+
+/// `CPU_SETSIZE`.
+const CPU_SETSIZE: usize = 1024;
+
+/// `php_swoole_server_set_cpu_affinity_ignore`: the CPUs left to bind workers
+/// to once `value`'s are taken out of this process's affinity. False: rejected.
+fn cpu_affinity_ignore(s: &Settings, value: *mut zval) -> Result<bool, Stop> {
+    let host = host();
+    // SAFETY: a live setting.
+    if unsafe { type_of(value) } != IS_ARRAY {
+        fatal(E_ERROR, c"cpu_affinity_ignore must be array");
+        return Err(Stop);
+    }
+    let mut cpus = vec![0; CPU_SETSIZE];
+    let mut error = 0;
+    // SAFETY: room for every CPU and a writable error.
+    let count = unsafe { (host.cpu_affinity)(cpus.as_mut_ptr(), cpus.len(), &raw mut error) };
+    let Ok(count) = usize::try_from(count) else {
+        // php_swoole_sys_error(E_WARNING, "sched_getaffinity() failed")
+        // SAFETY: plain state.
+        unsafe { (host.set_last_error)(error) };
+        // SAFETY: reads a setting.
+        if unsafe { (host.display_errors)() } {
+            // SAFETY: plain state.
+            let reason = unsafe { (host.strerror)(error) };
+            // SAFETY: Swoole's static error strings.
+            let reason = unsafe { CStr::from_ptr(reason) };
+            let text = message!(
+                "sched_getaffinity() failed, Error: {}[{error}]",
+                reason.to_string_lossy()
+            );
+            // SAFETY: a warning from a handler.
+            bailout::defer(unsafe { php_error(E_WARNING, text.as_cstr()) });
+        }
+        return checked().map(|()| false);
+    };
+    cpus.truncate(count);
+    // SAFETY: an array setting.
+    let ignored = unsafe { table(value) };
+    let mut items = Vec::new();
+    // SAFETY: a live table; the values are only collected.
+    unsafe {
+        swoole_rs_zend::each_value(ignored, |item| {
+            items.push(item);
+            true
+        });
+    }
+    for item in items {
+        let cpu = Settings::long(item)?;
+        cpus.retain(|&available| i64::from(available) != cpu);
+    }
+    if cpus.is_empty() {
+        fatal(E_ERROR, c"cpu_affinity_ignore excludes all available CPUs");
+        return Err(Stop);
+    }
+    // SAFETY: a live server and the CPUs left.
+    unsafe { (host.set_cpu_affinity)(s.serv, cpus.as_ptr(), cpus.len()) };
+    Ok(true)
 }
 
 /// The HTTP, buffer, queue and thread options, and the final checks.

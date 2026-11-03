@@ -153,6 +153,10 @@ typedef struct {
     void *(*co_current)(bool *bailed);
     bool (*co_suspending)(void *co);
     void (*co_yield)(void *co);
+    bool (*co_yield_ex)(void *co, double timeout);
+    /* serv->send(session_id, data, length). */
+    bool (*send)(void *server, int64_t session_id, const char *data, size_t length);
+    double (*send_timeout)(void *server);
     struct _zend_class_entry *(*process_class)(void);
     struct _zend_class_entry *(*exception_class)(void);
 } swr_v1_phpserver_lifecycle_host;
@@ -168,6 +172,13 @@ struct _zval_struct *swr_v1_phpserver_user_process(struct _zend_object *object, 
 /* A command handler's call: the callable's reply, written through `reply`; true if it bailed out. */
 bool swr_v1_phpserver_command_run(void *callable, void *server, const char *message, size_t length,
                                   swr_phpserver_reply reply, void *out);
+/* php_swoole_server_send_yield: 0 false, 1 true, 2 bailed out (re-raise it). */
+int swr_v1_phpserver_send_yield(void *server, int64_t session_id, const char *data, size_t length);
+/* send_yield's coroutines waiting on a session, taken from the server (null: none); wake each
+ * swr_v1_phpserver_send_next returns (pop: resume, else cancel), then free them. */
+void *swr_v1_phpserver_send_waiters(void *server, int64_t session_id);
+void *swr_v1_phpserver_send_next(void *waiters, bool pop);
+void swr_v1_phpserver_send_waiters_free(void *waiters);
 /* The Port object at `index` of the Server object, or null. */
 struct _zval_struct *swr_v1_phpserver_port(struct _zend_object *object, size_t index);
 #ifdef __cplusplus

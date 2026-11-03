@@ -6,8 +6,11 @@
 //! callbacks it installs (`native/process/swoole_rs_phpserver_lifecycle.h`).
 use crate::server::{SERVER, ServerData, fatal, running, server};
 use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
+    rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
@@ -170,6 +173,9 @@ pub struct LifecycleHost {
     co_current: unsafe extern "C" fn(*mut bool) -> *mut c_void,
     co_suspending: unsafe extern "C" fn(*mut c_void) -> bool,
     co_yield: unsafe extern "C" fn(*mut c_void),
+    co_yield_ex: unsafe extern "C" fn(*mut c_void, f64) -> bool,
+    send: unsafe extern "C" fn(*mut c_void, i64, *const c_char, usize) -> bool,
+    send_timeout: unsafe extern "C" fn(*mut c_void) -> f64,
     process_class: unsafe extern "C" fn() -> *mut zend_class_entry,
     exception_class: unsafe extern "C" fn() -> *mut zend_class_entry,
 }
@@ -189,8 +195,10 @@ pub unsafe extern "C" fn swr_v1_phpserver_lifecycle_init(table: *const Lifecycle
     HOST.store(table.cast_mut(), Ordering::Release);
 }
 
-/// What upstream's `ServerProperty` held. `send_coroutine_map` stays C++ with
-/// `send_yield`.
+/// `send_yield`'s coroutines waiting on one session, each with its token.
+type Waiters = Rc<RefCell<VecDeque<(u64, *mut c_void)>>>;
+
+/// What upstream's `ServerProperty` held.
 #[derive(Default)]
 pub(crate) struct Property {
     /// The Port objects (`sw_malloc_zval`, borrowed from `$server->ports`).
@@ -201,6 +209,10 @@ pub(crate) struct Property {
     callbacks: [*mut c_void; CALLBACKS],
     /// `addCommand`'s callables.
     commands: Vec<*mut c_void>,
+    /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
+    send_waiters: HashMap<i64, Waiters>,
+    /// The next waiter's token.
+    send_token: u64,
 }
 
 fn fact(serv: *mut c_void, id: u32) -> bool {
@@ -1136,6 +1148,106 @@ fn start(call: &Call) {
     // SAFETY: what `thread_prepare` made, or null.
     unsafe { (host.thread_release)(state) };
     call.set_bool(true);
+}
+
+/// `SW_ERROR_OUTPUT_SEND_YIELD`.
+const SW_ERROR_OUTPUT_SEND_YIELD: c_int = 1010;
+
+/// `php_swoole_server_send_yield`: wait in the session's queue until its
+/// output buffer drains, then send; repeat while the send asks to yield again.
+/// 0: false, 1: true, 2: a trapped bailout for the C++ caller to re-raise.
+/// # Safety
+/// `server` is the running server and `data` holds `length` bytes, live while
+/// the coroutine waits.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
+    server: *mut c_void,
+    session_id: i64,
+    data: *const c_char,
+    length: usize,
+) -> c_int {
+    let host = host();
+    let mut bailed = false;
+    // SAFETY: a writable flag.
+    let co = unsafe { (host.co_current)(&raw mut bailed) };
+    if bailed {
+        return 2;
+    }
+    if length == 0 {
+        return 0;
+    }
+    loop {
+        // SAFETY: the running server's live object.
+        let property = unsafe { property(instance(server)) };
+        let waiters = Rc::clone(property.send_waiters.entry(session_id).or_default());
+        property.send_token += 1;
+        let token = property.send_token;
+        waiters.borrow_mut().push_back((token, co));
+        // SAFETY: a live server.
+        let timeout = unsafe { (host.send_timeout)(server) };
+        // SAFETY: this call's coroutine; `onBufferEmpty` or `onClose` wakes it.
+        if !unsafe { (host.co_yield_ex)(co, timeout) } {
+            waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
+            return 0;
+        }
+        // SAFETY: a live server and the caller's bytes.
+        let sent = unsafe { (host.send)(server, session_id, data, length) };
+        // SAFETY: plain state.
+        let yielded = !sent && unsafe { (host.last_error)() } == SW_ERROR_OUTPUT_SEND_YIELD;
+        if yielded && fact(server, fact::SEND_YIELD) {
+            continue;
+        }
+        return c_int::from(sent);
+    }
+}
+
+/// Take the session's waiting coroutines out of the server for C++ to wake
+/// (`onBufferEmpty` resumes each, `onClose` cancels each): null when none
+/// wait. Release with `swr_v1_phpserver_send_waiters_free`.
+/// # Safety
+/// `server` is the running server.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_send_waiters(
+    server: *mut c_void,
+    session_id: i64,
+) -> *mut c_void {
+    // SAFETY: the running server's live object.
+    let property = unsafe { property(instance(server)) };
+    property
+        .send_waiters
+        .remove(&session_id)
+        .map_or(ptr::null_mut(), |waiters| {
+            Box::into_raw(Box::new(waiters)).cast()
+        })
+}
+
+/// The next coroutine to wake, or null: `pop` takes it off the queue (a
+/// resume), else it stays first until its `send_yield` leaves (a cancel).
+/// # Safety
+/// `waiters` is from `swr_v1_phpserver_send_waiters` and not yet freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_send_next(
+    waiters: *mut c_void,
+    pop: bool,
+) -> *mut c_void {
+    // SAFETY: per the caller.
+    let waiters = unsafe { &*waiters.cast::<Waiters>() };
+    let mut queue = waiters.borrow_mut();
+    let next = if pop {
+        queue.pop_front()
+    } else {
+        queue.front().copied()
+    };
+    next.map_or(ptr::null_mut(), |(_, co)| co)
+}
+
+/// Release what `swr_v1_phpserver_send_waiters` took.
+/// # Safety
+/// `waiters` is from `swr_v1_phpserver_send_waiters`, freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_send_waiters_free(waiters: *mut c_void) {
+    // SAFETY: per the caller.
+    drop(unsafe { Box::from_raw(waiters.cast::<Waiters>()) });
 }
 
 fn nothing(_: &Call) {}
