@@ -465,7 +465,7 @@ impl Client {
             basic_auth: Vec::new(),
             head: false,
             // SAFETY: as above.
-            resolve: unsafe { native::swoole_http_client_coro_resolve_new() },
+            resolve: unsafe { native::swoole_name_resolver_context_new() },
             parser: Parser::new(),
             wait_response: false,
             header_field: (ptr::null(), 0),
@@ -1440,7 +1440,7 @@ impl Drop for Client {
         // SAFETY: as above.
         unsafe { native::swoole_http_client_coro_ws_free(self.ws) };
         // SAFETY: as above.
-        unsafe { native::swoole_http_client_coro_resolve_free(self.resolve) };
+        unsafe { native::swoole_name_resolver_context_free(self.resolve) };
         // SAFETY: as above.
         unsafe { native::swoole_http_client_coro_file_free(self.download_file) };
         // SAFETY: the conn the client allocated; the socket hook no longer runs
