@@ -14,7 +14,10 @@ def extract(text,signature):
     start=text.index(marker,method)if marker in text else text.index('        if (php_swoole_array_get_value(vht, "ssl_compress", ztmp)) {',method)
     boundary='        // SNI frontend admission only; native iteration/context/crypto remains authoritative.'
     end=text.index(boundary,start)if boundary in text else text.index('        if (php_swoole_array_get_value(vht, "ssl_sni_certs", ztmp)) {',start)
-    return 'static void tls_prefix(TlsPort *port, HashTable *vht) {\n    zval *ztmp = nullptr;\n'+text[start:end]+'}\n'
+    body=text[start:end]
+    # Upstream's block sits in a void method; the Rust-backed one in a bool helper.
+    kind,tail=('bool','    return true;\n')if 'return false;' in body else('void','')
+    return f'static {kind} tls_prefix(TlsPort *port, HashTable *vht) {{\n    zval *ztmp = nullptr;\n{body}{tail}}}\n'
 
 
 def support(folder,args,read):
