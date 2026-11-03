@@ -96,8 +96,8 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_addresses(
     conn: *mut c_void,
     table: *mut HashTable,
     session: i64,
-    local_port: zend_long,
-    remote_port: zend_long,
+    local_port: i64,
+    remote_port: i64,
     loopback: c_int,
     cache: bool,
 ) {

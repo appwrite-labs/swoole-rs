@@ -298,7 +298,7 @@ struct _zend_array;
 void swr_v1_phphttp_server_addresses(void *server, void *conn, struct _zend_array *table, int64_t session,
                                      int64_t local_port, int64_t remote_port, int loopback, bool cache);
 void swr_v1_phphttp_server_close(int64_t session);
-bool swr_v1_phphttp_server_admit(void *context);
+bool swr_v1_phphttp_server_admit(void *ctx);
 void swr_v1_phphttp_server_release(void);
 void swr_v1_phphttp_server_rshutdown(void);
 typedef struct { uint32_t *concurrency; uint32_t *server_concurrency; uint32_t max_concurrency; bool shutdown; } swr_http_worker;
