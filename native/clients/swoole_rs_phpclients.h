@@ -31,7 +31,12 @@ void swr_v1_phpclients_socket_minit(struct _zend_class_entry *exception,
 void swoole_rs_php_error(int level, bool fatal, const char *message);
 void swoole_socket_coro_unconstructed(void);
 void *swoole_socket_coro_create(int64_t domain, int64_t type, int64_t protocol, int *error);
-void swoole_socket_coro_init(struct _zend_object *object);
+/* socket_coro_init's socket half: zero copy and the zend string allocator, then
+ * its fd, domain, type and protocol into fields. */
+void swoole_socket_coro_adopt(void *socket, int64_t *fields);
+/* A Coroutine\Socket object over socket, as socket_coro_init leaves it;
+ * reference: the object does not own the socket. */
+struct _zend_object *swr_v1_phpclients_socket_object(void *socket, bool reference);
 void swoole_socket_coro_release(struct _zend_object *object);
 void swoole_socket_coro_close(struct _zend_object *object);
 bool swoole_socket_coro_is_closed(void *socket);
@@ -121,8 +126,9 @@ void swoole_socket_coro_sockopt(void *call);
 /* getsockopt(SOL_TCP, TCP_INFO) into array: 1; 0 when name is not TCP_INFO (or
  * the build has none); -1 when it failed. */
 int swoole_socket_coro_tcp_info(void *socket, int name, struct _zval_struct *array);
-/* import's object, run inside zend_try: a socket over fd, holding stream, with
- * nonblock set; null when none could be made. */
+/* php_swoole_create_socket_from_fd(fd, type), run inside zend_try; with a
+ * stream (import), the object holds it and nonblock is set. Null when none
+ * could be made. */
 typedef struct {
     int fd, type, nonblock;
     struct _zval_struct *stream;

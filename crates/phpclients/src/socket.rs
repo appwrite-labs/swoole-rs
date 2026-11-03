@@ -379,7 +379,46 @@ fn construct(call: &Call) {
     }
     data.socket = socket;
     // SAFETY: `$this` now holds its socket.
-    unsafe { native::swoole_socket_coro_init(call.this()) };
+    unsafe { init(call.this()) };
+}
+
+/// `socket_coro_init`: zero copy and the zend string allocator, then the fd,
+/// domain, type and protocol properties.
+/// # Safety
+/// `object` is a live socket object holding its socket.
+unsafe fn init(object: *mut zend_object) {
+    let mut fields = [0_i64; 4];
+    // SAFETY: per the caller.
+    let socket = unsafe { SocketObject::data(object) }.socket;
+    // SAFETY: a live socket and four writable slots.
+    unsafe { native::swoole_socket_coro_adopt(socket, fields.as_mut_ptr()) };
+    for (name, field) in [c"fd", c"domain", c"type", c"protocol"]
+        .into_iter()
+        .zip(fields)
+    {
+        // SAFETY: a live instance of the registered class.
+        unsafe { value::update_long(SOCKET.entry(), object, name, field) };
+    }
+}
+
+/// A `Coroutine\Socket` object over `socket`, as `socket_coro_init` leaves it;
+/// with `reference`, the object does not own the socket.
+/// # Safety
+/// `socket` is a live coroutine socket; called after MINIT, from PHP's thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpclients_socket_object(
+    socket: *mut libc::c_void,
+    reference: bool,
+) -> *mut zend_object {
+    // SAFETY: a new object of the registered class.
+    let object = unsafe { create(SOCKET.entry()) };
+    // SAFETY: the object just created, not yet shared.
+    let data = unsafe { SocketObject::data(object) };
+    data.socket = socket;
+    data.reference = reference;
+    // SAFETY: the object holds its socket.
+    unsafe { init(object) };
+    object
 }
 
 /// `bind(string $address, int $port = 0): bool`.
@@ -436,7 +475,7 @@ fn accept(call: &Call) {
     // SAFETY: the return slot takes the new object's only reference.
     unsafe { set_object(call.return_value(), client) };
     // SAFETY: the object holds its socket.
-    unsafe { native::swoole_socket_coro_init(client) };
+    unsafe { init(client) };
 }
 
 /// `connect(string $host, int $port = 0, float $timeout = 0): bool`.

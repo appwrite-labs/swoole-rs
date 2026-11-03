@@ -1,4 +1,5 @@
-//! `Coroutine\Socket`'s option surface: `getOption`, `setOption` and `import`, and
+//! `Coroutine\Socket`'s option surface: `getOption`, `setOption`, `import` and
+//! `swoole_coroutine_socketpair()`, and
 //! the settings arrays every coroutine client applies to its socket
 //! (`php_swoole_socket_set`, `_set_protocol` and `_set_ssl`). Each reads its
 //! arguments in upstream's order and stops where upstream's fatal error would;
@@ -16,14 +17,17 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_zend::{
-    Call, bailout, php_error, set_object,
+    Call,
+    bailout::{self, Bailout},
+    php_error, set_object,
     string::bytes,
     sys::{
         _zend_expected_type_Z_EXPECTED_RESOURCE, E_ERROR, E_WARNING, HashTable, IS_ARRAY, IS_NULL,
         IS_OBJECT, IS_RESOURCE, IS_STRING, ZPP_ERROR_WRONG_ARG, php_stream, swr_zend_is_true,
-        swr_zend_object_properties, swr_zend_stream_socketd, swr_zend_stream_unbuffer,
-        swr_zend_string_release, swr_zend_zval_value_name, zend_argument_type_error,
-        zend_argument_value_error, zend_hash_str_find, zend_ini_parse_quantity, zend_string,
+        swr_zend_object_properties, swr_zend_object_release, swr_zend_stream_socketd,
+        swr_zend_stream_unbuffer, swr_zend_string_release, swr_zend_zval_value_name,
+        zend_argument_type_error, zend_argument_value_error, zend_hash_next_index_insert,
+        zend_hash_str_find, zend_ini_parse_quantity, zend_object, zend_string,
         zend_wrong_parameter_error, zval,
     },
     throw_exception, type_of,
@@ -1032,6 +1036,73 @@ fn domain(fd: c_int) -> Option<c_int> {
     (status == 0).then_some(c_int::from(address.ss_family))
 }
 
+/// `php_swoole_create_socket_from_fd(fd, kind)` inside `zend_try`: null when
+/// no socket could be made (after upstream's warning).
+fn from_fd(fd: c_int, kind: c_int) -> Result<*mut zend_object, Bailout> {
+    let mut call = native::ImportCall {
+        fd,
+        kind,
+        nonblock: 0,
+        stream: ptr::null_mut(),
+        object: ptr::null_mut(),
+    };
+    // SAFETY: C++ that may report a PHP error, with its arguments.
+    unsafe { bailout::trap(native::swoole_socket_coro_import, (&raw mut call).cast()) }?;
+    Ok(call.object)
+}
+
+/// `swoole_coroutine_socketpair(int $domain, int $type, int $protocol): array|false`.
+fn socketpair(call: &Call) {
+    let parsed = call
+        .arity(3, 3)
+        .and_then(|()| Ok((call.long(1, 0)?, call.long(2, 0)?, call.long(3, 0)?)));
+    let Ok((domain, kind, protocol)) = parsed else {
+        return call.set_bool(false);
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "(int) casts, as upstream's"
+    )]
+    let (domain, kind, protocol) = (domain as c_int, kind as c_int, protocol as c_int);
+    let mut pair: [c_int; 2] = [-1; 2];
+    // SAFETY: two writable descriptors.
+    if unsafe { libc::socketpair(domain, kind, protocol, pair.as_mut_ptr()) } != 0 {
+        warn_sys("failed to create socket", errno());
+        return call.set_bool(false);
+    }
+    // SAFETY: from a function handler.
+    unsafe { native::swoole_rs_check_reactor() };
+    let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
+    let first = match from_fd(pair[0], kind) {
+        Ok(object) if !object.is_null() => object,
+        Ok(_) => return call.set_bool(false),
+        Err(bailout) => return bailout.defer(),
+    };
+    let second = match from_fd(pair[1], kind) {
+        Ok(object) if !object.is_null() => object,
+        result => {
+            // SAFETY: the first object, not yet shared.
+            unsafe { swr_zend_object_release(first) };
+            return match result {
+                Err(bailout) => bailout.defer(),
+                Ok(_) => call.set_bool(false),
+            };
+        }
+    };
+    // SAFETY: the return slot is writable and holds nothing yet.
+    unsafe { value::array_init(call.return_value()) };
+    // SAFETY: the array just made.
+    let array = unsafe { table(call.return_value()) };
+    for object in [first, second] {
+        // SAFETY: an all-zero zval is undefined; it is given the object's only reference.
+        let mut item: zval = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        unsafe { set_object(&raw mut item, object) };
+        // SAFETY: the array takes the reference.
+        unsafe { zend_hash_next_index_insert(array, &raw mut item) };
+    }
+}
+
 /// `static import($stream): Socket|false`.
 fn import(call: &Call) {
     if call.arity(1, 1).is_err() {
@@ -1102,6 +1173,7 @@ fn import(call: &Call) {
 }
 
 swoole_rs_zend::handlers! {
+    zif_swoole_coroutine_socketpair => socketpair;
     zim_swoole_socket_coro_getOption => get_option;
     zim_swoole_socket_coro_setOption => set_option;
     zim_swoole_socket_coro_import => import;
