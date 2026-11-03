@@ -12,6 +12,7 @@
 #include <sys/statvfs.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <netdb.h>
 #include <sys/types.h>
 #include <sys/types.h>
 #ifdef __cplusplus
@@ -46,6 +47,14 @@ off_t swr_v1_hook_lseek(int fd, off_t offset, int whence, swr_v1_hook_offload of
 ssize_t swr_v1_hook_readlink(const char *pathname, char *buf, size_t len, swr_v1_hook_offload offload);
 int swr_v1_hook_statvfs(const char *path, struct statvfs *buf, swr_v1_hook_offload offload);
 int swr_v1_hook_access(const char *pathname, int mode, swr_v1_hook_offload offload);
+int swr_v1_hook_close_fd(int fd, swr_v1_hook_offload offload);
+int swr_v1_hook_getaddrinfo(const char *name,
+                            const char *service,
+                            const struct addrinfo *req,
+                            struct addrinfo **pai,
+                            swr_v1_hook_offload offload);
+/* The lookup's h_errno (0 if the pool refused it) becomes the caller's. */
+struct hostent *swr_v1_hook_gethostbyname(const char *name, swr_v1_hook_offload offload);
 bool swr_v1_hook_no_coro(bool reactor, bool coroutine);
 int32_t swr_v1_hook_transition(uint32_t requested, uint32_t installed, uint32_t bit);
 uint32_t swr_v1_hook_filter(uint32_t flags, uint32_t unavailable);
