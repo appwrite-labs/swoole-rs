@@ -16,6 +16,7 @@ mod control;
 mod dispatch;
 pub mod local_addr;
 pub mod ops;
+mod reactor_io;
 mod reactor_thread;
 mod startup;
 
@@ -139,7 +140,10 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
             startup::destroy(h);
             SW_OK
         }
-        _ => reactor_thread::run(h, operation, arg),
+        _ => match reactor_io::run(h, operation, arg) {
+            Some(result) => result,
+            None => reactor_thread::run(h, operation, arg),
+        },
     }
 }
 
