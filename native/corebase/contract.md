@@ -16,23 +16,20 @@ bailout or panic crosses the ABI. All spans and pointer differences fit
 ## Helpers
 
 - `type_size`: original ASCII character mapping; unknown returns 0.
-- `gcd` / `lcm`: native facades keep both positive-input assertions. LCM wraps
-  the `uint32` product before division (65536*65536 -> 0). Rust uses Euclid's
-  remainder loop. Native LCM's unsigned-to-int conversion above `INT_MAX` is
-  implementation-defined.
+- `swoole_common_divisor` / `_multiple`: Rust asserts both inputs are positive,
+  as upstream does (a failed assertion aborts). LCM wraps the `uint32` product
+  before division (65536*65536 -> 0). Rust uses Euclid's remainder loop.
 - `itoa`: writes decimal bytes then NUL into caller-owned storage and returns the
   length. Handles `LONG_MIN`. Buffers need only fit the
   actual value.
-- `radix`: base 2..36, writes backwards into scratch of at least
-  `sizeof(unsigned long)*8+1`. Returns `SIZE_MAX` without writing for invalid
-  radix, null output or short capacity. The facade keeps its assertion and calls
-  the original `sw_strndup` after Rust returns.
+- `swoole_dec2hex`: asserts base 2..36, formats backwards into scratch of
+  `sizeof(unsigned long)*8+1` bytes and returns a libc `strndup` of the digits.
 - `hex`: accepts all ASCII A..Z/a..z (as upstream, beyond F). Counts an optional
   `0x` prefix even without digits, wraps `size_t` per digit, then converts to
   `unsigned long`. The facade passes its compiler's plain-`char` signedness
   (`hex_mode`); in unsigned mode all bytes go to `toupper` as non-negative.
   Output must be writable and disjoint from input.
-- `version`: calls host `strtoul` left then right on every component, keeping
+- `swoole_version_compare`: calls host `strtoul` left then right on every component, keeping
   sticky errno/ERANGE and platform differences. Skips exactly one arbitrary
   separator between equal components.
 - `parse_stoi`: host decimal `strtol`, accepted only within `int` range. The
@@ -109,6 +106,14 @@ in upstream's order. `swr_v1_core_max_sockets` is the `RLIMIT_NOFILE` soft limit
 as `uint32_t`, capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept.
 `swoole_clean` resets the record after the native `Global`. The unused `uname`,
 `use_async_resolver` and `use_name_resolver` fields are gone.
+
+Upstream's own C++ symbols defined in Rust (`export_name`), with no body left in
+base.cc: `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
+`swoole_version_compare`, `swoole_dump_ascii`/`_hex`, `swoole::microtime`,
+`DataHead::dump`, both `swoole_rand` overloads, `swoole_random_int`, and
+`sw_malloc`/`sw_free`/`sw_calloc`/`sw_realloc`, which call libc's allocator
+directly (`SwooleG.std_allocator` only ever held it). The `corebase-native` gate
+checks the hybrid base.o leaves the first four to the Rust archive.
 
 Whole operations in Rust (`host.rs`), with native code keeping only their
 warnings: `swoole_shell_exec`, `sw_wait_for` (through a non-throwing predicate
