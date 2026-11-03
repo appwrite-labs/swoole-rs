@@ -24,8 +24,8 @@ mod vm;
 
 pub use module::{
     Globals, php_swoole_parse_to_size, php_swoole_register_shutdown_function,
-    swr_v1_phpswoole_init_globals, zif_swoole_set_process_name, zm_activate_swoole,
-    zm_deactivate_swoole, zm_shutdown_swoole,
+    swr_v1_phpswoole_init_globals, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,
+    swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
 };
 pub use options::{php_swoole_set_global_option, sw_zval_is_serializable};
 pub use table::swr_v1_phpswoole_functions;

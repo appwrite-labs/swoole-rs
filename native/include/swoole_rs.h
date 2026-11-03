@@ -231,7 +231,7 @@ const char *swr_v1_server_local_addr(const swr_v1_server_local_addrs *addrs, boo
  * globals (swr_v1_phpswoole_init_globals) and ini entries, then
  * swr_v1_phpswoole_minit registers the global constants, Swoole\Exception/Swoole\Error
  * and the short-name aliases and runs Swoole's core and every family's MINIT. Rust
- * defines MSHUTDOWN, RINIT and RSHUTDOWN (zm_*_swoole, declared in php_swoole.h), and
+ * defines MSHUTDOWN, RINIT and RSHUTDOWN (swr_v1_phpswoole_mshutdown, _rinit, _rshutdown), and
  * swoole_module_entry's function table is swr_v1_phpswoole_functions: Rust's rows (its
  * zif_swoole_* exports and C++'s) around the stdext/ssh2/ftp rows only C++'s #ifdefs
  * decide. C++ lends what only it can reach: Swoole's core, error, logger and MIME state.
@@ -309,6 +309,10 @@ void swr_v1_phpswoole_minit(int32_t module_number, uint32_t flags, const swr_v1_
                             struct _zend_class_entry **error);
 struct _zend_function_entry;
 const struct _zend_function_entry *swr_v1_phpswoole_functions(const struct _zend_function_entry *optional);
+/* The module's MSHUTDOWN, RINIT and RSHUTDOWN: 0 on success. */
+int swr_v1_phpswoole_mshutdown(int _kind, int module_number);
+int swr_v1_phpswoole_rinit(int _kind, int module_number);
+int swr_v1_phpswoole_rshutdown(int _kind, int module_number);
 /* ZEND_INIT_MODULE_GLOBALS' constructor of zend_swoole_globals. */
 void swr_v1_phpswoole_init_globals(void *globals);
 /* sw_php_allocator() (emalloc) and sw_zend_string_allocator() (zend_string values):

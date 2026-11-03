@@ -1,6 +1,6 @@
 //! The module's lifecycle, in upstream's order: the rest of MINIT after the
 //! constants and classes, and MSHUTDOWN, RINIT and RSHUTDOWN
-//! (`zm_shutdown_swoole`, `zm_activate_swoole`, `zm_deactivate_swoole`). Each
+//! (`swr_v1_phpswoole_mshutdown`, `_rinit`, `_rshutdown`). Each
 //! family's hook is C (`php_swoole_private.h` declares them `extern "C"`) and
 //! runs inside `zend_try`: a bailout stops the phase there, as it did
 //! upstream, and is raised once this frame is the only Rust one left.
@@ -222,7 +222,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_init_globals(globals: *mut Globals) {
 /// # Safety
 /// Zend's MSHUTDOWN.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zm_shutdown_swoole(_type: c_int, module_number: c_int) -> c_int {
+pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number: c_int) -> c_int {
     let ops = ops();
     let steps = [
         Step::Hook(ops.known_strings_dtor),
@@ -238,7 +238,7 @@ pub unsafe extern "C" fn zm_shutdown_swoole(_type: c_int, module_number: c_int) 
 /// # Safety
 /// Zend's RINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zm_activate_swoole(_type: c_int, module_number: c_int) -> c_int {
+pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_int) -> c_int {
     let globals = globals();
     // SAFETY: this thread's live globals (as for every access below).
     if !unsafe { (*globals).cli } {
@@ -293,7 +293,7 @@ pub unsafe extern "C" fn zm_activate_swoole(_type: c_int, module_number: c_int) 
 /// # Safety
 /// Zend's RSHUTDOWN.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zm_deactivate_swoole(_type: c_int, module_number: c_int) -> c_int {
+pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number: c_int) -> c_int {
     let globals = globals();
     // SAFETY: this thread's live globals (as for every access below).
     if !unsafe { (*globals).cli } {
