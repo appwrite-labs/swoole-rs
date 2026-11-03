@@ -1,10 +1,12 @@
-//! `Swoole\Server`'s classes, its connection, worker and lifecycle methods, and
-//! `Swoole\Connection\Iterator`. C++ keeps the Server and its objects and
-//! answers through the host table (`native/process/swoole_rs_phpserver_server.h`).
+//! `Swoole\Server`'s classes, its connection and worker methods, and
+//! `Swoole\Connection\Iterator`. C++ keeps the Server and its `Server\Task`
+//! objects and answers through the host table
+//! (`native/process/swoole_rs_phpserver_server.h`); lifecycle.rs owns the Server
+//! objects.
 use std::{
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
 use swoole_rs_phpstubs::server;
 use swoole_rs_zend::{
@@ -22,7 +24,7 @@ use swoole_rs_zend::{
 use swoole_rs_zend::{method_table, sys as z};
 
 /// Swoole error codes (`include/swoole_error.h`).
-const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
+pub(crate) const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
 const SW_ERROR_NO_PAYLOAD: c_int = 550;
 const SW_ERROR_SESSION_NOT_EXIST: c_int = 1005;
 /// `SW_MAX_FIND_COUNT`.
@@ -66,11 +68,6 @@ type Each = unsafe extern "C" fn(*mut c_void, i64);
 /// `swr_v1_phpserver_host`.
 #[repr(C)]
 pub struct ServerHost {
-    server_create: unsafe extern "C" fn(*mut zend_class_entry) -> *mut zend_object,
-    server_free: unsafe extern "C" fn(*mut zend_object),
-    task_create: unsafe extern "C" fn(*mut zend_class_entry) -> *mut zend_object,
-    task_free: unsafe extern "C" fn(*mut zend_object),
-    task_offset: usize,
     invalid: unsafe extern "C" fn(*mut zend_object),
     set_last_error: unsafe extern "C" fn(c_int),
     display_errors: unsafe extern "C" fn() -> bool,
@@ -136,14 +133,17 @@ pub(crate) static DATA: [Class; 5] = [
 ];
 static ITERATOR: Class = Class::new();
 
-/// `ServerObject` before its `zend_object`: `Server *serv; ServerProperty
-/// *property; zval init_arguments;` (C++ creates and frees it).
+/// `ServerObject` before its `zend_object`: `Server *serv; void *property;
+/// zval init_arguments;`, where `property` is lifecycle.rs's `Property`.
 #[repr(C)]
-struct ServerData {
-    serv: *mut c_void,
-    property: *mut c_void,
-    init_arguments: zval,
+pub(crate) struct ServerData {
+    pub(crate) serv: *mut c_void,
+    pub(crate) property: *mut c_void,
+    pub(crate) init_arguments: zval,
 }
+
+/// `SW_THREAD`, as MINIT was told.
+pub(crate) static THREAD: AtomicBool = AtomicBool::new(false);
 
 /// `ConnectionIterator`.
 #[repr(C)]
@@ -156,6 +156,26 @@ struct Iterator {
 }
 
 type IteratorObject = Object<Iterator>;
+
+/// `ServerTaskObject` before its `zend_object`: `Server *serv; DataHead info;`
+/// (C++ binds and reads them).
+#[repr(C)]
+struct TaskData {
+    serv: *mut c_void,
+    info: [u64; 5],
+}
+
+type TaskObject = Object<TaskData>;
+
+unsafe extern "C" fn task_create(ce: *mut zend_class_entry) -> *mut zend_object {
+    // SAFETY: Zend creates a task of this class; zeroes are an unbound one.
+    unsafe { TaskObject::create(&TASK, ce) }
+}
+
+unsafe extern "C" fn task_free(object: *mut zend_object) {
+    // SAFETY: Zend frees an object this class created.
+    unsafe { TaskObject::dtor(object) };
+}
 
 fn deny(handlers: &mut zend_object_handlers) {
     handlers.clone_obj = None;
@@ -317,14 +337,14 @@ const SERVER_PROPERTIES: &[Property] = &[
 
 method_table! {
     static SERVER_METHODS = [
-        c"__construct" => zim_swoole_server___construct, &server::arginfo_class_Swoole_Server___construct, z::ZEND_ACC_PUBLIC;
-        c"__destruct" => zim_swoole_server___destruct, &server::arginfo_class_Swoole_Server___destruct, z::ZEND_ACC_PUBLIC;
+        c"__construct" => crate::lifecycle::zim_swoole_server___construct, &server::arginfo_class_Swoole_Server___construct, z::ZEND_ACC_PUBLIC;
+        c"__destruct" => crate::lifecycle::zim_swoole_server___destruct, &server::arginfo_class_Swoole_Server___destruct, z::ZEND_ACC_PUBLIC;
         c"listen" => crate::io::zim_swoole_server_listen, &server::arginfo_class_Swoole_Server_listen, z::ZEND_ACC_PUBLIC;
         c"addlistener" => crate::io::zim_swoole_server_listen, &server::arginfo_class_Swoole_Server_listen, z::ZEND_ACC_PUBLIC;
         c"on" => crate::io::zim_swoole_server_on, &server::arginfo_class_Swoole_Server_on, z::ZEND_ACC_PUBLIC;
         c"getCallback" => crate::io::zim_swoole_server_getCallback, &server::arginfo_class_Swoole_Server_getCallback, z::ZEND_ACC_PUBLIC;
         c"set" => crate::settings::zim_swoole_server_set, &server::arginfo_class_Swoole_Server_set, z::ZEND_ACC_PUBLIC;
-        c"start" => zim_swoole_server_start, &server::arginfo_class_Swoole_Server_start, z::ZEND_ACC_PUBLIC;
+        c"start" => crate::lifecycle::zim_swoole_server_start, &server::arginfo_class_Swoole_Server_start, z::ZEND_ACC_PUBLIC;
         c"send" => crate::io::zim_swoole_server_send, &server::arginfo_class_Swoole_Server_send, z::ZEND_ACC_PUBLIC;
         c"sendto" => crate::io::zim_swoole_server_sendto, &server::arginfo_class_Swoole_Server_sendto, z::ZEND_ACC_PUBLIC;
         c"sendwait" => zim_swoole_server_sendwait, &server::arginfo_class_Swoole_Server_sendwait, z::ZEND_ACC_PUBLIC;
@@ -356,9 +376,9 @@ method_table! {
         c"connection_info" => zim_swoole_server_getClientInfo, &server::arginfo_class_Swoole_Server_getClientInfo, z::ZEND_ACC_PUBLIC;
         c"connection_list" => zim_swoole_server_getClientList, &server::arginfo_class_Swoole_Server_getClientList, z::ZEND_ACC_PUBLIC;
         c"sendMessage" => crate::io::zim_swoole_server_sendMessage, &server::arginfo_class_Swoole_Server_sendMessage, z::ZEND_ACC_PUBLIC;
-        c"command" => zim_swoole_server_command, &server::arginfo_class_Swoole_Server_command, z::ZEND_ACC_PUBLIC;
-        c"addCommand" => zim_swoole_server_addCommand, &server::arginfo_class_Swoole_Server_addCommand, z::ZEND_ACC_PUBLIC;
-        c"addProcess" => zim_swoole_server_addProcess, &server::arginfo_class_Swoole_Server_addProcess, z::ZEND_ACC_PUBLIC;
+        c"command" => crate::lifecycle::zim_swoole_server_command, &server::arginfo_class_Swoole_Server_command, z::ZEND_ACC_PUBLIC;
+        c"addCommand" => crate::lifecycle::zim_swoole_server_addCommand, &server::arginfo_class_Swoole_Server_addCommand, z::ZEND_ACC_PUBLIC;
+        c"addProcess" => crate::lifecycle::zim_swoole_server_addProcess, &server::arginfo_class_Swoole_Server_addProcess, z::ZEND_ACC_PUBLIC;
         c"stats" => zim_swoole_server_stats, &server::arginfo_class_Swoole_Server_stats, z::ZEND_ACC_PUBLIC;
         // SWOOLE_SOCKETS_SUPPORT builds only; MINIT drops it from the others.
         c"getSocket" => zim_swoole_server_getSocket, &server::arginfo_class_Swoole_Server_getSocket, z::ZEND_ACC_PUBLIC;
@@ -391,15 +411,8 @@ method_table! {
     ];
 }
 
-// The handlers that stay C++, and `swoole_last_error()` (crates/phpswoole),
-// which `getLastError()` aliases.
+// `swoole_last_error()` (crates/phpswoole), which `getLastError()` aliases.
 unsafe extern "C" {
-    fn zim_swoole_server___construct(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server___destruct(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_addCommand(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_addProcess(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_command(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_server_start(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_last_error(frame: *mut z::zend_execute_data, value: *mut z::zval);
 }
 
@@ -416,7 +429,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
     classes: *mut ServerClasses,
 ) {
     HOST.store(table.cast_mut(), Ordering::Release);
-    let host = host();
+    THREAD.store(thread, Ordering::Relaxed);
     let methods = if sockets {
         SERVER_METHODS.as_ptr()
     } else {
@@ -427,7 +440,12 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
         SERVER.register(c"Swoole\\Server", methods, |entry, handlers| {
             entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
             deny(handlers);
-            Object::<ServerData>::install(entry, handlers, host.server_create, host.server_free);
+            Object::<ServerData>::install(
+                entry,
+                handlers,
+                crate::lifecycle::swr_v1_phpserver_create,
+                crate::lifecycle::swr_v1_phpserver_free,
+            );
         });
     }
     // SAFETY: as above.
@@ -438,8 +456,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
             |entry, handlers| {
                 entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
                 deny(handlers);
-                Object::<ServerData>::install(entry, handlers, host.task_create, host.task_free);
-                handlers.offset = c_int::try_from(host.task_offset).unwrap_or(c_int::MAX);
+                TaskObject::install(entry, handlers, task_create, task_free);
             },
         );
     }
@@ -583,6 +600,24 @@ pub(crate) fn server(call: &Call) -> *mut c_void {
         unsafe { (host().invalid)(call.this()) };
     }
     serv
+}
+
+/// `SWOOLE_G(display_errors)`.
+pub(crate) fn display_errors() -> bool {
+    // SAFETY: reads a setting.
+    unsafe { (host().display_errors)() }
+}
+
+/// A new `Connection\Iterator` over `serv` and `port` (null: every port) in `target`.
+pub(crate) fn new_iterator(target: &mut zval, serv: *mut c_void, port: *mut c_void) {
+    // SAFETY: a writable zval and the registered iterator class.
+    unsafe { swoole_rs_zend::init_object(target, ITERATOR.entry()) };
+    // SAFETY: an object zval.
+    let object = unsafe { swoole_rs_zend::object_of(target) };
+    // SAFETY: an iterator object just created.
+    let iterator = unsafe { IteratorObject::data(object) };
+    iterator.serv = serv;
+    iterator.port = port;
 }
 
 /// `server(call)`, or `None` with a warning and `false` returned when the
@@ -1152,11 +1187,13 @@ mod tests {
 
     #[test]
     fn layouts_mirror_cxx() {
-        // ServerObject { Server *; ServerProperty *; zval init_arguments; zend_object std; }
+        // ServerObject { Server *; Property *; zval init_arguments; zend_object std; }
         assert_eq!(Object::<ServerData>::OFFSET, 32);
         // ConnectionIterator { int; SessionId; Server *; ListenPort *; int; }
         assert_eq!(size_of::<Iterator>(), 40);
         assert_eq!(IteratorObject::OFFSET, 40);
+        // ServerTaskObject { Server *; DataHead info; zend_object std; }
+        assert_eq!(TaskObject::OFFSET, 48);
     }
 
     #[test]

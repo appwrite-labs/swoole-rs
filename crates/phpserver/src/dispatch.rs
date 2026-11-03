@@ -52,7 +52,6 @@ pub struct Packet {
 pub struct DispatchHost {
     facts: unsafe extern "C" fn(*mut c_void, *mut Facts),
     zserv: unsafe extern "C" fn(*mut c_void) -> *mut zval,
-    callback: unsafe extern "C" fn(*mut c_void, c_int) -> *mut c_void,
     port_callback: unsafe extern "C" fn(*mut c_void, c_int, c_int) -> *mut c_void,
     call: unsafe extern "C" fn(*mut c_void, u32, *mut zval, bool) -> c_int,
     helper: unsafe extern "C" fn(*const c_char, u32, *mut zval) -> bool,
@@ -440,8 +439,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_pipe_message(
     source_worker_id: i64,
     time: f64,
 ) -> bool {
-    // SAFETY: a live server.
-    let cb = unsafe { (host().callback)(server, ON_PIPE_MESSAGE) };
+    let cb = server_callback(server, ON_PIPE_MESSAGE);
     let facts = facts(server);
     let mut args = [zserv(server), undef(), undef()];
     let argc = if facts.event_object {
@@ -502,8 +500,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_lifecycle(
         return false;
     };
     let host = host();
-    // SAFETY: a live server.
-    let cb = unsafe { (host.callback)(server, kind) };
+    let cb = server_callback(server, kind);
     let facts = facts(server);
     let mut args = [zserv(server), long(worker_id)];
     // SAFETY: the server's object zval.
@@ -556,8 +553,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_worker_error(
     code: i64,
     signal: i64,
 ) -> bool {
-    // SAFETY: a live server.
-    let cb = unsafe { (host().callback)(server, ON_WORKER_ERROR) };
+    let cb = server_callback(server, ON_WORKER_ERROR);
     let facts = facts(server);
     let mut args = [zserv(server), undef(), undef(), undef(), undef()];
     let argc = if facts.event_object {
@@ -594,8 +590,17 @@ pub(crate) fn server_zval(server: *mut c_void) -> zval {
 
 /// `server_object->get_callback(kind)`: a `zend::Callable *`, or null.
 pub(crate) fn server_callback(server: *mut c_void, kind: c_int) -> *mut c_void {
+    crate::lifecycle::callback(server, kind)
+}
+
+/// `*php_swoole_server_zval_ptr(serv) = *zserv`: no reference is taken.
+pub(crate) fn set_server_zval(server: *mut c_void, zserv: *mut zval) {
     // SAFETY: a live server.
-    unsafe { (host().callback)(server, kind) }
+    let slot = unsafe { (host().zserv)(server) };
+    // SAFETY: the live object zval.
+    let value = unsafe { *zserv };
+    // SAFETY: the server's instance slot.
+    unsafe { *slot = value };
 }
 
 /// The "`<class>->on<event> handler error`" warning of a failed call.

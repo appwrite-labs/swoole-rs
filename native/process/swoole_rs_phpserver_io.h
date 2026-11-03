@@ -16,8 +16,6 @@ struct _zend_string;
 typedef struct {
     /* !serv->is_worker_thread() && serv->is_started() */
     bool (*closed)(void *server);
-    /* Replace server-level callback `type` (property->callbacks) with `callable`; false if not callable. */
-    bool (*set_callback)(struct _zend_object *object, int type, struct _zval_struct *callable);
     /* The primary port's on()/getCallback() (0/1), called as a PHP method into `retval`;
      * true if a bailout was trapped. */
     bool (*port_call)(struct _zend_object *object, int which, struct _zval_struct *name, struct _zval_struct *callable,

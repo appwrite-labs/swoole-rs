@@ -24,7 +24,8 @@ def attest(manifest,archive,source_ref,metadata):
     if module_source!=sha(ROOT/'crates/ports/src/lib.rs'):raise ValueError('Manifest M25 source differs from this current socket-controller consumer')
     caller_digests={k:v for k,v in data['inputs']['headers_sha256'].items() if k.startswith('native/ports/')}
     caller_digests.update({item['path']:item['sha256'] for item in data['inputs']['patches'] if item['path'].startswith('migration/patches/ports/')})
-    expected={'native/ports/swoole_rs_ports.h','native/ports/swoole_rs_phpserver.h','migration/patches/ports/0001-port.patch','migration/patches/ports/0002-swoole_server_port.patch'}
+    # Every ports header and patch the build applied, as this checkout has them.
+    expected={str(path.relative_to(ROOT)) for pattern in ('native/ports/*.h','migration/patches/ports/*.patch') for path in ROOT.glob(pattern)}
     if set(caller_digests)!=expected or any(sha(ROOT/path)!=digest for path,digest in caller_digests.items()):raise ValueError('Manifest M25 header/callers differ from current socket-controller consumer')
     export=manifest.parent/'export.json'
     if export.exists():

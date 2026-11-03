@@ -121,7 +121,7 @@ index 547eedd..3ab3189 100644
 +PHP_FUNCTION(swoole_implicit_fn) {
      char *fn;
 diff --git a/ext-src/php_swoole_private.h b/ext-src/php_swoole_private.h
-index 3b1bd5c..22154fc 100644
+index 3b1bd5c..9e19d23 100644
 --- a/ext-src/php_swoole_private.h
 +++ b/ext-src/php_swoole_private.h
 @@ -40,10 +40,2 @@ BEGIN_EXTERN_C()
@@ -152,16 +152,12 @@ index 3b1bd5c..22154fc 100644
 -};
 -//---------------------------------------------------------
  enum php_swoole_req_status {
-@@ -171,3 +149,2 @@ enum php_swoole_hook_type {
- extern zend_class_entry *swoole_event_ce;
--extern zend_class_entry *swoole_timer_ce;
- extern zend_class_entry *swoole_socket_coro_ce;
-@@ -189,4 +166,2 @@ extern zend_object_handlers swoole_exception_handlers;
+@@ -189,4 +167,2 @@ extern zend_object_handlers swoole_exception_handlers;
  extern zend_class_entry *swoole_error_ce;
 -extern zend_class_entry *swoole_resolve_context_ce;
 -extern zend_object_handlers swoole_resolve_context_handlers;
  
-@@ -219,9 +194,2 @@ PHP_FUNCTION(swoole_tracer_prof_begin);
+@@ -219,9 +195,2 @@ PHP_FUNCTION(swoole_tracer_prof_begin);
  PHP_FUNCTION(swoole_tracer_prof_end);
 -//---------------------------------------------------------
 -//                  error
@@ -171,31 +167,31 @@ index 3b1bd5c..22154fc 100644
 -#define SW_STRERROR_DNS 2
 -#define SW_STRERROR_SWOOLE 9
  
-@@ -235,3 +203,2 @@ void php_swoole_atomic_minit(int module_number);
+@@ -235,3 +204,2 @@ void php_swoole_atomic_minit(int module_number);
  void php_swoole_lock_minit(int module_number);
 -int swoole_resolve_context_module_init(INIT_FUNC_ARGS);
  void php_swoole_process_minit(int module_number);
-@@ -333,6 +300,4 @@ void php_swoole_set_aio_option(const zend_array *vht);
+@@ -333,6 +301,4 @@ void php_swoole_set_aio_option(const zend_array *vht);
  void php_swoole_register_shutdown_function(const char *function);
 -void php_swoole_register_shutdown_function_prepend(const char *function);
  
  // event
 -void php_swoole_event_init();
  void php_swoole_event_wait();
-@@ -381,3 +346,2 @@ zend_bool php_swoole_signal_isset_handler(int signo);
+@@ -381,3 +347,2 @@ zend_bool php_swoole_signal_isset_handler(int signo);
  
 -#define sw_zend7_object zend_object
  #define SW_Z8_OBJ_P(zobj) Z_OBJ_P(zobj)
-@@ -385,3 +349,2 @@ zend_bool php_swoole_signal_isset_handler(int signo);
+@@ -385,3 +350,2 @@ zend_bool php_swoole_signal_isset_handler(int signo);
  typedef ssize_t php_stream_size_t;
 -typedef zend_string error_filename_t;
  
-@@ -508,14 +471,3 @@ void sw_php_print_backtrace_impl(int skip_last = 1, int options = 0, int limit =
+@@ -508,14 +472,4 @@ void sw_php_print_backtrace_impl(int skip_last = 1, int options = 0, int limit =
  
 -#define SW_REGISTER_NULL_CONSTANT(name) REGISTER_NULL_CONSTANT(name, CONST_CS | CONST_PERSISTENT)
 -#define SW_REGISTER_BOOL_CONSTANT(name, value) REGISTER_BOOL_CONSTANT(name, value, CONST_CS | CONST_PERSISTENT)
  #define SW_REGISTER_LONG_CONSTANT(name, value) REGISTER_LONG_CONSTANT(name, value, CONST_CS | CONST_PERSISTENT)
--#define SW_REGISTER_DOUBLE_CONSTANT(name, value) REGISTER_DOUBLE_CONSTANT(name, value, CONST_CS | CONST_PERSISTENT)
+ #define SW_REGISTER_DOUBLE_CONSTANT(name, value) REGISTER_DOUBLE_CONSTANT(name, value, CONST_CS | CONST_PERSISTENT)
 -#define SW_REGISTER_STRING_CONSTANT(name, value)                                                                       \
 -    REGISTER_STRING_CONSTANT(name, (char *) value, CONST_CS | CONST_PERSISTENT)
 -#define SW_REGISTER_STRINGL_CONSTANT(name, value)                                                                      \
@@ -205,7 +201,7 @@ index 3b1bd5c..22154fc 100644
 -
 -#define sw_php_math_round(value, places, mode) _php_math_round(value, places, mode)
  
-@@ -523,12 +475,2 @@ void sw_php_print_backtrace_impl(int skip_last = 1, int options = 0, int limit =
+@@ -523,12 +477,2 @@ void sw_php_print_backtrace_impl(int skip_last = 1, int options = 0, int limit =
  
 -#define SW_PHP_OB_START(zoutput)                                                                                       \
 -    zval zoutput;                                                                                                      \
@@ -218,11 +214,11 @@ index 3b1bd5c..22154fc 100644
 -    while (0)
 -
  static sw_inline zend_string *sw_zend_string_recycle(zend_string *s, size_t alloc_len, size_t real_len) {
-@@ -561,3 +503,2 @@ static sw_inline int php_swoole_array_length_safe(zval *zarray) {
+@@ -561,3 +505,2 @@ static sw_inline int php_swoole_array_length_safe(zval *zarray) {
  void php_swoole_sha1(const char *str, int _len, uchar *digest);
 -void php_swoole_sha256(const char *str, int _len, uchar *digest);
  
-@@ -582,16 +523,2 @@ void php_swoole_sha256(const char *str, int _len, uchar *digest);
+@@ -582,16 +525,2 @@ void php_swoole_sha256(const char *str, int _len, uchar *digest);
  
 -static sw_inline void add_assoc_ulong_safe_ex(zval *arg, const char *key, size_t key_len, zend_ulong value) {
 -    if (sw_likely(value <= ZEND_LONG_MAX)) {
@@ -239,7 +235,7 @@ index 3b1bd5c..22154fc 100644
 -}
 -
  //----------------------------------Class API------------------------------------
-@@ -764,9 +691,2 @@ static sw_inline zval *sw_zend_read_property(zend_class_entry *ce, zval *obj, co
+@@ -764,9 +693,2 @@ static sw_inline zval *sw_zend_read_property(zend_class_entry *ce, zval *obj, co
  
 -static sw_inline void sw_zend_update_property_null_ex(zend_class_entry *scope, zval *object, zend_string *s) {
 -    zval tmp;
@@ -249,7 +245,7 @@ index 3b1bd5c..22154fc 100644
 -}
 -
  static sw_inline zval *sw_zend_read_property_ex(zend_class_entry *ce, zval *zobject, zend_string *name, int silent) {
-@@ -781,9 +701,2 @@ static sw_inline zval *sw_zend_read_property_ex(zend_class_entry *ce, zval *zobj
+@@ -781,9 +703,2 @@ static sw_inline zval *sw_zend_read_property_ex(zend_class_entry *ce, zval *zobj
  
 -static sw_inline zval *sw_zend_read_property_not_null(
 -    zend_class_entry *ce, zval *obj, const char *s, size_t len, int silent) {
@@ -259,7 +255,7 @@ index 3b1bd5c..22154fc 100644
 -}
 -
  static sw_inline zval *sw_zend_read_property_not_null_ex(zend_class_entry *ce, zval *obj, zend_string *s, int silent) {
-@@ -851,11 +764,2 @@ static sw_inline int sw_zend_function_max_num_args(zend_function *function) {
+@@ -851,11 +766,2 @@ static sw_inline int sw_zend_function_max_num_args(zend_function *function) {
  
 -// TODO: remove it after remove async modules
 -static sw_inline zend_bool sw_zend_is_callable(zval *callable, int check_flags, char **callable_name) {
@@ -495,7 +491,7 @@ index 590ed3a..5ae9dcd 100644
 +ZEND_FUNCTION(swoole_get_object_by_handle);
  END_EXTERN_C()
 diff --git a/include/swoole.h b/include/swoole.h
-index 9674d83..a653c13 100644
+index 9674d83..7e60535 100644
 --- a/include/swoole.h
 +++ b/include/swoole.h
 @@ -91,3 +91,2 @@ typedef unsigned long ulong_t;
@@ -539,44 +535,29 @@ index 9674d83..a653c13 100644
 -#endif
 -
  #ifndef MAX
-@@ -165,3 +144,2 @@ static constexpr const char *sw_log_origin = nullptr;
- 
--#define SW_NUM_BILLION (1000 * 1000 * 1000)
- #define SW_NUM_MILLION (1000 * 1000)
-@@ -182,3 +160,2 @@ static constexpr const char *sw_log_origin = nullptr;
+@@ -182,3 +161,2 @@ static constexpr const char *sw_log_origin = nullptr;
  #endif
 -#define SW_START_SLEEP usleep(100000)  // sleep 0.1s, wait fork and pthread_create
  
-@@ -512,4 +489,2 @@ typedef unsigned char uchar;
+@@ -512,4 +490,2 @@ typedef unsigned char uchar;
  
 -#define swoole_tolower(c) (uchar)((c >= 'A' && c <= 'Z') ? (c | 0x20) : c)
 -#define swoole_toupper(c) (uchar)((c >= 'a' && c <= 'z') ? (c & ~0x20) : c)
  
 diff --git a/include/swoole_config.h b/include/swoole_config.h
-index 8a9b8fa..94daa31 100644
+index 8a9b8fa..89a7afd 100644
 --- a/include/swoole_config.h
 +++ b/include/swoole_config.h
-@@ -72,3 +72,2 @@
- #define SW_IPC_BUFFER_SIZE (SW_IPC_MAX_SIZE - sizeof(swoole::DataHead))
--#define SW_IPC_MSG_MIN (2048 - sizeof(swoole::DataHead))
- // !!!End.-------------------------------------------------------------------
-@@ -93,3 +92,2 @@
- #define SW_WORKER_MIN_REQUEST 10
--#define SW_WORKER_MAX_RECV_CHUNK_COUNT 32
- 
-@@ -129,4 +127,2 @@
+@@ -129,4 +129,2 @@
  
 -#define SW_FILE_CHUNK_SIZE 65536
 -
  #define SW_TABLE_CONFLICT_PROPORTION 0.2  // 20%
-@@ -165,6 +161,4 @@
- #define SW_HTTP_SERVER_SOFTWARE "swoole-http-server"
--#define SW_HTTP_SERVER_BOUNDARY_PREKEY "SwooleBoundary"
- #define SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE 39
+@@ -168,3 +166,2 @@
  #define SW_HTTP_SERVER_PART_HEADER 256
 -#define SW_HTTP_PARAM_MAX_NUM 128
  #define SW_HTTP_FORM_KEYLEN 512
-@@ -200,7 +194,3 @@ a { color: #0969da; } \
+@@ -200,7 +197,3 @@ a { color: #0969da; } \
  
 -#define SW_HTTP_PAGE_400                                                                                               \
 -    "<html><body>" SW_HTTP_PAGE_CSS "<h1>HTTP 400 Bad Request</h1>" SW_HTTP_POWER_BY "</body></html>"
@@ -584,11 +565,11 @@ index 8a9b8fa..94daa31 100644
 -#define SW_HTTP_PAGE_500                                                                                               \
 -    "<html><body>" SW_HTTP_PAGE_CSS "<h1>HTTP 500 Internal Server Error</h1>" SW_HTTP_POWER_BY "</body></html>"
  
-@@ -217,3 +207,2 @@ a { color: #0969da; } \
+@@ -217,3 +210,2 @@ a { color: #0969da; } \
  
 -#define SW_HTTP_CLIENT_USERAGENT "swoole-http-client"
  #define SW_HTTP_CLIENT_BOUNDARY_PREKEY "----SwooleBoundary"
-@@ -228,17 +217,4 @@ a { color: #0969da; } \
+@@ -228,17 +220,4 @@ a { color: #0969da; } \
  #define SW_WEBSOCKET_KEY_LENGTH 16
 -#define SW_WEBSOCKET_QUEUE_SIZE 16
  #define SW_WEBSOCKET_EXTENSION_DEFLATE "permessage-deflate; client_no_context_takeover; server_no_context_takeover"

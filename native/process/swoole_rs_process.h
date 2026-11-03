@@ -6,20 +6,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef struct { uint32_t action; bool callback_called; } swr_v1_process_exit_observation;
-typedef struct { bool timed_out; bool update_timeout; int32_t timeout_msec; } swr_v1_process_exit_budget_result;
-swr_v1_process_exit_observation swr_v1_process_worker_exit(bool can_exit, bool callback_present, bool callback_called);
-swr_v1_process_exit_budget_result swr_v1_process_exit_budget(int32_t remaining, int32_t timeout_msec);
-bool swr_v1_process_discard_data(bool present, bool closed, bool disable_notify, bool discard_timeout);
-uint32_t swr_v1_process_task_action(bool pipe, bool shutdown, bool command);
-uint32_t swr_v1_process_finish_error(bool pipe, bool no_reply);
-int32_t swr_v1_process_result_flags(int32_t flags, bool callback, bool coroutine, int32_t callback_flag, int32_t coroutine_flag);
-uint32_t swr_v1_process_reload_action(bool all, bool task);
-/* Manager::signal_handler action: 0 none, 1 stop, 2 reload all, 3 reload workers,
- * 4 read message, 5 force-kill if armed, 6 reopen logger. */
-uint32_t swr_v1_process_manager_signal_action(int signo);
-/* Server::worker_signal_handler action: 0 none, 1 terminate, 2 reopen logger. */
-uint32_t swr_v1_process_worker_signal_action(int signo);
 typedef struct { uint32_t status; int32_t error; } swr_v1_process_affinity_outcome;
 swr_v1_process_affinity_outcome swr_v1_process_worker_affinity(uint32_t worker_id, const int32_t *available, int32_t available_len, bool thread);
 typedef struct { uint32_t status; int32_t error; int32_t fd; size_t read; } swr_v1_process_task_file_read_result;
