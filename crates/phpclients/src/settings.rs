@@ -255,10 +255,21 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
         let fd = unsafe { native::swoole_client_fd(cli) };
         warn_sys(&format!("setsockopt({fd}, TCP_NODELAY) failed"), error);
     }
+    if !proxies(cli, &options) {
+        return Some(false);
+    }
+    if option(cli, OPEN_SSL, 0) != 0 {
+        apply_ssl(cli, settings);
+    }
+    Some(true)
+}
+
+/// The SOCKS5 or HTTP proxy options: false when the port is missing.
+fn proxies(cli: Cli, options: &Options) -> bool {
     if let Some(host) = options.string("socks5_host") {
         let Some(port) = options.long("socks5_port") else {
             warn(ErrorKind::Fatal, "socks5_port should not be null");
-            return Some(false);
+            return false;
         };
         let user = options.string("socks5_username");
         let password = options.string("socks5_password");
@@ -266,7 +277,7 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
     } else if let Some(host) = options.string("http_proxy_host") {
         let Some(port) = options.long("http_proxy_port") else {
             warn(ErrorKind::Fatal, "http_proxy_port should not be null");
-            return Some(false);
+            return false;
         };
         let user = options
             .string("http_proxy_username")
@@ -274,10 +285,7 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
         let password = options.string("http_proxy_password");
         proxy(cli, true, &host, port, user.as_ref(), password.as_ref());
     }
-    if option(cli, OPEN_SSL, 0) != 0 {
-        apply_ssl(cli, settings);
-    }
-    Some(true)
+    true
 }
 
 /// `SWOOLE_CLIENT_OPT_LENGTH_FUNC`: install `callable`, returning the previous one.
