@@ -11,17 +11,16 @@ use crate::ops::{
     OP_CONN_CLOSING_FLAG, OP_CONN_FORCE, OP_CONN_RESETTING, OP_CONN_UID, OP_CONN_WORKER,
     OP_DGRAM_PORT, OP_DISPATCH_FUNC, OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_FD_CONN,
     OP_FEEDBACK_SEND, OP_FEEDBACK_THREAD, OP_FIELD, OP_FORWARD_CLOSE, OP_FORWARD_SEND,
-    OP_HAS_DISPATCH_FUNC, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IDLE_WORKER, OP_INFO_CONN, OP_IP_KEY,
-    OP_IS_CREATED, OP_IS_MASTER, OP_LOWEST_CONCURRENT, OP_LOWEST_LOAD, OP_MODE,
-    OP_NEW_BASE_FACTORY, OP_NEW_PORT_TYPE, OP_NOT_EXIST, OP_NOTIFY_ACCEPT, OP_PIN_LOWEST,
-    OP_PIPE_NOBUFS, OP_PORT_COUNT, OP_PORT_IMPORT, OP_PORT_NEW, OP_PORT_NUMBER, OP_PORT_PUSH,
-    OP_PORT_SOCKET, OP_PORT_TYPE, OP_ROUND_NEXT, OP_SEND_HERE, OP_SEND_KIND_OK, OP_SEND_SYNC,
+    OP_HAS_DISPATCH_FUNC, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_INFO_CONN, OP_IP_KEY, OP_IS_CREATED,
+    OP_IS_MASTER, OP_MODE, OP_NEW_BASE_FACTORY, OP_NEW_PORT_TYPE, OP_NOT_EXIST, OP_NOTIFY_ACCEPT,
+    OP_PIN_WORKER, OP_PIPE_NOBUFS, OP_PORT_COUNT, OP_PORT_IMPORT, OP_PORT_NEW, OP_PORT_NUMBER,
+    OP_PORT_PUSH, OP_PORT_SOCKET, OP_PORT_TYPE, OP_SEND_HERE, OP_SEND_KIND_OK, OP_SEND_SYNC,
     OP_SENDFILE_FINISH, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX,
     OP_SENDFILE_OFFSET, OP_SESSION_FD, OP_SESSION_FOREIGN, OP_SET_CLOSING, OP_SOCKET_CONN,
     OP_SOCKET_NOBUFS, OP_STREAM_PORT, OP_SYSTEMD_FDS, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN,
-    OP_WORKER_IDLE, TRACE_FORWARD,
+    OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WORKER_IDLE, TRACE_FORWARD,
 };
-use crate::{Host, MODE_PROCESS, SW_OK};
+use crate::{Host, MODE_PROCESS, SW_OK, state};
 use core::ffi::c_char;
 
 /// `Server::DispatchMode`, `DISPATCH_RESULT_USERFUNC_FALLBACK`; native asserts each.
@@ -63,7 +62,7 @@ pub(crate) fn schedule_worker<H: Host>(h: &mut H, fd: i32) -> i64 {
         .unwrap_or(u32::MAX)
         .max(1);
     let key = match field(h, FIELD_DISPATCH_MODE) {
-        DISPATCH_ROUND => u32::try_from(h.get(OP_ROUND_NEXT) & 0xffff_ffff).unwrap_or(0),
+        DISPATCH_ROUND => h.state().next_round(),
         DISPATCH_FDMOD => fd_key,
         DISPATCH_IPMOD => u32::try_from(h.get(OP_IP_KEY) & 0xffff_ffff).unwrap_or(0),
         DISPATCH_UIDMOD => {
@@ -84,15 +83,17 @@ pub(crate) fn schedule_worker<H: Host>(h: &mut H, fd: i32) -> i64 {
             }
             let worker = h.signed(OP_CONN_WORKER);
             return if worker < 0 {
-                h.signed(OP_PIN_LOWEST)
+                let lowest = state::lowest(h, OP_WORKER_COROUTINES);
+                h.op(OP_PIN_WORKER, lowest.cast_unsigned());
+                lowest
             } else {
                 worker
             };
         }
-        DISPATCH_CO_REQ_LB => return h.signed(OP_LOWEST_LOAD),
-        DISPATCH_CONCURRENT_LB => return h.signed(OP_LOWEST_CONCURRENT),
+        DISPATCH_CO_REQ_LB => return state::lowest(h, OP_WORKER_COROUTINES),
+        DISPATCH_CONCURRENT_LB => return state::lowest(h, OP_WORKER_CONCURRENCY),
         // Deliver to an idle worker.
-        _ => return h.signed(OP_IDLE_WORKER),
+        _ => return state::idle_worker(h),
     };
     i64::from(key % workers)
 }
@@ -389,8 +390,8 @@ mod tests {
             "fd mod"
         );
         assert_eq!(
-            schedule_worker(&mut mode(DISPATCH_ROUND, &[(OP_ROUND_NEXT, 7)]), 10),
-            3,
+            schedule_worker(&mut mode(DISPATCH_ROUND, &[]), 10),
+            0,
             "round robin"
         );
         assert_eq!(
@@ -423,22 +424,22 @@ mod tests {
                     &[
                         (OP_FD_CONN, 1),
                         (OP_CONN_WORKER, u64::MAX),
-                        (OP_PIN_LOWEST, 3)
+                        (OP_WORKER_COROUTINES, 1)
                     ]
                 ),
                 10
             ),
-            3,
+            0,
             "pinned to the lowest load"
         );
         assert_eq!(
-            schedule_worker(&mut mode(DISPATCH_CO_REQ_LB, &[(OP_LOWEST_LOAD, 1)]), 10),
-            1,
+            schedule_worker(&mut mode(DISPATCH_CO_REQ_LB, &[]), 10),
+            0,
             "lowest load"
         );
         assert_eq!(
-            schedule_worker(&mut mode(3, &[(OP_IDLE_WORKER, 2)]), 10),
-            2,
+            schedule_worker(&mut mode(3, &[(OP_WORKER_IDLE, 1)]), 10),
+            0,
             "idle worker"
         );
         let mut s = Script::with(&[(OP_HAS_DISPATCH_FUNC, 1), (OP_DISPATCH_FUNC, 6)]);
