@@ -582,7 +582,7 @@ pub const OP_FEEDBACK_SEND: u32 = 412;
 pub const OP_VERIFY_CONN: u32 = 413;
 /// `send_sync` of the context data; whether all of it was sent.
 pub const OP_SEND_SYNC: u32 = 414;
-/// Selects `get_connection(arg)` when it has a socket.
+/// Selects `get_connection(arg)`: 0 when it has no socket, else 1, plus 2 in process mode.
 pub const OP_SOCKET_CONN: u32 = 415;
 pub const OP_PIPE_NOBUFS: u32 = 416;
 pub const OP_SOCKET_NOBUFS: u32 = 417;

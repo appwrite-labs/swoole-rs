@@ -470,6 +470,10 @@ pub const OP_SPAWN_MANAGER_THREAD: u32 = 385;
 pub const OP_PORT_DGRAM: u32 = 386;
 pub const OP_SET_MASTER_THREAD_ID: u32 = 387;
 pub const OP_START_MASTER_THREAD: u32 = 388;
+/// `Server::worker_accept_event`'s ends: the worker is busy, the event's type; the worker
+/// is idle, whether it exceeded its maximum request count.
+pub const OP_EVENT_BEGIN: u32 = 389;
+pub const OP_EVENT_END: u32 = 390;
 #[cfg(test)]
 pub(crate) const NUMBERED: &[(&str, u32)] = &[
     ("RUN_SIGNAL_INIT", RUN_SIGNAL_INIT),
@@ -914,6 +918,8 @@ pub(crate) const NUMBERED: &[(&str, u32)] = &[
     ("OP_PORT_DGRAM", OP_PORT_DGRAM),
     ("OP_SET_MASTER_THREAD_ID", OP_SET_MASTER_THREAD_ID),
     ("OP_START_MASTER_THREAD", OP_START_MASTER_THREAD),
+    ("OP_EVENT_BEGIN", OP_EVENT_BEGIN),
+    ("OP_EVENT_END", OP_EVENT_END),
 ];
 // END NUMBERED
 
