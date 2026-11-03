@@ -13,7 +13,7 @@ default = []
 # The PHP classes: Swoole\Timer and each enabled module's php* crate (empty without
 # it). Only the extension's archive has PHP; the native gates' archive leaves it
 # off so it holds no Zend references (docs/zend.md).
-php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php",
+php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpredis", "swoole-rs-phpredis/php",
        "swoole-rs-phplocks?/php", "swoole-rs-phpruntime?/php", "swoole-rs-phpserver?/php", "swoole-rs-phpprocess?/php", "swoole-rs-phpthread?/php", "swoole-rs-phpclients?/php", "swoole-rs-phphttp?/php", "swoole-rs-phphttp2?/php", "swoole-rs-phpstdext?/php", "swoole-rs-phpcollections?/php", "swoole-rs-phpevents?/php", "swoole-rs-phpcoroutines?/php"]
 
 memory = ["dep:swoole-rs-memory"]
@@ -31,6 +31,10 @@ coroutine = ["dep:swoole-rs-coroutine"]
 hooks = ["dep:swoole-rs-hooks", "dep:swoole-rs-phpruntime"]
 # Not a module: the hybrid adds it when configured with --enable-iouring.
 iouring = ["hooks", "swoole-rs-hooks/iouring"]
+# Not modules: the hybrid adds each when configured with its database hook
+# (--enable-swoole-pgsql, --with-swoole-odbc).
+pgsql = ["hooks", "dep:swoole-rs-pgsql"]
+odbc = ["hooks", "dep:swoole-rs-odbc"]
 
 ossupport = ["dep:swoole-rs-ossupport"]
 tls = ["dep:swoole-rs-tls"]
@@ -60,6 +64,7 @@ swoole-rs-locks = { path = "../locks", optional = true }
 swoole-rs-phplocks = { path = "../phplocks", optional = true }
 swoole-rs-phptimer = { path = "../phptimer", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
+swoole-rs-phpredis = { path = "../phpredis", optional = true }
 swoole-rs-wrappers = { path = "../wrappers", optional = true }
 swoole-rs-framing = { path = "../framing" }
 swoole-rs-server = { path = "../server" }
@@ -87,6 +92,8 @@ swoole-rs-phpstdext = { path = "../phpstdext", optional = true }
 swoole-rs-phpcollections = { path = "../phpcollections", optional = true }
 swoole-rs-phpevents = { path = "../phpevents", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
+swoole-rs-pgsql = { path = "../pgsql", optional = true }
+swoole-rs-odbc = { path = "../odbc", optional = true }
 
 [lints]
 workspace = true

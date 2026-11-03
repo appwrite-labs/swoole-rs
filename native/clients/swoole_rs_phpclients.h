@@ -14,7 +14,7 @@ extern "C" {
 /* PHP Coroutine\Socket (crates/phpclients). Rust registers the class with its
  * method table, its exception,
  * properties and constants, and the methods are its zim_swoole_socket_coro_*
- * exports (getOption, setOption and import stay C++). */
+ * exports. */
 struct _zend_class_entry;
 struct _zend_object;
 struct _zval_struct;
@@ -31,7 +31,12 @@ void swr_v1_phpclients_socket_minit(struct _zend_class_entry *exception,
 void swoole_rs_php_error(int level, bool fatal, const char *message);
 void swoole_socket_coro_unconstructed(void);
 void *swoole_socket_coro_create(int64_t domain, int64_t type, int64_t protocol, int *error);
-void swoole_socket_coro_init(struct _zend_object *object);
+/* socket_coro_init's socket half: zero copy and the zend string allocator, then
+ * its fd, domain, type and protocol into fields. */
+void swoole_socket_coro_adopt(void *socket, int64_t *fields);
+/* A Coroutine\Socket object over socket, as socket_coro_init leaves it;
+ * reference: the object does not own the socket. */
+struct _zend_object *swr_v1_phpclients_socket_object(void *socket, bool reference);
 void swoole_socket_coro_release(struct _zend_object *object);
 void swoole_socket_coro_close(struct _zend_object *object);
 bool swoole_socket_coro_is_closed(void *socket);
@@ -61,7 +66,75 @@ bool swoole_socket_coro_getsockname(void *socket);
 bool swoole_socket_coro_getpeername(void *socket, char *address, size_t size, int *port);
 bool swoole_socket_coro_cancel(void *socket, int event);
 bool swoole_socket_coro_ssl_handshake(void *socket);
-bool swoole_socket_coro_set_protocol(void *socket, const struct _zval_struct *settings);
+/* The settings arrays (php_swoole_socket_set, _set_protocol and _set_ssl), for
+ * C++ callers: whether they all applied. A deferred bailout is raised last. */
+enum { SWR_PHPCLIENTS_SETTINGS_ALL = 0, SWR_PHPCLIENTS_SETTINGS_PROTOCOL = 1, SWR_PHPCLIENTS_SETTINGS_SSL = 2 };
+bool swr_v1_phpclients_socket_settings(void *socket, const struct _zval_struct *settings, int which);
+/* What the options and settings need from the C++ socket. flag: 0 open_length_check,
+ * 1 open_eof_check, 2 http2. preset: 0 mqtt::set_protocol, 1 the default length function. */
+void swoole_socket_coro_set_flag(void *socket, int flag, bool value);
+void *swoole_socket_coro_protocol(void *socket);
+void swoole_socket_coro_protocol_preset(void *socket, int kind);
+/* package_length_func, run inside zend_try: a callable replaces any earlier one. */
+typedef struct {
+    void *socket;
+    struct _zval_struct *value;
+} swoole_socket_coro_callable;
+void swoole_socket_coro_length_callable(void *call);
+bool swoole_socket_coro_set_option(void *socket, int level, int name, int value);
+void swoole_socket_coro_set_timeout(void *socket, double timeout, int type);
+double swoole_socket_coro_get_timeout(void *socket, int type);
+void swoole_socket_coro_proxy(void *socket, bool http, const char *host, size_t host_length, int64_t port,
+                              const char *user, size_t user_length, const char *password, size_t password_length);
+/* SSL: ENABLE is enable_ssl_encrypt(), ENABLED ssl_is_enable(), the file options
+ * report whether the file exists, HAS_* whether one is set; the rest set text or
+ * value and return true, or false when the build lacks them (ssl_supports). */
+enum {
+    SWR_PHPCLIENTS_SSL_ENABLE,
+    SWR_PHPCLIENTS_SSL_ENABLED,
+    SWR_PHPCLIENTS_SSL_PROTOCOLS,
+    SWR_PHPCLIENTS_SSL_DISABLE_COMPRESS,
+    SWR_PHPCLIENTS_SSL_CERT_FILE,
+    SWR_PHPCLIENTS_SSL_KEY_FILE,
+    SWR_PHPCLIENTS_SSL_HAS_CERT_FILE,
+    SWR_PHPCLIENTS_SSL_HAS_KEY_FILE,
+    SWR_PHPCLIENTS_SSL_PASSPHRASE,
+    SWR_PHPCLIENTS_SSL_HOST_NAME,
+    SWR_PHPCLIENTS_SSL_VERIFY_PEER,
+    SWR_PHPCLIENTS_SSL_ALLOW_SELF_SIGNED,
+    SWR_PHPCLIENTS_SSL_CAFILE,
+    SWR_PHPCLIENTS_SSL_CAPATH,
+    SWR_PHPCLIENTS_SSL_VERIFY_DEPTH,
+    SWR_PHPCLIENTS_SSL_CIPHERS,
+    SWR_PHPCLIENTS_SSL_ECDH_CURVE,
+    SWR_PHPCLIENTS_SSL_GREASE,
+};
+bool swoole_socket_coro_ssl_option(void *socket, int option, const char *text, size_t length, int64_t value);
+bool swoole_socket_coro_ssl_supports(int option);
+/* ext/sockets' helpers, run inside zend_try. op: 0 getsockopt_ipv6_rfc3542,
+ * 1 setsockopt_ip_mcast, 2 setsockopt_ipv6_mcast, 3 setsockopt_ipv6_rfc3542,
+ * 4 add4_to_if_index(address) into index. */
+typedef struct {
+    void *socket;
+    int op, level, name;
+    struct _zval_struct *value;
+    const void *address;
+    unsigned index;
+    int result;
+} swoole_socket_coro_sockopt_call;
+void swoole_socket_coro_sockopt(void *call);
+/* getsockopt(SOL_TCP, TCP_INFO) into array: 1; 0 when name is not TCP_INFO (or
+ * the build has none); -1 when it failed. */
+int swoole_socket_coro_tcp_info(void *socket, int name, struct _zval_struct *array);
+/* php_swoole_create_socket_from_fd(fd, type), run inside zend_try; with a
+ * stream (import), the object holds it and nonblock is set. Null when none
+ * could be made. */
+typedef struct {
+    int fd, type, nonblock;
+    struct _zval_struct *stream;
+    struct _zend_object *object;
+} swoole_socket_coro_import_call;
+void swoole_socket_coro_import(void *call);
 
 /* PHP Coroutine\Client (crates/phpclients): MINIT and, from
  * ext-src/swoole_client_coro.cc, what its methods need beyond the socket calls. */
@@ -70,7 +143,6 @@ void swr_v1_phpclients_client_minit(bool shortname,
 void swoole_rs_check_reactor(void);
 void swoole_rs_set_last_error(int code);
 void *swoole_client_coro_create_socket(struct _zend_object *object, int64_t type);
-bool swoole_client_coro_apply(void *socket, const struct _zval_struct *settings);
 void swoole_client_coro_merge_setting(struct _zend_object *object, const struct _zval_struct *settings);
 struct _zval_struct *swoole_client_coro_setting(struct _zend_object *object);
 int64_t swoole_client_coro_type_property(struct _zend_object *object);
@@ -83,7 +155,6 @@ int swoole_client_coro_type(void *socket);
 bool swoole_client_coro_packet_mode(void *socket);
 bool swoole_client_coro_is_connected(void *socket);
 bool swoole_client_coro_has_ssl(void *socket);
-int swoole_client_coro_enable_ssl(struct _zend_object *object, void *socket);
 struct _zend_string *swoole_client_coro_peer_cert(void *socket);
 bool swoole_client_coro_verify_peer(void *socket, bool allow_self_signed);
 
@@ -110,7 +181,8 @@ void swr_v1_phpclients_parse_set_cookies(const char *at,
 /* Defined by ext-src/swoole_http_client_coro.cc for those methods. */
 struct _zend_object *swoole_http_client_coro_create_socket(int64_t type, int *error);
 bool swoole_http_client_coro_enable_ssl(void *socket);
-void swoole_http_client_coro_apply(void *socket, const struct _zval_struct *settings);
+/* After the settings: an HTTP proxy without SSL skips its CONNECT handshake. */
+void swoole_http_client_coro_apply(void *socket);
 void *swoole_http_client_coro_resolve_new(void);
 void swoole_http_client_coro_resolve_reset(void *context, bool with_port);
 void swoole_http_client_coro_resolve_free(void *context);

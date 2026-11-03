@@ -26,6 +26,7 @@ mod net;
 mod select;
 mod settings;
 mod socket;
+mod socket_options;
 
 pub use async_net::*;
 pub use client::*;
@@ -33,3 +34,4 @@ pub use http_client::*;
 pub use net::*;
 pub use select::*;
 pub use socket::*;
+pub use socket_options::*;
