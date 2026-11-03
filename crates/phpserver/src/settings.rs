@@ -134,6 +134,12 @@ pub unsafe extern "C" fn swr_v1_phpserver_settings_init(table: *const SettingsHo
     HOST.store(table.cast_mut(), Ordering::Release);
 }
 
+/// `serv->reload_async = true` (`on_before_start` with coroutines on).
+pub(crate) fn set_reload_async(serv: *mut c_void) {
+    // SAFETY: a live server.
+    unsafe { (host().set)(serv, field::RELOAD_ASYNC, 1) };
+}
+
 /// The settings array and the Server being configured.
 struct Settings {
     serv: *mut c_void,
