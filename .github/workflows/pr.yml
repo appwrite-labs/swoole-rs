@@ -40,6 +40,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 tools/check_migration.py
+      # The all-modules patch set applies to the pin (seconds), so a conflict fails a required check.
+      - run: python3 tools/patches.py check
       - run: tests/dev/run.sh
 
   # Whether this PR touches what the hybrid build compiles or installs with.
@@ -79,6 +81,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # Restores main's release build; hybrid build trees must start clean.
       - uses: Swatinem/rust-cache@v2
         with:
@@ -122,6 +126,12 @@ jobs:
           python3 corpus/run.py --php-extension curl --project 11-buffer-lifecycle
           --engine hybrid=$(echo target/hybrid/rust-*-halfclose)/modules/swoole.so
           --output target/reports/corpus-halfclose.json
+      # This run built main as of its push. Auto-merge follows the last required check
+      # (usually this one) within seconds, so re-apply the patch set over main as it is now.
+      - run: |
+          git fetch -q origin main
+          git -c user.name=ci -c user.email=ci@localhost merge -q --no-edit FETCH_HEAD
+          python3 tools/patches.py check
       - uses: actions/upload-artifact@v4
         if: always()
         with:

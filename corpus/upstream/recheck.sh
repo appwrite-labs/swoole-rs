@@ -2,8 +2,8 @@
 # Re-run the PHPT gate's flagged tests up to three times per engine, upstream first. Upstream
 # stops at a test's first failed re-run; the hybrid then re-runs every flagged test until its
 # verdict is settled (a pass, and also a failure unless upstream failed), once only when its
-# first failure timed out (gate.py --print-pending).
-# An inconclusive re-run (the #200 runner abort) is replaced, up to six attempts in all.
+# first failure timed out, up to nine times when upstream failed one (gate.py --print-pending).
+# An inconclusive re-run (the #200 runner abort) is replaced, up to twice the budget in all.
 # A test the hybrid both passed and failed then gets more upstream re-runs (up to 9 in all),
 # so a test racy on both engines isn't counted as a hybrid regression.
 #   recheck.sh RESULTS_DIR ENGINES_DIR RECHECK_DIR [run.py arguments...]
@@ -20,7 +20,7 @@ pending() {
   python3 corpus/upstream/gate.py "$@" --print-pending "$engine" | sed -n 's/^\(..*\)$/--case \1/p' | tr '\n' ' '
 }
 for engine in upstream hybrid; do
-  for attempt in 1 2 3 4 5 6; do
+  for attempt in $(seq 18); do
     cases=$(pending "$engine")
     [ -n "$cases" ] || break
     # shellcheck disable=SC2086 # one --case per word

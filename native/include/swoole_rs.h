@@ -91,7 +91,7 @@ enum {
 
     SWR_SERVER_OP_ACCEPT_TIMER = 90, SWR_SERVER_OP_ACCEPT_TIMER_CLEAR, SWR_SERVER_OP_SEND_SHUTDOWN,
     SWR_SERVER_OP_KILL_TERM, SWR_SERVER_OP_REACTOR_WAIT_EXIT, SWR_SERVER_OP_PIPE_COMMAND_DEL,
-    SWR_SERVER_OP_CLEAR_TIMER, SWR_SERVER_OP_FORCED_EXIT, SWR_SERVER_OP_STOP_WORKER_THREADS,
+    SWR_SERVER_OP_KILL_WINCH, SWR_SERVER_OP_FORCED_EXIT, SWR_SERVER_OP_STOP_WORKER_THREADS,
     SWR_SERVER_OP_THREAD0_SHUTDOWN, SWR_SERVER_OP_STOP_SINGLE_WORKER, SWR_SERVER_OP_BEFORE_SHUTDOWN,
     SWR_SERVER_OP_SIGNAL_RELOAD, SWR_SERVER_OP_SIGNAL_READ_MESSAGE, SWR_SERVER_OP_SIGNAL_REOPEN,
     SWR_SERVER_OP_SIGNAL_IGNORE, SWR_SERVER_OP_SIGNAL_HANDLE, SWR_SERVER_OP_MASTER_TIMER_HOOK,
@@ -158,9 +158,9 @@ enum {
     SWR_SERVER_LOG_RECVFROM = 350, SWR_SERVER_LOG_NO_SESSION, SWR_SERVER_TRACE_DISPATCH, SWR_SERVER_TRACE_QUEUED,
     SWR_SERVER_TRACE_HEARTBEAT_JOIN,
 
-    SWR_SERVER_OP_HAS_DISPATCH_FUNC = 400, SWR_SERVER_OP_DISPATCH_FUNC, SWR_SERVER_OP_ROUND_NEXT,
+    SWR_SERVER_OP_HAS_DISPATCH_FUNC = 400, SWR_SERVER_OP_DISPATCH_FUNC, SWR_SERVER_OP_STATE,
     SWR_SERVER_OP_IP_KEY, SWR_SERVER_OP_FD_CONN, SWR_SERVER_OP_CONN_UID, SWR_SERVER_OP_CONN_WORKER,
-    SWR_SERVER_OP_PIN_LOWEST, SWR_SERVER_OP_LOWEST_LOAD, SWR_SERVER_OP_LOWEST_CONCURRENT, SWR_SERVER_OP_IDLE_WORKER,
+    SWR_SERVER_OP_PIN_WORKER, SWR_SERVER_OP_WORKER_COROUTINES, SWR_SERVER_OP_WORKER_CONCURRENCY, SWR_SERVER_OP_SET_WARNING,
     SWR_SERVER_OP_FEEDBACK_THREAD, SWR_SERVER_OP_FEEDBACK_SEND, SWR_SERVER_OP_VERIFY_CONN, SWR_SERVER_OP_SEND_SYNC,
     SWR_SERVER_OP_SOCKET_CONN, SWR_SERVER_OP_PIPE_NOBUFS, SWR_SERVER_OP_SOCKET_NOBUFS, SWR_SERVER_OP_WORKER_IDLE,
     SWR_SERVER_OP_TASKING, SWR_SERVER_OP_TASKING_RESET, SWR_SERVER_OP_IS_MASTER, SWR_SERVER_OP_SENDFILE_NAME_MAX,
@@ -219,6 +219,67 @@ enum {
     SWR_SERVER_OP_RT_ADD_WORKER_PIPE,
 };
 
+/* Rust-owned server state and the rest of master.cc (crates/server/src/state.rs). */
+enum {
+    SWR_SERVER_RUN_ST_ADD_COMMAND = 300, SWR_SERVER_RUN_ST_DTLS_ACCEPT, SWR_SERVER_RUN_ST_DOCUMENT_ROOT,
+    SWR_SERVER_RUN_ST_STORE_PIPE_FD, SWR_SERVER_RUN_ST_INIT_PIPE_SOCKETS, SWR_SERVER_RUN_ST_RESET_COUNTER,
+    SWR_SERVER_RUN_ST_ABORT, SWR_SERVER_RUN_ST_FOREACH, SWR_SERVER_RUN_ST_SEND, SWR_SERVER_RUN_ST_CLEAR_TIMER,
+    SWR_SERVER_OP_ST_CMD_EXISTS = 1000, SWR_SERVER_OP_ST_PIPE_COMMAND_NEW, SWR_SERVER_OP_ST_CMD_ADD,
+    SWR_SERVER_OP_ST_DTLS_SOCKET, SWR_SERVER_OP_ST_DTLS_TYPE, SWR_SERVER_OP_ST_DTLS_ASSERT,
+    SWR_SERVER_OP_ST_DTLS_BIND, SWR_SERVER_OP_ST_DTLS_V6ONLY, SWR_SERVER_OP_ST_DTLS_CONNECT,
+    SWR_SERVER_OP_ST_DTLS_PEER, SWR_SERVER_OP_ST_DTLS_ADD, SWR_SERVER_OP_ST_DTLS_SESSION,
+    SWR_SERVER_OP_ST_DTLS_CLEANUP, SWR_SERVER_OP_ST_ROOT_PATH, SWR_SERVER_OP_ST_SET_ROOT,
+    SWR_SERVER_OP_ST_PIPE_FD, SWR_SERVER_OP_ST_PIPE_BIND, SWR_SERVER_OP_ST_INIT_PIPE,
+    SWR_SERVER_OP_ST_W_CONCURRENCY, SWR_SERVER_OP_ST_W_CONCURRENCY_CAS, SWR_SERVER_OP_ST_GS_CONCURRENCY_SUB,
+    SWR_SERVER_OP_ST_GS_CONCURRENCY, SWR_SERVER_OP_ST_GS_CONCURRENCY_ZERO, SWR_SERVER_OP_ST_W_RESET_COUNTS,
+    SWR_SERVER_OP_ST_ABORT_COUNT, SWR_SERVER_OP_ST_SOCK_OBJECT, SWR_SERVER_OP_ST_REACTOR_CLOSE,
+    SWR_SERVER_OP_ST_SOCK_FREE, SWR_SERVER_OP_ST_VALID_CONN, SWR_SERVER_OP_ST_VISIT,
+    SWR_SERVER_OP_ST_FINISH, SWR_SERVER_OP_ST_COUNT_SEND, SWR_SERVER_OP_ST_SESSION_PORT,
+    SWR_SERVER_OP_ST_COUNT_PORT_SEND, SWR_SERVER_OP_ST_HAS_WORKER, SWR_SERVER_OP_ST_WORKER_RESPONSE,
+    SWR_SERVER_OP_ST_TIMER, SWR_SERVER_OP_ST_TIMER_DEL,
+    SWR_SERVER_LOG_ST_DTLS_BIND = 1100, SWR_SERVER_LOG_ST_DTLS_CONNECT, SWR_SERVER_LOG_ST_ROOT_TOO_LONG,
+    SWR_SERVER_LOG_ST_ROOT_MISSING, SWR_SERVER_TRACE_ST_SCHEDULE,
+};
+
+/* Server::send_to_connection (crates/server/src/send.rs). */
+enum {
+    SWR_SERVER_RUN_SC_SEND = 310,
+    SWR_SERVER_OP_SC_VERIFY = 1040, SWR_SERVER_OP_SC_SETUP, SWR_SERVER_OP_SC_FLAGS, SWR_SERVER_OP_SC_SEND_YIELD,
+    SWR_SERVER_OP_SC_YIELD_ERROR, SWR_SERVER_OP_SC_CLOSE, SWR_SERVER_OP_SC_HALFCLOSE, SWR_SERVER_OP_SC_SET,
+    SWR_SERVER_OP_SC_DEL, SWR_SERVER_OP_SC_ADD, SWR_SERVER_OP_SC_REMOVE_READ, SWR_SERVER_OP_SC_ADD_READ,
+    SWR_SERVER_OP_SC_OUT_EMPTY, SWR_SERVER_OP_SC_DIRECT_SEND, SWR_SERVER_OP_SC_SEND_LEFT, SWR_SERVER_OP_SC_SEND,
+    SWR_SERVER_OP_SC_ADVANCE, SWR_SERVER_OP_SC_TOUCH_SEND, SWR_SERVER_OP_SC_ENSURE_BUFFER,
+    SWR_SERVER_OP_SC_QUEUE_CLOSE, SWR_SERVER_OP_SC_SENDFILE, SWR_SERVER_OP_SC_OUT_FULL, SWR_SERVER_OP_SC_OVERFLOW,
+    SWR_SERVER_OP_SC_HIGH_WATERMARK, SWR_SERVER_OP_SC_APPEND, SWR_SERVER_OP_SC_OUT_HIGH,
+    SWR_SERVER_OP_SC_NOTIFY_FULL, SWR_SERVER_OP_SC_HAS_SEND_TIMER, SWR_SERVER_OP_SC_IDLE_TIMER,
+    SWR_SERVER_OP_SC_WRITABLE, SWR_SERVER_OP_SC_ADD_WRITE,
+    SWR_SERVER_LOG_SC_NO_SESSION_DATA = 1110, SWR_SERVER_LOG_SC_NO_SESSION_EVENT, SWR_SERVER_LOG_SC_SOCKET_OVERFLOW,
+    SWR_SERVER_LOG_SC_CLOSED_BY_CLIENT, SWR_SERVER_LOG_SC_CONN_OVERFLOW,
+};
+/* send_to_connection's OP_SC_FLAGS bits (crates/server/src/send.rs) and OP_SC_SET/OP_SC_ADD events. */
+#define SWR_SC_OVERFLOW (1u << 0)
+#define SWR_SC_CLOSE_RESET (1u << 1)
+#define SWR_SC_CLOSE_FORCE (1u << 2)
+#define SWR_SC_PEER_CLOSED (1u << 3)
+#define SWR_SC_CLOSED (1u << 4)
+#define SWR_SC_CLOSE_QUEUED (1u << 5)
+#define SWR_SC_HIGH_WATERMARK (1u << 6)
+#define SWR_SC_REMOVED (1u << 7)
+#define SWR_SC_CLOSE_NOTIFIED (1u << 8)
+#define SWR_SC_EVENT_READ (1u << 9)
+#define SWR_SC_EVENT_WRITE (1u << 10)
+#define SWR_SC_ON_BUFFER_FULL (1u << 11)
+#define SWR_SC_ON_BUFFER_EMPTY (1u << 12)
+#define SWR_SC_READ 1u
+#define SWR_SC_WRITE 2u
+
+/* Server::state_: the round-robin and command id counters. */
+typedef struct swr_v1_server_state swr_v1_server_state;
+swr_v1_server_state *swr_v1_server_state_new(void);
+void swr_v1_server_state_free(swr_v1_server_state *state);
+/* Server::get_startup_error_message: message, or code as text when it is empty and code > 0. */
+const char *swr_v1_server_startup_error(const char *message, int code);
+
 /* The server's local interface addresses (Server::local_addrs). */
 typedef struct swr_v1_server_local_addrs swr_v1_server_local_addrs;
 swr_v1_server_local_addrs *swr_v1_server_local_addrs_new(void);
@@ -227,12 +288,14 @@ uint16_t swr_v1_server_local_addr_index(const swr_v1_server_local_addrs *addrs, 
 const char *swr_v1_server_local_addr(const swr_v1_server_local_addrs *addrs, bool v6, uint16_t index);
 
 /*
- * The module host (crates/phpswoole): php_swoole.cc's MINIT registers the global
- * constants, Swoole\Exception/Swoole\Error and the short-name aliases through
- * swr_v1_phpswoole_minit, and swoole_module_entry's function table is
- * swr_v1_phpswoole_functions: Rust's rows (its zif_swoole_* exports and C++'s)
- * around the stdext/ssh2/ftp rows only C++'s #ifdefs decide. C++ lends what only it can
- * reach: Swoole's error, logger and MIME state and the module globals.
+ * The module host (crates/phpswoole): php_swoole.cc's MINIT sets up the module
+ * globals (swr_v1_phpswoole_init_globals) and ini entries, then
+ * swr_v1_phpswoole_minit registers the global constants, Swoole\Exception/Swoole\Error
+ * and the short-name aliases and runs Swoole's core and every family's MINIT. Rust
+ * defines MSHUTDOWN, RINIT and RSHUTDOWN (swr_v1_phpswoole_mshutdown, _rinit, _rshutdown), and
+ * swoole_module_entry's function table is swr_v1_phpswoole_functions: Rust's rows (its
+ * zif_swoole_* exports and C++'s) around the stdext/ssh2/ftp rows only C++'s #ifdefs
+ * decide. C++ lends what only it can reach: Swoole's core, error, logger and MIME state.
  */
 #define SWR_PHPSWOOLE_DEBUG (1u << 0)
 #define SWR_PHPSWOOLE_SHORTNAME (1u << 1)
@@ -253,7 +316,25 @@ struct _zend_object_handlers;
 typedef struct swr_v1_phpswoole_ops {
     int32_t (*last_error)(void);
     void (*set_last_error)(int32_t code);
-    uint8_t (*display_errors)(void);
+    /* ZEND_MODULE_GLOBALS_BULK(swoole): this thread's zend_swoole_globals. */
+    void *(*globals)(void);
+    /* MINIT: swoole_init(), the after-fork hook, the bug report; and its end: the
+     * fatal-error and backtrace hooks, socket buffer size, DNS refresh, pcre.jit, known strings. */
+    void (*startup)(void);
+    void (*ready)(void);
+    /* The hooks only C++'s #ifdefs decide: ssh2/ftp after the clients, the drivers,
+     * Swoole\Thread and stdext before the tracer, and their MSHUTDOWN, RINIT, RSHUTDOWN. */
+    void (*optional_client_minit)(int module_number);
+    void (*optional_minit)(int module_number);
+    void (*optional_mshutdown)(void);
+    void (*optional_rinit)(void);
+    void (*optional_rshutdown)(void);
+    void (*known_strings_dtor)(void);
+    void (*clean)(void);
+    void (*set_task_tmpdir)(const char *dir);
+    /* php_swoole_load_library(), a zend_try body. */
+    void (*load_library)(void *);
+    void (*event_free)(void);
     uint32_t (*cpu_num)(void);
     /* sw_logger()->put */
     void (*log_put)(int32_t level, const char *message, size_t length);
@@ -266,8 +347,6 @@ typedef struct swr_v1_phpswoole_ops {
     const char *(*mime_get)(const char *filename);
     uint8_t (*mime_exists)(const char *filename);
     void (*mime_list)(struct _zval_struct *array);
-    /* req_status RINIT_END -> CALL_USER_SHUTDOWNFUNC_BEGIN; 0 if it was not RINIT_END. */
-    uint8_t (*shutdown_begin)(void);
     void (*unserialize)(struct _zval_struct *value, const char *buf, size_t length, struct _zend_array *options);
     void (*json_decode)(struct _zval_struct *value, const char *str, size_t length, int64_t options, int64_t depth);
     /* php_swoole_set_global_option's effects, in its order. */
@@ -279,7 +358,6 @@ typedef struct swr_v1_phpswoole_ops {
     void (*set_log_date_format)(const char *format, size_t length);
     void (*set_log_date_with_microseconds)(uint8_t on);
     void (*set_log_rotation)(int64_t rotation);
-    void (*set_display_errors)(uint8_t on);
     void (*set_print_backtrace)(uint8_t on);
     void (*set_dns_server)(const char *server, size_t length);
     /* kind: 0 dns, 1 connect, 2 read, 3 write */
@@ -290,12 +368,24 @@ typedef struct swr_v1_phpswoole_ops {
 void swr_v1_phpswoole_minit(int32_t module_number, uint32_t flags, const swr_v1_phpswoole_ops *ops,
                             struct _zend_class_entry **exception, struct _zend_object_handlers *exception_handlers,
                             struct _zend_class_entry **error);
-/* php_swoole_set_global_option: null, or the error of the size at *failed that
- * did not parse, which the caller reports as a fatal error. */
 struct _zend_function_entry;
 const struct _zend_function_entry *swr_v1_phpswoole_functions(const struct _zend_function_entry *optional);
-struct _zend_string;
-struct _zend_string *swr_v1_phpswoole_set_global_option(struct _zend_array *options, struct _zval_struct **failed);
+/* The module's MSHUTDOWN, RINIT and RSHUTDOWN: 0 on success. */
+int swr_v1_phpswoole_mshutdown(int _kind, int module_number);
+int swr_v1_phpswoole_rinit(int _kind, int module_number);
+int swr_v1_phpswoole_rshutdown(int _kind, int module_number);
+/* ZEND_INIT_MODULE_GLOBALS' constructor of zend_swoole_globals. */
+void swr_v1_phpswoole_init_globals(void *globals);
+/* sw_php_allocator() (emalloc) and sw_zend_string_allocator() (zend_string values):
+ * swoole::Allocators. */
+typedef struct swr_v1_phpswoole_allocator {
+    void *(*malloc)(size_t size);
+    void *(*calloc)(size_t nmemb, size_t size);
+    void *(*realloc)(void *ptr, size_t size);
+    void (*free)(void *ptr);
+} swr_v1_phpswoole_allocator;
+extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_php_allocator;
+extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_zend_string_allocator;
 
 #ifdef __cplusplus
 }

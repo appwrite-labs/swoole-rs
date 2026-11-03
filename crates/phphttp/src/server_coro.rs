@@ -1,8 +1,9 @@
-//! `Swoole\Coroutine\Http\Server`: registration, the object, `__construct`,
-//! `set`, `handle`, `shutdown`, the per-connection request loop (`onAccept`)
-//! and the HTTP/2 request dispatch. C++ keeps `swoole::coroutine::HttpServer`
-//! (the listening socket, the handler map, the settings the contexts copy),
-//! `start` and the coroutine sockets, and answers through `swr_hsc_*`
+//! `Swoole\Coroutine\Http\Server`: registration, the object and upstream's
+//! `swoole::coroutine::HttpServer` (handlers, connections, settings),
+//! `__construct`, `set`, `handle`, `start`, `shutdown`, the per-connection
+//! request loop (`onAccept`), HTTP/2 on a connection and its request
+//! dispatch. C++ keeps the coroutine sockets and the settings the contexts
+//! copy into C++ fields, and answers through `swr_hsc_*`
 //! (`ext-src/swoole_http_server_coro.cc`).
 use crate::{
     host::{self, Context},
@@ -10,11 +11,12 @@ use crate::{
     send,
 };
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell, UnsafeCell},
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
+use swoole_rs_httpbindings::{Text, swr_v1_httpbindings_handler};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_zend::{
     Call, Class, Object, bailout, declare_bool, declare_long, declare_property_null,
@@ -35,13 +37,181 @@ static EXCEPTION: AtomicPtr<zend_class_entry> = AtomicPtr::new(ptr::null_mut());
 static COMPRESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// `struct HttpServerObject { HttpServer *server; zend_object std; }`.
-type Holder = Object<*mut c_void>;
+type Holder = Object<*mut HttpServer>;
+
+/// Upstream's `swoole::coroutine::HttpServer`. Its connections' coroutines
+/// share it, so every field that changes is a cell.
+struct HttpServer {
+    /// The listening coroutine socket (C++'s).
+    socket: *mut c_void,
+    /// What the contexts copy into C++ fields (`HttpServerSettings`).
+    settings: *mut c_void,
+    /// `handle()`'s patterns, in registration order, and their callables.
+    handlers: RefCell<Vec<Handler>>,
+    default_handler: Cell<*mut c_void>,
+    running: Cell<bool>,
+    /// The connections, by the coroutine serving each.
+    clients: UnsafeCell<zval>,
+    parse_cookie: Cell<bool>,
+    parse_post: Cell<bool>,
+    parse_files: Cell<bool>,
+    compression: Cell<bool>,
+    compression_level: Cell<i8>,
+    compression_min_length: Cell<u32>,
+}
+
+/// A pattern and its callable (a `zend::Callable`).
+type Handler = (Box<[u8]>, *mut c_void);
+
+/// `SW_Z_BEST_SPEED` and `SW_COMPRESSION_MIN_LENGTH_DEFAULT`.
+const Z_BEST_SPEED: i8 = 1;
+const COMPRESSION_MIN_LENGTH_DEFAULT: u32 = 20;
+
+impl HttpServer {
+    fn new(socket: *mut c_void, settings: *mut c_void) -> Self {
+        // SAFETY: a zval is plain data, initialised below.
+        let mut clients = unsafe { std::mem::zeroed::<zval>() };
+        // SAFETY: an empty slot takes a new array.
+        unsafe { value::array_init(&raw mut clients) };
+        Self {
+            socket,
+            settings,
+            handlers: RefCell::new(Vec::new()),
+            default_handler: Cell::new(ptr::null_mut()),
+            running: Cell::new(true),
+            clients: UnsafeCell::new(clients),
+            parse_cookie: Cell::new(true),
+            parse_post: Cell::new(true),
+            parse_files: Cell::new(false),
+            compression: Cell::new(true),
+            compression_level: Cell::new(Z_BEST_SPEED),
+            compression_min_length: Cell::new(COMPRESSION_MIN_LENGTH_DEFAULT),
+        }
+    }
+
+    fn clients(&self) -> *mut z::HashTable {
+        // SAFETY: the server's array, live until drop.
+        unsafe { value::table(self.clients.get()) }
+    }
+
+    /// `set_handler`: false if `callable` is not callable.
+    fn set_handler(&self, pattern: &[u8], callable: *mut zval) -> Result<bool, bailout::Bailout> {
+        let mut bailed = false;
+        // SAFETY: a passed value; C++ traps what making the callable raises.
+        let handler = unsafe { swr_hsc_callable(callable, &raw mut bailed) };
+        if bailed {
+            return Err(bailout::Bailout);
+        }
+        if handler.is_null() {
+            return Ok(false);
+        }
+        let mut handlers = self.handlers.borrow_mut();
+        if let Some(entry) = handlers.iter_mut().find(|(known, _)| **known == *pattern) {
+            // SAFETY: the callable this pattern had, freed once.
+            unsafe { swr_hsc_callable_free(entry.1) };
+            entry.1 = handler;
+        } else {
+            handlers.push((pattern.into(), handler));
+        }
+        if pattern == b"/" {
+            self.default_handler.set(handler);
+        }
+        Ok(true)
+    }
+
+    /// `get_handler`: the first other handler whose pattern starts the path
+    /// (ignoring case), else the default.
+    fn handler(&self, context: *mut Context) -> *mut c_void {
+        let request = &send::state(context).request;
+        let path = Text {
+            data: request.path.cast(),
+            length: request.path_len as usize,
+        };
+        select(&self.handlers.borrow(), self.default_handler.get(), path)
+    }
+
+    /// A flag's or a number's setting (`SWR_HTTPBINDINGS_SETTING_*`), as
+    /// `swr_hsc_setting` read it.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "upstream's uint8_t level and uint32_t minimum"
+    )]
+    fn apply(&self, kind: u32, value: i64) {
+        match kind {
+            SETTING_COOKIE => self.parse_cookie.set(value != 0),
+            SETTING_POST => self.parse_post.set(value != 0),
+            SETTING_FILES => self.parse_files.set(value != 0),
+            SETTING_COMPRESSION => self.compression.set(value != 0),
+            SETTING_LEVEL => self.compression_level.set(value as i8),
+            SETTING_MINIMUM => self.compression_min_length.set(value as u32),
+            _ => {}
+        }
+    }
+
+    /// `create_context`: the settings, the socket and the parser.
+    fn context(&self, socket: *mut c_void, zconn: *mut zval) -> *mut Context {
+        // SAFETY: the live settings, socket and connection object.
+        let context = unsafe { swr_hsc_context(self.settings, socket, zconn) };
+        let state = send::state(context);
+        state.parse_body = u8::from(self.parse_post.get());
+        state.parse_cookie = u8::from(self.parse_cookie.get());
+        state.parse_files = u8::from(self.parse_files.get());
+        if COMPRESSION.load(Relaxed) {
+            state.enable_compression = u8::from(self.compression.get());
+            state.compression_level = self.compression_level.get();
+            state.compression_min_length = self.compression_min_length.get();
+        }
+        context
+    }
+}
+
+impl Drop for HttpServer {
+    fn drop(&mut self) {
+        // SAFETY: the server's own array, released once.
+        unsafe { zval_ptr_dtor(self.clients.get()) };
+        for (_, handler) in self.handlers.get_mut().drain(..) {
+            // SAFETY: each callable `set_handler` made, freed once.
+            unsafe { swr_hsc_callable_free(handler) };
+        }
+        // SAFETY: the socket and settings `swr_hsc_new` made, freed once.
+        unsafe { swr_hsc_delete(self.socket, self.settings) };
+    }
+}
+
+/// `get_handler`'s scan over `handlers`.
+fn select(handlers: &[Handler], default: *mut c_void, path: Text) -> *mut c_void {
+    for (pattern, handler) in handlers {
+        if *handler == default {
+            continue;
+        }
+        let pattern = Text {
+            data: pattern.as_ptr(),
+            length: pattern.len(),
+        };
+        // SAFETY: the request's path and the pattern, for the call.
+        if unsafe { swr_v1_httpbindings_handler(path, pattern) } == 1 {
+            return *handler;
+        }
+    }
+    default
+}
+
+/// The live server a method's or a connection's pointer names.
+fn server<'a>(server: *const HttpServer) -> &'a HttpServer {
+    // SAFETY: the object's server, which outlives its methods and the
+    // connections it serves; only cells change.
+    unsafe { &*server }
+}
 
 /// HTTP statuses the loop answers with, and llhttp's codes it checks.
 const BAD_REQUEST: c_int = 400;
 const NOT_FOUND: c_int = 404;
+/// `SW_HTTP2_ERROR_INTERNAL_ERROR`.
+const HTTP2_INTERNAL_ERROR: u32 = 2;
 const ENTITY_TOO_LARGE: c_int = 413;
 const HPE_OK: i32 = 0;
+const SW_ERR: c_int = -1;
 const HPE_PAUSED_H2_UPGRADE: i32 = 23;
 /// `SW_BUFFER_SIZE_BIG`.
 const BUFFER_SIZE_BIG: usize = 65536;
@@ -71,21 +241,11 @@ struct Peer {
 }
 
 unsafe extern "C" {
-    fn swr_hsc_new(host: *const c_char, length: usize) -> *mut c_void;
-    fn swr_hsc_delete(server: *mut c_void);
-    fn swr_hsc_listener(server: *mut c_void) -> *mut c_void;
-    fn swr_hsc_running(server: *mut c_void) -> *mut bool;
-    fn swr_hsc_set_handler(
-        server: *mut c_void,
-        pattern: *const c_char,
-        length: usize,
-        callable: *mut zval,
-    ) -> bool;
-    fn swr_hsc_handler(server: *mut c_void, context: *mut Context) -> *mut c_void;
+    fn swr_hsc_new(host: *const c_char, length: usize, settings: *mut *mut c_void) -> *mut c_void;
+    fn swr_hsc_delete(socket: *mut c_void, settings: *mut c_void);
+    fn swr_hsc_callable(callable: *mut zval, bailed: *mut bool) -> *mut c_void;
+    fn swr_hsc_callable_free(callable: *mut c_void);
     fn swr_hsc_call(callable: *mut c_void, args: *mut zval, coroutine: bool) -> c_int;
-    fn swr_hsc_track(server: *mut c_void, cid: i64, connection: *mut zval);
-    fn swr_hsc_untrack(server: *mut c_void, cid: i64);
-    fn swr_hsc_clients(server: *mut c_void) -> *mut zval;
     fn swr_hsc_cancel(socket: *mut c_void);
     fn swr_hsc_recv_waiting(socket: *mut c_void) -> bool;
     fn swr_hsc_cid() -> i64;
@@ -102,22 +262,37 @@ unsafe extern "C" {
     fn swr_hsc_connection(connection: *mut zval) -> *mut c_void;
     fn swr_hsc_connection_buffer(socket: *mut c_void) -> *mut Buffer;
     fn swr_hsc_ssl_handshake(socket: *mut c_void) -> bool;
-    fn swr_hsc_peer(server: *mut c_void, socket: *mut c_void, peer: *mut Peer);
+    fn swr_hsc_peer(listener: *mut c_void, socket: *mut c_void, peer: *mut Peer);
     fn swr_hsc_recv(socket: *mut c_void, buffer: *mut Buffer) -> isize;
     fn swr_hsc_recv_wait(socket: *mut c_void, waiting: bool);
     fn swr_hsc_package_max_length(socket: *mut c_void) -> usize;
     fn swr_hsc_extend(buffer: *mut Buffer, size: usize);
     fn swr_hsc_send_all(socket: *mut c_void, data: *const c_char, length: usize);
     fn swr_hsc_context(
-        server: *mut c_void,
+        settings: *mut c_void,
         socket: *mut c_void,
         connection: *mut zval,
     ) -> *mut Context;
     fn swr_hsc_add_server(context: *mut Context, peer: *mut Peer);
-    fn swr_hsc_http2(server: *mut c_void, context: *mut Context);
+    fn swr_hsc_http2_begin(socket: *mut c_void);
+    fn swr_hsc_recv_packet(socket: *mut c_void, retval: *mut isize) -> *const c_char;
+    /// The HTTP/2 sessions' request handler, C++ (a `swr_h2s_request`).
+    fn swr_hsc_http2_request(request: *mut c_void);
     fn swr_hsc_request_data(context: *mut Context, buffer: *mut Buffer, length: usize);
     fn swr_hsc_closed(connection: *mut zval) -> bool;
-    fn swr_hsc_stream_reset(stream: *mut c_void);
+    /// The HTTP/2 server (crates/phphttp2): a stream's reset, and a
+    /// connection's session. `receive` leaves a bailout pending.
+    fn swr_v1_phphttp2_server_reset(ctx: *mut c_void, stream_id: u32, code: u32);
+    fn swr_v1_phphttp2_session_new(
+        fd: i64,
+        default_ctx: *mut c_void,
+        max_body_size: u32,
+        is_coro: bool,
+        handle: unsafe extern "C" fn(*mut c_void),
+        data: *mut c_void,
+    );
+    fn swr_v1_phphttp2_session_receive(fd: i64, buf: *const c_char) -> c_int;
+    fn swr_v1_phphttp2_session_free(fd: i64);
     fn swr_hsc_accept_callable(
         object: *mut zval,
         frame: *mut z::zend_execute_data,
@@ -135,10 +310,11 @@ unsafe extern "C" {
     ) -> i64;
     fn swr_hsc_sleep();
     fn swr_hsc_setting(
-        server: *mut c_void,
+        settings: *mut c_void,
         kind: u32,
-        settings: *mut z::HashTable,
+        table: *mut z::HashTable,
         value: *mut zval,
+        result: *mut i64,
     ) -> c_int;
     fn llhttp_should_keep_alive(parser: *const crate::state::Llhttp) -> c_int;
 }
@@ -164,8 +340,8 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees an object this class created.
     let server = unsafe { *Holder::data(std) };
     if !server.is_null() {
-        // SAFETY: the server `__construct` created, deleted once.
-        unsafe { swr_hsc_delete(server) };
+        // SAFETY: the server `__construct` boxed, dropped once.
+        drop(unsafe { Box::from_raw(server) });
     }
     // SAFETY: as above.
     unsafe { Holder::dtor(std) };
@@ -221,7 +397,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_coro_minit(
     ce
 }
 
-fn server_of(call: &Call) -> *mut c_void {
+fn server_of(call: &Call) -> *mut HttpServer {
     // SAFETY: the methods are non-static, so `$this` is one of ours.
     unsafe { *Holder::data(call.this()) }
 }
@@ -280,12 +456,12 @@ fn construct(call: &Call) {
             exception(EINVAL, "host is empty");
             return None;
         }
-        // SAFETY: the host's bytes; C++ copies them.
-        let server = unsafe { swr_hsc_new(host.as_ptr().cast(), host.len()) };
+        let mut settings = ptr::null_mut();
+        // SAFETY: the host's bytes, which C++ copies, and a local output.
+        let socket = unsafe { swr_hsc_new(host.as_ptr().cast(), host.len(), &raw mut settings) };
+        let server = Box::into_raw(Box::new(HttpServer::new(socket, settings)));
         // SAFETY: as above.
         unsafe { *Holder::data(object) = server };
-        // SAFETY: the new server's listener.
-        let socket = unsafe { swr_hsc_listener(server) };
         // SAFETY: a live socket and the host's bytes.
         if !unsafe { swr_hsc_bind(socket, host.as_ptr().cast(), host.len(), port, reuse_port) } {
             let code = set_error(object, socket);
@@ -336,6 +512,12 @@ const REFUSED: c_int = 1;
 const BAILED: c_int = -1;
 /// `SWR_HTTPBINDINGS_SETTING_*`.
 const SETTING_LOOKUP: u32 = 1;
+const SETTING_COOKIE: u32 = 2;
+const SETTING_POST: u32 = 3;
+const SETTING_FILES: u32 = 4;
+const SETTING_COMPRESSION: u32 = 5;
+const SETTING_LEVEL: u32 = 6;
+const SETTING_MINIMUM: u32 = 7;
 const SETTING_DONE: u32 = 11;
 
 /// `start`'s `onAccept` callable and its cache (C++'s), released on drop.
@@ -364,9 +546,8 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         swr_v1_httpbindings_settings,
     };
     let object = call.this();
-    let server = server_of(call);
-    // SAFETY: a live server.
-    let socket = unsafe { swr_hsc_listener(server) };
+    let server = server(server_of(call));
+    let socket = server.socket;
     let mut callable = ptr::null_mut();
     // SAFETY: `$this`, this method's frame and a local output; C++ traps the
     // E_CORE_ERROR of an uncallable `onAccept`.
@@ -389,7 +570,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         let message = unsafe { CStr::from_ptr(message) };
         // SAFETY: a live object of the class.
         unsafe { value::update_string(SERVER.entry(), object, c"errMsg", message) };
-        set_running(server, false);
+        server.running.set(false);
         return Ok(Some(false));
     }
     // SAFETY: the live settings array.
@@ -417,16 +598,22 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
                 found = u32::from(!value.is_null() && unsafe { type_of(value) } != z::IS_NULL);
             }
             SETTING_DONE => break,
-            // SAFETY: a live server, the settings and the value just found.
-            kind => match unsafe { swr_hsc_setting(server, kind, table, value) } {
-                DONE => {}
-                BAILED => return Err(bailout::Bailout),
-                REFUSED => return Ok(Some(false)),
-                _ => return Ok(None),
-            },
+            kind => {
+                let mut result = 0;
+                // SAFETY: the live settings, the settings array, the value just
+                // found and a local output.
+                match unsafe {
+                    swr_hsc_setting(server.settings, kind, table, value, &raw mut result)
+                } {
+                    DONE => server.apply(kind, result),
+                    BAILED => return Err(bailout::Bailout),
+                    REFUSED => return Ok(Some(false)),
+                    _ => return Ok(None),
+                }
+            }
         }
     }
-    set_running(server, true);
+    server.running.set(true);
     // SAFETY: a zeroed policy table C++ fills with the platform's errno values.
     let mut errors = unsafe { std::mem::zeroed() };
     // SAFETY: a local output.
@@ -456,9 +643,9 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
 }
 
 /// The `start` frame the accept loop's host callbacks read (`AcceptHost::data`).
-struct Start {
+struct Start<'a> {
     object: *mut zend_object,
-    server: *mut c_void,
+    server: &'a HttpServer,
     socket: *mut c_void,
     accept: *mut c_void,
     /// Creating an `onAccept` coroutine bailed out (#913): the loop stops and
@@ -466,14 +653,14 @@ struct Start {
     bailed: Cell<bool>,
 }
 
-fn start_of<'a>(data: *mut c_void) -> &'a Start {
+fn start_of<'a>(data: *mut c_void) -> &'a Start<'a> {
     // SAFETY: `run_start` passes its live `Start` for the loop.
     unsafe { &*data.cast::<Start>() }
 }
 
 unsafe extern "C" fn start_running(data: *mut c_void) -> bool {
     let start = start_of(data);
-    !start.bailed.get() && running(start.server)
+    !start.bailed.get() && start.server.running.get()
 }
 
 unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i64 {
@@ -505,7 +692,7 @@ unsafe extern "C" fn start_fail(data: *mut c_void, warning: swoole_rs_httpbindin
     let warning = unsafe { std::slice::from_raw_parts(warning.data, warning.length) };
     host::fatal(std::str::from_utf8(warning).unwrap_or_default());
     // Keep-alive connections stop once the listener cannot accept.
-    set_running(start_of(data).server, false);
+    start_of(data).server.running.set(false);
 }
 
 /// `%s` of a ZPP string: up to its first NUL.
@@ -526,10 +713,10 @@ fn handle(call: &Call) {
     if server.is_null() {
         return;
     }
-    // SAFETY: a live server, the pattern's bytes and the passed callable.
-    let set =
-        unsafe { swr_hsc_set_handler(server, pattern.as_ptr().cast(), pattern.len(), callable) };
-    call.set_bool(set);
+    match self::server(server).set_handler(pattern, callable) {
+        Ok(set) => call.set_bool(set),
+        Err(bailout) => bailout.defer(),
+    }
 }
 
 fn set(call: &Call) {
@@ -560,16 +747,12 @@ fn shutdown(call: &Call) {
     if server.is_null() {
         return;
     }
-    set_running(server, false);
-    // SAFETY: a live server.
-    let listener = unsafe { swr_hsc_listener(server) };
+    let server = self::server(server);
+    server.running.set(false);
     // SAFETY: its live listening socket.
-    unsafe { swr_hsc_cancel(listener) };
+    unsafe { swr_hsc_cancel(server.socket) };
     // Connections waiting for their next request stop waiting.
-    // SAFETY: a live server.
-    let clients = unsafe { swr_hsc_clients(server) };
-    // SAFETY: the server's live connection array.
-    let clients = unsafe { value::table(clients) };
+    let clients = server.clients();
     let mut waiting: Vec<(z::zend_ulong, *mut c_void)> = Vec::new();
     // SAFETY: a live array; the callback only reads.
     unsafe { z::swr_zend_hash_foreach_kv(clients, Some(collect), (&raw mut waiting).cast()) };
@@ -597,21 +780,6 @@ unsafe extern "C" fn collect(
     }
 }
 
-/// `HttpServer::running`.
-fn running(server: *mut c_void) -> bool {
-    // SAFETY: a live server's flag.
-    let flag = unsafe { swr_hsc_running(server) };
-    // SAFETY: as above.
-    unsafe { *flag }
-}
-
-fn set_running(server: *mut c_void, running: bool) {
-    // SAFETY: a live server's flag.
-    let flag = unsafe { swr_hsc_running(server) };
-    // SAFETY: as above.
-    unsafe { *flag = running };
-}
-
 /// The context's request and response objects, borrowed as upstream's
 /// handler arguments (released by the caller).
 fn objects(context: *mut Context) -> [zval; 2] {
@@ -624,14 +792,14 @@ fn objects(context: *mut Context) -> [zval; 2] {
 }
 
 /// One connection's state across its requests.
-struct Connection {
-    server: *mut c_void,
+struct Connection<'a> {
+    server: &'a HttpServer,
     socket: *mut c_void,
     zconn: *mut zval,
     buffer: *mut Buffer,
 }
 
-impl Connection {
+impl Connection<'_> {
     #[expect(
         clippy::mut_from_ref,
         reason = "C++ owns the buffer; no two borrows overlap"
@@ -677,7 +845,7 @@ fn on_accept(call: &Call) {
         call.set_null();
         return;
     };
-    let server = server_of(call);
+    let server = server(server_of(call));
     // SAFETY: a coroutine socket object.
     let socket = unsafe { swr_hsc_connection(zconn) };
     // SAFETY: as above; sets the request allocator first.
@@ -689,16 +857,18 @@ fn on_accept(call: &Call) {
     }
     // SAFETY: a coroutine runs this method.
     let cid = unsafe { swr_hsc_cid() };
-    // SAFETY: a live server and connection.
-    unsafe { swr_hsc_track(server, cid, zconn) };
+    // SAFETY: the server's live array takes a reference to the connection.
+    unsafe { z::swr_zval_try_addref(zconn) };
+    // SAFETY: as above.
+    unsafe { z::zend_hash_index_add(server.clients(), cid.cast_unsigned(), zconn) };
     let mut peer = Peer {
         remote_addr: ptr::null_mut(),
         server_addr: ptr::null_mut(),
         remote_port: 0,
         server_port: 0,
     };
-    // SAFETY: a live server and socket.
-    unsafe { swr_hsc_peer(server, socket, &raw mut peer) };
+    // SAFETY: the live listener and socket.
+    unsafe { swr_hsc_peer(server.socket, socket, &raw mut peer) };
     let conn = Connection {
         server,
         socket,
@@ -711,8 +881,8 @@ fn on_accept(call: &Call) {
     // SAFETY: as above.
     unsafe { z::swr_zend_string_release(peer.server_addr) };
     if result.is_ok() {
-        // SAFETY: a live server.
-        unsafe { swr_hsc_untrack(server, cid) };
+        // SAFETY: the server's live array.
+        unsafe { z::zend_hash_index_del(server.clients(), cid.cast_unsigned()) };
     }
     bailout::defer(result);
 }
@@ -743,8 +913,7 @@ fn serve(conn: &Connection, peer: &mut Peer) -> Result<(), bailout::Bailout> {
         }
         step = Step::Recv;
         if context.is_null() {
-            // SAFETY: a live server, socket and connection object.
-            context = unsafe { swr_hsc_context(conn.server, conn.socket, conn.zconn) };
+            context = conn.server.context(conn.socket, conn.zconn);
         }
         let max = conn.package_max_length();
         if !header_completed {
@@ -828,15 +997,13 @@ fn serve(conn: &Connection, peer: &mut Peer) -> Result<(), bailout::Bailout> {
             && conn.data(0, HTTP2_PRI.len()) == HTTP2_PRI
         {
             conn.buffer().offset = i64::try_from(HTTP2_PRI.len()).unwrap_or(0);
-            // SAFETY: a live server; the session takes over the context.
-            unsafe { swr_hsc_http2(conn.server, context) };
+            http2(conn, context);
             context = ptr::null_mut();
             break;
         }
         // SAFETY: a live context and the buffer holding its `total` bytes.
         unsafe { swr_hsc_request_data(context, conn.buffer, total) };
-        // SAFETY: a live server and context.
-        let callable = unsafe { swr_hsc_handler(conn.server, context) };
+        let callable = conn.server.handler(context);
         let mut args = objects(context);
         let state = send::state(context);
         // SAFETY: the context's llhttp parser.
@@ -859,7 +1026,7 @@ fn serve(conn: &Connection, peer: &mut Peer) -> Result<(), bailout::Bailout> {
         // SAFETY: as above.
         unsafe { zval_ptr_dtor(&raw mut args[1]) };
         context = ptr::null_mut();
-        let running = running(conn.server);
+        let running = conn.server.running.get();
         // SAFETY: a live connection object.
         if !running || !keep_alive || unsafe { swr_hsc_closed(conn.zconn) } {
             break;
@@ -876,6 +1043,49 @@ fn serve(conn: &Connection, peer: &mut Peer) -> Result<(), bailout::Bailout> {
 }
 
 /// `swoole_strnpos(.., "\r\n\r\n")`.
+/// `recv_http2_frame`: the connection speaks HTTP/2 from here on. Its session
+/// takes the HTTP/1 request's context as its default and handles each frame
+/// until the peer goes or a frame fails (or a handler bailed out, which
+/// `onAccept` re-raises).
+fn http2(conn: &Connection, context: *mut Context) {
+    // SAFETY: a live socket.
+    unsafe { swr_hsc_http2_begin(conn.socket) };
+    let fd = send::state(context).fd;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "upstream's uint32_t package_max_length"
+    )]
+    let max_body_size = conn.package_max_length() as u32;
+    // SAFETY: the context outlives the session, freed below; the handler
+    // gets the server, which outlives the connection.
+    unsafe {
+        swr_v1_phphttp2_session_new(
+            fd,
+            context,
+            max_body_size,
+            true,
+            swr_hsc_http2_request,
+            ptr::from_ref(conn.server).cast_mut().cast(),
+        );
+    };
+    loop {
+        let mut retval = 0;
+        // SAFETY: a live socket; the frame stays in its read buffer.
+        let frame = unsafe { swr_hsc_recv_packet(conn.socket, &raw mut retval) };
+        // SAFETY: a whole frame.
+        if retval <= 0 || unsafe { swr_v1_phphttp2_session_receive(fd, frame) } == SW_ERR {
+            break;
+        }
+        if bailout::pending() {
+            break;
+        }
+    }
+    // SAFETY: the session made above.
+    unsafe { swr_v1_phphttp2_session_free(fd) };
+    send::state(context).detached = 1;
+    release(context);
+}
+
 fn find_crlf2(data: &[u8]) -> Option<usize> {
     data.windows(4).position(|window| window == b"\r\n\r\n")
 }
@@ -905,24 +1115,21 @@ handlers! {
 /// `http2_server_onRequest`: an HTTP/2 stream's request, with the HTTP/1
 /// request's `$server` and `SERVER_PROTOCOL` `HTTP/2`.
 /// # Safety
-/// The stream's live context, the session's default context, the server and
-/// the stream.
+/// The stream's live context, the session's default context and the server.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp_server_coro_http2_request(
     context: *mut c_void,
     http1: *mut c_void,
     server: *mut c_void,
-    stream: *mut c_void,
 ) {
-    let result = http2_request(context, http1, server, stream);
+    let result = http2_request(context, http1, self::server(server.cast()));
     bailout::raise(result);
 }
 
 fn http2_request(
     context: *mut Context,
     http1: *mut Context,
-    server: *mut c_void,
-    stream: *mut c_void,
+    server: &HttpServer,
 ) -> Result<(), bailout::Bailout> {
     let target = send::state(context).request.zserver.ptr;
     let source = send::state(http1).request.zserver.ptr;
@@ -943,8 +1150,7 @@ fn http2_request(
     unsafe { z::swr_zval_str(&raw mut protocol, http2) };
     // SAFETY: the live array, the interned key and value.
     unsafe { z::zend_hash_add_new(table, key, &raw mut protocol) };
-    // SAFETY: a live context and server.
-    let callable = unsafe { swr_hsc_handler(server, context) };
+    let callable = server.handler(context);
     let mut args = objects(context);
     let mut result = Ok(());
     if callable.is_null() {
@@ -954,8 +1160,9 @@ fn http2_request(
         match unsafe { swr_hsc_call(callable, args.as_mut_ptr(), true) } {
             -1 => result = Err(bailout::Bailout),
             0 => {
-                // SAFETY: the live stream.
-                unsafe { swr_hsc_stream_reset(stream) };
+                let stream_id = send::state(context).stream_id;
+                // SAFETY: the stream's live context.
+                unsafe { swr_v1_phphttp2_server_reset(context, stream_id, HTTP2_INTERNAL_ERROR) };
                 host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
             }
             _ => {}
@@ -994,6 +1201,25 @@ mod tests {
     fn the_header_ends_at_the_first_blank_line() {
         assert_eq!(find_crlf2(b"GET / HTTP/1.1\r\n\r\nbody"), Some(14), "end");
         assert_eq!(find_crlf2(b"GET / HTTP/1.1\r\n"), None, "incomplete");
+    }
+
+    #[test]
+    fn a_handler_matches_a_prefix_of_the_path_ignoring_case() {
+        let mut slots = [0_u8; 3];
+        let [root, api, stop] = [0, 1, 2].map(|i| (&raw mut slots[i]).cast::<c_void>());
+        let handlers: Vec<Handler> = vec![
+            ((*b"/").into(), root),
+            ((*b"/api").into(), api),
+            ((*b"/stop").into(), stop),
+        ];
+        let path = |path: &'static [u8]| Text {
+            data: path.as_ptr(),
+            length: path.len(),
+        };
+        assert_eq!(select(&handlers, root, path(b"/API/users")), api);
+        assert_eq!(select(&handlers, root, path(b"/stop")), stop);
+        assert_eq!(select(&handlers, root, path(b"/other")), root, "default");
+        assert!(select(&handlers[1..], ptr::null_mut(), path(b"/x")).is_null());
     }
 
     #[test]

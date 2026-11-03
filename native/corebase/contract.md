@@ -1,11 +1,12 @@
 # Core base helpers
 
 Opt-in feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. Callers are
-in `src/core/base.cc`. No public C++ signature or Global/ThreadGlobal layout
-changes.
+in `src/core/base.cc` and the readers of the `SwooleG` fields Rust owns. No
+public C++ signature changes; `swoole::Global` loses the fields Rust owns.
 
-Rust holds numeric/byte/path comparison and formatting policy. It keeps no
-state, pointers or borrows after return, performs no allocation, and calls no
+Rust holds numeric/byte/path comparison and formatting policy. Apart from the
+core state record below it keeps no state, pointers or borrows after return,
+performs no allocation, and calls no
 native allocator, user callback, Zend operation or C++ constructor. Host libc
 `strtoul`, `strncasecmp` and `toupper` are called directly so locale and errno
 behave as upstream; input strings must stay valid for the call. No exception,
@@ -15,23 +16,20 @@ bailout or panic crosses the ABI. All spans and pointer differences fit
 ## Helpers
 
 - `type_size`: original ASCII character mapping; unknown returns 0.
-- `gcd` / `lcm`: native facades keep both positive-input assertions. LCM wraps
-  the `uint32` product before division (65536*65536 -> 0). Rust uses Euclid's
-  remainder loop. Native LCM's unsigned-to-int conversion above `INT_MAX` is
-  implementation-defined.
+- `swoole_common_divisor` / `_multiple`: Rust asserts both inputs are positive,
+  as upstream does (a failed assertion aborts). LCM wraps the `uint32` product
+  before division (65536*65536 -> 0). Rust uses Euclid's remainder loop.
 - `itoa`: writes decimal bytes then NUL into caller-owned storage and returns the
   length. Handles `LONG_MIN`. Buffers need only fit the
   actual value.
-- `radix`: base 2..36, writes backwards into scratch of at least
-  `sizeof(unsigned long)*8+1`. Returns `SIZE_MAX` without writing for invalid
-  radix, null output or short capacity. The facade keeps its assertion and calls
-  the original `sw_strndup` after Rust returns.
+- `swoole_dec2hex`: asserts base 2..36, formats backwards into scratch of
+  `sizeof(unsigned long)*8+1` bytes and returns a libc `strndup` of the digits.
 - `hex`: accepts all ASCII A..Z/a..z (as upstream, beyond F). Counts an optional
   `0x` prefix even without digits, wraps `size_t` per digit, then converts to
   `unsigned long`. The facade passes its compiler's plain-`char` signedness
   (`hex_mode`); in unsigned mode all bytes go to `toupper` as non-negative.
   Output must be writable and disjoint from input.
-- `version`: calls host `strtoul` left then right on every component, keeping
+- `swoole_version_compare`: calls host `strtoul` left then right on every component, keeping
   sticky errno/ERANGE and platform differences. Skips exactly one arbitrary
   separator between equal components.
 - `parse_stoi`: host decimal `strtol`, accepted only within `int` range. The
@@ -94,9 +92,28 @@ Native shims perform exactly one requested effect per step.
   native `exit(0)`. A returning fatal handler resumes the sequence; throwing or
   exiting handlers never re-enter Rust.
 
-`init_next` also selects the `SW_MAX(1, sysconf(_SC_NPROCESSORS_ONLN))` CPU
-branch: native runs the first query, reports only `< 1`, then either assigns 1 or
-runs the second query and assigns.
+## Core state (`global.rs`)
+
+Rust owns these `SwooleG` fields in one process-wide record of atomics: the init
+guard, `cpu_num`, `wait_signal`, `dns_lookup_random`, `dns_tries`, the memory
+pool and the stdout stream (the last two are native pointers Rust only holds).
+Native code reads them through `swr_v1_core_*` accessors; `SW_CPU_NUM`,
+`sw_mem_pool()` and `swoole_get_stdout_stream()` keep their names.
+`swr_v1_core_init` is `swoole_init`'s guard: false when already initialised,
+otherwise it resets the record and sets `SW_MAX(1, sysconf(...))` CPUs, one DNS
+try and the `srandom(time(nullptr))` seed; `swoole_init` keeps the native effects
+in upstream's order. `swr_v1_core_max_sockets` is the `RLIMIT_NOFILE` soft limit
+as `uint32_t`, capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept.
+`swoole_clean` resets the record after the native `Global`. The unused `uname`,
+`use_async_resolver` and `use_name_resolver` fields are gone.
+
+Upstream's own C++ symbols defined in Rust (`export_name`), with no body left in
+base.cc: `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
+`swoole_version_compare`, `swoole_dump_ascii`/`_hex`, `swoole::microtime`,
+`DataHead::dump`, both `swoole_rand` overloads, `swoole_random_int`, and
+`sw_malloc`/`sw_free`/`sw_calloc`/`sw_realloc`, which call libc's allocator
+directly (`SwooleG.std_allocator` only ever held it). The `corebase-native` gate
+checks the hybrid base.o leaves the first four to the Rust archive.
 
 Whole operations in Rust (`host.rs`), with native code keeping only their
 warnings: `swoole_shell_exec`, `sw_wait_for` (through a non-throwing predicate
@@ -105,5 +122,5 @@ trampoline), `swoole_dump_ascii`/`_hex`, `swoole_print_backtrace` without Boost,
 xoshiro256** seeded by getentropy), `swoole_system_random` and
 `swoole_redirect_stdout(int)` (each dup2's errno is handed back for its warning).
 
-Still native: varargs, globals, C++ containers/objects, filesystem IO, hook
+Still native: varargs, the rest of `SwooleG` and TLS, C++ containers/objects, filesystem IO, hook
 traversal and other runtime operations.

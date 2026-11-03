@@ -8,20 +8,26 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+mod global;
 mod hook;
 mod host;
 mod lifecycle;
 mod random;
+pub use global::{
+    swr_v1_core_cpu_num, swr_v1_core_dns_lookup_random, swr_v1_core_dns_tries, swr_v1_core_init,
+    swr_v1_core_initialized, swr_v1_core_max_sockets, swr_v1_core_memory_pool, swr_v1_core_reset,
+    swr_v1_core_set_dns_lookup_random, swr_v1_core_set_memory_pool, swr_v1_core_set_stdout,
+    swr_v1_core_set_wait_signal, swr_v1_core_stdout, swr_v1_core_wait_signal,
+};
 pub use hook::swr_v1_corebase_hook_add_action;
 pub use host::{
-    DataHead, swr_v1_corebase_datahead_dump, swr_v1_corebase_dump_ascii, swr_v1_corebase_dump_hex,
-    swr_v1_corebase_microtime, swr_v1_corebase_print_backtrace, swr_v1_corebase_rand,
-    swr_v1_corebase_random_u64, swr_v1_corebase_redirect_stdout, swr_v1_corebase_shell_exec,
+    DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, sw_realloc,
+    swoole_dump_ascii, swoole_dump_hex, swoole_rand, swoole_rand_any, swoole_random_int,
+    swr_v1_corebase_print_backtrace, swr_v1_corebase_redirect_stdout, swr_v1_corebase_shell_exec,
     swr_v1_corebase_system_random, swr_v1_corebase_wait_for,
 };
 pub use lifecycle::{
-    LifecycleState, swr_v1_corebase_init_next, swr_v1_corebase_lifecycle_next,
-    swr_v1_corebase_task_tmp_next,
+    LifecycleState, swr_v1_corebase_lifecycle_next, swr_v1_corebase_task_tmp_next,
 };
 pub use random::{RandomState, swr_v1_corebase_random_next};
 
@@ -72,18 +78,62 @@ pub extern "C" fn swr_v1_corebase_type_size(kind: u8) -> c_int {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_corebase_gcd(mut left: u32, mut right: u32) -> u32 {
+/// `uint32_t swoole_common_divisor(uint32_t, uint32_t)`.
+/// # Panics
+/// On a zero operand, which upstream asserts against (a panic here aborts).
+#[must_use]
+#[unsafe(export_name = "_Z21swoole_common_divisorjj")]
+pub extern "C" fn swoole_common_divisor(left: u32, right: u32) -> u32 {
+    assert!(left > 0 && right > 0, "swoole_common_divisor: zero operand");
+    gcd(left, right)
+}
+
+/// `uint32_t swoole_common_multiple(uint32_t, uint32_t)`: the `uint32_t` product
+/// wraps before the division, as upstream's does (65536 * 65536 gives 0).
+/// # Panics
+/// On a zero operand, which upstream asserts against (a panic here aborts).
+#[must_use]
+#[unsafe(export_name = "_Z22swoole_common_multiplejj")]
+pub extern "C" fn swoole_common_multiple(left: u32, right: u32) -> u32 {
+    assert!(
+        left > 0 && right > 0,
+        "swoole_common_multiple: zero operand"
+    );
+    left.wrapping_mul(right) / gcd(left, right)
+}
+
+fn gcd(mut left: u32, mut right: u32) -> u32 {
     while right != 0 {
         (left, right) = (right, left % right);
     }
     left
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_corebase_lcm(left: u32, right: u32) -> u32 {
-    let divisor = swr_v1_corebase_gcd(left, right);
-    left.wrapping_mul(right).checked_div(divisor).unwrap_or(0)
+unsafe extern "C" {
+    fn strndup(input: *const c_char, length: usize) -> *mut c_char;
+}
+
+/// `char *swoole_dec2hex(ulong_t value, int base)`: the digits in a fresh
+/// `strndup` allocation the caller frees.
+/// # Panics
+/// On a base outside 2..=36, which upstream asserts against (a panic here aborts).
+#[must_use]
+#[unsafe(export_name = "_Z14swoole_dec2hexmi")]
+pub extern "C" fn swoole_dec2hex(value: c_ulong, base: c_int) -> *mut c_char {
+    assert!(base > 1 && base < 37, "swoole_dec2hex: base out of range");
+    let mut buffer = [0_u8; c_ulong::BITS as usize + 1];
+    // SAFETY: `buffer` is a live local of the capacity `radix` requires; `base` is checked.
+    let first = unsafe {
+        radix(
+            value,
+            base.cast_unsigned(),
+            buffer.as_mut_ptr(),
+            buffer.len(),
+        )
+    };
+    let digits = buffer.as_ptr().wrapping_add(first).cast();
+    // SAFETY: `digits` starts the NUL-terminated digits `radix` just wrote into `buffer`.
+    unsafe { strndup(digits, buffer.len() - first - 1) }
 }
 
 /// Select the native warning, error, or accepted-value path for systemd fds.
@@ -128,13 +178,7 @@ pub unsafe extern "C" fn swr_v1_corebase_itoa(output: *mut c_char, value: c_long
 /// `SIZE_MAX` rejects invalid radix, null output or insufficient maximum capacity.
 /// # Safety
 /// Nonnull output is writable for capacity bytes, with no overlapping live borrow.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_radix(
-    mut value: c_ulong,
-    radix: u32,
-    output: *mut u8,
-    capacity: usize,
-) -> usize {
+pub unsafe fn radix(mut value: c_ulong, radix: u32, output: *mut u8, capacity: usize) -> usize {
     const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     if !(2..=36).contains(&radix) || output.is_null() || capacity < c_ulong::BITS as usize + 1 {
         return usize::MAX;
@@ -227,8 +271,9 @@ pub unsafe extern "C" fn swr_v1_corebase_hex_mode(
 /// Compare components using the same host libc parser and observable errno order.
 /// # Safety
 /// Both inputs are valid NUL-terminated C strings for the duration of this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_version(
+#[must_use]
+#[unsafe(export_name = "_Z22swoole_version_comparePKcS0_")]
+pub unsafe extern "C" fn swoole_version_compare(
     mut left: *const c_char,
     mut right: *const c_char,
 ) -> c_int {
@@ -391,8 +436,22 @@ mod tests {
 
     #[test]
     fn wrapped_product_precedes_division() {
-        assert_eq!(swr_v1_corebase_lcm(65536, 65536), 0);
-        assert_eq!(swr_v1_corebase_gcd(u32::MAX, u32::MAX - 1), 1);
+        assert_eq!(swoole_common_multiple(65536, 65536), 0);
+        assert_eq!(swoole_common_divisor(u32::MAX, u32::MAX - 1), 1);
+        assert_eq!(swoole_common_multiple(4, 6), 12);
+    }
+
+    #[test]
+    fn dec2hex_returns_an_owned_digit_string() {
+        for (value, base, expected) in [
+            (255, 16, c"ff"),
+            (0, 2, c"0"),
+            (c_ulong::MAX, 36, c"3w5e11264sgsf"),
+        ] {
+            let digits = swoole_dec2hex(value, base);
+            assert_eq!(unsafe { std::ffi::CStr::from_ptr(digits) }, expected);
+            unsafe { libc::free(digits.cast()) };
+        }
     }
 
     #[test]
@@ -458,10 +517,7 @@ mod tests {
     fn borrowed_binary_path_and_output_bounds() {
         assert_eq!(unsafe { swr_v1_corebase_dirname(b"a\0/b".as_ptr(), 4) }, 2);
         let mut output = [0xa5; 2];
-        assert_eq!(
-            unsafe { swr_v1_corebase_radix(0, 10, output.as_mut_ptr(), 2) },
-            usize::MAX
-        );
+        assert_eq!(unsafe { radix(0, 10, output.as_mut_ptr(), 2) }, usize::MAX);
         assert_eq!(output, [0xa5; 2]);
         let mut decimal = [0xa5u8; 4];
         assert_eq!(

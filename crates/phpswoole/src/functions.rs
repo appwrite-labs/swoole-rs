@@ -1,5 +1,9 @@
 //! The global functions of `php_swoole.cc`, each as upstream parses and answers.
-use crate::{constants::VERSION, ops};
+use crate::{
+    constants::VERSION,
+    module::{CALL_USER_SHUTDOWNFUNC_BEGIN, RINIT_END},
+    ops,
+};
 use std::{
     ffi::{CStr, c_char, c_int},
     ptr,
@@ -275,8 +279,11 @@ fn mime_type_list(call: &Call) {
 }
 
 fn shutdown_begin(call: &Call) {
-    // SAFETY: C++'s module globals.
-    if unsafe { (ops().shutdown_begin)() } != 0 {
+    let globals = crate::module::globals();
+    // SAFETY: this thread's live module globals.
+    if unsafe { (*globals).req_status } == RINIT_END {
+        // SAFETY: as above.
+        unsafe { (*globals).req_status = CALL_USER_SHUTDOWNFUNC_BEGIN };
         call.set_bool(true);
     } else {
         // SAFETY: a handler, with a literal message.
