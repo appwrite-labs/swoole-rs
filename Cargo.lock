@@ -613,6 +613,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-error",
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
