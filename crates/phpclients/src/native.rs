@@ -8,6 +8,36 @@ use swoole_rs_zend::sys::{zend_object, zend_string, zval};
 /// A `SocketImpl *`.
 pub(crate) type Socket = *mut libc::c_void;
 
+/// `swoole_socket_coro_callable`.
+#[repr(C)]
+pub(crate) struct LengthCallable {
+    pub(crate) socket: Socket,
+    pub(crate) value: *mut zval,
+}
+
+/// `swoole_socket_coro_sockopt_call`.
+#[repr(C)]
+pub(crate) struct SockoptCall {
+    pub(crate) socket: Socket,
+    pub(crate) op: c_int,
+    pub(crate) level: c_int,
+    pub(crate) name: c_int,
+    pub(crate) value: *mut zval,
+    pub(crate) address: *const c_void,
+    pub(crate) index: u32,
+    pub(crate) result: c_int,
+}
+
+/// `swoole_socket_coro_import_call`.
+#[repr(C)]
+pub(crate) struct ImportCall {
+    pub(crate) fd: c_int,
+    pub(crate) kind: c_int,
+    pub(crate) nonblock: c_int,
+    pub(crate) stream: *mut zval,
+    pub(crate) object: *mut zend_object,
+}
+
 unsafe extern "C" {
     /// `php_swoole_error(level, "%s", message)`, or with `fatal`
     /// `php_swoole_fatal_error`.
@@ -22,9 +52,9 @@ unsafe extern "C" {
         protocol: i64,
         error: *mut c_int,
     ) -> Socket;
-    /// `socket_coro_init`: zero-copy, the zend string allocator, and the fd,
-    /// domain, type and protocol properties of `object`'s socket.
-    pub(crate) fn swoole_socket_coro_init(object: *mut zend_object);
+    /// `socket_coro_init`'s socket half: zero copy and the zend string
+    /// allocator, then its fd, domain, type and protocol into `fields`.
+    pub(crate) fn swoole_socket_coro_adopt(socket: Socket, fields: *mut i64);
     /// `socket_coro_free_object` up to `zend_object_std_dtor`.
     pub(crate) fn swoole_socket_coro_release(object: *mut zend_object);
     /// `close()` after the reference check: free the length callable, then
@@ -126,8 +156,6 @@ unsafe extern "C" {
     /// `type`, published in its `socket` and `fd` properties; null on failure,
     /// with errCode/errMsg set.
     pub(crate) fn swoole_client_coro_create_socket(object: *mut zend_object, kind: i64) -> Socket;
-    /// `php_swoole_socket_set(socket, settings)`.
-    pub(crate) fn swoole_client_coro_apply(socket: Socket, settings: *const zval) -> bool;
     /// Merge `settings` into the client's `setting` property.
     pub(crate) fn swoole_client_coro_merge_setting(object: *mut zend_object, settings: *const zval);
     /// The client's `setting` property.
@@ -154,14 +182,59 @@ unsafe extern "C" {
     pub(crate) fn swoole_client_coro_packet_mode(socket: Socket) -> bool;
     pub(crate) fn swoole_client_coro_is_connected(socket: Socket) -> bool;
     pub(crate) fn swoole_client_coro_has_ssl(socket: Socket) -> bool;
-    /// Encrypt a plain socket, applying the `setting` SSL options: 0, or the
-    /// errno to report (EISCONN).
-    pub(crate) fn swoole_client_coro_enable_ssl(object: *mut zend_object, socket: Socket) -> c_int;
     /// The peer certificate as a new string, or null.
     pub(crate) fn swoole_client_coro_peer_cert(socket: Socket) -> *mut zend_string;
     pub(crate) fn swoole_client_coro_verify_peer(socket: Socket, allow_self_signed: bool) -> bool;
-    /// `php_swoole_socket_set_protocol(socket, settings)`.
-    pub(crate) fn swoole_socket_coro_set_protocol(socket: Socket, settings: *const zval) -> bool;
+    /// `open_length_check` (0), `open_eof_check` (1) or `http2` (2) = `value`.
+    pub(crate) fn swoole_socket_coro_set_flag(socket: Socket, flag: c_int, value: bool);
+    /// `&protocol`, a `swoole::Protocol`.
+    pub(crate) fn swoole_socket_coro_protocol(socket: Socket) -> *mut c_void;
+    /// `mqtt::set_protocol` (0) or `Protocol::default_length_func` (1).
+    pub(crate) fn swoole_socket_coro_protocol_preset(socket: Socket, kind: c_int);
+    /// `package_length_func` from a [`LengthCallable`]; run inside `zend_try`.
+    pub(crate) fn swoole_socket_coro_length_callable(call: *mut c_void);
+    /// `set_option(level, name, value)`, warning (a log line) on failure.
+    pub(crate) fn swoole_socket_coro_set_option(
+        socket: Socket,
+        level: c_int,
+        name: c_int,
+        value: c_int,
+    ) -> bool;
+    pub(crate) fn swoole_socket_coro_set_timeout(socket: Socket, timeout: f64, kind: c_int);
+    pub(crate) fn swoole_socket_coro_get_timeout(socket: Socket, kind: c_int) -> f64;
+    /// `set_http_proxy` or `set_socks5_proxy`.
+    pub(crate) fn swoole_socket_coro_proxy(
+        socket: Socket,
+        http: bool,
+        host: *const c_char,
+        host_length: size_t,
+        port: i64,
+        user: *const c_char,
+        user_length: size_t,
+        password: *const c_char,
+        password_length: size_t,
+    );
+    /// One `SWR_PHPCLIENTS_SSL_*` option.
+    pub(crate) fn swoole_socket_coro_ssl_option(
+        socket: Socket,
+        option: c_int,
+        text: *const c_char,
+        length: size_t,
+        value: i64,
+    ) -> bool;
+    /// Whether the build has an optional SSL option (host name, grease).
+    pub(crate) fn swoole_socket_coro_ssl_supports(option: c_int) -> bool;
+    /// ext/sockets' helpers over a [`SockoptCall`]; run inside `zend_try`.
+    pub(crate) fn swoole_socket_coro_sockopt(call: *mut c_void);
+    /// `TCP_INFO` into `array`: 1, 0 when `name` is not it, -1 when it failed.
+    pub(crate) fn swoole_socket_coro_tcp_info(
+        socket: Socket,
+        name: c_int,
+        array: *mut zval,
+    ) -> c_int;
+    /// `php_swoole_create_socket_from_fd` over an [`ImportCall`] (with a
+    /// stream, `import`'s object); run inside `zend_try`.
+    pub(crate) fn swoole_socket_coro_import(call: *mut c_void);
 }
 
 unsafe extern "C" {
@@ -207,6 +280,28 @@ unsafe extern "C" {
     pub(crate) fn swoole_client_last_error() -> c_int;
     /// Run one [`ClientCall`]; a `bailout::trap` body.
     pub(crate) fn swoole_client_run(call: *mut c_void);
+    /// `&cli->protocol`, whose head crates/framing mirrors.
+    pub(crate) fn swoole_client_protocol(cli: Cli) -> *mut c_void;
+    /// Write one `SWOOLE_CLIENT_OPT_*` into the client (`crate::settings`).
+    pub(crate) fn swoole_client_option(
+        cli: Cli,
+        option: c_int,
+        value: i64,
+        text: *const c_char,
+        length: size_t,
+    ) -> i64;
+    /// `set_http_proxy` (`http`) or `set_socks5_proxy`.
+    pub(crate) fn swoole_client_proxy(
+        cli: Cli,
+        http: bool,
+        host: *const c_char,
+        host_length: size_t,
+        port: i64,
+        user: *const c_char,
+        user_length: size_t,
+        password: *const c_char,
+        password_length: size_t,
+    );
 }
 
 /// A `network::Client *`.
@@ -267,7 +362,6 @@ pub(crate) enum Op {
     Close = 7,
     Sleep = 8,
     Wakeup = 9,
-    Settings = 10,
     EnableSsl = 11,
     SslHandshake = 12,
     SslVerify = 13,

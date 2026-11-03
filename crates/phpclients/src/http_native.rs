@@ -15,8 +15,8 @@ unsafe extern "C" {
         error: *mut c_int,
     ) -> *mut zend_object;
     pub(crate) fn swoole_http_client_coro_enable_ssl(socket: Socket) -> bool;
-    /// `php_swoole_socket_set`, and no proxy handshake for plain HTTP proxying.
-    pub(crate) fn swoole_http_client_coro_apply(socket: Socket, settings: *const zval);
+    /// After the settings: no proxy handshake for plain HTTP proxying.
+    pub(crate) fn swoole_http_client_coro_apply(socket: Socket);
     /// A `NameResolver::Context`.
     pub(crate) fn swoole_http_client_coro_resolve_new() -> *mut c_void;
     pub(crate) fn swoole_http_client_coro_resolve_reset(context: *mut c_void, with_port: bool);

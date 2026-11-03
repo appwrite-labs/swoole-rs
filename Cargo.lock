@@ -210,6 +210,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
+name = "pq-sys"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "297a95d6f2378891f949d9556723e15140e50d29eac07458dabcee8688995b1d"
+dependencies = [
+ "libc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -395,7 +406,9 @@ dependencies = [
  "swoole-rs-inflate",
  "swoole-rs-locks",
  "swoole-rs-memory",
+ "swoole-rs-odbc",
  "swoole-rs-ossupport",
+ "swoole-rs-pgsql",
  "swoole-rs-phpclients",
  "swoole-rs-phpcollections",
  "swoole-rs-phpcoroutines",
@@ -471,6 +484,21 @@ name = "swoole-rs-memory"
 version = "0.1.0"
 
 [[package]]
+name = "swoole-rs-odbc"
+version = "0.1.0"
+dependencies = [
+ "swoole-rs-odbc-sys",
+]
+
+[[package]]
+name = "swoole-rs-odbc-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "pkg-config",
+]
+
+[[package]]
 name = "swoole-rs-oracle"
 version = "0.1.0"
 dependencies = [
@@ -485,13 +513,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-pgsql"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pq-sys",
+]
+
+[[package]]
 name = "swoole-rs-phpclients"
 version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
  "swoole-rs-clients",
+ "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-framing",
  "swoole-rs-inflate",
  "swoole-rs-phpstubs",
  "swoole-rs-phptable",
@@ -613,6 +651,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-error",
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 
