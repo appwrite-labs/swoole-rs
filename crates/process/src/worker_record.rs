@@ -134,6 +134,15 @@ pub(crate) unsafe fn pipe_master(worker: *const WorkerRecord) -> *mut c_void {
     unsafe { (*worker).pipe_master }
 }
 
+/// Point the worker at its pool.
+///
+/// # Safety
+/// `worker` points to a live `Worker`/`WorkerRecord`.
+pub(crate) unsafe fn set_pool(worker: *mut WorkerRecord, pool: *mut c_void) {
+    // SAFETY: the caller lends a live worker record; only the field is written.
+    unsafe { (*worker).pool = pool };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
