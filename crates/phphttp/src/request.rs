@@ -223,7 +223,7 @@ unsafe extern "C" fn option(
             let bytes = unsafe { string::bytes(dir) };
             // SAFETY: a live context; C++ copies the bytes.
             unsafe {
-                swr_http_host_set_upload_tmp_dir(context, bytes.as_ptr().cast(), bytes.len())
+                swr_http_host_set_upload_tmp_dir(context, bytes.as_ptr().cast(), bytes.len());
             };
             // SAFETY: the reference `get_string` returned.
             unsafe { swr_zend_string_release(dir) };

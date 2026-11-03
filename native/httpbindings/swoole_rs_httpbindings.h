@@ -365,6 +365,7 @@ void swr_http_host_before_request(void *context);
 void *swr_http_host_callback(void *server, int server_fd, bool handshake);
 void swr_http_host_set_callback(void *context, void *callback);
 void swr_http_host_notice(const char *message);
+uint8_t swr_http_host_websocket_status(void *conn);
 #ifdef __cplusplus
 }
 #endif

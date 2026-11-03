@@ -110,6 +110,8 @@ unsafe extern "C" {
     fn swr_http_host_set_callback(context: *mut Context, callback: *mut c_void);
     /// `swoole_notice("%s", message)`.
     fn swr_http_host_notice(message: *const c_char);
+    /// The connection's `websocket_status` (parsing an upgrade request sets it).
+    fn swr_http_host_websocket_status(conn: *mut c_void) -> u8;
 }
 
 thread_local! {
@@ -325,7 +327,8 @@ fn handle(
     add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
     // SAFETY: a live context.
     unsafe { swr_http_host_before_request(ctx) };
-    let handshake = facts.websocket_status == STATUS_CONNECTION;
+    // SAFETY: the live connection.
+    let handshake = unsafe { swr_http_host_websocket_status(conn) } == STATUS_CONNECTION;
     // SAFETY: the live server.
     let callback = unsafe { swr_http_host_callback(server, server_fd, handshake) };
     if callback.is_null() {

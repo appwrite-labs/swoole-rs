@@ -200,7 +200,7 @@ index a376f72..3d58d22 100644
 +    static_cast<HttpContext *>(context)->upload_tmp_dir = std::string(dir, length);
  }
 diff --git a/ext-src/swoole_http_server.cc b/ext-src/swoole_http_server.cc
-index 650179a..3b9bc30 100644
+index 650179a..e13f8fd 100644
 --- a/ext-src/swoole_http_server.cc
 +++ b/ext-src/swoole_http_server.cc
 @@ -55,27 +55,55 @@ static void http_server_process_request(const Server *serv, zend::Callable *cb,
@@ -241,18 +241,18 @@ index 650179a..3b9bc30 100644
 +        break;
 +    default:
 +        break;
-     }
++    }
 +    if (ctx) {
 +        zval_ptr_dtor(ctx->request.zobject);
 +        zval_ptr_dtor(ctx->response.zobject);
-+    }
+     }
 +    return SW_OK;
 +}
++
++static_assert(sizeof(swr_http_receive) == 40, "crates/phphttp/src/server.rs mirrors swr_http_receive");
  
 -    if (conn->http2_stream) {
 -        return swoole_http2_server_onReceive(serv, conn, req);
-+static_assert(sizeof(swr_http_receive) == 40, "crates/phphttp/src/server.rs mirrors swr_http_receive");
-+
 +void *swr_http_host_receive(void *server, int64_t session_id, int server_fd, swr_http_receive *out) {
 +    auto *serv = static_cast<Server *>(server);
 +    Connection *conn = serv->get_connection_verify_no_ssl(session_id);
@@ -276,7 +276,7 @@ index 650179a..3b9bc30 100644
 +void *swr_http_host_receive_context(void *server, int64_t session_id, void *req, zval **zdata) {
 +    auto *serv = static_cast<Server *>(server);
      HttpContext *ctx = swoole_http_context_new(session_id);
-@@ -83,76 +111,25 @@ int php_swoole_http_server_onReceive(Server *serv, RecvData *req) {
+@@ -83,76 +111,29 @@ int php_swoole_http_server_onReceive(Server *serv, RecvData *req) {
      ctx->onBeforeRequest = swoole_http_server_onBeforeRequest;
 +    *zdata = &ctx->request.zdata;
 +    php_swoole_get_recv_data(serv, *zdata, static_cast<RecvData *>(req));
@@ -369,6 +369,10 @@ index 650179a..3b9bc30 100644
 -    return SW_OK;
 +void swr_http_host_notice(const char *message) {
 +    swoole_notice("%s", message);
++}
++
++uint8_t swr_http_host_websocket_status(void *conn) {
++    return static_cast<Connection *>(conn)->websocket_status;
  }
 diff --git a/ext-src/swoole_websocket_server.cc b/ext-src/swoole_websocket_server.cc
 index 17d2a41..aa2d504 100644
