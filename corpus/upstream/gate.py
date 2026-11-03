@@ -8,8 +8,8 @@ row as JSON.
 
 A flagged test may be re-run (--recheck: up to 3 re-runs per engine, or one hybrid
 re-run when the hybrid's first failure timed out). If upstream fails a re-run, the test
-is flaky on upstream only if the hybrid passes one of its re-runs; otherwise it is a
-regression. If upstream passes every re-run, any failed hybrid re-run is a regression
+is flaky on upstream only if the hybrid passes one of its re-runs (up to 9 then);
+otherwise it is a regression. If upstream passes every re-run, any failed hybrid re-run is a regression
 and passing them all is a pass on re-run. The hybrid re-runs until it has both passed and
 failed, so one failed re-run of a test racy on both engines doesn't decide it. A hybrid that both passed and failed its
 re-runs gets more upstream re-runs (up to 9 in all) before that verdict: a test racy
@@ -131,7 +131,9 @@ def pending(tests, rechecked, engine='upstream', results=()):
     re-run; `upstream-extended` continues upstream, to 9 re-runs, for a test the hybrid
     both passed and failed. Another engine stops once its verdict is settled (a pass after an upstream
     failure, otherwise both a pass and a failure, which earns those upstream re-runs) or its
-    budget is spent: one re-run if its first failure timed out, else three. A failure alone
+    budget is spent: one re-run if its first failure timed out, nine once upstream failed a
+    re-run (a test racy on both engines may fail several hybrid re-runs before one passes),
+    else three. A failure alone
     doesn't settle it: a test racy on both engines (#862) fails a hybrid re-run as often as
     the first run. Inconclusive re-runs don't use the budget, but each engine stops
     after twice its budget in all."""
@@ -152,7 +154,8 @@ def pending(tests, rechecked, engine='upstream', results=()):
         statuses = runs[test].get(engine, [])
         upstream_failed = any(status not in ('passed', 'inconclusive') for status in runs[test].get('upstream', []))
         settled = 'passed' in statuses and (upstream_failed or 'failed' in statuses)
-        if not settled and within(statuses, 1 if test in timed_out else RERUNS):
+        budget = 1 if test in timed_out else EXTENDED_RERUNS if upstream_failed else RERUNS
+        if not settled and within(statuses, budget):
             left.append(test)
     return left
 
