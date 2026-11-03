@@ -48,6 +48,8 @@ pub(crate) fn send(ctx: *mut Context, data: &[u8]) -> bool {
 fn buffer(ctx: *mut Context, parts: [&[u8]; 3]) {
     let buffer = state(ctx).write_buffer.get_or_insert_default();
     buffer.clear();
+    // One allocation for the response, not one per doubling.
+    buffer.reserve(parts.iter().map(|part| part.len()).sum());
     for part in parts {
         buffer.extend_from_slice(part);
     }
