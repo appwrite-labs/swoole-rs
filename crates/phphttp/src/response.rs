@@ -6,8 +6,8 @@ use crate::{
         self, CO_SOCKET, COOKIE, Context, DETACHED, END, HEADER, HEADER_KEY_SIZE,
         HTTP_CONTEXT_UNAVAILABLE, HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED,
         TRAILER, UPGRADE, WEBSOCKET, swr_http_host_after, swr_http_host_close,
-        swr_http_host_goaway, swr_http_host_mark, swr_http_host_recv, swr_http_host_redirect,
-        swr_http_host_response_free, swr_http_host_response_property,
+        swr_http_host_goaway, swr_http_host_recv, swr_http_host_redirect,
+        swr_http_host_response_property,
     },
     send, websocket,
 };
@@ -38,6 +38,8 @@ const OPCODE_TEXT: i64 = 1;
 const CLOSE_NORMAL: i64 = 1000;
 /// `SW_ERROR_WEBSOCKET_PACK_FAILED`.
 const WEBSOCKET_PACK_FAILED: c_int = 8505;
+/// `SW_HTTP_INTERNAL_SERVER_ERROR`.
+const INTERNAL_SERVER_ERROR: c_int = 500;
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: Zend calls `create_object` with this class or a subclass of it.
@@ -47,11 +49,44 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees an object this class created.
     let ctx = unsafe { *Holder::data(std) };
-    // SAFETY: the context the object holds; C++ ends and releases it.
-    let bailed = !ctx.is_null() && unsafe { swr_http_host_response_free(ctx) };
+    let bailed = !ctx.is_null() && release(ctx);
     // SAFETY: as above.
     unsafe { Holder::dtor(std) };
     host::raise(bailed);
+}
+
+unsafe extern "C" {
+    /// `ctx->onAfterResponse(ctx)` when set; true if it bailed out.
+    fn swr_http_host_after_response(ctx: *mut Context) -> bool;
+    /// `sw_reactor() != nullptr`.
+    fn swr_http_host_reactor() -> bool;
+}
+
+/// The response object is going: finish what the handler left unanswered
+/// (500 when no status was set) and release the context. True if user code
+/// bailed out on the way.
+fn release(ctx: *mut Context) -> bool {
+    // SAFETY: a live context.
+    let mut bailed = unsafe { swr_http_host_after_response(ctx) };
+    let state = send::state(ctx);
+    if !bailed
+        && state.end == 0
+        && (state.send_chunked != 0 || state.send_header == 0)
+        && state.detached == 0
+        // SAFETY: reads a global.
+        && unsafe { swr_http_host_reactor() }
+    {
+        if state.response.status == 0 {
+            state.response.status = INTERNAL_SERVER_ERROR;
+        }
+        if context::available(ctx) {
+            bailed = send::end(ctx, ptr::null_mut()).is_err();
+        }
+    }
+    send::state(ctx).response.zobject.ptr = ptr::null_mut();
+    // SAFETY: a live context, which the response no longer holds.
+    unsafe { context::swr_v1_phphttp_context_free(ctx) };
+    bailed
 }
 
 method_table! {
@@ -586,8 +621,7 @@ fn recv(call: &Call) {
 fn detach(call: &Call) {
     let run = || -> Option<()> {
         let ctx = checked(call)?;
-        // SAFETY: a live context.
-        unsafe { swr_http_host_mark(ctx, DETACHED) };
+        send::state(ctx).detached = 1;
         call.set_bool(true);
         Some(())
     };
@@ -683,6 +717,12 @@ fn refuse(call: &Call, message: &str) {
     call.set_bool(false);
 }
 
+/// A found slot holding an object.
+fn is_object(slot: *mut z::zval) -> bool {
+    // SAFETY: a found slot is a live zval.
+    unsafe { type_of(slot) == IS_OBJECT }
+}
+
 fn instance_of(object: *mut z::zval, ce: *mut zend_class_entry) -> bool {
     // SAFETY: a live object zval.
     let object = unsafe { obj_of(object) };
@@ -707,9 +747,8 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
         let table = unsafe { value::table(object) };
         // SAFETY: a live table.
         request = unsafe { z::zend_hash_index_find(table, 1) };
-        // SAFETY: a found slot is a live zval.
         if request.is_null()
-            || unsafe { type_of(request) } != IS_OBJECT
+            || !is_object(request)
             || !instance_of(request, crate::request::entry())
         {
             return refuse(call, "parameter $1.second must be instanceof Http\\Request");

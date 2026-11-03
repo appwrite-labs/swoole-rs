@@ -9,7 +9,7 @@ use swoole_rs_zend::{
 
 pub(crate) type Context = c_void;
 
-/// `swoole_http_ctx` state bits, as `swr_http_host_flags` packs them.
+/// `swoole_http_ctx` state bits, as `flags` packs them.
 pub(crate) const END: u32 = 1;
 pub(crate) const DETACHED: u32 = 1 << 1;
 pub(crate) const COMPLETED: u32 = 1 << 2;
@@ -37,9 +37,6 @@ pub(crate) const HEADER_KEY_SIZE: usize = 128;
 
 unsafe extern "C" {
     pub(crate) fn swr_http_host_error(code: c_int, always: c_int, message: *const c_char);
-    pub(crate) fn swr_http_host_flags(context: *const Context) -> u32;
-    pub(crate) fn swr_http_host_fd(context: *const Context) -> zend_long;
-    pub(crate) fn swr_http_host_mark(context: *mut Context, flag: u32);
     pub(crate) fn swr_http_host_request_free(context: *mut Context);
     pub(crate) fn swr_http_host_request_create(return_value: *mut zval, options: *mut zval)
     -> bool;
@@ -52,7 +49,6 @@ unsafe extern "C" {
         context: *mut Context,
         length: *mut usize,
     ) -> *const c_char;
-    pub(crate) fn swr_http_host_response_free(context: *mut Context) -> bool;
     pub(crate) fn swr_http_host_response_property(context: *mut Context, which: c_int)
     -> *mut zval;
     pub(crate) fn swr_http_host_after(context: *mut Context) -> bool;
@@ -163,12 +159,20 @@ pub(crate) fn log(level: c_int, error: c_int, func: &std::ffi::CStr, message: im
 
 /// The context's state bits.
 pub(crate) fn flags(context: *const Context) -> u32 {
-    // SAFETY: a live context.
-    unsafe { swr_http_host_flags(context) }
+    // SAFETY: a live context, which starts with its `ContextState`.
+    let state = unsafe { &*context.cast::<crate::state::State>() };
+    u32::from(state.end)
+        | u32::from(state.detached) << 1
+        | u32::from(state.completed) << 2
+        | u32::from(state.http2) << 3
+        | u32::from(state.send_chunked) << 4
+        | u32::from(crate::context::co_socket(state)) << 5
+        | u32::from(state.upgrade) << 6
+        | u32::from(state.websocket) << 7
 }
 
 /// `ctx->fd`.
 pub(crate) fn fd(context: *const Context) -> zend_long {
-    // SAFETY: a live context.
-    unsafe { swr_http_host_fd(context) }
+    // SAFETY: as above.
+    unsafe { (*context.cast::<crate::state::State>()).fd }
 }
