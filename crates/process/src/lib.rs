@@ -7,6 +7,7 @@
     )
 )]
 pub mod affinity;
+pub mod command;
 pub mod pool;
 pub mod reaper;
 pub mod reload_task;

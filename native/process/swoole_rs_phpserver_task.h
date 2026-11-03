@@ -1,11 +1,11 @@
 #ifndef SWOOLE_RS_PHPSERVER_TASK_H
 #define SWOOLE_RS_PHPSERVER_TASK_H
 /* Swoole\Server's task family: task, taskwait, taskWaitMulti, taskCo,
- * Swoole\Server\Task::pack/unpack and the onTask/onFinish dispatch
- * (crates/phpserver, task.rs). Rust owns the pending callbacks and waiting
- * coroutines; C++ keeps the Server, the task encoding (Server::task_pack and
- * PHP serialization) and the coroutine, reached through `host`. A `bool *bailed`
- * reports a bailout C++ trapped (a user __serialize/__unserialize). */
+ * Swoole\Server\Task::pack/unpack, the onTask/onFinish dispatch and the task
+ * encoding (crates/phpserver, task.rs). Rust owns the pending callbacks, the waiting
+ * coroutines and the payload (a string, or serialized); C++ keeps the Server, its
+ * task_pack/task_unpack/finish and the coroutine, reached through `host`. A `bool *bailed`
+ * reports a trapped bailout (a user __serialize/__unserialize). */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -39,10 +39,12 @@ typedef struct {
 
 typedef struct {
     void (*facts)(void *server, swr_phpserver_task_facts *facts);
-    /* php_swoole_server_task_pack into `buf` (an EventData): the task id, or -1. */
-    int64_t (*pack)(struct _zval_struct *data, void *buf, bool *bailed);
-    /* php_swoole_server_task_unpack of `buf` into `out`. */
-    bool (*unpack)(void *buf, struct _zval_struct *out, bool *bailed);
+    /* Server::task_pack of the payload into `buf` (an EventData): the task id, or -1 (fd and len reset). */
+    int64_t (*pack)(void *buf, const char *data, size_t length);
+    /* Server::task_unpack of `buf`: its payload and ext_flags. */
+    bool (*unpack)(void *buf, const char **data, size_t *length, uint32_t *flags);
+    /* The "unserialize() failed" warning. */
+    void (*log_unserialize)(int64_t offset, size_t length);
     /* buf->info.ext_flags |= flags */
     void (*flag)(void *buf, uint32_t flags);
     /* buf->size() */
@@ -60,8 +62,8 @@ typedef struct {
     void (*tasking_done)(void *server);
     /* The Swoole\Server\Task object `out` (object_init_ex'd by Rust) gets the server and req's DataHead. */
     void (*bind_task)(struct _zend_object *task, void *server, void *req);
-    /* php_swoole_server_task_finish(serv, data, req) */
-    bool (*finish)(void *server, struct _zval_struct *data, void *req, bool *bailed);
+    /* serv->finish(data, length, flags, req) */
+    bool (*finish)(void *server, const char *data, size_t length, int flags, void *req);
     /* sw_callable_create(zfn); null if not callable. */
     void *(*callable_create)(struct _zval_struct *callable);
     void (*callable_free)(void *callable);
@@ -84,6 +86,11 @@ void swr_v1_phpserver_task_init(const swr_v1_phpserver_task_host *table);
  * re-raise a bailout. */
 bool swr_v1_phpserver_on_task(void *server, void *req, int *result);
 bool swr_v1_phpserver_on_finish(void *server, void *req, int *result);
+/* php_swoole_server_task_pack: `data` (a string, or serialized) into `buf`; the task id, or -1;
+ * *bailed when it bailed out. */
+int64_t swr_v1_phpserver_task_pack(struct _zval_struct *data, void *buf, bool *bailed);
+/* php_swoole_server_task_unpack of `buf` into `out`; *bailed when it bailed out. */
+bool swr_v1_phpserver_task_unpack(void *buf, struct _zval_struct *out, bool *bailed);
 
 #ifdef __cplusplus
 }
