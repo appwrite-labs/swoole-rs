@@ -691,6 +691,7 @@ name = "swoole-rs-phpthread"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-phplocks",
  "swoole-rs-phpprocess",
  "swoole-rs-phpstubs",
  "swoole-rs-zend",

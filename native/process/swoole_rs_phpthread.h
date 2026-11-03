@@ -1,9 +1,9 @@
 #ifndef SWOOLE_RS_PHPTHREAD_H
 #define SWOOLE_RS_PHPTHREAD_H
 /* PHP Swoole\Thread, Thread\Map, ArrayList, Queue and Barrier (crates/phpthread),
- * ZTS builds only. C++ keeps the thread body (TSRM, request startup, the script), the thread
- * resources (Lock, Atomic) and sockets a container may hold, reached through
- * `host`. Rust registers the classes, starts the threads, owns the shared tables,
+ * ZTS builds only. C++ keeps the thread body (TSRM, request startup, the script) and
+ * the sockets a container may hold, reached through `host`; the Lock and Atomic
+ * resources are crates/phplocks'. Rust registers the classes, starts the threads, owns the shared tables,
  * queues and barriers and runs every method: the zim_swoole_thread_* exports. A
  * thread-mode Server passes its workers' arguments as an array handle. */
 #include <stdbool.h>
@@ -24,14 +24,8 @@ typedef struct {
     struct _zend_string *(*serialize)(struct _zval_struct *value, bool *bailed);
     /* php_swoole_unserialize into `out`; true when it bailed out */
     bool (*unserialize)(const char *data, size_t length, struct _zval_struct *out);
-    /* IS_CO_SOCKET, IS_PHP_SOCKET, IS_LOCK, IS_ATOMIC, IS_ATOMIC_LONG, or 0 */
+    /* IS_CO_SOCKET, IS_PHP_SOCKET, or 0 */
     uint32_t (*object_kind)(struct _zval_struct *object);
-    /* The ThreadResource of a Lock, Atomic or Atomic\Long object */
-    void *(*resource_cast)(struct _zval_struct *object, uint32_t kind);
-    /* A new object of `kind` taking over a reference to `resource` */
-    void (*resource_create)(struct _zval_struct *return_value, uint32_t kind, void *resource);
-    void (*resource_add_ref)(void *resource);
-    void (*resource_del_ref)(void *resource);
     int (*stream_cast)(struct _zval_struct *stream);            /* a dup'd fd, or -1 */
     int (*co_socket_cast)(struct _zval_struct *object, int *type); /* a dup'd fd, or -1 */
     /* a dup'd fd; -1 after throwing "failed to dup socket fd", -2 after "invalid socket fd" */
