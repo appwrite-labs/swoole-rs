@@ -64,9 +64,6 @@ unsafe extern "C" {
         data: *const c_char,
         length: usize,
     ) -> c_int;
-    fn swr_http_host_compression_buffer(context: *mut c_void, size: usize) -> *mut u8;
-    fn swr_http_host_compressed(context: *mut c_void, length: usize);
-    fn swr_http_host_compressed_length(context: *const c_void) -> usize;
     fn swr_http_host_compression_type(
         context: *const c_void,
         kind: *const c_char,
@@ -179,12 +176,6 @@ pub(crate) fn date() -> *mut zend_string {
     let date = unsafe { php_format_date(format.as_ptr(), format.count_bytes(), now, false) };
     DATE_CACHE.set((now, date));
     date
-}
-
-/// `php_swoole_http_get_date` for C++ (the HTTP/2 server).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphttp_date() -> *mut zend_string {
-    date()
 }
 
 /// `php_swoole_http_response_rshutdown`: drop the cached date.
@@ -441,8 +432,7 @@ fn build(
         }
     } else if length > 0 || state.parser.method != HEAD {
         if compression && compress(state, body, length) {
-            // SAFETY: the context `compress` just filled.
-            length = unsafe { swr_http_host_compressed_length(context) };
+            length = compressed(state).len();
             let codecs = CAPABILITIES.load(Relaxed) & CODECS;
             let encoding =
                 swr_v1_httpbindings_encoding(i32::from(state.compression_method), codecs);
@@ -582,11 +572,7 @@ fn compress(state: &mut State, data: *const c_char, length: usize) -> bool {
     )]
     let level = level as i8;
     state.compression_level = level;
-    let size = bound(length);
-    // SAFETY: the context; C++ makes the zlib_buffer.
-    let buffer = unsafe { swr_http_host_compression_buffer(context, size) };
-    // SAFETY: a fresh buffer of `size` bytes.
-    let out = unsafe { std::slice::from_raw_parts_mut(buffer, size) };
+    let out = state.compressed.insert(Box::new(vec![0; bound(length)]));
     let input: &[u8] = if length == 0 {
         &[]
     } else {
@@ -595,8 +581,7 @@ fn compress(state: &mut State, data: *const c_char, length: usize) -> bool {
     };
     match deflate(input, out, window_bits, c_int::from(level), zalloc, zfree) {
         Ok(compressed) => {
-            // SAFETY: the context's buffer now holds `compressed` bytes.
-            unsafe { swr_http_host_compressed(context, compressed) };
+            out.truncate(compressed);
             state.content_compressed = 1;
             true
         }
@@ -611,17 +596,43 @@ fn compress(state: &mut State, data: *const c_char, length: usize) -> bool {
     }
 }
 
-/// `Context::compress`, for the HTTP/2 server.
+/// The body the last `compress` made.
+pub(crate) fn compressed(state: &State) -> &[u8] {
+    state.compressed.as_deref().map_or(&[], Vec::as_slice)
+}
+
+/// `Context::compress` for the HTTP/2 server: the encoding's name and the
+/// compressed body, or `None` when the body goes as it is.
+pub(crate) fn compress_body<'a>(
+    state: &'a mut State,
+    data: &[u8],
+) -> Option<(&'static CStr, &'a [u8])> {
+    if !compress(state, data.as_ptr().cast(), data.len()) {
+        return None;
+    }
+    let codecs = CAPABILITIES.load(Relaxed) & CODECS;
+    let encoding = swr_v1_httpbindings_encoding(i32::from(state.compression_method), codecs);
+    // SAFETY: a static NUL-terminated label.
+    let encoding = unsafe { CStr::from_ptr(encoding.data.cast()) };
+    Some((encoding, compressed(state)))
+}
+
+/// brotli or zstd's output (C++, `swr_http_host_compress_other`), copied in
+/// as the compressed body.
 /// # Safety
 /// `context` is a live context and `data` spans `length` bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_compress(
+pub unsafe extern "C" fn swr_v1_phphttp_set_compressed(
     context: *mut c_void,
     data: *const c_char,
     length: usize,
-) -> bool {
+) {
     // SAFETY: per the caller.
-    compress(unsafe { &mut *context.cast::<State>() }, data, length)
+    let body = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
+    // SAFETY: per the caller.
+    let state = unsafe { &mut *context.cast::<State>() };
+    state.compressed = Some(Box::new(body.to_vec()));
+    state.content_compressed = 1;
 }
 
 #[cfg(test)]

@@ -130,6 +130,18 @@ pub(crate) struct State {
     pub(crate) stream_id: u32,
     /// The `Server` or the coroutine `Socket`.
     pub(crate) private_data: *mut c_void,
+    /// The response bytes being sent (upstream's `write_buffer`).
+    #[expect(
+        clippy::box_collection,
+        reason = "all zeroes must be valid: a null Box is None"
+    )]
+    pub(crate) write_buffer: Option<Box<Vec<u8>>>,
+    /// The compressed body (upstream's `zlib_buffer`).
+    #[expect(
+        clippy::box_collection,
+        reason = "all zeroes must be valid: a null Box is None"
+    )]
+    pub(crate) compressed: Option<Box<Vec<u8>>>,
 }
 
 /// `swoole::http::Response`.
@@ -147,7 +159,7 @@ pub(crate) struct Response {
 
 /// `SWR_PHPHTTP_PARSE_SIZE` and `SWR_PHPHTTP_STATE_SIZE`.
 const _: () = assert!(size_of::<Parse>() == 144, "ext-src/php_swoole_http.h");
-const _: () = assert!(size_of::<State>() == 712, "ext-src/php_swoole_http.h");
+const _: () = assert!(size_of::<State>() == 728, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Response>() == 120, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Llhttp>() == 96, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Request>() == 272, "ext-src/php_swoole_http.h");
@@ -165,5 +177,7 @@ mod tests {
         assert_eq!(std::mem::offset_of!(State, websocket_compression), 675);
         assert_eq!(std::mem::offset_of!(State, zsocket), 680);
         assert_eq!(std::mem::offset_of!(State, stream_id), 696);
+        assert_eq!(std::mem::offset_of!(State, write_buffer), 712);
+        assert_eq!(std::mem::offset_of!(State, compressed), 720);
     }
 }

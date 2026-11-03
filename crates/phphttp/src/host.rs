@@ -50,16 +50,6 @@ unsafe extern "C" {
     pub(crate) fn swr_http_host_response_property(context: *mut Context, which: c_int)
     -> *mut zval;
     pub(crate) fn swr_http_host_after(context: *mut Context) -> bool;
-    pub(crate) fn swr_http_host_buffer(
-        context: *mut Context,
-        head: *const c_char,
-        head_length: usize,
-        body: *const c_char,
-        body_length: usize,
-        tail: *const c_char,
-        tail_length: usize,
-    );
-    pub(crate) fn swr_http_host_flush(context: *mut Context) -> bool;
     pub(crate) fn swr_http_host_send(
         context: *mut Context,
         data: *const c_char,
@@ -71,10 +61,6 @@ unsafe extern "C" {
         offset: i64,
         length: usize,
     ) -> bool;
-    pub(crate) fn swr_http_host_compressed_body(
-        context: *const Context,
-        length: *mut usize,
-    ) -> *const c_char;
     pub(crate) fn swr_http_host_http2(
         context: *mut Context,
         op: c_int,
