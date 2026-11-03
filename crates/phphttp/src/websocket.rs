@@ -24,7 +24,7 @@ use swoole_rs_zend::{
     init_object, method_table, register_long_constant,
     string::{self, bytes},
     sys::{
-        IS_NULL, IS_OBJECT, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC,
+        IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC,
         swr_zend_instanceof, swr_zend_property_slot, swr_zend_string_release,
         swr_zend_ws_property_not_null, swr_zval_is_true, swr_zval_str, zend_ce_stringable,
         zend_class_entry, zend_class_implements, zend_long, zend_object, zend_string,
@@ -153,8 +153,11 @@ unsafe extern "C" {
         args: *mut zval,
     ) -> c_int;
     fn swr_ws_host_server_zval(server: *mut Server) -> *mut zval;
-    fn swr_ws_host_context_server(context: *mut Context) -> *mut Server;
-    fn swr_ws_host_context_compression(context: *mut Context) -> bool;
+    /// Whether the server (or the coroutine server's settings) offers
+    /// permessage-deflate.
+    fn swr_ws_host_offer_compression(context: *mut Context) -> bool;
+    /// `conn->websocket_compression` of a verified connection.
+    fn swr_ws_host_set_compression(server: *mut Server, fd: zend_long, compression: bool);
     fn swr_ws_host_co_protocol(context: *mut Context);
     fn swr_ws_host_set_header(
         context: *mut Context,
@@ -1104,8 +1107,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_websocket_handshake(
 ) -> bool {
     let result = handshake(context).and_then(|done| {
         if open {
-            // SAFETY: a live server context.
-            let server = unsafe { swr_ws_host_context_server(context) };
+            let server = send::state(context).private_data;
             let fd = host::fd(context);
             if done {
                 on_open(server, context)?;
@@ -1166,8 +1168,7 @@ fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
     set_header(context, b"Sec-WebSocket-Version", b"13")?;
     let fd = host::fd(context);
     if host::flags(context) & CO_SOCKET == 0 {
-        // SAFETY: a live server context.
-        let server = unsafe { swr_ws_host_context_server(context) };
+        let server = send::state(context).private_data;
         let Some(conn) = connection(server, fd, false) else {
             closed(c"swoole_websocket_handshake", fd);
             return Ok(false);
@@ -1262,8 +1263,7 @@ pub(crate) fn response_push(
     });
     let mut frame = FrameObject::new(data, opcode, flags, 0);
     frame.flags &= !FLAG_MASK;
-    // SAFETY: a live context.
-    if unsafe { swr_ws_host_context_compression(context) } {
+    if send::state(context).websocket_compression != 0 {
         frame.flags |= FLAG_COMPRESS;
     }
     send_frame(context, &frame).unwrap_or(false)
@@ -1302,6 +1302,78 @@ pub(crate) fn response_disconnect(
 }
 
 /// The coroutine `Response::upgrade`'s handshake.
+/// The handshake response's `permessage-deflate` answer, when built with zlib
+/// and offered: the request asked for it, so the response says so and the
+/// connection compresses.
+pub(crate) fn accept(context: *mut Context) {
+    if !ZLIB.load(Relaxed) {
+        return;
+    }
+    // SAFETY: a live context.
+    let offered = unsafe { swr_ws_host_offer_compression(context) };
+    let state = send::state(context);
+    let mut accepted = false;
+    if offered && !state.request.zobject.ptr.is_null() {
+        let name = b"sec-websocket-extensions";
+        // SAFETY: the request's live `header` array.
+        let table = unsafe { value::table(state.request.zheader.ptr) };
+        // SAFETY: a live table and the name's bytes.
+        let value = unsafe {
+            swoole_rs_zend::sys::zend_hash_str_find(table, name.as_ptr().cast(), name.len())
+        };
+        // SAFETY: a found slot is a live zval.
+        if !value.is_null() && unsafe { type_of(value) } == IS_STRING {
+            // SAFETY: a string zval.
+            let text = unsafe { value::str_of(value) };
+            // SAFETY: a live string.
+            let text = unsafe { bytes(text) };
+            let first = text.split(|&byte| byte == b';').next().unwrap_or_default();
+            if first == b"permessage-deflate" {
+                accepted = true;
+                let mut offer = zval_of(string::copy(
+                    b"permessage-deflate; client_no_context_takeover; server_no_context_takeover",
+                ));
+                crate::response::set_header(
+                    context,
+                    b"Sec-Websocket-Extensions",
+                    &raw mut offer,
+                    false,
+                );
+                // SAFETY: the reference made here; the header array took its own.
+                unsafe { zval_ptr_dtor(&raw mut offer) };
+            }
+        }
+    }
+    let state = send::state(context);
+    state.websocket_compression = u8::from(accepted);
+    if !crate::context::co_socket(state) {
+        // SAFETY: the server the context is bound to.
+        unsafe { swr_ws_host_set_compression(state.private_data, state.fd, accepted) };
+    }
+}
+
+/// After a server handshake response: the connection is a WebSocket on 101,
+/// otherwise the handshake failed and the connection closes.
+pub(crate) fn handshaked(context: *mut Context) {
+    let state = send::state(context);
+    let (server, fd) = (state.private_data, state.fd);
+    let Some(conn) = connection(server, fd, true) else {
+        return;
+    };
+    if i64::from(conn.status) != STATUS_HANDSHAKE {
+        return;
+    }
+    let state = send::state(context);
+    let status = if state.response.status == 101 {
+        STATUS_ACTIVE
+    } else {
+        state.keepalive = 0;
+        STATUS_HANDSHAKE_FAILED
+    };
+    // SAFETY: a live server and its verified connection.
+    unsafe { swr_ws_host_set_status(server, fd, status) };
+}
+
 pub(crate) fn upgrade(context: *mut Context) -> Result<bool, bailout::Bailout> {
     handshake(context)
 }

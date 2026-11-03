@@ -85,8 +85,6 @@ unsafe extern "C" {
         length: usize,
     ) -> c_int;
     pub(crate) fn swr_http_host_file_type(context: *mut Context, file: *mut zend_string);
-    pub(crate) fn swr_http_host_websocket_accept(context: *mut Context);
-    pub(crate) fn swr_http_host_websocket_handshaked(context: *mut Context);
     pub(crate) fn swr_http_host_redirect(
         context: *mut Context,
         url: *mut zval,

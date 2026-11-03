@@ -164,12 +164,8 @@ void swr_v1_phphttp_set_context(struct _zend_object *object, void *context);
 
 /* What those methods ask of the context, implemented in ext-src over
  * swoole::http::Context until it moves to Rust. */
-enum { SWR_PHPHTTP_DETACHED = 2 };
 enum { SWR_PHPHTTP_HEADER = 0, SWR_PHPHTTP_COOKIE = 1, SWR_PHPHTTP_TRAILER = 2 };
 void swr_http_host_error(int code, int always, const char *message);
-uint32_t swr_http_host_flags(const void *context);
-int64_t swr_http_host_fd(const void *context);
-void swr_http_host_mark(void *context, uint32_t flag);
 void swr_http_host_request_free(void *context);
 bool swr_http_host_request_create(struct _zval_struct *return_value, struct _zval_struct *options);
 
@@ -177,7 +173,7 @@ bool swr_http_host_request_create(struct _zval_struct *return_value, struct _zva
  * callbacks over swoole::http::ContextState, whose layout state.rs mirrors.
  * `context` is a swoole::http::Context. MINIT passes the codecs built in
  * (1 zlib, 2 brotli, 4 zstd, 8 any). */
-enum { SWR_PHPHTTP_PARSE_SIZE = 144, SWR_PHPHTTP_STATE_SIZE = 680 };
+enum { SWR_PHPHTTP_PARSE_SIZE = 144, SWR_PHPHTTP_STATE_SIZE = 712 };
 void swr_v1_phphttp_parse_minit(uint32_t codecs);
 size_t swr_v1_phphttp_parse(void *context, const char *data, size_t length);
 void swr_v1_phphttp_parse_free(void *context);
@@ -215,8 +211,6 @@ bool swr_http_host_sendfile(void *context, struct _zend_string *file, int64_t of
 const char *swr_http_host_compressed_body(const void *context, size_t *length);
 int swr_http_host_http2(void *context, int op, struct _zend_string *data, int64_t offset, size_t length);
 void swr_http_host_file_type(void *context, struct _zend_string *file);
-void swr_http_host_websocket_accept(void *context);
-void swr_http_host_websocket_handshaked(void *context);
 /* What they ask of the context: brotli/zstd (1 done, 0 failed, -1 not built),
  * the zlib_buffer, whether a content type is compressible (a null type asks
  * whether the server lists types). */
@@ -229,7 +223,6 @@ bool swr_http_host_compression_type(const void *context, const char *type, size_
  * response, exit() in it) trap a Zend bailout in C++: request_create,
  * response_free and redirect return true when one happened, and Rust
  * re-raises it (docs/zend.md). */
-bool swr_http_host_response_free(void *context);
 struct _zval_struct *swr_http_host_response_property(void *context, int which);
 bool swr_http_host_redirect(void *context, struct _zval_struct *url, struct _zval_struct *code, struct _zval_struct *return_value);
 bool swr_http_host_goaway(void *context, int64_t code, struct _zend_string *debug);
@@ -248,6 +241,16 @@ void swr_v1_phphttp_context_objects(void *ctx, int64_t fd);
 bool swr_v1_phphttp_set_header(void *ctx, const char *key, size_t length, struct _zval_struct *value, bool format);
 struct _zend_string *swr_v1_phphttp_date(void);
 void swr_v1_phphttp_response_rshutdown(void);
+/* Context::free (crates/phphttp/src/context.rs) and what it and the response's
+ * release ask of C++: a coroutine socket's state, a server connection's,
+ * deleting what C++ still owns of the context, onAfterResponse (true if it
+ * bailed out) and whether a reactor runs. */
+void swr_v1_phphttp_context_free(void *ctx);
+bool swr_http_host_socket_closed(const struct _zval_struct *socket);
+bool swr_http_host_connection_open(void *server, int64_t fd);
+void swr_http_host_context_delete(void *ctx);
+bool swr_http_host_after_response(void *ctx);
+bool swr_http_host_reactor(void);
 
 /* Swoole\WebSocket\Server, Frame and CloseFrame (crates/phphttp/src/websocket.rs).
  * MINIT registers them and the constants, returning the server class and
@@ -290,8 +293,8 @@ const char *swr_ws_host_protocol(void *server, int server_fd, size_t *length);
 void swr_ws_host_recv_data(void *server, void *request, struct _zval_struct *data);
 int swr_ws_host_call(void *server, int server_fd, int event, uint32_t argc, struct _zval_struct *args);
 struct _zval_struct *swr_ws_host_server_zval(void *server);
-void *swr_ws_host_context_server(void *context);
-bool swr_ws_host_context_compression(void *context);
+bool swr_ws_host_offer_compression(void *context);
+void swr_ws_host_set_compression(void *server, int64_t fd, bool compression);
 void swr_ws_host_co_protocol(void *context);
 bool swr_ws_host_set_header(void *context, const char *key, size_t key_length, const char *value, size_t length);
 #ifdef __cplusplus
