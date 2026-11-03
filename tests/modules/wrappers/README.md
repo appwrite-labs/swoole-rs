@@ -2,11 +2,11 @@
 
 The wrapper area is `src/wrapper/event.cc` and `src/wrapper/http.cc` (timer.cc
 belongs to the timer module). Rust owns HTTP request/multipart field names and
-byte accumulation, completion policy, URL/listener splitting, header
-classification, response-header serialization, Content-Length digits, response
-send sequencing, event direction/wait admission and event-init ordering. Native
-code keeps the public `Context` containers, C++ resource lifetimes, callbacks,
-transport, llhttp/multipart parsers, FILE/tmpfile handling and warnings. See
+byte accumulation, the llhttp and multipart callbacks, completion policy,
+URL/listener splitting, header classification, response-header serialization,
+Content-Length digits, response send sequencing, event direction/wait admission
+and event-init ordering. Native code keeps the public `Context` containers,
+transport, the llhttp/multipart parsers, FILE/tmpfile handling and warnings. See
 [native/wrappers/contract.md](../../../native/wrappers/contract.md).
 
 `overlay.py` applies `migration/patches/wrappers/` to the pinned `event.cc`/`http.cc`

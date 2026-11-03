@@ -9,17 +9,22 @@ macOS and Linux. No panic, C++ exception or Zend bailout may cross the ABI.
 A private Rust handle owns current header/form/input names, multipart form
 accumulation and beginning/completed state. Allocate and free it through Rust
 exactly once, tied to the native request lifetime. It must not be copied,
-accessed concurrently or used after free. Rust never stores Context, Server,
-parser, FILE, callback or Zend pointers. Allocation can return null (native parse
+accessed concurrently or used after free. Allocation can return null (native parse
 then fails without dereferencing it). Mutations are fallible: `Vec` reservation
 failure returns -1 and callback failures propagate.
+
+The llhttp and multipart callbacks are Rust (`crates/wrappers/src/http.rs`, #931).
+`ContextImpl::parse` binds the handle to its `Context` and a native effect call
+(`swr_v1_wrappers_request_bind`, `SWR_WRAPPER_HTTP_*`), then runs llhttp with
+`swr_v1_wrappers_http_settings()`. The handle owns the open multipart parser and
+frees it (closing its upload file) through that call when the request goes.
 
 Views are borrowed byte spans; copy what you need before the next mutation or
 destruction. Input buffers must be valid, live, not overlap mutable handle state,
 and be at most `isize::MAX` long; null with zero length is accepted. Context
-maps, callbacks, llhttp and the multipart parser, server transport, FILE/temp
-files, warnings and `strtol` stay native. Native destruction frees native
-dependencies; Rust destruction frees only Rust state.
+maps, the llhttp and multipart parsers themselves, server transport, FILE/temp
+files, warnings and `strtol` stay native, as effects. No C++ exception crosses
+the Rust callbacks: an upload's `files.emplace` failure terminates.
 
 Header classification keeps llhttp method numbers (DELETE = 0, POST = 3, PUT = 4,
 PATCH = 28; static-asserted), ASCII case-insensitive content/header matching, and
