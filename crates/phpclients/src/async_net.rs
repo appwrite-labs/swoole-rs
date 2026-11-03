@@ -366,12 +366,10 @@ fn connect(call: &Call) {
     };
     // SAFETY: the connection just made, not yet the object's.
     let fresh = unsafe { &mut *conn };
-    if let Some(zset) = net::settings(object) {
-        let mut apply = fresh.call(Op::Settings);
-        apply.settings = zset;
-        if bailed(apply.run()).is_none() {
-            return call.set_bool(false);
-        }
+    if let Some(zset) = net::settings(object)
+        && crate::settings::apply(fresh.cli, zset).is_none()
+    {
+        return call.set_bool(false);
     }
     let Some(slots) = callbacks(net::this(call)).map(|slots| *slots) else {
         return call.set_bool(false);
