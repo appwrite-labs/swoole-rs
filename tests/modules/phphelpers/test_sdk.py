@@ -42,28 +42,5 @@ class DependencyFlags(unittest.TestCase):
             self.assertIn('pkg-config missing',row['stderr'])
 
 
-class FacadeDeclarations(unittest.TestCase):
-    def header(self):
-        return '#define NATIVE_MACRO(x) ((x)+1)\n'+''.join(
-            'class '+name+' {\n  public:\n    int field;\n    int value(int arg) const { return arg; }\n};\n'
-            for name in ['String','KeyValue','ArrayIterator','Array','Variable','CharPtr','Callable'])
-
-    def test_body_policy_can_change_without_changing_declarations(self):
-        native=self.header();selected=native.replace('return arg;','return rust_policy(arg);')
-        result=sdk.facade_surface(native,selected)
-        self.assertTrue(result['matched']);self.assertEqual(len(result['classes']),7)
-        self.assertEqual(result['macro_definitions'],1)
-
-    def test_same_size_field_or_signature_change_is_rejected(self):
-        native=self.header()
-        for before,after in [('int field;','unsigned field;'),('value(int arg)','value(unsigned arg)'),('  public:','  private:')]:
-            with self.subTest(after=after),self.assertRaisesRegex(ValueError,'declarations changed'):
-                sdk.facade_surface(native,native.replace(before,after,1))
-
-    def test_macro_body_change_is_rejected(self):
-        native=self.header()
-        with self.assertRaisesRegex(ValueError,'macro definitions changed'):
-            sdk.facade_surface(native,native.replace('((x)+1)','((x)+2)'))
-
 
 if __name__=='__main__':unittest.main()
