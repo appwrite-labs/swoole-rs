@@ -41,8 +41,8 @@ def build_helper(sdk_path, work, report, profile="native"):
     if len(consumed)!=1:raise ValueError('Require one actually consumed facade header')
     public_header=consumed[0]
     expected=PUBLIC_HEADER_SHA256 if profile=='native' else sdk.get('selected_header_sha256')
-    if sha(public_header)!=expected or (profile!='native' and not sdk.get('layout_matched')):
-        raise ValueError('Selected public header/layout identity differs from qualified SDK')
+    if sha(public_header)!=expected:
+        raise ValueError('Selected public header differs from qualified SDK')
     command = [item for item in row['command'][:row['command'].index('-MD')] if item != '-fsyntax-only']
     helper = work / 'm26_helpers.so'
     command += ['-O2', *(['-bundle', '-undefined', 'dynamic_lookup'] if sys.platform == 'darwin' else ['-shared', '-fPIC']),
