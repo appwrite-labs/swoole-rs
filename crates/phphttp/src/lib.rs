@@ -29,7 +29,8 @@ mod state;
 mod websocket;
 
 pub use context::{
-    swr_v1_phphttp_context, swr_v1_phphttp_context_objects, swr_v1_phphttp_set_context,
+    swr_v1_phphttp_context, swr_v1_phphttp_context_free, swr_v1_phphttp_context_objects,
+    swr_v1_phphttp_set_context,
 };
 pub use cookie::*;
 pub use header::{swr_v1_phphttp_compress, swr_v1_phphttp_date, swr_v1_phphttp_response_rshutdown};
