@@ -23,7 +23,8 @@ def main(*, scope=None, witness=None, source_path="src/wrapper/http.cc", body_ex
     if a.rust_asan and (not a.sanitize or '__asan_report_'not in subprocess.check_output(['nm','-u',str(a.archive)],text=True,stderr=subprocess.DEVNULL)):p.error('Actual instrumented archive and native sanitizer required')
     folder=a.output.resolve().with_suffix('');folder.mkdir(parents=True,exist_ok=True);report={'scope':scope,'pin':overlay.PIN,'sdk':[],'native_instrumented':a.sanitize,'rust_instrumented':a.rust_asan,'passed':False,'native_io_executed':False,'whole_response_lifecycle_qualified':False,'performance_qualified':False}
     # Original side from the pin, selected side from the hybrid build's fully patched tree.
-    for name,text in [('original',overlay.original(source_path)),('selected',(hybrid_tree(a.archive)[0]/source_path).read_text())]:
+    hybrid_source=hybrid_tree(a.archive)[0]
+    for name,text in [('original',overlay.original(source_path)),('selected',(hybrid_source/source_path).read_text())]:
         (folder/(name+'.inc')).write_text(body_extractor(text))
     raw=overlay.original('src/core/base.cc');start=raw.index('size_t sw_snprintf(');end=raw.index('\nsize_t sw_vsnprintf',start);(folder/'format.inc').write_text(raw[start:end])
     report['source_path']=source_path
@@ -47,7 +48,7 @@ def main(*, scope=None, witness=None, source_path="src/wrapper/http.cc", body_ex
         report['sdk_dependency_includes']=[str(x.resolve())for x in a.include]
         for engine in ['original','selected']:
             for source in ['src/wrapper/event.cc','src/wrapper/http.cc']:
-                text=overlay.original(source)if engine=='original'else generated[source];path=folder/(engine+'-'+Path(source).name);path.write_text(text);command=[*base,*(['-DSWOOLE_RS_WRAPPERS']if engine=='selected'else[]),'-fsyntax-only',str(path)];checked_space();r=run_isolated(command,cwd=core,timeout=120);report['sdk'].append({'engine':engine,'source':source,'command':command,'cwd':str(core),'exit':r.returncode,'stdout':r.stdout,'stderr':r.stderr});write_report(a.output, report)
+                text=overlay.original(source)if engine=='original'else (hybrid_source/source).read_text();path=folder/(engine+'-'+Path(source).name);path.write_text(text);command=[*base,*(['-DSWOOLE_RS_WRAPPERS']if engine=='selected'else[]),'-fsyntax-only',str(path)];checked_space();r=run_isolated(command,cwd=core,timeout=120);report['sdk'].append({'engine':engine,'source':source,'command':command,'cwd':str(core),'exit':r.returncode,'stdout':r.stdout,'stderr':r.stderr});write_report(a.output, report)
     report['execution_status']='complete'
     report['passed']=report.get('run',{}).get('exit')==0 and all(x['exit']==0 for x in report['sdk']);write_report(a.output,report);print(json.dumps({'passed':report['passed'],'run':report.get('run'),'sdk_exits':[x['exit']for x in report['sdk']]}));return int(not report['passed'])
 

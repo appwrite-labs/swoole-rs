@@ -22,7 +22,7 @@ class Checkpoints(unittest.TestCase):
             with self.subTest(stop=stop),tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);archive=root/'inert.a';archive.write_bytes(b'no native archive')
                 core=root/'sdk';core.mkdir();(core/'config.h').write_text('inert metadata')
-                hybrid=root/'hybrid';(hybrid/'src/wrapper').mkdir(parents=True);(hybrid/'src/wrapper/http.cc').write_text(method)
+                hybrid=root/'hybrid';(hybrid/'src/wrapper').mkdir(parents=True);(hybrid/'src/wrapper/http.cc').write_text(method);(hybrid/'src/wrapper/event.cc').write_text('inert')
                 output=root/'result.json';calls=[]
                 def guard(_):
                     calls.append(None)
