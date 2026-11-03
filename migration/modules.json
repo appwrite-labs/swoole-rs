@@ -214,6 +214,8 @@
         "crates/odbc-sys/",
         "crates/firebird/",
         "crates/firebird-sys/",
+        "crates/curl/",
+        "crates/curl-sys/",
         "native/hooks/",
         "migration/patches/hooks/",
         "tests/modules/hooks/"
@@ -235,7 +237,11 @@
         "include/swoole_uring_socket.h",
         "ext-src/swoole_pgsql.cc",
         "ext-src/swoole_odbc.cc",
-        "ext-src/swoole_firebird.cc"
+        "ext-src/swoole_firebird.cc",
+        "ext-src/swoole_curl.cc",
+        "ext-src/php_swoole_curl.h",
+        "thirdparty/php/curl/multi.cc",
+        "thirdparty/php84/curl/multi.cc"
       ],
       "abi_contract": "docs/hooks-abi-v1.md",
       "feature_bit_reserved": 65536

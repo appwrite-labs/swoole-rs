@@ -1,0 +1,291 @@
+use super::*;
+use std::{ffi::CString, net::TcpListener};
+use swoole_rs_curl_sys::{CURLOPT_URL, curl_easy_cleanup, curl_easy_init};
+
+thread_local! {
+    /// What the fake host saw, and whether its event loop runs.
+    static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static LOOP: Cell<bool> = const { Cell::new(true) };
+}
+
+fn log(entry: String) {
+    LOG.with(|log| log.borrow_mut().push(entry));
+}
+
+fn take() -> Vec<String> {
+    LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
+}
+
+/// A fake reactor socket: its events and whether it is out of the reactor.
+type Fake = [i32; 2];
+
+unsafe extern "C" fn event_available() -> bool {
+    LOOP.with(Cell::get)
+}
+unsafe extern "C" fn install_handlers() {}
+unsafe extern "C" fn socket_new(fd: c_int, _object: *mut c_void) -> *mut c_void {
+    log(format!("new {fd}"));
+    Box::into_raw(Box::new([0, 1] as Fake)).cast()
+}
+unsafe extern "C" fn socket_events(socket: *mut c_void, removed: *mut bool) -> c_int {
+    let state = unsafe { *socket.cast::<Fake>() };
+    if let Some(removed) = unsafe { removed.as_mut() } {
+        *removed = state[1] != 0;
+    }
+    state[0]
+}
+unsafe extern "C" fn event_add(socket: *mut c_void, events: c_int) -> c_int {
+    log(format!("add {events}"));
+    unsafe { *socket.cast::<Fake>() = [events, 0] };
+    0
+}
+unsafe extern "C" fn event_set(socket: *mut c_void, events: c_int) -> c_int {
+    log(format!("set {events}"));
+    unsafe { (*socket.cast::<Fake>())[0] = events };
+    0
+}
+unsafe extern "C" fn event_del(socket: *mut c_void) -> c_int {
+    log("del".into());
+    unsafe { *socket.cast::<Fake>() = [0, 1] };
+    0
+}
+unsafe extern "C" fn socket_free(socket: *mut c_void) {
+    log("free".into());
+    drop(unsafe { Box::from_raw(socket.cast::<Fake>()) });
+}
+unsafe extern "C" fn timer_available() -> bool {
+    true
+}
+unsafe extern "C" fn timer_add(ms: c_long, _multi: *mut c_void) -> *mut c_void {
+    log(format!("timer {ms}"));
+    ptr::dangling_mut::<u8>().cast()
+}
+unsafe extern "C" fn timer_del(_timer: *mut c_void) {
+    log("timer del".into());
+}
+unsafe extern "C" fn current() -> *mut c_void {
+    ptr::null_mut()
+}
+unsafe extern "C" fn yield_(_co: *mut c_void, _timeout: f64) -> bool {
+    false
+}
+unsafe extern "C" fn resume(_co: *mut c_void) {}
+unsafe extern "C" fn defer(_multi: *mut c_void) {
+    log("defer".into());
+}
+unsafe extern "C" fn set_canceled() {}
+unsafe extern "C" fn warn_message() {}
+
+static OPS: Ops = Ops {
+    event_available,
+    install_handlers,
+    socket_new,
+    socket_events,
+    event_add,
+    event_set,
+    event_del,
+    socket_free,
+    timer_available,
+    timer_add,
+    timer_del,
+    current,
+    yield_,
+    resume,
+    defer,
+    set_canceled,
+    warn_message,
+};
+
+/// An easy handle for `url`, with its Swoole handle.
+fn easy(url: &str) -> *mut CURL {
+    let cp = unsafe { curl_easy_init() };
+    let url = CString::new(url).unwrap();
+    unsafe { curl_easy_setopt(cp, CURLOPT_URL, url.as_ptr()) };
+    unsafe { swr_v1_curl_create_handle(cp) };
+    cp
+}
+
+fn close(cp: *mut CURL) {
+    unsafe { swr_v1_curl_destroy_handle(cp) };
+    assert!(unsafe { swr_v1_curl_get_handle(cp) }.is_null(), "destroyed");
+    unsafe { curl_easy_cleanup(cp) };
+}
+
+fn new_multi() -> &'static Multi {
+    unsafe { &*swr_v1_curl_multi_new(&raw const OPS) }
+}
+
+fn free(multi: &Multi) {
+    unsafe { swr_v1_curl_multi_free(ptr::from_ref(multi).cast_mut()) };
+}
+
+fn raw(multi: &Multi) -> *mut Multi {
+    ptr::from_ref(multi).cast_mut()
+}
+
+#[test]
+fn poll_actions_map_to_reactor_events() {
+    assert_eq!(events(CURL_POLL_IN), READ, "in");
+    assert_eq!(events(CURL_POLL_OUT), WRITE, "out");
+    assert_eq!(events(CURL_POLL_INOUT), READ | WRITE, "inout");
+    assert_eq!(events(CURL_POLL_REMOVE), 0, "remove");
+    assert_eq!(
+        poll_events(READ | WRITE),
+        libc::POLLIN | libc::POLLOUT,
+        "poll"
+    );
+    assert_eq!(select_bits(libc::POLLHUP), CURL_CSELECT_IN, "hangup reads");
+    assert_eq!(
+        select_bits(libc::POLLNVAL | libc::POLLOUT),
+        CURL_CSELECT_ERR | CURL_CSELECT_OUT,
+        "error"
+    );
+}
+
+#[test]
+fn a_handle_survives_reset_and_is_destroyed() {
+    let cp = easy("http://127.0.0.1/");
+    let handle = unsafe { swr_v1_curl_get_handle(cp) };
+    assert!(!handle.is_null(), "created");
+    unsafe { swoole_curl_easy_reset(cp) };
+    assert_eq!(
+        unsafe { swr_v1_curl_get_handle(cp) },
+        handle,
+        "kept across reset"
+    );
+    close(cp);
+}
+
+#[test]
+fn exec_without_a_coroutine_asks_cxx_for_the_fatal_error() {
+    LOOP.with(|on| on.set(true));
+    take();
+    let cp = easy("http://127.0.0.1:1/");
+    let handle = unsafe { swr_v1_curl_get_handle(cp) };
+    let multi = new_multi();
+    assert_eq!(
+        unsafe { swr_v1_curl_multi_exec(raw(multi), handle) },
+        EXEC_NEEDS_COROUTINE,
+        "needs one"
+    );
+    assert_eq!(unsafe { (*handle).multi }, raw(multi), "left in the multi");
+    assert_eq!(
+        take().first().map(String::as_str),
+        Some("timer 1"),
+        "curl's immediate timeout"
+    );
+    assert_eq!(multi.remove_handle(handle), CURLM_OK, "removed");
+    assert!(unsafe { (*handle).multi }.is_null(), "detached");
+    free(multi);
+    close(cp);
+}
+
+/// A transfer to a server that accepts and never answers, performed until
+/// curl watches its socket.
+struct Transfer {
+    _listener: TcpListener,
+    cp: *mut CURL,
+    handle: *mut Handle,
+    multi: &'static Multi,
+}
+
+fn transfer() -> Transfer {
+    LOOP.with(|on| on.set(true));
+    take();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let cp = easy(&format!("http://{}/", listener.local_addr().unwrap()));
+    let handle = unsafe { swr_v1_curl_get_handle(cp) };
+    let multi = new_multi();
+    assert_eq!(multi.add_handle(handle), CURLM_OK, "added");
+    for _ in 0..100 {
+        assert_eq!(multi.perform(), CURLM_OK, "performed");
+        if !multi.sockets.borrow().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        multi.timer_callback.set(true);
+    }
+    assert_eq!(
+        unsafe { swr_v1_curl_multi_running(raw(multi)) },
+        1,
+        "running"
+    );
+    assert_eq!(multi.sockets.borrow().len(), 1, "one socket");
+    assert!(
+        take().iter().any(|entry| entry.starts_with("new ")),
+        "made a reactor socket"
+    );
+    Transfer {
+        _listener: listener,
+        cp,
+        handle,
+        multi,
+    }
+}
+
+impl Transfer {
+    fn finish(self) {
+        assert_eq!(self.multi.remove_handle(self.handle), CURLM_OK, "removed");
+        assert!(
+            take().contains(&"free".to_string()),
+            "socket freed with the transfer"
+        );
+        assert!(self.multi.sockets.borrow().is_empty(), "no sockets");
+        assert_eq!(self.multi.ready(), 0, "no active socket");
+        free(self.multi);
+        close(self.cp);
+    }
+}
+
+#[test]
+fn perform_registers_the_transfer_socket_and_removal_frees_it() {
+    transfer().finish();
+}
+
+#[test]
+fn a_waiterless_socket_event_leaves_the_reactor() {
+    let transfer = transfer();
+    let multi = transfer.multi;
+    let socket = *multi.sockets.borrow().values().next().unwrap();
+    unsafe { swr_v1_curl_socket_event(socket.cast(), CURL_CSELECT_IN) };
+    assert_eq!(take(), ["del"], "no waiter: out of the reactor");
+    multi.selector_prepare();
+    assert_eq!(take().len(), 1, "back in before waiting");
+    multi.co.set(ptr::dangling_mut::<u8>().cast());
+    unsafe { swr_v1_curl_socket_event(socket.cast(), CURL_CSELECT_IN) };
+    unsafe { swr_v1_curl_socket_event(socket.cast(), CURL_CSELECT_OUT) };
+    assert_eq!(take(), ["defer"], "one deferred wake-up");
+    assert_eq!(multi.ready(), 1, "one active socket");
+    assert_eq!(
+        unsafe { (*socket).bitmask.get() } & (CURL_CSELECT_IN | CURL_CSELECT_OUT),
+        CURL_CSELECT_IN | CURL_CSELECT_OUT,
+        "both events"
+    );
+    multi.co.set(ptr::null_mut());
+    unsafe { swr_v1_curl_multi_deferred(raw(multi)) };
+    assert!(!multi.defer_callback.get(), "wake-up done");
+    transfer.finish();
+}
+
+#[test]
+fn timeouts_without_an_event_loop_fail() {
+    LOOP.with(|on| on.set(false));
+    take();
+    let multi = new_multi();
+    assert_eq!(multi.on_timeout(0), -1, "no loop");
+    LOOP.with(|on| on.set(true));
+    assert_eq!(multi.on_timeout(0), 0, "a loop");
+    assert_eq!(multi.on_timeout(-1), 0, "cancel");
+    assert_eq!(
+        take(),
+        ["timer 1", "timer del"],
+        "zero waits 1 ms; -1 deletes it"
+    );
+    assert_eq!(multi.on_timeout(-1), 0, "nothing to cancel");
+    assert_eq!(
+        take(),
+        ["timer 1000"],
+        "-1 without a timer polls in a second"
+    );
+    free(multi);
+}
