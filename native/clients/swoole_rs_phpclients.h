@@ -183,9 +183,7 @@ struct _zend_object *swoole_http_client_coro_create_socket(int64_t type, int *er
 bool swoole_http_client_coro_enable_ssl(void *socket);
 /* After the settings: an HTTP proxy without SSL skips its CONNECT handshake. */
 void swoole_http_client_coro_apply(void *socket);
-void *swoole_http_client_coro_resolve_new(void);
 void swoole_http_client_coro_resolve_reset(void *context, bool with_port);
-void swoole_http_client_coro_resolve_free(void *context);
 void swoole_http_client_coro_configure(void *socket, double timeout, void *resolve, void *conn);
 bool swoole_http_client_coro_connect(void *socket, const char *host, size_t length, int port);
 bool swoole_http_client_coro_close(void *socket);

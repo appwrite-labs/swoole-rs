@@ -18,9 +18,10 @@ unsafe extern "C" {
     /// After the settings: no proxy handshake for plain HTTP proxying.
     pub(crate) fn swoole_http_client_coro_apply(socket: Socket);
     /// A `NameResolver::Context`.
-    pub(crate) fn swoole_http_client_coro_resolve_new() -> *mut c_void;
+    /// `new NameResolver::Context()` (ext-src/swoole_name_resolver.cc).
+    pub(crate) fn swoole_name_resolver_context_new() -> *mut c_void;
     pub(crate) fn swoole_http_client_coro_resolve_reset(context: *mut c_void, with_port: bool);
-    pub(crate) fn swoole_http_client_coro_resolve_free(context: *mut c_void);
+    pub(crate) fn swoole_name_resolver_context_free(context: *mut c_void);
     /// Connect timeout (0: the default), resolve context, the close hook
     /// (`swr_v1_phpclients_http_client_socket_dtor(conn, ..)`) and the zend
     /// string allocator.
