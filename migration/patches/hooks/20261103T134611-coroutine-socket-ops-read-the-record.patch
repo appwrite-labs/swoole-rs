@@ -1,5 +1,5 @@
 diff --git a/include/swoole_coroutine_socket.h b/include/swoole_coroutine_socket.h
-index 20ea726..abdfca6 100644
+index 4f1a9a7..488983a 100644
 --- a/include/swoole_coroutine_socket.h
 +++ b/include/swoole_coroutine_socket.h
 @@ -246,6 +246,2 @@ class Socket : public swr_v1_co_socket {
@@ -36,7 +36,7 @@ index 20ea726..abdfca6 100644
 -
      bool ssl_is_available() const {
 diff --git a/src/coroutine/socket.cc b/src/coroutine/socket.cc
-index 5cdaf3e..d752bef 100644
+index 30a0f71..dfbc814 100644
 --- a/src/coroutine/socket.cc
 +++ b/src/coroutine/socket.cc
 @@ -104,16 +104,4 @@ swr_v1_hook_wait_ops Socket::wait_ops() {
@@ -57,23 +57,3 @@ index 5cdaf3e..d752bef 100644
 -        [](void *s) -> bool { return static_cast<Socket *>(s)->is_closed(); },
 -        [](void *s) -> int32_t { return static_cast<Socket *>(s)->errCode; },
          [](void *s, int32_t error) { static_cast<Socket *>(s)->set_err(error); },
-@@ -1156,11 +1144,5 @@ swr_v1_hook_socket_ops Socket::lifecycle_ops() {
-         this,
--        state_,
--        SW_EVENT_READ,
--        SW_EVENT_WRITE,
-+        this,
-         SW_ERROR_CO_SOCKET_CLOSE_WAIT,
--        [](void *s) -> bool { return static_cast<Socket *>(s)->is_closed(); },
-         [](void *s) { static_cast<Socket *>(s)->shutdown(); },
--        [](void *s, uint32_t event) -> bool {
--            return static_cast<Socket *>(s)->has_bound(static_cast<EventType>(event));
--        },
-         [](void *s, int32_t error) { static_cast<Socket *>(s)->set_err(error); },
-@@ -1170,6 +1152,4 @@ swr_v1_hook_socket_ops Socket::lifecycle_ops() {
-         },
--        [](void *s) { static_cast<Socket *>(s)->socket->close_wait = 1; },
-         [](void *s) {
-             auto *sock = static_cast<Socket *>(s);
--            sock->sock_fd = SW_BAD_SOCKET;
-             if (sock->dtor_ != nullptr) {

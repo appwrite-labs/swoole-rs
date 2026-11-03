@@ -301,11 +301,15 @@ uint32_t swr_v1_hook_socket_event_name(const swr_v1_hook_socket_state *state, ui
    to the event (read or write). */
 typedef struct {
     void *context;
-    struct swr_v1_co_socket *socket;
+    swr_v1_hook_socket_state *state;
+    uint32_t read, write;
     int32_t close_wait_error;
+    bool (*closed)(void *);
     void (*shutdown)(void *);
+    bool (*bound)(void *, uint32_t event);
     void (*set_err)(void *, int32_t);
     void (*resume)(void *, uint32_t event);
+    void (*close_wait)(void *);
     void (*release)(void *);
 } swr_v1_hook_socket_ops;
 bool swr_v1_hook_cancel(const swr_v1_hook_socket_ops *ops, uint32_t event);

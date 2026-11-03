@@ -1,8 +1,8 @@
 diff --git a/src/coroutine/socket.cc b/src/coroutine/socket.cc
-index 30a0f71..8c56f99 100644
+index dfbc814..b9753af 100644
 --- a/src/coroutine/socket.cc
 +++ b/src/coroutine/socket.cc
-@@ -981,2 +981,5 @@ bool Socket::sendto_address(const std::string &host, int port, network::Address
+@@ -969,2 +969,5 @@ bool Socket::sendto_address(const std::string &host, int port, network::Address
      }
 +    // Address::assign sets family, port and address only; a stale scope id
 +    // misroutes an interface-local IPv6 destination (ff01::/16).
