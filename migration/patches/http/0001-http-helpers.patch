@@ -1,5 +1,5 @@
 diff --git a/src/protocol/http.cc b/src/protocol/http.cc
-index 34f1caa..e13575a 100644
+index 34f1caa..03bbc27 100644
 --- a/src/protocol/http.cc
 +++ b/src/protocol/http.cc
 @@ -21,2 +21,5 @@
@@ -8,13 +8,7 @@ index 34f1caa..e13575a 100644
 +#include <cerrno>
 +#include "swoole_rs_http.h"
  #include "swoole_http2.h"
-@@ -26,2 +29,5 @@
- #include "thirdparty/multipart_parser.h"
-+#if defined(SWOOLE_RS_HTTP_REQUEST_V2)
-+#include "swoole_rs_http_request_v2.h"
-+#endif
- 
-@@ -32,9 +38,3 @@ using swoole::network::Socket;
+@@ -32,9 +35,3 @@ using swoole::network::Socket;
  
 -// clang-format off
 -static const char *method_strings[] = {
@@ -25,12 +19,12 @@ index 34f1caa..e13575a 100644
 -// clang-format on
 +
  
-@@ -45,3 +45,3 @@ HttpProxy *HttpProxy::create(const std::string &host, int port, const std::strin
+@@ -45,3 +42,3 @@ HttpProxy *HttpProxy::create(const std::string &host, int port, const std::strin
      http_proxy->port = port;
 -    if (!user.empty() && !pwd.empty()) {
 +    if (swr_v1_http_proxy_auth_enabled(user.size(), pwd.size()) == 1) {
          http_proxy->username = user;
-@@ -53,12 +53,9 @@ HttpProxy *HttpProxy::create(const std::string &host, int port, const std::strin
+@@ -53,12 +50,9 @@ HttpProxy *HttpProxy::create(const std::string &host, int port, const std::strin
  std::string HttpProxy::get_auth_str() const {
 -    char auth_buf[256];
      char encode_buf[512];
@@ -49,7 +43,7 @@ index 34f1caa..e13575a 100644
 +    if (result < 0) return {};
 +    if (result == 1) errno = EOVERFLOW;
      return {encode_buf};
-@@ -67,26 +64,13 @@ std::string HttpProxy::get_auth_str() const {
+@@ -67,26 +61,13 @@ std::string HttpProxy::get_auth_str() const {
  size_t HttpProxy::pack(const String *send_buffer, const std::string &host_name) const {
 -    if (!password.empty()) {
 -        auto auth_str = get_auth_str();
@@ -87,7 +81,7 @@ index 34f1caa..e13575a 100644
 +    swr_v1_http_proxy_pack(&request, reinterpret_cast<uint8_t *>(send_buffer->str), send_buffer->size, &written);
 +    return written;
  }
-@@ -94,54 +78,7 @@ size_t HttpProxy::pack(const String *send_buffer, const std::string &host_name)
+@@ -94,54 +75,7 @@ size_t HttpProxy::pack(const String *send_buffer, const std::string &host_name)
  bool HttpProxy::handshake(const String *recv_buffer) {
 -    bool ret = false;
 -    char *buf = recv_buffer->str;
@@ -146,7 +140,7 @@ index 34f1caa..e13575a 100644
 -    return ret;
 +    return status == 1;
  }
-@@ -149,4 +86,61 @@ bool HttpProxy::handshake(const String *recv_buffer) {
+@@ -149,4 +83,61 @@ bool HttpProxy::handshake(const String *recv_buffer) {
  namespace http_server {
 +namespace {
 +int http_no_digits_errno() {
@@ -208,12 +202,12 @@ index 34f1caa..e13575a 100644
 +}
 +
  static int multipart_on_header_field(multipart_parser *p, const char *at, size_t length) {
-@@ -160,2 +154,4 @@ static int multipart_on_header_field(multipart_parser *p, const char *at, size_t
+@@ -160,2 +151,4 @@ static int multipart_on_header_field(multipart_parser *p, const char *at, size_t
  
 +static auto http_cookie_scratch(const char *at, size_t length) -> String *;
 +
  static int multipart_on_header_value(multipart_parser *p, const char *at, size_t length) {
-@@ -166,33 +162,42 @@ static int multipart_on_header_value(multipart_parser *p, const char *at, size_t
+@@ -166,33 +159,42 @@ static int multipart_on_header_value(multipart_parser *p, const char *at, size_t
  
 -    form_data->multipart_buffer_->append(form_data->current_header_name, form_data->current_header_name_len);
 -    form_data->multipart_buffer_->append(SW_STRL(": "));
@@ -287,7 +281,7 @@ index 34f1caa..e13575a 100644
 +        default: throw std::logic_error("Invalid HTTP multipart upload action");
 +        }
      }
-@@ -203,34 +208,30 @@ static int multipart_on_header_value(multipart_parser *p, const char *at, size_t
+@@ -203,34 +205,30 @@ static int multipart_on_header_value(multipart_parser *p, const char *at, size_t
  static int multipart_on_data(multipart_parser *p, const char *at, size_t length) {
 -    auto request = (Request *) p->data;
 +    auto request = static_cast<Request *>(p->data);
@@ -331,8 +325,7 @@ index 34f1caa..e13575a 100644
 -        request->excepted = 1;
 -        request->too_large = 1;
 -        return 1;
-+        action = swr_v1_http_multipart_data(&state);
-     }
+-    }
 -
 -    ssize_t n = fwrite(at, sizeof(char), length, p->fp);
 -    if (n != (off_t) length) {
@@ -342,11 +335,12 @@ index 34f1caa..e13575a 100644
 -        request->unavailable = 1;
 -        swoole_sys_warning("failed to write upload file");
 -        return 1;
--    }
++        action = swr_v1_http_multipart_data(&state);
+     }
 -
 -    return 0;
  }
-@@ -239,11 +240,3 @@ static int multipart_on_header_complete(multipart_parser *p) {
+@@ -239,11 +237,3 @@ static int multipart_on_header_complete(multipart_parser *p) {
      swoole_trace("on_header_complete");
 -    auto *request = static_cast<Request *>(p->data);
 -    auto *form_data = request->form_data_;
@@ -359,7 +353,7 @@ index 34f1caa..e13575a 100644
 -    return 0;
 +    return http_multipart_emit(p, 0);
  }
-@@ -252,13 +245,3 @@ static int multipart_on_data_end(multipart_parser *p) {
+@@ -252,13 +242,3 @@ static int multipart_on_data_end(multipart_parser *p) {
      swoole_trace("on_data_end\n");
 -    auto *request = static_cast<Request *>(p->data);
 -    auto *form_data = request->form_data_;
@@ -374,7 +368,7 @@ index 34f1caa..e13575a 100644
 -    return 0;
 +    return http_multipart_emit(p, 1);
  }
-@@ -267,7 +250,3 @@ static int multipart_on_part_begin(multipart_parser *p) {
+@@ -267,7 +247,3 @@ static int multipart_on_part_begin(multipart_parser *p) {
      swoole_trace("on_part_begin");
 -    auto *request = static_cast<Request *>(p->data);
 -    auto *form_data = request->form_data_;
@@ -383,7 +377,7 @@ index 34f1caa..e13575a 100644
 -    return 0;
 +    return http_multipart_emit(p, 2);
  }
-@@ -277,42 +256,5 @@ static int multipart_on_body_end(multipart_parser *p) {
+@@ -277,42 +253,5 @@ static int multipart_on_body_end(multipart_parser *p) {
      auto *form_data = request->form_data_;
 -    form_data->multipart_buffer_->append(p->boundary, p->boundary_length);
 -    form_data->multipart_buffer_->append(SW_STRL("--"));
@@ -428,7 +422,7 @@ index 34f1caa..e13575a 100644
      swoole_trace("end, buffer=%.*s", (int) form_data->multipart_buffer_->length, form_data->multipart_buffer_->str);
 -
      return 0;
-@@ -330,149 +272,24 @@ static constexpr multipart_parser_settings mt_parser_settings = {
+@@ -330,149 +269,24 @@ static constexpr multipart_parser_settings mt_parser_settings = {
  
 -static thread_local char http_status_message[128];
 -
@@ -598,7 +592,7 @@ index 34f1caa..e13575a 100644
 +        default: throw std::invalid_argument("Invalid HTTP cookie scratch buffer");
 +        }
      }
-@@ -481,38 +298,20 @@ const char *get_status_message(int code) {
+@@ -481,38 +295,20 @@ const char *get_status_message(int code) {
  void parse_cookie(const char *at, size_t length, const ParseCookieCallback &cb) {
 -    char *value;
 -    const char *separator = ";\0";
@@ -653,7 +647,7 @@ index 34f1caa..e13575a 100644
 +        default: throw std::invalid_argument("Invalid HTTP cookie scratch buffer");
 +        }
      }
-@@ -522,50 +321,7 @@ bool parse_multipart_boundary(
+@@ -522,50 +318,7 @@ bool parse_multipart_boundary(
      const char *at, size_t length, size_t offset, char **out_boundary_str, int *out_boundary_len) {
 -    while (offset < length) {
 -        if (at[offset] == ' ' || at[offset] == ';') {
@@ -709,7 +703,7 @@ index 34f1caa..e13575a 100644
 +    *out_boundary_str = const_cast<char *>(at) + boundary.offset;
 +    *out_boundary_len = static_cast<int>(boundary.length);
      return true;
-@@ -573,39 +329,8 @@ bool parse_multipart_boundary(
+@@ -573,39 +326,8 @@ bool parse_multipart_boundary(
  
 -static int url_htoi(const char *s) {
 -    int c = ((unsigned char *) s)[0];
@@ -753,7 +747,7 @@ index 34f1caa..e13575a 100644
 +    if (status != 0) throw std::length_error("Invalid HTTP URL decode buffer");
 +    return written;
  }
-@@ -613,29 +338,12 @@ size_t url_decode(char *str, size_t len) {
+@@ -613,29 +335,12 @@ size_t url_decode(char *str, size_t len) {
  char *url_encode(char const *str, size_t len) {
 -    static uchar hexchars[] = "0123456789ABCDEF";
 -
@@ -793,7 +787,7 @@ index 34f1caa..e13575a 100644
 +    if (status != 0) { sw_free(result); throw std::invalid_argument("Invalid HTTP URL encode input"); }
 +    return result;
  }
-@@ -643,79 +351,3 @@ char *url_encode(char const *str, size_t len) {
+@@ -643,79 +348,3 @@ char *url_encode(char const *str, size_t len) {
  int Request::get_protocol() {
 -    char *p = buffer_->str;
 -    char *pe = p + buffer_->length;
@@ -874,7 +868,7 @@ index 34f1caa..e13575a 100644
 -    return SW_OK;
 +    return frame_request(*this, 0);
  }
-@@ -726,55 +358,21 @@ _end:
+@@ -726,55 +355,21 @@ _end:
  void Request::parse_header_info() {
 -    // header field start
 -    char *p = buffer_->str + request_line_length_ + (sizeof("\r\n") - 1);
@@ -949,7 +943,7 @@ index 34f1caa..e13575a 100644
 +        form_data_->multipart_boundary_buf = buffer_->str + boundary.offset;
 +        form_data_->multipart_boundary_len = boundary.length;
      }
-@@ -785,24 +383,34 @@ bool Request::init_multipart_parser(const Server *server) {
+@@ -785,24 +380,34 @@ bool Request::init_multipart_parser(const Server *server) {
      int boundary_len;
 -    if (!parse_multipart_boundary(
 -            form_data_->multipart_boundary_buf, form_data_->multipart_boundary_len, 0, &boundary_str, &boundary_len)) {
@@ -1005,7 +999,7 @@ index 34f1caa..e13575a 100644
 -    return true;
 +    return false;
  }
-@@ -810,16 +418,29 @@ bool Request::init_multipart_parser(const Server *server) {
+@@ -810,16 +415,29 @@ bool Request::init_multipart_parser(const Server *server) {
  void Request::destroy_multipart_parser() {
 -    auto tmp_buffer = buffer_;
 -    delete tmp_buffer;
@@ -1048,23 +1042,23 @@ index 34f1caa..e13575a 100644
 -    delete form_data_;
 -    form_data_ = nullptr;
  }
-@@ -830,3 +451,4 @@ bool Request::parse_multipart_data(String *buffer) {
+@@ -830,3 +448,4 @@ bool Request::parse_multipart_data(String *buffer) {
      swoole_trace("multipart_parser_execute: buffer->length=%lu, n=%lu\n", buffer->length, n);
 -    if (n < 0) {
 +    int32_t outcome = swr_v1_http_multipart_result(n, buffer->length, excepted);
 +    if (outcome < 0) {
          int l_error =
-@@ -839,3 +461,3 @@ bool Request::parse_multipart_data(String *buffer) {
+@@ -839,3 +458,3 @@ bool Request::parse_multipart_data(String *buffer) {
          return false;
 -    } else if ((size_t) n != buffer->length) {
 +    } else if (outcome != 2) {
          swoole_error_log(SW_LOG_NOTICE,
-@@ -845,3 +467,3 @@ bool Request::parse_multipart_data(String *buffer) {
+@@ -845,3 +464,3 @@ bool Request::parse_multipart_data(String *buffer) {
                           buffer->length);
 -        return excepted;
 +        return outcome != 0;
      }
-@@ -852,4 +474,10 @@ bool Request::parse_multipart_data(String *buffer) {
+@@ -852,4 +471,10 @@ bool Request::parse_multipart_data(String *buffer) {
  Request::~Request() {
 -    if (form_data_) {
 -        destroy_multipart_parser();
@@ -1077,7 +1071,7 @@ index 34f1caa..e13575a 100644
 +        default: std::terminate();
 +        }
      }
-@@ -858,23 +486,3 @@ Request::~Request() {
+@@ -858,23 +483,3 @@ Request::~Request() {
  bool Request::has_expect_header() const {
 -    char *buf = buffer_->str;
 -    size_t len = buffer_->length;
@@ -1102,7 +1096,7 @@ index 34f1caa..e13575a 100644
 -    return false;
 +    return swr_v1_http_expect(reinterpret_cast<const uint8_t *>(buffer_->str), buffer_->length) > 0;
  }
-@@ -882,15 +490,3 @@ bool Request::has_expect_header() const {
+@@ -882,15 +487,3 @@ bool Request::has_expect_header() const {
  int Request::get_header_length() {
 -    char *p = buffer_->str + buffer_->offset;
 -    char *pe = buffer_->str + buffer_->length;
@@ -1119,7 +1113,7 @@ index 34f1caa..e13575a 100644
 -    return SW_ERR;
 +    return frame_request(*this, 1);
  }
-@@ -898,48 +494,20 @@ int Request::get_header_length() {
+@@ -898,48 +491,20 @@ int Request::get_header_length() {
  int Request::get_chunked_body_length() {
 -    const char *p = buffer_->str + buffer_->offset;
 -    const char *pe = buffer_->str + buffer_->length;
@@ -1182,7 +1176,7 @@ index 34f1caa..e13575a 100644
 -    excepted = 1;
 -    return SW_ERR;
  }
-@@ -947,63 +515,324 @@ int Request::get_chunked_body_length() {
+@@ -947,63 +512,12 @@ int Request::get_chunked_body_length() {
  std::string Request::get_header(const char *name) const {
 -    size_t name_len = strlen(name);
 -    char *p = buffer_->str + url_offset_ + url_length_ + 10;
@@ -1217,349 +1211,43 @@ index 34f1caa..e13575a 100644
 -            }
 -
 -            i++;
-+    swr_v1_http_span value{};
-+    size_t start = url_offset_ + url_length_ + 10;
-+    int32_t status = swr_v1_http_header_value(reinterpret_cast<const uint8_t *>(buffer_->str),
-+        buffer_->length, start, header_length_, reinterpret_cast<const uint8_t *>(name), strlen(name), &value);
-+    return status == 1 ? std::string(buffer_->str + value.offset, value.length) : std::string();
-+}
-+
-+#if defined(SWOOLE_RS_HTTP_REQUEST_V2)
-+namespace {
-+// Independent immutable metadata snapshot for one Native String effect.
-+// Small bytes are copied into local IO scratch; fallback bytes remain Rust-owned.
-+class RequestTextSnapshot {
-+    uint8_t scratch_[64];
-+    swr_v1_http_proxy_text text_{};
-+    swr_v2_http_request_text_snapshot *lease_=nullptr;
-+public:
-+    RequestTextSnapshot(const swr_v2_http_request *owner,uint32_t kind) {
-+        const int32_t status=swr_v2_http_request_text_snapshot_new(owner,kind,scratch_,sizeof(scratch_),&text_,&lease_);
-+        if (status==-3) throw std::bad_alloc();
-+        if (status<0) throw std::logic_error("Invalid HTTP request text snapshot");
-+    }
-+    ~RequestTextSnapshot() { swr_v2_http_request_text_snapshot_drop(lease_); }
-+    RequestTextSnapshot(const RequestTextSnapshot &)=delete;
-+    RequestTextSnapshot &operator=(const RequestTextSnapshot &)=delete;
-+    const char *data() const { return reinterpret_cast<const char *>(text_.data); }
-+    size_t size() const { return text_.length; }
-+};
-+}
-+RequestV2::RequestV2() : owner_(swr_v2_http_request_new()) {
-+    if (!owner_) throw std::bad_alloc();
-+}
-+RequestV2::~RequestV2() {
-+    size_t count=0;
-+    const uint32_t *actions=swr_v2_http_request_lifecycle(owner_,4,0,&count);
-+    for (size_t cursor=0;cursor<count;++cursor) {
-+        switch (actions[cursor]) {
-+        case SWR_HTTP_REQUEST_DESTROY: destroy_multipart_parser(); break;
-+        case SWR_HTTP_REQUEST_DELETE_FORM: control(SWR_HTTP_REQUEST_V2_DESTROY_FORM_TEXT); break;
-+        case SWR_HTTP_REQUEST_NULL_FORM: control(SWR_HTTP_REQUEST_V2_DISCARD_FORM); break;
-+        case SWR_HTTP_REQUEST_DONE: swr_v2_http_request_drop(owner_); return;
-+        default: std::terminate();
-+        }
-+    }
-+    std::terminate();
-+}
-+void RequestV2::control(uint32_t operation,uint64_t value,uint64_t auxiliary) {
-+    const int32_t result=swr_v2_http_request_control(owner_,operation,value,auxiliary);
-+    if (result==-3) throw std::bad_alloc();
-+    if (result<0) throw std::logic_error("Invalid HTTP request control");
-+}
-+swr_v2_http_request_observation RequestV2::observe() const {
-+    swr_v2_http_request_observation result{};
-+    if (swr_v2_http_request_observe(owner_,&result)<0)
-+        throw std::logic_error("Invalid HTTP request observation");
-+    return result;
-+}
-+int RequestV2::frame(uint32_t operation) {
-+    size_t next=buffer_->offset;
-+    const int32_t result=swr_v2_http_request_frame(owner_,operation,
-+        reinterpret_cast<const uint8_t *>(buffer_->str),buffer_->length,buffer_->offset,&next);
-+    buffer_->offset=next;
-+    return result==0 ? SW_OK : SW_ERR;
-+}
-+int RequestV2::get_protocol() { return frame(0); }
-+int RequestV2::get_header_length() { return frame(1); }
-+void RequestV2::parse_header_info() {
-+    uint32_t operation=0;
-+    for (;;) {
-+        swr_v2_http_request_header_result result{};
-+        const int32_t action=swr_v2_http_request_headers(owner_,operation,
-+            reinterpret_cast<const uint8_t *>(buffer_->str),buffer_->length,&result);
-+        if (result.number_errors & 1u) errno=ERANGE;
-+        if (result.number_errors & 2u) { const int error=http_no_digits_errno(); if (error) errno=error; }
-+        if (action<0) { control(SWR_HTTP_REQUEST_V2_SET_EXCEPTED); return; }
-+        if (action==0) return;
-+        control(SWR_HTTP_REQUEST_V2_ADMIT_FORM,result.boundary.length);
-+        boundary_=buffer_->str+result.boundary.offset;
-+        operation=1;
-+    }
-+}
-+std::string RequestV2::get_header(const char *name) const {
-+    swr_v1_http_span value{};
-+    const int32_t result=swr_v2_http_request_header(owner_,reinterpret_cast<const uint8_t *>(buffer_->str),
-+        buffer_->length,reinterpret_cast<const uint8_t *>(name),strlen(name),&value);
-+    return result==1 ? std::string(buffer_->str+value.offset,value.length) : std::string();
-+}
-+bool RequestV2::has_expect_header() const {
-+    return swr_v1_http_expect(reinterpret_cast<const uint8_t *>(buffer_->str),buffer_->length)>0;
-+}
-+int RequestV2::emit(multipart_parser *p,uint32_t kind,const char *at,size_t length) {
-+    size_t count=0;
-+    const auto *actions=swr_v1_http_multipart_emit(kind,kind<2 && p->fp!=nullptr,&count);
-+    if (!actions) throw std::logic_error("Invalid HTTP multipart emission kind");
-+    for (size_t cursor=0;cursor<count;++cursor) {
-+        const auto &step=actions[cursor];
-+        if (step.effects) control(SWR_HTTP_REQUEST_V2_EMIT,step.effects,
-+            step.effects & 4 ? saved_->length : 0);
-+        switch (step.action) {
-+        case 0: return 0;
-+        case 1: saved_->append(reinterpret_cast<const char *>(step.data),step.length); break;
-+        case 2: saved_->append(upload_->str,strlen(upload_->str)); break;
-+        case 3: saved_->append(p->boundary,p->boundary_length); break;
-+        case 4: fflush(p->fp); break;
-+        case 5: fclose(p->fp); p->fp=nullptr; break;
-+        case 6: { const RequestTextSnapshot name(owner_,1); saved_->append(name.data(),name.size()); break; }
-+        case 7: saved_->append(at,length); break;
-+        default: throw std::logic_error("Invalid HTTP multipart emission state");
-+        }
-+    }
-+    return 0;
-+}
-+// Retain original diagnostic stems despite the private facade's different class
-+// scope. Native macros/effects stay unchanged; source-line trace identity and
-+// allocation/exception/partial/lifetime profiles remain independently unqualified.
-+#pragma push_macro("__SW_FUNC__")
-+#undef __SW_FUNC__
-+#define __SW_FUNC__ "http_server::multipart_on_header_field"
-+int RequestV2::on_header_field(multipart_parser *p,const char *at,size_t length) {
-+    auto *request=static_cast<RequestV2 *>(p->data);
-+    if (swr_v2_http_request_text_set(request->owner_,1,reinterpret_cast<const uint8_t *>(at),length)<0)
-+        throw std::bad_alloc();
-+    swoole_trace("header_field: at=%.*s, length=%lu",(int)length,at,length);
-+    return 0;
-+}
-+#undef __SW_FUNC__
-+#define __SW_FUNC__ "http_server::multipart_on_header_value"
-+int RequestV2::on_header_value(multipart_parser *p,const char *at,size_t length) {
-+    swoole_trace("header_value: at=%.*s, length=%lu",(int)length,at,length);
-+    auto *request=static_cast<RequestV2 *>(p->data);
-+    request->emit(p,4,at,length);
-+    size_t count=0;
-+    const uint32_t *actions=swr_v2_http_request_upload_plan(request->owner_,0,0,&count);
-+    if (!actions) throw std::invalid_argument("Invalid HTTP multipart header");
-+    int temporary=-1;
-+    FILE *opened=nullptr;
-+    for (size_t cursor=0;cursor<count;++cursor) {
-+        switch (actions[cursor]) {
-+        case 0: return 0;
-+        case 1: {
-+            auto *scratch=http_cookie_scratch(at,length);
-+            const int32_t filename=swr_v1_http_multipart_filename(reinterpret_cast<uint8_t *>(scratch->str),scratch->size);
-+            if (filename<0) throw std::invalid_argument("Invalid HTTP multipart scratch buffer");
-+            actions=swr_v2_http_request_upload_plan(request->owner_,1,filename,&count);
-+            cursor=static_cast<size_t>(-1);
-             break;
+-            break;
 -        case 1:
 -            if (!isspace(*p)) {
 -                buffer = p;
 -                state = 2;
 -            }
-+        }
-+        case 2: {
-+            if (swr_v2_http_request_upload_template(request->owner_,
-+                    reinterpret_cast<uint8_t *>(request->upload_->str),request->upload_->size)<0)
-+                throw std::logic_error("Invalid HTTP upload template buffer");
-             break;
+-            break;
 -        case 2:
 -            if (SW_STR_ISTARTS_WITH(p, pe - p, "\r\n")) {
 -                return {buffer, static_cast<size_t>(p - buffer)};
 -            }
-+        }
-+        case 3:
-+            temporary=swoole_tmpfile(request->upload_->str);
-+            actions=swr_v2_http_request_upload_plan(request->owner_,2,temporary>=0,&count);
-+            cursor=static_cast<size_t>(-1);
-             break;
+-            break;
 -        default:
-+        case 4:
-+            opened=fdopen(temporary,"wb+");
-+            actions=swr_v2_http_request_upload_plan(request->owner_,3,opened!=nullptr,&count);
-+            cursor=static_cast<size_t>(-1);
-             break;
-+        case 5: request->control(SWR_HTTP_REQUEST_V2_SET_EXCEPTED); break;
-+        case 6: swoole_sys_warning("fopen(%s) failed",request->upload_->str); break;
-+        case 7: p->fp=opened; break;
-+        default: throw std::logic_error("Invalid HTTP multipart upload action");
-         }
-     }
+-            break;
+-        }
+-    }
 -
 -    return {};
-+    return 0;
++    swr_v1_http_span value{};
++    size_t start = url_offset_ + url_length_ + 10;
++    int32_t status = swr_v1_http_header_value(reinterpret_cast<const uint8_t *>(buffer_->str),
++        buffer_->length, start, header_length_, reinterpret_cast<const uint8_t *>(name), strlen(name), &value);
++    return status == 1 ? std::string(buffer_->str + value.offset, value.length) : std::string();
  }
--
--int get_method(const char *method_str, size_t method_len) {
+ 
++
+ int get_method(const char *method_str, size_t method_len) {
 -    int i = 0;
 -    for (; i < SW_HTTP_PRI; i++) {
 -        if (swoole_strcaseeq(method_strings[i], strlen(method_strings[i]), method_str, method_len)) {
 -            return i + 1;
-+#undef __SW_FUNC__
-+#define __SW_FUNC__ "http_server::multipart_on_data"
-+int RequestV2::on_data(multipart_parser *p,const char *at,size_t length) {
-+    auto *request=static_cast<RequestV2 *>(p->data);
-+    swoole_trace("on_data: length=%lu",length);
-+    int32_t action=swr_v2_http_request_data(request->owner_,0,p->fp!=nullptr,length,request->saved_->length,0);
-+    int64_t written=0;
-+    for (;;) {
-+        switch (action) {
-+        case 0: return 0;
-+        case 1: request->saved_->append(at,length); return 0;
-+        case 2: written=static_cast<int64_t>(static_cast<ssize_t>(fwrite(at,sizeof(char),length,p->fp))); break;
-+        case 3: fclose(p->fp); p->fp=nullptr; break;
-+        case 4: swoole_sys_warning("failed to write upload file"); return 1;
-+        default: return 1;
-         }
-+        action=swr_v2_http_request_data(request->owner_,1,0,0,0,written);
-     }
+-        }
+-    }
 -    return -1;
-+}
-+#undef __SW_FUNC__
-+#define __SW_FUNC__ "http_server::multipart_on_header_complete"
-+int RequestV2::on_header_complete(multipart_parser *p) {
-+    swoole_trace("on_header_complete");
-+    return static_cast<RequestV2 *>(p->data)->emit(p,0);
-+}
-+#undef __SW_FUNC__
-+#define __SW_FUNC__ "http_server::multipart_on_data_end"
-+int RequestV2::on_data_end(multipart_parser *p) {
-+    swoole_trace("on_data_end\n");
-+    return static_cast<RequestV2 *>(p->data)->emit(p,1);
-+}
-+#undef __SW_FUNC__
-+#define __SW_FUNC__ "http_server::multipart_on_part_begin"
-+int RequestV2::on_part_begin(multipart_parser *p) {
-+    swoole_trace("on_part_begin");
-+    return static_cast<RequestV2 *>(p->data)->emit(p,2);
-+}
-+#undef __SW_FUNC__
-+#define __SW_FUNC__ "http_server::multipart_on_body_end"
-+int RequestV2::on_body_end(multipart_parser *p) {
-+    auto *request=static_cast<RequestV2 *>(p->data);
-+    request->emit(p,3);
-+    swoole_trace("end, buffer=%.*s",(int)request->saved_->length,request->saved_->str);
-+    return 0;
-+}
-+#undef __SW_FUNC__
-+#define __SW_FUNC__ "Request::init_multipart_parser"
-+bool RequestV2::init_multipart_parser(const Server *server) {
-+    char *boundary;
-+    int boundary_length;
-+    String *temporary=nullptr;
-+    const bool valid=parse_multipart_boundary(boundary_,observe().boundary_length,0,&boundary,&boundary_length);
-+    static constexpr multipart_parser_settings settings{
-+        on_header_field,on_header_value,on_data,on_part_begin,on_header_complete,on_data_end,on_body_end};
-+    size_t count=0,cursor=0;
-+    const uint32_t *actions=swr_v2_http_request_lifecycle(owner_,0,valid,&count);
-+    while (cursor<count) {
-+        switch (actions[cursor++]) {
-+        case SWR_HTTP_REQUEST_MAKE_PARSER:
-+            parser_=multipart_parser_init(boundary,boundary_length,&settings);
-+            actions=swr_v2_http_request_lifecycle(owner_,1,parser_!=nullptr,&count); cursor=0; break;
-+        case SWR_HTTP_REQUEST_SET_DATA: parser_->data=this; break;
-+        case SWR_HTTP_REQUEST_NEW_BODY: temporary=new String(SW_BUFFER_SIZE_BIG); break;
-+        case SWR_HTTP_REQUEST_APPEND_BODY: {
-+            const auto header=header_length();
-+            temporary->append(buffer_->str+header,buffer_->length-header);
-+            break;
-+        }
-+        case SWR_HTTP_REQUEST_SAVE_BUFFER: saved_=buffer_; break;
-+        case SWR_HTTP_REQUEST_TRIM_BUFFER: saved_->length=header_length(); break;
-+        case SWR_HTTP_REQUEST_USE_BODY: buffer_=temporary; break;
-+        case SWR_HTTP_REQUEST_TMP_NAME:
-+            if (swr_v2_http_request_text_set(owner_,0,reinterpret_cast<const uint8_t *>(server->upload_tmp_dir.data()),server->upload_tmp_dir.size())<0)
-+                throw std::bad_alloc();
-+            break;
-+        case SWR_HTTP_REQUEST_NEW_UPLOAD: {
-+            const RequestTextSnapshot path(owner_,0); upload_=new String(path.data(),path.size()); break;
-+        }
-+        case SWR_HTTP_REQUEST_UPLOAD_MAX: control(SWR_HTTP_REQUEST_V2_UPLOAD_MAXIMUM,server->upload_max_filesize); break;
-+        case SWR_HTTP_REQUEST_WARN: swoole_warning("multipart_parser_init() failed"); break;
-+        case SWR_HTTP_REQUEST_FALSE: return false;
-+        case SWR_HTTP_REQUEST_TRUE: control(SWR_HTTP_REQUEST_V2_ACTIVATE_FORM); return true;
-+        default: throw std::logic_error("Invalid HTTP request initialization plan");
-+        }
-+    }
-+    return false;
-+}
-+void RequestV2::destroy_multipart_parser() {
-+    size_t count=0,cursor=0;
-+    const uint32_t *actions=swr_v2_http_request_lifecycle(owner_,2,0,&count);
-+    while (cursor<count) {
-+        switch (actions[cursor++]) {
-+        case SWR_HTTP_REQUEST_DELETE_BODY: delete buffer_; break;
-+        case SWR_HTTP_REQUEST_RESTORE_BUFFER: buffer_=saved_; break;
-+        case SWR_HTTP_REQUEST_CLEAR_SAVED: saved_=nullptr; break;
-+        case SWR_HTTP_REQUEST_OBSERVE_FILE:
-+            actions=swr_v2_http_request_lifecycle(owner_,3,parser_->fp!=nullptr,&count); cursor=0; break;
-+        case SWR_HTTP_REQUEST_CLOSE: fclose(parser_->fp); break;
-+        case SWR_HTTP_REQUEST_UNLINK: unlink(upload_->str); break;
-+        case SWR_HTTP_REQUEST_FREE_PARSER: multipart_parser_free(parser_); break;
-+        case SWR_HTTP_REQUEST_NULL_PARSER: parser_=nullptr; break;
-+        case SWR_HTTP_REQUEST_DELETE_UPLOAD: delete upload_; break;
-+        case SWR_HTTP_REQUEST_NULL_UPLOAD: upload_=nullptr; break;
-+        case SWR_HTTP_REQUEST_DELETE_FORM: control(SWR_HTTP_REQUEST_V2_DESTROY_FORM_TEXT); break;
-+        case SWR_HTTP_REQUEST_NULL_FORM: control(SWR_HTTP_REQUEST_V2_DISCARD_FORM); break;
-+        case SWR_HTTP_REQUEST_DONE: return;
-+        default: throw std::logic_error("Invalid HTTP request destruction plan");
-+        }
-+    }
-+}
-+#undef __SW_FUNC__
-+#define __SW_FUNC__ "Request::parse_multipart_data"
-+bool RequestV2::parse_multipart_data(String *buffer) {
-+    control(SWR_HTTP_REQUEST_V2_CLEAR_EXCEPTED);
-+    const ssize_t processed=multipart_parser_execute(parser_,buffer->str,buffer->length);
-+    swoole_trace("multipart_parser_execute: buffer->length=%lu, n=%lu\n",buffer->length,processed);
-+    const int32_t outcome=swr_v1_http_multipart_result(processed,buffer->length,excepted());
-+    if (outcome<0) {
-+        const int length=multipart_parser_error_msg(parser_,sw_tg_buffer()->str,sw_tg_buffer()->size);
-+        swoole_error_log(SW_LOG_NOTICE,SW_ERROR_SERVER_INVALID_REQUEST,
-+            "parse multipart body failed, reason: %.*s",length,sw_tg_buffer()->str);
-+        return false;
-+    }
-+    if (outcome!=2) {
-+        swoole_error_log(SW_LOG_NOTICE,SW_ERROR_SERVER_INVALID_REQUEST,
-+            "parse multipart body failed, %zu/%zu bytes processed",processed,buffer->length);
-+        return outcome!=0;
-+    }
-+    buffer->clear();
-+    return true;
-+}
-+#undef __SW_FUNC__
-+#define __SW_FUNC__ "Request::get_chunked_body_length"
-+int RequestV2::get_chunked_body_length() {
-+    uint32_t operation=0;
-+    for (;;) {
-+        swr_v1_http_chunk_result step{};
-+        const int32_t action=swr_v2_http_request_chunk(owner_,operation,
-+            reinterpret_cast<const uint8_t *>(buffer_->str),buffer_->length,buffer_->offset,&step);
-+        if (action<0) return SW_ERR;
-+        swoole_trace_log(SW_TRACE_HTTP,"chunk_length=%zu, chunk_len_str=%.*s\n",step.chunk_length,
-+            static_cast<int>(step.line_length),buffer_->str+step.line_offset);
-+        if (action==2) return SW_OK;
-+        if (action==3) return SW_ERR;
-+        operation=1;
-+    }
-+}
-+#pragma pop_macro("__SW_FUNC__")
-+#endif
-+
-+int get_method(const char *method_str, size_t method_len) {
 +    return swr_v1_http_method(reinterpret_cast<const uint8_t *>(method_str), method_len);
  }
-@@ -1011,6 +840,3 @@ int get_method(const char *method_str, size_t method_len) {
+@@ -1011,6 +525,3 @@ int get_method(const char *method_str, size_t method_len) {
  const char *get_method_string(int method) {
 -    if (method <= 0 || method > SW_HTTP_PRI) {
 -        return nullptr;
@@ -1567,7 +1255,7 @@ index 34f1caa..e13575a 100644
 -    return method_strings[method - 1];
 +    return swr_v1_http_method_string(method);
  }
-@@ -1037,5 +863,7 @@ ssize_t get_package_length(const Protocol *protocol, Socket *socket, PacketLengt
+@@ -1037,5 +548,7 @@ ssize_t get_package_length(const Protocol *protocol, Socket *socket, PacketLengt
      auto *conn = static_cast<Connection *>(socket->object);
 -    if (conn->websocket_status >= websocket::STATUS_HANDSHAKE) {
 +    static_assert(websocket::STATUS_HANDSHAKE == 2, "Pinned WebSocket route threshold changed");
@@ -1577,7 +1265,7 @@ index 34f1caa..e13575a 100644
 -    } else if (conn->http2_stream) {
 +    } else if (route == 2) {
          return http2::get_frame_length(protocol, socket, pl);
-@@ -1049,5 +877,7 @@ uint8_t get_package_length_size(Socket *socket) {
+@@ -1049,5 +562,7 @@ uint8_t get_package_length_size(Socket *socket) {
      auto *conn = (Connection *) socket->object;
 -    if (conn->websocket_status >= websocket::STATUS_HANDSHAKE) {
 +    static_assert(websocket::STATUS_HANDSHAKE == 2, "Pinned WebSocket route threshold changed");
@@ -1587,7 +1275,7 @@ index 34f1caa..e13575a 100644
 -    } else if (conn->http2_stream) {
 +    } else if (route == 2) {
          return SW_HTTP2_FRAME_HEADER_SIZE;
-@@ -1061,5 +891,7 @@ int dispatch_frame(const Protocol *proto, Socket *socket, const RecvData *rdata)
+@@ -1061,5 +576,7 @@ int dispatch_frame(const Protocol *proto, Socket *socket, const RecvData *rdata)
      auto *conn = (Connection *) socket->object;
 -    if (conn->websocket_status >= websocket::STATUS_HANDSHAKE) {
 +    static_assert(websocket::STATUS_HANDSHAKE == 2, "Pinned WebSocket route threshold changed");

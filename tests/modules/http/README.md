@@ -77,8 +77,7 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   timeouts in `sendfile_client_reset`/issue 2360 (the original can stall waiting
   for more than 2 MiB from a randomly smaller file).
 - `boundary_rng_gate.py` covers only the positive 24-byte length.
-- RequestV2's capability stays off pending paired callers. Mixed Rust/native ASan
-  linking fails on macOS.
+- Mixed Rust/native ASan linking fails on macOS.
 
 ## Gate audit (#482)
 

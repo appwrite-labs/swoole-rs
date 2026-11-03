@@ -305,7 +305,6 @@ upstream.
 - [directory-v2.md](directory-v2.md): `swr_v2_http_directory_*`
 - [static-tasks-v2.md](static-tasks-v2.md): `swr_v2_http_tasks_*`
 - [static-context-v2.md](static-context-v2.md): `swr_v2_http_context_*`
-- [request-v2.md](request-v2.md): `swr_v2_http_request_*`
 
 Tests: `tests/modules/http/` (for example `gate.py`, `static_gate.py`,
 `proxy_gate.py`, `multipart_headers_gate.py`).

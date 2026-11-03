@@ -111,8 +111,6 @@ cd tests/modules/ports && python3 -m unittest test_configured_flags test_count_c
   length big-packet PHPT skip, so the strict Mac originals gate stays false.
 - A Rust float conversion for `max_idle_time` failed on signaling NaN with Apple
   Clang and was dropped; that conversion stays native.
-- `SWOOLE_RS_HTTP_REQUEST_V2` caller adaptation has no gate here: its scripts
-  depended on a `request_v2_controls.py` that does not exist in the repo.
 
 Open: broader Server originals, getSocket/platform/real TLS coverage,
 exceptions/bailout/teardown, production sanitizer runs and benchmarks.

@@ -109,7 +109,7 @@ class Overlays(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ['include/swoole_rs.h', 'ports/ports.h', 'http/swoole_rs_http_request_view.h',
-                         'http/swoole_rs_http_request_v2.h', 'http/swoole_rs_http.h']:
+                         'http/swoole_rs_http.h']:
                 path = root / 'native' / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.touch()
@@ -118,7 +118,6 @@ class Overlays(unittest.TestCase):
                 self.assertEqual(ports, {'swoole_rs.h', 'ports.h', 'swoole_rs_http_request_view.h'})
                 paired = build_hybrid.headers_for(['ports', 'http'])
                 self.assertEqual(sum(p.name == 'swoole_rs_http_request_view.h' for p in paired), 1)
-                self.assertIn('swoole_rs_http_request_v2.h', {p.name for p in paired})
 
     def test_development_configuration_invalidation(self):
         inputs = {'patches': [{'upstream_paths': ['src/core/buffer.cc'], 'sha256': 'one'}],
