@@ -10,6 +10,7 @@ import sys
 import overlay
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
+from tools.build_hybrid import hybrid_tree
 from tools.harness import run_isolated,write_report
 from tools.build_upstream import require_build_space
 
@@ -60,7 +61,7 @@ def main():
     report={'scope':__doc__,'pin':overlay.PIN,'platform':sys.platform,'configured_compiler_flags':configuration,'results':[],'passed':False,'native_instrumented':a.sanitize};outputs=[]
     for engine in ['upstream','rust']:
         directory=folder/engine;directory.mkdir(exist_ok=True)
-        raw=extract(overlay.original('src/server/port.cc') if engine=='upstream' else overlay.generated()['src/server/port.cc']);(directory/'socket.inc').write_text(raw)
+        raw=extract(overlay.original('src/server/port.cc') if engine=='upstream' else (hybrid_tree(a.archive)[0]/'src/server/port.cc').read_text());(directory/'socket.inc').write_text(raw)
         command=['c++','-std=c++14','-O1','-UNDEBUG','-DSWOOLE_RS_PORTS','-DHAVE_CONFIG_H','-I'+str(ROOT/'native/ports'),'-I'+str(a.core),'-I'+str(a.core/'include'),'-I'+str(a.core/'thirdparty/llhttp'),*flags,'-I'+str(directory),str(Path(__file__).resolve().with_suffix('.cc')),*([str(a.archive)] if engine=='rust' else []),'-lpthread','-o',str(directory/'witness')]
         if a.openssl_root:command[1:1]=['-I'+str(a.openssl_root/'include')]
         if sys.platform=='linux':command+=['-ldl','-lm']

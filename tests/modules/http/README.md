@@ -42,7 +42,7 @@ marked `[R]` also take `--rust-sanitize`. `tools/dev.py` registers each as an
 | `locale_gate.py` | Case-insensitive helpers against libc `strncasecmp` across available locales |
 | `cookie_flow_gate.py` [R] (`--status-only`, `--codes-only`) | Cookie callback flow; status fallback buffer; public `int[128]` status-code array export |
 | `context_gate.py` [R] | The whole `StaticHandler` (paths, locations, rewrites, index files and pages, ranges, content types, dates) against the pinned class |
-| `boundary_rng_gate.py --export DIR` | Random-boundary overloads against a production corebase export; verifies the export's archive/header/source checksums first |
+| `boundary_rng_gate.py --archive ARCHIVE` | Random-boundary overloads: pinned bodies against the hybrid build's `base.cc` |
 
 Locale semantic runs must be unsanitized: under ASan the macOS interceptor
 compares `C0`/`E0` with ASCII rules where libc in `en_US.ISO8859-1` treats them
@@ -82,7 +82,7 @@ Rust unit test or fuzz target reaches:
 `-headers`, `-proxy`, `-static`, `-conditionals`,
 `-multipart`, `-multipart-headers`, `-multipart-emit`, `-rewrites`,
 `-dispatch`, `-locales` (libc locales), `-context`, `-request-lifecycle`,
-`-boundary-rng` (production corebase export) and `-cookie-flow-positive`.
+`-boundary-rng` (corebase base.cc) and `-cookie-flow-positive`.
 `-status-buffer-positive` covers the TLS status buffer across threads.
 `-status-codes-positive` covers the public `int[128]` ABI.
 

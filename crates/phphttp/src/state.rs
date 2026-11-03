@@ -11,7 +11,7 @@ pub(crate) struct Llhttp {
     span_pos0: *mut c_void,
     span_cb0: *mut c_void,
     pub(crate) error: i32,
-    reason: *const c_char,
+    pub(crate) reason: *const c_char,
     error_pos: *const c_char,
     pub(crate) data: *mut c_void,
     current: *mut c_void,

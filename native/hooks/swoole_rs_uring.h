@@ -105,6 +105,10 @@ bool swr_v1_uring_tls_prepare(swr_v1_uring_tls tls);
 bool swr_v1_uring_tls_perform(swr_v1_uring_tls tls, int rc, const char *function);
 ssize_t swr_v1_uring_tls_recv(swr_v1_uring_tls tls, void *buf, size_t n);
 ssize_t swr_v1_uring_tls_send(swr_v1_uring_tls tls, const void *buf, size_t n);
+/* UringSocket::send_once / recv_once: io is the network socket's send or recv; want returns its
+ * ssl_want_read (bit 0) and ssl_want_write (bit 1). Without a TLS session io runs once. */
+ssize_t swr_v1_uring_tls_once(swr_v1_uring_tls tls, void *buf, size_t n, ssize_t (*io)(void *socket, void *buf, size_t n),
+                              int (*want)(void *socket));
 /* UringSocket::ssl_sendfile's loop: size bytes of file from *offset, encrypted; catch is
  * catch_write_error(errno). warn: 1 "pread() failed", 2 "write() failed", else 0. */
 typedef struct {

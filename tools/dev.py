@@ -152,7 +152,7 @@ def plan(args, reports):
     variant = build_variant(args)
     manifest = ROOT / 'target/hybrid' / variant / 'build-manifest.json'
     hybrid = manifest.parent / 'modules/swoole.so'
-    captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines', 'coroutine'} & set(modules)) or {'http', 'corebase'} <= set(modules))
+    captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines', 'coroutine'} & set(modules)))
     native_variant = build_alias('upstream', [], profile_suffix(args))
     reference = (ROOT / 'target/hybrid' / native_variant / 'modules/swoole.so'
                  if captured_reference or getattr(args, 'stdext', False) or getattr(args, 'php_sockets', False) else ROOT / 'target/upstream/src/modules/swoole.so')
@@ -205,7 +205,8 @@ def plan(args, reports):
                *php, *engines, *report('error-php'))
     if integrate and {'http', 'corebase'} <= set(modules):
         script('http-boundary-rng', 'tests/modules/http/boundary_rng_gate.py',
-               '--source', ROOT / 'target/upstream/src', '--export', selected_export, *report('http-boundary-rng'))
+               '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-boundary-rng'))
     if 'http' in modules:
         script('http-context', 'tests/modules/http/context_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-context'))
@@ -321,7 +322,7 @@ def plan(args, reports):
     if 'clients' in modules:
         for name, runner in [('clients-policy', 'gate.py'), ('clients-http', 'http_gate.py'), ('clients-codec', 'codec_gate.py'),
                              ('clients-resolver-config', 'resolv_gate.py'),
-                             ('clients-pool', 'pool_gate.py'), ('clients-resolver', 'resolver_gate.py'),
+                             ('clients-pool', 'pool_gate.py'),
                              ('clients-http-format', 'http_format_gate.py'),
                              ('clients-ip', 'ip_gate.py'), ('clients-ip-text', 'ip_text_gate.py')]:
             script(name, 'tests/modules/clients/' + runner, '--source', ROOT / 'target/upstream/src',

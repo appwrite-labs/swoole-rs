@@ -24,7 +24,7 @@ wrappers = ["dep:swoole-rs-wrappers"]
 
 reactor = ["dep:swoole-rs-reactor", "dep:swoole-rs-tls"]
 
-corebase = ["dep:swoole-rs-corebase"]
+corebase = ["dep:swoole-rs-corebase", "swoole-rs-corebase/upstream-symbols"]
 
 coroutine = ["dep:swoole-rs-coroutine"]
 

@@ -28,7 +28,6 @@
  "clients-php-resolver": 5,
  "clients-policy": 11,
  "clients-pool": 3,
- "clients-resolver": 51,
  "clients-resolver-config": 3,
  "clients-unit": 1,
  "clippy": 8,

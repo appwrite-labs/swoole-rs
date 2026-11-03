@@ -238,6 +238,10 @@ jobs:
   iouring:
     uses: ./.github/workflows/iouring.yml
 
+  # The --enable-cares build variant and its PHPTs.
+  cares:
+    uses: ./.github/workflows/cares.yml
+
   # The thread-safe PHP --enable-swoole-thread build variant and its PHPTs.
   zts:
     uses: ./.github/workflows/zts.yml

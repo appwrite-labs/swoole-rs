@@ -172,17 +172,6 @@ struct swr_v1_clients_pool_state { uint32_t kind; size_t length; };
 struct swr_v1_clients_pool_state swr_v1_clients_pool_state(const void *, const uint8_t *, size_t);
 void *swr_v1_clients_pool_take(void *, const uint8_t *, size_t);
 uint8_t swr_v1_clients_pool_remove_empty(void *, const uint8_t *, size_t);
-enum swr_v1_clients_resolver_action {
-    SWR_CLIENTS_RESOLVER_LOOKUP=1, SWR_CLIENTS_RESOLVER_COUNT=2,
-    SWR_CLIENTS_RESOLVER_STORE_CLUSTER=3, SWR_CLIENTS_RESOLVER_STRING=4,
-    SWR_CLIENTS_RESOLVER_RESET=5, SWR_CLIENTS_RESOLVER_RELEASE=6,
-    SWR_CLIENTS_RESOLVER_POP=7, SWR_CLIENTS_RESOLVER_FIND_HOST=8,
-    SWR_CLIENTS_RESOLVER_COPY_HOST=9, SWR_CLIENTS_RESOLVER_COLON_PORT=10,
-    SWR_CLIENTS_RESOLVER_APPEND_PORT=11, SWR_CLIENTS_RESOLVER_DTOR=12,
-    SWR_CLIENTS_RESOLVER_RESULT=13, SWR_CLIENTS_RESOLVER_EMPTY=14
-};
-struct swr_v1_clients_resolver_plan { uint32_t action, stage; };
-struct swr_v1_clients_resolver_plan swr_v1_clients_resolver_next(uint32_t stage, uint32_t facts);
 struct swr_v1_clients_format_span { const uint8_t *data; size_t length; };
 struct swr_v1_clients_format_result { size_t written; uint32_t error; };
 /* Output is disjoint native-owned writable bytes, possibly uninitialized.

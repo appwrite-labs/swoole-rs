@@ -265,13 +265,15 @@ def hybrid_tree(archive):
 
 def overlay_hybrid_tree(archive, tree):
     """Copy every file the archive's hybrid build patched over `tree`, a pinned checkout (such as
-    one staged with upstream's core-tests). Returns the CMake lines that give the tree's existing
-    targets hybrid_tree's switches and include directories."""
+    one staged with upstream's core-tests), and delete the ones it deleted. Returns the CMake
+    lines that give the tree's existing targets hybrid_tree's switches and include directories."""
     source, flags = hybrid_tree(archive)
     for directory in (ROOT / 'migration/patches').iterdir():
         for patch in module_patches(directory):
             for name in patch['upstream_paths']:
-                if (source / name).read_bytes() != (Path(tree) / name).read_bytes():
+                if not (source / name).exists():
+                    (Path(tree) / name).unlink(missing_ok=True)
+                elif (source / name).read_bytes() != (Path(tree) / name).read_bytes():
                     shutil.copyfile(source / name, Path(tree) / name)
     # add_definitions and include_directories reach targets defined before them; add_compile_options does not.
     defines = ' '.join(flag for flag in flags if flag.startswith('-D'))

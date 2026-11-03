@@ -1,19 +1,25 @@
 //! `Swoole\Http\Request`.
 use crate::{
     context::{self, Holder},
-    host::{
-        self, COMPLETED, Context, HTTP_CONTEXT_UNAVAILABLE, HTTP2, swr_http_host_request_create,
-        swr_http_host_request_free,
-    },
-    parse::{self, body, method_name},
+    host::{self, COMPLETED, Context, HTTP_CONTEXT_UNAVAILABLE, HTTP2, swr_http_host_request_free},
+    parse::{self, CAPABILITIES, Property, body, method_name},
+    send,
     state::State,
 };
-use std::ptr;
+use std::{
+    ffi::{c_char, c_void},
+    sync::atomic::Ordering::Relaxed,
+};
+use swoole_rs_httpbindings::{Text, swr_v1_httpbindings_request_option};
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_zend::{
-    Call, Class, declare_long, declare_null, handlers,
-    sys::{IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
+    Call, Class, declare_long, declare_null, handlers, init_object, string,
+    sys::{
+        IS_STRING, ZEND_ACC_PUBLIC, swr_zend_hash_foreach_kv, swr_zend_string_release,
+        swr_zval_is_true, zend_class_entry, zend_object, zend_string, zend_ulong, zval,
+    },
     type_of,
+    value::{self, get_long, get_string, obj_of},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -122,15 +128,108 @@ fn get_data(call: &Call) {
     call.set_empty_string();
 }
 
+unsafe extern "C" {
+    /// `new Context()` with `upload_tmp_dir` "/tmp" and its request parser.
+    fn swr_http_host_request_new() -> *mut Context;
+    /// `ctx->upload_tmp_dir = std::string(dir, length)`.
+    fn swr_http_host_set_upload_tmp_dir(context: *mut Context, dir: *const c_char, length: usize);
+}
+
+/// `SW_Z_BEST_SPEED`.
+const BEST_SPEED: i8 = 1;
+
+/// `Request::create(array $options = [])`: a request parsed by hand.
 fn create_request(call: &Call) {
     let Ok(options) = call.arity(0, 1).and_then(|()| call.array_opt(1)) else {
         return call.set_bool(false);
     };
-    // SAFETY: the return slot and an optional array argument of this call.
-    let bailed = unsafe {
-        swr_http_host_request_create(call.return_value(), options.unwrap_or(ptr::null_mut()))
+    // SAFETY: C++ allocates the context.
+    let ctx = unsafe { swr_http_host_request_new() };
+    let object = call.return_value();
+    // SAFETY: the return slot and the registered class.
+    unsafe { init_object(object, entry()) };
+    let state = send::state(ctx);
+    // SAFETY: the object just made; the context borrows it, as upstream's does.
+    state.request.zobject.value = unsafe { *object };
+    state.request.zobject.ptr = &raw mut state.request.zobject.value;
+    // SAFETY: the object just made.
+    let std = unsafe { obj_of(object) };
+    // SAFETY: one of our objects.
+    unsafe { context::swr_v1_phphttp_set_context(std, ctx) };
+    state.parse_cookie = 1;
+    state.parse_body = 1;
+    state.parse_files = 1;
+    let compression = CAPABILITIES.load(Relaxed) & 8 != 0;
+    if compression {
+        state.enable_compression = 1;
+        state.compression_level = BEST_SPEED;
+    }
+    if let Some(options) = options {
+        // SAFETY: an array argument of this call.
+        let table = unsafe { value::table(options) };
+        // SAFETY: a live array; `option` takes the context.
+        unsafe { swr_zend_hash_foreach_kv(table, Some(option), ctx.cast()) };
+    }
+    parse::property(send::state(ctx), Property::Server);
+    parse::property(send::state(ctx), Property::Header);
+}
+
+/// One of `Request::create`'s options (a bailout in a conversion is deferred).
+unsafe extern "C" fn option(
+    key: *mut zend_string,
+    _: zend_ulong,
+    zvalue: *mut zval,
+    context: *mut c_void,
+) {
+    if key.is_null() {
+        return;
+    }
+    // SAFETY: the array's string key.
+    let name = unsafe { string::bytes(key) };
+    let capabilities = CAPABILITIES.load(Relaxed);
+    let wanted = u32::from(capabilities & 8 != 0) | u32::from(capabilities & 1 != 0) << 1;
+    let text = Text {
+        data: name.as_ptr(),
+        length: name.len(),
     };
-    host::raise(bailed);
+    // SAFETY: the key's bytes, borrowed for the call.
+    let option = unsafe { swr_v1_httpbindings_request_option(text, wanted) };
+    let state = send::state(context);
+    // SAFETY: the array's live value.
+    let truth = || u8::from(unsafe { swr_zval_is_true(zvalue) });
+    match option {
+        1 => state.parse_cookie = truth(),
+        2 => state.parse_body = truth(),
+        3 => state.parse_files = truth(),
+        4 => state.enable_compression = truth(),
+        5 => {
+            // SAFETY: as above.
+            let level = unsafe { get_long(zvalue) };
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "upstream's int8_t compression_level"
+            )]
+            let level = level as i8;
+            send::state(context).compression_level = level;
+        }
+        6 => state.websocket_compression = truth(),
+        7 => {
+            // SAFETY: as above.
+            let dir = unsafe { get_string(zvalue) };
+            if dir.is_null() {
+                return;
+            }
+            // SAFETY: the converted string.
+            let bytes = unsafe { string::bytes(dir) };
+            // SAFETY: a live context; C++ copies the bytes.
+            unsafe {
+                swr_http_host_set_upload_tmp_dir(context, bytes.as_ptr().cast(), bytes.len());
+            };
+            // SAFETY: the reference `get_string` returned.
+            unsafe { swr_zend_string_release(dir) };
+        }
+        _ => {}
+    }
 }
 
 fn parse(call: &Call) {

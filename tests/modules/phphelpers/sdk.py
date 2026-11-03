@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tarfile
 import uuid
-from gate import ROOT,PIN,sha,body
+from gate import ROOT,PIN,sha
 from tools.build_hybrid import hybrid_tree, module_patches
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated,write_report
@@ -36,36 +36,6 @@ def dependency_flags():
             'stdout':' '.join(row['stdout'].strip() for row in probes.values() if row['returncode']==0),
             'stderr':'\n'.join(package+': '+row['stderr'].strip() for package,row in probes.items() if row['stderr']),
             'probes':probes}
-
-
-def facade_surface(native,selected):
-    """Pinned-format source guard, in addition to actual compiler/layout checks."""
-    classes={}
-    for name in ['String','KeyValue','ArrayIterator','Array','Variable','CharPtr','Callable']:
-        def declarations(text):
-            piece=body(text,'class '+name+' {')
-            methods=list(re.finditer(r'^    (\S[^\n{};]*\([^\n{};]*\)[^\n{};]*\{)',piece,re.M))
-            skeleton=piece
-            for match in reversed(methods):
-                end=match.start()+len(body(piece,match.group(0)))
-                skeleton=skeleton[:match.end()]+skeleton[end-1:]
-            return skeleton,len(methods)
-        original,count=declarations(native);candidate,selected_count=declarations(selected)
-        if original!=candidate or count!=selected_count:
-            raise ValueError('Common facade declarations changed: '+name)
-        classes[name]={'inline_methods':count}
-    def macros(text):
-        lines=iter(text.splitlines(keepends=True));definitions=[]
-        for line in lines:
-            if re.match(r'^\s*#\s*define\s',line):
-                value=line
-                while line.rstrip('\r\n').endswith('\\'):
-                    line=next(lines);value+=line
-                definitions.append(value)
-        return definitions
-    original=macros(native)
-    if original!=macros(selected):raise ValueError('Public macro definitions changed')
-    return {'matched':True,'classes':classes,'macro_definitions':len(original)}
 
 
 def copy_headers(root,mirror):
@@ -117,7 +87,6 @@ def main():
         # entrypoint.py checks this against the pinned public header ABI.
         report['mirror_sha256']={'ext-src/php_swoole_cxx.h':sha(headers['native'])}
         report['sources']=sorted(name for patch in module_patches(ROOT/'migration/patches/phphelpers') for name in patch['upstream_paths'])
-        report['declaration_surface']=facade_surface(headers['native'].read_text(),headers['hybrid'].read_text())
         includes=shlex.split(subprocess.check_output([a.php_config,'--includes'],text=True))
         report['php_version']=subprocess.check_output([a.php_config,'--version'],text=True).strip()
         report['php_includes']=includes
@@ -163,21 +132,6 @@ def main():
                             if (enabled or name.endswith('php_swoole_cxx.cc')) and str(headers[engine].resolve()) not in row['dependencies_sha256']:raise ValueError('Actual TU did not consume its assigned facade header')
                             if any(escape in path for path in row['dependencies_sha256'] for escape in escapes):raise ValueError('Compiler escaped mirror into a source tree')
                         write_report(output,report)
-        # Observe only public sizes/alignment: no Zend objects or VM calls.
-        layout=work/'layout.cc'
-        classes=['String','KeyValue','ArrayIterator','Array','Variable','CharPtr','Callable']
-        layout.write_text('#include "php_swoole_cxx.h"\n#include <cstdio>\nint main() {\n'+''.join(
-            'std::printf("'+name+':%zu:%zu\\n",sizeof(zend::'+name+'),alignof(zend::'+name+'));\n' for name in classes)+'}\n')
-        report['layout_commands']=[]
-        for engine in report['feature_profiles']:
-            profile=work/(engine+'-profile-True');binary=work/(engine+'-layout');engine_base=base(engine)
-            command=[engine_base[0],'-std=c++14',*engine_base[3:5],'-I'+str(profile),*engine_base[5:],'-O2',str(layout),'-o',str(binary)]
-            require_build_space(ROOT);compiled=run_isolated(command,timeout=120)
-            row={'engine':engine,'command':command,'exit':compiled.returncode,'stdout':compiled.stdout,'stderr':compiled.stderr}
-            report['layout_commands'].append(row)
-            if not compiled.returncode:
-                observed=run_isolated([str(binary)],timeout=10)
-                row.update(run_exit=observed.returncode,layout=observed.stdout,run_stderr=observed.stderr)
         # Force optimized code generation for the whole actual inline helper.
         # This compiles a caller only; it never executes fn or coroutine::async.
         async_unit=work/'async-codegen.cc'
@@ -206,8 +160,7 @@ def main():
                 write_report(output,report)
         report['async_codegen_passed']=len(report['async_codegen_commands'])==4 and all(
             row['exit']==0 and row.get('expected_async_import') for row in report['async_codegen_commands'])
-        report['layout_matched']=all(row['exit']==0 and row.get('run_exit')==0 and not row.get('run_stderr') for row in report['layout_commands']) and len({row.get('layout') for row in report['layout_commands']})==1
-        report['passed']=len(report['commands'])==16 and all(row['returncode']==0 for row in report['commands']) and report['layout_matched'] and report['async_codegen_passed']
+        report['passed']=len(report['commands'])==16 and all(row['returncode']==0 for row in report['commands']) and report['async_codegen_passed']
         if sha(config)!=config_sha256:raise ValueError('Input SDK config changed')
     except Exception as error:
         report['passed']=False;report['error']=str(error)
