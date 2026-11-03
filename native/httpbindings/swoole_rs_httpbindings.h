@@ -244,8 +244,8 @@ void *swr_http_host_bind(void *context, void *server, struct _zval_struct *socke
 /* Rust's side of the context: a new context's request and response objects,
  * Context::set_header (re-raising a bailout itself), and the cached Date
  * header (php_swoole_http_get_date) and its RSHUTDOWN. */
-void swr_v1_phphttp_context_objects(void *context, int64_t fd);
-bool swr_v1_phphttp_set_header(void *context, const char *key, size_t length, struct _zval_struct *value, bool format);
+void swr_v1_phphttp_context_objects(void *ctx, int64_t fd);
+bool swr_v1_phphttp_set_header(void *ctx, const char *key, size_t length, struct _zval_struct *value, bool format);
 struct _zend_string *swr_v1_phphttp_date(void);
 void swr_v1_phphttp_response_rshutdown(void);
 
