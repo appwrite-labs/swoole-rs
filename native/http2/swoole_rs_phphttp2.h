@@ -107,6 +107,8 @@ void swr_v1_phphttp2_stream_release(const void *stream);
  * user code (a header's __toString, onRequest) is trapped and re-raised
  * before return. */
 int swr_v1_phphttp2_session_parse(int64_t fd, const char *buf);
+/* The same for a Rust caller, which raises a pending bailout itself. */
+int swr_v1_phphttp2_session_receive(int64_t fd, const char *buf);
 bool swr_v1_phphttp2_server_respond(void *ctx, const char *data, size_t length);
 bool swr_v1_phphttp2_server_write(void *ctx, const char *data, size_t length);
 bool swr_v1_phphttp2_server_ping(void *ctx);
