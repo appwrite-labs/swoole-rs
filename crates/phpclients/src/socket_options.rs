@@ -281,7 +281,7 @@ pub(crate) fn apply(socket: Socket, settings: *const zval, which: c_int) -> bool
 /// `socket` is a live coroutine socket and `settings` a live array zval.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpclients_socket_settings(
-    socket: Socket,
+    socket: *mut c_void,
     settings: *const zval,
     which: c_int,
 ) -> bool {
