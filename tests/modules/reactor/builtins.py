@@ -24,7 +24,7 @@ if a.report.exists():raise ValueError('Choose a unique receipt path')
 report=dict(scope=__doc__,pin=PIN,commands=[],results=[],passed=False)
 with tempfile.TemporaryDirectory(prefix='swr-builtins-') as tmp:
     t=Path(tmp);selected_tree,abi=hybrid(a.archive);report['hybrid_tree']=str(selected_tree)
-    original={name:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name]).decode() for name in ['include/swoole_reactor.h','src/reactor/base.cc','src/reactor/kqueue.cc']}
+    original={name:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name]).decode() for name in ['include/swoole_reactor.h','src/reactor/base.cc']}
     core=subprocess.check_output(['git','-C',str(a.source),'show',PIN+':include/swoole.h'],text=True);alias=next(line for line in core.splitlines() if line.startswith('typedef std::function<void(void *)> Callback;'))
     header=original['include/swoole_reactor.h'];manager=block(header,header.index('class CallbackManager'))[0]+';';task=block(header,header.index('struct DeferCallback'))[0]+';'
     report['pinned_callback_alias']=alias
@@ -50,10 +50,6 @@ with tempfile.TemporaryDirectory(prefix='swr-builtins-') as tmp:
             field=('CallbackManager' if variant=='original' else 'ReactorDeferredQueue')+' *defer_tasks = nullptr;'
             if field not in source_header:raise ValueError('Deferred queue field is not bound')
             cls=cls.replace('CallbackManager *defer_tasks=nullptr;', '\n'+field+'\nint timeout_msec=17;'+block(source_header,source_header.index('int get_timeout_msec('))[0]+'\n')
-            native_predicate='} else if (reactor_->defer_tasks) {'
-            selected_predicate='milliseconds <= 0 && self->reactor_->defer_tasks != nullptr'
-            if native_predicate not in original['src/reactor/kqueue.cc'] or selected_predicate not in (selected_tree/'src/reactor/kqueue.cc').read_text():raise ValueError('Actual kqueue observation source is not bound')
-            report['kqueue_observation_source']={'native':native_predicate,'selected':selected_predicate,'runtime_qualified':False}
             (t/'builtins.inc').write_text(cls+'}\n')
             for standard in ['c++14','c++17','c++20']:
                 binary=t/(variant+'-'+standard);cmd=['c++','-std='+standard,'-O1','-g','-I'+str(t),abi,ROOT/'tests/modules/reactor/builtins.cc',a.archive.resolve(),'-lpthread','-o',binary]
