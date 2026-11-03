@@ -1,5 +1,5 @@
 diff --git a/ext-src/php_swoole.cc b/ext-src/php_swoole.cc
-index 3ab3189..eb80281 100644
+index 3ab3189..cf02597 100644
 --- a/ext-src/php_swoole.cc
 +++ b/ext-src/php_swoole.cc
 @@ -285,54 +285,9 @@ PHP_INI_END()
@@ -230,7 +230,7 @@ index 3ab3189..eb80281 100644
 -    // Constants, Swoole\Exception and Swoole\Error (crates/phpswoole).
 +    // Constants, Swoole\Exception and Swoole\Error, then Swoole's core and every family (crates/phpswoole).
      uint32_t flags = SWOOLE_G(use_shortname) ? SWR_PHPSWOOLE_SHORTNAME : 0;
-@@ -681,118 +697,2 @@ PHP_MINIT_FUNCTION(swoole) {
+@@ -681,90 +697,2 @@ PHP_MINIT_FUNCTION(swoole) {
  
 -    swoole_init();
 -    swoole_add_hook(SW_GLOBAL_HOOK_AFTER_FORK, sw_after_fork, 0);
@@ -320,13 +320,13 @@ index 3ab3189..eb80281 100644
 -
 -    zend::known_strings_init();
 -
--    return SUCCESS;
--}
--/* }}} */
--
+     return SUCCESS;
+@@ -773,29 +701,14 @@ PHP_MINIT_FUNCTION(swoole) {
+ 
 -/* {{{ PHP_MSHUTDOWN_FUNCTION
 - */
--PHP_MSHUTDOWN_FUNCTION(swoole) {
++// crates/phpswoole.
+ PHP_MSHUTDOWN_FUNCTION(swoole) {
 -    zend::known_strings_dtor();
 -
 -    php_swoole_runtime_mshutdown();
@@ -345,11 +345,21 @@ index 3ab3189..eb80281 100644
 -#ifdef SW_HAVE_SSH2LIB
 -    php_swoole_ssh2_mshutdown();
 -#endif
--
++    return swr_v1_phpswoole_mshutdown(type, module_number) == 0 ? SUCCESS : FAILURE;
++}
+ 
 -    swoole_clean();
--
-     return SUCCESS;
-@@ -958,62 +858,4 @@ PHP_MINFO_FUNCTION(swoole) {
++PHP_RINIT_FUNCTION(swoole) {
++    return swr_v1_phpswoole_rinit(type, module_number) == 0 ? SUCCESS : FAILURE;
++}
+ 
+-    return SUCCESS;
++PHP_RSHUTDOWN_FUNCTION(swoole) {
++    return swr_v1_phpswoole_rshutdown(type, module_number) == 0 ? SUCCESS : FAILURE;
+ }
+-/* }}} */
+ 
+@@ -958,62 +871,4 @@ PHP_MINFO_FUNCTION(swoole) {
  
 -static void *sw_emalloc(size_t size) {
 -    return emalloc(size);
@@ -413,12 +423,12 @@ index 3ab3189..eb80281 100644
 -    return &php_allocator;
 +    return reinterpret_cast<const swoole::Allocator *>(&swr_v1_phpswoole_php_allocator);
  }
-@@ -1021,3 +863,3 @@ const swoole::Allocator *sw_php_allocator() {
+@@ -1021,3 +876,3 @@ const swoole::Allocator *sw_php_allocator() {
  const swoole::Allocator *sw_zend_string_allocator() {
 -    return &zend_string_allocator;
 +    return reinterpret_cast<const swoole::Allocator *>(&swr_v1_phpswoole_zend_string_allocator);
  }
-@@ -1033,121 +875,2 @@ void sw_php_exit(int status) {
+@@ -1033,121 +888,2 @@ void sw_php_exit(int status) {
  
 -PHP_RINIT_FUNCTION(swoole) {
 -    if (!SWOOLE_G(cli)) {
