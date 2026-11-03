@@ -804,6 +804,66 @@ pub const LOG_ST_ROOT_MISSING: u32 = 1103;
 /// arg the worker and `worker_round_id << 32`.
 pub const TRACE_ST_SCHEDULE: u32 = 1104;
 
+// `Server::send_to_connection` (`crates/server/src/send.rs`); context send, data and length.
+/// arg the send's type.
+pub const RUN_SC_SEND: u32 = 310;
+/// Selects `get_connection_verify` (`get_connection_verify_no_ssl` for a close); whether found.
+pub const OP_SC_VERIFY: u32 = 1040;
+/// The reactor, port and socket of the connection, asserting the thread owns it.
+pub const OP_SC_SETUP: u32 = 1041;
+/// The connection's and socket's `send::*` flag bits.
+pub const OP_SC_FLAGS: u32 = 1042;
+/// `send_yield`; `swoole_set_last_error(SW_ERROR_OUTPUT_SEND_YIELD)`.
+pub const OP_SC_SEND_YIELD: u32 = 1043;
+pub const OP_SC_YIELD_ERROR: u32 = 1044;
+/// `reactor->close(reactor, socket)`.
+pub const OP_SC_CLOSE: u32 = 1045;
+/// Built with `SW_HALFCLOSE_DRAIN` (`--fix-halfclose`).
+pub const OP_SC_HALFCLOSE: u32 = 1046;
+/// `reactor->set(socket, arg)`, `del`, `add(socket, arg)`, with `send::READ`/`WRITE` bits.
+pub const OP_SC_SET: u32 = 1047;
+pub const OP_SC_DEL: u32 = 1048;
+pub const OP_SC_ADD: u32 = 1049;
+/// `reactor->remove_read_event(socket)`, `add_read_event(socket)`.
+pub const OP_SC_REMOVE_READ: u32 = 1050;
+pub const OP_SC_ADD_READ: u32 = 1051;
+/// The output buffer is empty; the socket sends directly.
+pub const OP_SC_OUT_EMPTY: u32 = 1052;
+pub const OP_SC_DIRECT_SEND: u32 = 1053;
+/// The bytes left to send; `send` of them, the result; skip arg sent bytes.
+pub const OP_SC_SEND_LEFT: u32 = 1054;
+pub const OP_SC_SEND: u32 = 1055;
+pub const OP_SC_ADVANCE: u32 = 1056;
+/// `last_send_time = microtime()`.
+pub const OP_SC_TOUCH_SEND: u32 = 1057;
+/// An output buffer when there is none.
+pub const OP_SC_ENSURE_BUFFER: u32 = 1058;
+/// A close chunk queued and `close_queued = 1`.
+pub const OP_SC_QUEUE_CLOSE: u32 = 1059;
+/// `sendfile_async` of the task; its result.
+pub const OP_SC_SENDFILE: u32 = 1060;
+/// The output buffer holds `buffer_size` or more; `overflow = 1`; `high_watermark = 1`.
+pub const OP_SC_OUT_FULL: u32 = 1061;
+pub const OP_SC_OVERFLOW: u32 = 1062;
+pub const OP_SC_HIGH_WATERMARK: u32 = 1063;
+/// The data appended and `send_queued_bytes` updated; the buffer reached the port's
+/// high watermark; `SW_SERVER_EVENT_BUFFER_FULL` notified and `high_watermark = 1`.
+pub const OP_SC_APPEND: u32 = 1064;
+pub const OP_SC_OUT_HIGH: u32 = 1065;
+pub const OP_SC_NOTIFY_FULL: u32 = 1066;
+/// The socket has a send timer; one for the port's idle time is added.
+pub const OP_SC_HAS_SEND_TIMER: u32 = 1067;
+pub const OP_SC_IDLE_TIMER: u32 = 1068;
+/// The socket has its writable event; it is added.
+pub const OP_SC_WRITABLE: u32 = 1069;
+pub const OP_SC_ADD_WRITE: u32 = 1070;
+
+pub const LOG_SC_NO_SESSION_DATA: u32 = 1110;
+pub const LOG_SC_NO_SESSION_EVENT: u32 = 1111;
+pub const LOG_SC_SOCKET_OVERFLOW: u32 = 1112;
+pub const LOG_SC_CLOSED_BY_CLIENT: u32 = 1113;
+pub const LOG_SC_CONN_OVERFLOW: u32 = 1114;
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
