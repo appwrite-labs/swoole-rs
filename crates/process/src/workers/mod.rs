@@ -1,7 +1,8 @@
 //! The server's worker side: event workers (`src/server/worker.cc`), the
 //! base-mode reactor processes (`src/server/reactor_process.cc`), task workers
 //! (`src/server/task_worker.cc`), the manager (`src/server/manager.cc`) and the
-//! process-mode factory (`src/server/process.cc`). Native code keeps
+//! process-mode factory (`src/server/process.cc`), and thread mode
+//! (`src/server/thread.cc`). Native code keeps
 //! the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
 //! runs each operation and asks native code for each fact or effect through one
 //! `call(context, op, arg)`, reading facts afresh.
@@ -13,6 +14,7 @@ mod manager;
 pub mod ops;
 mod reactor_process;
 mod task_worker;
+pub mod thread;
 
 /// One native fact or effect in `context`.
 pub type WorkersCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> u64;
@@ -100,6 +102,11 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         | ops::RUN_PROCESS_DISPATCH
         | ops::RUN_PROCESS_FINISH
         | ops::RUN_PROCESS_END => factory::run(h, operation, arg),
+        ops::RUN_THREAD_MANAGER_WAIT
+        | ops::RUN_THREAD_RELOAD
+        | ops::RUN_THREAD_TERMINATE_MANAGER
+        | ops::RUN_START_WORKER_THREADS
+        | ops::RUN_STOP_WORKER_THREADS => thread::run(h, operation, arg),
         _ => event_worker::run(h, operation, arg),
     }
 }

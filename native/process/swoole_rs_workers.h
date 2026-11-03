@@ -12,6 +12,12 @@ int64_t swr_v1_workers_run(uint32_t operation, uint64_t arg, void *context, swr_
 /* OP_SIGNAL_SET's argument: the signal number (-1 for SIGRTMIN) in the low word and
  * the handler in the high word: 0 none, 1 SIG_IGN, 2 `own`. Defined in worker.cc. */
 void swr_workers_signal_set(uint64_t arg, void (*own)(int));
+/* Thread mode's manager state (crates/process/src/workers/thread.rs), owned by
+ * ThreadFactory: its wait queue, reload request and reload progress. */
+void *swr_v1_thread_manager_new(void);
+void swr_v1_thread_manager_free(void *manager);
+/* A worker thread exited: wake the manager thread to rejoin and respawn it. */
+void swr_v1_thread_manager_exited(const void *manager, void *worker);
 /* BEGIN NUMBERED */
 #define SWR_WORKERS_RUN_SIGNAL_INIT 0
 #define SWR_WORKERS_RUN_WORKER_SIGNAL 1
@@ -58,6 +64,11 @@ void swr_workers_signal_set(uint64_t arg, void (*own)(int));
 #define SWR_WORKERS_RUN_PROCESS_DISPATCH 42
 #define SWR_WORKERS_RUN_PROCESS_FINISH 43
 #define SWR_WORKERS_RUN_PROCESS_END 44
+#define SWR_WORKERS_RUN_THREAD_MANAGER_WAIT 45
+#define SWR_WORKERS_RUN_THREAD_RELOAD 46
+#define SWR_WORKERS_RUN_THREAD_TERMINATE_MANAGER 47
+#define SWR_WORKERS_RUN_START_WORKER_THREADS 48
+#define SWR_WORKERS_RUN_STOP_WORKER_THREADS 49
 #define SWR_WORKERS_OP_BUS_READ 0
 #define SWR_WORKERS_OP_BUS_POP 1
 #define SWR_WORKERS_OP_ON_WORKER_ERROR 2
@@ -427,6 +438,26 @@ void swr_workers_signal_set(uint64_t arg, void (*own)(int));
 #define SWR_WORKERS_OP_ON_CLOSE 366
 #define SWR_WORKERS_OP_CLEAR_CLOSE_ERRNO 367
 #define SWR_WORKERS_OP_FINISH_CLOSE 368
+#define SWR_WORKERS_OP_THREAD_MANAGER 369
+#define SWR_WORKERS_OP_JOIN_THREAD 370
+#define SWR_WORKERS_OP_MANAGER_THREAD_ID 371
+#define SWR_WORKERS_TRACE_MANAGER_EXITED 372
+#define SWR_WORKERS_OP_TERMINATE_MANAGER_THREAD 373
+#define SWR_WORKERS_OP_KILL_WORKER 374
+#define SWR_WORKERS_OP_TIMER_NEXT_MSEC 375
+#define SWR_WORKERS_TRACE_MANAGER_WAKE 376
+#define SWR_WORKERS_OP_SELECT_WORKER 377
+#define SWR_WORKERS_OP_THREAD_EXIT_STATUS 378
+#define SWR_WORKERS_OP_SPAWN_EVENT_THREAD 379
+#define SWR_WORKERS_OP_SPAWN_TASK_THREAD 380
+#define SWR_WORKERS_OP_SPAWN_USER_THREAD 381
+#define SWR_WORKERS_LOG_CANNOT_RELOAD 382
+#define SWR_WORKERS_OP_SET_NOT_SUPPORTED 383
+#define SWR_WORKERS_LOG_NOTIFY_MANAGER 384
+#define SWR_WORKERS_OP_SPAWN_MANAGER_THREAD 385
+#define SWR_WORKERS_OP_PORT_DGRAM 386
+#define SWR_WORKERS_OP_SET_MASTER_THREAD_ID 387
+#define SWR_WORKERS_OP_START_MASTER_THREAD 388
 /* END NUMBERED */
 #ifdef __cplusplus
 }
