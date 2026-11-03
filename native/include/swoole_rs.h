@@ -227,12 +227,14 @@ uint16_t swr_v1_server_local_addr_index(const swr_v1_server_local_addrs *addrs, 
 const char *swr_v1_server_local_addr(const swr_v1_server_local_addrs *addrs, bool v6, uint16_t index);
 
 /*
- * The module host (crates/phpswoole): php_swoole.cc's MINIT registers the global
- * constants, Swoole\Exception/Swoole\Error and the short-name aliases through
- * swr_v1_phpswoole_minit, and swoole_module_entry's function table is
- * swr_v1_phpswoole_functions: Rust's rows (its zif_swoole_* exports and C++'s)
- * around the stdext/ssh2/ftp rows only C++'s #ifdefs decide. C++ lends what only it can
- * reach: Swoole's error, logger and MIME state and the module globals.
+ * The module host (crates/phpswoole): php_swoole.cc's MINIT sets up the module
+ * globals (swr_v1_phpswoole_init_globals) and ini entries, then
+ * swr_v1_phpswoole_minit registers the global constants, Swoole\Exception/Swoole\Error
+ * and the short-name aliases and runs Swoole's core and every family's MINIT. Rust
+ * defines MSHUTDOWN, RINIT and RSHUTDOWN (zm_*_swoole, declared in php_swoole.h), and
+ * swoole_module_entry's function table is swr_v1_phpswoole_functions: Rust's rows (its
+ * zif_swoole_* exports and C++'s) around the stdext/ssh2/ftp rows only C++'s #ifdefs
+ * decide. C++ lends what only it can reach: Swoole's core, error, logger and MIME state.
  */
 #define SWR_PHPSWOOLE_DEBUG (1u << 0)
 #define SWR_PHPSWOOLE_SHORTNAME (1u << 1)
@@ -253,7 +255,25 @@ struct _zend_object_handlers;
 typedef struct swr_v1_phpswoole_ops {
     int32_t (*last_error)(void);
     void (*set_last_error)(int32_t code);
-    uint8_t (*display_errors)(void);
+    /* ZEND_MODULE_GLOBALS_BULK(swoole): this thread's zend_swoole_globals. */
+    void *(*globals)(void);
+    /* MINIT: swoole_init(), the after-fork hook, the bug report; and its end: the
+     * fatal-error and backtrace hooks, socket buffer size, DNS refresh, pcre.jit, known strings. */
+    void (*startup)(void);
+    void (*ready)(void);
+    /* The hooks only C++'s #ifdefs decide: ssh2/ftp after the clients, the drivers,
+     * Swoole\Thread and stdext before the tracer, and their MSHUTDOWN, RINIT, RSHUTDOWN. */
+    void (*optional_client_minit)(int module_number);
+    void (*optional_minit)(int module_number);
+    void (*optional_mshutdown)(void);
+    void (*optional_rinit)(void);
+    void (*optional_rshutdown)(void);
+    void (*known_strings_dtor)(void);
+    void (*clean)(void);
+    void (*set_task_tmpdir)(const char *dir);
+    /* php_swoole_load_library(), a zend_try body. */
+    void (*load_library)(void *);
+    void (*event_free)(void);
     uint32_t (*cpu_num)(void);
     /* sw_logger()->put */
     void (*log_put)(int32_t level, const char *message, size_t length);
@@ -266,8 +286,6 @@ typedef struct swr_v1_phpswoole_ops {
     const char *(*mime_get)(const char *filename);
     uint8_t (*mime_exists)(const char *filename);
     void (*mime_list)(struct _zval_struct *array);
-    /* req_status RINIT_END -> CALL_USER_SHUTDOWNFUNC_BEGIN; 0 if it was not RINIT_END. */
-    uint8_t (*shutdown_begin)(void);
     void (*unserialize)(struct _zval_struct *value, const char *buf, size_t length, struct _zend_array *options);
     void (*json_decode)(struct _zval_struct *value, const char *str, size_t length, int64_t options, int64_t depth);
     /* php_swoole_set_global_option's effects, in its order. */
@@ -279,7 +297,6 @@ typedef struct swr_v1_phpswoole_ops {
     void (*set_log_date_format)(const char *format, size_t length);
     void (*set_log_date_with_microseconds)(uint8_t on);
     void (*set_log_rotation)(int64_t rotation);
-    void (*set_display_errors)(uint8_t on);
     void (*set_print_backtrace)(uint8_t on);
     void (*set_dns_server)(const char *server, size_t length);
     /* kind: 0 dns, 1 connect, 2 read, 3 write */
@@ -290,12 +307,20 @@ typedef struct swr_v1_phpswoole_ops {
 void swr_v1_phpswoole_minit(int32_t module_number, uint32_t flags, const swr_v1_phpswoole_ops *ops,
                             struct _zend_class_entry **exception, struct _zend_object_handlers *exception_handlers,
                             struct _zend_class_entry **error);
-/* php_swoole_set_global_option: null, or the error of the size at *failed that
- * did not parse, which the caller reports as a fatal error. */
 struct _zend_function_entry;
 const struct _zend_function_entry *swr_v1_phpswoole_functions(const struct _zend_function_entry *optional);
-struct _zend_string;
-struct _zend_string *swr_v1_phpswoole_set_global_option(struct _zend_array *options, struct _zval_struct **failed);
+/* ZEND_INIT_MODULE_GLOBALS' constructor of zend_swoole_globals. */
+void swr_v1_phpswoole_init_globals(void *globals);
+/* sw_php_allocator() (emalloc) and sw_zend_string_allocator() (zend_string values):
+ * swoole::Allocators. */
+typedef struct swr_v1_phpswoole_allocator {
+    void *(*malloc)(size_t size);
+    void *(*calloc)(size_t nmemb, size_t size);
+    void *(*realloc)(void *ptr, size_t size);
+    void (*free)(void *ptr);
+} swr_v1_phpswoole_allocator;
+extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_php_allocator;
+extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_zend_string_allocator;
 
 #ifdef __cplusplus
 }
