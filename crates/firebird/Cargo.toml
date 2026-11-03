@@ -1,0 +1,13 @@
+[package]
+name = "swoole-rs-firebird"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Swoole's coroutine Firebird calls for its bundled pdo_firebird (--with-swoole-firebird)"
+
+[dependencies]
+swoole-rs-firebird-sys = { path = "../firebird-sys" }
+
+[lints]
+workspace = true
