@@ -155,6 +155,11 @@ def main():
                 for case in inventory:
                     if sha(tree / case['path']) != case['sha256']:
                         raise ValueError('Original assertion source changed')
+                if engine == 'rust':
+                    # Worker's id is Rust state behind get_id() (#735); the assertions are unchanged.
+                    for path in ASSERTIONS:
+                        text = (tree / path).read_text()
+                        write_changed(tree / path, re.sub(r'\bworker->id\b(?!\()', 'worker->get_id()', text).encode())
                 for name, command in [('configure', ['cmake', '-S', str(tree), '-B', str(tree / 'build'), '-Dphp_dir=/usr', '-DCMAKE_BUILD_TYPE=Release']),
                         ('build', ['cmake', '--build', str(tree / 'build'), '--target', 'core-tests', '-j' + str(args.jobs)])]:
                     result = run_isolated(command, timeout=600)
