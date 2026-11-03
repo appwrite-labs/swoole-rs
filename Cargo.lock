@@ -527,7 +527,9 @@ dependencies = [
  "libc",
  "swoole-rs-base64",
  "swoole-rs-clients",
+ "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-framing",
  "swoole-rs-inflate",
  "swoole-rs-phpstubs",
  "swoole-rs-phptable",
@@ -649,6 +651,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-error",
+ "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]
 

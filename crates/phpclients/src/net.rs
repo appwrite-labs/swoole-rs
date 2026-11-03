@@ -705,12 +705,10 @@ fn connect(call: &Call) {
     }
     if let Some(zset) = settings(object) {
         set_last_error(0);
-        let mut apply = conn.call(Op::Settings);
-        apply.settings = zset;
-        let Some(applied) = bailed(apply.run()) else {
+        let Some(applied) = crate::settings::apply(conn.cli, zset) else {
             return call.set_bool(false);
         };
-        if applied == 0 {
+        if !applied {
             set_err_code(object, last_error());
             return call.set_bool(false);
         }
@@ -1245,11 +1243,10 @@ pub(crate) fn enable_ssl(call: &Call, conn: &mut Conn) -> bool {
         warn(ErrorKind::Fatal, "SSL has been enabled");
         return false;
     }
-    let mut enable = conn.call(Op::EnableSsl);
     if let Some(zset) = settings(call.this()) {
-        enable.settings = zset;
+        crate::settings::apply_ssl(conn.cli, zset);
     }
-    bailed(enable.run()).is_some_and(|result| result == 0)
+    bailed(conn.call(Op::EnableSsl).run()).is_some_and(|result| result == 0)
 }
 
 /// `enableSSL(?callable $onSslReady = null): bool`.

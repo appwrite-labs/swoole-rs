@@ -24,6 +24,7 @@ mod llhttp;
 mod native;
 mod net;
 mod select;
+mod settings;
 mod socket;
 
 pub use async_net::*;
