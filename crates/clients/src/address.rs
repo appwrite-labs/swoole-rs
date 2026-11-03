@@ -124,6 +124,8 @@ pub unsafe extern "C" fn swr_v1_clients_address_assign(
             let v4 = address.cast::<libc::sockaddr_in>();
             // SAFETY: `address` is the union, which holds a sockaddr_in.
             let v4 = unsafe { &mut *v4 };
+            // SAFETY: an all-zero sockaddr_in is valid.
+            *v4 = unsafe { std::mem::zeroed() };
             v4.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or(0);
             v4.sin_port = port;
             // SAFETY: the caller passes the union's length.
@@ -136,6 +138,9 @@ pub unsafe extern "C" fn swr_v1_clients_address_assign(
             let v6 = address.cast::<libc::sockaddr_in6>();
             // SAFETY: `address` is the union, which holds a sockaddr_in6.
             let v6 = unsafe { &mut *v6 };
+            // No stale scope id or flow info: ff01::/16 and fe80::/10 route by the scope id.
+            // SAFETY: an all-zero sockaddr_in6 is valid.
+            *v6 = unsafe { std::mem::zeroed() };
             v6.sin6_family = libc::sa_family_t::try_from(libc::AF_INET6).unwrap_or(0);
             v6.sin6_port = port;
             // SAFETY: as above.
@@ -214,6 +219,33 @@ mod tests {
             )
         };
         (error, address, length)
+    }
+
+    #[test]
+    fn clears_stale_inet_fields() {
+        let mut address: Union = unsafe { std::mem::zeroed() };
+        unsafe { std::ptr::write_bytes(&raw mut address, 0xff, 1) };
+        let mut length = 0;
+        let assign = |address: &mut Union,
+                      length: &mut libc::socklen_t,
+                      kind,
+                      host: &std::ffi::CStr| unsafe {
+            swr_v1_clients_address_assign(
+                (&raw mut *address).cast(),
+                length,
+                kind,
+                host.as_ptr(),
+                host.to_bytes().len(),
+                1,
+                None,
+            )
+        };
+        assert_eq!(assign(&mut address, &mut length, UDP6, c"ff01::114"), 0);
+        let v6 = unsafe { address.v6 };
+        assert_eq!((v6.sin6_scope_id, v6.sin6_flowinfo), (0, 0));
+        unsafe { std::ptr::write_bytes(&raw mut address, 0xff, 1) };
+        assert_eq!(assign(&mut address, &mut length, UDP, c"127.0.0.1"), 0);
+        assert_eq!(unsafe { address.v4 }.sin_zero, [0; 8]);
     }
 
     #[test]
