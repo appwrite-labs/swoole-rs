@@ -49,9 +49,9 @@ fn slot(signo: c_int) -> Option<&'static Slot> {
     swr_v1_signals.get(usize::try_from(signo).ok()?)
 }
 
-/// `swoole_signalfd_init`: an empty mask and table.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signalfd_init() {
+/// `void swoole_signalfd_init()`: an empty mask and table.
+#[unsafe(export_name = "_Z20swoole_signalfd_initv")]
+pub extern "C" fn swoole_signalfd_init() {
     clear_mask();
     swr_v1_signal_reset();
 }
@@ -240,7 +240,7 @@ mod tests {
     fn registers_reads_and_clears() {
         let _state = crate::signal_state_lock();
         let handler = handler as *const () as usize;
-        swr_v1_signalfd_init();
+        swoole_signalfd_init();
         assert_eq!(swr_v1_signalfd_set(libc::SIGURG, handler), 0);
         let created = swr_v1_signalfd_create();
         assert_eq!(created.status, 0);
