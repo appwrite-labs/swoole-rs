@@ -815,9 +815,9 @@ unsafe extern "C" fn observer(frame: *mut zend_execute_data) -> zend_observer_fc
 /// # Safety
 /// At MINIT, once, with a static configuration.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_tracer_minit(config: *const Config) {
+pub unsafe extern "C" fn swr_v1_phpcoroutines_tracer_minit(tracer: *const Config) {
     // SAFETY: per the caller, a static configuration.
-    let Some(config) = (unsafe { config.as_ref() }) else {
+    let Some(config) = (unsafe { tracer.as_ref() }) else {
         return;
     };
     CONFIG.get_or_init(|| config);
