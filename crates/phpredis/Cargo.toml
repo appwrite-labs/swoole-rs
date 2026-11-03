@@ -1,0 +1,19 @@
+[package]
+name = "swoole-rs-phpredis"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "PHP Swoole\\Redis\\Server over the zend crates and the protocols crate's RESP"
+
+[features]
+# Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php"]
+
+[dependencies]
+swoole-rs-protocols = { path = "../protocols" }
+swoole-rs-zend = { path = "../zend", optional = true }
+swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
+
+[lints]
+workspace = true

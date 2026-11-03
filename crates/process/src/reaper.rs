@@ -79,7 +79,7 @@ impl ReapHost {
     }
 
     /// Run the loop until the host stops running.
-    fn run(&self) {
+    pub(crate) fn run(&self) {
         while self.running() {
             let nonblock = self.reload_requested();
             let mut status: c_int = 0;
