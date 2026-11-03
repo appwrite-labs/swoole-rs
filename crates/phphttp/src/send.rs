@@ -32,6 +32,7 @@ const MAX_APPEND_DATA: usize = 16384;
 const HTTP2_END: c_int = 0;
 const HTTP2_WRITE: c_int = 1;
 const HTTP2_SEND_FILE: c_int = 2;
+pub(crate) const HTTP2_PING: c_int = 3;
 
 /// The context's `ContextState`, its first base.
 pub(crate) fn state<'a>(ctx: *mut Context) -> &'a mut State {
@@ -40,7 +41,7 @@ pub(crate) fn state<'a>(ctx: *mut Context) -> &'a mut State {
     unsafe { &mut *ctx.cast::<State>() }
 }
 
-fn send(ctx: *mut Context, data: &[u8]) -> bool {
+pub(crate) fn send(ctx: *mut Context, data: &[u8]) -> bool {
     // SAFETY: a live context and `data.len()` bytes.
     unsafe { swr_http_host_send(ctx, data.as_ptr().cast(), data.len()) }
 }
@@ -72,7 +73,7 @@ fn close(ctx: *mut Context) {
 }
 
 /// The HTTP/2 server's `op`.
-fn http2(
+pub(crate) fn http2(
     ctx: *mut Context,
     op: c_int,
     data: *mut zend_string,

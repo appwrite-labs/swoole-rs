@@ -231,7 +231,8 @@ const HEADER_KEYS: [Key; 8] = [
 
 static KEYS: [AtomicPtr<zend_string>; 17] = [const { AtomicPtr::new(ptr::null_mut()) }; 17];
 /// `Swoole\Http\Request`'s `get`, `post`, `cookie`, `files` and `tmpfiles` slots.
-static OFFSETS: [AtomicU32; 5] = [const { AtomicU32::new(0) }; 5];
+/// ... and `server`, `header` and `fd`.
+static OFFSETS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
 pub(crate) static CAPABILITIES: AtomicU32 = AtomicU32::new(0);
 
 fn key(key: Key) -> *mut zend_string {
@@ -240,12 +241,14 @@ fn key(key: Key) -> *mut zend_string {
 
 /// The request's array properties, read (and created) on first use.
 #[derive(Clone, Copy)]
-enum Property {
+pub(crate) enum Property {
     Get,
     Post,
     Cookie,
     Files,
     TmpFiles,
+    Server,
+    Header,
 }
 
 /// MINIT: intern the keys and find the array properties' slots.
@@ -262,10 +265,9 @@ pub unsafe extern "C" fn swr_v1_phphttp_parse_minit(codecs: u32) {
         );
     }
     let ce: *mut zend_class_entry = crate::request::entry();
-    for (slot, name) in OFFSETS
-        .iter()
-        .zip(["get", "post", "cookie", "files", "tmpfiles"])
-    {
+    for (slot, name) in OFFSETS.iter().zip([
+        "get", "post", "cookie", "files", "tmpfiles", "server", "header", "fd",
+    ]) {
         // SAFETY: the registered class, which declares the property.
         let offset = unsafe { swr_zend_http_property_offset(ce, name.as_ptr().cast(), name.len()) };
         slot.store(offset, Relaxed);
@@ -274,7 +276,12 @@ pub unsafe extern "C" fn swr_v1_phphttp_parse_minit(codecs: u32) {
 
 /// `swoole_http_init_and_read_property`: the array behind a property slot,
 /// creating it on first use. Like upstream, the slot keeps an uncounted copy.
-fn property(state: &mut State, which: Property) -> *mut zval {
+/// `Swoole\Http\Request`'s declared `fd` slot.
+pub(crate) fn fd_offset() -> u32 {
+    OFFSETS[7].load(Relaxed)
+}
+
+pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
     let request = &mut state.request;
     let slot: &mut Slot = match which {
         Property::Get => &mut request.zget,
@@ -282,13 +289,21 @@ fn property(state: &mut State, which: Property) -> *mut zval {
         Property::Cookie => &mut request.zcookie,
         Property::Files => &mut request.zfiles,
         Property::TmpFiles => &mut request.ztmpfiles,
+        Property::Server => &mut request.zserver,
+        Property::Header => &mut request.zheader,
     };
     if slot.ptr.is_null() {
         // SAFETY: the request's live object zval.
         let object: *mut zend_object = unsafe { value::obj_of(request.zobject.ptr) };
         let offset = OFFSETS[which as usize].load(Relaxed);
         // SAFETY: a declared property slot of that object.
-        let array = unsafe { swr_zend_http_property_array(object, offset, HT_MIN_SIZE) };
+        let size = if matches!(which, Property::Server) {
+            HT_MIN_SIZE << 1
+        } else {
+            HT_MIN_SIZE
+        };
+        // SAFETY: as above.
+        let array = unsafe { swr_zend_http_property_array(object, offset, size) };
         // SAFETY: as above; the array zval just initialised.
         slot.value = unsafe { *array };
         slot.ptr = &raw mut slot.value;
