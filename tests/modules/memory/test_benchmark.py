@@ -28,9 +28,8 @@ class FrozenCases(unittest.TestCase):
             marker = root / 'marker'
             marker.write_bytes(b'frozen input')
             digest = hashlib.sha256(marker.read_bytes()).hexdigest()
-            manifest = {'extension': str(marker), 'extension_sha256': digest,
-                        'source_snapshot': str(root), 'frozen_sha256': {'marker': digest},
-                        'variants': {name: {'binary': str(marker), 'sha256': digest,
+            manifest = {'source_snapshot': str(root), 'frozen_sha256': {'marker': digest},
+                        'variants': {name: {'binary': str(marker), 'sha256': digest, 'extension': str(marker), 'extension_sha256': digest,
                                            'command': ['mock-only', name]} for name in ['upstream', 'rust']}}
             if declared is not None:
                 manifest['timing_cases'] = declared

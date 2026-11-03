@@ -18,6 +18,39 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#if defined(SWOOLE_RS_COREBASE) && defined(__linux__)
+#include <dlfcn.h>
+#include <link.h>
+// SwooleG's Rust record is the extension's process state, filled by its swoole_init.
+// This probe links its own copy of the record from the archive, and PHP loads it with
+// RTLD_DEEPBIND, so the probe's copy shadows the extension's and starts empty.
+// Initialise it as swoole_init does and share the extension's memory pool, as the
+// pinned probe shares SwooleG's.
+static void *extension_memory_pool() {
+    void *pool = nullptr;
+    dl_iterate_phdr(
+        [](dl_phdr_info *object, size_t, void *out) {
+            void *handle = object->dlpi_name[0] ? dlopen(object->dlpi_name, RTLD_LAZY | RTLD_NOLOAD) : nullptr;
+            auto get = handle ? reinterpret_cast<void *(*) ()>(dlsym(handle, "swr_v1_core_memory_pool")) : nullptr;
+            if (handle) {
+                dlclose(handle);
+            }
+            if (!get || get == &swr_v1_core_memory_pool) {
+                return 0;
+            }
+            *static_cast<void **>(out) = get();
+            return 1;
+        },
+        &pool);
+    return pool;
+}
+
+__attribute__((constructor)) static void adopt_process_state() {
+    swr_v1_core_init();
+    swr_v1_core_set_memory_pool(extension_memory_pool());
+}
+#endif
+
 static uint64_t checksum = 1469598103934665603ULL;
 static void observe(uint64_t value) { checksum = (checksum ^ value) * 1099511628211ULL; }
 static uint64_t random_step(uint64_t &state) { state ^= state << 13; state ^= state >> 7; state ^= state << 17; return state; }
