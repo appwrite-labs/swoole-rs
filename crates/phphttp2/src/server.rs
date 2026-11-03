@@ -1,8 +1,8 @@
 //! The HTTP/2 server's frames, responses and request header blocks: upstream's
 //! `swoole_http2_server_parse` and everything it and `Response` send (headers
-//! over nghttp2's HPACK, bodies under flow control, trailers, files). The
-//! sessions, streams and HTTP contexts stay C++ objects, reached through the
-//! `swr_h2s_*` hosts of `ext-src/swoole_http2_server.cc`
+//! over nghttp2's HPACK, bodies under flow control, trailers, files), over
+//! the sessions and streams of `session`. The HTTP contexts are C++'s,
+//! reached through the `swr_h2s_*` hosts of `ext-src/swoole_http2_server.cc`
 //! (`native/http2/swoole_rs_phphttp2.h`).
 use crate::native::{
     Header, swoole_http2_client_coro_deflate, swoole_http2_client_coro_deflate_bound,
@@ -10,6 +10,7 @@ use crate::native::{
     swoole_http2_client_coro_inflate, swoole_http2_client_coro_inflate_end,
     swoole_http2_client_coro_inflater, swoole_http2_client_coro_strerror,
 };
+use crate::session::{Session, SessionState, Stream};
 use libc::{c_char, c_int, c_void};
 use std::{
     ffi::{CStr, CString},
@@ -140,43 +141,7 @@ enum Value {
     Cookie = 5,
 }
 
-/// `swr_h2s_session`: the session's fields, borrowed while a reference holds it.
-#[repr(C)]
-struct SessionView {
-    local_settings: *mut u32,
-    remote_settings: *mut u32,
-    remote_window_size: *mut u32,
-    local_window_size: *mut u32,
-    last_stream_id: *mut u32,
-    shutting_down: *mut bool,
-    inflater: *mut *mut c_void,
-    deflater: *mut *mut c_void,
-    max_body_size: u32,
-    is_coro: bool,
-    default_ctx: *mut c_void,
-}
-
-/// `swr_h2s_stream`.
-#[repr(C)]
-struct StreamView {
-    ctx: *mut c_void,
-    id: u32,
-    remote_window_size: *mut u32,
-    local_window_size: *mut u32,
-}
-
 unsafe extern "C" {
-    fn swr_h2s_session_hold(ctx: *mut c_void) -> *mut c_void;
-    fn swr_h2s_session_release(session: *mut c_void);
-    fn swr_h2s_session_view(session: *const c_void, view: *mut SessionView);
-    fn swr_h2s_session_idle(session: *const c_void) -> bool;
-    fn swr_h2s_session_handle(session: *const c_void, stream: *const c_void) -> bool;
-    fn swr_h2s_stream_hold(session: *const c_void, id: u32, create: bool) -> *mut c_void;
-    fn swr_h2s_stream_release(stream: *mut c_void);
-    fn swr_h2s_stream_remove(session: *const c_void, id: u32) -> bool;
-    fn swr_h2s_stream_view(stream: *const c_void, view: *mut StreamView);
-    fn swr_h2s_stream_wait(stream: *const c_void);
-    fn swr_h2s_stream_wake(stream: *const c_void);
     fn swr_h2s_send(ctx: *mut c_void, data: *const c_char, length: usize) -> bool;
     fn swr_h2s_close(ctx: *mut c_void) -> bool;
     fn swr_h2s_get(ctx: *mut c_void, field: Field) -> u32;
@@ -213,17 +178,6 @@ unsafe extern "C" {
 
 // --- hosts, one safe call each ---
 
-/// A live `uint32_t` field of a session or stream the caller holds.
-fn load(field: *const u32) -> u32 {
-    // SAFETY: the hosts' views point at live fields while a reference is held.
-    unsafe { field.read() }
-}
-
-fn store(field: *mut u32, value: u32) {
-    // SAFETY: as `load`.
-    unsafe { field.write(value) };
-}
-
 fn get(ctx: *mut c_void, field: Field) -> u32 {
     // SAFETY: a live context; a plain field read.
     unsafe { swr_h2s_get(ctx, field) }
@@ -250,7 +204,7 @@ fn zval_of(ctx: *mut c_void, which: Value) -> *mut zval {
 }
 
 /// `swoole_warning` (`error` 0) or `swoole_error_log(level, error)` as `func`.
-fn log(level: c_int, error: c_int, func: &CStr, message: &str) {
+pub(crate) fn log(level: c_int, error: c_int, func: &CStr, message: &str) {
     let message = CString::new(message).unwrap_or_default();
     // SAFETY: NUL-terminated strings, printed through "%s".
     unsafe { swr_h2s_log(level, error, func.as_ptr(), message.as_ptr()) };
@@ -294,153 +248,35 @@ fn frame_header(kind: u32, length: usize, flags: u32, stream_id: u32) -> [u8; FR
     header
 }
 
-/// A session, held by a reference the hosts own (or C++ lent).
-struct Session {
-    holder: *mut c_void,
-    owned: bool,
-    view: SessionView,
-}
-
-impl Session {
-    fn new(holder: *mut c_void, owned: bool) -> Self {
-        let mut view = SessionView {
-            local_settings: ptr::null_mut(),
-            remote_settings: ptr::null_mut(),
-            remote_window_size: ptr::null_mut(),
-            local_window_size: ptr::null_mut(),
-            last_stream_id: ptr::null_mut(),
-            shutting_down: ptr::null_mut(),
-            inflater: ptr::null_mut(),
-            deflater: ptr::null_mut(),
-            max_body_size: 0,
-            is_coro: false,
-            default_ctx: ptr::null_mut(),
-        };
-        // SAFETY: a live session reference; the view's pointers live as long as it.
-        unsafe { swr_h2s_session_view(holder, &raw mut view) };
-        Self {
-            holder,
-            owned,
-            view,
-        }
-    }
-
-    /// `http2_sessions[ctx->fd]`.
-    fn of(ctx: *mut c_void) -> Self {
-        // SAFETY: a live context of a session.
-        Self::new(unsafe { swr_h2s_session_hold(ctx) }, true)
-    }
-
-    fn local(&self, field: usize) -> u32 {
-        load(self.view.local_settings.wrapping_add(field))
-    }
-
-    fn remote(&self) -> *mut u32 {
-        self.view.remote_settings
-    }
-
-    fn shutting_down(&self) -> bool {
-        // SAFETY: a live field.
-        unsafe { *self.view.shutting_down }
-    }
-
-    fn stream(&self, id: u32, create: bool) -> Option<Stream> {
-        // SAFETY: a live session.
-        let holder = unsafe { swr_h2s_stream_hold(self.holder, id, create) };
-        (!holder.is_null()).then(|| Stream::new(holder))
-    }
-
-    fn remove(&self, id: u32) {
-        // SAFETY: a live session; a held stream outlives its removal.
-        unsafe { swr_h2s_stream_remove(self.holder, id) };
-    }
-
-    fn idle(&self) -> bool {
-        // SAFETY: a live session.
-        unsafe { swr_h2s_session_idle(self.holder) }
-    }
-
-    /// `client->handle(client, stream)`: onRequest; a bailout waits for `finish`.
-    fn handle(&self, stream: &Stream) {
-        // SAFETY: live references; C++ traps a bailout.
-        if unsafe { swr_h2s_session_handle(self.holder, stream.holder) } {
-            bailout::Bailout.defer();
-        }
-    }
-
-    /// The HPACK deflater, created on first use as `func`.
-    fn deflater(&self, func: &CStr) -> Option<*mut c_void> {
-        // SAFETY: a live field.
-        let deflater = unsafe { *self.view.deflater };
-        if !deflater.is_null() {
-            return Some(deflater);
-        }
-        let mut error = 0;
-        let size = load(self.remote());
-        // SAFETY: nghttp2's constructor; `error` is writable.
-        let deflater = unsafe { swoole_http2_client_coro_deflater(size, &raw mut error) };
-        if error != 0 {
-            warn(
-                func,
-                &format!(
-                    "nghttp2_hd_deflate_new2() failed with error: {}",
-                    strerror(error)
-                ),
-            );
-            return None;
-        }
-        // SAFETY: a live field; the session frees it.
-        unsafe { *self.view.deflater = deflater };
-        Some(deflater)
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        if self.owned {
-            // SAFETY: the reference `of` took.
-            unsafe { swr_h2s_session_release(self.holder) };
-        }
-    }
-}
-
-/// A stream, held by a reference the hosts own.
-struct Stream {
-    holder: *mut c_void,
-    view: StreamView,
-}
-
-impl Stream {
-    fn new(holder: *mut c_void) -> Self {
-        let mut view = StreamView {
-            ctx: ptr::null_mut(),
-            id: 0,
-            remote_window_size: ptr::null_mut(),
-            local_window_size: ptr::null_mut(),
-        };
-        // SAFETY: a live stream reference.
-        unsafe { swr_h2s_stream_view(holder, &raw mut view) };
-        Self { holder, view }
-    }
-
-    fn remote_window(&self) -> u32 {
-        // SAFETY: a live field.
-        unsafe { *self.view.remote_window_size }
-    }
-}
-
-impl Drop for Stream {
-    fn drop(&mut self) {
-        // SAFETY: the reference `Session::stream` took.
-        unsafe { swr_h2s_stream_release(self.holder) };
-    }
-}
-
 /// The session and stream of a response's context.
 fn of(ctx: *mut c_void) -> Option<(Session, Stream)> {
-    let session = Session::of(ctx);
+    let session = SessionState::of(ctx)?;
     let stream = session.stream(get(ctx, Field::StreamId), false)?;
     Some((session, stream))
+}
+
+/// The HPACK deflater, created on first use as `func`.
+fn deflater(session: &SessionState, func: &CStr) -> Option<*mut c_void> {
+    let deflater = session.deflater.get();
+    if !deflater.is_null() {
+        return Some(deflater);
+    }
+    let mut error = 0;
+    let size = session.remote[0].get();
+    // SAFETY: nghttp2's constructor; `error` is writable.
+    let deflater = unsafe { swoole_http2_client_coro_deflater(size, &raw mut error) };
+    if error != 0 {
+        warn(
+            func,
+            &format!(
+                "nghttp2_hd_deflate_new2() failed with error: {}",
+                strerror(error)
+            ),
+        );
+        return None;
+    }
+    session.deflater.set(deflater);
+    Some(deflater)
 }
 
 // --- small frames ---
@@ -491,8 +327,10 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_goaway(
     data: *const c_char,
     length: usize,
 ) -> bool {
-    let session = Session::of(ctx);
-    let last_stream_id = load(session.view.last_stream_id);
+    let Some(session) = SessionState::of(ctx) else {
+        return false;
+    };
+    let last_stream_id = session.last_stream_id.get();
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -505,8 +343,7 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_goaway(
     frame.extend_from_slice(&code.to_be_bytes());
     frame.extend_from_slice(bytes(data, length));
     let sent = send(ctx, &frame);
-    // SAFETY: a live field.
-    unsafe { *session.view.shutting_down = true };
+    session.shutting_down.set(true);
     sent
 }
 
@@ -570,7 +407,7 @@ impl Headers {
     /// Encode the set with `nghttp2_hd_deflate_hd` into the frame after its
     /// nine header bytes, which `seal` fills in (`func` names the caller in logs).
     fn deflate(mut self, session: &Session, func: &CStr) -> Option<Self> {
-        let deflater = session.deflater(func)?;
+        let deflater = deflater(session, func)?;
         let Buffers {
             bytes,
             slots,
@@ -941,7 +778,7 @@ fn send_header(
     if flags & FLAG_END_STREAM != 0 {
         set(ctx, Field::End, 1);
     }
-    if !send(ctx, headers.seal(TYPE_HEADERS, flags, stream.view.id)) {
+    if !send(ctx, headers.seal(TYPE_HEADERS, flags, stream.id)) {
         set(ctx, Field::SendHeader, 0);
         return false;
     }
@@ -966,7 +803,7 @@ fn send_body(
         // SAFETY: a writable plan.
         unsafe { sw_rs_http2_chunk(rest.len(), max_frame_size, flags, &raw mut chunk) };
         let (mut send_n, mut send_flags) = (chunk.length, chunk.flags);
-        let window = stream.remote_window();
+        let window = stream.remote_window_size.get();
         if send_n > window as usize {
             // The coroutine server receives frames serially and cannot be
             // suspended, so it has no flow control.
@@ -978,8 +815,8 @@ fn send_body(
                     "The data sent exceeded remote_window_size",
                 ),
                 2 => {
-                    // SAFETY: a live stream, in a coroutine; WINDOW_UPDATE wakes it.
-                    unsafe { swr_h2s_stream_wait(stream.holder) };
+                    // In a coroutine: WINDOW_UPDATE wakes it.
+                    stream.wait();
                     continue;
                 }
                 _ => {
@@ -988,7 +825,7 @@ fn send_body(
                 }
             }
         }
-        let header = frame_header(TYPE_DATA, send_n, send_flags, stream.view.id);
+        let header = frame_header(TYPE_DATA, send_n, send_flags, stream.id);
         let part = &rest[..send_n];
         if send_n < page {
             // One send of header and payload, on the stack when it fits.
@@ -1014,14 +851,12 @@ fn send_body(
             reason = "native uint32_t window arithmetic"
         )]
         let sent = send_n as u32;
-        store(
-            stream.view.remote_window_size,
-            load(stream.view.remote_window_size).wrapping_sub(sent),
-        );
-        store(
-            session.view.remote_window_size,
-            load(session.view.remote_window_size).wrapping_sub(sent),
-        );
+        stream
+            .remote_window_size
+            .set(stream.remote_window_size.get().wrapping_sub(sent));
+        session
+            .remote_window_size
+            .set(session.remote_window_size.get().wrapping_sub(sent));
     }
     true
 }
@@ -1092,10 +927,7 @@ fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
                 action = next(action, true, &facts);
             }
             RESP_EMPTY => {
-                let sent = send(
-                    ctx,
-                    &frame_header(TYPE_DATA, 0, FLAG_END_STREAM, stream.view.id),
-                );
+                let sent = send(ctx, &frame_header(TYPE_DATA, 0, FLAG_END_STREAM, stream.id));
                 action = next(action, sent, &facts);
             }
             RESP_BODY => {
@@ -1104,16 +936,16 @@ fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
                 action = next(action, sent, &facts);
             }
             RESP_TRAILER => {
-                let sent = send_trailer(ctx, &session, stream.view.id);
+                let sent = send_trailer(ctx, &session, stream.id);
                 action = next(action, sent, &facts);
             }
             RESP_ERROR_CLOSE | RESP_REMOVE => {
                 if action == RESP_ERROR_CLOSE {
                     close(ctx);
                 } else {
-                    session.remove(stream.view.id);
+                    session.remove(stream.id);
                 }
-                facts.shutting_down = u32::from(session.shutting_down());
+                facts.shutting_down = u32::from(session.shutting_down.get());
                 facts.streams_empty = u32::from(facts.shutting_down != 0 && session.idle());
                 action = next(action, true, &facts);
             }
@@ -1259,7 +1091,9 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_finish_file(
 }
 
 fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) {
-    let session = Session::of(ctx);
+    let Some(session) = SessionState::of(ctx) else {
+        return;
+    };
     let stream_id = get(ctx, Field::StreamId);
     let mut action = sw_rs_http2_file_complete(u32::from(!error), u32::from(trailer));
     loop {
@@ -1276,16 +1110,15 @@ fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) {
 
 // --- receiving ---
 
-/// `swoole_http2_server_parse`: one frame from the peer.
+/// `swoole_http2_server_parse`: one frame from the peer of connection `fd`,
+/// whose session stays alive until the frame is handled.
 /// # Safety
-/// `session` points at the live `std::shared_ptr<Session>`; `buf` holds a
-/// whole frame.
+/// `buf` holds a whole frame.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_parse(
-    session: *const c_void,
-    buf: *const c_char,
-) -> c_int {
-    let session = Session::new(session.cast_mut(), false);
+pub unsafe extern "C" fn swr_v1_phphttp2_session_parse(fd: i64, buf: *const c_char) -> c_int {
+    let Some(session) = SessionState::find(fd) else {
+        return SW_ERR;
+    };
     let result = parse(&session, buf.cast());
     drop(session);
     bailout::finish();
@@ -1294,14 +1127,14 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_parse(
 
 fn parse(session: &Session, buf: *const u8) -> c_int {
     let mut facts = Http2FrameFacts::default();
-    let last_stream_id = load(session.view.last_stream_id);
+    let last_stream_id = session.last_stream_id.get();
     // SAFETY: nine readable header bytes and a writable result.
     unsafe { sw_rs_http2_decode_frame(buf, FRAME_HEADER, last_stream_id, 0, &raw mut facts) };
     let stream_id = facts.stream_id;
     if facts.publish_last_id != 0 {
-        store(session.view.last_stream_id, stream_id);
+        session.last_stream_id.set(stream_id);
     }
-    if session.shutting_down() {
+    if session.shutting_down.get() {
         log(
             LOG_WARNING,
             STREAM_IGNORE,
@@ -1323,7 +1156,7 @@ fn parse(session: &Session, buf: *const u8) -> c_int {
             else {
                 return SW_ERR;
             };
-            if parse_header(session, stream.view.ctx, flags, payload, length) < 0 {
+            if parse_header(session, stream.ctx, flags, payload, length) < 0 {
                 return SW_ERR;
             }
             if flags & FLAG_END_STREAM != 0 {
@@ -1342,23 +1175,20 @@ fn parse(session: &Session, buf: *const u8) -> c_int {
             // SAFETY: the frame's eight payload bytes.
             frame[FRAME_HEADER..]
                 .copy_from_slice(unsafe { std::slice::from_raw_parts(payload, PING_PAYLOAD) });
-            send(session.view.default_ctx, &frame);
+            send(session.default_ctx, &frame);
         }
         ACTION_WINDOW_UPDATE => {
             let value = read_u32(payload);
             if stream_id == 0 {
-                store(
-                    session.view.remote_window_size,
-                    credit(load(session.view.remote_window_size), value),
-                );
+                session
+                    .remote_window_size
+                    .set(credit(session.remote_window_size.get(), value));
             } else if let Some(stream) = session.stream(stream_id, false) {
-                store(
-                    stream.view.remote_window_size,
-                    credit(stream.remote_window(), value),
-                );
-                if !session.view.is_coro {
-                    // SAFETY: a live stream.
-                    unsafe { swr_h2s_stream_wake(stream.holder) };
+                stream
+                    .remote_window_size
+                    .set(credit(stream.remote_window_size.get(), value));
+                if !session.is_coro {
+                    stream.wake();
                 }
             }
         }
@@ -1391,10 +1221,9 @@ fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
         let (mut id, mut value) = (0_u16, 0_u32);
         // SAFETY: six readable bytes, as upstream reads them.
         unsafe { swoole_rs_http2::sw_rs_http2_unpack_setting(at, &raw mut id, &raw mut value) };
-        // SAFETY: a live field.
-        let deflater = unsafe { *session.view.deflater };
+        let deflater = session.deflater.get();
         let old = if id == SETTING_HEADER_TABLE_SIZE {
-            load(session.remote())
+            session.remote[0].get()
         } else {
             0
         };
@@ -1413,11 +1242,12 @@ fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
         };
         if plan.set_value != 0
             && let Ok(field) = usize::try_from(plan.field)
+            && let Some(setting) = session.remote.get(field)
         {
-            store(session.remote().wrapping_add(field), value);
+            setting.set(value);
         }
         if plan.set_window != 0 {
-            store(session.view.remote_window_size, value);
+            session.remote_window_size.set(value);
         }
         if plan.change_deflater != 0 {
             // SAFETY: a live deflater.
@@ -1439,7 +1269,7 @@ fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
     }
     // The client assumes the server has not applied its settings until it acknowledges them.
     send(
-        session.view.default_ctx,
+        session.default_ctx,
         &frame_header(TYPE_SETTINGS, 0, FLAG_ACK, 0),
     );
     SW_OK
@@ -1468,11 +1298,11 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
     while action != recv::DONE {
         let mut ok = true;
         match (action, &stream) {
-            (recv::CONTEXT, Some(stream)) => ctx = stream.view.ctx,
+            (recv::CONTEXT, Some(stream)) => ctx = stream.ctx,
             (recv::BUFFER, _) => {
                 // SAFETY: a live context; the buffer is created.
                 unsafe { swr_h2s_data(ctx, true, &raw mut facts.buffered_length) };
-                facts.maximum = session.view.max_body_size;
+                facts.maximum = session.max_body_size;
                 facts.ended = get(ctx, Field::End);
             }
             (recv::RESET, _) => {
@@ -1517,20 +1347,18 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
 /// remains.
 fn flow(session: &Session, stream: &Stream, ctx: *mut c_void, stream_id: u32, length: usize) {
     let initial = session.local(INIT_WINDOW_SIZE);
-    // SAFETY: live fields.
-    let connection = window(load(session.view.local_window_size), length, initial, false);
-    store(session.view.local_window_size, connection.value);
-    // SAFETY: a live field.
-    let debited = window(load(stream.view.local_window_size), length, 0, false).value;
-    store(stream.view.local_window_size, debited);
+    let connection = window(session.local_window_size.get(), length, initial, false);
+    session.local_window_size.set(connection.value);
+    let debited = window(stream.local_window_size.get(), length, 0, false).value;
+    stream.local_window_size.set(debited);
     if connection.increment != 0 {
         window_update(ctx, 0, connection.increment);
-        store(session.view.local_window_size, initial);
+        session.local_window_size.set(initial);
     }
     let reopen = window(debited, 0, initial, false);
     if reopen.increment != 0 {
         window_update(ctx, stream_id, reopen.increment);
-        store(stream.view.local_window_size, initial);
+        stream.local_window_size.set(initial);
     }
 }
 
@@ -1544,8 +1372,7 @@ fn parse_header(
     mut length: usize,
 ) -> c_int {
     const FUNC: &CStr = c"http2_server_parse_header";
-    // SAFETY: a live field.
-    let mut inflater = unsafe { *session.view.inflater };
+    let mut inflater = session.inflater.get();
     if inflater.is_null() {
         let mut error = 0;
         // SAFETY: nghttp2's constructor; `error` is writable.
@@ -1560,8 +1387,7 @@ fn parse_header(
             );
             return SW_ERR;
         }
-        // SAFETY: a live field; the session frees it.
-        unsafe { *session.view.inflater = inflater };
+        session.inflater.set(inflater);
     }
     if flags & FLAG_PRIORITY != 0 {
         // The stream dependency and weight are ignored.
@@ -1700,7 +1526,7 @@ fn request_header(
             if sw_rs_http2_content_length_rejected(
                 u32::from(complete),
                 parsed,
-                session.view.max_body_size,
+                session.max_body_size,
             ) != 0
             {
                 send_status_code(ctx, ENTITY_TOO_LARGE);

@@ -40,6 +40,8 @@ type Holder = Object<*mut c_void>;
 /// HTTP statuses the loop answers with, and llhttp's codes it checks.
 const BAD_REQUEST: c_int = 400;
 const NOT_FOUND: c_int = 404;
+/// `SW_HTTP2_ERROR_INTERNAL_ERROR`.
+const HTTP2_INTERNAL_ERROR: u32 = 2;
 const ENTITY_TOO_LARGE: c_int = 413;
 const HPE_OK: i32 = 0;
 const HPE_PAUSED_H2_UPGRADE: i32 = 23;
@@ -117,7 +119,8 @@ unsafe extern "C" {
     fn swr_hsc_http2(server: *mut c_void, context: *mut Context);
     fn swr_hsc_request_data(context: *mut Context, buffer: *mut Buffer, length: usize);
     fn swr_hsc_closed(connection: *mut zval) -> bool;
-    fn swr_hsc_stream_reset(stream: *mut c_void);
+    /// `Stream::reset` (crates/phphttp2).
+    fn swr_v1_phphttp2_server_reset(ctx: *mut c_void, stream_id: u32, code: u32);
     fn swr_hsc_accept_callable(
         object: *mut zval,
         frame: *mut z::zend_execute_data,
@@ -905,16 +908,14 @@ handlers! {
 /// `http2_server_onRequest`: an HTTP/2 stream's request, with the HTTP/1
 /// request's `$server` and `SERVER_PROTOCOL` `HTTP/2`.
 /// # Safety
-/// The stream's live context, the session's default context, the server and
-/// the stream.
+/// The stream's live context, the session's default context and the server.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp_server_coro_http2_request(
     context: *mut c_void,
     http1: *mut c_void,
     server: *mut c_void,
-    stream: *mut c_void,
 ) {
-    let result = http2_request(context, http1, server, stream);
+    let result = http2_request(context, http1, server);
     bailout::raise(result);
 }
 
@@ -922,7 +923,6 @@ fn http2_request(
     context: *mut Context,
     http1: *mut Context,
     server: *mut c_void,
-    stream: *mut c_void,
 ) -> Result<(), bailout::Bailout> {
     let target = send::state(context).request.zserver.ptr;
     let source = send::state(http1).request.zserver.ptr;
@@ -954,8 +954,9 @@ fn http2_request(
         match unsafe { swr_hsc_call(callable, args.as_mut_ptr(), true) } {
             -1 => result = Err(bailout::Bailout),
             0 => {
-                // SAFETY: the live stream.
-                unsafe { swr_hsc_stream_reset(stream) };
+                let stream_id = send::state(context).stream_id;
+                // SAFETY: the stream's live context.
+                unsafe { swr_v1_phphttp2_server_reset(context, stream_id, HTTP2_INTERNAL_ERROR) };
                 host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
             }
             _ => {}

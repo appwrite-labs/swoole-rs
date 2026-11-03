@@ -18,6 +18,8 @@ php = [
     "swoole-rs-zend/php",
     "dep:swoole-rs-phpstubs",
     "swoole-rs-phpstubs/php",
+    "dep:swoole-rs-phphttp",
+    "swoole-rs-phphttp/php",
 ]
 
 [dependencies]
@@ -27,6 +29,7 @@ swoole-rs-http2 = { path = "../http2", optional = true }
 swoole-rs-phptable = { path = "../phptable", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
+swoole-rs-phphttp = { path = "../phphttp", optional = true }
 
 [lints]
 workspace = true

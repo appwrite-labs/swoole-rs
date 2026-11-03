@@ -102,7 +102,7 @@ struct _zend_class_entry *swr_v1_phphttp_response_minit(void);
  * calls the dispatch. */
 struct _zend_class_entry *swr_v1_phphttp_server_coro_minit(struct _zend_class_entry *exception, bool short_name,
     bool compression);
-void swr_v1_phphttp_server_coro_http2_request(void *context, void *http1, void *server, void *stream);
+void swr_v1_phphttp_server_coro_http2_request(void *context, void *http1, void *server);
 /* What it asks of swoole::coroutine::HttpServer (`server`), its coroutine
  * sockets (`sock`), a socket's read buffer (`buffer`, a swoole::String) and
  * the contexts it creates. swr_hsc_call is 1 called, 0 failed, -1 bailed out. */
@@ -143,7 +143,6 @@ void swr_hsc_add_server(void *context, swr_hsc_peer_t *peer);
 void swr_hsc_http2(void *server, void *context);
 void swr_hsc_request_data(void *context, void *buffer, size_t length);
 bool swr_hsc_closed(struct _zval_struct *connection);
-void swr_hsc_stream_reset(void *stream);
 /* `start`: the `onAccept` callable (0, 1 not callable, -1 bailed out), the
  * protocol settings, a setting by SWR_HTTPBINDINGS_SETTING_* kind (0 applied,
  * 1 refused, 2 no return value, -1 bailed out), and accepting a connection
