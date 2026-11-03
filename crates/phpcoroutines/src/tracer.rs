@@ -240,40 +240,42 @@ fn unhook() {
 }
 
 impl Leaks {
-    /// `save_backtrace`.
-    fn save_backtrace(&mut self, at: &[u8]) {
-        if !self.backtraces.contains_key(at) {
+    /// `save_backtrace` of `at`, when `count` asked for it.
+    fn save_backtrace(&mut self, at: Option<Vec<u8>>) {
+        if let Some(at) = at {
             let trace = backtrace(BACKTRACE_IGNORE_ARGS);
-            self.backtraces.insert(at.to_vec(), trace);
+            self.backtraces.insert(at, trace);
         }
     }
 
-    /// One more live allocation at `at`: its backtrace is kept once the site
-    /// nears the threshold.
-    fn count(&mut self, at: &[u8], new_site: bool) {
+    /// One more live allocation at `at`. A site nearing the threshold without
+    /// a kept backtrace is returned, for `save_backtrace`.
+    fn count(&mut self, at: &[u8], new_site: bool) -> Option<Vec<u8>> {
         if let Some(counter) = self.counters.get_mut(at) {
             *counter = counter.wrapping_add(1);
-            if zend_long::from(*counter) >= self.threshold - 1 {
-                self.save_backtrace(at);
+            if zend_long::from(*counter) >= self.threshold - 1 && !self.backtraces.contains_key(at)
+            {
+                return Some(at.to_vec());
             }
         } else if new_site {
             self.counters.insert(at.to_vec(), 1);
         }
+        None
     }
 
     /// `add_point`.
-    fn add(&mut self, ptr: usize, size: usize, at: Vec<u8>) {
-        self.count(&at, true);
+    fn add(&mut self, ptr: usize, size: usize, at: Vec<u8>) -> Option<Vec<u8>> {
+        let site = self.count(&at, true);
         self.points.insert(ptr, Point { size, count: 1, at });
+        site
     }
 
     /// `tracer_realloc`'s bookkeeping.
-    fn moved(&mut self, ptr: usize, new_ptr: usize, size: usize, at: Vec<u8>) {
+    fn moved(&mut self, ptr: usize, new_ptr: usize, size: usize, at: Vec<u8>) -> Option<Vec<u8>> {
         let Some(point) = self.points.remove(&ptr) else {
-            self.add(new_ptr, size, at);
-            return;
+            return self.add(new_ptr, size, at);
         };
-        self.count(&point.at, false);
+        let site = self.count(&point.at, false);
         self.points.insert(
             new_ptr,
             Point {
@@ -282,6 +284,7 @@ impl Leaks {
                 at: point.at,
             },
         );
+        site
     }
 
     /// `del_point`.
@@ -311,16 +314,20 @@ impl Leaks {
 
 unsafe extern "C" fn on_alloc(ptr: *mut c_void, size: usize) {
     if let Some(at) = file_and_line() {
-        LEAKS.with(|leaks| leaks.borrow_mut().add(ptr as usize, size, at));
+        LEAKS.with(|leaks| {
+            let mut leaks = leaks.borrow_mut();
+            let site = leaks.add(ptr as usize, size, at);
+            leaks.save_backtrace(site);
+        });
     }
 }
 
 unsafe extern "C" fn on_realloc(ptr: *mut c_void, new_ptr: *mut c_void, size: usize) {
     if let Some(at) = file_and_line() {
         LEAKS.with(|leaks| {
-            leaks
-                .borrow_mut()
-                .moved(ptr as usize, new_ptr as usize, size, at);
+            let mut leaks = leaks.borrow_mut();
+            let site = leaks.moved(ptr as usize, new_ptr as usize, size, at);
+            leaks.save_backtrace(site);
         });
     }
 }
@@ -876,16 +883,27 @@ mod tests {
     #[test]
     fn points_follow_allocations() {
         let mut leaks = leaks();
-        leaks.add(1, 10, b"a.php:1".to_vec());
-        leaks.add(2, 20, b"a.php:1".to_vec());
-        leaks.add(3, 5, b"b.php:2".to_vec());
-        leaks.moved(1, 4, 30, b"c.php:3".to_vec());
-        leaks.moved(9, 8, 7, b"c.php:3".to_vec());
+        assert_eq!(leaks.add(1, 10, b"a.php:1".to_vec()), None);
+        assert_eq!(leaks.add(2, 20, b"a.php:1".to_vec()), None);
+        assert_eq!(leaks.add(3, 5, b"b.php:2".to_vec()), None);
+        assert_eq!(leaks.moved(1, 4, 30, b"c.php:3".to_vec()), None);
+        assert_eq!(leaks.moved(9, 8, 7, b"c.php:3".to_vec()), None);
         leaks.freed(2);
         assert_eq!(leaks.counters[b"a.php:1".as_slice()], 2);
         let stats = leaks.stats();
         assert_eq!(stats[b"a.php:1".as_slice()], (30, 2));
         assert_eq!(stats[b"b.php:2".as_slice()], (5, 1));
         assert_eq!(stats[b"c.php:3".as_slice()], (7, 1));
+    }
+
+    #[test]
+    fn a_site_near_the_threshold_asks_for_its_backtrace() {
+        let mut leaks = leaks();
+        leaks.threshold = 3;
+        assert_eq!(leaks.add(1, 1, b"a.php:1".to_vec()), None);
+        assert_eq!(
+            leaks.add(2, 1, b"a.php:1".to_vec()),
+            Some(b"a.php:1".to_vec())
+        );
     }
 }
