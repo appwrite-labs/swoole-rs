@@ -2,6 +2,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <functional>
 #include <map>
@@ -66,7 +67,7 @@ int sock_fd=77,type=4,sock_domain=AF_INET;NativeSocket native;NativeSocket *sock
  bool wait_event(int e){record("wait:"+std::to_string(e));if(!wake_ok)return false;auto p=e==SW_EVENT_READ?recv_barrier:send_barrier;while(p && (*p)())record("barrier:again");return true;} \
  bool wait_event(int e,const void **buf,size_t n){record("wait-buffer:"+std::to_string(n));*buf=redirected_buffer;return wait_event(e);} \
  bool wait_event(int e,swr_v1_hook_barrier b,void *s,const void **buf=nullptr,size_t n=0){EventBarrier f=[b,s]{return b(s);};EventBarrier *&slot=e==SW_EVENT_READ?recv_barrier:send_barrier;if(b)slot=&f;bool woke=buf?wait_event(e,buf,n):wait_event(e);if(b)slot=nullptr;return woke;} \
- ssize_t recvmsg(msghdr *,int);ssize_t sendmsg(const msghdr *,int);ssize_t sendto(const std::string &,int,const void *,size_t);ssize_t recvfrom(void *,size_t,sockaddr *,socklen_t *); \
+ ssize_t recvmsg(msghdr *,int);ssize_t sendmsg(const msghdr *,int);ssize_t sendto(const std::string &,int,const void *,size_t);bool sendto_address(const std::string &,int,network::Address *);ssize_t recvfrom(void *,size_t,sockaddr *,socklen_t *); \
  ssize_t recv(void *,size_t);ssize_t send(const void *,size_t);ssize_t read(void *,size_t);ssize_t write(const void *,size_t);ssize_t readv(network::IOVector *);ssize_t writev(network::IOVector *); \
  ssize_t recv_all(void *,size_t);ssize_t send_all(const void *,size_t); \
  enum {TRANSFER_ALL=1,TRANSFER_EINTR=2,TRANSFER_CHECKED=4};template <class Call> ssize_t transfer(EventType,const void *,size_t,int,Call);}; \

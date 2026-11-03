@@ -1,10 +1,10 @@
 diff --git a/src/coroutine/socket.cc b/src/coroutine/socket.cc
-index 0ed924c..2b16667 100644
+index f4083a7..bd7b578 100644
 --- a/src/coroutine/socket.cc
 +++ b/src/coroutine/socket.cc
-@@ -1049,2 +1049,5 @@ ssize_t Socket::sendto(const std::string &host, int port, const void *_buf, size
-     network::Address addr;
+@@ -1060,2 +1060,5 @@ bool Socket::sendto_address(const std::string &host, int port, network::Address
+     }
 +    // Address::assign sets family, port and address only; a stale scope id
 +    // misroutes an interface-local IPv6 destination (ff01::/16).
-+    memset(&addr, 0, sizeof(addr));
++    memset(addr, 0, sizeof(*addr));
  
