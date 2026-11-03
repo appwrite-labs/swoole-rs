@@ -377,6 +377,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-curl"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-curl-sys",
+]
+
+[[package]]
+name = "swoole-rs-curl-sys"
+version = "0.1.0"
+
+[[package]]
 name = "swoole-rs-deflate"
 version = "0.1.0"
 dependencies = [
@@ -398,6 +410,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-crc32",
+ "swoole-rs-curl",
  "swoole-rs-error",
  "swoole-rs-firebird",
  "swoole-rs-framing",

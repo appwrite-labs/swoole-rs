@@ -34,7 +34,7 @@ BRIDGE_PATCH = 'migration/patches/integration/0001-rust-bridge.patch'
 # The ffi features that replace upstream's optional hooks, by the configure switch
 # that builds each: the Rust code links what that switch makes the extension link.
 HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
-                  'firebird': '--with-swoole-firebird'}
+                  'firebird': '--with-swoole-firebird', 'curl': '--enable-swoole-curl'}
 # Modules a module cannot build without: PHP Table stores rows in memory's TableV2; the
 # HTTP/2 server's sessions (http2) own httpbindings' contexts, and its coroutine server
 # runs them; network::Client (clients) reads the reactor's socket record.
