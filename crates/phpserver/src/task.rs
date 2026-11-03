@@ -2,14 +2,16 @@
 //! `taskCo`, `Swoole\Server\Task::pack`/`unpack`, and the `onTask`/`onFinish`
 //! events. Rust owns the callbacks of pending tasks and the coroutines that
 //! wait for results (upstream's `ServerProperty::task_callbacks` and
-//! `task_coroutine_map`); C++ keeps the Server, the task encoding and the
-//! coroutine (`native/process/swoole_rs_phpserver_task.h`).
+//! `task_coroutine_map`), and the task encoding (a string, or PHP's serialize
+//! with `SW_TASK_SERIALIZE`); C++ keeps the Server, its `task_pack`,
+//! `task_unpack` and `finish`, and the coroutine
+//! (`native/process/swoole_rs_phpserver_task.h`).
 use crate::dispatch::{handler_error, server_callback, server_zval, set_last_error};
 use crate::server::{DATA, TASK, fatal, running};
 use std::{
     cell::RefCell,
     collections::HashMap,
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -17,8 +19,10 @@ use swoole_rs_zend::{
     Call, E_WARNING,
     bailout::Bailout,
     each_value, init_object, long_zval, message, object_of, php_error,
+    string::bytes,
     sys::{
-        IS_ARRAY, IS_NULL, add_index_bool, swr_zval_is_true, zend_class_entry,
+        IS_ARRAY, IS_NULL, add_index_bool, swr_zend_serialize, swr_zend_string_release,
+        swr_zend_unserialize, swr_zval_is_true, swr_zval_stringl, zend_class_entry,
         zend_hash_index_find, zend_hash_index_update, zend_object, zend_update_property,
         zend_update_property_double, zend_update_property_long, zval, zval_ptr_dtor,
     },
@@ -27,6 +31,7 @@ use swoole_rs_zend::{
 };
 
 /// `SW_TASK_*` flags.
+const SERIALIZE: u32 = 1 << 1;
 const NONBLOCK: u32 = 1 << 2;
 const CALLBACK: u32 = 1 << 3;
 const COROUTINE: u32 = 1 << 5;
@@ -73,8 +78,9 @@ struct Info {
 #[repr(C)]
 pub struct TaskHost {
     facts: unsafe extern "C" fn(*mut c_void, *mut Facts),
-    pack: unsafe extern "C" fn(*mut zval, *mut c_void, *mut bool) -> i64,
-    unpack: unsafe extern "C" fn(*mut c_void, *mut zval, *mut bool) -> bool,
+    pack: unsafe extern "C" fn(*mut c_void, *const c_char, usize) -> i64,
+    unpack: unsafe extern "C" fn(*mut c_void, *mut *const c_char, *mut usize, *mut u32) -> bool,
+    log_unserialize: unsafe extern "C" fn(i64, usize),
     flag: unsafe extern "C" fn(*mut c_void, u32),
     size: unsafe extern "C" fn(*mut c_void) -> usize,
     info: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut Info),
@@ -90,7 +96,7 @@ pub struct TaskHost {
     dispatch_multi: unsafe extern "C" fn(*mut c_void, *mut zval, f64, *mut zval, *mut bool) -> bool,
     tasking_done: unsafe extern "C" fn(*mut c_void),
     bind_task: unsafe extern "C" fn(*mut zend_object, *mut c_void, *mut c_void),
-    finish: unsafe extern "C" fn(*mut c_void, *mut zval, *mut c_void, *mut bool) -> bool,
+    finish: unsafe extern "C" fn(*mut c_void, *const c_char, usize, c_int, *mut c_void) -> bool,
     callable_create: unsafe extern "C" fn(*mut zval) -> *mut c_void,
     callable_free: unsafe extern "C" fn(*mut c_void),
     call: unsafe extern "C" fn(*mut c_void, u32, *mut zval, *mut zval, bool) -> c_int,
@@ -119,14 +125,14 @@ pub unsafe extern "C" fn swr_v1_phpserver_task_init(table: *const TaskHost) {
 
 /// An `EventData`, which C++ asserts fits.
 #[repr(C, align(8))]
-struct EventData([u8; 8192]);
+pub(crate) struct EventData([u8; 8192]);
 
 impl EventData {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self([0; 8192])
     }
 
-    fn ptr(&mut self) -> *mut c_void {
+    pub(crate) fn ptr(&mut self) -> *mut c_void {
         self.0.as_mut_ptr().cast()
     }
 }
@@ -182,17 +188,136 @@ fn dtor(value: &mut zval) {
     unsafe { zval_ptr_dtor(value) };
 }
 
+/// The bytes a task carries: a string as it is, anything else serialized
+/// (`None`: serialize wrote nothing). `each` sees the bytes and whether they
+/// were serialized.
+fn encoded<R>(data: *mut zval, each: impl FnOnce(&[u8], bool) -> R) -> Result<Option<R>, Bailout> {
+    // SAFETY: a live value.
+    if let Some(text) = unsafe { swoole_rs_zend::string_of(data) } {
+        return Ok(Some(each(text, false)));
+    }
+    let mut bailed = false;
+    // SAFETY: a live value and a writable flag; the string is ours.
+    let serialized = unsafe { swr_zend_serialize(data, &raw mut bailed) };
+    if bailed {
+        return Err(Bailout);
+    }
+    if serialized.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: the string serialize made.
+    let result = each(unsafe { bytes(serialized) }, true);
+    // SAFETY: as above, released once.
+    unsafe { swr_zend_string_release(serialized) };
+    Ok(Some(result))
+}
+
+/// `php_swoole_server_task_pack`: pack `data` into `buf`; the task id, or -1.
+fn encode(data: *mut zval, buf: *mut c_void) -> Result<i64, Bailout> {
+    let host = host();
+    let packed = encoded(data, |payload, serialized| {
+        // SAFETY: a writable `EventData` and the payload's bytes.
+        let id = unsafe { (host.pack)(buf, payload.as_ptr().cast(), payload.len()) };
+        (id, serialized)
+    })?;
+    let Some((id, serialized)) = packed else {
+        return Ok(-1);
+    };
+    if id < 0 {
+        event_warning(c"large task pack failed")?;
+    }
+    if serialized {
+        // SAFETY: the `EventData` packed above.
+        unsafe { (host.flag)(buf, SERIALIZE) };
+    }
+    Ok(id)
+}
+
+/// `php_swoole_server_task_unpack`: the task in `buf` into `out`.
+fn decode(buf: *mut c_void, out: *mut zval) -> Result<bool, Bailout> {
+    let host = host();
+    let (mut data, mut length, mut flags) = (ptr::null(), 0, 0);
+    // SAFETY: a packed task and writable views of its payload.
+    if !unsafe { (host.unpack)(buf, &raw mut data, &raw mut length, &raw mut flags) } {
+        return Ok(false);
+    }
+    if flags & SERIALIZE == 0 {
+        // SAFETY: a writable zval and the payload's bytes.
+        unsafe { swr_zval_stringl(out, data, length) };
+        return Ok(true);
+    }
+    let (mut offset, mut bailed) = (0, false);
+    // SAFETY: as above.
+    let done = unsafe { swr_zend_unserialize(out, data, length, &raw mut offset, &raw mut bailed) };
+    if bailed {
+        return Err(Bailout);
+    }
+    if !done {
+        // SAFETY: a log line C++ formats.
+        unsafe { (host.log_unserialize)(i64::try_from(offset).unwrap_or(i64::MAX), length) };
+    }
+    Ok(done)
+}
+
+/// `php_swoole_server_task_finish`: send `data` as the result of `req` (null:
+/// this worker's current task).
+pub(crate) fn finish_task(
+    server: *mut c_void,
+    data: *mut zval,
+    req: *mut c_void,
+) -> Result<bool, Bailout> {
+    let finished = encoded(data, |payload, serialized| {
+        let flags = if serialized {
+            SERIALIZE.cast_signed()
+        } else {
+            0
+        };
+        // SAFETY: a live server, the payload's bytes and the task, or null.
+        unsafe { (host().finish)(server, payload.as_ptr().cast(), payload.len(), flags, req) }
+    })?;
+    Ok(finished.unwrap_or(false))
+}
+
+/// `encode` for C++ (`sendMessage`, `taskWaitMulti`'s tasks); `*bailed` when
+/// it bailed out.
+/// # Safety
+/// `data` is a live value, `buf` a writable `EventData` and `bailed` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_task_pack(
+    data: *mut zval,
+    buf: *mut c_void,
+    bailed: *mut bool,
+) -> i64 {
+    encode(data, buf).unwrap_or_else(|Bailout| {
+        // SAFETY: per the caller.
+        unsafe { bailed.write(true) };
+        -1
+    })
+}
+
+/// `decode` for C++ (`onPipeMessage`, `taskwait`'s and `taskWaitMulti`'s results).
+/// # Safety
+/// `buf` is a packed task, `out` a writable zval and `bailed` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_task_unpack(
+    buf: *mut c_void,
+    out: *mut zval,
+    bailed: *mut bool,
+) -> bool {
+    decode(buf, out).unwrap_or_else(|Bailout| {
+        // SAFETY: per the caller.
+        unsafe { bailed.write(true) };
+        false
+    })
+}
+
 /// `php_swoole_server_task_pack`: the task id, or -1; a trapped bailout waits
 /// for the handler's end.
-fn pack(data: *mut zval, buf: &mut EventData) -> i64 {
-    let mut bailed = false;
-    // SAFETY: a live value and a writable `EventData`.
-    let id = unsafe { (host().pack)(data, buf.ptr(), &raw mut bailed) };
-    if bailed {
-        Bailout.defer();
-        return -1;
-    }
-    id
+pub(crate) fn pack(data: *mut zval, buf: &mut EventData) -> i64 {
+    encode(data, buf.ptr()).unwrap_or_else(|bailout| {
+        bailout.defer();
+        -1
+    })
 }
 
 fn flag(buf: &mut EventData, flags: u32) {
@@ -531,12 +656,11 @@ fn unpack_method(call: &Call) {
     let buf = unsafe { swoole_rs_zend::value::str_of(data) };
     // SAFETY: the string's bytes.
     let bytes = unsafe { (*buf).val.as_mut_ptr() };
-    let mut bailed = false;
-    // SAFETY: as upstream: the bytes hold a packed task.
-    let done = unsafe { (host().unpack)(bytes.cast(), call.return_value(), &raw mut bailed) };
-    if bailed {
-        Bailout.defer();
-    }
+    // As upstream: the bytes hold a packed task.
+    let done = decode(bytes.cast(), call.return_value()).unwrap_or_else(|bailout| {
+        bailout.defer();
+        false
+    });
     if !done {
         call.set_bool(false);
     }
@@ -576,13 +700,7 @@ fn set_value(ce: *mut zend_class_entry, object: *mut zend_object, name: &CStr, v
 /// Unpack `req` into a value, or `None` (`Err` for a trapped bailout).
 fn unpack(req: *mut c_void) -> Result<Option<zval>, Bailout> {
     let mut data = undef();
-    let mut bailed = false;
-    // SAFETY: a received task and a writable value.
-    let done = unsafe { (host().unpack)(req, &raw mut data, &raw mut bailed) };
-    if bailed {
-        return Err(Bailout);
-    }
-    Ok(done.then_some(data))
+    Ok(decode(req, &raw mut data)?.then_some(data))
 }
 
 /// `php_swoole_server_onTask`; true when C++ must re-raise a bailout.
@@ -654,13 +772,9 @@ fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
     let outcome = outcome.and_then(|()| {
         // SAFETY: the callback's result, or undef.
         if unsafe { type_of(&raw const retval) } != IS_NULL {
-            let mut bailed = false;
-            // SAFETY: a live server, the result and the task.
-            unsafe { (host.finish)(server, &raw mut retval, req, &raw mut bailed) };
+            let finished = finish_task(server, &raw mut retval, req);
             dtor(&mut retval);
-            if bailed {
-                return Err(Bailout);
-            }
+            finished?;
         }
         Ok(())
     });

@@ -36,11 +36,9 @@ typedef struct {
     bool (*is_worker)(void *server); /* is_worker() || is_task_worker() */
     int64_t (*worker_id)(void);
     int64_t (*core_worker_num)(void *server);
-    /* php_swoole_server_task_pack and send_pipe_message: -1 pack failed, else 0/1. */
-    int (*send_message)(void *server, struct _zval_struct *message, int64_t worker_id);
+    /* send_pipe_message of the packed message (an EventData). */
+    bool (*send_message)(void *server, void *message, int64_t worker_id);
     bool (*task_enable_coroutine)(void *server);
-    /* php_swoole_server_task_finish with the task's info, or none. */
-    bool (*finish)(void *server, struct _zval_struct *data, struct _zend_object *task);
     /* A Server\Task's server; E_ERROR (does not return) when unset. */
     void *(*task_server)(struct _zend_object *task);
     bool (*started)(void *server);
