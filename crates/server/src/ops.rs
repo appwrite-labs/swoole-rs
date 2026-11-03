@@ -848,6 +848,34 @@ pub const LOG_SC_SOCKET_OVERFLOW: u32 = 1112;
 pub const LOG_SC_CLOSED_BY_CLIENT: u32 = 1113;
 pub const LOG_SC_CONN_OVERFLOW: u32 = 1114;
 
+// The admin server's facts (`crates/server/src/admin.rs`).
+/// `out` is the answer's bytes and `arg` their length.
+pub const ADMIN_ANSWER: u32 = 0;
+/// The event (`arg` 0) or task (1) worker count.
+pub const ADMIN_PIPE_WORKERS: u32 = 1;
+/// A worker pipe's socket: `arg` is `index << 2 | task << 1 | master`.
+pub const ADMIN_PIPE_SOCKET: u32 = 2;
+pub const ADMIN_HAS_REACTOR: u32 = 3;
+/// Collects the reactor's sockets; returns how many.
+pub const ADMIN_SOCKETS: u32 = 4;
+/// The collected socket `arg`.
+pub const ADMIN_SOCKET: u32 = 5;
+/// `Socket::get_name()` on the collected socket `arg`.
+pub const ADMIN_SOCKET_NAME: u32 = 6;
+pub const ADMIN_COMMANDS: u32 = 7;
+pub const ADMIN_COMMAND: u32 = 8;
+/// Collects the connections this thread or worker owns.
+pub const ADMIN_CONNECTIONS: u32 = 9;
+pub const ADMIN_CONNECTION: u32 = 10;
+/// Collects the connection of session `arg` if it is valid; returns 1 if so.
+pub const ADMIN_SESSION: u32 = 11;
+pub const ADMIN_THREAD: u32 = 12;
+pub const ADMIN_MANAGER: u32 = 13;
+/// Fills `out` with up to 16 named sizes; returns how many.
+pub const ADMIN_MEMORY: u32 = 14;
+pub const ADMIN_PORTS: u32 = 15;
+pub const ADMIN_PORT: u32 = 16;
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

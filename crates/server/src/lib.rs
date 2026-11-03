@@ -11,9 +11,11 @@
 )]
 use core::ffi::c_void;
 
+mod admin;
 mod connection;
 mod control;
 mod dispatch;
+mod json;
 pub mod local_addr;
 pub mod ops;
 mod reactor_io;
@@ -25,6 +27,9 @@ mod state;
 pub use state::{
     ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
 };
+
+pub use admin::swr_v1_server_tcp_info;
+pub use admin::{swr_v1_server_admin_command, swr_v1_server_admin_run};
 
 pub use local_addr::{
     swr_v1_server_local_addr, swr_v1_server_local_addr_index, swr_v1_server_local_addrs_free,
