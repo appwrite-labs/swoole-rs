@@ -475,7 +475,7 @@ pub(crate) struct TestSocket(pub Box<CoSocket>);
 impl TestSocket {
     pub(crate) fn new() -> Self {
         let mut storage = Box::new(core::mem::MaybeUninit::<CoSocket>::uninit());
-        unsafe { swr_v1_hook_co_socket_init(storage.as_mut_ptr()) };
+        unsafe { init(storage.as_mut_ptr()) };
         let mut socket = unsafe { Box::from_raw(Box::into_raw(storage).cast::<CoSocket>()) };
         socket.socket = swoole_rs_reactor::swr_v1_socket_make(-1, FD_CO_SOCKET);
         socket.sock_fd = 100;
