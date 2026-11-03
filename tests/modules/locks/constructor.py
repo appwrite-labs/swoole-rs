@@ -36,11 +36,14 @@ inline Pool *sw_mem_pool(){static Pool pool;return &pool;}
     sides={'reference':overlay.original,'ported':lambda path:(hybrid_source/path).read_text()}
     (folder/'support.h').write_text(support)
     for side,read in sides.items():
-        (folder/side).mkdir(exist_ok=True);namespace='reference' if side=='reference' else 'swoole'
+        (folder/side).mkdir(exist_ok=True)
         header=read('include/swoole_lock.h').replace('#include "swoole_memory.h"','#include "support.h"')
-        base=read('src/core/base.cc')
-        # The fragment keeps the Rust ABI includes of the file it comes from.
-        text=''.join(line+'\n' for line in base.splitlines() if line.startswith('#include "swoole_rs_'))+'namespace '+namespace+' {\n'+base[base.index('bool sw_wait_for('):base.index('\nint swoole_itoa')]+'}\n'
+        # The pinned lock bodies poll through base.cc's sw_wait_for; the hybrid ones wait in
+        # Rust and call nothing in base.cc, so only the reference side carries that body.
+        text=''
+        if side=='reference':
+            base=read('src/core/base.cc');start=base.index('bool sw_wait_for(')
+            text='namespace reference {\n'+base[start:base.index('\n}\n',start)+3]+'}\n'
         for name in ['mutex','rw_lock','spin_lock']:
             body=read('src/lock/'+name+'.cc');text+=(body.replace('#include "swoole_lock.h"','#include "reference.h"').replace('namespace swoole','namespace reference') if side=='reference' else body)+'\n'
         if side=='reference':(folder/side/'reference.h').write_text(header.replace('namespace swoole','namespace reference'));(folder/side/'original.inc').write_text(text)
