@@ -150,7 +150,10 @@ fn newline() {
 /// `swoole_dump_ascii`: each byte as its native `(unsigned) char` value.
 /// # Safety
 /// `data` is readable for `size` bytes.
-#[unsafe(export_name = "_Z17swoole_dump_asciiPKcm")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z17swoole_dump_asciiPKcm")
+)]
 pub unsafe extern "C" fn swoole_dump_ascii(data: *const c_char, size: usize) {
     for index in 0..size {
         // SAFETY: `index < size`, inside the caller's readable extent.
@@ -163,7 +166,10 @@ pub unsafe extern "C" fn swoole_dump_ascii(data: *const c_char, size: usize) {
 /// `swoole_dump_hex`: sixteen bytes per row, each row led by its offset.
 /// # Safety
 /// `data` is readable for `size` bytes.
-#[unsafe(export_name = "_Z15swoole_dump_hexPKhm")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z15swoole_dump_hexPKhm")
+)]
 pub unsafe extern "C" fn swoole_dump_hex(data: *const u8, size: usize) {
     for index in 0..size {
         if index % 16 == 0 {
@@ -209,7 +215,10 @@ pub extern "C" fn swr_v1_corebase_print_backtrace() {
 /// `swoole::microtime`: wall-clock seconds, as libstdc++'s
 /// `duration<double>` of the nanosecond `system_clock` count.
 #[must_use]
-#[unsafe(export_name = "_ZN6swoole9microtimeEv")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9microtimeEv")
+)]
 pub extern "C" fn microtime() -> f64 {
     // One clock_gettime, as libstdc++'s system_clock::now(); std's SystemTime adds
     // a checked subtraction on every request (#853).
@@ -250,7 +259,10 @@ pub struct DataHead {
 /// result: at most `size - 1` bytes written, always NUL-terminated.
 /// # Safety
 /// `head` is a live `DataHead` and `buffer` is writable for `size` bytes.
-#[unsafe(export_name = "_ZN6swoole8DataHead4dumpEPcm")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole8DataHead4dumpEPcm")
+)]
 pub unsafe extern "C" fn datahead_dump(
     head: *const DataHead,
     buffer: *mut c_char,
@@ -330,14 +342,17 @@ fn next() -> u64 {
 
 /// `uint64_t swoole_random_int()`: a uniform 64-bit value.
 #[must_use]
-#[unsafe(export_name = "_Z17swoole_random_intv")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z17swoole_random_intv")
+)]
 pub extern "C" fn swoole_random_int() -> u64 {
     next()
 }
 
 /// `int swoole_rand()`: `swoole_rand(0, INT_MAX)`.
 #[must_use]
-#[unsafe(export_name = "_Z11swoole_randv")]
+#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z11swoole_randv"))]
 pub extern "C" fn swoole_rand_any() -> c_int {
     swoole_rand(0, c_int::MAX)
 }
@@ -345,7 +360,7 @@ pub extern "C" fn swoole_rand_any() -> c_int {
 /// `void *sw_malloc(size_t)`. Upstream calls through `SwooleG.std_allocator`,
 /// which only ever holds libc's allocator.
 #[must_use]
-#[unsafe(export_name = "_Z9sw_mallocm")]
+#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_mallocm"))]
 pub extern "C" fn sw_malloc(size: usize) -> *mut c_void {
     // SAFETY: malloc has no preconditions.
     unsafe { libc::malloc(size) }
@@ -354,7 +369,7 @@ pub extern "C" fn sw_malloc(size: usize) -> *mut c_void {
 /// `void sw_free(void *)`.
 /// # Safety
 /// `pointer` is null or a live allocation from this allocator.
-#[unsafe(export_name = "_Z7sw_freePv")]
+#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z7sw_freePv"))]
 pub unsafe extern "C" fn sw_free(pointer: *mut c_void) {
     // SAFETY: the caller passes null or a live allocation.
     unsafe { libc::free(pointer) }
@@ -362,7 +377,7 @@ pub unsafe extern "C" fn sw_free(pointer: *mut c_void) {
 
 /// `void *sw_calloc(size_t, size_t)`.
 #[must_use]
-#[unsafe(export_name = "_Z9sw_callocmm")]
+#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_callocmm"))]
 pub extern "C" fn sw_calloc(count: usize, size: usize) -> *mut c_void {
     // SAFETY: calloc has no preconditions.
     unsafe { libc::calloc(count, size) }
@@ -371,7 +386,10 @@ pub extern "C" fn sw_calloc(count: usize, size: usize) -> *mut c_void {
 /// `void *sw_realloc(void *, size_t)`.
 /// # Safety
 /// `pointer` is null or a live allocation from this allocator.
-#[unsafe(export_name = "_Z10sw_reallocPvm")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z10sw_reallocPvm")
+)]
 pub unsafe extern "C" fn sw_realloc(pointer: *mut c_void, size: usize) -> *mut c_void {
     // SAFETY: the caller passes null or a live allocation.
     unsafe { libc::realloc(pointer, size) }
@@ -379,7 +397,10 @@ pub unsafe extern "C" fn sw_realloc(pointer: *mut c_void, size: usize) -> *mut c
 
 /// `swoole_rand(min, max)`: uniform over the closed range; `min` when it is empty.
 #[must_use]
-#[unsafe(export_name = "_Z11swoole_randii")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z11swoole_randii")
+)]
 pub extern "C" fn swoole_rand(min: c_int, max: c_int) -> c_int {
     let Some(span) = u64::try_from(i64::from(max) - i64::from(min) + 1)
         .ok()
