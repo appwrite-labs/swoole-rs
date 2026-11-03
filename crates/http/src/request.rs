@@ -1,8 +1,8 @@
 //! `http_server::Request`, the HTTP/1 request a `ListenPort` parses (#931): its layout
 //! and every operation over it. Native code keeps the struct's fields, because
 //! upstream's own `ListenPort` reads them whenever the ports module is off, but each
-//! method is a call into this module, and its `FormData` is a Rust [`Form`]. The
-//! effects Rust can't run go through the request's [`Native`] call
+//! method is a call into this module, and its `FormData` is a Rust [`HttpForm`]. The
+//! effects Rust can't run go through the request's [`HttpNative`] call
 //! (`http_server::request_native`): `swoole::String` allocation, the third-party
 //! multipart parser, stdio, `swoole_tmpfile` and logs.
 use crate::{HttpFrame, HttpHeaderInfo, HttpSpan, case_equal, framing, headers};
@@ -74,9 +74,9 @@ static SETTINGS: ParserSettings = ParserSettings {
 };
 
 /// `op(op, a, b, n, m)`: one native effect (`SWR_HTTP_NATIVE_*`).
-pub type Native = unsafe extern "C" fn(u32, *mut c_void, *const u8, u64, u64) -> u64;
+pub type HttpNative = unsafe extern "C" fn(u32, *mut c_void, *const u8, u64, u64) -> u64;
 
-// Native effects. Each reads only its arguments.
+// HttpNative effects. Each reads only its arguments.
 /// `new String(n)` when `b` is null, else `new String(b, n)`.
 const STRING_NEW: u32 = 0;
 const STRING_FREE: u32 = 1;
@@ -122,7 +122,7 @@ const UPLOAD_FILE: &[u8] = b"Swoole-Upload-File";
 const BUFFER_SIZE_BIG: u64 = 65536;
 
 /// A multipart body being streamed: upstream's `FormData`.
-pub struct Form {
+pub struct HttpForm {
     /// The `Content-Type` value after `multipart/form-data`, in the header buffer.
     boundary: *const u8,
     boundary_length: u32,
@@ -139,7 +139,7 @@ pub struct Form {
     upload_max: usize,
 }
 
-impl Form {
+impl HttpForm {
     /// The `Content-Type` value after `multipart/form-data`, in the header buffer.
     #[must_use]
     pub fn boundary(&self) -> (*const u8, u32) {
@@ -149,7 +149,7 @@ impl Form {
 
 /// `http_server::Request`, field for field; native code asserts the layout.
 #[repr(C)]
-pub struct Request {
+pub struct HttpRequest {
     pub method: u8,
     pub version: u8,
     pub excepted: bool,
@@ -170,15 +170,15 @@ pub struct Request {
     /// Including the request line and `\r\n\r\n`.
     pub header_length: u32,
     pub content_length: u64,
-    pub form: Option<Box<Form>>,
+    pub form: Option<Box<HttpForm>>,
     pub buffer: *mut HttpString,
-    pub native: Native,
+    pub native: HttpNative,
 }
 
-impl Request {
-    /// `Request()`: what native code's constructor makes.
+impl HttpRequest {
+    /// `HttpRequest()`: what native code's constructor makes.
     #[must_use]
-    pub fn new(native: Native) -> Self {
+    pub fn new(native: HttpNative) -> Self {
         Self {
             method: 0,
             version: 0,
@@ -224,7 +224,7 @@ impl Request {
         (buffer, bytes)
     }
 
-    /// `memset(&method, 0, offsetof(Request, form_data_))`: the form and buffer stay.
+    /// `memset(&method, 0, offsetof(HttpRequest, form_data_))`: the form and buffer stay.
     pub fn clean(&mut self) {
         let (form, buffer) = (self.form.take(), self.buffer);
         *self = Self {
@@ -312,7 +312,7 @@ impl Request {
             if status == 0 {
                 return;
             }
-            self.form = Some(Box::new(Form {
+            self.form = Some(Box::new(HttpForm {
                 boundary: input[boundary.offset..].as_ptr(),
                 boundary_length: u32::try_from(boundary.length).unwrap_or(u32::MAX),
                 parser: ptr::null_mut(),
@@ -391,7 +391,7 @@ impl Request {
 /// # Safety
 /// `request` is live and has a form; nothing else uses it during the call.
 pub unsafe fn init_multipart_parser(
-    request: *mut Request,
+    request: *mut HttpRequest,
     tmp_dir: &[u8],
     upload_max: usize,
 ) -> bool {
@@ -464,7 +464,7 @@ pub unsafe fn init_multipart_parser(
 ///
 /// # Safety
 /// `request` is live; nothing else uses it during the call.
-pub unsafe fn destroy_multipart_parser(request: *mut Request) {
+pub unsafe fn destroy_multipart_parser(request: *mut HttpRequest) {
     // SAFETY: per the contract.
     let r = unsafe { &mut *request };
     let Some(form) = r.form.take() else {
@@ -496,7 +496,7 @@ pub unsafe fn destroy_multipart_parser(request: *mut Request) {
 /// # Safety
 /// `request` is live with an initialized form and `buffer` is live; the parser's
 /// callbacks are the only other users of either during the call.
-pub unsafe fn parse_multipart_data(request: *mut Request, buffer: *mut HttpString) -> bool {
+pub unsafe fn parse_multipart_data(request: *mut HttpRequest, buffer: *mut HttpString) -> bool {
     // SAFETY: per the contract; the borrow ends before the parser runs.
     let r = unsafe { &mut *request };
     r.excepted = false;
@@ -550,15 +550,15 @@ pub unsafe fn parse_multipart_data(request: *mut Request, buffer: *mut HttpStrin
 /// # Safety
 /// `parser` is live with `data` set by [`init_multipart_parser`] to a live request
 /// that has a form, and no other borrow of that request is live.
-unsafe fn parts<'a>(parser: *mut Parser) -> (&'a mut Parser, &'a mut Request) {
+unsafe fn parts<'a>(parser: *mut Parser) -> (&'a mut Parser, &'a mut HttpRequest) {
     // SAFETY: per the contract.
     let parser = unsafe { &mut *parser };
     // SAFETY: per the contract.
-    let request = unsafe { &mut *parser.data.cast::<Request>() };
+    let request = unsafe { &mut *parser.data.cast::<HttpRequest>() };
     (parser, request)
 }
 
-fn form_of(request: &mut Request) -> &mut Form {
+fn form_of(request: &mut HttpRequest) -> &mut HttpForm {
     // Callbacks run only from `parse_multipart_data`, on a request with a form.
     request
         .form
@@ -743,7 +743,7 @@ unsafe extern "C" fn on_body_end(parser: *mut Parser) -> c_int {
 /// # Safety
 /// `request` and its buffer are live, and nothing else uses them during the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_protocol(request: *mut Request) -> i32 {
+pub unsafe extern "C" fn swr_v1_http_request_protocol(request: *mut HttpRequest) -> i32 {
     // SAFETY: per the contract.
     unsafe { &mut *request }.get_protocol()
 }
@@ -753,7 +753,7 @@ pub unsafe extern "C" fn swr_v1_http_request_protocol(request: *mut Request) -> 
 /// # Safety
 /// As [`swr_v1_http_request_protocol`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_header_length(request: *mut Request) -> i32 {
+pub unsafe extern "C" fn swr_v1_http_request_header_length(request: *mut HttpRequest) -> i32 {
     // SAFETY: per the contract.
     unsafe { &mut *request }.get_header_length()
 }
@@ -763,7 +763,7 @@ pub unsafe extern "C" fn swr_v1_http_request_header_length(request: *mut Request
 /// # Safety
 /// As [`swr_v1_http_request_protocol`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_chunked_length(request: *mut Request) -> i32 {
+pub unsafe extern "C" fn swr_v1_http_request_chunked_length(request: *mut HttpRequest) -> i32 {
     // SAFETY: per the contract.
     unsafe { &mut *request }.get_chunked_body_length()
 }
@@ -773,7 +773,7 @@ pub unsafe extern "C" fn swr_v1_http_request_chunked_length(request: *mut Reques
 /// # Safety
 /// As [`swr_v1_http_request_protocol`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_parse_header(request: *mut Request) {
+pub unsafe extern "C" fn swr_v1_http_request_parse_header(request: *mut HttpRequest) {
     // SAFETY: per the contract.
     unsafe { &mut *request }.parse_header_info();
 }
@@ -783,7 +783,7 @@ pub unsafe extern "C" fn swr_v1_http_request_parse_header(request: *mut Request)
 /// # Safety
 /// As [`swr_v1_http_request_protocol`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_expect(request: *const Request) -> u32 {
+pub unsafe extern "C" fn swr_v1_http_request_expect(request: *const HttpRequest) -> u32 {
     // SAFETY: per the contract.
     unsafe { &*request }.has_expect_header().into()
 }
@@ -794,7 +794,7 @@ pub unsafe extern "C" fn swr_v1_http_request_expect(request: *const Request) -> 
 /// As [`swr_v1_http_request_protocol`]; `name` holds `length` bytes; `value` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_http_request_header(
-    request: *const Request,
+    request: *const HttpRequest,
     name: *const u8,
     length: usize,
     value: *mut HttpSpan,
@@ -817,7 +817,7 @@ pub unsafe extern "C" fn swr_v1_http_request_header(
 /// As [`init_multipart_parser`]; `dir` holds `length` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_http_request_multipart_init(
-    request: *mut Request,
+    request: *mut HttpRequest,
     dir: *const u8,
     length: usize,
     upload_max: usize,
@@ -834,19 +834,19 @@ pub unsafe extern "C" fn swr_v1_http_request_multipart_init(
 /// As [`parse_multipart_data`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_http_request_multipart_parse(
-    request: *mut Request,
+    request: *mut HttpRequest,
     buffer: *mut HttpString,
 ) -> u32 {
     // SAFETY: per the contract.
     unsafe { parse_multipart_data(request, buffer) }.into()
 }
 
-/// `Request::destroy_multipart_parser`, and `~Request` (which runs it for a form).
+/// `Request::destroy_multipart_parser`, and `~HttpRequest` (which runs it for a form).
 ///
 /// # Safety
 /// As [`destroy_multipart_parser`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_multipart_destroy(request: *mut Request) {
+pub unsafe extern "C" fn swr_v1_http_request_multipart_destroy(request: *mut HttpRequest) {
     // SAFETY: per the contract.
     unsafe { destroy_multipart_parser(request) };
 }
@@ -856,7 +856,7 @@ pub unsafe extern "C" fn swr_v1_http_request_multipart_destroy(request: *mut Req
 /// # Safety
 /// `form` is null or a request's form, not used afterwards.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_form_free(form: *mut Form) {
+pub unsafe extern "C" fn swr_v1_http_form_free(form: *mut HttpForm) {
     if !form.is_null() {
         // SAFETY: per the contract: forms are boxed.
         drop(unsafe { Box::from_raw(form) });
@@ -990,18 +990,18 @@ mod tests {
         input
     }
 
-    fn request(input: &mut Input) -> Request {
-        let mut request = Request::new(native);
+    fn request(input: &mut Input) -> HttpRequest {
+        let mut request = HttpRequest::new(native);
         request.buffer = &raw mut input.buffer;
         request
     }
 
-    fn url(request: &Request, input: &Input) -> Vec<u8> {
+    fn url(request: &HttpRequest, input: &Input) -> Vec<u8> {
         let at = request.url_offset as usize;
         input.bytes[at..at + request.url_length as usize].to_vec()
     }
 
-    fn parsed(text: &[u8]) -> (Box<Input>, Request) {
+    fn parsed(text: &[u8]) -> (Box<Input>, HttpRequest) {
         let mut i = input(text);
         let mut r = request(&mut i);
         assert_eq!(r.get_protocol(), SW_OK, "request line");
@@ -1030,17 +1030,17 @@ mod tests {
     fn layouts_match_native_static_asserts() {
         use core::mem::{offset_of, size_of};
         let request = [
-            offset_of!(Request, url_offset),
-            offset_of!(Request, content_length),
-            offset_of!(Request, form),
+            offset_of!(HttpRequest, url_offset),
+            offset_of!(HttpRequest, content_length),
+            offset_of!(HttpRequest, form),
         ];
-        assert_eq!(request, [12, 32, 40], "Request fields");
+        assert_eq!(request, [12, 32, 40], "HttpRequest fields");
         let tail = [
-            offset_of!(Request, buffer),
-            offset_of!(Request, native),
-            size_of::<Request>(),
+            offset_of!(HttpRequest, buffer),
+            offset_of!(HttpRequest, native),
+            size_of::<HttpRequest>(),
         ];
-        assert_eq!(tail, [48, 56, 64], "Request tail");
+        assert_eq!(tail, [48, 56, 64], "HttpRequest tail");
         let parser = [
             offset_of!(Parser, boundary_length),
             offset_of!(Parser, fp),

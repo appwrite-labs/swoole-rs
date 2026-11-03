@@ -5,7 +5,7 @@
 //! context (layouts pinned by native `static_assert`s), as upstream's reader did; the
 //! request's own operations are `swoole_rs_http`'s.
 use core::ffi::c_void;
-use swoole_rs_http::{HttpString as Buffer, Request};
+use swoole_rs_http::{HttpRequest as Request, HttpString as Buffer};
 
 /// One native fact or effect on the connection in `context`.
 pub type PortsCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> u64;

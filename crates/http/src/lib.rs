@@ -45,7 +45,7 @@ mod range_response;
 pub use range_response::{HttpRangeFinish, HttpRangeFormat, swr_v1_http_range_format};
 mod request;
 pub use request::{
-    Form, HttpString, Native, Request, destroy_multipart_parser, init_multipart_parser,
+    HttpForm, HttpNative, HttpRequest, HttpString, destroy_multipart_parser, init_multipart_parser,
     parse_multipart_data, swr_v1_http_form_free, swr_v1_http_request_chunked_length,
     swr_v1_http_request_expect, swr_v1_http_request_header, swr_v1_http_request_header_length,
     swr_v1_http_request_multipart_destroy, swr_v1_http_request_multipart_init,
