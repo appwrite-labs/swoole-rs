@@ -52,6 +52,20 @@ void swr_v1_wrappers_part_end(SwrWrapperRequest *);
 void swr_v1_wrappers_complete(SwrWrapperRequest *);
 size_t swr_v1_wrappers_split(const uint8_t *, size_t, uint8_t delimiter);
 size_t swr_v1_wrappers_header_wire(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, size_t);
+/* http_server::listen's llhttp and multipart callbacks (crates/wrappers/src/http.rs) run
+ * over the request bound to a Context; each effect on it goes through `native`. */
+enum {
+    SWR_WRAPPER_HTTP_PATH = 0, SWR_WRAPPER_HTTP_QUERY, SWR_WRAPPER_HTTP_HEADER, SWR_WRAPPER_HTTP_FORM_URLENCODED,
+    SWR_WRAPPER_HTTP_HEADERS_COMPLETE, SWR_WRAPPER_HTTP_BODY, SWR_WRAPPER_HTTP_MULTIPART_NEW,
+    SWR_WRAPPER_HTTP_MULTIPART_FREE, SWR_WRAPPER_HTTP_MULTIPART_EXECUTE, SWR_WRAPPER_HTTP_LOG_PARSE,
+    SWR_WRAPPER_HTTP_FILE, SWR_WRAPPER_HTTP_HAS_FILE, SWR_WRAPPER_HTTP_WRITE, SWR_WRAPPER_HTTP_OPEN,
+    SWR_WRAPPER_HTTP_FORM_DATA, SWR_WRAPPER_HTTP_FCLOSE, SWR_WRAPPER_HTTP_BOUNDARY
+};
+typedef uint64_t (*SwrWrapperNative)(void *context, uint32_t op, void *object, const uint8_t *a, size_t an,
+                                     const uint8_t *b, size_t bn);
+void swr_v1_wrappers_request_bind(SwrWrapperRequest *, void *context, SwrWrapperNative native);
+/* The llhttp_settings_t of those callbacks. */
+const void *swr_v1_wrappers_http_settings(void);
 uint8_t swr_v1_wrappers_event_wait(uint8_t wait_exit, uint8_t exit);
 int32_t swr_v1_wrappers_event_direction(int32_t event);
 #ifdef __cplusplus

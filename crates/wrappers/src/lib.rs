@@ -1,4 +1,5 @@
-//! Wrapper-local request state. Native parsers, callbacks, containers and IO stay native.
+//! Wrapper-local request state and `http_server::listen`'s parser callbacks
+//! ([`http`]). The third-party parsers, the `Context`'s containers and IO stay native.
 #![cfg_attr(
     not(test),
     deny(
@@ -12,6 +13,11 @@
 )]
 use std::alloc::{Layout, alloc, dealloc};
 use std::{ptr, slice};
+mod http;
+pub use http::{
+    Llhttp, LlhttpSettings, Multipart, MultipartSettings, Native, swr_v1_wrappers_http_settings,
+    swr_v1_wrappers_request_bind,
+};
 
 #[repr(C)]
 pub struct ListenerPlan {
@@ -124,12 +130,18 @@ pub struct Request {
     has_filename: bool,
     completed: bool,
     started: bool,
+    binding: http::Binding,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Span {
     pub data: *const u8,
     pub len: usize,
+}
+impl Default for Span {
+    fn default() -> Self {
+        Self::from(&[])
+    }
 }
 impl Span {
     fn from(v: &[u8]) -> Self {
@@ -140,6 +152,7 @@ impl Span {
     }
 }
 #[repr(C)]
+#[derive(Default)]
 pub struct View {
     pub header: Span,
     pub form: Span,
@@ -185,6 +198,8 @@ pub extern "C" fn swr_v1_wrappers_request_new() -> *mut Request {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_wrappers_request_free(p: *mut Request) {
     if !p.is_null() {
+        // SAFETY: `p` is a live handle from `swr_v1_wrappers_request_new`.
+        unsafe { (*p).clear_multipart() };
         // SAFETY: `p` is a live handle from `swr_v1_wrappers_request_new`, freed exactly once.
         unsafe { ptr::drop_in_place(p) };
         // SAFETY: `p` came from `alloc` with this layout and its value was just dropped.
