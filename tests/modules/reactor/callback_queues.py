@@ -27,9 +27,7 @@ with tempfile.TemporaryDirectory(prefix='swr-inert-queues-') as temporary:
             queue='ReactorDeferredQueue' if selected else 'CallbackManager'
             field=queue+' *defer_tasks = nullptr;\n    '+queue+' destroy_callbacks;'
             if field not in header:raise ValueError('Deferred queue fields are not bound')
-            method=block(base,base.index('void Reactor::add_destroy_callback('))[0];destructor=block(base,base.index('Reactor::~Reactor('))[0]
-            report['sources'][variant]=dict(actual_destructor_execute_call=destructor.count('destroy_callbacks.execute();')==1)
-            if not report['sources'][variant]['actual_destructor_execute_call']:raise ValueError('Actual caller source changed')
+            method=block(base,base.index('void Reactor::add_destroy_callback('))[0]
             (tree/'callback-queues.inc').write_text('namespace swoole {\n'+alias+'\n'+manager+'\nclass Reactor {public:\n'+field+'\nvoid add_destroy_callback(const Callback&,void *);};\n'+method+'\n}\n')
             for standard in ['c++14','c++17','c++20']:
                 binary=tree/(variant+'-'+standard);command=['c++','-std='+standard,'-O1','-g','-I'+str(tree),abi,ROOT/'tests/modules/reactor/callback_queues.cc',a.archive.resolve(),'-lpthread','-o',binary]

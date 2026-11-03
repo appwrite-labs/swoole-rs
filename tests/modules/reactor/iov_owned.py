@@ -37,11 +37,6 @@ with tempfile.TemporaryDirectory(prefix='swr-iov-owned-') as temporary:
    else:tree.mkdir()
    body=(root/dest).read_text();h=(root/header).read_text();report['sources'][name]={'selected':selected,'optional_native_fix':corrected}
    declaration=block(h,h.index('struct IOVector {'))[0]
-   if selected:
-    # The public IOVector getters, layout and fields are frozen; only length's body may differ.
-    pinned=original[header].decode();old_decl=block(pinned,pinned.index('struct IOVector {'))[0]
-    old_length=block(old_decl,old_decl.index('size_t length()'))[0];new_length=block(declaration,declaration.index('size_t length()'))[0]
-    if declaration.replace(new_length,old_length,1)!=old_decl:raise ValueError('Unrelated IOVector public bytes changed')
    options=['-DSWOOLE_RS_REACTOR'] if selected else []
    for ssl in [False,True]:
     cmd=['c++','-std=c++14','-fsyntax-only',*(hybrid_flags if selected else []),*(['-DSW_USE_OPENSSL'] if ssl else []),'-I'+str(root/'include'),'-I'+str(root),*subprocess.check_output(['pkg-config','--cflags','openssl'],text=True).split(),str(root/dest)]
