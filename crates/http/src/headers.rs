@@ -61,7 +61,13 @@ pub(crate) fn header_info(
     }
     let mut at = state.cursor;
     while at < end {
-        if input[at - 2..at] == *b"\r\n" {
+        // The next line start: just past a `\n` at `at - 1` or later.
+        let Some(newline) = memchr::memchr(b'\n', &input[at - 1..end - 1]) else {
+            at = end;
+            break;
+        };
+        at += newline;
+        if input[at - 2] == b'\r' {
             let kind = if starts(&input[at..end], b"Content-Length:") {
                 Some((15, 1))
             } else if starts(&input[at..end], b"Connection:") {
@@ -123,8 +129,8 @@ pub(crate) fn header_info(
             }
         }
         at += 1;
-        state.cursor = at;
     }
+    state.cursor = at;
     state.flags |= 16;
     if state.flags & 5 == 5 && state.content_length == 0 {
         state.flags |= 8;
@@ -331,6 +337,39 @@ mod tests {
             0
         );
         assert_eq!(state.flags, 29);
+    }
+    #[test]
+    fn only_lines_after_crlf_before_end_count() {
+        let scan = |input: &[u8], cursor: usize, end: usize| {
+            let mut state = HttpHeaderInfo {
+                cursor,
+                ..Default::default()
+            };
+            let mut span = HttpSpan::default();
+            assert_eq!(header_info(input, end, &mut state, &mut span), 0);
+            (state.cursor, state.flags, state.content_length)
+        };
+        let input = b"GET / HTTP/1.1\nContent-Length: 5\r\nX: a\rContent-Length: 7\r\nConnection: keep-alive\r\n\r\n";
+        assert_eq!(
+            scan(input, 2, input.len()),
+            (input.len(), 18, 0),
+            "LF or CR alone starts no line"
+        );
+        let input = b"GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 12\r\n\r\n";
+        assert_eq!(scan(input, 2, input.len()), (input.len(), 17, 12));
+        assert_eq!(
+            scan(input, 25, input.len()),
+            (input.len(), 17, 12),
+            "cursor at the line start"
+        );
+        assert_eq!(
+            scan(input, 26, input.len()),
+            (input.len(), 16, 0),
+            "cursor past it"
+        );
+        assert_eq!(scan(input, 2, 25), (25, 16, 0), "the line starts at end");
+        assert_eq!(scan(input, 2, 26), (26, 16, 0), "the name runs past end");
+        assert_eq!(scan(input, 2, 41), (42, 17, 12), "the name ends before end");
     }
     #[test]
     fn cookie_tokens_keep_leading_trim_trailing_spaces_and_value_bytes() {
