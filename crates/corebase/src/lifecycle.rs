@@ -46,19 +46,6 @@ enum Action {
     ExecCallback = 31,
     ExitChild = 32,
     FailedExec = 33,
-    ObserveInitialized = 34,
-    PublishInit = 35,
-    HostDefaults = 36,
-    AllocateLogger = 37,
-    InitMainThread = 38,
-    LogDefaults = 39,
-    DefaultSockets = 40,
-    QueryRlimit = 41,
-    WarnRlimit = 42,
-    PublishRlimit = 43,
-    TaskTemplate = 44,
-    SignalFd = 45,
-    BugMessage = 46,
     ObserveTaskByte = 47,
     WarnTaskAbsolute = 48,
     AccessTask = 49,
@@ -69,9 +56,6 @@ enum Action {
     WarnTaskLong = 54,
     RejectTask = 55,
     AcceptTask = 56,
-    QueryCpu = 57,
-    PublishCpuOne = 58,
-    QueryCpuAgain = 59,
 }
 
 #[derive(Clone, Copy)]
@@ -81,7 +65,6 @@ enum Operation {
     Clean,
     Fork,
     ForkExec,
-    Init,
     TaskTmp,
 }
 
@@ -112,24 +95,6 @@ pub unsafe extern "C" fn swr_v1_corebase_lifecycle_next(
     };
     // SAFETY: forwards the caller's exclusive, initially zeroed state unchanged.
     unsafe { next(operation, state, observed, argument) }
-}
-
-/// Initialization sequencing with a distinct actual native caller/export.
-/// # Safety
-/// State is exclusively writable and initially zero. Execute each returned
-/// native action after return; preserve cursor and limit between calls. After
-/// `QueryCpu` observations are booleans for native sysconf(_`SC_NPROCESSORS_ONLN`) < 1;
-/// `QueryRlimit` observations are (uint64(native uint32 `rlim_cur`)<<1)|1 on success,
-/// zero on failure. Other observations are booleans. `PublishRlimit` reads index.
-/// Stop on zero/INVALID. No borrow survives return or spans a native effect.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_init_next(
-    state: *mut LifecycleState,
-    observed: u64,
-    limit: u32,
-) -> u32 {
-    // SAFETY: forwards the caller's exclusive, initially zeroed state unchanged.
-    unsafe { next(Operation::Init, state, observed, limit) }
 }
 
 /// Task-directory acceptance/publication sequencing, using copied native facts.
@@ -255,44 +220,54 @@ unsafe fn next(
             (Operation::ForkExec, 1) if observed == 2 => return 0,
             (Operation::ForkExec, 2) => (3, Action::ExitChild),
             (Operation::ForkExec, 3) => return 0,
-            // Init publishes its guard before fallible native effects. Failure
-            // never rolls back that guard or implicitly restarts initialization.
-            (Operation::Init, 0) => (1, Action::ObserveInitialized),
-            (Operation::Init, 1) if observed != 0 => return 0,
-            (Operation::Init, 1) => (2, Action::PublishInit),
-            (Operation::Init, 2) => (3, Action::QueryCpu),
-            (Operation::Init, 3) if observed != 0 => (4, Action::PublishCpuOne),
-            (Operation::Init, 3) => (5, Action::QueryCpuAgain),
-            (Operation::Init, 4 | 5) => (6, Action::HostDefaults),
-            (Operation::Init, 6) => (7, Action::ObserveLogger),
-            (Operation::Init, 7) if observed == 0 => (8, Action::AllocateLogger),
-            (Operation::Init, 7) => (8, Action::Next),
-            (Operation::Init, 8) => (9, Action::InitMainThread),
-            (Operation::Init, 9) => (10, Action::LogDefaults),
-            (Operation::Init, 10) => (11, Action::ReplacePool),
-            (Operation::Init, 11) => (12, Action::DefaultSockets),
-            (Operation::Init, 12) => (13, Action::QueryRlimit),
-            (Operation::Init, 13) if observed & 1 == 0 => (15, Action::WarnRlimit),
-            (Operation::Init, 13) => {
-                // Native success first writes max(default, limit), then
-                // overwrites it without intervening effects. Keep only min.
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "upstream's (uint32_t) rlim_cur, taken before SW_MIN"
-                )]
-                let limit = (observed >> 1) as u32;
-                state.index = limit.min(argument);
-                (15, Action::PublishRlimit)
-            }
-            (Operation::Init, 15) => (16, Action::TaskTemplate),
-            (Operation::Init, 16) => (17, Action::SignalFd),
-            (Operation::Init, 17) => (18, Action::BugMessage),
-            (Operation::Init, 18) => return 0,
             _ => return INVALID,
         };
         state.phase = next;
         if action as u32 != 0 {
             return action as u32;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trace(first: u8, accessible: bool, created: bool, published: u64) -> Vec<u32> {
+        let mut cursor = LifecycleState::default();
+        let mut observed = 0;
+        let mut actions = Vec::new();
+        for _ in 0..12 {
+            let action = unsafe { swr_v1_corebase_task_tmp_next(&raw mut cursor, observed, 256) };
+            actions.push(action);
+            observed = match action {
+                47 => u64::from(first),
+                49 => u64::from(accessible),
+                50 => u64::from(created),
+                53 => published,
+                55 | 56 => return actions,
+                _ => 0,
+            };
+        }
+        panic!("policy did not terminate");
+    }
+
+    #[test]
+    fn relative_path_rejection_precedes_access_and_publication() {
+        assert_eq!(trace(b'a', true, true, 0), [47, 48, 55]);
+    }
+    #[test]
+    fn access_success_bypasses_mkdir_and_observes_after_publication() {
+        assert_eq!(trace(b'/', true, false, 255), [47, 49, 52, 53, 56]);
+    }
+    #[test]
+    fn failed_access_requires_successful_mkdir_before_publication() {
+        assert_eq!(trace(b'/', false, true, 255), [47, 49, 50, 52, 53, 56]);
+        assert_eq!(trace(b'/', false, false, 255), [47, 49, 50, 51, 55]);
+    }
+    #[test]
+    fn length_limit_rejects_only_after_native_publication() {
+        assert_eq!(trace(b'/', true, false, 256), [47, 49, 52, 53, 54, 55]);
+        assert_eq!(trace(b'/', true, false, u64::MAX), [47, 49, 52, 53, 54, 55]);
     }
 }
