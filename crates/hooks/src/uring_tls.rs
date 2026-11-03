@@ -442,7 +442,7 @@ mod tests {
     fn once_pumps_the_wanted_bio_until_bytes_move() {
         let steps = RefCell::new(Vec::new());
         let mut attempts = [-1, -1, 5].into_iter();
-        let mut wants = [1, 1, 0, 2, 2, 0, 0].into_iter();
+        let mut wants = [1, 1, 0, 2, 0, 2, 0, 0].into_iter();
         let n = once(
             || attempts.next().unwrap(),
             || wants.next().unwrap(),
