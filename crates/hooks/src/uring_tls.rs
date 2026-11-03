@@ -285,6 +285,65 @@ pub unsafe extern "C" fn swr_v1_uring_tls_send(tls: Tls, buf: *const c_void, n: 
     })
 }
 
+/// `UringSocket::send_once` / `recv_once`'s retry: one `io` attempt, then the
+/// BIO pumps the socket's want flags (`want`: bit 0 read, bit 1 write, read
+/// afresh at each check as upstream does) ask for, until `io` moves bytes.
+fn once(
+    mut io: impl FnMut() -> isize,
+    mut want: impl FnMut() -> c_int,
+    mut prepare: impl FnMut() -> bool,
+    mut read: impl FnMut() -> bool,
+    mut write: impl FnMut() -> bool,
+) -> isize {
+    loop {
+        let n = io();
+        if n == -1 && want() == 0 {
+            return -1;
+        }
+        if !prepare() {
+            return -1;
+        }
+        if want() & 1 != 0 && !read() {
+            return -1;
+        }
+        if want() & 2 != 0 && !write() {
+            return -1;
+        }
+        if n >= 0 {
+            return n;
+        }
+    }
+}
+
+/// `send_once` / `recv_once`: `io` is the network socket's `send` or `recv` of
+/// `buf`; without a TLS session it runs once.
+///
+/// # Safety
+/// As [`swr_v1_uring_tls_write`]; `buf` holds `n` bytes and the callbacks take
+/// `tls.socket`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_uring_tls_once(
+    tls: Tls,
+    buf: *mut c_void,
+    n: usize,
+    io: unsafe extern "C" fn(socket: *mut c_void, buf: *mut c_void, n: usize) -> isize,
+    want: unsafe extern "C" fn(socket: *mut c_void) -> c_int,
+) -> isize {
+    // SAFETY: the caller's live socket and buffer.
+    let attempt = || unsafe { io(tls.socket, buf, n) };
+    if tls.ssl.is_null() {
+        return attempt();
+    }
+    once(
+        attempt,
+        // SAFETY: the caller's live socket.
+        || unsafe { want(tls.socket) },
+        || tls.prepare(),
+        || tls.bio_read(),
+        || tls.bio_write(),
+    )
+}
+
 /// `UringSocket::ssl_sendfile`'s outcome: bytes sent and the warning to log
 /// (`crate::sendfile::TLS_WARN_*`, or 0).
 #[repr(C)]
@@ -377,6 +436,44 @@ mod tests {
             read_timeout: 1.0,
             write_timeout: 1.0,
         }
+    }
+
+    #[test]
+    fn once_pumps_the_wanted_bio_until_bytes_move() {
+        let steps = RefCell::new(Vec::new());
+        let mut attempts = [-1, -1, 5].into_iter();
+        let mut wants = [1, 1, 0, 2, 0, 2, 0, 0].into_iter();
+        let n = once(
+            || attempts.next().unwrap(),
+            || wants.next().unwrap(),
+            || {
+                steps.borrow_mut().push("prepare");
+                true
+            },
+            || {
+                steps.borrow_mut().push("read");
+                true
+            },
+            || {
+                steps.borrow_mut().push("write");
+                true
+            },
+        );
+        assert_eq!(n, 5);
+        assert_eq!(
+            steps.into_inner(),
+            ["prepare", "read", "prepare", "write", "prepare"]
+        );
+    }
+
+    #[test]
+    fn once_fails_without_a_want_or_a_pump() {
+        assert_eq!(
+            once(|| -1, || 0, || panic!("prepare"), || true, || true),
+            -1
+        );
+        assert_eq!(once(|| -1, || 1, || true, || false, || panic!("write")), -1);
+        assert_eq!(once(|| 3, || 0, || false, || true, || true), -1);
     }
 
     #[test]
