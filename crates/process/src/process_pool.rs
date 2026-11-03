@@ -134,8 +134,10 @@ pub const SW_IPC_BUFFER_MAX_SIZE: i64 = 64 * 1024;
 
 /// `SW_WORKER_MESSAGE_STOP`, and where an `EventData` keeps its type and data.
 const WORKER_MESSAGE_STOP: u8 = 1;
+const EVENT_LEN: usize = 16;
 const EVENT_TYPE: usize = 22;
 const EVENT_DATA: usize = 40;
+const HEAD_SIZE: u32 = 40;
 
 // BEGIN NUMBERED: native/process/swoole_rs_process.h's SWR_POOL_*; a test keeps them equal.
 pub const OP_HAVE_MSGQUEUE: u32 = 0;
@@ -183,15 +185,18 @@ pub const OP_FREE_MESSAGE_BUS: u32 = 41;
 pub const OP_FREE_WORKERS: u32 = 42;
 pub const OP_WORKER_INIT: u32 = 43;
 pub const OP_EVENT_INIT: u32 = 44;
-pub const LOG_NO_SYSVMSG: u32 = 45;
-pub const LOG_ALLOC: u32 = 46;
-pub const LOG_NEEDS_UNIXSOCK: u32 = 47;
-pub const LOG_BUS_EXISTS: u32 = 48;
-pub const LOG_MUST_LISTEN: u32 = 49;
-pub const LOG_UNKNOWN_CHILD: u32 = 50;
-pub const LOG_WAIT_FAILED: u32 = 51;
-pub const LOG_KILL_FAILED: u32 = 52;
-pub const LOG_WAITPID_FAILED: u32 = 53;
+pub const OP_BOX_PUSH: u32 = 45;
+pub const OP_STREAM_SEND: u32 = 46;
+pub const OP_SYNC_SEND: u32 = 47;
+pub const LOG_NO_SYSVMSG: u32 = 48;
+pub const LOG_ALLOC: u32 = 49;
+pub const LOG_NEEDS_UNIXSOCK: u32 = 50;
+pub const LOG_BUS_EXISTS: u32 = 51;
+pub const LOG_MUST_LISTEN: u32 = 52;
+pub const LOG_UNKNOWN_CHILD: u32 = 53;
+pub const LOG_WAIT_FAILED: u32 = 54;
+pub const LOG_KILL_FAILED: u32 = 55;
+pub const LOG_WAITPID_FAILED: u32 = 56;
 pub const CB_START: c_int = 1;
 pub const CB_BEFORE_RELOAD: c_int = 2;
 pub const CB_SHUTDOWN: c_int = 3;
@@ -217,6 +222,7 @@ pub const RUN_DESTROY: u32 = 15;
 pub const RUN_SET_TYPE: u32 = 16;
 pub const RUN_SET_START_ID: u32 = 17;
 pub const RUN_SET_MAX_REQUEST: u32 = 18;
+pub const RUN_PUSH_MESSAGE: u32 = 19;
 // END NUMBERED
 
 /// What a pool operation asks of native code.
@@ -508,7 +514,20 @@ impl<H: PoolHost> Pool<H> {
         }
     }
 
-    /// `ProcessPool::set_protocol`.
+    /// `ProcessPool::set_protocol`: how the workers receive (`crate::pool`'s loops).
+    ///
+    /// - `SW_PROTOCOL_TASK`: each `EventData` arrives whole, in one message; a
+    ///   payload larger than its data field travels in a temporary file whose path
+    ///   is sent instead, with `SW_TASK_TMPFILE` in `info.ext_flags`
+    ///   (`Server::task_pack`).
+    /// - `SW_PROTOCOL_MESSAGE`: an `EventData` may arrive in slices sharing one
+    ///   `info.msg_id`, the first flagged `SW_EVENT_DATA_CHUNK | SW_EVENT_DATA_BEGIN`
+    ///   and the last `SW_EVENT_DATA_CHUNK | SW_EVENT_DATA_END`; the message bus
+    ///   joins them and `onMessage` runs once per whole message
+    ///   (`MessageBus::write`/`read`).
+    /// - `SW_PROTOCOL_STREAM`: a 4-byte payload length in network byte order, then
+    ///   the payload; the receiver reads the length, allocates, then reads that
+    ///   many bytes.
     fn set_protocol(&mut self, protocol: c_int) {
         if !matches!(protocol, PROTOCOL_TASK | PROTOCOL_STREAM | PROTOCOL_MESSAGE) {
             std::process::abort();
@@ -828,7 +847,7 @@ impl<H: PoolHost> Pool<H> {
             running: reap_running::<H>,
             reload_requested: reap_reload_requested::<H>,
             reload_task: reap_reload_task::<H>,
-            wait: reap_wait,
+            wait: swr_v1_process_reap_wait,
             service: reap_service::<H>,
             wait_failed: reap_wait_failed::<H>,
             start_reload: reap_start_reload::<H>,
@@ -863,6 +882,76 @@ impl<H: PoolHost> Pool<H> {
         }
         self.set_started(false);
         Ok(SW_OK)
+    }
+
+    /// `ProcessPool::push_message(msg)`: into the message box, then wake the master.
+    fn push_message(&mut self, message: *const u8) -> i64 {
+        if self.op(OP_BOX_PUSH, message as u64) < 0 {
+            return SW_ERR;
+        }
+        kill(self.master_pid(), libc::SIGIO).into()
+    }
+
+    /// `ProcessPool::push_message(type, data, length)`.
+    fn push(&mut self, kind: u8, data: *const u8, length: usize) -> i64 {
+        if self.message_box().is_null() {
+            return SW_ERR;
+        }
+        let size = self.h.event_size();
+        assert!(length < size - EVENT_DATA, "the message fits in EventData");
+        let mut message = vec![0u64; size.div_ceil(8)];
+        let bytes = message.as_mut_ptr().cast::<u8>();
+        // SAFETY: the DataHead's type and length fields, inside the buffer.
+        unsafe { bytes.wrapping_add(EVENT_TYPE).write(kind) };
+        let len = u32::try_from(length).unwrap_or(u32::MAX);
+        let len = len.to_ne_bytes();
+        // SAFETY: as above.
+        unsafe { ptr::copy_nonoverlapping(len.as_ptr(), bytes.wrapping_add(EVENT_LEN), len.len()) };
+        // SAFETY: the caller's `length` bytes fit in the data field (asserted).
+        unsafe { ptr::copy_nonoverlapping(data, bytes.wrapping_add(EVENT_DATA), length) };
+        self.push_message(bytes)
+    }
+
+    /// `ProcessPool::dispatch`/`dispatch_sync(EventData *)`: to the stream
+    /// listener, or a worker's pipe or queue.
+    fn dispatch(&mut self, event: *mut u8, worker_id: *mut c_int, blocking: bool) -> i64 {
+        if self.use_socket() != 0 {
+            return self.op(
+                if blocking {
+                    OP_SYNC_SEND
+                } else {
+                    OP_STREAM_SEND
+                },
+                event as u64,
+            );
+        }
+        // SAFETY: the caller's EventData.
+        let size =
+            unsafe { event.wrapping_add(EVENT_LEN).cast::<u32>().read_unaligned() } + HEAD_SIZE;
+        let p = self.p;
+        // SAFETY: the pool's shared counter, in place.
+        let round_id = unsafe { &raw mut (*p).round_id };
+        // SAFETY: the pool's flag, in place.
+        let warning = unsafe { &raw mut (*p).scheduler_warning };
+        // SAFETY: the pool's records, counter and flag; the caller's event and out-pointer.
+        let sent = unsafe {
+            crate::pool::swr_v1_process_pool_dispatch(
+                self.h.hooks(),
+                p.cast(),
+                self.workers(),
+                self.worker_num(),
+                self.start_id(),
+                round_id,
+                warning,
+                self.schedule_by_sysvmsg(),
+                self.use_msgqueue() != 0,
+                worker_id,
+                event,
+                size,
+                blocking,
+            )
+        };
+        if sent { SW_OK } else { SW_ERR }
     }
 
     /// `ProcessPool::destroy`.
@@ -910,8 +999,13 @@ unsafe extern "C" fn reap_reload_task<H: PoolHost>(ctx: *mut c_void) -> *mut Rel
     pool_of::<H>(ctx).reload_task()
 }
 
-/// `wait()`, or `waitpid(-1, WNOHANG)` when `nonblock`.
-unsafe extern "C" fn reap_wait(
+/// The reap loop's wait: `wait()`, or `waitpid(-1, WNOHANG)` when `nonblock`,
+/// with the status and the wait's `errno` written out.
+///
+/// # Safety
+/// `status` and `error` are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_reap_wait(
     _: *mut c_void,
     nonblock: bool,
     status: *mut c_int,
@@ -1011,6 +1105,53 @@ pub unsafe extern "C" fn swr_v1_process_pool_create(
     unsafe { with(native, pool, |p| p.create(worker_num, key, mode)) }
 }
 
+/// `ProcessPool::push_message(type, data, length)`.
+///
+/// # Safety
+/// `native` is native's table; `pool` a live `ProcessPool`; `data` holds `length` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_pool_push(
+    native: *const PoolNative,
+    pool: *mut PoolRecord,
+    kind: u8,
+    data: *const u8,
+    length: usize,
+) -> i64 {
+    // SAFETY: as the caller guarantees.
+    unsafe { with(native, pool, |p| p.push(kind, data, length)) }
+}
+
+/// `ProcessPool::dispatch` (`blocking`: `dispatch_sync`) of the `EventData` at `event`.
+///
+/// # Safety
+/// `native` is native's table; `pool` a live `ProcessPool`; `event` an `EventData`
+/// and `worker_id` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_pool_dispatch_event(
+    native: *const PoolNative,
+    pool: *mut PoolRecord,
+    event: *mut u8,
+    worker_id: *mut c_int,
+    blocking: bool,
+) -> i64 {
+    // SAFETY: as the caller guarantees.
+    unsafe { with(native, pool, |p| p.dispatch(event, worker_id, blocking)) }
+}
+
+/// `swoole_get_worker_symbol`: the log's mark for a worker type (`swWorkerType`).
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
+    let symbol = match kind {
+        1 => b'#',
+        3 => b'$',
+        2 => b'*',
+        4 => b'^',
+        5 => b'@',
+        _ => b'%',
+    };
+    symbol.cast_signed()
+}
+
 /// One `ProcessPool` operation (`RUN_*`) on `pool` (and `worker`, for those over
 /// one): the C++ method's return value, or [`RAISE`].
 ///
@@ -1087,6 +1228,7 @@ impl<H: PoolHost> Pool<H> {
                 }
                 SW_OK
             }
+            RUN_PUSH_MESSAGE => self.push_message(pointer::<u8>(signed).cast_const()),
             RUN_SET_MAX_REQUEST => {
                 self.set_max_request(u32::try_from(arg & 0xffff_ffff).unwrap_or(0));
                 self.set_max_request_grace(u32::try_from(arg >> 32).unwrap_or(0));
@@ -1395,6 +1537,37 @@ mod tests {
         pool.set_ipc_mode(IPC_MSGQUEUE);
         assert_eq!(pool.main(pool.worker(0), PROTOCOL_MESSAGE), SW_ERR);
         assert_eq!(pool.h.log, [(LOG_NEEDS_UNIXSOCK, 1)]);
+    }
+
+    #[test]
+    fn each_worker_type_has_its_log_symbol() {
+        let symbols: String = (0..=6)
+            .map(|kind| char::from(swr_v1_worker_symbol(kind).cast_unsigned()))
+            .collect();
+        assert_eq!(symbols, "%#*$^@%");
+    }
+
+    #[test]
+    fn push_message_needs_a_message_box_then_wakes_the_master() {
+        let mut fixture = Fixture::new(0);
+        let mut pool = fixture.pool(Script::default());
+        assert_eq!(pool.push(1, b"ab".as_ptr(), 2), SW_ERR);
+        record(&mut pool).message_box = ptr::dangling_mut();
+        pool.h.answers.insert(OP_BOX_PUSH, -1);
+        assert_eq!(pool.push(1, b"ab".as_ptr(), 2), SW_ERR);
+        assert_eq!(ops(&pool), [OP_BOX_PUSH]);
+    }
+
+    #[test]
+    fn a_socket_pool_dispatches_to_its_stream() {
+        let mut fixture = Fixture::new(0);
+        let mut pool = fixture.pool(Script::default());
+        record(&mut pool).use_socket = 1;
+        let mut event = [0u8; 64];
+        let mut worker_id = -1;
+        pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, false);
+        pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, true);
+        assert_eq!(ops(&pool), [OP_STREAM_SEND, OP_SYNC_SEND]);
     }
 
     #[test]

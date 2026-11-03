@@ -258,6 +258,12 @@ typedef struct {
 #define SWR_POOL_RAISE INT64_MIN
 int64_t swr_v1_process_pool_create(const swr_v1_pool_native *native, void *pool, uint32_t worker_num, int key, uint8_t mode);
 int64_t swr_v1_process_pool_run_op(const swr_v1_pool_native *native, void *pool, void *worker, uint32_t operation, uint64_t arg);
+int64_t swr_v1_process_pool_push(const swr_v1_pool_native *native, void *pool, uint8_t type, const void *data, size_t length);
+int64_t swr_v1_process_pool_dispatch_event(const swr_v1_pool_native *native, void *pool, void *event, int *worker_id, bool blocking);
+/* The reap loop's wait: wait(), or waitpid(-1, WNOHANG) when `nonblock`. */
+int swr_v1_process_reap_wait(void *ctx, bool nonblock, int *status, int *error);
+/* swoole_get_worker_symbol's mark for a worker type. */
+char swr_v1_worker_symbol(int type);
 #define SWR_POOL_OP_HAVE_MSGQUEUE 0
 #define SWR_POOL_OP_ALLOC_WORKERS 1
 #define SWR_POOL_OP_NEW_MESSAGE_BOX 2
@@ -303,15 +309,18 @@ int64_t swr_v1_process_pool_run_op(const swr_v1_pool_native *native, void *pool,
 #define SWR_POOL_OP_FREE_WORKERS 42
 #define SWR_POOL_OP_WORKER_INIT 43
 #define SWR_POOL_OP_EVENT_INIT 44
-#define SWR_POOL_LOG_NO_SYSVMSG 45
-#define SWR_POOL_LOG_ALLOC 46
-#define SWR_POOL_LOG_NEEDS_UNIXSOCK 47
-#define SWR_POOL_LOG_BUS_EXISTS 48
-#define SWR_POOL_LOG_MUST_LISTEN 49
-#define SWR_POOL_LOG_UNKNOWN_CHILD 50
-#define SWR_POOL_LOG_WAIT_FAILED 51
-#define SWR_POOL_LOG_KILL_FAILED 52
-#define SWR_POOL_LOG_WAITPID_FAILED 53
+#define SWR_POOL_OP_BOX_PUSH 45
+#define SWR_POOL_OP_STREAM_SEND 46
+#define SWR_POOL_OP_SYNC_SEND 47
+#define SWR_POOL_LOG_NO_SYSVMSG 48
+#define SWR_POOL_LOG_ALLOC 49
+#define SWR_POOL_LOG_NEEDS_UNIXSOCK 50
+#define SWR_POOL_LOG_BUS_EXISTS 51
+#define SWR_POOL_LOG_MUST_LISTEN 52
+#define SWR_POOL_LOG_UNKNOWN_CHILD 53
+#define SWR_POOL_LOG_WAIT_FAILED 54
+#define SWR_POOL_LOG_KILL_FAILED 55
+#define SWR_POOL_LOG_WAITPID_FAILED 56
 #define SWR_POOL_CB_START 1
 #define SWR_POOL_CB_BEFORE_RELOAD 2
 #define SWR_POOL_CB_SHUTDOWN 3
@@ -337,6 +346,7 @@ int64_t swr_v1_process_pool_run_op(const swr_v1_pool_native *native, void *pool,
 #define SWR_POOL_RUN_SET_TYPE 16
 #define SWR_POOL_RUN_SET_START_ID 17
 #define SWR_POOL_RUN_SET_MAX_REQUEST 18
+#define SWR_POOL_RUN_PUSH_MESSAGE 19
 /* Server::task and Server::task_sync (crates/process/src/task_sync.rs). Each
  * hook takes a swr_v1_pool_call whose pool is the Server and worker the MultiTask. */
 typedef struct {
