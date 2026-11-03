@@ -121,9 +121,8 @@ pub mod http_frame {
         pub header_length: u32,
     }
 
-    /// Request framing compiled from one engine's http.cc: `upstream` is the pinned
-    /// file, `candidate` the file with the http overlay patch, which calls the Rust
-    /// exports (the caller's binary must link `swr_v1_http_*`).
+    /// Request framing from one engine: `UPSTREAM` is the pinned http.cc; a candidate
+    /// supplies the same entry points (fuzz/src/lib.rs runs `swoole_rs_http::Request`).
     pub struct Engine {
         /// `operation` 0 `get_protocol`, 1 `get_header_length`, 2
         /// `get_chunked_body_length` over `length` bytes followed by a NUL;
@@ -188,30 +187,6 @@ pub mod http_frame {
             header_length: u32,
             out: *mut HeaderInfo,
         );
-        fn swr_oracle_http_frame_candidate(
-            operation: u32,
-            data: *mut c_char,
-            length: usize,
-            state: *mut State,
-        ) -> i32;
-        fn swr_oracle_http_expect_candidate(data: *mut c_char, length: usize) -> bool;
-        fn swr_oracle_http_header_candidate(
-            data: *mut c_char,
-            length: usize,
-            url_offset: u32,
-            url_length: u32,
-            header_length: u32,
-            name: *const c_char,
-            output: *mut c_char,
-        ) -> usize;
-        fn swr_oracle_http_method_candidate(method: i32) -> *const c_char;
-        fn swr_oracle_http_header_info_candidate(
-            data: *mut c_char,
-            length: usize,
-            line_length: u32,
-            header_length: u32,
-            out: *mut HeaderInfo,
-        );
     }
 
     pub const UPSTREAM: Engine = Engine {
@@ -220,13 +195,6 @@ pub mod http_frame {
         header: swr_oracle_http_header_upstream,
         method: swr_oracle_http_method_upstream,
         header_info: swr_oracle_http_header_info_upstream,
-    };
-    pub const CANDIDATE: Engine = Engine {
-        frame: swr_oracle_http_frame_candidate,
-        expect: swr_oracle_http_expect_candidate,
-        header: swr_oracle_http_header_candidate,
-        method: swr_oracle_http_method_candidate,
-        header_info: swr_oracle_http_header_info_candidate,
     };
 }
 

@@ -32,10 +32,10 @@ upstream runs to completion on every input.
 For HTTP request framing, `http_frame` runs `get_protocol`, `get_header_length`
 or `get_chunked_body_length` from a chosen offset, header length and request
 state, and `http_header` runs `has_expect_header`, `get_header(name)` and
-`get_method_string`. Both compare the pinned http.cc bodies with the same bodies
-after `migration/patches/http/0001-http-helpers.patch` (which call Rust), over a
-`Request` with upstream's field types, copied by `crates/oracle/build.rs`. Inputs
-outside the compared domain are not compared; the candidate is still checked. Seeds include the requests
+`get_method_string`, and `http_header_info` runs `parse_header_info`. Each compares
+the pinned http.cc bodies (copied by `crates/oracle/build.rs`, over a `Request` with
+upstream's field types) with `swoole_rs_http::Request`. Inputs outside the compared
+domain are not compared; the candidate is still checked. Seeds include the requests
 `http.client` sends for the corpus applications.
 
 `http_header_info` runs `Request::parse_header_info` on both engines over any

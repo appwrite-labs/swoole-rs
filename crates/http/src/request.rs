@@ -139,6 +139,14 @@ pub struct Form {
     upload_max: usize,
 }
 
+impl Form {
+    /// The `Content-Type` value after `multipart/form-data`, in the header buffer.
+    #[must_use]
+    pub fn boundary(&self) -> (*const u8, u32) {
+        (self.boundary, self.boundary_length)
+    }
+}
+
 /// `http_server::Request`, field for field; native code asserts the layout.
 #[repr(C)]
 pub struct Request {

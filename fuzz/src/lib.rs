@@ -13,13 +13,162 @@ use swoole_rs_http::{
 use swoole_rs_oracle::{
     base64 as upstream, clients, framing as upstream_framing, framing_stream,
     http as upstream_http,
-    http_frame::{self, CANDIDATE, Engine, UPSTREAM},
+    http_frame::{self, Engine, UPSTREAM},
     http_range, protocols, resp_stream, socks5, websocket as upstream_ws,
 };
 use swoole_rs_protocols as _;
 use swoole_rs_websocket::{DecodedFrame, swr_v1_ws_decode, swr_v1_ws_frame_length, swr_v1_ws_mask};
 
 const RED_ZONE: usize = 17;
+
+/// `swoole_rs_http::Request` behind the oracle's request framing entry points.
+const CANDIDATE: Engine = Engine {
+    frame: request::frame,
+    expect: request::expect,
+    header: request::header,
+    method: swoole_rs_http::swr_v1_http_method_string,
+    header_info: request::header_info,
+};
+
+mod request {
+    use std::cell::Cell;
+    use std::ffi::{CStr, c_char, c_void};
+    use swoole_rs_http::{HttpString, Request};
+
+    thread_local! {
+        /// The errno native code would leave after `strtoull`.
+        static ERRNO: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// src/protocol/http.cc's `request_native`, for the one effect framing has.
+    unsafe extern "C" fn native(op: u32, _: *mut c_void, _: *const u8, n: u64, _: u64) -> u64 {
+        const NUMBER_ERRORS: u32 = 12;
+        // glibc's strtoull leaves errno alone without digits; Darwin's sets EINVAL.
+        const NO_DIGITS: u32 = if cfg!(target_os = "macos") { 22 } else { 0 };
+        if op == NUMBER_ERRORS {
+            if n & 1 != 0 {
+                ERRNO.set(34);
+            }
+            if n & 2 != 0 && NO_DIGITS != 0 {
+                ERRNO.set(NO_DIGITS);
+            }
+        }
+        0
+    }
+
+    /// A received `swoole::String` over `length` bytes and their spare NUL.
+    fn on(data: *mut c_char, length: usize, offset: usize) -> HttpString {
+        HttpString {
+            length,
+            size: length + 1,
+            offset: offset as i64,
+            str: data.cast(),
+        }
+    }
+
+    pub unsafe extern "C" fn frame(
+        operation: u32,
+        data: *mut c_char,
+        length: usize,
+        state: *mut http_frame::State,
+    ) -> i32 {
+        // SAFETY: the caller's state.
+        let s = unsafe { &mut *state };
+        let mut r = Request::new(native);
+        let mut buffer = on(data, length, s.offset);
+        (r.method, r.version) = (s.method as u8, s.version as u8);
+        (r.excepted, r.known_length) = (s.excepted != 0, s.known_length != 0);
+        (r.url_offset, r.url_length) = (s.url_offset, s.url_length);
+        (r.request_line_length, r.header_length) = (s.line_length, s.header_length);
+        r.content_length = s.content_length;
+        r.buffer = &raw mut buffer;
+        let result = match operation {
+            0 => r.get_protocol(),
+            1 => r.get_header_length(),
+            _ => r.get_chunked_body_length(),
+        };
+        *s = http_frame::State {
+            offset: buffer.offset as usize,
+            content_length: r.content_length,
+            method: r.method.into(),
+            version: r.version.into(),
+            excepted: r.excepted.into(),
+            known_length: r.known_length.into(),
+            url_offset: r.url_offset,
+            url_length: r.url_length,
+            line_length: r.request_line_length,
+            header_length: r.header_length,
+        };
+        result
+    }
+
+    pub unsafe extern "C" fn header_info(
+        data: *mut c_char,
+        length: usize,
+        line_length: u32,
+        header_length: u32,
+        out: *mut http_frame::HeaderInfo,
+    ) {
+        let mut r = Request::new(native);
+        let mut buffer = on(data, length, 0);
+        (r.request_line_length, r.header_length) = (line_length, header_length);
+        r.buffer = &raw mut buffer;
+        ERRNO.set(0);
+        r.parse_header_info();
+        let (offset, boundary) = r.form.as_deref().map_or((-1, 0), |form| {
+            let (at, boundary) = form.boundary();
+            (at as i64 - data as i64, i64::from(boundary))
+        });
+        // SAFETY: the caller's output.
+        unsafe {
+            *out = http_frame::HeaderInfo {
+                content_length: r.content_length,
+                flags: u32::from(r.known_length)
+                    | u32::from(r.keep_alive) << 1
+                    | u32::from(r.chunked) << 2
+                    | u32::from(r.nobody_chunked) << 3
+                    | u32::from(r.header_parsed) << 4
+                    | u32::from(r.excepted) << 5,
+                error: ERRNO.get(),
+                boundary_offset: offset,
+                boundary_length: boundary,
+            }
+        };
+        r.form = None;
+    }
+
+    pub unsafe extern "C" fn expect(data: *mut c_char, length: usize) -> bool {
+        let mut r = Request::new(native);
+        let mut buffer = on(data, length, 0);
+        r.buffer = &raw mut buffer;
+        r.has_expect_header()
+    }
+
+    pub unsafe extern "C" fn header(
+        data: *mut c_char,
+        length: usize,
+        url_offset: u32,
+        url_length: u32,
+        header_length: u32,
+        name: *const c_char,
+        output: *mut c_char,
+    ) -> usize {
+        let mut r = Request::new(native);
+        let mut buffer = on(data, length, 0);
+        (r.url_offset, r.url_length, r.header_length) = (url_offset, url_length, header_length);
+        r.buffer = &raw mut buffer;
+        // SAFETY: a NUL-terminated name.
+        let name = unsafe { CStr::from_ptr(name) }.to_bytes();
+        let Some(value) = r.get_header(name) else {
+            return 0;
+        };
+        // SAFETY: the value is inside the buffer; output holds `length` bytes.
+        unsafe { std::ptr::copy_nonoverlapping(data.add(value.offset), output, value.length) };
+        value.length
+    }
+
+    use swoole_rs_oracle::http_frame;
+}
 
 pub fn base64(bytes: &[u8], encode: bool) {
     // Zero-length encode is undefined upstream.
