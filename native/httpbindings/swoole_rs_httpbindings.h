@@ -286,6 +286,26 @@ void *swr_ws_host_context_server(void *context);
 bool swr_ws_host_context_compression(void *context);
 void swr_ws_host_co_protocol(void *context);
 bool swr_ws_host_set_header(void *context, const char *key, size_t key_length, const char *value, size_t length);
+
+/* Swoole\Http\Server's per-worker state (crates/phphttp/src/server.rs): the
+ * addresses cached for keep-alive sessions (`server` a swoole::Server, `conn`
+ * its swoole::Connection, `table` the request's `server` array, `loopback` 4
+ * or 6 for a loopback peer) and the requests queued past
+ * worker_max_concurrency. What it asks of C++: an address, the worker's
+ * counters (false without a server worker), deferring a queued request's
+ * onRequest and clearing a context's onAfterResponse. */
+struct _zend_array;
+void swr_v1_phphttp_server_addresses(void *server, void *conn, struct _zend_array *table, int64_t session,
+                                     int64_t local_port, int64_t remote_port, int loopback, bool cache);
+void swr_v1_phphttp_server_close(int64_t session);
+bool swr_v1_phphttp_server_admit(void *ctx);
+void swr_v1_phphttp_server_release(void);
+void swr_v1_phphttp_server_rshutdown(void);
+typedef struct { uint32_t *concurrency; uint32_t *server_concurrency; uint32_t max_concurrency; bool shutdown; } swr_http_worker;
+const char *swr_http_host_address(void *server, void *conn, bool local);
+bool swr_http_host_worker(swr_http_worker *worker);
+void swr_http_host_defer(void *context);
+void swr_http_host_unhook(void *context);
 #ifdef __cplusplus
 }
 #endif

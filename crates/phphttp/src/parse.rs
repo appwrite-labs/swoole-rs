@@ -178,7 +178,7 @@ static PARTS: PartSettings = PartSettings {
 /// Keys interned at MINIT (Swoole's `SW_ZSTR_KNOWN`; interning returns the
 /// same strings).
 #[derive(Clone, Copy)]
-enum Key {
+pub(crate) enum Key {
     Host,
     UserAgent,
     Accept,
@@ -196,9 +196,15 @@ enum Key {
     ServerProtocol,
     Http10,
     Http11,
+    ServerPort,
+    RemotePort,
+    ServerAddr,
+    RemoteAddr,
+    LoopbackV4,
+    LoopbackV6,
 }
 
-const KEY_NAMES: [&[u8]; 17] = [
+const KEY_NAMES: [&[u8]; 23] = [
     b"host",
     b"user-agent",
     b"accept",
@@ -216,6 +222,12 @@ const KEY_NAMES: [&[u8]; 17] = [
     b"server_protocol",
     b"HTTP/1.0",
     b"HTTP/1.1",
+    b"server_port",
+    b"remote_port",
+    b"server_addr",
+    b"remote_addr",
+    b"127.0.0.1",
+    b"::1",
 ];
 /// The header keys `swr_v1_httpbindings_request_key` numbers 0 to 7.
 const HEADER_KEYS: [Key; 8] = [
@@ -229,12 +241,12 @@ const HEADER_KEYS: [Key; 8] = [
     Key::AcceptEncoding,
 ];
 
-static KEYS: [AtomicPtr<zend_string>; 17] = [const { AtomicPtr::new(ptr::null_mut()) }; 17];
+static KEYS: [AtomicPtr<zend_string>; 23] = [const { AtomicPtr::new(ptr::null_mut()) }; 23];
 /// `Swoole\Http\Request`'s `get`, `post`, `cookie`, `files` and `tmpfiles` slots.
 static OFFSETS: [AtomicU32; 5] = [const { AtomicU32::new(0) }; 5];
 pub(crate) static CAPABILITIES: AtomicU32 = AtomicU32::new(0);
 
-fn key(key: Key) -> *mut zend_string {
+pub(crate) fn key(key: Key) -> *mut zend_string {
     KEYS[key as usize].load(Relaxed)
 }
 
@@ -1529,6 +1541,8 @@ mod tests {
     fn keys_are_upstreams_known_strings() {
         assert_eq!(KEY_NAMES[Key::RequestMethod as usize], b"request_method");
         assert_eq!(KEY_NAMES[Key::Http11 as usize], b"HTTP/1.1");
+        assert_eq!(KEY_NAMES[Key::ServerAddr as usize], b"server_addr");
+        assert_eq!(KEY_NAMES[Key::LoopbackV6 as usize], b"::1");
         assert_eq!(KEY_NAMES[HEADER_KEYS[7] as usize], b"accept-encoding");
     }
 }
