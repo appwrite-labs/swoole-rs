@@ -5,7 +5,7 @@ use swoole_rs_locks::{atomic32, atomic64};
 use swoole_rs_zend::Call;
 
 const LOAD: u32 = 0;
-const STORE: u32 = 1;
+pub(crate) const STORE: u32 = 1;
 const ADD_FETCH: u32 = 2;
 const SUB_FETCH: u32 = 3;
 const COMPARE_SET: u32 = 4;

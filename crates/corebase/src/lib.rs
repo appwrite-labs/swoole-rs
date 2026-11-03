@@ -8,10 +8,17 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+mod global;
 mod hook;
 mod host;
 mod lifecycle;
 mod random;
+pub use global::{
+    swr_v1_core_cpu_num, swr_v1_core_dns_lookup_random, swr_v1_core_dns_tries, swr_v1_core_init,
+    swr_v1_core_initialized, swr_v1_core_max_sockets, swr_v1_core_memory_pool, swr_v1_core_reset,
+    swr_v1_core_set_dns_lookup_random, swr_v1_core_set_memory_pool, swr_v1_core_set_stdout,
+    swr_v1_core_set_wait_signal, swr_v1_core_stdout, swr_v1_core_wait_signal,
+};
 pub use hook::swr_v1_corebase_hook_add_action;
 pub use host::{
     DataHead, swr_v1_corebase_datahead_dump, swr_v1_corebase_dump_ascii, swr_v1_corebase_dump_hex,
@@ -20,8 +27,7 @@ pub use host::{
     swr_v1_corebase_system_random, swr_v1_corebase_wait_for,
 };
 pub use lifecycle::{
-    LifecycleState, swr_v1_corebase_init_next, swr_v1_corebase_lifecycle_next,
-    swr_v1_corebase_task_tmp_next,
+    LifecycleState, swr_v1_corebase_lifecycle_next, swr_v1_corebase_task_tmp_next,
 };
 pub use random::{RandomState, swr_v1_corebase_random_next};
 

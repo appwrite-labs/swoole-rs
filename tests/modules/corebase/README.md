@@ -2,9 +2,12 @@
 
 The corebase overlay patches `src/core/base.cc` so that helper policy (type
 size, gcd/lcm, stoi env parsing, itoa/radix/hex, version compare, dirname,
-recursive mkdir), lifecycle sequencing (init, clean, thread init/clean, fork,
-task tmpdir) and hook insertion decisions come from Rust. Native code keeps all
-globals/TLS, allocation, syscalls, logging and callback execution. See
+recursive mkdir), lifecycle sequencing (clean, thread init/clean, fork, task
+tmpdir) and hook insertion decisions come from Rust. Rust owns part of
+`SwooleG` (`crates/corebase/src/global.rs`): the init guard, CPU count, DNS
+options, memory pool and stdout stream, read through accessors; `swoole_init`
+calls it for those defaults. Native code keeps the rest of `SwooleG`, TLS,
+allocation, logging and callback execution. See
 `native/corebase/contract.md`.
 
 On Homebrew macOS add `--include /opt/homebrew/opt/openssl@3/include` to the
@@ -33,36 +36,17 @@ native-TU gates.
 - `canonical.py --source PINNED_GIT --config CONFIG_H --archive A --output R [--jobs N] [--openssl-dir P] [--php-dir P] [--ccache EXE | --no-ccache]`
   (`corebase-lifecycle`): builds a native and a corebase-only full library
   with `tools/native_core.py`, requires the selected upstream base GTests to
-  pass in both (12 on macOS, all 33 active on Linux), then runs
-  `prepare_benchmark.py` and `lifecycle_gate.py` on that pair. Its report is
-  also consumed by `tests/modules/tls/gate.py --allocation-native-report`.
+  pass in both (12 on macOS, all 33 active on Linux). Its report is also
+  consumed by `tests/modules/tls/gate.py --allocation-native-report`.
 
-## Lifecycle pieces
+## Helpers
 
-- `prepare_benchmark.py --source NATIVE_TREE --native-build R --rust-build R --identity ID --output R`:
-  compiles `benchmark.cc` against both libraries, verifies the loaded library,
-  and checks all 11 workload checksums with no timing.
-- `lifecycle_gate.py --prepared R --archive A --output R`: checks the prepared
-  pair was built from the current overlay and archive, then runs
-  `hook_lifetime.py` for cleanup/thread, fork, task-directory and
-  task-lifetime drivers (plus fork-failure, init and init-host on Linux).
-- `hook_lifetime.py --prepared R --output R --driver hooks|fork|fork-failure|init|init-host|task-directory|task-lifetime [--require-fork] [--require-init] [--require-task-tmp] [--require-lifecycle]`:
-  compiles the matching `*.cc` witness against both libraries and compares its
-  trace to the expected one (for `init`, native and Rust traces must match).
-  The `--require-*` flags use `lifecycle_proof.py` to require actual call paths
-  from the native facades to the Rust entry points. `fork-failure`, `init` and
-  `init-host` interpose syscalls and are Linux-only.
-- `benchmark.py --measure --prepared R --output R [--counts PROFILE] [--repetitions N]`:
-  times the prepared workloads (seven alternating repetitions by default) and
-  fails if any Rust median is slower. Run with no other workload on the host.
-  It has not been run yet.
-- Pure Rust policy checks:
-  `rustc --edition=2024 --test tests/modules/corebase/init-policy.rs -o target/corebase-init-policy && target/corebase-init-policy`
-  (likewise `task-directory-policy.rs`). The hook policy's tests are in `crates/corebase/src/hook.rs`.
+Rust unit tests: the task-directory policy in `crates/corebase/src/lifecycle.rs`,
+the hook policy in `hook.rs`, the core state record in `global.rs`.
 
-`patching.py`, `cases.py`, `lifecycle_proof.py` and `supervisor.py` are shared
-helpers. `supervisor.py` runs child Python tools in-process so SIGTERM/SIGINT
-unwind their process groups; a forced SIGKILL does not.
+`patching.py`, `cases.py` and `supervisor.py` are shared helpers.
+`supervisor.py` runs child Python tools in-process so SIGTERM/SIGINT unwind
+their process groups; a forced SIGKILL does not.
 
 ## Known failures and gaps
 
@@ -71,7 +55,7 @@ unwind their process groups; a forced SIGKILL does not.
   coroutine/system, lock/lock, network/socket, os/os, os/process_pool,
   os/signal, server/http_server, server/server, coroutine/iouring; on Linux
   coroutine/iouring), so `full_native_inventory_passed` is false. Only the
-  selected base cases gate the lifecycle comparison.
+  selected base cases gate.
 - macOS `base.futex` fails its wakeup assertion and times out in both engines
   (the native fallback returns 0 where the test expects 1). Five macOS base
   cases that use fixed `/tmp` paths are not run.

@@ -1,11 +1,12 @@
 # Core base helpers
 
 Opt-in feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. Callers are
-in `src/core/base.cc`. No public C++ signature or Global/ThreadGlobal layout
-changes.
+in `src/core/base.cc` and the readers of the `SwooleG` fields Rust owns. No
+public C++ signature changes; `swoole::Global` loses the fields Rust owns.
 
-Rust holds numeric/byte/path comparison and formatting policy. It keeps no
-state, pointers or borrows after return, performs no allocation, and calls no
+Rust holds numeric/byte/path comparison and formatting policy. Apart from the
+core state record below it keeps no state, pointers or borrows after return,
+performs no allocation, and calls no
 native allocator, user callback, Zend operation or C++ constructor. Host libc
 `strtoul`, `strncasecmp` and `toupper` are called directly so locale and errno
 behave as upstream; input strings must stay valid for the call. No exception,
@@ -94,9 +95,20 @@ Native shims perform exactly one requested effect per step.
   native `exit(0)`. A returning fatal handler resumes the sequence; throwing or
   exiting handlers never re-enter Rust.
 
-`init_next` also selects the `SW_MAX(1, sysconf(_SC_NPROCESSORS_ONLN))` CPU
-branch: native runs the first query, reports only `< 1`, then either assigns 1 or
-runs the second query and assigns.
+## Core state (`global.rs`)
+
+Rust owns these `SwooleG` fields in one process-wide record of atomics: the init
+guard, `cpu_num`, `wait_signal`, `dns_lookup_random`, `dns_tries`, the memory
+pool and the stdout stream (the last two are native pointers Rust only holds).
+Native code reads them through `swr_v1_core_*` accessors; `SW_CPU_NUM`,
+`sw_mem_pool()` and `swoole_get_stdout_stream()` keep their names.
+`swr_v1_core_init` is `swoole_init`'s guard: false when already initialised,
+otherwise it resets the record and sets `SW_MAX(1, sysconf(...))` CPUs, one DNS
+try and the `srandom(time(nullptr))` seed; `swoole_init` keeps the native effects
+in upstream's order. `swr_v1_core_max_sockets` is the `RLIMIT_NOFILE` soft limit
+as `uint32_t`, capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept.
+`swoole_clean` resets the record after the native `Global`. The unused `uname`,
+`use_async_resolver` and `use_name_resolver` fields are gone.
 
 Whole operations in Rust (`host.rs`), with native code keeping only their
 warnings: `swoole_shell_exec`, `sw_wait_for` (through a non-throwing predicate
@@ -105,5 +117,5 @@ trampoline), `swoole_dump_ascii`/`_hex`, `swoole_print_backtrace` without Boost,
 xoshiro256** seeded by getentropy), `swoole_system_random` and
 `swoole_redirect_stdout(int)` (each dup2's errno is handed back for its warning).
 
-Still native: varargs, globals, C++ containers/objects, filesystem IO, hook
+Still native: varargs, the rest of `SwooleG` and TLS, C++ containers/objects, filesystem IO, hook
 traversal and other runtime operations.

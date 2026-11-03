@@ -157,7 +157,12 @@ pull request and the PR tier's `rust`, `tooling` and `hybrid` checks, so renamin
 those jobs means updating the ruleset in the same PR. `hybrid` (the all-modules
 build, extension load and corpus, a few minutes cached) runs only when a PR
 touches patches, `native/`, the build tools, `.github/` or `.devcontainer/`, and
-is skipped, which counts as passing, otherwise. `gates` is informative; breakage
+is skipped, which counts as passing, otherwise. Checks run against `main` as of
+the PR's last push, and a PR merged meanwhile can make this one's patches stop
+applying, so `tooling` applies the all-modules patch set to the pin
+(`tools/patches.py check`, seconds; run it before pushing a patch change) and
+`hybrid` re-runs that check over `main`'s head as its last step. A merged PR's
+patches can still stop compiling; the merge tier catches that. `gates` is informative; breakage
 it misses is caught by the merge tier and the red-main rule. Keep them cached and audit
 them regularly for waste and duplicate steps; slow or flaky CI is a ticket.
 
