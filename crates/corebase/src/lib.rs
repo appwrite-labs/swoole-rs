@@ -82,7 +82,10 @@ pub extern "C" fn swr_v1_corebase_type_size(kind: u8) -> c_int {
 /// # Panics
 /// On a zero operand, which upstream asserts against (a panic here aborts).
 #[must_use]
-#[unsafe(export_name = "_Z21swoole_common_divisorjj")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z21swoole_common_divisorjj")
+)]
 pub extern "C" fn swoole_common_divisor(left: u32, right: u32) -> u32 {
     assert!(left > 0 && right > 0, "swoole_common_divisor: zero operand");
     gcd(left, right)
@@ -93,7 +96,10 @@ pub extern "C" fn swoole_common_divisor(left: u32, right: u32) -> u32 {
 /// # Panics
 /// On a zero operand, which upstream asserts against (a panic here aborts).
 #[must_use]
-#[unsafe(export_name = "_Z22swoole_common_multiplejj")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z22swoole_common_multiplejj")
+)]
 pub extern "C" fn swoole_common_multiple(left: u32, right: u32) -> u32 {
     assert!(
         left > 0 && right > 0,
@@ -118,7 +124,10 @@ unsafe extern "C" {
 /// # Panics
 /// On a base outside 2..=36, which upstream asserts against (a panic here aborts).
 #[must_use]
-#[unsafe(export_name = "_Z14swoole_dec2hexmi")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z14swoole_dec2hexmi")
+)]
 pub extern "C" fn swoole_dec2hex(value: c_ulong, base: c_int) -> *mut c_char {
     assert!(base > 1 && base < 37, "swoole_dec2hex: base out of range");
     let mut buffer = [0_u8; c_ulong::BITS as usize + 1];
@@ -272,7 +281,10 @@ pub unsafe extern "C" fn swr_v1_corebase_hex_mode(
 /// # Safety
 /// Both inputs are valid NUL-terminated C strings for the duration of this call.
 #[must_use]
-#[unsafe(export_name = "_Z22swoole_version_comparePKcS0_")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z22swoole_version_comparePKcS0_")
+)]
 pub unsafe extern "C" fn swoole_version_compare(
     mut left: *const c_char,
     mut right: *const c_char,

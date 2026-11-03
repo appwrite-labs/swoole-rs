@@ -13,7 +13,6 @@ pub mod dns;
 pub mod http_format;
 pub mod ip;
 pub mod pool;
-pub mod resolver;
 pub mod ws;
 
 #[repr(C)]

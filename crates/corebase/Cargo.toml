@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+# Define base.cc's helpers under their C++ symbols. Only the corebase module, whose
+# patch deletes the C++ definitions, turns it on; another module linking this crate
+# would otherwise duplicate them.
+upstream-symbols = []
+
 [dependencies]
 itoa = "1.0.18"
 libc = "=0.2.191"

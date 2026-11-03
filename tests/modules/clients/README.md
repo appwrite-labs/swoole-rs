@@ -31,7 +31,6 @@ these are whole-TU, live-socket or PHP runtime tests.
 | `codec_gate.py` | DNS domain encode/decode and whole query/response callers |
 | `resolv_gate.py` | Resolver configuration file and endpoint parsing |
 | `pool_gate.py` | Rust persistent pool vs native reference, fork isolation; `--faults` adds allocation-failure cases from a cfg(test) archive |
-| `resolver_gate.py` | PHP resolver cluster lookup, retry, host/port selection |
 | `http_format_gate.py` | Request formatting against the pinned `sw_snprintf` |
 | `ip_gate.py` | Numeric Address validation/assignment and loopback against libc |
 | `ip_text_gate.py` | DNS numeric IP formatting |
