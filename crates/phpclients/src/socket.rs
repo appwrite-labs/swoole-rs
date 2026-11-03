@@ -1,6 +1,6 @@
 //! `Swoole\Coroutine\Socket` and its exception: registration, the socket
-//! constants, the object and every method but `getOption`, `setOption` and
-//! `import` (still C++, over the `ext/sockets` option helpers and PHP streams).
+//! constants, the object and its methods (`getOption`, `setOption` and `import`
+//! are in `socket_options`).
 //! Each method parses as upstream's ZPP block does, then makes one call into the
 //! C++ socket (`crate::native`).
 use crate::{
@@ -101,9 +101,9 @@ method_table! {
         c"sendAll" => zim_swoole_socket_coro_sendAll, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_sendAll, z::ZEND_ACC_PUBLIC;
         c"recvfrom" => zim_swoole_socket_coro_recvfrom, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_recvfrom, z::ZEND_ACC_PUBLIC;
         c"sendto" => zim_swoole_socket_coro_sendto, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_sendto, z::ZEND_ACC_PUBLIC;
-        c"getOption" => zim_swoole_socket_coro_getOption, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_getOption, z::ZEND_ACC_PUBLIC;
+        c"getOption" => crate::socket_options::zim_swoole_socket_coro_getOption, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_getOption, z::ZEND_ACC_PUBLIC;
         c"setProtocol" => zim_swoole_socket_coro_setProtocol, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_setProtocol, z::ZEND_ACC_PUBLIC;
-        c"setOption" => zim_swoole_socket_coro_setOption, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_setOption, z::ZEND_ACC_PUBLIC;
+        c"setOption" => crate::socket_options::zim_swoole_socket_coro_setOption, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_setOption, z::ZEND_ACC_PUBLIC;
         c"sslHandshake" => zim_swoole_socket_coro_sslHandshake, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_sslHandshake, z::ZEND_ACC_PUBLIC;
         c"shutdown" => zim_swoole_socket_coro_shutdown, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_shutdown, z::ZEND_ACC_PUBLIC;
         c"cancel" => zim_swoole_socket_coro_cancel, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_cancel, z::ZEND_ACC_PUBLIC;
@@ -111,15 +111,8 @@ method_table! {
         c"getpeername" => zim_swoole_socket_coro_getpeername, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_getpeername, z::ZEND_ACC_PUBLIC;
         c"getsockname" => zim_swoole_socket_coro_getsockname, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_getsockname, z::ZEND_ACC_PUBLIC;
         c"isClosed" => zim_swoole_socket_coro_isClosed, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_isClosed, z::ZEND_ACC_PUBLIC;
-        c"import" => zim_swoole_socket_coro_import, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_import, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"import" => crate::socket_options::zim_swoole_socket_coro_import, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_import, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
     ];
-}
-
-// The handlers that stay C++.
-unsafe extern "C" {
-    fn zim_swoole_socket_coro_getOption(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_socket_coro_import(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_socket_coro_setOption(frame: *mut z::zend_execute_data, value: *mut z::zval);
 }
 
 /// MINIT, as `php_swoole_socket_coro_minit` did: both classes, their short
@@ -184,6 +177,7 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_minit(
         // SAFETY: as above.
         unsafe { register_long_constant(name, i64::from(*value), module) };
     }
+    crate::net::EXCEPTION_PARENT.store(exception, std::sync::atomic::Ordering::Release);
     // SAFETY: per the caller, a writable slot.
     unsafe { *socket_class = ce };
 }
@@ -225,7 +219,7 @@ pub(crate) unsafe fn socket_of(object: *mut zend_object) -> Socket {
 }
 
 /// `$this`'s data.
-fn this<'a>(call: &Call) -> &'a mut Data {
+pub(crate) fn this<'a>(call: &Call) -> &'a mut Data {
     // SAFETY: socket methods are non-static, so `$this` is a socket object, and
     // no other reference to its data is live during the call.
     unsafe { SocketObject::data(call.this()) }
@@ -233,7 +227,7 @@ fn this<'a>(call: &Call) -> &'a mut Data {
 
 /// `swoole_get_socket_coro`: the constructed, open socket of `$this`; else
 /// errCode/errMsg say EBADF and the method returns false.
-fn open(call: &Call) -> Option<Socket> {
+pub(crate) fn open(call: &Call) -> Option<Socket> {
     let socket = this(call).socket;
     if socket.is_null() {
         // SAFETY: a fatal error; it does not return.
@@ -1074,8 +1068,11 @@ fn set_protocol(call: &Call) {
     if unsafe { value::count(settings) } == 0 {
         return call.set_bool(false);
     }
-    // SAFETY: an open socket and a live array.
-    call.set_bool(unsafe { native::swoole_socket_coro_set_protocol(socket, settings) });
+    call.set_bool(crate::socket_options::apply(
+        socket,
+        settings,
+        crate::socket_options::PROTOCOL,
+    ));
 }
 
 /// `sslHandshake(): bool`.
