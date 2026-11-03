@@ -168,15 +168,9 @@ SwrPortsSocketAction swr_v1_ports_socket_step(SwrPortsSocketState *, const SwrPo
  * call(context, op, arg). */
 typedef struct { uint64_t length, size; int64_t offset; char *str; } SwrPortsString;
 typedef struct {
-    uint8_t method, version, flags[2];
-    uint32_t url_offset, url_length, max_length, request_line_length, header_length;
-    uint64_t content_length;
-    void *form_data;
     SwrPortsString *buffer;
-} SwrPortsRequest;
-typedef struct {
-    SwrPortsString *buffer;
-    SwrPortsRequest *request;
+    /* The connection's http_server::Request (crates/http/src/request.rs). */
+    void *request;
     uint8_t websocket, upgraded, http2_stream, static_handler, trace;
 } SwrPortsShared;
 enum { SWR_PORTS_ON_READ_RAW=0, SWR_PORTS_ON_READ_LENGTH=1, SWR_PORTS_ON_READ_EOF=2, SWR_PORTS_ON_READ_REDIS=3,
@@ -187,19 +181,11 @@ enum { SWR_PORTS_ON_READ_RAW=0, SWR_PORTS_ON_READ_LENGTH=1, SWR_PORTS_ON_READ_EO
        SWR_PORTS_OP_WEBSOCKET_ACTIVATE=17, SWR_PORTS_OP_HTTP2_ENABLED=18, SWR_PORTS_OP_HTTP2_START=19,
        SWR_PORTS_OP_SKIP_RECV=20, SWR_PORTS_OP_MAX_LENGTH=21, SWR_PORTS_OP_UPLOADS=22, SWR_PORTS_OP_STATIC=23,
        SWR_PORTS_OP_BUF_REDUCE=36, SWR_PORTS_OP_BUF_EXTEND=38, SWR_PORTS_OP_BUF_HEADER_END=39, SWR_PORTS_OP_REQ_INIT=50,
-       SWR_PORTS_OP_REQ_DESTROY=51, SWR_PORTS_OP_REQ_PROTOCOL=53, SWR_PORTS_OP_REQ_FIND_HEADER=54,
-       SWR_PORTS_OP_REQ_FIND_CHUNKED=55, SWR_PORTS_OP_REQ_PARSE_HEADER=59, SWR_PORTS_OP_REQ_MULTIPART_INIT=63,
-       SWR_PORTS_OP_REQ_DISCARD_FORM=64, SWR_PORTS_OP_REQ_MULTIPART_PARSE=66, SWR_PORTS_OP_REQ_MULTIPART_DESTROY=70,
-       SWR_PORTS_OP_REQ_MARK_DISPATCHED=73, SWR_PORTS_OP_REQ_CLEAN=76, SWR_PORTS_OP_REQ_EXPECT=77,
-       SWR_PORTS_OP_REQ_FLAGS=78, SWR_PORTS_LOG_UNKNOWN_PROTOCOL=90,
+       SWR_PORTS_OP_REQ_DESTROY=51, SWR_PORTS_OP_REQ_MULTIPART_INIT=63, SWR_PORTS_LOG_UNKNOWN_PROTOCOL=90,
        SWR_PORTS_LOG_UNKNOWN_METHOD=91, SWR_PORTS_LOG_NO_HTTP2=92, SWR_PORTS_LOG_HEADER_TOO_LARGE=93, SWR_PORTS_LOG_CHUNKED_ERROR=94,
        SWR_PORTS_LOG_CHUNKED_TOO_LARGE=95, SWR_PORTS_LOG_TOO_LARGE=96, SWR_PORTS_LOG_DISCARD=97, SWR_PORTS_TRACE_HEADER=98,
        SWR_PORTS_TRACE_CHUNKED=99, SWR_PORTS_TRACE_POST_WAIT=100, SWR_PORTS_TRACE_CLOSE=101, SWR_PORTS_SEND_BAD_REQUEST=0,
        SWR_PORTS_SEND_TOO_LARGE=1, SWR_PORTS_SEND_UNAVAILABLE=2, SWR_PORTS_SEND_CONTINUE=3 };
-/* SWR_PORTS_OP_REQ_FLAGS bits. */
-enum { SWR_PORTS_FLAG_EXCEPTED=1, SWR_PORTS_FLAG_TOO_LARGE=2, SWR_PORTS_FLAG_UNAVAILABLE=4, SWR_PORTS_FLAG_HEADER_PARSED=8,
-       SWR_PORTS_FLAG_TRIED=16, SWR_PORTS_FLAG_MULTIPART_HEADER=32, SWR_PORTS_FLAG_KNOWN_LENGTH=64, SWR_PORTS_FLAG_CHUNKED=128,
-       SWR_PORTS_FLAG_NOBODY_CHUNKED=256 };
 typedef uint64_t (*SwrPortsCall)(void *context, uint32_t op, uint64_t arg);
 int32_t swr_v1_ports_on_read(uint32_t kind, void *context, SwrPortsCall call);
 /* TLS setup, SNI, import and close (crates/ports/src/lifecycle.rs), over the same call. */

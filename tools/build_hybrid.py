@@ -68,8 +68,6 @@ def headers_for(modules):
         if contract.is_file():
             headers.append(contract)
         headers.extend((ROOT / 'native' / module).rglob('*.h'))
-    if 'ports' in modules and 'http' not in modules:
-        headers.append(ROOT / 'native/http/swoole_rs_http_request_view.h')
     if len({path.name.casefold() for path in headers}) != len(headers):
         raise ValueError('ABI header basenames overlap in the build prefix')
     return sorted(headers)

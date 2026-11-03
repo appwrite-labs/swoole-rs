@@ -21,7 +21,7 @@ preface, WebSocket handover, multipart uploads, chunked bodies and size limits,
 It reads and writes the receive buffer's and the request's fields in place through
 `SwrPortsShared`, the head of the context (layouts pinned by `static_assert`s),
 and asks native code for every other fact or effect through one `call(context, op,
-arg)`: `recv`, the request's bit-fields and parser steps, canned replies, logs and
-dispatch. Native and unchanged: `destroy_http_request`, the request parser
-itself, worker generation and suspended-response handling.
+arg)`: `recv`, canned replies, logs and dispatch. The request's own operations
+(parsing, multipart) are `swoole_rs_http`'s Rust methods. Native and unchanged:
+`destroy_http_request`, worker generation and suspended-response handling.
 

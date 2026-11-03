@@ -207,45 +207,6 @@ def sni_admission(php):
     return php
 
 
-def request_v2_callers(native):
-    native = replace(native, '#include "swoole_http.h"', '#include "swoole_http.h"\n#include "swoole_rs_http_request_view.h"')
-    native = replace(native, 'using swoole::http_server::Request;', 'using swoole::http_server::SelectedRequest;\nusing swoole::http_server::SelectedRequestView;')
-    start = native.index('int ListenPort::readable_callback_http(')
-    opening = native.index('{', start)
-    depth, end = 1, opening + 1
-    while depth:
-        depth += (native[end] == '{') - (native[end] == '}')
-        end += 1
-    text = native[start:end]
-    text = replace(text, 'Request *request = nullptr;', 'SelectedRequest *request = nullptr;')
-    text = replace(text, 'request = new Request();', 'request = new SelectedRequest();')
-    text = replace(text, 'static_cast<Request *>(conn->object)', 'static_cast<SelectedRequest *>(conn->object)')
-    text = replace(text, '    if (!request->buffer_) {', '    SelectedRequestView request_view(request);\n    if (!request->buffer_) {')
-    text = replace(text, 'request->buffer_ = serv->get_recv_buffer(_socket);', 'request_view.set_buffer(serv->get_recv_buffer(_socket));')
-    text = replace(text, 'request->max_length_ = protocol->package_max_length;', 'request_view.set_max_length(protocol->package_max_length);')
-    text = replace(text, 'request->header_length_ += (sizeof(SW_HTTP_CHUNK_EOF) - 1);', 'request_view.advance_header_length(sizeof(SW_HTTP_CHUNK_EOF) - 1);')
-    text = replace(text, 'request->tried_to_dispatch = 1;', 'request_view.mark_dispatched();')
-    text = replace(text, 'delete request->form_data_;\n                request->form_data_ = nullptr;', 'request_view.discard_form();')
-    text = replace(text, 'serv->select_static_handler(request, conn)', 'request_view.select_static_handler(serv, conn)')
-    fields = {'buffer_':'buffer', 'form_data_':'has_form', 'method':'method',
-              'excepted':'excepted', 'header_length_':'header_length', 'header_parsed':'header_parsed',
-              'max_length_':'max_length', 'content_length_':'content_length', 'keep_alive':'keep_alive',
-              'chunked':'chunked', 'multipart_header_parsed':'multipart_header_parsed',
-              'too_large':'too_large', 'unavailable':'unavailable', 'tried_to_dispatch':'tried_to_dispatch',
-              'nobody_chunked':'nobody_chunked', 'known_length':'known_length'}
-    # Pinned expressions only; longest names first avoid partial member replacements.
-    import re
-    for old, new in sorted(fields.items(), key=lambda item: -len(item[0])):
-        text = re.sub(r'\brequest->' + old + r'\b', 'request_view.' + new + '()', text)
-    for name in ['get_protocol','get_header_length','parse_header_info','init_multipart_parser',
-                 'parse_multipart_data','destroy_multipart_parser','clean','get_chunked_body_length','has_expect_header']:
-        text = text.replace('request->' + name + '(', 'request_view.' + name + '(')
-    native = native[:start] + text + native[end:]
-    start = native.index('void ListenPort::destroy_http_request(')
-    native = native[:start] + replace(native[start:], 'static_cast<Request *>(conn->object)', 'static_cast<SelectedRequest *>(conn->object)')
-    return native
-
-
 def class_properties(php):
     start = php.index('    zend_declare_property_null(swoole_server_port_ce, ZEND_STRL("onConnect")')
     end = php.index('\n', php.index('    zend_declare_property_null(swoole_server_port_ce, ZEND_STRL("connections")', start))
@@ -701,7 +662,6 @@ static_assert(SW_SERVER_CB_onConnect == 0 && SW_SERVER_CB_onReceive == 1 && SW_S
     php = callback_hooks(php)
     php = class_properties(php)
     php = rust_frontend(php)
-    native = request_v2_callers(native)
     return {'src/server/port.cc': native, 'ext-src/swoole_server_port.cc': php}
 
 
