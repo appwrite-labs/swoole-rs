@@ -1,27 +1,3 @@
-diff --git a/ext-src/php_swoole_http.h b/ext-src/php_swoole_http.h
-index c9aac46..06cd007 100644
---- a/ext-src/php_swoole_http.h
-+++ b/ext-src/php_swoole_http.h
-@@ -398,19 +398,2 @@ static inline bool swr_http_host_try(F &&body) {
- 
--static sw_inline bool swoole_http_has_crlf(const char *value, size_t length) {
--    /* new line/NUL character safety check */
--    for (size_t i = 0; i < length; i++) {
--        /* RFC 7230 ch. 3.2.4 deprecates folding support */
--        if (value[i] == '\n' || value[i] == '\r') {
--            php_swoole_error(E_WARNING, "Header may not contain more than a single header, new line detected");
--            return true;
--        }
--        if (value[i] == '\0') {
--            php_swoole_error(E_WARNING, "Header may not contain NUL bytes");
--            return true;
--        }
--    }
--
--    return false;
--}
--
- void swoole_http_parse_cookie(zval *array, const char *at, size_t length);
 diff --git a/ext-src/php_swoole_http_server.h b/ext-src/php_swoole_http_server.h
 index eb0d5a5..b4888a4 100644
 --- a/ext-src/php_swoole_http_server.h
