@@ -19,6 +19,7 @@ mod context;
 mod cookie;
 mod header;
 mod host;
+pub mod http2;
 mod parse;
 mod request;
 mod response;

@@ -40,6 +40,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 tools/check_migration.py
+      # The all-modules patch set applies to the pin (seconds), so a conflict fails a required check.
+      - run: python3 tools/patches.py check
       - run: tests/dev/run.sh
 
   # Whether this PR touches what the hybrid build compiles or installs with.
@@ -79,6 +81,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # Restores main's release build; hybrid build trees must start clean.
       - uses: Swatinem/rust-cache@v2
         with:
@@ -86,6 +90,8 @@ jobs:
           save-if: false
       - run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
       - uses: ./.github/actions/install
+        with:
+          packages: libssh2-1-dev
       - id: upstream
         uses: actions/cache@v4
         with:
@@ -101,7 +107,8 @@ jobs:
           key: ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
-      - run: python3 tools/build_hybrid.py --fix-halfclose $(python3 -c "from tools.build_hybrid import SELECTABLE; print(' '.join('--module ' + m for m in SELECTABLE))")
+      # With the optional cURL and ssh2 hooks (the merge tier's phpt-build runs their PHPTs).
+      - run: python3 tools/build_hybrid.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2 $(python3 -c "from tools.build_hybrid import SELECTABLE; print(' '.join('--module ' + m for m in SELECTABLE))")
       - run: ccache --show-stats
       # 12-hyperf needs composer; it runs in the merge tier.
       - run: >
@@ -114,10 +121,17 @@ jobs:
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/reports/corpus.json
       # Upstream truncates queued responses after a client half-close; --fix-halfclose repairs it.
+      # The native cURL hook links ext/curl, so it loads first.
       - run: >
-          python3 corpus/run.py --project 11-buffer-lifecycle
+          python3 corpus/run.py --php-extension curl --project 11-buffer-lifecycle
           --engine hybrid=$(echo target/hybrid/rust-*-halfclose)/modules/swoole.so
           --output target/reports/corpus-halfclose.json
+      # This run built main as of its push. Auto-merge follows the last required check
+      # (usually this one) within seconds, so re-apply the patch set over main as it is now.
+      - run: |
+          git fetch -q origin main
+          git -c user.name=ci -c user.email=ci@localhost merge -q --no-edit FETCH_HEAD
+          python3 tools/patches.py check
       - uses: actions/upload-artifact@v4
         if: always()
         with:

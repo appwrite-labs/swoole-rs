@@ -1,14 +1,14 @@
 //! Signals, the master timer and shutdown.
 use crate::ops::{
-    LOG_MANAGER_EXIT, LOG_NO_IDLE_WORKER, LOG_SHUTDOWN_FAILED, OP_BEFORE_SHUTDOWN, OP_CLEAR_TIMER,
-    OP_FORCED_EXIT, OP_IS_MASTER_THREAD, OP_IS_STARTED, OP_KILL_TERM, OP_MANAGER_PID,
-    OP_MASTER_PID, OP_MASTER_TIMER_HOOK, OP_MAX_WAIT_TIME, OP_MODE, OP_PIPE_COMMAND_DEL,
-    OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_REACTOR_DEL, OP_PORT_REMOVED, OP_REACTOR_STOP,
-    OP_REACTOR_WAIT_EXIT, OP_RUNNING, OP_SEND_SHUTDOWN, OP_SET_MINFD, OP_SET_RUNNING,
-    OP_SIGNAL_ACTIVE, OP_SIGNAL_FD, OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SIGNAL_READ_MESSAGE,
-    OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN, OP_SIGRTMIN, OP_SINGLE_THREAD, OP_STOP_SINGLE_WORKER,
-    OP_STOP_WORKER_THREADS, OP_THREAD0_SHUTDOWN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
-    OP_WRONG_OPERATION, TRACE_SHUTDOWN_BEGIN, TRACE_SHUTDOWN_END, TRACE_SIGNAL,
+    LOG_MANAGER_EXIT, LOG_NO_IDLE_WORKER, LOG_SHUTDOWN_FAILED, OP_BEFORE_SHUTDOWN, OP_FORCED_EXIT,
+    OP_IS_MASTER_THREAD, OP_IS_STARTED, OP_KILL_TERM, OP_KILL_WINCH, OP_MANAGER_PID, OP_MASTER_PID,
+    OP_MASTER_TIMER_HOOK, OP_MAX_WAIT_TIME, OP_MODE, OP_PIPE_COMMAND_DEL, OP_PORT_COUNT,
+    OP_PORT_DGRAM, OP_PORT_REACTOR_DEL, OP_PORT_REMOVED, OP_REACTOR_STOP, OP_REACTOR_WAIT_EXIT,
+    OP_RUNNING, OP_SEND_SHUTDOWN, OP_SET_MINFD, OP_SET_RUNNING, OP_SIGNAL_ACTIVE, OP_SIGNAL_FD,
+    OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SIGNAL_READ_MESSAGE, OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN,
+    OP_SIGRTMIN, OP_SINGLE_THREAD, OP_STOP_SINGLE_WORKER, OP_STOP_WORKER_THREADS,
+    OP_THREAD0_SHUTDOWN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WRONG_OPERATION,
+    TRACE_SHUTDOWN_BEGIN, TRACE_SHUTDOWN_END, TRACE_SIGNAL,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD};
 
@@ -64,15 +64,23 @@ pub(crate) fn signal<H: Host>(h: &mut H, signo: i32) {
         libc::SIGIO => {
             h.get(OP_SIGNAL_READ_MESSAGE);
         }
-        libc::SIGWINCH => {
-            h.get(OP_SIGNAL_REOPEN);
-        }
+        libc::SIGWINCH => reopen_logger(h),
         _ => {
             let rtmin = h.get(OP_SIGRTMIN);
             if rtmin != 0 && signal_number(signo) == rtmin {
-                h.get(OP_SIGNAL_REOPEN);
+                reopen_logger(h);
             }
         }
+    }
+}
+
+/// `Server::signal_handler_reopen_logger`: the log file reopens, and in process mode
+/// the manager is told to reopen its own.
+fn reopen_logger<H: Host>(h: &mut H) {
+    h.get(OP_SIGNAL_REOPEN);
+    if h.get(OP_MODE) == MODE_PROCESS {
+        let manager = h.get(OP_MANAGER_PID);
+        h.op(OP_KILL_WINCH, manager);
     }
 }
 
@@ -122,7 +130,7 @@ pub(crate) fn stop_master_thread<H: Host>(h: &mut H) {
         }
     }
     h.get(OP_PIPE_COMMAND_DEL);
-    h.get(OP_CLEAR_TIMER);
+    crate::state::clear_timer(h);
     if h.signed(OP_MAX_WAIT_TIME) > 0 {
         h.get(OP_FORCED_EXIT);
     }

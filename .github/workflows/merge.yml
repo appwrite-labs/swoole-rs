@@ -100,7 +100,7 @@ jobs:
       - id: install
         uses: ./.github/actions/install
         with:
-          packages: unixodbc-dev firebird-dev
+          packages: unixodbc-dev firebird-dev libssh2-1-dev
           php: latest
       - id: upstream
         uses: actions/cache@v4
@@ -116,8 +116,9 @@ jobs:
           restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       - run: |
-          # Database hooks as upstream's own CI builds them (scripts/docker-compile.sh).
+          # Database, cURL and ssh2 hooks as upstream's own CI builds them (scripts/docker-compile.sh).
           services="--configure=--enable-swoole-pgsql --configure=--enable-mysqlnd --configure=--with-swoole-odbc=unixODBC,/usr --configure=--with-swoole-firebird"
+          services="$services --configure=--enable-swoole-curl --configure=--with-swoole-ssh2"
           python3 tools/build_hybrid.py --backend upstream --php-sockets $services | tee upstream.log
           python3 tools/build_hybrid.py --php-sockets $services $(python3 -c 'from tools.build_hybrid import SELECTABLE; print(*(f"--module {m}" for m in SELECTABLE))') | tee hybrid.log
           mkdir -p target/phpt

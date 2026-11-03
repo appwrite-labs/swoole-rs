@@ -1,0 +1,36 @@
+diff --git a/src/server/master.cc b/src/server/master.cc
+index 1e1ae64..2b7dca8 100644
+--- a/src/server/master.cc
++++ b/src/server/master.cc
+@@ -16,2 +16,4 @@
+ 
++// M15: send_to_connection (crates/server/src/send.rs) drains queued output before close.
++#define SW_HALFCLOSE_DRAIN 1
+ #include "swoole_server.h"
+@@ -1487,3 +1489,7 @@ int Server::send_to_connection(const SendData *_send) const {
+         }
+-        return reactor->remove_read_event(_socket);
++        if (_socket->events & SW_EVENT_WRITE) {
++            return reactor->set(conn->socket, SW_EVENT_WRITE);
++        } else {
++            return reactor->del(conn->socket);
++        }
+     }
+@@ -1493,7 +1499,10 @@ int Server::send_to_connection(const SendData *_send) const {
+     else if (_send->info.type == SW_SERVER_EVENT_RESUME_RECV) {
+-        if (conn->closed || conn->peer_closed || conn->close_queued || _socket->close_notified ||
+-            (_socket->events & SW_EVENT_READ)) {
++        if (!_socket->removed || (_socket->events & SW_EVENT_READ)) {
+             return SW_OK;
+         }
+-        return reactor->add_read_event(_socket);
++        if (_socket->events & SW_EVENT_WRITE) {
++            return reactor->set(_socket, SW_EVENT_READ | SW_EVENT_WRITE);
++        } else {
++            return reactor->add(_socket, SW_EVENT_READ);
++        }
+     }
+@@ -1543,3 +1552,2 @@ int Server::send_to_connection(const SendData *_send) const {
+         conn->close_queued = 1;
+-        reactor->remove_read_event(_socket);
+     } else if (_send->info.type == SW_SERVER_EVENT_SEND_FILE) {

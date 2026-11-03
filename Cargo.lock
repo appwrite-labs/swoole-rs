@@ -602,6 +602,7 @@ dependencies = [
  "libc",
  "swoole-rs-http2",
  "swoole-rs-inflate",
+ "swoole-rs-phphttp",
  "swoole-rs-phpstubs",
  "swoole-rs-phptable",
  "swoole-rs-zend",
@@ -691,6 +692,7 @@ name = "swoole-rs-phpthread"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-phplocks",
  "swoole-rs-phpprocess",
  "swoole-rs-phpstubs",
  "swoole-rs-zend",

@@ -2,12 +2,15 @@
 
 Opt-in feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. Patched upstream
 files: `ext-src/swoole_atomic.cc`, `ext-src/swoole_thread_atomic.cc`,
-`src/lock/barrier.cc`, `src/lock/coroutine_lock.cc`, `src/lock/mutex.cc`,
-`src/lock/rw_lock.cc`, `src/lock/spin_lock.cc`.
+`ext-src/swoole_thread_lock.cc`, `src/lock/barrier.cc`, `src/lock/coroutine_lock.cc`,
+`src/lock/mutex.cc`, `src/lock/rw_lock.cc`, `src/lock/spin_lock.cc`.
 
 Native callers keep public C++/PHP object layout, allocation provenance,
 reference counts, exceptions and Zend operations. The module adds no scheduler,
-registry, thread or Rust heap. No allocator or PHP callback runs under a Rust
+registry or thread. The one Rust heap is ZTS builds' thread resources: a
+`Thread\Atomic`, `Thread\Atomic\Long` or `Thread\Lock` keeps its word or private
+lock in an `Arc` (upstream's `ThreadResource`), which crates/phpthread's
+containers share between threads. No allocator or PHP callback runs under a Rust
 frame, and no panic or exception crosses the ABI.
 
 ## Mutex, RW and spin locks

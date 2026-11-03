@@ -4,9 +4,9 @@
 //!
 //! C++ stores the scheduler in its original thread-local scope and each
 //! [`Coroutine`] inside its `swoole::Coroutine` facade, and reads fields inline;
-//! every write goes through these functions. C++ keeps the effects Rust must not
-//! run: the swap callbacks (PHP may longjmp out of them), the context switch, the
-//! coroutine map, timers and `delete`.
+//! every write goes through these functions. Registering and releasing keep the
+//! live map (`live.rs`). C++ keeps the effects Rust must not run: the swap
+//! callbacks (PHP may longjmp out of them), the context switch, timers and `delete`.
 use core::ffi::{c_long, c_void};
 use core::ptr;
 
@@ -198,20 +198,23 @@ macro_rules! export {
 }
 
 export! {
-    /// Constructor: seeds `co` with the next id and the creation clocks.
+    /// Constructor: seeds `co` with the next id and the creation clocks, and
+    /// makes it live.
     fn swr_v1_coroutine_register(s: *mut Scheduler, co: *mut Coroutine, native: *mut c_void, init_msec: c_long, now: c_long) -> c_long {
         // SAFETY: the caller lends the scheduler exclusively.
         let s = unsafe { &mut *s };
         // SAFETY: the caller lends `co` exclusively.
-        s.register(unsafe { &mut *co }, native, init_msec, now)
+        let cid = s.register(unsafe { &mut *co }, native, init_msec, now);
+        crate::live::insert(co, cid);
+        cid
     }
 }
 
 export! {
-    /// After the map insert: tracks the peak, returns whether to activate.
-    fn swr_v1_coroutine_admit(s: *mut Scheduler, count: usize) -> bool {
+    /// After registering: tracks the peak, returns whether to activate.
+    fn swr_v1_coroutine_admit(s: *mut Scheduler) -> bool {
         // SAFETY: the caller lends the scheduler exclusively.
-        unsafe { (*s).admit(count) }
+        unsafe { (*s).admit(crate::live::count()) }
     }
 }
 
@@ -296,13 +299,16 @@ export! {
 }
 
 export! {
-    /// Close, after the close callback: control returns to the origin and `co`
-    /// unlinks from the origin tree, orphaning the coroutines it resumed.
+    /// Close, after the close callback: control returns to the origin, `co`
+    /// unlinks from the origin tree, orphaning the coroutines it resumed, and is
+    /// no longer live.
     fn swr_v1_coroutine_release(s: *mut Scheduler, co: *mut Coroutine) {
         // SAFETY: the caller lends the scheduler exclusively.
         let s = unsafe { &mut *s };
         // SAFETY: the caller lends `co` and its links exclusively.
         unsafe { release(s, co) };
+        // SAFETY: `co` is live for this call.
+        crate::live::remove(unsafe { (*co).cid });
     }
 }
 
