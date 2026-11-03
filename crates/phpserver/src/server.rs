@@ -68,9 +68,6 @@ type Each = unsafe extern "C" fn(*mut c_void, i64);
 /// `swr_v1_phpserver_host`.
 #[repr(C)]
 pub struct ServerHost {
-    task_create: unsafe extern "C" fn(*mut zend_class_entry) -> *mut zend_object,
-    task_free: unsafe extern "C" fn(*mut zend_object),
-    task_offset: usize,
     invalid: unsafe extern "C" fn(*mut zend_object),
     set_last_error: unsafe extern "C" fn(c_int),
     display_errors: unsafe extern "C" fn() -> bool,
@@ -159,6 +156,26 @@ struct Iterator {
 }
 
 type IteratorObject = Object<Iterator>;
+
+/// `ServerTaskObject` before its `zend_object`: `Server *serv; DataHead info;`
+/// (C++ binds and reads them).
+#[repr(C)]
+struct TaskData {
+    serv: *mut c_void,
+    info: [u64; 5],
+}
+
+type TaskObject = Object<TaskData>;
+
+unsafe extern "C" fn task_create(ce: *mut zend_class_entry) -> *mut zend_object {
+    // SAFETY: Zend creates a task of this class; zeroes are an unbound one.
+    unsafe { TaskObject::create(&TASK, ce) }
+}
+
+unsafe extern "C" fn task_free(object: *mut zend_object) {
+    // SAFETY: Zend frees an object this class created.
+    unsafe { TaskObject::dtor(object) };
+}
 
 fn deny(handlers: &mut zend_object_handlers) {
     handlers.clone_obj = None;
@@ -413,7 +430,6 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
 ) {
     HOST.store(table.cast_mut(), Ordering::Release);
     THREAD.store(thread, Ordering::Relaxed);
-    let host = host();
     let methods = if sockets {
         SERVER_METHODS.as_ptr()
     } else {
@@ -440,8 +456,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
             |entry, handlers| {
                 entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
                 deny(handlers);
-                Object::<ServerData>::install(entry, handlers, host.task_create, host.task_free);
-                handlers.offset = c_int::try_from(host.task_offset).unwrap_or(c_int::MAX);
+                TaskObject::install(entry, handlers, task_create, task_free);
             },
         );
     }
@@ -1177,6 +1192,8 @@ mod tests {
         // ConnectionIterator { int; SessionId; Server *; ListenPort *; int; }
         assert_eq!(size_of::<Iterator>(), 40);
         assert_eq!(IteratorObject::OFFSET, 40);
+        // ServerTaskObject { Server *; DataHead info; zend_object std; }
+        assert_eq!(TaskObject::OFFSET, 48);
     }
 
     #[test]

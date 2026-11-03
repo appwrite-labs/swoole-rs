@@ -24,11 +24,12 @@ use swoole_rs_zend::{
     init_object, method_table, register_long_constant,
     string::{self, bytes},
     sys::{
-        IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC,
-        swr_zend_instanceof, swr_zend_property_slot, swr_zend_string_release,
-        swr_zend_ws_property_not_null, swr_zval_is_true, swr_zval_str, zend_ce_stringable,
-        zend_class_entry, zend_class_implements, zend_long, zend_object, zend_string,
-        zend_update_property, zval, zval_ptr_dtor,
+        _zval_struct__bindgen_ty_1, IS_FALSE, IS_NULL, IS_OBJECT, IS_STRING,
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_instanceof,
+        swr_zend_property_slot, swr_zend_string_release, swr_zend_ws_property_not_null,
+        swr_zval_is_true, swr_zval_str, zend_ce_stringable, zend_class_entry,
+        zend_class_implements, zend_long, zend_object, zend_string, zend_update_property, zval,
+        zval_ptr_dtor,
     },
     type_of,
     value::{self, get_long, get_string, obj_of},
@@ -1378,19 +1379,6 @@ pub(crate) fn upgrade(context: *mut Context) -> Result<bool, bailout::Bailout> {
     handshake(context)
 }
 
-/// `websocket::construct_frame` for C++ (the coroutine `recv`).
-/// # Safety
-/// `frame` is a writable slot and `payload` a live string zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_websocket_frame(
-    frame: *mut zval,
-    opcode: i64,
-    payload: *mut zval,
-    flags: u8,
-) {
-    construct(frame, opcode, payload, flags);
-}
-
 /// `FrameObject`'s constructor for C++.
 /// # Safety
 /// `object` is writable and `data` a live zval.
@@ -1421,24 +1409,244 @@ pub unsafe extern "C" fn swr_v1_phphttp_websocket_pack(
     packed
 }
 
-/// `FrameObject::uncompress` for C++.
-/// # Safety
-/// `payload` is an empty slot and `data` covers `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_websocket_uncompress(
-    payload: *mut zval,
-    data: *const c_char,
-    length: usize,
-) -> bool {
-    let data = if length == 0 {
-        &[][..]
+/// `WebSocketSettings`' bits for `swr_v1_phphttp_websocket_recv`.
+const IN_SERVER: u32 = 1;
+const OPEN_PING_FRAME: u32 = 1 << 1;
+const OPEN_PONG_FRAME: u32 = 1 << 2;
+const OPEN_CLOSE_FRAME: u32 = 1 << 3;
+/// `SW_WEBSOCKET_DEFAULT_BUFFER`.
+const DEFAULT_BUFFER: usize = 4096;
+
+// A coroutine socket and the message continuation buffer that goes with it
+// (`std::shared_ptr<String>`), both C++'s.
+unsafe extern "C" {
+    fn swr_ws_host_sock_recv(
+        sock: *mut c_void,
+        timeout: f64,
+        data: *mut *mut u8,
+        length: *mut usize,
+    ) -> isize;
+    fn swr_ws_host_sock_send(sock: *mut c_void, data: *const c_char, length: usize);
+    fn swr_ws_host_sock_fd(sock: *mut c_void) -> c_int;
+    /// Null when there is no buffer; `offset` holds the message's ext flags.
+    fn swr_ws_host_buffer(slot: *mut c_void, length: *mut usize, offset: *mut usize) -> *const u8;
+    fn swr_ws_host_buffer_new(slot: *mut c_void, size: usize, offset: usize);
+    fn swr_ws_host_buffer_append(slot: *mut c_void, data: *const u8, length: usize);
+    fn swr_ws_host_buffer_reset(slot: *mut c_void);
+}
+
+/// `websocket::send_frame`: answer a control frame the user did not ask for.
+fn reply(settings: u32, sock: *mut c_void, opcode: u8, payload: &[u8]) {
+    let flags = if settings & IN_SERVER != 0 {
+        FLAG_FIN
     } else {
-        // SAFETY: per the caller.
-        unsafe { std::slice::from_raw_parts(data.cast(), length) }
+        FLAG_FIN | FLAG_MASK
     };
-    let done = uncompress(payload, data);
+    if let Some(frame) = encode(payload, opcode, flags) {
+        let frame = frame.bytes();
+        // SAFETY: the live socket and the encoded frame.
+        unsafe { swr_ws_host_sock_send(sock, frame.as_ptr().cast(), frame.len()) };
+    }
+}
+
+/// A frame object for `payload` in `return_value`, with the socket's fd.
+fn deliver(return_value: *mut zval, sock: *mut c_void, opcode: u8, payload: &mut zval, flags: u8) {
+    construct(return_value, zend_long::from(opcode), payload, flags);
+    // SAFETY: the frame took its own reference.
+    unsafe { zval_ptr_dtor(payload) };
+    // SAFETY: the live socket.
+    let fd = unsafe { swr_ws_host_sock_fd(sock) };
+    // SAFETY: the frame just created.
+    let object = unsafe { obj_of(return_value) };
+    // SAFETY: a live Frame, which declares `fd`.
+    unsafe { value::update_long(FRAME.entry(), object, c"fd", zend_long::from(fd)) };
+}
+
+fn bytes_of<'a>(data: *const u8, length: usize) -> &'a [u8] {
+    if length == 0 || data.is_null() {
+        return &[];
+    }
+    // SAFETY: per every caller, `length` readable bytes.
+    unsafe { std::slice::from_raw_parts(data, length) }
+}
+
+fn set_type(target: *mut zval, kind: u32) {
+    // SAFETY: a writable zval; these types carry no value.
+    unsafe { (*target).u1 = _zval_struct__bindgen_ty_1 { type_info: kind } };
+}
+
+fn protocol_error(return_value: *mut zval) {
+    host::set_last_error(PROTOCOL_ERROR);
+    set_type(return_value, IS_NULL);
+}
+
+fn new_zval() -> zval {
+    // SAFETY: all zeroes is `IS_UNDEF`.
+    unsafe { std::mem::zeroed() }
+}
+
+/// The payload as a string zval, inflated when `compressed`.
+fn payload_zval(payload: &[u8], compressed: bool) -> Option<zval> {
+    if !compressed {
+        return Some(zval_of(string::copy(payload)));
+    }
+    let mut out = new_zval();
+    uncompress(&raw mut out, payload).then_some(out)
+}
+
+/// `websocket::recv_frame`: the next whole message from a coroutine socket as
+/// a frame object, answering pings and closes the settings leave to it.
+/// `false` when the socket read failed, `""` when it closed, `null` on any
+/// other error.
+fn recv(
+    settings: u32,
+    slot: *mut c_void,
+    sock: *mut c_void,
+    return_value: *mut zval,
+    timeout: f64,
+) {
+    let func = c"websocket::recv_frame";
+    loop {
+        let mut data = ptr::null_mut();
+        let mut length = 0;
+        // SAFETY: the live socket and local outputs.
+        let received =
+            unsafe { swr_ws_host_sock_recv(sock, timeout, &raw mut data, &raw mut length) };
+        if received < 0 {
+            set_type(return_value, IS_FALSE);
+            return;
+        }
+        if received == 0 {
+            // SAFETY: the empty interned string.
+            unsafe { swr_zval_str(return_value, empty()) };
+            return;
+        }
+        if length < 2 {
+            protocol_error(return_value);
+            return;
+        }
+        // SAFETY: the socket's read buffer, `length` bytes, unmasked in place.
+        let buffer = unsafe { std::slice::from_raw_parts_mut(data, length) };
+        let Some(frame) = decode(buffer) else {
+            protocol_error(return_value);
+            return;
+        };
+        let payload = bytes_of(
+            buffer.as_ptr().wrapping_add(frame.header_length),
+            frame.payload_length,
+        );
+        let opcode = frame.opcode;
+        let respond = match opcode {
+            OPCODE_PING if settings & OPEN_PING_FRAME == 0 => {
+                reply(settings, sock, OPCODE_PONG, payload);
+                continue;
+            }
+            OPCODE_PONG if settings & OPEN_PONG_FRAME == 0 => continue,
+            OPCODE_CLOSE if settings & OPEN_CLOSE_FRAME == 0 => {
+                reply(settings, sock, OPCODE_CLOSE, payload);
+                continue;
+            }
+            OPCODE_PING | OPCODE_PONG | OPCODE_CLOSE => true,
+            _ => false,
+        };
+        if respond {
+            let mut zpayload = zval_of(string::copy(payload));
+            deliver(return_value, sock, opcode, &mut zpayload, FLAG_FIN);
+            return;
+        }
+        let mut buffered = 0;
+        let mut ext_flags = 0;
+        // SAFETY: the caller's buffer slot and local outputs.
+        let started = unsafe { swr_ws_host_buffer(slot, &raw mut buffered, &raw mut ext_flags) };
+        if opcode == OPCODE_CONTINUATION {
+            if started.is_null() {
+                warning(
+                    func,
+                    "A continuation frame cannot stand alone and MUST be preceded by an initial frame whose \
+                     opcode indicates either text or binary data.",
+                );
+                set_type(return_value, IS_NULL);
+                return;
+            }
+            if !payload.is_empty() {
+                // SAFETY: the started buffer and the frame's payload.
+                unsafe { swr_ws_host_buffer_append(slot, payload.as_ptr(), payload.len()) };
+            }
+            if frame.flags & FLAG_FIN == 0 {
+                continue;
+            }
+            // SAFETY: as above, after the append.
+            let message =
+                unsafe { swr_ws_host_buffer(slot, &raw mut buffered, &raw mut ext_flags) };
+            let [complete_opcode, complete_flags] =
+                u16::try_from(ext_flags).unwrap_or_default().to_be_bytes();
+            let Some(mut zpayload) =
+                payload_zval(bytes_of(message, buffered), complete_flags & FLAG_RSV1 != 0)
+            else {
+                // SAFETY: the caller's buffer slot.
+                unsafe { swr_ws_host_buffer_reset(slot) };
+                protocol_error(return_value);
+                return;
+            };
+            deliver(
+                return_value,
+                sock,
+                complete_opcode,
+                &mut zpayload,
+                complete_flags | FLAG_FIN,
+            );
+            // The whole message is assembled: release its memory now.
+            // SAFETY: the caller's buffer slot.
+            unsafe { swr_ws_host_buffer_reset(slot) };
+            return;
+        }
+        if !started.is_null() {
+            warning(
+                func,
+                "All fragments of a message, except for the initial frame, must use the continuation \
+                 frame opcode(0).",
+            );
+            set_type(return_value, IS_NULL);
+            return;
+        }
+        if frame.flags & FLAG_FIN != 0 {
+            let Some(mut zpayload) = payload_zval(payload, frame.flags & FLAG_RSV1 != 0) else {
+                protocol_error(return_value);
+                return;
+            };
+            deliver(return_value, sock, opcode, &mut zpayload, frame.flags);
+            return;
+        }
+        let size = if payload.is_empty() {
+            DEFAULT_BUFFER
+        } else {
+            payload.len()
+        };
+        let ext_flags = usize::from(u16::from_be_bytes([opcode, frame.flags]));
+        // SAFETY: the caller's buffer slot.
+        unsafe { swr_ws_host_buffer_new(slot, size, ext_flags) };
+        if !payload.is_empty() {
+            // SAFETY: the buffer just made and the frame's payload.
+            unsafe { swr_ws_host_buffer_append(slot, payload.as_ptr(), payload.len()) };
+        }
+    }
+}
+
+/// `websocket::recv_frame` for C++: `settings` packs `WebSocketSettings`'
+/// `in_server`, `open_ping_frame`, `open_pong_frame` and `open_close_frame`
+/// from bit 0; `slot` is the `std::shared_ptr<String>` of the message being assembled.
+/// # Safety
+/// `slot` and `sock` are live; `return_value` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_websocket_recv(
+    settings: u32,
+    slot: *mut c_void,
+    sock: *mut c_void,
+    return_value: *mut zval,
+    timeout: f64,
+) {
+    recv(settings, slot, sock, return_value, timeout);
     bailout::finish();
-    done
 }
 
 #[cfg(test)]

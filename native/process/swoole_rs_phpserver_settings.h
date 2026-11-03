@@ -94,8 +94,11 @@ typedef struct {
     bool (*global_options)(void *settings);
     /* dispatch_func: the callable and its hook, in zend_try: true if it bailed out. */
     bool (*dispatch_func)(void *server, struct _zval_struct *value);
-    /* cpu_affinity_ignore: 0 rejected, 1 set, 2 bailed out. */
-    int (*cpu_affinity_ignore)(void *server, struct _zval_struct *value);
+    /* This process's CPU affinity into `cpus`: the count, or -1 with *error = errno. */
+    int (*cpu_affinity)(int *cpus, size_t capacity, int *error);
+    /* serv->cpu_affinity_available(_num) = a copy of `cpus`. */
+    void (*set_cpu_affinity)(void *server, const int *cpus, size_t count);
+    const char *(*strerror)(int code);
     int (*create_dir)(const char *path, size_t length);
     bool (*msgqueue_key_valid)(int64_t key);
     /* SW_THREAD's bootstrap and init_arguments, in zend_try: true if it bailed out. */

@@ -23,6 +23,7 @@ mod parse;
 mod request;
 mod response;
 mod send;
+mod server;
 mod server_coro;
 mod state;
 mod websocket;
@@ -41,5 +42,6 @@ pub use parse::{
 pub use request::*;
 pub use response::*;
 pub use send::swr_v1_phphttp_end;
+pub use server::*;
 pub use server_coro::*;
 pub use websocket::*;

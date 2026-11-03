@@ -5,7 +5,8 @@ use crate::{
     bailout::{self, Bailout},
     sys::{
         IS_LONG, swr_zend_callable, swr_zend_callable_hold, swr_zend_callable_release,
-        swr_zend_efree, swr_zend_emalloc, swr_zval_try_addref, zend_value, zval,
+        swr_zend_callable_release_quiet, swr_zend_efree, swr_zend_emalloc, swr_zval_try_addref,
+        zend_value, zval,
     },
 };
 use std::{ffi::c_void, ptr};
@@ -116,8 +117,13 @@ impl Callable {
     /// # Errors
     /// A destructor bailed out; the callable is freed anyway.
     pub fn release(self) -> Result<(), Bailout> {
-        // SAFETY: the release body is C; the callable was kept.
-        let released = unsafe { bailout::trap(swr_zend_callable_release, self.0.cast()) };
+        // SAFETY: a kept callable; the quiet release runs no PHP code.
+        let released = if unsafe { swr_zend_callable_release_quiet(self.0) } != 0 {
+            Ok(())
+        } else {
+            // SAFETY: the release body is C; the callable was kept.
+            unsafe { bailout::trap(swr_zend_callable_release, self.0.cast()) }
+        };
         // SAFETY: emalloc'd by `parse`.
         unsafe { swr_zend_efree(self.0.cast()) };
         released

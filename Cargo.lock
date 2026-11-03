@@ -398,6 +398,7 @@ dependencies = [
  "swoole-rs-coroutine",
  "swoole-rs-crc32",
  "swoole-rs-error",
+ "swoole-rs-firebird",
  "swoole-rs-framing",
  "swoole-rs-hooks",
  "swoole-rs-http",
@@ -438,6 +439,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-firebird"
+version = "0.1.0"
+dependencies = [
+ "swoole-rs-firebird-sys",
+]
+
+[[package]]
+name = "swoole-rs-firebird-sys"
+version = "0.1.0"
+
+[[package]]
 name = "swoole-rs-framing"
 version = "0.1.0"
 
@@ -447,6 +459,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
+ "swoole-rs-reactor",
  "swoole-rs-uring-sys",
 ]
 

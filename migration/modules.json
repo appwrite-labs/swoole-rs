@@ -212,6 +212,8 @@
         "crates/pgsql/",
         "crates/odbc/",
         "crates/odbc-sys/",
+        "crates/firebird/",
+        "crates/firebird-sys/",
         "native/hooks/",
         "migration/patches/hooks/",
         "tests/modules/hooks/"
@@ -232,7 +234,8 @@
         "include/swoole_iouring.h",
         "include/swoole_uring_socket.h",
         "ext-src/swoole_pgsql.cc",
-        "ext-src/swoole_odbc.cc"
+        "ext-src/swoole_odbc.cc",
+        "ext-src/swoole_firebird.cc"
       ],
       "abi_contract": "docs/hooks-abi-v1.md",
       "feature_bit_reserved": 65536

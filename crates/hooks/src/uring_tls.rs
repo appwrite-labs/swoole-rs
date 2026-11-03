@@ -285,6 +285,43 @@ pub unsafe extern "C" fn swr_v1_uring_tls_send(tls: Tls, buf: *const c_void, n: 
     })
 }
 
+/// `UringSocket::ssl_sendfile`'s outcome: bytes sent and the warning to log
+/// (`crate::sendfile::TLS_WARN_*`, or 0).
+#[repr(C)]
+pub struct TlsSendfile {
+    pub total: usize,
+    pub warn: c_int,
+}
+
+/// `UringSocket::ssl_sendfile`: `size` bytes of `file` from `*offset`, encrypted
+/// ([`crate::sendfile::tls_sendfile`]). `classify` is the socket's
+/// `catch_write_error(errno)`.
+///
+/// # Safety
+/// As [`swr_v1_uring_tls_write`]; `file` is open and `offset` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_uring_tls_sendfile(
+    tls: Tls,
+    file: c_int,
+    offset: *mut libc::off_t,
+    size: usize,
+    classify: unsafe extern "C" fn(socket: *mut c_void, error: c_int) -> c_int,
+) -> TlsSendfile {
+    // SAFETY: the caller's offset.
+    let offset = unsafe { &mut *offset };
+    let (total, warn) = crate::sendfile::tls_sendfile(
+        size,
+        offset,
+        // SAFETY: `buf` is writable for its length.
+        |buf, at| unsafe { libc::pread(file, buf.as_mut_ptr().cast(), buf.len(), at) },
+        // SAFETY: the operation's live TLS state, and the bytes read.
+        |data| unsafe { swr_v1_uring_tls_send(tls, data.as_ptr().cast(), data.len()) },
+        // SAFETY: the live socket's classifier.
+        || unsafe { classify(tls.socket, errno()) },
+    );
+    TlsSendfile { total, warn }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
