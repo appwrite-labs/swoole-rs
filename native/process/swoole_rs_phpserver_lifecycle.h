@@ -162,14 +162,14 @@ void swr_v1_phpserver_lifecycle_init(const swr_v1_phpserver_lifecycle_host *tabl
 struct _zend_object *swr_v1_phpserver_create(struct _zend_class_entry *ce);
 void swr_v1_phpserver_free(struct _zend_object *object);
 /* add_port's Port object for `port`, kept by the Server object `server`. */
-struct _zval_struct *swr_v1_phpserver_add_port(struct _zend_object *server, void *port);
+struct _zval_struct *swr_v1_phpserver_add_port(struct _zend_object *object, void *port);
 /* The Server object's user process `index`, or null. */
-struct _zval_struct *swr_v1_phpserver_user_process(struct _zend_object *server, size_t index);
+struct _zval_struct *swr_v1_phpserver_user_process(struct _zend_object *object, size_t index);
 /* A command handler's call: the callable's reply, written through `reply`; true if it bailed out. */
 bool swr_v1_phpserver_command_run(void *callable, void *server, const char *message, size_t length,
                                   swr_phpserver_reply reply, void *out);
 /* The Port object at `index` of the Server object, or null. */
-struct _zval_struct *swr_v1_phpserver_port(struct _zend_object *server, size_t index);
+struct _zval_struct *swr_v1_phpserver_port(struct _zend_object *object, size_t index);
 #ifdef __cplusplus
 }
 #endif
