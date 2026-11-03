@@ -38,17 +38,21 @@ $cases = [
         ->addFile('/nonexistent/file', 'file'),
     // phphttp: PHPCoroutine::create's warning while Coroutine\Http\Server
     // accepts (#913).
-    'server_coro_accept' => fn() => Swoole\Coroutine\run(function () {
-        Swoole\Coroutine::set(['max_coroutine' => 2]);
+    'server_coro_accept' => function () {
+        Swoole\Coroutine::set(['max_coroutine' => 2, 'hook_flags' => 0]);
+        return Swoole\Coroutine\run(function () {
         $server = new Swoole\Coroutine\Http\Server('127.0.0.1', 0);
         $server->handle('/', fn() => null);
         go(function () use ($server) {
             $client = new Swoole\Coroutine\Client(SWOOLE_SOCK_TCP);
             $client->connect('127.0.0.1', $server->port);
-            $client->recv(1);
+            $client->recv(0.5);
+            // exit() throws in a coroutine and the loop keeps accepting.
+            $server->shutdown();
         });
         $server->start();
-    }),
+        });
+    },
 ];
 
 var_dump($cases[$case]());

@@ -35,8 +35,7 @@ pub struct AcceptHost {
     pub data: *mut c_void,
     /// `hs->running`.
     pub running: unsafe extern "C" fn(*mut c_void) -> bool,
-    /// `sock->accept()` and, for a connection, the `onAccept` coroutine's cid,
-    /// or [`ACCEPT_BAILED`] if creating it bailed out.
+    /// `sock->accept()` and, for a connection, the `onAccept` coroutine's cid.
     pub accept: unsafe extern "C" fn(*mut c_void, *mut bool) -> i64,
     /// The socket's `errCode`, and its NUL-terminated `errMsg`.
     pub error: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> i32,
@@ -48,12 +47,8 @@ pub struct AcceptHost {
     pub fail: unsafe extern "C" fn(*mut c_void, Text),
 }
 
-/// `AcceptHost::accept`'s result when creating the `onAccept` coroutine bailed
-/// out: the loop stops at once and returns -2 so the caller re-raises it.
-pub const ACCEPT_BAILED: i64 = i64::MIN;
-
 /// Upstream's `start` loop: accept until the server stops. 1 is `RETURN_TRUE`,
-/// 0 `RETURN_FALSE` after a failed accept, -1 a null argument, -2 a bailout.
+/// 0 `RETURN_FALSE` after a failed accept, -1 a null argument.
 ///
 /// # Safety
 /// `host` and `errors` are null or valid for the call, and each callback may be
@@ -77,9 +72,6 @@ pub unsafe extern "C" fn swr_v1_httpbindings_accept_loop(
         let mut connected = false;
         // SAFETY: as above, and a local output.
         let cid = unsafe { (host.accept)(data, &raw mut connected) };
-        if cid == ACCEPT_BAILED {
-            return -2;
-        }
         if connected {
             if cid < 0 {
                 // SAFETY: as above.
@@ -230,11 +222,6 @@ mod tests {
                 trace(&["accept", "set-error", "accept failed, Error: boom[9]"])
             ),
             "any other error records it, warns and returns false"
-        );
-        assert_eq!(
-            run(&[(true, ACCEPT_BAILED, 0), (true, 1, 0)]),
-            (-2, trace(&["accept"])),
-            "a bailout creating the coroutine stops the loop at once"
         );
         // SAFETY: a null host is refused before any use.
         let null = unsafe { swr_v1_httpbindings_accept_loop(core::ptr::null(), &raw const ERRORS) };
