@@ -26,4 +26,16 @@ zend_long swr_zend_resource_handle(const zval *value);
 uint8_t swr_zend_is_numeric_string(const char *text, size_t length, zend_long *lval, double *dval);
 /* zendi_smart_strcmp. */
 int swr_zend_smart_strcmp(zend_string *a, zend_string *b);
+
+/* Swoole\Thread's streams. php_stream_open_wrapper_ex(path, mode, 0, NULL, NULL). */
+php_stream *swr_zend_stream_open(const char *path, const char *mode);
+/* php_stream_cast(stream, PHP_STREAM_AS_FD_FOR_SELECT | PHP_STREAM_CAST_INTERNAL, &fd, 1)
+ * inside zend_try: 0 on success, 1 on failure, 2 if a warning's handler bailed out. */
+int swr_zend_stream_select_fd(php_stream *stream, int *fd);
+/* php_stream_cast(stream, PHP_STREAM_AS_FD, &fd, 0) == SUCCESS. */
+bool swr_zend_stream_fd(php_stream *stream, int *fd);
+/* stream->flags |= PHP_STREAM_FLAG_NO_CLOSE. */
+void swr_zend_stream_no_close(php_stream *stream);
+/* Register `stream` as the case-sensitive constant `name` (STDIN and friends). */
+void swr_zend_register_stream_constant(const char *name, php_stream *stream);
 #endif

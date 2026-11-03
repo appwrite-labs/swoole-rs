@@ -22,6 +22,7 @@ mod classes;
 mod host;
 mod item;
 mod queue;
+mod request;
 mod table;
 mod thread;
 
@@ -29,4 +30,8 @@ pub use array::*;
 pub use barrier::*;
 pub use classes::*;
 pub use host::swr_v1_phpthread_minit;
+pub use request::{
+    swr_v1_phpthread_request, swr_v1_phpthread_rinit, swr_v1_phpthread_rshutdown,
+    swr_v1_phpthread_stdio_close, swr_v1_phpthread_stdio_open,
+};
 pub use thread::*;

@@ -2,7 +2,7 @@
 //! thread can read it back. Strings and serialized objects are copied, arrays
 //! become shared tables, containers and thread resources are shared by
 //! reference, and sockets by a duplicated descriptor.
-use crate::{array::Array, barrier, classes, host::host, queue::Queue};
+use crate::{array::Array, barrier, classes, host::host, queue::Queue, request};
 use std::{cmp::Ordering, ffi::c_int, ptr, sync::Arc};
 use swoole_rs_phplocks::{self as phplocks, Resource, Shareable};
 use swoole_rs_zend::{
@@ -118,8 +118,8 @@ impl Item {
             }
             IS_TRUE | IS_FALSE | IS_NULL => bare(kind),
             IS_RESOURCE => {
-                // SAFETY: a live stream zval.
-                let fd = unsafe { (host().stream_cast)(value) };
+                // SAFETY: a live resource zval.
+                let fd = unsafe { request::stream_cast(value) };
                 if fd == -1 {
                     socket_error(c"failed to convert to socket fd");
                 }
@@ -260,14 +260,26 @@ impl Item {
             }
             Value::Socket { fd, kind } => match self.kind {
                 // SAFETY: per the caller.
-                IS_STREAM_SOCKET => unsafe { (host.stream_create)(out, i64::from(*fd)) },
-                // SAFETY: per the caller.
-                IS_CO_SOCKET => unsafe { (host.co_socket_create)(out, i64::from(*fd), *kind) },
-                _ => match host.php_socket_create {
+                IS_STREAM_SOCKET => unsafe { request::stream_create(out, *fd) },
+                IS_CO_SOCKET => {
+                    let create = |out, fd| {
+                        // SAFETY: C++ makes the object over the duplicate it takes.
+                        unsafe { (host.co_socket_create)(out, fd, *kind) }
+                    };
                     // SAFETY: per the caller.
-                    Some(create) => unsafe { create(out, i64::from(*fd)) },
-                    None => return false,
-                },
+                    unsafe { request::socket_create(out, *fd, create) };
+                }
+                _ => {
+                    let Some(create) = host.php_socket_create else {
+                        return false;
+                    };
+                    let create = |out, fd| {
+                        // SAFETY: as above.
+                        unsafe { create(out, fd) }
+                    };
+                    // SAFETY: per the caller.
+                    unsafe { request::socket_create(out, *fd, create) };
+                }
             },
             Value::Serialized(data) => {
                 // SAFETY: per the caller; C++ traps a bailout of `__unserialize`.
