@@ -659,13 +659,28 @@ fn tcp_info_of(_: i32) -> Option<Vec<(&'static str, Json)>> {
     None
 }
 
+/// The fields of the `tcp_info` at `info`, in upstream's order.
+///
+/// # Safety
+/// `info` points at a `tcp_info` (`tcp_connection_info` on Apple platforms).
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+unsafe fn tcp_fields_at(info: *const c_void) -> Vec<(&'static CStr, u64)> {
+    // SAFETY: the caller passes a `tcp_info`.
+    tcp_fields(unsafe { &*info.cast::<TcpInfo>() }).to_vec()
+}
+
+/// No fields where upstream's list is not ported.
+#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+unsafe fn tcp_fields_at(_: *const c_void) -> Vec<(&'static CStr, u64)> {
+    Vec::new()
+}
+
 /// Writes the fields of the `tcp_info` at `info` to `out` (room for `cap`), in
 /// upstream's order; returns how many it wrote.
 ///
 /// # Safety
 /// `info` points at a `tcp_info` (`tcp_connection_info` on Apple platforms); `out`
 /// has `cap` writable facts.
-#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_tcp_info(
     info: *const c_void,
@@ -673,7 +688,7 @@ pub unsafe extern "C" fn swr_v1_server_tcp_info(
     cap: usize,
 ) -> usize {
     // SAFETY: the caller passes a `tcp_info`.
-    let fields = tcp_fields(unsafe { &*info.cast::<TcpInfo>() });
+    let fields = unsafe { tcp_fields_at(info) };
     let n = fields.len().min(cap);
     for (index, (name, value)) in fields.into_iter().take(n).enumerate() {
         // SAFETY: `index < cap`, within `out`.
@@ -686,13 +701,6 @@ pub unsafe extern "C" fn swr_v1_server_tcp_info(
         unsafe { slot.write(fact) };
     }
     n
-}
-
-/// No fields where upstream's list is not ported.
-#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_tcp_info(_: *const c_void, _: *mut Fact, _: usize) -> usize {
-    0
 }
 
 #[cfg(test)]
