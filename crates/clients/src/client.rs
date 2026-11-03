@@ -1228,7 +1228,13 @@ pub unsafe extern "C" fn swr_v1_clients_on_dgram_read(client: *const Client) -> 
         reason = "upstream's stack buffer: nothing to drop if the callback longjmps"
     )]
     let mut buffer = [0_u8; BUFFER_SIZE_UDP];
-    let n = recv(this, buffer.as_mut_ptr().cast(), buffer.len(), 0);
+    // Upstream's datagram receive, even once DTLS made `recv` a stream one.
+    let op = if this.flag(ASYNC) {
+        IO_RECVFROM_SYNC
+    } else {
+        IO_RECVFROM
+    };
+    let n = this.io(op, buffer.as_mut_ptr().cast(), buffer.len(), 0);
     if n < 0 {
         return ERR;
     }
