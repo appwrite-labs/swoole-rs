@@ -1,0 +1,20 @@
+[package]
+name = "swoole-rs-odbc-sys"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Raw ODBC bindings, generated at build time from the system's unixODBC headers"
+links = "odbc"
+
+[features]
+# Bind the system unixODBC (pkg-config odbc). Without it the crate is empty, so
+# the workspace builds and tests on machines without it.
+unixodbc = ["dep:bindgen", "dep:pkg-config"]
+
+[build-dependencies]
+bindgen = { version = "=0.73.2", default-features = false, features = ["runtime"], optional = true }
+pkg-config = { version = "=0.3.34", optional = true }
+
+[lints]
+workspace = true

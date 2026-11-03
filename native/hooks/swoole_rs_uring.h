@@ -105,6 +105,14 @@ bool swr_v1_uring_tls_prepare(swr_v1_uring_tls tls);
 bool swr_v1_uring_tls_perform(swr_v1_uring_tls tls, int rc, const char *function);
 ssize_t swr_v1_uring_tls_recv(swr_v1_uring_tls tls, void *buf, size_t n);
 ssize_t swr_v1_uring_tls_send(swr_v1_uring_tls tls, const void *buf, size_t n);
+/* UringSocket::ssl_sendfile's loop: size bytes of file from *offset, encrypted; catch is
+ * catch_write_error(errno). warn: 1 "pread() failed", 2 "write() failed", else 0. */
+typedef struct {
+    size_t total;
+    int warn;
+} swr_v1_uring_tls_sendfile_result;
+swr_v1_uring_tls_sendfile_result swr_v1_uring_tls_sendfile(swr_v1_uring_tls tls, int file, off_t *offset, size_t size,
+                                                           int (*classify)(void *socket, int error));
 /* UringSocket's operations, whole (crates/hooks/src/uring_socket.rs): availability, the current
  * coroutine bound to the direction, the request (TLS when tls.ssl is set), the result check. */
 typedef struct swr_v1_hook_socket_state swr_v1_hook_socket_state;
