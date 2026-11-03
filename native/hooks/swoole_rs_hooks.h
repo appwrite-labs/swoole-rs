@@ -178,6 +178,9 @@ ssize_t swr_v1_hook_io_all(const swr_v1_hook_transfer_ops *ops, char *buffer, si
 /* The coroutine Socket's connection state, Rust-owned behind an opaque handle (#439) in its record. */
 typedef struct swr_v1_hook_socket_state swr_v1_hook_socket_state;
 typedef struct { bool connected, read, write; } swr_v1_hook_socket_flags_t;
+/* The record makes its own state; the hooks gates' socket facades use these. */
+swr_v1_hook_socket_state *swr_v1_hook_socket_state_new(void);
+void swr_v1_hook_socket_state_free(swr_v1_hook_socket_state *state);
 swr_v1_hook_socket_flags_t swr_v1_hook_socket_flags(const swr_v1_hook_socket_state *state);
 void swr_v1_hook_socket_set_flags(swr_v1_hook_socket_state *state, swr_v1_hook_socket_flags_t flags);
 void swr_v1_hook_socket_connect(swr_v1_hook_socket_state *state);
