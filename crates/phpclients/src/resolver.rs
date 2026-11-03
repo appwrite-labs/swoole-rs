@@ -457,6 +457,9 @@ unsafe fn resolve(
     let host = unsafe { value::str_of(host) };
     // SAFETY: a live string.
     let mut result = unsafe { string::bytes(host) }.to_vec();
+    // The PHP calls may have re-run `__construct`: read `with_port` now, as upstream.
+    // SAFETY: a live context.
+    unsafe { native::swoole_name_resolver_context_get(context, &raw mut with_port) };
     if with_port {
         result.push(b':');
         // SAFETY: a live array.
