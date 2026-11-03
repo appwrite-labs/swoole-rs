@@ -2,32 +2,27 @@
 //! reactor callbacks, over the Rust-owned state: which event to add (a TLS session
 //! may want the other direction), binding the coroutine for the wait, the barrier
 //! that retries a transfer before the waiter wakes, and removing the event after.
-//! Native code keeps the reactor, the coroutine switch and the write buffer, and
-//! passes them in `WaitOps`.
+//! It reads the socket's record; native code keeps the reactor, the coroutine
+//! switch and the write buffer, and passes them in `WaitOps`.
+use crate::co_socket::CoSocket;
 use crate::shutdown::{READ, SocketState, WRITE, swr_v1_hook_socket_bind, swr_v1_hook_socket_co};
 use crate::vector::Barrier;
 use core::ffi::c_void;
 
 /// `status` bits; the socket's `events` arrive in the `READ` and `WRITE` bits.
-pub const CLOSE_WAIT: u32 = 1;
-pub const NOBUFS: u32 = 1 << 1;
-pub const WANT_READ: u32 = 1 << 2;
-pub const WANT_WRITE: u32 = 1 << 3;
-pub const REMOVED: u32 = 1 << 4;
+const CLOSE_WAIT: u32 = 1;
+const NOBUFS: u32 = 1 << 1;
+const WANT_READ: u32 = 1 << 2;
+const WANT_WRITE: u32 = 1 << 3;
+const REMOVED: u32 = 1 << 4;
 
 /// The socket's effects. Every callback gets `context`.
 #[repr(C)]
 pub struct WaitOps {
     pub context: *mut c_void,
-    pub state: *mut SocketState,
+    pub socket: *mut CoSocket,
     /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
     pub close_wait_error: i32,
-    /// `close_wait`, else `has_kernel_nobufs()` (which clears it); the TLS
-    /// session's wants, `removed` and `events`.
-    pub status: unsafe extern "C" fn(*mut c_void) -> u32,
-    pub closed: unsafe extern "C" fn(*mut c_void) -> bool,
-    /// `errCode`.
-    pub error: unsafe extern "C" fn(*mut c_void) -> i32,
     pub set_err: unsafe extern "C" fn(*mut c_void, i32),
     /// `System::sleep(0.01)`.
     pub sleep: unsafe extern "C" fn(*mut c_void),
@@ -48,6 +43,44 @@ fn slot(event: u32) -> usize {
 }
 
 impl WaitOps {
+    fn socket(&self) -> &CoSocket {
+        // SAFETY: the live record the caller passes; nothing here holds it across a callback.
+        unsafe { &*self.socket }
+    }
+
+    fn state(&self) -> *mut SocketState {
+        self.socket().state
+    }
+
+    fn closed(&self) -> bool {
+        self.socket().is_closed()
+    }
+
+    /// `close_wait`, else `has_kernel_nobufs()` (which clears it); the TLS
+    /// session's wants, `removed` and `events`.
+    fn status(&self) -> u32 {
+        // SAFETY: an open socket's record, not otherwise borrowed here.
+        let record = unsafe { self.socket().record() };
+        if record.output.close_wait != 0 {
+            return CLOSE_WAIT;
+        }
+        let tls = !record.ssl.is_null();
+        let mut status = record.events.cast_unsigned() & (READ | WRITE);
+        if core::mem::take(&mut record.kernel_nobufs) {
+            status |= NOBUFS;
+        }
+        if tls && record.tls.want_read != 0 {
+            status |= WANT_READ;
+        }
+        if tls && record.tls.want_write != 0 {
+            status |= WANT_WRITE;
+        }
+        if record.removed != 0 {
+            status |= REMOVED;
+        }
+        status
+    }
+
     fn set_err(&self, error: i32) {
         // SAFETY: a native effect on the live socket in `context`.
         unsafe { (self.set_err)(self.context, error) };
@@ -55,27 +88,22 @@ impl WaitOps {
 
     fn bind(&self, event: u32, co: *mut c_void) {
         // SAFETY: the socket's live handle, not borrowed across this call.
-        unsafe { swr_v1_hook_socket_bind(self.state, event, co) };
+        unsafe { swr_v1_hook_socket_bind(self.state(), event, co) };
     }
 
     fn want(&self) -> u32 {
         // SAFETY: a read of the live handle.
-        unsafe { (*self.state).want }
+        unsafe { (*self.state()).want }
     }
 
     fn set_want(&self, event: u32) {
         // SAFETY: a write to the live handle, not borrowed across this call.
-        unsafe { (*self.state).want = event };
+        unsafe { (*self.state()).want = event };
     }
 
     fn set_barrier(&self, event: u32, barrier: Option<(Barrier, *mut c_void)>) {
         // SAFETY: a write to the live handle, not borrowed across this call.
-        unsafe { (*self.state).barriers[slot(event)] = barrier };
-    }
-
-    fn closed(&self) -> bool {
-        // SAFETY: a read of the live socket.
-        unsafe { (self.closed)(self.context) }
+        unsafe { (*self.state()).barriers[slot(event)] = barrier };
     }
 
     /// `add_event`: add `event` to the reactor unless it is there already.
@@ -97,8 +125,7 @@ impl WaitOps {
     }
 
     fn wait(&self, co: *mut c_void, event: u32, buffer: *mut *mut u8, length: usize) -> bool {
-        // SAFETY: a read of the live socket; it clears the kernel no-buffers flag.
-        let status = unsafe { (self.status)(self.context) };
+        let status = self.status();
         if status & CLOSE_WAIT != 0 {
             self.set_err(self.close_wait_error);
             return false;
@@ -136,15 +163,14 @@ impl WaitOps {
         // Both coroutines may wait for the same event under TLS.
         // SAFETY: a read of the live handle.
         let bound = unsafe {
-            !crate::shutdown::swr_v1_hook_socket_bound_co(self.state, READ | WRITE).is_null()
+            !crate::shutdown::swr_v1_hook_socket_bound_co(self.state(), READ | WRITE).is_null()
         };
         if self.want() == 0 || !bound {
             // SAFETY: a native effect on the live socket's reactor registration.
             unsafe { (self.remove)(self.context, added) };
         }
         self.set_want(0);
-        // SAFETY: a read of the live socket.
-        !self.closed() && unsafe { (self.error)(self.context) } == 0
+        !self.closed() && self.socket().err_code == 0
     }
 }
 
@@ -216,33 +242,36 @@ pub unsafe extern "C" fn swr_v1_hook_socket_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shutdown::{swr_v1_hook_socket_state_free, swr_v1_hook_socket_state_new};
+    use crate::co_socket::TestSocket;
 
     struct Fake {
-        state: *mut SocketState,
-        status: u32,
-        error: i32,
-        closed: bool,
+        socket: TestSocket,
         reactor_ok: bool,
         events: Vec<String>,
     }
 
     impl Fake {
         fn new(status: u32) -> Self {
+            let socket = TestSocket::new();
+            let record = unsafe { socket.0.record() };
+            record.output.close_wait = u8::from(status & CLOSE_WAIT != 0);
+            record.kernel_nobufs = status & NOBUFS != 0;
+            if status & (WANT_READ | WANT_WRITE) != 0 {
+                record.ssl = core::ptr::NonNull::<u8>::dangling().as_ptr().cast();
+            }
+            record.tls.want_read = u8::from(status & WANT_READ != 0);
+            record.tls.want_write = u8::from(status & WANT_WRITE != 0);
+            record.removed = u8::from(status & REMOVED != 0);
+            record.events = (status & (READ | WRITE)).cast_signed();
             Self {
-                state: swr_v1_hook_socket_state_new(),
-                status,
-                error: 0,
-                closed: false,
+                socket,
                 reactor_ok: true,
                 events: Vec::new(),
             }
         }
-    }
 
-    impl Drop for Fake {
-        fn drop(&mut self) {
-            unsafe { swr_v1_hook_socket_state_free(self.state) };
+        fn state(&self) -> *mut SocketState {
+            self.socket.state()
         }
     }
 
@@ -250,21 +279,12 @@ mod tests {
         unsafe { &mut *c.cast::<Fake>() }
     }
 
-    unsafe extern "C" fn status(c: *mut c_void) -> u32 {
-        unsafe { fake(c) }.status
-    }
-    unsafe extern "C" fn closed(c: *mut c_void) -> bool {
-        unsafe { fake(c) }.closed
-    }
-    unsafe extern "C" fn error(c: *mut c_void) -> i32 {
-        unsafe { fake(c) }.error
-    }
     unsafe extern "C" fn set_err(c: *mut c_void, e: i32) {
-        unsafe { fake(c) }.error = e;
+        unsafe { fake(c) }.socket.0.err_code = e;
     }
     unsafe extern "C" fn sleep(c: *mut c_void) {
         let this = unsafe { fake(c) };
-        let bound = unsafe { !swr_v1_hook_socket_co(this.state, WRITE).is_null() };
+        let bound = unsafe { !swr_v1_hook_socket_co(this.state(), WRITE).is_null() };
         this.events.push(format!("sleep:{bound}"));
     }
     unsafe extern "C" fn reactor(c: *mut c_void, events: u32, add: bool) -> bool {
@@ -275,8 +295,7 @@ mod tests {
     }
     unsafe extern "C" fn suspend(c: *mut c_void, co: *mut c_void, event: u32) {
         let this = unsafe { fake(c) };
-        let state = this.state;
-        let woken = unsafe { swr_v1_hook_socket_ready(state, event, false) };
+        let woken = unsafe { swr_v1_hook_socket_ready(this.state(), event, false) };
         this.events.push(format!("yield:{}", woken == co));
     }
     unsafe extern "C" fn buffer(c: *mut c_void, _: *mut *mut u8, n: usize) {
@@ -289,11 +308,8 @@ mod tests {
     fn ops(fake: &mut Fake) -> WaitOps {
         WaitOps {
             context: (&raw mut *fake).cast(),
-            state: fake.state,
+            socket: fake.socket.ptr(),
             close_wait_error: 1777,
-            status,
-            closed,
-            error,
             set_err,
             sleep,
             reactor,
@@ -337,10 +353,13 @@ mod tests {
     fn close_wait_nobufs_and_reactor_failures_stop_early() {
         let mut fake = Fake::new(CLOSE_WAIT | NOBUFS);
         assert!(!wait(&mut fake, READ, None));
-        assert_eq!((fake.error, fake.events.len()), (1777, 0));
+        assert_eq!((fake.socket.0.err_code, fake.events.len()), (1777, 0));
+        // close_wait leaves the no-buffers flag for the next wait.
+        assert!(unsafe { fake.socket.0.record() }.kernel_nobufs);
         let mut fake = Fake::new(NOBUFS);
         assert!(wait(&mut fake, WRITE, None));
         assert_eq!(fake.events, ["sleep:true"]);
+        assert!(!unsafe { fake.socket.0.record() }.kernel_nobufs);
         let mut fake = Fake::new(0);
         fake.reactor_ok = false;
         assert!(!wait(&mut fake, READ, None));
@@ -353,7 +372,15 @@ mod tests {
         assert!(wait(&mut fake, READ, None));
         // The writable callback wakes the reader; no one else is bound, so remove.
         assert_eq!(fake.events, ["set:1024", "yield:false", "remove:1024"]);
-        assert_eq!(unsafe { (*fake.state).want }, 0);
+        assert_eq!(unsafe { (*fake.state()).want }, 0);
+    }
+
+    #[test]
+    fn wants_count_only_with_a_tls_session() {
+        let mut fake = Fake::new(WANT_WRITE);
+        unsafe { fake.socket.0.record() }.ssl = core::ptr::null_mut();
+        assert!(wait(&mut fake, READ, None));
+        assert_eq!(fake.events, ["set:512", "yield:true", "remove:512"]);
     }
 
     #[test]
@@ -364,13 +391,13 @@ mod tests {
         let mut fake = Fake::new(0);
         assert!(wait(&mut fake, READ, Some(again)));
         assert_eq!(fake.events, ["set:512", "yield:false", "remove:512"]);
-        assert!(unsafe { (*fake.state).barriers[0] }.is_none());
+        assert!(unsafe { (*fake.state()).barriers[0] }.is_none());
     }
 
     #[test]
     fn a_wake_with_an_error_or_close_fails() {
         let mut fake = Fake::new(0);
-        fake.closed = true;
+        fake.socket.0.sock_fd = -1;
         assert!(!wait(&mut fake, READ, None));
     }
 }

@@ -107,6 +107,27 @@ pub const NODELAY_FAILED: u32 = 2;
 pub const FD_WARNINGS_SHIFT: u32 = 8;
 
 impl CoSocket {
+    /// `is_closed`.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.sock_fd == -1
+    }
+
+    /// The `network::Socket` record.
+    ///
+    /// # Safety
+    /// The socket is open (constructed with a `network::Socket`) and no other
+    /// reference to that record is live.
+    #[must_use]
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "the network::Socket record is its own allocation, which this record only points to"
+    )]
+    pub unsafe fn record(&self) -> &mut SocketRecord {
+        // SAFETY: as the caller promises.
+        unsafe { &mut *self.socket }
+    }
+
     fn new(state: *mut SocketState) -> Self {
         Self {
             err_code: 0,
@@ -443,6 +464,41 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_peer_name(
     }
     address.kind = socket.kind;
     0
+}
+
+/// An open record over a `network::Socket` record without a descriptor, for the
+/// operations' tests.
+#[cfg(test)]
+pub(crate) struct TestSocket(pub Box<CoSocket>);
+
+#[cfg(test)]
+impl TestSocket {
+    pub(crate) fn new() -> Self {
+        let mut storage = Box::new(core::mem::MaybeUninit::<CoSocket>::uninit());
+        unsafe { init(storage.as_mut_ptr()) };
+        let mut socket = unsafe { Box::from_raw(Box::into_raw(storage).cast::<CoSocket>()) };
+        socket.socket = swoole_rs_reactor::swr_v1_socket_make(-1, FD_CO_SOCKET);
+        socket.sock_fd = 100;
+        Self(socket)
+    }
+
+    pub(crate) fn ptr(&mut self) -> *mut CoSocket {
+        &raw mut *self.0
+    }
+
+    pub(crate) fn state(&self) -> *mut SocketState {
+        self.0.state
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestSocket {
+    fn drop(&mut self) {
+        unsafe {
+            swoole_rs_reactor::swr_v1_socket_dealloc(self.0.socket);
+            swr_v1_hook_co_socket_fini(self.ptr());
+        }
+    }
 }
 
 #[cfg(test)]
