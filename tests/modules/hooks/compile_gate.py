@@ -19,7 +19,21 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import module_patches
+from tools.build_hybrid import module_patches, patches_for
+
+
+def requirements():
+    """Hooks and the modules it depends on (migration/modules.json), in plan order: the
+    selected units include their headers and records (the reactor's socket, #947)."""
+    plan = json.loads((ROOT/'migration/modules.json').read_text())['modules']
+    by_id = {module['id']: module for module in plan}
+    wanted, pending = set(), ['M07']
+    while pending:
+        module = pending.pop()
+        if module not in wanted:
+            wanted.add(module)
+            pending.extend(by_id[module].get('depends_on', []))
+    return [module for module in plan if module['id'] in wanted]
 from tools.build_upstream import COMMIT as PIN
 
 def main():
@@ -31,6 +45,9 @@ def main():
     a = p.parse_args()
     manifest = module_patches(ROOT/'migration/patches/hooks')
     paths = sorted({path for entry in manifest for path in entry['upstream_paths']})
+    modules = requirements()
+    selected_patches = patches_for(modules)
+    native = sorted({ROOT/path for module in modules for path in module['owned_paths'] if path.startswith('native/') and (ROOT/path).is_dir()})
     config = a.config.read_bytes()
     baseline_config = re.sub(rb'^#define SWOOLE_RS_HOOKS[^\n]*\n', b'', config, flags=re.MULTILINE)
     rows = []
@@ -49,7 +66,7 @@ def main():
         pkg_env['PKG_CONFIG_PATH'] = os.pathsep.join(pkg_paths)
     with tempfile.TemporaryDirectory(prefix='swr-hooks-compile-') as temp:
         tree = Path(temp)
-        data = subprocess.check_output(['git', '-C', str(a.source), 'archive', PIN, 'include', 'ext-src', 'thirdparty', 'php_swoole.h', 'php_swoole_api.h', *paths])
+        data = subprocess.check_output(['git', '-C', str(a.source), 'archive', PIN, 'include', 'ext-src', 'thirdparty', 'php_swoole.h', 'php_swoole_api.h', *sorted({*paths, *(path for entry in selected_patches for path in entry['upstream_paths'])})])
         with tarfile.open(fileobj=io.BytesIO(data)) as archive:
             for member in archive:
                 if member.isfile():
@@ -57,15 +74,14 @@ def main():
                     out.parent.mkdir(parents=True, exist_ok=True)
                     out.write_bytes(archive.extractfile(member).read())
         (tree/'config.h').write_bytes(config)
-        flags = ['-std=c++14', '-O1', '-DHAVE_CONFIG_H', '-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1', '-I'+str(tree), '-I'+str(tree/'include'), '-I'+str(tree/'ext-src'), '-I'+str(ROOT/'native/hooks')]
+        flags = ['-std=c++14', '-O1', '-DHAVE_CONFIG_H', '-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1', '-I'+str(tree), '-I'+str(tree/'include'), '-I'+str(tree/'ext-src'), *('-I'+str(path) for path in native)]
         flags.extend(shlex.split(subprocess.check_output([a.php_config, '--includes'], text=True)))
         flags.extend(shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl', 'libpq', 'libcurl'], text=True, env=pkg_env)))
         for variant in ['original', 'selected', 'disabled']:
             (tree/'config.h').write_bytes(baseline_config + (b'\n#define SWOOLE_RS_HOOKS 1\n' if variant == 'selected' else b''))
             if variant == 'selected':
-                for entry in manifest:
-                    patch = ROOT/'migration/patches/hooks'/entry['path']
-                    subprocess.run(['git', 'apply', str(patch)], cwd=tree, check=True)
+                for entry in selected_patches:
+                    subprocess.run(['git', 'apply', str(ROOT/entry['path'])], cwd=tree, check=True)
             # Translation units only: the patches also touch headers (stubs), which the units include.
             for path in (path for path in paths if path.endswith(".cc")):
                 command = ['c++', *flags, '-fsyntax-only', str(tree/path)]
