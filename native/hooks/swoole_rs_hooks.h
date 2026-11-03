@@ -298,15 +298,11 @@ uint32_t swr_v1_hook_socket_event_name(const swr_v1_hook_socket_state *state, ui
    to the event (read or write). */
 typedef struct {
     void *context;
-    swr_v1_hook_socket_state *state;
-    uint32_t read, write;
+    struct swr_v1_co_socket *socket;
     int32_t close_wait_error;
-    bool (*closed)(void *);
     void (*shutdown)(void *);
-    bool (*bound)(void *, uint32_t event);
     void (*set_err)(void *, int32_t);
     void (*resume)(void *, uint32_t event);
-    void (*close_wait)(void *);
     void (*release)(void *);
 } swr_v1_hook_socket_ops;
 bool swr_v1_hook_cancel(const swr_v1_hook_socket_ops *ops, uint32_t event);
@@ -319,20 +315,10 @@ int32_t swr_v1_hook_shutdown(int (*syscall)(int, int), int32_t fd, int32_t how, 
    coroutine to resume (null for none). barrier (when given) stays installed for the wait; buffer,
    when not null, is a write's buffer slot. status reports close_wait, else has_kernel_nobufs(),
    then the TLS wants, removed, and events' SW_EVENT_READ/WRITE bits. */
-enum {
-    SWR_V1_HOOK_WAIT_CLOSE_WAIT = 1,
-    SWR_V1_HOOK_WAIT_NOBUFS = 2,
-    SWR_V1_HOOK_WAIT_WANT_READ = 4,
-    SWR_V1_HOOK_WAIT_WANT_WRITE = 8,
-    SWR_V1_HOOK_WAIT_REMOVED = 16,
-};
 typedef struct {
     void *context;
-    swr_v1_hook_socket_state *state;
+    struct swr_v1_co_socket *socket;
     int32_t close_wait_error;
-    uint32_t (*status)(void *);
-    bool (*closed)(void *);
-    int32_t (*error)(void *);
     void (*set_err)(void *, int32_t);
     void (*sleep)(void *);
     bool (*reactor)(void *, uint32_t events, bool add);
