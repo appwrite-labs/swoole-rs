@@ -52,42 +52,35 @@ to `std::bad_alloc`. Correction: upstream allocates len×3 and can overflow by o
 byte (for example `url_encode("!",1)` under ASan). Rust reserves the exact size
 once and has no shrink copy.
 
-## Request framing
+## Request
 
-Native adapters pass independent PODs, never C++ object layouts. `HttpFrame`
-carries offset, content length, method, version, error and URL/line/header
-metadata.
+`http_server::Request` (`crates/http/src/request.rs`, #931) keeps its native
+fields, because upstream's `ListenPort` reads them whenever the ports module is
+off, but Rust defines the layout (`#[repr(C)]`, one-byte flags instead of
+bit-fields, plus the `native_` effect call) and runs every method on the struct in
+place: `swr_v1_http_request_protocol`, `_header_length`, `_chunked_length`,
+`_parse_header`, `_expect`, `_header`, `_multipart_init`, `_multipart_parse`,
+`_multipart_destroy`. `FormData` is a Rust `Form`; its `operator delete` hands it
+back (`swr_v1_http_form_free`). The ports module's reader calls the Rust methods
+directly.
 
-- `swr_v1_http_frame`: operation 0 = request line, 1 = header terminator. Returns
-  0 = complete, -1 = retry/error, with the same partial fields as legacy code (no
-  rollback). Known method prefixes stay case-sensitive and permissive.
-- `swr_v1_http_chunk_step`: 1 = next chunk, 2 = zero-length chunk (complete),
-  3 = more data needed after a valid numeric line, -1 = incomplete initial tail or
-  invalid bounds, -2 = invalid syntax. Native logs 1/2/3, sets `excepted` only for
-  -2, and publishes known/content length only for 2. Initialize the cursor from
-  the buffer offset, pass `initial = 1` only on the first step, and keep the same
-  input and header position across steps. Uses C-locale `strtoul` rules.
-- `swr_v1_http_expect` returns 1/0.
-- `swr_v1_http_header_value` returns 1 = found, 0 = absent; outputs are zeroed if
-  absent or on error. Native builds the `std::string` after return. The original
-  case matching, first-match, colon and line-break whitespace rules are kept.
+The multipart parser stays the third-party C one, with Rust callbacks. Native
+effects go through `request_native(op, a, b, n, m)` (`SWR_HTTP_NATIVE_*`):
+`swoole::String` allocation and appends, the parser, `swoole_tmpfile`, stdio, the
+`strtoull` errno, and upstream's logs, under their original function names.
 
-Corrections: request lines that previously formed `input.end()+8` without finding
-a version, and chunk lengths that pointed past the allocation, are rejected.
+Framing keeps upstream's permissive rules (case-sensitive method prefixes, partial
+fields published on error, C-locale `strtoul` chunk lengths, first-match header
+values). Corrections: request lines that previously formed `input.end()+8` without
+finding a version, and chunk lengths that pointed past the allocation, are rejected.
 
 ## Header metadata and cookies
 
-`swr_v1_http_header_info` parses into `swr_v1_http_header_state` plus multipart
-spans. Flags: known 1, keepalive 2, chunked 4, nobody 8, parsed 16. Initialize the
-cursor to request-line length + 2 and pass header-end − 4. After result 1, native
-publishes the scalar fields and allocates FormData before resuming. 0 = complete;
-negative = invalid bounds. The iterator stops at each multipart allocation, so
-field mutations and callback timing before an exception match upstream.
-
-Content-length parsing (whitespace, sign, decimal overflow, unsigned negation) is
-done in Rust. `number_errors` bit 1 = overflow, bit 2 = the last numeric error had
-no digits. Native sets errno after return. A one-time probe with a fixed literal
-detects whether libc sets errno on no-conversion (Darwin sets EINVAL).
+Header metadata: flags known 1, keepalive 2, chunked 4, nobody 8, parsed 16, from
+request-line length + 2 to header end − 4; each multipart `Content-Type` makes a new
+form. Content-length parsing (whitespace, sign, decimal overflow, unsigned negation)
+is Rust; native sets errno afterwards, with a one-time probe for whether libc sets
+it on no-conversion (Darwin sets EINVAL).
 
 `swr_v1_http_cookie_next` advances through a native scratch buffer to the next
 token and returns key/value spans plus whether `=` was present. Start the cursor at
@@ -265,11 +258,6 @@ without changing the scratch.
 
 ## Multipart
 
-- `swr_v1_http_multipart_data` takes POD counters/flags. Phase 0 picks append,
-  file write or reject, and increments `upload_size` before the limit check.
-  Returned flag bits: 1 = excepted, 2 = unavailable, 4 = too_large. Actions:
-  0 = success, 1 = append, 2 = write (signed count), 3 = close + clear FILE,
-  4 = warn/reject, 5 = reject. Unsigned `size_t` additions wrap as upstream.
 - `swr_v1_http_multipart_result` classifies the parser return: -1 = error message,
   log, reject; 0 = short, log, reject; 1 = short, log, excepted-accept; 2 = clear
   input, accept.
@@ -277,28 +265,6 @@ without changing the scratch.
   `Content-Disposition` name, else 0. `swr_v1_http_multipart_filename` uses the
   cookie iterator over native scratch and returns 1 at the first `filename` key.
   Invalid scratch can be partly mutated before rejection.
-- `swr_v1_http_multipart_emit` returns an immutable action array and count for a
-  callback kind and the initial FILE-presence flag. Actions: 0 = done, 1 = append
-  static marker, 2 = append filename (strlen), 3 = append boundary, 4 = fflush,
-  5 = fclose then clear, 6 = append header name, 7 = append header value. Effects
-  before an action: 1 sets `multipart_header_parsed`, 2 clears it, 4 commits
-  content length then `tried_to_dispatch`. Native reads all dynamic operands when
-  it runs each action. Unknown kind or null count returns null.
-- `swr_v2_http_multipart_upload` runs after the emit plan in
-  `multipart_on_header_value`. It decides disposition/filename admission, temp-file
-  selection and FILE-publication/error order. Native does the allocation, tempfile,
-  fdopen and warnings, and the warning stays in `multipart_on_header_value`.
-
-## Request multipart lifecycle
-
-`swr_v1_http_request_lifecycle(kind, observed, count)` returns immutable `uint32`
-action storage (`SWR_HTTP_REQUEST_*`). Kind 0 uses the boundary result, 1 the
-parser-allocation result, 2 returns the destruction prefix, 3 uses fresh FILE
-presence after that prefix, 4 chooses destructor cleanup from FormData presence.
-Invalid kind, non-boolean observation or null count returns null. FILE presence is
-read after the temporary body is deleted, the original buffer restored and the
-saved field cleared. Partial-initialization cleanup has the same limits as
-upstream.
 
 ## Versioned owners
 
@@ -307,4 +273,4 @@ upstream.
 - [static-context-v2.md](static-context-v2.md): `swr_v2_http_context_*`
 
 Tests: `tests/modules/http/` (for example `gate.py`, `static_gate.py`,
-`proxy_gate.py`, `multipart_headers_gate.py`).
+`proxy_gate.py`, `cookie_flow_gate.py`).

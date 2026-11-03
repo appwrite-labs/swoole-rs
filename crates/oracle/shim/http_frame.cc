@@ -1,7 +1,6 @@
-// Request framing from http.cc behind C entry points, once per engine: build.rs
-// copies the pinned bodies (upstream) or the bodies with the http overlay patch
-// applied (candidate, which calls the Rust exports) into SWR_FRAME_INC unchanged.
-// The facade gives them upstream's Request fields and String's str/length/offset.
+// Request framing from the pinned http.cc behind C entry points: build.rs copies the
+// bodies into SWR_FRAME_INC unchanged. The facade gives them upstream's Request
+// fields and String's str/length/offset.
 #include <cctype>
 #include <cerrno>
 #include <cstdint>

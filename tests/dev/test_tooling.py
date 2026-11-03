@@ -105,20 +105,6 @@ class Overlays(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     build_hybrid.headers_for(['websocket'])
 
-    def test_ports_only_stages_real_legacy_request_view_without_http_owner_headers(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for name in ['include/swoole_rs.h', 'ports/ports.h', 'http/swoole_rs_http_request_view.h',
-                         'http/swoole_rs_http.h']:
-                path = root / 'native' / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.touch()
-            with patch.object(build_hybrid, 'ROOT', root):
-                ports = {p.name for p in build_hybrid.headers_for(['ports'])}
-                self.assertEqual(ports, {'swoole_rs.h', 'ports.h', 'swoole_rs_http_request_view.h'})
-                paired = build_hybrid.headers_for(['ports', 'http'])
-                self.assertEqual(sum(p.name == 'swoole_rs_http_request_view.h' for p in paired), 1)
-
     def test_development_configuration_invalidation(self):
         inputs = {'patches': [{'upstream_paths': ['src/core/buffer.cc'], 'sha256': 'one'}],
                   'rust_archive_sha256': 'one', 'headers_sha256': {'abi.h': 'one'}, 'modules': ['buffer']}
@@ -540,7 +526,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--reference', commands['abi'])
         self.assertNotIn('--startup-only', commands['abi'])
         self.assertIn('--sanitize', commands['buffer-posix-iovec'])
-        self.assertIn('--archive', commands['http-multipart-headers'])
         self.assertIn('--sanitize', commands['ports-flags'])
         self.assertIn('--sanitize', commands['ports-packet-settings'])
         self.assertIn('--sanitize', commands['ports-options'])
@@ -551,8 +536,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('tests/modules/buffer/string/test_gate.py::test_profile[allocation]', commands['string-allocation'])
         self.assertIn('tests/modules/buffer/string/test_gate.py::test_profile[format]', commands['string-format'])
         self.assertIn('tests/modules/buffer/string/test_gate.py::test_profile[random]', commands['string-random'])
-        self.assertIn('--source', commands['http-request-lifecycle'])
-        self.assertIn('--archive', commands['http-request-lifecycle'])
         self.assertIn('--archive', commands['memory-fixed-native-construction'])
         self.assertIn('--archive', commands['memory-mapping-operation'])
         self.assertNotIn('--sanitize', commands['memory-mapping-operation'])
@@ -689,7 +672,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive',commands['http-locales'])
         self.assertIn('--archive',commands['http-rewrites'])
         self.assertIn('--archive',commands['http-dispatch'])
-        self.assertIn('--archive',commands['http-multipart-emit'])
         args.native_build_root = Path('/private-ram/hybrid')
         args.ccache = Path('/explicit/compiler-cache')
         with patch.object(dev.subprocess, 'check_output', return_value='/openssl'):

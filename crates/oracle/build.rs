@@ -141,42 +141,24 @@ fn definition(text: &str, signature: &str) -> String {
     panic!("unterminated {signature}");
 }
 
-/// Request framing from the pinned http.cc (upstream) and from it with the http
-/// overlay patch applied (candidate), copied unchanged for `shim/http_frame.cc`,
-/// with the method and version enums from the pinned `swoole_http.h`.
+/// Request framing from the pinned http.cc, copied unchanged for `shim/http_frame.cc`,
+/// with the method and version enums from the pinned `swoole_http.h`. The candidate is
+/// `swoole_rs_http::Request` itself (fuzz/src/lib.rs).
 fn http_frame() {
-    let patch = "../../migration/patches/http/0001-http-helpers.patch";
-    println!("cargo:rerun-if-changed={patch}");
-    let upstream = fs::read_to_string("upstream/src/protocol/http.cc").expect("vendored http.cc");
-    let candidate = apply(&upstream, &fs::read_to_string(patch).expect("http patch"));
-    for (name, text) in [("upstream", &upstream), ("candidate", &candidate)] {
-        let mut parts = Vec::new();
-        if text.contains("static const char *method_strings[]") {
-            parts.push(slice(text, "static const char *method_strings[]", "\n};") + "\n};");
-        }
-        if text.contains("int frame_request(") {
-            parts.push(definition(text, "int frame_request("));
-        }
-        if text.contains("int http_no_digits_errno(") {
-            parts.push(definition(text, "int http_no_digits_errno("));
-        }
-        for signature in [
-            "void Request::parse_header_info(",
-            "int Request::get_protocol(",
-            "int Request::get_header_length(",
-            "int Request::get_chunked_body_length(",
-            "bool Request::has_expect_header(",
-            "std::string Request::get_header(",
-            "const char *get_method_string(",
-        ] {
-            parts.push(definition(text, signature));
-        }
-        fs::write(
-            out(&format!("http_frame_{name}.inc")),
-            parts.join("\n") + "\n",
-        )
-        .unwrap();
+    let text = fs::read_to_string("upstream/src/protocol/http.cc").expect("vendored http.cc");
+    let mut parts = vec![slice(&text, "static const char *method_strings[]", "\n};") + "\n};"];
+    for signature in [
+        "void Request::parse_header_info(",
+        "int Request::get_protocol(",
+        "int Request::get_header_length(",
+        "int Request::get_chunked_body_length(",
+        "bool Request::has_expect_header(",
+        "std::string Request::get_header(",
+        "const char *get_method_string(",
+    ] {
+        parts.push(definition(&text, signature));
     }
+    fs::write(out("http_frame_upstream.inc"), parts.join("\n") + "\n").unwrap();
     let header =
         fs::read_to_string("upstream/include/swoole_http.h").expect("vendored swoole_http.h");
     let enums = [
@@ -595,14 +577,6 @@ fn main() {
             .compile(&format!("swoole_{engine}_resp_stream"));
     }
     socks5();
-    // The candidate framing bodies call the Rust exports, resolved by the binary.
-    cpp()
-        .define("SWR_FRAME_ENGINE", "candidate")
-        .define("SWR_FRAME_INC", "\"http_frame_candidate.inc\"")
-        .include("../../native/http")
-        .include(env::var("OUT_DIR").unwrap())
-        .file("shim/http_frame.cc")
-        .compile("swoole_candidate_http_frame");
     cpp()
         .define("SWR_PROTO_ENGINE", "candidate")
         .define("SWR_PROTO_INC", "\"protocols_candidate.inc\"")

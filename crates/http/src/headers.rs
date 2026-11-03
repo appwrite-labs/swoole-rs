@@ -1,5 +1,5 @@
 //! Header metadata and cookie tokenization with native work between pure steps.
-use super::{HttpSpan, INVALID, bytes};
+use super::{HttpSpan, INVALID};
 fn space(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t'..=b'\r')
 }
@@ -136,36 +136,6 @@ pub(crate) fn header_info(
         state.flags |= 8;
     }
     0
-}
-/// Parse through the next multipart allocation boundary or completion.
-/// Status1 requires native `FormData` allocation before resuming;0 completes.
-/// # Safety
-/// Input is readable; state/span are valid/aligned/disjoint. The same input is
-/// retained across steps; no Rust reference survives native allocation/bailout.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_header_info(
-    data: *const u8,
-    length: usize,
-    end: usize,
-    state: *mut HttpHeaderInfo,
-    multipart: *mut HttpSpan,
-) -> i32 {
-    if state.is_null() || multipart.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `multipart` is non-null (checked above), aligned and writable.
-    unsafe {
-        multipart.write(HttpSpan::default());
-    }
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    let input = match unsafe { bytes(data, length) } {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    // SAFETY: `state` is non-null (checked above), aligned and exclusive per the caller contract.
-    header_info(input, end, unsafe { &mut *state }, unsafe {
-        &mut *multipart
-    })
 }
 #[repr(C)]
 #[derive(Default)]
@@ -308,15 +278,7 @@ mod tests {
         };
         let mut span = HttpSpan::default();
         assert_eq!(
-            unsafe {
-                swr_v1_http_header_info(
-                    input.as_ptr(),
-                    input.len(),
-                    input.len() - 4,
-                    &raw mut state,
-                    &raw mut span,
-                )
-            },
+            header_info(input, input.len() - 4, &mut state, &mut span),
             1
         );
         assert_eq!((state.flags, state.content_length), (1, 0));
@@ -325,15 +287,7 @@ mod tests {
             b"; boundary=a"
         );
         assert_eq!(
-            unsafe {
-                swr_v1_http_header_info(
-                    input.as_ptr(),
-                    input.len(),
-                    input.len() - 4,
-                    &raw mut state,
-                    &raw mut span,
-                )
-            },
+            header_info(input, input.len() - 4, &mut state, &mut span),
             0
         );
         assert_eq!(state.flags, 29);

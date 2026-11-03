@@ -724,6 +724,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-ports"
 version = "0.1.0"
+dependencies = [
+ "swoole-rs-http",
+]
 
 [[package]]
 name = "swoole-rs-process"

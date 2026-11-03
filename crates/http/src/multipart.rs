@@ -1,77 +1,4 @@
 //! Multipart upload accounting and result policy; native retains parser/stdio.
-use crate::INVALID;
-#[repr(C)]
-#[derive(Default)]
-pub struct HttpMultipartData {
-    pub phase: u32,
-    pub has_file: u32,
-    pub flags: u32,
-    pub buffer_length: usize,
-    pub maximum: usize,
-    pub upload_size: usize,
-    pub upload_maximum: usize,
-    pub length: usize,
-    pub written: i64,
-}
-impl HttpMultipartData {
-    pub(crate) fn step(&mut self) -> i32 {
-        if self.phase > 2 {
-            return INVALID;
-        }
-        self.flags = 0;
-        match self.phase {
-            0 => {
-                if self.has_file == 0 {
-                    // Native unsigned size_t addition is defined to wrap. Preserve
-                    // its existing limit behavior rather than silently tightening it.
-                    if self.buffer_length.wrapping_add(self.length) > self.maximum {
-                        self.flags = 3;
-                        5
-                    } else {
-                        1
-                    }
-                } else {
-                    self.upload_size = self.upload_size.wrapping_add(self.length);
-                    if self.upload_size > self.upload_maximum {
-                        self.flags = 5;
-                        5
-                    } else {
-                        self.phase = 1;
-                        2
-                    }
-                }
-            }
-            1 => {
-                if i64::try_from(self.length).is_ok_and(|length| self.written == length) {
-                    0
-                } else {
-                    self.phase = 2;
-                    3
-                }
-            }
-            2 => {
-                self.flags = 3;
-                4
-            }
-            _ => INVALID,
-        }
-    }
-}
-/// Native action:0=success,1=append,2=fwrite,3=fclose+clear FILE,4=warn/reject,
-/// 5=reject. `Flags:1=excepted,2=unavailable,4=too_large`. `Upload_size` publication
-/// follows the first call when `has_file`; flags apply before the requested action.
-/// # Safety
-/// State is aligned/readable/writable and valid for each call. No native object,
-/// allocation, callback or borrow is retained between resumptions.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_multipart_data(state: *mut HttpMultipartData) -> i32 {
-    if state.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `state` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *state };
-    state.step()
-}
 /// Classify the mature parser's return after its native execution has ended.
 /// -1=log parser error,0=log short result/reject,1=log short result/excepted,
 /// 2=clear input/success. Unsigned cast matches the pinned `ssize_t/size_t` check.
@@ -135,6 +62,7 @@ pub unsafe extern "C" fn swr_v1_http_multipart_filename(data: *mut u8, capacity:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::INVALID;
     #[test]
     fn filename_stops_with_identical_destructive_cookie_state() {
         for input in [
@@ -197,22 +125,7 @@ mod tests {
         );
     }
     #[test]
-    fn unsigned_accounting_and_write_failure_publication_order() {
-        let mut data = HttpMultipartData {
-            buffer_length: usize::MAX,
-            length: 1,
-            ..Default::default()
-        };
-        assert_eq!(unsafe { swr_v1_http_multipart_data(&raw mut data) }, 1);
-        data.has_file = 1;
-        data.upload_size = usize::MAX;
-        assert_eq!(unsafe { swr_v1_http_multipart_data(&raw mut data) }, 2);
-        assert_eq!(data.upload_size, 0);
-        data.written = 0;
-        assert_eq!(unsafe { swr_v1_http_multipart_data(&raw mut data) }, 3);
-        assert_eq!(data.flags, 0);
-        assert_eq!(unsafe { swr_v1_http_multipart_data(&raw mut data) }, 4);
-        assert_eq!(data.flags, 3);
+    fn parser_results() {
         assert_eq!(swr_v1_http_multipart_result(-1, usize::MAX, 1), -1);
         assert_eq!(swr_v1_http_multipart_result(1, 2, 0), 0);
         assert_eq!(swr_v1_http_multipart_result(1, 2, 1), 1);

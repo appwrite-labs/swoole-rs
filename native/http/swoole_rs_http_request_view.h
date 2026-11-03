@@ -49,10 +49,7 @@ class LegacyRequestView {
         return server->select_static_handler(request_,connection);
     }
 };
-using SelectedRequest = Request;
-using SelectedRequestView = LegacyRequestView<SelectedRequest>;
 static_assert(sizeof(LegacyRequestView<Request>)==sizeof(Request *),"Request view must retain only typed identity");
-static_assert(sizeof(SelectedRequestView)==sizeof(SelectedRequest *),"Selected request view must retain only typed identity");
 }
 }
 #endif

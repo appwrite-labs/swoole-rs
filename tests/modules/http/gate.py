@@ -150,17 +150,6 @@ class Sides:
         return not result.returncode
 
 
-def engine_units(tree, driver, namespaces):
-    """A driver whose engines #include their bodies (multipart_gate.cc): each engine's TU,
-    with its side's flags, then the driver's main."""
-    units = []
-    for side, namespace in zip(['upstream', 'candidate'], namespaces):
-        unit = tree/(namespace+'_engine.cc')
-        unit.write_text(f'#define SWR_ENGINE {namespace}\n#define SWR_ENGINE_BODIES "{namespace}.inc"\n#include "{driver.name}"\n')
-        units.append((side, unit))
-    return units + [('candidate', driver)]
-
-
 def run(binary, symbols, output, report, timeout=30):
     """Require the Rust symbols in the gate binary, run it and record its last JSON line."""
     present = subprocess.check_output(['nm', '-g', str(binary)], text=True)

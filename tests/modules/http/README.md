@@ -34,19 +34,13 @@ marked `[R]` also take `--rust-sanitize`. `tools/dev.py` registers each as an
 | Script | Checks |
 | --- | --- |
 | `gate.py` | URL encode/decode, boundary, method, status helpers; five unchanged original core-test bodies |
-| `framing_gate.py` | Request framing and buffer metadata; original `get_protocol`, `has_expect_header`, `all_method` bodies |
-| `headers_gate.py` | FormData/header callbacks, errno, reentrancy |
 | `proxy_gate.py` [R] | Proxy auth packing/handshake with actual base64 |
 | `static_gate.py` [R] | Static response method, send order, HEAD/keep-alive changes |
 | `conditional_gate.py` | Date callers with libc `strptime`/`gmtime`/`mktime` |
-| `multipart_gate.py` | Multipart upload accounting callbacks |
-| `multipart_headers_gate.py` [R] | Multipart header field/value and filename callbacks |
-| `multipart_emit_gate.py` [R] | Header-complete/data-end/part-begin/body-end callbacks |
 | `rewrite_gate.py` [R] | `add_rewrite_rule`/`apply_rewrite_rules`, rewriting the Rust static context |
 | `dispatch_gate.py` [R] | Route/index/proxy-init/status bodies, TLS status buffer |
 | `locale_gate.py` | Case-insensitive helpers against libc `strncasecmp` across available locales |
 | `cookie_flow_gate.py` [R] (`--status-only`, `--codes-only`) | Cookie callback flow; status fallback buffer; public `int[128]` status-code array export |
-| `request_lifecycle_gate.py` [R] | Request multipart init/destroy/destructor |
 | `context_gate.py` [R] | The whole `StaticHandler` (paths, locations, rewrites, index files and pages, ranges, content types, dates) against the pinned class |
 | `boundary_rng_gate.py --archive ARCHIVE` | Random-boundary overloads: pinned bodies against the hybrid build's `base.cc` |
 
@@ -108,9 +102,11 @@ Deleted (6 duplicates and one ported phase):
   `make_index_page` and proxy auth differentials. `http-index-pages` and
   `http-proxy` run the same functions over a wider path, entry, credential and
   capacity domain.
-- `http-multipart-headers-positive`: replaced by the full
-  `http-multipart-headers`, which had no phase before. It adds append and stdio
-  failures, seeded state and 2,048 random values.
+- `http-framing`, `http-headers`, `http-multipart`, `http-multipart-emit`,
+  `http-multipart-headers`, `http-request-lifecycle`: compared `Request`'s C++
+  bodies with upstream's. Those bodies are Rust now (`crates/http/src/request.rs`,
+  #931); its unit tests carry the cases, including core-tests' `get_protocol` and
+  `has_expect_header`, and the HTTP PHPTs cover the server path.
 - `http-binding-reflection`: ported into `api-surface`. `tools/php_api_inventory.php`
   now records parameter default values, class modifiers and default properties
   for every Swoole class, not just these five.

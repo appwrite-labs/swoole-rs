@@ -7,19 +7,19 @@ extern "C" {
 #endif
 typedef struct { size_t offset, length; } swr_v1_http_span;
 
-enum swr_v1_http_request_action {
-    SWR_HTTP_REQUEST_DONE=0, SWR_HTTP_REQUEST_MAKE_PARSER=1, SWR_HTTP_REQUEST_SET_DATA=2,
-    SWR_HTTP_REQUEST_NEW_BODY=3, SWR_HTTP_REQUEST_APPEND_BODY=4, SWR_HTTP_REQUEST_SAVE_BUFFER=5,
-    SWR_HTTP_REQUEST_TRIM_BUFFER=6, SWR_HTTP_REQUEST_USE_BODY=7, SWR_HTTP_REQUEST_TMP_NAME=8,
-    SWR_HTTP_REQUEST_NEW_UPLOAD=9, SWR_HTTP_REQUEST_UPLOAD_MAX=10, SWR_HTTP_REQUEST_TRUE=11,
-    SWR_HTTP_REQUEST_WARN=12, SWR_HTTP_REQUEST_FALSE=13, SWR_HTTP_REQUEST_DELETE_BODY=14,
-    SWR_HTTP_REQUEST_RESTORE_BUFFER=15, SWR_HTTP_REQUEST_CLEAR_SAVED=16, SWR_HTTP_REQUEST_OBSERVE_FILE=17,
-    SWR_HTTP_REQUEST_CLOSE=18, SWR_HTTP_REQUEST_UNLINK=19, SWR_HTTP_REQUEST_FREE_PARSER=20,
-    SWR_HTTP_REQUEST_NULL_PARSER=21, SWR_HTTP_REQUEST_DELETE_UPLOAD=22, SWR_HTTP_REQUEST_NULL_UPLOAD=23,
-    SWR_HTTP_REQUEST_DELETE_FORM=24, SWR_HTTP_REQUEST_NULL_FORM=25, SWR_HTTP_REQUEST_DESTROY=26
+/* http_server::Request's native effects (crates/http/src/request.rs, src/protocol/http.cc's
+ * request_native(op, a, b, n, m)). */
+enum swr_v1_http_native {
+    SWR_HTTP_NATIVE_STRING_NEW=0, SWR_HTTP_NATIVE_STRING_FREE=1, SWR_HTTP_NATIVE_STRING_APPEND=2,
+    SWR_HTTP_NATIVE_PARSER_NEW=3, SWR_HTTP_NATIVE_PARSER_EXECUTE=4, SWR_HTTP_NATIVE_PARSER_FREE=5,
+    SWR_HTTP_NATIVE_TMPFILE=6, SWR_HTTP_NATIVE_FDOPEN=7, SWR_HTTP_NATIVE_FWRITE=8, SWR_HTTP_NATIVE_FFLUSH=9,
+    SWR_HTTP_NATIVE_FCLOSE=10, SWR_HTTP_NATIVE_UNLINK=11, SWR_HTTP_NATIVE_NUMBER_ERRORS=12,
+    SWR_HTTP_NATIVE_LOG_PARSER_NEW=13, SWR_HTTP_NATIVE_LOG_FOPEN=14, SWR_HTTP_NATIVE_LOG_WRITE=15,
+    SWR_HTTP_NATIVE_LOG_PARSE_REASON=16, SWR_HTTP_NATIVE_LOG_PARSE_PARTIAL=17, SWR_HTTP_NATIVE_TRACE_CHUNK=18,
+    SWR_HTTP_NATIVE_TRACE_HEADER_FIELD=19, SWR_HTTP_NATIVE_TRACE_HEADER_VALUE=20, SWR_HTTP_NATIVE_TRACE_DATA=21,
+    SWR_HTTP_NATIVE_TRACE_HEADERS_COMPLETE=22, SWR_HTTP_NATIVE_TRACE_DATA_END=23,
+    SWR_HTTP_NATIVE_TRACE_PART_BEGIN=24, SWR_HTTP_NATIVE_TRACE_BODY_END=25, SWR_HTTP_NATIVE_TRACE_EXECUTE=26
 };
-const uint32_t *swr_v1_http_request_lifecycle(uint32_t, uint32_t, size_t *);
-const uint32_t *swr_v2_http_multipart_upload(uint32_t, uint32_t, const uint8_t *, size_t, size_t *);
 
 
 typedef struct swr_v2_http_tasks swr_v2_http_tasks;
@@ -52,27 +52,9 @@ typedef struct {
 } swr_v1_http_range_format_input;
 int32_t swr_v1_http_range_format(const swr_v1_http_range_format_input *, uint8_t *, size_t, size_t *);
 int32_t swr_v2_http_tasks_prepare(swr_v2_http_tasks *, int64_t, size_t, const swr_v1_http_range_format_input *, size_t *);
-typedef struct {
-    size_t offset; uint64_t content_length;
-    uint32_t method, version, excepted, url_offset, url_length, line_length, header_length, known_length;
-} swr_v1_http_frame_state;
-typedef struct { size_t line_offset, line_length, chunk_length, next; uint64_t body_length; } swr_v1_http_chunk_result;
-int32_t swr_v1_http_chunk_step(const uint8_t *, size_t, size_t, size_t, uint32_t, swr_v1_http_chunk_result *);
-int32_t swr_v1_http_frame(const uint8_t *, size_t, swr_v1_http_frame_state *, uint32_t);
-int32_t swr_v1_http_expect(const uint8_t *, size_t);
-int32_t swr_v1_http_header_value(const uint8_t *, size_t, size_t, size_t, const uint8_t *, size_t, swr_v1_http_span *);
-typedef struct {
-    uint32_t phase, has_file, flags;
-    size_t buffer_length, maximum, upload_size, upload_maximum, length;
-    int64_t written;
-} swr_v1_http_multipart_data_state;
-int32_t swr_v1_http_multipart_data(swr_v1_http_multipart_data_state *);
-int32_t swr_v1_http_multipart_result(int64_t, size_t, uint32_t);
 int32_t swr_v1_http_multipart_disposition(const uint8_t *, size_t);
 int32_t swr_v1_http_multipart_filename(uint8_t *, size_t);
-typedef struct { size_t cursor; uint64_t content_length; uint32_t flags, number_errors; } swr_v1_http_header_state;
 typedef struct { size_t key_offset, key_length, value_offset, value_length; uint32_t has_value; } swr_v1_http_cookie;
-int32_t swr_v1_http_header_info(const uint8_t *, size_t, size_t, swr_v1_http_header_state *, swr_v1_http_span *);
 int32_t swr_v1_http_cookie_next(uint8_t *, size_t, size_t *, swr_v1_http_cookie *);
 // Invocation-local Rust policy state; no resource owner or pointer is retained.
 typedef struct { uint32_t phase, source_inside; size_t source_offset, required, cursor; swr_v1_http_cookie cookie; } swr_v2_http_cookie_flow_state;
@@ -137,13 +119,6 @@ typedef struct { uint32_t phase, last; size_t url_length, filename_length; } swr
 int32_t swr_v1_http_static_index_path(uint8_t *, size_t, size_t, const uint8_t *, size_t);
 int32_t swr_v1_http_static_location(const uint8_t *, size_t, const uint8_t *, size_t, swr_v1_http_static_path_state *);
 int32_t swr_v1_http_static_path(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, size_t, swr_v1_http_static_path_state *, uint32_t);
-typedef struct {
-    uint32_t action, effects;
-    const uint8_t *data;
-    size_t length;
-} swr_v1_http_multipart_action;
-const swr_v1_http_multipart_action *swr_v1_http_multipart_emit(uint32_t, uint32_t, size_t *);
-size_t swr_v1_http_multipart_body_length(size_t, size_t);
 int32_t swr_v1_http_transport_route(uint32_t, uint32_t);
 int32_t swr_v1_http_proxy_auth_enabled(size_t, size_t);
 int32_t swr_v1_http_unknown_status(int32_t, uint8_t *, size_t, size_t *);

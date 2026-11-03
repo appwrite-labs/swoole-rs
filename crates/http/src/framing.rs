@@ -209,62 +209,6 @@ pub(crate) fn chunk_step(
         (3, step)
     }
 }
-/// One chunk step:1=next,2=zero complete,3=need more data after logging,
-/// -1=initially incomplete/bad bounds,-2=invalid length syntax (excepted).
-/// Native logs the returned line only after Rust returns, preserving log timing.
-/// # Safety
-/// Input is readable; output is writable/aligned/disjoint. No borrow escapes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_chunk_step(
-    data: *const u8,
-    length: usize,
-    cursor: usize,
-    header: usize,
-    initial: u32,
-    output: *mut HttpChunkStep,
-) -> i32 {
-    if output.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(HttpChunkStep::default());
-    }
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    let input = match unsafe { bytes(data, length) } {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    let (status, step) = chunk_step(input, cursor, header, initial != 0);
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(step);
-    }
-    status
-}
-/// Operation 0=request line, 1=header terminator.
-/// # Safety
-/// Input is readable; frame is valid/aligned/disjoint. Native calls/allocators
-/// happen only after return. Legacy state mutations publish even on partial/error.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_frame(
-    data: *const u8,
-    length: usize,
-    frame: *mut HttpFrame,
-    operation: u32,
-) -> i32 {
-    if frame.is_null() {
-        return INVALID;
-    }
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    let input = match unsafe { bytes(data, length) } {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    // SAFETY: `frame` is non-null (checked above), aligned and exclusive per the caller contract.
-    let frame = unsafe { &mut *frame };
-    frame.parse(input, operation)
-}
 /// Preserve the native Expect scanner's exact skip/matching behavior.
 /// # Safety
 /// Input is readable. No references, callbacks or allocation escape.
@@ -346,40 +290,6 @@ pub(crate) fn header_value(
         at += 1;
     }
     0
-}
-/// Find the first legacy header value with its original whitespace/state rules.
-/// # Safety
-/// Input/name are readable. Output is writable/aligned/disjoint and zeroes on
-/// absent/error. Status1=found,0=absent, negative=invalid bounds. No borrow escapes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_header_value(
-    data: *const u8,
-    length: usize,
-    start: usize,
-    end: usize,
-    name: *const u8,
-    name_length: usize,
-    output: *mut HttpSpan,
-) -> i32 {
-    if output.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(HttpSpan::default());
-    }
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    let input = match unsafe { bytes(data, length) } {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    // SAFETY: the caller lends `name_length` initialized bytes at `name` (null only when empty).
-    let name = match unsafe { bytes(name, name_length) } {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    // SAFETY: `output` is non-null (checked above), aligned and exclusive per the caller contract.
-    header_value(input, start, end, name, unsafe { &mut *output })
 }
 #[cfg(test)]
 mod tests {

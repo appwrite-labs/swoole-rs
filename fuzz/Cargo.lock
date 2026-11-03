@@ -44,6 +44,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "itoa"
+version = "1.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
 name = "jobserver"
 version = "0.1.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -92,11 +98,22 @@ name = "swoole-rs-base64"
 version = "0.1.0"
 
 [[package]]
+name = "swoole-rs-buffer"
+version = "0.1.0"
+dependencies = [
+ "itoa",
+ "libc",
+ "memchr",
+]
+
+[[package]]
 name = "swoole-rs-clients"
 version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
+ "swoole-rs-reactor",
+ "swoole-rs-websocket",
 ]
 
 [[package]]
@@ -135,7 +152,22 @@ dependencies = [
 [[package]]
 name = "swoole-rs-protocols"
 version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-reactor",
+]
+
+[[package]]
+name = "swoole-rs-reactor"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-buffer",
+]
 
 [[package]]
 name = "swoole-rs-websocket"
 version = "0.1.0"
+dependencies = [
+ "swoole-rs-base64",
+]

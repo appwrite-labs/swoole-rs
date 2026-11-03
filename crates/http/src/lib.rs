@@ -25,26 +25,16 @@ pub use dispatch::{
     swr_v1_http_proxy_auth_enabled, swr_v1_http_transport_route, swr_v1_http_unknown_status,
 };
 mod framing;
-pub use framing::{
-    HttpChunkStep, HttpFrame, swr_v1_http_chunk_step, swr_v1_http_expect, swr_v1_http_frame,
-    swr_v1_http_header_value,
-};
+pub use framing::{HttpChunkStep, HttpFrame, swr_v1_http_expect};
 mod headers;
 mod index_page;
-pub use headers::{HttpCookie, HttpHeaderInfo, swr_v1_http_cookie_next, swr_v1_http_header_info};
+pub use headers::{HttpCookie, HttpHeaderInfo, swr_v1_http_cookie_next};
 pub use index_page::{HttpIndexPage, swr_v1_http_index_page};
 mod maps;
 mod multipart;
-mod multipart_emit;
-mod multipart_upload;
 pub use multipart::{
-    HttpMultipartData, swr_v1_http_multipart_data, swr_v1_http_multipart_disposition,
-    swr_v1_http_multipart_filename, swr_v1_http_multipart_result,
+    swr_v1_http_multipart_disposition, swr_v1_http_multipart_filename, swr_v1_http_multipart_result,
 };
-pub use multipart_emit::{
-    HttpMultipartAction, swr_v1_http_multipart_body_length, swr_v1_http_multipart_emit,
-};
-pub use multipart_upload::swr_v2_http_multipart_upload;
 mod proxy;
 pub use proxy::{
     HttpProxyRequest, HttpProxyText, swr_v1_http_proxy_credentials, swr_v1_http_proxy_handshake,
@@ -53,8 +43,15 @@ pub use proxy::{
 mod range;
 mod range_response;
 pub use range_response::{HttpRangeFinish, HttpRangeFormat, swr_v1_http_range_format};
-mod request_lifecycle;
-pub use request_lifecycle::swr_v1_http_request_lifecycle;
+mod request;
+pub use request::{
+    HttpForm, HttpNative, HttpRequest, HttpString, destroy_multipart_parser, init_multipart_parser,
+    parse_multipart_data, swr_v1_http_form_free, swr_v1_http_request_chunked_length,
+    swr_v1_http_request_expect, swr_v1_http_request_header, swr_v1_http_request_header_length,
+    swr_v1_http_request_multipart_destroy, swr_v1_http_request_multipart_init,
+    swr_v1_http_request_multipart_parse, swr_v1_http_request_parse_header,
+    swr_v1_http_request_protocol,
+};
 mod rewrite;
 pub use rewrite::HttpRewriteState;
 pub use rewrite::swr_v1_http_rewrite_rule;
