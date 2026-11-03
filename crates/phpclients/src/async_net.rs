@@ -12,7 +12,7 @@ use crate::{
 };
 use libc::{c_char, c_int, c_void};
 use std::{ffi::CStr, ptr};
-use swoole_rs_clients::{state, swr_v1_clients_port};
+use swoole_rs_clients::{client as state, swr_v1_clients_port};
 use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
     Call, Class, E_ERROR,

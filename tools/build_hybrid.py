@@ -36,7 +36,7 @@ BRIDGE_PATCH = 'migration/patches/integration/0001-rust-bridge.patch'
 HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
                   'firebird': '--with-swoole-firebird'}
 # Modules a module cannot build without: PHP Table stores rows in memory's TableV2.
-REQUIRES = {'phpcollections': ('memory',), 'hooks': ('reactor',)}
+REQUIRES = {'phpcollections': ('memory',), 'hooks': ('reactor',), 'clients': ('reactor',)}
 # The build's two Rust archives in rust-prefix/lib, by the input that records each: the
 # Zend-free one the native gates link, and the PHP extension's (with LTO unless --dev, #889).
 ARCHIVES = {'libswoole_rs_ffi.a': 'rust_archive_sha256', 'libswoole_rs_php.a': 'rust_php_archive_sha256'}
