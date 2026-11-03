@@ -190,6 +190,35 @@ enum {
     SWR_SERVER_TRACE_FORWARD,
 };
 
+/* Reactor threads' close, peer-close and pipe-write paths and setup (crates/server/src/reactor_io.rs). */
+enum {
+    SWR_SERVER_RUN_RT_PIPE_WRITE = 200, SWR_SERVER_RUN_RT_INIT,
+    SWR_SERVER_OP_RT_BUF_EMPTY = 900,
+    SWR_SERVER_OP_RT_FRONT,
+    SWR_SERVER_OP_RT_FRONT_STREAM,
+    SWR_SERVER_OP_RT_FRONT_CONN,
+    SWR_SERVER_OP_RT_TOUCH_SEND,
+    SWR_SERVER_OP_RT_FRONT_CONN_CLOSED,
+    SWR_SERVER_LOG_RT_CLOSED_BY_SERVER,
+    SWR_SERVER_OP_RT_DISCARD_TIMEOUT,
+    SWR_SERVER_LOG_RT_DISCARD,
+    SWR_SERVER_OP_RT_POP,
+    SWR_SERVER_OP_RT_SEND_FRONT,
+    SWR_SERVER_OP_RT_CATCH_WAIT,
+    SWR_SERVER_OP_RT_REMOVE_WRITE,
+    SWR_SERVER_LOG_RT_SET_WRITE,
+    SWR_SERVER_OP_RT_SETUP,
+    SWR_SERVER_OP_RT_DGRAM_BIND,
+    SWR_SERVER_OP_RT_INIT_REACTOR,
+    SWR_SERVER_OP_RT_INIT_PIPE_SOCKETS,
+    SWR_SERVER_OP_RT_THREAD_WORKER,
+    SWR_SERVER_OP_RT_HEARTBEAT_TIMER,
+    SWR_SERVER_OP_RT_HAS_PIPE_COMMAND,
+    SWR_SERVER_OP_RT_PIPE_COMMAND,
+    SWR_SERVER_OP_RT_BUS_SETUP,
+    SWR_SERVER_OP_RT_ADD_WORKER_PIPE,
+};
+
 /* The server's local interface addresses (Server::local_addrs). */
 typedef struct swr_v1_server_local_addrs swr_v1_server_local_addrs;
 swr_v1_server_local_addrs *swr_v1_server_local_addrs_new(void);
