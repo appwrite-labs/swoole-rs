@@ -1,0 +1,13 @@
+diff --git a/ext-src/swoole_http_server_coro.cc b/ext-src/swoole_http_server_coro.cc
+index 9127ca5..cfb45f5 100644
+--- a/ext-src/swoole_http_server_coro.cc
++++ b/ext-src/swoole_http_server_coro.cc
+@@ -472,3 +472,7 @@ int64_t swr_hsc_accept(void *sock, void *accept, bool *connected) {
+     php_swoole_init_socket_object(&zsocket, conn);
+-    long cid = PHPCoroutine::create(&handler->cache, 1, &zsocket, handler->callback.ptr());
++    long cid = 0;
++    // A warning's error handler can exit(): the Rust loop re-raises it (#913).
++    if (swr_http_host_try([&] { cid = PHPCoroutine::create(&handler->cache, 1, &zsocket, handler->callback.ptr()); })) {
++        return SWR_HTTPBINDINGS_ACCEPT_BAILED;
++    }
+     zval_dtor(&zsocket);
