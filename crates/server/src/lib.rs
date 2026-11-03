@@ -18,6 +18,7 @@ pub mod local_addr;
 pub mod ops;
 mod reactor_io;
 mod reactor_thread;
+mod send;
 mod startup;
 mod state;
 
@@ -160,6 +161,7 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
             Some(result) => result,
             None => match state::run(h, operation, arg) {
                 Some(result) => result,
+                None if operation == ops::RUN_SC_SEND => send::send_to_connection(h, arg),
                 None => reactor_thread::run(h, operation, arg),
             },
         },

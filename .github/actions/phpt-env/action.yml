@@ -12,7 +12,7 @@ runs:
   steps:
     - uses: ./.github/actions/install
       with:
-        packages: php-gmp php-bcmath php-mysql php-pgsql unixodbc odbc-mariadb libfbclient2
+        packages: php-gmp php-bcmath php-mysql php-pgsql unixodbc odbc-mariadb libfbclient2 libssh2-1t64 openssh-server
         php: ${{ inputs.php }}
     - shell: bash
       run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql' | sudo tee -a /etc/hosts
@@ -29,6 +29,17 @@ runs:
         path: target/upstream
         key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
         fail-on-cache-miss: true
+    # The ssh2 tests' account on localhost (ssh2_test.inc's defaults), password and key
+    # logins, as upstream's tests/init creates it.
+    - shell: bash
+      run: |
+        user=swoole_ssh2_test_user
+        id -u $user >/dev/null 2>&1 || sudo useradd -m $user
+        echo "$user:swoole_ssh2_test_pass" | sudo chpasswd
+        sudo install -d -m 700 -o $user -g $user /home/$user/.ssh
+        sudo install -m 600 -o $user -g $user target/upstream/src/tests/swoole_ssh2/testkey_ed25519.pub /home/$user/.ssh/authorized_keys
+        echo 'PasswordAuthentication yes' | sudo tee /etc/ssh/sshd_config.d/00-swoole-ssh2-test.conf
+        sudo systemctl restart ssh
     # Upstream's test tables, which its tests/init --mysql loads from tests/test.sql.
     - shell: bash
       run: >

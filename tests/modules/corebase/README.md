@@ -23,7 +23,9 @@ native-TU gates.
   expected values. It also runs eight extracted upstream `TEST(base, ...)`
   bodies (dec2hex, hex2dec, version_compare, common_divisor, common_multiple,
   dirname, itoa, type_size) and the `allocator.cc` strndup interposer. The hybrid
-  binary must contain real calls to each Rust helper; the original none.
+  binary must contain real calls to each Rust helper; the original none. For the
+  helpers Rust defines under upstream's own symbols (gcd, lcm, version compare,
+  dec2hex) the hybrid base.o must not define them and the archive must.
   `--unsigned-char` also covers bytes 128..255.
 - `mkdir.py --source S --archive A --output R [--sanitize]` (`corebase-mkdir`):
   270 traced `swoole_mkdir_recursive` cases (30 paths x 9 syscall scenarios,
