@@ -86,6 +86,8 @@ jobs:
           save-if: false
       - run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
       - uses: ./.github/actions/install
+        with:
+          packages: libssh2-1-dev
       - id: upstream
         uses: actions/cache@v4
         with:
@@ -101,7 +103,8 @@ jobs:
           key: ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
-      - run: python3 tools/build_hybrid.py --fix-halfclose $(python3 -c "from tools.build_hybrid import SELECTABLE; print(' '.join('--module ' + m for m in SELECTABLE))")
+      # With the optional cURL and ssh2 hooks (the merge tier's phpt-build runs their PHPTs).
+      - run: python3 tools/build_hybrid.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2 $(python3 -c "from tools.build_hybrid import SELECTABLE; print(' '.join('--module ' + m for m in SELECTABLE))")
       - run: ccache --show-stats
       # 12-hyperf needs composer; it runs in the merge tier.
       - run: >
