@@ -164,3 +164,9 @@ pub use swoole_rs_phpevents as phpevents;
 
 #[cfg(feature = "phpcoroutines")]
 pub use swoole_rs_phpcoroutines as phpcoroutines;
+
+#[cfg(feature = "pgsql")]
+pub use swoole_rs_pgsql as pgsql;
+
+#[cfg(feature = "odbc")]
+pub use swoole_rs_odbc as odbc;
