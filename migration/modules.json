@@ -216,6 +216,8 @@
         "crates/firebird-sys/",
         "crates/curl/",
         "crates/curl-sys/",
+        "crates/ssh2/",
+        "crates/ssh2-sys/",
         "native/hooks/",
         "migration/patches/hooks/",
         "tests/modules/hooks/"
@@ -241,7 +243,9 @@
         "ext-src/swoole_curl.cc",
         "ext-src/php_swoole_curl.h",
         "thirdparty/php/curl/multi.cc",
-        "thirdparty/php84/curl/multi.cc"
+        "thirdparty/php84/curl/multi.cc",
+        "ext-src/php_swoole_ssh2.h",
+        "ext-src/php_swoole_ssh2_hook.h"
       ],
       "abi_contract": "docs/hooks-abi-v1.md",
       "feature_bit_reserved": 65536
