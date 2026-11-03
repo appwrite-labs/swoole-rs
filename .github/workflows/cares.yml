@@ -1,0 +1,66 @@
+name: c-ares
+# Upstream and the all-modules hybrid built with --enable-cares (libcares resolves
+# coroutine DNS lookups instead of the built-in UDP client), then the PHPT families
+# that resolve names. Any test that passes on upstream must pass on the hybrid.
+# Called by the merge tier, and by the PR tier when a PR touches resolver code.
+on:
+  workflow_call:
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 500M
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  phpt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          packages: libc-ares-dev
+      # Restored only: the pinned reference is rebuilt with c-ares below, never saved.
+      - uses: actions/cache/restore@v4
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+      - uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-
+      - run: cargo fetch --locked
+      # The control is the pinned reference itself, unpatched.
+      - run: |
+          python3 tools/build_upstream.py --configure=--enable-cares
+          python3 tools/build_hybrid.py --configure=--enable-cares $(python3 -c 'from tools.build_hybrid import SELECTABLE; print(*(f"--module {m}" for m in SELECTABLE))') | tee hybrid.log
+          mkdir -p target/phpt
+          cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
+          cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
+          for engine in upstream hybrid; do php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -i 'c-ares'; done
+          python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
+      - id: extensions
+        run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      - run: |
+          families="--module swoole_coroutine --module swoole_coroutine_system --module swoole_client_coro --module swoole_http_client_coro --module swoole_socket_coro"
+          mkdir -p target/phpt/cares
+          for engine in upstream hybrid; do
+            python3 corpus/upstream/run.py --manifest target/phpt/manifest.json $families --timeout 30 \
+              ${{ steps.extensions.outputs.args }} --engine $engine=target/phpt/$engine.so \
+              --output target/phpt/cares/$engine.json || [ $? -eq 1 ]
+          done
+          corpus/upstream/recheck.sh target/phpt/cares target/phpt target/phpt/recheck \
+            --manifest target/phpt/manifest.json --timeout 30 ${{ steps.extensions.outputs.args }}
+          set -- target/phpt/cares/*.json
+          if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
+          python3 corpus/upstream/gate.py "$@" --output phpt-cares.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phpt-cares
+          path: |
+            phpt-cares.json
+            target/phpt/cares/
+            target/phpt/recheck/
