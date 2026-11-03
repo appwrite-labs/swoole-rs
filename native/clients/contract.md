@@ -17,7 +17,6 @@ symbol is excluded from production artifacts.
 | DNS codec | `domain_encode`, `domain_decode` | Bounded label encoding/decoding with native `char` signedness |
 | Client | `new`, `free`, `connect`, `send`, `recv`, `close`, `shutdown`, `on_*`, … | `network::Client`: state and every operation (see below) |
 | Persistent clients | `pool_create`, `pool_destroy`, `pool_push`, `pool_state`, `pool_take`, `pool_remove_empty` | Private pool storage (crates/phpclients keeps the connections) |
-| PHP resolver | `resolver_next` | Lookup/cluster retry/result/context publication order |
 | HTTP | `cookie`, `http_format` | Set-Cookie spans; bounded output formatting |
 
 ## Common rules

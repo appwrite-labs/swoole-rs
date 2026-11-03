@@ -1,0 +1,12 @@
+/* Shims Swoole\NameResolver's lookup (crates/phpclients) needs. */
+#ifndef SWOOLE_RS_ZEND_SHIM_RESOLVER_H
+#define SWOOLE_RS_ZEND_SHIM_RESOLVER_H
+
+#include "shim.h"
+
+/* zend_call_method(object, NULL, NULL, name, length, retval, arg ? 1 : 0, arg, NULL)
+ * inside zend_try: 1 if it bailed out. */
+int swr_zend_try_call_method(zend_object *object, const char *name, size_t length, zval *retval, zval *arg);
+/* zval_dtor (zval_ptr_dtor_nogc) inside zend_try: 1 if it bailed out. */
+int swr_zend_try_zval_dtor(zval *value);
+#endif
