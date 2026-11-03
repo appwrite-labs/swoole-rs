@@ -16,14 +16,14 @@ use swoole_rs_zend::bailout;
 /// What a session's handler gets: the stream's context, the session's
 /// default context and the data it was created with.
 #[repr(C)]
-pub struct Request {
+pub struct SessionRequest {
     pub ctx: *mut c_void,
     pub default_ctx: *mut c_void,
     pub data: *mut c_void,
 }
 
 /// `onRequest` for a finished request, C++ (a bailout is trapped around it).
-pub type Handler = unsafe extern "C" fn(*mut c_void);
+pub type SessionHandler = unsafe extern "C" fn(*mut c_void);
 
 unsafe extern "C" {
     /// A new context for stream `id`, a copy of `default_ctx`'s settings.
@@ -54,7 +54,7 @@ pub(crate) struct SessionState {
     pub(crate) is_coro: bool,
     /// The connection's context: frames that belong to no stream go out on it.
     pub(crate) default_ctx: *mut c_void,
-    handle: Handler,
+    handle: SessionHandler,
     data: *mut c_void,
 }
 
@@ -93,7 +93,7 @@ impl SessionState {
         default_ctx: *mut c_void,
         max_body_size: u32,
         is_coro: bool,
-        handle: Handler,
+        handle: SessionHandler,
         data: *mut c_void,
     ) -> Self {
         // The peer need not send every setting: start from the defaults.
@@ -172,7 +172,7 @@ impl SessionState {
 
     /// `handle(session, stream)`: onRequest; a bailout waits for `finish`.
     pub(crate) fn handle(&self, stream: &StreamState) {
-        let mut request = Request {
+        let mut request = SessionRequest {
             ctx: stream.ctx,
             default_ctx: self.default_ctx,
             data: self.data,
@@ -228,14 +228,14 @@ pub extern "C" fn swr_v1_phphttp2_session_exists(fd: i64) -> bool {
 /// it has one. `handle` gets each finished request with `data`.
 /// # Safety
 /// `default_ctx` is a live context that outlives the session; `handle` may be
-/// called with a `Request`.
+/// called with a `SessionRequest`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp2_session_new(
     fd: i64,
     default_ctx: *mut c_void,
     max_body_size: u32,
     is_coro: bool,
-    handle: Handler,
+    handle: SessionHandler,
     data: *mut c_void,
 ) {
     SESSIONS.with_borrow_mut(|sessions| {
