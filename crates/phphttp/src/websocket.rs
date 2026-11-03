@@ -1097,31 +1097,23 @@ fn message(
     MESSAGE_DISPATCH
 }
 
-/// `swoole_websocket_handshake`, and for the async server (`open`) what
-/// `swoole_websocket_onHandshake` does after it: `onOpen`, or a reset.
-/// # Safety
-/// `context` is a live `swoole::http::Context`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_websocket_handshake(
-    context: *mut c_void,
-    open: bool,
-) -> bool {
-    let result = handshake(context).and_then(|done| {
-        if open {
-            let server = send::state(context).private_data;
-            let fd = host::fd(context);
-            if done {
-                on_open(server, context)?;
-            } else {
-                // SAFETY: a live server.
-                unsafe { swr_ws_host_close(server, fd, true) };
-            }
-        }
-        Ok(done)
-    });
-    let done = matches!(result, Ok(true));
-    bailout::raise(result.map(|_| ()));
-    done
+/// `swoole_websocket_onHandshake`: the handshake, then `onOpen`, or a reset.
+pub(crate) fn handshake_open(context: *mut c_void) -> Result<(), bailout::Bailout> {
+    let server = send::state(context).private_data;
+    let fd = host::fd(context);
+    if handshake(context)? {
+        on_open(server, context)
+    } else {
+        // SAFETY: a live server.
+        unsafe { swr_ws_host_close(server, fd, true) };
+        Ok(())
+    }
+}
+
+/// A handshake `onHandshake` answers: the connection is upgrading.
+pub(crate) fn upgrading(server: *mut c_void, fd: zend_long) {
+    // SAFETY: a live server.
+    unsafe { swr_ws_host_set_status(server, fd, STATUS_HANDSHAKE) };
 }
 
 /// Set a response header as `Context::set_header(..., false)`.
@@ -1233,10 +1225,7 @@ fn on_open(server: *mut Server, context: *mut Context) -> Result<(), bailout::Ba
 }
 
 /// `swoole_websocket_onRequest`, the default `onRequest`: 400 and close.
-/// # Safety
-/// `context` is a live server context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_websocket_request(context: *mut c_void) {
+pub(crate) fn request(context: *mut c_void) {
     const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\
         Connection: close\r\n\
         Content-Type: text/html; charset=UTF-8\r\n\

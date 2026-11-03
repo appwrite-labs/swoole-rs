@@ -171,7 +171,8 @@ void swr_v1_phphttp_set_context(struct _zend_object *object, void *context);
 enum { SWR_PHPHTTP_HEADER = 0, SWR_PHPHTTP_COOKIE = 1, SWR_PHPHTTP_TRAILER = 2 };
 void swr_http_host_error(int code, int always, const char *message);
 void swr_http_host_request_free(void *context);
-bool swr_http_host_request_create(struct _zval_struct *return_value, struct _zval_struct *options);
+void *swr_http_host_request_new(void);
+void swr_http_host_set_upload_tmp_dir(void *context, const char *dir, size_t length);
 
 /* The request parser (crates/phphttp/src/parse.rs): llhttp and multipart
  * callbacks over swoole::http::ContextState, whose layout state.rs mirrors.
@@ -258,8 +259,7 @@ bool swr_http_host_reactor(void);
 
 /* Swoole\WebSocket\Server, Frame and CloseFrame (crates/phphttp/src/websocket.rs).
  * MINIT registers them and the constants, returning the server class and
- * filling `frame`. The C++ entry points (onMessage, onHandshake, the default
- * onRequest) and FrameObject's members call the rest; each raises a bailout it
+ * filling `frame`. onMessage and FrameObject's members call the rest; each raises a bailout it
  * trapped once its Rust frames are done. `object` is a swoole::websocket::FrameObject. */
 struct _zend_class_entry *swr_v1_phphttp_websocket_minit(int module_number, struct _zend_class_entry *http_server,
     bool serializable, bool zlib, struct _zend_class_entry **frame);
@@ -270,8 +270,6 @@ int swr_v1_phphttp_websocket_message(void *server, void *request, int64_t fd, ui
                                      struct _zval_struct *args, struct _zval_struct *data);
 void swr_v1_phphttp_websocket_message_done(void *server, int64_t fd, bool failed, struct _zval_struct *args,
                                            struct _zval_struct *data);
-bool swr_v1_phphttp_websocket_handshake(void *context, bool open);
-void swr_v1_phphttp_websocket_request(void *context);
 void swr_v1_phphttp_websocket_frame_object(void *object, struct _zval_struct *data, int64_t opcode, int64_t flags,
     int64_t code);
 struct _zend_string *swr_v1_phphttp_websocket_pack(const void *object);
@@ -334,6 +332,40 @@ const char *swr_http_host_address(void *server, void *conn, bool local);
 bool swr_http_host_worker(swr_http_worker *worker);
 void swr_http_host_defer(void *context);
 void swr_http_host_unhook(void *context);
+/* php_swoole_http_server_onReceive up to the handler's call. It returns what
+ * the trampoline does next: return SW_ERR (CLOSED), hand the data to the TCP,
+ * WebSocket or HTTP/2 onReceive, call the context's handler (REQUEST; it is
+ * the context's private_data_2) or only release the context's objects (DONE).
+ * It asks C++ for the connection and port facts (null: closed), a new context
+ * holding the request data, the before-request hook, the port's onHandshake or
+ * onRequest, setting private_data_2, and a notice. */
+enum {
+    SWR_PHPHTTP_RECEIVE_CLOSED = 0,
+    SWR_PHPHTTP_RECEIVE_TCP = 1,
+    SWR_PHPHTTP_RECEIVE_WEBSOCKET = 2,
+    SWR_PHPHTTP_RECEIVE_HTTP2 = 3,
+    SWR_PHPHTTP_RECEIVE_REQUEST = 4,
+    SWR_PHPHTTP_RECEIVE_DONE = 5,
+};
+int swr_v1_phphttp_server_receive(void *server, void *request, int64_t session, int server_fd, void **context);
+typedef struct {
+    double last_recv_time;
+    int64_t local_port;
+    int64_t remote_port;
+    int loopback;
+    uint8_t websocket_status;
+    bool http;
+    bool websocket;
+    bool http2;
+    bool cache;
+} swr_http_receive;
+void *swr_http_host_receive(void *server, int64_t session, int server_fd, swr_http_receive *out);
+void *swr_http_host_receive_context(void *server, int64_t session, void *request, struct _zval_struct **zdata);
+void swr_http_host_before_request(void *context);
+void *swr_http_host_callback(void *server, int server_fd, bool handshake);
+void swr_http_host_set_callback(void *context, void *callback);
+void swr_http_host_notice(const char *message);
+uint8_t swr_http_host_websocket_status(void *conn);
 #ifdef __cplusplus
 }
 #endif

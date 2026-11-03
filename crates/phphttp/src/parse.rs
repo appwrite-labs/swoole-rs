@@ -202,9 +202,10 @@ pub(crate) enum Key {
     RemoteAddr,
     LoopbackV4,
     LoopbackV6,
+    MasterTime,
 }
 
-const KEY_NAMES: [&[u8]; 23] = [
+const KEY_NAMES: [&[u8]; 24] = [
     b"host",
     b"user-agent",
     b"accept",
@@ -228,6 +229,7 @@ const KEY_NAMES: [&[u8]; 23] = [
     b"remote_addr",
     b"127.0.0.1",
     b"::1",
+    b"master_time",
 ];
 /// The header keys `swr_v1_httpbindings_request_key` numbers 0 to 7.
 const HEADER_KEYS: [Key; 8] = [
@@ -241,7 +243,7 @@ const HEADER_KEYS: [Key; 8] = [
     Key::AcceptEncoding,
 ];
 
-static KEYS: [AtomicPtr<zend_string>; 23] = [const { AtomicPtr::new(ptr::null_mut()) }; 23];
+static KEYS: [AtomicPtr<zend_string>; 24] = [const { AtomicPtr::new(ptr::null_mut()) }; 24];
 /// `Swoole\Http\Request`'s `get`, `post`, `cookie`, `files` and `tmpfiles` slots.
 /// ... and `server`, `header` and `fd`.
 static OFFSETS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];

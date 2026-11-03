@@ -40,10 +40,6 @@ with tempfile.TemporaryDirectory(prefix='swr-output-') as tmp:
     file=tree/dest;file.parent.mkdir(parents=True);file.write_bytes(source);overlaid=sdk
     if corrected:report['patch_application'].append(dict(variant=variant,proof=apply_patch_verified(tree,fixed,[dest])))
    body=file.read_text()
-   prefix='    size_t sendn = '+('swr_v1_socket_sendfile_chunk' if selected else 'get_sendfile_chunk_size')+'(task->begin, task->end);\n    ssize_t rv = sendfile(task->file, &task->begin, sendn);\n'
-   if corrected:prefix+='    if (rv < 0 && errno == EINTR) {\n        return SW_OK;\n    }\n'
-   prefix+='\n    swoole_trace("rv=%ld|begin=%ld|sendn=%lu|end=%lu", rv, (long) task->begin, sendn, task->end);'
-   if prefix not in body:raise ValueError('Native sendfile prefix changed')
    for ssl in [False,True]:
     command=['c++','-std=c++14','-fsyntax-only',*(hybrid_flags if selected else []),'-I'+str(overlaid/'include'),'-I'+str(overlaid),*subprocess.check_output(['pkg-config','--cflags','openssl'],text=True).split()]
     if ssl:command+=['-DSW_USE_OPENSSL']

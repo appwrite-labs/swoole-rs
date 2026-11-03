@@ -323,7 +323,7 @@ def plan(args, reports):
                '--core-report', reports / 'http2-native.json', *includes, *report('http2-header'))
     if 'clients' in modules:
         for name, runner in [('clients-policy', 'gate.py'), ('clients-http', 'http_gate.py'), ('clients-codec', 'codec_gate.py'),
-                             ('clients-pool', 'pool_gate.py'), ('clients-resolver', 'resolver_gate.py'),
+                             ('clients-pool', 'pool_gate.py'),
                              ('clients-http-format', 'http_format_gate.py'),
                              ('clients-ip', 'ip_gate.py'), ('clients-ip-text', 'ip_text_gate.py')]:
             script(name, 'tests/modules/clients/' + runner, '--source', ROOT / 'target/upstream/src',

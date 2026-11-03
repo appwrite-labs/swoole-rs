@@ -51,6 +51,7 @@ jobs:
     outputs:
       hybrid: ${{ steps.paths.outputs.hybrid }}
       iouring: ${{ steps.paths.outputs.iouring }}
+      cares: ${{ steps.paths.outputs.cares }}
       zts: ${{ steps.paths.outputs.zts }}
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +66,9 @@ jobs:
           fi
           if echo "$changed" | grep -qE '^(migration/patches/hooks/|crates/(hooks|uring[^/]*)/|\.github/workflows/iouring\.yml$|\.devcontainer/install\.sh$)'; then
             echo iouring=true >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(migration/patches/(clients|corebase)/|crates/(clients|corebase)/|\.github/workflows/cares\.yml$)'; then
+            echo cares=true >> "$GITHUB_OUTPUT"
           fi
           if echo "$changed" | grep -qE '^(migration/patches/(locks/|[^/]+/[^/]*thread)|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php-zts)\.sh$)'; then
             echo zts=true >> "$GITHUB_OUTPUT"
@@ -143,6 +147,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.iouring == 'true'
     uses: ./.github/workflows/iouring.yml
+
+  # The c-ares build variant (merge tier), when a PR touches resolver code. Informative.
+  cares:
+    needs: changes
+    if: needs.changes.outputs.cares == 'true'
+    uses: ./.github/workflows/cares.yml
 
   # The ZTS build variant (merge tier), when a PR touches thread or ZTS code. Informative.
   zts:
