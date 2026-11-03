@@ -195,6 +195,19 @@ uint8_t swr_v1_phpcoroutines_activated(void);
  * `task` (a coroutine's context) from 0; without, stop counting those of the
  * running context (null `task`). Returns the count. */
 size_t swr_v1_phpcoroutines_watch_switches(void *task, uint8_t watch);
+/* The tracer (swoole_tracer.cc): its INI switches, which are PHP_INI_SYSTEM,
+ * and sw_printf. Rust's zif_swoole_tracer_* are the functions' handlers. */
+struct swr_v1_phpcoroutines_tracer {
+    void (*print)(const char *text);
+    int64_t blocking_threshold;
+    uint8_t blocking_detection;
+    uint8_t profile;
+    uint8_t leak_detection;
+};
+/* At MINIT: observes calls when profiling or blocking detection is on. */
+void swr_v1_phpcoroutines_tracer_minit(const struct swr_v1_phpcoroutines_tracer *tracer);
+void swr_v1_phpcoroutines_tracer_rinit(void);
+void swr_v1_phpcoroutines_tracer_rshutdown(void);
 /* sw_php_print_backtrace: 1 if output bailed out. */
 uint8_t swr_v1_phpcoroutines_print_backtrace(long cid, long options, long limit, struct _zval_struct *return_value);
 #ifdef __cplusplus

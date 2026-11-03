@@ -257,11 +257,24 @@ void swr_v1_phphttp_websocket_message_done(void *server, int64_t fd, bool failed
                                            struct _zval_struct *data);
 bool swr_v1_phphttp_websocket_handshake(void *context, bool open);
 void swr_v1_phphttp_websocket_request(void *context);
-void swr_v1_phphttp_websocket_frame(struct _zval_struct *frame, int64_t opcode, struct _zval_struct *payload, uint8_t flags);
 void swr_v1_phphttp_websocket_frame_object(void *object, struct _zval_struct *data, int64_t opcode, int64_t flags,
     int64_t code);
 struct _zend_string *swr_v1_phphttp_websocket_pack(const void *object);
-bool swr_v1_phphttp_websocket_uncompress(struct _zval_struct *payload, const char *data, size_t length);
+/* websocket::recv_frame: `settings` packs in_server, open_ping_frame,
+ * open_pong_frame and open_close_frame from bit 0; `slot` is the
+ * std::shared_ptr<String> of the message being assembled, `sock` a
+ * swoole::coroutine::Socket. It asks C++ to receive, send and read the fd, and
+ * to read (null without one; `offset` holds the message's ext flags), make,
+ * append to and reset that buffer. */
+void swr_v1_phphttp_websocket_recv(uint32_t settings, void *slot, void *sock, struct _zval_struct *return_value,
+                                   double timeout);
+ssize_t swr_ws_host_sock_recv(void *sock, double timeout, char **data, size_t *length);
+void swr_ws_host_sock_send(void *sock, const char *data, size_t length);
+int swr_ws_host_sock_fd(void *sock);
+const char *swr_ws_host_buffer(void *slot, size_t *length, size_t *offset);
+void swr_ws_host_buffer_new(void *slot, size_t size, size_t offset);
+void swr_ws_host_buffer_append(void *slot, const char *data, size_t length);
+void swr_ws_host_buffer_reset(void *slot);
 /* What it asks of the Server (`server` is a swoole::Server, `context` a
  * swoole::http::Context): the checked server of `$this` (true when the check
  * bailed out), a connection's WebSocket state, sending (`wait`: yield on a
@@ -286,6 +299,26 @@ void *swr_ws_host_context_server(void *context);
 bool swr_ws_host_context_compression(void *context);
 void swr_ws_host_co_protocol(void *context);
 bool swr_ws_host_set_header(void *context, const char *key, size_t key_length, const char *value, size_t length);
+
+/* Swoole\Http\Server's per-worker state (crates/phphttp/src/server.rs): the
+ * addresses cached for keep-alive sessions (`server` a swoole::Server, `conn`
+ * its swoole::Connection, `table` the request's `server` array, `loopback` 4
+ * or 6 for a loopback peer) and the requests queued past
+ * worker_max_concurrency. What it asks of C++: an address, the worker's
+ * counters (false without a server worker), deferring a queued request's
+ * onRequest and clearing a context's onAfterResponse. */
+struct _zend_array;
+void swr_v1_phphttp_server_addresses(void *server, void *conn, struct _zend_array *table, int64_t session,
+                                     int64_t local_port, int64_t remote_port, int loopback, bool cache);
+void swr_v1_phphttp_server_close(int64_t session);
+bool swr_v1_phphttp_server_admit(void *ctx);
+void swr_v1_phphttp_server_release(void);
+void swr_v1_phphttp_server_rshutdown(void);
+typedef struct { uint32_t *concurrency; uint32_t *server_concurrency; uint32_t max_concurrency; bool shutdown; } swr_http_worker;
+const char *swr_http_host_address(void *server, void *conn, bool local);
+bool swr_http_host_worker(swr_http_worker *worker);
+void swr_http_host_defer(void *context);
+void swr_http_host_unhook(void *context);
 #ifdef __cplusplus
 }
 #endif

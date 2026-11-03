@@ -398,6 +398,7 @@ dependencies = [
  "swoole-rs-coroutine",
  "swoole-rs-crc32",
  "swoole-rs-error",
+ "swoole-rs-firebird",
  "swoole-rs-framing",
  "swoole-rs-hooks",
  "swoole-rs-http",
@@ -436,6 +437,17 @@ dependencies = [
  "swoole-rs-websocket",
  "swoole-rs-wrappers",
 ]
+
+[[package]]
+name = "swoole-rs-firebird"
+version = "0.1.0"
+dependencies = [
+ "swoole-rs-firebird-sys",
+]
+
+[[package]]
+name = "swoole-rs-firebird-sys"
+version = "0.1.0"
 
 [[package]]
 name = "swoole-rs-framing"
@@ -552,6 +564,7 @@ dependencies = [
 name = "swoole-rs-phpcoroutines"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]

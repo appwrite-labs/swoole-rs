@@ -33,7 +33,8 @@ SELECTABLE = sorted(set(MODULES) - set(GRADUATED))
 BRIDGE_PATCH = 'migration/patches/integration/0001-rust-bridge.patch'
 # The ffi features that replace upstream's optional hooks, by the configure switch
 # that builds each: the Rust code links what that switch makes the extension link.
-HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc'}
+HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
+                  'firebird': '--with-swoole-firebird'}
 # Modules a module cannot build without: PHP Table stores rows in memory's TableV2.
 REQUIRES = {'phpcollections': ('memory',)}
 # The build's two Rust archives in rust-prefix/lib, by the input that records each: the

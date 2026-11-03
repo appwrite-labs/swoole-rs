@@ -17,6 +17,7 @@ mod functions;
 mod interfaces;
 mod options;
 mod table;
+mod vm;
 
 pub use options::{sw_zval_is_serializable, swr_v1_phpswoole_set_global_option};
 pub use table::swr_v1_phpswoole_functions;

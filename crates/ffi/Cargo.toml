@@ -32,9 +32,10 @@ hooks = ["dep:swoole-rs-hooks", "dep:swoole-rs-phpruntime"]
 # Not a module: the hybrid adds it when configured with --enable-iouring.
 iouring = ["hooks", "swoole-rs-hooks/iouring"]
 # Not modules: the hybrid adds each when configured with its database hook
-# (--enable-swoole-pgsql, --with-swoole-odbc).
+# (--enable-swoole-pgsql, --with-swoole-odbc, --with-swoole-firebird).
 pgsql = ["hooks", "dep:swoole-rs-pgsql"]
 odbc = ["hooks", "dep:swoole-rs-odbc"]
+firebird = ["hooks", "dep:swoole-rs-firebird"]
 
 ossupport = ["dep:swoole-rs-ossupport"]
 tls = ["dep:swoole-rs-tls"]
@@ -94,6 +95,7 @@ swoole-rs-phpevents = { path = "../phpevents", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
 swoole-rs-pgsql = { path = "../pgsql", optional = true }
 swoole-rs-odbc = { path = "../odbc", optional = true }
+swoole-rs-firebird = { path = "../firebird", optional = true }
 
 [lints]
 workspace = true
