@@ -116,9 +116,10 @@ typedef struct {
 /* The listening socket for `host`, and the new server's settings. */
 void *swr_hsc_new(const char *host, size_t length, void **settings);
 void swr_hsc_delete(void *sock, void *settings);
-/* A zend::Callable, or null (*bailed: making it bailed out). */
-void *swr_hsc_callable(struct _zval_struct *callable, bool *bailed);
-void swr_hsc_callable_free(void *callable);
+/* The handler map: `handle()` (1 set, 0 not callable, -1 bailed out) and a
+ * request's callable (null for none). */
+int swr_hsc_set_handler(void *settings, const char *pattern, size_t length, struct _zval_struct *callable);
+void *swr_hsc_handler(void *settings, void *context);
 int swr_hsc_call(void *callable, struct _zval_struct *args, bool coroutine);
 void swr_hsc_cancel(void *sock);
 bool swr_hsc_recv_waiting(void *sock);
