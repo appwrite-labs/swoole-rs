@@ -53,11 +53,6 @@ unsafe extern "C" {
         length: *mut usize,
     ) -> *const c_char;
     pub(crate) fn swr_http_host_response_free(context: *mut Context) -> bool;
-    pub(crate) fn swr_http_host_response_create(
-        object: *mut zval,
-        fd: zend_long,
-        return_value: *mut zval,
-    );
     pub(crate) fn swr_http_host_response_property(context: *mut Context, which: c_int)
     -> *mut zval;
     pub(crate) fn swr_http_host_after(context: *mut Context) -> bool;
@@ -102,24 +97,6 @@ unsafe extern "C" {
         code: *mut zval,
         return_value: *mut zval,
     ) -> bool;
-    pub(crate) fn swr_http_host_status(
-        context: *mut Context,
-        status: zend_long,
-        reason: *const c_char,
-        reason_length: usize,
-    );
-    pub(crate) fn swr_http_host_set_header(
-        context: *mut Context,
-        key: *const c_char,
-        key_length: usize,
-        value: *mut zval,
-        format: bool,
-    ) -> bool;
-    pub(crate) fn swr_http_host_ping(
-        context: *mut Context,
-        data: *mut zend_string,
-        return_value: *mut zval,
-    );
     pub(crate) fn swr_http_host_goaway(
         context: *mut Context,
         code: zend_long,

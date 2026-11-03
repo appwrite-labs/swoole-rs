@@ -6,19 +6,27 @@ use crate::{
         self, CO_SOCKET, COOKIE, Context, DETACHED, END, HEADER, HEADER_KEY_SIZE,
         HTTP_CONTEXT_UNAVAILABLE, HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED,
         TRAILER, UPGRADE, WEBSOCKET, swr_http_host_after, swr_http_host_close,
-        swr_http_host_goaway, swr_http_host_mark, swr_http_host_ping, swr_http_host_recv,
-        swr_http_host_redirect, swr_http_host_response_create, swr_http_host_response_free,
-        swr_http_host_response_property, swr_http_host_set_header, swr_http_host_status,
+        swr_http_host_goaway, swr_http_host_mark, swr_http_host_recv, swr_http_host_redirect,
+        swr_http_host_response_free, swr_http_host_response_property,
     },
     send, websocket,
 };
-use std::{ffi::CStr, mem::MaybeUninit, ptr};
-use swoole_rs_httpbindings::swr_v1_httpbindings_file_range;
+use std::{
+    ffi::{CStr, c_char, c_int, c_void},
+    mem::MaybeUninit,
+    ptr,
+};
+use swoole_rs_httpbindings::{swr_v1_httpbindings_file_range, swr_v1_httpbindings_response_key};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_zend::{
-    Call, Class, Invalid, declare_long, declare_null, handlers, push_string, set_key,
-    sys::{IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_object, zend_string},
-    type_of, value_of,
+    Call, Class, Invalid, declare_long, declare_null, handlers, init_object, push_string, set_key,
+    sys::{
+        IS_ARRAY, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
+        zend_string,
+    },
+    type_of,
+    value::{self, obj_of},
+    value_of,
 };
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
@@ -28,6 +36,8 @@ static RESPONSE: Class = Class::new();
 /// `WebSocket::OPCODE_TEXT` and `WebSocket::CLOSE_NORMAL` (RFC 6455).
 const OPCODE_TEXT: i64 = 1;
 const CLOSE_NORMAL: i64 = 1000;
+/// `SW_ERROR_WEBSOCKET_PACK_FAILED`.
+const WEBSOCKET_PACK_FAILED: c_int = 8505;
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: Zend calls `create_object` with this class or a subclass of it.
@@ -96,7 +106,13 @@ pub unsafe extern "C" fn swr_v1_phphttp_response_minit() -> *mut zend_class_entr
         unsafe { declare_null(ce, name) };
     }
     crate::header::minit(ce);
+    context::response_minit(ce);
     ce
+}
+
+/// The registered class entry.
+pub(crate) fn entry() -> *mut zend_class_entry {
+    RESPONSE.entry()
 }
 
 /// `http_response_get_and_check_context`: a context that can still respond.
@@ -388,8 +404,19 @@ fn status(call: &Call) {
         let (code, reason) = parsed.ok()?;
         let ctx = checked(call)?;
         let reason = reason.unwrap_or_default();
-        // SAFETY: a live context and the reason's bytes, which C++ copies.
-        unsafe { swr_http_host_status(ctx, code, reason.as_ptr().cast(), reason.len()) };
+        let response = &mut send::state(ctx).response;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "upstream assigns it to an int"
+        )]
+        let code = code as i32;
+        response.status = code;
+        response.reason = if reason.is_empty() {
+            ptr::null_mut()
+        } else {
+            // SAFETY: the reason's bytes, copied into request memory.
+            unsafe { z::swr_zend_http_estrndup(reason.as_ptr().cast(), reason.len()) }
+        };
         call.set_bool(true);
         Some(())
     };
@@ -418,10 +445,7 @@ fn header(call: &Call) {
             return None;
         };
         let ctx = checked(call)?;
-        // SAFETY: a live context and this call's arguments.
-        let set =
-            unsafe { swr_http_host_set_header(ctx, key.as_ptr().cast(), key.len(), value, format) };
-        call.set_bool(set);
+        call.set_bool(set_header(ctx, key, value, format));
         Some(())
     };
     or_false(call, run());
@@ -457,12 +481,26 @@ fn ping(call: &Call) {
             return None;
         }
         let data = call.arity(0, 1).and_then(|()| call.str(1)).ok()?;
-        if host::flags(ctx) & (HTTP2 | WEBSOCKET) == 0 {
+        let flags = host::flags(ctx);
+        if flags & (HTTP2 | WEBSOCKET) == 0 {
             host::fatal("only supports websocket or http2 client");
             return None;
         }
-        // SAFETY: a live context, the optional payload and the return slot.
-        unsafe { swr_http_host_ping(ctx, nullable(data), call.return_value()) };
+        if flags & HTTP2 != 0 {
+            match send::http2(ctx, send::HTTP2_PING, ptr::null_mut(), 0, 0) {
+                Ok(done) => call.set_bool(done),
+                Err(bailout) => bailout.defer(),
+            }
+            return Some(());
+        }
+        // SAFETY: the optional payload, live for the call.
+        let payload = data.map_or(&[][..], |data| unsafe { bytes(data) });
+        let Some(frame) = websocket::encode(payload, websocket::OPCODE_PING, websocket::FLAG_FIN)
+        else {
+            host::set_last_error(WEBSOCKET_PACK_FAILED);
+            return None;
+        };
+        call.set_bool(send::send(ctx, frame.bytes()));
         Some(())
     };
     or_false(call, run());
@@ -564,11 +602,203 @@ fn create_response(call: &Call) {
         let (Some(object), fd) = parsed.ok()? else {
             return None;
         };
-        // SAFETY: this call's argument and return slot.
-        unsafe { swr_http_host_response_create(object, fd, call.return_value()) };
+        respond_on(call, object, fd);
         Some(())
     };
     or_false(call, run());
+}
+
+/// `Context::set_header`: `$response->header[key] = value`, the key in
+/// canonical case when `format` (lower case over HTTP/2).
+pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, format: bool) -> bool {
+    if key.len() > HEADER_KEY_SIZE - 1 {
+        host::notice("header key is too long");
+        return false;
+    }
+    if crate::header::has_crlf(key) {
+        return false;
+    }
+    let header = property(ctx, HEADER);
+    let mut name = key.to_vec();
+    if format {
+        if host::flags(ctx) & HTTP2 != 0 {
+            name.make_ascii_lowercase();
+        } else if !name.is_empty() {
+            // SAFETY: the name's own bytes.
+            unsafe { swr_v1_httpbindings_response_key(name.as_mut_ptr(), name.len()) };
+        }
+    }
+    // SAFETY: the value the array now also references.
+    unsafe { z::swr_zval_try_addref(value) };
+    // SAFETY: the live header array and the name's bytes, which Zend copies.
+    unsafe { z::add_assoc_zval_ex(header, name.as_ptr().cast(), name.len(), value) };
+    true
+}
+
+/// `Context::set_header` for C++.
+/// # Safety
+/// `ctx` is a live context with a response, `key` covers `length` bytes and
+/// `value` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_set_header(
+    ctx: *mut Context,
+    key: *const c_char,
+    length: usize,
+    value: *mut z::zval,
+    format: bool,
+) -> bool {
+    let key = if length == 0 {
+        &[][..]
+    } else {
+        // SAFETY: per the caller.
+        unsafe { std::slice::from_raw_parts(key.cast(), length) }
+    };
+    let set = set_header(ctx, key, value, format);
+    swoole_rs_zend::bailout::finish();
+    set
+}
+
+/// `swr_http_host_object_kind`'s answers.
+const SERVER_OBJECT: c_int = 1;
+const SOCKET_OBJECT: c_int = 2;
+
+unsafe extern "C" {
+    /// `SERVER_OBJECT` for a `Swoole\Server`, `SOCKET_OBJECT` (with its fd)
+    /// for a `Swoole\Coroutine\Socket`, otherwise 0.
+    fn swr_http_host_object_kind(object: *mut z::zval, fd: *mut zend_long) -> c_int;
+    /// `sw_server()`.
+    fn swr_http_host_server() -> *mut c_void;
+    /// A new context for `server` or `socket` (`ctx` null), or `ctx` bound
+    /// to one.
+    fn swr_http_host_bind(
+        ctx: *mut Context,
+        server: *mut c_void,
+        socket: *mut z::zval,
+    ) -> *mut Context;
+}
+
+/// `php_swoole_fatal_error(E_WARNING, ...)`, then `RETURN_FALSE`.
+fn refuse(call: &Call, message: &str) {
+    host::fatal(message);
+    call.set_bool(false);
+}
+
+/// A found slot holding an object.
+fn is_object(slot: *mut z::zval) -> bool {
+    // SAFETY: a found slot is a live zval.
+    unsafe { type_of(slot) == IS_OBJECT }
+}
+
+fn instance_of(object: *mut z::zval, ce: *mut zend_class_entry) -> bool {
+    // SAFETY: a live object zval.
+    let object = unsafe { obj_of(object) };
+    // SAFETY: a live object.
+    let class = unsafe { (*object).ce };
+    // SAFETY: a live class and a registered one.
+    unsafe { z::swr_zend_instanceof(class, ce) }
+}
+
+/// `Response::create($server|$socket|[$server|$socket, $request]|$fd, $fd)`:
+/// a response on a server connection or a coroutine socket, sharing the
+/// request's context when one is given.
+fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
+    let mut request = ptr::null_mut();
+    let mut ctx: *mut Context = ptr::null_mut();
+    let mut server: *mut c_void = ptr::null_mut();
+    let mut socket = ptr::null_mut();
+    // SAFETY: the argument, live for the call.
+    let kind = unsafe { type_of(object) };
+    if kind == IS_ARRAY {
+        // SAFETY: an array zval.
+        let table = unsafe { value::table(object) };
+        // SAFETY: a live table.
+        request = unsafe { z::zend_hash_index_find(table, 1) };
+        if request.is_null()
+            || !is_object(request)
+            || !instance_of(request, crate::request::entry())
+        {
+            return refuse(call, "parameter $1.second must be instanceof Http\\Request");
+        }
+        // SAFETY: as above.
+        object = unsafe { z::zend_hash_index_find(table, 0) };
+        // SAFETY: as above.
+        if object.is_null() || unsafe { type_of(object) } != IS_OBJECT {
+            return refuse(
+                call,
+                "parameter $1 must be instanceof Server or Coroutine\\Socket",
+            );
+        }
+        // SAFETY: as above.
+        let request = unsafe { obj_of(request) };
+        // SAFETY: a `Swoole\Http\Request`.
+        ctx = unsafe { context::swr_v1_phphttp_context(request) };
+    }
+    // SAFETY: as above.
+    if unsafe { type_of(object) } == IS_OBJECT {
+        // SAFETY: a live object zval and a local output.
+        match unsafe { swr_http_host_object_kind(object, &raw mut fd) } {
+            SERVER_OBJECT => {
+                // SAFETY: a `Swoole\Server` and a local output.
+                if unsafe { websocket::swr_ws_host_server(object, &raw mut server) } {
+                    Bailout.defer();
+                    return;
+                }
+                if !websocket::server_connection(server, fd) {
+                    return refuse(
+                        call,
+                        &format!("parameter $2 ({fd}) must be valid connection session_id"),
+                    );
+                }
+            }
+            SOCKET_OBJECT => socket = object,
+            _ => {
+                return refuse(
+                    call,
+                    "parameter $1 must be instanceof Server or Coroutine\\Socket",
+                );
+            }
+        }
+    } else {
+        // SAFETY: the argument.
+        fd = unsafe { z::swr_zval_get_long(object) };
+        // SAFETY: reads a global.
+        server = unsafe { swr_http_host_server() };
+    }
+    // SAFETY: a live server.
+    if !server.is_null() && !unsafe { websocket::swr_ws_host_started(server) } {
+        return refuse(call, "server is not running");
+    }
+    if server.is_null() && socket.is_null() {
+        call.set_bool(false);
+        return;
+    }
+    // SAFETY: the request's context (or null), and the server or the socket.
+    let ctx = unsafe { swr_http_host_bind(ctx, server, socket) };
+    let response = call.return_value();
+    let ce = RESPONSE.entry();
+    // SAFETY: the return slot and this registered class.
+    unsafe { init_object(response, ce) };
+    // SAFETY: the object just created.
+    let std = unsafe { obj_of(response) };
+    // SAFETY: a `Swoole\Http\Response`.
+    unsafe { context::swr_v1_phphttp_set_context(std, ctx) };
+    let state = send::state(ctx);
+    state.fd = fd;
+    // SAFETY: the object zval just created.
+    state.response.zobject.value = unsafe { *response };
+    state.response.zobject.ptr = &raw mut state.response.zobject.value;
+    // SAFETY: a live Response, which declares `fd`.
+    unsafe { value::update_long(ce, std, c"fd", fd) };
+    if !socket.is_null() {
+        // SAFETY: as above; the property takes its own reference.
+        unsafe { z::zend_update_property(ce, std, c"socket".as_ptr(), 6, socket) };
+    }
+    if !request.is_null() {
+        // SAFETY: the request object, which declares `fd`.
+        let request = unsafe { obj_of(send::state(ctx).request.zobject.ptr) };
+        // SAFETY: as above.
+        unsafe { value::update_long(crate::request::entry(), request, c"fd", fd) };
+    }
 }
 
 fn redirect(call: &Call) {

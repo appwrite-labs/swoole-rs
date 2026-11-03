@@ -45,10 +45,10 @@ const OPCODE_CONTINUATION: u8 = 0;
 const OPCODE_TEXT: u8 = 1;
 const OPCODE_BINARY: u8 = 2;
 const OPCODE_CLOSE: u8 = 8;
-const OPCODE_PING: u8 = 9;
+pub(crate) const OPCODE_PING: u8 = 9;
 const OPCODE_PONG: u8 = 10;
 /// `swoole::websocket::Flag`.
-const FLAG_FIN: u8 = 1;
+pub(crate) const FLAG_FIN: u8 = 1;
 const FLAG_COMPRESS: u8 = 2;
 const FLAG_RSV1: u8 = 4;
 const FLAG_RSV2: u8 = 8;
@@ -121,8 +121,8 @@ struct Connection {
 }
 
 unsafe extern "C" {
-    fn swr_ws_host_server(object: *mut zval, server: *mut *mut Server) -> bool;
-    fn swr_ws_host_started(server: *mut Server) -> bool;
+    pub(crate) fn swr_ws_host_server(object: *mut zval, server: *mut *mut Server) -> bool;
+    pub(crate) fn swr_ws_host_started(server: *mut Server) -> bool;
     fn swr_ws_host_connection(
         server: *mut Server,
         fd: zend_long,
@@ -431,10 +431,10 @@ fn not_null(object: *mut zend_object, name: &CStr) -> Option<*mut zval> {
 }
 
 /// An owned `zend_string` reference, released on drop.
-struct Str(*mut zend_string);
+pub(crate) struct Str(*mut zend_string);
 
 impl Str {
-    fn bytes(&self) -> &[u8] {
+    pub(crate) fn bytes(&self) -> &[u8] {
         if self.0.is_null() {
             return &[];
         }
@@ -543,7 +543,7 @@ fn header_only_mask(flags: u8) -> bool {
 }
 
 /// `websocket::encode`.
-fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Str> {
+pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Str> {
     if swr_v1_ws_control_invalid(opcode, flags, data.len()) {
         warning(
             c"websocket::encode",
@@ -803,6 +803,11 @@ fn server(call: &Call) -> Option<*mut Server> {
         return None;
     }
     Some(server)
+}
+
+/// `Server::get_connection_verify(fd) != nullptr`.
+pub(crate) fn server_connection(server: *mut Server, fd: zend_long) -> bool {
+    connection(server, fd, true).is_some()
 }
 
 fn connection(server: *mut Server, fd: zend_long, verify: bool) -> Option<Connection> {
