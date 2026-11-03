@@ -1,13 +1,18 @@
-//! The server's worker side: event workers (`src/server/worker.cc`) and the
-//! base-mode reactor processes (`src/server/reactor_process.cc`). Native code keeps
+//! The server's worker side: event workers (`src/server/worker.cc`), the
+//! base-mode reactor processes (`src/server/reactor_process.cc`), task workers
+//! (`src/server/task_worker.cc`), the manager (`src/server/manager.cc`) and the
+//! process-mode factory (`src/server/process.cc`). Native code keeps
 //! the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
 //! runs each operation and asks native code for each fact or effect through one
 //! `call(context, op, arg)`, reading facts afresh.
 use core::ffi::c_void;
 
 mod event_worker;
+mod factory;
+mod manager;
 pub mod ops;
 mod reactor_process;
+mod task_worker;
 
 /// One native fact or effect in `context`.
 pub type WorkersCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> u64;
@@ -69,6 +74,32 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         | ops::RUN_REACTOR_PROCESS_MAIN
         | ops::RUN_REACTOR_PROCESS_CLOSE
         | ops::RUN_REACTOR_PROCESS_TIMEOUT => reactor_process::run(h, operation),
+        ops::RUN_INIT_TASK_WORKERS
+        | ops::RUN_TASK_COMMAND
+        | ops::RUN_TASK_ON_TASK
+        | ops::RUN_TASK_ON_START
+        | ops::RUN_TASK_ON_STOP
+        | ops::RUN_TASK_ON_PIPE
+        | ops::RUN_TASK_LOOP_ASYNC
+        | ops::RUN_FINISH => task_worker::run(h, operation, arg),
+        ops::RUN_START_MANAGER
+        | ops::RUN_MANAGER_MAIN
+        | ops::RUN_MANAGER_SIGNAL
+        | ops::RUN_RESTART_WORKER
+        | ops::RUN_READ_WORKER_MESSAGE
+        | ops::RUN_RELOAD => manager::run(h, operation, arg),
+        ops::RUN_CREATE_PROCESS_FACTORY
+        | ops::RUN_DESTROY_PROCESS_FACTORY
+        | ops::RUN_KILL_TASK_WORKERS
+        | ops::RUN_SPAWN_EVENT_WORKER
+        | ops::RUN_SPAWN_USER_WORKER
+        | ops::RUN_CHECK_EXIT_STATUS
+        | ops::RUN_PROCESS_FACTORY_SHUTDOWN
+        | ops::RUN_CREATE_WORKER_PIPES
+        | ops::RUN_PROCESS_FACTORY_START
+        | ops::RUN_PROCESS_DISPATCH
+        | ops::RUN_PROCESS_FINISH
+        | ops::RUN_PROCESS_END => factory::run(h, operation, arg),
         _ => event_worker::run(h, operation, arg),
     }
 }
@@ -92,11 +123,18 @@ pub(crate) const HANDLER_OWN: u64 = 2;
 /// `OP_SIGNAL_SET`'s stand-in for SIGRTMIN, which only native code can name.
 pub(crate) const SIGNAL_RTMIN: i32 = -1;
 
-pub(crate) fn set_signal<H: Host>(h: &mut H, signo: i32, handler: u64) {
+pub(crate) fn set_signal<H: Host + ?Sized>(h: &mut H, signo: i32, handler: u64) {
     h.op(
         ops::OP_SIGNAL_SET,
         u64::from(signo.cast_unsigned()) | (handler << 32),
     );
+}
+
+/// `set_signal` for each (signal, handler) in turn.
+pub(crate) fn set_signal_all<H: Host + ?Sized>(h: &mut H, signals: &[(i32, u64)]) {
+    for &(signo, handler) in signals {
+        set_signal(h, signo, handler);
+    }
 }
 
 #[cfg(test)]
