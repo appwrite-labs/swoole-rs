@@ -1171,7 +1171,7 @@ pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
         5 => b'@',
         _ => b'%',
     };
-    symbol.cast_signed()
+    std::ffi::c_char::from_ne_bytes([symbol])
 }
 
 /// One `ProcessPool` operation (`RUN_*`) on `pool` (and `worker`, for those over
@@ -1568,7 +1568,7 @@ mod tests {
     #[test]
     fn each_worker_type_has_its_log_symbol() {
         let symbols: String = (0..=6)
-            .map(|kind| char::from(swr_v1_worker_symbol(kind).cast_unsigned()))
+            .map(|kind| char::from(u8::from_ne_bytes(swr_v1_worker_symbol(kind).to_ne_bytes())))
             .collect();
         assert_eq!(symbols, "%#*$^@%");
     }
