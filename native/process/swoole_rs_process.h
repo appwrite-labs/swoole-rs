@@ -347,6 +347,7 @@ char swr_v1_worker_symbol(int type);
 #define SWR_POOL_RUN_SET_START_ID 17
 #define SWR_POOL_RUN_SET_MAX_REQUEST 18
 #define SWR_POOL_RUN_PUSH_MESSAGE 19
+#define SWR_POOL_RUN_SIGNAL 20
 /* Server::task and Server::task_sync (crates/process/src/task_sync.rs). Each
  * hook takes a swr_v1_pool_call whose pool is the Server and worker the MultiTask. */
 typedef struct {

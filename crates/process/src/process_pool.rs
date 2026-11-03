@@ -223,6 +223,7 @@ pub const RUN_SET_TYPE: u32 = 16;
 pub const RUN_SET_START_ID: u32 = 17;
 pub const RUN_SET_MAX_REQUEST: u32 = 18;
 pub const RUN_PUSH_MESSAGE: u32 = 19;
+pub const RUN_SIGNAL: u32 = 20;
 // END NUMBERED
 
 /// What a pool operation asks of native code.
@@ -649,6 +650,27 @@ impl<H: PoolHost> Pool<H> {
         }
         self.set_running(false);
         true
+    }
+
+    /// `Swoole\Process\Pool`'s signal handler (upstream's
+    /// `process_pool_signal_handler`), in `worker` or (null) the master.
+    fn signal(&mut self, signo: c_int, worker: *mut WorkerRecord) -> Result<(), Bailed> {
+        match signo {
+            libc::SIGTERM => {
+                self.set_running(false);
+                if !worker.is_null() {
+                    self.stop(worker);
+                }
+            }
+            libc::SIGUSR1 | libc::SIGUSR2 => {
+                self.reload()?;
+            }
+            libc::SIGIO => self.set_read_message(true),
+            libc::SIGWINCH => self.reopen_logger(),
+            _ if crate::is_sigrtmin(signo) => self.reopen_logger(),
+            _ => {}
+        }
+        Ok(())
     }
 
     /// `ProcessPool::kill_all_workers`.
@@ -1228,6 +1250,10 @@ impl<H: PoolHost> Pool<H> {
                 }
                 SW_OK
             }
+            RUN_SIGNAL => raise_or(
+                self.signal(c_int::try_from(signed).unwrap_or(0), worker)
+                    .map(|()| SW_OK),
+            ),
             RUN_PUSH_MESSAGE => self.push_message(pointer::<u8>(signed).cast_const()),
             RUN_SET_MAX_REQUEST => {
                 self.set_max_request(u32::try_from(arg & 0xffff_ffff).unwrap_or(0));
@@ -1568,6 +1594,21 @@ mod tests {
         pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, false);
         pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, true);
         assert_eq!(ops(&pool), [OP_STREAM_SEND, OP_SYNC_SEND]);
+    }
+
+    #[test]
+    fn signals_stop_reload_and_read_messages() {
+        let mut fixture = Fixture::new(1);
+        let mut pool = fixture.pool(Script::default());
+        pool.set_running(true);
+        assert!(pool.signal(libc::SIGIO, ptr::null_mut()).is_ok());
+        assert!(pool.read_message());
+        assert!(pool.signal(libc::SIGUSR1, ptr::null_mut()).is_ok());
+        assert!(pool.reload_init());
+        pool.drop_reload_task();
+        assert!(pool.signal(libc::SIGTERM, pool.worker(0)).is_ok());
+        assert!(!pool.running());
+        assert!(ops(&pool).contains(&OP_WORKER_SHUTDOWN));
     }
 
     #[test]
