@@ -7,6 +7,7 @@ unset $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p')
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -q -- -D warnings
 python3 tools/check_migration.py > /dev/null
+git diff --cached --quiet -- migration/patches || python3 tools/patches.py check > /dev/null
 # Zend families add shims in parallel; a helper defined twice only fails at link
 # time in builds macOS can't run, so catch it here.
 dups=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_ *]* \*?swr_[a-z0-9_]+\(' crates/zend-sys/src/*.c | grep -oE 'swr_[a-z0-9_]+' | sort | uniq -d)
