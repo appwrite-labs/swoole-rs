@@ -10,34 +10,16 @@ use std::collections::BTreeMap;
 pub(crate) type AdminCall =
     unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64, out: *mut c_void) -> u64;
 
-// Native facts (`SWR_SERVER_ADMIN_*`).
-/// `out` is the answer's bytes and `arg` their length.
-const ANSWER: u32 = 0;
-/// The event (`arg` 0) or task (1) worker count.
-const PIPE_WORKERS: u32 = 1;
-/// A worker pipe's socket: `arg` is `index << 2 | task << 1 | master`.
-const PIPE_SOCKET: u32 = 2;
-const HAS_REACTOR: u32 = 3;
-/// Collects the reactor's sockets; returns how many.
-const SOCKETS: u32 = 4;
-/// The collected socket `arg`.
-const SOCKET: u32 = 5;
-/// `Socket::get_name()` on the collected socket `arg`.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-const SOCKET_NAME: u32 = 6;
-const COMMANDS: u32 = 7;
-const COMMAND: u32 = 8;
-/// Collects the connections this thread or worker owns.
-const CONNECTIONS: u32 = 9;
-const CONNECTION: u32 = 10;
-/// Collects the connection of session `arg` if it is valid; returns 1 if so.
-const SESSION: u32 = 11;
-const THREAD: u32 = 12;
-const MANAGER: u32 = 13;
-/// Fills `out` with up to 16 named sizes; returns how many.
-const MEMORY: u32 = 14;
-const PORTS: u32 = 15;
-const PORT: u32 = 16;
+use crate::ops::ADMIN_SOCKET_NAME as SOCKET_NAME;
+use crate::ops::{
+    ADMIN_ANSWER as ANSWER, ADMIN_COMMAND as COMMAND, ADMIN_COMMANDS as COMMANDS,
+    ADMIN_CONNECTION as CONNECTION, ADMIN_CONNECTIONS as CONNECTIONS,
+    ADMIN_HAS_REACTOR as HAS_REACTOR, ADMIN_MANAGER as MANAGER, ADMIN_MEMORY as MEMORY,
+    ADMIN_PIPE_SOCKET as PIPE_SOCKET, ADMIN_PIPE_WORKERS as PIPE_WORKERS, ADMIN_PORT as PORT,
+    ADMIN_PORTS as PORTS, ADMIN_SESSION as SESSION, ADMIN_SOCKET as SOCKET,
+    ADMIN_SOCKETS as SOCKETS, ADMIN_THREAD as THREAD,
+};
 
 /// A named number (`swr_v1_server_fact`).
 #[repr(C)]

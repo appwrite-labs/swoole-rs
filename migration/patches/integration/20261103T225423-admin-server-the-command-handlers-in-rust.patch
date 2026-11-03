@@ -1,18 +1,21 @@
 diff --git a/ext-src/swoole_admin_server.cc b/ext-src/swoole_admin_server.cc
-index 7faddf5..e49cf60 100644
+index 7faddf5..c660589 100644
 --- a/ext-src/swoole_admin_server.cc
 +++ b/ext-src/swoole_admin_server.cc
-@@ -18,242 +18,24 @@
+@@ -18,242 +18,28 @@
  #include "swoole_process_pool.h"
 -#include "php_swoole_http.h"
--
++#include "swoole_rs.h"
+ 
 -#include <sstream>
 -#include <thread>
 -
 -#include "nlohmann/json.hpp"
 -
 -using json = nlohmann::json;
-+#include "swoole_rs.h"
++#include <algorithm>
++#include <cstring>
++#include <iterator>
  
 +// The admin server's commands are crates/server/src/admin.rs; this file lends it the
 +// server's state.
@@ -56,7 +59,13 @@ index 7faddf5..e49cf60 100644
 -            {"out_buffer_size", master_socket->get_out_buffer_length()},
 -        });
 -        sockets.push_back(master_socket_info);
--
++struct AdminContext {
++    Server *serv;
++    std::vector<void *> items;
++    std::string text;
++    std::string answer;
++};
+ 
 -        auto worker_socket = workers[i].pipe_object->get_socket(false);
 -        json worker_socket_info = json::object({
 -            {"fd", worker_socket->fd},
@@ -73,8 +82,10 @@ index 7faddf5..e49cf60 100644
 -        {"code", 0},
 -    };
 -    return return_value.dump();
--}
--
++static swr_v1_server_text admin_text(const char *text) {
++    return {text, strlen(text)};
+ }
+ 
 -static std::string handle_get_all_sockets(Server *, const std::string &msg) {
 -    if (sw_reactor() == nullptr) {
 -        json return_value{
@@ -216,13 +227,7 @@ index 7faddf5..e49cf60 100644
 -#endif
 -    return return_value.dump();
 -}
-+struct AdminContext {
-+    Server *serv;
-+    std::vector<void *> items;
-+    std::string text;
-+    std::string answer;
-+};
- 
+-
 -static std::string handle_get_thread_info(Server *serv, const std::string &msg) {
 -    ReactorThread *thread = serv->get_thread(SwooleTG.id);
 -    std::stringstream ss;
@@ -239,10 +244,8 @@ index 7faddf5..e49cf60 100644
 -        {"code", 0},
 -    };
 -    return return_value.dump();
-+static swr_v1_server_text admin_text(const char *text) {
-+    return {text, strlen(text)};
- }
- 
+-}
+-
 -static std::string handle_get_manager_info(Server *serv, const std::string &msg) {
 -    ProcessPool *pool = serv->get_event_worker_pool();
 -    json jinfo{
@@ -261,7 +264,7 @@ index 7faddf5..e49cf60 100644
 +        socket->total_recv_bytes, socket->total_send_bytes, socket->get_out_buffer_length(),
 +        admin_text(socket->get_addr())};
  }
-@@ -271,6 +53,5 @@ static size_t get_socket_out_buffer_total_size() {
+@@ -271,6 +57,5 @@ static size_t get_socket_out_buffer_total_size() {
  
 -static std::string handle_get_memory_info(Server *serv, const std::string &msg) {
 +static uint64_t admin_memory(Server *serv, void *out) {
@@ -270,7 +273,7 @@ index 7faddf5..e49cf60 100644
 -    json jinfo{
 +    const swr_v1_server_fact facts[] = {
          {"server", sizeof(Server)},
-@@ -288,11 +69,7 @@ static std::string handle_get_memory_info(Server *serv, const std::string &msg)
+@@ -288,11 +73,7 @@ static std::string handle_get_memory_info(Server *serv, const std::string &msg)
      };
 -    json return_value{
 -        {"data", jinfo},
@@ -278,14 +281,14 @@ index 7faddf5..e49cf60 100644
 -    };
 -    return return_value.dump();
 +    std::copy(std::begin(facts), std::end(facts), static_cast<swr_v1_server_fact *>(out));
-+    return std::size(facts);
++    return sizeof(facts) / sizeof(facts[0]);
  }
  
 -static std::string handle_get_connections(Server *serv, const std::string &msg) {
 -    json list = json::array();
 +static void admin_connections(Server *serv, std::vector<void *> &list) {
      serv->foreach_connection([serv, &list](Connection *conn) {
-@@ -304,58 +81,96 @@ static std::string handle_get_connections(Server *serv, const std::string &msg)
+@@ -304,58 +85,96 @@ static std::string handle_get_connections(Server *serv, const std::string &msg)
          }
 -        list.push_back(get_connection_info(serv, conn));
 +        list.push_back(conn);
@@ -433,7 +436,7 @@ index 7faddf5..e49cf60 100644
 -    };
 -    return return_value.dump();
  }
-@@ -363,20 +178,12 @@ static std::string handle_get_all_ports(Server *serv, const std::string &msg) {
+@@ -363,20 +182,12 @@ static std::string handle_get_all_ports(Server *serv, const std::string &msg) {
  void register_admin_server_commands(Server *serv) {
 -    serv->add_command("get_all_sockets", Server::Command::ALL_PROCESS, handle_get_all_sockets);
 -    serv->add_command("get_all_commands", Server::Command::ALL_PROCESS, handle_get_all_commands);
@@ -463,7 +466,7 @@ index 7faddf5..e49cf60 100644
 -    serv->add_command("get_connections", accepted_process_types, handle_get_connections);
 -    serv->add_command("get_connection_info", accepted_process_types, handle_get_connection_info);
  }
-@@ -385,143 +192,13 @@ void register_admin_server_commands(Server *serv) {
+@@ -385,143 +196,13 @@ void register_admin_server_commands(Server *serv) {
  #ifdef TCP_INFO
 -// clang-format off
  std::unordered_map<std::string, uint64_t> sw_socket_parse_tcp_info(tcp_info *info) {
@@ -605,7 +608,7 @@ index 7faddf5..e49cf60 100644
 -    return {};
 -#endif
 +    swr_v1_server_fact facts[64];
-+    size_t n = swr_v1_server_tcp_info(info, facts, std::size(facts));
++    size_t n = swr_v1_server_tcp_info(info, facts, sizeof(facts) / sizeof(facts[0]));
 +    std::vector<std::pair<std::string, uint64_t>> fields;
 +    for (size_t i = 0; i < n; i++) {
 +        fields.emplace_back(facts[i].name, facts[i].value);
