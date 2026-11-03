@@ -92,7 +92,7 @@ index c2171cd..20ea726 100644
 -
      bool wait_event(EventType event,
 diff --git a/src/coroutine/socket.cc b/src/coroutine/socket.cc
-index 0ed924c..5cdaf3e 100644
+index 0ed924c..9162d20 100644
 --- a/src/coroutine/socket.cc
 +++ b/src/coroutine/socket.cc
 @@ -150,17 +150,23 @@ swr_v1_hook_wait_ops Socket::wait_ops() {
@@ -274,7 +274,8 @@ index 0ed924c..5cdaf3e 100644
 -}
 -
  void Socket::set_timeout(double timeout, int _type) const {
-@@ -1297,3 +1218,2 @@ Socket::~Socket() {
+@@ -1297,3 +1218,3 @@ Socket::~Socket() {
      delete write_buffer;
 -    swr_v1_hook_socket_state_free(state_);
++    swr_v1_hook_co_socket_fini(this);
      if (socket == nullptr) {
