@@ -19,14 +19,10 @@ swr_v1_process_task_pack_result swr_v1_process_task_pack(uint8_t *dest, size_t d
 typedef struct { uintptr_t handler; uint16_t signo; bool activated; } swr_v1_signal_slot;
 extern swr_v1_signal_slot swr_v1_signals[128];
 typedef struct { uint32_t status; uintptr_t handler; } swr_v1_signal_lookup_result;
-uintptr_t swr_v1_signal_set_action(int signo, uintptr_t func, bool restart, bool mask);
 uintptr_t swr_v1_signal_set(int signo, uintptr_t handler, bool safety, void (*callback)(int), bool (*has_reactor)(void));
-void swr_v1_signal_dispatch(void (*callback)(int));
 swr_v1_signal_lookup_result swr_v1_signal_lookup(int signo);
-bool swr_v1_signal_isset(int signo);
 void swr_v1_signal_reset(void);
 void swr_v1_signal_clear(void);
-void swr_v1_signal_mask_all(bool block, bool *blocking_all);
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
 uintptr_t swr_v1_signal_kqueue_set(int kq, int signo, uintptr_t handler, bool *failed);
 void swr_v1_signal_kqueue_clear(int kq, bool available);
@@ -45,7 +41,6 @@ size_t swr_v1_wait_count(void);
 #ifdef __linux__
 typedef struct { uint32_t status; int fd; int32_t error; } swr_v1_signalfd_created;
 typedef struct { uint32_t status; uint32_t signo; uintptr_t handler; int32_t error; } swr_v1_signalfd_received;
-void swr_v1_signalfd_init(void);
 int swr_v1_signalfd_fd(void);
 bool swr_v1_signalfd_owned(void);
 uintptr_t swr_v1_signalfd_set(int signo, uintptr_t handler);

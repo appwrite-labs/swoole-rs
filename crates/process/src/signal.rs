@@ -3,7 +3,8 @@
 //! looking a handler up, clearing the table and blocking every signal.
 //! The signalfd and kqueue paths (`signalfd.rs`, `signal_kqueue.rs`) share the
 //! table, `swr_v1_signals`, laid out as `swoole::Signal`.
-use std::ffi::c_int;
+use std::cell::Cell;
+use std::ffi::{CStr, c_char, c_int};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
 
 /// `SW_SIGNO_MAX`.
@@ -55,16 +56,22 @@ fn slot(signo: c_int) -> Option<&'static Slot> {
     swr_v1_signals.get(usize::try_from(signo).ok()?)
 }
 
+/// `SignalHandler swoole_signal_set(int signo, SignalHandler func, int restart, int mask)`.
+#[must_use]
+#[unsafe(export_name = "_Z17swoole_signal_setiPFviEii")]
+pub extern "C" fn swoole_signal_set_action(
+    signo: c_int,
+    func: usize,
+    restart: c_int,
+    mask: c_int,
+) -> usize {
+    set_action(signo, func, restart != 0, mask != 0)
+}
+
 /// `swoole_signal_set(signo, func, restart, mask)`: installs `func` with sigaction
 /// (null means `SIG_IGN`, -1 `SIG_DFL`, either of which unregisters `signo`) and
 /// returns the previous action's handler, or null if sigaction failed.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signal_set_action(
-    signo: c_int,
-    func: usize,
-    restart: bool,
-    mask: bool,
-) -> usize {
+fn set_action(signo: c_int, func: usize, restart: bool, mask: bool) -> usize {
     let func = match func {
         0 => SIG_IGN,
         usize::MAX => SIG_DFL,
@@ -115,7 +122,7 @@ pub extern "C" fn swr_v1_signal_set(
         slot.signo.store(u16::try_from(signo).unwrap_or(0), Relaxed);
     }
     let async_handler: extern "C" fn(c_int) = if safety { deferred } else { immediate };
-    swr_v1_signal_set_action(signo, async_handler as usize, false, true)
+    set_action(signo, async_handler as usize, false, true)
 }
 
 /// `signal_handler_safety`: marks the signal for the next dispatch.
@@ -147,13 +154,26 @@ extern "C" fn immediate(signo: c_int) {
     RUNNING.store(false, Relaxed);
 }
 
-/// `swoole_signal_dispatch`: runs `callback` for each signal the deferred handler
-/// marked, in signal order, clearing each mark after its callback.
+/// `void swoole_signal_dispatch()`: runs `swoole_signal_callback` for each signal
+/// the deferred handler marked.
+#[unsafe(export_name = "_Z22swoole_signal_dispatchv")]
+pub extern "C" fn swoole_signal_dispatch() {
+    if !PENDING.load(Relaxed) {
+        return;
+    }
+    // SAFETY: only the deferred handler marks a signal, and `swr_v1_signal_set`
+    // stores its `Callback` before installing that handler.
+    let callback: Callback = unsafe { std::mem::transmute(CALLBACK.load(Relaxed)) };
+    // SAFETY: upstream calls dispatch from a safe context, never a signal frame.
+    unsafe { dispatch(callback) };
+}
+
+/// Runs `callback` for each signal the deferred handler marked, in signal order,
+/// clearing each mark after its callback.
 ///
 /// # Safety
 /// `callback` may run PHP; no value with a destructor is live across it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_signal_dispatch(callback: Callback) {
+pub unsafe fn dispatch(callback: Callback) {
     if !PENDING.load(Relaxed) {
         return;
     }
@@ -196,9 +216,10 @@ pub extern "C" fn swr_v1_signal_lookup(signo: c_int) -> Lookup {
     Lookup { status, handler }
 }
 
-/// `swoole_signal_isset`: a handler is registered and active.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signal_isset(signo: c_int) -> bool {
+/// `bool swoole_signal_isset(int)`: a handler is registered and active.
+#[must_use]
+#[unsafe(export_name = "_Z19swoole_signal_isseti")]
+pub extern "C" fn swoole_signal_isset(signo: c_int) -> bool {
     slot(signo).is_some_and(|slot| slot.handler.load(Relaxed) != 0 && slot.activated.load(Relaxed))
 }
 
@@ -214,7 +235,7 @@ pub extern "C" fn swr_v1_signal_reset() {
 pub extern "C" fn swr_v1_signal_clear() {
     for slot in &swr_v1_signals {
         if slot.activated.load(Relaxed) {
-            swr_v1_signal_set_action(
+            set_action(
                 c_int::from(slot.signo.load(Relaxed)),
                 usize::MAX,
                 true,
@@ -225,18 +246,16 @@ pub extern "C" fn swr_v1_signal_clear() {
     swr_v1_signal_reset();
 }
 
+thread_local! {
+    /// `SwooleTG.signal_blocking_all`: this thread has blocked every signal.
+    static BLOCKING_ALL: Cell<bool> = const { Cell::new(false) };
+}
+
 /// `swoole_signal_block_all` (`block`) and `swoole_signal_unblock_all`: changes this
-/// thread's mask for every signal unless `*blocking_all` already says it is done.
-/// Upstream's failure check (`pthread_sigmask(...) < 0`) never holds, so the flag
-/// always follows.
-///
-/// # Safety
-/// `blocking_all` points to `SwooleTG.signal_blocking_all`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_signal_mask_all(block: bool, blocking_all: *mut bool) {
-    // SAFETY: the caller passes this thread's flag.
-    let blocking_all = unsafe { &mut *blocking_all };
-    if *blocking_all == block {
+/// thread's mask for every signal unless it already is so. Upstream's failure check
+/// (`pthread_sigmask(...) < 0`) never holds, so the flag always follows.
+fn mask_all(block: bool) {
+    if BLOCKING_ALL.get() == block {
         return;
     }
     // SAFETY: sigset_t is plain data.
@@ -250,7 +269,70 @@ pub unsafe extern "C" fn swr_v1_signal_mask_all(block: bool, blocking_all: *mut 
     };
     // SAFETY: `mask` is initialized; the old mask is not wanted.
     unsafe { libc::pthread_sigmask(how, &raw const mask, std::ptr::null_mut()) };
-    *blocking_all = block;
+    BLOCKING_ALL.set(block);
+}
+
+/// `void swoole_signal_block_all()`.
+#[unsafe(export_name = "_Z23swoole_signal_block_allv")]
+pub extern "C" fn swoole_signal_block_all() {
+    mask_all(true);
+}
+
+/// `void swoole_signal_unblock_all()`.
+#[unsafe(export_name = "_Z25swoole_signal_unblock_allv")]
+pub extern "C" fn swoole_signal_unblock_all() {
+    mask_all(false);
+}
+
+/// `char *swoole_signal_to_str(int)`: `strsignal`'s text in a static 64-byte
+/// buffer, with `": <signo>"` appended when the text has no colon. It may run in a
+/// signal frame (an unregistered signal's warning), so it does not allocate.
+#[unsafe(export_name = "_Z20swoole_signal_to_stri")]
+pub extern "C" fn swoole_signal_to_str(signo: c_int) -> *mut c_char {
+    struct Buffer(std::cell::UnsafeCell<[u8; 64]>);
+    // SAFETY: upstream's function-static buffer, shared as upstream shares it.
+    unsafe impl Sync for Buffer {}
+    static BUF: Buffer = Buffer(std::cell::UnsafeCell::new([0; 64]));
+    // SAFETY: strsignal accepts any number.
+    let name = unsafe { libc::strsignal(signo) };
+    // SAFETY: strsignal returns a C string.
+    let text = unsafe { CStr::from_ptr(name) };
+    // SAFETY: the static buffer, written here only, as upstream writes it.
+    let buf = unsafe { &mut *BUF.0.get() };
+    signal_text(text.to_bytes(), signo, buf);
+    buf.as_mut_ptr().cast()
+}
+
+/// `snprintf(buf, 64, "%s", name)`, then `": <signo>"` into what is left when
+/// the name has no colon; always NUL-terminated.
+fn signal_text(name: &[u8], signo: c_int, buf: &mut [u8; 64]) {
+    let mut len = name.len().min(63);
+    buf[..len].copy_from_slice(&name[..len]);
+    if !buf[..len].contains(&b':') {
+        let mut digits = [0_u8; 12];
+        let mut at = digits.len();
+        let mut value = signo.unsigned_abs();
+        loop {
+            at -= 1;
+            digits[at] = b'0' + u8::try_from(value % 10).unwrap_or(0);
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        if signo < 0 {
+            at -= 1;
+            digits[at] = b'-';
+        }
+        for &byte in b": ".iter().chain(&digits[at..]) {
+            if len == 63 {
+                break;
+            }
+            buf[len] = byte;
+            len += 1;
+        }
+    }
+    buf[len] = 0;
 }
 
 #[cfg(test)]
@@ -274,7 +356,7 @@ mod tests {
         let _state = crate::signal_state_lock();
         let handler = record as *const () as usize;
         swr_v1_signal_set(libc::SIGUSR1, handler, false, record, no_reactor);
-        assert!(swr_v1_signal_isset(libc::SIGUSR1));
+        assert!(swoole_signal_isset(libc::SIGUSR1));
         assert_eq!(
             swr_v1_signal_lookup(libc::SIGUSR1),
             Lookup { status: 0, handler }
@@ -287,27 +369,46 @@ mod tests {
         // SAFETY: SIGUSR2 has the deferred handler installed above.
         unsafe { libc::raise(libc::SIGUSR2) };
         assert_eq!(SEEN.load(Relaxed), 0);
-        unsafe { swr_v1_signal_dispatch(record) };
+        swoole_signal_dispatch();
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR2);
 
         swr_v1_signal_clear();
-        assert!(!swr_v1_signal_isset(libc::SIGUSR1));
+        assert!(!swoole_signal_isset(libc::SIGUSR1));
         assert_eq!(swr_v1_signal_lookup(libc::SIGUSR1).status, 2);
         assert_eq!(swr_v1_signal_lookup(200).status, 1);
-        assert_eq!(
-            swr_v1_signal_set_action(libc::SIGUSR1, 0, false, false),
-            SIG_DFL
-        );
+        assert_eq!(set_action(libc::SIGUSR1, 0, false, false), SIG_DFL);
         assert_eq!(swr_v1_signal_lookup(libc::SIGUSR1).status, 2);
-        swr_v1_signal_set_action(libc::SIGUSR1, usize::MAX, false, false);
+        set_action(libc::SIGUSR1, usize::MAX, false, false);
     }
 
     #[test]
     fn masks_all_once() {
-        let mut blocking = false;
-        unsafe { swr_v1_signal_mask_all(true, &raw mut blocking) };
-        assert!(blocking);
-        unsafe { swr_v1_signal_mask_all(false, &raw mut blocking) };
-        assert!(!blocking);
+        swoole_signal_block_all();
+        assert!(BLOCKING_ALL.get());
+        swoole_signal_block_all();
+        assert!(BLOCKING_ALL.get());
+        swoole_signal_unblock_all();
+        assert!(!BLOCKING_ALL.get());
+    }
+
+    #[test]
+    fn signal_text_appends_the_number_without_a_colon() {
+        let text = |name: &[u8], signo| {
+            let mut buf = [0xff; 64];
+            signal_text(name, signo, &mut buf);
+            let end = buf.iter().position(|&b| b == 0).unwrap();
+            buf[..end].to_vec()
+        };
+        assert_eq!(text(b"Interrupt", 2), b"Interrupt: 2");
+        assert_eq!(text(b"Unknown signal: 99", 99), b"Unknown signal: 99");
+        assert_eq!(text(b"x", -12), b"x: -12");
+        let long = [b'x'; 70];
+        assert_eq!(text(&long, 7), &long[..63]);
+        let mut near = [b'y'; 61].to_vec();
+        near.extend_from_slice(b": 1");
+        assert_eq!(text(&[b'y'; 61], 15), &near[..63]);
+        // SAFETY: the export returns its NUL-terminated static buffer.
+        let named = unsafe { CStr::from_ptr(swoole_signal_to_str(libc::SIGTERM)) };
+        assert!(named.to_bytes().ends_with(b": 15"), "{named:?}");
     }
 }
