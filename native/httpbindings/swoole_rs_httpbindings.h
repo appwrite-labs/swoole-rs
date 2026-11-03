@@ -155,7 +155,8 @@ void swr_hsc_accept_free(void *callable);
 bool swr_hsc_set_protocol(void *sock, struct _zval_struct *settings);
 const char *swr_hsc_strerror(int code);
 void swr_hsc_accept_errors(swr_v1_httpbindings_accept_errors *errors);
-int64_t swr_hsc_accept(void *sock, void *callable, bool *connected);
+/* *bailed: creating the onAccept coroutine bailed out; Rust re-raises it. */
+int64_t swr_hsc_accept(void *sock, void *callable, bool *connected, bool *bailed);
 void swr_hsc_sleep(void);
 int swr_hsc_setting(void *server, uint32_t kind, struct _zend_array *settings, struct _zval_struct *value);
 void *swr_v1_phphttp_context(const struct _zend_object *object);

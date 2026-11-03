@@ -8,11 +8,12 @@ description = "The swoole module host: global constants, Swoole\\Exception/Error
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-error", "dep:libc"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-error", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php"]
 
 [dependencies]
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-error = { path = "../error", optional = true }
+swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 libc = { version = "=0.2.191", optional = true }
 
 [lints]

@@ -44,6 +44,8 @@ struct PHPCoroutine{static long create(void*,int,zval*,zval*){oracle->event("cre
 struct System{static void sleep(int){oracle->event("sleep");}};
 inline void php_swoole_init_socket_object(zval*,AcceptSocket*){oracle->event("socket-object");}
 inline void zval_dtor(zval*){oracle->event("socket-dtor");}
+// The hybrid's bailout trap (php_swoole_http.h): no bailout without Zend.
+template<class F>bool swr_http_host_try(F&&body){body();return false;}
 inline void http_server_coro_set_error(void*,AcceptSocket*){oracle->event("set-error");}
 inline void php_swoole_fatal_error(int,const char*fmt,...){va_list args;va_start(args,fmt);emit_log("warning:",fmt,args);va_end(args);}
 namespace upstream_server{void call_accept(AcceptSocket*,AcceptServer*);}
