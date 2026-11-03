@@ -37,9 +37,9 @@ HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql'
                   'firebird': '--with-swoole-firebird'}
 # Modules a module cannot build without: PHP Table stores rows in memory's TableV2; the
 # HTTP/2 server's sessions (http2) own httpbindings' contexts, and its coroutine server
-# runs them.
+# runs them; network::Client (clients) reads the reactor's socket record.
 REQUIRES = {'phpcollections': ('memory',), 'hooks': ('reactor',), 'http2': ('httpbindings',),
-            'httpbindings': ('http2',)}
+            'httpbindings': ('http2',), 'clients': ('reactor',)}
 # The build's two Rust archives in rust-prefix/lib, by the input that records each: the
 # Zend-free one the native gates link, and the PHP extension's (with LTO unless --dev, #889).
 ARCHIVES = {'libswoole_rs_ffi.a': 'rust_archive_sha256', 'libswoole_rs_php.a': 'rust_php_archive_sha256'}

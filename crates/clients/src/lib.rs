@@ -1,4 +1,4 @@
-//! Client policy and private persistent-pool storage; native Client/Zend effects stay native.
+//! `network::Client`, DNS resolution, address policy and the persistent pool.
 #![cfg_attr(
     not(test),
     deny(
@@ -8,16 +8,12 @@
 )]
 
 pub mod address;
-pub mod connect;
+pub mod client;
 pub mod dns;
-pub mod handlers;
 pub mod http_format;
 pub mod ip;
-pub mod object;
 pub mod pool;
 pub mod resolver;
-pub mod state;
-pub mod transport;
 pub mod ws;
 
 #[repr(C)]
@@ -427,15 +423,5 @@ pub unsafe extern "C" fn swr_v1_clients_dns_endpoint(
             host_length: bytes.len(),
             ..DnsEndpoint::default()
         },
-    }
-}
-
-/// Both values are native `ssize_t`, preserving the caller's original len cast.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_datagram_send(result: isize, length: isize) -> isize {
-    if result < 0 || result < length {
-        -1
-    } else {
-        result
     }
 }
