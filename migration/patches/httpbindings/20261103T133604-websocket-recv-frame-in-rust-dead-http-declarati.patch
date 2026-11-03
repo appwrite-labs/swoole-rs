@@ -1,0 +1,438 @@
+diff --git a/ext-src/php_swoole_http.h b/ext-src/php_swoole_http.h
+index c9aac46..2e878e5 100644
+--- a/ext-src/php_swoole_http.h
++++ b/ext-src/php_swoole_http.h
+@@ -33,11 +33,2 @@
+ #include <zlib.h>
+-#define SW_ZLIB_ENCODING_RAW -0xf
+-#define SW_ZLIB_ENCODING_GZIP 0x1f
+-#define SW_ZLIB_ENCODING_DEFLATE 0x0f
+-#define SW_ZLIB_ENCODING_ANY 0x2f
+-#if MAX_MEM_LEVEL >= 8
+-#define SW_ZLIB_DEF_MEM_LEVEL 8
+-#else
+-#define SW_ZLIB_DEF_MEM_LEVEL MAX_MEM_LEVEL
+-#endif
+ #endif
+@@ -53,17 +44,4 @@
+ 
+-#define HTTP_API
+-
+ #include <nghttp2/nghttp2.h>
+ 
+-enum swHttpHeaderFlag {
+-    HTTP_HEADER_SERVER = 1u << 1,
+-    HTTP_HEADER_CONNECTION = 1u << 2,
+-    HTTP_HEADER_CONTENT_LENGTH = 1u << 3,
+-    HTTP_HEADER_DATE = 1u << 4,
+-    HTTP_HEADER_CONTENT_TYPE = 1u << 5,
+-    HTTP_HEADER_TRANSFER_ENCODING = 1u << 6,
+-    HTTP_HEADER_ACCEPT_ENCODING = 1u << 7,
+-    HTTP_HEADER_CONTENT_ENCODING = 1u << 8,
+-};
+-
+ enum swHttpCompressMethod {
+@@ -76,9 +54,2 @@ enum swHttpCompressMethod {
+ 
+-enum swHttpErrorStatusCode {
+-    HTTP_ESTATUS_CONNECT_FAILED = -1,
+-    HTTP_ESTATUS_REQUEST_TIMEOUT = -2,
+-    HTTP_ESTATUS_SERVER_RESET = -3,
+-    HTTP_ESTATUS_SEND_FAILED = -4,
+-};
+-
+ namespace swoole {
+@@ -223,5 +194,5 @@ struct Context : ContextState {
+ 
+-    HTTP_API bool set_header(const char *, size_t, zval *, bool);
+-    HTTP_API bool set_header(const char *, size_t, const char *, size_t, bool);
+-    HTTP_API bool set_header(const char *, size_t, const std::string &, bool);
++    bool set_header(const char *, size_t, zval *, bool);
++    bool set_header(const char *, size_t, const char *, size_t, bool);
++    bool set_header(const char *, size_t, const std::string &, bool);
+     // Rust's; a bailout it trapped (a header value's __toString) is re-raised here.
+@@ -416,3 +387,2 @@ static sw_inline bool swoole_http_has_crlf(const char *value, size_t length) {
+ void swoole_http_parse_cookie(zval *array, const char *at, size_t length);
+-int swoole_http_token_list_contains_value(const char *at, size_t length, const char *value);
+ 
+@@ -424,12 +394,2 @@ zend_string *php_swoole_http_get_date();
+ 
+-#ifdef SW_HAVE_ZLIB
+-voidpf php_zlib_alloc(voidpf opaque, uInt items, uInt size);
+-void php_zlib_free(voidpf opaque, voidpf address);
+-#endif
+-
+-#ifdef SW_HAVE_BROTLI
+-void *php_brotli_alloc(void *opaque, size_t size);
+-void php_brotli_free(void *opaque, void *address);
+-#endif
+-
+ static sw_inline nghttp2_mem *php_nghttp2_mem() {
+@@ -442,78 +402 @@ static sw_inline nghttp2_mem *php_nghttp2_mem() {
+ }
+-
+-namespace swoole {
+-namespace http2 {
+-//-----------------------------------namespace begin--------------------------------------------
+-class HeaderSet {
+-  public:
+-    explicit HeaderSet(size_t size) : size(size), index(0) {
+-        nvs = (nghttp2_nv *) ecalloc(size, sizeof(nghttp2_nv));
+-    }
+-
+-    nghttp2_nv *get() const {
+-        return nvs;
+-    }
+-
+-    size_t len() const {
+-        return index;
+-    }
+-
+-    void reserve_one() {
+-        index++;
+-    }
+-
+-    void add(size_t index,
+-             const char *name,
+-             size_t name_len,
+-             const char *value,
+-             size_t value_len,
+-             const uint8_t flags = NGHTTP2_NV_FLAG_NONE) const {
+-        if (sw_likely(index < size || nvs[index].name == nullptr)) {
+-            nghttp2_nv *nv = &nvs[index];
+-            name = zend_str_tolower_dup(name, name_len);  // auto to lower
+-            nv->name = (uchar *) name;
+-            nv->namelen = name_len;
+-            nv->value = (uchar *) emalloc(value_len);
+-            memcpy(nv->value, value, value_len);
+-            nv->valuelen = value_len;
+-            nv->flags = flags | NGHTTP2_NV_FLAG_NO_COPY_NAME | NGHTTP2_NV_FLAG_NO_COPY_VALUE;
+-            swoole_trace_log(SW_TRACE_HTTP2,
+-                             "name=(%zu)[" SW_ECHO_LEN_BLUE "], value=(%zu)[" SW_ECHO_LEN_CYAN "]",
+-                             name_len,
+-                             (int) name_len,
+-                             name,
+-                             value_len,
+-                             (int) value_len,
+-                             value);
+-        } else {
+-            php_swoole_fatal_error(
+-                E_WARNING, "unexpect http2 header [%.*s] (duplicated or overflow)", (int) name_len, name);
+-        }
+-    }
+-
+-    void add(const char *name,
+-             size_t name_len,
+-             const char *value,
+-             size_t value_len,
+-             const uint8_t flags = NGHTTP2_NV_FLAG_NONE) {
+-        add(index++, name, name_len, value, value_len, flags);
+-    }
+-
+-    ~HeaderSet() {
+-        for (size_t i = 0; i < size; ++i) {
+-            if (sw_likely(nvs[i].name /* && nvs[i].value */)) {
+-                efree((void *) nvs[i].name);
+-                efree((void *) nvs[i].value);
+-            }
+-        }
+-        efree(nvs);
+-    }
+-
+-  private:
+-    nghttp2_nv *nvs;
+-    size_t size;
+-    size_t index;
+-};
+-//-----------------------------------namespace end--------------------------------------------
+-}  // namespace http2
+-}  // namespace swoole
+diff --git a/ext-src/php_swoole_websocket.h b/ext-src/php_swoole_websocket.h
+index a88d965..97a5b42 100644
+--- a/ext-src/php_swoole_websocket.h
++++ b/ext-src/php_swoole_websocket.h
+@@ -34,9 +34,2 @@ void recv_frame(const WebSocketSettings &settings,
+                 double timeout);
+-ssize_t send_frame(const WebSocketSettings &settings,
+-                   SocketImpl *sock,
+-                   uchar opcode,
+-                   uchar flags,
+-                   const char *payload,
+-                   size_t payload_length);
+-void construct_frame(zval *zframe, zend_long opcode, zval *zpayload, uint8_t flags);
+ 
+@@ -53,3 +46,2 @@ struct FrameObject {
+     bool pack(String *buffer);
+-    static bool uncompress(zval *zpayload, const char *data, size_t length);
+ };
+diff --git a/ext-src/swoole_http_request.cc b/ext-src/swoole_http_request.cc
+index a376f72..1f43ae5 100644
+--- a/ext-src/swoole_http_request.cc
++++ b/ext-src/swoole_http_request.cc
+@@ -80,15 +80,2 @@ void swoole_http_parse_cookie(zval *zcookies, const char *at, size_t length) {
+ 
+-// Return -1 when the token list cannot fit in the scratch buffer, 0 when absent, and 1 when found.
+-int swoole_http_token_list_contains_value(const char *at, size_t length, const char *value) {
+-    int32_t result = swr_v1_httpbindings_tokens(reinterpret_cast<uint8_t *>(const_cast<char *>(at)), length,
+-        reinterpret_cast<const uint8_t *>(value), sizeof(value) - 1, 0);
+-    if (result != 2) return result == 1 ? 1 : 0;
+-    if (length >= SW_STACK_BUFFER_SIZE || length >= sw_tg_buffer()->size) return -1;
+-    char *scratch = sw_tg_buffer()->str;
+-    memcpy(scratch, at, length);
+-    scratch[length] = '\0';
+-    return swr_v1_httpbindings_tokens(reinterpret_cast<uint8_t *>(scratch), length,
+-        reinterpret_cast<const uint8_t *>(value), sizeof(value) - 1, 1) == 1 ? 1 : 0;
+-}
+-
+ #ifdef SW_HAVE_COMPRESSION
+diff --git a/ext-src/swoole_http_response.cc b/ext-src/swoole_http_response.cc
+index 94899ea..44cf29e 100644
+--- a/ext-src/swoole_http_response.cc
++++ b/ext-src/swoole_http_response.cc
+@@ -21,5 +21,3 @@
+ #include "swoole_rs_httpbindings.h"
+-static_assert(HTTP_HEADER_SERVER == 2 && HTTP_HEADER_CONNECTION == 4 && HTTP_HEADER_CONTENT_LENGTH == 8 &&
+-              HTTP_HEADER_DATE == 16 && HTTP_HEADER_CONTENT_TYPE == 32 && HTTP_HEADER_TRANSFER_ENCODING == 64 &&
+-              HTTP_HEADER_CONTENT_ENCODING == 256 && HTTP_HEAD == 2, "Pinned response mapping changed");
++static_assert(HTTP_HEAD == 2, "Pinned response mapping changed");
+ #include "php_swoole_websocket.h"
+@@ -156,22 +154,2 @@ zend_string *php_swoole_http_get_date() {
+ 
+-#ifdef SW_HAVE_ZLIB
+-voidpf php_zlib_alloc(voidpf opaque, uInt items, uInt size) {
+-    return (voidpf) safe_emalloc(items, size, 0);
+-}
+-
+-void php_zlib_free(voidpf opaque, voidpf address) {
+-    efree((void *) address);
+-}
+-#endif
+-
+-#ifdef SW_HAVE_BROTLI
+-void *php_brotli_alloc(void *opaque, size_t size) {
+-    return emalloc(size);
+-}
+-
+-void php_brotli_free(void *opaque, void *address) {
+-    efree(address);
+-}
+-#endif
+-
+ // What crates/phphttp/src/header.rs asks of the context to build the header
+@@ -486,26 +464,4 @@ bool swr_http_host_close(void *context) {
+ 
+-ssize_t WebSocket::send_frame(const swoole::WebSocketSettings &settings,
+-                              SocketImpl *sock,
+-                              uchar opcode,
+-                              uchar flags,
+-                              const char *payload,
+-                              size_t payload_length) {
+-    if (settings.in_server) {
+-        sw_unset_bit(flags, WebSocket::FLAG_MASK);
+-    } else {
+-        sw_set_bit(flags, WebSocket::FLAG_MASK);
+-    }
+-    auto wbuf = sock->get_write_buffer();
+-    wbuf->clear();
+-    WebSocket::encode(wbuf, payload, payload_length, opcode, flags);
+-    return sock->send(wbuf->str, wbuf->length);
+-}
+-
+-/**
+- * return_value is object means success.
+- * return_value is false means socket.read() method returning -1.
+- * return_value is null means other error.
+- * return_value is empry string means socket is closed.
+- * the opcode is returned so the caller can decide when to release the continue_frame_buffer.
+- */
++// The frames are Rust's (crates/phphttp/src/websocket.rs); the socket and the
++// buffer of a message being assembled stay C++.
+ void WebSocket::recv_frame(const WebSocketSettings &settings,
+@@ -515,128 +471,53 @@ void WebSocket::recv_frame(const WebSocketSettings &settings,
+                            double timeout) {
+-    zval zpayload;
+-
+-    do {
+-        ssize_t retval = sock->recv_packet(timeout);
+-        if (retval < 0) {
+-            RETURN_FALSE;
+-        } else if (retval == 0) {
+-            RETURN_EMPTY_STRING();
+-        }
+-
+-        auto buffer = sock->get_read_buffer();
+-        WebSocket::Frame frame{};
++    swr_v1_phphttp_websocket_recv(settings.in_server | settings.open_ping_frame << 1 | settings.open_pong_frame << 2 |
++                                      settings.open_close_frame << 3,
++                                  &continue_frame_buffer,
++                                  sock,
++                                  return_value,
++                                  timeout);
++}
++
++ssize_t swr_ws_host_sock_recv(void *sock, double timeout, char **data, size_t *length) {
++    auto *socket = static_cast<SocketImpl *>(sock);
++    ssize_t retval = socket->recv_packet(timeout);
++    if (retval > 0) {
++        *data = socket->get_read_buffer()->str;
++        *length = socket->get_read_buffer()->length;
++    }
++    return retval;
++}
+ 
+-        if (sw_unlikely(static_cast<size_t>(buffer->length) < sizeof(frame.header))) {
+-            swoole_set_last_error(SW_ERROR_PROTOCOL_ERROR);
+-            RETURN_NULL();
+-        }
++void swr_ws_host_sock_send(void *sock, const char *data, size_t length) {
++    static_cast<SocketImpl *>(sock)->send(data, length);
++}
+ 
+-        if (sw_unlikely(!WebSocket::decode(&frame, buffer))) {
+-            swoole_set_last_error(SW_ERROR_PROTOCOL_ERROR);
+-            RETURN_NULL();
+-        }
++int swr_ws_host_sock_fd(void *sock) {
++    return static_cast<SocketImpl *>(sock)->get_fd();
++}
+ 
+-        uchar opcode = frame.header.OPCODE;
+-        bool should_respond = false;
+-        if (opcode == WebSocket::OPCODE_PING) {
+-            if (!settings.open_ping_frame) {
+-                WebSocket::send_frame(
+-                    settings, sock, WebSocket::OPCODE_PONG, WebSocket::FLAG_FIN, frame.payload, frame.payload_length);
+-                continue;
+-            }
+-            should_respond = true;
+-        }
+-        if (opcode == WebSocket::OPCODE_PONG) {
+-            if (!settings.open_pong_frame) {
+-                continue;
+-            }
+-            should_respond = true;
+-        }
+-        if (opcode == WebSocket::OPCODE_CLOSE) {
+-            if (!settings.open_close_frame) {
+-                WebSocket::send_frame(
+-                    settings, sock, WebSocket::OPCODE_CLOSE, WebSocket::FLAG_FIN, frame.payload, frame.payload_length);
+-                continue;
+-            }
+-            should_respond = true;
+-        }
++static std::shared_ptr<String> &ws_buffer(void *slot) {
++    return *static_cast<std::shared_ptr<String> *>(slot);
++}
+ 
+-        if (should_respond) {
+-            ZVAL_STRINGL(&zpayload, frame.payload, frame.payload_length);
+-            WebSocket::construct_frame(return_value, opcode, &zpayload, WebSocket::FLAG_FIN);
+-            zval_ptr_dtor(&zpayload);
+-            zend::object_set(return_value, ZEND_STRL("fd"), sock->get_fd());
+-            return;
+-        }
++const char *swr_ws_host_buffer(void *slot, size_t *length, size_t *offset) {
++    auto &buffer = ws_buffer(slot);
++    if (!buffer) {
++        return nullptr;
++    }
++    *length = buffer->length;
++    *offset = buffer->offset;
++    return buffer->str;
++}
+ 
+-        if (opcode == WebSocket::OPCODE_CONTINUATION) {
+-            if (sw_unlikely(!continue_frame_buffer)) {
+-                swoole_warning("A continuation frame cannot stand alone and MUST be preceded by an initial frame whose "
+-                               "opcode indicates either text or binary data.");
+-                RETURN_NULL();
+-            }
++void swr_ws_host_buffer_new(void *slot, size_t size, size_t offset) {
++    ws_buffer(slot) = std::make_shared<String>(size, sw_zend_string_allocator());
++    ws_buffer(slot)->offset = offset;
++}
+ 
+-            if (sw_likely(frame.payload)) {
+-                continue_frame_buffer->append(frame.payload, frame.payload_length);
+-            }
++void swr_ws_host_buffer_append(void *slot, const char *data, size_t length) {
++    ws_buffer(slot)->append(data, length);
++}
+ 
+-            if (frame.header.FIN) {
+-                uchar complete_opcode = 0;
+-                uchar complete_flags = 0;
+-                WebSocket::parse_ext_flags(continue_frame_buffer->offset, &complete_opcode, &complete_flags);
+-
+-                if (complete_flags & WebSocket::FLAG_RSV1) {
+-                    if (sw_unlikely(!FrameObject::uncompress(
+-                            &zpayload, continue_frame_buffer->str, continue_frame_buffer->length))) {
+-                        continue_frame_buffer.reset();
+-                        swoole_set_last_error(SW_ERROR_PROTOCOL_ERROR);
+-                        RETURN_NULL();
+-                    }
+-                } else {
+-                    zend::assign_zend_string_by_val(
+-                        &zpayload, continue_frame_buffer->str, continue_frame_buffer->length);
+-                    Z_TRY_ADDREF(zpayload);
+-                }
+-
+-                sw_set_bit(complete_flags, WebSocket::FLAG_FIN);
+-                WebSocket::construct_frame(return_value, complete_opcode, &zpayload, complete_flags);
+-                zend::object_set(return_value, ZEND_STRL("fd"), sock->get_fd());
+-                zval_ptr_dtor(&zpayload);
+-                /**
+-                 * The final frame of the continuous frame sequence has been received,
+-                 * and the complete message has been assembled. Memory can be released immediately.
+-                 */
+-                continue_frame_buffer.reset();
+-                return;
+-            }
+-        } else {
+-            if (sw_unlikely(continue_frame_buffer)) {
+-                swoole_warning("All fragments of a message, except for the initial frame, must use the continuation "
+-                               "frame opcode(0).");
+-                RETURN_NULL();
+-            }
+-            if (frame.header.FIN) {
+-                if (frame.compressed()) {
+-                    if (sw_unlikely(!FrameObject::uncompress(&zpayload, frame.payload, frame.payload_length))) {
+-                        swoole_set_last_error(SW_ERROR_PROTOCOL_ERROR);
+-                        RETURN_NULL();
+-                    }
+-                } else {
+-                    ZVAL_STRINGL(&zpayload, frame.payload, frame.payload_length);
+-                }
+-                WebSocket::construct_frame(return_value, frame.header.OPCODE, &zpayload, frame.get_flags());
+-                zend::object_set(return_value, ZEND_STRL("fd"), sock->get_fd());
+-                zval_ptr_dtor(&zpayload);
+-                return;
+-            } else {
+-                continue_frame_buffer = std::make_shared<String>(
+-                    (frame.payload_length > 0 ? frame.payload_length : SW_WEBSOCKET_DEFAULT_BUFFER),
+-                    sw_zend_string_allocator());
+-                continue_frame_buffer->offset = WebSocket::get_ext_flags(frame.header.OPCODE, frame.get_flags());
+-                if (sw_likely(frame.payload)) {
+-                    continue_frame_buffer->append(frame.payload, frame.payload_length);
+-                }
+-            }
+-        }
+-    } while (true);
++void swr_ws_host_buffer_reset(void *slot) {
++    ws_buffer(slot).reset();
+ }
+diff --git a/ext-src/swoole_websocket_server.cc b/ext-src/swoole_websocket_server.cc
+index a9ba1c6..c2dbec4 100644
+--- a/ext-src/swoole_websocket_server.cc
++++ b/ext-src/swoole_websocket_server.cc
+@@ -42,10 +42,2 @@ static_assert(sizeof(swr_ws_connection) == 12, "websocket.rs mirrors swr_ws_conn
+ 
+-void WebSocket::construct_frame(zval *zframe, zend_long opcode, zval *zpayload, uint8_t flags) {
+-    swr_v1_phphttp_websocket_frame(zframe, opcode, zpayload, flags);
+-}
+-
+-bool FrameObject::uncompress(zval *zpayload, const char *data, size_t length) {
+-    return swr_v1_phphttp_websocket_uncompress(zpayload, data, length);
+-}
+-
+ bool FrameObject::pack(String *buffer) {
