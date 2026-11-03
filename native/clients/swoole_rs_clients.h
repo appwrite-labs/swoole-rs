@@ -12,8 +12,12 @@ int swr_v1_clients_address_assign(void *address, uint32_t *length, int kind, con
 bool swr_v1_clients_verify_ip(int family, const char *host, void *destination);
 int swr_v1_clients_dns_query(const char *domain, int family, uint16_t request_id, void *context, bool (*send)(void *context, const uint8_t *data, size_t length), long (*recv)(void *context, uint8_t *data, size_t capacity), void (*push)(void *context, const uint8_t *text, size_t length), bool signed_char);
 int swr_v1_clients_gethostbyname(int flags, const char *name, char *addr);
-int swr_v1_clients_resolv_conf(const char *path, char *server);
-bool swr_v1_clients_hosts_lookup(const char *path, const uint8_t *domain, size_t domain_length, const uint8_t *spaces, void *context, void (*push)(void *context, const uint8_t *text, size_t length));
+/* The resolver's configuration (SwooleG.dns_server and dns_hosts_path upstream). */
+void swr_v1_clients_set_dns_server(const uint8_t *server, size_t length);
+int swr_v1_clients_dns_server(void *context, void (*push)(void *context, const uint8_t *text, size_t length));
+int swr_v1_clients_load_resolv_conf(const char *path);
+void swr_v1_clients_set_hosts_path(const uint8_t *path, size_t length);
+bool swr_v1_clients_hosts_lookup(const uint8_t *domain, size_t domain_length, const uint8_t *spaces, void *context, void (*push)(void *context, const uint8_t *text, size_t length));
 typedef struct { int error; int count; } swr_v1_clients_resolved;
 swr_v1_clients_resolved swr_v1_clients_getaddrinfo(const char *host, const char *service, int family, int socktype, int protocol, void *results, size_t capacity, void (*unknown)(int family));
 struct swr_v1_clients_ip_plan { uint8_t bytes[16]; uint32_t length; };
