@@ -89,6 +89,9 @@ pub use swoole_rs_phptimer::*;
 #[cfg(feature = "php")]
 pub use swoole_rs_phpswoole::*;
 
+#[cfg(feature = "php")]
+pub use swoole_rs_phpredis::*;
+
 pub use swoole_rs_framing::{
     swr_v1_framing_default, swr_v1_framing_hton64, swr_v1_framing_mime_count,
     swr_v1_framing_mime_entry, swr_v1_framing_mime_fallback, swr_v1_framing_mime_suffix,
@@ -164,3 +167,9 @@ pub use swoole_rs_phpevents as phpevents;
 
 #[cfg(feature = "phpcoroutines")]
 pub use swoole_rs_phpcoroutines as phpcoroutines;
+
+#[cfg(feature = "pgsql")]
+pub use swoole_rs_pgsql as pgsql;
+
+#[cfg(feature = "odbc")]
+pub use swoole_rs_odbc as odbc;

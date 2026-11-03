@@ -274,8 +274,7 @@ fn socket_for_connect(call: &Call, port: i64) -> Option<Socket> {
     let settings = unsafe { native::swoole_client_coro_setting(object) };
     // SAFETY: Zend returns a live property zval.
     if !settings.is_null() && unsafe { type_of(settings) } == IS_ARRAY {
-        // SAFETY: a live socket and array.
-        unsafe { native::swoole_client_coro_apply(socket, settings) };
+        crate::socket_options::apply(socket, settings, crate::socket_options::ALL);
     }
     Some(socket)
 }
@@ -343,8 +342,11 @@ fn set(call: &Call) {
     if socket.is_null() {
         return call.set_bool(true);
     }
-    // SAFETY: a live socket and array.
-    call.set_bool(unsafe { native::swoole_client_coro_apply(socket, settings) });
+    call.set_bool(crate::socket_options::apply(
+        socket,
+        settings,
+        crate::socket_options::ALL,
+    ));
 }
 
 /// `connect(string $host, int $port = 0, float $timeout = 0, int $sock_flag = 0): bool`.
@@ -748,11 +750,20 @@ fn enable_ssl(call: &Call) {
         report_code(call, libc::ESOCKTNOSUPPORT);
         return call.set_bool(false);
     }
-    // SAFETY: `$this` is live and holds the socket.
-    let error = unsafe { native::swoole_client_coro_enable_ssl(call.this(), socket) };
-    if error != 0 {
-        report_code(call, error);
+    // SAFETY: a held socket.
+    if unsafe { native::swoole_client_coro_has_ssl(socket) }
+        || !crate::socket_options::enable_ssl(socket)
+    {
+        report_code(call, libc::EISCONN);
         return call.set_bool(false);
+    }
+    // SAFETY: `$this` is live.
+    let settings = unsafe { native::swoole_client_coro_setting(call.this()) };
+    // SAFETY: Zend returns a live property zval.
+    let array = !settings.is_null() && unsafe { type_of(settings) } == IS_ARRAY;
+    // SAFETY: as above, an array.
+    if array && unsafe { value::count(settings) } > 0 {
+        crate::socket_options::apply(socket, settings, crate::socket_options::SSL);
     }
     // SAFETY: a held socket.
     if !unsafe { native::swoole_socket_coro_ssl_handshake(socket) } {

@@ -575,8 +575,11 @@ impl Client {
         }
         let socket = self.socket();
         if !socket.is_null() {
-            // SAFETY: a live socket and array.
-            unsafe { native::swoole_http_client_coro_apply(socket, settings) };
+            crate::socket_options::apply(socket, settings, crate::socket_options::ALL);
+            if !swoole_rs_zend::bailout::pending() {
+                // SAFETY: a live socket.
+                unsafe { native::swoole_http_client_coro_apply(socket) };
+            }
         }
     }
 

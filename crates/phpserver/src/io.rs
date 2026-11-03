@@ -22,7 +22,6 @@ use swoole_rs_zend::{
 #[repr(C)]
 pub struct IoHost {
     closed: unsafe extern "C" fn(*mut c_void) -> bool,
-    set_callback: unsafe extern "C" fn(*mut zend_object, c_int, *mut zval) -> bool,
     port_call:
         unsafe extern "C" fn(*mut zend_object, c_int, *mut zval, *mut zval, *mut zval) -> bool,
     listen: unsafe extern "C" fn(*mut zend_object, *const c_char, i64, i64, *mut zval) -> bool,
@@ -149,7 +148,7 @@ fn on(call: &Call) {
         );
     }
     // SAFETY: `$this` and the callback argument.
-    call.set_bool(unsafe { (host().set_callback)(call.this(), kind, cb) });
+    call.set_bool(unsafe { crate::lifecycle::set_callback(call.this(), kind, cb) });
 }
 
 fn get_callback(call: &Call) {

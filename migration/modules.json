@@ -209,6 +209,9 @@
       "owned_paths": [
         "crates/hooks/",
         "crates/phpruntime/",
+        "crates/pgsql/",
+        "crates/odbc/",
+        "crates/odbc-sys/",
         "native/hooks/",
         "migration/patches/hooks/",
         "tests/modules/hooks/"
@@ -227,7 +230,9 @@
         "ext-src/swoole_runtime.cc",
         "include/swoole_coroutine_socket.h",
         "include/swoole_iouring.h",
-        "include/swoole_uring_socket.h"
+        "include/swoole_uring_socket.h",
+        "ext-src/swoole_pgsql.cc",
+        "ext-src/swoole_odbc.cc"
       ],
       "abi_contract": "docs/hooks-abi-v1.md",
       "feature_bit_reserved": 65536
