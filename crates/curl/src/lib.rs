@@ -461,11 +461,9 @@ impl Multi {
         if fds.is_empty() {
             return CURLM_OK;
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "one pollfd per curl socket"
-        )]
-        let count = fds.len() as libc::nfds_t;
+        let Ok(count) = libc::nfds_t::try_from(fds.len()) else {
+            return CURLM_INTERNAL_ERROR;
+        };
         // SAFETY: `count` live pollfds.
         if unsafe { libc::poll(fds.as_mut_ptr(), count, 0) } < 0 {
             return if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {

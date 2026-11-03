@@ -1,10 +1,12 @@
-//! The hooked stdio, directory and file-system functions (`swoole_coroutine_fopen`,
-//! `swoole_coroutine_stat`, …): inside a coroutine each libc call runs on the async
-//! thread pool while the coroutine waits; outside one it runs here. Native code passes
+//! The hooked stdio, directory, file-system and resolver functions
+//! (`swoole_coroutine_fopen`, `swoole_coroutine_stat`, `swoole_coroutine_getaddrinfo`,
+//! …): inside a coroutine each libc call runs on the async thread pool while the
+//! coroutine waits; outside one it runs here. Native code passes
 //! its `async` as `Offload` (null outside a coroutine), which also restores the
 //! worker's errno.
 use libc::{
-    DIR, FILE, c_char, c_int, c_uint, c_void, dirent, mode_t, off_t, size_t, ssize_t, stat, statvfs,
+    DIR, FILE, addrinfo, c_char, c_int, c_uint, c_void, dirent, hostent, mode_t, off_t, size_t,
+    ssize_t, stat, statvfs,
 };
 
 /// Runs `job(context)` on the async pool and parks the coroutine until it is done;
@@ -94,6 +96,48 @@ hooked! {
     swr_v1_hook_readlink(pathname: *const c_char, buf: *mut c_char, len: size_t) -> ssize_t, refused -1 => libc::readlink(pathname, buf, len);
     swr_v1_hook_statvfs(path: *const c_char, buf: *mut statvfs) -> c_int, refused -1 => libc::statvfs(path, buf);
     swr_v1_hook_access(pathname: *const c_char, mode: c_int) -> c_int, refused -1 => libc::access(pathname, mode);
+    swr_v1_hook_close_fd(fd: c_int) -> c_int, refused -1 => libc::close(fd);
+    swr_v1_hook_getaddrinfo(name: *const c_char, service: *const c_char, req: *const addrinfo, pai: *mut *mut addrinfo) -> c_int, refused -1 => libc::getaddrinfo(name, service, req, pai);
+}
+
+unsafe extern "C" {
+    fn gethostbyname(name: *const c_char) -> *mut hostent;
+    #[cfg(target_os = "linux")]
+    fn __h_errno_location() -> *mut c_int;
+    #[cfg(not(target_os = "linux"))]
+    static mut h_errno: c_int;
+}
+
+/// This thread's `h_errno`.
+fn h_errno_slot() -> *mut c_int {
+    #[cfg(target_os = "linux")]
+    // SAFETY: glibc and musl return this thread's slot.
+    return unsafe { __h_errno_location() };
+    #[cfg(not(target_os = "linux"))]
+    return &raw mut h_errno;
+}
+
+/// Hooked `gethostbyname`: the lookup's `h_errno` (0 if the pool refused it)
+/// becomes this thread's.
+///
+/// # Safety
+/// `name` is a C string; `offload` as in [`Offload`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_gethostbyname(
+    name: *const c_char,
+    offload: Option<Offload>,
+) -> *mut hostent {
+    let call = || {
+        // SAFETY: the caller passes a C string.
+        let entry = unsafe { gethostbyname(name) };
+        // SAFETY: this thread's slot.
+        (entry, unsafe { *h_errno_slot() })
+    };
+    // SAFETY: the caller passes native `async` or null.
+    let (entry, error) = unsafe { offloaded(offload, (std::ptr::null_mut(), 0), call) };
+    // SAFETY: this thread's slot.
+    unsafe { *h_errno_slot() = error };
+    entry
 }
 
 #[cfg(test)]
@@ -158,6 +202,50 @@ mod tests {
         }
         assert_eq!(OFFLOADED.get(), 10);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn resolver_and_close_on_the_pool() {
+        unsafe {
+            let mut list: *mut addrinfo = std::ptr::null_mut();
+            assert_eq!(
+                swr_v1_hook_getaddrinfo(
+                    c"127.0.0.1".as_ptr(),
+                    c"80".as_ptr(),
+                    std::ptr::null(),
+                    &raw mut list,
+                    Some(pool)
+                ),
+                0
+            );
+            assert!(!list.is_null());
+            libc::freeaddrinfo(list);
+            assert_eq!(
+                swr_v1_hook_getaddrinfo(
+                    c"127.0.0.1".as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    &raw mut list,
+                    Some(refuse)
+                ),
+                -1
+            );
+
+            // The entry lives in the looking-up thread's storage, which may end with
+            // the test's pool thread: read it only from a lookup run here.
+            assert!(!swr_v1_hook_gethostbyname(c"127.0.0.1".as_ptr(), Some(pool)).is_null());
+            let entry = swr_v1_hook_gethostbyname(c"127.0.0.1".as_ptr(), None);
+            assert_eq!((*entry).h_addrtype, libc::AF_INET);
+            *h_errno_slot() = 3;
+            assert!(swr_v1_hook_gethostbyname(c"localhost".as_ptr(), Some(refuse)).is_null());
+            assert_eq!(*h_errno_slot(), 0);
+
+            let mut fds = [0; 2];
+            assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+            assert_eq!(swr_v1_hook_close_fd(fds[0], Some(pool)), 0);
+            assert_eq!(swr_v1_hook_close_fd(fds[1], None), 0);
+            assert_eq!(swr_v1_hook_close_fd(fds[1], Some(refuse)), -1);
+        }
     }
 
     #[test]

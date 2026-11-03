@@ -84,11 +84,31 @@ void swoole_http2_client_coro_warning(const char *message);
 void swoole_http2_client_coro_log(int what, uint32_t stream_id);
 
 
+/* The HTTP/2 server's sessions (crates/phphttp2/src/session.rs), one per
+ * connection `fd`, and their streams, each owning its request's context.
+ * `handle` runs onRequest for a finished request (Rust traps a bailout
+ * around it); `data` is passed along. */
+struct swr_h2s_request {
+    void *ctx;
+    void *default_ctx;
+    void *data;
+};
+typedef void (*swr_h2s_handler)(struct swr_h2s_request *request);
+bool swr_v1_phphttp2_session_exists(int64_t fd);
+void swr_v1_phphttp2_session_new(
+    int64_t fd, void *default_ctx, uint32_t max_body_size, bool is_coro, swr_h2s_handler handle, void *data);
+void swr_v1_phphttp2_session_free(int64_t fd);
+/* Holds a context's stream (and so the context) across coroutine switches; null if none. */
+const void *swr_v1_phphttp2_stream_hold(void *ctx);
+void swr_v1_phphttp2_stream_release(const void *stream);
+
 /* The HTTP/2 server (crates/phphttp2/src/server.rs): frames, the response and
- * the request header block. `ctx` is a swoole::http::Context, `session` and
- * `stream` point at the std::shared_ptr that holds one. A bailout in user code
- * (a header's __toString, onRequest) is trapped and re-raised before return. */
-int swr_v1_phphttp2_server_parse(const void *session, const char *buf);
+ * the request header block. `ctx` is a swoole::http::Context. A bailout in
+ * user code (a header's __toString, onRequest) is trapped and re-raised
+ * before return. */
+int swr_v1_phphttp2_session_parse(int64_t fd, const char *buf);
+/* The same for a Rust caller, which raises a pending bailout itself. */
+int swr_v1_phphttp2_session_receive(int64_t fd, const char *buf);
 bool swr_v1_phphttp2_server_respond(void *ctx, const char *data, size_t length);
 bool swr_v1_phphttp2_server_write(void *ctx, const char *data, size_t length);
 bool swr_v1_phphttp2_server_ping(void *ctx);
@@ -100,25 +120,6 @@ bool swr_v1_phphttp2_server_send_body(void *ctx, const char *data, size_t length
 bool swr_v1_phphttp2_server_finish_file(void *ctx, bool trailer, bool error);
 
 /* What it asks of C++, defined by ext-src/swoole_http2_server.cc. */
-struct swr_h2s_session {
-    uint32_t *local_settings; /* swoole::http2::Settings, six uint32_t */
-    uint32_t *remote_settings;
-    uint32_t *remote_window_size;
-    uint32_t *local_window_size;
-    uint32_t *last_stream_id;
-    bool *shutting_down;
-    void **inflater;
-    void **deflater;
-    uint32_t max_body_size;
-    bool is_coro;
-    void *default_ctx;
-};
-struct swr_h2s_stream {
-    void *ctx;
-    uint32_t id;
-    uint32_t *remote_window_size;
-    uint32_t *local_window_size;
-};
 enum swr_h2s_field {
     SWR_H2S_END,
     SWR_H2S_SEND_HEADER,
@@ -135,17 +136,10 @@ enum swr_h2s_field {
     SWR_H2S_STREAM_ID,
 };
 enum swr_h2s_value { SWR_H2S_SERVER, SWR_H2S_HEADER, SWR_H2S_RESPONSE, SWR_H2S_GET, SWR_H2S_POST, SWR_H2S_COOKIE };
-void *swr_h2s_session_hold(void *ctx);
-void swr_h2s_session_release(void *session);
-void swr_h2s_session_view(const void *session, struct swr_h2s_session *view);
-bool swr_h2s_session_idle(const void *session);
-bool swr_h2s_session_handle(const void *session, const void *stream);
-void *swr_h2s_stream_hold(const void *session, uint32_t stream_id, bool create);
-void swr_h2s_stream_release(void *stream);
-bool swr_h2s_stream_remove(const void *session, uint32_t stream_id);
-void swr_h2s_stream_view(const void *stream, struct swr_h2s_stream *view);
-void swr_h2s_stream_wait(const void *stream);
-void swr_h2s_stream_wake(const void *stream);
+/* A stream's new context: a copy of `default_ctx`'s settings, its request's streamId set. */
+void *swr_h2s_stream_context(void *default_ctx, int64_t fd, uint32_t stream_id);
+void swr_h2s_wait(void **coroutine);
+void swr_h2s_wake(void *coroutine);
 bool swr_h2s_send(void *ctx, const char *data, size_t length);
 bool swr_h2s_close(void *ctx);
 uint32_t swr_h2s_get(void *ctx, int field);

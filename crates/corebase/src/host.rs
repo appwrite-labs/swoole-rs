@@ -150,8 +150,8 @@ fn newline() {
 /// `swoole_dump_ascii`: each byte as its native `(unsigned) char` value.
 /// # Safety
 /// `data` is readable for `size` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_dump_ascii(data: *const c_char, size: usize) {
+#[unsafe(export_name = "_Z17swoole_dump_asciiPKcm")]
+pub unsafe extern "C" fn swoole_dump_ascii(data: *const c_char, size: usize) {
     for index in 0..size {
         // SAFETY: `index < size`, inside the caller's readable extent.
         let byte = unsafe { data.wrapping_add(index).read() };
@@ -163,8 +163,8 @@ pub unsafe extern "C" fn swr_v1_corebase_dump_ascii(data: *const c_char, size: u
 /// `swoole_dump_hex`: sixteen bytes per row, each row led by its offset.
 /// # Safety
 /// `data` is readable for `size` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_dump_hex(data: *const u8, size: usize) {
+#[unsafe(export_name = "_Z15swoole_dump_hexPKhm")]
+pub unsafe extern "C" fn swoole_dump_hex(data: *const u8, size: usize) {
     for index in 0..size {
         if index % 16 == 0 {
             // SAFETY: `%08zX` takes one size_t.
@@ -208,8 +208,9 @@ pub extern "C" fn swr_v1_corebase_print_backtrace() {
 
 /// `swoole::microtime`: wall-clock seconds, as libstdc++'s
 /// `duration<double>` of the nanosecond `system_clock` count.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_corebase_microtime() -> f64 {
+#[must_use]
+#[unsafe(export_name = "_ZN6swoole9microtimeEv")]
+pub extern "C" fn microtime() -> f64 {
     // One clock_gettime, as libstdc++'s system_clock::now(); std's SystemTime adds
     // a checked subtraction on every request (#853).
     let mut now = libc::timespec {
@@ -249,8 +250,8 @@ pub struct DataHead {
 /// result: at most `size - 1` bytes written, always NUL-terminated.
 /// # Safety
 /// `head` is a live `DataHead` and `buffer` is writable for `size` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_datahead_dump(
+#[unsafe(export_name = "_ZN6swoole8DataHead4dumpEPcm")]
+pub unsafe extern "C" fn datahead_dump(
     head: *const DataHead,
     buffer: *mut c_char,
     size: usize,
@@ -302,7 +303,7 @@ fn seed() -> [u64; 4] {
     let mut state = [0u64; 4];
     // SAFETY: `state` is 32 writable bytes, within getentropy(3)'s 256.
     if unsafe { getentropy(state.as_mut_ptr().cast(), size_of_val(&state)) } != 0 {
-        state[0] = swr_v1_corebase_microtime().to_bits();
+        state[0] = microtime().to_bits();
     }
     if state == [0; 4] {
         state[0] = 0x9e37_79b9_7f4a_7c15;
@@ -327,15 +328,59 @@ fn next() -> u64 {
     })
 }
 
-/// `swoole_random_int`: a uniform 64-bit value.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_corebase_random_u64() -> u64 {
+/// `uint64_t swoole_random_int()`: a uniform 64-bit value.
+#[must_use]
+#[unsafe(export_name = "_Z17swoole_random_intv")]
+pub extern "C" fn swoole_random_int() -> u64 {
     next()
 }
 
+/// `int swoole_rand()`: `swoole_rand(0, INT_MAX)`.
+#[must_use]
+#[unsafe(export_name = "_Z11swoole_randv")]
+pub extern "C" fn swoole_rand_any() -> c_int {
+    swoole_rand(0, c_int::MAX)
+}
+
+/// `void *sw_malloc(size_t)`. Upstream calls through `SwooleG.std_allocator`,
+/// which only ever holds libc's allocator.
+#[must_use]
+#[unsafe(export_name = "_Z9sw_mallocm")]
+pub extern "C" fn sw_malloc(size: usize) -> *mut c_void {
+    // SAFETY: malloc has no preconditions.
+    unsafe { libc::malloc(size) }
+}
+
+/// `void sw_free(void *)`.
+/// # Safety
+/// `pointer` is null or a live allocation from this allocator.
+#[unsafe(export_name = "_Z7sw_freePv")]
+pub unsafe extern "C" fn sw_free(pointer: *mut c_void) {
+    // SAFETY: the caller passes null or a live allocation.
+    unsafe { libc::free(pointer) }
+}
+
+/// `void *sw_calloc(size_t, size_t)`.
+#[must_use]
+#[unsafe(export_name = "_Z9sw_callocmm")]
+pub extern "C" fn sw_calloc(count: usize, size: usize) -> *mut c_void {
+    // SAFETY: calloc has no preconditions.
+    unsafe { libc::calloc(count, size) }
+}
+
+/// `void *sw_realloc(void *, size_t)`.
+/// # Safety
+/// `pointer` is null or a live allocation from this allocator.
+#[unsafe(export_name = "_Z10sw_reallocPvm")]
+pub unsafe extern "C" fn sw_realloc(pointer: *mut c_void, size: usize) -> *mut c_void {
+    // SAFETY: the caller passes null or a live allocation.
+    unsafe { libc::realloc(pointer, size) }
+}
+
 /// `swoole_rand(min, max)`: uniform over the closed range; `min` when it is empty.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_corebase_rand(min: c_int, max: c_int) -> c_int {
+#[must_use]
+#[unsafe(export_name = "_Z11swoole_randii")]
+pub extern "C" fn swoole_rand(min: c_int, max: c_int) -> c_int {
     let Some(span) = u64::try_from(i64::from(max) - i64::from(min) + 1)
         .ok()
         .filter(|span| *span > 0)
@@ -359,7 +404,7 @@ pub extern "C" fn swr_v1_corebase_rand(min: c_int, max: c_int) -> c_int {
 static DEV_RANDOM: AtomicI32 = AtomicI32::new(-1);
 
 /// `swoole_system_random`: four bytes from a cached `/dev/urandom` descriptor
-/// mapped onto `min..=max`; [`swr_v1_corebase_rand`] when it can't be opened.
+/// mapped onto `min..=max`; [`swoole_rand`] when it can't be opened.
 /// A short read sets `read_failed` (errno kept) and returns -1.
 /// # Safety
 /// `read_failed` is writable.
@@ -375,7 +420,7 @@ pub unsafe extern "C" fn swr_v1_corebase_system_random(
         fd = unsafe { libc::open(c"/dev/urandom".as_ptr(), libc::O_RDONLY) };
         DEV_RANDOM.store(fd, Ordering::Relaxed);
         if fd < 0 {
-            return swr_v1_corebase_rand(min, max);
+            return swoole_rand(min, max);
         }
     }
     let mut value = [0u8; 4];
@@ -418,16 +463,16 @@ mod tests {
     fn rand_covers_the_closed_range_only() {
         let mut seen = [false; 7];
         for _ in 0..2000 {
-            let value = swr_v1_corebase_rand(-3, 3);
+            let value = swoole_rand(-3, 3);
             assert!((-3..=3).contains(&value), "{value} out of range");
             seen[usize::try_from(value + 3).unwrap()] = true;
         }
         assert!(seen.iter().all(|hit| *hit), "every value drawn");
-        assert_eq!(swr_v1_corebase_rand(5, 5), 5);
-        assert_eq!(swr_v1_corebase_rand(5, 4), 5, "empty range");
-        let full = swr_v1_corebase_rand(c_int::MIN, c_int::MAX);
+        assert_eq!(swoole_rand(5, 5), 5);
+        assert_eq!(swoole_rand(5, 4), 5, "empty range");
+        let full = swoole_rand(c_int::MIN, c_int::MAX);
         assert!((c_int::MIN..=c_int::MAX).contains(&full), "full range");
-        assert_ne!(swr_v1_corebase_random_u64(), swr_v1_corebase_random_u64());
+        assert_ne!(swoole_random_int(), swoole_random_int());
     }
 
     #[test]
@@ -446,10 +491,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs_f64();
-        assert!(
-            (swr_v1_corebase_microtime() - now).abs() < 1.0,
-            "within a second"
-        );
+        assert!((microtime() - now).abs() < 1.0, "within a second");
     }
 
     #[test]
@@ -482,7 +524,7 @@ mod tests {
             time: 1.5,
         };
         let mut buffer = [0 as c_char; 512];
-        let n = unsafe { swr_v1_corebase_datahead_dump(&raw const head, buffer.as_mut_ptr(), 512) };
+        let n = unsafe { datahead_dump(&raw const head, buffer.as_mut_ptr(), 512) };
         let text = unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().unwrap();
         assert_eq!(text.len(), n);
         let body = &text[text.find(']').unwrap() + 1..];
@@ -491,7 +533,7 @@ mod tests {
             "\n{\n    long fd = -7;\n    uint64_t msg_id = 18446744073709551615;\n    uint32_t len = 12;\n    int16_t reactor_id = -1;\n    uint8_t type = 3;\n    uint8_t flags = 255;\n    uint16_t server_fd = 9;\n    uint16_t ext_flags = 65535;\n    double time = 1.500000;\n}\n"
         );
         let mut short = [0x55 as c_char; 8];
-        let n = unsafe { swr_v1_corebase_datahead_dump(&raw const head, short.as_mut_ptr(), 8) };
+        let n = unsafe { datahead_dump(&raw const head, short.as_mut_ptr(), 8) };
         assert_eq!((n, short[7]), (7, 0));
     }
 

@@ -1,6 +1,6 @@
 //! The module's function table (`swoole_functions[]` in `php_swoole.cc`), in
 //! upstream's order, and the short-name aliases MINIT adds.
-use crate::{constants::SHORTNAME, functions as f, interfaces as i, vm};
+use crate::{constants::SHORTNAME, functions as f, interfaces as i, module, vm};
 use std::ffi::CStr;
 use swoole_rs_phpstubs::{ex, stdext, swoole as s, tracer};
 use swoole_rs_zend::{
@@ -20,7 +20,6 @@ unsafe extern "C" {
     fn zif_swoole_coroutine_socketpair(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_test_kernel_coroutine(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_client_select(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_set_process_name(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_clear_dns_cache(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_implicit_fn(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_name_resolver_lookup(frame: *mut z::zend_execute_data, value: *mut z::zval);
@@ -44,7 +43,7 @@ method_table! {
         c"swoole_test_kernel_coroutine" => zif_swoole_test_kernel_coroutine, &s::arginfo_swoole_test_kernel_coroutine, 0;
         c"swoole_client_select" => zif_swoole_client_select, &s::arginfo_swoole_client_select, 0;
         c"swoole_select" => zif_swoole_client_select, &s::arginfo_swoole_client_select, 0;
-        c"swoole_set_process_name" => zif_swoole_set_process_name, &s::arginfo_swoole_set_process_name, 0;
+        c"swoole_set_process_name" => module::zif_swoole_set_process_name, &s::arginfo_swoole_set_process_name, 0;
         c"swoole_get_local_ip" => i::zif_swoole_get_local_ip, &s::arginfo_swoole_get_local_ip, 0;
         c"swoole_get_local_mac" => i::zif_swoole_get_local_mac, &s::arginfo_swoole_get_local_mac, 0;
         c"swoole_strerror" => f::zif_swoole_strerror, &s::arginfo_swoole_strerror, 0;

@@ -9,9 +9,6 @@
 extern "C" {
 #endif
 int32_t swr_v1_corebase_type_size(uint8_t kind);
-/* Native facades retain their original positive-operand assertions. */
-uint32_t swr_v1_corebase_gcd(uint32_t left, uint32_t right);
-uint32_t swr_v1_corebase_lcm(uint32_t left, uint32_t right);
 /* Success matches the representable decimal portion of std::stoi; native code
  * retains its exception path and publishes output only after success. */
 uint8_t swr_v1_corebase_parse_stoi(const char *input, int32_t *output);
@@ -24,16 +21,12 @@ enum swr_v1_corebase_systemd_listen_fds_action {
 uint32_t swr_v1_corebase_systemd_listen_fds_action(uint8_t found, int32_t count, int32_t maximum);
 /* Caller owns sufficient output for value's decimal bytes and NUL. */
 int32_t swr_v1_corebase_itoa(char *output, long value);
-/* Output is writable for capacity bytes; capacity >= sizeof(unsigned long)*8+1.
- * Returns first digit offset, or SIZE_MAX for invalid arguments. */
-size_t swr_v1_corebase_radix(unsigned long value, uint32_t radix, uint8_t *output, size_t capacity);
 /* Valid NUL-terminated input, disjoint writable parsed output. Original host
  * ctype input requirements apply. These direct libc parsers preserve original errno effects/order. */
 /* Frozen target-default mode; native compiler char mode must match Rust. */
 unsigned long swr_v1_corebase_hex(const char *input, size_t *parsed);
 /* Actual native callers supply their compiler plain-char mode. */
 unsigned long swr_v1_corebase_hex_mode(const char *input, size_t *parsed, uint8_t native_char_signed);
-int32_t swr_v1_corebase_version(const char *left, const char *right);
 /* Nonempty input is readable for length bytes; length <= PTRDIFF_MAX.
  * Returns prefix length; native std::string construction happens afterward. */
 size_t swr_v1_corebase_dirname(const uint8_t *input, size_t length);
@@ -71,40 +64,22 @@ enum swr_v1_corebase_lifecycle_action {
     SWR_COREBASE_CLEAR_SIGNALS = 12, SWR_COREBASE_CLEAN_THREAD = 13,
     SWR_COREBASE_OBSERVE_LOGGER = 14, SWR_COREBASE_CLOSE_LOGGER = 15,
     SWR_COREBASE_DELETE_LOGGER = 16, SWR_COREBASE_DELETE_POOL = 17,
-    SWR_COREBASE_RESET_GLOBAL = 18,
-    SWR_COREBASE_OBSERVE_COROUTINE = 19, SWR_COREBASE_REJECT_COROUTINE = 20,
-    SWR_COREBASE_OBSERVE_ASYNC = 21, SWR_COREBASE_REJECT_ASYNC = 22,
-    SWR_COREBASE_FORK_CALL = 23, SWR_COREBASE_WARN_FORK = 24,
-    SWR_COREBASE_SLEEP_RETRY = 25, SWR_COREBASE_REPLACE_POOL = 26,
-    SWR_COREBASE_REOPEN_LOGGER = 27, SWR_COREBASE_FREE_FORK_REACTOR = 28,
-    SWR_COREBASE_OBSERVE_AFTER_FORK = 29, SWR_COREBASE_CALL_AFTER_FORK = 30,
-    SWR_COREBASE_EXEC_CALLBACK = 31, SWR_COREBASE_EXIT_CHILD = 32,
-    SWR_COREBASE_FAILED_EXEC = 33,
-    SWR_COREBASE_OBSERVE_INITIALIZED = 34, SWR_COREBASE_PUBLISH_INIT = 35,
-    SWR_COREBASE_HOST_DEFAULTS = 36, SWR_COREBASE_ALLOCATE_LOGGER = 37,
-    SWR_COREBASE_INIT_MAIN_THREAD = 38, SWR_COREBASE_LOG_DEFAULTS = 39,
-    SWR_COREBASE_DEFAULT_SOCKETS = 40, SWR_COREBASE_QUERY_RLIMIT = 41,
-    SWR_COREBASE_WARN_RLIMIT = 42, SWR_COREBASE_PUBLISH_RLIMIT = 43,
-    SWR_COREBASE_TASK_TEMPLATE = 44, SWR_COREBASE_SIGNAL_FD = 45,
-    SWR_COREBASE_BUG_MESSAGE = 46,
+    SWR_COREBASE_RESET_GLOBAL = 18, SWR_COREBASE_OBSERVE_COROUTINE = 19,
+    SWR_COREBASE_REJECT_COROUTINE = 20, SWR_COREBASE_OBSERVE_ASYNC = 21,
+    SWR_COREBASE_REJECT_ASYNC = 22, SWR_COREBASE_FORK_CALL = 23,
+    SWR_COREBASE_WARN_FORK = 24, SWR_COREBASE_SLEEP_RETRY = 25,
+    SWR_COREBASE_REPLACE_POOL = 26, SWR_COREBASE_REOPEN_LOGGER = 27,
+    SWR_COREBASE_FREE_FORK_REACTOR = 28, SWR_COREBASE_OBSERVE_AFTER_FORK = 29,
+    SWR_COREBASE_CALL_AFTER_FORK = 30, SWR_COREBASE_EXEC_CALLBACK = 31,
+    SWR_COREBASE_EXIT_CHILD = 32, SWR_COREBASE_FAILED_EXEC = 33,
     SWR_COREBASE_OBSERVE_TASK_BYTE = 47, SWR_COREBASE_WARN_TASK_ABSOLUTE = 48,
     SWR_COREBASE_ACCESS_TASK = 49, SWR_COREBASE_MKDIR_TASK = 50,
     SWR_COREBASE_WARN_TASK_CREATE = 51, SWR_COREBASE_PUBLISH_TASK = 52,
     SWR_COREBASE_OBSERVE_TASK_LENGTH = 53, SWR_COREBASE_WARN_TASK_LONG = 54,
-    SWR_COREBASE_REJECT_TASK = 55, SWR_COREBASE_ACCEPT_TASK = 56,
-    SWR_COREBASE_QUERY_CPU = 57, SWR_COREBASE_PUBLISH_CPU_ONE = 58,
-    SWR_COREBASE_QUERY_CPU_AGAIN = 59
+    SWR_COREBASE_REJECT_TASK = 55, SWR_COREBASE_ACCEPT_TASK = 56
 };
 uint32_t swr_v1_corebase_lifecycle_next(uint32_t operation,
     struct swr_v1_corebase_lifecycle_state *state, uint64_t observed, uint32_t argument);
-/* Dedicated initialization entry: limit is native session-list size.
- * QUERY_CPU observation is sysconf(_SC_NPROCESSORS_ONLN) < 1. Native performs
- * the original one/two sysconf calls and stores the result. QUERY_RLIMIT
- * observation is (uint64_t(uint32_t(rlim_cur))<<1)|1 on success, zero on
- * failure; other observations are booleans. PUBLISH_RLIMIT reads cursor.index.
- * Same exclusive zeroed cursor/effect-after-return contract. */
-uint32_t swr_v1_corebase_init_next(struct swr_v1_corebase_lifecycle_state *state,
-                                uint64_t observed, uint32_t limit);
 /* Task directory: zeroed exclusive cursor; copied observations are native at(0)
  * byte, access>=0 / mkdir success, then freshly published string length.
  * Native owns lock, IO, warning, format/assignment and exception effects.
@@ -135,25 +110,43 @@ enum swr_v1_corebase_random_action {
 };
 uint32_t swr_v1_corebase_random_next(struct swr_v1_corebase_random_state *state,
     uint32_t mode, uint32_t flags, size_t length, uint32_t random, int32_t _min, int32_t _max);
+/* Rust defines these upstream functions under their C++ symbols, so swoole.h and
+ * swoole_protocol.h stay their declarations: sw_malloc/sw_free/sw_calloc/
+ * sw_realloc (libc's allocator), swoole_common_divisor/_multiple,
+ * swoole_version_compare, swoole_dec2hex, swoole_dump_ascii/_hex, swoole_rand
+ * (both overloads), swoole_random_int, swoole::microtime and
+ * swoole::DataHead::dump. */
 /* Whole host operations; native code keeps only the warnings. */
 /* Read end of the command's pipe; -1 when pipe() fails, -2 when fork() fails
  * (errno kept). */
 int swr_v1_corebase_shell_exec(const char *command, pid_t *pid, bool get_error_stream);
 /* Polls ready(context) with doubling sleeps; ready must not throw. */
 bool swr_v1_corebase_wait_for(bool (*ready)(void *), void *context, int timeout_ms);
-void swr_v1_corebase_dump_ascii(const char *data, size_t size);
-void swr_v1_corebase_dump_hex(const unsigned char *data, size_t size);
 void swr_v1_corebase_print_backtrace(void);
-double swr_v1_corebase_microtime(void);
-/* sw_snprintf's result: at most size - 1 bytes, NUL-terminated. head is a
- * swoole::DataHead, whose layout the caller asserts. */
-size_t swr_v1_corebase_datahead_dump(const void *head, char *buffer, size_t size);
-uint64_t swr_v1_corebase_random_u64(void);
-int swr_v1_corebase_rand(int min, int max);
 /* Sets *read_failed (errno kept) and returns -1 on a short read. */
 int swr_v1_corebase_system_random(int min, int max, bool *read_failed);
 /* errors[0], errors[1]: errno of dup2 onto stdout, stderr; 0 on success. */
 void swr_v1_corebase_redirect_stdout(int new_fd, int *errors);
+/* Process-wide core state, the part of upstream's SwooleG Rust owns. The memory
+ * pool (swoole::MemoryPool *) and stdout stream (FILE *) are native objects
+ * Rust only holds. swr_v1_core_init returns false when already initialised;
+ * otherwise it resets the record and sets the CPU count, DNS tries and the
+ * random() seed. swr_v1_core_max_sockets: RLIMIT_NOFILE's soft limit as
+ * uint32_t, capped at limit; -1 (errno kept) when getrlimit fails. */
+bool swr_v1_core_init(void);
+void swr_v1_core_reset(void);
+int64_t swr_v1_core_max_sockets(uint32_t limit);
+bool swr_v1_core_initialized(void);
+uint16_t swr_v1_core_cpu_num(void);
+bool swr_v1_core_wait_signal(void);
+void swr_v1_core_set_wait_signal(bool on);
+bool swr_v1_core_dns_lookup_random(void);
+void swr_v1_core_set_dns_lookup_random(bool on);
+int swr_v1_core_dns_tries(void);
+void *swr_v1_core_memory_pool(void);
+void swr_v1_core_set_memory_pool(void *pool);
+void *swr_v1_core_stdout(void);
+void swr_v1_core_set_stdout(void *stream);
 #ifdef __cplusplus
 }
 #endif

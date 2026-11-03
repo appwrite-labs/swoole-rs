@@ -1,14 +1,18 @@
 //! `php_swoole_set_global_option`: the process-wide settings that
 //! `swoole_async_set()`, `Co::set()` and `Process\Pool::set()` take, applied in
 //! upstream's order. And `sw_zval_is_serializable`.
-use crate::{constants::DEBUG, ops};
+use crate::{
+    constants::DEBUG,
+    module::{globals, size_error},
+    ops,
+};
 use std::{
     ffi::{CStr, c_char},
     ptr,
     sync::atomic::Ordering,
 };
 use swoole_rs_zend::{
-    each_value,
+    bailout, each_value,
     string::bytes,
     sys::{
         IS_ARRAY, IS_NULL, IS_OBJECT, IS_REFERENCE, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE,
@@ -65,7 +69,7 @@ fn clamp(timeout: f64) -> f64 {
 }
 
 /// `php_swoole_parse_to_size`, or the error string to report fatally.
-fn size(value: *mut zval) -> Result<i64, *mut zend_string> {
+pub(crate) fn size(value: *mut zval) -> Result<i64, *mut zend_string> {
     // SAFETY: a live zval.
     if unsafe { type_of(value) } != IS_STRING {
         return Ok(long(value));
@@ -114,23 +118,19 @@ fn text_option(
 }
 
 /// `php_swoole_set_global_option(options)`. A size that does not parse stops
-/// here: its zval is written to `failed` and its error string returned, for
-/// C++ to raise the fatal error once this frame is gone. Null otherwise.
+/// here with a fatal error.
 /// # Safety
-/// After MINIT, with a live options table and a writable `failed`.
+/// After MINIT, with a live options table; the caller is C or C++ (the fatal
+/// error bails out from here).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpswoole_set_global_option(
-    options: *mut zend_array,
-    failed: *mut *mut zval,
-) -> *mut zend_string {
-    match apply(options) {
-        Ok(()) => ptr::null_mut(),
-        Err((value, error)) => {
-            // SAFETY: per the caller.
-            unsafe { failed.write(value) };
-            error
-        }
+pub unsafe extern "C" fn php_swoole_set_global_option(options: *mut zend_array) {
+    if let Err((value, error)) = apply(options) {
+        // SAFETY: only a string fails to parse.
+        let failed = unsafe { value::str_of(value) };
+        // SAFETY: a live string, and Zend's error string.
+        unsafe { size_error(failed, error) };
     }
+    bailout::finish();
 }
 
 fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> {
@@ -169,7 +169,10 @@ fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> 
         ops.set_log_date_with_microseconds,
     );
     number(c"log_rotation", ops.set_log_rotation);
-    flag(c"display_errors", ops.set_display_errors);
+    if let Some(value) = get(options, c"display_errors") {
+        // SAFETY: this thread's live module globals.
+        unsafe { (*globals()).display_errors = truthy(value) != 0 };
+    }
     flag(c"print_backtrace_on_error", ops.set_print_backtrace);
     // [DNS]
     text_option(options, c"dns_server", ops.set_dns_server);
