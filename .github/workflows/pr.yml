@@ -117,8 +117,9 @@ jobs:
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/reports/corpus.json
       # Upstream truncates queued responses after a client half-close; --fix-halfclose repairs it.
+      # The native cURL hook links ext/curl, so it loads first.
       - run: >
-          python3 corpus/run.py --project 11-buffer-lifecycle
+          python3 corpus/run.py --php-extension curl --project 11-buffer-lifecycle
           --engine hybrid=$(echo target/hybrid/rust-*-halfclose)/modules/swoole.so
           --output target/reports/corpus-halfclose.json
       - uses: actions/upload-artifact@v4
