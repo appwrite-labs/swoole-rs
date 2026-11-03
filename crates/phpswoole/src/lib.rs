@@ -1,8 +1,9 @@
 //! The swoole module host (with the `php` feature, see docs/zend.md): the global
-//! constants, `Swoole\Exception` and `Swoole\Error`, and the global functions of
-//! `php_swoole.cc`, and the module's function table. C++ keeps the module
-//! globals and Swoole's error, logger and MIME state, which it lends as a table
-//! of operations.
+//! constants, `Swoole\Exception` and `Swoole\Error`, the global functions of
+//! `php_swoole.cc`, the module's function table and its lifecycle (MINIT's
+//! sequence, MSHUTDOWN, RINIT, RSHUTDOWN). C++ keeps the module globals' ini
+//! entries and Swoole's core, error, logger and MIME state, which it lends as a
+//! table of operations.
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),
@@ -15,19 +16,26 @@
 mod constants;
 mod functions;
 mod interfaces;
+mod memory;
+mod module;
 mod options;
 mod table;
 mod vm;
 
-pub use options::{sw_zval_is_serializable, swr_v1_phpswoole_set_global_option};
+pub use module::{
+    Globals, php_swoole_parse_to_size, php_swoole_register_shutdown_function,
+    swr_v1_phpswoole_init_globals, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,
+    swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
+};
+pub use options::{php_swoole_set_global_option, sw_zval_is_serializable};
 pub use table::swr_v1_phpswoole_functions;
 
 use std::{
-    ffi::c_char,
+    ffi::{c_char, c_int, c_void},
     ptr,
     sync::{
         OnceLock,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicI32, AtomicU32, Ordering},
     },
 };
 use swoole_rs_zend::{
@@ -44,8 +52,32 @@ pub struct HostOps {
     last_error: unsafe extern "C" fn() -> i32,
     /// `swoole_set_last_error(code)`.
     set_last_error: unsafe extern "C" fn(code: i32),
-    /// `SWOOLE_G(display_errors)`.
-    display_errors: unsafe extern "C" fn() -> u8,
+    /// `ZEND_MODULE_GLOBALS_BULK(swoole)`: this thread's module globals.
+    globals: unsafe extern "C" fn() -> *mut module::Globals,
+    /// MINIT, after the constants: `swoole_init()`, the after-fork hook and
+    /// the bug report's PHP version.
+    startup: unsafe extern "C" fn(),
+    /// MINIT's end: Swoole's fatal-error and backtrace hooks, the socket
+    /// buffer size and DNS cache refresh time, macOS's `pcre.jit`, the known
+    /// strings.
+    ready: unsafe extern "C" fn(),
+    /// The hooks only C++'s `#ifdef`s decide, where upstream calls them:
+    /// ssh2 and ftp after the clients; the drivers, `Swoole\Thread` and
+    /// stdext before the tracer; and their MSHUTDOWN, RINIT and RSHUTDOWN.
+    optional_client_minit: unsafe extern "C" fn(module_number: c_int),
+    optional_minit: unsafe extern "C" fn(module_number: c_int),
+    optional_mshutdown: unsafe extern "C" fn(),
+    optional_rinit: unsafe extern "C" fn(),
+    optional_rshutdown: unsafe extern "C" fn(),
+    /// `zend::known_strings_dtor()` and `swoole_clean()`.
+    known_strings_dtor: unsafe extern "C" fn(),
+    clean: unsafe extern "C" fn(),
+    /// `swoole_set_task_tmpdir(dir)`.
+    set_task_tmpdir: unsafe extern "C" fn(dir: *const c_char),
+    /// `php_swoole_load_library()`, a `zend_try` body.
+    load_library: unsafe extern "C" fn(*mut c_void),
+    /// `swoole_event_free()`.
+    event_free: unsafe extern "C" fn(),
     /// `SW_CPU_NUM`.
     cpu_num: unsafe extern "C" fn() -> u32,
     /// `sw_logger()->put(level, message, length)`.
@@ -62,9 +94,6 @@ pub struct HostOps {
     mime_exists: unsafe extern "C" fn(filename: *const c_char) -> u8,
     /// Push every MIME type onto `array`.
     mime_list: unsafe extern "C" fn(array: *mut zval),
-    /// `req_status` from `RINIT_END` to `CALL_USER_SHUTDOWNFUNC_BEGIN`; 0 if
-    /// it was not `RINIT_END`.
-    shutdown_begin: unsafe extern "C" fn() -> u8,
     /// `zend::unserialize`.
     unserialize: unsafe extern "C" fn(
         value: *mut zval,
@@ -89,7 +118,6 @@ pub struct HostOps {
     set_log_date_format: unsafe extern "C" fn(format: *const c_char, length: usize),
     set_log_date_with_microseconds: unsafe extern "C" fn(on: u8),
     set_log_rotation: unsafe extern "C" fn(rotation: i64),
-    set_display_errors: unsafe extern "C" fn(on: u8),
     /// `SwooleG.print_backtrace_on_error`, or C++'s exception when the build
     /// has no stack traces.
     set_print_backtrace: unsafe extern "C" fn(on: u8),
@@ -104,6 +132,7 @@ pub struct HostOps {
 static OPS: OnceLock<&'static HostOps> = OnceLock::new();
 /// The `swr_v1_phpswoole_minit` flags.
 static FLAGS: AtomicU32 = AtomicU32::new(0);
+static MODULE_NUMBER: AtomicI32 = AtomicI32::new(0);
 static EXCEPTION: Class = Class::new();
 static ERROR: Class = Class::new();
 
@@ -112,9 +141,11 @@ fn ops() -> &'static HostOps {
     OPS.get().copied().unwrap_or_else(|| std::process::abort())
 }
 
-/// MINIT: the global constants, then `Swoole\Exception` and `Swoole\Error`,
-/// whose entries (and `Swoole\Exception`'s handlers, which its subclasses
-/// copy) are written to the C++ globals, then the short-name function aliases.
+/// MINIT after the module globals and ini entries: the global constants, then
+/// `Swoole\Exception` and `Swoole\Error`, whose entries (and
+/// `Swoole\Exception`'s handlers, which its subclasses copy) are written to
+/// the C++ globals, the short-name function aliases, then Swoole's core and
+/// every family (`module::startup`).
 /// # Safety
 /// Called once, at MINIT, with the module's number, a static operations table
 /// and writable class-entry globals.
@@ -132,6 +163,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(
         OPS.get_or_init(|| ops);
     }
     FLAGS.store(flags, Ordering::Relaxed);
+    MODULE_NUMBER.store(module_number, Ordering::Relaxed);
     // SAFETY: MINIT, with the module's number.
     unsafe { constants::register(module_number, flags) };
     // SAFETY: Zend registers Exception before any extension's MINIT.
@@ -152,4 +184,12 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(
     unsafe { error.write(ERROR.entry()) };
     // SAFETY: MINIT, after Zend registered the module's functions.
     unsafe { table::register_aliases(flags) };
+    module::startup(module_number);
+    swoole_rs_zend::bailout::finish();
+}
+
+/// `sw_module_number()`: the number Zend gave the module at MINIT.
+#[unsafe(no_mangle)]
+pub extern "C" fn sw_module_number() -> c_int {
+    MODULE_NUMBER.load(Ordering::Relaxed)
 }

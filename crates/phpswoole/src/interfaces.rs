@@ -18,8 +18,8 @@ fn sys_warning(what: &str) {
     let code = io::Error::last_os_error().raw_os_error().unwrap_or(0);
     // SAFETY: C++'s setter.
     unsafe { (ops().set_last_error)(code) };
-    // SAFETY: C++'s getter.
-    if unsafe { (ops().display_errors)() } == 0 {
+    // SAFETY: this thread's live module globals.
+    if !unsafe { (*crate::module::globals()).display_errors } {
         return;
     }
     // SAFETY: libc's message table.
