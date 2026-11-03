@@ -54,7 +54,13 @@ case 'profile':
         echo $event['name'], ' ', $event['ph'], ' ', $event['cat'], ' tid=', $event['tid'], $ok ? '' : ' BAD', "\n";
     }
     show('prof_end after end', fn() => swoole_tracer_prof_end($file));
-    show('prof_begin after end', fn() => swoole_tracer_prof_begin());
+    show('prof_begin root_path', fn() => swoole_tracer_prof_begin(['root_path' => __DIR__]));
+    helper(5);
+    show('prof_end', fn() => swoole_tracer_prof_end($file));
+    foreach (json_decode(file_get_contents($file), true)['traceEvents'] as $event) {
+        echo $event['name'], "\n";
+    }
+    unlink($file);
     break;
 
 case 'leak':
