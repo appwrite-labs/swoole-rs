@@ -683,6 +683,12 @@ fn refuse(call: &Call, message: &str) {
     call.set_bool(false);
 }
 
+/// A found slot holding an object.
+fn is_object(slot: *mut z::zval) -> bool {
+    // SAFETY: a found slot is a live zval.
+    unsafe { type_of(slot) == IS_OBJECT }
+}
+
 fn instance_of(object: *mut z::zval, ce: *mut zend_class_entry) -> bool {
     // SAFETY: a live object zval.
     let object = unsafe { obj_of(object) };
@@ -707,9 +713,8 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
         let table = unsafe { value::table(object) };
         // SAFETY: a live table.
         request = unsafe { z::zend_hash_index_find(table, 1) };
-        // SAFETY: a found slot is a live zval.
         if request.is_null()
-            || unsafe { type_of(request) } != IS_OBJECT
+            || !is_object(request)
             || !instance_of(request, crate::request::entry())
         {
             return refuse(call, "parameter $1.second must be instanceof Http\\Request");
