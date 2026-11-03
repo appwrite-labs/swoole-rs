@@ -24,26 +24,26 @@ use swoole_rs_zend::{
 };
 
 /// `swoole::Lock::Type`.
-const RW_LOCK: i64 = 1;
-const MUTEX: i64 = 3;
-const SPIN_LOCK: i64 = 5;
+pub(crate) const RW_LOCK: i64 = 1;
+pub(crate) const MUTEX: i64 = 3;
+pub(crate) const SPIN_LOCK: i64 = 5;
 /// `LOCK_EX` from `<sys/file.h>` (Linux and macOS).
-const LOCK_EX: i64 = 2;
+pub(crate) const LOCK_EX: i64 = 2;
 /// `alignof(std::max_align_t)`: what the pool's allocations guarantee.
 const MAX_ALIGN: usize = 16;
 
 /// What only C++ can reach, fixed at MINIT.
-struct Native {
+pub(crate) struct Native {
     /// Bit `1 << type` for each lock type this build has (`HAVE_RWLOCK`, `HAVE_SPINLOCK`).
-    kinds: u32,
+    pub(crate) kinds: u32,
     /// The timed-lock capabilities `swr_v1_locks_lock` takes.
-    capabilities: u32,
+    pub(crate) capabilities: u32,
     alloc: unsafe extern "C" fn(size: u32) -> *mut c_void,
     /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
     unconstructed: unsafe extern "C" fn(),
 }
 
-static NATIVE: OnceLock<Native> = OnceLock::new();
+pub(crate) static NATIVE: OnceLock<Native> = OnceLock::new();
 static EXCEPTION: AtomicPtr<zend_class_entry> = AtomicPtr::new(ptr::null_mut());
 static LOCK: Class = Class::new();
 
@@ -200,7 +200,7 @@ fn construct(call: &Call) {
 }
 
 /// `SW_LOCK_CHECK_RETURN`: true on success, else false with `$this->errCode`.
-fn check(call: &Call, result: i32) {
+pub(crate) fn check(call: &Call, result: i32) {
     if result != 0 {
         call.update_property_long(None, c"errCode", result.into());
     }
@@ -212,7 +212,7 @@ fn check(call: &Call, result: i32) {
     clippy::cast_possible_truncation,
     reason = "upstream casts to long, then passes an int"
 )]
-fn milliseconds(seconds: f64) -> i32 {
+pub(crate) fn milliseconds(seconds: f64) -> i32 {
     (seconds * 1000.0) as i64 as i32
 }
 

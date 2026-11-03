@@ -97,7 +97,10 @@ class PhptGate(unittest.TestCase):
         # Upstream stops at its first failure; the hybrid until its verdict is settled.
         self.assertEqual(pending(tests, rechecked, 'upstream'), ['steady-failed', 'steady-passing'])
         self.assertEqual(pending(tests, rechecked, 'hybrid', results), ['flaky-failing', 'steady-failed', 'steady-passing'])
+        # Once upstream failed, a test racy on both engines gets nine hybrid re-runs to pass one.
         self.assertEqual(pending(['flaky-failing'], rechecked + [row('flaky-failing', 'hybrid', 'failed')] * 2,
+                                 'hybrid', results), ['flaky-failing'])
+        self.assertEqual(pending(['flaky-failing'], rechecked + [row('flaky-failing', 'hybrid', 'failed')] * 8,
                                  'hybrid', results), [])
         # One failed re-run doesn't settle a hybrid on a clean upstream; a pass then does (#862),
         # and three failures spend the budget.

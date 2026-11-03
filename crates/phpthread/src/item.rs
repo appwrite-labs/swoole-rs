@@ -3,12 +3,8 @@
 //! become shared tables, containers and thread resources are shared by
 //! reference, and sockets by a duplicated descriptor.
 use crate::{array::Array, barrier, classes, host::host, queue::Queue};
-use std::{
-    cmp::Ordering,
-    ffi::{c_int, c_void},
-    ptr,
-    sync::Arc,
-};
+use std::{cmp::Ordering, ffi::c_int, ptr, sync::Arc};
+use swoole_rs_phplocks::{self as phplocks, Resource, Shareable};
 use swoole_rs_zend::{
     bailout::Bailout,
     string::bytes,
@@ -49,9 +45,9 @@ pub(crate) enum Value {
     Queue(Arc<Queue>),
     /// A Barrier; `None` when stored unconstructed.
     Barrier(Option<Arc<std::sync::Barrier>>),
-    /// A C++ `ThreadResource` (Lock, Atomic, Atomic\Long); null when
-    /// stored unconstructed.
-    Resource(*mut c_void),
+    /// A Lock, Atomic or Atomic\Long's resource; `None` when stored
+    /// unconstructed.
+    Resource(Option<Arc<Resource>>),
     /// A duplicated descriptor and, for coroutine sockets, its socket type.
     Socket {
         fd: c_int,
@@ -66,25 +62,12 @@ pub(crate) struct Item {
     pub(crate) value: Value,
 }
 
-// SAFETY: a resource is reference-counted with atomics by C++ and owned by the
-// item; everything else is owned Rust data.
-unsafe impl Send for Item {}
-// SAFETY: as above; shared reads only fetch (add a reference) or compare.
-unsafe impl Sync for Item {}
-
 impl Drop for Item {
     /// `ArrayItem::release`.
     fn drop(&mut self) {
-        match self.value {
-            Value::Socket { fd, .. } => {
-                // SAFETY: the item owns the duplicated descriptor.
-                unsafe { libc::close(fd) };
-            }
-            Value::Resource(resource) if !resource.is_null() => {
-                // SAFETY: the item holds one reference.
-                unsafe { (host().resource_del_ref)(resource) };
-            }
-            _ => {}
+        if let Value::Socket { fd, .. } = self.value {
+            // SAFETY: the item owns the duplicated descriptor.
+            unsafe { libc::close(fd) };
         }
     }
 }
@@ -196,19 +179,21 @@ impl Item {
                     };
                 }
             }
-            IS_LOCK | IS_ATOMIC | IS_ATOMIC_LONG => {
-                // SAFETY: an object of that class.
-                let resource = unsafe { (host.resource_cast)(value, foreign) };
-                if !resource.is_null() {
-                    // SAFETY: a live resource; the item keeps a reference.
-                    unsafe { (host.resource_add_ref)(resource) };
-                }
-                return Self {
-                    kind: foreign,
-                    value: Value::Resource(resource),
-                };
-            }
             _ => {}
+        }
+        // SAFETY: a live object zval.
+        let std = unsafe { swoole_rs_zend::value::obj_of(value) };
+        // SAFETY: a live object.
+        if let Some((class, resource)) = unsafe { phplocks::shared(std) } {
+            let kind = match class {
+                Shareable::Lock => IS_LOCK,
+                Shareable::Atomic => IS_ATOMIC,
+                Shareable::Long => IS_ATOMIC_LONG,
+            };
+            return Self {
+                kind,
+                value: Value::Resource(resource),
+            };
         }
         // SAFETY: a live object zval.
         if let Some(shared) = unsafe { classes::shared(value) } {
@@ -265,12 +250,13 @@ impl Item {
             // SAFETY: per the caller.
             Value::Barrier(shared) => unsafe { barrier::object(out, shared.as_ref()) },
             Value::Resource(resource) => {
-                if !resource.is_null() {
-                    // SAFETY: the item's live resource; the object takes the new reference.
-                    unsafe { (host.resource_add_ref)(*resource) };
-                }
+                let class = match self.kind {
+                    IS_LOCK => Shareable::Lock,
+                    IS_ATOMIC => Shareable::Atomic,
+                    _ => Shareable::Long,
+                };
                 // SAFETY: per the caller.
-                unsafe { (host.resource_create)(out, self.kind, *resource) };
+                unsafe { phplocks::shared_object(out, class, resource.as_ref()) };
             }
             Value::Socket { fd, kind } => match self.kind {
                 // SAFETY: per the caller.
@@ -339,7 +325,9 @@ impl Item {
             Value::Double(value) => value.to_bits(),
             #[expect(clippy::cast_sign_loss, reason = "the union's bits")]
             Value::Socket { fd, kind } => (u64::from(*kind as u32) << 32) | u64::from(*fd as u32),
-            Value::Resource(resource) => resource.addr() as u64,
+            Value::Resource(resource) => resource
+                .as_ref()
+                .map_or(0, |r| Arc::as_ptr(r).addr() as u64),
             Value::Array(array) => Arc::as_ptr(array).addr() as u64,
             Value::Queue(queue) => Arc::as_ptr(queue).addr() as u64,
             Value::Barrier(shared) => shared.as_ref().map_or(0, |b| Arc::as_ptr(b).addr() as u64),

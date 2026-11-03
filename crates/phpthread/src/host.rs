@@ -17,11 +17,6 @@ pub struct Host {
     pub unserialize:
         unsafe extern "C" fn(data: *const c_char, length: usize, out: *mut zval) -> bool,
     pub object_kind: unsafe extern "C" fn(object: *mut zval) -> u32,
-    pub resource_cast: unsafe extern "C" fn(object: *mut zval, kind: u32) -> *mut c_void,
-    pub resource_create:
-        unsafe extern "C" fn(return_value: *mut zval, kind: u32, resource: *mut c_void),
-    pub resource_add_ref: unsafe extern "C" fn(resource: *mut c_void),
-    pub resource_del_ref: unsafe extern "C" fn(resource: *mut c_void),
     pub stream_cast: unsafe extern "C" fn(stream: *mut zval) -> c_int,
     pub co_socket_cast: unsafe extern "C" fn(object: *mut zval, kind: *mut c_int) -> c_int,
     pub php_socket_cast: Option<unsafe extern "C" fn(object: *mut zval) -> c_int>,
