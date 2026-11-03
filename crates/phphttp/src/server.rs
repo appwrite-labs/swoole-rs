@@ -1,25 +1,65 @@
-//! `Swoole\Http\Server`'s per-worker state from upstream's
-//! `swoole_http_server.cc`: the addresses cached for keep-alive sessions until
-//! they close, and the requests queued past `worker_max_concurrency`. The
-//! server, its connections and the worker stay C++ (`swr_http_host_*`).
+//! `Swoole\Http\Server` from upstream's `swoole_http_server.cc`: `onReceive`'s
+//! routing and request parsing, the addresses cached for keep-alive sessions
+//! until they close, and the requests queued past `worker_max_concurrency`.
+//! The server, its connections and the worker stay C++ (`swr_http_host_*`),
+//! and so does the handler's call (no Rust frame under PHP code).
 use crate::{
-    host::Context,
-    parse::{Key, key},
+    host::{self, Context},
+    parse::{Key, key, swr_v1_phphttp_parse},
     send::state,
+    websocket,
 };
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_char, c_int, c_void},
+    ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
 use swoole_rs_zend::sys::{
     HashTable, swr_zend_string_copy, swr_zend_string_init, swr_zend_string_release, swr_zval_str,
     zend_hash_add_new, zend_long, zend_string, zval, zval_ptr_dtor,
 };
+use swoole_rs_zend::{bailout, string, value};
 
 /// `SW_HTTP_SERVICE_UNAVAILABLE_PACKET`.
 const SERVICE_UNAVAILABLE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\r\n";
+/// `SW_HTTP_BAD_REQUEST_PACKET`.
+const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\r\n";
+/// llhttp's `HPE_OK`.
+const HPE_OK: i32 = 0;
+/// `WebSocket::STATUS_CONNECTION` and `STATUS_HANDSHAKE`.
+const STATUS_CONNECTION: u8 = 1;
+const STATUS_HANDSHAKE: u8 = 2;
+/// `SW_ERROR_SESSION_NOT_EXIST` and `SW_LOG_TRACE`.
+const SESSION_NOT_EXIST: c_int = 1005;
+const LOG_TRACE: c_int = 1;
+
+/// What `swr_v1_phphttp_server_receive` tells its trampoline to do
+/// (`SWR_PHPHTTP_RECEIVE_*`).
+const CLOSED: c_int = 0;
+const TCP: c_int = 1;
+const WEBSOCKET: c_int = 2;
+const HTTP2: c_int = 3;
+const REQUEST: c_int = 4;
+const DONE: c_int = 5;
+
+/// `swr_http_receive`: the connection and its port, as `onReceive` routes by.
+#[repr(C)]
+struct Receive {
+    last_recv_time: f64,
+    local_port: i64,
+    remote_port: i64,
+    loopback: c_int,
+    websocket_status: u8,
+    /// The port speaks HTTP and has `onRequest`.
+    http: bool,
+    /// The port speaks WebSocket and has `onMessage`.
+    websocket: bool,
+    http2: bool,
+    /// The session's addresses may be cached.
+    cache: bool,
+}
 
 /// `swr_http_worker`: the counters of the worker serving requests.
 #[repr(C)]
@@ -44,6 +84,34 @@ unsafe extern "C" {
     fn swr_http_host_unhook(context: *mut Context);
     fn swr_http_host_send(context: *mut Context, data: *const c_char, length: usize) -> bool;
     fn swr_http_host_close(context: *mut Context) -> bool;
+    /// `get_connection_verify_no_ssl` and its port's facts (null: closed).
+    fn swr_http_host_receive(
+        server: *mut c_void,
+        session: i64,
+        server_fd: c_int,
+        out: *mut Receive,
+    ) -> *mut c_void;
+    /// A new context for the server's request, holding its data (`zdata`).
+    fn swr_http_host_receive_context(
+        server: *mut c_void,
+        session: i64,
+        request: *mut c_void,
+        zdata: *mut *mut zval,
+    ) -> *mut Context;
+    /// `PHP_SWOOLE_HOOK_BEFORE_REQUEST`, when one is set.
+    fn swr_http_host_before_request(context: *mut Context);
+    /// The port's `onHandshake` (`handshake`) or `onRequest`, or null.
+    fn swr_http_host_callback(
+        server: *mut c_void,
+        server_fd: c_int,
+        handshake: bool,
+    ) -> *mut c_void;
+    /// `ctx->private_data_2 = callback`.
+    fn swr_http_host_set_callback(context: *mut Context, callback: *mut c_void);
+    /// `swoole_notice("%s", message)`.
+    fn swr_http_host_notice(message: *const c_char);
+    /// The connection's `websocket_status` (parsing an upgrade request sets it).
+    fn swr_http_host_websocket_status(conn: *mut c_void) -> u8;
 }
 
 thread_local! {
@@ -128,6 +196,156 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_addresses(
     };
     add(table, Key::ServerAddr, local);
     add(table, Key::RemoteAddr, remote);
+}
+
+/// `php_swoole_http_server_onReceive` up to the handler's call: route the
+/// data to another protocol's `onReceive`, or parse it into a new context
+/// (`*context`) and pick its handler. `REQUEST` leaves the call to the
+/// trampoline; after `DONE` it only releases the context's objects. A
+/// bailout (a handshake's `onOpen`) is raised last, over this frame only.
+/// # Safety
+/// `server` is the live server and `request` its `RecvData`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_server_receive(
+    server: *mut c_void,
+    request: *mut c_void,
+    session: i64,
+    server_fd: c_int,
+    context: *mut *mut Context,
+) -> c_int {
+    let mut facts = Receive {
+        last_recv_time: 0.0,
+        local_port: 0,
+        remote_port: 0,
+        loopback: 0,
+        websocket_status: 0,
+        http: false,
+        websocket: false,
+        http2: false,
+        cache: false,
+    };
+    // SAFETY: the live server; fills a local struct.
+    let conn = unsafe { swr_http_host_receive(server, session, server_fd, &raw mut facts) };
+    if conn.is_null() {
+        host::log(
+            LOG_TRACE,
+            SESSION_NOT_EXIST,
+            c"php_swoole_http_server_onReceive",
+            format!("session[{session}] is closed"),
+        );
+        return CLOSED;
+    }
+    let route = route(&facts);
+    if route != REQUEST {
+        return route;
+    }
+    let mut zdata = ptr::null_mut();
+    // SAFETY: as above; the request's data moves into the context.
+    let ctx = unsafe { swr_http_host_receive_context(server, session, request, &raw mut zdata) };
+    // SAFETY: per the caller.
+    unsafe { *context = ctx };
+    let result = handle(server, conn, ctx, zdata, session, server_fd, &facts);
+    let route = *result.as_ref().unwrap_or(&DONE);
+    bailout::raise(result.map(|_| ()));
+    route
+}
+
+/// Where `onReceive` sends data before any parsing.
+fn route(facts: &Receive) -> c_int {
+    if !facts.http && !facts.websocket {
+        TCP
+    } else if facts.websocket_status >= STATUS_HANDSHAKE {
+        WEBSOCKET
+    } else if facts.http2 {
+        HTTP2
+    } else {
+        REQUEST
+    }
+}
+
+fn notice(message: &str) {
+    let message = CString::new(message).unwrap_or_default();
+    // SAFETY: a NUL-terminated message, printed through "%s".
+    unsafe { swr_http_host_notice(message.as_ptr()) };
+}
+
+/// Parse the request, fill `$request->server` and pick the handler.
+fn handle(
+    server: *mut c_void,
+    conn: *mut c_void,
+    ctx: *mut Context,
+    zdata: *mut zval,
+    session: i64,
+    server_fd: c_int,
+    facts: &Receive,
+) -> Result<c_int, bailout::Bailout> {
+    // SAFETY: the context's request data, a string.
+    let data = unsafe { value::str_of(zdata) };
+    // SAFETY: as above.
+    let data = unsafe { string::bytes(data) };
+    // SAFETY: a live context and its data.
+    let parsed = unsafe { swr_v1_phphttp_parse(ctx, data.as_ptr().cast(), data.len()) };
+    if state(ctx).parser.error != HPE_OK || state(ctx).completed == 0 {
+        // SAFETY: a live context.
+        unsafe { swr_http_host_send(ctx, BAD_REQUEST.as_ptr().cast(), BAD_REQUEST.len()) };
+        // SAFETY: as above.
+        unsafe { swr_http_host_close(ctx) };
+        let parser = &state(ctx).parser;
+        if parser.error == HPE_OK {
+            notice("Incomplete HTTP request: parsed successfully but missing required components");
+        } else {
+            // SAFETY: llhttp's NUL-terminated reason for its error.
+            let reason = unsafe { CStr::from_ptr(parser.reason) };
+            notice(&format!(
+                "Invalid HTTP request discarded: {} bytes unprocessed. Reason: {}",
+                data.len() - parsed,
+                reason.to_string_lossy()
+            ));
+        }
+        return Ok(DONE);
+    }
+    let state = state(ctx);
+    // SAFETY: the request's `server` array.
+    let table = unsafe { value::table(state.request.zserver.ptr) };
+    // SAFETY: the live server and connection and the request's array.
+    unsafe {
+        swr_v1_phphttp_server_addresses(
+            server,
+            conn,
+            table,
+            session,
+            facts.local_port,
+            facts.remote_port,
+            facts.loopback,
+            state.keepalive != 0 && facts.cache,
+        );
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "upstream's (zend_long) cast"
+    )]
+    add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
+    // SAFETY: a live context.
+    unsafe { swr_http_host_before_request(ctx) };
+    // SAFETY: the live connection.
+    let handshake = unsafe { swr_http_host_websocket_status(conn) } == STATUS_CONNECTION;
+    // SAFETY: the live server.
+    let callback = unsafe { swr_http_host_callback(server, server_fd, handshake) };
+    if callback.is_null() {
+        if handshake {
+            websocket::handshake_open(ctx)?;
+        } else {
+            websocket::request(ctx);
+        }
+        return Ok(DONE);
+    }
+    if handshake {
+        websocket::upgrading(server, session);
+        state.upgrade = 1;
+    }
+    // SAFETY: a live context and the port's callback.
+    unsafe { swr_http_host_set_callback(ctx, callback) };
+    Ok(REQUEST)
 }
 
 fn release([local, remote]: [*mut zend_string; 2]) {
@@ -245,5 +463,41 @@ mod tests {
         assert_eq!(size_of::<Worker>(), 24);
         assert_eq!(std::mem::offset_of!(Worker, max_concurrency), 16);
         assert_eq!(std::mem::offset_of!(Worker, shutdown), 20);
+    }
+
+    #[test]
+    fn receive_matches_the_c_struct() {
+        // `swr_http_receive`, which C++ asserts is 40 bytes.
+        assert_eq!(size_of::<Receive>(), 40);
+        assert_eq!(std::mem::offset_of!(Receive, loopback), 24);
+        assert_eq!(std::mem::offset_of!(Receive, websocket_status), 28);
+        assert_eq!(std::mem::offset_of!(Receive, cache), 32);
+    }
+
+    fn facts(http: bool, websocket: bool, status: u8, http2: bool) -> Receive {
+        Receive {
+            last_recv_time: 0.0,
+            local_port: 0,
+            remote_port: 0,
+            loopback: 0,
+            websocket_status: status,
+            http,
+            websocket,
+            http2,
+            cache: false,
+        }
+    }
+
+    #[test]
+    fn data_goes_where_upstream_sends_it() {
+        assert_eq!(route(&facts(false, false, STATUS_HANDSHAKE, true)), TCP);
+        assert_eq!(
+            route(&facts(true, false, STATUS_HANDSHAKE, true)),
+            WEBSOCKET
+        );
+        assert_eq!(route(&facts(false, true, 3, false)), WEBSOCKET);
+        assert_eq!(route(&facts(true, false, STATUS_CONNECTION, true)), HTTP2);
+        assert_eq!(route(&facts(true, true, STATUS_CONNECTION, false)), REQUEST);
+        assert_eq!(route(&facts(true, false, 0, false)), REQUEST);
     }
 }

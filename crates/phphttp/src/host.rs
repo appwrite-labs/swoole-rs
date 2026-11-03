@@ -38,8 +38,6 @@ pub(crate) const HEADER_KEY_SIZE: usize = 128;
 unsafe extern "C" {
     pub(crate) fn swr_http_host_error(code: c_int, always: c_int, message: *const c_char);
     pub(crate) fn swr_http_host_request_free(context: *mut Context);
-    pub(crate) fn swr_http_host_request_create(return_value: *mut zval, options: *mut zval)
-    -> bool;
     fn swr_http_host_log(level: c_int, error: c_int, func: *const c_char, message: *const c_char);
     pub(crate) fn swr_http_host_treat_data(arg: c_int, text: *mut c_char, array: *mut zval);
     pub(crate) fn swr_http_host_websocket_connection(context: *mut Context) -> c_int;
