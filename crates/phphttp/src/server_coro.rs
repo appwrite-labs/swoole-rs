@@ -10,6 +10,7 @@ use crate::{
     send,
 };
 use std::{
+    cell::Cell,
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
@@ -126,7 +127,12 @@ unsafe extern "C" {
     fn swr_hsc_set_protocol(socket: *mut c_void, settings: *mut zval) -> bool;
     fn swr_hsc_strerror(code: c_int) -> *const c_char;
     fn swr_hsc_accept_errors(errors: *mut swoole_rs_httpbindings::AcceptErrors);
-    fn swr_hsc_accept(socket: *mut c_void, callable: *mut c_void, connected: *mut bool) -> i64;
+    fn swr_hsc_accept(
+        socket: *mut c_void,
+        callable: *mut c_void,
+        connected: *mut bool,
+        bailed: *mut bool,
+    ) -> i64;
     fn swr_hsc_sleep();
     fn swr_hsc_setting(
         server: *mut c_void,
@@ -430,6 +436,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         server,
         socket,
         accept: accept.0,
+        bailed: Cell::new(false),
     };
     let host = AcceptHost {
         data: (&raw mut start).cast(),
@@ -442,6 +449,9 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     };
     // SAFETY: the host below and the local policy table.
     let accepted = unsafe { swr_v1_httpbindings_accept_loop(&raw const host, &raw const errors) };
+    if start.bailed.get() {
+        return Err(bailout::Bailout);
+    }
     Ok(Some(accepted == 1))
 }
 
@@ -451,6 +461,9 @@ struct Start {
     server: *mut c_void,
     socket: *mut c_void,
     accept: *mut c_void,
+    /// Creating an `onAccept` coroutine bailed out (#913): the loop stops and
+    /// `start` re-raises it once the Rust frames are done.
+    bailed: Cell<bool>,
 }
 
 fn start_of<'a>(data: *mut c_void) -> &'a Start {
@@ -459,13 +472,17 @@ fn start_of<'a>(data: *mut c_void) -> &'a Start {
 }
 
 unsafe extern "C" fn start_running(data: *mut c_void) -> bool {
-    running(start_of(data).server)
+    let start = start_of(data);
+    !start.bailed.get() && running(start.server)
 }
 
 unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i64 {
     let start = start_of(data);
-    // SAFETY: a live listener, the accept callable and the loop's output.
-    unsafe { swr_hsc_accept(start.socket, start.accept, connected) }
+    let mut bailed = false;
+    // SAFETY: a live listener, the accept callable and the loop's outputs.
+    let cid = unsafe { swr_hsc_accept(start.socket, start.accept, connected, &raw mut bailed) };
+    start.bailed.set(bailed);
+    cid
 }
 
 unsafe extern "C" fn start_error(data: *mut c_void, message: *mut *const c_char) -> c_int {

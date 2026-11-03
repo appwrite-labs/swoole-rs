@@ -207,6 +207,28 @@ unsafe extern "C" {
     pub(crate) fn swoole_client_last_error() -> c_int;
     /// Run one [`ClientCall`]; a `bailout::trap` body.
     pub(crate) fn swoole_client_run(call: *mut c_void);
+    /// `&cli->protocol`, whose head crates/framing mirrors.
+    pub(crate) fn swoole_client_protocol(cli: Cli) -> *mut c_void;
+    /// Write one `SWOOLE_CLIENT_OPT_*` into the client (`crate::settings`).
+    pub(crate) fn swoole_client_option(
+        cli: Cli,
+        option: c_int,
+        value: i64,
+        text: *const c_char,
+        length: size_t,
+    ) -> i64;
+    /// `set_http_proxy` (`http`) or `set_socks5_proxy`.
+    pub(crate) fn swoole_client_proxy(
+        cli: Cli,
+        http: bool,
+        host: *const c_char,
+        host_length: size_t,
+        port: i64,
+        user: *const c_char,
+        user_length: size_t,
+        password: *const c_char,
+        password_length: size_t,
+    );
 }
 
 /// A `network::Client *`.
@@ -267,7 +289,6 @@ pub(crate) enum Op {
     Close = 7,
     Sleep = 8,
     Wakeup = 9,
-    Settings = 10,
     EnableSsl = 11,
     SslHandshake = 12,
     SslVerify = 13,

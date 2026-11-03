@@ -213,6 +213,47 @@ void swoole_client_async_listen(void *cli, struct _zend_object *object, uint32_t
 bool swoole_client_has_on_error(void *cli);
 void swoole_client_ssl_wait_stream(void *cli);
 
+/* What crates/phpclients' settings write into network::Client. */
+struct swoole_protocol_head;
+/* &cli->protocol, whose leading fields crates/framing mirrors (swoole::Protocol). */
+struct swoole_protocol_head *swoole_client_protocol(void *cli);
+enum {
+    SWOOLE_CLIENT_OPT_EOF_CHECK = 0,      /* value */
+    SWOOLE_CLIENT_OPT_LENGTH_CHECK = 1,   /* value; the default length function */
+    SWOOLE_CLIENT_OPT_MQTT = 2,           /* value: the length check, and MQTT framing when set */
+    SWOOLE_CLIENT_OPT_LENGTH_FUNC = 3,    /* text: the callable; returns the previous one */
+    SWOOLE_CLIENT_OPT_BUFFER_SIZE = 4,    /* value */
+    SWOOLE_CLIENT_OPT_HIGH_WATERMARK = 5, /* value */
+    SWOOLE_CLIENT_OPT_LOW_WATERMARK = 6,  /* value */
+    SWOOLE_CLIENT_OPT_BIND = 7,           /* text, length: address; value: port; returns bind() */
+    SWOOLE_CLIENT_OPT_TCP_NODELAY = 8,    /* returns false when setsockopt failed (errno) */
+    SWOOLE_CLIENT_OPT_OPEN_SSL = 9,       /* returns open_ssl */
+    SWOOLE_CLIENT_OPT_SSL_PROTOCOLS = 10,
+    SWOOLE_CLIENT_OPT_SSL_DISABLE_COMPRESS = 11,
+    SWOOLE_CLIENT_OPT_SSL_CERT_FILE = 12, /* returns whether the file exists */
+    SWOOLE_CLIENT_OPT_SSL_KEY_FILE = 13,  /* as above */
+    SWOOLE_CLIENT_OPT_SSL_PASSPHRASE = 14,
+    SWOOLE_CLIENT_OPT_SSL_HOST_NAME = 15,
+    SWOOLE_CLIENT_OPT_SSL_VERIFY_PEER = 16,
+    SWOOLE_CLIENT_OPT_SSL_ALLOW_SELF_SIGNED = 17,
+    SWOOLE_CLIENT_OPT_SSL_CAFILE = 18,
+    SWOOLE_CLIENT_OPT_SSL_CAPATH = 19,
+    SWOOLE_CLIENT_OPT_SSL_VERIFY_DEPTH = 20,
+    SWOOLE_CLIENT_OPT_SSL_CIPHERS = 21,
+    SWOOLE_CLIENT_OPT_SSL_FILES = 22,     /* returns 1: a cert file is set, | 2: a key file is */
+};
+int64_t swoole_client_option(void *cli, int option, int64_t value, const char *text, size_t length);
+/* set_http_proxy (http) or set_socks5_proxy. */
+void swoole_client_proxy(void *cli,
+                         bool http,
+                         const char *host,
+                         size_t host_length,
+                         int64_t port,
+                         const char *user,
+                         size_t user_length,
+                         const char *password,
+                         size_t password_length);
+
 /* One operation that can run PHP code, run by swoole_client_run as a
  * bailout::trap body. */
 enum {
@@ -226,8 +267,7 @@ enum {
     SWOOLE_CLIENT_CLOSE = 7,
     SWOOLE_CLIENT_SLEEP = 8,
     SWOOLE_CLIENT_WAKEUP = 9,
-    SWOOLE_CLIENT_SETTINGS = 10,   /* settings: php_swoole_client_check_setting */
-    SWOOLE_CLIENT_ENABLE_SSL = 11, /* settings (or null): the SSL options, then enable_ssl_encrypt */
+    SWOOLE_CLIENT_ENABLE_SSL = 11, /* enable_ssl_encrypt */
     SWOOLE_CLIENT_SSL_HANDSHAKE = 12,
     SWOOLE_CLIENT_SSL_VERIFY = 13, /* a: allow_self_signed */
     SWOOLE_CLIENT_SSL_WAIT = 14,   /* swoole_event_set(socket, SW_EVENT_WRITE) */

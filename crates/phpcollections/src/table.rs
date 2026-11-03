@@ -238,7 +238,9 @@ fn ready(table: *mut c_void) -> bool {
 fn created(call: &Call) -> Option<*mut c_void> {
     let table = constructed(call)?;
     if !ready(table) {
+        // The deferred bailout ends the method here, as upstream's fatal does.
         fatal(E_ERROR, c"table is not created or has been destroyed");
+        return None;
     }
     Some(table)
 }

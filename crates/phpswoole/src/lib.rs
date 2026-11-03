@@ -1,8 +1,8 @@
 //! The swoole module host (with the `php` feature, see docs/zend.md): the global
 //! constants, `Swoole\Exception` and `Swoole\Error`, and the global functions of
-//! `php_swoole.cc`. C++ keeps the function table built from the stubs' arginfo,
-//! the module globals and Swoole's error, logger and MIME state, which it lends
-//! as a table of operations.
+//! `php_swoole.cc`, and the module's function table. C++ keeps the module
+//! globals and Swoole's error, logger and MIME state, which it lends as a table
+//! of operations.
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),
@@ -16,8 +16,10 @@ mod constants;
 mod functions;
 mod interfaces;
 mod options;
+mod table;
 
 pub use options::{sw_zval_is_serializable, swr_v1_phpswoole_set_global_option};
+pub use table::swr_v1_phpswoole_functions;
 
 use std::{
     ffi::c_char,
@@ -111,7 +113,7 @@ fn ops() -> &'static HostOps {
 
 /// MINIT: the global constants, then `Swoole\Exception` and `Swoole\Error`,
 /// whose entries (and `Swoole\Exception`'s handlers, which its subclasses
-/// copy) are written to the C++ globals.
+/// copy) are written to the C++ globals, then the short-name function aliases.
 /// # Safety
 /// Called once, at MINIT, with the module's number, a static operations table
 /// and writable class-entry globals.
@@ -147,4 +149,6 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(
     unsafe { exception.write(EXCEPTION.entry()) };
     // SAFETY: as above.
     unsafe { error.write(ERROR.entry()) };
+    // SAFETY: MINIT, after Zend registered the module's functions.
+    unsafe { table::register_aliases(flags) };
 }
