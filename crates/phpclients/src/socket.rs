@@ -407,7 +407,7 @@ unsafe fn init(object: *mut zend_object) {
 /// `socket` is a live coroutine socket; called after MINIT, from PHP's thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpclients_socket_object(
-    socket: Socket,
+    socket: *mut libc::c_void,
     reference: bool,
 ) -> *mut zend_object {
     // SAFETY: a new object of the registered class.
