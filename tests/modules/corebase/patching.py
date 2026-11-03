@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.build_hybrid import hybrid_tree
 
-CALLS = ('type_size', 'gcd', 'lcm', 'parse_stoi', 'systemd_listen_fds_action', 'itoa', 'radix', 'hex_mode', 'version', 'dirname', 'mkdir_next', 'lifecycle_next', 'init_next', 'hook_add_action')
+CALLS = ('type_size', 'gcd', 'lcm', 'parse_stoi', 'systemd_listen_fds_action', 'itoa', 'radix', 'hex_mode', 'version', 'dirname', 'mkdir_next', 'lifecycle_next', 'hook_add_action')
 
 
 def check_git_environment():
@@ -30,14 +30,10 @@ def hybrid_corebase(archive):
     patched = (source / 'src/core/base.cc').read_bytes()
     if any(('swr_v1_corebase_' + name + '(').encode() not in patched for name in CALLS):
         raise ValueError('Required corebase caller absent')
-    cpu_actions = (b'case SWR_COREBASE_QUERY_CPU:',
-                   b'case SWR_COREBASE_PUBLISH_CPU_ONE:',
-                   b'case SWR_COREBASE_QUERY_CPU_AGAIN:')
-    if any(action not in patched for action in cpu_actions):
-        raise ValueError('Rust-selected native CPU initialization actions absent')
+    if b'swr_v1_core_init()' not in patched:
+        raise ValueError('swoole_init does not take its guard and defaults from the Rust core record')
     return patched, [*flags, '-DHAVE_CONFIG_H', '-I' + str(source)], {
-        'hybrid_tree': str(source), 'required_callers': list(CALLS),
-        'cpu_init_actions': [action.decode().removeprefix('case ').removesuffix(':') for action in cpu_actions]}
+        'hybrid_tree': str(source), 'required_callers': [*CALLS, 'core_init']}
 
 
 def prove_calls(binary, names, selected, run, prefix):

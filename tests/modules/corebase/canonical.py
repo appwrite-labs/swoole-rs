@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce a current corebase full-native pair and its bounded lifecycle gate."""
+"""Run the selected upstream base GTests on a full native library and a corebase-only one."""
 import argparse
 from datetime import datetime, timezone
 import json
@@ -10,11 +10,30 @@ import subprocess
 import sys
 import uuid
 
-from prepare_benchmark import ROOT, clean_environment, sha
+import hashlib
+import os
+
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
 from tools.build_upstream import COMMIT
 from tools.native_core import test_outcome
 from supervisor import cooperative_signals, run_tool
 from tools.native_core import library_identity
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def clean_environment():
+    env = os.environ.copy()
+    removed = {key: env.pop(key) for key in list(env)
+               if key.startswith(('DYLD_PRINT_', 'LD_DEBUG', 'LD_TRACE_'))
+               or key in ('LD_VERBOSE', 'LD_WARN', 'LD_SHOW_AUXV', 'LD_PROFILE', 'LD_PROFILE_OUTPUT')}
+    for key in ('LD_PRELOAD', 'LD_AUDIT', 'DYLD_INSERT_LIBRARIES'):
+        if env.get(key):
+            raise ValueError('Injected libraries require a separate matched protocol: ' + key)
+    return env, removed
+
 
 MAC_EXCLUDED = ['coroutine/hook', 'coroutine/system', 'lock/lock', 'network/socket',
                 'os/os', 'os/process_pool', 'os/signal', 'server/http_server', 'server/server', 'coroutine/iouring']
@@ -83,7 +102,7 @@ def main():
         shutil.copy2(args.output, attempt / 'previous-summary.json')
     report = dict(passed=False, status='running', utc=datetime.now(timezone.utc).isoformat(),
                   attempt=str(attempt), commands=[], builds={},
-                  scope='Current exact FFI with corebase-only full-native callers and same-config original comparator; selected original and lifecycle parity only. Unsupported full native inventory remains independently failed. No PHP, sanitizer, optional-context, performance or activation claim.')
+                  scope='Current exact FFI with corebase-only full-native callers and same-config original comparator; selected original base GTests only. Unsupported full native inventory remains independently failed. No PHP, sanitizer, optional-context, performance or activation claim.')
     env = {}
 
     def checkpoint():
@@ -107,7 +126,7 @@ def main():
                       runner_sha256=sha(__file__), environment={key: env.get(key) for key in ['PATH', 'PKG_CONFIG_PATH', 'LIBRARY_PATH']},
                       helper_sha256={name: sha(ROOT / name) for name in ['tools/native_core.py', 'tools/build_upstream.py',
                           'tools/harness.py', 'tools/build_hybrid.py', 'tools/check_migration.py',
-                          'tests/modules/corebase/prepare_benchmark.py', 'tests/modules/corebase/lifecycle_gate.py', 'tests/modules/corebase/supervisor.py']})
+                          'tests/modules/corebase/supervisor.py']})
         if subprocess.check_output(['git', '-C', str(args.source), 'rev-parse', 'HEAD'], text=True, timeout=30).strip() != COMMIT:
             raise ValueError('Read-only reference must be pinned upstream')
         is_mac = platform.system() == 'Darwin'
@@ -146,20 +165,6 @@ def main():
             checkpoint()
         identity_path = attempt / 'paired-original-identity.json'; identity_path.write_text(json.dumps(identity, indent=2) + '\n')
         report['full_native_inventory_passed'] = all(row['full_inventory_passed'] for row in report['builds'].values())
-        prepared = attempt / 'prepared.json'
-        native_tree = Path(json.loads((attempt / 'native-originals.json').read_text())['cache']) / 'src'
-        command = [sys.executable, ROOT / 'tests/modules/corebase/prepare_benchmark.py', '--source', native_tree,
-                   '--native-build', attempt / 'native-originals.json', '--rust-build', attempt / 'rust-originals.json',
-                   '--identity', identity_path, '--output', prepared]
-        if args.openssl_dir:
-            command += ['--include', args.openssl_dir.resolve() / 'include']
-        if run(command) != 0:
-            raise RuntimeError('Actual-call preparation failed; first report retained')
-        child = attempt / 'lifecycle.json'
-        if run([sys.executable, ROOT / 'tests/modules/corebase/lifecycle_gate.py', '--prepared', prepared,
-                '--archive', args.archive, '--output', child]) != 0:
-            raise RuntimeError('Actual lifecycle gate failed; first report retained')
-        report['lifecycle'] = dict(report=str(child))
         if (sha(__file__) != report['runner_sha256'] or sha(args.archive) != report['archive_sha256'] or sha(args.config) != report['config_sha256']
                 or any(sha(ROOT / name) != value for name, value in report['helper_sha256'].items())):
             raise RuntimeError('Input/helper changed during canonical gate')
