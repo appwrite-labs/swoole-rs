@@ -433,6 +433,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
+ "swoole-rs-reactor",
  "swoole-rs-uring-sys",
 ]
 
