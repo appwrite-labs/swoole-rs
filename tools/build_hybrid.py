@@ -31,6 +31,9 @@ SELECTABLE = sorted(set(MODULES) - set(GRADUATED))
 # The integration patch that adds the --with(out)-swoole-rs switch; later patches to
 # the same files call into Rust.
 BRIDGE_PATCH = 'migration/patches/integration/0001-rust-bridge.patch'
+# The ffi features that replace upstream's optional hooks, by the configure switch
+# that builds each: the Rust code links what that switch makes the extension link.
+HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc'}
 # Modules a module cannot build without: PHP Table stores rows in memory's TableV2.
 REQUIRES = {'phpcollections': ('memory',)}
 # The build's two Rust archives in rust-prefix/lib, by the input that records each: the
@@ -400,7 +403,8 @@ def build(args, parser):
         patches = [patch for patch in patches if patch['path'] == BRIDGE_PATCH]
     archives, rust_inputs, rust_compilation, rust_php_compilation = {}, None, None, None
     # The Rust io_uring engine replaces upstream's when the build enables io_uring.
-    cargo_extra = ['iouring'] if 'hooks' in args.module and '--enable-iouring' in args.configure else []
+    cargo_extra = [feature for feature, switch in HOOK_SWITCHES.items()
+                   if 'hooks' in args.module and any(flag.startswith(switch) for flag in args.configure)]
     if args.backend == 'rust':
         rust_inputs = rust_sources(args.module, cargo_extra)
         cargo_started = time.monotonic()

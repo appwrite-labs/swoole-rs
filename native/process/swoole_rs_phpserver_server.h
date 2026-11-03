@@ -1,8 +1,8 @@
 #ifndef SWOOLE_RS_PHPSERVER_SERVER_H
 #define SWOOLE_RS_PHPSERVER_SERVER_H
 /* PHP Swoole\Server and its data classes (crates/phpserver, server.rs). C++
- * keeps the Server objects (ServerObject, ServerTaskObject: created and freed by C++) and the
- * Server they wrap; Rust registers the classes with their method tables and runs the methods it owns,
+ * keeps the Server\Task objects (ServerTaskObject: created and freed by C++) and the
+ * Server the objects wrap (lifecycle.rs creates and frees the Server objects); Rust registers the classes with their method tables and runs the methods it owns,
  * reaching that C++ state through `host`. Swoole\Connection\Iterator objects
  * are Rust's, laid out as `struct { ConnectionIterator iterator; zend_object std; }`. */
 #include <stdbool.h>
@@ -53,8 +53,6 @@ typedef struct {
 
 typedef struct {
     /* Objects C++ creates and frees. */
-    struct _zend_object *(*server_create)(struct _zend_class_entry *ce);
-    void (*server_free)(struct _zend_object *object);
     struct _zend_object *(*task_create)(struct _zend_class_entry *ce);
     void (*task_free)(struct _zend_object *object);
     size_t task_offset; /* offsetof(ServerTaskObject, std) */

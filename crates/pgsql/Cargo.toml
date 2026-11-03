@@ -1,0 +1,15 @@
+[package]
+name = "swoole-rs-pgsql"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Swoole's coroutine libpq calls for its bundled pdo_pgsql (--enable-swoole-pgsql)"
+
+[dependencies]
+libc = "=0.2.191"
+# The system libpq, as upstream links it.
+pq-sys = "=0.7.8"
+
+[lints]
+workspace = true

@@ -199,8 +199,10 @@ const char *swr_v1_server_local_addr(const swr_v1_server_local_addrs *addrs, boo
 
 /*
  * The module host (crates/phpswoole): php_swoole.cc's MINIT registers the global
- * constants and Swoole\Exception/Swoole\Error through swr_v1_phpswoole_minit, and
- * the global functions are its zif_swoole_* exports. C++ lends what only it can
+ * constants, Swoole\Exception/Swoole\Error and the short-name aliases through
+ * swr_v1_phpswoole_minit, and swoole_module_entry's function table is
+ * swr_v1_phpswoole_functions: Rust's rows (its zif_swoole_* exports and C++'s)
+ * around the stdext/ssh2/ftp rows only C++'s #ifdefs decide. C++ lends what only it can
  * reach: Swoole's error, logger and MIME state and the module globals.
  */
 #define SWR_PHPSWOOLE_DEBUG (1u << 0)
@@ -214,6 +216,7 @@ const char *swr_v1_server_local_addr(const swr_v1_server_local_addrs *addrs, boo
 #define SWR_PHPSWOOLE_DTLS (1u << 8)
 #define SWR_PHPSWOOLE_SSL3 (1u << 9)
 #define SWR_PHPSWOOLE_IOURING (1u << 10)
+#define SWR_PHPSWOOLE_STDEXT (1u << 11)
 struct _zval_struct;
 struct _zend_array;
 struct _zend_class_entry;
@@ -260,6 +263,8 @@ void swr_v1_phpswoole_minit(int32_t module_number, uint32_t flags, const swr_v1_
                             struct _zend_class_entry **error);
 /* php_swoole_set_global_option: null, or the error of the size at *failed that
  * did not parse, which the caller reports as a fatal error. */
+struct _zend_function_entry;
+const struct _zend_function_entry *swr_v1_phpswoole_functions(const struct _zend_function_entry *optional);
 struct _zend_string;
 struct _zend_string *swr_v1_phpswoole_set_global_option(struct _zend_array *options, struct _zval_struct **failed);
 
