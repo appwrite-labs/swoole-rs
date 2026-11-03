@@ -76,9 +76,7 @@ uint32_t swr_v1_httpbindings_server_level(int64_t);
 int32_t swr_v1_httpbindings_handler(swr_v1_httpbindings_text, swr_v1_httpbindings_text);
 typedef struct {int32_t per_process,system,timeout,bad_ssl,canceled;} swr_v1_httpbindings_accept_errors;
 /* Upstream's Coroutine\Http\Server::start accept loop over its host's effects:
- * 1 is RETURN_TRUE, 0 RETURN_FALSE after a failed accept, -2 when `accept`
- * returned SWR_HTTPBINDINGS_ACCEPT_BAILED (it trapped a bailout to re-raise). */
-#define SWR_HTTPBINDINGS_ACCEPT_BAILED INT64_MIN
+ * 1 is RETURN_TRUE, 0 RETURN_FALSE after a failed accept. */
 typedef struct {
     void *data;
     bool (*running)(void *);
@@ -157,7 +155,8 @@ void swr_hsc_accept_free(void *callable);
 bool swr_hsc_set_protocol(void *sock, struct _zval_struct *settings);
 const char *swr_hsc_strerror(int code);
 void swr_hsc_accept_errors(swr_v1_httpbindings_accept_errors *errors);
-int64_t swr_hsc_accept(void *sock, void *callable, bool *connected);
+/* *bailed: creating the onAccept coroutine bailed out; Rust re-raises it. */
+int64_t swr_hsc_accept(void *sock, void *callable, bool *connected, bool *bailed);
 void swr_hsc_sleep(void);
 int swr_hsc_setting(void *server, uint32_t kind, struct _zend_array *settings, struct _zval_struct *value);
 void *swr_v1_phphttp_context(const struct _zend_object *object);

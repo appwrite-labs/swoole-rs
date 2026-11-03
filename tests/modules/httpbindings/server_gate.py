@@ -20,7 +20,7 @@ from tools.harness import ROOT,run_isolated,write_report
 # The hybrid tree's C++ the Rust loop calls back into.
 EFFECTS=['static SocketImpl *sock_of(void *sock)','int swr_hsc_error(void *sock, const char **message)',
          'void swr_hsc_accept_errors(swr_v1_httpbindings_accept_errors *errors)',
-         'int64_t swr_hsc_accept(void *sock, void *accept, bool *connected)','void swr_hsc_sleep(void)']
+         'int64_t swr_hsc_accept(void *sock, void *accept, bool *connected, bool *bailed)','void swr_hsc_sleep(void)']
 # An effect that exits (Exit) ends the loop there: later callbacks do nothing and the
 # exit resumes in call_accept, as upstream's frame would never return.
 CANDIDATE_HOST=r"""using SocketImpl=AcceptSocket;
@@ -32,7 +32,7 @@ void call_accept(AcceptSocket*sock,AcceptServer*hs){
  Host h{sock,hs};swr_v1_httpbindings_accept_errors errors{};candidate_server::swr_hsc_accept_errors(&errors);
  swr_v1_httpbindings_accept_host host{&h,
   [](void*d){return effect(d,false,[](Host&h){return h.hs->running;});},
-  [](void*d,bool*connected){return effect(d,int64_t(0),[&](Host&h){return candidate_server::swr_hsc_accept(h.sock,&h.accept,connected);});},
+  [](void*d,bool*connected){return effect(d,int64_t(0),[&](Host&h){return bool bailed=false;return candidate_server::swr_hsc_accept(h.sock,&h.accept,connected,&bailed);});},
   [](void*d,const char**message){*message="";return effect(d,0,[&](Host&h){return int32_t(candidate_server::swr_hsc_error(h.sock,message));});},
   [](void*d){effect(d,0,[](Host&){candidate_server::swr_hsc_sleep();return 0;});},
   [](void*d){effect(d,0,[](Host&h){http_server_coro_set_error(nullptr,h.sock);return 0;});},
