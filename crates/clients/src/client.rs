@@ -278,7 +278,7 @@ impl Client {
 
 /// A client under an operation: a raw pointer, since a callback may free it.
 #[derive(Clone, Copy)]
-struct Handle(*const Client);
+struct Handle(*mut Client);
 
 impl Handle {
     fn get(self) -> &'static Client {
@@ -529,13 +529,13 @@ pub unsafe extern "C" fn swr_v1_clients_free(client: *mut Client) {
 /// `client` is live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_flag(client: *const Client, name: u32) -> bool {
-    Handle(client).flag(name)
+    Handle(client.cast_mut()).flag(name)
 }
 
 /// # Safety
 /// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_set_flag(client: *const Client, name: u32, value: bool) {
+pub unsafe extern "C" fn swr_v1_clients_set_flag(client: *mut Client, name: u32, value: bool) {
     Handle(client).set(name, value);
 }
 
@@ -544,11 +544,7 @@ pub unsafe extern "C" fn swr_v1_clients_set_flag(client: *const Client, name: u3
 /// # Safety
 /// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_set_watermark(
-    client: *const Client,
-    high: bool,
-    value: u32,
-) {
+pub unsafe extern "C" fn swr_v1_clients_set_watermark(client: *mut Client, high: bool, value: u32) {
     let client = Handle(client).get();
     if high {
         &client.high_watermark
@@ -603,7 +599,7 @@ fn close(this: Handle) -> c_int {
 /// # Safety
 /// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_close(client: *const Client) -> c_int {
+pub unsafe extern "C" fn swr_v1_clients_close(client: *mut Client) -> c_int {
     close(Handle(client))
 }
 
@@ -612,7 +608,7 @@ pub unsafe extern "C" fn swr_v1_clients_close(client: *const Client) -> c_int {
 /// # Safety
 /// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_shutdown(client: *const Client, how: c_int) -> c_int {
+pub unsafe extern "C" fn swr_v1_clients_shutdown(client: *mut Client, how: c_int) -> c_int {
     let this = Handle(client);
     if this.get().socket.is_null() || this.flag(CLOSED) {
         return ERR;
@@ -644,7 +640,7 @@ pub unsafe extern "C" fn swr_v1_clients_shutdown(client: *const Client, how: c_i
 /// # Safety
 /// `client` is live with a socket.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_sleep(client: *const Client) -> c_int {
+pub unsafe extern "C" fn swr_v1_clients_sleep(client: *mut Client) -> c_int {
     let this = Handle(client);
     if this.socket().events & EVENT_WRITE != 0 {
         this.event(EVENT_SET, EVENT_WRITE)
@@ -658,7 +654,7 @@ pub unsafe extern "C" fn swr_v1_clients_sleep(client: *const Client) -> c_int {
 /// # Safety
 /// `client` is live with a socket.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_wakeup(client: *const Client) -> c_int {
+pub unsafe extern "C" fn swr_v1_clients_wakeup(client: *mut Client) -> c_int {
     let this = Handle(client);
     if this.socket().events & EVENT_WRITE != 0 {
         this.event(EVENT_SET, EVENT_READ | EVENT_WRITE)
@@ -673,7 +669,7 @@ pub unsafe extern "C" fn swr_v1_clients_wakeup(client: *const Client) -> c_int {
 /// # Safety
 /// `client` is live with a socket.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_enable_ssl(client: *const Client) -> c_int {
+pub unsafe extern "C" fn swr_v1_clients_enable_ssl(client: *mut Client) -> c_int {
     let this = Handle(client);
     this.set(OPEN_SSL, true);
     if is_dgram(this.socket().socket_type) && !enable_dtls(this) {
@@ -721,7 +717,7 @@ fn ssl_handshake(this: Handle) -> c_int {
 /// # Safety
 /// `client` is live with a socket and a TLS context.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ssl_handshake(client: *const Client) -> c_int {
+pub unsafe extern "C" fn swr_v1_clients_ssl_handshake(client: *mut Client) -> c_int {
     ssl_handshake(Handle(client))
 }
 
@@ -770,7 +766,7 @@ fn dns_lookup(this: Handle) -> c_int {
 /// `client` is live with a socket; `host` is NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_connect(
-    client: *const Client,
+    client: *mut Client,
     host: *const c_char,
     port: c_int,
     timeout: f64,
@@ -1019,7 +1015,7 @@ fn bind_unix(this: Handle) -> c_int {
 /// `client` is live with a socket; `length` bytes at `data`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_send(
-    client: *const Client,
+    client: *mut Client,
     data: *const c_char,
     length: usize,
     flags: c_int,
@@ -1070,7 +1066,7 @@ fn send_async(this: Handle, data: *const c_char, length: usize) -> isize {
 /// `client` is live with a socket; `file` is NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_sendfile(
-    client: *const Client,
+    client: *mut Client,
     file: *const c_char,
     offset: i64,
     length: usize,
@@ -1096,7 +1092,7 @@ pub unsafe extern "C" fn swr_v1_clients_sendfile(
 /// `client` is live with a socket; `length` writable bytes at `data`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_recv(
-    client: *const Client,
+    client: *mut Client,
     data: *mut c_char,
     length: usize,
     flags: c_int,
@@ -1135,7 +1131,7 @@ fn connect_failed(this: Handle) -> c_int {
 /// # Safety
 /// `client` is a live async stream client with its input buffer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_on_read(client: *const Client) -> c_int {
+pub unsafe extern "C" fn swr_v1_clients_on_read(client: *mut Client) -> c_int {
     let this = Handle(client);
     let view = this.buffer(BUFFER_VIEW, 0);
     // SAFETY: the unused tail of the input buffer.
@@ -1221,7 +1217,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_read(client: *const Client) -> c_int 
 /// # Safety
 /// `client` is a live async datagram client.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_on_dgram_read(client: *const Client) -> c_int {
+pub unsafe extern "C" fn swr_v1_clients_on_dgram_read(client: *mut Client) -> c_int {
     let this = Handle(client);
     #[expect(
         clippy::large_stack_arrays,
@@ -1248,7 +1244,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_dgram_read(client: *const Client) -> 
 /// `client` is a live async stream client; `reactor` and `event` are the handler's.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_on_write(
-    client: *const Client,
+    client: *mut Client,
     reactor: *mut c_void,
     event: *mut c_void,
 ) -> c_int {
@@ -1338,7 +1334,7 @@ fn write_failed(this: Handle) -> c_int {
 /// As `swr_v1_clients_on_write`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_on_error(
-    client: *const Client,
+    client: *mut Client,
     reactor: *mut c_void,
     event: *mut c_void,
 ) -> c_int {
@@ -1356,7 +1352,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_error(
 /// # Safety
 /// `client` is a live async client whose connect timer fired.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_on_timeout(client: *const Client) {
+pub unsafe extern "C" fn swr_v1_clients_on_timeout(client: *mut Client) {
     let this = Handle(client);
     this.set_last_error(libc::ETIMEDOUT);
     this.get().timer.set(core::ptr::null_mut());
@@ -1381,7 +1377,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_timeout(client: *const Client) {
 /// `client` is a live async client waiting for DNS; `address` is NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_on_resolved(
-    client: *const Client,
+    client: *mut Client,
     error: c_int,
     address: *const c_char,
 ) {

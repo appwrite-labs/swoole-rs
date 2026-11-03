@@ -134,11 +134,11 @@ typedef struct {
     bool (*recv_framed)(void *cli, ssize_t *received);
 } swr_v1_clients_native;
 /* Client::Client: the state, with cli->socket made (null when socket() failed, errno kept). */
-swr_v1_clients *swr_v1_clients_new(void *cli, const swr_v1_clients_native *native, int type, bool is_async);
+swr_v1_clients *swr_v1_clients_new(void *cli, const swr_v1_clients_native *native, int kind, bool is_async);
 /* Client::~Client, then the state's release. */
 void swr_v1_clients_free(swr_v1_clients *client);
-bool swr_v1_clients_flag(const swr_v1_clients *client, uint32_t flag);
-void swr_v1_clients_set_flag(swr_v1_clients *client, uint32_t flag, bool value);
+bool swr_v1_clients_flag(const swr_v1_clients *client, uint32_t name);
+void swr_v1_clients_set_flag(swr_v1_clients *client, uint32_t name, bool value);
 void swr_v1_clients_set_watermark(swr_v1_clients *client, bool high, uint32_t value);
 int swr_v1_clients_connect(swr_v1_clients *client, const char *host, int port, double timeout, int flags);
 ssize_t swr_v1_clients_send(swr_v1_clients *client, const char *data, size_t length, int flags);
