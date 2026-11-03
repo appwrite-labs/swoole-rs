@@ -166,14 +166,6 @@ type/default) in declaration order, then `SWR_PORTS_PROPERTY_END`. The 12 privat
 names reuse the event catalog. Public: host, port, type, sock, ssl, setting,
 connections. Native MINIT calls the Zend declaration APIs after each return.
 
-## RequestV2 callers
-
-Port constructs, reuses, observes and deletes the HTTP request through the http
-module's pointer-only `SelectedRequestView`; see
-[request-v2-caller-boundary.md](request-v2-caller-boundary.md). Gated by
-`SWOOLE_RS_HTTP_REQUEST_V2`, which is off; with only the HTTP and Ports feature
-flags, Port keeps the legacy `Request`.
-
 ## Not converted
 
 Native defaults beyond the explicit constructor body, SSL/import/close custody,

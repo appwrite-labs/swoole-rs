@@ -1,5 +1,5 @@
 diff --git a/src/server/static_handler.cc b/src/server/static_handler.cc
-index 0614fcf..7f19383 100644
+index 0614fcf..51b7a39 100644
 --- a/src/server/static_handler.cc
 +++ b/src/server/static_handler.cc
 @@ -17,2 +17,4 @@
@@ -759,14 +759,14 @@ index 0614fcf..7f19383 100644
 +    swr_v1_http_static_headers(&header, reinterpret_cast<uint8_t *>(output), capacity, &written);
 +    return written;
 +}
- 
--    http_server::StaticHandler handler(this, url, url_length);
--    if (!handler.try_serve()) {
++
 +template<class RequestView>
 +static bool select_static_handler_impl(Server *server,const RequestView &request,const Connection *conn) {
 +    const char *url = request.buffer()->str + request.url_offset();
 +    size_t url_length = request.url_length();
-+
+ 
+-    http_server::StaticHandler handler(this, url, url_length);
+-    if (!handler.try_serve()) {
 +    http_server::StaticHandler handler(server, url, url_length);
 +    swr_v1_http_static_selection selection{};
 +    if (swr_v1_http_static_select(&selection, handler.try_serve(), 0) == SWR_HTTP_SELECT_SKIP) {
@@ -1017,7 +1017,7 @@ index 0614fcf..7f19383 100644
 +            break;
 +        default: throw std::logic_error("Invalid HTTP static body state");
          }
-@@ -652,49 +583,60 @@ bool Server::select_static_handler(const http_server::Request *request, const Co
+@@ -652,11 +583,6 @@ bool Server::select_static_handler(const http_server::Request *request, const Co
  
 -    // Close the connection if keepalive is not used
 -    if (!request->keep_alive) {
@@ -1031,13 +1031,8 @@ index 0614fcf..7f19383 100644
 -    return true;
 +bool Server::select_static_handler(const http_server::Request *request,const Connection *conn) {
 +    return select_static_handler_impl(this,http_server::LegacyRequestView<const http_server::Request>(request),conn);
-+}
-+#if defined(SWOOLE_RS_HTTP_REQUEST_V2)
-+bool Server::select_static_handler(const http_server::RequestV2 *request,const Connection *conn) {
-+    return select_static_handler_impl(this,http_server::RustRequestView<const http_server::RequestV2>(request),conn);
  }
-+#endif
- 
+@@ -664,37 +590,48 @@ bool Server::select_static_handler(const http_server::Request *request, const Co
  bool Server::apply_rewrite_rules(http_server::StaticHandler *handler) {
 -    if (!rewrite_rules || rewrite_rules->empty()) {
 -        return false;
