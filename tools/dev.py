@@ -225,6 +225,8 @@ def plan(args, reports):
         script('locks-platforms', 'tests/modules/locks/platforms.py', '--source', ROOT / 'target/upstream/src', *report('locks-platforms'))
         if integrate:
             script('locks-state', 'tests/modules/locks/state.py', *php_for('curl'), *engines, *report('locks-state'))
+    if integrate and 'phpcoroutines' in modules:
+        script('phpcoroutines-tracer', 'tests/modules/phpcoroutines/tracer.py', *php, *engines, *report('phpcoroutines-tracer'))
     if 'wrappers' in modules:
         script('wrappers-native', 'tests/modules/wrappers/gate.py', '--archive',
                manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('wrappers-native'))
