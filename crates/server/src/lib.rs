@@ -19,6 +19,11 @@ pub mod ops;
 mod reactor_io;
 mod reactor_thread;
 mod startup;
+mod state;
+
+pub use state::{
+    ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
+};
 
 pub use local_addr::{
     swr_v1_server_local_addr, swr_v1_server_local_addr_index, swr_v1_server_local_addrs_free,
@@ -52,7 +57,12 @@ pub(crate) trait Host {
     fn float(&mut self, op: u32) -> f64 {
         f64::from_bits(self.get(op))
     }
+    /// The server's Rust-owned state.
+    fn state(&mut self) -> &ServerState;
 }
+
+/// The state of a server without one, which native code never passes.
+static NO_STATE: ServerState = ServerState::new();
 
 struct Native {
     context: *mut c_void,
@@ -63,6 +73,12 @@ impl Host for Native {
     fn op(&mut self, op: u32, arg: u64) -> u64 {
         // SAFETY: a native fact or effect on the live server in `context`.
         unsafe { (self.call)(self.context, op, arg) }
+    }
+    fn state(&mut self) -> &ServerState {
+        let address = usize::try_from(self.get(ops::OP_STATE)).unwrap_or(0);
+        let state = core::ptr::with_exposed_provenance::<ServerState>(address);
+        // SAFETY: native code passes `Server::state_`, which lives as long as the server.
+        unsafe { state.as_ref() }.unwrap_or(&NO_STATE)
     }
 }
 
@@ -142,7 +158,10 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         }
         _ => match reactor_io::run(h, operation, arg) {
             Some(result) => result,
-            None => reactor_thread::run(h, operation, arg),
+            None => match state::run(h, operation, arg) {
+                Some(result) => result,
+                None => reactor_thread::run(h, operation, arg),
+            },
         },
     }
 }
@@ -151,6 +170,7 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
 pub(crate) mod script {
     //! A scripted server: answers facts from a table and records every op.
     use super::Host;
+    use crate::ServerState;
     use std::collections::HashMap;
 
     #[derive(Default)]
@@ -159,6 +179,7 @@ pub(crate) mod script {
         /// Answers consumed in order before `facts` for ops called repeatedly.
         pub queued: HashMap<u32, Vec<u64>>,
         pub log: Vec<(u32, u64)>,
+        pub state: ServerState,
     }
 
     impl Script {
@@ -193,6 +214,9 @@ pub(crate) mod script {
                 return answers.remove(0);
             }
             self.facts.get(&op).copied().unwrap_or(0)
+        }
+        fn state(&mut self) -> &ServerState {
+            &self.state
         }
     }
 }
