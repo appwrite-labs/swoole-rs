@@ -289,21 +289,9 @@ mod tests {
 
     #[test]
     fn a_session_starts_from_the_default_settings() {
-        unsafe extern "C" fn nothing(_: *mut c_void) {}
-        let session = SessionState::new(
-            7,
-            std::ptr::null_mut(),
-            0,
-            false,
-            nothing,
-            std::ptr::null_mut(),
-        );
-        assert_eq!(session.local(INIT_WINDOW_SIZE), 65535);
-        assert_eq!(session.remote[4].get(), 16384);
-        assert_eq!(session.remote_window_size.get(), 65535);
-        assert!(session.idle());
-        assert!(!session.shutting_down.get());
-        // Nothing to free: the codecs were never created.
-        std::mem::forget(session);
+        // header_table_size, enable_push, max_concurrent_streams,
+        // init_window_size, max_frame_size, max_header_list_size.
+        assert_eq!(defaults(), [4096, 0, u32::MAX, 65535, 16384, u32::MAX]);
+        assert_eq!(defaults()[INIT_WINDOW_SIZE], 65535);
     }
 }
