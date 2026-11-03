@@ -28,9 +28,11 @@ mod server_coro;
 mod state;
 mod websocket;
 
-pub use context::{swr_v1_phphttp_context, swr_v1_phphttp_set_context};
+pub use context::{
+    swr_v1_phphttp_context, swr_v1_phphttp_context_objects, swr_v1_phphttp_set_context,
+};
 pub use cookie::*;
-pub use header::swr_v1_phphttp_compress;
+pub use header::{swr_v1_phphttp_compress, swr_v1_phphttp_date, swr_v1_phphttp_response_rshutdown};
 pub use parse::{
     swr_v1_phphttp_compression_method, swr_v1_phphttp_multipart_boundary,
     swr_v1_phphttp_multipart_init, swr_v1_phphttp_multipart_parse, swr_v1_phphttp_parse,

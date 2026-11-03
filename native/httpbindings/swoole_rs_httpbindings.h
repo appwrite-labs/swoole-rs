@@ -205,7 +205,7 @@ bool swr_v1_phphttp_end(void *context, struct _zend_string *data, struct _zval_s
  * direct send or sendfile, the compressed body, the HTTP/2 server's end, write
  * and send_file (-1 on a bailout), a default Content-Type, and the WebSocket
  * handshake's compression offer and connection status. */
-enum { SWR_PHPHTTP_HTTP2_END = 0, SWR_PHPHTTP_HTTP2_WRITE = 1, SWR_PHPHTTP_HTTP2_SEND_FILE = 2 };
+enum { SWR_PHPHTTP_HTTP2_END = 0, SWR_PHPHTTP_HTTP2_WRITE = 1, SWR_PHPHTTP_HTTP2_SEND_FILE = 2, SWR_PHPHTTP_HTTP2_PING = 3 };
 bool swr_http_host_after(void *context);
 void swr_http_host_buffer(void *context, const char *head, size_t head_length, const char *body, size_t body_length,
     const char *tail, size_t tail_length);
@@ -219,27 +219,35 @@ void swr_http_host_websocket_accept(void *context);
 void swr_http_host_websocket_handshaked(void *context);
 /* What they ask of the context: brotli/zstd (1 done, 0 failed, -1 not built),
  * the zlib_buffer, whether a content type is compressible (a null type asks
- * whether the server lists types) and the cached Date. */
+ * whether the server lists types). */
 int swr_http_host_compress_other(void *context, int method, const char *data, size_t length);
 char *swr_http_host_compression_buffer(void *context, size_t size);
 void swr_http_host_compressed(void *context, size_t length);
 size_t swr_http_host_compressed_length(const void *context);
 bool swr_http_host_compression_type(const void *context, const char *type, size_t length);
-struct _zend_string *swr_http_host_date(void);
 /* Calls that can run user code (a value's __toString while building the
  * response, exit() in it) trap a Zend bailout in C++: request_create,
  * response_free and redirect return true when one happened, and Rust
  * re-raises it (docs/zend.md). */
 bool swr_http_host_response_free(void *context);
-void swr_http_host_response_create(struct _zval_struct *object, int64_t fd, struct _zval_struct *return_value);
 struct _zval_struct *swr_http_host_response_property(void *context, int which);
 bool swr_http_host_redirect(void *context, struct _zval_struct *url, struct _zval_struct *code, struct _zval_struct *return_value);
-void swr_http_host_status(void *context, int64_t status, const char *reason, size_t reason_length);
-bool swr_http_host_set_header(void *context, const char *key, size_t key_length, struct _zval_struct *value, bool format);
-void swr_http_host_ping(void *context, struct _zend_string *data, struct _zval_struct *return_value);
 bool swr_http_host_goaway(void *context, int64_t code, struct _zend_string *debug);
 bool swr_http_host_close(void *context);
 void swr_http_host_recv(void *context, double timeout, struct _zval_struct *return_value);
+/* Response::create asks what an object is (1 a Swoole\Server, 2 a coroutine
+ * socket, whose fd it sets), for sw_server(), and for a context: a new one for
+ * the server or the socket when `context` is null, else `context` bound to it. */
+int swr_http_host_object_kind(struct _zval_struct *object, int64_t *fd);
+void *swr_http_host_server(void);
+void *swr_http_host_bind(void *context, void *server, struct _zval_struct *socket);
+/* Rust's side of the context: a new context's request and response objects,
+ * Context::set_header (re-raising a bailout itself), and the cached Date
+ * header (php_swoole_http_get_date) and its RSHUTDOWN. */
+void swr_v1_phphttp_context_objects(void *ctx, int64_t fd);
+bool swr_v1_phphttp_set_header(void *ctx, const char *key, size_t length, struct _zval_struct *value, bool format);
+struct _zend_string *swr_v1_phphttp_date(void);
+void swr_v1_phphttp_response_rshutdown(void);
 
 /* Swoole\WebSocket\Server, Frame and CloseFrame (crates/phphttp/src/websocket.rs).
  * MINIT registers them and the constants, returning the server class and

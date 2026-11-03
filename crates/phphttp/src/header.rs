@@ -14,6 +14,7 @@ use swoole_rs_httpbindings::{
     Text, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level, swr_v1_httpbindings_encoding,
     swr_v1_httpbindings_response_header,
 };
+use swoole_rs_zend::sys::php_format_date;
 use swoole_rs_zend::sys::{
     HashPosition, IS_ARRAY, IS_NULL, IS_STRING, swr_zend_efree, swr_zend_emalloc,
     swr_zend_http_get_string, swr_zend_http_property_offset, swr_zend_string_release,
@@ -71,7 +72,6 @@ unsafe extern "C" {
         kind: *const c_char,
         length: usize,
     ) -> bool;
-    fn swr_http_host_date() -> *mut zend_string;
 }
 
 /// MINIT (from the response class's): find the array properties' slots.
@@ -156,8 +156,49 @@ fn each<E>(
     }
 }
 
+thread_local! {
+    /// `php_swoole_http_get_date`'s per-second cache: the time and its text.
+    static DATE_CACHE: std::cell::Cell<(libc::time_t, *mut zend_string)> =
+        const { std::cell::Cell::new((0, ptr::null_mut())) };
+}
+
+/// The `Date` header for now, formatted at most once a second.
+pub(crate) fn date() -> *mut zend_string {
+    // SAFETY: reads the clock.
+    let now = unsafe { libc::time(ptr::null_mut()) };
+    let (time, date) = DATE_CACHE.get();
+    if now == time && !date.is_null() {
+        return date;
+    }
+    if !date.is_null() {
+        // SAFETY: the cache's reference.
+        unsafe { swr_zend_string_release(date) };
+    }
+    let format = c"D, d M Y H:i:s T";
+    // SAFETY: a NUL-terminated format and its length.
+    let date = unsafe { php_format_date(format.as_ptr(), format.count_bytes(), now, false) };
+    DATE_CACHE.set((now, date));
+    date
+}
+
+/// `php_swoole_http_get_date` for C++ (the HTTP/2 server).
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_phphttp_date() -> *mut zend_string {
+    date()
+}
+
+/// `php_swoole_http_response_rshutdown`: drop the cached date.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_phphttp_response_rshutdown() {
+    let (_, date) = DATE_CACHE.replace((0, ptr::null_mut()));
+    if !date.is_null() {
+        // SAFETY: the cache's reference.
+        unsafe { swr_zend_string_release(date) };
+    }
+}
+
 /// `swoole_http_has_crlf`, warning as upstream does.
-fn has_crlf(bytes: &[u8]) -> bool {
+pub(crate) fn has_crlf(bytes: &[u8]) -> bool {
     for &byte in bytes {
         if byte == b'\n' || byte == b'\r' {
             host::notice("Header may not contain more than a single header, new line detected");
@@ -371,8 +412,7 @@ fn build(
         out.extend_from_slice(b"Server: swoole-http-server\r\n");
     }
     if flags & DATE == 0 {
-        // SAFETY: the C++ per-second cache, live until it changes.
-        let date = unsafe { swr_http_host_date() };
+        let date = date();
         // SAFETY: a live string.
         let date = unsafe { string::bytes(date) };
         out.extend_from_slice(b"Date: ");
