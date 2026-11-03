@@ -42,9 +42,8 @@ pub struct IoHost {
     is_worker: unsafe extern "C" fn(*mut c_void) -> bool,
     worker_id: unsafe extern "C" fn() -> i64,
     core_worker_num: unsafe extern "C" fn(*mut c_void) -> i64,
-    send_message: unsafe extern "C" fn(*mut c_void, *mut zval, i64) -> c_int,
+    send_message: unsafe extern "C" fn(*mut c_void, *mut c_void, i64) -> bool,
     task_enable_coroutine: unsafe extern "C" fn(*mut c_void) -> bool,
-    finish: unsafe extern "C" fn(*mut c_void, *mut zval, *mut zend_object) -> bool,
     task_server: unsafe extern "C" fn(*mut zend_object) -> *mut c_void,
     started: unsafe extern "C" fn(*mut c_void) -> bool,
 }
@@ -374,11 +373,12 @@ fn send_message(call: &Call) {
         );
         return call.set_bool(false);
     }
-    // SAFETY: a live server and the message argument.
-    match unsafe { (host.send_message)(serv, call.zval(1), worker_id) } {
-        -1 => call.set_bool(false),
-        sent => call.set_bool(sent != 0),
+    let mut buf = crate::task::EventData::new();
+    if crate::task::pack(call.zval(1), &mut buf) < 0 {
+        return call.set_bool(false);
     }
+    // SAFETY: a live server and the packed message.
+    call.set_bool(unsafe { (host.send_message)(serv, buf.ptr(), worker_id) });
 }
 
 fn finish(call: &Call) {
@@ -396,8 +396,7 @@ fn finish(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    // SAFETY: a live server and the data argument.
-    call.set_bool(unsafe { (host.finish)(serv, call.zval(1), ptr::null_mut()) });
+    finished(call, serv, ptr::null_mut());
 }
 
 fn task_finish(call: &Call) {
@@ -412,8 +411,15 @@ fn task_finish(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    // SAFETY: a live server, the data and the task.
-    call.set_bool(unsafe { (host.finish)(serv, call.zval(1), call.this()) });
+    finished(call, serv, crate::server::task_info(call.this()));
+}
+
+/// `php_swoole_server_task_finish` of the data argument into the return slot.
+fn finished(call: &Call, serv: *mut c_void, req: *mut c_void) {
+    match crate::task::finish_task(serv, call.zval(1), req) {
+        Ok(done) => call.set_bool(done),
+        Err(bailout) => bailout.defer(),
+    }
 }
 
 swoole_rs_zend::handlers! {
