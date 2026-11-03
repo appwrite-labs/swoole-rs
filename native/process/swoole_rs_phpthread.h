@@ -57,8 +57,8 @@ struct _zend_class_entry *swr_v1_phpthread_thread_minit(void);
 /* The main thread's RINIT keeps its script path and $argv (true if serializing
  * bailed out); a new thread's request starts with them (valid until the main
  * thread's RSHUTDOWN releases them). */
-bool swr_v1_phpthread_rinit(const char *path_translated, int argc, struct _zval_struct *argv);
-struct _zend_string *swr_v1_phpthread_request(const char **path_translated, int *argc);
+bool swr_v1_phpthread_rinit(const char *path, int argc, struct _zval_struct *argv);
+struct _zend_string *swr_v1_phpthread_request(const char **path, int *argc);
 void swr_v1_phpthread_rshutdown(void);
 /* A thread's STDIN, STDOUT and STDERR constants, opened inside its request's
  * zend_try; their descriptors outlive the request and are closed after it. */
