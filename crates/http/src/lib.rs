@@ -122,6 +122,7 @@ fn differs_at_first(left: u8, right: u8) -> bool {
         && right | 0x20 != b'i'
         && !left.eq_ignore_ascii_case(&right)
 }
+#[inline]
 fn case_prefix(input: &[u8], expected: &[u8]) -> bool {
     input.len() >= expected.len()
         && !matches!((input.first(), expected.first()), (Some(&left), Some(&right)) if differs_at_first(left, right))
