@@ -4,6 +4,7 @@
   patches.py checkout MODULE   clone the pin to target/patches/MODULE and commit each patch
   patches.py export MODULE     write each commit back to migration/patches/MODULE (new ones as <timestamp>-<subject>.patch)
   patches.py rehash OLD [NEW]  rewrite recorded hashes of upstream files changed from OLD to NEW (default: the pin)
+  patches.py check             apply every module's patches, in build order, to the pin; fail on the first that doesn't
 """
 import argparse
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.build_hybrid import module_patches
+from tools.build_hybrid import module_patches, patches_for
 from tools.build_upstream import COMMIT, VERSION
 from tools.harness import ROOT
 
@@ -26,13 +27,17 @@ def git(work, *args):
                           check=True, capture_output=True, text=True).stdout
 
 
-def checkout(module, patches, work):
-    if work.exists():
-        raise SystemExit(f'{work} exists; export or delete it first')
+def clone_pin(work):
     reference = ROOT / 'target/upstream/src'
     source = [str(reference)] if (reference / '.git').exists() else ['--depth', '1', '--branch', VERSION,
                                                                      'https://github.com/swoole/swoole-src.git']
     subprocess.run(['git', '-c', 'advice.detachedHead=false', 'clone', '-q', *source, str(work)], check=True)
+
+
+def checkout(module, patches, work):
+    if work.exists():
+        raise SystemExit(f'{work} exists; export or delete it first')
+    clone_pin(work)
     git(work, 'checkout', '-q', '-b', 'patches/' + module, COMMIT)
     baseline = {}
     for patch in module_patches(patches):
@@ -106,12 +111,32 @@ def rehash(old, new):
     shutil.rmtree(work)
 
 
+def check():
+    """The all-modules patch set, in the order build_hybrid applies it, applies cleanly to the pin."""
+    work = ROOT / 'target/patches/.check'
+    shutil.rmtree(work, ignore_errors=True)
+    clone_pin(work)
+    git(work, 'checkout', '-q', COMMIT)
+    plan = json.loads((ROOT / 'migration/modules.json').read_text())
+    patches = patches_for([m for m in plan['modules'] if any(p.startswith('migration/patches/') for p in m['owned_paths'])])
+    for patch in patches:
+        result = subprocess.run(['git', '-C', str(work), 'apply', str(ROOT / patch['path'])], capture_output=True, text=True)
+        if result.returncode:
+            raise SystemExit(f"{patch['path']} does not apply over the patches before it:\n{result.stderr}")
+    shutil.rmtree(work)
+    print(f'{len(patches)} patches apply to {COMMIT[:12]}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('command', choices=['checkout', 'export', 'rehash'])
-    parser.add_argument('module', help='module, or OLD commit for rehash')
+    parser.add_argument('command', choices=['checkout', 'export', 'rehash', 'check'])
+    parser.add_argument('module', nargs='?', help='module, or OLD commit for rehash')
     parser.add_argument('new', nargs='?', default=COMMIT, help='rehash only: NEW commit')
     args = parser.parse_args()
+    if args.command == 'check':
+        return check()
+    if not args.module:
+        parser.error('module required')
     if args.command == 'rehash':
         return rehash(args.module, args.new)
     patches, work = ROOT / 'migration/patches' / args.module, ROOT / 'target/patches' / args.module
