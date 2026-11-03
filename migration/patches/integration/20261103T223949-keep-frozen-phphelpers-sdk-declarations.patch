@@ -1,0 +1,15 @@
+diff --git a/ext-src/php_swoole_cxx.h b/ext-src/php_swoole_cxx.h
+index 9ad8bd3..1e5af87 100644
+--- a/ext-src/php_swoole_cxx.h
++++ b/ext-src/php_swoole_cxx.h
+@@ -146,2 +146,3 @@ SW_API void php_swoole_socket_set_error_properties(const zval *zobject, int code
+ SW_API void php_swoole_socket_set_error_properties(const zval *zobject, const SocketImpl *socket);
++#define php_swoole_client_set php_swoole_socket_set
+ SW_API php_stream *php_swoole_create_stream_from_socket(php_socket_t _fd,
+@@ -574,2 +575,6 @@ class Callable {
+ 
++    zend_refcounted *refcount_ptr() {
++        return sw_get_refcount_ptr(&zfn);
++    }
++
+     zend_fcall_info_cache *ptr() {
