@@ -167,6 +167,13 @@ struct TaskData {
 
 type TaskObject = Object<TaskData>;
 
+/// A `Server\Task`'s `info`, as the `EventData *` `finish` reads its head from.
+pub(crate) fn task_info(object: *mut zend_object) -> *mut c_void {
+    // SAFETY: a `Server\Task` object, which this class creates.
+    let data = unsafe { TaskObject::data(object) };
+    data.info.as_mut_ptr().cast()
+}
+
 unsafe extern "C" fn task_create(ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: Zend creates a task of this class; zeroes are an unbound one.
     unsafe { TaskObject::create(&TASK, ce) }
