@@ -1,6 +1,6 @@
 //! The module's function table (`swoole_functions[]` in `php_swoole.cc`), in
 //! upstream's order, and the short-name aliases MINIT adds.
-use crate::{constants::SHORTNAME, functions as f, interfaces as i};
+use crate::{constants::SHORTNAME, functions as f, interfaces as i, vm};
 use std::ffi::CStr;
 use swoole_rs_phpstubs::{ex, stdext, swoole as s, tracer};
 use swoole_rs_zend::{
@@ -23,9 +23,6 @@ unsafe extern "C" {
     fn zif_swoole_set_process_name(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_clear_dns_cache(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_implicit_fn(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_get_objects(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_get_vm_status(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_get_object_by_handle(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_name_resolver_lookup(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_name_resolver_add(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_name_resolver_remove(frame: *mut z::zend_execute_data, value: *mut z::zval);
@@ -69,9 +66,9 @@ method_table! {
         c"swoole_substr_json_decode" => f::zif_swoole_substr_json_decode, &s::arginfo_swoole_substr_json_decode, 0;
         c"swoole_internal_call_user_shutdown_begin" => f::zif_swoole_internal_call_user_shutdown_begin, &s::arginfo_swoole_internal_call_user_shutdown_begin, 0;
         c"swoole_implicit_fn" => zif_swoole_implicit_fn, &s::arginfo_swoole_implicit_fn, 0;
-        c"swoole_get_objects" => zif_swoole_get_objects, &ex::arginfo_swoole_get_objects, 0;
-        c"swoole_get_vm_status" => zif_swoole_get_vm_status, &ex::arginfo_swoole_get_vm_status, 0;
-        c"swoole_get_object_by_handle" => zif_swoole_get_object_by_handle, &ex::arginfo_swoole_get_object_by_handle, 0;
+        c"swoole_get_objects" => vm::zif_swoole_get_objects, &ex::arginfo_swoole_get_objects, 0;
+        c"swoole_get_vm_status" => vm::zif_swoole_get_vm_status, &ex::arginfo_swoole_get_vm_status, 0;
+        c"swoole_get_object_by_handle" => vm::zif_swoole_get_object_by_handle, &ex::arginfo_swoole_get_object_by_handle, 0;
         c"swoole_name_resolver_lookup" => zif_swoole_name_resolver_lookup, &ex::arginfo_swoole_name_resolver_lookup, 0;
         c"swoole_name_resolver_add" => zif_swoole_name_resolver_add, &ex::arginfo_swoole_name_resolver_add, 0;
         c"swoole_name_resolver_remove" => zif_swoole_name_resolver_remove, &ex::arginfo_swoole_name_resolver_remove, 0;

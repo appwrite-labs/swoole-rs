@@ -36,8 +36,6 @@ typedef struct {
 typedef struct {
     void (*facts)(void *server, swr_phpserver_facts *facts);
     struct _zval_struct *(*zserv)(void *server);
-    /* A server-level callback (php_swoole_server_callback_type), or null. */
-    void *(*callback)(void *server, int type);
     /* php_swoole_server_get_callback(serv, server_fd, type), or null. */
     void *(*port_callback)(void *server, int server_fd, int type);
     /* zend::function::call(cb, argc, args, nullptr, coroutine) in zend_try:
