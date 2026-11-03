@@ -25,10 +25,3 @@ arg)`: `recv`, the request's bit-fields and parser steps, canned replies, logs a
 dispatch. Native and unchanged: `destroy_http_request`, the request parser
 itself, worker generation and suspended-response handling.
 
-HTTP RequestV2 (`SWOOLE_RS_HTTP_REQUEST_V2`, off by default, and no longer
-compatible: the receive callback reads the legacy request in place): with M04's Rust
-request, the HTTP receive callback's ops and `destroy_http_request` use typed
-allocation/reuse/access/delete. The HTTP/2 stream flag does not choose the deletion type.
-Cleanup keeps multipart and borrowed buffers, and teardown never touches the
-socket buffer M08 has already released. A ports-only build must compile without
-HTTP Rust symbols.

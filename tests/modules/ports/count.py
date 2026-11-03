@@ -33,7 +33,14 @@ def main(signatures=None,witness=None,scope=None,support=None,source_path="src/s
         (folder/side).mkdir(exist_ok=True)
         (folder/side/'body.inc').write_text('\n'.join(body_extractor(read(source_path),signature)for signature in signatures))
         for name,(source,signature)in (support or {}).items():
-            raw=read(source);(folder/side/name).write_text(accessor(raw,signature) if signature else raw);report['support'][name]={'source':source,'signature':signature}
+            raw=read(source);text=raw
+            if signature:
+                # A free function the hybrid defines in Rust under its upstream symbol comes from
+                # the archive, as in the hybrid build. Witnesses include support files directly
+                # inside their side's namespace, so the declaration steps out of it.
+                function=signature.split('(')[0].split()[-1].lstrip('*')
+                text=accessor(raw,signature) if side=='original' or signature in raw or '::' in function else f'}}\n{signature};\nnamespace {side} {{\nusing ::{function};\n'
+            (folder/side/name).write_text(text);report['support'][name]={'source':source,'signature':signature}
         if extra_support:
             report.setdefault('extra_support',{})[side]=extra_support(folder/side,a,read)
     def checked_space():

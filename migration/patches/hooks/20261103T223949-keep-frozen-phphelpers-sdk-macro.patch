@@ -1,0 +1,16 @@
+diff --git a/ext-src/php_swoole_cxx.h b/ext-src/php_swoole_cxx.h
+index 16230c9..6ea3708 100644
+--- a/ext-src/php_swoole_cxx.h
++++ b/ext-src/php_swoole_cxx.h
+@@ -603,2 +603,11 @@ class Callable {
+ 
++#define SW_CONCURRENCY_HASHMAP_LOCK(code)                                                                              \
++    if (locked_) {                                                                                                     \
++        code;                                                                                                          \
++    } else {                                                                                                           \
++        lock_.lock();                                                                                                  \
++        code;                                                                                                          \
++        lock_.unlock();                                                                                                \
++    }
++
+ namespace function {

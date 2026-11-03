@@ -53,8 +53,6 @@ pub use proxy::{
 mod range;
 mod range_response;
 pub use range_response::{HttpRangeFinish, HttpRangeFormat, swr_v1_http_range_format};
-mod request_context;
-pub use request_context::*;
 mod request_lifecycle;
 pub use request_lifecycle::swr_v1_http_request_lifecycle;
 mod rewrite;

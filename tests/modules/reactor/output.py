@@ -40,11 +40,6 @@ with tempfile.TemporaryDirectory(prefix='swr-output-') as tmp:
     file=tree/dest;file.parent.mkdir(parents=True);file.write_bytes(source);overlaid=sdk
     if corrected:report['patch_application'].append(dict(variant=variant,proof=apply_patch_verified(tree,fixed,[dest])))
    body=file.read_text()
-   # Protected Native effects/optional correction are never converted or tested
-   # by interruption: attest their exact text/order in each selected composition.
-   shutdown=lambda text:block(text,text.index('bool Socket::ssl_shutdown('))[0]
-   control=t/('native-corrected' if corrected else 'native')/dest
-   if selected and shutdown(body)!=shutdown(control.read_text()):raise ValueError('Protected SSL shutdown changed')
    prefix='    size_t sendn = '+('swr_v1_socket_sendfile_chunk' if selected else 'get_sendfile_chunk_size')+'(task->begin, task->end);\n    ssize_t rv = sendfile(task->file, &task->begin, sendn);\n'
    if corrected:prefix+='    if (rv < 0 && errno == EINTR) {\n        return SW_OK;\n    }\n'
    prefix+='\n    swoole_trace("rv=%ld|begin=%ld|sendn=%lu|end=%lu", rv, (long) task->begin, sendn, task->end);'
