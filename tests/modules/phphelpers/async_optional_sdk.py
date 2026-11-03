@@ -20,6 +20,16 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def rust_library(crate):
+    """Build a crate as the workspace does and return its rlib."""
+    built = subprocess.run(['cargo', 'build', '--locked', '--release', '-p', crate, '--message-format=json'],
+                           cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    name = crate.replace('-', '_')
+    return next(Path(path) for line in built.splitlines() if line.startswith('{')
+                for message in [json.loads(line)] if message.get('reason') == 'compiler-artifact'
+                and message['target']['name'] == name for path in message['filenames'] if path.endswith('.rlib'))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
@@ -63,9 +73,14 @@ def main():
             unit.parent.mkdir()
             unit.write_bytes(subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':' + name]) if engine == 'native'
                              else (Path(sdk['hybrid_source']) / name).read_bytes())
-            # The pinned callers are the inventory; the hybrid's may move into Rust.
-            if engine == 'native' and unit.read_text().count('php_swoole_async(') != len(expected):
+            # The pinned callers are the inventory; the hybrid's may move into Rust whole.
+            callers = unit.read_text().count('php_swoole_async(')
+            if callers not in ({len(expected)} if engine == 'native' else {0, len(expected)}):
                 raise ValueError('Optional async caller inventory changed: ' + engine)
+            # Moved: the provider's Rust crate defines the wrappers, and the TU hands it the coroutine ops.
+            in_rust = engine == 'hybrid' and callers == 0
+            if in_rust:
+                report['rust_library'] = str(rust_library('swoole-rs-' + provider))
             for standard in ['c++14', 'c++17']:
                 row = next(item for item in sdk['commands'] if item['engine'] == engine and item['cpp_standard'] == standard and not item['stdext_enabled'] and item['unit'].endswith('php_swoole_cxx.cc'))
                 old_profile = Path(sdk['work']) / (engine + '-profile-False')
@@ -96,9 +111,10 @@ def main():
                     symbols = run_isolated(['nm', '-u', str(obj)], timeout=20)
                     observed.update(nm_exit=symbols.returncode,
                                     undefined_symbols=symbols.stdout, nm_stderr=symbols.stderr)
-                    imported = 'swr_v1_phphelpers_async' in symbols.stdout
+                    imported = ('swr_v1_' + provider + '_init' if in_rust else 'swr_v1_phphelpers_async') in symbols.stdout
                     observed['expected_async_import'] = symbols.returncode == 0 and not symbols.stderr and imported == (engine != 'native')
-                    defined = run_isolated(['nm', '-g', str(obj)], timeout=20)
+                    # An rlib's metadata members have no symbols; --quiet keeps nm from saying so.
+                    defined = run_isolated(['nm', '-g', '--defined-only', *(['--quiet', report['rust_library']] if in_rust else [str(obj)])], timeout=20)
                     wrappers = sorted(set(re.findall(r'\bT\s+_?(swoole_' + ('sqlite3' if provider == 'sqlite' else 'odbc') + r'_\w+)$', defined.stdout, re.M)))
                     observed.update(defined_nm_exit=defined.returncode, defined_nm_stderr=defined.stderr,
                                     defined_symbols=defined.stdout, defined_wrappers=wrappers,

@@ -818,8 +818,10 @@ fn tcp_connect_sync(
         return ret;
     }
     this.set(ACTIVE, true);
-    let shared = this.buffer(BUFFER_SHARED, 0);
+    // Only a proxy handshake reads the thread's shared buffer, which a thread
+    // that never set up SwooleTG doesn't have.
     if this.proxy_state(PROXY_SOCKS5) >= 0 {
+        let shared = this.buffer(BUFFER_SHARED, 0);
         let (data, length) = this.socks5_negotiate();
         if send(this, data, length, 0) < 0 {
             return ERR;
@@ -840,6 +842,8 @@ fn tcp_connect_sync(
         if send(this, data, length, 0) < 0 {
             return ERR;
         }
+        // After the pack, which may have grown it.
+        let shared = this.buffer(BUFFER_SHARED, 0);
         let n = recv(this, shared.str, shared.size, 0);
         if n <= 0 || !this.http_handshake(true, n.cast_unsigned()) {
             return ERR;
