@@ -9,7 +9,7 @@ import platform
 import signal
 import subprocess
 import tempfile
-from patching import check_git_environment, hybrid_corebase, prove_calls
+from patching import check_git_environment, hybrid_corebase, prove_calls, prove_definitions
 from cases import generate
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -109,8 +109,9 @@ def main():
                 run(['c++', *flags, '-c', src, '-o', obj])
                 run(['c++', *flags, ROOT / 'tests/modules/corebase/driver.cc', obj, *([archive] if engine == 'rust' else []), *link, '-o', binary])
                 report.setdefault('actual_calls', {})[engine] = prove_calls(binary,
-                    ['type_size', 'gcd', 'lcm', 'parse_stoi', 'itoa', 'radix', 'hex_mode', 'version', 'dirname'],
+                    ['type_size', 'parse_stoi', 'itoa', 'hex_mode', 'dirname'],
                     engine == 'rust', run, args.output.with_suffix('.' + engine))
+                report.setdefault('rust_definitions', {})[engine] = prove_definitions(obj, binary, engine == 'rust', run)
                 test_binary = work / (engine + '-original-tests')
                 run(['c++', *flags, original_driver, obj, *([archive] if engine == 'rust' else []), *link, '-o', test_binary])
                 run([test_binary])

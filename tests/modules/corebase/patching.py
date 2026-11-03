@@ -10,7 +10,10 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.build_hybrid import hybrid_tree
 
-CALLS = ('type_size', 'gcd', 'lcm', 'parse_stoi', 'systemd_listen_fds_action', 'itoa', 'radix', 'hex_mode', 'version', 'dirname', 'mkdir_next', 'lifecycle_next', 'hook_add_action')
+CALLS = ('type_size', 'parse_stoi', 'systemd_listen_fds_action', 'itoa', 'hex_mode', 'dirname', 'mkdir_next', 'lifecycle_next', 'hook_add_action')
+# Upstream functions Rust defines under their own C++ symbols; the hybrid base.cc has no body.
+DEFINED = ('_Z21swoole_common_divisorjj', '_Z22swoole_common_multiplejj', '_Z22swoole_version_comparePKcS0_',
+           '_Z14swoole_dec2hexmi')
 
 
 def check_git_environment():
@@ -50,3 +53,19 @@ def prove_calls(binary, names, selected, run, prefix):
     if not selected and b'swr_v1_corebase_' in nm:
         raise ValueError('Original comparator unexpectedly contains corebase Rust symbols')
     return {'calls': calls, 'definitions': definitions}
+
+
+def prove_definitions(obj, binary, selected, run):
+    """The original base.o defines each DEFINED symbol; the hybrid base.o leaves it to the
+    Rust archive, so the linked binary defines it."""
+    def defined(path):
+        listing = run(['nm', '-g', path]).decode(errors='replace')
+        return {name for name in DEFINED if re.search(r'\b[Tt] _?' + re.escape(name) + r'\s*$', listing, re.M)}
+    own = defined(obj)
+    rust = defined(binary) if selected else set()
+    if selected and (own or rust != set(DEFINED)):
+        raise ValueError('The Rust archive must define these, and the hybrid base.cc must not: '
+                         + ', '.join(sorted((set(DEFINED) - rust) | own)))
+    if not selected and own != set(DEFINED):
+        raise ValueError('Original base.cc lacks an upstream definition: ' + ', '.join(sorted(set(DEFINED) - own)))
+    return {'base_defines': sorted(own), 'rust_defines': sorted(rust)}
