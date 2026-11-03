@@ -8,8 +8,7 @@
 use crate::{
     header,
     host::{
-        self, CO_SOCKET, Context, HTTP2, NO_PAYLOAD, swr_http_host_buffer, swr_http_host_close,
-        swr_http_host_compressed_body, swr_http_host_file_type, swr_http_host_flush,
+        self, CO_SOCKET, Context, HTTP2, NO_PAYLOAD, swr_http_host_close, swr_http_host_file_type,
         swr_http_host_http2, swr_http_host_send, swr_http_host_sendfile,
     },
     state::State,
@@ -46,24 +45,23 @@ pub(crate) fn send(ctx: *mut Context, data: &[u8]) -> bool {
 }
 
 /// Clear the write buffer and copy `parts` into it (no send).
-fn buffer(ctx: *mut Context, [head, body, tail]: [&[u8]; 3]) {
-    // SAFETY: a live context and the three spans.
-    unsafe {
-        swr_http_host_buffer(
-            ctx,
-            head.as_ptr().cast(),
-            head.len(),
-            body.as_ptr().cast(),
-            body.len(),
-            tail.as_ptr().cast(),
-            tail.len(),
-        );
+fn buffer(ctx: *mut Context, parts: [&[u8]; 3]) {
+    let buffer = state(ctx).write_buffer.get_or_insert_default();
+    buffer.clear();
+    for part in parts {
+        buffer.extend_from_slice(part);
     }
 }
 
+/// Send the write buffer. It stays the context's until the next `buffer`, so
+/// a send that waits for the socket still reads it.
 fn flush(ctx: *mut Context) -> bool {
-    // SAFETY: a live context.
-    unsafe { swr_http_host_flush(ctx) }
+    let (data, length) = state(ctx)
+        .write_buffer
+        .as_ref()
+        .map_or((ptr::null(), 0), |buffer| (buffer.as_ptr(), buffer.len()));
+    // SAFETY: a live context and the buffer's `length` bytes.
+    unsafe { swr_http_host_send(ctx, data.cast(), length) }
 }
 
 fn close(ctx: *mut Context) {
@@ -195,7 +193,7 @@ fn body(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bailout> {
     };
     let mut large = false;
     header::header(state(ctx), pointer, length, |state, head| {
-        let body = sent_body(ctx, state, raw);
+        let body = sent_body(state, raw);
         large = body.len() > MAX_APPEND_DATA;
         buffer(ctx, [head, if large { b"" } else { body }, b""]);
     })?;
@@ -211,7 +209,7 @@ fn body(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bailout> {
         state(ctx).send_header = 0;
         return Ok(false);
     }
-    let body = sent_body(ctx, state(ctx), raw);
+    let body = sent_body(state(ctx), raw);
     if send(ctx, body) {
         return Ok(true);
     }
@@ -221,16 +219,14 @@ fn body(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bailout> {
 }
 
 /// The body as sent: the compressed bytes when the header compressed it.
-fn sent_body<'a>(ctx: *mut Context, state: &State, raw: &'a [u8]) -> &'a [u8] {
+fn sent_body<'a>(state: &State, raw: &'a [u8]) -> &'a [u8] {
     if raw.is_empty() || state.content_compressed == 0 {
         return raw;
     }
-    let mut length = 0;
-    // SAFETY: a live context whose zlib buffer `build` just filled; it lives
-    // until the next compression of this context.
-    let data = unsafe { swr_http_host_compressed_body(ctx, &raw mut length) };
-    // SAFETY: as above, `length` bytes.
-    unsafe { std::slice::from_raw_parts(data.cast(), length) }
+    let compressed = header::compressed(state);
+    // SAFETY: the body `header` just compressed; it lives until the next
+    // compression of this context.
+    unsafe { std::slice::from_raw_parts(compressed.as_ptr(), compressed.len()) }
 }
 
 /// `Context::send_file`: the header, then `length` bytes of `file` from

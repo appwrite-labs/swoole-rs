@@ -1037,7 +1037,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_multipart_parse(
 }
 
 /// `Context::set_compression_method`.
-fn compression_method(state: &mut State, at: *const u8, length: usize) {
+pub(crate) fn compression_method(state: &mut State, at: *const u8, length: usize) {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream truncates to uint32_t"
@@ -1052,19 +1052,6 @@ fn compression_method(state: &mut State, at: *const u8, length: usize) {
         let method = method as i8;
         state.compression_method = method;
     }
-}
-
-/// `Context::set_compression_method`, for the HTTP/2 server.
-/// # Safety
-/// `context` is a live context and `at` spans `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_compression_method(
-    context: *mut c_void,
-    at: *const c_char,
-    length: usize,
-) {
-    // SAFETY: per the caller.
-    compression_method(unsafe { &mut *context.cast::<State>() }, at.cast(), length);
 }
 
 unsafe extern "C" fn on_part_header_field(

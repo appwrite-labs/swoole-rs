@@ -161,16 +161,7 @@ unsafe extern "C" {
         value: *const c_char,
         length: usize,
     );
-    fn swr_h2s_date() -> *mut zend_string;
-    fn swr_h2s_compression_method(ctx: *mut c_void, value: *const c_char, length: usize);
     fn swr_h2s_compressible(ctx: *mut c_void, kind: *const c_char, length: usize) -> bool;
-    fn swr_h2s_compress(
-        ctx: *mut c_void,
-        data: *const c_char,
-        length: usize,
-        compressed: *mut usize,
-    ) -> *const c_char;
-    fn swr_h2s_compressed(ctx: *mut c_void, length: *mut usize) -> *const c_char;
     fn swr_h2s_in_coroutine() -> bool;
     fn swr_h2s_log(level: c_int, error: c_int, func: *const c_char, message: *const c_char);
     fn swr_h2s_error(code: c_int, always: c_int, message: *const c_char);
@@ -678,9 +669,8 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
         headers.add(b"server", b"swoole-http-server");
     }
     if missing & MISSING_DATE != 0 {
-        // SAFETY: a plain call.
-        let date = unsafe { swr_h2s_date() };
-        // SAFETY: the cached date string, owned by C++.
+        let date = swoole_rs_phphttp::http2::date();
+        // SAFETY: the cached date string.
         let date = unsafe { string::bytes(date) };
         headers.add(b"date", date);
     }
@@ -699,17 +689,12 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
     }
     if let Some(body) = body {
         let mut content_length = body.length;
-        let mut compressed = 0;
         // SAFETY: a live context; the body is only read when compression is accepted.
-        let encoding =
-            unsafe { swr_h2s_compress(ctx, body.data, body.length, &raw mut compressed) };
-        if !encoding.is_null() {
-            content_length = compressed;
-            // SAFETY: the context's static encoding name.
-            headers.add(
-                b"content-encoding",
-                unsafe { CStr::from_ptr(encoding) }.to_bytes(),
-            );
+        let compressed =
+            unsafe { swoole_rs_phphttp::http2::compress(ctx, bytes(body.data, body.length)) };
+        if let Some((encoding, compressed)) = compressed {
+            content_length = compressed.len();
+            headers.add(b"content-encoding", encoding.to_bytes());
         }
         headers.add(
             b"content-length",
@@ -916,10 +901,8 @@ fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
                 // Headers are sent: body failures must not permit a retry.
                 set(ctx, Field::End, 1);
                 if get(ctx, Field::ContentCompressed) != 0 {
-                    let mut length = 0;
-                    // SAFETY: a live context whose zlib buffer holds the compressed body.
-                    let zlib = unsafe { swr_h2s_compressed(ctx, &raw mut length) };
-                    body = bytes(zlib, length).to_vec();
+                    // SAFETY: a live context, which holds the compressed body.
+                    body = unsafe { swoole_rs_phphttp::http2::compressed(ctx) }.to_vec();
                     compressed = true;
                 }
                 facts.chunked = get(ctx, Field::SendChunked);
@@ -1542,8 +1525,8 @@ fn request_header(
             }
         }
         HEADER_ACCEPT_ENCODING if get(ctx, Field::EnableCompression) != 0 => {
-            // SAFETY: a live context and the header value.
-            unsafe { swr_h2s_compression_method(ctx, value.as_ptr().cast(), value.len()) };
+            // SAFETY: a live context.
+            unsafe { swoole_rs_phphttp::http2::compression_method(ctx, value) };
         }
         _ => {}
     }

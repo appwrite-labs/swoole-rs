@@ -34,11 +34,11 @@ pub use context::{
     swr_v1_phphttp_set_context,
 };
 pub use cookie::*;
-pub use header::{swr_v1_phphttp_compress, swr_v1_phphttp_date, swr_v1_phphttp_response_rshutdown};
+pub use header::{swr_v1_phphttp_response_rshutdown, swr_v1_phphttp_set_compressed};
 pub use parse::{
-    swr_v1_phphttp_compression_method, swr_v1_phphttp_multipart_boundary,
-    swr_v1_phphttp_multipart_init, swr_v1_phphttp_multipart_parse, swr_v1_phphttp_parse,
-    swr_v1_phphttp_parse_free, swr_v1_phphttp_parse_minit,
+    swr_v1_phphttp_multipart_boundary, swr_v1_phphttp_multipart_init,
+    swr_v1_phphttp_multipart_parse, swr_v1_phphttp_parse, swr_v1_phphttp_parse_free,
+    swr_v1_phphttp_parse_minit,
 };
 pub use request::*;
 pub use response::*;
