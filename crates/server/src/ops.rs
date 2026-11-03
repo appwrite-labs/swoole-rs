@@ -523,31 +523,26 @@ pub const OP_SET_WAITING_TIME: u32 = 320;
 pub const OP_RESUME_TIMER: u32 = 321;
 /// The reactor reads the socket again and the timer is cleared.
 pub const OP_RESUME_READ: u32 = 322;
-/// Fills the receive task from the connection and data.
+/// Fills the receive task from the connection and data and traces it; the data's length.
 pub const OP_TASK_INIT: u32 = 323;
-pub const OP_DATA_LEN: u32 = 324;
-/// `recv_queued_bytes` += / -= arg.
-pub const OP_QUEUE_ADD: u32 = 325;
-pub const OP_QUEUE_SUB: u32 = 326;
-pub const OP_FACTORY_DISPATCH: u32 = 327;
-/// The connection's reactor thread counts a dispatch; the server and port count one.
-pub const OP_THREAD_DISPATCH_COUNT: u32 = 328;
-pub const OP_COUNT_DISPATCH: u32 = 329;
-pub const OP_JOIN_HEARTBEAT: u32 = 330;
+/// `recv_queued_bytes` += (traced) / -= arg.
+pub const OP_QUEUE_ADD: u32 = 324;
+pub const OP_QUEUE_SUB: u32 = 325;
+pub const OP_FACTORY_DISPATCH: u32 = 326;
+/// The server and port count a dispatch, and in process mode the connection's reactor thread.
+pub const OP_COUNT_DISPATCH: u32 = 327;
+pub const OP_JOIN_HEARTBEAT: u32 = 328;
 /// Reactor thread arg: joinable; notify it to shut down; join.
-pub const OP_THREAD_JOINABLE: u32 = 331;
-pub const OP_THREAD_NOTIFY: u32 = 332;
-pub const OP_THREAD_JOIN: u32 = 333;
+pub const OP_THREAD_JOINABLE: u32 = 329;
+pub const OP_THREAD_NOTIFY: u32 = 330;
+pub const OP_THREAD_JOIN: u32 = 331;
 /// Asks the connection's reactor thread to force-close session arg.
-pub const OP_SEND_CLOSE_FORCE: u32 = 334;
+pub const OP_SEND_CLOSE_FORCE: u32 = 332;
 
 pub const LOG_RECVFROM: u32 = 350;
 /// arg the session.
 pub const LOG_NO_SESSION: u32 = 351;
-/// arg the length.
-pub const TRACE_DISPATCH: u32 = 352;
-pub const TRACE_QUEUED: u32 = 353;
-pub const TRACE_HEARTBEAT_JOIN: u32 = 354;
+pub const TRACE_HEARTBEAT_JOIN: u32 = 352;
 
 // `ServerEventType` values on the reactor pipe.
 pub const EVENT_CLOSE_FORCE: u32 = 6;
