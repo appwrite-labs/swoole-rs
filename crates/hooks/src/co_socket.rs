@@ -258,17 +258,19 @@ fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
     unsafe { swoole_rs_reactor::swr_v1_socket_domain_and_type(socket_type, domain, kind) };
 }
 
-/// A socket record's defaults: not open, no buffers, nothing bound.
+/// A socket record's defaults (not open, no buffers, nothing bound), which every
+/// constructor writes first.
 ///
 /// # Safety
 /// `socket` is writable storage for one record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_init(socket: *mut CoSocket) {
+pub(crate) unsafe fn init(socket: *mut CoSocket) -> &'static mut CoSocket {
     // SAFETY: as the caller promises.
     unsafe { socket.write(CoSocket::new(swr_v1_hook_socket_state_new())) };
+    // SAFETY: just initialised; the native object owns it for its lifetime.
+    unsafe { &mut *socket }
 }
 
-/// Release what [`swr_v1_hook_co_socket_init`] made. Native code frees the buffers
+/// Release what a constructor made. Native code frees the buffers
 /// and the `network::Socket`.
 ///
 /// # Safety
@@ -282,14 +284,14 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_fini(socket: *mut CoSocket) {
     socket.state = ptr::null_mut();
 }
 
-/// The public constructors, after [`swr_v1_hook_co_socket_init`]:
+/// The public constructors, which initialise the record first:
 /// [`NEW_BY_FAMILY`] `Socket(domain, type, protocol)`, [`NEW_BY_TYPE`]
 /// `Socket(SocketType)`, [`NEW_FD_BY_TYPE`] `Socket(fd, SocketType)` and
 /// [`NEW_FD_BY_FAMILY`] `Socket(fd, domain, type, protocol)`. `owner` is the native
 /// `Socket`, which the new `network::Socket` points back to. Returns the bits above.
 ///
 /// # Safety
-/// `socket` is a live record without a `network::Socket`; `owner` is its native object.
+/// `socket` is writable storage for one record; `owner` is its native object.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_new(
     socket: *mut CoSocket,
@@ -302,7 +304,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_new(
     protocol: c_int,
 ) -> u32 {
     // SAFETY: as the caller promises.
-    let socket = unsafe { &mut *socket };
+    let socket = unsafe { init(socket) };
     let mut result = OPENED;
     match how {
         NEW_BY_FAMILY | NEW_FD_BY_FAMILY => {
@@ -374,7 +376,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_reinit(
 /// Returns [`swr_v1_hook_co_socket_new`]'s bits.
 ///
 /// # Safety
-/// `socket` is a fresh record, `server` a live one, `conn` a live accepted
+/// `socket` is writable storage for one record, `server` a live one, `conn` a live accepted
 /// `network::Socket` the record takes; `owner` is the record's native object.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_accepted(
@@ -384,7 +386,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_accepted(
     server: *const CoSocket,
 ) -> u32 {
     // SAFETY: as the caller promises.
-    let socket = unsafe { &mut *socket };
+    let socket = unsafe { init(socket) };
     // SAFETY: as the caller promises.
     let server = unsafe { &*server };
     socket.kind = server.kind;
@@ -506,7 +508,7 @@ mod tests {
 
     fn record() -> Box<CoSocket> {
         let mut storage = Box::new(MaybeUninit::<CoSocket>::uninit());
-        unsafe { swr_v1_hook_co_socket_init(storage.as_mut_ptr()) };
+        unsafe { init(storage.as_mut_ptr()) };
         unsafe { Box::from_raw(Box::into_raw(storage).cast::<CoSocket>()) }
     }
 
@@ -527,6 +529,8 @@ mod tests {
 
     fn new(socket: &mut CoSocket, how: c_int, fd: c_int, ty: c_int, d: c_int, k: c_int) -> u32 {
         let owner = (&raw mut *socket).cast();
+        // The constructor writes the record again.
+        unsafe { swr_v1_hook_co_socket_fini(socket) };
         unsafe { swr_v1_hook_co_socket_new(socket, owner, how, fd, ty, d, k, 0) }
     }
 
@@ -675,6 +679,7 @@ mod tests {
         let conn = swoole_rs_reactor::swr_v1_socket_make(fd, 0);
         let mut socket = record();
         let owner = (&raw mut *socket).cast();
+        unsafe { swr_v1_hook_co_socket_fini(&raw mut *socket) };
         let bits = unsafe {
             swr_v1_hook_co_socket_accepted(&raw mut *socket, owner, conn, &raw const *server)
         };

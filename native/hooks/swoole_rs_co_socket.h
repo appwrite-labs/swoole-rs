@@ -10,13 +10,6 @@
 #include "swoole_protocol.h"
 #include <stddef.h>
 
-struct swr_v1_co_socket;
-extern "C" {
-/* The defaults; releases what they made (native code frees the buffers and socket). */
-void swr_v1_hook_co_socket_init(swr_v1_co_socket *socket);
-void swr_v1_hook_co_socket_fini(swr_v1_co_socket *socket);
-}
-
 struct swr_v1_co_socket {
     int errCode;
     const char *errMsg;
@@ -42,18 +35,12 @@ struct swr_v1_co_socket {
     swoole::NameResolver::Context *resolve_context_;
     /* The coroutines, barriers and timers bound to each direction. */
     swr_v1_hook_socket_state *state_;
-
-    swr_v1_co_socket() {
-        swr_v1_hook_co_socket_init(this);
-    }
-    ~swr_v1_co_socket() {
-        swr_v1_hook_co_socket_fini(this);
-    }
-    swr_v1_co_socket(const swr_v1_co_socket &) = delete;
-    swr_v1_co_socket &operator=(const swr_v1_co_socket &) = delete;
 };
 
 extern "C" {
+/* The constructors write the whole record first; fini releases what they made
+ * (native code frees the buffers and the network::Socket). */
+void swr_v1_hook_co_socket_fini(swr_v1_co_socket *socket);
 /* The public constructors, by how: Socket(domain, type, protocol), Socket(SocketType),
  * Socket(fd, SocketType), Socket(fd, domain, type, protocol). owner is the Socket the
  * network::Socket points back to. Returns SWR_CO_SOCKET_OPENED unless socket(2) failed
