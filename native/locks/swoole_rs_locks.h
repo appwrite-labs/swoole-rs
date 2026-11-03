@@ -40,9 +40,8 @@ double swr_v1_locks_coroutine_backoff(double second, double initial, double maxi
 /* PHP Atomic classes (crates/phplocks). Rust registers the classes with its
  * method tables (the stubs' arginfo, crates/phpstubs), and the methods are its
  * zim_swoole_*atomic* exports. Atomic words come from `alloc`/`release` (the
- * global pool); thread words live in C++ ThreadResources made by `create`. */
+ * global pool). */
 struct _zend_class_entry;
-struct _zval_struct;
 void swr_v1_phplocks_atomic_minit(struct _zend_class_entry *exception,
                                   void *(*alloc)(uint32_t size),
                                   void (*release)(void *word));
@@ -54,12 +53,12 @@ void swr_v1_phplocks_lock_minit(int32_t module_number,
                                 struct _zend_class_entry *exception,
                                 void *(*alloc)(uint32_t size), void (*unconstructed)(void));
 #ifdef SW_THREAD /* config.h: ZTS builds with thread support */
-void swr_v1_phplocks_thread_atomic_minit(void *(*create)(int32_t is_long, int64_t value, void **word),
-                                         void (*del_ref)(void *resource),
-                                         struct _zend_class_entry **atomic_class,
-                                         struct _zend_class_entry **long_class);
-void *swr_v1_phplocks_thread_atomic_resource(const struct _zval_struct *object);
-void swr_v1_phplocks_thread_atomic_create(struct _zval_struct *return_value, int32_t is_long, void *resource, void *word);
+/* Swoole\Thread\Atomic, Atomic\Long and Lock, whose resources Thread\Map,
+ * ArrayList and Queue share. Thread\Lock takes Swoole\Lock's types, so its MINIT
+ * follows swr_v1_phplocks_lock_minit; `unconstructed` is
+ * php_swoole_fatal_error(E_ERROR, "%s", message). */
+void swr_v1_phplocks_thread_atomic_minit(void);
+void swr_v1_phplocks_thread_lock_minit(void (*unconstructed)(const char *message));
 #endif
 #ifdef __cplusplus
 }
