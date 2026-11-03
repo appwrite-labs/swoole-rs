@@ -1028,7 +1028,7 @@ unsafe extern "C" fn reap_reload_task<H: PoolHost>(ctx: *mut c_void) -> *mut Rel
 /// `status` and `error` are writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_process_reap_wait(
-    _: *mut c_void,
+    _ctx: *mut c_void,
     nonblock: bool,
     status: *mut c_int,
     error: *mut c_int,

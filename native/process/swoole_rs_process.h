@@ -258,12 +258,12 @@ typedef struct {
 #define SWR_POOL_RAISE INT64_MIN
 int64_t swr_v1_process_pool_create(const swr_v1_pool_native *native, void *pool, uint32_t worker_num, int key, uint8_t mode);
 int64_t swr_v1_process_pool_run_op(const swr_v1_pool_native *native, void *pool, void *worker, uint32_t operation, uint64_t arg);
-int64_t swr_v1_process_pool_push(const swr_v1_pool_native *native, void *pool, uint8_t type, const void *data, size_t length);
+int64_t swr_v1_process_pool_push(const swr_v1_pool_native *native, void *pool, uint8_t kind, const void *data, size_t length);
 int64_t swr_v1_process_pool_dispatch_event(const swr_v1_pool_native *native, void *pool, void *event, int *worker_id, bool blocking);
 /* The reap loop's wait: wait(), or waitpid(-1, WNOHANG) when `nonblock`. */
-int swr_v1_process_reap_wait(void *ctx, bool nonblock, int *status, int *error);
+int swr_v1_process_reap_wait(void *_ctx, bool nonblock, int *status, int *error);
 /* swoole_get_worker_symbol's mark for a worker type. */
-char swr_v1_worker_symbol(int type);
+char swr_v1_worker_symbol(int kind);
 #define SWR_POOL_OP_HAVE_MSGQUEUE 0
 #define SWR_POOL_OP_ALLOC_WORKERS 1
 #define SWR_POOL_OP_NEW_MESSAGE_BOX 2
