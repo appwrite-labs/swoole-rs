@@ -192,6 +192,8 @@ pub unsafe extern "C" fn swr_v1_phphttp_context_free(ctx: *mut Context) {
         // SAFETY: the context's reference to its socket.
         unsafe { zval_ptr_dtor(&raw mut state.zsocket) };
     }
+    state.write_buffer = None;
+    state.compressed = None;
     // SAFETY: nothing references the context any more.
     unsafe { swr_http_host_context_delete(ctx) };
 }

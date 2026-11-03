@@ -178,7 +178,7 @@ void swr_http_host_set_upload_tmp_dir(void *context, const char *dir, size_t len
  * callbacks over swoole::http::ContextState, whose layout state.rs mirrors.
  * `context` is a swoole::http::Context. MINIT passes the codecs built in
  * (1 zlib, 2 brotli, 4 zstd, 8 any). */
-enum { SWR_PHPHTTP_PARSE_SIZE = 144, SWR_PHPHTTP_STATE_SIZE = 712 };
+enum { SWR_PHPHTTP_PARSE_SIZE = 144, SWR_PHPHTTP_STATE_SIZE = 728 };
 void swr_v1_phphttp_parse_minit(uint32_t codecs);
 size_t swr_v1_phphttp_parse(void *context, const char *data, size_t length);
 void swr_v1_phphttp_parse_free(void *context);
@@ -186,7 +186,6 @@ bool swr_v1_phphttp_multipart_boundary(void *context, const char *at, size_t len
     char **boundary, int *boundary_length);
 bool swr_v1_phphttp_multipart_init(void *context, const char *boundary, int length);
 bool swr_v1_phphttp_multipart_parse(void *context, const char *at, size_t length);
-void swr_v1_phphttp_compression_method(void *context, const char *at, size_t length);
 /* What the parser asks of Swoole. `swr_http_host_log` is swoole_error_log
  * (error > 0), swoole_warning (0) or swoole_sys_warning (-errno) from `func`. */
 void swr_http_host_log(int level, int error, const char *func, const char *message);
@@ -196,33 +195,26 @@ const char *swr_http_host_upload_tmp_dir(const void *context);
 int swr_http_host_tmpfile(char *path);
 const char *swr_http_host_http2_data(void *context, size_t *length);
 
-/* Body compression for the HTTP/2 server (crates/phphttp/src/header.rs). */
-bool swr_v1_phphttp_compress(void *context, const char *data, size_t length);
+/* brotli/zstd output (swr_http_host_compress_other) as the context's
+ * compressed body (crates/phphttp/src/header.rs). */
+void swr_v1_phphttp_set_compressed(void *context, const char *data, size_t length);
 /* Context::end (crates/phphttp/src/send.rs): true if a bailout was trapped,
  * which the caller re-raises. */
 bool swr_v1_phphttp_end(void *context, struct _zend_string *data, struct _zval_struct *return_value);
 /* What send.rs asks of the context: http_response_after (true on a bailout),
- * the write buffer (cleared, then three parts appended) and sending it, a
- * direct send or sendfile, the compressed body, the HTTP/2 server's end, write
+ * a send or sendfile, the HTTP/2 server's end, write
  * and send_file (-1 on a bailout), a default Content-Type, and the WebSocket
  * handshake's compression offer and connection status. */
 enum { SWR_PHPHTTP_HTTP2_END = 0, SWR_PHPHTTP_HTTP2_WRITE = 1, SWR_PHPHTTP_HTTP2_SEND_FILE = 2, SWR_PHPHTTP_HTTP2_PING = 3 };
 bool swr_http_host_after(void *context);
-void swr_http_host_buffer(void *context, const char *head, size_t head_length, const char *body, size_t body_length,
-    const char *tail, size_t tail_length);
-bool swr_http_host_flush(void *context);
 bool swr_http_host_send(void *context, const char *data, size_t length);
 bool swr_http_host_sendfile(void *context, struct _zend_string *file, int64_t offset, size_t length);
-const char *swr_http_host_compressed_body(const void *context, size_t *length);
 int swr_http_host_http2(void *context, int op, struct _zend_string *data, int64_t offset, size_t length);
 void swr_http_host_file_type(void *context, struct _zend_string *file);
-/* What they ask of the context: brotli/zstd (1 done, 0 failed, -1 not built),
- * the zlib_buffer, whether a content type is compressible (a null type asks
- * whether the server lists types). */
+/* What they ask of the context: brotli/zstd (1 done, 0 failed, -1 not built)
+ * and whether a content type is compressible (a null type asks whether the
+ * server lists types). */
 int swr_http_host_compress_other(void *context, int method, const char *data, size_t length);
-char *swr_http_host_compression_buffer(void *context, size_t size);
-void swr_http_host_compressed(void *context, size_t length);
-size_t swr_http_host_compressed_length(const void *context);
 bool swr_http_host_compression_type(const void *context, const char *type, size_t length);
 /* Calls that can run user code (a value's __toString while building the
  * response, exit() in it) trap a Zend bailout in C++: request_create,
@@ -240,11 +232,10 @@ int swr_http_host_object_kind(struct _zval_struct *object, int64_t *fd);
 void *swr_http_host_server(void);
 void *swr_http_host_bind(void *context, void *server, struct _zval_struct *socket);
 /* Rust's side of the context: a new context's request and response objects,
- * Context::set_header (re-raising a bailout itself), and the cached Date
- * header (php_swoole_http_get_date) and its RSHUTDOWN. */
+ * Context::set_header (re-raising a bailout itself), and the RSHUTDOWN of the
+ * cached Date header. */
 void swr_v1_phphttp_context_objects(void *ctx, int64_t fd);
 bool swr_v1_phphttp_set_header(void *ctx, const char *key, size_t length, struct _zval_struct *value, bool format);
-struct _zend_string *swr_v1_phphttp_date(void);
 void swr_v1_phphttp_response_rshutdown(void);
 /* Context::free (crates/phphttp/src/context.rs) and what it and the response's
  * release ask of C++: a coroutine socket's state, a server connection's,
