@@ -132,10 +132,18 @@ pub(crate) fn token<const N: usize>() -> [u8; N] {
     random.map(|byte| CHARACTERS[usize::from(byte) % CHARACTERS.len()])
 }
 
+// libc declares getentropy for glibc but not musl, which has had it since 1.1.20.
+#[cfg(target_env = "musl")]
+unsafe extern "C" {
+    fn getentropy(buffer: *mut libc::c_void, length: libc::size_t) -> libc::c_int;
+}
+#[cfg(not(target_env = "musl"))]
+use libc::getentropy;
+
 fn fill_random(out: &mut [u8]) {
     for chunk in out.chunks_mut(256) {
         // SAFETY: a writable buffer of at most 256 bytes, getentropy's limit.
-        let failed = unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } != 0;
+        let failed = unsafe { getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } != 0;
         if failed {
             // Fall back to the clock rather than leave a predictable zero token.
             let seed = std::time::SystemTime::now()
