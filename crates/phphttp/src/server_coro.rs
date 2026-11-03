@@ -441,8 +441,10 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         fail: start_fail,
     };
     // SAFETY: the host below and the local policy table.
-    let accepted = unsafe { swr_v1_httpbindings_accept_loop(&raw const host, &raw const errors) };
-    Ok(Some(accepted == 1))
+    match unsafe { swr_v1_httpbindings_accept_loop(&raw const host, &raw const errors) } {
+        -2 => Err(bailout::Bailout),
+        accepted => Ok(Some(accepted == 1)),
+    }
 }
 
 /// The `start` frame the accept loop's host callbacks read (`AcceptHost::data`).

@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 CASES = ['atomic_coercion', 'process_signal', 'table_column', 'table_conversion', 'timer_after',
-         'event_del', 'cookie_name', 'http_client_file']
+         'event_del', 'cookie_name', 'http_client_file', 'server_coro_accept']
 SCRIPT = Path(__file__).with_name('error_handler_bailout.php')
 
 

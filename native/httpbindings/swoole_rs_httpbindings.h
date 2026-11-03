@@ -76,7 +76,9 @@ uint32_t swr_v1_httpbindings_server_level(int64_t);
 int32_t swr_v1_httpbindings_handler(swr_v1_httpbindings_text, swr_v1_httpbindings_text);
 typedef struct {int32_t per_process,system,timeout,bad_ssl,canceled;} swr_v1_httpbindings_accept_errors;
 /* Upstream's Coroutine\Http\Server::start accept loop over its host's effects:
- * 1 is RETURN_TRUE, 0 RETURN_FALSE after a failed accept. */
+ * 1 is RETURN_TRUE, 0 RETURN_FALSE after a failed accept, -2 when `accept`
+ * returned SWR_HTTPBINDINGS_ACCEPT_BAILED (it trapped a bailout to re-raise). */
+#define SWR_HTTPBINDINGS_ACCEPT_BAILED INT64_MIN
 typedef struct {
     void *data;
     bool (*running)(void *);
