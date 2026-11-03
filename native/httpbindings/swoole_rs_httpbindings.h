@@ -103,25 +103,23 @@ struct _zend_class_entry *swr_v1_phphttp_response_minit(void);
 struct _zend_class_entry *swr_v1_phphttp_server_coro_minit(struct _zend_class_entry *exception, bool short_name,
     bool compression);
 void swr_v1_phphttp_server_coro_http2_request(void *context, void *http1, void *server);
-/* What it asks of swoole::coroutine::HttpServer (`server`), its coroutine
- * sockets (`sock`), a socket's read buffer (`buffer`, a swoole::String) and
- * the contexts it creates. swr_hsc_call is 1 called, 0 failed, -1 bailed out. */
+/* What it asks of C++: the settings the contexts copy that stay C++
+ * (`settings`, an HttpServerSettings), the coroutine sockets (`sock`), a
+ * socket's read buffer (`buffer`, a swoole::String) and the contexts it
+ * creates. swr_hsc_call is 1 called, 0 failed, -1 bailed out. */
 typedef struct {
     struct _zend_string *remote_addr;
     struct _zend_string *server_addr;
     int remote_port;
     int server_port;
 } swr_hsc_peer_t;
-void *swr_hsc_new(const char *host, size_t length);
-void swr_hsc_delete(void *server);
-void *swr_hsc_listener(void *server);
-bool *swr_hsc_running(void *server);
-struct _zval_struct *swr_hsc_clients(void *server);
-bool swr_hsc_set_handler(void *server, const char *pattern, size_t length, struct _zval_struct *callable);
-void *swr_hsc_handler(void *server, void *context);
+/* The listening socket for `host`, and the new server's settings. */
+void *swr_hsc_new(const char *host, size_t length, void **settings);
+void swr_hsc_delete(void *sock, void *settings);
+/* A zend::Callable, or null (*bailed: making it bailed out). */
+void *swr_hsc_callable(struct _zval_struct *callable, bool *bailed);
+void swr_hsc_callable_free(void *callable);
 int swr_hsc_call(void *callable, struct _zval_struct *args, bool coroutine);
-void swr_hsc_track(void *server, int64_t cid, struct _zval_struct *connection);
-void swr_hsc_untrack(void *server, int64_t cid);
 void swr_hsc_cancel(void *sock);
 bool swr_hsc_recv_waiting(void *sock);
 int64_t swr_hsc_cid(void);
@@ -132,15 +130,20 @@ int swr_hsc_error(void *sock, const char **message);
 void *swr_hsc_connection(struct _zval_struct *connection);
 void *swr_hsc_connection_buffer(void *sock);
 bool swr_hsc_ssl_handshake(void *sock);
-void swr_hsc_peer(void *server, void *sock, swr_hsc_peer_t *peer);
+void swr_hsc_peer(void *listener, void *sock, swr_hsc_peer_t *peer);
 ssize_t swr_hsc_recv(void *sock, void *buffer);
 void swr_hsc_recv_wait(void *sock, bool waiting);
 size_t swr_hsc_package_max_length(void *sock);
 void swr_hsc_extend(void *buffer, size_t size);
 void swr_hsc_send_all(void *sock, const char *data, size_t length);
-void *swr_hsc_context(void *server, void *sock, struct _zval_struct *connection);
+void *swr_hsc_context(void *settings, void *sock, struct _zval_struct *connection);
 void swr_hsc_add_server(void *context, swr_hsc_peer_t *peer);
-void swr_hsc_http2(void *server, void *context);
+/* HTTP/2 on the connection: the server's SETTINGS frame and frame-length
+ * protocol, each frame (*retval as recv_packet; the read buffer's data), and
+ * the sessions' request handler (a struct swr_h2s_request). */
+void swr_hsc_http2_begin(void *sock);
+const char *swr_hsc_recv_packet(void *sock, ssize_t *retval);
+void swr_hsc_http2_request(void *request);
 void swr_hsc_request_data(void *context, void *buffer, size_t length);
 bool swr_hsc_closed(struct _zval_struct *connection);
 /* `start`: the `onAccept` callable (0, 1 not callable, -1 bailed out), the
@@ -157,7 +160,8 @@ void swr_hsc_accept_errors(swr_v1_httpbindings_accept_errors *errors);
 /* *bailed: creating the onAccept coroutine bailed out; Rust re-raises it. */
 int64_t swr_hsc_accept(void *sock, void *callable, bool *connected, bool *bailed);
 void swr_hsc_sleep(void);
-int swr_hsc_setting(void *server, uint32_t kind, struct _zend_array *settings, struct _zval_struct *value);
+int swr_hsc_setting(
+    void *settings, uint32_t kind, struct _zend_array *table, struct _zval_struct *value, int64_t *result);
 void *swr_v1_phphttp_context(const struct _zend_object *object);
 void swr_v1_phphttp_set_context(struct _zend_object *object, void *context);
 

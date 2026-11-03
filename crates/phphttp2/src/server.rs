@@ -1125,6 +1125,15 @@ pub unsafe extern "C" fn swr_v1_phphttp2_session_parse(fd: i64, buf: *const c_ch
     result
 }
 
+/// `swr_v1_phphttp2_session_parse` for a Rust caller (the coroutine server's
+/// connection loop): a bailout stays pending for the caller's `finish`.
+/// # Safety
+/// As `swr_v1_phphttp2_session_parse`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp2_session_receive(fd: i64, buf: *const c_char) -> c_int {
+    SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, buf.cast()))
+}
+
 fn parse(session: &Session, buf: *const u8) -> c_int {
     let mut facts = Http2FrameFacts::default();
     let last_stream_id = session.last_stream_id.get();
