@@ -52,9 +52,9 @@ unsafe extern "C" {
         protocol: i64,
         error: *mut c_int,
     ) -> Socket;
-    /// `socket_coro_init`: zero-copy, the zend string allocator, and the fd,
-    /// domain, type and protocol properties of `object`'s socket.
-    pub(crate) fn swoole_socket_coro_init(object: *mut zend_object);
+    /// `socket_coro_init`'s socket half: zero copy and the zend string
+    /// allocator, then its fd, domain, type and protocol into `fields`.
+    pub(crate) fn swoole_socket_coro_adopt(socket: Socket, fields: *mut i64);
     /// `socket_coro_free_object` up to `zend_object_std_dtor`.
     pub(crate) fn swoole_socket_coro_release(object: *mut zend_object);
     /// `close()` after the reference check: free the length callable, then
@@ -232,7 +232,8 @@ unsafe extern "C" {
         name: c_int,
         array: *mut zval,
     ) -> c_int;
-    /// `import`'s object over an [`ImportCall`]; run inside `zend_try`.
+    /// `php_swoole_create_socket_from_fd` over an [`ImportCall`] (with a
+    /// stream, `import`'s object); run inside `zend_try`.
     pub(crate) fn swoole_socket_coro_import(call: *mut c_void);
 }
 
