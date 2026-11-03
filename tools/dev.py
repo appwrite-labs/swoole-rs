@@ -152,7 +152,7 @@ def plan(args, reports):
     variant = build_variant(args)
     manifest = ROOT / 'target/hybrid' / variant / 'build-manifest.json'
     hybrid = manifest.parent / 'modules/swoole.so'
-    captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines', 'coroutine'} & set(modules)) or {'http', 'corebase'} <= set(modules))
+    captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines', 'coroutine'} & set(modules)))
     native_variant = build_alias('upstream', [], profile_suffix(args))
     reference = (ROOT / 'target/hybrid' / native_variant / 'modules/swoole.so'
                  if captured_reference or getattr(args, 'stdext', False) or getattr(args, 'php_sockets', False) else ROOT / 'target/upstream/src/modules/swoole.so')
@@ -205,7 +205,8 @@ def plan(args, reports):
                *php, *engines, *report('error-php'))
     if integrate and {'http', 'corebase'} <= set(modules):
         script('http-boundary-rng', 'tests/modules/http/boundary_rng_gate.py',
-               '--source', ROOT / 'target/upstream/src', '--export', selected_export, *report('http-boundary-rng'))
+               '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-boundary-rng'))
     if 'http' in modules:
         script('http-context', 'tests/modules/http/context_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-context'))
