@@ -152,7 +152,7 @@ fn spawn_user_worker<H: Host>(h: &mut H) -> i64 {
 }
 
 /// `swoole::WorkerType::SW_USER_WORKER`.
-const USER_WORKER_TYPE: u64 = 4;
+const USER_WORKER_TYPE: u64 = 5;
 
 /// `Server::create_worker_pipes`.
 fn create_worker_pipes<H: Host>(h: &mut H) -> bool {

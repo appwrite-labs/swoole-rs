@@ -41,8 +41,13 @@ use crate::reaper::{RELOAD_KILL_ONE, RELOAD_NONE, RELOAD_SIGNALLED, RELOAD_SKIP,
 use crate::reload_task::{ReloadTask, Warn};
 
 /// `swoole::WorkerType`.
-const TASK_WORKER: u64 = 3;
-const USER_WORKER: u64 = 4;
+const TASK_WORKER: u64 = 4;
+const USER_WORKER: u64 = 5;
+
+#[cfg(test)]
+pub(super) fn worker_types() -> (u64, u64, u64) {
+    (EVENT_WORKER, TASK_WORKER, USER_WORKER)
+}
 
 /// What upstream's `struct Manager` held: the requested reloads, and the pids
 /// SIGALRM kills once `max_wait_time` runs out on shutdown. Signal handlers reach

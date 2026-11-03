@@ -25,8 +25,8 @@ use super::ops::{
 use super::{Host, SW_ERR, SW_OK};
 
 /// `swoole::WorkerType`.
-const TASK_WORKER: u64 = 3;
-const USER_WORKER: u64 = 4;
+const TASK_WORKER: u64 = 4;
+const USER_WORKER: u64 = 5;
 
 /// What the manager thread waits for.
 enum Wake {
@@ -300,6 +300,13 @@ fn start<H: Host>(h: &mut H) -> i64 {
 mod tests {
     use super::*;
     use crate::workers::script::Script;
+
+    #[test]
+    fn worker_types_are_upstreams() {
+        // swoole_process_pool.h: SW_EVENT_WORKER = 2, SW_TASK_WORKER = 4, SW_USER_WORKER = 5.
+        assert_eq!((EVENT_WORKER, TASK_WORKER, USER_WORKER), (2, 4, 5));
+        assert_eq!((super::super::manager::worker_types()), (2, 4, 5));
+    }
 
     fn run_op(h: &mut Script, operation: u32, arg: u64) -> i64 {
         crate::workers::run(h, operation, arg)
