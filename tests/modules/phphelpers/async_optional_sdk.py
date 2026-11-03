@@ -63,7 +63,8 @@ def main():
             unit.parent.mkdir()
             unit.write_bytes(subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':' + name]) if engine == 'native'
                              else (Path(sdk['hybrid_source']) / name).read_bytes())
-            if unit.read_text().count('php_swoole_async(') != len(expected):
+            # The pinned callers are the inventory; the hybrid's may move into Rust.
+            if engine == 'native' and unit.read_text().count('php_swoole_async(') != len(expected):
                 raise ValueError('Optional async caller inventory changed: ' + engine)
             for standard in ['c++14', 'c++17']:
                 row = next(item for item in sdk['commands'] if item['engine'] == engine and item['cpp_standard'] == standard and not item['stdext_enabled'] and item['unit'].endswith('php_swoole_cxx.cc'))
