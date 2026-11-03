@@ -2,6 +2,7 @@
 #ifndef SWOOLE_RS_COROUTINE_H
 #define SWOOLE_RS_COROUTINE_H
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 #ifdef __cplusplus
@@ -30,7 +31,17 @@ typedef struct {
 } swr_v1_coroutine_scheduler;
 enum { SWR_CO_ON_YIELD = 0, SWR_CO_ON_RESUME = 1, SWR_CO_ON_CLOSE = 2 };
 long swr_v1_coroutine_register(swr_v1_coroutine_scheduler *, swr_v1_coroutine *, void *native, long init_msec, long now);
-bool swr_v1_coroutine_admit(swr_v1_coroutine_scheduler *, size_t count);
+bool swr_v1_coroutine_admit(swr_v1_coroutine_scheduler *);
+/* The live coroutines (crates/coroutine/src/live.rs), per thread, from register
+ * until release; the void pointers are swoole::Coroutine facades. get: null if
+ * cid is not live. older: the newest live coroutine older than `before` (LONG_MAX
+ * starts a walk), its id in *cid, or null. print_list prints them to `out`. */
+void *swr_v1_coroutine_get(long cid);
+size_t swr_v1_coroutine_count(void);
+void *swr_v1_coroutine_older(long before, long *cid);
+void swr_v1_coroutine_iterator_reset(void);
+void *swr_v1_coroutine_iterator_each(void);
+void swr_v1_coroutine_print_list(FILE *out);
 void swr_v1_coroutine_set_active(swr_v1_coroutine_scheduler *, bool);
 void swr_v1_coroutine_set_stack_size(swr_v1_coroutine_scheduler *, size_t);
 void swr_v1_coroutine_bind_socket(swr_v1_coroutine_scheduler *, long cid);
