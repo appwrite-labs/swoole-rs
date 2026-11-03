@@ -11,7 +11,6 @@ use crate::{
         self, CO_SOCKET, Context, HTTP2, NO_PAYLOAD, swr_http_host_buffer, swr_http_host_close,
         swr_http_host_compressed_body, swr_http_host_file_type, swr_http_host_flush,
         swr_http_host_http2, swr_http_host_send, swr_http_host_sendfile,
-        swr_http_host_websocket_accept, swr_http_host_websocket_handshaked,
     },
     state::State,
 };
@@ -174,8 +173,7 @@ pub(crate) fn end(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bai
         return Ok(false);
     }
     if state(ctx).upgrade != 0 && flags & CO_SOCKET == 0 {
-        // SAFETY: a live server context.
-        unsafe { swr_http_host_websocket_handshaked(ctx) };
+        crate::websocket::handshaked(ctx);
     }
     if state(ctx).keepalive == 0 {
         close(ctx);
@@ -187,8 +185,7 @@ pub(crate) fn end(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bai
 /// The header and a whole body: one send, or two for a large body.
 fn body(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bailout> {
     if state(ctx).upgrade != 0 {
-        // SAFETY: a live context; offers permessage-deflate when built with zlib.
-        unsafe { swr_http_host_websocket_accept(ctx) };
+        crate::websocket::accept(ctx);
     }
     let raw = of(data);
     let (pointer, length) = if data.is_null() {

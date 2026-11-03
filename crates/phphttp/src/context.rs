@@ -3,16 +3,20 @@ use crate::{
     host::Context,
     parse::{self, Property},
     send,
-    state::Slot,
+    state::{Slot, State},
 };
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::{
+    ffi::c_void,
+    sync::atomic::{AtomicU32, Ordering::Relaxed},
+};
 use swoole_rs_zend::{
     Class, Object, init_object,
     sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_property_offset, zend_class_entry, zend_object,
-        zend_object_handlers, zval,
+        IS_NULL, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree,
+        swr_zend_http_property_offset, swr_zend_string_release, zend_class_entry, zend_object,
+        zend_object_handlers, zval, zval_ptr_dtor,
     },
-    unset_property_deny,
+    type_of, unset_property_deny, value,
     value::{obj_of, set_long},
 };
 
@@ -121,6 +125,75 @@ pub unsafe extern "C" fn swr_v1_phphttp_context_objects(ctx: *mut Context, fd: i
     parse::property(state, Property::Server);
     parse::property(state, Property::Header);
     state.fd = fd;
+}
+
+unsafe extern "C" {
+    /// `php_swoole_socket_is_closed`.
+    fn swr_http_host_socket_closed(socket: *const zval) -> bool;
+    /// The server still holds the session's connection, neither closed nor
+    /// closed by the peer.
+    fn swr_http_host_connection_open(server: *mut c_void, fd: i64) -> bool;
+    /// Free what C++ owns (the write and HTTP/2 data buffers) and the context.
+    fn swr_http_host_context_delete(ctx: *mut Context);
+}
+
+/// `Context::is_co_socket`: bound to a coroutine socket rather than a server.
+pub(crate) fn co_socket(state: &State) -> bool {
+    // SAFETY: the context's own zval.
+    unsafe { type_of(&raw const state.zsocket) != IS_NULL }
+}
+
+/// `Context::is_available`: the response can still reach its peer.
+pub(crate) fn available(ctx: *mut Context) -> bool {
+    let state = send::state(ctx);
+    if state.response.zobject.ptr.is_null() {
+        return false;
+    }
+    if co_socket(state) {
+        // SAFETY: the context's live socket zval.
+        return !unsafe { swr_http_host_socket_closed(&raw const state.zsocket) };
+    }
+    // SAFETY: the server the context is bound to.
+    unsafe { swr_http_host_connection_open(state.private_data, state.fd) }
+}
+
+/// `Context::free`: release the context once neither object nor an HTTP/2
+/// stream holds it.
+/// # Safety
+/// `ctx` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_context_free(ctx: *mut Context) {
+    let state = send::state(ctx);
+    if !state.request.zobject.ptr.is_null()
+        || !state.response.zobject.ptr.is_null()
+        || state.stream_id > 0
+    {
+        return;
+    }
+    if !state.request.path.is_null() {
+        // SAFETY: the path the parser copied into request memory.
+        unsafe { swr_zend_efree(state.request.path.cast()) };
+    }
+    // SAFETY: the context's own zval.
+    if unsafe { type_of(&raw const state.request.zdata) } == IS_STRING {
+        // SAFETY: a string zval.
+        let data = unsafe { value::str_of(&raw const state.request.zdata) };
+        // SAFETY: the received data the context holds.
+        unsafe { swr_zend_string_release(data) };
+    }
+    if !state.response.reason.is_null() {
+        // SAFETY: the reason `status()` copied into request memory.
+        unsafe { swr_zend_efree(state.response.reason.cast()) };
+    }
+    // SAFETY: a live context.
+    unsafe { parse::swr_v1_phphttp_parse_free(ctx) };
+    let state = send::state(ctx);
+    if co_socket(state) {
+        // SAFETY: the context's reference to its socket.
+        unsafe { zval_ptr_dtor(&raw mut state.zsocket) };
+    }
+    // SAFETY: nothing references the context any more.
+    unsafe { swr_http_host_context_delete(ctx) };
 }
 
 #[cfg(test)]

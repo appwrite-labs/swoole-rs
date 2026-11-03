@@ -120,6 +120,16 @@ pub(crate) struct State {
     pub(crate) end: u8,
     /// `send_trailer_`: `trailer()` set one.
     pub(crate) send_trailer: u8,
+    /// Upstream's `websocket_compression`, `detached` and `http2` bits.
+    pub(crate) websocket_compression: u8,
+    pub(crate) detached: u8,
+    pub(crate) http2: u8,
+    /// The coroutine socket; `IS_NULL` once bound to a server.
+    pub(crate) zsocket: zval,
+    /// The HTTP/2 stream, 0 once it is released.
+    pub(crate) stream_id: u32,
+    /// The `Server` or the coroutine `Socket`.
+    pub(crate) private_data: *mut c_void,
 }
 
 /// `swoole::http::Response`.
@@ -137,7 +147,7 @@ pub(crate) struct Response {
 
 /// `SWR_PHPHTTP_PARSE_SIZE` and `SWR_PHPHTTP_STATE_SIZE`.
 const _: () = assert!(size_of::<Parse>() == 144, "ext-src/php_swoole_http.h");
-const _: () = assert!(size_of::<State>() == 680, "ext-src/php_swoole_http.h");
+const _: () = assert!(size_of::<State>() == 712, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Response>() == 120, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Llhttp>() == 96, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Request>() == 272, "ext-src/php_swoole_http.h");
@@ -145,3 +155,15 @@ const _: () = assert!(
     std::mem::offset_of!(State, parse) == 400,
     "ext-src/php_swoole_http.h"
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_fields_follow_the_response_state() {
+        assert_eq!(std::mem::offset_of!(State, websocket_compression), 675);
+        assert_eq!(std::mem::offset_of!(State, zsocket), 680);
+        assert_eq!(std::mem::offset_of!(State, stream_id), 696);
+    }
+}

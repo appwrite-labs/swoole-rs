@@ -33,7 +33,9 @@ pub struct SocketState {
 }
 
 /// A new socket's state: not connected, nothing shut, no coroutine bound.
+/// The record makes its own; the hooks gates' socket facades use this.
 #[must_use]
+#[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_socket_state_new() -> *mut SocketState {
     Box::into_raw(Box::new(SocketState {
         flags: SocketFlags::default(),
@@ -130,6 +132,7 @@ pub unsafe extern "C" fn swr_v1_hook_socket_event_name(
 
 /// # Safety
 /// `state` is null or a handle from `swr_v1_hook_socket_state_new`, not used afterwards.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_socket_state_free(state: *mut SocketState) {
     if !state.is_null() {
         // SAFETY: a live handle from Box::into_raw, released once (see above).
