@@ -32,7 +32,7 @@ void call_accept(AcceptSocket*sock,AcceptServer*hs){
  Host h{sock,hs};swr_v1_httpbindings_accept_errors errors{};candidate_server::swr_hsc_accept_errors(&errors);
  swr_v1_httpbindings_accept_host host{&h,
   [](void*d){return effect(d,false,[](Host&h){return h.hs->running;});},
-  [](void*d,bool*connected){return effect(d,int64_t(0),[&](Host&h){return bool bailed=false;return candidate_server::swr_hsc_accept(h.sock,&h.accept,connected,&bailed);});},
+  [](void*d,bool*connected){return effect(d,int64_t(0),[&](Host&h){bool bailed=false;return candidate_server::swr_hsc_accept(h.sock,&h.accept,connected,&bailed);});},
   [](void*d,const char**message){*message="";return effect(d,0,[&](Host&h){return int32_t(candidate_server::swr_hsc_error(h.sock,message));});},
   [](void*d){effect(d,0,[](Host&){candidate_server::swr_hsc_sleep();return 0;});},
   [](void*d){effect(d,0,[](Host&h){http_server_coro_set_error(nullptr,h.sock);return 0;});},
