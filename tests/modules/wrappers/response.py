@@ -8,6 +8,7 @@ import sys
 import overlay
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
+from tools.build_hybrid import hybrid_tree
 from tools.harness import run_isolated,write_report
 from tools.build_upstream import require_build_space
 
@@ -20,8 +21,9 @@ def main(*, scope=None, witness=None, source_path="src/wrapper/http.cc", body_ex
     scope=scope or __doc__;witness=witness or Path(__file__).with_suffix(".cc")
     p=argparse.ArgumentParser(description=scope);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--core',type=Path);p.add_argument('--include',type=Path,action='append',default=[]);p.add_argument('--sanitize',action='store_true');p.add_argument('--rust-asan',action='store_true');a=p.parse_args();overlay.SOURCE=a.source
     if a.rust_asan and (not a.sanitize or '__asan_report_'not in subprocess.check_output(['nm','-u',str(a.archive)],text=True,stderr=subprocess.DEVNULL)):p.error('Actual instrumented archive and native sanitizer required')
-    folder=a.output.resolve().with_suffix('');folder.mkdir(parents=True,exist_ok=True);generated=overlay.generated();report={'scope':scope,'pin':overlay.PIN,'sdk':[],'native_instrumented':a.sanitize,'rust_instrumented':a.rust_asan,'passed':False,'native_io_executed':False,'whole_response_lifecycle_qualified':False,'performance_qualified':False}
-    for name,text in [('original',overlay.original(source_path)),('selected',generated[source_path])]:
+    folder=a.output.resolve().with_suffix('');folder.mkdir(parents=True,exist_ok=True);report={'scope':scope,'pin':overlay.PIN,'sdk':[],'native_instrumented':a.sanitize,'rust_instrumented':a.rust_asan,'passed':False,'native_io_executed':False,'whole_response_lifecycle_qualified':False,'performance_qualified':False}
+    # Original side from the pin, selected side from the hybrid build's fully patched tree.
+    for name,text in [('original',overlay.original(source_path)),('selected',(hybrid_tree(a.archive)[0]/source_path).read_text())]:
         (folder/(name+'.inc')).write_text(body_extractor(text))
     raw=overlay.original('src/core/base.cc');start=raw.index('size_t sw_snprintf(');end=raw.index('\nsize_t sw_vsnprintf',start);(folder/'format.inc').write_text(raw[start:end])
     report['source_path']=source_path

@@ -22,6 +22,7 @@ class Checkpoints(unittest.TestCase):
             with self.subTest(stop=stop),tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);archive=root/'inert.a';archive.write_bytes(b'no native archive')
                 core=root/'sdk';core.mkdir();(core/'config.h').write_text('inert metadata')
+                hybrid=root/'hybrid';(hybrid/'src/wrapper').mkdir(parents=True);(hybrid/'src/wrapper/http.cc').write_text(method)
                 output=root/'result.json';calls=[]
                 def guard(_):
                     calls.append(None)
@@ -32,7 +33,7 @@ class Checkpoints(unittest.TestCase):
                     if '-o'in command:Path(command[command.index('-o')+1]).write_bytes(b'inert executable metadata')
                     return Result()
                 argv=[str(HERE/'response.py'),'--source',str(root),'--archive',str(archive),'--core',str(core),'--output',str(output)]
-                with patch.object(sys,'argv',argv),patch.object(response.overlay,'generated',return_value={'src/wrapper/http.cc':method,'src/wrapper/event.cc':'inert'}),patch.object(response.overlay,'original',side_effect=original),patch.object(response,'run_isolated',side_effect=run),patch.object(response,'require_build_space',side_effect=guard),contextlib.redirect_stdout(io.StringIO()):
+                with patch.object(sys,'argv',argv),patch.object(response,'hybrid_tree',return_value=(hybrid,[])),patch.object(response.overlay,'original',side_effect=original),patch.object(response,'run_isolated',side_effect=run),patch.object(response,'require_build_space',side_effect=guard),contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaisesRegex(RuntimeError,'synthetic runner interruption'):response.main()
                 data=json.loads(output.read_text());self.assertFalse(data['passed']);self.assertEqual(data['execution_status'],'blocked_build_space');self.assertEqual(data['error'],'synthetic runner interruption')
                 self.assertEqual('run'in data,stop>1);self.assertEqual(len(data['sdk']),max(0,stop-2))
