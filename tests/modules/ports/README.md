@@ -14,9 +14,7 @@ class `Swoole\Server\Port` (registration, objects, every method) is
 `crates/phpserver`; its `set()` reaches the ListenPort/TLS block that stays C++
 (`port_apply_settings`) through `native/ports/swoole_rs_phpserver.h`. The
 `flags`, `options`, `packet_settings` and `tls_settings` gates extract that block;
-`callback_property` compares the original getter with the Rust one's body.
-`overlay.py` regenerates 0002 only: 0001 has been edited with `tools/patches.py`
-since (#764, #780). Native
+`callback_property` compares the original getter with the Rust one's body. Native
 code keeps allocation, Zend storage and conversions, syscalls, callbacks,
 warnings, cleanup, crypto, the HTTP request parser and request destruction.
 
@@ -26,14 +24,14 @@ warnings, cleanup, crypto, the HTTP request parser and request destruction.
 `PINNED_REFERENCE` is `target/upstream/src`, `SELECTED_ARCHIVE` the Rust FFI
 archive, `CONFIGURED_CORE` a configured upstream/hybrid `src` tree.
 
-Native differential gates (extract exact original and Rust-selected bodies from
-the overlay, compile both against scripted native effects, compare output):
+Native differential gates (extract exact original bodies from the pin and selected
+ones from the hybrid build's tree, compile both against scripted native effects,
+compare output):
 
 ```text
 python3 tests/modules/ports/gate.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --output REPORT [--sanitize] [--rust-asan]
 python3 tests/modules/ports/listen.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --output REPORT [--sanitize]
 python3 tests/modules/ports/socket_workflow.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --core CONFIGURED_CORE --output REPORT [--sanitize]
-python3 tests/modules/ports/native.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --core PREPARED_NATIVE_CORE --socket-io custody --output REPORT
 ```
 
 - `gate.py`: integer macros, event enum/catalog and protocol plan against the
@@ -42,9 +40,6 @@ python3 tests/modules/ports/native.py --source PINNED_REFERENCE --archive SELECT
 - `socket_workflow.py`: `create_socket` bodies, 1280 traces must match. Reads
   configured Makefile `INCLUDES`/`CPPFLAGS` as literal argv; shell expressions,
   unknown variables and cycles are rejected and no Make command runs.
-- `native.py`: complete native translation units plus PHP SDK syntax compile.
-  `--socket-io custody` uses real loopback TCP/UDP sockets and an occupied-port
-  bind failure. `--archive` skips the Rust rebuild.
 
 Exact-body model gates share the `count.py` runner (`main()`), which extracts the
 named bodies (original from the pin, selected from the hybrid build's tree), compiles
@@ -105,8 +100,6 @@ cd tests/modules/ports && python3 -m unittest test_configured_flags test_count_c
 - `configuration.py` fails in both engines: a throwing package-length
   Stringable makes both warn and fatally reject the length type instead of
   propagating the exception. The conversion block is still native.
-- `native.py --socket-io probe` fails on macOS in both engines: pre-listen
-  `SO_ACCEPTCONN` returns `ENOPROTOOPT`.
 - On macOS the original `heartbeat_3` PHPT (upstream TODO) and the Linux-only
   length big-packet PHPT skip, so the strict Mac originals gate stays false.
 - A Rust float conversion for `max_idle_time` failed on signaling NaN with Apple
