@@ -174,6 +174,7 @@ pub unsafe extern "C" fn swr_v1_reactor_callbacks_next(
     next_metadata(unsafe { owner.as_ref() }, kind, cursor, previous, token)
 }
 
+#[inline]
 fn next_metadata(
     owner: Option<&ReactorCallbacks>,
     kind: u32,
@@ -181,6 +182,28 @@ fn next_metadata(
     previous: u32,
     token: &mut usize,
 ) -> i32 {
+    // The common step: an end callback returned and the walk goes on to the next entry.
+    if kind == 0
+        && cursor.phase == 1
+        && let Some(owner) = owner
+    {
+        let entries = &owner.entries[0];
+        if entries
+            .get(cursor.index)
+            .is_some_and(|entry| entry.key == cursor.key)
+        {
+            return if let Some(entry) = entries.get(cursor.index + 1) {
+                cursor.key = entry.key;
+                cursor.index += 1;
+                *token = entry.token;
+                1
+            } else {
+                cursor.phase = 2;
+                *token = 0;
+                0
+            };
+        }
+    }
     *token = 0;
     if cursor.phase == 3 {
         return 2;
