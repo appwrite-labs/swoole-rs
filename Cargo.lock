@@ -445,6 +445,7 @@ dependencies = [
  "swoole-rs-protocols",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-ssh2",
  "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-utilities",
@@ -749,6 +750,21 @@ dependencies = [
 
 [[package]]
 name = "swoole-rs-server"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "swoole-rs-ssh2"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-ssh2-sys",
+]
+
+[[package]]
+name = "swoole-rs-ssh2-sys"
 version = "0.1.0"
 dependencies = [
  "libc",

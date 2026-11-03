@@ -179,3 +179,6 @@ pub use swoole_rs_firebird as firebird;
 
 #[cfg(feature = "curl")]
 pub use swoole_rs_curl as curl;
+
+#[cfg(feature = "ssh2")]
+pub use swoole_rs_ssh2 as ssh2;
