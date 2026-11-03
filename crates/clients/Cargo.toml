@@ -11,6 +11,7 @@ crate-type = ["rlib"]
 [dependencies]
 swoole-rs-base64 = { path = "../base64" }
 swoole-rs-websocket = { path = "../websocket" }
+swoole-rs-reactor = { path = "../reactor" }
 libc = "=0.2.191"
 
 [lints]

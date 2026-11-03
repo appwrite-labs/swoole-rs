@@ -7,7 +7,7 @@ Opt-in feature bit 1048576 (`clients`). ABI: `docs/clients-resolver-abi-v1.md`,
 `ext-src/swoole_http_client_coro.cc`, `ext-src/swoole_name_resolver.cc`,
 `src/network/address.cc`, `src/network/client.cc`, `src/network/dns.cc`.
 
-35 production exports (prefix `swr_v1_clients_`). A test-only allocation-budget
+Production exports have the prefix `swr_v1_clients_`. A test-only allocation-budget
 symbol is excluded from production artifacts.
 
 | Area | Exports | Rust responsibility |
@@ -15,8 +15,7 @@ symbol is excluded from production artifacts.
 | Address | `url`, `port`, `ip`, `loopback`, `ip_text` | URL spans; port validity; numeric bytes, original loopback policy and DNS text |
 | Hosts/resolver settings | `hosts_match`, `resolv_line`, `dns_endpoint` | Borrowed line/token spans; locale/`strtol` stay native |
 | DNS codec | `domain_encode`, `domain_decode` | Bounded label encoding/decoding with native `char` signedness |
-| Raw lifecycle | `shutdown`, `close_next`, `object_next` | Shutdown, close and constructor/destructor order |
-| Raw transport | `write_next`, `read_next`, `connect_next`, `transport_next`, `datagram_send` | Proxy/TLS/connect/read/write/datagram decisions and result narrowing |
+| Client | `new`, `free`, `connect`, `send`, `recv`, `close`, `shutdown`, `on_*`, … | `network::Client`: state and every operation (see below) |
 | Persistent clients | `pool_create`, `pool_destroy`, `pool_push`, `pool_state`, `pool_take`, `pool_remove_empty` | Private pool storage (crates/phpclients keeps the connections) |
 | PHP resolver | `resolver_next` | Lookup/cluster retry/result/context publication order |
 | HTTP | `cookie`, `http_format` | Set-Cookie spans; bounded output formatting |
@@ -81,9 +80,15 @@ its own buffers on destruction, so allocation topology differs.
   IPv6 is emitted as eight four-digit lowercase groups (as the original DNS
   helper does, not compressed `inet_ntop` text). Native builds the
   `std::string`; the invalid-family assertion stays native.
-- Raw construction checks static `Socket::is_stream(type)` for fd class and the
-  created `Socket::is_stream()` for dispatch. Destruction observes `async` after
-  close and buffer destruction. A null Socket keeps the early return; the
-  zero-fd assertion, function pointers and deletion stay native.
+
+## Client (`src/network/client.cc`)
+
+`network::Client`'s state (flags, server host and port, connect timer,
+watermarks) and operations are Rust's; see
+[the boundary](../../docs/clients-resolver-abi-v1.md#clients). The C++ half is
+the `swr_v1_clients_native` table over the members of C++ types, and the
+warnings, emitted from functions named as upstream's so the log lines match.
+Construction checks static `Socket::is_stream(type)` for fd class and the
+created socket's type for dispatch; a null Socket keeps the early return.
 
 Tests: `tests/modules/clients/README.md`.

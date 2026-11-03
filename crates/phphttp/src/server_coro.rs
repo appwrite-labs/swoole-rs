@@ -11,12 +11,11 @@ use crate::{
     send,
 };
 use std::{
-    cell::{Cell, RefCell, UnsafeCell},
+    cell::{Cell, UnsafeCell},
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
-use swoole_rs_httpbindings::{Text, swr_v1_httpbindings_handler};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_zend::{
     Call, Class, Object, bailout, declare_bool, declare_long, declare_property_null,
@@ -44,11 +43,9 @@ type Holder = Object<*mut HttpServer>;
 struct HttpServer {
     /// The listening coroutine socket (C++'s).
     socket: *mut c_void,
-    /// What the contexts copy into C++ fields (`HttpServerSettings`).
+    /// The handler map and what the contexts copy into C++ fields
+    /// (`HttpServerSettings`).
     settings: *mut c_void,
-    /// `handle()`'s patterns, in registration order, and their callables.
-    handlers: RefCell<Vec<Handler>>,
-    default_handler: Cell<*mut c_void>,
     running: Cell<bool>,
     /// The connections, by the coroutine serving each.
     clients: UnsafeCell<zval>,
@@ -59,9 +56,6 @@ struct HttpServer {
     compression_level: Cell<i8>,
     compression_min_length: Cell<u32>,
 }
-
-/// A pattern and its callable (a `zend::Callable`).
-type Handler = (Box<[u8]>, *mut c_void);
 
 /// `SW_Z_BEST_SPEED` and `SW_COMPRESSION_MIN_LENGTH_DEFAULT`.
 const Z_BEST_SPEED: i8 = 1;
@@ -76,8 +70,6 @@ impl HttpServer {
         Self {
             socket,
             settings,
-            handlers: RefCell::new(Vec::new()),
-            default_handler: Cell::new(ptr::null_mut()),
             running: Cell::new(true),
             clients: UnsafeCell::new(clients),
             parse_cookie: Cell::new(true),
@@ -94,40 +86,10 @@ impl HttpServer {
         unsafe { value::table(self.clients.get()) }
     }
 
-    /// `set_handler`: false if `callable` is not callable.
-    fn set_handler(&self, pattern: &[u8], callable: *mut zval) -> Result<bool, bailout::Bailout> {
-        let mut bailed = false;
-        // SAFETY: a passed value; C++ traps what making the callable raises.
-        let handler = unsafe { swr_hsc_callable(callable, &raw mut bailed) };
-        if bailed {
-            return Err(bailout::Bailout);
-        }
-        if handler.is_null() {
-            return Ok(false);
-        }
-        let mut handlers = self.handlers.borrow_mut();
-        if let Some(entry) = handlers.iter_mut().find(|(known, _)| **known == *pattern) {
-            // SAFETY: the callable this pattern had, freed once.
-            unsafe { swr_hsc_callable_free(entry.1) };
-            entry.1 = handler;
-        } else {
-            handlers.push((pattern.into(), handler));
-        }
-        if pattern == b"/" {
-            self.default_handler.set(handler);
-        }
-        Ok(true)
-    }
-
-    /// `get_handler`: the first other handler whose pattern starts the path
-    /// (ignoring case), else the default.
+    /// `get_handler`: the callable for the request's path, or null.
     fn handler(&self, context: *mut Context) -> *mut c_void {
-        let request = &send::state(context).request;
-        let path = Text {
-            data: request.path.cast(),
-            length: request.path_len as usize,
-        };
-        select(&self.handlers.borrow(), self.default_handler.get(), path)
+        // SAFETY: the live settings and a live context.
+        unsafe { swr_hsc_handler(self.settings, context) }
     }
 
     /// A flag's or a number's setting (`SWR_HTTPBINDINGS_SETTING_*`), as
@@ -170,31 +132,9 @@ impl Drop for HttpServer {
     fn drop(&mut self) {
         // SAFETY: the server's own array, released once.
         unsafe { zval_ptr_dtor(self.clients.get()) };
-        for (_, handler) in self.handlers.get_mut().drain(..) {
-            // SAFETY: each callable `set_handler` made, freed once.
-            unsafe { swr_hsc_callable_free(handler) };
-        }
         // SAFETY: the socket and settings `swr_hsc_new` made, freed once.
         unsafe { swr_hsc_delete(self.socket, self.settings) };
     }
-}
-
-/// `get_handler`'s scan over `handlers`.
-fn select(handlers: &[Handler], default: *mut c_void, path: Text) -> *mut c_void {
-    for (pattern, handler) in handlers {
-        if *handler == default {
-            continue;
-        }
-        let pattern = Text {
-            data: pattern.as_ptr(),
-            length: pattern.len(),
-        };
-        // SAFETY: the request's path and the pattern, for the call.
-        if unsafe { swr_v1_httpbindings_handler(path, pattern) } == 1 {
-            return *handler;
-        }
-    }
-    default
 }
 
 /// The live server a method's or a connection's pointer names.
@@ -243,8 +183,13 @@ struct Peer {
 unsafe extern "C" {
     fn swr_hsc_new(host: *const c_char, length: usize, settings: *mut *mut c_void) -> *mut c_void;
     fn swr_hsc_delete(socket: *mut c_void, settings: *mut c_void);
-    fn swr_hsc_callable(callable: *mut zval, bailed: *mut bool) -> *mut c_void;
-    fn swr_hsc_callable_free(callable: *mut c_void);
+    fn swr_hsc_set_handler(
+        settings: *mut c_void,
+        pattern: *const c_char,
+        length: usize,
+        callable: *mut zval,
+    ) -> c_int;
+    fn swr_hsc_handler(settings: *mut c_void, context: *mut Context) -> *mut c_void;
     fn swr_hsc_call(callable: *mut c_void, args: *mut zval, coroutine: bool) -> c_int;
     fn swr_hsc_cancel(socket: *mut c_void);
     fn swr_hsc_recv_waiting(socket: *mut c_void) -> bool;
@@ -713,9 +658,13 @@ fn handle(call: &Call) {
     if server.is_null() {
         return;
     }
-    match self::server(server).set_handler(pattern, callable) {
-        Ok(set) => call.set_bool(set),
-        Err(bailout) => bailout.defer(),
+    let settings = self::server(server).settings;
+    // SAFETY: the live settings, the pattern's bytes and the passed callable;
+    // C++ traps what making the callable raises.
+    match unsafe { swr_hsc_set_handler(settings, pattern.as_ptr().cast(), pattern.len(), callable) }
+    {
+        BAILED => bailout::Bailout.defer(),
+        set => call.set_bool(set != 0),
     }
 }
 
@@ -1201,25 +1150,6 @@ mod tests {
     fn the_header_ends_at_the_first_blank_line() {
         assert_eq!(find_crlf2(b"GET / HTTP/1.1\r\n\r\nbody"), Some(14), "end");
         assert_eq!(find_crlf2(b"GET / HTTP/1.1\r\n"), None, "incomplete");
-    }
-
-    #[test]
-    fn a_handler_matches_a_prefix_of_the_path_ignoring_case() {
-        let mut slots = [0_u8; 3];
-        let [root, api, stop] = [0, 1, 2].map(|i| (&raw mut slots[i]).cast::<c_void>());
-        let handlers: Vec<Handler> = vec![
-            ((*b"/").into(), root),
-            ((*b"/api").into(), api),
-            ((*b"/stop").into(), stop),
-        ];
-        let path = |path: &'static [u8]| Text {
-            data: path.as_ptr(),
-            length: path.len(),
-        };
-        assert_eq!(select(&handlers, root, path(b"/API/users")), api);
-        assert_eq!(select(&handlers, root, path(b"/stop")), stop);
-        assert_eq!(select(&handlers, root, path(b"/other")), root, "default");
-        assert!(select(&handlers[1..], ptr::null_mut(), path(b"/x")).is_null());
     }
 
     #[test]

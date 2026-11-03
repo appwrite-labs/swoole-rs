@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Actual pinned/patched Address URL/port and Client shutdown body differential.
+"""Actual pinned/patched Address URL/port and hosts-file body differential.
 
 Uses native effect recording doubles, not sockets/PHP. Production TU compilation
 and unchanged original/API tests remain separate gates. No network operations.
@@ -143,14 +143,10 @@ struct { std::string dns_hosts_path; } SwooleG;
 #define SW_LOG_NOTICE 0
 #define SW_ERROR_BAD_HOST_ADDR 1
 #define SW_TRACE_CLIENT 0
-#define SHUT_RD 10
-#define SHUT_WR 11
-#define SHUT_RDWR 12
 static int logs=0, last_error=0, effect_result=0, calls=0, effect_how=0;
 #define swoole_trace_log(...) ((void) 0)
 #define swoole_error_log(...) (++logs)
 static void swoole_set_last_error(int error) { last_error=error; }
-static int shutdown(int, int how) { ++calls; effect_how=how; return effect_result; }
 enum SocketType {SW_SOCK_TCP=1, SW_SOCK_UDP, SW_SOCK_TCP6, SW_SOCK_UDP6, SW_SOCK_UNIX_STREAM, SW_SOCK_UNIX_DGRAM};
 struct Socket { int fd=123; };
 struct Address {
@@ -159,24 +155,8 @@ struct Address {
     bool assign(const std::string &url);
     bool assign(int kind,const std::string&host,int port) { type=kind;seen_host=host;seen_port=port;return accept; }
 };
-#ifdef SW_USE_RUST_CLIENTS
-// The selected Client's flags are Rust's (#439); the driver sets and reads them the same way.
-struct Client {
-    Socket *socket=nullptr;std::unique_ptr<swr_v1_clients_state, decltype(&swr_v1_clients_state_free)> state_{swr_v1_clients_state_new(false), swr_v1_clients_state_free};
-    bool flag(uint32_t f) const{return swr_v1_clients_flag(state_.get(),f);}
-    void set(uint32_t f,bool v){swr_v1_clients_set_flag(state_.get(),f,v);}
-    int shutdown(int _how);
-};
-#else
-struct Client {
-    Socket *socket=nullptr;bool closed=false,shutdown_read=false,shutdown_write=false,shutdown_rw=false;
-    bool flag(uint32_t f) const{return f==SWR_CLIENTS_CLOSED?closed:f==SWR_CLIENTS_SHUTDOWN_READ?shutdown_read:f==SWR_CLIENTS_SHUTDOWN_WRITE?shutdown_write:false;}
-    void set(uint32_t f,bool v){if(f==SWR_CLIENTS_CLOSED)closed=v;if(f==SWR_CLIENTS_SHUTDOWN_READ)shutdown_read=v;if(f==SWR_CLIENTS_SHUTDOWN_WRITE)shutdown_write=v;}
-    int shutdown(int _how);
-};
-#endif
 '''
-    funcs = [('address', 'bool Address::verify_port('), ('address', 'bool Address::assign(const std::string &url)'), ('client', 'int Client::shutdown('), ('dns', 'std::string get_ip_by_hosts(')]
+    funcs = [('address', 'bool Address::verify_port('), ('address', 'bool Address::assign(const std::string &url)'), ('dns', 'std::string get_ip_by_hosts(')]
     extracted = {}
     for engine in ['native', 'rust']:
         texts = originals if engine == 'native' else {n:(scratch/f'src/network/{n}.cc').read_text() for n in originals}
@@ -206,17 +186,6 @@ int main(int argc, char **argv) {
     for(const auto&url:urls)for(bool accept:{false,true}) {auto a=native::trace(url,accept),b=rust::trace(url,accept);if(a!=b) {std::cerr<<"URL mismatch size "<<url.size()<<"\n";return 1;}}
     size_t count=urls.size()*2;
     for(int port=-3;port<=65538;port++)for(bool connect:{false,true}) {if(native::Address::verify_port(port,connect)!=rust::Address::verify_port(port,connect))return 2;++count;}
-    // Upstream never sets shutdown_rw, so only read/write shutdown states are reachable.
-    for(unsigned flags=0;flags<4;flags++)for(bool live:{false,true})for(bool closed:{false,true})for(int how:{SHUT_RD,SHUT_WR,SHUT_RDWR,-1})for(int result:{-1,0,1}) {
-        Socket socket;native::Client a;rust::Client b;
-        a.socket=b.socket=live?&socket:nullptr;a.set(SWR_CLIENTS_CLOSED,closed);b.set(SWR_CLIENTS_CLOSED,closed);
-        a.set(SWR_CLIENTS_SHUTDOWN_READ,flags&1);b.set(SWR_CLIENTS_SHUTDOWN_READ,flags&1);
-        a.set(SWR_CLIENTS_SHUTDOWN_WRITE,flags&2);b.set(SWR_CLIENTS_SHUTDOWN_WRITE,flags&2);
-        effect_result=result;calls=0;last_error=0;effect_how=0;int ar=a.shutdown(how),ac=calls,ae=last_error,ah=effect_how;
-        calls=0;last_error=0;effect_how=0;int br=b.shutdown(how);
-        if(ar!=br||ac!=calls||ae!=last_error||ah!=effect_how||a.flag(SWR_CLIENTS_SHUTDOWN_READ)!=b.flag(SWR_CLIENTS_SHUTDOWN_READ)||a.flag(SWR_CLIENTS_SHUTDOWN_WRITE)!=b.flag(SWR_CLIENTS_SHUTDOWN_WRITE))return 3;
-        ++count;
-    }
     struct ExtraWhitespace : std::ctype<char> {
         static const mask *classification() {
             static const std::array<mask, table_size> table=[] {
@@ -261,7 +230,7 @@ int main(int argc, char **argv) {
     compile_cmd=['c++','-std=c++17','-O1',*flags,'-I',ROOT/'native/clients',cpp,archive,'-lpthread','-ldl','-lm','-o',exe]
     run(compile_cmd)
     cases=int(run([exe, a.output/"hosts-fixture"]).strip())
-    report={'passed':True,'cases':cases,'scope':'actual pinned/patched address/shutdown bodies with effect doubles and hosts body with private real file IO; not whole TU/runtime/PHP parity','pin':PIN,'sanitized_native':a.sanitize,'rust_sanitized':a.rust_sanitized,'archive':str(archive.resolve())}
+    report={'passed':True,'cases':cases,'scope':'actual pinned/patched address bodies with effect doubles and hosts body with private real file IO; not whole TU/runtime/PHP parity','pin':PIN,'sanitized_native':a.sanitize,'rust_sanitized':a.rust_sanitized,'archive':str(archive.resolve())}
     report_path.write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report))
 

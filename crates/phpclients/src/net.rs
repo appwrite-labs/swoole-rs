@@ -11,7 +11,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_clients::{pool, state, swr_v1_clients_port};
+use swoole_rs_clients::{client as state, pool, swr_v1_clients_port};
 use swoole_rs_phpstubs::client;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object,

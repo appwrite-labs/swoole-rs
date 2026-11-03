@@ -17,12 +17,13 @@ pub struct Host {
     pub unserialize:
         unsafe extern "C" fn(data: *const c_char, length: usize, out: *mut zval) -> bool,
     pub object_kind: unsafe extern "C" fn(object: *mut zval) -> u32,
-    pub stream_cast: unsafe extern "C" fn(stream: *mut zval) -> c_int,
     pub co_socket_cast: unsafe extern "C" fn(object: *mut zval, kind: *mut c_int) -> c_int,
     pub php_socket_cast: Option<unsafe extern "C" fn(object: *mut zval) -> c_int>,
-    pub stream_create: unsafe extern "C" fn(return_value: *mut zval, fd: i64),
-    pub co_socket_create: unsafe extern "C" fn(return_value: *mut zval, fd: i64, kind: c_int),
-    pub php_socket_create: Option<unsafe extern "C" fn(return_value: *mut zval, fd: i64)>,
+    /// A coroutine socket over `fd`, which it takes; false on failure.
+    pub co_socket_create:
+        unsafe extern "C" fn(return_value: *mut zval, fd: c_int, kind: c_int) -> bool,
+    /// An ext/sockets Socket over `fd`, which it takes; false on failure.
+    pub php_socket_create: Option<unsafe extern "C" fn(return_value: *mut zval, fd: c_int) -> bool>,
     pub set_last_error: unsafe extern "C" fn(error: c_int),
     pub unconstructed: unsafe extern "C" fn(list: bool),
     /// Swoole\Thread's body on the new thread (`php_swoole_thread_start`):
@@ -44,6 +45,8 @@ pub struct Host {
     pub error: unsafe extern "C" fn(level: c_int, message: *const c_char),
     /// `php_swoole_sys_error(level, "%s", message)`.
     pub sys_error: unsafe extern "C" fn(level: c_int, message: *const c_char),
+    /// Swoole's warning log of a message that names its function.
+    pub warning: unsafe extern "C" fn(message: *const c_char),
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());

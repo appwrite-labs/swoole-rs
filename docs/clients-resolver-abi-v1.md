@@ -3,8 +3,8 @@
 Feature value 1048576 (`--module clients`). Upstream targets:
 `src/network/{address,client,dns}.cc`, `ext-src/swoole_client.cc`,
 `swoole_client_async.cc`, `swoole_client_coro.cc`, `swoole_name_resolver.cc`,
-`swoole_http_client_coro.cc`. `include/swoole.h` and `include/swoole_client.h`
-(Client/Stream layout, inline bodies) are unchanged. Follows the
+`swoole_http_client_coro.cc` and `include/swoole_client.h`. `include/swoole.h` and
+Stream are unchanged. Follows the
 [policy/effect split](abi-v1.md#policyeffect-split); data crosses as `repr(C)`
 scalars, opaque tokens, borrowed spans and caller-owned output with checked
 capacity.
@@ -30,13 +30,19 @@ native. `SwooleG.name_resolvers` stays the single registry; M07 owns the DNS LRU
 
 ## Clients
 
-Rust decides address/proxy precedence, connect/retry, handshake, read/error/
-timeout, shutdown/watermarks, persistent reuse and PHP property/argument order.
-SOCKS5 rewriting happens before HTTP proxy rewriting. `onClose`, `onReceive`,
-`onBufferFull`, `onBufferEmpty` and `onError` may reenter, close, delete, throw or
-bail out; after `onClose` may delete the Client, only the saved Socket's
-object-null guard permits further access. The destructor clears
-`Socket::object` before deferred free; timer cancellation precedes `onConnect`.
+`network::Client`'s state and every operation are Rust's
+(`crates/clients/src/client.rs`): construction and destruction, connect (sync,
+async, datagram, DNS wait), send/recv, the SOCKS5 and HTTP proxy handshakes, TLS,
+close, shutdown, the watermarks, and the reactor, timer and DNS completions. The
+C++ `Client` keeps the members of C++ types (callbacks, proxies, TLS context,
+protocol, input buffer, addresses) and hands Rust one static table over them,
+`swr_v1_clients_native`; Rust reads the socket's record directly. SOCKS5 rewriting
+happens before HTTP proxy rewriting. A callback may reenter, close, delete, throw
+or bail out, so no Rust borrow of the state spans one; after `onClose` only the
+saved Socket's object-null guard permits further access. A thrown exception ends
+the Rust operation and C++ rethrows it. The destructor clears `Socket::object`
+before deferred free and deletes a pending connect timer; timer cancellation
+precedes `onConnect`.
 
 Persistent connections: the private `long_connections` map of heap queues in
 `ext-src/swoole_client.cc` is one Rust-owned pool with binary keys and FIFO

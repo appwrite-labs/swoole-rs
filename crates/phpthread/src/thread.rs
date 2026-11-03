@@ -108,7 +108,8 @@ method_table! {
     ];
 }
 
-/// `php_swoole_thread_minit`'s class registration; C++ adds the constants.
+/// `php_swoole_thread_minit`'s class registration, then `Swoole\Thread\Error`;
+/// C++ adds the constants.
 /// # Safety
 /// MINIT, after `swr_v1_phpthread_minit`, with a static method table.
 #[unsafe(no_mangle)]
@@ -133,6 +134,8 @@ pub unsafe extern "C" fn swr_v1_phpthread_thread_minit() -> *mut zend_class_entr
             (ZEND_ACC_PUBLIC | ZEND_ACC_READONLY) as i32,
         );
     }
+    // SAFETY: MINIT, after Swoole\Thread, as upstream's order has it.
+    unsafe { crate::request::error_minit() };
     THREAD.entry()
 }
 

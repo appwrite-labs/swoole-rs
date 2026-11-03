@@ -308,7 +308,7 @@ unsafe extern "C" {
 pub(crate) type Cli = *mut c_void;
 
 /// crates/clients' per-client state.
-pub(crate) type ClientState = swoole_rs_clients::state::ClientState;
+pub(crate) type ClientState = swoole_rs_clients::client::Client;
 
 /// `struct swoole_client_framing`.
 #[repr(C)]
