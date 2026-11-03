@@ -344,7 +344,7 @@ Prepare optimized binaries (correctness gate runs first, no timing):
 
 ```
 python3 tests/modules/memory/gate.py --source /absolute/pinned/upstream \
-  --extension /absolute/upstream/swoole.so \
+  --extension /absolute/hybrid/swoole.so --reference-extension /absolute/upstream/swoole.so \
   --archive /absolute/build/rust-prefix/lib/libswoole_rs_ffi.a \
   --prepare-benchmark target/memory-benchmark \
   --output target/reports/memory/gate-benchmark-prepared.json

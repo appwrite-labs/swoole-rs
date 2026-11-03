@@ -31,7 +31,10 @@ def sha(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, default=ROOT / 'target/upstream/src')
-    parser.add_argument('--extension', type=Path, required=True)
+    parser.add_argument('--extension', type=Path, required=True, help='The hybrid extension: the Rust probe runs under it')
+    # Each probe resolves SwooleG, the allocators, Mutex and Pipe from the extension it is
+    # loaded beside, so that extension must share the headers the probe compiled against.
+    parser.add_argument('--reference-extension', type=Path, required=True, help='The pinned extension: the upstream probe runs under it')
     parser.add_argument('--php', default='php')
     parser.add_argument('--php-extension', action='append', default=[])
     parser.add_argument('--sanitize', action='store_true')
@@ -43,16 +46,16 @@ def main():
         parser.error('Benchmark preparation requires an unsanitized optimized build')
     prepared = {}
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'passed': False, 'upstream_commit': PIN,
-              'scope': 'Original native algorithms versus actual Rust-backed fixed/global/ring pools, heap, channel, mapping and table facades; native runtime allocation/locking/pipe dependencies supplied by pinned Swoole PHP extension. New assertions, not original GoogleTests. C++ sanitizers instrument only the Rust-backed native probe/facades, not Rust or PHP.',
+              'scope': 'Original native algorithms versus actual Rust-backed fixed/global/ring pools, heap, channel, mapping and table facades; native runtime allocation/locking/pipe dependencies supplied by the extension built from the same headers (pinned for upstream, hybrid for rust). New assertions, not original GoogleTests. C++ sanitizers instrument only the Rust-backed native probe/facades, not Rust or PHP.',
               'commands': [], 'results': []}
     try:
         if sys.platform != 'darwin' and not sys.platform.startswith('linux'):
             raise ValueError('Supported native hosts: macOS and Linux')
         linux = sys.platform.startswith('linux')
-        extension = args.extension.resolve(strict=True)
+        extensions = {'upstream': args.reference_extension.resolve(strict=True), 'rust': args.extension.resolve(strict=True)}
         if subprocess.check_output(['git', '-C', str(args.source), 'rev-parse', 'HEAD'], text=True).strip() != PIN:
             raise ValueError('Reference pin mismatch')
-        report['extension'] = str(extension)
+        report['extensions'] = {variant: str(path) for variant, path in extensions.items()}
         owned = [*sorted((ROOT / 'crates/memory').rglob('*.rs')),
                  *sorted(Path(__file__).parent.glob('*.rs')), *sorted((ROOT / 'native/memory').glob('*.h')),
                  Path(__file__), Path(__file__).with_name('probe.cc'), Path(__file__).with_name('benchmark.cc')]
@@ -137,7 +140,7 @@ def main():
                 run(command + ['-o', str(binary)])
                 php_extensions = args.php_extension or (['ffi'] if linux else [])
                 command = [args.php, '-n', *[arg for module in php_extensions for arg in ['-d', 'extension=' + module]],
-                           '-d', 'extension=' + str(extension), '-d', 'ffi.enable=1', '-r',
+                           '-d', 'extension=' + str(extensions[variant]), '-d', 'ffi.enable=1', '-r',
                            '$f=FFI::cdef("int swr_memory_probe(void);", $argv[1]); exit($f->swr_memory_probe());', str(binary)]
                 result = run(command, timeout=30, env=environment)
                 observations = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
@@ -168,7 +171,8 @@ def main():
                     timing_command = command.copy()
                     timing_command[-1] = str(stored)
                     timing_command[timing_command.index('-r') + 1] = '$f=FFI::cdef("int swr_memory_benchmark(unsigned int);", $argv[1]); exit($f->swr_memory_benchmark((int)$argv[2]));'
-                    prepared[variant] = {'command': timing_command, 'binary': str(stored), 'sha256': sha(stored)}
+                    prepared[variant] = {'command': timing_command, 'binary': str(stored), 'sha256': sha(stored),
+                                         'extension': str(extensions[variant]), 'extension_sha256': sha(extensions[variant])}
                 if variant == 'rust':
                     # Shrinking realloc is outside the compared domain; Rust-only.
                     additional = []
@@ -200,7 +204,7 @@ def main():
                     if sha(stored) != digest:
                         raise ValueError(f'Source changed during preparation: {relative}')
                 report['source_snapshot'] = str(snapshot)
-                write_report(args.prepare_benchmark / 'manifest.json', {'source_snapshot': str(snapshot), 'frozen_sha256': frozen_hashes, 'upstream_commit': PIN, 'extension': str(extension), 'extension_sha256': sha(extension), 'variants': prepared, 'correctness': report['results'], 'timing_cases': ['fixed_ns', 'heap_ns', 'channel_ns', 'ring_ns', 'global_ns', 'table_ns', 'table_clear8_ns', 'table_clear33_ns', 'fixed_construct_owned_ns', 'fixed_construct_borrowed_ns', 'table_schema17_ns', 'table_columns65_ns', 'table_names65_ns', 'table_long_names65_ns'], 'scope': 'Optimized native facades, C++ -O2 and release Rust, no sanitizers. Timing requires exclusive integrator lease; PHP startup excluded. Existing pool operations exclude setup; explicit fixed_construct cases include arena construction/destruction and owned native allocation/free. Column schema17 includes factory/unique declarations/one traversal/drain for min(loops,256) rounds; columns65 excludes setup/teardown. Names65 workloads include actual cursor plus Native borrowed names vs selected scratch copy/resize and whole-byte consumer hashing; short and80byte embedded-NUL prefixes, scratch lifetime per row, setup/teardown excluded. Typed TableV2 selected versus legacy Native Table. No PHP/original-suite parity or full-workload performance claim.'})
+                write_report(args.prepare_benchmark / 'manifest.json', {'source_snapshot': str(snapshot), 'frozen_sha256': frozen_hashes, 'upstream_commit': PIN, 'variants': prepared, 'correctness': report['results'], 'timing_cases': ['fixed_ns', 'heap_ns', 'channel_ns', 'ring_ns', 'global_ns', 'table_ns', 'table_clear8_ns', 'table_clear33_ns', 'fixed_construct_owned_ns', 'fixed_construct_borrowed_ns', 'table_schema17_ns', 'table_columns65_ns', 'table_names65_ns', 'table_long_names65_ns'], 'scope': 'Optimized native facades, C++ -O2 and release Rust, no sanitizers. Timing requires exclusive integrator lease; PHP startup excluded. Existing pool operations exclude setup; explicit fixed_construct cases include arena construction/destruction and owned native allocation/free. Column schema17 includes factory/unique declarations/one traversal/drain for min(loops,256) rounds; columns65 excludes setup/teardown. Names65 workloads include actual cursor plus Native borrowed names vs selected scratch copy/resize and whole-byte consumer hashing; short and80byte embedded-NUL prefixes, scratch lifetime per row, setup/teardown excluded. Typed TableV2 selected versus legacy Native Table. No PHP/original-suite parity or full-workload performance claim.'})
             if not report['passed']:
                 report['error'] = 'Native and Rust traces differ'
     except Exception as error:

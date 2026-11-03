@@ -12,14 +12,15 @@ The `*.rs` files here are the crate's unit tests, included by
 
 ```
 python3 tests/modules/memory/gate.py --source /absolute/pinned/upstream \
-  --extension /absolute/reference/swoole.so --sanitize \
+  --extension /absolute/hybrid/swoole.so --reference-extension /absolute/reference/swoole.so --sanitize \
   --archive /absolute/build/rust-prefix/lib/libswoole_rs_ffi.a \
   --output target/reports/memory/native.json
 ```
 
 Compiles the pinned C++ sources and the hybrid build's patched sources (the
 build `--archive` comes from) into `probe.cc` facades, loads each through PHP FFI
-alongside the reference extension, and requires identical checksum traces. It
+alongside the extension built from the same headers (the reference for the pinned
+probe, the hybrid for the Rust one: the probes read SwooleG through those headers), and requires identical checksum traces. It
 never rebuilds the archive. It also checks
 that every original native `assert(...)` expression survives the overlays, that
 the overlaid headers reject a build without the memory feature and accept one

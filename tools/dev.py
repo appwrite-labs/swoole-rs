@@ -496,7 +496,7 @@ def plan(args, reports):
                              ('memory-source-compatibility', 'channel_compat.py')]:
             script(name, 'tests/modules/memory/' + runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(name))
-        script('memory-native', 'tests/modules/memory/gate.py', '--extension', hybrid, *php,
+        script('memory-native', 'tests/modules/memory/gate.py', '--extension', hybrid, '--reference-extension', reference, *php,
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                *(['--sanitize'] if sys.platform == 'darwin' else []), *report('memory-native'))
     if 'memory' in modules and integrate:

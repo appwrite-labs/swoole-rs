@@ -31,8 +31,6 @@ def main():
         manifest_path = args.prepared / 'manifest.json'
         manifest = json.loads(manifest_path.read_text())
         report['preparation'] = manifest
-        if sha(manifest['extension']) != manifest['extension_sha256']:
-            raise ValueError('Extension changed since preparation')
         snapshot = Path(manifest.get('source_snapshot', ROOT))
         if 'frozen_sha256' in manifest:
             for path, digest in manifest['frozen_sha256'].items():
@@ -43,6 +41,8 @@ def main():
         for variant in manifest['variants'].values():
             if sha(variant['binary']) != variant['sha256']:
                 raise ValueError('Prepared binary changed')
+            if sha(variant['extension']) != variant['extension_sha256']:
+                raise ValueError('Extension changed since preparation')
         report['verified'] = True
         if args.verify_only:
             write_report(args.output, report)
