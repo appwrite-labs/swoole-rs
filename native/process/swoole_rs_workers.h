@@ -458,6 +458,8 @@ void swr_v1_thread_manager_exited(const void *manager, void *worker);
 #define SWR_WORKERS_OP_PORT_DGRAM 386
 #define SWR_WORKERS_OP_SET_MASTER_THREAD_ID 387
 #define SWR_WORKERS_OP_START_MASTER_THREAD 388
+#define SWR_WORKERS_OP_EVENT_BEGIN 389
+#define SWR_WORKERS_OP_EVENT_END 390
 /* END NUMBERED */
 #ifdef __cplusplus
 }

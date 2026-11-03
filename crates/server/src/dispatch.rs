@@ -118,10 +118,11 @@ pub(crate) fn sendwait<H: Host>(h: &mut H, session: u64) -> bool {
 
 /// `Server::has_kernel_nobufs_error`.
 pub(crate) fn kernel_nobufs<H: Host>(h: &mut H, session: u64) -> bool {
-    if h.op(OP_SOCKET_CONN, session) == 0 {
+    let conn = h.op(OP_SOCKET_CONN, session);
+    if conn == 0 {
         return false;
     }
-    if h.get(OP_MODE) == MODE_PROCESS {
+    if conn & 2 != 0 {
         h.is(OP_PIPE_NOBUFS)
     } else {
         h.is(OP_SOCKET_NOBUFS)
@@ -468,12 +469,10 @@ mod tests {
         assert!(!sendwait(&mut s, 3), "missing session");
         assert_eq!(s.args(LOG_SENDWAIT), vec![3], "traced");
 
-        let mut s = Script::with(&[
-            (OP_SOCKET_CONN, 1),
-            (OP_MODE, MODE_PROCESS),
-            (OP_PIPE_NOBUFS, 1),
-        ]);
+        let mut s = Script::with(&[(OP_SOCKET_CONN, 3), (OP_PIPE_NOBUFS, 1)]);
         assert!(kernel_nobufs(&mut s, 1), "pipe");
+        let mut s = Script::with(&[(OP_SOCKET_CONN, 1), (OP_PIPE_NOBUFS, 1)]);
+        assert!(!kernel_nobufs(&mut s, 1), "socket");
 
         let mut s = Script::with(&[(OP_FIELD, 3)]).queue(OP_WORKER_IDLE, &[1, 0, 1]);
         assert_eq!(idle_workers(&mut s, false), 2, "idle event workers");
