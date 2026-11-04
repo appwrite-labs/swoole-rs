@@ -43,12 +43,14 @@ CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_
                 'https_get_sync_with_socks5_proxy', 'http_get_sync_with_socks5_proxy_no_dns_tunnel', 'http_get_async_with_http_proxy',
                 'http_get_async_with_socks5_proxy', 'http_get_sync_with_http_proxy', 'http_get_sync_with_socks5_proxy']
 CORE_TESTS = {
-    'reactor': (['reactor/base.cpp', 'network/socket.cpp', 'network/stream.cpp'], {}, {}),
+    'reactor': (['reactor/base.cpp', 'network/socket.cpp', 'network/stream.cpp'],
+                {'socket.make_server_socket': "expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's kernel returns EPROTONOSUPPORT"}, {}),
     'http': (['server/http_server.cpp', 'server/http_parser.cpp', 'server/multipart_parser.cpp'],
              {'http_server.node_websocket_client_1': 'needs Node.js and its ws package',
               'http_server.node_websocket_client_2': 'needs Node.js and its ws package'}, {}),
     'clients': (['network/dns.cpp', 'network/address.cpp', 'network/client.cpp'],
                 {'dns.lookup1': NETWORK, 'dns.lookup_ipv6': NETWORK, 'dns.bad_family': NETWORK, 'dns.cancel': UNCACHED,
+                 'client.bind': "expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner isn't root and gets EACCES",
                  'client.async_tcp_socks5_proxy_handshake_fail': 'expects www.baidu.com:80 to time out a SOCKS5 greeting',
                  **{'client.' + name: PROXY for name in CLIENT_PROXY}}, {}),
     'hooks': (['coroutine/hook.cpp', 'coroutine/socket.cpp', 'coroutine/system.cpp'],
