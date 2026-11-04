@@ -16,6 +16,60 @@ pub extern "C" fn swr_v1_phphelpers_empty(count: usize) -> u8 {
     u8::from(count == 0)
 }
 
+fn merge_action(phase: &mut u32, inserted: u8, existing_array: u8) -> u32 {
+    let (action, next) = match *phase {
+        0 => (1, 1),
+        1 if inserted != 0 => (0, 3),
+        1 => (2, 2),
+        2 => (if existing_array != 0 { 3 } else { 4 }, 3),
+        _ => (0, 3),
+    };
+    *phase = next;
+    action
+}
+
+/// Keyed variant of the frozen merge lifecycle. Numeric-key classification stays
+/// native; Rust selects concrete `HashTable` effects without an extra dispatch.
+/// # Safety
+/// Same phase storage/lazy observation requirements as `swr_v1_phphelpers_merge`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphelpers_merge_keyed(
+    phase: *mut u32,
+    inserted: u8,
+    existing_array: u8,
+    numeric_key: u8,
+) -> u32 {
+    // SAFETY: `phase` is null or the caller's aligned, exclusively owned phase storage.
+    let Some(phase) = (unsafe { phase.as_mut() }) else {
+        return 0;
+    };
+    match merge_action(phase, inserted, existing_array) {
+        1 => {
+            if numeric_key != 0 {
+                1
+            } else {
+                2
+            }
+        }
+        2 => {
+            if numeric_key != 0 {
+                3
+            } else {
+                4
+            }
+        }
+        3 => 5,
+        4 => {
+            if numeric_key != 0 {
+                6
+            } else {
+                7
+            }
+        }
+        _ => 0,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phphelpers_call_success(result: i64, coroutine: u8) -> u8 {
     call_success(result, coroutine)
@@ -161,6 +215,36 @@ mod tests {
                 swr_v1_phphelpers_call_success(result, 1),
                 u8::from(result >= 0)
             );
+        }
+    }
+    #[test]
+    fn shared_common_policy_preserves_positive_lifecycles() {
+        for numeric in [0, 1] {
+            for existing in [0, 1] {
+                let mut phase = 0;
+                let first =
+                    unsafe { swr_v1_phphelpers_merge_keyed(&raw mut phase, 0, existing, numeric) };
+                assert_eq!(first, if numeric != 0 { 1 } else { 2 });
+                let next =
+                    unsafe { swr_v1_phphelpers_merge_keyed(&raw mut phase, 0, existing, numeric) };
+                assert_eq!(next, if numeric != 0 { 3 } else { 4 });
+                let final_action =
+                    unsafe { swr_v1_phphelpers_merge_keyed(&raw mut phase, 0, existing, numeric) };
+                assert_eq!(
+                    final_action,
+                    if existing != 0 {
+                        5
+                    } else if numeric != 0 {
+                        6
+                    } else {
+                        7
+                    }
+                );
+                assert_eq!(
+                    unsafe { swr_v1_phphelpers_merge_keyed(&raw mut phase, 0, existing, numeric) },
+                    0
+                );
+            }
         }
     }
 }

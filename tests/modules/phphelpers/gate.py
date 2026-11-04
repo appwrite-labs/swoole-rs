@@ -48,7 +48,10 @@ def main():
         report['passed']=True
         for engine in ['reference','candidate']:
             common=(subprocess.check_output(['git','-C',str(a.source),'show',PIN+':ext-src/php_swoole_cxx.cc'],text=True) if engine=='reference' else (hybrid/'ext-src/php_swoole_cxx.cc').read_text())
-            extracted=body(common,'Callable::Callable(')+'\nnamespace function {\n'+body(common,'bool call(')+'\n'+body(common,'Variable call(')+'\n}\n'
+            begin=common.index('static zend_always_inline zval *sw_zend_symtable_str_add(')
+            if engine=='candidate':begin=common.index('#ifndef SWOOLE_RS_PHPHELPERS\nstatic zend_always_inline zval *sw_zend_symtable_str_add(')
+            end=common.index('\nnamespace function',begin)
+            extracted=common[begin:end]+'\n'+body(common,'Callable::Callable(')+'\nnamespace function {\n'+body(common,'bool call(')+'\n'+body(common,'Variable call(')+'\n}\n'
             (work/(engine+'-effects.inc')).write_text(extracted)
         effects=work/'effects'
         command=['c++','-std=c++17','-O2','-UNDEBUG','-DSWOOLE_RS_PHPHELPERS','-Wall','-Wextra','-Werror','-I'+str(work),'-I'+str(ROOT/'native/phphelpers'),Path(__file__).with_name('effects.cc'),archive,'-lpthread','-lm','-o',effects]
@@ -72,15 +75,25 @@ def main():
         if run(command).returncode:raise ValueError('Complete cache/callable fixture compilation failed')
         cache_result=run([cache]);report['passed']=report['passed'] and cache_result.returncode==0
         if not cache_result.returncode:report['cache_observations']=json.loads(cache_result.stdout)
-        for family,name in [('facade','String'),('valuefacade','Variable')]:
+        for family,classes in [('facade',['String','CharPtr']),('valuefacade',['KeyValue','Variable']),('iteratorfacade',['ArrayIterator','Array'])]:
             for engine in ['reference','candidate']:
                 content=public_header if engine=='reference' else (hybrid/'ext-src/php_swoole_cxx.h').read_text()
-                start=content.index('class '+name+' {');end=content.index('\n};',start)+3
-                (work/(engine+'-'+family+'.inc')).write_text(content[start:end])
+                pieces=[]
+                for name in classes:
+                    start=content.index('class '+name+' {');end=content.index('\n};',start)+3
+                    piece=content[start:end]
+                    if family=='iteratorfacade':
+                        # Only the unused postfix declarator name is omitted in
+                        # the model; actual method bodies and production header
+                        # remain unchanged, with -Wextra/-Werror still enabled.
+                        piece=piece.replace('void operator++(int i)', 'void operator++(int)')
+                        report['iterator_fixture_adapter']='Only unused postfix parameter name omitted; types/body unchanged; actual SDK header unchanged.'
+                    pieces.append(piece)
+                (work/(engine+'-'+family+'.inc')).write_text('\n'.join(pieces))
             facade=work/family
             command=['c++','-std=c++17','-O2','-UNDEBUG','-DSWOOLE_RS_PHPHELPERS','-Wall','-Wextra','-Werror','-I'+str(work),'-I'+str(ROOT/'native/phphelpers'),Path(__file__).with_name(family+'.cc'),archive,'-lpthread','-lm','-o',facade]+sanitizer_flags
             if sys.platform.startswith('linux'):command+=['-ldl','-lrt','-lutil']
-            if run(command).returncode:raise ValueError('Complete '+name+' lifecycle fixture compilation failed')
+            if run(command).returncode:raise ValueError('Complete String/CharPtr lifecycle fixture compilation failed')
             facade_result=run([facade]);report['passed']=report['passed'] and facade_result.returncode==0
             if not facade_result.returncode:report[family+'_observations']=json.loads(facade_result.stdout)
         for engine in ['reference','candidate']:

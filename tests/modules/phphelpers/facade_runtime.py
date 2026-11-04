@@ -47,7 +47,7 @@ def main():
                 row['path']=str(helper)
                 symbols=subprocess.check_output(['nm','-u',str(helper)],text=True,stderr=subprocess.PIPE)
                 row['undefined_symbols']=symbols
-                required=['swr_v1_phphelpers_'+name for name in ['string_plan','value_plan','duplicate_plan','factory_plan','call_success','empty']]
+                required=['swr_v1_phphelpers_'+name for name in ['string_plan','value_plan','duplicate_plan','factory_plan','iterator_plan','call_success','empty']]
                 row['required_rust_calls']={name:name in symbols for name in required}
                 if profile=='native':
                     if 'swr_v1_phphelpers_' in symbols:raise ValueError('Native helper unexpectedly consumes Rust policy')
