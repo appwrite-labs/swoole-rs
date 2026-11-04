@@ -16,7 +16,6 @@
  "buffer-unit": 1,
  "build": 70,
  "clients-codec": 3,
- "clients-http": 3,
  "clients-ip": 19,
  "clients-ip-text": 7,
  "clients-php-async": 4,

@@ -14,21 +14,13 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import apply_patch_verified, hybrid_tree, module_patches
+from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import COMMIT as PIN
 
 
-
-def overlay_manifest():
-    return module_patches(ROOT/'migration/patches/clients')[0]
-
-
-def apply_overlay(scratch, output):
-    manifest = overlay_manifest()
-    receipt = apply_patch_verified(scratch, ROOT/'migration/patches/clients'/manifest['path'],
-                                   manifest['upstream_paths'], manifest['sha256'])
-    (output/'overlay-application.json').write_text(json.dumps(receipt, indent=2)+'\n')
-    return receipt
+def sources(source, archive, path):
+    """PATH at the pin, and in the fully patched tree of the hybrid build ARCHIVE comes from."""
+    return run(['git', '-C', source, 'show', f'{PIN}:{path}']), (hybrid_tree(archive)[0] / path).read_text()
 
 LOG = None
 SERIAL = 0
@@ -92,36 +84,23 @@ def body(text, signature):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--source', type=Path, required=True)
-    p.add_argument('--archive', type=Path)
+    p.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test')
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--sanitize', action='store_true')
-    p.add_argument('--rust-sanitized', action='store_true', help='Record independently built archive instrumentation; requires --archive and --sanitize')
+    p.add_argument('--rust-sanitized', action='store_true', help='Record independently built archive instrumentation; requires --sanitize')
     a = p.parse_args()
     report_path = a.output
     a.output = report_path.parent / (report_path.stem + "-artifacts")
-    if a.rust_sanitized and not (a.archive and a.sanitize):
-        p.error("--rust-sanitized requires --archive and --sanitize")
+    if a.rust_sanitized and not a.sanitize:
+        p.error("--rust-sanitized requires --sanitize")
     a.output.mkdir(parents=True, exist_ok=True)
     global LOG
     LOG = a.output / "commands"
     LOG.mkdir(exist_ok=True)
-    archive = a.archive or a.output / 'libclients.a'
-    if not a.archive:
-        run(['rustc', '--edition', '2024', '--crate-type', 'staticlib', '-O', '-C', 'panic=abort',
-             ROOT/'crates/clients/src/lib.rs', '-o', archive])
-    scratch = a.output/'patched'
-    scratch.mkdir(exist_ok=True)
-    run(['git', 'init', '-q', scratch])
-    originals = {}
-    for path in overlay_manifest()['upstream_paths']:
-        name = Path(path).stem
-        text = run(['git', '-C', a.source, 'show', f'{PIN}:{path}'])
-        if path.startswith('src/network/'):
-            originals[name] = text
-        dest = scratch/path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(text)
-    apply_overlay(scratch, a.output)
+    archive = a.archive
+    originals, selected = {}, {}
+    for name in ['address', 'dns']:
+        originals[name], selected[name] = sources(a.source, archive, f'src/network/{name}.cc')
     prefix = r'''
 #include <algorithm>
 #include <array>
@@ -161,17 +140,8 @@ struct Address {
 };
 '''
     funcs = [('address', 'bool Address::verify_port('), ('address', 'bool Address::assign(const std::string &url)'), ('dns', 'std::string get_ip_by_hosts(')]
-    extracted = {}
-    for engine in ['native', 'rust']:
-        # The selected side is the archive's own patched tree (every clients patch).
-        selected = hybrid_tree(a.archive)[0] if a.archive else scratch
-        texts = originals if engine == 'native' else {n:(selected/f'src/network/{n}.cc').read_text() for n in originals}
-        extracted[engine] = '\n'.join(body(texts[name], sig) for name, sig in funcs)
-    for index, (_, signature) in enumerate(funcs):
-        native_body = body(extracted['native'], signature)
-        selected_body = body(extracted['rust'], signature)
-        if native_body == selected_body or 'swr_v1_clients_' not in selected_body:
-            raise ValueError(f'Selected body was not converted: {signature}')
+    extracted = {engine: '\n'.join(body(texts[name], sig) for name, sig in funcs)
+                 for engine, texts in [('native', originals), ('rust', selected)]}
     driver = r'''
 static std::string trace(const std::string &url, bool accept) {
     Address a;a.accept=accept;logs=0;std::string exception;

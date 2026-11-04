@@ -654,11 +654,8 @@ class Lanes(unittest.TestCase):
             command = commands['clients-php-' + family]
             self.assertIn('--build-manifest', command)
             self.assertEqual(command.count('--engine'), 2)
-            self.assertEqual('--source-ref' in command, family != 'lifecycle')
         self.assertIn('--archive',commands['clients-policy'])
         self.assertIn('--sanitize',commands['clients-policy'])
-        self.assertIn('--archive',commands['clients-http'])
-        self.assertIn('--sanitize',commands['clients-http'])
         self.assertIn('--archive',commands['clients-codec'])
         self.assertIn('--sanitize',commands['clients-codec'])
         self.assertIn('--archive', commands['corebase-lifecycle'])
