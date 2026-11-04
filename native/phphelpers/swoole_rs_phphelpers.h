@@ -16,7 +16,7 @@ enum SwrPhpAsyncAction { SWR_PHP_ASYNC_DONE=0, SWR_PHP_ASYNC_OBSERVE_COROUTINE=1
 uint32_t swr_v1_phphelpers_async(uint32_t *phase, uint8_t blocking, uint8_t coroutine);
 /* Native parsing/string-length/array-count observation occurs before this call. */
 uint8_t swr_v1_phphelpers_empty(size_t count);
-/* Public native String lifecycle; initialized phase0, copied observations.
+/* Public native String/CharPtr lifecycle; initialized phase0, copied observations.
  * op0 release;1 copy assignment;2 move assignment;3 release/copy;4 retain/take.
  * Observe means native presence for0, self identity for1; no other reads.
  * Native executes every action only after Rust returns, then refreshes facts. */
@@ -24,10 +24,15 @@ enum SwrPhpStringAction { SWR_PHP_STRING_DONE=0, SWR_PHP_STRING_OBSERVE=1,
     SWR_PHP_STRING_RELEASE=2, SWR_PHP_STRING_RESET=3, SWR_PHP_STRING_COPY=4,
     SWR_PHP_STRING_MOVE=5, SWR_PHP_STRING_RESET_SOURCE=6, SWR_PHP_STRING_ALIAS=7 };
 uint32_t swr_v1_phphelpers_string_plan(uint32_t *phase, uint32_t operation, uint8_t observation);
-/* Variable retained-copy3/move4; phase0. Native storage/effects only. */
-enum SwrPhpValueAction { SWR_PHP_FACADE_DONE=0, SWR_PHP_FACADE_COPY=5,
-    SWR_PHP_FACADE_RETAIN=6, SWR_PHP_FACADE_RESET_SOURCE=12 };
-uint32_t swr_v1_phphelpers_value_plan(uint32_t *phase, uint32_t operation);
+/* Native KeyValue ctor0/insert1/dtor2; Variable retained-copy3/move4.
+ * Phase0; key presence observed freshly on request. Native storage/effects only. */
+enum SwrPhpValueAction { SWR_PHP_FACADE_DONE=0, SWR_PHP_FACADE_OBSERVE_KEY=1,
+    SWR_PHP_FACADE_RETAIN_KEY=2, SWR_PHP_FACADE_NULL_KEY=3,
+    SWR_PHP_FACADE_DEREFERENCE=4, SWR_PHP_FACADE_COPY=5, SWR_PHP_FACADE_RETAIN=6,
+    SWR_PHP_FACADE_INSERT_STRING=7, SWR_PHP_FACADE_INSERT_INDEX=8,
+    SWR_PHP_FACADE_RETAIN_INSERTED=9, SWR_PHP_FACADE_RELEASE_KEY=10,
+    SWR_PHP_FACADE_DESTROY=11, SWR_PHP_FACADE_RESET_SOURCE=12 };
+uint32_t swr_v1_phphelpers_value_plan(uint32_t *phase, uint32_t operation, uint8_t key_present);
 /* Inline Callable duplicate: native allocation precedes phase0. */
 enum SwrPhpDuplicateAction { SWR_PHP_DUPLICATE_DONE=0, SWR_PHP_DUPLICATE_CACHE=1,
     SWR_PHP_DUPLICATE_VALUE=2, SWR_PHP_DUPLICATE_RETAIN=3,
@@ -41,6 +46,14 @@ enum SwrPhpFactoryAction { SWR_PHP_FACTORY_NULL=0, SWR_PHP_FACTORY_OBSERVE_READY
     SWR_PHP_FACTORY_NULL_ERROR=8, SWR_PHP_FACTORY_INVALID_ERROR=9 };
 uint32_t swr_v1_phphelpers_factory_plan(uint32_t *phase, uint32_t operation,
                                       uint8_t observation, uint8_t allow_null);
+/* Whole sparse/indirect iterator policy; native bounds/storage/API decoding. */
+enum SwrPhpIteratorAction { SWR_PHP_ITERATOR_DONE=0, SWR_PHP_ITERATOR_OBSERVE_END=1,
+    SWR_PHP_ITERATOR_READ_VALUE=2, SWR_PHP_ITERATOR_OBSERVE_POINTER=3,
+    SWR_PHP_ITERATOR_OBSERVE_INDIRECT=4, SWR_PHP_ITERATOR_DEREFERENCE=5,
+    SWR_PHP_ITERATOR_OBSERVE_UNDEFINED=6, SWR_PHP_ITERATOR_ADVANCE=7,
+    SWR_PHP_ITERATOR_OBSERVE_KEY=8, SWR_PHP_ITERATOR_PUBLISH_STRING=9,
+    SWR_PHP_ITERATOR_PUBLISH_INDEX=10 };
+uint32_t swr_v1_phphelpers_iterator_plan(uint32_t *phase, uint8_t observation);
 /* Read-only known bytes retain frozen SW_ZEND_KNOWN_STRINGS enum order.
  * Native global persistent/interned pointer storage remains authoritative.
  * Cursor/length are independent initialized native size_t storage. */
@@ -50,6 +63,15 @@ enum SwrPhpReleaseAction { SWR_PHP_RELEASE_DONE=0, SWR_PHP_RELEASE_OBSERVE_VALUE
     SWR_PHP_RELEASE_VALUE=2, SWR_PHP_RELEASE_OBSERVE_NAME=3, SWR_PHP_RELEASE_NAME=4 };
 /* Phase0, freshly observed value-defined then name-present AFTER native dtor. */
 uint32_t swr_v1_phphelpers_release(uint32_t *, uint8_t observation);
+enum SwrPhpKeyedMergeAction { SWR_PHP_KEYED_DONE=0,
+    SWR_PHP_KEYED_ADD_INDEX=1, SWR_PHP_KEYED_ADD_STRING=2,
+    SWR_PHP_KEYED_FIND_INDEX=3, SWR_PHP_KEYED_FIND_STRING=4,
+    SWR_PHP_KEYED_APPEND=5, SWR_PHP_KEYED_PROMOTE_INDEX=6,
+    SWR_PHP_KEYED_PROMOTE_STRING=7 };
+/* Same lifecycle/observations as frozen merge; native numeric-key classification
+ * precedes phase0. Rust selects API routes at the existing dispatch points. */
+uint32_t swr_v1_phphelpers_merge_keyed(uint32_t *, uint8_t inserted,
+                                    uint8_t existing_array, uint8_t numeric_key);
 uint8_t swr_v1_phphelpers_call_success(int64_t result, uint8_t coroutine);
 enum SwrPhpCallAction { SWR_PHP_CALL_NULL=0, SWR_PHP_CALL_DIRECT=1,
     SWR_PHP_CALL_COROUTINE=2, SWR_PHP_CALL_NAMED=3, SWR_PHP_CALL_RELEASE_NAME=4,

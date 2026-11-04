@@ -1,7 +1,7 @@
 # M26 common PHP helpers and optional stdext
 
 M26 covers `ext-src/php_swoole_cxx.cc`, `ext-src/swoole_stdext.cc` and the
-String/Variable/inline Callable methods and
+String/KeyValue/ArrayIterator/Array/Variable/CharPtr/inline Callable methods and
 callable factories in `ext-src/php_swoole_cxx.h`. Public declarations, layout and
 macros stay frozen. The contract is
 [docs/phphelpers-abi-v1.md](../../../docs/phphelpers-abi-v1.md).
@@ -19,7 +19,8 @@ exceptions/bailouts stay native.
 | --- | --- |
 | Callable construction/release, keyed merge (index vs string route), bool/named call lifecycles | Values/refcounts, numeric-key classification, HashTable APIs, lookup, diagnostics and invocation |
 | 64 known strings | Persistent/interned pointer table |
-| String/Variable/Callable custody and factories; one release decision per String teardown | Allocation/copy/move/refcounts, storage, callbacks, destruction and errors |
+| String/CharPtr/KeyValue/Variable/Callable custody and factories; one release decision per String/CharPtr teardown | Allocation/copy/move/refcounts, storage, callbacks, destruction and errors |
+| ArrayIterator traversal; Array update status | Bucket bounds/kinds/indirection, cursor/key storage and HashTable updates |
 | `php_swoole_async` admission (blocking short-circuit, one nonblocking context query) | `std::function` capture/storage, invocation, async/yield, exceptions/bailout |
 
 Edit the three overlays with `tools/patches.py`; see
@@ -37,7 +38,8 @@ modeled native storage and effects, one fixture per family (`effects.cc`, `cache
 | Family | Matched cases per host |
 | --- | --- |
 | Known cache / Callable cleanup | 266 / 12 |
-| String / Variable / inline Callable | 11 / 5 / 14 |
+| String+CharPtr / KeyValue+Variable / inline Callable | 13 / 9 / 14 |
+| ArrayIterator / Array updates | 4681 bounded walks / 2 status profiles |
 
 These are modeled counts, not Zend runtime coverage; `phphelpers-facade-runtime`
 runs the facades in real PHP on both engines. The facades' sizes are not compared,
@@ -115,7 +117,7 @@ for t in tests/modules/phphelpers/test_*.py; do python3 -m unittest "$t"; done
 
 ## Open gates
 
-Loaded runtime for the keyed-merge routing, String release decision and
+Loaded runtime for the keyed-merge routing, String/CharPtr release decision and
 String dup/edup routing awaits a matching production build. The 48 optional DB
 async callers have no runtime qualification (6 SQLite and 11 ODBC compile on
 macOS; 31 Oracle/Firebird callers are not compiled). Whole caller/lifetime/fatal/

@@ -500,13 +500,15 @@ int swr_v1_phpswoole_rinit(int _kind, int module_number);
 int swr_v1_phpswoole_rshutdown(int _kind, int module_number);
 /* ZEND_INIT_MODULE_GLOBALS' constructor of zend_swoole_globals. */
 void swr_v1_phpswoole_init_globals(void *globals);
-/* sw_zend_string_allocator(): a swoole::Allocator of zend_string values. */
+/* sw_php_allocator() (emalloc) and sw_zend_string_allocator() (zend_string values):
+ * swoole::Allocators. */
 typedef struct swr_v1_phpswoole_allocator {
     void *(*malloc)(size_t size);
     void *(*calloc)(size_t nmemb, size_t size);
     void *(*realloc)(void *ptr, size_t size);
     void (*free)(void *ptr);
 } swr_v1_phpswoole_allocator;
+extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_php_allocator;
 extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_zend_string_allocator;
 
 #ifdef __cplusplus

@@ -40,12 +40,7 @@ diff --git a/ext-src/php_swoole_private.h b/ext-src/php_swoole_private.h
 index 3340bf2..70a5c3d 100644
 --- a/ext-src/php_swoole_private.h
 +++ b/ext-src/php_swoole_private.h
-@@ -158,4 +158,2 @@ PHP_FUNCTION(swoole_coroutine_gethostbyname);
- PHP_FUNCTION(swoole_client_select);
--PHP_FUNCTION(swoole_async_set);
--PHP_FUNCTION(swoole_async_dns_lookup_coro);
- 
-@@ -246,3 +244,2 @@ void php_swoole_http_server_rshutdown();
+@@ -246,3 +246,2 @@ void php_swoole_http_server_rshutdown();
  void php_swoole_http_response_rshutdown();
 -void php_swoole_async_coro_rshutdown();
  void php_swoole_redis_server_rshutdown();
