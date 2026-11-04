@@ -32,6 +32,8 @@ pub use headers::{HttpCookie, HttpHeaderInfo, swr_v1_http_cookie_next};
 pub use index_page::{HttpIndexPage, swr_v1_http_index_page};
 mod maps;
 mod multipart;
+#[cfg(test)]
+mod pin_helpers;
 pub use multipart::{
     swr_v1_http_multipart_disposition, swr_v1_http_multipart_filename, swr_v1_http_multipart_result,
 };
