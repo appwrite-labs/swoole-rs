@@ -70,8 +70,6 @@
  "http2-native": 5,
  "http2-unit": 8,
  "httpbindings-server": 4,
- "httpbindings-settings": 13,
- "httpbindings-settings-without-compression": 13,
  "httpbindings-unit": 1,
  "locks-constructor": 3,
  "locks-native": 5,

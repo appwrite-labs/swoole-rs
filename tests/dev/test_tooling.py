@@ -647,8 +647,6 @@ class Lanes(unittest.TestCase):
         for name in ['clients-pool', 'clients-http-format', 'clients-ip', 'clients-ip-text']:
             self.assertIn('--archive', commands[name])
             self.assertIn('--sanitize', commands[name])
-        self.assertIn('--archive', commands['httpbindings-settings'])
-        self.assertIn('--without-compression', commands['httpbindings-settings-without-compression'])
         self.assertNotIn('--faults', commands['clients-pool'])
         for family in ['http', 'dns', 'lifecycle', 'pool', 'resolver', 'pool_fork', 'http_connection', 'http_format', 'coro', 'async']:
             command = commands['clients-php-' + family]

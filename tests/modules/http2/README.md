@@ -40,9 +40,9 @@ predicates against the pinned headers, the Rust lookups and the driver against
 the hybrid build's tree (from the core report's archive).
 
 - `gate.py`: compiles the original `src/protocol/http2.cc` against the pinned
-  headers and the hybrid tree's copy and `core_calls.cpp` against the hybrid
-  build's patched headers, runs Rust unit tests, and compares the core codec calls
-  (`core_calls.cpp`) with a recording `Socket::send`.
+  headers, and `core_calls.cpp` (with the hybrid tree's `http2.cc` while it
+  exists) against the hybrid build's headers and archive, and compares the core
+  codec calls with a recording `Socket::send`.
 - `header_calls.py`: Rust role/media header lookup against the pinned
   locale-sensitive predicates.
 
