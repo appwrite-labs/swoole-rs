@@ -7,25 +7,25 @@ use std::ptr;
 
 /// `swr_v1_reactor_callback_entry`.
 #[repr(C)]
-pub struct Entry {
+pub struct CallbackEntry {
     pub key: i32,
     pub token: usize,
 }
 /// `swr_v1_reactor_callback_view`: one kind's entries, in ascending key order.
 #[repr(C)]
-pub struct View {
-    pub entries: *const Entry,
+pub struct CallbackView {
+    pub entries: *const CallbackEntry,
     pub len: usize,
 }
 /// Native reads `views` (`struct swr_v1_reactor_callbacks`), so they come first.
 #[repr(C)]
 pub struct ReactorCallbacks {
-    views: [View; 2],
-    entries: [Vec<Entry>; 2],
+    views: [CallbackView; 2],
+    entries: [Vec<CallbackEntry>; 2],
 }
 impl ReactorCallbacks {
     fn new() -> Self {
-        let empty = || View {
+        let empty = || CallbackView {
             entries: ptr::null(),
             len: 0,
         };
@@ -37,7 +37,7 @@ impl ReactorCallbacks {
     /// Publish `kind`'s entries after a change to them.
     fn refresh(&mut self, kind: usize) {
         let entries = &self.entries[kind];
-        self.views[kind] = View {
+        self.views[kind] = CallbackView {
             entries: entries.as_ptr(),
             len: entries.len(),
         };
@@ -55,7 +55,7 @@ impl ReactorCallbacks {
             Ok(index) => Ok((0, entries[index].token)),
             Err(index) => {
                 entries.try_reserve(1).map_err(|_| -2)?;
-                entries.insert(index, Entry { key, token });
+                entries.insert(index, CallbackEntry { key, token });
                 self.refresh(kind as usize);
                 Ok((1, token))
             }
