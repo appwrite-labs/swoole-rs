@@ -463,7 +463,7 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
     let client = client(1, true, true);
     mock(|m| m.out_buffer = 10);
     // SAFETY: a live state.
-    unsafe { swr_v1_clients_set_watermark(client, true, 8) };
+    unsafe { swr_v1_clients_watermark(client, true).write(8) };
     // SAFETY: a live state and four bytes.
     assert_eq!(
         unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) },
@@ -488,7 +488,7 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     let client = client(1, true, true);
     mock(|m| m.proxy[0] = SOCKS5_WAIT);
     // SAFETY: a live state.
-    unsafe { swr_v1_clients_set_watermark(client, true, 100) };
+    unsafe { swr_v1_clients_watermark(client, true).write(100) };
     // SAFETY: as above.
     let result =
         unsafe { swr_v1_clients_on_write(client, core::ptr::null_mut(), core::ptr::null_mut()) };

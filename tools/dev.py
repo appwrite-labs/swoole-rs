@@ -36,15 +36,24 @@ sys.exit(0 if ssl.HAS_TLSv1_3 else 2)"""
 # Upstream's own GoogleTests per module, run unchanged on the reference and the hybrid tree by
 # tools/core_tests.py (Linux, integrate): files, excluded cases with the reason, fixtures.
 NETWORK, PROXY = 'needs external DNS and network', 'needs a local HTTP or SOCKS5 proxy service'
+# The case's fixed missing name stays in the resolver's negative cache after any lookup of it (the
+# other engine's, an earlier run's), and the cached answer comes back before the cancel or timeout.
+UNCACHED = 'needs a DNS lookup that misses the resolver cache'
+CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_proxy', 'https_get_sync_with_http_proxy',
+                'https_get_sync_with_socks5_proxy', 'http_get_sync_with_socks5_proxy_no_dns_tunnel', 'http_get_async_with_http_proxy',
+                'http_get_async_with_socks5_proxy', 'http_get_sync_with_http_proxy', 'http_get_sync_with_socks5_proxy']
 CORE_TESTS = {
-    'reactor': (['network/socket.cpp', 'network/stream.cpp'], {}, {}),
+    'reactor': (['reactor/base.cpp', 'network/socket.cpp', 'network/stream.cpp'], {}, {}),
     'http': (['server/http_server.cpp', 'server/http_parser.cpp', 'server/multipart_parser.cpp'],
              {'http_server.node_websocket_client_1': 'needs Node.js and its ws package',
               'http_server.node_websocket_client_2': 'needs Node.js and its ws package'}, {}),
-    'clients': (['network/dns.cpp', 'network/address.cpp'],
-                {'dns.lookup1': NETWORK, 'dns.lookup_ipv6': NETWORK, 'dns.bad_family': NETWORK}, {}),
+    'clients': (['network/dns.cpp', 'network/address.cpp', 'network/client.cpp'],
+                {'dns.lookup1': NETWORK, 'dns.lookup_ipv6': NETWORK, 'dns.bad_family': NETWORK, 'dns.cancel': UNCACHED,
+                 'client.async_tcp_socks5_proxy_handshake_fail': 'expects www.baidu.com:80 to time out a SOCKS5 greeting',
+                 **{'client.' + name: PROXY for name in CLIENT_PROXY}}, {}),
     'hooks': (['coroutine/hook.cpp', 'coroutine/socket.cpp', 'coroutine/system.cpp'],
               {'coroutine_socket.tcp6': 'needs IPv6', 'coroutine_system.getaddrinfo': NETWORK,
+               'coroutine_system.getaddrinfo_timeout': UNCACHED,
                **{'coroutine_socket.' + name: PROXY for name in [
                    'https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy', 'https_get_with_http_proxy']}},
               {'core/base.cpp': 'base.file_put_contents'}),

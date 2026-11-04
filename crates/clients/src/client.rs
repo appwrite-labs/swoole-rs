@@ -539,19 +539,19 @@ pub unsafe extern "C" fn swr_v1_clients_set_flag(client: *mut Client, name: u32,
     Handle(client).set(name, value);
 }
 
-/// `buffer_high_watermark` (`high`) or `buffer_low_watermark` = `value`.
+/// `buffer_high_watermark` (`high`) or `buffer_low_watermark`: the address of the
+/// value, which C++'s `Client` keeps as a reference for its lifetime.
 ///
 /// # Safety
 /// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_set_watermark(client: *mut Client, high: bool, value: u32) {
+pub unsafe extern "C" fn swr_v1_clients_watermark(client: *mut Client, high: bool) -> *mut u32 {
     let client = Handle(client).get();
     if high {
-        &client.high_watermark
+        client.high_watermark.as_ptr()
     } else {
-        &client.low_watermark
+        client.low_watermark.as_ptr()
     }
-    .set(value);
 }
 
 /// `Client::close()`: -1 without a socket or when already closed, 0 when `onClose`
