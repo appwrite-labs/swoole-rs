@@ -4,7 +4,7 @@
 //! keeps only the warnings, whose formats must stay literals in the log macros.
 
 use std::cell::Cell;
-use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_void};
+use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -186,6 +186,52 @@ pub unsafe extern "C" fn swoole_dump_hex(data: *const u8, size: usize) {
         }
     }
     newline();
+}
+
+/// `swoole_dump_bin`: each whole `kind`-sized value, unpacked as `swoole_unpack`
+/// does, printed as `%ld,`, then a newline; nothing for a type without a size.
+/// # Safety
+/// `data` is readable for `size` bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z15swoole_dump_binPKhcm")
+)]
+pub unsafe extern "C" fn swoole_dump_bin(data: *const u8, kind: c_char, size: usize) {
+    let Ok(width) = usize::try_from(crate::swoole_type_size(kind)) else {
+        return;
+    };
+    if width == 0 {
+        return;
+    }
+    let [format] = kind.to_ne_bytes();
+    for index in 0..size / width {
+        let mut value = -1_i64;
+        // SAFETY: value `index` lies inside the caller's `size` readable bytes, and
+        // `value` is a live local.
+        unsafe {
+            swoole_rs_framing::swr_v1_framing_unpack(
+                format,
+                data.wrapping_add(index * width),
+                width,
+                &raw mut value,
+            )
+        };
+        // SAFETY: `%ld,` takes one long.
+        unsafe { printf(c"%ld,".as_ptr(), value as c_long) };
+    }
+    newline();
+}
+
+/// `ulong_t swoole_hex2dec(const char *, size_t *)` in the target's plain-char mode.
+/// # Safety
+/// As `swr_v1_corebase_hex_mode`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z14swoole_hex2decPKcPm")
+)]
+pub unsafe extern "C" fn swoole_hex2dec(hex: *const c_char, parsed: *mut usize) -> c_ulong {
+    // SAFETY: the caller upholds swr_v1_corebase_hex_mode's contract.
+    unsafe { crate::swr_v1_corebase_hex_mode(hex, parsed, u8::from(c_char::MIN != 0)) }
 }
 
 /// `swoole_print_backtrace` without Boost: up to 16 frames, one symbol per line.
@@ -479,6 +525,23 @@ pub unsafe extern "C" fn swr_v1_corebase_redirect_stdout(new_fd: c_int, errors: 
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn hex2dec_parses_in_the_targets_char_mode() {
+        let (mut parsed, mut expected_parsed) = (0, 0);
+        // SAFETY: NUL-terminated literals and live locals.
+        let value = unsafe { swoole_hex2dec(c"FFtail".as_ptr(), &raw mut parsed) };
+        // SAFETY: as above.
+        let expected =
+            unsafe { crate::swr_v1_corebase_hex(c"FFtail".as_ptr(), &raw mut expected_parsed) };
+        assert_eq!((value, parsed), (expected, expected_parsed));
+    }
+
+    #[test]
+    fn dump_bin_skips_types_without_a_size() {
+        // SAFETY: zero bytes are read for an unsized type.
+        unsafe { swoole_dump_bin(ptr::null(), c_char::from_ne_bytes(*b"x"), 0) };
+    }
 
     #[test]
     fn rand_covers_the_closed_range_only() {

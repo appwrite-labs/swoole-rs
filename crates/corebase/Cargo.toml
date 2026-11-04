@@ -13,6 +13,7 @@ upstream-symbols = []
 [dependencies]
 itoa = "1.0.18"
 libc = "=0.2.191"
+swoole-rs-framing = { path = "../framing" }
 
 [lib]
 name = "swoole_rs_corebase"
