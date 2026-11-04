@@ -231,39 +231,6 @@ pub extern "C" fn swr_v1_hook_sleep_timeout(seconds: f64, minimum: f64) -> f64 {
     if seconds < minimum { minimum } else { seconds }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_connect_action(
-    result: i32,
-    interrupted: bool,
-    in_progress: bool,
-) -> i32 {
-    if result >= 0 {
-        0
-    } else if interrupted {
-        1
-    } else if in_progress {
-        2
-    } else {
-        -1
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_connect_option(result: i32, error: i32) -> bool {
-    result < 0 || error != 0
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_liveness_error(alive: bool, error: i32, reset: i32) -> i32 {
-    if alive {
-        0
-    } else if error != 0 {
-        error
-    } else {
-        reset
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -42,6 +42,14 @@ pub struct Host {
     pub buffer: unsafe extern "C" fn(*mut CoSocket, *mut *mut u8, usize),
     /// `remove_read_event`/`remove_write_event`.
     pub remove: unsafe extern "C" fn(*mut CoSocket, u32),
+    /// Resumes a coroutine.
+    pub resume: unsafe extern "C" fn(*mut c_void),
+    /// `close()`'s release: runs the destructor callback once; the socket may be gone after.
+    pub release: unsafe extern "C" fn(*mut CoSocket),
+    /// `socket->ssl_shutdown()`.
+    pub ssl_shutdown: unsafe extern "C" fn(*mut CoSocket),
+    /// `socket->check_liveness()`, errno set when it fails.
+    pub liveness: unsafe extern "C" fn(*mut CoSocket) -> bool,
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
@@ -402,6 +410,8 @@ pub(crate) mod test_host {
     use std::cell::{Cell, RefCell};
 
     type Suspend = Box<dyn FnMut(*mut CoSocket, u32)>;
+    type OnResume = Box<dyn FnMut(c_long)>;
+    type OnRelease = Box<dyn FnMut(*mut CoSocket)>;
 
     thread_local! {
         static EVENTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -411,7 +421,46 @@ pub(crate) mod test_host {
         pub(crate) static ON_SUSPEND: RefCell<Option<Suspend>> = RefCell::new(None);
         /// What the bound-coroutine report does after it is recorded.
         pub(crate) static ON_BOUND: RefCell<Option<Box<dyn FnMut()>>> = RefCell::new(None);
+        /// What a resumed coroutine (its id) and the destructor callback do.
+        pub(crate) static ON_RESUME: RefCell<Option<OnResume>> = RefCell::new(None);
+        pub(crate) static ON_RELEASE: RefCell<Option<OnRelease>> = RefCell::new(None);
+        /// The liveness probe's answer and errno; the errno a TLS shutdown leaves.
+        pub(crate) static PROBE: Cell<(bool, c_int)> = const { Cell::new((true, 0)) };
+        pub(crate) static SSL_ERRNO: Cell<c_int> = const { Cell::new(0) };
         static NODES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn hook<T: ?Sized>(
+        slot: &'static std::thread::LocalKey<RefCell<Option<Box<T>>>>,
+        run: impl FnOnce(&mut T),
+    ) {
+        let taken = slot.take();
+        if let Some(mut taken) = taken {
+            run(&mut taken);
+            if slot.with_borrow(Option::is_none) {
+                slot.set(Some(taken));
+            }
+        }
+    }
+
+    unsafe extern "C" fn resume(co: *mut c_void) {
+        let cid = unsafe { *co.cast::<c_long>() };
+        log(format!("resume:{cid}"));
+        hook(&ON_RESUME, |f| f(cid));
+    }
+    unsafe extern "C" fn release(socket: *mut CoSocket) {
+        log("release");
+        hook(&ON_RELEASE, |f| f(socket));
+    }
+    unsafe extern "C" fn ssl_shutdown(_: *mut CoSocket) {
+        log("ssl-shutdown");
+        set_errno(SSL_ERRNO.get());
+    }
+    unsafe extern "C" fn liveness(_: *mut CoSocket) -> bool {
+        log("probe");
+        let (alive, error) = PROBE.get();
+        set_errno(error);
+        alive
     }
 
     pub(crate) fn log(event: impl Into<String>) {
@@ -431,6 +480,10 @@ pub(crate) mod test_host {
         REACTOR_OK.set(true);
         ON_SUSPEND.set(None);
         ON_BOUND.set(None);
+        ON_RESUME.set(None);
+        ON_RELEASE.set(None);
+        PROBE.set((true, 0));
+        SSL_ERRNO.set(0);
     }
 
     unsafe extern "C" fn set_last_error(error: c_int) {
@@ -503,6 +556,10 @@ pub(crate) mod test_host {
         suspend,
         buffer,
         remove,
+        resume,
+        release,
+        ssl_shutdown,
+        liveness,
     };
 }
 

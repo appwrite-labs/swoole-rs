@@ -1,9 +1,7 @@
 //! The coroutine socket's timers and timeouts: the read and write timer slots
 //! (in [`SocketState`]) and which one a firing timer belongs to, `TimeoutSetter`'s
-//! save/set/restore of the selected timeouts, and `connect(addr)`'s whole loop:
-//! the `connect(2)` retries, the wait for writability and the `SO_ERROR` check.
-use crate::shutdown::{SocketState, swr_v1_hook_socket_connect};
-use crate::swr_v1_hook_connect_action;
+//! save/set/restore of the selected timeouts.
+use crate::shutdown::SocketState;
 use core::ffi::{c_int, c_void};
 
 const EVENT_READ: u32 = 1 << 9;
@@ -111,77 +109,6 @@ pub unsafe extern "C" fn swr_v1_hook_timeouts(
     }
 }
 
-#[repr(C)]
-pub struct ConnectAddrOps {
-    pub socket: *mut c_void,
-    pub state: *mut SocketState,
-    /// The socket's descriptor, and `connect(2)` (native code passes `::connect`).
-    pub fd: c_int,
-    pub syscall: unsafe extern "C" fn(c_int, *const libc::sockaddr, libc::socklen_t) -> c_int,
-    /// `is_available(SW_EVENT_RDWR)` and `set_err(code)`.
-    pub available: unsafe extern "C" fn(*mut c_void) -> bool,
-    pub set_err: unsafe extern "C" fn(*mut c_void, c_int),
-    /// Waits to write under the connect timeout and, within the timer, settles the
-    /// attempt: false after `ECONNABORTED` for a socket closed meanwhile or the
-    /// error [`swr_v1_hook_connect_option`] finds in `SO_ERROR`, true when connected.
-    pub wait: unsafe extern "C" fn(*mut c_void) -> bool,
-    /// `get_name()`.
-    pub name: unsafe extern "C" fn(*mut c_void),
-}
-
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-/// `Socket::connect(addr, addrlen)`.
-///
-/// # Safety
-/// `ops` is live for the call and `addr` holds `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_connect_addr(
-    ops: *const ConnectAddrOps,
-    addr: *const libc::sockaddr,
-    length: libc::socklen_t,
-) -> bool {
-    // SAFETY: the caller passes a live table (see above).
-    let ops = unsafe { &*ops };
-    // SAFETY: the live socket's availability.
-    if !unsafe { (ops.available)(ops.socket) } {
-        return false;
-    }
-    let action = loop {
-        // SAFETY: the caller's descriptor and address.
-        let result = unsafe { (ops.syscall)(ops.fd, addr, length) };
-        let error = errno();
-        let action = swr_v1_hook_connect_action(
-            result,
-            result < 0 && error == libc::EINTR,
-            result < 0 && error == libc::EINPROGRESS,
-        );
-        if action != 1 {
-            break action;
-        }
-    };
-    if action < 0 {
-        // SAFETY: the live socket's error.
-        unsafe { (ops.set_err)(ops.socket, errno()) };
-        return false;
-    }
-    if action > 0 {
-        // SAFETY: the live socket's wait.
-        if !unsafe { (ops.wait)(ops.socket) } {
-            return false;
-        }
-    }
-    // SAFETY: the live state.
-    unsafe { swr_v1_hook_socket_connect(ops.state) };
-    // SAFETY: the live socket.
-    unsafe { (ops.name)(ops.socket) };
-    // SAFETY: the live socket's error.
-    unsafe { (ops.set_err)(ops.socket, 0) };
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,93 +207,5 @@ mod tests {
             SETS.with(|s| s.borrow().is_empty()),
             "a zero timeout changes nothing"
         );
-    }
-
-    thread_local! {
-        static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-        static WAIT: RefCell<bool> = const { RefCell::new(true) };
-    }
-
-    unsafe extern "C" fn available(_: *mut c_void) -> bool {
-        true
-    }
-    unsafe extern "C" fn set_err(_: *mut c_void, code: c_int) {
-        LOG.with(|l| l.borrow_mut().push(format!("err {code}")));
-    }
-    unsafe extern "C" fn wait(_: *mut c_void) -> bool {
-        LOG.with(|l| l.borrow_mut().push("wait".into()));
-        WAIT.with(|w| *w.borrow())
-    }
-    unsafe extern "C" fn name(_: *mut c_void) {
-        LOG.with(|l| l.borrow_mut().push("name".into()));
-    }
-
-    fn connect_to(fd: c_int, addr: &libc::sockaddr_in) -> (bool, Vec<String>, bool) {
-        LOG.with(|l| l.borrow_mut().clear());
-        let state = swr_v1_hook_socket_state_new();
-        let ops = ConnectAddrOps {
-            socket: std::ptr::null_mut(),
-            state,
-            fd,
-            syscall: libc::connect,
-            available,
-            set_err,
-            wait,
-            name,
-        };
-        // SAFETY: a local table and address.
-        let ok = unsafe {
-            swr_v1_hook_connect_addr(
-                &raw const ops,
-                std::ptr::from_ref(addr).cast(),
-                libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap(),
-            )
-        };
-        // SAFETY: the live state.
-        let connected = unsafe { crate::shutdown::swr_v1_hook_socket_flags(state) }.connected;
-        // SAFETY: frees the state made above.
-        unsafe { swr_v1_hook_socket_state_free(state) };
-        (ok, LOG.with(|l| l.borrow().clone()), connected)
-    }
-
-    fn loopback(port: u16) -> libc::sockaddr_in {
-        // SAFETY: an all-zero sockaddr_in is valid.
-        let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-        addr.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap();
-        addr.sin_port = port.to_be();
-        addr.sin_addr.s_addr = u32::from_be_bytes([127, 0, 0, 1]).to_be();
-        addr
-    }
-
-    #[test]
-    fn connect_now_or_after_a_wait() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        // A blocking socket connects at once.
-        // SAFETY: a new TCP socket.
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        let (ok, log, connected) = connect_to(fd, &loopback(port));
-        assert!(ok && connected);
-        assert_eq!(log, ["name", "err 0"]);
-        // A bad descriptor fails with its errno.
-        let (ok, log, connected) = connect_to(-1, &loopback(port));
-        assert!(!ok && !connected);
-        assert_eq!(log, [format!("err {}", libc::EBADF)]);
-        // SAFETY: the socket made above.
-        unsafe { libc::close(fd) };
-        // A nonblocking socket waits; a failed wait fails the connect.
-        // SAFETY: a new TCP socket made nonblocking.
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        // SAFETY: as above.
-        unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) };
-        WAIT.with(|w| *w.borrow_mut() = false);
-        let (ok, log, _) = connect_to(fd, &loopback(port));
-        WAIT.with(|w| *w.borrow_mut() = true);
-        if log.first().is_some_and(|e| e == "wait") {
-            assert!(!ok);
-            assert_eq!(log, ["wait"]);
-        }
-        // SAFETY: the socket made above.
-        unsafe { libc::close(fd) };
     }
 }

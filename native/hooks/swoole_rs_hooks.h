@@ -294,48 +294,12 @@ typedef struct {
 } swr_v1_hook_timeout_ops;
 void swr_v1_hook_timeouts(const swr_v1_hook_timeout_ops *ops, void *socket, double timeout, int types, double *original,
                           bool restore);
-/* Socket::connect(addr, addrlen): syscall (connect(2)) on fd, waiting to write when in progress.
- * wait settles an in-progress attempt within its timer: false after ECONNABORTED (closed
- * meanwhile) or SO_ERROR's error, true once connected. */
-typedef struct {
-    void *context;
-    swr_v1_hook_socket_state *state;
-    int fd;
-    int (*syscall)(int, const struct sockaddr *, socklen_t);
-    bool (*available)(void *);
-    void (*set_err)(void *, int code);
-    bool (*wait)(void *);
-    void (*name)(void *);
-} swr_v1_hook_connect_addr_ops;
-bool swr_v1_hook_connect_addr(const swr_v1_hook_connect_addr_ops *ops, const struct sockaddr *addr, socklen_t length);
 /* The coroutine bound for reading or writing (event SW_EVENT_READ/WRITE; bind accepts both bits).
    bound_co follows get_bound_co; event_name returns 0 reading, 1 writing, 2 reading or writing. */
 void *swr_v1_hook_socket_co(const swr_v1_hook_socket_state *state, uint32_t event);
 void swr_v1_hook_socket_bind(swr_v1_hook_socket_state *state, uint32_t event, void *co);
 void *swr_v1_hook_socket_bound_co(const swr_v1_hook_socket_state *state, uint32_t event);
 uint32_t swr_v1_hook_socket_event_name(const swr_v1_hook_socket_state *state, uint32_t event);
-/* Socket::cancel/close. release marks the descriptor closed and runs the destructor
-   callback once; the socket may be gone afterwards. resume wakes the coroutine bound
-   to the event (read or write). */
-typedef struct {
-    void *context;
-    swr_v1_hook_socket_state *state;
-    uint32_t read, write;
-    int32_t close_wait_error;
-    bool (*closed)(void *);
-    void (*shutdown)(void *);
-    bool (*bound)(void *, uint32_t event);
-    void (*set_err)(void *, int32_t);
-    void (*resume)(void *, uint32_t event);
-    void (*close_wait)(void *);
-    void (*release)(void *);
-} swr_v1_hook_socket_ops;
-bool swr_v1_hook_cancel(const swr_v1_hook_socket_ops *ops, uint32_t event);
-bool swr_v1_hook_close(const swr_v1_hook_socket_ops *ops);
-/* Socket::shutdown(how) after set_err(0): 0, or the error to set. closed is is_closed();
-   ssl_shutdown (null without TLS) closes the session first, with context; syscall is shutdown(2). */
-int32_t swr_v1_hook_shutdown(int (*syscall)(int, int), int32_t fd, int32_t how, bool closed, swr_v1_hook_socket_state *state,
-                             void (*ssl_shutdown)(void *), void *context);
 /* The readable/writable callbacks' choice of coroutine to resume (null for none). */
 void *swr_v1_hook_socket_ready(swr_v1_hook_socket_state *state, uint32_t event, bool hup);
 /* Socket::recv_with_buffer after the availability check, over the read buffer's fields, and
@@ -350,9 +314,6 @@ typedef ssize_t (*swr_v1_hook_read)(void *, char *buffer, size_t length);
 ssize_t swr_v1_hook_recv_buffered(const swr_v1_hook_buffer_fields *buffer, swr_v1_hook_read recv, void *context, char *out,
                                   size_t length);
 ssize_t swr_v1_hook_recv_line(swr_v1_hook_read read, void *context, char *out, size_t limit);
-int32_t swr_v1_hook_connect_action(int32_t result, bool interrupted, bool in_progress);
-bool swr_v1_hook_connect_option(int32_t result, int32_t error);
-int32_t swr_v1_hook_liveness_error(bool alive, int32_t error, int32_t reset);
 #ifdef __cplusplus
 }
 // Callables stay on the native stack. Rust returns before every IO, errno

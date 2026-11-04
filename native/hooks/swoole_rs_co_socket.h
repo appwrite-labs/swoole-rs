@@ -85,7 +85,21 @@ typedef struct {
     void (*buffer)(swr_v1_co_socket *, char **buffer, size_t length);
     /* remove_read_event/remove_write_event. */
     void (*remove)(swr_v1_co_socket *, uint32_t event);
+    /* Resumes a coroutine. */
+    void (*resume)(void *co);
+    /* close()'s release: the destructor callback, once; the socket may be gone after. */
+    void (*release)(swr_v1_co_socket *);
+    /* socket->ssl_shutdown() and socket->check_liveness(). */
+    void (*ssl_shutdown)(swr_v1_co_socket *);
+    bool (*liveness)(swr_v1_co_socket *);
 } swr_v1_hook_co_socket_host_t;
+/* The lifecycle (crates/hooks/src/lifecycle.rs): shutdown(how), cancel(event), close()
+   (the socket may be gone after it returns true), check_liveness() and connect(addr). */
+bool swr_v1_hook_co_socket_shutdown(swr_v1_co_socket *socket, int how);
+bool swr_v1_hook_co_socket_cancel(swr_v1_co_socket *socket, uint32_t event);
+bool swr_v1_hook_co_socket_close(swr_v1_co_socket *socket);
+bool swr_v1_hook_co_socket_check_liveness(swr_v1_co_socket *socket);
+bool swr_v1_hook_co_socket_connect(swr_v1_co_socket *socket, const struct sockaddr *addr, socklen_t length);
 void swr_v1_hook_co_socket_host(const swr_v1_hook_co_socket_host_t *host);
 /* set_err(e), check_return_value, is_available, get_bound_cid, check_bound_co,
    get_event_str (a static string) and TimeoutController::has_timedout (startup is
