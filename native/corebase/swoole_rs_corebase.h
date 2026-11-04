@@ -8,7 +8,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-int32_t swr_v1_corebase_type_size(uint8_t kind);
 /* Success matches the representable decimal portion of std::stoi; native code
  * retains its exception path and publishes output only after success. */
 uint8_t swr_v1_corebase_parse_stoi(const char *input, int32_t *output);
@@ -19,8 +18,6 @@ enum swr_v1_corebase_systemd_listen_fds_action {
 };
 /* getenv, exception construction, and every warning/error side effect remain native. */
 uint32_t swr_v1_corebase_systemd_listen_fds_action(uint8_t found, int32_t count, int32_t maximum);
-/* Caller owns sufficient output for value's decimal bytes and NUL. */
-int32_t swr_v1_corebase_itoa(char *output, long value);
 /* Valid NUL-terminated input, disjoint writable parsed output. Original host
  * ctype input requirements apply. These direct libc parsers preserve original errno effects/order. */
 /* Frozen target-default mode; native compiler char mode must match Rust. */
@@ -94,26 +91,13 @@ enum swr_v1_corebase_hook_add_action_kind {
 };
 /* Native owns list allocation/publication and Callback copy/insertion effects. */
 uint32_t swr_v1_corebase_hook_add_action(uint8_t list_present, int32_t push_back);
-/* Random string policy: exclusive zeroed per-call cursor. Run returned effects
- * after Rust returns. BUFFER/APPEND may set FIRST_DRAW_READY(4) when the first
- * native draw already occurred; DRAW uses the fixed alphabet bound below.
- * STORE_DRAW stores index/value BEFORE the next draw. STORE_NUL/STORE_DONE
- * store the final byte then terminate. Stop on NUL/DONE/STORE_NUL/STORE_DONE/
- * UINT32_MAX. Native exceptions never cross Rust. min/max are unused. */
-struct swr_v1_corebase_random_state { uint32_t phase; int32_t value; size_t index; };
-enum { SWR_COREBASE_RANDOM_DRAW_MAX = 61, SWR_COREBASE_RANDOM_FIRST_DRAW_READY = 4 };
-enum swr_v1_corebase_random_mode { SWR_COREBASE_RANDOM_BUFFER = 1, SWR_COREBASE_RANDOM_APPEND = 2 };
-enum swr_v1_corebase_random_action {
-    SWR_COREBASE_RANDOM_DRAW = 6, SWR_COREBASE_RANDOM_STORE_DRAW = 7,
-    SWR_COREBASE_RANDOM_NUL = 8, SWR_COREBASE_RANDOM_DONE = 9,
-    SWR_COREBASE_RANDOM_STORE_NUL = 10, SWR_COREBASE_RANDOM_STORE_DONE = 11
-};
-uint32_t swr_v1_corebase_random_next(struct swr_v1_corebase_random_state *state,
-    uint32_t mode, uint32_t flags, size_t length, uint32_t random, int32_t _min, int32_t _max);
+/* One character of swoole_random_string(std::string &, size_t), drawn with swoole_rand(0, 61). */
+char swr_v1_corebase_random_char(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
  * swoole_protocol.h stay their declarations: sw_malloc/sw_free/sw_calloc/
  * sw_realloc (libc's allocator), swoole_common_divisor/_multiple,
- * swoole_version_compare, swoole_dec2hex, swoole_dump_ascii/_hex, swoole_rand
+ * swoole_version_compare, swoole_dec2hex, swoole_type_size, swoole_itoa,
+ * swoole_random_string(char *, size_t), swoole_dump_ascii/_hex, swoole_rand
  * (both overloads), swoole_random_int, swoole::microtime and
  * swoole::DataHead::dump. */
 /* Whole host operations; native code keeps only the warnings. */
