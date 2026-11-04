@@ -173,8 +173,7 @@ pub unsafe extern "C" fn swr_v1_hook_socket_connect(state: *mut SocketState) {
 /// # Safety
 /// `state` is a live, unborrowed handle; `ssl_shutdown`, if set, acts on the live
 /// socket in `context`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_shutdown(
+pub(crate) unsafe fn swr_v1_hook_shutdown(
     syscall: unsafe extern "C" fn(i32, i32) -> i32,
     fd: i32,
     how: i32,

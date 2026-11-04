@@ -1,0 +1,29 @@
+diff --git a/ext-src/php_swoole.cc b/ext-src/php_swoole.cc
+index a4806db..5350c77 100644
+--- a/ext-src/php_swoole.cc
++++ b/ext-src/php_swoole.cc
+@@ -865,6 +865,2 @@ PHP_MINFO_FUNCTION(swoole) {
+ 
+-const swoole::Allocator *sw_php_allocator() {
+-    return reinterpret_cast<const swoole::Allocator *>(&swr_v1_phpswoole_php_allocator);
+-}
+-
+ const swoole::Allocator *sw_zend_string_allocator() {
+diff --git a/ext-src/php_swoole_cxx.h b/ext-src/php_swoole_cxx.h
+index d3bc883..d9f856c 100644
+--- a/ext-src/php_swoole_cxx.h
++++ b/ext-src/php_swoole_cxx.h
+@@ -677,3 +677,2 @@ void json_decode(zval *return_value, const char *str, size_t str_len, zend_long
+ zend_function *get_function(const char *fname, size_t fname_len);
+-zend_function *get_function(const std::string &fname);
+ zend_function *get_function(const zend_string *fname);
+@@ -703,9 +702,2 @@ static inline zval *array_get(zval *arg, zend_ulong index) {
+ 
+-/**
+- * Add new element to the associative array or merge with existing elements.
+- * If the key does not exist, add it to the array.
+- * If the key already exists, merge all into a two-dimensional array.
+- */
+-void array_add_or_merge(zval *zarray, const char *key, size_t key_len, zval *new_element);
+-
+ static inline void object_set(zval *obj, const char *name, size_t l_name, zval *zvalue) {

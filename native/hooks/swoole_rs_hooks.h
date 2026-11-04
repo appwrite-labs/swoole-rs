@@ -98,8 +98,6 @@ double swr_v1_hook_backoff(double current, double initial, double maximum);
 int64_t swr_v1_hook_transfer_result(int64_t result, uint64_t total);
 typedef struct { uint64_t total; bool again; } swr_v1_hook_transfer_plan;
 swr_v1_hook_transfer_plan swr_v1_hook_transfer(int64_t result, uint64_t total, uint64_t requested, bool wait);
-enum swr_hook_timer_action { SWR_HOOK_TIMER_ENABLE = 1, SWR_HOOK_TIMER_ADD = 2, SWR_HOOK_TIMER_SENTINEL = 4, SWR_HOOK_TIMER_DELETE = 8, SWR_HOOK_TIMER_CLEAR = 16 };
-uint32_t swr_v1_hook_timer(uint32_t operation, bool enabled, bool present, bool sentinel, double timeout);
 enum swr_hook_wait_action { SWR_HOOK_WAIT_DONE = 0, SWR_HOOK_WAIT_CALLBACK = 1, SWR_HOOK_WAIT_SLEEP = 2, SWR_HOOK_WAIT_CANCELED = -1, SWR_HOOK_WAIT_INVALID = -2 };
 typedef struct { double delay; uint32_t phase; int32_t action; } swr_v1_hook_wait_plan;
 swr_v1_hook_wait_plan swr_v1_hook_wait_for(uint32_t phase, double delay, bool result, double initial, double maximum);
@@ -152,12 +150,7 @@ void swr_v1_hook_dns_cache_clear(void);
 float swr_v1_hook_dns_cache_hit_ratio(void);
 bool swr_v1_hook_dns_cache_get(int domain, const char *name, size_t length, void *out, void (*assign)(void *out, const char *address, size_t length));
 void swr_v1_hook_dns_cache_set(int domain, const char *name, size_t length, const char *address, size_t address_length);
-uint32_t swr_v1_hook_socket_status(bool closed, bool close_wait);
-uint32_t swr_v1_hook_check_result(int64_t result, bool has_error);
 double swr_v1_hook_timeval(double seconds, double micros);
-uint32_t swr_v1_hook_timeout_action(double timeout, double startup);
-typedef struct { double remaining; bool expired; } swr_v1_hook_timeout_plan;
-swr_v1_hook_timeout_plan swr_v1_hook_timeout_remaining(double timeout, double elapsed, double minimum);
 typedef struct { uint32_t flags; bool conflict; } swr_v1_hook_curl_plan;
 swr_v1_hook_curl_plan swr_v1_hook_curl_flags(uint32_t flags, uint32_t native, uint32_t php);
 enum swr_hook_async_action { SWR_HOOK_ASYNC_REJECT = 0, SWR_HOOK_ASYNC_YIELD = 1, SWR_HOOK_ASYNC_COMPLETE = 2, SWR_HOOK_ASYNC_CANCEL = 3, SWR_HOOK_ASYNC_RESUME = 4 };
@@ -200,21 +193,6 @@ typedef struct {
     void (*check)(void *, ssize_t);
 } swr_v1_hook_vector_ops;
 ssize_t swr_v1_hook_vector_all(const swr_v1_hook_vector_ops *ops);
-/* The coroutine Socket's transfers: swr_v1_hook_io retries one call while the socket would
-   block; swr_v1_hook_io_all is recv_all/send_all. wait installs barrier (when given) and waits;
-   buffer, when not null, is the caller's buffer slot that a write's wait may move. */
-typedef struct {
-    void *context;
-    bool retry_interrupted;
-    ssize_t (*call)(void *, char *buffer, size_t length);
-    bool (*would_block)(void *);
-    bool (*start)(void *);
-    bool (*wait)(void *, swr_v1_hook_barrier barrier, void *barrier_state, char **buffer);
-    void (*check)(void *, ssize_t);
-    void (*fail)(void *);
-} swr_v1_hook_transfer_ops;
-ssize_t swr_v1_hook_io(const swr_v1_hook_transfer_ops *ops, char *buffer, size_t length);
-ssize_t swr_v1_hook_io_all(const swr_v1_hook_transfer_ops *ops, char *buffer, size_t length);
 /* The coroutine Socket's connection state, Rust-owned behind an opaque handle (#439) in its record. */
 typedef struct swr_v1_hook_socket_state swr_v1_hook_socket_state;
 typedef struct { bool connected, read, write; } swr_v1_hook_socket_flags_t;
@@ -316,65 +294,13 @@ typedef struct {
 } swr_v1_hook_timeout_ops;
 void swr_v1_hook_timeouts(const swr_v1_hook_timeout_ops *ops, void *socket, double timeout, int types, double *original,
                           bool restore);
-/* Socket::connect(addr, addrlen): syscall (connect(2)) on fd, waiting to write when in progress.
- * wait settles an in-progress attempt within its timer: false after ECONNABORTED (closed
- * meanwhile) or SO_ERROR's error, true once connected. */
-typedef struct {
-    void *context;
-    swr_v1_hook_socket_state *state;
-    int fd;
-    int (*syscall)(int, const struct sockaddr *, socklen_t);
-    bool (*available)(void *);
-    void (*set_err)(void *, int code);
-    bool (*wait)(void *);
-    void (*name)(void *);
-} swr_v1_hook_connect_addr_ops;
-bool swr_v1_hook_connect_addr(const swr_v1_hook_connect_addr_ops *ops, const struct sockaddr *addr, socklen_t length);
 /* The coroutine bound for reading or writing (event SW_EVENT_READ/WRITE; bind accepts both bits).
    bound_co follows get_bound_co; event_name returns 0 reading, 1 writing, 2 reading or writing. */
 void *swr_v1_hook_socket_co(const swr_v1_hook_socket_state *state, uint32_t event);
 void swr_v1_hook_socket_bind(swr_v1_hook_socket_state *state, uint32_t event, void *co);
 void *swr_v1_hook_socket_bound_co(const swr_v1_hook_socket_state *state, uint32_t event);
 uint32_t swr_v1_hook_socket_event_name(const swr_v1_hook_socket_state *state, uint32_t event);
-/* Socket::cancel/close. release marks the descriptor closed and runs the destructor
-   callback once; the socket may be gone afterwards. resume wakes the coroutine bound
-   to the event (read or write). */
-typedef struct {
-    void *context;
-    swr_v1_hook_socket_state *state;
-    uint32_t read, write;
-    int32_t close_wait_error;
-    bool (*closed)(void *);
-    void (*shutdown)(void *);
-    bool (*bound)(void *, uint32_t event);
-    void (*set_err)(void *, int32_t);
-    void (*resume)(void *, uint32_t event);
-    void (*close_wait)(void *);
-    void (*release)(void *);
-} swr_v1_hook_socket_ops;
-bool swr_v1_hook_cancel(const swr_v1_hook_socket_ops *ops, uint32_t event);
-bool swr_v1_hook_close(const swr_v1_hook_socket_ops *ops);
-/* Socket::shutdown(how) after set_err(0): 0, or the error to set. closed is is_closed();
-   ssl_shutdown (null without TLS) closes the session first, with context; syscall is shutdown(2). */
-int32_t swr_v1_hook_shutdown(int (*syscall)(int, int), int32_t fd, int32_t how, bool closed, swr_v1_hook_socket_state *state,
-                             void (*ssl_shutdown)(void *), void *context);
-/* Socket::wait_event for the current coroutine co, and the readable/writable callbacks' choice of
-   coroutine to resume (null for none). barrier (when given) stays installed for the wait; buffer,
-   when not null, is a write's buffer slot. status reports close_wait, else has_kernel_nobufs(),
-   then the TLS wants, removed, and events' SW_EVENT_READ/WRITE bits. */
-typedef struct {
-    void *context;
-    struct swr_v1_co_socket *socket;
-    int32_t close_wait_error;
-    void (*set_err)(void *, int32_t);
-    void (*sleep)(void *);
-    bool (*reactor)(void *, uint32_t events, bool add);
-    void (*suspend)(void *, void *co, uint32_t event);
-    void (*buffer)(void *, char **buffer, size_t length);
-    void (*remove)(void *, uint32_t event);
-} swr_v1_hook_wait_ops;
-bool swr_v1_hook_socket_wait(const swr_v1_hook_wait_ops *ops, void *co, uint32_t event, swr_v1_hook_barrier barrier,
-                             void *barrier_state, char **buffer, size_t length);
+/* The readable/writable callbacks' choice of coroutine to resume (null for none). */
 void *swr_v1_hook_socket_ready(swr_v1_hook_socket_state *state, uint32_t event, bool hup);
 /* Socket::recv_with_buffer after the availability check, over the read buffer's fields, and
    recv_line over recv_with_buffer (read). recv may yield; the fields stay current across it. */
@@ -388,15 +314,11 @@ typedef ssize_t (*swr_v1_hook_read)(void *, char *buffer, size_t length);
 ssize_t swr_v1_hook_recv_buffered(const swr_v1_hook_buffer_fields *buffer, swr_v1_hook_read recv, void *context, char *out,
                                   size_t length);
 ssize_t swr_v1_hook_recv_line(swr_v1_hook_read read, void *context, char *out, size_t limit);
-int32_t swr_v1_hook_connect_action(int32_t result, bool interrupted, bool in_progress);
-bool swr_v1_hook_connect_option(int32_t result, int32_t error);
-int32_t swr_v1_hook_liveness_error(bool alive, int32_t error, int32_t reset);
 #ifdef __cplusplus
 }
 // Callables stay on the native stack. Rust returns before every IO, errno
 // classifier, timer operation or coroutine suspension; exceptions remain native.
 static_assert(sizeof(swr_v1_hook_curl_plan) == 8, "curl plan ABI");
-static_assert(sizeof(swr_v1_hook_timeout_plan) == 16, "timeout plan ABI");
 static_assert(sizeof(swr_v1_hook_wait_plan) == 16, "wait cursor ABI");
 static_assert(sizeof(swr_v1_hook_event_plan) == 8, "event waiter ABI");
 static_assert(sizeof(swr_v1_hook_transfer_plan) == 16, "transfer ABI");

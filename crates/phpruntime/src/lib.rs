@@ -3,9 +3,10 @@
 //! `enableCoroutine`, and `PHPCoroutine::enable_hook`: which hook families
 //! change, the function-table hooks (handlers, arginfo copies, the library's
 //! PHP replacements, the classes they graft on) and the sleep family's
-//! replacements, and the coroutine socket streams (`stream`). The transport
-//! registry, the plain-file and stdio wrappers, the PDO drivers, the coroutine
-//! state and the coroutine socket stay C++, lent as a table and as calls.
+//! replacements, the coroutine socket streams (`stream`) and the transports
+//! they swap (`transport`). The plain-file and stdio wrappers, the PDO
+//! drivers, the coroutine state and the coroutine socket stay C++, lent as a
+//! table and as calls.
 //!
 //! A warning can run a user error handler that bails out; when it does from
 //! inside a function here, the jump crosses only frames that own nothing to
@@ -28,10 +29,12 @@ mod select;
 mod sleep;
 mod socket;
 mod stream;
+mod transport;
 pub use connect::*;
 pub use putenv::*;
 pub use select::*;
 pub use stream::*;
+pub use transport::swr_v1_phpruntime_original_transport;
 
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -108,9 +111,8 @@ pub struct Ops {
     active_threads: unsafe extern "C" fn() -> u32,
     /// The before (0) or after (1) enable-hook global hook, if set.
     call_hook: unsafe extern "C" fn(after: u8, flags: *mut u32),
-    /// Register `socket_create` (`hook`) or the original factory for transport
-    /// `index` (tcp, udp, unix, udg, ssl, tls): `SUCCESS` or `FAILURE`.
-    transport: unsafe extern "C" fn(index: u32, hook: u8) -> i32,
+    /// C++'s coroutine transport factory, `socket_create`.
+    socket_create: *mut c_void,
     /// Swap the plain-files wrapper (0) or the stdio ops (1).
     stream_ops: unsafe extern "C" fn(stdio: u8, hook: u8),
     /// `swoole_<driver>_set_blocking(blocking)` for a `HOOK_PDO_*` bit.
@@ -229,6 +231,7 @@ pub unsafe extern "C" fn swr_v1_phpruntime_minit(module_number: i32, ops: *const
         // SAFETY: MINIT, with the module's number.
         unsafe { register_long_constant(name, i64::from(value), module_number) };
     }
+    transport::register_async(self::ops().socket_create);
 }
 
 swoole_rs_zend::handlers! {
@@ -313,7 +316,9 @@ fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     requested &= !unavailable;
     let installed = HOOKED.load(Ordering::Relaxed);
 
-    requested = transports(requested, installed);
+    requested = transports(requested, installed, |index, hook| {
+        transport::register(index, hook, ops.socket_create)
+    });
     wrappers(requested, installed);
     functions::hook_all(requested, installed)?;
     mongodb(requested, installed)?;
@@ -336,22 +341,24 @@ const fn transition(requested: u32, installed: u32, bit: u32) -> Option<bool> {
 
 /// `hook_stream_factory`: a transport that fails to register is dropped from
 /// the flags, with an exception.
-fn transports(mut requested: u32, installed: u32) -> u32 {
-    const NAMES: [&str; 6] = ["tcp", "udp", "unix", "udg", "ssl", "tls"];
-    for (index, name) in (0u32..).zip(NAMES) {
+fn transports(
+    mut requested: u32,
+    installed: u32,
+    mut register: impl FnMut(usize, bool) -> i32,
+) -> u32 {
+    for (index, name) in transport::NAMES.iter().enumerate() {
         let bit = flags::TCP << index;
         match transition(requested, installed, bit) {
             Some(true) => {
-                // SAFETY: C++'s registration.
-                if unsafe { (ops().transport)(index, 1) } != 0 {
+                if register(index, true) != 0 {
                     requested ^= bit;
+                    let name = name.to_string_lossy();
                     let message = message!("failed to register `{name}` stream transport factory");
                     throw(&message, SW_ERROR_PHP_FATAL_ERROR);
                 }
             }
             Some(false) => {
-                // SAFETY: as above.
-                unsafe { (ops().transport)(index, 0) };
+                register(index, false);
             }
             None => {}
         }
@@ -451,6 +458,7 @@ pub extern "C" fn swr_v1_phpruntime_rinit() -> u8 {
         return 0;
     }
     functions::start();
+    transport::remember();
     1
 }
 
@@ -542,10 +550,6 @@ mod tests {
     }
     unsafe extern "C" fn flags_in(_: u32) {}
     unsafe extern "C" fn hook(_: u8, _: *mut u32) {}
-    unsafe extern "C" fn transport(index: u32, hook: u8) -> i32 {
-        record(format!("transport:{index}:{hook}"));
-        0
-    }
     unsafe extern "C" fn stream_ops(stdio: u8, hook: u8) {
         record(format!("stream:{stdio}:{hook}"));
     }
@@ -574,7 +578,7 @@ mod tests {
         main_thread: no,
         active_threads: zero,
         call_hook: hook,
-        transport,
+        socket_create: std::ptr::null_mut(),
         stream_ops,
         pdo,
         callable,
@@ -597,7 +601,10 @@ mod tests {
 
     fn run(requested: u32, installed: u32) -> (u32, Vec<String>) {
         OPS.get_or_init(|| &FAKE);
-        let requested = transports(requested, installed);
+        let requested = transports(requested, installed, |index, hook| {
+            record(format!("transport:{index}:{}", u8::from(hook)));
+            0
+        });
         wrappers(requested, installed);
         (requested, trace())
     }

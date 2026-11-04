@@ -37,7 +37,7 @@ const READ: i32 = 2;
 const WRITE: i32 = 3;
 
 /// `php_swoole_array_get_value`: the value under `key`, unless absent or null.
-fn get(options: *mut zend_array, key: &CStr) -> Option<*mut zval> {
+pub(crate) fn get(options: *mut zend_array, key: &CStr) -> Option<*mut zval> {
     // SAFETY: a live table; Zend returns a slot or null.
     let found = unsafe { zend_hash_str_find(options, key.as_ptr(), key.count_bytes()) };
     // SAFETY: a found slot is a live zval.
@@ -124,13 +124,21 @@ fn text_option(
 /// error bails out from here).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_set_global_option(options: *mut zend_array) {
-    if let Err((value, error)) = apply(options) {
-        // SAFETY: only a string fails to parse.
-        let failed = unsafe { value::str_of(value) };
-        // SAFETY: a live string, and Zend's error string.
-        unsafe { size_error(failed, error) };
-    }
+    set_global(options);
     bailout::finish();
+}
+
+/// `php_swoole_set_global_option`'s body: false after a size that does not
+/// parse, whose fatal error is deferred.
+pub(crate) fn set_global(options: *mut zend_array) -> bool {
+    let Err((value, error)) = apply(options) else {
+        return true;
+    };
+    // SAFETY: only a string fails to parse.
+    let failed = unsafe { value::str_of(value) };
+    // SAFETY: a live string, and Zend's error string.
+    unsafe { size_error(failed, error) };
+    false
 }
 
 fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> {

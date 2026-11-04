@@ -1,6 +1,6 @@
 //! The module's function table (`swoole_functions[]` in `php_swoole.cc`), in
 //! upstream's order, and the short-name aliases MINIT adds.
-use crate::{constants::SHORTNAME, functions as f, interfaces as i, module, vm};
+use crate::{asynchronous as a, constants::SHORTNAME, functions as f, interfaces as i, module, vm};
 use std::ffi::CStr;
 use swoole_rs_phpstubs::{ex, stdext, swoole as s, tracer};
 use swoole_rs_zend::{
@@ -13,8 +13,6 @@ pub(crate) const STDEXT: u32 = 1 << 11;
 
 // Handlers other crates or C++ define, whichever the build selects.
 unsafe extern "C" {
-    fn zif_swoole_async_dns_lookup_coro(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_async_set(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_coroutine_create(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_coroutine_defer(frame: *mut z::zend_execute_data, value: *mut z::zval);
     fn zif_swoole_coroutine_socketpair(frame: *mut z::zend_execute_data, value: *mut z::zval);
@@ -35,8 +33,8 @@ method_table! {
         c"swoole_version" => f::zif_swoole_version, &s::arginfo_swoole_version, 0;
         c"swoole_cpu_num" => f::zif_swoole_cpu_num, &s::arginfo_swoole_cpu_num, 0;
         c"swoole_last_error" => f::zif_swoole_last_error, &s::arginfo_swoole_last_error, 0;
-        c"swoole_async_dns_lookup_coro" => zif_swoole_async_dns_lookup_coro, &s::arginfo_swoole_async_dns_lookup_coro, 0;
-        c"swoole_async_set" => zif_swoole_async_set, &s::arginfo_swoole_async_set, 0;
+        c"swoole_async_dns_lookup_coro" => a::zif_swoole_async_dns_lookup_coro, &s::arginfo_swoole_async_dns_lookup_coro, 0;
+        c"swoole_async_set" => a::zif_swoole_async_set, &s::arginfo_swoole_async_set, 0;
         c"swoole_coroutine_create" => zif_swoole_coroutine_create, &s::arginfo_swoole_coroutine_create, 0;
         c"swoole_coroutine_defer" => zif_swoole_coroutine_defer, &s::arginfo_swoole_coroutine_defer, 0;
         c"swoole_coroutine_socketpair" => zif_swoole_coroutine_socketpair, &s::arginfo_swoole_coroutine_socketpair, 0;
