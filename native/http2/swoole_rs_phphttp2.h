@@ -94,6 +94,22 @@ struct swr_h2s_request {
     void *data;
 };
 typedef void (*swr_h2s_handler)(struct swr_h2s_request *request);
+/* An async server's finished request (crates/phphttp/src/server.rs): the
+ * static handler or the port's onRequest. It asks for the connection (null:
+ * closed) and what it reads of it and the server. */
+void swr_v1_phphttp_server_http2_request(struct swr_h2s_request *request);
+typedef struct {
+    double last_recv_time;
+    int64_t local_port;
+    int64_t remote_port;
+    int loopback;
+    int server_fd;
+    bool cache;
+    bool static_handler;
+    bool unavailable;
+    bool coroutine;
+} swr_h2s_connection_facts;
+void *swr_h2s_connection(void *server, int64_t fd, swr_h2s_connection_facts *out);
 bool swr_v1_phphttp2_session_exists(int64_t fd);
 void swr_v1_phphttp2_session_new(
     int64_t fd, void *default_ctx, uint32_t max_body_size, bool is_coro, swr_h2s_handler handle, void *data);
