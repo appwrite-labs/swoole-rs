@@ -6,7 +6,12 @@
 //! deletes what the map hands back. `close` takes it out only once
 //! `Socket::close()` succeeds, which it does not while a coroutine is bound to the
 //! socket, so a coroutine parked in an operation keeps a live pointer.
+//!
+//! `Socket::close()` cancels the bound coroutines, which resume inside it and may
+//! close the fd themselves; the sockets those nested closes remove are deleted only
+//! when this thread's outermost close returns.
 use libc::{c_int, c_void};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -89,6 +94,56 @@ pub extern "C" fn swr_v1_hook_socket_remove(fd: c_int) -> *mut c_void {
     socket
 }
 
+thread_local! {
+    /// How many hooked closes are running on this thread, and the sockets they
+    /// removed, which wait for the outermost one to return.
+    static CLOSING: RefCell<(usize, Vec<*mut c_void>)> = const { RefCell::new((0, Vec::new())) };
+}
+
+/// `swoole_coroutine_close(fd)` for a coroutine socket: 0 once `close(socket)`
+/// succeeds and the socket leaves the map, -1 when it fails, 1 (errno `ENOTSOCK`)
+/// when `fd` has no socket. `delete` frees each removed socket after the
+/// outermost close on this thread returns, so no close still running uses a
+/// freed one.
+///
+/// # Safety
+/// `close` and `delete` act on live sockets from this map.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_socket_close(
+    fd: c_int,
+    close: unsafe extern "C" fn(*mut c_void) -> bool,
+    delete: unsafe extern "C" fn(*mut c_void),
+) -> c_int {
+    let socket = swr_v1_hook_socket_get(fd);
+    if socket.is_null() {
+        return 1;
+    }
+    CLOSING.with_borrow_mut(|(depth, _)| *depth += 1);
+    // SAFETY: the socket is live: nothing deletes it before this close returns.
+    let closed = unsafe { close(socket) };
+    let removed = if closed {
+        swr_v1_hook_socket_remove(fd)
+    } else {
+        std::ptr::null_mut()
+    };
+    let doomed = CLOSING.with_borrow_mut(|(depth, doomed)| {
+        if !removed.is_null() {
+            doomed.push(removed);
+        }
+        *depth -= 1;
+        if *depth == 0 {
+            std::mem::take(doomed)
+        } else {
+            Vec::new()
+        }
+    });
+    for socket in doomed {
+        // SAFETY: removed from the map and used by no close still running.
+        unsafe { delete(socket) };
+    }
+    if closed { 0 } else { -1 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +173,57 @@ mod tests {
         assert_eq!(swr_v1_hook_socket_remove(fd), b);
         assert!(!swr_v1_hook_socket_exists(fd));
         assert!(swr_v1_hook_socket_remove(fd).is_null());
+        assert_eq!(errno(), libc::ENOTSOCK);
+    }
+
+    thread_local! {
+        static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    const NESTED: c_int = 1_000_002;
+
+    fn log(event: &str) {
+        LOG.with_borrow_mut(|log| log.push(event.to_owned()));
+    }
+
+    unsafe extern "C" fn delete(socket: *mut c_void) {
+        log(&format!("delete {}", socket as usize));
+    }
+
+    /// The cancelled reader's close, which succeeds.
+    unsafe extern "C" fn inner_close(_: *mut c_void) -> bool {
+        log("inner close");
+        true
+    }
+
+    /// The outer close cancels the reader, which closes the fd from inside it, then
+    /// fails with close-wait while still holding the socket.
+    unsafe extern "C" fn outer_close(_: *mut c_void) -> bool {
+        log("outer close");
+        assert_eq!(
+            unsafe { swr_v1_hook_socket_close(NESTED, inner_close, delete) },
+            0
+        );
+        assert!(!swr_v1_hook_socket_exists(NESTED));
+        log("outer returns");
+        false
+    }
+
+    #[test]
+    fn nested_close_defers_the_delete() {
+        assert!(swr_v1_hook_socket_insert(NESTED, 8usize as *mut c_void, true).is_null());
+        assert_eq!(
+            unsafe { swr_v1_hook_socket_close(NESTED, outer_close, delete) },
+            -1
+        );
+        assert_eq!(
+            LOG.with_borrow(Clone::clone),
+            ["outer close", "inner close", "outer returns", "delete 8"]
+        );
+        assert_eq!(
+            unsafe { swr_v1_hook_socket_close(NESTED, outer_close, delete) },
+            1
+        );
         assert_eq!(errno(), libc::ENOTSOCK);
     }
 }
