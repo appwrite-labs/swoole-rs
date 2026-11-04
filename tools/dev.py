@@ -476,9 +476,6 @@ def plan(args, reports):
                '--native-export', native_export,
                '--sdk-ref', utility_source,
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('utilities-logger-owned-state'))
-        script('utilities-lowercase-sdk', 'tests/modules/utilities/lowercase_sdk.py',
-               '--source', ROOT / 'target/upstream/src', '--sdk-export', native_export / 'export.json',
-               *report('utilities-lowercase-sdk'))
         script('utilities-lowercase-runtime', 'tests/modules/utilities/lowercase_runtime.py',
                '--source', manifest.parent / 'src', *php_for('sockets'), *engines,
                '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',

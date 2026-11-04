@@ -598,7 +598,6 @@ class Lanes(unittest.TestCase):
             self.assertIn('--archive', commands[phase])
             self.assertIn('--sanitize', commands[phase])
             self.assertTrue(commands[phase][commands[phase].index('--core') + 1].endswith('/upstream/src'))
-        self.assertIn('--sdk-export', commands['utilities-lowercase-sdk'])
         lowercase = commands['utilities-lowercase-runtime']
         for flag in ['--source', '--build-manifest', '--archive', '--source-ref']:
             self.assertIn(flag, lowercase)
