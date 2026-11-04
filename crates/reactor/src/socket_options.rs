@@ -205,8 +205,8 @@ pub extern "C" fn swr_v1_socket_buffer_size(fd: c_int, recv: bool, send: bool, s
 
 /// `_set_timeout`: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO` to `timeout` seconds,
 /// truncated as upstream's `(int)` casts do.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_kernel_timeout(fd: c_int, send: bool, timeout: f64) -> bool {
+#[must_use]
+pub fn swr_v1_socket_kernel_timeout(fd: c_int, send: bool, timeout: f64) -> bool {
     #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) timeout")]
     let seconds = timeout as c_int;
     #[expect(

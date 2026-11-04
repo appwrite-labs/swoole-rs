@@ -115,6 +115,10 @@ int swr_v1_socket_listen(swr_v1_socket *socket, int backlog);
 int swr_v1_socket_set_tcp_nopush(swr_v1_socket *socket, int nopush);
 bool swr_v1_socket_set_tcp_nodelay(swr_v1_socket *socket, int nodelay);
 bool swr_v1_socket_has_kernel_nobufs(swr_v1_socket *socket);
+/* set_fd_option's fcntl calls (warnings as swr_v1_socket_fd_option's), then both
+ * flags on success; _set_timeout's setsockopt, then write_timeout (send) or read_timeout. */
+swr_v1_socket_option_result swr_v1_socket_set_fd_option(swr_v1_socket *socket, int nonblock, int cloexec);
+bool swr_v1_socket_set_kernel_timeout(swr_v1_socket *socket, bool send, double timeout);
 /* recv/send/peek with EINTR and dont_restart, through `tls` when the record holds an
  * SSL; recv/send count bytes and, with a timer, stamp the time from `now`. A recv
  * that would block after POLLHUP returns 0. */

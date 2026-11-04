@@ -1,5 +1,5 @@
 //! `network::Socket`'s methods over its record: names, bind and listen, the TCP
-//! option flags, and `recv`/`send`/`peek` with their byte counters and timestamps.
+//! and descriptor option flags, kernel timeouts, and `recv`/`send`/`peek` with their byte counters and timestamps.
 //! Native `Socket` calls these inline (`swoole_socket.h`); a TLS socket passes its
 //! OpenSSL call, which runs only when the record holds an `SSL`.
 use crate::{SocketAddress, SocketRecord, TlsIo};
@@ -137,6 +137,58 @@ pub unsafe extern "C" fn swr_v1_socket_set_tcp_nodelay(
 ) -> bool {
     // SAFETY: as the caller promises.
     unsafe { &mut *socket }.set_tcp_nodelay(nodelay)
+}
+
+/// `Socket::set_fd_option`: [`crate::swr_v1_socket_fd_option`], recording both
+/// arguments (-1 included, as upstream assigns them) in the flags when it succeeds.
+///
+/// # Safety
+/// `socket` is a live record.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_socket_set_fd_option(
+    socket: *mut SocketRecord,
+    nonblock: c_int,
+    cloexec: c_int,
+) -> crate::SocketOptionResult {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { &mut *socket };
+    let result = crate::swr_v1_socket_fd_option(socket.fd, nonblock, cloexec);
+    if result.ok {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "upstream assigns the ints to its flags"
+        )]
+        let (nonblock, cloexec) = (nonblock as u8, cloexec as u8);
+        socket.output.nonblock = nonblock;
+        socket.cloexec = cloexec;
+    }
+    result
+}
+
+/// `_set_timeout`: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO`, then the record's write
+/// or read timeout, when the kernel took it.
+///
+/// # Safety
+/// `socket` is a live record.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_socket_set_kernel_timeout(
+    socket: *mut SocketRecord,
+    send: bool,
+    timeout: f64,
+) -> bool {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { &mut *socket };
+    if !crate::swr_v1_socket_kernel_timeout(socket.fd, send, timeout) {
+        return false;
+    }
+    let slot = if send {
+        &mut socket.timeouts.write
+    } else {
+        &mut socket.timeouts.read
+    };
+    *slot = timeout;
+    true
 }
 
 /// `Socket::has_kernel_nobufs`: whether a send hit `ENOBUFS` since the last call.
@@ -385,14 +437,33 @@ mod tests {
         unsafe {
             assert!(swr_v1_socket_has_kernel_nobufs(&raw mut socket));
             assert!(!swr_v1_socket_has_kernel_nobufs(&raw mut socket));
+            assert!(swr_v1_socket_set_fd_option(&raw mut socket, 1, -1).ok);
+            assert!(swr_v1_socket_set_kernel_timeout(&raw mut socket, true, 1.5));
+            assert!(swr_v1_socket_set_kernel_timeout(
+                &raw mut socket,
+                false,
+                0.25
+            ));
         }
+        assert_eq!((socket.output.nonblock, socket.cloexec), (1, 255));
+        assert_eq!((socket.timeouts.write, socket.timeouts.read), (1.5, 0.25));
         close(&[socket]);
         let mut closed = SocketRecord::with_fd(-1, 0);
         // SAFETY: a live local record with a bad fd.
         unsafe {
             assert_eq!(swr_v1_socket_listen(&raw mut closed, 0), ERR);
             assert_eq!(swr_v1_socket_get_name(&raw mut closed), ERR);
+            assert!(!swr_v1_socket_set_fd_option(&raw mut closed, 1, 1).ok);
+            assert!(!swr_v1_socket_set_kernel_timeout(
+                &raw mut closed,
+                true,
+                3.0
+            ));
         }
-        assert_eq!(closed.listened, 0);
+        assert_eq!(
+            (closed.listened, closed.output.nonblock, closed.cloexec),
+            (0, 0, 0)
+        );
+        assert_eq!(closed.timeouts.write, 60.0);
     }
 }
