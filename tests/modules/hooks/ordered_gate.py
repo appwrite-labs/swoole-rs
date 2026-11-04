@@ -45,7 +45,7 @@ def main():
     a = p.parse_args()
     signatures = {
         'src/coroutine/hook.cc': ['static sw_inline bool is_no_coro()'],
-        'src/coroutine/system.cc': ['bool wait_for(', 'static inline void event_waiter_callback('],
+        'src/coroutine/system.cc': ['bool wait_for('],
         'src/coroutine/socket.cc': ['ssize_t Socket::recvmsg(', 'ssize_t Socket::sendmsg(', 'ssize_t Socket::sendto(', 'ssize_t Socket::recvfrom(void *_buf, size_t _n, sockaddr *', 'ssize_t Socket::recv(', 'ssize_t Socket::send(', 'ssize_t Socket::read(', 'ssize_t Socket::write(', 'ssize_t Socket::readv(', 'ssize_t Socket::writev(', 'ssize_t Socket::recv_all(', 'ssize_t Socket::send_all(', 'bool Socket::TimerController::start()', 'Socket::TimerController::~TimerController()'],
     }
     # The poll event translations the hooks call: poll.cc's at the pin, the hybrid

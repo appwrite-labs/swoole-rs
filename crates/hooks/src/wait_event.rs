@@ -278,4 +278,32 @@ mod tests {
         assert_eq!(wait(9, READ, 1.0, unused), failed(0, libc::EBADF));
         assert_eq!(ADDED.get(), 0);
     }
+
+    /// The hooks-ordered gate's `EventWaiter` scenarios (1023..1059): a waiter holding
+    /// `held` fires `event` then `WRITE`. Upstream's callback deferred a resume only
+    /// while nothing had fired yet, and published the bits after choosing.
+    #[test]
+    fn ported_event_waiter_matrix() {
+        let masks = [0, READ, WRITE, ERROR, READ | WRITE, READ | ERROR];
+        for held in masks {
+            for event in masks {
+                let mut waiter = Waiter {
+                    co: CO,
+                    revents: held.cast_unsigned(),
+                };
+                let raw = (&raw mut waiter).cast();
+                let mut wakes = 0;
+                for fired in [event, WRITE] {
+                    let co = unsafe { swr_v1_hook_event_ready(raw, fired) };
+                    if !co.is_null() {
+                        assert_eq!(co, CO);
+                        wakes += 1;
+                    }
+                }
+                let expected = usize::from(held == 0) + usize::from(held | event == 0);
+                assert_eq!(wakes, expected, "held {held} event {event}");
+                assert_eq!(waiter.revents, (held | event | WRITE).cast_unsigned());
+            }
+        }
+    }
 }
