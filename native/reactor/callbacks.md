@@ -8,29 +8,32 @@ Rust owner holding two sorted vectors of integer keys and opaque Native
 Native map mirror. Public methods and the fallback stay intact; the private
 class layout changes, so old Native binary layout compatibility is not claimed.
 
-Entry points: lookup, fallible insertion, detach, fresh ordered next, drain and
-empty-owner release, plus three orchestration operations:
+Entry points: lookup, fallible insertion, detach, the resume index after a
+changed walk, drain and empty-owner release, plus two orchestration operations:
 
 - `callbacks_ensure`: lookup, empty-payload allocation request, insertion,
   commit and discard/requery. Native allocates the typed payload, passes its
   identity on the next call, and transfers ownership only on commit. Empty
   publication precedes Native function copy assignment (the `map[]` prefix). A
   discarded candidate is destroyed after Rust returns and lookup runs again.
-- `callbacks_copy_next`: ordered end-map then exit-map scan. Native performs
-  each typed copy/assignment after a returned token. The copy constructor's
-  catch/clear/rethrow and copy/swap assignment stay Native; copy assignment uses
-  a temporary metadata owner rather than map node reuse.
 - `callbacks_clear_next`: chooses each detached payload's type; Native deletes
   it. At the end Rust releases the empty metadata and publishes the owner slot
   as null.
 
-Traversal cursor: `int32` key + `uint32` phase, zeroed per execution. Each
-callback returns before the next fresh query, so a later-key insertion is seen,
-a future erasure disappears and an earlier-key insertion is not revisited. Exit
-returning false stops traversal. The same event-count reference survives the
-exit traversal. Erase detaches metadata before Native destroys the payload.
-Capacity refusal returns a status; Native throws `bad_alloc` after return.
-Member cleanup order stays sockets, exit callbacks, end callbacks.
+Traversal: the owner starts with one view per kind (entries pointer and
+length), which Rust republishes after every change, so Native walks the sorted
+entries without a call per callback (#680). After each callback Native re-reads
+the view: when the entry it ran is still at its index the walk steps on,
+otherwise `callbacks_after` gives the first index past its key. A later-key
+insertion is seen, a future erasure disappears and an earlier-key insertion is
+not revisited. Exit returning false stops traversal. The same event-count
+reference survives the exit traversal. Copying walks the source's end view then
+its exit view, assigning each typed copy; the copy constructor's
+catch/clear/rethrow and copy/swap assignment stay Native, and copy assignment
+uses a temporary metadata owner rather than map node reuse. Erase detaches
+metadata before Native destroys the payload. Capacity refusal returns a status;
+Native throws `bad_alloc` after return. Member cleanup order stays sockets,
+exit callbacks, end callbacks.
 
 Internally the container makes one opaque-owner allocation and two empty `Vec`
 seeds, reserves fallibly before sorted insertion, and publishes a new owner only
