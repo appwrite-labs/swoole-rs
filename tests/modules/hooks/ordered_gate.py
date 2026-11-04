@@ -46,7 +46,6 @@ def main():
     signatures = {
         'src/coroutine/hook.cc': ['static sw_inline bool is_no_coro()'],
         'src/coroutine/system.cc': ['bool wait_for('],
-        'src/coroutine/socket.cc': ['ssize_t Socket::recvmsg(', 'ssize_t Socket::sendmsg(', 'ssize_t Socket::sendto(', 'ssize_t Socket::recvfrom(void *_buf, size_t _n, sockaddr *', 'ssize_t Socket::recv(', 'ssize_t Socket::send(', 'ssize_t Socket::read(', 'ssize_t Socket::write(', 'ssize_t Socket::readv(', 'ssize_t Socket::writev(', 'ssize_t Socket::recv_all(', 'ssize_t Socket::send_all(', 'bool Socket::TimerController::start()', 'Socket::TimerController::~TimerController()'],
     }
     # The poll event translations the hooks call: poll.cc's at the pin, the hybrid
     # header's inline calls into the reactor's Rust (swr_v1_reactor_poll_events_*).
@@ -59,11 +58,6 @@ def main():
             for path, names in signatures.items():
                 text = (originals if variant == 'original' else selected)[path]
                 bodies.extend(block(text, name) for name in names)
-                # The selected socket's transfers run through one Rust-driven member template (#443).
-                if variant == 'selected' and path == 'src/coroutine/socket.cc':
-                    bodies.insert(len(bodies) - len(names), block(text, 'template <class Call>\nssize_t Socket::transfer('))
-                    # sendto's address half, which UringSocket shares (#934).
-                    bodies.insert(len(bodies) - len(names), block(text, 'bool Socket::sendto_address('))
             if variant == 'original':
                 bodies.extend(block(originals['src/reactor/poll.cc'], name) for name in translations)
             else:

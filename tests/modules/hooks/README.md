@@ -17,14 +17,10 @@ scenarios through each, comparing effects and order. Syscalls, contexts, TLS
 and kernel IO are faked; these are policy/order checks, not runtime proof.
 `--sanitize` adds ASan/UBSan to C++ only, not the Rust archive.
 
-- `ordered_gate.py` (2021 cases): hook guard short circuit; flock routing,
-  retry, cancel and invalid precedence; socket partial reads/writes, barrier
-  wait/error/EOF/timer failure and retry policy; recvmsg/sendmsg/sendto/recvfrom
-  paths; io_uring submission; system poll
-  error-to-read/write mapping; wait/poll and `System::wait_event`;
-  TimerController start/destructor; 121 requested/installed hook flag pairs
-  including the native/PHP curl conflict; all 19 stream/transport/PDO/function
-  families; MongoDB install-only aliases.
+- `ordered_gate.py` (26 cases): the hook guard's short circuit and
+  `wait_for`'s retry and cancel. The coroutine Socket's transfers and
+  `TimerController` moved to Rust with their cases (`ported_*` tests in
+  `crates/hooks/src/transfer.rs` and `co_io.rs`).
 - `async_gate.py` (434 cases): async event/lambda/sleep/DNS bodies, including
   dispatch rejection, timeout/cancel completion, late canceled completion,
   resume-deletes-event lifetime and errno capture.
