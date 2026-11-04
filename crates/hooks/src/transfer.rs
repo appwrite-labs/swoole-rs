@@ -1,159 +1,177 @@
-//! The coroutine socket's transfers as whole operations: one call retried while the
-//! socket would block (`recv`, `send`, `read`, `write`, `readv`, `writev`,
-//! `recvmsg`, `sendmsg`, `recvfrom`, `sendto`), and the all-or-nothing transfer of
-//! `recv_all`/`send_all`. Native code keeps the availability check, the timer, the
-//! coroutine wait and the `network::Socket` call itself, and passes them in
-//! `TransferOps`. A C++ exception never crosses these frames: native code catches
-//! it in its callback, stops the loop and rethrows after this returns.
-use crate::vector::Barrier;
+//! The coroutine socket's transfers as whole operations over its record: one call
+//! retried while the socket would block (`recv`, `send`, `read`, `write`, `readv`,
+//! `writev`, `recvmsg`, `sendmsg`, `recvfrom`, `sendto`), and the all-or-nothing
+//! transfer of `recv_all`/`send_all`, each with its availability check, timer and
+//! waits. Native code passes only the `network::Socket` (or syscall) call.
+use crate::co_io::{Timer, available, check, errno, set_err, would_block};
+use crate::co_socket::CoSocket;
+use crate::shutdown::{READ, WRITE};
+use crate::socket_wait::wait;
 use core::ffi::c_void;
 
-/// One transfer's effects. Every callback gets `context`.
-#[repr(C)]
-pub struct TransferOps {
-    pub context: *mut c_void,
-    /// Retry at once when the call fails with `EINTR` (the datagram calls).
-    pub retry_interrupted: bool,
-    /// The `network::Socket` (or syscall) transfer of `length` bytes at `buffer`;
-    /// sets errno when it fails.
-    pub call: unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> isize,
-    /// `catch_read_error`/`catch_write_error(errno) == SW_WAIT`.
-    pub would_block: unsafe extern "C" fn(*mut c_void) -> bool,
-    /// `timer.start()`.
-    pub start: unsafe extern "C" fn(*mut c_void) -> bool,
-    /// Waits for the socket, with `barrier` installed when given. `buffer`, when
-    /// not null, is the caller's buffer slot, which a write's wait may move to
-    /// the socket's write buffer (`wait_event`'s copy).
-    pub wait: unsafe extern "C" fn(*mut c_void, Option<Barrier>, *mut c_void, *mut *mut u8) -> bool,
-    /// `check_return_value`.
-    pub check: unsafe extern "C" fn(*mut c_void, isize),
-    /// `set_err(errno)`.
-    pub fail: unsafe extern "C" fn(*mut c_void),
+/// The transfer of `length` bytes at `buffer`; sets errno when it fails. A native
+/// call must not throw.
+pub type Call = unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> isize;
+
+/// `recv_all`/`send_all`: transfer every byte.
+pub const ALL: u32 = 1;
+/// Retry at once when the call fails with `EINTR` (the datagram calls).
+pub const RETRY_INTERRUPTED: u32 = 2;
+/// The caller checked availability already (`sendto`, after resolving).
+pub const CHECKED: u32 = 4;
+
+#[derive(Clone, Copy)]
+struct Op {
+    socket: *mut CoSocket,
+    call: Call,
+    context: *mut c_void,
 }
 
-impl TransferOps {
-    fn call(&self, buffer: *mut u8, length: usize) -> isize {
+impl Op {
+    fn call(self, buffer: *mut u8, length: usize) -> isize {
         // SAFETY: the native transfer for the live socket, over the caller's buffer.
         unsafe { (self.call)(self.context, buffer, length) }
     }
 
-    fn would_block(&self) -> bool {
-        // SAFETY: classifies errno on the live socket.
-        unsafe { (self.would_block)(self.context) }
-    }
-
-    fn start(&self) -> bool {
-        // SAFETY: starts the live socket's timer.
-        unsafe { (self.start)(self.context) }
-    }
-
-    /// Waits for the socket; `state` and `buffer` outlive the wait (see `wait`).
-    fn wait(&self, barrier: Option<Barrier>, state: *mut c_void, buffer: *mut *mut u8) -> bool {
-        // SAFETY: a native wait on the live socket; the caller keeps `state` and
-        // `buffer` alive across it, and a moved buffer holds the same bytes.
-        unsafe { (self.wait)(self.context, barrier, state, buffer) }
+    fn would_block(self) -> bool {
+        // SAFETY: an open record (it was available).
+        unsafe { would_block(self.socket) }
     }
 }
 
-fn interrupted() -> bool {
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
-}
-
-/// One transfer, retried while the socket would block: classify, start the timer,
-/// wait, call again. Returns the last call's result after `check_return_value`.
-///
-/// # Safety
-/// `ops` is live for the call; `buffer` holds `length` bytes for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_io(
-    ops: *const TransferOps,
-    buffer: *mut u8,
-    length: usize,
-) -> isize {
-    // SAFETY: the caller passes a live table (see above).
-    let ops = unsafe { &*ops };
-    let mut buffer = buffer;
-    let mut result = ops.call(buffer, length);
-    while result < 0 {
-        if ops.retry_interrupted && interrupted() {
-            result = ops.call(buffer, length);
-            continue;
-        }
-        if !ops.would_block()
-            || !ops.start()
-            || !ops.wait(None, core::ptr::null_mut(), &raw mut buffer)
-        {
-            break;
-        }
-        result = ops.call(buffer, length);
-    }
-    // SAFETY: a native effect on the live socket.
-    unsafe { (ops.check)(ops.context, result) };
-    result
-}
-
-struct All<'a> {
-    ops: &'a TransferOps,
+struct All {
+    op: Op,
     buffer: *mut u8,
     length: usize,
     total: usize,
     result: isize,
 }
 
-/// The barrier's retry for `transfer_all`: transfer the rest; keep waiting while it
-/// would block or is still short.
+/// The barrier's retry for `recv_all`/`send_all`: transfer the rest; keep waiting
+/// while it would block or is still short.
 unsafe extern "C" fn rest(state: *mut c_void) -> bool {
-    // SAFETY: `state` is the All that swr_v1_hook_io_all lent to `wait`.
+    // SAFETY: `state` is the All that `all` lent to the wait.
     let all = unsafe { &mut *state.cast::<All>() };
     all.result = all
-        .ops
+        .op
         .call(all.buffer.wrapping_add(all.total), all.length - all.total);
     if all.result > 0 {
         all.total += all.result.unsigned_abs();
     }
-    all.result < 0 && all.ops.would_block() || all.result > 0 && all.total < all.length
+    all.result < 0 && all.op.would_block() || all.result > 0 && all.total < all.length
 }
 
-/// `recv_all`/`send_all`: `length` bytes, or fewer at EOF, error or timeout. Returns
-/// the bytes transferred, -1 when none were, or the first call's result when it
-/// finished at once or failed outright.
-///
-/// # Safety
-/// `ops` is live for the call; `buffer` holds `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_io_all(
-    ops: *const TransferOps,
-    buffer: *mut u8,
-    length: usize,
-) -> isize {
-    // SAFETY: the caller passes a live table (see above).
-    let ops = unsafe { &*ops };
-    let first = ops.call(buffer, length);
-    if first == 0 || first.unsigned_abs() == length && first > 0 {
+/// `recv_all`/`send_all`: `length` bytes, or fewer at EOF, error or timeout.
+/// Returns the bytes transferred, -1 when none were, or the first call's result
+/// when it finished at once or failed outright.
+fn all(op: Op, timer: &mut Timer, event: u32, buffer: *mut u8, length: usize) -> isize {
+    let first = op.call(buffer, length);
+    if first == 0 || first > 0 && first.unsigned_abs() == length {
         return first;
     }
-    if first < 0 && !ops.would_block() {
-        // SAFETY: a native effect on the live socket.
-        unsafe { (ops.fail)(ops.context) };
+    if first < 0 && !op.would_block() {
+        // SAFETY: the live record.
+        unsafe { set_err(op.socket, errno()) };
         return first;
     }
     let mut all = All {
-        ops,
+        op,
         buffer,
         length,
         total: if first > 0 { first.unsigned_abs() } else { 0 },
         result: -1,
     };
-    // `all` outlives the wait, which calls `rest` with it.
-    if ops.start() && ops.wait(Some(rest), (&raw mut all).cast(), core::ptr::null_mut()) {
-        // SAFETY: a native effect on the live socket.
-        unsafe { (ops.check)(ops.context, all.result) };
+    let barrier: (crate::vector::Barrier, *mut c_void) = (rest, (&raw mut all).cast());
+    // SAFETY: `all` outlives the wait, which calls `rest` with it.
+    if timer.start() && unsafe { wait(op.socket, event, Some(barrier), core::ptr::null_mut(), 0) } {
+        // SAFETY: the live record.
+        unsafe { check(op.socket, all.result) };
     }
     if all.result < 0 && all.total == 0 {
         -1
     } else {
         all.total.cast_signed()
     }
+}
+
+/// One transfer, retried while the socket would block: start the timer, wait,
+/// call again. A write's wait may move the bytes to the write buffer and the
+/// retries send from there (upstream hands its buffer only to `send`, `write`
+/// and `sendto`, which pass one). Returns the last result after
+/// `check_return_value`.
+fn one(op: Op, timer: &mut Timer, event: u32, flags: u32, buffer: *mut u8, length: usize) -> isize {
+    let mut buffer = buffer;
+    let slot = if event == WRITE && !buffer.is_null() {
+        &raw mut buffer
+    } else {
+        core::ptr::null_mut()
+    };
+    let mut result = op.call(buffer, length);
+    while result < 0 {
+        if flags & RETRY_INTERRUPTED != 0 && errno() == libc::EINTR {
+            result = op.call(buffer, length);
+            continue;
+        }
+        if !op.would_block() || !timer.start() {
+            break;
+        }
+        // SAFETY: `slot` is null or `buffer`, live across the wait.
+        if !unsafe { wait(op.socket, event, None, slot, length) } {
+            break;
+        }
+        result = op.call(buffer, length);
+    }
+    // SAFETY: the live record.
+    unsafe { check(op.socket, result) };
+    result
+}
+
+/// A transfer of `length` bytes at `buffer` (null for the vector and message
+/// calls, which carry their own) in `event`'s direction, timed by the socket's
+/// read or write timeout; `flags` are [`ALL`], [`RETRY_INTERRUPTED`] and
+/// [`CHECKED`]. -1 when the socket is not available.
+///
+/// # Safety
+/// `socket` is a live record; `buffer` holds `length` bytes or is null; `call`
+/// with `context` transfers on it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_transfer(
+    socket: *mut CoSocket,
+    event: u32,
+    flags: u32,
+    buffer: *mut u8,
+    length: usize,
+    call: Call,
+    context: *mut c_void,
+) -> isize {
+    // SAFETY: the live record.
+    if flags & CHECKED == 0 && !unsafe { available(socket, event) } {
+        return -1;
+    }
+    let event = if event == READ { READ } else { WRITE };
+    // SAFETY: the live record.
+    let record = unsafe { &*socket };
+    // SAFETY: an available record is open; the read ends here.
+    let timeouts = unsafe { record.record() }.timeouts;
+    let timeout = if event == READ {
+        timeouts.read
+    } else {
+        timeouts.write
+    };
+    // SAFETY: the live record; the timer stops before this returns.
+    let mut timer = unsafe { Timer::new(socket, event, timeout) };
+    let op = Op {
+        socket,
+        call,
+        context,
+    };
+    let result = if flags & ALL != 0 {
+        all(op, &mut timer, event, buffer, length)
+    } else {
+        one(op, &mut timer, event, flags, buffer, length)
+    };
+    timer.stop();
+    result
 }
 
 #[cfg(test)]
@@ -164,170 +182,283 @@ pub unsafe extern "C" fn swr_v1_hook_io_all(
 )]
 mod tests {
     use super::*;
+    use crate::co_io::set_errno;
+    use crate::co_io::test_host::{ON_SUSPEND, REACTOR_OK, TIMER_OK, install, log, take};
+    use crate::co_socket::TestSocket;
+    use crate::socket_wait::swr_v1_hook_socket_ready;
+    use std::cell::RefCell;
     use std::collections::VecDeque;
 
-    /// A socket whose calls return scripted results (negative: -errno) and moves bytes.
-    struct Fake {
-        results: VecDeque<isize>,
-        moved: usize,
-        events: Vec<String>,
-        wakes: bool,
+    thread_local! {
+        /// Scripted call results: bytes moved, or -errno.
+        static RESULTS: RefCell<VecDeque<isize>> = const { RefCell::new(VecDeque::new()) };
     }
 
-    unsafe fn fake<'a>(context: *mut c_void) -> &'a mut Fake {
-        unsafe { &mut *context.cast::<Fake>() }
-    }
-
-    unsafe extern "C" fn call(c: *mut c_void, _: *mut u8, length: usize) -> isize {
-        let this = unsafe { fake(c) };
-        let result = this.results.pop_front().unwrap_or(0);
+    unsafe extern "C" fn call(_: *mut c_void, at: *mut u8, length: usize) -> isize {
+        let result = RESULTS.with_borrow_mut(VecDeque::pop_front).unwrap_or(0);
+        log(format!("io:{length}:{}", !at.is_null()));
         if result < 0 {
             set_errno(i32::try_from(-result).unwrap());
             return -1;
         }
-        let moved = (result as usize).min(length);
-        this.moved += moved;
-        moved as isize
-    }
-
-    fn set_errno(error: i32) {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            *libc::__errno_location() = error;
-        }
-        #[cfg(target_vendor = "apple")]
-        unsafe {
-            *libc::__error() = error;
-        }
-    }
-
-    unsafe extern "C" fn would_block(_: *mut c_void) -> bool {
-        std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN)
-    }
-    unsafe extern "C" fn start(c: *mut c_void) -> bool {
-        unsafe { fake(c) }.events.push("start".into());
-        true
-    }
-    unsafe extern "C" fn wait(
-        c: *mut c_void,
-        barrier: Option<Barrier>,
-        state: *mut c_void,
-        _: *mut *mut u8,
-    ) -> bool {
-        let this = unsafe { fake(c) };
-        this.events.push("wait".into());
-        if !this.wakes {
-            return false;
-        }
-        if let Some(barrier) = barrier {
-            while unsafe { barrier(state) } {
-                unsafe { fake(c) }.events.push("again".into());
-            }
-        }
-        true
-    }
-    unsafe extern "C" fn check(c: *mut c_void, result: isize) {
-        unsafe { fake(c) }.events.push(format!("check:{result}"));
-    }
-    unsafe extern "C" fn fail(c: *mut c_void) {
-        unsafe { fake(c) }.events.push("fail".into());
-    }
-
-    fn run(
-        all: bool,
-        eintr: bool,
-        results: &[isize],
-        length: usize,
-        wakes: bool,
-    ) -> (isize, Vec<String>) {
-        let mut fake = Fake {
-            results: results.iter().copied().collect(),
-            moved: 0,
-            events: Vec::new(),
-            wakes,
-        };
-        let ops = TransferOps {
-            context: (&raw mut fake).cast(),
-            retry_interrupted: eintr,
-            call,
-            would_block,
-            start,
-            wait,
-            check,
-            fail,
-        };
-        let mut buffer = vec![0u8; length];
-        let result = unsafe {
-            if all {
-                swr_v1_hook_io_all(&raw const ops, buffer.as_mut_ptr(), length)
-            } else {
-                swr_v1_hook_io(&raw const ops, buffer.as_mut_ptr(), length)
-            }
-        };
-        (result, fake.events)
+        set_errno(0);
+        result.min(length as isize)
     }
 
     const EAGAIN: isize = -(libc::EAGAIN as isize);
     const EINTR: isize = -(libc::EINTR as isize);
-    const EIO: isize = -(libc::EIO as isize);
+    const EINVAL: isize = -(libc::EINVAL as isize);
+    const ECONNRESET: isize = -(libc::ECONNRESET as isize);
 
-    #[test]
-    fn one_transfer_waits_while_it_would_block() {
-        assert_eq!(
-            run(false, false, &[5], 8, true),
-            (5, vec!["check:5".into()])
-        );
-        assert_eq!(
-            run(false, false, &[EAGAIN, 3], 8, true),
-            (3, vec!["start".into(), "wait".into(), "check:3".into()])
-        );
-        assert_eq!(
-            run(false, false, &[EIO], 8, true),
-            (-1, vec!["check:-1".into()])
-        );
-        assert_eq!(
-            run(false, false, &[EAGAIN], 8, false),
-            (-1, vec!["start".into(), "wait".into(), "check:-1".into()])
-        );
-    }
-
-    #[test]
-    fn datagrams_retry_interrupts_at_once() {
-        assert_eq!(
-            run(false, true, &[EINTR, 4], 8, true),
-            (4, vec!["check:4".into()])
-        );
-        assert_eq!(
-            run(false, false, &[EINTR], 8, true),
-            (-1, vec!["check:-1".into()])
-        );
-    }
-
-    #[test]
-    fn all_or_nothing_accumulates_through_the_barrier() {
-        assert_eq!(run(true, false, &[8], 8, true), (8, vec![]));
-        assert_eq!(run(true, false, &[0], 8, true), (0, vec![]));
-        assert_eq!(run(true, false, &[EIO], 8, true), (-1, vec!["fail".into()]));
-        assert_eq!(
-            run(true, false, &[2, EAGAIN, 3, 3], 8, true),
-            (
+    /// How a scenario fails besides its results: 1 the socket is closed, 2 the
+    /// timer can't be added, 3 the wait wakes with an error.
+    fn run(
+        event: u32,
+        flags: u32,
+        buffered: bool,
+        results: &[isize],
+        failure: u32,
+    ) -> (isize, i32, Vec<String>) {
+        install();
+        let mut socket = TestSocket::new();
+        unsafe { socket.0.record() }.timeouts.read = 1.0;
+        unsafe { socket.0.record() }.timeouts.write = 1.0;
+        RESULTS.set(results.iter().copied().collect());
+        if failure == 1 {
+            socket.0.sock_fd = -1;
+        }
+        TIMER_OK.set(failure != 2);
+        // A woken wait runs the installed barrier while it keeps waiting.
+        ON_SUSPEND.set(Some(Box::new(move |socket: *mut CoSocket, event| {
+            let state = unsafe { (*socket).state };
+            while unsafe { swr_v1_hook_socket_ready(state, event, false) }.is_null() {
+                log("again");
+            }
+            if failure == 3 {
+                unsafe { (*socket).err_code = libc::ETIMEDOUT };
+            }
+        })));
+        let mut buffer = [0u8; 16];
+        let at = if buffered {
+            buffer.as_mut_ptr()
+        } else {
+            core::ptr::null_mut()
+        };
+        let result = unsafe {
+            swr_v1_hook_co_socket_transfer(
+                socket.ptr(),
+                event,
+                flags,
+                at,
                 8,
-                vec![
-                    "start".into(),
-                    "wait".into(),
-                    "again".into(),
-                    "again".into(),
-                    "check:3".into()
-                ]
+                call,
+                core::ptr::null_mut(),
             )
-        );
-        assert_eq!(
-            run(true, false, &[2, 0], 8, true),
-            (2, vec!["start".into(), "wait".into(), "check:0".into()])
-        );
-        assert_eq!(
-            run(true, false, &[EAGAIN], 8, false),
-            (-1, vec!["start".into(), "wait".into()])
-        );
+        };
+        let error = socket.0.err_code;
+        socket.0.sock_fd = 100;
+        let events = take()
+            .into_iter()
+            .filter(|e| !e.starts_with("last-error"))
+            .collect();
+        (result, error, events)
+    }
+
+    /// Upstream's one-call loop (`recv`, `send`, `read`, `write`, `readv`,
+    /// `writev`, `recvmsg`, `sendmsg`, `recvfrom`, `sendto`), transcribed: the
+    /// result, the error it leaves and the native effects in order.
+    fn upstream_one(
+        event: u32,
+        eintr: bool,
+        buffered: bool,
+        results: &[isize],
+        failure: u32,
+    ) -> (isize, i32, Vec<String>) {
+        let mut effects = Vec::new();
+        if failure == 1 {
+            return (-1, libc::EBADF, effects);
+        }
+        let mut results: VecDeque<isize> = results.iter().copied().collect();
+        let mut call = |effects: &mut Vec<String>| {
+            effects.push(format!("io:8:{buffered}"));
+            results.pop_front().unwrap_or(0)
+        };
+        let (mut timer, mut error) = (false, 0);
+        let mut result = call(&mut effects);
+        while result < 0 {
+            if eintr && result == EINTR {
+                result = call(&mut effects);
+                continue;
+            }
+            if result != EAGAIN {
+                break;
+            }
+            if !timer {
+                effects.push("timer:add:1".into());
+                if failure == 2 {
+                    break;
+                }
+                timer = true;
+            }
+            effects.push(format!("add:{event}"));
+            if event == WRITE && buffered {
+                effects.push("buffer:8".into());
+            }
+            effects.push(format!("yield:{event}"));
+            effects.push(format!("remove:{event}"));
+            if failure == 3 {
+                error = libc::ETIMEDOUT;
+                break;
+            }
+            result = call(&mut effects);
+        }
+        if result >= 0 {
+            error = 0;
+        } else if error == 0 {
+            error = i32::try_from(-result).unwrap();
+        }
+        if timer {
+            effects.push("timer:delete".into());
+        }
+        (result.max(-1), error, effects)
+    }
+
+    /// The ordered gate's former scenarios 1170..1434 (the stream calls) and
+    /// 1440..1872 (the message and datagram calls, which retry `EINTR` at once).
+    #[test]
+    fn ported_transfer_matrix() {
+        let modes: [&[isize]; 15] = [
+            &[0],
+            &[8],
+            &[EINVAL],
+            &[EINTR],
+            &[EAGAIN, 8],
+            &[EAGAIN, EAGAIN, 3],
+            &[EAGAIN, 0],
+            &[EAGAIN, ECONNRESET],
+            &[EAGAIN, EINTR],
+            &[EAGAIN, EAGAIN, 0],
+            &[EAGAIN, EAGAIN, EINVAL],
+            &[EINTR, 8],
+            &[EINTR, EINTR, 0],
+            &[EINTR, EAGAIN, 3],
+            &[EINTR, EAGAIN, EAGAIN, 8],
+        ];
+        for (event, buffered) in [(READ, true), (WRITE, true), (READ, false), (WRITE, false)] {
+            for eintr in [false, true] {
+                for results in modes {
+                    for failure in 0..4 {
+                        let flags = if eintr { RETRY_INTERRUPTED } else { 0 };
+                        assert_eq!(
+                            run(event, flags, buffered, results, failure),
+                            upstream_one(event, eintr, buffered, results, failure),
+                            "{event} {eintr} {buffered} {results:?} {failure}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Upstream's `recv_all`/`send_all`, transcribed.
+    fn upstream_all(event: u32, results: &[isize], failure: u32) -> (isize, i32, Vec<String>) {
+        let mut effects = Vec::new();
+        if failure == 1 {
+            return (-1, libc::EBADF, effects);
+        }
+        let mut results: VecDeque<isize> = results.iter().copied().collect();
+        let mut call = |effects: &mut Vec<String>, length: usize| {
+            effects.push(format!("io:{length}:true"));
+            results.pop_front().unwrap_or(0).min(length as isize)
+        };
+        let first = call(&mut effects, 8);
+        if first == 0 || first == 8 {
+            return (first, 0, effects);
+        }
+        if first < 0 && first != EAGAIN {
+            return (-1, i32::try_from(-first).unwrap(), effects);
+        }
+        let mut total = first.max(0) as usize;
+        let mut result = -1;
+        let mut error = 0;
+        effects.push("timer:add:1".into());
+        if failure != 2 {
+            effects.push(format!("add:{event}"));
+            effects.push(format!("yield:{event}"));
+            loop {
+                result = call(&mut effects, 8 - total);
+                if result > 0 {
+                    total += result as usize;
+                }
+                if !(result == EAGAIN || result > 0 && total < 8) {
+                    break;
+                }
+                effects.push("again".into());
+            }
+            effects.push(format!("remove:{event}"));
+            error = if failure == 3 {
+                libc::ETIMEDOUT
+            } else if result >= 0 {
+                0
+            } else {
+                i32::try_from(-result).unwrap()
+            };
+            effects.push("timer:delete".into());
+        }
+        let total = if result < 0 && total == 0 {
+            -1
+        } else {
+            total as isize
+        };
+        (total, error, effects)
+    }
+
+    /// The ordered gate's former scenarios 28..50.
+    #[test]
+    fn ported_transfer_all_matrix() {
+        let cases: [&[isize]; 8] = [
+            &[0],
+            &[8],
+            &[EINVAL],
+            &[EAGAIN, 3, 5],
+            &[2, 3, 3],
+            &[2, EAGAIN, ECONNRESET],
+            &[2, 0],
+            &[EAGAIN, 0],
+        ];
+        for event in [READ, WRITE] {
+            for results in cases {
+                for failure in 0..4 {
+                    assert_eq!(
+                        run(event, ALL, true, results, failure),
+                        upstream_all(event, results, failure),
+                        "{event} {results:?} {failure}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_reactor_add_stops_the_wait() {
+        install();
+        REACTOR_OK.set(false);
+        let mut socket = TestSocket::new();
+        unsafe { socket.0.record() }.timeouts.read = 0.0;
+        RESULTS.set([EAGAIN].into_iter().collect());
+        let result = unsafe {
+            swr_v1_hook_co_socket_transfer(
+                socket.ptr(),
+                READ,
+                CHECKED,
+                core::ptr::null_mut(),
+                8,
+                call,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, -1);
+        // A zero timeout starts no timer.
+        assert!(!take().iter().any(|e| e.starts_with("timer")));
     }
 }

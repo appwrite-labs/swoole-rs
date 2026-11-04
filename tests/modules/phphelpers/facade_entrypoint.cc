@@ -1,7 +1,6 @@
 // Test-only consumer of the actual public native/M26 facade header.
 #include "php_swoole_cxx.h"
 #include <utility>
-#include <vector>
 #include <initializer_list>
 ZEND_BEGIN_ARG_INFO_EX(arginfo_m26_facade,0,0,2)
     ZEND_ARG_TYPE_INFO(0, stringable, IS_OBJECT, 0)
@@ -42,8 +41,6 @@ PHP_FUNCTION(m26_facade_custody) {
             add_next_index_zval(&duplicates,&pair);
         }
         add_assoc_zval(return_value,"duplicates",&duplicates);
-        zend::CharPtr bytes("first");bytes.assign("second",6);bytes.assign_tolower("ABC",3);
-        add_assoc_string(return_value,"lower",bytes.get());bytes.release();bytes.release();
     }
     {
         zend::Variable source("value",5),assigned;
@@ -52,43 +49,6 @@ PHP_FUNCTION(m26_facade_custody) {
         zend::Variable moved(std::move(source));
         add_assoc_bool(return_value,"variable_copy",Z_TYPE(assigned.value)==IS_STRING && Z_TYPE(copied.value)==IS_STRING);
         add_assoc_bool(return_value,"variable_move",Z_ISUNDEF(source.value) && Z_TYPE(moved.value)==IS_STRING);
-    }
-    {
-        zval array;array_init(&array);
-        auto key=zend_string_init("entry",5,false);
-        for(const char *text:{"first","second"}) {
-            zval value;ZVAL_STRING(&value,text);
-            {zend::KeyValue entry(0,key,&value);entry.add_to(&array);}
-            zval_ptr_dtor(&value);
-        }
-        zval value;ZVAL_STRING(&value,"last");
-        {zend::KeyValue entry(7,nullptr,&value);entry.add_to(&array);}
-        zval_ptr_dtor(&value);zend_string_release(key);
-        add_assoc_string(&array,"drop","removed");
-        zend_hash_str_del(Z_ARRVAL(array),ZEND_STRL("drop"));
-        zend::Array facade(&array);
-        zval inserted;ZVAL_STRING(&inserted,"set");
-        bool set=facade.set(9,&inserted);if(set)ZVAL_UNDEF(&inserted);else zval_ptr_dtor(&inserted);
-        ZVAL_STRING(&inserted,"append");
-        bool append=facade.append(&inserted);if(append)ZVAL_UNDEF(&inserted);else zval_ptr_dtor(&inserted);
-        add_assoc_bool(return_value,"updates",set && append);
-        zval walk;array_init(&walk);
-        // Borrow native payloads while their owning array stays live. The
-        // initialized private sentinel gives both pinned constructors their
-        // documented modeled input domain; do not probe unused native buckets.
-        const auto used=Z_ARRVAL(array)->nNumUsed;
-        std::vector<Bucket> buckets(used+1);
-        memcpy(buckets.data(),Z_ARRVAL(array)->arData,used*sizeof(Bucket));
-        for(zend::ArrayIterator it(buckets.data(),buckets.data()+used),end(buckets.data()+used);it!=end;it++) {
-            zval entry;array_init(&entry);
-            if(it.ptr()->key) {auto name=it.key();add_assoc_stringl(&entry,"key",name.data(),name.size());}
-            else add_assoc_long(&entry,"key",it.index());
-            zval copied;ZVAL_COPY(&copied,it.value());add_assoc_zval(&entry,"value",&copied);
-            add_next_index_zval(&walk,&entry);
-        }
-        add_assoc_long(return_value,"array_count",facade.count());
-        add_assoc_zval(return_value,"walk",&walk);
-        add_assoc_zval(return_value,"map",&array);
     }
     {
         auto original=sw_callable_create(callback);

@@ -62,6 +62,83 @@ uint32_t swr_v1_hook_co_socket_accepted(swr_v1_co_socket *socket,
 void *swr_v1_hook_co_socket_pop_buffer(swr_v1_co_socket *socket, bool write);
 /* getpeername: 0, or the errno to set. */
 int swr_v1_hook_co_socket_peer_name(const swr_v1_co_socket *socket, swoole::network::Address *address);
+
+/* What the Rust operations need from C++ (crates/hooks/src/co_io.rs), installed once. */
+typedef struct {
+    void (*set_last_error)(int);
+    const char *(*strerror)(int);
+    /* Coroutine::get_current_safe(). */
+    void *(*current)(void);
+    /* A coroutine's id, and Coroutine::print_socket_bound_error. */
+    long (*cid)(void *co);
+    void (*bound_error)(int fd, const char *event, long cid);
+    /* swoole_timer_add(timeout, false, timer_callback, socket), or null. */
+    void *(*timer_add)(swr_v1_co_socket *, double timeout);
+    void (*timer_del)(void *node);
+    /* System::sleep(0.01). */
+    void (*sleep)(void);
+    /* swoole_event_add(events) when add, else swoole_event_set(events). */
+    bool (*reactor)(swr_v1_co_socket *, uint32_t events, bool add);
+    /* Yields co with cancel(event) as its cancel function. */
+    void (*suspend)(swr_v1_co_socket *, void *co, uint32_t event);
+    /* Moves a write's bytes to the write buffer unless they are there or the socket is zero-copy. */
+    void (*buffer)(swr_v1_co_socket *, char **buffer, size_t length);
+    /* remove_read_event/remove_write_event. */
+    void (*remove)(swr_v1_co_socket *, uint32_t event);
+    /* Resumes a coroutine. */
+    void (*resume)(void *co);
+    /* close()'s release: the destructor callback, once; the socket may be gone after. */
+    void (*release)(swr_v1_co_socket *);
+    /* socket->ssl_shutdown() and socket->check_liveness(). */
+    void (*ssl_shutdown)(swr_v1_co_socket *);
+    bool (*liveness)(swr_v1_co_socket *);
+} swr_v1_hook_co_socket_host_t;
+/* The lifecycle (crates/hooks/src/lifecycle.rs): shutdown(how), cancel(event), close()
+   (the socket may be gone after it returns true), check_liveness() and connect(addr). */
+bool swr_v1_hook_co_socket_shutdown(swr_v1_co_socket *socket, int how);
+bool swr_v1_hook_co_socket_cancel(swr_v1_co_socket *socket, uint32_t event);
+bool swr_v1_hook_co_socket_close(swr_v1_co_socket *socket);
+bool swr_v1_hook_co_socket_check_liveness(swr_v1_co_socket *socket);
+bool swr_v1_hook_co_socket_connect(swr_v1_co_socket *socket, const struct sockaddr *addr, socklen_t length);
+void swr_v1_hook_co_socket_host(const swr_v1_hook_co_socket_host_t *host);
+/* set_err(e), check_return_value, is_available, get_bound_cid, check_bound_co,
+   get_event_str (a static string) and TimeoutController::has_timedout (startup is
+   its clock, now microtime()). */
+void swr_v1_hook_co_socket_set_err(swr_v1_co_socket *socket, int error);
+void swr_v1_hook_co_socket_check(swr_v1_co_socket *socket, ssize_t result);
+bool swr_v1_hook_co_socket_available(swr_v1_co_socket *socket, uint32_t event);
+long swr_v1_hook_co_socket_bound_cid(const swr_v1_co_socket *socket, uint32_t event);
+void swr_v1_hook_co_socket_check_bound(const swr_v1_co_socket *socket, uint32_t event);
+const char *swr_v1_hook_co_socket_event_str(const swr_v1_co_socket *socket, uint32_t event);
+bool swr_v1_hook_co_socket_timed_out(swr_v1_co_socket *socket, double timeout, double *startup, double now, int kind);
+/* TimerController: one wait's timer in the socket's slot for its direction. */
+typedef struct {
+    swr_v1_co_socket *socket;
+    void **slot;
+    double timeout;
+    bool enabled;
+} swr_v1_hook_co_timer_t;
+swr_v1_hook_co_timer_t swr_v1_hook_co_timer_new(swr_v1_co_socket *socket, uint32_t event, double timeout);
+bool swr_v1_hook_co_timer_start(swr_v1_hook_co_timer_t *timer);
+void swr_v1_hook_co_timer_stop(swr_v1_hook_co_timer_t *timer);
+/* wait_event for the current coroutine: barrier (when given) stays installed for the wait;
+   buffer, when not null, is a write's buffer slot. */
+bool swr_v1_hook_co_socket_wait(swr_v1_co_socket *socket,
+                                uint32_t event,
+                                swr_v1_hook_barrier barrier,
+                                void *barrier_state,
+                                char **buffer,
+                                size_t length);
+/* One transfer in event's direction, retried while it would block; flags: 1 all
+   (recv_all/send_all), 2 retry EINTR at once, 4 availability checked already. call
+   (with context) is the network::Socket call and must not throw. */
+ssize_t swr_v1_hook_co_socket_transfer(swr_v1_co_socket *socket,
+                                       uint32_t event,
+                                       uint32_t flags,
+                                       char *buffer,
+                                       size_t length,
+                                       ssize_t (*call)(void *, char *, size_t),
+                                       void *context);
 }
 
 static_assert(sizeof(swoole::Protocol) == 64 && offsetof(swoole::Protocol, package_max_length) == 16 &&

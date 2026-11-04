@@ -61,7 +61,7 @@ fn ops() -> &'static SystemOps {
     OPS.get().copied().unwrap_or_else(|| std::process::abort())
 }
 
-// `swoole_async_dns_lookup_coro()`, still C++ (swoole_async_coro.cc).
+// `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
 unsafe extern "C" {
     pub(crate) fn zif_swoole_async_dns_lookup_coro(
         frame: *mut z::zend_execute_data,

@@ -466,6 +466,28 @@ typedef struct swr_v1_phpswoole_ops {
     void (*set_socket_timeout)(int32_t kind, double seconds);
     void (*set_socket_buffer_size)(int64_t size);
     void (*set_http2_default)(int32_t id, int64_t value);
+    /* swoole_async_set() and php_swoole_set_aio_option's SwooleG fields. */
+    void (*set_aio_core_worker_num)(uint32_t count);
+    void (*set_aio_worker_num)(uint32_t count);
+    void (*set_aio_max_wait_time)(double seconds);
+    void (*set_aio_max_idle_time)(double seconds);
+    void (*set_iouring_entries)(uint32_t count);
+    void (*set_iouring_workers)(uint32_t count);
+    void (*set_iouring_flag)(int64_t flag);
+    void (*set_dns_cache_refresh_time)(double seconds);
+    double (*dns_cache_refresh_time)(void);
+    void (*set_enable_coroutine)(uint8_t on);
+    /* SW_MUST_BE_MAIN_THREAD's test: 1 without SW_THREAD. */
+    uint8_t (*main_thread)(void);
+    uint8_t (*reactor_created)(void);
+    /* Coroutine::get_current_safe(): a fatal error outside a coroutine. */
+    void (*current_coroutine_safe)(void);
+    void (*check_reactor)(void);
+    double (*default_dns_timeout)(void);
+    int64_t (*absolute_msec)(void);
+    /* swoole::coroutine::dns_lookup: each address pushed onto list in order. */
+    void (*dns_lookup)(const char *domain, int32_t family, double timeout, void (*push)(void *list, const char *address),
+                       void *list);
 } swr_v1_phpswoole_ops;
 void swr_v1_phpswoole_minit(int32_t module_number, uint32_t flags, const swr_v1_phpswoole_ops *ops,
                             struct _zend_class_entry **exception, struct _zend_object_handlers *exception_handlers,
@@ -478,15 +500,13 @@ int swr_v1_phpswoole_rinit(int _kind, int module_number);
 int swr_v1_phpswoole_rshutdown(int _kind, int module_number);
 /* ZEND_INIT_MODULE_GLOBALS' constructor of zend_swoole_globals. */
 void swr_v1_phpswoole_init_globals(void *globals);
-/* sw_php_allocator() (emalloc) and sw_zend_string_allocator() (zend_string values):
- * swoole::Allocators. */
+/* sw_zend_string_allocator(): a swoole::Allocator of zend_string values. */
 typedef struct swr_v1_phpswoole_allocator {
     void *(*malloc)(size_t size);
     void *(*calloc)(size_t nmemb, size_t size);
     void *(*realloc)(void *ptr, size_t size);
     void (*free)(void *ptr);
 } swr_v1_phpswoole_allocator;
-extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_php_allocator;
 extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_zend_string_allocator;
 
 #ifdef __cplusplus

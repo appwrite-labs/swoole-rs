@@ -11,6 +11,7 @@
 
 pub mod address;
 pub mod buffered;
+pub mod co_io;
 pub mod co_socket;
 pub mod connect;
 pub mod dns_cache;
@@ -112,24 +113,6 @@ pub extern "C" fn swr_v1_hook_transfer(
     }
 }
 
-/// Timer-controller actions: 1 enable, 2 add native timer, 4 install negative
-/// timeout sentinel, 8 delete native timer, 16 clear native pointer.
-/// operation0 starts, operation1 destroys. Native retains timer node custody.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_timer(
-    operation: u32,
-    enabled: bool,
-    present: bool,
-    sentinel: bool,
-    timeout: f64,
-) -> u32 {
-    match operation {
-        0 if timeout != 0.0 && !present => 1 | if timeout > 0.0 { 2 } else { 4 },
-        1 if enabled && present => 16 | if sentinel { 0 } else { 8 },
-        _ => 0,
-    }
-}
-
 #[repr(C)]
 #[derive(Debug, PartialEq)]
 pub struct WaitForPlan {
@@ -209,64 +192,10 @@ pub extern "C" fn swr_v1_hook_curl_flags(flags: u32, native: u32, php: u32) -> C
     }
 }
 
-/// Closed sockets take precedence without requiring a native socket dereference.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_socket_status(closed: bool, close_wait: bool) -> u32 {
-    if closed {
-        1
-    } else if close_wait {
-        2
-    } else {
-        0
-    }
-}
-
-/// Native error publication: retain, clear, or publish the current errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_check_result(result: i64, has_error: bool) -> u32 {
-    if result >= 0 {
-        1
-    } else if !has_error {
-        2
-    } else {
-        0
-    }
-}
-
 /// Preserve the pinned two divisions rather than changing timeout rounding.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_timeval(seconds: f64, micros: f64) -> f64 {
     seconds + micros / 1000.0 / 1000.0
-}
-
-/// 0 no timeout, 1 initialize native clock, 2 inspect native elapsed time.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_timeout_action(timeout: f64, startup: f64) -> u32 {
-    if timeout > 0.0 {
-        if startup == 0.0 { 1 } else { 2 }
-    } else {
-        0
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TimeoutPlan {
-    pub remaining: f64,
-    pub expired: bool,
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_timeout_remaining(
-    timeout: f64,
-    elapsed: f64,
-    minimum: f64,
-) -> TimeoutPlan {
-    let remaining = timeout - elapsed;
-    TimeoutPlan {
-        remaining,
-        expired: remaining < minimum,
-    }
 }
 
 /// Async phases: dispatch admission, cancellable yield, completion callback.
@@ -300,39 +229,6 @@ pub extern "C" fn swr_v1_hook_dns_error(
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_sleep_timeout(seconds: f64, minimum: f64) -> f64 {
     if seconds < minimum { minimum } else { seconds }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_connect_action(
-    result: i32,
-    interrupted: bool,
-    in_progress: bool,
-) -> i32 {
-    if result >= 0 {
-        0
-    } else if interrupted {
-        1
-    } else if in_progress {
-        2
-    } else {
-        -1
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_connect_option(result: i32, error: i32) -> bool {
-    result < 0 || error != 0
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_liveness_error(alive: bool, error: i32, reset: i32) -> i32 {
-    if alive {
-        0
-    } else if error != 0 {
-        error
-    } else {
-        reset
-    }
 }
 
 #[cfg(test)]
@@ -378,16 +274,5 @@ mod tests {
         assert_eq!(swr_v1_hook_transition(0, 1, 1), -1);
         assert_eq!(swr_v1_hook_transition(1, 1, 1), 0);
         assert_eq!(swr_v1_hook_filter(u32::MAX, 5), u32::MAX ^ 5);
-    }
-    #[test]
-    fn timer_sentinel_and_allocation_actions() {
-        assert_eq!(swr_v1_hook_timer(0, false, false, false, 0.0), 0);
-        assert_eq!(swr_v1_hook_timer(0, false, false, false, -1.0), 5);
-        assert_eq!(swr_v1_hook_timer(0, false, false, false, f64::NAN), 5);
-        assert_eq!(swr_v1_hook_timer(0, false, false, false, 1.0), 3);
-        assert_eq!(swr_v1_hook_timer(0, false, true, false, 1.0), 0);
-        assert_eq!(swr_v1_hook_timer(1, false, true, false, 1.0), 0);
-        assert_eq!(swr_v1_hook_timer(1, true, true, false, 1.0), 24);
-        assert_eq!(swr_v1_hook_timer(1, true, true, true, -1.0), 16);
     }
 }
