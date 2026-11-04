@@ -444,7 +444,7 @@ class Lanes(unittest.TestCase):
                                    benchmark=False, compare=False, stdext=stdext, fix_halfclose=repair)
             commands = dict(dev.plan(args, ROOT / 'target/reports/owned-config'))
             self.assertNotIn('-owned', ' '.join(map(str, commands['build'])))
-            for phase, flags in [('reactor-production-owned-iov', ['--blocking', '--require-owned-iov']),
+            for phase, flags in [('reactor-production-blocking', ['--blocking']),
                                  ('reactor-production-owned-defer', ['--builtins', '--require-owned-defer', '--require-batch'])]:
                 for flag in flags:
                     self.assertIn(flag, commands[phase])

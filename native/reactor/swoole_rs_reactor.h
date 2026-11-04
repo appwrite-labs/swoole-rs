@@ -47,9 +47,7 @@ typedef struct { struct iovec *original, *iterator; int32_t status; } swr_v1_rea
 swr_v1_reactor_iov_allocation swr_v1_reactor_iov_owned_new(const struct iovec *, int32_t);
 void swr_v1_reactor_iov_owned_free(struct iovec *);
 size_t swr_v1_reactor_iov_owned_length(const struct iovec *, int32_t);
-size_t swr_v1_reactor_iov_owned_layout(uint32_t);
 typedef struct { size_t offset_bytes, advance, consumed; int32_t remain_count, index, action; } swr_v1_reactor_iov_progress_reply;
-size_t swr_v1_reactor_iov_progress_layout(uint32_t);
 swr_v1_reactor_iov_progress_reply swr_v1_reactor_iov_owned_progress(struct iovec *, intptr_t, int32_t, int32_t, size_t);
 
 struct pollfd;

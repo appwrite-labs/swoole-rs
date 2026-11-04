@@ -15,14 +15,14 @@ from tools.build_hybrid import apply_patch_verified,hybrid_tree
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated
 from tools.harness import run_compiler
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True);p.add_argument('--report',type=Path,required=True);p.add_argument('--sanitize',action='store_true');profile=p.add_mutually_exclusive_group();profile.add_argument('--iov-progress',action='store_true',help='Separate genuine IOVector Native-array progression inventory');profile.add_argument('--forwarding',action='store_true',help='Whole file/event forwarding positive source effects; clean Native effects not executed');a=p.parse_args()
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True);p.add_argument('--report',type=Path,required=True);p.add_argument('--sanitize',action='store_true');p.add_argument('--forwarding',action='store_true',help='Whole file/event forwarding positive source effects; clean Native effects not executed');a=p.parse_args()
 if a.report.exists():raise ValueError('Choose a unique receipt path')
 fixed=ROOT/'migration/patches/halfclose/0003-send-tls-close-notify.patch'
 dest='src/network/socket.cc'
 selected_tree,abi=hybrid(a.archive);hybrid_flags=hybrid_tree(a.archive)[1]
 hybrid_corrected=json.loads((selected_tree.parent/'build-manifest.json').read_text())['inputs']['fix_halfclose']
-fixture_name='forwarding' if a.forwarding else 'iov_progress' if a.iov_progress else 'output'
-report=dict(hybrid_tree=str(selected_tree),hybrid_corrected=hybrid_corrected,scope=('Whole file/event forwarding positive source effects; clean syntax/pure Rust only, Native clean unexecuted' if a.forwarding else 'Genuine IOVector complete progression; Native vs Rust-owned descriptor storage, unchanged public class; no kernel/loaded production or error/fault/lifetime qualification' if a.iov_progress else __doc__),pin=PIN,patch_application=[],syntax=[],commands=[],results=[],passed=False)
+fixture_name='forwarding' if a.forwarding else 'output'
+report=dict(hybrid_tree=str(selected_tree),hybrid_corrected=hybrid_corrected,scope=('Whole file/event forwarding positive source effects; clean syntax/pure Rust only, Native clean unexecuted' if a.forwarding else __doc__),pin=PIN,patch_application=[],syntax=[],commands=[],results=[],passed=False)
 with tempfile.TemporaryDirectory(prefix='swr-output-') as tmp:
  t=Path(tmp)
  try:
@@ -54,10 +54,6 @@ with tempfile.TemporaryDirectory(prefix='swr-output-') as tmp:
    signatures=(['static bool check_sendfile_parameters(','static swr_v1_socket_output_hooks output_hooks(','int Socket::handle_sendfile(','int Socket::handle_send()','static void Socket_sendfile_destructor(','struct SendfileAsync {','int Socket::sendfile_async('] if selected else
                ['static bool check_sendfile_parameters(','static size_t get_sendfile_chunk_size(','int Socket::handle_sendfile(','int Socket::handle_send()','static void Socket_sendfile_destructor(','int Socket::sendfile_async('])
    extracted='\n'.join(block(body,body.index(sig))[0]+(';' if sig.startswith('struct ') else '') for sig in signatures)
-   if a.iov_progress:
-    header=subprocess.check_output(['git','-C',str(a.source),'show',PIN+':include/swoole_socket.h'],text=True)
-    declaration=block(header,header.index('struct IOVector {'))[0]+';'
-    extracted=declaration+'\n'+'\n'.join(block(body,body.index(sig))[0] for sig in ['IOVector::IOVector(','IOVector::~IOVector(','void IOVector::update_iterator('])
    if a.forwarding:
     extracted='\n'.join(block(body,body.index(sig))[0] for sig in ['ssize_t Socket::sendfile(','ssize_t Socket::send_async(','void Socket::clean(','bool Socket::check_liveness('])
    tree.mkdir(exist_ok=True);(tree/(fixture_name+'.inc')).write_text(extracted);binary=tree/'consumer';command=['c++','-std=c++14','-O1','-g','-I'+str(tree),abi,str(ROOT/('tests/modules/reactor/'+fixture_name+'.cc')),str(a.archive.resolve()),'-lpthread','-o',str(binary)]

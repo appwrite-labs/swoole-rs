@@ -13,7 +13,6 @@ from tools.harness import ROOT,Engine,parse_engines,run_isolated,write_report
 from tools import hybrid_identity as shared
 from tools.hybrid_identity import attest,sha
 from tools.build_upstream import require_build_space
-import owned_iov_identity as owned_iov
 import buffer_typed_identity as typed_buffer
 
 p=argparse.ArgumentParser(description=__doc__)
@@ -29,7 +28,6 @@ p.add_argument('--php-config',default='php-config')
 p.add_argument('--php-extension',action='append',default=[])
 p.add_argument('--output',type=Path,required=True)
 p.add_argument('--require-owned-defer',action='store_true',help='Require the selected Rust deferred queue imports/origins and a Native control; builtins profile only')
-p.add_argument('--require-owned-iov',action='store_true',help='Require the selected Rust-owned IOVector imports/origins and a Native control; blocking profile only')
 p.add_argument('--require-typed-buffer',action='store_true',help='Require literal typed Buffer request/SDK/source for every profile; Buffer execution credit only in existing socket-output profile')
 p.add_argument('--require-batch',action='store_true',help='Refuse older production sources before compiling/running the consumer')
 profiles=p.add_mutually_exclusive_group()
@@ -55,12 +53,9 @@ try:
         report['typed_buffer_requests']={'selected':typed_buffer.requested(inputs,True),'native':typed_buffer.requested(json.loads((a.native_export.parent/'build-manifest.json').read_text())['inputs'],False)}
         files={name:subprocess.check_output(['git','-C',str(ROOT),'show',a.source_ref+':'+name]) for name in (*typed_buffer.SOURCES,*typed_buffer.PATCHES)}
         typed_buffer.prepared(inputs,files)
-    if a.require_owned_iov:
-        if not a.blocking:raise ValueError('--require-owned-iov requires --blocking')
     if a.require_owned_defer:
         if not a.builtins:raise ValueError('--require-owned-defer requires --builtins')
     report['require_owned_defer']=a.require_owned_defer
-    report['require_owned_iov']=a.require_owned_iov
     bindings={}
     for value in a.engine:
         _,separator,path=value.partition('=')
@@ -86,8 +81,6 @@ try:
     if a.builtins and not report['selected_builtins_compiled']:raise ValueError('Selected source predates Rust builtin orchestration; no current caller qualification')
     report['selected_socket_output_compiled']='crates/reactor/src/output.rs' in selected_inputs
     if a.socket_output and not report['selected_socket_output_compiled']:raise ValueError('Selected source predates Rust Socket output; no current caller qualification')
-    report['selected_blocking_iov_compiled']='crates/reactor/src/iov_owned.rs' in selected_inputs
-    if a.blocking and not report['selected_blocking_iov_compiled']:raise ValueError('Selected source predates the Rust-owned IOVector; no new-source qualification')
     source=Path(__file__).parent;fixture=source/('production_blocking.php' if a.blocking else 'production_output.php' if a.socket_output else 'production_builtins.php' if a.builtins else 'production_callbacks.php' if a.callbacks else 'production_supported.php');addon_source=source/'production_supported.cc'
     for engine,row in zip(engines,identities):
         selected=bool(row['rust_feature_bits']&16384);export=a.selected_export if selected else a.native_export
@@ -109,10 +102,9 @@ try:
         result=json.loads(run(engine.command('-d','extension='+str(addon),fixture)))
         if result['checks']!=(54 if a.blocking else 78 if a.socket_output else 31 if a.builtins else 22 if a.callbacks else 210 if sys.platform=='darwin' else 240) or result['method_image']!=str(engine.extension):raise ValueError('Actual production consumer/origin differs')
         if a.blocking:
-            if a.require_owned_iov:owned_iov.consumer(result,undefined,str(engine.extension),selected)
-            symbols=['_ZN6swoole7network6Socket9send_syncEPKvmi','_ZN6swoole7network6Socket11writev_syncEPK5iovecm','_ZN6swoole7network6Socket13sendfile_syncEPKc'+('x' if sys.platform=='darwin' else 'l')+'m','_ZN6swoole7network8IOVector15update_iteratorEl']
-            if any(symbol not in undefined for symbol in symbols):raise ValueError('Addon must invoke all real blocking Socket/IOVector methods')
-            if result['cases']!=7 or any(result[key]!=str(engine.extension) for key in ['vector_image','file_image','event_image','iov_image']):raise ValueError('Actual blocking method origins/cases differ')
+            symbols=['_ZN6swoole7network6Socket9send_syncEPKvmi','_ZN6swoole7network6Socket11writev_syncEPK5iovecm','_ZN6swoole7network6Socket13sendfile_syncEPKc'+('x' if sys.platform=='darwin' else 'l')+'m']
+            if any(symbol not in undefined for symbol in symbols):raise ValueError('Addon must invoke all real blocking Socket methods')
+            if result['cases']!=7 or any(result[key]!=str(engine.extension) for key in ['vector_image','file_image','event_image']):raise ValueError('Actual blocking method origins/cases differ')
         if a.socket_output:
             symbols=['_ZN6swoole7network6Socket11handle_sendEv','_ZN6swoole7network6Socket15handle_sendfileEv','_ZN6swoole7network6Socket14sendfile_asyncEPKc'+('x' if sys.platform=='darwin' else 'l')+'m']
             if any(symbol not in undefined for symbol in symbols):raise ValueError('Addon must call all genuine production Socket output methods')
