@@ -212,131 +212,30 @@ effect, 1/2 heap/shared allocation, 3/4 heap/shared release, -1 invalid.
 
 ## Shared tables
 
-Row layout: the C POD row is the actual storage base of native TableRow (no derived
-members). 88-byte header, alignment 8, next at 16, key at 24, payload at 88. The
-lock word is volatile native storage; Rust never locks or borrows it. Row field
-access uses raw unaligned loads/stores. Numeric native types are 8 bytes.
+Rust owns `swoole::Table` (crates/memory/src/table.rs); the C++ `Table`,
+`TableRow` and `TableColumn` are views of its handles. The host allocates two
+blocks, so both stay shared across `fork()` as upstream's are: the header
+(`table_header_size()` bytes from `sw_mem_pool()`, holding sizes, counters and
+the pool and iterator mutexes) and, at create, the arena (`table_arena_size()`
+bytes from `sw_shm_malloc`). `table_destroy` frees the rest and returns the arena
+for the host to free with the header.
 
-Lookup/set/delete:
-
-- Native hashes (existing callback), clamps keys to 63 bytes and holds the root lock
-  across lookup/planning/mutation. Chains must be acyclic.
-- Rust owns key matching, collision planning, root promotion/deletion, header
-  initialization, iterator row selection/copying, numeric encoding and bounded
-  length-prefixed strings.
-- set plan: 0 existing/root row, 1 native pool allocation needed, -1 invalid.
-  Conflict counters increment before a failed allocation; out_flags untouched.
-- delete: 0 removed, 1 missing, -1 invalid; returns a detached collision row for
-  native disposal.
-- Single-row iteration keeps the upstream collision cursor.
-- Returned string pointers borrow the locked row; unsafe after unlock/delete/destroy.
-
-Layout: helpers keep row-count rounding, f32 conflict arithmetic, pointer-array
-placement, pool bytes and the reported pool memory_size. NaN/infinite sizing,
-oversized widths and overflowing layouts are rejected. `table_storage_layout`
-rounds record strides to row alignment (8) for physical storage; public
-calc_memory_size/get_memory_size still use the logical plan. This adds 0..7 bytes
-per record (including conflict rows). Legacy and aligned layouts must never be
-mixed across forked processes.
-
-`table_mutation_step`: 144-byte state with typed addresses of six live counters,
-root/key/row/release tokens, the plan, and mode/phase.
-
-- Mode 0 (set), phase 0: find row and complete, or request a conflict-row
-  allocation (return 1, phase 1). Conflict count/max publish before the request;
-  allocation failure leaves row count, links, out_flags and insert/update counters
-  unchanged. Native fills only `state.row`; Rust then initializes, counts, links,
-  writes flags and counts insert/update.
-- Mode 1 (delete): return 2 missing, complete, or request native row release; the
-  key is consumed in phase 0 and not read afterward (it may live in the released
-  row). Counters update after release.
-- Phase 2 is terminal; error returns -1.
-- Row/insert/delete/update counters keep SeqCst native ordering; conflict count/max
-  now use atomics. Native direct access to these fields must serialize or use
-  compatible atomics.
-
-`table_lookup_step`: 56-byte cursor. Phase 0 clamps the u16 key length to 63
-(return 1); native calls HashFunc and fills only the hash. Phase 1 selects the
-index and reads one row-pointer token (return 0); invalid/replay -1. Native keeps
-prelock activity observation and the index<size assertion.
-
-`table_iterator_reset/step`: 32-byte view of cursor addresses, current-row storage
-and row size; native holds the iterator mutex. Phase 0 starts; phase 1 consumes the
-native lookup/lock result (NULL inactive bucket, else a locked live root). Return 1
-requests lookup/lock of the output bucket, 0 completes, -1 rejects. Native unlocks
-before the next request. End-of-walk clears only the 88-byte header; reset clears
-the full row.
-
-`table_iterator_release_step`: 24-byte copied tokens; frees the current row only if
-non-null, then deletes the mutex. Native refreshes the mutex token before resuming.
-
-Column clearing:
-
-- `table_clear_value(row,index,width,kind)`: kinds 1/2 require width 8 and write
-  positive zero; kind 3 requires width>=4 and clears only the 4-byte string length.
-  Unaligned access, no allocation, returns 0/-1 before any write on invalid input.
-- `table_clear_columns(row,descriptors,count,item_size)`: 16-byte descriptors
-  (index:usize, width:u32, kind:u32). All validated against item_size before any
-  write; overlapping ranges coalesce. NULL descriptors allowed when count=0. Native
-  batches at most eight live TableColumn descriptors (128 bytes) per call.
-- `table_clear_step`: 240-byte cursor over a read-only pointer-token span from the
-  public column vector; requests batches of up to eight in declaration order
-  (return 1), native copies index/width/kind, Rust validates the batch then writes.
-  0 completes, -1 rejects without restart; completed batches stay committed.
-
-`table_value_step`: 48-byte cursor. Ordinary writes complete in one call. An
-overlong string returns 1 before writing; native logs the warning, refreshes
-descriptor facts and resumes phase 1 (also for an overlong null string). Terminal
-replay rejects.
-
-Metadata and construction:
-
-- `table_metadata_fields`: 128-byte descriptor of typed addresses of Table scalar,
-  pointer and counter fields. The bool target is written as 0/1 (sizeof(bool)==1
-  checked).
-- `table_metadata_initialize` validates configuration before any write, then sets
-  size/mask/item/accounting/conflict, pointer fields, created and six statistics.
-- `table_creation_step`: 112-byte cursor. Phase 0 refuses an already-created table
-  and returns logical/physical plans (return 1). Native allocates and constructs
-  pool/iterator under RAII. Phase 1 validates tokens and unchanged metadata, then
-  publishes arena/row-array/pool/iterator pointers, logical accounting and created
-  (return 0); replay/invalid -1. Exclusive construction only. See
-  [table-construction.md](table-construction.md).
-- Native rollback: pool is destroyed before its mapping; iterator keeps its row
-  buffer until mutex construction succeeds. A failed create leaves the table
-  unready with zero memory size and reusable.
-- `table_declaration_step`: 96-byte cursor with name, column token and typed
-  item-size/index/width addresses. Phase 0 validates type/width/total (return 1:
-  construct column); phase 1 publishes index (return 2: append to vector); phase 2
-  inserts the name index and commits width (return 0) or requests pop-back
-  rollback (return 3). Unknown type -2 (native warning), other failures -1.
-  Duplicate names keep first-index lookup while every declaration advances layout.
-- `table_teardown_step`: 88-byte cursor, one 16-byte effect per step: column
-  delete, vector delete, iterator delete, pool delete, optional shared arena
-  release, mutex delete, Table-pool release. The Rust name index is disposed
-  first; `memory=NULL` is published after arena release. Return 1 effect, 0
-  terminal, -1 invalid. No restart after partial failure. The cursor borrows the
-  `column_list->data()` token span; it never copies the vector.
-
-## Table column-name index
-
-Opaque Rust HashMap of owned byte keys to native TableColumn tokens, with a
-deterministic hasher (no entropy/syscall). Binary/empty names allowed;
-first-insertion-wins on duplicates, matching `unordered_map::emplace`. Duplicates
-still advance item_size and enter the public column vector, which owns every
-column; destroy drains the index then deletes all vector entries (fixing the
-original duplicate-column leak).
-
-- create returns 0/-1 (NULL on failure).
-- insert returns 0 inserted, 1 existing, -1 invalid/OOM; caller keeps custody on
-  failure/duplicate. Key allocation and reserve happen before insertion.
-- get/count/pop do not allocate; pop returns one token for native destruction.
-- release rejects a nonempty map. `columns_discard` drops the whole index without
-  destructors; the caller must hold every token.
-- Metadata is process-private (copy-on-write across fork). Registry init failure
-  returns NULL/false rather than propagating an allocator exception.
-
-TableV2 replaces this with a Rust record owner; see [columns-v2.md](columns-v2.md).
+- Rows: 88-byte header (`swr_v1_memory_table_row`; next at 16, key at 24) and the
+  column data. Rows are padded to 8 bytes in the arena so lock words and links are
+  aligned; `calc_memory_size`/`get_memory_size` and the slice counts still report
+  upstream's unpadded accounting.
+- Row locks are upstream's spin lock: spin when there is more than one CPU, take
+  over a lock whose owner is gone (`kill(pid, 0)` and `ESRCH`) or held for more
+  than 2000 ms, and log upstream's warning through the host's warning callback.
+- Keys are cut to 63 bytes and hashed by the host's callback (`swoole_hash_php`,
+  or Zend's string hash for `Swoole\Table`). `set` returns null with the bucket
+  still locked when the collision pool is exhausted, after counting the
+  conflict, and reports `SW_ERROR_MALLOC_FAIL` through the host's error callback.
+  Deleting a bucket's own row moves its first collision row in.
+- Columns are process-private (copied on fork), as upstream's maps were.
+  Duplicate names keep the first declaration for lookup; every declaration
+  takes row space. Columns cannot be added once the table is created.
+- The iterator's cursor and row copy are process-private; its mutex is shared.
 
 ## Benchmarks
 

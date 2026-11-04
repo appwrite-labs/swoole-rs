@@ -1,18 +1,17 @@
 #pragma once
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
-namespace swoole { struct TableRow; struct TableColumn; struct TableIterator; class FixedPool; }
+namespace swoole { struct TableRow; struct TableColumn; class Table; }
 typedef swoole::TableRow swr_v1_memory_table_link;
 typedef swoole::TableColumn swr_v1_memory_table_column_link;
-typedef swoole::TableIterator swr_v1_memory_table_iterator_link;
-typedef swoole::FixedPool swr_v1_memory_table_pool_link;
+typedef swoole::Table swr_v1_memory_table;
 extern "C" {
 #else
 typedef struct swr_v1_memory_table_row swr_v1_memory_table_link;
-typedef struct swr_v1_memory_table_column_opaque swr_v1_memory_table_column_link;
-typedef struct swr_v1_memory_table_iterator_opaque swr_v1_memory_table_iterator_link;
-typedef struct swr_v1_memory_table_pool_opaque swr_v1_memory_table_pool_link;
+typedef struct swr_v1_memory_table_column swr_v1_memory_table_column_link;
+typedef struct swr_v1_memory_table swr_v1_memory_table;
 #endif
 /* Single-use whole SharedMemory operation cursor. OS constants/results are
  * copied Native facts, never guessed Rust libc values or Native class objects.
@@ -231,8 +230,11 @@ int32_t swr_v1_memory_mapping_relocate(const void *old, void *new_);
 int32_t swr_v1_memory_mapping_size(size_t requested, size_t *total);
 int32_t swr_v1_memory_mapping_product(size_t count, size_t width, size_t *requested);
 int32_t swr_v1_memory_mapping_copy(size_t old_total, size_t new_total, size_t *bytes);
-/* Actual C POD row storage; C++ TableRow derives without data members.
- * Locking and hash callbacks remain native. All row byte access is unaligned. */
+/* swoole::Table (crates/memory/src/table.rs). Rust owns the table; the host
+ * allocates its header (header_size() bytes, 8-aligned, shared memory) and,
+ * for create, its arena (arena_size() bytes). Every row pointer here is a row
+ * of the table or the iterator's copy of one; a bucket's chain is read and
+ * written only under the bucket's lock. */
 typedef struct swr_v1_memory_table_row {
     volatile uint32_t lock_;
     int32_t lock_pid;
@@ -241,367 +243,63 @@ typedef struct swr_v1_memory_table_row {
     char key[64];
     char data[0];
 } swr_v1_memory_table_row;
-typedef struct swr_v1_memory_table_plan {
-    void *row, *parent;
-    uint32_t level, flags, initialize;
-} swr_v1_memory_table_plan;
-/* Live typed counter targets; descriptor/state are independent of actual fields.
- * Native accesses are atomic/serialized; key/row lifetimes follow each phase. */
-typedef struct swr_v1_memory_table_counter_fields {
-    volatile uint32_t *rows;
-    volatile int64_t *inserted, *deleted, *updated;
-    size_t *conflicts;
-    uint32_t *max_conflict;
-} swr_v1_memory_table_counter_fields;
-typedef struct swr_v1_memory_table_mutation {
-    swr_v1_memory_table_counter_fields counters;
-    swr_v1_memory_table_link *root, *row, *removed;
-    const uint8_t *key;
-    int32_t *out_flags;
-    size_t item_size;
-    swr_v1_memory_table_plan plan;
-    uint32_t mode, phase;
-    uint16_t key_length;
-} swr_v1_memory_table_mutation;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_counter_fields) == 48 && sizeof(swr_v1_memory_table_mutation) == 144,
-              "table mutation independent POD ABI");
-#endif
-/* mode0 set/mode1 delete; phase initially0. Return1: native pool effect, then
- * resume Rust phase1. Set supplies row; delete frees removed before resuming.
- * Return0 success,2 missing delete,-1 invalid; phase2 completed cannot resume. */
-int32_t swr_v1_memory_table_mutation_step(swr_v1_memory_table_mutation *);
-/* Independent field view, exclusive under iterator mutex. Current buffer and
- * scalar targets/descriptors/lookup are disjoint. Row lookup and locking occur
- * only after Rust returns; non-NULL root must be locked for phase1. */
-typedef struct swr_v1_memory_table_iterator_fields {
-    uint32_t *absolute, *collision;
-    swr_v1_memory_table_link *current;
-    size_t row_size;
-} swr_v1_memory_table_iterator_fields;
-int32_t swr_v1_memory_table_iterator_reset(const swr_v1_memory_table_iterator_fields *);
-int32_t swr_v1_memory_table_iterator_step(const swr_v1_memory_table_iterator_fields *, size_t buckets,
-                                        swr_v1_memory_table_link *root, uint32_t phase, uint32_t *lookup);
-typedef struct swr_v1_memory_table_layout_result {
-    size_t total, row_size, pool_offset, pool_size;
-    uint32_t rows;
-} swr_v1_memory_table_layout_result;
-/* Read-only live row-pointer span, not a C++ Table/row object borrow. Cursor
- * independent, serialized with Table destruction. phase0 normalizes key length
- * (return1); native invokes HashFunc after return and fills hash only; phase1
- * selects pointer token (return0). Invalid/replay -1. Caller keeps key buffer
- * live for normalized prefix; no Rust borrow/frame crosses native callback.
- * Row locking/prelock activity observation remain native and unchanged. */
-typedef struct swr_v1_memory_table_lookup {
-    swr_v1_memory_table_link *const *rows;
-    size_t count, mask;
-    uint64_t hash;
-    size_t index;
-    swr_v1_memory_table_link *row;
-    uint16_t length;
-    uint32_t phase;
-} swr_v1_memory_table_lookup;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_lookup) == 56, "independent table lookup ABI");
-#endif
-int32_t swr_v1_memory_table_lookup_step(swr_v1_memory_table_lookup *);
-/* Borrowed name remains live through insertion; cursor, item-size and column
- * scalar targets disjoint/aligned, serialized and live throughout each phase.
- * No C++ object borrow; opaque column token never dereferenced by Rust.
- * phase0->1 native column construction; phase1->2 native vector append;
- * phase2 returns0 commit or3 native pop-back rollback before RAII column delete.
- * -2 unknown type requests native warning, -1 invalid/pre-effect failure.
- * Native effect must finish before resume; no restart/replay after partial effect. */
-typedef struct swr_v1_memory_table_declaration {
-    void *index;
-    size_t *item_size;
-    const uint8_t *name;
-    size_t length, requested, base, next;
-    void *column;
-    size_t *column_index;
-    uint32_t *column_width;
-    uint32_t kind, width, phase;
-} swr_v1_memory_table_declaration;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_declaration) == 96, "independent column declaration ABI");
-#endif
-int32_t swr_v1_memory_table_declaration_step(swr_v1_memory_table_declaration *);
-/* Disjoint aligned actual field targets; no C++ class borrow. Initialization
- * requires fresh unpublished storage, creation exclusive serialization. created
- * points to one native bool object-representation byte, only0/1 is written. */
-typedef struct swr_v1_memory_table_metadata_fields {
-    size_t *size, *mask, *item_size, *memory_size;
-    float *conflict;
-    uint8_t *created;
-    swr_v1_memory_table_link ***rows;
-    swr_v1_memory_table_pool_link **pool;
-    swr_v1_memory_table_iterator_link **iterator;
-    void **memory;
-    swr_v1_memory_table_counter_fields counters;
-} swr_v1_memory_table_metadata_fields;
-typedef struct swr_v1_memory_table_creation {
-    swr_v1_memory_table_layout_result logical, physical;
-    void *memory, *pool, *iterator;
-    uint32_t phase;
-} swr_v1_memory_table_creation;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_metadata_fields) == 128 && sizeof(swr_v1_memory_table_creation) == 112,
-              "independent Table metadata/publication ABI");
-#endif
-/* initialize validates before writes, zeros actual unpublished metadata/counters.
- * Creation phase0 ->1 requests native effects; phase1 validates unchanged plans
- * and live tokens then publishes fields/created and returns0. Other states -1.
- * Native retains arena/pool/iterator RAII until successful publication; no
- * borrow/callback enters Rust. Plans/cursor/targets and live arena are disjoint. */
-int32_t swr_v1_memory_table_metadata_initialize(const swr_v1_memory_table_metadata_fields *, uint32_t, float);
-int32_t swr_v1_memory_table_creation_step(const swr_v1_memory_table_metadata_fields *, swr_v1_memory_table_creation *);
-/* Complete construction transaction, independent of frozen creation ABI.
- * Zero cursor starts.1 requests effect,0 publishes all fields/created,-1 invalid.
- * Actions:1 allocate shared arena(size);2 construct native FixedPool(row_size,
- * memory,size,true);3 construct native TableIterator(size). Native records the
- * resulting tokens in storage.memory/pool/iterator before resume and retains
- * RAII until return0. Rust initializes arena rows and computes the pool interior
- * pointer; no class/allocator/effect is called or borrowed through Rust.
- * Scratch/targets/arena disjoint; exclusive schema serialization; no restart or
- * reuse after error, native exception or completion. Existing native exception
- * propagation/RAII remains outside Rust. This is not allocator-failure proof. */
-typedef struct swr_v1_memory_table_construction {
-    swr_v1_memory_table_creation storage;
-    uint32_t phase;
-} swr_v1_memory_table_construction;
-typedef struct swr_v1_memory_table_construction_effect {
-    void *memory;
-    size_t size, row_size;
-    uint32_t action;
-} swr_v1_memory_table_construction_effect;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_construction) == 120 &&
-              sizeof(swr_v1_memory_table_construction_effect) == 32, "table construction ABI");
-#endif
-int32_t swr_v1_memory_table_construction_step(const swr_v1_memory_table_metadata_fields *,
-    swr_v1_memory_table_construction *, swr_v1_memory_table_construction_effect *);
-/* Unpublished Table factory: rows/conflict/legacy input, other fields zero.
- * Positive return requests1 native Table allocation,2 native Mutex(true),
- *3 native legacy vector; caller records tokens before resume. fields may be NULL
- * until final resume; then fresh unpublished actual targets are required.
- *0 commits normalized metadata and optional sole Rust name index. Native
- * publishes mutex/list/index/hash only after0 and transfers RAII custody.
- * -1 leaves native rollback with caller; exceptions/effects stay native, no
- * restart or reuse, externally serialized, no allocation-failure qualification.
- * Legacy0 allocates no vector/index; legacy1 preserves public vector ABI. */
-typedef struct swr_v1_memory_table_factory {
-    void *table, *mutex, *list, *index;
-    uint32_t rows;
-    float conflict;
-    uint32_t legacy, phase;
-} swr_v1_memory_table_factory;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_factory) == 48, "table factory ABI");
-#endif
-int32_t swr_v1_memory_table_factory_step(const swr_v1_memory_table_metadata_fields *, swr_v1_memory_table_factory *);
-int32_t swr_v1_memory_table_config(uint32_t, float, uint32_t *, float *);
-int32_t swr_v1_memory_table_layout(uint32_t, size_t, float, swr_v1_memory_table_layout_result *);
-/* Additive physical plan rounds record strides to frozen row alignment.
- * Existing layout remains the logical/accounting plan with unchanged outputs. */
-int32_t swr_v1_memory_table_storage_layout(uint32_t, size_t, float, swr_v1_memory_table_layout_result *);
-int32_t swr_v1_memory_table_arena(void *, const swr_v1_memory_table_layout_result *);
-int32_t swr_v1_memory_table_clear(swr_v1_memory_table_row *, uint32_t keep_lock);
-int32_t swr_v1_memory_table_init(swr_v1_memory_table_row *, const uint8_t *, uint16_t);
-swr_v1_memory_table_row *swr_v1_memory_table_get(swr_v1_memory_table_row *, const uint8_t *, uint16_t);
-int32_t swr_v1_memory_table_set_plan(swr_v1_memory_table_row *, const uint8_t *, uint16_t, swr_v1_memory_table_plan *);
-int32_t swr_v1_memory_table_delete(swr_v1_memory_table_row *, const uint8_t *, uint16_t, size_t, void **);
-int32_t swr_v1_memory_table_next(swr_v1_memory_table_row *, uint32_t, swr_v1_memory_table_row *, size_t, uint32_t *, uint32_t *);
-int32_t swr_v1_memory_table_column_size(uint32_t, size_t, uint32_t *);
-int32_t swr_v1_memory_table_clear_value(swr_v1_memory_table_row *, size_t, uint32_t, uint32_t);
-int32_t swr_v1_memory_table_set_value(swr_v1_memory_table_row *, size_t, uint32_t, uint32_t, const void *, size_t);
-int32_t swr_v1_memory_table_get_number(const swr_v1_memory_table_row *, size_t, void *);
-int32_t swr_v1_memory_table_get_string(const swr_v1_memory_table_row *, size_t, uint32_t, uint8_t **, uint32_t *);
-/* Teardown borrows only the live pointer-token array from public vector.data(),
- * never the C++ vector object. The vector is unchanged until its delete action;
- * distinct column objects with duplicate names retain declaration order.
- * Cursor/output independent of Table/array/arena; calls exclusively serialized.
- * phase starts0;1 effect,0 complete,-1 invalid. Native executes action before
- * resuming:1 column delete,2 vector delete,3 iterator delete,4 pool delete,
- *5 shared arena release,6 mutex delete,7 Table memory-pool release.
- * Index disposal and actual memory=NULL publication are Rust; native class
- * destructors/free run only after return. After final release only cursor is
- * accessed. No reuse after partial native effect failure or phase restart. */
-typedef struct swr_v1_memory_table_teardown {
-    void *index;
-    swr_v1_memory_table_column_link *const *columns;
-    size_t count, position;
-    void *list, *iterator, *pool;
-    void **memory;
-    void *mutex, *table;
-    uint32_t phase;
-} swr_v1_memory_table_teardown;
-typedef struct swr_v1_memory_table_teardown_effect {
-    void *token;
-    uint32_t action;
-} swr_v1_memory_table_teardown_effect;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_teardown) == 88 && sizeof(swr_v1_memory_table_teardown_effect) == 16,
-              "independent table teardown ABI");
-#endif
-int32_t swr_v1_memory_table_teardown_step(swr_v1_memory_table_teardown *, swr_v1_memory_table_teardown_effect *);
-/* Actual collection-free TableV2 core only: index/columns/list/count/position
- * stay null/zero, and phase0 selects row/iterator/pool/arena/mutex/core cleanup.
- * All existing teardown signatures/layouts and legacy behavior stay unchanged.
- * Effects complete natively after return; terminal resume reads scratch only. */
-int32_t swr_v1_memory_table_core_teardown_step(swr_v1_memory_table_teardown *, swr_v1_memory_table_teardown_effect *);
-/* Independent copied destruction tokens. phase0 starts;1 effect,0 terminal,
- * -1 invalid. action1 sw_free(current), action2 delete native Mutex. Native
- * completes each effect and refreshes mutex token from actual field before
- * resume; no Rust borrow spans native allocation
- * callback/destruction. Null current skips free (custom allocator not called);
- * null mutex still receives native delete-null effect. No restart/partial retry. */
-typedef struct swr_v1_memory_table_iterator_release {
-    void *current, *mutex;
-    uint32_t phase;
-} swr_v1_memory_table_iterator_release;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_iterator_release) == 24, "iterator release ABI");
-#endif
-int32_t swr_v1_memory_table_iterator_release_step(swr_v1_memory_table_iterator_release *, swr_v1_memory_table_teardown_effect *);
-/* Cursor/row/value disjoint and live, serialized through native warning effect.
- * phase0 returns0 after write, or1 requests native warning BEFORE any row write.
- * Native completes warning, may refresh descriptor scalar facts, then resumes
- * phase1 to write. Existing truncation/null-string policy unchanged. Terminal
- * replay -1 before touching value/row; no Rust frame spans warning/bailout. */
-typedef struct swr_v1_memory_table_value {
-    swr_v1_memory_table_row *row;
-    const void *value;
-    size_t length, index;
-    uint32_t width, kind, phase;
-} swr_v1_memory_table_value;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_value) == 48, "table value ABI");
-#endif
-int32_t swr_v1_memory_table_value_step(swr_v1_memory_table_value *);
-/* Per-call POD snapshot; native TableColumn objects stay native and mutable. */
-typedef struct {
-    size_t index;
-    uint32_t width;
-    uint32_t kind;
+/* The leading fields of a column, which Rust allocates. */
+typedef struct swr_v1_memory_table_column {
+    uint32_t type; /* 1 int, 2 float, 3 string */
+    uint32_t size; /* bytes in a row: 8, or a string's capacity plus its 4-byte length */
+    size_t index;  /* offset in a row's data */
 } swr_v1_memory_table_column;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_column) == 16 &&
-              offsetof(swr_v1_memory_table_column, width) == 8 &&
-              offsetof(swr_v1_memory_table_column, kind) == 12, "column snapshot ABI");
-#endif
-/* Live pointer-token span and row remain serialized/live through completion.
- * Independent cursor/snapshots disjoint from row/span/native column objects.
- * phase0 starts, return1 requests exactly take native descriptor field copies
- * into batch[] from tokens[]; native must not change cursor control fields.
- * Resume clears validated batch and requests next or returns0. -1 invalid,
- * terminal failure cannot restart. Earlier batches remain committed on failure.
- * Native vector custody/mutable column layout stay native; no callback/frame
- * crosses Rust. Empty list completes without touching row. */
-typedef struct swr_v1_memory_table_clear_cursor {
-    swr_v1_memory_table_row *row;
-    swr_v1_memory_table_column_link *const *columns;
-    size_t count, position, item_size;
-    swr_v1_memory_table_column_link *tokens[8];
-    swr_v1_memory_table_column batch[8];
-    uint32_t take, phase;
-} swr_v1_memory_table_clear_cursor;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_table_clear_cursor) == 240, "independent clear cursor ABI");
-#endif
-int32_t swr_v1_memory_table_clear_step(swr_v1_memory_table_clear_cursor *);
-int32_t swr_v1_memory_table_clear_columns(swr_v1_memory_table_row *, const swr_v1_memory_table_column *, size_t, size_t);
-/* Rust-owned byte-key index; native column tokens are never dereferenced. */
-int32_t swr_v1_memory_table_columns_create(void **);
-int32_t swr_v1_memory_table_columns_insert(void *, const uint8_t *, size_t, void *);
-void *swr_v1_memory_table_columns_get(const void *, const uint8_t *, size_t);
-size_t swr_v1_memory_table_columns_count(const void *);
-void *swr_v1_memory_table_columns_pop(void *);
-int32_t swr_v1_memory_table_columns_release(void *);
-/* Consume a borrowed index; native code retains custody of every column token. */
-int32_t swr_v1_memory_table_columns_discard(void *);
-/* Versioned sole ordered-column owner for TableV2. Legacy Table/Columns APIs
- * remain distinct. Every opaque native column token is owned once by this store;
- * first duplicate-name lookup and all declaration-order tokens are retained.
- * No native vector mirrors this store. Native column effects occur after return. */
-typedef struct swr_v1_memory_columns_v2 swr_v1_memory_columns_v2;
-typedef struct swr_v1_memory_columns_v2_declaration {
-    swr_v1_memory_columns_v2 *owner;
-    size_t *item_size;
-    const uint8_t *created, *name;
-    size_t length, requested, base, next;
-    void *column;
-    size_t *column_index;
-    const uint32_t *column_width;
-    uint32_t kind, width, phase;
-} swr_v1_memory_columns_v2_declaration;
-typedef struct swr_v1_memory_columns_v2_cursor {
-    size_t count, unique_count, position;
-    uint64_t generation;
-    swr_v1_memory_table_column_link *column;
-} swr_v1_memory_columns_v2_cursor;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_columns_v2_declaration) == 104 &&
-              sizeof(swr_v1_memory_columns_v2_cursor) == 40, "owned columns v2 ABI");
-#endif
-/* Targets/borrowed name/cursors/owner disjoint, aligned and live. Mutation,
- * creation and close require exclusive serialization; sealed-owner lookup and
- * cursor reads may concur with independent scratch. Clear may share sealed
- * owner with independently locked/disjoint rows; no column metadata mutation.
- * open0/-1, output null on failure. Declare phase0 returns1 native construction;
- * phase1 reserves all storage then publishes index/width/custody (0), or-1 with
- * native RAII custody retained. -2 unknown type requests native warning. No
- * restart after native effect; created!=0 refuses before construction. */
-int32_t swr_v1_memory_columns_v2_open(swr_v1_memory_columns_v2 **);
-int32_t swr_v1_memory_columns_v2_declare_step(swr_v1_memory_columns_v2_declaration *);
-void *swr_v1_memory_columns_v2_get(const swr_v1_memory_columns_v2 *, const uint8_t *, size_t);
-/* Scratch cursor only: open0/-1; next1 token,0 end,-1 closing/generation change.
- * No owner borrow spans native/Zend effects; native token lifetime requires
- * owner/column to remain live. Count includes duplicates; unique_count does not.
- * Errors must remain distinct from an empty list in callers. */
-int32_t swr_v1_memory_columns_v2_cursor_open(const swr_v1_memory_columns_v2 *, swr_v1_memory_columns_v2_cursor *);
-int32_t swr_v1_memory_columns_v2_cursor_next(const swr_v1_memory_columns_v2 *, swr_v1_memory_columns_v2_cursor *);
-/* Uses existing clear cursor protocol, sets count from actual Rust store and
- * selects tokens; never exposes native vector or retained Rust-vector pointer. */
-int32_t swr_v1_memory_columns_v2_clear_step(const swr_v1_memory_columns_v2 *, swr_v1_memory_table_clear_cursor *);
-/* Actual typed owner field is nulled on final completion.1 transfers one column
- * token to native delete;0 releases Rust index/vector and nulls field;-1 invalid.
- * Null owner is an empty cleanup, no allocation/callback. Caller completes each
- * native deletion before resume. No lookup/mutation/cursor after closing starts,
- * no restart or use after final free; terminal null-field cleanup is harmless. */
-int32_t swr_v1_memory_columns_v2_close_step(swr_v1_memory_columns_v2 **, void **);
-/* Authoritative Rust metadata owner used by the amended TableV2 facade.
- * Original token-owner declarations above stay ABI-compatible and distinct.
- * Owner/cursor/view/field/buffer disjoint, aligned, live; mutations/close
- * exclusive, sealed reads may share independent scratch. No Rust span escapes.
- * Views valid only while owner lives and generation is unchanged. Not-found0
- * is distinct from error-1; get/next success1; other success0. Unknown kind-2.
- * Declare reserves all fallible storage before committing actual item_size.
- * Copy validates the entire descriptor before writing name_length bytes; caller
- * owns scratch through any native/Zend effects. Close nulls the actual field,
- * drops all records/name bytes without callbacks, and is null-idempotent. */
-typedef struct swr_v1_memory_records swr_v1_memory_records;
-typedef struct swr_v1_memory_record_view {
-    size_t ordinal;
-    uint64_t generation;
-    size_t index, name_length;
-    uint32_t width, kind;
-} swr_v1_memory_record_view;
-typedef struct swr_v1_memory_record_cursor {
-    size_t count, unique_count, position;
-    uint64_t generation;
-} swr_v1_memory_record_cursor;
-#ifdef __cplusplus
-static_assert(sizeof(swr_v1_memory_record_view) == 40 && sizeof(swr_v1_memory_record_cursor) == 32,
-              "copied metadata record ABI");
-#endif
-int32_t swr_v1_memory_records_open(swr_v1_memory_records **);
-int32_t swr_v1_memory_records_declare(swr_v1_memory_records *, size_t *, const uint8_t *, const uint8_t *, size_t, uint32_t, size_t);
-int32_t swr_v1_memory_records_get(const swr_v1_memory_records *, const uint8_t *, size_t, swr_v1_memory_record_view *);
-int32_t swr_v1_memory_records_cursor_open(const swr_v1_memory_records *, swr_v1_memory_record_cursor *);
-int32_t swr_v1_memory_records_cursor_next(const swr_v1_memory_records *, swr_v1_memory_record_cursor *, swr_v1_memory_record_view *);
-int32_t swr_v1_memory_records_copy_name(const swr_v1_memory_records *, const swr_v1_memory_record_view *, uint8_t *, size_t);
-int32_t swr_v1_memory_records_clear(const swr_v1_memory_records *, swr_v1_memory_table_row *);
-int32_t swr_v1_memory_records_close(swr_v1_memory_records **);
+typedef struct swr_v1_memory_table_stats {
+    size_t conflict_count;
+    uint32_t conflict_max_level;
+    int64_t insert_count, update_count, delete_count;
+} swr_v1_memory_table_stats;
+typedef uint64_t (*swr_v1_memory_table_hash)(const char *key, size_t length);
+/* Logs one whole warning line ("Class::method(): message"). */
+typedef void (*swr_v1_memory_table_warning)(const char *message, size_t length);
+typedef void (*swr_v1_memory_table_error)(int code);
+size_t swr_v1_memory_table_header_size(void);
+bool swr_v1_memory_table_init(swr_v1_memory_table *, uint32_t rows, float conflict, swr_v1_memory_table_hash,
+                              swr_v1_memory_table_warning, swr_v1_memory_table_error);
+void swr_v1_memory_table_set_hash(swr_v1_memory_table *, swr_v1_memory_table_hash);
+bool swr_v1_memory_table_add_column(swr_v1_memory_table *, const char *name, size_t length, uint32_t kind, size_t size);
+swr_v1_memory_table_column_link *swr_v1_memory_table_find_column(const swr_v1_memory_table *, const char *name, size_t length);
+swr_v1_memory_table_column_link *swr_v1_memory_table_column_at(const swr_v1_memory_table *, size_t index);
+size_t swr_v1_memory_table_column_count(const swr_v1_memory_table *, bool unique);
+const char *swr_v1_memory_table_column_name(const swr_v1_memory_table_column *, size_t *length);
+size_t swr_v1_memory_table_memory_total(const swr_v1_memory_table *);
+size_t swr_v1_memory_table_arena_size(const swr_v1_memory_table *);
+bool swr_v1_memory_table_create(swr_v1_memory_table *, void *arena);
+/* Frees the table's own parts; returns its arena (or NULL) for the host to free. */
+void *swr_v1_memory_table_destroy(swr_v1_memory_table *);
+bool swr_v1_memory_table_created(const swr_v1_memory_table *);
+bool swr_v1_memory_table_ready(const swr_v1_memory_table *);
+size_t swr_v1_memory_table_size(const swr_v1_memory_table *);
+float swr_v1_memory_table_conflict_proportion(const swr_v1_memory_table *);
+size_t swr_v1_memory_table_memory_size(const swr_v1_memory_table *);
+size_t swr_v1_memory_table_count(const swr_v1_memory_table *);
+swr_v1_memory_table_stats swr_v1_memory_table_counters(const swr_v1_memory_table *);
+uint32_t swr_v1_memory_table_slices(const swr_v1_memory_table *, bool available);
+swr_v1_memory_table_link *swr_v1_memory_table_set(const swr_v1_memory_table *, const char *key, uint16_t length,
+                                                  swr_v1_memory_table_link **lock, int *flags);
+swr_v1_memory_table_link *swr_v1_memory_table_get(const swr_v1_memory_table *, const char *key, uint16_t length,
+                                                  swr_v1_memory_table_link **lock);
+bool swr_v1_memory_table_exists(const swr_v1_memory_table *, const char *key, uint16_t length);
+bool swr_v1_memory_table_del(const swr_v1_memory_table *, const char *key, uint16_t length);
+swr_v1_memory_table_link *swr_v1_memory_table_by_index(const swr_v1_memory_table *, uint32_t index);
+void swr_v1_memory_table_rewind(const swr_v1_memory_table *);
+void swr_v1_memory_table_forward(const swr_v1_memory_table *);
+swr_v1_memory_table_link *swr_v1_memory_table_current(const swr_v1_memory_table *);
+void swr_v1_memory_table_clear_row(const swr_v1_memory_table *, swr_v1_memory_table_row *);
+void swr_v1_memory_table_row_lock(swr_v1_memory_table_row *, swr_v1_memory_table_warning);
+void swr_v1_memory_table_row_unlock(swr_v1_memory_table_row *);
+void swr_v1_memory_table_row_clear(swr_v1_memory_table_row *);
+void swr_v1_memory_table_set_value(swr_v1_memory_table_row *, const swr_v1_memory_table_column *, const void *value,
+                                   size_t length, swr_v1_memory_table_warning);
+void swr_v1_memory_table_clear_value(swr_v1_memory_table_row *, const swr_v1_memory_table_column *);
+void swr_v1_memory_table_get_number(const swr_v1_memory_table_row *, const swr_v1_memory_table_column *, void *value);
+void swr_v1_memory_table_get_string(const swr_v1_memory_table_row *, const swr_v1_memory_table_column *, char **value,
+                                    uint32_t *length);
 #ifdef __cplusplus
 }
 #endif

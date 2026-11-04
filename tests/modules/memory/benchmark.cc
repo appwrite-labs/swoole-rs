@@ -2,12 +2,8 @@
 #include "swoole_heap.h"
 #include "swoole_channel.h"
 #include "swoole_table.h"
-#ifdef SWOOLE_RS_MEMORY
-#include "swoole_rs_memory_table_v2.h"
-using BenchmarkTable = swoole::TableV2;
-#else
+#include "table_compat.h"
 using BenchmarkTable = swoole::Table;
-#endif
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -49,28 +45,12 @@ extern "C" __attribute__((visibility("default"))) int swr_memory_construction_ch
     return 0;
 }
 
-// Identical assertions on the original pointer API and copied record API.
-#ifdef SWOOLE_RS_MEMORY
-using TestColumn = swoole::TableV2::Column;
-static bool column_valid(const TestColumn &c) { return c.valid() && !c.failed(); }
-static size_t column_index(const TestColumn &c) { return c.index(); }
-static uint32_t column_width(const TestColumn &c) { return c.width(); }
-static std::string column_name(const TestColumn &c) {
-    std::string result(c.name_length(), '\0');
-    assert(c.copy_name(result.empty() ? nullptr : &result[0], result.size()));
-    return result;
-}
-static void column_get(swoole::TableRow *row, const TestColumn &c, long *value) { assert(c.get_value(row, value)); }
-static void column_set(swoole::TableRow *row, const TestColumn &c, const long *value) { assert(c.set_value(row, value, 0)); }
-#else
 using TestColumn = const swoole::TableColumn *;
 static bool column_valid(TestColumn c) { return c != nullptr; }
 static size_t column_index(TestColumn c) { return c->index; }
 static uint32_t column_width(TestColumn c) { return c->size; }
-static std::string column_name(TestColumn c) { return c->name; }
 static void column_get(swoole::TableRow *row, TestColumn c, long *value) { row->get_value(c, value); }
 static void column_set(swoole::TableRow *row, TestColumn c, const long *value) { row->set_value(c, value, 0); }
-#endif
 
 // Shared by the untimed preflight and later optimized measurements.
 static BenchmarkTable *column_schema(unsigned count, unsigned prefix = 0) {
@@ -89,53 +69,31 @@ static BenchmarkTable *column_schema(unsigned count, unsigned prefix = 0) {
 static void column_traversal(const BenchmarkTable *table, unsigned count, unsigned loops, uint64_t &checksum) {
     for (unsigned pass = 0; pass < loops; ++pass) {
         unsigned seen = 0;
-#ifdef SWOOLE_RS_MEMORY
-        auto cursor = table->columns();
-        assert(!cursor.failed() && cursor.count() == count);
-        TestColumn column;
-        while (cursor.next(column)) {
-#else
-        assert(table->column_list->size() == count);
-        for (const auto *column : *table->column_list) {
-#endif
+        assert(column_list_size(table) == count);
+        for (size_t i = 0; i < count; ++i) {
+            const auto *column = column_list_at(table, i);
             assert(column_valid(column) && column_index(column) == seen * 8 && column_width(column) == 8);
             checksum += column_index(column) / 8 + 1;
             ++seen;
         }
-#ifdef SWOOLE_RS_MEMORY
-        assert(!cursor.failed());
-#endif
         assert(seen == count);
     }
 }
-// Same name observation used by the PHP full-row consumer: the Native
-// control borrows its original string; selected copies to fresh native scratch
-// before the consumer effect. Scratch capacity is reused within one row only.
+// Same name observation used by the PHP full-row consumer: both borrow the
+// stored name.
 static void column_names(const BenchmarkTable *table, unsigned count, unsigned passes, uint64_t &checksum) {
     for (unsigned pass = 0; pass < passes; ++pass) {
         unsigned seen = 0;
-#ifdef SWOOLE_RS_MEMORY
-        auto cursor = table->columns(); TestColumn column;
-        std::string scratch;
-        while (cursor.next(column)) {
-            scratch.resize(column.name_length());
-            assert(column.copy_name(scratch.empty() ? nullptr : &scratch[0], scratch.size()));
-            const char *bytes = scratch.data();
-            const size_t length = scratch.size();
-#else
-        for (const auto *column : *table->column_list) {
-            const char *bytes = column->name.data();
-            const size_t length = column->name.size();
-#endif
+        for (size_t k = 0; k < column_list_size(table); ++k) {
+            const auto name = column_name_view(column_list_at(table, k));
+            const char *bytes = name.data();
+            const size_t length = name.size();
             // Consume every byte (including embedded NUL), without reconstructing
             // metadata in the control or timing Zend/PHP/startup itself.
             checksum = (checksum ^ length) * 1099511628211ULL;
             for (size_t i = 0; i < length; ++i) checksum = (checksum ^ static_cast<unsigned char>(bytes[i])) * 1099511628211ULL;
             ++seen;
         }
-#ifdef SWOOLE_RS_MEMORY
-        assert(!cursor.failed());
-#endif
         assert(seen == count);
     }
 }

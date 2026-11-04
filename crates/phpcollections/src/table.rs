@@ -1,20 +1,18 @@
-//! PHP `Swoole\Table`: class registration, object handlers and every method.
-//! Rows, locks and the shared arena stay the memory module's C++ `TableV2`,
-//! which C++ lends as a table of operations; the column records and row
-//! values are the memory crate's, called directly.
+//! PHP `Swoole\Table`: class registration, object handlers and every method,
+//! over the memory crate's table. C++ lends what needs the host: making,
+//! creating and destroying a table (Swoole's shared allocators and Zend's
+//! string hash) and PHP's error reports.
 //!
 //! `E_ERROR` and Swoole's fatal errors leave a method by a bailout or exit;
 //! where a method can raise one, nothing it holds needs dropping.
 use std::{
-    ffi::{CStr, c_char, c_void},
+    ffi::{CStr, c_char},
     ptr,
     sync::OnceLock,
 };
-use swoole_rs_memory::{
-    swr_v1_memory_records_clear, swr_v1_memory_records_declare, swr_v1_memory_table_clear_value,
-    swr_v1_memory_table_get_number, swr_v1_memory_table_get_string, swr_v1_memory_table_set_value,
-    table::{Row, row_key},
-    table_records::{Column, Records},
+use swoole_rs_memory::table::{
+    Column, NEW_ROW, Row, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table, clear_value, get_number,
+    get_string, row_key, unlock,
 };
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
@@ -32,44 +30,14 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// `swoole::TableV2`'s operations (`swr_v1_phpcollections_table_ops`).
+/// The host's half of `Swoole\Table` (`swr_v1_phpcollections_table_ops`).
 #[repr(C)]
 pub struct TableOps {
-    /// `TableV2::make(rows, conflict)` with Zend's string hash; null if it failed.
-    make: unsafe extern "C" fn(rows: u32, conflict: f32) -> *mut c_void,
-    destroy: unsafe extern "C" fn(table: *mut c_void),
-    /// The column records, and the core's `item_size` and `created` they declare against.
-    records: unsafe extern "C" fn(
-        table: *mut c_void,
-        item_size: *mut *mut usize,
-        created: *mut *const u8,
-    ) -> *mut Records,
-    create: unsafe extern "C" fn(table: *mut c_void) -> u8,
-    ready: unsafe extern "C" fn(table: *mut c_void) -> u8,
-    count: unsafe extern "C" fn(table: *mut c_void) -> usize,
-    size: unsafe extern "C" fn(table: *mut c_void) -> usize,
-    memory_size: unsafe extern "C" fn(table: *mut c_void) -> usize,
-    /// The eight values `stats()` returns, in its order.
-    stats: unsafe extern "C" fn(table: *mut c_void, values: *mut i64),
-    set: unsafe extern "C" fn(
-        table: *mut c_void,
-        key: *const c_char,
-        length: u16,
-        lock: *mut *mut Row,
-        flags: *mut i32,
-    ) -> *mut Row,
-    get: unsafe extern "C" fn(
-        table: *mut c_void,
-        key: *const c_char,
-        length: u16,
-        lock: *mut *mut Row,
-    ) -> *mut Row,
-    del: unsafe extern "C" fn(table: *mut c_void, key: *const c_char, length: u16) -> u8,
-    exists: unsafe extern "C" fn(table: *mut c_void, key: *const c_char, length: u16) -> u8,
-    unlock: unsafe extern "C" fn(row: *mut Row),
-    rewind: unsafe extern "C" fn(table: *mut c_void),
-    forward: unsafe extern "C" fn(table: *mut c_void),
-    current: unsafe extern "C" fn(table: *mut c_void) -> *mut Row,
+    /// `Table::make(rows, conflict)` with Zend's string hash; null if it failed.
+    make: unsafe extern "C" fn(rows: u32, conflict: f32) -> *mut Table,
+    /// `Table::create()`: the shared arena.
+    create: unsafe extern "C" fn(table: *mut Table) -> u8,
+    destroy: unsafe extern "C" fn(table: *mut Table),
     /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
     unconstructed: unsafe extern "C" fn(),
     /// `php_swoole_fatal_error(level, "%s", message)`.
@@ -80,19 +48,10 @@ pub struct TableOps {
     set_failed: unsafe extern "C" fn(key: *const c_char, length: i32),
     /// `php_swoole_fatal_error(E_WARNING, "column[%s] does not exist", column)`.
     no_column: unsafe extern "C" fn(column: *const c_char),
-    /// Swoole's warning log that a string value is too long for its column.
-    too_long: unsafe extern "C" fn(row: *mut Row, field: *const c_char, length: usize),
-    /// Swoole's warning log of a message.
-    log_warning: unsafe extern "C" fn(message: *const c_char),
 }
 
-const TYPE_INT: u32 = 1;
-const TYPE_FLOAT: u32 = 2;
-const TYPE_STRING: u32 = 3;
-/// `SW_TABLE_KEY_SIZE`, `SW_TABLE_FLAG_NEW_ROW`, `SW_TABLE_CONFLICT_PROPORTION`,
-/// `SW_ERROR_MALLOC_FAIL`.
+/// `SW_TABLE_KEY_SIZE`, `SW_TABLE_CONFLICT_PROPORTION`, `SW_ERROR_MALLOC_FAIL`.
 const KEY_SIZE: usize = 64;
-const NEW_ROW: i32 = 1;
 const CONFLICT_PROPORTION: f64 = 0.2;
 const MALLOC_FAIL: i64 = 501;
 /// `HASH_KEY_IS_STRING`, `HASH_KEY_NON_EXISTENT`.
@@ -103,8 +62,8 @@ static OPS: OnceLock<&'static TableOps> = OnceLock::new();
 static TABLE: Class = Class::new();
 static EXCEPTION: OnceLock<usize> = OnceLock::new();
 
-/// `struct TableObject { TableV2 *ptr; zend_object std; }`.
-type TableObject = Object<*mut c_void>;
+/// `struct TableObject { Table *ptr; zend_object std; }`.
+type TableObject = Object<*mut Table>;
 
 fn ops() -> &'static TableOps {
     // Methods and handlers run only after MINIT stored the table.
@@ -195,7 +154,7 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
     TableObject::install(entry, handlers, create_object, free_object);
 }
 
-fn this(call: &Call) -> &'static mut *mut c_void {
+fn this(call: &Call) -> &'static mut *mut Table {
     // SAFETY: Table methods are non-static, so `$this` is one of our objects.
     unsafe { TableObject::data(call.this()) }
 }
@@ -218,26 +177,26 @@ fn report(reporter: unsafe extern "C" fn(*const c_char), text: &[u8]) -> bool {
     bailed
 }
 
-/// `table_get_and_check_ptr`: the table, or Swoole's fatal error (which exits).
-fn constructed(call: &Call) -> Option<*mut c_void> {
-    let table = *this(call);
-    if table.is_null() {
-        // SAFETY: C++'s fatal-error report.
-        unsafe { (ops().unconstructed)() };
-        return None;
-    }
-    Some(table)
+/// The table this object made, if any.
+fn table_of(call: &Call) -> Option<&'static mut Table> {
+    // SAFETY: a table `make` returned stays valid until `destroy` nulls the pointer.
+    unsafe { this(call).as_mut() }
 }
 
-fn ready(table: *mut c_void) -> bool {
-    // SAFETY: a constructed table.
-    unsafe { (ops().ready)(table) != 0 }
+/// `table_get_and_check_ptr`: the table, or Swoole's fatal error (which exits).
+fn constructed(call: &Call) -> Option<&'static mut Table> {
+    let table = table_of(call);
+    if table.is_none() {
+        // SAFETY: C++'s fatal-error report.
+        unsafe { (ops().unconstructed)() };
+    }
+    table
 }
 
 /// `table_get_and_check_ptr2`: also created and not destroyed (an `E_ERROR`).
-fn created(call: &Call) -> Option<*mut c_void> {
+fn created(call: &Call) -> Option<&'static mut Table> {
     let table = constructed(call)?;
-    if !ready(table) {
+    if !table.ready() {
         // The deferred bailout ends the method here, as upstream's fatal does.
         fatal(E_ERROR, c"table is not created or has been destroyed");
         return None;
@@ -245,13 +204,14 @@ fn created(call: &Call) -> Option<*mut c_void> {
     Some(table)
 }
 
-/// The table's column records.
-fn records<'a>(table: *mut c_void) -> &'a Records {
-    let (mut size, mut flag) = (ptr::null_mut(), ptr::null());
-    // SAFETY: a constructed table; writable outputs.
-    let records = unsafe { (ops().records)(table, &raw mut size, &raw mut flag) };
-    // SAFETY: a constructed table always has its records.
-    unsafe { &*records }
+/// The key as upstream passes it: its length cut to a `uint16_t`.
+fn table_key(key: &[u8]) -> &[u8] {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "upstream passes size_t keys as uint16_t"
+    )]
+    let length = key.len() as u16;
+    &key[..usize::from(length)]
 }
 
 /// `__construct(int $table_size, float $conflict_proportion = 0.2)`.
@@ -310,7 +270,7 @@ fn column(call: &Call) {
         // SW_MEM_ALIGNED_SIZE: to `sizeof(unsigned long)`.
         size = (size + 7) & !7;
     }
-    if ready(table) {
+    if table.ready() {
         fatal(
             E_WARNING,
             c"unable to add column after table has been created",
@@ -318,31 +278,12 @@ fn column(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let (mut item_size, mut flag) = (ptr::null_mut(), ptr::null());
-    // SAFETY: a constructed table; writable outputs.
-    let records = unsafe { (ops().records)(table, &raw mut item_size, &raw mut flag) };
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "upstream casts the type to the enum and the size to size_t"
     )]
-    // SAFETY: the table's records and core fields, before creation.
-    let status = unsafe {
-        swr_v1_memory_records_declare(
-            records,
-            item_size,
-            flag,
-            name.as_ptr(),
-            name.len(),
-            kind as u32,
-            size as usize,
-        )
-    };
-    if status == -2 {
-        // SAFETY: a NUL-terminated message.
-        unsafe { (ops().log_warning)(c"Table::add_column(): unknown column type".as_ptr()) };
-    }
-    call.set_bool(status == 0);
+    call.set_bool(table.add_column(name, kind as u32, size as usize));
 }
 
 /// `create(): bool`.
@@ -350,19 +291,14 @@ fn create(call: &Call) {
     let Some(table) = constructed(call) else {
         return;
     };
-    let ops = ops();
     // SAFETY: a constructed table.
-    if unsafe { (ops.create)(table) } == 0 {
+    if unsafe { (ops().create)(table) } == 0 {
         fatal(E_ERROR, c"unable to allocate memory");
         call.set_bool(false);
         return;
     }
-    // SAFETY: a created table.
-    let size = unsafe { (ops.size)(table) };
-    // SAFETY: as above.
-    let memory = unsafe { (ops.memory_size)(table) };
-    call.update_property_long(Some(&TABLE), c"size", long(size));
-    call.update_property_long(Some(&TABLE), c"memorySize", long(memory));
+    call.update_property_long(Some(&TABLE), c"size", long(table.size()));
+    call.update_property_long(Some(&TABLE), c"memorySize", long(table.memory_size()));
     call.set_bool(true);
 }
 
@@ -393,10 +329,10 @@ fn is_null(value: *mut zval) -> bool {
 
 /// `table_set_field_value`: store `value` into a row's column; a new row
 /// clears a column its array leaves out or sets to null.
-fn store(row: *mut Row, column: &Column, value: *mut zval, initialize: bool) {
+fn store(table: &Table, row: *mut Row, column: &Column, value: *mut zval, initialize: bool) {
     if initialize && is_null(value) {
         // SAFETY: a locked row of this table and one of its columns.
-        unsafe { swr_v1_memory_table_clear_value(row, column.index, column.width, column.kind) };
+        unsafe { clear_value(row, column) };
         return;
     }
     match column.kind {
@@ -405,12 +341,8 @@ fn store(row: *mut Row, column: &Column, value: *mut zval, initialize: bool) {
             let string = unsafe { swoole_rs_zend::value::get_string(value) };
             // SAFETY: a live string.
             let bytes = unsafe { string_bytes(string) };
-            if bytes.len() > column.width as usize - 4 {
-                // SAFETY: a locked row; the column's name bytes.
-                unsafe { (ops().too_long)(row, column.name.as_ptr().cast(), column.name.len()) };
-            }
-            // SAFETY: as above; the string is copied (cut to the column).
-            unsafe { set_value(row, column, bytes.as_ptr().cast(), bytes.len()) };
+            // SAFETY: as above; the string is copied (cut to the column, with a warning).
+            unsafe { table.set_value(row, column, bytes.as_ptr(), bytes.len()) };
             // SAFETY: our reference.
             unsafe { swr_zend_string_release(string) };
         }
@@ -418,24 +350,14 @@ fn store(row: *mut Row, column: &Column, value: *mut zval, initialize: bool) {
             // SAFETY: a live zval; `zval_get_double`.
             let number = unsafe { swoole_rs_zend::value::get_double(value) };
             // SAFETY: as above.
-            unsafe { set_value(row, column, (&raw const number).cast(), 0) };
+            unsafe { table.set_value(row, column, (&raw const number).cast(), 0) };
         }
         _ => {
             // SAFETY: a live zval; `zval_get_long`.
             let number = unsafe { swoole_rs_zend::value::get_long(value) };
             // SAFETY: as above.
-            unsafe { set_value(row, column, (&raw const number).cast(), 0) };
+            unsafe { table.set_value(row, column, (&raw const number).cast(), 0) };
         }
-    }
-}
-
-/// # Safety
-/// A locked row, one of its table's columns, and `length` bytes at `value`
-/// (8 for a number).
-unsafe fn set_value(row: *mut Row, column: &Column, value: *const c_void, length: usize) {
-    // SAFETY: per the caller.
-    unsafe {
-        swr_v1_memory_table_set_value(row, column.index, column.width, column.kind, value, length);
     }
 }
 
@@ -452,14 +374,6 @@ unsafe fn string_bytes<'a>(string: *mut zend_string) -> &'a [u8] {
     unsafe { std::slice::from_raw_parts(bytes, length) }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "upstream passes size_t keys as uint16_t"
-)]
-fn key_length(key: &[u8]) -> u16 {
-    key.len() as u16
-}
-
 /// `set(string $key, array $value): bool`.
 fn set(call: &Call) {
     let Some(table) = created(call) else { return };
@@ -470,7 +384,7 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if !ready(table) {
+    if !table.ready() {
         fatal(E_ERROR, c"the table object does not exist");
         call.set_bool(false);
         return;
@@ -481,19 +395,10 @@ fn set(call: &Call) {
         return;
     }
     let (mut lock, mut flags) = (ptr::null_mut(), 0);
-    // SAFETY: a created table; writable outputs.
-    let row = unsafe {
-        (ops.set)(
-            table,
-            key.as_ptr().cast(),
-            key_length(key),
-            &raw mut lock,
-            &raw mut flags,
-        )
-    };
+    let row = table.set(table_key(key), &mut lock, Some(&mut flags));
     if row.is_null() {
         // SAFETY: the bucket lock `set` took.
-        unsafe { (ops.unlock)(lock) };
+        unsafe { unlock(lock) };
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_possible_wrap,
@@ -507,15 +412,14 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let records = records(table);
     // SAFETY: an array argument.
     let hash = unsafe { swoole_rs_zend::value::table(array) };
     if flags & NEW_ROW != 0 {
-        for column in records.columns() {
+        for column in table.columns() {
+            let name = column.name();
             // SAFETY: a live array; Zend reads `len` bytes of the name.
-            let value =
-                unsafe { zend_hash_str_find(hash, column.name.as_ptr().cast(), column.name.len()) };
-            store(row, &column, value, true);
+            let value = unsafe { zend_hash_str_find(hash, name.as_ptr().cast(), name.len()) };
+            store(table, row, column, value, true);
         }
     } else {
         let mut position: HashPosition = 0;
@@ -535,10 +439,10 @@ fn set(call: &Call) {
             if kind == KEY_IS_STRING {
                 // SAFETY: a key of the live array.
                 let name = unsafe { string_bytes(name) };
-                if let Some(column) = records.column(name) {
+                if let Some(column) = table.column(name) {
                     // SAFETY: as above.
                     let value = unsafe { zend_hash_get_current_data_ex(hash, &raw mut position) };
-                    store(row, &column, value, false);
+                    store(table, row, column, value, false);
                 }
             }
             // SAFETY: as above.
@@ -546,7 +450,7 @@ fn set(call: &Call) {
         }
     }
     // SAFETY: the row lock `set` took.
-    unsafe { (ops.unlock)(lock) };
+    unsafe { unlock(lock) };
     call.set_bool(true);
 }
 
@@ -561,43 +465,28 @@ fn update(call: &Call, subtract: bool) {
         return;
     };
     let by = call.zval(3);
-    let ops = ops();
     let (mut lock, mut flags) = (ptr::null_mut(), 0);
-    // SAFETY: a created table; writable outputs.
-    let row = unsafe {
-        (ops.set)(
-            table,
-            key.as_ptr().cast(),
-            key_length(key),
-            &raw mut lock,
-            &raw mut flags,
-        )
-    };
+    let row = table.set(table_key(key), &mut lock, Some(&mut flags));
     // SAFETY: the bucket lock `set` took (released before any warning).
-    let unlock = || unsafe { (ops.unlock)(lock) };
+    let unlock = || unsafe { unlock(lock) };
     if row.is_null() {
         unlock();
         fatal(E_WARNING, c"unable to allocate memory");
         call.set_bool(false);
         return;
     }
-    let records = records(table);
-    let Some(column) = records.column(name) else {
+    let Some(column) = table.column(name) else {
         unlock();
-        report(ops.no_column, name);
+        report(ops().no_column, name);
         call.set_bool(false);
         return;
     };
     if flags & NEW_ROW != 0 {
-        // SAFETY: the table's records and a new, locked row.
-        unsafe { swr_v1_memory_records_clear(records, row) };
+        // SAFETY: a new, locked row of this table.
+        unsafe { table.clear_row(row) };
     }
-    let bits = || {
-        let mut bits = 0u64;
-        // SAFETY: a locked row; 8 bytes of a number column.
-        unsafe { swr_v1_memory_table_get_number(row, column.index, (&raw mut bits).cast()) };
-        bits
-    };
+    // SAFETY: a locked row; 8 bytes of a number column.
+    let bits = || unsafe { get_number(row, column) };
     match column.kind {
         TYPE_STRING => {
             unlock();
@@ -621,7 +510,7 @@ fn update(call: &Call, subtract: bool) {
             let current = f64::from_bits(bits());
             let value = if subtract { current - by } else { current + by };
             // SAFETY: a locked row and 8 bytes.
-            unsafe { set_value(row, &column, (&raw const value).cast(), 0) };
+            unsafe { table.set_value(row, column, (&raw const value).cast(), 0) };
             unlock();
             set_double(call, value);
         }
@@ -640,7 +529,7 @@ fn update(call: &Call, subtract: bool) {
                 current.wrapping_add(by)
             };
             // SAFETY: a locked row and 8 bytes.
-            unsafe { set_value(row, &column, (&raw const value).cast(), 0) };
+            unsafe { table.set_value(row, column, (&raw const value).cast(), 0) };
             unlock();
             call.set_long(value);
         }
@@ -674,28 +563,11 @@ enum Value<'a> {
 
 fn read<'a>(row: *mut Row, column: &Column) -> Value<'a> {
     match column.kind {
-        TYPE_STRING => {
-            let (mut text, mut length) = (ptr::null_mut(), 0);
-            // SAFETY: a locked row; writable outputs.
-            unsafe {
-                swr_v1_memory_table_get_string(
-                    row,
-                    column.index,
-                    column.width,
-                    &raw mut text,
-                    &raw mut length,
-                );
-            }
-            if text.is_null() {
-                return Value::Bytes(&[]);
-            }
-            // SAFETY: `length` bytes of the row's string, valid while it is locked.
-            Value::Bytes(unsafe { std::slice::from_raw_parts(text, length as usize) })
-        }
+        // SAFETY: a locked row (or the iterator's copy); valid while it is.
+        TYPE_STRING => Value::Bytes(unsafe { get_string(row, column) }),
         kind => {
-            let mut bits = 0u64;
             // SAFETY: a locked row; 8 bytes of a number column.
-            unsafe { swr_v1_memory_table_get_number(row, column.index, (&raw mut bits).cast()) };
+            let bits = unsafe { get_number(row, column) };
             if kind == TYPE_FLOAT {
                 Value::Double(f64::from_bits(bits))
             } else {
@@ -707,12 +579,12 @@ fn read<'a>(row: *mut Row, column: &Column) -> Value<'a> {
 }
 
 /// `table_row2array`: every column of a locked row, into `target`.
-fn row_array(records: &Records, row: *mut Row, target: *mut zval) {
+fn row_array(table: &Table, row: *mut Row, target: *mut zval) {
     // SAFETY: a writable zval.
     unsafe { swr_zend_array_init(target) };
-    for column in records.columns() {
-        let (name, length) = (column.name.as_ptr().cast::<c_char>(), column.name.len());
-        match read(row, &column) {
+    for column in table.columns() {
+        let (name, length) = (column.name().as_ptr().cast::<c_char>(), column.name().len());
+        match read(row, column) {
             // SAFETY: an array; Zend copies the key and the bytes.
             Value::Long(value) => unsafe { add_assoc_long_ex(target, name, length, value) },
             // SAFETY: as above.
@@ -754,28 +626,25 @@ fn get(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let ops = ops();
     let mut lock = ptr::null_mut();
-    // SAFETY: a created table; a writable output.
-    let row = unsafe { (ops.get)(table, key.as_ptr().cast(), key_length(key), &raw mut lock) };
-    let records = records(table);
+    let row = table.get(table_key(key), &mut lock);
     if row.is_null() {
         call.set_bool(false);
     } else if let Some(field) = field {
         // SAFETY: a live string argument.
-        match records.column(unsafe { string_bytes(field) }) {
+        match table.column(unsafe { string_bytes(field) }) {
             None => call.set_bool(false),
-            Some(column) => match read(row, &column) {
+            Some(column) => match read(row, column) {
                 Value::Long(value) => call.set_long(value),
                 Value::Double(value) => set_double(call, value),
                 Value::Bytes(bytes) => set_bytes(call, bytes),
             },
         }
     } else {
-        row_array(records, row, call.return_value());
+        row_array(table, row, call.return_value());
     }
     // SAFETY: the bucket lock `get` took.
-    unsafe { (ops.unlock)(lock) };
+    unsafe { unlock(lock) };
 }
 
 /// A key argument (`"s"` or `Z_PARAM_STRING`), or `RETURN_FALSE`.
@@ -791,72 +660,65 @@ fn key(call: &Call) -> Option<&[u8]> {
 fn exists(call: &Call) {
     let Some(table) = created(call) else { return };
     let Some(key) = key(call) else { return };
-    // SAFETY: a created table.
-    let found = unsafe { (ops().exists)(table, key.as_ptr().cast(), key_length(key)) };
-    call.set_bool(found != 0);
+    call.set_bool(table.exists(table_key(key)));
 }
 
 /// `del(string $key): bool`.
 fn del(call: &Call) {
     let Some(table) = created(call) else { return };
     let Some(key) = key(call) else { return };
-    // SAFETY: a created table.
-    let deleted = unsafe { (ops().del)(table, key.as_ptr().cast(), key_length(key)) };
-    call.set_bool(deleted != 0);
+    call.set_bool(table.del(table_key(key)));
 }
 
 /// `count(int $mode = COUNT_NORMAL): int`.
 fn count(call: &Call) {
-    let table = *this(call);
-    if table.is_null() {
+    let Some(table) = table_of(call) else {
         call.set_long(0);
         return;
-    }
+    };
     let Ok(mode) = call.arity(0, 1).and_then(|()| call.long(1, 0)) else {
         call.set_bool(false);
         return;
     };
-    // SAFETY: a constructed table.
-    let rows = unsafe { (ops().count)(table) };
+    let rows = table.count();
     let count = if mode == 0 {
         rows
     } else {
-        rows.wrapping_mul(records(table).columns().count())
+        rows.wrapping_mul(table.columns().len())
     };
     call.set_long(long(count));
 }
 
 /// `getMemorySize(): int` and `getSize(): int`: 0 before `__construct`.
 fn get_memory_size(call: &Call) {
-    let table = *this(call);
-    call.set_long(if table.is_null() {
-        0
-    } else {
-        // SAFETY: a constructed table.
-        long(unsafe { (ops().memory_size)(table) })
-    });
+    call.set_long(table_of(call).map_or(0, |table| long(table.memory_size())));
 }
 
 fn get_size(call: &Call) {
-    let table = *this(call);
-    call.set_long(if table.is_null() {
-        0
-    } else {
-        // SAFETY: a constructed table.
-        long(unsafe { (ops().size)(table) })
-    });
+    call.set_long(table_of(call).map_or(0, |table| long(table.size())));
 }
 
 /// `stats(): array|false`.
 fn stats(call: &Call) {
-    let table = *this(call);
-    if table.is_null() {
+    let Some(table) = table_of(call) else {
         call.set_bool(false);
         return;
-    }
-    let mut values = [0i64; 8];
-    // SAFETY: a constructed table; eight writable values.
-    unsafe { (ops().stats)(table, values.as_mut_ptr()) };
+    };
+    let stats = table.stats();
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "upstream's (zend_long) casts of its counters"
+    )]
+    let values = [
+        table.count() as i64,
+        stats.conflict_count as i64,
+        i64::from(stats.conflict_max_level),
+        stats.insert_count,
+        stats.update_count,
+        stats.delete_count,
+        i64::from(table.available_slices()),
+        i64::from(table.total_slices()),
+    ];
     call.set_array();
     for (key, value) in [
         c"num",
@@ -877,23 +739,18 @@ fn stats(call: &Call) {
 
 fn rewind(call: &Call) {
     let Some(table) = created(call) else { return };
-    let ops = ops();
-    // SAFETY: a created table.
-    unsafe { (ops.rewind)(table) };
-    // SAFETY: as above.
-    unsafe { (ops.forward)(table) };
+    table.rewind();
+    table.forward();
 }
 
 fn next(call: &Call) {
     let Some(table) = created(call) else { return };
-    // SAFETY: a created table.
-    unsafe { (ops().forward)(table) };
+    table.forward();
 }
 
 /// The iterator's current row and its key (empty past the end).
-fn current_row<'a>(table: *mut c_void) -> (*mut Row, &'a [u8]) {
-    // SAFETY: a created table; its iterator's row buffer.
-    let row = unsafe { (ops().current)(table) };
+fn current_row<'a>(table: &Table) -> (*mut Row, &'a [u8]) {
+    let row = table.current();
     // SAFETY: the iterator's copy of a row, which only the iterator rewrites.
     (row, unsafe { row_key(row) })
 }
@@ -910,7 +767,7 @@ fn current(call: &Call) {
         call.set_null();
         return;
     }
-    row_array(records(table), row, call.return_value());
+    row_array(table, row, call.return_value());
 }
 
 fn key_of(call: &Call) {

@@ -2,9 +2,9 @@
 
 M27 covers the `Swoole\Table` and coroutine `Channel` PHP classes. Both are Rust
 over the zend crates (docs/zend.md, `crates/phpcollections`): C++ keeps their
-arginfo method tables and lends the coroutine module's queue and the memory
-module's `TableV2` (rows, locks, shared memory) as tables of operations. Table's
-column records and row values are the memory crate's, called from Rust.
+arginfo method tables and lends the coroutine module's queue as a table of
+operations. Table runs over the memory crate's table, called from Rust; C++
+lends its shared allocation, Zend's string hash and PHP's error reports.
 
 Edit both overlays in `migration/patches/phpcollections/` with `tools/patches.py`
 (see [hybrid build](../../../docs/hybrid-build.md#editing-patches)); selected sources

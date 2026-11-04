@@ -80,7 +80,7 @@
  "memory-mapping-operation": 11,
  "memory-native": 31,
  "memory-source-compatibility": 9,
- "memory-table-v2-compatibility": 13,
+ "memory-table-compatibility": 13,
  "memory-unit": 1,
  "ossupport-unit": 1,
  "ownership": 1,

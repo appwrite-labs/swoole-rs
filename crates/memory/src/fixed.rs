@@ -57,6 +57,14 @@ impl Fixed {
     }
 }
 
+impl Fixed {
+    /// Spare and total slices, as `get_number_of_spare_slice` and
+    /// `get_number_of_total_slice` read them.
+    pub(crate) fn slices(&self) -> (u32, u32) {
+        (self.slice_num.wrapping_sub(self.slice_use), self.slice_num)
+    }
+}
+
 #[repr(C)]
 #[derive(Default)]
 pub struct Usage {

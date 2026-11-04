@@ -2,9 +2,7 @@
 #include "swoole_heap.h"
 #include "swoole_channel.h"
 #include "swoole_table.h"
-#ifdef SWOOLE_RS_MEMORY
-#include "swoole_rs_memory_table_v2.h"
-#endif
+#include "table_compat.h"
 #include <algorithm>
 #include <cassert>
 #include <cstring>
@@ -354,7 +352,7 @@ static void tables() {
         assert(table->add_column("integer", swoole::TableColumn::TYPE_INT, 0));
         std::string binary_name("field\0name", 10);
         assert(table->add_column(binary_name, swoole::TableColumn::TYPE_STRING, 4));
-        assert(table->get_column("integer") == integer && table->get_column_size() == 4 && table->column_list->size() == 5);
+        assert(table->get_column("integer") == integer && table->get_column_size() == 4 && column_list_size(table) == 5);
         assert(table->get_column(binary_name) && !table->get_column("field"));
         if (force_collisions) table->set_hash_func(collision_hash);
         assert(table->create()); assert(!table->create());
@@ -398,8 +396,9 @@ static void tables() {
             long value = 0; row->get_value(integer, &value); assert(value == entry.second); observe(value); lock->unlock();
         }
         // Root promotion, failure locking, and collision counter state are observable.
-        observe(table->conflict_count); observe(table->conflict_max_level);
-        observe(table->insert_count); observe(table->delete_count); observe(table->update_count);
+        const auto stats = table_stats(table);
+        observe(stats.conflict_count); observe(stats.conflict_max_level);
+        observe(stats.insert_count); observe(stats.delete_count); observe(stats.update_count);
         for (auto &entry : model) assert(table->del(entry.first.data(), entry.first.size()));
         assert(table->count() == 0 && table->get_available_slice_num() == table->get_total_slice_num());
         const char key[] = {'x', 0, 'y'};
@@ -571,40 +570,17 @@ static void value_write_boundaries() {
     lock->unlock(); assert(table->del("value", 5)); table->destroy();
 }
 
-// Identical assertions on the original pointer API and copied record API.
-#ifdef SWOOLE_RS_MEMORY
-using TestColumn = swoole::TableV2::Column;
-static bool column_valid(const TestColumn &c) { return c.valid() && !c.failed(); }
-static size_t column_index(const TestColumn &c) { return c.index(); }
-static uint32_t column_width(const TestColumn &c) { return c.width(); }
-static uint32_t column_kind(const TestColumn &c) { return c.kind(); }
-static std::string column_name(const TestColumn &c) {
-    std::string result(c.name_length(), '\0');
-    assert(c.copy_name(result.empty() ? nullptr : &result[0], result.size()));
-    return result;
-}
-static void column_get(swoole::TableRow *row, const TestColumn &c, long *value) { assert(c.get_value(row, value)); }
-static void column_set(swoole::TableRow *row, const TestColumn &c, const long *value) { assert(c.set_value(row, value, 0)); }
-#else
 using TestColumn = const swoole::TableColumn *;
 static bool column_valid(TestColumn c) { return c != nullptr; }
 static size_t column_index(TestColumn c) { return c->index; }
 static uint32_t column_width(TestColumn c) { return c->size; }
 static uint32_t column_kind(TestColumn c) { return c->type; }
-static std::string column_name(TestColumn c) { return c->name; }
 static void column_get(swoole::TableRow *row, TestColumn c, long *value) { row->get_value(c, value); }
 static void column_set(swoole::TableRow *row, TestColumn c, const long *value) { row->set_value(c, value, 0); }
-#endif
 
 static void versioned_columns() {
-#ifdef SWOOLE_RS_MEMORY
-    using Store = swoole::TableV2;
-    static_assert(!std::is_convertible<Store *, swoole::Table *>::value, "distinct typed facade");
-#else
-    using Store = swoole::Table;
-#endif
     {
-        auto *table = Store::make(64, 0.5); assert(table);
+        auto *table = swoole::Table::make(64, 0.5); assert(table);
         const std::string binary_name("field\0tail", 10);
         assert(table->add_column("integer", swoole::TableColumn::TYPE_INT, 0));
         assert(table->add_column("floating", swoole::TableColumn::TYPE_FLOAT, 0));
@@ -615,11 +591,7 @@ static void versioned_columns() {
         assert(column_valid(integer) && column_valid(floating) && column_valid(binary));
         assert(column_index(integer) == 0 && column_index(floating) == 8 && column_index(binary) == 16);
         assert(column_width(binary) == 16 && column_name(binary) == binary_name);
-#ifdef SWOOLE_RS_MEMORY
-        const auto absent = table->get_column("field"); assert(!absent.valid() && !absent.failed());
-#else
         assert(!table->get_column("field"));
-#endif
         assert(table->create());
         swoole::TableRow *lock = nullptr;
         auto *row = table->set("mixed", 5, &lock, nullptr); assert(row && lock);
@@ -628,54 +600,32 @@ static void versioned_columns() {
         double dvalue = 12.5, dread = 0;
         const std::string value("hello\0world!", 12);
         char *bytes = nullptr; swoole::TableStringLength length = 0;
-#ifdef SWOOLE_RS_MEMORY
-        assert(integer.set_value(row, &ivalue, 0) && integer.get_value(row, &iread));
-        assert(floating.set_value(row, &dvalue, 0) && floating.get_value(row, &dread));
-        assert(binary.set_value(row, value.data(), value.size()) && binary.get_value(row, &bytes, &length));
-#else
         row->set_value(integer, &ivalue, 0); row->get_value(integer, &iread);
         row->set_value(floating, &dvalue, 0); row->get_value(floating, &dread);
         row->set_value(binary, value.data(), value.size()); row->get_value(binary, &bytes, &length);
-#endif
         assert(iread == ivalue && dread == dvalue && length == value.size());
         assert(std::string(bytes, length) == value);
         table->clear_row(row);
-#ifdef SWOOLE_RS_MEMORY
-        assert(integer.get_value(row, &iread) && floating.get_value(row, &dread));
-        assert(binary.get_value(row, &bytes, &length));
-#else
         row->get_value(integer, &iread); row->get_value(floating, &dread); row->get_value(binary, &bytes, &length);
-#endif
         assert(iread == 0 && dread == 0 && length == 0 && std::string(bytes, value.size()) == value);
         lock->unlock(); table->destroy();
     }
     for (unsigned count : {1u, 3u, 17u, 65u}) {
-        auto *table = Store::make(64, 0.5); assert(table);
+        auto *table = swoole::Table::make(64, 0.5); assert(table);
         for (unsigned i = 0; i < count; ++i) {
             assert(table->add_column("column" + std::to_string(i), swoole::TableColumn::TYPE_INT, 0));
         }
         assert(table->add_column("column0", swoole::TableColumn::TYPE_INT, 0));
         const auto first = table->get_column("column0"); assert(column_valid(first) && column_index(first) == 0);
         assert(table->get_column_size() == count);
-#ifdef SWOOLE_RS_MEMORY
-        auto columns = table->columns();
-        assert(!columns.failed() && columns.count() == count + 1);
+        assert(column_list_size(table) == count + 1);
         for (unsigned i = 0; i <= count; ++i) {
-            TestColumn column; assert(columns.next(column) && column_valid(column) && column_index(column) == i * 8);
+            const auto *column = column_list_at(table, i); assert(column->index == i * 8);
             assert(column_name(column) == "column" + std::to_string(i == count ? 0 : i));
         }
-        TestColumn end; assert(!columns.next(end) && !columns.failed());
-#else
-        assert(table->column_list->size() == count + 1);
-        for (unsigned i = 0; i <= count; ++i) {
-            const auto *column = (*table->column_list)[i]; assert(column->index == i * 8);
-            assert(column_name(column) == "column" + std::to_string(i == count ? 0 : i));
-        }
-#endif
         assert(table->create());
 #ifdef SWOOLE_RS_MEMORY
-        // New V2 interface enforces post-create immutability; do not execute
-        // unsupported legacy after-create arena-layout mutation.
+        // Rust refuses a column once rows exist; upstream would corrupt them.
         assert(!table->add_column("after-create", swoole::TableColumn::TYPE_INT, 0));
 #endif
         swoole::TableRow *lock = nullptr;
@@ -686,32 +636,16 @@ static void versioned_columns() {
         long value = 713; column_set(row, first, &value);
         value = 0; column_get(row, first, &value); assert(value == 713);
         lock->unlock();
-        assert(table->count() == 1 && table->insert_count == 1);
+        assert(table->count() == 1 && table_stats(table).insert_count == 1);
         std::vector<std::thread> readers;
         for (unsigned worker = 0; worker < 4; ++worker) readers.emplace_back([&] {
             for (unsigned step = 0; step < 128; ++step) {
-#ifdef SWOOLE_RS_MEMORY
-                const auto found = table->get_column("column0");
-                assert(found.valid() && !found.failed() && found.index() == 0);
-                assert(found.width() == 8 && found.kind() == swoole::TableColumn::TYPE_INT);
-#else
                 assert(table->get_column("column0") == first);
-#endif
-#ifdef SWOOLE_RS_MEMORY
-                auto columns = table->columns();
-                assert(!columns.failed() && columns.count() == count + 1);
+                assert(column_list_size(table) == count + 1);
                 for (unsigned i = 0; i <= count; ++i) {
-                    TestColumn column; assert(columns.next(column) && column_valid(column) && column_index(column) == i * 8);
+                    const auto *column = column_list_at(table, i); assert(column && column->index == i * 8);
                     assert(column_width(column) == 8 && column_kind(column) == swoole::TableColumn::TYPE_INT);
                 }
-                TestColumn end; assert(!columns.next(end) && !columns.failed());
-#else
-                assert(table->column_list->size() == count + 1);
-                for (unsigned i = 0; i <= count; ++i) {
-                    const auto *column = (*table->column_list)[i]; assert(column && column->index == i * 8);
-                    assert(column_width(column) == 8 && column_kind(column) == swoole::TableColumn::TYPE_INT);
-                }
-#endif
                 swoole::TableRow *held = nullptr;
                 auto *entry = table->get("owned", 5, &held); assert(entry && held);
                 long current = 0; column_get(entry, first, &current); ++current;
@@ -721,33 +655,22 @@ static void versioned_columns() {
         for (auto &reader : readers) reader.join();
         row = table->get("owned", 5, &lock); assert(row && lock);
         value = 0; column_get(row, first, &value); assert(value == 713 + 512); lock->unlock();
-        // A sealed Rust metadata owner is process-private copy-on-write after
-        // fork; only the existing native-locked row is shared/mutated. Child
-        // never mutates the schema or destroys the parent's table/core.
+        // Columns are process-private, copied on fork; only the locked row is
+        // shared. The child never changes the schema or destroys the table.
         const auto child = fork();
         if (child == 0) {
             const auto inherited = table->get_column("column0");
             assert(column_valid(inherited) && column_index(inherited) == 0);
             assert(column_name(inherited) == "column0");
-#ifdef SWOOLE_RS_MEMORY
-            auto columns = table->columns(); TestColumn column;
+            assert(column_list_size(table) == count + 1);
             unsigned seen = 0;
-            while (columns.next(column)) {
-                assert(column_valid(column) && column_index(column) == seen * 8);
+            for (size_t i = 0; i < column_list_size(table); ++i) {
+                const auto *column = column_list_at(table, i);
+                assert(column && column->index == seen * 8);
                 assert(column_name(column) == "column" + std::to_string(seen == count ? 0 : seen));
                 ++seen;
             }
-            assert(!columns.failed() && seen == count + 1);
-#else
-            assert(table->column_list->size() == count + 1);
-            unsigned seen = 0;
-            for (const auto *column : *table->column_list) {
-                assert(column && column->index == seen * 8);
-                assert(column->name == "column" + std::to_string(seen == count ? 0 : seen));
-                ++seen;
-            }
             assert(seen == count + 1);
-#endif
             swoole::TableRow *held = nullptr;
             auto *entry = table->get("owned", 5, &held); assert(entry && held);
             long changed = 0; column_get(entry, inherited, &changed);
@@ -760,10 +683,10 @@ static void versioned_columns() {
         table->rewind(); table->forward(); assert(table->current()->active);
         table->forward(); assert(!table->current()->active);
         assert(table->exists("owned", 5) && table->del("owned", 5));
-        assert(table->count() == 0 && table->delete_count == 1);
+        assert(table->count() == 0 && table_stats(table).delete_count == 1);
         table->destroy();
     }
-    auto *uncreated = Store::make(64, 0.5); assert(uncreated);
+    auto *uncreated = swoole::Table::make(64, 0.5); assert(uncreated);
     assert(uncreated->add_column("uncreated", swoole::TableColumn::TYPE_INT, 0));
     uncreated->destroy();
 }
@@ -810,10 +733,11 @@ extern "C" __attribute__((visibility("default"))) int swr_memory_odd_table_probe
         // Root index1 is itself unaligned with the old odd record stride,
         // reproducing the retained ARM64 CAS failure rather than only root0.
         table->set_hash_func([](const char *, size_t) -> uint64_t { return 1; });
-        swr_v1_memory_table_layout_result logical{};
-        assert(swr_v1_memory_table_layout(64, 12 + width, 1.0, &logical) == 0);
-        assert(table->calc_memory_size() == logical.total);
-        assert(table->create() && table->get_memory_size() == logical.pool_size);
+        // Upstream's accounting: 128 unpadded rows, 64 pool slices, 64 buckets.
+        const size_t row_size = sizeof(TableRow) + 12 + width;
+        const size_t pool = swoole::FixedPool::sizeof_struct_impl() + 64 * (row_size + swoole::FixedPool::sizeof_struct_slice());
+        assert(table->calc_memory_size() == 64 * sizeof(TableRow *) + 64 * row_size + pool);
+        assert(table->create() && table->get_memory_size() == pool);
         assert(table->get_total_slice_num() == 64);
         for (unsigned id = 0; id < 16; ++id) {
             char key[16], payload[17];

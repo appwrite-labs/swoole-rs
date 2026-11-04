@@ -515,7 +515,7 @@ def plan(args, reports):
                '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                *report('memory-mapping-operation'))
-        for name, runner in [('memory-table-v2-compatibility', 'table_v2_compat.py'),
+        for name, runner in [('memory-table-compatibility', 'table_compat.py'),
                              ('memory-source-compatibility', 'channel_compat.py')]:
             script(name, 'tests/modules/memory/' + runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(name))
