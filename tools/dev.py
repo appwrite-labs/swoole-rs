@@ -33,6 +33,16 @@ except ValueError:
     sys.exit(2)
 sys.exit(0 if ssl.HAS_TLSv1_3 else 2)"""
 
+# Upstream's own GoogleTests per module, run unchanged on the reference and the hybrid tree by
+# tools/core_tests.py (Linux, integrate). Exclusions name cases this runner can't host.
+CORE_TESTS = {
+    'reactor': (['reactor/base.cpp', 'network/socket.cpp', 'network/stream.cpp'], {}),
+    'http': (['server/http_server.cpp', 'server/http_parser.cpp', 'server/multipart_parser.cpp'], {}),
+    'clients': (['network/client.cpp', 'network/dns.cpp', 'network/address.cpp'], {}),
+    'hooks': (['coroutine/hook.cpp', 'coroutine/socket.cpp', 'coroutine/system.cpp'], {}),
+    'http2': (['protocol/http2.cpp'], {}),
+}
+
 
 def require_frozen_source(expected):
     """Boundary guard; individual build/source/artifact attestations remain required."""
@@ -443,6 +453,14 @@ def plan(args, reports):
                        '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        '--build-root', ROOT / 'target/native-originals/framing', '--jobs', args.jobs,
                        *report('framing-native-originals'))
+    for module, (files, excluded) in CORE_TESTS.items():
+        if integrate and module in modules and sys.platform.startswith('linux'):
+            name = module + '-native-originals'
+            script(name, 'tools/core_tests.py', '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
+                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+                   '--build-root', ROOT / 'target/native-originals' / module, '--jobs', args.jobs,
+                   *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
+                   *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]], *report(name))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-native'))
