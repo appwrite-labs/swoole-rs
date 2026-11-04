@@ -74,8 +74,12 @@ impl Owned {
 
 impl Drop for Owned {
     fn drop(&mut self) {
+        let created = self.get().ready();
         let arena = unsafe { Table::destroy(self.table) };
+        assert_eq!(!arena.is_null(), created);
         assert!(arena.is_null() || arena == self.arena.as_mut_ptr().cast());
+        // Other processes sharing the header see the table destroyed.
+        assert!(!self.get().ready());
         unsafe { dealloc(self.table.cast(), Alloc::new::<Table>()) };
     }
 }

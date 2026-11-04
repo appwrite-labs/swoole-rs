@@ -705,7 +705,8 @@ impl Table {
         unsafe { swr_v1_locks_destroy(table.iterator_mutex.get(), MUTEX) };
         // SAFETY: as above.
         unsafe { swr_v1_locks_destroy(table.mutex.get(), MUTEX) };
-        table.memory
+        // The header is shared: forked processes see `ready()` turn false, as upstream's do.
+        std::mem::replace(&mut table.memory, ptr::null_mut())
     }
 
     #[must_use]
