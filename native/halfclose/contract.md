@@ -11,6 +11,7 @@ unchanged.
 | 0002-preserve-prequeue-response | `src/server/reactor_thread.cc` |
 | 0003-send-tls-close-notify | `src/network/socket.cc` |
 | 20261103T195726-drain-before-close-in-rust-send-to-connection | `src/server/master.cc`: `send_to_connection` runs in `crates/server/src/send.rs`, so 0001's `master.cc` hunks give way to `SW_HALFCLOSE_DRAIN`, which selects the same pause, resume and queued-close behaviour there |
+| 20261104T005648-tls-close-notify-repair-in-rust-ssl-shutdown | `src/network/socket.cc`: `ssl_shutdown` runs in `crates/tls/src/socket.rs`, so 0003's method hunks give way to `SW_HALFCLOSE_TLS_SHUTDOWN`, which selects the repaired shutdown there |
 
 ## Queued close
 

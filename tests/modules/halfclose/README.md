@@ -58,15 +58,13 @@ ASan/UBSan and drive them through minimal adapters.
 
 ```sh
 python3 tests/modules/halfclose/stale_read.py --source /absolute/prepared/source --output /absolute/report.json
-python3 tests/modules/halfclose/tls_shutdown.py --source /absolute/prepared/source \
-  --cert /absolute/server.crt --key /absolute/server.key --output /absolute/report.json
 ```
 
 - `stale_read.py`: `ReactorThread_onRead` with a cached EOF after close queued.
-- `tls_shutdown.py`: TLS shutdown/close methods over real OpenSSL memory BIOs and
-  nonblocking socketpairs (ordering, one-way, peer-first, quiet shutdown,
-  backpressure retry, peer death) plus five injected error results. On Mac add
-  `--openssl-dir /opt/homebrew/opt/openssl@3`.
+- TLS shutdown/close now runs in Rust: `cargo test -p swoole-rs-tls shutdown`
+  covers it over real OpenSSL memory BIOs and nonblocking socketpairs (ordering,
+  one-way, peer-first, quiet shutdown, backpressure retry, peer death) plus five
+  injected error results.
 
 ## Known failures
 

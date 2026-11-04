@@ -314,6 +314,9 @@ long swr_v1_socket_ssl_verify(const struct ssl_st *ssl, bool allow_self_signed);
 int swr_v1_socket_ssl_pem(struct x509_st *cert, char *buffer, size_t length, bool consume);
 const char *swr_v1_socket_ssl_error_reason(int *reason);
 int swr_v1_socket_ssl_peek_reason(void);
+/* Socket::ssl_shutdown: 1 true, 0 false, 2 false after the caller warns with
+ * ssl_get_error_reason. `repaired` is --fix-halfclose's close_notify repair. */
+int swr_v1_socket_ssl_shutdown(swr_v1_socket_tls *tls, struct ssl_st *ssl, uint8_t *closed, bool quiet, bool repaired);
 int swr_v1_socket_ssl_new(swr_v1_socket_tls *tls, struct ssl_ctx_st *context, int fd, int flags, int index, void *socket, struct ssl_st **ssl, unsigned long *error);
 /* A TLS socket's ssl_recv/ssl_send/SSL_peek; catch_error's classification (swReturnCode). */
 typedef ssize_t (*swr_v1_socket_tls_io)(void *socket, void *buffer, size_t length);
