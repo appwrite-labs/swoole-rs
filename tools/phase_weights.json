@@ -58,7 +58,6 @@
  "hooks-packet-policy": 5,
  "hooks-socket-policy": 4,
  "hooks-unit": 1,
- "http-boundary-rng": 1,
  "http-conditionals": 24,
  "http-context": 44,
  "http-cookie-flow-positive": 6,

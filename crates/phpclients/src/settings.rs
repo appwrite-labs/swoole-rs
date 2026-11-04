@@ -175,7 +175,8 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
             clippy::cast_sign_loss,
             reason = "sizes up to 8"
         )]
-        let size = swoole_rs_corebase::swr_v1_corebase_type_size(kind) as u8;
+        let size =
+            swoole_rs_corebase::swoole_type_size(std::ffi::c_char::from_ne_bytes([kind])) as u8;
         protocol.package_length_size = size;
         if size == 0 {
             let name = c_text(&[kind]);
