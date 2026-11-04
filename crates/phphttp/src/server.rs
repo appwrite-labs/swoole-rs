@@ -98,20 +98,19 @@ unsafe extern "C" {
         request: *mut c_void,
         zdata: *mut *mut zval,
     ) -> *mut Context;
-    /// `PHP_SWOOLE_HOOK_BEFORE_REQUEST`, when one is set.
-    fn swr_http_host_before_request(context: *mut Context);
-    /// The port's `onHandshake` (`handshake`) or `onRequest`, or null.
+    /// `PHP_SWOOLE_HOOK_BEFORE_REQUEST`, when one is set, then the connection's
+    /// `websocket_status` (parsing an upgrade request sets it).
+    fn swr_http_host_before_request(context: *mut Context, conn: *mut c_void) -> u8;
+    /// The port's `onHandshake` (`handshake`) or `onRequest`, or null; a callback
+    /// found is also `ctx->private_data_2`.
     fn swr_http_host_callback(
         server: *mut c_void,
         server_fd: c_int,
         handshake: bool,
+        context: *mut Context,
     ) -> *mut c_void;
-    /// `ctx->private_data_2 = callback`.
-    fn swr_http_host_set_callback(context: *mut Context, callback: *mut c_void);
     /// `swoole_notice("%s", message)`.
     fn swr_http_host_notice(message: *const c_char);
-    /// The connection's `websocket_status` (parsing an upgrade request sets it).
-    fn swr_http_host_websocket_status(conn: *mut c_void) -> u8;
 }
 
 thread_local! {
@@ -325,12 +324,10 @@ fn handle(
         reason = "upstream's (zend_long) cast"
     )]
     add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
-    // SAFETY: a live context.
-    unsafe { swr_http_host_before_request(ctx) };
-    // SAFETY: the live connection.
-    let handshake = unsafe { swr_http_host_websocket_status(conn) } == STATUS_CONNECTION;
-    // SAFETY: the live server.
-    let callback = unsafe { swr_http_host_callback(server, server_fd, handshake) };
+    // SAFETY: a live context and its connection.
+    let handshake = unsafe { swr_http_host_before_request(ctx, conn) } == STATUS_CONNECTION;
+    // SAFETY: the live server and context.
+    let callback = unsafe { swr_http_host_callback(server, server_fd, handshake, ctx) };
     if callback.is_null() {
         if handshake {
             websocket::handshake_open(ctx)?;
@@ -343,8 +340,6 @@ fn handle(
         websocket::upgrading(server, session);
         state.upgrade = 1;
     }
-    // SAFETY: a live context and the port's callback.
-    unsafe { swr_http_host_set_callback(ctx, callback) };
     Ok(REQUEST)
 }
 
