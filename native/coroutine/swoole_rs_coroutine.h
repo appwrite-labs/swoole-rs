@@ -8,9 +8,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* The scheduler and each coroutine's state (crates/coroutine/src/coroutine.rs).
- * C++ stores them in their original scopes and reads fields inline; every write
- * goes through a function below. Pointer arguments are live and unshared. */
+/* The scheduler and each coroutine's state (crates/coroutine/src/coroutine.rs,
+ * live.rs). C++ stores them in their original scopes and reads fields inline;
+ * every write goes through a function below. Pointer arguments are live and
+ * unshared. run/resume/yield/bailout are whole operations that call the swap
+ * callbacks and the hooks, which take a swoole::Coroutine facade. */
 typedef struct swr_v1_coroutine swr_v1_coroutine;
 struct swr_v1_coroutine {
     void *native; /* the swoole::Coroutine facade */
@@ -22,42 +24,50 @@ struct swr_v1_coroutine {
 };
 typedef void (*swr_v1_coroutine_swap_function)(void *);
 typedef struct {
+    bool (*swap_in)(void *); /* returns whether the coroutine ended */
+    void (*swap_out)(void *);
+    void (*destroy)(void *); /* deletes the ended facade */
+    void (*bailout)(void);   /* calls on_bailout */
+    long (*clock)(void);     /* SW_CORO_TIME's clock, or null */
+} swr_v1_coroutine_hooks;
+typedef struct {
     swr_v1_coroutine *current;
     long last_cid, socket_bound_cid;
     uint64_t peak_num;
     size_t stack_size;
     swr_v1_coroutine_swap_function on_yield, on_resume, on_close;
-    bool activated;
+    swr_v1_coroutine_hooks hooks;
+    void *live; /* Rust's map, null until the first coroutine */
+    long cursor;
+    bool activated, bailout;
 } swr_v1_coroutine_scheduler;
 enum { SWR_CO_ON_YIELD = 0, SWR_CO_ON_RESUME = 1, SWR_CO_ON_CLOSE = 2 };
-long swr_v1_coroutine_register(swr_v1_coroutine_scheduler *, swr_v1_coroutine *, void *native, long init_msec, long now);
-bool swr_v1_coroutine_admit(swr_v1_coroutine_scheduler *);
-/* The live coroutines (crates/coroutine/src/live.rs), per thread, from register
- * until release; the void pointers are swoole::Coroutine facades. get: null if
- * cid is not live. older: the newest live coroutine older than `before` (LONG_MAX
- * starts a walk), its id in *cid, or null. print_list prints them to `out`. */
-void *swr_v1_coroutine_get(long cid);
-size_t swr_v1_coroutine_count(void);
-void *swr_v1_coroutine_older(long before, long *cid);
-void swr_v1_coroutine_iterator_reset(void);
-void *swr_v1_coroutine_iterator_each(void);
-void swr_v1_coroutine_print_list(FILE *out);
+/* register returns whether to activate the scheduler. */
+bool swr_v1_coroutine_register(swr_v1_coroutine_scheduler *, swr_v1_coroutine *, void *native, long init_msec, long now);
+long swr_v1_coroutine_run(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
+void swr_v1_coroutine_resume(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
+void swr_v1_coroutine_yield(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
+void swr_v1_coroutine_yield_cancelable(swr_v1_coroutine_scheduler *, swr_v1_coroutine *, void *cancel_fn);
+void swr_v1_coroutine_bailout(swr_v1_coroutine_scheduler *);
+/* The live coroutines; the void pointers are swoole::Coroutine facades. get:
+ * null if cid is not live. older: the newest live coroutine older than `before`
+ * (LONG_MAX starts a walk), its id in *cid, or null. print_list prints them to
+ * `out`. */
+void *swr_v1_coroutine_get(const swr_v1_coroutine_scheduler *, long cid);
+size_t swr_v1_coroutine_count(const swr_v1_coroutine_scheduler *);
+void *swr_v1_coroutine_older(const swr_v1_coroutine_scheduler *, long before, long *cid);
+void swr_v1_coroutine_iterator_reset(swr_v1_coroutine_scheduler *);
+void *swr_v1_coroutine_iterator_each(swr_v1_coroutine_scheduler *);
+void swr_v1_coroutine_print_list(const swr_v1_coroutine_scheduler *, FILE *out);
+/* set_active also clears (true) or sets (false) the bailout mark. */
 void swr_v1_coroutine_set_active(swr_v1_coroutine_scheduler *, bool);
 void swr_v1_coroutine_set_stack_size(swr_v1_coroutine_scheduler *, size_t);
 void swr_v1_coroutine_bind_socket(swr_v1_coroutine_scheduler *, long cid);
 void swr_v1_coroutine_set_callback(swr_v1_coroutine_scheduler *, uint32_t slot, swr_v1_coroutine_swap_function);
-void swr_v1_coroutine_enter(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
-void swr_v1_coroutine_wake(swr_v1_coroutine *);
-void swr_v1_coroutine_suspend(swr_v1_coroutine *);
-void swr_v1_coroutine_leave(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
-void swr_v1_coroutine_end(swr_v1_coroutine *);
-void swr_v1_coroutine_release(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
-void swr_v1_coroutine_set_origin(swr_v1_coroutine *, swr_v1_coroutine *origin);
 void swr_v1_coroutine_set_task(swr_v1_coroutine *, void *);
-void swr_v1_coroutine_set_cancel_fn(swr_v1_coroutine *, void *);
 void swr_v1_coroutine_cancel(swr_v1_coroutine *);
 void swr_v1_coroutine_timeout(swr_v1_coroutine *);
-void swr_v1_coroutine_switch_time(swr_v1_coroutine *yielding, swr_v1_coroutine *resuming, long now);
+long swr_v1_coroutine_execute_usec(const swr_v1_coroutine *, long now);
 long swr_v1_coroutine_execute_usec(const swr_v1_coroutine *, long now);
 /* swoole::coroutine::Channel (crates/coroutine/src/channel.rs): an owned
  * handle with whole pop/push/close operations that call back into C++ for the
