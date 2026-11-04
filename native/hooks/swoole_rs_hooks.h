@@ -122,8 +122,6 @@ double swr_v1_hook_backoff(double current, double initial, double maximum);
 int64_t swr_v1_hook_transfer_result(int64_t result, uint64_t total);
 typedef struct { uint64_t total; bool again; } swr_v1_hook_transfer_plan;
 swr_v1_hook_transfer_plan swr_v1_hook_transfer(int64_t result, uint64_t total, uint64_t requested, bool wait);
-enum swr_hook_timer_action { SWR_HOOK_TIMER_ENABLE = 1, SWR_HOOK_TIMER_ADD = 2, SWR_HOOK_TIMER_SENTINEL = 4, SWR_HOOK_TIMER_DELETE = 8, SWR_HOOK_TIMER_CLEAR = 16 };
-uint32_t swr_v1_hook_timer(uint32_t operation, bool enabled, bool present, bool sentinel, double timeout);
 enum swr_hook_wait_action { SWR_HOOK_WAIT_DONE = 0, SWR_HOOK_WAIT_CALLBACK = 1, SWR_HOOK_WAIT_SLEEP = 2, SWR_HOOK_WAIT_CANCELED = -1, SWR_HOOK_WAIT_INVALID = -2 };
 typedef struct { double delay; uint32_t phase; int32_t action; } swr_v1_hook_wait_plan;
 swr_v1_hook_wait_plan swr_v1_hook_wait_for(uint32_t phase, double delay, bool result, double initial, double maximum);
@@ -224,21 +222,6 @@ typedef struct {
     void (*check)(void *, ssize_t);
 } swr_v1_hook_vector_ops;
 ssize_t swr_v1_hook_vector_all(const swr_v1_hook_vector_ops *ops);
-/* The coroutine Socket's transfers: swr_v1_hook_io retries one call while the socket would
-   block; swr_v1_hook_io_all is recv_all/send_all. wait installs barrier (when given) and waits;
-   buffer, when not null, is the caller's buffer slot that a write's wait may move. */
-typedef struct {
-    void *context;
-    bool retry_interrupted;
-    ssize_t (*call)(void *, char *buffer, size_t length);
-    bool (*would_block)(void *);
-    bool (*start)(void *);
-    bool (*wait)(void *, swr_v1_hook_barrier barrier, void *barrier_state, char **buffer);
-    void (*check)(void *, ssize_t);
-    void (*fail)(void *);
-} swr_v1_hook_transfer_ops;
-ssize_t swr_v1_hook_io(const swr_v1_hook_transfer_ops *ops, char *buffer, size_t length);
-ssize_t swr_v1_hook_io_all(const swr_v1_hook_transfer_ops *ops, char *buffer, size_t length);
 /* The coroutine Socket's connection state, Rust-owned behind an opaque handle (#439) in its record. */
 typedef struct swr_v1_hook_socket_state swr_v1_hook_socket_state;
 typedef struct { bool connected, read, write; } swr_v1_hook_socket_flags_t;
@@ -382,23 +365,7 @@ bool swr_v1_hook_close(const swr_v1_hook_socket_ops *ops);
    ssl_shutdown (null without TLS) closes the session first, with context; syscall is shutdown(2). */
 int32_t swr_v1_hook_shutdown(int (*syscall)(int, int), int32_t fd, int32_t how, bool closed, swr_v1_hook_socket_state *state,
                              void (*ssl_shutdown)(void *), void *context);
-/* Socket::wait_event for the current coroutine co, and the readable/writable callbacks' choice of
-   coroutine to resume (null for none). barrier (when given) stays installed for the wait; buffer,
-   when not null, is a write's buffer slot. status reports close_wait, else has_kernel_nobufs(),
-   then the TLS wants, removed, and events' SW_EVENT_READ/WRITE bits. */
-typedef struct {
-    void *context;
-    struct swr_v1_co_socket *socket;
-    int32_t close_wait_error;
-    void (*set_err)(void *, int32_t);
-    void (*sleep)(void *);
-    bool (*reactor)(void *, uint32_t events, bool add);
-    void (*suspend)(void *, void *co, uint32_t event);
-    void (*buffer)(void *, char **buffer, size_t length);
-    void (*remove)(void *, uint32_t event);
-} swr_v1_hook_wait_ops;
-bool swr_v1_hook_socket_wait(const swr_v1_hook_wait_ops *ops, void *co, uint32_t event, swr_v1_hook_barrier barrier,
-                             void *barrier_state, char **buffer, size_t length);
+/* The readable/writable callbacks' choice of coroutine to resume (null for none). */
 void *swr_v1_hook_socket_ready(swr_v1_hook_socket_state *state, uint32_t event, bool hup);
 /* Socket::recv_with_buffer after the availability check, over the read buffer's fields, and
    recv_line over recv_with_buffer (read). recv may yield; the fields stay current across it. */
