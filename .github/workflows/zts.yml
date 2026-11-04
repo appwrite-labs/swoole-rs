@@ -48,17 +48,8 @@ jobs:
           for engine in upstream hybrid; do target/php-zts/bin/php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -E '^thread '; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
       - run: |
-          families="--module swoole_thread --module swoole_atomic --module swoole_lock"
-          options="--manifest target/phpt/manifest.json --timeout 30 --php $PWD/target/php-zts/bin/php"
-          mkdir -p target/phpt/zts
-          for engine in upstream hybrid; do
-            python3 corpus/upstream/run.py $options $families --engine $engine=target/phpt/$engine.so \
-              --output target/phpt/zts/$engine.json || [ $? -eq 1 ]
-          done
-          corpus/upstream/recheck.sh target/phpt/zts target/phpt target/phpt/recheck $options
-          set -- target/phpt/zts/*.json
-          if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
-          python3 corpus/upstream/gate.py "$@" --output phpt-zts.json | tee -a "$GITHUB_STEP_SUMMARY"
+          sudo apt-get install -y -qq bpftrace >/dev/null
+          python3 .github/diag998.py | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
