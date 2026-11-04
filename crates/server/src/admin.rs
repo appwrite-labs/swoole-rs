@@ -438,7 +438,10 @@ fn thread_id() -> String {
     let thread = unsafe { libc::pthread_self() };
     #[cfg(target_vendor = "apple")]
     return format!("{thread:#x}");
-    #[cfg(not(target_vendor = "apple"))]
+    // musl's pthread_t is a pointer, which libstdc++ prints as one.
+    #[cfg(target_env = "musl")]
+    return format!("{thread:p}");
+    #[cfg(not(any(target_vendor = "apple", target_env = "musl")))]
     return thread.to_string();
 }
 
