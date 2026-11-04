@@ -4,6 +4,7 @@
 //! The server, its connections and the worker stay C++ (`swr_http_host_*`),
 //! and so does the handler's call (no Rust frame under PHP code).
 use crate::{
+    context,
     host::{self, Context},
     parse::{Key, key, swr_v1_phphttp_parse},
     send::state,
@@ -77,13 +78,9 @@ unsafe extern "C" {
     fn swr_http_host_address(server: *mut c_void, conn: *mut c_void, local: bool) -> *const c_char;
     /// False when this process is no server worker.
     fn swr_http_host_worker(worker: *mut Worker) -> bool;
-    /// `swoole_event_defer`: run the queued request's `onRequest`, then
-    /// release its objects.
+    /// `swoole_event_defer`: run the queued request's handler, then release
+    /// its objects.
     fn swr_http_host_defer(context: *mut Context);
-    /// `ctx->onAfterResponse = nullptr`.
-    fn swr_http_host_unhook(context: *mut Context);
-    fn swr_http_host_send(context: *mut Context, data: *const c_char, length: usize) -> bool;
-    fn swr_http_host_close(context: *mut Context) -> bool;
     /// `get_connection_verify_no_ssl` and its port's facts (null: closed).
     fn swr_http_host_receive(
         server: *mut c_void,
@@ -101,13 +98,11 @@ unsafe extern "C" {
     /// `PHP_SWOOLE_HOOK_BEFORE_REQUEST`, when one is set, then the connection's
     /// `websocket_status` (parsing an upgrade request sets it).
     fn swr_http_host_before_request(context: *mut Context, conn: *mut c_void) -> u8;
-    /// The port's `onHandshake` (`handshake`) or `onRequest`, or null; a callback
-    /// found is also `ctx->private_data_2`.
+    /// The port's `onHandshake` (`handshake`) or `onRequest`, or null.
     fn swr_http_host_callback(
         server: *mut c_void,
         server_fd: c_int,
         handshake: bool,
-        context: *mut Context,
     ) -> *mut c_void;
     /// `swoole_notice("%s", message)`.
     fn swr_http_host_notice(message: *const c_char);
@@ -285,10 +280,8 @@ fn handle(
     // SAFETY: a live context and its data.
     let parsed = unsafe { swr_v1_phphttp_parse(ctx, data.as_ptr().cast(), data.len()) };
     if state(ctx).parser.error != HPE_OK || state(ctx).completed == 0 {
-        // SAFETY: a live context.
-        unsafe { swr_http_host_send(ctx, BAD_REQUEST.as_ptr().cast(), BAD_REQUEST.len()) };
-        // SAFETY: as above.
-        unsafe { swr_http_host_close(ctx) };
+        context::send(ctx, BAD_REQUEST);
+        context::close(ctx);
         let parser = &state(ctx).parser;
         if parser.error == HPE_OK {
             notice("Incomplete HTTP request: parsed successfully but missing required components");
@@ -326,8 +319,8 @@ fn handle(
     add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
     // SAFETY: a live context and its connection.
     let handshake = unsafe { swr_http_host_before_request(ctx, conn) } == STATUS_CONNECTION;
-    // SAFETY: the live server and context.
-    let callback = unsafe { swr_http_host_callback(server, server_fd, handshake, ctx) };
+    // SAFETY: the live server.
+    let callback = unsafe { swr_http_host_callback(server, server_fd, handshake) };
     if callback.is_null() {
         if handshake {
             websocket::handshake_open(ctx)?;
@@ -336,6 +329,7 @@ fn handle(
         }
         return Ok(DONE);
     }
+    state.callback = callback;
     if handshake {
         websocket::upgrading(server, session);
         state.upgrade = 1;
@@ -372,8 +366,7 @@ fn worker() -> Option<Worker> {
 /// Mark a queued request answered and release its objects.
 fn abandon(ctx: *mut Context) {
     state(ctx).end = 1;
-    // SAFETY: a queued context, whose `onAfterResponse` C++ owns.
-    unsafe { swr_http_host_unhook(ctx) };
+    state(ctx).after_response = 0;
     // SAFETY: the queued request's own references to its objects.
     unsafe { zval_ptr_dtor(state(ctx).request.zobject.ptr) };
     // SAFETY: as above.
@@ -384,8 +377,7 @@ fn abandon(ctx: *mut Context) {
 /// request, or queue it past `worker_max_concurrency` (false: not now).
 /// # Safety
 /// `ctx` is a live server request's context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_server_admit(ctx: *mut Context) -> bool {
+pub(crate) unsafe fn admit(ctx: *mut Context) -> bool {
     let Some(worker) = worker().filter(|worker| !worker.shutdown) else {
         return false;
     };
@@ -404,23 +396,14 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_admit(ctx: *mut Context) -> bool 
 /// `swoole_http_server_onAfterResponse` after it clears the hook: uncount the
 /// request and start the next queued one, or answer every queued one with
 /// 503 once the worker is shutting down.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphttp_server_release() {
+pub(crate) fn release_request() {
     let Some(worker) = worker() else {
         return;
     };
     if worker.shutdown {
         while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
-            // SAFETY: a queued context.
-            unsafe {
-                swr_http_host_send(
-                    ctx,
-                    SERVICE_UNAVAILABLE.as_ptr().cast(),
-                    SERVICE_UNAVAILABLE.len(),
-                )
-            };
-            // SAFETY: as above.
-            unsafe { swr_http_host_close(ctx) };
+            context::send(ctx, SERVICE_UNAVAILABLE);
+            context::close(ctx);
             abandon(ctx);
         }
         return;

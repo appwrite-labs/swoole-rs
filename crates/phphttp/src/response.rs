@@ -5,9 +5,8 @@ use crate::{
     host::{
         self, CO_SOCKET, COOKIE, Context, DETACHED, END, HEADER, HEADER_KEY_SIZE,
         HTTP_CONTEXT_UNAVAILABLE, HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED,
-        TRAILER, UPGRADE, WEBSOCKET, swr_http_host_after, swr_http_host_close,
-        swr_http_host_goaway, swr_http_host_recv, swr_http_host_redirect,
-        swr_http_host_response_property,
+        TRAILER, UPGRADE, WEBSOCKET, swr_http_host_after, swr_http_host_goaway, swr_http_host_recv,
+        swr_http_host_redirect, swr_http_host_response_property,
     },
     send, websocket,
 };
@@ -15,6 +14,7 @@ use std::{
     ffi::{CStr, c_char, c_int, c_void},
     mem::MaybeUninit,
     ptr,
+    sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_httpbindings::{swr_v1_httpbindings_file_range, swr_v1_httpbindings_response_key};
 use swoole_rs_phpstubs::http_response;
@@ -56,8 +56,6 @@ unsafe extern "C" fn free(std: *mut zend_object) {
 }
 
 unsafe extern "C" {
-    /// `ctx->onAfterResponse(ctx)` when set; true if it bailed out.
-    fn swr_http_host_after_response(ctx: *mut Context) -> bool;
     /// `sw_reactor() != nullptr`.
     fn swr_http_host_reactor() -> bool;
 }
@@ -66,11 +64,10 @@ unsafe extern "C" {
 /// (500 when no status was set) and release the context. True if user code
 /// bailed out on the way.
 fn release(ctx: *mut Context) -> bool {
-    // SAFETY: a live context.
-    let mut bailed = unsafe { swr_http_host_after_response(ctx) };
+    context::after_response(ctx);
+    let mut bailed = false;
     let state = send::state(ctx);
-    if !bailed
-        && state.end == 0
+    if state.end == 0
         && (state.send_chunked != 0 || state.send_header == 0)
         && state.detached == 0
         // SAFETY: reads a global.
@@ -242,6 +239,7 @@ fn write(call: &Call) {
 
 /// `http_response_after`: the server's and the hooks' after-response step.
 fn after(ctx: *mut Context) -> Result<(), Bailout> {
+    context::after_response(ctx);
     // SAFETY: a live context; C++ traps a bailout.
     if unsafe { swr_http_host_after(ctx) } {
         return Err(Bailout);
@@ -600,8 +598,7 @@ fn push(call: &Call) {
 fn close(call: &Call) {
     let run = || -> Option<()> {
         let ctx = open(call)?;
-        // SAFETY: a live context.
-        call.set_bool(unsafe { swr_http_host_close(ctx) });
+        call.set_bool(context::close(ctx));
         Some(())
     };
     or_false(call, run());
@@ -702,13 +699,9 @@ unsafe extern "C" {
     fn swr_http_host_object_kind(object: *mut z::zval, fd: *mut zend_long) -> c_int;
     /// `sw_server()`.
     fn swr_http_host_server() -> *mut c_void;
-    /// A new context for `server` or `socket` (`ctx` null), or `ctx` bound
-    /// to one.
-    fn swr_http_host_bind(
-        ctx: *mut Context,
-        server: *mut c_void,
-        socket: *mut z::zval,
-    ) -> *mut Context;
+    /// A new keep-alive context with `server`'s settings, or one with its
+    /// request parser for a socket (`server` null).
+    fn swr_http_host_response_context(server: *mut c_void) -> *mut Context;
 }
 
 /// `php_swoole_fatal_error(E_WARNING, ...)`, then `RETURN_FALSE`.
@@ -806,8 +799,26 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: the request's context (or null), and the server or the socket.
-    let ctx = unsafe { swr_http_host_bind(ctx, server, socket) };
+    let ctx = if ctx.is_null() {
+        // SAFETY: the live server, or null for the socket.
+        let ctx = unsafe { swr_http_host_response_context(server) };
+        if server.is_null() {
+            // `Context::init(zval *)`.
+            let state = send::state(ctx);
+            state.parse_cookie = 1;
+            state.parse_body = 1;
+            state.parse_files = 1;
+            if crate::parse::CAPABILITIES.load(Relaxed) & 8 != 0 {
+                state.enable_compression = 1;
+                state.compression_level = 1;
+            }
+        }
+        ctx
+    } else {
+        ctx
+    };
+    // SAFETY: a live context, and the server or the socket.
+    unsafe { context::swr_v1_phphttp_context_bind(ctx, server, socket) };
     let response = call.return_value();
     let ce = RESPONSE.entry();
     // SAFETY: the return slot and this registered class.

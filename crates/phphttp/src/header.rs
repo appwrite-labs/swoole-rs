@@ -64,11 +64,6 @@ unsafe extern "C" {
         data: *const c_char,
         length: usize,
     ) -> c_int;
-    fn swr_http_host_compression_type(
-        context: *const c_void,
-        kind: *const c_char,
-        length: usize,
-    ) -> bool;
 }
 
 /// MINIT (from the response class's): find the array properties' slots.
@@ -285,7 +280,6 @@ fn build(
     mut length: usize,
     out: &mut Vec<u8>,
 ) -> Result<(), bailout::Bailout> {
-    let context = ptr::from_mut(state).cast::<c_void>();
     let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0;
     out.clear();
     // http status line
@@ -307,9 +301,8 @@ fn build(
     let header = property(state, 0);
     // SAFETY: a declared property slot.
     if unsafe { type_of(header) } == IS_ARRAY {
-        // SAFETY: as below, asked once like upstream's `compression_types` test.
-        let typed =
-            compression && unsafe { swr_http_host_compression_type(context, ptr::null(), 0) };
+        // Asked once, like upstream's `compression_types` test.
+        let typed = compression && crate::context::compression_type(state, None);
         let mut content_type: Option<(*mut zend_string, bool)> = None;
         let walked = each(header, |key, value_| {
             let (key, owned_key, flag) = header_key(key);
@@ -369,11 +362,8 @@ fn build(
                 // SAFETY: a string this function holds.
                 unsafe { string::bytes(text) }
             });
-            // SAFETY: the context and the content type's bytes.
-            let accepted = unsafe {
-                swr_http_host_compression_type(context, kind.as_ptr().cast(), kind.len())
-            };
-            state.accept_compression = u8::from(accepted);
+            state.accept_compression =
+                u8::from(crate::context::compression_type(state, Some(kind)));
         }
         if let Some((text, owned)) = content_type {
             release(text, owned);

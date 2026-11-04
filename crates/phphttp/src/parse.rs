@@ -1354,11 +1354,7 @@ unsafe extern "C" fn on_part_headers_complete(parser: *mut Multipart) -> c_int {
     if error.is_null() || long(error).is_some_and(|code| code != UPLOAD_OK) {
         return 0;
     }
-    // SAFETY: the live context.
-    let directory = unsafe { host::swr_http_host_upload_tmp_dir(ptr::from_mut(state).cast()) };
-    // SAFETY: the context's `std::string`, NUL-terminated.
-    let directory = unsafe { CStr::from_ptr(directory) };
-    let mut path = directory.to_bytes().to_vec();
+    let mut path = crate::context::upload_tmp_dir(state).to_bytes().to_vec();
     path.extend_from_slice(b"/swoole.upfile.XXXXXX");
     path.truncate(UPLOAD_TMPDIR_SIZE - 1);
     path.push(0);

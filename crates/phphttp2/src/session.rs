@@ -187,6 +187,11 @@ impl Drop for SessionState {
     fn drop(&mut self) {
         // SAFETY: the session's own codecs (or null).
         unsafe { swoole_http2_client_coro_hpack_free(self.inflater.get(), self.deflater.get()) };
+        if !self.is_coro {
+            // SAFETY: the server's settings context, made for this session
+            // alone (a coroutine server's is its connection's).
+            unsafe { swoole_rs_phphttp::http2::release_default(self.default_ctx) };
+        }
     }
 }
 
@@ -258,29 +263,6 @@ pub unsafe extern "C" fn swr_v1_phphttp2_session_new(
 pub extern "C" fn swr_v1_phphttp2_session_free(fd: i64) {
     let session = SESSIONS.with_borrow_mut(|sessions| sessions.remove(&fd));
     drop(session);
-}
-
-/// Hold the stream of `ctx` (and so `ctx`) while C++ works on it across
-/// coroutine switches; null if it has none.
-/// # Safety
-/// `ctx` is a live HTTP/2 context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_stream_hold(ctx: *mut c_void) -> *const c_void {
-    // SAFETY: a live context.
-    let id = unsafe { swoole_rs_phphttp::http2::stream_id(ctx) };
-    SessionState::of(ctx)
-        .and_then(|session| session.stream(id, false))
-        .map_or(std::ptr::null(), |stream| Rc::into_raw(stream).cast())
-}
-
-/// # Safety
-/// `stream` came from `swr_v1_phphttp2_stream_hold` (or is null), released once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_stream_release(stream: *const c_void) {
-    if !stream.is_null() {
-        // SAFETY: per the caller.
-        drop(unsafe { Rc::from_raw(stream.cast::<StreamState>()) });
-    }
 }
 
 #[cfg(test)]
