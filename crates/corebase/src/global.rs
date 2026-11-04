@@ -73,6 +73,7 @@ record! {
     current_task_id: AtomicI64, c_long = 0, swr_v1_core_current_task_id, swr_v1_core_set_current_task_id;
     signal_fd: AtomicI32, c_int = 0, swr_v1_core_signal_fd, swr_v1_core_set_signal_fd;
     signal_alarm: AtomicBool, bool = false, swr_v1_core_signal_alarm, swr_v1_core_set_signal_alarm;
+    signal_dispatch: AtomicBool, bool = false, swr_v1_core_signal_dispatch, swr_v1_core_set_signal_dispatch;
     signal_listener_num: AtomicU32, u32 = 0,
         swr_v1_core_signal_listener_num, swr_v1_core_set_signal_listener_num;
     signal_async_listener_num: AtomicU32, u32 = 0,

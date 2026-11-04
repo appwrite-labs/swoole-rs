@@ -97,7 +97,7 @@ Native shims perform exactly one requested effect per step.
 Rust owns `SwooleG`'s scalars in one process-wide record of atomics: the init
 guard, `cpu_num`, `dns_tries`, the flags (`running`, `enable_signalfd`,
 `enable_kqueue`, `enable_coroutine`, `print_backtrace_on_error`, `wait_signal`,
-`dns_lookup_random`, `signal_alarm`), the counters and limits (`current_task_id`,
+`dns_lookup_random`, `signal_alarm`, `signal_dispatch`), the counters and limits (`current_task_id`,
 `signal_fd`, `signal_listener_num`, `signal_async_listener_num`, `trace_flags`,
 `pagesize`, `max_file_content`, the AIO and io_uring sizes and times), the
 bug-report text, and native pointers Rust only holds (memory pool, stdout,
@@ -119,8 +119,8 @@ upstream's order. `swr_v1_core_bug_report_init` writes base.cc's bug-report
 banner, `uname` and compiler lines around the TLS line native code passes.
 `swr_v1_core_max_sockets` is the `RLIMIT_NOFILE` soft limit as `uint32_t`,
 capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept. `swoole_clean` resets
-the record after the native `Global`. The unused `uname`, `use_async_resolver`,
-`use_name_resolver` and `signal_dispatch` fields are gone.
+the record after the native `Global`. The unused `uname`, `use_async_resolver`
+and `use_name_resolver` fields are gone.
 
 Upstream's own C++ symbols defined in Rust (`export_name`), with no body left in
 base.cc: `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
