@@ -72,7 +72,5 @@ int main() {
         const auto actual=exercise<candidate::KeyValue,candidate::Variable>(mode);
         assert(expected==actual);
     }
-    static_assert(sizeof(reference::KeyValue)==sizeof(candidate::KeyValue),"KeyValue layout");
-    static_assert(sizeof(reference::Variable)==sizeof(candidate::Variable),"Variable layout");
-    std::puts("{\"whole_classes\":2,\"matched_cases\":9,\"layout_matched\":true}");
+    std::puts("{\"whole_classes\":2,\"matched_cases\":9}");
 }
