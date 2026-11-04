@@ -18,7 +18,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.harness import ROOT, write_report
-from tools.build_hybrid import GRADUATED, MODULES, REQUIRES, SELECTABLE, profile_suffix, build_alias
+from tools.build_hybrid import GRADUATED, HALFCLOSE_REQUIRES, MODULES, REQUIRES, SELECTABLE, profile_suffix, build_alias
 from tools.build_upstream import require_build_space
 from tools.dev_report import read_json
 from tools.private_copy import copy_private
@@ -93,6 +93,8 @@ CONTROLS = {'tls': ('coroutine', 'corebase')}
 def selected_modules(args):
     chosen = MODULES if getattr(args, 'all_modules', False) else args.module or []
     chosen = set(chosen) | {extra for module in chosen for extra in CONTROLS.get(module, ()) + REQUIRES.get(module, ())}
+    if getattr(args, 'fix_halfclose', False):
+        chosen |= set(HALFCLOSE_REQUIRES)
     return sorted(chosen | set(GRADUATED))
 
 
@@ -588,8 +590,6 @@ def plan(args, reports):
                 add(tls_name, tls13_python if version == '1.3' else python, 'tests/modules/halfclose/pause.py', *php, *candidate, *profile,
                        '--tls-cert', certs / 'server.crt', '--tls-key', certs / 'server.key',
                        '--tls-version', version, *report(tls_name))
-        script('halfclose-stale-read', 'tests/modules/halfclose/stale_read.py',
-               '--source', manifest.parent / 'src', *report('halfclose-stale-read'))
         script('halfclose-pause-originals', 'corpus/upstream/run.py', *php, *candidate,
                '--manifest', 'tests/modules/halfclose/pause-originals.json', '--require-all',
                *report('halfclose-pause-originals'))

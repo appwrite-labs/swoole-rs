@@ -41,6 +41,9 @@ HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql'
 # runs them; network::Client (clients) reads the reactor's socket record.
 REQUIRES = {'phpcollections': ('memory',), 'hooks': ('reactor',), 'http2': ('httpbindings',),
             'httpbindings': ('http2',), 'clients': ('reactor',)}
+# --fix-halfclose's repairs in the reactor thread's read, write and close paths are Rust's
+# (crates/server/src/conn_io.rs), which only the reactor module's patches call.
+HALFCLOSE_REQUIRES = ('reactor',)
 # The build's two Rust archives in rust-prefix/lib, by the input that records each: the
 # Zend-free one the native gates link, and the PHP extension's (with LTO unless --dev, #889).
 ARCHIVES = {'libswoole_rs_ffi.a': 'rust_archive_sha256', 'libswoole_rs_php.a': 'rust_php_archive_sha256'}
@@ -374,6 +377,9 @@ def main():
         missing = set(REQUIRES.get(module, ())) - set(args.module)
         if missing:
             parser.error(f'--module {module} requires ' + ' '.join('--module ' + name for name in sorted(missing)))
+    missing = set(HALFCLOSE_REQUIRES if args.fix_halfclose else ()) - set(args.module)
+    if missing:
+        parser.error('--fix-halfclose requires ' + ' '.join('--module ' + name for name in sorted(missing)))
     with exclusive(ROOT / 'target/hybrid/.builder.lock'):
         return build(args, parser)
 

@@ -247,7 +247,8 @@ jobs:
     uses: ./.github/workflows/zts.yml
 
   # The opt-in --fix-halfclose repair (M15) is its own build variant, so its gates run
-  # here; full-gates builds without it.
+  # here; full-gates builds without it. Its read, write and close paths are the reactor
+  # module's (HALFCLOSE_REQUIRES in tools/build_hybrid.py).
   halfclose:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -266,7 +267,7 @@ jobs:
           key: ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
-      - run: python3 tools/dev.py integrate --fix-halfclose --php-extension sockets --phase 'halfclose-*' --with-prerequisites
+      - run: python3 tools/dev.py integrate --fix-halfclose --module reactor --php-extension sockets --phase 'halfclose-*' --with-prerequisites
       # tools/ci.py reads phases* artifacts for new and fixed phases.
       - uses: actions/upload-artifact@v4
         if: always()

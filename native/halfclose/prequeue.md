@@ -31,10 +31,9 @@ and freed the pending file (observed: zero send error, file offset 0 of 4 MiB,
 both chunks still queued). The queued-close guard now ignores application reads
 once close is queued; TLS WANT_READ still reaches the shutdown retry.
 
-`tests/modules/halfclose/stale_read.py --source PATCHED_TREE --output REPORT`
-runs the extracted dispatcher on a real socketpair/poll cached EOF: ordinary
-reads, queued plain reads, TLS retry routing and terminal notification. Its TLS
-callback is a stub.
+`crates/server/src/conn_io.rs`'s `prequeue_reads_stop_at_a_queued_or_notified_close`
+drives the read dispatcher through ordinary reads, queued plain reads, TLS retry
+routing and terminal notification.
 
 ## Suspended coroutine responses (open)
 

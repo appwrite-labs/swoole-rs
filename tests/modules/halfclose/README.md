@@ -51,20 +51,13 @@ python3 corpus/upstream/run.py --manifest tests/modules/halfclose/pause-original
   --engine fixed=/absolute/modules/swoole.so --require-all
 ```
 
-## Native method checks
+## Rust unit checks
 
-These compile method bodies extracted from a prepared source tree with C++
-ASan/UBSan and drive them through minimal adapters.
-
-```sh
-python3 tests/modules/halfclose/stale_read.py --source /absolute/prepared/source --output /absolute/report.json
-```
-
-- `stale_read.py`: `ReactorThread_onRead` with a cached EOF after close queued.
-- TLS shutdown/close now runs in Rust: `cargo test -p swoole-rs-tls shutdown`
-  covers it over real OpenSSL memory BIOs and nonblocking socketpairs (ordering,
-  one-way, peer-first, quiet shutdown, backpressure retry, peer death) plus five
-  injected error results.
+- The read dispatcher with a cached EOF after close queued:
+  `cargo test -p swoole-rs-server prequeue`.
+- TLS shutdown/close: `cargo test -p swoole-rs-tls shutdown` covers it over real
+  OpenSSL memory BIOs and nonblocking socketpairs (ordering, one-way, peer-first,
+  quiet shutdown, backpressure retry, peer death) plus five injected error results.
 
 ## Known failures
 

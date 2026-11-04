@@ -12,6 +12,7 @@
 use core::ffi::c_void;
 
 mod admin;
+mod conn_io;
 mod connection;
 mod control;
 mod dispatch;
@@ -112,6 +113,10 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         RUN_STORE_LISTEN_SOCKET,
     };
     match operation {
+        ops::RUN_RT_READ => conn_io::read(h, arg),
+        ops::RUN_RT_WRITE => conn_io::write(h, arg),
+        ops::RUN_PEER_CLOSE => conn_io::peer_close(h, arg),
+        ops::RUN_CLOSE_CONNECTION => conn_io::close_connection(h),
         RUN_ACCEPT => connection::accept(h),
         RUN_ADD_CONNECTION => i64::from(connection::add_connection(h)),
         RUN_INCOMING => connection::incoming(h),

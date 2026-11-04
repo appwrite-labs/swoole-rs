@@ -1,0 +1,62 @@
+diff --git a/src/server/reactor_thread.cc b/src/server/reactor_thread.cc
+index 384a134..11180a6 100644
+--- a/src/server/reactor_thread.cc
++++ b/src/server/reactor_thread.cc
+@@ -16,2 +16,5 @@
+ 
++// M15: the reactor thread's read, write and close paths (crates/server/src/conn_io.rs)
++// keep a synchronous process worker's response after a clean FIN; see native/halfclose/prequeue.md.
++#define SW_HALFCLOSE_PREQUEUE 1
+ #include "swoole_server.h"
+@@ -179,18 +182,2 @@ int Server::close_connection(Reactor *reactor, Socket *socket) {
+ 
+-    if (socket->ssl && socket->ssl_state == SW_SSL_STATE_READY && socket->is_stream() &&
+-        !(conn->peer_closed || conn->close_force || conn->close_reset) && !socket->ssl_closed_ &&
+-        !socket->ssl_shutdown() && (socket->ssl_want_read || socket->ssl_want_write)) {
+-        if (!conn->close_queued) {
+-            if (!socket->out_buffer) {
+-                socket->out_buffer = new Buffer(SW_SEND_BUFFER_SIZE);
+-            }
+-            socket->out_buffer->alloc(BufferChunk::TYPE_CLOSE, 0);
+-            conn->close_queued = 1;
+-        }
+-        int events = socket->what_event_want(SW_EVENT_WRITE);
+-        if ((socket->removed ? reactor->add(socket, events) : reactor->set(socket, events)) == SW_OK) {
+-            return SW_OK;
+-        }
+-    }
+-
+     if (conn->websocket_buffer) {
+@@ -309,7 +296,7 @@ static int ReactorThread_onClose(Reactor *reactor, Event *event) {
+         } else if (socket->close_notified == 0) {
+-            // A synchronous process worker still owes its ordered response after a clean FIN.
+-            // Other execution modes, TLS and fatal closes retain their terminal behavior.
+-            conn->peer_closed = !serv->is_process_mode() || !serv->is_hash_dispatch_mode() ||
+-                                serv->dispatch_func || serv->enable_coroutine || conn->ssl ||
+-                                conn->close_errno || conn->close_force || conn->close_reset;
++            /**
++             * peer_closed indicates that the client has closed the connection
++             * and the connection is no longer available.
++             */
++            conn->peer_closed = 1;
+             socket->close_notified = 1;
+@@ -557,8 +544,5 @@ static int ReactorThread_onRead(Reactor *reactor, Event *event) {
+      */
+-    if (!conn || conn->server_fd == 0 || event->socket->close_notified) {
++    if (!conn || conn->server_fd == 0) {
+         return SW_OK;
+     }
+-    if (conn->close_queued) {
+-        return event->socket->ssl && event->socket->ssl_want_read ? ReactorThread_onWrite(reactor, event) : SW_OK;
+-    }
+     ListenPort *port = serv->get_port_by_fd(event->fd);
+@@ -606,3 +590,3 @@ static int ReactorThread_onRead(Reactor *reactor, Event *event) {
+     }
+-    if (!conn->active || event->socket->close_notified) {
++    if (!conn->active) {
+         return retval;
+@@ -700,3 +684,3 @@ static int ReactorThread_onWrite(Reactor *reactor, Event *ev) {
+     if (!conn->peer_closed && !socket->removed && Buffer::empty(socket->out_buffer)) {
+-        reactor->remove_write_event(socket);
++        reactor->set(socket, SW_EVENT_READ);
+     }

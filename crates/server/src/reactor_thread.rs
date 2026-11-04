@@ -14,31 +14,30 @@ use crate::ops::{
     OP_MODE, OP_NOTIFY_CONNECT, OP_ON_FINISH, OP_ON_PIPE_MESSAGE, OP_PACKET_DISPATCH,
     OP_PACKET_INIT, OP_PEER_CERT, OP_PIPE_FD, OP_PIPE_POP, OP_PIPE_READ, OP_PIPE_SEND,
     OP_PIPE_TYPE, OP_PORT_COUNT, OP_PORT_DEL, OP_PORT_DGRAM, OP_PORT_DTLS, OP_PORT_FD,
-    OP_PORT_LISTEN, OP_PORT_READ, OP_PORT_REMOVED, OP_QUEUE_ADD, OP_QUEUE_FULL, OP_QUEUE_SUB,
-    OP_REACTOR_BARRIER, OP_REACTOR_CLOSE, OP_REACTOR_DEL, OP_REACTOR_ID, OP_REACTOR_NUM,
-    OP_REACTOR_THREAD_TYPE, OP_RECVFROM, OP_RESUME_READ, OP_RESUME_TIMER, OP_RUNNING,
-    OP_SEND_CLOSE_FORCE, OP_SESSION_CONN, OP_SESSION_HANDLERS, OP_SET_WAITING_TIME,
-    OP_SINGLE_THREAD, OP_SPAWN_REACTOR_THREAD, OP_SSL_ACCEPT, OP_SSL_PENDING, OP_SSL_READY,
-    OP_SSL_VERIFY, OP_START_MASTER_THREAD, OP_STOP_THREAD_WORKER, OP_STORE_LISTEN_SOCKET,
-    OP_TASK_INIT, OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT, OP_THREAD_JOIN,
-    OP_THREAD_JOINABLE, OP_THREAD_NOTIFY, OP_THREAD0_INIT, OP_VERIFY_PEER, OP_WAIT_EXIT,
-    OP_WAITING_TIME, OP_WORKER_NUM, OP_WORKER_PIPE_UNREAD, OP_WORKER_START, OP_WORKER_STOP,
+    OP_PORT_LISTEN, OP_PORT_READ, OP_PORT_REMOVED, OP_QUEUE_FULL, OP_QUEUE_SUB, OP_REACTOR_BARRIER,
+    OP_REACTOR_CLOSE, OP_REACTOR_DEL, OP_REACTOR_ID, OP_REACTOR_NUM, OP_REACTOR_THREAD_TYPE,
+    OP_RECVFROM, OP_RESUME_READ, OP_RESUME_TIMER, OP_RUNNING, OP_SEND_CLOSE_FORCE, OP_SESSION_CONN,
+    OP_SESSION_HANDLERS, OP_SET_WAITING_TIME, OP_SINGLE_THREAD, OP_SPAWN_REACTOR_THREAD,
+    OP_SSL_ACCEPT, OP_SSL_READY, OP_SSL_VERIFY, OP_START_MASTER_THREAD, OP_STOP_THREAD_WORKER,
+    OP_STORE_LISTEN_SOCKET, OP_TASK_INIT, OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT,
+    OP_THREAD_JOIN, OP_THREAD_JOINABLE, OP_THREAD_NOTIFY, OP_THREAD0_INIT, OP_VERIFY_PEER,
+    OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM, OP_WORKER_PIPE_UNREAD, OP_WORKER_START,
+    OP_WORKER_STOP,
 };
 use crate::{Host, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
 
 /// `swReturnCode` values.
-const SW_CONTINUE: i64 = 1;
-const SW_ERROR: i64 = 4;
-const SW_READY: i64 = 5;
+pub(crate) const SW_CONTINUE: i64 = 1;
+pub(crate) const SW_WAIT: i64 = 2;
+pub(crate) const SW_ERROR: i64 = 4;
+pub(crate) const SW_READY: i64 = 5;
 /// The longest resume back-off, in milliseconds.
 const MAX_WAITING_TIME: u64 = 1024;
 
-/// `ReactorThread_verify_ssl_state`: finish the TLS handshake, then announce the
-/// connection (with the client certificate when the port asks for one).
+/// `ReactorThread_verify_ssl_state` once the socket's TLS handshake is pending:
+/// finish it, then announce the connection (with the client certificate when the
+/// port asks for one).
 pub(crate) fn verify_ssl<H: Host>(h: &mut H) -> i64 {
-    if !h.is(OP_SSL_PENDING) {
-        return SW_CONTINUE;
-    }
     let code = h.signed(OP_SSL_ACCEPT);
     if code != SW_READY {
         return code;
@@ -308,11 +307,8 @@ pub(crate) fn resume_receiving<H: Host>(h: &mut H) {
 
 /// `Server::dispatch_task`: one received data frame to a worker, counting the bytes
 /// queued for it until the worker takes them.
-pub(crate) fn dispatch_task<H: Host>(h: &mut H) -> i64 {
-    let len = h.get(OP_TASK_INIT);
-    if len > 0 {
-        h.op(OP_QUEUE_ADD, len);
-    }
+pub(crate) fn dispatch_task<H: Host>(h: &mut H, len: u64) -> i64 {
+    h.op(OP_TASK_INIT, len);
     if !h.is(OP_FACTORY_DISPATCH) {
         if len > 0 {
             h.op(OP_QUEUE_SUB, len);
@@ -363,10 +359,8 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         RUN_DISPATCH_TASK, RUN_HEARTBEAT_CHECK, RUN_HEARTBEAT_THREAD, RUN_INIT_REACTOR,
         RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED, RUN_PIPE_READ, RUN_REACTOR_THREAD_MAIN,
         RUN_RESUME_RECEIVING, RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE, RUN_THREAD_SHUTDOWN,
-        RUN_VERIFY_SSL,
     };
     match operation {
-        RUN_VERIFY_SSL => verify_ssl(h),
         RUN_PACKET_RECEIVED => packet_received(h),
         RUN_THREAD_SHUTDOWN => {
             shutdown(h);
@@ -391,7 +385,7 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
             resume_receiving(h);
             SW_OK
         }
-        RUN_DISPATCH_TASK => dispatch_task(h),
+        RUN_DISPATCH_TASK => dispatch_task(h, arg),
         RUN_JOIN_REACTOR_THREADS => {
             join_reactor_threads(h);
             SW_OK
@@ -421,14 +415,10 @@ mod tests {
 
     #[test]
     fn ssl_states() {
-        let mut s = Script::with(&[]);
-        assert_eq!(verify_ssl(&mut s), SW_CONTINUE, "plain or ready");
-
-        let mut s = Script::with(&[(OP_SSL_PENDING, 1), (OP_SSL_ACCEPT, 2)]);
+        let mut s = Script::with(&[(OP_SSL_ACCEPT, 2)]);
         assert_eq!(verify_ssl(&mut s), 2, "handshake waits");
 
         let mut s = Script::with(&[
-            (OP_SSL_PENDING, 1),
             (OP_SSL_ACCEPT, 5),
             (OP_HAS_ON_CONNECT, 1),
             (OP_DELAY_RECEIVE, 1),
@@ -439,7 +429,6 @@ mod tests {
 
         let cert = |peer, verify, ok| {
             let mut s = Script::with(&[
-                (OP_SSL_PENDING, 1),
                 (OP_SSL_ACCEPT, 5),
                 (OP_CLIENT_CERT, 1),
                 (OP_PEER_CERT, peer),
@@ -612,13 +601,16 @@ mod tests {
 
     #[test]
     fn dispatch_counts_queued_bytes() {
-        let mut s = Script::with(&[(OP_TASK_INIT, 10), (OP_FACTORY_DISPATCH, 1)]);
-        assert_eq!(dispatch_task(&mut s), SW_OK, "dispatched");
-        assert_eq!(s.args(OP_QUEUE_ADD), vec![10], "queued");
+        let mut s = Script::with(&[(OP_FACTORY_DISPATCH, 1)]);
+        assert_eq!(dispatch_task(&mut s, 10), SW_OK, "dispatched");
+        assert_eq!(s.args(OP_TASK_INIT), vec![10], "queued");
         assert_eq!(s.called(OP_COUNT_DISPATCH), 1, "counted");
 
-        let mut s = Script::with(&[(OP_TASK_INIT, 10)]);
-        assert_eq!(dispatch_task(&mut s), SW_ERR, "failed");
+        let mut s = Script::default();
+        assert_eq!(dispatch_task(&mut s, 0), SW_ERR, "failed");
+        assert_eq!(s.called(OP_QUEUE_SUB), 0, "nothing queued");
+        let mut s = Script::default();
+        assert_eq!(dispatch_task(&mut s, 10), SW_ERR, "failed");
         assert_eq!(s.args(OP_QUEUE_SUB), vec![10], "unqueued");
     }
 }
