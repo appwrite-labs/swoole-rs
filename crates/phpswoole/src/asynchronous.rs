@@ -1,0 +1,286 @@
+//! `swoole_async_coro.cc`: `swoole_async_set()`, the AIO options it shares with
+//! `Server::set()` and `Process\Pool::set()`, and `swoole_async_dns_lookup_coro()`
+//! with its per-thread cache. C++ lends `SwooleG`'s fields and the coroutine DNS
+//! lookup.
+use crate::{
+    constants::IOURING,
+    module::PHP_FATAL_ERROR,
+    ops,
+    options::{self, get},
+};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    ffi::{CStr, c_char, c_void},
+    sync::atomic::Ordering,
+};
+use swoole_rs_corebase::{
+    swoole_rand_any, swr_v1_core_dns_lookup_random, swr_v1_core_set_dns_lookup_random,
+    swr_v1_core_set_wait_signal,
+};
+use swoole_rs_zend::{
+    Call, E_ERROR, E_WARNING, bailout, handlers, php_error,
+    string::bytes,
+    sys::{IS_STRING, swr_zval_get_double, swr_zval_get_long, swr_zval_is_true, zend_array, zval},
+    type_of, value,
+};
+
+/// `SW_ERROR_OPERATION_NOT_SUPPORT` and `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
+const OPERATION_NOT_SUPPORT: i32 = 507;
+const DNSLOOKUP_RESOLVE_FAILED: i32 = 711;
+
+handlers! {
+    zif_swoole_async_set => async_set;
+    zif_swoole_async_dns_lookup_coro => dns_lookup;
+}
+
+/// A cached lookup: the address and when it expires (`Timer::get_absolute_msec`).
+struct Cached {
+    address: Vec<u8>,
+    expires: i64,
+}
+
+thread_local! {
+    /// `request_cache_map`, keyed by the domain's bytes.
+    static CACHE: RefCell<HashMap<Vec<u8>, Cached>> = RefCell::new(HashMap::new());
+}
+
+fn truthy(value: *mut zval) -> bool {
+    // SAFETY: a live zval; Zend's own conversion.
+    unsafe { swr_zval_is_true(value) }
+}
+
+fn long(value: *mut zval) -> i64 {
+    // SAFETY: as above.
+    unsafe { swr_zval_get_long(value) }
+}
+
+fn double(value: *mut zval) -> f64 {
+    // SAFETY: as above.
+    unsafe { swr_zval_get_double(value) }
+}
+
+/// `SW_MAX(low, SW_MIN(v, UINT32_MAX))`.
+fn bounded(value: i64, low: u32) -> u32 {
+    u32::try_from(value.clamp(i64::from(low), i64::from(u32::MAX))).unwrap_or(u32::MAX)
+}
+
+/// `php_swoole_async_coro_rshutdown`: the cache goes with the request.
+pub(crate) unsafe extern "C" fn rshutdown() {
+    CACHE.with_borrow_mut(HashMap::clear);
+}
+
+/// `php_swoole_set_aio_option(options)`: the AIO pool's sizes and timeouts, and
+/// `io_uring`'s when the build has it.
+/// # Safety
+/// After MINIT, with a live options table.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn php_swoole_set_aio_option(options: *mut zend_array) {
+    let ops = ops();
+    // Every setter below is C++'s, taking a plain value.
+    if let Some(value) = get(options, c"aio_core_worker_num") {
+        // SAFETY: as above.
+        unsafe { (ops.set_aio_core_worker_num)(bounded(long(value), 1)) };
+    }
+    if let Some(value) = get(options, c"aio_worker_num") {
+        // SAFETY: as above.
+        unsafe { (ops.set_aio_worker_num)(bounded(long(value), 1)) };
+    }
+    if let Some(value) = get(options, c"aio_max_wait_time") {
+        // SAFETY: as above.
+        unsafe { (ops.set_aio_max_wait_time)(double(value)) };
+    }
+    if let Some(value) = get(options, c"aio_max_idle_time") {
+        // SAFETY: as above.
+        unsafe { (ops.set_aio_max_idle_time)(double(value)) };
+    }
+    if crate::FLAGS.load(Ordering::Relaxed) & IOURING == 0 {
+        return;
+    }
+    if let Some(value) = get(options, c"iouring_entries") {
+        // SAFETY: as above.
+        unsafe { (ops.set_iouring_entries)(bounded(long(value), 0)) };
+    }
+    if let Some(value) = get(options, c"iouring_workers") {
+        // SAFETY: as above.
+        unsafe { (ops.set_iouring_workers)(bounded(long(value), 0)) };
+    }
+    if let Some(value) = get(options, c"iouring_flag") {
+        // SAFETY: as above.
+        unsafe { (ops.set_iouring_flag)(long(value)) };
+    }
+}
+
+/// `php_swoole_fatal_error(level, message)`: the error code, then the error,
+/// whose bailout waits for the handler's end.
+fn fatal_error(level: i32, message: &CStr) {
+    // SAFETY: C++'s setter.
+    unsafe { (ops().set_last_error)(PHP_FATAL_ERROR) };
+    // SAFETY: an error from Rust, through the shim's zend_try.
+    bailout::defer(unsafe { php_error(level, message) });
+}
+
+/// `swoole_async_set(array $settings)`.
+fn async_set(call: &Call) {
+    let ops = ops();
+    // SAFETY: C++'s getters and setters, here and below.
+    if unsafe { (ops.main_thread)() } == 0 {
+        // SAFETY: as above.
+        unsafe { (ops.set_last_error)(OPERATION_NOT_SUPPORT) };
+        call.set_bool(true);
+        return;
+    }
+    // SAFETY: as above.
+    if unsafe { (ops.reactor_created)() } != 0 {
+        // E_ERROR bails out: upstream goes no further.
+        fatal_error(
+            E_ERROR,
+            c"eventLoop has already been created. unable to change settings",
+        );
+        return;
+    }
+    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+        call.set_bool(false);
+        return;
+    };
+    // SAFETY: an array zval.
+    let options = unsafe { value::table(settings) };
+    if !options::set_global(options) {
+        return;
+    }
+    // SAFETY: a live table.
+    unsafe { php_swoole_set_aio_option(options) };
+    if let Some(value) = get(options, c"wait_signal") {
+        swr_v1_core_set_wait_signal(truthy(value));
+    }
+    if let Some(value) = get(options, c"dns_cache_refresh_time") {
+        // SAFETY: as above.
+        unsafe { (ops.set_dns_cache_refresh_time)(double(value)) };
+    }
+    if let Some(value) = get(options, c"thread_num").or_else(|| get(options, c"min_thread_num")) {
+        // SAFETY: as above.
+        unsafe { (ops.set_aio_core_worker_num)(bounded(long(value), 1)) };
+    }
+    if let Some(value) = get(options, c"max_thread_num") {
+        // SAFETY: as above.
+        unsafe { (ops.set_aio_worker_num)(bounded(long(value), 1)) };
+    }
+    if let Some(value) = get(options, c"dns_lookup_random") {
+        swr_v1_core_set_dns_lookup_random(truthy(value));
+    }
+    if let Some(value) = get(options, c"enable_coroutine") {
+        // SAFETY: as above.
+        unsafe { (ops.set_enable_coroutine)(u8::from(truthy(value))) };
+    }
+    call.set_bool(true);
+}
+
+/// The lookup's answers, as C++ pushes them.
+extern "C" fn push(list: *mut c_void, address: *const c_char) {
+    // SAFETY: `list` is the vector `dns_lookup` lent for the call.
+    let list = unsafe { &mut *list.cast::<Vec<Vec<u8>>>() };
+    // SAFETY: C++ passes a live C string.
+    let address = unsafe { CStr::from_ptr(address) };
+    list.push(address.to_bytes().to_vec());
+}
+
+/// `swoole_async_dns_lookup_coro(string $domain, float $timeout = 5, int $type = AF_INET)`.
+fn dns_lookup(call: &Call) {
+    let ops = ops();
+    // SAFETY: C++'s getters and effects, here and below.
+    unsafe { (ops.current_coroutine_safe)() };
+    // SAFETY: as above.
+    let default_timeout = unsafe { (ops.default_dns_timeout)() };
+    let parsed = call.arity(1, 3).and_then(|()| {
+        let domain = call.zval(1);
+        Ok((
+            domain,
+            call.double(2, default_timeout)?,
+            call.long(3, i64::from(libc::AF_INET))?,
+        ))
+    });
+    let Ok((domain, timeout, family)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
+    // SAFETY: a passed argument is a live zval.
+    if unsafe { type_of(domain) } != IS_STRING {
+        fatal_error(E_WARNING, c"invalid domain name");
+        call.set_bool(false);
+        return;
+    }
+    // SAFETY: a string zval holds a live string.
+    let string = unsafe { value::str_of(domain) };
+    // SAFETY: a live string, NUL-terminated after its bytes.
+    let name = unsafe { bytes(string) };
+    if name.is_empty() {
+        fatal_error(E_WARNING, c"domain name empty");
+        call.set_bool(false);
+        return;
+    }
+    let cached = CACHE.with_borrow(|cache| {
+        // SAFETY: as above.
+        let now = unsafe { (ops.absolute_msec)() };
+        cache
+            .get(name)
+            .filter(|entry| entry.expires > now)
+            .map(|entry| entry.address.clone())
+    });
+    if let Some(address) = cached {
+        call.set_bytes(&address);
+        return;
+    }
+    // SAFETY: as above.
+    unsafe { (ops.check_reactor)() };
+    let mut answers: Vec<Vec<u8>> = Vec::new();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "C's (int) conversion of the family"
+    )]
+    let family = family as i32;
+    // SAFETY: the domain as a C string (it ends at a NUL, as upstream passes
+    // it), and a vector `push` fills during the call; the coroutine may yield.
+    unsafe {
+        (ops.dns_lookup)(
+            name.as_ptr().cast(),
+            family,
+            timeout,
+            push,
+            (&raw mut answers).cast(),
+        );
+    }
+    if answers.is_empty() {
+        // SAFETY: as above.
+        unsafe { (ops.set_last_error)(DNSLOOKUP_RESOLVE_FAILED) };
+        call.set_bool(false);
+        return;
+    }
+    let pick = if swr_v1_core_dns_lookup_random() {
+        usize::try_from(swoole_rand_any()).unwrap_or_default() % answers.len()
+    } else {
+        0
+    };
+    let address = answers.swap_remove(pick);
+    call.set_bytes(&address);
+    // SAFETY: as above.
+    let refresh = unsafe { (ops.dns_cache_refresh_time)() };
+    // SAFETY: as above.
+    let now = unsafe { (ops.absolute_msec)() };
+    #[expect(clippy::cast_possible_truncation, reason = "C's (int64_t) conversion")]
+    let expires = now + (refresh * 1000.0) as i64;
+    CACHE.with_borrow_mut(|cache| cache.insert(name.to_vec(), Cached { address, expires }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded;
+
+    #[test]
+    fn worker_counts_clamp_like_upstream() {
+        assert_eq!(bounded(-5, 1), 1);
+        assert_eq!(bounded(0, 1), 1);
+        assert_eq!(bounded(0, 0), 0);
+        assert_eq!(bounded(8, 1), 8);
+        assert_eq!(bounded(i64::MAX, 1), u32::MAX);
+    }
+}

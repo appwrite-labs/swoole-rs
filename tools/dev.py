@@ -98,7 +98,7 @@ def changed_modules(base):
 
 # Gates that read another module's native-control report: tls-native attests the coroutine
 # originals' build and borrows corebase-lifecycle's uninstrumented control (#420).
-CONTROLS = {'tls': ('coroutine', 'corebase')}
+CONTROLS = {'tls': ('coroutine',)}
 
 
 def selected_modules(args):

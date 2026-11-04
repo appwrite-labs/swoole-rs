@@ -33,7 +33,7 @@ struct swr_v1_phpruntime_ops {
     uint8_t (*main_thread)(void);
     uint32_t (*active_threads)(void);
     void (*call_hook)(uint8_t after, uint32_t *flags);
-    int32_t (*transport)(uint32_t index, uint8_t hook);
+    void *socket_create; /* the coroutine php_stream_transport_factory */
     void (*stream_ops)(uint8_t stdio, uint8_t hook);
     void (*pdo)(uint32_t flag, uint8_t blocking);
     void *(*callable)(struct _zval_struct *name);
@@ -61,8 +61,10 @@ uint8_t swr_v1_phpruntime_set_hook_flags(struct _zend_execute_data *frame, struc
 /* PHPCoroutine::enable_hook: bit 0 applied, bit 1 a trapped bailout. */
 uint8_t swr_v1_phpruntime_enable_hook(uint32_t flags);
 void swr_v1_phpruntime_unsafe_functions(uint8_t disable);
-/* RINIT: 1 on the main thread (C++ then saves the original transports). */
+/* RINIT: 1 on the main thread (C++ then saves the original stream ops). */
 uint8_t swr_v1_phpruntime_rinit(void);
+/* The transport factory PHP had registered for proto (saved at RINIT), or NULL. */
+void *swr_v1_phpruntime_original_transport(const char *proto, size_t length);
 /* RSHUTDOWN: 1 if a bailout was trapped. */
 uint8_t swr_v1_phpruntime_rshutdown(void);
 swr_v1_phpruntime_handler swr_v1_phpruntime_original_handler(const char *name, size_t length);

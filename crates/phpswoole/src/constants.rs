@@ -18,7 +18,7 @@ const TLS1_2: u32 = 1 << 6;
 const TLS1_3: u32 = 1 << 7;
 const DTLS: u32 = 1 << 8;
 const SSL3: u32 = 1 << 9;
-const IOURING: u32 = 1 << 10;
+pub(crate) const IOURING: u32 = 1 << 10;
 
 /// `SWOOLE_VERSION`.
 pub(crate) const VERSION: &CStr = c"6.2.4";

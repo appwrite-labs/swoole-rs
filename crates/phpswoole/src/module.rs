@@ -50,7 +50,7 @@ const RSHUTDOWN_BEGIN: c_int = 3;
 const RSHUTDOWN_END: c_int = 4;
 /// `SW_SOCKET_BUFFER_SIZE` and `SW_ERROR_PHP_FATAL_ERROR`.
 const SOCKET_BUFFER_SIZE: i64 = 8 * 1024 * 1024;
-const PHP_FATAL_ERROR: i32 = 503;
+pub(crate) const PHP_FATAL_ERROR: i32 = 503;
 /// `SUCCESS`.
 const SUCCESS: c_int = 0;
 
@@ -106,7 +106,6 @@ unsafe extern "C" {
     fn php_swoole_server_rshutdown();
     fn php_swoole_http_server_rshutdown();
     fn php_swoole_http_response_rshutdown();
-    fn php_swoole_async_coro_rshutdown();
     fn php_swoole_redis_server_rshutdown();
     fn php_swoole_coroutine_rshutdown();
     fn php_swoole_coroutine_scheduler_rshutdown();
@@ -306,7 +305,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
         Step::Hook(php_swoole_server_rshutdown),
         Step::Hook(php_swoole_http_server_rshutdown),
         Step::Hook(php_swoole_http_response_rshutdown),
-        Step::Hook(php_swoole_async_coro_rshutdown),
+        Step::Hook(crate::asynchronous::rshutdown),
         Step::Hook(php_swoole_redis_server_rshutdown),
         Step::Hook(php_swoole_coroutine_rshutdown),
         Step::Hook(php_swoole_coroutine_scheduler_rshutdown),
