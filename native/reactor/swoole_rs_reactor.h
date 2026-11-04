@@ -137,7 +137,7 @@ bool swr_v1_reactor_handlers_set(swr_v1_reactor_handlers *, int fd_type, int eve
 bool swr_v1_reactor_handlers_isset(const swr_v1_reactor_handlers *, int fd_type, int events);
 swr_v1_reactor_handler swr_v1_reactor_handlers_get(const swr_v1_reactor_handlers *, uint32_t kind, int fd_type, bool error_only);
 void swr_v1_reactor_handlers_set_default(swr_v1_reactor_handlers *, uint32_t kind, swr_v1_reactor_handler);
-swr_v1_reactor_handler swr_v1_reactor_handlers_default(const swr_v1_reactor_handlers *, uint32_t kind);
+const swr_v1_reactor_handler *swr_v1_reactor_handlers_default(const swr_v1_reactor_handlers *, uint32_t kind);
 typedef struct {
     void *context;
     uint32_t backend;
