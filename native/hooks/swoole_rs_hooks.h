@@ -19,42 +19,18 @@
 extern "C" {
 #endif
 typedef bool (*swr_v1_hook_offload)(void (*job)(void *), void *context);
-FILE *swr_v1_hook_fopen(const char *pathname, const char *mode, swr_v1_hook_offload offload);
-FILE *swr_v1_hook_fdopen(int fd, const char *mode, swr_v1_hook_offload offload);
-FILE *swr_v1_hook_freopen(const char *pathname, const char *mode, FILE *stream, swr_v1_hook_offload offload);
-size_t swr_v1_hook_fread(void *ptr, size_t size, size_t nmemb, FILE *stream, swr_v1_hook_offload offload);
-size_t swr_v1_hook_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream, swr_v1_hook_offload offload);
-char *swr_v1_hook_fgets(char *s, int size, FILE *stream, swr_v1_hook_offload offload);
-int swr_v1_hook_fputs(const char *s, FILE *stream, swr_v1_hook_offload offload);
-int swr_v1_hook_feof(FILE *stream, swr_v1_hook_offload offload);
-int swr_v1_hook_fflush(FILE *stream, swr_v1_hook_offload offload);
-int swr_v1_hook_fclose(FILE *stream, swr_v1_hook_offload offload);
-DIR *swr_v1_hook_opendir(const char *name, swr_v1_hook_offload offload);
-struct dirent *swr_v1_hook_readdir(DIR *dirp, swr_v1_hook_offload offload);
-int swr_v1_hook_closedir(DIR *dirp, swr_v1_hook_offload offload);
-int swr_v1_hook_open(const char *pathname, int flags, mode_t mode, swr_v1_hook_offload offload);
-int swr_v1_hook_fstat(int fd, struct stat *statbuf, swr_v1_hook_offload offload);
-int swr_v1_hook_stat(const char *path, struct stat *statbuf, swr_v1_hook_offload offload);
-int swr_v1_hook_lstat(const char *path, struct stat *statbuf, swr_v1_hook_offload offload);
-int swr_v1_hook_unlink(const char *pathname, swr_v1_hook_offload offload);
-int swr_v1_hook_mkdir(const char *pathname, mode_t mode, swr_v1_hook_offload offload);
-int swr_v1_hook_rmdir(const char *pathname, swr_v1_hook_offload offload);
-int swr_v1_hook_rename(const char *oldpath, const char *newpath, swr_v1_hook_offload offload);
-int swr_v1_hook_fsync(int fd, swr_v1_hook_offload offload);
-int swr_v1_hook_fdatasync(int fd, swr_v1_hook_offload offload);
-int swr_v1_hook_ftruncate(int fd, off_t length, swr_v1_hook_offload offload);
-off_t swr_v1_hook_lseek(int fd, off_t offset, int whence, swr_v1_hook_offload offload);
-ssize_t swr_v1_hook_readlink(const char *pathname, char *buf, size_t len, swr_v1_hook_offload offload);
-int swr_v1_hook_statvfs(const char *path, struct statvfs *buf, swr_v1_hook_offload offload);
-int swr_v1_hook_access(const char *pathname, int mode, swr_v1_hook_offload offload);
+/* What the hooked file, sleep and resolver functions (Rust, under upstream's
+ * swoole_coroutine_<name>) need of native; hook.cc registers it at load (swr_v1_hook_set_host). */
+typedef struct swr_v1_hook_host {
+    bool (*in_coroutine)(void);    /* a reactor and a coroutine are running */
+    swr_v1_hook_offload offload;   /* swoole::coroutine::async */
+    int (*sleep)(double seconds);  /* System::sleep */
+    const void *uring;             /* &Iouring::host with io_uring, else NULL */
+    bool uring_statx;              /* HAVE_IOURING_STATX */
+    bool uring_ftruncate;          /* HAVE_IOURING_FTRUNCATE */
+} swr_v1_hook_host;
+void swr_v1_hook_set_host(const swr_v1_hook_host *host);
 int swr_v1_hook_close_fd(int fd, swr_v1_hook_offload offload);
-int swr_v1_hook_getaddrinfo(const char *name,
-                            const char *service,
-                            const struct addrinfo *req,
-                            struct addrinfo **pai,
-                            swr_v1_hook_offload offload);
-/* The lookup's h_errno (0 if the pool refused it) becomes the caller's. */
-struct hostent *swr_v1_hook_gethostbyname(const char *name, swr_v1_hook_offload offload);
 bool swr_v1_hook_no_coro(bool reactor, bool coroutine);
 /* System::read_file / write_file: the whole operation on the pool (offload). Each
  * warning reaches warn on the pool thread with the failing call's errno, named by
