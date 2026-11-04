@@ -8,7 +8,7 @@ use crate::{
     send,
 };
 use std::{ffi::CStr, sync::atomic::Ordering::Relaxed};
-use swoole_rs_zend::sys::zend_string;
+use swoole_rs_zend::sys::{zend_string, zval};
 
 /// What the HTTP/2 server reads and writes of a context.
 #[derive(Clone, Copy)]
@@ -27,6 +27,83 @@ pub enum Field {
     CompressionTypes,
     StreamId,
 }
+
+/// The request arrays and the response object the HTTP/2 server reads.
+#[derive(Clone, Copy)]
+pub enum Value {
+    Server,
+    Header,
+    Response,
+    Get,
+    Post,
+    Cookie,
+}
+
+/// `$request->server`, `header`, `get`, `post` or `cookie` (made on first
+/// use), or the response object.
+/// # Safety
+/// `ctx` is a live context with its objects.
+#[must_use]
+pub unsafe fn value(ctx: *mut Context, which: Value) -> *mut zval {
+    let state = send::state(ctx);
+    let property = match which {
+        Value::Response => return state.response.zobject.ptr,
+        Value::Server => parse::Property::Server,
+        Value::Header => parse::Property::Header,
+        Value::Get => parse::Property::Get,
+        Value::Post => parse::Property::Post,
+        Value::Cookie => parse::Property::Cookie,
+    };
+    parse::property(state, property)
+}
+
+/// The request body's bytes so far (none without a body).
+/// # Safety
+/// `ctx` is a live context; the bytes live until the next append.
+#[must_use]
+pub unsafe fn data<'a>(ctx: *mut Context) -> &'a [u8] {
+    send::state(ctx)
+        .request
+        .h2_data
+        .as_deref()
+        .map_or(&[], Vec::as_slice)
+}
+
+/// Start the request body (`SW_HTTP2_DATA_BUFFER_SIZE` reserved), unless
+/// it has started.
+/// # Safety
+/// `ctx` is a live context.
+pub unsafe fn data_start(ctx: *mut Context) {
+    send::state(ctx)
+        .request
+        .h2_data
+        .get_or_insert_with(|| Box::new(Vec::with_capacity(DATA_BUFFER_SIZE)));
+}
+
+/// Append a DATA frame's payload to the request body.
+/// # Safety
+/// `ctx` is a live context.
+pub unsafe fn data_append(ctx: *mut Context, payload: &[u8]) {
+    // SAFETY: per the caller.
+    unsafe { data_start(ctx) };
+    if let Some(data) = send::state(ctx).request.h2_data.as_mut() {
+        data.extend_from_slice(payload);
+    }
+}
+
+/// `parse_multipart_data` over the whole body.
+/// # Safety
+/// `ctx` is a live context with a multipart parser.
+pub unsafe fn multipart(ctx: *mut Context) -> bool {
+    let state = send::state(ctx);
+    let data = state.request.h2_data.take().unwrap_or_default();
+    let parsed = parse::multipart_parse(state, data.as_ptr(), data.len());
+    send::state(ctx).request.h2_data = Some(data);
+    parsed
+}
+
+/// `SW_HTTP2_DATA_BUFFER_SIZE`.
+const DATA_BUFFER_SIZE: usize = 8192;
 
 /// Built with `SW_HAVE_COMPRESSION`.
 fn compression() -> bool {

@@ -171,7 +171,6 @@ void swr_v1_phphttp_set_context(struct _zend_object *object, void *context);
 
 /* What those methods ask of the context, implemented in ext-src over
  * swoole::http::Context until it moves to Rust. */
-enum { SWR_PHPHTTP_HEADER = 0, SWR_PHPHTTP_COOKIE = 1, SWR_PHPHTTP_TRAILER = 2 };
 void swr_http_host_error(int code, int always, const char *message);
 void swr_http_host_request_free(void *context);
 void *swr_http_host_request_new(void);
@@ -194,7 +193,6 @@ void swr_http_host_log(int level, int error, const char *func, const char *messa
 void swr_http_host_treat_data(int arg, char *str, struct _zval_struct *array);
 int swr_http_host_websocket_connection(void *context);
 int swr_http_host_tmpfile(char *path);
-const char *swr_http_host_http2_data(void *context, size_t *length);
 
 /* brotli/zstd output (swr_http_host_compress_other) as the context's
  * compressed body (crates/phphttp/src/header.rs). */
@@ -216,7 +214,6 @@ int swr_http_host_compress_other(void *context, int method, const char *data, si
  * response, exit() in it) trap a Zend bailout in C++: request_create,
  * response_free and redirect return true when one happened, and Rust
  * re-raises it (docs/zend.md). */
-struct _zval_struct *swr_http_host_response_property(void *context, int which);
 bool swr_http_host_redirect(void *context, struct _zval_struct *url, struct _zval_struct *code, struct _zval_struct *return_value);
 bool swr_http_host_goaway(void *context, int64_t code, struct _zend_string *debug);
 void swr_http_host_recv(void *context, double timeout, struct _zval_struct *return_value);

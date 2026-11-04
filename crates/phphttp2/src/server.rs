@@ -113,22 +113,9 @@ const SW_ERR: c_int = -1;
 
 use swoole_rs_phphttp::http2::Field;
 
-/// `swr_h2s_value`.
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub(crate) enum Value {
-    Server,
-    Header,
-    Response,
-    Get,
-    Cookie = 5,
-}
+pub(crate) use swoole_rs_phphttp::http2::Value;
 
 unsafe extern "C" {
-    fn swr_h2s_zval(ctx: *mut c_void, which: Value) -> *mut zval;
-    fn swr_h2s_data(ctx: *mut c_void, create: bool, length: *mut usize) -> *const c_char;
-    fn swr_h2s_data_append(ctx: *mut c_void, data: *const c_char, length: usize);
-    fn swr_h2s_body(ctx: *mut c_void, multipart: bool) -> bool;
     fn swr_h2s_query(array: *mut zval, query: *const c_char, length: usize);
     fn swr_h2s_path(ctx: *mut c_void, path: *const c_char, length: usize);
     fn swr_h2s_cookie(array: *mut zval, cookie: *const c_char, length: usize);
@@ -168,8 +155,8 @@ fn close(ctx: *mut c_void) {
 }
 
 pub(crate) fn zval_of(ctx: *mut c_void, which: Value) -> *mut zval {
-    // SAFETY: a live context.
-    unsafe { swr_h2s_zval(ctx, which) }
+    // SAFETY: a live context with its objects.
+    unsafe { swoole_rs_phphttp::http2::value(ctx, which) }
 }
 
 /// `swoole_warning` (`error` 0) or `swoole_error_log(level, error)` as `func`.
@@ -1222,8 +1209,10 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
         match (action, &stream) {
             (recv::CONTEXT, Some(stream)) => ctx = stream.ctx,
             (recv::BUFFER, _) => {
-                // SAFETY: a live context; the buffer is created.
-                unsafe { swr_h2s_data(ctx, true, &raw mut facts.buffered_length) };
+                // SAFETY: a live context.
+                unsafe { swoole_rs_phphttp::http2::data_start(ctx) };
+                // SAFETY: as above.
+                facts.buffered_length = unsafe { swoole_rs_phphttp::http2::data(ctx) }.len();
                 facts.maximum = session.max_body_size;
                 facts.ended = get(ctx, Field::End);
             }
@@ -1232,13 +1221,13 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
             }
             (recv::REMOVE, _) => session.remove(stream_id),
             // SAFETY: a live context and the frame's payload.
-            (recv::APPEND, _) => unsafe { swr_h2s_data_append(ctx, payload.cast(), length) },
+            (recv::APPEND, _) => unsafe {
+                swoole_rs_phphttp::http2::data_append(ctx, bytes(payload.cast(), length));
+            },
             (recv::FLOW, Some(stream)) => flow(session, stream, ctx, stream_id, length),
             (recv::LENGTH, _) => {
-                let mut buffered = 0;
-                // SAFETY: a live context; nothing is created.
-                unsafe { swr_h2s_data(ctx, false, &raw mut buffered) };
-                ok = buffered > 0;
+                // SAFETY: a live context.
+                ok = !unsafe { swoole_rs_phphttp::http2::data(ctx) }.is_empty();
             }
             (recv::END_BUFFER, _) => {
                 facts.parse_body = get(ctx, Field::ParseBody);
@@ -1246,11 +1235,14 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
                 facts.multipart = get(ctx, Field::Multipart);
             }
             (recv::FORM, _) => {
-                // SAFETY: a live context with a body.
-                unsafe { swr_h2s_body(ctx, false) };
+                // SAFETY: a live context.
+                let body = unsafe { swoole_rs_phphttp::http2::data(ctx) };
+                let post = zval_of(ctx, Value::Post);
+                // SAFETY: the live `post` array and the body's bytes, which C++ copies.
+                unsafe { swr_h2s_query(post, body.as_ptr().cast(), body.len()) };
             }
-            // SAFETY: as above.
-            (recv::MULTIPART, _) => ok = unsafe { swr_h2s_body(ctx, true) },
+            // SAFETY: a live context with a multipart parser.
+            (recv::MULTIPART, _) => ok = unsafe { swoole_rs_phphttp::http2::multipart(ctx) },
             (recv::HANDLE, Some(stream)) => session.handle(stream),
             (recv::WARN, _) => log(
                 LOG_WARNING,

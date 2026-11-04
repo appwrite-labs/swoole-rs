@@ -94,6 +94,22 @@ struct swr_h2s_request {
     void *data;
 };
 typedef void (*swr_h2s_handler)(struct swr_h2s_request *request);
+/* An async server's finished request (crates/phphttp/src/server.rs): the
+ * static handler or the port's onRequest. It asks for the connection (null:
+ * closed) and what it reads of it and the server. */
+void swr_v1_phphttp_server_http2_request(struct swr_h2s_request *request);
+typedef struct {
+    double last_recv_time;
+    int64_t local_port;
+    int64_t remote_port;
+    int loopback;
+    int server_fd;
+    bool cache;
+    bool static_handler;
+    bool unavailable;
+    bool coroutine;
+} swr_h2s_connection_facts;
+void *swr_h2s_connection(void *server, int64_t fd, swr_h2s_connection_facts *out);
 bool swr_v1_phphttp2_session_exists(int64_t fd);
 void swr_v1_phphttp2_session_new(
     int64_t fd, void *default_ctx, uint32_t max_body_size, bool is_coro, swr_h2s_handler handle, void *data);
@@ -154,15 +170,10 @@ void swr_h2s_file_content_free(void *owner);
 const char *swr_h2s_mime_type(const char *path, size_t length);
 
 /* What it asks of C++, defined by ext-src/swoole_http2_server.cc. */
-enum swr_h2s_value { SWR_H2S_SERVER, SWR_H2S_HEADER, SWR_H2S_RESPONSE, SWR_H2S_GET, SWR_H2S_POST, SWR_H2S_COOKIE };
 /* A stream's new context: a copy of `default_ctx`'s settings, its request's streamId set. */
 void *swr_h2s_stream_context(void *default_ctx, int64_t fd, uint32_t stream_id);
 void swr_h2s_wait(void **coroutine);
 void swr_h2s_wake(void *coroutine);
-struct _zval_struct *swr_h2s_zval(void *ctx, int which);
-const char *swr_h2s_data(void *ctx, bool create, size_t *length);
-void swr_h2s_data_append(void *ctx, const char *data, size_t length);
-bool swr_h2s_body(void *ctx, bool multipart);
 void swr_h2s_query(struct _zval_struct *array, const char *query, size_t length);
 void swr_h2s_path(void *ctx, const char *path, size_t length);
 void swr_h2s_cookie(struct _zval_struct *array, const char *cookie, size_t length);
