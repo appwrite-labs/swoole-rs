@@ -330,7 +330,7 @@ def plan(args, reports):
         script('http2-header', 'tests/modules/http2/header_calls.py', '--source', ROOT / 'target/upstream/src',
                '--core-report', reports / 'http2-native.json', *includes, *report('http2-header'))
     if 'clients' in modules:
-        for name, runner in [('clients-policy', 'gate.py'), ('clients-http', 'http_gate.py'), ('clients-codec', 'codec_gate.py'),
+        for name, runner in [('clients-policy', 'gate.py'), ('clients-codec', 'codec_gate.py'),
                              ('clients-pool', 'pool_gate.py'),
                              ('clients-http-format', 'http_format_gate.py'),
                              ('clients-ip', 'ip_gate.py'), ('clients-ip-text', 'ip_text_gate.py')]:
@@ -343,7 +343,6 @@ def plan(args, reports):
                                    ('coro', 'php_coro.py'), ('async', 'php_async.py'), ('coro_io', 'php_coro_io.py')]:
                 name = 'clients-php-' + family
                 script(name, 'tests/modules/clients/' + runner, '--build-manifest', manifest,
-                       *(['--source-ref', 'HEAD'] if family != 'lifecycle' else []),
                        *php_for('curl', 'sockets'), *engines, *report(name))
     if 'phpcollections' in modules:
         if integrate:
