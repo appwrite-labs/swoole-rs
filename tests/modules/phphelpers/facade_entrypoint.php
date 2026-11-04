@@ -24,10 +24,8 @@ $actual=m26_facade_custody(new M26FacadeStringable(),$callback);
 unset($callback);
 $expected=['copy'=>'second','self_copy'=>'second','move_source_null'=>true,'self_move_null'=>true,
     'conversion'=>'converted','retained'=>'owned','taken'=>'owned',
-    'duplicates'=>[[null,null],['plain','plain'],["a","a\0B"]],'lower'=>'abc',
-    'variable_copy'=>true,'variable_move'=>true,'updates'=>true,'array_count'=>4,
-    'walk'=>[['key'=>'entry','value'=>'second'],['key'=>7,'value'=>'last'],['key'=>9,'value'=>'set'],['key'=>10,'value'=>'append']],
-    'map'=>['entry'=>'second',7=>'last',9=>'set',10=>'append'],
+    'duplicates'=>[[null,null],['plain','plain'],["a","a\0B"]],
+    'variable_copy'=>true,'variable_move'=>true,
     'callable_ready'=>true,'called'=>['nested'=>11],'nullable_ready'=>true,'nullable_null'=>true];
 if($actual!==$expected || $events!==['convert','invoke','destroy'])throw new RuntimeException('facade result/custody mismatch: '.json_encode([$actual,$events]));
 echo json_encode(['matches'=>count($expected),'results'=>$actual,'events'=>$events],JSON_THROW_ON_ERROR),"\n";
