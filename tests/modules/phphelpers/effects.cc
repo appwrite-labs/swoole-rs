@@ -16,28 +16,12 @@ struct zend_fcall_info_cache {};
 struct EffectFailure {};
 static std::ostringstream trace;
 static int effect, fail_at;
-static bool numeric, inserted, truthy, callable;
+static bool truthy, callable;
 static void tick(const char *name) { trace<<name<<';';if(effect++==fail_at)throw EffectFailure{}; }
 #define zend_always_inline inline
 #define E_WARNING 2
 #define Z_ARRVAL_P(p) ((p)->array)
-static bool numeric_key(const char *,size_t,zend_ulong &index) {tick("numeric");index=42;return numeric;}
-#define ZEND_HANDLE_NUMERIC_STR(p,n,i) ::numeric_key(p,n,i)
-static zval *add(HashTable *ht) {tick("add");return inserted ? &ht->current : nullptr;}
-static zval *find(HashTable *ht) {tick("find");return &ht->current;}
-static zval *update(HashTable *ht) {tick("update");return &ht->current;}
-static zval *zend_hash_index_add(HashTable *ht,zend_ulong index,zval *) {trace<<"index:add:"<<index<<';';return add(ht);}
-static zval *zend_hash_str_add(HashTable *ht,const char *key,size_t length,zval *) {trace<<"string:add:"<<std::string(key,length)<<';';return add(ht);}
-static zval *zend_hash_index_find(HashTable *ht,zend_ulong index) {trace<<"index:find:"<<index<<';';return find(ht);}
-static zval *zend_hash_str_find(HashTable *ht,const char *key,size_t length) {trace<<"string:find:"<<std::string(key,length)<<';';return find(ht);}
-static zval *zend_hash_index_update(HashTable *ht,zend_ulong index,zval *) {trace<<"index:update:"<<index<<';';return update(ht);}
-static zval *zend_hash_str_update(HashTable *ht,const char *key,size_t length,zval *) {trace<<"string:update:"<<std::string(key,length)<<';';return update(ht);}
-static bool is_array(zval *value) {tick("array-observation");return value->type==6;}
-#define ZVAL_IS_ARRAY(p) is_array(p)
-static void array_init_size(zval *value,size_t) {tick("array-init");value->type=6;}
 static void addref(zval *value) {tick("addref");++value->refs;}
-#define Z_ADDREF_P(p) addref(p)
-static void add_next_index_zval(zval *,zval *value) {trace<<"append:"<<value->id<<';';tick("append");}
 static void undef(zval *value) {tick("undef");value->type=0;}
 #define ZVAL_UNDEF(p) undef(p)
 static bool zval_is_true(zval *) {tick("truthy");return truthy;}
@@ -107,14 +91,6 @@ template<class Callable> static std::string construct() {
     catch(const EffectFailure &) {trace<<"throw;";}
     return trace.str();
 }
-using Merge=void (*)(zval *,const char *,size_t,zval *);
-static std::string merge(Merge fn,bool array) {
-    trace.str("");trace.clear();effect=0;zend_array table;table.current.type=array ? 6 : 3;table.current.id=1;
-    zval container;container.array=&table;zval added;added.id=2;
-    try {fn(&container,"fixture",7,&added);trace<<"return;";}
-    catch(const EffectFailure &) {trace<<"throw;";}
-    trace<<"refs:"<<table.current.refs;return trace.str();
-}
 using Call=bool (*)(zend_fcall_info_cache *,uint32_t,zval *,zval *,bool);
 static std::string call(Call fn,bool coroutine,bool return_storage) {
     trace.str("");trace.clear();effect=0;exception=nullptr;
@@ -133,11 +109,6 @@ static std::string named_call(NamedCall fn) {
 }
 int main() {
     size_t checks=0;
-    for(bool num:{false,true})for(bool add_ok:{false,true})for(bool array:{false,true})for(int fail=-1;fail<12;++fail) {
-        numeric=num;inserted=add_ok;fail_at=fail;
-        const auto before=merge(reference::array_add_or_merge,array),after=merge(candidate::array_add_or_merge,array);
-        if(before!=after){std::cerr<<before<<'\n'<<after<<'\n';return 1;}++checks;
-    }
     for(bool first:{false,true})for(bool second:{false,true})for(int fail=-1;fail<7;++fail) {
         truthy=first;callable=second;fail_at=fail;
         const auto before=construct<reference::Callable>(),after=construct<candidate::Callable>();

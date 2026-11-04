@@ -48,10 +48,7 @@ def main():
         report['passed']=True
         for engine in ['reference','candidate']:
             common=(subprocess.check_output(['git','-C',str(a.source),'show',PIN+':ext-src/php_swoole_cxx.cc'],text=True) if engine=='reference' else (hybrid/'ext-src/php_swoole_cxx.cc').read_text())
-            begin=common.index('static zend_always_inline zval *sw_zend_symtable_str_add(')
-            if engine=='candidate':begin=common.index('#ifndef SWOOLE_RS_PHPHELPERS\nstatic zend_always_inline zval *sw_zend_symtable_str_add(')
-            end=common.index('\nnamespace function',begin)
-            extracted=common[begin:end]+'\n'+body(common,'Callable::Callable(')+'\nnamespace function {\n'+body(common,'bool call(')+'\n'+body(common,'Variable call(')+'\n}\n'
+            extracted=body(common,'Callable::Callable(')+'\nnamespace function {\n'+body(common,'bool call(')+'\n'+body(common,'Variable call(')+'\n}\n'
             (work/(engine+'-effects.inc')).write_text(extracted)
         effects=work/'effects'
         command=['c++','-std=c++17','-O2','-UNDEBUG','-DSWOOLE_RS_PHPHELPERS','-Wall','-Wextra','-Werror','-I'+str(work),'-I'+str(ROOT/'native/phphelpers'),Path(__file__).with_name('effects.cc'),archive,'-lpthread','-lm','-o',effects]

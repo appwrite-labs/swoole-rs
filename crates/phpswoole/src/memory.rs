@@ -1,14 +1,10 @@
-//! The `swoole::Allocator`s over Zend's request allocator: `sw_php_allocator()`
-//! (`emalloc`) and `sw_zend_string_allocator()`, whose buffers are the
-//! `ZSTR_VAL` of `zend_string`s, so a received message becomes a PHP string
-//! without a copy.
+//! The `swoole::Allocator` over Zend's request allocator that
+//! `sw_zend_string_allocator()` returns: its buffers are the `ZSTR_VAL` of
+//! `zend_string`s, so a received message becomes a PHP string without a copy.
 use std::ffi::c_void;
 use swoole_rs_zend::{
     string::{self, from_val, val},
-    sys::{
-        swr_zend_ecalloc, swr_zend_efree, swr_zend_emalloc, swr_zend_erealloc,
-        swr_zend_string_release,
-    },
+    sys::swr_zend_string_release,
 };
 
 /// `swoole::Allocator`.
@@ -19,15 +15,6 @@ pub(crate) struct Allocator {
     realloc: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
     free: unsafe extern "C" fn(*mut c_void),
 }
-
-/// The allocator `sw_php_allocator()` returns.
-#[unsafe(export_name = "swr_v1_phpswoole_php_allocator")]
-pub(crate) static PHP_ALLOCATOR: Allocator = Allocator {
-    malloc: swr_zend_emalloc,
-    calloc: swr_zend_ecalloc,
-    realloc: swr_zend_erealloc,
-    free: swr_zend_efree,
-};
 
 /// The allocator `sw_zend_string_allocator()` returns.
 #[unsafe(export_name = "swr_v1_phpswoole_zend_string_allocator")]
