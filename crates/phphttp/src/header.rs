@@ -64,11 +64,6 @@ unsafe extern "C" {
         data: *const c_char,
         length: usize,
     ) -> c_int;
-    fn swr_http_host_compression_type(
-        context: *const c_void,
-        kind: *const c_char,
-        length: usize,
-    ) -> bool;
 }
 
 /// MINIT (from the response class's): find the array properties' slots.
@@ -78,6 +73,28 @@ pub(crate) fn minit(ce: *mut zend_class_entry) {
         let offset = unsafe { swr_zend_http_property_offset(ce, name.as_ptr().cast(), name.len()) };
         slot.store(offset, Relaxed);
     }
+}
+
+/// `swoole_http_init_and_read_property`: the response's `header`, `cookie`
+/// or `trailer` array (`host::HEADER`, `COOKIE`, `TRAILER`), made on first use.
+pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
+    let response = &mut state.response;
+    let slot = match which {
+        host::HEADER => &mut response.zheader,
+        host::COOKIE => &mut response.zcookie,
+        _ => &mut response.ztrailer,
+    };
+    if slot.ptr.is_null() {
+        // SAFETY: the response's live object zval.
+        let object: *mut zend_object = unsafe { value::obj_of(response.zobject.ptr) };
+        let offset = OFFSETS[usize::try_from(which).unwrap_or(2).min(2)].load(Relaxed);
+        // SAFETY: a declared property slot of that object.
+        let array = unsafe { swoole_rs_zend::sys::swr_zend_http_property_array(object, offset, 8) };
+        // SAFETY: the array zval just initialised.
+        slot.value = unsafe { *array };
+        slot.ptr = &raw mut slot.value;
+    }
+    slot.ptr
 }
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`.
@@ -285,7 +302,6 @@ fn build(
     mut length: usize,
     out: &mut Vec<u8>,
 ) -> Result<(), bailout::Bailout> {
-    let context = ptr::from_mut(state).cast::<c_void>();
     let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0;
     out.clear();
     // http status line
@@ -307,9 +323,8 @@ fn build(
     let header = property(state, 0);
     // SAFETY: a declared property slot.
     if unsafe { type_of(header) } == IS_ARRAY {
-        // SAFETY: as below, asked once like upstream's `compression_types` test.
-        let typed =
-            compression && unsafe { swr_http_host_compression_type(context, ptr::null(), 0) };
+        // Asked once, like upstream's `compression_types` test.
+        let typed = compression && crate::context::compression_type(state, None);
         let mut content_type: Option<(*mut zend_string, bool)> = None;
         let walked = each(header, |key, value_| {
             let (key, owned_key, flag) = header_key(key);
@@ -369,11 +384,8 @@ fn build(
                 // SAFETY: a string this function holds.
                 unsafe { string::bytes(text) }
             });
-            // SAFETY: the context and the content type's bytes.
-            let accepted = unsafe {
-                swr_http_host_compression_type(context, kind.as_ptr().cast(), kind.len())
-            };
-            state.accept_compression = u8::from(accepted);
+            state.accept_compression =
+                u8::from(crate::context::compression_type(state, Some(kind)));
         }
         if let Some((text, owned)) = content_type {
             release(text, owned);

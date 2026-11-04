@@ -4,8 +4,9 @@
 //! The server, its connections and the worker stay C++ (`swr_http_host_*`),
 //! and so does the handler's call (no Rust frame under PHP code).
 use crate::{
+    context,
     host::{self, Context},
-    parse::{Key, key, swr_v1_phphttp_parse},
+    parse::{Key, add_protocol, key, request_times, swr_v1_phphttp_parse},
     send::state,
     websocket,
 };
@@ -77,13 +78,9 @@ unsafe extern "C" {
     fn swr_http_host_address(server: *mut c_void, conn: *mut c_void, local: bool) -> *const c_char;
     /// False when this process is no server worker.
     fn swr_http_host_worker(worker: *mut Worker) -> bool;
-    /// `swoole_event_defer`: run the queued request's `onRequest`, then
-    /// release its objects.
+    /// `swoole_event_defer`: run the queued request's handler, then release
+    /// its objects.
     fn swr_http_host_defer(context: *mut Context);
-    /// `ctx->onAfterResponse = nullptr`.
-    fn swr_http_host_unhook(context: *mut Context);
-    fn swr_http_host_send(context: *mut Context, data: *const c_char, length: usize) -> bool;
-    fn swr_http_host_close(context: *mut Context) -> bool;
     /// `get_connection_verify_no_ssl` and its port's facts (null: closed).
     fn swr_http_host_receive(
         server: *mut c_void,
@@ -101,13 +98,11 @@ unsafe extern "C" {
     /// `PHP_SWOOLE_HOOK_BEFORE_REQUEST`, when one is set, then the connection's
     /// `websocket_status` (parsing an upgrade request sets it).
     fn swr_http_host_before_request(context: *mut Context, conn: *mut c_void) -> u8;
-    /// The port's `onHandshake` (`handshake`) or `onRequest`, or null; a callback
-    /// found is also `ctx->private_data_2`.
+    /// The port's `onHandshake` (`handshake`) or `onRequest`, or null.
     fn swr_http_host_callback(
         server: *mut c_void,
         server_fd: c_int,
         handshake: bool,
-        context: *mut Context,
     ) -> *mut c_void;
     /// `swoole_notice("%s", message)`.
     fn swr_http_host_notice(message: *const c_char);
@@ -285,10 +280,8 @@ fn handle(
     // SAFETY: a live context and its data.
     let parsed = unsafe { swr_v1_phphttp_parse(ctx, data.as_ptr().cast(), data.len()) };
     if state(ctx).parser.error != HPE_OK || state(ctx).completed == 0 {
-        // SAFETY: a live context.
-        unsafe { swr_http_host_send(ctx, BAD_REQUEST.as_ptr().cast(), BAD_REQUEST.len()) };
-        // SAFETY: as above.
-        unsafe { swr_http_host_close(ctx) };
+        context::send(ctx, BAD_REQUEST);
+        context::close(ctx);
         let parser = &state(ctx).parser;
         if parser.error == HPE_OK {
             notice("Incomplete HTTP request: parsed successfully but missing required components");
@@ -326,8 +319,8 @@ fn handle(
     add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
     // SAFETY: a live context and its connection.
     let handshake = unsafe { swr_http_host_before_request(ctx, conn) } == STATUS_CONNECTION;
-    // SAFETY: the live server and context.
-    let callback = unsafe { swr_http_host_callback(server, server_fd, handshake, ctx) };
+    // SAFETY: the live server.
+    let callback = unsafe { swr_http_host_callback(server, server_fd, handshake) };
     if callback.is_null() {
         if handshake {
             websocket::handshake_open(ctx)?;
@@ -336,6 +329,7 @@ fn handle(
         }
         return Ok(DONE);
     }
+    state.callback = callback;
     if handshake {
         websocket::upgrading(server, session);
         state.upgrade = 1;
@@ -348,6 +342,142 @@ fn release([local, remote]: [*mut zend_string; 2]) {
     unsafe { swr_zend_string_release(local) };
     // SAFETY: as above.
     unsafe { swr_zend_string_release(remote) };
+}
+
+/// `swr_h2s_connection_facts`: an HTTP/2 request's connection and server state.
+#[repr(C)]
+struct Http2Connection {
+    last_recv_time: f64,
+    local_port: i64,
+    remote_port: i64,
+    loopback: c_int,
+    server_fd: c_int,
+    cache: bool,
+    static_handler: bool,
+    unavailable: bool,
+    coroutine: bool,
+}
+
+/// `swr_h2s_request`.
+#[repr(C)]
+struct Http2Request {
+    ctx: *mut Context,
+    default_ctx: *mut c_void,
+    data: *mut c_void,
+}
+
+/// `SW_HTTP_VERSION_2`, `SW_HTTP_SERVICE_UNAVAILABLE` and
+/// `SW_HTTP2_ERROR_INTERNAL_ERROR`.
+const HTTP_VERSION_2: c_int = 3;
+const SERVICE_UNAVAILABLE_STATUS: c_int = 503;
+const HTTP2_INTERNAL_ERROR: u32 = 2;
+
+unsafe extern "C" {
+    /// `get_connection_by_session_id` (null: closed) and what onRequest reads.
+    fn swr_h2s_connection(server: *mut c_void, fd: i64, out: *mut Http2Connection) -> *mut c_void;
+    /// `zend::function::call(callable, 2, args)`: 1 called, 0 failed, -1 bailed out.
+    fn swr_hsc_call(callable: *mut c_void, args: *mut zval, coroutine: bool) -> c_int;
+    /// The HTTP/2 server's (crates/phphttp2): the static handler, a whole
+    /// response and a stream reset.
+    fn swr_v1_phphttp2_server_static(server: *mut c_void, ctx: *mut Context) -> bool;
+    fn swr_v1_phphttp2_server_respond(
+        ctx: *mut Context,
+        data: *const c_char,
+        length: usize,
+    ) -> bool;
+    fn swr_v1_phphttp2_server_reset(ctx: *mut Context, stream_id: u32, code: u32);
+}
+
+/// `http2_server_onRequest`: a finished HTTP/2 request on a server's
+/// connection, answered by the static handler or the port's `onRequest`.
+/// A bailout in the handler is raised last, over this frame only.
+/// # Safety
+/// `request` is the session's `swr_h2s_request` for a live stream context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_server_http2_request(request: *mut c_void) {
+    // SAFETY: per the caller.
+    let ctx = unsafe { (*request.cast::<Http2Request>()).ctx };
+    let result = http2_request(ctx);
+    bailout::raise(result);
+}
+
+fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
+    let (server, fd) = (state(ctx).private_data, state(ctx).fd);
+    // SAFETY: plain data, filled below.
+    let mut facts: Http2Connection = unsafe { std::mem::zeroed() };
+    // SAFETY: the live server and a local output.
+    let conn = unsafe { swr_h2s_connection(server, fd, &raw mut facts) };
+    if conn.is_null() {
+        release_objects(ctx);
+        return Ok(());
+    }
+    state(ctx).request.version = HTTP_VERSION_2;
+    // SAFETY: the live server and stream context.
+    if facts.static_handler && unsafe { swr_v1_phphttp2_server_static(server, ctx) } {
+        release_objects(ctx);
+        return Ok(());
+    }
+    let state = state(ctx);
+    // SAFETY: the request's `server` array.
+    let table = unsafe { value::table(state.request.zserver.ptr) };
+    // SAFETY: the live server and connection and the request's array.
+    unsafe {
+        swr_v1_phphttp_server_addresses(
+            server,
+            conn,
+            table,
+            fd,
+            facts.local_port,
+            facts.remote_port,
+            facts.loopback,
+            state.keepalive != 0 && facts.cache,
+        );
+    }
+    request_times(state);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "upstream's (zend_long) cast"
+    )]
+    add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
+    add_protocol(state, Key::Http2);
+    // SAFETY: the live server.
+    state.callback = unsafe { swr_http_host_callback(server, facts.server_fd, false) };
+    if state.before_request != 0 {
+        if facts.unavailable {
+            state.response.status = SERVICE_UNAVAILABLE_STATUS;
+            // SAFETY: a live stream context; an empty body.
+            unsafe { swr_v1_phphttp2_server_respond(ctx, ptr::null(), 0) };
+            release_objects(ctx);
+            return Ok(());
+        }
+        // SAFETY: a live context.
+        if !unsafe { context::swr_v1_phphttp_before_request(ctx) } {
+            return Ok(());
+        }
+    }
+    let state = self::state(ctx);
+    let mut args = [state.request.zobject.value, state.response.zobject.value];
+    // SAFETY: the handler (or null) and the request's two objects.
+    match unsafe { swr_hsc_call(state.callback, args.as_mut_ptr(), facts.coroutine) } {
+        -1 => return Err(bailout::Bailout),
+        0 => {
+            let stream_id = self::state(ctx).stream_id;
+            // SAFETY: the stream's live context.
+            unsafe { swr_v1_phphttp2_server_reset(ctx, stream_id, HTTP2_INTERNAL_ERROR) };
+            host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
+        }
+        _ => {}
+    }
+    release_objects(ctx);
+    Ok(())
+}
+
+/// The request's own references to its objects, released once handled.
+fn release_objects(ctx: *mut Context) {
+    // SAFETY: the request's object, referenced by the request.
+    unsafe { zval_ptr_dtor(state(ctx).request.zobject.ptr) };
+    // SAFETY: as above.
+    unsafe { zval_ptr_dtor(state(ctx).response.zobject.ptr) };
 }
 
 /// `php_swoole_http_server_onClose`: forget the session's addresses.
@@ -372,8 +502,7 @@ fn worker() -> Option<Worker> {
 /// Mark a queued request answered and release its objects.
 fn abandon(ctx: *mut Context) {
     state(ctx).end = 1;
-    // SAFETY: a queued context, whose `onAfterResponse` C++ owns.
-    unsafe { swr_http_host_unhook(ctx) };
+    state(ctx).after_response = 0;
     // SAFETY: the queued request's own references to its objects.
     unsafe { zval_ptr_dtor(state(ctx).request.zobject.ptr) };
     // SAFETY: as above.
@@ -384,8 +513,7 @@ fn abandon(ctx: *mut Context) {
 /// request, or queue it past `worker_max_concurrency` (false: not now).
 /// # Safety
 /// `ctx` is a live server request's context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_server_admit(ctx: *mut Context) -> bool {
+pub(crate) unsafe fn admit(ctx: *mut Context) -> bool {
     let Some(worker) = worker().filter(|worker| !worker.shutdown) else {
         return false;
     };
@@ -404,23 +532,14 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_admit(ctx: *mut Context) -> bool 
 /// `swoole_http_server_onAfterResponse` after it clears the hook: uncount the
 /// request and start the next queued one, or answer every queued one with
 /// 503 once the worker is shutting down.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphttp_server_release() {
+pub(crate) fn release_request() {
     let Some(worker) = worker() else {
         return;
     };
     if worker.shutdown {
         while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
-            // SAFETY: a queued context.
-            unsafe {
-                swr_http_host_send(
-                    ctx,
-                    SERVICE_UNAVAILABLE.as_ptr().cast(),
-                    SERVICE_UNAVAILABLE.len(),
-                )
-            };
-            // SAFETY: as above.
-            unsafe { swr_http_host_close(ctx) };
+            context::send(ctx, SERVICE_UNAVAILABLE);
+            context::close(ctx);
             abandon(ctx);
         }
         return;
@@ -458,6 +577,15 @@ mod tests {
         assert_eq!(size_of::<Worker>(), 24);
         assert_eq!(std::mem::offset_of!(Worker, max_concurrency), 16);
         assert_eq!(std::mem::offset_of!(Worker, shutdown), 20);
+    }
+
+    #[test]
+    fn http2_connection_matches_the_c_struct() {
+        // `swr_h2s_connection_facts`, which C++ asserts is 40 bytes.
+        assert_eq!(size_of::<Http2Connection>(), 40);
+        assert_eq!(std::mem::offset_of!(Http2Connection, server_fd), 28);
+        assert_eq!(std::mem::offset_of!(Http2Connection, coroutine), 35);
+        assert_eq!(size_of::<Http2Request>(), 24);
     }
 
     #[test]

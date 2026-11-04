@@ -2,18 +2,19 @@
 //! `swoole::coroutine::HttpServer` (handlers, connections, settings),
 //! `__construct`, `set`, `handle`, `start`, `shutdown`, the per-connection
 //! request loop (`onAccept`), HTTP/2 on a connection and its request
-//! dispatch. C++ keeps the coroutine sockets and the settings the contexts
-//! copy into C++ fields, and answers through `swr_hsc_*`
-//! (`ext-src/swoole_http_server_coro.cc`).
+//! dispatch. C++ keeps the coroutine sockets and the handler map, and
+//! answers through `swr_hsc_*` (`ext-src/swoole_http_server_coro.cc`).
 use crate::{
+    context::{self, CompressionTypes},
     host::{self, Context},
     parse::{find, swr_v1_phphttp_parse},
-    send,
+    send, websocket,
 };
 use std::{
-    cell::{Cell, UnsafeCell},
-    ffi::{CStr, c_char, c_int, c_void},
+    cell::{Cell, RefCell, UnsafeCell},
+    ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
+    rc::Rc,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
 use swoole_rs_phpstubs::http_server_coro;
@@ -43,8 +44,7 @@ type Holder = Object<*mut HttpServer>;
 struct HttpServer {
     /// The listening coroutine socket (C++'s).
     socket: *mut c_void,
-    /// The handler map and what the contexts copy into C++ fields
-    /// (`HttpServerSettings`).
+    /// The handler map (C++'s `HttpServerSettings`).
     settings: *mut c_void,
     running: Cell<bool>,
     /// The connections, by the coroutine serving each.
@@ -55,6 +55,12 @@ struct HttpServer {
     compression: Cell<bool>,
     compression_level: Cell<i8>,
     compression_min_length: Cell<u32>,
+    /// `http_compression_types`, once set.
+    compression_types: RefCell<Option<CompressionTypes>>,
+    /// `WebSocketSettings` (`websocket::` bits): `start` always applies them,
+    /// so the contexts see a server's.
+    websocket_settings: Cell<u8>,
+    upload_tmp_dir: RefCell<Rc<CString>>,
 }
 
 /// `SW_Z_BEST_SPEED` and `SW_COMPRESSION_MIN_LENGTH_DEFAULT`.
@@ -78,7 +84,48 @@ impl HttpServer {
             compression: Cell::new(true),
             compression_level: Cell::new(Z_BEST_SPEED),
             compression_min_length: Cell::new(COMPRESSION_MIN_LENGTH_DEFAULT),
+            compression_types: RefCell::new(None),
+            #[expect(clippy::cast_possible_truncation, reason = "the bit fits")]
+            websocket_settings: Cell::new(websocket::IN_SERVER as u8),
+            upload_tmp_dir: RefCell::new(Rc::new(c"/tmp".to_owned())),
         }
+    }
+
+    /// `WebSocket::apply_setting(hs->websocket_settings, vht, true)`, the
+    /// settings a coroutine server's contexts read.
+    #[expect(clippy::cast_possible_truncation, reason = "the bits fit")]
+    fn apply_websocket(&self, table: *mut z::HashTable) {
+        let mut bits = self.websocket_settings.get();
+        let mut flag = |key: &[u8], bit: u8| {
+            // SAFETY: the live settings table and the key's bytes.
+            let found = unsafe { z::zend_hash_str_find(table, key.as_ptr().cast(), key.len()) };
+            // SAFETY: a found entry is live.
+            if !found.is_null() && unsafe { type_of(found) } != z::IS_NULL {
+                // SAFETY: as above.
+                if unsafe { z::swr_zend_is_true(found) } {
+                    bits |= bit;
+                } else {
+                    bits &= !bit;
+                }
+            }
+        };
+        if websocket::ZLIB.load(Relaxed) {
+            flag(b"websocket_compression", websocket::SETTING_COMPRESSION);
+        }
+        flag(
+            b"open_websocket_close_frame",
+            websocket::OPEN_CLOSE_FRAME as u8,
+        );
+        flag(
+            b"open_websocket_ping_frame",
+            websocket::OPEN_PING_FRAME as u8,
+        );
+        flag(
+            b"open_websocket_pong_frame",
+            websocket::OPEN_PONG_FRAME as u8,
+        );
+        self.websocket_settings
+            .set(bits | websocket::IN_SERVER as u8);
     }
 
     fn clients(&self) -> *mut z::HashTable {
@@ -113,9 +160,16 @@ impl HttpServer {
 
     /// `create_context`: the settings, the socket and the parser.
     fn context(&self, socket: *mut c_void, zconn: *mut zval) -> *mut Context {
-        // SAFETY: the live settings, socket and connection object.
-        let context = unsafe { swr_hsc_context(self.settings, socket, zconn) };
+        // SAFETY: the live socket and connection object.
+        let context = unsafe { swr_hsc_context(socket, zconn) };
+        // SAFETY: a new context and the live connection object.
+        unsafe { context::swr_v1_phphttp_context_bind(context, ptr::null_mut(), zconn) };
         let state = send::state(context);
+        state
+            .compression_types
+            .clone_from(&self.compression_types.borrow());
+        state.upload_tmp_dir = Some(self.upload_tmp_dir.borrow().clone());
+        state.websocket_settings = self.websocket_settings.get();
         state.parse_body = u8::from(self.parse_post.get());
         state.parse_cookie = u8::from(self.parse_cookie.get());
         state.parse_files = u8::from(self.parse_files.get());
@@ -134,6 +188,40 @@ impl Drop for HttpServer {
         unsafe { zval_ptr_dtor(self.clients.get()) };
         // SAFETY: the socket and settings `swr_hsc_new` made, freed once.
         unsafe { swr_hsc_delete(self.socket, self.settings) };
+    }
+}
+
+/// A text setting `swr_hsc_setting` read (`SWR_HTTPBINDINGS_SETTING_*`): `http_compression_types` (reset by
+/// a null `text`, then one type per call) or `upload_tmp_dir`.
+/// # Safety
+/// `server` is the live server `swr_hsc_setting` was given; `text` holds
+/// `length` bytes unless null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_server_coro_text(
+    server: *const c_void,
+    kind: u32,
+    text: *const c_char,
+    length: usize,
+) {
+    let server = self::server(server.cast());
+    let text = if text.is_null() {
+        None
+    } else {
+        // SAFETY: per the caller.
+        Some(unsafe { std::slice::from_raw_parts(text.cast::<u8>(), length) })
+    };
+    if kind != SETTING_TYPES {
+        *server.upload_tmp_dir.borrow_mut() = context::directory(text.unwrap_or_default());
+        return;
+    }
+    let mut types = server.compression_types.borrow_mut();
+    match text {
+        None => *types = Some(Rc::default()),
+        Some(kind) => {
+            if let Some(types) = types.as_mut() {
+                Rc::make_mut(types).insert(kind.into());
+            }
+        }
     }
 }
 
@@ -213,11 +301,7 @@ unsafe extern "C" {
     fn swr_hsc_package_max_length(socket: *mut c_void) -> usize;
     fn swr_hsc_extend(buffer: *mut Buffer, size: usize);
     fn swr_hsc_send_all(socket: *mut c_void, data: *const c_char, length: usize);
-    fn swr_hsc_context(
-        settings: *mut c_void,
-        socket: *mut c_void,
-        connection: *mut zval,
-    ) -> *mut Context;
+    fn swr_hsc_context(socket: *mut c_void, connection: *mut zval) -> *mut Context;
     fn swr_hsc_add_server(context: *mut Context, peer: *mut Peer);
     fn swr_hsc_http2_begin(socket: *mut c_void);
     fn swr_hsc_recv_packet(socket: *mut c_void, retval: *mut isize) -> *const c_char;
@@ -255,7 +339,7 @@ unsafe extern "C" {
     ) -> i64;
     fn swr_hsc_sleep();
     fn swr_hsc_setting(
-        settings: *mut c_void,
+        server: *const c_void,
         kind: u32,
         table: *mut z::HashTable,
         value: *mut zval,
@@ -463,6 +547,8 @@ const SETTING_FILES: u32 = 4;
 const SETTING_COMPRESSION: u32 = 5;
 const SETTING_LEVEL: u32 = 6;
 const SETTING_MINIMUM: u32 = 7;
+const SETTING_TYPES: u32 = 8;
+const SETTING_WEBSOCKET: u32 = 9;
 const SETTING_DONE: u32 = 11;
 
 /// `start`'s `onAccept` callable and its cache (C++'s), released on drop.
@@ -543,12 +629,19 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
                 found = u32::from(!value.is_null() && unsafe { type_of(value) } != z::IS_NULL);
             }
             SETTING_DONE => break,
+            SETTING_WEBSOCKET => server.apply_websocket(table),
             kind => {
                 let mut result = 0;
                 // SAFETY: the live settings, the settings array, the value just
                 // found and a local output.
                 match unsafe {
-                    swr_hsc_setting(server.settings, kind, table, value, &raw mut result)
+                    swr_hsc_setting(
+                        ptr::from_ref(server).cast(),
+                        kind,
+                        table,
+                        value,
+                        &raw mut result,
+                    )
                 } {
                     DONE => server.apply(kind, result),
                     BAILED => return Err(bailout::Bailout),

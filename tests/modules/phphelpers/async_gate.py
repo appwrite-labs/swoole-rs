@@ -6,8 +6,9 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from gate import ROOT, PIN, stage, body
+from gate import ROOT, PIN, body
 sys.path.insert(0, str(ROOT))
+from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated, write_report
 DEST = 'ext-src/php_swoole_cxx.h'
@@ -18,7 +19,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--archive', type=Path, help='Source-matched selected FFI archive; query real ABI1/bit16777216')
+    parser.add_argument('--archive', type=Path, required=True,
+                        help='<build>/rust-prefix/lib/libswoole_rs_ffi.a of the hybrid build')
     args = parser.parse_args()
     output = args.output.resolve()
     if output.exists():
@@ -39,9 +41,10 @@ def main():
         return result
 
     try:
-        report['sources'] = stage(args.source, work / 'current')
+        hybrid = hybrid_tree(args.archive)[0]
+        report['hybrid_tree'] = str(hybrid)
         original = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':' + DEST])
-        new_body = body((work / 'current' / DEST).read_text(), SIGNATURE)
+        new_body = body((hybrid / DEST).read_text(), SIGNATURE)
         # Exact original body is retained, apart from guard-adjacent newlines.
         reference = body(original.decode(), SIGNATURE)
         inner = reference[reference.index('{') + 1:-1].strip('\n')
@@ -49,15 +52,11 @@ def main():
             raise ValueError('Native async fallback changed')
         (work / 'async-reference.inc').write_text(reference)
         (work / 'async-selected.inc').write_text(new_body)
-        archive = args.archive.resolve() if args.archive else work / 'libphphelpers.a'
-        if not args.archive:
-            run(['rustc', '--edition=2024', '--crate-type=staticlib', '-C', 'opt-level=2', '-D', 'warnings', ROOT / 'crates/phphelpers/src/lib.rs', '-o', archive])
+        archive = args.archive.resolve()
         abi = work / 'async-abi.o'
         c_command = ['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-UNDEBUG',
                      '-I' + str(ROOT / 'native/phphelpers'), '-I' + str(ROOT / 'native/include'),
-                     '-c', Path(__file__).with_name('async_abi.c'), '-o', abi]
-        if args.archive:
-            c_command += ['-DSWR_PHPHELPERS_FFI']
+                     '-DSWR_PHPHELPERS_FFI', '-c', Path(__file__).with_name('async_abi.c'), '-o', abi]
         run(c_command)
         link = ['c++', abi, archive, '-lpthread', '-lm', '-o', work / 'async-abi']
         if sys.platform == 'linux':

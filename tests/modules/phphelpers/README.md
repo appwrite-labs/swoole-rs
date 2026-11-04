@@ -44,7 +44,7 @@ runs the facades in real PHP on both engines. The facades' sizes are not compare
 so a facade can hold a Rust handle; the PR that moves a facade's bodies into Rust
 ports its fixture's cases into crates/phphelpers and deletes the fixture.
 
-`async_gate.py --source PINNED --output UNIQUE.json [--archive FFI.a]`
+`async_gate.py --source PINNED --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --output UNIQUE.json`
 (`phphelpers-async`) runs the original and selected `php_swoole_async` bodies with
 inert recorders (8 dispatch cases), the C11 `async_abi.c` consumer, and C++14/17
 with and without ASan/UBSan. It checks the native fallback is unchanged.

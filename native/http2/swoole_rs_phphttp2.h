@@ -94,13 +94,26 @@ struct swr_h2s_request {
     void *data;
 };
 typedef void (*swr_h2s_handler)(struct swr_h2s_request *request);
+/* An async server's finished request (crates/phphttp/src/server.rs): the
+ * static handler or the port's onRequest. It asks for the connection (null:
+ * closed) and what it reads of it and the server. */
+void swr_v1_phphttp_server_http2_request(struct swr_h2s_request *request);
+typedef struct {
+    double last_recv_time;
+    int64_t local_port;
+    int64_t remote_port;
+    int loopback;
+    int server_fd;
+    bool cache;
+    bool static_handler;
+    bool unavailable;
+    bool coroutine;
+} swr_h2s_connection_facts;
+void *swr_h2s_connection(void *server, int64_t fd, swr_h2s_connection_facts *out);
 bool swr_v1_phphttp2_session_exists(int64_t fd);
 void swr_v1_phphttp2_session_new(
     int64_t fd, void *default_ctx, uint32_t max_body_size, bool is_coro, swr_h2s_handler handle, void *data);
 void swr_v1_phphttp2_session_free(int64_t fd);
-/* Holds a context's stream (and so the context) across coroutine switches; null if none. */
-const void *swr_v1_phphttp2_stream_hold(void *ctx);
-void swr_v1_phphttp2_stream_release(const void *stream);
 
 /* The HTTP/2 server (crates/phphttp2/src/server.rs): frames, the response and
  * the request header block. `ctx` is a swoole::http::Context. A bailout in
@@ -114,46 +127,58 @@ bool swr_v1_phphttp2_server_write(void *ctx, const char *data, size_t length);
 bool swr_v1_phphttp2_server_ping(void *ctx);
 bool swr_v1_phphttp2_server_goaway(void *ctx, int64_t code, const char *data, size_t length);
 void swr_v1_phphttp2_server_reset(void *ctx, uint32_t stream_id, uint32_t code);
-/* A file response's header: -1 if it was not sent, else whether a trailer follows. */
-int swr_v1_phphttp2_server_begin_file(void *ctx, const char *content_type, size_t type_length, size_t length);
-bool swr_v1_phphttp2_server_send_body(void *ctx, const char *data, size_t length, bool end_stream);
-bool swr_v1_phphttp2_server_finish_file(void *ctx, bool trailer, bool error);
+/* File responses (crates/phphttp2/src/files.rs): the static handler's answer
+ * to a request (true when it served it) and Response::sendfile's. What they
+ * ask of the StaticHandler (`handler`): a step or fact (SWR_H2S_STATIC_*), a
+ * text (SWR_H2S_TEXT_*, a new string), a date check, the ranges and a task;
+ * and of a file: opening it read-only (null if not), one read at an offset
+ * (on the thread pool with `async`; -1 on failure), its whole content
+ * (System::read_file in a coroutine; null if unreadable, `owner` freed by
+ * swr_h2s_file_content_free) and its mime type. */
+bool swr_v1_phphttp2_server_static(void *server, void *ctx);
+bool swr_v1_phphttp2_server_send_file(void *ctx, struct _zend_string *file, int64_t offset, size_t length);
+enum {
+    SWR_H2S_STATIC_SERVE,
+    SWR_H2S_STATIC_STATUS,
+    SWR_H2S_STATIC_INDEX,
+    SWR_H2S_STATIC_AUTOINDEX,
+    SWR_H2S_STATIC_FILESIZE,
+    SWR_H2S_STATIC_CONTENT_LENGTH,
+    SWR_H2S_STATIC_TASKS,
+};
+enum {
+    SWR_H2S_TEXT_INDEX_PAGE,
+    SWR_H2S_TEXT_LAST_MODIFIED,
+    SWR_H2S_TEXT_CONTENT_TYPE,
+    SWR_H2S_TEXT_FILENAME,
+    SWR_H2S_TEXT_END_PART,
+    SWR_H2S_TEXT_PART_HEADER,
+    SWR_H2S_TEXT_PAGE_404,
+};
+void *swr_h2s_static_new(void *server, const char *url, size_t length);
+void swr_h2s_static_free(void *handler);
+int64_t swr_h2s_static(void *handler, int op);
+struct _zend_string *swr_h2s_static_text(void *handler, int which, size_t task);
+bool swr_h2s_static_modified(void *handler, const char *date, size_t length);
+void swr_h2s_static_range(void *handler, const char *range, const char *if_range);
+void swr_h2s_static_task(void *handler, size_t task, int64_t *offset, size_t *length);
+void *swr_h2s_file_open(const char *path);
+ssize_t swr_h2s_file_read(void *file, int64_t offset, char *buf, size_t length, bool async);
+void swr_h2s_file_close(void *file);
+const char *swr_h2s_file_content(const char *path, size_t *length, void **owner);
+void swr_h2s_file_content_free(void *owner);
+const char *swr_h2s_mime_type(const char *path, size_t length);
 
 /* What it asks of C++, defined by ext-src/swoole_http2_server.cc. */
-enum swr_h2s_field {
-    SWR_H2S_END,
-    SWR_H2S_SEND_HEADER,
-    SWR_H2S_SEND_CHUNKED,
-    SWR_H2S_STATUS,
-    SWR_H2S_PARSE_BODY,
-    SWR_H2S_FORM,
-    SWR_H2S_MULTIPART,
-    SWR_H2S_CO_SOCKET,
-    SWR_H2S_ACCEPT_COMPRESSION,
-    SWR_H2S_ENABLE_COMPRESSION,
-    SWR_H2S_CONTENT_COMPRESSED,
-    SWR_H2S_COMPRESSION_TYPES,
-    SWR_H2S_STREAM_ID,
-};
-enum swr_h2s_value { SWR_H2S_SERVER, SWR_H2S_HEADER, SWR_H2S_RESPONSE, SWR_H2S_GET, SWR_H2S_POST, SWR_H2S_COOKIE };
 /* A stream's new context: a copy of `default_ctx`'s settings, its request's streamId set. */
 void *swr_h2s_stream_context(void *default_ctx, int64_t fd, uint32_t stream_id);
 void swr_h2s_wait(void **coroutine);
 void swr_h2s_wake(void *coroutine);
-bool swr_h2s_send(void *ctx, const char *data, size_t length);
-bool swr_h2s_close(void *ctx);
-uint32_t swr_h2s_get(void *ctx, int field);
-void swr_h2s_set(void *ctx, int field, uint32_t value);
-struct _zval_struct *swr_h2s_zval(void *ctx, int which);
-const char *swr_h2s_data(void *ctx, bool create, size_t *length);
-void swr_h2s_data_append(void *ctx, const char *data, size_t length);
-bool swr_h2s_body(void *ctx, bool multipart);
 void swr_h2s_query(struct _zval_struct *array, const char *query, size_t length);
 void swr_h2s_path(void *ctx, const char *path, size_t length);
 void swr_h2s_cookie(struct _zval_struct *array, const char *cookie, size_t length);
 bool swr_h2s_multipart(void *ctx, const char *value, size_t length);
 void swr_h2s_set_header(void *ctx, const char *name, size_t name_length, const char *value, size_t length);
-bool swr_h2s_compressible(void *ctx, const char *type, size_t length);
 bool swr_h2s_in_coroutine(void);
 void swr_h2s_log(int level, int error, const char *func, const char *message);
 void swr_h2s_error(int code, int always, const char *message);

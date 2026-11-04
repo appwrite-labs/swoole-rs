@@ -203,9 +203,10 @@ pub(crate) enum Key {
     LoopbackV4,
     LoopbackV6,
     MasterTime,
+    Http2,
 }
 
-const KEY_NAMES: [&[u8]; 24] = [
+const KEY_NAMES: [&[u8]; 25] = [
     b"host",
     b"user-agent",
     b"accept",
@@ -230,6 +231,7 @@ const KEY_NAMES: [&[u8]; 24] = [
     b"127.0.0.1",
     b"::1",
     b"master_time",
+    b"HTTP/2",
 ];
 /// The header keys `swr_v1_httpbindings_request_key` numbers 0 to 7.
 const HEADER_KEYS: [Key; 8] = [
@@ -243,7 +245,7 @@ const HEADER_KEYS: [Key; 8] = [
     Key::AcceptEncoding,
 ];
 
-static KEYS: [AtomicPtr<zend_string>; 24] = [const { AtomicPtr::new(ptr::null_mut()) }; 24];
+static KEYS: [AtomicPtr<zend_string>; 25] = [const { AtomicPtr::new(ptr::null_mut()) }; 25];
 /// `Swoole\Http\Request`'s `get`, `post`, `cookie`, `files` and `tmpfiles` slots.
 /// ... and `server`, `header` and `fd`.
 static OFFSETS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
@@ -758,7 +760,24 @@ unsafe extern "C" fn on_headers_complete(parser: *mut crate::state::Llhttp) -> c
     // SAFETY: the zval takes over the fresh string.
     unsafe { swr_zval_str(&raw mut tmp, decoded) };
     add_server(state, Key::PathInfo, &mut tmp);
+    request_times(state);
+    let protocol = if state.request.version == 101 {
+        Key::Http11
+    } else {
+        Key::Http10
+    };
+    add_protocol(state, protocol);
 
+    // SAFETY: the context's parser.
+    state.keepalive = u8::from(unsafe { llhttp_should_keep_alive(&raw const state.parser) } != 0);
+    state.recv_chunked = u8::from(state.parser.flags & CHUNKED != 0);
+    state.parse.header_name = ptr::null();
+    0
+}
+
+/// Swoole's `microtime()`.
+/// `$request->server`'s `request_time` and `request_time_float`.
+pub(crate) fn request_times(state: &State) {
     // SAFETY: `time(NULL)`.
     let now = unsafe { libc::time(ptr::null_mut()) };
     let mut tmp = new_zval();
@@ -769,24 +788,16 @@ unsafe extern "C" fn on_headers_complete(parser: *mut crate::state::Llhttp) -> c
     tmp.value = zend_value { dval: microtime() };
     tmp.u1.type_info = IS_DOUBLE;
     add_server(state, Key::RequestTimeFloat, &mut tmp);
-    let protocol = key(if state.request.version == 101 {
-        Key::Http11
-    } else {
-        Key::Http10
-    });
-    let mut tmp = new_zval();
-    // SAFETY: an interned string, which ZVAL_STR does not count.
-    unsafe { swr_zval_str(&raw mut tmp, protocol) };
-    add_server(state, Key::ServerProtocol, &mut tmp);
-
-    // SAFETY: the context's parser.
-    state.keepalive = u8::from(unsafe { llhttp_should_keep_alive(&raw const state.parser) } != 0);
-    state.recv_chunked = u8::from(state.parser.flags & CHUNKED != 0);
-    state.parse.header_name = ptr::null();
-    0
 }
 
-/// Swoole's `microtime()`.
+/// `$request->server['server_protocol']`, an interned protocol name.
+pub(crate) fn add_protocol(state: &State, protocol: Key) {
+    let mut tmp = new_zval();
+    // SAFETY: an interned string, which ZVAL_STR does not count.
+    unsafe { swr_zval_str(&raw mut tmp, key(protocol)) };
+    add_server(state, Key::ServerProtocol, &mut tmp);
+}
+
 fn microtime() -> f64 {
     let mut now = libc::timeval {
         tv_sec: 0,
@@ -999,7 +1010,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_multipart_init(
 }
 
 /// `Context::parse_multipart_data`.
-fn multipart_parse(state: &mut State, at: *const u8, length: usize) -> bool {
+pub(crate) fn multipart_parse(state: &mut State, at: *const u8, length: usize) -> bool {
     let parser = state.mt_parser;
     // SAFETY: the context's multipart parser and `length` readable bytes.
     let parsed = unsafe { multipart_parser_execute(parser, at.cast(), length) };
@@ -1354,11 +1365,7 @@ unsafe extern "C" fn on_part_headers_complete(parser: *mut Multipart) -> c_int {
     if error.is_null() || long(error).is_some_and(|code| code != UPLOAD_OK) {
         return 0;
     }
-    // SAFETY: the live context.
-    let directory = unsafe { host::swr_http_host_upload_tmp_dir(ptr::from_mut(state).cast()) };
-    // SAFETY: the context's `std::string`, NUL-terminated.
-    let directory = unsafe { CStr::from_ptr(directory) };
-    let mut path = directory.to_bytes().to_vec();
+    let mut path = crate::context::upload_tmp_dir(state).to_bytes().to_vec();
     path.extend_from_slice(b"/swoole.upfile.XXXXXX");
     path.truncate(UPLOAD_TMPDIR_SIZE - 1);
     path.push(0);
@@ -1482,11 +1489,10 @@ pub(crate) fn body(state: *mut State) -> Option<&'static [u8]> {
         // SAFETY: the context owns the buffer while the request object lives.
         return Some(unsafe { std::slice::from_raw_parts(chunked.as_ptr(), chunked.len()) });
     }
-    let mut length = 0;
-    // SAFETY: a live context and a writable length.
-    let data = unsafe { host::swr_http_host_http2_data(state.cast(), &raw mut length) };
-    // SAFETY: the HTTP/2 data buffer holds `length` bytes.
-    (!data.is_null()).then(|| unsafe { std::slice::from_raw_parts(data.cast(), length) })
+    // SAFETY: a live context, which owns the buffer while the request object lives.
+    let data = unsafe { (*state).request.h2_data.as_ref() }?;
+    // SAFETY: as above.
+    (!data.is_empty()).then(|| unsafe { std::slice::from_raw_parts(data.as_ptr(), data.len()) })
 }
 
 /// `llhttp_method_name(parser.method)`.

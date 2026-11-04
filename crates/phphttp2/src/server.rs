@@ -111,45 +111,11 @@ const LOG_WARNING: c_int = 4;
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
 
-/// `swr_h2s_field`.
-#[derive(Clone, Copy)]
-#[repr(C)]
-enum Field {
-    End,
-    SendHeader,
-    SendChunked,
-    Status,
-    ParseBody,
-    Form,
-    Multipart,
-    CoSocket,
-    AcceptCompression,
-    EnableCompression,
-    ContentCompressed,
-    CompressionTypes,
-    StreamId,
-}
+use swoole_rs_phphttp::http2::Field;
 
-/// `swr_h2s_value`.
-#[derive(Clone, Copy)]
-#[repr(C)]
-enum Value {
-    Server,
-    Header,
-    Response,
-    Get,
-    Cookie = 5,
-}
+pub(crate) use swoole_rs_phphttp::http2::Value;
 
 unsafe extern "C" {
-    fn swr_h2s_send(ctx: *mut c_void, data: *const c_char, length: usize) -> bool;
-    fn swr_h2s_close(ctx: *mut c_void) -> bool;
-    fn swr_h2s_get(ctx: *mut c_void, field: Field) -> u32;
-    fn swr_h2s_set(ctx: *mut c_void, field: Field, value: u32);
-    fn swr_h2s_zval(ctx: *mut c_void, which: Value) -> *mut zval;
-    fn swr_h2s_data(ctx: *mut c_void, create: bool, length: *mut usize) -> *const c_char;
-    fn swr_h2s_data_append(ctx: *mut c_void, data: *const c_char, length: usize);
-    fn swr_h2s_body(ctx: *mut c_void, multipart: bool) -> bool;
     fn swr_h2s_query(array: *mut zval, query: *const c_char, length: usize);
     fn swr_h2s_path(ctx: *mut c_void, path: *const c_char, length: usize);
     fn swr_h2s_cookie(array: *mut zval, cookie: *const c_char, length: usize);
@@ -161,7 +127,6 @@ unsafe extern "C" {
         value: *const c_char,
         length: usize,
     );
-    fn swr_h2s_compressible(ctx: *mut c_void, kind: *const c_char, length: usize) -> bool;
     fn swr_h2s_in_coroutine() -> bool;
     fn swr_h2s_log(level: c_int, error: c_int, func: *const c_char, message: *const c_char);
     fn swr_h2s_error(code: c_int, always: c_int, message: *const c_char);
@@ -169,29 +134,29 @@ unsafe extern "C" {
 
 // --- hosts, one safe call each ---
 
-fn get(ctx: *mut c_void, field: Field) -> u32 {
-    // SAFETY: a live context; a plain field read.
-    unsafe { swr_h2s_get(ctx, field) }
+pub(crate) fn get(ctx: *mut c_void, field: Field) -> u32 {
+    // SAFETY: a live context.
+    unsafe { swoole_rs_phphttp::http2::get(ctx, field) }
 }
 
-fn set(ctx: *mut c_void, field: Field, value: u32) {
-    // SAFETY: a live context; a plain field store.
-    unsafe { swr_h2s_set(ctx, field, value) };
+pub(crate) fn set(ctx: *mut c_void, field: Field, value: u32) {
+    // SAFETY: a live context.
+    unsafe { swoole_rs_phphttp::http2::set(ctx, field, value) };
 }
 
 fn send(ctx: *mut c_void, data: &[u8]) -> bool {
-    // SAFETY: a live context and `data.len()` bytes.
-    unsafe { swr_h2s_send(ctx, data.as_ptr().cast(), data.len()) }
+    // SAFETY: a live, bound context.
+    unsafe { swoole_rs_phphttp::http2::send(ctx, data) }
 }
 
 fn close(ctx: *mut c_void) {
-    // SAFETY: a live context.
-    unsafe { swr_h2s_close(ctx) };
+    // SAFETY: a live, bound context.
+    unsafe { swoole_rs_phphttp::http2::close(ctx) };
 }
 
-fn zval_of(ctx: *mut c_void, which: Value) -> *mut zval {
-    // SAFETY: a live context.
-    unsafe { swr_h2s_zval(ctx, which) }
+pub(crate) fn zval_of(ctx: *mut c_void, which: Value) -> *mut zval {
+    // SAFETY: a live context with its objects.
+    unsafe { swoole_rs_phphttp::http2::value(ctx, which) }
 }
 
 /// `swoole_warning` (`error` 0) or `swoole_error_log(level, error)` as `func`.
@@ -240,7 +205,7 @@ fn frame_header(kind: u32, length: usize, flags: u32, stream_id: u32) -> [u8; FR
 }
 
 /// The session and stream of a response's context.
-fn of(ctx: *mut c_void) -> Option<(Session, Stream)> {
+pub(crate) fn of(ctx: *mut c_void) -> Option<(Session, Stream)> {
     let session = SessionState::of(ctx)?;
     let stream = session.stream(get(ctx, Field::StreamId), false)?;
     Some((session, stream))
@@ -658,8 +623,8 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
         }
         if can_capture {
             let kind = content_type.as_ref().map_or(&b"text/html"[..], Text::bytes);
-            // SAFETY: a live context with compression types.
-            let accept = unsafe { swr_h2s_compressible(ctx, kind.as_ptr().cast(), kind.len()) };
+            // SAFETY: a live context.
+            let accept = unsafe { swoole_rs_phphttp::http2::compressible(ctx, kind) };
             set(ctx, Field::AcceptCompression, u32::from(accept));
         }
     }
@@ -771,7 +736,7 @@ fn send_header(
 }
 
 /// `Stream::send_body`: DATA frames within the peer's flow-control window.
-fn send_body(
+pub(crate) fn send_body(
     ctx: *mut c_void,
     session: &Session,
     stream: &Stream,
@@ -866,7 +831,7 @@ fn has_trailer(ctx: *mut c_void) -> bool {
 
 /// `http2_server_respond`: the header, the body and the trailer, then the
 /// stream is done.
-fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
+pub(crate) fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
     let Some((session, stream)) = of(ctx) else {
         return false;
     };
@@ -985,24 +950,7 @@ fn write(ctx: *mut c_void, chunk: &[u8]) -> bool {
     send_body(ctx, &session, &stream, chunk, false)
 }
 
-/// A file response's header (`Response::sendfile` and the static handler):
-/// compression off, `content_type` unless one is set, the header for a
-/// `length`-byte body. -1 if it was not sent, else whether a trailer follows.
-/// # Safety
-/// `ctx` is a live HTTP/2 stream context; `content_type` covers `type_length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_begin_file(
-    ctx: *mut c_void,
-    content_type: *const c_char,
-    type_length: usize,
-    length: usize,
-) -> c_int {
-    let done = begin_file(ctx, bytes(content_type, type_length), length);
-    bailout::finish();
-    done
-}
-
-fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -> c_int {
+pub(crate) fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -> c_int {
     let Some((session, stream)) = of(ctx) else {
         return -1;
     };
@@ -1042,38 +990,7 @@ fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -> c_int {
     c_int::from(trailer)
 }
 
-/// DATA frames of a file response.
-/// # Safety
-/// As `swr_v1_phphttp2_server_respond`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_send_body(
-    ctx: *mut c_void,
-    data: *const c_char,
-    length: usize,
-    end_stream: bool,
-) -> bool {
-    let Some((session, stream)) = of(ctx) else {
-        return false;
-    };
-    send_body(ctx, &session, &stream, bytes(data, length), end_stream)
-}
-
-/// `http2_server_complete_file`: the trailer, then the stream is done (or
-/// the connection closed after an error).
-/// # Safety
-/// `ctx` is a live HTTP/2 stream context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_finish_file(
-    ctx: *mut c_void,
-    trailer: bool,
-    error: bool,
-) -> bool {
-    finish_file(ctx, trailer, error);
-    bailout::finish();
-    true
-}
-
-fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) {
+pub(crate) fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) {
     let Some(session) = SessionState::of(ctx) else {
         return;
     };
@@ -1292,8 +1209,10 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
         match (action, &stream) {
             (recv::CONTEXT, Some(stream)) => ctx = stream.ctx,
             (recv::BUFFER, _) => {
-                // SAFETY: a live context; the buffer is created.
-                unsafe { swr_h2s_data(ctx, true, &raw mut facts.buffered_length) };
+                // SAFETY: a live context.
+                unsafe { swoole_rs_phphttp::http2::data_start(ctx) };
+                // SAFETY: as above.
+                facts.buffered_length = unsafe { swoole_rs_phphttp::http2::data(ctx) }.len();
                 facts.maximum = session.max_body_size;
                 facts.ended = get(ctx, Field::End);
             }
@@ -1302,13 +1221,13 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
             }
             (recv::REMOVE, _) => session.remove(stream_id),
             // SAFETY: a live context and the frame's payload.
-            (recv::APPEND, _) => unsafe { swr_h2s_data_append(ctx, payload.cast(), length) },
+            (recv::APPEND, _) => unsafe {
+                swoole_rs_phphttp::http2::data_append(ctx, bytes(payload.cast(), length));
+            },
             (recv::FLOW, Some(stream)) => flow(session, stream, ctx, stream_id, length),
             (recv::LENGTH, _) => {
-                let mut buffered = 0;
-                // SAFETY: a live context; nothing is created.
-                unsafe { swr_h2s_data(ctx, false, &raw mut buffered) };
-                ok = buffered > 0;
+                // SAFETY: a live context.
+                ok = !unsafe { swoole_rs_phphttp::http2::data(ctx) }.is_empty();
             }
             (recv::END_BUFFER, _) => {
                 facts.parse_body = get(ctx, Field::ParseBody);
@@ -1316,11 +1235,14 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
                 facts.multipart = get(ctx, Field::Multipart);
             }
             (recv::FORM, _) => {
-                // SAFETY: a live context with a body.
-                unsafe { swr_h2s_body(ctx, false) };
+                // SAFETY: a live context.
+                let body = unsafe { swoole_rs_phphttp::http2::data(ctx) };
+                let post = zval_of(ctx, Value::Post);
+                // SAFETY: the live `post` array and the body's bytes, which C++ copies.
+                unsafe { swr_h2s_query(post, body.as_ptr().cast(), body.len()) };
             }
-            // SAFETY: as above.
-            (recv::MULTIPART, _) => ok = unsafe { swr_h2s_body(ctx, true) },
+            // SAFETY: a live context with a multipart parser.
+            (recv::MULTIPART, _) => ok = unsafe { swoole_rs_phphttp::http2::multipart(ctx) },
             (recv::HANDLE, Some(stream)) => session.handle(stream),
             (recv::WARN, _) => log(
                 LOG_WARNING,

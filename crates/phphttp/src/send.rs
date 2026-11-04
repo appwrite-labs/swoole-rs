@@ -6,10 +6,9 @@
 //! Host calls never run while Rust holds a reference into the context: C++
 //! writes some of the same fields (`keepalive`), so each step re-borrows it.
 use crate::{
-    header,
+    context, header,
     host::{
-        self, CO_SOCKET, Context, HTTP2, NO_PAYLOAD, swr_http_host_close, swr_http_host_file_type,
-        swr_http_host_http2, swr_http_host_send, swr_http_host_sendfile,
+        self, CO_SOCKET, Context, HTTP2, NO_PAYLOAD, swr_http_host_file_type, swr_http_host_http2,
     },
     state::State,
 };
@@ -39,10 +38,7 @@ pub(crate) fn state<'a>(ctx: *mut Context) -> &'a mut State {
     unsafe { &mut *ctx.cast::<State>() }
 }
 
-pub(crate) fn send(ctx: *mut Context, data: &[u8]) -> bool {
-    // SAFETY: a live context and `data.len()` bytes.
-    unsafe { swr_http_host_send(ctx, data.as_ptr().cast(), data.len()) }
-}
+pub(crate) use context::send;
 
 /// Clear the write buffer and copy `parts` into it (no send).
 fn buffer(ctx: *mut Context, parts: [&[u8]; 3]) {
@@ -62,13 +58,11 @@ fn flush(ctx: *mut Context) -> bool {
         .write_buffer
         .as_ref()
         .map_or((ptr::null(), 0), |buffer| (buffer.as_ptr(), buffer.len()));
-    // SAFETY: a live context and the buffer's `length` bytes.
-    unsafe { swr_http_host_send(ctx, data.cast(), length) }
+    context::send_raw(ctx, data.cast(), length)
 }
 
 fn close(ctx: *mut Context) {
-    // SAFETY: a live context.
-    unsafe { swr_http_host_close(ctx) };
+    context::close(ctx);
 }
 
 /// The HTTP/2 server's `op`.
@@ -253,7 +247,7 @@ pub(crate) fn send_file(
         }
     }
     // SAFETY: a live context and the checked range of a regular file.
-    if length > 0 && !unsafe { swr_http_host_sendfile(ctx, file, offset, length) } {
+    if length > 0 && !context::sendfile(ctx, file, offset, length) {
         close(ctx);
         return Ok(false);
     }

@@ -12,6 +12,39 @@ const UNIX_DGRAM: c_int = 6;
 const RAW: c_int = 7;
 const RAW6: c_int = 8;
 
+/// `Socket::is_stream`, `is_dgram`, `is_inet4`, `is_inet6`, `is_tcp` and `is_local`:
+/// the bits [`swr_v1_socket_type_classes`] holds for each `swSocketType`.
+pub const CLASS_STREAM: u8 = 1;
+pub const CLASS_DGRAM: u8 = 1 << 1;
+pub const CLASS_INET4: u8 = 1 << 2;
+pub const CLASS_INET6: u8 = 1 << 3;
+pub const CLASS_TCP: u8 = 1 << 4;
+pub const CLASS_LOCAL: u8 = 1 << 5;
+
+/// Each `swSocketType`'s classes, indexed by the type; native code reads it inline.
+#[unsafe(no_mangle)]
+pub static swr_v1_socket_type_classes: [u8; 16] = {
+    let mut classes = [0; 16];
+    classes[TCP as usize] = CLASS_STREAM | CLASS_INET4 | CLASS_TCP;
+    classes[TCP6 as usize] = CLASS_STREAM | CLASS_INET6 | CLASS_TCP;
+    classes[UNIX_STREAM as usize] = CLASS_STREAM | CLASS_LOCAL;
+    classes[UDP as usize] = CLASS_DGRAM | CLASS_INET4;
+    classes[UDP6 as usize] = CLASS_DGRAM | CLASS_INET6;
+    classes[UNIX_DGRAM as usize] = CLASS_DGRAM | CLASS_LOCAL;
+    classes[RAW as usize] = CLASS_INET4;
+    classes[RAW6 as usize] = CLASS_INET6;
+    classes
+};
+
+/// Whether `socket_type` has any of `classes`; unknown types have none.
+#[must_use]
+pub fn type_is(socket_type: c_int, classes: u8) -> bool {
+    usize::try_from(socket_type)
+        .ok()
+        .and_then(|index| swr_v1_socket_type_classes.get(index))
+        .is_some_and(|bits| bits & classes != 0)
+}
+
 /// `Socket::convert_to_type(domain, type)`: anything unknown is `SW_SOCK_RAW`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_socket_type(domain: c_int, kind: c_int) -> c_int {
@@ -142,6 +175,40 @@ pub extern "C" fn swr_v1_socket_open(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classes_match_upstream_predicates() {
+        let stream = [TCP, TCP6, UNIX_STREAM];
+        let dgram = [UDP, UDP6, UNIX_DGRAM];
+        let inet4 = [TCP, UDP, RAW];
+        let inet6 = [TCP6, UDP6, RAW6];
+        for socket_type in -1..20 {
+            assert_eq!(
+                type_is(socket_type, CLASS_STREAM),
+                stream.contains(&socket_type)
+            );
+            assert_eq!(
+                type_is(socket_type, CLASS_DGRAM),
+                dgram.contains(&socket_type)
+            );
+            assert_eq!(
+                type_is(socket_type, CLASS_INET4),
+                inet4.contains(&socket_type)
+            );
+            assert_eq!(
+                type_is(socket_type, CLASS_INET6),
+                inet6.contains(&socket_type)
+            );
+            assert_eq!(
+                type_is(socket_type, CLASS_TCP),
+                [TCP, TCP6].contains(&socket_type)
+            );
+            assert_eq!(
+                type_is(socket_type, CLASS_LOCAL),
+                [UNIX_STREAM, UNIX_DGRAM].contains(&socket_type)
+            );
+        }
+    }
 
     #[test]
     fn domain_and_type_round_trip() {

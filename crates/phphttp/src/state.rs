@@ -1,7 +1,11 @@
 //! `swoole::http::ContextState`: the part of `swoole::http::Context` the
 //! request parser reads and writes, laid out as `ext-src/php_swoole_http.h`
 //! declares it (C++ asserts the size against `SWR_PHPHTTP_STATE_SIZE`).
-use std::ffi::{c_char, c_int, c_void};
+use std::{
+    collections::HashSet,
+    ffi::{CString, c_char, c_int, c_void},
+    rc::Rc,
+};
 use swoole_rs_zend::sys::zval;
 
 /// `llhttp_t` (`thirdparty/llhttp/llhttp.h`, `llhttp__internal_s`).
@@ -49,7 +53,12 @@ pub(crate) struct Request {
     pub(crate) zdata: zval,
     pub(crate) body_at: *const c_char,
     pub(crate) body_length: usize,
-    h2_data_buffer: *mut c_void,
+    /// An HTTP/2 request's body, as its DATA frames arrive.
+    #[expect(
+        clippy::box_collection,
+        reason = "all zeroes must be valid: a null Box is None"
+    )]
+    pub(crate) h2_data: Option<Box<Vec<u8>>>,
     pub(crate) zobject: Slot,
     pub(crate) zserver: Slot,
     pub(crate) zheader: Slot,
@@ -142,6 +151,20 @@ pub(crate) struct State {
         reason = "all zeroes must be valid: a null Box is None"
     )]
     pub(crate) compressed: Option<Box<Vec<u8>>>,
+    /// `private_data_2`: the handler the server picked for the request.
+    pub(crate) callback: *mut c_void,
+    /// `onBeforeRequest` is the server's: count or queue the request first.
+    pub(crate) before_request: u8,
+    /// `onAfterResponse` is the server's: uncount the request.
+    pub(crate) after_response: u8,
+    /// A coroutine server's `WebSocketSettings` (`websocket::SETTING_*` bits).
+    pub(crate) websocket_settings: u8,
+    /// A coroutine server's or `Request::create`'s `upload_tmp_dir`; a
+    /// server's context reads its server's.
+    pub(crate) upload_tmp_dir: Option<Rc<CString>>,
+    /// A coroutine server's `http_compression_types`; a server's context
+    /// reads its server's.
+    pub(crate) compression_types: Option<Rc<HashSet<Box<[u8]>>>>,
 }
 
 /// `swoole::http::Response`.
@@ -152,14 +175,14 @@ pub(crate) struct Response {
     pub(crate) status: c_int,
     pub(crate) reason: *mut c_char,
     pub(crate) zobject: Slot,
-    zheader: Slot,
-    zcookie: Slot,
-    ztrailer: Slot,
+    pub(crate) zheader: Slot,
+    pub(crate) zcookie: Slot,
+    pub(crate) ztrailer: Slot,
 }
 
 /// `SWR_PHPHTTP_PARSE_SIZE` and `SWR_PHPHTTP_STATE_SIZE`.
 const _: () = assert!(size_of::<Parse>() == 144, "ext-src/php_swoole_http.h");
-const _: () = assert!(size_of::<State>() == 728, "ext-src/php_swoole_http.h");
+const _: () = assert!(size_of::<State>() == 760, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Response>() == 120, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Llhttp>() == 96, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Request>() == 272, "ext-src/php_swoole_http.h");
@@ -179,5 +202,10 @@ mod tests {
         assert_eq!(std::mem::offset_of!(State, stream_id), 696);
         assert_eq!(std::mem::offset_of!(State, write_buffer), 712);
         assert_eq!(std::mem::offset_of!(State, compressed), 720);
+        assert_eq!(std::mem::offset_of!(State, callback), 728);
+        assert_eq!(std::mem::offset_of!(State, before_request), 736);
+        assert_eq!(std::mem::offset_of!(State, websocket_settings), 738);
+        assert_eq!(std::mem::offset_of!(State, upload_tmp_dir), 744);
+        assert_eq!(std::mem::offset_of!(State, compression_types), 752);
     }
 }

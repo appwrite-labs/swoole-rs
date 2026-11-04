@@ -5,6 +5,7 @@
 //! the code assigns.
 use crate::SocketOutput;
 use crate::socket_timeouts::SocketTimeouts;
+use crate::socket_types::{CLASS_INET4, CLASS_INET6, CLASS_LOCAL, CLASS_TCP, type_is};
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::ffi::{c_int, c_void};
 use std::mem::{offset_of, size_of};
@@ -177,13 +178,19 @@ impl SocketRecord {
     /// `Socket::is_tcp`: a TCP stream over IPv4 or IPv6.
     #[must_use]
     pub fn is_tcp(&self) -> bool {
-        matches!(self.socket_type, 1 | 3)
+        type_is(self.socket_type, CLASS_TCP)
     }
 
-    /// `Socket::is_inet`: IPv4 or IPv6, stream, datagram or raw.
+    /// `Socket::is_inet4() || is_inet6()`: stream, datagram or raw.
     #[must_use]
     pub fn is_inet(&self) -> bool {
-        matches!(self.socket_type, 1..=4 | 7 | 8)
+        type_is(self.socket_type, CLASS_INET4 | CLASS_INET6)
+    }
+
+    /// `Socket::is_local`: a Unix stream or datagram socket.
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        type_is(self.socket_type, CLASS_LOCAL)
     }
 
     /// `Socket::catch_error` (`catch_read_error`, `catch_write_error`).
@@ -250,6 +257,34 @@ pub unsafe extern "C" fn swr_v1_socket_dealloc(socket: *mut SocketRecord) {
         // SAFETY: as the caller promises; the record has no destructor.
         unsafe { dealloc(socket.cast(), Layout::new::<SocketRecord>()) };
     }
+}
+
+/// `socket_free_defer`'s descriptor work: a bound Unix socket's path is unlinked
+/// (from getsockname(2), as upstream), then the descriptor closed. False when
+/// close(2) failed, with errno set; native code warns, then deletes the record.
+///
+/// # Safety
+/// `socket` is a live record.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_socket_release(socket: *mut SocketRecord) -> bool {
+    // SAFETY: as the caller promises.
+    let record = unsafe { &*socket };
+    if record.is_local() && record.bound != 0
+        // SAFETY: as the caller promises.
+        && unsafe { crate::swr_v1_socket_get_name(socket) } == 0
+    {
+        // SAFETY: the record's address, which getsockname(2) just wrote.
+        let path = unsafe { (&raw const (*socket).info.addr.un.sun_path).cast::<libc::c_char>() };
+        // SAFETY: the path's first byte, inside the record.
+        if unsafe { *path } != 0 {
+            // SAFETY: a NUL-terminated path in the record's address storage.
+            unsafe { libc::unlink(path) };
+        }
+    }
+    // SAFETY: as the caller promises.
+    let fd = unsafe { (*socket).fd };
+    // SAFETY: close(2) has no memory preconditions.
+    fd == -1 || unsafe { libc::close(fd) } == 0
 }
 
 /// `Socket()`: the record `new Socket()` value-initialises.
@@ -377,6 +412,26 @@ pub unsafe extern "C" fn swr_v1_socket_accept_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_unlinks_a_bound_unix_socket_and_closes() {
+        let path = std::env::temp_dir().join(format!("swr-release-{}", std::process::id()));
+        std::fs::remove_file(&path).ok();
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        let mut socket = SocketRecord::new();
+        socket.fd = std::os::fd::IntoRawFd::into_raw_fd(listener);
+        socket.socket_type = 5;
+        socket.bound = 1;
+        // SAFETY: a local record that owns its descriptor.
+        assert!(unsafe { swr_v1_socket_release(&raw mut socket) });
+        assert!(!path.exists(), "the path is unlinked");
+        socket.fd = -1;
+        // SAFETY: as above; -1 is not closed.
+        assert!(unsafe { swr_v1_socket_release(&raw mut socket) });
+        socket.fd = i32::MAX;
+        // SAFETY: as above; a descriptor that is not open fails.
+        assert!(!unsafe { swr_v1_socket_release(&raw mut socket) });
+    }
 
     #[test]
     fn new_records_carry_the_default_timeouts() {

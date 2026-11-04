@@ -17,9 +17,10 @@ pub use global::*;
 pub use hook::swr_v1_corebase_hook_add_action;
 pub use host::{
     DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, sw_realloc,
-    swoole_dump_ascii, swoole_dump_hex, swoole_rand, swoole_rand_any, swoole_random_int,
-    swr_v1_corebase_print_backtrace, swr_v1_corebase_redirect_stdout, swr_v1_corebase_shell_exec,
-    swr_v1_corebase_system_random, swr_v1_corebase_wait_for,
+    swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_hex2dec, swoole_rand,
+    swoole_rand_any, swoole_random_int, swr_v1_corebase_print_backtrace,
+    swr_v1_corebase_redirect_stdout, swr_v1_corebase_shell_exec, swr_v1_corebase_system_random,
+    swr_v1_corebase_wait_for,
 };
 pub use lifecycle::{
     LifecycleState, swr_v1_corebase_lifecycle_next, swr_v1_corebase_task_tmp_next,
