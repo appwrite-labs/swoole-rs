@@ -52,7 +52,6 @@
  "framing-unit": 1,
  "hooks-async-policy": 5,
  "hooks-compile": 22,
- "hooks-lifecycle-policy": 6,
  "hooks-ordered": 13,
  "hooks-packet-policy": 5,
  "hooks-unit": 1,

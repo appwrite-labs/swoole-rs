@@ -507,7 +507,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('coroutine-compile',commands)
         self.assertIn('tests/modules/coroutine/rust_asan.py', commands['coroutine-rust-asan'])
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
-        for name in ['hooks-ordered','hooks-async-policy','hooks-packet-policy','hooks-lifecycle-policy','hooks-compile']:
+        for name in ['hooks-ordered','hooks-async-policy','hooks-packet-policy','hooks-compile']:
             self.assertIn(name,commands)
         self.assertIn('--config',commands['hooks-compile'])
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-hybrid',
