@@ -10,11 +10,6 @@
 #include "callbacks.inc"
 using swoole::Reactor;
 int main() {
-    // ABI observations are separate from the unchanged Native behavior checks.
-    assert(swr_v1_reactor_callbacks_copy_layout(0)==sizeof(swr_v1_reactor_callback_copy));
-    assert(swr_v1_reactor_callbacks_copy_layout(1)==alignof(swr_v1_reactor_callback_copy));
-    assert(swr_v1_reactor_callbacks_copy_layout(2)==offsetof(swr_v1_reactor_callback_copy,cursor));
-    assert(swr_v1_reactor_callbacks_copy_layout(3)==offsetof(swr_v1_reactor_callback_copy,kind));
     unsigned checks=0;std::vector<int> trace;
     auto check=[&](bool value) { assert(value);++checks; };
     {
@@ -63,5 +58,5 @@ int main() {
         copied=original;check(copied.isset_exit_condition(1));check(copied.if_exit());copied.execute_end_callbacks(false);check(trace==std::vector<int>({1}));trace.clear();
         const Reactor *self=&copied;copied=*self;copied.execute_end_callbacks(false);check(trace==std::vector<int>({1}));trace.clear();
     }
-    std::cout<<"{\"checks\":"<<checks<<",\"normal_ordered_mutation\":true,\"native_std_function_effects\":true,\"copy_layout_checks\":4,\"lifetime_or_fault_probes\":false}\n";
+    std::cout<<"{\"checks\":"<<checks<<",\"normal_ordered_mutation\":true,\"native_std_function_effects\":true,\"lifetime_or_fault_probes\":false}\n";
 }
