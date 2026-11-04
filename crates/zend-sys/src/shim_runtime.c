@@ -137,3 +137,14 @@ void swr_zend_runtime_env_lock(bool lock) {
     (void) lock;
 #endif
 }
+
+void *swr_zend_runtime_transport(const char *name, size_t length) {
+    return zend_hash_str_find_ptr(php_stream_xport_get_hash(), name, length);
+}
+
+int swr_zend_runtime_set_transport(const char *name, void *factory, bool remove) {
+    if (remove) {
+        return php_stream_xport_unregister(name);
+    }
+    return php_stream_xport_register(name, (php_stream_transport_factory) factory);
+}

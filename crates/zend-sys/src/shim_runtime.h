@@ -37,6 +37,11 @@ int swr_zend_runtime_select_args(zend_execute_data *execute_data,
                                  bool *seconds_null,
                                  zend_long *micros,
                                  bool *micros_null);
+/* The stream transport factory registered as name, or NULL. */
+void *swr_zend_runtime_transport(const char *name, size_t length);
+/* php_stream_xport_register(name, factory), or php_stream_xport_unregister(name)
+ * (remove): SUCCESS or FAILURE. */
+int swr_zend_runtime_set_transport(const char *name, void *factory, bool remove);
 /* tsrm_env_lock (lock) or tsrm_env_unlock; nothing without ZTS. */
 void swr_zend_runtime_env_lock(bool lock);
 #endif
