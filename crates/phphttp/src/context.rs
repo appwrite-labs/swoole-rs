@@ -460,6 +460,21 @@ mod tests {
         assert_eq!(directory(b"/tmp").as_bytes(), b"/tmp");
     }
 
+    // The server's answers, which a context bound to no server never asks for.
+    #[unsafe(no_mangle)]
+    extern "C" fn swr_http_host_server_upload_tmp_dir(_: *mut c_void) -> *const c_char {
+        c"/server".as_ptr()
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn swr_http_host_server_compression_type(
+        _: *mut c_void,
+        _: *const c_char,
+        _: usize,
+    ) -> bool {
+        true
+    }
+
     #[test]
     fn a_coroutine_servers_types_answer_without_the_server() {
         // A value-initialised context: no socket bound, no server.
