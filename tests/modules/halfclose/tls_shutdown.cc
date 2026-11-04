@@ -24,7 +24,14 @@ static int observed_error(const SSL *ssl, int result) {
     last_error_queue = ERR_peek_error();
     return last_error_class;
 }
-// ACTUAL_ERROR_REASON
+// Upstream's Socket::ssl_get_error_reason (Rust's in reactor builds), which the methods log with.
+static const char *ssl_get_error_reason(int *reason) {
+    unsigned long error = ERR_get_error();
+    if (reason) {
+        *reason = ERR_GET_REASON(error);
+    }
+    return ERR_reason_error_string(error);
+}
 static int null_warnings;
 static void record_warning(int, const char *message) {
     ++warnings;

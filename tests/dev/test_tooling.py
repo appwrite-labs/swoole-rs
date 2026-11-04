@@ -806,14 +806,15 @@ class Lanes(unittest.TestCase):
                                fix_halfclose=True)
         commands = dict(dev.plan(args, ROOT / 'target/reports/test-repair'))
         self.assertIn('--fix-halfclose', commands['build'])
-        self.assertEqual(commands['build'].count('--module'), 0)  # error is graduated
-        self.assertIn('/rust-halfclose/', ' '.join(commands['error-native']))
+        # error is graduated; the repair's paths are the reactor module's
+        self.assertEqual(commands['build'].count('--module'), 1)
+        self.assertEqual(commands['build'][commands['build'].index('--module') + 1], 'reactor')
+        self.assertIn('/rust-reactor-halfclose/', ' '.join(commands['error-native']))
         self.assertEqual(commands['error-php'].count('--engine'), 2)
         self.assertEqual(commands['halfclose-prequeue'].count('--engine'), 1)
         self.assertNotIn('--probe-coroutines', commands['halfclose-prequeue'])
         self.assertIn('--keep-alive', commands['halfclose-pressure'])
-        stale = commands['halfclose-stale-read']
-        self.assertEqual(stale[stale.index('--source') + 1], str(ROOT / 'target/hybrid/rust-halfclose/src'))
+        self.assertNotIn('halfclose-stale-read', commands)  # a crates/server unit test
 
     def test_protocol_lifetime_gates_use_actual_reference_first(self):
         args = SimpleNamespace(lane='integrate', module=['protocols'], php='php', php_extension=[],

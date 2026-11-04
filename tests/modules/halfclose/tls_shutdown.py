@@ -19,15 +19,13 @@ def main():
     args = parser.parse_args()
     source = (args.source / 'src/network/socket.cc').read_text()
     methods = source[source.index('bool Socket::ssl_shutdown() {'):source.index('void Socket::ssl_catch_error() const {')]
-    helper = source[source.index('const char *Socket::ssl_get_error_reason('):source.index('ReturnCode Socket::ssl_accept()')]
-    helper = helper.replace('Socket::', '').replace('ulong_t', 'unsigned long')
     driver = Path(__file__).with_suffix('.cc').read_text()
     assert driver.count('// ACTUAL_SOCKET_METHODS') == 1
     report = {'scope': 'Actual extracted method bodies, real memory-BIO and nonblocking socketpair TLS1.2 peers; error adapter replaces only SSL_shutdown/SSL_get_error for five explicit negative-result cases. Native method instrumentation; OpenSSL library uninstrumented. No claim of full native object-layout/reactor coverage.',
               'source': str(args.source.resolve())}
     with tempfile.TemporaryDirectory(prefix='tls-shutdown-') as temp:
         temp = Path(temp)
-        (temp / 'test.cc').write_text(driver.replace('// ACTUAL_SOCKET_METHODS', methods).replace('// ACTUAL_ERROR_REASON', helper))
+        (temp / 'test.cc').write_text(driver.replace('// ACTUAL_SOCKET_METHODS', methods))
         flags = ['-I' + str(args.openssl_dir / 'include'), '-L' + str(args.openssl_dir / 'lib')] if args.openssl_dir else []
         command = [os.environ.get('CXX', 'c++'), '-std=c++17', '-fsanitize=address,undefined', '-fno-omit-frame-pointer', *flags, str(temp / 'test.cc'), '-lssl', '-lcrypto', '-o', str(temp / 'test')]
         result = subprocess.run(command, capture_output=True, text=True, timeout=60)
