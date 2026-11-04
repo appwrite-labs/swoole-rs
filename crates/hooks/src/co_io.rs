@@ -4,8 +4,8 @@
 //! it, the record's `set_err`, `check_return_value` and `is_available`, and the
 //! per-direction timer (`TimerController`).
 use crate::co_socket::CoSocket;
-use crate::shutdown::{READ, swr_v1_hook_socket_bound_co};
-use core::ffi::{c_char, c_int, c_void};
+use crate::shutdown::{READ, swr_v1_hook_socket_bound_co, swr_v1_hook_socket_event_name};
+use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
@@ -23,8 +23,10 @@ pub struct Host {
     pub strerror: unsafe extern "C" fn(c_int) -> *const c_char,
     /// `Coroutine::get_current_safe()`.
     pub current: unsafe extern "C" fn() -> *mut c_void,
-    /// `check_bound_co`'s report that coroutine `co` holds `event`.
-    pub bound_error: unsafe extern "C" fn(*mut CoSocket, u32, *mut c_void),
+    /// A coroutine's id.
+    pub cid: unsafe extern "C" fn(*mut c_void) -> c_long,
+    /// `Coroutine::print_socket_bound_error(fd, event, cid)`.
+    pub bound_error: unsafe extern "C" fn(c_int, *const c_char, c_long),
     /// `swoole_timer_add(timeout, false, timer_callback, socket)`, or null.
     pub timer_add: unsafe extern "C" fn(*mut CoSocket, f64) -> *mut c_void,
     pub timer_del: unsafe extern "C" fn(*mut c_void),
@@ -118,14 +120,8 @@ pub(crate) unsafe fn check(socket: *mut CoSocket, result: isize) {
 /// As [`set_err`]; the record's state is live.
 pub(crate) unsafe fn available(socket: *mut CoSocket, event: u32) -> bool {
     if event != 0 {
-        // SAFETY: as the caller promises.
-        let state = unsafe { (*socket).state };
-        // SAFETY: the record's live state.
-        let co = unsafe { swr_v1_hook_socket_bound_co(state, event) };
-        if !co.is_null() {
-            // SAFETY: a native report; it may close the socket, so read it again after.
-            unsafe { (host().bound_error)(socket, event, co) };
-        }
+        // SAFETY: forwarded; the report may close the socket, so it is read again after.
+        unsafe { check_bound(socket, event) };
     }
     // SAFETY: as the caller promises; read again after the report.
     let record = unsafe { &*socket };
@@ -140,6 +136,150 @@ pub(crate) unsafe fn available(socket: *mut CoSocket, event: u32) -> bool {
     // SAFETY: forwarded.
     unsafe { set_err(socket, error) };
     false
+}
+
+/// `get_bound_cid(event)`: the id of the coroutine `get_bound_co` finds, or 0.
+///
+/// # Safety
+/// `socket` is a live record.
+unsafe fn bound_cid(socket: *const CoSocket, event: u32) -> c_long {
+    // SAFETY: as the caller promises.
+    let state = unsafe { (*socket).state };
+    // SAFETY: the record's live state.
+    let co = unsafe { swr_v1_hook_socket_bound_co(state, event) };
+    if co.is_null() {
+        0
+    } else {
+        // SAFETY: a live native coroutine.
+        unsafe { (host().cid)(co) }
+    }
+}
+
+/// `get_event_str(event)`.
+///
+/// # Safety
+/// `socket` is a live record.
+unsafe fn event_str(socket: *const CoSocket, event: u32) -> &'static CStr {
+    // SAFETY: as the caller promises.
+    let state = unsafe { (*socket).state };
+    // SAFETY: the record's live state.
+    match unsafe { swr_v1_hook_socket_event_name(state, event) } {
+        0 => c"reading",
+        1 => c"writing",
+        _ => c"reading or writing",
+    }
+}
+
+/// `check_bound_co(event)`: report a coroutine with a nonzero id holding `event`.
+///
+/// # Safety
+/// `socket` is a live record.
+unsafe fn check_bound(socket: *const CoSocket, event: u32) {
+    // SAFETY: as the caller promises.
+    let cid = unsafe { bound_cid(socket, event) };
+    if cid != 0 {
+        // SAFETY: as the caller promises.
+        let fd = unsafe { (*socket).sock_fd };
+        // SAFETY: as the caller promises.
+        let name = unsafe { event_str(socket, event) };
+        // SAFETY: a native report (fatal in a running server).
+        unsafe { (host().bound_error)(fd, name.as_ptr(), cid) };
+    }
+}
+
+/// `TimeoutController::has_timedout(kind)` at `now`: the first call starts the
+/// clock; later ones set the time left as `kind`'s timeout, or time out
+/// (`ETIMEDOUT`) with less than `SW_TIMER_MIN_SEC` left. No limit unless positive.
+///
+/// # Safety
+/// `socket` is a live, open record, not borrowed elsewhere for the call.
+unsafe fn timed_out(
+    socket: *mut CoSocket,
+    timeout: f64,
+    startup: &mut f64,
+    now: f64,
+    kind: c_int,
+) -> bool {
+    /// `SW_TIMER_MIN_SEC`.
+    const MIN_SEC: f64 = 0.001;
+    if timeout <= 0.0 || timeout.is_nan() {
+        return false;
+    }
+    if *startup == 0.0 {
+        *startup = now;
+        return false;
+    }
+    let left = timeout - (now - *startup);
+    if left < MIN_SEC {
+        // SAFETY: forwarded.
+        unsafe { set_err(socket, libc::ETIMEDOUT) };
+        return true;
+    }
+    // SAFETY: as the caller promises.
+    let socket = unsafe { &*socket };
+    // SAFETY: an open record's network::Socket, not otherwise borrowed.
+    let timeouts = &raw mut unsafe { socket.record() }.timeouts;
+    // SAFETY: the record's timeouts.
+    unsafe { swoole_rs_reactor::swr_v1_socket_set_timeout(timeouts, left, kind) };
+    false
+}
+
+macro_rules! export {
+    ($(#[$doc:meta])* fn $name:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? = $call:expr) => {
+        $(#[$doc])*
+        ///
+        /// # Safety
+        /// `socket` is a live record, not borrowed elsewhere for the call.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name($($arg: $ty),*) $(-> $ret)? {
+            // SAFETY: as the caller promises.
+            unsafe { $call }
+        }
+    };
+}
+
+export!(
+    /// `set_err(e)`.
+    fn swr_v1_hook_co_socket_set_err(socket: *mut CoSocket, error: c_int) = set_err(socket, error)
+);
+export!(
+    /// `check_return_value(retval)`.
+    fn swr_v1_hook_co_socket_check(socket: *mut CoSocket, result: isize) = check(socket, result)
+);
+export!(
+    /// `is_available(event)`.
+    fn swr_v1_hook_co_socket_available(socket: *mut CoSocket, event: u32) -> bool = available(socket, event)
+);
+export!(
+    /// `get_bound_cid(event)`.
+    fn swr_v1_hook_co_socket_bound_cid(socket: *const CoSocket, event: u32) -> c_long = bound_cid(socket, event)
+);
+export!(
+    /// `check_bound_co(event)`.
+    fn swr_v1_hook_co_socket_check_bound(socket: *const CoSocket, event: u32) = check_bound(socket, event)
+);
+export!(
+    /// `get_event_str(event)`, a static string.
+    fn swr_v1_hook_co_socket_event_str(socket: *const CoSocket, event: u32) -> *const c_char = event_str(socket, event).as_ptr()
+);
+
+/// `has_timedout(kind)` with `startup` its controller's clock and `now` `microtime()`.
+///
+/// # Safety
+/// `socket` is a live, open record, not borrowed elsewhere for the call; `startup`
+/// is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_timed_out(
+    socket: *mut CoSocket,
+    timeout: f64,
+    startup: *mut f64,
+    now: f64,
+    kind: c_int,
+) -> bool {
+    // SAFETY: as the caller promises.
+    let startup = unsafe { &mut *startup };
+    // SAFETY: as the caller promises.
+    unsafe { timed_out(socket, timeout, startup, now, kind) }
 }
 
 /// `catch_read_error`/`catch_write_error(errno) == SW_WAIT`.
@@ -269,6 +409,8 @@ pub(crate) mod test_host {
         pub(crate) static REACTOR_OK: Cell<bool> = const { Cell::new(true) };
         /// What a suspended coroutine does before it is resumed.
         pub(crate) static ON_SUSPEND: RefCell<Option<Suspend>> = RefCell::new(None);
+        /// What the bound-coroutine report does after it is recorded.
+        pub(crate) static ON_BOUND: RefCell<Option<Box<dyn FnMut()>>> = RefCell::new(None);
         static NODES: Cell<usize> = const { Cell::new(0) };
     }
 
@@ -288,6 +430,7 @@ pub(crate) mod test_host {
         TIMER_OK.set(true);
         REACTOR_OK.set(true);
         ON_SUSPEND.set(None);
+        ON_BOUND.set(None);
     }
 
     unsafe extern "C" fn set_last_error(error: c_int) {
@@ -299,8 +442,20 @@ pub(crate) mod test_host {
     unsafe extern "C" fn current() -> *mut c_void {
         ptr::dangling_mut::<u64>().cast()
     }
-    unsafe extern "C" fn bound_error(_: *mut CoSocket, event: u32, _: *mut c_void) {
-        log(format!("bound-error:{event}"));
+    /// A test coroutine is a `c_long` holding its id.
+    unsafe extern "C" fn cid(co: *mut c_void) -> c_long {
+        let cid = unsafe { *co.cast::<c_long>() };
+        log(format!("cid:{cid}"));
+        cid
+    }
+    unsafe extern "C" fn bound_error(fd: c_int, event: *const c_char, cid: c_long) {
+        let event = unsafe { CStr::from_ptr(event) }.to_str().unwrap();
+        log(format!("bound-error:{fd}:{event}:{cid}"));
+        let hook = ON_BOUND.take();
+        if let Some(mut hook) = hook {
+            hook();
+            ON_BOUND.set(Some(hook));
+        }
     }
     unsafe extern "C" fn timer_add(_: *mut CoSocket, timeout: f64) -> *mut c_void {
         log(format!("timer:add:{timeout}"));
@@ -339,6 +494,7 @@ pub(crate) mod test_host {
         set_last_error,
         strerror,
         current,
+        cid,
         bound_error,
         timer_add,
         timer_del,
@@ -352,7 +508,7 @@ pub(crate) mod test_host {
 
 #[cfg(test)]
 mod tests {
-    use super::test_host::{TIMER_OK, install, take};
+    use super::test_host::{ON_BOUND, TIMER_OK, install, take};
     use super::*;
     use crate::co_socket::TestSocket;
     use crate::shutdown::{WRITE, swr_v1_hook_socket_bind};
@@ -422,24 +578,252 @@ mod tests {
         }
     }
 
+    const MASKS: [u32; 6] = [0, READ, WRITE, READ | WRITE, 1 << 11, u32::MAX];
+
+    /// Binds a reader with id `reader` and a writer with id `writer` per `bound`'s bits.
+    fn bind(socket: &TestSocket, bound: usize, ids: &mut [c_long; 2]) {
+        let [reader, writer] = ids;
+        let co = |on: bool, id: &mut c_long| {
+            if on {
+                ptr::from_mut(id).cast()
+            } else {
+                ptr::null_mut()
+            }
+        };
+        unsafe { swr_v1_hook_socket_bind(socket.state(), READ, co(bound & 1 != 0, reader)) };
+        unsafe { swr_v1_hook_socket_bind(socket.state(), WRITE, co(bound & 2 != 0, writer)) };
+    }
+
+    /// Upstream's `get_event_str`, `get_bound_cid` and `check_bound_co`.
+    fn upstream_bound(
+        fd: c_int,
+        bound: usize,
+        [reader, writer]: [c_long; 2],
+        event: u32,
+    ) -> (c_long, &'static str, Vec<String>) {
+        let (read, write) = (bound & 1 != 0, bound & 2 != 0);
+        let name = if event == READ {
+            "reading"
+        } else if event == WRITE {
+            "writing"
+        } else if read && write {
+            "reading or writing"
+        } else if read {
+            "reading"
+        } else {
+            "writing"
+        };
+        let co = if event & READ != 0 && read {
+            Some(reader)
+        } else if event & WRITE != 0 && write {
+            Some(writer)
+        } else {
+            None
+        };
+        let mut effects = Vec::new();
+        let cid = co.map_or(0, |cid| {
+            effects.push(format!("cid:{cid}"));
+            cid
+        });
+        if cid != 0 {
+            effects.push(format!("bound-error:{fd}:{name}:{cid}"));
+        }
+        (cid, name, effects)
+    }
+
+    /// The socket policy gate's former scenarios 0..72: the bound coroutine, its id,
+    /// the event's name and the bound report, for each binding, id sign and mask.
     #[test]
-    fn availability_reports_a_bound_coroutine_then_checks_close() {
+    fn ported_bound_matrix() {
         install();
-        let mut socket = TestSocket::new();
-        let mut co = 0u8;
-        unsafe { swr_v1_hook_socket_bind(socket.state(), WRITE, (&raw mut co).cast()) };
-        assert!(unsafe { available(socket.ptr(), READ) });
-        assert_eq!(take(), Vec::<String>::new());
-        assert!(unsafe { available(socket.ptr(), WRITE) });
-        assert_eq!(take(), ["bound-error:1024"]);
-        unsafe { socket.0.record() }.output.close_wait = 1;
-        assert!(!unsafe { available(socket.ptr(), 0) });
-        assert_eq!(socket.0.err_code, CLOSE_WAIT_ERROR);
-        assert_eq!(take(), ["last-error:10019"]);
-        socket.0.sock_fd = -1;
-        assert!(!unsafe { available(socket.ptr(), 0) });
-        assert_eq!(socket.0.err_code, libc::EBADF);
-        socket.0.sock_fd = 100;
+        for k in 0..72 {
+            let (bound, event) = ((k / 6) % 4, MASKS[k % 6]);
+            let ids = [[0, 0], [5, 7], [-5, -7]][k / 24];
+            let socket = TestSocket::new();
+            let mut cells = ids;
+            bind(&socket, bound, &mut cells);
+            let (cid, name, effects) = upstream_bound(100, bound, ids, event);
+            assert_eq!(
+                unsafe { swr_v1_hook_co_socket_bound_cid(&raw const *socket.0, event) },
+                cid
+            );
+            let got = unsafe {
+                CStr::from_ptr(swr_v1_hook_co_socket_event_str(&raw const *socket.0, event))
+            };
+            assert_eq!(got.to_str().unwrap(), name, "scenario {k}");
+            take();
+            unsafe { swr_v1_hook_co_socket_check_bound(&raw const *socket.0, event) };
+            assert_eq!(take(), effects, "scenario {k}");
+        }
+    }
+
+    /// The socket policy gate's former scenarios 72..216: `is_available` over each
+    /// binding, mask and socket state (open, closed, close-wait), with the bound
+    /// report recorded or closing the socket. (Its third mode, a report that
+    /// throws, has no counterpart: the real report is a fatal error.)
+    #[test]
+    fn ported_availability_matrix() {
+        install();
+        for k in 0..144 {
+            let (event, bound, state, closes) =
+                (MASKS[k % 6], (k / 6) % 4, (k / 24) % 3, k / 72 == 1);
+            let mut socket = TestSocket::new();
+            let mut ids = [5, 7];
+            bind(&socket, bound, &mut ids);
+            socket.0.sock_fd = if state == 1 { -1 } else { 100 };
+            unsafe { socket.0.record() }.output.close_wait = u8::from(state == 2);
+            let target = socket.ptr();
+            if closes {
+                ON_BOUND.set(Some(Box::new(move || unsafe { (*target).sock_fd = -1 })));
+            }
+            set_errno(0);
+            take();
+            let mut expected = Vec::new();
+            let mut closed = state == 1;
+            if event != 0 {
+                let (_, _, effects) = upstream_bound(socket.0.sock_fd, bound, [5, 7], event);
+                closed |= closes && effects.len() == 2;
+                expected = effects;
+            }
+            let error = if closed {
+                libc::EBADF
+            } else if state == 2 {
+                CLOSE_WAIT_ERROR
+            } else {
+                0
+            };
+            if error != 0 {
+                expected.push(format!("last-error:{error}"));
+            }
+            let available = unsafe { swr_v1_hook_co_socket_available(target, event) };
+            assert_eq!(
+                (available, socket.0.err_code, errno()),
+                (error == 0, error, error),
+                "scenario {}",
+                k + 72
+            );
+            assert_eq!(take(), expected, "scenario {}", k + 72);
+            ON_BOUND.set(None);
+            socket.0.sock_fd = 100;
+        }
+    }
+
+    /// The socket policy gate's former scenarios 288..324: `check_return_value`
+    /// over the result's extremes, a preset error and errno.
+    #[test]
+    fn ported_check_matrix() {
+        install();
+        for k in 0..36 {
+            let result = [isize::MIN, -1, 0, isize::MAX][k % 4];
+            let preset = [0, 9, -9][(k / 4) % 3];
+            let system = [0, libc::EINVAL, libc::EAGAIN][k / 12];
+            let mut socket = TestSocket::new();
+            socket.0.err_code = preset;
+            socket.0.err_msg = c"preset".as_ptr();
+            set_errno(system);
+            take();
+            // Upstream: set_err(0) after a success, set_err(errno) if no error is set.
+            let set = if result >= 0 {
+                Some(0)
+            } else if preset == 0 {
+                Some(system)
+            } else {
+                None
+            };
+            unsafe { swr_v1_hook_co_socket_check(socket.ptr(), result) };
+            let message = unsafe { CStr::from_ptr(socket.0.err_msg) }
+                .to_str()
+                .unwrap();
+            let expected = set.map_or((preset, system, "preset", vec![]), |e| {
+                (
+                    e,
+                    e,
+                    if e == 0 { "" } else { "native-error" },
+                    vec![format!("last-error:{e}")],
+                )
+            });
+            assert_eq!(
+                (socket.0.err_code, errno(), message, take()),
+                expected,
+                "scenario {}",
+                k + 288
+            );
+        }
+    }
+
+    /// The socket policy gate's former scenarios 324..348: `set_timeout(timeval)`'s
+    /// conversion, upstream's two divisions.
+    #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "upstream converts both fields to double"
+    )]
+    fn ported_timeval_conversion() {
+        for seconds in [-1i64, 0, 1, 9_007_199_254_740_993] {
+            for micros in [-1i64, 0, 1, 999_999, 1_000_000, i64::from(i32::MAX)] {
+                let expected = seconds as f64 + micros as f64 / 1000.0 / 1000.0;
+                let got = crate::swr_v1_hook_timeval(seconds as f64, micros as f64);
+                assert_eq!(got.to_bits(), expected.to_bits(), "{seconds} {micros}");
+            }
+        }
+    }
+
+    /// The socket policy gate's former scenarios 348..420: `has_timedout` over each
+    /// timeout, starting clock and start time, three calls half a second apart.
+    #[test]
+    fn ported_has_timedout_matrix() {
+        install();
+        let timeouts = [-1.0, 0.0, 0.001, 1.0, f64::NAN, f64::INFINITY];
+        for k in 0..72 {
+            let (timeout, start) = (timeouts[k % 6], [0.0, -0.0, 1.0, 2.0][(k / 6) % 4]);
+            let mut now = 1.0 + f64::from(u32::try_from(k / 24).unwrap()) * 2.0;
+            let mut socket = TestSocket::new();
+            unsafe { socket.0.record() }.timeouts.read = -7.0;
+            let (mut startup, mut model) = (start, start);
+            for _ in 0..3 {
+                take();
+                // Upstream, transcribed.
+                let (mut expired, mut set) = (false, None);
+                if timeout > 0.0 {
+                    if model == 0.0 {
+                        model = now;
+                    } else {
+                        let used = now - model;
+                        if timeout - used < 0.001 {
+                            expired = true;
+                        } else {
+                            set = Some(timeout - used);
+                        }
+                    }
+                }
+                let before = unsafe { socket.0.record() }.timeouts.read;
+                let got = unsafe {
+                    swr_v1_hook_co_socket_timed_out(socket.ptr(), timeout, &raw mut startup, now, 4)
+                };
+                let after = unsafe { socket.0.record() }.timeouts.read;
+                assert_eq!(
+                    (got, startup.to_bits()),
+                    (expired, model.to_bits()),
+                    "scenario {}",
+                    k + 348
+                );
+                assert_eq!(
+                    after.to_bits(),
+                    set.unwrap_or(before).to_bits(),
+                    "scenario {}",
+                    k + 348
+                );
+                assert_eq!(
+                    take(),
+                    if expired {
+                        vec![format!("last-error:{}", libc::ETIMEDOUT)]
+                    } else {
+                        vec![]
+                    }
+                );
+                now += 0.5;
+            }
+        }
     }
 
     #[test]

@@ -52,6 +52,10 @@ struct Socket {
  swr_v1_hook_socket_ops lifecycle_ops();
 };
 #include ACTUAL_BODIES
+#ifdef SELECTED_STATE
+// get_event_str is Rust in the selected tree (crates/hooks/src/co_io.rs); upstream's, over the bound coroutines.
+const char *Socket::get_event_str(EventType event) const {return event==SW_EVENT_READ?"reading":event==SW_EVENT_WRITE?"writing":event_co(SW_EVENT_READ)&&event_co(SW_EVENT_WRITE)?"reading or writing":event_co(SW_EVENT_READ)?"reading":"writing";}
+#endif
 // The selected socket's connection state is Rust's (#439); scenarios set and read it the same way.
 #ifdef SELECTED_STATE
 static void set_state(Socket *s,bool c,bool r,bool w){swr_v1_hook_socket_set_flags(s->state_,{c,r,w});}

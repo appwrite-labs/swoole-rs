@@ -22,8 +22,11 @@ def main():
     a=p.parse_args()
     unit='src/coroutine/socket.cc'
     originals,selected,hybrid=sources(a.source,a.archive,[unit,'include/swoole_coroutine_socket.h'])
-    signatures=['bool Socket::shutdown(', 'bool Socket::cancel(', 'bool Socket::close()', 'bool Socket::connect(const sockaddr *', 'bool Socket::check_liveness()', 'const char *Socket::get_event_str(']
-    inline=['bool is_closed() const', 'bool is_connected() const', 'Coroutine *get_bound_co(', 'bool has_bound(', 'void set_err(const int e)', 'bool is_available(', 'void check_bound_co(', 'long get_bound_cid(']
+    signatures=['bool Socket::shutdown(', 'bool Socket::cancel(', 'bool Socket::close()', 'bool Socket::connect(const sockaddr *', 'bool Socket::check_liveness()']
+    inline=['bool is_closed() const', 'bool is_connected() const', 'Coroutine *get_bound_co(', 'bool has_bound(']
+    # set_err, is_available and the bound checks are Rust in the selected tree, with their
+    # cases ported (crates/hooks/src/co_io.rs); both sides run upstream's here.
+    helpers=['void set_err(const int e)', 'bool is_available(', 'void check_bound_co(', 'long get_bound_cid(']
     with tempfile.TemporaryDirectory(prefix='swr-hooks-lifecycle-') as directory:
         tree=Path(directory)
         for variant in ['original','selected']:
@@ -31,10 +34,11 @@ def main():
             # cancel/close are Rust calls in the selected tree (#443); its lifecycle_ops passes the effects.
             selected_only=['swr_v1_hook_socket_ops Socket::lifecycle_ops('] if variant=='selected' else []
             bodies=[block(texts[unit],signature)+(';' if signature.startswith('struct ') else '') for signature in signatures+selected_only]
+            if variant=='original':bodies.append(block(originals[unit],'const char *Socket::get_event_str('))
             (tree/(variant+'-lifecycle.inc')).write_text('\n'.join(bodies))
             # The selected header's bound-coroutine accessors over its Rust state (#439).
             inline_selected=['Coroutine *event_co(', 'void bind_co('] if variant=='selected' else []
-            (tree/(variant+'-lifecycle-inline.inc')).write_text('\n'.join(block(texts['include/swoole_coroutine_socket.h'],signature) for signature in inline+inline_selected))
+            (tree/(variant+'-lifecycle-inline.inc')).write_text('\n'.join([block(texts['include/swoole_coroutine_socket.h'],signature) for signature in inline+inline_selected]+[block(originals['include/swoole_coroutine_socket.h'],signature) for signature in helpers]))
         command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/lifecycle_gate.cc'),str(a.archive.resolve()),'-lpthread','-o',str(tree/'lifecycle')]
         if a.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
         if sys.platform.startswith('linux'):command+=['-ldl','-lm']

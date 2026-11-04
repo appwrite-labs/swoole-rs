@@ -9,7 +9,7 @@ python3 tests/modules/hooks/ordered_gate.py --source PINNED_SOURCE --archive BUI
 python3 tests/modules/hooks/compile_gate.py --source PINNED_SOURCE --config ACTUAL_GENERATED_CONFIG --report OWN/compile.json
 ```
 
-`async_gate.py`, `packet_gate.py`, `socket_policy_gate.py` and `lifecycle_gate.py`
+`async_gate.py`, `packet_gate.py` and `lifecycle_gate.py`
 take the same arguments. Each `*_gate.py` extracts the pinned function bodies and
 the patched ones from the hybrid build `--archive` comes from (`hybrid_tree`), compiles both
 against a deterministic native facade (`*_fixture.h`) and runs identical
@@ -26,12 +26,15 @@ and kernel IO are faked; these are policy/order checks, not runtime proof.
   resume-deletes-event lifetime and errno capture.
 - `packet_gate.py` (624 cases): length/EOF/raw framing paths and vectored
   all-transfer paths with EAGAIN/EINTR/error/partial progress.
-- `socket_policy_gate.py` (420 cases): Socket header and TimeoutController
-  bodies: read/write CID diagnostics, close/exception, closed/null sockets,
-  error priority, exact timeout bits and clock phases.
+- The socket policy gate's bodies (the bound-coroutine checks, `set_err`,
+  `check_return_value`, `is_available`, `get_event_str` and
+  `TimeoutController::has_timedout`) moved to Rust with their cases (`ported_*`
+  tests in `crates/hooks/src/co_io.rs`).
 - `lifecycle_gate.py` (1249 cases): shutdown, cancel, close after resume,
   destructor reentry, connect EINTR/EINPROGRESS/timer/option outcomes,
-  liveness errno and native exception unwind order.
+  liveness errno and native exception unwind order. Both sides run upstream's
+  `set_err`, `is_available`, bound checks and `get_event_str`, which are Rust in
+  the selected tree.
 
 `compile_gate.py` compiles all eight original and patched translation units as
 C++14 using the given `config.h`, and checks that each overlay refuses to
@@ -66,13 +69,13 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 
 ## Gate audit (#481)
 
-All six phases are kept. They compile the pinned and patched C++ bodies against
+All five phases are kept. They compile the pinned and patched C++ bodies against
 fakes and inject what a running server can't reliably produce: EAGAIN, EINTR,
 partial IO, timer and dispatch failures, cancel races and destructor reentry, all
 under ASan/UBSan. Neither a PHPT nor the Rust unit tests reach that C++ glue.
 
 - `hooks-ordered`, `hooks-async-policy`, `hooks-packet-policy`,
-  `hooks-socket-policy`, `hooks-lifecycle-policy`: the five fault/order matrices above.
+  `hooks-lifecycle-policy`: the four fault/order matrices above.
 - `hooks-compile`: the only C++14 build of the eight patched units, and the
   `SWOOLE_RS_HOOKS` refusal check.
 

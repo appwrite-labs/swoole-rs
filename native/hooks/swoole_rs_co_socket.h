@@ -69,8 +69,9 @@ typedef struct {
     const char *(*strerror)(int);
     /* Coroutine::get_current_safe(). */
     void *(*current)(void);
-    /* check_bound_co's report that coroutine co holds event. */
-    void (*bound_error)(swr_v1_co_socket *, uint32_t event, void *co);
+    /* A coroutine's id, and Coroutine::print_socket_bound_error. */
+    long (*cid)(void *co);
+    void (*bound_error)(int fd, const char *event, long cid);
     /* swoole_timer_add(timeout, false, timer_callback, socket), or null. */
     void *(*timer_add)(swr_v1_co_socket *, double timeout);
     void (*timer_del)(void *node);
@@ -86,6 +87,16 @@ typedef struct {
     void (*remove)(swr_v1_co_socket *, uint32_t event);
 } swr_v1_hook_co_socket_host_t;
 void swr_v1_hook_co_socket_host(const swr_v1_hook_co_socket_host_t *host);
+/* set_err(e), check_return_value, is_available, get_bound_cid, check_bound_co,
+   get_event_str (a static string) and TimeoutController::has_timedout (startup is
+   its clock, now microtime()). */
+void swr_v1_hook_co_socket_set_err(swr_v1_co_socket *socket, int error);
+void swr_v1_hook_co_socket_check(swr_v1_co_socket *socket, ssize_t result);
+bool swr_v1_hook_co_socket_available(swr_v1_co_socket *socket, uint32_t event);
+long swr_v1_hook_co_socket_bound_cid(const swr_v1_co_socket *socket, uint32_t event);
+void swr_v1_hook_co_socket_check_bound(const swr_v1_co_socket *socket, uint32_t event);
+const char *swr_v1_hook_co_socket_event_str(const swr_v1_co_socket *socket, uint32_t event);
+bool swr_v1_hook_co_socket_timed_out(swr_v1_co_socket *socket, double timeout, double *startup, double now, int kind);
 /* TimerController: one wait's timer in the socket's slot for its direction. */
 typedef struct {
     swr_v1_co_socket *socket;

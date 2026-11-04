@@ -192,64 +192,10 @@ pub extern "C" fn swr_v1_hook_curl_flags(flags: u32, native: u32, php: u32) -> C
     }
 }
 
-/// Closed sockets take precedence without requiring a native socket dereference.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_socket_status(closed: bool, close_wait: bool) -> u32 {
-    if closed {
-        1
-    } else if close_wait {
-        2
-    } else {
-        0
-    }
-}
-
-/// Native error publication: retain, clear, or publish the current errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_check_result(result: i64, has_error: bool) -> u32 {
-    if result >= 0 {
-        1
-    } else if !has_error {
-        2
-    } else {
-        0
-    }
-}
-
 /// Preserve the pinned two divisions rather than changing timeout rounding.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_timeval(seconds: f64, micros: f64) -> f64 {
     seconds + micros / 1000.0 / 1000.0
-}
-
-/// 0 no timeout, 1 initialize native clock, 2 inspect native elapsed time.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_timeout_action(timeout: f64, startup: f64) -> u32 {
-    if timeout > 0.0 {
-        if startup == 0.0 { 1 } else { 2 }
-    } else {
-        0
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TimeoutPlan {
-    pub remaining: f64,
-    pub expired: bool,
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_timeout_remaining(
-    timeout: f64,
-    elapsed: f64,
-    minimum: f64,
-) -> TimeoutPlan {
-    let remaining = timeout - elapsed;
-    TimeoutPlan {
-        remaining,
-        expired: remaining < minimum,
-    }
 }
 
 /// Async phases: dispatch admission, cancellable yield, completion callback.

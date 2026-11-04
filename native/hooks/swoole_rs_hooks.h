@@ -150,12 +150,7 @@ void swr_v1_hook_dns_cache_clear(void);
 float swr_v1_hook_dns_cache_hit_ratio(void);
 bool swr_v1_hook_dns_cache_get(int domain, const char *name, size_t length, void *out, void (*assign)(void *out, const char *address, size_t length));
 void swr_v1_hook_dns_cache_set(int domain, const char *name, size_t length, const char *address, size_t address_length);
-uint32_t swr_v1_hook_socket_status(bool closed, bool close_wait);
-uint32_t swr_v1_hook_check_result(int64_t result, bool has_error);
 double swr_v1_hook_timeval(double seconds, double micros);
-uint32_t swr_v1_hook_timeout_action(double timeout, double startup);
-typedef struct { double remaining; bool expired; } swr_v1_hook_timeout_plan;
-swr_v1_hook_timeout_plan swr_v1_hook_timeout_remaining(double timeout, double elapsed, double minimum);
 typedef struct { uint32_t flags; bool conflict; } swr_v1_hook_curl_plan;
 swr_v1_hook_curl_plan swr_v1_hook_curl_flags(uint32_t flags, uint32_t native, uint32_t php);
 enum swr_hook_async_action { SWR_HOOK_ASYNC_REJECT = 0, SWR_HOOK_ASYNC_YIELD = 1, SWR_HOOK_ASYNC_COMPLETE = 2, SWR_HOOK_ASYNC_CANCEL = 3, SWR_HOOK_ASYNC_RESUME = 4 };
@@ -363,7 +358,6 @@ int32_t swr_v1_hook_liveness_error(bool alive, int32_t error, int32_t reset);
 // Callables stay on the native stack. Rust returns before every IO, errno
 // classifier, timer operation or coroutine suspension; exceptions remain native.
 static_assert(sizeof(swr_v1_hook_curl_plan) == 8, "curl plan ABI");
-static_assert(sizeof(swr_v1_hook_timeout_plan) == 16, "timeout plan ABI");
 static_assert(sizeof(swr_v1_hook_wait_plan) == 16, "wait cursor ABI");
 static_assert(sizeof(swr_v1_hook_event_plan) == 8, "event waiter ABI");
 static_assert(sizeof(swr_v1_hook_transfer_plan) == 16, "transfer ABI");

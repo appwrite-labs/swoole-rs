@@ -324,7 +324,7 @@ def plan(args, reports):
                    '--report', reports / (phase + '.json'))
     if 'hooks' in modules:
         for name, runner in [('hooks-ordered', 'ordered_gate.py'), ('hooks-async-policy', 'async_gate.py'),
-                             ('hooks-packet-policy', 'packet_gate.py'), ('hooks-socket-policy', 'socket_policy_gate.py'),
+                             ('hooks-packet-policy', 'packet_gate.py'),
                              ('hooks-lifecycle-policy', 'lifecycle_gate.py')]:
             script(name, 'tests/modules/hooks/' + runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
