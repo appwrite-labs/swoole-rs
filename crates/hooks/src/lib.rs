@@ -23,6 +23,7 @@ pub mod sendfile;
 pub mod setup;
 pub mod shutdown;
 pub mod sleep;
+pub mod socket_map;
 pub mod socket_wait;
 pub mod stdio;
 pub mod timers;

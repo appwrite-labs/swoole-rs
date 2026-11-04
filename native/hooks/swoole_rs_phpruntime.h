@@ -157,10 +157,6 @@ uint8_t swoole_runtime_x509_read(const char *pem, size_t length, struct _zval_st
  * 1 php_swoole_error, 2 php_swoole_fatal_error, of level and "%s" message. */
 uint8_t swoole_runtime_error(int kind, int level, const char *message);
 void swoole_runtime_check_reactor(void);
-/* The coroutine socket of a hooked fd, or null; *holder keeps it alive until
- * swoole_runtime_fd_socket_release. */
-void *swoole_runtime_fd_socket(int fd, void **holder);
-void swoole_runtime_fd_socket_release(void *holder);
 /* poll(SW_EVENT_WRITE or SW_EVENT_READ, timeout). */
 bool swoole_runtime_socket_poll(void *socket, bool write, double timeout);
 const char *swoole_runtime_strerror(int code);

@@ -56,6 +56,12 @@ int swr_v1_hook_getaddrinfo(const char *name,
 /* The lookup's h_errno (0 if the pool refused it) becomes the caller's. */
 struct hostent *swr_v1_hook_gethostbyname(const char *name, swr_v1_hook_offload offload);
 bool swr_v1_hook_no_coro(bool reactor, bool coroutine);
+/* The hooked fds' coroutine sockets: lookups lend the pointer until the fd's
+ * close or unwrap removes it; native code deletes what insert/remove hand back. */
+void *swr_v1_hook_socket_get(int fd);
+bool swr_v1_hook_socket_exists(int fd);
+void *swr_v1_hook_socket_insert(int fd, void *socket, bool replace);
+void *swr_v1_hook_socket_remove(int fd);
 int32_t swr_v1_hook_transition(uint32_t requested, uint32_t installed, uint32_t bit);
 uint32_t swr_v1_hook_filter(uint32_t flags, uint32_t unavailable);
 bool swr_v1_hook_file_result(bool open, int64_t result);
