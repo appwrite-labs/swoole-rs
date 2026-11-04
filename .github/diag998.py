@@ -19,8 +19,8 @@ import run  # noqa: E402
 PHP = ROOT / 'target/php-zts/bin/php'
 SOURCE = ROOT / 'target/upstream/src'
 CASE = 'tests/swoole_thread/server/reset_concurrency.phpt'
-UNTRACED = int(os.environ.get('UNTRACED', '0'))
-TRACED = int(os.environ.get('TRACED', '30'))
+UNTRACED = int(os.environ.get('UNTRACED', '700'))
+TRACED = int(os.environ.get('TRACED', '10'))
 manifest = json.loads((ROOT / 'target/phpt/manifest.json').read_text())
 case = next(c for c in manifest['tests'] if c['path'] == CASE)
 sandbox = Path(tempfile.mkdtemp(prefix='diag-'))
@@ -40,7 +40,7 @@ NAMES = {0: 'read', 1: 'write', 3: 'close', 7: 'poll', 9: 'mmap', 10: 'mprotect'
 BT = r'''
 tracepoint:raw_syscalls:sys_enter /comm == "php" && pid != $1/ { printf("E %llu %d %d %ld\n", nsecs, pid, tid, args->id); }
 tracepoint:syscalls:sys_exit_write /comm == "php" && pid != $1/ { printf("X %llu %d %d 1 %ld\n", nsecs, pid, tid, args->ret); }
-tracepoint:syscalls:sys_enter_write /comm == "php" && pid != $1 && args->fd <= 2/ { printf("W %llu %d %d %r\n", nsecs, pid, tid, buf(args->buf, 12)); }
+tracepoint:syscalls:sys_enter_write /comm == "php" && pid != $1 && args->fd <= 2/ { printf("W %llu %d %d %r\n", nsecs, pid, tid, buf(uptr(args->buf), 12)); }
 tracepoint:sched:sched_switch /comm == "php" && pid != $1/ { printf("O %llu %d %d %ld %d\n", nsecs, pid, tid, args->prev_state, args->next_pid); }
 '''
 
