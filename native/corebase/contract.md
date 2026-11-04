@@ -125,7 +125,10 @@ the record after the native `Global`. The unused `uname`, `use_async_resolver`,
 Upstream's own C++ symbols defined in Rust (`export_name`), with no body left in
 base.cc: `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
 `swoole_version_compare`, `swoole_dump_ascii`/`_hex`, `swoole::microtime`,
-`swoole_set_trace_flags`, `swoole_set_print_backtrace_on_error`,
+`swoole_set_trace_flags`, `swoole_set_print_backtrace_on_error`, `sw_logger`,
+`swoole_set_stdout_stream`/`swoole_get_stdout_stream` (`FILE` mangles as its libc's
+struct tag), `swoole_hex2dec` (in the target's plain-char mode), `swoole_dump_bin`
+(over crates/framing's unpack),
 `DataHead::dump`, both `swoole_rand` overloads, `swoole_random_int`, and
 `sw_malloc`/`sw_free`/`sw_calloc`/`sw_realloc`, which call libc's allocator
 directly (`SwooleG.std_allocator` only ever held it). The `corebase-native` gate
