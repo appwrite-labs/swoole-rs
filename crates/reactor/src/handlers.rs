@@ -166,18 +166,22 @@ pub unsafe extern "C" fn swr_v1_reactor_handlers_set_default(
     }
 }
 
+/// The write (`kind` 1) or error (`kind` 2) default's slot, which lives as long as
+/// `handlers` (upstream's `default_write_handler` / `default_error_handler` members
+/// read it), or null for another `kind`.
+///
 /// # Safety
 /// `handlers` is live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_reactor_handlers_default(
     handlers: *const Handlers,
     kind: u32,
-) -> Option<Handler> {
+) -> *const Option<Handler> {
     // SAFETY: as the caller promises.
     let handlers = unsafe { &*handlers };
-    *kind
-        .checked_sub(1)
-        .and_then(|i| handlers.defaults.get(i as usize))?
+    kind.checked_sub(1)
+        .and_then(|i| handlers.defaults.get(i as usize))
+        .map_or(ptr::null(), ptr::from_ref)
 }
 
 #[cfg(test)]
@@ -228,7 +232,8 @@ mod tests {
             assert_eq!(call(swr_v1_reactor_handlers_get(h, 2, 5, false)), 1);
             swr_v1_reactor_handlers_set_default(h, 2, Some(three));
             assert_eq!(call(swr_v1_reactor_handlers_get(h, 2, 5, false)), 3);
-            assert_eq!(call(swr_v1_reactor_handlers_default(h, 2)), 3);
+            assert_eq!(call(*swr_v1_reactor_handlers_default(h, 2)), 3);
+            assert!(swr_v1_reactor_handlers_default(h, 3).is_null());
             assert!(swr_v1_reactor_handlers_set(
                 h,
                 5,
