@@ -8,5 +8,9 @@ publish = false
 name = "swoole_rs_memory"
 crate-type = ["rlib", "staticlib"]
 
+[dependencies]
+libc = "=0.2.191"
+swoole-rs-locks = { path = "../locks" }
+
 [lints]
 workspace = true

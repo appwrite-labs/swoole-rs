@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TableV2 custody and original/selected complete table TU release syntax; not runtime or configured SDK proof."""
+"""Original and selected table translation units compile warning-free at C++14/17/20; not runtime or configured SDK proof."""
 import argparse
 import io
 import json
@@ -15,25 +15,6 @@ sys.path.insert(0, str(ROOT))
 from tools.harness import run_isolated
 from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import COMMIT as PIN
-FIXTURE = '''#include "swoole_rs_memory_table_v2.h"
-#include <type_traits>
-#include <utility>
-template <class...> using Void = void;
-template <class T, class = void> struct HasColumns : std::false_type {};
-template <class T> struct HasColumns<T, Void<decltype(std::declval<T>().column_list)>> : std::true_type {};
-template <class T, class = void> struct HasCore : std::false_type {};
-template <class T> struct HasCore<T, Void<decltype(std::declval<T>().core_)>> : std::true_type {};
-static_assert(!HasColumns<swoole::TableV2>::value && !HasCore<swoole::TableV2>::value, "no public vector/core escape");
-static_assert(!std::is_convertible<swoole::TableV2*,swoole::Table*>::value, "no legacy object conversion");
-static_assert(!std::is_default_constructible<swoole::TableV2>::value && !std::is_copy_constructible<swoole::TableV2>::value, "factory ownership");
-static_assert(!std::is_destructible<swoole::TableV2>::value, "explicit destroy API");
-using RecordView = swoole::TableV2::Column;
-static_assert(!std::is_pointer<decltype(std::declval<swoole::TableV2>().get_column(std::string()))>::value, "copied descriptor, not native column pointer");
-static_assert(std::is_same<decltype(std::declval<swoole::TableV2>().get_column(std::string())), RecordView>::value, "typed record value");
-static_assert(std::is_same<decltype(std::declval<swoole::TableV2::ColumnCursor>().next(std::declval<RecordView&>())), bool>::value, "copy-out cursor");
-static_assert(std::is_same<decltype(std::declval<RecordView>().copy_name(nullptr, 0)), bool>::value, "native owned name copy");
-static_assert(std::is_same<decltype(std::declval<swoole::Table>().column_list), std::vector<swoole::TableColumn*>*>::value, "legacy type unchanged");
-'''
 
 
 def main():
@@ -55,7 +36,7 @@ def main():
         report['hybrid_tree'] = str(hybrid_source)
         flags = shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))
         archive = subprocess.check_output(['git', '-C', str(args.source), 'archive', PIN, 'include', 'src/memory/table.cc', *(['src/memory/fixed_pool.cc'] if args.fixed_pool else [])], timeout=15)
-        with tempfile.TemporaryDirectory(prefix='swr-table-v2-compat-') as temporary:
+        with tempfile.TemporaryDirectory(prefix='swr-table-compat-') as temporary:
             tree = Path(temporary)
             control = tree / 'original'
             with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
@@ -69,11 +50,8 @@ def main():
                 'austin_branch': 'Unqualified; command-line undef does not override the pinned header define. No header variant silently invented.',
                 'custom_callbacks': 'Runtime callback corpus is separate, not qualified by compiler-only checks',
             }
-            fixture = tree / 'facade.cc'
-            fixture.write_text(FIXTURE)
             pinned = ['-I' + str(control / 'include')]
             units = [
-                ('typed-header', fixture, hybrid_flags),
                 ('selected-table', hybrid_source / 'src/memory/table.cc', hybrid_flags),
                 ('original-table', control / 'src/memory/table.cc', pinned),
             ]

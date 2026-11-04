@@ -58,7 +58,7 @@ def main():
         report['extensions'] = {variant: str(path) for variant, path in extensions.items()}
         owned = [*sorted((ROOT / 'crates/memory').rglob('*.rs')),
                  *sorted(Path(__file__).parent.glob('*.rs')), *sorted((ROOT / 'native/memory').glob('*.h')),
-                 Path(__file__), Path(__file__).with_name('probe.cc'), Path(__file__).with_name('benchmark.cc')]
+                 Path(__file__), *(Path(__file__).with_name(name) for name in ['probe.cc', 'benchmark.cc', 'table_compat.h'])]
         source_hashes = {str(path.relative_to(ROOT)): sha(path) for path in owned}
         def run(command, timeout=90, env=None):
             result = run_isolated(command, cwd=ROOT, timeout=timeout, env=env)
@@ -204,7 +204,7 @@ def main():
                     if sha(stored) != digest:
                         raise ValueError(f'Source changed during preparation: {relative}')
                 report['source_snapshot'] = str(snapshot)
-                write_report(args.prepare_benchmark / 'manifest.json', {'source_snapshot': str(snapshot), 'frozen_sha256': frozen_hashes, 'upstream_commit': PIN, 'variants': prepared, 'correctness': report['results'], 'timing_cases': ['fixed_ns', 'heap_ns', 'channel_ns', 'ring_ns', 'global_ns', 'table_ns', 'table_clear8_ns', 'table_clear33_ns', 'fixed_construct_owned_ns', 'fixed_construct_borrowed_ns', 'table_schema17_ns', 'table_columns65_ns', 'table_names65_ns', 'table_long_names65_ns'], 'scope': 'Optimized native facades, C++ -O2 and release Rust, no sanitizers. Timing requires exclusive integrator lease; PHP startup excluded. Existing pool operations exclude setup; explicit fixed_construct cases include arena construction/destruction and owned native allocation/free. Column schema17 includes factory/unique declarations/one traversal/drain for min(loops,256) rounds; columns65 excludes setup/teardown. Names65 workloads include actual cursor plus Native borrowed names vs selected scratch copy/resize and whole-byte consumer hashing; short and80byte embedded-NUL prefixes, scratch lifetime per row, setup/teardown excluded. Typed TableV2 selected versus legacy Native Table. No PHP/original-suite parity or full-workload performance claim.'})
+                write_report(args.prepare_benchmark / 'manifest.json', {'source_snapshot': str(snapshot), 'frozen_sha256': frozen_hashes, 'upstream_commit': PIN, 'variants': prepared, 'correctness': report['results'], 'timing_cases': ['fixed_ns', 'heap_ns', 'channel_ns', 'ring_ns', 'global_ns', 'table_ns', 'table_clear8_ns', 'table_clear33_ns', 'fixed_construct_owned_ns', 'fixed_construct_borrowed_ns', 'table_schema17_ns', 'table_columns65_ns', 'table_names65_ns', 'table_long_names65_ns'], 'scope': 'Optimized native facades, C++ -O2 and release Rust, no sanitizers. Timing requires exclusive integrator lease; PHP startup excluded. Existing pool operations exclude setup; explicit fixed_construct cases include arena construction/destruction and owned native allocation/free. Column schema17 includes factory/unique declarations/one traversal/drain for min(loops,256) rounds; columns65 excludes setup/teardown. Names65 workloads include borrowed names and whole-byte consumer hashing; short and 80-byte embedded-NUL prefixes, setup/teardown excluded. Rust-owned Table versus the pinned Table. No PHP/original-suite parity or full-workload performance claim.'})
             if not report['passed']:
                 report['error'] = 'Native and Rust traces differ'
     except Exception as error:

@@ -563,7 +563,7 @@ class Lanes(unittest.TestCase):
         self.assertLess(list(commands).index('build'), list(commands).index('api-surface'))
         self.assertIn('tests/modules/buffer/string/test_gate.py::test_profile[originals]', commands['string-originals'])
         self.assertIn('tests/modules/buffer/string/test_gate.py::test_profile[split]', commands['string-split'])
-        self.assertIn('memory-table-v2-compatibility', commands)
+        self.assertIn('memory-table-compatibility', commands)
         self.assertIn('--core', commands['wrappers-listener'])
         self.assertIn('--sanitize', commands['wrappers-listener'])
         self.assertIn('column-bytes', commands['phpcollections-column-bytes'])
@@ -881,7 +881,7 @@ class ChangedModules(unittest.TestCase):
         self.assertEqual(self.changed('migration/patches/halfclose/0003-send-tls-close-notify.patch'), sorted(dev.MODULES))
 
     def test_selection_adds_the_modules_a_module_cannot_build_without(self):
-        # build_hybrid.py refuses phpcollections without memory (TableV2 storage).
+        # build_hybrid.py refuses phpcollections without memory (its table).
         selected = dev.selected_modules(SimpleNamespace(module=['phpcollections'], all_modules=False))
         self.assertIn('memory', selected)
 

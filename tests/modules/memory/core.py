@@ -65,7 +65,7 @@ def main():
     parser.add_argument('--archive', type=Path, help='Rust archive of the hybrid build under test (<build>/rust-prefix/lib/libswoole_rs_ffi.a)')
     parser.add_argument('--build-root', type=Path, help='Private writable cache outside reference/repository')
     parser.add_argument('--inventory-only', action='store_true')
-    parser.add_argument('--model', action='store_true', help='Also run owned standalone FIFO/table/fork models, bounded mapping and native allocation-failure witnesses')
+    parser.add_argument('--model', action='store_true', help='Also run owned standalone FIFO/table/fork models and bounded mapping witnesses')
     parser.add_argument('--sanitize', action='store_true', help='Native AddressSanitizer only; original packed C++ is not UBSan-clean')
     parser.add_argument('--rust-asan', action='store_true', help='Supplied archive was separately compiled with actual Rust ASan')
     parser.add_argument('--case', action='append', default=[], help='Exact original group.name; repeat to select a focused correctness loop')
@@ -201,7 +201,7 @@ def main():
                         if result.returncode:
                             raise RuntimeError('Standalone model build failed: ' + str(logs / 'model-build.log'))
                         metadata['model'] = {'command': command}
-                        for mode in ['', 'mapping', 'metadata', 'odd-rows', 'creation', 'clearing'] if engine == 'rust' else ['']:
+                        for mode in ['', 'mapping', 'odd-rows'] if engine == 'rust' else ['']:
                             command = [str(binary)] + ([mode] if mode else [])
                             result = run_isolated(command, timeout=args.timeout, cwd=tree, env=environment)
                             log = logs / ('model-' + (mode or 'collections') + '.log')

@@ -36,7 +36,7 @@ BRIDGE_PATCH = 'migration/patches/integration/0001-rust-bridge.patch'
 HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
                   'firebird': '--with-swoole-firebird', 'curl': '--enable-swoole-curl',
                   'ssh2': '--with-swoole-ssh2'}
-# Modules a module cannot build without: PHP Table stores rows in memory's TableV2; the
+# Modules a module cannot build without: PHP Table is memory's table; the
 # HTTP/2 server's sessions (http2) own httpbindings' contexts, and its coroutine server
 # runs them; network::Client (clients) reads the reactor's socket record.
 REQUIRES = {'phpcollections': ('memory',), 'hooks': ('reactor',), 'http2': ('httpbindings',),

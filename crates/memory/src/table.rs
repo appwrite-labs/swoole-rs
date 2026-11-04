@@ -1,1945 +1,1406 @@
-//! Shared-table row storage and collision policy. Hash callbacks and locks are native.
-use std::ffi::c_void;
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
-use std::{mem, ptr, slice};
+//! `swoole::Table`: a fixed-size hash table in shared memory, used by forked
+//! workers at once. Rust owns the whole table; C++ allocates its two blocks
+//! (the header from `sw_mem_pool()`, the arena from `sw_shm_malloc`), so both
+//! stay shared across `fork()` exactly as upstream's are.
+//!
+//! The header holds what upstream's `Table` held in shared memory: sizes,
+//! counters, the pool mutex and the iterator mutex. Columns and the iterator's
+//! cursor are process-private heap objects, as upstream's maps and
+//! `TableIterator` were. The arena is `size` bucket pointers, `size` bucket
+//! rows, then a fixed pool of collision rows. Each row is an 88-byte header
+//! (`swr_v1_memory_table_row`) followed by the column data, rounded up to 8
+//! bytes so every lock word and link is aligned.
+//!
+//! Row locks are upstream's spin locks, with its recovery from a dead owner
+//! (`kill(pid, 0)` fails with `ESRCH`) and from an owner that holds a lock for
+//! more than two seconds.
+use crate::fixed::{Fixed, Layout, Slice, swr_v1_memory_fixed_construct};
+use crate::fixed::{
+    swr_v1_memory_fixed_alloc, swr_v1_memory_fixed_free, swr_v1_memory_fixed_layout,
+};
+use std::cell::UnsafeCell;
+use std::collections::HashMap;
+use std::ffi::{c_char, c_int, c_void};
+use std::mem::{offset_of, size_of};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering};
+use std::time::Instant;
+use std::{ptr, slice};
+use swoole_rs_locks::{swr_v1_locks_destroy, swr_v1_locks_init, swr_v1_locks_lock};
+use swoole_rs_locks::{swr_v1_locks_size, swr_v1_locks_unlock};
 
-/// Row invariant: every non-null row pointer reached from a bucket root, a `next` link or
-/// a caller argument is a live row inside the table arena or its pool (laid out by
-/// `table_arena` and the native pool), at least `size_of::<Row>()` bytes, accessed only
-/// under the table's native locking rules. Row headers in the pool may be unaligned, so
-/// fields are read and written unaligned through `field` addresses.
+/// `TableColumn::TYPE_INT`, `TYPE_FLOAT`, `TYPE_STRING`.
+pub const TYPE_INT: u32 = 1;
+pub const TYPE_FLOAT: u32 = 2;
+pub const TYPE_STRING: u32 = 3;
+/// `SW_TABLE_FLAG_NEW_ROW`, `SW_TABLE_FLAG_CONFLICT`.
+pub const NEW_ROW: i32 = 1;
+pub const CONFLICT: i32 = 2;
+/// `SW_TABLE_KEY_SIZE`: keys keep at most 63 bytes and a NUL.
+pub const KEY_SIZE: usize = 64;
+const MAX_ROWS: u32 = 0x8000_0000;
+const CONFLICT_PROPORTION: f32 = 0.2;
+const FORCE_UNLOCK_MS: u128 = 2000;
+const SPINLOCK_LOOP_N: u32 = 1024;
+const SW_ERROR_MALLOC_FAIL: c_int = 501;
+/// `swr_v1_locks` kind of a pthread mutex.
+const MUTEX: i32 = 3;
+
+/// The host's hash of a key (`swoole_hash_php`, or Zend's for `Swoole\Table`).
+pub type Hash = unsafe extern "C" fn(key: *const c_char, length: usize) -> u64;
+/// Logs one whole warning line, as `swoole_warning` does.
+pub type Warning = unsafe extern "C" fn(message: *const c_char, length: usize);
+/// `swoole_set_last_error`.
+pub type Error = unsafe extern "C" fn(code: c_int);
+
+/// A row header, then `item_size` bytes of column data (`swr_v1_memory_table_row`).
 #[repr(C)]
 pub struct Row {
-    lock: u32,
-    lock_pid: i32,
+    lock: AtomicU32,
+    lock_pid: AtomicI32,
     active: u8,
     key_len: u8,
     next: *mut Row,
-    key: [u8; 64],
+    key: [u8; KEY_SIZE],
 }
-#[repr(C)]
-#[derive(Default, Clone, Copy)]
-pub struct Plan {
-    row: *mut c_void,
-    parent: *mut c_void,
-    level: u32,
-    flags: u32,
-    initialize: u32,
+const ROW: usize = size_of::<Row>();
+
+/// A row of a created table, or the iterator's copy of one, read and written
+/// in place: other processes share it. Fields other than the lock change only
+/// under the bucket's lock.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Live(*mut Row);
+
+impl Live {
+    fn at<T>(self, offset: usize) -> *mut T {
+        self.0.wrapping_byte_add(offset).cast()
+    }
+
+    fn lock_word(self) -> &'static AtomicU32 {
+        // SAFETY: a live row (see `Live`); the word is only accessed atomically.
+        unsafe { &*self.at::<AtomicU32>(offset_of!(Row, lock)) }
+    }
+
+    fn owner(self) -> &'static AtomicI32 {
+        // SAFETY: as above.
+        unsafe { &*self.at::<AtomicI32>(offset_of!(Row, lock_pid)) }
+    }
+
+    fn active(self) -> bool {
+        // SAFETY: a live row; `del` reads this before taking the lock, as upstream does.
+        unsafe { ptr::read_volatile(self.at::<u8>(offset_of!(Row, active))) != 0 }
+    }
+
+    fn next(self) -> Option<Live> {
+        // SAFETY: a live row; links only point at rows of the same table.
+        let next = unsafe { self.at::<*mut Row>(offset_of!(Row, next)).read() };
+        (!next.is_null()).then_some(Live(next))
+    }
+
+    fn set_next(self, next: Option<Live>) {
+        let next = next.map_or(ptr::null_mut(), |row| row.0);
+        // SAFETY: a live row, under its bucket's lock.
+        unsafe { self.at::<*mut Row>(offset_of!(Row, next)).write(next) };
+    }
+
+    fn key_len(self) -> u8 {
+        // SAFETY: a live row.
+        unsafe { self.at::<u8>(offset_of!(Row, key_len)).read() }
+    }
+
+    fn key(self) -> &'static [u8] {
+        let length = usize::from(self.key_len()).min(KEY_SIZE - 1);
+        // SAFETY: a live row holds `key_len` (at most 63) key bytes.
+        unsafe { slice::from_raw_parts(self.at::<u8>(offset_of!(Row, key)), length) }
+    }
+
+    fn data(self) -> *mut u8 {
+        self.at(ROW)
+    }
+
+    /// Zero the header from `offset` on.
+    fn zero(self, offset: usize) {
+        // SAFETY: a live row; `offset` is inside its header.
+        unsafe { ptr::write_bytes(self.at::<u8>(offset), 0, ROW - offset) };
+    }
+
+    /// `init_row`: a fresh, active row for a key of at most 63 bytes.
+    fn claim(self, key: &[u8]) {
+        self.zero(offset_of!(Row, active));
+        // SAFETY: a live row; the key fits its 64 bytes.
+        unsafe { ptr::copy_nonoverlapping(key.as_ptr(), self.at(offset_of!(Row, key)), key.len()) };
+        #[expect(clippy::cast_possible_truncation, reason = "clamped to 63 bytes")]
+        let length = key.len() as u8;
+        // SAFETY: as above.
+        unsafe { self.at::<u8>(offset_of!(Row, key_len)).write(length) };
+        // SAFETY: as above.
+        unsafe { self.at::<u8>(offset_of!(Row, active)).write(1) };
+    }
+
+    /// Move `from`'s key and data into this row (a deleted bucket row).
+    fn take(self, from: Live, item_size: usize) {
+        let (key, key_len) = (offset_of!(Row, key), from.key_len());
+        let length = usize::from(key_len) + 1;
+        // SAFETY: two live rows of one table, under the bucket's lock.
+        unsafe { ptr::copy_nonoverlapping(from.at::<u8>(key), self.at(key), length) };
+        // SAFETY: as above.
+        unsafe { self.at::<u8>(offset_of!(Row, key_len)).write(key_len) };
+        // SAFETY: as above; both rows hold `item_size` data bytes.
+        unsafe { ptr::copy_nonoverlapping(from.data(), self.data(), item_size) };
+    }
+
+    fn lock(self, warning: Warning) {
+        let word = self.lock_word();
+        let acquire = || {
+            word.load(Ordering::Relaxed) == 0
+                && word
+                    .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+        };
+        let mut since = None;
+        loop {
+            if acquire() || multicore() && spin(acquire) {
+                break;
+            }
+            let owner = self.owner().load(Ordering::Relaxed);
+            // SAFETY: signal 0 only checks that `owner` exists.
+            if unsafe { libc::kill(owner, 0) } < 0
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
+                word.store(1, Ordering::Relaxed);
+                let message =
+                    format!("TableRow::lock(): lock process[{owner}] not exists, force unlock");
+                warn(warning, message.as_bytes());
+                break;
+            }
+            match since {
+                None => since = Some(Instant::now()),
+                Some(start) if start.elapsed().as_millis() > FORCE_UNLOCK_MS => {
+                    word.store(1, Ordering::Relaxed);
+                    warn(warning, b"TableRow::lock(): timeout, force unlock");
+                    break;
+                }
+                Some(_) => (),
+            }
+            std::thread::yield_now();
+        }
+        // SAFETY: getpid has no preconditions.
+        let pid = unsafe { libc::getpid() };
+        self.owner().store(pid, Ordering::Relaxed);
+    }
+
+    fn unlock(self) {
+        self.lock_word().store(0, Ordering::Release);
+    }
 }
+
+/// A declared column. The C header declares its first three fields
+/// (`swr_v1_memory_table_column`); the name follows.
 #[repr(C)]
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub struct Layout {
-    total: usize,
+pub struct Column {
+    pub kind: u32,
+    /// Bytes in a row: 8 for a number, the capacity plus a 4-byte length for a string.
+    pub width: u32,
+    /// Offset in the row's data.
+    pub index: usize,
+    name: Box<[u8]>,
+}
+
+impl Column {
+    #[must_use]
+    pub fn name(&self) -> &[u8] {
+        &self.name
+    }
+}
+
+/// Every declaration in order, repeats included (upstream's `column_list`),
+/// and the first declaration of each name (upstream's `column_map`).
+#[derive(Default)]
+struct Columns {
+    #[expect(
+        clippy::vec_box,
+        reason = "C++ keeps column pointers across later declarations"
+    )]
+    list: Vec<Box<Column>>,
+    first: HashMap<Box<[u8]>, usize>,
+}
+
+/// The iterator's position and its private copy of the current row.
+struct Cursor {
+    absolute: usize,
+    collision: usize,
+    current: Vec<u64>,
+}
+
+/// Storage for a pthread mutex and its attributes (`swr_v1_locks`).
+#[repr(C, align(8))]
+struct Lock(UnsafeCell<[u8; 128]>);
+
+impl Lock {
+    fn get(&self) -> *mut c_void {
+        self.0.get().cast()
+    }
+
+    fn lock(&self) {
+        // SAFETY: initialised by `Table::init`, destroyed only by `Table::destroy`.
+        unsafe { swr_v1_locks_lock(self.get(), MUTEX, 0, 0, 0) };
+    }
+
+    fn unlock(&self) {
+        // SAFETY: as above; this thread holds it.
+        unsafe { swr_v1_locks_unlock(self.get(), MUTEX) };
+    }
+}
+
+/// The counters `Swoole\Table::stats()` reports (`swr_v1_memory_table_stats`).
+#[repr(C)]
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct Stats {
+    pub conflict_count: usize,
+    pub conflict_max_level: u32,
+    pub insert_count: i64,
+    pub update_count: i64,
+    pub delete_count: i64,
+}
+
+/// The table header (`swr_v1_memory_table`), in
+/// `swr_v1_memory_table_header_size()` bytes of shared memory.
+///
+/// Invariant: once `created`, `memory` is the arena `create` laid out: `rows`
+/// holds `size` pointers to bucket rows, `pool` is a fixed pool of collision
+/// rows, and `cursor` is this process's cursor.
+#[repr(C)]
+pub struct Table {
+    mutex: Lock,
+    iterator_mutex: Lock,
+    row_num: AtomicU32,
+    conflict_max_level: AtomicU32,
+    conflict_count: AtomicUsize,
+    insert_count: AtomicI64,
+    delete_count: AtomicI64,
+    update_count: AtomicI64,
+    size: usize,
+    item_size: usize,
+    memory_size: usize,
+    conflict_proportion: f32,
+    created: bool,
+    hash: Hash,
+    warning: Warning,
+    error: Error,
+    columns: *mut Columns,
+    cursor: *mut Cursor,
+    memory: *mut u8,
+    rows: *mut *mut Row,
+    pool: *mut Fixed,
+}
+
+/// The arena of a table about to be created.
+struct Plan {
+    /// `calc_memory_size()`: upstream's byte count, rows unpadded.
+    logical: usize,
+    /// The arena, rows padded to `stride`.
+    physical: usize,
     row_size: usize,
-    pool_offset: usize,
-    pool_size: usize,
-    rows: u32,
+    stride: usize,
+    slices: usize,
 }
-// The address of one `Row` field, computed without dereferencing `row`.
-fn field<T>(row: *mut Row, offset: usize) -> *mut T {
-    row.wrapping_byte_add(offset).cast()
+
+/// Whether to spin before yielding (`SW_CPU_NUM > 1`).
+fn multicore() -> bool {
+    static MULTICORE: OnceLock<bool> = OnceLock::new();
+    // SAFETY: sysconf has no memory preconditions.
+    *MULTICORE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) } > 1)
 }
-// Callers pass a live row (see the row invariant).
-unsafe fn next(row: *mut Row) -> *mut Row {
-    // SAFETY: as above.
-    unsafe { field::<*mut Row>(row, mem::offset_of!(Row, next)).read_unaligned() }
-}
-// Callers pass a live row (see the row invariant).
-unsafe fn active(row: *mut Row) -> bool {
-    // SAFETY: as above.
-    unsafe { field::<u8>(row, mem::offset_of!(Row, active)).read_unaligned() != 0 }
-}
-// Compare fixed-width endpoints for short keys. They can overlap each
-// other, but neither load extends beyond either borrowed key span.
-unsafe fn endpoints<T: Copy + Eq>(left: *const u8, right: *const u8, length: usize) -> bool {
-    // Both spans hold `length >= size_of::<T>()` readable bytes.
-    let end = length - mem::size_of::<T>();
-    // SAFETY: as above.
-    let head = unsafe { left.cast::<T>().read_unaligned() };
-    // SAFETY: as above.
-    let other_head = unsafe { right.cast::<T>().read_unaligned() };
-    // SAFETY: as above; the last `size_of::<T>()` bytes start at `end`.
-    let tail = unsafe { left.wrapping_add(end).cast::<T>().read_unaligned() };
-    // SAFETY: as above.
-    let other_tail = unsafe { right.wrapping_add(end).cast::<T>().read_unaligned() };
-    (head == other_head) && (tail == other_tail)
-}
-// Callers pass a live row (see the row invariant).
-unsafe fn matches(row: *mut Row, key: &[u8]) -> bool {
-    // SAFETY: as above.
-    let length = unsafe { field::<u8>(row, mem::offset_of!(Row, key_len)).read_unaligned() };
-    let length = length as usize;
-    if length != key.len() {
-        return false;
+
+/// `SW_SPINLOCK_LOOP_N` rounds of doubling pauses, trying after each.
+fn spin(acquire: impl Fn() -> bool) -> bool {
+    let mut n = 1;
+    while n < SPINLOCK_LOOP_N {
+        for _ in 0..n {
+            std::hint::spin_loop();
+        }
+        if acquire() {
+            return true;
+        }
+        n <<= 1;
     }
-    let stored = field::<u8>(row, mem::offset_of!(Row, key)).cast_const();
-    // The stored key holds `length` (<= 63) initialized bytes, equal to `key.len()`.
-    match length {
-        0 => true,
-        // SAFETY: as above.
-        1 => (unsafe { stored.read() }) == key[0],
-        // SAFETY: as above.
-        2..=3 => unsafe { endpoints::<u16>(stored, key.as_ptr(), length) },
-        // SAFETY: as above.
-        4..=7 => unsafe { endpoints::<u32>(stored, key.as_ptr(), length) },
-        // SAFETY: as above.
-        8..=16 => unsafe { endpoints::<u64>(stored, key.as_ptr(), length) },
-        // SAFETY: as above.
-        _ => (unsafe { slice::from_raw_parts(stored, length) }) == key,
-    }
+    false
 }
-/// The key of a row.
+
+/// Bytes up to the first NUL, as `%s` prints them.
+fn c_str(bytes: &[u8]) -> &[u8] {
+    bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .map_or(bytes, |end| &bytes[..end])
+}
+
+fn warn(warning: Warning, message: &[u8]) {
+    // SAFETY: the host logs `message.len()` bytes.
+    unsafe { warning(message.as_ptr().cast(), message.len()) };
+}
+
+/// `check_key_length`: keys are cut to 63 bytes.
+fn clamp(key: &[u8]) -> &[u8] {
+    &key[..key.len().min(KEY_SIZE - 1)]
+}
+
+/// `length` bytes the host lends at `bytes`.
 /// # Safety
-/// `row` is live (see the row invariant) and its key is not rewritten while the
-/// result is.
+/// `bytes` holds `length` readable bytes, or `length` is 0.
+unsafe fn borrow<'a>(bytes: *const c_char, length: usize) -> &'a [u8] {
+    if bytes.is_null() || length == 0 {
+        return &[];
+    }
+    // SAFETY: per the caller.
+    unsafe { slice::from_raw_parts(bytes.cast(), length) }
+}
+
+/// The key a row holds.
+/// # Safety
+/// `row` is a row of a created table, or the iterator's copy of one.
 #[must_use]
 pub unsafe fn row_key<'a>(row: *const Row) -> &'a [u8] {
-    let row = row.cast_mut();
-    // SAFETY: as above.
-    let length = unsafe { field::<u8>(row, mem::offset_of!(Row, key_len)).read_unaligned() };
-    let stored = field::<u8>(row, mem::offset_of!(Row, key)).cast_const();
-    // SAFETY: a live row holds `key_len` (<= 63) initialized key bytes.
-    unsafe { slice::from_raw_parts(stored, usize::from(length).min(63)) }
+    Live(row.cast_mut()).key()
 }
-unsafe fn key<'a>(bytes: *const u8, length: u16) -> Option<&'a [u8]> {
-    if length > 63 || bytes.is_null() && length != 0 {
-        return None;
-    }
-    Some(if length == 0 {
-        &[]
-    } else {
-        // SAFETY: non-null, `length <= 63` (checked above); callers lend those key bytes.
-        unsafe { slice::from_raw_parts(bytes, length as usize) }
-    })
+
+/// `TableRow::lock()`.
+/// # Safety
+/// `row` is a row of a created table.
+pub unsafe fn lock(row: *mut Row, warning: Warning) {
+    Live(row).lock(warning);
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_config(
-    requested: u32,
-    proportion: f32,
-    rows: *mut u32,
-    conflict: *mut f32,
-) -> i32 {
-    if rows.is_null() || conflict.is_null() {
-        return -1;
-    }
-    // SAFETY: both are non-null (checked above), aligned and writable.
-    unsafe { rows.write(0) };
-    // SAFETY: as above.
-    unsafe { conflict.write(0.0) };
-    if !proportion.is_finite() {
-        return -1;
-    }
-    let count = if requested >= 0x8000_0000 {
-        0x8000_0000
-    } else {
-        requested.max(64).next_power_of_two()
-    };
-    // SAFETY: as above.
-    unsafe { rows.write(count) };
-    // SAFETY: as above.
-    unsafe { conflict.write(proportion.clamp(0.2, 1.0)) };
-    0
+
+/// `TableRow::unlock()`.
+/// # Safety
+/// `row` is a row of a created table this process locked.
+pub unsafe fn unlock(row: *mut Row) {
+    Live(row).unlock();
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_layout(
-    rows: u32,
-    item: usize,
-    conflict: f32,
-    output: *mut Layout,
-) -> i32 {
-    if output.is_null() {
-        return -1;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(Layout::default());
-    }
-    if rows < 64 || !rows.is_power_of_two() || !(0.2..=1.0).contains(&conflict) {
-        return -1;
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_precision_loss,
-        reason = "native float row sizing"
-    )]
-    let all_rows = (rows as f32 * (1.0 + conflict)) as usize;
-    let Some(row_size) = mem::size_of::<Row>().checked_add(item) else {
-        return -1;
-    };
-    let Some(base) = (rows as usize).checked_mul(mem::size_of::<*mut Row>()) else {
-        return -1;
-    };
-    let Some(pool_offset) = row_size
-        .checked_mul(rows as usize)
-        .and_then(|n| base.checked_add(n))
-    else {
-        return -1;
-    };
-    let Some(pool_size) = row_size
-        .checked_add(mem::size_of::<crate::fixed::Slice>())
-        .and_then(|n| n.checked_mul(all_rows - rows as usize))
-        .and_then(|n| n.checked_add(mem::size_of::<crate::fixed::Fixed>()))
-    else {
-        return -1;
-    };
-    let Some(total) = pool_offset
-        .checked_add(pool_size)
-        .filter(|&n| isize::try_from(n).is_ok())
-    else {
-        return -1;
-    };
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(Layout {
-            total,
-            row_size,
-            pool_offset,
-            pool_size,
-            rows,
-        });
-    }
-    0
+
+/// `TableRow::clear()`: the header but its lock word.
+/// # Safety
+/// `row` is a locked row of a created table.
+pub unsafe fn clear(row: *mut Row) {
+    Live(row).zero(offset_of!(Row, lock_pid));
 }
-/// Physical storage plan for naturally aligned native row objects. The frozen
-/// layout function continues to report its exact original logical byte counts.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_storage_layout(
-    rows: u32,
-    item: usize,
-    conflict: f32,
-    output: *mut Layout,
-) -> i32 {
-    if output.is_null() {
-        return -1;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(Layout::default());
-    }
-    let Some(stride) = mem::size_of::<Row>()
-        .checked_add(item)
-        .and_then(|n| n.checked_add(mem::align_of::<Row>() - 1))
-        .map(|n| n & !(mem::align_of::<Row>() - 1))
-    else {
-        return -1;
-    };
-    // SAFETY: forwards the caller's aligned, writable output.
-    unsafe { swr_v1_memory_table_layout(rows, stride - mem::size_of::<Row>(), conflict, output) }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_arena(
-    memory: *mut c_void,
-    layout: *const Layout,
-) -> i32 {
-    if memory.is_null() || layout.is_null() || !memory.addr().is_multiple_of(8) {
-        return -1;
-    }
-    // SAFETY: `layout` is non-null (checked above), aligned and initialized per the caller contract.
-    let l = unsafe { &*layout };
-    let expected = (l.rows as usize)
-        .checked_mul(mem::size_of::<*mut Row>())
-        .and_then(|base| {
-            (l.rows as usize)
-                .checked_mul(l.row_size)
-                .and_then(|n| base.checked_add(n))
-        });
-    if l.rows < 64
-        || !l.rows.is_power_of_two()
-        || l.row_size < mem::size_of::<Row>()
-        || expected != Some(l.pool_offset)
-        || l.total > isize::MAX as usize
-        || l.pool_offset.checked_add(l.pool_size) != Some(l.total)
-    {
-        return -1;
-    }
-    // `memory` is a non-null, 8-aligned arena of `total` bytes whose layout was validated
-    // above: `rows` bucket pointers, then `rows` rows of `row_size` bytes, before the pool.
-    let table = memory.cast::<*mut Row>();
-    let base = memory
-        .cast::<u8>()
-        .wrapping_add(l.rows as usize * mem::size_of::<*mut Row>());
-    for i in 0..l.rows as usize {
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "Row fields are only accessed unaligned (see Row)"
-        )]
-        let row = base.wrapping_add(i * l.row_size).cast::<Row>();
-        // SAFETY: as above; bucket `i` is an aligned pointer slot.
-        unsafe { table.wrapping_add(i).write(row) };
-        // SAFETY: as above; row `i` spans `row_size >= size_of::<Row>()` bytes.
-        unsafe { ptr::write_bytes(row.cast::<u8>(), 0, mem::size_of::<Row>()) };
-    }
-    0
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_clear(row: *mut Row, keep_lock: u32) -> i32 {
-    if row.is_null() || keep_lock > 1 {
-        return -1;
-    }
-    let begin = if keep_lock == 1 {
-        mem::offset_of!(Row, lock_pid)
-    } else {
-        0
-    };
-    // SAFETY: `row` is a non-null live row (see the row invariant); `begin` is a field offset.
-    unsafe {
-        ptr::write_bytes(
-            row.cast::<u8>().wrapping_add(begin),
-            0,
-            mem::size_of::<Row>() - begin,
-        );
-    };
-    0
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_init(
+
+/// `TableRow::set_value()`: a number's 8 bytes, or a string cut to the
+/// column with a warning.
+/// # Safety
+/// `row` is a locked row of the column's table; `value` holds 8 bytes for a
+/// number, `length` bytes (or is null) for a string.
+pub unsafe fn set_value(
     row: *mut Row,
-    bytes: *const u8,
-    length: u16,
-) -> i32 {
-    if row.is_null() {
-        return -1;
+    column: &Column,
+    value: *const u8,
+    mut length: usize,
+    warning: Warning,
+) {
+    let row = Live(row);
+    let target = row.data().wrapping_add(column.index);
+    if column.kind != TYPE_STRING {
+        // SAFETY: per the caller; the column's 8 bytes in the row.
+        unsafe { ptr::copy_nonoverlapping(value, target, 8) };
+        return;
     }
-    // SAFETY: the caller lends `length` initialized key bytes at `bytes`.
-    let Some(key) = (unsafe { key(bytes, length) }) else {
-        return -1;
-    };
-    // `row` is a non-null live row (see the row invariant), disjoint from `key`.
-    let begin = mem::offset_of!(Row, active);
-    // SAFETY: as above.
-    unsafe {
-        ptr::write_bytes(
-            row.cast::<u8>().wrapping_add(begin),
-            0,
-            mem::size_of::<Row>() - begin,
-        );
-    };
-    if !key.is_empty() {
-        // SAFETY: as above; `key.len() <= 63` fits the 64-byte key field.
-        unsafe {
-            ptr::copy_nonoverlapping(
-                key.as_ptr(),
-                field::<u8>(row, mem::offset_of!(Row, key)),
-                key.len(),
-            );
-        };
+    let capacity = (column.width as usize).wrapping_sub(4);
+    if length > capacity {
+        let mut message = b"TableRow::set_value(): [key=".to_vec();
+        message.extend_from_slice(c_str(row.key()));
+        message.extend_from_slice(b",field=");
+        message.extend_from_slice(c_str(column.name()));
+        message.extend_from_slice(b"]string value is too long");
+        warn(warning, &message);
+        length = capacity;
+    }
+    if value.is_null() {
+        length = 0;
     }
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "key length <= 63 (checked above)"
+        reason = "upstream stores the low 4 bytes"
     )]
-    // SAFETY: as above.
-    unsafe {
-        field::<u8>(row, mem::offset_of!(Row, key_len)).write_unaligned(length as u8);
-    };
-    // SAFETY: as above.
-    unsafe { field::<u8>(row, mem::offset_of!(Row, active)).write_unaligned(1) };
-    0
+    let stored = length as u32;
+    // SAFETY: per the caller; the column's length word.
+    unsafe { target.cast::<u32>().write_unaligned(stored) };
+    // SAFETY: per the caller; `length` fits the column.
+    unsafe { ptr::copy_nonoverlapping(value, target.wrapping_add(4), length) };
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_get(
-    root: *mut Row,
-    bytes: *const u8,
-    length: u16,
-) -> *mut Row {
-    // SAFETY: the caller lends `length` initialized key bytes at `bytes`.
-    let Some(key) = (unsafe { key(bytes, length) }) else {
-        return ptr::null_mut();
-    };
-    // Every row on the chain is live (see the row invariant).
-    let mut row = root;
-    while !row.is_null() {
-        // SAFETY: as above.
-        if unsafe { matches(row, key) } {
-            // SAFETY: as above.
-            return if unsafe { active(row) } {
-                row
-            } else {
-                ptr::null_mut()
-            };
-        }
-        // SAFETY: as above.
-        row = unsafe { next(row) };
-    }
-    ptr::null_mut()
+
+/// `TableColumn::clear()`: an empty string or a zero number.
+/// # Safety
+/// `row` is a locked row of the column's table.
+pub unsafe fn clear_value(row: *mut Row, column: &Column) {
+    let width = if column.kind == TYPE_STRING { 4 } else { 8 };
+    // SAFETY: per the caller; the column's first `width` bytes.
+    unsafe { ptr::write_bytes(Live(row).data().wrapping_add(column.index), 0, width) };
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_set_plan(
-    root: *mut Row,
-    bytes: *const u8,
-    length: u16,
-    output: *mut Plan,
-) -> i32 {
-    if output.is_null() {
-        return -1;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(Plan::default());
-    }
-    if root.is_null() {
-        return -1;
-    }
-    // SAFETY: the caller lends `length` initialized key bytes at `bytes`.
-    let Some(key) = (unsafe { key(bytes, length) }) else {
-        return -1;
-    };
-    // SAFETY: a live table row (see the row invariant).
-    if !unsafe { active(root) } {
-        // SAFETY: `output` is non-null (checked above), aligned and writable.
-        unsafe {
-            output.write(Plan {
-                row: root.cast(),
-                flags: 1,
-                initialize: 1,
-                ..Plan::default()
-            });
+
+/// A number column's 8 bytes.
+/// # Safety
+/// `row` is a locked row (or the iterator's copy) of the column's table.
+#[must_use]
+pub unsafe fn get_number(row: *const Row, column: &Column) -> u64 {
+    let at = Live(row.cast_mut()).data().wrapping_add(column.index);
+    // SAFETY: per the caller.
+    unsafe { at.cast::<u64>().read_unaligned() }
+}
+
+/// A string column's bytes, valid while the row is locked.
+/// # Safety
+/// As `get_number`.
+#[must_use]
+pub unsafe fn get_string<'a>(row: *const Row, column: &Column) -> &'a [u8] {
+    let at = Live(row.cast_mut()).data().wrapping_add(column.index);
+    // SAFETY: per the caller.
+    let length = unsafe { at.cast::<u32>().read_unaligned() };
+    // SAFETY: as above; a stored length never exceeds the column.
+    unsafe { slice::from_raw_parts(at.wrapping_add(4), length as usize) }
+}
+
+impl Table {
+    /// `Table::make`: an empty, uncreated table in `this`.
+    /// # Safety
+    /// `this` is 8-aligned, writable and `size_of::<Table>()` bytes.
+    pub unsafe fn init(
+        this: *mut Table,
+        rows: u32,
+        conflict: f32,
+        hash: Hash,
+        warning: Warning,
+        error: Error,
+    ) -> bool {
+        if swr_v1_locks_size(MUTEX) > size_of::<Lock>() {
+            return false;
         }
-        return 0;
-    }
-    let (mut row, mut flags, mut level) = (root, 0, 1u32);
-    loop {
-        // SAFETY: a live table row (see the row invariant).
-        if unsafe { matches(row, key) } {
-            // SAFETY: `output` is non-null (checked above), aligned and writable.
-            unsafe {
-                output.write(Plan {
-                    row: row.cast(),
-                    flags,
-                    level,
-                    ..Plan::default()
-                });
-            }
-            return 0;
-        }
-        // SAFETY: a live table row (see the row invariant).
-        let following = unsafe { next(row) };
-        if following.is_null() {
-            // SAFETY: `output` is non-null (checked above), aligned and writable.
-            unsafe {
-                output.write(Plan {
-                    parent: row.cast(),
-                    level,
-                    flags: flags | 1,
-                    initialize: 1,
-                    ..Plan::default()
-                });
-            }
-            return 1;
-        }
-        row = following;
-        flags |= 2;
-        let Some(next_level) = level.checked_add(1) else {
-            return -1;
+        let size = if rows >= MAX_ROWS {
+            MAX_ROWS
+        } else {
+            rows.max(64).next_power_of_two()
         };
-        level = next_level;
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_delete(
-    root: *mut Row,
-    bytes: *const u8,
-    length: u16,
-    item_size: usize,
-    removed: *mut *mut c_void,
-) -> i32 {
-    if removed.is_null() {
-        return -1;
-    }
-    // SAFETY: `removed` is non-null (checked above), aligned and writable.
-    unsafe {
-        removed.write(ptr::null_mut());
-    }
-    if root.is_null() || item_size > isize::MAX as usize - mem::size_of::<Row>() {
-        return -1;
-    }
-    // SAFETY: the caller lends `length` initialized key bytes at `bytes`.
-    let Some(key) = (unsafe { key(bytes, length) }) else {
-        return -1;
-    };
-    let (mut row, mut previous) = (root, ptr::null_mut::<Row>());
-    // SAFETY: a live table row (see the row invariant).
-    while !row.is_null() && !unsafe { matches(row, key) } {
-        previous = row;
-        // SAFETY: a live table row (see the row invariant).
-        row = unsafe { next(row) };
-    }
-    if row.is_null() {
-        return 1;
-    }
-    if row == root {
-        // SAFETY: a live table row (see the row invariant).
-        let replacement = unsafe { next(root) };
-        if replacement.is_null() {
-            // SAFETY: `root` is a non-null live row.
-            return unsafe { swr_v1_memory_table_clear(root, 1) };
-        }
-        // `root` and `replacement` are distinct live rows (see the row invariant), each at
-        // least `size_of::<Row>() + item_size` bytes.
-        // SAFETY: as above.
-        let length =
-            unsafe { field::<u8>(replacement, mem::offset_of!(Row, key_len)).read_unaligned() };
-        let length = length as usize;
-        if length > 63 {
-            return -1;
-        }
-        // SAFETY: as above.
-        let following = unsafe { next(replacement) };
-        // SAFETY: as above.
-        unsafe { field::<*mut Row>(root, mem::offset_of!(Row, next)).write_unaligned(following) };
-        // SAFETY: as above; `length + 1 <= 64` fits both key fields.
-        unsafe {
-            ptr::copy_nonoverlapping(
-                field::<u8>(replacement, mem::offset_of!(Row, key)),
-                field::<u8>(root, mem::offset_of!(Row, key)),
-                length + 1,
-            );
+        let conflict = if conflict > 1.0 {
+            1.0
+        } else if f64::from(conflict) < 0.2 {
+            CONFLICT_PROPORTION
+        } else {
+            conflict
         };
+        let table = Table {
+            mutex: Lock(UnsafeCell::new([0; 128])),
+            iterator_mutex: Lock(UnsafeCell::new([0; 128])),
+            row_num: AtomicU32::new(0),
+            conflict_max_level: AtomicU32::new(0),
+            conflict_count: AtomicUsize::new(0),
+            insert_count: AtomicI64::new(0),
+            delete_count: AtomicI64::new(0),
+            update_count: AtomicI64::new(0),
+            size: size as usize,
+            item_size: 0,
+            memory_size: 0,
+            conflict_proportion: conflict,
+            created: false,
+            hash,
+            warning,
+            error,
+            columns: ptr::null_mut(),
+            cursor: ptr::null_mut(),
+            memory: ptr::null_mut(),
+            rows: ptr::null_mut(),
+            pool: ptr::null_mut(),
+        };
+        // SAFETY: per the caller.
+        unsafe { this.write(table) };
+        // SAFETY: written above.
+        let table = unsafe { &mut *this };
+        // SAFETY: this header's unused lock storage.
+        if unsafe { swr_v1_locks_init(table.mutex.get(), MUTEX, 1) } != 0 {
+            return false;
+        }
+        // SAFETY: as above.
+        if unsafe { swr_v1_locks_init(table.iterator_mutex.get(), MUTEX, 1) } != 0 {
+            // SAFETY: initialised above, never locked.
+            unsafe { swr_v1_locks_destroy(table.mutex.get(), MUTEX) };
+            return false;
+        }
+        table.columns = Box::into_raw(Box::default());
+        true
+    }
+
+    fn column_set(&self) -> &Columns {
+        // SAFETY: `init` made the columns; only `destroy` frees them.
+        unsafe { &*self.columns }
+    }
+
+    pub fn set_hash(&mut self, hash: Hash) {
+        self.hash = hash;
+    }
+
+    /// `Table::add_column`. Refused once the table is created: its rows have no
+    /// room for another column.
+    pub fn add_column(&mut self, name: &[u8], kind: u32, size: usize) -> bool {
+        if !(TYPE_INT..=TYPE_STRING).contains(&kind) {
+            warn(self.warning, b"Table::add_column(): unknown column type");
+            return false;
+        }
+        if self.created {
+            return false;
+        }
+        #[expect(clippy::cast_possible_truncation, reason = "upstream's uint32_t size")]
+        let width = if kind == TYPE_STRING {
+            size.wrapping_add(4) as u32
+        } else {
+            8
+        };
+        let column = Column {
+            kind,
+            width,
+            index: self.item_size,
+            name: name.into(),
+        };
+        self.item_size = self.item_size.wrapping_add(width as usize);
+        // SAFETY: as in `column_set`; `&mut self` excludes other users.
+        let columns = unsafe { &mut *self.columns };
+        columns
+            .first
+            .entry(name.into())
+            .or_insert(columns.list.len());
+        columns.list.push(Box::new(column));
+        true
+    }
+
+    /// `Table::get_column`: the first column declared with this name.
+    #[must_use]
+    pub fn column(&self, name: &[u8]) -> Option<&Column> {
+        let columns = self.column_set();
+        columns.first.get(name).map(|&at| &*columns.list[at])
+    }
+
+    /// Every declaration, repeats included (`column_list`).
+    pub fn columns(&self) -> impl ExactSizeIterator<Item = &Column> {
+        self.column_set().list.iter().map(|column| &**column)
+    }
+
+    /// `get_column_size()`: distinct names.
+    #[must_use]
+    pub fn column_size(&self) -> usize {
+        self.column_set().first.len()
+    }
+
+    fn plan(&self) -> Option<Plan> {
         #[expect(
             clippy::cast_possible_truncation,
-            reason = "key length <= 63 (checked above)"
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "upstream sizes rows in float: size_t * (1 + float)"
         )]
-        // SAFETY: as above.
-        unsafe {
-            field::<u8>(root, mem::offset_of!(Row, key_len)).write_unaligned(length as u8);
+        let rows = (self.size as f32 * (1.0 + self.conflict_proportion)) as usize;
+        let slices = rows.checked_sub(self.size)?;
+        let row_size = ROW.checked_add(self.item_size)?;
+        let stride = row_size.checked_next_multiple_of(8)?;
+        let bytes = |row: usize| {
+            let pool = row.checked_add(size_of::<Slice>())?.checked_mul(slices)?;
+            row.checked_add(size_of::<*mut Row>())?
+                .checked_mul(self.size)?
+                .checked_add(pool)?
+                .checked_add(size_of::<Fixed>())
         };
-        if item_size != 0 {
-            // SAFETY: as above.
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    replacement.cast::<u8>().wrapping_add(mem::size_of::<Row>()),
-                    root.cast::<u8>().wrapping_add(mem::size_of::<Row>()),
-                    item_size,
-                );
-            };
+        Some(Plan {
+            logical: bytes(row_size)?,
+            physical: bytes(stride).filter(|&n| isize::try_from(n).is_ok())?,
+            row_size,
+            stride,
+            slices,
+        })
+    }
+
+    /// `calc_memory_size()`: the arena's size as upstream counts it.
+    #[must_use]
+    pub fn memory_total(&self) -> usize {
+        self.plan().map_or(0, |plan| plan.logical)
+    }
+
+    /// Bytes `create` needs, or 0 if the table is created or too large.
+    #[must_use]
+    pub fn arena_size(&self) -> usize {
+        match self.plan() {
+            Some(plan) if !self.created && plan.slices >= 2 => plan.physical,
+            _ => 0,
         }
-        // SAFETY: `removed` is non-null (checked above), aligned and writable.
-        unsafe { removed.write(replacement.cast()) };
-    } else {
-        // SAFETY: `row` and `previous` are live rows on this chain.
-        let following = unsafe { next(row) };
-        // SAFETY: as above.
-        unsafe {
-            field::<*mut Row>(previous, mem::offset_of!(Row, next)).write_unaligned(following);
+    }
+
+    /// `Table::create`, in an arena of `arena_size()` bytes.
+    /// # Safety
+    /// `arena` is 8-aligned, writable, `arena_size()` bytes and as shared as
+    /// the table should be; the table owns it until `destroy`.
+    pub unsafe fn create(&mut self, arena: *mut u8) -> bool {
+        let Some(plan) = self.plan().filter(|plan| plan.slices >= 2) else {
+            return false;
         };
-        // SAFETY: `removed` is non-null (checked above), aligned and writable.
-        unsafe { removed.write(row.cast()) };
-    }
-    0
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_next(
-    root: *mut Row,
-    index: u32,
-    current: *mut Row,
-    row_size: usize,
-    next_index: *mut u32,
-    advance: *mut u32,
-) -> i32 {
-    if next_index.is_null() || advance.is_null() {
-        return -1;
-    }
-    // SAFETY: non-null (checked above), aligned and writable.
-    unsafe { next_index.write(0) };
-    // SAFETY: `advance` is non-null (checked above), aligned and writable.
-    unsafe { advance.write(0) };
-    if root.is_null()
-        || current.is_null()
-        || row_size < mem::size_of::<Row>()
-        || row_size > isize::MAX as usize
-    {
-        return -1;
-    }
-    let mut row = root;
-    // SAFETY: a live table row (see the row invariant).
-    if unsafe { next(root) }.is_null() {
-        // SAFETY: non-null (checked above), aligned and writable.
-        unsafe { advance.write(1) };
-        // SAFETY: `next_index` is non-null (checked above), aligned and writable.
-        unsafe { next_index.write(index) };
-    } else {
-        for _ in 0..index {
-            // SAFETY: a live table row (see the row invariant).
-            row = unsafe { next(row) };
-            if row.is_null() {
-                return 1;
-            }
+        if self.created || arena.is_null() || !arena.addr().is_multiple_of(8) {
+            return false;
         }
-        let Some(following) = index.checked_add(1) else {
-            return -1;
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "the arena is 8-aligned (checked above)"
+        )]
+        let rows = arena.cast::<*mut Row>();
+        let first = arena.wrapping_add(self.size * size_of::<*mut Row>());
+        for i in 0..self.size {
+            #[expect(
+                clippy::cast_ptr_alignment,
+                reason = "8-aligned: the stride is a multiple of 8"
+            )]
+            let row = first.wrapping_add(i * plan.stride).cast::<Row>();
+            // SAFETY: per the caller; bucket `i` lies in the arena.
+            unsafe { rows.wrapping_add(i).write(row) };
+            Live(row).zero(0);
+        }
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "8-aligned: it follows whole rows"
+        )]
+        let pool = first.wrapping_add(self.size * plan.stride).cast::<Fixed>();
+        let pool_bytes = plan.physical - self.size * (plan.stride + size_of::<*mut Row>());
+        let Ok(width) = u32::try_from(plan.stride) else {
+            return false;
         };
-        // SAFETY: `next_index` is non-null (checked above), aligned and writable.
-        unsafe {
-            next_index.write(following);
+        let mut layout = Layout::default();
+        // SAFETY: a writable layout.
+        if unsafe { swr_v1_memory_fixed_layout(0, width, pool_bytes, 0, &raw mut layout) } != 0 {
+            return false;
         }
-    }
-    // SAFETY: `row` is a live row of `row_size` bytes; `current` is the caller's disjoint,
-    // writable `row_size`-byte snapshot buffer (non-null, checked above).
-    unsafe { ptr::copy_nonoverlapping(row.cast::<u8>(), current.cast::<u8>(), row_size) };
-    0
-}
-/// Typed addresses of the actual native counters, never a native class borrow.
-#[repr(C)]
-#[derive(Default, Clone, Copy)]
-pub struct CounterFields {
-    rows: *mut u32,
-    inserted: *mut i64,
-    deleted: *mut i64,
-    updated: *mut i64,
-    conflicts: *mut usize,
-    max_conflict: *mut u32,
-}
-impl CounterFields {
-    fn valid(&self) -> bool {
-        fn aligned<T, A>(p: *mut T) -> bool {
-            !p.is_null() && p.addr().is_multiple_of(mem::align_of::<A>())
+        // SAFETY: the arena's last `pool_bytes`, per the caller.
+        if unsafe { swr_v1_memory_fixed_construct(pool, &raw const layout, 1, 0) } != 0 {
+            return false;
         }
-        aligned::<_, AtomicU32>(self.rows)
-            && aligned::<_, AtomicI64>(self.inserted)
-            && aligned::<_, AtomicI64>(self.deleted)
-            && aligned::<_, AtomicI64>(self.updated)
-            && aligned::<_, AtomicUsize>(self.conflicts)
-            && aligned::<_, AtomicU32>(self.max_conflict)
+        self.cursor = Box::into_raw(Box::new(Cursor {
+            absolute: 0,
+            collision: 0,
+            current: vec![0; plan.stride / 8],
+        }));
+        self.rows = rows;
+        self.pool = pool;
+        self.memory_size = plan.logical - self.size * (plan.row_size + size_of::<*mut Row>());
+        self.memory = arena;
+        self.created = true;
+        true
     }
-    // Callers check `valid` first: every counter is a non-null, aligned native atomic.
-    unsafe fn deleted(&self) {
+
+    /// `Table::destroy`: frees the process-private parts and the locks, and
+    /// returns the arena (null if the table was never created) for the host to
+    /// free with the header.
+    /// # Safety
+    /// `this` is an initialised table nothing uses afterwards.
+    pub unsafe fn destroy(this: *mut Table) -> *mut u8 {
+        // SAFETY: per the caller.
+        let table = unsafe { &mut *this };
+        // SAFETY: made by `init`, freed only here.
+        drop(unsafe { Box::from_raw(table.columns) });
+        if !table.cursor.is_null() {
+            // SAFETY: made by `create`, freed only here.
+            drop(unsafe { Box::from_raw(table.cursor) });
+        }
+        // SAFETY: initialised by `init`, unlocked, destroyed once.
+        unsafe { swr_v1_locks_destroy(table.iterator_mutex.get(), MUTEX) };
         // SAFETY: as above.
-        unsafe { AtomicI64::from_ptr(self.deleted) }.fetch_add(1, Ordering::SeqCst);
-        // SAFETY: as above.
-        unsafe { AtomicU32::from_ptr(self.rows) }.fetch_sub(1, Ordering::SeqCst);
+        unsafe { swr_v1_locks_destroy(table.mutex.get(), MUTEX) };
+        table.memory
     }
-}
-/// Independent native stack state. Only raw tokens survive native effect steps.
-#[repr(C)]
-#[derive(Default)]
-pub struct Mutation {
-    counters: CounterFields,
-    root: *mut Row,
-    row: *mut Row,
-    removed: *mut Row,
-    key: *const u8,
-    out_flags: *mut i32,
-    item_size: usize,
-    plan: Plan,
-    mode: u32,
-    phase: u32,
-    key_length: u16,
-}
-unsafe fn finish_set(m: &mut Mutation) -> i32 {
-    if m.row.is_null() || m.plan.initialize > 1 || m.plan.flags & !3 != 0 {
-        return -1;
-    }
-    // The caller validated the counters and key; `m.row` is a live row (non-null, checked
-    // above) and a non-null `plan.parent` is the live tail row (see the row invariant).
-    if m.plan.initialize != 0 {
-        // SAFETY: as above.
-        if unsafe { swr_v1_memory_table_init(m.row, m.key, m.key_length) } != 0 {
-            return -1;
-        }
-        // SAFETY: as above; `rows` is an aligned native atomic.
-        unsafe { AtomicU32::from_ptr(m.counters.rows) }.fetch_add(1, Ordering::SeqCst);
-    }
-    if !m.plan.parent.is_null() {
-        let parent = m.plan.parent.cast::<Row>();
-        // SAFETY: as above.
-        unsafe { field::<*mut Row>(parent, mem::offset_of!(Row, next)).write_unaligned(m.row) };
-    }
-    if !m.out_flags.is_null() {
-        // SAFETY: non-null and aligned (checked by the caller), writable.
-        unsafe { m.out_flags.write(m.plan.flags.cast_signed()) };
-    }
-    let counter = if m.plan.flags & 1 != 0 {
-        m.counters.inserted
-    } else {
-        m.counters.updated
-    };
-    // SAFETY: as above; an aligned native atomic.
-    unsafe { AtomicI64::from_ptr(counter) }.fetch_add(1, Ordering::SeqCst);
-    m.phase = 2;
-    0
-}
-/// mode0 set, mode1 delete. Return1 requests the mode-specific native pool
-/// allocate/free effect; resume the unchanged phase1 state after that effect.
-/// Return0 success,2 missing delete,-1 invalid. No native callback enters Rust.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_mutation_step(state: *mut Mutation) -> i32 {
-    if state.is_null() {
-        return -1;
-    }
-    // SAFETY: `state` is non-null (checked above), aligned and exclusive per the caller contract.
-    let m = unsafe { &mut *state };
-    if m.mode > 1
-        || m.phase > 1
-        || m.root.is_null()
-        || !m.counters.valid()
-        || m.mode == 0 && !m.out_flags.is_null() && !m.out_flags.is_aligned()
-    {
-        return -1;
-    }
-    // Delete resume acknowledges an already completed native release. Its key
-    // token may name that released storage and must never become a Rust borrow.
-    // SAFETY: before a delete resume, the key token names `key_length` initialized bytes.
-    if (m.phase == 0 || m.mode == 0) && unsafe { key(m.key, m.key_length) }.is_none() {
-        return -1;
-    }
-    match (m.mode, m.phase) {
-        (0, 0) => {
-            // SAFETY: `root` is a non-null live bucket row and the key was validated above.
-            let status = unsafe {
-                swr_v1_memory_table_set_plan(m.root, m.key, m.key_length, &raw mut m.plan)
-            };
-            m.row = m.plan.row.cast();
-            if status < 0 {
-                return -1;
-            }
-            if status == 1 {
-                // SAFETY: the counters passed `valid` (above): aligned native atomics.
-                unsafe { AtomicUsize::from_ptr(m.counters.conflicts) }
-                    .fetch_add(1, Ordering::SeqCst);
-                // SAFETY: as above.
-                unsafe { AtomicU32::from_ptr(m.counters.max_conflict) }
-                    .fetch_max(m.plan.level, Ordering::SeqCst);
-                m.phase = 1;
-                1
-            } else {
-                // SAFETY: counters and key were validated above.
-                unsafe { finish_set(m) }
-            }
-        }
-        // SAFETY: counters and key were validated above; the native allocation completed.
-        (0, 1) => unsafe { finish_set(m) },
-        (1, 0) => {
-            let mut removed = ptr::null_mut();
-            // SAFETY: `root` is a live bucket row, the key was validated, `removed` is a local.
-            let status = unsafe {
-                swr_v1_memory_table_delete(
-                    m.root,
-                    m.key,
-                    m.key_length,
-                    m.item_size,
-                    &raw mut removed,
-                )
-            };
-            m.removed = removed.cast();
-            if status < 0 {
-                return -1;
-            }
-            if status == 1 {
-                m.phase = 2;
-                return 2;
-            }
-            if !m.removed.is_null() {
-                m.phase = 1;
-                return 1;
-            }
-            // SAFETY: the counters passed `valid` (above).
-            unsafe { m.counters.deleted() };
-            m.phase = 2;
-            0
-        }
-        (1, 1) => {
-            if m.removed.is_null() {
-                return -1;
-            }
-            // SAFETY: the counters passed `valid` (above).
-            unsafe { m.counters.deleted() };
-            m.phase = 2;
-            0
-        }
-        _ => -1,
-    }
-}
 
-/// Independent live scalar-field view; the native iterator/row mutexes never cross.
-#[repr(C)]
-pub struct IteratorFields {
-    absolute: *mut u32,
-    collision: *mut u32,
-    current: *mut Row,
-    row_size: usize,
-}
-impl IteratorFields {
-    fn valid(&self) -> bool {
-        !self.absolute.is_null()
-            && self.absolute.is_aligned()
-            && !self.collision.is_null()
-            && self.collision.is_aligned()
-            && !self.current.is_null()
-            && self.row_size >= mem::size_of::<Row>()
-            && isize::try_from(self.row_size).is_ok()
+    #[must_use]
+    pub fn is_created(&self) -> bool {
+        self.created
     }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_iterator_reset(fields: *const IteratorFields) -> i32 {
-    if fields.is_null() {
-        return -1;
-    }
-    // SAFETY: `fields` is non-null (checked above), aligned and initialized per the caller contract.
-    let f = unsafe { &*fields };
-    if !f.valid() {
-        return -1;
-    }
-    // The fields passed `valid`: aligned, non-null counters and a `row_size`-byte snapshot.
-    // SAFETY: as above.
-    unsafe { f.absolute.write(0) };
-    // SAFETY: as above.
-    unsafe { f.collision.write(0) };
-    // SAFETY: as above.
-    unsafe { ptr::write_bytes(f.current.cast::<u8>(), 0, f.row_size) };
-    0
-}
-/// phase0 starts selection; phase1 consumes one native lookup/lock observation.
-/// Return1 requests lookup/locking of output bucket,0 completes,-1 rejects.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_iterator_step(
-    fields: *const IteratorFields,
-    buckets: usize,
-    root: *mut Row,
-    phase: u32,
-    lookup: *mut u32,
-) -> i32 {
-    if fields.is_null() || lookup.is_null() {
-        return -1;
-    }
-    // SAFETY: `lookup` is non-null (checked above), aligned and writable.
-    unsafe {
-        lookup.write(0);
-    }
-    // SAFETY: `fields` is non-null (checked above), aligned and initialized per the caller contract.
-    let f = unsafe { &*fields };
-    if !f.valid() || phase > 1 || buckets > u32::MAX as usize || phase == 0 && !root.is_null() {
-        return -1;
-    }
-    // The fields passed `valid`: aligned, non-null counters and a `row_size`-byte snapshot.
-    // SAFETY: as above.
-    let mut absolute = unsafe { f.absolute.read() };
-    if phase == 1 && (absolute as usize) < buckets {
-        if !root.is_null() {
-            let mut collision = 0;
-            let mut advance = 0;
-            // SAFETY: as above.
-            let index = unsafe { f.collision.read() };
-            // SAFETY: `root` is the native-locked live bucket row; the snapshot is valid.
-            let result = unsafe {
-                swr_v1_memory_table_next(
-                    root,
-                    index,
-                    f.current,
-                    f.row_size,
-                    &raw mut collision,
-                    &raw mut advance,
-                )
-            };
-            if result < 0 {
-                return -1;
-            }
-            // SAFETY: a validated, aligned iterator counter.
-            unsafe { f.collision.write(collision) };
-            if result == 0 {
-                // SAFETY: a validated, aligned iterator counter.
-                unsafe { f.absolute.write(absolute + advance) };
-                return 0;
-            }
-        }
-        absolute += 1;
-        // SAFETY: a validated, aligned iterator counter.
-        unsafe { f.absolute.write(absolute) };
-    }
-    if (absolute as usize) < buckets {
-        // SAFETY: `lookup` is non-null (checked above), aligned and writable.
-        unsafe {
-            lookup.write(absolute);
-        }
-        1
-    } else {
-        // SAFETY: the validated snapshot spans `row_size >= size_of::<Row>()` writable bytes.
-        unsafe { swr_v1_memory_table_clear(f.current, 0) }
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_column_size(
-    kind: u32,
-    requested: usize,
-    output: *mut u32,
-) -> i32 {
-    if output.is_null() {
-        return -1;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(0);
-    }
-    let size = match kind {
-        1 | 2 => 8,
-        3 => match requested.checked_add(4).and_then(|n| u32::try_from(n).ok()) {
-            Some(n) => n,
-            None => return -1,
-        },
-        _ => return -1,
-    };
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(size);
-    }
-    0
-}
-/// Independent native descriptor snapshot, never a C++ `TableColumn` layout.
-#[repr(C)]
-#[derive(Default, Clone, Copy)]
-pub struct Column {
-    index: usize,
-    width: u32,
-    kind: u32,
-}
 
-/// Independent cursor: pointer tokens select live native descriptor facts, never
-/// borrow the C++ column/vector objects. Native fills only the requested batch.
-#[repr(C)]
-#[derive(Default)]
-pub struct Clear {
-    row: *mut Row,
-    columns: *const *mut c_void,
-    count: usize,
-    position: usize,
-    item_size: usize,
-    tokens: [*mut c_void; 8],
-    batch: [Column; 8],
-    take: u32,
-    phase: u32,
-}
+    /// `ready()`: created and not destroyed.
+    #[must_use]
+    pub fn ready(&self) -> bool {
+        !self.memory.is_null()
+    }
 
-/// 1 requests native field copies; 0 completes; -1 rejects. Each completed
-/// batch is committed before requesting the next: failure is not transactional
-/// across batches. No Rust borrow survives native descriptor marshalling.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_clear_step(cursor: *mut Clear) -> i32 {
-    if cursor.is_null() {
-        return -1;
+    #[must_use]
+    pub fn size(&self) -> usize {
+        self.size
     }
-    // SAFETY: `cursor` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *cursor };
-    if state.phase == 2 {
-        return 0;
-    }
-    if state.phase > 1
-        || state.position > state.count
-        || state.count > isize::MAX as usize / mem::size_of::<*mut c_void>()
-        || state.columns.is_null() && state.count != 0
-        || state.item_size > isize::MAX as usize - mem::size_of::<Row>()
-    {
-        return -1;
-    }
-    if state.phase == 1 {
-        if state.take == 0
-            || state.take > 8
-            || state.take as usize > state.count - state.position
-            // SAFETY: `row` is a live row; the batch holds `take <= 8` validated columns.
-            || unsafe {
-                swr_v1_memory_table_clear_columns(
-                    state.row,
-                    state.batch.as_ptr(),
-                    state.take as usize,
-                    state.item_size,
-                )
-            } != 0
-        {
-            state.phase = 3;
-            return -1;
-        }
-        state.position += state.take as usize;
-    }
-    state.take = u32::try_from((state.count - state.position).min(8)).unwrap_or(8);
-    if state.take == 0 {
-        state.phase = 2;
-        return 0;
-    }
-    if state.row.is_null() {
-        state.phase = 3;
-        return -1;
-    }
-    for i in 0..state.take as usize {
-        // SAFETY: `position + i < count`, and `columns` lends `count` readable tokens.
-        let token = unsafe { state.columns.wrapping_add(state.position + i).read() };
-        if token.is_null() {
-            state.phase = 3;
-            return -1;
-        }
-        state.tokens[i] = token;
-    }
-    state.phase = 1;
-    1
-}
 
-/// Use the sole Rust token store during this call only. Neither the vector
-/// representation nor a raw pointer into it is retained across native effects.
-pub(super) unsafe fn clear_owned(cursor: *mut Clear, tokens: &[*mut c_void]) -> i32 {
-    if cursor.is_null() {
-        return -1;
+    #[must_use]
+    pub fn conflict_proportion(&self) -> f32 {
+        self.conflict_proportion
     }
-    // SAFETY: `cursor` is non-null (checked above), the caller's live, exclusive cursor.
-    let state = unsafe { &mut *cursor };
-    state.columns = tokens.as_ptr();
-    state.count = tokens.len();
-    // SAFETY: the cursor now borrows `tokens` for this call only.
-    let status = unsafe { swr_v1_memory_table_clear_step(cursor) };
-    // SAFETY: as for the first borrow; the step has returned.
-    unsafe { (*cursor).columns = ptr::null() };
-    status
-}
 
-/// Validate a whole borrowed batch before clearing scalar/string-length bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_clear_columns(
-    row: *mut Row,
-    columns: *const Column,
-    count: usize,
-    item_size: usize,
-) -> i32 {
-    if row.is_null()
-        || columns.is_null() && count != 0
-        || count > isize::MAX as usize / mem::size_of::<Column>()
-        || item_size > isize::MAX as usize - mem::size_of::<Row>()
-    {
-        return -1;
+    /// `get_memory_size()`: the collision pool's bytes, as upstream reports them.
+    #[must_use]
+    pub fn memory_size(&self) -> usize {
+        self.memory_size
     }
-    let columns = if count == 0 {
-        &[]
-    } else {
-        // SAFETY: non-null, `count` bounded (checked above), readable descriptors.
-        unsafe { slice::from_raw_parts(columns, count) }
-    };
-    for column in columns {
-        if !matches!((column.kind, column.width), (1 | 2, 8) | (3, 4..))
-            || column
-                .index
-                .checked_add(column.width as usize)
-                .is_none_or(|end| end > item_size)
-        {
-            return -1;
+
+    /// Active rows.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.row_num.load(Ordering::Relaxed) as usize
+    }
+
+    #[must_use]
+    pub fn stats(&self) -> Stats {
+        Stats {
+            conflict_count: self.conflict_count.load(Ordering::Relaxed),
+            conflict_max_level: self.conflict_max_level.load(Ordering::Relaxed),
+            insert_count: self.insert_count.load(Ordering::Relaxed),
+            update_count: self.update_count.load(Ordering::Relaxed),
+            delete_count: self.delete_count.load(Ordering::Relaxed),
         }
     }
-    // Every column `index + width <= item_size` (checked above), and the live row has
-    // `item_size` value bytes after its header.
-    let data = row.cast::<u8>().wrapping_add(mem::size_of::<Row>());
-    let (mut begin, mut end) = (0, 0);
-    for column in columns {
-        let bytes = if column.kind == 3 { 4 } else { 8 };
-        if column.index == end {
-            end += bytes;
-        } else {
-            if end != begin {
-                // SAFETY: as above.
-                unsafe { ptr::write_bytes(data.wrapping_add(begin), 0, end - begin) };
-            }
-            begin = column.index;
-            end = begin + bytes;
+
+    fn pool(&self) -> Option<&Fixed> {
+        // SAFETY: a created table's pool (see the invariant), or null.
+        unsafe { self.pool.as_ref() }
+    }
+
+    /// Spare collision rows (0 before `create`).
+    #[must_use]
+    pub fn available_slices(&self) -> u32 {
+        let Some(pool) = self.pool() else { return 0 };
+        self.mutex.lock();
+        let (spare, _) = pool.slices();
+        self.mutex.unlock();
+        spare
+    }
+
+    /// All collision rows (0 before `create`).
+    #[must_use]
+    pub fn total_slices(&self) -> u32 {
+        self.pool().map_or(0, |pool| pool.slices().1)
+    }
+
+    fn bucket_row(&self, index: usize) -> Live {
+        // SAFETY: a created table's buckets (see the invariant); callers keep `index < size`.
+        Live(unsafe { self.rows.wrapping_add(index).read() })
+    }
+
+    /// `get_by_index`: bucket `index`'s row if it is active.
+    #[must_use]
+    pub fn by_index(&self, index: usize) -> *mut Row {
+        if !self.created || index >= self.size {
+            return ptr::null_mut();
         }
+        let row = self.bucket_row(index);
+        if row.active() { row.0 } else { ptr::null_mut() }
     }
-    if end != begin {
-        // SAFETY: as above.
-        unsafe { ptr::write_bytes(data.wrapping_add(begin), 0, end - begin) };
-    }
-    0
-}
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_clear_value(
-    row: *mut Row,
-    index: usize,
-    width: u32,
-    kind: u32,
-) -> i32 {
-    let bytes = match (kind, width) {
-        (1 | 2, 8) => 8,
-        (3, 4..) => 4, // Empty strings retain their payload, clearing only length.
-        _ => return -1,
-    };
-    let end = mem::size_of::<Row>()
-        .checked_add(index)
-        .and_then(|offset| offset.checked_add(width as usize));
-    if row.is_null() || end.is_none_or(|end| end > isize::MAX as usize) {
-        return -1;
+    /// The bucket a (clamped) key hashes to.
+    fn bucket(&self, key: &[u8]) -> Live {
+        // SAFETY: the host's hash reads `key.len()` bytes.
+        let hash = unsafe { (self.hash)(key.as_ptr().cast(), key.len()) };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "masked below the row count"
+        )]
+        self.bucket_row((hash & (self.size as u64 - 1)) as usize)
     }
-    // Native Unix long zero and IEEE double positive zero both have zero bits.
-    // SAFETY: a live row whose column (`index`, `width >= bytes`) lies inside its values.
-    unsafe {
-        ptr::write_bytes(
-            row.cast::<u8>().wrapping_add(mem::size_of::<Row>() + index),
-            0,
-            bytes,
-        );
-    };
-    0
-}
-/// Native warning is an effect boundary, not a Rust callback. Ordinary writes
-/// complete in one call; overlong strings return before any destination write.
-#[repr(C)]
-#[derive(Default)]
-pub struct Value {
-    row: *mut Row,
-    value: *const c_void,
-    length: usize,
-    index: usize,
-    width: u32,
-    kind: u32,
-    phase: u32,
-}
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_value_step(cursor: *mut Value) -> i32 {
-    if cursor.is_null() {
-        return -1;
+    fn claim(&self, row: Live, key: &[u8]) {
+        row.claim(key);
+        self.row_num.fetch_add(1, Ordering::Relaxed);
     }
-    // SAFETY: `cursor` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *cursor };
-    if state.phase > 1 {
-        return -1;
-    }
-    if state.phase == 0
-        && state.kind == 3
-        && state.width >= 4
-        && state.length > state.width as usize - 4
-    {
-        state.phase = 1;
-        return 1;
-    }
-    state.phase = 2;
-    // SAFETY: the cursor's row, column and value span follow set_value's contract.
-    unsafe {
-        swr_v1_memory_table_set_value(
-            state.row,
-            state.index,
-            state.width,
-            state.kind,
-            state.value,
-            state.length,
-        )
-    }
-}
 
-/// Independent tokens only. Native destructors/free execute after each return;
-/// after the final effect, only this cursor is read, not the released storage.
-#[repr(C)]
-#[derive(Default)]
-pub struct IteratorRelease {
-    current: *mut c_void,
-    mutex: *mut c_void,
-    phase: u32,
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_iterator_release_step(
-    cursor: *mut IteratorRelease,
-    output: *mut TeardownEffect,
-) -> i32 {
-    if cursor.is_null() || output.is_null() {
-        return -1;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable per the caller contract.
-    unsafe { output.write(TeardownEffect::default()) };
-    // SAFETY: `cursor` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *cursor };
-    loop {
-        let effect = match state.phase {
-            0 => {
-                state.phase = 1;
-                if state.current.is_null() {
+    /// `Table::set`: the row for `key`, made if it is new, with `lock` set to
+    /// the bucket's row, which stays locked even when no row could be made.
+    /// `flags` gets `NEW_ROW` and `CONFLICT` unless that happens.
+    pub fn set(&self, key: &[u8], lock: &mut *mut Row, flags: Option<&mut i32>) -> *mut Row {
+        if !self.created {
+            return ptr::null_mut();
+        }
+        let key = clamp(key);
+        let root = self.bucket(key);
+        *lock = root.0;
+        root.lock(self.warning);
+        let mut found = 0;
+        let mut row = root;
+        if root.active() {
+            let mut level = 1;
+            while row.key() != key {
+                if let Some(next) = row.next() {
+                    row = next;
+                    found |= CONFLICT;
+                    level += 1;
                     continue;
                 }
-                TeardownEffect {
-                    token: state.current,
-                    action: 1,
-                }
+                self.conflict_count.fetch_add(1, Ordering::Relaxed);
+                self.conflict_max_level.fetch_max(level, Ordering::Relaxed);
+                let Some(fresh) = self.alloc_row() else {
+                    // SAFETY: the host's last-error setter.
+                    unsafe { (self.error)(SW_ERROR_MALLOC_FAIL) };
+                    return ptr::null_mut();
+                };
+                self.claim(fresh, key);
+                found |= NEW_ROW;
+                row.set_next(Some(fresh));
+                row = fresh;
+                break;
             }
-            1 => {
-                state.phase = 2;
-                TeardownEffect {
-                    token: state.mutex,
-                    action: 2,
-                }
-            }
-            2 => return 0,
-            _ => return -1,
+        } else {
+            self.claim(root, key);
+            found |= NEW_ROW;
+        }
+        if let Some(flags) = flags {
+            *flags = found;
+        }
+        let counter = if found & NEW_ROW == 0 {
+            &self.update_count
+        } else {
+            &self.insert_count
         };
-        // SAFETY: `output` is non-null (checked above), aligned and writable per the caller contract.
-        unsafe { output.write(effect) };
-        return 1;
+        counter.fetch_add(1, Ordering::Relaxed);
+        row.0
     }
+
+    /// `Table::get`: the active row for `key` or null, with `lock` set to the
+    /// bucket's row, which is locked either way.
+    pub fn get(&self, key: &[u8], lock: &mut *mut Row) -> *mut Row {
+        if !self.created {
+            return ptr::null_mut();
+        }
+        let key = clamp(key);
+        let mut row = self.bucket(key);
+        *lock = row.0;
+        row.lock(self.warning);
+        while row.key() != key {
+            match row.next() {
+                Some(next) => row = next,
+                None => return ptr::null_mut(),
+            }
+        }
+        if row.active() { row.0 } else { ptr::null_mut() }
+    }
+
+    /// `Table::exists`.
+    #[must_use]
+    pub fn exists(&self, key: &[u8]) -> bool {
+        let mut lock = ptr::null_mut();
+        let row = self.get(key, &mut lock);
+        if !lock.is_null() {
+            Live(lock).unlock();
+        }
+        !row.is_null()
+    }
+
+    /// `Table::del`. Deleting a bucket's own row moves its first collision row in.
+    pub fn del(&self, key: &[u8]) -> bool {
+        if !self.created {
+            return false;
+        }
+        let key = clamp(key);
+        let root = self.bucket(key);
+        if !root.active() {
+            return false;
+        }
+        root.lock(self.warning);
+        let deleted = self.unlink(root, key);
+        if deleted {
+            self.delete_count.fetch_add(1, Ordering::Relaxed);
+            self.row_num.fetch_sub(1, Ordering::Relaxed);
+        }
+        root.unlock();
+        deleted
+    }
+
+    /// Delete `key` from a locked bucket.
+    fn unlink(&self, root: Live, key: &[u8]) -> bool {
+        let Some(mut next) = root.next() else {
+            if root.key() != key {
+                return false;
+            }
+            root.zero(offset_of!(Row, lock_pid));
+            return true;
+        };
+        if root.key() == key {
+            root.set_next(next.next());
+            root.take(next, self.item_size);
+        } else {
+            let mut previous = root;
+            while next.key() != key {
+                previous = next;
+                let Some(after) = next.next() else {
+                    return false;
+                };
+                next = after;
+            }
+            previous.set_next(next.next());
+        }
+        self.free_row(next);
+        true
+    }
+
+    fn alloc_row(&self) -> Option<Live> {
+        self.mutex.lock();
+        // SAFETY: a created table's pool, under its mutex.
+        let row = unsafe { swr_v1_memory_fixed_alloc(self.pool) }.cast::<Row>();
+        self.mutex.unlock();
+        (!row.is_null()).then_some(Live(row))
+    }
+
+    /// Return a collision row no chain links any more.
+    fn free_row(&self, row: Live) {
+        self.mutex.lock();
+        row.zero(offset_of!(Row, lock_pid));
+        // SAFETY: a row this pool allocated, under its mutex.
+        unsafe { swr_v1_memory_fixed_free(self.pool, row.0.cast()) };
+        self.mutex.unlock();
+    }
+
+    /// `Table::clear_row`: every column empty or zero.
+    /// # Safety
+    /// `row` is a locked row of this table.
+    pub unsafe fn clear_row(&self, row: *mut Row) {
+        for column in self.columns() {
+            // SAFETY: per the caller.
+            unsafe { clear_value(row, column) };
+        }
+    }
+
+    /// `TableRow::set_value` with this table's warning log.
+    /// # Safety
+    /// As `set_value`.
+    pub unsafe fn set_value(
+        &self,
+        row: *mut Row,
+        column: &Column,
+        value: *const u8,
+        length: usize,
+    ) {
+        // SAFETY: per the caller.
+        unsafe { set_value(row, column, value, length, self.warning) };
+    }
+
+    fn cursor<T>(&self, step: impl FnOnce(&mut Cursor, usize) -> T) -> Option<T> {
+        if self.cursor.is_null() {
+            return None;
+        }
+        self.iterator_mutex.lock();
+        // SAFETY: this process's cursor (see the invariant), under the iterator mutex.
+        let result = step(unsafe { &mut *self.cursor }, ROW + self.item_size);
+        self.iterator_mutex.unlock();
+        Some(result)
+    }
+
+    /// `Table::rewind`.
+    pub fn rewind(&self) {
+        self.cursor(|cursor, row_size| {
+            cursor.absolute = 0;
+            cursor.collision = 0;
+            Self::copy(cursor, None, row_size);
+        });
+    }
+
+    /// Copy `row_size` bytes of `row` (zeros for `None`) to the cursor's row,
+    /// which holds `stride >= row_size` bytes.
+    fn copy(cursor: &mut Cursor, row: Option<Live>, row_size: usize) {
+        let current = cursor.current.as_mut_ptr().cast::<u8>();
+        match row {
+            // SAFETY: a locked row's bytes, into the cursor's row.
+            Some(row) => unsafe { ptr::copy_nonoverlapping(row.0.cast::<u8>(), current, row_size) },
+            // SAFETY: the cursor's row.
+            None => unsafe { ptr::write_bytes(current, 0, row_size) },
+        }
+    }
+
+    /// `Table::forward`: copies the next row to `current()`, or an empty
+    /// header past the last.
+    pub fn forward(&self) {
+        self.cursor(|cursor, row_size| {
+            while cursor.absolute < self.size {
+                let bucket = self.bucket_row(cursor.absolute);
+                if !bucket.active() {
+                    cursor.absolute += 1;
+                    continue;
+                }
+                bucket.lock(self.warning);
+                let found = Self::visit(cursor, bucket);
+                if found.is_some() {
+                    Self::copy(cursor, found, row_size);
+                }
+                bucket.unlock();
+                if found.is_some() {
+                    return;
+                }
+                cursor.absolute += 1;
+            }
+            Self::copy(cursor, None, ROW);
+        });
+    }
+
+    /// The row of a locked bucket the cursor visits next, or `None` once it
+    /// has visited them all.
+    fn visit(cursor: &mut Cursor, bucket: Live) -> Option<Live> {
+        if bucket.next().is_none() {
+            cursor.absolute += 1;
+            return Some(bucket);
+        }
+        let mut row = bucket;
+        for _ in 0..cursor.collision {
+            let Some(next) = row.next() else {
+                cursor.collision = 0;
+                return None;
+            };
+            row = next;
+        }
+        cursor.collision += 1;
+        Some(row)
+    }
+
+    /// `Table::current`: the iterator's copy of its row (null before `create`).
+    #[must_use]
+    pub fn current(&self) -> *mut Row {
+        // SAFETY: this process's cursor, or null; the copy never moves.
+        unsafe { self.cursor.as_mut() }
+            .map_or(ptr::null_mut(), |cursor| cursor.current.as_mut_ptr().cast())
+    }
+}
+
+// The C ABI (swoole_rs_memory.h). Each `table` is one `init` initialised and
+// `destroy` has not freed, each `row` a row of it, each `column` one of its
+// columns; outputs are writable.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_memory_table_header_size() -> usize {
+    size_of::<Table>()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_init(
+    table: *mut Table,
+    rows: u32,
+    conflict: f32,
+    hash: Hash,
+    warning: Warning,
+    error: Error,
+) -> bool {
+    if table.is_null() || !table.addr().is_multiple_of(align_of::<Table>()) {
+        return false;
+    }
+    // SAFETY: per the C contract, `header_size()` writable bytes.
+    unsafe { Table::init(table, rows, conflict, hash, warning, error) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_set_hash(table: *mut Table, hash: Hash) {
+    // SAFETY: per the C contract.
+    unsafe { &mut *table }.set_hash(hash);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_add_column(
+    table: *mut Table,
+    name: *const c_char,
+    length: usize,
+    kind: u32,
+    size: usize,
+) -> bool {
+    // SAFETY: per the C contract, `length` bytes.
+    let name = unsafe { borrow(name, length) };
+    // SAFETY: per the C contract.
+    unsafe { &mut *table }.add_column(name, kind, size)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_find_column(
+    table: *const Table,
+    name: *const c_char,
+    length: usize,
+) -> *const Column {
+    // SAFETY: per the C contract, `length` bytes.
+    let name = unsafe { borrow(name, length) };
+    // SAFETY: per the C contract.
+    unsafe { &*table }
+        .column(name)
+        .map_or(ptr::null(), ptr::from_ref)
+}
+
+/// The `index`th declaration, repeats included, or null past the last.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_column_at(
+    table: *const Table,
+    index: usize,
+) -> *const Column {
+    // SAFETY: per the C contract.
+    unsafe { &*table }
+        .columns()
+        .nth(index)
+        .map_or(ptr::null(), ptr::from_ref)
+}
+
+/// Declarations, repeats included, or distinct names if `unique`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_column_count(
+    table: *const Table,
+    unique: bool,
+) -> usize {
+    // SAFETY: per the C contract.
+    let table = unsafe { &*table };
+    if unique {
+        table.column_size()
+    } else {
+        table.columns().len()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_column_name(
+    column: *const Column,
+    length: *mut usize,
+) -> *const c_char {
+    // SAFETY: per the C contract.
+    let name = unsafe { &*column }.name();
+    // SAFETY: as above.
+    unsafe { length.write(name.len()) };
+    name.as_ptr().cast()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_memory_total(table: *const Table) -> usize {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.memory_total()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_arena_size(table: *const Table) -> usize {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.arena_size()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_create(table: *mut Table, arena: *mut c_void) -> bool {
+    // SAFETY: per the C contract.
+    let table = unsafe { &mut *table };
+    // SAFETY: per the C contract, an `arena_size()` arena the table now owns.
+    unsafe { table.create(arena.cast()) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_destroy(table: *mut Table) -> *mut c_void {
+    // SAFETY: per the C contract; nothing uses the table afterwards.
+    unsafe { Table::destroy(table) }.cast()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_created(table: *const Table) -> bool {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.is_created()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_ready(table: *const Table) -> bool {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.ready()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_size(table: *const Table) -> usize {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.size()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_conflict_proportion(table: *const Table) -> f32 {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.conflict_proportion()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_memory_size(table: *const Table) -> usize {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.memory_size()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_count(table: *const Table) -> usize {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.count()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_counters(table: *const Table) -> Stats {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.stats()
+}
+
+/// Spare collision rows if `available`, else all of them.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_slices(table: *const Table, available: bool) -> u32 {
+    // SAFETY: per the C contract.
+    let table = unsafe { &*table };
+    if available {
+        table.available_slices()
+    } else {
+        table.total_slices()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_set(
+    table: *const Table,
+    key: *const c_char,
+    length: u16,
+    lock: *mut *mut Row,
+    flags: *mut c_int,
+) -> *mut Row {
+    // SAFETY: per the C contract, `length` bytes.
+    let key = unsafe { borrow(key, usize::from(length)) };
+    // SAFETY: per the C contract; `flags` may be null.
+    let flags = unsafe { flags.as_mut() };
+    // SAFETY: per the C contract.
+    let lock = unsafe { &mut *lock };
+    // SAFETY: as above.
+    unsafe { &*table }.set(key, lock, flags)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_get(
+    table: *const Table,
+    key: *const c_char,
+    length: u16,
+    lock: *mut *mut Row,
+) -> *mut Row {
+    // SAFETY: per the C contract, `length` bytes.
+    let key = unsafe { borrow(key, usize::from(length)) };
+    // SAFETY: per the C contract.
+    let lock = unsafe { &mut *lock };
+    // SAFETY: as above.
+    unsafe { &*table }.get(key, lock)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_exists(
+    table: *const Table,
+    key: *const c_char,
+    length: u16,
+) -> bool {
+    // SAFETY: per the C contract, `length` bytes.
+    let key = unsafe { borrow(key, usize::from(length)) };
+    // SAFETY: per the C contract.
+    unsafe { &*table }.exists(key)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_del(
+    table: *const Table,
+    key: *const c_char,
+    length: u16,
+) -> bool {
+    // SAFETY: per the C contract, `length` bytes.
+    let key = unsafe { borrow(key, usize::from(length)) };
+    // SAFETY: per the C contract.
+    unsafe { &*table }.del(key)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_by_index(table: *const Table, index: u32) -> *mut Row {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.by_index(index as usize)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_rewind(table: *const Table) {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.rewind();
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_forward(table: *const Table) {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.forward();
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_current(table: *const Table) -> *mut Row {
+    // SAFETY: per the C contract.
+    unsafe { &*table }.current()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_clear_row(table: *const Table, row: *mut Row) {
+    // SAFETY: per the C contract.
+    let table = unsafe { &*table };
+    // SAFETY: per the C contract, a locked row.
+    unsafe { table.clear_row(row) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_row_lock(row: *mut Row, warning: Warning) {
+    // SAFETY: per the C contract.
+    unsafe { lock(row, warning) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_row_unlock(row: *mut Row) {
+    // SAFETY: per the C contract; this process holds the lock.
+    unsafe { unlock(row) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_row_clear(row: *mut Row) {
+    // SAFETY: per the C contract, a locked row.
+    unsafe { clear(row) };
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_memory_table_set_value(
     row: *mut Row,
-    index: usize,
-    width: u32,
-    kind: u32,
+    column: *const Column,
     value: *const c_void,
     length: usize,
-) -> i32 {
-    if row.is_null() || index > isize::MAX as usize - mem::size_of::<Row>() - width as usize {
-        return -1;
-    }
-    // The caller's column (`index`, `width`) lies inside the live row's value bytes.
-    let data = row.cast::<u8>().wrapping_add(mem::size_of::<Row>() + index);
-    match kind {
-        // SAFETY: as above; `value` lends 8 readable bytes, disjoint from the row.
-        1 | 2 if width == 8 && !value.is_null() => unsafe {
-            ptr::copy_nonoverlapping(value.cast::<u8>(), data, 8);
-        },
-        3 if width >= 4 => {
-            let length = if value.is_null() {
-                0
-            } else {
-                length.min(width as usize - 4)
-            };
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "length <= width - 4, a native uint32_t column width"
-            )]
-            // SAFETY: as above; a 4-byte length prefix leads the column.
-            unsafe {
-                data.cast::<u32>().write_unaligned(length as u32);
-            };
-            if length != 0 {
-                // SAFETY: as above; `length <= width - 4` bytes follow the prefix, and `value`
-                // lends them readable, disjoint from the row.
-                unsafe {
-                    ptr::copy_nonoverlapping(value.cast::<u8>(), data.wrapping_add(4), length);
-                };
-            }
-        }
-        _ => return -1,
-    }
-    0
+    warning: Warning,
+) {
+    // SAFETY: per the C contract.
+    let column = unsafe { &*column };
+    // SAFETY: per the C contract, a locked row and `value` as `set_value` reads it.
+    unsafe { set_value(row, column, value.cast(), length, warning) };
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_table_clear_value(row: *mut Row, column: *const Column) {
+    // SAFETY: per the C contract.
+    let column = unsafe { &*column };
+    // SAFETY: per the C contract, a locked row.
+    unsafe { clear_value(row, column) };
+}
+
+/// A number column's 8 bytes, into `value`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_memory_table_get_number(
     row: *const Row,
-    index: usize,
-    output: *mut c_void,
-) -> i32 {
-    if row.is_null() || output.is_null() || index > isize::MAX as usize - mem::size_of::<Row>() - 8
-    {
-        return -1;
-    }
-    // SAFETY: the 8-byte column at `index` lies inside the live row's values; `output` is
-    // non-null (checked above) with 8 writable, disjoint bytes.
-    unsafe {
-        ptr::copy_nonoverlapping(
-            row.cast::<u8>().wrapping_add(mem::size_of::<Row>() + index),
-            output.cast::<u8>(),
-            8,
-        );
-    };
-    0
+    column: *const Column,
+    value: *mut c_void,
+) {
+    // SAFETY: per the C contract.
+    let column = unsafe { &*column };
+    // SAFETY: per the C contract, a locked row.
+    let bits = unsafe { get_number(row, column) };
+    // SAFETY: per the C contract, 8 writable bytes.
+    unsafe { value.cast::<u64>().write_unaligned(bits) };
 }
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_memory_table_get_string(
     row: *const Row,
-    index: usize,
-    width: u32,
-    output: *mut *mut u8,
+    column: *const Column,
+    value: *mut *mut c_char,
     length: *mut u32,
-) -> i32 {
-    if output.is_null() || length.is_null() {
-        return -1;
-    }
-    // SAFETY: non-null (checked above), aligned and writable.
-    unsafe { output.write(ptr::null_mut()) };
-    // SAFETY: `length` is non-null (checked above), aligned and writable.
-    unsafe { length.write(0) };
-    if row.is_null()
-        || width < 4
-        || index > isize::MAX as usize - mem::size_of::<Row>() - width as usize
-    {
-        return -1;
-    }
-    // The caller's column (`index`, `width`) lies inside the live row's value bytes.
-    let data = row
-        .cast::<u8>()
-        .cast_mut()
-        .wrapping_add(mem::size_of::<Row>() + index);
-    // SAFETY: as above; the string column starts with its 4-byte length.
-    let count = unsafe { data.cast::<u32>().read_unaligned() };
-    if count > width - 4 {
-        return -1;
-    }
-    // SAFETY: non-null (checked above), aligned and writable.
-    unsafe { output.write(data.wrapping_add(4)) };
-    // SAFETY: `length` is non-null (checked above), aligned and writable.
-    unsafe { length.write(count) };
-    0
-}
-
-/// Key normalization and bucket policy around a native hash callback. Only the
-/// pointer-token array is borrowed; no row/class/lock or callback enters Rust.
-#[repr(C)]
-#[derive(Default)]
-pub struct Lookup {
-    rows: *const *mut Row,
-    count: usize,
-    mask: usize,
-    hash: u64,
-    index: usize,
-    row: *mut Row,
-    length: u16,
-    phase: u32,
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_lookup_step(cursor: *mut Lookup) -> i32 {
-    if cursor.is_null() {
-        return -1;
-    }
-    // SAFETY: `cursor` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *cursor };
-    if state.phase > 1
-        || state.rows.is_null()
-        || state.count == 0
-        || state.count > isize::MAX as usize / mem::size_of::<*mut Row>()
-        || !state
-            .rows
-            .addr()
-            .is_multiple_of(mem::align_of::<*mut Row>())
-    {
-        return -1;
-    }
-    if state.phase == 0 {
-        state.length = state.length.min(63);
-        state.phase = 1;
-        return 1;
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "native size_t hash on LP64"
-    )]
-    let hash = state.hash as usize;
-    state.index = hash & state.mask;
-    if state.index >= state.count {
-        return -1;
-    }
-    // SAFETY: `index < count`, and `rows` is a non-null, aligned array of `count` buckets.
-    state.row = unsafe { state.rows.wrapping_add(state.index).read() };
-    state.phase = 2;
-    0
-}
-
-/// Independent declaration cursor, borrowed name and actual scalar field views.
-#[repr(C)]
-#[derive(Default)]
-pub struct Declaration {
-    index: *mut crate::table_columns::Columns,
-    item_size: *mut usize,
-    name: *const u8,
-    length: usize,
-    requested: usize,
-    base: usize,
-    next: usize,
-    column: *mut c_void,
-    column_index: *mut usize,
-    column_width: *mut u32,
-    kind: u32,
-    width: u32,
-    phase: u32,
-}
-///0 commits,1 requests native column construction,2 vector append,3 rollback
-/// append; -2 is unknown type (native warning),-1 other invalid/pre-effect error.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_declaration_step(cursor: *mut Declaration) -> i32 {
-    if cursor.is_null() {
-        return -1;
-    }
-    // SAFETY: `cursor` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *cursor };
-    let rollback = if state.phase == 2 { 3 } else { -1 };
-    if state.phase > 2
-        || state.index.is_null()
-        || state.item_size.is_null()
-        || !state
-            .item_size
-            .addr()
-            .is_multiple_of(mem::align_of::<usize>())
-        || state.length > isize::MAX as usize
-        || state.name.is_null() && state.length != 0
-    {
-        if rollback == 3 {
-            state.phase = 3;
-        }
-        return rollback;
-    }
-    if state.phase == 0 {
-        if !(1..=3).contains(&state.kind) {
-            return -2;
-        }
-        let mut width = 0;
-        // SAFETY: `width` is a writable local.
-        if unsafe { swr_v1_memory_table_column_size(state.kind, state.requested, &raw mut width) }
-            != 0
-        {
-            return -1;
-        }
-        // SAFETY: `item_size` is non-null and aligned (checked above), live native storage.
-        let base = unsafe { state.item_size.read() };
-        let Some(next) = base.checked_add(width as usize) else {
-            return -1;
-        };
-        state.base = base;
-        state.next = next;
-        state.width = width;
-        state.phase = 1;
-        return 1;
-    }
-    if state.column.is_null()
-        || state.column_index.is_null()
-        || state.column_width.is_null()
-        || !state
-            .column_index
-            .addr()
-            .is_multiple_of(mem::align_of::<usize>())
-        || !state
-            .column_width
-            .addr()
-            .is_multiple_of(mem::align_of::<u32>())
-        // SAFETY: `column_width` is non-null and aligned (checked above), live native storage.
-        || unsafe { state.column_width.read() } != state.width
-        // SAFETY: `item_size` is non-null and aligned (checked above).
-        || unsafe { state.item_size.read() } != state.base
-    {
-        if rollback == 3 {
-            state.phase = 3;
-        }
-        return rollback;
-    }
-    if state.phase == 1 {
-        // SAFETY: `column_index` is non-null and aligned (checked above), live native storage.
-        unsafe { state.column_index.write(state.base) };
-        state.phase = 2;
-        return 2;
-    }
-    // The native append has completed; any insertion failure requests matching
-    // rollback before its RAII owner destroys the still-unpublished column.
-    // SAFETY: `index` is the live columns owner; the name span and column are the caller's.
-    let status = unsafe {
-        crate::table_columns::swr_v1_memory_table_columns_insert(
-            state.index,
-            state.name,
-            state.length,
-            state.column,
-        )
+) {
+    // SAFETY: per the C contract.
+    let column = unsafe { &*column };
+    // SAFETY: per the C contract, a locked row.
+    let bytes = unsafe { get_string(row, column) };
+    #[expect(clippy::cast_possible_truncation, reason = "a stored 4-byte length")]
+    // SAFETY: per the C contract.
+    unsafe {
+        length.write(bytes.len() as u32);
     };
-    state.phase = 3;
-    if status < 0 {
-        return 3;
-    }
-    // SAFETY: `item_size` is non-null and aligned (checked above), live native storage.
-    unsafe { state.item_size.write(state.next) };
-    0
-}
-
-/// Typed addresses of actual metadata fields; no C++ class is borrowed.
-#[repr(C)]
-pub struct MetadataFields {
-    size: *mut usize,
-    mask: *mut usize,
-    item_size: *mut usize,
-    memory_size: *mut usize,
-    conflict: *mut f32,
-    created: *mut u8,
-    rows: *mut *mut *mut Row,
-    pool: *mut *mut c_void,
-    iterator: *mut *mut c_void,
-    memory: *mut *mut c_void,
-    counters: CounterFields,
-}
-impl MetadataFields {
-    fn valid(&self) -> bool {
-        fn aligned<T>(p: *mut T) -> bool {
-            !p.is_null() && p.addr().is_multiple_of(mem::align_of::<T>())
-        }
-        aligned(self.size)
-            && aligned(self.mask)
-            && aligned(self.item_size)
-            && aligned(self.memory_size)
-            && aligned(self.conflict)
-            && aligned(self.created)
-            && aligned(self.rows)
-            && aligned(self.pool)
-            && aligned(self.iterator)
-            && aligned(self.memory)
-            && self.counters.valid()
-    }
-}
-/// Fresh unpublished field targets; validate configuration before any write.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_metadata_initialize(
-    fields: *const MetadataFields,
-    requested: u32,
-    proportion: f32,
-) -> i32 {
-    if fields.is_null() {
-        return -1;
-    }
-    // SAFETY: `fields` is non-null (checked above), aligned and initialized per the caller contract.
-    let fields = unsafe { &*fields };
-    let mut rows = 0;
-    let mut conflict = 0.0;
-    if !fields.valid()
-        // SAFETY: `rows` and `conflict` are writable locals.
-        || unsafe { swr_v1_memory_table_config(requested, proportion, &raw mut rows, &raw mut conflict) }
-            != 0
-    {
-        return -1;
-    }
-    // Every field target passed `valid` (above): non-null, aligned, fresh native storage.
-    // SAFETY: as above.
-    unsafe { fields.size.write(rows as usize) };
-    // SAFETY: as above.
-    unsafe { fields.mask.write(rows as usize - 1) };
-    // SAFETY: as above.
-    unsafe { fields.item_size.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.memory_size.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.conflict.write(conflict) };
-    // SAFETY: as above.
-    unsafe { fields.created.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.rows.write(ptr::null_mut()) };
-    // SAFETY: as above.
-    unsafe { fields.pool.write(ptr::null_mut()) };
-    // SAFETY: as above.
-    unsafe { fields.iterator.write(ptr::null_mut()) };
-    // SAFETY: as above.
-    unsafe { fields.memory.write(ptr::null_mut()) };
-    // SAFETY: as above.
-    unsafe { fields.counters.rows.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.counters.inserted.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.counters.deleted.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.counters.updated.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.counters.conflicts.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.counters.max_conflict.write(0) };
-    0
-}
-/// Unpublished factory transaction. Native object/Mutex/vector allocations are
-/// effects; Rust owns configuration, optional-collection selection and readiness.
-#[repr(C)]
-#[derive(Default)]
-pub struct Factory {
-    table: *mut c_void,
-    mutex: *mut c_void,
-    list: *mut c_void,
-    index: *mut crate::table_columns::Columns,
-    rows: u32,
-    conflict: f32,
-    legacy: u32,
-    phase: u32,
-}
-/// Positive results request1 Table allocation,2 Mutex,3 legacy vector.0 commits
-/// the completed native tokens; no C++ constructor or allocator runs in Rust.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_factory_step(
-    fields: *const MetadataFields,
-    cursor: *mut Factory,
-) -> i32 {
-    if cursor.is_null() {
-        return -1;
-    }
-    // SAFETY: `cursor` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *cursor };
-    match state.phase {
-        0 => {
-            if state.legacy > 1 {
-                return -1;
-            }
-            let (mut rows, mut conflict) = (0, 0.0);
-            // SAFETY: `rows` and `conflict` are writable locals.
-            if unsafe {
-                swr_v1_memory_table_config(
-                    state.rows,
-                    state.conflict,
-                    &raw mut rows,
-                    &raw mut conflict,
-                )
-            } != 0
-            {
-                return -1;
-            }
-            state.rows = rows;
-            state.conflict = conflict;
-            state.phase = 1;
-            return 1;
-        }
-        1 => {
-            if state.table.is_null() {
-                return -1;
-            }
-            state.phase = 2;
-            return 2;
-        }
-        2 if state.legacy == 1 => {
-            if state.mutex.is_null() {
-                return -1;
-            }
-            state.phase = 3;
-            return 3;
-        }
-        2 if state.legacy == 0 => {}
-        3 if state.legacy == 1 && !state.list.is_null() => {}
-        _ => return -1,
-    }
-    if state.mutex.is_null()
-        || !state.index.is_null()
-        // SAFETY: forwards the caller's fresh, unpublished field targets.
-        || unsafe { swr_v1_memory_table_metadata_initialize(fields, state.rows, state.conflict) }
-            != 0
-    {
-        return -1;
-    }
-    if state.legacy == 1
-        // SAFETY: `state.index` is a writable field of the caller's cursor.
-        && unsafe { crate::table_columns::swr_v1_memory_table_columns_create(&raw mut state.index) }
-            != 0
-    {
-        return -1;
-    }
-    state.phase = 4;
-    0
-}
-
-#[repr(C)]
-#[derive(Default)]
-pub struct Creation {
-    logical: Layout,
-    physical: Layout,
-    memory: *mut c_void,
-    pool: *mut c_void,
-    iterator: *mut c_void,
-    phase: u32,
-}
-/// phase0 plans; phase1 publishes ready native tokens to actual field targets.
-/// Native owns rollback until success; no Rust borrow survives native effects.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_creation_step(
-    fields: *const MetadataFields,
-    cursor: *mut Creation,
-) -> i32 {
-    if fields.is_null() || cursor.is_null() {
-        return -1;
-    }
-    // SAFETY: `fields` is non-null (checked above), aligned and initialized per the caller contract.
-    let fields = unsafe { &*fields };
-    // SAFETY: `cursor` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *cursor };
-    // Every field target is non-null, aligned native storage once `valid` passes.
-    // SAFETY: as above (short-circuit: `valid` ran first).
-    if !fields.valid() || state.phase > 1 || unsafe { fields.created.read() } != 0 {
-        return -1;
-    }
-    // SAFETY: as above.
-    let Ok(rows) = u32::try_from(unsafe { fields.size.read() }) else {
-        return -1;
-    };
-    // SAFETY: as above.
-    let item = unsafe { fields.item_size.read() };
-    // SAFETY: as above.
-    let conflict = unsafe { fields.conflict.read() };
-    let mut logical = Layout::default();
-    let mut physical = Layout::default();
-    // SAFETY: both outputs are writable locals.
-    if unsafe { swr_v1_memory_table_layout(rows, item, conflict, &raw mut logical) } != 0
-        // SAFETY: as above.
-        || unsafe { swr_v1_memory_table_storage_layout(rows, item, conflict, &raw mut physical) } != 0
-    {
-        return -1;
-    }
-    if state.phase == 0 {
-        state.logical = logical;
-        state.physical = physical;
-        state.phase = 1;
-        return 1;
-    }
-    if state.logical != logical
-        || state.physical != physical
-        || state.memory.is_null()
-        || state.pool.is_null()
-        || state.iterator.is_null()
-        || !state.memory.addr().is_multiple_of(mem::align_of::<Row>())
-    {
-        return -1;
-    }
-    // Every field target passed `valid` (above): non-null, aligned native storage.
-    // SAFETY: as above.
-    unsafe { fields.memory.write(state.memory) };
-    // SAFETY: as above.
-    unsafe { fields.rows.write(state.memory.cast()) };
-    // SAFETY: as above.
-    unsafe { fields.pool.write(state.pool) };
-    // SAFETY: as above.
-    unsafe { fields.iterator.write(state.iterator) };
-    // Preserve frozen logical accounting despite padded physical strides.
-    // SAFETY: as above.
-    unsafe { fields.memory_size.write(logical.pool_size) };
-    // SAFETY: as above.
-    unsafe { fields.created.write(1) };
-    state.phase = 2;
-    0
-}
-
-/// Construction owns ordering/readiness and arena pointer arithmetic. Each
-/// requested native effect completes before resume; native RAII owns rollback.
-#[repr(C)]
-#[derive(Default)]
-pub struct Construction {
-    storage: Creation,
-    phase: u32,
-}
-#[repr(C)]
-#[derive(Default)]
-pub struct ConstructionEffect {
-    memory: *mut c_void,
-    size: usize,
-    row_size: usize,
-    action: u32,
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_construction_step(
-    fields: *const MetadataFields,
-    cursor: *mut Construction,
-    output: *mut ConstructionEffect,
-) -> i32 {
-    if output.is_null() {
-        return -1;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable per the caller contract.
-    unsafe { output.write(ConstructionEffect::default()) };
-    if cursor.is_null() {
-        return -1;
-    }
-    // SAFETY: `cursor` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *cursor };
-    let storage = &mut state.storage;
-    let effect = match state.phase {
-        0 => {
-            // SAFETY: forwards the caller's field targets; `storage` is the cursor's own.
-            if unsafe { swr_v1_memory_table_creation_step(fields, storage) } != 1 {
-                return -1;
-            }
-            ConstructionEffect {
-                size: storage.physical.total,
-                action: 1,
-                ..Default::default()
-            }
-        }
-        1 => {
-            // SAFETY: native code allocated `memory` with the planned physical layout.
-            if unsafe { swr_v1_memory_table_arena(storage.memory, &raw const storage.physical) }
-                != 0
-            {
-                return -1;
-            }
-            ConstructionEffect {
-                // In range: the validated layout puts the pool at `pool_offset < total`.
-                memory: storage
-                    .memory
-                    .cast::<u8>()
-                    .wrapping_add(storage.physical.pool_offset)
-                    .cast(),
-                size: storage.physical.pool_size,
-                row_size: storage.physical.row_size,
-                action: 2,
-            }
-        }
-        2 => {
-            if storage.pool.is_null() {
-                return -1;
-            }
-            ConstructionEffect {
-                size: storage.physical.row_size,
-                action: 3,
-                ..Default::default()
-            }
-        }
-        3 => {
-            // SAFETY: forwards the caller's field targets; `storage` is the cursor's own.
-            if unsafe { swr_v1_memory_table_creation_step(fields, storage) } != 0 {
-                return -1;
-            }
-            state.phase = 4;
-            return 0;
-        }
-        _ => return -1,
-    };
-    state.phase += 1;
-    // SAFETY: `output` is non-null (checked above), aligned and writable per the caller contract.
-    unsafe { output.write(effect) };
-    1
-}
-
-/// Independent teardown cursor. Native resource tokens are never dereferenced in
-/// Rust; only the live pointer-token span and actual memory field are accessed.
-#[repr(C)]
-pub struct Teardown {
-    index: *mut crate::table_columns::Columns,
-    columns: *const *mut c_void,
-    count: usize,
-    position: usize,
-    list: *mut c_void,
-    iterator: *mut c_void,
-    pool: *mut c_void,
-    memory: *mut *mut c_void,
-    mutex: *mut c_void,
-    table: *mut c_void,
-    phase: u32,
-}
-#[repr(C)]
-#[derive(Default)]
-pub struct TeardownEffect {
-    token: *mut c_void,
-    action: u32,
-}
-
-/// One effect per return, in existing opt-in facade order. No pointer-token span
-/// borrow survives native column/list destruction or arena/wrapper release.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_teardown_step(
-    cursor: *mut Teardown,
-    output: *mut TeardownEffect,
-) -> i32 {
-    if output.is_null() {
-        return -1;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable per the caller contract.
-    unsafe { output.write(TeardownEffect::default()) };
-    if cursor.is_null() {
-        return -1;
-    }
-    // SAFETY: `cursor` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *cursor };
-    if state.phase == 8 {
-        return 0;
-    }
-    if state.phase > 8
-        || state.position > state.count
-        || state.count > isize::MAX as usize / std::mem::size_of::<*mut c_void>()
-        || state.columns.is_null() && state.count != 0
-        || state.memory.is_null()
-        || !state
-            .memory
-            .addr()
-            .is_multiple_of(std::mem::align_of::<*mut c_void>())
-    {
-        return -1;
-    }
-    loop {
-        let (token, action) = match state.phase {
-            0 => {
-                // SAFETY: `index` is the cursor's live (or null) legacy columns owner.
-                if unsafe { crate::table_columns::swr_v1_memory_table_columns_discard(state.index) }
-                    != 0
-                {
-                    return -1;
-                }
-                state.index = ptr::null_mut();
-                state.phase = 1;
-                continue;
-            }
-            1 if state.position < state.count => {
-                // Read one token only; a later effect may destroy its column.
-                // SAFETY: `position < count`, and `columns` lends `count` readable tokens.
-                let token = unsafe { state.columns.wrapping_add(state.position).read() };
-                state.position += 1;
-                (token, 1)
-            }
-            1 => {
-                state.phase = 2;
-                continue;
-            }
-            2 => {
-                state.phase = 3;
-                (state.list, 2)
-            }
-            3 => {
-                state.phase = 4;
-                (state.iterator, 3)
-            }
-            4 => {
-                state.phase = 5;
-                (state.pool, 4)
-            }
-            5 => {
-                state.phase = 6;
-                // SAFETY: `memory` is a non-null, aligned native field (checked above).
-                let memory = unsafe { state.memory.read() };
-                if memory.is_null() {
-                    continue;
-                }
-                (memory, 5)
-            }
-            6 => {
-                // Native has completed the optional unmap; actual pointer field
-                // is still live until the final native Table-owner release.
-                // SAFETY: as above; still live until the final owner release.
-                unsafe { state.memory.write(ptr::null_mut()) };
-                state.phase = 7;
-                (state.mutex, 6)
-            }
-            7 => {
-                state.phase = 8;
-                (state.table, 7)
-            }
-            _ => return -1,
-        };
-        // SAFETY: `output` is non-null (checked above), aligned and writable per the caller contract.
-        unsafe { output.write(TeardownEffect { token, action }) };
-        return 1;
-    }
-}
-
-/// Collection-free core custody is explicit; never discard a legacy index or
-/// infer an alternative owner from a tagged pointer. The existing Rust teardown
-/// owns all remaining native-effect selection and memory-field publication.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_core_teardown_step(
-    cursor: *mut Teardown,
-    output: *mut TeardownEffect,
-) -> i32 {
-    if output.is_null() {
-        return -1;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable per the caller contract.
-    unsafe { output.write(TeardownEffect::default()) };
-    if cursor.is_null() {
-        return -1;
-    }
-    // SAFETY: `cursor` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *cursor };
-    if !state.index.is_null()
-        || !state.columns.is_null()
-        || !state.list.is_null()
-        || state.count != 0
-        || state.position != 0
-        || (1..=2).contains(&state.phase)
-    {
-        return -1;
-    }
-    if state.phase == 0 {
-        state.phase = 3;
-    }
-    // SAFETY: forwards the caller's exclusive cursor and writable output.
-    unsafe { swr_v1_memory_table_teardown_step(cursor, output) }
+    // SAFETY: per the C contract.
+    unsafe { value.write(bytes.as_ptr().cast_mut().cast()) };
 }
 
 #[cfg(test)]
 #[path = "../../../tests/modules/memory/table.rs"]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_ptr_alignment,
-    clippy::cast_sign_loss,
-    reason = "tests drive the native integer interfaces with literal and loop values"
-)]
 mod tests;

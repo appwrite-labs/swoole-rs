@@ -1,4 +1,4 @@
-"""Real TableV2 callers require their memory implementation before build setup."""
+"""PHP Table requires its memory implementation before build setup."""
 from contextlib import nullcontext, redirect_stderr
 import io
 import unittest

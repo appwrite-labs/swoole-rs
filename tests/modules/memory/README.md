@@ -2,8 +2,7 @@
 
 Opt-in checks for the Rust-backed memory module (fixed/global/ring pools, heap,
 channel, shared mapping and table). ABI lifetimes and native contracts are in
-[native/memory/contract.md](../../../native/memory/contract.md) and
-[native/memory/columns-v2.md](../../../native/memory/columns-v2.md).
+[native/memory/contract.md](../../../native/memory/contract.md).
 
 The `*.rs` files here are the crate's unit tests, included by
 `crates/memory/src/*.rs` via `#[path]`.
@@ -115,9 +114,9 @@ build's `libswoole_rs_ffi.a`.
 ```
 python3 tests/modules/memory/channel_compat.py --source /absolute/pinned/upstream \
   --archive /absolute/libswoole_rs_ffi.a --output target/reports/memory/channel-compat.json
-python3 tests/modules/memory/table_v2_compat.py --source /absolute/pinned/upstream \
+python3 tests/modules/memory/table_compat.py --source /absolute/pinned/upstream \
   --archive /absolute/libswoole_rs_ffi.a [--fixed-pool] [--upstream-unused-parameter-policy] \
-  --output target/reports/memory/table-v2-compat.json
+  --output target/reports/memory/table-compat.json
 python3 tests/modules/memory/fixed_native_construction.py \
   --archive /absolute/build/rust-prefix/lib/libswoole_rs_ffi.a --output target/reports/memory/fixed-construction.json
 python3 tests/modules/memory/mapping_operation.py --source /absolute/pinned/upstream \
@@ -132,8 +131,7 @@ the original side against the pin.
   flat (C++14/17/20) and designated (C++20) aggregate initialization of
   `Channel`; the selected headers must reject a build without the memory feature and
   accept one configured via `config.h`.
-- `table_v2_compat.py`: compiles the `TableV2` structural assertions plus the
-  original and selected `table.cc` (and `fixed_pool.cc` with `--fixed-pool`) at
+- `table_compat.py`: compiles the original and selected `table.cc` (and `fixed_pool.cc` with `--fixed-pool`) at
   C++14/17/20 with `-Werror`; any warning fails.
 - `fixed_native_construction.py`: compiles the selected `FixedPool` constructor
   bodies with `fixed_native_construction.cc` under ASan/UBSan at C++14/17 and
@@ -179,7 +177,7 @@ All six phases are kept, none deleted:
   memory feature.
 - `memory-fixed-native-construction`, `memory-mapping-operation`: the selected
   C++ bodies under ASan/UBSan at C++14/17, including every mapping backend.
-- `memory-table-v2-compatibility`, `memory-source-compatibility`: the only
+- `memory-table-compatibility`, `memory-source-compatibility`: the only
   C++14/17/20 `-Werror` builds of `table.cc`, and `Channel` aggregate
   initialisation.
 - `memory-table-witnesses`: table fork, grow, clear-batch and odd-width

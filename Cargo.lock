@@ -511,6 +511,10 @@ dependencies = [
 [[package]]
 name = "swoole-rs-memory"
 version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-locks",
+]
 
 [[package]]
 name = "swoole-rs-odbc"
