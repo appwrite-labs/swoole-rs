@@ -19,8 +19,8 @@ import run  # noqa: E402
 PHP = ROOT / 'target/php-zts/bin/php'
 SOURCE = ROOT / 'target/upstream/src'
 CASE = 'tests/swoole_thread/server/reset_concurrency.phpt'
-UNTRACED = int(os.environ.get('UNTRACED', '700'))
-TRACED = int(os.environ.get('TRACED', '10'))
+UNTRACED = int(os.environ.get('UNTRACED', '0'))
+TRACED = int(os.environ.get('TRACED', '15'))
 manifest = json.loads((ROOT / 'target/phpt/manifest.json').read_text())
 case = next(c for c in manifest['tests'] if c['path'] == CASE)
 sandbox = Path(tempfile.mkdtemp(prefix='diag-'))
@@ -116,12 +116,13 @@ for engine in ('upstream', 'hybrid'):
         log = sandbox / f'bt-{engine}-{attempt}.txt'
         test = subprocess.Popen(['sh', '-c', 'sleep 4; exec "$@"', 'sh', *command(engine)],
                                 stdout=subprocess.PIPE, text=True, env=env)
-        bt = subprocess.Popen(['sudo', 'env', 'BPFTRACE_PERF_RB_PAGES=8192', 'bpftrace', '-q', '-e', BT, str(test.pid)],
-                              stdout=open(log, 'w'), stderr=subprocess.STDOUT)
+        bt = subprocess.Popen(['sudo', 'env', 'BPFTRACE_PERF_RB_PAGES=8192', 'bpftrace', '-q', '-B', 'full',
+                               '-o', str(log), '-e', BT, str(test.pid)], stderr=subprocess.DEVNULL)
         ok = verdict(test.communicate()[0])
         time.sleep(0.5)
-        subprocess.run(['sudo', 'kill', '-INT', str(bt.pid)])
+        subprocess.run(['sudo', 'pkill', '-INT', '-x', 'bpftrace'])
         bt.wait()
+        subprocess.run(['sudo', 'chmod', 'a+r', str(log)])
         if attempt < 3:
             keep = ROOT / 'target/phpt/zts'
             keep.mkdir(parents=True, exist_ok=True)
