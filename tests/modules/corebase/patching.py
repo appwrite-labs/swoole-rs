@@ -13,7 +13,7 @@ from tools.build_hybrid import hybrid_tree
 CALLS = ('parse_stoi', 'systemd_listen_fds_action', 'hex_mode', 'dirname', 'mkdir_next', 'lifecycle_next', 'hook_add_action')
 # Upstream functions Rust defines under their own C++ symbols; the hybrid base.cc has no body.
 DEFINED = ('_Z21swoole_common_divisorjj', '_Z22swoole_common_multiplejj', '_Z22swoole_version_comparePKcS0_',
-           '_Z14swoole_dec2hexmi', '_Z16swoole_type_sizec', '_Z11swoole_itoaPcl', '_Z20swoole_random_stringPcm')
+           '_Z14swoole_dec2hexmi', '_Z16swoole_type_sizec', '_Z11swoole_itoaPcl')
 
 
 def check_git_environment():

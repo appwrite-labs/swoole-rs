@@ -70,16 +70,18 @@ int32_t swr_v1_reactor_deferred_push(swr_v1_reactor_deferred **, uintptr_t);
 int32_t swr_v1_reactor_deferred_step(swr_v1_reactor_deferred *, uint32_t *, uintptr_t *);
 int32_t swr_v1_reactor_deferred_clear(swr_v1_reactor_deferred **, uintptr_t *);
 
-typedef struct swr_v1_reactor_callbacks swr_v1_reactor_callbacks;
-typedef struct { int32_t key; uint32_t phase; size_t index; } swr_v1_reactor_callback_cursor;
+/* End (0) and exit (1) callbacks by key. Rust keeps views[kind] current: that kind's
+   entries in ascending key order, readable until the next change. Its other fields
+   are Rust's own. */
+typedef struct { int32_t key; uintptr_t token; } swr_v1_reactor_callback_entry;
+typedef struct { const swr_v1_reactor_callback_entry *entries; size_t len; } swr_v1_reactor_callback_view;
+typedef struct swr_v1_reactor_callbacks { swr_v1_reactor_callback_view views[2]; } swr_v1_reactor_callbacks;
 int32_t swr_v1_reactor_callbacks_lookup(const swr_v1_reactor_callbacks *, uint32_t, int32_t, uintptr_t *);
 int32_t swr_v1_reactor_callbacks_erase(swr_v1_reactor_callbacks *, uint32_t, int32_t, uintptr_t *);
-int32_t swr_v1_reactor_callbacks_next(const swr_v1_reactor_callbacks *, uint32_t, swr_v1_reactor_callback_cursor *, uint32_t, uintptr_t *);
-typedef struct { swr_v1_reactor_callback_cursor cursor; uint32_t kind; } swr_v1_reactor_callback_copy;
+/* The index of the first entry after key: where a walk goes on once a callback changed the entries. */
+size_t swr_v1_reactor_callbacks_after(const swr_v1_reactor_callbacks *, uint32_t, int32_t);
 int32_t swr_v1_reactor_callbacks_ensure(swr_v1_reactor_callbacks **, uint32_t, int32_t, uintptr_t, uintptr_t *);
-int32_t swr_v1_reactor_callbacks_copy_next(const swr_v1_reactor_callbacks *, swr_v1_reactor_callback_copy *, uintptr_t *);
 int32_t swr_v1_reactor_callbacks_clear_next(swr_v1_reactor_callbacks **, uintptr_t *);
-size_t swr_v1_reactor_callbacks_copy_layout(uint32_t);
 /* Each backend's whole wait() loop in one call (#336, #391). Rust runs the loop and its readiness
    order; these are the native effects, each passed `context` (prepare/remove also the socket). */
 enum { SWR_REACTOR_POLL, SWR_REACTOR_EPOLL, SWR_REACTOR_KQUEUE };
@@ -314,6 +316,9 @@ long swr_v1_socket_ssl_verify(const struct ssl_st *ssl, bool allow_self_signed);
 int swr_v1_socket_ssl_pem(struct x509_st *cert, char *buffer, size_t length, bool consume);
 const char *swr_v1_socket_ssl_error_reason(int *reason);
 int swr_v1_socket_ssl_peek_reason(void);
+/* Socket::ssl_shutdown: 1 true, 0 false, 2 false after the caller warns with
+ * ssl_get_error_reason. `repaired` is --fix-halfclose's close_notify repair. */
+int swr_v1_socket_ssl_shutdown(swr_v1_socket_tls *tls, struct ssl_st *ssl, uint8_t *closed, bool quiet, bool repaired);
 int swr_v1_socket_ssl_new(swr_v1_socket_tls *tls, struct ssl_ctx_st *context, int fd, int flags, int index, void *socket, struct ssl_st **ssl, unsigned long *error);
 /* A TLS socket's ssl_recv/ssl_send/SSL_peek; catch_error's classification (swReturnCode). */
 typedef ssize_t (*swr_v1_socket_tls_io)(void *socket, void *buffer, size_t length);

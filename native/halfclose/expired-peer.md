@@ -11,9 +11,9 @@ because it premarks both shutdown bits, so the upstream test sees no warning.
 substitutes `no OpenSSL reason available`. The fatal warning and failure/retry
 state are unchanged; a failed write is not treated as a delivered alert.
 
-`tls_shutdown.py` reproduces terminal EPIPE with completed TLS handshakes over
-nonblocking socketpairs and a closed peer (48 checks including the non-null
-reason checks).
+`crates/tls`'s `closed_peer` test reproduces terminal EPIPE with a completed TLS
+handshake over a nonblocking socketpair and a closed peer, with the non-null
+reason checks.
 
 ## Compatibility limit
 
