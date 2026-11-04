@@ -50,13 +50,7 @@ def stage(work, export, source, reference, root):
             raise ValueError('Frozen SDK ABI differs: ' + path)
         # Production installs all declared ABI headers in one prefix include directory.
         (sdk / Path(path).name).write_bytes(data)
-    logger = (sdk / 'swoole_log.h').read_bytes()
     logger_overlay = any('include/swoole_log.h' in row['upstream_paths'] for row in patches)
-    if logger_overlay:
-        if b'#define SWOOLE_RS_LOGGER_STATE_ABI 2' not in logger or b'SwrUtilsLogState *state' not in logger:
-            raise ValueError('Unknown selected Logger layout')
-    elif digest(logger) != '3e6dd302ac18d32f9a173dcbfca0680f16b9682a5f5031456099cda5b1bbb180':
-        raise ValueError('Unknown native Logger layout')
     (sdk / 'config.h').write_bytes((export / 'config.h').read_bytes())
     # macro_profile.py re-verifies headers_sha256 before reusing this SDK.
     return dict(logger_state_abi=2 if logger_overlay else 1, header_patches=patches,

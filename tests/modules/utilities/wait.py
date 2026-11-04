@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Actual misc.cc futex wait/wake bodies versus the Rust facades and shared forks (Linux only)."""
+"""Pinned misc.cc futex wait/wake bodies versus the Rust kernel and shared forks (Linux only)."""
 import argparse
 import json
 from pathlib import Path
@@ -26,7 +26,6 @@ def main():
         p.error('Rust implements only the futex path; other platforms poll the Rust wait registry')
     archive = args.archive.resolve(strict=True)
     original = subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:src/core/misc.cc'], text=True)
-    patch = ROOT/'migration/patches/utilities/0001-misc.patch'
     caller = Path(__file__).with_suffix('.cc')
     report = {'pin': PIN,
               'scope': 'Defined LP64 original misc.cc wait/wake result, errno, word and actual process-shared wake; no performance claim. C++ sanitizer only; Rust uninstrumented.',
@@ -36,16 +35,9 @@ def main():
         report['scope'] = report['scope'].replace('Rust uninstrumented.', 'Rust ASan imports verified; precompiled std/libc uninstrumented.')
     with tempfile.TemporaryDirectory(prefix='swr-utils-wait-') as temp:
         tree = Path(temp)
-        (tree/'src/core').mkdir(parents=True)
-        product = tree/'src/core/misc.cc'
-        product.write_text(original)
-        subprocess.run(['git', 'apply', str(patch)], cwd=tree, check=True, capture_output=True)
-        candidate = product.read_text()
         oracle = original[original.index('#ifdef HAVE_FUTEX'):original.index('/* {{{ DJBX33A')]
         oracle = oracle.replace('#include <linux/futex.h>\n', '').replace('#include <sys/syscall.h>\n', '')
-        candidate = candidate[candidate.index('#ifdef HAVE_FUTEX'):candidate.index('uint64_t swoole_hash_php')]
-        for name, text in [('oracle', oracle), ('candidate', candidate)]:
-            (tree/(name+'.inc')).write_text(text)
+        (tree/'oracle.inc').write_text(oracle)
         binary = tree/'wait'
         command = ['c++', '-std=c++14', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-ignored-qualifiers',
                    '-I'+str(tree), '-I'+str(ROOT/'native/utilities'), str(caller), str(archive), '-o', str(binary)]

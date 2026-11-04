@@ -30,7 +30,7 @@ python3 tests/modules/utilities/put.py --source /pinned/reference \
 | Script (dev.py phase) | Checks |
 | --- | --- |
 | `gate.py` (`utilities-native`) | Pinned vs Rust: defined hashes, pretty ranges, levels/labels/rotation, exact line/microsecond formatting, truncation, NUL and errno, thread/shared-mapping spin witnesses; signed and unsigned char |
-| `bytes_gate.py` (`utilities-bytes`) | All 16 pinned vs overlaid inline helpers: binary/NUL input, bounds/sentinels/errno, locale classification and casefold, both char modes |
+| `bytes_gate.py` (`utilities-bytes`) | All 16 pinned inline helpers vs the hybrid build's headers: binary/NUL input, bounds/sentinels/errno, locale classification and casefold, both char modes |
 | `wait.py` (`utilities-wait`) | Wait/wake result, errno and word; real shared fork wake, Linux futex wait channel and fallback, macOS polling |
 | `put.py --threads` (`utilities-put-threads`) | Complete `Logger::put` bodies with four threads, real mutex/stdio: 16,384 ordered records and 1,024 stream/flag publications per engine |
 
@@ -102,9 +102,6 @@ Other consumers:
   (`utilities-php-logger`): PHP Logger thresholds, rotation/reopen, date
   rejection/recovery, binary NUL, inherited/private file custody, and four forked
   writers with 128 records per file.
-- `lowercase_sdk.py --source S --sdk-export EXPORT --output F`
-  (`utilities-lowercase-sdk`): compiles the unchanged HTTP Response TU native and
-  selected, both char modes, and checks the lowercase import.
 - `lowercase_runtime.py` (`utilities-lowercase-runtime`, same pair arguments plus
   `--source`): the unchanged trailer PHPT from `lowercase-originals.json` and the
   raw HTTP/1 wire fixture `lowercase_wire.py`. Linux needs `--php-extension sockets`.

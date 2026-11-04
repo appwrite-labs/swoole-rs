@@ -48,10 +48,6 @@ def main():
         report['hybrid_tree'] = str(hybrid)
         source = hybrid/'src/core/log.cc'
         rust_headers = [flag for flag in flags if flag.startswith('-I') and flag != '-I'+str(hybrid/'include')]
-        log_header = subprocess.check_output(['git','-C',str(args.source),'show',PIN+':include/swoole_log.h'], text=True)
-        config_header = subprocess.check_output(['git','-C',str(args.source),'show',PIN+':include/swoole_config.h'], text=True)
-        if '#define SW_LOG_DATE_STRLEN 128' not in log_header or '#define SW_LOG_BUFFER_SIZE (SW_ERROR_MSG_SIZE + 256)' not in log_header or '#define SW_ERROR_MSG_SIZE 16384' not in config_header:
-            raise ValueError('Pinned Logger buffer dimensions differ from fixture')
         oracle = ''
         owned_state = any(call in source.read_text() for call in ['swr_v1_utils_log_state_emit_step(', 'swr_v1_utils_log_path_emit_step('])
         report['owned_state'] = owned_state

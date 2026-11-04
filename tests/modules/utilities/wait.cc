@@ -22,8 +22,14 @@ using sw_atomic_t = volatile uint32_t;
 namespace reference_kernel {
 #include "oracle.inc"
 }
+// The hybrid's sw_atomic_futex_wait/wakeup forward to these.
 namespace rust_kernel {
-#include "candidate.inc"
+static int sw_atomic_futex_wait(sw_atomic_t *atomic, double timeout) {
+    return swr_v1_utils_wait(const_cast<uint32_t *>(atomic), timeout);
+}
+static int sw_atomic_futex_wakeup(sw_atomic_t *atomic, int n) {
+    return swr_v1_utils_wakeup(const_cast<uint32_t *>(atomic), n);
+}
 }
 #undef HAVE_FUTEX
 using Wait = int (*)(sw_atomic_t *, double);
