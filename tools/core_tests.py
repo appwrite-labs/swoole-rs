@@ -4,9 +4,7 @@ hybrid build's patched tree (overlay_hybrid_tree), in private Linux build trees.
 
 Every TEST() in each --file is a case. A case passes when it passes on both engines. --exclude
 NAME=REASON names a case that cannot run here (network, IPv6, an external service); it is reported
-`excluded` with its reason and never counts as passed. --together NAME runs a case on both engines at
-once: its DNS lookup must miss the resolver's cache, and the engine run second would hit the answer
-the first one's lookup left there."""
+`excluded` with its reason and never counts as passed."""
 import argparse
 import io
 import json
@@ -18,7 +16,6 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -84,7 +81,6 @@ def main():
     parser.add_argument('--build-root', type=Path, required=True, help='Private writable build directory')
     parser.add_argument('--file', action='append', required=True, help='core-tests/src/... file whose TEST()s run')
     parser.add_argument('--exclude', action='append', default=[], metavar='SUITE.NAME=REASON')
-    parser.add_argument('--together', action='append', default=[], metavar='SUITE.NAME')
     parser.add_argument('--fixture', action='append', default=[], metavar='FILE=SUITE.NAME',
                         help='An upstream test that must pass first because the cases read what it writes')
     parser.add_argument('--jobs', type=int, default=2)
@@ -102,9 +98,8 @@ def main():
             staged = Path(temporary)
             stage(args.source, staged)
             inventory = cases(staged, args.file)
-            if not inventory or len(set(inventory)) != len(inventory) or (set(excluded) | set(args.together)) - set(inventory):
+            if not inventory or len(set(inventory)) != len(inventory) or set(excluded) - set(inventory):
                 raise ValueError('Empty or duplicate inventory, or an exclusion names no case')
-            runs = {}
             for engine in ['upstream', 'hybrid']:
                 hybrid_cmake = overlay_hybrid_tree(args.archive, staged) if engine == 'hybrid' else ''
                 tree = args.build_root.resolve() / engine
@@ -142,16 +137,10 @@ def main():
                 for name in fixtures.values():
                     if run_case(binary, tree, name, logs, args.timeout) != 'passed':
                         raise RuntimeError(f'{engine} fixture {name} failed: {logs / (name + ".log")}')
-                runs[engine] = (binary, tree, logs)
-            for name in inventory:
-                def run(engine):
-                    binary, tree, logs = runs[engine]
-                    return 'excluded' if name in excluded else run_case(binary, tree, name, logs, args.timeout)
-                with ThreadPoolExecutor(2 if name in args.together else 1) as pool:
-                    statuses = list(pool.map(run, runs))
-                for engine, status in zip(runs, statuses):
+                for name in inventory:
+                    status = 'excluded' if name in excluded else run_case(binary, tree, name, logs, args.timeout)
                     report['results'].append({'engine': engine, 'name': name, 'status': status})
-                write_report(args.output, report)
+                    write_report(args.output, report)
         report['passed'] = all(row['status'] in ('passed', 'excluded') for row in report['results'])
     except Exception as error:
         report['error'] = str(error)
