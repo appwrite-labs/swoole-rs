@@ -19,8 +19,8 @@ import run  # noqa: E402
 PHP = ROOT / 'target/php-zts/bin/php'
 SOURCE = ROOT / 'target/upstream/src'
 CASE = 'tests/swoole_thread/server/reset_concurrency.phpt'
-UNTRACED = int(os.environ.get('UNTRACED', '40'))
-TRACED = int(os.environ.get('TRACED', '30'))
+UNTRACED = int(os.environ.get('UNTRACED', '250'))
+TRACED = int(os.environ.get('TRACED', '20'))
 manifest = json.loads((ROOT / 'target/phpt/manifest.json').read_text())
 case = next(c for c in manifest['tests'] if c['path'] == CASE)
 sandbox = Path(tempfile.mkdtemp(prefix='diag-'))
@@ -42,8 +42,6 @@ tracepoint:raw_syscalls:sys_enter /comm == "php"/ { printf("E %llu %d %d %ld\n",
 tracepoint:raw_syscalls:sys_exit /comm == "php"/ { printf("X %llu %d %d %ld %ld\n", nsecs, pid, tid, args->id, args->ret); }
 tracepoint:syscalls:sys_enter_write /comm == "php" && args->fd <= 2/ { printf("W %llu %d %d %r\n", nsecs, pid, tid, buf(args->buf, 12)); }
 tracepoint:sched:sched_switch /comm == "php"/ { printf("O %llu %d %d %ld %d\n", nsecs, pid, tid, args->prev_state, args->next_pid); }
-tracepoint:sched:sched_switch /str(args->next_comm) == "php"/ { printf("I %llu %d %d\n", nsecs, args->prev_pid, args->next_pid); }
-tracepoint:sched:sched_wakeup /str(args->comm) == "php"/ { printf("K %llu %d %d %d\n", nsecs, tid, args->pid, args->target_cpu); }
 '''
 
 
@@ -98,9 +96,12 @@ def analyse(lines, verbose):
 
 
 summary = []
-for engine in ('upstream', 'hybrid'):
-    passes = sum(runner(engine) for _ in range(UNTRACED))
-    summary.append(f'{engine}: untraced passed {passes}/{UNTRACED}')
+passes = {'upstream': 0, 'hybrid': 0}
+for i in range(UNTRACED):
+    for engine in (('upstream', 'hybrid') if i % 2 else ('hybrid', 'upstream')):
+        passes[engine] += runner(engine)
+for engine, n in passes.items():
+    summary.append(f'{engine}: untraced passed {n}/{UNTRACED} (interleaved)')
     print(summary[-1], flush=True)
 
 subprocess.run(['sudo', 'sysctl', '-q', 'kernel.perf_event_paranoid=-1'])
