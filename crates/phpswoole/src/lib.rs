@@ -13,6 +13,7 @@
     )
 )]
 
+mod asynchronous;
 mod constants;
 mod functions;
 mod interfaces;
@@ -22,6 +23,7 @@ mod options;
 mod table;
 mod vm;
 
+pub use asynchronous::php_swoole_set_aio_option;
 pub use module::{
     Globals, php_swoole_parse_to_size, php_swoole_register_shutdown_function,
     swr_v1_phpswoole_init_globals, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,
@@ -127,6 +129,38 @@ pub struct HostOps {
     set_socket_buffer_size: unsafe extern "C" fn(size: i64),
     /// `http2::put_default_setting(id, value)`.
     set_http2_default: unsafe extern "C" fn(id: i32, value: i64),
+    // `swoole_async_set()` and `php_swoole_set_aio_option`'s `SwooleG` fields.
+    set_aio_core_worker_num: unsafe extern "C" fn(count: u32),
+    set_aio_worker_num: unsafe extern "C" fn(count: u32),
+    set_aio_max_wait_time: unsafe extern "C" fn(seconds: f64),
+    set_aio_max_idle_time: unsafe extern "C" fn(seconds: f64),
+    set_iouring_entries: unsafe extern "C" fn(count: u32),
+    set_iouring_workers: unsafe extern "C" fn(count: u32),
+    set_iouring_flag: unsafe extern "C" fn(flag: i64),
+    set_dns_cache_refresh_time: unsafe extern "C" fn(seconds: f64),
+    dns_cache_refresh_time: unsafe extern "C" fn() -> f64,
+    set_enable_coroutine: unsafe extern "C" fn(on: u8),
+    /// `SW_MUST_BE_MAIN_THREAD`'s test: always true without `SW_THREAD`.
+    main_thread: unsafe extern "C" fn() -> u8,
+    /// `sw_reactor() != nullptr`.
+    reactor_created: unsafe extern "C" fn() -> u8,
+    /// `Coroutine::get_current_safe()`: a fatal error outside a coroutine.
+    current_coroutine_safe: unsafe extern "C" fn(),
+    /// `php_swoole_check_reactor()`.
+    check_reactor: unsafe extern "C" fn(),
+    /// `Socket::default_dns_timeout`.
+    default_dns_timeout: unsafe extern "C" fn() -> f64,
+    /// `Timer::get_absolute_msec()`.
+    absolute_msec: unsafe extern "C" fn() -> i64,
+    /// `swoole::coroutine::dns_lookup(domain, family, timeout)`, each address
+    /// pushed onto `list` in order. The coroutine yields.
+    dns_lookup: unsafe extern "C" fn(
+        domain: *const c_char,
+        family: i32,
+        timeout: f64,
+        push: extern "C" fn(list: *mut c_void, address: *const c_char),
+        list: *mut c_void,
+    ),
 }
 
 static OPS: OnceLock<&'static HostOps> = OnceLock::new();
