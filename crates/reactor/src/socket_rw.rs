@@ -1,8 +1,7 @@
 //! `network::Socket`'s per-request reads and writes as whole operations, syscall
 //! included: `recv`, `send` and `peek` with their EINTR and `dont_restart` rules,
 //! and `catch_error`'s errno classification. A TLS socket passes its OpenSSL call
-//! (`ssl_recv`, `ssl_send`, `SSL_peek`), which this loop drives. Native code keeps
-//! the byte counters, timers and trace.
+//! (`ssl_recv`, `ssl_send`, `SSL_peek`), which this loop drives.
 use std::io::Error;
 use std::os::raw::{c_int, c_void};
 
@@ -19,21 +18,20 @@ fn interrupted() -> bool {
 /// errno is left as the last call set it.
 ///
 /// # Safety
-/// `buffer` denotes `length` writable bytes; `tls`, when given, is valid for `socket`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_recv(
+/// `buffer` denotes `length` writable bytes; `tls`, when given, is valid for its socket.
+#[must_use]
+pub unsafe fn socket_recv(
     fd: c_int,
     buffer: *mut c_void,
     length: usize,
     flags: c_int,
     nonblock: bool,
     dont_restart: bool,
-    tls: Option<TlsIo>,
-    socket: *mut c_void,
+    tls: Option<(TlsIo, *mut c_void)>,
 ) -> isize {
     loop {
         let total = match tls {
-            Some(read) => {
+            Some((read, socket)) => {
                 let mut total: isize = 0;
                 while total.cast_unsigned() < length {
                     // SAFETY: `total < length`, so the rest of the caller's buffer starts in bounds.
@@ -65,21 +63,20 @@ pub unsafe extern "C" fn swr_v1_socket_recv(
 /// `Socket::send`: send(2) or one `tls` write, retried on EINTR unless `dont_restart`.
 ///
 /// # Safety
-/// `buffer` denotes `length` readable bytes; `tls`, when given, is valid for `socket`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_send(
+/// `buffer` denotes `length` readable bytes; `tls`, when given, is valid for its socket.
+#[must_use]
+pub unsafe fn socket_send(
     fd: c_int,
     buffer: *const c_void,
     length: usize,
     flags: c_int,
     dont_restart: bool,
-    tls: Option<TlsIo>,
-    socket: *mut c_void,
+    tls: Option<(TlsIo, *mut c_void)>,
 ) -> isize {
     loop {
         let sent = match tls {
             // SAFETY: the caller's TLS write for this socket; it only reads the buffer.
-            Some(write) => unsafe { write(socket, buffer.cast_mut(), length) },
+            Some((write, socket)) => unsafe { write(socket, buffer.cast_mut(), length) },
             // SAFETY: the caller lends `length` readable bytes.
             None => unsafe { libc::send(fd, buffer, length, flags) },
         };
@@ -92,20 +89,19 @@ pub unsafe extern "C" fn swr_v1_socket_send(
 /// `Socket::peek`: recv(2) with `MSG_PEEK`, or `tls` (`SSL_peek`), retried on EINTR.
 ///
 /// # Safety
-/// `buffer` denotes `length` writable bytes; `tls`, when given, is valid for `socket`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_peek(
+/// `buffer` denotes `length` writable bytes; `tls`, when given, is valid for its socket.
+#[must_use]
+pub unsafe fn socket_peek(
     fd: c_int,
     buffer: *mut c_void,
     length: usize,
     flags: c_int,
-    tls: Option<TlsIo>,
-    socket: *mut c_void,
+    tls: Option<(TlsIo, *mut c_void)>,
 ) -> isize {
     loop {
         let peeked = match tls {
             // SAFETY: the caller's SSL_peek for this socket, into its buffer.
-            Some(peek) => unsafe { peek(socket, buffer, length) },
+            Some((peek, socket)) => unsafe { peek(socket, buffer, length) },
             // SAFETY: the caller lends `length` writable bytes.
             None => unsafe { libc::recv(fd, buffer, length, flags | libc::MSG_PEEK) },
         };
@@ -340,29 +336,16 @@ mod tests {
     #[test]
     fn plain_send_recv_and_peek() {
         let [a, b] = pair();
-        let null = std::ptr::null_mut();
         // SAFETY: local buffers, no TLS.
         unsafe {
             assert_eq!(
-                swr_v1_socket_send(b, b"hello".as_ptr().cast(), 5, 0, false, None, null),
+                socket_send(b, b"hello".as_ptr().cast(), 5, 0, false, None),
                 5
             );
             let mut buffer = [0_u8; 8];
+            assert_eq!(socket_peek(a, buffer.as_mut_ptr().cast(), 8, 0, None), 5);
             assert_eq!(
-                swr_v1_socket_peek(a, buffer.as_mut_ptr().cast(), 8, 0, None, null),
-                5
-            );
-            assert_eq!(
-                swr_v1_socket_recv(
-                    a,
-                    buffer.as_mut_ptr().cast(),
-                    8,
-                    0,
-                    false,
-                    false,
-                    None,
-                    null
-                ),
+                socket_recv(a, buffer.as_mut_ptr().cast(), 8, 0, false, false, None),
                 5
             );
             assert_eq!(&buffer[..5], b"hello");
@@ -379,41 +362,38 @@ mod tests {
         // SAFETY: local buffer and counter; the stub reads within them.
         unsafe {
             assert_eq!(
-                swr_v1_socket_recv(
+                socket_recv(
                     -1,
                     buffer.as_mut_ptr().cast(),
                     8,
                     0,
                     false,
                     false,
-                    Some(tls_in_pieces),
-                    socket
+                    Some((tls_in_pieces, socket))
                 ),
                 2
             );
             assert_eq!(
-                swr_v1_socket_recv(
+                socket_recv(
                     -1,
                     buffer.as_mut_ptr().cast(),
                     8,
                     0,
                     true,
                     false,
-                    Some(tls_in_pieces),
-                    socket
+                    Some((tls_in_pieces, socket))
                 ),
                 5
             );
             assert_eq!(
-                swr_v1_socket_recv(
+                socket_recv(
                     -1,
                     buffer.as_mut_ptr().cast(),
                     8,
                     0,
                     true,
                     false,
-                    Some(tls_in_pieces),
-                    socket
+                    Some((tls_in_pieces, socket))
                 ),
                 0
             );
