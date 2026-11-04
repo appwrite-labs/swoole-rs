@@ -16,7 +16,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#if defined(SWOOLE_RS_COREBASE) && defined(__linux__)
+#if defined(SWOOLE_RS_BRIDGE) && defined(__linux__)
 #include <dlfcn.h>
 #include <link.h>
 // SwooleG's Rust record is the extension's process state, filled by its swoole_init.

@@ -5,9 +5,9 @@ edition = "2024"
 publish = false
 
 [features]
-# Define base.cc's helpers under their C++ symbols. Only the corebase module, whose
-# patch deletes the C++ definitions, turns it on; another module linking this crate
-# would otherwise duplicate them.
+# Define base.cc's helpers under their C++ symbols. Only crates/ffi, whose builds apply
+# the corebase patches that delete the C++ definitions, turns it on; another crate
+# linking this one would otherwise duplicate them.
 upstream-symbols = []
 
 [dependencies]

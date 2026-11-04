@@ -140,7 +140,6 @@ int main(void) {
             (512, 'src/core/misc.cc', 'Utilities overlay requires --enable-swoole-rs-utilities'),
             (1024, 'src/lock/mutex.cc', 'Locks overlay requires --enable-swoole-rs-locks'),
             (2048, 'src/wrapper/event.cc', 'Wrapper overlay requires --enable-swoole-rs-wrappers'),
-            (8192, 'src/core/base.cc', 'Corebase overlay requires --enable-swoole-rs-corebase'),
             (16384, 'src/reactor/poll.cc', 'Reactor overlay requires --enable-swoole-rs-reactor'),
             (32768, 'src/coroutine/base.cc', 'Coroutine overlay requires --enable-swoole-rs-coroutine'),
             (65536, 'src/coroutine/hook.cc', 'Hooks overlay requires --enable-swoole-rs-hooks'),
@@ -154,7 +153,7 @@ int main(void) {
         ]:
             if not ARGS.feature_bits & bit:
                 continue
-            macros = {64: 'SWOOLE_RS_MEMORY', 512: 'SWOOLE_RS_UTILITIES', 1024: 'SWOOLE_RS_LOCKS', 2048: 'SWOOLE_RS_WRAPPERS', 8192: 'SWOOLE_RS_COREBASE', 16384: 'SWOOLE_RS_REACTOR', 32768: 'SWOOLE_RS_COROUTINE', 65536: 'SWOOLE_RS_HOOKS', 131072: 'SWOOLE_RS_OSSUPPORT', 262144: 'SWOOLE_RS_TLS', 524288: 'SWOOLE_RS_PROCESS', 1048576: 'SWOOLE_RS_CLIENTS', 2097152: 'SWOOLE_RS_HTTPBINDINGS', 4194304: 'SW_USE_RUST_HTTP2', 8388608: 'SWOOLE_RS_PORTS', 33554432: 'SWOOLE_RS_PHPCOLLECTIONS'}
+            macros = {64: 'SWOOLE_RS_MEMORY', 512: 'SWOOLE_RS_UTILITIES', 1024: 'SWOOLE_RS_LOCKS', 2048: 'SWOOLE_RS_WRAPPERS', 16384: 'SWOOLE_RS_REACTOR', 32768: 'SWOOLE_RS_COROUTINE', 65536: 'SWOOLE_RS_HOOKS', 131072: 'SWOOLE_RS_OSSUPPORT', 262144: 'SWOOLE_RS_TLS', 524288: 'SWOOLE_RS_PROCESS', 1048576: 'SWOOLE_RS_CLIENTS', 2097152: 'SWOOLE_RS_HTTPBINDINGS', 4194304: 'SW_USE_RUST_HTTP2', 8388608: 'SWOOLE_RS_PORTS', 33554432: 'SWOOLE_RS_PHPCOLLECTIONS'}
             defines = ['-D' + macro for flag, macro in macros.items() if flag != bit and ARGS.feature_bits & flag]
             php_includes = (shlex.split(next(line.split('=', 1)[1]
                             for line in (source / 'Makefile').read_text().splitlines()
