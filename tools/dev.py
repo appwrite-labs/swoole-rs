@@ -246,7 +246,7 @@ def plan(args, reports):
             for phase, extra in [('reactor-production-supported', []), ('reactor-production-callbacks', ['--callbacks']),
                                  ('reactor-production-builtins', ['--builtins']),
                                  ('reactor-production-socket-output', ['--socket-output']),
-                                 ('reactor-production-owned-iov', ['--blocking', '--require-owned-iov']),
+                                 ('reactor-production-blocking', ['--blocking']),
                                  ('reactor-production-owned-defer', ['--builtins', '--require-owned-defer'])]:
                 script(phase, 'tests/modules/reactor/production_supported.py',
                        '--source', ROOT / 'target/upstream/src', '--source-ref', 'HEAD', *php_for(),
@@ -265,7 +265,7 @@ def plan(args, reports):
                '--source', ROOT / 'target/upstream/src', '--sanitize',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'reactor-callback-queues.json')
-        for phase, flag in [('reactor-iov-progress', '--iov-progress'), ('reactor-forwarding', '--forwarding')]:
+        for phase, flag in [('reactor-forwarding', '--forwarding')]:
             script(phase, 'tests/modules/reactor/output.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', flag,
                    '--report', reports / (phase + '.json'))

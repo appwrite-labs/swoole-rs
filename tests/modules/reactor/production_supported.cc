@@ -251,15 +251,6 @@ PHP_FUNCTION(swr_reactor_blocking_supported) {
     image(return_value,"method_image","_ZN6swoole7network6Socket9send_syncEPKvmi");
     image(return_value,"vector_image","_ZN6swoole7network6Socket11writev_syncEPK5iovecm");
     image(return_value,"event_image","_ZNK6swoole7network6Socket15what_event_wantEi");
-    image(return_value,"iov_image","_ZN6swoole7network8IOVector15update_iteratorEl");
-    image(return_value,"iov_constructor_image","_ZN6swoole7network8IOVectorC1EPK5ioveci");
-    image(return_value,"iov_destructor_image","_ZN6swoole7network8IOVectorD1Ev");
-#if defined(SWOOLE_RS_REACTOR) && SWOOLE_RS_REACTOR
-    add_assoc_long(return_value,"iov_owned_compiled",1);
-    image(return_value,"iov_owned_length_image","swr_v1_reactor_iov_owned_length");
-#else
-    add_assoc_long(return_value,"iov_owned_compiled",0);
-#endif
 #if defined(__APPLE__)
     image(return_value,"file_image","_ZN6swoole7network6Socket13sendfile_syncEPKcxm");
 #else

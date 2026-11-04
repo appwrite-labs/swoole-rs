@@ -59,12 +59,10 @@ python3 tests/modules/reactor/builtins.py --source PINNED --archive PRIVATE_TARG
 Other gates under `tests/modules/reactor/` take the same
 `--source/--archive/--report [--sanitize]` arguments: `backend_storage.py`,
 `poll_snapshot.py`, `wait.py`, `initialize.py`, `callbacks.py`,
-`callback_queues.py`, `flush.py`, `iov_owned.py` and `output.py` (optionally
-`--iov-progress` or `--forwarding`). `rust_asan.py` runs filtered Rust ASan
-units with `--snapshot-only`, `--flush-only`, `--backend-only` or `--wait-only`.
+`callback_queues.py`, `flush.py` and `output.py` (optionally `--forwarding`).
 
 These gates extract the complete original and selected method bodies and run
 them against Native effect facades with positive inputs only. Error,
-interruption, allocation-failure, reentry and lifetime paths are not executed,
-and the unfiltered Rust-ASan entrypoint refuses to run. Mixed Rust/Native ASan
-linking fails on macOS (runtime version symbol mismatch); it works on Linux.
+interruption, allocation-failure, reentry and lifetime paths are not executed.
+Mixed Rust/Native ASan linking fails on macOS (runtime version symbol mismatch);
+it works on Linux.

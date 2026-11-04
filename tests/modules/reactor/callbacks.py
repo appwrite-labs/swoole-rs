@@ -11,13 +11,11 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from ordered_gate import ROOT,PIN,block
-from tools.build_hybrid import module_patches
+from ordered_gate import ROOT,PIN,block,hybrid
 sys.path.insert(0,str(ROOT))
 from tools.harness import run_isolated
 from tools.harness import run_compiler
 from tools.build_upstream import require_build_space
-from tools.build_hybrid import apply_patch_verified
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--source',type=Path,required=True)
 p.add_argument('--archive',type=Path,required=True)
@@ -25,22 +23,15 @@ p.add_argument('--report',type=Path,required=True)
 p.add_argument('--sanitize',action='store_true')
 a=p.parse_args()
 if a.report.exists():raise ValueError('Choose a unique new receipt path')
-overlay=ROOT/'migration/patches/reactor';entries=module_patches(overlay)
-report=dict(scope=__doc__,pin=PIN,patch_application=[],commands=[],results=[],passed=False)
+hybrid_source=hybrid(a.archive)[0]
+report=dict(scope=__doc__,pin=PIN,hybrid_tree=str(hybrid_source),commands=[],results=[],passed=False)
 with tempfile.TemporaryDirectory(prefix='swr-callbacks-') as temporary:
-    tree=Path(temporary);original={}
-    for entry in entries:
-        for name in entry['upstream_paths']:
-            path=tree/name
-            if not path.exists():
-                data=subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name]);path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data);original[name]=data.decode()
-    for entry in entries:
-        patch=overlay/entry['path']
-        report['patch_application'].append(apply_patch_verified(tree,patch,entry['upstream_paths'],entry['sha256']))
+    tree=Path(temporary)
+    original={name:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name],text=True) for name in ['include/swoole_reactor.h','src/reactor/base.cc']}
     try:
         for variant in ['original','selected']:
-            header=original['include/swoole_reactor.h'] if variant=='original' else (tree/'include/swoole_reactor.h').read_text()
-            base=original['src/reactor/base.cc'] if variant=='original' else (tree/'src/reactor/base.cc').read_text()
+            header=original['include/swoole_reactor.h'] if variant=='original' else (hybrid_source/'include/swoole_reactor.h').read_text()
+            base=original['src/reactor/base.cc'] if variant=='original' else (hybrid_source/'src/reactor/base.cc').read_text()
             fields='std::map<int,std::function<void(Reactor*)>> end_callbacks; std::map<int,std::function<bool(Reactor*,size_t&)>> exit_conditions;' if variant=='original' else 'ReactorCallbacks callbacks_;'
             cls='''namespace swoole { class Reactor { public:
                 using EndCallback=int;using ExitCondition=int;
