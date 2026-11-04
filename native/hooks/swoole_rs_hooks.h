@@ -96,6 +96,9 @@ void *swr_v1_hook_socket_get(int fd);
 bool swr_v1_hook_socket_exists(int fd);
 void *swr_v1_hook_socket_insert(int fd, void *socket, bool replace);
 void *swr_v1_hook_socket_remove(int fd);
+/* swoole_coroutine_close for a coroutine socket: 0 closed, -1 failed, 1 no socket.
+ * Removed sockets are deleted after this thread's outermost close returns. */
+int swr_v1_hook_socket_close(int fd, bool (*close)(void *socket), void (*delete_socket)(void *socket));
 int32_t swr_v1_hook_transition(uint32_t requested, uint32_t installed, uint32_t bit);
 uint32_t swr_v1_hook_filter(uint32_t flags, uint32_t unavailable);
 bool swr_v1_hook_file_result(bool open, int64_t result);
