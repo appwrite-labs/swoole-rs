@@ -21,7 +21,7 @@ namespace http2 { inline ssize_t get_frame_length(const Protocol *p,Socket *s,Pa
 inline void protocol_status_error(Socket *s,const Connection *) { ++error_calls;seen_socket=s; } \
 struct Server { std::shared_ptr<std::vector<std::string>> http_index_files; bool http_autoindex=false; \
 static int dispatch_task(const Protocol *p,Socket *s,const RecvData *d){++dispatch_calls;seen_proto=p;seen_socket=s;seen_data=d;return 55;} }; \
-const char *get_status_message(int);ssize_t get_package_length(const Protocol *,Socket *,PacketLength *);uint8_t get_package_length_size(Socket *);int dispatch_frame(const Protocol *,Socket *,const RecvData *); \
+ssize_t get_package_length(const Protocol *,Socket *,PacketLength *);uint8_t get_package_length_size(Socket *);int dispatch_frame(const Protocol *,Socket *,const RecvData *); \
 }
 DISPATCH_ORACLE(upstream_dispatch)
 DISPATCH_ORACLE(candidate_dispatch)

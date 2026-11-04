@@ -502,7 +502,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['reactor-flush'])
         self.assertIn('--sanitize', commands['reactor-flush'])
         self.assertIn('corebase-native',commands)
-        self.assertIn('http-native', commands)
+        self.assertIn('http-context', commands)
         self.assertIn('--socket-output', commands['reactor-production-socket-output'])
         self.assertIn('coroutine-compile',commands)
         self.assertIn('tests/modules/coroutine/rust_asan.py', commands['coroutine-rust-asan'])

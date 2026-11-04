@@ -33,19 +33,24 @@ marked `[R]` also take `--rust-sanitize`. `tools/dev.py` registers each as an
 
 | Script | Checks |
 | --- | --- |
-| `gate.py` | URL encode/decode, boundary, method, status helpers; five unchanged original core-test bodies |
 | `proxy_gate.py` [R] | Proxy auth packing/handshake with actual base64 |
 | `static_gate.py` [R] | Static response method, send order, HEAD/keep-alive changes |
 | `conditional_gate.py` | Date callers with libc `strptime`/`gmtime`/`mktime` |
 | `rewrite_gate.py` [R] | `add_rewrite_rule`/`apply_rewrite_rules`, rewriting the Rust static context |
-| `dispatch_gate.py` [R] | Route/index/proxy-init/status bodies, TLS status buffer |
+| `dispatch_gate.py` [R] | Route and proxy-init bodies |
 | `locale_gate.py` | Case-insensitive helpers against libc `strncasecmp` across available locales |
-| `cookie_flow_gate.py` [R] (`--status-only`, `--codes-only`) | Cookie callback flow; status fallback buffer; public `int[128]` status-code array export |
+| `cookie_flow_gate.py` [R] | Cookie callback flow |
 | `context_gate.py` [R] | The whole `StaticHandler` (paths, locations, rewrites, index files and pages, ranges, content types, dates) against the pinned class |
 
 Locale semantic runs must be unsanitized: under ASan the macOS interceptor
 compares `C0`/`E0` with ASCII rules where libc in `en_US.ISO8859-1` treats them
 as equal. Unavailable locales are reported as unsupported.
+
+`gate.py` holds the helpers these share (`body`, `Sides`, `run`). The status, method,
+URL and boundary helpers are Rust behind thin facades, so the crate's
+`pin_helpers` tests compare them with v6.2.4's bodies instead. Upstream's own
+`http_server`, `http_parser` and `multipart_parser` GoogleTests run unchanged on
+the reference and the hybrid tree in the merge tier's `http-native-originals`.
 
 ## PHP checks
 
