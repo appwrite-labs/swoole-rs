@@ -40,7 +40,6 @@ the Native control.
 
 | Modifier | Profile | Checks |
 | --- | --- | --- |
-| `--require-owned-iov` | `--blocking` | IOVector constructor/destructor and Rust-owned length origins |
 | `--require-owned-defer` | `--builtins` | defer import, field types and push/step/clear origins |
 | `--require-output-workflow` | `--socket-output` | exact workflow source and caller-overlay hashes, selected workflow symbol origin |
 | `--require-typed-buffer` | any | typed Buffer request/SDK/source; Buffer execution only in `--socket-output` |

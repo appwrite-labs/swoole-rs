@@ -10,8 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from ordered_gate import ROOT, PIN, block, apply_patch_verified
-from tools.build_hybrid import module_patches
+from ordered_gate import ROOT, PIN, block, hybrid
 
 
 def main():
@@ -25,22 +24,10 @@ def main():
     native='ReactorEpoll' if backend=='epoll' else 'ReactorKqueue'
     path='src/reactor/'+backend+'.cc'
     original=subprocess.check_output(['git','-C',str(args.source),'show',PIN+':'+path],text=True)
-    overlay=ROOT/'migration/patches/reactor'
-    entries=module_patches(overlay)
+    hybrid_source = hybrid(args.archive)[0]
     with tempfile.TemporaryDirectory(prefix='swr-backend-storage-') as temporary:
         tree=Path(temporary)
-        for entry in entries:
-            for name in entry['upstream_paths']:
-                output=tree/name
-                if not output.exists():
-                    output.parent.mkdir(parents=True,exist_ok=True)
-                    output.write_bytes(subprocess.check_output(['git','-C',str(args.source),'show',PIN+':'+name]))
-        patches=[]
-        for entry in entries:
-            patch=overlay/entry['path']
-            application = apply_patch_verified(tree, patch, entry['upstream_paths'], entry['sha256'])
-            patches.append(dict(path=entry['path'],application=application))
-        selected=(tree/path).read_text()
+        selected=(hybrid_source/path).read_text()
         fragments=[]
         for label,text in [('Original',original),('Selected',selected)]:
             name='Backend'+label
@@ -55,7 +42,7 @@ def main():
         if args.sanitize: command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
         if sys.platform.startswith('linux'): command+=['-ldl','-lm']
         result=subprocess.run(command,capture_output=True,text=True)
-        report=dict(pin=PIN,backend=backend,scope=__doc__,patches=patches,command=command,compile_returncode=result.returncode,compile_stdout=result.stdout,compile_stderr=result.stderr)
+        report=dict(pin=PIN,backend=backend,scope=__doc__,hybrid_tree=str(hybrid_source),command=command,compile_returncode=result.returncode,compile_stdout=result.stdout,compile_stderr=result.stderr)
         if result.returncode==0:
             result=subprocess.run([str(binary)],capture_output=True,text=True)
             report.update(returncode=result.returncode,stdout=result.stdout,stderr=result.stderr)

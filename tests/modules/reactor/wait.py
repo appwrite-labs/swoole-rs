@@ -11,8 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from ordered_gate import ROOT,PIN,block, apply_patch_verified
-from tools.build_hybrid import module_patches
+from ordered_gate import ROOT,PIN,block,hybrid
 
 
 def main():
@@ -23,28 +22,15 @@ def main():
     parser.add_argument('--sanitize',action='store_true')
     args=parser.parse_args()
     if args.report.exists():raise ValueError('Choose a unique wait receipt path')
-    overlay=ROOT/'migration/patches/reactor';entries=module_patches(overlay)
-    originals={}
+    hybrid_source=hybrid(args.archive)[0]
     with tempfile.TemporaryDirectory(prefix='swr-wait-') as temporary:
         tree=Path(temporary)
-        for entry in entries:
-            for name in entry['upstream_paths']:
-                path=tree/name
-                if not path.exists():
-                    path.parent.mkdir(parents=True,exist_ok=True)
-                    content=subprocess.check_output(['git','-C',str(args.source),'show',PIN+':'+name])
-                    path.write_bytes(content);originals[name]=content.decode()
-        patches=[]
-        for entry in entries:
-            patch=overlay/entry['path']
-            application = apply_patch_verified(tree, patch, entry['upstream_paths'], entry['sha256'])
-            patches.append(dict(path=entry['path'],application=application))
         fragments=[]
         for backend in ['poll', 'epoll' if sys.platform.startswith('linux') else 'kqueue']:
             original_type={'poll':'ReactorPoll','epoll':'ReactorEpoll','kqueue':'ReactorKqueue'}[backend]
             path='src/reactor/'+backend+'.cc'
-            selected=(tree/path).read_text()
-            for label,text in [('Original',originals[path]),('Selected',selected)]:
+            original=subprocess.check_output(['git','-C',str(args.source),'show',PIN+':'+path],text=True)
+            for label,text in [('Original',original),('Selected',(hybrid_source/path).read_text())]:
                 name=backend.capitalize()+label
                 methods=[]
                 body,_=block(text,text.index('int '+original_type+'::wait()'))
@@ -64,7 +50,7 @@ def main():
         if args.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
         if sys.platform.startswith('linux'):command+=['-ldl','-lm']
         result=subprocess.run(command,capture_output=True,text=True)
-        report=dict(pin=PIN,scope=__doc__,patches=patches,command=command,compile_returncode=result.returncode,compile_stdout=result.stdout,compile_stderr=result.stderr)
+        report=dict(pin=PIN,scope=__doc__,hybrid_tree=str(hybrid_source),command=command,compile_returncode=result.returncode,compile_stdout=result.stdout,compile_stderr=result.stderr)
         if result.returncode==0:
             result=subprocess.run([str(binary)],capture_output=True,text=True)
             report.update(returncode=result.returncode,stdout=result.stdout,stderr=result.stderr)

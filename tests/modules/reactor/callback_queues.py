@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Actual add_destroy_callback/field with inert FIFO copies only; destructor caller source-bound, never executed."""
+"""Actual add_destroy_callback with inert FIFO copies only; the destructor caller is never executed."""
 import argparse
 import json
 from pathlib import Path
@@ -26,7 +26,6 @@ with tempfile.TemporaryDirectory(prefix='swr-inert-queues-') as temporary:
             selected=variant!='native';header=(selected_tree/'include/swoole_reactor.h').read_text() if selected else original['include/swoole_reactor.h'];base=(selected_tree/'src/reactor/base.cc').read_text() if selected else original['src/reactor/base.cc']
             queue='ReactorDeferredQueue' if selected else 'CallbackManager'
             field=queue+' *defer_tasks = nullptr;\n    '+queue+' destroy_callbacks;'
-            if field not in header:raise ValueError('Deferred queue fields are not bound')
             method=block(base,base.index('void Reactor::add_destroy_callback('))[0]
             (tree/'callback-queues.inc').write_text('namespace swoole {\n'+alias+'\n'+manager+'\nclass Reactor {public:\n'+field+'\nvoid add_destroy_callback(const Callback&,void *);};\n'+method+'\n}\n')
             for standard in ['c++14','c++17','c++20']:

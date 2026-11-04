@@ -62,17 +62,3 @@ pub(crate) fn progress(
         action: -1,
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_iov_progress_layout(field: u32) -> usize {
-    match field {
-        0 => std::mem::size_of::<ReactorIovProgress>(),
-        1 => std::mem::align_of::<ReactorIovProgress>(),
-        2 => std::mem::offset_of!(ReactorIovProgress, offset_bytes),
-        3 => std::mem::offset_of!(ReactorIovProgress, advance),
-        4 => std::mem::offset_of!(ReactorIovProgress, consumed),
-        5 => std::mem::offset_of!(ReactorIovProgress, remain_count),
-        6 => std::mem::offset_of!(ReactorIovProgress, index),
-        7 => std::mem::offset_of!(ReactorIovProgress, action),
-        _ => usize::MAX,
-    }
-}

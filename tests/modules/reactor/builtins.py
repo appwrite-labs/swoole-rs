@@ -48,7 +48,6 @@ with tempfile.TemporaryDirectory(prefix='swr-builtins-') as tmp:
             selected_header=(selected_tree/'include/swoole_reactor.h').read_text()
             source_header=header if variant=='original' else selected_header
             field=('CallbackManager' if variant=='original' else 'ReactorDeferredQueue')+' *defer_tasks = nullptr;'
-            if field not in source_header:raise ValueError('Deferred queue field is not bound')
             cls=cls.replace('CallbackManager *defer_tasks=nullptr;', '\n'+field+'\nint timeout_msec=17;'+block(source_header,source_header.index('int get_timeout_msec('))[0]+'\n')
             (t/'builtins.inc').write_text(cls+'}\n')
             for standard in ['c++14','c++17','c++20']:

@@ -11,13 +11,16 @@ Most gates take the pinned upstream source and a Rust FFI archive:
         --archive PATH/libswoole_rs_ffi.a --sanitize --report OUT.json
 
 `NAME` is one of `output`, `wait`, `callbacks`, `callback_queues`,
-`initialize`, `builtins`, `backend_storage`, `flush`, `poll_snapshot`,
-`stream_gate` and `iov_owned`. Each extracts the original function bodies from
-the pin and the patched ones from the archive's hybrid tree (`hybrid_tree`, #796;
-some older gates still apply `migration/patches/reactor/` to the pin), compiles
-them against native facades and the archive, and checks that both variants
-behave the same. `output.py` also takes
-`--iov-progress` or `--forwarding`.
+`initialize`, `builtins`, `backend_storage`, `flush` and `poll_snapshot`.
+Each extracts the original function bodies from the pin and the patched ones
+from the archive's hybrid tree (`hybrid_tree`, #796), compiles them against
+native facades and the archive, and checks that both variants behave the same.
+`output.py` also takes `--forwarding`. A PR that moves one of these bodies into
+Rust ports the gate's cases into crates/reactor's unit tests and deletes it there,
+as `iov_owned` became `iov_owned.rs`'s `iov_vector_*` tests.
+
+`reactor-native-originals` (`tools/core_tests.py`) runs upstream's own
+`network/socket.cpp` and `network/stream.cpp` GoogleTests on both engines.
 
 Compile and declaration gates:
 
@@ -40,23 +43,14 @@ both engines:
         --require-batch --output OUT.json
 
 Profiles: default (readiness over AF_UNIX socketpairs), `--callbacks`,
-`--builtins`, `--socket-output`, `--blocking`. Extra identity checks: `--require-owned-iov` (with
-`--blocking`) and `--require-owned-defer` (with `--builtins`) check the Rust-owned storage
-imports and origins against the Native control; `--require-typed-buffer`
+`--builtins`, `--socket-output`, `--blocking`. `--require-owned-defer` (with `--builtins`)
+checks the Rust-owned storage imports and origins against the Native control; `--require-typed-buffer`
 refuses a selected build whose source predates the required Rust code.
 
 Known failure: the original broad production profile failed on Native kqueue (a
 missing WRITE filter deletion warned, and its assertions assumed poll ordering
 and ONCE across separate kqueue records). The supported profile covers
 single-filter kqueue records only.
-
-## Sanitizer
-
-`rust_asan.py --source S --target EMPTY_DIR --report R --PROFILE-only` builds
-the reactor crate with `-Zsanitizer=address`, runs its filtered unit tests and
-the matching facade gates against the instrumented archive. A profile flag is
-required. Cargo intermediates go in a keyed cache beside `--target` (or under
-`--dependency-target-root`).
 
 ## Unit tests
 
