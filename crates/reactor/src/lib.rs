@@ -83,6 +83,10 @@ mod socket_types;
 #[cfg(unix)]
 pub use socket_types::*;
 #[cfg(unix)]
+mod socket_methods;
+#[cfg(unix)]
+pub use socket_methods::*;
+#[cfg(unix)]
 mod socket_record;
 #[cfg(unix)]
 pub use socket_record::*;

@@ -1,13 +1,9 @@
 #include "dispatch_oracle.h"
 #include "allocation_oracle.h"
 #include <iostream>
-#include <climits>
-#include <thread>
-#include <atomic>
-#include <cerrno>
 void check(bool yes,const char *message){if(!yes)throw std::runtime_error(message);}
 int main(){
-    unsigned routes=0,proxies=0,proxy_faults=0,statuses=0;
+    unsigned routes=0,proxies=0,proxy_faults=0;
     try {
         for(unsigned ws=0;ws<256;++ws)for(unsigned h2:{0u,1u,255u}) {
             upstream_dispatch::Connection a;candidate_dispatch::Connection b;a.websocket_status=b.websocket_status=ws;a.http2_stream=b.http2_stream=h2;
@@ -43,14 +39,6 @@ int main(){
                 if(!nth){total=count;++proxies;}else++proxy_faults;
             }
         }
-        auto status=[&](int code){errno=EINTR;const char *a=upstream_dispatch::get_status_message(code);int before=errno;errno=EINTR;const char *b=candidate_dispatch::get_status_message(code);int after=errno;check(before==after&&std::strcmp(a,b)==0,"unknown/known status text/errno");++statuses;};
-        for(int code=-512;code<=1024;++code)status(code);status(INT_MIN);status(INT_MAX);
-        auto *old_tls=upstream_dispatch::get_status_message(-999);auto *new_tls=candidate_dispatch::get_status_message(-999);
-        check(old_tls==upstream_dispatch::get_status_message(-1000)&&new_tls==candidate_dispatch::get_status_message(-1000),"TLS fallback reference");
-        std::atomic<unsigned> ready{0};std::exception_ptr errors[2];uintptr_t old_ptr[2]={},new_ptr[2]={};
-        auto thread=[&](unsigned id){try{old_ptr[id]=reinterpret_cast<uintptr_t>(upstream_dispatch::get_status_message(-12345));new_ptr[id]=reinterpret_cast<uintptr_t>(candidate_dispatch::get_status_message(-12345));++ready;while(ready.load()!=2)std::this_thread::yield();for(unsigned n=0;n<1024;++n){int code=-int(2000+id*1024+n);check(std::strcmp(upstream_dispatch::get_status_message(code),candidate_dispatch::get_status_message(code))==0,"thread status isolation");}}catch(...){errors[id]=std::current_exception();}};
-        std::thread t1(thread,0),t2(thread,1);t1.join();t2.join();for(auto &e:errors)if(e)std::rethrow_exception(e);
-        check(old_ptr[0]!=old_ptr[1]&&new_ptr[0]!=new_ptr[1],"distinct TLS fallback storage");
-        std::cout<<"{\"route_cases\":"<<routes<<",\"proxy_cases\":"<<proxies<<",\"proxy_allocation_faults\":"<<proxy_faults<<",\"status_cases\":"<<statuses<<",\"thread_status_cases\":2048,\"errors\":0}\n";
+        std::cout<<"{\"route_cases\":"<<routes<<",\"proxy_cases\":"<<proxies<<",\"proxy_allocation_faults\":"<<proxy_faults<<",\"errors\":0}\n";
     }catch(const std::exception &e){allocation::end();std::cerr<<e.what()<<'\n';return 1;}
 }

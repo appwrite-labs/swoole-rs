@@ -70,16 +70,18 @@ int32_t swr_v1_reactor_deferred_push(swr_v1_reactor_deferred **, uintptr_t);
 int32_t swr_v1_reactor_deferred_step(swr_v1_reactor_deferred *, uint32_t *, uintptr_t *);
 int32_t swr_v1_reactor_deferred_clear(swr_v1_reactor_deferred **, uintptr_t *);
 
-typedef struct swr_v1_reactor_callbacks swr_v1_reactor_callbacks;
-typedef struct { int32_t key; uint32_t phase; size_t index; } swr_v1_reactor_callback_cursor;
+/* End (0) and exit (1) callbacks by key. Rust keeps views[kind] current: that kind's
+   entries in ascending key order, readable until the next change. Its other fields
+   are Rust's own. */
+typedef struct { int32_t key; uintptr_t token; } swr_v1_reactor_callback_entry;
+typedef struct { const swr_v1_reactor_callback_entry *entries; size_t len; } swr_v1_reactor_callback_view;
+typedef struct swr_v1_reactor_callbacks { swr_v1_reactor_callback_view views[2]; } swr_v1_reactor_callbacks;
 int32_t swr_v1_reactor_callbacks_lookup(const swr_v1_reactor_callbacks *, uint32_t, int32_t, uintptr_t *);
 int32_t swr_v1_reactor_callbacks_erase(swr_v1_reactor_callbacks *, uint32_t, int32_t, uintptr_t *);
-int32_t swr_v1_reactor_callbacks_next(const swr_v1_reactor_callbacks *, uint32_t, swr_v1_reactor_callback_cursor *, uint32_t, uintptr_t *);
-typedef struct { swr_v1_reactor_callback_cursor cursor; uint32_t kind; } swr_v1_reactor_callback_copy;
+/* The index of the first entry after key: where a walk goes on once a callback changed the entries. */
+size_t swr_v1_reactor_callbacks_after(const swr_v1_reactor_callbacks *, uint32_t, int32_t);
 int32_t swr_v1_reactor_callbacks_ensure(swr_v1_reactor_callbacks **, uint32_t, int32_t, uintptr_t, uintptr_t *);
-int32_t swr_v1_reactor_callbacks_copy_next(const swr_v1_reactor_callbacks *, swr_v1_reactor_callback_copy *, uintptr_t *);
 int32_t swr_v1_reactor_callbacks_clear_next(swr_v1_reactor_callbacks **, uintptr_t *);
-size_t swr_v1_reactor_callbacks_copy_layout(uint32_t);
 /* Each backend's whole wait() loop in one call (#336, #391). Rust runs the loop and its readiness
    order; these are the native effects, each passed `context` (prepare/remove also the socket). */
 enum { SWR_REACTOR_POLL, SWR_REACTOR_EPOLL, SWR_REACTOR_KQUEUE };
@@ -137,7 +139,7 @@ bool swr_v1_reactor_handlers_set(swr_v1_reactor_handlers *, int fd_type, int eve
 bool swr_v1_reactor_handlers_isset(const swr_v1_reactor_handlers *, int fd_type, int events);
 swr_v1_reactor_handler swr_v1_reactor_handlers_get(const swr_v1_reactor_handlers *, uint32_t kind, int fd_type, bool error_only);
 void swr_v1_reactor_handlers_set_default(swr_v1_reactor_handlers *, uint32_t kind, swr_v1_reactor_handler);
-swr_v1_reactor_handler swr_v1_reactor_handlers_default(const swr_v1_reactor_handlers *, uint32_t kind);
+const swr_v1_reactor_handler *swr_v1_reactor_handlers_default(const swr_v1_reactor_handlers *, uint32_t kind);
 typedef struct {
     void *context;
     uint32_t backend;
@@ -245,7 +247,6 @@ bool swr_v1_socket_tcp_nodelay(int fd, int nodelay);
 swr_v1_socket_option_result swr_v1_socket_cork(int fd, swr_v1_socket_cork_state *state);
 swr_v1_socket_option_result swr_v1_socket_uncork(int fd, bool enable_tcp_nodelay, swr_v1_socket_cork_state *state);
 bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
-bool swr_v1_socket_kernel_timeout(int fd, bool send, double timeout);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
  * write_timeout), embedded in this order (Socket static_asserts it). set_timeout
  * writes timeout into each SW_TIMEOUT_* bit of kind unless timeout is 0;
@@ -253,7 +254,6 @@ bool swr_v1_socket_kernel_timeout(int fd, bool send, double timeout);
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
 void swr_v1_socket_set_timeout(swr_v1_socket_timeouts *timeouts, double timeout, int kind);
 const double *swr_v1_socket_timeout(const swr_v1_socket_timeouts *timeouts, int kind);
-bool swr_v1_socket_listen(int fd, int backlog, int default_backlog);
 /* network::Socket's descriptor I/O. status 0 ready; 1 timed out (wait) or
  * EINPROGRESS (connect); 2 failed with errno `error`. */
 typedef struct { int status, error; } swr_v1_socket_io_result;
@@ -263,11 +263,6 @@ void swr_v1_socket_clean(int fd);
 ssize_t swr_v1_socket_recvfrom(int fd, void *buffer, size_t length, int flags, struct sockaddr *address, socklen_t *address_length, uint32_t retries);
 int swr_v1_socket_accept(int fd, struct sockaddr *address, socklen_t *address_length, bool nonblock, bool *listener_cloexec);
 swr_v1_socket_io_result swr_v1_socket_connect(int fd, const struct sockaddr *address, socklen_t length);
-/* getsockname/getpeername/bind: caller sets *address_length to the storage
- * capacity; native code keeps the address type and the bound flag. */
-bool swr_v1_socket_get_name(int fd, struct sockaddr *address, socklen_t *address_length);
-bool swr_v1_socket_get_peer_name(int fd, struct sockaddr *address, socklen_t *address_length);
-bool swr_v1_socket_bind(int fd, const struct sockaddr *address, socklen_t length);
 swr_v1_socket_io_result swr_v1_socket_pending_error(int fd);
 /* sendfile's range check (fstat included) and chunk size: 0 with *end set, 1
  * fstat failed (errno set), 2 empty file, 3 range outside the file. */
@@ -321,10 +316,11 @@ long swr_v1_socket_ssl_verify(const struct ssl_st *ssl, bool allow_self_signed);
 int swr_v1_socket_ssl_pem(struct x509_st *cert, char *buffer, size_t length, bool consume);
 const char *swr_v1_socket_ssl_error_reason(int *reason);
 int swr_v1_socket_ssl_peek_reason(void);
+/* Socket::ssl_shutdown: 1 true, 0 false, 2 false after the caller warns with
+ * ssl_get_error_reason. `repaired` is --fix-halfclose's close_notify repair. */
+int swr_v1_socket_ssl_shutdown(swr_v1_socket_tls *tls, struct ssl_st *ssl, uint8_t *closed, bool quiet, bool repaired);
 int swr_v1_socket_ssl_new(swr_v1_socket_tls *tls, struct ssl_ctx_st *context, int fd, int flags, int index, void *socket, struct ssl_st **ssl, unsigned long *error);
-/* network::Socket's per-request reads and writes: recv/send/peek with EINTR and
- * dont_restart, driving `tls` (ssl_recv/ssl_send/SSL_peek on `socket`) when set;
- * catch_error's classification (swReturnCode). */
+/* A TLS socket's ssl_recv/ssl_send/SSL_peek; catch_error's classification (swReturnCode). */
 typedef ssize_t (*swr_v1_socket_tls_io)(void *socket, void *buffer, size_t length);
 /* Socket::ssl_sendfile: pread up to SW_BUFFER_SIZE_BIG bytes at *offset, send them
  * once through send, advance *offset. warn: 1 write() failed, 2 pread() failed. */
@@ -333,9 +329,6 @@ typedef struct {
     int warn;
 } swr_v1_socket_ssl_sendfile_result;
 swr_v1_socket_ssl_sendfile_result swr_v1_socket_ssl_sendfile(int file_fd, off_t *offset, size_t size, swr_v1_socket_tls_io send, void *socket, bool *kernel_nobufs);
-ssize_t swr_v1_socket_recv(int fd, void *buffer, size_t length, int flags, bool nonblock, bool dont_restart, swr_v1_socket_tls_io tls, void *socket);
-ssize_t swr_v1_socket_send(int fd, const void *buffer, size_t length, int flags, bool dont_restart, swr_v1_socket_tls_io tls, void *socket);
-ssize_t swr_v1_socket_peek(int fd, void *buffer, size_t length, int flags, swr_v1_socket_tls_io tls, void *socket);
 /* Socket::readv/writev: readv(2)/writev(2) over state's remaining iovecs, or tls one
  * iovec at a time until one comes up short; advances state like
  * IOVector::update_iterator and retries EINTR. Native code copies the IOVector's

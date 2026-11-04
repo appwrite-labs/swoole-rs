@@ -51,20 +51,13 @@ python3 corpus/upstream/run.py --manifest tests/modules/halfclose/pause-original
   --engine fixed=/absolute/modules/swoole.so --require-all
 ```
 
-## Native method checks
+## Rust unit checks
 
-These compile method bodies extracted from a prepared source tree with C++
-ASan/UBSan and drive them through minimal adapters.
-
-```sh
-python3 tests/modules/halfclose/tls_shutdown.py --source /absolute/prepared/source \
-  --cert /absolute/server.crt --key /absolute/server.key --output /absolute/report.json
-```
-
-- `tls_shutdown.py`: TLS shutdown/close methods over real OpenSSL memory BIOs and
-  nonblocking socketpairs (ordering, one-way, peer-first, quiet shutdown,
-  backpressure retry, peer death) plus five injected error results. On Mac add
-  `--openssl-dir /opt/homebrew/opt/openssl@3`.
+- The read dispatcher with a cached EOF after close queued:
+  `cargo test -p swoole-rs-server prequeue`.
+- TLS shutdown/close: `cargo test -p swoole-rs-tls shutdown` covers it over real
+  OpenSSL memory BIOs and nonblocking socketpairs (ordering, one-way, peer-first,
+  quiet shutdown, backpressure retry, peer death) plus five injected error results.
 
 ## Known failures
 

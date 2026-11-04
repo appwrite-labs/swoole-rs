@@ -14,19 +14,14 @@ ROOT=Path(__file__).resolve().parents[3]
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source',required=True,type=Path)
-    p.add_argument('--archive',type=Path)
+    p.add_argument('--archive',type=Path,required=True)
     p.add_argument('--output',required=True,type=Path)
     p.add_argument('--sanitize',action='store_true')
     p.add_argument('--rust-sanitized',action='store_true')
     a=p.parse_args();out=a.output.parent/(a.output.stem+'-artifacts');out.mkdir(parents=True,exist_ok=True);gate.LOG=out/'commands';gate.LOG.mkdir(exist_ok=True)
-    if a.rust_sanitized and not (a.sanitize and a.archive):p.error('--rust-sanitized needs --archive and --sanitize')
-    archive=a.archive or out/'libclients.a'
-    if not a.archive:gate.run(['rustc','--edition','2024','--crate-type','staticlib','-O','-C','panic=abort',ROOT/'crates/clients/src/lib.rs','-o',archive])
-    scratch=out/'patched';scratch.mkdir(exist_ok=True);original=''
-    for path in gate.overlay_manifest()['upstream_paths']:
-        text=gate.run(['git','-C',a.source,'show',f'{gate.PIN}:{path}']);dest=scratch/path;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_text(text)
-        if path=='src/network/dns.cc':original=text
-    gate.apply_overlay(scratch,out);selected=(scratch/'src/network/dns.cc').read_text()
+    if a.rust_sanitized and not a.sanitize:p.error('--rust-sanitized needs --sanitize')
+    archive=a.archive
+    original,selected=gate.sources(a.source,archive,'src/network/dns.cc')
     encoder='static int domain_encode(const char *src, int n, char *dest) {'
     decoder_native='static void domain_decode(char *str) {'
     native=gate.body(original,encoder)+'\n'+gate.body(original,decoder_native)
@@ -42,7 +37,6 @@ static void domain_decode(char *str, size_t capacity) {
     swr_v1_clients_domain_decode(reinterpret_cast<uint8_t *>(str), capacity, std::numeric_limits<char>::is_signed);
 }
 '''
-    if 'swr_v1_clients_dns_query' not in gate.body(selected,'std::vector<std::string> dns_lookup_impl_with_socket('):raise ValueError('Missing actual selected Rust call')
     prelude=r'''
 #include <cstring>
 #include <cassert>
@@ -69,6 +63,7 @@ using uchar=unsigned char;
 #define SW_ERROR_DNSLOOKUP_NO_SERVER 714
 #define SW_ERROR_DNSLOOKUP_RESOLVE_FAILED 711
 #define SW_ERROR_CO_CANCELED 10017
+namespace swoole {struct DnsServer {std::string host;int port;};}
 #define sw_memset_zero(p,n) std::memset(p,0,n)
 #define sw_snprintf std::snprintf
 #define swoole_warning(...) ((void)0)
@@ -100,10 +95,12 @@ struct Socket {
     parser_signature='std::vector<std::string> dns_lookup_impl_with_socket('
     formatter_signature='static std::string parse_ip_address(void *vaddr, int type) {'
     native += '\nstatic uint16_t dns_request_id=1;\n'+gate.body(original,formatter_signature)+'\n'+gate.body(original,parser_signature)
-    rust += '\nstatic uint16_t dns_request_id=1;\n'+gate.body(selected,formatter_signature)+'\n'+gate.body(selected,parser_signature)
+    # The hybrid's DNS server is Rust state; the driver sets it to SwooleG's.
+    rust += '\nstatic uint16_t dns_request_id=1;\n'+'\n'.join(gate.body(selected,signature) for signature in ['static void assign_text(','static swoole::DnsServer swoole_dns_server() {',formatter_signature])+'\n'+gate.body(selected,parser_signature)
     driver=r'''
 int main(){
     size_t count=0;
+    swr_v1_clients_set_dns_server(reinterpret_cast<const uint8_t *>("127.0.0.1:53"),12);
     std::vector<std::string> domains={"","a","www.apple.com","localhost",".","a.",".a","a..b","a b.c","a:b.c"};
     for(unsigned byte=0;byte<256;byte++)for(unsigned length:{1,2,4,63,127,128,255,256})domains.push_back(std::string(length,char(byte)));
     for(unsigned n=1;n<=127;n++)domains.push_back(std::string(n,'a')+"."+std::string(128-n,'b')+".example");

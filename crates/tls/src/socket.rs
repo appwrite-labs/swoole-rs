@@ -3,11 +3,12 @@
 //! reasons, and the socket's TLS state group they set. Native code keeps errno, the
 //! last error and logs, which need the socket's address.
 use openssl_sys::{
-    BIO_ctrl, BIO_free_all, BIO_new, BIO_read, BIO_s_mem, ERR_GET_REASON, ERR_clear_error,
-    ERR_get_error, ERR_reason_error_string, PEM_write_bio_X509, SSL, SSL_CTX, SSL_ERROR_SSL,
-    SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE, SSL_ERROR_ZERO_RETURN,
-    SSL_accept, SSL_connect, SSL_get_error, SSL_get_verify_result, SSL_new, SSL_read,
-    SSL_set_accept_state, SSL_set_connect_state, SSL_set_ex_data, SSL_write, X509,
+    BIO_ctrl, BIO_free_all, BIO_new, BIO_read, BIO_s_mem, ERR_clear_error, ERR_get_error,
+    ERR_reason_error_string, PEM_write_bio_X509, SSL, SSL_CTX, SSL_ERROR_SSL, SSL_ERROR_SYSCALL,
+    SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE, SSL_ERROR_ZERO_RETURN, SSL_RECEIVED_SHUTDOWN,
+    SSL_SENT_SHUTDOWN, SSL_accept, SSL_connect, SSL_get_error, SSL_get_shutdown,
+    SSL_get_verify_result, SSL_new, SSL_read, SSL_set_accept_state, SSL_set_connect_state,
+    SSL_set_ex_data, SSL_set_shutdown, SSL_shutdown, SSL_write, X509,
     X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, X509_check_host, X509_free,
 };
 
@@ -15,6 +16,8 @@ use openssl_sys::{
 unsafe extern "C" {
     fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
     fn ERR_peek_error() -> std::os::raw::c_ulong;
+    fn SSL_in_init(ssl: *const SSL) -> c_int;
+    fn SSL_set_quiet_shutdown(ssl: *mut SSL, mode: c_int);
 }
 
 /// `BIO_CTRL_PENDING`, behind the `BIO_pending` macro.
@@ -398,6 +401,17 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_pem(
     written
 }
 
+/// OpenSSL 3's `ERR_GET_REASON`: a system error's reason is its errno.
+/// openssl-sys's port returns `ERR_LIB_SYS` (2) for those instead.
+fn error_reason(error: std::os::raw::c_ulong) -> c_int {
+    const SYSTEM_FLAG: std::os::raw::c_ulong = 1 << 31;
+    if error & SYSTEM_FLAG == 0 {
+        openssl_sys::ERR_GET_REASON(error)
+    } else {
+        c_int::try_from(error & (SYSTEM_FLAG - 1)).unwrap_or(c_int::MAX)
+    }
+}
+
 /// `Socket::ssl_get_error_reason`: pops the oldest queued OpenSSL error and
 /// returns its reason string, storing its reason code in `reason` when given.
 ///
@@ -409,7 +423,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_error_reason(reason: *mut c_int) -> *
     let error = unsafe { ERR_get_error() };
     // SAFETY: `reason` is null or writable.
     if let Some(reason) = unsafe { reason.as_mut() } {
-        *reason = ERR_GET_REASON(error);
+        *reason = error_reason(error);
     }
     // SAFETY: OpenSSL's static string table.
     unsafe { ERR_reason_error_string(error) }
@@ -419,7 +433,123 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_error_reason(reason: *mut c_int) -> *
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_socket_ssl_peek_reason() -> c_int {
     // SAFETY: this thread's OpenSSL error queue, read without popping.
-    ERR_GET_REASON(unsafe { ERR_peek_error() })
+    error_reason(unsafe { ERR_peek_error() })
+}
+
+/// `SSL_shutdown` and `SSL_get_error`, which tests replace to inject failures.
+trait ShutdownCalls {
+    /// # Safety
+    /// `ssl` is live.
+    unsafe fn shutdown(&mut self, ssl: *mut SSL) -> c_int;
+    /// # Safety
+    /// `ssl` is live.
+    unsafe fn error(&mut self, ssl: *const SSL, result: c_int) -> c_int;
+}
+
+struct OpenSsl;
+
+impl ShutdownCalls for OpenSsl {
+    unsafe fn shutdown(&mut self, ssl: *mut SSL) -> c_int {
+        // SAFETY: the caller's live SSL.
+        unsafe { SSL_shutdown(ssl) }
+    }
+    unsafe fn error(&mut self, ssl: *const SSL, result: c_int) -> c_int {
+        // SAFETY: the caller's live SSL.
+        unsafe { SSL_get_error(ssl, result) }
+    }
+}
+
+/// `Socket::ssl_shutdown`'s results: false, true, or false after native code warns
+/// with `ssl_get_error_reason`.
+const SHUTDOWN_FALSE: c_int = 0;
+const SHUTDOWN_TRUE: c_int = 1;
+const SHUTDOWN_WARN: c_int = 2;
+
+/// # Safety
+/// As `swr_v1_socket_ssl_shutdown`.
+unsafe fn shutdown(
+    tls: &mut SocketTls,
+    ssl: *mut SSL,
+    closed: &mut u8,
+    quiet: bool,
+    repaired: bool,
+    calls: &mut impl ShutdownCalls,
+) -> c_int {
+    // SAFETY: the caller's live SSL.
+    if *closed != 0 || unsafe { SSL_in_init(ssl) } != 0 {
+        return SHUTDOWN_FALSE;
+    }
+    // If the peer closed first, shut down quietly: sending data then makes the peer
+    // reply with an RST segment.
+    if quiet {
+        // SAFETY: the caller's live SSL.
+        unsafe { SSL_set_quiet_shutdown(ssl, 1) };
+    }
+    let result = if repaired {
+        // SAFETY: clears this thread's OpenSSL error queue.
+        unsafe { ERR_clear_error() };
+        tls.want(false, false);
+        // SAFETY: the caller's live SSL.
+        let n = unsafe { calls.shutdown(ssl) };
+        let error = if n < 0 {
+            // SAFETY: the caller's live SSL.
+            unsafe { calls.error(ssl, n) }
+        } else {
+            0
+        };
+        tls.want(error == SSL_ERROR_WANT_READ, error == SSL_ERROR_WANT_WRITE);
+        *closed = u8::from(tls.want_read == 0 && tls.want_write == 0);
+        (n, error)
+    } else {
+        // Upstream marks both directions shut first, so OpenSSL writes no alert.
+        // SAFETY: the caller's live SSL.
+        let mode = unsafe { SSL_get_shutdown(ssl) };
+        // SAFETY: the caller's live SSL.
+        unsafe { SSL_set_shutdown(ssl, mode | SSL_RECEIVED_SHUTDOWN | SSL_SENT_SHUTDOWN) };
+        // SAFETY: the caller's live SSL.
+        let n = unsafe { calls.shutdown(ssl) };
+        *closed = 1;
+        // SAFETY: this thread's OpenSSL error queue, read without popping.
+        let error = if n != 1 && unsafe { ERR_peek_error() } != 0 {
+            // SAFETY: the caller's live SSL.
+            unsafe { calls.error(ssl, n) }
+        } else {
+            0
+        };
+        (n, error)
+    };
+    match result {
+        (1, _) | (_, 0 | SSL_ERROR_ZERO_RETURN) => SHUTDOWN_TRUE,
+        _ => SHUTDOWN_WARN,
+    }
+}
+
+/// `Socket::ssl_shutdown`: one `SSL_shutdown` once the handshake is done, quiet when
+/// `quiet` is set. Returns 1 for true, 0 for false and 2 for false after native code
+/// warns with `ssl_get_error_reason`.
+///
+/// Upstream marks the shutdown sent and received first, so no `close_notify` is
+/// written, and closes the socket (`*closed`) whatever the result. `repaired`
+/// (`--fix-halfclose`, M15) writes the alert: a pending read or write leaves the
+/// socket open with its want flag set, to retry, and anything else closes it.
+///
+/// # Safety
+/// `tls` is the live state group of the socket owning `ssl`, a live SSL, and
+/// `closed` is that socket's `ssl_closed_`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_socket_ssl_shutdown(
+    tls: *mut SocketTls,
+    ssl: *mut SSL,
+    closed: *mut u8,
+    quiet: bool,
+    repaired: bool,
+) -> c_int {
+    // SAFETY: the caller's live state group.
+    let tls = unsafe { &mut *tls };
+    // SAFETY: the caller's live flag.
+    let closed = unsafe { &mut *closed };
+    // SAFETY: as the caller promises.
+    unsafe { shutdown(tls, ssl, closed, quiet, repaired, &mut OpenSsl) }
 }
 
 /// `Socket::ssl_create`: a new SSL from `context` on `fd`, in connect state for
@@ -765,5 +895,544 @@ mod tests {
             assert_ne!(ERR_get_error(), 0, "the queue is left for ssl_catch_error");
             SSL_free(ssl);
         }
+    }
+}
+
+/// `Socket::ssl_shutdown` and `ssl_close` over real TLS 1.2 peers (memory BIO pairs and
+/// a nonblocking socketpair), with `SSL_shutdown`/`SSL_get_error` observed and, for five
+/// negative results, injected. The repaired (`--fix-halfclose`) cases were the
+/// halfclose-tls-native gate's, which this replaces.
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use openssl_sys::*;
+    use std::os::raw::{c_char, c_int, c_long};
+    use std::ptr;
+
+    // SAFETY: libssl/libcrypto's own declarations; openssl-sys binds none of them.
+    unsafe extern "C" {
+        fn BIO_new_bio_pair(
+            left: *mut *mut BIO,
+            left_size: usize,
+            right: *mut *mut BIO,
+            right_size: usize,
+        ) -> c_int;
+        fn BIO_test_flags(bio: *const BIO, flags: c_int) -> c_int;
+        fn BIO_new_file(filename: *const c_char, mode: *const c_char) -> *mut BIO;
+    }
+
+    /// `BIO_FLAGS_SHOULD_RETRY`, behind the `BIO_should_retry` macro.
+    const BIO_FLAGS_SHOULD_RETRY: c_int = 0x08;
+
+    /// Counts and records the real calls, or fails them with `injected`.
+    #[derive(Default)]
+    struct Observed {
+        injected: c_int,
+        shutdown_calls: usize,
+        last_shutdown_errno: c_int,
+        last_error_class: c_int,
+        last_error_queue: std::os::raw::c_ulong,
+    }
+
+    impl ShutdownCalls for Observed {
+        unsafe fn shutdown(&mut self, ssl: *mut SSL) -> c_int {
+            self.shutdown_calls += 1;
+            let result = if self.injected == 0 {
+                unsafe { SSL_shutdown(ssl) }
+            } else {
+                -1
+            };
+            self.last_shutdown_errno = errno();
+            result
+        }
+        unsafe fn error(&mut self, ssl: *const SSL, result: c_int) -> c_int {
+            self.last_error_class = if self.injected == 0 {
+                unsafe { SSL_get_error(ssl, result) }
+            } else {
+                self.injected
+            };
+            self.last_error_queue = unsafe { ERR_peek_error() };
+            self.last_error_class
+        }
+    }
+
+    /// `network::Socket`'s TLS fields and the native caller: its warning formats
+    /// `ssl_get_error_reason`'s string, or a fallback when OpenSSL has none.
+    struct Socket {
+        ssl: *mut SSL,
+        tls: SocketTls,
+        closed: u8,
+        quiet: bool,
+        repaired: bool,
+        calls: Observed,
+        warnings: usize,
+        null_warnings: usize,
+    }
+
+    impl Socket {
+        fn new(ssl: *mut SSL) -> Self {
+            Self {
+                ssl,
+                tls: SocketTls::default(),
+                closed: 0,
+                quiet: false,
+                repaired: true,
+                calls: Observed::default(),
+                warnings: 0,
+                null_warnings: 0,
+            }
+        }
+
+        fn ssl_shutdown(&mut self) -> bool {
+            let result = unsafe {
+                shutdown(
+                    &mut self.tls,
+                    self.ssl,
+                    &mut self.closed,
+                    self.quiet,
+                    self.repaired,
+                    &mut self.calls,
+                )
+            };
+            if result == SHUTDOWN_WARN {
+                let mut reason = 0;
+                let reason_string = unsafe { swr_v1_socket_ssl_error_reason(&raw mut reason) };
+                let message = if reason_string.is_null() {
+                    c"no OpenSSL reason available".as_ptr()
+                } else {
+                    reason_string
+                };
+                self.warnings += 1;
+                self.null_warnings += usize::from(message.is_null());
+            }
+            result == SHUTDOWN_TRUE
+        }
+
+        fn ssl_close(&mut self) {
+            if self.closed == 0 {
+                self.ssl_shutdown();
+            }
+            unsafe { SSL_free(self.ssl) };
+            self.ssl = ptr::null_mut();
+        }
+    }
+
+    /// A server certificate: self-signed Ed25519.
+    unsafe fn certificate(context: *mut SSL_CTX) {
+        unsafe {
+            let keygen = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, ptr::null_mut());
+            let mut key = ptr::null_mut();
+            assert_eq!(EVP_PKEY_keygen_init(keygen), 1);
+            assert_eq!(EVP_PKEY_keygen(keygen, &raw mut key), 1);
+            EVP_PKEY_CTX_free(keygen);
+            let cert = X509_new();
+            assert_eq!(X509_set_version(cert, 2), 1);
+            assert_eq!(ASN1_INTEGER_set(X509_get_serialNumber(cert), 1), 1);
+            assert!(!X509_gmtime_adj(X509_getm_notBefore(cert), 0).is_null());
+            assert!(!X509_gmtime_adj(X509_getm_notAfter(cert), 3600).is_null());
+            assert_eq!(X509_set_pubkey(cert, key), 1);
+            assert!(X509_sign(cert, key, ptr::null()) > 0);
+            assert_eq!(SSL_CTX_use_certificate(context, cert), 1);
+            assert_eq!(SSL_CTX_use_PrivateKey(context, key), 1);
+            X509_free(cert);
+            EVP_PKEY_free(key);
+        }
+    }
+
+    /// A server and client after a completed TLS 1.2 handshake.
+    struct Pair {
+        server_ctx: *mut SSL_CTX,
+        client_ctx: *mut SSL_CTX,
+        server: *mut SSL,
+        client: *mut SSL,
+        fds: [c_int; 2],
+    }
+
+    impl Pair {
+        fn new(native_socket: bool) -> Self {
+            unsafe {
+                let server_ctx = SSL_CTX_new(TLS_server_method());
+                let client_ctx = SSL_CTX_new(TLS_client_method());
+                for context in [server_ctx, client_ctx] {
+                    assert_eq!(SSL_CTX_set_max_proto_version(context, TLS1_2_VERSION), 1);
+                }
+                SSL_CTX_set_verify(client_ctx, SSL_VERIFY_NONE, None);
+                certificate(server_ctx);
+                let (server, client) = (SSL_new(server_ctx), SSL_new(client_ctx));
+                let mut fds = [-1; 2];
+                if native_socket {
+                    assert_eq!(
+                        libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()),
+                        0
+                    );
+                    for fd in fds {
+                        assert_eq!(libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK), 0);
+                    }
+                    SSL_set_fd(server, fds[0]);
+                    SSL_set_fd(client, fds[1]);
+                } else {
+                    let (mut left, mut right) = (ptr::null_mut(), ptr::null_mut());
+                    assert_eq!(BIO_new_bio_pair(&raw mut left, 0, &raw mut right, 0), 1);
+                    SSL_set_bio(server, left, left);
+                    SSL_set_bio(client, right, right);
+                }
+                SSL_set_accept_state(server);
+                SSL_set_connect_state(client);
+                for _ in 0..1000 {
+                    if SSL_in_init(server) == 0 && SSL_in_init(client) == 0 {
+                        break;
+                    }
+                    SSL_do_handshake(client);
+                    SSL_do_handshake(server);
+                }
+                assert!(SSL_in_init(server) == 0 && SSL_in_init(client) == 0);
+                ERR_clear_error();
+                Self {
+                    server_ctx,
+                    client_ctx,
+                    server,
+                    client,
+                    fds,
+                }
+            }
+        }
+
+        /// Bytes waiting for the client: an alert the server sent, say.
+        fn client_pending(&self) -> c_long {
+            unsafe {
+                BIO_ctrl(
+                    SSL_get_rbio(self.client),
+                    BIO_CTRL_PENDING,
+                    0,
+                    ptr::null_mut(),
+                )
+            }
+        }
+
+        /// The client's next read: 0 with `SSL_ERROR_ZERO_RETURN` after a `close_notify`.
+        fn client_reads_close_notify(&self) -> bool {
+            let mut byte = 0_u8;
+            unsafe {
+                let n = SSL_read(self.client, (&raw mut byte).cast(), 1);
+                n == 0 && SSL_get_error(self.client, n) == SSL_ERROR_ZERO_RETURN
+            }
+        }
+    }
+
+    impl Drop for Pair {
+        fn drop(&mut self) {
+            unsafe {
+                SSL_free(self.server);
+                SSL_free(self.client);
+                SSL_CTX_free(self.server_ctx);
+                SSL_CTX_free(self.client_ctx);
+                for fd in self.fds {
+                    if fd >= 0 {
+                        libc::close(fd);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn one_way_shutdown() {
+        let mut pair = Pair::new(false);
+        let mut socket = Socket::new(pair.server);
+        unsafe {
+            assert_eq!(
+                SSL_write(pair.server, b"bytes".as_ptr().cast(), 5),
+                5,
+                "payload write"
+            );
+            assert!(
+                socket.ssl_shutdown(),
+                "one-way shutdown succeeds without peer wait"
+            );
+            let mut received = [0_u8; 5];
+            assert_eq!(
+                SSL_read(pair.client, received.as_mut_ptr().cast(), 5),
+                5,
+                "payload precedes alert"
+            );
+            assert_eq!(&received, b"bytes", "payload precedes alert");
+        }
+        assert!(pair.client_reads_close_notify(), "strict close_notify");
+        let calls = socket.calls.shutdown_calls;
+        assert!(
+            !socket.ssl_shutdown() && socket.calls.shutdown_calls == calls,
+            "one shutdown only"
+        );
+        socket.ssl_close();
+        pair.server = ptr::null_mut();
+        assert!(
+            socket.ssl.is_null() && socket.calls.shutdown_calls == calls,
+            "close frees without duplicate shutdown"
+        );
+    }
+
+    #[test]
+    fn quiet_shutdown() {
+        let pair = Pair::new(false);
+        let mut socket = Socket::new(pair.server);
+        socket.quiet = true;
+        assert!(socket.ssl_shutdown(), "quiet shutdown succeeds");
+        assert_eq!(pair.client_pending(), 0, "quiet shutdown emits no alert");
+    }
+
+    #[test]
+    fn peer_first() {
+        let pair = Pair::new(false);
+        let mut socket = Socket::new(pair.server);
+        unsafe {
+            assert_eq!(
+                SSL_shutdown(pair.client),
+                0,
+                "peer first sends alert without waiting"
+            );
+            let mut byte = 0_u8;
+            let n = SSL_read(pair.server, (&raw mut byte).cast(), 1);
+            assert!(
+                n == 0 && SSL_get_error(pair.server, n) == SSL_ERROR_ZERO_RETURN,
+                "peer alert received"
+            );
+            assert!(socket.ssl_shutdown(), "peer first acknowledged");
+            assert_eq!(SSL_shutdown(pair.client), 1, "peer first completes");
+        }
+    }
+
+    #[test]
+    fn unfinished_handshake() {
+        unsafe {
+            let context = SSL_CTX_new(TLS_server_method());
+            let mut socket = Socket::new(SSL_new(context));
+            SSL_set_accept_state(socket.ssl);
+            let calls = socket.calls.shutdown_calls;
+            assert!(
+                !socket.ssl_shutdown() && socket.calls.shutdown_calls == calls,
+                "unfinished handshake not shut down"
+            );
+            socket.ssl_close();
+            assert!(socket.ssl.is_null(), "unfinished handshake freed");
+            SSL_CTX_free(context);
+        }
+    }
+
+    #[test]
+    fn nonblocking_want_read() {
+        let pair = Pair::new(false);
+        let mut socket = Socket::new(pair.server);
+        unsafe {
+            assert_eq!(SSL_shutdown(pair.server), 0, "pending shutdown sends alert");
+            ERR_clear_error();
+        }
+        assert!(
+            !socket.ssl_shutdown(),
+            "real nonblocking WANT_READ reported without waiting"
+        );
+        assert!(
+            socket.tls.want_read != 0 && socket.closed == 0,
+            "pending read remains retryable"
+        );
+    }
+
+    #[test]
+    fn pending_write() {
+        let pair = Pair::new(false);
+        let mut socket = Socket::new(pair.server);
+        let data = vec![b'x'; 16384];
+        let (mut result, mut attempts) = (1, 0);
+        unsafe {
+            while result > 0 && attempts < 99 {
+                attempts += 1;
+                result = SSL_write(pair.server, data.as_ptr().cast(), 16384);
+            }
+            assert!(
+                result < 0 && SSL_get_error(pair.server, result) == SSL_ERROR_WANT_WRITE,
+                "real bounded BIO write backpressure"
+            );
+            ERR_clear_error();
+        }
+        assert!(
+            !socket.ssl_shutdown(),
+            "real pending write shutdown reports incomplete/error"
+        );
+        assert!(
+            socket.tls.want_write != 0 && socket.closed == 0,
+            "pending write remains retryable"
+        );
+    }
+
+    #[test]
+    fn retryable_alert_write() {
+        let pair = Pair::new(false);
+        let mut socket = Socket::new(pair.server);
+        // Fill only the transport BIO: no unfinished application SSL_write.
+        let mut filler = vec![b'x'; 32768];
+        let (mut bytes, mut drained) = (0, 0);
+        unsafe {
+            let wbio = SSL_get_wbio(pair.server);
+            loop {
+                let n = BIO_write(wbio, filler.as_ptr().cast(), 32768);
+                if n <= 0 {
+                    break;
+                }
+                bytes += n;
+            }
+            assert!(
+                bytes > 0 && BIO_test_flags(wbio, BIO_FLAGS_SHOULD_RETRY) != 0,
+                "alert transport full"
+            );
+            assert!(
+                !socket.ssl_shutdown() && socket.tls.want_write != 0 && socket.closed == 0,
+                "alert write remains retryable"
+            );
+            loop {
+                let n = BIO_read(SSL_get_rbio(pair.client), filler.as_mut_ptr().cast(), 32768);
+                if n <= 0 {
+                    break;
+                }
+                drained += n;
+            }
+        }
+        assert_eq!(drained, bytes, "transport capacity released");
+        assert!(
+            socket.ssl_shutdown(),
+            "pending alert retries after peer drains"
+        );
+        assert!(
+            pair.client_reads_close_notify(),
+            "retried alert reaches peer"
+        );
+    }
+
+    /// A completed handshake followed by peer transport death is distinct from alert
+    /// backpressure: the real write fails with no OpenSSL reason. (The test harness
+    /// ignores SIGPIPE, as Swoole does.)
+    #[test]
+    fn closed_peer() {
+        let mut pair = Pair::new(true);
+        let mut socket = Socket::new(pair.server);
+        assert_eq!(
+            unsafe { libc::close(pair.fds[1]) },
+            0,
+            "peer transport closes after handshake"
+        );
+        pair.fds[1] = -1;
+        assert!(
+            !socket.ssl_shutdown(),
+            "closed peer cannot receive close_notify"
+        );
+        let queue = socket.calls.last_error_queue;
+        assert!(
+            socket.calls.last_error_class == SSL_ERROR_SYSCALL
+                && socket.calls.last_shutdown_errno == libc::EPIPE
+                && (queue == 0
+                    || (ERR_GET_LIB(queue) == ERR_LIB_SYS && error_reason(queue) == libc::EPIPE)),
+            "real closed-peer shutdown is EPIPE with only empty/system error queue"
+        );
+        assert!(
+            socket.closed != 0 && socket.tls.want_read == 0 && socket.tls.want_write == 0,
+            "broken pipe is terminal rather than readiness retry"
+        );
+        assert_eq!(socket.warnings, 1, "fatal peer write remains reported");
+        assert_eq!(
+            socket.null_warnings, 0,
+            "real peer failure diagnostic never formats a null string"
+        );
+        let calls = socket.calls.shutdown_calls;
+        assert!(
+            !socket.ssl_shutdown() && socket.calls.shutdown_calls == calls,
+            "terminal broken pipe is not retried"
+        );
+    }
+
+    #[test]
+    fn injected_negative_results() {
+        let mut null_warnings = 0;
+        for error in [
+            SSL_ERROR_WANT_READ,
+            SSL_ERROR_WANT_WRITE,
+            SSL_ERROR_SSL,
+            SSL_ERROR_SYSCALL,
+            SSL_ERROR_ZERO_RETURN,
+        ] {
+            let pair = Pair::new(false);
+            let mut socket = Socket::new(pair.server);
+            socket.calls.injected = error;
+            unsafe { ERR_clear_error() };
+            let ok = socket.ssl_shutdown();
+            assert_eq!(
+                ok,
+                error == SSL_ERROR_ZERO_RETURN,
+                "negative native result classified without queued error"
+            );
+            assert_eq!(
+                socket.warnings,
+                usize::from(error != SSL_ERROR_ZERO_RETURN),
+                "incomplete/error shutdown reported"
+            );
+            assert_eq!(
+                pair.client_pending(),
+                0,
+                "injected failure never counted as delivered alert"
+            );
+            null_warnings += socket.null_warnings;
+        }
+        assert_eq!(
+            null_warnings, 0,
+            "all terminal and injected diagnostics have a non-null message"
+        );
+    }
+    /// Upstream's shutdown (no `--fix-halfclose`): both directions are marked shut
+    /// first, so no alert is written, and the socket closes whatever OpenSSL returns.
+    #[test]
+    fn upstream_premarks_shutdown() {
+        let pair = Pair::new(false);
+        let mut socket = Socket::new(pair.server);
+        socket.repaired = false;
+        assert!(socket.ssl_shutdown(), "upstream shutdown succeeds");
+        assert_eq!(pair.client_pending(), 0, "upstream writes no close_notify");
+        assert_ne!(socket.closed, 0, "upstream closes at once");
+        let calls = socket.calls.shutdown_calls;
+        assert!(
+            !socket.ssl_shutdown() && socket.calls.shutdown_calls == calls,
+            "one shutdown only"
+        );
+
+        // A negative result counts only with a queued error, which upstream peeks
+        // without clearing the queue first.
+        for queued in [false, true] {
+            let pair = Pair::new(false);
+            let mut socket = Socket::new(pair.server);
+            socket.repaired = false;
+            socket.calls.injected = SSL_ERROR_WANT_WRITE;
+            if queued {
+                assert!(
+                    unsafe { BIO_new_file(c"/nonexistent/m21".as_ptr(), c"r".as_ptr()) }.is_null()
+                );
+            }
+            assert_eq!(socket.ssl_shutdown(), !queued);
+            assert_eq!(socket.warnings, usize::from(queued));
+            assert_eq!(
+                (socket.closed, socket.tls.want_read, socket.tls.want_write),
+                (1, 0, 0),
+                "closed with no retry"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::error_reason;
+
+    #[test]
+    fn system_errors_give_their_errno() {
+        // OpenSSL 3 packs a system error as ERR_SYSTEM_FLAG | errno.
+        assert_eq!(error_reason(0x8000_0000 | 32), 32);
+        // ERR_PACK(ERR_LIB_SSL, 0, SSL_R_SSLV3_ALERT_BAD_CERTIFICATE).
+        assert_eq!(error_reason(0x0A00_0412), 1042);
+        assert_eq!(error_reason(0), 0);
     }
 }

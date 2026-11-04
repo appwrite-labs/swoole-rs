@@ -9,19 +9,12 @@ from pathlib import Path
 import gate
 ROOT=Path(__file__).resolve().parents[3]
 def main():
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path);p.add_argument('--output',type=Path,required=True);p.add_argument('--sanitize',action='store_true');p.add_argument('--rust-sanitized',action='store_true');a=p.parse_args()
- if a.rust_sanitized and not(a.archive and a.sanitize):p.error('--rust-sanitized requires --archive and --sanitize')
- out=a.output.parent/(a.output.stem+'-artifacts');out.mkdir(parents=True,exist_ok=True);gate.LOG=out/'commands';gate.LOG.mkdir(exist_ok=True);archive=a.archive or out/'libclients.a'
- if not a.archive:gate.run(['rustc','--edition','2024','--crate-type','staticlib','-O','-C','panic=abort',ROOT/'crates/clients/src/lib.rs','-o',archive])
- scratch=out/'patched';scratch.mkdir(exist_ok=True);original='';destination='src/network/address.cc'
- for path in gate.overlay_manifest()['upstream_paths']:
-  text=gate.run(['git','-C',a.source,'show',f'{gate.PIN}:{path}']);dest=scratch/path;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_text(text)
-  if path==destination:original=text
- gate.apply_overlay(scratch,out);selected=(scratch/destination).read_text();signatures=['bool Address::verify_ip(int family, const std::string &str) {','bool Address::verify_port(const int port, const bool for_connect) {','bool Address::assign(SocketType _type, const std::string &_host, int _port, bool _resolve_name) {','bool Address::is_loopback_addr() const {'];before='';after=''
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--sanitize',action='store_true');p.add_argument('--rust-sanitized',action='store_true');a=p.parse_args()
+ if a.rust_sanitized and not a.sanitize:p.error('--rust-sanitized requires --sanitize')
+ out=a.output.parent/(a.output.stem+'-artifacts');out.mkdir(parents=True,exist_ok=True);gate.LOG=out/'commands';gate.LOG.mkdir(exist_ok=True);archive=a.archive
+ original,selected=gate.sources(a.source,archive,'src/network/address.cc');signatures=['bool Address::verify_ip(int family, const std::string &str) {','bool Address::verify_port(const int port, const bool for_connect) {','bool Address::assign(SocketType _type, const std::string &_host, int _port, bool _resolve_name) {','bool Address::is_loopback_addr() const {'];before='';after=''
  for signature in signatures:
-  native=gate.body(original,signature);rust=gate.body(selected,signature)
-  if native==rust:raise ValueError('Missing actual address caller')
-  before+=native+'\n';after+=rust+'\n'
+  before+=gate.body(original,signature)+'\n';after+=gate.body(selected,signature)+'\n'
  before=gate.body(original,'static bool IN_IS_ADDR_LOOPBACK(const in_addr *a) {')+'\n'+before
  after=gate.body(selected,'static int address_resolve(int family, const char *name, char *address) {')+'\n'+after
 

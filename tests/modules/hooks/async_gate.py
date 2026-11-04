@@ -7,11 +7,10 @@ import subprocess
 import sys
 import tempfile
 
-from ordered_gate import block
+from ordered_gate import block, sources
 
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import module_patches
 from tools.build_upstream import COMMIT as PIN
 
 def main():
@@ -22,19 +21,12 @@ def main():
     p.add_argument('--sanitize',action='store_true')
     a=p.parse_args()
     unit='src/coroutine/system.cc'
-    manifest=module_patches(ROOT/'migration/patches/hooks')
-    paths=sorted({path for entry in manifest for path in entry['upstream_paths']})
-    originals={path:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+path],text=True) for path in paths}
+    originals,selected,hybrid=sources(a.source,a.archive,[unit])
     signatures=['static void async_task_completed(', 'bool async(async::Handler handler,', 'struct AsyncLambdaTask {', 'static void async_lambda_handler(', 'static void async_lambda_callback(', 'bool async(const std::function<void()> &fn)', 'int System::sleep(', 'std::string gethostbyname_impl_with_async(', 'std::vector<std::string> System::getaddrinfo(']
     with tempfile.TemporaryDirectory(prefix='swr-hooks-async-') as directory:
         tree=Path(directory)
-        for path,text in originals.items():
-            out=tree/path;out.parent.mkdir(parents=True,exist_ok=True);out.write_text(text)
-        for entry in manifest:
-            patch=ROOT/'migration/patches/hooks'/entry['path']
-            subprocess.run(['git','apply',str(patch)],cwd=tree,check=True)
         for variant in ['original','selected']:
-            texts=originals if variant=='original' else {path:(tree/path).read_text() for path in paths if (tree/path).exists()}
+            texts=originals if variant=='original' else selected
             bodies=[block(texts[unit],signature)+(';' if signature.startswith('struct ') else '') for signature in signatures]
             (tree/(variant+'-async.inc')).write_text('\n'.join(bodies))
         command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/async_gate.cc'),str(a.archive.resolve()),'-lpthread','-o',str(tree/'async')]
@@ -44,7 +36,7 @@ def main():
         run=subprocess.run([str(tree/'async')],capture_output=True,text=True) if build.returncode==0 else build
         print(build.stderr,end='');print(run.stdout,end='')
         if run is not build:print(run.stderr,end='')
-        report=dict(pin=PIN,scope=__doc__,manifest=manifest,command=command,compile_returncode=build.returncode,compile_stderr=build.stderr,returncode=run.returncode,stdout=run.stdout,stderr=run.stderr)
+        report=dict(pin=PIN,scope=__doc__,hybrid_tree=hybrid,command=command,compile_returncode=build.returncode,compile_stderr=build.stderr,returncode=run.returncode,stdout=run.stdout,stderr=run.stderr)
         a.report.parent.mkdir(parents=True,exist_ok=True);a.report.write_text(json.dumps(report,indent=2)+'\n')
         raise SystemExit(run.returncode)
 

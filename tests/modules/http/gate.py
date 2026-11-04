@@ -1,7 +1,5 @@
-#!/usr/bin/env python3
-"""Compare actual pinned/patched HTTP helper bodies, without servers or parsers."""
-import argparse
-import hashlib
+"""Shared helpers for the HTTP differential gates: body extraction, the two compile sides
+(pin and hybrid tree), the optional ASan HTTP archive and the run/report step."""
 import io
 import json
 import os
@@ -10,14 +8,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tarfile
-import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.harness import ROOT, run_isolated, write_report
 from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import COMMIT as PIN
-ORIGINAL_TESTS = ['EncodeDecodeBasic', 'EncodeDecodeWithSpecialChars', 'get_method', 'get_method_str', 'parse_multipart_boundary']
-FUNCTIONS = ['const char *get_status_message(', 'bool parse_multipart_boundary(', 'size_t url_decode(', 'char *url_encode(', 'int get_method(', 'const char *get_method_string(']
-def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
 def body(source, signature):
     """The definition starting at signature. Braces count only in the first branch of
     each #if/#else, so alternatives such as `#if A switch (x) { #else switch (y) { #endif`
@@ -35,33 +29,6 @@ def body(source, signature):
                     return source[start:position + offset + 1]
         position += len(line)
     raise ValueError('Unterminated definition: ' + signature)
-def extract(source, namespace):
-    parts = ['static thread_local char http_status_message[128];']
-    if 'static const char *method_strings[]' in source:
-        array_start = source.index('static const char *method_strings[]'); array_end = source.index('};', array_start) + 2
-        parts.insert(0, source[array_start:array_end])
-    if 'static int url_htoi(' in source: parts.append(body(source, 'static int url_htoi('))
-    parts += [body(source, signature) for signature in FUNCTIONS]
-    return '#include "oracle.h"\nnamespace ' + namespace + ' {\n' + '\n'.join(parts) + '\n}\n'
-def original_assertions(tests):
-    adapter = r'''#define ASSERT_TRUE(value) do { if (!(value)) throw std::runtime_error("Original assertion: " #value); } while (false)
-#define ASSERT_FALSE(value) ASSERT_TRUE(!(value))
-#define ASSERT_EQ(a, b) ASSERT_TRUE((a) == (b))
-#define EXPECT_EQ(a, b) ASSERT_EQ(a, b)
-#define EXPECT_STREQ(a, b) ASSERT_TRUE(std::strcmp(a, b) == 0)
-#define ASSERT_STREQ(a, b) EXPECT_STREQ(a, b)
-#define TEST(group, name) static void original_##name()
-'''
-    output = '#include "oracle.h"\n' + adapter
-    bodies = [body(tests, 'TEST(http_server, ' + name + ')') for name in ORIGINAL_TESTS]
-    for engine in ['upstream', 'candidate']:
-        output += 'namespace ' + engine + '_assertions {\nnamespace swoole { namespace http_server {\n'
-        output += '\n'.join('using ::' + engine + '::' + signature.split('(')[0].split()[-1].lstrip('*') + ';' for signature in FUNCTIONS) + '\n}}\n'
-        output += 'using namespace swoole::http_server;\n' + '\n'.join(bodies) + '\n}\n'
-    output += 'void run_original_assertions() {\n'
-    for engine in ['upstream', 'candidate']:
-        output += '\n'.join(engine + '_assertions::original_' + name + '();' for name in ORIGINAL_TESTS) + '\n'
-    return output + '}\n'
 def add_archive_arguments(parser):
     parser.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test')
     parser.add_argument('--rust-sanitize', action='store_true', help='Link a private ASan HTTP Rust archive instead; precompiled std remains uninstrumented')
@@ -175,26 +142,3 @@ def prepare_index_buffer(sides):
             output += '#include "swoole_rs_string.h"\n'
         output += 'namespace '+namespace+' {\nclass IndexBuffer { public:\n std::vector<unsigned char> storage;char *str=nullptr;size_t size=0,length=6,offset=7;unsigned calls=0,fail=0;std::vector<size_t> events;\n enum FormatFlag{FORMAT_APPEND=1,FORMAT_GROW=2};\n explicit IndexBuffer(size_t capacity):storage(capacity,0xa5),size(capacity){str=reinterpret_cast<char*>(storage.data());if(capacity>=6)memcpy(str,"prefix",6);events.reserve(32);}\n void reserve(size_t requested){events.push_back(requested);if(++calls==fail)throw std::bad_alloc();size_t count=size==0?requested:SW_MEM_ALIGNED_SIZE(requested);storage.resize(count,0xa5);size=count;str=reinterpret_cast<char*>(storage.data());}\n void extend_align(size_t minimum){size_t count=SW_MEM_ALIGNED_SIZE(size*2);while(count<minimum)count*=2;reserve(count);}\n void append(const char *input,size_t count){if(length+count>size)reserve(length+count);memcpy(str+length,input,count);length+=count;}\n'+members+' template <typename... Args>\n'+template+'\n};\n}\n'
     (sides.tree/'index_buffer.h').write_text(output)
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source', type=Path, required=True)
-    parser.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test')
-    parser.add_argument('--output', default='target/reports/http-helpers.json')
-    args = parser.parse_args()
-    report = {'pin': PIN, 'scope': 'Extracted actual first-party helper bodies; not full native TU, original parser/server tests or PHP parity', 'cpp_sanitized_rust_not_instrumented': True}
-    with tempfile.TemporaryDirectory(prefix='swr-http-') as temp:
-        tree = Path(temp); path = 'src/protocol/http.cc'
-        sides = Sides(args.source, args.archive, tree, 'thirdparty/multipart_parser.h', path)
-        tests = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/src/server/http_server.cpp'], text=True)
-        assertions = tree / 'original_assertions.cc'; assertions.write_text(original_assertions(tests))
-        report['selected_original_tests'] = ORIGINAL_TESTS
-        if not sides.native(report, path): write_report(args.output, report); return 1
-        for namespace, text in [('upstream', sides.original(path)), ('candidate', sides.selected(path))]:
-            (tree / (namespace + '.cc')).write_text(extract(text, namespace))
-        binary = tree / 'gate'
-        units = [('upstream', tree/'upstream.cc'), ('candidate', tree/'candidate.cc'), ('candidate', Path(__file__).with_name('gate.cc')), ('candidate', assertions)]
-        if not sides.build(binary, units, args.archive.resolve(), report): write_report(args.output, report); return 1
-        return run(binary, ['swr_v1_http_status', 'swr_v1_http_boundary', 'swr_v1_http_url_encode', 'swr_v1_http_url_decode', 'swr_v1_http_method'], args.output, report)
-if __name__ == '__main__': sys.exit(main())

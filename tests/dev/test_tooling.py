@@ -502,7 +502,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['reactor-flush'])
         self.assertIn('--sanitize', commands['reactor-flush'])
         self.assertIn('corebase-native',commands)
-        self.assertIn('http-native', commands)
+        self.assertIn('http-context', commands)
         self.assertIn('--socket-output', commands['reactor-production-socket-output'])
         self.assertIn('coroutine-compile',commands)
         self.assertIn('tests/modules/coroutine/rust_asan.py', commands['coroutine-rust-asan'])
@@ -647,18 +647,13 @@ class Lanes(unittest.TestCase):
         for name in ['clients-pool', 'clients-http-format', 'clients-ip', 'clients-ip-text']:
             self.assertIn('--archive', commands[name])
             self.assertIn('--sanitize', commands[name])
-        self.assertIn('--archive', commands['httpbindings-settings'])
-        self.assertIn('--without-compression', commands['httpbindings-settings-without-compression'])
         self.assertNotIn('--faults', commands['clients-pool'])
         for family in ['http', 'dns', 'lifecycle', 'pool', 'resolver', 'pool_fork', 'http_connection', 'http_format', 'coro', 'async']:
             command = commands['clients-php-' + family]
             self.assertIn('--build-manifest', command)
             self.assertEqual(command.count('--engine'), 2)
-            self.assertEqual('--source-ref' in command, family != 'lifecycle')
         self.assertIn('--archive',commands['clients-policy'])
         self.assertIn('--sanitize',commands['clients-policy'])
-        self.assertIn('--archive',commands['clients-http'])
-        self.assertIn('--sanitize',commands['clients-http'])
         self.assertIn('--archive',commands['clients-codec'])
         self.assertIn('--sanitize',commands['clients-codec'])
         self.assertIn('--archive', commands['corebase-lifecycle'])
@@ -841,7 +836,6 @@ class Lanes(unittest.TestCase):
                 self.assertEqual(command[command.index('--tls-version') + 1], version)
                 self.assertIn('--tls-cert', command)
         self.assertIn('--require-all', commands['halfclose-pause-originals'])
-        self.assertIn('/src', str(commands['halfclose-tls-native']))
 
     def test_explicit_tls13_python_changes_only_tls13_client_profiles(self):
         args = SimpleNamespace(lane='integrate', module=['error'], php='php', php_extension=[],
@@ -855,7 +849,6 @@ class Lanes(unittest.TestCase):
             for version in ['1.2', '1.3']:
                 self.assertEqual(commands[prefix + '-tls' + version][0],
                                  str(args.tls13_python) if version == '1.3' else sys.executable)
-        self.assertEqual(commands['halfclose-tls-native'][0], sys.executable)
 
     def test_integration_cannot_filter_or_use_development_build(self):
         from argparse import Namespace

@@ -8,13 +8,18 @@ Opt-in feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
 `src/coroutine/system.cc`, `src/coroutine/uring_socket.cc`.
 
 All exports are allocation-free, callback-free decisions over copied scalars.
-They never read or write errno/last_error. Native code owns socket maps, objects,
+They never read or write errno/last_error. Native code owns objects,
 IO, callbacks, queues, timers, context switches, PHP function/transport
 registries and error publication. No user-buffer borrow or Rust frame survives
 a native operation, and native exceptions unwind only native frames. Public
 declarations and layouts are unchanged.
 
 ## Hooks and file locks
+
+- The hooked fds' socket map is Rust's (`hook_socket_{get,exists,insert,remove}`):
+  fd to a lent `SocketImpl *`, no reference count. A lookup sets `ENOTSOCK` when
+  absent; insert and remove hand back the socket the map let go of, which native
+  code deletes. Hooked `close` removes it only after `Socket::close()` succeeds.
 
 - `hook_no_coro` keeps the reactor/current-coroutine guard only at its existing
   call site; DNS hooks without that guard are unchanged.
@@ -102,13 +107,19 @@ are still never uninstalled.
   unless error was requested), deletes the timer and defers one completion; the
   completion or the timer removes every socket without closing its fd and resumes.
   The hooked `poll` counts a repeated fd once, through its first entry.
-- `EventWaiter` computes event bits and single-defer selection before native
-  defer runs; a deferred terminal resume may delete its owner.
 - `System::wait_event` is one Rust call, `hook_wait_event`: it masks to read/write
   (none is EINVAL), answers a zero timeout with one `poll(2)` (POLLNVAL is EBADF,
-  nothing ready is ETIMEDOUT), and otherwise runs native's `EventWaiter` through a
-  function pointer, then turns error readiness into the requested read/write bits.
-  Native sets the last error and errno it returns.
+  nothing ready is ETIMEDOUT), and otherwise parks as an `EventWaiter` whose state
+  (coroutine, fired events) is Rust's: native adds and removes the `SW_FD_CO_EVENT`
+  socket and yields, and its reactor callbacks call `hook_event_ready`, which
+  returns the coroutine to defer-resume on the first event only. Error readiness
+  becomes the requested read/write bits. Native sets the last error and errno it
+  returns.
+- `System::read_file`/`write_file` are one Rust call each, `hook_read_file` and
+  `hook_write_file`: open, flock, size, the whole read or write (`File::read_all`,
+  `write_all`, `read_content` semantics), fsync and unlock on the async pool.
+  Native creates and grows the `String` and logs each warning on the pool thread,
+  named as upstream (`System::read_file`, `File::read_all`, ...).
 - `System::wait_signal` is one Rust call, `hook_wait_signal`: the listener table,
   the EBUSY/EINVAL checks, registering through native `listen`, the park, the wake-up handler
   `hook_signal_wake` (clears the slot, records the signal, resumes) and the
