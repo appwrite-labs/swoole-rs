@@ -112,7 +112,7 @@ thread_local! {
 pub unsafe extern "C" fn swr_v1_hook_socket_close(
     fd: c_int,
     close: unsafe extern "C" fn(*mut c_void) -> bool,
-    delete: unsafe extern "C" fn(*mut c_void),
+    delete_socket: unsafe extern "C" fn(*mut c_void),
 ) -> c_int {
     let socket = swr_v1_hook_socket_get(fd);
     if socket.is_null() {
@@ -139,7 +139,7 @@ pub unsafe extern "C" fn swr_v1_hook_socket_close(
     });
     for socket in doomed {
         // SAFETY: removed from the map and used by no close still running.
-        unsafe { delete(socket) };
+        unsafe { delete_socket(socket) };
     }
     if closed { 0 } else { -1 }
 }
