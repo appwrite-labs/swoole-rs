@@ -8,9 +8,9 @@
 
 void original_buffer_append_iov();
 swoole::Global SwooleG{};
+static uint32_t random_state = 1;
 #ifndef SWR_BUFFER_HYBRID_GATE
 // The hybrid gate links the Rust archive, which defines swoole_rand.
-static uint32_t random_state = 1;
 int swoole_rand(int minimum, int maximum) {
     random_state ^= random_state << 13;
     random_state ^= random_state >> 17;
