@@ -111,26 +111,85 @@ void swr_v1_corebase_print_backtrace(void);
 int swr_v1_corebase_system_random(int min, int max, bool *read_failed);
 /* errors[0], errors[1]: errno of dup2 onto stdout, stderr; 0 on success. */
 void swr_v1_corebase_redirect_stdout(int new_fd, int *errors);
-/* Process-wide core state, the part of upstream's SwooleG Rust owns. The memory
- * pool (swoole::MemoryPool *) and stdout stream (FILE *) are native objects
- * Rust only holds. swr_v1_core_init returns false when already initialised;
- * otherwise it resets the record and sets the CPU count, DNS tries and the
- * random() seed. swr_v1_core_max_sockets: RLIMIT_NOFILE's soft limit as
- * uint32_t, capped at limit; -1 (errno kept) when getrlimit fails. */
+/* Process-wide core state: upstream's SwooleG scalars. swoole::Global's members
+ * of these names are swoole::RustField views over the accessor pairs below.
+ * Pointers (memory pool, stdout FILE *, Logger *, Server *, the AIO pipe
+ * Socket *, the fatal-error and backtrace hooks) are native objects Rust only
+ * holds. swr_v1_core_init returns false when already initialised; otherwise it
+ * resets the record and sets running, enable_coroutine, the page size, the
+ * file-content cap, the CPU count, DNS tries and the random() seed.
+ * swr_v1_core_max_sockets: RLIMIT_NOFILE's soft limit as uint32_t, capped at
+ * limit; -1 (errno kept) when getrlimit fails. */
 bool swr_v1_core_init(void);
 void swr_v1_core_reset(void);
 int64_t swr_v1_core_max_sockets(uint32_t limit);
 bool swr_v1_core_initialized(void);
 uint16_t swr_v1_core_cpu_num(void);
-bool swr_v1_core_wait_signal(void);
-void swr_v1_core_set_wait_signal(bool on);
-bool swr_v1_core_dns_lookup_random(void);
-void swr_v1_core_set_dns_lookup_random(bool on);
 int swr_v1_core_dns_tries(void);
+bool swr_v1_core_running(void);
+void swr_v1_core_set_running(bool value);
+bool swr_v1_core_enable_signalfd(void);
+void swr_v1_core_set_enable_signalfd(bool value);
+bool swr_v1_core_enable_kqueue(void);
+void swr_v1_core_set_enable_kqueue(bool value);
+bool swr_v1_core_enable_coroutine(void);
+void swr_v1_core_set_enable_coroutine(bool value);
+bool swr_v1_core_print_backtrace_on_error(void);
+void swr_v1_core_set_print_backtrace_on_error(bool value);
+bool swr_v1_core_wait_signal(void);
+void swr_v1_core_set_wait_signal(bool value);
+bool swr_v1_core_dns_lookup_random(void);
+void swr_v1_core_set_dns_lookup_random(bool value);
+long swr_v1_core_current_task_id(void);
+void swr_v1_core_set_current_task_id(long value);
+int swr_v1_core_signal_fd(void);
+void swr_v1_core_set_signal_fd(int value);
+bool swr_v1_core_signal_alarm(void);
+void swr_v1_core_set_signal_alarm(bool value);
+uint32_t swr_v1_core_signal_listener_num(void);
+void swr_v1_core_set_signal_listener_num(uint32_t value);
+uint32_t swr_v1_core_signal_async_listener_num(void);
+void swr_v1_core_set_signal_async_listener_num(uint32_t value);
+long swr_v1_core_trace_flags(void);
+void swr_v1_core_set_trace_flags(long value);
+uint32_t swr_v1_core_pagesize(void);
+void swr_v1_core_set_pagesize(uint32_t value);
+uint32_t swr_v1_core_max_file_content(void);
+void swr_v1_core_set_max_file_content(uint32_t value);
+uint32_t swr_v1_core_aio_core_worker_num(void);
+void swr_v1_core_set_aio_core_worker_num(uint32_t value);
+uint32_t swr_v1_core_aio_worker_num(void);
+void swr_v1_core_set_aio_worker_num(uint32_t value);
+uint32_t swr_v1_core_iouring_entries(void);
+void swr_v1_core_set_iouring_entries(uint32_t value);
+uint32_t swr_v1_core_iouring_workers(void);
+void swr_v1_core_set_iouring_workers(uint32_t value);
+uint32_t swr_v1_core_iouring_flag(void);
+void swr_v1_core_set_iouring_flag(uint32_t value);
+double swr_v1_core_aio_max_wait_time(void);
+void swr_v1_core_set_aio_max_wait_time(double value);
+double swr_v1_core_aio_max_idle_time(void);
+void swr_v1_core_set_aio_max_idle_time(double value);
 void *swr_v1_core_memory_pool(void);
-void swr_v1_core_set_memory_pool(void *pool);
+void swr_v1_core_set_memory_pool(void *value);
 void *swr_v1_core_stdout(void);
-void swr_v1_core_set_stdout(void *stream);
+void swr_v1_core_set_stdout(void *value);
+void *swr_v1_core_logger(void);
+void swr_v1_core_set_logger(void *value);
+void *swr_v1_core_server(void);
+void swr_v1_core_set_server(void *value);
+void *swr_v1_core_aio_default_socket(void);
+void swr_v1_core_set_aio_default_socket(void *value);
+void *swr_v1_core_fatal_error(void);
+void swr_v1_core_set_fatal_error(void *value);
+void *swr_v1_core_print_backtrace(void);
+void swr_v1_core_set_print_backtrace(void *value);
+/* SwooleG.bug_report_message: c_str() valid until it next changes; append
+ * text; init writes base.cc's banner, uname, compiler (null: none) and TLS
+ * lines. Strings are NUL-terminated. */
+const char *swr_v1_core_bug_report_message(void);
+void swr_v1_core_bug_report_append(const char *text);
+void swr_v1_core_bug_report_init(const char *banner, const char *compiler, const char *ssl);
 #ifdef __cplusplus
 }
 #endif
