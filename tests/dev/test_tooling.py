@@ -840,7 +840,6 @@ class Lanes(unittest.TestCase):
                 self.assertEqual(command[command.index('--tls-version') + 1], version)
                 self.assertIn('--tls-cert', command)
         self.assertIn('--require-all', commands['halfclose-pause-originals'])
-        self.assertIn('/src', str(commands['halfclose-tls-native']))
 
     def test_explicit_tls13_python_changes_only_tls13_client_profiles(self):
         args = SimpleNamespace(lane='integrate', module=['error'], php='php', php_extension=[],
@@ -854,7 +853,6 @@ class Lanes(unittest.TestCase):
             for version in ['1.2', '1.3']:
                 self.assertEqual(commands[prefix + '-tls' + version][0],
                                  str(args.tls13_python) if version == '1.3' else sys.executable)
-        self.assertEqual(commands['halfclose-tls-native'][0], sys.executable)
 
     def test_integration_cannot_filter_or_use_development_build(self):
         from argparse import Namespace

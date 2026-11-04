@@ -579,11 +579,6 @@ def plan(args, reports):
         script('halfclose-pause-originals', 'corpus/upstream/run.py', *php, *candidate,
                '--manifest', 'tests/modules/halfclose/pause-originals.json', '--require-all',
                *report('halfclose-pause-originals'))
-        openssl = (['--openssl-dir', subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()]
-                   if sys.platform == 'darwin' else [])
-        script('halfclose-tls-native', 'tests/modules/halfclose/tls_shutdown.py',
-               '--source', manifest.parent / 'src', '--cert', certs / 'server.crt',
-               '--key', certs / 'server.key', *openssl, *report('halfclose-tls-native'))
     if integrate:
         # 11-buffer-lifecycle hits upstream's half-close truncation, which only --fix-halfclose
         # repairs, so it fails on both engines otherwise. The PR tier runs it on a repaired build.

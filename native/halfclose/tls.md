@@ -1,6 +1,9 @@
 # Queued TLS shutdown
 
 Changes `src/network/socket.cc` (patch 0003) and `src/server/reactor_thread.cc`.
+`Socket::ssl_shutdown` runs in `crates/tls/src/socket.rs`; the halfclose patch
+20261104T005648 replaces 0003's method hunks with `SW_HALFCLOSE_TLS_SHUTDOWN`,
+which selects the repaired shutdown there.
 No public layout, signature, Rust ABI or second queue.
 
 ## Socket::ssl_shutdown
@@ -31,14 +34,12 @@ socket shutdown callers keep their own semantics.
 
 ## Test
 
-`tests/modules/halfclose/tls_shutdown.py --source PATCHED_TREE --cert CERT
---key KEY [--openssl-dir DIR] --output REPORT` compiles the extracted
-shutdown/close bodies under ASan/UBSan (system OpenSSL uninstrumented). Paired
-BIOs check payload-before-alert, one-way shutdown, peer-first, quiet mode,
-repeated close/free, unfinished handshake and nonblocking errors; a bounded BIO
-checks alert retry once capacity frees; five injected result/error pairs check
-empty-queue classification. Peer-death and non-null-reason checks from
-[expired-peer.md](expired-peer.md) bring the total to 48.
+`cargo test -p swoole-rs-tls shutdown` runs both shutdowns over real TLS 1.2
+peers. Paired BIOs check payload-before-alert, one-way shutdown, peer-first,
+quiet mode, repeated close/free, unfinished handshake and nonblocking errors; a
+bounded BIO checks alert retry once capacity frees; five injected result/error
+pairs check empty-queue classification. Peer-death and non-null-reason checks
+from [expired-peer.md](expired-peer.md) complete the old gate's checks.
 
 ## Open
 
