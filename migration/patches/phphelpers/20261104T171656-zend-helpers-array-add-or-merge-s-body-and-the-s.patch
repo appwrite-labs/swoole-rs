@@ -1,0 +1,142 @@
+diff --git a/ext-src/php_swoole_cxx.cc b/ext-src/php_swoole_cxx.cc
+index 8e254ae..3dd8332 100644
+--- a/ext-src/php_swoole_cxx.cc
++++ b/ext-src/php_swoole_cxx.cc
+@@ -61,6 +61,2 @@ zend_function *get_function(const char *fname, size_t fname_len) {
+ 
+-zend_function *get_function(const std::string &fname) {
+-    return get_function(fname.c_str(), fname.length());
+-}
+-
+ zend_function *get_function(const zend_string *fname) {
+@@ -69,101 +65,2 @@ zend_function *get_function(const zend_string *fname) {
+ 
+-#ifndef SWOOLE_RS_PHPHELPERS
+-static zend_always_inline zval *sw_zend_symtable_str_add(
+-    HashTable *ht, const char *str, size_t len, zend_ulong idx, bool numeric_key, zval *pData) {
+-    if (numeric_key) {
+-        return zend_hash_index_add(ht, idx, pData);
+-    } else {
+-        return zend_hash_str_add(ht, str, len, pData);
+-    }
+-}
+-
+-static zend_always_inline zval *sw_zend_symtable_str_find(
+-    HashTable *ht, const char *str, size_t len, zend_ulong idx, bool numeric_key) {
+-    if (numeric_key) {
+-        return zend_hash_index_find(ht, idx);
+-    } else {
+-        return zend_hash_str_find(ht, str, len);
+-    }
+-}
+-
+-static zend_always_inline zval *sw_zend_symtable_str_update(
+-    HashTable *ht, const char *str, size_t len, zend_ulong idx, bool numeric_key, zval *pData) {
+-    if (numeric_key) {
+-        return zend_hash_index_update(ht, idx, pData);
+-    } else {
+-        return zend_hash_str_update(ht, str, len, pData);
+-    }
+-}
+-#endif
+-
+-void array_add_or_merge(zval *zarray, const char *key, size_t key_len, zval *new_element) {
+-#ifdef SWOOLE_RS_PHPHELPERS
+-    zend_ulong idx = 0;
+-#else
+-    zend_ulong idx;
+-#endif
+-    bool numeric_key = ZEND_HANDLE_NUMERIC_STR(key, key_len, idx);
+-
+-    zend_array *array = Z_ARRVAL_P(zarray);
+-#ifdef SWOOLE_RS_PHPHELPERS
+-    uint32_t phase = 0;
+-    bool inserted = false, existing_array = false;
+-    zval *current_elements = nullptr;
+-    for (;;) {
+-        const auto action = swr_v1_phphelpers_merge_keyed(&phase, inserted, existing_array, numeric_key);
+-        switch (action) {
+-        case SWR_PHP_KEYED_ADD_INDEX:
+-            inserted = zend_hash_index_add(array, idx, new_element) != nullptr;
+-            break;
+-        case SWR_PHP_KEYED_ADD_STRING:
+-            inserted = zend_hash_str_add(array, key, key_len, new_element) != nullptr;
+-            break;
+-        case SWR_PHP_KEYED_FIND_INDEX:
+-            current_elements = zend_hash_index_find(array, idx);
+-            existing_array = ZVAL_IS_ARRAY(current_elements);
+-            break;
+-        case SWR_PHP_KEYED_FIND_STRING:
+-            current_elements = zend_hash_str_find(array, key, key_len);
+-            existing_array = ZVAL_IS_ARRAY(current_elements);
+-            break;
+-        case SWR_PHP_KEYED_APPEND:
+-            add_next_index_zval(current_elements, new_element);
+-            return;
+-        case SWR_PHP_KEYED_PROMOTE_INDEX:
+-        case SWR_PHP_KEYED_PROMOTE_STRING: {
+-            zval zvalue_array;
+-            array_init_size(&zvalue_array, 2);
+-            Z_ADDREF_P(current_elements);
+-            add_next_index_zval(&zvalue_array, current_elements);
+-            add_next_index_zval(&zvalue_array, new_element);
+-            if (action == SWR_PHP_KEYED_PROMOTE_INDEX) {
+-                zend_hash_index_update(array, idx, &zvalue_array);
+-            } else {
+-                zend_hash_str_update(array, key, key_len, &zvalue_array);
+-            }
+-            return;
+-        }
+-        default:
+-            return;
+-        }
+-    }
+-#else
+-    zval *zresult = sw_zend_symtable_str_add(array, key, key_len, idx, numeric_key, new_element);
+-    // Adding element failed, indicating that this key already exists and must be converted to an array
+-    if (!zresult) {
+-        zval *current_elements = sw_zend_symtable_str_find(array, key, key_len, idx, numeric_key);
+-        if (ZVAL_IS_ARRAY(current_elements)) {
+-            add_next_index_zval(current_elements, new_element);
+-        } else {
+-            zval zvalue_array;
+-            array_init_size(&zvalue_array, 2);
+-            Z_ADDREF_P(current_elements);
+-            add_next_index_zval(&zvalue_array, current_elements);
+-            add_next_index_zval(&zvalue_array, new_element);
+-            sw_zend_symtable_str_update(array, key, key_len, idx, numeric_key, &zvalue_array);
+-        }
+-    }
+-#endif
+-}
+-
+ namespace function {
+diff --git a/ext-src/php_swoole_cxx.h b/ext-src/php_swoole_cxx.h
+index c3be1da..5628d47 100644
+--- a/ext-src/php_swoole_cxx.h
++++ b/ext-src/php_swoole_cxx.h
+@@ -116,20 +116,2 @@ extern zend_string **sw_zend_known_strings;
+ 
+-/**
+- * It is safe across coroutines,
+- * add reference count, prevent the socket pointer being released
+- */
+-#define SW_CLIENT_GET_SOCKET_SAFE(__sock, __zsocket)                                                                   \
+-    SocketImpl *__sock = nullptr;                                                                                      \
+-    zend::Variable tmp_socket;                                                                                         \
+-    if (ZVAL_IS_OBJECT(__zsocket)) {                                                                                   \
+-        __sock = php_swoole_get_socket(__zsocket);                                                                     \
+-        tmp_socket.assign(__zsocket);                                                                                  \
+-    }
+-
+-#define SW_CLIENT_PRESERVE_SOCKET(__zsocket)                                                                           \
+-    zend::Variable tmp_socket;                                                                                         \
+-    if (ZVAL_IS_OBJECT(__zsocket)) {                                                                                   \
+-        tmp_socket.assign(__zsocket);                                                                                  \
+-    }
+-
+ SW_API bool php_swoole_is_enable_coroutine();
+@@ -182,3 +164,2 @@ bool php_swoole_name_resolver_add(zval *zresolver);
+ 
+-const swoole::Allocator *sw_php_allocator();
+ const swoole::Allocator *sw_zend_string_allocator();

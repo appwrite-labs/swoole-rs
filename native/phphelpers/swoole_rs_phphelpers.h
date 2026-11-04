@@ -50,15 +50,6 @@ enum SwrPhpReleaseAction { SWR_PHP_RELEASE_DONE=0, SWR_PHP_RELEASE_OBSERVE_VALUE
     SWR_PHP_RELEASE_VALUE=2, SWR_PHP_RELEASE_OBSERVE_NAME=3, SWR_PHP_RELEASE_NAME=4 };
 /* Phase0, freshly observed value-defined then name-present AFTER native dtor. */
 uint32_t swr_v1_phphelpers_release(uint32_t *, uint8_t observation);
-enum SwrPhpKeyedMergeAction { SWR_PHP_KEYED_DONE=0,
-    SWR_PHP_KEYED_ADD_INDEX=1, SWR_PHP_KEYED_ADD_STRING=2,
-    SWR_PHP_KEYED_FIND_INDEX=3, SWR_PHP_KEYED_FIND_STRING=4,
-    SWR_PHP_KEYED_APPEND=5, SWR_PHP_KEYED_PROMOTE_INDEX=6,
-    SWR_PHP_KEYED_PROMOTE_STRING=7 };
-/* Same lifecycle/observations as frozen merge; native numeric-key classification
- * precedes phase0. Rust selects API routes at the existing dispatch points. */
-uint32_t swr_v1_phphelpers_merge_keyed(uint32_t *, uint8_t inserted,
-                                    uint8_t existing_array, uint8_t numeric_key);
 uint8_t swr_v1_phphelpers_call_success(int64_t result, uint8_t coroutine);
 enum SwrPhpCallAction { SWR_PHP_CALL_NULL=0, SWR_PHP_CALL_DIRECT=1,
     SWR_PHP_CALL_COROUTINE=2, SWR_PHP_CALL_NAMED=3, SWR_PHP_CALL_RELEASE_NAME=4,
