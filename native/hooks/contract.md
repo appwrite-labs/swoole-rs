@@ -130,11 +130,14 @@ are still never uninstalled.
   `freopen`, `fread`, `fwrite`, `fgets`, `fputs`, `feof`, `fflush`, `fclose`,
   `opendir`, `readdir`, `closedir`, `open`, `fstat`, `stat`, `lstat`, `unlink`,
   `mkdir`, `rmdir`, `rename`, `fsync`, `fdatasync`, `ftruncate`, `lseek`,
-  `readlink`, `statvfs`, `access`) are Rust (`hook_<name>`). In an io_uring build
-  native still sends a coroutine's call to `Iouring` where upstream did; outside a coroutine the libc call runs in
-  place; inside one it runs through native `async` (`hook_offload`), which parks the
-  coroutine and restores the worker's errno; a refused dispatch returns the
-  function's failure value.
+  `readlink`, `statvfs`, `access`), `sleep`, `usleep`, `getaddrinfo` and
+  `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
+  hook.cc registers a host table while the library loads (`swr_v1_hook_set_host`): its
+  coroutine test, `async`, `System::sleep` and, in an io_uring build, `Iouring::host`.
+  Inside a coroutine an io_uring build sends the call to the ring where upstream did;
+  outside a coroutine the libc call runs in place; inside one it runs through native
+  `async`, which parks the coroutine and restores the worker's errno; a refused
+  dispatch returns the function's failure value. The resolver always offloads.
 - `TimerController` selects activation/addition/negative-timeout sentinel and
   enabled-only destruction. Disabled destructors and zero-timeout starts do not
   dereference `timer_pp`. Positive allocation failure leaves enabled = true with

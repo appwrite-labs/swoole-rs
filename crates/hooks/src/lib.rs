@@ -11,6 +11,7 @@
 
 pub mod address;
 pub mod buffered;
+pub mod co_io;
 pub mod co_socket;
 pub mod connect;
 pub mod dns_cache;
@@ -109,24 +110,6 @@ pub extern "C" fn swr_v1_hook_transfer(
     Transfer {
         total,
         again: (result < 0 && wait) || (result > 0 && total < requested),
-    }
-}
-
-/// Timer-controller actions: 1 enable, 2 add native timer, 4 install negative
-/// timeout sentinel, 8 delete native timer, 16 clear native pointer.
-/// operation0 starts, operation1 destroys. Native retains timer node custody.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_timer(
-    operation: u32,
-    enabled: bool,
-    present: bool,
-    sentinel: bool,
-    timeout: f64,
-) -> u32 {
-    match operation {
-        0 if timeout != 0.0 && !present => 1 | if timeout > 0.0 { 2 } else { 4 },
-        1 if enabled && present => 16 | if sentinel { 0 } else { 8 },
-        _ => 0,
     }
 }
 
@@ -378,16 +361,5 @@ mod tests {
         assert_eq!(swr_v1_hook_transition(0, 1, 1), -1);
         assert_eq!(swr_v1_hook_transition(1, 1, 1), 0);
         assert_eq!(swr_v1_hook_filter(u32::MAX, 5), u32::MAX ^ 5);
-    }
-    #[test]
-    fn timer_sentinel_and_allocation_actions() {
-        assert_eq!(swr_v1_hook_timer(0, false, false, false, 0.0), 0);
-        assert_eq!(swr_v1_hook_timer(0, false, false, false, -1.0), 5);
-        assert_eq!(swr_v1_hook_timer(0, false, false, false, f64::NAN), 5);
-        assert_eq!(swr_v1_hook_timer(0, false, false, false, 1.0), 3);
-        assert_eq!(swr_v1_hook_timer(0, false, true, false, 1.0), 0);
-        assert_eq!(swr_v1_hook_timer(1, false, true, false, 1.0), 0);
-        assert_eq!(swr_v1_hook_timer(1, true, true, false, 1.0), 24);
-        assert_eq!(swr_v1_hook_timer(1, true, true, true, -1.0), 16);
     }
 }
