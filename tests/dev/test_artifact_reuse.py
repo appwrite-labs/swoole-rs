@@ -69,7 +69,7 @@ class ArtifactReuse(unittest.TestCase):
 
     def test_loaded_minimal_profiles_capture_both_producers(self):
         for modules, phase in [(['coroutine'], 'coroutine-production-stack'),
-                               (['http','corebase'], 'http-boundary-rng'),
+                               (['http'], 'http-context'),
                                (['reactor'], 'reactor-production-builtins')]:
             with self.subTest(modules=modules):
                 args=SimpleNamespace(lane='integrate', module=modules, all_modules=False,

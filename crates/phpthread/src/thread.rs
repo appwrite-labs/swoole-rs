@@ -7,13 +7,11 @@ use crate::{
 };
 use std::{
     ffi::{CStr, c_int, c_void},
-    os::unix::thread::JoinHandleExt,
     ptr,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, AtomicI32, Ordering},
     },
-    thread::JoinHandle,
 };
 use swoole_rs_phpstubs::thread;
 use swoole_rs_zend::{
@@ -43,7 +41,8 @@ struct State {
 /// Upstream's `PhpThread`.
 #[derive(Debug, Default)]
 struct PhpThread {
-    handle: Option<JoinHandle<()>>,
+    /// The joinable OS thread, as `std::thread` holds it.
+    handle: Option<libc::pthread_t>,
     state: Arc<State>,
     constructed: bool,
 }
@@ -51,14 +50,12 @@ struct PhpThread {
 impl PhpThread {
     /// `PhpThread::join`: false when not joinable.
     fn join(&mut self) -> bool {
-        match self.handle.take() {
-            Some(handle) => {
-                // A thread's body never unwinds (C++ catches its bailouts).
-                drop(handle.join());
-                true
-            }
-            None => false,
-        }
+        let Some(handle) = self.handle.take() else {
+            return false;
+        };
+        // SAFETY: a joinable thread this object started and nobody joined.
+        unsafe { libc::pthread_join(handle, ptr::null_mut()) };
+        true
     }
 }
 
@@ -146,25 +143,6 @@ fn this(call: &Call) -> &'static mut PhpThread {
     unsafe { &mut *thread }
 }
 
-/// The stack size of a thread `std::thread` would start: the pthread default.
-fn stack_size() -> usize {
-    static SIZE: OnceLock<usize> = OnceLock::new();
-    *SIZE.get_or_init(|| {
-        // SAFETY: an all-zero attribute object is initialised below.
-        let mut attr: libc::pthread_attr_t = unsafe { std::mem::zeroed() };
-        let mut size = 0;
-        // SAFETY: a local attribute object.
-        if unsafe { libc::pthread_attr_init(&raw mut attr) } != 0 {
-            return 8 << 20;
-        }
-        // SAFETY: initialised above; `size` is writable.
-        unsafe { libc::pthread_attr_getstacksize(&raw const attr, &raw mut size) };
-        // SAFETY: initialised above.
-        unsafe { libc::pthread_attr_destroy(&raw mut attr) };
-        size
-    })
-}
-
 extern "C" fn enter(state: *mut c_void) {
     // SAFETY: the thread's closure keeps the state alive while C++ runs.
     let state = unsafe { &*state.cast::<State>() };
@@ -179,10 +157,34 @@ extern "C" fn exit(state: *mut c_void, status: c_int) {
     state.living.store(false, Ordering::Release);
 }
 
-/// A handle C++ may send to another thread.
-struct Handle(*mut c_void);
-// SAFETY: a shared table handle (an `Arc`), released by the thread.
-unsafe impl Send for Handle {}
+/// What a new thread takes: `construct` boxes it, the thread frees it.
+struct Start {
+    file: Vec<u8>,
+    /// A shared table handle (an `Arc`), released by the thread, or null.
+    argv: *mut c_void,
+    state: Arc<State>,
+}
+
+/// The OS thread's entry, as `std::thread` would run upstream's lambda: straight
+/// into C++'s body, which marks the thread alive before anything allocates (a
+/// new thread's first malloc can map an arena, and `yield.phpt` gives it 10 µs).
+extern "C" fn start(start: *mut c_void) -> *mut c_void {
+    // SAFETY: `construct` boxed it for this thread alone.
+    let start = unsafe { Box::from_raw(start.cast::<Start>()) };
+    let context = Arc::as_ptr(&start.state).cast_mut().cast();
+    // SAFETY: C++'s thread body; `start` outlives it.
+    unsafe {
+        (host().thread_run)(
+            start.file.as_ptr().cast(),
+            start.file.len(),
+            start.argv,
+            context,
+            enter,
+            exit,
+        );
+    }
+    ptr::null_mut()
+}
 
 /// `__construct(string $script_file, mixed ...$args)`.
 fn construct(call: &Call) {
@@ -200,56 +202,43 @@ fn construct(call: &Call) {
         unsafe { throw_exception(host().exception, c"exec file name is empty", INVALID_PARAMS) };
         return;
     }
-    let file = file.to_vec();
     let argv = if call.num_args() > 1 {
         let argv = Arc::<Array>::default();
         for n in 2..=call.num_args() {
             // SAFETY: in a handler, with a passed argument.
             unsafe { argv.push(call.zval(n)) };
         }
-        Handle(handle(argv))
+        handle(argv)
     } else {
-        Handle(ptr::null_mut())
+        ptr::null_mut()
     };
-    let state = Arc::clone(&thread.state);
-    let spawned = std::thread::Builder::new()
-        .stack_size(stack_size())
-        .spawn(move || {
-            let argv = argv;
-            let context = Arc::as_ptr(&state).cast_mut().cast();
-            // SAFETY: C++'s thread body; `state` outlives it.
-            unsafe {
-                (host().thread_run)(
-                    file.as_ptr().cast(),
-                    file.len(),
-                    argv.0,
-                    context,
-                    enter,
-                    exit,
-                );
-            }
-        });
-    match spawned {
-        Ok(handle) => {
-            #[expect(
-                clippy::cast_possible_wrap,
-                reason = "upstream's (zend_long) pthread_t"
-            )]
-            let id = handle.as_pthread_t() as i64;
-            thread.handle = Some(handle);
-            thread.constructed = true;
-            call.update_property_long(Some(&THREAD), c"id", id);
-        }
-        Err(error) => {
-            // `std::system_error::what()`: the OS message.
-            let text = error
-                .raw_os_error()
-                .map_or_else(|| error.to_string(), strerror);
-            let text = std::ffi::CString::new(text).unwrap_or_default();
-            // SAFETY: in a handler, with Swoole's exception class.
-            unsafe { throw_exception(host().exception, &text, SYSTEM_CALL_FAIL) };
-        }
+    let boxed = Box::into_raw(Box::new(Start {
+        file: file.to_vec(),
+        argv,
+        state: Arc::clone(&thread.state),
+    }));
+    let mut handle = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
+    // SAFETY: default attributes, as `std::thread`'s; `start` owns `boxed`.
+    let errno =
+        unsafe { libc::pthread_create(handle.as_mut_ptr(), ptr::null(), start, boxed.cast()) };
+    if errno != 0 {
+        // SAFETY: the thread never started, so the box is still ours.
+        drop(unsafe { Box::from_raw(boxed) });
+        // `std::system_error::what()`: the OS message.
+        let text = std::ffi::CString::new(strerror(errno)).unwrap_or_default();
+        // SAFETY: in a handler, with Swoole's exception class.
+        unsafe { throw_exception(host().exception, &text, SYSTEM_CALL_FAIL) };
+        return;
     }
+    // SAFETY: `pthread_create` succeeded, so it wrote the id.
+    let handle = unsafe { handle.assume_init() };
+    thread.handle = Some(handle);
+    thread.constructed = true;
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "upstream's (zend_long) pthread_t"
+    )]
+    call.update_property_long(Some(&THREAD), c"id", handle as i64);
 }
 
 fn strerror(errno: i32) -> String {
@@ -274,8 +263,13 @@ fn joinable(call: &Call) {
 }
 
 fn detach(call: &Call) {
-    // Dropping a handle detaches its thread.
-    call.set_bool(this(call).handle.take().is_some());
+    let Some(handle) = this(call).handle.take() else {
+        call.set_bool(false);
+        return;
+    };
+    // SAFETY: a joinable thread this object started.
+    unsafe { libc::pthread_detach(handle) };
+    call.set_bool(true);
 }
 
 fn get_exit_status(call: &Call) {

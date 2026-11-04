@@ -16,7 +16,6 @@ def main():
     p.add_argument('--php',default='php');p.add_argument('--php-extension',action='append',default=[])
     p.add_argument('--engine',action='append',required=True);p.add_argument('--build-manifest',type=Path)
     p.add_argument('--native-only',action='store_true',help='Prepare native controls only, passed remains false')
-    p.add_argument('--source-ref',default='HEAD',help='Frozen selected source whose patch must match manifest and current HTTP body')
     p.add_argument('--output',type=Path,required=True);a=p.parse_args()
     fixture=Path(__file__).with_suffix('.php');peer=fixture.with_name('php_http_connection_peer.php')
     report=dict(passed=False,execution_status='running',scope=__doc__,created_utc=datetime.now(timezone.utc).isoformat(),results=[])
@@ -26,7 +25,7 @@ def main():
             if len(identities)!=1 or identities[0]['rust_feature_bits']&1048576:raise ValueError('Native-only requires one unselected engine')
         else:
             if not a.build_manifest:raise ValueError('Selected HTTP connection proof requires --build-manifest')
-            report['attestation']=attest(a.build_manifest,a.source_ref,identities,'ext-src/swoole_http_client_coro.cc')
+            report['attestation']=attest(a.build_manifest,identities)
         outcomes={mode:[] for mode in ['reconnect','close-callback','throw-callback','defer','refused']}
         for engine,identity in zip(engines,identities):
             for mode in outcomes:

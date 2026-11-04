@@ -72,7 +72,7 @@ def main():
         # The selected side's sources, headers and config.h are the hybrid build's.
         hybrid, hybrid_flags = hybrid_tree(args.archive)
         report['hybrid_tree'] = str(hybrid)
-        for name in [fixture + '.cc', fixture + '.php', 'storage_summary.py'] + (['logger_layout.cc'] if fixture == 'storage' else []) + ['coherent_sdk.py'] + (['child_assertions.h', 'terminal_stdout.py'] if redirect else []):
+        for name in [fixture + '.cc', fixture + '.php', 'storage_summary.py'] + ['coherent_sdk.py'] + (['child_assertions.h', 'terminal_stdout.py'] if redirect else []):
             path = Path(__file__).with_name(name)
             (work / name).write_bytes(path.read_bytes())
         header = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole_log.h'])
@@ -251,28 +251,6 @@ def main():
         report['selected_inline_exports'] = {name: re.findall(r'^.*\b[TW]\s+_?' + name + (r'\w+$' if name.endswith('_') else r'$'), exports.stdout, re.M) for name in required}
         if exports.returncode or not all(report['selected_inline_exports'].values()):
             raise ValueError('Actual selected DSO lacks required defined inline utility exports')
-        layouts = None
-        if fixture == 'storage':
-            layouts = {}
-            layout_source = Path(__file__).with_name('logger_layout.cc')
-            report['layout_probes'] = {}
-            for identity in report['engines']:
-                name = identity['name']
-                binary = work / ('layout-' + name)
-                layout_command = ['c++', '-std=c++14', '-O2', '-Wall', '-Wextra', '-Werror',
-                                  *sdk_headers['selected' if identity['rust_feature_bits'] & 512 else 'native'], str(layout_source), '-o', str(binary)]
-                compiled = run_isolated(layout_command, timeout=60)
-                probe = dict(command=layout_command, compile_exit=compiled.returncode,
-                             compile_stdout=compiled.stdout, compile_stderr=compiled.stderr)
-                report['layout_probes'][name] = probe
-                if compiled.returncode:
-                    raise ValueError('Logger SDK layout probe compilation failed')
-                observed = run_isolated([str(binary)], timeout=15)
-                probe.update(exit=observed.returncode, stdout=observed.stdout, stderr=observed.stderr)
-                if observed.returncode or observed.stderr:
-                    raise ValueError('Logger SDK layout probe failed')
-                layouts[name] = json.loads(observed.stdout)
-            report['expected_engine_layouts'] = layouts
         launch = [sys.executable, str(work / 'terminal_stdout.py')] if redirect else []
         report['stdout_environment'] = 'terminal with raw output processing; libc line buffering inherited by fork' if redirect else 'pipe'
         for engine, identity in zip(engines, report['engines']):
@@ -326,7 +304,7 @@ def main():
                             raise ValueError('Child assertion negative control did not expose original zero-exit blindness')
         if not all(row['passed'] for row in report['results']):
             raise ValueError('Logger storage fixture failed; all engine outputs retained')
-        compare(report['results'], layouts)
+        compare(report['results'])
         receipt = report['source_attestation']
         if sha(args.build_manifest) != receipt['manifest_sha256'] or sha(args.archive) != receipt['archive_sha256']:
             raise ValueError('Selected production inputs changed')

@@ -15,13 +15,12 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--php',default='php');p.add_argument('--php-extension',action='append',default=[])
     p.add_argument('--engine',action='append',required=True);p.add_argument('--build-manifest',type=Path,required=True)
-    p.add_argument('--source-ref',required=True,help='Frozen selected source whose patch must match manifest and current DNS body')
     p.add_argument('--output',type=Path,required=True);a=p.parse_args()
     fixture=Path(__file__).with_suffix('.php');peer=fixture.with_name('php_dns_peer.php')
     report=dict(passed=False,execution_status='running',scope=__doc__,created_utc=datetime.now(timezone.utc).isoformat(),results=[])
     try:
         engines=parse_engines(a.engine,a.php,a.php_extension);identities=[engine.metadata() for engine in engines];report['engines']=identities
-        report['attestation']=attest(a.build_manifest,a.source_ref,identities,'src/network/dns.cc')
+        report['attestation']=attest(a.build_manifest,identities)
         outcomes={mode:[] for mode in ['a','aaaa','bad-id']}
         for engine,identity in zip(engines,identities):
             info=run_isolated(engine.command('--ri','swoole'),timeout=10)

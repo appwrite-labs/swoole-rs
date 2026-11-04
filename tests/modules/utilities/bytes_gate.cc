@@ -11,15 +11,28 @@
 #include <string>
 #include <vector>
 #include <unistd.h>
-#include "swoole_rs_utilities.h"
-#define sw_likely(x) (x)
+#include "swoole.h"
+#include "swoole_util.h"
 namespace original {
 #include "original.inc"
 }
+// The hybrid build's helpers, as its headers declare them.
 namespace candidate {
-#include "candidate.inc"
+using ::swoole_str_istarts_with;
+using ::swoole_str_starts_with;
+using ::swoole_strcaseeq;
+using ::swoole_streq;
+using ::swoole_strncasestr;
+using ::swoole_strnpos;
+using ::swoole_strnstr;
+using ::swoole_strrnpos;
+using ::swoole_strtolower;
+using swoole::ends_with;
+using swoole::ltrim;
+using swoole::rtrim;
+using swoole::starts_with;
+using swoole::substr_len;
 }
-#undef sw_likely
 static ptrdiff_t offset(const char *data, const char *found) { return found ? found-data : -1; }
 int main() {
     std::mt19937 random(774812);

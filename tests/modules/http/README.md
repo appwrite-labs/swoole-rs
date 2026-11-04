@@ -33,20 +33,24 @@ marked `[R]` also take `--rust-sanitize`. `tools/dev.py` registers each as an
 
 | Script | Checks |
 | --- | --- |
-| `gate.py` | URL encode/decode, boundary, method, status helpers; five unchanged original core-test bodies |
 | `proxy_gate.py` [R] | Proxy auth packing/handshake with actual base64 |
 | `static_gate.py` [R] | Static response method, send order, HEAD/keep-alive changes |
 | `conditional_gate.py` | Date callers with libc `strptime`/`gmtime`/`mktime` |
 | `rewrite_gate.py` [R] | `add_rewrite_rule`/`apply_rewrite_rules`, rewriting the Rust static context |
-| `dispatch_gate.py` [R] | Route/index/proxy-init/status bodies, TLS status buffer |
+| `dispatch_gate.py` [R] | Route and proxy-init bodies |
 | `locale_gate.py` | Case-insensitive helpers against libc `strncasecmp` across available locales |
-| `cookie_flow_gate.py` [R] (`--status-only`, `--codes-only`) | Cookie callback flow; status fallback buffer; public `int[128]` status-code array export |
+| `cookie_flow_gate.py` [R] | Cookie callback flow |
 | `context_gate.py` [R] | The whole `StaticHandler` (paths, locations, rewrites, index files and pages, ranges, content types, dates) against the pinned class |
-| `boundary_rng_gate.py --archive ARCHIVE` | Random-boundary overloads: pinned bodies against the hybrid build's `base.cc` |
 
 Locale semantic runs must be unsanitized: under ASan the macOS interceptor
 compares `C0`/`E0` with ASCII rules where libc in `en_US.ISO8859-1` treats them
 as equal. Unavailable locales are reported as unsupported.
+
+`gate.py` holds the helpers these share (`body`, `Sides`, `run`). The status, method,
+URL and boundary helpers are Rust behind thin facades, so the crate's
+`pin_helpers` tests compare them with v6.2.4's bodies instead. Upstream's own
+`http_server`, `http_parser` and `multipart_parser` GoogleTests run unchanged on
+the reference and the hybrid tree in the merge tier's `http-native-originals`.
 
 ## PHP checks
 
@@ -70,19 +74,18 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   (needs Composer Guzzle), coroutine `close_socket` (needs external HTTPS), and
   timeouts in `sendfile_client_reset`/issue 2360 (the original can stall waiting
   for more than 2 MiB from a randomly smaller file).
-- `boundary_rng_gate.py` covers only the positive 24-byte length.
 - Mixed Rust/native ASan linking fails on macOS.
 
 ## Gate audit (#482)
 
-Kept (23, now 18). Each differential gate compares pinned and patched native bodies
+Kept (23, now 17). Each differential gate compares pinned and patched native bodies
 under ASan/UBSan, most with allocation-failure or errno injection that no PHPT,
 Rust unit test or fuzz target reaches:
 `http-native` (also the five original core-test bodies), `-framing`,
 `-headers`, `-proxy`, `-static`, `-conditionals`,
 `-multipart`, `-multipart-headers`, `-multipart-emit`, `-rewrites`,
 `-dispatch`, `-locales` (libc locales), `-context`, `-request-lifecycle`,
-`-boundary-rng` (corebase base.cc) and `-cookie-flow-positive`.
+and `-cookie-flow-positive`. (`-boundary-rng` became a crates/corebase unit test, #995.)
 `-status-buffer-positive` covers the TLS status buffer across threads.
 `-status-codes-positive` covers the public `int[128]` ABI.
 

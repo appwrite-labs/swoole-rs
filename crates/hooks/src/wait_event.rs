@@ -1,17 +1,85 @@
 //! `System::wait_event(fd, events, timeout)`: wait until `fd` is readable and/or
-//! writable. A zero timeout is one `poll(2)` here; otherwise native code parks the
-//! coroutine on the reactor (`EventWaiter`) through `EventWait`. Native code keeps
-//! setting errno and the last error from the outcome.
-use crate::swr_v1_hook_wait_revents;
+//! writable. A zero timeout is one `poll(2)` here; otherwise the coroutine parks on
+//! the reactor as an `EventWaiter`, whose state is here and whose reactor socket and
+//! coroutine native code drives through `EventWaitOps`. Native code keeps setting
+//! errno and the last error from the outcome.
+use crate::{swr_v1_hook_event_waiter, swr_v1_hook_wait_revents};
+use core::ffi::c_void;
 
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_EVENT_ERROR`.
 pub(crate) const READ: i32 = 1 << 9;
 pub(crate) const WRITE: i32 = 1 << 10;
 pub(crate) const ERROR: i32 = 1 << 11;
 
-/// Parks the current coroutine until `events` fire on `fd` or `timeout` passes,
-/// storing the fired events; returns the error, or 0.
-pub type EventWait = unsafe extern "C" fn(i32, i32, f64, *mut i32) -> i32;
+/// Native code's side of an `EventWaiter`.
+#[repr(C)]
+pub struct EventWaitOps {
+    /// The current coroutine.
+    pub current: unsafe extern "C" fn() -> *mut c_void,
+    /// `make_socket(fd, SW_FD_CO_EVENT)` carrying `waiter`, added to the reactor for
+    /// `events`; null with the last error in `*error` if the reactor refuses it (the
+    /// socket is then released, not its fd).
+    pub add: unsafe extern "C" fn(
+        fd: i32,
+        events: i32,
+        waiter: *mut c_void,
+        error: *mut i32,
+    ) -> *mut c_void,
+    /// `co->yield_ex(timeout)`: 0, or the last error if it timed out or was cancelled.
+    pub park: unsafe extern "C" fn(co: *mut c_void, timeout: f64) -> i32,
+    /// Take the socket off the reactor and release it, not its fd.
+    pub remove: unsafe extern "C" fn(socket: *mut c_void),
+}
+
+/// A parked `wait_event`: its coroutine and the events fired so far.
+struct Waiter {
+    co: *mut c_void,
+    revents: u32,
+}
+
+/// The reactor fired `event` on a waiter's socket: the coroutine for native code to
+/// resume (deferred) on the first event, else null.
+///
+/// # Safety
+/// `waiter` is the socket's object, a parked `swr_v1_hook_wait_event`'s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_event_ready(waiter: *mut c_void, event: i32) -> *mut c_void {
+    // SAFETY: the waiter lives in its parked frame, and only this thread touches it.
+    let waiter = unsafe { &mut *waiter.cast::<Waiter>() };
+    let plan = swr_v1_hook_event_waiter(waiter.revents, event.cast_unsigned());
+    waiter.revents = plan.revents;
+    if plan.wake {
+        waiter.co
+    } else {
+        core::ptr::null_mut()
+    }
+}
+
+/// Park the current coroutine until `events` fire on `fd` or `timeout` passes: the
+/// fired events, or the error.
+///
+/// # Safety
+/// `ops` is native code's, callable in the current coroutine.
+unsafe fn park(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps) -> Result<u32, i32> {
+    // SAFETY: native code's.
+    let co = unsafe { (ops.current)() };
+    let mut waiter = Waiter { co, revents: 0 };
+    let mut error = 0;
+    // SAFETY: `waiter` outlives the socket, which `remove` takes off the reactor.
+    let socket = unsafe { (ops.add)(fd, events, (&raw mut waiter).cast(), &raw mut error) };
+    if socket.is_null() {
+        return Err(error);
+    }
+    // SAFETY: native code's, in the current coroutine.
+    let error = unsafe { (ops.park)(co, timeout) };
+    // SAFETY: the socket `add` made.
+    unsafe { (ops.remove)(socket) };
+    if error == 0 {
+        Ok(waiter.revents)
+    } else {
+        Err(error)
+    }
+}
 
 /// What `wait_event` returns.
 #[repr(C)]
@@ -65,13 +133,13 @@ pub(crate) fn from_poll(revents: i16) -> i32 {
 /// Waits for `events` (only `SW_EVENT_READ`/`WRITE` count) on `fd`.
 ///
 /// # Safety
-/// `wait` is native's `EventWaiter` wait, callable in the current coroutine.
+/// `ops` is native code's, callable in the current coroutine.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_wait_event(
     fd: i32,
     events: i32,
     timeout: f64,
-    wait: EventWait,
+    ops: *const EventWaitOps,
 ) -> WaitEvent {
     let events = events & (READ | WRITE);
     if events == 0 {
@@ -101,16 +169,17 @@ pub unsafe extern "C" fn swr_v1_hook_wait_event(
         };
         return failed(error, 0);
     }
-    let mut fired = 0;
-    // SAFETY: the caller passes the native wait; `fired` is writable.
-    let error = unsafe { wait(fd, events, timeout, &raw mut fired) };
-    if error != 0 {
-        return failed(0, error);
-    }
+    // SAFETY: the caller's ops, valid for the call.
+    let ops = unsafe { &*ops };
+    // SAFETY: native code's ops, callable in the current coroutine.
+    let fired = match unsafe { park(fd, events, timeout, ops) } {
+        Ok(fired) => fired,
+        Err(error) => return failed(0, error),
+    };
     let read_write = (READ | WRITE).cast_unsigned();
     let result = swr_v1_hook_wait_revents(
         events.cast_unsigned(),
-        fired.cast_unsigned(),
+        fired,
         read_write,
         ERROR.cast_unsigned(),
     );
@@ -124,19 +193,59 @@ pub unsafe extern "C" fn swr_v1_hook_wait_event(
 mod tests {
     use super::*;
 
-    unsafe extern "C" fn unused(_: i32, _: i32, _: f64, _: *mut i32) -> i32 {
-        unreachable!()
-    }
-    unsafe extern "C" fn fires_error(_: i32, _: i32, _: f64, fired: *mut i32) -> i32 {
-        unsafe { *fired = ERROR };
-        0
-    }
-    unsafe extern "C" fn times_out(_: i32, _: i32, _: f64, _: *mut i32) -> i32 {
-        libc::ETIMEDOUT
+    use std::cell::Cell;
+
+    const CO: *mut c_void = 0x10 as *mut c_void;
+    const SOCKET: *mut c_void = 0x20 as *mut c_void;
+
+    thread_local! {
+        /// The waiter `add` registered, and how many sockets are on the reactor.
+        static WAITER: Cell<*mut c_void> = const { Cell::new(core::ptr::null_mut()) };
+        static ADDED: Cell<i32> = const { Cell::new(0) };
     }
 
-    fn wait(fd: i32, events: i32, timeout: f64, how: EventWait) -> WaitEvent {
-        unsafe { swr_v1_hook_wait_event(fd, events, timeout, how) }
+    unsafe extern "C" fn current() -> *mut c_void {
+        CO
+    }
+    unsafe extern "C" fn add(fd: i32, _: i32, waiter: *mut c_void, error: *mut i32) -> *mut c_void {
+        if fd == 9 {
+            unsafe { *error = libc::EBADF };
+            return core::ptr::null_mut();
+        }
+        WAITER.set(waiter);
+        ADDED.set(ADDED.get() + 1);
+        SOCKET
+    }
+    unsafe extern "C" fn remove(socket: *mut c_void) {
+        assert_eq!(socket, SOCKET);
+        ADDED.set(ADDED.get() - 1);
+    }
+    /// The reactor fires an error then a read before the deferred resume runs.
+    unsafe extern "C" fn fires_error(co: *mut c_void, _: f64) -> i32 {
+        assert_eq!(unsafe { swr_v1_hook_event_ready(WAITER.get(), ERROR) }, co);
+        assert!(unsafe { swr_v1_hook_event_ready(WAITER.get(), READ) }.is_null());
+        0
+    }
+    unsafe extern "C" fn times_out(_: *mut c_void, _: f64) -> i32 {
+        libc::ETIMEDOUT
+    }
+    unsafe extern "C" fn unused(_: *mut c_void, _: f64) -> i32 {
+        unreachable!()
+    }
+
+    fn wait(
+        fd: i32,
+        events: i32,
+        timeout: f64,
+        park: unsafe extern "C" fn(*mut c_void, f64) -> i32,
+    ) -> WaitEvent {
+        let ops = EventWaitOps {
+            current,
+            add,
+            park,
+            remove,
+        };
+        unsafe { swr_v1_hook_wait_event(fd, events, timeout, &raw const ops) }
     }
 
     #[test]
@@ -166,5 +275,35 @@ mod tests {
 
         assert_eq!(wait(7, READ, 1.0, fires_error), ok(READ));
         assert_eq!(wait(7, READ, -1.0, times_out), failed(0, libc::ETIMEDOUT));
+        assert_eq!(wait(9, READ, 1.0, unused), failed(0, libc::EBADF));
+        assert_eq!(ADDED.get(), 0);
+    }
+
+    /// The hooks-ordered gate's `EventWaiter` scenarios (1023..1059): a waiter holding
+    /// `held` fires `event` then `WRITE`. Upstream's callback deferred a resume only
+    /// while nothing had fired yet, and published the bits after choosing.
+    #[test]
+    fn ported_event_waiter_matrix() {
+        let masks = [0, READ, WRITE, ERROR, READ | WRITE, READ | ERROR];
+        for held in masks {
+            for event in masks {
+                let mut waiter = Waiter {
+                    co: CO,
+                    revents: held.cast_unsigned(),
+                };
+                let raw = (&raw mut waiter).cast();
+                let mut wakes = 0;
+                for fired in [event, WRITE] {
+                    let co = unsafe { swr_v1_hook_event_ready(raw, fired) };
+                    if !co.is_null() {
+                        assert_eq!(co, CO);
+                        wakes += 1;
+                    }
+                }
+                let expected = usize::from(held == 0) + usize::from(held | event == 0);
+                assert_eq!(wakes, expected, "held {held} event {event}");
+                assert_eq!(waiter.revents, (held | event | WRITE).cast_unsigned());
+            }
+        }
     }
 }

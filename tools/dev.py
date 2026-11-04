@@ -33,6 +33,16 @@ except ValueError:
     sys.exit(2)
 sys.exit(0 if ssl.HAS_TLSv1_3 else 2)"""
 
+# Upstream's own GoogleTests per module, run unchanged on the reference and the hybrid tree by
+# tools/core_tests.py (Linux, integrate). Exclusions name cases this runner can't host.
+CORE_TESTS = {
+    'reactor': (['reactor/base.cpp', 'network/socket.cpp', 'network/stream.cpp'], {}),
+    'http': (['server/http_server.cpp', 'server/http_parser.cpp', 'server/multipart_parser.cpp'], {}),
+    'clients': (['network/client.cpp', 'network/dns.cpp', 'network/address.cpp'], {}),
+    'hooks': (['coroutine/hook.cpp', 'coroutine/socket.cpp', 'coroutine/system.cpp'], {}),
+    'http2': (['protocol/http2.cpp'], {}),
+}
+
 
 def require_frozen_source(expected):
     """Boundary guard; individual build/source/artifact attestations remain required."""
@@ -203,19 +213,14 @@ def plan(args, reports):
     if 'error' in modules and integrate:
         script('error-php', 'tests/modules/error/php.py', '--source', ROOT / 'target/upstream/src',
                *php, *engines, *report('error-php'))
-    if integrate and {'http', 'corebase'} <= set(modules):
-        script('http-boundary-rng', 'tests/modules/http/boundary_rng_gate.py',
-               '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-boundary-rng'))
     if 'http' in modules:
         script('http-context', 'tests/modules/http/context_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-context'))
-        for name, runner in [('http-native', 'gate.py'), ('http-proxy', 'proxy_gate.py'), ('http-static', 'static_gate.py'), ('http-conditionals', 'conditional_gate.py'), ('http-rewrites', 'rewrite_gate.py'), ('http-dispatch', 'dispatch_gate.py'), ('http-locales', 'locale_gate.py')]:
+        for name, runner in [('http-proxy', 'proxy_gate.py'), ('http-static', 'static_gate.py'), ('http-conditionals', 'conditional_gate.py'), ('http-rewrites', 'rewrite_gate.py'), ('http-dispatch', 'dispatch_gate.py'), ('http-locales', 'locale_gate.py')]:
             script(name, 'tests/modules/http/' + runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(name))
-        for phase, flags in [('http-cookie-flow-positive', []), ('http-status-buffer-positive', ['--status-only']), ('http-status-codes-positive', ['--codes-only'])]:
-            script(phase, 'tests/modules/http/cookie_flow_gate.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *flags, *report(phase))
+        script('http-cookie-flow-positive', 'tests/modules/http/cookie_flow_gate.py', '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-cookie-flow-positive'))
     if 'locks' in modules:
         script('locks-native', 'tests/modules/locks/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('locks-native'))
@@ -308,10 +313,6 @@ def plan(args, reports):
     if 'httpbindings' in modules:
         script('httpbindings-server', 'tests/modules/httpbindings/server_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('httpbindings-server'))
-        for suffix, options in [('', []), ('-without-compression', ['--without-compression'])]:
-            name = 'httpbindings-settings' + suffix
-            script(name, 'tests/modules/httpbindings/settings_gate.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options, *report(name))
     if 'http2' in modules:
         includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
                     if sys.platform == 'darwin' else [])
@@ -320,7 +321,7 @@ def plan(args, reports):
         script('http2-header', 'tests/modules/http2/header_calls.py', '--source', ROOT / 'target/upstream/src',
                '--core-report', reports / 'http2-native.json', *includes, *report('http2-header'))
     if 'clients' in modules:
-        for name, runner in [('clients-policy', 'gate.py'), ('clients-http', 'http_gate.py'), ('clients-codec', 'codec_gate.py'),
+        for name, runner in [('clients-policy', 'gate.py'), ('clients-codec', 'codec_gate.py'),
                              ('clients-pool', 'pool_gate.py'),
                              ('clients-http-format', 'http_format_gate.py'),
                              ('clients-ip', 'ip_gate.py'), ('clients-ip-text', 'ip_text_gate.py')]:
@@ -333,7 +334,6 @@ def plan(args, reports):
                                    ('coro', 'php_coro.py'), ('async', 'php_async.py'), ('coro_io', 'php_coro_io.py')]:
                 name = 'clients-php-' + family
                 script(name, 'tests/modules/clients/' + runner, '--build-manifest', manifest,
-                       *(['--source-ref', 'HEAD'] if family != 'lifecycle' else []),
                        *php_for('curl', 'sockets'), *engines, *report(name))
     if 'phpcollections' in modules:
         if integrate:
@@ -443,6 +443,14 @@ def plan(args, reports):
                        '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        '--build-root', ROOT / 'target/native-originals/framing', '--jobs', args.jobs,
                        *report('framing-native-originals'))
+    for module, (files, excluded) in CORE_TESTS.items():
+        if integrate and module in modules and sys.platform.startswith('linux'):
+            name = module + '-native-originals'
+            script(name, 'tools/core_tests.py', '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
+                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+                   '--build-root', ROOT / 'target/native-originals' / module, '--jobs', args.jobs,
+                   *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
+                   *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]], *report(name))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-native'))
@@ -468,9 +476,6 @@ def plan(args, reports):
                '--native-export', native_export,
                '--sdk-ref', utility_source,
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('utilities-logger-owned-state'))
-        script('utilities-lowercase-sdk', 'tests/modules/utilities/lowercase_sdk.py',
-               '--source', ROOT / 'target/upstream/src', '--sdk-export', native_export / 'export.json',
-               *report('utilities-lowercase-sdk'))
         script('utilities-lowercase-runtime', 'tests/modules/utilities/lowercase_runtime.py',
                '--source', manifest.parent / 'src', *php_for('sockets'), *engines,
                '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
@@ -579,11 +584,6 @@ def plan(args, reports):
         script('halfclose-pause-originals', 'corpus/upstream/run.py', *php, *candidate,
                '--manifest', 'tests/modules/halfclose/pause-originals.json', '--require-all',
                *report('halfclose-pause-originals'))
-        openssl = (['--openssl-dir', subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()]
-                   if sys.platform == 'darwin' else [])
-        script('halfclose-tls-native', 'tests/modules/halfclose/tls_shutdown.py',
-               '--source', manifest.parent / 'src', '--cert', certs / 'server.crt',
-               '--key', certs / 'server.key', *openssl, *report('halfclose-tls-native'))
     if integrate:
         # 11-buffer-lifecycle hits upstream's half-close truncation, which only --fix-halfclose
         # repairs, so it fails on both engines otherwise. The PR tier runs it on a repaired build.

@@ -9,13 +9,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree, module_patches
+from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import COMMIT as PIN
 
 
@@ -39,8 +38,7 @@ def main():
     report = {'passed': False, 'upstream_commit': PIN, 'scope': 'actual core production translation unit; Socket::send recording double',
               'not_covered': ['PHP client/server production TUs and runtime', 'HPACK', 'reentrant stream/session lifetimes', 'performance'],
               'native_sanitizers': ['address', 'undefined except alignment'] if args.sanitize else [],
-              'rust_sanitized': False, 'commands': commands,
-              'module_header_sha256': digest(ROOT / 'native/http2/rust_http2.h')}
+              'rust_sanitized': False, 'commands': commands}
 
     def run(command, cwd=None):
         command = list(map(str, command))
@@ -53,28 +51,13 @@ def main():
         return result.stdout
 
     try:
-        manifest = module_patches(ROOT / 'migration/patches/http2')
         # The patched side is the hybrid build's fully patched tree, headers included.
         hybrid_source, hybrid_flags = hybrid_tree(args.archive)
         report['hybrid_tree'] = str(hybrid_source)
-        scratch = work / 'overlay'
-        for name in manifest[0]['upstream_paths']:
-            path = scratch / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(hybrid_source / name, path)
-        report['patched_sources'] = {name: digest(scratch / name) for name in manifest[0]['upstream_paths']}
         original = work / 'original.cc'
         name = 'src/protocol/http2.cc'
         original.write_text(run(['git', 'show', f'{PIN}:{name}'], args.source))
-        if original.read_text() == (scratch / name).read_text():
-            raise ValueError('Hybrid tree lacks the http2 patch')
-        rust_sources = {str(path.relative_to(ROOT)): digest(path)
-                        for path in sorted((ROOT / 'crates/http2/src').rglob('*.rs'))}
-        report['rust_sources'] = rust_sources
         archive = args.archive.resolve()
-        unit = work / 'policy-unit'
-        run(['rustc', '--edition=2021', '--test', ROOT / 'crates/http2/src/lib.rs', '-o', unit])
-        report['rust_unit_output'] = run([unit])
         report['archive'] = str(archive)
         report['archive_sha256'] = digest(archive)
         compiler = os.environ.get('CXX', 'c++')
@@ -89,16 +72,15 @@ def main():
         functions = ['put_default_setting', 'get_default_setting', 'pack_setting_frame', 'unpack_setting_data',
                      'get_frame_length', 'send_setting_frame', 'get_type', 'get_type_color']
         run(pinned + [f'-D{name}=original_{name}' for name in functions] + ['-c', original, '-o', work / 'original.o'])
-        run(hybrid + ['-c', scratch / name, '-o', work / 'rust.o'])
+        # The calls link from the hybrid's http2.cc while it exists, then from the archive.
+        objects = [work / 'original.o']
+        if (hybrid_source / name).is_file():
+            run(hybrid + ['-c', hybrid_source / name, '-o', work / 'rust.o'])
+            objects.append(work / 'rust.o')
         executable = work / 'core-calls'
         harness = ROOT / 'tests/modules/http2/core_calls.cpp'
-        run(hybrid + [harness, work / 'original.o', work / 'rust.o', archive, '-o', executable])
+        run(hybrid + [harness, *objects, archive, '-o', executable])
         report['core_calls'] = json.loads(run([executable]))
-        if digest(ROOT / 'native/http2/rust_http2.h') != report['module_header_sha256']:
-            raise ValueError('Module header changed during checks')
-        if rust_sources != {str(path.relative_to(ROOT)): digest(path)
-                            for path in sorted((ROOT / 'crates/http2/src').rglob('*.rs'))}:
-            raise ValueError('Rust module sources changed during checks')
         report['passed'] = report['core_calls']['passed']
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'

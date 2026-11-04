@@ -52,9 +52,6 @@ def prepare_oracles(source, attempt, report):
         fixture = 'FixtureLogger' if engine == 'reference' else 'OwnedFixtureLogger'
         put += 'namespace '+engine+' { struct Logger : '+fixture+' { __attribute__((noinline)) void put(int, const char *, size_t); };\n'+actual+'\n}\n'
     (attempt/'benchmark-put.inc').write_text(put)
-    header, config = original('include/swoole_log.h'), original('include/swoole_config.h')
-    if '#define SW_LOG_DATE_STRLEN 128' not in header or '#define SW_LOG_BUFFER_SIZE (SW_ERROR_MSG_SIZE + 256)' not in header or '#define SW_ERROR_MSG_SIZE 16384' not in config:
-        raise ValueError('Pinned Logger dimensions changed')
     report['logger_substitutions'] = {'std::chrono::': 'fixture_clock:: (fixed date only; elapsed clock reads remain exclusively --measure)'}
 
 

@@ -109,7 +109,7 @@ def main():
                 run(['c++', *flags, '-c', src, '-o', obj])
                 run(['c++', *flags, ROOT / 'tests/modules/corebase/driver.cc', obj, *([archive] if engine == 'rust' else []), *link, '-o', binary])
                 report.setdefault('actual_calls', {})[engine] = prove_calls(binary,
-                    ['type_size', 'parse_stoi', 'itoa', 'hex_mode', 'dirname'],
+                    ['parse_stoi', 'hex_mode', 'dirname'],
                     engine == 'rust', run, args.output.with_suffix('.' + engine))
                 report.setdefault('rust_definitions', {})[engine] = prove_definitions(obj, binary, engine == 'rust', run)
                 test_binary = work / (engine + '-original-tests')

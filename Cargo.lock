@@ -349,6 +349,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
+ "swoole-rs-oracle",
  "swoole-rs-reactor",
  "swoole-rs-websocket",
 ]

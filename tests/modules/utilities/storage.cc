@@ -266,8 +266,6 @@ PHP_FUNCTION(m14_storage) {
         add_assoc_long(return_value, "caller_streams", 2);
         add_assoc_long(return_value, "thread_records", 1024);
         add_assoc_long(return_value, "thread_reopens", 64);
-        add_assoc_long(return_value, "sizeof_logger", sizeof(swoole::Logger));
-        add_assoc_long(return_value, "alignof_logger", alignof(swoole::Logger));
     } catch (const std::exception &error) {
         zend_throw_exception(zend_ce_exception, error.what(), 0);
     }

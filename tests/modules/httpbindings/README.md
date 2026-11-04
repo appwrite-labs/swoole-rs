@@ -17,29 +17,20 @@ form handling) is Rust over the zend crates (`crates/phphttp/src/parse.rs`);
 the pinned `swoole_http_server`, `swoole_http_server_coro` and
 `swoole_http2_server` PHPTs cover it.
 
-Each `*_gate.py` extracts the actual pinned and patched function bodies from
-`ext-src/swoole_http_*.cc`, compiles both against shared native effect facades
-(`*_oracle.h`) and the Rust archive, and compares outputs, effect order, partial
-state and fault exits. Native code always runs under ASan/UBSan.
+The `start` settings order (aliases, null/false fallthrough, the compression
+switch, refusals and reentrant rewrites) is Rust's cursor
+(`crates/httpbindings/src/settings.rs`); its unit tests compare it with
+upstream's `start` body across every subset of the twelve keys.
+
+`server_gate.py` extracts the pinned coroutine handler routing and accept loop,
+and the hybrid build's `swr_hsc_*` effects the Rust loop calls, compiles both
+against shared native effect facades (`server_oracle.h`) and the archive under
+ASan/UBSan, and compares outputs, effect order and fault exits:
 
 ```sh
-rustc --edition 2024 --crate-type staticlib -C opt-level=2 \
-  crates/httpbindings/src/lib.rs -o /private/target/libhttpbindings.a
-python3 tests/modules/httpbindings/settings_gate.py --source /readonly/pinned/git \
-  --archive /private/target/libhttpbindings.a --output /private/target/settings.json
+python3 tests/modules/httpbindings/server_gate.py --source /readonly/pinned/git \
+  --archive HYBRID/rust-prefix/lib/libswoole_rs_ffi.a --output /private/target/server.json
 ```
-
-All gates take `--source`, `--output` and either `--archive PATH` or
-`--rust-sanitize` (Linux: build an ASan Rust archive privately; std stays
-uninstrumented). `server_gate.py` needs `--archive` from a hybrid build
-(with `--rust-sanitize` it links a private ASan archive instead): their candidate side,
-including the `swoole.h`/`swoole_util.h` helpers they inline, comes from that
-build's fully patched tree, the upstream side from the pin.
-
-| Gate | Checks | Extra flags |
-|---|---|---|
-| `server_gate.py` | coroutine handler routing, whole accept loop (the Rust loop over the hybrid's `swr_hsc_*` effects) | |
-| `settings_gate.py` | coroutine server startup settings body: alias order, null/false fallthrough, level clamp | `--without-compression` |
 
 Preserved native quirks (asserted by independent witnesses, not fixed): the
 pointer-size token fast path, shrinking quote-trim bound, leading-hyphen key
