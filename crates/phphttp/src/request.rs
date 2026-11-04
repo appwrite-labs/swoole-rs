@@ -6,10 +6,7 @@ use crate::{
     send,
     state::State,
 };
-use std::{
-    ffi::{c_char, c_void},
-    sync::atomic::Ordering::Relaxed,
-};
+use std::{ffi::c_void, sync::atomic::Ordering::Relaxed};
 use swoole_rs_httpbindings::{Text, swr_v1_httpbindings_request_option};
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_zend::{
@@ -129,10 +126,8 @@ fn get_data(call: &Call) {
 }
 
 unsafe extern "C" {
-    /// `new Context()` with `upload_tmp_dir` "/tmp" and its request parser.
+    /// `new Context()` and its request parser.
     fn swr_http_host_request_new() -> *mut Context;
-    /// `ctx->upload_tmp_dir = std::string(dir, length)`.
-    fn swr_http_host_set_upload_tmp_dir(context: *mut Context, dir: *const c_char, length: usize);
 }
 
 /// `SW_Z_BEST_SPEED`.
@@ -221,10 +216,7 @@ unsafe extern "C" fn option(
             }
             // SAFETY: the converted string.
             let bytes = unsafe { string::bytes(dir) };
-            // SAFETY: a live context; C++ copies the bytes.
-            unsafe {
-                swr_http_host_set_upload_tmp_dir(context, bytes.as_ptr().cast(), bytes.len());
-            };
+            send::state(context).upload_tmp_dir = Some(crate::context::directory(bytes));
             // SAFETY: the reference `get_string` returned.
             unsafe { swr_zend_string_release(dir) };
         }

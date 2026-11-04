@@ -187,6 +187,11 @@ impl Drop for SessionState {
     fn drop(&mut self) {
         // SAFETY: the session's own codecs (or null).
         unsafe { swoole_http2_client_coro_hpack_free(self.inflater.get(), self.deflater.get()) };
+        if !self.is_coro {
+            // SAFETY: the server's settings context, made for this session
+            // alone (a coroutine server's is its connection's).
+            unsafe { swoole_rs_phphttp::http2::release_default(self.default_ctx) };
+        }
     }
 }
 

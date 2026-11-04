@@ -5,7 +5,8 @@
 //! (`ext-src/swoole_websocket_server.cc`); PHP callbacks run there, inside
 //! `zend_try` (docs/zend.md).
 use crate::{
-    host::{self, CO_SOCKET, Context, swr_http_host_close, swr_http_host_send},
+    context,
+    host::{self, CO_SOCKET, Context},
     send,
 };
 use std::{
@@ -39,7 +40,7 @@ static SERVER: Class = Class::new();
 static FRAME: Class = Class::new();
 static CLOSE_FRAME: Class = Class::new();
 /// `SW_HAVE_ZLIB`.
-static ZLIB: AtomicBool = AtomicBool::new(false);
+pub(crate) static ZLIB: AtomicBool = AtomicBool::new(false);
 
 /// `swoole::websocket::Opcode`.
 const OPCODE_CONTINUATION: u8 = 0;
@@ -154,9 +155,8 @@ unsafe extern "C" {
         args: *mut zval,
     ) -> c_int;
     fn swr_ws_host_server_zval(server: *mut Server) -> *mut zval;
-    /// Whether the server (or the coroutine server's settings) offers
-    /// permessage-deflate.
-    fn swr_ws_host_offer_compression(context: *mut Context) -> bool;
+    /// `Server::websocket_compression`: the server offers permessage-deflate.
+    fn swr_ws_host_server_compression(server: *mut c_void) -> bool;
     /// `conn->websocket_compression` of a verified connection.
     fn swr_ws_host_set_compression(server: *mut Server, fd: zend_long, compression: bool);
     fn swr_ws_host_co_protocol(context: *mut Context);
@@ -1233,11 +1233,9 @@ pub(crate) fn request(context: *mut c_void) {
         Content-Length: 83\r\n\
         Server: swoole-http-server\r\n\r\n\
         <html><body><h2>HTTP 400 Bad Request</h2><hr><i>Powered by Swoole</i></body></html>";
-    // SAFETY: a live context and the response's bytes.
-    unsafe { swr_http_host_send(context, BAD_REQUEST.as_ptr().cast(), BAD_REQUEST.len()) };
+    context::send(context, BAD_REQUEST);
     send::state(context).end = 1;
-    // SAFETY: a live context.
-    unsafe { swr_http_host_close(context) };
+    context::close(context);
 }
 
 /// The coroutine `Response::push`: a frame over the context's socket.
@@ -1266,8 +1264,7 @@ fn send_frame(context: *mut Context, frame: &FrameObject) -> Option<bool> {
         return None;
     };
     let packed = packed.bytes();
-    // SAFETY: a live context and the frame's bytes.
-    Some(unsafe { swr_http_host_send(context, packed.as_ptr().cast(), packed.len()) })
+    Some(context::send(context, packed))
 }
 
 /// The coroutine `Response::disconnect`: a close frame, then close.
@@ -1286,8 +1283,7 @@ pub(crate) fn response_disconnect(
     let Some(sent) = send_frame(context, &frame) else {
         return false;
     };
-    // SAFETY: a live context.
-    unsafe { swr_http_host_close(context) };
+    context::close(context);
     sent
 }
 
@@ -1299,9 +1295,13 @@ pub(crate) fn accept(context: *mut Context) {
     if !ZLIB.load(Relaxed) {
         return;
     }
-    // SAFETY: a live context.
-    let offered = unsafe { swr_ws_host_offer_compression(context) };
     let state = send::state(context);
+    let offered = if context::co_socket(state) {
+        state.websocket_settings & SETTING_COMPRESSION != 0
+    } else {
+        // SAFETY: the context's live server.
+        unsafe { swr_ws_host_server_compression(state.private_data) }
+    };
     let mut accepted = false;
     if offered && !state.request.zobject.ptr.is_null() {
         let name = b"sec-websocket-extensions";
@@ -1398,11 +1398,13 @@ pub unsafe extern "C" fn swr_v1_phphttp_websocket_pack(
     packed
 }
 
-/// `WebSocketSettings`' bits for `swr_v1_phphttp_websocket_recv`.
-const IN_SERVER: u32 = 1;
-const OPEN_PING_FRAME: u32 = 1 << 1;
-const OPEN_PONG_FRAME: u32 = 1 << 2;
-const OPEN_CLOSE_FRAME: u32 = 1 << 3;
+/// `WebSocketSettings`' bits for `swr_v1_phphttp_websocket_recv`, and with
+/// `compression` a coroutine server's `websocket_settings`.
+pub(crate) const IN_SERVER: u32 = 1;
+pub(crate) const OPEN_PING_FRAME: u32 = 1 << 1;
+pub(crate) const OPEN_PONG_FRAME: u32 = 1 << 2;
+pub(crate) const OPEN_CLOSE_FRAME: u32 = 1 << 3;
+pub(crate) const SETTING_COMPRESSION: u8 = 1 << 4;
 /// `SW_WEBSOCKET_DEFAULT_BUFFER`.
 const DEFAULT_BUFFER: usize = 4096;
 

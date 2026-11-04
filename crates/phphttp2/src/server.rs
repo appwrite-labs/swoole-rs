@@ -111,24 +111,7 @@ const LOG_WARNING: c_int = 4;
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
 
-/// `swr_h2s_field`.
-#[derive(Clone, Copy)]
-#[repr(C)]
-enum Field {
-    End,
-    SendHeader,
-    SendChunked,
-    Status,
-    ParseBody,
-    Form,
-    Multipart,
-    CoSocket,
-    AcceptCompression,
-    EnableCompression,
-    ContentCompressed,
-    CompressionTypes,
-    StreamId,
-}
+use swoole_rs_phphttp::http2::Field;
 
 /// `swr_h2s_value`.
 #[derive(Clone, Copy)]
@@ -142,10 +125,6 @@ enum Value {
 }
 
 unsafe extern "C" {
-    fn swr_h2s_send(ctx: *mut c_void, data: *const c_char, length: usize) -> bool;
-    fn swr_h2s_close(ctx: *mut c_void) -> bool;
-    fn swr_h2s_get(ctx: *mut c_void, field: Field) -> u32;
-    fn swr_h2s_set(ctx: *mut c_void, field: Field, value: u32);
     fn swr_h2s_zval(ctx: *mut c_void, which: Value) -> *mut zval;
     fn swr_h2s_data(ctx: *mut c_void, create: bool, length: *mut usize) -> *const c_char;
     fn swr_h2s_data_append(ctx: *mut c_void, data: *const c_char, length: usize);
@@ -161,7 +140,6 @@ unsafe extern "C" {
         value: *const c_char,
         length: usize,
     );
-    fn swr_h2s_compressible(ctx: *mut c_void, kind: *const c_char, length: usize) -> bool;
     fn swr_h2s_in_coroutine() -> bool;
     fn swr_h2s_log(level: c_int, error: c_int, func: *const c_char, message: *const c_char);
     fn swr_h2s_error(code: c_int, always: c_int, message: *const c_char);
@@ -170,23 +148,23 @@ unsafe extern "C" {
 // --- hosts, one safe call each ---
 
 fn get(ctx: *mut c_void, field: Field) -> u32 {
-    // SAFETY: a live context; a plain field read.
-    unsafe { swr_h2s_get(ctx, field) }
+    // SAFETY: a live context.
+    unsafe { swoole_rs_phphttp::http2::get(ctx, field) }
 }
 
 fn set(ctx: *mut c_void, field: Field, value: u32) {
-    // SAFETY: a live context; a plain field store.
-    unsafe { swr_h2s_set(ctx, field, value) };
+    // SAFETY: a live context.
+    unsafe { swoole_rs_phphttp::http2::set(ctx, field, value) };
 }
 
 fn send(ctx: *mut c_void, data: &[u8]) -> bool {
-    // SAFETY: a live context and `data.len()` bytes.
-    unsafe { swr_h2s_send(ctx, data.as_ptr().cast(), data.len()) }
+    // SAFETY: a live, bound context.
+    unsafe { swoole_rs_phphttp::http2::send(ctx, data) }
 }
 
 fn close(ctx: *mut c_void) {
-    // SAFETY: a live context.
-    unsafe { swr_h2s_close(ctx) };
+    // SAFETY: a live, bound context.
+    unsafe { swoole_rs_phphttp::http2::close(ctx) };
 }
 
 fn zval_of(ctx: *mut c_void, which: Value) -> *mut zval {
@@ -658,8 +636,8 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
         }
         if can_capture {
             let kind = content_type.as_ref().map_or(&b"text/html"[..], Text::bytes);
-            // SAFETY: a live context with compression types.
-            let accept = unsafe { swr_h2s_compressible(ctx, kind.as_ptr().cast(), kind.len()) };
+            // SAFETY: a live context.
+            let accept = unsafe { swoole_rs_phphttp::http2::compressible(ctx, kind) };
             set(ctx, Field::AcceptCompression, u32::from(accept));
         }
     }

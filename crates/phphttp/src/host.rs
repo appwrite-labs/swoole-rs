@@ -41,7 +41,6 @@ unsafe extern "C" {
     fn swr_http_host_log(level: c_int, error: c_int, func: *const c_char, message: *const c_char);
     pub(crate) fn swr_http_host_treat_data(arg: c_int, text: *mut c_char, array: *mut zval);
     pub(crate) fn swr_http_host_websocket_connection(context: *mut Context) -> c_int;
-    pub(crate) fn swr_http_host_upload_tmp_dir(context: *const Context) -> *const c_char;
     pub(crate) fn swr_http_host_tmpfile(path: *mut c_char) -> c_int;
     pub(crate) fn swr_http_host_http2_data(
         context: *mut Context,
@@ -50,17 +49,6 @@ unsafe extern "C" {
     pub(crate) fn swr_http_host_response_property(context: *mut Context, which: c_int)
     -> *mut zval;
     pub(crate) fn swr_http_host_after(context: *mut Context) -> bool;
-    pub(crate) fn swr_http_host_send(
-        context: *mut Context,
-        data: *const c_char,
-        length: usize,
-    ) -> bool;
-    pub(crate) fn swr_http_host_sendfile(
-        context: *mut Context,
-        file: *mut zend_string,
-        offset: i64,
-        length: usize,
-    ) -> bool;
     pub(crate) fn swr_http_host_http2(
         context: *mut Context,
         op: c_int,
@@ -80,7 +68,6 @@ unsafe extern "C" {
         code: zend_long,
         debug: *mut zend_string,
     ) -> bool;
-    pub(crate) fn swr_http_host_close(context: *mut Context) -> bool;
     pub(crate) fn swr_http_host_recv(context: *mut Context, timeout: f64, return_value: *mut zval);
 }
 

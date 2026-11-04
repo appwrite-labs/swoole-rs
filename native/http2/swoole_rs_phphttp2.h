@@ -120,30 +120,11 @@ bool swr_v1_phphttp2_server_send_body(void *ctx, const char *data, size_t length
 bool swr_v1_phphttp2_server_finish_file(void *ctx, bool trailer, bool error);
 
 /* What it asks of C++, defined by ext-src/swoole_http2_server.cc. */
-enum swr_h2s_field {
-    SWR_H2S_END,
-    SWR_H2S_SEND_HEADER,
-    SWR_H2S_SEND_CHUNKED,
-    SWR_H2S_STATUS,
-    SWR_H2S_PARSE_BODY,
-    SWR_H2S_FORM,
-    SWR_H2S_MULTIPART,
-    SWR_H2S_CO_SOCKET,
-    SWR_H2S_ACCEPT_COMPRESSION,
-    SWR_H2S_ENABLE_COMPRESSION,
-    SWR_H2S_CONTENT_COMPRESSED,
-    SWR_H2S_COMPRESSION_TYPES,
-    SWR_H2S_STREAM_ID,
-};
 enum swr_h2s_value { SWR_H2S_SERVER, SWR_H2S_HEADER, SWR_H2S_RESPONSE, SWR_H2S_GET, SWR_H2S_POST, SWR_H2S_COOKIE };
 /* A stream's new context: a copy of `default_ctx`'s settings, its request's streamId set. */
 void *swr_h2s_stream_context(void *default_ctx, int64_t fd, uint32_t stream_id);
 void swr_h2s_wait(void **coroutine);
 void swr_h2s_wake(void *coroutine);
-bool swr_h2s_send(void *ctx, const char *data, size_t length);
-bool swr_h2s_close(void *ctx);
-uint32_t swr_h2s_get(void *ctx, int field);
-void swr_h2s_set(void *ctx, int field, uint32_t value);
 struct _zval_struct *swr_h2s_zval(void *ctx, int which);
 const char *swr_h2s_data(void *ctx, bool create, size_t *length);
 void swr_h2s_data_append(void *ctx, const char *data, size_t length);
@@ -153,7 +134,6 @@ void swr_h2s_path(void *ctx, const char *path, size_t length);
 void swr_h2s_cookie(struct _zval_struct *array, const char *cookie, size_t length);
 bool swr_h2s_multipart(void *ctx, const char *value, size_t length);
 void swr_h2s_set_header(void *ctx, const char *name, size_t name_length, const char *value, size_t length);
-bool swr_h2s_compressible(void *ctx, const char *type, size_t length);
 bool swr_h2s_in_coroutine(void);
 void swr_h2s_log(int level, int error, const char *func, const char *message);
 void swr_h2s_error(int code, int always, const char *message);
