@@ -1,5 +1,5 @@
 diff --git a/ext-src/swoole_runtime.cc b/ext-src/swoole_runtime.cc
-index 46f309a..d191957 100644
+index 46f309a..71eddb1 100644
 --- a/ext-src/swoole_runtime.cc
 +++ b/ext-src/swoole_runtime.cc
 @@ -139,18 +139,2 @@ php_stream_ops swoole_runtime_socket_ops {
@@ -21,7 +21,17 @@ index 46f309a..d191957 100644
 -    nullptr,
 -};
  // clang-format on
-@@ -187,10 +171,2 @@ void php_swoole_runtime_rinit() {
+@@ -173,9 +157,2 @@ void php_swoole_runtime_minit(int module_number) {
+ 
+-    php_stream_xport_register("async.tcp", socket_create);
+-    php_stream_xport_register("async.udp", socket_create);
+-    php_stream_xport_register("async.unix", socket_create);
+-    php_stream_xport_register("async.udg", socket_create);
+-    php_stream_xport_register("async.ssl", socket_create);
+-    php_stream_xport_register("async.tls", socket_create);
+-
+     php_register_url_stream_wrapper(SW_ASYNC_FILE_PROTOCOL, &sw_php_plain_files_wrapper);
+@@ -187,10 +164,2 @@ void php_swoole_runtime_rinit() {
      }
 -    HashTable *xport_hash = php_stream_xport_get_hash();
 -    ori_factory.tcp = (php_stream_transport_factory) zend_hash_str_find_ptr(xport_hash, ZEND_STRL("tcp"));
@@ -32,7 +42,7 @@ index 46f309a..d191957 100644
 -    ori_factory.tls = (php_stream_transport_factory) zend_hash_str_find_ptr(xport_hash, ZEND_STRL("tls"));
 -
      memcpy(&ori_php_plain_files_wrapper, &php_plain_files_wrapper, sizeof(php_plain_files_wrapper));
-@@ -461,35 +437,2 @@ SW_EXTERN_C_END
+@@ -461,35 +430,2 @@ SW_EXTERN_C_END
  
 -static php_stream *socket_create_original(const char *proto,
 -                                          size_t protolen,
@@ -68,7 +78,7 @@ index 46f309a..d191957 100644
 -}
 -
  static php_stream *socket_create(const char *proto,
-@@ -504,4 +447,11 @@ static php_stream *socket_create(const char *proto,
+@@ -504,4 +440,11 @@ static php_stream *socket_create(const char *proto,
      if (sw_unlikely(Coroutine::get_current() == nullptr)) {
 -        return socket_create_original(
 -            proto, protolen, resourcename, resourcenamelen, persistent_id, options, flags, timeout, context STREAMS_CC);
@@ -82,7 +92,7 @@ index 46f309a..d191957 100644
 +            return nullptr;
 +        }
      }
-@@ -533,15 +483,2 @@ void PHPCoroutine::enable_unsafe_function() {
+@@ -533,15 +476,2 @@ void PHPCoroutine::enable_unsafe_function() {
  
 -static int32_t runtime_transport(uint32_t index, uint8_t hook) {
 -    static const char *names[] = {"tcp", "udp", "unix", "udg", "ssl", "tls"};
@@ -98,7 +108,7 @@ index 46f309a..d191957 100644
 -}
 -
  static void runtime_stream_ops(uint8_t stdio, uint8_t hook) {
-@@ -709,3 +646,3 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
+@@ -709,3 +639,3 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
      },
 -    runtime_transport,
 +    (void *) socket_create,

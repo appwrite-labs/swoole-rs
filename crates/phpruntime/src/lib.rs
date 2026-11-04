@@ -231,6 +231,7 @@ pub unsafe extern "C" fn swr_v1_phpruntime_minit(module_number: i32, ops: *const
         // SAFETY: MINIT, with the module's number.
         unsafe { register_long_constant(name, i64::from(value), module_number) };
     }
+    transport::register_async(self::ops().socket_create);
 }
 
 swoole_rs_zend::handlers! {

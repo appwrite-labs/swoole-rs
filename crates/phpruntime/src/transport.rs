@@ -11,7 +11,25 @@ use swoole_rs_zend::sys::{swr_zend_runtime_set_transport, swr_zend_runtime_trans
 /// The transports, in `HOOK_TCP` .. `HOOK_TLS` order.
 pub(crate) const NAMES: [&CStr; 6] = [c"tcp", c"udp", c"unix", c"udg", c"ssl", c"tls"];
 
+/// The names MINIT gives the coroutine factory for good.
+const ASYNC: [&CStr; 6] = [
+    c"async.tcp",
+    c"async.udp",
+    c"async.unix",
+    c"async.udg",
+    c"async.ssl",
+    c"async.tls",
+];
+
 static ORIGINAL: [AtomicPtr<c_void>; 6] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 6];
+
+/// MINIT: register `coroutine` as `async.tcp` .. `async.tls`.
+pub(crate) fn register_async(coroutine: *mut c_void) {
+    for name in ASYNC {
+        // SAFETY: a static name and C++'s factory.
+        unsafe { swr_zend_runtime_set_transport(name.as_ptr(), coroutine, false) };
+    }
+}
 
 /// RINIT, on the main thread: remember what PHP registered.
 pub(crate) fn remember() {
