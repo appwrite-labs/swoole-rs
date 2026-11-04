@@ -143,7 +143,8 @@ swr_v1_clients *swr_v1_clients_new(void *cli, const swr_v1_clients_native *nativ
 void swr_v1_clients_free(swr_v1_clients *client);
 bool swr_v1_clients_flag(const swr_v1_clients *client, uint32_t name);
 void swr_v1_clients_set_flag(swr_v1_clients *client, uint32_t name, bool value);
-void swr_v1_clients_set_watermark(swr_v1_clients *client, bool high, uint32_t value);
+/* buffer_high_watermark (high) or buffer_low_watermark, for the C++ Client's reference views. */
+uint32_t *swr_v1_clients_watermark(swr_v1_clients *client, bool high);
 int swr_v1_clients_connect(swr_v1_clients *client, const char *host, int port, double timeout, int flags);
 ssize_t swr_v1_clients_send(swr_v1_clients *client, const char *data, size_t length, int flags);
 int swr_v1_clients_sendfile(swr_v1_clients *client, const char *file, int64_t offset, size_t length);
