@@ -16,7 +16,7 @@ pub extern "C" fn swr_v1_abi_version() -> u32 {
     1
 }
 
-/// Return enabled migrated kernels; graduated ones (base64, buffer, crc32, error, framing, http, protocols, websocket, timer) are always set.
+/// Return enabled migrated kernels; graduated ones (base64, buffer, corebase, crc32, error, framing, http, protocols, websocket, timer) are always set.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_feature_bits() -> u64 {
     1 | (1 << 1)
@@ -31,7 +31,7 @@ pub extern "C" fn swr_v1_feature_bits() -> u64 {
         | (u64::from(cfg!(feature = "locks")) << 10)
         | (u64::from(cfg!(feature = "wrappers")) << 11)
         | (u64::from(cfg!(feature = "reactor")) << 14)
-        | (u64::from(cfg!(feature = "corebase")) << 13)
+        | (1 << 13)
         | (1 << 12)
         | (u64::from(cfg!(feature = "coroutine")) << 15)
         | (u64::from(cfg!(feature = "hooks")) << 16)
@@ -101,7 +101,6 @@ pub use swoole_rs_framing::{
 #[cfg(feature = "reactor")]
 pub use swoole_rs_reactor::*;
 
-#[cfg(feature = "corebase")]
 pub use swoole_rs_corebase::*;
 
 #[cfg(feature = "coroutine")]
