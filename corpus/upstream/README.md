@@ -164,7 +164,8 @@ PASSED counts as passed.
 A test the gate flags is re-run 3 times on both engines (in the `phpt-gate` job,
 unless more than 20 are flagged). If upstream fails any re-run, the test is listed
 as flaky on upstream and doesn't fail the gate, provided the hybrid passes one of its
-re-runs. If upstream passes every re-run and the hybrid fails any, it is a regression; when the
+re-runs or upstream then fails up to 9 re-runs too (a test both engines almost always
+fail, whose first upstream pass was the outlier). If upstream passes every re-run and the hybrid fails any, it is a regression; when the
 hybrid both passed and failed, upstream first gets up to 9 re-runs in all, and an upstream
 failure among them makes the test flaky on both engines instead.
 If both pass every re-run, it is listed as passed on re-run and doesn't fail the gate.

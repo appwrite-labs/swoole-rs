@@ -129,6 +129,21 @@ class PhptGate(unittest.TestCase):
         self.assertEqual(pending(['mixed'], solid, 'upstream-extended'), [])
         self.assertEqual(recheck(['mixed'], solid), (['mixed'], [], [], []))
 
+    def test_a_test_both_engines_almost_always_fail_needs_an_upstream_pass_to_gate(self):
+        def row(test, engine, status):
+            return {'test': test, 'family': 'a', 'engine': engine, 'status': status, 'category': 'other'}
+        # Upstream passed the first run, then failed a re-run; the hybrid failed all nine (#998).
+        rechecked = [row('rare', 'upstream', 'failed')] + [row('rare', 'hybrid', 'failed')] * 9
+        self.assertEqual(pending(['rare'], rechecked, 'upstream-extended'), ['rare'])
+        self.assertEqual(recheck(['rare'], rechecked), (['rare'], [], [], []))
+        # Upstream keeps re-running to nine in all, and stops at its first pass: that pass gates it.
+        allfail = rechecked + [row('rare', 'upstream', 'failed')] * 8
+        self.assertEqual(pending(['rare'], allfail, 'upstream-extended'), [])
+        self.assertEqual(recheck(['rare'], allfail), ([], ['rare'], [], []))
+        passed = rechecked + [row('rare', 'upstream', 'failed'), row('rare', 'upstream', 'passed')]
+        self.assertEqual(pending(['rare'], passed, 'upstream-extended'), [])
+        self.assertEqual(recheck(['rare'], passed), (['rare'], [], [], []))
+
     def test_the_runner_abort_is_inconclusive_on_either_engine(self):
         abort = 'PASS x [tests/x.phpt]\n...\ncorrupted double-linked list\nAborted (core dumped)\n'
         with tempfile.TemporaryDirectory() as temp:
