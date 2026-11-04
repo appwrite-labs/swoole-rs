@@ -22,30 +22,39 @@
 // SwooleG's Rust record is the extension's process state, filled by its swoole_init.
 // This probe links its own copy of the record from the archive, and PHP loads it with
 // RTLD_DEEPBIND, so the probe's copy shadows the extension's and starts empty.
-// Initialise it as swoole_init does and share the extension's memory pool, as the
-// pinned probe shares SwooleG's.
-static void *extension_memory_pool() {
-    void *pool = nullptr;
+// Initialise it as swoole_init does and share the extension's memory pool, logger and
+// fatal-error hook, as the pinned probe shares SwooleG's.
+struct ExtensionGetter {
+    const char *name;
+    void *(*own)();
+    void *value;
+};
+
+static void *extension_value(void *(*own)(), const char *name) {
+    ExtensionGetter getter{name, own, nullptr};
     dl_iterate_phdr(
         [](dl_phdr_info *object, size_t, void *out) {
+            auto *getter = static_cast<ExtensionGetter *>(out);
             void *handle = object->dlpi_name[0] ? dlopen(object->dlpi_name, RTLD_LAZY | RTLD_NOLOAD) : nullptr;
-            auto get = handle ? reinterpret_cast<void *(*) ()>(dlsym(handle, "swr_v1_core_memory_pool")) : nullptr;
+            auto get = handle ? reinterpret_cast<void *(*) ()>(dlsym(handle, getter->name)) : nullptr;
             if (handle) {
                 dlclose(handle);
             }
-            if (!get || get == &swr_v1_core_memory_pool) {
+            if (!get || get == getter->own) {
                 return 0;
             }
-            *static_cast<void **>(out) = get();
+            getter->value = get();
             return 1;
         },
-        &pool);
-    return pool;
+        &getter);
+    return getter.value;
 }
 
 __attribute__((constructor)) static void adopt_process_state() {
     swr_v1_core_init();
-    swr_v1_core_set_memory_pool(extension_memory_pool());
+    swr_v1_core_set_memory_pool(extension_value(&swr_v1_core_memory_pool, "swr_v1_core_memory_pool"));
+    swr_v1_core_set_logger(extension_value(&swr_v1_core_logger, "swr_v1_core_logger"));
+    swr_v1_core_set_fatal_error(extension_value(&swr_v1_core_fatal_error, "swr_v1_core_fatal_error"));
 }
 #endif
 

@@ -3,11 +3,11 @@
 The corebase overlay patches `src/core/base.cc` so that helper policy (type
 size, gcd/lcm, stoi env parsing, itoa/radix/hex, version compare, dirname,
 recursive mkdir), lifecycle sequencing (clean, thread init/clean, fork, task
-tmpdir) and hook insertion decisions come from Rust. Rust owns part of
-`SwooleG` (`crates/corebase/src/global.rs`): the init guard, CPU count, DNS
-options, memory pool and stdout stream, read through accessors; `swoole_init`
-calls it for those defaults. Native code keeps the rest of `SwooleG`, TLS,
-allocation, logging and callback execution. See
+tmpdir) and hook insertion decisions come from Rust. Rust owns `SwooleG`'s
+scalars and native pointers (`crates/corebase/src/global.rs`), which
+`swoole::Global` exposes as `RustField` views under their upstream names;
+`swoole_init` calls it for their defaults. Native code keeps `SwooleG`'s C++
+objects, TLS, allocation, logging and callback execution. See
 `native/corebase/contract.md`.
 
 On Homebrew macOS add `--include /opt/homebrew/opt/openssl@3/include` to the
