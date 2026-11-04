@@ -56,6 +56,40 @@ int swr_v1_hook_getaddrinfo(const char *name,
 /* The lookup's h_errno (0 if the pool refused it) becomes the caller's. */
 struct hostent *swr_v1_hook_gethostbyname(const char *name, swr_v1_hook_offload offload);
 bool swr_v1_hook_no_coro(bool reactor, bool coroutine);
+/* System::read_file / write_file: the whole operation on the pool (offload). Each
+ * warning reaches warn on the pool thread with the failing call's errno, named by
+ * the function upstream logged it from. */
+typedef enum swr_v1_hook_file_warning {
+    SWR_HOOK_FILE_OPEN_READ,      /* read_file: open(file, O_RDONLY) */
+    SWR_HOOK_FILE_LOCK_SHARED,    /* read_file: flock(file, LOCK_SH) */
+    SWR_HOOK_FILE_UNLOCK_READ,    /* read_file: flock(file, LOCK_UN) */
+    SWR_HOOK_FILE_OPEN_WRITE,     /* write_file: open(file, number = flags) */
+    SWR_HOOK_FILE_LOCK_EXCLUSIVE, /* write_file: flock(file, LOCK_EX) */
+    SWR_HOOK_FILE_SYNC,           /* write_file: fsync(file) */
+    SWR_HOOK_FILE_UNLOCK_WRITE,   /* write_file: flock(file, LOCK_UN) */
+    SWR_HOOK_FILE_PREAD,          /* File::read_all: pread(number = fd, buf, remaining, done) */
+    SWR_HOOK_FILE_PWRITE,         /* File::write_all: pwrite(number = fd, buf, remaining, done) */
+} swr_v1_hook_file_warning;
+typedef struct swr_v1_hook_file_ops {
+    void (*warn)(swr_v1_hook_file_warning warning,
+                 int error,
+                 const char *file,
+                 int number,
+                 const void *buf,
+                 size_t remaining,
+                 size_t done);
+    /* out's String (created on first use): length bytes of content, room for size; its buffer. */
+    char *(*buffer)(void *out, size_t length, size_t size);
+} swr_v1_hook_file_ops;
+void swr_v1_hook_read_file(
+    const char *file, bool lock, void *out, const swr_v1_hook_file_ops *ops, swr_v1_hook_offload offload);
+ssize_t swr_v1_hook_write_file(const char *file,
+                               const void *data,
+                               size_t length,
+                               bool lock,
+                               int flags,
+                               const swr_v1_hook_file_ops *ops,
+                               swr_v1_hook_offload offload);
 /* The hooked fds' coroutine sockets: lookups lend the pointer until the fd's
  * close or unwrap removes it; native code deletes what insert/remove hand back. */
 void *swr_v1_hook_socket_get(int fd);
@@ -93,7 +127,19 @@ swr_v1_hook_wait_plan swr_v1_hook_wait_for(uint32_t phase, double delay, bool re
 typedef struct { uint32_t revents; bool wake; } swr_v1_hook_event_plan;
 swr_v1_hook_event_plan swr_v1_hook_event_waiter(uint32_t received, uint32_t event);
 typedef struct { int32_t result; int32_t last_error; int32_t error; } swr_v1_hook_wait_event_outcome;
-swr_v1_hook_wait_event_outcome swr_v1_hook_wait_event(int32_t fd, int32_t events, double timeout, int (*wait)(int fd, int events, double timeout, int *revents));
+/* The EventWaiter's reactor socket and coroutine. add: make_socket(fd, SW_FD_CO_EVENT)
+ * carrying waiter, added for events; null with the last error in *error if refused (the
+ * socket released, not its fd). park: co->yield_ex(timeout), 0 or the last error.
+ * remove: off the reactor, released, not its fd. */
+typedef struct {
+    void *(*current)(void);
+    void *(*add)(int fd, int events, void *waiter, int *error);
+    int (*park)(void *co, double timeout);
+    void (*remove)(void *socket);
+} swr_v1_hook_event_wait_ops;
+swr_v1_hook_wait_event_outcome swr_v1_hook_wait_event(int32_t fd, int32_t events, double timeout, const swr_v1_hook_event_wait_ops *ops);
+/* The reactor fired event on a waiter's socket: the coroutine to resume (deferred), or null. */
+void *swr_v1_hook_event_ready(void *waiter, int event);
 typedef struct {
     void *(*current)(void);
     bool (*busy)(void);

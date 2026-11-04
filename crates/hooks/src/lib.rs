@@ -14,6 +14,7 @@ pub mod buffered;
 pub mod co_socket;
 pub mod connect;
 pub mod dns_cache;
+pub mod file_io;
 pub mod flock;
 pub mod lifecycle;
 pub mod packet;
