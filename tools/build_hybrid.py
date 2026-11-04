@@ -26,7 +26,7 @@ MODULES = {'websocket': ('M02', 1), 'buffer': ('M01', 2), 'timer': ('M03', 4),
            'http': ('M04', 256), 'utilities': ('M14', 512), 'locks': ('M16', 1024), 'wrappers': ('M17', 2048), 'framing': ('M18', 4096), 'corebase': ('M19', 8192), 'reactor': ('M05', 16384), 'coroutine': ('M06', 32768), 'hooks': ('M07', 65536), 'ossupport': ('M20', 131072), 'tls': ('M21', 262144), 'process': ('M08', 524288), 'clients': ('M22', 1048576), 'httpbindings': ('M23', 2097152), 'http2': ('M24', 4194304), 'ports': ('M25', 8388608), 'phphelpers': ('M26', 16777216), 'phpcollections': ('M27', 33554432), 'phpevents': ('M28', 67108864), 'phpcoroutines': ('M29', 134217728)}
 # Graduated modules (docs/migration.md#graduation) are part of every Rust build:
 # no --module or configure switch, and no cargo feature.
-GRADUATED = ('base64', 'buffer', 'crc32', 'error', 'framing', 'http', 'protocols', 'websocket', 'timer')
+GRADUATED = ('base64', 'buffer', 'corebase', 'crc32', 'error', 'framing', 'http', 'protocols', 'websocket', 'timer')
 SELECTABLE = sorted(set(MODULES) - set(GRADUATED))
 # The integration patch that adds the --with(out)-swoole-rs switch; later patches to
 # the same files call into Rust.

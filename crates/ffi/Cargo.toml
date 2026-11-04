@@ -24,8 +24,6 @@ wrappers = ["dep:swoole-rs-wrappers"]
 
 reactor = ["dep:swoole-rs-reactor", "dep:swoole-rs-tls"]
 
-corebase = ["dep:swoole-rs-corebase", "swoole-rs-corebase/upstream-symbols"]
-
 coroutine = ["dep:swoole-rs-coroutine"]
 
 hooks = ["dep:swoole-rs-hooks", "dep:swoole-rs-phpruntime"]
@@ -73,7 +71,7 @@ swoole-rs-wrappers = { path = "../wrappers", optional = true }
 swoole-rs-framing = { path = "../framing" }
 swoole-rs-server = { path = "../server" }
 swoole-rs-reactor = { path = "../reactor", optional = true }
-swoole-rs-corebase = { path = "../corebase", optional = true }
+swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-coroutine = { path = "../coroutine", optional = true }
 swoole-rs-hooks = { path = "../hooks", optional = true }
 swoole-rs-phpruntime = { path = "../phpruntime", optional = true }
