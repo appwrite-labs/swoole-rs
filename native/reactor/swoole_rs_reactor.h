@@ -245,7 +245,6 @@ bool swr_v1_socket_tcp_nodelay(int fd, int nodelay);
 swr_v1_socket_option_result swr_v1_socket_cork(int fd, swr_v1_socket_cork_state *state);
 swr_v1_socket_option_result swr_v1_socket_uncork(int fd, bool enable_tcp_nodelay, swr_v1_socket_cork_state *state);
 bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
-bool swr_v1_socket_kernel_timeout(int fd, bool send, double timeout);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
  * write_timeout), embedded in this order (Socket static_asserts it). set_timeout
  * writes timeout into each SW_TIMEOUT_* bit of kind unless timeout is 0;
