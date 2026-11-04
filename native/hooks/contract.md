@@ -8,13 +8,18 @@ Opt-in feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
 `src/coroutine/system.cc`, `src/coroutine/uring_socket.cc`.
 
 All exports are allocation-free, callback-free decisions over copied scalars.
-They never read or write errno/last_error. Native code owns socket maps, objects,
+They never read or write errno/last_error. Native code owns objects,
 IO, callbacks, queues, timers, context switches, PHP function/transport
 registries and error publication. No user-buffer borrow or Rust frame survives
 a native operation, and native exceptions unwind only native frames. Public
 declarations and layouts are unchanged.
 
 ## Hooks and file locks
+
+- The hooked fds' socket map is Rust's (`hook_socket_{get,exists,insert,remove}`):
+  fd to a lent `SocketImpl *`, no reference count. A lookup sets `ENOTSOCK` when
+  absent; insert and remove hand back the socket the map let go of, which native
+  code deletes. Hooked `close` removes it only after `Socket::close()` succeeds.
 
 - `hook_no_coro` keeps the reactor/current-coroutine guard only at its existing
   call site; DNS hooks without that guard are unchanged.

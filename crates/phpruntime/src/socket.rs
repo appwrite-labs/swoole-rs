@@ -68,8 +68,6 @@ unsafe extern "C" {
     fn swoole_runtime_x509_read(pem: *const c_char, length: size_t, retval: *mut zval) -> u8;
     fn swoole_runtime_error(kind: c_int, level: c_int, message: *const c_char) -> u8;
     fn swoole_runtime_check_reactor();
-    fn swoole_runtime_fd_socket(fd: c_int, holder: *mut *mut c_void) -> *mut c_void;
-    fn swoole_runtime_fd_socket_release(holder: *mut c_void);
     fn swoole_runtime_socket_poll(socket: *mut c_void, write: bool, timeout: f64) -> bool;
     fn swoole_runtime_strerror(code: c_int) -> *const c_char;
     fn swoole_runtime_coroutine_check() -> u8;
@@ -118,20 +116,18 @@ pub(crate) enum Io {
 /// `SW_WAIT`.
 pub(crate) const SW_WAIT: i32 = 2;
 
-/// A `SocketImpl *`: owned (deleted on drop), or a hooked fd's, kept alive
-/// by a `shared_ptr` the drop releases.
+/// A `SocketImpl *`: owned (deleted on drop), or a hooked fd's, lent by the
+/// socket map until the fd's hooked close.
 pub(crate) struct Socket {
     socket: NonNull<c_void>,
-    holder: Option<NonNull<c_void>>,
+    owned: bool,
 }
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        match self.holder {
-            // SAFETY: the holder `swoole_runtime_fd_socket` made, released once.
-            Some(holder) => unsafe { swoole_runtime_fd_socket_release(holder.as_ptr()) },
+        if self.owned {
             // SAFETY: the socket is owned and live.
-            None => unsafe { swoole_runtime_socket_free(self.raw()) },
+            unsafe { swoole_runtime_socket_free(self.raw()) };
         }
     }
 }
@@ -147,28 +143,28 @@ impl Socket {
     pub(crate) fn from_fd(fd: i32, domain: i32, kind: i32, protocol: i32) -> Option<Self> {
         // SAFETY: plain construction; the socket owns the fd.
         let socket = unsafe { swoole_runtime_socket_from_fd(fd, domain, kind, protocol) };
-        Self::wrap(socket, None)
+        Self::wrap(socket, true)
     }
 
     /// The coroutine socket of hooked `fd`, if any.
     pub(crate) fn of_fd(fd: i32) -> Option<Self> {
-        let mut holder = std::ptr::null_mut();
-        // SAFETY: a lookup; the holder keeps the socket alive until dropped.
-        let socket = unsafe { swoole_runtime_fd_socket(fd, &raw mut holder) };
-        Self::wrap(socket, Some(NonNull::new(holder)?))
+        Self::wrap(
+            swoole_rs_hooks::socket_map::swr_v1_hook_socket_get(fd),
+            false,
+        )
     }
 
-    fn wrap(socket: *mut c_void, holder: Option<NonNull<c_void>>) -> Option<Self> {
+    fn wrap(socket: *mut c_void, owned: bool) -> Option<Self> {
         Some(Self {
             socket: NonNull::new(socket)?,
-            holder,
+            owned,
         })
     }
 
     /// Own `socket`, a fresh `SocketImpl *` or null; `None` when it is null or
     /// has no fd.
     fn owned(socket: *mut c_void) -> Option<Self> {
-        let socket = Self::wrap(socket, None)?;
+        let socket = Self::wrap(socket, true)?;
         (socket.fd() >= 0).then_some(socket)
     }
 
@@ -306,7 +302,7 @@ impl Socket {
     /// `accept()`: the connection, if any.
     pub(crate) fn accept(&self) -> Option<Self> {
         // SAFETY: a live socket; the connection is new and owned.
-        Self::wrap(unsafe { swoole_runtime_socket_accept(self.raw()) }, None)
+        Self::wrap(unsafe { swoole_runtime_socket_accept(self.raw()) }, true)
     }
 
     pub(crate) fn shutdown(&self, how: i32) -> bool {
