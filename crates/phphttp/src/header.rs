@@ -75,6 +75,28 @@ pub(crate) fn minit(ce: *mut zend_class_entry) {
     }
 }
 
+/// `swoole_http_init_and_read_property`: the response's `header`, `cookie`
+/// or `trailer` array (`host::HEADER`, `COOKIE`, `TRAILER`), made on first use.
+pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
+    let response = &mut state.response;
+    let slot = match which {
+        host::HEADER => &mut response.zheader,
+        host::COOKIE => &mut response.zcookie,
+        _ => &mut response.ztrailer,
+    };
+    if slot.ptr.is_null() {
+        // SAFETY: the response's live object zval.
+        let object: *mut zend_object = unsafe { value::obj_of(response.zobject.ptr) };
+        let offset = OFFSETS[usize::try_from(which).unwrap_or(2).min(2)].load(Relaxed);
+        // SAFETY: a declared property slot of that object.
+        let array = unsafe { swoole_rs_zend::sys::swr_zend_http_property_array(object, offset, 8) };
+        // SAFETY: the array zval just initialised.
+        slot.value = unsafe { *array };
+        slot.ptr = &raw mut slot.value;
+    }
+    slot.ptr
+}
+
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`.
 fn property(state: &State, which: usize) -> *mut zval {
     // SAFETY: the response's live object zval.

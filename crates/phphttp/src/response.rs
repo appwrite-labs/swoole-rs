@@ -6,7 +6,7 @@ use crate::{
         self, CO_SOCKET, COOKIE, Context, DETACHED, END, HEADER, HEADER_KEY_SIZE,
         HTTP_CONTEXT_UNAVAILABLE, HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED,
         TRAILER, UPGRADE, WEBSOCKET, swr_http_host_after, swr_http_host_goaway, swr_http_host_recv,
-        swr_http_host_redirect, swr_http_host_response_property,
+        swr_http_host_redirect,
     },
     send, websocket,
 };
@@ -194,8 +194,7 @@ fn nullable(string: Option<*mut zend_string>) -> *mut zend_string {
 }
 
 fn property(ctx: *mut Context, which: i32) -> *mut swoole_rs_zend::sys::zval {
-    // SAFETY: a live context whose response object is live.
-    unsafe { swr_http_host_response_property(ctx, which) }
+    crate::header::response_property(send::state(ctx), which)
 }
 
 fn init_header(call: &Call) {

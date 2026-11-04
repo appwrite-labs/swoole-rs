@@ -154,15 +154,10 @@ void swr_h2s_file_content_free(void *owner);
 const char *swr_h2s_mime_type(const char *path, size_t length);
 
 /* What it asks of C++, defined by ext-src/swoole_http2_server.cc. */
-enum swr_h2s_value { SWR_H2S_SERVER, SWR_H2S_HEADER, SWR_H2S_RESPONSE, SWR_H2S_GET, SWR_H2S_POST, SWR_H2S_COOKIE };
 /* A stream's new context: a copy of `default_ctx`'s settings, its request's streamId set. */
 void *swr_h2s_stream_context(void *default_ctx, int64_t fd, uint32_t stream_id);
 void swr_h2s_wait(void **coroutine);
 void swr_h2s_wake(void *coroutine);
-struct _zval_struct *swr_h2s_zval(void *ctx, int which);
-const char *swr_h2s_data(void *ctx, bool create, size_t *length);
-void swr_h2s_data_append(void *ctx, const char *data, size_t length);
-bool swr_h2s_body(void *ctx, bool multipart);
 void swr_h2s_query(struct _zval_struct *array, const char *query, size_t length);
 void swr_h2s_path(void *ctx, const char *path, size_t length);
 void swr_h2s_cookie(struct _zval_struct *array, const char *cookie, size_t length);

@@ -53,7 +53,12 @@ pub(crate) struct Request {
     pub(crate) zdata: zval,
     pub(crate) body_at: *const c_char,
     pub(crate) body_length: usize,
-    h2_data_buffer: *mut c_void,
+    /// An HTTP/2 request's body, as its DATA frames arrive.
+    #[expect(
+        clippy::box_collection,
+        reason = "all zeroes must be valid: a null Box is None"
+    )]
+    pub(crate) h2_data: Option<Box<Vec<u8>>>,
     pub(crate) zobject: Slot,
     pub(crate) zserver: Slot,
     pub(crate) zheader: Slot,
@@ -170,9 +175,9 @@ pub(crate) struct Response {
     pub(crate) status: c_int,
     pub(crate) reason: *mut c_char,
     pub(crate) zobject: Slot,
-    zheader: Slot,
-    zcookie: Slot,
-    ztrailer: Slot,
+    pub(crate) zheader: Slot,
+    pub(crate) zcookie: Slot,
+    pub(crate) ztrailer: Slot,
 }
 
 /// `SWR_PHPHTTP_PARSE_SIZE` and `SWR_PHPHTTP_STATE_SIZE`.

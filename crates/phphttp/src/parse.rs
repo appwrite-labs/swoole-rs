@@ -999,7 +999,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_multipart_init(
 }
 
 /// `Context::parse_multipart_data`.
-fn multipart_parse(state: &mut State, at: *const u8, length: usize) -> bool {
+pub(crate) fn multipart_parse(state: &mut State, at: *const u8, length: usize) -> bool {
     let parser = state.mt_parser;
     // SAFETY: the context's multipart parser and `length` readable bytes.
     let parsed = unsafe { multipart_parser_execute(parser, at.cast(), length) };
@@ -1478,11 +1478,10 @@ pub(crate) fn body(state: *mut State) -> Option<&'static [u8]> {
         // SAFETY: the context owns the buffer while the request object lives.
         return Some(unsafe { std::slice::from_raw_parts(chunked.as_ptr(), chunked.len()) });
     }
-    let mut length = 0;
-    // SAFETY: a live context and a writable length.
-    let data = unsafe { host::swr_http_host_http2_data(state.cast(), &raw mut length) };
-    // SAFETY: the HTTP/2 data buffer holds `length` bytes.
-    (!data.is_null()).then(|| unsafe { std::slice::from_raw_parts(data.cast(), length) })
+    // SAFETY: a live context, which owns the buffer while the request object lives.
+    let data = unsafe { (*state).request.h2_data.as_ref() }?;
+    // SAFETY: as above.
+    (!data.is_empty()).then(|| unsafe { std::slice::from_raw_parts(data.as_ptr(), data.len()) })
 }
 
 /// `llhttp_method_name(parser.method)`.

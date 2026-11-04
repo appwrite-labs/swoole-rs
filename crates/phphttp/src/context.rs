@@ -171,7 +171,7 @@ unsafe extern "C" {
     /// The server still holds the session's connection, neither closed nor
     /// closed by the peer.
     fn swr_http_host_connection_open(server: *mut c_void, fd: i64) -> bool;
-    /// Free what C++ owns (the write and HTTP/2 data buffers) and the context.
+    /// Free what C++ owns of the context, and the context.
     fn swr_http_host_context_delete(ctx: *mut Context);
 }
 
@@ -434,6 +434,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_context_free(ctx: *mut Context) {
     }
     state.write_buffer = None;
     state.compressed = None;
+    state.request.h2_data = None;
     state.upload_tmp_dir = None;
     state.compression_types = None;
     // SAFETY: nothing references the context any more.

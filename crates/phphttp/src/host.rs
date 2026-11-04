@@ -19,7 +19,7 @@ pub(crate) const CO_SOCKET: u32 = 1 << 5;
 pub(crate) const UPGRADE: u32 = 1 << 6;
 pub(crate) const WEBSOCKET: u32 = 1 << 7;
 
-/// `swr_http_host_response_property`'s properties.
+/// The response's array properties (`header::response_property`).
 pub(crate) const HEADER: c_int = 0;
 pub(crate) const COOKIE: c_int = 1;
 pub(crate) const TRAILER: c_int = 2;
@@ -42,12 +42,6 @@ unsafe extern "C" {
     pub(crate) fn swr_http_host_treat_data(arg: c_int, text: *mut c_char, array: *mut zval);
     pub(crate) fn swr_http_host_websocket_connection(context: *mut Context) -> c_int;
     pub(crate) fn swr_http_host_tmpfile(path: *mut c_char) -> c_int;
-    pub(crate) fn swr_http_host_http2_data(
-        context: *mut Context,
-        length: *mut usize,
-    ) -> *const c_char;
-    pub(crate) fn swr_http_host_response_property(context: *mut Context, which: c_int)
-    -> *mut zval;
     pub(crate) fn swr_http_host_after(context: *mut Context) -> bool;
     pub(crate) fn swr_http_host_http2(
         context: *mut Context,
