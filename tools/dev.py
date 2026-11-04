@@ -34,13 +34,21 @@ except ValueError:
 sys.exit(0 if ssl.HAS_TLSv1_3 else 2)"""
 
 # Upstream's own GoogleTests per module, run unchanged on the reference and the hybrid tree by
-# tools/core_tests.py (Linux, integrate). Exclusions name cases this runner can't host.
+# tools/core_tests.py (Linux, integrate): files, excluded cases with the reason, fixtures.
+NETWORK, PROXY = 'needs external DNS and network', 'needs a local HTTP or SOCKS5 proxy service'
 CORE_TESTS = {
-    'reactor': (['reactor/base.cpp', 'network/socket.cpp', 'network/stream.cpp'], {}),
-    'http': (['server/http_server.cpp', 'server/http_parser.cpp', 'server/multipart_parser.cpp'], {}),
-    'clients': (['network/client.cpp', 'network/dns.cpp', 'network/address.cpp'], {}),
-    'hooks': (['coroutine/hook.cpp', 'coroutine/socket.cpp', 'coroutine/system.cpp'], {}),
-    'http2': (['protocol/http2.cpp'], {}),
+    'reactor': (['network/socket.cpp', 'network/stream.cpp'], {}, {}),
+    'http': (['server/http_server.cpp', 'server/http_parser.cpp', 'server/multipart_parser.cpp'],
+             {'http_server.node_websocket_client_1': 'needs Node.js and its ws package',
+              'http_server.node_websocket_client_2': 'needs Node.js and its ws package'}, {}),
+    'clients': (['network/dns.cpp', 'network/address.cpp'],
+                {'dns.lookup1': NETWORK, 'dns.lookup_ipv6': NETWORK, 'dns.bad_family': NETWORK}, {}),
+    'hooks': (['coroutine/hook.cpp', 'coroutine/socket.cpp', 'coroutine/system.cpp'],
+              {'coroutine_socket.tcp6': 'needs IPv6', 'coroutine_system.getaddrinfo': NETWORK,
+               **{'coroutine_socket.' + name: PROXY for name in [
+                   'https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy', 'https_get_with_http_proxy']}},
+              {'core/base.cpp': 'base.file_put_contents'}),
+    'http2': (['protocol/http2.cpp'], {'http2.ssl': 'needs the nghttp2 client'}, {}),
 }
 
 
@@ -443,14 +451,15 @@ def plan(args, reports):
                        '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        '--build-root', ROOT / 'target/native-originals/framing', '--jobs', args.jobs,
                        *report('framing-native-originals'))
-    for module, (files, excluded) in CORE_TESTS.items():
+    for module, (files, excluded, fixtures) in CORE_TESTS.items():
         if integrate and module in modules and sys.platform.startswith('linux'):
             name = module + '-native-originals'
             script(name, 'tools/core_tests.py', '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                    '--build-root', ROOT / 'target/native-originals' / module, '--jobs', args.jobs,
                    *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
-                   *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]], *report(name))
+                   *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]],
+                   *[arg for file, case in fixtures.items() for arg in ['--fixture', 'core-tests/src/' + file + '=' + case]], *report(name))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-native'))
