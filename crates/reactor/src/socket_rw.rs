@@ -119,6 +119,7 @@ const WAIT: c_int = 2;
 const CLOSE: c_int = 3;
 const ERROR: c_int = 4;
 const INVALID: c_int = 6;
+const REDUCE_SIZE: c_int = 7;
 
 /// `Socket::catch_error`: what an errno (or Swoole TLS error) means for the socket.
 /// `ENOBUFS` waits and sets `*kernel_nobufs`; `EFAULT` aborts, as upstream does.
@@ -156,6 +157,30 @@ pub unsafe extern "C" fn swr_v1_socket_catch_error(
             WAIT
         }
         _ => ERROR,
+    }
+}
+
+/// `Socket::catch_write_pipe_error`: a pipe write that is too large reduces its
+/// size (`EMSGSIZE`, and on Linux `ENOBUFS`, which also sets `*kernel_nobufs`);
+/// anything else is [`swr_v1_socket_catch_error`]'s.
+///
+/// # Safety
+/// `kernel_nobufs` points to a writable bool.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_socket_catch_pipe_error(
+    error: c_int,
+    kernel_nobufs: *mut bool,
+) -> c_int {
+    match error {
+        libc::EMSGSIZE => REDUCE_SIZE,
+        #[cfg(target_os = "linux")]
+        libc::ENOBUFS => {
+            // SAFETY: the caller lends a writable bool.
+            unsafe { *kernel_nobufs = true };
+            REDUCE_SIZE
+        }
+        // SAFETY: as the caller promises.
+        _ => unsafe { swr_v1_socket_catch_error(error, kernel_nobufs) },
     }
 }
 
@@ -412,6 +437,24 @@ mod tests {
         assert_eq!(classify(libc::EBADF), INVALID);
         assert_eq!(classify(libc::EINVAL), ERROR);
         assert_eq!(classify(libc::ENOBUFS), WAIT);
+        assert!(nobufs, "ENOBUFS records kernel_nobufs");
+    }
+
+    #[test]
+    fn pipe_errors_reduce_the_size() {
+        let mut nobufs = false;
+        // SAFETY: `nobufs` is a local.
+        let mut classify =
+            |error| unsafe { swr_v1_socket_catch_pipe_error(error, &raw mut nobufs) };
+        assert_eq!(classify(libc::EMSGSIZE), REDUCE_SIZE);
+        assert_eq!(classify(libc::EAGAIN), WAIT);
+        assert_eq!(classify(libc::EPIPE), CLOSE);
+        let expected = if cfg!(target_os = "linux") {
+            REDUCE_SIZE
+        } else {
+            WAIT
+        };
+        assert_eq!(classify(libc::ENOBUFS), expected);
         assert!(nobufs, "ENOBUFS records kernel_nobufs");
     }
 

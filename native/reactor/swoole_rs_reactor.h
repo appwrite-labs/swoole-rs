@@ -361,10 +361,26 @@ typedef struct {
 } swr_v1_socket_sync_hooks;
 ssize_t swr_v1_socket_sync(const swr_v1_socket_sync_hooks *hooks, int kind, void *buffer, size_t length, int flags, int event, int timeout_ms);
 int swr_v1_socket_catch_error(int error, bool *kernel_nobufs);
+/* catch_write_pipe_error: EMSGSIZE, and ENOBUFS on Linux (setting *kernel_nobufs),
+ * reduce the size; anything else is swr_v1_socket_catch_error's. */
+int swr_v1_socket_catch_pipe_error(int error, bool *kernel_nobufs);
 /* network::Socket's swSocketType <-> (domain, type), and the type a host names
  * with how many leading bytes convert_to_type erases. */
 typedef struct { int socket_type; size_t erase; } swr_v1_socket_host_type_plan;
 int swr_v1_socket_type(int domain, int kind);
+/* Each swSocketType's classes (Socket::is_stream ... is_local), indexed by the type. */
+enum {
+    SWR_SOCKET_STREAM = 1,
+    SWR_SOCKET_DGRAM = 1 << 1,
+    SWR_SOCKET_INET4 = 1 << 2,
+    SWR_SOCKET_INET6 = 1 << 3,
+    SWR_SOCKET_TCP = 1 << 4,
+    SWR_SOCKET_LOCAL = 1 << 5,
+};
+extern const uint8_t swr_v1_socket_type_classes[16];
+static inline bool swr_v1_socket_type_is(int socket_type, uint8_t classes) {
+    return (unsigned) socket_type < 16 && (swr_v1_socket_type_classes[socket_type] & classes);
+}
 bool swr_v1_socket_domain_and_type(int socket_type, int *domain, int *kind);
 swr_v1_socket_host_type_plan swr_v1_socket_host_type(const uint8_t *host, size_t length);
 /* swoole::socket: socket(2) with SW_SOCK_NONBLOCK/SW_SOCK_CLOEXEC applied. */
