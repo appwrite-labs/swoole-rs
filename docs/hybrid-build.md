@@ -14,7 +14,9 @@ clone. Do not edit the reference to develop a patch.
 ## Editing patches
 
 Each module's patches are a branch of the pinned upstream, one commit per patch
-file named after it:
+file named after it, over a `base: …` commit holding the patches every build
+applies first (the modules ahead of it that it depends on, the graduated ones
+and M00), so a module can edit lines an earlier module already changed:
 
 ```sh
 python3 tools/patches.py checkout phphelpers   # target/patches/phphelpers, branch patches/phphelpers

@@ -265,29 +265,6 @@ pub extern "C" fn swr_v1_phphttp2_session_free(fd: i64) {
     drop(session);
 }
 
-/// Hold the stream of `ctx` (and so `ctx`) while C++ works on it across
-/// coroutine switches; null if it has none.
-/// # Safety
-/// `ctx` is a live HTTP/2 context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_stream_hold(ctx: *mut c_void) -> *const c_void {
-    // SAFETY: a live context.
-    let id = unsafe { swoole_rs_phphttp::http2::stream_id(ctx) };
-    SessionState::of(ctx)
-        .and_then(|session| session.stream(id, false))
-        .map_or(std::ptr::null(), |stream| Rc::into_raw(stream).cast())
-}
-
-/// # Safety
-/// `stream` came from `swr_v1_phphttp2_stream_hold` (or is null), released once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_stream_release(stream: *const c_void) {
-    if !stream.is_null() {
-        // SAFETY: per the caller.
-        drop(unsafe { Rc::from_raw(stream.cast::<StreamState>()) });
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

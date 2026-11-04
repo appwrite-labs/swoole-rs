@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Edit a module's upstream patches as a Git branch: one commit per patch file.
 
-  patches.py checkout MODULE   clone the pin to target/patches/MODULE and commit each patch
+  patches.py checkout MODULE   clone the pin to target/patches/MODULE, commit the patches every build
+                               applies before MODULE's as one base commit, then commit each of MODULE's
   patches.py export MODULE     write each commit back to migration/patches/MODULE (new ones as <timestamp>-<subject>.patch)
   patches.py rehash OLD [NEW]  rewrite recorded hashes of upstream files changed from OLD to NEW (default: the pin)
   patches.py check             apply every module's patches, in build order, to the pin; fail on the first that doesn't
@@ -17,7 +18,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.build_hybrid import module_patches, patches_for
+from tools.build_hybrid import GRADUATED, module_patches, patches_for
 from tools.build_upstream import COMMIT, VERSION
 from tools.harness import ROOT
 
@@ -34,11 +35,43 @@ def clone_pin(work):
     subprocess.run(['git', '-c', 'advice.detachedHead=false', 'clone', '-q', *source, str(work)], check=True)
 
 
+# The subject of the commit holding the patches applied before the module's own.
+BASE = 'base: '
+
+
+def base_patches(module):
+    """The patches every build applies before `module`'s: those of the modules ahead of it in
+    build order that it depends on (transitively), are always on (graduated) or are M00.
+    A module's patches are written against them, as a partial build applies them."""
+    plan = [m for m in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
+            if any(p.startswith('migration/patches/') for p in m['owned_paths'])]
+    def directory(m):
+        return next(p for p in m['owned_paths'] if p.startswith('migration/patches/')).rstrip('/').split('/')[-1]
+    by_id = {m['id']: m for m in plan}
+    target = next((m for m in plan if directory(m) == module), None)
+    if target is None:
+        return []
+    needed, stack = set(), list(target.get('depends_on', []))
+    while stack:
+        dependency = stack.pop()
+        if dependency not in needed:
+            needed.add(dependency)
+            stack += by_id.get(dependency, {}).get('depends_on', [])
+    order = sorted(plan, key=lambda m: not m.get('applies_first'))
+    ahead = order[:order.index(target)]
+    return patches_for([m for m in ahead if m['id'] in needed or m['id'] == 'M00' or directory(m) in GRADUATED])
+
+
 def checkout(module, patches, work):
     if work.exists():
         raise SystemExit(f'{work} exists; export or delete it first')
     clone_pin(work)
     git(work, 'checkout', '-q', '-b', 'patches/' + module, COMMIT)
+    base = base_patches(module)
+    for patch in base:
+        git(work, 'apply', '--index', str(ROOT / patch['path']))
+    if base:
+        git(work, 'commit', '-q', '-m', BASE + ' '.join(sorted({p['path'].split('/')[2] for p in base})))
     baseline = {}
     for patch in module_patches(patches):
         git(work, 'apply', '--index', str(patches / patch['path']))
@@ -58,6 +91,8 @@ def export(patches, work):
     names = []
     for commit in git(work, 'rev-list', '--reverse', COMMIT + '..HEAD').split():
         subject, stamp = git(work, 'log', '-1', '--format=%s%n%at', commit).splitlines()
+        if subject.startswith(BASE):
+            continue
         name = subject
         if name not in baseline:
             moment = datetime.fromtimestamp(int(stamp), timezone.utc)

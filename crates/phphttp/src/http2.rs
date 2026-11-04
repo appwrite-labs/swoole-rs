@@ -162,6 +162,15 @@ pub unsafe fn release_stream(ctx: *mut Context) {
     unsafe { swr_v1_phphttp_context_free(ctx) };
 }
 
+/// The static handler answers the request: no server hook counts it.
+/// # Safety
+/// `ctx` is a live context.
+pub unsafe fn unhook(ctx: *mut Context) {
+    let state = send::state(ctx);
+    state.before_request = 0;
+    state.after_response = 0;
+}
+
 /// `delete default_ctx`: a server connection's settings context, which no
 /// object or stream holds, goes with its session.
 /// # Safety

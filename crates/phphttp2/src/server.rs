@@ -116,7 +116,7 @@ use swoole_rs_phphttp::http2::Field;
 /// `swr_h2s_value`.
 #[derive(Clone, Copy)]
 #[repr(C)]
-enum Value {
+pub(crate) enum Value {
     Server,
     Header,
     Response,
@@ -147,12 +147,12 @@ unsafe extern "C" {
 
 // --- hosts, one safe call each ---
 
-fn get(ctx: *mut c_void, field: Field) -> u32 {
+pub(crate) fn get(ctx: *mut c_void, field: Field) -> u32 {
     // SAFETY: a live context.
     unsafe { swoole_rs_phphttp::http2::get(ctx, field) }
 }
 
-fn set(ctx: *mut c_void, field: Field, value: u32) {
+pub(crate) fn set(ctx: *mut c_void, field: Field, value: u32) {
     // SAFETY: a live context.
     unsafe { swoole_rs_phphttp::http2::set(ctx, field, value) };
 }
@@ -167,7 +167,7 @@ fn close(ctx: *mut c_void) {
     unsafe { swoole_rs_phphttp::http2::close(ctx) };
 }
 
-fn zval_of(ctx: *mut c_void, which: Value) -> *mut zval {
+pub(crate) fn zval_of(ctx: *mut c_void, which: Value) -> *mut zval {
     // SAFETY: a live context.
     unsafe { swr_h2s_zval(ctx, which) }
 }
@@ -218,7 +218,7 @@ fn frame_header(kind: u32, length: usize, flags: u32, stream_id: u32) -> [u8; FR
 }
 
 /// The session and stream of a response's context.
-fn of(ctx: *mut c_void) -> Option<(Session, Stream)> {
+pub(crate) fn of(ctx: *mut c_void) -> Option<(Session, Stream)> {
     let session = SessionState::of(ctx)?;
     let stream = session.stream(get(ctx, Field::StreamId), false)?;
     Some((session, stream))
@@ -749,7 +749,7 @@ fn send_header(
 }
 
 /// `Stream::send_body`: DATA frames within the peer's flow-control window.
-fn send_body(
+pub(crate) fn send_body(
     ctx: *mut c_void,
     session: &Session,
     stream: &Stream,
@@ -844,7 +844,7 @@ fn has_trailer(ctx: *mut c_void) -> bool {
 
 /// `http2_server_respond`: the header, the body and the trailer, then the
 /// stream is done.
-fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
+pub(crate) fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
     let Some((session, stream)) = of(ctx) else {
         return false;
     };
@@ -963,24 +963,7 @@ fn write(ctx: *mut c_void, chunk: &[u8]) -> bool {
     send_body(ctx, &session, &stream, chunk, false)
 }
 
-/// A file response's header (`Response::sendfile` and the static handler):
-/// compression off, `content_type` unless one is set, the header for a
-/// `length`-byte body. -1 if it was not sent, else whether a trailer follows.
-/// # Safety
-/// `ctx` is a live HTTP/2 stream context; `content_type` covers `type_length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_begin_file(
-    ctx: *mut c_void,
-    content_type: *const c_char,
-    type_length: usize,
-    length: usize,
-) -> c_int {
-    let done = begin_file(ctx, bytes(content_type, type_length), length);
-    bailout::finish();
-    done
-}
-
-fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -> c_int {
+pub(crate) fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -> c_int {
     let Some((session, stream)) = of(ctx) else {
         return -1;
     };
@@ -1020,38 +1003,7 @@ fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -> c_int {
     c_int::from(trailer)
 }
 
-/// DATA frames of a file response.
-/// # Safety
-/// As `swr_v1_phphttp2_server_respond`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_send_body(
-    ctx: *mut c_void,
-    data: *const c_char,
-    length: usize,
-    end_stream: bool,
-) -> bool {
-    let Some((session, stream)) = of(ctx) else {
-        return false;
-    };
-    send_body(ctx, &session, &stream, bytes(data, length), end_stream)
-}
-
-/// `http2_server_complete_file`: the trailer, then the stream is done (or
-/// the connection closed after an error).
-/// # Safety
-/// `ctx` is a live HTTP/2 stream context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_finish_file(
-    ctx: *mut c_void,
-    trailer: bool,
-    error: bool,
-) -> bool {
-    finish_file(ctx, trailer, error);
-    bailout::finish();
-    true
-}
-
-fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) {
+pub(crate) fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) {
     let Some(session) = SessionState::of(ctx) else {
         return;
     };
