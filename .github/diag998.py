@@ -19,8 +19,8 @@ import run  # noqa: E402
 PHP = ROOT / 'target/php-zts/bin/php'
 SOURCE = ROOT / 'target/upstream/src'
 CASE = 'tests/swoole_thread/server/reset_concurrency.phpt'
-UNTRACED = int(os.environ.get('UNTRACED', '250'))
-TRACED = int(os.environ.get('TRACED', '20'))
+UNTRACED = int(os.environ.get('UNTRACED', '0'))
+TRACED = int(os.environ.get('TRACED', '30'))
 manifest = json.loads((ROOT / 'target/phpt/manifest.json').read_text())
 case = next(c for c in manifest['tests'] if c['path'] == CASE)
 sandbox = Path(tempfile.mkdtemp(prefix='diag-'))
@@ -38,19 +38,24 @@ NAMES = {0: 'read', 1: 'write', 3: 'close', 7: 'poll', 9: 'mmap', 10: 'mprotect'
          290: 'eventfd2', 291: 'epoll_create1', 293: 'pipe2', 302: 'prlimit64', 318: 'getrandom',
          334: 'rseq', 435: 'clone3', 441: 'epoll_pwait2', 56: 'clone', 228: 'clock_gettime'}
 BT = r'''
-tracepoint:raw_syscalls:sys_enter /comm == "php"/ { printf("E %llu %d %d %ld\n", nsecs, pid, tid, args->id); }
-tracepoint:raw_syscalls:sys_exit /comm == "php"/ { printf("X %llu %d %d %ld %ld\n", nsecs, pid, tid, args->id, args->ret); }
-tracepoint:syscalls:sys_enter_write /comm == "php" && args->fd <= 2/ { printf("W %llu %d %d %r\n", nsecs, pid, tid, buf(args->buf, 12)); }
-tracepoint:sched:sched_switch /comm == "php"/ { printf("O %llu %d %d %ld %d\n", nsecs, pid, tid, args->prev_state, args->next_pid); }
+tracepoint:raw_syscalls:sys_enter /comm == "php" && pid != $1/ { printf("E %llu %d %d %ld\n", nsecs, pid, tid, args->id); }
+tracepoint:syscalls:sys_exit_write /comm == "php" && pid != $1/ { printf("X %llu %d %d 1 %ld\n", nsecs, pid, tid, args->ret); }
+tracepoint:syscalls:sys_enter_write /comm == "php" && pid != $1 && args->fd <= 2/ { printf("W %llu %d %d %r\n", nsecs, pid, tid, buf(args->buf, 12)); }
+tracepoint:sched:sched_switch /comm == "php" && pid != $1/ { printf("O %llu %d %d %ld %d\n", nsecs, pid, tid, args->prev_state, args->next_pid); }
 '''
 
 
-def runner(engine):
-    out = subprocess.run(
-        [str(PHP), str(sandbox / 'run-tests.php'), '-q', '-n', '-p', str(PHP), '--no-color', '--set-timeout', '20',
-         '-d', f'extension={ROOT}/target/phpt/{engine}.so', '-d', 'zend.assertions=1', str(sandbox / CASE)],
-        capture_output=True, text=True, env=env).stdout
+def command(engine):
+    return [str(PHP), str(sandbox / 'run-tests.php'), '-q', '-n', '-p', str(PHP), '--no-color', '--set-timeout', '20',
+         '-d', f'extension={ROOT}/target/phpt/{engine}.so', '-d', 'zend.assertions=1', str(sandbox / CASE)]
+
+
+def verdict(out):
     return 'PASS' in out and 'FAIL' not in out
+
+
+def runner(engine):
+    return verdict(subprocess.run(command(engine), capture_output=True, text=True, env=env).stdout)
 
 
 def med(xs):
@@ -79,9 +84,9 @@ def analyse(lines, verbose):
         w1 = int(mine[i1][1])
         x1 = next((int(e[1]) for e in mine[i1:] if e[0] == 'X' and e[4].startswith('1 ')), None)
         w2 = next((int(e[1]) for e in mine[i1 + 1:] if e[0] == 'W'), None)
-        prev = [e for e in mine[:i1] if e[0] == 'X']
+        prev = [e for e in mine[:i1] if e[0] == 'E']
         wake = int(prev[-1][1]) if prev else None
-        prev_id = NAMES.get(int(prev[-1][4].split()[0]), prev[-1][4]) if prev else '?'
+        prev_id = NAMES.get(int(prev[-1][4]), prev[-1][4]) if prev else '?'
         blocked = sum(1 for e in mine[i1:] if e[0] == 'O' and (w2 is None or int(e[1]) < w2))
         stats.append(dict(w1=w1, x1=x1, w2=w2, wake=wake, prev=prev_id, blocked=blocked))
     if verbose:
@@ -89,7 +94,7 @@ def analyse(lines, verbose):
         first = min(s['w1'] for s in stats) if stats else t0
         for e in ev:
             t = int(e[1])
-            if e[3] in workers and first - 1_000_000 <= t <= first + 1_000_000:
+            if e[3] in workers and first - 2_000_000 <= t <= first + 500_000:
                 what = e[4] if e[0] == 'W' else (NAMES.get(int(e[4].split()[0]), e[4]) + (' ret ' + e[4].split()[1] if e[0] == 'X' else '')) if e[0] in 'EX' else e[4]
                 print(f'    {(t - first) / 1e3:9.2f} {e[3]} {e[0]} {what}')
     return stats
@@ -109,13 +114,18 @@ for engine in ('upstream', 'hybrid'):
     passes, gaps, durs, spreads, wakes, prevs, blocked = 0, [], [], [], [], defaultdict(int), 0
     for attempt in range(TRACED):
         log = sandbox / f'bt-{engine}-{attempt}.txt'
-        bt = subprocess.Popen(['sudo', 'env', 'BPFTRACE_PERF_RB_PAGES=4096', 'bpftrace', '-q', '-e', BT],
+        test = subprocess.Popen(['sh', '-c', 'sleep 4; exec "$@"', 'sh', *command(engine)],
+                                stdout=subprocess.PIPE, text=True, env=env)
+        bt = subprocess.Popen(['sudo', 'env', 'BPFTRACE_PERF_RB_PAGES=8192', 'bpftrace', '-q', '-e', BT, str(test.pid)],
                               stdout=open(log, 'w'), stderr=subprocess.STDOUT)
-        time.sleep(4)
-        ok = runner(engine)
+        ok = verdict(test.communicate()[0])
         time.sleep(0.5)
         subprocess.run(['sudo', 'kill', '-INT', str(bt.pid)])
         bt.wait()
+        if attempt < 3:
+            keep = ROOT / 'target/phpt/zts'
+            keep.mkdir(parents=True, exist_ok=True)
+            (keep / log.name).write_text(log.read_text(errors='replace'))
         passes += ok
         stats = analyse(log.read_text(errors='replace').splitlines(), attempt < 3)
         if not stats or len(stats) != 4:
