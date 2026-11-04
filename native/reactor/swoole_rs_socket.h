@@ -74,6 +74,9 @@ struct swr_v1_socket {
     swr_v1_socket_tls *tls() {
         return reinterpret_cast<swr_v1_socket_tls *>(&ssl_state);
     }
+    const swr_v1_socket_tls *tls() const {
+        return reinterpret_cast<const swr_v1_socket_tls *>(&ssl_state);
+    }
     swr_v1_socket_timeouts *timeouts() {
         return reinterpret_cast<swr_v1_socket_timeouts *>(&dns_timeout);
     }
@@ -103,6 +106,25 @@ swr_v1_socket *swr_v1_socket_make_typed(int socket_type, int fd_type, int flags,
 /* Socket::dup; Socket::accept (null with errno set). */
 swr_v1_socket *swr_v1_socket_dup(const swr_v1_socket *socket);
 swr_v1_socket *swr_v1_socket_accept_new(swr_v1_socket *listener);
+/* Socket's methods over the record (crates/reactor/src/socket_methods.rs): SW_OK or
+ * SW_ERR, setting info, bound, listened or the TCP flags on success. */
+int swr_v1_socket_get_name(swr_v1_socket *socket);
+int swr_v1_socket_get_peer_name(const swr_v1_socket *socket, swoole::network::Address *address);
+int swr_v1_socket_bind(swr_v1_socket *socket, const struct sockaddr *address, socklen_t length);
+int swr_v1_socket_listen(swr_v1_socket *socket, int backlog);
+int swr_v1_socket_set_tcp_nopush(swr_v1_socket *socket, int nopush);
+bool swr_v1_socket_set_tcp_nodelay(swr_v1_socket *socket, int nodelay);
+bool swr_v1_socket_has_kernel_nobufs(swr_v1_socket *socket);
+/* set_fd_option's fcntl calls (warnings as swr_v1_socket_fd_option's), then both
+ * flags on success; _set_timeout's setsockopt, then write_timeout (send) or read_timeout. */
+swr_v1_socket_option_result swr_v1_socket_set_fd_option(swr_v1_socket *socket, int nonblock, int cloexec);
+bool swr_v1_socket_set_kernel_timeout(swr_v1_socket *socket, bool send, double timeout);
+/* recv/send/peek with EINTR and dont_restart, through `tls` when the record holds an
+ * SSL; recv/send count bytes and, with a timer, stamp the time from `now`. A recv
+ * that would block after POLLHUP returns 0. */
+ssize_t swr_v1_socket_record_recv(swr_v1_socket *socket, void *buffer, size_t length, int flags, swr_v1_socket_tls_io tls, double (*now)(void));
+ssize_t swr_v1_socket_record_send(swr_v1_socket *socket, const void *buffer, size_t length, int flags, swr_v1_socket_tls_io tls, double (*now)(void));
+ssize_t swr_v1_socket_record_peek(swr_v1_socket *socket, void *buffer, size_t length, int flags, swr_v1_socket_tls_io tls);
 }
 
 static_assert(sizeof(void *) == 8, "the socket record's offsets are LP64's");

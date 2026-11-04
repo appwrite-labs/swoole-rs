@@ -205,8 +205,8 @@ pub extern "C" fn swr_v1_socket_buffer_size(fd: c_int, recv: bool, send: bool, s
 
 /// `_set_timeout`: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO` to `timeout` seconds,
 /// truncated as upstream's `(int)` casts do.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_kernel_timeout(fd: c_int, send: bool, timeout: f64) -> bool {
+#[must_use]
+pub fn swr_v1_socket_kernel_timeout(fd: c_int, send: bool, timeout: f64) -> bool {
     #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) timeout")]
     let seconds = timeout as c_int;
     #[expect(
@@ -239,18 +239,6 @@ pub extern "C" fn swr_v1_socket_kernel_timeout(fd: c_int, send: bool, timeout: f
             length,
         ) == 0
     }
-}
-
-/// `Socket::listen`: a backlog of 0 or less takes `default_backlog` (`SW_BACKLOG`).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_listen(fd: c_int, backlog: c_int, default_backlog: c_int) -> bool {
-    let backlog = if backlog <= 0 {
-        default_backlog
-    } else {
-        backlog
-    };
-    // SAFETY: listen(2) has no memory preconditions.
-    unsafe { libc::listen(fd, backlog) == 0 }
 }
 
 #[cfg(test)]
@@ -346,15 +334,13 @@ mod tests {
     }
 
     #[test]
-    fn buffers_timeouts_and_listen() {
+    fn buffers_and_timeouts() {
         let fd = tcp();
         assert!(swr_v1_socket_buffer_size(fd, true, true, 65536));
         assert!(swr_v1_socket_kernel_timeout(fd, true, 1.5));
         assert!(swr_v1_socket_kernel_timeout(fd, false, 0.25));
         assert!(swr_v1_socket_tcp_nodelay(fd, 1));
-        assert!(swr_v1_socket_listen(fd, 0, 512));
         close(fd);
-        assert!(!swr_v1_socket_listen(-1, 0, 512));
         assert!(!swr_v1_socket_buffer_size(-1, false, true, 1));
     }
 }

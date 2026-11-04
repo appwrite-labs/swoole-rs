@@ -29,7 +29,7 @@ pub use host::{
 pub use lifecycle::{
     LifecycleState, swr_v1_corebase_lifecycle_next, swr_v1_corebase_task_tmp_next,
 };
-pub use random::{RandomState, swr_v1_corebase_random_next};
+pub use random::{swoole_random_string, swr_v1_corebase_random_char};
 
 use std::ffi::{c_char, c_int, c_long, c_ulong};
 use std::{cmp::Ordering, ptr, slice};
@@ -67,9 +67,14 @@ pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
     1
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_corebase_type_size(kind: u8) -> c_int {
-    match kind {
+/// `int swoole_type_size(char)`: the byte width of a pack-style length type, or 0.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z16swoole_type_sizec")
+)]
+pub extern "C" fn swoole_type_size(kind: c_char) -> c_int {
+    match kind.to_ne_bytes()[0] {
         b'c' | b'C' => 1,
         b's' | b'S' | b'n' | b'v' => 2,
         b'l' | b'L' | b'N' | b'V' => 4,
@@ -162,12 +167,15 @@ pub extern "C" fn swr_v1_corebase_systemd_listen_fds_action(
     }
 }
 
-/// Write decimal native-long bytes and NUL; return the byte count before NUL.
+/// `int swoole_itoa(char *buf, long value)`: the decimal digits and a NUL; returns the
+/// byte count before the NUL.
 /// # Safety
-/// Output fits the value's decimal representation plus NUL and does not alias
-/// this call's stack storage.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_itoa(output: *mut c_char, value: c_long) -> c_int {
+/// `output` is writable for the value's decimal representation plus NUL.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z11swoole_itoaPcl")
+)]
+pub unsafe extern "C" fn swoole_itoa(output: *mut c_char, value: c_long) -> c_int {
     let mut buffer = itoa::Buffer::new();
     let bytes = buffer.format(value).as_bytes();
     // SAFETY: the caller sizes `output` for these digits plus NUL, disjoint from `buffer`.
@@ -532,10 +540,7 @@ mod tests {
         assert_eq!(unsafe { radix(0, 10, output.as_mut_ptr(), 2) }, usize::MAX);
         assert_eq!(output, [0xa5; 2]);
         let mut decimal = [0xa5u8; 4];
-        assert_eq!(
-            unsafe { swr_v1_corebase_itoa(decimal.as_mut_ptr().cast(), -1) },
-            2
-        );
+        assert_eq!(unsafe { swoole_itoa(decimal.as_mut_ptr().cast(), -1) }, 2);
         assert_eq!(decimal, [b'-', b'1', 0, 0xa5]);
     }
 }

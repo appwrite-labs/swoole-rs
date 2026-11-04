@@ -502,7 +502,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['reactor-flush'])
         self.assertIn('--sanitize', commands['reactor-flush'])
         self.assertIn('corebase-native',commands)
-        self.assertIn('http-native', commands)
+        self.assertIn('http-context', commands)
         self.assertIn('--socket-output', commands['reactor-production-socket-output'])
         self.assertIn('coroutine-compile',commands)
         self.assertIn('tests/modules/coroutine/rust_asan.py', commands['coroutine-rust-asan'])
@@ -647,18 +647,13 @@ class Lanes(unittest.TestCase):
         for name in ['clients-pool', 'clients-http-format', 'clients-ip', 'clients-ip-text']:
             self.assertIn('--archive', commands[name])
             self.assertIn('--sanitize', commands[name])
-        self.assertIn('--archive', commands['httpbindings-settings'])
-        self.assertIn('--without-compression', commands['httpbindings-settings-without-compression'])
         self.assertNotIn('--faults', commands['clients-pool'])
         for family in ['http', 'dns', 'lifecycle', 'pool', 'resolver', 'pool_fork', 'http_connection', 'http_format', 'coro', 'async']:
             command = commands['clients-php-' + family]
             self.assertIn('--build-manifest', command)
             self.assertEqual(command.count('--engine'), 2)
-            self.assertEqual('--source-ref' in command, family != 'lifecycle')
         self.assertIn('--archive',commands['clients-policy'])
         self.assertIn('--sanitize',commands['clients-policy'])
-        self.assertIn('--archive',commands['clients-http'])
-        self.assertIn('--sanitize',commands['clients-http'])
         self.assertIn('--archive',commands['clients-codec'])
         self.assertIn('--sanitize',commands['clients-codec'])
         self.assertIn('--archive', commands['corebase-lifecycle'])

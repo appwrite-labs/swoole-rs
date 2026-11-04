@@ -206,54 +206,6 @@ pub extern "C" fn swr_v1_socket_pending_error(fd: c_int) -> SocketIoResult {
     READY
 }
 
-/// `Socket::get_name`/`get_peer_name`: getsockname(2)/getpeername(2). The caller
-/// sets `*address_length` to the storage capacity first; the kernel updates it to
-/// the stored length. Returns whether the call succeeded; native code keeps the
-/// `Socket`'s address type.
-///
-/// # Safety
-/// `address` points to writable sockaddr storage of `*address_length` bytes, and
-/// `address_length` is a writable in/out length.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_get_name(
-    fd: c_int,
-    address: *mut libc::sockaddr,
-    address_length: *mut libc::socklen_t,
-) -> bool {
-    // SAFETY: the caller lends the address storage and its in/out length.
-    unsafe { libc::getsockname(fd, address, address_length) == 0 }
-}
-
-/// `Socket::get_peer_name`: getpeername(2); see [`swr_v1_socket_get_name`].
-///
-/// # Safety
-/// `address` points to writable sockaddr storage of `*address_length` bytes, and
-/// `address_length` is a writable in/out length.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_get_peer_name(
-    fd: c_int,
-    address: *mut libc::sockaddr,
-    address_length: *mut libc::socklen_t,
-) -> bool {
-    // SAFETY: the caller lends the address storage and its in/out length.
-    unsafe { libc::getpeername(fd, address, address_length) == 0 }
-}
-
-/// `Socket::bind`: bind(2) to a prepared address. Returns whether it succeeded;
-/// native code sets the `bound` flag.
-///
-/// # Safety
-/// `address` denotes `length` readable bytes of a sockaddr.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_bind(
-    fd: c_int,
-    address: *const libc::sockaddr,
-    length: libc::socklen_t,
-) -> bool {
-    // SAFETY: the caller lends `length` bytes of sockaddr for this call.
-    unsafe { libc::bind(fd, address, length) == 0 }
-}
-
 /// `check_sendfile_parameters`: fstat(2) the open `file_fd` and resolve the range
 /// `[begin, *end)` to send, where a zero `length` means to the end of the file.
 /// Returns 0 with `*end` set, 1 when fstat failed (errno set), 2 for an empty
@@ -392,7 +344,8 @@ mod tests {
         let raw = (&raw mut address).cast::<libc::sockaddr>();
         // SAFETY: `address` is a local sockaddr_in of `length` bytes.
         assert_eq!(unsafe { libc::bind(listener, raw, length) }, 0);
-        assert!(crate::swr_v1_socket_listen(listener, 0, 8));
+        // SAFETY: listen(2) has no memory preconditions.
+        assert_eq!(unsafe { libc::listen(listener, 8) }, 0);
         // SAFETY: as above; getsockname fills in the bound port.
         assert_eq!(
             unsafe { libc::getsockname(listener, raw, &raw mut length) },

@@ -15,19 +15,20 @@ python3 tests/modules/clients/gate.py --source /path/to/pinned-git \
   --archive /path/to/libswoole_rs_ffi.a --output target/clients.json [--sanitize] [--rust-sanitized]
 ```
 
-Each gate extracts the original and patched function bodies from the pinned
-source and the clients overlay, compiles both into one program with native
-effect-recording doubles, and compares return values, state, errors and effect
-order. It fails if a selected body is unchanged or does not call Rust. Without
-`--archive`, `gate.py` builds `crates/clients/src/lib.rs` with rustc into a
-private archive. `--sanitize` adds native ASan/UBSan; `--rust-sanitized` records
-that the archive was ASan-built (requires `--archive` and `--sanitize`). None of
-these are whole-TU, live-socket or PHP runtime tests.
+Each gate extracts the original function bodies from the pin and the patched ones
+from the hybrid build `--archive` comes from (`hybrid_tree`), compiles both into
+one program with native effect-recording doubles, and compares return values,
+state, errors and effect order. `--sanitize` adds native ASan/UBSan;
+`--rust-sanitized` records that the archive was ASan-built (requires
+`--sanitize`). None of these are whole-TU, live-socket or PHP runtime tests.
+Once a body moves into Rust, its cases move to a `crates/clients` test against
+the pinned C++ in `swoole-rs-oracle`, as the Set-Cookie split did
+(`tests/upstream.rs`). `clients-native-originals` runs upstream's own
+`network/client.cpp`, `dns.cpp` and `address.cpp` GoogleTests on the hybrid tree.
 
 | Gate | Bodies covered |
 |---|---|
 | `gate.py` | Address URL/port policy, hosts-file lookup (real file IO) |
-| `http_gate.py` | HTTP Set-Cookie parsing |
 | `codec_gate.py` | DNS domain encode/decode and whole query/response callers |
 | `pool_gate.py` | Rust persistent pool vs native reference, fork isolation; `--faults` adds allocation-failure cases from a cfg(test) archive |
 | `http_format_gate.py` | Request formatting against the pinned `sw_snprintf` |
@@ -46,14 +47,13 @@ using private peers on ephemeral ports. Families: `lifecycle`, `http`, `dns`,
 
 ```sh
 python3 tests/modules/clients/php_http.py --build-manifest BUILD_MANIFEST \
-  --source-ref HEAD --engine native=/path/native.so --engine hybrid=/path/selected.so \
+  --engine native=/path/native.so --engine hybrid=/path/selected.so \
   --php-extension curl --php-extension sockets --output target/clients-php-http.json
 ```
 
 `php_attestation.py` refuses to run unless the selected extension matches the
-build manifest and the frozen patch section for that family's destination matches
-the current overlay; the extension hash must also stay unchanged across the run.
-`php_lifecycle.py` takes no `--source-ref`. `--native-only` (all except `http`
+build manifest; the extension hash must also stay unchanged across the run.
+`--native-only` (all except `http`
 and `dns`) runs native controls and reports `passed: false`. `php_dns.py`
 rejects c-ares builds, which bypass the converted codec. `php_async.py` bailout
 mode expects exit 43 on PHP 8.2 and 0 on 8.5; other versions are unsupported.
