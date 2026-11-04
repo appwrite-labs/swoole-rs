@@ -5,17 +5,13 @@ Pin `c7e514509451beafd4d70ce5b78943d51e76381c`.
 ## Native-facade gates
 
 ```sh
-rustc --edition 2024 --crate-type staticlib --crate-name swoole_rs_hooks \
-  -Copt-level=2 -Cpanic=abort crates/hooks/src/lib.rs -o OWN/libhooks.a
-python3 tests/modules/hooks/ordered_gate.py --source PINNED_SOURCE --archive OWN/libhooks.a --sanitize --report OWN/ordered.json
-python3 tests/modules/hooks/async_gate.py --source PINNED_SOURCE --archive OWN/libhooks.a --sanitize --report OWN/async.json
-python3 tests/modules/hooks/packet_gate.py --source PINNED_SOURCE --archive OWN/libhooks.a --sanitize --report OWN/packet.json
-python3 tests/modules/hooks/socket_policy_gate.py --source PINNED_SOURCE --archive OWN/libhooks.a --sanitize --report OWN/socket.json
-python3 tests/modules/hooks/lifecycle_gate.py --source PINNED_SOURCE --archive OWN/libhooks.a --sanitize --report OWN/lifecycle.json
+python3 tests/modules/hooks/ordered_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --sanitize --report OWN/ordered.json
 python3 tests/modules/hooks/compile_gate.py --source PINNED_SOURCE --config ACTUAL_GENERATED_CONFIG --report OWN/compile.json
 ```
 
-Each `*_gate.py` extracts the pinned and patched function bodies, compiles both
+`async_gate.py`, `packet_gate.py`, `socket_policy_gate.py` and `lifecycle_gate.py`
+take the same arguments. Each `*_gate.py` extracts the pinned function bodies and
+the patched ones from the hybrid build `--archive` comes from (`hybrid_tree`), compiles both
 against a deterministic native facade (`*_fixture.h`) and runs identical
 scenarios through each, comparing effects and order. Syscalls, contexts, TLS
 and kernel IO are faked; these are policy/order checks, not runtime proof.
@@ -48,17 +44,11 @@ reported UNSUPPORTED when the config does not enable `SW_USE_IOURING`.
 
 ## Original tests
 
-```sh
-python3 tests/modules/hooks/core.py --receipt upstream=NATIVE_CORE_RECEIPT --receipt hybrid=NATIVE_CORE_RECEIPT --output REPORT
-```
+`hooks-native-originals` (`tools/core_tests.py`, Linux, integrate lane) runs
+upstream's own `core-tests/src/coroutine/{hook,socket,system}.cpp` GoogleTests
+unchanged on the reference and on the hybrid tree.
 
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
-
-`core.py` runs the 100 `TEST()` declarations of the pinned
-`core-tests/src/coroutine/{hook,socket,system}.cpp` (plus the `accept` dependency) against completed
-`tools/native_core.py` builds, after verifying the original assertion files,
-executable and loaded library match the receipt. It runs the unchanged
-`base.file_put_contents` test first to create `TEST_TMP_FILE`.
 
 ## Known failures
 
@@ -71,6 +61,9 @@ executable and loaded library match the receipt. It runs the unchanged
   fail. Both fail tcp6, four external proxy cases and two DNS cases; the
   reference TLS verify case timed out. An earlier run showed TLS SIGPIPE in both
   engines.
+- macOS (clang): `packet_gate.py` stops at a narrowing error in the selected
+  `recv_packet` initializer and `lifecycle_gate.py` at its `native-dtor`
+  scenario. Both pass on Linux, which is where CI runs them.
 - Not run: enabled io_uring runtime, ZTS/thread mode, the PHP originals after
   the latest wait/poll, retry, datagram and curl/MongoDB policy moves, and
   performance.
@@ -87,8 +80,5 @@ under ASan/UBSan. Neither a PHPT nor the Rust unit tests reach that C++ glue.
 - `hooks-compile`: the only C++14 build of the eight patched units, and the
   `SWOOLE_RS_HOOKS` refusal check.
 
-`core.py` is not a phase. No CI lane produces the `tools/native_core.py` receipts
-it needs, and some of its cases need external network. Its 8,150-line
-`originals.json` inventory is replaced by the three pinned hashes above. Only
-those hashes and the test names were ever read, and the names now come from the
-source.
+A body these gates slice may move into Rust: the PR that moves it ports the
+gate's cases for it into a `crates/hooks` test and drops the body from the gate.

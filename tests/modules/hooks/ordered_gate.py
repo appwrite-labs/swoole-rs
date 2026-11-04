@@ -13,8 +13,15 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[3]
 import sys
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import module_patches
+from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import COMMIT as PIN
+
+
+def sources(source, archive, paths):
+    """Each path at the pin, and in the fully patched tree of the hybrid build ARCHIVE comes from."""
+    hybrid = hybrid_tree(archive)[0]
+    return ({path: subprocess.check_output(['git', '-C', str(source), 'show', PIN+':'+path], text=True) for path in paths},
+            {path: (hybrid/path).read_text() for path in paths}, str(hybrid))
 
 
 def block(text, signature):
@@ -41,28 +48,27 @@ def main():
         'src/coroutine/system.cc': ['bool wait_for(', 'static inline void event_waiter_callback('],
         'src/coroutine/socket.cc': ['ssize_t Socket::recvmsg(', 'ssize_t Socket::sendmsg(', 'ssize_t Socket::sendto(', 'ssize_t Socket::recvfrom(void *_buf, size_t _n, sockaddr *', 'ssize_t Socket::recv(', 'ssize_t Socket::send(', 'ssize_t Socket::read(', 'ssize_t Socket::write(', 'ssize_t Socket::readv(', 'ssize_t Socket::writev(', 'ssize_t Socket::recv_all(', 'ssize_t Socket::send_all(', 'bool Socket::TimerController::start()', 'Socket::TimerController::~TimerController()'],
     }
-    signatures['src/reactor/poll.cc'] = ['int16_t translate_events_to_poll(', 'int translate_events_from_poll(']
-    manifest = module_patches(ROOT/'migration/patches/hooks')
-    originals = {path: subprocess.check_output(['git', '-C', str(a.source), 'show', PIN+':'+path], text=True) for path in {*(path for entry in manifest for path in entry['upstream_paths']), 'src/reactor/poll.cc'}}
+    # The poll event translations the hooks call: poll.cc's at the pin, the hybrid
+    # header's inline calls into the reactor's Rust (swr_v1_reactor_poll_events_*).
+    translations = ['int16_t translate_events_to_poll(', 'int translate_events_from_poll(']
+    originals, selected, hybrid = sources(a.source, a.archive, [*signatures, 'src/reactor/poll.cc', 'include/swoole_reactor.h'])
     with tempfile.TemporaryDirectory(prefix='swr-hooks-order-') as temp:
         tree = Path(temp)
-        for path, text in originals.items():
-            output = tree/path
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(text)
-        for entry in manifest:
-            patch = ROOT/'migration/patches/hooks'/entry['path']
-            subprocess.run(['git', 'apply', str(patch)], cwd=tree, check=True)
         for variant in ['original', 'selected']:
             bodies = []
             for path, names in signatures.items():
-                text = originals[path] if variant == 'original' else (tree/path).read_text()
+                text = (originals if variant == 'original' else selected)[path]
                 bodies.extend(block(text, name) for name in names)
                 # The selected socket's transfers run through one Rust-driven member template (#443).
                 if variant == 'selected' and path == 'src/coroutine/socket.cc':
                     bodies.insert(len(bodies) - len(names), block(text, 'template <class Call>\nssize_t Socket::transfer('))
                     # sendto's address half, which UringSocket shares (#934).
                     bodies.insert(len(bodies) - len(names), block(text, 'bool Socket::sendto_address('))
+            if variant == 'original':
+                bodies.extend(block(originals['src/reactor/poll.cc'], name) for name in translations)
+            else:
+                bodies.append('extern "C" int16_t swr_v1_reactor_poll_events_to(int);\nextern "C" int swr_v1_reactor_poll_events_from(int16_t);')
+                bodies.extend(block(selected['include/swoole_reactor.h'], name) for name in translations)
             (tree/(variant+'.inc')).write_text('\n'.join(bodies))
         command = ['c++', '-std=c++14', '-O1', '-g', '-I'+str(tree), '-I'+str(ROOT/'native/hooks'), str(ROOT/'tests/modules/hooks/ordered_gate.cc'), str(a.archive.resolve()), '-o', str(tree/'ordered'), '-lpthread']
         if a.sanitize:
@@ -75,7 +81,7 @@ def main():
         print(run.stdout, end='')
         if run is not build:
             print(run.stderr, end='')
-        report = dict(pin=PIN, scope=__doc__, manifest=manifest,
+        report = dict(pin=PIN, scope=__doc__, hybrid_tree=hybrid,
                       command=command, compile_returncode=build.returncode, compile_stderr=build.stderr, returncode=run.returncode, stdout=run.stdout, stderr=run.stderr)
         a.report.parent.mkdir(parents=True, exist_ok=True)
         a.report.write_text(json.dumps(report, indent=2)+'\n')

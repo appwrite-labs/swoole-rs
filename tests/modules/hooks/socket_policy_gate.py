@@ -7,11 +7,10 @@ import subprocess
 import sys
 import tempfile
 
-from ordered_gate import block
+from ordered_gate import block, sources
 
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import module_patches
 from tools.build_upstream import COMMIT as PIN
 
 def main():
@@ -23,20 +22,13 @@ def main():
     a=p.parse_args()
     header='include/swoole_coroutine_socket.h'
     unit='src/coroutine/socket.cc'
-    manifest=module_patches(ROOT/'migration/patches/hooks')
-    paths=sorted({path for entry in manifest for path in entry['upstream_paths']})
-    originals={path:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+path],text=True) for path in paths}
+    originals,selected,hybrid=sources(a.source,a.archive,[header,unit])
     signatures=['Coroutine *get_bound_co(', 'long get_bound_cid(', 'void check_bound_co(', 'void set_err(const int e)', 'void check_return_value(', 'bool is_available(', 'void set_timeout(const timeval *timeout,']
     methods=['const char *Socket::get_event_str(', 'bool Socket::TimeoutController::has_timedout(']
     with tempfile.TemporaryDirectory(prefix='swr-hooks-inline-') as directory:
         tree=Path(directory)
-        for path,text in originals.items():
-            out=tree/path;out.parent.mkdir(parents=True,exist_ok=True);out.write_text(text)
-        for entry in manifest:
-            patch=ROOT/'migration/patches/hooks'/entry['path']
-            subprocess.run(['git','apply',str(patch)],cwd=tree,check=True)
         for variant in ['original','selected']:
-            texts=originals if variant=='original' else {path:(tree/path).read_text() for path in paths if (tree/path).exists()}
+            texts=originals if variant=='original' else selected
             # The selected header's bound-coroutine accessors over its Rust state (#439).
             selected_inline=['Coroutine *event_co(', 'void bind_co('] if variant=='selected' else []
             (tree/(variant+'-inline.inc')).write_text('\n'.join(block(texts[header],signature) for signature in signatures+selected_inline))
@@ -48,7 +40,7 @@ def main():
         run=subprocess.run([str(tree/'inline')],capture_output=True,text=True) if build.returncode==0 else build
         print(build.stderr,end='');print(run.stdout,end='')
         if run is not build:print(run.stderr,end='')
-        report=dict(pin=PIN,scope=__doc__,manifest=manifest,command=command,compile_returncode=build.returncode,compile_stderr=build.stderr,returncode=run.returncode,stdout=run.stdout,stderr=run.stderr)
+        report=dict(pin=PIN,scope=__doc__,hybrid_tree=hybrid,command=command,compile_returncode=build.returncode,compile_stderr=build.stderr,returncode=run.returncode,stdout=run.stdout,stderr=run.stderr)
         a.report.parent.mkdir(parents=True,exist_ok=True);a.report.write_text(json.dumps(report,indent=2)+'\n')
         raise SystemExit(run.returncode)
 
