@@ -29,11 +29,11 @@ Edit the three overlays with `tools/patches.py`; see
 ## Body gate (`gate.py`, `phphelpers-policy`)
 
 ```sh
-python3 tests/modules/phphelpers/gate.py --source PINNED --sanitize --output BODY.json
+python3 tests/modules/phphelpers/gate.py --source PINNED --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --sanitize --output BODY.json
 ```
 
-Runs complete pinned and selected `php_swoole_cxx` bodies against modeled native
-storage and effects, one fixture per family (`effects.cc`, `cache.cc`, ...):
+Runs complete pinned and hybrid-tree (`hybrid_tree`) `php_swoole_cxx` bodies against
+modeled native storage and effects, one fixture per family (`effects.cc`, `cache.cc`, ...):
 
 | Family | Matched cases per host |
 | --- | --- |
@@ -41,10 +41,10 @@ storage and effects, one fixture per family (`effects.cc`, `cache.cc`, ...):
 | String+CharPtr / KeyValue+Variable / inline Callable | 13 / 9 / 14 |
 | ArrayIterator / Array updates | 4681 bounded walks / 2 status profiles |
 
-These are modeled counts, not Zend runtime coverage. `--rust-sanitize` builds a
-private ASan-instrumented Rust module; `--archive EXACT --sanitize --rust-asan`
-instead checks ASan imports in a supplied archive. Rust std, Zend and system
-libraries stay uninstrumented, and Rust ASan does not work on macOS.
+These are modeled counts, not Zend runtime coverage; `phphelpers-facade-runtime`
+runs the facades in real PHP on both engines. The facades' sizes are not compared,
+so a facade can hold a Rust handle; the PR that moves a facade's bodies into Rust
+ports its fixture's cases into crates/phphelpers and deletes the fixture.
 
 `async_gate.py --source PINNED --output UNIQUE.json [--archive FFI.a]`
 (`phphelpers-async`) runs the original and selected `php_swoole_async` bodies with
