@@ -1109,13 +1109,13 @@ pub unsafe extern "C" fn swr_v1_memory_table_find_column(
     table: *const Table,
     name: *const c_char,
     length: usize,
-) -> *const Column {
+) -> *mut Column {
     // SAFETY: per the C contract, `length` bytes.
     let name = unsafe { borrow(name, length) };
     // SAFETY: per the C contract.
     unsafe { &*table }
         .column(name)
-        .map_or(ptr::null(), ptr::from_ref)
+        .map_or(ptr::null_mut(), |c| ptr::from_ref(c).cast_mut())
 }
 
 /// The `index`th declaration, repeats included, or null past the last.
@@ -1123,12 +1123,12 @@ pub unsafe extern "C" fn swr_v1_memory_table_find_column(
 pub unsafe extern "C" fn swr_v1_memory_table_column_at(
     table: *const Table,
     index: usize,
-) -> *const Column {
+) -> *mut Column {
     // SAFETY: per the C contract.
     unsafe { &*table }
         .columns()
         .nth(index)
-        .map_or(ptr::null(), ptr::from_ref)
+        .map_or(ptr::null_mut(), |c| ptr::from_ref(c).cast_mut())
 }
 
 /// Declarations, repeats included, or distinct names if `unique`.

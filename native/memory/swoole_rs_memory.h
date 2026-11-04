@@ -262,7 +262,7 @@ size_t swr_v1_memory_table_header_size(void);
 bool swr_v1_memory_table_init(swr_v1_memory_table *, uint32_t rows, float conflict, swr_v1_memory_table_hash,
                               swr_v1_memory_table_warning, swr_v1_memory_table_error);
 void swr_v1_memory_table_set_hash(swr_v1_memory_table *, swr_v1_memory_table_hash);
-bool swr_v1_memory_table_add_column(swr_v1_memory_table *, const char *name, size_t length, uint32_t type, size_t size);
+bool swr_v1_memory_table_add_column(swr_v1_memory_table *, const char *name, size_t length, uint32_t kind, size_t size);
 swr_v1_memory_table_column_link *swr_v1_memory_table_find_column(const swr_v1_memory_table *, const char *name, size_t length);
 swr_v1_memory_table_column_link *swr_v1_memory_table_column_at(const swr_v1_memory_table *, size_t index);
 size_t swr_v1_memory_table_column_count(const swr_v1_memory_table *, bool unique);
