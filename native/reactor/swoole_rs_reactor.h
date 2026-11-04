@@ -253,7 +253,6 @@ bool swr_v1_socket_kernel_timeout(int fd, bool send, double timeout);
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
 void swr_v1_socket_set_timeout(swr_v1_socket_timeouts *timeouts, double timeout, int kind);
 const double *swr_v1_socket_timeout(const swr_v1_socket_timeouts *timeouts, int kind);
-bool swr_v1_socket_listen(int fd, int backlog, int default_backlog);
 /* network::Socket's descriptor I/O. status 0 ready; 1 timed out (wait) or
  * EINPROGRESS (connect); 2 failed with errno `error`. */
 typedef struct { int status, error; } swr_v1_socket_io_result;
@@ -263,11 +262,6 @@ void swr_v1_socket_clean(int fd);
 ssize_t swr_v1_socket_recvfrom(int fd, void *buffer, size_t length, int flags, struct sockaddr *address, socklen_t *address_length, uint32_t retries);
 int swr_v1_socket_accept(int fd, struct sockaddr *address, socklen_t *address_length, bool nonblock, bool *listener_cloexec);
 swr_v1_socket_io_result swr_v1_socket_connect(int fd, const struct sockaddr *address, socklen_t length);
-/* getsockname/getpeername/bind: caller sets *address_length to the storage
- * capacity; native code keeps the address type and the bound flag. */
-bool swr_v1_socket_get_name(int fd, struct sockaddr *address, socklen_t *address_length);
-bool swr_v1_socket_get_peer_name(int fd, struct sockaddr *address, socklen_t *address_length);
-bool swr_v1_socket_bind(int fd, const struct sockaddr *address, socklen_t length);
 swr_v1_socket_io_result swr_v1_socket_pending_error(int fd);
 /* sendfile's range check (fstat included) and chunk size: 0 with *end set, 1
  * fstat failed (errno set), 2 empty file, 3 range outside the file. */
@@ -322,9 +316,7 @@ int swr_v1_socket_ssl_pem(struct x509_st *cert, char *buffer, size_t length, boo
 const char *swr_v1_socket_ssl_error_reason(int *reason);
 int swr_v1_socket_ssl_peek_reason(void);
 int swr_v1_socket_ssl_new(swr_v1_socket_tls *tls, struct ssl_ctx_st *context, int fd, int flags, int index, void *socket, struct ssl_st **ssl, unsigned long *error);
-/* network::Socket's per-request reads and writes: recv/send/peek with EINTR and
- * dont_restart, driving `tls` (ssl_recv/ssl_send/SSL_peek on `socket`) when set;
- * catch_error's classification (swReturnCode). */
+/* A TLS socket's ssl_recv/ssl_send/SSL_peek; catch_error's classification (swReturnCode). */
 typedef ssize_t (*swr_v1_socket_tls_io)(void *socket, void *buffer, size_t length);
 /* Socket::ssl_sendfile: pread up to SW_BUFFER_SIZE_BIG bytes at *offset, send them
  * once through send, advance *offset. warn: 1 write() failed, 2 pread() failed. */
@@ -333,9 +325,6 @@ typedef struct {
     int warn;
 } swr_v1_socket_ssl_sendfile_result;
 swr_v1_socket_ssl_sendfile_result swr_v1_socket_ssl_sendfile(int file_fd, off_t *offset, size_t size, swr_v1_socket_tls_io send, void *socket, bool *kernel_nobufs);
-ssize_t swr_v1_socket_recv(int fd, void *buffer, size_t length, int flags, bool nonblock, bool dont_restart, swr_v1_socket_tls_io tls, void *socket);
-ssize_t swr_v1_socket_send(int fd, const void *buffer, size_t length, int flags, bool dont_restart, swr_v1_socket_tls_io tls, void *socket);
-ssize_t swr_v1_socket_peek(int fd, void *buffer, size_t length, int flags, swr_v1_socket_tls_io tls, void *socket);
 /* Socket::readv/writev: readv(2)/writev(2) over state's remaining iovecs, or tls one
  * iovec at a time until one comes up short; advances state like
  * IOVector::update_iterator and retries EINTR. Native code copies the IOVector's
