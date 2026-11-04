@@ -24,6 +24,8 @@ from tools.build_upstream import COMMIT as PIN  # noqa: E402
 from tools.harness import run_isolated, write_report  # noqa: E402
 
 SELECTION = 'file(GLOB_RECURSE core_test_files core-tests/src/*.cpp thirdparty/llhttp/*.c)'
+# Upstream's test helpers (not assertions) that write state the hybrid moved behind accessors.
+ADAPTATIONS = {'core-tests/src/_lib/process.cpp': [('worker.pid = pid;', 'worker.set_pid(pid);')]}
 
 
 def write_changed(path, data):
@@ -79,6 +81,8 @@ def main():
     parser.add_argument('--build-root', type=Path, required=True, help='Private writable build directory')
     parser.add_argument('--file', action='append', required=True, help='core-tests/src/... file whose TEST()s run')
     parser.add_argument('--exclude', action='append', default=[], metavar='SUITE.NAME=REASON')
+    parser.add_argument('--fixture', action='append', default=[], metavar='FILE=SUITE.NAME',
+                        help='An upstream test that must pass first because the cases read what it writes')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--timeout', type=int, default=90, help='Seconds per test')
     parser.add_argument('--output', type=Path, required=True)
@@ -86,6 +90,7 @@ def main():
     if sys.platform != 'linux':
         parser.error('core-tests build on Linux only')
     excluded = dict(entry.split('=', 1) for entry in args.exclude)
+    fixtures = dict(entry.split('=', 1) for entry in args.fixture)
     report = {'pin': PIN, 'scope': __doc__, 'files': args.file, 'excluded': excluded, 'engines': [], 'results': [], 'passed': False}
     artifacts = args.output.resolve().with_name(args.output.stem + '-artifacts')
     try:
@@ -102,10 +107,17 @@ def main():
                     if path.is_file():
                         write_changed(tree / path.relative_to(staged), path.read_bytes())
                 write_changed(tree / 'config.h', args.config.read_bytes())
+                for path, edits in (ADAPTATIONS.items() if engine == 'hybrid' else []):
+                    text = (staged / path).read_text()
+                    for old, new in edits:
+                        if text.count(old) != 1:
+                            raise ValueError(f'Test helper changed: {path}')
+                        text = text.replace(old, new)
+                    write_changed(tree / path, text.encode())
                 cmake = (staged / 'CMakeLists.txt').read_text()
                 if cmake.count(SELECTION) != 1:
                     raise ValueError('Upstream core-tests target selection changed')
-                cmake = cmake.replace(SELECTION, 'file(GLOB core_test_files ' + ' '.join(['core-tests/src/main.cpp', 'core-tests/src/_lib/*.cpp', *args.file]) + ')')
+                cmake = cmake.replace(SELECTION, 'file(GLOB core_test_files ' + ' '.join(['core-tests/src/main.cpp', 'core-tests/src/_lib/*.cpp', *fixtures, *args.file]) + ')')
                 if hybrid_cmake:
                     cmake += f'\n{hybrid_cmake}target_link_libraries(lib-swoole "{args.archive.resolve()}")\n'
                 write_changed(tree / 'CMakeLists.txt', cmake.encode())
@@ -122,6 +134,9 @@ def main():
                 binary = tree / 'bin/core-tests'
                 binary.parent.mkdir(exist_ok=True)
                 shutil.copy2(tree / 'build/bin/core-tests', binary)
+                for name in fixtures.values():
+                    if run_case(binary, tree, name, logs, args.timeout) != 'passed':
+                        raise RuntimeError(f'{engine} fixture {name} failed: {logs / (name + ".log")}')
                 for name in inventory:
                     status = 'excluded' if name in excluded else run_case(binary, tree, name, logs, args.timeout)
                     report['results'].append({'engine': engine, 'name': name, 'status': status})
