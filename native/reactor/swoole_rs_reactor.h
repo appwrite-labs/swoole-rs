@@ -378,7 +378,7 @@ enum {
     SWR_SOCKET_LOCAL = 1 << 5,
 };
 extern const uint8_t swr_v1_socket_type_classes[16];
-static inline bool swr_v1_socket_type_is(int socket_type, uint8_t classes) {
+static inline bool swr_socket_type_is(int socket_type, uint8_t classes) {
     return (unsigned) socket_type < 16 && (swr_v1_socket_type_classes[socket_type] & classes);
 }
 bool swr_v1_socket_domain_and_type(int socket_type, int *domain, int *kind);
