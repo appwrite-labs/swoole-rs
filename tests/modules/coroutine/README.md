@@ -37,11 +37,11 @@ python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --sourc
   `channel` must fail closed with their guard message.
 - `rust_asan.py` runs crates/coroutine's unit tests under Rust ASan (the plain
   run is `coroutine-unit`).
-- The scheduler, coroutine state, Channel and stacks (crates/coroutine) are
-  covered by its Rust unit tests and, through real context switches, by
-  `core.py`'s upstream GoogleTests and the coroutine PHPT families. The
-  coroutine map (`Coroutine::coroutines`, `print_list`, lookups) stays
-  upstream's `std::unordered_map`: `Coroutine::list()` exposes its order (#357).
+- The scheduler, coroutine state, the live map, Channel and stacks
+  (crates/coroutine) are covered by its Rust unit tests and, through real
+  context switches, by `core.py`'s upstream GoogleTests and the coroutine PHPT
+  families. The live map lists newest first, the order `Coroutine::list()`
+  shows from upstream's `std::unordered_map` (#357).
 - `production_stack.py` builds the Context constructor/destructor/query into a
   private PHP addon against each engine's SDK and checks marker observations.
 
