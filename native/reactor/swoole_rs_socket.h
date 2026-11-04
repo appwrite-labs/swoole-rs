@@ -115,6 +115,9 @@ int swr_v1_socket_listen(swr_v1_socket *socket, int backlog);
 int swr_v1_socket_set_tcp_nopush(swr_v1_socket *socket, int nopush);
 bool swr_v1_socket_set_tcp_nodelay(swr_v1_socket *socket, int nodelay);
 bool swr_v1_socket_has_kernel_nobufs(swr_v1_socket *socket);
+/* socket_free_defer: unlink a bound Unix socket's path, close the fd; false (errno
+ * set) when close(2) failed. */
+bool swr_v1_socket_release(swr_v1_socket *socket);
 /* set_fd_option's fcntl calls (warnings as swr_v1_socket_fd_option's), then both
  * flags on success; _set_timeout's setsockopt, then write_timeout (send) or read_timeout. */
 swr_v1_socket_option_result swr_v1_socket_set_fd_option(swr_v1_socket *socket, int nonblock, int cloexec);
