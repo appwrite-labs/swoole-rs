@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import uuid
-from gate import ROOT, PIN
+from source import ROOT, PIN
 sys.path.insert(0, str(ROOT))
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated, write_report

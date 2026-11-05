@@ -37,6 +37,26 @@ int32_t swr_v1_locks_wakeup(uint32_t *, int32_t n);
 int32_t swr_v1_locks_coroutine_try(uint32_t *, uintptr_t held_cookie, int64_t held_cid, uintptr_t current_cookie, int64_t current_cid, uint8_t blocking);
 int32_t swr_v1_locks_coroutine_release(uint32_t *);
 double swr_v1_locks_coroutine_backoff(double second, double initial, double maximum);
+/* Complete coroutine owner. The immutable host lives for the process; only
+ * scheduler/pool leaves cross the native boundary. */
+typedef struct SwrCoroutineLock SwrCoroutineLock;
+typedef struct { int32_t code; uint8_t bailed; } SwrCoroutineOutcome;
+typedef struct {
+    void *(*current)(void);
+    int64_t (*cid)(void *);
+    uint32_t *(*alloc_shared)(void);
+    void (*free_shared)(uint32_t *);
+    SwrCoroutineOutcome (*sleep)(double);
+    SwrCoroutineOutcome (*wait)(uint32_t *);
+    SwrCoroutineOutcome (*wake)(uint32_t *);
+    uint8_t (*warning)(void);
+} SwrCoroutineHost;
+SwrCoroutineLock *swr_v1_locks_coroutine_new(uint8_t shared, const SwrCoroutineHost *);
+void swr_v1_locks_coroutine_free(SwrCoroutineLock *);
+SwrCoroutineOutcome swr_v1_locks_coroutine_lock(SwrCoroutineLock *, int32_t operation);
+SwrCoroutineOutcome swr_v1_locks_coroutine_unlock(SwrCoroutineLock *);
+const SwrCoroutineHost *swr_cpp_coroutine_lock_native_host(void);
+void swr_v1_phplocks_coroutine_minit(const SwrCoroutineHost *, void (*unconstructed)(void *));
 /* PHP Atomic classes (crates/phplocks). Rust registers the classes with its
  * method tables (the stubs' arginfo, crates/phpstubs), and the methods are its
  * zim_swoole_*atomic* exports. Atomic words come from `alloc`/`release` (the
