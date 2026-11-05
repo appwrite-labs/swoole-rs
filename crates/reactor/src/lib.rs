@@ -23,9 +23,11 @@ mod write;
 #[cfg(unix)]
 pub use write::*;
 #[cfg(unix)]
+mod change;
+#[cfg(unix)]
 mod registration;
 #[cfg(unix)]
-pub use registration::*;
+pub use change::*;
 #[cfg(unix)]
 mod registry;
 #[cfg(unix)]

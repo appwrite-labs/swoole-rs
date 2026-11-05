@@ -35,14 +35,14 @@ pub struct ReactorFields {
 
 pub struct ReactorState {
     pub(crate) fields: ReactorFields,
-    registry: Registry,
+    pub(crate) registry: Registry,
     pub(crate) handlers: Handlers,
-    backend: Backend,
-    backend_fd: c_int,
-    backend_limit: c_int,
+    pub(crate) backend: Backend,
+    pub(crate) backend_fd: c_int,
+    pub(crate) backend_limit: c_int,
 }
 
-enum Backend {
+pub(crate) enum Backend {
     None,
     Poll(*mut crate::PollSnapshot),
     #[cfg(target_os = "linux")]
@@ -372,42 +372,47 @@ pub unsafe extern "C" fn swr_v1_reactor_state_socket(
     // SAFETY: live exclusively lent records, not accessed by any callback.
     let state = unsafe { &mut *owner };
     // SAFETY: socket is distinct from the state and exclusively lent.
-    let socket = unsafe { &mut *socket };
-    match op {
-        0 => {
-            // SAFETY: the state's registry is exclusively lent; token remains live while registered.
-            let result = unsafe {
-                crate::swr_v1_reactor_registry_put(
-                    &raw mut state.registry,
-                    socket.fd,
-                    ptr::from_mut(socket).cast(),
-                    events,
-                )
-            };
-            if result != 0 {
-                return result;
-            }
-            socket.events = events;
-            socket.removed = 0;
-        }
-        1 => {
-            socket.events = events;
-            // SAFETY: the state's registry is exclusively lent.
-            unsafe {
-                crate::swr_v1_reactor_registry_set(&raw mut state.registry, socket.fd, events);
-            };
-        }
-        _ => {
-            socket.events = 0;
-            socket.removed = 1;
-            // SAFETY: the state's registry is exclusively lent.
-            unsafe { crate::swr_v1_reactor_registry_remove(&raw mut state.registry, socket.fd) };
-        }
-    }
-    0
+    state.record(unsafe { &mut *socket }, op, events)
 }
 
 impl ReactorState {
+    /// `Reactor::_add` (0), `_set` (1) and `_del` (2): the registry and the socket's
+    /// flags together. -2 when add cannot allocate, leaving the flags alone.
+    pub(crate) fn record(&mut self, socket: &mut SocketRecord, op: u32, events: c_int) -> c_int {
+        match op {
+            0 => {
+                // SAFETY: the registry is exclusively lent; the token stays live while registered.
+                let result = unsafe {
+                    crate::swr_v1_reactor_registry_put(
+                        &raw mut self.registry,
+                        socket.fd,
+                        ptr::from_mut(socket).cast(),
+                        events,
+                    )
+                };
+                if result != 0 {
+                    return result;
+                }
+                socket.events = events;
+                socket.removed = 0;
+            }
+            1 => {
+                socket.events = events;
+                // SAFETY: the registry is exclusively lent.
+                unsafe {
+                    crate::swr_v1_reactor_registry_set(&raw mut self.registry, socket.fd, events);
+                };
+            }
+            _ => {
+                socket.events = 0;
+                socket.removed = 1;
+                // SAFETY: the registry is exclusively lent.
+                unsafe { crate::swr_v1_reactor_registry_remove(&raw mut self.registry, socket.fd) };
+            }
+        }
+        0
+    }
+
     fn close_backend(&mut self) {
         if self.backend_fd >= 0 {
             // SAFETY: this state owns the descriptor and invalidates ownership immediately.
@@ -441,15 +446,6 @@ impl ReactorState {
     }
 }
 
-/// Original private backend bound, independent of the public event-count slot.
-/// # Safety
-/// owner is a live state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_state_limit(owner: *const ReactorState) -> c_int {
-    // SAFETY: immutable observation of a live state.
-    unsafe { (*owner).backend_limit }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,7 +458,7 @@ mod tests {
             assert_eq!((*fields).native_handle, -1);
             assert_eq!(swr_v1_reactor_state_open(state.owner, 3, 4), 0);
             assert_eq!(state.fields, fields);
-            assert_eq!(swr_v1_reactor_state_limit(state.owner), 4);
+            assert_eq!((*state.owner).backend_limit, 4);
             let mut socket = SocketRecord::with_fd(123, 0);
             assert_eq!(
                 swr_v1_reactor_state_socket(state.owner, &raw mut socket, 0, 512),
@@ -509,7 +505,7 @@ mod tests {
                 #[cfg(target_os = "linux")]
                 if kind == 1 {
                     assert_eq!(
-                        crate::swr_v1_reactor_epoll_ctl(
+                        crate::registration::epoll_ctl(
                             descriptor,
                             0,
                             fds[0],
@@ -522,7 +518,7 @@ mod tests {
                 #[cfg(not(target_os = "linux"))]
                 if kind == 2 {
                     assert_eq!(
-                        crate::swr_v1_reactor_kqueue_add(
+                        crate::registration::kqueue_add(
                             descriptor,
                             fds[0],
                             ptr::from_mut(&mut socket).cast(),
