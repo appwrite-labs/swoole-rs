@@ -55,17 +55,10 @@ errno or invokes callbacks.
 | Function | Caller |
 | --- | --- |
 | `swr_v1_timer_backend` (manual/reactor/system) | `Timer::init`, from copied flags |
-| `swr_v1_timer_system_interval` (positive interval or disarm) | `SystemTimer_set`, before its single `setitimer` |
-| `swr_v1_timer_realtime_split` (ns split, signed truncation) | `realtime_get`, after `system_clock` |
-| `swr_v1_timer_realtime_add` (ms addition, positive carry) | `realtime_add`, also used by M16 timed locks |
+| `swr_v1_timer_system_set` (`setitimer`, positive interval or disarm) | `Timer::init`'s system-timer `set`/`close`; upstream `src/os/timer.cc`, deleted |
 | `swr_v1_timer_relative_msec` | `Timer::get_relative_msec` |
 | `swr_v1_timer_rearm_after_add` | `Timer::add`; Native set still precedes the cached timeout write |
 | `swr_v1_timer_delay_deadline` | `Timer::delay`, before the queue update; no output write on rejection |
-
-`realtime_add` keeps negative fractions (no floor normalization) and the Native
-`int` quotient and `int` multiplication in the carry; on LP64 Clang/GCC the
-narrowing is modulo 2^32. Inputs that overflow signed arithmetic in the original
-use explicit wrapping in Rust and are outside parity.
 
 ## Still Native
 

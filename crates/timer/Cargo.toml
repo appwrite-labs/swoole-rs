@@ -8,5 +8,8 @@ publish = false
 name = "swoole_rs_timer"
 crate-type = ["rlib", "staticlib"]
 
+[dependencies]
+libc = "=0.2.191"
+
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
-//! Stateless native clock/backend adaptation; never calls clocks or foreign code.
-
-const BILLION: i64 = 1_000_000_000;
+//! Stateless native clock/backend adaptation, and the system timer
+//! (`setitimer`, upstream `src/os/timer.cc`).
+use libc::c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,8 +22,7 @@ pub extern "C" fn swr_v1_timer_backend(manual: u32, reactor: u32) -> u32 {
 }
 
 /// Nonpositive milliseconds disarm; positive values produce timeval microseconds.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_timer_system_interval(milliseconds: i64) -> NativeTime {
+fn system_interval(milliseconds: i64) -> NativeTime {
     if milliseconds <= 0 {
         NativeTime {
             seconds: 0,
@@ -37,41 +36,26 @@ pub extern "C" fn swr_v1_timer_system_interval(milliseconds: i64) -> NativeTime 
     }
 }
 
-/// Preserve truncation toward zero, including negative native epoch values.
+/// Upstream `SystemTimer_set`: `ITIMER_REAL` fires every `milliseconds` (zero or
+/// less disarms it). `SW_OK`, or `SW_ERR` with errno from `setitimer`.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_timer_realtime_split(nanoseconds: i64) -> NativeTime {
-    NativeTime {
-        seconds: nanoseconds / BILLION,
-        fraction: nanoseconds % BILLION,
+pub extern "C" fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
+    let interval = system_interval(milliseconds);
+    let every = libc::timeval {
+        tv_sec: interval.seconds,
+        // Under a million microseconds.
+        tv_usec: libc::suseconds_t::try_from(interval.fraction).unwrap_or_default(),
+    };
+    let value = libc::itimerval {
+        it_interval: every,
+        it_value: every,
+    };
+    // SAFETY: `value` is a live itimerval; the old value is not wanted.
+    if unsafe { libc::setitimer(libc::ITIMER_REAL, &raw const value, std::ptr::null_mut()) } < 0 {
+        -1
+    } else {
+        0
     }
-}
-
-/// Preserve native positive carry only: negative fractions are not floor-normalized.
-/// Parity covers original defined signed arithmetic/conversion ranges.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_timer_realtime_add(
-    seconds: i64,
-    nanoseconds: i64,
-    milliseconds: i64,
-) -> NativeTime {
-    let mut seconds = seconds.wrapping_add(milliseconds / 1000);
-    let mut fraction = nanoseconds.wrapping_add(milliseconds % 1000 * 1_000_000);
-    if fraction >= BILLION {
-        // The native helper stores the quotient in int before its int product.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the native helper's int quotient"
-        )]
-        let carry = (fraction / BILLION) as i32;
-        seconds = seconds.wrapping_add(i64::from(carry));
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "BILLION fits the native int product"
-        )]
-        let billion = BILLION as i32;
-        fraction = fraction.wrapping_sub(i64::from(carry.wrapping_mul(billion)));
-    }
-    NativeTime { seconds, fraction }
 }
 
 /// Native clocks remain outside Rust; overflow was outside original defined input.
@@ -136,15 +120,19 @@ mod tests {
     }
 
     #[test]
-    fn split_keeps_signed_native_remainders_and_disarm() {
-        for value in [i64::MIN, -BILLION - 1, -1, 0, 1, BILLION + 1, i64::MAX] {
-            let split = swr_v1_timer_realtime_split(value);
-            assert_eq!(
-                i128::from(split.seconds) * i128::from(BILLION) + i128::from(split.fraction),
-                i128::from(value)
-            );
-            assert!(split.fraction.abs() < BILLION);
-            let interval = swr_v1_timer_system_interval(value);
+    fn system_interval_disarms_or_splits_milliseconds() {
+        for value in [
+            i64::MIN,
+            -1_000_000_001,
+            -1,
+            0,
+            1,
+            999,
+            1000,
+            1_000_000_001,
+            i64::MAX,
+        ] {
+            let interval = system_interval(value);
             if value <= 0 {
                 assert_eq!(
                     interval,
@@ -161,52 +149,24 @@ mod tests {
     }
 
     #[test]
-    fn negative_timed_lock_addition_does_not_floor_normalize() {
+    fn system_timer_arms_and_disarms() {
+        assert_eq!(swr_v1_timer_system_set(-1), 0);
+        let mut current = libc::itimerval {
+            it_interval: libc::timeval {
+                tv_sec: 1,
+                tv_usec: 1,
+            },
+            it_value: libc::timeval {
+                tv_sec: 1,
+                tv_usec: 1,
+            },
+        };
+        unsafe { libc::getitimer(libc::ITIMER_REAL, &raw mut current) };
         assert_eq!(
-            swr_v1_timer_realtime_add(10, 100, -1),
-            NativeTime {
-                seconds: 10,
-                fraction: -999_900
-            }
+            (current.it_interval.tv_sec, current.it_interval.tv_usec),
+            (0, 0)
         );
-        assert_eq!(
-            swr_v1_timer_realtime_add(10, 100, -1001),
-            NativeTime {
-                seconds: 9,
-                fraction: -999_900
-            }
-        );
-        assert_eq!(
-            swr_v1_timer_realtime_add(10, 999_999_999, 1),
-            NativeTime {
-                seconds: 11,
-                fraction: 999_999
-            }
-        );
-        assert_eq!(
-            swr_v1_timer_realtime_add(10, 1_999_999_999, 1),
-            NativeTime {
-                seconds: 12,
-                fraction: 999_999
-            }
-        );
-    }
-
-    #[test]
-    fn realtime_add_preserves_native_int_carry_narrowing() {
-        for (fraction, expected_seconds) in [
-            (4_294_967_295_000_000_000, 9),
-            (4_294_967_296_000_000_000, 10),
-            (4_294_967_297_000_000_000, 11),
-        ] {
-            assert_eq!(
-                swr_v1_timer_realtime_add(10, fraction, 0),
-                NativeTime {
-                    seconds: expected_seconds,
-                    fraction: 4_294_967_296_000_000_000
-                }
-            );
-        }
+        assert_eq!((current.it_value.tv_sec, current.it_value.tv_usec), (0, 0));
     }
 
     #[test]
