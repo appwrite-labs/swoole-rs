@@ -97,8 +97,8 @@ pub struct ConnectOps {
 
 /// `Address::verify_ip`: `inet_pton` of the host's `c_str()` for `family` succeeds.
 fn is_ip(family: c_int, host: &[u8]) -> bool {
-    let end = host.iter().position(|&b| b == 0).unwrap_or(host.len());
-    let Ok(text) = std::ffi::CString::new(&host[..end]) else {
+    let text = host.split(|&b| b == 0).next().unwrap_or_default();
+    let Ok(text) = std::ffi::CString::new(text) else {
         return false;
     };
     let mut address = [0u8; 16];

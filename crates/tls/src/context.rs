@@ -658,7 +658,7 @@ extern "C" fn verify_cookie(ssl: *mut SSL, cookie: *const c_uchar, cookie_length
     }
     // SAFETY: OpenSSL lends `cookie_length` bytes.
     let cookie = unsafe { std::slice::from_raw_parts(cookie, cookie_length as usize) };
-    c_int::from(cookie == &expected[..length as usize])
+    c_int::from(expected.get(..length as usize) == Some(cookie))
 }
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);

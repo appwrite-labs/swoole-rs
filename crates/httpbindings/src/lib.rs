@@ -196,14 +196,14 @@ pub unsafe extern "C" fn swr_v1_httpbindings_cookie(
     };
     *output = Action::default();
     let mut fields: [&[u8]; 6] = [&[]; 6];
-    for (index, text) in input.fields.iter().enumerate() {
+    for (field, text) in fields.iter_mut().zip(&input.fields) {
         if text.length > isize::MAX as usize || (text.data.is_null() && text.length != 0) {
             return -1;
         }
         if text.length != 0 {
             // SAFETY: non-null, `length <= isize::MAX`, and each nonempty field spans that
             // many initialized bytes for this call.
-            fields[index] = unsafe { core::slice::from_raw_parts(text.data, text.length) };
+            *field = unsafe { core::slice::from_raw_parts(text.data, text.length) };
         }
     }
     loop {

@@ -90,9 +90,11 @@ pub unsafe extern "C" fn swr_v1_core_string_set(
 ) -> i32 {
     let replacement = if length < 24 {
         let mut data = [0u8; 24];
-        if length != 0 {
+        if length != 0
+            && let Some(inline) = data.get_mut(..length)
+        {
             // SAFETY: the caller lends all bytes, copied into the bounded inline value.
-            data[..length]
+            inline
                 .copy_from_slice(unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) });
         }
         Bytes::Inline { data, length }

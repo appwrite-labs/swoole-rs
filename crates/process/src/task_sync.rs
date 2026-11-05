@@ -194,7 +194,9 @@ impl Server<'_> {
                 unsafe { (self.hooks.warn)(WARN_PACK) };
             } else {
                 // `info.ext_flags`: bytes 26..28, in the event's fourth word.
-                event[HEAD_EXT_FLAGS / 8] |= u64::from(TASK_WAITALL) << (8 * (HEAD_EXT_FLAGS % 8));
+                if let Some(word) = event.get_mut(HEAD_EXT_FLAGS / 8) {
+                    *word |= u64::from(TASK_WAITALL) << (8 * (HEAD_EXT_FLAGS % 8));
+                }
                 self.tasking.fetch_add(1, Ordering::SeqCst);
                 let mut worker_id: c_int = -1;
                 if self.task(event.as_mut_ptr().cast(), &raw mut worker_id, true)? {
@@ -238,12 +240,13 @@ impl Server<'_> {
             unsafe { std::slice::from_raw_parts(contents.data.cast::<u8>(), contents.length) };
         let mut offset = 0;
         let mut unpacked = Ok(());
-        while offset + HEAD <= bytes.len() {
-            let record = &bytes[offset..];
-            let task_id = i64::from_ne_bytes(record[..8].try_into().unwrap_or_default());
+        while let Some(record) = bytes.get(offset..).filter(|record| record.len() >= HEAD) {
+            let task_id = i64::from_ne_bytes(record.first_chunk().copied().unwrap_or_default());
             let len = u32::from_ne_bytes(
-                record[HEAD_LEN..HEAD_LEN + 4]
-                    .try_into()
+                record
+                    .get(HEAD_LEN..)
+                    .and_then(<[u8]>::first_chunk)
+                    .copied()
                     .unwrap_or_default(),
             );
             if let Some(&index) = indexes.get(&task_id)

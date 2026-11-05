@@ -85,7 +85,9 @@ impl Wait {
 
     fn set_barrier(&self, event: u32, barrier: Option<(Barrier, *mut c_void)>) {
         // SAFETY: a write to the live handle, not borrowed across this call.
-        unsafe { (*self.state()).barriers[slot(event)] = barrier };
+        if let Some(slot) = unsafe { (*self.state()).barriers.get_mut(slot(event)) } {
+            *slot = barrier;
+        }
     }
 
     /// `add_event`: add `event` to the reactor unless it is there already.
@@ -223,7 +225,9 @@ pub unsafe extern "C" fn swr_v1_hook_socket_ready(
     // SAFETY: a read of the live handle.
     let want = unsafe { (*state).want };
     // SAFETY: a read of the live handle.
-    let barrier = unsafe { (*state).barriers[slot(event)] };
+    let barrier = unsafe { (*state).barriers.get(slot(event)) }
+        .copied()
+        .flatten();
     if want != 0 {
         return if want == event {
             // SAFETY: a read of the live handle.

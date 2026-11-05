@@ -48,7 +48,7 @@ pub extern "C" fn swr_v1_core_proxy_new(socks: bool) -> PreparedProxy {
     let result = PreparedProxy {
         owner: ptr::from_mut(owner.as_mut()),
         fields: owner.fields.get(),
-        strings: std::array::from_fn(|index| ptr::from_ref(&owner.strings[index])),
+        strings: owner.strings.each_ref().map(ptr::from_ref),
         buffer: owner
             .buffer
             .get_mut()
@@ -68,11 +68,18 @@ pub unsafe extern "C" fn swr_v1_core_proxy_free(owner: *mut ProxyState) {
     }
 }
 impl ProxyState {
+    /// The string at `index`, or an empty view past the four slots.
     /// # Safety
     /// self is live, externally synchronized and cannot change during the view.
     pub unsafe fn string(&self, index: usize) -> CoreStringView {
+        let Some(slot) = self.strings.get(index) else {
+            return CoreStringView {
+                data: c"".as_ptr(),
+                length: 0,
+            };
+        };
         // SAFETY: the caller lends the stable, synchronized inline string slot.
-        unsafe { swr_v1_core_string_view(ptr::from_ref(&self.strings[index])) }
+        unsafe { swr_v1_core_string_view(slot) }
     }
     /// # Safety
     /// self is a SOCKS owner, exclusively lent for packet writes.
@@ -110,7 +117,8 @@ pub unsafe extern "C" fn swr_v1_core_proxy_assign(
     let fields = unsafe { *source.fields.get() };
     // SAFETY: private packet presence identifies the two proxy value layouts.
     let socks = unsafe { &*source.buffer.get() }.is_some();
-    for index in 0..4 {
+    let slots = source.strings.iter().zip(&destination.strings);
+    for (index, (from, to)) in slots.enumerate() {
         if (socks && index == 1) || (!socks && index == 0) {
             // SAFETY: snapshot the trailing fields that have not yet been assigned.
             let previous = unsafe { *destination.fields.get() };
@@ -124,15 +132,9 @@ pub unsafe extern "C" fn swr_v1_core_proxy_assign(
             };
         }
         // SAFETY: source string bytes remain unchanged through the cache callback.
-        let value = unsafe { source.string(index) };
+        let value = unsafe { swr_v1_core_string_view(from) };
         // SAFETY: destination is exclusive; its native cache catches exceptions.
-        let status = unsafe {
-            swr_v1_core_string_set(
-                ptr::from_ref(&destination.strings[index]),
-                value.data,
-                value.length,
-            )
-        };
+        let status = unsafe { swr_v1_core_string_set(to, value.data, value.length) };
         if status != 0 {
             return ProxyCopyResult {
                 status,
@@ -175,18 +177,12 @@ pub unsafe extern "C" fn swr_v1_core_proxy_configure(
     let texts = unsafe { std::slice::from_raw_parts(texts, 3) };
     // SAFETY: packet ownership is immutable after construction and identifies SOCKS.
     let socks = unsafe { &*owner.buffer.get() }.is_some();
-    for (index, value) in texts.iter().enumerate() {
+    for (index, (value, slot)) in texts.iter().zip(&owner.strings).enumerate() {
         if index != 0 && !authenticated {
             break;
         }
         // SAFETY: live exclusive slot and readable input span; its cache guards exceptions.
-        let status = unsafe {
-            swr_v1_core_string_set(
-                ptr::from_ref(&owner.strings[index]),
-                value.data,
-                value.length,
-            )
-        };
+        let status = unsafe { swr_v1_core_string_set(slot, value.data, value.length) };
         if status != 0 {
             return ProxyCopyResult {
                 status,

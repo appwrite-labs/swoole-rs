@@ -273,17 +273,17 @@ pub unsafe extern "C" fn swr_v1_httpbindings_trim_quotes(
         // SAFETY: non-null, `length <= isize::MAX`, initialized and exclusively writable.
         unsafe { core::slice::from_raw_parts_mut(data, length) }
     };
-    let mut offset = 0;
-    let mut remaining = length;
-    let mut index = 0;
-    while index < remaining && input[offset] == b'"' {
-        offset += 1;
+    // Leading quotes go while they are fewer than what remains after them.
+    let offset = input
+        .iter()
+        .take_while(|&&byte| byte == b'"')
+        .count()
+        .min(length.div_ceil(2));
+    let rest = input.get_mut(offset..).unwrap_or_default();
+    let mut remaining = rest.len();
+    for byte in rest.iter_mut().rev().take_while(|byte| **byte == b'"') {
+        *byte = 0;
         remaining -= 1;
-        index += 1;
-    }
-    while remaining > 0 && input[offset + remaining - 1] == b'"' {
-        remaining -= 1;
-        input[offset + remaining] = 0;
     }
     *output = Trimmed {
         offset,

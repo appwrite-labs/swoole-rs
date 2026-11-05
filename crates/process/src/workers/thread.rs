@@ -199,9 +199,11 @@ pub unsafe extern "C" fn swr_v1_thread_manager_join_all(manager: *const ThreadMa
     let manager = unsafe { &*manager };
     let count = lock(&manager.threads).len();
     for index in 0..count {
-        let (handle, join) = {
-            let threads = lock(&manager.threads);
-            (threads[index].handle, threads[index].ops.join)
+        let Some((handle, join)) = lock(&manager.threads)
+            .get(index)
+            .map(|thread| (thread.handle, thread.ops.join))
+        else {
+            break;
         };
         // SAFETY: the fixed table keeps this slot alive, without a mutex/borrow held over joining.
         let error = unsafe { join(handle) };

@@ -13,7 +13,8 @@ const LAST: c_int = 61;
 /// `characters[draw(0, 61)]`. A draw is always in range; the remainder only keeps the
 /// lookup total.
 fn character(draw: &mut impl FnMut(c_int, c_int) -> c_int) -> u8 {
-    CHARACTERS[draw(0, LAST).rem_euclid(LAST + 1).unsigned_abs() as usize]
+    let index = draw(0, LAST).rem_euclid(LAST + 1).unsigned_abs() as usize;
+    CHARACTERS.get(index).copied().unwrap_or(CHARACTERS[0])
 }
 
 /// The buffer overload over a draw source: a character per byte but the last, then

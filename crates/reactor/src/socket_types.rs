@@ -23,6 +23,10 @@ pub const CLASS_LOCAL: u8 = 1 << 5;
 
 /// Each `swSocketType`'s classes, indexed by the type; native code reads it inline.
 #[unsafe(no_mangle)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const-evaluated: an out-of-range index fails the build, and const has no get()"
+)]
 pub static swr_v1_socket_type_classes: [u8; 16] = {
     let mut classes = [0; 16];
     classes[TCP as usize] = CLASS_STREAM | CLASS_INET4 | CLASS_TCP;
@@ -100,7 +104,7 @@ pub struct HostType {
 fn host_type(host: &[u8]) -> HostType {
     if host.starts_with(b"unix:/") {
         // "unix:" goes, then every leading '/' but one; all slashes erases everything.
-        let path = &host[5..];
+        let path = host.get(5..).unwrap_or_default();
         let erase = path
             .iter()
             .position(|&b| b != b'/')

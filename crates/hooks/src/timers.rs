@@ -22,8 +22,10 @@ pub unsafe extern "C" fn swr_v1_hook_socket_timer(
     state: *mut SocketState,
     event: u32,
 ) -> *mut *mut c_void {
-    // SAFETY: the caller's live state; the slot stays inside its allocation.
-    unsafe { &raw mut (*state).timers[slot(event)] }
+    // SAFETY: the caller's live state.
+    let timers = unsafe { &raw mut (*state).timers };
+    // `slot` is 0 or 1, so the slot stays inside the two-entry array.
+    timers.cast::<*mut c_void>().wrapping_add(slot(event))
 }
 
 /// A timer fired: clears the slot holding `node` and returns its direction
@@ -38,9 +40,9 @@ pub unsafe extern "C" fn swr_v1_hook_socket_timeout(
 ) -> u32 {
     // SAFETY: the caller's live state.
     let timers = unsafe { &mut (*state).timers };
-    for (index, event) in [EVENT_READ, EVENT_WRITE].into_iter().enumerate() {
-        if timers[index] == node {
-            timers[index] = core::ptr::null_mut();
+    for (timer, event) in timers.iter_mut().zip([EVENT_READ, EVENT_WRITE]) {
+        if *timer == node {
+            *timer = core::ptr::null_mut();
             return event;
         }
     }

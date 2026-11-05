@@ -306,33 +306,39 @@ pub extern "C" fn swoole_signal_to_str(signo: c_int) -> *mut c_char {
 /// `snprintf(buf, 64, "%s", name)`, then `": <signo>"` into what is left when
 /// the name has no colon; always NUL-terminated.
 fn signal_text(name: &[u8], signo: c_int, buf: &mut [u8; 64]) {
-    let mut len = name.len().min(63);
-    buf[..len].copy_from_slice(&name[..len]);
-    if !buf[..len].contains(&b':') {
-        let mut digits = [0_u8; 12];
-        let mut at = digits.len();
-        let mut value = signo.unsigned_abs();
-        loop {
-            at -= 1;
-            digits[at] = b'0' + u8::try_from(value % 10).unwrap_or(0);
-            value /= 10;
-            if value == 0 {
-                break;
-            }
-        }
-        if signo < 0 {
-            at -= 1;
-            digits[at] = b'-';
-        }
-        for &byte in b": ".iter().chain(&digits[at..]) {
-            if len == 63 {
-                break;
-            }
-            buf[len] = byte;
-            len += 1;
+    let name = name.get(..63).unwrap_or(name);
+    // A sign and up to ten digits, written from the end.
+    let mut digits = [0_u8; 12];
+    let mut at = digits.len();
+    let mut value = signo.unsigned_abs();
+    for digit in digits.iter_mut().rev() {
+        *digit = b'0' + u8::try_from(value % 10).unwrap_or(0);
+        at -= 1;
+        value /= 10;
+        if value == 0 {
+            break;
         }
     }
-    buf[len] = 0;
+    if signo < 0 {
+        at -= 1;
+        if let Some(sign) = digits.get_mut(at) {
+            *sign = b'-';
+        }
+    }
+    let suffix: [&[u8]; 2] = if name.contains(&b':') {
+        [b"", b""]
+    } else {
+        [b": ", digits.get(at..).unwrap_or_default()]
+    };
+    let text = name.iter().chain(suffix.into_iter().flatten()).take(63);
+    let mut len = 0;
+    for (slot, &byte) in buf.iter_mut().zip(text) {
+        *slot = byte;
+        len += 1;
+    }
+    if let Some(terminator) = buf.get_mut(len) {
+        *terminator = 0;
+    }
 }
 
 #[cfg(test)]

@@ -80,14 +80,13 @@ pub fn tls_sendfile(
     mut send: impl FnMut(&[u8]) -> isize,
     mut catch: impl FnMut() -> c_int,
 ) -> (usize, c_int) {
-    let mut buf = vec![0_u8; TLS_CHUNK];
-    let readn = size.min(TLS_CHUNK);
+    let mut buf = vec![0_u8; size.min(TLS_CHUNK)];
     let mut total = 0;
     while total < size {
-        let Ok(n @ 1..) = usize::try_from(pread(&mut buf[..readn], *offset)) else {
+        let Ok(n @ 1..) = usize::try_from(pread(&mut buf, *offset)) else {
             return (total, TLS_WARN_PREAD);
         };
-        let sent = send(&buf[..n]);
+        let sent = send(buf.get(..n).unwrap_or(&buf));
         if let Ok(sent @ 1..) = usize::try_from(sent) {
             *offset += libc::off_t::try_from(sent).unwrap_or(libc::off_t::MAX);
             total += sent;
