@@ -596,6 +596,7 @@
       "owned_paths": [
         "crates/ossupport/",
         "native/ossupport/",
+        "tests/modules/ossupport/",
         "migration/patches/ossupport/"
       ],
       "phpt_families": [

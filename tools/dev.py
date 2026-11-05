@@ -415,6 +415,9 @@ def plan(args, reports):
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--build-root', ROOT / 'target/native-originals/coroutine', '--jobs', args.jobs,
                '--sanitize', *native_options, *report('coroutine-native-originals'))
+    if 'ossupport' in modules:
+        script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-file-owner'))
     if 'corebase' in modules:
         script('corebase-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src', *report('corebase-constants'))
         includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
@@ -760,10 +763,6 @@ def prune(root, older_than_hours):
         removed.append(path)
     if any(path.parent == target / 'worktrees' for path in removed):
         subprocess.run(['git', 'worktree', 'prune'], cwd=root, check=False)
-    images = docker_images()
-    for image in images[1:] if images and images[0] == docker_image() else images:
-        if subprocess.run(['docker', 'image', 'rm', image], capture_output=True).returncode == 0:
-            removed.append(Path('docker:' + image))
     return removed, freed
 
 
@@ -777,17 +776,6 @@ def docker_image():
         if path.is_file():
             digest.update(path.relative_to(ROOT).as_posix().encode() + b'\0' + path.read_bytes())
     return f'{DOCKER_REPOSITORY}:{os.uname().machine}-{digest.hexdigest()[:12]}'
-
-
-def docker_images():
-    """Local dev images, the current one first; [] without docker."""
-    try:
-        listed = subprocess.run(['docker', 'image', 'ls', DOCKER_REPOSITORY, '--format', '{{.Repository}}:{{.Tag}}'],
-                                capture_output=True, text=True, check=True).stdout.split()
-    except (OSError, subprocess.CalledProcessError):
-        return []
-    current = docker_image()
-    return sorted(listed, key=lambda image: image != current)
 
 
 # Inside the container: the pinned toolchain, the locked crates and the pinned upstream
