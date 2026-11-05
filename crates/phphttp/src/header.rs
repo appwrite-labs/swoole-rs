@@ -1,11 +1,12 @@
 //! The HTTP/1 response header and trailer, and body compression, as
 //! `swoole::http::Context::build_header`, `build_trailer` and `compress` did
-//! them. The bytes go to a thread-local buffer C++ appends to its own.
-use crate::host;
+//! them. Each send leases reusable storage until its IO completes.
 use crate::parse::CAPABILITIES;
 use crate::state::State;
+use crate::{host, send};
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::io::Write;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
@@ -55,6 +56,19 @@ static OFFSETS: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
 
 thread_local! {
     static OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Each send owns its bytes across yields and reentry; only an idle buffer is cached.
+pub(crate) fn buffer<R>(f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+    let mut out = OUT.with_borrow_mut(std::mem::take);
+    out.clear();
+    let result = f(&mut out);
+    OUT.with_borrow_mut(|idle| {
+        if out.capacity() <= TRAILER_LINE && out.capacity() > idle.capacity() {
+            *idle = out;
+        }
+    });
+    result
 }
 
 unsafe extern "C" {
@@ -303,7 +317,6 @@ fn build(
     out: &mut Vec<u8>,
 ) -> Result<(), bailout::Bailout> {
     let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0;
-    out.clear();
     // http status line
     out.extend_from_slice(b"HTTP/1.1 ");
     if state.response.reason.is_null() {
@@ -311,7 +324,7 @@ fn build(
         let status = unsafe { CStr::from_ptr(swr_v2_http_status_message(state.response.status)) };
         out.extend_from_slice(status.to_bytes());
     } else {
-        out.extend_from_slice(state.response.status.to_string().as_bytes());
+        write!(out, "{}", state.response.status).unwrap_or_default();
         out.push(b' ');
         // SAFETY: `status()` stored a NUL-terminated reason.
         out.extend_from_slice(unsafe { CStr::from_ptr(state.response.reason) }.to_bytes());
@@ -456,9 +469,7 @@ fn build(
             out.extend_from_slice(b"\r\n");
         }
         if flags & CONTENT_LENGTH == 0 {
-            out.extend_from_slice(b"Content-Length: ");
-            out.extend_from_slice(length.to_string().as_bytes());
-            out.extend_from_slice(b"\r\n");
+            write!(out, "Content-Length: {length}\r\n").unwrap_or_default();
         }
     }
     out.extend_from_slice(b"\r\n");
@@ -467,19 +478,19 @@ fn build(
 }
 
 /// `Context::build_header` of a `length`-byte body (compressing it when the
-/// response asks to), then `f(state, header)`. `f` must not yield or re-enter:
-/// the bytes are thread-local.
+/// response asks to), then `f(header)`. The buffer stays owned until `f`
+/// returns, including when sending yields to another request.
 /// # Errors
 /// A header value's `__toString` bailed out.
 pub(crate) fn header<R>(
-    state: &mut State,
+    ctx: *mut host::Context,
     body: *const c_char,
     length: usize,
-    f: impl FnOnce(&mut State, &[u8]) -> R,
+    f: impl FnOnce(&mut Vec<u8>) -> R,
 ) -> Result<R, bailout::Bailout> {
-    OUT.with_borrow_mut(|out| {
-        build(state, body, length, out)?;
-        Ok(f(state, out))
+    buffer(|out| {
+        build(send::state(ctx), body, length, out)?;
+        Ok(f(out))
     })
 }
 
@@ -487,10 +498,12 @@ pub(crate) fn header<R>(
 /// `f(trailer)`, as [`header`].
 /// # Errors
 /// A trailer value's `__toString` bailed out.
-pub(crate) fn trailer<R>(state: &State, f: impl FnOnce(&[u8]) -> R) -> Result<R, bailout::Bailout> {
-    OUT.with_borrow_mut(|out| {
-        out.clear();
-        let trailer = property(state, 2);
+pub(crate) fn trailer<R>(
+    ctx: *mut host::Context,
+    f: impl FnOnce(&[u8]) -> R,
+) -> Result<R, bailout::Bailout> {
+    buffer(|out| {
+        let trailer = property(send::state(ctx), 2);
         // SAFETY: a declared property slot.
         let built: Result<(), bailout::Bailout> = if unsafe { type_of(trailer) } == IS_ARRAY {
             each(trailer, |key, value_| {
@@ -650,6 +663,20 @@ pub unsafe extern "C" fn swr_v1_phphttp_set_compressed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_survives_reentry_and_returns_on_error() {
+        let result: Result<(), ()> = buffer(|outer| {
+            outer.extend_from_slice(b"pending response");
+            buffer(|inner| inner.extend_from_slice(b"another coroutine"));
+            assert_eq!(outer, b"pending response");
+            Err(())
+        });
+        assert!(result.is_err());
+        buffer(|out| assert!(out.is_empty() && out.capacity() >= b"pending response".len()));
+        buffer(|out| out.resize(TRAILER_LINE + 1, 0));
+        OUT.with_borrow(|idle| assert!(idle.capacity() <= TRAILER_LINE));
+    }
 
     #[test]
     fn c_isspace_is_the_c_locale_set() {

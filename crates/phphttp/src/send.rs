@@ -1,6 +1,7 @@
 //! `Context::end`, `write`, `send_trailer` and `send_file`: the HTTP/1
 //! response over the server's or the coroutine socket's send, which C++ lends
-//! (`swr_http_host_send*`, the context's write buffer). The HTTP/2 server's
+//! (`swr_http_host_send*`). Chunked writes reuse their context's buffer; whole
+//! responses lease the header buffer across IO. The HTTP/2 server's
 //! own `end`, `write` and `send_file` stay the http2 module's.
 //!
 //! Host calls never run while Rust holds a reference into the context: C++
@@ -14,6 +15,7 @@ use crate::{
 };
 use std::{
     ffi::{c_char, c_int},
+    io::Write,
     ptr,
 };
 use swoole_rs_zend::{
@@ -38,32 +40,7 @@ pub(crate) fn state<'a>(ctx: *mut Context) -> &'a mut State {
     unsafe { &mut *ctx.cast::<State>() }
 }
 
-pub(crate) use context::send;
-
-/// Clear the write buffer and copy `parts` into it (no send).
-fn buffer(ctx: *mut Context, parts: [&[u8]; 3]) {
-    let buffer = state(ctx).write_buffer.get_or_insert_default();
-    buffer.clear();
-    // One allocation for the response, not one per doubling.
-    buffer.reserve(parts.iter().map(|part| part.len()).sum());
-    for part in parts {
-        buffer.extend_from_slice(part);
-    }
-}
-
-/// Send the write buffer. It stays the context's until the next `buffer`, so
-/// a send that waits for the socket still reads it.
-fn flush(ctx: *mut Context) -> bool {
-    let (data, length) = state(ctx)
-        .write_buffer
-        .as_ref()
-        .map_or((ptr::null(), 0), |buffer| (buffer.as_ptr(), buffer.len()));
-    context::send_raw(ctx, data.cast(), length)
-}
-
-fn close(ctx: *mut Context) {
-    context::close(ctx);
-}
+pub(crate) use context::{close, send};
 
 /// The HTTP/2 server's `op`.
 pub(crate) fn http2(
@@ -80,17 +57,9 @@ pub(crate) fn http2(
     }
 }
 
-/// The header of a `length`-byte response body into the write buffer, with
-/// `body` after it when given.
-fn buffer_header(
-    ctx: *mut Context,
-    data: *const c_char,
-    length: usize,
-    body: Option<&[u8]>,
-) -> Result<(), Bailout> {
-    header::header(state(ctx), data, length, |_, head| {
-        buffer(ctx, [head, body.unwrap_or_default(), b""]);
-    })
+/// Send a header without borrowing context state across the IO.
+fn send_header(ctx: *mut Context, length: usize) -> Result<bool, Bailout> {
+    header::header(ctx, ptr::null(), length, |head| send(ctx, head))
 }
 
 /// The bytes of an optional string argument.
@@ -109,8 +78,7 @@ pub(crate) fn write(ctx: *mut Context, data: *mut zend_string) -> Result<bool, B
     }
     if state(ctx).send_header == 0 {
         state(ctx).send_chunked = 1;
-        buffer_header(ctx, ptr::null(), 0, None)?;
-        if !flush(ctx) {
+        if !send_header(ctx, 0)? {
             let state = state(ctx);
             state.send_chunked = 0;
             state.send_header = 0;
@@ -123,16 +91,21 @@ pub(crate) fn write(ctx: *mut Context, data: *mut zend_string) -> Result<bool, B
         return Ok(false);
     }
     // `"%x\r\n" data "\r\n"` (swoole_dec2hex: lowercase).
-    let size = format!("{:x}\r\n", data.len());
-    buffer(ctx, [size.as_bytes(), data, b"\r\n"]);
-    Ok(flush(ctx))
+    let mut out = state(ctx).write_buffer.take().unwrap_or_default();
+    out.clear();
+    out.reserve(data.len() + 2 * size_of::<usize>() + 4);
+    write!(out, "{:x}\r\n", data.len()).unwrap_or_default();
+    out.extend_from_slice(data);
+    out.extend_from_slice(b"\r\n");
+    let sent = send(ctx, &out);
+    state(ctx).write_buffer = Some(out);
+    Ok(sent)
 }
 
 /// `Context::send_trailer`, after the last chunk: false if it could not be
 /// sent (the context is then ended and closed).
 fn send_trailer(ctx: *mut Context) -> Result<bool, Bailout> {
-    header::trailer(state(ctx), |trailer| buffer(ctx, [trailer, b"", b""]))?;
-    if flush(ctx) {
+    if header::trailer(ctx, |trailer| send(ctx, trailer))? {
         return Ok(true);
     }
     state(ctx).end = 1;
@@ -187,21 +160,23 @@ fn body(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bailout> {
     } else {
         (raw.as_ptr().cast::<c_char>(), raw.len())
     };
-    let mut large = false;
-    header::header(state(ctx), pointer, length, |state, head| {
-        let body = sent_body(state, raw);
-        large = body.len() > MAX_APPEND_DATA;
-        buffer(ctx, [head, if large { b"" } else { body }, b""]);
+    let (large, sent) = header::header(ctx, pointer, length, |out| {
+        let body = sent_body(state(ctx), raw);
+        let large = body.len() > MAX_APPEND_DATA;
+        if !large {
+            out.extend_from_slice(body);
+        }
+        (large, send(ctx, out))
     })?;
     if !large {
-        if flush(ctx) {
+        if sent {
             return Ok(true);
         }
         state(ctx).end = 1;
         close(ctx);
         return Ok(false);
     }
-    if !flush(ctx) {
+    if !sent {
         state(ctx).send_header = 0;
         return Ok(false);
     }
@@ -240,8 +215,7 @@ pub(crate) fn send_file(
     unsafe { swr_http_host_file_type(ctx, file) };
     if state(ctx).send_header == 0 {
         state(ctx).accept_compression = 0;
-        buffer_header(ctx, ptr::null(), length, None)?;
-        if !flush(ctx) {
+        if !send_header(ctx, length)? {
             state(ctx).send_header = 0;
             return Ok(false);
         }
