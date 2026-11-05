@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Positive poll snapshot storage, exact body/translation and target libc layout gate.
+"""Positive poll snapshot storage ABI, original translation and target libc layout gate.
 
 No callback, lifetime/fd-reuse, zero-codec, fault injection or network probes.
 This does not execute full original reactor/core suites or establish parity.

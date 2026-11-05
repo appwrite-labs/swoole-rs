@@ -7,6 +7,7 @@ Not actual kernel/Socket production or whole-module parity qualification.
 """
 import argparse
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -50,7 +51,8 @@ def main():
                     body = body.replace('swr_v1_reactor_state_wait(reactor->handle(), reactor->defer_tasks != nullptr, entries)', kernel)
                     body = body.replace('self->descriptor()', 'self->epfd_')
 
-                body=body.replace('struct kevent','NativeKevent').replace('::kevent(', 'native_kevent(').replace('epoll_wait(', 'native_epoll_wait(').replace('poll(events_', 'native_poll(events_').replace('::poll(', '::native_poll(')
+                body=body.replace('struct kevent','NativeKevent').replace('::kevent(', 'native_kevent(').replace('poll(events_', 'native_poll(events_').replace('::poll(', '::native_poll(')
+                body = re.sub(r'\bepoll_wait\(', 'native_epoll_wait(', body)
                 if backend=='kqueue':
                     helpers=['bool fetch_event(', 'void del_once_socket('] if label=='Original' else []
                     body+='\n'+'\n'.join(block(text,text.index(signature))[0] for signature in helpers)

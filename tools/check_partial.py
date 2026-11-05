@@ -118,16 +118,20 @@ def check_profile(name, modules, record, configured, headers, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', required=True, help='PR base ref; compares its merge base to HEAD')
+    parser.add_argument('--manifest', type=Path, help='Use this existing all-modules build manifest; otherwise require one unique cached full build')
     args = parser.parse_args()
     headers = changed_headers(args.base)
     if not headers:
         print('No shared header changed; partial syntax checks not needed.')
         return 0
-    manifests = [path for path in (ROOT / 'target/hybrid/builds').glob('*/build-manifest.json')
-                 if set(json.loads(path.read_text())['inputs']['modules']) == set(MODULES)]
+    manifests = ([args.manifest.resolve(strict=True)] if args.manifest else
+                 [path for path in (ROOT / 'target/hybrid/builds').glob('*/build-manifest.json')
+                  if set(json.loads(path.read_text())['inputs']['modules']) == set(MODULES)])
     if len(manifests) != 1:
-        parser.error('Expected one configured all-modules build in target/hybrid/builds')
+        parser.error('Expected one configured all-modules build; select its --manifest when several exist')
     record = json.loads(manifests[0].read_text())
+    if set(record['inputs']['modules']) != set(MODULES):
+        parser.error('--manifest must name an all-modules build')
     configured = manifests[0].parent / 'src'
     output = ROOT / 'target/reports/partial-syntax'
     output.mkdir(parents=True, exist_ok=True)

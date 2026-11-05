@@ -4,18 +4,7 @@
 /* Generated from crates/tls by cbindgen (tools/headers.sh); do not edit. */
 
 #include <stdint.h>
-
-#define SW_SSL_ALL ((((((int32_t)SW_SSL_SSLv2 | (int32_t)SW_SSL_SSLv3) | (int32_t)SW_SSL_TLSv1) | (int32_t)SW_SSL_TLSv1_1) | (int32_t)SW_SSL_TLSv1_2) | (int32_t)SW_SSL_TLSv1_3)
-
-typedef enum swSSLVersion {
-  SW_SSL_SSLv2 = (1 << 1),
-  SW_SSL_SSLv3 = (1 << 2),
-  SW_SSL_TLSv1 = (1 << 3),
-  SW_SSL_TLSv1_1 = (1 << 4),
-  SW_SSL_TLSv1_2 = (1 << 5),
-  SW_SSL_TLSv1_3 = (1 << 6),
-  SW_SSL_DTLS = (1 << 7),
-} swSSLVersion;
+#define SW_SSL_ALL (SW_SSL_SSLv2 | SW_SSL_SSLv3 | SW_SSL_TLSv1 | SW_SSL_TLSv1_1 | SW_SSL_TLSv1_2 | SW_SSL_TLSv1_3)
 
 typedef enum swSSLCreateFlag {
   SW_SSL_SERVER = 1,
@@ -27,6 +16,16 @@ typedef enum swSSLState {
   SW_SSL_STATE_READY = 1,
   SW_SSL_STATE_WAIT_STREAM = 2,
 } swSSLState;
+
+typedef enum swSSLVersion {
+  SW_SSL_SSLv2 = (1 << 1),
+  SW_SSL_SSLv3 = (1 << 2),
+  SW_SSL_TLSv1 = (1 << 3),
+  SW_SSL_TLSv1_1 = (1 << 4),
+  SW_SSL_TLSv1_2 = (1 << 5),
+  SW_SSL_TLSv1_3 = (1 << 6),
+  SW_SSL_DTLS = (1 << 7),
+} swSSLVersion;
 
 typedef enum swSSLMethod {
   SW_SSLv23_METHOD = 0,

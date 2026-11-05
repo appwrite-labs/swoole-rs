@@ -58,7 +58,8 @@ template<size_t N> void emit(const char *name, const char (&value)[N]) {
  std::cout << std::dec << '\\n';
 }
 '''
-        driver = '\nint main(){\n' + ''.join(f'emit("{name}", {name});\n' for name in names) + '}\n'
+        pp_probe = '\n#if SW_SSL_ALL\nstatic constexpr int native_ssl_mask_pp = 1;\n#else\nstatic constexpr int native_ssl_mask_pp = 0;\n#endif\n' if args.include_tls else ''
+        driver = pp_probe + '\nint main(){\n' + ''.join(f'emit("{name}", {name});\n' for name in names) + ('emit("SW_SSL_ALL#if", native_ssl_mask_pp);\n' if args.include_tls else '') + '}\n'
         with tempfile.TemporaryDirectory(prefix='constants-', dir=args.output.parent) as directory:
             work = Path(directory)
             (work / 'original_config.h').write_text(original('include/swoole_config.h'))
@@ -78,7 +79,7 @@ template<size_t N> void emit(const char *name, const char (&value)[N]) {
                             raise RuntimeError(f'{engine} constants comparison failed')
                     observations[engine] = result.stdout.splitlines()
                 differences = [dict(native=a, rust=b) for a,b in zip(observations['native'], observations['rust']) if a != b]
-                report['profiles'].append(dict(apple=apple, constants=len(names), differences=differences))
+                report['profiles'].append(dict(apple=apple, constants=len(names), preprocessor_cases=int(args.include_tls), differences=differences))
                 if observations['native'] != observations['rust']:
                     raise RuntimeError('Identifier value/type or literal-byte differences')
         report['passed'] = True

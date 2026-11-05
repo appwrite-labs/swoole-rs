@@ -213,7 +213,7 @@ PHP_FUNCTION(swr_reactor_output_supported) {
 #else
     image(return_value,"request_image","_ZN6swoole7network6Socket14sendfile_asyncEPKclm");
 #endif
-    image(return_value,"send_policy_image","swr_v1_socket_handle_send");
+    image(return_value,"send_policy_image","swr_v1_socket_handle_send_owned");
     image(return_value,"sendfile_cork_image","swr_v1_socket_sendfile_cork");
     image(return_value,"sendfile_sent_image","swr_v1_socket_sendfile_sent");
     image(return_value,"request_policy_image","swr_v1_socket_sendfile_async");

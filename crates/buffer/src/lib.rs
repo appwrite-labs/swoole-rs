@@ -11,6 +11,11 @@ use std::alloc::{Layout, alloc};
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::{mem, ptr, slice};
+pub use typed::{
+    Detached as TypedDetached, Front as TypedFront, swr_v1_buffer_typed_consume,
+    swr_v1_buffer_typed_create, swr_v1_buffer_typed_front, swr_v1_buffer_typed_pop,
+    swr_v1_buffer_typed_push,
+};
 
 const OK: i32 = 0;
 const EMPTY: i32 = 1;
