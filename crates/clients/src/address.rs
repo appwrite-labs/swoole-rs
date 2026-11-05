@@ -9,12 +9,12 @@ use std::ffi::{c_char, c_int, c_void};
 use swoole_rs_corebase::net_types::SocketAddress;
 
 /// `SocketType` values from `swoole.h`.
-const TCP: c_int = 1;
-const UDP: c_int = 2;
-const TCP6: c_int = 3;
-const UDP6: c_int = 4;
-const UNIX_STREAM: c_int = 5;
-const UNIX_DGRAM: c_int = 6;
+pub(crate) const TCP: c_int = 1;
+pub(crate) const UDP: c_int = 2;
+pub(crate) const TCP6: c_int = 3;
+pub(crate) const UDP6: c_int = 4;
+pub(crate) const UNIX_STREAM: c_int = 5;
+pub(crate) const UNIX_DGRAM: c_int = 6;
 const RAW: c_int = 7;
 const RAW6: c_int = 8;
 

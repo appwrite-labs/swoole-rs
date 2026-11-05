@@ -15,9 +15,9 @@ use core::ffi::{c_char, c_int, c_void};
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_reactor::{
-    SocketRecord, swr_v1_socket_buffer_size, swr_v1_socket_catch_error, swr_v1_socket_clean,
-    swr_v1_socket_defaults, swr_v1_socket_domain_and_type, swr_v1_socket_get_peer_name,
-    swr_v1_socket_set_timeout,
+    SocketRecord, swr_v1_socket_bind, swr_v1_socket_buffer_size, swr_v1_socket_catch_error,
+    swr_v1_socket_clean, swr_v1_socket_defaults, swr_v1_socket_domain_and_type,
+    swr_v1_socket_get_peer_name, swr_v1_socket_set_timeout,
 };
 
 /// The flags `swr_v1_clients_flag` reads (`SWR_CLIENTS_*`).
@@ -126,6 +126,7 @@ const SOCKS5_HANDSHAKE: c_int = 1;
 const SOCKS5_READY: c_int = 4;
 const HTTP_PROXY_WAIT: c_int = 0;
 const HTTP_PROXY_READY: c_int = 2;
+const ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = 711;
 const ERROR_BAD_HOST_ADDR: c_int = 722;
 const ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
@@ -1088,6 +1089,138 @@ fn bind_unix(this: Handle) -> c_int {
     let length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
     // SAFETY: binds the client's descriptor to its own address storage.
     unsafe { libc::bind(socket.fd, (&raw const *address).cast(), length) }
+}
+
+/// A native log line, named for the C++ method that passes it.
+pub type Warn = unsafe extern "C" fn(fd: c_int);
+
+/// An address of the client's socket type for `host`, resolved if `resolve`;
+/// `None` with the last error set when it does not assign.
+///
+/// # Safety
+/// `host` is NUL-terminated with `host_length` bytes before it.
+unsafe fn address_of(
+    this: Handle,
+    host: *const c_char,
+    host_length: usize,
+    port: c_int,
+    resolve: bool,
+) -> Option<SocketAddress> {
+    // SAFETY: an all-zero sockaddr union, length and type, as `Address` starts.
+    let mut address: SocketAddress = unsafe { core::mem::zeroed() };
+    address.kind = this.socket().socket_type;
+    let resolve = resolve
+        .then_some(swoole_rs_corebase::swr_v1_clients_gethostbyname as crate::address::Resolve);
+    // SAFETY: the local record's union and length, and the caller's host.
+    let error = unsafe {
+        crate::address::swr_v1_clients_address_assign(
+            (&raw mut address.addr).cast(),
+            &raw mut address.len,
+            address.kind,
+            host,
+            host_length,
+            port,
+            resolve,
+        )
+    };
+    if error != 0 {
+        this.set_last_error(error);
+        return None;
+    }
+    Some(address)
+}
+
+/// `Client::bind(host, port)`: `SO_REUSEADDR` (a failure is logged by
+/// `reuse_failed`), then bind(2) to the host's literal address.
+///
+/// # Safety
+/// `client` is live with a socket; `host` is NUL-terminated after `host_length` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_bind(
+    client: *mut Client,
+    host: *const c_char,
+    host_length: usize,
+    port: c_int,
+    reuse_failed: Warn,
+) -> c_int {
+    let this = Handle(client);
+    let fd = this.socket().fd;
+    let enable: c_int = 1;
+    #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
+    let size = size_of::<c_int>() as libc::socklen_t;
+    // SAFETY: setsockopt(2) reads the int it is lent.
+    if unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            (&raw const enable).cast(),
+            size,
+        )
+    } < 0
+    {
+        // SAFETY: a log line about this descriptor.
+        unsafe { reuse_failed(fd) };
+    }
+    // SAFETY: as the caller promises.
+    let Some(address) = (unsafe { address_of(this, host, host_length, port, false) }) else {
+        return ERR;
+    };
+    // SAFETY: the live socket record and the local address of its length.
+    if unsafe { swr_v1_socket_bind(this.socket_ptr(), &raw const address.addr.ss, address.len) } < 0
+    {
+        this.set_last_error(errno());
+        return ERR;
+    }
+    OK
+}
+
+/// `Client::sendto(host, port, data, length)`: one datagram to the host, resolved
+/// unless the client is async; a stream client logs through `not_datagram`.
+///
+/// # Safety
+/// `client` is live with a socket; `host` is NUL-terminated after `host_length`
+/// bytes; `length` bytes at `data`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_sendto(
+    client: *mut Client,
+    host: *const c_char,
+    host_length: usize,
+    port: c_int,
+    data: *const c_char,
+    length: usize,
+    not_datagram: Warn,
+) -> c_int {
+    let this = Handle(client);
+    let socket = this.socket();
+    if !is_dgram(socket.socket_type) {
+        this.set_last_error(ERROR_OPERATION_NOT_SUPPORT);
+        // SAFETY: a log line about this descriptor.
+        unsafe { not_datagram(socket.fd) };
+        return ERR;
+    }
+    // SAFETY: as the caller promises.
+    let Some(address) = (unsafe { address_of(this, host, host_length, port, !this.flag(ASYNC)) })
+    else {
+        return ERR;
+    };
+    let fd = this.socket().fd;
+    // SAFETY: the caller's `length` bytes to the local address of its length.
+    if unsafe {
+        libc::sendto(
+            fd,
+            data.cast(),
+            length,
+            0,
+            &raw const address.addr.ss,
+            address.len,
+        )
+    } < 0
+    {
+        this.set_last_error(errno());
+        return ERR;
+    }
+    OK
 }
 
 /// `Client::send(data, length, flags)`.
