@@ -15,10 +15,12 @@
 )]
 
 mod atomic;
+mod coroutine;
 mod lock;
 mod thread;
 mod word;
 
 pub use atomic::*;
+pub use coroutine::*;
 pub use lock::*;
 pub use thread::*;

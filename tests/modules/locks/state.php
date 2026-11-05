@@ -78,4 +78,48 @@ if ($events !== ['held', 'release', 'contender']) {
     throw new RuntimeException('Coroutine mutual exclusion order failed');
 }
 $observations['coroutine_sequence'] = $events;
+// Constructor and PHP object rules are part of the migrated class, too.
+$observations['coroutine_object'] = [];
+foreach ([false, true] as $shared) {
+    $lock = new Swoole\Coroutine\Lock($shared);
+    try {
+        $lock->__construct();
+        throw new RuntimeException('Repeated coroutine constructor succeeded');
+    } catch (Error $e) {
+        $observations['coroutine_object'][] = $e->getMessage();
+    }
+    try {
+        clone $lock;
+        throw new RuntimeException('Coroutine lock clone succeeded');
+    } catch (Error $e) {
+        $observations['coroutine_object'][] = $e->getMessage();
+    }
+    try {
+        serialize($lock);
+        throw new RuntimeException('Coroutine lock serialization succeeded');
+    } catch (Exception $e) {
+        $observations['coroutine_object'][] = $e->getMessage();
+    }
+    Swoole\Coroutine\run(function () use ($lock, &$observations) {
+        if (!$lock->lock()) throw new RuntimeException('Initial owner failed');
+        Swoole\Coroutine::create(function () use ($lock, &$observations) {
+            if ($lock->lock(LOCK_EX | LOCK_NB) || $lock->errCode !== 16) {
+                throw new RuntimeException('Nonblocking contender did not preserve EBUSY');
+            }
+            $observations['coroutine_object'][] = $lock->errCode;
+        });
+        $cid = Swoole\Coroutine::create(function () use ($lock, &$observations) {
+            if ($lock->lock() || $lock->errCode !== SWOOLE_ERROR_CO_CANCELED) {
+                throw new RuntimeException('Canceled contender changed ownership or error');
+            }
+            $observations['coroutine_object'][] = $lock->errCode;
+        });
+        if (!Swoole\Coroutine::cancel($cid)) throw new RuntimeException('Contender cancellation failed');
+        if (!$lock->lock(LOCK_EX | LOCK_NB) || !$lock->unlock() || !$lock->unlock()) {
+            throw new RuntimeException('Canceled waiter changed owner reentrancy or empty unlock');
+        }
+        // A successful operation deliberately leaves the last failure code in place.
+        if ($lock->errCode !== SWOOLE_ERROR_CO_CANCELED) throw new RuntimeException('Success cleared errCode');
+    });
+}
 echo json_encode($observations, JSON_THROW_ON_ERROR), "\n";

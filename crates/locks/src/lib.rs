@@ -29,6 +29,8 @@ use std::{
     sync::atomic::{AtomicI64, AtomicU32, Ordering},
 };
 
+pub mod coroutine;
+
 // libc 0.2.191 omits these Linux declarations; signatures match pthread.h.
 #[cfg(target_os = "linux")]
 unsafe extern "C" {
