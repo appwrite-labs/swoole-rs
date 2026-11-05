@@ -1,0 +1,83 @@
+#ifndef SWR_PROCESS_NATIVE_VIEW_CONTEXT
+#include "swoole_process_pool.h"
+#else
+#ifndef SWOOLE_RS_PROCESS_VIEWS_H
+#define SWOOLE_RS_PROCESS_VIEWS_H
+// Generated from crates/process/src/{worker_record,process_pool}.rs.
+// Typed native loans only; Rust owns the record layouts and operations.
+struct WorkerFields {
+    uint32_t : 32;
+    uint32_t : 32;
+    ProcessPool * pool;
+    MsgQueue * queue;
+    bool shared;
+    bool redirect_stdout;
+    bool redirect_stdin;
+    bool redirect_stderr;
+    uint8_t : 8;
+    uint8_t : 8;
+    uint8_t msgqueue_mode;
+    uint8_t child_process;
+    uint32_t concurrency;
+    time_t start_time;
+    sw_atomic_long_t dispatch_count;
+    sw_atomic_long_t request_count;
+    sw_atomic_long_t response_count;
+    size_t coroutine_num;
+    Mutex * lock;
+    UnixSocket * pipe_object;
+    network::Socket * pipe_master;
+    network::Socket * pipe_worker;
+    network::Socket * pipe_current;
+    void * ptr;
+};
+struct PoolFields {
+    bool running;
+    bool reload_init;
+    bool read_message;
+    bool started;
+    bool schedule_by_sysvmsg;
+    bool async;
+    uint8_t ipc_mode;
+    ProtocolType protocol_type_;
+    int master_pid;
+    uint32_t max_wait_time;
+    uint64_t reload_count;
+    time_t reload_last_time;
+    uint8_t type;
+    uint16_t start_id;
+    uint8_t use_msgqueue;
+    uint8_t use_socket;
+    uint32_t max_packet_size_;
+    key_t msgqueue_key;
+    uint32_t worker_num;
+    uint32_t max_request;
+    uint32_t max_request_grace;
+    uint8_t scheduler_warning;
+    time_t warning_time;
+    void (*onStart)(ProcessPool *);
+    void (*onShutdown)(ProcessPool *);
+    void (*onBeforeReload)(ProcessPool *);
+    void (*onAfterReload)(ProcessPool *);
+    int (*onTask)(ProcessPool *, Worker *, EventData *);
+    void (*onWorkerStart)(ProcessPool *, Worker *);
+    void (*onMessage)(ProcessPool *, RecvData *);
+    void (*onWorkerExit)(ProcessPool *, Worker *);
+    void (*onWorkerStop)(ProcessPool *, Worker *);
+    void (*onWorkerError)(ProcessPool *, Worker *, const ExitStatus &);
+    void (*onWorkerMessage)(ProcessPool *, EventData *);
+    int (*onWorkerNotFound)(ProcessPool *, const ExitStatus &);
+    int (*main_loop)(ProcessPool *, Worker *);
+    sw_atomic_t round_id;
+    Worker * workers;
+    std::vector<std::shared_ptr<UnixSocket>> * pipes;
+    swr_v1_process_worker_registry * registry_;
+    MsgQueue * queue;
+    swr_v1_process_pool_ipc * ipc_;
+    Channel * message_box = nullptr;
+    MessageBus * message_bus = nullptr;
+    swr_v1_process_reload_task * reload_task = nullptr;
+    void * ptr;
+};
+#endif
+#endif

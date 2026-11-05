@@ -2,8 +2,9 @@
 //! upstream's order, and the short-name aliases MINIT adds.
 use crate::{asynchronous as a, constants::SHORTNAME, functions as f, interfaces as i, module, vm};
 use std::ffi::CStr;
-use swoole_rs_phpstubs::{ex, stdext, swoole as s, tracer};
+use swoole_rs_phpstubs::{ex, ftp, ssh2, stdext, swoole as s, tracer};
 use swoole_rs_zend::{
+    arginfo::{Handler, Methods, definition},
     method_table,
     sys::{self as z, zend_function_entry, zend_internal_arg_info},
 };
@@ -80,37 +81,269 @@ method_table! {
     ];
 }
 
-/// `head`'s rows, then `optional`'s up to its `END`, then `tail` (which ends
-/// with `END`), leaked for the process.
+// Optional native handlers; generated Rust arginfo remains authoritative.
+static STDEXT_ROWS: Methods<23> = Methods([
+    definition(
+        c"swoole_call_array_method",
+        &stdext::arginfo_swoole_call_array_method,
+        0,
+    ),
+    definition(
+        c"swoole_call_string_method",
+        &stdext::arginfo_swoole_call_string_method,
+        0,
+    ),
+    definition(
+        c"swoole_call_stream_method",
+        &stdext::arginfo_swoole_call_stream_method,
+        0,
+    ),
+    definition(
+        c"swoole_array_search",
+        &stdext::arginfo_swoole_array_search,
+        0,
+    ),
+    definition(
+        c"swoole_array_contains",
+        &stdext::arginfo_swoole_array_contains,
+        0,
+    ),
+    definition(c"swoole_array_join", &stdext::arginfo_swoole_array_join, 0),
+    definition(
+        c"swoole_array_key_exists",
+        &stdext::arginfo_swoole_array_key_exists,
+        0,
+    ),
+    definition(c"swoole_array_map", &stdext::arginfo_swoole_array_map, 0),
+    definition(c"swoole_str_split", &stdext::arginfo_swoole_str_split, 0),
+    definition(c"swoole_parse_str", &stdext::arginfo_swoole_parse_str, 0),
+    definition(c"swoole_hash", &stdext::arginfo_swoole_hash, 0),
+    definition(
+        c"swoole_typed_array",
+        &stdext::arginfo_swoole_typed_array,
+        0,
+    ),
+    definition(
+        c"swoole_array_is_typed",
+        &stdext::arginfo_swoole_array_is_typed,
+        0,
+    ),
+    definition(
+        c"swoole_str_is_empty",
+        &stdext::arginfo_swoole_str_is_empty,
+        0,
+    ),
+    definition(
+        c"swoole_array_is_empty",
+        &stdext::arginfo_swoole_array_is_empty,
+        0,
+    ),
+    definition(c"swoole_str_match", &stdext::arginfo_swoole_str_match, 0),
+    definition(
+        c"swoole_str_match_all",
+        &stdext::arginfo_swoole_str_match_all,
+        0,
+    ),
+    definition(
+        c"swoole_str_json_decode",
+        &stdext::arginfo_swoole_str_json_decode,
+        0,
+    ),
+    definition(
+        c"swoole_str_json_decode_to_object",
+        &stdext::arginfo_swoole_str_json_decode_to_object,
+        0,
+    ),
+    definition(
+        c"swoole_str_replace",
+        &stdext::arginfo_swoole_str_replace,
+        0,
+    ),
+    definition(
+        c"swoole_str_ireplace",
+        &stdext::arginfo_swoole_str_ireplace,
+        0,
+    ),
+    definition(
+        c"swoole_array_replace_str",
+        &stdext::arginfo_swoole_array_replace_str,
+        0,
+    ),
+    definition(
+        c"swoole_array_ireplace_str",
+        &stdext::arginfo_swoole_array_ireplace_str,
+        0,
+    ),
+]);
+static SSH2_ROWS: Methods<35> = Methods([
+    definition(c"ssh2_connect", &ssh2::arginfo_ssh2_connect, 0),
+    definition(c"ssh2_disconnect", &ssh2::arginfo_ssh2_disconnect, 0),
+    definition(
+        c"ssh2_methods_negotiated",
+        &ssh2::arginfo_ssh2_methods_negotiated,
+        0,
+    ),
+    definition(c"ssh2_fingerprint", &ssh2::arginfo_ssh2_fingerprint, 0),
+    definition(c"ssh2_auth_none", &ssh2::arginfo_ssh2_auth_none, 0),
+    definition(c"ssh2_auth_password", &ssh2::arginfo_ssh2_auth_password, 0),
+    definition(
+        c"ssh2_auth_pubkey_file",
+        &ssh2::arginfo_ssh2_auth_pubkey_file,
+        0,
+    ),
+    definition(c"ssh2_auth_pubkey", &ssh2::arginfo_ssh2_auth_pubkey, 0),
+    definition(
+        c"ssh2_auth_hostbased_file",
+        &ssh2::arginfo_ssh2_auth_hostbased_file,
+        0,
+    ),
+    definition(
+        c"ssh2_forward_listen",
+        &ssh2::arginfo_ssh2_forward_listen,
+        0,
+    ),
+    definition(
+        c"ssh2_forward_accept",
+        &ssh2::arginfo_ssh2_forward_accept,
+        0,
+    ),
+    definition(c"ssh2_shell", &ssh2::arginfo_ssh2_shell, 0),
+    definition(c"ssh2_shell_resize", &ssh2::arginfo_ssh2_shell_resize, 0),
+    definition(c"ssh2_exec", &ssh2::arginfo_ssh2_exec, 0),
+    definition(c"ssh2_tunnel", &ssh2::arginfo_ssh2_tunnel, 0),
+    definition(c"ssh2_scp_recv", &ssh2::arginfo_ssh2_scp_recv, 0),
+    definition(c"ssh2_scp_send", &ssh2::arginfo_ssh2_scp_send, 0),
+    definition(c"ssh2_fetch_stream", &ssh2::arginfo_ssh2_fetch_stream, 0),
+    definition(c"ssh2_send_eof", &ssh2::arginfo_ssh2_send_eof, 0),
+    definition(c"ssh2_sftp", &ssh2::arginfo_ssh2_sftp, 0),
+    definition(c"ssh2_sftp_rename", &ssh2::arginfo_ssh2_sftp_rename, 0),
+    definition(c"ssh2_sftp_unlink", &ssh2::arginfo_ssh2_sftp_unlink, 0),
+    definition(c"ssh2_sftp_mkdir", &ssh2::arginfo_ssh2_sftp_mkdir, 0),
+    definition(c"ssh2_sftp_rmdir", &ssh2::arginfo_ssh2_sftp_rmdir, 0),
+    definition(c"ssh2_sftp_chmod", &ssh2::arginfo_ssh2_sftp_chmod, 0),
+    definition(c"ssh2_sftp_stat", &ssh2::arginfo_ssh2_sftp_stat, 0),
+    definition(c"ssh2_sftp_lstat", &ssh2::arginfo_ssh2_sftp_lstat, 0),
+    definition(c"ssh2_sftp_symlink", &ssh2::arginfo_ssh2_sftp_symlink, 0),
+    definition(c"ssh2_sftp_readlink", &ssh2::arginfo_ssh2_sftp_readlink, 0),
+    definition(c"ssh2_sftp_realpath", &ssh2::arginfo_ssh2_sftp_realpath, 0),
+    definition(
+        c"ssh2_publickey_init",
+        &ssh2::arginfo_ssh2_publickey_init,
+        0,
+    ),
+    definition(c"ssh2_publickey_add", &ssh2::arginfo_ssh2_publickey_add, 0),
+    definition(
+        c"ssh2_publickey_remove",
+        &ssh2::arginfo_ssh2_publickey_remove,
+        0,
+    ),
+    definition(
+        c"ssh2_publickey_list",
+        &ssh2::arginfo_ssh2_publickey_list,
+        0,
+    ),
+    definition(c"ssh2_auth_agent", &ssh2::arginfo_ssh2_auth_agent, 0),
+]);
+static FTP_ROWS: Methods<36> = Methods([
+    definition(c"ftp_connect", &ftp::arginfo_ftp_connect, 0),
+    definition(c"ftp_ssl_connect", &ftp::arginfo_ftp_ssl_connect, 0),
+    definition(c"ftp_login", &ftp::arginfo_ftp_login, 0),
+    definition(c"ftp_pwd", &ftp::arginfo_ftp_pwd, 0),
+    definition(c"ftp_cdup", &ftp::arginfo_ftp_cdup, 0),
+    definition(c"ftp_chdir", &ftp::arginfo_ftp_chdir, 0),
+    definition(c"ftp_exec", &ftp::arginfo_ftp_exec, 0),
+    definition(c"ftp_raw", &ftp::arginfo_ftp_raw, 0),
+    definition(c"ftp_mkdir", &ftp::arginfo_ftp_mkdir, 0),
+    definition(c"ftp_rmdir", &ftp::arginfo_ftp_rmdir, 0),
+    definition(c"ftp_chmod", &ftp::arginfo_ftp_chmod, 0),
+    definition(c"ftp_alloc", &ftp::arginfo_ftp_alloc, 0),
+    definition(c"ftp_nlist", &ftp::arginfo_ftp_nlist, 0),
+    definition(c"ftp_rawlist", &ftp::arginfo_ftp_rawlist, 0),
+    definition(c"ftp_mlsd", &ftp::arginfo_ftp_mlsd, 0),
+    definition(c"ftp_systype", &ftp::arginfo_ftp_systype, 0),
+    definition(c"ftp_fget", &ftp::arginfo_ftp_fget, 0),
+    definition(c"ftp_nb_fget", &ftp::arginfo_ftp_nb_fget, 0),
+    definition(c"ftp_pasv", &ftp::arginfo_ftp_pasv, 0),
+    definition(c"ftp_get", &ftp::arginfo_ftp_get, 0),
+    definition(c"ftp_nb_get", &ftp::arginfo_ftp_nb_get, 0),
+    definition(c"ftp_nb_continue", &ftp::arginfo_ftp_nb_continue, 0),
+    definition(c"ftp_fput", &ftp::arginfo_ftp_fput, 0),
+    definition(c"ftp_nb_fput", &ftp::arginfo_ftp_nb_fput, 0),
+    definition(c"ftp_put", &ftp::arginfo_ftp_put, 0),
+    definition(c"ftp_append", &ftp::arginfo_ftp_append, 0),
+    definition(c"ftp_nb_put", &ftp::arginfo_ftp_nb_put, 0),
+    definition(c"ftp_size", &ftp::arginfo_ftp_size, 0),
+    definition(c"ftp_mdtm", &ftp::arginfo_ftp_mdtm, 0),
+    definition(c"ftp_rename", &ftp::arginfo_ftp_rename, 0),
+    definition(c"ftp_delete", &ftp::arginfo_ftp_delete, 0),
+    definition(c"ftp_site", &ftp::arginfo_ftp_site, 0),
+    definition(c"ftp_close", &ftp::arginfo_ftp_close, 0),
+    definition(c"ftp_quit", &ftp::arginfo_ftp_quit, 0),
+    definition(c"ftp_set_option", &ftp::arginfo_ftp_set_option, 0),
+    definition(c"ftp_get_option", &ftp::arginfo_ftp_get_option, 0),
+]);
+
+/// Append a family's Rust metadata with its static native handler array.
 /// # Safety
-/// `optional` is null or `END`-terminated.
+/// `handlers` is null (family disabled), or has one entry for every metadata row.
+/// Only an unavailable FTP SSL handler may be null within an enabled family.
+unsafe fn append_optional(
+    table: &mut Vec<zend_function_entry>,
+    rows: &[zend_function_entry],
+    handlers: *const Option<Handler>,
+) {
+    if handlers.is_null() {
+        return;
+    }
+    for (index, row) in rows.iter().enumerate() {
+        // SAFETY: the caller lends an entry for every row.
+        let handler = unsafe { *handlers.wrapping_add(index) };
+        if handler.is_none() {
+            // SAFETY: metadata names are static C strings.
+            let name = unsafe { CStr::from_ptr(row.fname) };
+            assert_eq!(name, c"ftp_ssl_connect", "missing native function handler");
+            continue;
+        }
+        let mut entry = *row;
+        entry.handler = handler;
+        table.push(entry);
+    }
+}
+
+/// Assemble the complete table in upstream family order.
+/// # Safety
+/// Each non-null native array has one element for every metadata row.
 unsafe fn join(
     head: &[zend_function_entry],
-    mut optional: *const zend_function_entry,
+    families: &[(&[zend_function_entry], *const Option<Handler>)],
     tail: &[zend_function_entry],
 ) -> *const zend_function_entry {
     let mut table = head.to_vec();
-    // SAFETY: per the caller, every row up to END is readable.
-    while let Some(row) = unsafe { optional.as_ref() }.filter(|row| !row.fname.is_null()) {
-        table.push(*row);
-        // SAFETY: not past END.
-        optional = unsafe { optional.add(1) };
+    for (rows, handlers) in families {
+        // SAFETY: the caller lends an array matching these metadata rows.
+        unsafe { append_optional(&mut table, rows, *handlers) };
     }
     table.extend_from_slice(tail);
     Box::leak(table.into_boxed_slice()).as_ptr()
 }
 
-/// `swoole_functions[]`: Rust's rows around `optional` (the stdext, ssh2 and
-/// ftp rows only C++'s `#ifdef`s decide). C++ calls it while initializing
-/// `swoole_module_entry`, before Zend reads the entry.
+/// Rust owns the complete module function table, including optional families.
+/// Native lends only their handler addresses, in upstream's order.
 /// # Safety
-/// `optional` is null or a static `END`-terminated table.
+/// Each non-null array is static, with 23 stdext, 35 SSH2 or 36 FTP entries.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_functions(
-    optional: *const zend_function_entry,
+    stdext: *const Option<Handler>,
+    ssh2: *const Option<Handler>,
+    ftp: *const Option<Handler>,
 ) -> *const zend_function_entry {
-    // SAFETY: per the caller; HEAD's last row is its END.
-    unsafe { join(&HEAD.0[..HEAD.0.len() - 1], optional, &TAIL.0) }
+    let families = [
+        (STDEXT_ROWS.0.as_slice(), stdext),
+        (SSH2_ROWS.0.as_slice(), ssh2),
+        (FTP_ROWS.0.as_slice(), ftp),
+    ];
+    // SAFETY: Native lends the matching arrays or null for disabled families.
+    unsafe { join(&HEAD.0[..HEAD.0.len() - 1], &families, &TAIL.0) }
 }
 
 /// MINIT's `go`, `defer` and (with stdext) `typed_array`, when short names are on.
@@ -155,7 +388,7 @@ pub(crate) unsafe fn register_aliases(flags: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swoole_rs_zend::arginfo::{ArgInfo, END, begin, entry};
+    use swoole_rs_zend::arginfo::{ArgInfo, END, begin};
 
     unsafe extern "C" fn handler(_: *mut z::zend_execute_data, _: *mut z::zval) {}
     static INFO: ArgInfo<1> = ArgInfo([begin(0, 0)]);
@@ -174,23 +407,84 @@ mod tests {
 
     #[test]
     fn optional_rows_sit_between_head_and_tail() {
-        let head = [
-            entry(c"a", handler, &INFO, 0),
-            entry(c"b", handler, &INFO, 0),
-        ];
-        let optional = [entry(c"c", handler, &INFO, 0), END];
-        let tail = [entry(c"d", handler, &INFO, 0), END];
-        // SAFETY: END-terminated.
-        let table = unsafe { join(&head, optional.as_ptr(), &tail) };
+        let head = [definition(c"a", &INFO, 0), definition(c"b", &INFO, 0)];
+        let optional = [definition(c"c", &INFO, 0)];
+        let handlers = [Some(handler as Handler)];
+        let tail = [definition(c"d", &INFO, 0), END];
+        let table = unsafe { join(&head, &[(&optional, handlers.as_ptr())], &tail) };
         assert_eq!(names(table), [c"a", c"b", c"c", c"d"]);
     }
 
     #[test]
     fn no_optional_rows() {
-        let head = [entry(c"a", handler, &INFO, 0)];
-        let tail = [entry(c"d", handler, &INFO, 0), END];
-        // SAFETY: null is allowed.
-        let table = unsafe { join(&head, std::ptr::null(), &tail) };
+        let head = [definition(c"a", &INFO, 0)];
+        let tail = [definition(c"d", &INFO, 0), END];
+        let table = unsafe { join(&head, &[], &tail) };
         assert_eq!(names(table), [c"a", c"d"]);
+    }
+
+    #[test]
+    fn optional_registry_profiles_preserve_order_and_signatures() {
+        let stdext = [Some(handler as Handler); 23];
+        let ssh2 = [Some(handler as Handler); 35];
+        for enabled in 0_u8..16 {
+            let mut ftp = [Some(handler as Handler); 36];
+            if enabled & 8 == 0 {
+                ftp[1] = None;
+            }
+            let families = [
+                (
+                    STDEXT_ROWS.0.as_slice(),
+                    if enabled & 1 == 0 {
+                        std::ptr::null()
+                    } else {
+                        stdext.as_ptr()
+                    },
+                ),
+                (
+                    SSH2_ROWS.0.as_slice(),
+                    if enabled & 2 == 0 {
+                        std::ptr::null()
+                    } else {
+                        ssh2.as_ptr()
+                    },
+                ),
+                (
+                    FTP_ROWS.0.as_slice(),
+                    if enabled & 4 == 0 {
+                        std::ptr::null()
+                    } else {
+                        ftp.as_ptr()
+                    },
+                ),
+            ];
+            let table = unsafe { join(&[], &families, &[END]) };
+            let mut index = 0;
+            for (metadata, native) in families {
+                if native.is_null() {
+                    continue;
+                }
+                for (slot, info) in metadata.iter().enumerate() {
+                    let handler = unsafe { *native.add(slot) };
+                    if handler.is_none() {
+                        continue;
+                    }
+                    let actual = unsafe { &*table.add(index) };
+                    assert_eq!(actual.fname, info.fname);
+                    assert_eq!(actual.arg_info, info.arg_info);
+                    assert_eq!(actual.num_args, info.num_args);
+                    assert_eq!(actual.flags, info.flags);
+                    assert!(actual.handler.is_some());
+                    index += 1;
+                }
+            }
+            assert!(unsafe { (*table.add(index)).fname }.is_null());
+            let names = names(table);
+            assert_eq!(names.contains(&c"ftp_ssl_connect"), enabled & 12 == 12);
+            if enabled & 4 != 0 {
+                assert!(names.contains(&c"ftp_quit"));
+                assert!(names.contains(&c"ftp_close"));
+            }
+        }
     }
 }

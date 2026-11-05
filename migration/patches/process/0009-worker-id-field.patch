@@ -1,8 +1,8 @@
 diff --git a/ext-src/swoole_admin_server.cc b/ext-src/swoole_admin_server.cc
-index 590ed3a..bb96c48 100644
+index 8e3510f..f9cd7fc 100644
 --- a/ext-src/swoole_admin_server.cc
 +++ b/ext-src/swoole_admin_server.cc
-@@ -305,3 +305,3 @@ static std::string handle_get_connections(Server *serv, const std::string &msg)
+@@ -80,3 +80,3 @@ static void admin_connections(Server *serv, std::vector<void *> &list) {
          }
 -        if (serv->is_base_mode() && sw_worker() && conn->reactor_id != sw_worker()->id) {
 +        if (serv->is_base_mode() && sw_worker() && conn->reactor_id != sw_worker()->get_id()) {
@@ -240,25 +240,25 @@ index 65a4afd..b39fe68 100644
 +            swoole_sys_warning("kill(%d, SIGTERM) [%d] failed", pid, iter->second->get_id());
          }
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 94a3140..1044a1d 100644
+index da79734..fbe22cf 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -681,3 +681,3 @@ int Server::start() {
+@@ -328,3 +328,3 @@ int Server::start() {
          pool->workers[i].pool = pool;
 -        pool->workers[i].id = i;
 +        pool->workers[i].set_id(i);
          pool->workers[i].set_type(SW_WORKER);
-@@ -688,3 +688,3 @@ int Server::start() {
+@@ -335,3 +335,3 @@ int Server::start() {
          for (auto worker : user_worker_list) {
 -            worker->id = worker_num + task_worker_num + i;
 +            worker->set_id(worker_num + task_worker_num + i);
              i++;
-@@ -1206,3 +1206,3 @@ bool Server::command(WorkerId process_id,
+@@ -545,3 +545,3 @@ bool Server::command(WorkerId process_id,
          return false;
 -    } else if (is_base_mode() && sw_worker()->id != 0) {
 +    } else if (is_base_mode() && sw_worker()->get_id() != 0) {
          swoole_error_log(SW_LOG_NOTICE, SW_ERROR_INVALID_PARAMS, "command() can only be used in worker process 0");
-@@ -1770,5 +1770,5 @@ int Server::add_worker(Worker *worker) {
+@@ -769,5 +769,5 @@ int Server::add_worker(Worker *worker) {
      user_worker_list.push_back(worker);
 -    worker->id = user_worker_list.size() - 1;
 +    worker->set_id(user_worker_list.size() - 1);
@@ -266,7 +266,7 @@ index 94a3140..1044a1d 100644
 -    return worker->id;
 +    return worker->get_id();
  }
-@@ -2012,3 +2012,3 @@ void Server::abort_worker(Worker *worker) const {
+@@ -835,3 +835,3 @@ void Server::abort_worker(Worker *worker) const {
              Session *session = get_session(i);
 -            if (session->reactor_id == worker->id) {
 +            if (session->reactor_id == worker->get_id()) {
@@ -309,7 +309,7 @@ index 529fd05..693a4db 100644
 +        server_->get_worker(worker->get_id())->set_pid(pid);
          server_->user_worker_map.emplace(pid, worker);
 diff --git a/src/server/reactor_process.cc b/src/server/reactor_process.cc
-index 03ab315..cfca061 100644
+index 0a4316b..38529a0 100644
 --- a/src/server/reactor_process.cc
 +++ b/src/server/reactor_process.cc
 @@ -71,3 +71,3 @@ int Server::start_reactor_processes() {

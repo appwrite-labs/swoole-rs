@@ -32,7 +32,10 @@
         "CMakeLists.txt",
         "ext-src/php_swoole.cc",
         "include/swoole_server.h",
-        "src/server/master.cc"
+        "src/server/master.cc",
+        "ext-src/stubs/php_swoole_stdext_arginfo.h",
+        "ext-src/stubs/php_swoole_ftp_arginfo.h",
+        "ext-src/stubs/php_swoole_ssh2_arginfo.h"
       ]
     },
     {
@@ -805,7 +808,7 @@
       ],
       "owned_paths": [
         "crates/phphelpers/",
-  "crates/phpstdext/",
+        "crates/phpstdext/",
         "native/phphelpers/",
         "migration/patches/phphelpers/",
         "tests/modules/phphelpers/"

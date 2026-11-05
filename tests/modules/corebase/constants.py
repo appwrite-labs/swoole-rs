@@ -28,7 +28,8 @@ def main():
         names = sorted(set(re.findall(r'^\s*(SW_\w+)\s*(?:=|,)', re.sub(r'/\*.*?\*/', '', enums, flags=re.S), re.M)))
         constants = (ROOT / 'crates/corebase/src/constants.rs').read_text()
         names = sorted(set(names) | set(re.findall(r'pub const (SW_\w+):', constants)))
-        prelude = '''#include <cstdint>
+        prelude = '''#include <climits>
+#include <cstdint>
 #include <cstddef>
 #include <iostream>
 #include <iomanip>
