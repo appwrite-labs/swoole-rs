@@ -595,10 +595,8 @@ def plan(args, reports):
         pytest('buffer-native', 'tests/modules/buffer/test_native.py', '--manifest', manifest, '--sanitize')
         pytest('buffer-callbacks', 'tests/modules/buffer/test_callbacks.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a')
         pytest('buffer-posix-iovec', 'tests/modules/buffer/test_iovec.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
-        for profile in ['originals', 'split', 'integer', 'ownership', 'allocation', 'format', 'random', 'copy',
-                        'transitions']:
-            pytest('string-' + profile, f'tests/modules/buffer/string/test_gate.py::test_profile[{profile}]',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
+        pytest('string-originals', 'tests/modules/buffer/string/test_gate.py',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
         if integrate:
             pytest('buffer-model', 'tests/modules/buffer/test_model.py', '--manifest', manifest, '--sanitize')
         pytest('buffer-network', 'tests/modules/buffer/test_network.py', *php, *engines)

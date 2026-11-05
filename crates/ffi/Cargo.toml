@@ -55,7 +55,7 @@ phpcoroutines = ["dep:swoole-rs-phpcoroutines"]
 
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }
-swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
 swoole-rs-timer = { path = "../timer" }
 swoole-rs-base64 = { path = "../base64" }
 swoole-rs-crc32 = { path = "../crc32" }
