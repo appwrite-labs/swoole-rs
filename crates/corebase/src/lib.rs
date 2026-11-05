@@ -12,6 +12,7 @@ mod global;
 mod hook;
 mod host;
 mod lifecycle;
+pub mod net_types;
 mod random;
 pub use global::*;
 pub use hook::swr_v1_corebase_hook_add_action;

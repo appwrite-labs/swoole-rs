@@ -85,10 +85,23 @@ def main():
             raise ValueError('Require native and phphelpers selected engines')
         selected = next(item for item in report['engines'] if item['rust_feature_bits'] & 16777216)
         report['source_attestation'] = attest(args.build_manifest, args.archive, selected, args.source_ref, 16777216)
-        helper = build_helper(args.sdk_report, work, report)
-        if any(item['php'] != report['helper_compilation']['sdk_php'] for item in report['engines']):
+        # C++ wrappers are source-compatible, not a frozen binary layout.
+        # Compile each helper against the same headers as its loaded engine.
+        helpers = {}
+        report['helper_profiles'] = {}
+        for profile in ['native', 'hybrid']:
+            directory = work / profile
+            directory.mkdir()
+            (directory / 'entrypoint.cc').write_bytes((work / 'entrypoint.cc').read_bytes())
+            row = {}
+            helpers[profile] = build_helper(args.sdk_report, directory, row, profile=profile)
+            report['helper_profiles'][profile] = row['helper_compilation']
+        report['helper_compilation'] = report['helper_profiles']['native']
+        if any(item['php'] != report['helper_profiles']['hybrid' if item['rust_feature_bits'] & 16777216 else 'native']['sdk_php']
+               for item in report['engines']):
             raise ValueError('Helper SDK and actual PHP engine versions differ')
         for engine, identity in zip(engines, report['engines']):
+            helper = helpers['hybrid' if identity['rust_feature_bits'] & 16777216 else 'native']
             result = run_isolated(engine.command('-d', 'extension=' + str(helper), str(work / 'entrypoint.php')), timeout=30)
             row = dict(engine=engine.name, exit=result.returncode, stdout=result.stdout, stderr=result.stderr,
                        extension_sha256_after=sha(identity['extension']), passed=False)
@@ -104,6 +117,7 @@ def main():
         if len({json.dumps(row['summary'], sort_keys=True) for row in report['results']}) != 1:
             raise ValueError('Named entry native/selected summaries differ')
         for engine, identity in zip(engines, report['engines']):
+            helper = helpers['hybrid' if identity['rust_feature_bits'] & 16777216 else 'native']
             for mode in ['direct', 'coroutine']:
                 for outcome in ['return', 'exception', 'missing']:
                     result = run_isolated(engine.command('-d', 'extension=' + str(helper), '-d', 'display_errors=stderr', '-d', 'log_errors=0',
@@ -134,7 +148,8 @@ def main():
         receipt = report['source_attestation']
         if sha(args.build_manifest) != receipt['manifest_sha256'] or sha(args.archive) != receipt['archive_sha256']:
             raise ValueError('Selected production receipt/archive changed')
-        if any(sha(path) != digest for path, digest in report['helper_compilation']['dependencies_sha256'].items()):
+        if any(sha(path) != digest for profile in report['helper_profiles'].values()
+               for path, digest in profile['dependencies_sha256'].items()):
             raise ValueError('Helper build dependency changed')
         report['passed'] = True
     except Exception as error:

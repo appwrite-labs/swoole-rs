@@ -61,11 +61,18 @@ def main():
         report['optimization_observations']={row['name']:optimization_observation(row) for row in report['engines']}
         if len({row['fix_halfclose'] for row in report['optimization_observations'].values()})!=1:
             raise ValueError('Require matching explicit native correction identities')
-        helper=entrypoint.build_helper(a.sdk_report,work,report)
-        if any(row['php']!=report['helper_compilation']['sdk_php'] for row in report['engines']):
+        helpers={};report['helper_profiles']={}
+        for profile in ['native','hybrid']:
+            directory=work/profile;directory.mkdir()
+            shutil.copy2(work/'entrypoint.cc',directory/'entrypoint.cc')
+            row={};helpers[profile]=entrypoint.build_helper(a.sdk_report,directory,row,profile=profile)
+            report['helper_profiles'][profile]=row['helper_compilation']
+        report['helper_compilation']=report['helper_profiles']['native']
+        if any(row['php']!=report['helper_profiles']['hybrid' if row['rust_feature_bits'] &16777216 else 'native']['sdk_php'] for row in report['engines']):
             raise ValueError('Helper SDK/PHP versions differ')
         report['future_commands']={}
         for engine,identity in zip(engines,report['engines']):
+            helper=helpers['hybrid' if identity['rust_feature_bits'] &16777216 else 'native']
             command=engine.command('-d','extension='+str(helper),str(work/'php_benchmark.php'),'--check')
             result=run_isolated(command,timeout=60)
             row=dict(engine=engine.name,command=command,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,

@@ -1,4 +1,4 @@
-//! Common PHP helper policy. Zend storage, calls, allocation and VM effects stay native.
+//! Common Zend value ownership and operations, plus asynchronous and legacy adapter policy.
 #![cfg_attr(
     not(test),
     deny(
@@ -6,9 +6,14 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+#[cfg(feature = "php")]
+mod array;
 mod asynchronous;
-mod facade;
+#[cfg(feature = "php")]
+mod callable;
 mod known_strings;
+#[cfg(feature = "php")]
+mod owned;
 
 fn merge_action(phase: &mut u32, inserted: u8, existing_array: u8) -> u32 {
     let (action, next) = match *phase {
@@ -131,73 +136,9 @@ pub unsafe extern "C" fn swr_v1_phphelpers_call_plan(
     action as u32
 }
 
-/// # Safety
-/// Phase is native-owned aligned storage initialized to0, no retained pointer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphelpers_callable(phase: *mut u32, truthy: u8, valid: u8) -> u32 {
-    // SAFETY: `phase` is null or the caller's aligned, exclusively owned phase storage.
-    let Some(phase) = (unsafe { phase.as_mut() }) else {
-        return 0;
-    };
-    let (action, next) = match *phase {
-        0 => (1, 1),
-        1 if truthy == 0 => (3, 3),
-        1 => (2, 2),
-        2 => (if valid != 0 { 5 } else { 4 }, 3),
-        _ => (0, 3),
-    };
-    *phase = next;
-    action
-}
-
-/// # Safety
-/// Phase is aligned native-owned storage initialized to0. Observation is fresh
-/// value-defined/name-present fact, with no borrowed Zend pointer retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphelpers_release(phase: *mut u32, observation: u8) -> u32 {
-    // SAFETY: `phase` is null or the caller's aligned, exclusively owned phase storage.
-    let Some(phase) = (unsafe { phase.as_mut() }) else {
-        return 0;
-    };
-    let (action, next) = match *phase {
-        0 => (1, 1),
-        1 if observation != 0 => (2, 2),
-        1 | 2 => (3, 3),
-        3 if observation != 0 => (4, 4),
-        _ => (0, 4),
-    };
-    *phase = next;
-    action
-}
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn callable_observation_order_is_lazy() {
-        for truthy in [0, 1] {
-            for valid in [0, 1] {
-                let mut phase = 0;
-                assert_eq!(
-                    unsafe { swr_v1_phphelpers_callable(&raw mut phase, truthy, valid) },
-                    1
-                );
-                let next = unsafe { swr_v1_phphelpers_callable(&raw mut phase, truthy, valid) };
-                if truthy == 0 {
-                    assert_eq!(next, 3);
-                } else {
-                    assert_eq!(next, 2);
-                    assert_eq!(
-                        unsafe { swr_v1_phphelpers_callable(&raw mut phase, truthy, valid) },
-                        if valid == 0 { 4 } else { 5 }
-                    );
-                }
-                assert_eq!(
-                    unsafe { swr_v1_phphelpers_callable(&raw mut phase, truthy, valid) },
-                    0
-                );
-            }
-        }
-    }
     #[test]
     fn call_success_follows_the_call_mode() {
         for result in [-1, 0, 1, i64::MAX] {

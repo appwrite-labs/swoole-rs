@@ -759,10 +759,6 @@ def prune(root, older_than_hours):
         removed.append(path)
     if any(path.parent == target / 'worktrees' for path in removed):
         subprocess.run(['git', 'worktree', 'prune'], cwd=root, check=False)
-    images = docker_images()
-    for image in images[1:] if images and images[0] == docker_image() else images:
-        if subprocess.run(['docker', 'image', 'rm', image], capture_output=True).returncode == 0:
-            removed.append(Path('docker:' + image))
     return removed, freed
 
 
@@ -776,17 +772,6 @@ def docker_image():
         if path.is_file():
             digest.update(path.relative_to(ROOT).as_posix().encode() + b'\0' + path.read_bytes())
     return f'{DOCKER_REPOSITORY}:{os.uname().machine}-{digest.hexdigest()[:12]}'
-
-
-def docker_images():
-    """Local dev images, the current one first; [] without docker."""
-    try:
-        listed = subprocess.run(['docker', 'image', 'ls', DOCKER_REPOSITORY, '--format', '{{.Repository}}:{{.Tag}}'],
-                                capture_output=True, text=True, check=True).stdout.split()
-    except (OSError, subprocess.CalledProcessError):
-        return []
-    current = docker_image()
-    return sorted(listed, key=lambda image: image != current)
 
 
 # Inside the container: the pinned toolchain, the locked crates and the pinned upstream
