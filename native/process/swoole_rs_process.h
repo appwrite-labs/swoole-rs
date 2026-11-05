@@ -7,6 +7,16 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+typedef struct {
+    bool blocking;
+    double timeout;
+    int socks[2];
+    void *master_socket;
+    void *worker_socket;
+} swr_v1_socket_pair_record;
+void swr_v1_process_socket_pair_init(swr_v1_socket_pair_record *, bool, double);
+int swr_v1_process_socket_pair_open(swr_v1_socket_pair_record *, bool, int);
+int swr_v1_process_socket_pair_control(swr_v1_socket_pair_record *, uint32_t, uint64_t, void *, int (*)(void *, void *, uint32_t, uint64_t));
 typedef struct { uint32_t status; int32_t error; } swr_v1_process_affinity_outcome;
 #if defined(__linux__) || defined(__FreeBSD__)
 swr_v1_process_affinity_outcome swr_v1_process_worker_affinity(uint32_t worker_id, const int32_t *available, int32_t available_len, bool thread);
@@ -248,7 +258,6 @@ typedef struct {
 } swr_v1_server_workers;
 void swr_v1_process_server_workers_start(const swr_v1_server_workers *, void *, swr_v1_worker_record *const *);
 swr_v1_worker_record *swr_v1_process_server_worker(const swr_v1_server_workers *, uint16_t);
-bool swr_v1_process_server_workers_create(const swr_v1_server_workers *, swr_v1_worker_record *const *, bool, void *, bool (*)(void *, swr_v1_worker_record *));
 
 typedef struct {
     int64_t (*call)(void *pool, void *worker, uint32_t op, uint64_t arg);

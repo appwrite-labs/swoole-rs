@@ -94,58 +94,6 @@ pub unsafe extern "C" fn swr_v1_process_server_worker(
     core::ptr::null_mut()
 }
 
-/// Initialize worker resources, preserving the original copy-before-create order
-/// for user workers. Resource constructors stay native leaves; any C++ exception
-/// is captured there and rethrown only after this operation returns.
-/// # Safety
-/// `view` and `pending` loan the initialized arrays described by the view. For user
-/// creation the destination has `user_count` writable records, disjoint from
-/// pending originals. `create` initializes one worker and returns false after
-/// capturing an exception, without unwinding, bailing out or exiting the thread.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_server_workers_create(
-    view: *const ServerWorkers,
-    pending: *const *mut WorkerRecord,
-    users: bool,
-    context: *mut c_void,
-    create: unsafe extern "C" fn(*mut c_void, *mut WorkerRecord) -> bool,
-) -> bool {
-    // SAFETY: the native creator lends this view for the whole operation.
-    let view = unsafe { &*view };
-    let count = if users {
-        view.user_count
-    } else {
-        view.event_count as usize
-    };
-    for index in 0..count {
-        let worker = if users {
-            // SAFETY: the immutable pending list has user_count live worker pointers.
-            let original = unsafe { pending.wrapping_add(index).read() };
-            // SAFETY: each original and its distinct shared destination are valid
-            // initialized WorkerRecord storage; this is the original byte copy.
-            unsafe {
-                core::ptr::copy_nonoverlapping(original, view.user_workers.wrapping_add(index), 1);
-            };
-            original
-        } else {
-            // SAFETY: the event pool's initialized array has event_count records.
-            let workers = unsafe { (*view.event_pool).workers };
-            workers.wrapping_add(index)
-        };
-        // SAFETY: the native leaf catches C++ exceptions and returns without
-        // crossing this Rust frame; this worker remains live for the operation.
-        if !unsafe { create(context, worker) } {
-            return false;
-        }
-        if users {
-            // SAFETY: resource creation succeeded, and the original user record
-            // remains exclusively loaned. Preserve SW_USER_WORKER after copying.
-            unsafe { swr_v1_worker_set_type(worker, 5) };
-        }
-    }
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,15 +108,6 @@ mod tests {
     fn pool() -> PoolRecord {
         // Same all-zero valid representation as the native shared pool allocation.
         unsafe { core::mem::zeroed() }
-    }
-
-    unsafe extern "C" fn create(context: *mut c_void, worker: *mut WorkerRecord) -> bool {
-        let calls = unsafe { &mut *context.cast::<usize>() };
-        *calls += 1;
-        unsafe {
-            swr_v1_worker_set_pid(worker, 99);
-        }
-        *calls != 2
     }
 
     #[test]
@@ -249,67 +188,5 @@ mod tests {
             );
             assert_eq!(unsafe { swr_v1_worker_type(event) }, 2);
         }
-    }
-
-    #[test]
-    fn resource_failure_preserves_copy_before_create_and_stops_at_the_failed_worker() {
-        let mut pending = [worker(), worker(), worker()];
-        let mut shared = [worker(), worker(), worker()];
-        for (index, record) in pending.iter_mut().enumerate() {
-            unsafe {
-                swr_v1_worker_set_pid(record, i32::try_from(index).unwrap() + 10);
-            }
-            unsafe {
-                swr_v1_worker_set_type(record, 7);
-            }
-        }
-        let pointers = [
-            &raw mut pending[0],
-            &raw mut pending[1],
-            &raw mut pending[2],
-        ];
-        let view = ServerWorkers {
-            event_pool: core::ptr::null_mut(),
-            task_pool: core::ptr::null_mut(),
-            event_workers: core::ptr::null_mut(),
-            user_workers: shared.as_mut_ptr(),
-            event_count: 0,
-            task_count: 0,
-            user_count: 3,
-        };
-        let mut calls = 0_usize;
-        assert!(!unsafe {
-            swr_v1_process_server_workers_create(
-                &raw const view,
-                pointers.as_ptr(),
-                true,
-                (&raw mut calls).cast(),
-                create,
-            )
-        });
-        assert_eq!(calls, 2);
-        assert_eq!(unsafe { swr_v1_worker_pid(&raw const shared[0]) }, 10);
-        assert_eq!(
-            unsafe { swr_v1_worker_type(&raw const shared[0]) },
-            7,
-            "shared copy precedes original type update"
-        );
-        assert_eq!(unsafe { swr_v1_worker_type(&raw const pending[0]) }, 5);
-        assert_eq!(
-            unsafe { swr_v1_worker_pid(&raw const shared[1]) },
-            11,
-            "failed worker was copied before constructor attempt"
-        );
-        assert_eq!(
-            unsafe { swr_v1_worker_type(&raw const pending[1]) },
-            7,
-            "failed creation must not publish user type"
-        );
-        assert_eq!(
-            unsafe { swr_v1_worker_pid(&raw const shared[2]) },
-            0,
-            "no later worker copy after failure"
-        );
-        assert_eq!(unsafe { swr_v1_worker_pid(&raw const pending[2]) }, 12);
     }
 }
