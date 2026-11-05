@@ -18,10 +18,10 @@ from tools.build_upstream import COMMIT as PIN
 
 
 def sources(source, archive, paths):
-    """Each path at the pin, and in the fully patched tree of the hybrid build ARCHIVE comes from."""
+    """Each path at the pin, and each the hybrid keeps in the fully patched tree its build ARCHIVE comes from."""
     hybrid = hybrid_tree(archive)[0]
     return ({path: subprocess.check_output(['git', '-C', str(source), 'show', PIN+':'+path], text=True) for path in paths},
-            {path: (hybrid/path).read_text() for path in paths}, str(hybrid))
+            {path: (hybrid/path).read_text() for path in paths if (hybrid/path).exists()}, str(hybrid))
 
 
 def block(text, signature):
