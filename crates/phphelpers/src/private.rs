@@ -518,10 +518,12 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_call_anyway(
     result
 }
 
+/// Invoke directly or create a coroutine, preserving the immediate fatal-exception check.
+/// # Errors
+/// PHP bailed out; no jump is resumed while a Rust caller owns its state.
 /// # Safety
 /// A live resolved cache, argument span and optional return slot. `create` is the C++ core leaf.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_function_call(
+pub unsafe fn function_call(
     cache: *mut zend_fcall_info_cache,
     argc: u32,
     argv: *mut zval,
@@ -529,7 +531,7 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_function_call(
     coroutine: bool,
     create: unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval) -> i64,
     report: unsafe extern "C" fn(*const c_char),
-) -> bool {
+) -> Result<bool, bailout::Bailout> {
     let success = if coroutine {
         if !retval.is_null() {
             // SAFETY: coroutines publish null before creation and have no return value.
@@ -553,8 +555,11 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_function_call(
         // SAFETY: callbacks outside the VM must report an exception immediately.
         unsafe { fatal_exception() };
     }
-    bailout::finish();
-    success
+    if bailout::pending() {
+        Err(bailout::Bailout)
+    } else {
+        Ok(success)
+    }
 }
 
 /// # Safety
@@ -594,4 +599,23 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_named_call(
         }
     }
     bailout::finish();
+}
+
+/// # Safety
+/// The native caller lends a live cache, arguments and return slot and native coroutine/warning leaves.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn swr_v1_phphelpers_function_call(
+    cache: *mut zend_fcall_info_cache,
+    argc: u32,
+    argv: *mut zval,
+    retval: *mut zval,
+    coroutine: bool,
+    create: unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval) -> i64,
+    report: unsafe extern "C" fn(*const c_char),
+) -> bool {
+    // SAFETY: forward the native caller's initialized call data and contained native leaves.
+    let result = unsafe { function_call(cache, argc, argv, retval, coroutine, create, report) }
+        .unwrap_or(false);
+    bailout::finish();
+    result
 }
