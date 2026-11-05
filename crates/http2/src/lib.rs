@@ -1,4 +1,5 @@
-//! HTTP/2 policy and one externally native-owned send queue; native code executes effects.
+//! HTTP/2 policy for crates/phphttp2, and `src/protocol/http2.cc`'s functions under
+//! their upstream symbols.
 #![cfg_attr(
     not(test),
     deny(
@@ -6,19 +7,11 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-#[cfg(test)]
-mod queue_faults;
 mod receive;
 pub use receive::*;
 mod files;
 pub use files::*;
-mod decompression;
-pub use decompression::*;
-mod connection;
-pub use connection::*;
-mod send_queue;
-pub use send_queue::*;
-use std::ffi::c_char;
+use std::ffi::{c_char, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -67,15 +60,6 @@ pub struct Http2ResponsePlan {
     pub ready: u32,
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_setting_index(id: u32) -> i32 {
-    if (1..=6).contains(&id) {
-        (id - 1).cast_signed()
-    } else {
-        -1
-    }
-}
-
 /// The process-wide defaults (`SW_HTTP2_DEFAULT_*`), indexed by setting id - 1:
 /// header table, push, concurrent streams, initial window, frame size, header list.
 static DEFAULT_SETTINGS: [AtomicU32; 6] = [
@@ -87,30 +71,31 @@ static DEFAULT_SETTINGS: [AtomicU32; 6] = [
     AtomicU32::new(u32::MAX),
 ];
 
-fn default_slot(id: u32) -> Option<&'static AtomicU32> {
-    let index = usize::try_from(sw_rs_http2_setting_index(id)).ok()?;
-    DEFAULT_SETTINGS.get(index)
+/// The slot of a setting id. Upstream asserts on any other id, so this aborts.
+fn default_slot(id: u32) -> &'static AtomicU32 {
+    usize::try_from(id)
+        .ok()
+        .and_then(|id| DEFAULT_SETTINGS.get(id.checked_sub(1)?))
+        .unwrap_or_else(|| std::process::abort())
 }
 
-/// `http2::put_default_setting`; false for an unknown id (upstream asserts).
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_put_default_setting(id: u32, value: u32) -> bool {
-    default_slot(id).is_some_and(|slot| {
-        slot.store(value, Ordering::Relaxed);
-        true
-    })
+/// `swoole::http2::put_default_setting(swHttp2SettingId, uint32_t)`.
+#[unsafe(export_name = "_ZN6swoole5http219put_default_settingE16swHttp2SettingIdj")]
+pub extern "C" fn put_default_setting(id: u32, value: u32) {
+    default_slot(id).store(value, Ordering::Relaxed);
 }
 
-/// `http2::get_default_setting`; 0 for an unknown id (upstream asserts).
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_get_default_setting(id: u32) -> u32 {
-    default_slot(id).map_or(0, |slot| slot.load(Ordering::Relaxed))
+/// `swoole::http2::get_default_setting(swHttp2SettingId)`.
+#[must_use]
+#[unsafe(export_name = "_ZN6swoole5http219get_default_settingE16swHttp2SettingId")]
+pub extern "C" fn get_default_setting(id: u32) -> u32 {
+    default_slot(id).load(Ordering::Relaxed)
 }
 
 /// All defaults, for the server's SETTINGS frame.
 #[no_mangle]
 pub extern "C" fn sw_rs_http2_default_settings() -> Http2Settings {
-    let get = |id| sw_rs_http2_get_default_setting(id);
+    let get = get_default_setting;
     Http2Settings {
         header_table_size: get(1),
         enable_push: get(2),
@@ -424,22 +409,6 @@ pub unsafe extern "C" fn sw_rs_http2_pack_frame_header(
 }
 
 /// # Safety
-/// `bytes` addresses four initialized bytes.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_read_u32(bytes: *const u8) -> u32 {
-    let mut value = [0; 4];
-    ptr::copy_nonoverlapping(bytes, value.as_mut_ptr(), value.len());
-    u32::from_be_bytes(value)
-}
-
-/// # Safety
-/// `out` addresses four writable bytes.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_write_u32(out: *mut u8, value: u32) {
-    ptr::copy_nonoverlapping(value.to_be_bytes().as_ptr(), out, 4);
-}
-
-/// # Safety
 /// `out` addresses `capacity` writable bytes; `settings` addresses an initialized POD.
 #[no_mangle]
 pub unsafe extern "C" fn sw_rs_http2_pack_settings(
@@ -476,6 +445,23 @@ pub unsafe extern "C" fn sw_rs_http2_pack_settings(
     }
     ptr::copy_nonoverlapping(bytes.as_ptr(), out, size);
     size
+}
+
+/// `swoole::http2::pack_setting_frame(char *, const Settings &, bool)`.
+/// # Safety
+/// `out` addresses a whole frame (45 bytes, 39 for a server); `settings` is initialized.
+#[unsafe(export_name = "_ZN6swoole5http218pack_setting_frameEPcRKNS0_8SettingsEb")]
+pub unsafe extern "C" fn pack_setting_frame(
+    out: *mut u8,
+    settings: *const Http2Settings,
+    server: bool,
+) -> usize {
+    sw_rs_http2_pack_settings(
+        out,
+        if server { 39 } else { 45 },
+        settings,
+        u32::from(server),
+    )
 }
 
 /// Decode one item only. Native code invokes the callback before decoding another.
@@ -528,17 +514,31 @@ pub unsafe extern "C" fn sw_rs_http2_decode_frame(
     1
 }
 
+/// `swoole::PacketLength`.
+#[repr(C)]
+pub struct PacketLength {
+    pub buf: *const u8,
+    pub buf_size: u32,
+    pub header_len: u32,
+}
+
+/// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`: 0 until
+/// the nine-byte frame header is buffered, then the whole frame's length.
 /// # Safety
-/// For `available >= 9`, bytes addresses nine initialized bytes.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_frame_length(bytes: *const u8, available: usize) -> isize {
-    if available < 9 || bytes.is_null() {
+/// `pl` is valid and its `buf` addresses `buf_size` initialized bytes.
+#[unsafe(export_name = "_ZN6swoole5http216get_frame_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE")]
+pub unsafe extern "C" fn get_frame_length(
+    _protocol: *const c_void,
+    _conn: *mut c_void,
+    pl: *const PacketLength,
+) -> isize {
+    let pl = &*pl;
+    if pl.buf_size < 9 {
         return 0;
     }
-    let mut b = [0u8; 3];
-    ptr::copy_nonoverlapping(bytes, b.as_mut_ptr(), 3);
-    let length = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-    isize::try_from(length).map_or(-1, |length| length + 9)
+    let mut b = [0u8; 4];
+    ptr::copy_nonoverlapping(pl.buf, b.as_mut_ptr().add(1), 3);
+    isize::try_from(u32::from_be_bytes(b)).map_or(-1, |length| length + 9)
 }
 
 /// # Safety
@@ -650,16 +650,6 @@ pub unsafe extern "C" fn sw_rs_http2_inflate_step(
 }
 
 #[no_mangle]
-pub extern "C" fn sw_rs_http2_request_value_default(is_string: u32, length: usize) -> u32 {
-    u32::from(is_string == 0 || length == 0)
-}
-
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_authority_with_port(secure: u32, port: i32) -> u32 {
-    u32::from(port != if secure != 0 { 443 } else { 80 })
-}
-
-#[no_mangle]
 pub extern "C" fn sw_rs_http2_headers_flags(empty: u32, end_stream: u32, stream_flags: u32) -> u32 {
     4 | u32::from(empty != 0 && end_stream != 0 && stream_flags & 2 == 0)
 }
@@ -704,31 +694,35 @@ pub unsafe extern "C" fn sw_rs_http2_response(
     );
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_type_name(kind: i32) -> *const c_char {
-    let text: &'static [u8] = match kind {
-        0 => b"DATA\0",
-        1 => b"HEADERS\0",
-        2 => b"PRIORITY\0",
-        3 => b"RST_STREAM\0",
-        4 => b"SETTINGS\0",
-        5 => b"PUSH_PROMISE\0",
-        6 => b"PING\0",
-        7 => b"GOAWAY\0",
-        8 => b"WINDOW_UPDATE\0",
-        9 => b"CONTINUATION\0",
-        _ => b"UNKNOWN\0",
-    };
-    text.as_ptr().cast()
+/// `swoole::http2::get_type(int)`.
+#[must_use]
+#[unsafe(export_name = "_ZN6swoole5http28get_typeEi")]
+pub extern "C" fn get_type(kind: i32) -> *const c_char {
+    match kind {
+        0 => c"DATA",
+        1 => c"HEADERS",
+        2 => c"PRIORITY",
+        3 => c"RST_STREAM",
+        4 => c"SETTINGS",
+        5 => c"PUSH_PROMISE",
+        6 => c"PING",
+        7 => c"GOAWAY",
+        8 => c"WINDOW_UPDATE",
+        9 => c"CONTINUATION",
+        _ => c"UNKNOWN",
+    }
+    .as_ptr()
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_color_group(kind: i32) -> u32 {
+/// `swoole::http2::get_type_color(int)`: `SW_COLOR_MAGENTA`, `_GREEN`, `_WHITE` or `_RED`.
+#[must_use]
+#[unsafe(export_name = "_ZN6swoole5http214get_type_colorEi")]
+pub extern "C" fn get_type_color(kind: i32) -> i32 {
     match kind {
-        0 | 8 => 0,
-        1 | 4 | 5 | 9 => 1,
-        2 | 6 => 2,
-        _ => 3,
+        0 | 8 => 5,
+        1 | 4 | 5 | 9 => 2,
+        2 | 6 => 7,
+        _ => 1,
     }
 }
 
@@ -753,12 +747,9 @@ mod tests {
                 max_header_list_size: u32::MAX,
             }
         );
-        assert!(!sw_rs_http2_put_default_setting(0, 1));
-        assert!(!sw_rs_http2_put_default_setting(7, 1));
-        assert_eq!(sw_rs_http2_get_default_setting(7), 0);
-        assert!(sw_rs_http2_put_default_setting(2, 1));
-        assert_eq!(sw_rs_http2_get_default_setting(2), 1);
-        assert!(sw_rs_http2_put_default_setting(2, 0));
+        put_default_setting(2, 1);
+        assert_eq!(get_default_setting(2), 1);
+        put_default_setting(2, 0);
     }
     #[test]
     fn send_complete_matches_the_wrapping_native_cast() {
@@ -780,16 +771,6 @@ mod tests {
     }
     #[test]
     fn codec_and_unknown_settings() {
-        for id in 0..=8 {
-            assert_eq!(
-                sw_rs_http2_setting_index(id),
-                if (1..=6).contains(&id) {
-                    id as i32 - 1
-                } else {
-                    -1
-                }
-            );
-        }
         let s = Http2Settings {
             header_table_size: 0x0102_0304,
             enable_push: 1,
@@ -828,8 +809,17 @@ mod tests {
     }
     #[test]
     fn framing_and_short_prefix() {
-        assert_eq!(unsafe { sw_rs_http2_frame_length(ptr::null(), 8) }, 0);
         let bytes = header(255, 0x00ff_ffff, 0x80, 0xffff_ffff);
+        let length = |buf_size| {
+            let pl = PacketLength {
+                buf: bytes.as_ptr(),
+                buf_size,
+                header_len: 0,
+            };
+            unsafe { get_frame_length(ptr::null(), ptr::null_mut(), &raw const pl) }
+        };
+        assert_eq!(length(8), 0);
+        assert_eq!(length(9), 0x00ff_ffff + 9);
         let mut f = Http2FrameFacts::default();
         assert_eq!(
             unsafe { sw_rs_http2_decode_frame(bytes.as_ptr(), 9, 0, 0, &raw mut f) },
@@ -837,10 +827,6 @@ mod tests {
         );
         assert_eq!(f.stream_id, 0x7fff_ffff);
         assert_eq!(f.publish_last_id, 1);
-        assert_eq!(
-            unsafe { sw_rs_http2_frame_length(bytes.as_ptr(), 9) },
-            0x00ff_ffff + 9
-        );
     }
     #[test]
     fn role_specific_setting_effects() {

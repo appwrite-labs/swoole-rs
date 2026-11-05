@@ -1,7 +1,6 @@
 #include "swoole_socket.h"
 #include "swoole_http2.h"
 #include "swoole_protocol.h"
-#include "rust_http2.h"
 #include <array>
 #include <iostream>
 #include <vector>

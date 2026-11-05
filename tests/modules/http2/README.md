@@ -2,11 +2,11 @@
 
 Rust (`crates/http2`) owns the settings/frame codecs, role-specific SETTINGS
 decisions, body chunking, window actions, frame header and control payload
-integers, the client send queue container, and next-effect selection for
+integers, and next-effect selection for
 several server methods. `crates/phphttp2/src/server.rs` drives the server's
 frames and responses over the C++ sessions, streams and contexts, which keep
 the stores, HPACK, socket, compression, coroutine and destructor effects.
-Rust also owns the process-wide default settings. Public headers are unchanged.
+Rust also owns the process-wide default settings.
 `Swoole\Coroutine\Http2\Client` is Rust (`crates/phphttp2`, #827); its PHPTs
 cover it.
 The overlay has no native fallback: patched builds define `SW_USE_RUST_HTTP2`.
@@ -40,9 +40,10 @@ predicates against the pinned headers, the Rust lookups and the driver against
 the hybrid build's tree (from the core report's archive).
 
 - `gate.py`: compiles the original `src/protocol/http2.cc` against the pinned
-  headers, and `core_calls.cpp` (with the hybrid tree's `http2.cc` while it
-  exists) against the hybrid build's headers and archive, and compares the core
-  codec calls with a recording `Socket::send`.
+  headers, and `core_calls.cpp` against the hybrid build's headers and archive
+  (the hybrid has no `http2.cc`: Rust exports its functions under their upstream
+  symbols, and `swoole_http2.h` keeps the callback and `Socket::send` glue
+  inline), and compares the core codec calls with a recording `Socket::send`.
 - `header_calls.py`: Rust role/media header lookup against the pinned
   locale-sensitive predicates.
 
