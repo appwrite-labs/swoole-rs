@@ -1,8 +1,8 @@
 //! `swoole::Logger` (upstream `src/core/log.cc`): level, date format, log file,
-//! rotation, stdout redirection and `put`, behind one lock. Diagnostics, worker
-//! identity and backtraces are native (`LoggerHost`, from `src/core/log.cc`) and
-//! run after the lock is released, so a diagnostic can log through this logger
-//! again.
+//! rotation, stdout redirection and `put`, behind one lock. Diagnostics go out
+//! through corebase's log host; worker identity, `swoole_redirect_stdout` and
+//! backtraces are native (`LoggerHost`, from `src/core/log.cc`). Both run after
+//! the lock is released, so a diagnostic can log through this logger again.
 use crate::{
     swr_v1_utils_log_level, swr_v1_utils_log_line, swr_v1_utils_log_micros,
     swr_v1_utils_log_rotation,
@@ -12,31 +12,18 @@ use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
+use swoole_rs_corebase::log;
 
 const SW_LOG_INFO: c_int = 2;
 const SW_LOG_DATE_STRLEN: usize = 128;
 const SW_LOG_BUFFER_SIZE: usize = 16384 + 256;
 const SW_LOG_DEFAULT_DATE_FORMAT: &CStr = c"%F %T";
 
-/// What `LoggerHost::effect` reports, with its `value` and `text`.
-mod host {
-    use libc::c_int;
-    /// errno, the real file.
-    pub(super) const OPEN_FAILED: c_int = 0;
-    /// The format's length.
-    pub(super) const DATE_FORMAT_TOO_LONG: c_int = 1;
-    pub(super) const NO_LOG_FILE: c_int = 2;
-    pub(super) const ALREADY_REDIRECTED: c_int = 3;
-    /// errno.
-    pub(super) const DUP_STDOUT_FAILED: c_int = 4;
-    pub(super) const DUP_STDERR_FAILED: c_int = 5;
-    pub(super) const NOT_REDIRECTED: c_int = 6;
-    pub(super) const DUP2_STDOUT_FAILED: c_int = 7;
-    pub(super) const DUP2_STDERR_FAILED: c_int = 8;
-    /// `swoole_redirect_stdout(value)`.
-    pub(super) const REDIRECT: c_int = 9;
-    pub(super) const BACKTRACE: c_int = 10;
-}
+/// `SW_LOG_WARNING`, `SW_ERROR_SYSTEM_CALL_FAIL` and `SW_ERROR_INVALID_PARAMS`.
+const LOG_WARNING: c_int = 4;
+const SYSTEM_CALL_FAIL: c_int = 502;
+const INVALID_PARAMS: c_int = 505;
+const REDIRECT_ORIGIN: &CStr = c"Logger::redirect_stdout_and_stderr";
 
 #[repr(C)]
 #[derive(Default)]
@@ -56,13 +43,26 @@ unsafe extern "C" {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LoggerHost {
-    /// A diagnostic or effect from `host`; `text` is null or NUL-terminated.
-    pub effect: unsafe extern "C" fn(what: c_int, value: c_int, text: *const c_char),
+    /// `swoole_redirect_stdout(fd)`.
+    pub redirect: unsafe extern "C" fn(fd: c_int),
+    pub backtrace: unsafe extern "C" fn(),
     pub identity: unsafe extern "C" fn(identity: *mut LoggerIdentity),
 }
 
-/// A native effect, run once the lock is released.
-struct Effect(c_int, c_int, Option<CString>);
+/// A diagnostic or native effect, run once the lock is released.
+#[derive(Debug, PartialEq)]
+enum Effect {
+    /// errno, the real file.
+    OpenFailed(c_int, CString),
+    /// The format's length.
+    DateFormatTooLong(c_int),
+    /// `Logger::redirect_stdout_and_stderr`'s `swoole_warning`.
+    Warning(&'static str),
+    /// `Logger::redirect_stdout_and_stderr`'s `swoole_sys_warning`, with errno.
+    SysWarning(&'static str, c_int),
+    Redirect(c_int),
+    Backtrace,
+}
 
 struct State {
     opened: bool,
@@ -157,10 +157,9 @@ impl State {
             )
         };
         if fd < 0 {
-            effects.push(Effect(
-                host::OPEN_FAILED,
+            effects.push(Effect::OpenFailed(
                 errno(),
-                Some(std::mem::take(&mut self.real_file)),
+                std::mem::take(&mut self.real_file),
             ));
             self.file = CString::default();
             return false;
@@ -180,57 +179,49 @@ impl State {
         self.open(file, effects);
         if self.redirected {
             // SAFETY: the live log stream.
-            effects.push(Effect(
-                host::REDIRECT,
-                unsafe { libc::fileno(self.fp) },
-                None,
-            ));
+            effects.push(Effect::Redirect(unsafe { libc::fileno(self.fp) }));
         }
     }
 
     fn redirect(&mut self, effects: &mut Vec<Effect>) -> bool {
         if !self.opened {
-            effects.push(Effect(host::NO_LOG_FILE, 0, None));
+            effects.push(Effect::Warning("no log file opened"));
             return false;
         }
         if self.redirected {
-            effects.push(Effect(host::ALREADY_REDIRECTED, 0, None));
+            effects.push(Effect::Warning("has been redirected"));
             return false;
         }
         // SAFETY: dup has no memory preconditions.
         self.stdout_fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
         if self.stdout_fd < 0 {
-            effects.push(Effect(host::DUP_STDOUT_FAILED, errno(), None));
+            effects.push(Effect::SysWarning("dup(STDOUT_FILENO) failed", errno()));
             return false;
         }
         // SAFETY: as above.
         self.stderr_fd = unsafe { libc::dup(libc::STDERR_FILENO) };
         if self.stderr_fd < 0 {
-            effects.push(Effect(host::DUP_STDERR_FAILED, errno(), None));
+            effects.push(Effect::SysWarning("dup(STDERR_FILENO) failed", errno()));
             return false;
         }
         // SAFETY: the live log stream.
-        effects.push(Effect(
-            host::REDIRECT,
-            unsafe { libc::fileno(self.fp) },
-            None,
-        ));
+        effects.push(Effect::Redirect(unsafe { libc::fileno(self.fp) }));
         self.redirected = true;
         true
     }
 
     fn restore(&mut self, effects: &mut Vec<Effect>) -> bool {
         if !self.redirected {
-            effects.push(Effect(host::NOT_REDIRECTED, 0, None));
+            effects.push(Effect::Warning("no redirected"));
             return false;
         }
         // SAFETY: dup2 has no memory preconditions.
         if unsafe { libc::dup2(self.stdout_fd, libc::STDOUT_FILENO) } < 0 {
-            effects.push(Effect(host::DUP2_STDOUT_FAILED, errno(), None));
+            effects.push(Effect::SysWarning("dup2(STDOUT_FILENO) failed", errno()));
         }
         // SAFETY: as above.
         if unsafe { libc::dup2(self.stderr_fd, libc::STDERR_FILENO) } < 0 {
-            effects.push(Effect(host::DUP2_STDERR_FAILED, errno(), None));
+            effects.push(Effect::SysWarning("dup2(STDERR_FILENO) failed", errno()));
         }
         // SAFETY: the descriptors `redirect` duplicated, closed once.
         unsafe { libc::close(self.stdout_fd) };
@@ -302,12 +293,50 @@ impl State {
             unsafe { funlockfile(self.fp) };
         }
         if self.backtrace {
-            effects.push(Effect(host::BACKTRACE, 0, None));
+            effects.push(Effect::Backtrace);
         }
     }
 }
 
 impl Logger {
+    fn run(&self, effect: Effect) {
+        match effect {
+            Effect::OpenFailed(code, file) => {
+                // SAFETY: strerror has no memory preconditions.
+                let reason = unsafe { libc::strerror(code) };
+                // SAFETY: strerror returns a NUL-terminated string, read at once.
+                let reason = unsafe { CStr::from_ptr(reason) };
+                log::error_log(
+                    LOG_WARNING,
+                    SYSTEM_CALL_FAIL,
+                    c"Logger::open",
+                    format_args!(
+                        "open('{}') failed. Error: {}[{code}]",
+                        file.to_string_lossy(),
+                        reason.to_string_lossy()
+                    ),
+                );
+            }
+            Effect::DateFormatTooLong(length) => {
+                log::set_last_error(INVALID_PARAMS);
+                log::error_log(
+                    LOG_WARNING,
+                    INVALID_PARAMS,
+                    c"Logger::set_date_format",
+                    format_args!("The date format string[length={length}] is too long"),
+                );
+            }
+            Effect::Warning(message) => log::warning(REDIRECT_ORIGIN, format_args!("{message}")),
+            Effect::SysWarning(message, code) => {
+                log::sys_warning_errno(code, REDIRECT_ORIGIN, format_args!("{message}"));
+            }
+            // SAFETY: native's own effect; the host is live for the logger's life.
+            Effect::Redirect(fd) => unsafe { (self.host.redirect)(fd) },
+            // SAFETY: as above.
+            Effect::Backtrace => unsafe { (self.host.backtrace)() },
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -316,10 +345,8 @@ impl Logger {
     fn with<T>(&self, operation: impl FnOnce(&mut State, &mut Vec<Effect>) -> T) -> T {
         let mut effects = Vec::new();
         let result = operation(&mut self.lock(), &mut effects);
-        for Effect(what, value, text) in effects {
-            let text = text.as_deref().map_or(std::ptr::null(), CStr::as_ptr);
-            // SAFETY: `text` is null or NUL-terminated and outlives the call.
-            unsafe { (self.host.effect)(what, value, text) };
+        for effect in effects {
+            self.run(effect);
         }
         result
     }
@@ -496,7 +523,7 @@ pub unsafe extern "C" fn swr_v1_logger_set_date_format(
     unsafe { live(logger) }.with(|state, effects| {
         if strftime(&mut [0u8; SW_LOG_DATE_STRLEN], format, now().0) == 0 {
             let length = c_int::try_from(format.to_bytes().len()).unwrap_or(c_int::MAX);
-            effects.push(Effect(host::DATE_FORMAT_TOO_LONG, length, None));
+            effects.push(Effect::DateFormatTooLong(length));
             return false;
         }
         format.clone_into(&mut state.date_format);
@@ -561,18 +588,27 @@ pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
 
+    /// A corebase log call: kind, level, code, origin and message.
+    type Logged = (c_int, c_int, c_int, String, String);
+
     thread_local! {
-        static HOST: RefCell<Vec<(c_int, c_int, Option<String>)>> = const { RefCell::new(Vec::new()) };
+        static HOST: RefCell<Vec<Logged>> = const { RefCell::new(Vec::new()) };
     }
 
-    unsafe extern "C" fn effect(what: c_int, value: c_int, text: *const c_char) {
-        let text = (!text.is_null()).then(|| {
-            unsafe { CStr::from_ptr(text) }
-                .to_string_lossy()
-                .into_owned()
-        });
-        HOST.with(|host| host.borrow_mut().push((what, value, text)));
+    unsafe extern "C" fn logged(
+        kind: c_int,
+        level: c_int,
+        code: c_int,
+        origin: *const c_char,
+        message: *const c_char,
+    ) {
+        let text = |p| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        let entry = (kind, level, code, text(origin), text(message));
+        HOST.with(|host| host.borrow_mut().push(entry));
     }
+
+    unsafe extern "C" fn redirect(_: c_int) {}
+    unsafe extern "C" fn backtrace() {}
 
     unsafe extern "C" fn identity(identity: *mut LoggerIdentity) {
         unsafe {
@@ -581,9 +617,14 @@ pub(crate) mod tests {
         }
     }
 
-    const HOST_FAKE: LoggerHost = LoggerHost { effect, identity };
+    const HOST_FAKE: LoggerHost = LoggerHost {
+        redirect,
+        backtrace,
+        identity,
+    };
 
-    fn host() -> Vec<(c_int, c_int, Option<String>)> {
+    fn host() -> Vec<Logged> {
+        swoole_rs_corebase::log::swr_v1_core_set_log_host(logged);
         HOST.with(RefCell::take)
     }
 
@@ -638,8 +679,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn failures_are_reported_to_the_host_after_the_state_changes() {
+    fn failures_are_logged_after_the_state_changes() {
         let logger = swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE);
+        host();
         unsafe {
             assert!(
                 !swr_v1_logger_open(logger, c"/nonexistent/dir/log".as_ptr()),
@@ -648,9 +690,15 @@ pub(crate) mod tests {
             assert_eq!(
                 host(),
                 [(
-                    host::OPEN_FAILED,
-                    libc::ENOENT,
-                    Some("/nonexistent/dir/log".into())
+                    log::LOG_ERROR,
+                    LOG_WARNING,
+                    SYSTEM_CALL_FAIL,
+                    "Logger::open".into(),
+                    format!(
+                        "open('/nonexistent/dir/log') failed. Error: {}[{}]",
+                        CStr::from_ptr(libc::strerror(libc::ENOENT)).to_string_lossy(),
+                        libc::ENOENT
+                    )
                 )],
                 "open diagnostic"
             );
@@ -668,7 +716,13 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 host(),
-                [(host::DATE_FORMAT_TOO_LONG, 200, None)],
+                [(
+                    log::LOG_ERROR,
+                    LOG_WARNING,
+                    INVALID_PARAMS,
+                    "Logger::set_date_format".into(),
+                    "The date format string[length=200] is too long".into()
+                )],
                 "date diagnostic"
             );
 
@@ -677,12 +731,19 @@ pub(crate) mod tests {
                 "nothing to redirect to"
             );
             assert!(!swr_v1_logger_redirect(logger, false), "nothing to restore");
+            assert_eq!(log::last_error(), INVALID_PARAMS, "last error");
+            let warning = |message: &str| {
+                (
+                    log::LOG_WARNING,
+                    0,
+                    0,
+                    REDIRECT_ORIGIN.to_string_lossy().into_owned(),
+                    message.into(),
+                )
+            };
             assert_eq!(
                 host(),
-                [
-                    (host::NO_LOG_FILE, 0, None),
-                    (host::NOT_REDIRECTED, 0, None)
-                ],
+                [warning("no log file opened"), warning("no redirected")],
                 "redirect diagnostics"
             );
             swr_v1_logger_free(logger);

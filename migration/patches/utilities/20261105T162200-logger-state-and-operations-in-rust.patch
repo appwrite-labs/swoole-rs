@@ -1,5 +1,5 @@
 diff --git a/include/swoole_log.h b/include/swoole_log.h
-index 92e7f22..9204f01 100644
+index 92e7f22..5601687 100644
 --- a/include/swoole_log.h
 +++ b/include/swoole_log.h
 @@ -21,2 +21,3 @@
@@ -25,7 +25,7 @@ index 92e7f22..9204f01 100644
 -
 -    void reopen_without_lock();
 -    SwrUtilsLogPath *make_real_path(const char *file, size_t length) const;
-+    SwrLogger *logger = swr_v1_logger_new(stdout, {swr_logger_host, swr_logger_host_identity});
++    SwrLogger *logger = swr_v1_logger_new(stdout, swr_logger_host);
  
    public:
 -    Logger();
@@ -120,22 +120,23 @@ index 92e7f22..9204f01 100644
 +        swr_v1_logger_set(logger, SWR_LOGGER_BACKTRACE, 1);
      }
 diff --git a/src/core/log.cc b/src/core/log.cc
-index 965dcc6..15ea440 100644
+index 965dcc6..5a699bd 100644
 --- a/src/core/log.cc
 +++ b/src/core/log.cc
-@@ -19,11 +19,3 @@
- #include <cstring>
+@@ -18,12 +18,2 @@
+ 
+-#include <cstring>
 -#include <new>
 -#include <memory>
 -#include <stdexcept>
 -#include <fcntl.h>
- 
+-
 -#include <string>
 -#include <chrono>  // NOLINT [build/c++11]
 -
 -#include "swoole_rs_utilities.h"
  #ifndef SWOOLE_RS_UTILITIES
-@@ -32,300 +24,39 @@
+@@ -32,300 +22,11 @@
  
 -namespace swoole {
 -
@@ -324,43 +325,7 @@ index 965dcc6..15ea440 100644
 -void Logger::reopen() {
 -    std::unique_lock<std::mutex> _lock(lock);
 -    reopen_without_lock();
-+// The native side of Rust's Logger (crates/utilities/src/logger.rs): its
-+// diagnostics, under the method names upstream logged them as, and the effects
-+// it can't make itself. Each runs after the logger's lock is released.
-+extern "C" {
-+void swr_logger_host(int what, int value, const char *text) {
-+    if (what >= 4 && what <= 8) {
-+        errno = value;
-+    }
-+    switch (what) {
-+    case 0:
-+        swoole_log_as("Logger::open",
-+                      swoole_error_log(SW_LOG_WARNING, SW_ERROR_SYSTEM_CALL_FAIL, "open('%s') failed. Error: %s[%d]",
-+                                       text, strerror(value), value));
-+        break;
-+    case 1:
-+        swoole_set_last_error(SW_ERROR_INVALID_PARAMS);
-+        swoole_log_as("Logger::set_date_format",
-+                      swoole_error_log(SW_LOG_WARNING, SW_ERROR_INVALID_PARAMS,
-+                                       "The date format string[length=%ld] is too long", (long) value));
-+        break;
-+    case 2: swoole_log_as("Logger::redirect_stdout_and_stderr", swoole_warning("no log file opened")); break;
-+    case 3: swoole_log_as("Logger::redirect_stdout_and_stderr", swoole_warning("has been redirected")); break;
-+    case 4: swoole_log_as("Logger::redirect_stdout_and_stderr", swoole_sys_warning("dup(STDOUT_FILENO) failed")); break;
-+    case 5: swoole_log_as("Logger::redirect_stdout_and_stderr", swoole_sys_warning("dup(STDERR_FILENO) failed")); break;
-+    case 6: swoole_log_as("Logger::redirect_stdout_and_stderr", swoole_warning("no redirected")); break;
-+    case 7: swoole_log_as("Logger::redirect_stdout_and_stderr", swoole_sys_warning("dup2(STDOUT_FILENO) failed")); break;
-+    case 8: swoole_log_as("Logger::redirect_stdout_and_stderr", swoole_sys_warning("dup2(STDERR_FILENO) failed")); break;
-+    case 9: swoole_redirect_stdout(value); break;
-+    default: swoole_print_backtrace(); break;
-+    }
-+}
-+
-+void swr_logger_host_identity(SwrLoggerIdentity *identity) {
-+    identity->worker_id = swoole_get_worker_id();
-+    identity->worker_pid = swoole_get_worker_pid();
-+    identity->worker_symbol = swoole_get_worker_symbol();
- }
+-}
 -
 -const char *Logger::get_real_file() {
 -    return swr_v1_utils_log_state_text_get(state, SWR_UTILS_STATE_REAL_FILE);
@@ -395,7 +360,7 @@ index 965dcc6..15ea440 100644
 -
 -bool Logger::is_opened() const {
 -    return swr_v1_utils_log_state_scalar_get(state, SWR_UTILS_STATE_OPENED);
- }
+-}
 -
 -void Logger::put(int level, const char *content, size_t length) {
 -    char date_str[SW_LOG_DATE_STRLEN];
@@ -469,6 +434,14 @@ index 965dcc6..15ea440 100644
 -        default: return;
 -        }
 -    }
--}
--
++// The native effects of Rust's Logger (crates/utilities/src/logger.rs); its
++// diagnostics go through corebase's log host. Each runs after the logger's lock
++// is released.
++static void logger_identity(SwrLoggerIdentity *identity) {
++    identity->worker_id = swoole_get_worker_id();
++    identity->worker_pid = swoole_get_worker_pid();
++    identity->worker_symbol = swoole_get_worker_symbol();
+ }
+ 
 -}  // namespace swoole
++extern "C" const SwrLoggerHost swr_logger_host = {swoole_redirect_stdout, swoole_print_backtrace, logger_identity};

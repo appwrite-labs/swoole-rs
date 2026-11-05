@@ -96,10 +96,11 @@ All public utility signatures are unchanged; v1 is frozen.
 ### Logger (`swr_v1_logger_*`)
 
 `swoole::Logger` holds one `SwrLogger` handle; every operation is Rust's, under one
-lock (the level is an atomic, so `get_level` takes no lock). Diagnostics, worker
-identity, `swoole_redirect_stdout` and backtraces call `swr_logger_host` and
-`swr_logger_host_identity` (`src/core/log.cc`) after the lock is released, so a
-diagnostic can log through the same logger. A failed open warns as upstream's
+lock (the level is an atomic, so `get_level` takes no lock). Diagnostics go
+through corebase's log host under upstream's method names; worker identity,
+`swoole_redirect_stdout` and backtraces call `swr_logger_host` (`src/core/log.cc`).
+Both run after the lock is released, so a diagnostic can log through the same
+logger. A failed open warns as upstream's
 `Logger::open` did; a failed open during `put`'s rotation, which deadlocked
 upstream, warns after the line is written. `get_file`/`get_real_file` pointers are
 valid until the file next changes.

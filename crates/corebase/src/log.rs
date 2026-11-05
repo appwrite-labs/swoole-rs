@@ -82,7 +82,11 @@ fn emit(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: fmt::Arg
 
 /// `swoole_sys_warning` from `origin`, with this thread's errno as on entry.
 pub fn sys_warning(origin: &CStr, message: fmt::Arguments<'_>) {
-    let code = errno();
+    sys_warning_errno(errno(), origin, message);
+}
+
+/// `swoole_sys_warning` from `origin`, with errno `code`.
+pub fn sys_warning_errno(code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
     emit(LOG_SYS_WARNING, 0, code, origin, message);
 }
 

@@ -12,6 +12,7 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 libc = "=0.2.191"
 memchr = "2.8.3"
+swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-locks = { path = "../locks" }
 
 [lints]

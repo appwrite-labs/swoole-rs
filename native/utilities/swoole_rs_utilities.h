@@ -63,17 +63,17 @@ size_t swr_v1_utils_log_line(uint8_t *, size_t, const uint8_t *, int32_t, uint8_
                            int32_t, int32_t, int32_t, const uint8_t *, int32_t);
 /* Exact microsecond suffix, same output bounds and count convention. */
 size_t swr_v1_utils_log_micros(uint8_t *, size_t, int64_t);
-/* swoole::Logger (crates/utilities/src/logger.rs). Diagnostics, worker identity,
- * backtraces and stdout redirection call back into the host (src/core/log.cc)
- * after the logger's lock is released. */
+/* swoole::Logger (crates/utilities/src/logger.rs). Worker identity, backtraces
+ * and stdout redirection call back into the host (src/core/log.cc), and
+ * diagnostics into corebase's log host, after the logger's lock is released. */
 typedef struct SwrLogger SwrLogger;
 struct SwrLoggerIdentity { int worker_id, worker_pid; char worker_symbol; };
 struct SwrLoggerHost {
-    void (*effect)(int what, int value, const char *text);
+    void (*redirect)(int fd);
+    void (*backtrace)(void);
     void (*identity)(struct SwrLoggerIdentity *);
 };
-void swr_logger_host(int what, int value, const char *text);
-void swr_logger_host_identity(struct SwrLoggerIdentity *);
+extern const struct SwrLoggerHost swr_logger_host;
 enum SwrLoggerSetting {
     SWR_LOGGER_ROTATION = 0, SWR_LOGGER_MICROSECONDS = 1,
     SWR_LOGGER_BACKTRACE = 2, SWR_LOGGER_RESET = 3
