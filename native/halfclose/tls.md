@@ -1,9 +1,10 @@
 # Queued TLS shutdown
 
 Changes `src/network/socket.cc` (patch 0003) and `src/server/reactor_thread.cc`.
-`Socket::ssl_shutdown` runs in `crates/tls/src/socket.rs`; the halfclose patch
+`Socket::ssl_shutdown` runs in `crates/tls/src/upstream.rs`; the halfclose patch
 20261104T005648 replaces 0003's method hunks with `SW_HALFCLOSE_TLS_SHUTDOWN`,
-which selects the repaired shutdown there.
+which socket.cc registers with Rust (`swr_v1_socket_set_tls_shutdown_repaired`)
+to select the repaired shutdown.
 No public layout, signature, Rust ABI or second queue.
 
 ## Socket::ssl_shutdown

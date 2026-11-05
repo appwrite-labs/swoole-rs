@@ -12,6 +12,7 @@ upstream-symbols = []
 [dependencies]
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-reactor = { path = "../reactor" }
+swoole-rs-ossupport = { path = "../ossupport" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
