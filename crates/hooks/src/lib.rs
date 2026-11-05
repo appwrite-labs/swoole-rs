@@ -19,6 +19,7 @@ pub mod fd_control;
 pub mod file_io;
 pub mod flock;
 pub mod lifecycle;
+pub mod methods;
 pub mod offload;
 pub mod packet;
 pub mod poll;
