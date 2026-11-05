@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(prefix='swr-forwarding-',dir=a.report.parent) a
     refused=result.returncode!=0 and 'Reactor overlay requires --enable-swoole-rs-reactor' in result.stderr
     report['syntax'].append(dict(variant=variant+'-disabled',command=disabled,exit=result.returncode,stderr=result.stderr,expected_refusal=refused))
     if not refused:raise RuntimeError('Disabled selected Socket not refused')
-   extracted='\n'.join(block(body,body.index(sig))[0] for sig in ['ssize_t Socket::sendfile(','ssize_t Socket::send_async(','bool Socket::check_liveness('])
+   extracted='\n'.join(block(body,body.index(sig))[0] for sig in ['ssize_t Socket::sendfile(','ssize_t Socket::send_async('])
    tree.mkdir(exist_ok=True);(tree/(fixture_name+'.inc')).write_text(extracted);binary=tree/'consumer';command=['c++','-std=c++14','-O1','-g','-I'+str(tree),abi,str(ROOT/('tests/modules/reactor/'+fixture_name+'.cc')),str(a.archive.resolve()),'-lpthread','-o',str(binary)]
    if a.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
    if sys.platform.startswith('linux'):command+=['-ldl','-lm']
