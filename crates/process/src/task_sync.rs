@@ -10,7 +10,14 @@ use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::pool::{BAILED, Bailed, DONE, PoolCall, Step, run};
+use std::ffi::{CStr, c_char};
+use std::mem::MaybeUninit;
+use std::ptr;
+
+use swoole_rs_corebase::log::set_last_error;
+
+use crate::pool::{BAILED, Bailed, DONE, PoolCall, Step, run, swr_v1_process_bailout};
+use crate::task_file::{TASK_TMP_PATH_SIZE, errno, native};
 
 /// `swoole::DataHead`: `fd` (the task id) at 0, `len` at 16, `ext_flags` at 26.
 const HEAD: usize = 40;
@@ -127,6 +134,24 @@ impl Server<'_> {
         Ok(self
             .call(self.hooks.pipe_read, (&raw mut notify).cast(), 8, 0)?
             .result)
+    }
+
+    /// Names the result file in this worker's slot under its lock: no results yet,
+    /// then `path` (`swoole_strlcpy`'d).
+    fn name_result_file(&self, path: &CStr) -> Result<(), Bailed> {
+        let path = path.to_bytes_with_nul();
+        let length = path.len().min(TASK_TMP_PATH_SIZE);
+        self.lock(true)?;
+        // The slot is an `EventData`, whose data holds the count and a path.
+        let count = self.result.wrapping_add(HEAD);
+        let named = count.wrapping_add(size_of::<c_int>());
+        // SAFETY: as above.
+        unsafe { count.cast::<c_int>().write_unaligned(0) };
+        // SAFETY: as above; `length` is at most `SW_TASK_TMP_PATH_SIZE`.
+        unsafe { ptr::copy_nonoverlapping(path.as_ptr(), named, length) };
+        // SAFETY: as above.
+        unsafe { named.wrapping_add(length - 1).write(0) };
+        self.lock(false)
     }
 
     fn lock(&self, on: bool) -> Result<(), Bailed> {
@@ -366,6 +391,125 @@ pub unsafe extern "C" fn swr_v1_process_task_sync_many(
     outcome(server.sync_many(count, timeout, path, event_size), ok)
 }
 
+/// `SW_ERROR_TASK_DISPATCH_FAIL`; process.cc asserts it.
+const ERROR_TASK_DISPATCH_FAIL: c_int = 2002;
+
+/// The server's task state from native code, and its `MultiTask`'s count.
+///
+/// # Safety
+/// `serv` is a live `Server`, `mtask` null or a live `MultiTask`.
+unsafe fn task_server(
+    serv: *mut c_void,
+    mtask: *mut c_void,
+    with_result: bool,
+) -> (TaskServer, u16) {
+    let mut state = MaybeUninit::<TaskServer>::uninit();
+    // SAFETY: as the caller guarantees; native fills every field.
+    let count = unsafe { (native().server)(serv, mtask, with_result, state.as_mut_ptr()) };
+    // SAFETY: filled above.
+    (unsafe { state.assume_init() }, count)
+}
+
+/// Raises the bailout a task call returned [`BAILED`] for. The frames it crosses
+/// hold nothing with a destructor.
+fn raise(outcome: c_int) {
+    if outcome == BAILED {
+        swr_v1_process_bailout();
+    }
+}
+
+/// `Server::task(task, dst_worker_id, blocking)`.
+///
+/// # Safety
+/// `serv` is a live `Server`, `task` an `EventData` and `dst_worker_id` writable.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server4taskEPNS_9EventDataEPib")
+)]
+pub unsafe extern "C" fn task(
+    serv: *mut c_void,
+    task: *mut u8,
+    dst_worker_id: *mut c_int,
+    blocking: bool,
+) -> bool {
+    // SAFETY: as the caller guarantees.
+    let (state, _) = unsafe { task_server(serv, ptr::null_mut(), false) };
+    let mut ok = false;
+    // SAFETY: as the caller guarantees; the state is live.
+    raise(unsafe {
+        swr_v1_process_task(&raw const state, task, dst_worker_id, blocking, &raw mut ok)
+    });
+    ok
+}
+
+/// `Server::task_sync(task, dst_worker_id, timeout)`.
+///
+/// # Safety
+/// As [`task`].
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server9task_syncEPNS_9EventDataEPid")
+)]
+pub unsafe extern "C" fn task_sync(
+    serv: *mut c_void,
+    task: *mut u8,
+    dst_worker_id: *mut c_int,
+    timeout: f64,
+) -> bool {
+    // SAFETY: as the caller guarantees.
+    let (state, _) = unsafe { task_server(serv, ptr::null_mut(), true) };
+    let mut ok = false;
+    // SAFETY: as the caller guarantees; the state is live.
+    raise(unsafe {
+        swr_v1_process_task_sync(&raw const state, task, dst_worker_id, timeout, &raw mut ok)
+    });
+    ok
+}
+
+/// `Server::task_sync(mtask, timeout)`: the result slot cleared and pointed at a
+/// new temporary file, then every task dispatched and its results unpacked.
+///
+/// # Safety
+/// `serv` is a live `Server` and `mtask` a live `MultiTask`.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server9task_syncERNS0_9MultiTaskEd")
+)]
+pub unsafe extern "C" fn task_sync_many(
+    serv: *mut c_void,
+    mtask: *mut c_void,
+    timeout: f64,
+) -> bool {
+    // SAFETY: as the caller guarantees.
+    let (state, count) = unsafe { task_server(serv, mtask, true) };
+    // SAFETY: the result slot starts with its `DataHead`.
+    unsafe { state.result.write_bytes(0, HEAD) };
+    let mut path = [0 as c_char; TASK_TMP_PATH_SIZE];
+    // SAFETY: `path` holds `SW_TASK_TMP_PATH_SIZE` bytes.
+    if !unsafe { (native().make_tmpfile)(path.as_mut_ptr()) } {
+        set_last_error(errno());
+        return false;
+    }
+    // SAFETY: `make_tmpfile` NUL-terminated it.
+    let path = unsafe { CStr::from_ptr(path.as_ptr()) };
+    let server = server(&state);
+    let mut ok = 0;
+    raise(outcome(
+        server
+            .name_result_file(path)
+            .and_then(|()| server.sync_many(count, timeout, path, state.result_size)),
+        &raw mut ok,
+    ));
+    if ok == NONE_DISPATCHED {
+        set_last_error(ERROR_TASK_DISPATCH_FAIL);
+        return false;
+    }
+    ok == 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,6 +713,32 @@ mod tests {
         // One in flight per dispatched task (its task worker takes it off), and the
         // failed dispatch keeps its extra count, as upstream.
         assert_eq!((tasking, count), (3, 2));
+    }
+
+    #[test]
+    fn the_result_file_is_named_under_the_lock() {
+        // A slot whose count and path bytes are dirty.
+        with(|s| {
+            *s = Script {
+                result: vec![u64::MAX; 64],
+                ..Script::default()
+            }
+        });
+        let (mut tasking, mut count) = (0, 0);
+        let state = state(&mut tasking, &mut count);
+        let path = c"/tmp/swoole.task.abc123";
+        assert!(server(&state).name_result_file(path).is_ok());
+        let script = with(std::mem::take);
+        assert_eq!(script.locks, vec![1, 0]);
+        let data = script
+            .result
+            .iter()
+            .flat_map(|word| word.to_ne_bytes())
+            .skip(HEAD)
+            .collect::<Vec<_>>();
+        assert_eq!(data[..4], [0; 4], "no results yet");
+        let named = &data[4..4 + path.to_bytes_with_nul().len()];
+        assert_eq!(named, path.to_bytes_with_nul());
     }
 
     #[test]

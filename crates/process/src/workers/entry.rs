@@ -1,18 +1,18 @@
 //! The `Server` methods of the deleted worker-side files (`src/server/manager.cc`,
-//! `worker.cc` and `reactor_process.cc`), defined under their upstream (Itanium)
+//! `worker.cc`, `reactor_process.cc` and `task_worker.cc`), defined under their upstream (Itanium)
 //! symbols when the hybrid links this crate (`upstream-symbols`). Each one enters
 //! native code with its operation and objects; process.cc's `workers_enter` builds
 //! the context the C++ forward built and runs the operation over it.
-use core::ffi::{c_int, c_long, c_void};
+use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
 use std::sync::OnceLock;
 
 use super::ops::{
     RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_CALL_WORKER_START, RUN_CALL_WORKER_STOP,
-    RUN_CLEAN_CONNECTIONS, RUN_DRAIN_PIPES, RUN_KILL_WORKER, RUN_REACTOR_PROCESS_MAIN,
-    RUN_REACTOR_PROCESS_START, RUN_READ_WORKER_MESSAGE, RUN_RELOAD, RUN_RESTART_WORKER,
-    RUN_SEND_TO_REACTOR_THREAD, RUN_SIGNAL_INIT, RUN_START_EVENT_WORKER, RUN_START_MANAGER,
-    RUN_STOP_ASYNC, RUN_WORKER_SIGNAL, RUN_WORKER_START,
+    RUN_CLEAN_CONNECTIONS, RUN_DRAIN_PIPES, RUN_FINISH, RUN_INIT_TASK_WORKERS, RUN_KILL_WORKER,
+    RUN_REACTOR_PROCESS_MAIN, RUN_REACTOR_PROCESS_START, RUN_READ_WORKER_MESSAGE, RUN_RELOAD,
+    RUN_RESTART_WORKER, RUN_SEND_TO_REACTOR_THREAD, RUN_SIGNAL_INIT, RUN_START_EVENT_WORKER,
+    RUN_START_MANAGER, RUN_STOP_ASYNC, RUN_WORKER_SIGNAL, RUN_WORKER_START,
 };
 use crate::methods::{Narrow, send_pipe_message};
 use crate::worker_record::WorkerRecord;
@@ -164,6 +164,54 @@ methods! {
         = RUN_REACTOR_PROCESS_MAIN(pool, worker, NONE, 0);
 }
 
+/// `Server::finish`'s result bytes, as `workers_enter`'s `extra`.
+#[repr(C)]
+struct Bytes {
+    data: *const c_char,
+    length: usize,
+}
+
+methods! {
+    #[must_use]
+    "_ZN6swoole6Server17init_task_workersEv"
+    fn init_task_workers(serv: *mut c_void) -> bool = RUN_INIT_TASK_WORKERS(serv, NONE, NONE, 0);
+}
+
+/// `Server::finish(data, data_len, flags, current_task)`: the task's result to the
+/// worker that sent it.
+///
+/// # Safety
+/// `serv` is a live `Server`, `data` holds `data_len` bytes and `current_task` is
+/// null or a live `EventData`.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server6finishEPKcmiPKNS_9EventDataE")
+)]
+pub unsafe extern "C" fn finish(
+    serv: *mut c_void,
+    data: *const c_char,
+    data_len: usize,
+    flags: c_int,
+    current_task: *const c_void,
+) -> bool {
+    let bytes = Bytes {
+        data,
+        length: data_len,
+    };
+    let flags = u64::from(flags.cast_unsigned());
+    // SAFETY: as the caller guarantees; `bytes` lives for the call.
+    unsafe {
+        enter(
+            RUN_FINISH,
+            serv,
+            current_task,
+            (&raw const bytes).cast(),
+            flags,
+        )
+    }
+}
+
 /// `Server::send_to_worker_from_worker(dst_worker, buf, len, flags)`: the worker's
 /// `send_pipe_message`.
 ///
@@ -201,11 +249,14 @@ mod tests {
         extra: *mut c_void,
         arg: u64,
     ) -> i64 {
-        let extra = if operation == RUN_SEND_TO_REACTOR_THREAD {
+        let extra = match operation {
             // SAFETY: send_to_reactor_thread lends its session id.
-            usize::try_from(unsafe { *extra.cast::<c_long>() }).unwrap_or(0)
-        } else {
-            extra.addr()
+            RUN_SEND_TO_REACTOR_THREAD => {
+                usize::try_from(unsafe { *extra.cast::<c_long>() }).unwrap_or(0)
+            }
+            // SAFETY: finish lends its result's bytes.
+            RUN_FINISH => unsafe { (*extra.cast::<Bytes>()).length },
+            _ => extra.addr(),
         };
         SEEN.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -233,6 +284,7 @@ mod tests {
             assert!(kill_worker(at(0x10), -1));
             assert_eq!(send_to_reactor_thread(at(0x10), at(0x70), 48, 9), -1);
             assert_eq!(reactor_process_main_loop(at(0x30), at(0x20)), 1);
+            assert!(finish(at(0x10), c"ok".as_ptr(), 2, -1, at(0x80)));
         }
         let seen = SEEN
             .lock()
@@ -250,6 +302,7 @@ mod tests {
                 (RUN_KILL_WORKER, 0x10, 0, 0, u64::MAX),
                 (RUN_SEND_TO_REACTOR_THREAD, 0x10, 0x70, 9, 48),
                 (RUN_REACTOR_PROCESS_MAIN, 0x30, 0x20, 0, 0),
+                (RUN_FINISH, 0x10, 0x80, 2, u64::from(u32::MAX)),
             ]
         );
     }

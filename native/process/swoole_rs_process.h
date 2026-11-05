@@ -21,9 +21,6 @@ typedef struct { uint32_t status; int32_t error; } swr_v1_process_affinity_outco
 #if defined(__linux__) || defined(__FreeBSD__)
 swr_v1_process_affinity_outcome swr_v1_process_worker_affinity(uint32_t worker_id, const int32_t *available, int32_t available_len, bool thread);
 #endif
-/* SwooleG.task_tmpfile and String::extend, for Server::task_pack and task_unpack. */
-typedef struct { const char *(*tmpfile)(void); void (*extend)(void *string, size_t size); } swr_v1_task_native;
-void swr_v1_process_task_set_native(const swr_v1_task_native *native);
 /* Laid out as swoole::Signal. */
 typedef struct { uintptr_t handler; uint16_t signo; bool activated; } swr_v1_signal_slot;
 extern swr_v1_signal_slot swr_v1_signals[128];
@@ -352,6 +349,17 @@ typedef struct {
     uint8_t *result;
     size_t result_size;
 } swr_v1_task_server;
+/* For the Rust task methods (crates/process/src/task_file.rs, task_sync.rs):
+ * SwooleG.task_tmpfile, String::extend, the server's task state for a MultiTask
+ * (or null; this worker's result slot when with_result; returns its count), and
+ * make_tmpfile() closed, its path copied into SW_TASK_TMP_PATH_SIZE bytes. */
+typedef struct {
+    const char *(*tmpfile)(void);
+    void (*extend)(void *string, size_t size);
+    uint16_t (*server)(void *serv, void *mtask, bool with_result, swr_v1_task_server *out);
+    bool (*make_tmpfile)(char *path);
+} swr_v1_task_native;
+void swr_v1_process_task_set_native(const swr_v1_task_native *native);
 enum { SWR_TASK_WARN_PACK = 1, SWR_TASK_WARN_DISPATCH = 2 };
 #define SWR_TASK_NONE_DISPATCHED 2
 int swr_v1_process_task(const swr_v1_task_server *task_server, uint8_t *task, int *worker_id, bool blocking, bool *ok);
