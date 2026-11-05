@@ -326,7 +326,10 @@ impl Worker<'_> {
     ) -> Result<(), Bailed> {
         // `struct { long mtype; EventData buf; }`, zeroed.
         let mut out = vec![0u64; (MTYPE + event_size).div_ceil(8)];
-        out[0] = if by_sysvmsg {
+        let Some(mtype) = out.first_mut() else {
+            return Ok(());
+        };
+        *mtype = if by_sysvmsg {
             0
         } else {
             u64::from(worker_id) + 1
@@ -337,7 +340,9 @@ impl Worker<'_> {
         )]
         let server_fd = u64::from(worker_id as u16);
         // `info.server_fd`: bytes 24..26 of the head, i.e. of out[4].
-        out[1 + HEAD_SERVER_FD / 8] = server_fd << (8 * (HEAD_SERVER_FD % 8));
+        if let Some(word) = out.get_mut(1 + HEAD_SERVER_FD / 8) {
+            *word = server_fd << (8 * (HEAD_SERVER_FD % 8));
+        }
         let base = out.as_mut_ptr().cast::<u8>();
         let buf = base.wrapping_add(MTYPE);
 
@@ -420,7 +425,9 @@ impl Worker<'_> {
                         break;
                     }
                     self.warn(TRACE_POP, 0, call.result as i64, 0);
-                    self.ipc.packet[0] = 0;
+                    if let Some(mtype) = self.ipc.packet.first_mut() {
+                        *mtype = 0;
+                    }
                     (packet.wrapping_add(MTYPE), call.result)
                 }
                 Mode::Socket => {
@@ -884,7 +891,9 @@ pub unsafe extern "C" fn swr_v1_process_worker_send(
     let mut call = PoolCall::new(pool, ptr::null_mut());
     if queue {
         let mut message = vec![0u64; (MTYPE + length).div_ceil(8)];
-        message[0] = u64::from(worker_id) + 1;
+        if let Some(mtype) = message.first_mut() {
+            *mtype = u64::from(worker_id) + 1;
+        }
         let base = message.as_mut_ptr().cast::<u8>();
         // SAFETY: the caller's bytes fit after `mtype`.
         unsafe { ptr::copy_nonoverlapping(data, base.wrapping_add(MTYPE), length) };

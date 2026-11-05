@@ -354,7 +354,7 @@ unsafe fn wildcard_match(subject: *const c_char, cert: *const c_char) -> bool {
     let Some(prefix) = cert_bytes.iter().position(|&b| b == b'*') else {
         return false;
     };
-    if cert_bytes[..prefix].contains(&b'.') {
+    if cert_bytes.iter().take(prefix).any(|&b| b == b'.') {
         return false;
     }
     // The prefix, when not empty, must match the subject.

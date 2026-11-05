@@ -148,11 +148,14 @@ pub unsafe extern "C" fn swr_v1_os_file_read_line(fd: c_int, buf: *mut c_void, n
     let read = read.unsigned_abs();
     // SAFETY: the read initialised `read` bytes at `buf`.
     let bytes = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), n) };
-    let (length, skip) = bytes[..read]
+    let (length, skip) = bytes
         .iter()
+        .take(read)
         .position(|&b| b == 0 || b == b'\n')
         .map_or((read, 1), |at| (at + 1, 0));
-    bytes[length] = 0;
+    if let Some(terminator) = bytes.get_mut(length) {
+        *terminator = 0;
+    }
     // SAFETY: plain syscall on a caller-owned descriptor.
     unsafe { libc::lseek(fd, start + to_off(length + skip), libc::SEEK_SET) };
     length.cast_signed()

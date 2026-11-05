@@ -293,7 +293,7 @@ pub extern "C" fn swr_v1_os_pool_complete(
         return -1;
     }
     let count = n.unsigned_abs() / size_of::<usize>();
-    for &event in &events[..count] {
+    for &event in events.iter().take(count) {
         complete(event);
     }
     count.cast_signed()

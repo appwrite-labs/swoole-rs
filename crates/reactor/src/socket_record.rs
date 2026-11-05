@@ -115,6 +115,10 @@ const OFFSETS: [(usize, usize); 15] = [
 ];
 
 #[cfg(target_pointer_width = "64")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const-evaluated: an out-of-range index fails the build, and const has no get()"
+)]
 const _: () = {
     let mut i = 0;
     while i < OFFSETS.len() {

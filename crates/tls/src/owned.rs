@@ -104,7 +104,7 @@ pub extern "C" fn swr_v1_tls_owner_new(warn: Warn) -> OwnedTlsPrepared {
     });
     OwnedTlsPrepared {
         fields: owner.fields.get(),
-        strings: std::array::from_fn(|i| Arc::as_ptr(&owner.strings[i])),
+        strings: owner.strings.each_ref().map(Arc::as_ptr),
         owner: Arc::into_raw(owner),
     }
 }
@@ -147,23 +147,22 @@ pub unsafe extern "C" fn swr_v1_tls_owner_bind(
 unsafe fn configuration(owner: *const OwnedTlsContext) -> TlsConfig {
     // SAFETY: the caller lends the live owner for this short snapshot.
     let owner = unsafe { &*owner };
-    let string = |index| {
+    let strings = owner.strings.each_ref().map(|slot| {
         // SAFETY: owner's stable string slots remain live and unchanged for the returned view.
-        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner.strings[index])) }
-            .into()
-    };
+        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(slot)) }
+    });
     // SAFETY: field observation is externally synchronized.
     let fields = unsafe { &*owner.fields.get() };
     TlsConfig {
-        ciphers: string(0),
-        ecdh_curve: string(1),
-        dhparam: string(3),
-        cert_file: string(4),
-        key_file: string(5),
-        passphrase: string(PASSPHRASE),
-        client_cert_file: string(7),
-        cafile: string(9),
-        capath: string(10),
+        ciphers: strings[0].into(),
+        ecdh_curve: strings[1].into(),
+        dhparam: strings[3].into(),
+        cert_file: strings[4].into(),
+        key_file: strings[5].into(),
+        passphrase: strings[PASSPHRASE].into(),
+        client_cert_file: strings[7].into(),
+        cafile: strings[9].into(),
+        capath: strings[10].into(),
         protocols: fields.protocols,
         verify_depth: fields.verify_depth,
         http: fields.http != 0,
@@ -350,7 +349,10 @@ pub unsafe extern "C" fn swr_v1_tls_owner_set_path(
         return 1;
     }
     // SAFETY: the owner is live and index names one of its stable slots.
-    let slot = unsafe { Arc::as_ptr(&(*owner).strings[index as usize]) };
+    let Some(slot) = (unsafe { &(*owner).strings }).get(index as usize) else {
+        return -1;
+    };
+    let slot = Arc::as_ptr(slot);
     // SAFETY: forwards the synchronized owner and readable bytes/cache contract.
     unsafe { swoole_rs_corebase::swr_v1_core_string_set(slot, path, length) }
 }
@@ -381,18 +383,13 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
     let destination = unsafe { &*destination };
     // SAFETY: source remains unchanged for the configuration copy.
     let source = unsafe { &*source };
-    for index in 0..STRING_COUNT {
+    let slots = source.strings.iter().zip(&destination.strings);
+    for (index, (from, to)) in slots.enumerate() {
         // SAFETY: the source owns this stable, unchanged string slot.
-        let value = unsafe {
-            swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&source.strings[index]))
-        };
+        let value = unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(from)) };
         // SAFETY: the destination slot is exclusive and its cache catches exceptions.
         let status = unsafe {
-            swoole_rs_corebase::swr_v1_core_string_set(
-                Arc::as_ptr(&destination.strings[index]),
-                value.data,
-                value.length,
-            )
+            swoole_rs_corebase::swr_v1_core_string_set(Arc::as_ptr(to), value.data, value.length)
         };
         if status != 0 {
             return OwnedTlsCopy {

@@ -78,13 +78,13 @@ pub unsafe extern "C" fn swr_v1_hook_timeout_scope(
     let network = unsafe { (*socket).socket };
     // SAFETY: take only a raw pointer; no Rust borrow crosses a later operation.
     let timeouts = unsafe { &raw mut (*network).timeouts };
-    for (index, bit) in [1, 2, 4, 8].into_iter().enumerate() {
+    for (original, bit) in scope.original.iter_mut().zip([1, 2, 4, 8]) {
         if kind & bit != 0 {
             // SAFETY: each bit selects one field in the live timeout record.
             let slot = unsafe { swr_v1_socket_timeout(timeouts, bit) };
             // SAFETY: the selected field exists in the live record.
             let value = unsafe { *slot };
-            scope.original[index] = value;
+            *original = value;
             if timeout != value {
                 // SAFETY: the live synchronized record is exclusively writable.
                 unsafe { swr_v1_socket_set_timeout(timeouts, timeout, bit) };
@@ -111,10 +111,10 @@ pub unsafe extern "C" fn swr_v1_hook_timeout_restore(scope: *const TimeoutScope)
     let network = unsafe { (*saved.socket).socket };
     // SAFETY: a raw field pointer makes no overlapping Rust borrow.
     let timeouts = unsafe { &raw mut (*network).timeouts };
-    for (index, bit) in [1, 2, 4, 8].into_iter().enumerate() {
-        if saved.kind & bit != 0 && saved.timeout != saved.original[index] {
+    for (original, bit) in saved.original.into_iter().zip([1, 2, 4, 8]) {
+        if saved.kind & bit != 0 && saved.timeout != original {
             // SAFETY: this is the scope's still-live synchronized timeout group.
-            unsafe { swr_v1_socket_set_timeout(timeouts, saved.original[index], bit) };
+            unsafe { swr_v1_socket_set_timeout(timeouts, original, bit) };
         }
     }
 }

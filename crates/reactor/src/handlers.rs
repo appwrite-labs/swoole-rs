@@ -43,7 +43,9 @@ fn table(events: c_int) -> Option<usize> {
 impl Handlers {
     fn slot(&mut self, fd_type: c_int, events: c_int) -> Option<&mut Option<Handler>> {
         let table = table(events)?;
-        self.tables[table].get_mut(usize::try_from(fd_type).ok()?)
+        self.tables
+            .get_mut(table)?
+            .get_mut(usize::try_from(fd_type).ok()?)
     }
 
     fn registered(&self, kind: usize, fd_type: c_int) -> Option<Handler> {

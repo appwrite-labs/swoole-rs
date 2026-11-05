@@ -47,14 +47,14 @@ pub struct Signalled {
     pub last_error: i32,
 }
 
-fn listener(signo: i32) -> &'static AtomicPtr<Listener> {
-    &LISTENERS[usize::try_from(signo).unwrap_or(0)]
+fn listener(signo: i32) -> Option<&'static AtomicPtr<Listener>> {
+    LISTENERS.get(usize::try_from(signo).ok()?)
 }
 
 /// The signal handler: wakes the coroutine listening for `signo`, once.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_signal_wake(signo: i32) {
-    let Some(slot) = usize::try_from(signo).ok().and_then(|i| LISTENERS.get(i)) else {
+    let Some(slot) = listener(signo) else {
         return;
     };
     let waiting = slot.swap(std::ptr::null_mut(), Relaxed);
@@ -101,10 +101,10 @@ pub unsafe extern "C" fn swr_v1_hook_wait_signal(
     };
     RESUME.store(ops.resume as usize, Relaxed);
     for &signo in signals {
-        if !(0..SIGNO_MAX).contains(&signo) || signo == libc::SIGCHLD {
+        let Some(slot) = listener(signo).filter(|_| signo != libc::SIGCHLD) else {
             return failed(libc::EINVAL);
-        }
-        listener(signo).store(&raw mut waiting, Relaxed);
+        };
+        slot.store(&raw mut waiting, Relaxed);
         // SAFETY: as above.
         unsafe { (ops.listen)(signo, true) };
     }
@@ -116,7 +116,9 @@ pub unsafe extern "C" fn swr_v1_hook_wait_signal(
     for &signo in signals {
         // SAFETY: as above.
         unsafe { (ops.listen)(signo, false) };
-        listener(signo).store(std::ptr::null_mut(), Relaxed);
+        if let Some(slot) = listener(signo) {
+            slot.store(std::ptr::null_mut(), Relaxed);
+        }
     }
     // SAFETY: as above.
     unsafe { (ops.waiting)(false) };

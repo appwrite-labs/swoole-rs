@@ -36,23 +36,25 @@ impl ReactorCallbacks {
     }
     /// Publish `kind`'s entries after a change to them.
     fn refresh(&mut self, kind: usize) {
-        let entries = &self.entries[kind];
-        self.views[kind] = CallbackView {
-            entries: entries.as_ptr(),
-            len: entries.len(),
-        };
+        if let (Some(view), Some(entries)) = (self.views.get_mut(kind), self.entries.get(kind)) {
+            *view = CallbackView {
+                entries: entries.as_ptr(),
+                len: entries.len(),
+            };
+        }
     }
     fn lookup(&self, kind: u32, key: i32) -> Option<usize> {
         let entries = self.entries.get(kind as usize)?;
         entries
             .binary_search_by_key(&key, |entry| entry.key)
             .ok()
-            .map(|index| entries[index].token)
+            .and_then(|index| entries.get(index))
+            .map(|entry| entry.token)
     }
     fn insert(&mut self, kind: u32, key: i32, token: usize) -> Result<(i32, usize), i32> {
         let entries = self.entries.get_mut(kind as usize).ok_or(-1)?;
         match entries.binary_search_by_key(&key, |entry| entry.key) {
-            Ok(index) => Ok((0, entries[index].token)),
+            Ok(index) => entries.get(index).map(|entry| (0, entry.token)).ok_or(-1),
             Err(index) => {
                 entries.try_reserve(1).map_err(|_| -2)?;
                 entries.insert(index, CallbackEntry { key, token });
@@ -62,7 +64,7 @@ impl ReactorCallbacks {
         }
     }
     fn erase(&mut self, kind: usize, key: i32) -> Option<usize> {
-        let entries = &mut self.entries[kind];
+        let entries = self.entries.get_mut(kind)?;
         let index = entries.binary_search_by_key(&key, |entry| entry.key).ok()?;
         let token = entries.remove(index).token;
         self.refresh(kind);
@@ -70,7 +72,7 @@ impl ReactorCallbacks {
     }
     fn drain(&mut self, kind: &mut u32, token: &mut usize) -> i32 {
         *kind = u32::from(!self.entries[1].is_empty());
-        let entry = self.entries[*kind as usize].pop();
+        let entry = self.entries.get_mut(*kind as usize).and_then(Vec::pop);
         self.refresh(*kind as usize);
         if let Some(entry) = entry {
             *token = entry.token;
@@ -176,9 +178,11 @@ pub unsafe extern "C" fn swr_v1_reactor_callbacks_after(
         return usize::MAX;
     }
     // SAFETY: `owner` is null or live and aligned for this call.
-    unsafe { owner.as_ref() }.map_or(0, |owner| {
-        owner.entries[kind as usize].partition_point(|entry| entry.key <= key)
-    })
+    unsafe { owner.as_ref() }
+        .and_then(|owner| owner.entries.get(kind as usize))
+        .map_or(0, |entries| {
+            entries.partition_point(|entry| entry.key <= key)
+        })
 }
 
 /// Complete empty-payload publication/retry policy. Candidate allocation and

@@ -25,12 +25,13 @@ fn owner(state: &ServerState) -> &Mutex<StaticConfig> {
         .get_or_init(|| Mutex::new(StaticConfig::new()))
 }
 fn table(state: &ServerState, kind: usize) -> Arc<Mutex<Strings>> {
-    Arc::clone(
-        &owner(state)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .tables[kind],
-    )
+    owner(state)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .tables
+        .get(kind)
+        .map(Arc::clone)
+        .unwrap_or_default()
 }
 
 /// Share the current collection identity. Replacing the Server's optional
@@ -118,10 +119,14 @@ pub unsafe extern "C" fn swr_v1_server_static_config(
     if operation == 3 {
         // Assignment replaces the shared_ptr identity; contexts holding the old
         // table continue to observe it, rather than a copy or the new collection.
-        owner(state)
+        if let Some(table) = owner(state)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .tables[kind] = Arc::default();
+            .tables
+            .get_mut(kind)
+        {
+            *table = Arc::default();
+        }
         return 0;
     }
     let table = table(state, kind);

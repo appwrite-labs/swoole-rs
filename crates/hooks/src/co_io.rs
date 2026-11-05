@@ -331,8 +331,12 @@ impl Timer {
     pub(crate) unsafe fn new(socket: *mut CoSocket, event: u32, timeout: f64) -> Self {
         // SAFETY: as the caller promises.
         let state = unsafe { (*socket).state };
-        // SAFETY: the record's live state; the slot stays inside its allocation.
-        let slot = unsafe { &raw mut (*state).timers[usize::from(event != READ)] };
+        // SAFETY: the record's live state.
+        let timers = unsafe { &raw mut (*state).timers };
+        // The index is 0 or 1, so the slot stays inside the two-entry array.
+        let slot = timers
+            .cast::<*mut c_void>()
+            .wrapping_add(usize::from(event != READ));
         Self {
             socket,
             slot,

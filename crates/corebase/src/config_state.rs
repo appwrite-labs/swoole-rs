@@ -37,7 +37,7 @@ pub extern "C" fn swr_v1_core_config_new() -> CoreConfigPrepared {
     });
     CoreConfigPrepared {
         fields: owner.fields.get(),
-        strings: std::array::from_fn(|index| ptr::from_ref(&owner.strings[index])),
+        strings: owner.strings.each_ref().map(ptr::from_ref),
         owner: Box::into_raw(owner),
     }
 }
@@ -110,7 +110,8 @@ pub unsafe extern "C" fn swr_v1_core_config_copy_values(
     unsafe { (*destination.fields.get()).max_sockets = fields.max_sockets };
     // SAFETY: allocator function values follow, before task path assignment.
     unsafe { (*destination.fields.get()).std_allocator = fields.std_allocator };
-    for index in 0..2 {
+    let slots = source.strings.iter().zip(&destination.strings);
+    for (index, (from, to)) in slots.enumerate() {
         if index == 1 {
             // SAFETY: refresh time follows the task path and precedes resolver path.
             unsafe {
@@ -118,15 +119,9 @@ pub unsafe extern "C" fn swr_v1_core_config_copy_values(
             };
         }
         // SAFETY: the source's stable string slot remains readable through assignment.
-        let value = unsafe { swr_v1_core_string_view(ptr::from_ref(&source.strings[index])) };
+        let value = unsafe { swr_v1_core_string_view(from) };
         // SAFETY: exclusive destination; its native cache catches exceptions before publication.
-        let status = unsafe {
-            swr_v1_core_string_set(
-                ptr::from_ref(&destination.strings[index]),
-                value.data,
-                value.length,
-            )
-        };
+        let status = unsafe { swr_v1_core_string_set(to, value.data, value.length) };
         if status != 0 {
             return CoreConfigCopy {
                 status,

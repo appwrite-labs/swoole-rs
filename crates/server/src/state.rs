@@ -249,13 +249,10 @@ fn document_root<H: Host>(h: &mut H, path: &[u8]) -> crate::Effect<bool> {
         return Ok(false);
     }
     // `realpath` reads the path up to its first NUL.
-    let end = path
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(path.len());
+    let path = path.split(|byte| *byte == 0).next().unwrap_or_default();
     let real = {
         use std::os::unix::ffi::OsStrExt;
-        std::fs::canonicalize(std::ffi::OsStr::from_bytes(&path[..end])).ok()
+        std::fs::canonicalize(std::ffi::OsStr::from_bytes(path)).ok()
     }
     .and_then(|real| {
         use std::os::unix::ffi::OsStringExt;

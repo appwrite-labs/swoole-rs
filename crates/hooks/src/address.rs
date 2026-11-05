@@ -46,20 +46,20 @@ fn plan(name: &[u8]) -> AddressPlan {
         status,
         ..AddressPlan::default()
     };
-    if name.first() == Some(&b'[') && name.len() > 1 {
+    if let [b'[', inner @ .., _] = name {
         // `]` is searched in name[1..len - 1], so the byte after it exists.
-        let Some(close) = name[1..name.len() - 1].iter().position(|&b| b == b']') else {
+        let Some(close) = inner.iter().position(|&b| b == b']') else {
             return failed(1);
         };
-        let close = close + 1;
-        if name[close + 1] != b':' {
+        // `close` indexes `inner`, which starts one byte into `name`.
+        let Some([b':', port @ ..]) = name.get(close + 2..) else {
             return failed(1);
-        }
+        };
         return AddressPlan {
             status: 0,
             host_offset: 1,
-            host_length: close - 1,
-            port: atoi(&name[close + 2..]),
+            host_length: close,
+            port: atoi(port),
         };
     }
     match name
@@ -70,7 +70,7 @@ fn plan(name: &[u8]) -> AddressPlan {
             status: 0,
             host_offset: 0,
             host_length: colon,
-            port: atoi(&name[colon + 1..]),
+            port: atoi(name.get(colon + 1..).unwrap_or_default()),
         },
         None => failed(2),
     }

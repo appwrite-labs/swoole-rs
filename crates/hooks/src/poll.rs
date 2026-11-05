@@ -255,7 +255,9 @@ pub unsafe extern "C" fn swr_v1_hook_poll(
     let mut ready = 0;
     for (row, i) in rows.iter().zip(first) {
         let revents = row.get().revents;
-        fds[i].revents = to_poll(revents);
+        if let Some(fd) = fds.get_mut(i) {
+            fd.revents = to_poll(revents);
+        }
         ready += i32::from(revents > 0);
     }
     ready

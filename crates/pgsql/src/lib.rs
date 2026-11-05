@@ -93,9 +93,14 @@ pub unsafe extern "C" fn swoole_libpq_version(buf: *mut c_char, len: usize) {
     let text = version_text(unsafe { PQlibVersion() });
     // SAFETY: per the caller.
     let out = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), len) };
-    let n = text.len().min(len - 1);
-    out[..n].copy_from_slice(&text.as_bytes()[..n]);
-    out[n] = 0;
+    let mut n = 0;
+    for (slot, &byte) in out.iter_mut().zip(text.as_bytes().iter().take(len - 1)) {
+        *slot = byte;
+        n += 1;
+    }
+    if let Some(terminator) = out.get_mut(n) {
+        *terminator = 0;
+    }
 }
 
 /// `translate_events_to_poll`.
