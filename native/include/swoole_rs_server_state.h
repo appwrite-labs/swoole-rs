@@ -22,6 +22,7 @@ typedef struct swr_v1_server_state swr_v1_server_state;
 typedef struct { const uint8_t *name; size_t length; int32_t id; int32_t accepted_types; } swr_v1_server_command_info;
 bool swr_v1_server_command_add(const swr_v1_server_state *, const uint8_t *, size_t, int32_t, int32_t, void *);
 bool swr_v1_server_command_find(const swr_v1_server_state *, const uint8_t *, size_t, swr_v1_server_command_info *);
+void swr_v1_server_command_attach(const swr_v1_server_state *, int32_t, void *);
 void *swr_v1_server_command_handler(const swr_v1_server_state *, int32_t);
 int64_t swr_v1_server_command_request(const swr_v1_server_state *, void *);
 void *swr_v1_server_command_callback(const swr_v1_server_state *, int64_t, bool);

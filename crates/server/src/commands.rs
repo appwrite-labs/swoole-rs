@@ -61,7 +61,9 @@ pub unsafe extern "C" fn swr_v1_server_command_add(
     if commands.named.contains_key(name) {
         return false;
     }
-    commands.handlers.insert(id, handler.expose_provenance());
+    if !handler.is_null() {
+        commands.handlers.insert(id, handler.expose_provenance());
+    }
     commands
         .named
         .insert(name.to_vec(), Command { id, accepted_types });
@@ -99,6 +101,26 @@ pub unsafe extern "C" fn swr_v1_server_command_find(
         });
     };
     true
+}
+
+/// Attach a native empty callable before its copying assignment, matching the
+/// original map's publication/reentry order without a native constructor in Rust.
+/// # Safety
+/// `state` is live and takes custody of the non-null native callable `handler`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_command_attach(
+    state: *const ServerState,
+    id: i32,
+    handler: *mut c_void,
+) {
+    // SAFETY: the caller lends a live Server state.
+    let state = unsafe { &*state };
+    state
+        .commands
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .handlers
+        .insert(id, handler.expose_provenance());
 }
 
 /// # Safety
@@ -341,6 +363,47 @@ mod tests {
                 ),
                 i64::MIN
             );
+        }
+    }
+    #[test]
+    fn metadata_precedes_native_callable_assignment_without_empty_drain_entries() {
+        let state = ServerState::new();
+        unsafe {
+            assert!(swr_v1_server_command_add(
+                &raw const state,
+                b"pending".as_ptr(),
+                7,
+                1,
+                62,
+                core::ptr::null_mut()
+            ));
+            let mut info = CommandInfo::default();
+            assert!(swr_v1_server_command_find(
+                &raw const state,
+                b"pending".as_ptr(),
+                7,
+                &raw mut info
+            ));
+            assert!(swr_v1_server_command_handler(&raw const state, 1).is_null());
+            assert!(swr_v1_server_command_drain(&raw const state, false).is_null());
+            swr_v1_server_command_attach(
+                &raw const state,
+                1,
+                core::ptr::without_provenance_mut(31),
+            );
+            assert_eq!(
+                swr_v1_server_command_handler(&raw const state, 1).addr(),
+                31
+            );
+            assert!(
+                state.commands.try_lock().is_ok(),
+                "native copying assignment may reenter the published registry"
+            );
+            assert_eq!(
+                swr_v1_server_command_drain(&raw const state, false).addr(),
+                31
+            );
+            assert!(swr_v1_server_command_drain(&raw const state, false).is_null());
         }
     }
 }
