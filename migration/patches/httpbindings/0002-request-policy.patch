@@ -1,16 +1,13 @@
 diff --git a/ext-src/swoole_http_request.cc b/ext-src/swoole_http_request.cc
-index f9313ea48..26c1f52c0 100644
+index f9313ea..6fff2ca 100644
 --- a/ext-src/swoole_http_request.cc
 +++ b/ext-src/swoole_http_request.cc
-@@ -17,2 +17,7 @@
+@@ -17,2 +17,4 @@
  #include "php_swoole_http_server.h"
-+#ifndef SWOOLE_RS_HTTPBINDINGS
-+#error "HTTP PHP binding overlay requires --enable-swoole-rs-httpbindings"
-+#endif
 +#include "swoole_rs_httpbindings.h"
 +static_assert(HTTP_DELETE == 0 && HTTP_POST == 3 && HTTP_PUT == 4 && HTTP_PATCH == 28, "Pinned llhttp method mapping changed");
  
-@@ -68,26 +73,6 @@ static HttpContext *http_request_get_and_check_context(const zval *zobject) {
+@@ -68,26 +70,6 @@ static HttpContext *http_request_get_and_check_context(const zval *zobject) {
  static inline char *http_trim_double_quote(char *ptr, size_t *len) {
 -    size_t i;
 -    char *tmp = ptr;
@@ -41,7 +38,7 @@ index f9313ea48..26c1f52c0 100644
 +    *len = result.length;
 +    return ptr + result.offset;
  }
-@@ -287,4 +272,5 @@ void php_swoole_http_request_minit(int module_number) {
+@@ -287,4 +269,5 @@ void php_swoole_http_request_minit(int module_number) {
  static int http_request_on_url(llhttp_t *parser, const char *at, size_t length) {
 -    const char *query_start = (const char *) memchr(at, '?', length);
 -    size_t path_len = query_start ? (size_t) (query_start - at) : length;
@@ -49,19 +46,19 @@ index f9313ea48..26c1f52c0 100644
 +    if (swr_v1_httpbindings_request_url({reinterpret_cast<const uint8_t *>(at), length}, &parts) != 0) return -1;
 +    size_t path_len = parts.path_length;
  
-@@ -294,3 +280,3 @@ static int http_request_on_url(llhttp_t *parser, const char *at, size_t length)
+@@ -294,3 +277,3 @@ static int http_request_on_url(llhttp_t *parser, const char *at, size_t length)
  
 -    if (!query_start || (length - path_len) <= 1) {
 +    if (parts.query_length == 0) {
          return 0;
-@@ -298,4 +284,4 @@ static int http_request_on_url(llhttp_t *parser, const char *at, size_t length)
+@@ -298,4 +281,4 @@ static int http_request_on_url(llhttp_t *parser, const char *at, size_t length)
  
 -    const char *query_str = query_start + 1;
 -    size_t query_len = length - path_len - 1;
 +    const char *query_str = at + parts.query_offset;
 +    size_t query_len = parts.query_length;
  
-@@ -407,31 +393,11 @@ static void http_request_add_upload_file(HttpContext *ctx, const char *file, siz
+@@ -407,31 +390,11 @@ static void http_request_add_upload_file(HttpContext *ctx, const char *file, siz
  int swoole_http_token_list_contains_value(const char *at, size_t length, const char *value) {
 -    if (0 == length) {
 -        return 0;
@@ -102,7 +99,7 @@ index f9313ea48..26c1f52c0 100644
 +    return swr_v1_httpbindings_tokens(reinterpret_cast<uint8_t *>(scratch), length,
 +        reinterpret_cast<const uint8_t *>(value), sizeof(value) - 1, 1) == 1 ? 1 : 0;
  }
-@@ -443,4 +409,11 @@ static int http_request_on_header_value(llhttp_t *parser, const char *at, size_t
+@@ -443,4 +406,11 @@ static int http_request_on_header_value(llhttp_t *parser, const char *at, size_t
      size_t header_len = ctx->current_header_name_len;
 -
 -    if (ctx->parse_cookie && SW_STRCASEEQ(header_name, header_len, "cookie")) {
@@ -116,13 +113,13 @@ index f9313ea48..26c1f52c0 100644
 +    switch (action) {
 +    case SWR_HTTPBINDINGS_HEADER_COOKIE: {
          zval *zcookie = swoole_http_init_and_read_property(
-@@ -449,3 +422,4 @@ static int http_request_on_header_value(llhttp_t *parser, const char *at, size_t
+@@ -449,3 +419,4 @@ static int http_request_on_header_value(llhttp_t *parser, const char *at, size_t
          return 0;
 -    } else if (SW_STRCASEEQ(header_name, header_len, "upgrade")) {
 +    }
 +    case SWR_HTTPBINDINGS_HEADER_UPGRADE: {
          constexpr size_t max_length = SW_STACK_BUFFER_SIZE - 1;
-@@ -461,64 +435,44 @@ static int http_request_on_header_value(llhttp_t *parser, const char *at, size_t
+@@ -461,64 +432,44 @@ static int http_request_on_header_value(llhttp_t *parser, const char *at, size_t
          }
 -        if (!contains_websocket) {
 -            goto _add_header;
@@ -222,14 +219,14 @@ index f9313ea48..26c1f52c0 100644
 +    case 7: zend_hash_update(Z_ARR_P(zheader), SW_ZSTR_KNOWN(SW_ZEND_STR_ACCEPT_ENCODING), &tmp); break;
 +    default: {
          char *new_header_name = estrndup(header_name, header_len);
-@@ -527,4 +481,5 @@ _add_header:
+@@ -527,4 +478,5 @@ _add_header:
          efree(new_header_name);
 +        break;
 +    }
      }
 -
      return 0;
-@@ -882,12 +837,6 @@ static int http_request_on_body(llhttp_t *parser, const char *at, size_t length)
+@@ -882,12 +834,6 @@ static int http_request_on_body(llhttp_t *parser, const char *at, size_t length)
      if (ctx->mt_parser != nullptr && !ctx->recv_chunked) {
 -        if (is_beginning) {
 -            /* Compatibility: some clients may send extra EOL */
@@ -246,7 +243,7 @@ index f9313ea48..26c1f52c0 100644
 +        at += prefix;
 +        length -= prefix;
          if (!ctx->parse_multipart_data(at, length)) {
-@@ -909,7 +858,6 @@ static int http_request_message_complete(llhttp_t *parser) {
+@@ -909,7 +855,6 @@ static int http_request_message_complete(llhttp_t *parser) {
          size_t length = ctx->request.chunked_body->length;
 -        /* Compatibility: some clients may send extra EOL */
 -        while (length != 0 && (*at == '\r' || *at == '\n')) {
@@ -258,7 +255,7 @@ index f9313ea48..26c1f52c0 100644
 +        at += prefix;
 +        length -= prefix;
          if (!ctx->parse_multipart_data(at, length)) {
-@@ -919,3 +867,7 @@ static int http_request_message_complete(llhttp_t *parser) {
+@@ -919,3 +864,7 @@ static int http_request_message_complete(llhttp_t *parser) {
  
 -    if (ctx->request.chunked_body != nullptr && ctx->parse_body && ctx->request.post_form_urlencoded) {
 +    int form_source = swr_v1_httpbindings_form_source(
@@ -267,12 +264,12 @@ index f9313ea48..26c1f52c0 100644
 +        (ctx->request.body_at != nullptr ? 16u : 0u));
 +    if (form_source == 1) {
          /* parse dechunked content */
-@@ -926,3 +878,3 @@ static int http_request_message_complete(llhttp_t *parser) {
+@@ -926,3 +875,3 @@ static int http_request_message_complete(llhttp_t *parser) {
                  swoole_http_request_ce, ctx->request.zobject, &ctx->request.zpost, SW_ZSTR_KNOWN(SW_ZEND_STR_POST)));
 -    } else if (!ctx->recv_chunked && ctx->parse_body && ctx->request.post_form_urlencoded && ctx->request.body_at) {
 +    } else if (form_source == 2) {
          swoole_php_treat_data(
-@@ -951,27 +903,23 @@ static int http_request_message_complete(llhttp_t *parser) {
+@@ -951,27 +900,23 @@ static int http_request_message_complete(llhttp_t *parser) {
  #ifdef SW_HAVE_COMPRESSION
 -void HttpContext::set_compression_method(const char *accept_encoding, size_t length) {
 -#ifdef SW_HAVE_BROTLI
@@ -317,7 +314,7 @@ index f9313ea48..26c1f52c0 100644
 +    accept_compression = method > 0;
 +    if (method > 0) compression_method = static_cast<swHttpCompressMethod>(method);
  }
-@@ -979,22 +927,4 @@ void HttpContext::set_compression_method(const char *accept_encoding, size_t len
+@@ -979,22 +924,4 @@ void HttpContext::set_compression_method(const char *accept_encoding, size_t len
  const char *HttpContext::get_content_encoding() const {
 -#ifdef SW_HAVE_ZLIB
 -    if (compression_method == HTTP_COMPRESS_GZIP) {
@@ -342,7 +339,7 @@ index f9313ea48..26c1f52c0 100644
 +    auto encoding = swr_v1_httpbindings_encoding(compression_method, http_request_compression_capabilities());
 +    return reinterpret_cast<const char *>(encoding.data);
  }
-@@ -1071,23 +1001,21 @@ static PHP_METHOD(swoole_http_request, create) {
+@@ -1071,23 +998,21 @@ static PHP_METHOD(swoole_http_request, create) {
          SW_HASHTABLE_FOREACH_START2(Z_ARRVAL_P(zoptions), key, keylen, keytype, zvalue) {
 -            if (SW_STRCASEEQ(key, keylen, "parse_cookie")) {
 -                ctx->parse_cookie = zval_is_true(zvalue);

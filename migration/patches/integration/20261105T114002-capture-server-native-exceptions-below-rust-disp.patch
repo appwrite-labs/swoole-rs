@@ -1,12 +1,12 @@
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 281113b..086ac75 100644
+index 7218272..3246d91 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
 @@ -17,2 +17,3 @@
  #include "swoole_server.h"
 +#include "swoole_rs_corebase_native_exception.h"
- #ifdef SWOOLE_RS_PROCESS
-@@ -84,4 +85,16 @@ static uint64_t server_call(void *context, uint32_t op, uint64_t arg);
+ #include "swoole_rs_process.h"
+@@ -82,4 +83,16 @@ static uint64_t server_call(void *context, uint32_t op, uint64_t arg);
  
 +// Per-invocation custody permits nested operations to rethrow into their native
 +// caller. No C++ exception crosses the Rust algorithm which requested the effect.

@@ -2,8 +2,7 @@
 """Compile unchanged and hybrid coroutine translation units.
 
 original: the pinned tree. patched: the hybrid build's tree with its switches and
-headers (hybrid_tree, #796). disabled: the same tree without SWOOLE_RS_COROUTINE;
-base and channel must refuse to compile, context and thread_context still build.
+headers (hybrid_tree, #796).
 """
 from pathlib import Path
 import argparse
@@ -47,17 +46,13 @@ with tempfile.TemporaryDirectory(prefix='swr-coroutine-compile-') as tmp:
     common += ['-DSW_CONTEXT_DETECT_STACK_USAGE'] if a.stack_usage else []
     common += ['-DSW_CORO_TIME'] if a.timing else []
     trees = {'original': (tree, ['-I' + str(tree / 'include'), '-I' + str(tree)]),
-             'patched': (hybrid_source, [*hybrid_flags, '-I' + str(hybrid_source)]),
-             'disabled': (hybrid_source, [flag for flag in hybrid_flags if flag != '-DSWOOLE_RS_COROUTINE']
-                          + ['-I' + str(hybrid_source)])}
+             'patched': (hybrid_source, [*hybrid_flags, '-I' + str(hybrid_source)])}
     for variant, (root, flags) in trees.items():
         for name in units:
             cmd = ['c++', *common, *flags, '-c', str(root / ('src/coroutine/' + name + '.cc')),
                    '-o', str(tree / (variant + '-' + name + '.o'))]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            refuses = variant == 'disabled' and name in ['base', 'channel']
-            passed = (result.returncode != 0 and 'Coroutine overlay requires --enable-swoole-rs-coroutine' in result.stderr
-                      if refuses else result.returncode == 0)
+            passed = result.returncode == 0
             print(variant, name, result.returncode, 'PASS' if passed else 'FAIL', flush=True)
             rows.append(dict(variant=variant, backend=name, command=cmd, returncode=result.returncode, passed=passed,
                              stderr=result.stderr))

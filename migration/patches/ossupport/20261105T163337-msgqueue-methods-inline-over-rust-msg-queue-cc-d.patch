@@ -88,10 +88,10 @@ index bee9e2f..a199d75 100644
  };
 diff --git a/src/os/msg_queue.cc b/src/os/msg_queue.cc
 deleted file mode 100644
-index 1afe650..0000000
+index 4a2e2d3..0000000
 --- a/src/os/msg_queue.cc
 +++ /dev/null
-@@ -1,133 +0,0 @@
+@@ -1,130 +0,0 @@
 -/*
 -  +----------------------------------------------------------------------+
 -  | Swoole                                                               |
@@ -110,9 +110,6 @@ index 1afe650..0000000
 -
 -#include "swoole_msg_queue.h"
 -
--#ifndef SWOOLE_RS_OSSUPPORT
--#error "OS support overlay requires --enable-swoole-rs-ossupport"
--#endif
 -#include "swoole_rs_ossupport.h"
 -
 -namespace swoole {

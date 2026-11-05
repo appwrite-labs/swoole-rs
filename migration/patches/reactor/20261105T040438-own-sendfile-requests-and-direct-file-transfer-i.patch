@@ -1,14 +1,8 @@
 diff --git a/include/swoole_socket.h b/include/swoole_socket.h
-index 48c5081..905f392 100644
+index 2c8ef8d..4940e4f 100644
 --- a/include/swoole_socket.h
 +++ b/include/swoole_socket.h
-@@ -28,2 +28,5 @@
- #include "swoole_rs_reactor.h"
-+#ifndef SWOOLE_RS_OSSUPPORT
-+#error "Rust socket file requests require --enable-swoole-rs-ossupport"
-+#endif
- 
-@@ -71,18 +74,38 @@ struct SendfileTask {
+@@ -68,18 +68,38 @@ struct SendfileTask {
  
 -struct SendfileRequest {
 -    File file;
@@ -21,12 +15,13 @@ index 48c5081..905f392 100644
 -        begin = _offset;
 -        end = 0;
 -        corked = 0;
+-    }
 +class SocketFileOwner {
 +  protected:
 +    swr_v1_socket_file_prepared prepared_;
 +    explicit SocketFileOwner(swr_v1_socket_file_prepared prepared) : prepared_(prepared) {
 +        if (!prepared_.owner) throw std::bad_alloc();
-     }
++    }
 +    SocketFileOwner(const SocketFileOwner &) = delete;
 +    SocketFileOwner &operator=(const SocketFileOwner &) = delete;
 +    ~SocketFileOwner() { swr_v1_socket_file_free(prepared_.owner); }
@@ -61,10 +56,10 @@ index 48c5081..905f392 100644
 +    swr_v1_socket_file_request *handle() const { return prepared_.owner; }
  };
 diff --git a/src/network/socket.cc b/src/network/socket.cc
-index 787a41f..5a71934 100644
+index a6bca0f..cd1a021 100644
 --- a/src/network/socket.cc
 +++ b/src/network/socket.cc
-@@ -56,15 +56,18 @@ static_assert(SW_SENDFILE_CHUNK_SIZE == 65536, "swr_v1_socket_sendfile_chunk's c
+@@ -53,15 +53,18 @@ static_assert(SW_SENDFILE_CHUNK_SIZE == 65536, "swr_v1_socket_sendfile_chunk's c
  
 -static bool check_sendfile_parameters(const File *file, off_t begin, size_t length, off_t *end) {
 -    auto filename = file->get_path().c_str();
@@ -94,7 +89,7 @@ index 787a41f..5a71934 100644
 +        swoole_error_log(SW_LOG_WARNING, SW_ERROR_INVALID_PARAMS,
 +                         "length[%ld] or offset[%ld] is invalid", length, (long) task->begin);
          return false;
-@@ -114,19 +117,11 @@ static ssize_t socket_sync(Socket *socket, int kind, void *buffer, size_t length
+@@ -111,19 +114,11 @@ static ssize_t socket_sync(Socket *socket, int kind, void *buffer, size_t length
  int Socket::sendfile_sync(const char *filename, off_t offset, size_t length) {
 -    off_t end;
 -    File file(filename, O_RDONLY);
@@ -121,7 +116,7 @@ index 787a41f..5a71934 100644
 -
 +    if (corked) uncork();
      return rv < 0 ? SW_ERR : SW_OK;
-@@ -365,9 +360,5 @@ int Socket::handle_sendfile() {
+@@ -362,9 +357,5 @@ int Socket::handle_sendfile() {
      Buffer *buffer = out_buffer;
 -#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
      auto *task = static_cast<SendfileRequest *>(buffer->typed_front().token);
@@ -132,12 +127,12 @@ index 787a41f..5a71934 100644
 -    swr_v1_socket_sendfile_cork(&hooks, &task->corked, task->begin, task->end, SW_SOCKET_CORK_MIN_SIZE);
 +    swr_v1_socket_file_cork(task->handle(), &hooks);
  
-@@ -378,3 +369,3 @@ int Socket::handle_sendfile() {
+@@ -375,3 +366,3 @@ int Socket::handle_sendfile() {
  
 -    auto result = swr_v1_socket_sendfile_sent(&hooks, rv, sendn, &task->corked, task->begin, task->end);
 +    auto result = swr_v1_socket_file_sent(task->handle(), this, &hooks, rv, sendn);
      if (result.warn == 2) {
-@@ -382,11 +373,3 @@ int Socket::handle_sendfile() {
+@@ -379,11 +370,3 @@ int Socket::handle_sendfile() {
      }
 -    if (result.close_wait) {
 -        close_wait = 1;
@@ -150,7 +145,7 @@ index 787a41f..5a71934 100644
 -    }
 +    if (result.pop) buffer->pop();
      return result.code;
-@@ -438,8 +421,3 @@ extern "C" void swr_socket_dispose_typed_sendfile(void *token) {
+@@ -435,8 +418,3 @@ extern "C" void swr_socket_dispose_typed_sendfile(void *token) {
  
 -#if !defined(SWOOLE_RS_BUFFER_TYPED) || !SWOOLE_RS_BUFFER_TYPED
 -static void Socket_sendfile_destructor(BufferChunk *chunk) {
@@ -160,7 +155,7 @@ index 787a41f..5a71934 100644
 -#endif
 +
  
-@@ -453,35 +431,9 @@ ssize_t Socket::sendfile(const File &fp, off_t *offset, size_t length) {
+@@ -450,35 +428,9 @@ ssize_t Socket::sendfile(const File &fp, off_t *offset, size_t length) {
  
 -struct SendfileAsync {
 -    Socket *socket;

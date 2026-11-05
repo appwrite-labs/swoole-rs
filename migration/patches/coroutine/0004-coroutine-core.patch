@@ -191,14 +191,11 @@ index fba89b0..d7263a1 100644
 -    CancelFunc *cancel_fn_ = nullptr;
  
 diff --git a/src/coroutine/base.cc b/src/coroutine/base.cc
-index 2fbb21d..94a3a60 100644
+index 2fbb21d..90698fd 100644
 --- a/src/coroutine/base.cc
 +++ b/src/coroutine/base.cc
-@@ -19,15 +19,11 @@
+@@ -19,15 +19,8 @@
  
-+#ifndef SWOOLE_RS_COROUTINE
-+#error "Coroutine overlay requires --enable-swoole-rs-coroutine"
-+#endif
 +
  namespace swoole {
  
@@ -216,17 +213,17 @@ index 2fbb21d..94a3a60 100644
 -SW_THREAD_LOCAL Coroutine::SwapCallback Coroutine::on_resume = nullptr;
 -SW_THREAD_LOCAL Coroutine::SwapCallback Coroutine::on_close = nullptr;
  SW_THREAD_LOCAL Coroutine::BailoutCallback Coroutine::on_bailout = nullptr;
-@@ -45,3 +41,3 @@ void Coroutine::activate() {
+@@ -45,3 +38,3 @@ void Coroutine::activate() {
  #endif
 -    activated = true;
 +    swr_v1_coroutine_set_active(&scheduler_, true);
      on_bailout = nullptr;
-@@ -53,3 +49,3 @@ void Coroutine::deactivate() {
+@@ -53,3 +46,3 @@ void Coroutine::deactivate() {
  #endif
 -    activated = false;
 +    swr_v1_coroutine_set_active(&scheduler_, false);
      on_bailout = []() {
-@@ -62,22 +58,7 @@ void Coroutine::deactivate() {
+@@ -62,22 +55,7 @@ void Coroutine::deactivate() {
  
 -#ifdef SW_CORO_TIME
 -void Coroutine::calc_execute_usec(Coroutine *yield_coroutine, Coroutine *resume_coroutine) {
@@ -253,12 +250,12 @@ index 2fbb21d..94a3a60 100644
 -    if (!activated) {
 +    if (swr_v1_coroutine_admit(&scheduler_, count())) {
          activate();
-@@ -90,3 +71,3 @@ void Coroutine::check_end() {
+@@ -90,3 +68,3 @@ void Coroutine::check_end() {
      } else if (sw_unlikely(on_bailout)) {
 -        SW_ASSERT(current == nullptr);
 +        SW_ASSERT(get_current() == nullptr);
          on_bailout();
-@@ -96,7 +77,5 @@ void Coroutine::check_end() {
+@@ -96,7 +74,5 @@ void Coroutine::check_end() {
  long Coroutine::run() {
 -    const long _cid = cid;
 -    set_origin(current);
@@ -269,7 +266,7 @@ index 2fbb21d..94a3a60 100644
 +    swr_v1_coroutine_enter(&scheduler_, &co_);
 +    CALC_EXECUTE_USEC(get_origin(), nullptr);
      ctx.swap_in();
-@@ -107,11 +86,10 @@ long Coroutine::run() {
+@@ -107,11 +83,10 @@ long Coroutine::run() {
  void Coroutine::yield() {
 -    SW_ASSERT(current == this || on_bailout != nullptr);
 -    state = STATE_WAITING;
@@ -287,17 +284,17 @@ index 2fbb21d..94a3a60 100644
 -    CALC_EXECUTE_USEC(this, current);
 +    CALC_EXECUTE_USEC(this, get_current());
      ctx.swap_out();
-@@ -128,3 +106,3 @@ bool Coroutine::yield_ex(double timeout) {
+@@ -128,3 +103,3 @@ bool Coroutine::yield_ex(double timeout) {
      TimerCallback timer_callback = [this](Timer *timer, TimerNode *tnode) {
 -        resume_code_ = RC_TIMEDOUT;
 +        swr_v1_coroutine_timeout(&co_);
          resume();
-@@ -158,3 +136,3 @@ bool Coroutine::yield_ex(double timeout) {
+@@ -158,3 +133,3 @@ bool Coroutine::yield_ex(double timeout) {
  void Coroutine::resume() {
 -    SW_ASSERT(current != this);
 +    SW_ASSERT(get_current() != this);
      if (sw_unlikely(on_bailout)) {
-@@ -162,10 +140,9 @@ void Coroutine::resume() {
+@@ -162,10 +137,9 @@ void Coroutine::resume() {
      }
 -    state = STATE_RUNNING;
 -    if (sw_likely(on_resume && task)) {
@@ -313,12 +310,12 @@ index 2fbb21d..94a3a60 100644
 -    CALC_EXECUTE_USEC(origin, this);
 +    CALC_EXECUTE_USEC(get_origin(), this);
      ctx.swap_in();
-@@ -175,3 +152,3 @@ void Coroutine::resume() {
+@@ -175,3 +149,3 @@ void Coroutine::resume() {
  bool Coroutine::cancel() {
 -    if (!cancel_fn_) {
 +    if (!co_.cancel_fn) {
          swoole_set_last_error(SW_ERROR_CO_CANNOT_CANCEL);
-@@ -179,5 +156,4 @@ bool Coroutine::cancel() {
+@@ -179,5 +153,4 @@ bool Coroutine::cancel() {
      }
 -    auto fn = *cancel_fn_;
 -    set_cancel_fn(nullptr);
@@ -326,7 +323,7 @@ index 2fbb21d..94a3a60 100644
 +    auto fn = *static_cast<CancelFunc *>(co_.cancel_fn);
 +    swr_v1_coroutine_cancel(&co_);
      return fn(this);
-@@ -186,6 +162,6 @@ bool Coroutine::cancel() {
+@@ -186,6 +159,6 @@ bool Coroutine::cancel() {
  void Coroutine::close() {
 -    SW_ASSERT(current == this);
 -    state = STATE_END;
@@ -337,7 +334,7 @@ index 2fbb21d..94a3a60 100644
 +    if (scheduler_.on_close && co_.task) {
 +        scheduler_.on_close(co_.task);
      }
-@@ -195,16 +171,4 @@ void Coroutine::close() {
+@@ -195,16 +168,4 @@ void Coroutine::close() {
  #endif
 -    current = origin;
 -    coroutines.erase(cid);
@@ -356,7 +353,7 @@ index 2fbb21d..94a3a60 100644
 +    swr_v1_coroutine_release(&scheduler_, &co_);
 +    coroutines.erase(get_cid());
      delete this;
-@@ -212,27 +176,2 @@ void Coroutine::close() {
+@@ -212,27 +173,2 @@ void Coroutine::close() {
  
 -void Coroutine::set_origin(Coroutine *co) {
 -    if (origin == co) {
@@ -384,22 +381,22 @@ index 2fbb21d..94a3a60 100644
 -}
 -
  void Coroutine::print_list() {
-@@ -240,3 +179,3 @@ void Coroutine::print_list() {
+@@ -240,3 +176,3 @@ void Coroutine::print_list() {
          const char *state;
 -        switch (coroutine.second->state) {
 +        switch (coroutine.second->get_state()) {
          case STATE_INIT:
-@@ -262,3 +201,3 @@ void Coroutine::print_list() {
+@@ -262,3 +198,3 @@ void Coroutine::print_list() {
  void Coroutine::print_socket_bound_error(int sock_fd, const char *event_str, long bound_cid) {
 -    socket_bound_cid = bound_cid;
 +    set_socket_bound_cid(bound_cid);
      swoole_fatal_error(SW_ERROR_CO_HAS_BEEN_BOUND,
-@@ -267,3 +206,3 @@ void Coroutine::print_socket_bound_error(int sock_fd, const char *event_str, lon
+@@ -267,3 +203,3 @@ void Coroutine::print_socket_bound_error(int sock_fd, const char *event_str, lon
                         sock_fd,
 -                       socket_bound_cid,
 +                       get_socket_bound_cid(),
                         event_str,
-@@ -272,16 +211,4 @@ void Coroutine::print_socket_bound_error(int sock_fd, const char *event_str, lon
+@@ -272,16 +208,4 @@ void Coroutine::print_socket_bound_error(int sock_fd, const char *event_str, lon
  
 -void Coroutine::set_on_yield(const SwapCallback func) {
 -    on_yield = func;
@@ -417,7 +414,7 @@ index 2fbb21d..94a3a60 100644
 -    Coroutine *co = current;
 +    Coroutine *co = get_current();
      if (!co) {
-@@ -300,4 +227,4 @@ void Coroutine::bailout(const BailoutCallback &func) {
+@@ -300,4 +224,4 @@ void Coroutine::bailout(const BailoutCallback &func) {
      // find the coroutine which is closest to the main
 -    while (co->origin) {
 -        co = co->origin;

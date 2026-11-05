@@ -1,12 +1,9 @@
 diff --git a/src/memory/ring_buffer.cc b/src/memory/ring_buffer.cc
-index 20569881f..0aa45fdd4 100644
+index 2056988..991667a 100644
 --- a/src/memory/ring_buffer.cc
 +++ b/src/memory/ring_buffer.cc
-@@ -17,22 +17,13 @@
+@@ -17,22 +17,10 @@
  #include "swoole_memory.h"
-+#ifndef SWOOLE_RS_MEMORY
-+#error "Memory overlay requires --enable-swoole-rs-memory"
-+#endif
 +#include "swoole_rs_memory.h"
 +#include <cstddef>
 +#include <type_traits>
@@ -33,7 +30,7 @@ index 20569881f..0aa45fdd4 100644
 -    uint16_t index;
 +    uint16_t lock, index;
      uint32_t length;
-@@ -40,134 +31,44 @@ struct RingBufferItem {
+@@ -40,134 +28,44 @@ struct RingBufferItem {
  };
 -
 -#ifdef SW_RINGBUFFER_DEBUG
@@ -60,16 +57,7 @@ index 20569881f..0aa45fdd4 100644
 -    void *mem = (shared == 1) ? sw_shm_malloc(size) : sw_malloc(size);
 -    if (mem == nullptr) {
 -        throw std::bad_alloc();
-+    uint32_t total = 0, payload = 0;
-+    if (swr_v1_memory_ring_layout(size, &total, &payload) != 0) throw Exception(SW_ERROR_INVALID_PARAMS);
-+    const auto action = swr_v1_memory_arena_lifecycle(shared, 1, 0);
-+    void *memory = action == 2 ? sw_shm_malloc(total) : sw_malloc(total);
-+    if (!memory) throw std::bad_alloc();
-+    impl = new (memory) RingBufferImpl{};
-+    if (swr_v1_memory_ring_construct(impl, total, shared) != 0) {
-+        action == 2 ? sw_shm_free(memory) : sw_free(memory);
-+        throw Exception(SW_ERROR_INVALID_PARAMS);
-     }
+-    }
 -
 -    impl = static_cast<RingBufferImpl *>(mem);
 -    mem = static_cast<char *>(mem) + sizeof(*impl);
@@ -80,8 +68,7 @@ index 20569881f..0aa45fdd4 100644
 -    impl->memory = mem;
 -
 -    swoole_debug("memory: ptr=%p", mem);
-+    swoole_debug("memory: ptr=%p", impl->memory);
- }
+-}
 -
 -RingBufferItem *RingBufferImpl::get_item(uint32_t offset) const {
 -    return reinterpret_cast<RingBufferItem *>(static_cast<char *>(memory) + offset);
@@ -101,8 +88,18 @@ index 20569881f..0aa45fdd4 100644
 -        } else {
 -            break;
 -        }
--    }
--}
++    uint32_t total = 0, payload = 0;
++    if (swr_v1_memory_ring_layout(size, &total, &payload) != 0) throw Exception(SW_ERROR_INVALID_PARAMS);
++    const auto action = swr_v1_memory_arena_lifecycle(shared, 1, 0);
++    void *memory = action == 2 ? sw_shm_malloc(total) : sw_malloc(total);
++    if (!memory) throw std::bad_alloc();
++    impl = new (memory) RingBufferImpl{};
++    if (swr_v1_memory_ring_construct(impl, total, shared) != 0) {
++        action == 2 ? sw_shm_free(memory) : sw_free(memory);
++        throw Exception(SW_ERROR_INVALID_PARAMS);
+     }
++    swoole_debug("memory: ptr=%p", impl->memory);
+ }
 -
  void *RingBuffer::alloc(uint32_t size) {
      assert(size > 0);

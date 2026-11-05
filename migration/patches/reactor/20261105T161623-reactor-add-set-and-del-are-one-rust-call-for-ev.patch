@@ -1,8 +1,8 @@
 diff --git a/include/swoole_reactor.h b/include/swoole_reactor.h
-index 5967f8d..8f3eae3 100644
+index c0be2f6..3f8ca74 100644
 --- a/include/swoole_reactor.h
 +++ b/include/swoole_reactor.h
-@@ -40,18 +40,2 @@ class Reactor;
+@@ -37,18 +37,2 @@ class Reactor;
  
 -class ReactorImpl {
 -  protected:
@@ -21,7 +21,7 @@ index 5967f8d..8f3eae3 100644
 -};
 -
  class ReactorStateOwner {
-@@ -125,4 +109,7 @@ class Reactor : private ReactorStateOwner {
+@@ -122,4 +106,7 @@ class Reactor : private ReactorStateOwner {
  
 +    // ReactorEpoll/ReactorKqueue/ReactorPoll add, set and del are Rust's (swr_v1_reactor_change).
 +    int change(network::Socket *socket, uint32_t op, int events) const;
@@ -30,21 +30,21 @@ index 5967f8d..8f3eae3 100644
 -        return impl->add(socket, events);
 +        return change(socket, 0, events);
      }
-@@ -130,3 +117,3 @@ class Reactor : private ReactorStateOwner {
+@@ -127,3 +114,3 @@ class Reactor : private ReactorStateOwner {
      int set(network::Socket *socket, int events) const {
 -        return impl->set(socket, events);
 +        return change(socket, 1, events);
      }
-@@ -134,3 +121,3 @@ class Reactor : private ReactorStateOwner {
+@@ -131,3 +118,3 @@ class Reactor : private ReactorStateOwner {
      int del(network::Socket *socket) const {
 -        return impl->del(socket);
 +        return change(socket, 2, 0);
      }
-@@ -157,3 +144,2 @@ class Reactor : private ReactorStateOwner {
+@@ -154,3 +141,2 @@ class Reactor : private ReactorStateOwner {
    private:
 -    ReactorImpl *impl;
      ReactorCallbacks callbacks_;
-@@ -314,13 +300,2 @@ class Reactor : private ReactorStateOwner {
+@@ -311,13 +297,2 @@ class Reactor : private ReactorStateOwner {
  
 -    void _add(network::Socket *socket, int events) {
 -        if (swr_v1_reactor_state_socket(state_.owner, socket, 0, events) < 0) throw std::bad_alloc();
@@ -139,10 +139,10 @@ index 414cfb3..ac2059d 100644
      if (swoole_isset_hook(SW_GLOBAL_HOOK_ON_REACTOR_DESTROY)) {
 diff --git a/src/reactor/epoll.cc b/src/reactor/epoll.cc
 deleted file mode 100644
-index 19b968a..0000000
+index da3753e..0000000
 --- a/src/reactor/epoll.cc
 +++ /dev/null
-@@ -1,142 +0,0 @@
+@@ -1,139 +0,0 @@
 -/*
 - +----------------------------------------------------------------------+
 - | Swoole                                                               |
@@ -161,9 +161,6 @@ index 19b968a..0000000
 -
 -#include "swoole_socket.h"
 -#include "swoole_reactor.h"
--#ifndef SWOOLE_RS_REACTOR
--#error "Reactor overlay requires --enable-swoole-rs-reactor"
--#endif
 -
 -#ifdef HAVE_EPOLL
 -#include <sys/epoll.h>
@@ -287,10 +284,10 @@ index 19b968a..0000000
 -#endif
 diff --git a/src/reactor/kqueue.cc b/src/reactor/kqueue.cc
 deleted file mode 100644
-index 4cd20cd..0000000
+index 46a1c5e..0000000
 --- a/src/reactor/kqueue.cc
 +++ /dev/null
-@@ -1,139 +0,0 @@
+@@ -1,136 +0,0 @@
 -/*
 - +----------------------------------------------------------------------+
 - | Swoole                                                               |
@@ -309,9 +306,6 @@ index 4cd20cd..0000000
 -
 -#include "swoole_socket.h"
 -#include "swoole_reactor.h"
--#ifndef SWOOLE_RS_REACTOR
--#error "Reactor overlay requires --enable-swoole-rs-reactor"
--#endif
 -#include "swoole_signal.h"
 -
 -#ifdef HAVE_KQUEUE
@@ -432,10 +426,10 @@ index 4cd20cd..0000000
 -#endif
 diff --git a/src/reactor/poll.cc b/src/reactor/poll.cc
 deleted file mode 100644
-index 88a3e36..0000000
+index d2a745d..0000000
 --- a/src/reactor/poll.cc
 +++ /dev/null
-@@ -1,132 +0,0 @@
+@@ -1,129 +0,0 @@
 -/*
 -  +----------------------------------------------------------------------+
 -  | Swoole                                                               |
@@ -454,9 +448,6 @@ index 88a3e36..0000000
 -
 -#include "swoole_socket.h"
 -#include "swoole_reactor.h"
--#ifndef SWOOLE_RS_REACTOR
--#error "Reactor overlay requires --enable-swoole-rs-reactor"
--#endif
 -
 -namespace swoole {
 -using network::Socket;

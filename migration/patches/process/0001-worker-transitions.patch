@@ -1,16 +1,13 @@
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index 750fd93..0f57e9c 100644
+index 750fd93..076329e 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
-@@ -17,2 +17,7 @@
+@@ -17,2 +17,4 @@
  #include "swoole_memory.h"
 +
-+#ifndef SWOOLE_RS_PROCESS
-+#error "Process overlay requires --enable-swoole-rs-process"
-+#endif
 +#include "swoole_rs_process.h"
  #include "swoole_socket.h"
-@@ -1160,6 +1165,8 @@ void ReloadTask::kill_all(int signal_number) {
+@@ -1160,6 +1162,8 @@ void ReloadTask::kill_all(int signal_number) {
      for (auto &kv : workers) {
 -        if (swoole_kill(kv.first, signal_number) < 0) {
 -            if (errno == ECHILD || errno == ESRCH) {
@@ -23,7 +20,7 @@ index 750fd93..0f57e9c 100644
 +            continue;
 +        } else if (action == 2) {
              swoole_sys_warning("failed to kill(%d, SIGTERM) worker#[%d]", kv.first, kv.second->id);
-@@ -1181,7 +1188,9 @@ void ReloadTask::kill_one(int signal_number) {
+@@ -1181,7 +1185,9 @@ void ReloadTask::kill_one(int signal_number) {
          }
 -        if (swoole_kill(pid, signal_number) < 0) {
 -            if (errno == ECHILD || errno == ESRCH) {
@@ -39,18 +36,15 @@ index 750fd93..0f57e9c 100644
 +        } else if (action == 2) {
              swoole_sys_warning("kill(%d, SIGTERM) [%d] failed", pid, iter->second->id);
 diff --git a/src/os/signal.cc b/src/os/signal.cc
-index e05a2d9..1e4b22e 100644
+index e05a2d9..1792c1c 100644
 --- a/src/os/signal.cc
 +++ b/src/os/signal.cc
-@@ -20,2 +20,7 @@
+@@ -20,2 +20,4 @@
  
-+#ifndef SWOOLE_RS_PROCESS
-+#error "Process overlay requires --enable-swoole-rs-process"
-+#endif
 +#include "swoole_rs_process.h"
 +
  #ifdef HAVE_SIGNALFD
-@@ -56,16 +61,13 @@ static void swoole_signal_kqueue_clear();
+@@ -56,16 +58,13 @@ static void swoole_signal_kqueue_clear();
  
 -static void signal_handler_safety(int signo);
 -static void signal_handler_simple(int signo);
@@ -73,7 +67,7 @@ index e05a2d9..1e4b22e 100644
 +    return sw_reactor() != nullptr;
 +}
  
-@@ -82,13 +84,3 @@ char *swoole_signal_to_str(int sig) {
+@@ -82,13 +81,3 @@ char *swoole_signal_to_str(int sig) {
  void swoole_signal_block_all() {
 -    if (SwooleTG.signal_blocking_all) {
 -        return;
@@ -88,7 +82,7 @@ index e05a2d9..1e4b22e 100644
 -    }
 +    swr_v1_signal_mask_all(true, &SwooleTG.signal_blocking_all);
  }
-@@ -96,13 +88,3 @@ void swoole_signal_block_all() {
+@@ -96,13 +85,3 @@ void swoole_signal_block_all() {
  void swoole_signal_unblock_all() {
 -    if (!SwooleTG.signal_blocking_all) {
 -        return;
@@ -103,7 +97,7 @@ index e05a2d9..1e4b22e 100644
 -    }
 +    swr_v1_signal_mask_all(false, &SwooleTG.signal_blocking_all);
  }
-@@ -113,31 +95,4 @@ void swoole_signal_unblock_all() {
+@@ -113,31 +92,4 @@ void swoole_signal_unblock_all() {
  SignalHandler swoole_signal_set(int signo, SignalHandler func, int restart, int mask) {
 -    // ignore
 -    if (func == nullptr) {
@@ -137,12 +131,12 @@ index e05a2d9..1e4b22e 100644
 +    return reinterpret_cast<SignalHandler>(
 +        swr_v1_signal_set_action(signo, reinterpret_cast<uintptr_t>(func), restart, mask));
  }
-@@ -145,3 +100,3 @@ SignalHandler swoole_signal_set(int signo, SignalHandler func, int restart, int
+@@ -145,3 +97,3 @@ SignalHandler swoole_signal_set(int signo, SignalHandler func, int restart, int
  SW_API bool swoole_signal_isset(int signo) {
 -    return signals[signo].handler && signals[signo].activated;
 +    return swr_v1_signal_isset(signo);
  }
-@@ -166,26 +121,4 @@ SignalHandler swoole_signal_set(int signo, SignalHandler handler, bool safety) {
+@@ -166,26 +118,4 @@ SignalHandler swoole_signal_set(int signo, SignalHandler handler, bool safety) {
  
 -    signals[signo].handler = handler;
 -    signals[signo].activated = true;
@@ -171,7 +165,7 @@ index e05a2d9..1e4b22e 100644
 +    return reinterpret_cast<SignalHandler>(swr_v1_signal_set(
 +        signo, reinterpret_cast<uintptr_t>(handler), safety, swoole_signal_callback, signal_has_reactor));
  }
-@@ -193,12 +126,3 @@ static void signal_handler_simple(int signo) {
+@@ -193,12 +123,3 @@ static void signal_handler_simple(int signo) {
  void swoole_signal_dispatch() {
 -    if (!SwooleG.signal_dispatch) {
 -        return;
@@ -185,7 +179,7 @@ index e05a2d9..1e4b22e 100644
 -    SwooleG.signal_dispatch = false;
 +    swr_v1_signal_dispatch(swoole_signal_callback);
  }
-@@ -206,16 +130,11 @@ void swoole_signal_dispatch() {
+@@ -206,16 +127,11 @@ void swoole_signal_dispatch() {
  void swoole_signal_callback(int signo) {
 -    if (signo >= SW_SIGNO_MAX) {
 +    const auto lookup = swr_v1_signal_lookup(signo);
@@ -207,7 +201,7 @@ index e05a2d9..1e4b22e 100644
      }
 -    callback(signo);
  }
-@@ -223,8 +142,7 @@ void swoole_signal_callback(int signo) {
+@@ -223,8 +139,7 @@ void swoole_signal_callback(int signo) {
  SignalHandler swoole_signal_get_handler(int signo) {
 -    if (signo >= SW_SIGNO_MAX) {
 +    const auto lookup = swr_v1_signal_lookup(signo);
@@ -219,7 +213,7 @@ index e05a2d9..1e4b22e 100644
      }
 +    return reinterpret_cast<SignalHandler>(lookup.handler);
  }
-@@ -250,8 +168,3 @@ void swoole_signal_clear() {
+@@ -250,8 +165,3 @@ void swoole_signal_clear() {
  
 -    SW_LOOP_N(SW_SIGNO_MAX) {
 -        if (signals[i].activated) {
@@ -229,13 +223,13 @@ index e05a2d9..1e4b22e 100644
 -    sw_memset_zero(signals, sizeof(signals));
 +    swr_v1_signal_clear();
  }
-@@ -260,4 +173,3 @@ void swoole_signal_clear() {
+@@ -260,4 +170,3 @@ void swoole_signal_clear() {
  void swoole_signalfd_init() {
 -    sigemptyset(&signalfd_mask);
 -    sw_memset_zero(signals, sizeof(signals));
 +    swr_v1_signalfd_init();
  }
-@@ -268,21 +180,5 @@ void swoole_signalfd_init() {
+@@ -268,21 +177,5 @@ void swoole_signalfd_init() {
  static SignalHandler swoole_signalfd_set(int signo, SignalHandler handler) {
 -    SignalHandler origin_handler = nullptr;
 -
@@ -259,14 +253,14 @@ index e05a2d9..1e4b22e 100644
      swoole_signalfd_setup(sw_reactor());
 -
      return origin_handler;
-@@ -296,5 +192,4 @@ static void swoole_signalfd_close() {
+@@ -296,5 +189,4 @@ static void swoole_signalfd_close() {
      signal_socket->free();
 -    close(signal_fd);
      signal_socket = nullptr;
 -    signal_fd = -1;
 +    swr_v1_signalfd_close();
  }
-@@ -302,19 +197,17 @@ static void swoole_signalfd_close() {
+@@ -302,19 +194,17 @@ static void swoole_signalfd_close() {
  static bool swoole_signalfd_create() {
 -    if (swoole_signalfd_is_available()) {
 -        return false;
@@ -297,12 +291,12 @@ index e05a2d9..1e4b22e 100644
 +    signal_socket = swoole::make_socket(created.fd, SW_FD_SIGNAL);
 +    SwooleG.signal_fd = created.fd;
  
-@@ -335,3 +228,3 @@ bool swoole_signalfd_setup(Reactor *reactor) {
+@@ -335,3 +225,3 @@ bool swoole_signalfd_setup(Reactor *reactor) {
              // child process removes signal socket, parent process will not be able to trigger signal
 -            if (signal_socket && signalfd_create_pid == getpid()) {
 +            if (signal_socket && swr_v1_signalfd_owned()) {
                  swoole_event_del(signal_socket);
-@@ -351,9 +244,5 @@ static void swoole_signalfd_clear() {
+@@ -351,9 +241,5 @@ static void swoole_signalfd_clear() {
      }
 -
 -    if (sigprocmask(SIG_UNBLOCK, &signalfd_mask, nullptr) < 0) {
@@ -313,7 +307,7 @@ index e05a2d9..1e4b22e 100644
 -    sw_memset_zero(&signalfd_mask, sizeof(signalfd_mask));
 -
      swoole_signalfd_close();
-@@ -362,26 +251,16 @@ static void swoole_signalfd_clear() {
+@@ -362,26 +248,16 @@ static void swoole_signalfd_clear() {
  static int swoole_signalfd_event_callback(Reactor *reactor, Event *event) {
 -    signalfd_siginfo siginfo;
 -    ssize_t n = read(event->fd, &siginfo, sizeof(siginfo));
@@ -352,26 +346,23 @@ index e05a2d9..1e4b22e 100644
 -    }
 -
      return SW_OK;
-@@ -436,3 +315,3 @@ static void swoole_signal_kqueue_clear() {
+@@ -436,3 +312,3 @@ static void swoole_signal_kqueue_clear() {
      }
 -    sw_memset_zero(signals, sizeof(signals));
 +    swr_v1_signal_reset();
  }
 diff --git a/src/os/wait.cc b/src/os/wait.cc
-index a4a523e..f192fb6 100644
+index a4a523e..a2bdb22 100644
 --- a/src/os/wait.cc
 +++ b/src/os/wait.cc
-@@ -23,4 +23,7 @@
+@@ -23,4 +23,4 @@
  
 -#include <list>
 -#include <unordered_map>
-+#ifndef SWOOLE_RS_PROCESS
-+#error "Process overlay requires --enable-swoole-rs-process"
-+#endif
 +#include "swoole_rs_process.h"
 +
  
-@@ -29,15 +32,2 @@ using swoole::coroutine::System;
+@@ -29,15 +29,2 @@ using swoole::coroutine::System;
  
 -struct WaitTask {
 -    Coroutine *co;
@@ -387,7 +378,7 @@ index a4a523e..f192fb6 100644
 -static std::unordered_map<pid_t, WaitTask *> waitpid_map;
 -static std::unordered_map<pid_t, int> child_processes;
  
-@@ -45,28 +35,8 @@ bool signal_ready = false;
+@@ -45,28 +32,8 @@ bool signal_ready = false;
  
 -static void signal_handler(int signo) {
 -    if (signo != SIGCHLD) {
@@ -421,7 +412,7 @@ index a4a523e..f192fb6 100644
 +static void signal_handler(int signo) {
 +    swr_v1_wait_reap(signo, wait_resume);
  }
-@@ -91,2 +61,14 @@ static void signal_init() {
+@@ -91,2 +58,14 @@ static void signal_init() {
  
 +static void *wait_current() {
 +    return SwooleTG.reactor ? Coroutine::get_current() : nullptr;
@@ -436,7 +427,7 @@ index a4a523e..f192fb6 100644
 +}
 +
  #if SW_USE_IOURING
-@@ -130,61 +112,5 @@ pid_t System::waitpid(pid_t _pid, int *_stat_loc, int _options, double timeout)
+@@ -130,61 +109,5 @@ pid_t System::waitpid(pid_t _pid, int *_stat_loc, int _options, double timeout)
  #endif
 -    if (_pid < 0) {
 -        if (!child_processes.empty()) {
@@ -501,42 +492,39 @@ index a4a523e..f192fb6 100644
 +    const auto waited = swr_v1_wait_pid(_pid, _stat_loc, _options, timeout, &coroutines);
 +    if (waited.timed_out) {
          errno = ETIMEDOUT;
-@@ -192,4 +118,3 @@ pid_t System::waitpid(pid_t _pid, int *_stat_loc, int _options, double timeout)
+@@ -192,4 +115,3 @@ pid_t System::waitpid(pid_t _pid, int *_stat_loc, int _options, double timeout)
      }
 -
 -    return task.pid;
 +    return waited.pid;
  }
-@@ -198,3 +123,3 @@ extern "C" {
+@@ -198,3 +120,3 @@ extern "C" {
  size_t swoole_coroutine_wait_count() {
 -    return wait_list.size() + waitpid_map.size();
 +    return swr_v1_wait_count();
  }
 diff --git a/src/server/manager.cc b/src/server/manager.cc
-index 2d5d311..feb970c 100644
+index 2d5d311..6c6a32b 100644
 --- a/src/server/manager.cc
 +++ b/src/server/manager.cc
-@@ -17,2 +17,7 @@
+@@ -17,2 +17,4 @@
  #include "swoole_server.h"
 +
-+#ifndef SWOOLE_RS_PROCESS
-+#error "Process overlay requires --enable-swoole-rs-process"
-+#endif
 +#include "swoole_rs_process.h"
  #include "swoole_util.h"
-@@ -205,3 +210,5 @@ void Manager::wait(Server *_server) {
+@@ -205,3 +207,5 @@ void Manager::wait(Server *_server) {
          if (_server->running) {
 -            if (reload_all_worker) {  // reload task & event workers
 +            const bool reload_all = reload_all_worker;
 +            const auto reload_action = swr_v1_process_reload_action(reload_all, !reload_all && reload_task_worker);
 +            if (reload_action == 1) {  // reload task & event workers
                  pool->reload_init = reload_all_worker = false;
-@@ -230,3 +237,3 @@ void Manager::wait(Server *_server) {
+@@ -230,3 +234,3 @@ void Manager::wait(Server *_server) {
                  }
 -            } else if (reload_task_worker) {  // only reload task workers
 +            } else if (reload_action == 2) {  // only reload task workers
                  pool->reload_init = reload_task_worker = false;
-@@ -351,14 +358,16 @@ void Manager::signal_handler(int signo) {
+@@ -351,14 +355,16 @@ void Manager::signal_handler(int signo) {
  
 -    switch (signo) {
 -    case SIGTERM:
@@ -560,12 +548,12 @@ index 2d5d311..feb970c 100644
 -    case SIGALRM:
 +    case 5:
          if (manager->force_kill) {
-@@ -367,3 +376,3 @@ void Manager::signal_handler(int signo) {
+@@ -367,3 +373,3 @@ void Manager::signal_handler(int signo) {
          break;
 -    case SIGWINCH:
 +    case 6:
          manager->reopen_logger();
-@@ -371,7 +380,2 @@ void Manager::signal_handler(int signo) {
+@@ -371,7 +377,2 @@ void Manager::signal_handler(int signo) {
      default:
 -#ifdef SIGRTMIN
 -        if (signo == SIGRTMIN) {
@@ -574,18 +562,15 @@ index 2d5d311..feb970c 100644
 -#endif
          break;
 diff --git a/src/server/task_worker.cc b/src/server/task_worker.cc
-index e8c9b21..a87d464 100644
+index e8c9b21..df97183 100644
 --- a/src/server/task_worker.cc
 +++ b/src/server/task_worker.cc
-@@ -18,2 +18,7 @@
+@@ -18,2 +18,4 @@
  
-+#ifndef SWOOLE_RS_PROCESS
-+#error "Process overlay requires --enable-swoole-rs-process"
-+#endif
 +#include "swoole_rs_process.h"
 +
  namespace swoole {
-@@ -93,5 +98,7 @@ static int TaskWorker_onTask(ProcessPool *pool, Worker *worker, EventData *task)
+@@ -93,5 +95,7 @@ static int TaskWorker_onTask(ProcessPool *pool, Worker *worker, EventData *task)
      worker->set_status_to_busy();
 -    if (task->info.type == SW_SERVER_EVENT_PIPE_MESSAGE) {
 +    const auto action = swr_v1_process_task_action(task->info.type == SW_SERVER_EVENT_PIPE_MESSAGE,
@@ -595,12 +580,12 @@ index e8c9b21..a87d464 100644
 -    } else if (task->info.type == SW_SERVER_EVENT_SHUTDOWN) {
 +    } else if (action == 2) {
          worker->shutdown();
-@@ -101,3 +108,3 @@ static int TaskWorker_onTask(ProcessPool *pool, Worker *worker, EventData *task)
+@@ -101,3 +105,3 @@ static int TaskWorker_onTask(ProcessPool *pool, Worker *worker, EventData *task)
          return SW_OK;
 -    } else if (task->info.type == SW_SERVER_EVENT_COMMAND_REQUEST) {
 +    } else if (action == 3) {
          ret = TaskWorker_call_command_handler(pool, worker, task);
-@@ -134,15 +141,8 @@ bool Server::task_pack(EventData *task, const void *_data, size_t _length) {
+@@ -134,15 +138,8 @@ bool Server::task_pack(EventData *task, const void *_data, size_t _length) {
  
 -    if (_length < SW_IPC_MAX_SIZE - sizeof(task->info)) {
 -        memcpy(task->data, _data, _length);
@@ -622,7 +607,7 @@ index e8c9b21..a87d464 100644
 +                                                 SwooleG.task_tmpfile.c_str());
 +    if (!packed.ok) {
          swoole_warning("write to tmpfile failed");
-@@ -150,9 +150,6 @@ bool Server::task_pack(EventData *task, const void *_data, size_t _length) {
+@@ -150,9 +147,6 @@ bool Server::task_pack(EventData *task, const void *_data, size_t _length) {
      }
 -
 -    task->info.len = sizeof(pkg);
@@ -636,7 +621,7 @@ index e8c9b21..a87d464 100644
 +        task->info.ext_flags |= SW_TASK_TMPFILE;
 +    }
      return true;
-@@ -319,7 +316,2 @@ bool Server::task_unpack(EventData *task, String *buffer, PacketPtr *packet) {
+@@ -319,7 +313,2 @@ bool Server::task_unpack(EventData *task, String *buffer, PacketPtr *packet) {
  
 -    File fp(_pkg.tmpfile, O_RDONLY);
 -    if (!fp.ready()) {
@@ -644,7 +629,7 @@ index e8c9b21..a87d464 100644
 -        return false;
 -    }
      if (buffer->size < _pkg.length) {
-@@ -327,8 +319,15 @@ bool Server::task_unpack(EventData *task, String *buffer, PacketPtr *packet) {
+@@ -327,8 +316,15 @@ bool Server::task_unpack(EventData *task, String *buffer, PacketPtr *packet) {
      }
 -    if (fp.read_all(buffer->str, _pkg.length) != _pkg.length) {
 +    const auto read = swr_v1_process_task_file_read(
@@ -664,7 +649,7 @@ index e8c9b21..a87d464 100644
 -        unlink(_pkg.tmpfile);
 -    }
      buffer->length = _pkg.length;
-@@ -442,3 +441,6 @@ bool Server::finish(const char *data, size_t data_len, int flags, const EventDat
+@@ -442,3 +438,6 @@ bool Server::finish(const char *data, size_t data_len, int flags, const EventDat
      }
 -    if (current_task->info.type == SW_SERVER_EVENT_PIPE_MESSAGE) {
 +    const bool pipe_message = current_task->info.type == SW_SERVER_EVENT_PIPE_MESSAGE;
@@ -672,12 +657,12 @@ index e8c9b21..a87d464 100644
 +        !pipe_message && (current_task->info.ext_flags & SW_TASK_NOREPLY));
 +    if (finish_error == 1) {
          swoole_warning("Server::task()/Server::finish() is not supported in onPipeMessage callback");
-@@ -446,3 +448,3 @@ bool Server::finish(const char *data, size_t data_len, int flags, const EventDat
+@@ -446,3 +445,3 @@ bool Server::finish(const char *data, size_t data_len, int flags, const EventDat
      }
 -    if (current_task->info.ext_flags & SW_TASK_NOREPLY) {
 +    if (finish_error == 2) {
          swoole_warning("Server::finish() can only be used in the worker process");
-@@ -469,7 +471,6 @@ bool Server::finish(const char *data, size_t data_len, int flags, const EventDat
+@@ -469,7 +468,6 @@ bool Server::finish(const char *data, size_t data_len, int flags, const EventDat
          // callback function
 -        if (current_task->info.ext_flags & SW_TASK_CALLBACK) {
 -            flags |= SW_TASK_CALLBACK;
@@ -690,30 +675,27 @@ index e8c9b21..a87d464 100644
 +            SW_TASK_CALLBACK, SW_TASK_COROUTINE);
          buf.info.ext_flags |= flags;
 diff --git a/src/server/worker.cc b/src/server/worker.cc
-index b4624c6..8f824d9 100644
+index b4624c6..6adb8bb 100644
 --- a/src/server/worker.cc
 +++ b/src/server/worker.cc
-@@ -20,2 +20,7 @@
+@@ -20,2 +20,4 @@
  #include "swoole_server.h"
 +
-+#ifndef SWOOLE_RS_PROCESS
-+#error "Process overlay requires --enable-swoole-rs-process"
-+#endif
 +#include "swoole_rs_process.h"
  #include "swoole_memory.h"
-@@ -56,4 +61,4 @@ void Server::worker_signal_handler(int signo) {
+@@ -56,4 +58,4 @@ void Server::worker_signal_handler(int signo) {
      }
 -    switch (signo) {
 -    case SIGTERM:
 +    switch (swr_v1_process_worker_signal_action(signo)) {
 +    case 1:
          if (swoole_event_is_available()) {
-@@ -64,3 +69,3 @@ void Server::worker_signal_handler(int signo) {
+@@ -64,3 +66,3 @@ void Server::worker_signal_handler(int signo) {
          break;
 -    case SIGWINCH:
 +    case 2:
          Worker_reopen_logger();
-@@ -68,7 +73,2 @@ void Server::worker_signal_handler(int signo) {
+@@ -68,7 +70,2 @@ void Server::worker_signal_handler(int signo) {
      default:
 -#ifdef SIGRTMIN
 -        if (signo == SIGRTMIN) {
@@ -721,7 +703,7 @@ index b4624c6..8f824d9 100644
 -        }
 -#endif
          break;
-@@ -78,15 +78,7 @@ void Server::worker_signal_handler(int signo) {
+@@ -78,15 +75,7 @@ void Server::worker_signal_handler(int signo) {
  static sw_inline bool Worker_discard_data(const Server *serv, const Connection *conn, const DataHead *info) {
 -    if (conn == nullptr) {
 -        if (serv->disable_notify && !serv->discard_timeout_request) {
@@ -741,18 +723,14 @@ index b4624c6..8f824d9 100644
      }
 -_discard_data:
      swoole_error_log(SW_LOG_WARNING,
-@@ -243,44 +235,12 @@ void Server::worker_stop_callback(Worker *worker) {
+@@ -243,44 +232,12 @@ void Server::worker_stop_callback(Worker *worker) {
  static void Worker_set_cpu_affinity(const Server *serv, const Worker *worker) {
 -    cpu_set_t available;
 -    CPU_ZERO(&available);
 -    if (swoole_get_cpu_affinity(&available) < 0) {
 -        swoole_sys_warning("get CPU affinity for worker#%d failed", worker->id);
 -        return;
-+    const auto outcome = swr_v1_process_worker_affinity(
-+        worker->id, serv->cpu_affinity_available, serv->cpu_affinity_available_num, serv->is_thread_mode());
-+    if (outcome.error != 0) {
-+        errno = outcome.error;
-     }
+-    }
 -    if (serv->cpu_affinity_available) {
 -        cpu_set_t filtered;
 -        CPU_ZERO(&filtered);
@@ -767,7 +745,11 @@ index b4624c6..8f824d9 100644
 -    int count = 0;
 -    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
 -        count += CPU_ISSET(cpu, &available) ? 1 : 0;
--    }
++    const auto outcome = swr_v1_process_worker_affinity(
++        worker->id, serv->cpu_affinity_available, serv->cpu_affinity_available_num, serv->is_thread_mode());
++    if (outcome.error != 0) {
++        errno = outcome.error;
+     }
 -    if (count == 0) {
 +    if (outcome.status == 1) {
 +        swoole_sys_warning("get CPU affinity for worker#%d failed", worker->id);
@@ -794,7 +776,7 @@ index b4624c6..8f824d9 100644
 -        errno = error;
 +    } else if (outcome.status == 3) {
          swoole_sys_warning("set CPU affinity for worker#%d failed", worker->id);
-@@ -484,12 +444,14 @@ static void Worker_reactor_try_to_exit(Reactor *reactor) {
+@@ -484,12 +441,14 @@ static void Worker_reactor_try_to_exit(Reactor *reactor) {
      while (true) {
 -        if (reactor->if_exit()) {
 +        const bool can_exit = reactor->if_exit();
@@ -816,7 +798,7 @@ index b4624c6..8f824d9 100644
 +            const auto budget = swr_v1_process_exit_budget(remaining_time, remaining_time > 0 ? reactor->timeout_msec : 0);
 +            if (budget.timed_out) {
                  swoole_error_log(
-@@ -497,7 +459,4 @@ static void Worker_reactor_try_to_exit(Reactor *reactor) {
+@@ -497,7 +456,4 @@ static void Worker_reactor_try_to_exit(Reactor *reactor) {
                  reactor->running = false;
 -            } else {
 -                int timeout_msec = remaining_time * 1000;

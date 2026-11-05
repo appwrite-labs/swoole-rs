@@ -109,19 +109,15 @@ def main():
                 if variant == 'rust':
                     guard = tree / 'guard.cc'
                     guard.write_text('#include "swoole_heap.h"\n')
-                    rejected = run_isolated(compiler + ['-std=c++17', '-I' + str(hybrid / 'include'), '-fsyntax-only', str(guard)], cwd=ROOT, timeout=15)
-                    report['feature_guard'] = {'exit_code': rejected.returncode, 'stderr': rejected.stderr}
-                    if rejected.returncode == 0 or 'Memory overlay requires --enable-swoole-rs-memory' not in rejected.stderr:
-                        raise ValueError('Selected overlay did not reject disabled memory feature')
                     configured = tree / 'configured-memory'
                     configured.mkdir()
-                    (configured / 'config.h').write_text('#define SWOOLE_RS_MEMORY 1\n')
+                    (configured / 'config.h').write_text('')
                     command = compiler + ['-std=c++17', '-DHAVE_CONFIG_H', '-I' + str(configured),
                         *(flag for flag in hybrid_flags if flag.startswith('-I')), '-fsyntax-only', str(guard)]
                     accepted = run_isolated(command, cwd=ROOT, timeout=15)
                     report['configured_feature_guard'] = {'command': command, 'exit_code': accepted.returncode, 'stderr': accepted.stderr}
                     if accepted.returncode:
-                        raise ValueError('Heap header failed when memory feature is supplied only by config.h')
+                        raise ValueError('Heap header failed to compile against config.h')
                 binary = tree / ('probe.so' if linux else 'probe.dylib')
                 command = compiler + ['-std=c++17', '-O2', '-g', '-fvisibility=hidden', *headers]
                 command += shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))

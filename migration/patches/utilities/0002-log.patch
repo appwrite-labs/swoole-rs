@@ -1,5 +1,5 @@
 diff --git a/src/core/log.cc b/src/core/log.cc
-index 122677067..965dcc65d 100644
+index 1226770..0394132 100644
 --- a/src/core/log.cc
 +++ b/src/core/log.cc
 @@ -19,2 +19,5 @@
@@ -8,7 +8,7 @@ index 122677067..965dcc65d 100644
 +#include <memory>
 +#include <stdexcept>
  #include <fcntl.h>
-@@ -24,67 +27,76 @@
+@@ -24,67 +27,73 @@
  
 -namespace swoole {
 -
@@ -18,9 +18,6 @@ index 122677067..965dcc65d 100644
 -        return "";
 -    }
 +#include "swoole_rs_utilities.h"
-+#ifndef SWOOLE_RS_UTILITIES
-+#error "Utilities overlay requires --enable-swoole-rs-utilities"
-+#endif
  
 -    const size_t begin = pretty_function.substr(0, brackets).rfind(' ') + 1;
 -    const size_t end = brackets - begin;
@@ -140,13 +137,13 @@ index 122677067..965dcc65d 100644
 +        default: return false;
 +        }
      }
-@@ -93,3 +105,4 @@ bool Logger::open(const char *_log_file) {
+@@ -93,3 +102,4 @@ bool Logger::open(const char *_log_file) {
  void Logger::set_stream(FILE *stream) {
 -    if (opened) {
 +    uint32_t phase = 0;
 +    if (swr_v1_utils_log_state_config_step(state, &phase, 2, 0) == SWR_UTILS_LOG_CONFIG_CLOSE) {
          close();
-@@ -100,7 +113,7 @@ void Logger::set_stream(FILE *stream) {
+@@ -100,7 +110,7 @@ void Logger::set_stream(FILE *stream) {
  void Logger::close() {
 -    if (opened) {
 +    uint32_t phase = 0;
@@ -157,12 +154,12 @@ index 122677067..965dcc65d 100644
 -        opened = false;
 +        swr_v1_utils_log_state_clear(state, 0);
      }
-@@ -109,3 +122,3 @@ void Logger::close() {
+@@ -109,3 +119,3 @@ void Logger::close() {
  int Logger::get_level() const {
 -    return log_level;
 +    return swr_v1_utils_log_state_scalar_get(state, SWR_UTILS_STATE_LEVEL);
  }
-@@ -113,9 +126,3 @@ int Logger::get_level() const {
+@@ -113,9 +123,3 @@ int Logger::get_level() const {
  void Logger::set_level(int level) {
 -    if (level < SW_LOG_DEBUG) {
 -        level = SW_LOG_DEBUG;
@@ -173,12 +170,12 @@ index 122677067..965dcc65d 100644
 -    log_level = level;
 +    swr_v1_utils_log_state_scalar_set(state, SWR_UTILS_STATE_LEVEL, level);
  }
-@@ -123,3 +130,3 @@ void Logger::set_level(int level) {
+@@ -123,3 +127,3 @@ void Logger::set_level(int level) {
  void Logger::set_rotation(int _rotation) {
 -    log_rotation = _rotation;
 +    swr_v1_utils_log_state_scalar_set(state, SWR_UTILS_STATE_ROTATION, _rotation);
  }
-@@ -127,40 +134,30 @@ void Logger::set_rotation(int _rotation) {
+@@ -127,40 +131,30 @@ void Logger::set_rotation(int _rotation) {
  bool Logger::redirect_stdout_and_stderr(bool enable) {
 -    if (enable) {
 -        if (!opened) {
@@ -245,7 +242,7 @@ index 122677067..965dcc65d 100644
 -
 -    return true;
  }
-@@ -168,6 +165,3 @@ bool Logger::redirect_stdout_and_stderr(bool enable) {
+@@ -168,6 +162,3 @@ bool Logger::redirect_stdout_and_stderr(bool enable) {
  void Logger::reset() {
 -    date_format = SW_LOG_DEFAULT_DATE_FORMAT;
 -    date_with_microseconds = false;
@@ -253,7 +250,7 @@ index 122677067..965dcc65d 100644
 -    log_level = SW_LOG_INFO;
 +    swr_v1_utils_log_state_reset(state);
  }
-@@ -175,18 +169,23 @@ void Logger::reset() {
+@@ -175,18 +166,23 @@ void Logger::reset() {
  bool Logger::set_date_format(const char *format) {
 -    char date_str[SW_LOG_DATE_STRLEN];
 -    time_t now_sec;
@@ -293,12 +290,12 @@ index 122677067..965dcc65d 100644
 +        default: return false;
 +        }
      }
-@@ -195,3 +194,3 @@ bool Logger::set_date_format(const char *format) {
+@@ -195,3 +191,3 @@ bool Logger::set_date_format(const char *format) {
  void Logger::set_date_with_microseconds(bool enable) {
 -    date_with_microseconds = enable;
 +    swr_v1_utils_log_state_scalar_set(state, SWR_UTILS_STATE_MICROS, enable);
  }
-@@ -199,11 +198,17 @@ void Logger::set_date_with_microseconds(bool enable) {
+@@ -199,11 +195,17 @@ void Logger::set_date_with_microseconds(bool enable) {
  void Logger::reopen_without_lock() {
 -    if (!opened) {
 -        return;
@@ -325,12 +322,12 @@ index 122677067..965dcc65d 100644
 +        default: return;
 +        }
      }
-@@ -217,3 +222,3 @@ void Logger::reopen() {
+@@ -217,3 +219,3 @@ void Logger::reopen() {
  const char *Logger::get_real_file() {
 -    return log_real_file.c_str();
 +    return swr_v1_utils_log_state_text_get(state, SWR_UTILS_STATE_REAL_FILE);
  }
-@@ -221,30 +226,26 @@ const char *Logger::get_real_file() {
+@@ -221,30 +223,26 @@ const char *Logger::get_real_file() {
  const char *Logger::get_file() const {
 -    return log_file.c_str();
 +    return swr_v1_utils_log_state_text_get(state, SWR_UTILS_STATE_FILE);
@@ -378,12 +375,12 @@ index 122677067..965dcc65d 100644
 +    const char *bytes = swr_v1_utils_log_path_get(path.get(), &length);
 +    return std::string(bytes, length);
  }
-@@ -252,3 +253,3 @@ std::string Logger::gen_real_file(const std::string &file) const {
+@@ -252,3 +250,3 @@ std::string Logger::gen_real_file(const std::string &file) const {
  bool Logger::is_opened() const {
 -    return opened;
 +    return swr_v1_utils_log_state_scalar_get(state, SWR_UTILS_STATE_OPENED);
  }
-@@ -256,87 +257,75 @@ bool Logger::is_opened() const {
+@@ -256,87 +254,75 @@ bool Logger::is_opened() const {
  void Logger::put(int level, const char *content, size_t length) {
 -    const char *level_str;
      char date_str[SW_LOG_DATE_STRLEN];

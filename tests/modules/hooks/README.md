@@ -37,8 +37,7 @@ and kernel IO are faked; these are policy/order checks, not runtime proof.
 
 `compile_gate.py` compiles all eight original and patched translation units as
 C++14: the pinned ones, then the pin with every file the hybrid build patched
-(`overlay_hybrid_tree`) under that build's `config.h`. It checks that each overlay refuses to
-compile when `config.h` does not define `SWOOLE_RS_HOOKS`. io_uring units are
+(`overlay_hybrid_tree`) under that build's `config.h`. io_uring units are
 reported UNSUPPORTED when the config does not enable `SW_USE_IOURING`.
 
 ## Original tests
@@ -77,8 +76,7 @@ under ASan/UBSan. Neither a PHPT nor the Rust unit tests reach that C++ glue.
 
 - `hooks-ordered`, `hooks-async-policy`, `hooks-packet-policy`: the three
   fault/order matrices above.
-- `hooks-compile`: the only C++14 build of the eight patched units, and the
-  `SWOOLE_RS_HOOKS` refusal check.
+- `hooks-compile`: the only C++14 build of the eight patched units.
 
 A body these gates slice may move into Rust: the PR that moves it ports the
 gate's cases for it into a `crates/hooks` test and drops the body from the gate.

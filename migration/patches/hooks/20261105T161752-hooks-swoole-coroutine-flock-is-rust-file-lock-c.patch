@@ -1,9 +1,9 @@
 diff --git a/src/coroutine/file_lock.cc b/src/coroutine/file_lock.cc
 deleted file mode 100644
-index 58ab349..0000000
+index 8fbddf6..0000000
 --- a/src/coroutine/file_lock.cc
 +++ /dev/null
-@@ -1,44 +0,0 @@
+@@ -1,41 +0,0 @@
 -/*
 -  +----------------------------------------------------------------------+
 -  | Swoole                                                               |
@@ -23,9 +23,6 @@ index 58ab349..0000000
 -#include <sys/file.h>
 -
 -#include "swoole_coroutine.h"
--#ifndef SWOOLE_RS_HOOKS
--#error "Hooks overlay requires --enable-swoole-rs-hooks"
--#endif
 -#include "swoole_rs_hooks.h"
 -
 -#include "swoole_coroutine_api.h"
@@ -49,10 +46,10 @@ index 58ab349..0000000
 -    return outcome.result;
 -}
 diff --git a/src/coroutine/hook.cc b/src/coroutine/hook.cc
-index 6fdcd9f..7d830ab 100644
+index 39c4bbe..69bcc5a 100644
 --- a/src/coroutine/hook.cc
 +++ b/src/coroutine/hook.cc
-@@ -76,2 +76,3 @@ static const swr_v1_hook_host hook_host = {
+@@ -73,2 +73,3 @@ static const swr_v1_hook_host hook_host = {
  #endif
 +    swoole_set_last_error,
  };

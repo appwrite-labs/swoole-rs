@@ -1,30 +1,27 @@
 diff --git a/include/swoole_async.h b/include/swoole_async.h
-index 8f0a9eb..8d74b62 100644
+index 945a689..a926abe 100644
 --- a/include/swoole_async.h
 +++ b/include/swoole_async.h
-@@ -24,2 +24,4 @@
+@@ -26,2 +26,4 @@
  
 +struct swr_v1_os_pool;
 +
  #ifndef O_DIRECT
-@@ -94,3 +96,3 @@ class AsyncThreads {
+@@ -114,3 +116,3 @@ class AsyncThreads {
      UnixSocket *pipe = nullptr;
 -    std::shared_ptr<async::ThreadPool> pool;
 +    const swr_v1_os_pool *pool = nullptr;
      network::Socket *read_socket = nullptr;
 diff --git a/src/os/async_thread.cc b/src/os/async_thread.cc
-index 096c5f5..db3b6de 100644
+index 096c5f5..75d78fc 100644
 --- a/src/os/async_thread.cc
 +++ b/src/os/async_thread.cc
-@@ -17,2 +17,7 @@
+@@ -17,2 +17,4 @@
  #include "swoole_socket.h"
 +
-+#ifndef SWOOLE_RS_OSSUPPORT
-+#error "OS support overlay requires --enable-swoole-rs-ossupport"
-+#endif
 +#include "swoole_rs_ossupport.h"
  #include "swoole_reactor.h"
-@@ -21,15 +26,2 @@
+@@ -21,15 +23,2 @@
  #include "swoole_util.h"
 -#include "swoole_thread.h"
 -
@@ -40,7 +37,7 @@ index 096c5f5..db3b6de 100644
 -static std::mutex async_thread_lock;
 -static std::shared_ptr<swoole::async::ThreadPool> async_thread_pool;
  
-@@ -42,269 +34,54 @@ namespace async {
+@@ -42,269 +31,54 @@ namespace async {
  //-------------------------------------------------------------------------------
 -class EventQueue {
 -  public:
@@ -354,7 +351,7 @@ index 096c5f5..db3b6de 100644
 -    }
 +static void thread_clean() {
      swoole_thread_clean(false);
-@@ -312,10 +89,4 @@ void ThreadPool::main_func(const bool is_core_worker) {
+@@ -312,10 +86,4 @@ void ThreadPool::main_func(const bool is_core_worker) {
  
 -void ThreadPool::create_thread(const bool is_core_worker) {
 -    try {
@@ -367,7 +364,7 @@ index 096c5f5..db3b6de 100644
 +static void spawn_failed() {
 +    swoole_sys_notice("create aio thread failed, please check your system configuration or adjust aio_worker_num");
  }
-@@ -326,6 +97,8 @@ AsyncEvent *dispatch(const AsyncEvent *request) {
+@@ -326,6 +94,8 @@ AsyncEvent *dispatch(const AsyncEvent *request) {
      }
 -    AsyncEvent *event = SwooleTG.async_threads->pool->dispatch(request);
 -    if (sw_likely(event)) {
@@ -380,7 +377,7 @@ index 096c5f5..db3b6de 100644
 +    swr_v1_os_pool_dispatch(SwooleTG.async_threads->pool, reinterpret_cast<uintptr_t>(event));
 +    SwooleTG.async_threads->task_num++;
      return event;
-@@ -336,6 +109,14 @@ AsyncEvent *dispatch(const AsyncEvent *request) {
+@@ -336,6 +106,14 @@ AsyncEvent *dispatch(const AsyncEvent *request) {
  
 +static void complete(uintptr_t token) {
 +    auto *_event = reinterpret_cast<AsyncEvent *>(token);
@@ -398,7 +395,7 @@ index 096c5f5..db3b6de 100644
 +    static_assert(SW_AIO_EVENT_NUM == 128, "the Rust completion read takes 128 tokens");
 +    if (swr_v1_os_pool_complete(event->socket->fd, complete) < 0) {
          swoole_sys_warning("read() aio events failed");
-@@ -343,11 +124,2 @@ int AsyncThreads::callback(Reactor *reactor, Event *event) {
+@@ -343,11 +121,2 @@ int AsyncThreads::callback(Reactor *reactor, Event *event) {
      }
 -    for (size_t i = 0; i < n / sizeof(AsyncEvent *); i++) {
 -        AsyncEvent *_event = events[i];
@@ -410,24 +407,24 @@ index 096c5f5..db3b6de 100644
 -    }
 -
      return SW_OK;
-@@ -356,3 +128,3 @@ int AsyncThreads::callback(Reactor *reactor, Event *event) {
+@@ -356,3 +125,3 @@ int AsyncThreads::callback(Reactor *reactor, Event *event) {
  size_t AsyncThreads::get_worker_num() const {
 -    return pool ? pool->get_worker_num() : 0;
 +    return swr_v1_os_pool_worker_num(pool);
  }
-@@ -360,3 +132,3 @@ size_t AsyncThreads::get_worker_num() const {
+@@ -360,3 +129,3 @@ size_t AsyncThreads::get_worker_num() const {
  size_t AsyncThreads::get_queue_size() const {
 -    return pool ? pool->get_queue_size() : 0;
 +    return swr_v1_os_pool_queue_size(pool);
  }
-@@ -364,5 +136,3 @@ size_t AsyncThreads::get_queue_size() const {
+@@ -364,5 +133,3 @@ size_t AsyncThreads::get_queue_size() const {
  void AsyncThreads::notify_one() const {
 -    if (pool) {
 -        pool->notify_one();
 -    }
 +    swr_v1_os_pool_notify_one(pool);
  }
-@@ -406,12 +176,10 @@ AsyncThreads::AsyncThreads() {
+@@ -406,12 +173,10 @@ AsyncThreads::AsyncThreads() {
  
 -    async_thread_lock.lock();
 -    if (!async_thread_pool) {
@@ -448,7 +445,7 @@ index 096c5f5..db3b6de 100644
 +                                  SwooleG.aio_max_wait_time,
 +                                  SwooleG.aio_max_idle_time);
  
-@@ -422,12 +190,5 @@ AsyncThreads::AsyncThreads() {
+@@ -422,12 +187,5 @@ AsyncThreads::AsyncThreads() {
  AsyncThreads::~AsyncThreads() {
 -    pool.reset();
 -    async_thread_lock.lock();
@@ -465,18 +462,15 @@ index 096c5f5..db3b6de 100644
 +    pool = nullptr;
      pipe->close();
 diff --git a/src/os/base.cc b/src/os/base.cc
-index d9907a0..3b8ec7d 100644
+index b56260b..4863251 100644
 --- a/src/os/base.cc
 +++ b/src/os/base.cc
-@@ -19,2 +19,7 @@
+@@ -19,2 +19,4 @@
  #include "swoole_socket.h"
 +
-+#ifndef SWOOLE_RS_OSSUPPORT
-+#error "OS support overlay requires --enable-swoole-rs-ossupport"
-+#endif
 +#include "swoole_rs_ossupport.h"
  #include "swoole_async.h"
-@@ -23,21 +28,2 @@
+@@ -23,21 +25,2 @@
  
 -#include <pwd.h>
 -#include <grp.h>
@@ -498,7 +492,7 @@ index d9907a0..3b8ec7d 100644
 -#endif
 -
  #include <thread>
-@@ -47,26 +33,15 @@
+@@ -47,26 +30,15 @@
  int swoole_daemon(int nochdir, int noclose) {
 -    pid_t pid;
 -
@@ -534,7 +528,7 @@ index d9907a0..3b8ec7d 100644
 -    pid = swoole_fork(SW_FORK_DAEMON);
 +    pid_t pid = swoole_fork(SW_FORK_DAEMON);
      if (pid < 0) {
-@@ -106,74 +81,4 @@ int swoole_daemon(int nochdir, int noclose) {
+@@ -106,74 +78,4 @@ int swoole_daemon(int nochdir, int noclose) {
  
 -#ifdef HAVE_GETRANDOM
 -#include <sys/random.h>
@@ -610,7 +604,7 @@ index d9907a0..3b8ec7d 100644
 -    return read_bytes;
 +    return swr_v1_os_random_bytes(buf, size);
  }
-@@ -181,3 +86,33 @@ size_t swoole_random_bytes(char *buf, size_t size) {
+@@ -181,3 +83,33 @@ size_t swoole_random_bytes(char *buf, size_t size) {
  bool swoole_is_root_user() {
 -    return geteuid() == 0;
 +    return swr_v1_os_is_root_user();
@@ -645,7 +639,7 @@ index d9907a0..3b8ec7d 100644
 +        break;
 +    }
  }
-@@ -185,36 +120,4 @@ bool swoole_is_root_user() {
+@@ -185,36 +117,4 @@ bool swoole_is_root_user() {
  void swoole_set_isolation(const std::string &group_, const std::string &user_, const std::string &chroot_) {
 -    group *_group = nullptr;
 -    passwd *_passwd = nullptr;
@@ -684,7 +678,7 @@ index d9907a0..3b8ec7d 100644
 +    Isolation isolation{group_, user_, chroot_};
 +    swr_v1_os_set_isolation(group_.c_str(), user_.c_str(), chroot_.c_str(), isolation_warning, &isolation);
  }
-@@ -222,9 +125,6 @@ void swoole_set_isolation(const std::string &group_, const std::string &user_, c
+@@ -222,9 +122,6 @@ void swoole_set_isolation(const std::string &group_, const std::string &user_, c
  void swoole_set_process_death_signal(int signal) {
 -#if defined(__linux__)
 -    prctl(PR_SET_PDEATHSIG, signal);
@@ -696,7 +690,7 @@ index d9907a0..3b8ec7d 100644
  #endif
 +    swr_v1_os_set_process_death_signal(signal);
  }
-@@ -233,7 +133,3 @@ void swoole_set_process_death_signal(int signal) {
+@@ -233,7 +130,3 @@ void swoole_set_process_death_signal(int signal) {
  int swoole_set_cpu_affinity(cpu_set_t *set) {
 -#ifdef __FreeBSD__
 -    return cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, sizeof(*set), set);
@@ -705,7 +699,7 @@ index d9907a0..3b8ec7d 100644
 -#endif
 +    return swr_v1_os_set_cpu_affinity(set);
  }
-@@ -241,7 +137,3 @@ int swoole_set_cpu_affinity(cpu_set_t *set) {
+@@ -241,7 +134,3 @@ int swoole_set_cpu_affinity(cpu_set_t *set) {
  int swoole_get_cpu_affinity(cpu_set_t *set) {
 -#ifdef __FreeBSD__
 -    return cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, sizeof(*set), set);
@@ -714,7 +708,7 @@ index d9907a0..3b8ec7d 100644
 -#endif
 +    return swr_v1_os_get_cpu_affinity(set);
  }
-@@ -249,34 +141,4 @@ int swoole_get_cpu_affinity(cpu_set_t *set) {
+@@ -249,34 +138,4 @@ int swoole_get_cpu_affinity(cpu_set_t *set) {
  
 -#if defined(__linux__)
 -#include <sys/syscall.h> /* syscall(SYS_gettid) */
@@ -750,7 +744,7 @@ index d9907a0..3b8ec7d 100644
 -    return native_id;
 +    return swr_v1_os_thread_native_id();
  }
-@@ -293,7 +155,3 @@ static bool check_pthread_return_value(int rc) {
+@@ -293,7 +152,3 @@ static bool check_pthread_return_value(int rc) {
  bool swoole_thread_set_name(const char *name) {
 -#if defined(__APPLE__)
 -    return check_pthread_return_value(pthread_setname_np(name));
@@ -759,31 +753,29 @@ index d9907a0..3b8ec7d 100644
 -#endif
 +    return check_pthread_return_value(swr_v1_os_thread_set_name(name));
  }
-@@ -301,3 +159,3 @@ bool swoole_thread_set_name(const char *name) {
+@@ -301,3 +156,3 @@ bool swoole_thread_set_name(const char *name) {
  bool swoole_thread_get_name(char *buf, size_t len) {
 -    return check_pthread_return_value(pthread_getname_np(pthread_self(), buf, len));
 +    return check_pthread_return_value(swr_v1_os_thread_get_name(buf, len));
  }
 diff --git a/src/os/file.cc b/src/os/file.cc
-index 56e78fc..537b865 100644
+index 56e78fc..91df141 100644
 --- a/src/os/file.cc
 +++ b/src/os/file.cc
-@@ -18,9 +18,9 @@
+@@ -18,9 +18,6 @@
  
 -int swoole_tmpfile(char *filename) {
 -#if defined(HAVE_MKOSTEMP) && defined(HAVE_EPOLL)
 -    int tmp_fd = mkostemp(filename, O_WRONLY | O_CREAT);
 -#else
 -    int tmp_fd = mkstemp(filename);
-+#ifndef SWOOLE_RS_OSSUPPORT
-+#error "OS support overlay requires --enable-swoole-rs-ossupport"
- #endif
+-#endif
 +#include "swoole_rs_ossupport.h"
  
 +int swoole_tmpfile(char *filename) {
 +    int tmp_fd = swr_v1_os_tmpfile(filename);
      if (tmp_fd < 0) {
-@@ -41,8 +41,7 @@ ssize_t file_get_size(FILE *fp) {
+@@ -41,8 +38,7 @@ ssize_t file_get_size(FILE *fp) {
  ssize_t file_get_size(const std::string &filename) {
 -    File file(filename, File::READ);
 -    if (!file.ready()) {
@@ -796,7 +788,7 @@ index 56e78fc..537b865 100644
 -    return file.get_size();
 +    return size.size;
  }
-@@ -50,12 +49,7 @@ ssize_t file_get_size(const std::string &filename) {
+@@ -50,12 +46,7 @@ ssize_t file_get_size(const std::string &filename) {
  ssize_t file_get_size(int fd) {
 -    FileStatus file_stat;
 -    if (fstat(fd, &file_stat) < 0) {
@@ -813,7 +805,7 @@ index 56e78fc..537b865 100644
 -    return file_stat.st_size;
 +    return size.size;
  }
-@@ -63,15 +57,16 @@ ssize_t file_get_size(int fd) {
+@@ -63,15 +54,16 @@ ssize_t file_get_size(int fd) {
  std::shared_ptr<String> file_get_contents(const std::string &filename) {
 -    File fp(filename, O_RDONLY);
 -    if (!fp.ready()) {
@@ -838,12 +830,12 @@ index 56e78fc..537b865 100644
 -    } else if (filesize > SwooleG.max_file_content) {
 +    default:
          swoole_error_log(SW_LOG_WARNING, SW_ERROR_FILE_TOO_LARGE, "file[%s] is too large", filename.c_str());
-@@ -80,2 +75,4 @@ std::shared_ptr<String> file_get_contents(const std::string &filename) {
+@@ -80,2 +72,4 @@ std::shared_ptr<String> file_get_contents(const std::string &filename) {
  
 +    File fp(opened.fd, filename);
 +    ssize_t filesize = opened.size;
      std::shared_ptr<String> content = std::make_shared<String>(filesize + 1);
-@@ -99,7 +96,13 @@ File make_tmpfile() {
+@@ -99,7 +93,13 @@ File make_tmpfile() {
  bool file_put_contents(const std::string &filename, const char *content, size_t length) {
 -    if (length == 0) {
 +    const auto opened = swr_v1_os_file_put_open(filename.c_str(), length, SwooleG.max_file_content);
@@ -860,7 +852,7 @@ index 56e78fc..537b865 100644
 -    if (length > SwooleG.max_file_content) {
 +    default:
          swoole_error_log(SW_LOG_WARNING, SW_ERROR_FILE_TOO_LARGE, "content is too large");
-@@ -107,8 +110,2 @@ bool file_put_contents(const std::string &filename, const char *content, size_t
+@@ -107,8 +107,2 @@ bool file_put_contents(const std::string &filename, const char *content, size_t
      }
 -    File file(filename, O_WRONLY | O_TRUNC | O_CREAT, 0666);
 -    if (!file.ready()) {
@@ -869,7 +861,7 @@ index 56e78fc..537b865 100644
 -    }
 -    return file.write_all(content, length);
  }
-@@ -130,10 +127,3 @@ File::File(const std::string &path, int oflags, int mode) {
+@@ -130,10 +124,3 @@ File::File(const std::string &path, int oflags, int mode) {
  bool File::open(const std::string &path, int oflags, int mode) {
 -    if (fd_ != -1) {
 -        ::close(fd_);
@@ -881,7 +873,7 @@ index 56e78fc..537b865 100644
 -    }
 +    fd_ = swr_v1_os_file_open(fd_, path.c_str(), oflags, mode);
      path_ = path;
-@@ -144,8 +134,5 @@ bool File::open(const std::string &path, int oflags, int mode) {
+@@ -144,8 +131,5 @@ bool File::open(const std::string &path, int oflags, int mode) {
  bool File::close() {
 -    if (fd_ == -1) {
 -        return false;
@@ -892,7 +884,7 @@ index 56e78fc..537b865 100644
 -    return ::close(tmp_fd) == 0;
 +    return swr_v1_os_file_close(fd);
  }
-@@ -166,34 +153,8 @@ File::~File() {
+@@ -166,34 +150,8 @@ File::~File() {
  
 -static swReturnCode catch_fs_error(const ssize_t rv, const int error) {
 -    if (rv == 0) {
@@ -931,7 +923,7 @@ index 56e78fc..537b865 100644
 -    return written_bytes;
 +    return io.done;
  }
-@@ -201,18 +162,7 @@ size_t File::write_all(const void *data, size_t len) const {
+@@ -201,18 +159,7 @@ size_t File::write_all(const void *data, size_t len) const {
  size_t File::read_all(void *buf, size_t len) const {
 -    size_t read_bytes = 0;
 -    while (read_bytes < len) {
@@ -954,7 +946,7 @@ index 56e78fc..537b865 100644
 -    return read_bytes;
 +    return io.done;
  }
-@@ -220,18 +170,3 @@ size_t File::read_all(void *buf, size_t len) const {
+@@ -220,18 +167,3 @@ size_t File::read_all(void *buf, size_t len) const {
  ssize_t File::read_line(void *_buf, size_t _n) const {
 -    char *buf = (char *) _buf;
 -    auto offset = get_offset();
@@ -975,23 +967,20 @@ index 56e78fc..537b865 100644
 +    return swr_v1_os_file_read_line(fd_, _buf, _n);
  }
 diff --git a/src/os/msg_queue.cc b/src/os/msg_queue.cc
-index 2ed0f01..e8773a6 100644
+index 2ed0f01..9687df8 100644
 --- a/src/os/msg_queue.cc
 +++ b/src/os/msg_queue.cc
-@@ -18,2 +18,7 @@
+@@ -18,2 +18,4 @@
  
-+#ifndef SWOOLE_RS_OSSUPPORT
-+#error "OS support overlay requires --enable-swoole-rs-ossupport"
-+#endif
 +#include "swoole_rs_ossupport.h"
 +
  namespace swoole {
-@@ -24,3 +29,3 @@ namespace swoole {
+@@ -24,3 +26,3 @@ namespace swoole {
  bool MsgQueue::destroy() {
 -    if (msgctl(msg_id_, IPC_RMID, nullptr) < 0) {
 +    if (!swr_v1_os_msg_remove(msg_id_)) {
          swoole_sys_warning("msgctl(%d, IPC_RMID) failed", msg_id_);
-@@ -33,7 +38,3 @@ bool MsgQueue::destroy() {
+@@ -33,7 +35,3 @@ bool MsgQueue::destroy() {
  void MsgQueue::set_blocking(const bool blocking) {
 -    if (blocking == 0) {
 -        flags_ = flags_ | IPC_NOWAIT;
@@ -1000,7 +989,7 @@ index 2ed0f01..e8773a6 100644
 -    }
 +    flags_ = swr_v1_os_msg_flags(flags_, blocking);
  }
-@@ -41,10 +42,8 @@ void MsgQueue::set_blocking(const bool blocking) {
+@@ -41,10 +39,8 @@ void MsgQueue::set_blocking(const bool blocking) {
  MsgQueue::MsgQueue(key_t msg_key, bool blocking, int perms) {
 -    if (perms <= 0 || perms >= 01000) {
 -        perms = 0666;
@@ -1014,7 +1003,7 @@ index 2ed0f01..e8773a6 100644
 -    msg_id_ = msgget(msg_key, IPC_CREAT | perms);
 +    msg_id_ = queue.id;
      if (msg_id_ < 0) {
-@@ -64,6 +63,6 @@ MsgQueue::~MsgQueue() {
+@@ -64,6 +60,6 @@ MsgQueue::~MsgQueue() {
  ssize_t MsgQueue::pop(QueueNode *data, size_t mdata_size) const {
 -    ssize_t ret = msgrcv(msg_id_, data, mdata_size, data->mtype, flags_);
 -    if (ret < 0) {
@@ -1024,12 +1013,12 @@ index 2ed0f01..e8773a6 100644
 -        if (errno != ENOMSG && errno != EINTR) {
 +        if (ret.warn) {
              swoole_sys_warning("msgrcv(%d, %zu, %ld) failed", msg_id_, mdata_size, data->mtype);
-@@ -71,3 +70,3 @@ ssize_t MsgQueue::pop(QueueNode *data, size_t mdata_size) const {
+@@ -71,3 +67,3 @@ ssize_t MsgQueue::pop(QueueNode *data, size_t mdata_size) const {
      }
 -    return ret;
 +    return ret.result;
  }
-@@ -75,15 +74,10 @@ ssize_t MsgQueue::pop(QueueNode *data, size_t mdata_size) const {
+@@ -75,15 +71,10 @@ ssize_t MsgQueue::pop(QueueNode *data, size_t mdata_size) const {
  bool MsgQueue::push(const QueueNode *in, size_t mdata_length) const {
 -    while (true) {
 -        if (msgsnd(msg_id_, in, mdata_length, flags_) == 0) {
@@ -1053,18 +1042,15 @@ index 2ed0f01..e8773a6 100644
 +    swoole_set_last_error(errno);
      return false;
 diff --git a/src/os/sendfile.cc b/src/os/sendfile.cc
-index 97be4e6..860245f 100644
+index 97be4e6..fa91816 100644
 --- a/src/os/sendfile.cc
 +++ b/src/os/sendfile.cc
-@@ -18,2 +18,7 @@
+@@ -18,2 +18,4 @@
  
-+#ifndef SWOOLE_RS_OSSUPPORT
-+#error "OS support overlay requires --enable-swoole-rs-ossupport"
-+#endif
 +#include "swoole_rs_ossupport.h"
 +
  #if defined(__linux__)
-@@ -25,67 +30,20 @@ ssize_t swoole_sendfile(int out_fd, int in_fd, off_t *offset, size_t size) {
+@@ -25,67 +27,20 @@ ssize_t swoole_sendfile(int out_fd, int in_fd, off_t *offset, size_t size) {
  #elif defined(HAVE_SENDFILE) && defined(HAVE_KQUEUE)
 -#include <sys/socket.h>
 -#include <sys/uio.h>

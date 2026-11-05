@@ -1,16 +1,18 @@
 diff --git a/ext-src/php_swoole_cxx.h b/ext-src/php_swoole_cxx.h
-index 9ad8bd3..df5afd9 100644
+index fa7c56c..1679ffc 100644
 --- a/ext-src/php_swoole_cxx.h
 +++ b/ext-src/php_swoole_cxx.h
-@@ -19,2 +19,5 @@
+@@ -19,2 +19,3 @@
  #include "php_swoole_private.h"
-+#ifdef SWOOLE_RS_PHPHELPERS
 +#include "swoole_rs_phphelpers.h"
-+#endif
  #include "php_swoole_coroutine.h"
-@@ -195,2 +198,14 @@ std::unordered_map<std::string, uint64_t> sw_socket_parse_tcp_info(tcp_info *inf
+@@ -191,7 +192,11 @@ std::unordered_map<std::string, uint64_t> sw_socket_parse_tcp_info(tcp_info *inf
  static inline bool php_swoole_async(bool blocking, const std::function<void(void)> &fn) {
-+#ifdef SWOOLE_RS_PHPHELPERS
+-    if (!blocking && swoole_coroutine_is_in()) {
+-        return swoole::coroutine::async(fn);
+-    } else {
+-        fn();
+-        return true;
 +    uint32_t phase = 0;
 +    bool observation = false;
 +    for (;;) {
@@ -20,45 +22,41 @@ index 9ad8bd3..df5afd9 100644
 +        case SWR_PHP_ASYNC_DIRECT: fn(); return true;
 +        default: return false;
 +        }
-+    }
-+#else
-     if (!blocking && swoole_coroutine_is_in()) {
-@@ -201,2 +216,3 @@ static inline bool php_swoole_async(bool blocking, const std::function<void(void
      }
-+#endif
- }
-@@ -229,2 +245,3 @@ class String {
+@@ -225,2 +230,3 @@ class String {
          }
 +    
      }
-@@ -244,2 +261,3 @@ class String {
+@@ -240,2 +246,3 @@ class String {
          return *this;
 +    
      }
-@@ -251,2 +269,3 @@ class String {
+@@ -247,2 +254,3 @@ class String {
          return *this;
 +    
      }
-@@ -260,2 +279,3 @@ class String {
+@@ -256,2 +264,3 @@ class String {
          return *this;
 +    
      }
-@@ -284,2 +304,3 @@ class String {
+@@ -280,2 +289,3 @@ class String {
          return sw_likely(len() > 0) ? sw_strndup(val(), len()) : nullptr;
 +    
      }
-@@ -288,2 +309,3 @@ class String {
+@@ -284,2 +294,3 @@ class String {
          return sw_likely(len() > 0) ? estrndup(val(), len()) : nullptr;
 +    
      }
-@@ -295,2 +317,3 @@ class String {
+@@ -291,2 +302,3 @@ class String {
          }
 +    
      }
-@@ -312,2 +335,20 @@ class KeyValue {
-     KeyValue(zend_ulong _index, zend_string *_key, zval *_zvalue) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        index = _index;
+@@ -309,6 +321,17 @@ class KeyValue {
+         index = _index;
+-        key = _key ? zend_string_copy(_key) : nullptr;
+-        ZVAL_DEREF(_zvalue);
+-        zvalue = *_zvalue;
+-        Z_TRY_ADDREF(zvalue);
 +        key = nullptr;
 +        ZVAL_UNDEF(&zvalue);
 +        uint32_t phase = 0;
@@ -74,17 +72,11 @@ index 9ad8bd3..df5afd9 100644
 +            default: return;
 +            }
 +        }
-+#else
-         index = _index;
-@@ -317,2 +358,4 @@ class KeyValue {
-         Z_TRY_ADDREF(zvalue);
-+    
-+#endif
      }
-@@ -320,2 +363,17 @@ class KeyValue {
-     void add_to(zval *zarray) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        HashTable *ht = Z_ARRVAL_P(zarray);
+@@ -317,4 +340,14 @@ class KeyValue {
+         HashTable *ht = Z_ARRVAL_P(zarray);
+-        zval *dest_elem = !key ? zend_hash_index_update(ht, index, &zvalue) : zend_hash_update(ht, key, &zvalue);
+-        Z_TRY_ADDREF_P(dest_elem);
 +        zval *dest_elem = nullptr;
 +        uint32_t phase = 0;
 +        bool key_present = false;
@@ -97,16 +89,11 @@ index 9ad8bd3..df5afd9 100644
 +            default: return;
 +            }
 +        }
-+#else
-         HashTable *ht = Z_ARRVAL_P(zarray);
-@@ -323,2 +381,4 @@ class KeyValue {
-         Z_TRY_ADDREF_P(dest_elem);
-+    
-+#endif
      }
-@@ -326,2 +386,14 @@ class KeyValue {
+@@ -322,6 +355,12 @@ class KeyValue {
      ~KeyValue() {
-+#ifdef SWOOLE_RS_PHPHELPERS
+-        if (key) {
+-            zend_string_release(key);
 +        uint32_t phase = 0;
 +        bool key_present = false;
 +        for (;;) {
@@ -116,17 +103,26 @@ index 9ad8bd3..df5afd9 100644
 +            case SWR_PHP_FACADE_DESTROY: zval_ptr_dtor(&zvalue); break;
 +            default: return;
 +            }
-+        }
-+#else
-         if (key) {
-@@ -330,2 +402,4 @@ class KeyValue {
-         zval_ptr_dtor(&zvalue);
-+    
-+#endif
+         }
+-        zval_ptr_dtor(&zvalue);
      }
-@@ -379,2 +453,21 @@ class ArrayIterator {
+@@ -375,19 +414,18 @@ class ArrayIterator {
      void skipUndefBucket() {
-+#ifdef SWOOLE_RS_PHPHELPERS
+-        while (_ptr != pe) {
+-            _val = &_ptr->val;
+-            if (_val && Z_TYPE_P(_val) == IS_INDIRECT) {
+-                _val = Z_INDIRECT_P(_val);
+-            }
+-            if (UNEXPECTED(Z_TYPE_P(_val) == IS_UNDEF)) {
+-                ++_ptr;
+-                continue;
+-            }
+-            if (_ptr->key) {
+-                _key = _ptr->key;
+-                _index = 0;
+-            } else {
+-                _index = _ptr->h;
+-                _key = nullptr;
 +        uint32_t phase = 0;
 +        bool observation = false;
 +        for (;;) {
@@ -142,66 +138,52 @@ index 9ad8bd3..df5afd9 100644
 +            case SWR_PHP_ITERATOR_PUBLISH_STRING: _key = _ptr->key; _index = 0; break;
 +            case SWR_PHP_ITERATOR_PUBLISH_INDEX: _index = _ptr->h; _key = nullptr; break;
 +            default: return;
-+            }
-+        }
-+#else
-         while (_ptr != pe) {
-@@ -397,2 +490,4 @@ class ArrayIterator {
+             }
+-            break;
          }
-+    
-+#endif
-     }
-@@ -420,3 +515,8 @@ class Array {
+@@ -416,3 +454,3 @@ class Array {
      bool set(zend_ulong index, zval *value) const {
-+#ifdef SWOOLE_RS_PHPHELPERS
+-        return add_index_zval(arr, index, value) == SUCCESS;
 +        return swr_v1_phphelpers_call_success(add_index_zval(arr, index, value), 0) != 0;
-+#else
-         return add_index_zval(arr, index, value) == SUCCESS;
-+    
-+#endif
      }
-@@ -424,3 +524,8 @@ class Array {
+@@ -420,3 +458,3 @@ class Array {
      bool append(zval *value) const {
-+#ifdef SWOOLE_RS_PHPHELPERS
+-        return add_next_index_zval(arr, value) == SUCCESS;
 +        return swr_v1_phphelpers_call_success(add_next_index_zval(arr, value), 0) != 0;
-+#else
-         return add_next_index_zval(arr, value) == SUCCESS;
-+    
-+#endif
      }
-@@ -469,2 +574,3 @@ class Variable {
+@@ -465,2 +503,3 @@ class Variable {
          add_ref();
 +    
      }
-@@ -474,2 +580,3 @@ class Variable {
+@@ -470,2 +509,3 @@ class Variable {
          src.reset();
 +    
      }
-@@ -485,2 +592,3 @@ class Variable {
+@@ -481,2 +521,3 @@ class Variable {
          return *this;
 +    
      }
-@@ -490,2 +598,3 @@ class Variable {
+@@ -486,2 +527,3 @@ class Variable {
          add_ref();
 +    
      }
-@@ -540,2 +649,3 @@ class CharPtr {
+@@ -536,2 +578,3 @@ class CharPtr {
          }
 +    
      }
-@@ -545,2 +655,3 @@ class CharPtr {
+@@ -541,2 +584,3 @@ class CharPtr {
          str_ = estrndup(str, len);
 +    
      }
-@@ -550,2 +661,3 @@ class CharPtr {
+@@ -546,2 +590,3 @@ class CharPtr {
          str_ = zend_str_tolower_dup(str, len);
 +    
      }
-@@ -591,2 +703,3 @@ class Callable {
+@@ -587,2 +632,3 @@ class Callable {
          return copy;
 +    
      }
-@@ -595,2 +708,3 @@ class Callable {
+@@ -591,2 +637,3 @@ class Callable {
          return sw_zend_call_function_ex(&zfn, &fcc, argc, argv, retval) == SUCCESS;
 +    
      }

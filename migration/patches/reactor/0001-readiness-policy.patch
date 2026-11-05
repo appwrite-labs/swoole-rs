@@ -1,60 +1,51 @@
 diff --git a/include/swoole_reactor.h b/include/swoole_reactor.h
-index 238c0e6..eadabda 100644
+index 238c0e6..eee073d 100644
 --- a/include/swoole_reactor.h
 +++ b/include/swoole_reactor.h
-@@ -20,2 +20,8 @@
+@@ -20,2 +20,5 @@
  #include "swoole_socket.h"
-+#ifndef SWOOLE_RS_REACTOR
-+#error "Reactor overlay requires --enable-swoole-rs-reactor"
-+#endif
 +#include "swoole_rs_reactor.h"
 +#include "swoole_rs_reactor_defer.h"
 +static_assert(SW_EVENT_READ == (1 << 9) && SW_EVENT_WRITE == (1 << 10) && SW_EVENT_DEAULT == 256 && SW_EVENT_ERROR == (1 << 11), "Reactor event ABI");
  
-@@ -166,4 +172,4 @@ class Reactor {
+@@ -166,4 +169,4 @@ class Reactor {
  
 -    CallbackManager *defer_tasks = nullptr;
 -    CallbackManager destroy_callbacks;
 +    ReactorDeferredQueue *defer_tasks = nullptr;
 +    ReactorDeferredQueue destroy_callbacks;
  
-@@ -182,4 +188,3 @@ class Reactor {
+@@ -182,4 +185,3 @@ class Reactor {
      ReactorImpl *impl;
 -    std::map<int, std::function<void(Reactor *)>> end_callbacks;
 -    std::map<int, std::function<bool(Reactor *, size_t &)>> exit_conditions;
 +    ReactorCallbacks callbacks_;
      std::unordered_map<int, network::Socket *> sockets_;
-@@ -210,3 +215,3 @@ class Reactor {
+@@ -210,3 +212,3 @@ class Reactor {
      size_t remove_exit_condition(const ExitCondition _id) {
 -        return exit_conditions.erase(_id);
 +        return callbacks_.erase_exit(_id);
      }
-@@ -214,3 +219,3 @@ class Reactor {
+@@ -214,3 +216,3 @@ class Reactor {
      bool isset_exit_condition(const ExitCondition _id) {
 -        return exit_conditions.find(_id) != exit_conditions.end();
 +        return callbacks_.has_exit(_id);
      }
-@@ -300,3 +305,4 @@ class Reactor {
+@@ -300,3 +302,4 @@ class Reactor {
      void foreach_socket(const std::function<void(int, network::Socket *)> &callback) const {
 -        for (auto &kv : sockets_) {
 +        for (auto &kv : sockets_)
 +        {
              callback(kv.first, kv.second);
 diff --git a/src/reactor/epoll.cc b/src/reactor/epoll.cc
-index cc871e3..d66a56b 100644
+index cc871e3..fd02dc3 100644
 --- a/src/reactor/epoll.cc
 +++ b/src/reactor/epoll.cc
-@@ -18,2 +18,5 @@
- #include "swoole_reactor.h"
-+#ifndef SWOOLE_RS_REACTOR
-+#error "Reactor overlay requires --enable-swoole-rs-reactor"
-+#endif
- 
-@@ -36,2 +39,3 @@ class ReactorEpoll final : public ReactorImpl {
+@@ -36,2 +36,3 @@ class ReactorEpoll final : public ReactorImpl {
      epoll_event *events_ = nullptr;
 +    swr_v1_reactor_epoll_events *rs_events_ = nullptr;
  
-@@ -75,3 +79,6 @@ ReactorEpoll::ReactorEpoll(Reactor *_reactor, int max_events) : ReactorImpl(_rea
+@@ -75,3 +76,6 @@ ReactorEpoll::ReactorEpoll(Reactor *_reactor, int max_events) : ReactorImpl(_rea
  
 -    events_ = new epoll_event[max_events];
 +    if (max_events < 0) throw std::bad_array_new_length();
@@ -62,12 +53,12 @@ index cc871e3..d66a56b 100644
 +    if (!rs_events_) throw std::bad_alloc();
 +    events_ = swr_v1_reactor_epoll_data(rs_events_);
      reactor_->max_event_num = max_events;
-@@ -88,3 +95,3 @@ ReactorEpoll::~ReactorEpoll() {
+@@ -88,3 +92,3 @@ ReactorEpoll::~ReactorEpoll() {
      }
 -    delete[] events_;
 +    swr_v1_reactor_epoll_free(rs_events_);
  }
-@@ -177,79 +184,77 @@ int ReactorEpoll::set(Socket *socket, int events) {
+@@ -177,79 +181,77 @@ int ReactorEpoll::set(Socket *socket, int events) {
  int ReactorEpoll::wait() {
 -    Event event;
 -    ReactorHandler handler;
@@ -218,16 +209,10 @@ index cc871e3..d66a56b 100644
 +    return swr_v1_reactor_run(&ops) < 0 ? SW_ERR : SW_OK;
  }
 diff --git a/src/reactor/kqueue.cc b/src/reactor/kqueue.cc
-index 6ebce45..1b80827 100644
+index 6ebce45..2488b6b 100644
 --- a/src/reactor/kqueue.cc
 +++ b/src/reactor/kqueue.cc
-@@ -18,2 +18,5 @@
- #include "swoole_reactor.h"
-+#ifndef SWOOLE_RS_REACTOR
-+#error "Reactor overlay requires --enable-swoole-rs-reactor"
-+#endif
- #include "swoole_signal.h"
-@@ -34,2 +37,26 @@ using network::Socket;
+@@ -34,2 +34,26 @@ using network::Socket;
  
 +// Native signal/function-pointer/log effects only, after each Rust decision.
 +// The handler is observed in original short-circuit order; no post-effect read.
@@ -254,14 +239,14 @@ index 6ebce45..1b80827 100644
 +
 +
  class ReactorKqueue : public ReactorImpl {
-@@ -38,4 +65,5 @@ class ReactorKqueue : public ReactorImpl {
+@@ -38,4 +62,5 @@ class ReactorKqueue : public ReactorImpl {
      struct kevent *events_ = nullptr;
 +    swr_v1_reactor_kqueue_events *rs_events_ = nullptr;
  
 -    bool fetch_event(Event *event, void *udata) {
 +    void fill_event(Event *event, void *udata) {
          event->socket = (Socket *) udata;
-@@ -45,12 +73,2 @@ class ReactorKqueue : public ReactorImpl {
+@@ -45,12 +70,2 @@ class ReactorKqueue : public ReactorImpl {
  
 -        if (event->socket->removed) {
 -            return false;
@@ -274,7 +259,7 @@ index 6ebce45..1b80827 100644
 -            del(socket);
 -        }
      }
-@@ -81,3 +99,6 @@ ReactorKqueue::ReactorKqueue(Reactor *reactor, int max_events) : ReactorImpl(rea
+@@ -81,3 +96,6 @@ ReactorKqueue::ReactorKqueue(Reactor *reactor, int max_events) : ReactorImpl(rea
      event_max_ = max_events;
 -    events_ = new struct kevent[max_events];
 +    if (max_events < 0) throw std::bad_array_new_length();
@@ -282,12 +267,12 @@ index 6ebce45..1b80827 100644
 +    if (!rs_events_) throw std::bad_alloc();
 +    events_ = swr_v1_reactor_kqueue_data(rs_events_);
  }
-@@ -92,3 +113,3 @@ ReactorKqueue::~ReactorKqueue() {
+@@ -92,3 +110,3 @@ ReactorKqueue::~ReactorKqueue() {
      }
 -    delete[] events_;
 +    swr_v1_reactor_kqueue_free(rs_events_);
  }
-@@ -254,91 +275,63 @@ int ReactorKqueue::del(Socket *socket) {
+@@ -254,91 +272,63 @@ int ReactorKqueue::del(Socket *socket) {
  int ReactorKqueue::wait() {
 -    Event event;
 -    ReactorHandler handler;
@@ -440,20 +425,14 @@ index 6ebce45..1b80827 100644
 +    return swr_v1_reactor_run(&ops) < 0 ? SW_ERR : SW_OK;
  }
 diff --git a/src/reactor/poll.cc b/src/reactor/poll.cc
-index e65b2c6..13c04f7 100644
+index e65b2c6..b8601a1 100644
 --- a/src/reactor/poll.cc
 +++ b/src/reactor/poll.cc
-@@ -18,2 +18,5 @@
- #include "swoole_reactor.h"
-+#ifndef SWOOLE_RS_REACTOR
-+#error "Reactor overlay requires --enable-swoole-rs-reactor"
-+#endif
- 
-@@ -23,2 +26,3 @@ using network::Socket;
+@@ -23,2 +23,3 @@ using network::Socket;
  class ReactorPoll final : public ReactorImpl {
 +    swr_v1_reactor_poll_snapshot *snapshot_;
      pollfd *events_;
-@@ -45,3 +49,7 @@ ReactorImpl *make_reactor_poll(Reactor *_reactor, int max_events) {
+@@ -45,3 +46,7 @@ ReactorImpl *make_reactor_poll(Reactor *_reactor, int max_events) {
  ReactorPoll::ReactorPoll(Reactor *_reactor, int max_events) : ReactorImpl(_reactor) {
 -    events_ = new pollfd[max_events];
 +    // Preserve negative array-bound exception type before crossing into Rust.
@@ -462,12 +441,12 @@ index e65b2c6..13c04f7 100644
 +    if (!snapshot_) throw std::bad_alloc();
 +    events_ = swr_v1_reactor_poll_data(snapshot_);
      event_sockets_ = new Socket *[max_events];
-@@ -52,3 +60,3 @@ ReactorPoll::ReactorPoll(Reactor *_reactor, int max_events) : ReactorImpl(_react
+@@ -52,3 +57,3 @@ ReactorPoll::ReactorPoll(Reactor *_reactor, int max_events) : ReactorImpl(_react
  ReactorPoll::~ReactorPoll() {
 -    delete[] events_;
 +    swr_v1_reactor_poll_free(snapshot_);
      delete[] event_sockets_;
-@@ -150,79 +158,68 @@ int ReactorPoll::del(Socket *socket) {
+@@ -150,79 +155,68 @@ int ReactorPoll::del(Socket *socket) {
  int ReactorPoll::wait() {
 -    Event event;
 -    ReactorHandler handler;

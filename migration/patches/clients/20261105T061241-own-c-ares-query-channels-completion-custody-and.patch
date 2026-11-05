@@ -1,20 +1,20 @@
 diff --git a/src/network/dns.cc b/src/network/dns.cc
-index 6a8d816..d13e1ed 100644
+index fb7ea92..2012c9e 100644
 --- a/src/network/dns.cc
 +++ b/src/network/dns.cc
 @@ -23,3 +23,2 @@
  #include <vector>
 -#include <unordered_map>
- #ifndef SWOOLE_RS_CLIENTS
-@@ -34,2 +33,3 @@
+ #include "swoole_rs_clients.h"
+@@ -31,2 +30,3 @@
  #include <ares.h>
 +#include "swoole_rs_cares.h"
  #endif
-@@ -120,3 +120,2 @@ static uint16_t dns_request_id = 1;
+@@ -117,3 +117,2 @@ static uint16_t dns_request_id = 1;
  
 -static std::string parse_ip_address(void *vaddr, int type);
  
-@@ -136,12 +135,2 @@ std::string get_ip_by_hosts(const std::string &search_domain) {
+@@ -133,12 +132,2 @@ std::string get_ip_by_hosts(const std::string &search_domain) {
  
 -static std::string parse_ip_address(void *vaddr, int type) {
 -    const uint8_t version = type == AF_INET ? 4 : (type == AF_INET6 ? 6 : 0);
@@ -27,7 +27,7 @@ index 6a8d816..d13e1ed 100644
 -}
 -
  std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int family, double timeout) {
-@@ -193,190 +182,74 @@ std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int fam
+@@ -190,190 +179,74 @@ std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int fam
  #ifdef SW_USE_CARES
 -struct ResolvContext {
 -    ares_channel channel;

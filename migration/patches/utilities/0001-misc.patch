@@ -1,17 +1,14 @@
 diff --git a/src/core/misc.cc b/src/core/misc.cc
-index 49b80f230..3c95300b9 100644
+index 49b80f2..6fd0b1b 100644
 --- a/src/core/misc.cc
 +++ b/src/core/misc.cc
 @@ -24,2 +24,3 @@
  #include <chrono>
 +#include <climits>
  #include <cmath>
-@@ -27,21 +28,11 @@
+@@ -27,21 +28,8 @@
  
 +#include "swoole_rs_utilities.h"
-+#ifndef SWOOLE_RS_UTILITIES
-+#error "Utilities overlay requires --enable-swoole-rs-utilities"
-+#endif
 +
 +static_assert(sizeof(ulong_t) == 8, "Rust utility hashes require LP64");
 +
@@ -36,7 +33,7 @@ index 49b80f230..3c95300b9 100644
 -    }
 +    swr_v1_utils_spinlock(const_cast<uint32_t *>(lock), SW_CPU_NUM, SW_SPINLOCK_LOOP_N);
  }
-@@ -49,25 +40,4 @@ void sw_spinlock(sw_atomic_t *lock) {
+@@ -49,25 +37,4 @@ void sw_spinlock(sw_atomic_t *lock) {
  #ifdef HAVE_FUTEX
 -#include <linux/futex.h>
 -#include <sys/syscall.h>
@@ -63,7 +60,7 @@ index 49b80f230..3c95300b9 100644
 -    }
 +    return swr_v1_utils_wait(const_cast<uint32_t *>(atomic), timeout);
  }
-@@ -75,7 +45,3 @@ int sw_atomic_futex_wait(sw_atomic_t *atomic, double timeout) {
+@@ -75,7 +42,3 @@ int sw_atomic_futex_wait(sw_atomic_t *atomic, double timeout) {
  int sw_atomic_futex_wakeup(sw_atomic_t *atomic, int n) {
 -    if (sw_atomic_cmp_set(atomic, 0, 1)) {
 -        return syscall(SYS_futex, atomic, FUTEX_WAKE, n, NULL, NULL, 0);
@@ -72,7 +69,7 @@ index 49b80f230..3c95300b9 100644
 -    }
 +    return swr_v1_utils_wakeup(const_cast<uint32_t *>(atomic), n);
  }
-@@ -321,205 +287,12 @@ int sw_atomic_futex_wakeup(sw_atomic_t *atomic, int n) {
+@@ -321,205 +284,12 @@ int sw_atomic_futex_wakeup(sw_atomic_t *atomic, int n) {
  
 -/* {{{ DJBX33A (Daniel J. Bernstein, Times 33 with Addition)
 - *

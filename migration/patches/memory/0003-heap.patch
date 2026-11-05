@@ -1,16 +1,13 @@
 diff --git a/src/core/heap.cc b/src/core/heap.cc
-index 905e72bc9..1810fcd12 100644
+index 905e72b..6ddf6fb 100644
 --- a/src/core/heap.cc
 +++ b/src/core/heap.cc
-@@ -19,150 +19,46 @@
+@@ -19,150 +19,43 @@
  
 -#define left(i) ((i) << 1)
 -#define right(i) (((i) << 1) + 1)
 -#define parent(i) ((i) >> 1)
 -
-+#ifndef SWOOLE_RS_MEMORY
-+#error "Memory overlay requires --enable-swoole-rs-memory"
-+#endif
 +#include "swoole_rs_memory.h"
 +#include <cstddef>
 +#include <type_traits>
@@ -80,6 +77,8 @@ index 905e72bc9..1810fcd12 100644
 -
 -    nodes[i] = moving_node;
 -    moving_node->position = i;
+-}
+-
 +static_assert(std::is_standard_layout<HeapNode>::value, "heap node POD");
 +static_assert(sizeof(HeapNode) == sizeof(swr_v1_memory_heap_node), "heap node size");
 +static_assert(offsetof(HeapNode, priority) == offsetof(swr_v1_memory_heap_node, priority), "heap priority");
@@ -87,8 +86,7 @@ index 905e72bc9..1810fcd12 100644
 +static_assert(offsetof(HeapNode, data) == offsetof(swr_v1_memory_heap_node, data), "heap token");
 +Heap::Heap(size_t capacity, Type type) {
 +    if (swr_v1_memory_heap_create(capacity, type == MAX_HEAP, &rust_) != 0) throw std::bad_alloc();
- }
--
++}
 +Heap::~Heap() { swr_v1_memory_heap_release(rust_); }
 +int Heap::compare(uint64_t a, uint64_t b) const { return swr_v1_memory_heap_compare(rust_, a, b); }
  HeapNode *Heap::push(uint64_t priority, void *data) {

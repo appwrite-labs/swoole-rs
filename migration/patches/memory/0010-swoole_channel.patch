@@ -1,18 +1,15 @@
 diff --git a/include/swoole_channel.h b/include/swoole_channel.h
-index d2ccc2606..d64ea681d 100644
+index d2ccc26..768bbe9 100644
 --- a/include/swoole_channel.h
 +++ b/include/swoole_channel.h
-@@ -20,2 +20,9 @@
+@@ -20,2 +20,6 @@
  #pragma once
 +#ifdef HAVE_CONFIG_H
 +#include "config.h"
 +#endif
-+#ifndef SWOOLE_RS_MEMORY
-+#error "Memory overlay requires --enable-swoole-rs-memory"
-+#endif
 +#include "swoole_rs_memory.h"
  
-@@ -56,3 +63,5 @@ struct Channel {
+@@ -56,3 +60,5 @@ struct Channel {
      bool full() const {
 -        return ((head == tail && tail_tag != head_tag) || (bytes + sizeof(int) * num == size));
 +        const swr_v1_memory_channel_capacity state{head, tail, size, bytes, num,

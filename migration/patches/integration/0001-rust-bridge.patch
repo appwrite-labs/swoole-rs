@@ -264,7 +264,7 @@ index 230b1c0..e26466e 100644
 +
      if test "$PHP_MYSQLND" = "yes"; then
 diff --git a/ext-src/php_swoole.cc b/ext-src/php_swoole.cc
-index 66f2386..6aaf4c5 100644
+index 66f2386..034a056 100644
 --- a/ext-src/php_swoole.cc
 +++ b/ext-src/php_swoole.cc
 @@ -21,2 +21,7 @@
@@ -275,7 +275,7 @@ index 66f2386..6aaf4c5 100644
 +#endif
 +
  BEGIN_EXTERN_C()
-@@ -614,2 +619,127 @@ static void sw_after_fork(void *args) {
+@@ -614,2 +619,91 @@ static void sw_after_fork(void *args) {
  PHP_MINIT_FUNCTION(swoole) {
 +#ifdef SWOOLE_RS_BRIDGE
 +    const uint32_t rust_abi = swr_v1_abi_version();
@@ -285,125 +285,89 @@ index 66f2386..6aaf4c5 100644
 +        return FAILURE;
 +    }
 +    const uint64_t rust_features = swr_v1_feature_bits();
-+#ifdef SWOOLE_RS_MEMORY
 +    if ((rust_features & 64) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing memory feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_UTILITIES
 +    if ((rust_features & 512) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing utilities feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_LOCKS
 +    if ((rust_features & 1024) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing locks feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_WRAPPERS
 +    if ((rust_features & 2048) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing wrappers feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_REACTOR
 +    if ((rust_features & 16384) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing reactor feature");
 +        return FAILURE;
 +    }
-+#endif
 +#ifdef SWOOLE_RS_COREBASE
 +    if ((rust_features & 8192) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing corebase feature");
 +        return FAILURE;
 +    }
 +#endif
-+#ifdef SWOOLE_RS_COROUTINE
 +    if ((rust_features & 32768) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing coroutine feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_HOOKS
 +    if ((rust_features & 65536) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing hooks feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_OSSUPPORT
 +    if ((rust_features & 131072) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing ossupport feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_TLS
 +    if ((rust_features & 262144) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing tls feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_PROCESS
 +    if ((rust_features & 524288) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing process feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_CLIENTS
 +    if ((swr_v1_feature_bits() & 1048576) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing clients feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_HTTPBINDINGS
 +    if ((swr_v1_feature_bits() & 2097152) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing httpbindings feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SW_USE_RUST_HTTP2
 +    if ((swr_v1_feature_bits() & 4194304) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing http2 feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_PORTS
 +    if ((swr_v1_feature_bits() & 8388608) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing ports feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_PHPHELPERS
 +    if ((swr_v1_feature_bits() & 16777216) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing phphelpers feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_PHPCOLLECTIONS
 +    if ((swr_v1_feature_bits() & 33554432) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing phpcollections feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_PHPEVENTS
 +    if ((swr_v1_feature_bits() & 67108864) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing phpevents feature");
 +        return FAILURE;
 +    }
-+#endif
-+#ifdef SWOOLE_RS_PHPCOROUTINES
 +    if ((swr_v1_feature_bits() & 134217728) == 0) {
 +        php_error_docref(nullptr, E_WARNING, "Rust bridge missing phpcoroutines feature");
 +        return FAILURE;
 +    }
-+#endif
 +    SW_REGISTER_LONG_CONSTANT("SWOOLE_RS_ABI_VERSION", rust_abi);
 +    SW_REGISTER_LONG_CONSTANT("SWOOLE_RS_FEATURE_BITS", rust_features);
 +#endif
      ZEND_INIT_MODULE_GLOBALS(swoole, php_swoole_init_globals, nullptr);
-@@ -1106,2 +1236,7 @@ PHP_MINFO_FUNCTION(swoole) {
+@@ -1106,2 +1200,7 @@ PHP_MINFO_FUNCTION(swoole) {
      php_info_print_table_row(2, "Version", SWOOLE_VERSION);
 +#ifdef SWOOLE_RS_BRIDGE
 +    snprintf(buf, sizeof(buf), "ABI %u, features %llu", static_cast<unsigned>(swr_v1_abi_version()),

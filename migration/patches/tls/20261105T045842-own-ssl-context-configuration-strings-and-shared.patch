@@ -1,16 +1,13 @@
 diff --git a/include/swoole_ssl.h b/include/swoole_ssl.h
-index 0a50916..8656875 100644
+index 0a50916..f7c45dc 100644
 --- a/include/swoole_ssl.h
 +++ b/include/swoole_ssl.h
-@@ -32,2 +32,7 @@
+@@ -32,2 +32,4 @@
  #include <openssl/opensslv.h>
-+#ifndef SWOOLE_RS_TLS
-+#error "Rust SSLContext requires --enable-swoole-rs-tls"
-+#endif
 +#include "swoole_rs_corebase_string_view.h"
 +#include "swoole_rs_tls_owner.h"
  
-@@ -49,50 +54,3 @@
+@@ -49,50 +51,3 @@
  
 -enum swSSLCreateFlag {
 -    SW_SSL_SERVER = 1,
@@ -62,7 +59,7 @@ index 0a50916..8656875 100644
 -};
 +#include "swoole_rs_tls_constants.h"
  
-@@ -100,35 +58,50 @@ namespace swoole {
+@@ -100,35 +55,50 @@ namespace swoole {
  
 -struct SSLContext {
 -    uchar http : 1;
@@ -142,53 +139,53 @@ index 0a50916..8656875 100644
 +    uint8_t &create_flag = prepared_.fields->create_flag;
 +    SSL_CTX *&context = prepared_.fields->context;
  
-@@ -147,3 +120,5 @@ struct SSLContext {
+@@ -147,3 +117,5 @@ struct SSLContext {
      bool set_cert_file(const std::string &_cert_file) {
 -        if (access(_cert_file.c_str(), R_OK) < 0) {
 +        auto status=swr_v1_tls_owner_set_path(handle(), 4, _cert_file.c_str(), _cert_file.size());
 +        cert_file.check(status);
 +        if (status == 1) {
              swoole_warning("ssl cert file[%s] not found", _cert_file.c_str());
-@@ -151,3 +126,2 @@ struct SSLContext {
+@@ -151,3 +123,2 @@ struct SSLContext {
          }
 -        cert_file = _cert_file;
          return true;
-@@ -156,3 +130,5 @@ struct SSLContext {
+@@ -156,3 +127,5 @@ struct SSLContext {
      bool set_key_file(const std::string &_key_file) {
 -        if (access(_key_file.c_str(), R_OK) < 0) {
 +        auto status=swr_v1_tls_owner_set_path(handle(), 5, _key_file.c_str(), _key_file.size());
 +        key_file.check(status);
 +        if (status == 1) {
              swoole_warning("ssl key file[%s] not found", _key_file.c_str());
-@@ -160,3 +136,2 @@ struct SSLContext {
+@@ -160,3 +133,2 @@ struct SSLContext {
          }
 -        key_file = _key_file;
          return true;
-@@ -165,3 +140,5 @@ struct SSLContext {
+@@ -165,3 +137,5 @@ struct SSLContext {
      bool set_client_cert_file(const std::string &file) {
 -        if (access(file.c_str(), R_OK) < 0) {
 +        auto status=swr_v1_tls_owner_set_path(handle(), 7, file.c_str(), file.size());
 +        client_cert_file.check(status);
 +        if (status == 1) {
              swoole_warning("ssl client cert file[%s] not found", file.c_str());
-@@ -169,3 +146,2 @@ struct SSLContext {
+@@ -169,3 +143,2 @@ struct SSLContext {
          }
 -        client_cert_file = file;
          return true;
 diff --git a/src/protocol/ssl.cc b/src/protocol/ssl.cc
-index 8544791..498e952 100644
+index e39f3bd..d45e3cb 100644
 --- a/src/protocol/ssl.cc
 +++ b/src/protocol/ssl.cc
-@@ -36,2 +36,4 @@ std::string swoole_ssl_get_version_message() {
+@@ -33,2 +33,4 @@ std::string swoole_ssl_get_version_message() {
  
 +static void swoole_ssl_info_callback();
 +
  void swoole_ssl_init() {
-@@ -45,2 +47,3 @@ void swoole_ssl_init() {
+@@ -42,2 +44,3 @@ void swoole_ssl_init() {
      }
 +    swr_v1_tls_info_log(swoole_ssl_info_callback);
  }
-@@ -63,38 +66,3 @@ const char *swoole_ssl_get_error() {
+@@ -60,38 +63,3 @@ const char *swoole_ssl_get_error() {
  
 -static void swoole_ssl_info_callback(const SSL *ssl, int where, int ret) {
 -    Socket *sock;
@@ -228,7 +225,7 @@ index 8544791..498e952 100644
 -}
 +static void swoole_ssl_info_callback() { swoole_debug("SSL renegotiation"); }
  
-@@ -109,30 +77,30 @@ static void ssl_warning(const char *function, const char *message) {
+@@ -106,30 +74,30 @@ static void ssl_warning(const char *function, const char *message) {
  
 -static swr_tls_str ssl_str(const std::string &value) {
 -    return {value.c_str(), value.length()};
@@ -287,7 +284,7 @@ index 8544791..498e952 100644
 +    }
 +    return *this;
  }
-@@ -141,9 +109,3 @@ bool SSLContext::create() {
+@@ -138,9 +106,3 @@ bool SSLContext::create() {
      swoole_ssl_init();
 -    auto config = ssl_config(this);
 -    context = swr_v1_tls_context_create(&config);
@@ -298,7 +295,7 @@ index 8544791..498e952 100644
 -    SSL_CTX_set_info_callback(context, swoole_ssl_info_callback);
 +    if (!swr_v1_tls_owner_create(handle())) return false;
      return true;
-@@ -151,30 +113,9 @@ bool SSLContext::create() {
+@@ -148,30 +110,9 @@ bool SSLContext::create() {
  
 -bool SSLContext::set_capath() const {
 -    auto config = ssl_config(this);

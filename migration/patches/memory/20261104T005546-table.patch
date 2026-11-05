@@ -1,13 +1,10 @@
 diff --git a/include/swoole_table.h b/include/swoole_table.h
-index b8a0ead..f1644c0 100644
+index b8a0ead..6f97224 100644
 --- a/include/swoole_table.h
 +++ b/include/swoole_table.h
-@@ -19,10 +19,9 @@
+@@ -19,10 +19,6 @@
  #include "swoole_memory.h"
 -#include "swoole_lock.h"
-+#ifndef SWOOLE_RS_MEMORY
-+#error "Memory overlay requires --enable-swoole-rs-memory"
-+#endif
 +#include "swoole_rs_memory.h"
  
 -#include <csignal>
@@ -18,12 +15,12 @@ index b8a0ead..f1644c0 100644
 -
 -//#define SW_TABLE_DEBUG   0
  #define SW_TABLE_FORCE_UNLOCK_TIME 2000  // milliseconds
-@@ -31,2 +30,4 @@
+@@ -31,2 +27,4 @@
  
 +// The table, its columns and rows are Rust's (crates/memory/src/table.rs);
 +// these classes are views of them.
  namespace swoole {
-@@ -35,56 +36,42 @@ typedef uint64_t (*HashFunc)(const char *key, size_t len);
+@@ -35,56 +33,42 @@ typedef uint64_t (*HashFunc)(const char *key, size_t len);
  
 -struct TableColumn;
 -
@@ -110,14 +107,14 @@ index b8a0ead..f1644c0 100644
 +    void get_value(const TableColumn *col, char **strval, TableStringLength *strlen) {
 +        swr_v1_memory_table_get_string(this, col, strval, strlen);
      }
-@@ -92,2 +79,6 @@ struct TableIterator {
+@@ -92,2 +76,6 @@ struct TableIterator {
  
 +inline void TableColumn::clear(TableRow *row) const {
 +    swr_v1_memory_table_clear_value(row, this);
 +}
 +
  enum TableFlag {
-@@ -97,51 +88,4 @@ enum TableFlag {
+@@ -97,51 +85,4 @@ enum TableFlag {
  
 -struct TableColumn {
 -    enum Type {
@@ -169,7 +166,7 @@ index b8a0ead..f1644c0 100644
 -    uint32_t conflict_max_level;
 -
      Table() = delete;
-@@ -150,14 +94,3 @@ class Table {
+@@ -150,14 +91,3 @@ class Table {
      static Table *make(uint32_t rows_size, float conflict_proportion);
 -    size_t calc_memory_size() const;
 -    size_t get_memory_size() const;
@@ -184,7 +181,7 @@ index b8a0ead..f1644c0 100644
 -    bool del(const char *key, uint16_t keylen);
 -    void forward() const;
      // release shared memory
-@@ -165,4 +98,48 @@ class Table {
+@@ -165,4 +95,48 @@ class Table {
  
 +    size_t calc_memory_size() const {
 +        return swr_v1_memory_table_memory_total(this);
@@ -234,32 +231,32 @@ index b8a0ead..f1644c0 100644
 -        return created;
 +        return swr_v1_memory_table_created(this);
      }
-@@ -170,3 +147,3 @@ class Table {
+@@ -170,3 +144,3 @@ class Table {
      bool ready() const {
 -        return memory != nullptr;
 +        return swr_v1_memory_table_ready(this);
      }
-@@ -174,3 +151,3 @@ class Table {
+@@ -174,3 +148,3 @@ class Table {
      void set_hash_func(HashFunc _fn) {
 -        hash_func = _fn;
 +        swr_v1_memory_table_set_hash(this, _fn);
      }
-@@ -178,3 +155,3 @@ class Table {
+@@ -178,3 +152,3 @@ class Table {
      size_t get_size() const {
 -        return size;
 +        return swr_v1_memory_table_size(this);
      }
-@@ -182,3 +159,3 @@ class Table {
+@@ -182,3 +156,3 @@ class Table {
      float get_conflict_proportion() const {
 -        return conflict_proportion;
 +        return swr_v1_memory_table_conflict_proportion(this);
      }
-@@ -186,3 +163,3 @@ class Table {
+@@ -186,3 +160,3 @@ class Table {
      size_t get_column_size() const {
 -        return column_map->size();
 +        return swr_v1_memory_table_column_count(this, true);
      }
-@@ -190,4 +167,6 @@ class Table {
+@@ -190,4 +164,6 @@ class Table {
      TableRow *get_by_index(uint32_t index) const {
 -        TableRow *row = rows[index];
 -        return row->active ? row : nullptr;
@@ -268,24 +265,24 @@ index b8a0ead..f1644c0 100644
 +        (void) size;
 +        return swr_v1_memory_table_by_index(this, index);
      }
-@@ -195,3 +174,3 @@ class Table {
+@@ -195,3 +171,3 @@ class Table {
      size_t count() const {
 -        return row_num;
 +        return swr_v1_memory_table_count(this);
      }
-@@ -203,3 +182,3 @@ class Table {
+@@ -203,3 +179,3 @@ class Table {
      TableRow *current() const {
 -        return iterator->current_;
 +        return swr_v1_memory_table_current(this);
      }
-@@ -207,5 +186,3 @@ class Table {
+@@ -207,5 +183,3 @@ class Table {
      void rewind() const {
 -        iterator->lock();
 -        iterator->reset();
 -        iterator->unlock();
 +        swr_v1_memory_table_rewind(this);
      }
-@@ -213,51 +190,3 @@ class Table {
+@@ -213,51 +187,3 @@ class Table {
      void clear_row(TableRow *row) const {
 -        for (auto &i : *column_list) {
 -            i->clear(row);

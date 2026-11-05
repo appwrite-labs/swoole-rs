@@ -48,23 +48,23 @@ index 8f247a9..c4f7968 100644
  void php_swoole_client_check_ssl_setting(const NetClient *cli, const zval *zset);
 -bool php_swoole_client_enable_ssl_encryption(NetClient *cli, zval *zobject);
 diff --git a/ext-src/swoole_client.cc b/ext-src/swoole_client.cc
-index 83bcdc9..96c8c99 100644
+index 49a04c5..3d323ae 100644
 --- a/ext-src/swoole_client.cc
 +++ b/ext-src/swoole_client.cc
-@@ -21,3 +21,3 @@
+@@ -18,3 +18,3 @@
  #include "swoole_rs_clients.h"
 -#include "swoole_rs_clients_pool.h"
 +#include "swoole_rs_phpclients.h"
  #include "php_swoole_client.h"
-@@ -31,3 +31,2 @@ END_EXTERN_C()
+@@ -28,3 +28,2 @@ END_EXTERN_C()
  
 -using swoole::HttpProxy;
  using swoole::PacketLength;
-@@ -35,3 +34,2 @@ using swoole::Protocol;
+@@ -32,3 +31,2 @@ using swoole::Protocol;
  using swoole::SocketType;
 -using swoole::Socks5Proxy;
  using swoole::String;
-@@ -41,63 +39,27 @@ using swoole::network::Socket;
+@@ -38,63 +36,27 @@ using swoole::network::Socket;
  
 -static SwooleRustClientPool long_connections;
 -
@@ -148,7 +148,7 @@ index 83bcdc9..96c8c99 100644
 -static PHP_METHOD(swoole_client, getSocket);
 +PHP_METHOD(swoole_client, getSocket);
  #endif
-@@ -105,29 +67,2 @@ SW_EXTERN_C_END
+@@ -102,29 +64,2 @@ SW_EXTERN_C_END
  
 -static uint32_t client_poll_add(const zval *sock_array, uint32_t index, pollfd *fds, int maxevents, int event);
 -static int client_poll_wait(zval *sock_array, const pollfd *fds, int maxevents, int n_event, int revent);
@@ -178,7 +178,7 @@ index 83bcdc9..96c8c99 100644
 -}
 -
  // clang-format off
-@@ -159,30 +94,3 @@ static const zend_function_entry swoole_client_methods[] =
+@@ -156,30 +91,3 @@ static const zend_function_entry swoole_client_methods[] =
  void php_swoole_client_minit(int module_number) {
 -    SW_INIT_CLASS_ENTRY(swoole_client, "Swoole\\Client", nullptr, swoole_client_methods);
 -    SW_SET_CLASS_NOT_SERIALIZABLE(swoole_client);
@@ -210,7 +210,7 @@ index 83bcdc9..96c8c99 100644
 -    zend::add_constant("SWOOLE_KEEP", SW_FLAG_KEEP);
 +    swr_v1_phpclients_net_minit(swoole_client_methods, swoole_exception_ce, module_number, &swoole_client_ce);
  }
-@@ -449,43 +357,2 @@ bool php_swoole_client_check_setting(Client *cli, const zval *zset) {
+@@ -446,43 +354,2 @@ bool php_swoole_client_check_setting(Client *cli, const zval *zset) {
  
 -void php_swoole_client_free(const zval *zobject, Client *cli) {
 -    uint32_t stage = 100;
@@ -254,7 +254,7 @@ index 83bcdc9..96c8c99 100644
 -}
 -
  ssize_t php_swoole_length_func(const Protocol *protocol, Socket *_socket, PacketLength *pl) {
-@@ -509,832 +376,269 @@ ssize_t php_swoole_length_func(const Protocol *protocol, Socket *_socket, Packet
+@@ -506,832 +373,269 @@ ssize_t php_swoole_length_func(const Protocol *protocol, Socket *_socket, Packet
  
 -static Client *php_swoole_client_new(zval *zobject, char *host, int host_len, int port) {
 -    zval *ztype = sw_zend_read_property_ex(Z_OBJCE_P(zobject), zobject, SW_ZSTR_KNOWN(SW_ZEND_STR_TYPE), 0);
@@ -1295,18 +1295,18 @@ index 83bcdc9..96c8c99 100644
 +    client_of(cli)->socket->ssl_state = SW_SSL_STATE_WAIT_STREAM;
  }
 diff --git a/ext-src/swoole_client_async.cc b/ext-src/swoole_client_async.cc
-index f04d134..21fbcdd 100644
+index a4ed6d0..b7e4646 100644
 --- a/ext-src/swoole_client_async.cc
 +++ b/ext-src/swoole_client_async.cc
-@@ -20,6 +20,3 @@
- #endif
+@@ -17,6 +17,3 @@
+ #include "php_swoole_client.h"
 -#include "swoole_rs_clients.h"
 -#include <algorithm>
 -#include <cctype>
 -#include "swoole_mqtt.h"
 +#include "swoole_rs_phpclients.h"
  
-@@ -29,90 +26,17 @@ END_EXTERN_C()
+@@ -26,90 +23,17 @@ END_EXTERN_C()
  
 -#include "ext/standard/basic_functions.h"
 -
@@ -1410,7 +1410,7 @@ index f04d134..21fbcdd 100644
 -    zval_delref_p(zobject);
 -}
  
-@@ -136,349 +60,3 @@ static const zend_function_entry swoole_client_async_methods[] = {
+@@ -133,349 +57,3 @@ static const zend_function_entry swoole_client_async_methods[] = {
  void php_swoole_client_async_minit(int module_number) {
 -    SW_INIT_CLASS_ENTRY_EX(
 -        swoole_client_async, "Swoole\\Async\\Client", nullptr, swoole_client_async_methods, swoole_client);
@@ -1790,10 +1790,10 @@ index 3c97a4e..6777ff7 100644
 -    bool ssl_wait_handshake = false;
      std::shared_ptr<SSLContext> ssl_context = nullptr;
 diff --git a/src/network/client.cc b/src/network/client.cc
-index 836a5a6..4718743 100644
+index 11c9da3..e7b8cd2 100644
 --- a/src/network/client.cc
 +++ b/src/network/client.cc
-@@ -817,6 +817,8 @@ static int Client_onStreamRead(Reactor *reactor, Event *event) {
+@@ -814,6 +814,8 @@ static int Client_onStreamRead(Reactor *reactor, Event *event) {
              ctx->protocol_socket = cli->socket;
 -            if (cli->open_eof_check) {
 -                return cli->protocol.recv_with_eof_protocol(ctx->protocol_socket, cli->buffer);

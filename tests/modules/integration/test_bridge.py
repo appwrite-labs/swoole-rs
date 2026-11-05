@@ -136,46 +136,6 @@ int main(void) {
         info = self.php(ARGS.hybrid, '--ri', 'swoole')
         self.assertEqual(info.returncode, 0, info.stdout + info.stderr)
         self.assertIn(f'Rust migration bridge => ABI 1, features {ARGS.feature_bits}', info.stdout)
-        # Selected overlays require their flags; omission selects pristine C++.
-        source = ARGS.hybrid.resolve().parents[1]
-        manifest = json.loads((source.parent / 'build-manifest.json').read_text())
-        includes = shlex.split(manifest['inputs'].get('effective_cppflags', ''))
-        for option in manifest['configure']:
-            if option.startswith('--with-swoole-rs='):
-                includes += ['-I', str(Path(option.split('=', 1)[1]) / 'include')]
-            if option.startswith('--with-openssl-dir='):
-                includes += ['-I', str(Path(option.split('=', 1)[1]) / 'include')]
-        for bit, path, message in [
-            (64, 'src/memory/fixed_pool.cc', 'Memory overlay requires --enable-swoole-rs-memory'),
-            (512, 'src/core/misc.cc', 'Utilities overlay requires --enable-swoole-rs-utilities'),
-            (1024, 'src/lock/mutex.cc', 'Locks overlay requires --enable-swoole-rs-locks'),
-            (2048, 'src/wrapper/event.cc', 'Wrapper overlay requires --enable-swoole-rs-wrappers'),
-            (16384, 'src/network/socket.cc', 'Reactor overlay requires --enable-swoole-rs-reactor'),
-            (32768, 'src/coroutine/base.cc', 'Coroutine overlay requires --enable-swoole-rs-coroutine'),
-            (65536, 'src/coroutine/socket.cc', 'Hooks overlay requires --enable-swoole-rs-hooks'),
-            (131072, 'src/os/async_thread.cc', 'OS support overlay requires --enable-swoole-rs-ossupport'),
-            (262144, 'src/protocol/ssl.cc', 'TLS overlay requires explicit module activation'),
-            (524288, 'src/server/worker.cc', 'Process overlay requires --enable-swoole-rs-process'),
-            (1048576, 'src/network/address.cc', 'Clients overlay requires --enable-swoole-rs-clients'),
-            (2097152, 'ext-src/swoole_http_cookie.cc', 'HTTP PHP binding overlay requires --enable-swoole-rs-httpbindings'),
-            (8388608, 'src/server/port.cc', 'ListenPort overlay requires --enable-swoole-rs-ports'),
-            (33554432, 'ext-src/swoole_table.cc', 'PHP collections overlay requires --enable-swoole-rs-phpcollections'),
-        ]:
-            if not ARGS.feature_bits & bit:
-                continue
-            macros = {64: 'SWOOLE_RS_MEMORY', 512: 'SWOOLE_RS_UTILITIES', 1024: 'SWOOLE_RS_LOCKS', 2048: 'SWOOLE_RS_WRAPPERS', 16384: 'SWOOLE_RS_REACTOR', 32768: 'SWOOLE_RS_COROUTINE', 65536: 'SWOOLE_RS_HOOKS', 131072: 'SWOOLE_RS_OSSUPPORT', 262144: 'SWOOLE_RS_TLS', 524288: 'SWOOLE_RS_PROCESS', 1048576: 'SWOOLE_RS_CLIENTS', 2097152: 'SWOOLE_RS_HTTPBINDINGS', 4194304: 'SW_USE_RUST_HTTP2', 8388608: 'SWOOLE_RS_PORTS', 33554432: 'SWOOLE_RS_PHPCOLLECTIONS'}
-            defines = ['-D' + macro for flag, macro in macros.items() if flag != bit and ARGS.feature_bits & flag]
-            php_includes = (shlex.split(next(line.split('=', 1)[1]
-                            for line in (source / 'Makefile').read_text().splitlines()
-                            if line.startswith('INCLUDES = '))) if bit in {2097152, 33554432} else [])
-            result = run(shlex.split(os.environ.get('CXX', 'c++')) +
-                         ['-E', '-x', 'c++', *includes, *php_includes, *defines,
-                          '-U' + macros[bit],
-                          '-I', str(source / 'include'),
-                          '-I', str(ROOT / 'native/include'), str(source / path)], check=False)
-            self.assertNotEqual(result.returncode, 0, 'Overlay compiled with its feature disabled')
-            self.assertIn(message, result.stderr)
-
 
     def require_space(self, temporary):
         for path in [ROOT, ARGS.archive.parent, temporary]:
