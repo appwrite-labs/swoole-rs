@@ -12,6 +12,7 @@
 #include <vector>
 #include <sys/socket.h>
 #include "swoole_rs_hooks.h"
+#include "swoole_rs_corebase_resolver.h"
 static std::vector<std::string> trace;
 static void record(std::string text){trace.push_back(text);}
 #define SW_USE_IOURING 0

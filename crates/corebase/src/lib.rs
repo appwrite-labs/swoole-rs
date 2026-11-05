@@ -586,3 +586,9 @@ mod config_state;
 pub use config_state::*;
 mod thread_state;
 pub use thread_state::*;
+
+mod resolver;
+pub use resolver::*;
+
+mod resolver_request;
+pub use resolver_request::*;

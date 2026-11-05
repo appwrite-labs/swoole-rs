@@ -1,5 +1,5 @@
 diff --git a/src/network/dns.cc b/src/network/dns.cc
-index ae1223a..8974a47 100644
+index 6a8d816..d13e1ed 100644
 --- a/src/network/dns.cc
 +++ b/src/network/dns.cc
 @@ -23,3 +23,2 @@

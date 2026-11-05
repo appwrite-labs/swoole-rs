@@ -431,6 +431,7 @@ def plan(args, reports):
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(phase))
     if 'coroutine' in modules and integrate:
         native_options = ['--php-prefix', subprocess.check_output(['php-config', '--prefix'], text=True).strip()] if sys.platform == 'darwin' else []
+        native_options += ['--dns-requests']
         if 'hooks' in modules:
             native_options += ['--socket-scopes']
         if getattr(args, 'gtest_prefix', None):
@@ -452,6 +453,8 @@ def plan(args, reports):
         script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-file-owner'))
     if 'corebase' in modules:
+        script('corebase-dns-request-guard', 'tests/modules/corebase/resolver_guard.py',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('corebase-dns-request-guard'))
         script('corebase-thread-owner', 'tests/modules/corebase/thread_owner.py',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--reference', reference.parent.parent / 'src' if captured_reference or getattr(args, 'stdext', False) or getattr(args, 'php_sockets', False) else ROOT / 'target/upstream/src',

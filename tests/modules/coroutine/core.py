@@ -70,6 +70,7 @@ def main():
     parser.add_argument('--config', type=Path, help='Read-only same-platform configured baseline config.h')
     parser.add_argument('--archive', type=Path, help='Same-platform real coroutine Rust static archive')
     parser.add_argument('--build-root', type=Path, help='Private writable cache outside reference/repository')
+    parser.add_argument('--dns-requests', action='store_true', help='Execute the unchanged local DNS no-service original and five real request/async/vector witnesses')
     parser.add_argument('--socket-scopes', action='store_true', help='Also execute the two unchanged original local socket timeout tests and three scoped-state witnesses')
     parser.add_argument('--async-file', action='store_true', help='Also compile and execute the unchanged original coroutine AsyncFile unit')
     parser.add_argument('--lifetime-only', action='store_true', help='Execute only three supplemental real-context lifetime witnesses; original32 remain unmeasured')
@@ -83,12 +84,16 @@ def main():
     parser.add_argument('--timeout', type=int, default=90, help='Seconds per original test, unchanged stress sizes')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    if (args.async_file or args.socket_scopes) and args.lifetime_only:
+    if (args.async_file or args.socket_scopes or args.dns_requests) and args.lifetime_only:
         parser.error('--async-file requires the complete original selection')
     selected_units = [*SELECTED, *(['core-tests/src/coroutine/file.cpp'] if args.async_file else [])]
     if args.socket_scopes:
         selected_units += ['core-tests/src/coroutine/socket.cpp', 'core-tests/src/_lib/server.cpp',
                            'core-tests/src/_lib/process.cpp', 'core-tests/src/coroutine/rust_socket_scopes.cpp']
+    if args.dns_requests:
+        selected_units += ['core-tests/src/network/dns.cpp', 'core-tests/src/coroutine/rust_dns_requests.cpp']
+    if args.socket_scopes or args.dns_requests:
+        selected_units += ['core-tests/src/coroutine/rust_fault_allocation.cpp']
     if args.jobs < 1 or args.timeout < 1:
         parser.error('Jobs/timeout must be positive')
     source = args.source.resolve(strict=True)
@@ -140,6 +145,16 @@ def main():
                 inventory += selected_socket
                 report['unmeasured_socket_originals'] = [case['name'] for case in all_socket if case['name'] not in names]
                 report['scope'] = 'Unchanged coroutine originals and two local socket timeout originals, plus lifetime and scoped-state witnesses; actual complete production overlay. Other socket originals remain unmeasured.'
+            if args.dns_requests:
+                path = 'core-tests/src/network/dns.cpp'
+                all_dns = [{'name': f'{group}.{name}', 'path': path, 'sha256': sha(staged / path)}
+                           for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', (staged / path).read_text())]
+                selected_dns = [case for case in all_dns if case['name'] == 'dns.getaddrinfo_without_service']
+                if len(selected_dns) != 1:
+                    raise ValueError('Original DNS no-service inventory differs')
+                inventory += selected_dns
+                report['unmeasured_dns_originals'] = [case['name'] for case in all_dns if case not in selected_dns]
+                report['scope'] = 'Unchanged coroutine originals and local DNS no-service original, plus selected socket originals and lifetime/owner witnesses; actual production overlay. Other DNS/socket originals explicitly unmeasured.'
             report['original_inventory'] = inventory.copy()
             report['unmeasured_originals'] = [case['name'] for case in inventory] if args.lifetime_only else []
             supplemental = [{'name': group + '.' + name, 'path': LIFETIME, 'sha256': hashlib.sha256(lifetime).hexdigest()} for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', lifetime.decode())]
@@ -149,12 +164,26 @@ def main():
                 path = 'core-tests/src/coroutine/rust_socket_scopes.cpp'
                 data = (ROOT / 'tests/modules/hooks/socket_scopes.cpp').read_bytes()
                 write_changed(staged / path, data)
-                write_changed(staged / 'core-tests/src/coroutine/swoole_rs_test_allocation.h',
-                              (ROOT / 'tests/modules/http/allocation_oracle.h').read_bytes())
                 supplemental += [{'name': group + '.' + name, 'path': path, 'sha256': hashlib.sha256(data).hexdigest()}
                                  for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', data.decode())]
                 if len(supplemental) != 6:
                     raise ValueError('Socket scope witness inventory differs')
+            if args.dns_requests:
+                path = 'core-tests/src/coroutine/rust_dns_requests.cpp'
+                data = (ROOT / 'tests/modules/hooks/dns_request_owner.cpp').read_bytes()
+                write_changed(staged / path, data)
+                extra = [{'name': group + '.' + name, 'path': path, 'sha256': hashlib.sha256(data).hexdigest()}
+                         for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', data.decode())]
+                if len(extra) != 5:
+                    raise ValueError('DNS owner witness inventory differs')
+                supplemental += extra
+            if args.socket_scopes or args.dns_requests:
+                write_changed(staged / 'core-tests/src/coroutine/swoole_rs_test_allocation.h',
+                              b'#include <cstddef>\nnamespace allocation { void begin(size_t); void end(); }\n')
+                write_changed(staged / 'core-tests/src/coroutine/swoole_rs_allocation_definitions.h',
+                              (ROOT / 'tests/modules/http/allocation_oracle.h').read_bytes())
+                write_changed(staged / 'core-tests/src/coroutine/rust_fault_allocation.cpp',
+                              (ROOT / 'tests/modules/hooks/fault_allocation.cpp').read_bytes())
             inventory = supplemental if args.lifetime_only else inventory + supplemental
             report['inventory'] = inventory
             report['supplemental_inventory'] = supplemental

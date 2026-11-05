@@ -10,7 +10,7 @@ index 2f20ee0..9fb5f4a 100644
 -    std::string dns_hosts_path;
      std::list<NameResolver> name_resolvers;
 diff --git a/src/network/dns.cc b/src/network/dns.cc
-index 044ff22..ae1223a 100644
+index b9777a3..6a8d816 100644
 --- a/src/network/dns.cc
 +++ b/src/network/dns.cc
 @@ -32,4 +32,2 @@
