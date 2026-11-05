@@ -1,19 +1,26 @@
-//! The public `Server` methods of `src/server/master.cc` that were one operation
-//! over a fresh context, defined under their upstream (Itanium) symbols when the
-//! hybrid links this crate (`upstream-symbols`). Native code registers the
-//! guarded runner (`server_run`) once; each method fills the context the way its
-//! C++ forward did and runs over it.
+//! The public `Server` methods of `src/server/master.cc`, and the `BaseFactory`
+//! methods that were `src/server/base.cc`, that are one operation over a fresh
+//! context, defined under their upstream (Itanium) symbols when the hybrid links
+//! this crate (`upstream-symbols`). Native code registers the guarded runner
+//! (`server_run`) once; each method fills the context the way its C++ forward did
+//! and runs over it.
 
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
 use std::sync::OnceLock;
 
+use crate::base_factory::{SEND_DATA, SendData};
+use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER, OP_TASK_PACK};
 use crate::ops::{
-    RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_DISABLE_ACCEPT, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
-    RUN_IDLE_WORKERS, RUN_REOPEN_LOGGER, RUN_SCHEDULE_WORKER, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN,
-    RUN_ST_ABORT, RUN_ST_CLEAR_TIMER, RUN_ST_FOREACH, RUN_ST_STORE_PIPE_FD, RUN_STOP_MASTER_THREAD,
-    RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_BASE_DISPATCH, RUN_BASE_END,
+    RUN_BASE_FINISH, RUN_BASE_NOTIFY, RUN_DISABLE_ACCEPT, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
+    RUN_IDLE_WORKERS, RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_REOPEN_LOGGER, RUN_SC_SEND,
+    RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN,
+    RUN_ST_ABORT, RUN_ST_CLEAR_TIMER, RUN_ST_FOREACH, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
+    RUN_STOP_MASTER_THREAD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
+use crate::records::ConnectionRecord;
+use swoole_rs_corebase::DataHead;
 
 /// master.cc's `ServerRustContext`, which asserts this layout.
 #[repr(C)]
@@ -323,6 +330,351 @@ pub unsafe extern "C" fn add_connection(
     }
 }
 
+/// `Server::send(session_id, data, length)`: the operation reads the `SendData` it lends.
+///
+/// # Safety
+/// `serv` is a live `Server`; `data` holds `length` bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Server4sendElPKvj")
+)]
+pub unsafe extern "C" fn send(
+    serv: *mut c_void,
+    session_id: c_long,
+    data: *const c_void,
+    length: u32,
+) -> bool {
+    let mut send = SendData {
+        info: DataHead {
+            fd: session_id,
+            kind: SEND_DATA,
+            len: length,
+            ..DataHead::default()
+        },
+        data: data.cast(),
+    };
+    let mut ctx = NativeContext::new(serv);
+    ctx.send = (&raw mut send).cast();
+    ctx.session_id = session_id;
+    ctx.data = data;
+    ctx.length = length;
+    let arg = ctx.send.expose_provenance() as u64;
+    // SAFETY: as the caller guarantees; the SendData lives for the call.
+    unsafe { run(RUN_ST_SEND, arg, &mut ctx) != 0 }
+}
+
+/// `Server::sendwait(session_id, data, length)`.
+///
+/// # Safety
+/// `serv` is a live `Server`; `data` holds `length` bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Server8sendwaitElPKvj")
+)]
+pub unsafe extern "C" fn sendwait(
+    serv: *mut c_void,
+    session_id: c_long,
+    data: *const c_void,
+    length: u32,
+) -> bool {
+    let mut ctx = NativeContext::new(serv);
+    ctx.session_id = session_id;
+    ctx.data = data;
+    ctx.length = length;
+    // SAFETY: as the caller guarantees.
+    unsafe { run(RUN_SENDWAIT, session_id.cast_unsigned(), &mut ctx) != 0 }
+}
+
+/// `Server::has_kernel_nobufs_error(session_id)`.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Server23has_kernel_nobufs_errorEl")
+)]
+pub unsafe extern "C" fn has_kernel_nobufs_error(serv: *mut c_void, session_id: c_long) -> bool {
+    let mut ctx = NativeContext::new(serv);
+    // SAFETY: as the caller guarantees.
+    unsafe { run(RUN_KERNEL_NOBUFS, session_id.cast_unsigned(), &mut ctx) != 0 }
+}
+
+/// `Server::send_to_connection(send)`: `SW_OK` or `SW_ERR`.
+///
+/// # Safety
+/// `serv` is a live `Server`; `send` a live `SendData`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Server18send_to_connectionEPKNS_8SendDataE")
+)]
+pub unsafe extern "C" fn send_to_connection(serv: *mut c_void, send: *const c_void) -> c_int {
+    // SAFETY: as the caller guarantees.
+    let header = unsafe { &*send.cast::<SendData>() };
+    let mut ctx = NativeContext::new(serv);
+    ctx.send = send.cast_mut();
+    ctx.session_id = header.info.fd;
+    ctx.data = header.data.cast();
+    ctx.length = header.info.len;
+    // SAFETY: as the caller guarantees.
+    c_int::narrow(unsafe { run(RUN_SC_SEND, header.info.kind.into(), &mut ctx) })
+}
+
+/// `SW_IPC_BUFFER_SIZE`: `SW_IPC_MAX_SIZE` less a `DataHead` (master.cc asserts it).
+const IPC_BUFFER_SIZE: usize = if cfg!(target_os = "macos") {
+    2048
+} else {
+    8192
+} - 40;
+
+/// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
+#[repr(C, align(8))]
+struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
+
+/// `Server::sendfile(session_id, file, l_file, offset, length)`.
+///
+/// # Safety
+/// `serv` is a live `Server`; `file` holds `l_file` bytes.
+#[cfg_attr(
+    all(feature = "upstream-symbols", target_os = "macos"),
+    unsafe(export_name = "_ZNK6swoole6Server8sendfileElPKcjxm")
+)]
+#[cfg_attr(
+    all(feature = "upstream-symbols", not(target_os = "macos")),
+    unsafe(export_name = "_ZNK6swoole6Server8sendfileElPKcjlm")
+)]
+pub unsafe extern "C" fn sendfile(
+    serv: *mut c_void,
+    session_id: c_long,
+    file: *const c_char,
+    l_file: u32,
+    offset: libc::off_t,
+    length: usize,
+) -> bool {
+    let mut buffer = SendfileBuffer([0; IPC_BUFFER_SIZE]);
+    // `SendfileTask::length` follows its `off_t offset` (master.cc asserts it).
+    buffer.0[8..16].copy_from_slice(&length.to_ne_bytes());
+    let mut ctx = NativeContext::new(serv);
+    ctx.session_id = session_id;
+    ctx.data = file.cast();
+    ctx.length = l_file;
+    ctx.buffer = buffer.0.as_mut_ptr().cast();
+    ctx.offset = offset;
+    // SAFETY: as the caller guarantees; the buffer lives for the call.
+    unsafe { run(RUN_SENDFILE, session_id.cast_unsigned(), &mut ctx) != 0 }
+}
+
+/// `Server::create_base_factory()`: the new `BaseFactory`, or null.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server19create_base_factoryEv")
+)]
+pub unsafe extern "C" fn create_base_factory(serv: *mut c_void) -> *mut c_void {
+    let mut ctx = NativeContext::new(serv);
+    // SAFETY: as the caller guarantees.
+    if unsafe { run(RUN_BASE_CREATE, 0, &mut ctx) } != 0 {
+        ctx.object
+    } else {
+        ptr::null_mut()
+    }
+}
+
+/// `BaseFactory::start()`: base mode has nothing to start.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole11BaseFactory5startEv")
+)]
+pub extern "C" fn base_factory_start(_factory: *mut c_void) -> bool {
+    true
+}
+
+/// `BaseFactory::shutdown()`: nor to stop.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole11BaseFactory8shutdownEv")
+)]
+pub extern "C" fn base_factory_shutdown(_factory: *mut c_void) -> bool {
+    true
+}
+
+/// Runs a `BaseFactory` operation over its server, with `send` lent.
+///
+/// # Safety
+/// `factory` is a live `Factory`; `send` null or what `op` reads.
+unsafe fn on_base(factory: *mut c_void, send: *mut c_void, op: u32, arg: u64) -> bool {
+    // `Factory::server_`, the one member after the vtable pointer (master.cc asserts it).
+    // SAFETY: as the caller guarantees.
+    let serv = unsafe { *factory.cast::<*mut c_void>().wrapping_add(1) };
+    let mut ctx = NativeContext::new(serv);
+    ctx.send = send;
+    // SAFETY: as the caller guarantees.
+    unsafe { run(op, arg, &mut ctx) != 0 }
+}
+
+/// A `BaseFactory` method over one pointer, which is the operation's argument.
+macro_rules! base_methods {
+    ($($symbol:literal fn $name:ident($p:ident) = $op:ident, lend $lend:expr;)*) => {$(
+        #[doc = concat!("`", $symbol, "`.")]
+        ///
+        /// # Safety
+        /// `factory` is a live `BaseFactory`; the argument is the live record it takes.
+        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
+        pub unsafe extern "C" fn $name(factory: *mut c_void, $p: *mut c_void) -> bool {
+            let arg = $p.expose_provenance() as u64;
+            // SAFETY: as the caller guarantees.
+            unsafe { on_base(factory, if $lend { $p } else { ptr::null_mut() }, $op, arg) }
+        }
+    )*};
+}
+
+base_methods! {
+    "_ZN6swoole11BaseFactory8dispatchEPNS_8SendDataE" fn base_factory_dispatch(task) = RUN_BASE_DISPATCH, lend true;
+    "_ZN6swoole11BaseFactory6finishEPNS_8SendDataE" fn base_factory_finish(data) = RUN_BASE_FINISH, lend true;
+    "_ZN6swoole11BaseFactory6notifyEPNS_8DataHeadE" fn base_factory_notify(info) = RUN_BASE_NOTIFY, lend false;
+}
+
+/// Runs the native op `op` over `ctx`, which holds its operands.
+///
+/// # Safety
+/// `ctx.serv` is a live `Server`, and the other fields are what `op` reads.
+unsafe fn native_op(op: u32, ctx: &mut NativeContext) -> bool {
+    // SAFETY: as the caller guarantees.
+    unsafe { run(RUN_NATIVE_OP, op.into(), ctx) != 0 }
+}
+
+/// `Server::CLOSE_RESET`, `Server::CLOSE_ACTIVELY`.
+const CLOSE_RESET: c_int = 1 << 1;
+const CLOSE_ACTIVELY: c_int = 1 << 2;
+
+/// `Server::close(session_id, reset)`: the factory ends the session, actively.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Server5closeElb")
+)]
+pub unsafe extern "C" fn close(serv: *mut c_void, session_id: c_long, reset: bool) -> bool {
+    let mut ctx = NativeContext::new(serv);
+    ctx.session_id = session_id;
+    ctx.number = CLOSE_ACTIVELY | if reset { CLOSE_RESET } else { 0 };
+    // SAFETY: as the caller guarantees.
+    unsafe { native_op(OP_FACTORY_END, &mut ctx) }
+}
+
+/// `Server::notify(conn, event)`: the factory hears `event` for `conn`.
+///
+/// # Safety
+/// `serv` is a live `Server` and `conn` one of its connections.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Server6notifyEPNS_10ConnectionENS_15ServerEventTypeE")
+)]
+pub unsafe extern "C" fn notify(
+    serv: *mut c_void,
+    conn: *const ConnectionRecord,
+    event: c_int,
+) -> bool {
+    // SAFETY: as the caller guarantees.
+    let conn = unsafe { &*conn };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "DataHead's uint8_t type and uint16_t server_fd keep the low bits, as the C++ assignments did"
+    )]
+    let mut head = DataHead {
+        fd: conn.fd.into(),
+        reactor_id: conn.reactor_id.into(),
+        kind: event as u8,
+        server_fd: conn.server_fd as u16,
+        ..DataHead::default()
+    };
+    let mut ctx = NativeContext::new(serv);
+    ctx.object = (&raw mut head).cast();
+    // SAFETY: as the caller guarantees; the head lives for the call.
+    unsafe { native_op(OP_FACTORY_NOTIFY, &mut ctx) }
+}
+
+/// `SW_SERVER_EVENT_PIPE_MESSAGE` (master.cc asserts it).
+const EVENT_PIPE_MESSAGE: u8 = 10;
+
+/// `Server::send_pipe_message(worker_id, msg)`: `msg` to that worker, through the master.
+///
+/// # Safety
+/// `serv` is a live `Server`, `worker_id` one of its workers and `msg` a live `EventData`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server17send_pipe_messageEjPNS_9EventDataE")
+)]
+pub unsafe extern "C" fn send_pipe_message(
+    serv: *mut c_void,
+    worker_id: u32,
+    msg: *mut DataHead,
+) -> bool {
+    // SAFETY: as the caller guarantees: an `EventData` starts with its `DataHead`.
+    let head = unsafe { &mut *msg };
+    head.kind = EVENT_PIPE_MESSAGE;
+    let mut ctx = NativeContext::new(serv);
+    ctx.number = worker_id.cast_signed();
+    ctx.object = msg.cast();
+    // `EventData::size()`: the head and its payload.
+    ctx.length = 40 + head.len;
+    // SAFETY: as the caller guarantees.
+    unsafe { native_op(OP_PIPE_TO_WORKER, &mut ctx) }
+}
+
+/// An `EventData`: `SW_IPC_MAX_SIZE` bytes (master.cc asserts it), aligned for its head.
+#[repr(C, align(8))]
+struct EventData([u8; IPC_BUFFER_SIZE + 40]);
+
+/// `Server::send_pipe_message(worker_id, data, len)`: `data` packed as a task.
+///
+/// # Safety
+/// `serv` is a live `Server` and `worker_id` one of its workers; `data` holds `len` bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server17send_pipe_messageEjPKcm")
+)]
+pub unsafe extern "C" fn send_pipe_message_data(
+    serv: *mut c_void,
+    worker_id: u32,
+    data: *const c_char,
+    len: usize,
+) -> bool {
+    let mut buf = EventData([0; IPC_BUFFER_SIZE + 40]);
+    let mut ctx = NativeContext::new(serv);
+    ctx.object = buf.0.as_mut_ptr().cast();
+    ctx.data = data.cast();
+    ctx.offset = i64::try_from(len).unwrap_or(i64::MAX);
+    // SAFETY: as the caller guarantees; the buffer lives for the call.
+    if !unsafe { native_op(OP_TASK_PACK, &mut ctx) } {
+        return false;
+    }
+    // SAFETY: as the caller guarantees; task_pack filled the buffer's head.
+    unsafe { send_pipe_message(serv, worker_id, buf.0.as_mut_ptr().cast()) }
+}
+
+/// `BaseFactory::end(session_id, flags)`.
+///
+/// # Safety
+/// `factory` is a live `BaseFactory`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole11BaseFactory3endEli")
+)]
+pub unsafe extern "C" fn base_factory_end(
+    factory: *mut c_void,
+    session_id: c_long,
+    flags: c_int,
+) -> bool {
+    // The C++ forward's `(uint64_t) session_id | ((uint64_t) flags << 48)`.
+    let arg = session_id.cast_unsigned() | (i64::from(flags).cast_unsigned() << 48);
+    // SAFETY: as the caller guarantees.
+    unsafe { on_base(factory, ptr::null_mut(), RUN_BASE_END, arg) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +683,12 @@ mod tests {
     /// The last call the fake runner saw: op, arg and the context's fields.
     type Seen = (u32, u64, usize, usize, usize, usize, c_int, usize);
     static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
+    /// The send fields of each call: op, arg, serv, send, data, length, session,
+    /// offset and the `SendfileTask::length` in the buffer, if any.
+    type Sent = (u32, u64, usize, usize, usize, u32, c_long, i64, usize);
+    static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
+    /// The worker or flags and the `DataHead` of each native op that takes one.
+    static HEADS: Mutex<Vec<(c_int, DataHead)>> = Mutex::new(Vec::new());
 
     unsafe extern "C-unwind" fn fake(op: u32, arg: u64, ctx: *mut NativeContext) -> i64 {
         // SAFETY: the methods pass their own live context.
@@ -347,10 +705,52 @@ mod tests {
                 ctx.number,
                 ctx.host.addr(),
             ));
+        let task_length = if ctx.buffer.is_null() {
+            0
+        } else {
+            // SAFETY: sendfile's buffer starts with a `SendfileTask`.
+            unsafe { ctx.buffer.add(8).cast::<usize>().read_unaligned() }
+        };
+        SENT.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((
+                op,
+                arg,
+                ctx.serv.addr(),
+                ctx.send.addr(),
+                ctx.data.addr(),
+                ctx.length,
+                ctx.session_id,
+                ctx.offset,
+                task_length,
+            ));
+        if op == RUN_NATIVE_OP {
+            let head = ctx.object.cast::<DataHead>();
+            let number = ctx.number;
+            let push = |head: DataHead| {
+                HEADS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((number, head));
+            };
+            match u32::try_from(arg).unwrap_or(0) {
+                OP_TASK_PACK => {
+                    // SAFETY: the context lends the buffer to pack into.
+                    unsafe { (*head).len = 3 };
+                    return 1;
+                }
+                // SAFETY: these lend a head.
+                OP_FACTORY_NOTIFY | OP_PIPE_TO_WORKER => push(unsafe { *head }),
+                _ => push(DataHead::default()),
+            }
+            return 1;
+        }
         ctx.port = ptr::without_provenance_mut(0x50);
         ctx.conn = ptr::without_provenance_mut(0x60);
+        ctx.object = ptr::without_provenance_mut(0x70);
         match op {
-            RUN_SHUTDOWN | RUN_ADD_PORT => 1,
+            RUN_SHUTDOWN | RUN_ADD_PORT | RUN_BASE_CREATE | RUN_ST_SEND => 1,
+            RUN_SC_SEND => -1,
             RUN_IDLE_WORKERS => -1,
             _ => 0,
         }
@@ -362,6 +762,14 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .last()
             .unwrap_or(&(0, 0, 0, 0, 0, 0, 0, 0))
+    }
+
+    fn sent() -> Sent {
+        *SENT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last()
+            .unwrap_or(&(0, 0, 0, 0, 0, 0, 0, 0, 0))
     }
 
     #[test]
@@ -408,6 +816,147 @@ mod tests {
             assert_eq!(last().5, 0x40, "callback in object");
             assert!(!feedback(serv, at(0x60), 5), "feedback result");
             assert_eq!(last().1, 5, "event arg");
+            send_family_and_base_factory(serv);
+        }
+    }
+
+    unsafe fn send_family_and_base_factory(serv: *mut c_void) {
+        let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
+        unsafe {
+            let data = at(0x80);
+            assert!(send(serv, 9, data, 4), "send's 1 is true");
+            assert_eq!(
+                sent(),
+                (
+                    RUN_ST_SEND,
+                    sent().3 as u64,
+                    0x10,
+                    sent().3,
+                    0x80,
+                    4,
+                    9,
+                    0,
+                    0
+                ),
+                "send context, with its SendData lent"
+            );
+            assert_ne!(sent().3, 0, "a SendData is lent");
+            assert!(!sendwait(serv, 9, data, 4), "sendwait result");
+            assert_eq!(sent().1, 9, "sendwait passes the session");
+            assert!(!has_kernel_nobufs_error(serv, 11), "nobufs result");
+            assert_eq!(sent().1, 11, "nobufs passes the session");
+            assert!(
+                !sendfile(serv, 12, c"f".as_ptr(), 1, 3, 99),
+                "sendfile result"
+            );
+            let (op, arg, _, _, _, length, session, offset, task_length) = sent();
+            assert!(
+                op == RUN_SENDFILE && arg == 12 && length == 1 && session == 12,
+                "sendfile context"
+            );
+            assert_eq!((offset, task_length), (3, 99), "offset and task length");
+
+            let mut task = SendData {
+                info: DataHead {
+                    fd: 13,
+                    len: 5,
+                    kind: 2,
+                    ..DataHead::default()
+                },
+                data: data.cast_const().cast(),
+            };
+            let task_at = (&raw mut task).cast::<c_void>();
+            assert_eq!(send_to_connection(serv, task_at), -1, "SW_ERR");
+            assert_eq!(
+                sent(),
+                (RUN_SC_SEND, 2, 0x10, task_at.addr(), 0x80, 5, 13, 0, 0),
+                "send_to_connection reads the SendData"
+            );
+
+            assert_eq!(
+                create_base_factory(serv).addr(),
+                0x70,
+                "the created factory"
+            );
+            assert_eq!(sent().0, RUN_BASE_CREATE, "create op");
+            // A Factory: its vptr, then server_.
+            let mut factory = [at(0x90), serv];
+            let factory_at = factory.as_mut_ptr().cast::<c_void>();
+            assert!(base_factory_start(factory_at) && base_factory_shutdown(factory_at));
+            assert!(
+                !base_factory_dispatch(factory_at, task_at),
+                "dispatch result"
+            );
+            let (op, arg, s, lent, ..) = sent();
+            assert!(
+                op == RUN_BASE_DISPATCH
+                    && arg == task_at.addr() as u64
+                    && s == 0x10
+                    && lent == task_at.addr(),
+                "dispatch lends the task"
+            );
+            base_factory_notify(factory_at, at(0xa0));
+            let (op, arg, s, lent, ..) = sent();
+            assert!(
+                op == RUN_BASE_NOTIFY && arg == 0xa0 && s == 0x10 && lent == 0,
+                "notify passes the head"
+            );
+            base_factory_end(factory_at, 7, 6);
+            assert_eq!(sent().1, 7 | (6 << 48), "end packs flags above the session");
+            close_notify_and_pipe_messages(serv);
+        }
+    }
+
+    fn head() -> (c_int, DataHead) {
+        *HEADS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last()
+            .unwrap_or(&(0, DataHead::default()))
+    }
+
+    unsafe fn close_notify_and_pipe_messages(serv: *mut c_void) {
+        unsafe {
+            assert!(close(serv, 21, true), "close result");
+            let (op, arg, _, _, _, _, session, ..) = sent();
+            assert!(
+                op == RUN_NATIVE_OP && arg == u64::from(OP_FACTORY_END) && session == 21,
+                "close ends the session"
+            );
+            assert_eq!(head().0, CLOSE_ACTIVELY | CLOSE_RESET, "reset flags");
+            close(serv, 21, false);
+            assert_eq!(head().0, CLOSE_ACTIVELY, "active flags");
+
+            // SAFETY: a zeroed record is a valid connection.
+            let mut conn: ConnectionRecord = core::mem::zeroed();
+            conn.fd = 22;
+            conn.reactor_id = 3;
+            conn.server_fd = 0x1_0005;
+            assert!(notify(serv, &raw const conn, 0x104), "notify result");
+            assert_eq!(sent().1, u64::from(OP_FACTORY_NOTIFY), "notify op");
+            let (_, h) = head();
+            assert!(
+                h.fd == 22 && h.reactor_id == 3 && h.kind == 4 && h.server_fd == 5,
+                "notify head keeps the low bits"
+            );
+
+            assert!(
+                send_pipe_message_data(serv, 2, c"abc".as_ptr(), 3),
+                "pipe result"
+            );
+            let (op, arg, _, _, data, length, ..) = sent();
+            assert!(
+                op == RUN_NATIVE_OP
+                    && arg == u64::from(OP_PIPE_TO_WORKER)
+                    && length == 43
+                    && data == 0,
+                "the packed message goes to the worker with its size"
+            );
+            let (worker, h) = head();
+            assert!(
+                worker == 2 && h.kind == EVENT_PIPE_MESSAGE,
+                "worker and pipe type"
+            );
         }
     }
 }

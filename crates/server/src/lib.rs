@@ -274,6 +274,9 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
         RUN_STORE_LISTEN_SOCKET,
     };
     Ok(match operation {
+        ops::RUN_NATIVE_OP => h
+            .op(u32::try_from(arg).unwrap_or(u32::MAX), 0)?
+            .cast_signed(),
         ops::RUN_RT_READ => conn_io::read(h, arg)?,
         ops::RUN_RT_WRITE => conn_io::write(h, arg)?,
         ops::RUN_PEER_CLOSE => conn_io::peer_close(h, arg)?,
