@@ -277,17 +277,13 @@ typedef struct {
     int warn;
 } swr_v1_socket_ssl_sendfile_result;
 swr_v1_socket_ssl_sendfile_result swr_v1_socket_ssl_sendfile(int file_fd, off_t *offset, size_t size, swr_v1_socket_tls_io send, void *socket, bool *kernel_nobufs);
-/* Socket::readv/writev: readv(2)/writev(2) over state's remaining iovecs, or tls one
- * iovec at a time until one comes up short; advances state like
- * IOVector::update_iterator and retries EINTR. Native code copies the IOVector's
- * cursor in and back. */
+/* An IOVector's cursor. */
 typedef struct {
     struct iovec *iterator;
     int remain_count;
     int index;
     size_t offset_bytes;
 } swr_v1_socket_iov_state;
-ssize_t swr_v1_socket_iov(int fd, bool write, swr_v1_socket_iov_state *state, swr_v1_socket_tls_io tls, void *socket);
 /* The descriptor allocation owns its cursor; payloads remain borrowed. */
 typedef struct swr_v1_reactor_iov swr_v1_reactor_iov;
 typedef struct {
@@ -306,7 +302,6 @@ void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
 swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner);
 size_t swr_v1_reactor_iov_length(const swr_v1_reactor_iov *owner);
 void swr_v1_reactor_iov_advance(swr_v1_reactor_iov *owner, intptr_t n);
-ssize_t swr_v1_socket_iov_owned(int fd, bool write, swr_v1_reactor_iov *owner, swr_v1_socket_tls_io tls, void *socket);
 /* File requests own the actual File record and all range/cork slots. Native
  * views retain source-level File/std::string interfaces; only Rust closes fd. */
 typedef struct swr_v1_os_file_record swr_v1_os_file_record;
@@ -329,10 +324,7 @@ void swr_v1_socket_file_cork(swr_v1_socket_file_request *owner, const swr_v1_soc
  * native code gives the socket's flags and performs each I/O call. Returns the
  * bytes moved or -1 with the last error and errno set. */
 enum {
-    SWR_SOCKET_SYNC_SEND = 0,     /* all of length, retrying short writes */
-    SWR_SOCKET_SYNC_RECV = 1,     /* once, or all of length under MSG_WAITALL */
-    SWR_SOCKET_SYNC_ONCE = 2,     /* one call that moves bytes */
-    SWR_SOCKET_SYNC_SENDFILE = 3, /* all of length; a zero return is an error */
+    SWR_SOCKET_SYNC_SENDFILE = 3, /* all of length; a zero return is an error (Socket::sendfile_sync) */
 };
 typedef struct {
     void *socket;

@@ -113,12 +113,6 @@ bool swr_v1_socket_has_kernel_nobufs(swr_v1_socket *socket);
  * set) when close(2) failed. */
 bool swr_v1_socket_release(swr_v1_socket *socket);
 swr_v1_socket_output_result swr_v1_socket_file_sent(swr_v1_socket_file_request *owner, swr_v1_socket *socket, const swr_v1_socket_output_hooks *hooks, ssize_t sent, size_t requested);
-/* recv/send/peek with EINTR and dont_restart, through `tls` when the record holds an
- * SSL; recv/send count bytes and, with a timer, stamp the time from `now`. A recv
- * that would block after POLLHUP returns 0. */
-ssize_t swr_v1_socket_record_recv(swr_v1_socket *socket, void *buffer, size_t length, int flags, swr_v1_socket_tls_io tls, double (*now)(void));
-ssize_t swr_v1_socket_record_send(swr_v1_socket *socket, const void *buffer, size_t length, int flags, swr_v1_socket_tls_io tls, double (*now)(void));
-ssize_t swr_v1_socket_record_peek(swr_v1_socket *socket, void *buffer, size_t length, int flags, swr_v1_socket_tls_io tls);
 }
 
 static_assert(sizeof(void *) == 8, "the socket record's offsets are LP64's");
