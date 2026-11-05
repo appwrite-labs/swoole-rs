@@ -1,8 +1,10 @@
+use crate::pool::Pool;
 use std::alloc::{Layout, alloc, dealloc};
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Node {
     priority: u64,
     position: u32,
@@ -45,11 +47,11 @@ pub unsafe extern "C" fn swr_v1_memory_heap_debug_step(
 }
 
 /// Node invariant: every pointer in `nodes` and `spare` is a live `Node` allocation
-/// (global allocator, `Node` layout) owned by this heap, freed only by `retire` (for
-/// the previous spare) and `Drop`. `&mut self` makes node updates exclusive.
+/// owned by this heap's stable pool, retired only by `retire` (for the previous
+/// spare) and `Drop`. `&mut self` makes node updates exclusive.
 struct Heap {
     nodes: Vec<NonNull<Node>>,
-    // Bound retained storage to one removed node; live node addresses never move.
+    pool: Pool<Node>,
     spare: Option<NonNull<Node>>,
     max: bool,
 }
@@ -170,7 +172,7 @@ impl Heap {
         unsafe { (*node.as_ptr()).position = 0 };
         if let Some(previous) = self.spare.replace(node) {
             // SAFETY: the previous spare was owned by this heap and nothing refers to it.
-            unsafe { dealloc(previous.as_ptr().cast(), Layout::new::<Node>()) };
+            unsafe { self.pool.remove(previous) };
         }
         data
     }
@@ -184,7 +186,9 @@ impl Drop for Heap {
     fn drop(&mut self) {
         for node in self.nodes.iter().chain(self.spare.iter()) {
             // SAFETY: every owned node is freed exactly once, here.
-            unsafe { dealloc(node.as_ptr().cast(), Layout::new::<Node>()) };
+            unsafe {
+                self.pool.remove(*node);
+            }
         }
     }
 }
@@ -207,6 +211,7 @@ pub unsafe extern "C" fn swr_v1_memory_heap_create(
     }
     let mut heap = Heap {
         nodes: Vec::new(),
+        pool: Pool::default(),
         spare: None,
         max: max == 1,
     };
@@ -280,33 +285,30 @@ pub unsafe extern "C" fn swr_v1_memory_heap_push(
     if heap.nodes.len() >= u32::MAX as usize - 1 || heap.nodes.try_reserve(1).is_err() {
         return ptr::null_mut();
     }
-    #[expect(
-        clippy::cast_ptr_alignment,
-        reason = "alloc honours Layout::new::<Node>()"
-    )]
-    let Some(node) = heap
-        .spare
-        .take()
-        // SAFETY: `Node` is not zero-sized; null becomes `None`.
-        .or_else(|| NonNull::new(unsafe { alloc(Layout::new::<Node>()).cast::<Node>() }))
-    else {
-        return ptr::null_mut();
-    };
     let index = heap.nodes.len();
-    // SAFETY: a spare or fresh `Node` allocation this heap now owns.
-    unsafe {
-        node.as_ptr().write(Node {
-            priority,
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "native uint32_t positions; insert refuses len >= u32::MAX - 1"
-            )]
-            position: index as u32 + 1,
-            data,
-        });
+    let value = Node {
+        priority,
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "insert refuses len >= u32::MAX - 1"
+        )]
+        position: index as u32 + 1,
+        data,
+    };
+    let node = if let Some(node) = heap.spare.take() {
+        // SAFETY: the spare is a live, detached Node owned by this heap.
+        unsafe { node.as_ptr().write(value) };
+        node
+    } else {
+        let Some(node) = heap.pool.insert(value) else {
+            return ptr::null_mut();
+        };
+        node
     };
     heap.nodes.push(node);
-    heap.up(index);
+    if index != 0 {
+        heap.up(index);
+    }
     node.as_ptr()
 }
 #[unsafe(no_mangle)]
