@@ -128,19 +128,29 @@ pub unsafe extern "C" fn swr_v1_core_thread_start(
     }
     code
 }
+/// Validate the owned handle before native performs the cancellable join.
 /// # Safety
-/// The controlling thread exclusively owns this record and joins at most once.
+/// The controlling thread exclusively owns this record.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_join(record: *mut CoreThread) -> c_int {
-    // SAFETY: exclusive access to the owner handle.
-    let handle = unsafe { (*record).handle };
-    if handle == 0 {
-        return libc::EINVAL;
+pub unsafe extern "C" fn swr_v1_core_thread_join_check(record: *const CoreThread) -> c_int {
+    // SAFETY: the controlling thread alone reads/writes its owned handle.
+    if unsafe { (*record).handle == 0 } {
+        libc::EINVAL
+    } else {
+        0
     }
-    // SAFETY: a pthread handle created by this owner, not previously joined/detached.
-    let code = unsafe { libc::pthread_join(handle, ptr::null_mut()) };
+}
+/// Commit the native join's result; a cancelled join never reaches this leaf.
+/// # Safety
+/// `code` is the result of joining this record's current handle, or the failed
+/// validation status. The controlling thread exclusively owns the record.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_core_thread_join_complete(
+    record: *mut CoreThread,
+    code: c_int,
+) -> c_int {
     if code == 0 {
-        // SAFETY: a successful join consumed this handle; failures preserve it.
+        // SAFETY: successful native join consumed exactly this owner handle.
         unsafe {
             (*record).handle = 0;
         }
@@ -171,6 +181,17 @@ pub unsafe extern "C" fn swr_v1_core_thread_detach(record: *mut CoreThread) -> c
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+    // The test controls its own uncancelled pthread; production's cancellable
+    // join is native and executes only after the Rust validation leaf returns.
+    unsafe fn join(record: *mut CoreThread) -> c_int {
+        let code = unsafe { swr_v1_core_thread_join_check(record) };
+        let code = if code == 0 {
+            unsafe { libc::pthread_join(swr_v1_core_thread_id(record), ptr::null_mut()) }
+        } else {
+            code
+        };
+        unsafe { swr_v1_core_thread_join_complete(record, code) }
+    }
     struct Running {
         record: *mut CoreThread,
         ready: AtomicBool,
@@ -199,7 +220,7 @@ mod tests {
             });
             assert!(!swr_v1_core_thread_joinable(&raw const *owner));
             assert!(!swr_v1_core_thread_alive(&raw const *owner));
-            assert_eq!(swr_v1_core_thread_join(&raw mut *owner), libc::EINVAL);
+            assert_eq!(join(&raw mut *owner), libc::EINVAL);
             assert_eq!(
                 swr_v1_core_thread_start(&raw mut *owner, child, (&raw mut *context).cast()),
                 0
@@ -212,11 +233,11 @@ mod tests {
             assert_eq!(swr_v1_core_thread_status(&raw const *owner), 0);
             assert_ne!(swr_v1_core_thread_id(&raw const *owner), 0);
             context.release.store(true, Ordering::Release);
-            assert_eq!(swr_v1_core_thread_join(&raw mut *owner), 0);
+            assert_eq!(join(&raw mut *owner), 0);
             assert!(!swr_v1_core_thread_alive(&raw const *owner));
             assert!(!swr_v1_core_thread_joinable(&raw const *owner));
             assert_eq!(swr_v1_core_thread_status(&raw const *owner), 37);
-            assert_eq!(swr_v1_core_thread_join(&raw mut *owner), libc::EINVAL);
+            assert_eq!(join(&raw mut *owner), libc::EINVAL);
             assert_eq!(swr_v1_core_thread_detach(&raw mut *owner), libc::EINVAL);
         }
     }

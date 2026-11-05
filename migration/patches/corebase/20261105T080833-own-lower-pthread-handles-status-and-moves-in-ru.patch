@@ -1,5 +1,5 @@
 diff --git a/include/swoole_thread.h b/include/swoole_thread.h
-index 324f30e..bd569aa 100644
+index 324f30e..7e2fc12 100644
 --- a/include/swoole_thread.h
 +++ b/include/swoole_thread.h
 @@ -19,2 +19,5 @@
@@ -8,7 +8,7 @@ index 324f30e..bd569aa 100644
 +#include <memory>
 +#include <system_error>
  
-@@ -30,45 +33,55 @@ namespace swoole {
+@@ -30,45 +33,59 @@ namespace swoole {
  class Thread {
 -    int exit_status = 0;
 -    bool living = false;
@@ -18,10 +18,6 @@ index 324f30e..bd569aa 100644
 -  public:
 -    bool is_alive() const {
 -        return living;
--    }
--
--    bool joinable() const {
--        return thread.joinable();
 +    static void check(int error, const char *operation) {
 +        if (!error) return;
 +#if defined(_LIBCPP_VERSION)
@@ -41,8 +37,8 @@ index 324f30e..bd569aa 100644
 +        }
 +    };
  
--    void join() {
--        thread.join();
+-    bool joinable() const {
+-        return thread.joinable();
 +  public:
 +    Thread() noexcept = default;
 +    Thread(const Thread &) = delete;
@@ -51,22 +47,29 @@ index 324f30e..bd569aa 100644
 +        (void) swr_v1_core_thread_move(&state_, &source.state_);
      }
 -
--    void detach() {
--        thread.detach();
+-    void join() {
+-        thread.join();
 +    Thread &operator=(Thread &&source) noexcept {
 +        if (!swr_v1_core_thread_move(&state_, &source.state_)) std::terminate();
 +        return *this;
      }
 -
--    int get_exit_status() const {
--        return exit_status;
+-    void detach() {
+-        thread.detach();
 +    ~Thread() {
 +        if (joinable()) std::terminate();
      }
 -
+-    int get_exit_status() const {
+-        return exit_status;
 +    bool is_alive() const { return swr_v1_core_thread_alive(&state_); }
 +    bool joinable() const { return swr_v1_core_thread_joinable(&state_); }
-+    void join() { check(swr_v1_core_thread_join(&state_), "thread::join failed"); }
++    void join() {
++        int error = swr_v1_core_thread_join_check(&state_);
++        if (!error) error = pthread_join(swr_v1_core_thread_id(&state_), nullptr);
++        check(swr_v1_core_thread_join_complete(&state_, error), "thread::join failed");
+     }
+-
 +    void detach() { check(swr_v1_core_thread_detach(&state_), "thread::detach failed"); }
 +    int get_exit_status() const { return swr_v1_core_thread_status(&state_); }
      pthread_t get_id() {

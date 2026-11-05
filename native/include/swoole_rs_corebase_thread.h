@@ -34,7 +34,9 @@ pthread_t swr_v1_core_thread_id(const struct CoreThread *record);
 
 int swr_v1_core_thread_start(struct CoreThread *record, void *(*entry)(void*), void *argument);
 
-int swr_v1_core_thread_join(struct CoreThread *record);
+int swr_v1_core_thread_join_check(const struct CoreThread *record);
+
+int swr_v1_core_thread_join_complete(struct CoreThread *record, int code);
 
 int swr_v1_core_thread_detach(struct CoreThread *record);
 

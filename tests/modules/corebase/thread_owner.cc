@@ -159,6 +159,23 @@ int main(int argc, char **argv) {
         });
         gate.wait_entered(); gate.release(); gate.wait_finished(); owner.join();
     }
+    {
+        Thread owner; Gate worker;
+        owner.start([&] { worker.enter(); });
+        worker.wait_entered();
+        std::atomic<bool> joining{false}, unwound{false};
+        std::thread joiner([&] {
+            struct Unwound { std::atomic<bool> &flag; ~Unwound() { flag = true; } } guard{unwound};
+            joining = true;
+            owner.join();
+        });
+        while (!joining) std::this_thread::yield();
+        assert(pthread_cancel(joiner.native_handle()) == 0);
+        joiner.join();
+        assert(unwound && owner.joinable());
+        worker.release(); owner.join();
+        assert(!owner.joinable());
+    }
     char original[64] = {}, name[64] = {};
     assert(swoole_thread_get_name(original, sizeof(original)));
     swoole_set_last_error(941);
