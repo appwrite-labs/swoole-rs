@@ -40,6 +40,7 @@ def main():
     headers = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in ['include/swoole_proxy.h', 'include/swoole_redis.h']}
     if args.candidate:
         candidates = {p: (args.candidate / p).read_text() for p in TARGETS}
+        candidate_proxy_header = (args.candidate/'include/swoole_proxy.h').read_text()
     else:
         manifest = module_patches(ROOT / 'migration/patches/protocols')
         with tempfile.TemporaryDirectory(prefix='swr-protocols-overlay-') as directory:
@@ -55,17 +56,24 @@ def main():
                 subprocess.run(['git', '-C', directory, 'apply', '--check', str(path)], check=True)
                 subprocess.run(['git', '-C', directory, 'apply', str(path)], check=True)
             candidates = {p: (staged / p).read_text() for p in TARGETS}
+            candidate_proxy_header = (staged/'include/swoole_proxy.h').read_text()
     archive = args.archive.resolve(strict=True)
     local = Path(__file__).resolve().parent
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'upstream_pin': PIN,
               'scope': 'Actual pinned and selected protocol facade bodies. Native String/allocation/socket IO are modeled, protocol bodies unchanged. The exact original PHP request parser loop runs with modeled Zend parameters on 10000 seeded defined wires versus Rust typed events. Full Zend request/reply callers are staged, not executed here; run request.py/reply.py against actual PHP. No live network in this gate.',
               'sanitizer_scope': 'C++ ASan/UBSan; Rust not instrumented' if args.sanitize else 'none'}
-    def bodies(selected):
+    def bodies(selected, owned):
         mqtt, redis, socks = (selected[p] for p in TARGETS[:3])
         socks_header = headers['include/swoole_proxy.h']
         constants = '\n'.join(line for line in socks_header.splitlines() if line.startswith('#define SW_SOCKS5'))
         socks_types = socks_header[socks_header.index('enum swSocks5State'):socks_header.index('namespace swoole {')]
-        socks_types += socks_header[socks_header.index('struct Socks5Proxy {'):socks_header.index('}  // namespace swoole')]
+        if owned:
+            # The same real borrowed fields/RAII owner used in production; only
+            # method declarations are projected into the comparison namespace.
+            declarations = socks_header[socks_header.index('    ssize_t pack_negotiate_request();'):socks_header.index('}  // namespace swoole')]
+            socks_types += 'struct Socks5Proxy : ::swoole::Socks5Proxy {\n' + declarations
+        else:
+            socks_types += socks_header[socks_header.index('struct Socks5Proxy {'):socks_header.index('}  // namespace swoole')]
         redis_header = headers['include/swoole_redis.h']
         redis_types = redis_header[redis_header.index('enum State {'):redis_header.index('const char *get_number')]
         redis_constants = '#define SW_REDIS_RETURN_NIL "$-1\\r\\n"\n'
@@ -77,14 +85,15 @@ def main():
     with tempfile.TemporaryDirectory(prefix='swr-protocols-native-') as directory:
         tree = Path(directory)
         for name, selected in [('reference', sources), ('candidate', candidates)]:
-            value = bodies(selected)
+            value = bodies(selected, name == 'candidate')
             (tree / f'{name}.inc').write_text(value)
+        (tree/'proxy-candidate.h').write_text(candidate_proxy_header)
         php = sources['ext-src/swoole_redis_server.cc']
         php_loop = php[php.index('    const char *p = Z_STRVAL(zdata);'):php.index('\n    if (command_len >=')]
         (tree / 'php-request-original.inc').write_text(php_loop)
         binary = tree / 'native'
         command = ['c++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unused-function',
-                   '-I' + str(tree), '-I' + str(local), '-I' + str(ROOT / 'native/protocols'),
+                   '-I' + str(tree), '-I' + str(local), '-I' + str(ROOT / 'native/protocols'), '-I'+str(ROOT/'native/include'),
                    str(local / 'native.cc'), str(archive), '-lc', '-lm']
         if sys.platform.startswith('linux'):
             command += ['-ldl', '-lpthread', '-lrt', '-lutil']

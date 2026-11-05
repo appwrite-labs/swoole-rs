@@ -42,5 +42,5 @@ def main():
         units = [('upstream', tree/'upstream_proxy.cc'), ('candidate', tree/'candidate_proxy.cc'), ('candidate', local/'proxy_gate.cc'), ('upstream', dependencies)]
         if not guard(): return 1
         if not sides.build(binary, units, archive, report): write_report(args.output, report); return 1
-        return run(binary, ['swr_v1_http_proxy_pack'], args.output, report)
+        return run(binary, ['swr_v1_http_proxy_owned_pack', 'swr_v1_http_proxy_owned_authorization', 'swr_v1_core_proxy_new'], args.output, report)
 if __name__ == '__main__': sys.exit(main())

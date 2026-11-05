@@ -9,11 +9,13 @@
 )]
 mod bus;
 mod mqtt;
+mod owned_proxy;
 mod redis;
 mod reply;
 mod socks;
 pub use bus::*;
 pub use mqtt::*;
+pub use owned_proxy::*;
 pub use redis::*;
 pub use reply::*;
 pub use socks::*;

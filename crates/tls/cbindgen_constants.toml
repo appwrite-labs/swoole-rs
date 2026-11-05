@@ -1,0 +1,17 @@
+language = "C"
+include_guard = "SWOOLE_RS_TLS_CONSTANTS_H"
+cpp_compat = true
+no_includes = true
+sys_includes = ["stdint.h"]
+documentation = false
+autogen_warning = "/* Generated from crates/tls by cbindgen (tools/headers.sh); do not edit. */"
+[export]
+item_types = ["constants", "enums"]
+include = ["SslCreateFlag", "SslState", "SslVersion", "SslMethod", "SW_SSL_ALL"]
+[export.rename]
+"SslCreateFlag" = "swSSLCreateFlag"
+"SslState" = "swSSLState"
+"SslVersion" = "swSSLVersion"
+"SslMethod" = "swSSLMethod"
+[enum]
+prefix_with_name = false

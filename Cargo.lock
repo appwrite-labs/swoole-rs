@@ -476,6 +476,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
+ "swoole-rs-corebase",
  "swoole-rs-reactor",
  "swoole-rs-uring-sys",
 ]
@@ -486,6 +487,7 @@ version = "0.1.0"
 dependencies = [
  "memchr",
  "swoole-rs-base64",
+ "swoole-rs-corebase",
 ]
 
 [[package]]
@@ -754,6 +756,8 @@ name = "swoole-rs-protocols"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-clients",
+ "swoole-rs-corebase",
  "swoole-rs-reactor",
 ]
 
@@ -800,6 +804,8 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
+ "swoole-rs-corebase",
+ "swoole-rs-reactor",
 ]
 
 [[package]]

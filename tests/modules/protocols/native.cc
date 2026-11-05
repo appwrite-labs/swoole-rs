@@ -16,6 +16,8 @@
 #include <memory>
 #include <arpa/inet.h>
 #include <sys/uio.h>
+#include "proxy-candidate.h"
+static void swoole_set_last_error(int) {}
 #define swoole_error_log(...) ((void)0)
 #define swoole_warning(...) ((void)0)
 #define swoole_sys_warning(...) ((void)0)
@@ -39,6 +41,7 @@ namespace reference {
 #pragma GCC diagnostic pop
 }
 namespace candidate {
+using ::swoole::RustStringView;
 #include "adapter.inc"
 #include "candidate.inc"
 }
