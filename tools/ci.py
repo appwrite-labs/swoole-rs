@@ -13,6 +13,9 @@ until the deadline.
 
 For the merge tier, failed phases come from its `phases` artifact, with new and fixed ones
 against the previous completed run on main; other failures show each failed job's log tail.
+Status also shows the latest completed merge-tier run separately while the requested run
+is unfinished or absent. Its commit identifies the coverage; the exit code still describes
+the requested run.
 
 Progress goes to stderr and the result to stdout (--json for machine output).
 Exit codes: 0 passed, 1 failed, 2 no run, still running or timed out, 3 cancelled.
@@ -104,12 +107,16 @@ def status(workflow, sha):
                          '--json', 'databaseId,status,conclusion,url'))
     if not runs:
         return {'workflow': workflow, 'commit': sha, 'state': 'none'}
-    run = runs[0]
+    return run_status(workflow, sha, runs[0])
+
+
+def run_status(workflow, sha, run):
     state = ('running' if run['status'] != 'completed' else 'passed' if run['conclusion'] == 'success'
              else 'cancelled' if run['conclusion'] == 'cancelled' else 'failed')
     jobs = json.loads(gh('run', 'view', str(run['databaseId']), '--json', 'jobs'))['jobs']
     return {'workflow': workflow, 'commit': sha, 'state': state, 'run': run['databaseId'], 'url': run['url'],
-            'jobs': [{'name': job['name'], 'state': job['conclusion'] or job['status'], 'seconds': seconds(job)}
+            'jobs': [{'name': job['name'], 'id': job.get('databaseId'),
+                      'state': job['conclusion'] or job['status'], 'seconds': seconds(job)}
                      for job in jobs]}
 
 
@@ -150,7 +157,20 @@ def wait(workflow, sha, deadline, poll):
 def failure_logs(result):
     """The tail of each failed job's log, so a failure can be read without another call."""
     if result['state'] != 'failed':
-        return result
+        tails = {}
+        for job in result.get('jobs', []):
+            if job['state'] == 'failure' and job.get('id'):
+                try:
+                    log = gh('api', f"repos/{{owner}}/{{repo}}/actions/jobs/{job['id']}/logs", '--allow-escape-sequences')
+                except subprocess.CalledProcessError as error:
+                    tails[job['name']] = ['Job log unavailable: ' + error.stderr.strip()]
+                    continue
+                lines = log.splitlines()
+                errors = [index for index, line in enumerate(lines) if '##[error]' in line]
+                if errors:
+                    lines = lines[:errors[-1] + 1]
+                tails[job['name']] = lines[-LOG_LINES:]
+        return {**result, 'logs': tails} if tails else result
     try:
         log = gh('run', 'view', str(result['run']), '--log-failed')
     except subprocess.CalledProcessError:
@@ -231,6 +251,26 @@ def phase_changes(result):
     return result
 
 
+def completed_main():
+    """Newest completed success/failure, skipping replaced/cancelled pending runs."""
+    runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--status', 'completed',
+                         '--limit', '30', '--json', 'databaseId,conclusion,status,url,headSha'))
+    for run in runs:
+        if run.get('conclusion') in ('success', 'failure'):
+            return diagnostics(run_status('merge.yml', run['headSha'], run))
+    return None
+
+
+def diagnostics(result):
+    if result['state'] in ('passed', 'failed'):
+        result = phase_changes(result)
+    result = failure_logs(result)
+    if 'failed_phases' in result:
+        for job in [job for job in result.get('logs', {}) if job.split(' (')[0] == PHASES_JOB]:
+            result['logs'].pop(job)
+    return result
+
+
 def report(result, as_json):
     if as_json:
         print(json.dumps(result, indent=1))
@@ -250,6 +290,9 @@ def report(result, as_json):
         print(f'--- {job} (last {len(lines)} lines)', *lines, sep='\n')
     for name, lines in result.get('phase_logs', {}).items():
         print(f'--- new failure {name} (last {len(lines)} log lines)', *lines, sep='\n')
+    if result.get('last_completed'):
+        print('Latest completed run on main (separate from requested commit):')
+        report(result['last_completed'], False)
 
 
 def claimable():
@@ -302,11 +345,9 @@ def main(argv=None):
         else:
             sha = resolve(args.commit)
             result = status(args.workflow, sha) if args.command == 'status' else wait(args.workflow, sha, deadline, args.poll)
-        if result['state'] in ('passed', 'failed'):
-            result = failure_logs(phase_changes(result))
-        if 'failed_phases' in result:
-            for job in [job for job in result.get('logs', {}) if job.split(' (')[0] == PHASES_JOB]:
-                result['logs'].pop(job)
+        result = diagnostics(result)
+        if args.command == 'status' and args.workflow == 'merge.yml' and result['state'] not in ('passed', 'failed'):
+            result['last_completed'] = completed_main()
     except subprocess.CalledProcessError as failure:
         sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
     report(result, args.json)

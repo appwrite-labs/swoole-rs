@@ -6,11 +6,16 @@
 set -e
 cd "$(dirname "$0")/.."
 status=0
-for config in crates/*/cbindgen.toml; do
+for config in crates/*/cbindgen*.toml; do
     crate=$(dirname "$config")
-    header=native/include/swoole_rs_$(basename "$crate").h
+    suffix=$(basename "$config" .toml)
+    suffix=${suffix#cbindgen}
+    header=native/include/swoole_rs_$(basename "$crate")$suffix.h
     generated=$(mktemp)
     cbindgen --quiet --config "$config" --output "$generated" "$crate"
+    if [ -n "$suffix" ] && [ -f "$crate/src/${suffix#_}.rs" ]; then
+        python3 tools/header_strings.py "$crate/src/${suffix#_}.rs" "$generated"
+    fi
     if [ "$1" = --check ]; then
         if ! cmp -s "$generated" "$header"; then
             echo "$header is stale; run tools/headers.sh" >&2
@@ -23,6 +28,9 @@ for config in crates/*/cbindgen.toml; do
     fi
 done
 if [ "$1" = --check ]; then
+    python3 tools/process_records.py --check || status=1
     python3 tools/headers.py || status=1
+else
+    python3 tools/process_records.py
 fi
 exit $status

@@ -96,11 +96,11 @@ class Overlays(unittest.TestCase):
             for name in ['include', 'websocket', 'buffer']:
                 (root / 'native' / name).mkdir(parents=True)
             for name in ['include/swoole_rs.h', 'include/swoole_rs_websocket.h',
-                         'websocket/codec.h', 'buffer/string.h']:
+                         'websocket/codec.h', 'buffer/string.h', 'include/swoole_rs_corebase_constants.h']:
                 (root / 'native' / name).touch()
             with patch.object(build_hybrid, 'ROOT', root):
                 selected = build_hybrid.headers_for(['websocket'])
-                self.assertEqual({p.name for p in selected}, {'swoole_rs.h', 'swoole_rs_websocket.h', 'codec.h'})
+                self.assertEqual({p.name for p in selected}, {'swoole_rs.h', 'swoole_rs_server_state.h', 'swoole_rs_server_view.h', 'swoole_rs_server_records.h', 'swoole_rs_port_state.h', 'swoole_rs_websocket.h', 'codec.h', 'swoole_rs_corebase_constants.h'})
                 (root / 'native/websocket/swoole_rs.h').touch()
                 with self.assertRaises(ValueError):
                     build_hybrid.headers_for(['websocket'])

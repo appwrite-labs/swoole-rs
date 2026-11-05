@@ -45,6 +45,8 @@ elif args[0] == 'api' and '-X' in args:
     pass
 elif args[0] == 'api' and '/compare/' in args[1]:
     print(data.get('compare', 'ahead'))
+elif args[0] == 'api' and '/actions/jobs/' in args[1]:
+    print(data['job_logs'][args[1].split('/')[-2]])
 elif args[0] == 'api':
     print('c' * 40)
 elif args[:2] == ['run', 'list'] and '--commit' not in args:
@@ -75,9 +77,9 @@ elif args[:2] == ['run', 'view'] and '--log-failed' in args:
     print(data.get('failed_log', 'rust\\tcargo test\\t2026-10-25T21:00:01Z error: boom'))
 elif args[:2] == ['run', 'view']:
     jobs = data.get('jobs', {}).get(args[2], [['rust', 'success']])
-    print(json.dumps({'jobs': [{'name': name, 'status': 'completed', 'conclusion': conclusion,
+    print(json.dumps({'jobs': [{'name': name, 'databaseId': index + 100, 'status': 'completed', 'conclusion': conclusion,
                                 'startedAt': '2026-10-25T21:00:00Z', 'completedAt': '2026-10-25T21:00:31Z'}
-                               for name, conclusion in jobs]}))
+                               for index, (name, conclusion) in enumerate(jobs)]}))
 '''
 
 
@@ -216,6 +218,42 @@ class Ci(unittest.TestCase):
     def test_status_without_a_run_is_none(self):
         code, result, _ = self.ci('status', '--commit', 'abc1234', runs={})
         self.assertEqual((code, result['state']), (2, 'none'))
+
+    def test_unfinished_head_shows_completed_failures_without_changing_its_state(self):
+        history = [{'databaseId': 6, 'conclusion': 'cancelled', 'url': 'u6', 'headSha': 'f' * 40},
+                   {'databaseId': 5, 'conclusion': 'failure', 'status': 'completed', 'url': 'u5', 'headSha': 'e' * 40},
+                   {'databaseId': 4, 'conclusion': 'cancelled', 'url': 'u4', 'headSha': 'd' * 40},
+                   {'databaseId': 3, 'conclusion': 'success', 'url': 'u3', 'headSha': 'b' * 40}]
+        phases = {'5': [['socket', False, ['actual failure']]], '3': [['socket', True]]}
+        jobs = {'5': [['full-gates', 'failure']], '3': [['full-gates', 'success']]}
+        for conclusion, state, expected_code in [('running', 'running', 2), (None, 'none', 2),
+                                                  ('cancelled', 'cancelled', 3)]:
+            with self.subTest(conclusion=conclusion):
+                code, result, _ = self.ci('status', runs={'c' * 40: [] if conclusion is None else [conclusion]},
+                                          history=history, phases=phases, jobs=jobs)
+                self.assertEqual((code, result['state'], result['commit']), (expected_code, state, 'c' * 40))
+                completed = result['last_completed']
+                self.assertEqual((completed['commit'], completed['url'], completed['state']), ('e' * 40, 'u5', 'failed'))
+                self.assertEqual((completed['previous_run'], completed['new_failures']), ('u3', ['socket']))
+                self.assertEqual(completed['phase_logs'], {'socket': ['actual failure']})
+
+    def test_pr_status_does_not_query_main_history(self):
+        code, result, _ = self.ci('status', '--workflow', 'pr.yml', runs={'c' * 40: ['running']})
+        self.assertEqual(code, 2)
+        self.assertNotIn('last_completed', result)
+        self.assertFalse(any('--branch main' in call for call in self.gh_calls))
+
+    def test_failed_job_logs_are_visible_while_siblings_run(self):
+        log = '\n'.join(['old output'] * 50 + ['compiler diagnostic', '##[error]Process completed with exit code 1.']
+                        + ['artifact upload and cleanup'] * 60)
+        code, result, _ = self.ci('status', '--workflow', 'pr.yml', runs={'c' * 40: ['running']},
+                                  jobs={'7': [['hybrid', 'failure'], ['cares', '']]}, job_logs={'100': log})
+        self.assertEqual((code, result['state']), (2, 'running'))
+        self.assertEqual(len(result['logs']['hybrid']), 40)
+        self.assertEqual(result['logs']['hybrid'][-2:], ['compiler diagnostic', '##[error]Process completed with exit code 1.'])
+        self.assertNotIn('artifact upload and cleanup', result['logs']['hybrid'])
+        self.assertEqual([call for call in self.gh_calls if '/actions/jobs/' in call],
+                         ['api repos/{owner}/{repo}/actions/jobs/100/logs --allow-escape-sequences'])
 
 
 if __name__ == '__main__':

@@ -1,12 +1,12 @@
 diff --git a/src/server/master.cc b/src/server/master.cc
-index e445a28..57dbdf8 100644
+index 204e0f8..3bf8fa6 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -22,2 +22,3 @@
+@@ -25,2 +25,3 @@
  #include "swoole_hash.h"
 +#include "swoole_rs_process_command.h"
  
-@@ -1191,26 +1192,59 @@ bool Server::command(WorkerId process_id,
+@@ -530,26 +531,59 @@ bool Server::command(WorkerId process_id,
                       const Command::Callback &fn) {
 -    if (!is_started()) {
 -        return false;
@@ -85,7 +85,7 @@ index e445a28..57dbdf8 100644
 +    if (!route.request) {
 +        return false;
      }
-@@ -1219,45 +1253,17 @@ bool Server::command(WorkerId process_id,
+@@ -558,65 +592,18 @@ bool Server::command(WorkerId process_id,
      int64_t request_id = command_current_request_id++;
 -    Socket *pipe_sock;
 -
@@ -127,13 +127,30 @@ index e445a28..57dbdf8 100644
 -            swoole_error_log(SW_LOG_NOTICE, SW_ERROR_INVALID_PARAMS, "invalid task_worker_id[%d]", process_id);
 -            goto _fail;
 -        }
+-        EventData buf;
+-        if (!task_pack(&buf, msg.c_str(), msg.length())) {
+-            goto _fail;
+-        }
+-        buf.info.type = SW_SERVER_EVENT_COMMAND_REQUEST;
+-        buf.info.fd = request_id;
+-        buf.info.server_fd = command_id;
+-        int _dst_worker_id = process_id;
+-        if (!this->task(&buf, &_dst_worker_id)) {
+-            goto _fail;
+-        }
 +    bool sent = false;
 +    if (route.action == SWR_COMMAND_TO_MASTER) {
 +        fn(this, call_command_handler_in_master(command_id, msg));
-+        return true;
+         return true;
+-    } else if (process_type == Command::MANAGER) {
 +    } else if (route.action == SWR_COMMAND_TO_TASK_WORKER || route.action == SWR_COMMAND_TO_MANAGER) {
          EventData buf;
--        if (!task_pack(&buf, msg.c_str(), msg.length())) {
+-        if (msg.length() >= sizeof(buf.data)) {
+-            swoole_error_log(SW_LOG_NOTICE,
+-                             SW_ERROR_DATA_LENGTH_TOO_LARGE,
+-                             "message is too large, maximum length is %lu, the given length is %lu",
+-                             sizeof(buf.data),
+-                             msg.length());
 -            goto _fail;
 +        if (route.action == SWR_COMMAND_TO_TASK_WORKER) {
 +            sent = task_pack(&buf, msg.c_str(), msg.length());
@@ -143,31 +160,19 @@ index e445a28..57dbdf8 100644
 +            memcpy(buf.data, msg.c_str(), msg.length());
 +            sent = true;
          }
-@@ -1267,38 +1273,22 @@ bool Server::command(WorkerId process_id,
-         int _dst_worker_id = process_id;
--        if (!this->task(&buf, &_dst_worker_id)) {
--            goto _fail;
--        }
--        return true;
--    } else if (process_type == Command::MANAGER) {
--        EventData buf;
--        if (msg.length() >= sizeof(buf.data)) {
--            swoole_error_log(SW_LOG_NOTICE,
--                             SW_ERROR_DATA_LENGTH_TOO_LARGE,
--                             "message is too large, maximum length is %lu, the given length is %lu",
--                             sizeof(buf.data),
--                             msg.length());
--            goto _fail;
--        }
 -        memset(&buf.info, 0, sizeof(buf.info));
--        buf.info.type = SW_SERVER_EVENT_COMMAND_REQUEST;
--        buf.info.fd = request_id;
--        buf.info.server_fd = command_id;
+         buf.info.type = SW_SERVER_EVENT_COMMAND_REQUEST;
+@@ -624,20 +611,23 @@ bool Server::command(WorkerId process_id,
+         buf.info.server_fd = command_id;
 -        buf.info.len = msg.length();
 -        memcpy(buf.data, msg.c_str(), msg.length());
 -        if (get_event_worker_pool()->push_message(&buf) < 0) {
 -            goto _fail;
--        }
++        int _dst_worker_id = process_id;
++        if (sent) {
++            sent = route.action == SWR_COMMAND_TO_TASK_WORKER ? this->task(&buf, &_dst_worker_id)
++                                                              : get_event_worker_pool()->push_message(&buf) >= 0;
+         }
 -        return true;
 -    } else if (process_type == Command::MASTER) {
 -        auto result = call_command_handler_in_master(command_id, msg);
@@ -179,10 +184,6 @@ index e445a28..57dbdf8 100644
 -    }
 -    if (!message_bus.write(pipe_sock, &task)) {
 -        goto _fail;
-+        if (sent) {
-+            sent = route.action == SWR_COMMAND_TO_TASK_WORKER ? this->task(&buf, &_dst_worker_id)
-+                                                              : get_event_worker_pool()->push_message(&buf) >= 0;
-+        }
 +    } else if (route.action != SWR_COMMAND_FAIL) {
 +        SendData task{};
 +        task.info.fd = request_id;

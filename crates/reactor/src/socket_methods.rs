@@ -307,9 +307,65 @@ pub unsafe extern "C" fn swr_v1_socket_record_peek(
     unsafe { crate::socket_peek(fd, buffer, length, flags, tls) }
 }
 
+/// Native `Socket::what_event_want`, directly over the authoritative record.
+/// # Safety
+/// `socket` is the live zero-offset Rust socket record borrowed by its C++ facade.
+#[must_use]
+#[unsafe(export_name = "_ZNK6swoole7network6Socket15what_event_wantEi")]
+pub unsafe extern "C" fn cpp_socket_what_event_want(
+    socket: *const SocketRecord,
+    default: c_int,
+) -> c_int {
+    // SAFETY: the caller lends a live record; copy before any external operation.
+    let ssl = unsafe { (*socket).ssl };
+    // SAFETY: the caller lends a live record.
+    let tls = unsafe { (*socket).tls };
+    if !ssl.is_null() && (tls.want_read != 0 || tls.want_write != 0) {
+        use swoole_rs_corebase::constants::EventType::{SW_EVENT_READ, SW_EVENT_WRITE};
+        if tls.want_write != 0 {
+            SW_EVENT_WRITE as c_int
+        } else {
+            SW_EVENT_READ as c_int
+        }
+    } else {
+        default
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_event_want_preserves_write_priority_and_default() {
+        let mut socket: SocketRecord = unsafe { std::mem::zeroed() };
+        for ssl in [false, true] {
+            socket.ssl = if ssl {
+                std::ptr::dangling_mut()
+            } else {
+                std::ptr::null_mut()
+            };
+            for read in [0, 1] {
+                for write in [0, 1] {
+                    for default in [-1, 0, 512, 1024] {
+                        socket.tls.want_read = read;
+                        socket.tls.want_write = write;
+                        let expected = if ssl && write != 0 {
+                            1024
+                        } else if ssl && read != 0 {
+                            512
+                        } else {
+                            default
+                        };
+                        assert_eq!(
+                            unsafe { cpp_socket_what_event_want(&raw const socket, default) },
+                            expected
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     unsafe extern "C" fn no_tls(_: *mut c_void, _: *mut c_void, _: usize) -> isize {
         unreachable!("plain sockets never take the TLS call")

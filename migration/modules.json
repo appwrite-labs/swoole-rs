@@ -32,7 +32,10 @@
         "CMakeLists.txt",
         "ext-src/php_swoole.cc",
         "include/swoole_server.h",
-        "src/server/master.cc"
+        "src/server/master.cc",
+        "ext-src/stubs/php_swoole_stdext_arginfo.h",
+        "ext-src/stubs/php_swoole_ftp_arginfo.h",
+        "ext-src/stubs/php_swoole_ssh2_arginfo.h"
       ]
     },
     {
@@ -360,7 +363,8 @@
         "swoole_http2_server"
       ],
       "upstream_patch_targets": [
-        "src/core/error.cc"
+        "src/core/error.cc",
+        "include/swoole_error.h"
       ],
       "abi_contract": "docs/core-abi-v1.md"
     },
@@ -573,6 +577,8 @@
         "swoole_function"
       ],
       "upstream_patch_targets": [
+        "include/swoole.h",
+        "include/swoole_config.h",
         "src/core/base.cc"
       ],
       "abi_contract": "native/corebase/contract.md",
@@ -593,12 +599,14 @@
       "owned_paths": [
         "crates/ossupport/",
         "native/ossupport/",
+        "tests/modules/ossupport/",
         "migration/patches/ossupport/"
       ],
       "phpt_families": [
         "swoole_coroutine_system"
       ],
       "upstream_patch_targets": [
+        "include/swoole_file.h",
         "src/os/async_thread.cc",
         "src/os/base.cc",
         "src/os/file.cc",
@@ -800,7 +808,7 @@
       ],
       "owned_paths": [
         "crates/phphelpers/",
-  "crates/phpstdext/",
+        "crates/phpstdext/",
         "native/phphelpers/",
         "migration/patches/phphelpers/",
         "tests/modules/phphelpers/"

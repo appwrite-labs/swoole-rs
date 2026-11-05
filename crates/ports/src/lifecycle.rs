@@ -104,10 +104,24 @@ const TLSEXT_NOACK: i32 = 3;
 struct Native {
     context: *mut c_void,
     call: PortsCall,
+    config: *const swoole_rs_server::port_config::PortConfig,
 }
 
 impl Native {
     fn op(&self, op: u32, arg: u64) -> u64 {
+        if !self.config.is_null() {
+            // SAFETY: run_state lends a synchronized live port record for this leaf access.
+            let config = unsafe { &*self.config };
+            match op {
+                OP_OPEN_HTTP => return u64::from(config.open_http_protocol),
+                OP_OPEN_HTTP2 => return u64::from(config.open_http2_protocol),
+                OP_IS_DGRAM => return u64::from(matches!(config.r#type, 2 | 4 | 6)),
+                OP_SSL_ON => return u64::from(config.ssl),
+                OP_HAS_SOCKET => return u64::from(!config.socket.is_null()),
+                OP_IS_UNIX => return u64::from(matches!(config.r#type, 5 | 6)),
+                _ => {}
+            }
+        }
         // SAFETY: a native fact or effect on the live port in `context`.
         unsafe { (self.call)(self.context, op, arg) }
     }
@@ -129,7 +143,35 @@ impl Native {
 /// `call` acts on the port in `context`, live for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_ports_run(kind: u32, context: *mut c_void, call: PortsCall) -> i32 {
-    let n = Native { context, call };
+    run(kind, context, call, core::ptr::null())
+}
+
+/// Runs a lifecycle operation with direct access to the Rust-owned settings.
+///
+/// # Safety
+/// The record and native context are synchronized and live until return; callbacks
+/// catch any PHP bailout before crossing the Rust frame.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_ports_run_state(
+    kind: u32,
+    context: *mut c_void,
+    call: PortsCall,
+    config: *const swoole_rs_server::port_config::PortConfig,
+) -> i32 {
+    run(kind, context, call, config)
+}
+
+fn run(
+    kind: u32,
+    context: *mut c_void,
+    call: PortsCall,
+    config: *const swoole_rs_server::port_config::PortConfig,
+) -> i32 {
+    let n = Native {
+        context,
+        call,
+        config,
+    };
     match kind {
         RUN_SNI_ADD => {
             let added = context_create(&n, false);

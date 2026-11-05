@@ -57,17 +57,17 @@ index 6388eb1..5efbcf9 100644
 -    bool wait_detached_worker(std::unordered_set<pid_t> &detached_workers, pid_t pid);
  };
 diff --git a/include/swoole_server.h b/include/swoole_server.h
-index 4daff3f..4a4804b 100644
+index d836f52..31fec33 100644
 --- a/include/swoole_server.h
 +++ b/include/swoole_server.h
-@@ -1043,7 +1043,2 @@ class Server {
+@@ -714,7 +714,2 @@ class Server : public detail::ServerFields {
      std::unordered_map<pid_t, Worker *> user_worker_map;
 -    /**
 -     * When asynchronous restart is enabled, the old worker process will be detached first, and a new worker process
 -     * will be created immediately. The old process will live and die by itself
 -     */
 -    std::unordered_set<pid_t> detached_processes;
-     /**
+ 
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
 index b39fe68..a788be5 100644
 --- a/src/os/process_pool.cc
@@ -369,10 +369,10 @@ index 27b9263..1b4c8c9 100644
 -            detached_processes.erase(exited_pid);
          }
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 1044a1d..e445a28 100644
+index fbe22cf..204e0f8 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -800,7 +800,4 @@ Worker *Server::get_worker_by_pid(pid_t worker_pid) const {
+@@ -453,7 +453,4 @@ Worker *Server::get_worker_by_pid(pid_t worker_pid) const {
  
 -    if (get_task_worker_pool()->map_) {
 -        const auto iter = get_task_worker_pool()->map_->find(worker_pid);

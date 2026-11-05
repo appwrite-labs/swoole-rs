@@ -205,6 +205,8 @@ enum { SWR_PORTS_RUN_SNI_ADD=0, SWR_PORTS_RUN_SSL_INIT=1, SWR_PORTS_RUN_SSL_CREA
        SWR_PORTS_CONTEXT_SESSION_TICKETS=1, SWR_PORTS_CONTEXT_STAPLING=2, SWR_PORTS_CONTEXT_STAPLING_VERIFY=3, SWR_PORTS_IMPORT_TYPE=0,
        SWR_PORTS_IMPORT_NAME=1, SWR_PORTS_IMPORT_ACCEPTCONN=2, SWR_PORTS_IMPORT_NOT_LISTENING=3 };
 int32_t swr_v1_ports_run(uint32_t kind, void *context, SwrPortsCall call);
+struct swr_v1_port_config;
+int32_t swr_v1_ports_run_state(uint32_t kind, void *context, SwrPortsCall call, const struct swr_v1_port_config *config);
 bool swr_v1_ports_sni_match(const char *subject, const char *cert);
 #ifdef __cplusplus
 }

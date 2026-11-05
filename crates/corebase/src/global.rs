@@ -18,7 +18,7 @@ unsafe extern "C" {
 }
 
 /// Upstream's `SW_MAX_FILE_CONTENT` (`include/swoole_config.h`).
-const MAX_FILE_CONTENT: u32 = 64 * 1024 * 1024;
+const MAX_FILE_CONTENT: u32 = crate::constants::SW_MAX_FILE_CONTENT;
 
 /// The record, one atomic per field, with a getter and setter exported for each
 /// (`$get`, `$set`). Every field starts at, and `swr_v1_core_reset` returns it

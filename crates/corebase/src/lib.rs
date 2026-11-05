@@ -8,6 +8,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+pub mod constants;
 mod global;
 mod hook;
 mod host;

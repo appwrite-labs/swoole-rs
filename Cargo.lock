@@ -737,6 +737,7 @@ name = "swoole-rs-ports"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-http",
+ "swoole-rs-server",
 ]
 
 [[package]]
@@ -768,6 +769,7 @@ name = "swoole-rs-server"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-corebase",
 ]
 
 [[package]]

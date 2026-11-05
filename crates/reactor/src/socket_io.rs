@@ -254,7 +254,8 @@ pub extern "C" fn swr_v1_socket_sendfile_chunk(
     begin: libc::off_t,
     end: libc::off_t,
 ) -> libc::size_t {
-    const CHUNK: libc::size_t = 65536;
+    const CHUNK: libc::size_t =
+        swoole_rs_corebase::constants::SW_SENDFILE_CHUNK_SIZE as libc::size_t;
     // A range past its end converts to a huge size_t upstream, so a full chunk.
     libc::size_t::try_from(end.wrapping_sub(begin)).map_or(CHUNK, |left| left.min(CHUNK))
 }

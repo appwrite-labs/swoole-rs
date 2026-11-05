@@ -10,6 +10,10 @@ use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::ffi::{c_int, c_void};
 use std::mem::{offset_of, size_of};
 use std::ptr;
+use swoole_rs_corebase::constants::{
+    SW_SOCKET_BUFFER_SIZE, SW_SOCKET_DEFAULT_CONNECT_TIMEOUT, SW_SOCKET_DEFAULT_DNS_TIMEOUT,
+    SW_SOCKET_DEFAULT_READ_TIMEOUT, SW_SOCKET_DEFAULT_WRITE_TIMEOUT,
+};
 
 /// `network::Socket`'s TLS state group, in the layout `swoole_rs_tls` works on.
 #[repr(C)]
@@ -82,12 +86,12 @@ pub struct SocketDefaults {
 #[unsafe(no_mangle)]
 pub static mut swr_v1_socket_defaults: SocketDefaults = SocketDefaults {
     timeouts: SocketTimeouts {
-        dns: 60.0,
-        connect: 10.0,
-        read: 60.0,
-        write: 60.0,
+        dns: SW_SOCKET_DEFAULT_DNS_TIMEOUT as f64,
+        connect: SW_SOCKET_DEFAULT_CONNECT_TIMEOUT as f64,
+        read: SW_SOCKET_DEFAULT_READ_TIMEOUT as f64,
+        write: SW_SOCKET_DEFAULT_WRITE_TIMEOUT as f64,
     },
-    buffer_size: 8_388_608,
+    buffer_size: SW_SOCKET_BUFFER_SIZE,
 };
 
 /// Field offsets native code asserts too (`swoole_rs_socket.h`).

@@ -55,20 +55,20 @@ index 40c8f31..1901dd0 100644
 +        swoole_warning("Unknown worker [pid=%d] type [%d]", exited_pid, exited_worker->get_type());
          return SW_ERR;
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 29e9f72..a37776c 100644
+index 8bda6dd..5c43264 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -608,3 +608,3 @@ bool Server::create_user_workers() {
+@@ -255,3 +255,3 @@ bool Server::create_user_workers() {
          create_worker(worker);
 -        worker->type = SW_USER_WORKER;
 +        worker->set_type(SW_USER_WORKER);
          i++;
-@@ -682,3 +682,3 @@ int Server::start() {
+@@ -329,3 +329,3 @@ int Server::start() {
          pool->workers[i].id = i;
 -        pool->workers[i].type = SW_WORKER;
 +        pool->workers[i].set_type(SW_WORKER);
      }
-@@ -1771,3 +1771,3 @@ int Server::add_worker(Worker *worker) {
+@@ -770,3 +770,3 @@ int Server::add_worker(Worker *worker) {
      worker->id = user_worker_list.size() - 1;
 -    worker->type = SW_USER_WORKER;
 +    worker->set_type(SW_USER_WORKER);
@@ -89,7 +89,7 @@ index 786e181..9fff1f9 100644
 +              "Worker.msgqueue_mode drift");
  
 diff --git a/src/server/reactor_process.cc b/src/server/reactor_process.cc
-index e6f9d2c..03ab315 100644
+index e74e146..0a4316b 100644
 --- a/src/server/reactor_process.cc
 +++ b/src/server/reactor_process.cc
 @@ -72,3 +72,3 @@ int Server::start_reactor_processes() {

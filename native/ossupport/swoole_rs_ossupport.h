@@ -30,9 +30,24 @@ void swr_v1_os_pool_notify_one(const swr_v1_os_pool *pool);
 /* Reads up to 128 completed event tokens from the pipe and hands each to
  * complete; returns the count, or -1 with errno intact. */
 ssize_t swr_v1_os_pool_complete(int fd, void (*complete)(uintptr_t event));
+/* Rust-owned File state; Native path-view updates retain exceptions outside Rust. */
+struct stat;
+typedef struct swr_v1_os_file_record swr_v1_os_file_record;
+typedef int (*swr_v1_os_file_path_update)(void *context);
+swr_v1_os_file_record *swr_v1_os_file_record_new(int fd, const char *path, size_t length);
+swr_v1_os_file_record *swr_v1_os_file_record_clone(const swr_v1_os_file_record *source);
+void swr_v1_os_file_record_free(swr_v1_os_file_record *owner);
+int swr_v1_os_file_record_fd(swr_v1_os_file_record *owner, bool release);
+bool swr_v1_os_file_record_close(swr_v1_os_file_record *owner);
+int swr_v1_os_file_record_open(swr_v1_os_file_record *owner, const char *path, size_t length, int flags, int mode, swr_v1_os_file_path_update update, void *context);
+int swr_v1_os_file_record_assign(swr_v1_os_file_record *owner, const swr_v1_os_file_record *source, swr_v1_os_file_path_update update, void *context);
+ssize_t swr_v1_os_file_record_io(const swr_v1_os_file_record *owner, uint32_t operation, void *buffer, size_t length, off_t offset);
+off_t swr_v1_os_file_record_control(const swr_v1_os_file_record *owner, uint32_t operation, off_t value);
+bool swr_v1_os_file_record_stat(const swr_v1_os_file_record *owner, struct stat *output);
 /* File IO. Each call returns right after a failing syscall, errno intact, so
  * native logs the upstream warning. */
 typedef struct { size_t done; bool failed; } swr_v1_os_file_io;
+swr_v1_os_file_io swr_v1_os_file_record_all(const swr_v1_os_file_record *owner, bool write, void *buffer, size_t length);
 int swr_v1_os_file_open(int fd, const char *path, int flags, int mode);
 bool swr_v1_os_file_close(int fd);
 int swr_v1_os_tmpfile(char *filename);
