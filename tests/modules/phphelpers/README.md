@@ -18,17 +18,17 @@ the `swoole_*` stdext functions) is Rust in `crates/phpstdext` over the zend
 crates (docs/zend.md); only the `ASSIGN_DIM`/`ASSIGN_DIM_OP` handlers (PHP's
 `zend_execute.c` internals) and the PCRE/JSON library calls stay C++.
 
-For the rest, Rust owns copied-scalar policy. Native Zend storage,
-HashTables/COW/GC, allocators/destructors, callbacks/coroutines and
-exceptions/bailouts stay native.
+Rust owns the facade values and their operations through typed Zend layouts.
+Version-dependent Zend leaf effects remain C; calls that can execute PHP trap
+bailouts there before returning to Rust. Function/merge adapters still use
+copied-scalar policy, and the known-string pointer table stays native.
 
-| Rust policy | Native effects and representation |
+| Rust ownership / operations | Native leaf effects |
 | --- | --- |
-| Callable construction/release, keyed merge (index vs string route), bool/named call lifecycles | Values/refcounts, numeric-key classification, HashTable APIs, lookup, diagnostics and invocation |
-| 64 known strings | Persistent/interned pointer table |
-| KeyValue custody | Key/value storage, allocation, refcounts and destruction |
-| ArrayIterator traversal; Array update status | Bucket bounds/kinds/indirection, cursor/key storage and HashTable updates |
-| `php_swoole_async` admission (blocking short-circuit, one nonblocking context query) | `std::function` capture/storage, invocation, async/yield, exceptions/bailout |
+| String, CharPtr, Variable, KeyValue, Callable lifetimes and factories | Zend allocators/refcount macros; trapped PHP calls and diagnostics |
+| ArrayIterator sparse/indirect cursor; Array updates | Trapped hash insertion/replacement |
+| Function/merge policy; 64 known strings | Native call/merge effects; persistent/interned pointer cache |
+| `php_swoole_async` admission | `std::function` storage, native invocation/async/yield |
 
 Edit the three overlays with `tools/patches.py`; see
 [hybrid build](../../../docs/hybrid-build.md#editing-patches).
@@ -132,7 +132,7 @@ performance and default activation remain open.
 All five phases are kept, none deleted:
 
 - `phphelpers-policy`: complete pinned and selected bodies against modeled
-  native effects, with about 200,000 matched cases across the families above,
+  native effects, for the remaining function/merge/cache adapters,
   under ASan/UBSan.
 - `phphelpers-async`: the `php_swoole_async` dispatch bodies, the C11 ABI
   consumer, and C++14/17 builds with and without sanitizers.
@@ -150,8 +150,8 @@ None of these is a PHPT, Rust unit test or fuzz target.
 String, CharPtr, Variable, KeyValue, Array/ArrayIterator and Callable now execute
 their ownership and operations in Rust against the actual Zend SDK. Their former
 modeled C++ fixtures (13/9/4681/14 cases) copied private class bodies and supplied
-fake Zend layouts; those assumptions are retired. The SDK compile and loaded
-facade runtime remain mandatory, with the original PHP expectations unchanged:
+fake Zend layouts; those assumptions are retired. All 4,681 bounded sparse/indirect walks now run as Rust unit tests against real
+Zend Bucket/zval layouts. The SDK compile and loaded facade runtime remain mandatory, with the original PHP expectations unchanged:
 copy/self-copy/move/self-move, binary duplication, PHP conversion reentry,
 sparse keys and updates, callback duplication/invocation and destructor timing.
 The policy gate still compares the remaining native call/merge/cache bodies.

@@ -1,4 +1,4 @@
-//! Common PHP helper policy. Zend storage, calls, allocation and VM effects stay native.
+//! Common Zend value ownership and operations, plus asynchronous and legacy adapter policy.
 #![cfg_attr(
     not(test),
     deny(
