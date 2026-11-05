@@ -67,26 +67,33 @@ std::atomic<int> PthreadExit::destroyed{0};
 static void join_error(Thread &thread) {
     try { thread.join(); std::abort(); }
     catch (const std::system_error &error) {
-        assert(error.code() == std::error_code(EINVAL, std::system_category()));
-        std::cout << "join error " << error.what() << '\n';
+        assert(error.code().value() == EINVAL);
+        std::cout << "join error " << error.code().category().name() << ": " << error.what() << '\n';
     }
 }
 static void detach_error(Thread &thread) {
     try { thread.detach(); std::abort(); }
     catch (const std::system_error &error) {
-        assert(error.code() == std::error_code(EINVAL, std::system_category()));
-        std::cout << "detach error " << error.what() << '\n';
+        assert(error.code().value() == EINVAL);
+        std::cout << "detach error " << error.code().category().name() << ": " << error.what() << '\n';
     }
 }
 
+static Thread *termination_owner = nullptr;
+static pthread_t termination_id{};
+
 int main(int argc, char **argv) {
     if (argc > 1) {
-        std::set_terminate([] { std::cout << "terminate\n" << std::flush; std::_Exit(60); });
+        std::set_terminate([] {
+            if (termination_owner) assert(termination_owner->get_id() == termination_id);
+            std::cout << "terminate\n" << std::flush; std::_Exit(60);
+        });
         const std::string mode = argv[1];
         if (mode == "body-throw") {
             Thread thread; thread.start([] { throw std::runtime_error("body"); }); thread.join();
         } else {
             Thread first; first.start([] {});
+            termination_owner = &first; termination_id = first.get_id();
             if (mode == "occupied-start") first.start([] {});
             else if (mode == "self-move") { Thread &alias = first; first = std::move(alias); }
             else if (mode == "occupied-move") {
@@ -154,7 +161,7 @@ int main(int argc, char **argv) {
         owner.start([&] {
             gate.enter();
             try { owner.join(); std::abort(); }
-            catch (const std::system_error &error) { assert(error.code() == std::error_code(EDEADLK, std::system_category())); }
+            catch (const std::system_error &error) { assert(error.code().value() == EDEADLK); std::cout << "self join error " << error.code().category().name() << ": " << error.what() << '\n'; }
             gate.finish();
         });
         gate.wait_entered(); gate.release(); gate.wait_finished(); owner.join();

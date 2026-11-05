@@ -107,8 +107,9 @@ pub unsafe extern "C" fn swr_v1_core_thread_id(record: *const CoreThread) -> lib
 /// # Safety
 /// `entry` is a native pthread entry, owning `argument` after success. It must
 /// not require a Rust entry frame; a failed creation leaves ownership native.
-/// The controlling thread exclusively owns `record` and handles termination if
-/// a successful creation replaces a previously joinable handle.
+/// The controlling thread exclusively owns `record` and terminates after a
+/// successful creation on an already-occupied record. That record retains its
+/// original handle until native terminates, as `std::thread` move assignment does.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_thread_start(
     record: *mut CoreThread,
@@ -121,9 +122,14 @@ pub unsafe extern "C" fn swr_v1_core_thread_start(
     if code == 0 {
         // SAFETY: successful pthread_create initialized the handle.
         let thread = unsafe { thread.assume_init() };
-        // SAFETY: only the controlling thread publishes/reads the owned handle.
-        unsafe {
-            (*record).handle = thread;
+        // SAFETY: only the controlling thread reads/publishes the owned handle.
+        let occupied = unsafe { (*record).handle != libc::pthread_t::default() };
+        if !occupied {
+            // SAFETY: this empty record receives the new unique handle. An occupied
+            // record preserves its original handle for native's required termination.
+            unsafe {
+                (*record).handle = thread;
+            }
         }
     }
     code
