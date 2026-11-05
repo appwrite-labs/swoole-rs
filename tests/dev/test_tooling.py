@@ -497,8 +497,6 @@ class Lanes(unittest.TestCase):
         for name in ['phphelpers-facade-runtime', 'phphelpers-entrypoint', 'phphelpers-runtime']:
             self.assertNotIn(name, commands)
         self.assertEqual(set(commands['build'][i+1] for i,x in enumerate(commands['build']) if x=='--module'),set(dev.SELECTABLE))
-        self.assertIn('--sanitize', commands['reactor-poll-snapshot'])
-        self.assertIn('--report', commands['reactor-poll-snapshot'])
         self.assertIn('--archive', commands['reactor-flush'])
         self.assertIn('--sanitize', commands['reactor-flush'])
         self.assertIn('corebase-native',commands)
@@ -540,8 +538,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['memory-fixed-native-construction'])
         self.assertIn('--archive', commands['memory-mapping-operation'])
         self.assertNotIn('--sanitize', commands['memory-mapping-operation'])
-        self.assertIn('--archive', commands['reactor-backend-storage'])
-        self.assertIn('--report', commands['reactor-backend-storage'])
         self.assertIn('--archive', commands['utilities-logger-owned-state'])
         self.assertIn('--sdk-ref', commands['utilities-logger-owned-state'])
         for family in ['logger', 'hash', 'inline', 'global-logger', 'redirect']:

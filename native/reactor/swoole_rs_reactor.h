@@ -169,8 +169,6 @@ swr_v1_reactor_epoll_events *swr_v1_reactor_epoll_new(size_t);
 void swr_v1_reactor_epoll_free(swr_v1_reactor_epoll_events *);
 struct epoll_event *swr_v1_reactor_epoll_data(swr_v1_reactor_epoll_events *);
 swr_v1_reactor_backend_layout swr_v1_reactor_epoll_layout(void);
-/* epoll_ctl for op 0 add, 1 set (MOD), 2 del, with the socket as token; the kernel's result. */
-int swr_v1_reactor_epoll_ctl(int epfd, uint32_t op, int fd, void *socket, int events);
 #endif
 #if (defined(__APPLE__) && TARGET_OS_OSX) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
 typedef struct swr_v1_reactor_kqueue_events swr_v1_reactor_kqueue_events;
@@ -178,12 +176,6 @@ swr_v1_reactor_kqueue_events *swr_v1_reactor_kqueue_new(size_t);
 void swr_v1_reactor_kqueue_free(swr_v1_reactor_kqueue_events *);
 struct kevent *swr_v1_reactor_kqueue_data(swr_v1_reactor_kqueue_events *);
 swr_v1_reactor_backend_layout swr_v1_reactor_kqueue_layout(void);
-/* ReactorKqueue add/set/del's kevent calls; errno is the kernel's. add: 0, or the failed
- * filter (1 read, 2 write). set: 0, or 1 read add, 2 read delete, 3 write add, 4 write delete.
- * del: each failed filter's errno in errors (0 if it took); -1 stops at one not EBADF/ENOENT. */
-int swr_v1_reactor_kqueue_add(int kq, int fd, void *socket, int events);
-int swr_v1_reactor_kqueue_set(int kq, int fd, void *socket, int events);
-int swr_v1_reactor_kqueue_del(int kq, int fd, void *socket, int events, int *errors);
 #endif
 typedef struct swr_v1_reactor_poll_snapshot swr_v1_reactor_poll_snapshot;
 typedef struct { size_t size, alignment, fd, events, revents; } swr_v1_reactor_poll_layout_info;
@@ -445,8 +437,16 @@ swr_v1_reactor_backend_view swr_v1_reactor_state_backend(swr_v1_reactor_state *)
 /* Reactor::wait() on the state's backend: 0 when it stops (or poll fails), -1 when epoll/kqueue fail. */
 int32_t swr_v1_reactor_wait(swr_v1_reactor_state *, const swr_v1_reactor_wait_ops *);
 int swr_v1_reactor_state_descriptor(const swr_v1_reactor_state *);
-int swr_v1_reactor_state_limit(const swr_v1_reactor_state *);
 int swr_v1_reactor_state_socket(swr_v1_reactor_state *, void *socket, uint32_t op, int events);
+/* Logs message as from origin: code 0 is swoole_sys_warning (errno is the kernel's), else
+ * swoole_error_log(SW_LOG_WARNING, code, ...); then the backtrace on error. */
+typedef void (*swr_v1_reactor_change_log)(const char *origin, int code, const char *message);
+/* Reactor::add (op 0), set (1) or del (2) on the state's backend, checks and registry included:
+ * 0, -1 after logging the failure, or -2 when add cannot allocate. */
+int swr_v1_reactor_change(swr_v1_reactor_state *, void *socket, uint32_t op, int events, swr_v1_reactor_change_log log);
+/* Reactor's interest helpers over swr_v1_reactor_change: add_event (kind 0) and del_event (1) of
+ * event, add_read_event (2), add_write_event (3), remove_read_event (4), remove_write_event (5). */
+int swr_v1_reactor_interest(swr_v1_reactor_state *, void *socket, uint32_t kind, int event, swr_v1_reactor_change_log log);
 #ifdef __cplusplus
 }
 static_assert(sizeof(swr_v1_reactor_builtin_reply) == 8, "reactor builtin reply ABI");
