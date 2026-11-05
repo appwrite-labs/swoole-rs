@@ -344,11 +344,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-cares-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "swoole-rs-clients"
 version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
+ "swoole-rs-cares-sys",
+ "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-oracle",
  "swoole-rs-reactor",
  "swoole-rs-websocket",
@@ -476,6 +488,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
+ "swoole-rs-corebase",
  "swoole-rs-reactor",
  "swoole-rs-uring-sys",
 ]
@@ -486,6 +499,7 @@ version = "0.1.0"
 dependencies = [
  "memchr",
  "swoole-rs-base64",
+ "swoole-rs-corebase",
 ]
 
 [[package]]
@@ -757,6 +771,8 @@ name = "swoole-rs-protocols"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-clients",
+ "swoole-rs-corebase",
  "swoole-rs-reactor",
 ]
 
@@ -767,6 +783,7 @@ dependencies = [
  "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-ossupport",
 ]
 
 [[package]]
@@ -802,6 +819,8 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
+ "swoole-rs-corebase",
+ "swoole-rs-reactor",
 ]
 
 [[package]]

@@ -40,7 +40,8 @@ HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql'
 # HTTP/2 server's sessions (http2) own httpbindings' contexts, and its coroutine server
 # runs them; network::Client (clients) reads the reactor's socket record;
 # process's Thread resource tables share the locks/atomics/barrier owner.
-REQUIRES = {'memory': ('phpcollections',), 'phpcollections': ('memory',), 'hooks': ('reactor',), 'http2': ('httpbindings',),
+REQUIRES = {'tls': ('reactor',), 'reactor': ('ossupport',), 'memory': ('phpcollections',),
+            'phpcollections': ('memory',), 'hooks': ('reactor', 'tls'), 'http2': ('httpbindings',),
             'httpbindings': ('http2',), 'clients': ('reactor',), 'process': ('locks',)}
 # --fix-halfclose's repairs in the reactor thread's read, write and close paths are Rust's
 # (crates/server/src/conn_io.rs), which only the reactor module's patches call.
@@ -70,6 +71,8 @@ def headers_for(modules):
                ROOT / 'native/include/swoole_rs_server_view.h', ROOT / 'native/include/swoole_rs_server_records.h', ROOT / 'native/include/swoole_rs_port_state.h', ROOT / 'native/include/swoole_rs_server_shared.h', ROOT / 'native/include/swoole_rs_server_strings.h']
     headers.extend((ROOT / 'native/include').glob('swoole_rs_corebase_*.h'))
     for module in modules:
+        if module != 'corebase':
+            headers.extend((ROOT / 'native/include').glob(f'swoole_rs_{module}_*.h'))
         contract = ROOT / 'native/include' / f'swoole_rs_{module}.h'
         if contract.is_file():
             headers.append(contract)
@@ -419,6 +422,10 @@ def build(args, parser):
     # The Rust io_uring engine replaces upstream's when the build enables io_uring.
     cargo_extra = [feature for feature, switch in HOOK_SWITCHES.items()
                    if 'hooks' in args.module and any(flag.startswith(switch) for flag in args.configure)]
+    cares = next((flag for flag in reversed(args.configure)
+                  if flag in {'--enable-cares', '--disable-cares'} or flag.startswith('--enable-cares=')), None)
+    if 'clients' in args.module and cares not in {None, '--disable-cares', '--enable-cares=no'}:
+        cargo_extra.append('cares')
     if args.backend == 'rust':
         rust_inputs = rust_sources(args.module, cargo_extra)
         cargo_started = time.monotonic()

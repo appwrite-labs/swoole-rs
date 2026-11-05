@@ -35,9 +35,21 @@ struct swr_v1_co_socket {
     swoole::NameResolver::Context *resolve_context_;
     /* The coroutines, barriers and timers bound to each direction. */
     swr_v1_hook_socket_state *state_;
+    void *extra_;
 };
 
+#include "swoole_rs_corebase_string_slot.h"
+struct swr_v1_co_socket_extra;
+struct swr_v1_co_socket_extra_prepared {
+    swr_v1_co_socket_extra *owner;
+    const swr_v1_core_string *error;
+    const swr_v1_core_string *connect_host;
+    const swr_v1_core_string *ssl_host_name;
+};
 extern "C" {
+swr_v1_co_socket_extra_prepared swr_v1_hook_socket_extra_new();
+void swr_v1_hook_socket_extra_free(swr_v1_co_socket_extra *owner);
+
 /* The constructors write the whole record first; fini releases what they made
  * (native code frees the buffers and the network::Socket). */
 void swr_v1_hook_co_socket_fini(swr_v1_co_socket *socket);
@@ -157,6 +169,6 @@ static_assert(offsetof(swr_v1_co_socket, protocol) == 24 && offsetof(swr_v1_co_s
                   offsetof(swr_v1_co_socket, socket) == 96 && offsetof(swr_v1_co_socket, backlog) == 124 &&
                   offsetof(swr_v1_co_socket, buffer_allocator) == 128 &&
                   offsetof(swr_v1_co_socket, ssl_is_server) == 160 &&
-                  offsetof(swr_v1_co_socket, resolve_context_) == 168 && sizeof(swr_v1_co_socket) == 184,
+                  offsetof(swr_v1_co_socket, resolve_context_) == 168 && offsetof(swr_v1_co_socket, extra_) == 184 && sizeof(swr_v1_co_socket) == 192,
               "coroutine::Socket's fields are Rust's CoSocket");
 #endif

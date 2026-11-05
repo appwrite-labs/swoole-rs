@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[dependencies]
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-reactor = { path = "../reactor" }
+
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
 openssl-sys = "=0.9.117"

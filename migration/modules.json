@@ -665,6 +665,7 @@
       ],
       "owned_paths": [
         "crates/clients/",
+        "crates/cares-sys/",
         "crates/phpclients/",
         "crates/phptable/",
         "native/clients/",

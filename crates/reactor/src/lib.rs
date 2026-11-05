@@ -32,7 +32,11 @@ mod registry;
 pub use registry::*;
 
 #[cfg(unix)]
+mod file_output;
+#[cfg(unix)]
 mod output;
+#[cfg(unix)]
+pub use file_output::*;
 #[cfg(unix)]
 pub use output::*;
 
@@ -188,3 +192,8 @@ pub use iov_owned::*;
 
 mod signal_dispatch;
 pub use signal_dispatch::*;
+
+#[cfg(unix)]
+mod reactor_state;
+#[cfg(unix)]
+pub use reactor_state::*;

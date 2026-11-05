@@ -67,7 +67,7 @@ swr_v1_os_file_contents_t swr_v1_os_file_put_open(const char *path, uint64_t len
 /* warn: copy fallback 1 pread, 2 write; kqueue sendfile 1 sendfile. */
 typedef struct { ssize_t result; uint32_t warn; } swr_v1_os_sendfile_t;
 swr_v1_os_sendfile_t swr_v1_os_sendfile_copy(int out_fd, int in_fd, off_t *offset, size_t size);
-#if defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__FreeBSD__)
 swr_v1_os_sendfile_t swr_v1_os_sendfile(int out_fd, int in_fd, off_t *offset, size_t size);
 #endif
 size_t swr_v1_os_random_bytes(void *buf, size_t size);

@@ -20,6 +20,7 @@ pub(crate) const READ: usize = 0;
 pub(crate) const WRITE: usize = 1;
 pub(crate) const ERROR: usize = 2;
 
+#[derive(Default)]
 pub struct Handlers {
     tables: [[Option<Handler>; FD_TYPES]; 3],
     /// Write and error fallbacks (`default_write_handler`, `default_error_handler`).

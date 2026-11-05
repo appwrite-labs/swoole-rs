@@ -309,6 +309,22 @@ pub struct Sendfile {
     pub warn: u32,
 }
 
+/// Linux's direct sendfile syscall, preserving a nullable offset and its errno.
+/// # Safety
+/// offset is null or an exclusively writable `off_t`; descriptors follow sendfile(2).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_os_sendfile(
+    out_fd: c_int,
+    in_fd: c_int,
+    offset: *mut off_t,
+    size: usize,
+) -> Sendfile {
+    // SAFETY: the caller forwards the syscall's descriptor/offset contract.
+    let result = unsafe { libc::sendfile(out_fd, in_fd, offset, size) };
+    Sendfile { result, warn: 0 }
+}
+
 /// The `!HAVE_SENDFILE` fallback: one `pread` of at most `SW_BUFFER_SIZE_BIG`
 /// bytes at `*offset`, written once; the offset advances by what was written.
 /// # Safety
