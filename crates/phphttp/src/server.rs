@@ -260,6 +260,7 @@ fn call(ctx: *mut Context, coroutine: bool) -> Result<(), bailout::Bailout> {
         -1 => return Err(bailout::Bailout),
         0 => {
             host::notice("Swoole\\Http\\Server->onRequest handler error");
+            context::send(ctx, SERVICE_UNAVAILABLE);
             context::close(ctx);
         }
         _ => {}
