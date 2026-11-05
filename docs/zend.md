@@ -223,13 +223,17 @@ failures remain failed observations; no original PHPT expectation is changed.
 ### Dormant native C++ custody outcome
 
 The additive scope outcome `SWR_ZEND_NATIVE_EXCEPTION` (3) transports an
-exception already captured into a qualified native frame outside all Rust
-owners. `swr_zend_guard_mark_cpp` publishes that custody only after capture;
+exception already captured into a qualified native entry outside the Rust
+entry it protects. `swr_zend_guard_mark_cpp` publishes that custody only after capture;
 it does not capture C++ itself. Ordinary C++ capture stays inside each native
 effect body. The pending outcome survives a plain native Zend catch, and a
-subsequent Thread relay cannot relabel it. Rust owners drop before native
-resume targets the next same-context scope or immediate coroutine resumer.
-The native holder clears outcome3 only after Rust returns, then rethrows.
+subsequent Thread relay cannot relabel it. Its Rust owners drop before native resume targets the next same-context
+scope. Unlike whole-Thread exit, C++ custody never hops to another coroutine
+stack. A missing same-context target is unsupported. The nearest native holder
+takes/clears only its own captured fault after its Rust entry returns, then
+rethrows. A legitimate native C++ catch can continue before an outer Rust frame;
+if no catch handles it, the outer native effect must capture before that Rust
+frame is crossed.
 NativeEffectProvider's function-pointer layout does not change. Server maps
 provider3 to separate fault4 and relays only after Invocation destruction.
 
@@ -240,3 +244,15 @@ publication; it also checks physical Box/Vec cleanup and native exception
 payload destruction after outer rethrow/catch. It neither enables arbitrary
 native callback ownership nor changes OS pthread cancellation behavior. Forced
 unwinding remains excluded; PHP coroutine cancellation is a separate contract.
+
+`NativeCppScope` in `swoole_rs_native_cpp_scope.h` stores per-entry custody and
+registers a context-keyed intrusive native list. `current(runtime)` selects the
+nearest compatible entry in the current coroutine; unlinking is non-LIFO
+because an entry can finish after another coroutine's entry has suspended.
+Construct the scope outside its native jump target and keep the target live
+while registered: Zend longjmp must return to code which can take the fault and
+unregister the scope. Do not leave a registered nontrivial C++ scope alive across
+unprotected PHP result allocation. Its empty default runtime supports SDK-only
+C++ consumers without Zend exports. PHP MINIT registers the current coroutine
+provider for NTS as well as ZTS. Scope capture excludes forced unwind, and it is
+not a PHP-destructor cleanup/save-and-restore API for pending Thread exit.

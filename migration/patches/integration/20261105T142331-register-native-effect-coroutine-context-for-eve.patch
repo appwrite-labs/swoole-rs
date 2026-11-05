@@ -1,0 +1,8 @@
+diff --git a/ext-src/php_swoole.cc b/ext-src/php_swoole.cc
+index 67add8d..753b1bc 100644
+--- a/ext-src/php_swoole.cc
++++ b/ext-src/php_swoole.cc
+@@ -556,2 +556,3 @@ PHP_MINIT_FUNCTION(swoole) {
+     swoole_rs::register_native_effect_provider(&native_effects);
++    swr_zend_guard_register_context([]() -> void * { return swoole::Coroutine::get_current(); });
+     const uint64_t rust_features = swr_v1_feature_bits();

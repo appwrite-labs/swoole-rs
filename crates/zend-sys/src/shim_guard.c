@@ -11,6 +11,9 @@ void swr_zend_guard_register(void *(*context)(void), void (*resume)(void)) {
     resume_exit = resume;
 }
 
+void swr_zend_guard_register_context(void *(*context)(void)) { current_context = context; }
+void *swr_zend_guard_context(void) { return current_context ? current_context() : NULL; }
+
 void swr_zend_guard_enter(volatile swr_zend_guard *guard, void *target) {
     guard->context = current_context ? current_context() : NULL;
     guard->target = target;
@@ -61,6 +64,9 @@ void swr_zend_guard_resume(void) {
             EG(bailout) = target;
             zend_bailout();
         }
+        /* C++ is catchable in its own native stack, not a whole-thread exit.
+         * A producer without a same-context target is an unsupported boundary. */
+        if (pending_kind == SWR_ZEND_NATIVE_EXCEPTION) abort();
         if (resume_exit) resume_exit();
     }
     zend_bailout();

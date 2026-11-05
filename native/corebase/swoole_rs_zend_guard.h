@@ -24,6 +24,8 @@ typedef struct swr_zend_guard {
     void *original_bailout;
 } swr_zend_guard;
 void swr_zend_guard_register(void *(*context)(void), void (*resume)(void));
+void swr_zend_guard_register_context(void *(*context)(void));
+void *swr_zend_guard_context(void);
 void swr_zend_guard_enter(volatile swr_zend_guard *, void *target);
 void swr_zend_guard_leave(volatile swr_zend_guard *);
 void swr_zend_guard_scope_cleanup(volatile swr_zend_guard *);
@@ -31,11 +33,11 @@ void *swr_zend_guard_target(void);
 int swr_zend_guard_pending(void);
 void swr_zend_guard_mark(void);
 /* The C++ exception_ptr must already be held by a qualified native frame
- * outside every Rust owner. Capture happens inside the native effect body.
+ * outside the Rust entry it protects. Capture happens inside the native effect body.
  * Production producers stay disabled until all consumers relay this outcome. */
 void swr_zend_guard_mark_cpp(void);
 /* Thread exit clears at its request boundary. Native C++ custody clears only
- * after all Rust owners return, immediately before native rethrow. */
+ * after all Rust owners return, immediately before native rethrow in that coroutine. */
 void swr_zend_guard_clear(void);
 void swr_zend_guard_resume(void);
 #ifdef __cplusplus

@@ -1,53 +1,95 @@
 #include "php.h"
 #include "swoole_rs_zend_guard.h"
-#include <exception>
+#include "swoole_rs_native_cpp_scope.h"
 #include <memory>
 #include <stdexcept>
-#if defined(__GLIBCXX__)
-#include <cxxabi.h>
-#endif
 #ifdef ZTS
 ZEND_TSRMLS_CACHE_DEFINE()
 #endif
 
 extern "C" int swr_exit_guard_test_owner(void (*)(void *), void *, void (*)(const unsigned char *, size_t));
-static size_t owners, bytes, checksum, tokens;
-struct Token { ~Token() { ++tokens; } };
-struct Failure : std::runtime_error {
-    std::shared_ptr<Token> token = std::make_shared<Token>();
-    Failure() : std::runtime_error("native captured failure") {}
+static const swoole_rs::NativeCppRuntime runtime{
+    swr_zend_guard_context, swr_zend_guard_pending, swr_zend_guard_mark_cpp, swr_zend_guard_clear};
+struct Frame;
+static thread_local Frame *frames;
+struct Frame {
+    swoole_rs::NativeCppScope scope{runtime};
+    void *context = swr_zend_guard_context();
+    Frame *previous = frames;
+    size_t owners = 0, bytes = 0, checksum = 0, tokens = 0, token_owner_count = 0, publications = 0;
+    bool control, caught = false, linked = true;
+    explicit Frame(bool control) : control(control) { frames = this; }
+    void leave() {
+        if (!linked) return;
+        scope.leave();
+        auto **slot = &frames;
+        while (*slot && *slot != this) slot = &(*slot)->previous;
+        if (!*slot) std::abort();
+        *slot = previous;
+        linked = false;
+    }
+    ~Frame() { leave(); }
 };
-struct Frame { std::exception_ptr failure; size_t publications = 0; };
-static thread_local Frame *active;
+static Frame *current_frame() {
+    auto *context = swr_zend_guard_context();
+    for (auto *frame = frames; frame; frame = frame->previous) {
+        if (frame->context == context) return frame;
+    }
+    std::abort();
+}
+struct Token {
+    Frame *owner;
+    explicit Token(Frame *owner) : owner(owner) {}
+    ~Token() { ++owner->tokens; owner->token_owner_count = owner->owners; }
+};
+struct Failure : std::runtime_error {
+    std::shared_ptr<Token> token;
+    explicit Failure(Frame *frame) : std::runtime_error("native captured failure"), token(std::make_shared<Token>(frame)) {}
+};
 static void dropped(const unsigned char *data, size_t length) {
-    ++owners;
-    bytes += length;
-    for (size_t i = 0; i < length; ++i) checksum += data[i];
+    auto *frame = current_frame();
+    ++frame->owners;
+    frame->bytes += length;
+    for (size_t i = 0; i < length; ++i) frame->checksum += data[i];
 }
 static void capture_failure(void *) {
-    try { throw Failure();
-#if defined(__GLIBCXX__)
-    } catch (const __cxxabiv1::__forced_unwind &) { throw;
-#endif
-    } catch (...) { active->failure = std::current_exception(); }
-    // The native holder outlives both Rust owners. A plain native Zend catch
-    // cannot acknowledge this custody or allow PHP publication afterward.
-    swr_zend_guard_mark_cpp();
+    auto *frame = current_frame();
+    auto *scope = swoole_rs::NativeCppScope::current(runtime);
+    if (!scope) std::abort();
+    scope->capture([&]() { throw Failure(frame); });
     zend_bailout();
 }
 PHP_FUNCTION(cpp_native_catch) {
     ZEND_PARSE_PARAMETERS_NONE();
-    zend_try {
-        int outcome = swr_exit_guard_test_owner(capture_failure, nullptr, dropped);
-        if (outcome) swr_zend_guard_resume();
-    } zend_catch {
-        // A native PHP leaf can legitimately contain an ordinary Zend bailout.
-    } zend_end_try();
+    auto *frame = current_frame();
+    if (frame->control) {
+        int relay = 0;
+        try {
+            // This native entry owns only its completed inner Rust boundary.
+            swoole_rs::NativeCppScope inner{runtime};
+            int outcome = swr_exit_guard_test_owner(capture_failure, nullptr, dropped);
+            auto exception = inner.take();
+            inner.leave();
+            if (exception) std::rethrow_exception(exception);
+            relay = outcome;
+        } catch (const Failure &) {
+            frame->caught = true;
+        }
+        // No native custody object remains live across a nonlocal resume.
+        if (relay) swr_zend_guard_resume();
+    } else {
+        zend_try {
+            int outcome = swr_exit_guard_test_owner(capture_failure, nullptr, dropped);
+            if (outcome) swr_zend_guard_resume();
+        } zend_catch {
+            // A plain native Zend catch cannot acknowledge C++ custody.
+        } zend_end_try();
+    }
     RETURN_NULL();
 }
 PHP_FUNCTION(cpp_publish) {
     ZEND_PARSE_PARAMETERS_NONE();
-    ++active->publications;
+    ++current_frame()->publications;
     RETURN_NULL();
 }
 struct Call { zval *callback; zval result{}; };
@@ -58,36 +100,50 @@ static void invoke(void *argument) {
 }
 PHP_FUNCTION(cpp_chain) {
     zval *callback;
-    ZEND_PARSE_PARAMETERS_START(1, 1)
+    bool control = false;
+    ZEND_PARSE_PARAMETERS_START(1, 2)
         Z_PARAM_ZVAL(callback)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_BOOL(control)
     ZEND_PARSE_PARAMETERS_END();
-    Frame frame;
-    auto *previous = active;
-    auto *original = EG(bailout);
-    active = &frame;
-    Call call{callback};
-    int outcome = swr_exit_guard_test_owner(invoke, &call, dropped);
-    active = previous;
-    bool cleaned = owners == 2 && bytes == 8192 && checksum == 8192 * 42 &&
-        EG(bailout) == original && swr_zend_guard_target() == nullptr;
-    swr_zend_guard_clear();
-    bool caught = false;
-    try { if (frame.failure) std::rethrow_exception(frame.failure); }
-    catch (const Failure &failure) { caught = cleaned && std::string(failure.what()) == "native captured failure"; }
-    frame.failure = nullptr;
+    zend_long values[7]{};
+    bool caught;
+    {
+        auto *original = EG(bailout);
+        auto *target = swr_zend_guard_target();
+        auto *previous = swoole_rs::NativeCppScope::current(runtime);
+        Frame frame{control};
+        Call call{callback};
+        int outcome = swr_exit_guard_test_owner(invoke, &call, dropped);
+        bool cleaned = frame.owners == 2 && frame.bytes == 8192 && frame.checksum == 8192 * 42 &&
+            EG(bailout) == original && swr_zend_guard_target() == target;
+        try {
+            auto exception = frame.scope.take();
+            if (exception) std::rethrow_exception(exception);
+        } catch (const Failure &failure) {
+            frame.caught = std::string(failure.what()) == "native captured failure";
+        }
+        values[0] = outcome;
+        values[1] = frame.publications;
+        values[2] = frame.owners;
+        values[3] = frame.bytes;
+        values[4] = frame.checksum;
+        values[5] = frame.tokens;
+        values[6] = frame.token_owner_count;
+        frame.leave();
+        caught = cleaned && frame.caught && swoole_rs::NativeCppScope::current(runtime) == previous &&
+            swr_zend_guard_pending() == 0;
+    }
+    // Custody and registry nodes have ended before PHP result allocation.
     array_init(return_value);
-    add_next_index_long(return_value, outcome);
-    add_next_index_long(return_value, frame.publications);
-    add_next_index_long(return_value, owners);
-    add_next_index_long(return_value, bytes);
-    add_next_index_long(return_value, checksum);
-    add_next_index_long(return_value, tokens);
+    for (auto value : values) add_next_index_long(return_value, value);
     add_next_index_bool(return_value, caught);
 }
 ZEND_BEGIN_ARG_INFO_EX(arginfo_none, 0, 0, 0)
 ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_chain, 0, 0, 1)
     ZEND_ARG_INFO(0, callback)
+    ZEND_ARG_INFO(0, native_catch)
 ZEND_END_ARG_INFO()
 static const zend_function_entry functions[] = {
     PHP_FE(cpp_native_catch, arginfo_none)
