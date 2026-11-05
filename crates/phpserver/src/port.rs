@@ -87,21 +87,24 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     unsafe { Port::dtor(std) };
 }
 
-/// Bind a new port object to its `ListenPort` and Server; its `ServerPortProperty`.
+/// `php_swoole_server_port_set_ptr`: bind the object to its `ListenPort`.
 /// # Safety
 /// `object` is a `Swoole\Server\Port` this class created.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_port_bind(
+pub unsafe extern "C" fn swr_v1_phpserver_port_set(object: *mut zend_object, port: *mut c_void) {
+    // SAFETY: one of ours, per the contract.
+    unsafe { Port::data(object) }.port = port;
+}
+
+/// `php_swoole_server_port_get_property`: the object's `ServerPortProperty`.
+/// # Safety
+/// `object` is a `Swoole\Server\Port` this class created.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_port_object_property(
     object: *mut zend_object,
-    port: *mut c_void,
-    server: *mut c_void,
 ) -> *mut PortProperty {
     // SAFETY: one of ours, per the contract.
-    let data = unsafe { Port::data(object) };
-    data.port = port;
-    data.property.serv = server;
-    data.property.port = port;
-    &raw mut data.property
+    &raw mut unsafe { Port::data(object) }.property
 }
 
 /// The object's `ListenPort`; an `E_ERROR`, which does not return, when unbound.
