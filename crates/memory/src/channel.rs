@@ -1,4 +1,4 @@
-use std::ffi::c_void;
+use std::ffi::{c_int, c_void};
 use std::ptr;
 
 /// Layout invariant: `mem` holds `size + maxlen + 4` bytes (see `StoragePlan`), so a
@@ -203,244 +203,207 @@ unsafe fn read_record(c: &Channel, output: *mut c_void, capacity: i32) -> i32 {
     };
     length
 }
-/// Independent descriptor, not a C++ object or prefix. Its disjoint typed targets
-/// are live and serialized for this call; native Lock/Pipe objects never enter Rust.
+const LOCK: i32 = 2;
+const NOTIFY: i32 = 4;
+
+/// `swoole::Channel`: the queue state, then its process-shared mutex and its
+/// notification pipe (read end first). Native allocates `swr_v1_memory_channel_bytes`
+/// bytes for it (heap or shared mapping) and frees them after `close`; the queue
+/// storage follows the record.
 #[repr(C)]
-pub struct Fields {
-    head: *mut i64,
-    tail: *mut i64,
-    size: *mut usize,
-    head_tag: *mut u8,
-    tail_tag: *mut u8,
-    num: *mut i32,
-    max_num: *mut i32,
-    bytes: *mut usize,
-    flags: *mut i32,
-    maxlen: *mut i32,
-    mem: *mut *mut u8,
+pub struct Record {
+    queue: Channel,
+    lock: libc::pthread_mutex_t,
+    notify: [c_int; 2],
 }
-impl Fields {
-    fn valid(&self) -> bool {
-        !self.head.is_null()
-            && self.head.is_aligned()
-            && !self.tail.is_null()
-            && self.tail.is_aligned()
-            && !self.size.is_null()
-            && self.size.is_aligned()
-            && !self.head_tag.is_null()
-            && self.head_tag.is_aligned()
-            && !self.tail_tag.is_null()
-            && self.tail_tag.is_aligned()
-            && !self.num.is_null()
-            && self.num.is_aligned()
-            && !self.max_num.is_null()
-            && self.max_num.is_aligned()
-            && !self.bytes.is_null()
-            && self.bytes.is_aligned()
-            && !self.flags.is_null()
-            && self.flags.is_aligned()
-            && !self.maxlen.is_null()
-            && self.maxlen.is_aligned()
-            && !self.mem.is_null()
-            && self.mem.is_aligned()
-    }
-    // Callers check `valid` first: every target is non-null, aligned, live and serialized
-    // for the call.
-    unsafe fn load(&self) -> Channel {
-        Channel {
-            // SAFETY: as above.
-            head: unsafe { self.head.read() },
-            // SAFETY: as above.
-            tail: unsafe { self.tail.read() },
-            // SAFETY: as above.
-            size: unsafe { self.size.read() },
-            // SAFETY: as above.
-            head_tag: unsafe { self.head_tag.read() },
-            // SAFETY: as above.
-            tail_tag: unsafe { self.tail_tag.read() },
-            // SAFETY: as above.
-            num: unsafe { self.num.read() },
-            // SAFETY: as above.
-            max_num: unsafe { self.max_num.read() },
-            // SAFETY: as above.
-            bytes: unsafe { self.bytes.read() },
-            // SAFETY: as above.
-            flags: unsafe { self.flags.read() },
-            // SAFETY: as above.
-            maxlen: unsafe { self.maxlen.read() },
-            // SAFETY: as above.
-            mem: unsafe { self.mem.read() },
-        }
-    }
-    // Same precondition as `load`.
-    unsafe fn publish(&self, state: &Channel, producer: bool) {
-        if producer {
-            // SAFETY: as above.
-            unsafe { self.tail.write(state.tail) };
-            // SAFETY: as above.
-            unsafe { self.tail_tag.write(state.tail_tag) };
-        } else {
-            // SAFETY: as above.
-            unsafe { self.head.write(state.head) };
-            // SAFETY: as above.
-            unsafe { self.head_tag.write(state.head_tag) };
-        }
-        // SAFETY: as above.
-        unsafe { self.num.write(state.num) };
-        // SAFETY: as above.
-        unsafe { self.bytes.write(state.bytes) };
-    }
-}
-#[repr(C)]
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub struct StoragePlan {
-    total: usize,
-    size: usize,
-    header_size: usize,
-    maxlen: i32,
-    flags: i32,
-}
-impl StoragePlan {
-    fn new(size: usize, length: usize, flags: i32, header_size: usize) -> Option<Self> {
-        let maxlen = i32::try_from(length).ok()?;
-        if size < length || header_size == 0 {
-            return None;
-        }
-        let total = size
-            .checked_add(length)?
-            .checked_add(4)?
-            .checked_add(header_size)?;
-        isize::try_from(total).is_ok().then_some(Self {
-            total,
-            size,
-            header_size,
-            maxlen,
-            flags,
-        })
-    }
-}
+
+/// Bytes `Channel::make` allocates for a channel of `size` bytes and `maxlen`-byte
+/// records: the record plus `size + maxlen + 4` of storage. 0 for an invalid or
+/// unrepresentable configuration.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_storage_plan(
+pub extern "C" fn swr_v1_memory_channel_bytes(size: usize, maxlen: usize) -> usize {
+    if size < maxlen || i32::try_from(maxlen).is_err() {
+        return 0;
+    }
+    size_of::<Record>()
+        .checked_add(size)
+        .and_then(|n| n.checked_add(maxlen))
+        .and_then(|n| n.checked_add(4))
+        .filter(|&n| isize::try_from(n).is_ok())
+        .unwrap_or(0)
+}
+
+/// Initialize a fresh record and create its mutex (`SW_CHAN_LOCK`) and pipe
+/// (`SW_CHAN_NOTIFY`): 0 ready, -1 invalid configuration, 1 `pipe()` failed with
+/// errno intact, 2 the mutex failed. Nothing is left to release on failure.
+/// # Safety
+/// `record` is exclusively lent, aligned, and `swr_v1_memory_channel_bytes(size, maxlen)`
+/// bytes long.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_channel_init(
+    record: *mut Record,
     size: usize,
     maxlen: usize,
     flags: i32,
-    header_size: usize,
-    output: *mut StoragePlan,
 ) -> i32 {
-    if output.is_null() {
-        return -1;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(StoragePlan::default());
-    }
-    let Some(plan) = StoragePlan::new(size, maxlen, flags, header_size) else {
+    let Ok(length) = i32::try_from(maxlen) else {
         return -1;
     };
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(plan);
+    if record.is_null() || swr_v1_memory_channel_bytes(size, maxlen) == 0 {
+        return -1;
+    }
+    let queue = Channel {
+        head: 0,
+        tail: 0,
+        size,
+        head_tag: 0,
+        tail_tag: 0,
+        num: 0,
+        max_num: 0,
+        bytes: 0,
+        flags,
+        maxlen: length,
+        mem: record.wrapping_add(1).cast(),
+    };
+    // SAFETY: the caller lends the record exclusively; the queue is its first field.
+    unsafe { record.cast::<Channel>().write(queue) };
+    // SAFETY: as above.
+    let notify = unsafe { &raw mut (*record).notify };
+    // SAFETY: as above.
+    unsafe { notify.write([-1, -1]) };
+    // SAFETY: `notify` has room for the two descriptors.
+    if flags & NOTIFY != 0 && unsafe { libc::pipe(notify.cast()) } != 0 {
+        return 1;
+    }
+    // SAFETY: as above.
+    let lock = unsafe { &raw mut (*record).lock };
+    // SAFETY: `lock` is unused mutex storage inside the lent record.
+    if flags & LOCK != 0 && unsafe { init_mutex(lock) } != 0 {
+        // SAFETY: the record is still exclusively lent.
+        unsafe { close_pipe(record) };
+        return 2;
     }
     0
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_storage_init(
-    fields: *const Fields,
-    plan: *const StoragePlan,
-    memory: *mut c_void,
-) -> i32 {
-    if fields.is_null() || plan.is_null() || memory.is_null() {
-        return -1;
+
+/// A process-shared mutex, like upstream's `Mutex(true)`.
+unsafe fn init_mutex(lock: *mut libc::pthread_mutex_t) -> c_int {
+    let mut attr = std::mem::MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
+    // SAFETY: `attr` is writable attribute storage.
+    let mut result = unsafe { libc::pthread_mutexattr_init(attr.as_mut_ptr()) };
+    if result != 0 {
+        return result;
     }
-    // SAFETY: `fields` is non-null (checked above), aligned and initialized per the caller contract.
-    let fields = unsafe { &*fields };
-    // SAFETY: `plan` is non-null (checked above), aligned and initialized per the caller contract.
-    let plan = unsafe { plan.read() };
-    if !fields.valid()
-        // A negative maxlen fails the conversion and is refused like any other mismatch.
-        || usize::try_from(plan.maxlen)
-            .ok()
-            .and_then(|maxlen| StoragePlan::new(plan.size, maxlen, plan.flags, plan.header_size))
-            != Some(plan)
-        || memory
-            .addr()
-            .checked_add(plan.total - plan.header_size)
-            .is_none()
-    {
-        return -1;
-    }
-    // Every field target passed `valid` (above): non-null, aligned, live, serialized.
-    // SAFETY: as above.
-    unsafe { fields.head.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.tail.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.size.write(plan.size) };
-    // SAFETY: as above.
-    unsafe { fields.head_tag.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.tail_tag.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.num.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.max_num.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.bytes.write(0) };
-    // SAFETY: as above.
-    unsafe { fields.flags.write(plan.flags) };
-    // SAFETY: as above.
-    unsafe { fields.maxlen.write(plan.maxlen) };
-    // SAFETY: as above.
-    unsafe { fields.mem.write(memory.cast()) };
-    0
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_storage_in(
-    fields: *const Fields,
-    input: *const c_void,
-    length: i32,
-) -> i32 {
-    if fields.is_null() {
-        return -1;
-    }
-    // SAFETY: `fields` is non-null (checked above), aligned and initialized per the caller contract.
-    let fields = unsafe { &*fields };
-    if !fields.valid() {
-        return -1;
-    }
-    // SAFETY: `fields` passed `valid` (above).
-    let mut state = unsafe { fields.load() };
-    // SAFETY: `state` is a local snapshot; the caller's buffer follows swr_v1_memory_channel_in's contract.
-    let result = unsafe { swr_v1_memory_channel_in(&raw mut state, input, length) };
+    // SAFETY: `attr` was initialized above.
+    result = unsafe {
+        libc::pthread_mutexattr_setpshared(attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED)
+    };
     if result == 0 {
-        // SAFETY: `fields` passed `valid` (above).
-        unsafe { fields.publish(&state, true) };
+        // SAFETY: `lock` is writable, unused mutex storage; `attr` is initialized.
+        result = unsafe { libc::pthread_mutex_init(lock, attr.as_ptr()) };
     }
+    // SAFETY: `attr` is initialized.
+    unsafe { libc::pthread_mutexattr_destroy(attr.as_mut_ptr()) };
     result
 }
+
+unsafe fn close_pipe(record: *mut Record) {
+    // SAFETY: the caller's record is live.
+    for fd in unsafe { (*record).notify } {
+        if fd >= 0 {
+            // SAFETY: the record owns this descriptor.
+            unsafe { libc::close(fd) };
+        }
+    }
+}
+
+/// `Channel::destroy` before native frees the memory: the mutex and the pipe.
+/// # Safety
+/// `record` came from `swr_v1_memory_channel_init` and has no other user.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_storage_out(
-    fields: *const Fields,
-    output: *mut c_void,
-    capacity: i32,
-) -> i32 {
-    if fields.is_null() {
-        return -1;
+pub unsafe extern "C" fn swr_v1_memory_channel_close(record: *mut Record) {
+    // SAFETY: a live record.
+    let flags = unsafe { (*record).queue.flags };
+    if flags & LOCK != 0 {
+        // SAFETY: a live record.
+        let lock = unsafe { &raw mut (*record).lock };
+        // SAFETY: the mutex was initialized and nobody holds it.
+        unsafe { libc::pthread_mutex_destroy(lock) };
     }
-    // SAFETY: `fields` is non-null (checked above), aligned and initialized per the caller contract.
-    let fields = unsafe { &*fields };
-    if !fields.valid() {
-        return -1;
+    if flags & NOTIFY != 0 {
+        // SAFETY: as above.
+        unsafe { close_pipe(record) };
     }
-    // SAFETY: `fields` passed `valid` (above).
-    let mut state = unsafe { fields.load() };
-    // SAFETY: `state` is a local snapshot; the caller's buffer follows swr_v1_memory_channel_out's contract.
-    let result = unsafe { swr_v1_memory_channel_out(&raw mut state, output, capacity, 1) };
-    if result >= 0 {
-        // SAFETY: `fields` passed `valid` (above).
-        unsafe { fields.publish(&state, false) };
+}
+
+/// Lock (`true`) or unlock the channel's mutex.
+/// # Safety
+/// `record` is live with `SW_CHAN_LOCK`; an unlock follows this thread's lock.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_channel_lock(record: *mut Record, lock: bool) {
+    // SAFETY: a live record with an initialized mutex.
+    let mutex = unsafe { &raw mut (*record).lock };
+    if lock {
+        // SAFETY: as above.
+        unsafe { libc::pthread_mutex_lock(mutex) };
+    } else {
+        // SAFETY: as above; this thread holds it.
+        unsafe { libc::pthread_mutex_unlock(mutex) };
     }
-    result
+}
+
+/// `Channel::notify` (`true`: write one 8-byte token) or `Channel::wait` (read one,
+/// blocking): 0 done, -1 failed with errno intact.
+/// # Safety
+/// `record` is live with `SW_CHAN_NOTIFY`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_channel_signal(record: *const Record, notify: bool) -> i32 {
+    // SAFETY: a live record.
+    let [read, write] = unsafe { (*record).notify };
+    let mut value = u64::from(notify);
+    let length = size_of::<u64>();
+    loop {
+        let done = if notify {
+            // SAFETY: `value` lends `length` readable bytes.
+            unsafe { libc::write(write, (&raw const value).cast(), length) }
+        } else {
+            // SAFETY: `value` lends `length` writable bytes.
+            unsafe { libc::read(read, (&raw mut value).cast(), length) }
+        };
+        if done < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        let complete = if notify {
+            done.cast_unsigned() == length
+        } else {
+            done > 0
+        };
+        return if complete { 0 } else { -1 };
+    }
+}
+
+/// `Channel::print`, through C stdio like upstream (which labels the tags swapped).
+/// # Safety
+/// `record` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_memory_channel_print(record: *const Record) {
+    // SAFETY: a live record.
+    let c = unsafe { &(*record).queue };
+    // SAFETY: the format's conversions match the arguments.
+    unsafe {
+        libc::printf(
+            c"Channel\n{\n    off_t head = %ld;\n    off_t tail = %ld;\n    size_t size = %ld;\n    char head_tag = %d;\n    char tail_tag = %d;\n    int num = %d;\n    size_t bytes = %ld;\n    int flag = %d;\n    int maxlen = %d;\n\n}\n".as_ptr(),
+            c.head,
+            c.tail,
+            c.size,
+            c_int::from(c.tail_tag),
+            c_int::from(c.head_tag),
+            c.num,
+            c.bytes,
+            c.flags,
+            c.maxlen,
+        )
+    };
 }
 
 /// Only the initialized scalar fields read by public `Channel::full` cross ABI.
@@ -471,61 +434,6 @@ pub unsafe extern "C" fn swr_v1_memory_channel_full(state: *const CapacityState)
     i32::from(
         state.head == state.tail && state.tail_tag != state.head_tag || occupied == state.size,
     )
-}
-
-/// Native effects execute only after this independent action plan returns.
-#[repr(C)]
-#[derive(Default)]
-pub struct Lifecycle {
-    count: u32,
-    actions: [u32; 4],
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_lifecycle(
-    flags: i32,
-    phase: u32,
-    output: *mut Lifecycle,
-) -> i32 {
-    if output.is_null() {
-        return -1;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(Lifecycle::default());
-    }
-    if phase > 1 {
-        return -1;
-    }
-    let mut plan = Lifecycle::default();
-    let mut push = |action| {
-        if let Some(slot) = plan.actions.get_mut(plan.count as usize) {
-            *slot = action;
-            plan.count += 1;
-        }
-    };
-    if phase == 0 {
-        push(if flags & 8 == 0 { 1 } else { 2 }); // allocate heap/shared
-        push(3); // initialize scalar storage
-        if flags & 2 != 0 {
-            push(4);
-        } // create native lock
-        if flags & 4 != 0 {
-            push(5);
-        } // create native notification pipe
-    } else {
-        if flags & 2 != 0 {
-            push(6);
-        } // delete native lock
-        if flags & 4 != 0 {
-            push(7);
-        } // close/delete native pipe
-        push(if flags & 8 == 0 { 8 } else { 9 }); // release heap/shared
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(plan);
-    }
-    0
 }
 
 #[cfg(test)]

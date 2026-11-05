@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
+#include <pthread.h>
 #include <stdint.h>
 #ifdef __cplusplus
 namespace swoole { struct TableRow; struct TableColumn; class Table; }
@@ -98,7 +99,10 @@ int32_t swr_v1_memory_fixed_construct(swr_v1_memory_fixed *, const swr_v1_memory
 int32_t swr_v1_memory_fixed_init(swr_v1_memory_fixed *);
 void *swr_v1_memory_fixed_alloc(swr_v1_memory_fixed *);
 int32_t swr_v1_memory_fixed_free(swr_v1_memory_fixed *, void *);
-/* Independent channel state snapshot; no C++ class, lock or pipe crosses Rust. */
+/* swoole::Channel: the queue state, its process-shared mutex and its notification
+ * pipe (read end first). Native allocates swr_v1_memory_channel_bytes() bytes (heap
+ * or shared mapping), and frees them after swr_v1_memory_channel_close(); the queue
+ * storage follows the record. */
 typedef struct swr_v1_memory_channel {
     int64_t head, tail;
     size_t size;
@@ -107,29 +111,21 @@ typedef struct swr_v1_memory_channel {
     size_t bytes;
     int32_t flags, maxlen;
     void *mem;
+    pthread_mutex_t lock;
+    int notify[2];
 } swr_v1_memory_channel;
 int32_t swr_v1_memory_channel_in(swr_v1_memory_channel *, const void *, int32_t);
 int32_t swr_v1_memory_channel_out(swr_v1_memory_channel *, void *, int32_t, uint32_t consume);
-/* Independent typed field addresses, obtained by native member access. Targets
- * are disjoint, live, aligned, serialized and initialized (except during init).
- * Descriptor/plan/payload are disjoint. No C++ class, lock or pipe is borrowed. */
-typedef struct swr_v1_memory_channel_fields {
-    int64_t *head, *tail;
-    size_t *size;
-    char *head_tag, *tail_tag;
-    int32_t *num, *max_num;
-    size_t *bytes;
-    int32_t *flags, *maxlen;
-    void **mem;
-} swr_v1_memory_channel_fields;
-typedef struct swr_v1_memory_channel_plan {
-    size_t total, size, header_size;
-    int32_t maxlen, flags;
-} swr_v1_memory_channel_plan;
-int32_t swr_v1_memory_channel_storage_plan(size_t, size_t, int32_t, size_t, swr_v1_memory_channel_plan *);
-int32_t swr_v1_memory_channel_storage_init(const swr_v1_memory_channel_fields *, const swr_v1_memory_channel_plan *, void *);
-int32_t swr_v1_memory_channel_storage_in(const swr_v1_memory_channel_fields *, const void *, int32_t);
-int32_t swr_v1_memory_channel_storage_out(const swr_v1_memory_channel_fields *, void *, int32_t);
+/* 0 for an invalid or unrepresentable configuration. */
+size_t swr_v1_memory_channel_bytes(size_t size, size_t maxlen);
+/* 0 ready, -1 invalid, 1 pipe() failed (errno intact), 2 the mutex failed; nothing to
+ * release on failure. */
+int32_t swr_v1_memory_channel_init(swr_v1_memory_channel *, size_t size, size_t maxlen, int32_t flags);
+void swr_v1_memory_channel_close(swr_v1_memory_channel *);
+void swr_v1_memory_channel_lock(swr_v1_memory_channel *, bool lock);
+/* notify writes one 8-byte token, else wait reads one: 0 done, -1 failed. */
+int32_t swr_v1_memory_channel_signal(const swr_v1_memory_channel *, bool notify);
+void swr_v1_memory_channel_print(const swr_v1_memory_channel *);
 /* Independent read-only scalars for full(); unsigned occupancy wraps as C++. */
 typedef struct swr_v1_memory_channel_capacity {
     int64_t head, tail;
@@ -138,16 +134,6 @@ typedef struct swr_v1_memory_channel_capacity {
     uint8_t head_tag, tail_tag;
 } swr_v1_memory_channel_capacity;
 int32_t swr_v1_memory_channel_full(const swr_v1_memory_channel_capacity *);
-enum swr_v1_memory_channel_action {
-    SWR_CHANNEL_ALLOC_HEAP = 1, SWR_CHANNEL_ALLOC_SHARED = 2, SWR_CHANNEL_INITIALIZE = 3,
-    SWR_CHANNEL_CREATE_LOCK = 4, SWR_CHANNEL_CREATE_PIPE = 5, SWR_CHANNEL_DELETE_LOCK = 6,
-    SWR_CHANNEL_DELETE_PIPE = 7, SWR_CHANNEL_FREE_HEAP = 8, SWR_CHANNEL_FREE_SHARED = 9
-};
-typedef struct swr_v1_memory_channel_lifecycle_result {
-    uint32_t count, actions[4];
-} swr_v1_memory_channel_lifecycle_result;
-/* phase0: constructor effects, phase1: teardown effects, in native execution order. */
-int32_t swr_v1_memory_channel_lifecycle(int32_t flags, uint32_t phase, swr_v1_memory_channel_lifecycle_result *);
 /* Rust-owned opaque heap; public node POD layout stays unchanged. */
 typedef struct swr_v1_memory_heap_node {
     uint64_t priority;
