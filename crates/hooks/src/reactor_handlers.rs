@@ -1,0 +1,158 @@
+//! `System::init_reactor`'s readiness handlers for hooked polls (`SW_FD_CO_POLL`)
+//! and event waiters (`SW_FD_CO_EVENT`). Native code registers them through `set`
+//! and lends `wake`, which defers a parked coroutine's resume.
+use crate::poll::swr_v1_hook_poll_ready;
+use crate::wait_event::{ERROR, READ, WRITE, event_ready};
+use core::ffi::{c_int, c_void};
+use std::sync::OnceLock;
+use swoole_rs_corebase::constants::FdType;
+use swoole_rs_reactor::{Event, Handler, SocketRecord};
+
+/// `Reactor::set_handler(fd_type, events, handler)`.
+pub type SetHandler = unsafe extern "C" fn(*mut c_void, c_int, c_int, Handler);
+/// `reactor->defer(co->resume())`.
+pub type Wake = unsafe extern "C" fn(*mut c_void);
+
+/// Native's `wake`, the same function for every reactor.
+static WAKE: OnceLock<Wake> = OnceLock::new();
+
+/// The fired socket's object and fd.
+///
+/// # Safety
+/// `event` is the reactor's `Event` for a live socket.
+unsafe fn fired(event: *mut c_void) -> (*mut c_void, c_int) {
+    // SAFETY: the reactor passes its event, whose socket is live.
+    let event = unsafe { &*event.cast::<Event>() };
+    // SAFETY: as above.
+    let object = unsafe { (*event.socket.cast::<SocketRecord>()).object };
+    (object, event.fd)
+}
+
+unsafe extern "C" fn poll_ready<const KIND: i32>(_: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: a `SW_FD_CO_POLL` socket, whose object is its poll task.
+    let (task, fd) = unsafe { fired(event) };
+    // SAFETY: as above.
+    unsafe { swr_v1_hook_poll_ready(task, fd, KIND) };
+    0
+}
+
+unsafe extern "C" fn waiter_ready<const KIND: i32>(_: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: a `SW_FD_CO_EVENT` socket, whose object is its parked waiter.
+    let (waiter, _) = unsafe { fired(event) };
+    // SAFETY: as above.
+    let co = unsafe { event_ready(waiter, KIND) };
+    if let Some(wake) = WAKE.get().filter(|_| !co.is_null()) {
+        // SAFETY: `co` stays parked until the deferred resume runs.
+        unsafe { wake(co) };
+    }
+    0
+}
+
+/// Registers the poll and event-waiter handlers on `reactor`.
+///
+/// # Safety
+/// `set` registers on `reactor`; `wake` defers a resume on the calling thread's reactor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_init_reactor(
+    reactor: *mut c_void,
+    set: SetHandler,
+    wake: Wake,
+) {
+    WAKE.get_or_init(|| wake);
+    let poll = FdType::SW_FD_CO_POLL as c_int;
+    let waiter = FdType::SW_FD_CO_EVENT as c_int;
+    let handlers: [(c_int, c_int, Handler); 6] = [
+        (poll, READ, poll_ready::<READ>),
+        (poll, WRITE, poll_ready::<WRITE>),
+        (poll, ERROR, poll_ready::<ERROR>),
+        (waiter, READ, waiter_ready::<READ>),
+        (waiter, WRITE, waiter_ready::<WRITE>),
+        (waiter, ERROR, waiter_ready::<ERROR>),
+    ];
+    for (fd_type, events, handler) in handlers {
+        // SAFETY: the caller's registrar for `reactor`.
+        unsafe { set(reactor, fd_type, events, handler) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wait_event::{EventWaitOps, swr_v1_hook_wait_event};
+    use std::cell::{Cell, RefCell};
+    use swoole_rs_reactor::{swr_v1_socket_dealloc, swr_v1_socket_make};
+
+    const CO: *mut c_void = 0x10 as *mut c_void;
+
+    thread_local! {
+        static HANDLERS: RefCell<Vec<(c_int, c_int, Handler)>> = const { RefCell::new(Vec::new()) };
+        static SOCKET: Cell<*mut SocketRecord> = const { Cell::new(core::ptr::null_mut()) };
+        static WOKEN: Cell<u32> = const { Cell::new(0) };
+    }
+
+    unsafe extern "C" fn set(_: *mut c_void, fd_type: c_int, events: c_int, handler: Handler) {
+        HANDLERS.with_borrow_mut(|handlers| handlers.push((fd_type, events, handler)));
+    }
+    unsafe extern "C" fn wake(co: *mut c_void) {
+        assert_eq!(co, CO);
+        WOKEN.set(WOKEN.get() + 1);
+    }
+    fn handler(fd_type: FdType, events: c_int) -> Handler {
+        HANDLERS.with_borrow(|handlers| {
+            handlers
+                .iter()
+                .find(|(t, e, _)| *t == fd_type as c_int && *e == events)
+                .unwrap()
+                .2
+        })
+    }
+
+    unsafe extern "C" fn current() -> *mut c_void {
+        CO
+    }
+    unsafe extern "C" fn add(fd: i32, _: i32, waiter: *mut c_void, _: *mut i32) -> *mut c_void {
+        let socket = swr_v1_socket_make(fd, FdType::SW_FD_CO_EVENT as c_int);
+        unsafe { (*socket).object = waiter };
+        SOCKET.set(socket);
+        socket.cast()
+    }
+    unsafe extern "C" fn remove(socket: *mut c_void) {
+        unsafe { swr_v1_socket_dealloc(socket.cast()) };
+    }
+    /// The reactor fires write, then read, on the waiter's socket.
+    unsafe extern "C" fn park(_: *mut c_void, _: f64) -> i32 {
+        let mut event = Event {
+            fd: 7,
+            reactor_id: 0,
+            fd_type: FdType::SW_FD_CO_EVENT as c_int,
+            socket: SOCKET.get().cast(),
+        };
+        for events in [WRITE, READ] {
+            let ready = handler(FdType::SW_FD_CO_EVENT, events);
+            assert_eq!(
+                unsafe { ready(core::ptr::null_mut(), (&raw mut event).cast()) },
+                0
+            );
+        }
+        0
+    }
+
+    #[test]
+    fn registers_six_handlers_and_wakes_a_waiter_once() {
+        unsafe { swr_v1_hook_init_reactor(core::ptr::null_mut(), set, wake) };
+        assert_eq!(HANDLERS.with_borrow(Vec::len), 6);
+        for fd_type in [FdType::SW_FD_CO_POLL, FdType::SW_FD_CO_EVENT] {
+            for events in [READ, WRITE, ERROR] {
+                handler(fd_type, events);
+            }
+        }
+        let ops = EventWaitOps {
+            current,
+            add,
+            park,
+            remove,
+        };
+        let waited = unsafe { swr_v1_hook_wait_event(7, READ | WRITE, 1.0, &raw const ops) };
+        assert_eq!((waited.result, WOKEN.get()), (READ | WRITE, 1));
+    }
+}

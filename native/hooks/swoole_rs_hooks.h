@@ -95,8 +95,6 @@ typedef struct {
     void (*remove)(void *socket);
 } swr_v1_hook_event_wait_ops;
 swr_v1_hook_wait_event_outcome swr_v1_hook_wait_event(int32_t fd, int32_t events, double timeout, const swr_v1_hook_event_wait_ops *ops);
-/* The reactor fired event on a waiter's socket: the coroutine to resume (deferred), or null. */
-void *swr_v1_hook_event_ready(void *waiter, int event);
 typedef struct {
     void *(*current)(void);
     bool (*busy)(void);
@@ -119,7 +117,11 @@ typedef struct {
     void (*park)(void *co);
     void (*resume)(void *co);
 } swr_v1_hook_poll_ops;
-void swr_v1_hook_poll_ready(void *task, int fd, int event);
+/* System::init_reactor's SW_FD_CO_POLL and SW_FD_CO_EVENT handlers, registered through set;
+ * wake defers co->resume() on this thread's reactor. */
+void swr_v1_hook_init_reactor(void *reactor,
+                              void (*set)(void *reactor, int fd_type, int events, int (*handler)(void *, void *)),
+                              void (*wake)(void *co));
 void swr_v1_hook_poll_completed(void *task);
 void swr_v1_hook_poll_timeout(void *task);
 bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout, const swr_v1_hook_poll_ops *ops);

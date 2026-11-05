@@ -22,6 +22,7 @@ pub mod lifecycle;
 pub mod offload;
 pub mod packet;
 pub mod poll;
+pub mod reactor_handlers;
 pub mod resolve;
 pub mod sendfile;
 pub mod setup;

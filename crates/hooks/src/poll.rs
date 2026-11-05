@@ -89,7 +89,6 @@ fn coalesce(requested: i32, received: i32, event: i32) -> i32 {
 ///
 /// # Safety
 /// `task` is a registered socket's object.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_poll_ready(task: *mut c_void, fd: i32, event: i32) {
     let ptr = task;
     // SAFETY: the caller's precondition.
