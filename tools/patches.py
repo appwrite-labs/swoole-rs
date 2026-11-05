@@ -110,8 +110,9 @@ def export(patches, work):
     if names != sorted(names):
         raise SystemExit(f'Patch files apply in name order, but the commits are {names}: '
                          'add new commits after the existing ones, then export again')
-    for stale in set(patches.glob('*.patch')) - {patches / name for name in names}:
-        stale.unlink()
+    # Another PR may have added files since checkout; only prune our baseline.
+    for stale in set(baseline) - set(names):
+        (patches / stale).unlink(missing_ok=True)
 
 
 def rehash(old, new):
