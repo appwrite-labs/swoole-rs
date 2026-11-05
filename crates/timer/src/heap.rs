@@ -1,7 +1,6 @@
 //! Full timer records stay in reusable slots; sifting moves only slot ordinals.
 use super::TimerView;
 use std::collections::TryReserveError;
-use std::ops::{Index, IndexMut};
 
 struct Slot {
     view: TimerView,
@@ -16,16 +15,15 @@ struct Key {
 pub(super) struct Heap {
     slots: Vec<Slot>,
     order: Vec<Key>,
-    count: usize,
     // One-based free-list head; zero means no reusable slots.
     free: usize,
 }
 impl Heap {
     pub(super) fn len(&self) -> usize {
-        self.count
+        self.order.len()
     }
     pub(super) fn is_empty(&self) -> bool {
-        self.count == 0
+        self.order.is_empty()
     }
     pub(super) fn try_reserve(&mut self, count: usize) -> Result<(), TryReserveError> {
         self.order.try_reserve(count)?;
@@ -34,79 +32,108 @@ impl Heap {
         }
         Ok(())
     }
-    pub(super) fn slot(&self, index: usize) -> usize {
-        self.order[index].slot
+    pub(super) fn slot(&self, index: usize) -> Option<usize> {
+        self.order.get(index).map(|key| key.slot)
     }
-    pub(super) fn deadline(&self, index: usize) -> i64 {
-        self.order[index].deadline
+    pub(super) fn position(&self, slot: usize) -> Option<usize> {
+        self.slots.get(slot).map(|entry| entry.position)
     }
-    pub(super) fn refresh(&mut self, index: usize) {
-        self.order[index].deadline = self[index].deadline;
+    pub(super) fn get(&self, index: usize) -> Option<&TimerView> {
+        self.slots.get(self.slot(index)?).map(|entry| &entry.view)
     }
-    pub(super) fn position(&self, slot: usize) -> usize {
-        self.slots[slot].position
+    pub(super) fn first(&self) -> Option<&TimerView> {
+        self.get(0)
     }
-    pub(super) fn place(&mut self, index: usize, slot: usize) {
-        self.order[index] = Key {
-            slot,
-            deadline: self.slots[slot].view.deadline,
-        };
-        self.slots[slot].position = index;
+    pub(super) fn iter(&self) -> impl Iterator<Item = &TimerView> {
+        (0..self.len()).filter_map(|index| self.get(index))
     }
-    pub(super) fn push(&mut self, view: TimerView) {
-        let slot = if self.free == 0 {
-            self.slots.push(Slot { view, position: 0 });
-            self.slots.len() - 1
+    /// Stores the slot's new view and restores heap order around it.
+    pub(super) fn update(&mut self, index: usize, view: TimerView) {
+        if let Some(slot) = self.slot(index)
+            && let Some(entry) = self.slots.get_mut(slot)
+        {
+            entry.view = view;
+        }
+        self.repair(index);
+    }
+    /// Returns the new entry's slot.
+    pub(super) fn push(&mut self, view: TimerView) -> usize {
+        let mut slot = self.free.wrapping_sub(1);
+        if let Some(entry) = self.slots.get_mut(slot) {
+            self.free = entry.position;
+            entry.view = view;
         } else {
-            let slot = self.free - 1;
-            self.free = self.slots[slot].position;
-            self.slots[slot].view = view;
-            slot
-        };
+            slot = self.slots.len();
+            self.slots.push(Slot { view, position: 0 });
+        }
+        let index = self.order.len();
         self.order.push(Key {
             slot,
             deadline: view.deadline,
         });
-        self.place(self.count, slot);
-        self.count += 1;
+        self.sift_up(index);
+        slot
     }
-    pub(super) fn swap_remove(&mut self, index: usize) -> TimerView {
-        let slot = self.slot(index);
-        let view = self.slots[slot].view;
-        self.count -= 1;
-        self.order.swap_remove(index);
-        if index != self.count {
-            let moved = self.slot(index);
-            self.slots[moved].position = index;
+    pub(super) fn swap_remove(&mut self, index: usize) -> Option<TimerView> {
+        let key = (index < self.order.len()).then(|| self.order.swap_remove(index))?;
+        self.repair(index);
+        let entry = self.slots.get_mut(key.slot)?;
+        entry.position = self.free;
+        self.free = key.slot + 1;
+        Some(entry.view)
+    }
+    fn repair(&mut self, index: usize) {
+        let index = self.sift_up(index);
+        self.sift_down(index);
+    }
+    // The ordering key at `index`, with the deadline read from its slot's view.
+    fn key(&self, index: usize) -> Option<Key> {
+        let slot = self.slot(index)?;
+        let deadline = self.slots.get(slot)?.view.deadline;
+        Some(Key { deadline, slot })
+    }
+    fn place(&mut self, index: usize, slot: usize) {
+        if let Some(key) = self.order.get_mut(index)
+            && let Some(entry) = self.slots.get_mut(slot)
+        {
+            *key = Key {
+                slot,
+                deadline: entry.view.deadline,
+            };
+            entry.position = index;
         }
-        self.slots[slot].position = self.free;
-        self.free = slot + 1;
-        view
     }
-    pub(super) fn first(&self) -> Option<&TimerView> {
-        (!self.is_empty()).then(|| &self[0])
+    fn sift_up(&mut self, mut index: usize) -> usize {
+        let Some(key) = self.key(index) else {
+            return index;
+        };
+        while let Some(parent) = index.checked_sub(1).map(|i| i / 2)
+            && let Some(&above) = self.order.get(parent)
+            && key.deadline < above.deadline
+        {
+            self.place(index, above.slot);
+            index = parent;
+        }
+        self.place(index, key.slot);
+        index
     }
-    pub(super) fn iter(&self) -> impl Iterator<Item = &TimerView> {
-        (0..self.count).map(|index| &self[index])
-    }
-}
-impl Index<usize> for Heap {
-    type Output = TimerView;
-    fn index(&self, index: usize) -> &TimerView {
-        assert!(
-            index < self.count,
-            "timer heap index outside active entries"
-        );
-        &self.slots[self.slot(index)].view
-    }
-}
-impl IndexMut<usize> for Heap {
-    fn index_mut(&mut self, index: usize) -> &mut TimerView {
-        assert!(
-            index < self.count,
-            "timer heap index outside active entries"
-        );
-        let slot = self.slot(index);
-        &mut self.slots[slot].view
+    fn sift_down(&mut self, mut index: usize) {
+        let Some(key) = self.key(index) else {
+            return;
+        };
+        while let Some(left) = index.checked_mul(2).and_then(|i| i.checked_add(1))
+            && let Some(&below_left) = self.order.get(left)
+        {
+            let (child, below) = match self.order.get(left + 1) {
+                Some(&right) if right.deadline < below_left.deadline => (left + 1, right),
+                _ => (left, below_left),
+            };
+            if key.deadline <= below.deadline {
+                break;
+            }
+            self.place(index, below.slot);
+            index = child;
+        }
+        self.place(index, key.slot);
     }
 }

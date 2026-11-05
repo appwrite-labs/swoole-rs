@@ -33,6 +33,17 @@ unsafe fn input<'a>(data: *const u8, length: usize) -> Option<&'a [u8]> {
     }
 }
 
+/// Copies `parts` back to back into `out`, stopping at the first part that no longer fits.
+fn concat(mut out: &mut [u8], parts: &[&[u8]]) {
+    for part in parts {
+        let Some((head, tail)) = std::mem::take(&mut out).split_at_mut_checked(part.len()) else {
+            return;
+        };
+        head.copy_from_slice(part);
+        out = tail;
+    }
+}
+
 /// # Safety
 /// Output covers capacity exclusive writable bytes and is disjoint from inputs.
 unsafe fn output<'a>(data: *mut u8, capacity: usize, required: usize) -> Option<&'a mut [u8]> {

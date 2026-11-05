@@ -15,11 +15,10 @@ pub fn socks_transition(state: u8, method: u8, response: &[u8]) -> SocksTransiti
         state,
         ..SocksTransition::default()
     };
-    if response.len() < 2 {
+    let [version, reply, ..] = *response else {
         result.error = 1;
         return result;
-    }
-    let (version, reply) = (response[0], response[1]);
+    };
     result.reply = reply;
     match state {
         1 if version != 5 => result.error = 2,
@@ -106,11 +105,7 @@ pub unsafe extern "C" fn swr_v1_socks_auth(
     else {
         return -1;
     };
-    output[0] = 1;
-    output[1] = user_byte;
-    output[2..2 + user_length].copy_from_slice(user);
-    output[2 + user_length] = password_byte;
-    output[3 + user_length..].copy_from_slice(password);
+    crate::concat(output, &[&[1, user_byte], user, &[password_byte], password]);
     i64::try_from(size).unwrap_or(-1)
 }
 
@@ -136,7 +131,8 @@ pub unsafe extern "C" fn swr_v1_socks_connect(
     if !matches!((address_type, length), (1, 4) | (4, 16) | (3, _)) {
         return -1;
     }
-    if address_type == 3 && length > usize::from(u8::MAX) {
+    let domain_length = u8::try_from(length);
+    if address_type == 3 && domain_length.is_err() {
         return -2;
     }
     let offset = if address_type == 3 { 5usize } else { 4usize };
@@ -147,16 +143,21 @@ pub unsafe extern "C" fn swr_v1_socks_connect(
     let Some(output) = (unsafe { crate::output(output, capacity, size) }) else {
         return -1;
     };
-    output[..4].copy_from_slice(&[5, 1, 0, address_type]);
-    if address_type == 3 {
-        // At most u8::MAX, refused with -2 above.
-        let Ok(length) = u8::try_from(length) else {
-            return -2;
-        };
-        output[4] = length;
-    }
-    output[offset..offset + length].copy_from_slice(address);
-    output[offset + length..].copy_from_slice(&port.to_be_bytes());
+    let domain_length = [domain_length.unwrap_or(0)];
+    let domain_length: &[u8] = if address_type == 3 {
+        &domain_length
+    } else {
+        &[]
+    };
+    crate::concat(
+        output,
+        &[
+            &[5, 1, 0, address_type],
+            domain_length,
+            address,
+            &port.to_be_bytes(),
+        ],
+    );
     i64::try_from(size).unwrap_or(-1)
 }
 

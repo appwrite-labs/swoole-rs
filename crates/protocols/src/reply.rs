@@ -12,13 +12,13 @@ pub struct ReplyParts {
 impl ReplyParts {
     fn bytes(&mut self, bytes: &[u8]) {
         let start = self.prefix_length as usize;
-        self.prefix[start..start + bytes.len()].copy_from_slice(bytes);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "bytes fit the fixed prefix buffer, indexed above"
-        )]
-        let length = bytes.len() as u32;
-        self.prefix_length += length;
+        // Every reply prefix fits the fixed buffer: a flag, 20 digits and CRLF at most.
+        if let Some(slot) = self.prefix.get_mut(start..start + bytes.len())
+            && let Ok(length) = u32::try_from(bytes.len())
+        {
+            slot.copy_from_slice(bytes);
+            self.prefix_length += length;
+        }
     }
     fn number(&mut self, value: u64) {
         let mut buffer = [0; 20];

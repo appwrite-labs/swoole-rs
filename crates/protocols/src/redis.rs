@@ -87,14 +87,14 @@ pub unsafe extern "C" fn swr_v1_resp_handler_key(
     }
     let mut key = [0u8; 64];
     let prefix = b"_handler_";
-    key[..prefix.len()].copy_from_slice(prefix);
-    let mut length = prefix.len();
-    for byte in bytes
+    let name = bytes
         .iter()
         .take(63 - prefix.len())
         .take_while(|&&byte| byte != 0)
-    {
-        key[length] = byte.to_ascii_lowercase();
+        .map(u8::to_ascii_lowercase);
+    let mut length = 0;
+    for (slot, byte) in key.iter_mut().zip(prefix.iter().copied().chain(name)) {
+        *slot = byte;
         length += 1;
     }
     // SAFETY: `output` is non-null (checked above) and covers 64 exclusive writable bytes,
@@ -119,13 +119,14 @@ impl RespCursor {
         if self.state > 2 {
             return Err(());
         }
-        while self.position < bytes.len() {
-            let first = bytes[self.position];
+        while let Some(rest) = bytes.get(self.position..)
+            && let Some(&first) = rest.first()
+        {
             if self.state == 0 && first == b'*' {
-                self.position += number(&bytes[self.position..], range).ok_or(())?.consumed;
+                self.position += number(rest, range).ok_or(())?.consumed;
                 self.state = 1;
             } else if self.state <= 1 && first == b'$' {
-                let value = number(&bytes[self.position..], range).ok_or(())?;
+                let value = number(rest, range).ok_or(())?;
                 self.position += value.consumed;
                 if value.value == -1 {
                     return Ok(Some(RespSpan {
@@ -136,7 +137,7 @@ impl RespCursor {
                 self.length = value.value;
                 self.state = 2;
             } else if self.state <= 1 && first == b':' {
-                let value = number(&bytes[self.position..], range).ok_or(())?;
+                let value = number(rest, range).ok_or(())?;
                 self.position += value.consumed;
                 return Ok(Some(RespSpan {
                     integer: value.value,
@@ -361,15 +362,15 @@ pub unsafe extern "C" fn swr_v1_resp_scan(
 
 pub(crate) fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
     let mut offset = buffer.len();
-    loop {
+    for slot in buffer.iter_mut().rev() {
+        *slot = b'0' + (value % 10) as u8;
         offset -= 1;
-        buffer[offset] = b'0' + (value % 10) as u8;
         value /= 10;
         if value == 0 {
             break;
         }
     }
-    &buffer[offset..]
+    buffer.get(offset..).unwrap_or_default()
 }
 
 /// kind=0 error,2 status,4 bulk,7 explicit nil,8 integer. Other string overloads
@@ -397,7 +398,7 @@ pub unsafe extern "C" fn swr_v1_resp_format(
             let body = if value.is_empty() {
                 if kind == 0 { &b"ERR"[..] } else { &b"OK"[..] }
             } else {
-                &value[..value.iter().position(|b| *b == 0).unwrap_or(value.len())]
+                value.split(|b| *b == 0).next().unwrap_or_default()
             };
             (if kind == 0 { b"-" } else { b"+" }, body, b"\r\n")
         }
@@ -410,11 +411,16 @@ pub unsafe extern "C" fn swr_v1_resp_format(
         ),
         _ => return 0,
     };
-    let extra = if kind == 4 { 3 } else { 0 }; // '$' and header CRLF.
-    let Some(size) = prefix
-        .len()
-        .checked_add(body.len())
-        .and_then(|n| n.checked_add(suffix.len() + extra))
+    // Bulk strings wrap their length prefix in '$' and a header CRLF.
+    let (dollar, header): (&[u8], &[u8]) = if kind == 4 {
+        (b"$", b"\r\n")
+    } else {
+        (b"", b"")
+    };
+    let parts = [dollar, prefix, header, body, suffix];
+    let Some(size) = parts
+        .iter()
+        .try_fold(0usize, |size, part| size.checked_add(part.len()))
     else {
         return 0;
     };
@@ -425,20 +431,7 @@ pub unsafe extern "C" fn swr_v1_resp_format(
     let Some(out) = (unsafe { crate::output(output, capacity, size) }) else {
         return 0;
     };
-    let mut position = 0;
-    if kind == 4 {
-        out[0] = b'$';
-        position += 1;
-    }
-    out[position..position + prefix.len()].copy_from_slice(prefix);
-    position += prefix.len();
-    if kind == 4 {
-        out[position..position + 2].copy_from_slice(b"\r\n");
-        position += 2;
-    }
-    out[position..position + body.len()].copy_from_slice(body);
-    position += body.len();
-    out[position..].copy_from_slice(suffix);
+    crate::concat(out, &parts);
     size
 }
 
@@ -509,18 +502,21 @@ fn resp_receive_range(
     let mut position = 0;
     let mut set_offset = false;
     loop {
-        let Some(first) = bytes.get(position) else {
+        let Some(rest) = bytes.get(position..) else {
             return (0, set_offset);
         };
-        if request.state == 0 && *first == b'*' {
-            let Some(value) = number(&bytes[position..], range) else {
+        let Some(&first) = rest.first() else {
+            return (0, set_offset);
+        };
+        if request.state == 0 && first == b'*' {
+            let Some(value) = number(rest, range) else {
                 return (0, set_offset);
             };
             position += value.consumed;
             request.lines_total = value.value;
             request.state = 1;
-        } else if request.state <= 1 && *first == b'$' {
-            let Some(value) = number(&bytes[position..], range) else {
+        } else if request.state <= 1 && first == b'$' {
+            let Some(value) = number(rest, range) else {
                 return (0, set_offset);
             };
             position += value.consumed;
@@ -538,8 +534,8 @@ fn resp_receive_range(
             }
             request.bytes_total = value.value;
             request.state = 2;
-        } else if request.state <= 1 && *first == b':' {
-            let Some(value) = number(&bytes[position..], range) else {
+        } else if request.state <= 1 && first == b':' {
+            let Some(value) = number(rest, range) else {
                 return (0, set_offset);
             };
             position += value.consumed;
