@@ -98,7 +98,7 @@ macro_rules! internal {
 /// `swoole_<name>` through the trampoline.
 fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info) {
     let library = handler.is_none();
-    let handler = handler.or(ops().user_func);
+    let handler = handler.or(Some(crate::user_func_handler));
     let key = name.to_bytes();
     let mut table = table();
     let Table {
@@ -588,8 +588,11 @@ pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout
         installed,
         flags::STREAM_FUNCTION,
         &[
-            (c"stream_select", ops.stream_select),
-            (c"stream_socket_pair", ops.stream_socket_pair),
+            (c"stream_select", Some(crate::select::stream_select)),
+            (
+                c"stream_socket_pair",
+                Some(crate::stream::stream_socket_pair),
+            ),
         ],
     );
     family(

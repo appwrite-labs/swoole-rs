@@ -3,7 +3,7 @@
 //! coroutine `socket_create` and unhooking puts back, and which that factory
 //! falls back to outside a coroutine.
 use std::{
-    ffi::{CStr, c_char, c_void},
+    ffi::{CStr, c_void},
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::sys::{swr_zend_runtime_set_transport, swr_zend_runtime_transport};
@@ -53,21 +53,8 @@ pub(crate) fn register(index: usize, hook: bool, coroutine: *mut c_void) -> i32 
     unsafe { swr_zend_runtime_set_transport(NAMES[index].as_ptr(), factory, remove) }
 }
 
-/// The factory PHP had registered for `proto`, or null (C++ then warns of an
-/// unknown protocol): `socket_create` outside a coroutine.
-///
-/// # Safety
-/// `proto` points to `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_original_transport(
-    proto: *const c_char,
-    length: usize,
-) -> *mut c_void {
-    // SAFETY: the caller lends exactly length bytes of the protocol name.
-    original(unsafe { std::slice::from_raw_parts(proto.cast::<u8>(), length) })
-}
-
-/// The original, process-lived PHP factory for an exact borrowed protocol name.
+/// The original, process-lived PHP factory for an exact borrowed protocol name,
+/// or null: `socket_create` outside a coroutine.
 pub(crate) fn original(proto: &[u8]) -> *mut c_void {
     NAMES
         .iter()
@@ -85,9 +72,7 @@ mod tests {
     fn original_matches_whole_names_only() {
         let mut marker = 0u8;
         ORIGINAL[4].store((&raw mut marker).cast(), Ordering::Relaxed);
-        let find = |proto: &[u8]| unsafe {
-            swr_v1_phpruntime_original_transport(proto.as_ptr().cast(), proto.len())
-        };
+        let find = original;
         assert_eq!(find(b"ssl"), (&raw mut marker).cast());
         assert!(find(b"ss").is_null());
         assert!(find(b"sslv3").is_null());

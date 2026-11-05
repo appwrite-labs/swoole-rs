@@ -40,22 +40,6 @@ use swoole_rs_zend::{
 };
 
 unsafe extern "C" {
-    fn swr_cpp_phpruntime_socket_write(
-        stream: *mut php_stream,
-        buffer: *const c_char,
-        length: usize,
-    ) -> isize;
-    fn swr_cpp_phpruntime_socket_read(
-        stream: *mut php_stream,
-        buffer: *mut c_char,
-        length: usize,
-    ) -> isize;
-    fn swr_cpp_phpruntime_socket_option(
-        stream: *mut php_stream,
-        option: c_int,
-        value: c_int,
-        parameter: *mut c_void,
-    ) -> c_int;
     fn php_network_populate_name_from_sockaddr(
         sa: *mut sockaddr,
         sl: socklen_t,
@@ -134,33 +118,44 @@ fn errno() -> i32 {
 }
 
 /// Report a trapped bailout through `flag`; `failed` stands in for the result.
-pub(crate) fn reraise<T: Copy>(flag: *mut u8, result: Result<T, Bailout>, failed: T) -> T {
+pub(crate) fn reraise<T: Copy>(flag: *mut bool, result: Result<T, Bailout>, failed: T) -> T {
     let (value, status) = match result {
         Ok(value) => (value, Ok(())),
         Err(error) => (failed, Err(error)),
     };
     if swoole_rs_zend::bailout::relay_to_c(status) {
         // SAFETY: the native entry lends its flag; owned Rust cleanup has already finished.
-        unsafe { *flag = 1 };
+        unsafe { *flag = true };
         failed
     } else {
         value
     }
 }
 
+/// The value, or `failed` after a bailout, which is raised last: the caller is
+/// the native callback boundary and owns nothing by then.
+pub(crate) fn raise<T: Copy>(result: Result<T, Bailout>, failed: T) -> T {
+    let (value, status) = match result {
+        Ok(value) => (value, Ok(())),
+        Err(error) => (failed, Err(error)),
+    };
+    swoole_rs_zend::bailout::raise(status);
+    value
+}
+
 // PHP's required operations table is Rust-owned alongside its stream data and bodies.
-// Native entries only resume flags from the three callbacks that may execute PHP.
+// The three callbacks that may execute PHP raise a trapped bailout last.
 #[unsafe(no_mangle)]
 pub static mut swoole_runtime_socket_ops: php_stream_ops = php_stream_ops {
-    write: Some(swr_cpp_phpruntime_socket_write),
-    read: Some(swr_cpp_phpruntime_socket_read),
+    write: Some(socket_write),
+    read: Some(socket_read),
     close: Some(swr_v1_phpruntime_socket_close),
     flush: Some(swr_v1_phpruntime_socket_flush),
     label: c"socket/coroutine".as_ptr(),
     seek: None,
     cast: Some(swr_v1_phpruntime_socket_cast),
     stat: Some(swr_v1_phpruntime_socket_stat),
-    set_option: Some(swr_cpp_phpruntime_socket_option),
+    set_option: Some(socket_set_option),
 };
 
 /// The stream's `NetStream`, null once closed.
@@ -370,36 +365,27 @@ fn read(stream: *mut php_stream, buf: *mut c_char, count: usize) -> Result<isize
 /// The stream's `write`: bytes written, or -1.
 /// # Safety
 /// Called by Zend with a stream of these operations and `count` bytes at `buf`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_socket_write(
+unsafe extern "C" fn socket_write(
     stream: *mut php_stream,
     buf: *const c_char,
     count: usize,
-    bailout: *mut u8,
 ) -> isize {
-    reraise(bailout, write(stream, buf, count), -1)
+    raise(write(stream, buf, count), -1)
 }
 
 /// The stream's `read`: bytes read, or -1.
 /// # Safety
 /// Called by Zend with a stream of these operations and `count` writable
 /// bytes at `buf`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_socket_read(
-    stream: *mut php_stream,
-    buf: *mut c_char,
-    count: usize,
-    bailout: *mut u8,
-) -> isize {
-    reraise(bailout, read(stream, buf, count), -1)
+unsafe extern "C" fn socket_read(stream: *mut php_stream, buf: *mut c_char, count: usize) -> isize {
+    raise(read(stream, buf, count), -1)
 }
 
 /// The stream's `close`: the socket closes now and is freed once no
 /// operation holds it.
 /// # Safety
 /// Called by Zend with a stream of these operations.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_socket_close(
+unsafe extern "C" fn swr_v1_phpruntime_socket_close(
     stream: *mut php_stream,
     close_handle: c_int,
 ) -> c_int {
@@ -432,8 +418,7 @@ unsafe fn close_stream(stream: *mut php_stream) -> Result<c_int, Bailout> {
 }
 
 /// The stream's `flush`: nothing is buffered.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpruntime_socket_flush(stream: *mut php_stream) -> c_int {
+extern "C" fn swr_v1_phpruntime_socket_flush(stream: *mut php_stream) -> c_int {
     let _ = stream;
     0
 }
@@ -442,8 +427,7 @@ pub extern "C" fn swr_v1_phpruntime_socket_flush(stream: *mut php_stream) -> c_i
 /// # Safety
 /// Called by Zend with a stream of these operations; `ret` is null or holds
 /// the requested type.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_socket_cast(
+unsafe extern "C" fn swr_v1_phpruntime_socket_cast(
     stream: *mut php_stream,
     castas: c_int,
     ret: *mut *mut c_void,
@@ -481,8 +465,7 @@ pub unsafe extern "C" fn swr_v1_phpruntime_socket_cast(
 /// The stream's `stat`: `fstat` of the fd.
 /// # Safety
 /// Called by Zend with a stream of these operations and a writable `ssb`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_socket_stat(
+unsafe extern "C" fn swr_v1_phpruntime_socket_stat(
     stream: *mut php_stream,
     ssb: *mut php_stream_statbuf,
 ) -> c_int {
@@ -502,16 +485,13 @@ pub unsafe extern "C" fn swr_v1_phpruntime_socket_stat(
 /// # Safety
 /// Called by Zend with a stream of these operations and the option's
 /// parameter.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_socket_set_option(
+unsafe extern "C" fn socket_set_option(
     stream: *mut php_stream,
     option: c_int,
     value: c_int,
     ptrparam: *mut c_void,
-    bailout: *mut u8,
 ) -> c_int {
-    reraise(
-        bailout,
+    raise(
         set_option(stream, option, value, ptrparam),
         option::RETURN_ERR,
     )
@@ -1098,11 +1078,11 @@ fn ssl_set_options(socket: &Socket, context: *mut php_stream_context) -> Result<
 }
 
 /// The complete factory: PHP's original transport outside a coroutine, otherwise
-/// Rust's coroutine socket construction and stream ownership.
+/// Rust's coroutine socket construction and stream ownership. zend-sys's
+/// `swr_zend_stream_factory` is the registered factory and raises the bailout.
 /// # Safety
 /// All borrowed PHP factory arguments stay live through this call; bailout is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_transport_factory(
+pub(crate) unsafe extern "C" fn transport_factory_body(
     proto: *const c_char,
     protolen: usize,
     name: *const c_char,
@@ -1112,7 +1092,7 @@ pub unsafe extern "C" fn swr_v1_phpruntime_transport_factory(
     flags: c_int,
     time: *mut timeval,
     context: *mut php_stream_context,
-    bailed: *mut u8,
+    bailed: *mut bool,
 ) -> *mut php_stream {
     // SAFETY: the native entry lends every original PHP factory argument through invocation.
     let result = unsafe {
@@ -1176,23 +1156,7 @@ unsafe fn transport_factory(
 
 /// The transport factory's coroutine branch.
 /// # Safety
-/// Called by the C++ factory in a coroutine with Zend's arguments.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_socket_create(
-    proto: *const c_char,
-    protolen: usize,
-    resourcename: *const c_char,
-    persistent_id: *const c_char,
-    context: *mut php_stream_context,
-    bailout: *mut u8,
-) -> *mut php_stream {
-    // SAFETY: per the caller.
-    let result = unsafe { create(proto, protolen, resourcename, persistent_id, context) };
-    reraise(bailout, result, ptr::null_mut())
-}
-
-/// # Safety
-/// As `swr_v1_phpruntime_socket_create`.
+/// Called in a coroutine with Zend's factory arguments.
 unsafe fn create(
     proto: *const c_char,
     protolen: usize,
@@ -1291,18 +1255,16 @@ fn stream_from_socket(
     Ok(stream)
 }
 
-/// `stream_socket_pair(int $domain, int $type, int $protocol): array|false`:
-/// 1 if a bailout was trapped.
+/// `stream_socket_pair(int $domain, int $type, int $protocol): array|false`.
 /// # Safety
-/// Called from the C++ handler with its live frame and return slot.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_socket_pair(
+/// Called by Zend with a live frame and return slot.
+pub(crate) unsafe extern "C" fn stream_socket_pair(
     frame: *mut swoole_rs_zend::sys::zend_execute_data,
     value: *mut zval,
-) -> u8 {
+) {
     // SAFETY: per the caller.
-    let call = unsafe { Call::new(frame, value) };
-    u8::from(swoole_rs_zend::bailout::relay_to_c(socket_pair(&call)))
+    let result = socket_pair(&unsafe { Call::new(frame, value) });
+    swoole_rs_zend::bailout::raise(result);
 }
 
 fn socket_pair(call: &Call) -> Result<(), Bailout> {
