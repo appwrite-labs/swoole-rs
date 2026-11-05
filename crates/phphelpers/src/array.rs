@@ -46,14 +46,16 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_key_new(
 /// A live uniquely owned key/value handle and array zval.
 #[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn swr_v1_phphelpers_key_add(handle: *mut KeyValue, array: *mut zval) {
-    // SAFETY: the caller lends its handle for this operation.
-    let state = unsafe { &mut *handle };
+    // SAFETY: copy the immutable key/index before an update can execute PHP.
+    let key = unsafe { (*handle).key };
+    // SAFETY: the initialized handle's integer index is plain copied data.
+    let index = unsafe { (*handle).index };
+    // SAFETY: lend the stable zval without holding a Rust borrow across PHP reentry.
+    let value = unsafe { &raw mut (*handle).value };
     // SAFETY: array is a live array zval.
     let table = unsafe { swoole_rs_zend::value::table(array) };
-    // SAFETY: Zend's update can destroy the replaced element; the shim contains bailouts.
-    let added = unsafe {
-        sys::swr_zend_try_key_update(table, state.key, state.index, &raw mut state.value)
-    };
+    // SAFETY: replacement can execute a destructor; the shim contains its bailout.
+    let added = unsafe { sys::swr_zend_try_key_update(table, key, index, value) };
     if added.is_null() {
         bailout::Bailout.defer();
     } else {

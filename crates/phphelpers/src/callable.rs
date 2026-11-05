@@ -159,8 +159,8 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_invoke(
     argv: *mut zval,
     retval: *mut zval,
 ) -> bool {
-    // SAFETY: an initialized cache held live by its owned callback zval.
-    let state = unsafe { &mut *handle };
+    // SAFETY: the owned callback remains live; retain raw pointers across PHP reentry.
+    let cache = unsafe { &raw mut (*handle).cache };
     // SAFETY: zero initializes fci's optional members and the temporary return zval.
     let mut fci: sys::zend_fcall_info = unsafe { std::mem::zeroed() };
     // SAFETY: zero is an undefined zval.
@@ -173,14 +173,13 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_invoke(
     };
     fci.param_count = argc;
     fci.params = argv;
-    let result = if state.cache.function_handler.is_null() {
-        fci.function_name = state.value;
-        // SAFETY: the callback name, arguments and return slot are live.
-        unsafe { bailout::call(&raw mut fci, &raw mut state.cache) }
-    } else {
-        // SAFETY: the callable cache, arguments and return slot are live.
-        unsafe { bailout::call(&raw mut fci, &raw mut state.cache) }
-    };
+    // SAFETY: the cache is initialized and held live by the owned callback zval.
+    if unsafe { (*cache).function_handler }.is_null() {
+        // SAFETY: copy the borrowed function-name zval, matching ZVAL_COPY_VALUE.
+        fci.function_name = unsafe { (*handle).value };
+    }
+    // SAFETY: live cache, arguments and return storage; no Rust borrow spans PHP reentry.
+    let result = unsafe { bailout::call(&raw mut fci, cache) };
     let success = match result {
         Ok(success) => success,
         Err(error) => {

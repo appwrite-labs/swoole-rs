@@ -4,11 +4,18 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from tools import dev
 
 
 class Prune(unittest.TestCase):
+    def setUp(self):
+        # These tests own only a temporary filesystem, never shared Docker images.
+        images = patch.object(dev, "docker_images", return_value=[])
+        images.start()
+        self.addCleanup(images.stop)
+
     def test_only_entries_older_than_the_window_go(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

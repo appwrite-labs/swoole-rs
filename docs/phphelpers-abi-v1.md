@@ -29,3 +29,10 @@ SDK compilation and loaded helper fixtures compare behavior without freezing
 upstream class text or layout; the PHP facade expectations remain unchanged.
 
 The 31 stdext PHPTs need `--stdext` (`SW_STDEXT`), which default builds disable.
+
+C++ facade object layouts change with ownership migration. Consumers must be
+recompiled against the headers of the engine they load. The entrypoint and
+benchmark-preparation harnesses build separate native and hybrid callers, just
+as the facade runtime does; they do not mix a pinned stack layout with a Rust
+handle layout. The observed PHP values, refcounts and error expectations stay
+identical across those separately compiled consumers.
