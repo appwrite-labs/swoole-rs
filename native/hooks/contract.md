@@ -2,8 +2,8 @@
 
 Opt-in feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
 `swoole_rs_hooks.h`. Patched upstream files: `ext-src/swoole_runtime.cc`,
-`include/swoole_coroutine_socket.h`, `src/coroutine/file.cc`,
-`src/coroutine/file_lock.cc`, `src/coroutine/hook.cc`,
+`include/swoole_coroutine_socket.h`, `src/coroutine/file_lock.cc` (deleted),
+`src/coroutine/hook.cc`,
 `src/coroutine/iouring.cc`, `src/coroutine/socket.cc`,
 `src/coroutine/system.cc`, `src/coroutine/uring_socket.cc`.
 
@@ -23,11 +23,12 @@ declarations and layouts are unchanged.
 
 - `hook_no_coro` keeps the reactor/current-coroutine guard only at its existing
   call site; DNS hooks without that guard are unchanged.
-- `swoole_coroutine_flock` is one Rust call, `hook_coroutine_flock`: outside a
-  coroutine (native passes no sleep) or with `LOCK_NB` it is plain flock; `LOCK_UN`
-  unlocks; `LOCK_EX`/`LOCK_SH` retry `flock(op | LOCK_NB)` only on -1/EWOULDBLOCK,
-  sleeping through `System::sleep` with the `wait_for` backoff, and fail when that
-  sleep is cancelled; anything else is invalid, for native to raise EINVAL.
+- `swoole_coroutine_flock` is Rust, exported under that name: outside a
+  coroutine or with `LOCK_NB` it is plain flock; `LOCK_UN` unlocks;
+  `LOCK_EX`/`LOCK_SH` retry `flock(op | LOCK_NB)` only on -1/EWOULDBLOCK,
+  sleeping through the host's `System::sleep` with the `wait_for` backoff, and fail
+  when that sleep is cancelled; anything else fails with EINVAL as errno and, through
+  the host's `swoole_set_last_error`, the last error.
 - `hook_file_result` rejects open fd 0 and does not reset close's fd.
 - `wait_for` uses a copied caller-local delay/phase/result plan selecting the
   next callback, sleep, success or canceled return. Backoff: capped doubling with
