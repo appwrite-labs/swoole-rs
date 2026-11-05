@@ -300,7 +300,9 @@
         "ext-src/swoole_thread_arraylist.cc",
         "ext-src/swoole_thread_barrier.cc",
         "ext-src/swoole_thread_map.cc",
-        "ext-src/swoole_thread_queue.cc"
+        "ext-src/swoole_thread_queue.cc",
+        "include/swoole_pipe.h",
+        "src/os/unix_socket.cc"
       ],
       "abi_contract": "docs/process-abi-v1.md",
       "feature_bit_reserved": 524288

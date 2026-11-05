@@ -19,6 +19,9 @@ void *swr_v1_process_worker_registry_lookup_category(const swr_v1_process_worker
 void *swr_v1_process_worker_registry_lookup(const swr_v1_process_worker_registry *, int pid);
 void swr_v1_process_worker_registry_detach(swr_v1_process_worker_registry *, int pid);
 bool swr_v1_process_worker_registry_reap_detached(swr_v1_process_worker_registry *, int pid);
+size_t swr_v1_process_worker_registry_pending_add(swr_v1_process_worker_registry *, void *);
+size_t swr_v1_process_worker_registry_pending_count(const swr_v1_process_worker_registry *);
+void *const *swr_v1_process_worker_registry_pending_data(const swr_v1_process_worker_registry *);
 typedef struct swr_v1_worker_snapshot { void **data; size_t length; size_t capacity; } swr_v1_worker_snapshot;
 bool swr_v1_process_worker_registry_snapshot(const swr_v1_process_worker_registry *, int category, swr_v1_worker_snapshot *);
 void swr_v1_process_worker_registry_snapshot_free(swr_v1_worker_snapshot *);

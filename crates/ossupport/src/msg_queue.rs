@@ -1,5 +1,5 @@
 //! `swoole::MsgQueue` (upstream `src/os/msg_queue.cc`): open, blocking flag,
-//! push and pop over a `SysV` message queue. Native keeps the queue id and logs;
+//! push and pop over a `SysV` message queue. Rust defines and initializes the queue record; native keeps logs;
 //! each call returns right after a failing syscall with its errno intact.
 use libc::{c_int, c_long, c_void};
 
@@ -107,6 +107,71 @@ pub unsafe extern "C" fn swr_v1_os_msg_pop(
         result,
         warn: result < 0 && !matches!(errno(), libc::ENOMSG | libc::EINTR),
     }
+}
+
+/// Canonical `MsgQueue` storage. Native owns the enclosing object's lifetime and
+/// borrows this POD record; ordinary C++ value copies preserve the original
+/// queue-ID copy behavior without introducing allocation or shared ownership.
+#[repr(C)]
+pub struct QueueRecord {
+    pub blocking: bool,
+    pub id: c_int,
+    pub key: libc::key_t,
+    pub flags: c_int,
+    pub perms: c_int,
+}
+
+/// Initialize a queue and publish its exact opened ID, flags and permissions.
+/// # Safety
+/// `queue` is aligned writable storage for a new `QueueRecord`, not concurrently used.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_os_msg_queue_init(
+    queue: *mut QueueRecord,
+    key: libc::key_t,
+    blocking: bool,
+    perms: c_int,
+) -> bool {
+    let opened = swr_v1_os_msg_open(key, perms);
+    let flags = if opened.id < 0 {
+        0
+    } else {
+        swr_v1_os_msg_flags(0, blocking)
+    };
+    let record = QueueRecord {
+        blocking,
+        id: opened.id,
+        key,
+        flags,
+        perms: opened.perms,
+    };
+    // SAFETY: initialization owns this new native object's entire canonical storage.
+    unsafe { queue.write(record) };
+    opened.id >= 0
+}
+
+/// Change only `IPC_NOWAIT`, as the original method did; the constructor's blocking
+/// field is deliberately not rewritten by later flag changes.
+/// # Safety
+/// `queue` is live and exclusively loaned for this configuration update.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_os_msg_queue_blocking(queue: *mut QueueRecord, blocking: bool) {
+    // SAFETY: the caller serializes this live queue's flag mutation.
+    let queue = unsafe { &mut *queue };
+    queue.flags = swr_v1_os_msg_flags(queue.flags, blocking);
+}
+
+/// Destroy the kernel queue; a failed removal preserves its ID and errno.
+/// # Safety
+/// `queue` is live and exclusively loaned for removal.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_os_msg_queue_remove(queue: *mut QueueRecord) -> bool {
+    // SAFETY: the caller exclusively lends its live queue record for this leaf.
+    let queue = unsafe { &mut *queue };
+    if !swr_v1_os_msg_remove(queue.id) {
+        return false;
+    }
+    queue.id = -1;
+    true
 }
 
 #[cfg(test)]
