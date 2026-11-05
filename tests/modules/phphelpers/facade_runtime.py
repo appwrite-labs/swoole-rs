@@ -81,13 +81,16 @@ def main():
         report['oom_results']=[]
         for engine,identity,profile in plans:
             helper=report['helper_profiles'][profile]
-            for mode in range(3):
+            for mode in range(4):
                 command=engine.command('-d','extension='+helper['path'],'-d','memory_limit=16M',str(oom),str(mode))
                 result=run_isolated(command,timeout=30)
                 diagnostic=result.stdout+result.stderr
                 row=dict(engine=engine.name,profile=profile,mode=mode,command=command,exit=result.returncode,
                          stdout=result.stdout,stderr=result.stderr,extension_sha256_after=sha(identity['extension']))
-                row['passed']=(result.returncode==255 and 'Allowed memory size of 16777216 bytes exhausted' in diagnostic
+                expected_exit=137 if mode==3 else 255
+                expected_diagnostic=('Hard memory limit of 33554432 bytes exhausted' if mode==3
+                                     else 'Allowed memory size of 16777216 bytes exhausted')
+                row['passed']=(result.returncode==expected_exit and expected_diagnostic in diagnostic
                                and 'UNREACHABLE' not in diagnostic and row['extension_sha256_after']==identity['sha256'])
                 report['oom_results'].append(row)
         if not a.prepare_only and not all(row['passed'] for row in report['oom_results']):

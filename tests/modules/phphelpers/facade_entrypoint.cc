@@ -172,7 +172,7 @@ ZEND_END_ARG_INFO()
 PHP_FUNCTION(m26_facade_oom) {
     zend_long mode;
     ZEND_PARSE_PARAMETERS_START(1,1) Z_PARAM_LONG(mode) ZEND_PARSE_PARAMETERS_END();
-    std::string input(32*1024*1024, 'x');
+    std::string input((mode==3 ? 32 : 24)*1024*1024, 'x');
     if(mode==0) { zend::String value(input); }
     else if(mode==1) { zend::Variable value(input); }
     else { zend::CharPtr value(input.data(),input.size()); }
