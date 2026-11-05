@@ -1,11 +1,8 @@
 # Workers, processes and IPC boundary (M08)
 
-Feature value 524288 (`--module process --module locks --module phpcoroutines`):
-the Thread resource tables share the lock/atomic/barrier owner. PHP coroutine
-entrypoints relay a pending whole-thread exit after returning through their Rust
-owners; process selects that implementation explicitly. Every Thread-enabled
-hybrid build requires `--module phpcoroutines`, including a build using the native
-Process family. Native control builds retain their original module selection. Upstream targets:
+Feature value 524288: the Thread resource tables share the lock/atomic/barrier
+owner. PHP coroutine entrypoints relay a pending whole-thread exit after
+returning through their Rust owners. Upstream targets:
 `src/server/{worker,task_worker,process,manager,reactor_process}.cc` and
 `src/os/{process_pool,pipe,signal,wait}.cc`. Production Server/Factory/Worker/ProcessPool methods and PHP bindings are preserved.
 Worker/Pool and TLS WorkerGlobal fields are native views of canonical Rust records;

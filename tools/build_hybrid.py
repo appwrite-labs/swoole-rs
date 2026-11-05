@@ -24,8 +24,8 @@ from tools.private_copy import copy_private
 MODULES = {'websocket': ('M02', 1), 'buffer': ('M01', 2), 'timer': ('M03', 4),
            'base64': ('M09', 8), 'crc32': ('M10', 16), 'error': ('M11', 32), 'protocols': ('M13', 128), 'memory': ('M12', 64),
            'http': ('M04', 256), 'utilities': ('M14', 512), 'locks': ('M16', 1024), 'wrappers': ('M17', 2048), 'framing': ('M18', 4096), 'corebase': ('M19', 8192), 'reactor': ('M05', 16384), 'coroutine': ('M06', 32768), 'hooks': ('M07', 65536), 'ossupport': ('M20', 131072), 'tls': ('M21', 262144), 'process': ('M08', 524288), 'clients': ('M22', 1048576), 'httpbindings': ('M23', 2097152), 'http2': ('M24', 4194304), 'ports': ('M25', 8388608), 'phphelpers': ('M26', 16777216), 'phpcollections': ('M27', 33554432), 'phpevents': ('M28', 67108864), 'phpcoroutines': ('M29', 134217728)}
-# Graduated modules (docs/migration.md#graduation) are part of every Rust build:
-# no --module or configure switch, and no cargo feature.
+# Every Rust build has every module. Graduated modules have no configure switch and no
+# cargo feature; build_hybrid passes the others' switches and features.
 GRADUATED = ('base64', 'buffer', 'corebase', 'crc32', 'error', 'framing', 'http', 'protocols', 'websocket', 'timer')
 SELECTABLE = sorted(set(MODULES) - set(GRADUATED))
 # The integration patch that adds the --with(out)-swoole-rs switch; later patches to
@@ -36,17 +36,6 @@ BRIDGE_PATCH = 'migration/patches/integration/0001-rust-bridge.patch'
 HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
                   'firebird': '--with-swoole-firebird', 'curl': '--enable-swoole-curl',
                   'ssh2': '--with-swoole-ssh2'}
-# Modules a module cannot build without: Table and its PHP facade share a layout; the
-# HTTP/2 server's sessions (http2) own httpbindings' contexts, and its coroutine server
-# runs them; network::Client (clients) reads the reactor's socket record;
-# HTTP/WebSocket bindings borrow process's Server-object getter; process's Thread
-# resource tables share the locks/atomics/barrier owner.
-REQUIRES = {'tls': ('reactor',), 'reactor': ('ossupport',), 'memory': ('phpcollections',),
-            'phpcollections': ('memory',), 'hooks': ('reactor', 'tls'), 'http2': ('httpbindings',),
-            'httpbindings': ('http2', 'process'), 'clients': ('reactor',), 'process': ('locks', 'phpcoroutines')}
-# --fix-halfclose's repairs in the reactor thread's read, write and close paths are Rust's
-# (crates/server/src/conn_io.rs), which only the reactor module's patches call.
-HALFCLOSE_REQUIRES = ('reactor',)
 # The build's two Rust archives in rust-prefix/lib, by the input that records each: the
 # Zend-free one the native gates link, and the PHP extension's (with LTO unless --dev, #889).
 ARCHIVES = {'libswoole_rs_ffi.a': 'rust_archive_sha256', 'libswoole_rs_php.a': 'rust_php_archive_sha256'}
@@ -56,15 +45,9 @@ def profile_suffix(args):
     return ('-php-sockets' if getattr(args, 'php_sockets', False) else '') + ('-stdext' if getattr(args, 'stdext', False) else '')
 
 
-def build_alias(backend, modules, suffix='', *, dev=False):
-    """Keep existing short names; bind long module selections without NAME_MAX overflow."""
-    modules = sorted(set(modules) - set(GRADUATED))
-    prefix = ('dev-' if dev else '') + backend
-    name = prefix + ''.join('-' + module for module in modules) + suffix
-    if len(os.fsencode(name)) > 255:
-        identity = hashlib.sha256('\0'.join(modules).encode()).hexdigest()[:24]
-        name = prefix + '-modules' + str(len(modules)) + '-' + identity + suffix
-    return name
+def build_alias(backend, suffix='', *, dev=False):
+    """target/hybrid/<alias>: rust or upstream, with the profile's suffix."""
+    return ('dev-' if dev else '') + backend + suffix
 
 
 def headers_for(modules):
@@ -383,7 +366,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     add_build_arguments(parser)
     parser.add_argument('--backend', choices=['rust', 'upstream'], default='rust', help='Rust ABI seam enabled, or explicit upstream fallback')
-    parser.add_argument('--module', choices=SELECTABLE, action='append', default=[], help='Enable a migrated kernel; graduated modules are always on')
     parser.add_argument('--fix-halfclose', action='store_true', help='Apply the opt-in native queued-close drain repair (not a Rust kernel)')
     parser.add_argument('--dev', action='store_true', help='Reuse a private incremental tree; never publishes integration artifacts')
     parser.add_argument('--export', type=Path, help='Publish verified immutable copies to a new directory; refuses replacement')
@@ -393,17 +375,6 @@ def main():
         parser.error('--export requires an immutable build, without --dev')
     if args.export and args.export.exists():
         parser.error('Export already exists: ' + str(args.export))
-    for module in args.module:
-        missing = set(REQUIRES.get(module, ())) - set(args.module)
-        if missing:
-            parser.error(f'--module {module} requires ' + ' '.join('--module ' + name for name in sorted(missing)))
-    missing = set(HALFCLOSE_REQUIRES if args.fix_halfclose else ()) - set(args.module)
-    if missing:
-        parser.error('--fix-halfclose requires ' + ' '.join('--module ' + name for name in sorted(missing)))
-    if (args.backend == 'rust' and any(option == '--enable-swoole-thread' or
-            option.startswith('--enable-swoole-thread=') and option.split('=', 1)[1] != 'no'
-            for option in args.configure) and 'phpcoroutines' not in args.module):
-        parser.error('--enable-swoole-thread requires --module phpcoroutines for whole-thread exit relay')
     with exclusive(ROOT / 'target/hybrid/.builder.lock'):
         return build(args, parser)
 
@@ -412,11 +383,7 @@ def build(args, parser):
     require_build_space(ROOT)
     started = time.monotonic()
     timings = {}
-    args.module = sorted(set(args.module))
-    if args.module and args.backend != 'rust':
-        parser.error('Migrated modules require --backend rust')
-    if args.backend == 'rust':
-        args.module = sorted(set(args.module) | set(GRADUATED))
+    args.module = sorted(MODULES) if args.backend == 'rust' else []
     if args.jobs < 1:
         parser.error('--jobs must be positive')
     reference = ROOT / 'target/upstream/src'
@@ -439,13 +406,13 @@ def build(args, parser):
     archives, rust_inputs, rust_compilation, rust_php_compilation = {}, None, None, None
     # The Rust io_uring engine replaces upstream's when the build enables io_uring.
     cargo_extra = [feature for feature, switch in HOOK_SWITCHES.items()
-                   if 'hooks' in args.module and any(flag.startswith(switch) for flag in args.configure)]
+                   if any(flag.startswith(switch) for flag in args.configure)]
     cares = next((flag for flag in reversed(args.configure)
                   if flag in {'--enable-cares', '--disable-cares'} or flag.startswith('--enable-cares=')), None)
-    if 'clients' in args.module and cares not in {None, '--disable-cares', '--enable-cares=no'}:
+    if cares not in {None, '--disable-cares', '--enable-cares=no'}:
         cargo_extra.append('cares')
     if args.backend == 'rust':
-        if 'phphelpers' in args.module and stdext_enabled(args):
+        if stdext_enabled(args):
             cargo_extra.append('stdext')
         rust_inputs = rust_sources(args.module, cargo_extra)
         cargo_started = time.monotonic()
@@ -556,7 +523,7 @@ def build(args, parser):
     if args.backend == 'rust' and rust_sources(args.module, cargo_extra) != rust_inputs:
         raise ValueError('Rust sources changed during native compilation; refusing to publish the extension')
     suffix = ('-halfclose' if getattr(args, 'fix_halfclose', False) else '') + profile_suffix(args)
-    destination = ROOT / 'target/hybrid' / build_alias(args.backend, args.module, suffix, dev=args.dev)
+    destination = ROOT / 'target/hybrid' / build_alias(args.backend, suffix, dev=args.dev)
     destination.mkdir(parents=True, exist_ok=True)
     switch_link(destination / 'src', source)
     switch_link(destination / 'modules', source / 'modules')
@@ -570,7 +537,6 @@ def build(args, parser):
     if getattr(args, 'export', None):
         export_build(record_path, source, args.export, output(['git', 'rev-parse', 'HEAD']))
     print(f'Build phases: {timings}; mode={"development" if args.dev else "immutable"}')
-    print('Rust modules: ' + ', '.join(args.module) + '; other behavior remains upstream.' if args.module else 'ABI seam only; no Swoole subsystem has been migrated by this build.')
     return 0
 
 

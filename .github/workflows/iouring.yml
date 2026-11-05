@@ -35,7 +35,7 @@ jobs:
       - run: |
           iouring="--configure=--enable-iouring --configure=--enable-uring-socket"
           python3 tools/build_upstream.py $iouring
-          python3 tools/build_hybrid.py $iouring $(python3 -c 'from tools.build_hybrid import SELECTABLE; print(*(f"--module {m}" for m in SELECTABLE))') | tee hybrid.log
+          python3 tools/build_hybrid.py $iouring | tee hybrid.log
           mkdir -p target/phpt
           cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
           cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so

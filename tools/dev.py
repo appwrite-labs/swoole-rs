@@ -18,7 +18,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.harness import ROOT, write_report
-from tools.build_hybrid import GRADUATED, HALFCLOSE_REQUIRES, MODULES, REQUIRES, SELECTABLE, profile_suffix, build_alias
+from tools.build_hybrid import GRADUATED, MODULES, SELECTABLE, profile_suffix, build_alias
 from tools.build_upstream import require_build_space
 from tools.dev_report import read_json
 from tools.private_copy import copy_private
@@ -105,28 +105,16 @@ CONTROLS = {'tls': ('coroutine',)}
 
 
 def selected_modules(args):
-    chosen = MODULES if getattr(args, 'all_modules', False) else args.module or []
-    chosen = set(chosen)
-    pending = list(chosen)
-    while pending:
-        module = pending.pop()
-        for dependency in CONTROLS.get(module, ()) + REQUIRES.get(module, ()):
-            if dependency not in chosen:
-                chosen.add(dependency)
-                pending.append(dependency)
-    if getattr(args, 'fix_halfclose', False):
-        chosen |= set(HALFCLOSE_REQUIRES)
+    """The modules whose gates run. Every build has every module; this only narrows the gates."""
+    chosen = set(MODULES if getattr(args, 'all_modules', False) else args.module or [])
+    for module in list(chosen):
+        chosen.update(CONTROLS.get(module, ()))
     return sorted(chosen | set(GRADUATED))
-
-
-def typed_buffer(args):
-    """Configure enables the typed Buffer queue whenever the Rust reactor is built (buffer is graduated)."""
-    return 'reactor' in selected_modules(args)
 
 
 def build_variant(args):
     suffix = ('-halfclose' if getattr(args, 'fix_halfclose', False) else '') + profile_suffix(args)
-    return build_alias('rust', selected_modules(args), suffix, dev=args.lane != 'integrate')
+    return build_alias('rust', suffix, dev=args.lane != 'integrate')
 
 
 def verify_artifact_report(args):
@@ -134,7 +122,7 @@ def verify_artifact_report(args):
     source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     identities = {}
     for label, variant in [('selected', build_variant(args)),
-                           ('native', build_alias('upstream', [], profile_suffix(args)))]:
+                           ('native', build_alias('upstream', profile_suffix(args)))]:
         folder = args.artifacts_from / (label + '-export')
         receipt = json.loads((folder / 'export.json').read_text())
         if receipt['source_ref'] != source:
@@ -150,7 +138,7 @@ def verify_artifact_report(args):
                 or ('--enable-swoole-stdext' in manifest['configure']) != args.stdext
                 or manifest['inputs'].get('php_sockets_requested', False) != getattr(args, 'php_sockets', False)
                 or ('--enable-sockets' in manifest['configure']) != getattr(args, 'php_sockets', False)
-                or label == 'selected' and (sorted(set(manifest['inputs']['modules']) | set(GRADUATED)) != selected_modules(args)
+                or label == 'selected' and (sorted(manifest['inputs']['modules']) != sorted(MODULES)
                     or manifest['inputs']['fix_halfclose'] != args.fix_halfclose)):
             raise ValueError('Artifact configuration differs: ' + label)
         build = ROOT / 'target/hybrid' / variant
@@ -182,7 +170,6 @@ def plan(args, reports):
         return php + [argument for extension in dependencies
                       if sys.platform.startswith('linux') and extension not in args.php_extension
                       for argument in ['--php-extension', extension]]
-    flags = [arg for module in modules if module not in GRADUATED for arg in ['--module', module]]
     for module in modules:
         add(module + '-unit', 'cargo', 'test', '--locked', '-p', 'swoole-rs-' + module,
             *([args.test] if args.test and args.lane == 'edit' else []))
@@ -194,7 +181,7 @@ def plan(args, reports):
     manifest = ROOT / 'target/hybrid' / variant / 'build-manifest.json'
     hybrid = manifest.parent / 'modules/swoole.so'
     captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines', 'coroutine'} & set(modules)))
-    native_variant = build_alias('upstream', [], profile_suffix(args))
+    native_variant = build_alias('upstream', profile_suffix(args))
     reference = (ROOT / 'target/hybrid' / native_variant / 'modules/swoole.so'
                  if captured_reference or getattr(args, 'stdext', False) or getattr(args, 'php_sockets', False) else ROOT / 'target/upstream/src/modules/swoole.so')
     engines = ['--engine', f'hybrid={hybrid}']
@@ -216,7 +203,7 @@ def plan(args, reports):
                *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']),
                *(['--native-build-root', args.native_build_root] if getattr(args, 'native_build_root', None) else []))
     selected_export = artifact_reports / 'selected-export'
-    script('build', 'tools/build_hybrid.py', *([] if integrate else ['--dev']), *flags, *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []), *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []),
+    script('build', 'tools/build_hybrid.py', *([] if integrate else ['--dev']), *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []), *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []),
            *(['--export', selected_export] if captured_reference else []), '--jobs', args.jobs,
            *(['--native-build-root', args.native_build_root] if getattr(args, 'native_build_root', None) else []),
            *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']))
@@ -282,7 +269,7 @@ def plan(args, reports):
                        '--engine', f'upstream={native_export / "swoole.so"}', '--build-manifest', manifest,
                        '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        '--selected-export', selected_export / 'export.json', '--native-export', native_export / 'export.json',
-                       '--require-batch', *(['--require-typed-buffer'] if typed_buffer(args) else []),
+                       '--require-batch', '--require-typed-buffer',
                        *extra, *report(phase))
         for name in ['callbacks', 'initialize', 'builtins']:
             phase = 'reactor-' + name.replace('_', '-')
@@ -302,13 +289,12 @@ def plan(args, reports):
         script('reactor-compile', 'tests/modules/reactor/compile_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'reactor-compile.json')
-    if typed_buffer(args):
-        pytest('buffer-typed-layout', 'tests/modules/buffer/test_typed_layout.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a')
-        pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
-        script('reactor-buffer-typed-compile', 'tests/modules/reactor/buffer_typed_compile.py',
-               '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               '--report', reports / 'reactor-buffer-typed-compile.json')
+    pytest('buffer-typed-layout', 'tests/modules/buffer/test_typed_layout.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a')
+    pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
+    script('reactor-buffer-typed-compile', 'tests/modules/reactor/buffer_typed_compile.py',
+           '--source', ROOT / 'target/upstream/src',
+           '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+           '--report', reports / 'reactor-buffer-typed-compile.json')
     if 'coroutine' in modules:
         if integrate:
             script('coroutine-production-stack', 'tests/modules/coroutine/production_stack.py',
@@ -952,9 +938,9 @@ def main():
     parser.add_argument('--older-than', type=float, default=24, metavar='HOURS',
                         help='prune: delete target/ build output untouched for this long')
     selection = parser.add_mutually_exclusive_group()
-    selection.add_argument('--module', choices=SELECTABLE, action='append')
-    selection.add_argument('--all-modules', action='store_true', help='Select every concrete registered Rust module')
-    selection.add_argument('--changed-since', metavar='REF', help='Select the modules a diff from REF touches (all for shared build inputs)')
+    selection.add_argument('--module', choices=SELECTABLE, action='append', help="Run this module's gates (graduated modules' always run)")
+    selection.add_argument('--all-modules', action='store_true', help="Run every module's gates")
+    selection.add_argument('--changed-since', metavar='REF', help='Run the gates of the modules a diff from REF touches (all for shared build inputs)')
     parser.add_argument('--stdext', action='store_true', help='Build and compare genuine enabled experimental stdext profiles')
     parser.add_argument('--php-sockets', action='store_true', help='Build matching Native/Rust PHP sockets-integration profiles')
     parser.add_argument('--external-network', action='store_true',

@@ -138,8 +138,8 @@ changed tracked originals/support, wrong source heads and traversal groups.
 The shared Git blob reader batches content extraction. The31 stdext cases require
 actual loaded stdext functions; disabled builds report unsupported. A syntax-only
 SDK profile does not establish actual stdext runtime support. The canonical
-`tools/dev.py integrate --module phphelpers --stdext` plan builds separate genuine
-enabled native/selected worlds before running the official original runner.
+`tools/dev.py integrate --module phphelpers --stdext` plan builds genuine enabled
+native and all-modules worlds before running the official original runner.
 
 ## Every PHPT, gated on upstream
 
@@ -190,17 +190,16 @@ corpus/upstream/families.sh target/reports/phpt target/upstream/src/modules/swoo
 
 ## Attributing a regression
 
-The gate runs every PHPT once against the all-modules hybrid; there are no
-standing per-module PHPT runs. When it reports a test that passes on upstream but
-not on the hybrid, find the module by building single-module hybrids and running
-just that test (graduated modules are always on):
+The gate runs every PHPT once against the all-modules hybrid, the only hybrid
+there is. When it reports a test that passes on upstream but not on the hybrid,
+reproduce just that test and bisect the commit range:
 
 ```sh
-python3 tools/build_hybrid.py --module timer
+python3 tools/build_hybrid.py
 python3 corpus/upstream/run.py --source target/upstream/src \
   --case tests/swoole_http_server/example.phpt \
   --engine upstream=target/upstream/src/modules/swoole.so \
-  --engine hybrid=target/hybrid/rust-http/modules/swoole.so
+  --engine hybrid=target/hybrid/rust/modules/swoole.so
 ```
 
 Add `--external-network` for tests that need outside services, and repeat with

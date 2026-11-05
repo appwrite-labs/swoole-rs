@@ -42,7 +42,7 @@ python3 -m pytest tests/modules/websocket/test_prefix.py --sanitize \
 ```sh
 python3 -m pytest tests/modules/websocket/test_differential.py \
   --engine upstream=target/upstream/src/modules/swoole.so \
-  --engine hybrid=target/hybrid/rust-websocket/modules/swoole.so
+  --engine hybrid=target/hybrid/rust/modules/swoole.so
 ```
 
 `test_differential.py` compares 778 PHP frame outcomes with the first engine: 58 valid
@@ -83,7 +83,7 @@ Run only with no concurrent builds or tests:
 ```sh
 python3 tests/modules/websocket/benchmark.py \
   --engine upstream=target/upstream/src/modules/swoole.so \
-  --engine hybrid=target/hybrid/rust-websocket/modules/swoole.so \
+  --engine hybrid=target/hybrid/rust/modules/swoole.so \
   --iterations 100000 --repeat 5
 ```
 

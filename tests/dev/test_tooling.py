@@ -417,23 +417,10 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', queues)
         self.assertNotIn('--engine', queues)
 
-    def test_long_all_module_aliases_publish_and_remain_distinct(self):
-        from itertools import product
-        from tools.build_hybrid import build_alias, MODULES
-        variants = set()
-        with tempfile.TemporaryDirectory() as directory:
-            for repair, stdext in product([False, True], repeat=2):
-                args = SimpleNamespace(lane='integrate', all_modules=True, module=[],
-                                       fix_halfclose=repair, stdext=stdext)
-                name = dev.build_variant(args)
-                self.assertLessEqual(len(os.fsencode(name)), 255)
-                (Path(directory)/name).mkdir()
-                variants.add(name)
-                self.assertEqual(name, build_alias('rust', reversed(sorted(MODULES)),
-                    ('-halfclose' if repair else '') + ('-stdext' if stdext else '')))
-            self.assertEqual(len(variants), 4)
-        self.assertEqual(build_alias('rust', ['reactor'], '-halfclose-stdext'),
-                         'rust-reactor-halfclose-stdext')
+    def test_aliases_name_the_profile(self):
+        from tools.build_hybrid import build_alias
+        self.assertEqual(build_alias('rust', '-halfclose-stdext'), 'rust-halfclose-stdext')
+        self.assertEqual(build_alias('upstream', dev=True), 'dev-upstream')
 
     def test_reactor_always_runs_owned_storage_gates(self):
         from itertools import product
@@ -496,7 +483,7 @@ class Lanes(unittest.TestCase):
             stdext = dict(dev.plan(SimpleNamespace(**vars(args), stdext=True), ROOT / 'target/reports/all-registered-stdext'))
         for name in ['phphelpers-facade-runtime', 'phphelpers-entrypoint', 'phphelpers-runtime']:
             self.assertNotIn(name, commands)
-        self.assertEqual(set(commands['build'][i+1] for i,x in enumerate(commands['build']) if x=='--module'),set(dev.SELECTABLE))
+        self.assertNotIn('--module', commands['build'])
         self.assertIn('--archive', commands['reactor-flush'])
         self.assertIn('--sanitize', commands['reactor-flush'])
         self.assertIn('corebase-native',commands)
@@ -732,7 +719,7 @@ class Lanes(unittest.TestCase):
                     folder = args.artifacts_from/(label+'-export'); folder.mkdir(parents=True)
                     manifest = json.dumps(dict(build_mode='immutable',
                         configure=['--enable-sockets'] if configured else ['--disable-sockets'],
-                        inputs=dict(modules=['http'], fix_halfclose=False,
+                        inputs=dict(modules=sorted(dev.MODULES), fix_halfclose=False,
                                     php_sockets_requested=selected if label=='selected' else native))).encode()
                     files = {}
                     for name, data in [('build-manifest.json', manifest), ('swoole.so', b'fixture only')]:
@@ -752,7 +739,7 @@ class Lanes(unittest.TestCase):
                                php_extension=[], jobs=2, test=None, case=None, benchmark=False,
                                compare=False, fix_halfclose=False, native_build_root='/private-ram/hybrid')
         commands = dict(dev.plan(args, ROOT / 'target/reports/stdext-profiles'))
-        self.assertEqual(dev.build_variant(args), 'rust-phphelpers-stdext')
+        self.assertEqual(dev.build_variant(args), 'rust-stdext')
         self.assertIn('--stdext', commands['build'])
         native = commands['stdext-reference-build']
         self.assertEqual(native[native.index('--backend') + 1], 'upstream')
@@ -770,7 +757,7 @@ class Lanes(unittest.TestCase):
     def test_all_module_build_receipt_uses_the_executed_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            variant = 'rust' + ''.join('-' + name for name in dev.SELECTABLE) + '-halfclose'
+            variant = 'rust-halfclose'
             receipt = root / 'target/hybrid' / variant / 'last-run.json'
             receipt.parent.mkdir(parents=True)
             manifest = receipt.parent / 'build-manifest.json'
@@ -793,10 +780,8 @@ class Lanes(unittest.TestCase):
                                fix_halfclose=True)
         commands = dict(dev.plan(args, ROOT / 'target/reports/test-repair'))
         self.assertIn('--fix-halfclose', commands['build'])
-        # error is graduated; the repair's paths are the reactor module's
-        self.assertEqual(commands['build'].count('--module'), 1)
-        self.assertEqual(commands['build'][commands['build'].index('--module') + 1], 'reactor')
-        self.assertIn('/rust-reactor-halfclose/', ' '.join(commands['error-native']))
+        self.assertNotIn('--module', commands['build'])
+        self.assertIn('/rust-halfclose/', ' '.join(commands['error-native']))
         self.assertEqual(commands['error-php'].count('--engine'), 2)
         self.assertEqual(commands['halfclose-prequeue'].count('--engine'), 1)
         self.assertNotIn('--probe-coroutines', commands['halfclose-prequeue'])
@@ -865,21 +850,6 @@ class ChangedModules(unittest.TestCase):
         self.assertEqual(self.changed('crates/ffi/src/lib.rs'), sorted(dev.MODULES))
         self.assertEqual(self.changed('crates/oracle/build.rs', 'fuzz/src/lib.rs'), [])
         self.assertEqual(self.changed('migration/patches/halfclose/0003-send-tls-close-notify.patch'), sorted(dev.MODULES))
-
-    def test_selection_adds_the_modules_a_module_cannot_build_without(self):
-        # Table and its PHP reader must agree on the core layout, from either entry point.
-        for module in ['phpcollections', 'memory']:
-            with self.subTest(module=module):
-                selected = dev.selected_modules(SimpleNamespace(module=[module], all_modules=False))
-                self.assertIn('memory', selected)
-                self.assertIn('phpcollections', selected)
-
-        # Client/hook selection must close the two-hop reactor→File owner dependency.
-        for module in ['clients', 'hooks', 'reactor']:
-            with self.subTest(module=module):
-                selected = dev.selected_modules(SimpleNamespace(module=[module], all_modules=False))
-                self.assertIn('reactor', selected)
-                self.assertIn('ossupport', selected)
 
 
 class FocusedPhases(unittest.TestCase):

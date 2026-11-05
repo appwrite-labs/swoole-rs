@@ -1,6 +1,6 @@
 # ListenPort and PHP Port boundary (M25)
 
-Feature value 8388608 (`--module ports`). Upstream targets:
+Feature value 8388608. Upstream targets:
 `src/server/port.cc`, `ext-src/swoole_server_port.cc`. Follows the
 [policy/effect split](abi-v1.md#policyeffect-split).
 

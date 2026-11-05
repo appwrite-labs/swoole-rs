@@ -1,6 +1,6 @@
 # Common PHP helpers and stdext boundary (M26)
 
-Feature value 16777216 (`--module phphelpers`). Upstream targets:
+Feature value 16777216. Upstream targets:
 `ext-src/php_swoole_cxx.cc`, `ext-src/swoole_stdext.cc`, and in
 `ext-src/php_swoole_cxx.h` only `zend::String`, `KeyValue`, `ArrayIterator`,
 `Array`, `Variable`, `CharPtr`, the inline `Callable` helpers and

@@ -1,6 +1,6 @@
 # HTTP/2 boundary (M24)
 
-Feature value 4194304 (`--module http2`). Upstream targets:
+Feature value 4194304. Upstream targets:
 `src/protocol/http2.cc`, `ext-src/swoole_http2_server.cc`,
 `ext-src/swoole_http2_client_coro.cc`. Frame/Settings/Session/Stream/Context
 layouts and PHP declarations are unchanged. Follows the
