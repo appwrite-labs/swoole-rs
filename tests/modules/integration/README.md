@@ -57,3 +57,21 @@ tests that `abi` runs in full in the same integrate lane.
 
 `zts.py` and `zts_originals.py` are not phases: they need a ZTS PHP, which no
 CI lane has.
+
+## Captured Server effects
+
+`server_faults.py --archive <build>/rust-prefix/lib/libswoole_rs_ffi.a --output R`
+(`server-native-faults`) links the actual optimized archive and its copied native
+exception helper. C++14/17 runs cover typed and non-standard exceptions, nested
+Server operations, and exact effect prefixes after every injected failure in
+create/destroy. Native ASan/UBSan runs are separate; Rust instrumentation is not
+claimed. Linux additionally wraps `free` to prove the production Rust task-path
+String is released before the captured exception is rethrown. Other hosts report
+that drop observation as unmeasured.
+
+`ServerReply` carries an ordinary C++ exception outcome; the native invocation
+owns its `exception_ptr`. Rust uses `Result` to stop before any later effect and
+release local owners, then the native caller rethrows. The legacy nonthrowing
+Server ABI remains. This guard does not transport Zend bailout, custom whole-thread
+exit or pthread forced unwind. Generic callback ownership remains gated on their
+separate composed transport (#1145/#1167).

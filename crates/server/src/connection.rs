@@ -23,207 +23,212 @@ const MAX_CONNECTION: u32 = 100_000;
 const SESSION_LIST_SIZE: u32 = 1024 * 1024;
 
 /// `Server::accept_connection`: up to `SW_ACCEPT_MAX_COUNT` sockets per readable event.
-pub(crate) fn accept<H: Host>(h: &mut H) -> i64 {
+pub(crate) fn accept<H: Host>(h: &mut H) -> crate::Effect<i64> {
     for _ in 0..ACCEPT_MAX_COUNT {
-        if !h.is(OP_ACCEPT) {
-            let errno = i32::try_from(h.get(OP_ERRNO)).unwrap_or(0);
+        if !h.is(OP_ACCEPT)? {
+            let errno = i32::try_from(h.get(OP_ERRNO)?).unwrap_or(0);
             if errno == libc::EAGAIN {
-                return SW_OK;
+                return Ok(SW_OK);
             }
             if errno == libc::EINTR {
                 continue;
             }
             if errno == libc::EMFILE || errno == libc::ENFILE {
-                disable_accept(h);
+                disable_accept(h)?;
             }
-            h.get(LOG_ACCEPT_FAILED);
-            return SW_OK;
+            h.get(LOG_ACCEPT_FAILED)?;
+            return Ok(SW_OK);
         }
-        h.get(TRACE_ACCEPT);
-        if h.signed(OP_SOCK_FD) >= i64::from(max_connection(h)) {
-            h.get(LOG_TOO_MANY_CONNECTIONS);
-            h.get(OP_ABORT);
-            disable_accept(h);
-            return SW_OK;
+        h.get(TRACE_ACCEPT)?;
+        if h.signed(OP_SOCK_FD)? >= i64::from(max_connection(h)?) {
+            h.get(LOG_TOO_MANY_CONNECTIONS)?;
+            h.get(OP_ABORT)?;
+            disable_accept(h)?;
+            return Ok(SW_OK);
         }
-        if h.is(OP_PORT_SSL) {
-            if !h.is(OP_SSL_CREATE) {
-                h.get(OP_ABORT);
-                return SW_OK;
+        if h.is(OP_PORT_SSL)? {
+            if !h.is(OP_SSL_CREATE)? {
+                h.get(OP_ABORT)?;
+                return Ok(SW_OK);
             }
         } else {
-            h.get(OP_SSL_CLEAR);
+            h.get(OP_SSL_CLEAR)?;
         }
-        let server_fd = h.get(OP_EVENT_FD);
-        if !add(h, server_fd) {
-            h.get(OP_ABORT);
-            return SW_OK;
+        let server_fd = h.get(OP_EVENT_FD)?;
+        if !add(h, server_fd)? {
+            h.get(OP_ABORT)?;
+            return Ok(SW_OK);
         }
-        h.get(OP_CHUNK_SIZE);
-        let started = if h.is(OP_SINGLE_THREAD) {
-            incoming(h) >= 0
+        h.get(OP_CHUNK_SIZE)?;
+        let started = if h.is(OP_SINGLE_THREAD)? {
+            incoming(h)? >= 0
         } else {
-            h.signed(OP_SEND_INCOMING) >= 0
+            h.signed(OP_SEND_INCOMING)? >= 0
         };
         if !started {
-            h.get(OP_ABORT);
-            return SW_OK;
+            h.get(OP_ABORT)?;
+            return Ok(SW_OK);
         }
     }
-    SW_OK
+    Ok(SW_OK)
 }
 
-fn max_connection<H: Host>(h: &mut H) -> u32 {
-    u32::try_from(h.get(OP_MAX_CONNECTION)).unwrap_or(u32::MAX)
+fn max_connection<H: Host>(h: &mut H) -> crate::Effect<u32> {
+    Ok(u32::try_from(h.get(OP_MAX_CONNECTION)?).unwrap_or(u32::MAX))
 }
 
 /// `Server::add_connection` with the server fd native code stored in the context.
-pub(crate) fn add_connection<H: Host>(h: &mut H) -> bool {
-    let server_fd = h.get(OP_EVENT_FD);
+pub(crate) fn add_connection<H: Host>(h: &mut H) -> crate::Effect<bool> {
+    let server_fd = h.get(OP_EVENT_FD)?;
     add(h, server_fd)
 }
 
 /// Takes the next free session slot after `session_round`, then sets up the
 /// socket and connection.
-fn add<H: Host>(h: &mut H, server_fd: u64) -> bool {
-    h.get(OP_CONN_RESET);
-    h.get(OP_SPIN_LOCK);
-    let mut session_id = h.signed(OP_SESSION_ROUND);
+fn add<H: Host>(h: &mut H, server_fd: u64) -> crate::Effect<bool> {
+    h.get(OP_CONN_RESET)?;
+    h.get(OP_SPIN_LOCK)?;
+    let mut session_id = h.signed(OP_SESSION_ROUND)?;
     let mut found = false;
-    for _ in 0..max_connection(h) {
+    for _ in 0..max_connection(h)? {
         session_id += 1;
-        if h.op(OP_SESSION_CLAIM, session_id.cast_unsigned()) != 0 {
+        if h.op(OP_SESSION_CLAIM, session_id.cast_unsigned())? != 0 {
             found = true;
             break;
         }
     }
-    h.get(OP_SPIN_UNLOCK);
+    h.get(OP_SPIN_UNLOCK)?;
     if !found {
-        h.get(LOG_NO_SESSION_SLOT);
-        return false;
+        h.get(LOG_NO_SESSION_SLOT)?;
+        return Ok(false);
     }
-    h.op(OP_SESSION_BIND, session_id.cast_unsigned());
+    h.op(OP_SESSION_BIND, session_id.cast_unsigned())?;
 
-    if h.is(OP_PORT_NODELAY) {
-        if !h.is(OP_SET_NODELAY) {
-            h.get(LOG_NODELAY);
+    if h.is(OP_PORT_NODELAY)? {
+        if !h.is(OP_SET_NODELAY)? {
+            h.get(LOG_NODELAY)?;
         }
-        h.get(OP_NODELAY_ENABLED);
+        h.get(OP_NODELAY_ENABLED)?;
     }
-    if h.signed(OP_PORT_RCVBUF) > 0 && h.signed(OP_SET_RCVBUF) != 0 {
-        h.get(LOG_RCVBUF);
+    if h.signed(OP_PORT_RCVBUF)? > 0 && h.signed(OP_SET_RCVBUF)? != 0 {
+        h.get(LOG_RCVBUF)?;
     }
-    if h.signed(OP_PORT_SNDBUF) > 0 && h.signed(OP_SET_SNDBUF) != 0 {
-        h.get(LOG_SNDBUF);
+    if h.signed(OP_PORT_SNDBUF)? > 0 && h.signed(OP_SET_SNDBUF)? != 0 {
+        h.get(LOG_SNDBUF)?;
     }
-    h.op(OP_CONN_INIT, server_fd);
-    if !h.is(OP_PORT_SSL) {
-        h.get(OP_DIRECT_SEND);
+    h.op(OP_CONN_INIT, server_fd)?;
+    if !h.is(OP_PORT_SSL)? {
+        h.get(OP_DIRECT_SEND)?;
     }
 
-    h.get(OP_LOCK);
-    let fd = h.signed(OP_SOCK_FD);
-    if fd > h.signed(OP_MAXFD) {
-        h.op(OP_SET_MAXFD, fd.cast_unsigned());
-    } else if fd < h.signed(OP_MINFD) {
-        h.op(OP_SET_MINFD, fd.cast_unsigned());
+    h.get(OP_LOCK)?;
+    let fd = h.signed(OP_SOCK_FD)?;
+    if fd > h.signed(OP_MAXFD)? {
+        h.op(OP_SET_MAXFD, fd.cast_unsigned())?;
+    } else if fd < h.signed(OP_MINFD)? {
+        h.op(OP_SET_MINFD, fd.cast_unsigned())?;
     }
-    h.get(OP_UNLOCK);
-    h.get(OP_COUNT_ACCEPT);
-    true
+    h.get(OP_UNLOCK)?;
+    h.get(OP_COUNT_ACCEPT)?;
+    Ok(true)
 }
 
 /// `Server::connection_incoming`: the idle timer, reading, and `onConnect`.
-pub(crate) fn incoming<H: Host>(h: &mut H) -> i64 {
-    if h.float(OP_PORT_IDLE_TIME) > 0.0 {
-        h.get(OP_ADD_RECV_TIMER);
+pub(crate) fn incoming<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    if h.float(OP_PORT_IDLE_TIME)? > 0.0 {
+        h.get(OP_ADD_RECV_TIMER)?;
     }
-    if h.is(OP_SOCK_SSL) {
+    if h.is(OP_SOCK_SSL)? {
         return h.signed(OP_REACTOR_ADD_READ);
     }
     // Delayed receive waits for the resume command.
-    if !h.is(OP_DELAY_RECEIVE) && h.signed(OP_REACTOR_ADD_READ) < 0 {
-        return SW_ERR;
+    if !h.is(OP_DELAY_RECEIVE)? && h.signed(OP_REACTOR_ADD_READ)? < 0 {
+        return Ok(SW_ERR);
     }
-    if h.is(OP_HAS_ON_CONNECT) && !h.is(OP_NOTIFY_CONNECT) {
-        return SW_ERR;
+    if h.is(OP_HAS_ON_CONNECT)? && !h.is(OP_NOTIFY_CONNECT)? {
+        return Ok(SW_ERR);
     }
-    SW_OK
+    Ok(SW_OK)
 }
 
 /// The idle timer: closes a connection idle in both directions for `max_idle_time`.
-pub(crate) fn idle_timeout<H: Host>(h: &mut H) {
-    if h.is(OP_CONN_PROTECT) {
-        return;
+pub(crate) fn idle_timeout<H: Host>(h: &mut H) -> crate::Effect<()> {
+    if h.is(OP_CONN_PROTECT)? {
+        return Ok(());
     }
-    let now = h.float(OP_NOW_MS);
-    h.get(TRACE_TIMEOUT);
-    let idle = h.float(OP_PORT_IDLE_TIME);
-    if now - h.float(OP_LAST_RECEIVED) < idle && now - h.float(OP_LAST_SENT) < idle {
-        return;
+    let now = h.float(OP_NOW_MS)?;
+    h.get(TRACE_TIMEOUT)?;
+    let idle = h.float(OP_PORT_IDLE_TIME)?;
+    if now - h.float(OP_LAST_RECEIVED)? < idle && now - h.float(OP_LAST_SENT)? < idle {
+        return Ok(());
     }
-    if h.is(OP_DISABLE_NOTIFY) || h.is(OP_CONN_CLOSING) {
-        h.get(OP_CLOSE_CONNECTION);
-        return;
+    if h.is(OP_DISABLE_NOTIFY)? || h.is(OP_CONN_CLOSING)? {
+        h.get(OP_CLOSE_CONNECTION)?;
+        return Ok(());
     }
-    h.get(OP_FORCE_CLOSE);
+    h.get(OP_FORCE_CLOSE)?;
+    Ok(())
 }
 
 /// `Server::disable_accept`: stop accepting on stream ports until the retry timer.
-pub(crate) fn disable_accept<H: Host>(h: &mut H) {
-    if !h.is(OP_ACCEPT_TIMER) {
-        return;
+pub(crate) fn disable_accept<H: Host>(h: &mut H) -> crate::Effect<()> {
+    if !h.is(OP_ACCEPT_TIMER)? {
+        return Ok(());
     }
-    for_stream_ports(h, OP_PORT_EVENT_DEL);
+    for_stream_ports(h, OP_PORT_EVENT_DEL)?;
+    Ok(())
 }
 
 /// The accept retry timer: accept on stream ports again.
-pub(crate) fn enable_accept<H: Host>(h: &mut H) {
-    for_stream_ports(h, OP_PORT_EVENT_ADD);
-    h.get(OP_ACCEPT_TIMER_CLEAR);
+pub(crate) fn enable_accept<H: Host>(h: &mut H) -> crate::Effect<()> {
+    for_stream_ports(h, OP_PORT_EVENT_ADD)?;
+    h.get(OP_ACCEPT_TIMER_CLEAR)?;
+    Ok(())
 }
 
-fn for_stream_ports<H: Host>(h: &mut H, op: u32) {
-    for index in 0..h.get(OP_PORT_COUNT) {
-        if h.op(OP_PORT_DGRAM, index) == 0 {
-            h.op(op, index);
+fn for_stream_ports<H: Host>(h: &mut H, op: u32) -> crate::Effect<()> {
+    for index in 0..h.get(OP_PORT_COUNT)? {
+        if h.op(OP_PORT_DGRAM, index)? == 0 {
+            h.op(op, index)?;
         }
     }
+    Ok(())
 }
 
 /// `Server::set_max_connection`: 0 means the default, bounded by the session list
 /// and `SwooleG.max_sockets`.
-pub(crate) fn set_max_connection<H: Host>(h: &mut H, requested: u32) {
-    if h.is(OP_CONNECTION_LIST) {
-        h.get(LOG_MAX_CONNECTION_CREATED);
-        return;
+pub(crate) fn set_max_connection<H: Host>(h: &mut H, requested: u32) -> crate::Effect<()> {
+    if h.is(OP_CONNECTION_LIST)? {
+        h.get(LOG_MAX_CONNECTION_CREATED)?;
+        return Ok(());
     }
-    let max_sockets = u32::try_from(h.get(OP_MAX_SOCKETS)).unwrap_or(u32::MAX);
+    let max_sockets = u32::try_from(h.get(OP_MAX_SOCKETS)?).unwrap_or(u32::MAX);
     let mut value = requested;
     if value == 0 {
         value = MAX_CONNECTION.min(max_sockets);
     } else if value > SESSION_LIST_SIZE {
         value = SESSION_LIST_SIZE;
-        h.get(LOG_MAX_CONNECTION_SESSIONS);
+        h.get(LOG_MAX_CONNECTION_SESSIONS)?;
     }
     if max_sockets > 0 && value > max_sockets {
         value = max_sockets;
-        h.get(LOG_MAX_CONNECTION_SOCKETS);
+        h.get(LOG_MAX_CONNECTION_SOCKETS)?;
     }
-    h.op(OP_SET_MAX_CONNECTION, u64::from(value));
+    h.op(OP_SET_MAX_CONNECTION, u64::from(value))?;
+    Ok(())
 }
 
 /// `Server::is_healthy_connection`: received within the port's heartbeat idle time.
-pub(crate) fn healthy<H: Host>(h: &mut H, now: f64) -> bool {
-    if h.is(OP_CONN_PROTECT) {
-        return true;
+pub(crate) fn healthy<H: Host>(h: &mut H, now: f64) -> crate::Effect<bool> {
+    if h.is(OP_CONN_PROTECT)? {
+        return Ok(true);
     }
-    let last_recv = h.float(OP_CONN_LAST_RECV);
-    if last_recv == 0.0 || !h.is(OP_HAS_PORT) {
-        return true;
+    let last_recv = h.float(OP_CONN_LAST_RECV)?;
+    if last_recv == 0.0 || !h.is(OP_HAS_PORT)? {
+        return Ok(true);
     }
-    let idle = h.float(OP_PORT_HEARTBEAT);
-    idle == 0.0 || last_recv > now - idle
+    let idle = h.float(OP_PORT_HEARTBEAT)?;
+    Ok(idle == 0.0 || last_recv > now - idle)
 }
 
 #[cfg(test)]
@@ -249,7 +254,7 @@ mod tests {
     #[test]
     fn accepts_until_eagain_and_hands_each_to_a_reactor_thread() {
         let mut s = accepting(&[(OP_ERRNO, libc::EAGAIN as u64)]).queue(OP_ACCEPT, &[1, 1, 0]);
-        assert_eq!(accept(&mut s), SW_OK, "EAGAIN ends the batch");
+        assert_eq!(accept(&mut s).unwrap(), SW_OK, "EAGAIN ends the batch");
         assert_eq!(
             s.called(OP_SEND_INCOMING),
             2,
@@ -270,7 +275,11 @@ mod tests {
     fn eintr_retries_and_emfile_disables_accept() {
         let mut s = accepting(&[]).queue(OP_ERRNO, &[libc::EINTR as u64, libc::EMFILE as u64]);
         s.queued.insert(OP_ACCEPT, vec![0, 0]);
-        assert_eq!(accept(&mut s), SW_OK, "accept errors are not fatal");
+        assert_eq!(
+            accept(&mut s).unwrap(),
+            SW_OK,
+            "accept errors are not fatal"
+        );
         assert_eq!(s.called(OP_ACCEPT), 2, "EINTR retried once");
         assert_eq!(s.args(OP_PORT_DGRAM), vec![0, 1], "every port checked");
         assert_eq!(s.called(OP_PORT_EVENT_DEL), 2, "stream ports stop reading");
@@ -280,7 +289,7 @@ mod tests {
     #[test]
     fn too_many_connections_aborts_and_disables() {
         let mut s = accepting(&[(OP_SOCK_FD, 1000)]).queue(OP_ACCEPT, &[1]);
-        assert_eq!(accept(&mut s), SW_OK, "a full table is not fatal");
+        assert_eq!(accept(&mut s).unwrap(), SW_OK, "a full table is not fatal");
         assert_eq!(s.called(LOG_TOO_MANY_CONNECTIONS), 1, "warned");
         assert_eq!(s.called(OP_ABORT), 1, "socket aborted");
         assert_eq!(s.called(OP_CONN_RESET), 0, "no connection made");
@@ -289,7 +298,7 @@ mod tests {
     #[test]
     fn ssl_failure_and_full_session_list_abort() {
         let mut s = accepting(&[(OP_PORT_SSL, 1)]).queue(OP_ACCEPT, &[1]);
-        accept(&mut s);
+        accept(&mut s).unwrap();
         assert_eq!(s.called(OP_ABORT), 1, "ssl_create failed");
 
         let mut s = accepting(&[
@@ -298,7 +307,7 @@ mod tests {
             (OP_SOCK_FD, 1),
         ])
         .queue(OP_ACCEPT, &[1]);
-        accept(&mut s);
+        accept(&mut s).unwrap();
         assert_eq!(
             s.args(OP_SESSION_CLAIM),
             vec![1, 2, 3],
@@ -312,7 +321,7 @@ mod tests {
     #[test]
     fn session_ids_continue_from_the_round() {
         let mut s = accepting(&[(OP_SESSION_ROUND, 41)]).queue(OP_SESSION_CLAIM, &[0, 1]);
-        assert!(add_connection(&mut s), "second slot free");
+        assert!(add_connection(&mut s).unwrap(), "second slot free");
         assert_eq!(s.args(OP_SESSION_BIND), vec![43], "bound to the claimed id");
     }
 
@@ -325,7 +334,7 @@ mod tests {
             (OP_PORT_SNDBUF, 4096),
             (OP_SOCK_FD, 1),
         ]);
-        assert!(add_connection(&mut s), "added");
+        assert!(add_connection(&mut s).unwrap(), "added");
         assert_eq!(s.called(LOG_NODELAY), 1, "nodelay failed");
         assert_eq!(s.called(OP_NODELAY_ENABLED), 1, "flag set regardless");
         assert_eq!(s.called(LOG_RCVBUF), 1, "rcvbuf failed");
@@ -337,7 +346,7 @@ mod tests {
     fn single_thread_runs_incoming_inline() {
         let mut s =
             accepting(&[(OP_SINGLE_THREAD, 1), (OP_HAS_ON_CONNECT, 1)]).queue(OP_ACCEPT, &[1]);
-        accept(&mut s);
+        accept(&mut s).unwrap();
         assert_eq!(s.called(OP_REACTOR_ADD_READ), 1, "reading");
         assert_eq!(s.called(OP_ABORT), 1, "onConnect notify failed");
     }
@@ -345,7 +354,11 @@ mod tests {
     #[test]
     fn incoming_orders_timer_ssl_and_delay() {
         let mut s = Script::with(&[(OP_PORT_IDLE_TIME, 1.5f64.to_bits()), (OP_SOCK_SSL, 1)]);
-        assert_eq!(incoming(&mut s), 0, "ssl adds read regardless of delay");
+        assert_eq!(
+            incoming(&mut s).unwrap(),
+            0,
+            "ssl adds read regardless of delay"
+        );
         assert_eq!(s.called(OP_ADD_RECV_TIMER), 1, "idle timer armed");
 
         let mut s = Script::with(&[
@@ -353,11 +366,11 @@ mod tests {
             (OP_HAS_ON_CONNECT, 1),
             (OP_NOTIFY_CONNECT, 1),
         ]);
-        assert_eq!(incoming(&mut s), SW_OK, "delayed");
+        assert_eq!(incoming(&mut s).unwrap(), SW_OK, "delayed");
         assert_eq!(s.called(OP_REACTOR_ADD_READ), 0, "waits for resume");
 
         let mut s = Script::with(&[(OP_REACTOR_ADD_READ, u64::MAX)]);
-        assert_eq!(incoming(&mut s), SW_ERR, "reactor add failed");
+        assert_eq!(incoming(&mut s).unwrap(), SW_ERR, "reactor add failed");
     }
 
     #[test]
@@ -372,7 +385,7 @@ mod tests {
             ])
         };
         let mut s = facts(8000.0, 0);
-        idle_timeout(&mut s);
+        idle_timeout(&mut s).unwrap();
         assert_eq!(
             s.called(OP_FORCE_CLOSE) + s.called(OP_CLOSE_CONNECTION),
             0,
@@ -380,7 +393,7 @@ mod tests {
         );
 
         let mut s = facts(1000.0, 0);
-        idle_timeout(&mut s);
+        idle_timeout(&mut s).unwrap();
         assert_eq!(
             s.called(OP_FORCE_CLOSE),
             1,
@@ -388,7 +401,7 @@ mod tests {
         );
 
         let mut s = facts(1000.0, 1);
-        idle_timeout(&mut s);
+        idle_timeout(&mut s).unwrap();
         assert_eq!(
             s.called(OP_CLOSE_CONNECTION),
             1,
@@ -396,19 +409,19 @@ mod tests {
         );
 
         let mut s = Script::with(&[(OP_CONN_PROTECT, 1)]);
-        idle_timeout(&mut s);
+        idle_timeout(&mut s).unwrap();
         assert_eq!(s.called(OP_NOW_MS), 0, "protected");
     }
 
     #[test]
     fn enable_accept_skips_dgram_ports() {
         let mut s = Script::with(&[(OP_PORT_COUNT, 2)]).queue(OP_PORT_DGRAM, &[1, 0]);
-        enable_accept(&mut s);
+        enable_accept(&mut s).unwrap();
         assert_eq!(s.args(OP_PORT_EVENT_ADD), vec![1], "stream port only");
         assert_eq!(s.called(OP_ACCEPT_TIMER_CLEAR), 1, "timer cleared");
 
         let mut s = Script::with(&[(OP_PORT_COUNT, 2)]);
-        disable_accept(&mut s);
+        disable_accept(&mut s).unwrap();
         assert_eq!(
             s.called(OP_PORT_EVENT_DEL),
             0,
@@ -420,7 +433,7 @@ mod tests {
     fn max_connection_bounds() {
         let run = |requested, sockets, created| {
             let mut s = Script::with(&[(OP_MAX_SOCKETS, sockets), (OP_CONNECTION_LIST, created)]);
-            set_max_connection(&mut s, requested);
+            set_max_connection(&mut s, requested).unwrap();
             (
                 s.args(OP_SET_MAX_CONNECTION),
                 s.log
@@ -463,7 +476,7 @@ mod tests {
                 (OP_HAS_PORT, port),
                 (OP_PORT_HEARTBEAT, idle.to_bits()),
             ]);
-            healthy(&mut s, 100.0)
+            healthy(&mut s, 100.0).unwrap()
         };
         assert!(run(1, 1.0, 1, 10.0), "protected");
         assert!(run(0, 0.0, 1, 10.0), "never received");

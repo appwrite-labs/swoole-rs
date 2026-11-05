@@ -13,97 +13,97 @@ use crate::ops::{
 };
 use crate::{Host, MODE_THREAD, SW_ERR, SW_OK};
 
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> Option<i64> {
-    Some(match operation {
-        RUN_RT_PIPE_WRITE => pipe_write(h),
-        RUN_RT_INIT => init(h, arg),
-        _ => return None,
-    })
+pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
+    Ok(Some(match operation {
+        RUN_RT_PIPE_WRITE => pipe_write(h)?,
+        RUN_RT_INIT => init(h, arg)?,
+        _ => return Ok(None),
+    }))
 }
 
 /// `ReactorThread_onPipeWrite`: flush the queued messages to a worker, dropping
 /// those for connections the server already closed.
-fn pipe_write<H: Host>(h: &mut H) -> i64 {
-    while !h.is(OP_RT_BUF_EMPTY) {
-        h.get(OP_RT_FRONT);
-        if h.is(OP_RT_FRONT_STREAM) {
-            let discard = if h.is(OP_RT_FRONT_CONN) {
-                h.get(OP_RT_TOUCH_SEND);
-                let closed = h.is(OP_RT_FRONT_CONN_CLOSED);
+fn pipe_write<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    while !h.is(OP_RT_BUF_EMPTY)? {
+        h.get(OP_RT_FRONT)?;
+        if h.is(OP_RT_FRONT_STREAM)? {
+            let discard = if h.is(OP_RT_FRONT_CONN)? {
+                h.get(OP_RT_TOUCH_SEND)?;
+                let closed = h.is(OP_RT_FRONT_CONN_CLOSED)?;
                 if closed {
-                    h.get(LOG_RT_CLOSED_BY_SERVER);
+                    h.get(LOG_RT_CLOSED_BY_SERVER)?;
                 }
                 closed
-            } else if h.is(OP_RT_DISCARD_TIMEOUT) {
-                h.get(LOG_RT_DISCARD);
+            } else if h.is(OP_RT_DISCARD_TIMEOUT)? {
+                h.get(LOG_RT_DISCARD)?;
                 true
             } else {
                 false
             };
             if discard {
-                h.get(OP_RT_POP);
+                h.get(OP_RT_POP)?;
                 continue;
             }
         }
-        if h.signed(OP_RT_SEND_FRONT) < 0 {
-            return if h.is(OP_RT_CATCH_WAIT) {
+        if h.signed(OP_RT_SEND_FRONT)? < 0 {
+            return Ok(if h.is(OP_RT_CATCH_WAIT)? {
                 SW_OK
             } else {
                 SW_ERR
-            };
+            });
         }
-        h.get(OP_RT_POP);
+        h.get(OP_RT_POP)?;
     }
-    if h.signed(OP_RT_REMOVE_WRITE) < 0 {
-        h.get(LOG_RT_SET_WRITE);
+    if h.signed(OP_RT_REMOVE_WRITE)? < 0 {
+        h.get(LOG_RT_SET_WRITE)?;
     }
-    SW_OK
+    Ok(SW_OK)
 }
 
 /// `ReactorThread::init`: a reactor thread's handlers, its UDP ports, worker
 /// pipes and message bus.
-fn init<H: Host>(h: &mut H, id: u64) -> i64 {
-    h.op(OP_RT_SETUP, id);
+fn init<H: Host>(h: &mut H, id: u64) -> crate::Effect<i64> {
+    h.op(OP_RT_SETUP, id)?;
     // Listen on this thread's UDP ports.
-    if h.is(OP_HAVE_DGRAM) {
-        let reactors = h.get(OP_REACTOR_NUM);
-        for port in 0..h.get(OP_PORT_COUNT) {
-            if h.op(OP_PORT_DGRAM, port) == 0 {
+    if h.is(OP_HAVE_DGRAM)? {
+        let reactors = h.get(OP_REACTOR_NUM)?;
+        for port in 0..h.get(OP_PORT_COUNT)? {
+            if h.op(OP_PORT_DGRAM, port)? == 0 {
                 continue;
             }
-            let fd = h.op(OP_PORT_FD, port).cast_signed();
+            let fd = h.op(OP_PORT_FD, port)?.cast_signed();
             if reactors == 0 || fd.rem_euclid(reactors.cast_signed()).cast_unsigned() != id {
                 continue;
             }
-            if h.op(OP_RT_DGRAM_BIND, port).cast_signed() < 0 {
-                return SW_ERR;
+            if h.op(OP_RT_DGRAM_BIND, port)?.cast_signed() < 0 {
+                return Ok(SW_ERR);
             }
         }
     }
-    h.get(OP_RT_INIT_REACTOR);
-    h.get(OP_RT_INIT_PIPE_SOCKETS);
-    if h.get(OP_MODE) == MODE_THREAD {
-        h.get(OP_RT_THREAD_WORKER);
-        if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL)) > 0 {
-            h.get(OP_RT_HEARTBEAT_TIMER);
+    h.get(OP_RT_INIT_REACTOR)?;
+    h.get(OP_RT_INIT_PIPE_SOCKETS)?;
+    if h.get(OP_MODE)? == MODE_THREAD {
+        h.get(OP_RT_THREAD_WORKER)?;
+        if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))? > 0 {
+            h.get(OP_RT_HEARTBEAT_TIMER)?;
         }
     }
-    if h.is(OP_RT_HAS_PIPE_COMMAND) {
-        h.get(OP_RT_PIPE_COMMAND);
+    if h.is(OP_RT_HAS_PIPE_COMMAND)? {
+        h.get(OP_RT_PIPE_COMMAND)?;
     }
-    if !h.is(OP_RT_BUS_SETUP) {
-        return SW_ERR;
+    if !h.is(OP_RT_BUS_SETUP)? {
+        return Ok(SW_ERR);
     }
-    let reactors = h.get(OP_REACTOR_NUM);
-    for worker in 0..h.get(OP_WORKER_NUM) {
+    let reactors = h.get(OP_REACTOR_NUM)?;
+    for worker in 0..h.get(OP_WORKER_NUM)? {
         if reactors == 0 || worker % reactors != id {
             continue;
         }
-        if h.op(OP_RT_ADD_WORKER_PIPE, worker).cast_signed() < 0 {
-            return SW_ERR;
+        if h.op(OP_RT_ADD_WORKER_PIPE, worker)?.cast_signed() < 0 {
+            return Ok(SW_ERR);
         }
     }
-    SW_OK
+    Ok(SW_OK)
 }
 
 #[cfg(test)]
@@ -112,7 +112,7 @@ mod tests {
     use crate::script::Script;
 
     fn go(h: &mut Script, operation: u32, arg: u64) -> i64 {
-        run(h, operation, arg).unwrap()
+        run(h, operation, arg).unwrap().unwrap()
     }
 
     #[test]

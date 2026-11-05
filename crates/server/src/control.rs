@@ -18,153 +18,157 @@ fn signal_number(signo: i32) -> u64 {
 
 /// `Server::shutdown`: ask the master to stop, by pipe in process mode (a worker may
 /// not be allowed to signal it) and by `SIGTERM` otherwise.
-pub(crate) fn shutdown<H: Host>(h: &mut H) -> bool {
-    if !h.is(OP_IS_STARTED) {
-        h.get(OP_WRONG_OPERATION);
-        return false;
+pub(crate) fn shutdown<H: Host>(h: &mut H) -> crate::Effect<bool> {
+    if !h.is(OP_IS_STARTED)? {
+        h.get(OP_WRONG_OPERATION)?;
+        return Ok(false);
     }
-    let mode = h.get(OP_MODE);
+    let mode = h.get(OP_MODE)?;
     // A worker thread masks signals; the master thread stops itself.
-    if mode == MODE_THREAD && h.is(OP_IS_MASTER_THREAD) {
-        stop_master_thread(h);
-        return true;
+    if mode == MODE_THREAD && h.is(OP_IS_MASTER_THREAD)? {
+        stop_master_thread(h)?;
+        return Ok(true);
     }
     if mode == MODE_PROCESS {
         return h.is(OP_SEND_SHUTDOWN);
     }
-    let manager = h.signed(OP_MANAGER_PID);
+    let manager = h.signed(OP_MANAGER_PID)?;
     let pid = if mode == MODE_BASE && manager != 0 {
         manager
     } else {
-        h.signed(OP_MASTER_PID)
+        h.signed(OP_MASTER_PID)?
     };
-    if h.op(OP_KILL_TERM, pid.cast_unsigned()).cast_signed() < 0 {
-        h.op(LOG_SHUTDOWN_FAILED, pid.cast_unsigned());
-        return false;
+    if h.op(OP_KILL_TERM, pid.cast_unsigned())?.cast_signed() < 0 {
+        h.op(LOG_SHUTDOWN_FAILED, pid.cast_unsigned())?;
+        return Ok(false);
     }
-    true
+    Ok(true)
 }
 
 /// `Server::master_signal_handler`.
-pub(crate) fn signal<H: Host>(h: &mut H, signo: i32) {
-    h.op(TRACE_SIGNAL, signal_number(signo));
-    if !h.is(OP_SIGNAL_ACTIVE) {
-        return;
+pub(crate) fn signal<H: Host>(h: &mut H, signo: i32) -> crate::Effect<()> {
+    h.op(TRACE_SIGNAL, signal_number(signo))?;
+    if !h.is(OP_SIGNAL_ACTIVE)? {
+        return Ok(());
     }
     match signo {
         libc::SIGTERM => {
-            signal_shutdown(h);
+            signal_shutdown(h)?;
         }
         libc::SIGCHLD => {
-            child_exit(h);
+            child_exit(h)?;
         }
         libc::SIGUSR1 | libc::SIGUSR2 => {
-            h.op(OP_SIGNAL_RELOAD, u64::from(signo == libc::SIGUSR1));
+            h.op(OP_SIGNAL_RELOAD, u64::from(signo == libc::SIGUSR1))?;
         }
         libc::SIGIO => {
-            h.get(OP_SIGNAL_READ_MESSAGE);
+            h.get(OP_SIGNAL_READ_MESSAGE)?;
         }
-        libc::SIGWINCH => reopen_logger(h),
+        libc::SIGWINCH => reopen_logger(h)?,
         _ => {
-            let rtmin = h.get(OP_SIGRTMIN);
+            let rtmin = h.get(OP_SIGRTMIN)?;
             if rtmin != 0 && signal_number(signo) == rtmin {
-                reopen_logger(h);
+                reopen_logger(h)?;
             }
         }
     }
+    Ok(())
 }
 
 /// `Server::signal_handler_reopen_logger`: the log file reopens, and in process mode
 /// the manager is told to reopen its own.
-pub(crate) fn reopen_logger<H: Host>(h: &mut H) {
-    h.get(OP_SIGNAL_REOPEN);
-    if h.get(OP_MODE) == MODE_PROCESS {
-        let manager = h.get(OP_MANAGER_PID);
-        h.op(OP_KILL_WINCH, manager);
+pub(crate) fn reopen_logger<H: Host>(h: &mut H) -> crate::Effect<()> {
+    h.get(OP_SIGNAL_REOPEN)?;
+    if h.get(OP_MODE)? == MODE_PROCESS {
+        let manager = h.get(OP_MANAGER_PID)?;
+        h.op(OP_KILL_WINCH, manager)?;
     }
+    Ok(())
 }
 
 /// `Server::signal_handler_shutdown`.
-pub(crate) fn signal_shutdown<H: Host>(h: &mut H) -> bool {
-    h.get(TRACE_SHUTDOWN_BEGIN);
-    if h.get(OP_MODE) == MODE_BASE {
-        if h.signed(OP_MANAGER_PID) > 0 {
-            h.op(OP_SET_RUNNING, 0);
+pub(crate) fn signal_shutdown<H: Host>(h: &mut H) -> crate::Effect<bool> {
+    h.get(TRACE_SHUTDOWN_BEGIN)?;
+    if h.get(OP_MODE)? == MODE_BASE {
+        if h.signed(OP_MANAGER_PID)? > 0 {
+            h.op(OP_SET_RUNNING, 0)?;
         } else {
             // A single worker process exits directly.
-            h.get(OP_STOP_SINGLE_WORKER);
+            h.get(OP_STOP_SINGLE_WORKER)?;
         }
-        return true;
+        return Ok(true);
     }
-    h.get(OP_BEFORE_SHUTDOWN);
-    h.op(OP_SET_RUNNING, 0);
-    stop_master_thread(h);
-    h.get(TRACE_SHUTDOWN_END);
-    true
+    h.get(OP_BEFORE_SHUTDOWN)?;
+    h.op(OP_SET_RUNNING, 0)?;
+    stop_master_thread(h)?;
+    h.get(TRACE_SHUTDOWN_END)?;
+    Ok(true)
 }
 
 /// `Server::signal_handler_child_exit`: reap and report the manager's exit.
-pub(crate) fn child_exit<H: Host>(h: &mut H) -> bool {
-    if !h.is(OP_RUNNING) || h.get(OP_MODE) == MODE_BASE {
-        return false;
+pub(crate) fn child_exit<H: Host>(h: &mut H) -> crate::Effect<bool> {
+    if !h.is(OP_RUNNING)? || h.get(OP_MODE)? == MODE_BASE {
+        return Ok(false);
     }
     let mut status: libc::c_int = 0;
     // SAFETY: `status` is a valid out pointer for the call.
     let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::WNOHANG) };
-    if pid > 0 && i64::from(pid) == h.signed(OP_MANAGER_PID) {
-        h.op(LOG_MANAGER_EXIT, u64::from(status.cast_unsigned()));
+    if pid > 0 && i64::from(pid) == h.signed(OP_MANAGER_PID)? {
+        h.op(LOG_MANAGER_EXIT, u64::from(status.cast_unsigned()))?;
     }
-    true
+    Ok(true)
 }
 
 /// `Server::stop_master_thread`: stop accepting and let the reactor drain.
-pub(crate) fn stop_master_thread<H: Host>(h: &mut H) {
-    h.get(OP_REACTOR_WAIT_EXIT);
-    let mode = h.get(OP_MODE);
-    for index in 0..h.get(OP_PORT_COUNT) {
-        if h.op(OP_PORT_DGRAM, index) != 0 && mode != MODE_BASE {
+pub(crate) fn stop_master_thread<H: Host>(h: &mut H) -> crate::Effect<()> {
+    h.get(OP_REACTOR_WAIT_EXIT)?;
+    let mode = h.get(OP_MODE)?;
+    for index in 0..h.get(OP_PORT_COUNT)? {
+        if h.op(OP_PORT_DGRAM, index)? != 0 && mode != MODE_BASE {
             continue;
         }
-        if h.op(OP_PORT_REMOVED, index) == 0 {
-            h.op(OP_PORT_REACTOR_DEL, index);
+        if h.op(OP_PORT_REMOVED, index)? == 0 {
+            h.op(OP_PORT_REACTOR_DEL, index)?;
         }
     }
-    h.get(OP_PIPE_COMMAND_DEL);
-    crate::state::clear_timer(h);
-    if h.signed(OP_MAX_WAIT_TIME) > 0 {
-        h.get(OP_FORCED_EXIT);
+    h.get(OP_PIPE_COMMAND_DEL)?;
+    crate::state::clear_timer(h)?;
+    if h.signed(OP_MAX_WAIT_TIME)? > 0 {
+        h.get(OP_FORCED_EXIT)?;
     }
     if mode == MODE_THREAD {
-        h.get(OP_STOP_WORKER_THREADS);
+        h.get(OP_STOP_WORKER_THREADS)?;
     }
-    if mode == MODE_PROCESS && h.is(OP_SINGLE_THREAD) {
-        h.get(OP_THREAD0_SHUTDOWN);
+    if mode == MODE_PROCESS && h.is(OP_SINGLE_THREAD)? {
+        h.get(OP_THREAD0_SHUTDOWN)?;
     }
+    Ok(())
 }
 
 /// `Server::timer_callback`: rate-limited scheduler warnings, the timer hook, and
 /// stopping once the server no longer runs.
-pub(crate) fn master_timer<H: Host>(h: &mut H) {
+pub(crate) fn master_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
     // SAFETY: `time` accepts a null out pointer.
     let now = unsafe { libc::time(core::ptr::null_mut()) };
     for pool in [0, 1] {
-        if h.op(OP_WARNING, pool) != 0 && h.op(OP_WARNING_TIME, pool).cast_signed() < now {
-            h.op(OP_WARNING_RESET, (now.cast_unsigned() << 1) | pool);
-            h.op(LOG_NO_IDLE_WORKER, pool);
+        if h.op(OP_WARNING, pool)? != 0 && h.op(OP_WARNING_TIME, pool)?.cast_signed() < now {
+            h.op(OP_WARNING_RESET, (now.cast_unsigned() << 1) | pool)?;
+            h.op(LOG_NO_IDLE_WORKER, pool)?;
         }
     }
-    h.get(OP_MASTER_TIMER_HOOK);
-    if !h.is(OP_RUNNING) {
-        h.get(OP_REACTOR_STOP);
-        stop_master_thread(h);
+    h.get(OP_MASTER_TIMER_HOOK)?;
+    if !h.is(OP_RUNNING)? {
+        h.get(OP_REACTOR_STOP)?;
+        stop_master_thread(h)?;
     }
+    Ok(())
 }
 
 /// `Server::init_signal_handler`.
-pub(crate) fn init_signals<H: Host>(h: &mut H) {
-    h.op(OP_SIGNAL_IGNORE, signal_number(libc::SIGPIPE));
-    h.op(OP_SIGNAL_IGNORE, signal_number(libc::SIGHUP));
-    let child = if h.get(OP_MODE) == MODE_PROCESS {
+pub(crate) fn init_signals<H: Host>(h: &mut H) -> crate::Effect<()> {
+    h.op(OP_SIGNAL_IGNORE, signal_number(libc::SIGPIPE))?;
+    h.op(OP_SIGNAL_IGNORE, signal_number(libc::SIGHUP))?;
+    let child = if h.get(OP_MODE)? == MODE_PROCESS {
         libc::SIGCHLD
     } else {
         libc::SIGIO
@@ -176,16 +180,17 @@ pub(crate) fn init_signals<H: Host>(h: &mut H) {
         libc::SIGTERM,
         libc::SIGWINCH,
     ] {
-        h.op(OP_SIGNAL_HANDLE, signal_number(signo));
+        h.op(OP_SIGNAL_HANDLE, signal_number(signo))?;
     }
-    let rtmin = h.get(OP_SIGRTMIN);
+    let rtmin = h.get(OP_SIGRTMIN)?;
     if rtmin != 0 {
-        h.op(OP_SIGNAL_HANDLE, rtmin);
+        h.op(OP_SIGNAL_HANDLE, rtmin)?;
     }
-    let signal_fd = h.signed(OP_SIGNAL_FD);
+    let signal_fd = h.signed(OP_SIGNAL_FD)?;
     if signal_fd > 0 {
-        h.op(OP_SET_MINFD, signal_fd.cast_unsigned());
+        h.op(OP_SET_MINFD, signal_fd.cast_unsigned())?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -196,7 +201,7 @@ mod tests {
     #[test]
     fn shutdown_by_mode() {
         let mut s = Script::with(&[]);
-        assert!(!shutdown(&mut s), "not started");
+        assert!(!shutdown(&mut s).unwrap(), "not started");
         assert_eq!(s.called(OP_WRONG_OPERATION), 1, "error set");
 
         let mut s = Script::with(&[
@@ -204,11 +209,11 @@ mod tests {
             (OP_MODE, MODE_PROCESS),
             (OP_SEND_SHUTDOWN, 1),
         ]);
-        assert!(shutdown(&mut s), "pipe message sent");
+        assert!(shutdown(&mut s).unwrap(), "pipe message sent");
         assert_eq!(s.called(OP_KILL_TERM), 0, "no signal");
 
         let mut s = Script::with(&[(OP_IS_STARTED, 1), (OP_MODE, MODE_BASE), (OP_MASTER_PID, 7)]);
-        assert!(shutdown(&mut s), "signalled");
+        assert!(shutdown(&mut s).unwrap(), "signalled");
         assert_eq!(s.args(OP_KILL_TERM), vec![7], "no manager: master");
 
         let mut s = Script::with(&[
@@ -217,7 +222,7 @@ mod tests {
             (OP_MANAGER_PID, 8),
             (OP_KILL_TERM, u64::MAX),
         ]);
-        assert!(!shutdown(&mut s), "kill failed");
+        assert!(!shutdown(&mut s).unwrap(), "kill failed");
         assert_eq!(
             s.args(LOG_SHUTDOWN_FAILED),
             vec![8],
@@ -229,7 +234,7 @@ mod tests {
             (OP_MODE, MODE_THREAD),
             (OP_IS_MASTER_THREAD, 1),
         ]);
-        assert!(shutdown(&mut s), "master thread stops itself");
+        assert!(shutdown(&mut s).unwrap(), "master thread stops itself");
         assert_eq!(s.called(OP_REACTOR_WAIT_EXIT), 1, "stopped");
     }
 
@@ -241,7 +246,7 @@ mod tests {
                 (OP_MODE, MODE_PROCESS),
                 (OP_SIGRTMIN, 34),
             ]);
-            signal(&mut s, signo);
+            signal(&mut s, signo).unwrap();
             s
         };
         assert_eq!(
@@ -264,7 +269,7 @@ mod tests {
         assert_eq!(run(libc::SIGTERM).called(OP_BEFORE_SHUTDOWN), 1, "shutdown");
 
         let mut s = Script::with(&[]);
-        signal(&mut s, libc::SIGTERM);
+        signal(&mut s, libc::SIGTERM).unwrap();
         assert_eq!(
             s.called(TRACE_SHUTDOWN_BEGIN),
             0,
@@ -275,11 +280,11 @@ mod tests {
     #[test]
     fn signal_shutdown_in_base_mode() {
         let mut s = Script::with(&[(OP_MODE, MODE_BASE), (OP_MANAGER_PID, 3)]);
-        assert!(signal_shutdown(&mut s), "handled");
+        assert!(signal_shutdown(&mut s).unwrap(), "handled");
         assert_eq!(s.args(OP_SET_RUNNING), vec![0], "manager stops the workers");
 
         let mut s = Script::with(&[(OP_MODE, MODE_BASE)]);
-        signal_shutdown(&mut s);
+        signal_shutdown(&mut s).unwrap();
         assert_eq!(s.called(OP_STOP_SINGLE_WORKER), 1, "single worker exits");
         assert_eq!(s.called(OP_SET_RUNNING), 0, "running untouched");
     }
@@ -294,7 +299,7 @@ mod tests {
         ])
         .queue(OP_PORT_DGRAM, &[1, 0, 0])
         .queue(OP_PORT_REMOVED, &[0, 1]);
-        stop_master_thread(&mut s);
+        stop_master_thread(&mut s).unwrap();
         assert_eq!(
             s.args(OP_PORT_REACTOR_DEL),
             vec![1],
@@ -309,7 +314,7 @@ mod tests {
     fn master_timer_warns_once_per_second_and_stops() {
         let mut s =
             Script::with(&[(OP_WARNING, 1)]).queue(OP_WARNING_TIME, &[0, i64::MAX.cast_unsigned()]);
-        master_timer(&mut s);
+        master_timer(&mut s).unwrap();
         assert_eq!(
             s.args(LOG_NO_IDLE_WORKER),
             vec![0],
@@ -322,7 +327,7 @@ mod tests {
     #[test]
     fn signal_set() {
         let mut s = Script::with(&[(OP_MODE, MODE_BASE), (OP_SIGRTMIN, 34), (OP_SIGNAL_FD, 9)]);
-        init_signals(&mut s);
+        init_signals(&mut s).unwrap();
         assert_eq!(s.called(OP_SIGNAL_IGNORE), 2, "SIGPIPE and SIGHUP");
         let handled = s.args(OP_SIGNAL_HANDLE);
         assert_eq!(
