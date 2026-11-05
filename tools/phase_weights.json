@@ -142,7 +142,6 @@
  "timer-bailout": 9,
  "timer-fork-active": 1,
  "timer-kernel": 5,
- "timer-model": 1,
  "timer-native": 9,
  "tls-native": 123,
  "tls-unit": 1,

@@ -39,17 +39,6 @@ extracts the ID).
 - Update/remove/dispatch use `get_mut` on existing entries, so they never
   allocate (`HashMap::insert` on a full table can grow it).
 
-## Reference model
-
-`tests/modules/timer/test_model.py` is a Python model with an injected clock and
-golden event traces. It does not load PHP or Rust. Cases: active cancellation,
-active one-shot delayed past another due timer, active one-shot updating itself
-and another ID, active repeating delay, nested selection, callback/destructor
-mutation, equal deadlines (A/C/B), missed intervals, captured selection time,
-birth round, snapshot enumeration with mutation, checked limits, repeat deadline
-and count overflow, callback-triggered teardown, child teardown. Its unordered
-queue reproduces the three-node tie order but not general heap ordering.
-
 ## Commands
 
 ```sh
@@ -70,7 +59,6 @@ and are opt-in. `tests/modules/timer/FORK.md` describes the fork cases.
 
 ## Gaps
 
-- `core-tests/src/os/timer.cpp` needs GoogleTest and is not run.
 - Linux PHP-loaded adapter ASan is not set up.
 - On macOS, dispatch and repeat throughput were about 1% below upstream and
   cancel about 5% above; Linux is unmeasured.

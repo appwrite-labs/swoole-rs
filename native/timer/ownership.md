@@ -67,10 +67,6 @@ errno or invokes callbacks.
 narrowing is modulo 2^32. Inputs that overflow signed arithmetic in the original
 use explicit wrapping in Rust and are outside parity.
 
-`tests/modules/timer/clock.py` compiles the original and selected
-`src/os/timer.cc`, intercepts only `setitimer` (arguments, count, errno/result)
-and checks `realtime_get` against a Native clock bracket.
-
 ## Still Native
 
 - `src/os/timer.cc`: SIGALRM handler install, `timeval` packing and one

@@ -38,63 +38,26 @@ engine, upstream had 94 passed / 4 warned / 2 failed and Rust 94 passed /
 7/8). The strict gate fails intermittently on both engines; the official
 runner's retry turns these into WARNED.
 
-## Original native GoogleTest gate
+## Original native GoogleTests
 
-`core.py` (Linux) recovers the original `core-tests/src/os/timer.cpp`, its main
-and header from the pinned Git objects, verifies their hashes are unchanged
-after setup, and builds them with GoogleTest against the full native runtime
-twice: unchanged upstream, and with `migration/patches/timer` applied (each
-patch checksum verified against its manifest) and the Rust timer archive
-linked. Each of the nine tests runs in its own process; all 18 must pass.
-
-```sh
-cargo build --locked --release -p swoole-rs-timer --target-dir target/core-rust
-python3 tests/modules/timer/core.py \
-  --source /reference/target/upstream/src --config target/core-config.h \
-  --archive target/core-rust/release/libswoole_rs_timer.a \
-  --build-root target/core-native --output target/reports/timer-core.json
-```
-
-`--config` is a copy of a configured Linux baseline `config.h` that enables no
-other Rust module; `--build-root` must be outside the reference and repository
-root. Options:
-
-- `--sanitize`: native ASan/UBSan with leak detection (Rust uninstrumented
-  unless `--rust-asan`, see [RUST_ASAN.md](RUST_ASAN.md)). Use a separate build
-  root and report.
-- `--timed-locks`: also run `clock_lock.cc` against the native Mutex/RWLock
-  timed waits.
-- `--ucontext-timers`: see [ucontext_timers.md](ucontext_timers.md).
-
-18/18 pass, also under `--sanitize`. The original `timer.delay` case prints
-"timer is not available" warnings; they are original output.
+`core-tests/src/os/timer.cpp` runs unchanged on the reference and the hybrid
+tree as the `timer-native-originals` phase (`tools/core_tests.py`, Linux), like
+the other modules' GoogleTests (`CORE_TESTS` in `tools/dev.py`). The original
+`timer.delay` case prints "timer is not available" warnings; they are original
+output.
 
 ## Other timer gates
 
-- `clock.py`: compiles the complete original and selected `src/os/timer.cc`
-  with an intercepted `setitimer` (`clock.cc`) and requires identical
-  scalar/errno/syscall-argument output (734 rows). It verifies the extension and
-  archive against the build manifest first.
+`benchmark.py`: optimized PHP timer throughput (cancel/dispatch/repeat), with
+an engine named `upstream` as control. It requires matching PHP builds, `-O2`,
+`-O3` or `-Os` native flags, a clean upstream tree at the pin, and extension
+hashes matching their build manifests. Run only with no concurrent builds/tests.
 
-  ```sh
-  python3 tests/modules/timer/clock.py \
-    --manifest target/hybrid/rust-timer/build-manifest.json \
-    --control-source /absolute/clean/upstream/src \
-    --output target/reports/timer-clock.json [--sanitize]
-  ```
-
-- `test_model.py`: Python reference model with golden traces for the queue
-  contract in `docs/timer-abi-v1.md`.
-- `benchmark.py`: optimized PHP timer throughput (cancel/dispatch/repeat), with
-  an engine named `upstream` as control. It requires matching PHP builds, `-O2`,
-  `-O3` or `-Os` native flags, a clean upstream tree at the pin, and extension hashes
-  matching their build manifests. Run only with no concurrent builds/tests.
-
-  ```sh
-  python3 tests/modules/timer/benchmark.py \
-    --engine upstream=/absolute/upstream/swoole.so \
-    --engine timer=/absolute/timer/swoole.so --repeat 7
-  ```
+```sh
+python3 tests/modules/timer/benchmark.py \
+  --engine upstream=/absolute/upstream/swoole.so \
+  --engine timer=/absolute/timer/swoole.so --repeat 7
+```
 
 See also: [kernel.md](kernel.md), [hybrid.md](hybrid.md),
 [FORK.md](FORK.md), [bailout.md](bailout.md),

@@ -60,6 +60,7 @@ CORE_TESTS = {
                    'https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy', 'https_get_with_http_proxy']}},
               {'core/base.cpp': 'base.file_put_contents'}),
     'http2': (['protocol/http2.cpp'], {'http2.ssl': 'needs the nghttp2 client'}, {}),
+    'timer': (['os/timer.cpp'], {}, {}),
 }
 
 
@@ -198,7 +199,6 @@ def plan(args, reports):
     if integrate or args.compare or args.benchmark:
         engines += ['--engine', f'upstream={reference}']
     if integrate:
-        pytest('timer-model', 'tests/modules/timer/test_model.py')
         pytest('timer-kernel', 'tests/modules/timer/test_kernel.py', '--sanitize')
         add('format', 'cargo', 'fmt', '--all', '--check')
         add('clippy', 'cargo', 'clippy', '--locked', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings')

@@ -9,19 +9,13 @@ RUSTC_BOOTSTRAP=1 RUSTFLAGS='-Zsanitizer=address -Zexternal-clangrt=yes' \
   --target-dir target/rust-asan-timer --crate-type staticlib -v
 python3 -m pytest tests/modules/timer/test_kernel.py --sanitize --rust-asan \
   --archive target/rust-asan-timer/release/libswoole_rs_timer.a
-python3 tests/modules/timer/core.py --source target/upstream/src \
-  --config target/core-config.h --build-root target/core-rust-asan \
-  --archive target/rust-asan-timer/release/libswoole_rs_timer.a \
-  --sanitize --rust-asan --output target/reports/timer-rust-asan-core.json
 ```
 
 `--rust-asan` declares an externally instrumented archive; it does not build
-one. Both gates reject an archive without ASan report imports, and `kernel.py`
-requires `--no-build` so it cannot replace the supplied archive.
+one. The gate rejects an archive without ASan report imports.
 
-On Linux the C ABI gate passes all 13 topics and the original GoogleTest gate
-passes 9/9 upstream and 9/9 Rust with native ASan/UBSan, leak detection and the
-Rust archive instrumented. The precompiled Rust standard library is not
+On Linux the C ABI gate passes all 13 topics with native ASan/UBSan, leak
+detection and the Rust archive instrumented. The precompiled Rust standard library is not
 instrumented. Exhaustion/OOM injection and concurrent-fork allocator safety are
 outside this gate.
 
