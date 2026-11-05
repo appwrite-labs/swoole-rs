@@ -11,8 +11,8 @@
 //! A warning can run a user error handler that bails out; when it does from
 //! inside a function here, the jump crosses only frames that own nothing to
 //! drop, and no lock is held across such a call. Calls that run PHP code
-//! (autoloaders, the library's replacements, original handlers) are trapped
-//! and reported to a C++ caller, which re-raises the bailout.
+//! (autoloaders, the library's replacements, original handlers) are trapped,
+//! and the handler or export Zend or C++ called re-raises the bailout last.
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),
@@ -32,9 +32,7 @@ mod stream;
 mod transport;
 pub use connect::*;
 pub use putenv::*;
-pub use select::*;
 pub use stream::*;
-pub use transport::swr_v1_phpruntime_original_transport;
 
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -49,8 +47,9 @@ use swoole_rs_zend::{
     bailout::Bailout,
     message, register_long_constant,
     sys::{
-        swr_zend_module_loaded, swr_zend_runtime_find_class, zend_class_entry, zend_execute_data,
-        zend_fcall_info_cache, zend_register_class_alias_ex, zif_handler, zval,
+        swr_zend_module_loaded, swr_zend_runtime_find_class, swr_zend_stream_factory,
+        swr_zend_stream_factory_set, zend_class_entry, zend_execute_data, zend_fcall_info_cache,
+        zend_register_class_alias_ex, zif_handler, zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -99,6 +98,8 @@ pub struct Ops {
     exception: *mut zend_class_entry,
     /// `Coroutine::get_current() != nullptr`.
     in_coroutine: unsafe extern "C" fn() -> u8,
+    /// `SWOOLE_G(cli)`.
+    cli: unsafe extern "C" fn() -> u8,
     /// `System::sleep(seconds)`.
     coroutine_sleep: unsafe extern "C" fn(seconds: f64) -> i32,
     /// `PHPCoroutine::set_hook_flags` and `get_hook_flags`.
@@ -111,8 +112,6 @@ pub struct Ops {
     active_threads: unsafe extern "C" fn() -> u32,
     /// The before (0) or after (1) enable-hook global hook, if set.
     call_hook: unsafe extern "C" fn(after: u8, flags: *mut u32),
-    /// C++'s coroutine transport factory, `socket_create`.
-    socket_create: *mut c_void,
     /// Swap the plain-files wrapper (0) or the stdio ops (1).
     stream_ops: unsafe extern "C" fn(stdio: u8, hook: u8),
     /// `swoole_<driver>_set_blocking(blocking)` for a `HOOK_PDO_*` bit.
@@ -129,11 +128,8 @@ pub struct Ops {
     fatal_error: unsafe extern "C" fn(level: i32, message: *const c_char),
     /// `php_swoole_error(level, "%s", message)`.
     error: unsafe extern "C" fn(level: i32, message: *const c_char),
-    /// Handlers that stay C++: the library-call trampoline, and the
-    /// replacements of those names (`exit` and `putenv` null when not built).
-    user_func: zif_handler,
-    stream_select: zif_handler,
-    stream_socket_pair: zif_handler,
+    /// Handlers that stay C++: the replacements of those names (`exit` and
+    /// `putenv` null when not built).
     proc_open: zif_handler,
     proc_close: zif_handler,
     proc_get_status: zif_handler,
@@ -203,10 +199,10 @@ method_table! {
     ];
 }
 
-// The handlers that stay C++.
-unsafe extern "C" {
-    fn zim_swoole_runtime_enableCoroutine(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zim_swoole_runtime_setHookFlags(frame: *mut z::zend_execute_data, value: *mut z::zval);
+/// The coroutine transport factory zend-sys registers for PHP, over
+/// [`stream::transport_factory_body`].
+fn factory() -> *mut c_void {
+    swr_zend_stream_factory as *mut c_void
 }
 
 /// MINIT: `Swoole\Runtime` (not instantiable) and the `SWOOLE_HOOK_*`
@@ -231,11 +227,15 @@ pub unsafe extern "C" fn swr_v1_phpruntime_minit(module_number: i32, ops: *const
         // SAFETY: MINIT, with the module's number.
         unsafe { register_long_constant(name, i64::from(value), module_number) };
     }
-    transport::register_async(self::ops().socket_create);
+    // SAFETY: MINIT, before any PHP thread starts.
+    unsafe { swr_zend_stream_factory_set(Some(stream::transport_factory_body)) };
+    transport::register_async(factory());
 }
 
 swoole_rs_zend::handlers! {
     zim_swoole_runtime_getHookFlags => get_hook_flags;
+    zim_swoole_runtime_enableCoroutine => enable_coroutine;
+    zim_swoole_runtime_setHookFlags => set_hook_flags_method;
 }
 
 /// `Runtime::getHookFlags()`.
@@ -244,26 +244,35 @@ fn get_hook_flags(call: &Call) {
     call.set_long(i64::from(unsafe { (ops().get_hook_flags)() }));
 }
 
-/// `Runtime::enableCoroutine()` (`min` 0) and `setHookFlags()` (`min` 1),
-/// after C++'s CLI check: 1 if a bailout was trapped, which the C++ method
-/// re-raises.
-/// # Safety
-/// Called from those methods with their live frame and return slot.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_set_hook_flags(
-    frame: *mut zend_execute_data,
-    value: *mut zval,
-    min: u32,
-) -> u8 {
-    // SAFETY: per the caller.
-    let call = unsafe { Call::new(frame, value) };
+/// `Runtime::enableCoroutine()`.
+fn enable_coroutine(call: &Call) {
+    swoole_rs_zend::bailout::defer(set_hook_flags(call, 0));
+}
+
+/// `Runtime::setHookFlags()`.
+fn set_hook_flags_method(call: &Call) {
+    swoole_rs_zend::bailout::defer(set_hook_flags(call, 1));
+}
+
+/// `runtime_set_hook_flags`: CLI only, then `min` to one flags argument.
+fn set_hook_flags(call: &Call, min: u32) -> Result<(), Bailout> {
+    // SAFETY: C++'s accessor.
+    if unsafe { (ops().cli)() } == 0 {
+        let reported = socket::report(
+            socket::Report::Fatal,
+            swoole_rs_zend::E_ERROR,
+            c"must be used in PHP CLI mode",
+        );
+        call.set_bool(false);
+        return reported;
+    }
     let all = flags::all(ops().features & flags::NATIVE_CURL != 0);
     let Ok(requested) = call
         .arity(min, 1)
         .and_then(|()| call.long(1, i64::from(all)))
     else {
         call.set_bool(false);
-        return 0;
+        return Ok(());
     };
     #[expect(
         clippy::cast_possible_truncation,
@@ -273,23 +282,31 @@ pub unsafe extern "C" fn swr_v1_phpruntime_set_hook_flags(
     let requested = requested as u32;
     // SAFETY: C++'s setter.
     unsafe { (ops().set_hook_flags)(requested) };
-    match enable_hook(requested) {
-        Ok(enabled) => {
-            call.set_bool(enabled);
-            0
-        }
-        Err(Bailout) => 1,
-    }
+    call.set_bool(enable_hook(requested)?);
+    Ok(())
 }
 
-/// `PHPCoroutine::enable_hook(flags)`: bit 0 whether it applied, bit 1 a
-/// trapped bailout the C++ caller re-raises.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpruntime_enable_hook(flags: u32) -> u8 {
-    match enable_hook(flags) {
-        Ok(enabled) => u8::from(enabled),
-        Err(Bailout) => 2,
-    }
+/// `PHPCoroutine::enable_hook(flags)`; a trapped bailout is raised last.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole12PHPCoroutine11enable_hookEj")
+)]
+#[must_use]
+pub extern "C" fn php_coroutine_enable_hook(flags: u32) -> bool {
+    let enabled = enable_hook(flags);
+    let applied = matches!(enabled, Ok(true));
+    swoole_rs_zend::bailout::raise(enabled.map(|_| ()));
+    applied
+}
+
+/// `PHPCoroutine::disable_hook()`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole12PHPCoroutine12disable_hookEv")
+)]
+#[must_use]
+pub extern "C" fn php_coroutine_disable_hook() -> bool {
+    php_coroutine_enable_hook(0)
 }
 
 /// `PHPCoroutine::enable_hook`.
@@ -317,7 +334,7 @@ fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     let installed = HOOKED.load(Ordering::Relaxed);
 
     requested = transports(requested, installed, |index, hook| {
-        transport::register(index, hook, ops.socket_create)
+        transport::register(index, hook, factory())
     });
     wrappers(requested, installed);
     functions::hook_all(requested, installed)?;
@@ -474,17 +491,20 @@ pub extern "C" fn swr_v1_phpruntime_rinit() -> u8 {
     1
 }
 
-/// RSHUTDOWN, on the main thread: unhook everything, restore every function
-/// and class: 1 if a bailout was trapped, which the C++ caller re-raises.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpruntime_rshutdown() -> u8 {
+/// `php_swoole_runtime_rshutdown`, on the main thread: unhook everything,
+/// restore every function and class; a trapped bailout is raised last.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "php_swoole_runtime_rshutdown")
+)]
+pub extern "C" fn rshutdown() {
     // SAFETY: C++'s check.
     if unsafe { (ops().main_thread)() } == 0 {
-        return 0;
+        return;
     }
     let disabled = enable_hook(0);
     functions::finish();
-    u8::from(disabled.is_err())
+    swoole_rs_zend::bailout::raise(disabled.map(|_| ()));
 }
 
 /// `php_swoole_get_original_handler(name, length)`.
@@ -501,18 +521,14 @@ pub unsafe extern "C" fn original_handler(name: *const c_char, length: usize) ->
     functions::original_handler(name)
 }
 
-/// The library-call trampoline's body: run the function's PHP replacement
-/// (inside a coroutine) or its original handler: 1 if it bailed out.
+/// `swoole_user_func_handler`: run the function's PHP replacement (inside a
+/// coroutine) or its original handler.
 /// # Safety
-/// Called from `swoole_user_func_handler` with its live frame and return slot.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_user_func(
-    frame: *mut zend_execute_data,
-    value: *mut zval,
-) -> u8 {
+/// Called by Zend with a live frame and return slot.
+unsafe extern "C" fn user_func_handler(frame: *mut zend_execute_data, value: *mut zval) {
     // SAFETY: per the caller.
-    let call = unsafe { Call::new(frame, value) };
-    u8::from(functions::user_func(&call, frame, value).is_err())
+    let result = functions::user_func(&unsafe { Call::new(frame, value) }, frame, value);
+    swoole_rs_zend::bailout::raise(result);
 }
 
 #[cfg(test)]
@@ -584,6 +600,7 @@ mod tests {
         features: flags::PDO_PGSQL | flags::PDO_SQLITE,
         exception: std::ptr::null_mut(),
         in_coroutine: no,
+        cli: no,
         coroutine_sleep: sleep,
         set_hook_flags: flags_in,
         get_hook_flags: zero,
@@ -591,7 +608,6 @@ mod tests {
         main_thread: no,
         active_threads: zero,
         call_hook: hook,
-        socket_create: std::ptr::null_mut(),
         stream_ops,
         pdo,
         callable,
@@ -600,9 +616,6 @@ mod tests {
         log_warning: log,
         fatal_error: error,
         error,
-        user_func: None,
-        stream_select: None,
-        stream_socket_pair: None,
         proc_open: None,
         proc_close: None,
         proc_get_status: None,

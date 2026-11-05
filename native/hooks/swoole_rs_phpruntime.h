@@ -1,11 +1,10 @@
 /* Swoole\Runtime (Rust, crates/phpruntime): the class and SWOOLE_HOOK_*
  * constants, the hook flags, PHPCoroutine::enable_hook's family transitions,
  * the function-table hooks and the sleep family's replacements (their
- * zif_swoole_* handlers). C++ lends what it alone reaches: the stream
- * transports and wrappers, the PDO drivers, Swoole's coroutine state,
- * callables and logger, and the handlers that stay C++. Methods and functions
- * that can run PHP code go through C++ trampolines, which re-raise a bailout
- * the swr_v1_phpruntime_* bodies below report. */
+ * zif_swoole_* handlers), its methods and the hooked stream functions; each
+ * raises a trapped bailout last. C++ lends what it alone reaches: the stream
+ * wrappers, the PDO drivers, Swoole's coroutine state, callables and logger,
+ * and the handlers that stay C++. */
 #ifndef SWOOLE_RS_PHPRUNTIME_H
 #define SWOOLE_RS_PHPRUNTIME_H
 #include <stdbool.h>
@@ -26,6 +25,7 @@ struct swr_v1_phpruntime_ops {
     uint32_t features;
     struct _zend_class_entry *exception;
     uint8_t (*in_coroutine)(void);
+    uint8_t (*cli)(void);
     int32_t (*coroutine_sleep)(double seconds);
     void (*set_hook_flags)(uint32_t flags);
     uint32_t (*get_hook_flags)(void);
@@ -33,7 +33,6 @@ struct swr_v1_phpruntime_ops {
     uint8_t (*main_thread)(void);
     uint32_t (*active_threads)(void);
     void (*call_hook)(uint8_t after, uint32_t *flags);
-    void *socket_create; /* the coroutine php_stream_transport_factory */
     void (*stream_ops)(uint8_t stdio, uint8_t hook);
     void (*pdo)(uint32_t flag, uint8_t blocking);
     void *(*callable)(struct _zval_struct *name);
@@ -42,9 +41,6 @@ struct swr_v1_phpruntime_ops {
     void (*log_warning)(const char *message);
     void (*fatal_error)(int32_t level, const char *message);
     void (*error)(int32_t level, const char *message);
-    swr_v1_phpruntime_handler user_func;
-    swr_v1_phpruntime_handler stream_select;
-    swr_v1_phpruntime_handler stream_socket_pair;
     swr_v1_phpruntime_handler proc_open;
     swr_v1_phpruntime_handler proc_close;
     swr_v1_phpruntime_handler proc_get_status;
@@ -55,60 +51,13 @@ struct swr_v1_phpruntime_ops {
 };
 void swr_v1_phpruntime_minit(int32_t module_number,
                              const struct swr_v1_phpruntime_ops *ops);
-/* enableCoroutine (min 0) and setHookFlags (min 1) after the CLI check: 1 if a
- * bailout was trapped. */
-uint8_t swr_v1_phpruntime_set_hook_flags(struct _zend_execute_data *frame, struct _zval_struct *value, uint32_t min);
-/* PHPCoroutine::enable_hook: bit 0 applied, bit 1 a trapped bailout. */
-uint8_t swr_v1_phpruntime_enable_hook(uint32_t flags);
 /* RINIT: 1 on the main thread (C++ then saves the original stream ops). */
 uint8_t swr_v1_phpruntime_rinit(void);
-/* The transport factory PHP had registered for proto (saved at RINIT), or NULL. */
-void *swr_v1_phpruntime_original_transport(const char *proto, size_t length);
-/* RSHUTDOWN: 1 if a bailout was trapped. */
-uint8_t swr_v1_phpruntime_rshutdown(void);
-/* swoole_user_func_handler: 1 if the call bailed out. */
-uint8_t swr_v1_phpruntime_user_func(struct _zend_execute_data *frame, struct _zval_struct *value);
 
-/* The coroutine socket streams: the "socket/coroutine" operations, the
- * transport factory's coroutine branch and php_swoole_create_stream_from_socket.
- * An operation that can run PHP code sets *bailout to 1 when it trapped a
- * bailout, which the C++ caller re-raises. */
+/* The coroutine socket streams: the "socket/coroutine" operations and
+ * php_swoole_create_stream_from_socket. */
 struct _php_stream;
-struct _php_stream_statbuf;
-struct _php_stream_context;
-ssize_t swr_v1_phpruntime_socket_write(struct _php_stream *stream, const char *buf, size_t count, uint8_t *bailout);
-ssize_t swr_v1_phpruntime_socket_read(struct _php_stream *stream, char *buf, size_t count, uint8_t *bailout);
-int swr_v1_phpruntime_socket_close(struct _php_stream *stream, int close_handle);
-int swr_v1_phpruntime_socket_flush(struct _php_stream *stream);
-int swr_v1_phpruntime_socket_cast(struct _php_stream *stream, int castas, void **ret);
-int swr_v1_phpruntime_socket_stat(struct _php_stream *stream, struct _php_stream_statbuf *ssb);
-int swr_v1_phpruntime_socket_set_option(
-    struct _php_stream *stream, int option, int value, void *ptrparam, uint8_t *bailout);
-struct _php_stream *swr_v1_phpruntime_transport_factory(const char *proto, size_t protolen,
-    const char *name, size_t namelen, const char *persistent, int options, int flags,
-    struct timeval *time, struct _php_stream_context *context, uint8_t *bailed);
-struct _php_stream *swr_v1_phpruntime_socket_create(const char *proto,
-                                                    size_t protolen,
-                                                    const char *resourcename,
-                                                    const char *persistent_id,
-                                                    struct _php_stream_context *context,
-                                                    uint8_t *bailout);
 struct _php_stream *swr_v1_phpruntime_stream_from_socket(int fd, int domain, int kind, int protocol);
-/* stream_socket_pair: 1 if a bailout was trapped. */
-uint8_t swr_v1_phpruntime_socket_pair(struct _zend_execute_data *frame, struct _zval_struct *value);
-/* stream_select: 1 if a bailout was trapped. */
-uint8_t swr_v1_phpruntime_stream_select(struct _zend_execute_data *frame, struct _zval_struct *value);
-/* php_async_socket_connect_to_host: the connected coroutine socket's fd, or -1. */
-struct _zend_string;
-int swr_v1_phpruntime_connect_to_host(const char *host,
-                                      unsigned short port,
-                                      struct timeval *timeout,
-                                      struct _zend_string **error_string,
-                                      int *error_code,
-                                      const char *bindto,
-                                      unsigned short bindport,
-                                      long sockopts,
-                                      uint8_t *bailout);
 
 /* Defined by ext-src/swoole_runtime.cc for those streams: the coroutine socket
  * (a SocketImpl *) is still C++, so each operation is one call. */

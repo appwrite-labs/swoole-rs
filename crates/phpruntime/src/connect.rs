@@ -3,7 +3,7 @@
 use crate::{
     in_coroutine,
     socket::{Report, Socket, report, strerror, timeout},
-    stream::{reraise, seconds},
+    stream::{raise, seconds},
 };
 use libc::{c_char, c_int, c_long};
 use std::ffi::CStr;
@@ -27,22 +27,25 @@ const TCP_NODELAY: c_long = 1 << 5;
 const DNS_RESOLVE_FAILED: i32 = 711;
 
 /// `php_async_socket_connect_to_host`: a connected coroutine socket's fd, or
-/// -1 with the error.
+/// -1 with the error. A trapped bailout is raised last.
 /// # Safety
-/// Called by the C++ wrapper with the ftp extension's arguments: `host` and a
-/// non-null `bindto` are NUL-terminated; the other pointers are null or
-/// writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_connect_to_host(
+/// Called with the ftp extension's arguments: `host` and a non-null `bindto`
+/// are NUL-terminated; the other pointers are null or writable.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "php_async_socket_connect_to_host")
+)]
+pub unsafe extern "C" fn connect_to_host(
     host: *const c_char,
     port: u16,
+    _socktype: c_int,
+    _asynchronous: c_int,
     timeout: *mut timeval,
     error_string: *mut *mut zend_string,
     error_code: *mut c_int,
     bindto: *const c_char,
     bindport: u16,
     sockopts: c_long,
-    bailout: *mut u8,
 ) -> c_int {
     // SAFETY: per the caller.
     let host = unsafe { CStr::from_ptr(host) };
@@ -55,7 +58,7 @@ pub unsafe extern "C" fn swr_v1_phpruntime_connect_to_host(
         bind: bindto.map(|host| (host, bindport)),
         sockopts,
     };
-    reraise(bailout, connect(host, port, &options), -1)
+    raise(connect(host, port, &options), -1)
 }
 
 struct Options<'a> {

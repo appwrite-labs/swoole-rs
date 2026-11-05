@@ -58,6 +58,15 @@ int swr_zend_try_stream_free(php_stream *stream, int flags);
 php_stream *swr_zend_try_stream_factory(void *factory, const char *proto, size_t protolen,
     const char *name, size_t namelen, const char *persistent, int options, int flags,
     struct timeval *timeout, php_stream_context *context, bool *bailed);
+/* The coroutine transport factory (crates/phpruntime) as a php_stream_transport_factory
+ * with its native debug ABI: the body set once at MINIT, then the bailout it trapped. */
+typedef php_stream *(*swr_zend_stream_factory_body)(const char *proto, size_t protolen,
+    const char *name, size_t namelen, const char *persistent, int options, int flags,
+    struct timeval *timeout, php_stream_context *context, bool *bailed);
+void swr_zend_stream_factory_set(swr_zend_stream_factory_body body);
+php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const char *name,
+    size_t namelen, const char *persistent, int options, int flags, struct timeval *timeout,
+    php_stream_context *context STREAMS_DC);
 /* Individual allocator/close effects below owned Rust stream frames. */
 int swr_zend_try_stream_alloc(const php_stream_ops *, void *, const char *, php_stream **);
 int swr_zend_try_stream_close(php_stream *);

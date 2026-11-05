@@ -134,6 +134,25 @@ php_stream *swr_zend_try_stream_factory(void *factory, const char *proto, size_t
     return stream;
 }
 
+/* Set at MINIT, before any PHP thread starts. */
+static swr_zend_stream_factory_body factory_body;
+
+void swr_zend_stream_factory_set(swr_zend_stream_factory_body body) {
+    factory_body = body;
+}
+
+php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const char *name,
+    size_t namelen, const char *persistent, int options, int flags, struct timeval *timeout,
+    php_stream_context *context STREAMS_DC) {
+    bool bailed = false;
+    php_stream *stream = factory_body(proto, protolen, name, namelen, persistent, options, flags,
+        timeout, context, &bailed);
+    if (bailed) {
+        zend_bailout();
+    }
+    return stream;
+}
+
 int swr_zend_try_stream_alloc(const php_stream_ops *ops, void *abstract, const char *persistent, php_stream **stream) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { *stream = php_stream_alloc_rel(ops, abstract, persistent, "r+"); }

@@ -182,18 +182,16 @@ fn clean(array: *mut zval) {
 }
 
 /// `stream_select(?array &$read, ?array &$write, ?array &$except, ?int
-/// $seconds, ?int $microseconds = null): int|false`: 1 if a bailout was
-/// trapped.
+/// $seconds, ?int $microseconds = null): int|false`.
 /// # Safety
-/// Called from the C++ handler with its live frame and return slot.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_stream_select(
+/// Called by Zend with a live frame and return slot.
+pub(crate) unsafe extern "C" fn stream_select(
     frame: *mut swoole_rs_zend::sys::zend_execute_data,
     value: *mut zval,
-) -> u8 {
+) {
     // SAFETY: per the caller.
-    let call = unsafe { Call::new(frame, value) };
-    u8::from(select(&call, frame).is_err())
+    let result = select(&unsafe { Call::new(frame, value) }, frame);
+    swoole_rs_zend::bailout::raise(result);
 }
 
 fn select(call: &Call, frame: *mut swoole_rs_zend::sys::zend_execute_data) -> Result<(), Bailout> {
