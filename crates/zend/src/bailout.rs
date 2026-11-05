@@ -47,6 +47,15 @@ pub fn pending() -> bool {
     PENDING.get()
 }
 
+/// Hand a contained bailout to an outer C trampoline after Rust cleanup.
+/// The caller must re-raise a true result in C; consuming the pending bit here
+/// prevents a caught shutdown bailout from poisoning a later request operation.
+#[must_use = "the C caller must re-raise a returned bailout"]
+pub fn relay_to_c(result: Result<(), Bailout>) -> bool {
+    defer(result);
+    PENDING.replace(false)
+}
+
 /// Raise a deferred bailout (`zend_bailout()`). Called last by every handler
 /// and every export C or C++ calls, from a frame that owns nothing that needs
 /// a drop by then: the `longjmp` crosses only that frame.

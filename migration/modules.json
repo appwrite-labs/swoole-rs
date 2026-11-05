@@ -878,7 +878,8 @@
         "swoole_event"
       ],
       "upstream_patch_targets": [
-        "ext-src/swoole_event.cc"
+        "ext-src/swoole_event.cc",
+        "ext-src/php_swoole_private.h"
       ]
     },
     {
