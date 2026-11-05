@@ -68,17 +68,26 @@ pub unsafe fn function_alias(
     let value = unsafe { (*slot).value };
     // SAFETY: the table slot's union holds its zend_function pointer.
     let function = unsafe { value.ptr }.cast::<zend_function>();
-    let (handler, args, kind) = {
-        // SAFETY: the source table owns this live function.
-        let function = unsafe { &*function };
-        // SAFETY: this SDK operation is for an internal function, as its native assertion documents.
-        let internal = unsafe { &function.internal_function };
-        (internal.handler, internal.num_args, internal.type_)
+    let kind = {
+        // SAFETY: the source table owns this live function's common header.
+        let entry = unsafe { &*function };
+        // SAFETY: all function variants initialize their common header.
+        let common = unsafe { entry.common };
+        common.type_
     };
     if let Some(assert) = assert_internal {
         // SAFETY: the caller supplies a non-unwinding, non-PHP assertion leaf.
+        // Preserve its original ordering before reading internal-only fields.
         unsafe { assert(kind) };
     }
+    let (handler, args) = {
+        // SAFETY: the caller's source function is internal, after its optional
+        // native assertion, and remains live throughout this registration.
+        let entry = unsafe { &*function };
+        // SAFETY: this SDK operation's internal-function contract selects this union member.
+        let internal = unsafe { &entry.internal_function };
+        (internal.handler, internal.num_args)
+    };
     let mut name = ptr::null_mut();
     // SAFETY: allocate the original independent request buffer, including its NUL.
     leaf(unsafe { z::swr_zend_try_facade_alloc(alias_length.wrapping_add(1), &raw mut name) })?;
