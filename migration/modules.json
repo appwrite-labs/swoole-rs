@@ -232,7 +232,6 @@
         "src/coroutine/hook.cc",
         "src/coroutine/socket.cc",
         "src/coroutine/system.cc",
-        "src/coroutine/file.cc",
         "src/coroutine/file_lock.cc",
         "src/coroutine/iouring.cc",
         "src/coroutine/uring_socket.cc",
@@ -616,7 +615,8 @@
         "src/os/file.cc",
         "src/os/msg_queue.cc",
         "src/os/sendfile.cc",
-        "src/os/unix_socket.cc"
+        "src/os/unix_socket.cc",
+        "src/coroutine/file.cc"
       ],
       "abi_contract": "docs/os-support-abi-v1.md",
       "feature_bit_reserved": 131072
