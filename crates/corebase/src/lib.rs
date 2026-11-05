@@ -20,7 +20,7 @@ pub use hook::swr_v1_corebase_hook_add_action;
 pub use host::{
     DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, sw_realloc,
     swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_hex2dec, swoole_rand,
-    swoole_rand_any, swoole_random_int, swr_v1_corebase_print_backtrace,
+    swoole_rand_any, swoole_random_int, swr_v1_core_format_result, swr_v1_corebase_print_backtrace,
     swr_v1_corebase_redirect_stdout, swr_v1_corebase_shell_exec, swr_v1_corebase_system_random,
     swr_v1_corebase_wait_for,
 };
@@ -415,6 +415,36 @@ pub unsafe extern "C" fn swr_v1_corebase_mkdir_next(
     0
 }
 
+/// Create every path prefix directly, retaining the public warning facade.
+/// 0 success,1 syscall failure (the failing terminated prefix is in scratch),
+/// 2 path bound exceeded. No allocation or native callback occurs here.
+/// # Safety
+/// input lends length bytes; scratch lends capacity writable bytes and is disjoint.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_corebase_mkdir_complete(
+    input: *const u8,
+    length: usize,
+    scratch: *mut u8,
+    capacity: usize,
+) -> i32 {
+    let mut state = MkdirState::default();
+    loop {
+        // SAFETY: caller lends stable input and exclusive scratch through prefix iteration.
+        let step =
+            unsafe { swr_v1_corebase_mkdir_next(input, length, scratch, capacity, &raw mut state) };
+        if step != 1 {
+            return step;
+        }
+        // SAFETY: the prefix cursor just terminated a readable path inside scratch.
+        if unsafe { libc::access(scratch.cast(), libc::R_OK) } != 0
+            // SAFETY: the same terminated prefix remains unchanged through mkdir.
+            && unsafe { libc::mkdir(scratch.cast(), 0o755) } == -1
+        {
+            return 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,3 +578,8 @@ pub use string_slot::*;
 
 mod proxy_state;
 pub use proxy_state::*;
+
+mod config_state;
+pub use config_state::*;
+mod thread_state;
+pub use thread_state::*;

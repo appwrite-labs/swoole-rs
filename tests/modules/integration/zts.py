@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Build/load real ZTS+thread native and selected worlds using a verified Rust export.
+"""Build/load real ZTS+thread worlds using a verified Rust export from the same ZTS SDK.
 
-This reuses immutable compiled Rust bytes; it does not invoke Cargo, substitute
+This reuses matching-SDK immutable compiled Rust bytes; it does not invoke Cargo, substitute
 NTS headers for ZTS, exercise thread concurrency by default, or qualify whole parity. The explicit
 --locks-threads profile adds only the defined owned-lock/atomic/barrier consumer.
 """
@@ -11,6 +11,7 @@ import io
 import json
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -54,9 +55,12 @@ def main():
         report['thread_consumer_status'] = 'not_run'
         require_build_space(work)
         php = subprocess.check_output([a.php, '-n', '-r', 'echo json_encode([PHP_VERSION,PHP_ZTS]);'], text=True)
-        if json.loads(php)[1] is not True:
+        if json.loads(php)[1] != 1:
             raise ValueError('Actual PHP executable is not ZTS')
         report['php'] = json.loads(php)
+        sockets_builtin = subprocess.check_output([a.php, '-n', '-r', "echo extension_loaded('sockets') ? 'yes' : 'no';"], text=True)
+        dependencies = () if sockets_builtin == 'yes' else ('sockets',)
+        report['php_extensions'] = list(dependencies)
         report['php_config'] = subprocess.check_output([a.php_config, '--configure-options'], text=True)
         if subprocess.check_output([a.php_config, '--version'], text=True).strip() != report['php'][0]:
             raise ValueError('PHP and SDK versions differ')
@@ -70,6 +74,10 @@ def main():
         producer_path = a.rust_export.parent / 'build-manifest.json'
         producer = json.loads(producer_path.read_text())
         inputs = producer['inputs']
+        sdk_options = shlex.split(report['php_config'])
+        if (not any(option in sdk_options for option in ['--enable-zts', '--enable-zts=yes', '--enable-maintainer-zts'])
+                or inputs.get('php') != report['php'][0] or inputs.get('php_config') != report['php_config'].strip()):
+            raise ValueError('Require a Rust producer compiled with the matching ZTS PHP_CONFIG; Zend C shims are SDK-dependent')
         archive = a.rust_export.parent / 'libswoole_rs_php.a'
         artifact = producer['rust_php_compilation']['artifact']
         if (producer['build_mode'] != 'immutable' or inputs['upstream_commit'] != COMMIT
@@ -95,7 +103,7 @@ def main():
                                  scope='Reused exact producer Rust archive; no Rust compilation occurred in this SDK.')
         packed = subprocess.check_output(['git', '-C', str(a.source), 'archive', COMMIT])
         args = SimpleNamespace(jobs=a.jobs, php_config=a.php_config, phpize=a.phpize,
-                               stdext='--enable-swoole-stdext' in producer['configure'],
+                               stdext='--enable-swoole-stdext' in producer['configure'], php_sockets=True,
                                openssl_dir=None, ccache=shutil.which('ccache'))
         prefix = work / 'rust-prefix'
         (prefix / 'include').mkdir(parents=True)
@@ -119,7 +127,7 @@ def main():
             row = dict(name=name, patch_proofs=[], passed=False)
             report['engines'].append(row)
             write_report(output, report)
-            extra = ['--enable-swoole-thread', '--enable-sockets']
+            extra = ['--enable-swoole-thread']
             if name == 'selected':
                 for patch in patches:
                     row['patch_proofs'].append(apply_patch_verified(source, a.checkout / patch['path'],
@@ -131,20 +139,22 @@ def main():
             row['native_compilation'] = native_compilation(source, log)
             row['extension'] = str(extension)
             row['extension_sha256'] = sha(extension)
-            row['metadata'] = Engine(name, extension, a.php, ('sockets',)).metadata()
-            check = subprocess.run([a.php, '-n', '-d', 'extension=sockets', '-d', 'extension=' + str(extension),
-                                    '-r', 'echo json_encode(class_exists("Swoole\\\\Thread\\\\Lock"));'],
+            row['metadata'] = Engine(name, extension, a.php, dependencies).metadata()
+            check = subprocess.run(Engine(name, extension, a.php, dependencies).command(
+                                    '-r', 'echo json_encode(class_exists("Swoole\\\\Thread\\\\Lock"));'),
                                    text=True, capture_output=True, timeout=30)
             row['thread_class_probe'] = dict(exit=check.returncode, stdout=check.stdout, stderr=check.stderr)
-            row['passed'] = (row['metadata']['zts'] is True and row['metadata']['rust_feature_bits'] ==
+            row['passed'] = (row['metadata']['zts'] == 1 and row['metadata']['rust_feature_bits'] ==
                              (producer['migrated_feature_bits'] if name == 'selected' else 0)
+                             and 'php_sockets' in row['metadata']['capabilities']
                              and check.returncode == 0 and check.stdout == 'true' and not check.stderr)
             write_report(output, report)
             if not row['passed']:
                 raise ValueError('ZTS startup identity/capability differs')
         if a.locks_threads:
             consumer_output = output.with_name(output.stem + '-locks-threads.json')
-            command = [sys.executable, str(consumer), '--php', a.php, '--php-extension', 'sockets',
+            command = [sys.executable, str(consumer), '--php', a.php,
+                       *[arg for extension in dependencies for arg in ['--php-extension', extension]],
                        '--output', str(consumer_output)]
             for row in report['engines']:
                 command += ['--engine', row['name'] + '=' + row['extension']]

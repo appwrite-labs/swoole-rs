@@ -27,6 +27,7 @@ pub mod signalfd;
 pub mod task_file;
 pub mod task_sync;
 pub mod wait;
+pub mod worker_globals;
 pub mod worker_record;
 pub mod worker_registry;
 pub mod workers;

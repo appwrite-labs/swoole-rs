@@ -521,11 +521,80 @@ pub unsafe extern "C" fn swr_v1_corebase_redirect_stdout(new_fd: c_int, errors: 
     }
 }
 
+/// Commit libc formatting's bounded result and terminator. Native keeps only
+/// the platform `va_list` effect and forwards its exact returned integer.
+/// # Safety
+/// buffer covers size writable bytes, with a positive bound unless
+/// `zero_query` is true and size is zero. formatted is libc's returned count.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_core_format_result(
+    buffer: *mut c_char,
+    size: usize,
+    formatted: c_int,
+    zero_query: bool,
+) -> usize {
+    if zero_query && size == 0 {
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "native size-query overload converts libc's signed result to size_t"
+        )]
+        return formatted as usize;
+    }
+    let result = if formatted < 0 {
+        0
+    } else {
+        usize::try_from(formatted).unwrap_or(0).min(size - 1)
+    };
+    if formatted < 0 || usize::try_from(formatted).is_ok_and(|value| value >= size) {
+        // SAFETY: the caller's positive bounded destination contains this terminator slot.
+        unsafe { buffer.wrapping_add(result).write(0) };
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn formatting_result_keeps_query_error_and_termination_boundaries() {
+        unsafe {
+            assert_eq!(
+                swr_v1_core_format_result(std::ptr::null_mut(), 0, -1, true),
+                usize::MAX
+            );
+            assert_eq!(
+                swr_v1_core_format_result(std::ptr::null_mut(), 0, 17, true),
+                17
+            );
+            for size in [1usize, 2, 8, 16] {
+                for formatted in [-7, -1, 0, 1, 7, 8, 16, 99] {
+                    let mut bytes = [0x55u8; 18];
+                    let mut expected = bytes;
+                    let length = if formatted < 0 {
+                        0
+                    } else {
+                        usize::try_from(formatted).unwrap().min(size - 1)
+                    };
+                    if formatted < 0 || usize::try_from(formatted).is_ok_and(|count| count >= size)
+                    {
+                        expected[length] = 0;
+                    }
+                    assert_eq!(
+                        swr_v1_core_format_result(
+                            bytes.as_mut_ptr().cast(),
+                            size,
+                            formatted,
+                            false
+                        ),
+                        length
+                    );
+                    assert_eq!(bytes, expected);
+                }
+            }
+        }
+    }
     #[test]
     fn hex2dec_parses_in_the_targets_char_mode() {
         let (mut parsed, mut expected_parsed) = (0, 0);
