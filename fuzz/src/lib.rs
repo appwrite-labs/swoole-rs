@@ -691,11 +691,11 @@ pub fn resp_parse(bytes: &[u8]) {
 /// Longest URL compared: libstdc++'s std::regex recurses once per character.
 const URL_LIMIT: usize = 256;
 
-fn client_url(engine: clients::Url, data: &[u8]) -> (i32, i32, i32, Vec<u8>) {
+fn client_url(data: &[u8]) -> (i32, i32, i32, Vec<u8>) {
     let (mut kind, mut port, mut host, mut host_length) = (0, 0, vec![0; data.len()], 0);
     // SAFETY: `data` is readable for its length; `host` has room for any substring of it.
     let status = unsafe {
-        engine(
+        clients::url(
             data.as_ptr().cast(),
             data.len(),
             &mut kind,
@@ -708,18 +708,19 @@ fn client_url(engine: clients::Url, data: &[u8]) -> (i32, i32, i32, Vec<u8>) {
     (status, kind, port, host)
 }
 
-/// Any bytes as a client URL: `Address::assign(url)` from the pinned address.cc
-/// and with the clients patch assign the same type, host and port, or both reject.
+/// Any bytes as a client URL: `Address::assign(url)` from the pinned address.cc and
+/// `swoole_rs_clients::url` assign the same type, host and port, or both reject
+/// (or both find the port past `int`, where `std::stoi` throws).
 pub fn clients_url(bytes: &[u8]) {
-    let got = client_url(clients::CANDIDATE_URL, bytes);
+    let got = match swoole_rs_clients::url(bytes) {
+        Ok((kind, host, port)) => (1, kind, port, host.to_vec()),
+        Err(swoole_rs_clients::URL_PORT_RANGE) => (-1, 0, 0, Vec::new()),
+        Err(_) => (0, 0, 0, Vec::new()),
+    };
     if bytes.len() > URL_LIMIT {
         return;
     }
-    assert_eq!(
-        got,
-        client_url(clients::UPSTREAM_URL, bytes),
-        "url {bytes:?}"
-    );
+    assert_eq!(got, client_url(bytes), "url {bytes:?}");
 }
 
 /// Any bytes as one Set-Cookie header: the same key, value offset and value.

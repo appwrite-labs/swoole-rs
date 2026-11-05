@@ -9,12 +9,12 @@ use std::ffi::{c_char, c_int, c_void};
 use swoole_rs_corebase::net_types::SocketAddress;
 
 /// `SocketType` values from `swoole.h`.
-const TCP: c_int = 1;
-const UDP: c_int = 2;
-const TCP6: c_int = 3;
-const UDP6: c_int = 4;
-const UNIX_STREAM: c_int = 5;
-const UNIX_DGRAM: c_int = 6;
+pub(crate) const TCP: c_int = 1;
+pub(crate) const UDP: c_int = 2;
+pub(crate) const TCP6: c_int = 3;
+pub(crate) const UDP6: c_int = 4;
+pub(crate) const UNIX_STREAM: c_int = 5;
+pub(crate) const UNIX_DGRAM: c_int = 6;
 const RAW: c_int = 7;
 const RAW6: c_int = 8;
 
@@ -175,6 +175,39 @@ pub unsafe extern "C" fn swr_v1_clients_address_assign(
             0
         }
         _ => BAD_SOCKET_TYPE,
+    }
+}
+
+/// `Address::assign(type, host, port, resolve_name)` over the whole record: `kind`
+/// becomes its type even when the assignment fails; 0, or the `SW_ERROR_*` code for
+/// native to set as the last error. Resolution is `network::gethostbyname`.
+///
+/// # Safety
+/// `address` is a writable record; `host` as for [`swr_v1_clients_address_assign`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_address_assign_record(
+    address: *mut SocketAddress,
+    kind: c_int,
+    host: *const c_char,
+    host_length: usize,
+    port: c_int,
+    resolve: bool,
+) -> c_int {
+    // SAFETY: the caller lends a writable record.
+    let address = unsafe { &mut *address };
+    address.kind = kind;
+    let resolve = resolve.then_some(swoole_rs_corebase::swr_v1_clients_gethostbyname as Resolve);
+    // SAFETY: the record's union and length; the host as the caller promises.
+    unsafe {
+        swr_v1_clients_address_assign(
+            (&raw mut address.addr).cast(),
+            &raw mut address.len,
+            kind,
+            host,
+            host_length,
+            port,
+            resolve,
+        )
     }
 }
 

@@ -1,19 +1,12 @@
-// Address::assign(url) behind a C entry point, once per engine: build.rs copies
-// the pinned body (upstream) or the body with the clients overlay patch applied
-// (candidate, which calls the Rust export) into SWR_URL_INC unchanged. The
-// upstream build also wraps the pinned Set-Cookie split and DNS name decode.
+// The pinned Address::assign(url), Set-Cookie split and DNS name decode behind C
+// entry points: build.rs copies each body unchanged into an .inc.
 #include <cstdint>
 #include <cstring>
-#include <locale>
 #include <regex>
 #include <stdexcept>
 #include <string>
-#include "swoole_rs_clients.h"
 
-#define SWR_CAT2(a, b) a##_##b
-#define SWR_CAT(a, b) SWR_CAT2(a, b)
-
-namespace SWR_URL_ENGINE {
+namespace upstream_clients {
 // As upstream swoole_socket.h (values are this shim's own), logging off.
 enum SocketType {
     SW_SOCK_TCP = 1,
@@ -37,22 +30,16 @@ struct Address {
     }
     bool assign(const std::string &url);
 };
-#include SWR_URL_INC
+#include "clients_url.inc"
 #undef swoole_error_log
-}  // namespace SWR_URL_ENGINE
-
-#if SWR_URL_UPSTREAM
-namespace upstream_clients {
 #include "clients_dns.inc"
-}
-#endif
+}  // namespace upstream_clients
 
 extern "C" {
 // assign(url) over length bytes: 1 assigned, 0 rejected, -1 std::stoi threw.
 // The host goes to host (length bytes) and its length to *host_length.
-int SWR_CAT(swr_oracle_clients_url, SWR_URL_ENGINE)(
-    const char *data, size_t length, int *type, int *port, char *host, size_t *host_length) {
-    SWR_URL_ENGINE::Address address;
+int swr_oracle_clients_url(const char *data, size_t length, int *type, int *port, char *host, size_t *host_length) {
+    upstream_clients::Address address;
     bool assigned;
     try {
         assigned = address.assign(std::string(data, length));
@@ -66,7 +53,6 @@ int SWR_CAT(swr_oracle_clients_url, SWR_URL_ENGINE)(
     return assigned;
 }
 
-#if SWR_URL_UPSTREAM
 // php_swoole_http_parse_set_cookies's split of length bytes into key, value offset and value.
 void swr_oracle_clients_cookie(const char *at, size_t length, size_t *key, size_t *offset, size_t *value) {
     struct zval { int unused; };
@@ -81,5 +67,4 @@ void swr_oracle_clients_cookie(const char *at, size_t length, size_t *key, size_
 void swr_oracle_clients_domain_decode(char *str) {
     upstream_clients::domain_decode(str);
 }
-#endif
 }

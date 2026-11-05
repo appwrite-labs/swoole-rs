@@ -12,7 +12,7 @@ symbol is excluded from production artifacts.
 
 | Area | Exports | Rust responsibility |
 | --- | --- | --- |
-| Address | `url`, `port`, `ip`, `loopback`, `ip_text` | URL spans; port validity; numeric bytes, original loopback policy and DNS text |
+| Address | `address_url`, `address_assign_record`, `port`, `ip`, `loopback`, `ip_text` | URL grammar and port; whole assignment; port validity; numeric bytes, original loopback policy and DNS text |
 | Hosts/resolver settings | `hosts_match`, `resolv_line`, `dns_endpoint` | Borrowed line/token spans; locale/`strtol` stay native |
 | DNS codec | `domain_encode`, `domain_decode` | Bounded label encoding/decoding with native `char` signedness |
 | Client | `new`, `free`, `connect`, `send`, `recv`, `close`, `shutdown`, `on_*`, … | `network::Client`: state and every operation (see below) |
@@ -31,8 +31,8 @@ Borrowed spans must be initialized readable/writable storage for their stated
 length (see each unsafe export). Returned offsets/lengths refer to that
 caller-owned storage; no span is retained. Null/oversized inputs are rejected
 defensively. Scalar/span operations allocate no Rust storage. Locale facets,
-`std::stoi`/`strtol` and their exceptions/errno, buffers, strings, zvals,
-parsers, crypto, descriptors and callbacks stay native.
+`strtol` and its errno, buffers, strings, zvals, parsers, crypto, descriptors
+and callbacks stay native.
 
 ## Persistent pool
 
@@ -58,7 +58,13 @@ its own buffers on destruction, so allocation topology differs.
   `clients_address_assign`: port check, then the sockaddr union and length for
   IPv4/IPv6/raw (literal, else native `gethostbyname` through a function pointer
   when resolving) or Unix (length limit, `strlcpy` copy); it returns the
-  `SW_ERROR_*` code native sets as the last error. Native sets `type` first.
+  `SW_ERROR_*` code native sets as the last error. `clients_address_assign_record`
+  is the whole method over the record: `type` first, then the above, resolving
+  through `clients_gethostbyname`.
+- `Address::assign(url)` is `clients_address_url`: the pinned regexes' grammar,
+  ASCII port digits (the classic locale's `\d`) and `std::stoi`'s range, which
+  Rust reports for native to throw `std::out_of_range`; native logs the invalid
+  URL notice.
   `Address::verify_ip` is `clients_verify_ip` into native `tmp_address`.
 - Unsupported families and Apple scoped-IPv6 parsing go to the platform's
   `inet_pton` from Rust, errno included.
@@ -88,6 +94,8 @@ watermarks) and operations are Rust's; see
 [the boundary](../../docs/clients-resolver-abi-v1.md#clients). The C++ half is
 the `swr_v1_clients_native` table over the members of C++ types, and the
 warnings, emitted from functions named as upstream's so the log lines match.
+`bind` and `sendto` are whole Rust operations; each method passes a lambda for
+its one warning, which logs under the method's own name.
 Construction checks static `Socket::is_stream(type)` for fd class and the
 created socket's type for dispatch; a null Socket keeps the early return.
 

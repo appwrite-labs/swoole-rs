@@ -33,12 +33,11 @@ struct swr_v1_clients_ip_plan swr_v1_clients_ip(uint8_t version, const uint8_t *
 uint8_t swr_v1_clients_loopback(uint8_t version, const uint8_t *address);
 struct swr_v1_clients_ip_text_plan { uint8_t bytes[40]; uint32_t length; };
 struct swr_v1_clients_ip_text_plan swr_v1_clients_ip_text(uint8_t version, const uint8_t *address);
-struct swr_v1_clients_url_plan {
-    uint32_t kind, datagram;
-    size_t host_offset, host_length, port_offset, port_length;
-};
-/* Kinds0 invalid,1 IPv4/hostname,2 IPv6,3 Unix. Digit classification stays native. */
-struct swr_v1_clients_url_plan swr_v1_clients_url(const uint8_t *, size_t);
+/* Address::assign(type, host, port, resolve_name) over the record: 0 or an SW_ERROR_* code. */
+int swr_v1_clients_address_assign_record(void *address, int kind, const char *host, size_t host_length, int port, bool resolve);
+/* Address::assign(url): 0, an SW_ERROR_* code, or one of these. */
+enum { SWR_CLIENTS_URL_INVALID = -1, SWR_CLIENTS_URL_PORT_RANGE = -2 };
+int swr_v1_clients_address_url(void *address, const char *data, size_t length);
 uint8_t swr_v1_clients_port(int32_t port, uint8_t for_connect);
 struct swr_v1_clients_host_match { uint32_t found; size_t offset, length; };
 /* Line already has its first '#' replaced by NUL, as in the pinned caller.
@@ -166,6 +165,9 @@ int swr_v1_clients_wakeup(swr_v1_clients *client);
 /* After the C++ half made the TLS context: open_ssl, and DTLS for a datagram client. */
 int swr_v1_clients_enable_ssl(swr_v1_clients *client);
 int swr_v1_clients_ssl_handshake(swr_v1_clients *client);
+/* Client::bind and Client::sendto; the callback logs, named as the calling method. */
+int swr_v1_clients_bind(swr_v1_clients *client, const char *host, size_t host_length, int port, void (*reuse_failed)(int fd));
+int swr_v1_clients_sendto(swr_v1_clients *client, const char *host, size_t host_length, int port, const char *data, size_t length, void (*not_datagram)(int fd));
 /* The reactor handlers, the connect timer and the DNS completion. */
 int swr_v1_clients_on_read(swr_v1_clients *client);
 int swr_v1_clients_on_dgram_read(swr_v1_clients *client);

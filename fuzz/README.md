@@ -65,9 +65,8 @@ native effects) over the same stream, delivered in fuzzer-chosen chunks:
 every call's result, every packet and the final buffer must match.
 
 For the clients, `clients_url` compares `Address::assign(url)` from the pinned
-address.cc with the same body after
-`migration/patches/clients/0001-rust-address-client-policy.patch` (type, host,
-port, or a `std::stoi` throw), on URLs up to 256 bytes because libstdc++'s
+address.cc with `swoole_rs_clients::url` (type, host, port, or a `std::stoi`
+throw), on URLs up to 256 bytes because libstdc++'s
 `std::regex` recurses per character. `clients_cookie` compares
 `swr_v1_clients_cookie` with the Set-Cookie split in
 `php_swoole_http_parse_set_cookies`, and `clients_domain_decode` compares
