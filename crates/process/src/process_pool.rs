@@ -203,6 +203,9 @@ pub const CB_SHUTDOWN: c_int = 3;
 pub const CB_WORKER_START: c_int = 4;
 pub const CB_MAIN_LOOP: c_int = 5;
 pub const CB_WORKER_STOP: c_int = 6;
+pub const RUN_MAIN: u32 = 13;
+// END NUMBERED
+// The rest of `ProcessPool`'s operations, which only crates/process/src/methods.rs runs.
 pub const RUN_CREATE_MESSAGE_BOX: u32 = 0;
 pub const RUN_CREATE_MESSAGE_BUS: u32 = 1;
 pub const RUN_SET_PROTOCOL: u32 = 2;
@@ -216,7 +219,6 @@ pub const RUN_REOPEN_LOGGER: u32 = 9;
 pub const RUN_SHUTDOWN: u32 = 10;
 pub const RUN_RELOAD: u32 = 11;
 pub const RUN_DROP_RELOAD_TASK: u32 = 12;
-pub const RUN_MAIN: u32 = 13;
 pub const RUN_WAIT: u32 = 14;
 pub const RUN_DESTROY: u32 = 15;
 pub const RUN_SET_TYPE: u32 = 16;
@@ -224,7 +226,6 @@ pub const RUN_SET_START_ID: u32 = 17;
 pub const RUN_SET_MAX_REQUEST: u32 = 18;
 pub const RUN_PUSH_MESSAGE: u32 = 19;
 pub const RUN_SIGNAL: u32 = 20;
-// END NUMBERED
 
 /// What a pool operation asks of native code.
 pub(crate) trait PoolHost {
@@ -1115,7 +1116,6 @@ fn raise_or(result: Result<i64, Bailed>) -> i64 {
 ///
 /// # Safety
 /// `native` is native's table; `pool` a zeroed or reset `ProcessPool`.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_process_pool_create(
     native: *const PoolNative,
     pool: *mut PoolRecord,
@@ -1131,7 +1131,6 @@ pub unsafe extern "C" fn swr_v1_process_pool_create(
 ///
 /// # Safety
 /// `native` is native's table; `pool` a live `ProcessPool`; `data` holds `length` bytes.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_process_pool_push(
     native: *const PoolNative,
     pool: *mut PoolRecord,
@@ -1148,7 +1147,6 @@ pub unsafe extern "C" fn swr_v1_process_pool_push(
 /// # Safety
 /// `native` is native's table; `pool` a live `ProcessPool`; `event` an `EventData`
 /// and `worker_id` writable.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_process_pool_dispatch_event(
     native: *const PoolNative,
     pool: *mut PoolRecord,
@@ -1161,7 +1159,7 @@ pub unsafe extern "C" fn swr_v1_process_pool_dispatch_event(
 }
 
 /// `swoole_get_worker_symbol`: the log's mark for a worker type (`swWorkerType`).
-#[unsafe(no_mangle)]
+#[must_use]
 pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
     let symbol = match kind {
         1 => b'#',

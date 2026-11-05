@@ -33,7 +33,7 @@ pub extern "C" fn swr_v1_worker_globals() -> *mut WorkerGlobalRecord {
 }
 
 /// Fields: 0 id, 1 pid, 2 type, 3 running, 4 shutdown, 5 max requests.
-#[unsafe(no_mangle)]
+#[must_use]
 pub extern "C" fn swr_v1_worker_global_get(field: u32) -> i64 {
     let global = swr_v1_worker_globals();
     macro_rules! read {
@@ -54,7 +54,6 @@ pub extern "C" fn swr_v1_worker_global_get(field: u32) -> i64 {
 }
 
 /// Updates the current worker's identity, preserving native integer narrowing.
-#[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_worker_global_set(field: u32, value: i64) {
     let global = swr_v1_worker_globals();
     macro_rules! write {

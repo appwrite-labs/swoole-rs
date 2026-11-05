@@ -96,12 +96,7 @@ typedef struct swr_v1_worker_record {
 } swr_v1_worker_record;
 void swr_v1_worker_add_request_count(swr_v1_worker_record *);
 void swr_v1_worker_reset_counters(swr_v1_worker_record *, uint32_t *);
-void swr_v1_worker_init(swr_v1_worker_record *worker);
-void swr_v1_worker_shutdown(swr_v1_worker_record *worker);
-bool swr_v1_worker_exceeded_max_requests(const swr_v1_worker_record *worker);
 void *swr_v1_worker_globals(void);
-int64_t swr_v1_worker_global_get(uint32_t field);
-void swr_v1_worker_global_set(uint32_t field, int64_t value);
 void swr_v1_worker_global_max_requests(uint32_t max_request, uint32_t grace, int (*random)(int,int));
 void swr_v1_worker_global_detach(swr_v1_worker_record *worker);
 void swr_v1_worker_global_stopped(void);
@@ -218,7 +213,6 @@ char *swr_v1_process_pool_ipc_prepare(swr_v1_process_pool_ipc *ipc, uint32_t max
 char *swr_v1_process_pool_ipc_packet(swr_v1_process_pool_ipc *ipc);
 int swr_v1_process_pool_run(const swr_v1_pool_loop *pool_loop, int protocol);
 uint32_t swr_v1_process_pool_schedule(const swr_v1_worker_record *workers, uint32_t count, uint32_t *round_id, uint8_t *warning);
-ptrdiff_t swr_v1_process_worker_send(const swr_v1_pool_hooks *hooks, void *pool, void *pipe, bool queue, uint32_t worker_id, const uint8_t *data, size_t length, int flags);
 bool swr_v1_process_pool_dispatch(const swr_v1_pool_hooks *hooks, void *pool, swr_v1_worker_record *workers, uint32_t count, uint16_t start_id, uint32_t *round_id, uint8_t *warning, bool schedule_by_sysvmsg, bool queue, int *worker_id, const uint8_t *event, uint32_t size, bool blocking);
 /* ProcessPool's lifecycle (crates/process/src/process_pool.rs). Rust reads and
  * writes the pool in place through swr_v1_pool_record, ProcessPool's layout (the
@@ -269,14 +263,11 @@ typedef struct {
     size_t event_size;
 } swr_v1_pool_native;
 #define SWR_POOL_RAISE INT64_MIN
-int64_t swr_v1_process_pool_create(const swr_v1_pool_native *native, void *pool, uint32_t worker_num, int key, uint8_t mode);
+/* Native's table for the ProcessPool methods crates/process/src/methods.rs defines. */
+void swr_v1_process_pool_set_native(const swr_v1_pool_native *native);
 int64_t swr_v1_process_pool_run_op(const swr_v1_pool_native *native, void *pool, void *worker, uint32_t operation, uint64_t arg);
-int64_t swr_v1_process_pool_push(const swr_v1_pool_native *native, void *pool, uint8_t kind, const void *data, size_t length);
-int64_t swr_v1_process_pool_dispatch_event(const swr_v1_pool_native *native, void *pool, void *event, int *worker_id, bool blocking);
 /* The reap loop's wait: wait(), or waitpid(-1, WNOHANG) when `nonblock`. */
 int swr_v1_process_reap_wait(void *_ctx, bool nonblock, int *status, int *error);
-/* swoole_get_worker_symbol's mark for a worker type. */
-char swr_v1_worker_symbol(int kind);
 #define SWR_POOL_OP_HAVE_MSGQUEUE 0
 #define SWR_POOL_OP_ALLOC_WORKERS 1
 #define SWR_POOL_OP_NEW_MESSAGE_BOX 2
@@ -340,27 +331,7 @@ char swr_v1_worker_symbol(int kind);
 #define SWR_POOL_CB_WORKER_START 4
 #define SWR_POOL_CB_MAIN_LOOP 5
 #define SWR_POOL_CB_WORKER_STOP 6
-#define SWR_POOL_RUN_CREATE_MESSAGE_BOX 0
-#define SWR_POOL_RUN_CREATE_MESSAGE_BUS 1
-#define SWR_POOL_RUN_SET_PROTOCOL 2
-#define SWR_POOL_RUN_START_CHECK 3
-#define SWR_POOL_RUN_START 4
-#define SWR_POOL_RUN_SPAWN 5
-#define SWR_POOL_RUN_STOP 6
-#define SWR_POOL_RUN_DETACH 7
-#define SWR_POOL_RUN_KILL_ALL 8
-#define SWR_POOL_RUN_REOPEN_LOGGER 9
-#define SWR_POOL_RUN_SHUTDOWN 10
-#define SWR_POOL_RUN_RELOAD 11
-#define SWR_POOL_RUN_DROP_RELOAD_TASK 12
 #define SWR_POOL_RUN_MAIN 13
-#define SWR_POOL_RUN_WAIT 14
-#define SWR_POOL_RUN_DESTROY 15
-#define SWR_POOL_RUN_SET_TYPE 16
-#define SWR_POOL_RUN_SET_START_ID 17
-#define SWR_POOL_RUN_SET_MAX_REQUEST 18
-#define SWR_POOL_RUN_PUSH_MESSAGE 19
-#define SWR_POOL_RUN_SIGNAL 20
 /* Server::task and Server::task_sync (crates/process/src/task_sync.rs). Each
  * hook takes a swr_v1_pool_call whose pool is the Server and worker the MultiTask. */
 typedef struct {

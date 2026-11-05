@@ -8,6 +8,7 @@
 )]
 pub mod affinity;
 pub mod command;
+pub mod methods;
 pub mod pipe;
 pub mod pool;
 pub mod process_pool;

@@ -157,6 +157,24 @@ pub(crate) unsafe fn pipe_master(worker: *const WorkerRecord) -> *mut c_void {
     unsafe { (*worker).pipe_master }
 }
 
+/// The worker's end of its pipe (a native socket), or null.
+///
+/// # Safety
+/// `worker` points to a live `Worker`/`WorkerRecord`.
+pub(crate) unsafe fn pipe_worker(worker: *const WorkerRecord) -> *mut c_void {
+    // SAFETY: the caller lends a live worker record; only the field is read.
+    unsafe { (*worker).pipe_worker }
+}
+
+/// The worker's pool (a native `ProcessPool`).
+///
+/// # Safety
+/// `worker` points to a live `Worker`/`WorkerRecord`.
+pub(crate) unsafe fn pool_of(worker: *const WorkerRecord) -> *mut c_void {
+    // SAFETY: the caller lends a live worker record; only the field is read.
+    unsafe { (*worker).pool }
+}
+
 /// Point the worker at its pool.
 ///
 /// # Safety
@@ -182,7 +200,10 @@ pub(crate) unsafe extern "C" fn swr_v1_worker_add_request_count(worker: *mut Wor
 ///
 /// # Safety
 /// `worker` is a writable initialized worker record owned by this worker loop.
-#[unsafe(no_mangle)]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Worker4initEv")
+)]
 pub unsafe extern "C" fn swr_v1_worker_init(worker: *mut WorkerRecord) {
     // SAFETY: time's null output argument requests the current native timestamp.
     let now = unsafe { libc::time(core::ptr::null_mut()) };
@@ -200,7 +221,10 @@ pub unsafe extern "C" fn swr_v1_worker_init(worker: *mut WorkerRecord) {
 ///
 /// # Safety
 /// `worker` is the writable current worker record for this thread/process.
-#[unsafe(no_mangle)]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Worker8shutdownEv")
+)]
 pub unsafe extern "C" fn swr_v1_worker_shutdown(worker: *mut WorkerRecord) {
     // SAFETY: the caller owns the current worker's status transition.
     unsafe { swr_v1_worker_set_status(worker, 3) };
@@ -211,7 +235,11 @@ pub unsafe extern "C" fn swr_v1_worker_shutdown(worker: *mut WorkerRecord) {
 ///
 /// # Safety
 /// `worker` is a readable live worker record; its owning loop synchronizes the count.
-#[unsafe(no_mangle)]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Worker24has_exceeded_max_requestEv")
+)]
+#[must_use]
 pub unsafe extern "C" fn swr_v1_worker_exceeded_max_requests(worker: *const WorkerRecord) -> bool {
     let limit = crate::worker_globals::swr_v1_worker_global_get(5).cast_unsigned();
     if limit == 0 {
