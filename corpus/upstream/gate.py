@@ -75,7 +75,8 @@ def rows(reports):
                 entry['category'] = category(entry['reason'])
             elif row['status'] == 'failed':
                 entry['timed_out'] = bool(TIMED_OUT.search(row.get('detail') or ''))
-                entry['inconclusive'] = (row.get('upstream_status') in ('PASSED', 'WARNED')
+                # WARNED failed its first attempt: that failure counts, whatever the runner did next.
+                entry['inconclusive'] = (row.get('upstream_status') == 'PASSED'
                                          and bool(ABORTED.search(row.get('detail') or '')))
             yield entry
 
