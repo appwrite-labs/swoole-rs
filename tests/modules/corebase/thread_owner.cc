@@ -3,6 +3,8 @@
 #include <cassert>
 #include <condition_variable>
 #include <iostream>
+#include <future>
+#include <chrono>
 #include <mutex>
 #include <stdexcept>
 #include <type_traits>
@@ -79,6 +81,7 @@ static void detach_error(Thread &thread) {
     }
 }
 
+static const Thread constant_owner;
 static Thread *termination_owner = nullptr;
 static pthread_t termination_id{};
 
@@ -102,15 +105,16 @@ int main(int argc, char **argv) {
         }
         std::abort();
     }
+    assert(!constant_owner.joinable() && !constant_owner.is_alive() && constant_owner.get_exit_status() == 0);
     Thread empty;
     assert(!empty.joinable() && !empty.is_alive() && empty.get_exit_status() == 0 && empty.get_id() == pthread_t{});
     join_error(empty); detach_error(empty);
     {
-        Thread owner; Gate gate;
-        owner.start([&] { owner.enter(); gate.enter(); owner.exit(37); });
+        Thread owner; Gate gate; pthread_t observed{};
+        owner.start([&] { observed = pthread_self(); owner.enter(); gate.enter(); owner.exit(37); });
         gate.wait_entered();
         assert(owner.joinable() && owner.is_alive() && owner.get_exit_status() == 0);
-        assert(owner.get_id() != pthread_t{});
+        assert(owner.get_id() != pthread_t{} && pthread_equal(owner.get_id(), observed));
         gate.release(); owner.join();
         assert(!owner.joinable() && !owner.is_alive() && owner.get_exit_status() == 37);
         join_error(owner); detach_error(owner);
@@ -182,6 +186,21 @@ int main(int argc, char **argv) {
         assert(unwound && owner.joinable());
         worker.release(); owner.join();
         assert(!owner.joinable());
+    }
+    {
+        auto promise = std::make_shared<std::promise<int>>();
+        auto future = promise->get_future();
+        std::atomic<int> destroyed{0};
+        Thread owner;
+        owner.start([promise, &destroyed] {
+            struct Marker { std::atomic<int> &flag; ~Marker() { flag = 1; } };
+            thread_local Marker marker{destroyed};
+            (void) marker;
+            promise->set_value_at_thread_exit(57);
+        });
+        assert(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+        assert(destroyed == 1 && future.get() == 57);
+        owner.join();
     }
     char original[64] = {}, name[64] = {};
     assert(swoole_thread_get_name(original, sizeof(original)));

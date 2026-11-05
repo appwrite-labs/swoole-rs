@@ -1,19 +1,20 @@
 diff --git a/include/swoole_thread.h b/include/swoole_thread.h
-index 324f30e..7e2fc12 100644
+index 324f30e..5a689be 100644
 --- a/include/swoole_thread.h
 +++ b/include/swoole_thread.h
-@@ -19,2 +19,5 @@
+@@ -19,2 +19,6 @@
  #include "swoole_lock.h"
 +#include "swoole_rs_corebase_thread.h"
 +#include <memory>
 +#include <system_error>
++#include <tuple>
  
-@@ -30,45 +33,59 @@ namespace swoole {
+@@ -30,45 +34,67 @@ namespace swoole {
  class Thread {
 -    int exit_status = 0;
 -    bool living = false;
 -    std::thread thread;
-+    CoreThread state_{};
++    mutable CoreThread state_{};
  
 -  public:
 -    bool is_alive() const {
@@ -91,9 +92,17 @@ index 324f30e..7e2fc12 100644
 -        exit_status = status;
 -        living = false;
 +    template<typename Callable> void start(Callable fn) {
++#if defined(_LIBCPP_VERSION)
++        std::unique_ptr<std::__thread_struct> tls(new std::__thread_struct);
++        using NativeTask = std::tuple<std::unique_ptr<std::__thread_struct>, Callable>;
++        std::unique_ptr<NativeTask> task(new NativeTask(std::move(tls), fn));
++        const auto entry = &std::__thread_proxy<NativeTask>;
++#else
 +        std::unique_ptr<Task<Callable>> task(new Task<Callable>(fn));
++        const auto entry = &Task<Callable>::run;
++#endif
 +        const bool occupied = joinable();
-+        const int error = swr_v1_core_thread_start(&state_, Task<Callable>::run, task.get());
++        const int error = swr_v1_core_thread_start(&state_, entry, task.get());
 +        if (!error) task.release();
 +        check(error, "thread constructor failed");
 +        if (occupied) std::terminate();
