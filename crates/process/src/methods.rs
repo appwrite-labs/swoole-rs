@@ -439,7 +439,7 @@ mod tests {
             assert_eq!(swoole_get_worker_type(), 4, "type");
             assert_eq!(
                 swoole_get_worker_symbol(),
-                b'^'.cast_signed(),
+                std::ffi::c_char::from_ne_bytes(*b"^"),
                 "task worker mark"
             );
             swoole_set_worker_type(-1);
