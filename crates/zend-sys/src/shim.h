@@ -34,9 +34,10 @@ void swr_zend_efree(void *ptr);
 void swr_zval_try_addref(zval *value);
 void swr_zval_try_delref(zval *value);
 
-/* zend_string_init (request memory), zend_string_copy (add a reference),
- * zend_string_release and ZVAL_STR (the zval takes over the reference). */
+/* zend_string_init (request memory, or persistent), zend_string_copy (add a
+ * reference), zend_string_release and ZVAL_STR (the zval takes over the reference). */
 zend_string *swr_zend_string_init(const char *text, size_t length);
+zend_string *swr_zend_string_persistent(const char *text, size_t length);
 zend_string *swr_zend_string_copy(zend_string *string);
 void swr_zend_string_release(zend_string *string);
 void swr_zval_str(zval *value, zend_string *string);

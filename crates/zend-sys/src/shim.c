@@ -41,6 +41,10 @@ zend_string *swr_zend_string_init(const char *text, size_t length) {
     return zend_string_init(text, length, 0);
 }
 
+zend_string *swr_zend_string_persistent(const char *text, size_t length) {
+    return zend_string_init(text, length, 1);
+}
+
 zend_string *swr_zend_string_copy(zend_string *string) {
     return zend_string_copy(string);
 }

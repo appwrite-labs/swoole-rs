@@ -762,11 +762,6 @@ pub unsafe extern "C" fn swr_v1_phpevents_fd(value: *mut zval) -> i32 {
 pub extern "C" fn swr_v1_phpevents_wait() {
     complete(loop_driver::wait());
 }
-/// Native lifecycle effect, completed before resuming a contained bailout.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpevents_exit() {
-    complete(loop_driver::exit());
-}
 /// Native shutdown entry; its C++ caller contains the final jump.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phpevents_shutdown() {
