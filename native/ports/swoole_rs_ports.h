@@ -207,7 +207,11 @@ enum { SWR_PORTS_RUN_SNI_ADD=0, SWR_PORTS_RUN_SSL_INIT=1, SWR_PORTS_RUN_SSL_CREA
 int32_t swr_v1_ports_run(uint32_t kind, void *context, SwrPortsCall call);
 struct swr_v1_port_config;
 int32_t swr_v1_ports_run_state(uint32_t kind, void *context, SwrPortsCall call, const struct swr_v1_port_config *config);
-bool swr_v1_ports_sni_match(const char *subject, const char *cert);
+/* port.cc's runners, which the ListenPort methods crates/ports/src/methods.rs defines call:
+ * one lifecycle kind over (port, target context, socket, SSL, fd or allow_empty_cert),
+ * and one readable callback kind. */
+void swr_v1_ports_set_native(int32_t (*run)(uint32_t kind, void *port, void *target, void *sock, void *ssl, int number),
+                             int32_t (*read)(void *reactor, void *port, void *event, uint32_t kind));
 #ifdef __cplusplus
 }
 #endif

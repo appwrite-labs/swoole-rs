@@ -31,6 +31,8 @@ typedef struct ServerReply { uint64_t value; uint32_t fault; } ServerReply;
 typedef ServerReply (*ServerGuardedCall)(void *context, uint32_t op, uint64_t arg);
 ServerReply swr_v1_server_run_guarded(uint32_t operation, uint64_t arg, void *context,
     ServerGuardedCall call, const struct swr_v1_server_state *state);
+/* master.cc's guarded runner, which the Server methods crates/server/src/server_methods.rs defines call. */
+void swr_v1_server_set_native(int64_t (*run)(uint32_t operation, uint64_t arg, void *context));
 
 
 enum {

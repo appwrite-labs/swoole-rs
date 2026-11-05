@@ -45,7 +45,7 @@ cares = ["clients", "swoole-rs-clients/cares"]
 clients = ["dep:swoole-rs-clients", "dep:swoole-rs-inflate", "dep:swoole-rs-phpclients"]
 httpbindings = ["dep:swoole-rs-httpbindings", "dep:swoole-rs-phphttp"]
 http2 = ["dep:swoole-rs-http2", "dep:swoole-rs-phphttp2"]
-ports = ["dep:swoole-rs-ports", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/port"]
+ports = ["dep:swoole-rs-ports", "swoole-rs-ports/upstream-symbols", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/port"]
 stdext = ["phphelpers", "swoole-rs-phpstdext/active"]
 phphelpers = ["dep:swoole-rs-phphelpers", "dep:swoole-rs-phpstdext", "swoole-rs-phpswoole?/module-info"]
 phpcollections = ["dep:swoole-rs-phpcollections"]
@@ -71,7 +71,7 @@ swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpredis = { path = "../phpredis", optional = true }
 swoole-rs-wrappers = { path = "../wrappers", optional = true }
 swoole-rs-framing = { path = "../framing" }
-swoole-rs-server = { path = "../server" }
+swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
 swoole-rs-reactor = { path = "../reactor", optional = true }
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-coroutine = { path = "../coroutine", optional = true }

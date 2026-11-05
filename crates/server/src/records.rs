@@ -97,25 +97,6 @@ pub unsafe extern "C" fn swr_v1_server_tables_get(
     unsafe { &*state }.tables()
 }
 
-/// A session slot's fd, preserving the shared session-table modulo rule.
-///
-/// # Safety
-/// `state` owns live tables initialized by `Server::create`; `id` belongs to that table.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_session_fd(
-    state: *const crate::ServerState,
-    id: libc::c_long,
-) -> c_int {
-    // SAFETY: the caller lends a live server state.
-    let tables = unsafe { &*state }.tables();
-    // SAFETY: the live state owns this table-view allocation.
-    let tables = unsafe { &*tables };
-    let slot = isize::try_from(id % 1_048_576).unwrap_or_default();
-    let session = tables.session_list.wrapping_offset(slot);
-    // SAFETY: the caller's session belongs to the initialized shared table.
-    unsafe { (*session).fd }
-}
-
 /// Borrows a session-table slot through the original shared-table modulo rule.
 ///
 /// # Safety
@@ -278,7 +259,6 @@ mod tests {
             tables.session_list = sessions.as_mut_ptr();
             tables.connection_list = connections.as_mut_ptr();
             tables.max_connection = 2;
-            assert_eq!(swr_v1_server_session_fd(state, 1), 2);
             assert_eq!(
                 swr_v1_server_session(state, 1),
                 sessions.as_mut_ptr().add(1)
