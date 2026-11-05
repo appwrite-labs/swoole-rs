@@ -22,9 +22,9 @@ def main():
             extracted = tree/(namespace+'.cc')
             # Keep the actual generic declaration used by legacy and V2 callers.
             prefix = 'template<typename Handler>\n' if 'template<typename Handler>\nstatic bool conditional_file_date(' in text else ''
-            parts = ([prefix + body(text, 'static bool conditional_file_date(')] if namespace == 'candidate_conditional' else []) + [body(text, 'bool StaticHandler::is_modified('), body(text, 'bool StaticHandler::is_modified_range(')]
+            parts = ([prefix + body(text, 'static bool conditional_file_date(')] if namespace == 'candidate_conditional' and 'static bool conditional_file_date(' in text else []) + [body(text, 'bool StaticHandler::is_modified('), body(text, 'bool StaticHandler::is_modified_range(')]
             # The selected handler names its server serv_; the facade's is serv.
-            extracted.write_text('#include "conditional_oracle.h"\nnamespace '+namespace+' {\n'+'\n'.join(parts).replace('serv_,','serv,')+'\n}\n')
+            extracted.write_text('#include "conditional_oracle.h"\nnamespace '+namespace+' {\n'+'\n'.join(parts).replace('serv_,','serv,').replace('serv_ ?', 'serv ?').replace('&serv_->', '&serv->').replace('mtime_slot_', 'reinterpret_cast<const int64_t *>(&file_mtime)')+'\n}\n')
         binary = tree/'gate'
         units = [('upstream', tree/'upstream_conditional.cc'), ('candidate', tree/'candidate_conditional.cc'), ('candidate', local/'conditional_gate.cc')]
         if not sides.build(binary, units, args.archive.resolve(), report): write_report(args.output, report); return 1

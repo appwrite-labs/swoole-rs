@@ -175,6 +175,27 @@ pub struct HttpRequest {
     pub native: HttpNative,
 }
 
+/// Initialize native in-place storage without allocating another request.
+/// # Safety
+/// `request` is writable, aligned uninitialized storage, with no live previous owner.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v3_http_request_init(request: *mut HttpRequest, native: HttpNative) {
+    if !request.is_null() {
+        // SAFETY: the caller provides exclusive uninitialized storage.
+        unsafe { request.write(HttpRequest::new(native)) };
+    }
+}
+/// Reset parser fields while retaining the form, receive buffer and immutable effect table.
+/// # Safety
+/// Request is null or live and uniquely borrowed for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v3_http_request_clean(request: *mut HttpRequest) {
+    // SAFETY: the caller lends exclusive access to a live initialized request.
+    if let Some(request) = unsafe { request.as_mut() } {
+        request.clean();
+    }
+}
+
 impl HttpRequest {
     /// `HttpRequest()`: what native code's constructor makes.
     #[must_use]

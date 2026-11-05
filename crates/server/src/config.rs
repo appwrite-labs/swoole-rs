@@ -81,6 +81,18 @@ pub struct ServerConfig {
     pub message_queue_key: u64,
 }
 
+impl Drop for ServerConfig {
+    fn drop(&mut self) {
+        // SAFETY: ServerState constructed this registry; native configuration views
+        // only borrow its handle and have ended before the owning config is freed.
+        unsafe {
+            swoole_rs_corebase::worker_registry::swr_v1_process_worker_registry_free(
+                self.worker_registry.cast(),
+            );
+        }
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {

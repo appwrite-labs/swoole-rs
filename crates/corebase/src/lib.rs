@@ -16,6 +16,7 @@ mod lifecycle;
 pub mod net_types;
 mod random;
 mod thread;
+pub mod worker_registry;
 pub use global::*;
 pub use hook::swr_v1_corebase_hook_add_action;
 pub use host::{

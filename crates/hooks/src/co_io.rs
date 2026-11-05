@@ -916,3 +916,71 @@ mod tests {
         assert_eq!(take(), ["last-error:22", "last-error:0"]);
     }
 }
+
+/// Publishes the calling thread's current error without changing its errno or
+/// last-error slot. Unlike `set_err(0)`, the zero message comes from strerror.
+/// # Safety
+/// socket is live and exclusively writable; `last_error` is the caller's TLS value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_default_err(
+    socket: *mut CoSocket,
+    last_error: c_int,
+) {
+    let error = if last_error == 0 { errno() } else { last_error };
+    // SAFETY: the caller lends a live writable socket.
+    unsafe { (*socket).err_code = error };
+    // SAFETY: installed strerror is a native leaf returning stable text.
+    let message = unsafe { (host().strerror)(error) };
+    // SAFETY: the socket remains live through the leaf operation.
+    unsafe { (*socket).err_msg = message };
+}
+
+/// # Safety
+/// socket is exclusively writable; message remains readable while published.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_borrowed_err(
+    socket: *mut CoSocket,
+    error: c_int,
+    message: *const c_char,
+) {
+    // SAFETY: the caller lends the live socket.
+    unsafe { (*socket).err_code = error };
+    set_errno(error);
+    // SAFETY: the native TLS setter cannot access or destroy the socket.
+    unsafe { (host().set_last_error)(error) };
+    // SAFETY: the borrowed message outlives publication.
+    unsafe { (*socket).err_msg = message };
+}
+
+/// Sets owned error text, publishing error/errno first and the message pointer
+/// only after successful assignment. Native cache exceptions are contained and
+/// returned as status, to be rethrown after this Rust frame returns.
+/// # Safety
+/// socket/extra are live and exclusive; bytes are readable for length; the
+/// optional native cache only updates `std::string` and catches every exception.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_owned_err(
+    socket: *mut CoSocket,
+    error: c_int,
+    bytes: *const c_char,
+    length: usize,
+) -> c_int {
+    // SAFETY: the caller lends a live writable socket.
+    unsafe { (*socket).err_code = error };
+    set_errno(error);
+    // SAFETY: the installed native leaf writes only the calling thread's error.
+    unsafe { (host().set_last_error)(error) };
+    // SAFETY: the metadata owner outlives this synchronized call.
+    let extra = unsafe { (*socket).extra };
+    // SAFETY: its first stable slot owns the error string; take no Rust borrow.
+    let slot = unsafe { &raw const (*extra).strings[0] };
+    // SAFETY: readable bytes; the native cache contains all exceptions below Rust.
+    let status = unsafe { swoole_rs_corebase::swr_v1_core_string_set(slot, bytes, length) };
+    if status == 0 {
+        // SAFETY: successful assignment leaves stable terminated bytes in the slot.
+        let view = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) };
+        // SAFETY: publish only after the complete string assignment succeeds.
+        unsafe { (*socket).err_msg = view.data };
+    }
+    status
+}

@@ -38,6 +38,29 @@ struct swr_v1_co_socket {
     void *extra_;
 };
 
+struct swr_v1_co_protocol_scope {
+    swr_v1_co_socket *socket;
+    bool eof;
+    bool length;
+    swoole::Protocol protocol;
+};
+struct swr_v1_co_timeout_scope {
+    swr_v1_co_socket *socket_;
+    double timeout;
+    swoole::TimeoutType type;
+    double original_timeout[16];
+    double startup_time;
+};
+static_assert(sizeof(swr_v1_co_protocol_scope) == 80 && offsetof(swr_v1_co_protocol_scope, protocol) == 16, "Protocol scope ABI");
+static_assert(sizeof(swr_v1_co_timeout_scope) == 160 && offsetof(swr_v1_co_timeout_scope, original_timeout) == 24 &&
+              offsetof(swr_v1_co_timeout_scope, startup_time) == 152, "Timeout scope ABI");
+extern "C" {
+swr_v1_co_protocol_scope swr_v1_hook_protocol_scope(swr_v1_co_socket *socket);
+void swr_v1_hook_protocol_restore(const swr_v1_co_protocol_scope *scope);
+swr_v1_co_timeout_scope swr_v1_hook_timeout_scope(swr_v1_co_socket *socket, double timeout, int kind);
+void swr_v1_hook_timeout_restore(const swr_v1_co_timeout_scope *scope);
+}
+
 #include "swoole_rs_corebase_string_slot.h"
 struct swr_v1_co_socket_extra;
 struct swr_v1_co_socket_extra_prepared {
@@ -53,6 +76,9 @@ void swr_v1_hook_socket_extra_free(swr_v1_co_socket_extra *owner);
 /* The constructors write the whole record first; fini releases what they made
  * (native code frees the buffers and the network::Socket). */
 void swr_v1_hook_co_socket_fini(swr_v1_co_socket *socket);
+void swr_v1_hook_co_socket_default_err(swr_v1_co_socket *socket, int last_error);
+void swr_v1_hook_co_socket_borrowed_err(swr_v1_co_socket *socket, int error, const char *message);
+int swr_v1_hook_co_socket_owned_err(swr_v1_co_socket *socket, int error, const char *bytes, size_t length);
 /* The public constructors, by how: Socket(domain, type, protocol), Socket(SocketType),
  * Socket(fd, SocketType), Socket(fd, domain, type, protocol). owner is the Socket the
  * network::Socket points back to. Returns SWR_CO_SOCKET_OPENED unless socket(2) failed

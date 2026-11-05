@@ -18,7 +18,7 @@ index 9666d58..3bc5179 100644
 +    swr_v1_process_set_bailout(swr_zend_try, []() { zend_bailout(); });
      host.exception = swoole_exception_ce;
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index 2f2c2c6..f6dfae4 100644
+index b07ea84..dc0ba89 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -251,10 +251,2 @@ struct Worker {
@@ -56,7 +56,7 @@ index 2f2c2c6..f6dfae4 100644
 -    void at_worker_exit(Worker *worker);
  };
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index 340a654..bcd5eae 100644
+index 67b2f16..e93d4fd 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
 @@ -38,13 +38,2 @@ using network::Stream;
@@ -404,7 +404,7 @@ index 340a654..bcd5eae 100644
 -    return SW_OK;
 +    return dispatch_event(this, data, dst_worker_id, true);
  }
-@@ -586,80 +700,3 @@ void ProcessPool::at_worker_exit(Worker *worker) {
+@@ -587,80 +701,3 @@ void ProcessPool::at_worker_exit(Worker *worker) {
  int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
 -    struct {
 -        long mtype;
@@ -486,18 +486,18 @@ index 340a654..bcd5eae 100644
 -    return SW_OK;
 +    return run_protocol(pool, worker, SW_PROTOCOL_TASK);
  }
-@@ -668,3 +705,4 @@ int ProcessPool::recv_packet(Reactor *reactor, Event *event) {
+@@ -669,3 +706,4 @@ int ProcessPool::recv_packet(Reactor *reactor, Event *event) {
      auto *pool = static_cast<ProcessPool *>(reactor->ptr);
 -    ssize_t n = event->socket->read(pool->packet_buffer, pool->max_packet_size_);
 +    char *packet = swr_v1_process_pool_ipc_packet(pool->ipc_);
 +    ssize_t n = event->socket->read(packet, pool->max_packet_size_);
      if (n < 0 && errno != EINTR) {
-@@ -675,3 +713,3 @@ int ProcessPool::recv_packet(Reactor *reactor, Event *event) {
+@@ -676,3 +714,3 @@ int ProcessPool::recv_packet(Reactor *reactor, Event *event) {
      msg.info.len = n;
 -    msg.data = pool->packet_buffer;
 +    msg.data = packet;
      pool->onMessage(pool, &msg);
-@@ -682,13 +720,5 @@ int ProcessPool::recv_message(Reactor *reactor, Event *event) {
+@@ -683,13 +721,5 @@ int ProcessPool::recv_message(Reactor *reactor, Event *event) {
      auto *pool = static_cast<ProcessPool *>(reactor->ptr);
 -    if (pool->message_bus->read(event->socket) <= 0) {
 -        return SW_OK;
@@ -513,7 +513,7 @@ index 340a654..bcd5eae 100644
 -    pool->onMessage(pool, &msg);
 -    pool->message_bus->pop();
      return SW_OK;
-@@ -702,6 +732,3 @@ int ProcessPool::run_async(ProcessPool *pool, Worker *worker) {
+@@ -703,6 +733,3 @@ int ProcessPool::run_async(ProcessPool *pool, Worker *worker) {
          } else {
 -            pool->packet_buffer = new char[pool->max_packet_size_];
 -            if (pool->stream_info_) {
@@ -521,7 +521,7 @@ index 340a654..bcd5eae 100644
 -            }
 +            swr_v1_process_pool_ipc_prepare(pool->ipc_, pool->max_packet_size_);
              swoole_event_set_handler(SW_FD_PIPE, SW_EVENT_READ, recv_packet);
-@@ -713,99 +740,3 @@ int ProcessPool::run_async(ProcessPool *pool, Worker *worker) {
+@@ -714,99 +741,3 @@ int ProcessPool::run_async(ProcessPool *pool, Worker *worker) {
  int ProcessPool::run_with_stream_protocol(ProcessPool *pool, Worker *worker) {
 -    ssize_t n;
 -    RecvData msg{};
@@ -622,7 +622,7 @@ index 340a654..bcd5eae 100644
 -    return SW_OK;
 +    return run_protocol(pool, worker, SW_PROTOCOL_STREAM);
  }
-@@ -818,25 +749,2 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
+@@ -819,25 +750,2 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
      }
 -
 -    auto fn = [&]() -> ReturnCode {
@@ -648,7 +648,7 @@ index 340a654..bcd5eae 100644
 -    };
 -
      if (pool->message_bus == nullptr) {
-@@ -844,21 +752,3 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
+@@ -845,21 +753,3 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
      }
 -
 -    pool->at_worker_enter(worker);
@@ -671,7 +671,7 @@ index 340a654..bcd5eae 100644
 -    return SW_OK;
 +    return run_protocol(pool, worker, SW_PROTOCOL_MESSAGE);
  }
-@@ -1047,20 +937,4 @@ void ProcessPool::destroy() {
+@@ -1048,20 +938,4 @@ void ProcessPool::destroy() {
  
 -    if (stream_info_) {
 -        if (stream_info_->socket) {
@@ -694,7 +694,7 @@ index 340a654..bcd5eae 100644
 +    swr_v1_process_pool_ipc_free(ipc_, [](void *socket) { static_cast<Socket *>(socket)->free(); });
 +    ipc_ = nullptr;
  
-@@ -1115,30 +989,10 @@ bool Worker::is_running() {
+@@ -1116,30 +990,10 @@ bool Worker::is_running() {
  ssize_t Worker::send_pipe_message(const void *buf, size_t n, int flags) const {
 -    Socket *pipe_sock;
 -
@@ -734,7 +734,7 @@ index 340a654..bcd5eae 100644
 +                                      flags);
  }
 diff --git a/src/server/task_worker.cc b/src/server/task_worker.cc
-index 1692cb2..ff26ac0 100644
+index 9fb7776..9883a83 100644
 --- a/src/server/task_worker.cc
 +++ b/src/server/task_worker.cc
 @@ -479,7 +479,8 @@ bool Server::finish(const char *data, size_t data_len, int flags, const EventDat

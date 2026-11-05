@@ -148,11 +148,14 @@ The lower `swoole::Thread` owns a generated `CoreThread` record: Rust controls
 its pthread handle, status publication, moves, joins and detaches. The C++ SDK
 keeps its callable's standard C++ copy and destruction semantics. pthread starts
 the native callable trampoline directly, so C++ exceptions and pthread forced
-unwind do not cross a Rust child-entry frame. The libc++ SDK supplies its own native proxy and TLS context,
+unwind do not cross a Rust child-entry frame. The libc++ SDK supplies its own
+native proxy and TLS context,
 so at-thread-exit futures retain the standard library's lifecycle. The carrier
-remains writable for atomic status access through const C++ getters. The cancellable `pthread_join` primitive also runs in native code after Rust
+remains writable for atomic status access through const C++ getters. The
+cancellable `pthread_join` primitive also runs in native code after Rust
 validation returns; Rust commits successful handle consumption afterward. Native
-`std::system_error` and termination effects run after Rust returns. Existing Thread methods remain source
+`std::system_error` and termination effects run after Rust returns. Existing Thread
+methods remain source
 compatible; consumers must recompile against the matching SDK after this class
 layout change. PHP Thread request/bootstrap remains native pending the composed
 custom-exit guard contract; the lower owner does not add a Rust frame around it.

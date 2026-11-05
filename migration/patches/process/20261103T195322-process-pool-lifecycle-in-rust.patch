@@ -1,5 +1,5 @@
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index f6dfae4..b92e28a 100644
+index dc0ba89..78fe693 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -419,4 +419,2 @@ struct ProcessPool {
@@ -22,7 +22,7 @@ index f6dfae4..b92e28a 100644
 -    static int run_async(ProcessPool *pool, Worker *worker);
  };
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index bcd5eae..3b92454 100644
+index e93d4fd..3b92454 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
 @@ -217,22 +217,2 @@ static const swr_v1_pool_hooks pool_hooks = {
@@ -700,9 +700,9 @@ index bcd5eae..3b92454 100644
 -    }
 +    return pool_run(this, SWR_POOL_RUN_SHUTDOWN);
  }
-@@ -636,35 +798,3 @@ bool ProcessPool::shutdown() {
+@@ -636,36 +798,3 @@ bool ProcessPool::shutdown() {
  pid_t ProcessPool::spawn(Worker *worker) {
--    swr_v1_process_worker_registry_unregister(registry_, worker->get_pid());
+-    swr_v1_process_worker_registry_unregister(registry_, worker->pid);
 -    pid_t pid = swoole_fork(0);
 -    int ret_code = 0;
 -
@@ -731,19 +731,20 @@ index bcd5eae..3b92454 100644
 -        exit(ret_code);
 -    } else {
 -        worker->set_pid(pid);
--        add_worker(worker);
+-        // insert new process
+-        swr_v1_process_worker_registry_insert(registry_, pid, worker, 0);
 -    }
 -
 -    return pid;
 +    return (pid_t) pool_run(this, SWR_POOL_RUN_SPAWN, 0, worker);
  }
-@@ -672,4 +802,3 @@ pid_t ProcessPool::spawn(Worker *worker) {
+@@ -673,4 +802,3 @@ pid_t ProcessPool::spawn(Worker *worker) {
  void ProcessPool::set_max_request(uint32_t _max_request, uint32_t _max_request_grace) {
 -    max_request = _max_request;
 -    max_request_grace = _max_request_grace;
 +    pool_run(this, SWR_POOL_RUN_SET_MAX_REQUEST, _max_request | ((uint64_t) _max_request_grace << 32));
  }
-@@ -680,85 +809,2 @@ bool ProcessPool::is_worker_running(Worker *worker) const {
+@@ -681,85 +809,2 @@ bool ProcessPool::is_worker_running(Worker *worker) const {
  
 -void ProcessPool::at_worker_enter(Worker *worker) const {
 -    if (worker->pipe_worker) {
@@ -821,15 +822,15 @@ index bcd5eae..3b92454 100644
 -}
 -
 -void ProcessPool::add_worker(Worker *worker) const {
--    swr_v1_process_worker_registry_register(registry_, worker->get_pid(), worker, 0);
+-    swr_v1_process_worker_registry_insert(registry_, worker->pid, worker, 0);
 -}
 -
 -bool ProcessPool::del_worker(const Worker *worker) const {
--    return swr_v1_process_worker_registry_unregister(registry_, worker->get_pid());
+-    return swr_v1_process_worker_registry_unregister(registry_, worker->pid);
 -}
 -
  Worker *ProcessPool::get_worker_by_pid(pid_t pid) const {
-@@ -768,6 +814,3 @@ Worker *ProcessPool::get_worker_by_pid(pid_t pid) const {
+@@ -769,6 +814,3 @@ Worker *ProcessPool::get_worker_by_pid(pid_t pid) const {
  void ProcessPool::set_type(int _type) {
 -    type = _type;
 -    for (uint32_t i = 0; i < worker_num; i++) {
@@ -837,7 +838,7 @@ index bcd5eae..3b92454 100644
 -    }
 +    pool_run(this, SWR_POOL_RUN_SET_TYPE, (uint8_t) _type);
  }
-@@ -775,6 +818,3 @@ void ProcessPool::set_type(int _type) {
+@@ -776,6 +818,3 @@ void ProcessPool::set_type(int _type) {
  void ProcessPool::set_start_id(int _start_id) {
 -    start_id = _start_id;
 -    for (uint32_t i = 0; i < worker_num; i++) {
@@ -845,7 +846,7 @@ index bcd5eae..3b92454 100644
 -    }
 +    pool_run(this, SWR_POOL_RUN_SET_START_ID, (uint16_t) _start_id);
  }
-@@ -782,30 +822,3 @@ void ProcessPool::set_start_id(int _start_id) {
+@@ -783,30 +822,3 @@ void ProcessPool::set_start_id(int _start_id) {
  bool ProcessPool::detach() {
 -    if (!running || !message_box) {
 -        return false;
@@ -877,7 +878,7 @@ index bcd5eae..3b92454 100644
 -    return true;
 +    return pool_run(this, SWR_POOL_RUN_DETACH);
  }
-@@ -813,113 +826,3 @@ bool ProcessPool::wait_detached_worker(pid_t pid) {
+@@ -814,113 +826,3 @@ bool ProcessPool::wait_detached_worker(pid_t pid) {
  int ProcessPool::wait() {
 -    swr_v1_process_reap_host host{};
 -    host.ctx = this;
@@ -992,7 +993,7 @@ index bcd5eae..3b92454 100644
 -    return SW_OK;
 +    return (int) pool_run(this, SWR_POOL_RUN_WAIT);
  }
-@@ -927,29 +830,3 @@ int ProcessPool::wait() {
+@@ -928,29 +830,3 @@ int ProcessPool::wait() {
  void ProcessPool::destroy() {
 -    if (pipes) {
 -        delete pipes;

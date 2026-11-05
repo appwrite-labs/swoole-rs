@@ -8,7 +8,7 @@ index e6a2032..925a2bb 100644
 +        RETURN_LONG(swr_v1_worker_status(reinterpret_cast<const swr_v1_worker_record *>(worker)));
      }
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index 6097fa9..19ee051 100644
+index ed0d0ff..43a539c 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -159,6 +159,6 @@ struct Worker {
@@ -23,16 +23,16 @@ index 6097fa9..19ee051 100644
 +    uint8_t : 8;
      uint8_t type;
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index e7b3ac3..ecfb3cc 100644
+index 0f57e9c..ca1ddc6 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
-@@ -1085,3 +1085,3 @@ bool Worker::has_exceeded_max_request() const {
+@@ -1079,3 +1079,3 @@ bool Worker::has_exceeded_max_request() const {
  void Worker::shutdown() {
 -    status = SW_WORKER_EXIT;
 +    set_status(SW_WORKER_EXIT);
      SwooleWG.shutdown = true;
 diff --git a/src/server/process.cc b/src/server/process.cc
-index e68d6f7..786e181 100644
+index 9d9f768..a79f0f2 100644
 --- a/src/server/process.cc
 +++ b/src/server/process.cc
 @@ -28,3 +28,4 @@ static_assert(offsetof(Worker, pid) == offsetof(swr_v1_worker_record, pid), "Wor

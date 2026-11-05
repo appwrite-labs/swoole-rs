@@ -1,5 +1,5 @@
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index 5efbcf9..a0cc615 100644
+index 841f286..746476d 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -261,2 +261,4 @@ struct StreamInfo {
@@ -8,7 +8,7 @@ index 5efbcf9..a0cc615 100644
 +int reap_wait(void *ctx, bool nonblock, int *status, int *error);
  
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index a788be5..a6f1a27 100644
+index cec0100..1e4e279 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
 @@ -59,2 +59,9 @@ void reload_warn(int kind, int pid, uint32_t worker_id) {
@@ -21,8 +21,9 @@ index a788be5..a6f1a27 100644
 +}
 +
  static inline void worker_end_callback() {
-@@ -895,7 +902,11 @@ bool ProcessPool::detach() {
+@@ -896,8 +903,11 @@ bool ProcessPool::detach() {
  int ProcessPool::wait() {
+-
 -    while (running) {
 -        // A callback may have queued reload after the previous initialization phase.
 -        ExitStatus exit_status = reload_init ? wait_process(-1, WNOHANG) : wait_process();
@@ -38,7 +39,7 @@ index a788be5..a6f1a27 100644
 +    host.service = [](void *ctx) {
 +        auto pool = static_cast<ProcessPool *>(ctx);
          swoole_signal_dispatch();
-@@ -906,10 +917,10 @@ int ProcessPool::wait() {
+@@ -908,10 +918,10 @@ int ProcessPool::wait() {
  
 -        if (read_message) {
 +        if (pool->read_message) {
@@ -54,12 +55,12 @@ index a788be5..a6f1a27 100644
 +                if (msg.info.type != SW_WORKER_MESSAGE_STOP && pool->onWorkerMessage) {
 +                    pool->onWorkerMessage(pool, &msg);
                      continue;
-@@ -918,3 +929,3 @@ int ProcessPool::wait() {
+@@ -920,3 +930,3 @@ int ProcessPool::wait() {
                  memcpy(&worker_stop_msg, msg.data, sizeof(worker_stop_msg));
 -                Worker *exit_worker = get_worker_by_pid(worker_stop_msg.pid);
 +                Worker *exit_worker = pool->get_worker_by_pid(worker_stop_msg.pid);
                  if (exit_worker == nullptr) {
-@@ -922,66 +933,49 @@ int ProcessPool::wait() {
+@@ -924,69 +934,49 @@ int ProcessPool::wait() {
                  }
 -                spawn(exit_worker);
 -                swr_v1_process_worker_registry_detach(registry_, worker_stop_msg.pid);
@@ -102,8 +103,10 @@ index a788be5..a6f1a27 100644
 -            if (exit_worker == nullptr) {
 -                if (onWorkerNotFound) {
 -                    onWorkerNotFound(this, exit_status);
--                } else if (!swr_v1_process_worker_registry_reap_detached(registry_, exit_status.get_pid())) {
--                    swoole_warning("received an exit signal from an unknown child process[pid=%d]", exit_status.get_pid());
+-                } else {
+-                    if (!swr_v1_process_worker_registry_reap_detached(registry_, exit_status.get_pid())) {
+-                        swoole_warning("received an exit signal from an unknown child process[pid=%d]", exit_status.get_pid());
+-                    }
 -                }
 -                continue;
 -            }
@@ -116,6 +119,7 @@ index a788be5..a6f1a27 100644
 -            }
 -
 -            spawn(exit_worker);
+-            swr_v1_process_worker_registry_unregister(registry_, exit_status.get_pid());
 -            if (reload_task) {
 -                swr_v1_process_reload_task_remove(reload_task, exit_status.get_pid());
 +        pool->reload_init = false;
@@ -167,7 +171,7 @@ index a788be5..a6f1a27 100644
 +    swr_v1_process_reap_loop(&host);
  
 diff --git a/src/server/manager.cc b/src/server/manager.cc
-index 1b4c8c9..abdf6df 100644
+index 995b69a..bee2ca7 100644
 --- a/src/server/manager.cc
 +++ b/src/server/manager.cc
 @@ -164,7 +164,16 @@ void Manager::wait(Server *_server) {
@@ -192,7 +196,7 @@ index 1b4c8c9..abdf6df 100644
 +        Server *_server = static_cast<Manager *>(ctx)->server_;
 +        ProcessPool *pool = _server->get_event_worker_pool();
          swoole_signal_dispatch();
-@@ -198,93 +207,76 @@ void Manager::wait(Server *_server) {
+@@ -197,93 +206,76 @@ void Manager::wait(Server *_server) {
          }
 -
 -        if (exit_status.get_pid() < 0) {

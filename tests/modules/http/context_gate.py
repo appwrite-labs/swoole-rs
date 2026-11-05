@@ -67,7 +67,8 @@ def main():
                 parts += [body(original,signature) for signature in old_signatures]
                 parts += [body(original,'bool Server::apply_rewrite_rules(').replace('http_server::StaticHandler *','StaticHandler *')]
             else:
-                parts += ['template<typename Handler>\n'+body(selected,'static bool conditional_file_date(')]
+                if 'static bool conditional_file_date(' in selected:
+                    parts += ['template<typename Handler>\n'+body(selected,'static bool conditional_file_date(')]
                 parts += [body(selected,signature) for signature in ['static void append_directory_part(', 'static int32_t resume_range_header(', 'static int32_t resume_static_path(']]
                 parts += [body(selected,signature) for signature in v2_signatures]
                 parts += [body(selected,'bool Server::apply_rewrite_rules(').replace('http_server::StaticHandler *','StaticHandler *')]

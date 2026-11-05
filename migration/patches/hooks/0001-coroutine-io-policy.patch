@@ -1121,43 +1121,6 @@ index 06e9f5b..7f49cb6 100644
 +#endif
 +
      ssize_t ssl_readv(network::IOVector *io_vector);
-diff --git a/src/coroutine/file.cc b/src/coroutine/file.cc
-index 587f524..aefc101 100644
---- a/src/coroutine/file.cc
-+++ b/src/coroutine/file.cc
-@@ -17,2 +17,7 @@
- #include "swoole_file.h"
-+#ifndef SWOOLE_RS_HOOKS
-+#error "Hooks overlay requires --enable-swoole-rs-hooks"
-+#endif
-+#include "swoole_rs_hooks.h"
-+
- #include "swoole_coroutine_api.h"
-@@ -35,3 +40,3 @@ bool AsyncFile::open(const std::string &path, int flags, mode_t mode) {
-     fd = swoole_coroutine_open(path.c_str(), flags, mode);
--    return fd > 0;
-+    return swr_v1_hook_file_result(true, fd);
- }
-@@ -43,3 +48,3 @@ bool AsyncFile::close() const {
- 
--    return swoole_coroutine_close(fd) == 0;
-+    return swr_v1_hook_file_result(false, swoole_coroutine_close(fd));
- }
-@@ -55,3 +60,3 @@ ssize_t AsyncFile::write(const void *buf, size_t count) const {
- bool AsyncFile::sync() const {
--    return swoole_coroutine_fsync(fd) == 0;
-+    return swr_v1_hook_file_result(false, swoole_coroutine_fsync(fd));
- }
-@@ -59,3 +64,3 @@ bool AsyncFile::sync() const {
- bool AsyncFile::truncate(off_t length) const {
--    return swoole_coroutine_ftruncate(fd, length) == 0;
-+    return swr_v1_hook_file_result(false, swoole_coroutine_ftruncate(fd, length));
- }
-@@ -63,3 +68,3 @@ bool AsyncFile::truncate(off_t length) const {
- bool AsyncFile::stat(FileStatus *statbuf) const {
--    return swoole_coroutine_fstat(fd, statbuf) == 0;
-+    return swr_v1_hook_file_result(false, swoole_coroutine_fstat(fd, statbuf));
- }
 diff --git a/src/coroutine/file_lock.cc b/src/coroutine/file_lock.cc
 index 6a4aacf..58ab349 100644
 --- a/src/coroutine/file_lock.cc
