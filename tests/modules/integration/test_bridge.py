@@ -84,7 +84,7 @@ int main(void) {
                 '-E', '-P', '-x', 'c++', '-include', str(source / 'config.h'),
                 '-I', str(build / 'rust-prefix/include'), '-I', str(source),
                 '-I', str(source / 'include'), '-I', str(source / 'ext-src'),
-                *includes, *flags, str(inventory)]).stdout
+                '-I', str(source / 'thirdparty'), *includes, *flags, str(inventory)]).stdout
         text = re.sub(r'/\*.*?\*/|//[^\n]*', '', text, flags=re.S)
         expected = set(re.findall(r'\b(swr_v[0-9]+_\w+)\s*\(', text))
         self.assertTrue(expected, 'No selected ABI declarations were checked')

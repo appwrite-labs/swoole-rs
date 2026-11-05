@@ -10,6 +10,7 @@ static std::string hex(const std::string&s){static const char*d="0123456789abcde
 static int real_filesystem(const std::string &root) {
     namespace fs = std::filesystem;
     scenario = "real";
+    trace_enabled = true;
     auto require = [](bool condition) { if (!condition) std::abort(); };
     const mode_t original_mask = umask(0027);
     require(swoole_mkdir_recursive(root + "/created/deep"));
@@ -55,7 +56,7 @@ else if(p=="@MAX+1-NUL")path=std::string("a\0",2)+std::string(PATH_MAX-1,'x');
 else if(p=="@MAX-1-NUL")path=std::string("a\0",2)+std::string(PATH_MAX-3,'x');
 else if(p=="@UB-MAX-1")path=std::string(PATH_MAX-1,'a');
 else if(p!="-")path=unhex(p);
-events.clear();access_calls=mkdir_calls=0;last_error=77;errno=7;bool result=swoole_mkdir_recursive(path);int e=errno;
+events.clear();access_calls=mkdir_calls=0;last_error=77;errno=7;trace_enabled=true;bool result=swoole_mkdir_recursive(path);int e=errno;trace_enabled=false;
 std::cout<<"{\"id\":\""<<id<<"\",\"path_max\":"<<PATH_MAX<<",\"path_hex\":\""<<hex(path)<<"\",\"scenario\":\""<<scenario<<"\",\"result\":"<<(result?"true":"false")<<",\"errno\":"<<e<<",\"last_error\":"<<last_error<<",\"events\":[";
 for(size_t i=0;i<events.size();++i){auto&v=events[i];if(i)std::cout<<",";std::cout<<"{\"op\":\""<<v.operation<<"\",\"path_hex\":\""<<hex(v.path)<<"\",\"argument\":"<<v.argument<<",\"return\":"<<v.result<<",\"errno_before\":"<<v.before<<",\"errno_after\":"<<v.after<<"}";}
 std::cout<<"]}\n";

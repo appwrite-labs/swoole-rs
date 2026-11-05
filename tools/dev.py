@@ -238,10 +238,15 @@ def plan(args, reports):
     if 'error' in modules:
         script('error-native', 'tools/core_check.py', '--module', 'error',
                '--build-manifest', manifest, '--sanitize', *report('error-native'))
+    if 'process' in modules:
+        script('process-signals', 'tests/modules/process/signals.py',
+               *php, *engines, *report('process-signals'))
     if 'error' in modules and integrate:
         script('error-php', 'tests/modules/error/php.py', '--source', ROOT / 'target/upstream/src',
                *php, *engines, *report('error-php'))
     if 'http' in modules:
+        script('http-server-config-owners', 'tests/modules/http/server_config_owners.py',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-server-config-owners'))
         script('http-context', 'tests/modules/http/context_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-context'))
         for name, runner in [('http-proxy', 'proxy_gate.py'), ('http-static', 'static_gate.py'), ('http-conditionals', 'conditional_gate.py'), ('http-rewrites', 'rewrite_gate.py'), ('http-dispatch', 'dispatch_gate.py'), ('http-locales', 'locale_gate.py')]:
@@ -437,6 +442,8 @@ def plan(args, reports):
         script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-file-owner'))
     if 'corebase' in modules:
+        script('corebase-record-views', 'tests/modules/corebase/record_views.py',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('corebase-record-views'))
         script('corebase-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src', *report('corebase-constants'))
         includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
                     if sys.platform == 'darwin' else [])

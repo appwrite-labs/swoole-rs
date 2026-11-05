@@ -124,7 +124,8 @@ class ModulePublication(unittest.TestCase):
             self.assertNotEqual(broken.returncode, 0)
             self.assertIn(b'install copy deallocation failure', broken.stderr)
             timings = {}
-            with patch('tools.build_upstream.extension_configuration', return_value=([], os.environ.copy())):
+            with patch('tools.build_upstream.extension_configuration', return_value=([], os.environ.copy())), \
+                 patch('tools.build_upstream.require_build_space'):
                 build_extension(root, root / 'build.log', SimpleNamespace(jobs=1),
                                 incremental=True, timings=timings)
             self.assertEqual((root / 'modules/swoole.so').read_bytes(), b'linked\0bytes')
@@ -146,7 +147,8 @@ class ModulePublication(unittest.TestCase):
                     '\tmkdir -p ext-src/.libs\n'
                     '\tprintf "rebuilt" > ext-src/.libs/php_swoole.o\n'
                     '\tprintf "descriptor" > ext-src/php_swoole.lo\n')
-                with patch('tools.build_upstream.extension_configuration', return_value=([], os.environ.copy())):
+                with patch('tools.build_upstream.extension_configuration', return_value=([], os.environ.copy())), \
+                     patch('tools.build_upstream.require_build_space'):
                     build_extension(root, root / 'build.log', SimpleNamespace(jobs=1), incremental=True)
                 self.assertEqual((root / 'modules/swoole.so').read_bytes(), b'rebuilt')
 
