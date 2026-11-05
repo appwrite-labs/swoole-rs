@@ -522,6 +522,12 @@ def plan(args, reports):
                    *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
                    *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]],
                    *[arg for file, case in fixtures.items() for arg in ['--fixture', 'core-tests/src/' + file + '=' + case]], *report(name))
+    if integrate and 'process' in modules and sys.platform.startswith('linux'):
+        script('process-worker-retirement', 'tests/modules/process/worker_retirement.py',
+               '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--core', ROOT / 'target/native-originals/process', '--jobs', args.jobs,
+               *report('process-worker-retirement'))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-native'))

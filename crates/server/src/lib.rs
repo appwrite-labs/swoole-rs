@@ -44,7 +44,7 @@ pub use static_config::{
 
 pub use records::{
     ConnectionRecord, ServerTables, SessionRecord, swr_v1_server_connection, swr_v1_server_session,
-    swr_v1_server_session_fd, swr_v1_server_tables_get,
+    swr_v1_server_session_fd, swr_v1_server_sessions_retire, swr_v1_server_tables_get,
 };
 
 pub use shared::{
