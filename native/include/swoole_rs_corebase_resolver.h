@@ -26,7 +26,7 @@ int swr_v1_core_resolver_host(swr_v1_core_resolver *owner);
 swr_v1_core_resolver_text swr_v1_core_resolver_next(const swr_v1_core_resolver *owner, size_t *cursor);
 int swr_v1_clients_gethostbyname(int flags, const char *name, char *addr);
 swr_v1_core_resolver_text swr_v1_core_resolver_format(const swr_v1_core_resolver *owner, size_t index);
-swr_v1_core_resolver_completion swr_v1_core_resolver_finish(ssize_t retval, int event_error, int request_error, int timeout_error, int resolution_timeout);
+swr_v1_core_resolver_completion swr_v1_core_resolver_finish(ssize_t retval, int event_error, const int *request_error, int timeout_error, int resolution_timeout);
 }
 
 static_assert(sizeof(swr_v1_core_resolver_fields) == 20 && sizeof(swr_v1_core_resolver_prepared) == 40, "DNS record ABI");

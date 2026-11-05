@@ -296,18 +296,26 @@ pub struct ResolverCompletion {
     pub error: c_int,
     pub failed: bool,
 }
-/// Decides completion after native await returns, without owning its generic
-/// envelope or invoking a native string/vector effect.
+/// Decides completion after native await returns. A failed await must not read
+/// the worker-owned request error, which may still be changing after timeout.
+/// # Safety
+/// `request_error` may be null. Otherwise it is readable only when `retval != -1`;
+/// a failed await deliberately permits a still-inaccessible worker field.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_resolver_finish(
+pub unsafe extern "C" fn swr_v1_core_resolver_finish(
     retval: isize,
     event_error: c_int,
-    request_error: c_int,
+    request_error: *const c_int,
     timeout_error: c_int,
     resolution_timeout: c_int,
 ) -> ResolverCompletion {
+    let failed = retval == -1
+        || (!request_error.is_null() && {
+            // SAFETY: await succeeded, so the caller lends its synchronized error slot.
+            unsafe { *request_error != 0 }
+        });
     ResolverCompletion {
-        failed: retval == -1 || request_error != 0,
+        failed,
         error: if event_error == timeout_error {
             resolution_timeout
         } else {
@@ -406,3 +414,21 @@ const _: () = {
         "native DNS completion size"
     );
 };
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    #[test]
+    fn failed_await_never_reads_worker_error() {
+        let inaccessible = core::ptr::without_provenance::<c_int>(1);
+        let completion = unsafe { swr_v1_core_resolver_finish(-1, 4003, inaccessible, 4003, 712) };
+        assert!(completion.failed);
+        assert_eq!(completion.error, 712);
+        let completed_error = 7;
+        assert!(
+            unsafe { swr_v1_core_resolver_finish(0, 0, &raw const completed_error, 4003, 712) }
+                .failed
+        );
+        assert!(!unsafe { swr_v1_core_resolver_finish(1, 0, core::ptr::null(), 4003, 712) }.failed);
+    }
+}
