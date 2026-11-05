@@ -144,9 +144,8 @@ bool swr_v1_hook_co_socket_cancel(swr_v1_co_socket *socket, uint32_t event);
 bool swr_v1_hook_co_socket_close(swr_v1_co_socket *socket);
 bool swr_v1_hook_co_socket_check_liveness(swr_v1_co_socket *socket);
 bool swr_v1_hook_co_socket_connect(swr_v1_co_socket *socket, const struct sockaddr *addr, socklen_t length);
-/* poll(event, timeout); recvfrom(buffer, length) through the socket's own recvfrom
-   into its network::Socket's peer address. */
-bool swr_v1_hook_co_socket_poll(swr_v1_co_socket *socket, uint32_t event, double timeout);
+/* recvfrom(buffer, length) through the socket's own recvfrom into its
+   network::Socket's peer address. */
 ssize_t swr_v1_hook_co_socket_recvfrom(
     swr_v1_co_socket *socket, void *buffer, size_t length, ssize_t (*call)(swr_v1_co_socket *, void *, size_t, sockaddr *, socklen_t *));
 /* Pure preparation/commit; native virtual poll runs between the two calls. */

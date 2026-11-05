@@ -18,6 +18,7 @@ iouring = ["dep:swoole-rs-uring-sys", "swoole-rs-uring-sys/liburing", "dep:opens
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-reactor = { path = "../reactor" }
+swoole-rs-tls = { path = "../tls" }
 openssl-sys = { version = "=0.9.117", optional = true }
 swoole-rs-uring-sys = { path = "../uring-sys", optional = true }
 

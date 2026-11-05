@@ -251,7 +251,6 @@ pub unsafe extern "C" fn swr_v1_hook_socket_ready(
 ///
 /// # Safety
 /// `socket` is a live record, not borrowed elsewhere for the call.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_poll(
     socket: *mut CoSocket,
     event: u32,
