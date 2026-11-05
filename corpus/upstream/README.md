@@ -205,3 +205,18 @@ python3 corpus/upstream/run.py --source target/upstream/src \
 
 Add `--external-network` for tests that need outside services, and repeat with
 the next candidate module until the failure follows one.
+
+The ZTS original `swoole_thread/server/exit.phpt` remains registered with its
+unchanged source and expectation. Its two startup echo operands interleave on
+native and hybrid (#1120: native attempt 44 and hybrid attempts 4/17/30/32 of the
+paired 45-run stress). Only a verified ZTS runtime with the Thread class records
+this named original as `excluded`, separately from passed, skipped and unsupported.
+The ZTS workflow requires `tests/modules/integration/server_exit.py` instead: its
+repository-owned companion retains the exit-235, failed HTTP request, replacement
+worker, final count and exact output assertions, writes complete lines before
+readiness, waits for replacement readiness explicitly and retains the original
+200 ms shutdown delay. A separate process requests master shutdown with SIGTERM;
+it does not call shutdown from a participating Server Thread. This avoids the
+distinct native shutdown hang reproduced by the earlier companion. The companion
+retains the original exit/restart assertions; it does not qualify the added-process
+shutdown calling context. Its report does not claim the original passed. WARNED original runs remain failed.

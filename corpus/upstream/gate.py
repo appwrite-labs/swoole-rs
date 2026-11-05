@@ -47,7 +47,7 @@ RERUNS = 3
 # Upstream re-runs for a test the hybrid both passed and failed on re-run, or failed
 # every re-run of after upstream failed one.
 EXTENDED_RERUNS = 9
-STATUSES = ['passed', 'failed', 'skipped']
+STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 
 
 def skip_reason(detail):
@@ -68,7 +68,9 @@ def rows(reports):
         for row in data['results']:
             entry = {'test': row['test'], 'family': row['module'], 'engine': row.get('engine', 'upstream'),
                      'status': row['status'], 'upstream_status': row.get('upstream_status')}
-            if row['status'] == 'skipped':
+            if row['status'] == 'excluded':
+                entry['reason'] = row.get('detail', '')
+            elif row['status'] == 'skipped':
                 entry['reason'] = skip_reason(row.get('detail'))
                 entry['category'] = category(entry['reason'])
             elif row['status'] == 'failed':
@@ -192,6 +194,9 @@ def markdown(results, rechecked=None):
         skips = Counter(row['category'] for row in results if row['engine'] == engine and row['status'] == 'skipped')
         lines += [f'**{sum(statuses.values())} PHPTs** on {engine}: ' + ', '.join(f'{statuses[s]} {s}' for s in STATUSES),
                   '', 'Skips by reason: ' + ', '.join(f'{n} {c}' for c, n in skips.most_common()), '']
+    exclusions = sorted({row['test'] + ': ' + row.get('reason', '') for row in results if row['status'] == 'excluded'})
+    if exclusions:
+        lines += listing('named originals excluded (not passed)', exclusions)
     regressions, both = compare(results)
     if len(engines) > 1 and rechecked is not None:
         confirmed, flaky, recovered, inconclusive = recheck(flagged(results), rechecked)

@@ -37,374 +37,397 @@ const MAX_WAITING_TIME: u64 = 1024;
 /// `ReactorThread_verify_ssl_state` once the socket's TLS handshake is pending:
 /// finish it, then announce the connection (with the client certificate when the
 /// port asks for one).
-pub(crate) fn verify_ssl<H: Host>(h: &mut H) -> i64 {
-    let code = h.signed(OP_SSL_ACCEPT);
+pub(crate) fn verify_ssl<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    let code = h.signed(OP_SSL_ACCEPT)?;
     if code != SW_READY {
-        return code;
+        return Ok(code);
     }
-    h.get(OP_SSL_READY);
+    h.get(OP_SSL_READY)?;
     let mut announced = false;
-    if h.is(OP_CLIENT_CERT) {
-        if h.is(OP_PEER_CERT) {
-            if h.is(OP_VERIFY_PEER) && !h.is(OP_SSL_VERIFY) {
-                return SW_ERROR;
+    if h.is(OP_CLIENT_CERT)? {
+        if h.is(OP_PEER_CERT)? {
+            if h.is(OP_VERIFY_PEER)? && !h.is(OP_SSL_VERIFY)? {
+                return Ok(SW_ERROR);
             }
-            h.get(OP_DISPATCH_CERT);
+            h.get(OP_DISPATCH_CERT)?;
             announced = true;
-        } else if h.is(OP_VERIFY_PEER) {
-            return SW_ERROR;
+        } else if h.is(OP_VERIFY_PEER)? {
+            return Ok(SW_ERROR);
         }
     }
-    if !announced && h.is(OP_HAS_ON_CONNECT) {
-        h.get(OP_NOTIFY_CONNECT);
+    if !announced && h.is(OP_HAS_ON_CONNECT)? {
+        h.get(OP_NOTIFY_CONNECT)?;
     }
-    if h.is(OP_DELAY_RECEIVE) && h.signed(OP_REACTOR_DEL) < 0 {
-        return SW_ERROR;
+    if h.is(OP_DELAY_RECEIVE)? && h.signed(OP_REACTOR_DEL)? < 0 {
+        return Ok(SW_ERROR);
     }
-    SW_READY
+    Ok(SW_READY)
 }
 
 /// `ReactorThread_onPacketReceived`: dispatch datagrams until the socket would block.
-pub(crate) fn packet_received<H: Host>(h: &mut H) -> i64 {
-    h.get(OP_PACKET_INIT);
+pub(crate) fn packet_received<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    h.get(OP_PACKET_INIT)?;
     loop {
-        let n = h.signed(OP_RECVFROM);
+        let n = h.signed(OP_RECVFROM)?;
         if n <= 0 {
-            if h.get(OP_ERRNO) == u64::from(libc::EAGAIN.cast_unsigned()) {
-                return SW_OK;
+            if h.get(OP_ERRNO)? == u64::from(libc::EAGAIN.cast_unsigned()) {
+                return Ok(SW_OK);
             }
-            h.get(LOG_RECVFROM);
-            return SW_ERR;
+            h.get(LOG_RECVFROM)?;
+            return Ok(SW_ERR);
         }
         let length = n.cast_unsigned();
-        if h.is(OP_PORT_DTLS) {
-            return h.op(OP_DTLS_ACCEPT, length).cast_signed();
+        if h.is(OP_PORT_DTLS)? {
+            return Ok(h.op(OP_DTLS_ACCEPT, length)?.cast_signed());
         }
-        if h.op(OP_PACKET_DISPATCH, length) == 0 {
-            return SW_ERR;
+        if h.op(OP_PACKET_DISPATCH, length)? == 0 {
+            return Ok(SW_ERR);
         }
     }
 }
 
-fn reactor_owns<H: Host>(h: &mut H, fd: u64) -> bool {
-    let reactors = h.get(OP_REACTOR_NUM);
-    reactors != 0
+fn reactor_owns<H: Host>(h: &mut H, fd: u64) -> crate::Effect<bool> {
+    let reactors = h.get(OP_REACTOR_NUM)?;
+    Ok(reactors != 0
         && fd
             .cast_signed()
             .rem_euclid(reactors.cast_signed())
             .cast_unsigned()
-            == h.get(OP_REACTOR_ID)
+            == h.get(OP_REACTOR_ID)?)
 }
 
 /// `Server::foreach_connection`: each valid connection from `min_fd` to `max_fd`
 /// (read afresh each step), selected in turn.
-fn for_each_connection<H: Host>(h: &mut H, mut each: impl FnMut(&mut H)) {
-    let mut fd = h.signed(OP_MINFD);
-    while fd <= h.signed(OP_MAXFD) {
-        if h.op(OP_CONN_AT, fd.cast_unsigned()) != 0 {
-            each(h);
+fn for_each_connection<H: Host>(
+    h: &mut H,
+    mut each: impl FnMut(&mut H) -> crate::Effect<()>,
+) -> crate::Effect<()> {
+    let mut fd = h.signed(OP_MINFD)?;
+    while fd <= h.signed(OP_MAXFD)? {
+        if h.op(OP_CONN_AT, fd.cast_unsigned())? != 0 {
+            each(h)?;
         }
         fd += 1;
     }
+    Ok(())
 }
 
 /// `ReactorThread::shutdown`: stop reading datagrams, worker pipes and connections
 /// owned by this reactor, and let it exit once its writes drain.
-pub(crate) fn shutdown<H: Host>(h: &mut H) {
-    if h.is(OP_HAVE_DGRAM) {
-        for port in 0..h.get(OP_PORT_COUNT) {
-            if h.op(OP_PORT_DGRAM, port) == 0 {
+pub(crate) fn shutdown<H: Host>(h: &mut H) -> crate::Effect<()> {
+    if h.is(OP_HAVE_DGRAM)? {
+        for port in 0..h.get(OP_PORT_COUNT)? {
+            if h.op(OP_PORT_DGRAM, port)? == 0 {
                 continue;
             }
-            let fd = h.op(OP_PORT_FD, port);
-            if reactor_owns(h, fd) && h.op(OP_PORT_REMOVED, port) == 0 {
-                h.op(OP_PORT_DEL, port);
+            let fd = h.op(OP_PORT_FD, port)?;
+            if reactor_owns(h, fd)? && h.op(OP_PORT_REMOVED, port)? == 0 {
+                h.op(OP_PORT_DEL, port)?;
             }
         }
     }
-    h.get(OP_HEARTBEAT_TIMER_CLEAR);
-    h.get(OP_DESTROY_CALLBACK);
-    if h.get(OP_MODE) == MODE_THREAD {
-        h.get(OP_STOP_THREAD_WORKER);
-        return;
+    h.get(OP_HEARTBEAT_TIMER_CLEAR)?;
+    h.get(OP_DESTROY_CALLBACK)?;
+    if h.get(OP_MODE)? == MODE_THREAD {
+        h.get(OP_STOP_THREAD_WORKER)?;
+        return Ok(());
     }
-    for worker in 0..h.get(OP_WORKER_NUM) {
-        if reactor_owns(h, worker) {
-            h.op(OP_WORKER_PIPE_UNREAD, worker);
+    for worker in 0..h.get(OP_WORKER_NUM)? {
+        if reactor_owns(h, worker)? {
+            h.op(OP_WORKER_PIPE_UNREAD, worker)?;
         }
     }
     for_each_connection(h, |h| {
-        let fd = h.get(OP_CONN_FD);
-        if reactor_owns(h, fd) && h.is(OP_CONN_READING) {
-            h.get(OP_CONN_UNREAD);
-        }
-    });
-    h.get(OP_WAIT_EXIT);
+        let _: () = {
+            let fd = h.get(OP_CONN_FD)?;
+            if reactor_owns(h, fd)? && h.is(OP_CONN_READING)? {
+                h.get(OP_CONN_UNREAD)?;
+            }
+        };
+        Ok(())
+    })?;
+    h.get(OP_WAIT_EXIT)?;
+    Ok(())
 }
 
 /// `ReactorThread::close_connection`: close now when nobody is told, else notify
 /// the worker through the close event.
-pub(crate) fn close<H: Host>(h: &mut H, session: u64) -> i64 {
-    if h.op(OP_SESSION_CONN, session) == 0 {
-        h.op(LOG_NO_SESSION, session);
-        return SW_OK;
+pub(crate) fn close<H: Host>(h: &mut H, session: u64) -> crate::Effect<i64> {
+    if h.op(OP_SESSION_CONN, session)? == 0 {
+        h.op(LOG_NO_SESSION, session)?;
+        return Ok(SW_OK);
     }
-    if h.is(OP_DISABLE_NOTIFY) || h.is(OP_CONN_FORCE) {
+    if h.is(OP_DISABLE_NOTIFY)? || h.is(OP_CONN_FORCE)? {
         return h.signed(OP_CLOSE);
     }
     // A TLS connection that never finished its handshake has nobody to notify.
-    if h.is(OP_CONN_HANDSHAKING) {
+    if h.is(OP_CONN_HANDSHAKING)? {
         return h.signed(OP_CLOSE);
     }
-    h.get(OP_FORCE_CLOSE);
-    SW_OK
+    h.get(OP_FORCE_CLOSE)?;
+    Ok(SW_OK)
 }
 
 /// `ReactorThread_onPipeRead`: the messages workers send their reactor thread.
-pub(crate) fn pipe_read<H: Host>(h: &mut H) -> i64 {
+pub(crate) fn pipe_read<H: Host>(h: &mut H) -> crate::Effect<i64> {
     loop {
-        if h.signed(OP_PIPE_READ) <= 0 {
-            return SW_OK;
+        if h.signed(OP_PIPE_READ)? <= 0 {
+            return Ok(SW_OK);
         }
-        let kind = u32::try_from(h.get(OP_PIPE_TYPE)).unwrap_or(u32::MAX);
+        let kind = u32::try_from(h.get(OP_PIPE_TYPE)?).unwrap_or(u32::MAX);
         match kind {
             EVENT_INCOMING => {
-                let session = h.get(OP_PIPE_FD);
-                if h.op(OP_SESSION_CONN, session) != 0 && h.signed(OP_INCOMING) < 0 {
-                    h.get(OP_REACTOR_CLOSE);
+                let session = h.get(OP_PIPE_FD)?;
+                if h.op(OP_SESSION_CONN, session)? != 0 && h.signed(OP_INCOMING)? < 0 {
+                    h.get(OP_REACTOR_CLOSE)?;
                 }
             }
             EVENT_COMMAND_REQUEST => {
-                h.get(OP_COMMAND_REQUEST);
+                h.get(OP_COMMAND_REQUEST)?;
             }
             EVENT_COMMAND_RESPONSE => {
-                h.get(OP_COMMAND_RESPONSE);
+                h.get(OP_COMMAND_RESPONSE)?;
             }
-            EVENT_SHUTDOWN => shutdown(h),
+            EVENT_SHUTDOWN => shutdown(h)?,
             EVENT_SHUTDOWN_SIGNAL => {
-                h.get(OP_KILL_SELF);
+                h.get(OP_KILL_SELF)?;
             }
             EVENT_FINISH => {
-                h.get(OP_ON_FINISH);
+                h.get(OP_ON_FINISH)?;
             }
             EVENT_PIPE_MESSAGE => {
-                h.get(OP_ON_PIPE_MESSAGE);
+                h.get(OP_ON_PIPE_MESSAGE)?;
             }
             EVENT_CLOSE_FORCE => {
-                let session = h.get(OP_PIPE_FD);
-                close(h, session);
+                let session = h.get(OP_PIPE_FD)?;
+                close(h, session)?;
             }
             EVENT_CLOSE_FORWARD => {
-                let session = h.get(OP_PIPE_FD);
-                h.op(OP_CLOSE_FORWARD, session);
+                let session = h.get(OP_PIPE_FD)?;
+                h.op(OP_CLOSE_FORWARD, session)?;
             }
             _ => {
-                h.get(OP_PIPE_SEND);
+                h.get(OP_PIPE_SEND)?;
             }
         }
-        h.get(OP_PIPE_POP);
+        h.get(OP_PIPE_POP)?;
     }
 }
 
 /// `Server::init_reactor`.
-pub(crate) fn init_reactor<H: Host>(h: &mut H) {
+pub(crate) fn init_reactor<H: Host>(h: &mut H) -> crate::Effect<()> {
     // 64K datagrams need the larger thread buffer.
-    if h.is(OP_HAVE_DGRAM) {
-        h.get(OP_DGRAM_BUFFER);
+    if h.is(OP_HAVE_DGRAM)? {
+        h.get(OP_DGRAM_BUFFER)?;
     }
-    h.get(OP_SESSION_HANDLERS);
+    h.get(OP_SESSION_HANDLERS)?;
+    Ok(())
 }
 
 /// `Server::heartbeat_check`: close this reactor's connections idle past their port's
 /// heartbeat time.
-pub(crate) fn heartbeat_check<H: Host>(h: &mut H) {
-    let now = h.get(OP_MICROTIME);
-    let reactor = h.get(OP_REACTOR_ID);
+pub(crate) fn heartbeat_check<H: Host>(h: &mut H) -> crate::Effect<()> {
+    let now = h.get(OP_MICROTIME)?;
+    let reactor = h.get(OP_REACTOR_ID)?;
     for_each_connection(h, |h| {
-        let session = h.signed(OP_CONN_SESSION);
-        if session > 0 && h.get(OP_CONN_REACTOR) == reactor && !h.is_op(OP_CONN_HEALTHY, now) {
-            close(h, session.cast_unsigned());
-        }
-    });
+        let _: () = {
+            let session = h.signed(OP_CONN_SESSION)?;
+            if session > 0
+                && h.get(OP_CONN_REACTOR)? == reactor
+                && !h.is_op(OP_CONN_HEALTHY, now)?
+            {
+                close(h, session.cast_unsigned())?;
+            }
+        };
+        Ok(())
+    })?;
+    Ok(())
 }
 
 /// `Server::start_reactor_threads`: listen, start the reactor threads (or set up the
 /// single one) and the heartbeat, then run the master thread.
-pub(crate) fn start_reactor_threads<H: Host>(h: &mut H) -> i64 {
-    if h.signed(OP_EVENT_INIT) < 0 {
-        return SW_ERR;
+pub(crate) fn start_reactor_threads<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    if h.signed(OP_EVENT_INIT)? < 0 {
+        return Ok(SW_ERR);
     }
-    for port in 0..h.get(OP_PORT_COUNT) {
-        if h.op(OP_PORT_DGRAM, port) != 0 {
+    for port in 0..h.get(OP_PORT_COUNT)? {
+        if h.op(OP_PORT_DGRAM, port)? != 0 {
             continue;
         }
-        if h.op(OP_PORT_LISTEN, port).cast_signed() < 0 {
-            h.get(OP_EVENT_FREE);
-            return SW_ERR;
+        if h.op(OP_PORT_LISTEN, port)?.cast_signed() < 0 {
+            h.get(OP_EVENT_FREE)?;
+            return Ok(SW_ERR);
         }
-        h.op(OP_PORT_READ, port);
+        h.op(OP_PORT_READ, port)?;
     }
-    h.get(OP_STORE_LISTEN_SOCKET);
-    let single = h.is(OP_SINGLE_THREAD);
+    h.get(OP_STORE_LISTEN_SOCKET)?;
+    let single = h.is(OP_SINGLE_THREAD)?;
     if single {
-        h.get(OP_THREAD0_INIT);
+        h.get(OP_THREAD0_INIT)?;
     } else {
-        h.get(OP_MASTER_REACTOR_ID);
-        for thread in 0..h.get(OP_REACTOR_NUM) {
-            h.op(OP_SPAWN_REACTOR_THREAD, thread);
+        h.get(OP_MASTER_REACTOR_ID)?;
+        for thread in 0..h.get(OP_REACTOR_NUM)? {
+            h.op(OP_SPAWN_REACTOR_THREAD, thread)?;
         }
     }
-    if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL)) >= 1 {
+    if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))? >= 1 {
         h.get(if single {
             OP_HEARTBEAT_TIMER
         } else {
             OP_HEARTBEAT_THREAD
-        });
+        })?;
     }
     h.signed(OP_START_MASTER_THREAD)
 }
 
 /// `Server::reactor_thread_main_loop`.
-pub(crate) fn main_loop<H: Host>(h: &mut H, thread: u64) {
-    h.op(OP_THREAD_ENTER, thread);
-    if h.signed(OP_EVENT_INIT) < 0 {
-        return;
+pub(crate) fn main_loop<H: Host>(h: &mut H, thread: u64) -> crate::Effect<()> {
+    h.op(OP_THREAD_ENTER, thread)?;
+    if h.signed(OP_EVENT_INIT)? < 0 {
+        return Ok(());
     }
-    let mode = h.get(OP_MODE);
+    let mode = h.get(OP_MODE)?;
     if mode == MODE_THREAD {
-        h.get(OP_WORKER_START);
+        h.get(OP_WORKER_START)?;
     } else {
-        h.op(OP_REACTOR_THREAD_TYPE, thread);
+        h.op(OP_REACTOR_THREAD_TYPE, thread)?;
     }
-    if h.signed(OP_THREAD_INIT) < 0 {
-        return;
+    if h.signed(OP_THREAD_INIT)? < 0 {
+        return Ok(());
     }
     // Every reactor thread is ready before the master runs.
     if mode == MODE_PROCESS {
-        h.get(OP_REACTOR_BARRIER);
+        h.get(OP_REACTOR_BARRIER)?;
     }
-    h.get(OP_EVENT_WAIT);
+    h.get(OP_EVENT_WAIT)?;
     if mode == MODE_THREAD {
-        h.get(OP_WORKER_STOP);
+        h.get(OP_WORKER_STOP)?;
     }
-    h.get(OP_THREAD_CLEAN);
+    h.get(OP_THREAD_CLEAN)?;
+    Ok(())
 }
 
 /// `ReactorThread_resume_data_receiving`: back off (doubling up to 1024ms) while the
 /// workers still hold too many bytes, then read again.
-pub(crate) fn resume_receiving<H: Host>(h: &mut H) {
-    if h.is(OP_QUEUE_FULL) {
-        let waiting = h.get(OP_WAITING_TIME);
+pub(crate) fn resume_receiving<H: Host>(h: &mut H) -> crate::Effect<()> {
+    if h.is(OP_QUEUE_FULL)? {
+        let waiting = h.get(OP_WAITING_TIME)?;
         if waiting != MAX_WAITING_TIME {
-            h.op(OP_SET_WAITING_TIME, waiting * 2);
+            h.op(OP_SET_WAITING_TIME, waiting * 2)?;
         }
-        if h.is(OP_RESUME_TIMER) {
-            return;
+        if h.is(OP_RESUME_TIMER)? {
+            return Ok(());
         }
     }
-    h.get(OP_RESUME_READ);
+    h.get(OP_RESUME_READ)?;
+    Ok(())
 }
 
 /// `Server::dispatch_task`: one received data frame to a worker, counting the bytes
 /// queued for it until the worker takes them.
-pub(crate) fn dispatch_task<H: Host>(h: &mut H, len: u64) -> i64 {
-    h.op(OP_TASK_INIT, len);
-    if !h.is(OP_FACTORY_DISPATCH) {
+pub(crate) fn dispatch_task<H: Host>(h: &mut H, len: u64) -> crate::Effect<i64> {
+    h.op(OP_TASK_INIT, len)?;
+    if !h.is(OP_FACTORY_DISPATCH)? {
         if len > 0 {
-            h.op(OP_QUEUE_SUB, len);
+            h.op(OP_QUEUE_SUB, len)?;
         }
-        return SW_ERR;
+        return Ok(SW_ERR);
     }
-    h.get(OP_COUNT_DISPATCH);
-    SW_OK
+    h.get(OP_COUNT_DISPATCH)?;
+    Ok(SW_OK)
 }
 
 /// `Server::join_reactor_thread`: tell each running reactor thread to shut down and join it.
-pub(crate) fn join_reactor_threads<H: Host>(h: &mut H) {
-    if h.is(OP_SINGLE_THREAD) {
-        return;
+pub(crate) fn join_reactor_threads<H: Host>(h: &mut H) -> crate::Effect<()> {
+    if h.is(OP_SINGLE_THREAD)? {
+        return Ok(());
     }
-    if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL)) > 0 {
-        h.get(OP_JOIN_HEARTBEAT);
+    if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))? > 0 {
+        h.get(OP_JOIN_HEARTBEAT)?;
     }
-    for thread in 0..h.get(OP_REACTOR_NUM) {
-        if h.op(OP_THREAD_JOINABLE, thread) == 0 {
+    for thread in 0..h.get(OP_REACTOR_NUM)? {
+        if h.op(OP_THREAD_JOINABLE, thread)? == 0 {
             continue;
         }
-        h.op(OP_THREAD_NOTIFY, thread);
-        h.op(OP_THREAD_JOIN, thread);
+        h.op(OP_THREAD_NOTIFY, thread)?;
+        h.op(OP_THREAD_JOIN, thread)?;
     }
+    Ok(())
 }
 
 /// The heartbeat thread: every interval, ask reactor threads to force-close
 /// connections idle past their port's heartbeat time.
-pub(crate) fn heartbeat_thread<H: Host>(h: &mut H) {
-    while h.is(OP_RUNNING) {
-        let now = h.get(OP_MICROTIME);
+pub(crate) fn heartbeat_thread<H: Host>(h: &mut H) -> crate::Effect<()> {
+    while h.is(OP_RUNNING)? {
+        let now = h.get(OP_MICROTIME)?;
         for_each_connection(h, |h| {
-            let session = h.signed(OP_CONN_SESSION);
-            if session > 0 && !h.is_op(OP_CONN_HEALTHY, now) {
-                h.op(OP_SEND_CLOSE_FORCE, session.cast_unsigned());
-            }
-        });
-        let interval = h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL));
+            let _: () = {
+                let session = h.signed(OP_CONN_SESSION)?;
+                if session > 0 && !h.is_op(OP_CONN_HEALTHY, now)? {
+                    h.op(OP_SEND_CLOSE_FORCE, session.cast_unsigned())?;
+                }
+            };
+            Ok(())
+        })?;
+        let interval = h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))?;
         // SAFETY: `sleep` has no memory preconditions.
         unsafe { libc::sleep(u32::try_from(interval).unwrap_or(u32::MAX)) };
     }
+    Ok(())
 }
 
 /// The reactor-thread operations of `swr_v1_server_run`.
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
+pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use crate::ops::{
         RUN_DISPATCH_TASK, RUN_HEARTBEAT_CHECK, RUN_HEARTBEAT_THREAD, RUN_INIT_REACTOR,
         RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED, RUN_PIPE_READ, RUN_REACTOR_THREAD_MAIN,
         RUN_RESUME_RECEIVING, RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE, RUN_THREAD_SHUTDOWN,
     };
-    match operation {
-        RUN_PACKET_RECEIVED => packet_received(h),
+    Ok(match operation {
+        RUN_PACKET_RECEIVED => packet_received(h)?,
         RUN_THREAD_SHUTDOWN => {
-            shutdown(h);
+            shutdown(h)?;
             SW_OK
         }
-        RUN_THREAD_CLOSE => close(h, arg),
-        RUN_PIPE_READ => pipe_read(h),
+        RUN_THREAD_CLOSE => close(h, arg)?,
+        RUN_PIPE_READ => pipe_read(h)?,
         RUN_INIT_REACTOR => {
-            init_reactor(h);
+            init_reactor(h)?;
             SW_OK
         }
         RUN_HEARTBEAT_CHECK => {
-            heartbeat_check(h);
+            heartbeat_check(h)?;
             SW_OK
         }
-        RUN_START_REACTOR_THREADS => start_reactor_threads(h),
+        RUN_START_REACTOR_THREADS => start_reactor_threads(h)?,
         RUN_REACTOR_THREAD_MAIN => {
-            main_loop(h, arg);
+            main_loop(h, arg)?;
             SW_OK
         }
         RUN_RESUME_RECEIVING => {
-            resume_receiving(h);
+            resume_receiving(h)?;
             SW_OK
         }
-        RUN_DISPATCH_TASK => dispatch_task(h, arg),
+        RUN_DISPATCH_TASK => dispatch_task(h, arg)?,
         RUN_JOIN_REACTOR_THREADS => {
-            join_reactor_threads(h);
+            join_reactor_threads(h)?;
             SW_OK
         }
         RUN_HEARTBEAT_THREAD => {
-            heartbeat_thread(h);
+            heartbeat_thread(h)?;
             SW_OK
         }
-        _ => crate::dispatch::run(h, operation, arg),
-    }
+        _ => crate::dispatch::run(h, operation, arg)?,
+    })
 }
 
 trait IsOp {
-    fn is_op(&mut self, op: u32, arg: u64) -> bool;
+    fn is_op(&mut self, op: u32, arg: u64) -> crate::Effect<bool>;
 }
 
 impl<H: Host> IsOp for H {
-    fn is_op(&mut self, op: u32, arg: u64) -> bool {
-        self.op(op, arg) != 0
+    fn is_op(&mut self, op: u32, arg: u64) -> crate::Effect<bool> {
+        Ok(self.op(op, arg)? != 0)
     }
 }
 
@@ -416,14 +439,14 @@ mod tests {
     #[test]
     fn ssl_states() {
         let mut s = Script::with(&[(OP_SSL_ACCEPT, 2)]);
-        assert_eq!(verify_ssl(&mut s), 2, "handshake waits");
+        assert_eq!(verify_ssl(&mut s).unwrap(), 2, "handshake waits");
 
         let mut s = Script::with(&[
             (OP_SSL_ACCEPT, 5),
             (OP_HAS_ON_CONNECT, 1),
             (OP_DELAY_RECEIVE, 1),
         ]);
-        assert_eq!(verify_ssl(&mut s), SW_READY, "ready");
+        assert_eq!(verify_ssl(&mut s).unwrap(), SW_READY, "ready");
         assert_eq!(s.called(OP_NOTIFY_CONNECT), 1, "onConnect");
         assert_eq!(s.called(OP_REACTOR_DEL), 1, "delayed receive");
 
@@ -436,7 +459,7 @@ mod tests {
                 (OP_SSL_VERIFY, ok),
                 (OP_HAS_ON_CONNECT, 1),
             ]);
-            let code = verify_ssl(&mut s);
+            let code = verify_ssl(&mut s).unwrap();
             (
                 code,
                 s.called(OP_DISPATCH_CERT),
@@ -457,21 +480,21 @@ mod tests {
             (OP_PACKET_DISPATCH, 1),
         ])
         .queue(OP_RECVFROM, &[10, 20, u64::MAX]);
-        assert_eq!(packet_received(&mut s), SW_OK, "drained");
+        assert_eq!(packet_received(&mut s).unwrap(), SW_OK, "drained");
         assert_eq!(s.args(OP_PACKET_DISPATCH), vec![10, 20], "each datagram");
 
         let mut s = Script::with(&[(OP_ERRNO, 5)]).queue(OP_RECVFROM, &[u64::MAX]);
-        assert_eq!(packet_received(&mut s), SW_ERR, "recvfrom failed");
+        assert_eq!(packet_received(&mut s).unwrap(), SW_ERR, "recvfrom failed");
         assert_eq!(s.called(LOG_RECVFROM), 1, "warned");
 
         let mut s = Script::with(&[(OP_PACKET_DISPATCH, 0), (OP_RECVFROM, 3)]);
-        assert_eq!(packet_received(&mut s), SW_ERR, "dispatch failed");
+        assert_eq!(packet_received(&mut s).unwrap(), SW_ERR, "dispatch failed");
     }
 
     #[test]
     fn close_paths() {
         let mut s = Script::with(&[]);
-        assert_eq!(close(&mut s, 9), SW_OK, "missing session");
+        assert_eq!(close(&mut s, 9).unwrap(), SW_OK, "missing session");
         assert_eq!(s.args(LOG_NO_SESSION), vec![9], "traced");
 
         let mut s = Script::with(&[
@@ -479,11 +502,11 @@ mod tests {
             (OP_CONN_HANDSHAKING, 1),
             (OP_CLOSE, 0),
         ]);
-        close(&mut s, 1);
+        close(&mut s, 1).unwrap();
         assert_eq!(s.called(OP_CLOSE), 1, "handshaking closes directly");
 
         let mut s = Script::with(&[(OP_SESSION_CONN, 1)]);
-        close(&mut s, 1);
+        close(&mut s, 1).unwrap();
         assert_eq!(s.called(OP_FORCE_CLOSE), 1, "worker notified");
     }
 
@@ -504,7 +527,7 @@ mod tests {
                 2,
             ],
         );
-        assert_eq!(pipe_read(&mut s), SW_OK, "drained");
+        assert_eq!(pipe_read(&mut s).unwrap(), SW_OK, "drained");
         assert_eq!(s.called(OP_REACTOR_CLOSE), 1, "incoming failed");
         assert_eq!(s.args(OP_CLOSE_FORWARD), vec![7], "forwarded close");
         assert_eq!(s.called(OP_KILL_SELF), 1, "shutdown signal");
@@ -529,7 +552,7 @@ mod tests {
         ])
         .queue(OP_PORT_FD, &[4, 5])
         .queue(OP_CONN_FD, &[3, 4, 5, 6]);
-        shutdown(&mut s);
+        shutdown(&mut s).unwrap();
         assert_eq!(s.args(OP_PORT_DEL), vec![1], "odd fd belongs to reactor 1");
         assert_eq!(s.args(OP_WORKER_PIPE_UNREAD), vec![1, 3], "odd workers");
         assert_eq!(s.called(OP_CONN_UNREAD), 2, "odd connections");
@@ -548,7 +571,7 @@ mod tests {
         .queue(OP_CONN_SESSION, &[0, 11, 12])
         .queue(OP_CONN_REACTOR, &[0, 1])
         .queue(OP_CONN_HEALTHY, &[0]);
-        heartbeat_check(&mut s);
+        heartbeat_check(&mut s).unwrap();
         assert_eq!(
             s.args(OP_SESSION_CONN),
             vec![11],
@@ -560,18 +583,22 @@ mod tests {
     fn start_and_join_threads() {
         let mut s = Script::with(&[(OP_PORT_COUNT, 2), (OP_REACTOR_NUM, 3), (OP_FIELD, 5)])
             .queue(OP_PORT_DGRAM, &[1, 0]);
-        assert_eq!(start_reactor_threads(&mut s), SW_OK, "master ran");
+        assert_eq!(start_reactor_threads(&mut s).unwrap(), SW_OK, "master ran");
         assert_eq!(s.args(OP_PORT_LISTEN), vec![1], "stream port listens");
         assert_eq!(s.args(OP_SPAWN_REACTOR_THREAD), vec![0, 1, 2], "threads");
         assert_eq!(s.called(OP_HEARTBEAT_THREAD), 1, "heartbeat thread");
 
         let mut s = Script::with(&[(OP_PORT_COUNT, 1), (OP_PORT_LISTEN, u64::MAX)]);
-        assert_eq!(start_reactor_threads(&mut s), SW_ERR, "listen failed");
+        assert_eq!(
+            start_reactor_threads(&mut s).unwrap(),
+            SW_ERR,
+            "listen failed"
+        );
         assert_eq!(s.called(OP_EVENT_FREE), 1, "loop freed");
 
         let mut s =
             Script::with(&[(OP_REACTOR_NUM, 2), (OP_FIELD, 1)]).queue(OP_THREAD_JOINABLE, &[0, 1]);
-        join_reactor_threads(&mut s);
+        join_reactor_threads(&mut s).unwrap();
         assert_eq!(s.called(OP_JOIN_HEARTBEAT), 1, "heartbeat joined");
         assert_eq!(s.args(OP_THREAD_JOIN), vec![1], "joinable thread");
     }
@@ -579,7 +606,7 @@ mod tests {
     #[test]
     fn main_loop_and_backoff() {
         let mut s = Script::with(&[(OP_MODE, MODE_PROCESS)]);
-        main_loop(&mut s, 2);
+        main_loop(&mut s, 2).unwrap();
         assert_eq!(s.args(OP_REACTOR_THREAD_TYPE), vec![2], "reactor thread");
         assert_eq!(s.called(OP_REACTOR_BARRIER), 1, "barrier");
         assert_eq!(s.called(OP_THREAD_CLEAN), 1, "cleaned");
@@ -589,12 +616,12 @@ mod tests {
             (OP_WAITING_TIME, 64),
             (OP_RESUME_TIMER, 1),
         ]);
-        resume_receiving(&mut s);
+        resume_receiving(&mut s).unwrap();
         assert_eq!(s.args(OP_SET_WAITING_TIME), vec![128], "doubled");
         assert_eq!(s.called(OP_RESUME_READ), 0, "still waiting");
 
         let mut s = Script::with(&[(OP_QUEUE_FULL, 1), (OP_WAITING_TIME, 1024)]);
-        resume_receiving(&mut s);
+        resume_receiving(&mut s).unwrap();
         assert_eq!(s.called(OP_SET_WAITING_TIME), 0, "capped");
         assert_eq!(s.called(OP_RESUME_READ), 1, "timer failed: read now");
     }
@@ -602,15 +629,15 @@ mod tests {
     #[test]
     fn dispatch_counts_queued_bytes() {
         let mut s = Script::with(&[(OP_FACTORY_DISPATCH, 1)]);
-        assert_eq!(dispatch_task(&mut s, 10), SW_OK, "dispatched");
+        assert_eq!(dispatch_task(&mut s, 10).unwrap(), SW_OK, "dispatched");
         assert_eq!(s.args(OP_TASK_INIT), vec![10], "queued");
         assert_eq!(s.called(OP_COUNT_DISPATCH), 1, "counted");
 
         let mut s = Script::default();
-        assert_eq!(dispatch_task(&mut s, 0), SW_ERR, "failed");
+        assert_eq!(dispatch_task(&mut s, 0).unwrap(), SW_ERR, "failed");
         assert_eq!(s.called(OP_QUEUE_SUB), 0, "nothing queued");
         let mut s = Script::default();
-        assert_eq!(dispatch_task(&mut s, 10), SW_ERR, "failed");
+        assert_eq!(dispatch_task(&mut s, 10).unwrap(), SW_ERR, "failed");
         assert_eq!(s.args(OP_QUEUE_SUB), vec![10], "unqueued");
     }
 }

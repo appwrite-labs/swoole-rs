@@ -54,41 +54,41 @@ pub(crate) const DIRECT_SEND: u64 = 1 << 17;
 
 /// The context's send of type `kind` and `length` bytes; `SW_OK` or `SW_ERR`, and 0
 /// (upstream's `false`) where a send fails after the connection was found.
-pub(crate) fn send_to_connection<H: Host>(h: &mut H, kind: u64) -> i64 {
-    let flags = h.get(OP_SC_VERIFY);
+pub(crate) fn send_to_connection<H: Host>(h: &mut H, kind: u64) -> crate::Effect<i64> {
+    let flags = h.get(OP_SC_VERIFY)?;
     if flags & FOUND == 0 {
         h.get(if kind == SEND_DATA {
             LOG_SC_NO_SESSION_DATA
         } else {
             LOG_SC_NO_SESSION_EVENT
-        });
-        return SW_ERR;
+        })?;
+        return Ok(SW_ERR);
     }
     let send_yield = flags & SEND_YIELD != 0;
-    if flags & OVERFLOW != 0 && h.get(OP_MODE) != MODE_PROCESS {
+    if flags & OVERFLOW != 0 && h.get(OP_MODE)? != MODE_PROCESS {
         if send_yield {
-            h.get(OP_SC_YIELD_ERROR);
+            h.get(OP_SC_YIELD_ERROR)?;
         } else {
-            h.get(LOG_SC_SOCKET_OVERFLOW);
+            h.get(LOG_SC_SOCKET_OVERFLOW)?;
         }
-        return SW_ERR;
+        return Ok(SW_ERR);
     }
     if kind == CLOSE && flags & (CLOSE_RESET | CLOSE_FORCE | PEER_CLOSED) != 0 {
-        h.get(OP_SC_CLOSE);
-        return SW_OK;
+        h.get(OP_SC_CLOSE)?;
+        return Ok(SW_OK);
     }
     let halfclose = flags & HALFCLOSE != 0;
     if kind == PAUSE_RECV {
         if flags & REMOVED != 0 || flags & EVENT_READ == 0 {
-            return SW_OK;
+            return Ok(SW_OK);
         }
-        return if halfclose {
-            h.signed(OP_SC_REMOVE_READ)
+        return Ok(if halfclose {
+            h.signed(OP_SC_REMOVE_READ)?
         } else if flags & EVENT_WRITE != 0 {
-            h.op(OP_SC_SET, WRITE).cast_signed()
+            h.op(OP_SC_SET, WRITE)?.cast_signed()
         } else {
-            h.signed(OP_SC_DEL)
-        };
+            h.signed(OP_SC_DEL)?
+        });
     }
     if kind == RESUME_RECV {
         let skip = if halfclose {
@@ -97,83 +97,83 @@ pub(crate) fn send_to_connection<H: Host>(h: &mut H, kind: u64) -> i64 {
             flags & REMOVED == 0 || flags & EVENT_READ != 0
         };
         if skip {
-            return SW_OK;
+            return Ok(SW_OK);
         }
-        return if halfclose {
-            h.signed(OP_SC_ADD_READ)
+        return Ok(if halfclose {
+            h.signed(OP_SC_ADD_READ)?
         } else if flags & EVENT_WRITE != 0 {
-            h.op(OP_SC_SET, READ | WRITE).cast_signed()
+            h.op(OP_SC_SET, READ | WRITE)?.cast_signed()
         } else {
-            h.op(OP_SC_ADD, READ).cast_signed()
-        };
+            h.op(OP_SC_ADD, READ)?.cast_signed()
+        });
     }
     if flags & OUT_EMPTY != 0 {
         if kind == CLOSE {
-            h.get(OP_SC_CLOSE);
-            return SW_OK;
+            h.get(OP_SC_CLOSE)?;
+            return Ok(SW_OK);
         }
-        if kind != SEND_FILE && flags & DIRECT_SEND != 0 && direct_send(h, flags >> 32) {
-            return SW_OK;
+        if kind != SEND_FILE && flags & DIRECT_SEND != 0 && direct_send(h, flags >> 32)? {
+            return Ok(SW_OK);
         }
-        h.get(OP_SC_ENSURE_BUFFER);
+        h.get(OP_SC_ENSURE_BUFFER)?;
     }
     if kind == CLOSE {
-        h.get(OP_SC_QUEUE_CLOSE);
+        h.get(OP_SC_QUEUE_CLOSE)?;
         if halfclose {
-            h.get(OP_SC_REMOVE_READ);
+            h.get(OP_SC_REMOVE_READ)?;
         }
     } else if kind == SEND_FILE {
-        if h.signed(OP_SC_SENDFILE) < 0 {
-            return 0;
+        if h.signed(OP_SC_SENDFILE)? < 0 {
+            return Ok(0);
         }
     } else {
         if flags & PEER_CLOSED != 0 {
-            h.get(LOG_SC_CLOSED_BY_CLIENT);
-            return 0;
+            h.get(LOG_SC_CLOSED_BY_CLIENT)?;
+            return Ok(0);
         }
-        if h.is(OP_SC_OUT_FULL) {
+        if h.is(OP_SC_OUT_FULL)? {
             if send_yield {
-                h.get(OP_SC_YIELD_ERROR);
+                h.get(OP_SC_YIELD_ERROR)?;
             } else {
-                h.get(LOG_SC_CONN_OVERFLOW);
+                h.get(LOG_SC_CONN_OVERFLOW)?;
             }
-            h.get(OP_SC_OVERFLOW);
+            h.get(OP_SC_OVERFLOW)?;
             if flags & ON_BUFFER_EMPTY != 0 && flags & ON_BUFFER_FULL == 0 {
-                h.get(OP_SC_HIGH_WATERMARK);
+                h.get(OP_SC_HIGH_WATERMARK)?;
             }
         }
-        h.get(OP_SC_APPEND);
+        h.get(OP_SC_APPEND)?;
         if flags & ON_BUFFER_FULL != 0
-            && h.get(OP_SC_FLAGS) & HIGH_WATERMARK == 0
-            && h.is(OP_SC_OUT_HIGH)
+            && h.get(OP_SC_FLAGS)? & HIGH_WATERMARK == 0
+            && h.is(OP_SC_OUT_HIGH)?
         {
-            h.get(OP_SC_NOTIFY_FULL);
+            h.get(OP_SC_NOTIFY_FULL)?;
         }
     }
-    if h.float(OP_PORT_IDLE_TIME) > 0.0 && !h.is(OP_SC_HAS_SEND_TIMER) {
-        h.get(OP_SC_IDLE_TIMER);
+    if h.float(OP_PORT_IDLE_TIME)? > 0.0 && !h.is(OP_SC_HAS_SEND_TIMER)? {
+        h.get(OP_SC_IDLE_TIMER)?;
     }
-    if !h.is(OP_SC_WRITABLE) {
-        h.get(OP_SC_ADD_WRITE);
+    if !h.is(OP_SC_WRITABLE)? {
+        h.get(OP_SC_ADD_WRITE)?;
     }
-    SW_OK
+    Ok(SW_OK)
 }
 
 /// Writes the `length` bytes straight to the socket: true when all of them went, else
 /// the rest is buffered.
-fn direct_send<H: Host>(h: &mut H, length: u64) -> bool {
+fn direct_send<H: Host>(h: &mut H, length: u64) -> crate::Effect<bool> {
     loop {
-        let sent = h.signed(OP_SC_SEND);
+        let sent = h.signed(OP_SC_SEND)?;
         if sent >= 0 && sent.cast_unsigned() == length {
-            h.get(OP_SC_TOUCH_SEND);
-            return true;
+            h.get(OP_SC_TOUCH_SEND)?;
+            return Ok(true);
         }
         if sent > 0 {
-            h.op(OP_SC_ADVANCE, sent.cast_unsigned());
-            return false;
+            h.op(OP_SC_ADVANCE, sent.cast_unsigned())?;
+            return Ok(false);
         }
-        if h.signed(OP_ERRNO) != i64::from(libc::EINTR) {
-            return false;
+        if h.signed(OP_ERRNO)? != i64::from(libc::EINTR) {
+            return Ok(false);
         }
     }
 }
@@ -197,20 +197,20 @@ mod tests {
     #[test]
     fn missing_session_logs_by_kind() {
         let mut s = Script::default();
-        assert_eq!(send_to_connection(&mut s, SEND_DATA), SW_ERR);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), SW_ERR);
         assert_eq!(s.called(LOG_SC_NO_SESSION_DATA), 1);
         let mut s = Script::default();
-        assert_eq!(send_to_connection(&mut s, CLOSE), SW_ERR);
+        assert_eq!(send_to_connection(&mut s, CLOSE).unwrap(), SW_ERR);
         assert_eq!(s.called(LOG_SC_NO_SESSION_EVENT), 1);
     }
 
     #[test]
     fn overflow_outside_process_mode_refuses() {
         let mut s = found(OVERFLOW | SEND_YIELD, &[(OP_MODE, MODE_BASE)]);
-        assert_eq!(send_to_connection(&mut s, SEND_DATA), SW_ERR);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), SW_ERR);
         assert_eq!(s.called(OP_SC_YIELD_ERROR), 1);
         let mut s = found(OVERFLOW, &[(OP_MODE, MODE_BASE)]);
-        assert_eq!(send_to_connection(&mut s, SEND_DATA), SW_ERR);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), SW_ERR);
         assert_eq!(s.called(LOG_SC_SOCKET_OVERFLOW), 1);
     }
 
@@ -218,7 +218,7 @@ mod tests {
     fn forced_close_closes_now() {
         for flag in [CLOSE_RESET, CLOSE_FORCE, PEER_CLOSED] {
             let mut s = found(flag, &[]);
-            assert_eq!(send_to_connection(&mut s, CLOSE), SW_OK);
+            assert_eq!(send_to_connection(&mut s, CLOSE).unwrap(), SW_OK);
             assert_eq!(s.called(OP_SC_CLOSE), 1);
         }
     }
@@ -226,38 +226,38 @@ mod tests {
     #[test]
     fn pause_and_resume() {
         let mut s = found(EVENT_READ | EVENT_WRITE, &[(OP_SC_SET, 0)]);
-        assert_eq!(send_to_connection(&mut s, PAUSE_RECV), SW_OK);
+        assert_eq!(send_to_connection(&mut s, PAUSE_RECV).unwrap(), SW_OK);
         assert_eq!(s.args(OP_SC_SET), vec![WRITE]);
         let mut s = found(EVENT_READ, &[]);
-        send_to_connection(&mut s, PAUSE_RECV);
+        send_to_connection(&mut s, PAUSE_RECV).unwrap();
         assert_eq!(s.called(OP_SC_DEL), 1);
         let mut s = found(REMOVED | EVENT_READ, &[]);
-        send_to_connection(&mut s, PAUSE_RECV);
+        send_to_connection(&mut s, PAUSE_RECV).unwrap();
         assert_eq!(s.called(OP_SC_DEL), 0, "already removed");
 
         let mut s = found(REMOVED | EVENT_WRITE, &[]);
-        send_to_connection(&mut s, RESUME_RECV);
+        send_to_connection(&mut s, RESUME_RECV).unwrap();
         assert_eq!(s.args(OP_SC_SET), vec![READ | WRITE]);
         let mut s = found(REMOVED, &[]);
-        send_to_connection(&mut s, RESUME_RECV);
+        send_to_connection(&mut s, RESUME_RECV).unwrap();
         assert_eq!(s.args(OP_SC_ADD), vec![READ]);
         let mut s = found(0, &[]);
-        send_to_connection(&mut s, RESUME_RECV);
+        send_to_connection(&mut s, RESUME_RECV).unwrap();
         assert_eq!(s.called(OP_SC_ADD), 0, "still in the reactor");
     }
 
     #[test]
     fn halfclose_pause_and_resume() {
         let mut s = found(EVENT_READ | EVENT_WRITE | HALFCLOSE, &[]);
-        send_to_connection(&mut s, PAUSE_RECV);
+        send_to_connection(&mut s, PAUSE_RECV).unwrap();
         assert_eq!(s.called(OP_SC_REMOVE_READ), 1);
         assert_eq!(s.called(OP_SC_SET), 0);
         let mut s = found(HALFCLOSE, &[]);
-        send_to_connection(&mut s, RESUME_RECV);
+        send_to_connection(&mut s, RESUME_RECV).unwrap();
         assert_eq!(s.called(OP_SC_ADD_READ), 1, "not removed, but not reading");
         for closing in [CLOSED, PEER_CLOSED, CLOSE_QUEUED, CLOSE_NOTIFIED] {
             let mut s = found(REMOVED | closing | HALFCLOSE, &[]);
-            send_to_connection(&mut s, RESUME_RECV);
+            send_to_connection(&mut s, RESUME_RECV).unwrap();
             assert_eq!(s.called(OP_SC_ADD_READ), 0);
         }
     }
@@ -265,10 +265,10 @@ mod tests {
     #[test]
     fn close_with_empty_output_closes_else_queues() {
         let mut s = found(OUT_EMPTY, &[]);
-        assert_eq!(send_to_connection(&mut s, CLOSE), SW_OK);
+        assert_eq!(send_to_connection(&mut s, CLOSE).unwrap(), SW_OK);
         assert_eq!(s.called(OP_SC_CLOSE), 1);
         let mut s = found(HALFCLOSE, &[]);
-        assert_eq!(send_to_connection(&mut s, CLOSE), SW_OK);
+        assert_eq!(send_to_connection(&mut s, CLOSE).unwrap(), SW_OK);
         assert_eq!(s.called(OP_SC_QUEUE_CLOSE), 1);
         assert_eq!(s.called(OP_SC_REMOVE_READ), 1, "halfclose stops reading");
         assert_eq!(s.called(OP_SC_ADD_WRITE), 1);
@@ -279,19 +279,19 @@ mod tests {
         let mut s =
             found(OUT_EMPTY | DIRECT_SEND | 10 << 32, &[]).queue(OP_SC_SEND, &[u64::MAX, 10]);
         s.facts.insert(OP_ERRNO, libc::EINTR.cast_unsigned().into());
-        assert_eq!(send_to_connection(&mut s, SEND_DATA), SW_OK);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), SW_OK);
         assert_eq!(s.called(OP_SC_SEND), 2);
         assert_eq!(s.called(OP_SC_TOUCH_SEND), 1);
         assert_eq!(s.called(OP_SC_APPEND), 0);
 
         let mut s = found(OUT_EMPTY | DIRECT_SEND | 10 << 32, &[]).queue(OP_SC_SEND, &[4]);
-        send_to_connection(&mut s, SEND_DATA);
+        send_to_connection(&mut s, SEND_DATA).unwrap();
         assert_eq!(s.args(OP_SC_ADVANCE), vec![4]);
         assert_eq!(s.called(OP_SC_ENSURE_BUFFER), 1);
         assert_eq!(s.called(OP_SC_APPEND), 1);
 
         let mut s = found(OUT_EMPTY | DIRECT_SEND, &[]);
-        send_to_connection(&mut s, SEND_FILE);
+        send_to_connection(&mut s, SEND_FILE).unwrap();
         assert_eq!(s.called(OP_SC_SEND), 0, "files are never sent directly");
         assert_eq!(s.called(OP_SC_SENDFILE), 1);
     }
@@ -299,21 +299,21 @@ mod tests {
     #[test]
     fn buffered_send_watermarks() {
         let mut s = found(PEER_CLOSED, &[]);
-        assert_eq!(send_to_connection(&mut s, SEND_DATA), 0);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), 0);
         assert_eq!(s.called(LOG_SC_CLOSED_BY_CLIENT), 1);
 
         let mut s = found(ON_BUFFER_EMPTY, &[(OP_SC_OUT_FULL, 1)]);
-        assert_eq!(send_to_connection(&mut s, SEND_DATA), SW_OK);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), SW_OK);
         assert_eq!(s.called(LOG_SC_CONN_OVERFLOW), 1);
         assert_eq!(s.called(OP_SC_OVERFLOW), 1);
         assert_eq!(s.called(OP_SC_HIGH_WATERMARK), 1);
 
         let mut s = found(ON_BUFFER_FULL, &[(OP_SC_OUT_HIGH, 1)]);
-        send_to_connection(&mut s, SEND_DATA);
+        send_to_connection(&mut s, SEND_DATA).unwrap();
         assert_eq!(s.called(OP_SC_NOTIFY_FULL), 1);
         let mut s = found(ON_BUFFER_FULL, &[(OP_SC_OUT_HIGH, 1)])
             .queue(OP_SC_FLAGS, &[ON_BUFFER_FULL | HIGH_WATERMARK]);
-        send_to_connection(&mut s, SEND_DATA);
+        send_to_connection(&mut s, SEND_DATA).unwrap();
         assert_eq!(
             s.called(OP_SC_NOTIFY_FULL),
             0,
@@ -321,7 +321,7 @@ mod tests {
         );
 
         let mut s = found(0, &[(OP_SC_SENDFILE, u64::MAX)]);
-        assert_eq!(send_to_connection(&mut s, SEND_FILE), 0);
+        assert_eq!(send_to_connection(&mut s, SEND_FILE).unwrap(), 0);
         assert_eq!(s.called(OP_SC_ADD_WRITE), 0);
     }
 

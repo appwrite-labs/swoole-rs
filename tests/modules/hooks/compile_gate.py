@@ -19,7 +19,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import module_patches, patches_for
+from tools.build_hybrid import GRADUATED, MODULES, REQUIRES, module_patches, patches_for
 
 
 def requirements():
@@ -27,12 +27,14 @@ def requirements():
     selected units include their headers and records (the reactor's socket, #947)."""
     plan = json.loads((ROOT/'migration/modules.json').read_text())['modules']
     by_id = {module['id']: module for module in plan}
-    wanted, pending = set(), ['M07']
+    names = {module_id: name for name, (module_id, _) in MODULES.items()}
+    wanted, pending = set(), ['M07', *(MODULES[name][0] for name in GRADUATED)]
     while pending:
         module = pending.pop()
         if module not in wanted:
             wanted.add(module)
             pending.extend(by_id[module].get('depends_on', []))
+            pending.extend(MODULES[name][0] for name in REQUIRES.get(names.get(module), ()))
     return [module for module in plan if module['id'] in wanted]
 from tools.build_upstream import COMMIT as PIN
 

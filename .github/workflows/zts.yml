@@ -59,6 +59,12 @@ jobs:
           set -- target/phpt/zts/*.json
           if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt-zts.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Thread server exit lifecycle companion
+        run: |
+          python3 tests/modules/integration/server_exit.py --checkout "$PWD" --source target/upstream/src \
+            --runner target/upstream/src/run-tests.php --php "$PWD/target/php-zts/bin/php" \
+            --engine upstream=target/phpt/upstream.so --engine hybrid=target/phpt/hybrid.so \
+            --output target/phpt/server-exit-companion.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -67,3 +73,5 @@ jobs:
             phpt-zts.json
             target/phpt/zts/
             target/phpt/recheck/
+            target/phpt/server-exit-companion.json
+            target/phpt/server-exit-*/

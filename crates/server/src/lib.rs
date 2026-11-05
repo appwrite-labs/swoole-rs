@@ -77,58 +77,88 @@ pub(crate) const MODE_BASE: u64 = 1;
 pub(crate) const MODE_PROCESS: u64 = 2;
 pub(crate) const MODE_THREAD: u64 = 3;
 
+/// Abnormal native effects stop the current operation without unwinding Rust.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NativeFault(pub u32);
+pub(crate) type Effect<T> = Result<T, NativeFault>;
+
 /// What Rust asks of the server it runs on.
 pub(crate) trait Host {
-    fn op(&mut self, op: u32, arg: u64) -> u64;
-
-    fn get(&mut self, op: u32) -> u64 {
+    fn op(&mut self, op: u32, arg: u64) -> Effect<u64>;
+    fn get(&mut self, op: u32) -> Effect<u64> {
         self.op(op, 0)
     }
-    fn is(&mut self, op: u32) -> bool {
-        self.get(op) != 0
+    fn is(&mut self, op: u32) -> Effect<bool> {
+        Ok(self.get(op)? != 0)
     }
-    fn signed(&mut self, op: u32) -> i64 {
-        self.get(op).cast_signed()
+    fn signed(&mut self, op: u32) -> Effect<i64> {
+        Ok(self.get(op)?.cast_signed())
     }
-    fn float(&mut self, op: u32) -> f64 {
-        f64::from_bits(self.get(op))
+    fn float(&mut self, op: u32) -> Effect<f64> {
+        Ok(f64::from_bits(self.get(op)?))
     }
-    /// The server's Rust-owned state.
-    fn state(&mut self) -> &ServerState;
+    fn state(&mut self) -> Effect<&ServerState>;
 }
 
 /// The state of a server without one, which native code never passes.
 static NO_STATE: ServerState = ServerState::new();
 
+/// Native effects report faults as data; their enclosing C++ frame owns the payload.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ServerReply {
+    pub value: u64,
+    pub fault: u32,
+}
+/// A callback catches every abnormal native effect before returning.
+pub type ServerGuardedCall = unsafe extern "C" fn(*mut c_void, u32, u64) -> ServerReply;
+enum Call {
+    Legacy(ServerCall),
+    Guarded(ServerGuardedCall),
+}
+
 struct Native {
     context: *mut c_void,
-    call: ServerCall,
+    call: Call,
     state: *const ServerState,
 }
 
 impl Host for Native {
-    fn op(&mut self, op: u32, arg: u64) -> u64 {
+    fn op(&mut self, op: u32, arg: u64) -> Effect<u64> {
         if !self.state.is_null() {
             // SAFETY: run_state lends live synchronized records; this leaf access ends before callbacks.
             let fact = unsafe { config::native_fact(self.state, op, arg) };
             // SAFETY: the same call lends synchronized shared records, without holding callbacks.
             let fact = fact.or_else(|| unsafe { shared::native_fact(self.state, op, arg) });
             if let Some(value) = fact {
-                return value;
+                return Ok(value);
             }
         }
-        // SAFETY: a native fact or effect on the live server in `context`.
-        unsafe { (self.call)(self.context, op, arg) }
+        match self.call {
+            Call::Legacy(call) => {
+                // SAFETY: legacy callers promise a nonthrowing effect on the live context.
+                Ok(unsafe { call(self.context, op, arg) })
+            }
+            Call::Guarded(call) => {
+                // SAFETY: native captures abnormalities below this Rust frame.
+                let reply = unsafe { call(self.context, op, arg) };
+                if reply.fault == 0 {
+                    Ok(reply.value)
+                } else {
+                    Err(NativeFault(reply.fault))
+                }
+            }
+        }
     }
-    fn state(&mut self) -> &ServerState {
+    fn state(&mut self) -> Effect<&ServerState> {
         if !self.state.is_null() {
             // SAFETY: run_state lends this state for the entire operation.
-            return unsafe { &*self.state };
+            return Ok(unsafe { &*self.state });
         }
-        let address = usize::try_from(self.get(ops::OP_STATE)).unwrap_or(0);
+        let address = usize::try_from(self.get(ops::OP_STATE)?).unwrap_or(0);
         let state = core::ptr::with_exposed_provenance::<ServerState>(address);
         // SAFETY: native code passes `Server::state_`, which lives as long as the server.
-        unsafe { state.as_ref() }.unwrap_or(&NO_STATE)
+        Ok(unsafe { state.as_ref() }.unwrap_or(&NO_STATE))
     }
 }
 
@@ -147,12 +177,13 @@ pub unsafe extern "C" fn swr_v1_server_run(
     run(
         &mut Native {
             context,
-            call,
+            call: Call::Legacy(call),
             state: core::ptr::null(),
         },
         operation,
         arg,
     )
+    .unwrap_or(SW_ERR)
 }
 
 /// Runs a server operation directly over the server's owned records.
@@ -172,15 +203,46 @@ pub unsafe extern "C" fn swr_v1_server_run_state(
     run(
         &mut Native {
             context,
-            call,
+            call: Call::Legacy(call),
             state,
         },
         operation,
         arg,
     )
+    .unwrap_or(SW_ERR)
 }
 
-fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
+/// Run one operation with typed abnormal-effect propagation. No effect after the
+/// first fault executes; local Rust owners are dropped before this returns.
+/// # Safety
+/// Context/state remain live and synchronized; call catches all native unwinds,
+/// bailouts and thread exits before returning, and owns their pending payload.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_run_guarded(
+    operation: u32,
+    arg: u64,
+    context: *mut c_void,
+    call: ServerGuardedCall,
+    state: *const ServerState,
+) -> ServerReply {
+    match run(
+        &mut Native {
+            context,
+            call: Call::Guarded(call),
+            state,
+        },
+        operation,
+        arg,
+    ) {
+        Ok(value) => ServerReply {
+            value: value.cast_unsigned(),
+            fault: 0,
+        },
+        Err(NativeFault(fault)) => ServerReply { value: 0, fault },
+    }
+}
+
+fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use ops::{
         RUN_ACCEPT, RUN_ADD_CONNECTION, RUN_CHILD_EXIT, RUN_CREATE, RUN_DESTROY,
         RUN_DISABLE_ACCEPT, RUN_ENABLE_ACCEPT, RUN_HEALTHY, RUN_IDLE_TIMEOUT, RUN_INCOMING,
@@ -188,74 +250,74 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         RUN_SIGNAL_SHUTDOWN, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STOP_MASTER_THREAD,
         RUN_STORE_LISTEN_SOCKET,
     };
-    match operation {
-        ops::RUN_RT_READ => conn_io::read(h, arg),
-        ops::RUN_RT_WRITE => conn_io::write(h, arg),
-        ops::RUN_PEER_CLOSE => conn_io::peer_close(h, arg),
-        ops::RUN_CLOSE_CONNECTION => conn_io::close_connection(h),
-        RUN_ACCEPT => connection::accept(h),
-        RUN_ADD_CONNECTION => i64::from(connection::add_connection(h)),
-        RUN_INCOMING => connection::incoming(h),
+    Ok(match operation {
+        ops::RUN_RT_READ => conn_io::read(h, arg)?,
+        ops::RUN_RT_WRITE => conn_io::write(h, arg)?,
+        ops::RUN_PEER_CLOSE => conn_io::peer_close(h, arg)?,
+        ops::RUN_CLOSE_CONNECTION => conn_io::close_connection(h)?,
+        RUN_ACCEPT => connection::accept(h)?,
+        RUN_ADD_CONNECTION => i64::from(connection::add_connection(h)?),
+        RUN_INCOMING => connection::incoming(h)?,
         RUN_IDLE_TIMEOUT => {
-            connection::idle_timeout(h);
+            connection::idle_timeout(h)?;
             SW_OK
         }
         RUN_DISABLE_ACCEPT => {
-            connection::disable_accept(h);
+            connection::disable_accept(h)?;
             SW_OK
         }
         RUN_ENABLE_ACCEPT => {
-            connection::enable_accept(h);
+            connection::enable_accept(h)?;
             SW_OK
         }
         RUN_SET_MAX_CONNECTION => {
-            connection::set_max_connection(h, u32::try_from(arg).unwrap_or(u32::MAX));
+            connection::set_max_connection(h, u32::try_from(arg).unwrap_or(u32::MAX))?;
             SW_OK
         }
-        RUN_HEALTHY => i64::from(connection::healthy(h, f64::from_bits(arg))),
-        RUN_SHUTDOWN => i64::from(control::shutdown(h)),
+        RUN_HEALTHY => i64::from(connection::healthy(h, f64::from_bits(arg))?),
+        RUN_SHUTDOWN => i64::from(control::shutdown(h)?),
         ops::RUN_REOPEN_LOGGER => {
-            control::reopen_logger(h);
+            control::reopen_logger(h)?;
             1
         }
         RUN_SIGNAL => {
-            control::signal(h, i32::try_from(arg).unwrap_or(0));
+            control::signal(h, i32::try_from(arg).unwrap_or(0))?;
             SW_OK
         }
-        RUN_SIGNAL_SHUTDOWN => i64::from(control::signal_shutdown(h)),
-        RUN_CHILD_EXIT => i64::from(control::child_exit(h)),
+        RUN_SIGNAL_SHUTDOWN => i64::from(control::signal_shutdown(h)?),
+        RUN_CHILD_EXIT => i64::from(control::child_exit(h)?),
         RUN_STOP_MASTER_THREAD => {
-            control::stop_master_thread(h);
+            control::stop_master_thread(h)?;
             SW_OK
         }
         RUN_MASTER_TIMER => {
-            control::master_timer(h);
+            control::master_timer(h)?;
             SW_OK
         }
         RUN_INIT_SIGNALS => {
-            control::init_signals(h);
+            control::init_signals(h)?;
             SW_OK
         }
-        RUN_CREATE => startup::create(h),
-        RUN_START_CHECK => startup::start_check(h),
-        RUN_START_MASTER_THREAD => startup::start_master_thread(h),
+        RUN_CREATE => startup::create(h)?,
+        RUN_START_CHECK => startup::start_check(h)?,
+        RUN_START_MASTER_THREAD => startup::start_master_thread(h)?,
         RUN_STORE_LISTEN_SOCKET => {
-            startup::store_listen_socket(h);
+            startup::store_listen_socket(h)?;
             SW_OK
         }
         RUN_DESTROY => {
-            startup::destroy(h);
+            startup::destroy(h)?;
             SW_OK
         }
-        _ => match reactor_io::run(h, operation, arg) {
+        _ => match reactor_io::run(h, operation, arg)? {
             Some(result) => result,
-            None => match state::run(h, operation, arg) {
+            None => match state::run(h, operation, arg)? {
                 Some(result) => result,
-                None if operation == ops::RUN_SC_SEND => send::send_to_connection(h, arg),
-                None => reactor_thread::run(h, operation, arg),
+                None if operation == ops::RUN_SC_SEND => send::send_to_connection(h, arg)?,
+                None => reactor_thread::run(h, operation, arg)?,
             },
         },
-    }
+    })
 }
 
 #[cfg(test)]
@@ -298,17 +360,20 @@ pub(crate) mod script {
     }
 
     impl Host for Script {
-        fn op(&mut self, op: u32, arg: u64) -> u64 {
+        fn op(&mut self, op: u32, arg: u64) -> crate::Effect<u64> {
             self.log.push((op, arg));
             if let Some(answers) = self.queued.get_mut(&op)
                 && !answers.is_empty()
             {
-                return answers.remove(0);
+                return Ok(answers.remove(0));
             }
-            self.facts.get(&op).copied().unwrap_or(0)
+            Ok(self.facts.get(&op).copied().unwrap_or(0))
         }
-        fn state(&mut self) -> &ServerState {
-            &self.state
+        fn state(&mut self) -> crate::Effect<&crate::ServerState> {
+            Ok(&self.state)
         }
     }
 }
+
+#[cfg(test)]
+mod fault_tests;

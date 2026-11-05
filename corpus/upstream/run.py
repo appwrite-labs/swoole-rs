@@ -57,6 +57,30 @@ def timed_phase(report, phase):
 FIXED_PORTS = {'tests/swoole_timer/bug_4794_8.phpt': 9601}
 
 
+# Only this named ZTS original is excluded after the same output interleaving was
+# reproduced on native and hybrid (#1120). Its registered source/hash is retained;
+# the repository-owned server_exit companion qualifies lifecycle behavior instead.
+EXCLUDED = {'tests/swoole_thread/server/exit.phpt':
+            'two WorkerStart echo operands interleave on native and hybrid; native attempt44 '
+            'and hybrid attempts4/17/30/32 in the paired45 stress reproduce worker '
+            'startworker start (#1120); lifecycle companion: tests/modules/integration/server_exit.py'}
+
+
+def named_exclusion(case, metadata):
+    """A named original is excluded only on the verified runtime where its output races."""
+    if metadata.get('zts') == 1 and 'threads' in metadata.get('capabilities', []):
+        return EXCLUDED.get(case['path'])
+    return None
+
+
+def verdict_failed(row, require_all):
+    """Named exclusions stay non-passing; a real failure is never waived."""
+    if row['status'] == 'failed':
+        return True
+    return (require_all and row['status'] != 'passed' and row['test'] not in RACY
+            and not (row['status'] == 'excluded' and row['test'] in EXCLUDED))
+
+
 # Originals whose verdict is decided by something outside the engine, on upstream too: a
 # race in the test itself, or the runner's network. They are recorded unsupported, never
 # run or counted as passed.
@@ -358,7 +382,11 @@ def main():
                     runnable = []
                     for case in cases:
                         missing = sorted(set(case['requires']) - set(metadata['capabilities']))
-                        if case['path'] in RACY:
+                        exclusion = named_exclusion(case, metadata)
+                        if exclusion:
+                            record_result(report, engine, case, {'status': 'excluded',
+                                          'detail': exclusion, 'seconds': 0})
+                        elif case['path'] in RACY:
                             record_result(report, engine, case, {'status': 'unsupported',
                                           'detail': f'racy original: {RACY[case["path"]]}', 'seconds': 0})
                         elif missing:
@@ -390,8 +418,7 @@ def main():
             report['execution_status'] = 'interrupted'
         save_report(args.output, report)
     # A RACY row stays unsupported in the report; its verdict means nothing on either engine.
-    return int(any(row['status'] == 'failed' or args.require_all and row['status'] != 'passed'
-                   and row['test'] not in RACY for row in report['results']))
+    return int(any(verdict_failed(row, args.require_all) for row in report['results']))
 
 
 if __name__ == '__main__':

@@ -37,7 +37,7 @@ def main():
             bodies=[block(texts[unit],signature) for signature in signatures]
             if variant=='selected':bodies.append('#include "packet_host.h"')
             (tree/(variant+'-packet.inc')).write_text('\n'.join(bodies))
-        command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'native/reactor'),'-I'+str(a.source/'include'),'-I'+str(a.source),*shlex.split(subprocess.check_output(['pkg-config','--cflags','openssl'],text=True)),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/packet_gate.cc'),str(a.archive.resolve()),'-lpthread','-o',str(tree/'packet')]
+        command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'native/include'),'-I'+str(ROOT/'native/reactor'),'-I'+str(a.source/'include'),'-I'+str(a.source),*shlex.split(subprocess.check_output(['pkg-config','--cflags','openssl'],text=True)),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/packet_gate.cc'),str(a.archive.resolve()),'-lpthread','-o',str(tree/'packet')]
         if a.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
         if sys.platform.startswith('linux'):command+=['-ldl','-lm']
         build=subprocess.run(command,capture_output=True,text=True)
