@@ -1,7 +1,7 @@
 //! `swoole_async_coro.cc`: `swoole_async_set()`, the AIO options it shares with
 //! `Server::set()` and `Process\Pool::set()`, and `swoole_async_dns_lookup_coro()`
-//! with its per-thread cache. C++ lends `SwooleG`'s fields and the coroutine DNS
-//! lookup.
+//! with its per-thread cache. Core settings go directly to corebase's record;
+//! C++ lends the DNS cache refresh setting and coroutine lookup.
 use crate::{
     constants::IOURING,
     module::PHP_FATAL_ERROR,
@@ -15,8 +15,11 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::{
-    swoole_rand_any, swr_v1_core_dns_lookup_random, swr_v1_core_set_dns_lookup_random,
-    swr_v1_core_set_wait_signal,
+    swoole_rand_any, swr_v1_core_dns_lookup_random, swr_v1_core_set_aio_core_worker_num,
+    swr_v1_core_set_aio_max_idle_time, swr_v1_core_set_aio_max_wait_time,
+    swr_v1_core_set_aio_worker_num, swr_v1_core_set_dns_lookup_random,
+    swr_v1_core_set_enable_coroutine, swr_v1_core_set_iouring_entries,
+    swr_v1_core_set_iouring_flag, swr_v1_core_set_iouring_workers, swr_v1_core_set_wait_signal,
 };
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, bailout, handlers, php_error,
@@ -76,38 +79,35 @@ pub(crate) unsafe extern "C" fn rshutdown() {
 /// After MINIT, with a live options table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_set_aio_option(options: *mut zend_array) {
-    let ops = ops();
-    // Every setter below is C++'s, taking a plain value.
     if let Some(value) = get(options, c"aio_core_worker_num") {
-        // SAFETY: as above.
-        unsafe { (ops.set_aio_core_worker_num)(bounded(long(value), 1)) };
+        swr_v1_core_set_aio_core_worker_num(bounded(long(value), 1));
     }
     if let Some(value) = get(options, c"aio_worker_num") {
-        // SAFETY: as above.
-        unsafe { (ops.set_aio_worker_num)(bounded(long(value), 1)) };
+        swr_v1_core_set_aio_worker_num(bounded(long(value), 1));
     }
     if let Some(value) = get(options, c"aio_max_wait_time") {
-        // SAFETY: as above.
-        unsafe { (ops.set_aio_max_wait_time)(double(value)) };
+        swr_v1_core_set_aio_max_wait_time(double(value));
     }
     if let Some(value) = get(options, c"aio_max_idle_time") {
-        // SAFETY: as above.
-        unsafe { (ops.set_aio_max_idle_time)(double(value)) };
+        swr_v1_core_set_aio_max_idle_time(double(value));
     }
     if crate::FLAGS.load(Ordering::Relaxed) & IOURING == 0 {
         return;
     }
     if let Some(value) = get(options, c"iouring_entries") {
-        // SAFETY: as above.
-        unsafe { (ops.set_iouring_entries)(bounded(long(value), 0)) };
+        swr_v1_core_set_iouring_entries(bounded(long(value), 0));
     }
     if let Some(value) = get(options, c"iouring_workers") {
-        // SAFETY: as above.
-        unsafe { (ops.set_iouring_workers)(bounded(long(value), 0)) };
+        swr_v1_core_set_iouring_workers(bounded(long(value), 0));
     }
     if let Some(value) = get(options, c"iouring_flag") {
-        // SAFETY: as above.
-        unsafe { (ops.set_iouring_flag)(long(value)) };
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the native setter assigned the PHP int64_t to uint32_t"
+        )]
+        let flag = long(value) as u32;
+        swr_v1_core_set_iouring_flag(flag);
     }
 }
 
@@ -158,19 +158,16 @@ fn async_set(call: &Call) {
         unsafe { (ops.set_dns_cache_refresh_time)(double(value)) };
     }
     if let Some(value) = get(options, c"thread_num").or_else(|| get(options, c"min_thread_num")) {
-        // SAFETY: as above.
-        unsafe { (ops.set_aio_core_worker_num)(bounded(long(value), 1)) };
+        swr_v1_core_set_aio_core_worker_num(bounded(long(value), 1));
     }
     if let Some(value) = get(options, c"max_thread_num") {
-        // SAFETY: as above.
-        unsafe { (ops.set_aio_worker_num)(bounded(long(value), 1)) };
+        swr_v1_core_set_aio_worker_num(bounded(long(value), 1));
     }
     if let Some(value) = get(options, c"dns_lookup_random") {
         swr_v1_core_set_dns_lookup_random(truthy(value));
     }
     if let Some(value) = get(options, c"enable_coroutine") {
-        // SAFETY: as above.
-        unsafe { (ops.set_enable_coroutine)(u8::from(truthy(value))) };
+        swr_v1_core_set_enable_coroutine(truthy(value));
     }
     call.set_bool(true);
 }

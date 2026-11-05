@@ -1,10 +1,10 @@
 # Clients and resolver migration
 
-Partial, opt-in conversion of client and resolver policy into Rust
-(`crates/clients`, overlay `migration/patches/clients/`). Native code keeps
-ownership of sockets, Zend values, callbacks, allocations and IO; Rust makes
-copied-fact decisions and native effects run after Rust returns. No default
-activation.
+Opt-in client and resolver migration (`crates/clients`, patches in
+`migration/patches/clients/`). Rust owns `network::Client` state and operations,
+using the reactor's socket record directly. C++ retains Protocol, TLS/proxy
+objects, callbacks and Zend boundaries through the installed native table.
+The persistent client pool is also Rust-owned.
 
 ## Actual-body differentials
 
@@ -30,13 +30,18 @@ the pinned C++ in `swoole-rs-oracle`, as the Set-Cookie split did
 |---|---|
 | `gate.py` | Address URL/port policy, hosts-file lookup (real file IO) |
 | `codec_gate.py` | DNS domain encode/decode and whole query/response callers |
-| `pool_gate.py` | Rust persistent pool vs native reference, fork isolation; `--faults` adds allocation-failure cases from a cfg(test) archive |
 | `http_format_gate.py` | Request formatting against the pinned `sw_snprintf` |
 | `ip_gate.py` | Numeric Address validation/assignment and loopback against libc |
 | `ip_text_gate.py` | DNS numeric IP formatting |
 
 `python3 -m unittest discover -s tests/modules/clients -p 'test_*.py'` checks
 that the shared command recorder in `gate.py` keeps non-UTF-8 diagnostics.
+
+The persistent-pool witness runs in `clients-unit` (`pool::tests`): the same
+100,000 operations, 700,000 state checks, fork isolation, token teardown and
+allocation-failure prefixes now call the Rust exports directly. Its retired
+C++ RAII adapter had no production callers. PHP pool/fork runtime witnesses
+remain separate below.
 
 ## PHP runtime witnesses
 
