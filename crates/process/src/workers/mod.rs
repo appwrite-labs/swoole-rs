@@ -2,7 +2,7 @@
 //! base-mode reactor processes (upstream's `src/server/reactor_process.cc`), task workers
 //! (upstream's `src/server/task_worker.cc`), the manager (upstream's `src/server/manager.cc`) and the
 //! process-mode factory (`src/server/process.cc`, which now holds the others' ops too), and thread mode
-//! (`src/server/thread.cc`). Native code keeps
+//! (upstream's `src/server/thread.cc`). Native code keeps
 //! the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
 //! runs each operation and asks native code for each fact or effect through one
 //! `call(context, op, arg)`, reading facts afresh.
@@ -118,7 +118,10 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         | ops::RUN_STOP_WORKER_THREADS
         | ops::RUN_THREAD_BODY
         | ops::RUN_THREAD_MAIN
-        | ops::RUN_THREAD_FACTORY_START => thread::run(h, operation, arg),
+        | ops::RUN_THREAD_FACTORY_START
+        | ops::RUN_CREATE_THREAD_FACTORY
+        | ops::RUN_DESTROY_THREAD_FACTORY
+        | ops::RUN_THREAD_ID => thread::run(h, operation, arg),
         _ => event_worker::run(h, operation, arg),
     }
 }

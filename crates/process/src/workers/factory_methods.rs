@@ -53,7 +53,7 @@ pub extern "C" fn swr_v1_workers_set_factory_call(call: WorkersCall) {
 ///
 /// # Safety
 /// `factory` is a live `Factory`.
-unsafe fn server_of(factory: *const c_void) -> *mut c_void {
+pub(crate) unsafe fn server_of(factory: *const c_void) -> *mut c_void {
     let server = factory.cast::<*mut c_void>().wrapping_add(1);
     // SAFETY: as the caller guarantees; the Itanium layout puts the vptr first.
     unsafe { *server }

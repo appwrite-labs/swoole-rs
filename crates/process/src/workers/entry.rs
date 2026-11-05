@@ -1,5 +1,5 @@
 //! The `Server` methods of the deleted worker-side files (`src/server/manager.cc`,
-//! `worker.cc`, `reactor_process.cc` and `task_worker.cc`), defined under their upstream (Itanium)
+//! `worker.cc`, `reactor_process.cc`, `task_worker.cc` and `thread.cc`), defined under their upstream (Itanium)
 //! symbols when the hybrid links this crate (`upstream-symbols`). Each one enters
 //! native code with its operation and objects; process.cc's `workers_enter` builds
 //! the context the C++ forward built and runs the operation over it.
@@ -7,12 +7,16 @@ use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
 use std::sync::OnceLock;
 
+use super::factory_methods::server_of;
 use super::ops::{
     RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_CALL_WORKER_START, RUN_CALL_WORKER_STOP,
-    RUN_CLEAN_CONNECTIONS, RUN_DRAIN_PIPES, RUN_FINISH, RUN_INIT_TASK_WORKERS, RUN_KILL_WORKER,
-    RUN_REACTOR_PROCESS_MAIN, RUN_REACTOR_PROCESS_START, RUN_READ_WORKER_MESSAGE, RUN_RELOAD,
-    RUN_RESTART_WORKER, RUN_SEND_TO_REACTOR_THREAD, RUN_SIGNAL_INIT, RUN_START_EVENT_WORKER,
-    RUN_START_MANAGER, RUN_STOP_ASYNC, RUN_WORKER_SIGNAL, RUN_WORKER_START,
+    RUN_CLEAN_CONNECTIONS, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_DRAIN_PIPES,
+    RUN_FINISH, RUN_INIT_TASK_WORKERS, RUN_KILL_WORKER, RUN_REACTOR_PROCESS_MAIN,
+    RUN_REACTOR_PROCESS_START, RUN_READ_WORKER_MESSAGE, RUN_RELOAD, RUN_RESTART_WORKER,
+    RUN_SEND_TO_REACTOR_THREAD, RUN_SIGNAL_INIT, RUN_START_EVENT_WORKER, RUN_START_MANAGER,
+    RUN_START_WORKER_THREADS, RUN_STOP_ASYNC, RUN_STOP_WORKER_THREADS, RUN_THREAD_FACTORY_START,
+    RUN_THREAD_ID, RUN_THREAD_MANAGER_WAIT, RUN_THREAD_RELOAD, RUN_THREAD_TERMINATE_MANAGER,
+    RUN_WORKER_SIGNAL, RUN_WORKER_START,
 };
 use crate::methods::{Narrow, send_pipe_message};
 use crate::worker_record::WorkerRecord;
@@ -164,6 +168,61 @@ methods! {
         = RUN_REACTOR_PROCESS_MAIN(pool, worker, NONE, 0);
 }
 
+methods! {
+    "_ZN6swoole6Server21create_thread_factoryEv"
+    fn create_thread_factory(serv: *mut c_void) -> *mut c_void
+        = RUN_CREATE_THREAD_FACTORY(serv, NONE, NONE, 0);
+    "_ZNK6swoole6Server22destroy_thread_factoryEv"
+    fn destroy_thread_factory(serv: *const c_void) -> () = RUN_DESTROY_THREAD_FACTORY(serv, NONE, NONE, 0);
+    "_ZN6swoole6Server20start_worker_threadsEv"
+    fn start_worker_threads(serv: *mut c_void) -> c_int = RUN_START_WORKER_THREADS(serv, NONE, NONE, 0);
+    "_ZN6swoole6Server19stop_worker_threadsEv"
+    fn stop_worker_threads(serv: *mut c_void) -> () = RUN_STOP_WORKER_THREADS(serv, NONE, NONE, 0);
+    #[must_use]
+    "_ZNK6swoole6Server21reload_worker_threadsEb"
+    fn reload_worker_threads(serv: *const c_void, reload_all_workers: bool) -> bool
+        = RUN_THREAD_RELOAD(serv, NONE, NONE, u64::from(reload_all_workers));
+}
+
+/// Each `ThreadFactory` method that enters one operation over its server and itself.
+macro_rules! thread_factory_methods {
+    ($($(#[$attr:meta])* $symbol:literal fn $name:ident($($p:ident: $t:ty),*) -> $r:ty
+        = $op:ident($arg:expr);)*) => {$(
+        #[doc = concat!("`", $symbol, "`.")]
+        ///
+        /// # Safety
+        /// `factory` is a live `ThreadFactory`.
+        $(#[$attr])*
+        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
+        pub unsafe extern "C" fn $name(factory: *mut c_void, $($p: $t),*) -> $r {
+            // SAFETY: as the caller guarantees.
+            let serv = unsafe { server_of(factory) };
+            // SAFETY: as the caller guarantees.
+            unsafe { enter($op, serv.object(), factory.object(), NONE, $arg) }
+        }
+    )*};
+}
+
+thread_factory_methods! {
+    #[must_use]
+    "_ZN6swoole13ThreadFactory5startEv"
+    fn thread_factory_start() -> bool = RUN_THREAD_FACTORY_START(0);
+    "_ZN6swoole13ThreadFactory4waitEv"
+    fn thread_factory_wait() -> () = RUN_THREAD_MANAGER_WAIT(0);
+    #[must_use]
+    "_ZN6swoole13ThreadFactory6reloadEb"
+    fn thread_factory_reload(reload_all_workers: bool) -> bool
+        = RUN_THREAD_RELOAD(u64::from(reload_all_workers));
+    "_ZN6swoole13ThreadFactory24terminate_manager_threadEv"
+    fn terminate_manager_thread() -> () = RUN_THREAD_TERMINATE_MANAGER(0);
+    #[must_use]
+    "_ZNK6swoole13ThreadFactory21get_manager_thread_idEv"
+    fn get_manager_thread_id() -> u32 = RUN_THREAD_ID(0);
+    #[must_use]
+    "_ZNK6swoole13ThreadFactory20get_master_thread_idEv"
+    fn get_master_thread_id() -> u32 = RUN_THREAD_ID(1);
+}
+
 /// `Server::finish`'s result bytes, as `workers_enter`'s `extra`.
 #[repr(C)]
 struct Bytes {
@@ -272,6 +331,9 @@ mod tests {
     fn methods_enter_with_their_operation_and_objects() {
         swr_v1_workers_set_enter(fake);
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
+        // A `ThreadFactory`: the vtable pointer, then `server_`.
+        let mut factory: [usize; 2] = [0, 0x10];
+        let this = (&raw mut factory).cast::<c_void>();
         // SAFETY: the fake only records the pointers.
         unsafe {
             assert_eq!(start_manager_process(at(0x10)), 1);
@@ -285,6 +347,9 @@ mod tests {
             assert_eq!(send_to_reactor_thread(at(0x10), at(0x70), 48, 9), -1);
             assert_eq!(reactor_process_main_loop(at(0x30), at(0x20)), 1);
             assert!(finish(at(0x10), c"ok".as_ptr(), 2, -1, at(0x80)));
+            assert!(!create_thread_factory(at(0x10)).is_null());
+            assert!(reload_worker_threads(at(0x10), false));
+            assert_eq!(get_master_thread_id(this), 1);
         }
         let seen = SEEN
             .lock()
@@ -303,6 +368,9 @@ mod tests {
                 (RUN_SEND_TO_REACTOR_THREAD, 0x10, 0x70, 9, 48),
                 (RUN_REACTOR_PROCESS_MAIN, 0x30, 0x20, 0, 0),
                 (RUN_FINISH, 0x10, 0x80, 2, u64::from(u32::MAX)),
+                (RUN_CREATE_THREAD_FACTORY, 0x10, 0, 0, 0),
+                (RUN_THREAD_RELOAD, 0x10, 0, 0, 0),
+                (RUN_THREAD_ID, 0x10, this.addr(), 0, 1),
             ]
         );
     }

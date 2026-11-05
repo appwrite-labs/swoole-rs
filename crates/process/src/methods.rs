@@ -56,6 +56,23 @@ impl Narrow for bool {
     }
 }
 
+impl Narrow for u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the C++ method's (uint32_t) conversion of the export's result"
+    )]
+    fn narrow(value: i64) -> u32 {
+        value as u32
+    }
+}
+
+impl Narrow for *mut core::ffi::c_void {
+    fn narrow(value: i64) -> Self {
+        core::ptr::with_exposed_provenance_mut(usize::try_from(value).unwrap_or(0))
+    }
+}
+
 impl Narrow for isize {
     #[expect(
         clippy::cast_possible_truncation,
