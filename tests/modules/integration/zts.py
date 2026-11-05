@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Build/load real ZTS+thread native and selected worlds using a verified Rust export.
+"""Build/load real ZTS+thread worlds using a verified Rust export from the same ZTS SDK.
 
-This reuses immutable compiled Rust bytes; it does not invoke Cargo, substitute
+This reuses matching-SDK immutable compiled Rust bytes; it does not invoke Cargo, substitute
 NTS headers for ZTS, exercise thread concurrency by default, or qualify whole parity. The explicit
 --locks-threads profile adds only the defined owned-lock/atomic/barrier consumer.
 """
@@ -11,6 +11,7 @@ import io
 import json
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -73,6 +74,10 @@ def main():
         producer_path = a.rust_export.parent / 'build-manifest.json'
         producer = json.loads(producer_path.read_text())
         inputs = producer['inputs']
+        sdk_options = shlex.split(report['php_config'])
+        if (not any(option in sdk_options for option in ['--enable-zts', '--enable-zts=yes', '--enable-maintainer-zts'])
+                or inputs.get('php') != report['php'][0] or inputs.get('php_config') != report['php_config']):
+            raise ValueError('Require a Rust producer compiled with the matching ZTS PHP_CONFIG; Zend C shims are SDK-dependent')
         archive = a.rust_export.parent / 'libswoole_rs_php.a'
         artifact = producer['rust_php_compilation']['artifact']
         if (producer['build_mode'] != 'immutable' or inputs['upstream_commit'] != COMMIT
