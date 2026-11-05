@@ -26,18 +26,11 @@ protocol mask. Warnings keep upstream's text and the method name upstream's
 
 Copied scalars, no state:
 
-- `swr_v1_tls_read(empty, front, requested, peek)` -> `{length, consume, retry}`.
-  Preserves whole-datagram removal on truncated non-peek read, empty retry and
-  queue-total PENDING.
-- `swr_v1_tls_control(tag, observed)` -> `{long result, effect}`. Tags: 0 EOF,
-  1 GET_CLOSE, 2 PENDING, 3 SET_CLOSE, 4 success, 5 GET_PEER, 6 MTU, 7 overhead,
-  8 PEEK, 9 zero, others unknown. Effects: 0 none, 1 shutdown, 2 peer, 3 peek,
-  4 warning.
-- `swr_v1_tls_listen(result)`: negative -> 0 failure, zero -> 1 pending (success),
-  positive -> 2 publish.
-
-Native code keeps the Session queue, BIO method table, socket writes and
-`Session::init`.
+- `swr_v1_tls_dtls_new` prepares stable scalar fields and a Rust-owned datagram queue. Native `Session` retains its shared SSLContext and clears the queue before that context is destroyed.
+- `dtls_append` copies a payload; `dtls_append_buffer` takes one compatible native Buffer on success. Reads preserve datagram boundaries, short-read consumption, zero-length packets, retry and peek behavior.
+- `dtls_control` reads the actual queue and canonical flags, returning only native shutdown/diagnostic effects. Peer bytes copy the canonical socket address union. `dtls_listen` publishes success in the stable listened field.
+- `dtls_methods`/`publish`/`take` own method-table publication. OpenSSL method allocation, callback registration and detached table destruction execute in native code after Rust returns.
+- Native `Session` scalar aliases remain addressable. Its queue is opaque; direct std::deque layout/API compatibility is not claimed. Value copies use independent queue allocations.
 
 ## Native correction: BIO callback-control slot
 
