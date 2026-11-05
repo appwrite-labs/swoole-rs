@@ -31,4 +31,10 @@ void swr_zend_register_shutdown_function(const char *name);
  * STDERR), where PHP has the flag. */
 void swr_zend_stream_constant_no_close(const char *name, size_t length);
 
+int swr_zend_try_module_ini(const zend_ini_entry_def *, int, int);
+int swr_zend_try_info_start(void);
+int swr_zend_try_info_header(const char *, const char *);
+int swr_zend_try_info_row(const char *, const char *);
+int swr_zend_try_info_end(void);
+int swr_zend_try_info_ini(void *);
 #endif
