@@ -49,7 +49,13 @@ def main():
                             '--file', 'core-tests/src/os/process_pool.cpp'], check=True)
         for engine in ['upstream', 'hybrid']:
             build = a.core.resolve() / engine / 'build'
-            report.setdefault('sdks', {})[engine] = {'flags_sha256': sha(build / 'CMakeFiles/core-tests.dir/flags.make'), 'link_sha256': sha(build / 'CMakeFiles/core-tests.dir/link.txt')}
+            report.setdefault('sdks', {})[engine] = {
+                'flags_sha256': sha(build / 'CMakeFiles/core-tests.dir/flags.make'),
+                'link_sha256': sha(build / 'CMakeFiles/core-tests.dir/link.txt'),
+                'library_sha256': sha(build.parent / 'lib/libswoole.so'),
+                'config_sha256': sha(build.parent / 'config.h'),
+                'server_header_sha256': sha(build.parent / 'include/swoole_server.h'),
+            }
             flags = {}
             for line in (build / 'CMakeFiles/core-tests.dir/flags.make').read_text().splitlines():
                 if ' = ' in line:
