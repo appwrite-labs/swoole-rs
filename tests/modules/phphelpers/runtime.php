@@ -405,4 +405,35 @@ foreach (["<in\0t>", "<string,\0int>", "<int,<str\0ing>>", "<bo\0ol,string>"] as
     }
     $summary['initialized_definitions'][] = $observation;
 }
+// The real PCRE cache owner and version-specific match ABI, including cached
+// reuse, flags, offsets and nested compilation from a warning handler.
+$summary['pcre_matches']=0;
+foreach ([['12 A34','/(A)?([0-9]+)/',0,0],['A12 B34 A56','/([A-Z])([0-9]+)/',PREG_OFFSET_CAPTURE,2],
+          ['12 A34','/(A)?([0-9]+)/',PREG_UNMATCHED_AS_NULL,0],["A12\0A34",'/A([0-9]+)/',0,0],
+          ['é12 é34','/(é)([0-9]+)/u',PREG_OFFSET_CAPTURE|PREG_UNMATCHED_AS_NULL,0],
+          ['none','/A([0-9]+)/',0,0]] as [$subject,$pattern,$flags,$offset]) {
+    for ($round=0;$round<32;++$round) {
+        preg_match($pattern,$subject,$expected,$flags,$offset);
+        check(swoole_str_match($subject,$pattern,$flags,$offset)===$expected,'cached PCRE single match flags/offset/results');
+        preg_match_all($pattern,$subject,$expected,$flags|PREG_SET_ORDER,$offset);
+        check(swoole_str_match_all($subject,$pattern,$flags|PREG_SET_ORDER,$offset)===$expected,'cached PCRE global match flags/offset/results');
+        $summary['pcre_matches']+=2;
+    }
+}
+$pcreWarnings=[];
+set_error_handler(function (int $level,string $message) use (&$pcreWarnings):bool {
+    check($level===E_WARNING,'PCRE compilation warning level');
+    check(swoole_str_match('a','/a/')===['a'],'warning handler reenters real PCRE cache');
+    $pcreWarnings[]=$message;return true;
+});
+try { check(swoole_str_match('subject','/')===false,'invalid PCRE cache result'); }
+finally { restore_error_handler(); }
+check(count($pcreWarnings)===1,'one original PCRE compilation warning');
+$summary['pcre_warnings']=$pcreWarnings;
+class HelperVMStringReference { public string $text='x'; }
+$property=new HelperVMStringReference();
+$references=swoole_typed_array('<string>',[&$property->text]);
+$typedConcat=($references[0].='y');
+check($typedConcat==='xy' && $property->text==='xy' && $references[0]==='xy','typed-property string concat reference fast path');
+$summary['typed_reference_concat']=$typedConcat;
 echo json_encode($summary, JSON_THROW_ON_ERROR), "\n";

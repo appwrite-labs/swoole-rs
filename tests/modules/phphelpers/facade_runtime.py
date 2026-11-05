@@ -31,9 +31,10 @@ def main():
     try:
         sdk=json.loads(a.sdk_report.read_text())
         if not sdk.get('passed'):raise ValueError('Require a completed native/hybrid SDK qualification')
-        files={name:Path(__file__).with_name(name) for name in ['facade_entrypoint.cc','facade_entrypoint.php','facade_oom.php']}
+        files={name:Path(__file__).with_name(name) for name in ['facade_entrypoint.cc','facade_entrypoint.php','facade_oom.php','vm_bailout.php']}
         fixture=work/'facade_entrypoint.php';shutil.copy2(files['facade_entrypoint.php'],fixture)
         oom=work/'facade_oom.php';shutil.copy2(files['facade_oom.php'],oom)
+        vm_bailout=work/'vm_bailout.php';shutil.copy2(files['vm_bailout.php'],vm_bailout)
         engines=[]
         if not a.prepare_only:
             engines=parse_engines(a.engine,a.php,a.php_extension);report['engines']=[engine.metadata() for engine in engines]
@@ -48,7 +49,7 @@ def main():
                 row['path']=str(helper)
                 symbols=subprocess.check_output(['nm','-u',str(helper)],text=True,stderr=subprocess.PIPE)
                 row['undefined_symbols']=symbols
-                required=['swr_v1_phphelpers_'+name for name in ['string_new','variable_assign','key_add','iterator_next','array_set','callable_invoke','callable_factory']]
+                required=['swr_v1_phphelpers_'+name for name in ['string_new','variable_assign','key_add','iterator_next','array_set','callable_invoke','callable_factory','callable_frame','url_encode','http_query','function_alias','class_alias','unset_deny']]
                 row['required_rust_calls']={name:name in symbols for name in required}
                 retired=['swr_v1_phphelpers_'+name for name in ['string_plan','duplicate_plan','factory_plan','empty']]
                 if any(name in symbols for name in retired):raise ValueError('Helper still consumes a retired facade plan')
@@ -95,6 +96,19 @@ def main():
                 report['oom_results'].append(row)
         if not a.prepare_only and not all(row['passed'] for row in report['oom_results']):
             raise ValueError('Facade allocation-failure containment failed; original engine outcomes retained')
+        report['vm_bailout_results']=[]
+        for engine,identity,profile in plans:
+            helper=report['helper_profiles'][profile]
+            for mode,expected in [('pcre-exit',37),('vm-exit',38),('json-exit',39)]:
+                command=engine.command('-d','extension='+helper['path'],str(vm_bailout),mode)
+                result=run_isolated(command,timeout=30)
+                row=dict(engine=engine.name,profile=profile,mode=mode,command=command,exit=result.returncode,
+                         stdout=result.stdout,stderr=result.stderr,extension_sha256_after=sha(identity['extension']))
+                row['passed']=(result.returncode==expected and result.stdout=='before\nexit\n' and not result.stderr
+                               and row['extension_sha256_after']==identity['sha256'])
+                report['vm_bailout_results'].append(row)
+        if not a.prepare_only and not all(row['passed'] for row in report['vm_bailout_results']):
+            raise ValueError('Actual VM/PCRE/JSON bailout witness failed; original outputs retained')
         if not a.prepare_only:
             receipt=report['source_attestation']
             if sha(a.build_manifest)!=receipt['manifest_sha256'] or sha(a.archive)!=receipt['archive_sha256']:raise ValueError('Production input changed')
