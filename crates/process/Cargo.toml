@@ -12,4 +12,5 @@ crate-type = ["rlib"]
 workspace = true
 
 [dependencies]
+swoole-rs-corebase = { path = "../corebase" }
 libc = "=0.2.191"
