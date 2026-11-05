@@ -38,8 +38,8 @@ if (Thread::getInfo()['is_main_thread']) {
     }
     if (function_exists('swr_guard_counts')) {
         $count = in_array($mode, ['nested', 'coroutine', 'cancel', 'cancel-throw', 'serialize', 'unserialize', 'shared-set', 'shared-queue'], true) ? 2 : 1;
-        if (swr_guard_counts() !== [$count, $count, $count, $count * 4096, $count * 4096 * 42, $mode === 'fatal' ? 1 : 0, $normal || $mode === 'fatal' ? 0 : $count]) {
-            throw new RuntimeException('Rust owners were not dropped before native exit relay');
+        if (swr_guard_counts() !== [$count, $count, $count, $count * 4096, $count * 4096 * 42, in_array($mode, ['fatal', 'exit'], true) ? 1 : 0, $normal || in_array($mode, ['fatal', 'exit'], true) ? 0 : $count]) {
+            throw new RuntimeException('Rust owner cleanup or native outcome provenance changed');
         }
     }
     echo json_encode([$mode, $worker->getExitStatus(), $after->get()]), "\n";
