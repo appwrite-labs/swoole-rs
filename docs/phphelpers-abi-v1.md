@@ -2,9 +2,11 @@
 
 Feature value 16777216. Upstream targets:
 `ext-src/php_swoole_cxx.cc`, `ext-src/swoole_stdext.cc`, and in
-`ext-src/php_swoole_cxx.h` only `zend::String`, `KeyValue`, `ArrayIterator`,
-`Array`, `Variable`, `CharPtr`, the inline `Callable` helpers and
-`sw_callable_create` / `sw_callable_create_ex`. Follows the
+`ext-src/php_swoole_cxx.h` only `zend::String`, `ArrayIterator`, `Array`,
+`Variable`, the inline `Callable` helpers and `sw_callable_create`. Helpers
+nothing in the all-modules build calls (`KeyValue`, `CharPtr`,
+`sw_callable_create_ex` and the unused `php_swoole_private.h` macros and
+inlines) are deleted, with their Rust exports. Follows the
 [policy/effect split](abi-v1.md#policyeffect-split).
 
 `ext-src/swoole_stdext.cc` is Rust in `crates/phpstdext` (docs/zend.md): C++
@@ -12,9 +14,8 @@ keeps the `ASSIGN_DIM`/`ASSIGN_DIM_OP` handlers, which need PHP's
 `zend_execute.c` internals, and lends the PCRE and JSON library calls at MINIT.
 
 For the common owning facades, Rust owns the complete lifetime and operations:
-String conversion/copy/move/release/trim/duplication, CharPtr request allocation,
-Variable copy/move/reference operations, KeyValue custody and insertion,
-ArrayIterator sparse/indirect walks, Array updates, and Callable
+String conversion/copy/move/release/trim/duplication,
+Variable copy/move/reference operations, ArrayIterator sparse/indirect walks, Array updates, and Callable
 resolution/copy/invocation/release and factories. C++ keeps source-compatible
 constructors and forwarding methods. Variable's public `value` aliases stable
 Rust-owned zval storage; String and Callable hold opaque Rust handles. Iterators
