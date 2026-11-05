@@ -353,6 +353,9 @@ def plan(args, reports):
                 name = 'clients-php-' + family
                 script(name, 'tests/modules/clients/' + runner, '--build-manifest', manifest,
                        *php_for('curl', 'sockets'), *engines, *report(name))
+    if 'phpevents' in modules:
+        script('phpevents-lifecycle', 'tests/modules/phpevents/lifecycle.py', *php_for('curl', 'sockets'), *engines,
+               *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []), *report('phpevents-lifecycle'))
     if 'phpcollections' in modules:
         if integrate:
             script('phpcollections-runtime', 'tests/modules/phpcollections/php_runtime.py', *php_for('curl'), *engines,
