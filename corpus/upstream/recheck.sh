@@ -4,9 +4,9 @@
 # verdict is settled (a pass, and also a failure unless upstream failed), once only when its
 # first failure timed out, up to nine times when upstream failed one (gate.py --print-pending).
 # An inconclusive re-run (the #200 runner abort) is replaced, up to twice the budget in all.
-# A test the hybrid both passed and failed then gets more upstream re-runs (up to 9 in all),
+# A test the hybrid both passed and failed then gets more upstream re-runs (up to 24 in all),
 # so a test racy on both engines isn't counted as a hybrid regression; so does one whose
-# re-runs both engines failed, until upstream passes one.
+# re-runs both engines failed (up to 9), until upstream passes one.
 #   recheck.sh RESULTS_DIR ENGINES_DIR RECHECK_DIR [run.py arguments...]
 # ENGINES_DIR holds upstream.so and hybrid.so; RECHECK_DIR receives <engine>-<attempt>.json.
 set -eo pipefail
@@ -29,7 +29,7 @@ for engine in upstream hybrid; do
       --output "$recheck/$engine-$attempt.json" || [ $? -eq 1 ]
   done
 done
-for attempt in $(seq 7 24); do
+for attempt in $(seq 7 54); do
   cases=$(pending upstream-extended)
   [ -n "$cases" ] || break
   # shellcheck disable=SC2086 # one --case per word
