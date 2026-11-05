@@ -521,8 +521,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['memory-fixed-native-construction'])
         self.assertIn('--archive', commands['memory-mapping-operation'])
         self.assertNotIn('--sanitize', commands['memory-mapping-operation'])
-        self.assertIn('--archive', commands['utilities-logger-owned-state'])
-        self.assertIn('--sdk-ref', commands['utilities-logger-owned-state'])
         for family in ['logger', 'hash', 'inline', 'global-logger', 'redirect']:
             command = commands['utilities-' + family + '-originals']
             self.assertIn('--' + family + '-originals', command)
@@ -551,8 +549,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--build-manifest', commands['utilities-public-storage'])
         self.assertIn('--archive', commands['utilities-public-storage'])
         self.assertEqual(commands['utilities-public-storage'].count('--engine'), 2)
-        self.assertIn('--threads', commands['utilities-put-threads'])
-        self.assertIn('--sanitize', commands['utilities-put-threads'])
         self.assertIn('utilities-php-logger',commands)
         self.assertIn('--build-manifest', commands['utilities-php-logger'])
         self.assertIn('--archive', commands['utilities-php-logger'])

@@ -66,14 +66,13 @@ class PreparationGuards(unittest.TestCase):
                     self.assertIn('Require complete current utility',report['error']);oracle.assert_not_called()
 
     def test_workloads_remain_distinct_and_clock_calls_stay_explicit(self):
-        workloads=prepare.WORKLOADS+prepare.LOGGER_WORKLOADS
-        self.assertEqual(len(workloads),40);self.assertEqual(len(workloads),len(set(workloads)))
-        for name in ['benchmark.cc','benchmark_logger.cc']:
+        workloads=prepare.WORKLOADS
+        self.assertEqual(len(workloads),34);self.assertEqual(len(workloads),len(set(workloads)))
+        for name in ['benchmark.cc']:
             text=Path(__file__).with_name(name).read_text()
             self.assertNotIn('system_clock::now()',text)
             self.assertIn('"--measure"',text)
             self.assertEqual(text.count('steady_clock::now()'),2)
-        self.assertIn('std::chrono::',Path(__file__).with_name('prepare_benchmark.py').read_text())
 
 
 if __name__=='__main__':unittest.main()

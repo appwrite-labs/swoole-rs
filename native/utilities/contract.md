@@ -93,71 +93,17 @@ All public utility signatures are unchanged; v1 is frozen.
   be <= `INT_MAX`.
 - `swr_v1_utils_log_micros(out, cap, int64)`: the `<.%lld>` suffix, same output rules.
 
-### Stateless step controllers (v1)
+### Logger (`swr_v1_logger_*`)
 
-- `swr_v1_utils_redirect_step`: stdout/stderr redirection (`SwrUtilsRedirectAction`).
-  Upstream behavior is kept, not repaired: stderr dup failure leaves the saved stdout
-  descriptor owned; restore failures warn and still restore the other stream, close
-  both saved values and reset state; close results are ignored.
-- `swr_v1_utils_log_file_step`: operations open 0, close 1, reopen 2
-  (`SwrUtilsLogFileAction`). Open closes the old stream before copying the new path,
-  selects rotation before open, and warns before clearing fields on failure. Opened
-  is set before an unchecked `fdopen` (upstream). Close ignores `fclose`; stdout is
-  restored only for an opened stream. Reopen saves the path before close, ignores
-  open's result, then tests the redirected flag.
-- `swr_v1_utils_log_put_step` / `swr_v1_utils_log_emit_step`: emission sequence
-  (level filter, date, rotation, micros, identity, format, mutex/FILE lock, write,
-  flush, unlock, backtrace). Emit adds rotation try-lock/reopen/unlock and worker PID
-  fallback/symbol. Write/flush failures are ignored. Backtrace is tested after the
-  mutex is released. The native rotation scope (including temporary string
-  destruction) must finish before the micros phase.
-- `swr_v1_utils_log_config_step`: reset 0, date 1, stream 2. Reset returns
-  `SwrUtilsLogDefaults` (`%F %T`, INFO, single, no microseconds). Date rejection sets
-  last_error before the warning; stream replacement closes before publishing.
-
-Field observation rule: callers read only the Logger field that belongs to the
-current observation phase and pass 0 for unused facts. `opened` is read only at
-`SWR_UTILS_LOG_PUT_FILE_LOCK_PHASE` and `SWR_UTILS_LOG_PUT_FILE_UNLOCK_PHASE`, while
-the mutex is held; reading it outside the lock is a data race. For file steps: open
-reads opened in phase 0 and rotation in phase 2; close reads opened only; reopen
-reads opened in phase 0 and redirected in phase 3. Redirection phase 0 reads opened
-only when enabling, then redirected only if opened; disabling reads redirected only.
-
-### Logger state ABI 2
-
-`SWOOLE_RS_LOGGER_STATE_ABI 2` changes the selected Logger's C++ layout: it stores
-one opaque `SwrUtilsLogState` handle (`swr_v1_utils_log_state_*`) instead of native
-fields. Consumers must rebuild against the selected SDK; native-layout clients are
-incompatible. Public method signatures are unchanged.
-
-- `create(native_max, &out)` sets `*out` to null and publishes only a complete
-  allocation. `destroy` frees the sole handle once all users are quiescent; it never
-  closes FILEs or descriptors.
-- Status: 0 OK, 1 length -> `std::length_error`, 2 capacity -> `std::length_error`,
-  3 allocation -> `std::bad_alloc`, 4 invalid. C++ throws after return.
-- Text setters reserve fallibly before publication and keep a trailing NUL; input may
-  alias current text. Returned text pointers are valid until the corresponding
-  mutation or destruction.
-- Configuration is single-threaded. Native put/reopen keep mutex custody. Reset
-  changes only date format, microseconds, rotation and level. Close clears the
-  logical filename and opened flag but keeps the resolved filename; failed-open
-  cleanup clears both paths after diagnostics.
-
-`swr_v1_utils_log_path_*` owns temporary filenames:
-
-- `create` operation 0 copies the logical C filename before close; operation 1 copies
-  a binary filename before calendar effects. Output starts null.
-- `rotate` appends `.` and the formatted date after native strftime; on failure the
-  old value is intact.
-- `get` borrows bytes (with trailing NUL) until destroy/adopt.
-- `adopt` consumes the path only on success and moves its buffer into resolved state
-  without another allocation.
-- `path_emit_step` compares against the resolved C filename only at phase 14.
-
-Reopen keeps its captured filename until function exit; put keeps the scoped owner to
-the end of the rotation block. Only public `gen_real_file` constructs a
-`std::string`. Rust allocations differ from native `std::string`/SSO, so allocation
-and exception points can move.
+`swoole::Logger` holds one `SwrLogger` handle; every operation is Rust's, under one
+lock (the level is an atomic, so `get_level` takes no lock). Diagnostics go
+through corebase's log host under upstream's method names; worker identity,
+`swoole_redirect_stdout` and backtraces call `swr_logger_host` (`src/core/log.cc`).
+Both run after the lock is released, so a diagnostic can log through the same
+logger. A failed open warns as upstream's
+`Logger::open` did; a failed open during `put`'s rotation, which deadlocked
+upstream, warns after the line is written. `get_file`/`get_real_file` pointers are
+valid until the file next changes.
 
 ## Logging macros (v2)
 
