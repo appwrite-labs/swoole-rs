@@ -38,7 +38,7 @@ $yielded = null;
 Swoole\Coroutine\run(function () use (&$yielded): void { $yielded = m26_named_call('m26_named_yield'); });
 check($yielded === 'COROUTINE', 'native callback suspension and nested named return');
 $known = m26_known_cache();
-check($known === ['count' => 5, 'matches' => 5, 'interned' => 5], 'the known strings C++ reads match its header and are interned');
+check($known === ['count' => 6, 'matches' => 6, 'interned' => 6], 'the known strings C++ reads match its header and are interned');
 $ownedEvents = [];
 $ownedIdentity = 0;
 class M26OwnedCallable {
