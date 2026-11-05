@@ -10,6 +10,7 @@ use core::ffi::c_void;
 
 mod event_worker;
 mod factory;
+pub mod factory_methods;
 mod manager;
 pub mod ops;
 mod reactor_process;

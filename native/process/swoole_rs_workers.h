@@ -11,6 +11,8 @@ extern "C" {
 #endif
 typedef uint64_t (*swr_v1_workers_call)(void *context, uint32_t op, uint64_t arg);
 int64_t swr_v1_workers_run(uint32_t operation, uint64_t arg, void *context, swr_v1_workers_call call);
+/* process.cc's FactoryContext call, which the Rust Factory methods run over. */
+void swr_v1_workers_set_factory_call(swr_v1_workers_call call);
 /* OP_SIGNAL_SET's argument: the signal number (-1 for SIGRTMIN) in the low word and
  * the handler in the high word: 0 none, 1 SIG_IGN, 2 `own`. Defined in worker.cc. */
 void swr_workers_signal_set(uint64_t arg, void (*own)(int));
