@@ -75,14 +75,16 @@ pub(crate) unsafe fn native_fact(
     arg: u64,
 ) -> Option<u64> {
     use crate::ops::{
-        OP_IS_STARTED, OP_MANAGER_PID, OP_MASTER_PID, OP_MAXFD, OP_MINFD, OP_SESSION_ROUND,
-        OP_SET_MAXFD, OP_SET_MINFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB,
-        OP_ST_GS_CONCURRENCY_ZERO,
+        OP_IS_STARTED, OP_LC_CLAIM_START, OP_LC_START_TIME, OP_MANAGER_PID, OP_MASTER_PID,
+        OP_MAXFD, OP_MINFD, OP_SESSION_ROUND, OP_SET_MAXFD, OP_SET_MINFD, OP_ST_GS_CONCURRENCY,
+        OP_ST_GS_CONCURRENCY_SUB, OP_ST_GS_CONCURRENCY_ZERO,
     };
     use core::sync::atomic::Ordering;
     if !matches!(
         op,
         OP_IS_STARTED
+            | OP_LC_CLAIM_START
+            | OP_LC_START_TIME
             | OP_MASTER_PID
             | OP_MANAGER_PID
             | OP_MAXFD
@@ -109,6 +111,19 @@ pub(crate) unsafe fn native_fact(
     Some(match op {
         // SAFETY: each leaf field read uses the native owner's lifetime and synchronization.
         OP_IS_STARTED => u64::from(unsafe { (*gs).start.load(Ordering::Relaxed) }),
+        // SAFETY: `start` is aligned atomic storage in the shared prefix; one server starts.
+        OP_LC_CLAIM_START => u64::from(
+            unsafe { &(*gs).start }
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok(),
+        ),
+        OP_LC_START_TIME => {
+            // SAFETY: `time` with a null out-pointer only returns the current time.
+            let now = unsafe { libc::time(core::ptr::null_mut()) };
+            // SAFETY: only the starting master writes the start time, before forking workers.
+            unsafe { (*gs).start_time = now };
+            0
+        }
         // SAFETY: master pid is assigned before workers can read it.
         OP_MASTER_PID => i64::from(unsafe { (*gs).master_pid }).cast_unsigned(),
         // SAFETY: manager pid follows the original native lifecycle synchronization.
