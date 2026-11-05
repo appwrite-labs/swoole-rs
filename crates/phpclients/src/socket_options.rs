@@ -17,6 +17,7 @@ use std::{
     ptr,
     sync::atomic::Ordering,
 };
+use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_zend::{
     Call,
     bailout::{self, Bailout},
@@ -58,27 +59,9 @@ const FLAG_LENGTH: c_int = 0;
 const FLAG_EOF: c_int = 1;
 const FLAG_HTTP2: c_int = 2;
 
-/// `SWR_PHPCLIENTS_SSL_*`.
-mod ssl {
-    pub(super) const ENABLE: i32 = 0;
-    pub(super) const ENABLED: i32 = 1;
-    pub(super) const PROTOCOLS: i32 = 2;
-    pub(super) const DISABLE_COMPRESS: i32 = 3;
-    pub(super) const CERT_FILE: i32 = 4;
-    pub(super) const KEY_FILE: i32 = 5;
-    pub(super) const HAS_CERT_FILE: i32 = 6;
-    pub(super) const HAS_KEY_FILE: i32 = 7;
-    pub(super) const PASSPHRASE: i32 = 8;
-    pub(super) const HOST_NAME: i32 = 9;
-    pub(super) const VERIFY_PEER: i32 = 10;
-    pub(super) const ALLOW_SELF_SIGNED: i32 = 11;
-    pub(super) const CAFILE: i32 = 12;
-    pub(super) const CAPATH: i32 = 13;
-    pub(super) const VERIFY_DEPTH: i32 = 14;
-    pub(super) const CIPHERS: i32 = 15;
-    pub(super) const ECDH_CURVE: i32 = 16;
-    pub(super) const GREASE: i32 = 17;
-}
+/// `swoole_socket_coro_ssl_supports`'s optional settings.
+const SSL_HOST_NAME: c_int = 0;
+const SSL_GREASE: c_int = 1;
 
 /// `PacketLength`.
 #[repr(C)]
@@ -242,17 +225,9 @@ fn set_flag(socket: Socket, flag: c_int, value: bool) {
     unsafe { native::swoole_socket_coro_set_flag(socket, flag, value) };
 }
 
-fn ssl_option(socket: Socket, option: c_int, text: &[u8], value: i64) -> bool {
-    // SAFETY: a live socket and the bytes given.
-    unsafe {
-        native::swoole_socket_coro_ssl_option(
-            socket,
-            option,
-            text.as_ptr().cast(),
-            text.len(),
-            value,
-        )
-    }
+fn ssl_context(socket: Socket) -> *const OwnedTlsContext {
+    // SAFETY: a live socket.
+    unsafe { native::swoole_socket_coro_ssl_context(socket) }.cast()
 }
 
 /// The socket's `Protocol`, edited by `f`.
@@ -297,12 +272,12 @@ fn set_protocol(s: &Settings, socket: Socket) -> Result<bool, Stop> {
     if let Some(v) = s.get(c"open_ssl")
         && truth(v)
     {
-        ssl_option(socket, ssl::ENABLE, b"", 0);
+        enable_ssl(socket);
     }
     if let Some(v) = s.get(c"open_http2_protocol") {
         set_flag(socket, FLAG_HTTP2, truth(v));
     }
-    if ssl_option(socket, ssl::ENABLED, b"", 0) && !set_ssl(s, socket)? {
+    if !ssl_context(socket).is_null() && !set_ssl(s, socket)? {
         ret = false;
     }
     if let Some(v) = s.get(c"open_eof_check") {
@@ -403,8 +378,8 @@ fn clamp_u16(value: i64) -> u16 {
     u16::try_from(value.clamp(0, i64::from(u16::MAX))).unwrap_or(u16::MAX)
 }
 
-fn clamp_u8(value: i64) -> i64 {
-    value.clamp(0, i64::from(u8::MAX))
+fn clamp_u8(value: i64) -> u8 {
+    u8::try_from(value.clamp(0, i64::from(u8::MAX))).unwrap_or(u8::MAX)
 }
 
 /// `php_swoole_socket_set`.
@@ -576,28 +551,31 @@ fn proxy(socket: Socket, http: bool, host: &[u8], port: i64, user: &[u8], passwo
 
 /// `php_swoole_socket_set_ssl`.
 fn set_ssl(s: &Settings, socket: Socket) -> Result<bool, Stop> {
-    let value = |option, v| -> Result<(), Stop> {
-        ssl_option(socket, option, b"", long(v)?);
-        Ok(())
-    };
-    let flag = |option, on: bool| ssl_option(socket, option, b"", i64::from(on));
-    let text = |option, v| -> Result<bool, Stop> { Ok(ssl_option(socket, option, &string(v)?, 0)) };
+    let owner = ssl_context(socket);
+    if owner.is_null() {
+        return Ok(true);
+    }
+    // SAFETY: the live socket's context, which nothing else writes during the call.
+    let set = |value| unsafe { tls::set_value(owner, value) };
+    // SAFETY: as above.
+    let set_text = |which, text: &[u8]| unsafe { tls::set_text(owner, which, text) };
+    let text = |which, v| -> Result<bool, Stop> { Ok(set_text(which, &string(v)?)) };
     if let Some(v) = s.get(c"ssl_protocols") {
-        value(ssl::PROTOCOLS, v)?;
+        set(Value::Protocols(long(v)?));
     }
     if let Some(v) = s
         .get(c"ssl_compress")
         .or_else(|| s.get(c"ssl_disable_compression"))
     {
-        flag(ssl::DISABLE_COMPRESS, !truth(v));
+        set(Value::DisableCompress(!truth(v)));
     }
-    for (key, option, what) in [
-        (c"ssl_cert_file", ssl::CERT_FILE, "cert"),
-        (c"ssl_key_file", ssl::KEY_FILE, "key"),
+    for (key, which, what) in [
+        (c"ssl_cert_file", Text::CertFile, "cert"),
+        (c"ssl_key_file", Text::KeyFile, "key"),
     ] {
         if let Some(v) = s.get(key) {
             let file = string(v)?;
-            if !ssl_option(socket, option, &file, 0) {
+            if !set_text(which, &file) {
                 let message = [
                     format!("ssl {what} file[").as_bytes(),
                     &self::text(&file).into_bytes(),
@@ -609,56 +587,55 @@ fn set_ssl(s: &Settings, socket: Socket) -> Result<bool, Stop> {
             }
         }
     }
-    let has_cert = flag(ssl::HAS_CERT_FILE, false);
-    let has_key = flag(ssl::HAS_KEY_FILE, false);
-    if has_cert && !has_key {
-        fatal(E_WARNING, b"ssl require key file")?;
-    }
-    if has_key && !has_cert {
-        fatal(E_WARNING, b"ssl require cert file")?;
+    // SAFETY: the live context.
+    match unsafe { tls::has_files(owner) } {
+        (true, false) => fatal(E_WARNING, b"ssl require key file")?,
+        (false, true) => fatal(E_WARNING, b"ssl require cert file")?,
+        _ => {}
     }
     if let Some(v) = s.get(c"ssl_passphrase") {
-        text(ssl::PASSPHRASE, v)?;
+        text(Text::Passphrase, v)?;
     }
     // SAFETY: a pure query.
-    if unsafe { native::swoole_socket_coro_ssl_supports(ssl::HOST_NAME) }
+    if unsafe { native::swoole_socket_coro_ssl_supports(SSL_HOST_NAME) }
         && let Some(v) = s.get(c"ssl_host_name")
     {
-        text(ssl::HOST_NAME, v)?;
+        text(Text::HostName, v)?;
     }
     if let Some(v) = s.get(c"ssl_verify_peer") {
-        flag(ssl::VERIFY_PEER, truth(v));
+        set(Value::VerifyPeer(truth(v)));
     }
     if let Some(v) = s.get(c"ssl_allow_self_signed") {
-        flag(ssl::ALLOW_SELF_SIGNED, truth(v));
+        set(Value::AllowSelfSigned(truth(v)));
     }
     if let Some(v) = s.get(c"ssl_cafile") {
-        text(ssl::CAFILE, v)?;
+        text(Text::Cafile, v)?;
     }
     if let Some(v) = s.get(c"ssl_capath") {
-        text(ssl::CAPATH, v)?;
+        text(Text::Capath, v)?;
     }
     if let Some(v) = s.get(c"ssl_verify_depth") {
-        ssl_option(socket, ssl::VERIFY_DEPTH, b"", clamp_u8(long(v)?));
+        set(Value::VerifyDepth(clamp_u8(long(v)?)));
     }
     if let Some(v) = s.get(c"ssl_ciphers") {
-        text(ssl::CIPHERS, v)?;
+        text(Text::Ciphers, v)?;
     }
     if let Some(v) = s.get(c"ssl_ecdh_curve") {
-        text(ssl::ECDH_CURVE, v)?;
+        text(Text::EcdhCurve, v)?;
     }
     // SAFETY: a pure query.
-    if unsafe { native::swoole_socket_coro_ssl_supports(ssl::GREASE) }
+    if unsafe { native::swoole_socket_coro_ssl_supports(SSL_GREASE) }
         && let Some(v) = s.get(c"ssl_grease")
     {
-        ssl_option(socket, ssl::GREASE, b"", clamp_u8(long(v)?));
+        set(Value::Grease(clamp_u8(long(v)?)));
     }
     Ok(true)
 }
 
 /// Turn a client socket's TLS on (`enable_ssl_encrypt`): false if it had it.
 pub(crate) fn enable_ssl(socket: Socket) -> bool {
-    ssl_option(socket, ssl::ENABLE, b"", 0)
+    // SAFETY: a live socket.
+    unsafe { native::swoole_socket_coro_enable_ssl(socket) }
 }
 
 /// The coroutine socket's descriptor, from its `network::Socket` record.

@@ -591,6 +591,7 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phptable",
  "swoole-rs-reactor",
+ "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 

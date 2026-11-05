@@ -5,7 +5,7 @@ use crate::{TlsConfig, TlsStr, Warn};
 use openssl_sys::{SSL_CTX, SSL_CTX_free};
 use std::{
     cell::UnsafeCell,
-    ffi::{c_char, c_int, c_void},
+    ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::Arc,
 };
@@ -562,6 +562,138 @@ pub unsafe extern "C" fn swr_v1_tls_owner_socket_session(
     }
 }
 
+/// A text setting the clients' `SSLContext` setters (`set_ssl_*`) write, for
+/// `Swoole\Client`, `Coroutine\Client` and `Coroutine\Socket`.
+#[derive(Clone, Copy)]
+pub enum Text {
+    /// A readable file; a missing one is logged from `set_cert_file`.
+    CertFile,
+    /// As `CertFile`, from `set_key_file`.
+    KeyFile,
+    Passphrase,
+    /// An empty name also turns the automatic one off.
+    HostName,
+    Cafile,
+    Capath,
+    Ciphers,
+    EcdhCurve,
+}
+
+/// A scalar setting, as [`Text`].
+#[derive(Clone, Copy)]
+pub enum Value {
+    Protocols(i64),
+    DisableCompress(bool),
+    VerifyPeer(bool),
+    AllowSelfSigned(bool),
+    VerifyDepth(u8),
+    Grease(u8),
+}
+
+/// `set_cert_file`/`set_key_file`: false, logged from `origin`, when the file
+/// can't be read.
+/// # Safety
+/// owner is live and exclusive.
+unsafe fn set_file(
+    owner: *const OwnedTlsContext,
+    index: u32,
+    path: &[u8],
+    origin: &CStr,
+    what: &str,
+) -> bool {
+    // access(2) reads up to the first NUL, as upstream's c_str() does.
+    let name = path.split(|&b| b == 0).next().unwrap_or_default();
+    let terminated = [name, b"\0"].concat();
+    // SAFETY: the exclusive owner and a terminated path; the stored value keeps every byte.
+    let status =
+        unsafe { swr_v1_tls_owner_set_path(owner, index, terminated.as_ptr().cast(), path.len()) };
+    match status {
+        0 => true,
+        1 => {
+            let name = String::from_utf8_lossy(name);
+            swoole_rs_corebase::log::warning(
+                origin,
+                format_args!("ssl {what} file[{name}] not found"),
+            );
+            false
+        }
+        // A native cache that couldn't allocate, which std::bad_alloc ends.
+        _ => std::process::abort(),
+    }
+}
+
+/// Write the text setting into the owner: false for a certificate or key file
+/// that can't be read.
+/// # Safety
+/// owner is live and exclusive; native caches catch exceptions and do not reenter.
+pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8]) -> bool {
+    let index = match which {
+        // SAFETY: as the caller promises.
+        Text::CertFile => return unsafe { set_file(owner, 4, value, c"set_cert_file", "cert") },
+        // SAFETY: as the caller promises.
+        Text::KeyFile => return unsafe { set_file(owner, 5, value, c"set_key_file", "key") },
+        Text::Passphrase => PASSPHRASE,
+        Text::HostName => 8,
+        Text::Cafile => 9,
+        Text::Capath => 10,
+        Text::Ciphers => 0,
+        Text::EcdhCurve => 1,
+    };
+    // SAFETY: the caller lends the live owner.
+    let state = unsafe { &*owner };
+    let slot = Arc::as_ptr(&state.strings[index]);
+    // SAFETY: a stable slot of the exclusive owner; its cache catches exceptions.
+    let status = unsafe {
+        swoole_rs_corebase::swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len())
+    };
+    if status != 0 {
+        std::process::abort();
+    }
+    if matches!(which, Text::HostName) {
+        // SAFETY: the exclusive caller serializes field writes.
+        unsafe { (*state.fields.get()).disable_tls_host_name = value.is_empty().into() };
+    }
+    true
+}
+
+/// Write the scalar setting into the owner.
+/// # Safety
+/// owner is live and exclusive.
+pub unsafe fn set_value(owner: *const OwnedTlsContext, value: Value) {
+    // SAFETY: the caller lends the live owner.
+    let state = unsafe { &*owner };
+    // SAFETY: the exclusive caller serializes field writes.
+    let fields = unsafe { &mut *state.fields.get() };
+    match value {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "upstream assigns the long to a uint32_t"
+        )]
+        Value::Protocols(value) => fields.protocols = value as u32,
+        Value::DisableCompress(value) => fields.disable_compress = value.into(),
+        Value::VerifyPeer(value) => fields.verify_peer = value.into(),
+        Value::AllowSelfSigned(value) => fields.allow_self_signed = value.into(),
+        Value::VerifyDepth(value) => fields.verify_depth = value,
+        Value::Grease(value) => fields.grease = value,
+    }
+}
+
+/// Whether the owner has a certificate file and a key file.
+/// # Safety
+/// owner is live.
+pub unsafe fn has_files(owner: *const OwnedTlsContext) -> (bool, bool) {
+    // SAFETY: the caller lends the live owner.
+    let state = unsafe { &*owner };
+    let set = |index: usize| {
+        // SAFETY: a stable slot of the live owner.
+        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&state.strings[index])) }
+            .length
+            != 0
+    };
+    (set(4), set(5))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,6 +707,36 @@ mod tests {
         _data: *mut c_void,
     ) -> c_int {
         0
+    }
+    #[test]
+    fn client_settings_write_the_owner() {
+        unsafe {
+            let prepared = swr_v1_tls_owner_new(warning);
+            let owner = prepared.owner;
+            let text = |index: usize| {
+                let view = swoole_rs_corebase::swr_v1_core_string_view(prepared.strings[index]);
+                std::slice::from_raw_parts(view.data.cast::<u8>(), view.length).to_vec()
+            };
+            assert!(set_text(owner, Text::HostName, b"example.test"));
+            assert_eq!(text(8), b"example.test");
+            assert_eq!((*prepared.fields).disable_tls_host_name, 0);
+            assert!(set_text(owner, Text::HostName, b""));
+            assert_eq!((*prepared.fields).disable_tls_host_name, 1);
+            assert!(set_text(owner, Text::Ciphers, b"HIGH"));
+            assert_eq!(text(0), b"HIGH");
+            assert!(!set_text(owner, Text::CertFile, b"/nonexistent/cert.pem"));
+            assert_eq!(has_files(owner), (false, false));
+            let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+            assert!(set_text(owner, Text::KeyFile, manifest.as_bytes()));
+            assert_eq!(has_files(owner), (false, true));
+            set_value(owner, Value::Protocols(1 << 3));
+            set_value(owner, Value::VerifyDepth(7));
+            set_value(owner, Value::VerifyPeer(true));
+            assert_eq!((*prepared.fields).protocols, 1 << 3);
+            assert_eq!((*prepared.fields).verify_depth, 7);
+            assert_eq!((*prepared.fields).verify_peer, 1);
+            swr_v1_tls_owner_free(owner);
+        }
     }
     #[test]
     fn socket_session_hostname_precedence_and_record_identity() {
