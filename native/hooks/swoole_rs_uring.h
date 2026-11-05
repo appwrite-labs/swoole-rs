@@ -58,7 +58,6 @@ ssize_t swr_v1_uring_recv(const swr_v1_uring_host *host, int fd, void *buf, size
 ssize_t swr_v1_uring_send(const swr_v1_uring_host *host, int fd, const void *buf, size_t len, int flags, double timeout);
 ssize_t swr_v1_uring_recvmsg(const swr_v1_uring_host *host, int fd, struct msghdr *message, int flags, double timeout);
 ssize_t swr_v1_uring_sendmsg(const swr_v1_uring_host *host, int fd, const struct msghdr *message, int flags, double timeout);
-ssize_t swr_v1_uring_sendto(const swr_v1_uring_host *host, int fd, const void *buf, size_t n, int flags, const struct sockaddr *addr, socklen_t len, double timeout);
 ssize_t swr_v1_uring_recvfrom(const swr_v1_uring_host *host, int fd, void *buf, size_t n, struct sockaddr *addr, socklen_t *len, double timeout);
 /* splice_pages: MSG_SPLICE_PAGES when the build's headers define it, else 0. */
 ssize_t swr_v1_uring_sendfile(const swr_v1_uring_host *host, int out_fd, int in_fd, off_t *offset, size_t size, double timeout, int splice_pages);
@@ -137,8 +136,9 @@ typedef struct {
     void (*update)(void *, ssize_t n);
 } swr_v1_hook_io_vector;
 enum { SWR_URING_READ, SWR_URING_WRITE, SWR_URING_RECV, SWR_URING_SEND, SWR_URING_RECVMSG, SWR_URING_SENDMSG,
-       SWR_URING_RECVFROM };
-/* op SWR_URING_*: extra is the msghdr (with flags) or recvfrom's address (with extra_length). */
+       SWR_URING_RECVFROM, SWR_URING_SENDTO };
+/* op SWR_URING_*: extra is the msghdr (with flags) or recvfrom's/sendto's address (with extra_length);
+ * sendto skips the availability check, made before resolving the host. */
 ssize_t swr_v1_hook_uring_io(const swr_v1_hook_uring_socket *ops, int op, void *buf, size_t n, void *extra,
                              socklen_t *extra_length, int flags);
 /* recv_all (write false) or send_all. */
@@ -146,6 +146,8 @@ ssize_t swr_v1_hook_uring_io_all(const swr_v1_hook_uring_socket *ops, bool write
 /* readv/writev, or with all readv_all/writev_all. */
 ssize_t swr_v1_hook_uring_vector(const swr_v1_hook_uring_socket *ops, const swr_v1_hook_io_vector *vector, bool write,
                                  bool all);
+/* accept's request into addr/length; the descriptor, or -1 with the socket's error set. */
+int swr_v1_hook_uring_accept(const swr_v1_hook_uring_socket *ops, struct sockaddr *addr, socklen_t *length);
 bool swr_v1_hook_uring_connect(const swr_v1_hook_uring_socket *ops, const struct sockaddr *addr, socklen_t length);
 /* poll(event) for the poll(2) events within timeout seconds. */
 bool swr_v1_hook_uring_poll(const swr_v1_hook_uring_socket *ops, uint32_t event, short events, double timeout);
