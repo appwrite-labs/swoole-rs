@@ -288,17 +288,19 @@ pub extern "C" fn microtime() -> f64 {
 
 /// `DataHead`'s layout (include/swoole.h), checked by a native static assertion.
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
 pub struct DataHead {
-    fd: c_long,
-    msg_id: u64,
-    len: u32,
-    reactor_id: i16,
-    kind: u8,
-    flags: u8,
-    server_fd: u16,
-    ext_flags: u16,
-    reserved: u32,
-    time: f64,
+    pub fd: c_long,
+    pub msg_id: u64,
+    pub len: u32,
+    pub reactor_id: i16,
+    /// `type`.
+    pub kind: u8,
+    pub flags: u8,
+    pub server_fd: u16,
+    pub ext_flags: u16,
+    pub reserved: u32,
+    pub time: f64,
 }
 
 /// `DataHead::dump`: the fields in upstream's format, with `sw_snprintf`'s

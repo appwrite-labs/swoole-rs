@@ -18,6 +18,7 @@ pub use commands::{
 };
 
 mod admin;
+mod base_factory;
 mod commands;
 mod config;
 mod conn_io;
