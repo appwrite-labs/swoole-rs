@@ -2,7 +2,8 @@
 
 Feature bit 524288 (`process`). ABI: `docs/process-abi-v1.md` and
 `swoole_rs_process.h`. Callers are in `src/server/worker.cc`,
-`src/server/task_worker.cc`, `src/server/manager.cc` and `src/os/process_pool.cc`.
+`src/server/task_worker.cc`, `src/server/process.cc` (the manager's ops) and
+`src/os/process_pool.cc`.
 
 Rust decides worker-exit observation and timeout plans, discard triage,
 task-kind/finish diagnostic/result-flag precedence, ordinary manager reload

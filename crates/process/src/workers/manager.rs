@@ -1,4 +1,5 @@
-//! The server's manager (`src/server/manager.cc`): it forks the workers, reaps and
+//! The server's manager (upstream's `src/server/manager.cc`; its native ops are
+//! process.cc's `ManagerContext`): it forks the workers, reaps and
 //! restarts them, runs reloads and stops them all on shutdown. Rust owns the
 //! manager's state ([`Manager`], which native holds as the opaque `Manager *`
 //! `Server::manager_`) and drives `reaper`'s loop with its own host; native code

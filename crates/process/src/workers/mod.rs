@@ -1,6 +1,6 @@
 //! The server's worker side: event workers (`src/server/worker.cc`), the
 //! base-mode reactor processes (`src/server/reactor_process.cc`), task workers
-//! (`src/server/task_worker.cc`), the manager (`src/server/manager.cc`) and the
+//! (`src/server/task_worker.cc`), the manager (upstream's `src/server/manager.cc`) and the
 //! process-mode factory (`src/server/process.cc`), and thread mode
 //! (`src/server/thread.cc`). Native code keeps
 //! the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
@@ -8,6 +8,7 @@
 //! `call(context, op, arg)`, reading facts afresh.
 use core::ffi::c_void;
 
+pub mod entry;
 mod event_worker;
 mod factory;
 pub mod factory_methods;
