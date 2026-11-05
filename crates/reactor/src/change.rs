@@ -296,6 +296,49 @@ pub unsafe extern "C" fn swr_v1_reactor_change(
     state.record(unsafe { &mut *socket }, op, events)
 }
 
+const SW_EVENT_READ: c_int = 1 << 9;
+const SW_EVENT_WRITE: c_int = 1 << 10;
+
+/// `Reactor`'s interest helpers over [`swr_v1_reactor_change`]: `add_event` (kind 0) and
+/// `del_event` (1) of `event`, then `add_read_event` (2), `add_write_event` (3),
+/// `remove_read_event` (4) and `remove_write_event` (5). Each sets, adds or deletes as
+/// upstream decides from the socket's events; its result, or 0 when nothing changes.
+///
+/// # Safety
+/// As for [`swr_v1_reactor_change`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_reactor_interest(
+    owner: *mut ReactorState,
+    socket: *mut SocketRecord,
+    kind: u32,
+    event: c_int,
+    log: ChangeLog,
+) -> c_int {
+    // SAFETY: as the caller promises; the view ends before the change.
+    let events = unsafe { (*socket).events };
+    let (other, own) = if kind.is_multiple_of(2) {
+        (SW_EVENT_WRITE, SW_EVENT_READ)
+    } else {
+        (SW_EVENT_READ, SW_EVENT_WRITE)
+    };
+    let (op, events) = match kind {
+        0 if events & event == 0 => (SET, events | event),
+        1 if events & event != 0 => (SET, events & !event),
+        0 | 1 => return 0,
+        2 | 3 if events & other != 0 => (SET, events | own),
+        2 | 3 => (ADD, own),
+        _ if events & other != 0 => (SET, events & !own),
+        _ => (2, 0),
+    };
+    if op == SET && kind >= 2 {
+        // Upstream writes the socket's events before the set, so they stay when it fails.
+        // SAFETY: as above.
+        unsafe { (*socket).events = events };
+    }
+    // SAFETY: as the caller promises.
+    unsafe { swr_v1_reactor_change(owner, socket, op, events, log) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +485,42 @@ mod tests {
             );
             assert_eq!(logged()[0].0, format!("{name}::add"));
             libc::close(fds[1]);
+            swr_v1_reactor_state_free(state.owner);
+        }
+    }
+
+    #[test]
+    fn interest_helpers_choose_upstreams_change() {
+        unsafe {
+            let state = swr_v1_reactor_state_new();
+            assert_eq!(swr_v1_reactor_state_open(state.owner, 3, 4), 0);
+            let mut socket = SocketRecord::with_fd(20, 5);
+            let interest = |socket: &mut SocketRecord, kind, event| {
+                swr_v1_reactor_interest(state.owner, socket, kind, event, log)
+            };
+            // add_write_event on a new socket adds it for writing; add_read_event sets both.
+            assert_eq!(interest(&mut socket, 3, 0), 0);
+            assert_eq!(socket.events, SW_EVENT_WRITE);
+            assert_eq!(interest(&mut socket, 2, 0), 0);
+            assert_eq!(socket.events, SW_EVENT_READ | SW_EVENT_WRITE);
+            // add_event of a bit it has, and del_event of one it lacks, change nothing.
+            assert_eq!(interest(&mut socket, 0, SW_EVENT_READ), 0);
+            assert_eq!(interest(&mut socket, 1, 1 << 11), 0);
+            assert_eq!(interest(&mut socket, 0, 1 << 11), 0);
+            assert_eq!(socket.events, SW_EVENT_READ | SW_EVENT_WRITE | 1 << 11);
+            assert_eq!(interest(&mut socket, 1, 1 << 11), 0);
+            // remove_read_event keeps the write interest; remove_write_event then deletes it.
+            assert_eq!(interest(&mut socket, 4, 0), 0);
+            assert_eq!(socket.events, SW_EVENT_WRITE);
+            assert_eq!(interest(&mut socket, 5, 0), 0);
+            assert_eq!((socket.events, socket.removed), (0, 1));
+            // A failed set keeps the events upstream wrote first.
+            let mut missing = SocketRecord::with_fd(21, 5);
+            missing.events = SW_EVENT_READ;
+            assert_eq!(interest(&mut missing, 3, 0), -1);
+            assert_eq!(missing.events, SW_EVENT_READ | SW_EVENT_WRITE);
+            assert_eq!(logged()[0].0, "ReactorPoll::set");
+            assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 0);
             swr_v1_reactor_state_free(state.owner);
         }
     }

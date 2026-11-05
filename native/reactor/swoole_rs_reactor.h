@@ -444,6 +444,9 @@ typedef void (*swr_v1_reactor_change_log)(const char *origin, int code, const ch
 /* Reactor::add (op 0), set (1) or del (2) on the state's backend, checks and registry included:
  * 0, -1 after logging the failure, or -2 when add cannot allocate. */
 int swr_v1_reactor_change(swr_v1_reactor_state *, void *socket, uint32_t op, int events, swr_v1_reactor_change_log log);
+/* Reactor's interest helpers over swr_v1_reactor_change: add_event (kind 0) and del_event (1) of
+ * event, add_read_event (2), add_write_event (3), remove_read_event (4), remove_write_event (5). */
+int swr_v1_reactor_interest(swr_v1_reactor_state *, void *socket, uint32_t kind, int event, swr_v1_reactor_change_log log);
 #ifdef __cplusplus
 }
 static_assert(sizeof(swr_v1_reactor_builtin_reply) == 8, "reactor builtin reply ABI");
