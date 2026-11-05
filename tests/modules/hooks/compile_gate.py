@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Compile all eight unchanged and selected complete native units, plus disabled guards.
 
-Actual io_uring units require --config selecting a configured liburing2.8+
-source. A compiled-out unit is recorded UNSUPPORTED, never enabled-backend proof.
+original: the pinned tree. selected: the same tree with every file the hybrid build
+`--archive` comes from patched (overlay_hybrid_tree, #796) and that build's config.h.
+disabled: the selected tree whose config.h lacks SWOOLE_RS_HOOKS must refuse to compile.
+Actual io_uring units require a build configured with liburing2.8+. A compiled-out unit is
+recorded UNSUPPORTED, never enabled-backend proof.
 """
 import argparse
 import io
@@ -19,38 +22,20 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import GRADUATED, MODULES, REQUIRES, module_patches, patches_for
-
-
-def requirements():
-    """Hooks and the modules it depends on (migration/modules.json), in plan order: the
-    selected units include their headers and records (the reactor's socket, #947)."""
-    plan = json.loads((ROOT/'migration/modules.json').read_text())['modules']
-    by_id = {module['id']: module for module in plan}
-    names = {module_id: name for name, (module_id, _) in MODULES.items()}
-    wanted, pending = set(), ['M07', *(MODULES[name][0] for name in GRADUATED)]
-    while pending:
-        module = pending.pop()
-        if module not in wanted:
-            wanted.add(module)
-            pending.extend(by_id[module].get('depends_on', []))
-            pending.extend(MODULES[name][0] for name in REQUIRES.get(names.get(module), ()))
-    return [module for module in plan if module['id'] in wanted]
+from tools.build_hybrid import hybrid_tree, module_patches, overlay_hybrid_tree
 from tools.build_upstream import COMMIT as PIN
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source', type=Path, required=True)
-    p.add_argument('--config', type=Path, required=True)
+    p.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test')
     p.add_argument('--php-config', default='php-config')
     p.add_argument('--report', type=Path, required=True)
     a = p.parse_args()
-    manifest = module_patches(ROOT/'migration/patches/hooks')
-    paths = sorted({path for entry in manifest for path in entry['upstream_paths']})
-    modules = requirements()
-    selected_patches = patches_for(modules)
-    native = sorted({ROOT/path for module in modules for path in module['owned_paths'] if path.startswith('native/') and (ROOT/path).is_dir()})
-    config = a.config.read_bytes()
+    paths = sorted({path for entry in module_patches(ROOT/'migration/patches/hooks') for path in entry['upstream_paths']})
+    hybrid_source, hybrid_flags = hybrid_tree(a.archive)
+    abi = [flag for flag in hybrid_flags if flag.startswith('-I') and flag != '-I'+str(hybrid_source/'include')]
+    config = (hybrid_source/'config.h').read_bytes()
     baseline_config = re.sub(rb'^#define SWOOLE_RS_HOOKS[^\n]*\n', b'', config, flags=re.MULTILINE)
     rows = []
     pkg_env = os.environ.copy()
@@ -68,22 +53,21 @@ def main():
         pkg_env['PKG_CONFIG_PATH'] = os.pathsep.join(pkg_paths)
     with tempfile.TemporaryDirectory(prefix='swr-hooks-compile-') as temp:
         tree = Path(temp)
-        data = subprocess.check_output(['git', '-C', str(a.source), 'archive', PIN, 'include', 'ext-src', 'thirdparty', 'php_swoole.h', 'php_swoole_api.h', *sorted({*paths, *(path for entry in selected_patches for path in entry['upstream_paths'])})])
+        data = subprocess.check_output(['git', '-C', str(a.source), 'archive', PIN])
         with tarfile.open(fileobj=io.BytesIO(data)) as archive:
             for member in archive:
                 if member.isfile():
                     out = tree/member.name
                     out.parent.mkdir(parents=True, exist_ok=True)
                     out.write_bytes(archive.extractfile(member).read())
-        (tree/'config.h').write_bytes(config)
-        flags = ['-std=c++14', '-O1', '-DHAVE_CONFIG_H', '-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1', '-I'+str(tree), '-I'+str(tree/'include'), '-I'+str(tree/'ext-src'), *('-I'+str(path) for path in native)]
-        flags.extend(shlex.split(subprocess.check_output([a.php_config, '--includes'], text=True)))
-        flags.extend(shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl', 'libpq', 'libcurl'], text=True, env=pkg_env)))
+        common = ['-std=c++14', '-O1', '-DHAVE_CONFIG_H', '-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1', '-I'+str(tree), '-I'+str(tree/'include'), '-I'+str(tree/'ext-src')]
+        common.extend(shlex.split(subprocess.check_output([a.php_config, '--includes'], text=True)))
+        common.extend(shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl', 'libpq', 'libcurl'], text=True, env=pkg_env)))
         for variant in ['original', 'selected', 'disabled']:
-            (tree/'config.h').write_bytes(baseline_config + (b'\n#define SWOOLE_RS_HOOKS 1\n' if variant == 'selected' else b''))
             if variant == 'selected':
-                for entry in selected_patches:
-                    subprocess.run(['git', 'apply', str(ROOT/entry['path'])], cwd=tree, check=True)
+                overlay_hybrid_tree(a.archive, tree)
+            (tree/'config.h').write_bytes(config if variant == 'selected' else baseline_config)
+            flags = common + (abi if variant != 'original' else [])
             # Translation units only: the patches also touch headers (stubs), which the units include.
             for path in (path for path in paths if path.endswith(".cc")):
                 command = ['c++', *flags, '-fsyntax-only', str(tree/path)]
@@ -103,7 +87,7 @@ def main():
                 print('sdk-selected', path, result.returncode, status, flush=True)
                 rows.append(dict(variant='sdk-selected', path=path, command=command,
                                  returncode=result.returncode, passed=passed, status=status, stderr=result.stderr))
-    report = dict(pin=PIN, scope=__doc__, config=str(a.config.resolve()), pkg_config_path=pkg_env.get('PKG_CONFIG_PATH', ''), discovered_prefixes=discovered_prefixes, compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0], rows=rows)
+    report = dict(pin=PIN, scope=__doc__, hybrid_tree=str(hybrid_source), pkg_config_path=pkg_env.get('PKG_CONFIG_PATH', ''), discovered_prefixes=discovered_prefixes, compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0], rows=rows)
     a.report.parent.mkdir(parents=True, exist_ok=True)
     a.report.write_text(json.dumps(report, indent=2)+'\n')
     raise SystemExit(any(not row['passed'] for row in rows))

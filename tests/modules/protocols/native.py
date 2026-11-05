@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Real Rust C ABI + native facades versus unchanged pinned protocol bodies."""
+"""Real Rust C ABI + native facades: the hybrid build's protocol bodies (hybrid_tree, #796)
+versus unchanged pinned ones."""
 import argparse
 from datetime import datetime, timezone
 import json
@@ -9,7 +10,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.build_hybrid import module_patches
+from tools.build_hybrid import hybrid_tree
 from tools.harness import ROOT, run_isolated, write_report
 from tools.harness import run_compiler
 
@@ -31,32 +32,15 @@ def function(source, signature):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
-    parser.add_argument('--candidate', type=Path, help='External patched checkout; default stages the checked module overlay')
-    parser.add_argument('--archive', type=Path, default=ROOT / 'target/protocols/release/libswoole_rs_protocols.a')
+    parser.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test')
     parser.add_argument('--output', default=str(ROOT / 'target/reports/protocols-native.json'))
     parser.add_argument('--sanitize', action='store_true')
     args = parser.parse_args()
     sources = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in TARGETS}
     headers = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in ['include/swoole_proxy.h', 'include/swoole_redis.h']}
-    if args.candidate:
-        candidates = {p: (args.candidate / p).read_text() for p in TARGETS}
-        candidate_proxy_header = (args.candidate/'include/swoole_proxy.h').read_text()
-    else:
-        manifest = module_patches(ROOT / 'migration/patches/protocols')
-        with tempfile.TemporaryDirectory(prefix='swr-protocols-overlay-') as directory:
-            staged = Path(directory)
-            subprocess.run(['git', 'init', '-q', directory], check=True)
-            for name in {p for patch in manifest for p in patch['upstream_paths']} | set(TARGETS):
-                text = sources.get(name) or subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{name}'], text=True)
-                destination = staged / name
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text(text)
-            for patch in manifest:
-                path = ROOT / 'migration/patches/protocols' / patch['path']
-                subprocess.run(['git', '-C', directory, 'apply', '--check', str(path)], check=True)
-                subprocess.run(['git', '-C', directory, 'apply', str(path)], check=True)
-            candidates = {p: (staged / p).read_text() for p in TARGETS}
-            candidate_proxy_header = (staged/'include/swoole_proxy.h').read_text()
+    candidate = hybrid_tree(args.archive)[0]
+    candidates = {p: (candidate / p).read_text() for p in TARGETS}
+    candidate_proxy_header = (candidate / 'include/swoole_proxy.h').read_text()
     archive = args.archive.resolve(strict=True)
     local = Path(__file__).resolve().parent
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'upstream_pin': PIN,
