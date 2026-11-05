@@ -256,27 +256,11 @@ typedef struct {
  * is set, else default_event. */
 void swr_v1_socket_ssl_clear(swr_v1_socket_tls *tls);
 int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_event);
-/* Socket::ssl_check_host: X509_check_host on the peer certificate (consumed; may be
- * null): 0 none, 1 match, 2 no match. */
-int swr_v1_socket_ssl_check_host(struct x509_st *cert, const char *name, size_t length);
-/* PEM export of a certificate into at most length bytes (-1 BIO_new failed, -2
- * PEM_write_bio_X509 failed; frees cert when consume); a new SSL on fd from context
- * (0, or 1 SSL_new, 2 SSL_set_fd with *error, 3 SSL_set_ex_data failed), clearing
- * tls's want flags first and its state on success. */
-int swr_v1_socket_ssl_pem(struct x509_st *cert, char *buffer, size_t length, bool consume);
-/* Socket::ssl_shutdown: 1 true, 0 false, 2 false after the caller warns with
- * ssl_get_error_reason. `repaired` is --fix-halfclose's close_notify repair. */
-int swr_v1_socket_ssl_shutdown(swr_v1_socket_tls *tls, struct ssl_st *ssl, uint8_t *closed, bool quiet, bool repaired);
-int swr_v1_socket_ssl_new(swr_v1_socket_tls *tls, struct ssl_ctx_st *context, int fd, int flags, int index, void *socket, struct ssl_st **ssl, unsigned long *error);
-/* A TLS socket's ssl_recv/ssl_send/SSL_peek; catch_error's classification (swReturnCode). */
-typedef ssize_t (*swr_v1_socket_tls_io)(void *socket, void *buffer, size_t length);
-/* Socket::ssl_sendfile: pread up to SW_BUFFER_SIZE_BIG bytes at *offset, send them
- * once through send, advance *offset. warn: 1 write() failed, 2 pread() failed. */
-typedef struct {
-    ssize_t value;
-    int warn;
-} swr_v1_socket_ssl_sendfile_result;
-swr_v1_socket_ssl_sendfile_result swr_v1_socket_ssl_sendfile(int file_fd, off_t *offset, size_t size, swr_v1_socket_tls_io send, void *socket, bool *kernel_nobufs);
+/* _ssl_read_x509_file: a certificate as PEM into at most length bytes, warning and
+ * returning -1 on failure; frees cert when consume. */
+int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);
+/* --fix-halfclose's close_notify repair for Socket::ssl_shutdown (SW_HALFCLOSE_TLS_SHUTDOWN). */
+void swr_v1_socket_set_tls_shutdown_repaired(bool repaired);
 /* An IOVector's cursor. */
 typedef struct {
     struct iovec *iterator;

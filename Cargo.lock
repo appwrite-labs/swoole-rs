@@ -828,6 +828,7 @@ dependencies = [
  "libc",
  "openssl-sys",
  "swoole-rs-corebase",
+ "swoole-rs-ossupport",
  "swoole-rs-reactor",
 ]
 
