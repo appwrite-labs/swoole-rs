@@ -1,6 +1,7 @@
 //! `swoole::MsgQueue` (upstream `src/os/msg_queue.cc`): open, blocking flag,
-//! push and pop over a `SysV` message queue. Rust defines and initializes the queue record; native keeps logs;
-//! each call returns right after a failing syscall with its errno intact.
+//! push, pop, stat and capacity over a `SysV` message queue. Rust defines and
+//! initializes the queue record; the inline methods in `swoole_msg_queue.h` keep
+//! the logs; each call returns right after a failing syscall with its errno intact.
 use libc::{c_int, c_long, c_void};
 
 // The XSI message queue calls, declared here because libc omits them on Darwin.
@@ -174,6 +175,85 @@ pub unsafe extern "C" fn swr_v1_os_msg_queue_remove(queue: *mut QueueRecord) -> 
     true
 }
 
+/// `struct msqid_ds`, which libc omits on Darwin.
+#[cfg(target_os = "linux")]
+use libc::msqid_ds as MsqidDs;
+#[cfg(target_os = "macos")]
+#[repr(C, packed(4))]
+#[derive(Clone, Copy)]
+struct MsqidDs {
+    msg_perm: libc::ipc_perm,
+    msg_first: i32,
+    msg_last: i32,
+    __msg_cbytes: libc::c_ulong,
+    msg_qnum: libc::c_ulong,
+    msg_qbytes: libc::c_ulong,
+    msg_lspid: libc::pid_t,
+    msg_lrpid: libc::pid_t,
+    msg_stime: libc::time_t,
+    msg_pad1: i32,
+    msg_rtime: libc::time_t,
+    msg_pad2: i32,
+    msg_ctime: libc::time_t,
+    msg_pad3: i32,
+    msg_pad4: [i32; 4],
+}
+
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<MsqidDs>() == 116, "Darwin's packed msqid_ds");
+
+/// `msgctl(id, IPC_STAT)`.
+fn queue_stat(id: c_int) -> Option<MsqidDs> {
+    let mut stat = std::mem::MaybeUninit::<MsqidDs>::zeroed();
+    // SAFETY: IPC_STAT fills a writable `msqid_ds`.
+    let rc = unsafe { msgctl(id, libc::IPC_STAT, stat.as_mut_ptr().cast()) };
+    // SAFETY: zeroed is a valid `msqid_ds`, and msgctl filled it on success.
+    (rc == 0).then(|| unsafe { stat.assume_init() })
+}
+
+/// `MsgQueue::stat`: the queue's message count and bytes; false leaves errno.
+/// # Safety
+/// `queue` is live; `num` and `bytes` are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_os_msg_queue_stat(
+    queue: *const QueueRecord,
+    num: *mut usize,
+    bytes: *mut usize,
+) -> bool {
+    // SAFETY: a live queue record.
+    let Some(stat) = queue_stat(unsafe { (*queue).id }) else {
+        return false;
+    };
+    // SAFETY: writable per the contract.
+    unsafe { num.write(usize::try_from(stat.msg_qnum).unwrap_or(usize::MAX)) };
+    // SAFETY: as above.
+    unsafe { bytes.write(usize::try_from(stat.__msg_cbytes).unwrap_or(usize::MAX)) };
+    true
+}
+
+/// `MsgQueue::set_capacity`: 0 set, 1 `IPC_STAT` failed (quiet), 2 `IPC_SET`
+/// failed (native warns); errno intact.
+/// # Safety
+/// `queue` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_os_msg_queue_set_capacity(
+    queue: *const QueueRecord,
+    bytes: usize,
+) -> c_int {
+    // SAFETY: a live queue record.
+    let id = unsafe { (*queue).id };
+    let Some(mut stat) = queue_stat(id) else {
+        return 1;
+    };
+    stat.msg_qbytes = libc::c_ulong::try_from(bytes).unwrap_or(libc::c_ulong::MAX);
+    // SAFETY: IPC_SET reads the `msqid_ds` IPC_STAT filled.
+    if unsafe { msgctl(id, libc::IPC_SET, (&raw mut stat).cast()) } == 0 {
+        0
+    } else {
+        2
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +330,37 @@ mod tests {
             },
             "ENOMSG is quiet"
         );
+        let record = QueueRecord {
+            blocking: false,
+            id: queue.id,
+            key: libc::IPC_PRIVATE,
+            flags,
+            perms: queue.perms,
+        };
+        assert_eq!(
+            unsafe { swr_v1_os_msg_push(queue.id, (&raw const sent).cast(), 8, flags) },
+            0,
+            "sent again"
+        );
+        let (mut num, mut bytes) = (0, 0);
+        assert!(
+            unsafe { swr_v1_os_msg_queue_stat(&raw const record, &raw mut num, &raw mut bytes) },
+            "stat"
+        );
+        assert_eq!((num, bytes), (1, 8), "one 8-byte message queued");
+        // Lowering the limit needs no privilege.
+        assert_eq!(
+            unsafe { swr_v1_os_msg_queue_set_capacity(&raw const record, 1024) },
+            0,
+            "capacity"
+        );
+        let limit = queue_stat(queue.id).map(|stat| stat.msg_qbytes);
+        assert_eq!(limit, Some(1024), "msg_qbytes");
+        assert_eq!(
+            unsafe { swr_v1_os_msg_pop(queue.id, (&raw mut got).cast(), 8, 3, flags) }.result,
+            8,
+            "drained"
+        );
         assert!(swr_v1_os_msg_remove(queue.id), "removed");
         assert!(!swr_v1_os_msg_remove(queue.id), "already removed");
         let pop = unsafe { swr_v1_os_msg_pop(queue.id, (&raw mut got).cast(), 8, 3, flags) };
@@ -260,6 +371,16 @@ mod tests {
                 warn: true
             },
             "a removed queue warns"
+        );
+        let (mut num, mut bytes) = (0, 0);
+        assert!(
+            !unsafe { swr_v1_os_msg_queue_stat(&raw const record, &raw mut num, &raw mut bytes) },
+            "a removed queue has no stat"
+        );
+        assert_eq!(
+            unsafe { swr_v1_os_msg_queue_set_capacity(&raw const record, 1024) },
+            1,
+            "nor a capacity"
         );
     }
 }
