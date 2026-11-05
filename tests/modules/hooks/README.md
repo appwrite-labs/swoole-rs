@@ -78,3 +78,10 @@ under ASan/UBSan. Neither a PHPT nor the Rust unit tests reach that C++ glue.
 
 A body these gates slice may move into Rust: the PR that moves it ports the
 gate's cases for it into a `crates/hooks` test and drops the body from the gate.
+
+`fd_control_sdk.cpp` is a complete native SDK consumer for the hooked-fd timeout,
+fake-poll and wait operations. Link it against the configured core SDK and exact
+production archive. It checks real fd routing, directional timeout effects,
+fallback poll syscalls, and an injected virtual `SocketImpl::poll` throw with
+C++ destructor/exception custody. Rust preparation has returned before that
+virtual call; it does not test or claim foreign unwinding through Rust.
