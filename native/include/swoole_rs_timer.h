@@ -33,6 +33,8 @@ int32_t swr_v1_timer_release(swr_v1_timer *queue);
 int32_t swr_v1_timer_add(swr_v1_timer *queue, int64_t now, int64_t delay,
                         uint32_t persistent, void *token, swr_v1_timer_view *out);
 int32_t swr_v1_timer_get(const swr_v1_timer *queue, int64_t id, swr_v1_timer_view *out);
+/* The token id was added with, or null. */
+void *swr_v1_timer_token(const swr_v1_timer *queue, int64_t id);
 int32_t swr_v1_timer_update(swr_v1_timer *queue, int64_t id, int64_t deadline,
                            swr_v1_timer_view *out);
 /* RELEASE transfers token; DEFERRED retains the active removed entry. */
