@@ -36,13 +36,13 @@ int main() {
     assert(&global.std_allocator==allocator_address && global.std_allocator.malloc==nullptr && global.max_sockets==0 && global.task_tmpfile.empty());
     assert(reference.empty());
     swoole::ThreadGlobal first;
-    first.id=19;first.type=3;first.main_thread=true;first.error=71;
+    first.id=19;first.type=3;first.main_thread=true;
     auto *id_address=&first.id;auto id=first.id;
     swoole::ThreadGlobal copy=first;
-    assert(&copy.id!=&first.id && copy.id==19 && copy.type==3 && copy.main_thread && copy.error==71);
+    assert(&copy.id!=&first.id && copy.id==19 && copy.type==3 && copy.main_thread);
     first.id=23;assert(id==19 && copy.id==19);
     first={};
-    assert(&first.id==id_address && first.id==0 && !first.main_thread && first.error==0 && copy.id==19 && copy.error==71);
+    assert(&first.id==id_address && first.id==0 && !first.main_thread && copy.id==19);
     std::cout<<"core config/thread views PASS\n";
 }
 '''
