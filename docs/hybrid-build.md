@@ -89,6 +89,8 @@ and its PHP reader must match. The development lanes add the companion module
 automatically; direct builder calls need both `--module` flags.
 Upstream keeps PHP objects, socket/reactor ownership, protocol dispatch and
 native callbacks unless a selected module replaces them.
+`httpbindings` (and its paired `http2`) also requires `process`, which supplies
+the non-fatal PHP Server-object getter; `process` requires `locks`.
 
 Shared options (also on `build_upstream.py`): `--jobs N`, `--php-config PATH`,
 `--phpize PATH`, `--openssl-dir PREFIX`, `--stdext`, `--php-sockets`,
