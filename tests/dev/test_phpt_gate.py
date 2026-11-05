@@ -9,6 +9,26 @@ from corpus.upstream.inventory import shard
 
 
 class PhptGate(unittest.TestCase):
+    def test_named_exclusion_never_becomes_a_pass_or_waives_a_failure(self):
+        from corpus.upstream.run import named_exclusion, verdict_failed
+        case = {'path': 'tests/swoole_thread/server/exit.phpt'}
+        metadata = {'zts': 1, 'capabilities': ['threads']}
+        self.assertIsNotNone(named_exclusion(case, metadata))
+        self.assertIsNone(named_exclusion(case, {'zts': 0, 'capabilities': ['threads']}))
+        self.assertIsNone(named_exclusion(case, {'zts': 1, 'capabilities': []}))
+        self.assertIsNone(named_exclusion({'path': 'tests/other.phpt'}, metadata))
+        self.assertFalse(verdict_failed({'test': case['path'], 'status': 'excluded'}, True))
+        self.assertTrue(verdict_failed({'test': case['path'], 'status': 'failed',
+                                        'upstream_status': 'WARNED'}, True))
+        self.assertTrue(verdict_failed({'test': 'tests/other.phpt', 'status': 'excluded'}, True))
+        report = [{'test': case['path'], 'family': 'swoole_thread', 'engine': engine,
+                   'status': 'excluded', 'reason': named_exclusion(case, metadata)}
+                  for engine in ['upstream', 'hybrid']]
+        summary = markdown(report)
+        self.assertIn('0 passed, 0 failed, 0 skipped, 1 excluded', summary)
+        self.assertIn('named originals excluded (not passed)', summary)
+        self.assertEqual(compare(report), ([], []))
+
     def test_shards_partition_every_path(self):
         paths = [f'tests/t/{n}.phpt' for n in range(25)]
         parts = [shard(paths, index, 4) for index in range(1, 5)]

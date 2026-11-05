@@ -67,6 +67,7 @@ class Engine:
           method_exists('Swoole\\Http\\Request', 'create') && method_exists('Swoole\\Http\\Request', 'parse') ? 'http_request_parser' : null,
           method_exists('Swoole\\WebSocket\\Frame', 'pack') ? 'websocket_codec' : null,
           class_exists('Swoole\\Atomic') ? 'atomics' : null,
+          PHP_ZTS && defined('SWOOLE_THREAD') && class_exists('Swoole\\Thread') ? 'threads' : null,
           function_exists('swoole_typed_array') && function_exists('swoole_call_array_method') ? 'stdext' : null,
           function_exists('swoole_async_set') && method_exists('Swoole\\Coroutine', 'set') && defined('SWOOLE_USE_SHORTNAME') ? 'upstream_test_bootstrap' : null]))]);
         '''
