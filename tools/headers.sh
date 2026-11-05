@@ -12,7 +12,11 @@ for config in crates/*/cbindgen*.toml; do
     suffix=${suffix#cbindgen}
     header=native/include/swoole_rs_$(basename "$crate")$suffix.h
     generated=$(mktemp)
-    cbindgen --quiet --config "$config" --output "$generated" "$crate"
+    input=$crate
+    if [ -n "$suffix" ] && [ -f "$crate/src/${suffix#_}.rs" ]; then
+        input=$crate/src/${suffix#_}.rs
+    fi
+    cbindgen --quiet --config "$config" --output "$generated" "$input"
     if [ -n "$suffix" ] && [ -f "$crate/src/${suffix#_}.rs" ]; then
         python3 tools/header_strings.py "$crate/src/${suffix#_}.rs" "$generated"
     fi

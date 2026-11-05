@@ -1,0 +1,10 @@
+language = "C"
+include_guard = "SWOOLE_RS_COREBASE_THREAD_H"
+cpp_compat = true
+no_includes = true
+sys_includes = ["stdbool.h", "stdint.h", "stddef.h", "pthread.h"]
+documentation = false
+autogen_warning = "/* Generated from crates/corebase by cbindgen (tools/headers.sh); do not edit. */"
+[export]
+item_types = ["structs", "functions"]
+include = ["CoreThread", "swr_v1_core_thread_joinable", "swr_v1_core_thread_alive", "swr_v1_core_thread_status", "swr_v1_core_thread_enter", "swr_v1_core_thread_exit", "swr_v1_core_thread_move", "swr_v1_core_thread_id", "swr_v1_core_thread_start", "swr_v1_core_thread_join_check", "swr_v1_core_thread_join_complete", "swr_v1_core_thread_detach"]
