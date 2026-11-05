@@ -35,4 +35,7 @@ int swr_zend_try_facade_object_alloc(size_t, zend_class_entry *, void **);
 int swr_zend_try_facade_array_init(zval *);
 int swr_zend_try_facade_objects_new(zend_class_entry *, zend_object **);
 int swr_zend_try_facade_creation_error(zend_class_entry *);
+int swr_zend_try_facade_object_init(zend_object *, zend_class_entry *);
+int swr_zend_try_facade_properties_init(zend_object *, zend_class_entry *);
+int swr_zend_try_facade_object_dtor(zend_object *);
 #endif

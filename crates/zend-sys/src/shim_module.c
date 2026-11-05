@@ -111,3 +111,37 @@ void swr_zend_stream_constant_no_close(const char *name, size_t length) {
     stream->flags |= PHP_STREAM_FLAG_NO_CLOSE;
 #endif
 }
+
+int swr_zend_try_module_ini(const zend_ini_entry_def *entries, int number, int type) {
+    int bailed = 0;
+    zend_try { zend_register_ini_entries_ex(entries, number, type); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+
+#include "ext/standard/info.h"
+int swr_zend_try_info_start(void) {
+    int bailed = 0;
+    zend_try { php_info_print_table_start(); } zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_info_header(const char *key, const char *value) {
+    int bailed = 0;
+    zend_try { php_info_print_table_header(2, key, value); } zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_info_row(const char *key, const char *value) {
+    int bailed = 0;
+    zend_try { php_info_print_table_row(2, key, value); } zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_info_end(void) {
+    int bailed = 0;
+    zend_try { php_info_print_table_end(); } zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_info_ini(void *module) {
+    int bailed = 0;
+    zend_try { display_ini_entries((zend_module_entry *) module); } zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}

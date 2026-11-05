@@ -28,38 +28,37 @@ pub(crate) struct SockoptCall {
     pub(crate) result: c_int,
 }
 
-/// `swoole_socket_coro_import_call`.
-#[repr(C)]
-pub(crate) struct ImportCall {
-    pub(crate) fd: c_int,
-    pub(crate) kind: c_int,
-    pub(crate) nonblock: c_int,
-    pub(crate) stream: *mut zval,
-    pub(crate) object: *mut zend_object,
-}
-
 unsafe extern "C" {
     /// `php_swoole_error(level, "%s", message)`, or with `fatal`
     /// `php_swoole_fatal_error`.
     pub(crate) fn swoole_rs_php_error(level: c_int, fatal: bool, message: *const c_char);
     /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
     pub(crate) fn swoole_socket_coro_unconstructed();
-    /// `php_swoole_check_reactor()`, then `new SocketImpl(domain, type, protocol)`;
-    /// null with `errno` in `error` when it has no fd.
-    pub(crate) fn swoole_socket_coro_create(
-        domain: i64,
-        kind: i64,
-        protocol: i64,
-        error: *mut c_int,
-    ) -> Socket;
     /// `socket_coro_init`'s socket half: zero copy and the zend string
     /// allocator, then its fd, domain, type and protocol into `fields`.
     pub(crate) fn swoole_socket_coro_adopt(socket: Socket, fields: *mut i64);
-    /// `socket_coro_free_object` up to `zend_object_std_dtor`.
-    pub(crate) fn swoole_socket_coro_release(object: *mut zend_object);
-    /// `close()` after the reference check: free the length callable, then
-    /// release an imported stream or close the socket.
-    pub(crate) fn swoole_socket_coro_close(object: *mut zend_object);
+    pub(crate) fn swoole_socket_coro_new_family(
+        domain: c_int,
+        kind: c_int,
+        protocol: c_int,
+        result: *mut Socket,
+    ) -> u8;
+    /// Individual native C++ constructors; each contains PHP bailouts before returning.
+    pub(crate) fn swoole_socket_coro_new_type(kind: c_int, result: *mut Socket) -> u8;
+    pub(crate) fn swoole_socket_coro_new_fd(fd: c_int, kind: c_int, result: *mut Socket) -> u8;
+    pub(crate) fn swoole_socket_coro_new_fd_family(
+        fd: c_int,
+        domain: c_int,
+        kind: c_int,
+        protocol: c_int,
+        result: *mut Socket,
+    ) -> u8;
+    pub(crate) fn swoole_socket_coro_fd(socket: Socket) -> c_int;
+    /// Core lifetime leaves contain any PHP callback bailout below Rust.
+    pub(crate) fn swoole_socket_coro_destroy(socket: Socket) -> u8;
+    pub(crate) fn swoole_socket_coro_move_fd(socket: Socket);
+    pub(crate) fn swoole_socket_coro_close_native(socket: Socket) -> u8;
+    pub(crate) fn swoole_socket_coro_callable_free(callable: *mut c_void) -> u8;
     pub(crate) fn swoole_socket_coro_is_closed(socket: Socket) -> bool;
     /// `errCode`, with `errMsg` in `message`.
     pub(crate) fn swoole_socket_coro_error(socket: Socket, message: *mut *const c_char) -> c_int;
@@ -232,9 +231,6 @@ unsafe extern "C" {
         name: c_int,
         array: *mut zval,
     ) -> c_int;
-    /// `php_swoole_create_socket_from_fd` over an [`ImportCall`] (with a
-    /// stream, `import`'s object); run inside `zend_try`.
-    pub(crate) fn swoole_socket_coro_import(call: *mut c_void);
 }
 
 unsafe extern "C" {

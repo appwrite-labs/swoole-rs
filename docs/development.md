@@ -134,8 +134,8 @@ manual setup:
   (the image has valgrind)
 
 It warns when the disk has less than 20 GB free. `dev.py prune` also removes
-`target/worktrees/*` older than its window and dev images other than the current
-one, so nothing needs `rm -rf` outside `target/`.
+`target/worktrees/*` older than its window. It keeps Docker images shared with
+other worktrees.
 
 Any other image a tool or README builds gets one fixed name per purpose (for
 example `swoole-protocols-core`), never a hash or `:local` tag, so a rebuild

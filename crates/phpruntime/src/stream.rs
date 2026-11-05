@@ -25,23 +25,37 @@ use swoole_rs_zend::{
         IS_ARRAY, IS_NULL, add_assoc_bool_ex, add_assoc_long_ex, add_assoc_string_ex,
         add_assoc_zval_ex, add_next_index_resource, php_stream, php_stream_context, php_stream_ops,
         php_stream_statbuf, php_stream_xport_crypto_param, php_stream_xport_param, sockaddr,
-        swr_zend_array_init, swr_zend_efree, swr_zend_is_true, swr_zend_stream_alloc,
-        swr_zend_stream_avoid_blocking, swr_zend_stream_buffered, swr_zend_stream_close,
-        swr_zend_stream_context, swr_zend_stream_context_options, swr_zend_stream_crypto_op,
-        swr_zend_stream_default_timeout, swr_zend_stream_empty_string, swr_zend_stream_eof,
-        swr_zend_stream_expose, swr_zend_stream_option, swr_zend_stream_progress,
-        swr_zend_stream_set_eof, swr_zend_stream_set_option, swr_zend_stream_share_context,
-        swr_zend_stream_timeval, swr_zend_stream_vm_active, swr_zend_stream_xport_flags,
-        swr_zend_stream_xport_op, swr_zval_try_addref, timeval, zend_array,
-        zend_hash_next_index_insert, zend_hash_str_find, zend_string, zval, zval_ptr_dtor,
+        swr_zend_array_init, swr_zend_efree, swr_zend_is_true, swr_zend_stream_avoid_blocking,
+        swr_zend_stream_buffered, swr_zend_stream_context, swr_zend_stream_context_options,
+        swr_zend_stream_crypto_op, swr_zend_stream_default_timeout, swr_zend_stream_empty_string,
+        swr_zend_stream_eof, swr_zend_stream_expose, swr_zend_stream_option,
+        swr_zend_stream_progress, swr_zend_stream_set_eof, swr_zend_stream_set_option,
+        swr_zend_stream_share_context, swr_zend_stream_timeval, swr_zend_stream_vm_active,
+        swr_zend_stream_xport_flags, swr_zend_stream_xport_op, swr_zval_try_addref, timeval,
+        zend_array, zend_hash_next_index_insert, zend_hash_str_find, zend_string, zval,
+        zval_ptr_dtor,
     },
     type_of,
     value::table,
 };
 
 unsafe extern "C" {
-    /// The "socket/coroutine" operations table (ext-src/swoole_runtime.cc).
-    static swoole_runtime_socket_ops: php_stream_ops;
+    fn swr_cpp_phpruntime_socket_write(
+        stream: *mut php_stream,
+        buffer: *const c_char,
+        length: usize,
+    ) -> isize;
+    fn swr_cpp_phpruntime_socket_read(
+        stream: *mut php_stream,
+        buffer: *mut c_char,
+        length: usize,
+    ) -> isize;
+    fn swr_cpp_phpruntime_socket_option(
+        stream: *mut php_stream,
+        option: c_int,
+        value: c_int,
+        parameter: *mut c_void,
+    ) -> c_int;
     fn php_network_populate_name_from_sockaddr(
         sa: *mut sockaddr,
         sl: socklen_t,
@@ -120,13 +134,34 @@ fn errno() -> i32 {
 }
 
 /// Report a trapped bailout through `flag`; `failed` stands in for the result.
-pub(crate) fn reraise<T>(flag: *mut u8, result: Result<T, Bailout>, failed: T) -> T {
-    result.unwrap_or_else(|Bailout| {
-        // SAFETY: the C++ entry lends its flag.
+pub(crate) fn reraise<T: Copy>(flag: *mut u8, result: Result<T, Bailout>, failed: T) -> T {
+    let (value, status) = match result {
+        Ok(value) => (value, Ok(())),
+        Err(error) => (failed, Err(error)),
+    };
+    if swoole_rs_zend::bailout::relay_to_c(status) {
+        // SAFETY: the native entry lends its flag; owned Rust cleanup has already finished.
         unsafe { *flag = 1 };
         failed
-    })
+    } else {
+        value
+    }
 }
+
+// PHP's required operations table is Rust-owned alongside its stream data and bodies.
+// Native entries only resume flags from the three callbacks that may execute PHP.
+#[unsafe(no_mangle)]
+pub static mut swoole_runtime_socket_ops: php_stream_ops = php_stream_ops {
+    write: Some(swr_cpp_phpruntime_socket_write),
+    read: Some(swr_cpp_phpruntime_socket_read),
+    close: Some(swr_v1_phpruntime_socket_close),
+    flush: Some(swr_v1_phpruntime_socket_flush),
+    label: c"socket/coroutine".as_ptr(),
+    seek: None,
+    cast: Some(swr_v1_phpruntime_socket_cast),
+    stat: Some(swr_v1_phpruntime_socket_stat),
+    set_option: Some(swr_cpp_phpruntime_socket_option),
+};
 
 /// The stream's `NetStream`, null once closed.
 fn net(stream: *mut php_stream) -> *mut NetStream {
@@ -140,18 +175,30 @@ fn alloc(
     ops: *const php_stream_ops,
     socket: Socket,
     persistent_id: *const c_char,
-) -> *mut php_stream {
+) -> Result<*mut php_stream, Bailout> {
     let net = Box::into_raw(Box::new(NetStream {
         socket: Rc::new(socket),
         blocking: true,
     }));
-    // SAFETY: Zend's allocator; the stream owns `net` from here.
-    let stream = unsafe { swr_zend_stream_alloc(ops, net.cast(), persistent_id) };
+    let mut stream = ptr::null_mut();
+    // SAFETY: PHP receives this stable owned abstract pointer before resource registration.
+    // On bailout it remains available to PHP's partial-resource/request cleanup, as before.
+    if unsafe {
+        swoole_rs_zend::sys::swr_zend_try_stream_alloc(
+            ops,
+            net.cast(),
+            persistent_id,
+            &raw mut stream,
+        )
+    } != 0
+    {
+        return Err(Bailout);
+    }
     if stream.is_null() {
         // SAFETY: not handed over.
         drop(unsafe { Box::from_raw(net) });
     }
-    stream
+    Ok(stream)
 }
 
 fn socket_ops() -> *const php_stream_ops {
@@ -357,16 +404,31 @@ pub unsafe extern "C" fn swr_v1_phpruntime_socket_close(
     close_handle: c_int,
 ) -> c_int {
     let _ = close_handle;
+    // SAFETY: Zend holds this stream through its close callback.
+    let status = match unsafe { close_stream(stream) } {
+        Ok(status) => status,
+        Err(error) => {
+            error.defer();
+            FAILURE
+        }
+    };
+    // This is a native callback boundary: close_stream has already dropped its Box/Rc owners.
+    swoole_rs_zend::bailout::finish();
+    status
+}
+
+unsafe fn close_stream(stream: *mut php_stream) -> Result<c_int, Bailout> {
     let net = net(stream);
     if net.is_null() {
-        return FAILURE;
+        return Ok(FAILURE);
     }
-    // SAFETY: per the caller; cleared at once so nothing reaches it again.
+    // SAFETY: detach first, so reentrant PHP cannot reach this stream owner again.
     unsafe { (*stream).abstract_ = ptr::null_mut() };
-    // SAFETY: the stream owned it.
+    // SAFETY: transfer the stream's unique owner back from its stable abstract pointer.
     let net = unsafe { Box::from_raw(net) };
-    net.socket.close();
-    SUCCESS
+    let result = net.socket.close();
+    drop(net);
+    result.map(|_| SUCCESS)
 }
 
 /// The stream's `flush`: nothing is buffered.
@@ -623,7 +685,7 @@ fn xport_api(
             p.outputs.returncode = bind(socket, p, error_text);
         }
         xport::ACCEPT => {
-            p.outputs.returncode = accept(stream, socket, p, textaddr, addr, addrlen, error_text);
+            p.outputs.returncode = accept(stream, socket, p, textaddr, addr, addrlen, error_text)?;
         }
         xport::GET_NAME => {
             // SAFETY: the output slots Zend asked for.
@@ -727,7 +789,7 @@ fn connect(
             std::slice::from_raw_parts(param.inputs.name.cast::<u8>(), param.inputs.namelen)
         };
         let parsed = parse_address(name, error);
-        if socket.kind() == libc::SOCK_STREAM {
+        if socket.socket_type() == libc::SOCK_STREAM {
             socket.set_nodelay(1);
         }
         match parsed {
@@ -807,7 +869,7 @@ fn accept(
     addr: *mut *mut sockaddr,
     addrlen: *mut socklen_t,
     error: Option<*mut *mut zend_string>,
-) -> c_int {
+) -> Result<c_int, Bailout> {
     param.outputs.client = ptr::null_mut();
     let nodelay = option_true(stream, c"socket", c"tcp_nodelay");
     if !param.inputs.timeout.is_null() {
@@ -830,7 +892,7 @@ fn accept(
             // SAFETY: the caller's output slot.
             unsafe { *error = text };
         }
-        return FAILURE;
+        return Ok(FAILURE);
     };
     // The peer's name, as upstream reports it: from an empty address.
     // SAFETY: an all-zero sockaddr_storage is valid.
@@ -850,13 +912,13 @@ fn accept(
         client.set_nodelay(1);
     }
     // SAFETY: a live stream.
-    let connection = alloc(unsafe { (*stream).ops }, client, ptr::null());
+    let connection = alloc(unsafe { (*stream).ops }, client, ptr::null())?;
     if !connection.is_null() {
         // SAFETY: both live; the client counts its reference.
         unsafe { swr_zend_stream_share_context(connection, stream) };
     }
     param.outputs.client = connection;
-    SUCCESS
+    Ok(SUCCESS)
 }
 
 /// `socket_recvfrom`.
@@ -1035,6 +1097,83 @@ fn ssl_set_options(socket: &Socket, context: *mut php_stream_context) -> Result<
     result
 }
 
+/// The complete factory: PHP's original transport outside a coroutine, otherwise
+/// Rust's coroutine socket construction and stream ownership.
+/// # Safety
+/// All borrowed PHP factory arguments stay live through this call; bailout is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpruntime_transport_factory(
+    proto: *const c_char,
+    protolen: usize,
+    name: *const c_char,
+    namelen: usize,
+    persistent: *const c_char,
+    options: c_int,
+    flags: c_int,
+    time: *mut timeval,
+    context: *mut php_stream_context,
+    bailed: *mut u8,
+) -> *mut php_stream {
+    // SAFETY: the native entry lends every original PHP factory argument through invocation.
+    let result = unsafe {
+        transport_factory(
+            proto, protolen, name, namelen, persistent, options, flags, time, context,
+        )
+    };
+    reraise(bailed, result, ptr::null_mut())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves the complete native PHP transport factory signature"
+)]
+unsafe fn transport_factory(
+    proto: *const c_char,
+    protolen: usize,
+    name: *const c_char,
+    namelen: usize,
+    persistent: *const c_char,
+    options: c_int,
+    flags: c_int,
+    time: *mut timeval,
+    context: *mut php_stream_context,
+) -> Result<*mut php_stream, Bailout> {
+    if crate::in_coroutine() {
+        // SAFETY: Rust's coroutine factory receives the same borrowed arguments as before.
+        return unsafe { create(proto, protolen, name, persistent, context) };
+    }
+    // SAFETY: PHP lends exactly protolen bytes for the registry lookup.
+    let protocol = unsafe { std::slice::from_raw_parts(proto.cast::<u8>(), protolen) };
+    let factory = crate::transport::original(protocol);
+    if factory.is_null() {
+        // SAFETY: the native diagnostic used %s, so retain its complete NUL-terminated spelling.
+        let spelling = unsafe { CStr::from_ptr(proto) }.to_bytes();
+        let message = [b"unknown protocol '".as_slice(), spelling, b"'"].concat();
+        let message = CString::new(message).unwrap_or_default();
+        report(Report::Fatal, E_WARNING, &message)?;
+        return Ok(ptr::null_mut());
+    }
+    let mut bailed = false;
+    // SAFETY: the original process-lived PHP callback runs below Rust in a C Zend trap,
+    // with the compiler supplying its exact STREAMS_CC debug arguments.
+    let stream = unsafe {
+        swoole_rs_zend::sys::swr_zend_try_stream_factory(
+            factory,
+            proto,
+            protolen,
+            name,
+            namelen,
+            persistent,
+            options,
+            flags,
+            time,
+            context,
+            &raw mut bailed,
+        )
+    };
+    if bailed { Err(Bailout) } else { Ok(stream) }
+}
+
 /// The transport factory's coroutine branch.
 /// # Safety
 /// Called by the C++ factory in a coroutine with Zend's arguments.
@@ -1089,7 +1228,7 @@ unsafe fn create(
         return Ok(ptr::null_mut());
     };
     socket.set_zero_copy();
-    let stream = alloc(socket_ops(), socket, persistent_id);
+    let stream = alloc(socket_ops(), socket, persistent_id)?;
     if stream.is_null() {
         return Ok(stream);
     }
@@ -1097,8 +1236,10 @@ unsafe fn create(
     let socket = unsafe { Rc::clone(&(*net(stream)).socket) };
     if !ssl_set_options(&socket, context)? {
         drop(socket);
-        // SAFETY: ours, not yet handed out.
-        unsafe { swr_zend_stream_close(stream) };
+        // SAFETY: the stream is ours; its close callback runs below the C trap.
+        if unsafe { swoole_rs_zend::sys::swr_zend_try_stream_close(stream) } != 0 {
+            return Err(Bailout);
+        }
         return Ok(ptr::null_mut());
     }
     Ok(stream)
@@ -1115,8 +1256,26 @@ pub unsafe extern "C" fn swr_v1_phpruntime_stream_from_socket(
     kind: c_int,
     protocol: c_int,
 ) -> *mut php_stream {
+    let result = stream_from_socket(fd, domain, kind, protocol);
+    let stream = match result {
+        Ok(stream) => stream,
+        Err(error) => {
+            error.defer();
+            ptr::null_mut()
+        }
+    };
+    swoole_rs_zend::bailout::finish();
+    stream
+}
+
+fn stream_from_socket(
+    fd: c_int,
+    domain: c_int,
+    kind: c_int,
+    protocol: c_int,
+) -> Result<*mut php_stream, Bailout> {
     let Some(socket) = Socket::from_fd(fd, domain, kind, protocol) else {
-        return ptr::null_mut();
+        return Ok(ptr::null_mut());
     };
     // SAFETY: reads a PHP global.
     let seconds = unsafe { swr_zend_stream_default_timeout() };
@@ -1124,12 +1283,12 @@ pub unsafe extern "C" fn swr_v1_phpruntime_stream_from_socket(
         #[expect(clippy::cast_precision_loss, reason = "upstream's (double) cast")]
         socket.set_timeout(seconds as f64, timeout::ALL);
     }
-    let stream = alloc(socket_ops(), socket, ptr::null());
+    let stream = alloc(socket_ops(), socket, ptr::null())?;
     if !stream.is_null() {
         // SAFETY: the stream just made.
         unsafe { swr_zend_stream_avoid_blocking(stream) };
     }
-    stream
+    Ok(stream)
 }
 
 /// `stream_socket_pair(int $domain, int $type, int $protocol): array|false`:
@@ -1143,7 +1302,7 @@ pub unsafe extern "C" fn swr_v1_phpruntime_socket_pair(
 ) -> u8 {
     // SAFETY: per the caller.
     let call = unsafe { Call::new(frame, value) };
-    u8::from(socket_pair(&call).is_err())
+    u8::from(swoole_rs_zend::bailout::relay_to_c(socket_pair(&call)))
 }
 
 fn socket_pair(call: &Call) -> Result<(), Bailout> {
@@ -1172,8 +1331,7 @@ fn socket_pair(call: &Call) -> Result<(), Bailout> {
     call.set_array();
     check_reactor();
     for fd in pair {
-        // SAFETY: the stream takes the fd.
-        let stream = unsafe { swr_v1_phpruntime_stream_from_socket(fd, domain, kind, protocol) };
+        let stream = stream_from_socket(fd, domain, kind, protocol)?;
         // SAFETY: a fresh stream, exposed as the array's resource.
         let resource = unsafe { swr_zend_stream_expose(stream) };
         // SAFETY: the return value is an array.
