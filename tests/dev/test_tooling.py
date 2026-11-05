@@ -512,7 +512,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--config',commands['hooks-compile'])
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-hybrid',
                      'crc32-consumers-upstream','crc32-consumers-hybrid',
-                     'coroutine-native-originals','corebase-mkdir','corebase-startup']:
+                     'coroutine-native-originals','corebase-mkdir','corebase-startup','corebase-record-views']:
             self.assertIn(name,commands)
         self.assertIn('--sanitize',commands['coroutine-native-originals'])
         self.assertNotIn('--inventory-only',commands['coroutine-native-originals'])

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.build_hybrid import hybrid_tree
 
-CALLS = ('parse_stoi', 'systemd_listen_fds_action', 'dirname', 'mkdir_next', 'lifecycle_next', 'hook_add_action')
+CALLS = ('parse_stoi', 'systemd_listen_fds_action', 'dirname', 'mkdir_complete', 'lifecycle_next', 'hook_add_action')
 # Upstream functions Rust defines under their own C++ symbols; the hybrid base.cc has no body.
 DEFINED = ('_Z21swoole_common_divisorjj', '_Z22swoole_common_multiplejj', '_Z22swoole_version_comparePKcS0_',
            '_Z14swoole_dec2hexmi', '_Z16swoole_type_sizec', '_Z11swoole_itoaPcl', '_Z14swoole_hex2decPKcPm')

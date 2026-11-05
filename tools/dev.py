@@ -433,6 +433,8 @@ def plan(args, reports):
         script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-file-owner'))
     if 'corebase' in modules:
+        script('corebase-record-views', 'tests/modules/corebase/record_views.py',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('corebase-record-views'))
         script('corebase-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src', *report('corebase-constants'))
         includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
                     if sys.platform == 'darwin' else [])
