@@ -17,7 +17,7 @@ template<typename Worker> class PendingWorkers {
         iterator &operator++() { ++position; return *this; }
         bool operator!=(const iterator &other) const { return position != other.position; }
     };
-    explicit PendingWorkers(swr_v1_process_worker_registry *registry): registry_(registry) {}
+    explicit PendingWorkers(void *registry): registry_(static_cast<swr_v1_process_worker_registry *>(registry)) {}
     size_t size() const { return swr_v1_process_worker_registry_pending_count(registry_); }
     bool empty() const { return size()==0; }
     Worker *operator[](size_t index) const { return static_cast<Worker *>(data()[index]); }
