@@ -431,6 +431,8 @@ def plan(args, reports):
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(phase))
     if 'coroutine' in modules and integrate:
         native_options = ['--php-prefix', subprocess.check_output(['php-config', '--prefix'], text=True).strip()] if sys.platform == 'darwin' else []
+        if 'hooks' in modules:
+            native_options += ['--socket-scopes']
         if getattr(args, 'gtest_prefix', None):
             native_options += ['--gtest-prefix', args.gtest_prefix]
         script('coroutine-native-originals', 'tests/modules/coroutine/core.py', '--source', ROOT / 'target/upstream/src',

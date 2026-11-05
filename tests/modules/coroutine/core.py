@@ -70,6 +70,7 @@ def main():
     parser.add_argument('--config', type=Path, help='Read-only same-platform configured baseline config.h')
     parser.add_argument('--archive', type=Path, help='Same-platform real coroutine Rust static archive')
     parser.add_argument('--build-root', type=Path, help='Private writable cache outside reference/repository')
+    parser.add_argument('--socket-scopes', action='store_true', help='Also execute the two unchanged original local socket timeout tests and three scoped-state witnesses')
     parser.add_argument('--async-file', action='store_true', help='Also compile and execute the unchanged original coroutine AsyncFile unit')
     parser.add_argument('--lifetime-only', action='store_true', help='Execute only three supplemental real-context lifetime witnesses; original32 remain unmeasured')
     parser.add_argument('--rust-asan', action='store_true', help='Verify the coroutine archive contains actual Rust ASan imports')
@@ -82,9 +83,12 @@ def main():
     parser.add_argument('--timeout', type=int, default=90, help='Seconds per original test, unchanged stress sizes')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    if args.async_file and args.lifetime_only:
+    if (args.async_file or args.socket_scopes) and args.lifetime_only:
         parser.error('--async-file requires the complete original selection')
     selected_units = [*SELECTED, *(['core-tests/src/coroutine/file.cpp'] if args.async_file else [])]
+    if args.socket_scopes:
+        selected_units += ['core-tests/src/coroutine/socket.cpp', 'core-tests/src/_lib/server.cpp',
+                           'core-tests/src/_lib/process.cpp', 'core-tests/src/coroutine/rust_socket_scopes.cpp']
     if args.jobs < 1 or args.timeout < 1:
         parser.error('Jobs/timeout must be positive')
     source = args.source.resolve(strict=True)
@@ -125,11 +129,32 @@ def main():
                     raise ValueError('Original AsyncFile inventory differs')
                 inventory += extra
                 report['scope'] = 'Unchanged33 coroutine originals plus AsyncFile and3 supplemental lifetime witnesses; full native reference vs the exact production archive overlay. No PHP or performance claim.'
+            if args.socket_scopes:
+                path = 'core-tests/src/coroutine/socket.cpp'
+                all_socket = [{'name': f'{group}.{name}', 'path': path, 'sha256': sha(staged / path)}
+                              for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', (staged / path).read_text())]
+                names = {'coroutine_socket.timeout_setter', 'coroutine_socket.timeout_controller'}
+                selected_socket = [case for case in all_socket if case['name'] in names]
+                if {case['name'] for case in selected_socket} != names:
+                    raise ValueError('Original socket timeout inventory differs')
+                inventory += selected_socket
+                report['unmeasured_socket_originals'] = [case['name'] for case in all_socket if case['name'] not in names]
+                report['scope'] = 'Unchanged coroutine originals and two local socket timeout originals, plus lifetime and scoped-state witnesses; actual complete production overlay. Other socket originals remain unmeasured.'
             report['original_inventory'] = inventory.copy()
             report['unmeasured_originals'] = [case['name'] for case in inventory] if args.lifetime_only else []
             supplemental = [{'name': group + '.' + name, 'path': LIFETIME, 'sha256': hashlib.sha256(lifetime).hexdigest()} for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', lifetime.decode())]
             if len(supplemental) != 3:
                 raise ValueError('Supplemental lifetime inventory differs')
+            if args.socket_scopes:
+                path = 'core-tests/src/coroutine/rust_socket_scopes.cpp'
+                data = (ROOT / 'tests/modules/hooks/socket_scopes.cpp').read_bytes()
+                write_changed(staged / path, data)
+                write_changed(staged / 'core-tests/src/coroutine/swoole_rs_test_allocation.h',
+                              (ROOT / 'tests/modules/http/allocation_oracle.h').read_bytes())
+                supplemental += [{'name': group + '.' + name, 'path': path, 'sha256': hashlib.sha256(data).hexdigest()}
+                                 for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', data.decode())]
+                if len(supplemental) != 6:
+                    raise ValueError('Socket scope witness inventory differs')
             inventory = supplemental if args.lifetime_only else inventory + supplemental
             report['inventory'] = inventory
             report['supplemental_inventory'] = supplemental
