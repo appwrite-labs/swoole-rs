@@ -8,7 +8,7 @@ ZEND_TSRMLS_CACHE_DEFINE()
 #endif
 
 extern "C" int swr_exit_guard_test_owner(void (*body)(void *), void *, void (*dropped)(const unsigned char *, size_t));
-static std::atomic<size_t> entered{0}, dropped{0}, returned{0}, bytes{0}, checksum{0};
+static std::atomic<size_t> entered{0}, dropped{0}, returned{0}, bytes{0}, checksum{0}, zend_bailouts{0}, thread_exits{0};
 struct Call { zval *callback; zval result{}; };
 static void invoke(void *argument) {
     auto *call = static_cast<Call *>(argument);
@@ -31,6 +31,9 @@ PHP_FUNCTION(swr_guard_owned) {
     entered.fetch_add(1);
     int outcome = swr_exit_guard_test_owner(invoke, &call, owner_dropped);
     returned.fetch_add(1);
+    if (outcome == SWR_ZEND_BAILOUT) zend_bailouts.fetch_add(1);
+    else if (outcome == SWR_ZEND_THREAD_EXIT) thread_exits.fetch_add(1);
+    else if (outcome != SWR_ZEND_RETURN) std::abort();
     if (outcome) swr_zend_guard_resume();
     RETURN_NULL();
 }
@@ -67,6 +70,8 @@ PHP_FUNCTION(swr_guard_counts) {
     add_next_index_long(return_value, returned.load());
     add_next_index_long(return_value, bytes.load());
     add_next_index_long(return_value, checksum.load());
+    add_next_index_long(return_value, zend_bailouts.load());
+    add_next_index_long(return_value, thread_exits.load());
 }
 ZEND_BEGIN_ARG_INFO_EX(arginfo_owned, 0, 0, 1)
     ZEND_ARG_INFO(0, callback)

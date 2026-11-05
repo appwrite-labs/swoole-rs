@@ -38,7 +38,7 @@ if (Thread::getInfo()['is_main_thread']) {
     }
     if (function_exists('swr_guard_counts')) {
         $count = in_array($mode, ['nested', 'coroutine', 'cancel', 'cancel-throw', 'serialize', 'unserialize', 'shared-set', 'shared-queue'], true) ? 2 : 1;
-        if (swr_guard_counts() !== [$count, $count, $count, $count * 4096, $count * 4096 * 42]) {
+        if (swr_guard_counts() !== [$count, $count, $count, $count * 4096, $count * 4096 * 42, $mode === 'fatal' ? 1 : 0, $normal || $mode === 'fatal' ? 0 : $count]) {
             throw new RuntimeException('Rust owners were not dropped before native exit relay');
         }
     }
