@@ -18,8 +18,8 @@ struct _zend_array;
 typedef struct {
     /* E_ERROR "Invalid instance of %s" (does not return). */
     void (*invalid)(struct _zend_object *object);
-    /* php_swoole_server_port_deref: drop the callables and the port's link. */
-    void (*deref)(struct _zend_object *object);
+    /* &port->protocol.private_data_1: the package_length_func callable. */
+    void **(*length_slot)(void *port);
     /* !serv->is_worker_thread() && serv->is_started() */
     bool (*started)(void *server);
     /* 0: "can't register event callback function after server started";
@@ -36,6 +36,13 @@ typedef struct {
     /* getSocket() of a bound port. */
     void (*socket)(void *port, struct _zval_struct *return_value);
 } swr_v1_phpserver_port_host;
+
+/* Bind a new port object to its ListenPort and Server; returns its ServerPortProperty. */
+void *swr_v1_phpserver_port_bind(struct _zend_object *object, void *port, void *server);
+/* The object's ListenPort; E_ERROR "Invalid instance of %s" (no return) when unbound. */
+void *swr_v1_phpserver_port_port(struct _zend_object *object);
+/* Drop the callables and the port's link, as the Server does at shutdown. */
+void swr_v1_phpserver_port_deref(struct _zend_object *object);
 
 struct _zend_class_entry *swr_v1_phpserver_port_minit(const swr_v1_phpserver_port_host *table,
                                                       bool not_serializable, bool sockets);
