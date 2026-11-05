@@ -12,7 +12,10 @@ const OVERFLOW: i32 = -2;
 mod cookie_flow;
 pub use cookie_flow::{HttpCookieFlow, swr_v2_http_cookie_flow};
 mod conditional;
-pub use conditional::{HttpConditional, swr_v1_http_conditional, swr_v1_http_date_format};
+pub use conditional::{
+    HttpCalendar, HttpConditional, swr_v1_http_conditional, swr_v1_http_date_format,
+    swr_v3_http_conditional, swr_v3_http_date,
+};
 mod directory;
 pub use directory::{
     HttpDirectory, swr_v2_http_directory_clone, swr_v2_http_directory_contains,
@@ -52,7 +55,7 @@ pub use request::{
     swr_v1_http_request_expect, swr_v1_http_request_header, swr_v1_http_request_header_length,
     swr_v1_http_request_multipart_destroy, swr_v1_http_request_multipart_init,
     swr_v1_http_request_multipart_parse, swr_v1_http_request_parse_header,
-    swr_v1_http_request_protocol,
+    swr_v1_http_request_protocol, swr_v3_http_request_clean, swr_v3_http_request_init,
 };
 mod rewrite;
 pub use rewrite::HttpRewriteState;

@@ -1,5 +1,5 @@
 diff --git a/src/server/process.cc b/src/server/process.cc
-index 829e58a..e68d6f7 100644
+index 0547e27..9d9f768 100644
 --- a/src/server/process.cc
 +++ b/src/server/process.cc
 @@ -21,2 +21,12 @@ namespace swoole {

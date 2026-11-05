@@ -1,5 +1,5 @@
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index a0cc615..2f2c2c6 100644
+index 746476d..b07ea84 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -442,2 +442,3 @@ struct ProcessPool {
@@ -7,7 +7,7 @@ index a0cc615..2f2c2c6 100644
 +    bool wait_detached_worker(pid_t pid);
  
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index a6f1a27..340a654 100644
+index 1e4e279..67b2f16 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
 @@ -49,9 +49,22 @@ static inline swReturnCode catch_system_error(int error) {
@@ -38,7 +38,7 @@ index a6f1a27..340a654 100644
 -        swoole_sys_warning("kill(%d, SIGTERM) [%d] failed", pid, worker_id);
 +        ReloadTask::kill_all(kind, pid, worker_id);
      }
-@@ -901,2 +914,10 @@ bool ProcessPool::detach() {
+@@ -902,2 +915,10 @@ bool ProcessPool::detach() {
  
 +bool ProcessPool::wait_detached_worker(pid_t pid) {
 +    if (!swr_v1_process_worker_registry_reap_detached(registry_, pid)) {
@@ -49,7 +49,7 @@ index a6f1a27..340a654 100644
 +}
 +
  int ProcessPool::wait() {
-@@ -957,4 +978,4 @@ int ProcessPool::wait() {
+@@ -958,4 +979,4 @@ int ProcessPool::wait() {
                  pool->onWorkerNotFound(pool, exit_status);
 -            } else if (!swr_v1_process_worker_registry_reap_detached(pool->registry_, pid)) {
 -                swoole_warning("received an exit signal from an unknown child process[pid=%d]", pid);

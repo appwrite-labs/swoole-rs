@@ -1,5 +1,5 @@
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index 60dc96d..9ef379f 100644
+index 6029bfb..9155482 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -135,44 +135,5 @@ struct WorkerGlobal {
@@ -126,7 +126,7 @@ index 60dc96d..9ef379f 100644
 -
 -    Worker *workers;
 -    std::vector<std::shared_ptr<UnixSocket>> *pipes;
--    swr_v1_process_worker_registry *registry_;
+-    union { swr_v1_process_worker_registry *registry_ = nullptr; swr_v1_process_worker_registry *map_; };
 -    MsgQueue *queue;
 -    // The stream listener, its connection, the reply and the packet buffer (Rust).
 -    swr_v1_process_pool_ipc *ipc_;

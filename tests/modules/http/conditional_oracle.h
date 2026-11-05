@@ -25,3 +25,19 @@ CONDITIONAL_ORACLE(candidate_conditional)
 #define strptime calendar_strptime
 #define mktime calendar_mktime
 #define gmtime calendar_gmtime
+
+// Preserve the original calendar/errno/call-order probes below the Rust driver.
+inline bool conditional_calendar_parse(const char *date,const char *format,void *value) noexcept {
+ return calendar_strptime(date,format,static_cast<tm *>(value))!=nullptr;
+}
+inline int64_t conditional_calendar_time(void *value) noexcept {
+ return calendar_mktime(static_cast<tm *>(value));
+}
+inline void *conditional_calendar_gmt(int64_t value) noexcept {
+ const time_t time=value;return calendar_gmtime(&time);
+}
+inline int32_t conditional_owned_calendar(const char *date,size_t length,uint32_t kind,const int64_t *mtime,const long *timezone,const swr_v3_http_calendar *) {
+ const swr_v3_http_calendar calendar{sizeof(tm),alignof(tm),conditional_calendar_parse,conditional_calendar_time,conditional_calendar_gmt};
+ return swr_v3_http_conditional(date,length,kind,mtime,timezone,&calendar);
+}
+#define swr_v3_http_conditional conditional_owned_calendar
