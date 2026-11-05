@@ -2,25 +2,32 @@
 //! operations, defined under their upstream (Itanium) symbols when the hybrid
 //! links this crate (`upstream-symbols`): the reactor callbacks, the
 //! local and peer names, the timeouts and options, the buffered and packet reads,
-//! `bind` of an address and `listen`.
+//! `bind` of an address and `listen`, and the transfers (`recv`, `send`, their
+//! `_all` and `_once` forms, `read`, `write`, `readv`, `writev`, `recvmsg`,
+//! `sendmsg`), `peek` and `poll`.
 //! Upstream's `GoogleTest` suites call them through the class's own declarations.
 //!
 //! Each takes the native object (`this`). `Socket` is dynamic and its one base is
 //! the record (`swr_v1_co_socket`, not dynamic, pointer-aligned), so under the
 //! Itanium ABI the record follows the vtable pointer; socket.cc asserts that shape.
 use crate::buffered::{swr_v1_hook_co_socket_recv_buffered, swr_v1_hook_recv_line};
-use crate::co_io::{available, errno, host, set_err, swr_v1_hook_co_socket_default_err};
+use crate::co_io::{available, check, errno, host, set_err, swr_v1_hook_co_socket_default_err};
 use crate::co_socket::{CoSocket, swr_v1_hook_co_socket_peer_name};
 use crate::packet::swr_v1_hook_co_socket_recv_packet;
 use crate::shutdown::READ;
-use crate::socket_wait::{swr_v1_hook_co_socket_error_event, swr_v1_hook_socket_ready};
+use crate::socket_wait::{
+    swr_v1_hook_co_socket_error_event, swr_v1_hook_co_socket_poll, swr_v1_hook_socket_ready,
+};
+use crate::transfer::{ALL, swr_v1_hook_co_socket_transfer};
 use core::ffi::{c_int, c_void};
 use core::mem::{align_of, size_of};
+use core::ptr::null_mut;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
     Event, SocketAddress, SocketRecord, swr_v1_socket_bind, swr_v1_socket_get_name,
     swr_v1_socket_listen, swr_v1_socket_set_timeout, swr_v1_socket_timeout,
 };
+use swoole_rs_tls::upstream::{socket_peek, socket_readv, socket_recv, socket_send, socket_writev};
 
 /// `SW_EVENT_WRITE`.
 const WRITE: u32 = 1 << 10;
@@ -406,6 +413,269 @@ pub unsafe extern "C" fn listen(this: *mut c_void, backlog: c_int) -> bool {
     }
     record.ssl_is_server = true;
     true
+}
+
+/// A transfer's call over the `network::Socket` and the buffer it is given.
+macro_rules! call {
+    (|$s:tt, $at:tt, $len:tt| $body:expr) => {
+        |$s: *mut SocketRecord, $at: *mut u8, $len: usize| {
+            // SAFETY: the transfer's live network::Socket, over its buffer.
+            unsafe { $body }
+        }
+    };
+}
+
+/// A transfer's `network::Socket` call, over the native socket's current one.
+struct Transfer<F> {
+    this: *mut c_void,
+    call: F,
+}
+
+/// `Socket::transfer(event, buffer, length, flags, call)`: Rust's retry loop
+/// (`swr_v1_hook_co_socket_transfer`) over `call`, which gets the
+/// `network::Socket` at each try.
+///
+/// # Safety
+/// `this` is a live native socket; `buffer` holds `length` bytes or is null; `call`
+/// transfers on the `network::Socket` it is given.
+unsafe fn transfer<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
+    this: *mut c_void,
+    event: u32,
+    flags: u32,
+    buffer: *mut u8,
+    length: usize,
+    call: F,
+) -> isize {
+    unsafe extern "C" fn each<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
+        context: *mut c_void,
+        at: *mut u8,
+        length: usize,
+    ) -> isize {
+        // SAFETY: `transfer`'s own Transfer<F>, alive until the transfer returns.
+        let transfer = unsafe { &mut *context.cast::<Transfer<F>>() };
+        // SAFETY: the transfer runs on a live native socket.
+        let socket = unsafe { network(transfer.this) };
+        (transfer.call)(socket, at, length)
+    }
+    let mut transfer = Transfer { this, call };
+    let context = (&raw mut transfer).cast();
+    // SAFETY: as the caller promises; `each` matches `context`.
+    unsafe {
+        swr_v1_hook_co_socket_transfer(
+            record(this),
+            event,
+            flags,
+            buffer,
+            length,
+            each::<F>,
+            context,
+        )
+    }
+}
+
+/// `Socket::recv(buf, n)`.
+///
+/// # Safety
+/// `this` is a live native socket and `buf` holds `n` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket4recvEPvm")
+)]
+pub unsafe extern "C" fn recv(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
+    // SAFETY: as the caller promises; each try receives into the transfer's buffer.
+    unsafe { transfer(this, READ, 0, buf.cast(), n, call) }
+}
+
+/// `Socket::send(buf, n)`.
+///
+/// # Safety
+/// `this` is a live native socket and `buf` holds `n` bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket4sendEPKvm")
+)]
+pub unsafe extern "C" fn send(this: *mut c_void, buf: *const c_void, n: usize) -> isize {
+    let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
+    // SAFETY: as the caller promises; each try sends from the transfer's buffer.
+    unsafe { transfer(this, WRITE, 0, buf.cast_mut().cast(), n, call) }
+}
+
+/// `Socket::recv_all(buf, n)`.
+///
+/// # Safety
+/// As [`recv`].
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket8recv_allEPvm")
+)]
+pub unsafe extern "C" fn recv_all(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
+    // SAFETY: as the caller promises; each try receives into the transfer's buffer.
+    unsafe { transfer(this, READ, ALL, buf.cast(), n, call) }
+}
+
+/// `Socket::send_all(buf, n)`.
+///
+/// # Safety
+/// As [`send`].
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket8send_allEPKvm")
+)]
+pub unsafe extern "C" fn send_all(this: *mut c_void, buf: *const c_void, n: usize) -> isize {
+    let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
+    // SAFETY: as the caller promises; each try sends from the transfer's buffer.
+    unsafe { transfer(this, WRITE, ALL, buf.cast_mut().cast(), n, call) }
+}
+
+/// `Socket::read(buf, n)`.
+///
+/// # Safety
+/// As [`recv`].
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket4readEPvm")
+)]
+pub unsafe extern "C" fn read(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    let call = call!(|s, at, len| libc::read((*s).fd, at.cast(), len));
+    // SAFETY: as the caller promises; each try reads into the transfer's buffer.
+    unsafe { transfer(this, READ, 0, buf.cast(), n, call) }
+}
+
+/// `Socket::write(buf, n)`.
+///
+/// # Safety
+/// As [`send`].
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket5writeEPKvm")
+)]
+pub unsafe extern "C" fn write(this: *mut c_void, buf: *const c_void, n: usize) -> isize {
+    let call = call!(|s, at, len| libc::write((*s).fd, at.cast(), len));
+    // SAFETY: as the caller promises; each try writes from the transfer's buffer.
+    unsafe { transfer(this, WRITE, 0, buf.cast_mut().cast(), n, call) }
+}
+
+/// `Socket::readv(io_vector)`.
+///
+/// # Safety
+/// `this` is a live native socket and `vector` a live `IOVector`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket5readvEPNS_7network8IOVectorE")
+)]
+pub unsafe extern "C" fn readv(this: *mut c_void, vector: *mut c_void) -> isize {
+    let call = call!(|s, _, _| socket_readv(s, vector));
+    // SAFETY: as the caller promises.
+    unsafe { transfer(this, READ, 0, null_mut(), 0, call) }
+}
+
+/// `Socket::writev(io_vector)`.
+///
+/// # Safety
+/// As [`readv`].
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket6writevEPNS_7network8IOVectorE")
+)]
+pub unsafe extern "C" fn writev(this: *mut c_void, vector: *mut c_void) -> isize {
+    let call = call!(|s, _, _| socket_writev(s, vector));
+    // SAFETY: as the caller promises.
+    unsafe { transfer(this, WRITE, 0, null_mut(), 0, call) }
+}
+
+/// `Socket::recvmsg(msg, flags)`.
+///
+/// # Safety
+/// `this` is a live native socket and `msg` as recvmsg(2) takes it.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket7recvmsgEP6msghdri")
+)]
+pub unsafe extern "C" fn recvmsg(this: *mut c_void, msg: *mut libc::msghdr, flags: c_int) -> isize {
+    let call = call!(|_, _, _| libc::recvmsg((*record(this)).sock_fd, msg, flags));
+    // SAFETY: as the caller promises.
+    unsafe { transfer(this, READ, 0, null_mut(), 0, call) }
+}
+
+/// `Socket::sendmsg(msg, flags)`.
+///
+/// # Safety
+/// `this` is a live native socket and `msg` as sendmsg(2) takes it.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket7sendmsgEPK6msghdri")
+)]
+pub unsafe extern "C" fn sendmsg(
+    this: *mut c_void,
+    msg: *const libc::msghdr,
+    flags: c_int,
+) -> isize {
+    let call = call!(|_, _, _| libc::sendmsg((*record(this)).sock_fd, msg, flags));
+    // SAFETY: as the caller promises.
+    unsafe { transfer(this, WRITE, 0, null_mut(), 0, call) }
+}
+
+/// `Socket::recv_once(buf, n)`: one `network::Socket` receive, no wait.
+///
+/// # Safety
+/// `this` is a live, open native socket and `buf` holds `n` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket9recv_onceEPvm")
+)]
+pub unsafe extern "C" fn recv_once(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { network(this) };
+    // SAFETY: its network::Socket, into the caller's buffer.
+    unsafe { socket_recv(socket, buf, n, 0) }
+}
+
+/// `Socket::send_once(buf, n)`: one `network::Socket` send, no wait.
+///
+/// # Safety
+/// `this` is a live, open native socket and `buf` holds `n` bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket9send_onceEPKvm")
+)]
+pub unsafe extern "C" fn send_once(this: *mut c_void, buf: *const c_void, n: usize) -> isize {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { network(this) };
+    // SAFETY: its network::Socket, from the caller's buffer.
+    unsafe { socket_send(socket, buf, n, 0) }
+}
+
+/// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`.
+///
+/// # Safety
+/// As [`recv_once`].
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket4peekEPvm")
+)]
+pub unsafe extern "C" fn peek(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { network(this) };
+    // SAFETY: its network::Socket, into the caller's buffer.
+    let result = unsafe { socket_peek(socket, buf, n, 0) };
+    // SAFETY: the live record.
+    unsafe { check(record(this), result) };
+    result
+}
+
+/// `Socket::poll(event, timeout)`.
+///
+/// # Safety
+/// `this` is a live native socket.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket4pollE11swEventTyped")
+)]
+pub unsafe extern "C" fn poll(this: *mut c_void, event: u32, timeout: f64) -> bool {
+    // SAFETY: as the caller promises.
+    unsafe { swr_v1_hook_co_socket_poll(record(this), event, timeout) }
 }
 
 #[cfg(test)]
