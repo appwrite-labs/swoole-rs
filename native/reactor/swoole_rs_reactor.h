@@ -226,16 +226,7 @@ typedef struct { uint32_t offset, length, close_wait; } swr_v1_stream_view_actio
 int32_t swr_v1_stream_prepare(uint8_t *, size_t);
 int32_t swr_v1_stream_length(const uint8_t *, size_t);
 swr_v1_stream_view_action swr_v1_stream_view(uint32_t);
-/* network::Socket's descriptor options, syscall included. fd_option: -1 leaves a
- * flag alone. warnings: fd_option 1 F_GETFL, 2 F_SETFL, 4 F_GETFD, 8 F_SETFD failed;
- * cork/uncork 1 TCP_CORK, 2 TCP_NODELAY failed. */
-typedef struct { bool ok; uint32_t warnings; } swr_v1_socket_option_result;
-typedef struct { uint8_t tcp_nopush, tcp_nodelay; } swr_v1_socket_cork_state;
-swr_v1_socket_option_result swr_v1_socket_fd_option(int fd, int nonblock, int cloexec);
-int swr_v1_socket_tcp_nopush(int fd, int nopush);
-bool swr_v1_socket_tcp_nodelay(int fd, int nodelay);
-swr_v1_socket_option_result swr_v1_socket_cork(int fd, swr_v1_socket_cork_state *state);
-swr_v1_socket_option_result swr_v1_socket_uncork(int fd, bool enable_tcp_nodelay, swr_v1_socket_cork_state *state);
+/* network::Socket's buffer sizes, setsockopt included. */
 bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
  * write_timeout), embedded in this order (Socket static_asserts it). set_timeout
@@ -243,17 +234,11 @@ bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
  * swr_v1_socket_timeout is the slot one SW_TIMEOUT_* value names, else NULL. */
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
 void swr_v1_socket_set_timeout(swr_v1_socket_timeouts *timeouts, double timeout, int kind);
-const double *swr_v1_socket_timeout(const swr_v1_socket_timeouts *timeouts, int kind);
-/* network::Socket's descriptor I/O. status 0 ready; 1 timed out (wait) or
- * EINPROGRESS (connect); 2 failed with errno `error`. */
-typedef struct { int status, error; } swr_v1_socket_io_result;
+/* Socket::wait_event's signal dispatch (swoole_signal_dispatch), registered once. */
+void swr_v1_socket_set_signal_dispatch(void (*dispatch)(void));
 struct sockaddr;
-swr_v1_socket_io_result swr_v1_socket_wait(int fd, int16_t events, int timeout_ms, bool dont_restart, void (*dispatch)(void));
-void swr_v1_socket_clean(int fd);
 ssize_t swr_v1_socket_recvfrom(int fd, void *buffer, size_t length, int flags, struct sockaddr *address, socklen_t *address_length, uint32_t retries);
 int swr_v1_socket_accept(int fd, struct sockaddr *address, socklen_t *address_length, bool nonblock, bool *listener_cloexec);
-swr_v1_socket_io_result swr_v1_socket_connect(int fd, const struct sockaddr *address, socklen_t length);
-swr_v1_socket_io_result swr_v1_socket_pending_error(int fd);
 /* sendfile's range check (fstat included) and chunk size: 0 with *end set, 1
  * fstat failed (errno set), 2 empty file, 3 range outside the file. */
 int swr_v1_socket_sendfile_range(int file_fd, off_t begin, size_t length, off_t *end);
@@ -411,8 +396,6 @@ static inline bool swr_socket_type_is(int socket_type, uint8_t classes) {
 }
 bool swr_v1_socket_domain_and_type(int socket_type, int *domain, int *kind);
 swr_v1_socket_host_type_plan swr_v1_socket_host_type(const uint8_t *host, size_t length);
-/* swoole::socket: socket(2) with SW_SOCK_NONBLOCK/SW_SOCK_CLOEXEC applied. */
-int swr_v1_socket_open(int domain, int kind, int protocol, int flags);
 
 /* One owner for Reactor public slots, registry, handlers and kernel resources. */
 typedef struct swr_v1_reactor_state swr_v1_reactor_state;

@@ -97,12 +97,6 @@ extern swr_v1_socket_defaults_t swr_v1_socket_defaults;
 swr_v1_socket *swr_v1_socket_alloc(void);
 void swr_v1_socket_init(swr_v1_socket *socket);
 void swr_v1_socket_dealloc(swr_v1_socket *socket);
-/* make_socket(fd, fd_type); make_socket(type, fd_type, domain, type, protocol, flags),
- * null with errno set if socket(2) failed; make_socket(type, fd_type, flags), which
- * also sets *unknown for a type with no socket(2) arguments (errno ESOCKTNOSUPPORT). */
-swr_v1_socket *swr_v1_socket_make(int fd, int fd_type);
-swr_v1_socket *swr_v1_socket_make_open(int socket_type, int fd_type, int domain, int kind, int protocol, int flags);
-swr_v1_socket *swr_v1_socket_make_typed(int socket_type, int fd_type, int flags, bool *unknown);
 /* Socket::dup; Socket::accept (null with errno set). */
 swr_v1_socket *swr_v1_socket_dup(const swr_v1_socket *socket);
 swr_v1_socket *swr_v1_socket_accept_new(swr_v1_socket *listener);
@@ -118,10 +112,6 @@ bool swr_v1_socket_has_kernel_nobufs(swr_v1_socket *socket);
 /* socket_free_defer: unlink a bound Unix socket's path, close the fd; false (errno
  * set) when close(2) failed. */
 bool swr_v1_socket_release(swr_v1_socket *socket);
-/* set_fd_option's fcntl calls (warnings as swr_v1_socket_fd_option's), then both
- * flags on success; _set_timeout's setsockopt, then write_timeout (send) or read_timeout. */
-swr_v1_socket_option_result swr_v1_socket_set_fd_option(swr_v1_socket *socket, int nonblock, int cloexec);
-bool swr_v1_socket_set_kernel_timeout(swr_v1_socket *socket, bool send, double timeout);
 swr_v1_socket_output_result swr_v1_socket_file_sent(swr_v1_socket_file_request *owner, swr_v1_socket *socket, const swr_v1_socket_output_hooks *hooks, ssize_t sent, size_t requested);
 /* recv/send/peek with EINTR and dont_restart, through `tls` when the record holds an
  * SSL; recv/send count bytes and, with a timer, stamp the time from `now`. A recv
