@@ -19,7 +19,8 @@ impl Text {
     fn bytes(&self) -> &[u8] {
         match self {
             Self::Static(value) => value.to_bytes(),
-            Self::Owned(value) => &value[..value.len() - 1],
+            // Owned text keeps its NUL terminator for `pointer`.
+            Self::Owned(value) => value.split_last().map_or(&[], |(_, text)| text),
         }
     }
     fn pointer(&self) -> *const c_char {

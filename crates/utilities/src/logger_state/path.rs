@@ -9,10 +9,7 @@ pub(super) struct LogPath {
 }
 
 fn c_prefix(bytes: &[u8]) -> &[u8] {
-    &bytes[..bytes
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(bytes.len())]
+    bytes.split(|byte| *byte == 0).next().unwrap_or_default()
 }
 
 /// Capture the logical C filename (operation0), or an external binary filename (1).

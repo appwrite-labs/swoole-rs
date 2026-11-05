@@ -3,6 +3,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
+    clippy::indexing_slicing,
     reason = "a build script reports failure by panicking"
 )]
 use std::{env, fs, path::PathBuf};

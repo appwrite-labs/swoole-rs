@@ -329,10 +329,7 @@ fn spin(acquire: impl Fn() -> bool) -> bool {
 
 /// Bytes up to the first NUL, as `%s` prints them.
 fn c_str(bytes: &[u8]) -> &[u8] {
-    bytes
-        .iter()
-        .position(|&byte| byte == 0)
-        .map_or(bytes, |end| &bytes[..end])
+    bytes.split(|&byte| byte == 0).next().unwrap_or_default()
 }
 
 fn warn(warning: Warning, message: &[u8]) {
@@ -342,7 +339,7 @@ fn warn(warning: Warning, message: &[u8]) {
 
 /// `check_key_length`: keys are cut to 63 bytes.
 fn clamp(key: &[u8]) -> &[u8] {
-    &key[..key.len().min(KEY_SIZE - 1)]
+    key.get(..KEY_SIZE - 1).unwrap_or(key)
 }
 
 /// `length` bytes the host lends at `bytes`.
@@ -573,7 +570,11 @@ impl Table {
     #[must_use]
     pub fn column(&self, name: &[u8]) -> Option<&Column> {
         let columns = self.column_set();
-        columns.first.get(name).map(|&at| &*columns.list[at])
+        columns
+            .first
+            .get(name)
+            .and_then(|&at| columns.list.get(at))
+            .map(|column| &**column)
     }
 
     /// Every declaration, repeats included (`column_list`).

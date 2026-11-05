@@ -197,11 +197,15 @@ pub unsafe extern "C" fn swr_v1_ws_encode_close(
         reason = "upstream packs the close code as uint16_t"
     )]
     let code = code as u16;
-    payload[..2].copy_from_slice(&code.to_be_bytes());
-    if length != 0 {
+    let Some((code_bytes, reason_bytes)) = payload.split_first_chunk_mut() else {
+        return 0;
+    };
+    *code_bytes = code.to_be_bytes();
+    if length != 0
+        && let Some(reason_bytes) = reason_bytes.get_mut(..length)
+    {
         // SAFETY: Reason is borrowed and bounded by 125 bytes.
-        payload[2..2 + length]
-            .copy_from_slice(unsafe { std::slice::from_raw_parts(reason, length) });
+        reason_bytes.copy_from_slice(unsafe { std::slice::from_raw_parts(reason, length) });
     }
     // SAFETY: `payload` is a local holding `length + 2 <= 127` bytes; the caller lends
     // `capacity` writable output bytes, disjoint from it.

@@ -56,14 +56,16 @@ pub unsafe extern "C" fn swr_v1_framing_unpack(
     let (Some(v), Some(out)) = (v, out) else {
         return -2;
     };
-    if v.len() < width {
+    let Some(field) = v.get(..width) else {
         return -2;
-    }
+    };
     let mut raw = [0u8; 8];
-    raw[..width].copy_from_slice(&v[..width]);
+    for (slot, &byte) in raw.iter_mut().zip(field) {
+        *slot = byte;
+    }
     *out = match format {
-        b'c' => i64::from(v[0].cast_signed()),
-        b'C' => i64::from(v[0]),
+        b'c' => i64::from(raw[0].cast_signed()),
+        b'C' => i64::from(raw[0]),
         b's' => i64::from(i16::from_ne_bytes([raw[0], raw[1]])),
         b'S' => i64::from(u16::from_ne_bytes([raw[0], raw[1]])),
         b'n' => i64::from(u16::from_be_bytes([raw[0], raw[1]])),
@@ -113,14 +115,15 @@ pub unsafe extern "C" fn swr_v1_framing_default(
     if width == 0 {
         return -2;
     }
-    if width > len - offset as usize {
+    let Some(field) = v
+        .get(offset as usize..)
+        .filter(|field| width <= field.len())
+    else {
         return -1;
-    }
-    let mut value = 0;
-    // SAFETY: `width <= len - offset`, so `width` bytes from `offset` lie inside `v`.
-    let result = unsafe {
-        swr_v1_framing_unpack(format, v[offset as usize..].as_ptr(), width, &raw mut value)
     };
+    let mut value = 0;
+    // SAFETY: `width <= field.len()`, so `width` bytes from `field` lie inside `v`.
+    let result = unsafe { swr_v1_framing_unpack(format, field.as_ptr(), width, &raw mut value) };
     if result != 0 || value < 0 {
         return -1;
     }
@@ -196,7 +199,7 @@ pub unsafe extern "C" fn swr_v1_framing_mime_suffix(
         return usize::MAX;
     };
     let start = data.iter().rposition(|&c| c == b'.').map_or(0, |n| n + 1);
-    let suffix = &data[start..];
+    let suffix = data.get(start..).unwrap_or_default();
     if suffix.len() > cap || (!suffix.is_empty() && out.is_null()) {
         return usize::MAX;
     }

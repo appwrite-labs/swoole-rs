@@ -54,11 +54,13 @@ pub unsafe extern "C" fn swr_v1_utils_bitmap_set(bitmap: *mut Bitmap, bit: usize
     let Some(bitmap) = (unsafe { bitmap.as_mut() }) else {
         return;
     };
-    if let Some((word, mask)) = bitmap.locate(bit) {
+    if let Some((word, mask)) = bitmap.locate(bit)
+        && let Some(word) = bitmap.words.get_mut(word)
+    {
         if value {
-            bitmap.words[word] |= mask;
+            *word |= mask;
         } else {
-            bitmap.words[word] &= !mask;
+            *word &= !mask;
         }
     }
 }
@@ -74,7 +76,8 @@ pub unsafe extern "C" fn swr_v1_utils_bitmap_get(bitmap: *const Bitmap, bit: usi
     };
     bitmap
         .locate(bit)
-        .is_some_and(|(word, mask)| bitmap.words[word] & mask != 0)
+        .and_then(|(word, mask)| Some(bitmap.words.get(word)? & mask != 0))
+        .unwrap_or(false)
 }
 
 /// `swoole::get_timezone`: the local zone's offset from UTC now, in seconds.

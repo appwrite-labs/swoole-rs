@@ -100,21 +100,22 @@ pub unsafe extern "C" fn swr_v1_wrappers_content_length(
     let mut digits = [0_u8; usize::BITS as usize];
     let mut start = digits.len();
     let mut remaining = length;
-    loop {
+    for digit in digits.iter_mut().rev() {
+        *digit = b'0' + u8::try_from(remaining % 10).unwrap_or(0);
         start -= 1;
-        digits[start] = b"0123456789"[remaining % 10];
         remaining /= 10;
         if remaining == 0 {
             break;
         }
     }
-    let count = digits.len() - start;
+    let digits = digits.get(start..).unwrap_or_default();
+    let count = digits.len();
     if out.is_null() || capacity < count {
         return usize::MAX;
     }
     // SAFETY: `out` is non-null and the caller lends `capacity >= count` writable bytes,
-    // disjoint from the local `digits`, whose last `count` bytes start at `start`.
-    unsafe { ptr::copy_nonoverlapping(digits[start..].as_ptr(), out, count) };
+    // disjoint from the local `digits`.
+    unsafe { ptr::copy_nonoverlapping(digits.as_ptr(), out, count) };
     count
 }
 
@@ -354,22 +355,22 @@ pub unsafe extern "C" fn swr_v1_wrappers_disposition(
     };
     // strtok_r/strchr/strlen stop at the first NUL. Quotes and trailing spaces
     // are literal, key matching is case sensitive, and the last duplicate wins.
-    let data = &data[..data.iter().position(|&c| c == 0).unwrap_or(data.len())];
+    let data = data.split(|&c| c == 0).next().unwrap_or_default();
     let mut name = None;
     let mut filename = None;
     for token in data.split(|&c| c == b';') {
         let equal = token.iter().position(|&c| c == b'=');
-        let mut start = 0;
-        // SAFETY: isspace receives an unsigned char value, as C requires.
-        while start < token.len() && unsafe { disposition_space(i32::from(token[start])) } != 0 {
-            start += 1;
-        }
+        let start = token
+            .iter()
+            // SAFETY: isspace receives an unsigned char value, as C requires.
+            .position(|&c| unsafe { disposition_space(i32::from(c)) } == 0)
+            .unwrap_or(token.len());
         if start == token.len() || equal == Some(start) {
             continue;
         }
         let end = equal.unwrap_or(token.len());
-        let key = &token[start..end];
-        let value = equal.map_or(&b""[..], |at| &token[at + 1..]);
+        let key = token.get(start..end).unwrap_or_default();
+        let value = equal.map_or(&b""[..], |at| token.get(at + 1..).unwrap_or_default());
         match key {
             b"name" => name = Some(value),
             b"filename" => filename = Some(value),
@@ -477,8 +478,8 @@ pub unsafe extern "C" fn swr_v1_wrappers_header_wire(
     let (Some(key), Some(value)) = (key, value) else {
         return 0;
     };
-    let key = &key[..key.iter().position(|&c| c == 0).unwrap_or(key.len())];
-    let value = &value[..value.iter().position(|&c| c == 0).unwrap_or(value.len())];
+    let key = key.split(|&c| c == 0).next().unwrap_or_default();
+    let value = value.split(|&c| c == 0).next().unwrap_or_default();
     if cap == 0 {
         return key.len().saturating_add(value.len()).saturating_add(4);
     }
@@ -489,17 +490,14 @@ pub unsafe extern "C" fn swr_v1_wrappers_header_wire(
     // bytes disjoint from `key` and `value`.
     let dest = unsafe { slice::from_raw_parts_mut(out, cap) };
     let mut n = 0;
-    for &c in key
-        .iter()
-        .chain(b": ")
-        .chain(value)
-        .chain(b"\r\n")
-        .take(cap - 1)
-    {
-        dest[n] = c;
+    let line = key.iter().chain(b": ").chain(value).chain(b"\r\n");
+    for (slot, &c) in dest.iter_mut().zip(line.take(cap - 1)) {
+        *slot = c;
         n += 1;
     }
-    dest[n] = 0;
+    if let Some(terminator) = dest.get_mut(n) {
+        *terminator = 0;
+    }
     n
 }
 // Preserve native short-circuiting: if_exit is evaluated natively only for wait_exit.

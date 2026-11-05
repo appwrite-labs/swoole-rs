@@ -60,7 +60,10 @@ impl Heap {
         if self.max { a < b } else { a > b }
     }
     fn place(&mut self, index: usize, node: NonNull<Node>) {
-        self.nodes[index] = node;
+        let Some(slot) = self.nodes.get_mut(index) else {
+            return;
+        };
+        *slot = node;
         #[expect(
             clippy::cast_possible_truncation,
             reason = "native uint32_t positions; insert refuses len >= u32::MAX - 1"
@@ -78,17 +81,18 @@ impl Heap {
         }
     }
     fn up_ordered<const MAX: bool>(&mut self, mut index: usize) {
-        let node = self.nodes[index];
+        let Some(&node) = self.nodes.get(index) else {
+            return;
+        };
         // Placement changes positions, never the moving node's priority.
         // SAFETY: a node owned by this heap (see `Heap`).
         let priority = unsafe { node.as_ref().priority };
-        while index > 0 {
-            let parent = (index - 1) / 2;
+        while let Some(parent) = index.checked_sub(1).map(|i| i / 2)
+            && let Some(&above) = self.nodes.get(parent)
             // SAFETY: a node owned by this heap (see `Heap`).
-            if !worse_ordered::<MAX>(unsafe { self.nodes[parent].as_ref().priority }, priority) {
-                break;
-            }
-            self.place(index, self.nodes[parent]);
+            && worse_ordered::<MAX>(unsafe { above.as_ref().priority }, priority)
+        {
+            self.place(index, above);
             index = parent;
         }
         self.place(index, node);
@@ -101,31 +105,32 @@ impl Heap {
         }
     }
     fn down_ordered<const MAX: bool>(&mut self, mut index: usize) {
-        let node = self.nodes[index];
+        let Some(&node) = self.nodes.get(index) else {
+            return;
+        };
         // SAFETY: a node owned by this heap (see `Heap`).
         let priority = unsafe { node.as_ref().priority };
         loop {
             let left = index * 2 + 1;
-            if left >= self.nodes.len() {
+            let Some(&left_node) = self.nodes.get(left) else {
                 break;
-            }
-            let right = left + 1;
-            // SAFETY: a node owned by this heap (see `Heap`).
-            let left_priority = unsafe { self.nodes[left].as_ref().priority };
-            let child = if right < self.nodes.len()
-                // SAFETY: a node owned by this heap (see `Heap`).
-                && worse_ordered::<MAX>(left_priority, unsafe {
-                    self.nodes[right].as_ref().priority
-                }) {
-                right
-            } else {
-                left
             };
             // SAFETY: a node owned by this heap (see `Heap`).
-            if !worse_ordered::<MAX>(priority, unsafe { self.nodes[child].as_ref().priority }) {
+            let left_priority = unsafe { left_node.as_ref().priority };
+            let mut child = (left, left_node);
+            if let Some(&right) = self.nodes.get(left + 1) {
+                // SAFETY: a node owned by this heap (see `Heap`).
+                let right_priority = unsafe { right.as_ref().priority };
+                if worse_ordered::<MAX>(left_priority, right_priority) {
+                    child = (left + 1, right);
+                }
+            }
+            let (child, child_node) = child;
+            // SAFETY: a node owned by this heap (see `Heap`).
+            if !worse_ordered::<MAX>(priority, unsafe { child_node.as_ref().priority }) {
                 break;
             }
-            self.place(index, self.nodes[child]);
+            self.place(index, child_node);
             index = child;
         }
         self.place(index, node);
@@ -137,11 +142,11 @@ impl Heap {
     }
     fn remove(&mut self, index: usize) -> *mut c_void {
         let node = self.nodes.swap_remove(index);
-        if index < self.nodes.len() {
+        if let Some(&moved) = self.nodes.get(index) {
             // SAFETY: the removed node is still allocated until `retire`.
             let removed = unsafe { node.as_ref().priority };
             // SAFETY: a node owned by this heap (see `Heap`).
-            if self.worse(removed, unsafe { self.nodes[index].as_ref().priority }) {
+            if self.worse(removed, unsafe { moved.as_ref().priority }) {
                 self.up(index);
             } else {
                 self.down(index);
