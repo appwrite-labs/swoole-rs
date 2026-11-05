@@ -64,7 +64,7 @@ def control_from_report(path, config, *, allow_outer=True):
         expected = row['library_sha256']
         compiled_config = row['compiled_config_sha256']
         openssl = next((Path(v.split('=', 1)[1]) for v in command if v.startswith('-Dopenssl_dir=')), Path('/usr'))
-    elif report.get('source_commit') == PIN and report.get('modules') == [] and report.get('native_library'):
+    elif report.get('source_commit') == PIN and report.get('inputs', {}).get('hybrid', False) is None and report.get('native_library'):
         kind='native-core'
         if report.get('status') != 'complete':
             raise PreconditionError('Native core build report incomplete')

@@ -164,19 +164,19 @@ environment's own disk; `python3 tools/dev.py prune` clears a day's leavings.
 ## Native core-tests
 
 `tools/native_core.py` builds upstream's CMake/GoogleTest `core-tests` binary from
-pinned Git blobs, optionally with module overlays and a given Rust archive, in a
-private content-addressed tree.
+pinned Git blobs, optionally over a hybrid build's all-modules tree and Rust
+archive, in a private content-addressed tree.
 
 ```sh
 python3 tools/native_core.py \
   --source target/upstream/src --config target/upstream/src/config.h \
-  --module reactor --archive target/hybrid/builds/BUILD_ID/rust-prefix/lib/libswoole_rs_ffi.a \
+  --archive target/hybrid/builds/BUILD_ID/rust-prefix/lib/libswoole_rs_ffi.a \
   --exclude-unit core-tests/src/coroutine/iouring.cpp \
   --case 'reactor.*' --case stream.send --jobs 2 \
   --output target/reports/native-reactor.json
 ```
 
-Omit `--module`/`--archive` for the upstream control. No tests run without
+Omit `--archive` for the upstream control. No tests run without
 `--case` (exact names or globs). Each selected case needs exactly one matching
 XML result. Excluded units are reported unsupported and keep the overall exit
 status 1.

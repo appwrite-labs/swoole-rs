@@ -40,7 +40,7 @@ native-TU gates.
   slashes, file parent), comparing warnings and `swoole_last_error`. The Rust
   build manifest must contain the current corebase patch.
 - `canonical.py --source PINNED_GIT --config CONFIG_H --archive A --output R [--jobs N] [--openssl-dir P] [--php-dir P] [--ccache EXE | --no-ccache]`
-  (`corebase-lifecycle`): builds a native and a corebase-only full library
+  (`corebase-lifecycle`): builds a native and an all-modules hybrid full library
   with `tools/native_core.py`, requires the selected upstream base GTests to
   pass in both (12 on macOS, all 33 active on Linux). Its report is also
   consumed by `tests/modules/tls/gate.py --allocation-native-report`.

@@ -90,7 +90,6 @@ class OodaTiming(unittest.TestCase):
                     '--cache', str(root/'cache'), '--output', str(output)]
             with patch.object(sys, 'argv', argv), patch.object(native_core, 'ROOT', root), \
                  patch.object(native_core, 'require_build_space'), patch.object(native_core, 'validate'), \
-                 patch.object(native_core, 'patches_for', return_value=[]), \
                  patch.object(native_core.platform, 'platform', return_value='fixture OS'), \
                  patch.object(native_core.subprocess, 'check_output', return_value='fixture version\n'), \
                  patch.object(native_core.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='source', stderr='')), \
