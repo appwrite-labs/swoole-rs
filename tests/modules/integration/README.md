@@ -64,7 +64,9 @@ CI lane has.
 (`server-native-faults`) links the actual optimized archive and its copied native
 exception helper. C++14/17 runs cover typed and non-standard exceptions, nested
 Server operations, and exact effect prefixes after every injected failure in
-create/destroy. Native ASan/UBSan runs are separate; Rust instrumentation is not
+create/destroy, both with native facts and with the canonical Rust configuration
+records. The latter asserts those facts do not fall back through the native
+callback. Native ASan/UBSan runs are separate; Rust instrumentation is not
 claimed. Linux additionally wraps `free` to prove the production Rust task-path
 String is released before the captured exception is rethrown. Other hosts report
 that drop observation as unmeasured.
