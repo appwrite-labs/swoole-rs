@@ -18,7 +18,7 @@ import time
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.build_hybrid import MODULES, headers_for, patches_for, apply_patch_verified
+from tools.build_hybrid import hybrid_tree, module_patches, overlay_hybrid_tree
 from tools.build_upstream import COMMIT, require_build_space
 from tools.check_migration import validate
 from tools.harness import exclusive
@@ -67,6 +67,14 @@ def run_command(command, cwd, log, timeout, report, checkpoint, phase):
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def hybrid_inputs(archive):
+    """What overlay_hybrid_tree copies from the archive's build: its flags and every patched file."""
+    source, flags = hybrid_tree(archive)
+    names = sorted({name for directory in (ROOT / 'migration/patches').iterdir()
+                    for patch in module_patches(directory) for name in patch['upstream_paths']})
+    return {'flags': flags, 'files': {name: sha(source / name) if (source / name).exists() else None for name in names}}
 
 
 def stage(source, destination):
@@ -198,8 +206,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True, help='Read-only pinned Git object source')
     parser.add_argument('--config', type=Path, required=True, help='Matching configured native config.h')
-    parser.add_argument('--module', action='append', choices=sorted(MODULES), default=[])
-    parser.add_argument('--archive', type=Path, help='Exact optimized archive; required with modules')
+    parser.add_argument('--archive', type=Path, help="A hybrid build's libswoole_rs_ffi.a: build over that build's all-modules tree")
     parser.add_argument('--exclude-unit', action='append', default=[], help='Explicit incompatible original core-tests/src/*.cpp unit; inventory retained as unsupported, full gate stays failed')
     parser.add_argument('--case', action='append', default=[], help='Exact/glob original testcase, repeatable; no implicit execution')
     parser.add_argument('--cache', type=Path, default=ROOT / 'target/native-core')
@@ -212,14 +219,14 @@ def main():
     parser.add_argument('--timeout', type=int, default=90)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    if args.jobs < 1 or args.timeout < 1 or bool(args.module) != bool(args.archive):
-        parser.error('Positive jobs/timeout; modules and exact archive must be supplied together')
+    if args.jobs < 1 or args.timeout < 1:
+        parser.error('Positive jobs/timeout')
     repository = subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True)
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'status': 'running', 'passed': False,
               'scope': 'Pinned native core binary with original assertions and C++14. Explicit incompatible units remain inventoried unsupported and fail the full gate. Only requested original cases execute; external-service support is not inferred.',
               'source_commit': COMMIT, 'repository_commit': repository.stdout.strip() if repository.returncode == 0 else None,
               'repository_git_error': repository.stderr.strip() if repository.returncode else None,
-              'commands': [], 'results': [], 'modules': sorted(set(args.module))}
+              'commands': [], 'results': []}
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     def checkpoint():
@@ -243,20 +250,17 @@ def main():
             declarations = re.findall(r'\bTEST(?:_F|_P)?\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)',body.decode())
             excluded[unit] = {'sha256':hashlib.sha256(body).hexdigest(), 'declared_cases':[a+'.'+b for a,b in declarations], 'status':'unsupported', 'reason':'Explicit configured original build incompatibility; assertions unchanged and unexecuted'}
         report['excluded_units'] = excluded
-        selected = {MODULES[name][0] for name in args.module}
-        patches = patches_for([x for x in modules['modules'] if x['id'] in selected])
-        headers = headers_for(sorted(set(args.module))) if selected else []
         archive = args.archive.resolve(strict=True) if args.archive else None
         compiler = subprocess.check_output(['c++','--version'],text=True).splitlines()[0]
         ccache = args.ccache.resolve(strict=True) if args.ccache else None
         inputs = {'ccache': {'path':str(ccache), 'sha256':sha(ccache), 'version':subprocess.check_output([str(ccache),'--version'],text=True).splitlines()[0]} if ccache else None,
-                  'pin': COMMIT, 'config_sha256': sha(args.config), 'patches': patches,
-                  'headers': {p.name: sha(p) for p in headers}, 'archive_sha256': sha(archive) if archive else None,
+                  'pin': COMMIT, 'config_sha256': sha(args.config),
+                  'hybrid': hybrid_inputs(archive) if archive else None, 'archive_sha256': sha(archive) if archive else None,
                   'compiler': compiler, 'cmake': subprocess.check_output(['cmake','--version'],text=True).splitlines()[0],
                   'dependencies': subprocess.check_output(['pkg-config','--modversion','openssl','libnghttp2','libpq','libcurl','gtest'],text=True).splitlines(),
                   'openssl_dir': str(args.openssl_dir.resolve()) if args.openssl_dir else None,
                   'platform': platform.platform(), 'php_config': subprocess.check_output([str(Path(args.php_dir)/'bin/php-config'),'--version'],text=True).strip(),
-                  'excluded_units': excluded, 'runner_sha256': sha(__file__), 'patch_helper_sha256': sha(ROOT/'tools/build_hybrid.py'), 'modules': sorted(set(args.module)),
+                  'excluded_units': excluded, 'runner_sha256': sha(__file__), 'patch_helper_sha256': sha(ROOT/'tools/build_hybrid.py'),
                   'darwin_stat_adapter': args.darwin_stat_adapter,
                   'environment': {k:os.environ.get(k,'') for k in ['CC','CXX','CFLAGS','CXXFLAGS','CPPFLAGS','LDFLAGS','PKG_CONFIG_PATH','CMAKE_PREFIX_PATH','SWOOLE_RS_TOOLCHAIN_ID','LD_LIBRARY_PATH','LD_PRELOAD','DYLD_LIBRARY_PATH','DYLD_FALLBACK_LIBRARY_PATH','DYLD_INSERT_LIBRARIES']}}
         identity = hashlib.sha256(json.dumps(inputs,sort_keys=True).encode()).hexdigest()
@@ -283,13 +287,6 @@ def main():
                     report['original_assertion_files'] = stage(source,tree)
                     shutil.copyfile(args.config,tree/'config.h')
                     if sha(tree/'config.h') != inputs['config_sha256']: raise ValueError('Config changed during capture')
-                    include = work/'rust-include'; include.mkdir(exist_ok=True)
-                    for header in headers:
-                        shutil.copyfile(header,include/header.name)
-                        if sha(include/header.name) != inputs['headers'][header.name]: raise ValueError('Header changed during capture')
-                    for patch in patches:
-                        proof = apply_patch_verified(tree, ROOT/patch['path'], patch['upstream_paths'], patch['sha256'])
-                        write_report(attempt/(Path(patch['path']).parent.name+'-'+Path(patch['path']).stem+'-apply.json'), proof)
                     if excluded:
                         cmake = tree/'CMakeLists.txt'
                         text = cmake.read_text()
@@ -301,15 +298,15 @@ def main():
                     if adapter:
                         with (tree/'CMakeLists.txt').open('a') as f:
                             f.write(adapter)
-                    flags = ' '.join('-DSWOOLE_RS_' + name.upper() for name in sorted(set(args.module)))
-                    if headers: flags += ' -I' + str(include)
                     if archive:
+                        hybrid_cmake = overlay_hybrid_tree(archive, tree)
+                        if hybrid_inputs(archive) != inputs['hybrid']: raise ValueError('Hybrid tree changed during capture')
                         frozen_archive = work/'libswoole_rs_ffi.a'
                         shutil.copyfile(archive,frozen_archive)
                         if sha(frozen_archive) != inputs['archive_sha256']: raise ValueError('Archive changed during capture')
                         # Build-only adapter: original CMake/tests stay intact; add exact Rust dependency.
                         with (tree/'CMakeLists.txt').open('a') as f:
-                            f.write('\ntarget_link_libraries(lib-swoole '+json.dumps(str(frozen_archive))+' m dl pthread)\n')
+                            f.write('\n'+hybrid_cmake+'target_link_libraries(lib-swoole '+json.dumps(str(frozen_archive))+' m dl pthread)\n')
                     report['cmake_adapter_sha256'] = sha(tree/'CMakeLists.txt')
                     launchers = []
                     debug_map = '-fdebug-prefix-map='+str(work)+'=/swoole-native-originals' if ccache else ''
@@ -320,7 +317,7 @@ def main():
                     openssl = ['-Dopenssl_dir='+str(args.openssl_dir.resolve())] if args.openssl_dir else []
                 run(['cmake','-S',tree,'-B',build,'-DCMAKE_BUILD_TYPE=Release','-Dphp_dir='+args.php_dir,
                      '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -UNDEBUG','-DCMAKE_C_FLAGS_RELEASE=-O2 -UNDEBUG',
-                     '-DCMAKE_CXX_FLAGS='+flags+' '+debug_map,'-DCMAKE_C_FLAGS='+debug_map,*openssl,*launchers],tree,attempt/'configure.log',phase='configure')
+                     '-DCMAKE_CXX_FLAGS='+debug_map,'-DCMAKE_C_FLAGS='+debug_map,*openssl,*launchers],tree,attempt/'configure.log',phase='configure')
                 run(['cmake','--build',build,'--target','core-tests','-j'+str(args.jobs),'--','-k'],tree,attempt/'build.log',timeout=900,phase='build')
                 receipt.write_text(json.dumps({'inputs':inputs,'binary_sha256':sha(binary),'native_library':library_identity(library),'assertions':report['original_assertion_files'],'cmake_adapter_sha256':report['cmake_adapter_sha256']},indent=2)+'\n')
             built = json.loads(receipt.read_text()); report.update(binary_sha256=sha(binary),build_receipt_sha256=sha(receipt),original_assertion_files=built['assertions'],cache_hit=valid)

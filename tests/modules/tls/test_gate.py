@@ -55,25 +55,25 @@ class ControlReceipt(unittest.TestCase):
         with self.assertRaisesRegex(gate.PreconditionError, 'ambiguous'): self.read()
 
     def test_binary_only_cache_rejected(self):
-        self.data = dict(source_commit=gate.PIN, modules=[], status='complete', cache=str(self.root))
+        self.data = dict(source_commit=gate.PIN, status='complete', cache=str(self.root), inputs=dict(hybrid=None))
         with self.assertRaisesRegex(gate.PreconditionError, 'binary-only'): self.read()
 
     def test_native_core_attestation(self):
-        self.data = dict(source_commit=gate.PIN, modules=[], status='complete', cache=str(self.root),
+        self.data = dict(source_commit=gate.PIN, status='complete', cache=str(self.root),
             native_library=dict(resolved_path=str(self.library),sha256=gate.sha(self.library)),
-            inputs=dict(config_sha256=gate.sha(self.config)))
+            inputs=dict(config_sha256=gate.sha(self.config), hybrid=None))
         (self.root/'src').symlink_to(self.tree, target_is_directory=True)
         self.assertEqual(self.read()['library_sha256'], gate.sha(self.library))
-        self.data['modules'] = ['tls']
+        self.data['inputs']['hybrid'] = {'flags': [], 'files': {}}
         with self.assertRaisesRegex(gate.PreconditionError, 'original full-runtime'): self.read()
 
 
     def nested(self):
         (self.root/'src').symlink_to(self.tree,target_is_directory=True)
         child=self.root/'child.json'
-        child.write_text(json.dumps(dict(source_commit=gate.PIN,modules=[],status='complete',passed=False,
+        child.write_text(json.dumps(dict(source_commit=gate.PIN,status='complete',passed=False,
             cache=str(self.root),native_library=dict(resolved_path=str(self.library),sha256=gate.sha(self.library)),
-            inputs=dict(config_sha256=gate.sha(self.config)))))
+            inputs=dict(config_sha256=gate.sha(self.config),hybrid=None))))
         self.data=dict(passed=False,status='failed',error='retained selected downstream failure',
             builds=dict(native=dict(report=str(child),sha256=gate.sha(child),exit=1,
                 selected_cases_passed=True,full_inventory_passed=False,excluded_units=['unsupported'],case_count=33)))

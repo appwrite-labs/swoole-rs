@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the selected upstream base GTests on a full native library and a corebase-only one."""
+"""Run the selected upstream base GTests on a full native library and the all-modules hybrid one."""
 import argparse
 from datetime import datetime, timezone
 import json
@@ -42,16 +42,16 @@ MAC_CASES = ['dec2hex', 'hex2dec', 'version_compare', 'common_divisor', 'common_
              'dirname', 'itoa', 'type_size', 'mkdir_recursive', 'hook', 'log_level', 'trace_flag']
 
 
-def attest_originals(path, modules, config, archive):
+def attest_originals(path, hybrid, config, archive):
     """Derive an identity only from completed unchanged-original execution records."""
     build = json.loads(path.read_text())
     if (build.get('status') != 'complete' or build.get('selected_cases_passed') is not True
-            or build.get('source_commit') != COMMIT or build.get('modules') != modules
-            or build['inputs']['modules'] != modules or build['inputs']['config_sha256'] != sha(config)):
+            or build.get('source_commit') != COMMIT or (build['inputs']['hybrid'] is not None) != hybrid
+            or build['inputs']['config_sha256'] != sha(config)):
         raise ValueError('Original case build/config/source precondition failed: ' + str(path))
     if build.get('excluded_units') and (build.get('passed') or build.get('whole_build_inventory_supported')):
         raise ValueError('Unsupported native inventory cannot be a full pass')
-    if modules and build['inputs']['archive_sha256'] != sha(archive):
+    if hybrid and build['inputs']['archive_sha256'] != sha(archive):
         raise ValueError('Selected full library used a different FFI archive')
     tree = Path(build['cache']) / 'src'
     if sha(tree / 'config.h') != sha(config):
@@ -102,7 +102,7 @@ def main():
         shutil.copy2(args.output, attempt / 'previous-summary.json')
     report = dict(passed=False, status='running', utc=datetime.now(timezone.utc).isoformat(),
                   attempt=str(attempt), commands=[], builds={},
-                  scope='Current exact FFI with corebase-only full-native callers and same-config original comparator; selected original base GTests only. Unsupported full native inventory remains independently failed. No PHP, sanitizer, optional-context, performance or activation claim.')
+                  scope='Current exact FFI with the all-modules hybrid tree and same-config original comparator; selected original base GTests only. Unsupported full native inventory remains independently failed. No PHP, sanitizer, optional-context, performance or activation claim.')
     env = {}
 
     def checkpoint():
@@ -146,17 +146,17 @@ def main():
         for name in cases:
             common += ['--case', name]
         identity = {'engines': {}}
-        for label, modules in [('native', []), ('rust', ['corebase'])]:
+        for label, hybrid in [('native', False), ('rust', True)]:
             child = attempt / (label + '-originals.json')
             command = [*common, '--output', child]
-            if modules:
-                command += ['--module', 'corebase', '--archive', args.archive]
+            if hybrid:
+                command += ['--archive', args.archive]
             code = run(command)
             # native_core deliberately exits 1 for explicit unsupported units.
             # It is never promoted to a full-inventory pass by this adapter.
             report['builds'][label] = dict(report=str(child), sha256=sha(child) if child.is_file() else None, exit=code)
             checkpoint()
-            build, identity['engines'][label] = attest_originals(child, modules, args.config, args.archive)
+            build, identity['engines'][label] = attest_originals(child, hybrid, args.config, args.archive)
             if code not in [0, 1] or (code == 1 and not build.get('excluded_units')):
                 raise ValueError('Unexpected original gate exit: ' + label)
             report['builds'][label] = dict(report=str(child), sha256=sha(child), exit=code,
