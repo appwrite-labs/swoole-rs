@@ -55,7 +55,7 @@ const PROPERTY_BOOL: u32 = 3;
 #[repr(C)]
 pub struct PortHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
-    deref: unsafe extern "C" fn(*mut zend_object),
+    length_slot: unsafe extern "C" fn(*mut c_void) -> *mut *mut c_void,
     started: unsafe extern "C" fn(*mut c_void) -> bool,
     warn: unsafe extern "C" fn(c_int, *const c_char),
     callable_create: unsafe extern "C" fn(*mut zval) -> *mut c_void,
@@ -81,10 +81,74 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 }
 
 unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created; C++ drops its callables.
-    unsafe { (host().deref)(std) };
+    // SAFETY: Zend frees an object this class created.
+    unsafe { swr_v1_phpserver_port_deref(std) };
     // SAFETY: as above.
     unsafe { Port::dtor(std) };
+}
+
+/// `php_swoole_server_port_set_ptr`: bind the object to its `ListenPort`.
+/// # Safety
+/// `object` is a `Swoole\Server\Port` this class created.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_port_set(object: *mut zend_object, port: *mut c_void) {
+    // SAFETY: one of ours, per the contract.
+    unsafe { Port::data(object) }.port = port;
+}
+
+/// `php_swoole_server_port_get_property`: the object's `ServerPortProperty`.
+/// # Safety
+/// `object` is a `Swoole\Server\Port` this class created.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_port_object_property(
+    object: *mut zend_object,
+) -> *mut PortProperty {
+    // SAFETY: one of ours, per the contract.
+    &raw mut unsafe { Port::data(object) }.property
+}
+
+/// The object's `ListenPort`; an `E_ERROR`, which does not return, when unbound.
+/// # Safety
+/// `object` is a `Swoole\Server\Port` this class created; the caller owns nothing to drop.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_port_port(object: *mut zend_object) -> *mut c_void {
+    // SAFETY: one of ours, per the contract.
+    let port = unsafe { Port::data(object) }.port;
+    if port.is_null() {
+        // SAFETY: as above.
+        unsafe { (host().invalid)(object) };
+    }
+    port
+}
+
+/// `php_swoole_server_port_deref`: drop the callables and the port's link.
+/// # Safety
+/// `object` is a `Swoole\Server\Port` this class created.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_port_deref(object: *mut zend_object) {
+    // SAFETY: one of ours, per the contract.
+    let data = unsafe { Port::data(object) };
+    if !data.property.serv.is_null() {
+        for slot in &mut data.property.callbacks {
+            free_callable(slot);
+        }
+        data.property.serv = ptr::null_mut();
+    }
+    if !data.port.is_null() {
+        // SAFETY: a bound port; C++ hands out its length callable's slot.
+        let slot = unsafe { (host().length_slot)(data.port) };
+        // SAFETY: the slot lives in the ListenPort, which outlives this call.
+        free_callable(unsafe { &mut *slot });
+        data.port = ptr::null_mut();
+    }
+}
+
+fn free_callable(slot: &mut *mut c_void) {
+    if !slot.is_null() {
+        // SAFETY: a callable C++ created for this port.
+        unsafe { (host().callable_free)(*slot) };
+        *slot = ptr::null_mut();
+    }
 }
 
 fn configure(
@@ -221,10 +285,7 @@ fn on(call: &Call) {
         );
     }
     let slot = &mut property.callbacks[index];
-    if !slot.is_null() {
-        // SAFETY: a callable this port created.
-        unsafe { (host().callable_free)(*slot) };
-    }
+    free_callable(slot);
     // SAFETY: the callback argument.
     let callable = unsafe { (host().callable_create)(cb) };
     if callable.is_null() {
