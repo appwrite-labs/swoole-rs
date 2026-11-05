@@ -46,119 +46,122 @@ const IPC_UNIXSOCK: u64 = 1;
 const IPC_MSGQUEUE: u64 = 2;
 const IPC_SOCKET: u64 = 3;
 
-fn field<H: Host>(h: &mut H, id: u32) -> u64 {
+fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
     h.op(OP_FIELD, u64::from(id))
 }
 
-fn set_field<H: Host>(h: &mut H, id: u32, value: u64) {
-    h.op(OP_SET_FIELD, u64::from(id) | (value << 8));
+fn set_field<H: Host>(h: &mut H, id: u32, value: u64) -> crate::Effect<()> {
+    h.op(OP_SET_FIELD, u64::from(id) | (value << 8))?;
+    Ok(())
 }
 
 /// `Server::create` after the global before-create hook: shared memory, bounded
 /// thread and process counts, the factory and the task workers.
-pub(crate) fn create<H: Host>(h: &mut H) -> i64 {
-    if !h.is(OP_INIT_LOCAL_ADDRS) {
-        return SW_ERR;
+pub(crate) fn create<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    if !h.is(OP_INIT_LOCAL_ADDRS)? {
+        return Ok(SW_ERR);
     }
-    if !h.is(OP_ALLOC_SESSIONS) {
-        h.get(LOG_ALLOC_SESSIONS);
-        return SW_ERR;
+    if !h.is(OP_ALLOC_SESSIONS)? {
+        h.get(LOG_ALLOC_SESSIONS)?;
+        return Ok(SW_ERR);
     }
-    if !h.is(OP_ALLOC_PORT_GS) {
-        h.get(LOG_ALLOC_PORT_GS);
-        return SW_ERR;
+    if !h.is(OP_ALLOC_PORT_GS)? {
+        h.get(LOG_ALLOC_PORT_GS)?;
+        return Ok(SW_ERR);
     }
-    h.get(OP_HTTP_DEFAULTS);
-    bound_max_connection(h);
-    bound_workers(h);
-    if !h.is(OP_ALLOC_WORKERS) {
-        h.get(LOG_ALLOC_WORKERS);
-        return SW_ERR;
+    h.get(OP_HTTP_DEFAULTS)?;
+    bound_max_connection(h)?;
+    bound_workers(h)?;
+    if !h.is(OP_ALLOC_WORKERS)? {
+        h.get(LOG_ALLOC_WORKERS)?;
+        return Ok(SW_ERR);
     }
-    if !h.is(OP_CREATE_FACTORY) {
-        return SW_ERR;
+    if !h.is(OP_CREATE_FACTORY)? {
+        return Ok(SW_ERR);
     }
-    if field(h, FIELD_TASK_WORKER_NUM) > 0 && !create_task_workers(h) {
-        return SW_ERR;
+    if field(h, FIELD_TASK_WORKER_NUM)? > 0 && !create_task_workers(h)? {
+        return Ok(SW_ERR);
     }
-    h.get(OP_AFTER_CREATE);
-    SW_OK
+    h.get(OP_AFTER_CREATE)?;
+    Ok(SW_OK)
 }
 
 /// Room for every worker's pipes and the listen sockets, in `uint32_t` as upstream.
-fn bound_max_connection<H: Host>(h: &mut H) {
-    let workers = u32::try_from(field(h, FIELD_WORKER_NUM)).unwrap_or(u32::MAX);
-    let tasks = u32::try_from(field(h, FIELD_TASK_WORKER_NUM)).unwrap_or(u32::MAX);
+fn bound_max_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
+    let workers = u32::try_from(field(h, FIELD_WORKER_NUM)?).unwrap_or(u32::MAX);
+    let tasks = u32::try_from(field(h, FIELD_TASK_WORKER_NUM)?).unwrap_or(u32::MAX);
     let mut minimum = workers.wrapping_add(tasks).wrapping_mul(2).wrapping_add(32);
-    if h.get(OP_PORT_COUNT) > 0 {
-        let fd = i32::try_from(h.signed(OP_LAST_PORT_FD)).unwrap_or(-1);
+    if h.get(OP_PORT_COUNT)? > 0 {
+        let fd = i32::try_from(h.signed(OP_LAST_PORT_FD)?).unwrap_or(-1);
         minimum = minimum.wrapping_add(fd.cast_unsigned());
     }
-    let max = u32::try_from(h.get(OP_MAX_CONNECTION)).unwrap_or(u32::MAX);
+    let max = u32::try_from(h.get(OP_MAX_CONNECTION)?).unwrap_or(u32::MAX);
     if max < minimum {
-        let sockets = u32::try_from(h.get(OP_MAX_SOCKETS)).unwrap_or(u32::MAX);
+        let sockets = u32::try_from(h.get(OP_MAX_SOCKETS)?).unwrap_or(u32::MAX);
         let real = minimum.wrapping_add(1).max(sockets);
         h.op(
             LOG_MAX_CONNECTION_MINIMUM,
             (u64::from(minimum) << 32) | u64::from(real),
-        );
-        h.op(OP_SET_MAX_CONNECTION, u64::from(real));
+        )?;
+        h.op(OP_SET_MAX_CONNECTION, u64::from(real))?;
     }
+    Ok(())
 }
 
-fn bound_workers<H: Host>(h: &mut H) {
-    let cpu = field(h, FIELD_CPU_NUM);
-    let reactors = field(h, FIELD_REACTOR_NUM);
+fn bound_workers<H: Host>(h: &mut H) -> crate::Effect<()> {
+    let cpu = field(h, FIELD_CPU_NUM)?;
+    let reactors = field(h, FIELD_REACTOR_NUM)?;
     if reactors > cpu * MAX_THREAD_NCPU {
-        h.get(LOG_REACTOR_NUM);
-        set_field(h, FIELD_REACTOR_NUM, cpu * MAX_THREAD_NCPU);
+        h.get(LOG_REACTOR_NUM)?;
+        set_field(h, FIELD_REACTOR_NUM, cpu * MAX_THREAD_NCPU)?;
     } else if reactors == 0 {
-        set_field(h, FIELD_REACTOR_NUM, cpu);
+        set_field(h, FIELD_REACTOR_NUM, cpu)?;
     }
-    if h.is(OP_SINGLE_THREAD) {
-        set_field(h, FIELD_REACTOR_NUM, 1);
+    if h.is(OP_SINGLE_THREAD)? {
+        set_field(h, FIELD_REACTOR_NUM, 1)?;
     }
-    if field(h, FIELD_WORKER_NUM) > cpu * MAX_WORKER_NCPU {
-        h.get(LOG_WORKER_NUM);
-        set_field(h, FIELD_WORKER_NUM, cpu * MAX_WORKER_NCPU);
+    if field(h, FIELD_WORKER_NUM)? > cpu * MAX_WORKER_NCPU {
+        h.get(LOG_WORKER_NUM)?;
+        set_field(h, FIELD_WORKER_NUM, cpu * MAX_WORKER_NCPU)?;
     }
-    let workers = field(h, FIELD_WORKER_NUM);
-    if workers < field(h, FIELD_REACTOR_NUM) {
-        set_field(h, FIELD_REACTOR_NUM, workers);
+    let workers = field(h, FIELD_WORKER_NUM)?;
+    if workers < field(h, FIELD_REACTOR_NUM)? {
+        set_field(h, FIELD_REACTOR_NUM, workers)?;
     }
-    if field(h, FIELD_TASK_WORKER_NUM) > cpu * MAX_WORKER_NCPU {
-        h.get(LOG_TASK_WORKER_NUM);
-        set_field(h, FIELD_TASK_WORKER_NUM, cpu * MAX_WORKER_NCPU);
+    if field(h, FIELD_TASK_WORKER_NUM)? > cpu * MAX_WORKER_NCPU {
+        h.get(LOG_TASK_WORKER_NUM)?;
+        set_field(h, FIELD_TASK_WORKER_NUM, cpu * MAX_WORKER_NCPU)?;
     }
+    Ok(())
 }
 
 /// `Server::create_task_workers`: the task pool's memory, not its processes.
-fn create_task_workers<H: Host>(h: &mut H) -> bool {
-    let ipc = match field(h, FIELD_TASK_IPC_MODE) {
+fn create_task_workers<H: Host>(h: &mut H) -> crate::Effect<bool> {
+    let ipc = match field(h, FIELD_TASK_IPC_MODE)? {
         TASK_IPC_MSGQUEUE | TASK_IPC_PREEMPTIVE => IPC_MSGQUEUE,
         TASK_IPC_STREAM => IPC_SOCKET,
         _ => IPC_UNIXSOCK,
     };
-    if h.op(OP_TASK_POOL_CREATE, ipc) == 0 {
-        h.get(LOG_TASK_POOL);
-        return false;
+    if h.op(OP_TASK_POOL_CREATE, ipc)? == 0 {
+        h.get(LOG_TASK_POOL)?;
+        return Ok(false);
     }
-    h.get(OP_TASK_POOL_SETUP);
+    h.get(OP_TASK_POOL_SETUP)?;
     if ipc == IPC_SOCKET {
-        let path = format!("/tmp/swoole.task.{}.sock\0", h.signed(OP_MASTER_PID));
+        let path = format!("/tmp/swoole.task.{}.sock\0", h.signed(OP_MASTER_PID)?);
         let address = u64::try_from(path.as_ptr().addr()).unwrap_or(0);
-        if h.op(OP_TASK_POOL_LISTEN, address).cast_signed() < 0 {
-            return false;
+        if h.op(OP_TASK_POOL_LISTEN, address)?.cast_signed() < 0 {
+            return Ok(false);
         }
     }
     // Task results and notify pipes for `Server::task_sync()`.
-    if !h.is(OP_ALLOC_TASK_RESULTS) {
-        h.get(LOG_ALLOC_TASK_RESULTS);
-        return false;
+    if !h.is(OP_ALLOC_TASK_RESULTS)? {
+        h.get(LOG_ALLOC_TASK_RESULTS)?;
+        return Ok(false);
     }
-    for _ in 0..field(h, FIELD_WORKER_NUM) {
-        if !h.is(OP_TASK_PIPE) {
-            return false;
+    for _ in 0..field(h, FIELD_WORKER_NUM)? {
+        if !h.is(OP_TASK_PIPE)? {
+            return Ok(false);
         }
     }
     h.is(OP_INIT_TASK_WORKERS)
@@ -166,162 +169,164 @@ fn create_task_workers<H: Host>(h: &mut H) -> bool {
 
 /// `Server::start_check`: settings the mode cannot honour, required callbacks, and
 /// heartbeat and package-length defaults.
-pub(crate) fn start_check<H: Host>(h: &mut H) -> i64 {
-    if h.get(OP_MODE) == MODE_PROCESS {
+pub(crate) fn start_check<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    if h.get(OP_MODE)? == MODE_PROCESS {
         let hashed = matches!(
-            field(h, FIELD_DISPATCH_MODE),
+            field(h, FIELD_DISPATCH_MODE)?,
             DISPATCH_FDMOD | DISPATCH_IPMOD | DISPATCH_CO_CONN_LB
         );
-        if !hashed && field(h, FIELD_UNSAFE_EVENT) == 0 {
+        if !hashed && field(h, FIELD_UNSAFE_EVENT)? == 0 {
             for callback in [CB_CONNECT, CB_CLOSE, CB_BUFFER_FULL, CB_BUFFER_EMPTY] {
-                if h.op(OP_CALLBACK, u64::from(callback)) != 0 {
-                    h.op(LOG_CALLBACK_DISPATCH, u64::from(callback));
-                    h.op(OP_CLEAR_CALLBACK, u64::from(callback));
+                if h.op(OP_CALLBACK, u64::from(callback))? != 0 {
+                    h.op(LOG_CALLBACK_DISPATCH, u64::from(callback))?;
+                    h.op(OP_CLEAR_CALLBACK, u64::from(callback))?;
                 }
             }
-            h.get(OP_SET_DISABLE_NOTIFY);
+            h.get(OP_SET_DISABLE_NOTIFY)?;
         }
         if !hashed {
-            h.get(OP_CLEAR_SEND_YIELD);
+            h.get(OP_CLEAR_SEND_YIELD)?;
         }
     } else {
-        h.get(OP_CLEAR_MAX_QUEUED);
+        h.get(OP_CLEAR_MAX_QUEUED)?;
     }
-    if field(h, FIELD_TASK_WORKER_NUM) > 0 && !callback(h, CB_TASK) {
-        h.op(LOG_CALLBACK_REQUIRED, u64::from(CB_TASK));
-        return SW_ERR;
+    if field(h, FIELD_TASK_WORKER_NUM)? > 0 && !callback(h, CB_TASK)? {
+        h.op(LOG_CALLBACK_REQUIRED, u64::from(CB_TASK))?;
+        return Ok(SW_ERR);
     }
-    let send_timeout = h.float(OP_SEND_TIMEOUT);
+    let send_timeout = h.float(OP_SEND_TIMEOUT)?;
     if send_timeout > 0.0 && send_timeout < TIMER_MIN_SEC {
-        h.get(OP_SEND_TIMEOUT_MIN);
+        h.get(OP_SEND_TIMEOUT_MIN)?;
     }
-    let ports = h.get(OP_PORT_COUNT);
-    if field(h, FIELD_HEARTBEAT_INTERVAL) > 0 {
+    let ports = h.get(OP_PORT_COUNT)?;
+    if field(h, FIELD_HEARTBEAT_INTERVAL)? > 0 {
         for port in 0..ports {
-            if h.op(OP_PORT_IDLE, port) == 0 {
-                h.op(OP_PORT_DEFAULT_IDLE, port);
+            if h.op(OP_PORT_IDLE, port)? == 0 {
+                h.op(OP_PORT_DEFAULT_IDLE, port)?;
             }
         }
     }
     for port in 0..ports {
-        if check_port(h, port).is_err() {
-            return SW_ERR;
+        if check_port(h, port)?.is_err() {
+            return Ok(SW_ERR);
         }
     }
-    SW_OK
+    Ok(SW_OK)
 }
 
-fn callback<H: Host>(h: &mut H, id: u32) -> bool {
-    h.op(OP_CALLBACK, u64::from(id)) != 0
+fn callback<H: Host>(h: &mut H, id: u32) -> crate::Effect<bool> {
+    Ok(h.op(OP_CALLBACK, u64::from(id))? != 0)
 }
 
-fn check_port<H: Host>(h: &mut H, port: u64) -> Result<(), ()> {
-    if h.op(OP_PORT_MAX_LENGTH, port) < BUFFER_MIN_SIZE {
-        h.op(OP_PORT_MIN_LENGTH, port);
+fn check_port<H: Host>(h: &mut H, port: u64) -> crate::Effect<Result<(), ()>> {
+    if h.op(OP_PORT_MAX_LENGTH, port)? < BUFFER_MIN_SIZE {
+        h.op(OP_PORT_MIN_LENGTH, port)?;
     }
-    let dgram = h.op(OP_PORT_DGRAM, port) != 0;
-    let ssl = h.op(OP_PORT_SSL_AT, port) != 0;
-    let stream = h.op(OP_PORT_STREAM, port) != 0;
-    if ((dgram && ssl) || stream) && !callback(h, CB_RECEIVE) {
-        h.op(LOG_CALLBACK_REQUIRED, u64::from(CB_RECEIVE));
-        return Err(());
+    let dgram = h.op(OP_PORT_DGRAM, port)? != 0;
+    let ssl = h.op(OP_PORT_SSL_AT, port)? != 0;
+    let stream = h.op(OP_PORT_STREAM, port)? != 0;
+    if ((dgram && ssl) || stream) && !callback(h, CB_RECEIVE)? {
+        h.op(LOG_CALLBACK_REQUIRED, u64::from(CB_RECEIVE))?;
+        return Ok(Err(()));
     }
-    if dgram && !ssl && !callback(h, CB_PACKET) {
-        h.op(LOG_CALLBACK_REQUIRED, u64::from(CB_PACKET));
-        return Err(());
+    if dgram && !ssl && !callback(h, CB_PACKET)? {
+        h.op(LOG_CALLBACK_REQUIRED, u64::from(CB_PACKET))?;
+        return Ok(Err(()));
     }
-    let idle = h.op(OP_PORT_IDLE, port);
+    let idle = h.op(OP_PORT_IDLE, port)?;
     if idle > 0 {
         let expect = if idle > 2 { idle / 2 } else { 1 };
-        let interval = field(h, FIELD_HEARTBEAT_INTERVAL);
+        let interval = field(h, FIELD_HEARTBEAT_INTERVAL)?;
         if interval == 0 || interval > expect {
-            set_field(h, FIELD_HEARTBEAT_INTERVAL, expect);
+            set_field(h, FIELD_HEARTBEAT_INTERVAL, expect)?;
         }
     }
-    if h.op(OP_PORT_WEBSOCKET, port) != 0 {
-        h.op(OP_PORT_WS_COMPRESSION, port);
+    if h.op(OP_PORT_WEBSOCKET, port)? != 0 {
+        h.op(OP_PORT_WS_COMPRESSION, port)?;
     }
-    Ok(())
+    Ok(Ok(()))
 }
 
 /// `Server::start_master_thread`: the master's reactor, signals and timer, then the event loop.
-pub(crate) fn start_master_thread<H: Host>(h: &mut H) -> i64 {
-    let single = h.is(OP_SINGLE_THREAD);
+pub(crate) fn start_master_thread<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    let single = h.is(OP_SINGLE_THREAD)?;
     let thread_id = if single {
         0
     } else {
-        field(h, FIELD_REACTOR_NUM)
+        field(h, FIELD_REACTOR_NUM)?
     };
-    h.op(OP_MASTER_THREAD, thread_id);
-    if h.is(OP_TIMER_DETACHED) {
-        h.get(OP_TIMER_REINIT);
+    h.op(OP_MASTER_THREAD, thread_id)?;
+    if h.is(OP_TIMER_DETACHED)? {
+        h.get(OP_TIMER_REINIT)?;
     }
-    init_signals(h);
-    let mode = h.get(OP_MODE);
-    h.op(OP_MASTER_WORKER, mode);
-    h.get(OP_MASTER_REACTOR);
-    if h.is(OP_HAS_PIPE_COMMAND) {
+    init_signals(h)?;
+    let mode = h.get(OP_MODE)?;
+    h.op(OP_MASTER_WORKER, mode)?;
+    h.get(OP_MASTER_REACTOR)?;
+    if h.is(OP_HAS_PIPE_COMMAND)? {
         if !single {
-            h.get(OP_COMMAND_HANDLER);
+            h.get(OP_COMMAND_HANDLER)?;
         }
-        h.get(OP_PIPE_COMMAND_ADD);
+        h.get(OP_PIPE_COMMAND_ADD)?;
     }
-    if !h.is(OP_MASTER_TIMER) {
-        h.get(OP_EVENT_FREE);
-        return SW_ERR;
+    if !h.is(OP_MASTER_TIMER)? {
+        h.get(OP_EVENT_FREE)?;
+        return Ok(SW_ERR);
     }
     if !single && mode != MODE_THREAD {
-        h.get(OP_REACTOR_BARRIER);
+        h.get(OP_REACTOR_BARRIER)?;
     }
     if mode == MODE_PROCESS {
-        h.get(OP_MANAGER_BARRIER);
+        h.get(OP_MANAGER_BARRIER)?;
     }
-    h.get(OP_SET_MASTER_PID);
-    h.get(OP_MASTER_START);
+    h.get(OP_SET_MASTER_PID)?;
+    h.get(OP_MASTER_START)?;
     h.signed(OP_EVENT_WAIT)
 }
 
 /// `Server::store_listen_socket`: each listen socket in the connection list.
-pub(crate) fn store_listen_socket<H: Host>(h: &mut H) {
-    for port in 0..h.get(OP_PORT_COUNT) {
-        let fd = h.op(OP_STORE_LISTEN, port);
+pub(crate) fn store_listen_socket<H: Host>(h: &mut H) -> crate::Effect<()> {
+    for port in 0..h.get(OP_PORT_COUNT)? {
+        let fd = h.op(OP_STORE_LISTEN, port)?;
         if fd.cast_signed() >= 0 {
-            h.op(OP_SET_MINFD, fd);
-            h.op(OP_SET_MAXFD, fd);
+            h.op(OP_SET_MINFD, fd)?;
+            h.op(OP_SET_MAXFD, fd)?;
         }
     }
+    Ok(())
 }
 
 /// `Server::destroy` once the factory exists. In process mode the reactor threads
 /// finish their write events before the factory shuts down.
-pub(crate) fn destroy<H: Host>(h: &mut H) {
-    h.get(TRACE_RELEASE);
-    h.get(OP_AFTER_SHUTDOWN);
-    let mode = h.get(OP_MODE);
+pub(crate) fn destroy<H: Host>(h: &mut H) -> crate::Effect<()> {
+    h.get(TRACE_RELEASE)?;
+    h.get(OP_AFTER_SHUTDOWN)?;
+    let mode = h.get(OP_MODE)?;
     if mode == MODE_PROCESS {
-        h.get(TRACE_REACTOR_THREADS);
-        h.get(OP_JOIN_REACTOR_THREADS);
+        h.get(TRACE_REACTOR_THREADS)?;
+        h.get(OP_JOIN_REACTOR_THREADS)?;
     }
-    if h.is(OP_IS_STARTED) {
-        h.get(OP_FACTORY_SHUTDOWN);
+    if h.is(OP_IS_STARTED)? {
+        h.get(OP_FACTORY_SHUTDOWN)?;
     }
-    for worker in 0..field(h, FIELD_WORKER_NUM) {
-        h.op(OP_DESTROY_WORKER, worker);
+    for worker in 0..field(h, FIELD_WORKER_NUM)? {
+        h.op(OP_DESTROY_WORKER, worker)?;
     }
-    h.get(OP_RELEASE_PIPE_BUFFERS);
-    for port in 0..h.get(OP_PORT_COUNT) {
-        h.op(OP_PORT_CLOSE, port);
+    h.get(OP_RELEASE_PIPE_BUFFERS)?;
+    for port in 0..h.get(OP_PORT_COUNT)? {
+        h.op(OP_PORT_CLOSE, port)?;
     }
-    h.get(OP_FREE_USER_WORKERS);
-    h.get(OP_MARK_SHUTDOWN);
-    h.get(OP_ON_SHUTDOWN);
-    h.get(OP_FREE_HOOKS);
-    h.op(OP_DESTROY_FACTORY, mode);
-    if field(h, FIELD_TASK_WORKER_NUM) > 0 {
-        h.get(TRACE_TASK_WORKERS);
-        h.get(OP_DESTROY_TASK_WORKERS);
+    h.get(OP_FREE_USER_WORKERS)?;
+    h.get(OP_MARK_SHUTDOWN)?;
+    h.get(OP_ON_SHUTDOWN)?;
+    h.get(OP_FREE_HOOKS)?;
+    h.op(OP_DESTROY_FACTORY, mode)?;
+    if field(h, FIELD_TASK_WORKER_NUM)? > 0 {
+        h.get(TRACE_TASK_WORKERS)?;
+        h.get(OP_DESTROY_TASK_WORKERS)?;
     }
-    h.get(OP_FREE_SERVER);
+    h.get(OP_FREE_SERVER)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -337,18 +342,18 @@ mod tests {
     }
 
     impl Host for Fields {
-        fn op(&mut self, op: u32, arg: u64) -> u64 {
-            let answer = self.script.op(op, arg);
-            match op {
+        fn op(&mut self, op: u32, arg: u64) -> crate::Effect<u64> {
+            let answer = self.script.op(op, arg)?;
+            Ok(match op {
                 OP_FIELD => self.fields[usize::try_from(arg).unwrap()],
                 OP_SET_FIELD => {
                     self.fields[usize::try_from(arg & 0xff).unwrap()] = arg >> 8;
                     0
                 }
                 _ => answer,
-            }
+            })
         }
-        fn state(&mut self) -> &crate::ServerState {
+        fn state(&mut self) -> crate::Effect<&crate::ServerState> {
             self.script.state()
         }
     }
@@ -390,7 +395,7 @@ mod tests {
                 (FIELD_TASK_WORKER_NUM, 0),
             ],
         );
-        assert_eq!(create(&mut s), SW_OK, "created");
+        assert_eq!(create(&mut s).unwrap(), SW_OK, "created");
         assert_eq!(s.script.called(LOG_REACTOR_NUM), 1, "too many reactors");
         assert_eq!(
             s.fields[FIELD_REACTOR_NUM as usize], 8,
@@ -407,7 +412,7 @@ mod tests {
                 (FIELD_TASK_WORKER_NUM, 5000),
             ],
         );
-        assert_eq!(create(&mut s), SW_OK, "created");
+        assert_eq!(create(&mut s).unwrap(), SW_OK, "created");
         assert_eq!(s.fields[FIELD_WORKER_NUM as usize], 4000, "workers bounded");
         assert_eq!(
             s.fields[FIELD_TASK_WORKER_NUM as usize], 4000,
@@ -430,7 +435,7 @@ mod tests {
                 (FIELD_REACTOR_NUM, 1),
             ],
         );
-        create(&mut s);
+        create(&mut s).unwrap();
         // (2 + 1) * 2 + 32 + fd 5
         assert_eq!(
             s.script.args(LOG_MAX_CONNECTION_MINIMUM),
@@ -447,7 +452,7 @@ mod tests {
     #[test]
     fn create_stops_at_the_first_failure() {
         let mut s = server(&[(OP_INIT_LOCAL_ADDRS, 1)], [(FIELD_WORKER_NUM, 1); 3]);
-        assert_eq!(create(&mut s), SW_ERR, "sessions");
+        assert_eq!(create(&mut s).unwrap(), SW_ERR, "sessions");
         assert_eq!(s.script.called(LOG_ALLOC_SESSIONS), 1, "warned");
         assert_eq!(s.script.called(OP_ALLOC_PORT_GS), 0, "stopped");
     }
@@ -469,7 +474,7 @@ mod tests {
                 (FIELD_TASK_IPC_MODE, TASK_IPC_STREAM),
             ],
         );
-        assert_eq!(create(&mut s), SW_OK, "created");
+        assert_eq!(create(&mut s).unwrap(), SW_OK, "created");
         assert_eq!(
             s.script.args(OP_TASK_POOL_CREATE),
             vec![IPC_SOCKET],
@@ -490,7 +495,7 @@ mod tests {
                 (FIELD_TASK_IPC_MODE, TASK_IPC_PREEMPTIVE),
             ],
         );
-        create(&mut s);
+        create(&mut s).unwrap();
         assert_eq!(
             s.script.args(OP_TASK_POOL_CREATE),
             vec![IPC_MSGQUEUE],
@@ -509,7 +514,7 @@ mod tests {
                 (FIELD_TASK_WORKER_NUM, 0),
             ],
         );
-        assert_eq!(start_check(&mut s), SW_OK, "no ports");
+        assert_eq!(start_check(&mut s).unwrap(), SW_OK, "no ports");
         assert_eq!(
             s.script.args(OP_CLEAR_CALLBACK),
             vec![0, 1, 2, 3],
@@ -526,7 +531,7 @@ mod tests {
             &[(OP_MODE, MODE_PROCESS), (OP_CALLBACK, 1)],
             [(FIELD_DISPATCH_MODE, 2); 3],
         );
-        start_check(&mut s);
+        start_check(&mut s).unwrap();
         assert_eq!(
             s.script.called(OP_CLEAR_CALLBACK) + s.script.called(OP_CLEAR_SEND_YIELD),
             0,
@@ -534,7 +539,11 @@ mod tests {
         );
 
         let mut s = server(&[(OP_MODE, MODE_BASE)], [(FIELD_TASK_WORKER_NUM, 1); 3]);
-        assert_eq!(start_check(&mut s), SW_ERR, "task workers need onTask");
+        assert_eq!(
+            start_check(&mut s).unwrap(),
+            SW_ERR,
+            "task workers need onTask"
+        );
         assert_eq!(s.script.called(OP_CLEAR_MAX_QUEUED), 1, "base mode");
         assert_eq!(
             s.script.args(LOG_CALLBACK_REQUIRED),
@@ -562,7 +571,7 @@ mod tests {
             ],
         )
         .with_queue(OP_PORT_IDLE, &[0, 30, 30, 7]);
-        assert_eq!(start_check(&mut s), SW_OK, "valid");
+        assert_eq!(start_check(&mut s).unwrap(), SW_OK, "valid");
         assert_eq!(
             s.script.args(OP_PORT_DEFAULT_IDLE),
             vec![0],
@@ -592,7 +601,7 @@ mod tests {
             &[(OP_PORT_COUNT, 1), (OP_PORT_DGRAM, 1)],
             [(FIELD_DISPATCH_MODE, 0); 3],
         );
-        assert_eq!(start_check(&mut s), SW_ERR, "UDP needs onPacket");
+        assert_eq!(start_check(&mut s).unwrap(), SW_ERR, "UDP needs onPacket");
         assert_eq!(
             s.script.args(LOG_CALLBACK_REQUIRED),
             vec![u64::from(CB_PACKET)],
@@ -618,7 +627,7 @@ mod tests {
             ],
             [(FIELD_REACTOR_NUM, 4); 3],
         );
-        assert_eq!(start_master_thread(&mut s), SW_OK, "loop ran");
+        assert_eq!(start_master_thread(&mut s).unwrap(), SW_OK, "loop ran");
         assert_eq!(
             s.script.args(OP_MASTER_THREAD),
             vec![4],
@@ -636,7 +645,7 @@ mod tests {
             &[(OP_MODE, MODE_BASE), (OP_SINGLE_THREAD, 1)],
             [(FIELD_REACTOR_NUM, 4); 3],
         );
-        assert_eq!(start_master_thread(&mut s), SW_ERR, "timer failed");
+        assert_eq!(start_master_thread(&mut s).unwrap(), SW_ERR, "timer failed");
         assert_eq!(s.script.called(OP_EVENT_FREE), 1, "event loop freed");
         assert_eq!(
             s.script.args(OP_MASTER_THREAD),
@@ -648,7 +657,7 @@ mod tests {
     #[test]
     fn listen_sockets_and_destroy() {
         let mut s = Script::with(&[(OP_PORT_COUNT, 2)]).queue(OP_STORE_LISTEN, &[3, u64::MAX]);
-        store_listen_socket(&mut s);
+        store_listen_socket(&mut s).unwrap();
         assert_eq!(s.args(OP_SET_MAXFD), vec![3], "valid fd only");
 
         let mut s = server(
@@ -663,7 +672,7 @@ mod tests {
                 (FIELD_REACTOR_NUM, 1),
             ],
         );
-        destroy(&mut s);
+        destroy(&mut s).unwrap();
         let order: Vec<u32> = s
             .script
             .log

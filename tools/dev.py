@@ -220,6 +220,9 @@ def plan(args, reports):
            *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']))
     script('abi', 'tests/modules/integration/test_bridge.py', *php_for('sockets'), '--hybrid', hybrid, '--reference', reference,
            *([] if integrate else ['--startup-only']))
+    script('server-native-faults', 'tests/modules/integration/server_faults.py',
+           '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+           *report('server-native-faults'))
     if integrate:
         script('api-surface', 'tools/capability_inventory.py', '--source', ROOT / 'target/upstream/src',
                *php_for('curl', 'sockets', 'tokenizer'), *engines, '--require-same-api', *report('api-surface'))

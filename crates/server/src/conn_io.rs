@@ -85,89 +85,89 @@ const KIND_CLOSE: u64 = 2;
 
 /// `ReactorThread_onRead`: finish a pending TLS (or DTLS) handshake, then let the
 /// port read, and pause reading while the workers hold too many of its bytes.
-pub(crate) fn read<H: Host>(h: &mut H, facts: u64) -> i64 {
+pub(crate) fn read<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
     // The server closed the connection (and the fd may be reused) before the event.
     if facts & FOUND == 0 {
-        return SW_OK;
+        return Ok(SW_OK);
     }
     let prequeue = facts & PREQUEUE != 0;
     if prequeue {
         if facts & CLOSE_NOTIFIED != 0 {
-            return SW_OK;
+            return Ok(SW_OK);
         }
         // Once a close is queued, a read only drives a TLS shutdown that wants one.
         if facts & CLOSE_QUEUED != 0 {
-            return if facts & SSL_WANT_READ != 0 {
-                let facts = h.get(OP_RD_WRITE_FACTS);
-                write(h, facts)
+            return Ok(if facts & SSL_WANT_READ != 0 {
+                let facts = h.get(OP_RD_WRITE_FACTS)?;
+                write(h, facts)?
             } else {
                 SW_OK
-            };
+            });
         }
     }
-    if facts & DTLS_PORT != 0 && h.is(OP_RD_DTLS) {
-        h.get(OP_RD_ABORT);
-        return SW_OK;
+    if facts & DTLS_PORT != 0 && h.is(OP_RD_DTLS)? {
+        h.get(OP_RD_ABORT)?;
+        return Ok(SW_OK);
     }
     let code = if facts & SSL_PENDING != 0 {
-        verify_ssl(h)
+        verify_ssl(h)?
     } else {
         SW_CONTINUE
     };
     match code {
         SW_ERROR => {
-            h.get(OP_RD_ABORT);
-            return SW_OK;
+            h.get(OP_RD_ABORT)?;
+            return Ok(SW_OK);
         }
-        SW_READY if facts & DTLS_SOCKET != 0 => return SW_OK,
-        SW_WAIT => return SW_OK,
+        SW_READY if facts & DTLS_SOCKET != 0 => return Ok(SW_OK),
+        SW_WAIT => return Ok(SW_OK),
         SW_READY | SW_CONTINUE => {}
         _ => std::process::abort(),
     }
-    let result = h.get(OP_RD_PORT_READ);
+    let result = h.get(OP_RD_PORT_READ)?;
     let retval = i64::from(low(result).cast_signed());
     if result & ACTIVE == 0 || prequeue && result & READ_NOTIFIED != 0 {
-        return retval;
+        return Ok(retval);
     }
     if facts & PROCESS != 0 && result & QUEUE_OVER != 0 {
-        h.op(OP_SET_WAITING_TIME, 1);
-        if h.is(OP_RESUME_TIMER) {
-            h.get(OP_RD_UNREAD);
+        h.op(OP_SET_WAITING_TIME, 1)?;
+        if h.is(OP_RESUME_TIMER)? {
+            h.get(OP_RD_UNREAD)?;
         }
     }
-    retval
+    Ok(retval)
 }
 
 /// `ReactorThread_onWrite`: notify a pending close, or flush the output buffer, then
 /// report the drained buffer and stop watching for writes once it is empty.
-pub(crate) fn write<H: Host>(h: &mut H, facts: u64) -> i64 {
+pub(crate) fn write<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
     if facts & FOUND == 0 {
-        return SW_ERR;
+        return Ok(SW_ERR);
     }
     if facts & CLOSE_NOTIFY != 0 {
         if facts & SSL_PENDING != 0 {
             return h.signed(OP_CLOSE);
         }
-        h.get(OP_WR_NOTIFY_CLOSE);
-        return SW_OK;
+        h.get(OP_WR_NOTIFY_CLOSE)?;
+        return Ok(SW_OK);
     } else if facts & DISABLE_NOTIFY != 0 && facts & CLOSE_FORCE != 0 {
         return h.signed(OP_CLOSE);
     }
     loop {
-        let ret = match h.get(OP_WR_FRONT) {
+        let ret = match h.get(OP_WR_FRONT)? {
             0 => break,
             front if front - 1 == KIND_CLOSE => return h.signed(OP_WR_CLOSE),
-            front if front - 1 == KIND_SENDFILE => h.signed(OP_WR_SENDFILE),
+            front if front - 1 == KIND_SENDFILE => h.signed(OP_WR_SENDFILE)?,
             _ => {
-                let ret = h.signed(OP_WR_SEND);
+                let ret = h.signed(OP_WR_SEND)?;
                 if ret == SW_OK {
-                    h.get(OP_WR_QUEUED);
+                    h.get(OP_WR_QUEUED)?;
                 }
                 ret
             }
         };
         if ret < 0 {
-            let wait = h.get(OP_WR_WAIT);
+            let wait = h.get(OP_WR_WAIT)?;
             if wait & CLOSE_WAIT != 0 {
                 return h.signed(OP_WR_CLOSE_ERRNO);
             } else if wait & SEND_WAIT != 0 {
@@ -175,21 +175,21 @@ pub(crate) fn write<H: Host>(h: &mut H, facts: u64) -> i64 {
             }
         }
     }
-    let state = h.get(OP_WR_STATE);
+    let state = h.get(OP_WR_STATE)?;
     if state & OVERFLOW_DRAINED != 0 {
-        h.get(OP_WR_CLEAR_OVERFLOW);
+        h.get(OP_WR_CLEAR_OVERFLOW)?;
     }
     if state & LOW_WATERMARK != 0 {
-        h.get(OP_WR_BUFFER_EMPTY);
+        h.get(OP_WR_BUFFER_EMPTY)?;
     }
     // onBufferEmpty may have written more.
-    let state = h.get(OP_WR_STATE);
+    let state = h.get(OP_WR_STATE)?;
     if state & SEND_TIMER != 0 {
         h.get(if state & OUT_EMPTY != 0 {
             OP_WR_TIMER_DEL
         } else {
             OP_WR_TIMER_DELAY
-        });
+        })?;
     }
     if state & (PEER_CLOSED | REMOVED) == 0 && state & OUT_EMPTY != 0 {
         // A notified close no longer reads: it only drains.
@@ -197,31 +197,31 @@ pub(crate) fn write<H: Host>(h: &mut H, facts: u64) -> i64 {
             OP_RT_REMOVE_WRITE
         } else {
             OP_WR_READ_ONLY
-        });
+        })?;
     }
-    SW_OK
+    Ok(SW_OK)
 }
 
 /// `ReactorThread_onClose`: the peer closed. Close now when nobody is told or a
 /// close is already queued, else mark the connection and notify the worker once.
-pub(crate) fn peer_close<H: Host>(h: &mut H, facts: u64) -> i64 {
+pub(crate) fn peer_close<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
     if facts & FOUND == 0 {
-        return SW_ERR;
+        return Ok(SW_ERR);
     }
     if facts & DISABLE_NOTIFY != 0 {
         return h.signed(OP_CLOSE);
     }
-    if h.signed(OP_REACTOR_DEL) != 0 {
-        return SW_ERR;
+    if h.signed(OP_REACTOR_DEL)? != 0 {
+        return Ok(SW_ERR);
     }
     if facts & CLOSE_QUEUED != 0 {
         return h.signed(OP_CLOSE);
     }
     if facts & CLOSE_NOTIFIED != 0 {
-        return SW_OK;
+        return Ok(SW_OK);
     }
-    h.op(OP_PC_NOTIFY, u64::from(peer_closed(facts)))
-        .cast_signed()
+    Ok(h.op(OP_PC_NOTIFY, u64::from(peer_closed(facts)))?
+        .cast_signed())
 }
 
 /// Whether the peer's FIN ends the connection. A synchronous process worker with
@@ -237,64 +237,64 @@ fn peer_closed(facts: u64) -> bool {
 
 /// `Server::close_connection`: release what the connection holds, count the close,
 /// clear its session and move the max fd down past it, then close the socket.
-pub(crate) fn close_connection<H: Host>(h: &mut H) -> i64 {
-    let facts = h.get(OP_CC_FACTS);
+pub(crate) fn close_connection<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    let facts = h.get(OP_CC_FACTS)?;
     let fd = i64::from(low(facts >> 32).cast_signed());
     if facts & TIMER != 0 {
-        h.get(OP_CC_TIMER_DEL);
+        h.get(OP_CC_TIMER_DEL)?;
     }
     let removed = facts & REMOVED != 0;
     // A TLS close notify that cannot be sent now goes behind the queued output.
     if facts & PREQUEUE != 0
         && facts & TLS_READY_STREAM != 0
         && facts & (PEER_CLOSED | CLOSE_FORCE | CLOSE_RESET | SSL_CLOSED) == 0
-        && !h.is(OP_CC_SSL_SHUTDOWN)
-        && h.is(OP_CC_SSL_WANT)
+        && !h.is(OP_CC_SSL_SHUTDOWN)?
+        && h.is(OP_CC_SSL_WANT)?
     {
         if facts & CLOSE_QUEUED == 0 {
-            h.get(OP_CC_QUEUE_CLOSE);
+            h.get(OP_CC_QUEUE_CLOSE)?;
         }
-        if h.op(OP_CC_WATCH_WRITE, u64::from(removed)).cast_signed() == SW_OK {
-            return SW_OK;
+        if h.op(OP_CC_WATCH_WRITE, u64::from(removed))?.cast_signed() == SW_OK {
+            return Ok(SW_OK);
         }
     }
     if facts & WEBSOCKET_BUFFER != 0 {
-        h.get(OP_CC_WEBSOCKET_FREE);
+        h.get(OP_CC_WEBSOCKET_FREE)?;
     }
-    if !removed && h.signed(OP_REACTOR_DEL) < 0 {
-        return SW_ERR;
+    if !removed && h.signed(OP_REACTOR_DEL)? < 0 {
+        return Ok(SW_ERR);
     }
-    h.op(OP_CC_COUNT, u64::from(facts & BASE != 0));
+    h.op(OP_CC_COUNT, u64::from(facts & BASE != 0))?;
     if facts & SOCKET_SSL != 0 {
-        h.get(OP_CC_SSL_CLOSE);
+        h.get(OP_CC_SSL_CLOSE)?;
     }
     if facts & DTLS_SOCKET != 0 {
-        h.get(OP_CC_DTLS_FREE);
+        h.get(OP_CC_DTLS_FREE)?;
     }
     if facts & RECV_BUFFER != 0 {
-        h.get(OP_CC_RECV_FREE);
+        h.get(OP_CC_RECV_FREE)?;
     }
-    if h.is(OP_CC_HTTP_OBJECT) {
-        h.get(OP_CC_HTTP_DESTROY);
+    if h.is(OP_CC_HTTP_OBJECT)? {
+        h.get(OP_CC_HTTP_DESTROY)?;
     }
-    if h.is(OP_CC_REDIS_OBJECT) {
-        h.get(OP_CC_REDIS_FREE);
+    if h.is(OP_CC_REDIS_OBJECT)? {
+        h.get(OP_CC_REDIS_FREE)?;
     }
-    if facts & LINGER != 0 && facts & (CLOSE_FORCE | CLOSE_RESET) != 0 && h.is(OP_CC_LINGER) {
-        h.get(LOG_CC_LINGER);
+    if facts & LINGER != 0 && facts & (CLOSE_FORCE | CLOSE_RESET) != 0 && h.is(OP_CC_LINGER)? {
+        h.get(LOG_CC_LINGER)?;
     }
-    h.get(OP_CC_SESSION_CLEAR);
+    h.get(OP_CC_SESSION_CLEAR)?;
     // The connection list's max fd, if it was this one.
-    h.get(OP_LOCK);
-    if fd == h.signed(OP_MAXFD) {
+    h.get(OP_LOCK)?;
+    if fd == h.signed(OP_MAXFD)? {
         let mut find = fd - 1;
-        h.op(TRACE_CC_MAXFD, find.cast_unsigned());
-        while h.op(OP_CC_VALID, find.cast_unsigned()) == 0 && find > h.signed(OP_MINFD) {
+        h.op(TRACE_CC_MAXFD, find.cast_unsigned())?;
+        while h.op(OP_CC_VALID, find.cast_unsigned())? == 0 && find > h.signed(OP_MINFD)? {
             find -= 1;
         }
-        h.op(OP_SET_MAXFD, find.cast_unsigned());
+        h.op(OP_SET_MAXFD, find.cast_unsigned())?;
     }
-    h.get(OP_UNLOCK);
+    h.get(OP_UNLOCK)?;
     h.signed(OP_CC_FINISH)
 }
 
@@ -308,7 +308,7 @@ mod tests {
 
     fn read_with(facts: u64, script: Script) -> (i64, Script) {
         let mut h = script;
-        let code = read(&mut h, facts);
+        let code = read(&mut h, facts).unwrap();
         (code, h)
     }
 
@@ -427,22 +427,22 @@ mod tests {
     fn write_flushes_then_reads_again() {
         let mut h = Script::with(&[(OP_WR_SEND, 0), (OP_WR_STATE, OUT_EMPTY | SEND_TIMER)])
             .queue(OP_WR_FRONT, &[1, 1, 0]);
-        assert_eq!(write(&mut h, FOUND), SW_OK);
+        assert_eq!(write(&mut h, FOUND).unwrap(), SW_OK);
         assert_eq!((h.called(OP_WR_SEND), h.called(OP_WR_QUEUED)), (2, 2));
         assert_eq!(h.called(OP_WR_TIMER_DEL), 1);
         assert_eq!(h.called(OP_WR_READ_ONLY), 1);
         let mut h = Script::with(&[(OP_WR_STATE, OUT_EMPTY)]);
-        write(&mut h, FOUND | PREQUEUE);
+        write(&mut h, FOUND | PREQUEUE).unwrap();
         assert_eq!(
             (h.called(OP_RT_REMOVE_WRITE), h.called(OP_WR_READ_ONLY)),
             (1, 0),
             "drains only"
         );
         let mut h = Script::with(&[(OP_WR_STATE, OUT_EMPTY | PEER_CLOSED)]);
-        write(&mut h, FOUND);
+        write(&mut h, FOUND).unwrap();
         assert_eq!(h.called(OP_WR_READ_ONLY), 0);
         let mut h = Script::with(&[(OP_WR_STATE, SEND_TIMER | OVERFLOW_DRAINED | LOW_WATERMARK)]);
-        write(&mut h, FOUND);
+        write(&mut h, FOUND).unwrap();
         assert_eq!(h.called(OP_WR_TIMER_DELAY), 1);
         assert_eq!(
             (h.called(OP_WR_CLEAR_OVERFLOW), h.called(OP_WR_BUFFER_EMPTY)),
@@ -454,58 +454,58 @@ mod tests {
     #[test]
     fn write_stops_at_a_close_or_a_full_socket() {
         let mut h = Script::with(&[(OP_WR_FRONT, 1 + KIND_CLOSE), (OP_WR_CLOSE, 7)]);
-        assert_eq!(write(&mut h, FOUND), 7);
+        assert_eq!(write(&mut h, FOUND).unwrap(), 7);
         let mut h = Script::with(&[
             (OP_WR_FRONT, 1 + KIND_SENDFILE),
             (OP_WR_SENDFILE, u64::MAX),
             (OP_WR_WAIT, CLOSE_WAIT),
             (OP_WR_CLOSE_ERRNO, 3),
         ]);
-        assert_eq!(write(&mut h, FOUND), 3);
+        assert_eq!(write(&mut h, FOUND).unwrap(), 3);
         let mut h = Script::with(&[
             (OP_WR_FRONT, 1),
             (OP_WR_SEND, u64::MAX),
             (OP_WR_WAIT, SEND_WAIT),
         ]);
-        assert_eq!(write(&mut h, FOUND), SW_OK);
+        assert_eq!(write(&mut h, FOUND).unwrap(), SW_OK);
         assert_eq!((h.called(OP_WR_QUEUED), h.called(OP_WR_STATE)), (0, 2));
         let mut h = Script::default();
-        assert_eq!(write(&mut h, 0), SW_ERR);
+        assert_eq!(write(&mut h, 0).unwrap(), SW_ERR);
     }
 
     #[test]
     fn write_notifies_or_closes_a_pending_close() {
         let mut h = Script::default();
-        assert_eq!(write(&mut h, FOUND | CLOSE_NOTIFY), SW_OK);
+        assert_eq!(write(&mut h, FOUND | CLOSE_NOTIFY).unwrap(), SW_OK);
         assert_eq!(
             (h.called(OP_WR_NOTIFY_CLOSE), h.called(OP_WR_FRONT)),
             (1, 0)
         );
         let mut h = Script::default();
-        write(&mut h, FOUND | CLOSE_NOTIFY | SSL_PENDING);
+        write(&mut h, FOUND | CLOSE_NOTIFY | SSL_PENDING).unwrap();
         assert_eq!(h.called(OP_CLOSE), 1, "closed during the handshake");
         let mut h = Script::default();
-        write(&mut h, FOUND | DISABLE_NOTIFY | CLOSE_FORCE);
+        write(&mut h, FOUND | DISABLE_NOTIFY | CLOSE_FORCE).unwrap();
         assert_eq!((h.called(OP_CLOSE), h.called(OP_WR_FRONT)), (1, 0));
     }
 
     #[test]
     fn peer_close_notifies_once() {
         let mut h = Script::with(&[(OP_PC_NOTIFY, 1)]);
-        assert_eq!(peer_close(&mut h, FOUND), 1);
+        assert_eq!(peer_close(&mut h, FOUND).unwrap(), 1);
         assert_eq!(h.args(OP_PC_NOTIFY), vec![1], "peer closed");
         let mut h = Script::default();
-        assert_eq!(peer_close(&mut h, FOUND | CLOSE_NOTIFIED), SW_OK);
+        assert_eq!(peer_close(&mut h, FOUND | CLOSE_NOTIFIED).unwrap(), SW_OK);
         assert_eq!(h.called(OP_PC_NOTIFY), 0);
         let mut h = Script::with(&[(OP_REACTOR_DEL, u64::MAX)]);
-        assert_eq!(peer_close(&mut h, FOUND), SW_ERR);
+        assert_eq!(peer_close(&mut h, FOUND).unwrap(), SW_ERR);
         let mut h = Script::default();
-        peer_close(&mut h, FOUND | CLOSE_QUEUED);
+        peer_close(&mut h, FOUND | CLOSE_QUEUED).unwrap();
         assert_eq!((h.called(OP_CLOSE), h.called(OP_REACTOR_DEL)), (1, 1));
         let mut h = Script::default();
-        peer_close(&mut h, FOUND | DISABLE_NOTIFY);
+        peer_close(&mut h, FOUND | DISABLE_NOTIFY).unwrap();
         assert_eq!((h.called(OP_CLOSE), h.called(OP_REACTOR_DEL)), (1, 0));
-        assert_eq!(peer_close(&mut Script::default(), 0), SW_ERR);
+        assert_eq!(peer_close(&mut Script::default(), 0).unwrap(), SW_ERR);
     }
 
     #[test]
@@ -541,7 +541,7 @@ mod tests {
             (OP_CC_FINISH, 0),
         ])
         .queue(OP_CC_VALID, &[0, 0, 1]);
-        assert_eq!(close_connection(&mut h), SW_OK);
+        assert_eq!(close_connection(&mut h).unwrap(), SW_OK);
         for op in [
             OP_CC_TIMER_DEL,
             OP_CC_WEBSOCKET_FREE,
@@ -566,13 +566,13 @@ mod tests {
             (OP_MAXFD, 12),
             (OP_CC_LINGER, 1),
         ]);
-        close_connection(&mut h);
+        close_connection(&mut h).unwrap();
         assert_eq!((h.called(OP_REACTOR_DEL), h.called(LOG_CC_LINGER)), (0, 1));
         assert_eq!(h.called(OP_SET_MAXFD), 0, "not the max fd");
         assert_eq!(h.args(OP_CC_COUNT), vec![0]);
 
         let mut h = Script::with(&[(OP_CC_FACTS, fd), (OP_REACTOR_DEL, u64::MAX)]);
-        assert_eq!(close_connection(&mut h), SW_ERR);
+        assert_eq!(close_connection(&mut h).unwrap(), SW_ERR);
         assert_eq!(h.called(OP_CC_FINISH), 0);
     }
 
@@ -580,7 +580,7 @@ mod tests {
     fn prequeue_close_queues_a_tls_close_notify() {
         let tls = PREQUEUE | TLS_READY_STREAM;
         let mut h = Script::with(&[(OP_CC_FACTS, tls), (OP_CC_SSL_WANT, 1)]);
-        assert_eq!(close_connection(&mut h), SW_OK);
+        assert_eq!(close_connection(&mut h).unwrap(), SW_OK);
         assert_eq!(
             (h.called(OP_CC_QUEUE_CLOSE), h.args(OP_CC_WATCH_WRITE)),
             (1, vec![0])
@@ -590,7 +590,7 @@ mod tests {
             (OP_CC_FACTS, tls | CLOSE_QUEUED | REMOVED),
             (OP_CC_SSL_WANT, 1),
         ]);
-        close_connection(&mut h);
+        close_connection(&mut h).unwrap();
         assert_eq!(
             (h.called(OP_CC_QUEUE_CLOSE), h.args(OP_CC_WATCH_WRITE)),
             (0, vec![1])
@@ -600,10 +600,10 @@ mod tests {
             (OP_CC_SSL_WANT, 1),
             (OP_CC_WATCH_WRITE, u64::MAX),
         ]);
-        close_connection(&mut h);
+        close_connection(&mut h).unwrap();
         assert_eq!(h.called(OP_CC_FINISH), 1, "could not watch: close now");
         let mut h = Script::with(&[(OP_CC_FACTS, tls), (OP_CC_SSL_SHUTDOWN, 1)]);
-        close_connection(&mut h);
+        close_connection(&mut h).unwrap();
         assert_eq!(
             (h.called(OP_CC_SSL_WANT), h.called(OP_CC_FINISH)),
             (0, 1),
@@ -611,7 +611,7 @@ mod tests {
         );
         for terminal in [PEER_CLOSED, CLOSE_FORCE, CLOSE_RESET, SSL_CLOSED, PREQUEUE] {
             let mut h = Script::with(&[(OP_CC_FACTS, tls ^ terminal), (OP_CC_SSL_WANT, 1)]);
-            close_connection(&mut h);
+            close_connection(&mut h).unwrap();
             assert_eq!(h.called(OP_CC_SSL_SHUTDOWN), 0);
         }
     }

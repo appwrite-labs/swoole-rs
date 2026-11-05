@@ -141,65 +141,67 @@ pub unsafe extern "C" fn swr_v1_server_startup_error(
     })
 }
 
-fn field<H: Host>(h: &mut H, id: u32) -> u64 {
+fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
     h.op(OP_FIELD, u64::from(id))
 }
 
-fn worker_count<H: Host>(h: &mut H) -> u64 {
+fn worker_count<H: Host>(h: &mut H) -> crate::Effect<u64> {
     field(h, FIELD_WORKER_NUM)
 }
 
 /// `get_lowest_load_worker_id` (`OP_WORKER_COROUTINES`) and
 /// `get_lowest_concurrent_worker_id` (`OP_WORKER_CONCURRENCY`): the first worker
 /// with the fewest.
-pub(crate) fn lowest<H: Host>(h: &mut H, metric: u32) -> i64 {
-    let workers = worker_count(h);
+pub(crate) fn lowest<H: Host>(h: &mut H, metric: u32) -> crate::Effect<i64> {
+    let workers = worker_count(h)?;
     let mut lowest = 0;
-    let mut min = h.op(metric, 0);
+    let mut min = h.op(metric, 0)?;
     for id in 1..workers {
-        let value = h.op(metric, id);
+        let value = h.op(metric, id)?;
         if value < min {
             min = value;
             lowest = id;
         }
     }
-    lowest.cast_signed()
+    Ok(lowest.cast_signed())
 }
 
 /// `get_idle_worker_id`: up to `worker_num + 1` round-robin tries for an idle worker,
 /// else the last one tried, with the scheduler warning raised.
-pub(crate) fn idle_worker<H: Host>(h: &mut H) -> i64 {
-    let workers = u32::try_from(worker_count(h)).unwrap_or(u32::MAX).max(1);
+pub(crate) fn idle_worker<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    let workers = u32::try_from(worker_count(h)?).unwrap_or(u32::MAX).max(1);
     let mut key = 0;
     let mut found = false;
     for _ in 0..=workers {
-        key = h.state().next_round() % workers;
-        if h.op(OP_WORKER_IDLE, u64::from(key)) != 0 {
+        key = h.state()?.next_round() % workers;
+        if h.op(OP_WORKER_IDLE, u64::from(key))? != 0 {
             found = true;
             break;
         }
     }
     if !found {
-        h.get(OP_SET_WARNING);
+        h.get(OP_SET_WARNING)?;
     }
-    let round = h.state().round.load(Ordering::SeqCst);
-    h.op(TRACE_ST_SCHEDULE, u64::from(key) | (u64::from(round) << 32));
-    i64::from(key)
+    let round = h.state()?.round.load(Ordering::SeqCst);
+    h.op(TRACE_ST_SCHEDULE, u64::from(key) | (u64::from(round) << 32))?;
+    Ok(i64::from(key))
 }
 
 /// `Server::add_command`: before start, a new name, and (outside base mode) a command
 /// pipe; the command gets the next id.
-fn add_command<H: Host>(h: &mut H) -> bool {
-    if h.is(OP_IS_STARTED) || h.is(OP_ST_CMD_EXISTS) {
-        return false;
+fn add_command<H: Host>(h: &mut H) -> crate::Effect<bool> {
+    if h.is(OP_IS_STARTED)? || h.is(OP_ST_CMD_EXISTS)? {
+        return Ok(false);
     }
-    if h.get(OP_MODE) != MODE_BASE && !h.is(OP_RT_HAS_PIPE_COMMAND) && !h.is(OP_ST_PIPE_COMMAND_NEW)
+    if h.get(OP_MODE)? != MODE_BASE
+        && !h.is(OP_RT_HAS_PIPE_COMMAND)?
+        && !h.is(OP_ST_PIPE_COMMAND_NEW)?
     {
-        return false;
+        return Ok(false);
     }
-    let id = h.state().next_command.fetch_add(1, Ordering::SeqCst);
-    h.op(OP_ST_CMD_ADD, u64::from(id.cast_unsigned()));
-    true
+    let id = h.state()?.next_command.fetch_add(1, Ordering::SeqCst);
+    h.op(OP_ST_CMD_ADD, u64::from(id.cast_unsigned()))?;
+    Ok(true)
 }
 
 /// `SocketType`.
@@ -209,42 +211,42 @@ const SOCK_UDP6: u64 = 4;
 /// `Server::accept_dtls_connection`: a socket bound to the port and connected to the
 /// peer, registered as a connection with a DTLS session; on failure everything made
 /// is undone.
-fn accept_dtls<H: Host>(h: &mut H) -> bool {
-    if !h.is(OP_ST_DTLS_SOCKET) {
-        return false;
+fn accept_dtls<H: Host>(h: &mut H) -> crate::Effect<bool> {
+    if !h.is(OP_ST_DTLS_SOCKET)? {
+        return Ok(false);
     }
-    if !matches!(h.get(OP_ST_DTLS_TYPE), SOCK_UDP | SOCK_UDP6) {
-        h.get(OP_ST_DTLS_ASSERT);
+    if !matches!(h.get(OP_ST_DTLS_TYPE)?, SOCK_UDP | SOCK_UDP6) {
+        h.get(OP_ST_DTLS_ASSERT)?;
     }
     let mut added = false;
     let ok = 'setup: {
-        if !h.is(OP_ST_DTLS_BIND) {
-            h.get(LOG_ST_DTLS_BIND);
+        if !h.is(OP_ST_DTLS_BIND)? {
+            h.get(LOG_ST_DTLS_BIND)?;
             break 'setup false;
         }
-        h.get(OP_ST_DTLS_V6ONLY);
-        if !h.is(OP_ST_DTLS_CONNECT) {
-            h.get(LOG_ST_DTLS_CONNECT);
+        h.get(OP_ST_DTLS_V6ONLY)?;
+        if !h.is(OP_ST_DTLS_CONNECT)? {
+            h.get(LOG_ST_DTLS_CONNECT)?;
             break 'setup false;
         }
-        h.get(OP_ST_DTLS_PEER);
-        if !h.is(OP_ST_DTLS_ADD) {
+        h.get(OP_ST_DTLS_PEER)?;
+        if !h.is(OP_ST_DTLS_ADD)? {
             break 'setup false;
         }
         added = true;
-        h.is(OP_ST_DTLS_SESSION)
+        h.is(OP_ST_DTLS_SESSION)?
     };
     if !ok {
-        h.op(OP_ST_DTLS_CLEANUP, u64::from(added));
+        h.op(OP_ST_DTLS_CLEANUP, u64::from(added))?;
     }
-    ok
+    Ok(ok)
 }
 
 /// `Server::set_document_root(path)`: the path's real path, if it exists.
-fn document_root<H: Host>(h: &mut H, path: &[u8]) -> bool {
+fn document_root<H: Host>(h: &mut H, path: &[u8]) -> crate::Effect<bool> {
     if path.len() > usize::try_from(libc::PATH_MAX).unwrap_or(usize::MAX) {
-        h.get(LOG_ST_ROOT_TOO_LONG);
-        return false;
+        h.get(LOG_ST_ROOT_TOO_LONG)?;
+        return Ok(false);
     }
     // `realpath` reads the path up to its first NUL.
     let end = path
@@ -260,25 +262,26 @@ fn document_root<H: Host>(h: &mut H, path: &[u8]) -> bool {
         CString::new(real.into_os_string().into_vec()).ok()
     });
     let Some(real) = real else {
-        h.get(LOG_ST_ROOT_MISSING);
-        return false;
+        h.get(LOG_ST_ROOT_MISSING)?;
+        return Ok(false);
     };
-    h.op(OP_ST_SET_ROOT, real.as_ptr().expose_provenance() as u64);
-    true
+    h.op(OP_ST_SET_ROOT, real.as_ptr().expose_provenance() as u64)?;
+    Ok(true)
 }
 
 /// `Server::store_pipe_fd`: both ends of a worker pipe map to the pipe, and the
 /// highest fd grows to cover them.
-fn store_pipe_fd<H: Host>(h: &mut H) {
-    let master = h.signed(OP_ST_PIPE_FD);
-    let worker = h.op(OP_ST_PIPE_FD, 1).cast_signed();
-    h.op(OP_ST_PIPE_BIND, master.cast_unsigned());
-    h.op(OP_ST_PIPE_BIND, worker.cast_unsigned());
+fn store_pipe_fd<H: Host>(h: &mut H) -> crate::Effect<()> {
+    let master = h.signed(OP_ST_PIPE_FD)?;
+    let worker = h.op(OP_ST_PIPE_FD, 1)?.cast_signed();
+    h.op(OP_ST_PIPE_BIND, master.cast_unsigned())?;
+    h.op(OP_ST_PIPE_BIND, worker.cast_unsigned())?;
     for fd in [master, worker] {
-        if fd > h.signed(OP_MAXFD) {
-            h.op(OP_SET_MAXFD, fd.cast_unsigned());
+        if fd > h.signed(OP_MAXFD)? {
+            h.op(OP_SET_MAXFD, fd.cast_unsigned())?;
         }
     }
+    Ok(())
 }
 
 /// `Server::TASK_IPC_UNIXSOCK`.
@@ -286,120 +289,125 @@ const TASK_IPC_UNIXSOCK: u64 = 1;
 
 /// `Server::init_pipe_sockets`: the pipes of every event worker, and of the task
 /// workers when they talk over unix sockets.
-fn init_pipe_sockets<H: Host>(h: &mut H) {
-    let workers = worker_count(h);
-    let total = workers + field(h, FIELD_TASK_WORKER_NUM);
-    let task_pipes = field(h, FIELD_TASK_IPC_MODE) == TASK_IPC_UNIXSOCK;
+fn init_pipe_sockets<H: Host>(h: &mut H) -> crate::Effect<()> {
+    let workers = worker_count(h)?;
+    let total = workers + field(h, FIELD_TASK_WORKER_NUM)?;
+    let task_pipes = field(h, FIELD_TASK_IPC_MODE)? == TASK_IPC_UNIXSOCK;
     for id in 0..total {
         if id >= workers && !task_pipes {
             continue;
         }
-        h.op(OP_ST_INIT_PIPE, id);
+        h.op(OP_ST_INIT_PIPE, id)?;
     }
+    Ok(())
 }
 
 /// `Server::reset_worker_counter`: the worker's concurrency leaves the server's (never
 /// below 0) and its counters restart.
-fn reset_worker_counter<H: Host>(h: &mut H) {
-    let value = h.get(OP_ST_W_CONCURRENCY);
-    if value > 0 && h.op(OP_ST_W_CONCURRENCY_CAS, value) == value {
-        h.op(OP_ST_GS_CONCURRENCY_SUB, value);
-        let now = u32::try_from(h.get(OP_ST_GS_CONCURRENCY) & 0xffff_ffff).unwrap_or(0);
+fn reset_worker_counter<H: Host>(h: &mut H) -> crate::Effect<()> {
+    let value = h.get(OP_ST_W_CONCURRENCY)?;
+    if value > 0 && h.op(OP_ST_W_CONCURRENCY_CAS, value)? == value {
+        h.op(OP_ST_GS_CONCURRENCY_SUB, value)?;
+        let now = u32::try_from(h.get(OP_ST_GS_CONCURRENCY)? & 0xffff_ffff).unwrap_or(0);
         if now.cast_signed() < 0 {
-            h.get(OP_ST_GS_CONCURRENCY_ZERO);
+            h.get(OP_ST_GS_CONCURRENCY_ZERO)?;
         }
     }
-    h.get(OP_ST_W_RESET_COUNTS);
+    h.get(OP_ST_W_RESET_COUNTS)?;
+    Ok(())
 }
 
 /// `Server::abort_connection`: counted, then closed through the reactor when it is
 /// a connection, else freed.
-fn abort_connection<H: Host>(h: &mut H) {
-    h.get(OP_ST_ABORT_COUNT);
-    if h.is(OP_ST_SOCK_OBJECT) {
-        h.get(OP_ST_REACTOR_CLOSE);
+fn abort_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
+    h.get(OP_ST_ABORT_COUNT)?;
+    if h.is(OP_ST_SOCK_OBJECT)? {
+        h.get(OP_ST_REACTOR_CLOSE)?;
     } else {
-        h.get(OP_ST_SOCK_FREE);
+        h.get(OP_ST_SOCK_FREE)?;
     }
+    Ok(())
 }
 
 /// `Server::foreach_connection`: each valid connection from the lowest to the highest fd.
-fn foreach_connection<H: Host>(h: &mut H) {
-    let (min, max) = (h.signed(OP_MINFD), h.signed(OP_MAXFD));
+fn foreach_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
+    let (min, max) = (h.signed(OP_MINFD)?, h.signed(OP_MAXFD)?);
     for fd in min..=max {
-        if h.op(OP_ST_VALID_CONN, fd.cast_unsigned()) != 0 {
-            h.op(OP_ST_VISIT, fd.cast_unsigned());
+        if h.op(OP_ST_VALID_CONN, fd.cast_unsigned())? != 0 {
+            h.op(OP_ST_VISIT, fd.cast_unsigned())?;
         }
     }
+    Ok(())
 }
 
 /// `Server::send`: through the factory, then the server's, port's and worker's counts.
-fn send<H: Host>(h: &mut H) -> bool {
-    if !h.is(OP_ST_FINISH) {
-        return false;
+fn send<H: Host>(h: &mut H) -> crate::Effect<bool> {
+    if !h.is(OP_ST_FINISH)? {
+        return Ok(false);
     }
-    h.get(OP_ST_COUNT_SEND);
-    true
+    h.get(OP_ST_COUNT_SEND)?;
+    Ok(true)
 }
 
 /// `master_timer`, `heartbeat_timer`, `enable_accept_timer`.
 const TIMERS: u64 = 3;
 
 /// `Server::clear_timer`: each armed timer is deleted and forgotten.
-pub(crate) fn clear_timer<H: Host>(h: &mut H) {
+pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
     for timer in 0..TIMERS {
-        if h.op(OP_ST_TIMER, timer) != 0 {
-            h.op(OP_ST_TIMER_DEL, timer);
+        if h.op(OP_ST_TIMER, timer)? != 0 {
+            h.op(OP_ST_TIMER_DEL, timer)?;
         }
     }
+    Ok(())
 }
 
 /// The operations of `swr_v1_server_run` this module runs.
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> Option<i64> {
+pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
         RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT,
         RUN_ST_DTLS_ACCEPT, RUN_ST_FOREACH, RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_RESET_COUNTER,
         RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
     };
-    Some(match operation {
-        RUN_ST_ADD_COMMAND => i64::from(add_command(h)),
-        RUN_ST_DTLS_ACCEPT => i64::from(accept_dtls(h)),
+    Ok(Some(match operation {
+        RUN_ST_ADD_COMMAND => i64::from(add_command(h)?),
+        RUN_ST_DTLS_ACCEPT => i64::from(accept_dtls(h)?),
         RUN_ST_DOCUMENT_ROOT => {
-            let address = usize::try_from(h.get(OP_ST_ROOT_PATH)).unwrap_or(0);
+            let address = usize::try_from(h.get(OP_ST_ROOT_PATH)?).unwrap_or(0);
             let len = usize::try_from(arg).unwrap_or(0);
             // SAFETY: native passes the path's `len` bytes, live for the call.
             let path = unsafe {
                 core::slice::from_raw_parts(core::ptr::with_exposed_provenance::<u8>(address), len)
             };
-            i64::from(document_root(h, path))
+            i64::from(document_root(h, path)?)
         }
         RUN_ST_STORE_PIPE_FD => {
-            store_pipe_fd(h);
+            store_pipe_fd(h)?;
             0
         }
         RUN_ST_INIT_PIPE_SOCKETS => {
-            init_pipe_sockets(h);
+            init_pipe_sockets(h)?;
             0
         }
         RUN_ST_RESET_COUNTER => {
-            reset_worker_counter(h);
+            reset_worker_counter(h)?;
             0
         }
         RUN_ST_ABORT => {
-            abort_connection(h);
+            abort_connection(h)?;
             0
         }
         RUN_ST_FOREACH => {
-            foreach_connection(h);
+            foreach_connection(h)?;
             0
         }
-        RUN_ST_SEND => i64::from(send(h)),
+        RUN_ST_SEND => i64::from(send(h)?),
         RUN_ST_CLEAR_TIMER => {
-            clear_timer(h);
+            clear_timer(h)?;
             0
         }
-        _ => return None,
-    })
+        _ => return Ok(None),
+    }))
 }
 
 #[cfg(test)]
@@ -415,16 +423,20 @@ mod tests {
     #[test]
     fn lowest_takes_the_first_minimum() {
         let mut s = workers(4).queue(OP_WORKER_COROUTINES, &[5, 3, 3, 9]);
-        assert_eq!(lowest(&mut s, OP_WORKER_COROUTINES), 1);
+        assert_eq!(lowest(&mut s, OP_WORKER_COROUTINES).unwrap(), 1);
         assert_eq!(s.args(OP_WORKER_COROUTINES), vec![0, 1, 2, 3]);
         let mut s = workers(1);
-        assert_eq!(lowest(&mut s, OP_WORKER_CONCURRENCY), 0, "a single worker");
+        assert_eq!(
+            lowest(&mut s, OP_WORKER_CONCURRENCY).unwrap(),
+            0,
+            "a single worker"
+        );
     }
 
     #[test]
     fn idle_worker_tries_round_robin_then_warns() {
         let mut s = workers(3).queue(OP_WORKER_IDLE, &[0, 1]);
-        assert_eq!(idle_worker(&mut s), 1);
+        assert_eq!(idle_worker(&mut s).unwrap(), 1);
         assert_eq!(s.args(OP_WORKER_IDLE), vec![0, 1]);
         assert_eq!(s.called(OP_SET_WARNING), 0);
         // The round counter continues where the last schedule left it.
@@ -432,7 +444,7 @@ mod tests {
         busy.state = ServerState::new();
         busy.state.round.store(2, Ordering::SeqCst);
         assert_eq!(
-            idle_worker(&mut busy),
+            idle_worker(&mut busy).unwrap(),
             2,
             "the last of worker_num + 1 tries"
         );
@@ -444,21 +456,21 @@ mod tests {
     #[test]
     fn commands_need_a_pipe_outside_base_mode() {
         let mut base = Script::with(&[(OP_MODE, MODE_BASE)]);
-        assert!(add_command(&mut base));
-        assert!(add_command(&mut base));
+        assert!(add_command(&mut base).unwrap());
+        assert!(add_command(&mut base).unwrap());
         assert_eq!(base.args(OP_ST_CMD_ADD), vec![1, 2], "ids count from 1");
         assert_eq!(base.called(OP_ST_PIPE_COMMAND_NEW), 0);
 
         let mut process = Script::with(&[(OP_MODE, MODE_PROCESS)]);
-        assert!(!add_command(&mut process), "the pipe failed");
+        assert!(!add_command(&mut process).unwrap(), "the pipe failed");
         assert_eq!(process.called(OP_ST_CMD_ADD), 0);
         let mut process = Script::with(&[(OP_MODE, MODE_PROCESS), (OP_RT_HAS_PIPE_COMMAND, 1)]);
-        assert!(add_command(&mut process));
+        assert!(add_command(&mut process).unwrap());
         assert_eq!(process.called(OP_ST_PIPE_COMMAND_NEW), 0, "made once");
 
         for refused in [OP_IS_STARTED, OP_ST_CMD_EXISTS] {
             let mut s = Script::with(&[(OP_MODE, MODE_BASE), (refused, 1)]);
-            assert!(!add_command(&mut s));
+            assert!(!add_command(&mut s).unwrap());
             assert_eq!(s.called(OP_ST_CMD_ADD), 0);
         }
     }
@@ -474,20 +486,20 @@ mod tests {
             (OP_ST_DTLS_SESSION, 1),
         ];
         let mut s = Script::with(&ok);
-        assert!(accept_dtls(&mut s));
+        assert!(accept_dtls(&mut s).unwrap());
         assert_eq!(s.called(OP_ST_DTLS_CLEANUP), 0);
         assert_eq!(s.called(OP_ST_DTLS_ASSERT), 0);
 
         let mut s = Script::with(&ok);
         s.facts.insert(OP_ST_DTLS_BIND, 0);
-        assert!(!accept_dtls(&mut s));
+        assert!(!accept_dtls(&mut s).unwrap());
         assert_eq!(s.called(LOG_ST_DTLS_BIND), 1);
         assert_eq!(s.called(OP_ST_DTLS_CONNECT), 0);
         assert_eq!(s.args(OP_ST_DTLS_CLEANUP), vec![0]);
 
         let mut s = Script::with(&ok);
         s.facts.insert(OP_ST_DTLS_SESSION, 0);
-        assert!(!accept_dtls(&mut s));
+        assert!(!accept_dtls(&mut s).unwrap());
         assert_eq!(
             s.args(OP_ST_DTLS_CLEANUP),
             vec![1],
@@ -496,39 +508,39 @@ mod tests {
 
         let mut s = Script::with(&ok);
         s.facts.insert(OP_ST_DTLS_CONNECT, 0);
-        assert!(!accept_dtls(&mut s));
+        assert!(!accept_dtls(&mut s).unwrap());
         assert_eq!(s.called(LOG_ST_DTLS_CONNECT), 1);
         assert_eq!(s.args(OP_ST_DTLS_CLEANUP), vec![0]);
 
         let mut s = Script::with(&ok);
         s.facts.insert(OP_ST_DTLS_TYPE, 1);
-        accept_dtls(&mut s);
+        accept_dtls(&mut s).unwrap();
         assert_eq!(s.called(OP_ST_DTLS_ASSERT), 1, "only UDP ports");
 
         let mut s = Script::default();
-        assert!(!accept_dtls(&mut s));
+        assert!(!accept_dtls(&mut s).unwrap());
         assert_eq!(s.called(OP_ST_DTLS_CLEANUP), 0, "no socket to free");
     }
 
     #[test]
     fn document_root_is_the_real_path() {
         let mut s = Script::default();
-        assert!(document_root(&mut s, b"/"));
+        assert!(document_root(&mut s, b"/").unwrap());
         assert_eq!(s.called(OP_ST_SET_ROOT), 1);
         let mut s = Script::default();
-        assert!(!document_root(&mut s, b"/does/not/exist/swoole-rs"));
+        assert!(!document_root(&mut s, b"/does/not/exist/swoole-rs").unwrap());
         assert_eq!(s.called(LOG_ST_ROOT_MISSING), 1);
         assert_eq!(s.called(OP_ST_SET_ROOT), 0);
         let long = vec![b'a'; usize::try_from(libc::PATH_MAX).unwrap() + 1];
         let mut s = Script::default();
-        assert!(!document_root(&mut s, &long));
+        assert!(!document_root(&mut s, &long).unwrap());
         assert_eq!(s.called(LOG_ST_ROOT_TOO_LONG), 1);
     }
 
     #[test]
     fn pipe_fds_raise_the_highest_fd() {
         let mut s = Script::with(&[(OP_MAXFD, 7)]).queue(OP_ST_PIPE_FD, &[5, 9]);
-        store_pipe_fd(&mut s);
+        store_pipe_fd(&mut s).unwrap();
         assert_eq!(s.args(OP_ST_PIPE_FD), vec![0, 1]);
         assert_eq!(s.args(OP_ST_PIPE_BIND), vec![5, 9]);
         assert_eq!(s.args(OP_SET_MAXFD), vec![9]);
@@ -537,10 +549,10 @@ mod tests {
     #[test]
     fn task_pipes_only_over_unix_sockets() {
         let mut s = Script::default().queue(OP_FIELD, &[2, 2, TASK_IPC_UNIXSOCK]);
-        init_pipe_sockets(&mut s);
+        init_pipe_sockets(&mut s).unwrap();
         assert_eq!(s.args(OP_ST_INIT_PIPE), vec![0, 1, 2, 3]);
         let mut s = Script::default().queue(OP_FIELD, &[2, 2, 2]);
-        init_pipe_sockets(&mut s);
+        init_pipe_sockets(&mut s).unwrap();
         assert_eq!(s.args(OP_ST_INIT_PIPE), vec![0, 1]);
     }
 
@@ -551,25 +563,25 @@ mod tests {
             (OP_ST_W_CONCURRENCY_CAS, 3),
             (OP_ST_GS_CONCURRENCY, u64::from(u32::MAX)),
         ]);
-        reset_worker_counter(&mut s);
+        reset_worker_counter(&mut s).unwrap();
         assert_eq!(s.args(OP_ST_GS_CONCURRENCY_SUB), vec![3]);
         assert_eq!(s.called(OP_ST_GS_CONCURRENCY_ZERO), 1);
         assert_eq!(s.called(OP_ST_W_RESET_COUNTS), 1);
 
         let mut raced = Script::with(&[(OP_ST_W_CONCURRENCY, 3), (OP_ST_W_CONCURRENCY_CAS, 2)]);
-        reset_worker_counter(&mut raced);
+        reset_worker_counter(&mut raced).unwrap();
         assert_eq!(raced.called(OP_ST_GS_CONCURRENCY_SUB), 0);
         assert_eq!(raced.called(OP_ST_W_RESET_COUNTS), 1);
 
         let mut idle = Script::default();
-        reset_worker_counter(&mut idle);
+        reset_worker_counter(&mut idle).unwrap();
         assert_eq!(idle.called(OP_ST_W_CONCURRENCY_CAS), 0);
     }
 
     #[test]
     fn connections_abort_iterate_and_send() {
         let mut s = Script::with(&[(OP_ST_SOCK_OBJECT, 1)]);
-        abort_connection(&mut s);
+        abort_connection(&mut s).unwrap();
         assert_eq!(
             (
                 s.called(OP_ST_ABORT_COUNT),
@@ -579,26 +591,26 @@ mod tests {
             (1, 1, 0)
         );
         let mut s = Script::default();
-        abort_connection(&mut s);
+        abort_connection(&mut s).unwrap();
         assert_eq!(s.called(OP_ST_SOCK_FREE), 1);
 
         let mut s =
             Script::with(&[(OP_MINFD, 3), (OP_MAXFD, 6)]).queue(OP_ST_VALID_CONN, &[1, 0, 1, 1]);
-        foreach_connection(&mut s);
+        foreach_connection(&mut s).unwrap();
         assert_eq!(s.args(OP_ST_VISIT), vec![3, 5, 6]);
 
         let mut s = Script::with(&[(OP_ST_FINISH, 1)]);
-        assert!(send(&mut s));
+        assert!(send(&mut s).unwrap());
         assert_eq!(s.called(OP_ST_COUNT_SEND), 1);
         let mut s = Script::default();
-        assert!(!send(&mut s));
+        assert!(!send(&mut s).unwrap());
         assert_eq!(s.called(OP_ST_COUNT_SEND), 0);
     }
 
     #[test]
     fn clear_timer_deletes_armed_timers() {
         let mut s = Script::default().queue(OP_ST_TIMER, &[1, 0, 1]);
-        clear_timer(&mut s);
+        clear_timer(&mut s).unwrap();
         assert_eq!(s.args(OP_ST_TIMER_DEL), vec![0, 2]);
     }
 
