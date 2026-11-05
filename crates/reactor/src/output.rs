@@ -1,9 +1,8 @@
-//! `network::Socket`'s queued output: `handle_send` sends the front data chunk and
-//! classifies the result; `handle_sendfile` corks, then classifies and completes
-//! the front file request around native code's sendfile call (where the optional
-//! halfclose repair sits); `sendfile_async` queues a file. Native code owns the
-//! buffer, its chunks and the requests, and performs each effect through
-//! [`OutputHooks`].
+//! Queued output over Rust socket and buffer records. The ordinary send owns
+//! cursor/wait-flag publication and queue detachment here. Native retains only
+//! nonthrowing I/O/logging leaves and releases returned compatibility tokens
+//! after Rust returns; sendfile requests own descriptor/path/range state in
+//! `file_output`. Scalar kernels remain for the preserved original matrices.
 use std::io::Error;
 use std::os::raw::{c_int, c_void};
 
@@ -119,14 +118,17 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_cork(
     cork_min: libc::off_t,
 ) {
     // SAFETY: the caller lends its hooks and request field for this call.
-    let (hooks, corked) = (unsafe { &*hooks }, unsafe { &mut *corked });
-    if *corked == 0 {
+    let hooks = unsafe { &*hooks };
+    // SAFETY: the caller lends the stable cork slot; copy before the native effect.
+    if unsafe { *corked } == 0 {
         // SAFETY: the caller's socket.
-        *corked = if end - begin > cork_min && unsafe { (hooks.cork)(hooks.socket) } {
+        let next = if end - begin > cork_min && unsafe { (hooks.cork)(hooks.socket) } {
             1
         } else {
             -1
         };
+        // SAFETY: the effect returned and the caller still lends this slot exclusively.
+        unsafe { *corked = next };
     }
 }
 
@@ -146,7 +148,7 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_sent(
     end: libc::off_t,
 ) -> OutputResult {
     // SAFETY: the caller lends its hooks and request field for this call.
-    let (hooks, corked) = (unsafe { &*hooks }, unsafe { &mut *corked });
+    let hooks = unsafe { &*hooks };
     let result = OutputResult::default();
     if sent <= 0 {
         match classify(hooks) {
@@ -181,10 +183,12 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_sent(
     if begin != end {
         return result;
     }
-    if *corked == 1 {
+    // SAFETY: the caller lends a live cork slot; no borrow crosses uncork.
+    if unsafe { *corked } == 1 {
         // SAFETY: the caller's socket.
         unsafe { (hooks.uncork)(hooks.socket) };
-        *corked = 0;
+        // SAFETY: uncork returned; the caller still lends the stable slot.
+        unsafe { *corked = 0 };
     }
     OutputResult {
         pop: true,
@@ -214,6 +218,68 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_async(
     // SAFETY: as above.
     unsafe { enqueue(socket) };
     OK
+}
+
+/// Completed queue mutation and an optional native token to dispose after return.
+#[repr(C)]
+pub struct OwnedOutputResult {
+    pub result: OutputResult,
+    pub status: i32,
+    pub detached: swoole_rs_buffer::TypedDetached,
+}
+/// Send the real typed front and commit its cursor/socket flags in Rust.
+/// The native compatibility view supplies only its Rust queue handle and effects.
+/// # Safety
+/// socket/buffer are live and exclusive; hooks obey their nonthrowing contract.
+/// Native disposes any returned token after this call, under its existing guard.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_socket_handle_send_owned(
+    socket: *mut crate::SocketRecord,
+    buffer: *mut swoole_rs_buffer::Buffer,
+    hooks: *const OutputHooks,
+) -> OwnedOutputResult {
+    let mut output = OwnedOutputResult {
+        result: OutputResult::default(),
+        status: 0,
+        detached: swoole_rs_buffer::TypedDetached::default(),
+    };
+    let mut front = swoole_rs_buffer::TypedFront::default();
+    // SAFETY: a live typed queue and disjoint local observation, with no retained borrow.
+    output.status = unsafe { swoole_rs_buffer::swr_v1_buffer_typed_front(buffer, &raw mut front) };
+    if output.status != 0 {
+        return output;
+    }
+    // SAFETY: the queue lends its immutable front bytes through the nonthrowing send effect.
+    output.result =
+        unsafe { swr_v1_socket_handle_send(hooks, front.data, front.length, front.offset) };
+    if output.result.set_offset {
+        // SAFETY: the observed front identity is committed only after the effect returned.
+        output.status = unsafe {
+            swoole_rs_buffer::swr_v1_buffer_typed_consume(
+                buffer,
+                front.generation,
+                front.offset,
+                output.result.offset.wrapping_sub(front.offset),
+            )
+        };
+        if output.status != 0 {
+            return output;
+        }
+    }
+    if output.result.close_wait {
+        // SAFETY: no callback is active; the live socket's output flags are exclusive.
+        unsafe { (*socket).output.close_wait = 1 };
+    }
+    if output.result.send_wait {
+        // SAFETY: caller exclusively lends the socket through publication.
+        unsafe { (*socket).output.send_wait = 1 };
+    }
+    if output.result.pop {
+        // SAFETY: detach transfers custody to the native caller without invoking a disposer.
+        output.status =
+            unsafe { swoole_rs_buffer::swr_v1_buffer_typed_pop(buffer, &raw mut output.detached) };
+    }
+    output
 }
 
 #[cfg(test)]
@@ -299,6 +365,60 @@ mod tests {
         });
     }
 
+    #[test]
+    fn owned_queue_commits_offsets_wait_flags_and_detaches_after_effects() {
+        unsafe {
+            let socket = crate::swr_v1_socket_make(-1, 6);
+            let mut queue = std::ptr::null_mut();
+            assert_eq!(
+                swoole_rs_buffer::swr_v1_buffer_typed_create(64, &raw mut queue),
+                0
+            );
+            assert_eq!(
+                swoole_rs_buffer::swr_v1_buffer_append(queue, b"hello".as_ptr(), 5),
+                0
+            );
+            let hooks = hooks(socket.cast(), &mut (*socket).kernel_nobufs);
+            reset(2, 0, false);
+            let sent = swr_v1_socket_handle_send_owned(socket, queue, &raw const hooks);
+            assert_eq!(
+                (sent.status, sent.result.code, sent.result.offset),
+                (0, -1, 2)
+            );
+            assert_eq!((*socket).output.send_wait, 1);
+            let mut front = swoole_rs_buffer::TypedFront::default();
+            assert_eq!(
+                swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front),
+                0
+            );
+            assert_eq!(front.offset, 2);
+            reset(-1, libc::EPIPE, false);
+            let closed = swr_v1_socket_handle_send_owned(socket, queue, &raw const hooks);
+            assert_eq!(
+                (
+                    closed.status,
+                    closed.result.code,
+                    (*socket).output.close_wait
+                ),
+                (0, -1, 1)
+            );
+            assert_eq!(
+                swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front),
+                0
+            );
+            assert_eq!(front.offset, 2);
+            reset(3, 0, false);
+            let completed = swr_v1_socket_handle_send_owned(socket, queue, &raw const hooks);
+            assert_eq!((completed.status, completed.result.pop), (0, true));
+            assert!(completed.detached.token.is_null() && completed.detached.dispose.is_none());
+            assert_eq!(
+                swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front),
+                1
+            );
+            assert_eq!(swoole_rs_buffer::swr_v1_buffer_release(queue), 0);
+            crate::swr_v1_socket_dealloc(socket);
+        }
+    }
     #[test]
     fn handle_send_rules() {
         let mut nobufs = false;

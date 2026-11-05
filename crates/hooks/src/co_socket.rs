@@ -61,6 +61,8 @@ pub struct CoSocket {
     pub resolve_context: *mut c_void,
     /// The coroutines, barriers and timers bound to each direction.
     pub state: *mut SocketState,
+    /// Borrowed metadata owner; the enclosing native RAII member releases it.
+    pub extra: *mut crate::socket_extra::SocketExtra,
 }
 
 /// Field offsets native code asserts too (`swoole_rs_co_socket.h`).
@@ -80,7 +82,7 @@ const _: () = {
             && offset_of!(CoSocket, buffer_allocator) == 128
             && offset_of!(CoSocket, ssl_is_server) == 160
             && offset_of!(CoSocket, resolve_context) == 168
-            && size_of::<CoSocket>() == 184,
+            && size_of::<CoSocket>() == 192,
         "coroutine::Socket's layout moved"
     );
 };
@@ -154,6 +156,7 @@ impl CoSocket {
             zero_copy: false,
             resolve_context: ptr::null_mut(),
             state,
+            extra: ptr::null_mut(),
         }
     }
 

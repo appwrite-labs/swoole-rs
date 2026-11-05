@@ -39,7 +39,7 @@ HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql'
 # Modules a module cannot build without: Table and its PHP facade share a layout; the
 # HTTP/2 server's sessions (http2) own httpbindings' contexts, and its coroutine server
 # runs them; network::Client (clients) reads the reactor's socket record.
-REQUIRES = {'memory': ('phpcollections',), 'phpcollections': ('memory',), 'hooks': ('reactor',), 'http2': ('httpbindings',),
+REQUIRES = {'tls': ('reactor',), 'reactor': ('ossupport',), 'memory': ('phpcollections',), 'phpcollections': ('memory',), 'hooks': ('reactor', 'tls'), 'http2': ('httpbindings',),
             'httpbindings': ('http2',), 'clients': ('reactor',)}
 # --fix-halfclose's repairs in the reactor thread's read, write and close paths are Rust's
 # (crates/server/src/conn_io.rs), which only the reactor module's patches call.
@@ -69,6 +69,8 @@ def headers_for(modules):
                ROOT / 'native/include/swoole_rs_server_view.h', ROOT / 'native/include/swoole_rs_server_records.h', ROOT / 'native/include/swoole_rs_port_state.h']
     headers.extend((ROOT / 'native/include').glob('swoole_rs_corebase_*.h'))
     for module in modules:
+        if module != 'corebase':
+            headers.extend((ROOT / 'native/include').glob(f'swoole_rs_{module}_*.h'))
         contract = ROOT / 'native/include' / f'swoole_rs_{module}.h'
         if contract.is_file():
             headers.append(contract)

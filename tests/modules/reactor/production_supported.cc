@@ -41,6 +41,12 @@ PHP_FUNCTION(swr_reactor_supported) {
     image(return_value,"method_image","_ZN6swoole7ReactorC1EiNS0_4TypeE");
     image(return_value,"storage_image","swr_v1_reactor_poll_new");
     image(return_value,"batch_image","swr_v1_reactor_run");
+    image(return_value,"state_image","swr_v1_reactor_state_new");
+    image(return_value,"backend_owner_image","swr_v1_reactor_state_open");
+    image(return_value,"kernel_wait_image","swr_v1_reactor_state_wait");
+    image(return_value,"registry_owner_image","swr_v1_reactor_state_socket");
+    zval owner_rows;array_init(&owner_rows);
+    auto owner_check=[&](bool value) { add_next_index_bool(&owner_rows,value); };
     zval rows;array_init(&rows);unsigned cases=0;
     auto check=[&](bool value) { add_next_index_bool(&rows,value); };
     try {
@@ -55,6 +61,13 @@ PHP_FUNCTION(swr_reactor_supported) {
             if(backend==Reactor::TYPE_KQUEUE&&mode==2)continue;
             Reactor reactor(8,backend);check(reactor.ready_);reactor.once=true;reactor.timeout_msec=20;
             Witness state;reactor.ptr=&state;
+            auto timeout_snapshot=reactor.timeout_msec;auto *timeout_slot=&reactor.timeout_msec;
+            *timeout_slot=21;owner_check(timeout_snapshot==20&&reactor.timeout_msec==21);reactor.timeout_msec=20;
+            auto write_snapshot=reactor.write;reactor.write=nullptr;
+            owner_check(write_snapshot!=nullptr&&reactor.write==nullptr);reactor.write=write_snapshot;
+            auto once_snapshot=reactor.once;reactor.once=false;
+            owner_check(once_snapshot&&!reactor.once);reactor.once=true;
+            auto *ptr_slot=&reactor.ptr;owner_check(*ptr_slot==&state&&&reactor.ptr==ptr_slot);
             reactor.set_handler(SW_FD_USER,SW_EVENT_READ,on_read);
             reactor.set_handler(SW_FD_USER,SW_EVENT_WRITE,on_write);
             int pair[2];if(::socketpair(AF_UNIX,SOCK_STREAM,0,pair)!=0)throw std::runtime_error("private socketpair failed");
@@ -78,6 +91,7 @@ PHP_FUNCTION(swr_reactor_supported) {
             // Token stays live until the complete batch and explicit unregister.
             socket->free();::close(pair[1]);++cases;
         }
+        add_assoc_zval(return_value,"owner_outcomes",&owner_rows);
         add_assoc_long(return_value,"cases",cases);add_assoc_zval(return_value,"outcomes",&rows);
     } catch(const std::exception &error) {zval_ptr_dtor(&rows);zend_throw_exception(zend_ce_exception,error.what(),0);}
 }
@@ -199,10 +213,14 @@ PHP_FUNCTION(swr_reactor_output_supported) {
 #else
     image(return_value,"request_image","_ZN6swoole7network6Socket14sendfile_asyncEPKclm");
 #endif
-    image(return_value,"send_policy_image","swr_v1_socket_handle_send");
+    image(return_value,"send_policy_image","swr_v1_socket_handle_send_owned");
     image(return_value,"sendfile_cork_image","swr_v1_socket_sendfile_cork");
     image(return_value,"sendfile_sent_image","swr_v1_socket_sendfile_sent");
     image(return_value,"request_policy_image","swr_v1_socket_sendfile_async");
+    image(return_value,"request_owner_image","swr_v1_socket_file_new");
+    image(return_value,"request_range_image","swr_v1_socket_file_check");
+    image(return_value,"request_sent_image","swr_v1_socket_file_sent");
+    image(return_value,"request_free_image","swr_v1_socket_file_free");
     image(return_value,"buffer_constructor_image","_ZN6swoole6BufferC1Ej");
 #if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
     add_assoc_long(return_value,"typed_buffer_compiled",1);

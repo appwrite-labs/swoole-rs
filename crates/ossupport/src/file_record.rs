@@ -2,12 +2,53 @@
 //! view for its reference-returning API; guarded view updates never unwind into Rust.
 use crate::file::{FileIo, swr_v1_os_file_open, swr_v1_os_file_read_all, swr_v1_os_file_write_all};
 use libc::{c_char, c_int, c_void, off_t};
+use std::ffi::CStr;
 use std::{ptr, slice};
 
 pub struct FileRecord {
     fd: c_int,
     flags: c_int,
     path: Vec<u8>,
+}
+impl FileRecord {
+    /// Empty owner used before publishing a copied request descriptor.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            fd: -1,
+            flags: 0,
+            path: Vec::new(),
+        }
+    }
+
+    /// Open the request's file and own its exact path bytes.
+    #[must_use]
+    pub fn open_readonly(path: &CStr) -> Option<Self> {
+        let path_bytes = path_copy(path.to_bytes())?;
+        // SAFETY: CStr supplies the terminated path; no previous descriptor is owned.
+        let fd = unsafe { swr_v1_os_file_open(-1, path.as_ptr(), libc::O_RDONLY, 0) };
+        let file = Self {
+            fd,
+            flags: 0,
+            path: path_bytes,
+        };
+        Some(file)
+    }
+
+    /// Value-copy without duplicating the descriptor, as the native interface does.
+    #[must_use]
+    pub fn try_copy(&self) -> Option<Self> {
+        Some(Self {
+            fd: self.fd,
+            flags: self.flags,
+            path: path_copy(&self.path)?,
+        })
+    }
+
+    #[must_use]
+    pub const fn descriptor(&self) -> c_int {
+        self.fd
+    }
 }
 impl Drop for FileRecord {
     fn drop(&mut self) {

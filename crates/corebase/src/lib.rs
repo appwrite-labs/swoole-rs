@@ -542,3 +542,9 @@ mod tests {
         assert_eq!(decimal, [b'-', b'1', 0, 0xa5]);
     }
 }
+
+mod string_slot;
+pub use string_slot::*;
+
+mod proxy_state;
+pub use proxy_state::*;

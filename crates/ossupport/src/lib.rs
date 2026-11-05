@@ -9,7 +9,12 @@
 )]
 mod file;
 mod file_record;
-#[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    target_os = "freebsd"
+))]
 pub use file::swr_v1_os_sendfile;
 pub use file::{
     FileContents, FileIo, FileSize, Sendfile, swr_v1_os_file_close, swr_v1_os_file_contents_open,

@@ -109,7 +109,7 @@ try:
             symbols=['_ZN6swoole7network6Socket11handle_sendEv','_ZN6swoole7network6Socket15handle_sendfileEv','_ZN6swoole7network6Socket14sendfile_asyncEPKc'+('x' if sys.platform=='darwin' else 'l')+'m']
             if any(symbol not in undefined for symbol in symbols):raise ValueError('Addon must call all genuine production Socket output methods')
             if result['cases']!=9 or any(result[key]!=str(engine.extension) for key in ['sendfile_image','request_image']):raise ValueError('Actual output method origins/cases differ')
-            if selected and any(result[key]!=str(engine.extension) for key in ['send_policy_image','sendfile_cork_image','sendfile_sent_image','request_policy_image']):raise ValueError('Actual compiled Rust output/parameters origins differ')
+            if selected and any(result[key]!=str(engine.extension) for key in ['send_policy_image','sendfile_cork_image','sendfile_sent_image','request_policy_image','request_owner_image','request_range_image','request_sent_image','request_free_image']):raise ValueError('Actual compiled Rust output/parameters origins differ')
         if a.require_typed_buffer and a.socket_output:typed_buffer.consumer(result,undefined,str(engine.extension),selected)
         if a.require_owned_defer:
             defer_symbol='_ZN6swoole7Reactor5deferERKNSt3__18functionIFvPvEEES3_' if sys.platform=='darwin' else '_ZN6swoole7Reactor5deferERKSt8functionIFvPvEES2_'
@@ -121,6 +121,7 @@ try:
         if selected and a.builtins and result['builtins_image']!=str(engine.extension):raise ValueError('Actual Rust builtin origin differs')
         if selected and a.callbacks and result['callbacks_image']!=str(engine.extension):raise ValueError('Rust callback storage origin differs')
         if selected and not (a.callbacks or a.builtins or a.socket_output or a.blocking) and result['storage_image']!=str(engine.extension):raise ValueError('Rust storage origin differs')
+        if selected and not (a.callbacks or a.builtins or a.socket_output or a.blocking) and any(result[key]!=str(engine.extension) for key in ['state_image','backend_owner_image','kernel_wait_image','registry_owner_image']):raise ValueError('Rust reactor state/backend origins differ')
         if selected and not (a.callbacks or a.builtins or a.socket_output or a.blocking) and report['selected_batch_decoder_compiled'] and result['batch_image']!=str(engine.extension):raise ValueError('Compiled Rust decoder origin differs')
         if any(sha(mirror/name)!=digest for name,digest in row['headers']['files_sha256'].items()):raise ValueError('Attested headers changed')
         report['results'].append(dict(engine=engine.name,**result))
