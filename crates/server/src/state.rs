@@ -64,6 +64,15 @@ impl ServerState {
         self.tables.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_tables(tables: crate::records::ServerTables) -> Self {
+        let state = Self::new();
+        state
+            .tables
+            .store(Box::into_raw(Box::new(tables)), Ordering::Relaxed);
+        state
+    }
+
     /// The round before this call; it wraps as `sw_atomic_fetch_add` does.
     pub(crate) fn next_round(&self) -> u32 {
         self.round.fetch_add(1, Ordering::SeqCst)
