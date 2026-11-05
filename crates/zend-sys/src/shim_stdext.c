@@ -63,3 +63,26 @@ void swr_zend_hash_foreach_key(const HashTable *table,
     }
     ZEND_HASH_FOREACH_END();
 }
+
+int swr_zend_try_stdext_separate(zval *value) {
+    int bailed = 0;
+    zend_try { SEPARATE_ARRAY(value); } zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_stdext_append(HashTable *table, zval *value, zval **result) {
+    int bailed = 0;
+    zend_try { *result = zend_hash_next_index_insert(table, value); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_stdext_nogc_dtor(zval *value) {
+    int bailed = 0;
+    zend_try { zval_ptr_dtor_nogc(value); } zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_stdext_cannot_add(void) {
+    int bailed = 0;
+    zend_try { zend_throw_error(NULL, "Cannot add element to the array as the next element is already occupied"); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}

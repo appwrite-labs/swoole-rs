@@ -1,4 +1,7 @@
 //! Test fixture only: compile the unchanged production module with a fallible allocator.
+// The native facade's real Global also owns production corebase records. Link
+// that crate under the same allocator rather than substituting a fake Global.
+extern crate swoole_rs_corebase as _;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
 #[path = "../../../crates/buffer/src/lib.rs"]

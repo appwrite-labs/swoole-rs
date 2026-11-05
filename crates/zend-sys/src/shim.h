@@ -40,9 +40,6 @@ zend_string *swr_zend_string_copy(zend_string *string);
 void swr_zend_string_release(zend_string *string);
 void swr_zval_str(zval *value, zend_string *string);
 
-/* Swoole's sw_zend_register_class_alias for a name without a leading
- * backslash: a lowercased, interned, persistent alias. */
-int swr_zend_register_class_alias(const char *name, size_t length, zend_class_entry *ce);
 /* Bailouts. zend_try runs `body(arg)`; returns 1 if it bailed out (Zend's
  * longjmp), which is then caught here. `body` must be C or C++: a bailout must
  * never longjmp over a Rust frame. Rust reports the bailout to its C/C++ caller,

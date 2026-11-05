@@ -392,6 +392,23 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_coro_minit(
     short_name: bool,
     compression: bool,
 ) -> *mut zend_class_entry {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result = unsafe { init_phphttp_server_coro_minit(exception, short_name, compression) };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+            std::ptr::null_mut()
+        }
+    }
+}
+
+unsafe fn init_phphttp_server_coro_minit(
+    exception: *mut zend_class_entry,
+    short_name: bool,
+    compression: bool,
+) -> Result<*mut zend_class_entry, swoole_rs_zend::bailout::Bailout> {
     EXCEPTION.store(exception, Relaxed);
     COMPRESSION.store(compression, Relaxed);
     // SAFETY: MINIT, with a static table.
@@ -404,7 +421,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_coro_minit(
     }
     if short_name {
         // SAFETY: MINIT, after registration.
-        unsafe { SERVER.alias(c"Co\\Http\\Server") };
+        unsafe { SERVER.alias(c"Co\\Http\\Server") }?;
     }
     let ce = SERVER.entry();
     for (name, value) in [(c"fd", -1), (c"port", -1)] {
@@ -423,7 +440,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_coro_minit(
     unsafe { declare_long(ce, c"errCode", 0, ZEND_ACC_PUBLIC) };
     // SAFETY: as above.
     unsafe { declare_string(ce, c"errMsg", c"", ZEND_ACC_PUBLIC) };
-    ce
+    Ok(ce)
 }
 
 fn server_of(call: &Call) -> *mut HttpServer {

@@ -349,9 +349,9 @@ pub unsafe extern "C" fn swr_v1_phpswoole_functions(
 /// MINIT's `go`, `defer` and (with stdext) `typed_array`, when short names are on.
 /// # Safety
 /// At MINIT, after Zend registered the module's functions.
-pub(crate) unsafe fn register_aliases(flags: u32) {
+pub(crate) unsafe fn register_aliases(flags: u32) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     if flags & SHORTNAME == 0 {
-        return;
+        return Ok(());
     }
     let aliases: [(&CStr, &CStr, *const zend_internal_arg_info); 3] = [
         (
@@ -372,17 +372,24 @@ pub(crate) unsafe fn register_aliases(flags: u32) {
     ];
     let count = if flags & STDEXT == 0 { 2 } else { 3 };
     for (origin, alias, arg_info) in &aliases[..count] {
-        // SAFETY: at MINIT; Zend copies both names and keeps the static arginfo.
+        // SAFETY: Zend initializes the compiler function table before MINIT.
+        let target = unsafe { z::swr_zend_facade_compiler_functions() };
+        // SAFETY: at MINIT, these static binary names and arginfo remain live
+        // while the Rust registry performs the complete contained registration.
         unsafe {
-            z::swr_zend_register_global_alias(
+            swoole_rs_zend::registration::function_alias(
+                target,
                 origin.as_ptr(),
                 origin.count_bytes(),
+                target,
                 alias.as_ptr(),
                 alias.count_bytes(),
                 *arg_info,
+                None,
             )
-        };
+        }?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

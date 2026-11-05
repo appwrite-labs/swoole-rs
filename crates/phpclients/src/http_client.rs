@@ -1795,6 +1795,24 @@ pub unsafe extern "C" fn swr_v1_phpclients_http_client_minit(
     module: c_int,
     features: u32,
 ) {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result =
+        unsafe { init_phpclients_http_client_minit(exception, shortname, module, features) };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
+    }
+}
+
+unsafe fn init_phpclients_http_client_minit(
+    exception: *mut zend_class_entry,
+    shortname: bool,
+    module: c_int,
+    features: u32,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     FEATURES.store(features, Ordering::Relaxed);
     // SAFETY: MINIT, with a static table.
     unsafe {
@@ -1806,7 +1824,7 @@ pub unsafe extern "C" fn swr_v1_phpclients_http_client_minit(
     }
     if shortname {
         // SAFETY: MINIT, after `register`.
-        unsafe { CLIENT.alias(c"Co\\Http\\Client") };
+        unsafe { CLIENT.alias(c"Co\\Http\\Client") }?;
     }
     let ce = CLIENT.entry();
     // SAFETY: MINIT, with the method the table declares.
@@ -1858,7 +1876,7 @@ pub unsafe extern "C" fn swr_v1_phpclients_http_client_minit(
     }
     if shortname {
         // SAFETY: as above.
-        unsafe { EXCEPTION.alias(c"Co\\Http\\Client\\Exception") };
+        unsafe { EXCEPTION.alias(c"Co\\Http\\Client\\Exception") }?;
     }
     for (name, status) in [
         (c"SWOOLE_HTTP_CLIENT_ESTATUS_CONNECT_FAILED", CONNECT_FAILED),
@@ -1872,6 +1890,8 @@ pub unsafe extern "C" fn swr_v1_phpclients_http_client_minit(
         // SAFETY: MINIT of `module`.
         unsafe { register_long_constant(name, status, module) };
     }
+
+    Ok(())
 }
 
 /// `$this`'s data.

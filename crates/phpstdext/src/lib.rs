@@ -2,15 +2,14 @@
 //! docs/zend.md): typed arrays, methods on arrays, strings and streams, and
 //! the `swoole_*` functions behind them.
 //!
-//! What stays C++ in `ext-src/swoole_stdext.cc` is what needs PHP's own VM
-//! internals (`thirdparty/php/zend/zend_execute.c`): the `ASSIGN_DIM` and
-//! `ASSIGN_DIM_OP` handlers, which call [`swr_v1_phpstdext_check`] and its
-//! neighbours, and the PCRE and JSON library calls, lent as [`Ops`].
+//! Rust owns the complete `ASSIGN_DIM` and `ASSIGN_DIM_OP` operations,
+//! operand/result/refcount order, PCRE cache custody and opcode installation.
+//! C++ exposes only individual private Zend VM and JSON library effects.
 //!
 //! PHP code (autoloaders, callbacks, destructors) runs under `zend_try` in the
 //! C shim; a handler that trapped a bailout re-raises it as its last act, when
 //! its frame owns nothing.
-#![cfg(feature = "php")]
+#![cfg(all(feature = "php", feature = "active"))]
 #![cfg_attr(
     not(test),
     deny(
@@ -20,12 +19,13 @@
 )]
 
 mod aliases;
+mod assignment;
 mod invoke;
 mod text;
 mod typed;
 
+pub use assignment::{swr_v1_phpstdext_assign, swr_v1_phpstdext_assign_op};
 pub use invoke::swr_v1_phpstdext_method_call;
-pub use text::Ops;
 pub use typed::{
     swr_v1_phpstdext_check, swr_v1_phpstdext_copy_type, swr_v1_phpstdext_foreach_begin,
     swr_v1_phpstdext_operation, swr_v1_phpstdext_unset,
@@ -47,17 +47,40 @@ const _: () = assert!(
     "RT_CONSTANT below is the 64-bit (relative) form"
 );
 
-/// MINIT, after C++ set the opcode handlers: look up the functions stdext
-/// calls and wraps.
+/// Install the complete Rust-owned opcode handlers, then stdext's function overrides.
 /// # Safety
-/// At MINIT; `ops` lives for the process.
+/// Called once at MINIT, before any PHP code executes.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Zend opcode constants are encoded in its opcode byte"
+)]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpstdext_minit(ops: *const Ops) {
-    // SAFETY: per the caller.
-    unsafe { text::install(ops) };
-    // SAFETY: at MINIT.
+pub unsafe extern "C" fn swr_v1_phpstdext_minit() {
+    for (opcode, handler) in [
+        (
+            swoole_rs_zend::sys::ZEND_INIT_METHOD_CALL,
+            swr_v1_phpstdext_method_call as unsafe extern "C" fn(*mut zend_execute_data) -> c_int,
+        ),
+        (
+            swoole_rs_zend::sys::ZEND_ASSIGN_DIM,
+            swr_v1_phpstdext_assign,
+        ),
+        (
+            swoole_rs_zend::sys::ZEND_ASSIGN_DIM_OP,
+            swr_v1_phpstdext_assign_op,
+        ),
+        (swoole_rs_zend::sys::ZEND_UNSET_DIM, swr_v1_phpstdext_unset),
+        (
+            swoole_rs_zend::sys::ZEND_FE_RESET_RW,
+            swr_v1_phpstdext_foreach_begin,
+        ),
+    ] {
+        // SAFETY: each callback obeys Zend's user opcode ABI and lives for the process.
+        unsafe { swoole_rs_zend::sys::zend_set_user_opcode_handler(opcode as u8, Some(handler)) };
+    }
+    // SAFETY: install function lookups and overrides at MINIT in the original order.
     unsafe { invoke::install() };
-    // SAFETY: at MINIT.
+    // SAFETY: PHP's function table is complete and no request has started.
     unsafe { typed::install() };
 }
 

@@ -163,3 +163,62 @@ int swr_zend_try_facade_object_dtor(zend_object *object) {
     zend_catch { bailed = 1; } zend_end_try();
     return bailed;
 }
+
+#include "ext/standard/url.h"
+#include "ext/standard/php_http.h"
+int swr_zend_try_facade_callable_frame(zval *value, zend_object *object, zend_execute_data *frame,
+                                      uint32_t flags, zend_fcall_info_cache *cache, char **error, bool *result) {
+    int bailed = 0;
+    zend_try { *result = zend_is_callable_at_frame(value, object, frame, flags, cache, error); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_facade_callable_name(zval *value, zend_object *object, zend_string **result) {
+    int bailed = 0;
+    zend_try { *result = zend_get_callable_name_ex(value, object); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_facade_url(const char *value, size_t length, zend_string **result) {
+    int bailed = 0;
+    zend_try { *result = php_url_encode(value, length); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_facade_hash(zval *value, HashTable **result) {
+    int bailed = 0;
+    zend_try { *result = HASH_OF(value); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_facade_query(HashTable *table, smart_str *buffer) {
+    int bailed = 0;
+    zend_try {
+#if PHP_VERSION_ID < 80300
+        php_url_encode_hash_ex(table, buffer, NULL, 0, NULL, 0, NULL, 0, NULL, NULL, PHP_QUERY_RFC1738);
+#else
+        php_url_encode_hash_ex(table, buffer, NULL, 0, NULL, NULL, NULL, PHP_QUERY_RFC1738);
+#endif
+    } zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_facade_smart_zero(smart_str *buffer) {
+    int bailed = 0;
+    zend_try { smart_str_0(buffer); } zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+void swr_zend_facade_smart_free(smart_str *buffer) { smart_str_free(buffer); }
+
+int swr_zend_try_facade_register_functions(const zend_function_entry *entries, HashTable *table, int type, int *result) {
+    int bailed = 0;
+    zend_try { *result = zend_register_functions(NULL, entries, table, type); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_facade_class_alias(const char *name, size_t length, zend_class_entry *entry, int *result) {
+    int bailed = 0;
+    zend_try { *result = zend_register_class_alias_ex(name, length, entry, true); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+HashTable *swr_zend_facade_compiler_functions(void) { return CG(function_table); }

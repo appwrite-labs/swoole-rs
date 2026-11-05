@@ -73,8 +73,10 @@ pub fn raise(result: Result<(), Bailout>) {
     finish();
 }
 
-/// A trap's flag as a result.
-pub(crate) fn trapped(bailed: c_int) -> Result<(), Bailout> {
+/// A native trap's flag as a result, without resuming a PHP bailout.
+/// # Errors
+/// Returns `Bailout` when the native leaf reports a nonzero contained-bailout flag.
+pub fn trapped(bailed: c_int) -> Result<(), Bailout> {
     if bailed != 0 { Err(Bailout) } else { Ok(()) }
 }
 

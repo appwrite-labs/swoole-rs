@@ -78,7 +78,7 @@ fn flags_of(ht: *mut HashTable) -> *mut u32 {
 /// # Safety
 /// `ht` is live.
 #[inline]
-unsafe fn is_typed(ht: *mut HashTable) -> bool {
+pub(crate) unsafe fn is_typed(ht: *mut HashTable) -> bool {
     // SAFETY: per the caller.
     (unsafe { *flags_of(ht) } & TYPED) != 0
 }
@@ -532,13 +532,33 @@ unsafe fn check_array(info: *mut TypeInfo, element: *mut HashTable) -> bool {
 /// `container` holds the fresh unshared copy; `source` is a live typed array.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpstdext_copy_type(container: *mut zval, source: *mut HashTable) {
+    // SAFETY: the caller supplies the fresh separated array and still-live source.
+    let result = unsafe { copy_type(container, source) };
+    swoole_rs_zend::bailout::defer(result);
+    swoole_rs_zend::bailout::finish();
+}
+
+/// Copy the actual COW type information without resuming a contained bailout.
+/// # Safety
+/// `container` holds the fresh separated array and `source` remains live.
+pub(crate) unsafe fn copy_type(
+    container: *mut zval,
+    source: *mut HashTable,
+) -> Result<(), Bailout> {
     let source_info = info_of(source);
     // SAFETY: per the caller.
     let extra = info_size(usize::from(unsafe { (*source_info).len }));
     // SAFETY: an array zval.
     let ht = unsafe { table(container) };
-    // SAFETY: Zend's request allocator.
-    let copy = unsafe { swr_zend_emalloc(size_of::<HashTable>() + extra) }.cast::<HashTable>();
+    let mut memory = ptr::null_mut();
+    // SAFETY: allocate the real table header and trailing type metadata below a native trap.
+    swoole_rs_zend::bailout::trapped(unsafe {
+        swoole_rs_zend::sys::swr_zend_try_facade_alloc(
+            size_of::<HashTable>() + extra,
+            &raw mut memory,
+        )
+    })?;
+    let copy = memory.cast::<HashTable>();
     // SAFETY: both hold a table.
     unsafe { ptr::copy_nonoverlapping(ht, copy, 1) };
     // SAFETY: the source holds `extra` bytes of definition; the copy has room.
@@ -549,6 +569,7 @@ pub unsafe extern "C" fn swr_v1_phpstdext_copy_type(container: *mut zval, source
     unsafe { (*container).value = zend_value { arr: copy } };
     // SAFETY: the old allocation, which nothing references now.
     unsafe { swr_zend_efree(ht.cast()) };
+    Ok(())
 }
 
 /// The `ASSIGN_DIM_OP` restriction: concatenation needs string values,

@@ -116,16 +116,37 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
     array_object: *mut zend_class_entry,
     ops: *const host::Ops,
 ) {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result = unsafe {
+        init_phpcoroutines_minit(module_number, exception, array_iterator, array_object, ops)
+    };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
+    }
+}
+
+unsafe fn init_phpcoroutines_minit(
+    module_number: i32,
+    exception: *mut zend_class_entry,
+    array_iterator: *mut zend_class_entry,
+    array_object: *mut zend_class_entry,
+    ops: *const host::Ops,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: per the caller, a static table.
     if let Some(ops) = unsafe { ops.as_ref() } {
         host::install(ops);
     }
     let shortname = host::flag(host::SHORTNAME);
-    let alias = |class: &Class, name: &CStr| {
+    let alias = |class: &Class, name: &CStr| -> Result<(), swoole_rs_zend::bailout::Bailout> {
         if shortname {
             // SAFETY: MINIT, after registration.
-            unsafe { class.alias(name) };
+            unsafe { class.alias(name) }?;
         }
+        Ok(())
     };
     let methods = if host::flag(host::CORO_TIME) {
         COROUTINE_METHODS.as_ptr()
@@ -134,7 +155,7 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
     };
     // SAFETY: MINIT, with a table that lives for the process.
     unsafe { COROUTINE.register_static(c"Swoole\\Coroutine", methods) };
-    alias(&COROUTINE, c"Co");
+    alias(&COROUTINE, c"Co")?;
     // SAFETY: MINIT; SPL registers ArrayIterator and ArrayObject first.
     unsafe {
         ITERATOR.register_child(
@@ -144,7 +165,7 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
             |_, _| {},
         );
     };
-    alias(&ITERATOR, c"Co\\Iterator");
+    alias(&ITERATOR, c"Co\\Iterator")?;
     // SAFETY: as above.
     unsafe {
         CONTEXT.register_child(
@@ -154,7 +175,7 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
             |_, _| {},
         );
     };
-    alias(&CONTEXT, c"Co\\Context");
+    alias(&CONTEXT, c"Co\\Context")?;
     let constants: [(&CStr, i64); 6] = [
         (c"SWOOLE_DEFAULT_MAX_CORO_NUM", runtime::DEFAULT_MAX_NUM),
         (c"SWOOLE_CORO_MAX_NUM_LIMIT", MAX_NUM_LIMIT),
@@ -224,6 +245,8 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
         original.map_or(ptr::null_mut(), |f| f as *mut c_void),
         Ordering::Relaxed,
     );
+
+    Ok(())
 }
 
 /// `php_swoole_coroutine_rinit`.

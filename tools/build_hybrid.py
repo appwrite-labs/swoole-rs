@@ -185,6 +185,19 @@ def rust_sources(modules, extra=()):
     return {str(path.relative_to(ROOT)): digest(path) for path in sorted(files)}
 
 
+def stdext_enabled(args):
+    """Match configure's final stdext selection, including explicit overrides."""
+    enabled = getattr(args, 'stdext', False)
+    for option in getattr(args, 'configure', []):
+        if option in {'--disable-swoole-stdext', '-disable-swoole-stdext'}:
+            enabled = False
+        elif option in {'--enable-swoole-stdext', '-enable-swoole-stdext'}:
+            enabled = True
+        elif option.startswith(('--enable-swoole-stdext=', '-enable-swoole-stdext=')):
+            enabled = option.partition('=')[2] != 'no'
+    return enabled
+
+
 def rust_archive(modules, php_config='php-config', extra=(), *, php=True, profile='release'):
     """Use Cargo's actual static-library output, including configured target directories.
     zend-sys binds the headers of the PHP the extension is built for (PHP_CONFIG). Without
@@ -427,6 +440,8 @@ def build(args, parser):
     if 'clients' in args.module and cares not in {None, '--disable-cares', '--enable-cares=no'}:
         cargo_extra.append('cares')
     if args.backend == 'rust':
+        if 'phphelpers' in args.module and stdext_enabled(args):
+            cargo_extra.append('stdext')
         rust_inputs = rust_sources(args.module, cargo_extra)
         cargo_started = time.monotonic()
         staging = ROOT / 'target/hybrid/.archives'

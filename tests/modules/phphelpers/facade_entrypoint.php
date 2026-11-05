@@ -49,4 +49,23 @@ $privateExpected=['scalar'=>'initial','same_slot'=>true,'nullable'=>true,'nonnul
 if($private!==$privateExpected || $privateEvents!==['property:5','callback'])throw new RuntimeException('private helper custody mismatch: '.json_encode([$private,$privateEvents]));
 unset($privateCallback);
 if($privateEvents!==['property:5','callback','callback'])throw new RuntimeException('private callback retained');
-echo json_encode(['matches'=>count($expected),'results'=>$actual,'events'=>$events,'private'=>$private,'private_events'=>$privateEvents],JSON_THROW_ON_ERROR),"\n";
+// Complete common utility and registration SDK consumers.
+function checkUtility(bool $condition,string $message):void { if(!$condition)throw new RuntimeException($message); }
+$utilityData=(object)['a'=>'A B','bin'=>"X\0Y"];
+$utility=m26_utility_custody('strlen',$utilityData);
+checkUtility($utility===['callable'=>true,'name'=>'strlen','optional_name'=>true,'encoded'=>'A%00+B',
+    'query'=>'a=A+B&bin=X%00Y','query_reads'=>2,'invalid_query'=>true,'cleared'=>true,
+    'alias_registered'=>0,'alias_missing'=>-1,'class_alias_registered'=>0], 'complete utility/registration SDK contract');
+checkUtility(m26_alias_target("N\0ame")==="N\0ame" && !function_exists('m26_alias_absent'), 'registered alias handler/binary bytes and absent origin');
+$source=new ReflectionFunction('m26_alias_source');$alias=new ReflectionFunction('m26_alias_target');
+checkUtility($source->getNumberOfRequiredParameters()===$alias->getNumberOfRequiredParameters()
+    && (string)$source->getParameters()[0]->getType()===(string)$alias->getParameters()[0]->getType(), 'alias retains actual argument metadata');
+checkUtility(class_exists('M26GuardAlias',false) && (new M26GuardAlias()) instanceof M26Guard, 'case folded persistent class alias');
+class M26GuardChild extends M26Guard { public $child=1; }
+$guard=new M26GuardChild();unset($guard->child);
+checkUtility(!isset($guard->child), 'unset guard delegates child-only properties');
+$guardError=null;
+try { unset($guard->fixed); } catch (Error $error) { $guardError=$error->getMessage(); }
+checkUtility($guardError==='Property fixed of class M26GuardChild cannot be unset', 'unset guard preserves root declaration and actual class diagnostic');
+
+echo json_encode(['matches'=>count($expected),'results'=>$actual,'events'=>$events,'private'=>$private,'private_events'=>$privateEvents,'utility'=>$utility,'guard_error'=>$guardError],JSON_THROW_ON_ERROR),"\n";
