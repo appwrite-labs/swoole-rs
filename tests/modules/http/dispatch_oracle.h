@@ -3,12 +3,10 @@
 #include "swoole_websocket.h"
 #include "swoole_http2.h"
 #include "swoole_rs_http.h"
+#include "swoole_proxy.h"
 #include <set>
 #include <stdexcept>
 #define DISPATCH_ORACLE(ns) namespace ns { \
-struct HttpProxy { std::string host, username, password; int port = 0; \
-    static inline HttpProxy *last_created = nullptr; HttpProxy() { last_created=this; } \
-    static HttpProxy *create(const std::string &,int,const std::string &,const std::string &); }; \
 struct Protocol {}; struct PacketLength { int seen=0; }; struct RecvData {}; \
 struct Connection { uint8_t websocket_status=0,http2_stream=0; }; \
 struct Socket { void *object; }; inline unsigned ws_calls=0,h2_calls=0,error_calls=0,dispatch_calls=0; \
@@ -26,3 +24,17 @@ ssize_t get_package_length(const Protocol *,Socket *,PacketLength *);uint8_t get
 DISPATCH_ORACLE(upstream_dispatch)
 DISPATCH_ORACLE(candidate_dispatch)
 #undef DISPATCH_ORACLE
+size_t base64_encode(const unsigned char *, size_t, char *);
+namespace upstream_dispatch {
+struct HttpProxy {
+    std::string host, username, password;
+    int port = 0;
+    static inline HttpProxy *last_created = nullptr;
+    HttpProxy() { last_created = this; }
+    static HttpProxy *create(const std::string &, int, const std::string &, const std::string &);
+    std::string get_auth_str() const;
+};
+}
+#ifdef SWOOLE_RS_PROXY_OWNER
+namespace candidate_dispatch { using HttpProxy = swoole::HttpProxy; }
+#endif
