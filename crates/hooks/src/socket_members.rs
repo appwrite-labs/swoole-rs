@@ -9,7 +9,7 @@
 //!
 //! Each takes the native object (`this`). `Socket` is dynamic and its one base is
 //! the record (`swr_v1_co_socket`, not dynamic, pointer-aligned), so under the
-//! Itanium ABI the record follows the vtable pointer; socket.cc asserts that shape.
+//! Itanium ABI the record follows the vtable pointer; system.cc asserts that shape.
 use crate::buffered::{swr_v1_hook_co_socket_recv_buffered, swr_v1_hook_recv_line};
 use crate::co_io::{available, check, errno, host, set_err, swr_v1_hook_co_socket_default_err};
 use crate::co_socket::{CoSocket, swr_v1_hook_co_socket_peer_name};

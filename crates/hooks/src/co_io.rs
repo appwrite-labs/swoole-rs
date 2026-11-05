@@ -75,7 +75,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_host(host: *const Host) {
 /// The installed table.
 pub(crate) fn host() -> &'static Host {
     // SAFETY: native code installs a process-lifetime table before any socket
-    // operation runs (a static initialiser in socket.cc).
+    // operation runs (a static initialiser in system.cc).
     unsafe { &*HOST.load(Ordering::Acquire) }
 }
 
@@ -416,6 +416,32 @@ pub unsafe extern "C" fn swr_v1_hook_co_timer_stop(timer: *mut Timer) {
     unsafe { &mut *timer }.stop();
 }
 
+/// `Socket::timer_callback`: the timer `node` fired. The socket's error becomes
+/// `ETIMEDOUT` and the coroutine waiting in the timer's direction resumes; a node
+/// neither slot holds aborts, as upstream does.
+///
+/// # Safety
+/// `socket` is the live record whose timer `node` is.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_timer_fired(
+    socket: *mut CoSocket,
+    node: *mut c_void,
+) {
+    // SAFETY: as the caller promises.
+    unsafe { set_err(socket, libc::ETIMEDOUT) };
+    // SAFETY: as the caller promises.
+    let state = unsafe { (*socket).state };
+    // SAFETY: the record's live state.
+    let event = unsafe { crate::timers::socket_timeout(state, node) };
+    if event == 0 {
+        std::process::abort();
+    }
+    // SAFETY: as above.
+    let co = unsafe { crate::shutdown::swr_v1_hook_socket_co(state, event) };
+    // SAFETY: the coroutine waiting on the socket.
+    unsafe { (host().resume)(co) };
+}
+
 /// A recording host for the operations' tests. Each thread records its own events.
 #[cfg(test)]
 pub(crate) mod test_host {
@@ -649,6 +675,30 @@ mod tests {
             assert_eq!(take(), expected, "scenario {}", k + 931);
             assert_eq!(slot_state(&socket), node, "scenario {}", k + 931);
             unsafe { (*socket.state()).timers[0] = ptr::null_mut() };
+        }
+    }
+
+    /// Upstream's `timer_callback`: the firing timer's slot clears, the error is
+    /// `ETIMEDOUT` and the coroutine bound in that direction resumes.
+    #[test]
+    fn timer_fired_resumes_its_direction() {
+        install();
+        let mut socket = TestSocket::new();
+        let mut ids: [c_long; 2] = [3, 4];
+        bind(&socket, 3, &mut ids);
+        let node: *mut c_void = ptr::dangling_mut::<u32>().cast();
+        for (slot, cid) in [(1, 4), (0, 3)] {
+            unsafe { (*socket.state()).timers[slot] = node };
+            unsafe { swr_v1_hook_co_socket_timer_fired(socket.ptr(), node) };
+            assert!(unsafe { (*socket.state()).timers[slot] }.is_null());
+            assert_eq!(unsafe { (*socket.ptr()).err_code }, libc::ETIMEDOUT);
+            assert_eq!(
+                take(),
+                [
+                    format!("last-error:{}", libc::ETIMEDOUT),
+                    format!("resume:{cid}")
+                ]
+            );
         }
     }
 

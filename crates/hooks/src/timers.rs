@@ -1,5 +1,5 @@
-//! The coroutine socket's timers and timeouts: the read and write timer slots
-//! (in [`SocketState`]) and which one a firing timer belongs to, `TimeoutSetter`'s
+//! The coroutine socket's timers and timeouts: which of the read and write timer
+//! slots (in [`SocketState`]) a firing timer belongs to, `TimeoutSetter`'s
 //! save/set/restore of the selected timeouts.
 use crate::shutdown::SocketState;
 use core::ffi::{c_int, c_void};
@@ -7,37 +7,12 @@ use core::ffi::{c_int, c_void};
 const EVENT_READ: u32 = 1 << 9;
 const EVENT_WRITE: u32 = 1 << 10;
 
-/// The read slot for `SW_EVENT_READ`, else the write slot.
-fn slot(event: u32) -> usize {
-    usize::from(event != EVENT_READ)
-}
-
-/// The timer slot (a native `TimerNode *`) for `event`'s direction: reading for
-/// `SW_EVENT_READ`, else writing.
-///
-/// # Safety
-/// `state` is a live handle; the slot lives as long as it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_timer(
-    state: *mut SocketState,
-    event: u32,
-) -> *mut *mut c_void {
-    // SAFETY: the caller's live state.
-    let timers = unsafe { &raw mut (*state).timers };
-    // `slot` is 0 or 1, so the slot stays inside the two-entry array.
-    timers.cast::<*mut c_void>().wrapping_add(slot(event))
-}
-
 /// A timer fired: clears the slot holding `node` and returns its direction
 /// (`SW_EVENT_READ` first), or 0 when neither slot holds it.
 ///
 /// # Safety
 /// `state` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_timeout(
-    state: *mut SocketState,
-    node: *mut c_void,
-) -> u32 {
+pub(crate) unsafe fn socket_timeout(state: *mut SocketState, node: *mut c_void) -> u32 {
     // SAFETY: the caller's live state.
     let timers = unsafe { &mut (*state).timers };
     for (timer, event) in timers.iter_mut().zip([EVENT_READ, EVENT_WRITE]) {
@@ -124,23 +99,14 @@ mod tests {
         let node: *mut c_void = (&raw mut node).cast();
         // SAFETY: a live state.
         unsafe {
-            let read = swr_v1_hook_socket_timer(state, EVENT_READ);
-            let write = swr_v1_hook_socket_timer(state, EVENT_WRITE);
-            assert_ne!(read, write);
-            assert_eq!(
-                write,
-                swr_v1_hook_socket_timer(state, EVENT_READ | EVENT_WRITE)
-            );
-            assert_eq!(
-                swr_v1_hook_socket_timeout(state, node),
-                0,
-                "an unknown node"
-            );
+            let read = &raw mut (*state).timers[0];
+            let write = &raw mut (*state).timers[1];
+            assert_eq!(socket_timeout(state, node), 0, "an unknown node");
             *write = node;
-            assert_eq!(swr_v1_hook_socket_timeout(state, node), EVENT_WRITE);
+            assert_eq!(socket_timeout(state, node), EVENT_WRITE);
             assert!((*write).is_null());
             *read = node;
-            assert_eq!(swr_v1_hook_socket_timeout(state, node), EVENT_READ);
+            assert_eq!(socket_timeout(state, node), EVENT_READ);
             assert!((*read).is_null());
             swr_v1_hook_socket_state_free(state);
         }

@@ -257,10 +257,6 @@ typedef struct {
     bool (*verify)(void *);
 } swr_v1_hook_tls_ops;
 bool swr_v1_hook_ssl_handshake(const swr_v1_hook_tls_ops *ops);
-/* The socket's read and write timer slots (crates/hooks/src/timers.rs): the slot for event's
- * direction (SW_EVENT_READ, else write), and on expiry the cleared slot's event, or 0 for neither. */
-void **swr_v1_hook_socket_timer(swr_v1_hook_socket_state *state, uint32_t event);
-uint32_t swr_v1_hook_socket_timeout(swr_v1_hook_socket_state *state, void *node);
 /* TimeoutSetter: save and set (restore false), or restore, each SW_TIMEOUT_* type in types;
  * original holds timeout_type_list's four entries. */
 typedef struct {

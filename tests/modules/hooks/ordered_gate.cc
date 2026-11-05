@@ -49,7 +49,7 @@ namespace selected {
 }
 #undef poll
 
-/* 0..1003 and 1023..1059 moved to Rust: hook.cc (its guard is socket.cc's host
+/* 0..1003 and 1023..1059 moved to Rust: hook.cc (its guard is system.cc's host
    table's coroutine test), the hook_* families (crates/phpruntime), socket_poll_trigger_event (crates/hooks/src/poll.rs), and the coroutine Socket's
    transfers and TimerController (crates/hooks/src/transfer.rs and co_io.rs, ported_*). */
 #define CASES(NS) \

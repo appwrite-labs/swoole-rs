@@ -70,7 +70,7 @@ const _: () = {
 };
 
 /// `SW_FD_CO_SOCKET`, `SW_SOCK_RAW`, `SW_SOCK_NONBLOCK | SW_SOCK_CLOEXEC`,
-/// `SW_BUFFER_SIZE_BIG` and `SW_INPUT_BUFFER_SIZE` (asserted in socket.cc).
+/// `SW_BUFFER_SIZE_BIG` and `SW_INPUT_BUFFER_SIZE` (asserted in system.cc).
 const FD_CO_SOCKET: c_int = 6;
 const SOCK_RAW: c_int = 7;
 const OPEN_FLAGS: c_int = (1 << 2) | (1 << 3);
