@@ -171,10 +171,12 @@ class PhptGate(unittest.TestCase):
             report.write_text(json.dumps({'results': [
                 {'test': 'tests/x.phpt', 'module': 'x', 'status': 'failed', 'upstream_status': 'PASSED', 'detail': abort},
                 {'test': 'tests/y.phpt', 'module': 'y', 'status': 'failed', 'upstream_status': 'FAILED', 'detail': abort},
+                {'test': 'tests/w.phpt', 'module': 'w', 'status': 'failed', 'upstream_status': 'WARNED', 'detail': abort},
                 {'test': 'tests/z.phpt', 'module': 'z', 'status': 'failed', 'upstream_status': 'PASSED',
                  'detail': 'Segmentation fault (core dumped)'}]}))
-            # Only a passing test followed by the #200 signature; never a failed test or other crashes.
-            self.assertEqual([r['inconclusive'] for r in rows([report])], [True, False, False])
+            # Only a passing test followed by the #200 signature; never a failed test (WARNED failed
+            # its first attempt, #1300) or other crashes.
+            self.assertEqual([r['inconclusive'] for r in rows([report])], [True, False, False, False])
 
         def row(test, engine, status):
             return {'test': test, 'family': 'a', 'engine': engine, 'status': 'failed' if status == 'aborted' else status,
