@@ -100,6 +100,10 @@ pub(crate) trait Host {
         Ok(f64::from_bits(self.get(op)?))
     }
     fn state(&mut self) -> Effect<&ServerState>;
+    /// `swoole_get_worker_id()`.
+    fn worker_id(&mut self) -> Effect<u64> {
+        self.get(ops::OP_WORKER_ID)
+    }
 }
 
 /// The state of a server without one, which native code never passes.
@@ -171,6 +175,11 @@ impl<C: NativeCall> Host for Native<C> {
         }
         // SAFETY: the entrypoint lends this context with C's native effect contract.
         unsafe { self.call.invoke(self.context, op, arg) }
+    }
+
+    fn worker_id(&mut self) -> Effect<u64> {
+        // The process crate owns the worker record; no native call is needed.
+        Ok(u64::from(swoole_rs_process::methods::swoole_get_worker_id()))
     }
 
     fn state(&mut self) -> Effect<&ServerState> {

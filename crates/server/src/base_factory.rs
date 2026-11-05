@@ -7,7 +7,6 @@ use crate::ops::{
     OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_CONNECTIONS, OP_ALLOC_PORT_CONNECTION_NUMS, OP_BASE_PASS,
     OP_BASE_REACTORS, OP_CLOSE_SOCKET, OP_FORWARD, OP_HAS_ON_CLOSE, OP_NEW_BASE_FACTORY,
     OP_ON_CLOSE, OP_OUT_EMPTY, OP_POP_PTR, OP_PORT_COUNT, OP_QUEUE_CLOSE, OP_SEND_HERE,
-    OP_WORKER_ID,
 };
 use crate::records::{ConnectionRecord, swr_v1_server_connection, swr_v1_server_session};
 use crate::{Host, SW_OK};
@@ -195,7 +194,7 @@ fn forward<H: Host>(h: &mut H, send: &SendData) -> crate::Effect<bool> {
 }
 
 fn worker_id<H: Host>(h: &mut H) -> crate::Effect<u32> {
-    Ok(u32::try_from(h.get(OP_WORKER_ID)? & u64::from(u32::MAX)).unwrap_or_default())
+    Ok(u32::try_from(h.worker_id()? & u64::from(u32::MAX)).unwrap_or_default())
 }
 
 /// `BaseFactory::end`: forward the close to the session's worker, or mark the
@@ -355,6 +354,7 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::OP_WORKER_ID;
     use crate::records::{ServerTables, SessionRecord};
     use crate::script::Script;
     use core::sync::atomic::AtomicU32;
