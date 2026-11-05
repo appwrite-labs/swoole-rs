@@ -5,13 +5,13 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     sys::{
         swr_zend_try_info_end, swr_zend_try_info_header, swr_zend_try_info_ini,
-        swr_zend_try_info_row, swr_zend_try_info_start,
+        swr_zend_try_info_row, swr_zend_try_info_start, zend_module_entry,
     },
 };
 
 /// Native compiler and dependency facts, with no PHP output or row policy.
 #[repr(C)]
-pub struct Info {
+pub(crate) struct Info {
     flags: u64,
     abi: u32,
     features: u64,
@@ -47,7 +47,7 @@ fn text(key: &CStr, value: &str) -> Result<(), Bailout> {
     row(key, value.as_ptr())
 }
 impl Info {
-    fn has(&self, capability: C) -> bool {
+    pub(crate) fn has(&self, capability: C) -> bool {
         self.flags & (1 << capability as u8) != 0
     }
     fn enabled(&self, first: C, last: C) -> Result<(), Bailout> {
@@ -139,13 +139,15 @@ impl Info {
         contained(unsafe { swr_zend_try_info_ini(module) })
     }
 }
-/// Print the module's complete PHP information table and INI entries.
+/// `PHP_MINFO_FUNCTION(swoole)`: the module's complete PHP information table
+/// and INI entries, from C++'s compiler and library facts.
 /// # Safety
-/// `config` and its strings remain live for this call; `module` is Zend's module
-/// entry. The C caller must resume a returned bailout after this frame returns.
+/// Zend's MINFO, with the module's live entry.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpswoole_minfo(config: *const Info, module: *mut c_void) -> u8 {
-    // SAFETY: the caller lends its initialized compiler facts for this invocation.
-    let config = unsafe { &*config };
-    u8::from(bailout::relay_to_c(config.output(module)))
+pub unsafe extern "C" fn swr_v1_phpswoole_minfo(module: *mut zend_module_entry) {
+    // SAFETY: a plain C record of pointers, integers and bytes, for which zero is valid.
+    let mut info: Info = unsafe { std::mem::zeroed() };
+    // SAFETY: C++ fills it with static strings and its libpq version.
+    unsafe { (crate::ops().info)(&raw mut info) };
+    bailout::raise(info.output(module.cast()));
 }

@@ -407,14 +407,11 @@ typedef struct { uint64_t reload_count; int64_t reload_last_time; } swr_v1_serve
 size_t swr_v1_server_tcp_info(const void *info, swr_v1_server_fact *out, size_t cap);
 
 /*
- * The module host (crates/phpswoole): php_swoole.cc's MINIT sets up the module
- * globals (swr_v1_phpswoole_init_globals) and ini entries, then
- * swr_v1_phpswoole_minit registers the global constants, Swoole\Exception/Swoole\Error
- * and the short-name aliases and runs Swoole's core and every family's MINIT. Rust
- * defines MSHUTDOWN, RINIT and RSHUTDOWN (swr_v1_phpswoole_mshutdown, _rinit, _rshutdown), and
- * swoole_module_entry's function table is swr_v1_phpswoole_functions: Rust's rows (its
- * zif_swoole_* exports and C++'s) around the stdext/ssh2/ftp rows only C++'s #ifdefs
- * decide. C++ lends what only it can reach: Swoole's core, error, logger and MIME state.
+ * The module host (crates/phpswoole): get_module() returns swr_v1_phpswoole_module, Rust's
+ * module entry with its dependencies, function table, MINIT, MSHUTDOWN, RINIT, RSHUTDOWN and
+ * MINFO. C++ (php_swoole_cxx.cc) keeps the module globals and lends what only it or
+ * configure's #ifdefs reach: Swoole's core, error, logger and MIME state, the stdext/ssh2/ftp
+ * handlers, the build's flags and library versions.
  */
 #define SWR_PHPSWOOLE_DEBUG (1u << 0)
 #define SWR_PHPSWOOLE_SHORTNAME (1u << 1)
@@ -432,6 +429,17 @@ struct _zval_struct;
 struct _zend_array;
 struct _zend_class_entry;
 struct _zend_object_handlers;
+struct _zend_execute_data;
+struct _zend_module_entry;
+typedef void (*swr_php_function)(struct _zend_execute_data *, struct _zval_struct *);
+typedef struct swr_v1_phpswoole_info {
+    uint64_t flags;
+    uint32_t abi;
+    uint64_t features;
+    const char *version, *built, *openssl, *curl, *cares, *zlib, *zstd;
+    uint32_t brotli_encoder, brotli_decoder;
+    char libpq[16];
+} swr_v1_phpswoole_info;
 typedef struct swr_v1_phpswoole_ops {
     int32_t (*last_error)(void);
     void (*set_last_error)(int32_t code);
@@ -497,42 +505,23 @@ typedef struct swr_v1_phpswoole_ops {
     /* swoole::coroutine::dns_lookup: each address pushed onto list in order. */
     void (*dns_lookup)(const char *domain, int32_t family, double timeout, void (*push)(void *list, const char *address),
                        void *list);
+    /* MINIT's start: the bridge ABI check, native effects, SWOOLE_RS_* constants, the module
+     * globals and ini entries. 0 on success. */
+    int (*begin)(int type, int module_number);
+    /* The SWR_PHPSWOOLE_* flags of the build's #ifdefs (SHORTNAME is Rust's). */
+    uint32_t (*minit_flags)(void);
+    void (*info)(swr_v1_phpswoole_info *info);
+    /* Null disables a family; arrays have 23/35/36 entries. FTP SSL alone may be null. */
+    const swr_php_function *stdext, *ssh2, *ftp;
+    int64_t (*socket_bound_cid)(void);
+    /* php_swoole_thread_bailout(), or nothing without SW_THREAD. */
+    void (*thread_bailout)(void);
+    void (*exit)(int32_t status);
 } swr_v1_phpswoole_ops;
-void swr_v1_phpswoole_minit(int32_t module_number, uint32_t flags, const swr_v1_phpswoole_ops *ops);
-struct _zend_function_entry;
-struct _zend_execute_data;
-struct _zval_struct;
-typedef void (*swr_php_function)(struct _zend_execute_data *, struct _zval_struct *);
-/* Null disables a family; arrays have 23/35/36 entries. FTP SSL alone may be null. */
-const struct _zend_function_entry *swr_v1_phpswoole_functions(const swr_php_function *stdext,
-                                                          const swr_php_function *ssh2,
-                                                          const swr_php_function *ftp);
-/* The module's MSHUTDOWN, RINIT and RSHUTDOWN: 0 on success. */
-int swr_v1_phpswoole_mshutdown(int _kind, int module_number);
-int swr_v1_phpswoole_rinit(int _kind, int module_number);
-int swr_v1_phpswoole_rshutdown(int _kind, int module_number);
+struct _zend_module_entry *swr_v1_phpswoole_module(const swr_v1_phpswoole_ops *ops);
 /* ZEND_INIT_MODULE_GLOBALS' constructor of zend_swoole_globals. */
 void swr_v1_phpswoole_init_globals(void *globals);
 void swr_v1_phpswoole_register_ini(void *globals, int number, int kind);
-typedef struct swr_v1_phpswoole_info {
-    uint64_t flags;
-    uint32_t abi;
-    uint64_t features;
-    const char *version, *built, *openssl, *curl, *cares, *zlib, *zstd;
-    uint32_t brotli_encoder, brotli_decoder;
-    char libpq[16];
-} swr_v1_phpswoole_info;
-uint8_t swr_v1_phpswoole_minfo(const swr_v1_phpswoole_info *config, void *module);
-/* sw_php_allocator() (emalloc) and sw_zend_string_allocator() (zend_string values):
- * swoole::Allocators. */
-typedef struct swr_v1_phpswoole_allocator {
-    void *(*malloc)(size_t size);
-    void *(*calloc)(size_t nmemb, size_t size);
-    void *(*realloc)(void *ptr, size_t size);
-    void (*free)(void *ptr);
-} swr_v1_phpswoole_allocator;
-extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_php_allocator;
-extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_zend_string_allocator;
 
 #ifdef __cplusplus
 }

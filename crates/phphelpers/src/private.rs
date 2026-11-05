@@ -6,8 +6,8 @@ use std::{
 use swoole_rs_zend::{
     bailout,
     sys::{
-        self, zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_object,
-        zend_object_handlers, zend_string, zval,
+        self, zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_object, zend_string,
+        zval,
     },
     type_of,
 };
@@ -48,30 +48,6 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_dup(value: *const zval) -
     // SAFETY: the destination has space for one initialized slot.
     unsafe { dest.write(value) };
     dest
-}
-
-/// # Safety
-/// Registered class and stable handlers, called by Zend's object factory.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_object_new(
-    class: *mut zend_class_entry,
-    handlers: *const zend_object_handlers,
-) -> *mut zend_object {
-    // SAFETY: Zend allocates an object and its class's property slots.
-    let mut allocation = ptr::null_mut();
-    // SAFETY: trap allocation failure before initializing any Rust-visible object fields.
-    bailed(unsafe {
-        sys::swr_zend_try_facade_object_alloc(size_of::<zend_object>(), class, &raw mut allocation)
-    });
-    bailout::finish();
-    let object = allocation.cast::<zend_object>();
-    // SAFETY: fresh storage and a registered class.
-    unsafe { sys::zend_object_std_init(object, class) };
-    // SAFETY: standard initialization created the object's property table.
-    unsafe { sys::object_properties_init(object, class) };
-    // SAFETY: the fresh object borrows its class's process-lived handlers.
-    unsafe { (*object).handlers = handlers };
-    object
 }
 
 unsafe fn read(
