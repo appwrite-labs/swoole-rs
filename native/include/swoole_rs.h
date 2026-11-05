@@ -467,16 +467,8 @@ typedef struct swr_v1_phpswoole_ops {
     void (*set_socket_buffer_size)(int64_t size);
     void (*set_http2_default)(int32_t id, int64_t value);
     /* swoole_async_set() and php_swoole_set_aio_option's SwooleG fields. */
-    void (*set_aio_core_worker_num)(uint32_t count);
-    void (*set_aio_worker_num)(uint32_t count);
-    void (*set_aio_max_wait_time)(double seconds);
-    void (*set_aio_max_idle_time)(double seconds);
-    void (*set_iouring_entries)(uint32_t count);
-    void (*set_iouring_workers)(uint32_t count);
-    void (*set_iouring_flag)(int64_t flag);
     void (*set_dns_cache_refresh_time)(double seconds);
     double (*dns_cache_refresh_time)(void);
-    void (*set_enable_coroutine)(uint8_t on);
     /* SW_MUST_BE_MAIN_THREAD's test: 1 without SW_THREAD. */
     uint8_t (*main_thread)(void);
     uint8_t (*reactor_created)(void);
