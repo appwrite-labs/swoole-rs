@@ -5,11 +5,7 @@
 
 #include <stdint.h>
 
-enum swErrorCode
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swErrorCode {
   SW_ERROR_BEGIN = 500,
   SW_ERROR_MALLOC_FAIL = 501,
   SW_ERROR_SYSTEM_CALL_FAIL = 502,
@@ -142,14 +138,7 @@ enum swErrorCode
   SW_ERROR_CO_TIMEDOUT = 10018,
   SW_ERROR_CO_SOCKET_CLOSE_WAIT = 10019,
   SW_ERROR_END = 10020,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swErrorCode swErrorCode;
-#else
-typedef uint32_t swErrorCode;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swErrorCode;
 
 typedef struct SwrErrorIgnored SwrErrorIgnored;
 

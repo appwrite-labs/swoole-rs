@@ -1,8 +1,8 @@
 diff --git a/include/swoole.h b/include/swoole.h
-index 1cf72dd..9200dab 100644
+index 8b4d48b..c217d09 100644
 --- a/include/swoole.h
 +++ b/include/swoole.h
-@@ -353,103 +353,3 @@ static inline void swoole_strtolower(char *str, const int length) {
+@@ -354,103 +354,3 @@ static inline void swoole_strtolower(char *str, const int length) {
  /*--------------------------------Constants------------------------------------*/
 -enum swResultCode {
 -    SW_OK = 0,
@@ -107,11 +107,7 @@ index 1cf72dd..9200dab 100644
 -};
 +#include "swoole_rs_corebase_constants.h"
  
-@@ -460,3 +360,2 @@ typedef unsigned char uchar;
- 
--
- /**
-@@ -479,26 +378,2 @@ static inline size_t swoole_size_align(size_t size, int pagesize) {
+@@ -480,26 +380,2 @@ static inline size_t swoole_size_align(size_t size, int pagesize) {
  //------------------------------Base--------------------------------
 -enum swEventDataFlag {
 -    SW_EVENT_DATA_NORMAL,
@@ -138,7 +134,7 @@ index 1cf72dd..9200dab 100644
 -    SW_DNS_LOOKUP_RANDOM = (1u << 11),
 -};
  
-@@ -506,10 +381,2 @@ extern thread_local char sw_error[SW_ERROR_MSG_SIZE];
+@@ -507,10 +383,2 @@ extern thread_local char sw_error[SW_ERROR_MSG_SIZE];
  
 -enum swPipeType {
 -    SW_PIPE_WORKER = 0,
@@ -149,7 +145,7 @@ index 1cf72dd..9200dab 100644
 -};
 -
  //----------------------Tool Function---------------------
-@@ -847,6 +714,2 @@ SW_API FILE *swoole_get_stdout_stream();
+@@ -848,6 +716,2 @@ SW_API FILE *swoole_get_stdout_stream();
  
 -enum swEventInitFlag {
 -    SW_EVENTLOOP_WAIT_EXIT = 1,
