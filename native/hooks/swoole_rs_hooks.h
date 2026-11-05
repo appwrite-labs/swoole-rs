@@ -157,29 +157,7 @@ enum swr_hook_async_action { SWR_HOOK_ASYNC_REJECT = 0, SWR_HOOK_ASYNC_YIELD = 1
 int32_t swr_v1_hook_async_action(uint32_t phase, bool cancellable, bool success);
 int32_t swr_v1_hook_dns_error(int32_t error, int32_t asynchronous_timeout, int32_t resolve_timeout);
 double swr_v1_hook_sleep_timeout(double seconds, double minimum);
-/* Socket::recv_packet after its availability check, read timer and get_read_buffer.
-   buffer is the read buffer: swoole::String's leading fields. fail: 0 no package
-   length, 1 too large (warning naming the length), 2 no EOF within the maximum. */
 typedef struct { size_t length, size; int64_t offset; char *str; } swr_v1_hook_read_buffer;
-typedef struct {
-    void *context;
-    swr_v1_hook_read_buffer *buffer;
-    bool length_check, eof_check;
-    const char *eof;
-    uint8_t eof_len;
-    char length_type;
-    uint8_t length_size;
-    uint16_t length_offset;
-    uint32_t max_length;
-    ssize_t (*recv)(void *, char *, size_t);
-    ssize_t (*recv_all)(void *, char *, size_t);
-    ssize_t (*package_length)(void *, const char *, uint32_t, uint32_t *header_len);
-    void (*extend)(void *, size_t);
-    void (*reduce)(void *, int64_t);
-    void (*fail)(void *, uint32_t kind, ssize_t length);
-    bool (*timed_out)(void *);
-} swr_v1_hook_packet_ops;
-ssize_t swr_v1_hook_recv_packet(const swr_v1_hook_packet_ops *ops);
 /* Socket::readv_all/writev_all after the availability check and the timer's creation.
    wait installs barrier (called with barrier_state) and runs timer.start() && wait_event. */
 typedef bool (*swr_v1_hook_barrier)(void *barrier_state);
