@@ -37,8 +37,6 @@ unsigned expected_media(const std::string&v){return SW_STR_ISTARTS_WITH(v.data()
 ''')]
     prelude=r'''
 #include "swoole_http2.h"
-#define SW_USE_RUST_HTTP2
-#include "rust_http2.h"
 #include <string>
 #include <vector>
 #include <iostream>
@@ -46,7 +44,26 @@ unsigned expected_media(const std::string&v){return SW_STR_ISTARTS_WITH(v.data()
 #include <cctype>
 #include <strings.h>
 using namespace swoole;
-namespace Http2=swoole::http2;
+extern "C" {
+struct SwRsHttp2HeaderPlan { uint32_t kind, publish_flags, suppress, capture_content_type; };
+void sw_rs_http2_header_plan(uint32_t, const uint8_t *, size_t, size_t, uint32_t, SwRsHttp2HeaderPlan *);
+uint32_t sw_rs_http2_media_kind(const uint8_t *, size_t);
+}
+// Callers fold through the current locale (as crates/phphttp2 does) before the Rust lookups.
+static size_t fold(const std::string &s, uint8_t (&folded)[33]) {
+    size_t n = s.size() < sizeof(folded) ? s.size() : sizeof(folded);
+    for (size_t i = 0; i < n; ++i) folded[i] = std::tolower((unsigned char) s[i]);
+    return n;
+}
+static uint32_t rust_header_kind(unsigned role, const std::string &s) {
+    uint8_t folded[33]; SwRsHttp2HeaderPlan plan; auto n = fold(s, folded);
+    sw_rs_http2_header_plan(role, folded, n, s.size(), 0, &plan);
+    return plan.kind;
+}
+static uint32_t rust_media_kind(const std::string &s) {
+    uint8_t folded[33]; auto n = fold(s, folded);
+    return sw_rs_http2_media_kind(folded, n);
+}
 '''
     driver=r'''
 // ASan's strcasecmp interceptors fold ASCII only; glibc folds through the current
@@ -67,8 +84,8 @@ int main(){size_t count=0;std::vector<std::string> names={"",":status",":STATUS"
 for(unsigned c=0;c<256;++c){names.push_back(std::string(1,char(c))+"status");names.push_back("content-"+std::string(1,char(c))+"ype");names.push_back("set-cookie"+std::string(1,char(c)));}
 std::vector<std::string> values={"","200","00301","application/x-www-form-urlencoded","APPLICATION/X-WWW-FORM-URLENCODED; charset=x","multipart/form-data; boundary=a","MULTIPART/FORM-DATA","gzip","GZip;stuff","gzipgarbage","a=b;c=d",std::string("gzip\0tail",9),std::string(40,'a')};
 std::vector<std::string> locales,unavailable_locales;for(const char *locale:{"C","C.UTF-8","en_US.UTF-8","tr_TR.ISO8859-9"}){if(!setlocale(LC_CTYPE,locale)){unavailable_locales.push_back(locale);continue;}locales.push_back(locale);
- for(auto&name:names)for(unsigned role=0;role<4;++role){if(expected(role,name)!=Http2::rust_header_kind((SwRsHttp2HeaderRole)role,name.data(),name.size())){std::cerr<<"header kind mismatch\n";return 1;}++count;}
- for(auto&v:values){if(expected_media(v)!=Http2::rust_media_kind(v.data(),v.size()))return 2;++count;}
+ for(auto&name:names)for(unsigned role=0;role<4;++role){if(expected(role,name)!=rust_header_kind(role,name)){std::cerr<<"header kind mismatch\n";return 1;}++count;}
+ for(auto&v:values){if(expected_media(v)!=rust_media_kind(v))return 2;++count;}
 }
 std::cout<<"{\"passed\":true,\"header_cases\":"<<count<<",\"locales\":[";for(size_t i=0;i<locales.size();++i){if(i)std::cout<<",";std::cout<<"\""<<locales[i]<<"\"";}std::cout<<"],\"unavailable_locales\":[";for(size_t i=0;i<unavailable_locales.size();++i){if(i)std::cout<<",";std::cout<<"\""<<unavailable_locales[i]<<"\"";}std::cout<<"]}\n";
 }
