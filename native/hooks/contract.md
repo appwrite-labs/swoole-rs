@@ -4,8 +4,9 @@ Feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
 `swoole_rs_hooks.h`. Patched upstream files: `ext-src/swoole_runtime.cc`,
 `include/swoole_coroutine_socket.h`, `src/coroutine/file_lock.cc` (deleted),
 `src/coroutine/hook.cc` (deleted),
-`src/coroutine/iouring.cc`, `src/coroutine/socket.cc`,
-`src/coroutine/system.cc`, `src/coroutine/uring_socket.cc`.
+`src/coroutine/iouring.cc`, `src/coroutine/socket.cc` (deleted; the coroutine
+Socket's native side is in `system.cc`), `src/coroutine/system.cc`,
+`src/coroutine/uring_socket.cc`.
 
 All exports are allocation-free, callback-free decisions over copied scalars.
 They never read or write errno/last_error. Native code owns objects,
@@ -138,7 +139,7 @@ are still never uninstalled.
   `mkdir`, `rmdir`, `rename`, `fsync`, `fdatasync`, `ftruncate`, `lseek`,
   `readlink`, `statvfs`, `access`), `sleep`, `usleep`, `getaddrinfo` and
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
-  socket.cc registers a host table while the library loads (`swr_v1_hook_set_host`): its
+  system.cc registers a host table while the library loads (`swr_v1_hook_set_host`): its
   coroutine test, `async`, `System::sleep`, the poll table, the socket table and, in an
   io_uring build, `Iouring::host`.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;

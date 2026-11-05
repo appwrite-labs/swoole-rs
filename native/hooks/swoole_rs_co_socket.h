@@ -169,6 +169,8 @@ typedef struct {
 swr_v1_hook_co_timer_t swr_v1_hook_co_timer_new(swr_v1_co_socket *socket, uint32_t event, double timeout);
 bool swr_v1_hook_co_timer_start(swr_v1_hook_co_timer_t *timer);
 void swr_v1_hook_co_timer_stop(swr_v1_hook_co_timer_t *timer);
+/* Socket::timer_callback: node, one of the socket's timers, fired. */
+void swr_v1_hook_co_socket_timer_fired(swr_v1_co_socket *socket, void *node);
 /* wait_event for the current coroutine: barrier (when given) stays installed for the wait;
    buffer, when not null, is a write's buffer slot. */
 bool swr_v1_hook_co_socket_wait(swr_v1_co_socket *socket,
