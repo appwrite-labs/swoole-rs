@@ -1,3 +1,8 @@
+#ifndef SWR_PROCESS_NATIVE_VIEW_CONTEXT
+#include "swoole_process_pool.h"
+#else
+#ifndef SWOOLE_RS_PROCESS_VIEWS_H
+#define SWOOLE_RS_PROCESS_VIEWS_H
 // Generated from crates/process/src/{worker_record,process_pool}.rs.
 // Typed native loans only; Rust owns the record layouts and operations.
 struct WorkerFields {
@@ -74,3 +79,5 @@ struct PoolFields {
     swr_v1_process_reload_task * reload_task = nullptr;
     void * ptr;
 };
+#endif
+#endif
