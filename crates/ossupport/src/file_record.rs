@@ -21,6 +21,16 @@ impl FileRecord {
         }
     }
 
+    /// Own `fd`, opened with `flags`, with no path (a File whose path native keeps).
+    #[must_use]
+    pub const fn adopt(fd: c_int, flags: c_int) -> Self {
+        Self {
+            fd,
+            flags,
+            path: Vec::new(),
+        }
+    }
+
     /// Open the request's file and own its exact path bytes.
     #[must_use]
     pub fn open_readonly(path: &CStr) -> Option<Self> {

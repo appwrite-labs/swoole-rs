@@ -14,7 +14,6 @@ itoa = "1.0.18"
 memchr = "2.8.3"
 swoole-rs-base64 = { path = "../base64" }
 swoole-rs-corebase = { path = "../corebase" }
-swoole-rs-ossupport = { path = "../ossupport" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"

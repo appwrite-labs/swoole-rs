@@ -308,6 +308,14 @@ impl CppString {
         start.wrapping_sub(unsigned(first)).cast_signed()
     }
 
+    /// `String::grow`: counts `increment` more bytes, doubling a buffer they fill.
+    pub fn grow(&mut self, increment: usize) {
+        self.length = self.length.wrapping_add(increment);
+        if self.length == self.size {
+            self.reserve(self.size.wrapping_mul(2));
+        }
+    }
+
     pub fn extend_align(&mut self, new_size: usize) {
         let mut size = aligned(self.size.wrapping_mul(2));
         while size < new_size {
@@ -357,7 +365,7 @@ impl CppString {
         }
         let at = self.str.wrapping_add(self.length);
         // SAFETY: the buffer holds `length` free bytes at `at`.
-        let mut n = unsafe { swoole_rs_ossupport::swr_v1_os_random_bytes(at.cast(), length) };
+        let mut n = unsafe { swoole_rs_corebase::swr_v1_os_random_bytes(at.cast(), length) };
         if n != length {
             return false;
         }
@@ -645,11 +653,7 @@ upstream! {
     /// `this` is live.
     pub unsafe extern "C" fn swr_string_grow(this: *mut CppString, increment: usize) {
         // SAFETY: as the caller promises.
-        let string = unsafe { of(this) };
-        string.length = string.length.wrapping_add(increment);
-        if string.length == string.size {
-            string.reserve(string.size.wrapping_mul(2));
-        }
+        unsafe { of(this) }.grow(increment);
     }
     "_ZNK6swoole6String6substrEmm", "_ZNK6swoole6String6substrEmm" =>
     /// `String substr(size_t, size_t) const`. The C++ ABI returns a class with a

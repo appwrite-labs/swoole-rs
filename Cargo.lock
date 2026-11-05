@@ -343,7 +343,6 @@ dependencies = [
  "memchr",
  "swoole-rs-base64",
  "swoole-rs-corebase",
- "swoole-rs-ossupport",
 ]
 
 [[package]]
@@ -566,6 +565,8 @@ name = "swoole-rs-ossupport"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-buffer",
+ "swoole-rs-corebase",
 ]
 
 [[package]]

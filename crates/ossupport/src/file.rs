@@ -1,5 +1,4 @@
-//! `swoole::File` IO loops, `file_get_size`, the sendfile variants and
-//! `swoole_random_bytes` (upstream `src/os/{file,sendfile,base}.cc`). Rust runs the
+//! `swoole::File` IO loops, `file_get_size` and the sendfile variants (upstream `src/os/{file,sendfile,base}.cc`). Rust runs the
 //! syscalls; native code keeps the descriptors and logs warnings, so every
 //! function returns right after the failing call with its errno intact.
 use libc::{c_char, c_int, c_void, off_t};
@@ -193,116 +192,6 @@ pub extern "C" fn swr_v1_os_file_size(fd: c_int) -> FileSize {
     }
 }
 
-/// `file_get_size(filename)`: the size of a regular file by path.
-/// # Safety
-/// `path` is a valid NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_size_path(path: *const c_char) -> FileSize {
-    // SAFETY: valid C string per the contract.
-    let fd = unsafe { libc::open(path, libc::O_RDONLY) };
-    if fd < 0 {
-        return FileSize {
-            size: -1,
-            error: errno(),
-        };
-    }
-    let size = swr_v1_os_file_size(fd);
-    // SAFETY: the descriptor opened above.
-    unsafe { libc::close(fd) };
-    size
-}
-
-/// The checks before `file_get_contents` reads or `file_put_contents` writes:
-/// status 0 leaves `fd` open for native to read or write and close. Otherwise
-/// `fd` is closed: 1 open failed (errno intact), 2 the size is unknown (`error`
-/// to publish), 3 empty, 4 larger than the maximum.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileContents {
-    pub fd: c_int,
-    pub status: u32,
-    pub size: i64,
-    pub error: c_int,
-}
-
-const fn refused(status: u32, error: c_int) -> FileContents {
-    FileContents {
-        fd: -1,
-        status,
-        size: -1,
-        error,
-    }
-}
-
-/// `file_get_contents`: open read-only and size-check against `maximum`.
-/// # Safety
-/// `path` is a valid NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_contents_open(
-    path: *const c_char,
-    maximum: u64,
-) -> FileContents {
-    // SAFETY: valid C string per the contract.
-    let fd = unsafe { libc::open(path, libc::O_RDONLY) };
-    if fd < 0 {
-        return refused(1, 0);
-    }
-    let size = swr_v1_os_file_size(fd);
-    let status = if size.error != 0 {
-        2
-    } else if size.size == 0 {
-        3
-    } else if size.size.unsigned_abs() > maximum {
-        4
-    } else {
-        return FileContents {
-            fd,
-            status: 0,
-            size: size.size,
-            error: 0,
-        };
-    };
-    // SAFETY: the descriptor opened above.
-    unsafe { libc::close(fd) };
-    refused(status, size.error)
-}
-
-/// `file_put_contents`: refuse empty (3) or oversized (4) content, then
-/// open `O_WRONLY | O_TRUNC | O_CREAT` with mode 0666.
-/// # Safety
-/// `path` is a valid NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_put_open(
-    path: *const c_char,
-    length: u64,
-    maximum: u64,
-) -> FileContents {
-    if length == 0 {
-        return refused(3, 0);
-    }
-    if length > maximum {
-        return refused(4, 0);
-    }
-    // SAFETY: valid C string per the contract.
-    let fd = unsafe {
-        swr_v1_os_file_open(
-            -1,
-            path,
-            libc::O_WRONLY | libc::O_TRUNC | libc::O_CREAT,
-            0o666,
-        )
-    };
-    if fd < 0 {
-        return refused(1, 0);
-    }
-    FileContents {
-        fd,
-        status: 0,
-        size: 0,
-        error: 0,
-    }
-}
-
 /// A sendfile result and the warning native logs: 0 none; for the copy fallback
 /// 1 `pread() failed` and 2 `write() failed`; for kqueue `sendfile` 1 `sendfile failed`.
 #[repr(C)]
@@ -444,38 +333,6 @@ pub unsafe extern "C" fn swr_v1_os_sendfile(
                 };
             }
         }
-    }
-}
-
-/// `swoole_random_bytes`: fills `buf` from the system CSPRNG, retrying
-/// interrupted calls; returns how many bytes it filled.
-/// # Safety
-/// `buf` points to `size` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_random_bytes(buf: *mut c_void, size: usize) -> usize {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        let mut done = 0;
-        while done < size {
-            // SAFETY: `done < size`, so the range stays inside the caller's buffer.
-            let at = unsafe { buf.byte_add(done) };
-            // SAFETY: `at` has `size - done` writable bytes.
-            let n = unsafe { libc::getrandom(at, size - done, 0) };
-            if n == -1 {
-                if matches!(errno(), libc::EINTR | libc::EAGAIN) {
-                    continue;
-                }
-                break;
-            }
-            done += n.unsigned_abs();
-        }
-        done
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        // SAFETY: `buf` has `size` writable bytes.
-        unsafe { libc::arc4random_buf(buf, size) };
-        size
     }
 }
 
@@ -711,84 +568,5 @@ mod tests {
         assert!(swr_v1_os_file_close(fd), "closed");
         std::fs::remove_file(created.to_string_lossy().as_ref()).unwrap_or_default();
         std::fs::remove_file(path.to_string_lossy().as_ref()).unwrap_or_default();
-    }
-
-    #[test]
-    fn contents_checks_follow_upstream_order() {
-        let missing = c"/nonexistent/swr-ossupport";
-        let opened = unsafe { swr_v1_os_file_contents_open(missing.as_ptr(), 10) };
-        assert_eq!((opened.fd, opened.status), (-1, 1), "open failure first");
-        assert_eq!(errno(), libc::ENOENT, "errno kept for the warning");
-        let size = unsafe { swr_v1_os_file_size_path(missing.as_ptr()) };
-        assert_eq!(
-            size,
-            FileSize {
-                size: -1,
-                error: libc::ENOENT
-            },
-            "size by path"
-        );
-        let dir = std::ffi::CString::new(std::env::temp_dir().to_string_lossy().as_bytes())
-            .unwrap_or_default();
-        let opened = unsafe { swr_v1_os_file_contents_open(dir.as_ptr(), 10) };
-        assert_eq!(
-            (opened.status, opened.error),
-            (2, libc::EISDIR),
-            "directories have no size"
-        );
-        let mut template = *b"/tmp/swr-contents-XXXXXX\0";
-        let fd = unsafe { swr_v1_os_tmpfile(template.as_mut_ptr().cast()) };
-        let path = template.as_ptr().cast::<c_char>();
-        assert_eq!(
-            unsafe { swr_v1_os_file_contents_open(path, 10) }.status,
-            3,
-            "empty"
-        );
-        assert_eq!(
-            unsafe { swr_v1_os_file_put_open(path, 0, 10) }.status,
-            3,
-            "nothing to put"
-        );
-        assert_eq!(
-            unsafe { swr_v1_os_file_put_open(path, 11, 10) }.status,
-            4,
-            "too much to put"
-        );
-        let put = unsafe { swr_v1_os_file_put_open(path, 5, 10) };
-        assert_eq!(put.status, 0, "opened for writing");
-        let io = unsafe { swr_v1_os_file_write_all(put.fd, false, b"hello".as_ptr().cast(), 5) };
-        assert_eq!(io.done, 5, "written");
-        assert!(swr_v1_os_file_close(put.fd), "closed");
-        assert_eq!(
-            unsafe { swr_v1_os_file_size_path(path) }.size,
-            5,
-            "size by path"
-        );
-        assert_eq!(
-            unsafe { swr_v1_os_file_contents_open(path, 4) }.status,
-            4,
-            "too large"
-        );
-        let got = unsafe { swr_v1_os_file_contents_open(path, 5) };
-        assert_eq!((got.status, got.size), (0, 5), "ready to read");
-        assert!(swr_v1_os_file_close(got.fd), "left open for native");
-        assert!(swr_v1_os_file_close(fd), "tmpfile closed");
-        unsafe { libc::unlink(path) };
-    }
-
-    #[test]
-    fn random_bytes_fill_the_buffer() {
-        let mut buf = [0_u8; 64];
-        assert_eq!(
-            unsafe { swr_v1_os_random_bytes(buf.as_mut_ptr().cast(), 64) },
-            64,
-            "all requested bytes"
-        );
-        assert!(buf.iter().any(|&b| b != 0), "not left zeroed");
-        assert_eq!(
-            unsafe { swr_v1_os_random_bytes(buf.as_mut_ptr().cast(), 0) },
-            0,
-            "empty request"
-        );
     }
 }

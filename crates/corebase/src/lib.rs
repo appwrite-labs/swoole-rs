@@ -30,7 +30,7 @@ pub use host::{
 pub use lifecycle::{
     LifecycleState, swr_v1_corebase_lifecycle_next, swr_v1_corebase_task_tmp_next,
 };
-pub use random::{swoole_random_string, swr_v1_corebase_random_char};
+pub use random::{swoole_random_string, swr_v1_corebase_random_char, swr_v1_os_random_bytes};
 pub use thread::*;
 
 use std::ffi::{c_char, c_int, c_long, c_ulong};
