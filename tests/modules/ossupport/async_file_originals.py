@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the unchanged original coroutine AsyncFile case on full native and ossupport-only libraries."""
+"""Run the unchanged original coroutine AsyncFile case on native, ossupport-only and complete lower-hook libraries."""
 import argparse
 import hashlib
 import json
@@ -36,7 +36,9 @@ def main():
     try:
         if sys.platform != 'linux':
             raise ValueError('This gate requires the Linux C++14-compatible GoogleTest SDK; no cases executed')
-        for engine, modules in [('native', []), ('rust', ['ossupport'])]:
+        lower = ['base64', 'buffer', 'corebase', 'coroutine', 'crc32', 'error', 'framing', 'hooks',
+                 'http', 'ossupport', 'protocols', 'reactor', 'timer', 'tls', 'websocket']
+        for engine, modules in [('native', []), ('rust-ossupport', ['ossupport']), ('rust-hooks', lower)]:
             child = attempt / (engine + '.json')
             command = [sys.executable, str(ROOT / 'tools/native_core.py'), '--source', str(args.source),
                        '--config', str(args.config), '--jobs', str(args.jobs), '--case', case,
@@ -44,7 +46,8 @@ def main():
             if cache := shutil.which('ccache'):
                 command += ['--ccache', cache]
             if modules:
-                command += ['--module', 'ossupport', '--archive', str(args.archive)]
+                command += [argument for module in modules for argument in ['--module', module]]
+                command += ['--archive', str(args.archive)]
             result = run_isolated(command, cwd=ROOT, timeout=600)
             row = dict(command=command, exit=result.returncode, stdout=result.stdout,
                        stderr=result.stderr, report=str(child))
