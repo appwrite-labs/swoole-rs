@@ -1,15 +1,16 @@
+#include "shim.h"
 #include "shim_errors.h"
 
-/* Run `statement` inside zend_try; 1 if it bailed out. */
+/* Run `statement` inside SWR_ZEND_TRY; 1 if it bailed out. */
 #define SWR_TRAP(statement)                                                                \
     volatile int bailed = 0;                                                               \
-    zend_try {                                                                             \
+    SWR_ZEND_TRY {                                                                             \
         statement;                                                                         \
     }                                                                                      \
-    zend_catch {                                                                           \
+    SWR_ZEND_CATCH {                                                                           \
         bailed = 1;                                                                        \
     }                                                                                      \
-    zend_end_try();                                                                        \
+    SWR_ZEND_END_TRY();                                                                        \
     return bailed
 
 int swr_zend_try_error(int level, const char *message) {

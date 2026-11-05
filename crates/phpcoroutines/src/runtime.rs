@@ -128,7 +128,9 @@ pub(crate) fn create(
     // SAFETY: the running context.
     unsafe { swoole_rs_zend::sys::swr_zend_coroutine_save(context::vm(ctx)) };
     // SAFETY: the new coroutine reads `args` before this frame resumes.
-    Ok(unsafe { (host::ops().create)((&raw mut args).cast()) })
+    let cid = unsafe { (host::ops().create)((&raw mut args).cast()) };
+    bailout::trapped(0)?;
+    Ok(cid)
 }
 
 /// `PHPCoroutine::activate`.
@@ -281,8 +283,8 @@ unsafe extern "C" fn interrupt_resume(co: *mut c_void) {
 /// Re-raise a trapped bailout from a handler's outermost Rust frame, which
 /// owns nothing to drop (docs/zend.md).
 pub(crate) fn raise() {
-    // SAFETY: Zend's own `zend_bailout()`.
-    unsafe { swoole_rs_zend::sys::_zend_bailout(c"swoole_coroutine".as_ptr().cast_mut(), 0) };
+    Bailout.defer();
+    bailout::finish();
 }
 
 /// A pointer the interrupt thread may hold: `EG(vm_interrupt)` of this

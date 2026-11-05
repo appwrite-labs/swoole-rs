@@ -1,0 +1,72 @@
+<?php
+use Swoole\Thread;
+function guarded(callable $callback) {
+    return function_exists('swr_guard_owned') ? swr_guard_owned($callback) : $callback();
+}
+function escape(): never { swoole_implicit_fn('bailout', 235); }
+class ExitDestructor {
+    public function __destruct() { escape(); }
+}
+class ExitSerialization {
+    public function __serialize(): array {
+        if ($GLOBALS['mode'] === 'serialize') guarded(fn() => escape());
+        return [];
+    }
+    public function __unserialize(array $data): void {
+        guarded(fn() => escape());
+    }
+}
+if (Thread::getInfo()['is_main_thread']) {
+    $mode = $argv[1];
+    $after = new Thread\Atomic(0);
+    $worker = new Thread(__FILE__, $mode, $after);
+    if (!$worker->join()) throw new RuntimeException('join failed');
+    $normal = in_array($mode, ['return', 'exception'], true);
+    $expected = $normal ? 0 : 235;
+    if ($worker->getExitStatus() !== $expected || $after->get() !== ($normal ? 1 : 0)) {
+        throw new RuntimeException('exit or post-callback behavior changed');
+    }
+    if (function_exists('swr_guard_counts')) {
+        $count = in_array($mode, ['nested', 'coroutine', 'serialize', 'unserialize'], true) ? 2 : 1;
+        if (swr_guard_counts() !== [$count, $count, $count, $count * 4096]) {
+            throw new RuntimeException('Rust owners were not dropped before native exit relay');
+        }
+    }
+    echo json_encode([$mode, $worker->getExitStatus(), $after->get()]), "\n";
+    exit;
+}
+[$mode, $after] = Thread::getArguments();
+if ($mode === 'exception') {
+    try {
+        guarded(function () { throw new RuntimeException('kept'); });
+        throw new LogicException('exception was swallowed');
+    } catch (RuntimeException $exception) {
+        if ($exception->getMessage() !== 'kept') throw $exception;
+    }
+} elseif ($mode === 'nested') {
+    guarded(fn() => guarded(fn() => escape()));
+} elseif ($mode === 'coroutine') {
+    Swoole\Coroutine\run(function () {
+        guarded(function () {
+            go(fn() => guarded(fn() => escape()));
+            throw new LogicException('resumer continued after whole-thread exit');
+        });
+    });
+} elseif ($mode === 'error') {
+    set_error_handler(fn() => escape());
+    guarded(fn() => trigger_error('exit handler'));
+} elseif ($mode === 'destructor') {
+    guarded(function () { $object = new ExitDestructor(); unset($object); });
+} elseif ($mode === 'serialize') {
+    guarded(fn() => new Thread\Map(['object' => new ExitSerialization()]));
+} elseif ($mode === 'unserialize') {
+    $map = new Thread\Map(['object' => new ExitSerialization()]);
+    guarded(fn() => $map['object']);
+} elseif ($mode === 'exit') {
+    guarded(fn() => exit(235));
+} elseif ($mode === 'return') {
+    guarded(fn() => 42);
+} else {
+    guarded(fn() => escape());
+}
+$after->add();

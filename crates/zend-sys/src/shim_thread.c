@@ -1,3 +1,4 @@
+#include "shim.h"
 #include "shim_thread.h"
 
 bool swr_zend_array_is_list(const zend_array *array) {
@@ -43,16 +44,16 @@ php_stream *swr_zend_stream_open(const char *path, const char *mode) {
 
 int swr_zend_stream_select_fd(php_stream *stream, int *fd) {
     volatile int result = 1;
-    zend_try {
+    SWR_ZEND_TRY {
         if (php_stream_cast(stream, PHP_STREAM_AS_FD_FOR_SELECT | PHP_STREAM_CAST_INTERNAL, (void **) fd, 1) ==
             SUCCESS) {
             result = 0;
         }
     }
-    zend_catch {
+    SWR_ZEND_CATCH {
         result = 2;
     }
-    zend_end_try();
+    SWR_ZEND_END_TRY();
     return result;
 }
 

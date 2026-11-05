@@ -1,18 +1,19 @@
+#include "shim.h"
 #include "shim_socket.h"
 #include "ext/standard/file.h"
 
 int swr_zend_stream_socketd(zval *zstream, php_stream **stream, int *fd) {
     volatile int result = 1;
-    zend_try {
+    SWR_ZEND_TRY {
         *stream = (php_stream *) zend_fetch_resource2_ex(zstream, "stream", php_file_le_stream(), php_file_le_pstream());
         if (*stream && php_stream_cast(*stream, PHP_STREAM_AS_SOCKETD, (void **) fd, 1) == SUCCESS) {
             result = 0;
         }
     }
-    zend_catch {
+    SWR_ZEND_CATCH {
         result = 2;
     }
-    zend_end_try();
+    SWR_ZEND_END_TRY();
     return result;
 }
 

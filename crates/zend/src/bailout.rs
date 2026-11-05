@@ -5,9 +5,10 @@
 use crate::{
     Invalid,
     sys::{
-        _zend_bailout, swr_zend_parse_func, swr_zend_try, swr_zend_try_call, swr_zend_try_report,
-        swr_zend_try_report_code, swr_zend_try_report_flag, swr_zend_try_report_length,
-        swr_zend_try_report_level, zend_fcall_info, zend_fcall_info_cache, zval,
+        swr_zend_guard_pending, swr_zend_guard_resume, swr_zend_parse_func, swr_zend_try,
+        swr_zend_try_call, swr_zend_try_report, swr_zend_try_report_code, swr_zend_try_report_flag,
+        swr_zend_try_report_length, swr_zend_try_report_level, zend_fcall_info,
+        zend_fcall_info_cache, zval,
     },
 };
 use std::{
@@ -25,7 +26,25 @@ thread_local! {
     static PENDING: Cell<bool> = const { Cell::new(false) };
 }
 
+/// The native destination of a contained escape. Whole-thread provenance remains
+/// pending until the request boundary acknowledges it, including across PHP catches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BailoutKind {
+    Zend,
+    ThreadExit,
+}
+
 impl Bailout {
+    /// Native provenance of this contained escape; no PHP operation is run.
+    #[must_use]
+    pub fn kind(&self) -> BailoutKind {
+        if native_thread_exit() {
+            BailoutKind::ThreadExit
+        } else {
+            BailoutKind::Zend
+        }
+    }
+
     /// Leave the bailout for [`finish`], the last step of the handler or export
     /// that is the outermost Rust frame.
     pub fn defer(self) {
@@ -40,11 +59,17 @@ pub fn defer(result: Result<(), Bailout>) {
     }
 }
 
+/// Whole-thread provenance remains native and survives ordinary PHP catches.
+fn native_thread_exit() -> bool {
+    // SAFETY: a pure read of this OS thread's native pending outcome.
+    unsafe { swr_zend_guard_pending() != 0 }
+}
+
 /// Whether a bailout waits for [`finish`]. No error is raised meanwhile:
 /// upstream never ran past the first bailout.
 #[must_use]
 pub fn pending() -> bool {
-    PENDING.get()
+    PENDING.get() || native_thread_exit()
 }
 
 /// Hand a contained bailout to an outer C trampoline after Rust cleanup.
@@ -53,7 +78,7 @@ pub fn pending() -> bool {
 #[must_use = "the C caller must re-raise a returned bailout"]
 pub fn relay_to_c(result: Result<(), Bailout>) -> bool {
     defer(result);
-    PENDING.replace(false)
+    PENDING.replace(false) || native_thread_exit()
 }
 
 /// Raise a deferred bailout (`zend_bailout()`). Called last by every handler
@@ -61,9 +86,9 @@ pub fn relay_to_c(result: Result<(), Bailout>) -> bool {
 /// a drop by then: the `longjmp` crosses only that frame.
 #[inline]
 pub fn finish() {
-    if PENDING.replace(false) {
+    if PENDING.replace(false) || native_thread_exit() {
         // SAFETY: Zend's own bailout, from the outermost Rust frame (above).
-        unsafe { _zend_bailout(c"swoole-rs-zend".as_ptr().cast_mut(), 0) };
+        unsafe { swr_zend_guard_resume() };
     }
 }
 
@@ -77,7 +102,11 @@ pub fn raise(result: Result<(), Bailout>) {
 /// # Errors
 /// Returns `Bailout` when the native leaf reports a nonzero contained-bailout flag.
 pub fn trapped(bailed: c_int) -> Result<(), Bailout> {
-    if bailed != 0 { Err(Bailout) } else { Ok(()) }
+    if bailed != 0 || native_thread_exit() {
+        Err(Bailout)
+    } else {
+        Ok(())
+    }
 }
 
 /// `report(message)` inside `zend_try`, for a C or C++ reporter of a PHP

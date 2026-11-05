@@ -1,3 +1,4 @@
+#include "shim.h"
 #include "shim_event.h"
 
 uint8_t swr_zend_event_pause_shutdown(void) {
@@ -20,10 +21,10 @@ void swr_zend_event_restore_shutdown(uint8_t previous) {
 
 int swr_zend_event_property(zval *object, zend_string *name, zval **result) {
     volatile int bailed = 0;
-    zend_try {
+    SWR_ZEND_TRY {
         *result = zend_read_property_ex(Z_OBJCE_P(object), Z_OBJ_P(object), name, 0, NULL);
-    } zend_catch {
+    } SWR_ZEND_CATCH {
         bailed = 1;
-    } zend_end_try();
+    } SWR_ZEND_END_TRY();
     return bailed;
 }

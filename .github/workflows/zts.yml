@@ -41,12 +41,18 @@ jobs:
       - run: |
           php="--php-config $PWD/target/php-zts/bin/php-config --phpize $PWD/target/php-zts/bin/phpize --configure=--enable-swoole-thread"
           python3 tools/build_upstream.py $php
-          python3 tools/build_hybrid.py $php $(python3 -c 'from tools.build_hybrid import SELECTABLE; print(*(f"--module {m}" for m in SELECTABLE))') | tee hybrid.log
+          python3 tools/build_hybrid.py $php $(python3 -c 'from tools.build_hybrid import SELECTABLE; print(*(f"--module {m}" for m in SELECTABLE))') --export target/phpt/guard-sdk | tee hybrid.log
           mkdir -p target/phpt
           cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
           cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
           for engine in upstream hybrid; do target/php-zts/bin/php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -E '^thread '; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
+      - name: Composed whole-thread escape scopes
+        run: |
+          python3 tests/modules/phphelpers/exit_guard.py --php "$PWD/target/php-zts/bin/php" \
+            --php-config "$PWD/target/php-zts/bin/php-config" \
+            --engine upstream=target/phpt/upstream.so --engine hybrid=target/phpt/hybrid.so \
+            --export target/phpt/guard-sdk --source-ref "$GITHUB_SHA" --output target/phpt/guard.json
       - run: |
           families="--module swoole_thread --module swoole_atomic --module swoole_lock"
           options="--manifest target/phpt/manifest.json --timeout 30 --php $PWD/target/php-zts/bin/php"
@@ -67,3 +73,4 @@ jobs:
             phpt-zts.json
             target/phpt/zts/
             target/phpt/recheck/
+            target/phpt/guard.json

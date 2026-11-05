@@ -4,6 +4,7 @@
 #ifndef SWOOLE_RS_ZEND_SHIM_H
 #define SWOOLE_RS_ZEND_SHIM_H
 #include "php.h"
+#include "../../../native/corebase/swoole_rs_zend_guard.h"
 #include "zend_exceptions.h"
 #include "zend_interfaces.h"
 #include "ext/standard/url.h"
