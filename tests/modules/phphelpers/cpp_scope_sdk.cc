@@ -5,6 +5,16 @@
 #include <stdexcept>
 using swoole_rs::NativeCppScope;
 extern NativeCppScope *other_scope();
+extern "C" int cpp_scope_test_owner(int (*)(void *), void *, void (*)(const unsigned char *, size_t));
+static size_t drops, bytes, checksum;
+static void dropped(const unsigned char *data, size_t length) {
+    ++drops; bytes += length;
+    for (size_t i = 0; i < length; ++i) checksum += data[i];
+}
+static int capture(void *argument) {
+    auto *scope = static_cast<NativeCppScope *>(argument);
+    return scope->capture([]() { throw std::runtime_error("ordinary native catch"); }) ? 0 : 1;
+}
 static void *key;
 static void *context() { return key; }
 int main() {
@@ -17,7 +27,8 @@ int main() {
     {
         NativeCppScope inner;
         assert(other_scope() == &inner);
-        assert(!inner.capture([]() { throw std::runtime_error("ordinary native catch"); }));
+        assert(cpp_scope_test_owner(capture, &inner, dropped) == 1);
+        assert(drops == 1 && bytes == 4096 && checksum == 4096 * 42);
         try {
             auto exception = inner.take();
             inner.leave();

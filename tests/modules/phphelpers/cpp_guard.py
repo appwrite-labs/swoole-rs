@@ -58,7 +58,7 @@ def main():
         report['provider_header_sha256'] = sha(provider_header)
         sources = [Path(__file__).with_suffix('.cc'), Path(__file__).with_suffix('.php'),
                    Path(__file__).with_name('exit_guard.rs'), Path(__file__).with_name('cpp_scope_sdk.cc'),
-                   Path(__file__).with_name('cpp_scope_sdk_other.cc')]
+                   Path(__file__).with_name('cpp_scope_sdk_other.cc'), Path(__file__).with_name('cpp_scope_sdk.rs')]
         for source in sources:
             (work / source.name).write_bytes(source.read_bytes())
         report['sources'] = {str(source): sha(source) for source in sources}
@@ -70,11 +70,20 @@ def main():
         write_report(output, report)
         if result.returncode:
             raise ValueError('Rust owner witness did not compile')
+        sdk_archive = work / 'libcpp_sdk_owner.a'
+        command = ['rustc', '--edition=2024', '--crate-type=staticlib', '-Copt-level=3', '-Cpanic=abort',
+                   str(work / 'cpp_scope_sdk.rs'), '-o', str(sdk_archive)]
+        result = run_isolated(command, timeout=120)
+        report['sdk_rust_compile'] = dict(command=command, exit=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        write_report(output, report)
+        if result.returncode:
+            raise ValueError('SDK-only Rust owner witness did not compile')
         includes = shlex.split(subprocess.check_output([args.php_config, '--includes'], text=True))
         for standard in ['c++14', 'c++17']:
             sdk = work / ('cpp-sdk-' + standard)
             command = ['c++', '-std=' + standard, '-O2', '-I' + str(work),
-                       str(work / 'cpp_scope_sdk.cc'), str(work / 'cpp_scope_sdk_other.cc'), '-o', str(sdk)]
+                       str(work / 'cpp_scope_sdk.cc'), str(work / 'cpp_scope_sdk_other.cc'), str(sdk_archive),
+                       '-lpthread', '-ldl', '-lm', '-o', str(sdk)]
             compiled = run_isolated(command, timeout=120)
             sdk_row = dict(command=command, exit=compiled.returncode, stdout=compiled.stdout, stderr=compiled.stderr)
             if compiled.returncode:
