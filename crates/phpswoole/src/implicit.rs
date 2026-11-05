@@ -44,12 +44,14 @@ fn implicit_fn(call: &Call) {
         // SAFETY: a literal format with no conversions.
         unsafe { php_printf(c"never be executed here\n".as_ptr()) };
     } else if is(b"bailout") {
-        #[expect(clippy::cast_possible_truncation, reason = "C's (int) of a zend_long")]
-        // SAFETY: a passed argument is live.
         let status = if args.is_null() {
             95
         } else {
-            (unsafe { value::get_long(args) }) as c_int
+            // SAFETY: a passed argument is live.
+            let status = unsafe { value::get_long(args) };
+            #[expect(clippy::cast_possible_truncation, reason = "C's (int) of a zend_long")]
+            let status = status as c_int;
+            status
         };
         // SAFETY: it bails out across this frame, which owns nothing.
         unsafe { sw_php_exit(status) };
@@ -95,7 +97,7 @@ fn implicit_fn(call: &Call) {
                 EXCEPTION.entry(),
                 message.as_cstr(),
                 SW_ERROR_INVALID_PARAMS as i64,
-            )
-        };
+            );
+        }
     }
 }
