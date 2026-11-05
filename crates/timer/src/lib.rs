@@ -100,60 +100,16 @@ impl Timer {
     fn index(&self, id: i64) -> Option<usize> {
         self.positions
             .get(&id)
-            .map(|&slot| self.heap.position(slot))
+            .and_then(|&slot| self.heap.position(slot))
     }
-    fn up(&mut self, mut index: usize) {
-        let slot = self.heap.slot(index);
-        let deadline = self.heap[index].deadline;
-        while index > 0 {
-            let parent = (index - 1) / 2;
-            if self.heap.deadline(parent) <= deadline {
-                break;
-            }
-            self.heap.place(index, self.heap.slot(parent));
-            index = parent;
-        }
-        self.heap.place(index, slot);
+    fn find(&self, id: i64) -> Option<(usize, TimerView)> {
+        let index = self.index(id)?;
+        Some((index, *self.heap.get(index)?))
     }
-    fn down(&mut self, mut index: usize) {
-        let slot = self.heap.slot(index);
-        let deadline = self.heap[index].deadline;
-        while let Some(left) = index.checked_mul(2).and_then(|i| i.checked_add(1)) {
-            if left >= self.heap.len() {
-                break;
-            }
-            let right = left + 1;
-            let child = if right < self.heap.len()
-                && self.heap.deadline(right) < self.heap.deadline(left)
-            {
-                right
-            } else {
-                left
-            };
-            if deadline <= self.heap.deadline(child) {
-                break;
-            }
-            self.heap.place(index, self.heap.slot(child));
-            index = child;
-        }
-        self.heap.place(index, slot);
-    }
-    fn repair(&mut self, index: usize) {
-        self.heap.refresh(index);
-        if index > 0 && self.heap[index].deadline < self.heap[(index - 1) / 2].deadline {
-            self.up(index);
-        } else {
-            self.down(index);
-        }
-    }
-    fn detach(&mut self, index: usize) -> TimerView {
-        let entry = self.heap.swap_remove(index);
+    fn detach(&mut self, index: usize) -> Option<TimerView> {
+        let entry = self.heap.swap_remove(index)?;
         self.positions.remove(&entry.id);
-        if index < self.heap.len() {
-            // Repair places the moved candidate and updates its index once.
-            self.repair(index);
-        }
-        entry
+        Some(entry)
     }
 }
 
@@ -257,10 +213,8 @@ pub unsafe extern "C" fn swr_v1_timer_add(
         token,
         ..TimerView::default()
     };
-    let index = state.heap.len();
-    state.heap.push(view);
-    state.positions.insert(id, state.heap.slot(index));
-    state.up(index);
+    let slot = state.heap.push(view);
+    state.positions.insert(id, slot);
     state.last_id = id;
     state.last_time = now;
     // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
@@ -282,11 +236,11 @@ pub unsafe extern "C" fn swr_v1_timer_get(
     }
     // SAFETY: non-null (checked above); a live handle from create, not concurrently mutated.
     let state = unsafe { &*queue };
-    let Some(index) = state.index(id) else {
+    let Some((_, view)) = state.find(id) else {
         return NOT_FOUND;
     };
     // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe { out.write(state.heap[index]) };
+    unsafe { out.write(view) };
     OK
 }
 
@@ -308,15 +262,14 @@ pub unsafe extern "C" fn swr_v1_timer_update(
     if state.closing {
         return CLOSING;
     }
-    let Some(index) = state.index(id) else {
+    let Some((index, mut view)) = state.find(id) else {
         return NOT_FOUND;
     };
-    if state.heap[index].removed != 0 {
+    if view.removed != 0 {
         return NOT_FOUND;
     }
-    state.heap[index].deadline = deadline;
-    let view = state.heap[index];
-    state.repair(index);
+    view.deadline = deadline;
+    state.heap.update(index, view);
     // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
     unsafe { out.write(view) };
     OK
@@ -336,22 +289,25 @@ pub unsafe extern "C" fn swr_v1_timer_remove(
     }
     // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
     let state = unsafe { &mut *queue };
-    let Some(index) = state.index(id) else {
+    let Some((index, mut view)) = state.find(id) else {
         return NOT_FOUND;
     };
-    if state.heap[index].removed != 0 {
+    if view.removed != 0 {
         return NOT_FOUND;
     }
-    if state.active_id == id {
-        state.heap[index].removed = 1;
-        // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-        unsafe { out.write(state.heap[index]) };
+    let status = if state.active_id == id {
+        view.removed = 1;
+        state.heap.update(index, view);
         DEFERRED
-    } else {
-        // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-        unsafe { out.write(state.detach(index)) };
+    } else if let Some(entry) = state.detach(index) {
+        view = entry;
         RELEASE
-    }
+    } else {
+        return NOT_FOUND;
+    };
+    // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
+    unsafe { out.write(view) };
+    status
 }
 
 /// # Safety
@@ -429,10 +385,9 @@ pub unsafe extern "C" fn swr_v1_timer_complete(
     if !state.selecting || state.active_id != id {
         return INVALID;
     }
-    let Some(index) = state.index(id) else {
+    let Some((index, mut view)) = state.find(id) else {
         return INVALID;
     };
-    let view = state.heap[index];
     let mut next = Some(view.deadline);
     if view.deadline <= state.captured && view.interval > 0 {
         next = (state.captured - view.deadline)
@@ -450,20 +405,18 @@ pub unsafe extern "C" fn swr_v1_timer_complete(
     } else {
         OK
     };
-    let result = if status == OK {
+    if status == OK {
         // Both values were checked above; matching avoids fallible unwraps.
         if let (Some(deadline), Some(exec_count)) = (next, executions) {
-            state.heap[index].deadline = deadline;
-            state.heap[index].exec_count = exec_count;
+            view.deadline = deadline;
+            view.exec_count = exec_count;
         }
-        let result = state.heap[index];
-        state.repair(index);
-        result
-    } else {
-        state.detach(index)
-    };
+        state.heap.update(index, view);
+    } else if let Some(entry) = state.detach(index) {
+        view = entry;
+    }
     // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe { out.write(result) };
+    unsafe { out.write(view) };
     status
 }
 
@@ -568,8 +521,9 @@ pub unsafe extern "C" fn swr_v1_timer_close(queue: *mut Timer) -> i32 {
     // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
     let state = unsafe { &mut *queue };
     state.closing = true;
-    if let Some(index) = state.index(state.active_id) {
-        state.heap[index].removed = 1;
+    if let Some((index, mut view)) = state.find(state.active_id) {
+        view.removed = 1;
+        state.heap.update(index, view);
     }
     OK
 }
@@ -587,15 +541,14 @@ pub unsafe extern "C" fn swr_v1_timer_drain(queue: *mut Timer, out: *mut TimerVi
     if !state.closing {
         return INVALID;
     }
-    if state.heap.is_empty() {
+    let Some(head) = state.heap.first() else {
         return EMPTY;
-    }
-    let index = usize::from(state.heap[0].id == state.active_id);
-    if index >= state.heap.len() {
+    };
+    let Some(view) = state.detach(usize::from(head.id == state.active_id)) else {
         return DEFERRED;
-    }
+    };
     // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe { out.write(state.detach(index)) };
+    unsafe { out.write(view) };
     RELEASE
 }
 
@@ -703,10 +656,10 @@ mod tests {
             let state = unsafe { &*self.0 };
             assert_eq!(state.heap.len(), state.positions.len());
             for (i, entry) in state.heap.iter().enumerate() {
-                assert_eq!(state.positions.get(&entry.id), Some(&state.heap.slot(i)));
+                assert_eq!(state.positions.get(&entry.id), state.heap.slot(i).as_ref());
                 assert_eq!(state.index(entry.id), Some(i));
                 if i != 0 {
-                    assert!(state.heap[(i - 1) / 2].deadline <= entry.deadline);
+                    assert!(state.heap.get((i - 1) / 2).unwrap().deadline <= entry.deadline);
                 }
             }
         }
@@ -922,9 +875,12 @@ mod tests {
             let a = queue.add(0, 1, true, 1);
             queue.prime();
             if execution_limit {
-                unsafe {
-                    (&mut *queue.0).heap[0].exec_count = u64::MAX;
-                }
+                let heap = unsafe { &mut (*queue.0).heap };
+                let view = TimerView {
+                    exec_count: u64::MAX,
+                    ..*heap.first().unwrap()
+                };
+                heap.update(0, view);
             }
             assert_eq!(
                 unsafe { swr_v1_timer_begin(queue.0, if execution_limit { 1 } else { i64::MAX }) },
