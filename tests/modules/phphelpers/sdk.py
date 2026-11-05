@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Compile both actual PHP helper TUs, pinned (native) and from the hybrid build tree (hybrid),
+"""Compile every owned PHP helper TU, pinned (native) and from the hybrid build tree (hybrid),
 with stdext enabled/disabled; no runtime claim."""
 import argparse
+from collections import Counter
 import io
 import json
 import os
@@ -21,6 +22,18 @@ from tools.harness import run_isolated,write_report
 HEADERS={'.h','.hpp','.inc'}
 # stdext deliberately includes this vendored C fragment.
 STDEXT_FRAGMENT='thirdparty/php/zend/zend_execute.c'
+
+
+def compilation_matrix_passed(report):
+    """Require each source/profile/standard case exactly once and successful."""
+    expected=Counter((engine,enabled,unit,standard)
+                     for engine in report['feature_profiles']
+                     for enabled in [False,True]
+                     for unit in report['sources'] if unit.endswith('.cc')
+                     for standard in report['cpp_standards'])
+    actual=Counter((row['engine'],row['stdext_enabled'],row['unit'],row['cpp_standard'])
+                   for row in report['commands'])
+    return bool(expected) and actual==expected and all(row['returncode']==0 for row in report['commands'])
 
 
 def dependency_flags():
@@ -160,7 +173,7 @@ def main():
                 write_report(output,report)
         report['async_codegen_passed']=len(report['async_codegen_commands'])==4 and all(
             row['exit']==0 and row.get('expected_async_import') for row in report['async_codegen_commands'])
-        report['passed']=len(report['commands'])==16 and all(row['returncode']==0 for row in report['commands']) and report['async_codegen_passed']
+        report['passed']=compilation_matrix_passed(report) and report['async_codegen_passed']
         if sha(config)!=config_sha256:raise ValueError('Input SDK config changed')
     except Exception as error:
         report['passed']=False;report['error']=str(error)

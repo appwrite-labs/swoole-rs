@@ -197,3 +197,11 @@ pub use signal_dispatch::*;
 mod reactor_state;
 #[cfg(unix)]
 pub use reactor_state::*;
+
+#[cfg(test)]
+mod isolated_process {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/support/isolated_process.rs"
+    ));
+}
