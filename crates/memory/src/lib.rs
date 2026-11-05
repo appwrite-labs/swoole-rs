@@ -16,6 +16,7 @@ pub mod fixed;
 pub mod global;
 pub mod heap;
 pub mod mapping;
+mod pool;
 pub mod ring;
 
 #[cfg(test)]

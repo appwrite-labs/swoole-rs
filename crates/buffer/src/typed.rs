@@ -184,7 +184,7 @@ pub(crate) unsafe extern "C" fn swr_v1_buffer_typed_pop(
     }
     // SAFETY: `buffer` is non-null (checked above), live and exclusive.
     let queue = unsafe { &mut *buffer };
-    let Mode::Typed(cursor) = &mut queue.mode else {
+    let Mode::Typed(_) = &mut queue.mode else {
         return INVALID;
     };
     let Some(entry) = queue.entries.pop_front() else {
@@ -193,6 +193,7 @@ pub(crate) unsafe extern "C" fn swr_v1_buffer_typed_pop(
     let effect = match entry {
         Entry::Data(bytes) => {
             queue.length -= super::chunk_length(&bytes);
+            queue.recycle(bytes);
             Detached::default()
         }
         Entry::TypedToken(token) => Detached {
@@ -200,6 +201,9 @@ pub(crate) unsafe extern "C" fn swr_v1_buffer_typed_pop(
             dispose: token.dispose,
         },
         Entry::Native(_) => unreachable!("legacy push rejects typed mode"),
+    };
+    let Mode::Typed(cursor) = &mut queue.mode else {
+        unreachable!()
     };
     cursor.offset = 0;
     cursor.generation = cursor.generation.wrapping_add(1);

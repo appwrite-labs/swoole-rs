@@ -61,3 +61,14 @@ For native buffer comparisons, retain both pop-only and `--peek-front` reports
 from `tests/modules/buffer/benchmark.py`. The latter reads one byte per DATA
 front before pop, exercising repeated cached-front calls and verifying a checksum
 outside timing. They are different workloads, not a before/after speedup ratio.
+
+## Rust storage microbenchmarks
+
+`storage.py --baseline PATH --output target/storage-results.json` builds the
+same release harness against an untouched baseline and this checkout. It covers
+buffer reuse, flat directory names, heap node pooling and timer heap keys, with
+seven alternating trials calibrated toward at least 100 ms for the faster engine.
+Allocation probes run separately from timing; all timed checksums must match.
+Use `--prepare-only` to build without measuring. Stop builds and tests before
+measurement. These Rust public-ABI workloads do not measure PHP/server throughput.
+Keep raw reports under `target/` and put findings on the PR or issue.
