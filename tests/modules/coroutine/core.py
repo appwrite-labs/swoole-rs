@@ -70,6 +70,7 @@ def main():
     parser.add_argument('--config', type=Path, help='Read-only same-platform configured baseline config.h')
     parser.add_argument('--archive', type=Path, help='Same-platform real coroutine Rust static archive')
     parser.add_argument('--build-root', type=Path, help='Private writable cache outside reference/repository')
+    parser.add_argument('--async-file', action='store_true', help='Also compile and execute the unchanged original coroutine AsyncFile unit')
     parser.add_argument('--lifetime-only', action='store_true', help='Execute only three supplemental real-context lifetime witnesses; original32 remain unmeasured')
     parser.add_argument('--rust-asan', action='store_true', help='Verify the coroutine archive contains actual Rust ASan imports')
     parser.add_argument('--ucontext', action='store_true', help='Derived private config explicitly selects native ucontext instead of assembly')
@@ -81,6 +82,9 @@ def main():
     parser.add_argument('--timeout', type=int, default=90, help='Seconds per original test, unchanged stress sizes')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    if args.async_file and args.lifetime_only:
+        parser.error('--async-file requires the complete original selection')
+    selected_units = [*SELECTED, *(['core-tests/src/coroutine/file.cpp'] if args.async_file else [])]
     if args.jobs < 1 or args.timeout < 1:
         parser.error('Jobs/timeout must be positive')
     source = args.source.resolve(strict=True)
@@ -102,7 +106,8 @@ def main():
               'inventory': [], 'engines': [], 'results': [], 'execution_status': 'running', 'passed': False}
     artifacts = args.output.resolve().with_name(args.output.stem + '-artifacts')
     try:
-        with tempfile.TemporaryDirectory(prefix='swr-coroutine-core-inputs-') as temporary:
+        with tempfile.TemporaryDirectory(prefix='swr-coroutine-core-inputs-',
+                                         dir=None if args.inventory_only else build_root) as temporary:
             staged = Path(temporary)
             require_build_space(staged)
             stage(source, staged)
@@ -112,6 +117,14 @@ def main():
                 for path in ASSERTIONS for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', (staged / path).read_text())]
             if len(inventory) != 33 or len({case['name'] for case in inventory}) != len(inventory):
                 raise ValueError('Original coroutine inventory differs')
+            if args.async_file:
+                path = 'core-tests/src/coroutine/file.cpp'
+                extra = [{'name': f'{group}.{name}', 'path': path, 'sha256': sha(staged / path)}
+                         for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', (staged / path).read_text())]
+                if [case['name'] for case in extra] != ['coroutine_async_file.async_file']:
+                    raise ValueError('Original AsyncFile inventory differs')
+                inventory += extra
+                report['scope'] = 'Unchanged33 coroutine originals plus AsyncFile and3 supplemental lifetime witnesses; full native reference vs the exact production archive overlay. No PHP or performance claim.'
             report['original_inventory'] = inventory.copy()
             report['unmeasured_originals'] = [case['name'] for case in inventory] if args.lifetime_only else []
             supplemental = [{'name': group + '.' + name, 'path': LIFETIME, 'sha256': hashlib.sha256(lifetime).hexdigest()} for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', lifetime.decode())]
@@ -152,7 +165,7 @@ def main():
                     selection = 'file(GLOB_RECURSE core_test_files core-tests/src/*.cpp thirdparty/llhttp/*.c)'
                     if cmake.count(selection) != 1:
                         raise ValueError('Original core target selection changed')
-                    cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(SELECTED) + ')')
+                    cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(selected_units) + ')')
                     if engine == 'rust':
                         cmake += f'\n{hybrid_cmake}target_link_libraries(lib-swoole "{frozen_archive}")\n'
                     write_changed(tree / 'CMakeLists.txt', cmake.encode())

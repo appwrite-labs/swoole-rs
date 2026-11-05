@@ -442,9 +442,10 @@ def plan(args, reports):
         script('ossupport-async-file-owner', 'tests/modules/ossupport/async_file.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-async-file-owner'))
         if integrate and sys.platform == 'linux':
-            script('ossupport-async-file-originals', 'tests/modules/ossupport/async_file_originals.py',
+            script('ossupport-async-file-originals', 'tests/modules/coroutine/core.py', '--async-file',
                    '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+                   '--build-root', ROOT / 'target/native-originals/async-file', '--gtest-prefix', '/usr',
                    '--jobs', args.jobs, *report('ossupport-async-file-originals'))
         script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-file-owner'))
