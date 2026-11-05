@@ -39,7 +39,7 @@ try:
                     subprocess.run(['git','apply','--check',str(path)],cwd=tree,check=True)
                     subprocess.run(['git','apply',str(path)],cwd=tree,check=True)
         env={**os.environ}
-        extra=['--with-swoole-rs='+str(prefix),'--enable-swoole-rs-locks'] if name=='rust' else []
+        extra=['--with-swoole-rs='+str(prefix)] if name=='rust' else []
         for stage,cmd in [('phpize',['phpize']),('configure',['./configure','--enable-swoole','--enable-swoole-thread','--enable-sockets','--disable-brotli','--disable-zstd',*extra]),('build',['make','-j2'])]:
             log=base/(name+'-'+stage+'.log')
             with log.open('w') as out:subprocess.run(cmd,cwd=tree,env=env,stdout=out,stderr=subprocess.STDOUT,check=True)

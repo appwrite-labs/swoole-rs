@@ -24,10 +24,9 @@ from tools.private_copy import copy_private
 MODULES = {'websocket': ('M02', 1), 'buffer': ('M01', 2), 'timer': ('M03', 4),
            'base64': ('M09', 8), 'crc32': ('M10', 16), 'error': ('M11', 32), 'protocols': ('M13', 128), 'memory': ('M12', 64),
            'http': ('M04', 256), 'utilities': ('M14', 512), 'locks': ('M16', 1024), 'wrappers': ('M17', 2048), 'framing': ('M18', 4096), 'corebase': ('M19', 8192), 'reactor': ('M05', 16384), 'coroutine': ('M06', 32768), 'hooks': ('M07', 65536), 'ossupport': ('M20', 131072), 'tls': ('M21', 262144), 'process': ('M08', 524288), 'clients': ('M22', 1048576), 'httpbindings': ('M23', 2097152), 'http2': ('M24', 4194304), 'ports': ('M25', 8388608), 'phphelpers': ('M26', 16777216), 'phpcollections': ('M27', 33554432), 'phpevents': ('M28', 67108864), 'phpcoroutines': ('M29', 134217728)}
-# Every Rust build has every module. Graduated modules have no configure switch and no
-# cargo feature; build_hybrid passes the others' switches and features.
+# Every Rust build has every module: none has a configure switch or a cargo feature.
+# Graduated modules (docs/migration.md#graduation) have their gates run on every dev.py run.
 GRADUATED = ('base64', 'buffer', 'corebase', 'crc32', 'error', 'framing', 'http', 'protocols', 'websocket', 'timer')
-SELECTABLE = sorted(set(MODULES) - set(GRADUATED))
 # The integration patch that adds the --with(out)-swoole-rs switch; later patches to
 # the same files call into Rust.
 BRIDGE_PATCH = 'migration/patches/integration/0001-rust-bridge.patch'
@@ -138,12 +137,11 @@ def export_build(manifest, source, destination, source_ref):
     return receipt
 
 
-def rust_sources(modules, extra=()):
+def rust_sources(extra=()):
     """Hash selected first-party Cargo manifests/source trees, including path dependencies."""
     command = ['cargo', 'metadata', '--locked', '--offline', '--format-version', '1',
-               '--manifest-path', str(ROOT / 'crates/ffi/Cargo.toml'), '--no-default-features']
-    if features := [module for module in modules if module not in GRADUATED] + ['php'] + list(extra):
-        command += ['--features', ','.join(features)]
+               '--manifest-path', str(ROOT / 'crates/ffi/Cargo.toml'), '--no-default-features',
+               '--features', ','.join(['php', *extra])]
     metadata = json.loads(subprocess.check_output(command, cwd=ROOT, text=True))
     packages = {package['id']: package for package in metadata['packages']}
     nodes = {node['id']: node for node in metadata['resolve']['nodes']}
@@ -182,13 +180,13 @@ def stdext_enabled(args):
     return enabled
 
 
-def rust_archive(modules, php_config='php-config', extra=(), *, php=True, profile='release'):
+def rust_archive(php_config='php-config', extra=(), *, php=True, profile='release'):
     """Use Cargo's actual static-library output, including configured target directories.
     zend-sys binds the headers of the PHP the extension is built for (PHP_CONFIG). Without
     `php` the archive holds no Zend references: the native gates link it into executables."""
     command = ['cargo', 'build', '--locked', *(['--release'] if profile == 'release' else ['--profile', profile]), '--no-default-features', '-p', 'swoole-rs-ffi',
                '--message-format=json-render-diagnostics']
-    if features := [module for module in modules if module not in GRADUATED] + (['php'] if php else []) + list(extra):
+    if features := (['php'] if php else []) + list(extra):
         command += ['--features', ','.join(features)]
     result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, text=True,
                             env={**os.environ, 'PHP_CONFIG': php_config})
@@ -414,13 +412,13 @@ def build(args, parser):
     if args.backend == 'rust':
         if stdext_enabled(args):
             cargo_extra.append('stdext')
-        rust_inputs = rust_sources(args.module, cargo_extra)
+        rust_inputs = rust_sources(cargo_extra)
         cargo_started = time.monotonic()
         staging = ROOT / 'target/hybrid/.archives'
         staging.mkdir(parents=True, exist_ok=True)
         for name, php, profile in [('libswoole_rs_ffi.a', False, 'release'),
                                    ('libswoole_rs_php.a', True, 'release' if args.dev else 'release-lto')]:
-            archive, compilation = rust_archive(args.module, args.php_config, cargo_extra, php=php, profile=profile)
+            archive, compilation = rust_archive(args.php_config, cargo_extra, php=php, profile=profile)
             # Both --dev archives are Cargo's one release output: keep each before the next build.
             archives[name] = staging / name
             copy_private(archive, archives[name])
@@ -428,11 +426,10 @@ def build(args, parser):
                 rust_php_compilation = compilation
             else:
                 rust_compilation = compilation
-        if rust_sources(args.module, cargo_extra) != rust_inputs:
+        if rust_sources(cargo_extra) != rust_inputs:
             raise ValueError('Rust sources changed during compilation; refusing to attest the archive')
         timings['cargo'] = round(time.monotonic() - cargo_started, 4)
     switches = ['--with-swoole-rs={BUILD_PREFIX}'] if args.backend == 'rust' else ['--without-swoole-rs']
-    switches += ['--enable-swoole-rs-' + module for module in args.module if module not in GRADUATED]
     effective_configure, effective_env = extension_configuration(args, switches)
     headers = headers_for(args.module)
     inputs = {'php_sockets_requested': getattr(args, 'php_sockets', False),
@@ -520,7 +517,7 @@ def build(args, parser):
                   'configure': configure, 'builder_sha256': digest(__file__), 'php_builder_sha256': digest(ROOT / 'tools/build_upstream.py'), 'extension': str(library), 'extension_sha256': digest(library),
                   'log': str(build / 'build.log'), 'migrated_feature_bits': sum(MODULES[name][1] for name in args.module)}
         write_report(record_path, record)
-    if args.backend == 'rust' and rust_sources(args.module, cargo_extra) != rust_inputs:
+    if args.backend == 'rust' and rust_sources(cargo_extra) != rust_inputs:
         raise ValueError('Rust sources changed during native compilation; refusing to publish the extension')
     suffix = ('-halfclose' if getattr(args, 'fix_halfclose', False) else '') + profile_suffix(args)
     destination = ROOT / 'target/hybrid' / build_alias(args.backend, suffix, dev=args.dev)

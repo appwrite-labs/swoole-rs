@@ -7,8 +7,7 @@ operations. Table runs over the memory crate's table, called from Rust; C++
 lends its shared allocation, Zend's string hash and PHP's error reports.
 
 Edit both overlays in `migration/patches/phpcollections/` with `tools/patches.py`
-(see [hybrid build](../../../docs/hybrid-build.md#editing-patches)); selected sources
-require `--enable-swoole-rs-phpcollections`.
+(see [hybrid build](../../../docs/hybrid-build.md#editing-patches)).
 
 ## Loaded PHP runtime (`php_runtime.py`)
 

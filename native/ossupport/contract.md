@@ -1,6 +1,6 @@
 # OS support policy v1
 
-Opt-in feature bit 131072 (`ossupport`). ABI: `docs/os-support-abi-v1.md` and
+Feature bit 131072 (`ossupport`). ABI: `docs/os-support-abi-v1.md` and
 `swoole_rs_ossupport.h`. Patched upstream files: `src/os/async_thread.cc`,
 `src/os/file.cc`, `src/os/msg_queue.cc`, `src/os/base.cc`, `src/os/sendfile.cc`.
 

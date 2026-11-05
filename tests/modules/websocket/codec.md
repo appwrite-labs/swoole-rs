@@ -64,7 +64,7 @@ Run the real ABI differential against unchanged pinned C++ codec bodies:
 
 ```sh
 cargo test -p swoole-rs-websocket
-cargo build --release -p swoole-rs-ffi --features websocket
+cargo build --release -p swoole-rs-ffi
 python3 -m pytest tests/modules/websocket/test_codec.py \
   --archive target/release/libswoole_rs_ffi.a --sanitize   # reads target/upstream/src
 ```

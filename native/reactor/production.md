@@ -35,7 +35,7 @@ macOS and Linux for both engines; the owned-storage profiles pass on macOS.
 ## Capability modifiers
 
 Modifiers add identity checks, not assertions. The owned-storage modifiers
-compare the selected engine (Rust storage, `SWOOLE_RS_REACTOR` in its SDK) with
+compare the selected engine (Rust storage) with
 the Native control.
 
 | Modifier | Profile | Checks |

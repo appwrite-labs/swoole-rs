@@ -1,8 +1,5 @@
 #ifndef SWOOLE_RS_REACTOR_DEFER_H
 #define SWOOLE_RS_REACTOR_DEFER_H
-#if !defined(SWOOLE_RS_REACTOR) || !SWOOLE_RS_REACTOR
-#error "Deferred queue requires --enable-swoole-rs-reactor"
-#endif
 #include "swoole_rs_reactor.h"
 #include <cstdlib>
 #include <functional>

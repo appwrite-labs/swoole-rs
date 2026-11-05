@@ -1,8 +1,8 @@
 # M25 ListenPort configuration
 
 Contracts: [native/ports/contract.md](../../../native/ports/contract.md) and
-[docs/ports-abi-v1.md](../../../docs/ports-abi-v1.md). Opt-in feature bit
-8388608 (`SWOOLE_RS_PORTS`); not enabled by default.
+[docs/ports-abi-v1.md](../../../docs/ports-abi-v1.md). Feature bit
+8388608 (`ports`).
 
 Rust owns protocol priority/labels, integer normalization, event lookup,
 listener option sequencing, socket-creation decisions, the init_protocol plan,

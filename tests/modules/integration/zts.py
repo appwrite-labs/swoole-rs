@@ -132,7 +132,7 @@ def main():
                 for patch in patches:
                     row['patch_proofs'].append(apply_patch_verified(source, a.checkout / patch['path'],
                                                                    patch['upstream_paths'], patch['sha256']))
-                extra += ['--with-swoole-rs=' + str(prefix), *['--enable-swoole-rs-' + m for m in modules]]
+                extra += ['--with-swoole-rs=' + str(prefix)]
             log = work / (name + '-build.log')
             row['configure'] = build_extension(source, log, args, extra)
             extension = source / 'modules/swoole.so'

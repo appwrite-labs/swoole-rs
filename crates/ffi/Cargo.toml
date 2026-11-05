@@ -10,48 +10,22 @@ crate-type = ["staticlib"]
 
 [features]
 default = []
-# The PHP classes: Swoole\Timer and each enabled module's php* crate (empty without
-# it). Only the extension's archive has PHP; the native gates' archive leaves it
-# off so it holds no Zend references (docs/zend.md).
-php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpredis", "swoole-rs-phpredis/php",
-       "swoole-rs-phplocks?/php", "swoole-rs-phpruntime?/php", "swoole-rs-phpserver?/php", "swoole-rs-phpprocess?/php", "swoole-rs-phpthread?/php", "swoole-rs-phpclients?/php", "swoole-rs-phphttp?/php", "swoole-rs-phphttp2?/php", "swoole-rs-phpstdext?/php", "swoole-rs-phphelpers?/php", "swoole-rs-phpcollections?/php", "swoole-rs-phpevents?/php", "swoole-rs-phpcoroutines?/php"]
-
-memory = ["dep:swoole-rs-memory"]
-
-utilities = ["dep:swoole-rs-utilities"]
-locks = ["dep:swoole-rs-locks", "dep:swoole-rs-phplocks"]
-wrappers = ["dep:swoole-rs-wrappers"]
-
-reactor = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols", "dep:swoole-rs-tls", "swoole-rs-tls/upstream-symbols"]
-
-coroutine = ["dep:swoole-rs-coroutine"]
-
-hooks = ["dep:swoole-rs-hooks", "swoole-rs-hooks/upstream-symbols", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/upstream-symbols"]
-# Not a module: the hybrid adds it when configured with --enable-iouring.
-iouring = ["hooks", "swoole-rs-hooks/iouring"]
-# Not modules: the hybrid adds each when configured with its hook
-# (--enable-swoole-pgsql, --with-swoole-odbc, --with-swoole-firebird, --enable-swoole-curl,
-# --with-swoole-ssh2).
-pgsql = ["hooks", "dep:swoole-rs-pgsql"]
-odbc = ["hooks", "dep:swoole-rs-odbc"]
-firebird = ["hooks", "dep:swoole-rs-firebird"]
-curl = ["hooks", "dep:swoole-rs-curl"]
-ssh2 = ["hooks", "dep:swoole-rs-ssh2"]
-
-ossupport = ["dep:swoole-rs-ossupport", "swoole-rs-ossupport/upstream-symbols"]
-tls = ["dep:swoole-rs-tls"]
-process = ["dep:swoole-rs-process", "swoole-rs-process/upstream-symbols", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/server", "dep:swoole-rs-phpprocess", "dep:swoole-rs-phpthread"]
-cares = ["clients", "swoole-rs-clients/cares"]
-clients = ["dep:swoole-rs-clients", "dep:swoole-rs-inflate", "dep:swoole-rs-phpclients"]
-httpbindings = ["dep:swoole-rs-httpbindings", "dep:swoole-rs-phphttp"]
-http2 = ["dep:swoole-rs-http2", "dep:swoole-rs-phphttp2"]
-ports = ["dep:swoole-rs-ports", "swoole-rs-ports/upstream-symbols", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/port"]
-stdext = ["phphelpers", "swoole-rs-phpstdext/active"]
-phphelpers = ["dep:swoole-rs-phphelpers", "dep:swoole-rs-phpstdext", "swoole-rs-phpswoole?/module-info"]
-phpcollections = ["dep:swoole-rs-phpcollections"]
-phpevents = ["dep:swoole-rs-phpevents"]
-phpcoroutines = ["dep:swoole-rs-phpcoroutines"]
-
+# The PHP classes: Swoole\Timer and each module's php* crate. Only the extension's
+# archive has PHP; the native gates' archive leaves it off so it holds no Zend
+# references (docs/zend.md).
+php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "swoole-rs-phpswoole/module-info", "dep:swoole-rs-phpredis", "swoole-rs-phpredis/php",
+       "swoole-rs-phplocks/php", "swoole-rs-phpruntime/php", "swoole-rs-phpserver/php", "swoole-rs-phpprocess/php", "swoole-rs-phpthread/php", "swoole-rs-phpclients/php", "swoole-rs-phphttp/php", "swoole-rs-phphttp2/php", "swoole-rs-phpstdext/php", "swoole-rs-phphelpers/php", "swoole-rs-phpcollections/php", "swoole-rs-phpevents/php", "swoole-rs-phpcoroutines/php"]
+# Not modules: the hybrid adds each when configured with its switch (--enable-iouring,
+# --enable-cares, --enable-swoole-stdext, --enable-swoole-pgsql, --with-swoole-odbc,
+# --with-swoole-firebird, --enable-swoole-curl, --with-swoole-ssh2).
+iouring = ["swoole-rs-hooks/iouring"]
+cares = ["swoole-rs-clients/cares"]
+stdext = ["swoole-rs-phpstdext/active"]
+pgsql = ["dep:swoole-rs-pgsql"]
+odbc = ["dep:swoole-rs-odbc"]
+firebird = ["dep:swoole-rs-firebird"]
+curl = ["dep:swoole-rs-curl"]
+ssh2 = ["dep:swoole-rs-ssh2"]
 
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }
@@ -61,41 +35,41 @@ swoole-rs-base64 = { path = "../base64" }
 swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-protocols = { path = "../protocols" }
-swoole-rs-memory = { path = "../memory", optional = true }
+swoole-rs-memory = { path = "../memory" }
 swoole-rs-http = { path = "../http" }
-swoole-rs-utilities = { path = "../utilities", optional = true }
-swoole-rs-locks = { path = "../locks", optional = true }
-swoole-rs-phplocks = { path = "../phplocks", optional = true }
+swoole-rs-utilities = { path = "../utilities" }
+swoole-rs-locks = { path = "../locks" }
+swoole-rs-phplocks = { path = "../phplocks" }
 swoole-rs-phptimer = { path = "../phptimer", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpredis = { path = "../phpredis", optional = true }
-swoole-rs-wrappers = { path = "../wrappers", optional = true }
+swoole-rs-wrappers = { path = "../wrappers" }
 swoole-rs-framing = { path = "../framing" }
 swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
-swoole-rs-reactor = { path = "../reactor", optional = true }
+swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
-swoole-rs-coroutine = { path = "../coroutine", optional = true }
-swoole-rs-hooks = { path = "../hooks", optional = true }
-swoole-rs-phpruntime = { path = "../phpruntime", optional = true }
-swoole-rs-ossupport = { path = "../ossupport", optional = true }
-swoole-rs-tls = { path = "../tls", optional = true }
-swoole-rs-process = { path = "../process", optional = true }
-swoole-rs-phpprocess = { path = "../phpprocess", optional = true }
-swoole-rs-phpthread = { path = "../phpthread", optional = true }
-swoole-rs-clients = { path = "../clients", optional = true }
-swoole-rs-phpclients = { path = "../phpclients", optional = true }
-swoole-rs-inflate = { path = "../inflate", optional = true }
-swoole-rs-httpbindings = { path = "../httpbindings", optional = true }
-swoole-rs-phphttp = { path = "../phphttp", optional = true }
-swoole-rs-http2 = { path = "../http2", optional = true }
-swoole-rs-phphttp2 = { path = "../phphttp2", optional = true }
-swoole-rs-ports = { path = "../ports", optional = true }
-swoole-rs-phpserver = { path = "../phpserver", optional = true }
-swoole-rs-phphelpers = { path = "../phphelpers", optional = true }
-swoole-rs-phpstdext = { path = "../phpstdext", optional = true }
-swoole-rs-phpcollections = { path = "../phpcollections", optional = true }
-swoole-rs-phpevents = { path = "../phpevents", optional = true }
-swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
+swoole-rs-coroutine = { path = "../coroutine" }
+swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
+swoole-rs-phpruntime = { path = "../phpruntime", features = ["upstream-symbols"] }
+swoole-rs-ossupport = { path = "../ossupport", features = ["upstream-symbols"] }
+swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
+swoole-rs-process = { path = "../process", features = ["upstream-symbols"] }
+swoole-rs-phpprocess = { path = "../phpprocess" }
+swoole-rs-phpthread = { path = "../phpthread" }
+swoole-rs-clients = { path = "../clients" }
+swoole-rs-phpclients = { path = "../phpclients" }
+swoole-rs-inflate = { path = "../inflate" }
+swoole-rs-httpbindings = { path = "../httpbindings" }
+swoole-rs-phphttp = { path = "../phphttp" }
+swoole-rs-http2 = { path = "../http2" }
+swoole-rs-phphttp2 = { path = "../phphttp2" }
+swoole-rs-ports = { path = "../ports", features = ["upstream-symbols"] }
+swoole-rs-phpserver = { path = "../phpserver", features = ["server", "port"] }
+swoole-rs-phphelpers = { path = "../phphelpers" }
+swoole-rs-phpstdext = { path = "../phpstdext" }
+swoole-rs-phpcollections = { path = "../phpcollections" }
+swoole-rs-phpevents = { path = "../phpevents" }
+swoole-rs-phpcoroutines = { path = "../phpcoroutines" }
 swoole-rs-pgsql = { path = "../pgsql", optional = true }
 swoole-rs-odbc = { path = "../odbc", optional = true }
 swoole-rs-firebird = { path = "../firebird", optional = true }

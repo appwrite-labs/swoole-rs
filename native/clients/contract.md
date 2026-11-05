@@ -1,8 +1,7 @@
 # Clients local ABI
 
-Opt-in feature bit 1048576 (`clients`). ABI: `docs/clients-resolver-abi-v1.md`,
-`swoole_rs_clients.h`. Converted sources require
-`SWOOLE_RS_CLIENTS`. Patched upstream files: `ext-src/swoole_client.cc`,
+Feature bit 1048576 (`clients`). ABI: `docs/clients-resolver-abi-v1.md`,
+`swoole_rs_clients.h`. Patched upstream files: `ext-src/swoole_client.cc`,
 `ext-src/swoole_client_async.cc`, `ext-src/swoole_client_coro.cc`,
 `ext-src/swoole_http_client_coro.cc`, `ext-src/swoole_name_resolver.cc`,
 `src/network/address.cc`, `src/network/client.cc`, `src/network/dns.cc`.

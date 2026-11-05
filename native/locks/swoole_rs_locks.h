@@ -1,8 +1,5 @@
 #ifndef SWOOLE_RS_LOCKS_H
 #define SWOOLE_RS_LOCKS_H
-#ifndef SWOOLE_RS_LOCKS
-#error "Locks overlay requires --enable-swoole-rs-locks"
-#endif
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #if !TARGET_OS_OSX

@@ -37,7 +37,7 @@ class RustCache(unittest.TestCase):
                         filenames=['/explicit/private-target/release/libswoole_rs_ffi.a'])
         result = subprocess.CompletedProcess(['cargo'], 0, json.dumps(artifact) + '\n')
         with patch.object(build_hybrid.subprocess, 'run', return_value=result):
-            archive, receipt = build_hybrid.rust_archive(['httpbindings'])
+            archive, receipt = build_hybrid.rust_archive()
         self.assertEqual(archive, Path(artifact['filenames'][0]))
         self.assertIn('--features', receipt['command'])
         for result in [subprocess.CompletedProcess(['cargo'], 1, ''),
@@ -45,7 +45,7 @@ class RustCache(unittest.TestCase):
                        subprocess.CompletedProcess(['cargo'], 0, (json.dumps(artifact) + '\n') * 2)]:
             with patch.object(build_hybrid.subprocess, 'run', return_value=result):
                 with self.assertRaises((ValueError, subprocess.CalledProcessError)):
-                    build_hybrid.rust_archive([])
+                    build_hybrid.rust_archive(php=False)
 
     def test_selected_source_attestation_follows_build_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -61,15 +61,15 @@ class RustCache(unittest.TestCase):
                 nodes.append(dict(id=name, deps=[dict(pkg=dep, dep_kinds=[dict(kind=kind)]) for dep, kind in dependencies]))
             metadata = dict(packages=packages, resolve=dict(root='ffi', nodes=nodes))
             with patch.object(build_hybrid, 'ROOT', root), patch.object(build_hybrid.subprocess, 'check_output', return_value=json.dumps(metadata)):
-                first = build_hybrid.rust_sources(['selected'])
+                first = build_hybrid.rust_sources()
                 self.assertIn('crates/shared/src/lib.rs', first)
                 self.assertIn('.cargo/config.toml', first)
                 self.assertNotIn('crates/dev/src/lib.rs', first)
                 self.assertNotIn('crates/inactive/src/lib.rs', first)
                 (root / 'crates/inactive/src/lib.rs').write_text('unrelated')
-                self.assertEqual(first, build_hybrid.rust_sources(['selected']))
+                self.assertEqual(first, build_hybrid.rust_sources())
                 (root / 'crates/shared/src/lib.rs').write_text('changed dependency')
-                second = build_hybrid.rust_sources(['selected'])
+                second = build_hybrid.rust_sources()
                 self.assertNotEqual(first, second)
                 before = {'rust_sources_sha256': first, 'patches': [], 'headers_sha256': {}}
                 after = {**before, 'rust_sources_sha256': second}

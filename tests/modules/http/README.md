@@ -12,7 +12,7 @@ Rust unit tests and the archive the native gates link against:
 ```sh
 cargo test --locked -p swoole-rs-http
 cargo clippy --locked -p swoole-rs-http --all-targets -- -D warnings
-cargo build --locked -p swoole-rs-ffi --no-default-features --features http --release
+cargo build --locked -p swoole-rs-ffi --release
 ```
 
 ## Native differential gates

@@ -514,7 +514,6 @@ int swr_v1_phpswoole_rshutdown(int _kind, int module_number);
 /* ZEND_INIT_MODULE_GLOBALS' constructor of zend_swoole_globals. */
 void swr_v1_phpswoole_init_globals(void *globals);
 void swr_v1_phpswoole_register_ini(void *globals, int number, int kind);
-#ifdef SWOOLE_RS_PHPHELPERS
 typedef struct swr_v1_phpswoole_info {
     uint64_t flags;
     uint32_t abi;
@@ -524,7 +523,6 @@ typedef struct swr_v1_phpswoole_info {
     char libpq[16];
 } swr_v1_phpswoole_info;
 uint8_t swr_v1_phpswoole_minfo(const swr_v1_phpswoole_info *config, void *module);
-#endif
 /* sw_php_allocator() (emalloc) and sw_zend_string_allocator() (zend_string values):
  * swoole::Allocators. */
 typedef struct swr_v1_phpswoole_allocator {

@@ -1,6 +1,6 @@
 # TLS/DTLS boundary
 
-Opt-in feature bit 262144 (`SWOOLE_RS_TLS`). Patches `src/protocol/ssl.cc` and
+Feature bit 262144 (`tls`). Patches `src/protocol/ssl.cc` and
 `src/protocol/dtls.cc`. Declarations are in [swoole_rs_tls.h](swoole_rs_tls.h).
 Tests: `tests/modules/tls/README.md`. Requires OpenSSL 3 (rejected at compile
 time otherwise).

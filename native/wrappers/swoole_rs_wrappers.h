@@ -1,8 +1,5 @@
 #ifndef SWOOLE_RS_WRAPPERS_H
 #define SWOOLE_RS_WRAPPERS_H
-#ifndef SWOOLE_RS_WRAPPERS
-#error "Wrapper overlay requires --enable-swoole-rs-wrappers"
-#endif
 #include <stdint.h>
 #include <stddef.h>
 #ifdef __cplusplus

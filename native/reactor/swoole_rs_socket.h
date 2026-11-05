@@ -5,9 +5,6 @@
  * derives Socket from it, adding only methods. Rust allocates, initialises, makes,
  * accepts, duplicates and frees records; both sides assert the offsets below. The
  * upstream 1-bit flags are bytes, which keeps every value the code assigns. */
-#if !defined(SWOOLE_RS_REACTOR) || !SWOOLE_RS_REACTOR
-#error "The Rust socket record requires --enable-swoole-rs-reactor"
-#endif
 #include "swoole_rs_reactor.h"
 #include <stddef.h>
 

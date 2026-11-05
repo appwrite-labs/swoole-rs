@@ -1,6 +1,6 @@
 # Core base helpers
 
-Opt-in feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. Callers are
+Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. Callers are
 in `src/core/base.cc` and the readers of the `SwooleG` fields Rust owns. No
 public C++ signature changes; `swoole::Global` loses the fields Rust owns.
 
