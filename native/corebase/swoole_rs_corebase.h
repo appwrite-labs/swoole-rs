@@ -11,13 +11,6 @@ extern "C" {
 /* Success matches the representable decimal portion of std::stoi; native code
  * retains its exception path and publishes output only after success. */
 uint8_t swr_v1_corebase_parse_stoi(const char *input, int32_t *output);
-enum swr_v1_corebase_systemd_listen_fds_action {
-    SWR_COREBASE_SYSTEMD_LISTEN_FDS_RETURN = 0,
-    SWR_COREBASE_SYSTEMD_LISTEN_FDS_WARN_MISSING = 1,
-    SWR_COREBASE_SYSTEMD_LISTEN_FDS_ERROR_LIMIT = 2
-};
-/* getenv, exception construction, and every warning/error side effect remain native. */
-uint32_t swr_v1_corebase_systemd_listen_fds_action(uint8_t found, int32_t count, int32_t maximum);
 /* Valid NUL-terminated input, disjoint writable parsed output. Original host
  * ctype input requirements apply. These direct libc parsers preserve original errno effects/order. */
 /* Frozen target-default mode; native compiler char mode must match Rust. */
@@ -100,17 +93,12 @@ char swr_v1_corebase_random_char(void);
  * swoole_random_string(char *, size_t), swoole_dump_ascii/_hex, swoole_rand
  * (both overloads), swoole_random_int, swoole::microtime and
  * swoole::DataHead::dump. */
-/* Whole host operations; native code keeps only the warnings. */
-/* Read end of the command's pipe; -1 when pipe() fails, -2 when fork() fails
- * (errno kept). */
-int swr_v1_corebase_shell_exec(const char *command, pid_t *pid, bool get_error_stream);
+/* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both
+ * swoole_redirect_stdout overloads, swoole_print_backtrace(_on_error),
+ * swoole_exit and swoole_get_systemd_listen_fds; and, in crates/utilities,
+ * swoole_set_log_level, swoole_get_log_level and swoole_set_log_file. */
 /* Polls ready(context) with doubling sleeps; ready must not throw. */
 bool swr_v1_corebase_wait_for(bool (*ready)(void *), void *context, int timeout_ms);
-void swr_v1_corebase_print_backtrace(void);
-/* Sets *read_failed (errno kept) and returns -1 on a short read. */
-int swr_v1_corebase_system_random(int min, int max, bool *read_failed);
-/* errors[0], errors[1]: errno of dup2 onto stdout, stderr; 0 on success. */
-void swr_v1_corebase_redirect_stdout(int new_fd, int *errors);
 /* Process-wide core state: upstream's SwooleG scalars. swoole::Global's members
  * of these names are swoole::RustField views over the accessor pairs below.
  * Pointers (memory pool, stdout FILE *, Logger *, Server *, the AIO pipe

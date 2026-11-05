@@ -46,26 +46,13 @@ fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
     redirected
 }
 
-/// The C++ functions `swoole_daemon` calls (`src/core/base.cc`).
-#[cfg(feature = "upstream-symbols")]
-mod host {
-    use libc::{c_int, pid_t};
-    /// `SW_FORK_DAEMON`, `SW_FORK_PRECHECK` and `SW_GLOBAL_HOOK_AFTER_FORK`.
-    #[cfg(target_vendor = "apple")]
-    pub(super) const FORK_DAEMON: c_int = 4;
-    #[cfg(not(target_vendor = "apple"))]
-    pub(super) const FORK_PRECHECK: c_int = 8;
-    #[cfg(not(target_vendor = "apple"))]
-    pub(super) const HOOK_AFTER_FORK: c_int = 12;
-    unsafe extern "C" {
-        #[link_name = "_Z11swoole_forki"]
-        pub(super) fn swoole_fork(flags: c_int) -> pid_t;
-        #[cfg(not(target_vendor = "apple"))]
-        pub(super) fn swoole_isset_hook(kind: c_int) -> bool;
-        #[cfg(not(target_vendor = "apple"))]
-        pub(super) fn swoole_call_hook(kind: c_int, arg: *mut libc::c_void);
-    }
-}
+/// `SW_FORK_DAEMON`, `SW_FORK_PRECHECK` and `SW_GLOBAL_HOOK_AFTER_FORK`.
+#[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
+const FORK_DAEMON: c_int = 4;
+#[cfg(all(feature = "upstream-symbols", not(target_vendor = "apple")))]
+const FORK_PRECHECK: c_int = 8;
+#[cfg(all(feature = "upstream-symbols", not(target_vendor = "apple")))]
+const HOOK_AFTER_FORK: c_int = 12;
 
 /// `int swoole_daemon(int nochdir, int noclose)`. Darwin's `daemon(3)` is
 /// deprecated, so it detaches, forks and calls `setsid` itself.
@@ -73,11 +60,15 @@ mod host {
 #[unsafe(export_name = "_Z13swoole_daemonii")]
 #[must_use]
 pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
+    // base.cc's `swoole_fork`; without base.cc nothing can be forked.
+    let Some(host) = swoole_rs_corebase::native::host() else {
+        return -1;
+    };
     if !daemon_detach(nochdir != 0, noclose != 0) {
         return -1;
     }
     // SAFETY: upstream's fork; it rejects a coroutine or async-thread caller itself.
-    let pid = unsafe { host::swoole_fork(host::FORK_DAEMON) };
+    let pid = unsafe { (host.fork)(FORK_DAEMON) };
     if pid < 0 {
         log::sys_warning(c"swoole_daemon", format_args!("fork() failed"));
         return -1;
@@ -101,16 +92,20 @@ pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
 #[unsafe(export_name = "_Z13swoole_daemonii")]
 #[must_use]
 pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
+    // base.cc's `swoole_fork` and hooks; without base.cc nothing can be forked.
+    let Some(host) = swoole_rs_corebase::native::host() else {
+        return -1;
+    };
     // SAFETY: upstream's fork precheck; it forks nothing.
-    if unsafe { host::swoole_fork(host::FORK_PRECHECK) } < 0 {
+    if unsafe { (host.fork)(FORK_PRECHECK) } < 0 {
         return -1;
     }
     // SAFETY: daemon has no memory preconditions.
     let rv = unsafe { libc::daemon(nochdir, noclose) };
     // SAFETY: upstream's hook table, read on this thread.
-    if rv == 0 && unsafe { host::swoole_isset_hook(host::HOOK_AFTER_FORK) } {
+    if rv == 0 && unsafe { (host.isset_hook)(HOOK_AFTER_FORK) } {
         // SAFETY: as above; the after-fork hooks take no argument.
-        unsafe { host::swoole_call_hook(host::HOOK_AFTER_FORK, std::ptr::null_mut()) };
+        unsafe { (host.call_hook)(HOOK_AFTER_FORK, std::ptr::null_mut()) };
     }
     rv
 }

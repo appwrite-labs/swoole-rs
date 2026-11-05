@@ -583,6 +583,52 @@ pub unsafe extern "C" fn swr_v1_logger_rotation_date(
     rotation_date(rotation, unsafe { &mut *date })
 }
 
+/// The process logger, `sw_logger()`: a `swoole::Logger`, whose only member is
+/// this crate's `Logger`, or null before `swoole_init`.
+fn process_logger() -> Option<&'static Logger> {
+    let cpp = swoole_rs_corebase::swr_v1_core_logger().cast::<*const Logger>();
+    // SAFETY: a live `swoole::Logger` whenever set.
+    let member = unsafe { cpp.as_ref() }?;
+    // SAFETY: its only member is a live Logger.
+    Some(unsafe { live(*member) })
+}
+
+/// `void swoole_set_log_level(int level)` (upstream `src/core/base.cc`).
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z20swoole_set_log_leveli")
+)]
+pub extern "C" fn swoole_set_log_level(level: c_int) {
+    if let Some(logger) = process_logger() {
+        logger.level.store(swr_v1_utils_log_level(level), Relaxed);
+    }
+}
+
+/// `int swoole_get_log_level()`: `SW_LOG_NONE` without a logger.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z20swoole_get_log_levelv")
+)]
+pub extern "C" fn swoole_get_log_level() -> c_int {
+    const SW_LOG_NONE: c_int = 6;
+    process_logger().map_or(SW_LOG_NONE, |logger| logger.level.load(Relaxed))
+}
+
+/// `void swoole_set_log_file(const char *file)`.
+/// # Safety
+/// `file` is a NUL-terminated path.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z19swoole_set_log_filePKc")
+)]
+pub unsafe extern "C" fn swoole_set_log_file(file: *const c_char) {
+    if let Some(logger) = process_logger() {
+        // SAFETY: a live logger and, per the contract, a NUL-terminated path.
+        unsafe { swr_v1_logger_open(logger, file) };
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

@@ -14,6 +14,7 @@ mod hook;
 mod host;
 mod lifecycle;
 pub mod log;
+pub mod native;
 pub mod net_types;
 mod random;
 mod thread;
@@ -22,10 +23,10 @@ pub use global::*;
 pub use hook::swr_v1_corebase_hook_add_action;
 pub use host::{
     DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, sw_realloc,
-    swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_hex2dec, swoole_rand,
-    swoole_rand_any, swoole_random_int, swr_v1_core_format_result, swr_v1_corebase_print_backtrace,
-    swr_v1_corebase_redirect_stdout, swr_v1_corebase_shell_exec, swr_v1_corebase_system_random,
-    swr_v1_corebase_wait_for,
+    swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_hex2dec,
+    swoole_print_backtrace, swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any,
+    swoole_random_int, swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec,
+    swoole_system_random, swr_v1_core_format_result, swr_v1_corebase_wait_for,
 };
 pub use lifecycle::{
     LifecycleState, swr_v1_corebase_lifecycle_next, swr_v1_corebase_task_tmp_next,
@@ -185,20 +186,51 @@ pub extern "C" fn swoole_dec2hex(value: c_ulong, base: c_int) -> *mut c_char {
     unsafe { strndup(digits, buffer.len() - first - 1) }
 }
 
-/// Select the native warning, error, or accepted-value path for systemd fds.
-/// Native environment parsing and all logging/error-state effects stay outside Rust.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_corebase_systemd_listen_fds_action(
-    found: u8,
-    count: i32,
-    maximum: i32,
-) -> u32 {
-    if found == 0 {
-        1 // missing LISTEN_FDS: native warning, then -1
-    } else if count >= maximum {
-        2 // too many: native error-log path, then -1
+/// `SW_LOG_ERROR` and `SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT`.
+#[cfg(feature = "upstream-symbols")]
+const LOG_ERROR: c_int = 5;
+#[cfg(feature = "upstream-symbols")]
+const TOO_MANY_LISTEN_PORT: c_int = 9005;
+
+/// `LISTEN_FDS`'s verdict: the count to return, or which log line (`true`: too big).
+#[cfg(any(test, feature = "upstream-symbols"))]
+fn systemd_listen_fds(found: bool, count: c_int) -> Result<c_int, bool> {
+    if !found {
+        Err(false)
+    } else if u32::try_from(count).is_ok_and(|count| count >= constants::SW_MAX_LISTEN_PORT) {
+        Err(true)
     } else {
-        0 // native returns the original parsed signed value
+        Ok(count)
+    }
+}
+
+/// `int swoole_get_systemd_listen_fds()`: `LISTEN_FDS`, or -1 when it is missing
+/// or reaches `SW_MAX_LISTEN_PORT`.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_Z29swoole_get_systemd_listen_fdsv")]
+#[must_use]
+pub extern "C-unwind" fn swoole_get_systemd_listen_fds() -> c_int {
+    let mut count = 0;
+    // SAFETY: base.cc's `swoole_get_env`, with a NUL-terminated name and a live
+    // out-parameter; without base.cc there is no environment to read.
+    let found = native::host()
+        .is_some_and(|host| unsafe { (host.get_env)(c"LISTEN_FDS".as_ptr(), &raw mut count) });
+    let origin = c"swoole_get_systemd_listen_fds";
+    match systemd_listen_fds(found, count) {
+        Ok(count) => count,
+        Err(false) => {
+            log::warning(origin, format_args!("invalid LISTEN_FDS"));
+            -1
+        }
+        Err(true) => {
+            log::error_log(
+                LOG_ERROR,
+                TOO_MANY_LISTEN_PORT,
+                origin,
+                format_args!("LISTEN_FDS is too big"),
+            );
+            -1
+        }
     }
 }
 
@@ -541,20 +573,11 @@ mod tests {
 
     #[test]
     fn systemd_listener_policy_preserves_missing_limit_and_signed_values() {
-        assert_eq!(swr_v1_corebase_systemd_listen_fds_action(0, 0, 60000), 1);
-        assert_eq!(
-            swr_v1_corebase_systemd_listen_fds_action(1, 59999, 60000),
-            0
-        );
-        assert_eq!(
-            swr_v1_corebase_systemd_listen_fds_action(1, 60000, 60000),
-            2
-        );
-        assert_eq!(
-            swr_v1_corebase_systemd_listen_fds_action(1, 60001, 60000),
-            2
-        );
-        assert_eq!(swr_v1_corebase_systemd_listen_fds_action(1, -1, 60000), 0);
+        assert_eq!(systemd_listen_fds(false, 0), Err(false));
+        assert_eq!(systemd_listen_fds(true, 59999), Ok(59999));
+        assert_eq!(systemd_listen_fds(true, 60000), Err(true));
+        assert_eq!(systemd_listen_fds(true, 60001), Err(true));
+        assert_eq!(systemd_listen_fds(true, -1), Ok(-1));
     }
 
     #[test]

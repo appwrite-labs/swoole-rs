@@ -37,7 +37,7 @@ swoole-rs-error = { path = "../error" }
 swoole-rs-protocols = { path = "../protocols" }
 swoole-rs-memory = { path = "../memory" }
 swoole-rs-http = { path = "../http" }
-swoole-rs-utilities = { path = "../utilities" }
+swoole-rs-utilities = { path = "../utilities", features = ["upstream-symbols"] }
 swoole-rs-locks = { path = "../locks" }
 swoole-rs-phplocks = { path = "../phplocks" }
 swoole-rs-phptimer = { path = "../phptimer", optional = true }
