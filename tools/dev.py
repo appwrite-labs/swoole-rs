@@ -455,6 +455,10 @@ def plan(args, reports):
     if 'corebase' in modules:
         script('corebase-dns-request-guard', 'tests/modules/corebase/resolver_guard.py',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('corebase-dns-request-guard'))
+        script('corebase-thread-owner', 'tests/modules/corebase/thread_owner.py',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--reference', reference.parent.parent / 'src' if captured_reference or getattr(args, 'stdext', False) or getattr(args, 'php_sockets', False) else ROOT / 'target/upstream/src',
+               *report('corebase-thread-owner'))
         script('corebase-record-views', 'tests/modules/corebase/record_views.py',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('corebase-record-views'))
         script('corebase-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src', *report('corebase-constants'))

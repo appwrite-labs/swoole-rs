@@ -15,6 +15,7 @@ mod host;
 mod lifecycle;
 pub mod net_types;
 mod random;
+mod thread;
 pub mod worker_registry;
 pub use global::*;
 pub use hook::swr_v1_corebase_hook_add_action;
@@ -29,6 +30,7 @@ pub use lifecycle::{
     LifecycleState, swr_v1_corebase_lifecycle_next, swr_v1_corebase_task_tmp_next,
 };
 pub use random::{swoole_random_string, swr_v1_corebase_random_char};
+pub use thread::*;
 
 use std::ffi::{c_char, c_int, c_long, c_ulong};
 use std::{cmp::Ordering, ptr, slice};

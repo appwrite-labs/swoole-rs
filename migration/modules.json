@@ -582,6 +582,7 @@
       "upstream_patch_targets": [
         "include/swoole.h",
         "include/swoole_config.h",
+        "include/swoole_thread.h",
         "src/core/base.cc",
         "include/swoole_async.h",
         "src/os/base.cc",
