@@ -42,6 +42,7 @@ mod php {
         sources.sort();
         // The directory too: a new shim must rerun this.
         println!("cargo::rerun-if-changed=src");
+        println!("cargo::rerun-if-changed=../../native/corebase/swoole_rs_zend_guard.h");
         for file in &sources {
             println!("cargo::rerun-if-changed={}", file.display());
         }

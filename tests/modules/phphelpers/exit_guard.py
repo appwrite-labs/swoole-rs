@@ -73,6 +73,15 @@ def main():
         write_report(output, report)
         if result.returncode:
             raise ValueError('Actual PHP SDK owner witness did not compile')
+        command14 = [*command]
+        command14[1] = '-std=c++14'
+        command14[-1] = str(work / 'exit_guard-c++14.so')
+        result14 = run_isolated(command14, timeout=120)
+        report['cpp14_compile'] = dict(command=command14, exit=result14.returncode,
+                                       stdout=result14.stdout, stderr=result14.stderr)
+        write_report(output, report)
+        if result14.returncode:
+            raise ValueError('Actual C++14 PHP SDK owner witness did not compile')
         report['helper_sha256'] = sha(helper)
         selected_engine = next(engine for engine, identity in zip(engines, metadata) if identity['rust_feature_bits'])
         command = selected_engine.command('-d', 'extension=' + str(helper), work / sources['php'].name, 'cpp-probe')
@@ -82,9 +91,9 @@ def main():
                                             passed=result.returncode == 0 and result.stdout == 'cpp-probe: ok\n' and not result.stderr)
         write_report(output, report)
         modes = ['return', 'exception', 'custom', 'exit', 'nested', 'coroutine', 'error',
-                 'destructor', 'serialize', 'unserialize', 'shared-set', 'shared-queue']
+                 'destructor', 'serialize', 'unserialize', 'shared-set', 'shared-queue', 'fatal', 'cancel', 'cancel-throw']
         for mode in modes:
-            expected = json.dumps([mode, 0 if mode in ['return', 'exception'] else 235,
+            expected = json.dumps([mode, 0 if mode in ['return', 'exception'] else 255 if mode == 'fatal' else 235,
                                    int(mode in ['return', 'exception'])], separators=(',', ':')) + '\n'
             for engine, identity in zip(engines, metadata):
                 args = ['-d', 'extension=' + str(helper)] if identity['rust_feature_bits'] else []

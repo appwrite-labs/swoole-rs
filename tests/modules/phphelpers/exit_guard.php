@@ -29,7 +29,7 @@ if (Thread::getInfo()['is_main_thread']) {
     $worker = new Thread(__FILE__, $mode, $after, $map, $queue);
     if (!$worker->join()) throw new RuntimeException('join failed');
     $normal = in_array($mode, ['return', 'exception'], true);
-    $expected = $normal ? 0 : 235;
+    $expected = $normal ? 0 : ($mode === 'fatal' ? 255 : 235);
     if ($worker->getExitStatus() !== $expected || $after->get() !== ($normal ? 1 : 0)) {
         throw new RuntimeException('exit or post-callback behavior changed');
     }
@@ -37,7 +37,7 @@ if (Thread::getInfo()['is_main_thread']) {
         throw new RuntimeException('failed operation changed shared state');
     }
     if (function_exists('swr_guard_counts')) {
-        $count = in_array($mode, ['nested', 'coroutine', 'serialize', 'unserialize', 'shared-set', 'shared-queue'], true) ? 2 : 1;
+        $count = in_array($mode, ['nested', 'coroutine', 'cancel', 'cancel-throw', 'serialize', 'unserialize', 'shared-set', 'shared-queue'], true) ? 2 : 1;
         if (swr_guard_counts() !== [$count, $count, $count, $count * 4096, $count * 4096 * 42]) {
             throw new RuntimeException('Rust owners were not dropped before native exit relay');
         }
@@ -62,6 +62,23 @@ if ($mode === 'exception') {
             throw new LogicException('resumer continued after whole-thread exit');
         });
     });
+} elseif (in_array($mode, ['cancel', 'cancel-throw'], true)) {
+    Swoole\Coroutine\run(function () use ($mode) {
+        guarded(function () use ($mode) {
+            $cid = go(function () use ($mode) {
+                defer(fn() => guarded(fn() => escape()));
+                try { Swoole\Coroutine::yield(); }
+                catch (Swoole\Coroutine\CanceledException $exception) {
+                    if ($mode !== 'cancel-throw') throw $exception;
+                }
+            });
+            Swoole\Coroutine::cancel($cid, $mode === 'cancel-throw');
+            throw new LogicException('cancellation resumer continued after whole-thread exit');
+        });
+    });
+} elseif ($mode === 'fatal') {
+    error_reporting(0);
+    guarded(fn() => trigger_error('guard fatal probe', E_USER_ERROR));
 } elseif ($mode === 'error') {
     set_error_handler(fn() => escape());
     guarded(fn() => trigger_error('exit handler'));
