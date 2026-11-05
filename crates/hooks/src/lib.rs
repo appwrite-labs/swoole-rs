@@ -70,6 +70,7 @@ pub extern "C" fn swr_v1_hook_file_result(open: bool, result: i64) -> bool {
     if open { result > 0 } else { result == 0 }
 }
 
+/// `wait_for` and flock's next delay: double up to `maximum`, then start over at `initial`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_backoff(current: f64, initial: f64, maximum: f64) -> f64 {
     if current >= maximum {
@@ -112,41 +113,6 @@ pub extern "C" fn swr_v1_hook_transfer(
     Transfer {
         total,
         again: (result < 0 && wait) || (result > 0 && total < requested),
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, PartialEq)]
-pub struct WaitForPlan {
-    pub delay: f64,
-    pub phase: u32,
-    /// 1 native callback, 2 native sleep, 0 success, -1 cancellation, -2 invalid.
-    pub action: i32,
-}
-
-/// Caller-local `wait_for` cursor. Every callback and sleep is native and finishes
-/// before the next copied-fact transition; Rust keeps no closure or task pointer.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_wait_for(
-    phase: u32,
-    delay: f64,
-    result: bool,
-    initial: f64,
-    maximum: f64,
-) -> WaitForPlan {
-    let (delay, phase, action) = match phase {
-        0 => (initial, 1, 1),
-        1 if result => (delay, 3, 0),
-        1 => (delay, 2, 2),
-        2 if result => (swr_v1_hook_backoff(delay, initial, maximum), 1, 1),
-        2 | 4 => (delay, 4, -1),
-        3 => (delay, 3, 0),
-        _ => (delay, phase, -2),
-    };
-    WaitForPlan {
-        delay,
-        phase,
-        action,
     }
 }
 

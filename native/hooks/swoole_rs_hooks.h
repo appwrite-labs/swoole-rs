@@ -98,9 +98,6 @@ double swr_v1_hook_backoff(double current, double initial, double maximum);
 int64_t swr_v1_hook_transfer_result(int64_t result, uint64_t total);
 typedef struct { uint64_t total; bool again; } swr_v1_hook_transfer_plan;
 swr_v1_hook_transfer_plan swr_v1_hook_transfer(int64_t result, uint64_t total, uint64_t requested, bool wait);
-enum swr_hook_wait_action { SWR_HOOK_WAIT_DONE = 0, SWR_HOOK_WAIT_CALLBACK = 1, SWR_HOOK_WAIT_SLEEP = 2, SWR_HOOK_WAIT_CANCELED = -1, SWR_HOOK_WAIT_INVALID = -2 };
-typedef struct { double delay; uint32_t phase; int32_t action; } swr_v1_hook_wait_plan;
-swr_v1_hook_wait_plan swr_v1_hook_wait_for(uint32_t phase, double delay, bool result, double initial, double maximum);
 typedef struct { uint32_t revents; bool wake; } swr_v1_hook_event_plan;
 swr_v1_hook_event_plan swr_v1_hook_event_waiter(uint32_t received, uint32_t event);
 typedef struct { int32_t result; int32_t last_error; int32_t error; } swr_v1_hook_wait_event_outcome;
@@ -297,7 +294,6 @@ ssize_t swr_v1_hook_recv_line(swr_v1_hook_read read, void *context, char *out, s
 // Callables stay on the native stack. Rust returns before every IO, errno
 // classifier, timer operation or coroutine suspension; exceptions remain native.
 static_assert(sizeof(swr_v1_hook_curl_plan) == 8, "curl plan ABI");
-static_assert(sizeof(swr_v1_hook_wait_plan) == 16, "wait cursor ABI");
 static_assert(sizeof(swr_v1_hook_event_plan) == 8, "event waiter ABI");
 static_assert(sizeof(swr_v1_hook_transfer_plan) == 16, "transfer ABI");
 #endif
