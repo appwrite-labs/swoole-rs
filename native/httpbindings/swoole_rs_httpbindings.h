@@ -262,13 +262,8 @@ bool swr_http_host_server_compression_type(void *server, const char *type, size_
  * trapped once its Rust frames are done. `object` is a swoole::websocket::FrameObject. */
 struct _zend_class_entry *swr_v1_phphttp_websocket_minit(int module_number, struct _zend_class_entry *http_server,
     bool serializable, bool zlib, struct _zend_class_entry **frame);
-/* Fills args[2] (server, Frame) and *data and returns SWR_WS_MESSAGE_DISPATCH: the
- * caller calls onMessage, then swr_v1_phphttp_websocket_message_done. Otherwise SW_OK/SW_ERR. */
-enum { SWR_WS_MESSAGE_DISPATCH = 1 };
-int swr_v1_phphttp_websocket_message(void *server, void *request, int64_t fd, uint16_t ext_flags,
-                                     struct _zval_struct *args, struct _zval_struct *data);
-void swr_v1_phphttp_websocket_message_done(void *server, int64_t fd, bool failed, struct _zval_struct *args,
-                                           struct _zval_struct *data);
+/* swoole_websocket_onMessage: SW_OK/SW_ERR. It calls onMessage through swr_ws_host_call. */
+int swr_v1_phphttp_websocket_message(void *server, void *request, int64_t fd, int server_fd, uint16_t ext_flags);
 void swr_v1_phphttp_websocket_frame_object(void *object, struct _zval_struct *data, int64_t opcode, int64_t flags,
     int64_t code);
 struct _zend_string *swr_v1_phphttp_websocket_pack(const void *object);
