@@ -1,9 +1,24 @@
 #include "swoole_server.h"
 #include <cassert>
 #include <iostream>
+#include <type_traits>
 
 int main() {
     swoole_init();
+    static_assert(std::is_same<std::underlying_type<swoole::Server::Mode>::type, uint32_t>::value,
+                  "Server mode retains its native enum word");
+    {
+        swoole::Server defaults;
+        assert(defaults.get_mode() == swoole::Server::MODE_BASE);
+    }
+    for (auto mode : {static_cast<swoole::Server::Mode>(0), swoole::Server::MODE_BASE,
+                      swoole::Server::MODE_PROCESS, swoole::Server::MODE_THREAD}) {
+        swoole::Server configured(mode);
+        assert(configured.get_mode() == mode);
+        assert(configured.is_base_mode() == (mode == swoole::Server::MODE_BASE));
+        assert(configured.is_process_mode() == (mode == swoole::Server::MODE_PROCESS));
+        assert(configured.is_thread_mode() == (mode == swoole::Server::MODE_THREAD));
+    }
     {
         swoole::Server server(swoole::Server::MODE_BASE);
         server.worker_num = 2;
