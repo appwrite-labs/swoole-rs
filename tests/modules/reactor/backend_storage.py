@@ -25,16 +25,19 @@ def main():
     path='src/reactor/'+backend+'.cc'
     original=subprocess.check_output(['git','-C',str(args.source),'show',PIN+':'+path],text=True)
     hybrid_source = hybrid(args.archive)[0]
-    with tempfile.TemporaryDirectory(prefix='swr-backend-storage-') as temporary:
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='swr-backend-storage-', dir=args.report.parent) as temporary:
         tree=Path(temporary)
         selected=(hybrid_source/path).read_text()
         fragments=[]
         for label,text in [('Original',original),('Selected',selected)]:
             name='Backend'+label
-            storage='swr_v1_reactor_'+backend+'_events *rs_events_=nullptr;' if label=='Selected' else ''
+            storage=''
             fragments.append('struct '+name+' : ReactorImpl { int epfd_; int event_max_; NativeEvent *events_=nullptr; '+storage+' '+name+'(Reactor*,int); ~'+name+'(); bool ready(); };')
             for signature in [native+'::'+native+'(',native+'::~'+native+'(','bool '+native+'::ready(']:
                 method,_=block(text,text.index(signature))
+                if label == 'Selected' and signature == native+'::'+native+'(':
+                    method = method[:-1] + '\n epfd_ = swr_v1_reactor_state_descriptor(reactor_->handle()); events_ = static_cast<NativeEvent *>(swr_v1_reactor_state_backend(reactor_->handle()).events);\n}'
                 fragments.append(method.replace(native,name))
         (tree/'backend-storage.inc').write_text('\n'.join(fragments))
         binary=tree/'backend-storage'

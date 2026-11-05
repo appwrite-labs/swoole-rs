@@ -103,7 +103,14 @@ CONTROLS = {'tls': ('coroutine',)}
 
 def selected_modules(args):
     chosen = MODULES if getattr(args, 'all_modules', False) else args.module or []
-    chosen = set(chosen) | {extra for module in chosen for extra in CONTROLS.get(module, ()) + REQUIRES.get(module, ())}
+    chosen = set(chosen)
+    pending = list(chosen)
+    while pending:
+        module = pending.pop()
+        for dependency in CONTROLS.get(module, ()) + REQUIRES.get(module, ()):
+            if dependency not in chosen:
+                chosen.add(dependency)
+                pending.append(dependency)
     if getattr(args, 'fix_halfclose', False):
         chosen |= set(HALFCLOSE_REQUIRES)
     return sorted(chosen | set(GRADUATED))
@@ -453,6 +460,9 @@ def plan(args, reports):
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                    '--jobs', args.jobs, *native_options, *report('corebase-lifecycle'))
     # Its native control is coroutine-native-originals' upstream engine, built only when integrating.
+    if 'tls' in modules:
+        script('tls-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src',
+               '--include-tls', *report('tls-constants'))
     if 'tls' in modules and integrate and 'coroutine' in modules:
         tls_options = ['--gtest-prefix', args.gtest_prefix] if getattr(args, 'gtest_prefix', None) else []
         if integrate and 'corebase' in modules:

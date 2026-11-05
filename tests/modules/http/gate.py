@@ -38,18 +38,19 @@ def prepare_archive(args, tree, report):
     """The archive to link: the hybrid build's, or with --rust-sanitize a private ASan HTTP one."""
     if not args.rust_sanitize:
         return args.archive.resolve()
-    archive = tree/'libhttp-asan.a'
-    codec = tree/'libswoole_rs_base64.rlib'
-    codec_source = ROOT/'crates/base64/src/lib.rs'
-    codec_command = ['rustc', '--edition=2024', '-Zsanitizer=address', '--crate-name=swoole_rs_base64', '--crate-type=rlib', '-C', 'opt-level=3', '-C', 'panic=abort', str(codec_source), '-o', str(codec)]
-    compiled = run_isolated(codec_command, timeout=60, env={**os.environ, 'RUSTC_BOOTSTRAP': '1'})
-    report['rust_codec_compile'] = {'command': codec_command, 'returncode': compiled.returncode, 'stdout': compiled.stdout, 'stderr': compiled.stderr}
-    if compiled.returncode:
-        return None
-    command = ['rustc', '--edition=2024', '-Zsanitizer=address', '--extern', 'swoole_rs_base64='+str(codec), '--crate-type=staticlib', '-C', 'opt-level=3', '-C', 'panic=abort', str(ROOT/'crates/http/src/lib.rs'), '-o', str(archive)]
-    compiled = run_isolated(command, timeout=60, env={**os.environ, 'RUSTC_BOOTSTRAP': '1'})
-    report['rust_compile'] = {'command': command, 'returncode': compiled.returncode, 'stdout': compiled.stdout, 'stderr': compiled.stderr}
-    return None if compiled.returncode else archive
+    # Cargo instruments the HTTP crate and every actual dependency, including
+    # the canonical proxy/string owner; no hand-maintained extern inventory.
+    target = tree/'rust-asan'
+    archive = target/'release/libswoole_rs_http.a'
+    command = ['cargo', 'rustc', '--locked', '--manifest-path', str(ROOT/'Cargo.toml'),
+               '--release', '-p', 'swoole-rs-http', '--lib', '--crate-type', 'staticlib',
+               '--target-dir', str(target)]
+    compiled = run_isolated(command, timeout=120, env={**os.environ, 'RUSTC_BOOTSTRAP': '1',
+        'RUSTFLAGS': '-Zsanitizer=address -Cpanic=abort'})
+    report['rust_compile'] = {'command': command, 'returncode': compiled.returncode,
+                             'stdout': compiled.stdout, 'stderr': compiled.stderr}
+    return archive if compiled.returncode == 0 and archive.is_file() else None
+
 
 
 SANITIZE = ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize-recover=all']

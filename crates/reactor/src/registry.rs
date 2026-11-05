@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
+#[derive(Default)]
 pub struct Registry {
     sockets: HashMap<c_int, (*mut c_void, c_int)>,
 }

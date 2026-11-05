@@ -14,7 +14,14 @@ using NativeEvent=struct kevent;
 #endif
 #include "swoole_rs_reactor.h"
 #define swoole_sys_warning(...) std::fprintf(stderr, __VA_ARGS__)
-struct Reactor { int max_event_num=-1, native_handle=-1; };
+struct Reactor {
+    swr_v1_reactor_prepared owner=swr_v1_reactor_state_new();
+    int &max_event_num=*reinterpret_cast<int *>(&owner.fields->max_event_num);
+    int &native_handle=owner.fields->native_handle;
+    bool &ready_=owner.fields->ready;
+    swr_v1_reactor_state *handle() const { return owner.owner; }
+    ~Reactor(){ swr_v1_reactor_state_free(owner.owner); }
+};
 struct ReactorImpl { Reactor *reactor_; explicit ReactorImpl(Reactor *r):reactor_(r){} };
 #include "backend-storage.inc"
 static unsigned waits=0;

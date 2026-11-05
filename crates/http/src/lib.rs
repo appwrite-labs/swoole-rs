@@ -559,3 +559,6 @@ mod tests {
         }
     }
 }
+
+mod owned_proxy;
+pub use owned_proxy::*;
