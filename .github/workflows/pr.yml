@@ -120,6 +120,13 @@ jobs:
           cargo build --locked --release -p swoole-rs-ffi --features ssh2
           python3 tests/modules/hooks/ssh2_aliases.py --source target/upstream/src --archive target/release/libswoole_rs_ffi.a --output target/reports/ssh2-aliases.json
       - run: ccache --show-stats
+      # Exercise SNI's deferred port resolution on the production extension before merging.
+      - run: >
+          python3 corpus/upstream/run.py
+          --manifest tests/modules/ports/sni-originals.json
+          --php-extension curl --php-extension sockets --require-all --isolate-cases
+          --engine hybrid=$(echo target/hybrid/rust-*-halfclose)/modules/swoole.so
+          --output target/reports/ports-sni-originals.json
       # 12-hyperf needs composer; it runs in the merge tier.
       - run: >
           python3 corpus/run.py
