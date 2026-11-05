@@ -26,6 +26,13 @@ from tools.harness import run_isolated, write_report  # noqa: E402
 SELECTION = 'file(GLOB_RECURSE core_test_files core-tests/src/*.cpp thirdparty/llhttp/*.c)'
 # Upstream's test helpers (not assertions) that write state the hybrid moved behind accessors.
 ADAPTATIONS = {'core-tests/src/_lib/process.cpp': [('worker.pid = pid;', 'worker.set_pid(pid);')]}
+# The original ftruncate case creates this file with mode 000 and leaves it behind.
+# Give each engine a private path; keep the open flags, mode and every assertion.
+ABSOLUTE_FIXTURES = {'coroutine_hook.ftruncate': ('core-tests/src/coroutine/hook.cpp', '/tmp/123.txt')}
+
+
+def private_fixture(tree, name):
+    return tree / 'case-fixtures' / name / Path(ABSOLUTE_FIXTURES[name][1]).name
 
 
 def write_changed(path, data):
@@ -56,6 +63,10 @@ def cases(staged, files):
 
 
 def run_case(binary, tree, name, logs, timeout):
+    if name in ABSOLUTE_FIXTURES:
+        fixture = private_fixture(tree, name)
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.unlink(missing_ok=True)
     xml = logs / (name + '.xml')
     xml.unlink(missing_ok=True)
     command = [str(binary), '--gtest_filter=' + name, '--gtest_output=xml:' + str(xml)]
@@ -107,13 +118,24 @@ def main():
                     if path.is_file():
                         write_changed(tree / path.relative_to(staged), path.read_bytes())
                 write_changed(tree / 'config.h', args.config.read_bytes())
-                for path, edits in (ADAPTATIONS.items() if engine == 'hybrid' else []):
+                for path, edits in (ADAPTATIONS.items() if engine == 'hybrid' and b'#define SWOOLE_RS_PROCESS 1' in args.config.read_bytes() else []):
                     text = (staged / path).read_text()
                     for old, new in edits:
                         if text.count(old) != 1:
                             raise ValueError(f'Test helper changed: {path}')
                         text = text.replace(old, new)
                     write_changed(tree / path, text.encode())
+                for name, (path, original) in ABSOLUTE_FIXTURES.items():
+                    if path not in args.file:
+                        continue
+                    text = (tree / path).read_text()
+                    if text.count(json.dumps(original)) != 1:
+                        raise ValueError(f'Absolute test fixture changed: {path}')
+                    replacement = private_fixture(tree, name)
+                    text = text.replace(json.dumps(original), json.dumps(str(replacement)))
+                    write_changed(tree / path, text.encode())
+                    report.setdefault('fixture_isolation', []).append(
+                        {'engine': engine, 'case': name, 'original': original, 'private': str(replacement)})
                 cmake = (staged / 'CMakeLists.txt').read_text()
                 if cmake.count(SELECTION) != 1:
                     raise ValueError('Upstream core-tests target selection changed')
