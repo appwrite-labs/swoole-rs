@@ -1,5 +1,10 @@
 <?php
 use Swoole\Thread;
+if (($argv[1] ?? '') === 'cpp-probe') {
+    if (!swr_guard_cpp_probe()) throw new RuntimeException('native C++ guard cleanup failed');
+    echo "cpp-probe: ok\n";
+    exit;
+}
 function guarded(callable $callback) {
     return function_exists('swr_guard_owned') ? swr_guard_owned($callback) : $callback();
 }

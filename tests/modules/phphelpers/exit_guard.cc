@@ -1,6 +1,8 @@
 #include "php.h"
 #include "swoole_rs_zend_guard.h"
 #include <atomic>
+#include <exception>
+#include <stdexcept>
 #ifdef ZTS
 ZEND_TSRMLS_CACHE_DEFINE()
 #endif
@@ -32,6 +34,31 @@ PHP_FUNCTION(swr_guard_owned) {
     if (outcome) swr_zend_guard_resume();
     RETURN_NULL();
 }
+static void throw_native(void *) { throw std::runtime_error("native probe"); }
+static void nested_native(void *) { swr_zend_try(throw_native, nullptr); }
+static void capture_native(void *argument) {
+    auto *exception = static_cast<std::exception_ptr *>(argument);
+    try { nested_native(nullptr); } catch (...) { *exception = std::current_exception(); }
+}
+PHP_FUNCTION(swr_guard_cpp_probe) {
+    ZEND_PARSE_PARAMETERS_NONE();
+    auto *original = EG(bailout);
+    bool caught = false;
+    try { swr_zend_try(nested_native, nullptr); }
+    catch (const std::runtime_error &error) { caught = std::string(error.what()) == "native probe"; }
+    bool clean = caught && EG(bailout) == original && swr_zend_guard_target() == nullptr;
+    std::exception_ptr exception;
+    entered.fetch_add(1);
+    int outcome = swr_exit_guard_test_owner(capture_native, &exception, owner_dropped);
+    returned.fetch_add(1);
+    clean = clean && outcome == 0 && exception && EG(bailout) == original &&
+        swr_zend_guard_target() == nullptr && dropped.load() == 1 && bytes.load() == 4096 &&
+        checksum.load() == 4096 * 42;
+    caught = false;
+    try { if (exception) std::rethrow_exception(exception); }
+    catch (const std::runtime_error &error) { caught = std::string(error.what()) == "native probe"; }
+    RETURN_BOOL(clean && caught);
+}
 PHP_FUNCTION(swr_guard_counts) {
     ZEND_PARSE_PARAMETERS_NONE();
     array_init(return_value);
@@ -49,6 +76,7 @@ ZEND_END_ARG_INFO()
 static const zend_function_entry functions[] = {
     PHP_FE(swr_guard_owned, arginfo_owned)
     PHP_FE(swr_guard_counts, arginfo_counts)
+    PHP_FE(swr_guard_cpp_probe, arginfo_counts)
     PHP_FE_END
 };
 static PHP_RINIT_FUNCTION(swr_exit_guard_test) {

@@ -74,6 +74,13 @@ def main():
         if result.returncode:
             raise ValueError('Actual PHP SDK owner witness did not compile')
         report['helper_sha256'] = sha(helper)
+        selected_engine = next(engine for engine, identity in zip(engines, metadata) if identity['rust_feature_bits'])
+        command = selected_engine.command('-d', 'extension=' + str(helper), work / sources['php'].name, 'cpp-probe')
+        result = run_isolated(command, timeout=30)
+        report['native_cpp_cleanup'] = dict(command=list(map(str, command)), exit=result.returncode,
+                                            stdout=result.stdout, stderr=result.stderr,
+                                            passed=result.returncode == 0 and result.stdout == 'cpp-probe: ok\n' and not result.stderr)
+        write_report(output, report)
         modes = ['return', 'exception', 'custom', 'exit', 'nested', 'coroutine', 'error',
                  'destructor', 'serialize', 'unserialize', 'shared-set', 'shared-queue']
         for mode in modes:
@@ -113,7 +120,7 @@ def main():
         # lifecycle assertion; they are never excluded or counted as passed.
         report['native_passes_lost'] = [row['mode'] for row in baseline if row['passed'] and
                                        not next(other for other in required if other['mode'] == row['mode'])['passed']]
-        report['passed'] = report['selected_contract_passed'] and len(baseline) == len(modes) and not report['native_passes_lost']
+        report['passed'] = report['native_cpp_cleanup']['passed'] and report['selected_contract_passed'] and len(baseline) == len(modes) and not report['native_passes_lost']
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'
     write_report(output, report)

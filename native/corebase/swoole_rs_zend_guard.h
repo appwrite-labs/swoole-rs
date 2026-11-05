@@ -14,10 +14,12 @@ typedef struct swr_zend_guard {
     volatile struct swr_zend_guard *previous;
     void *context;
     void *target;
+    void *original_bailout;
 } swr_zend_guard;
 void swr_zend_guard_register(void *(*context)(void), void (*resume)(void));
 void swr_zend_guard_enter(volatile swr_zend_guard *, void *target);
 void swr_zend_guard_leave(volatile swr_zend_guard *);
+void swr_zend_guard_scope_cleanup(volatile swr_zend_guard *);
 void *swr_zend_guard_target(void);
 int swr_zend_guard_pending(void);
 void swr_zend_guard_mark(void);
@@ -26,15 +28,17 @@ void swr_zend_guard_resume(void);
 #ifdef __cplusplus
 }
 #endif
-/* Zend's native jump buffer is established before registration. Volatile keeps
- * records defined after setjmp returns through longjmp. A normally returning
- * coroutine effect still reports a pending whole-thread exit to its Rust caller. */
+/* C shims compile with -fexceptions so native C++ unwinding runs cleanup.
+ * Zend longjmp does not run compiler cleanup: unlink explicitly on both arms.
+ * No C++ exception may propagate through an active Rust caller. */
 #define SWR_ZEND_TRY                                                               \
-    { volatile swr_zend_guard swr_guard; zend_try {                                 \
+    { volatile swr_zend_guard swr_guard                                            \
+        __attribute__((cleanup(swr_zend_guard_scope_cleanup))) = {0};              \
+      swr_guard.original_bailout = EG(bailout); zend_try {                          \
         swr_zend_guard_enter(&swr_guard, EG(bailout)); if (!swr_zend_guard_pending())
 #define SWR_ZEND_CATCH                                                             \
         if (swr_zend_guard_pending()) { zend_bailout(); }                           \
-    } zend_catch
+        swr_zend_guard_leave(&swr_guard); } zend_catch
 #define SWR_ZEND_END_TRY()                                                         \
-    zend_end_try(); swr_zend_guard_leave(&swr_guard); }
+    swr_zend_guard_leave(&swr_guard); zend_end_try(); }
 #endif

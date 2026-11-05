@@ -25,10 +25,18 @@ void swr_zend_guard_leave(volatile swr_zend_guard *guard) {
         previous = entry;
         entry = entry->previous;
     }
-    ZEND_ASSERT(entry == guard);
-    if (!entry) abort();
-    if (previous) previous->previous = guard->previous;
-    else guards = guard->previous;
+    if (entry) {
+        if (previous) previous->previous = guard->previous;
+        else guards = guard->previous;
+    }
+    guard->target = NULL;
+}
+
+void swr_zend_guard_scope_cleanup(volatile swr_zend_guard *guard) {
+    void *target = guard->target;
+    if (!target) return;
+    swr_zend_guard_leave(guard);
+    if ((void *) EG(bailout) == target) EG(bailout) = guard->original_bailout;
 }
 
 void *swr_zend_guard_target(void) {
