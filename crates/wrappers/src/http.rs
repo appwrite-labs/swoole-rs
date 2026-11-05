@@ -245,9 +245,9 @@ unsafe extern "C" fn on_url(parser: *mut Llhttp, at: *const c_char, length: usiz
     let url = unsafe { span(at, length) };
     // SAFETY: as above.
     let path = unsafe { swr_v1_wrappers_split(url.as_ptr(), url.len(), b'?') };
-    r.op(PATH, ptr::null_mut(), &url[..path], &[]);
-    if path < length && length - path > 1 {
-        r.op(QUERY, ptr::null_mut(), &url[path + 1..], &[]);
+    r.op(PATH, ptr::null_mut(), url.get(..path).unwrap_or(url), &[]);
+    if let Some(query) = url.get(path + 1..).filter(|query| !query.is_empty()) {
+        r.op(QUERY, ptr::null_mut(), query, &[]);
     }
     0
 }
@@ -319,7 +319,7 @@ unsafe extern "C" fn on_body(parser: *mut Llhttp, at: *const c_char, length: usi
     if let Some(multipart) = r.binding.multipart {
         // SAFETY: as above.
         let skip = unsafe { swr_v1_wrappers_body_skip(r, body.as_ptr(), body.len()) };
-        let part = &body[skip..];
+        let part = body.get(skip..).unwrap_or_default();
         // The parser calls back into this request, so no borrow of it is live then.
         let request = (&raw mut *r).cast::<c_void>();
         let n = raw_op(

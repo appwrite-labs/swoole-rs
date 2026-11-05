@@ -37,8 +37,8 @@ fn promoted(byte: u8, signed: bool) -> u64 {
     clippy::cast_possible_truncation,
     reason = "the native hashes' 32-bit mixing truncates and reinterprets by design"
 )]
-fn word(bytes: &[u8], signed: bool) -> u32 {
-    bytes.iter().enumerate().fold(0u32, |sum, (i, byte)| {
+fn word<'a>(bytes: impl IntoIterator<Item = &'a u8>, signed: bool) -> u32 {
+    bytes.into_iter().enumerate().fold(0u32, |sum, (i, byte)| {
         sum.wrapping_add((promoted(*byte, signed) as u32).wrapping_shl((8 * i) as u32))
     })
 }
@@ -79,19 +79,19 @@ fn hash(bytes: &[u8], length: usize, algorithm: u32, signed: bool) -> u64 {
         }),
         1 => {
             let (mut a, mut b, mut c) = (0x9e37_79b9_u32, 0x9e37_79b9_u32, 0xfeed_beef_u64);
-            let mut rest = bytes;
-            while rest.len() >= 12 {
-                a = a.wrapping_add(word(&rest[..4], signed));
-                b = b.wrapping_add(word(&rest[4..8], signed));
-                c = c.wrapping_add(u64::from(word(&rest[8..12], signed)));
+            let (blocks, rest) = bytes.as_chunks::<12>();
+            for block in blocks {
+                let (words, _) = block.as_chunks::<4>();
+                if let [x, y, z] = words {
+                    a = a.wrapping_add(word(x, signed));
+                    b = b.wrapping_add(word(y, signed));
+                    c = c.wrapping_add(u64::from(word(z, signed)));
+                }
                 mix(&mut a, &mut b, &mut c);
-                rest = &rest[12..];
             }
             c = c.wrapping_add(length as u64);
-            a = a.wrapping_add(word(&rest[..rest.len().min(4)], signed));
-            if rest.len() > 4 {
-                b = b.wrapping_add(word(&rest[4..rest.len().min(8)], signed));
-            }
+            a = a.wrapping_add(word(rest.iter().take(4), signed));
+            b = b.wrapping_add(word(rest.iter().skip(4).take(4), signed));
             for (i, byte) in rest.iter().enumerate().skip(8) {
                 c = c.wrapping_add(u64::from(
                     (promoted(*byte, signed) as u32).wrapping_shl((8 * (i - 7)) as u32),
@@ -250,17 +250,17 @@ pub unsafe extern "C" fn swr_v1_utils_pretty_range(
     let Some(bracket) = bytes.iter().position(|b| *b == b'(') else {
         return 0;
     };
-    let mut start = bytes[..bracket]
-        .iter()
-        .rposition(|b| *b == b' ')
-        .map_or(0, |p| p + 1);
-    let method = &bytes[start..bracket];
+    let head = bytes.get(..bracket).unwrap_or_default();
+    let mut start = head.iter().rposition(|b| *b == b' ').map_or(0, |p| p + 1);
+    let method = head.get(start..).unwrap_or_default();
     if strip != 0
         && let Some(last) = method.windows(2).rposition(|w| w == b"::")
     {
         // Native rfind skips overlapping separators; a lone separator strips
         // itself, including the original wrapped search at positions zero/one.
-        let prior = method[..last].windows(2).rposition(|w| w == b"::");
+        let prior = method
+            .get(..last)
+            .and_then(|head| head.windows(2).rposition(|w| w == b"::"));
         start += prior.unwrap_or(last) + 2;
     }
     // SAFETY: non-null (checked above), aligned, writable outputs.
@@ -312,23 +312,22 @@ struct LogSink<'a> {
 impl LogSink<'_> {
     fn finish(self) -> usize {
         if self.required > i32::MAX as usize {
-            if self.bytes.is_empty() {
-                return usize::MAX;
+            if let Some(first) = self.bytes.first_mut() {
+                first.write(0);
             }
-            self.bytes[0].write(0);
             return usize::MAX;
         }
-        if self.bytes.is_empty() {
+        let written = self.required.min(self.bytes.len().saturating_sub(1));
+        let Some(terminator) = self.bytes.get_mut(written) else {
             return self.required;
-        }
-        let written = self.required.min(self.bytes.len() - 1);
-        self.bytes[written].write(0);
+        };
+        terminator.write(0);
         written
     }
     fn append(&mut self, bytes: &[u8]) {
         let start = self.required.min(self.bytes.len().saturating_sub(1));
         let count = bytes.len().min(self.bytes.len().saturating_sub(1) - start);
-        for (output, byte) in self.bytes[start..start + count].iter_mut().zip(bytes) {
+        for (output, byte) in self.bytes.iter_mut().skip(start).take(count).zip(bytes) {
             output.write(*byte);
         }
         self.required = self.required.saturating_add(bytes.len());

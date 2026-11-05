@@ -70,8 +70,7 @@ impl Registry {
     fn entry(&self, _: &Locked<'_>, address: usize, create: bool) -> Option<&Entry> {
         let start = (address >> 3) % ENTRIES;
         let mut reusable = None;
-        for i in 0..ENTRIES {
-            let entry = &self.entries[(start + i) % ENTRIES];
+        for entry in self.entries.iter().cycle().skip(start).take(ENTRIES) {
             let current = entry.address.load(R);
             if current == address {
                 return Some(entry);

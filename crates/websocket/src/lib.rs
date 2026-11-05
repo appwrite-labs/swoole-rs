@@ -71,8 +71,11 @@ pub unsafe extern "C" fn swr_v1_ws_frame_length(
     }
     // SAFETY: The caller supplies the readable input and exclusive output.
     let bytes = unsafe { std::slice::from_raw_parts(data, length) };
+    let [_, second, ref extended @ ..] = *bytes else {
+        return 0;
+    };
     let mut header = 2;
-    let mut payload = u64::from(bytes[1] & 0x7f);
+    let mut payload = u64::from(second & 0x7f);
     if payload == 126 {
         header = 4;
     } else if payload == 127 {
@@ -88,14 +91,16 @@ pub unsafe extern "C" fn swr_v1_ws_frame_length(
     if length < header {
         return 0;
     }
-    if header == 4 {
-        payload = u64::from(u16::from_be_bytes([bytes[2], bytes[3]]));
-    } else if header == 10 {
-        payload = u64::from_be_bytes([
-            bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9],
-        ]);
+    if header == 4
+        && let Some(&extended) = extended.first_chunk()
+    {
+        payload = u64::from(u16::from_be_bytes(extended));
+    } else if header == 10
+        && let Some(&extended) = extended.first_chunk()
+    {
+        payload = u64::from_be_bytes(extended);
     }
-    if bytes[1] & 0x80 != 0 {
+    if second & 0x80 != 0 {
         header += 4;
         #[expect(
             clippy::cast_possible_truncation,
@@ -193,14 +198,11 @@ pub unsafe extern "C" fn swr_v1_ws_mask(data: *mut u8, length: usize, key: *cons
     let word_mask = u64::from(key_word) | (u64::from(key_word) << 32);
     let (words, tail) = payload.as_chunks_mut::<8>();
     for bytes in words {
-        let word = u64::from_ne_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ]);
-        bytes.copy_from_slice(&(word ^ word_mask).to_ne_bytes());
+        *bytes = (u64::from_ne_bytes(*bytes) ^ word_mask).to_ne_bytes();
     }
     // Each complete word consumes two whole keys, so the tail restarts at 0.
-    for (index, byte) in tail.iter_mut().enumerate() {
-        *byte ^= mask[index & 3];
+    for (byte, key) in tail.iter_mut().zip(mask.iter().cycle()) {
+        *byte ^= key;
     }
     0
 }

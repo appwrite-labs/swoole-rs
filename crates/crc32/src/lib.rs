@@ -16,6 +16,11 @@
 mod portable {
     // Row n is the byte contribution followed by n zero bytes. Divide the base
     // row once, then append each zero byte using that same immutable recurrence.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "const-evaluated into TABLES: an out-of-range index fails the build, \
+                  and const fn has no get()"
+    )]
     const fn tables() -> [[u32; 256]; 8] {
         let mut entries = [[0; 256]; 8];
         let mut index = 0;
@@ -53,18 +58,20 @@ mod portable {
             // Exact chunks establish the conversion length. Explicit little-endian
             // decoding retains the same byte recurrence on either host endianness.
             let bytes = (u64::from_le_bytes(*block) ^ u64::from(crc)).to_le_bytes();
-            crc = TABLES[7][bytes[0] as usize]
-                ^ TABLES[6][bytes[1] as usize]
-                ^ TABLES[5][bytes[2] as usize]
-                ^ TABLES[4][bytes[3] as usize]
-                ^ TABLES[3][bytes[4] as usize]
-                ^ TABLES[2][bytes[5] as usize]
-                ^ TABLES[1][bytes[6] as usize]
-                ^ TABLES[0][bytes[7] as usize];
+            crc = TABLES
+                .iter()
+                .rev()
+                .zip(bytes)
+                .fold(0, |crc, (row, byte)| crc ^ entry(row, byte));
         }
         !tail.iter().fold(crc, |crc, &byte| {
-            (crc >> 8) ^ TABLES[0][((crc ^ u32::from(byte)) & 0xff) as usize]
+            (crc >> 8) ^ entry(&TABLES[0], crc.to_le_bytes()[0] ^ byte)
         })
+    }
+
+    // A byte always indexes a 256-entry row, so the fallback is never taken.
+    fn entry(row: &[u32; 256], byte: u8) -> u32 {
+        row.get(usize::from(byte)).copied().unwrap_or_default()
     }
 }
 

@@ -105,11 +105,18 @@ pub unsafe extern "C" fn swr_v1_utils_find(
     };
     let found = match mode {
         0 => memchr::memmem::find(data, needle),
-        // SAFETY: `p <= length - count`, so both ranges hold `count` readable bytes.
-        1 => memchr::memchr_iter(needle[0], &data[..=(length - count)]).find(|p| unsafe {
-            strncasecmp(data[*p..].as_ptr().cast(), needle.as_ptr().cast(), count) == 0
+        1 => needle.first().and_then(|&first| {
+            memchr::memchr_iter(first, data.get(..=length - count)?).find(|&p| {
+                data.get(p..).is_some_and(|rest| {
+                    // SAFETY: `p <= length - count`, so both ranges hold `count` readable bytes.
+                    unsafe { strncasecmp(rest.as_ptr().cast(), needle.as_ptr().cast(), count) == 0 }
+                })
+            })
         }),
-        2 => memchr::memmem::rfind(&data[1..], needle).map(|p| p + 1),
+        2 => data
+            .get(1..)
+            .and_then(|data| memchr::memmem::rfind(data, needle))
+            .map(|p| p + 1),
         _ => None,
     };
     found.map_or(-1, |p| isize::try_from(p).unwrap_or(-1))

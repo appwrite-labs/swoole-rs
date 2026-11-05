@@ -264,11 +264,14 @@ impl Buffer {
         if self.entries.try_reserve(chunks).is_err() {
             return NOMEM;
         }
-        let mut index = 0;
+        let mut parts = iov.iter();
+        let mut part = parts.next();
         let mut skip = offset;
-        while index < iov.len() && skip >= iov[index].length() {
-            skip -= iov[index].length();
-            index += 1;
+        while let Some(current) = part
+            && skip >= current.length()
+        {
+            skip -= current.length();
+            part = parts.next();
         }
         let mut left = remaining;
         while left != 0 {
@@ -282,15 +285,19 @@ impl Buffer {
             };
             let mut filled = 0;
             while filled < size {
-                let part = &iov[index];
-                let count = (part.length() - skip).min(size - filled);
+                // `remaining` counts the parts' bytes, so they outlast the copy.
+                let Some(current) = part else {
+                    self.entries.truncate(old_count);
+                    return INVALID;
+                };
+                let count = (current.length() - skip).min(size - filled);
                 if count != 0 {
-                    // SAFETY: `skip + count <= part.length()`, inside the descriptor's non-null,
+                    // SAFETY: `skip + count <= current.length()`, inside the descriptor's non-null,
                     // readable data (validated above); `filled + count <= size`, inside the
                     // reserved, disjoint `bytes` capacity.
                     unsafe {
                         ptr::copy_nonoverlapping(
-                            part.data().wrapping_add(skip),
+                            current.data().wrapping_add(skip),
                             bytes.as_mut_ptr().wrapping_add(filled),
                             count,
                         );
@@ -298,8 +305,8 @@ impl Buffer {
                 }
                 filled += count;
                 skip += count;
-                if skip == part.length() {
-                    index += 1;
+                if skip == current.length() {
+                    part = parts.next();
                     skip = 0;
                 }
             }

@@ -29,14 +29,23 @@ pub fn digest(data: &[u8]) -> [u8; 20] {
     let bit_len = u64::try_from(data.len())
         .unwrap_or(u64::MAX)
         .wrapping_mul(8);
-    let mut tail = [0u8; 128];
-    tail[..rest.len()].copy_from_slice(rest);
-    tail[rest.len()] = 0x80;
-    let tail_len = if rest.len() < 56 { 64 } else { 128 };
-    tail[tail_len - 8..tail_len].copy_from_slice(&bit_len.to_be_bytes());
-    compress(&mut h, &mut schedule, &tail[..64]);
-    if tail_len == 128 {
-        compress(&mut h, &mut schedule, &tail[64..128]);
+    let mut tail = [[0u8; 64]; 2];
+    for (slot, &byte) in tail
+        .as_flattened_mut()
+        .iter_mut()
+        .zip(rest.iter().chain(&[0x80]))
+    {
+        *slot = byte;
+    }
+    let used = if rest.len() < 56 { 1 } else { 2 };
+    if let Some(length) = tail
+        .get_mut(used - 1)
+        .and_then(|block| block.last_chunk_mut())
+    {
+        *length = bit_len.to_be_bytes();
+    }
+    for block in tail.iter().take(used) {
+        compress(&mut h, &mut schedule, block);
     }
 
     let mut out = [0u8; 20];
@@ -48,13 +57,17 @@ pub fn digest(data: &[u8]) -> [u8; 20] {
 }
 
 /// Fold one 64-byte block into the hash state.
-fn compress(h: &mut [u32; 5], w: &mut [u32; 80], block: &[u8]) {
+fn compress(h: &mut [u32; 5], w: &mut [u32; 80], block: &[u8; 64]) {
     let (block_words, _) = block.as_chunks::<4>();
     for (word, bytes) in w.iter_mut().zip(block_words) {
         *word = u32::from_be_bytes(*bytes);
     }
     for i in 16..80 {
-        w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        if let Some([w16, _, w14, _, _, _, _, _, w8, _, _, _, _, w3, _, _, word]) =
+            w.get_mut(i - 16..=i)
+        {
+            *word = (*w3 ^ *w8 ^ *w14 ^ *w16).rotate_left(1);
+        }
     }
 
     let [mut a, mut b, mut c, mut d, mut e] = *h;

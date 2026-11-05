@@ -498,8 +498,10 @@ pub unsafe extern "C" fn swr_v1_memory_channel_lifecycle(
     }
     let mut plan = Lifecycle::default();
     let mut push = |action| {
-        plan.actions[plan.count as usize] = action;
-        plan.count += 1;
+        if let Some(slot) = plan.actions.get_mut(plan.count as usize) {
+            *slot = action;
+            plan.count += 1;
+        }
     };
     if phase == 0 {
         push(if flags & 8 == 0 { 1 } else { 2 }); // allocate heap/shared
