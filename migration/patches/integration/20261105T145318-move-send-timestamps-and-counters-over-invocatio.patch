@@ -1,0 +1,69 @@
+diff --git a/src/server/master.cc b/src/server/master.cc
+index 2d566b1..2be27ec 100644
+--- a/src/server/master.cc
++++ b/src/server/master.cc
+@@ -56,2 +56,8 @@ static_assert(Server::MODE_BASE == 1 && Server::MODE_PROCESS == 2 && Server::MOD
+ 
++static_assert(sizeof(ServerSendBookkeeping) == 40 && alignof(ServerSendBookkeeping) == 8 &&
++              offsetof(ServerSendBookkeeping, server) == 8 && offsetof(ServerSendBookkeeping, port) == 16 &&
++              offsetof(ServerSendBookkeeping, worker_response_count) == 24 &&
++              offsetof(ServerSendBookkeeping, length) == 32 && offsetof(ServerSendBookkeeping, ready) == 36,
++              "Rust send bookkeeping loan layout");
++
+ // What a crates/server operation acts on besides the server.
+@@ -76,2 +82,3 @@ struct ServerRustContext {
+     void *object;
++    ServerSendBookkeeping send_bookkeeping;
+ };
+@@ -122,2 +129,3 @@ static int64_t server_run(uint32_t operation, uint64_t arg, ServerRustContext *c
+     const auto *provider = swoole_rs::native_effect_provider();
++    ctx->send_bookkeeping = {};
+     ServerReply reply;
+@@ -125,4 +133,4 @@ static int64_t server_run(uint32_t operation, uint64_t arg, ServerRustContext *c
+         ServerInvocation invocation{ctx, {}, provider, {}, 0, 0};
+-        reply = swr_v1_server_run_guarded(operation, arg, &invocation, server_guarded_call,
+-                                       ctx->serv ? ctx->serv->state_handle() : nullptr);
++        reply = swr_v1_server_run_guarded_send(operation, arg, &invocation, server_guarded_call,
++                                       ctx->serv ? ctx->serv->state_handle() : nullptr, &ctx->send_bookkeeping);
+         // C++ rethrow naturally unwinds invocation; nonlocal resume does not.
+@@ -2223,3 +2231,15 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
+         _send.info.len = ctx->length;
+-        return serv->factory_->finish(&_send);
++        const bool finished = serv->factory_->finish(&_send);
++        if (finished) {
++            // Refresh after the callback: it may change the current worker or session.
++            auto &bookkeeping = ctx->send_bookkeeping;
++            bookkeeping.server = serv->gs;
++            ListenPort *session_port = serv->get_port_by_session_id(ctx->session_id);
++            bookkeeping.port = session_port ? session_port->gs : nullptr;
++            Worker *worker = sw_worker();
++            bookkeeping.worker_response_count = worker ? &worker->response_count : nullptr;
++            bookkeeping.length = ctx->length;
++            bookkeeping.ready |= 2;
++        }
++        return finished;
+     }
+@@ -2265,2 +2285,4 @@ static uint64_t server_call(void *context, uint32_t op, uint64_t arg) {
+         sock = ctx->sock = conn->socket;
++        ctx->send_bookkeeping.last_send_time = &conn->last_send_time;
++        ctx->send_bookkeeping.ready |= 1;
+         if (!serv->single_thread) {
+@@ -2277,18 +2299,2 @@ static uint64_t server_call(void *context, uint32_t op, uint64_t arg) {
+         return (int64_t) sock->send(ctx->data, ctx->length, 0);
+-    case SWR_SERVER_OP_SC_TOUCH_SEND:
+-        conn->last_send_time = microtime();
+-        return 0;
+-    case SWR_SERVER_OP_ST_COUNT_SEND: {
+-        sw_atomic_fetch_add(&serv->gs->response_count, 1);
+-        sw_atomic_fetch_add(&serv->gs->total_send_bytes, ctx->length);
+-        ListenPort *session_port = serv->get_port_by_session_id(ctx->session_id);
+-        if (session_port) {
+-            sw_atomic_fetch_add(&session_port->gs->response_count, 1);
+-            sw_atomic_fetch_add(&session_port->gs->total_send_bytes, ctx->length);
+-        }
+-        if (sw_worker()) {
+-            sw_worker()->response_count++;
+-        }
+-        return 0;
+-    }
+     default:

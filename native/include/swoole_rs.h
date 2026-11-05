@@ -24,13 +24,25 @@ typedef uint64_t (*swr_v1_server_call)(void *context, uint32_t op, uint64_t arg)
 int64_t swr_v1_server_run(uint32_t operation, uint64_t arg, void *context, swr_v1_server_call call);
 struct swr_v1_server_state;
 int64_t swr_v1_server_run_state(uint32_t operation, uint64_t arg, void *context, swr_v1_server_call call, const struct swr_v1_server_state *state);
-/* Typed capture of ordinary C++ exceptions. Native retains the exception payload;
- * Rust stops at the first nonzero fault and returns before native rethrow.
- * This does not transport Zend bailout, pthread_exit or cancellation unwinds. */
+/* Native retains typed failure payloads. Rust stops at the first nonzero fault
+ * and returns before native resume/rethrow. Callbacks must contain nonlocal
+ * control flow; pthread_exit and cancellation unwinds are not covered. */
 typedef struct ServerReply { uint64_t value; uint32_t fault; } ServerReply;
 typedef ServerReply (*ServerGuardedCall)(void *context, uint32_t op, uint64_t arg);
 ServerReply swr_v1_server_run_guarded(uint32_t operation, uint64_t arg, void *context,
     ServerGuardedCall call, const struct swr_v1_server_state *state);
+/* Invocation-local loans, refreshed after native verification/finish. The arena
+ * and worker keep the cells alive under the existing synchronization protocol. */
+typedef struct ServerSendBookkeeping {
+    double *last_send_time;
+    void *server;
+    void *port;
+    volatile int64_t *worker_response_count;
+    uint32_t length;
+    uint32_t ready;
+} ServerSendBookkeeping;
+ServerReply swr_v1_server_run_guarded_send(uint32_t operation, uint64_t arg, void *context,
+    ServerGuardedCall call, const struct swr_v1_server_state *state, ServerSendBookkeeping *send);
 
 
 enum {

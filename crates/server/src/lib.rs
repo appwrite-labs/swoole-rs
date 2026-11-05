@@ -33,6 +33,7 @@ mod reactor_io;
 mod reactor_thread;
 mod records;
 mod send;
+mod send_bookkeeping;
 mod shared;
 mod startup;
 mod state;
@@ -53,6 +54,7 @@ pub use shared::{
 };
 
 pub use config::{ServerConfig, swr_v1_server_config_get, swr_v1_server_config_init};
+pub use send_bookkeeping::ServerSendBookkeeping;
 
 pub use state::{
     ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
@@ -138,12 +140,17 @@ struct Native<C> {
     context: *mut c_void,
     call: C,
     state: *const ServerState,
+    send: *mut ServerSendBookkeeping,
 }
 
 impl<C: NativeCall> Host for Native<C> {
     // Constant opcodes erase unrelated fact-table branches before native effects.
     #[inline(always)]
     fn op(&mut self, op: u32, arg: u64) -> Effect<u64> {
+        // SAFETY: the entrypoint lends refreshed, synchronized per-send cells.
+        if let Some(value) = unsafe { send_bookkeeping::native_op(self.send, op) } {
+            return Ok(value);
+        }
         if !self.state.is_null() {
             // SAFETY: run_state lends live synchronized records; this leaf access ends before callbacks.
             if let Some(value) = unsafe { config::native_fact(self.state, op, arg) } {
@@ -187,6 +194,7 @@ pub unsafe extern "C" fn swr_v1_server_run(
             context,
             call,
             state: core::ptr::null(),
+            send: core::ptr::null_mut(),
         },
         operation,
         arg,
@@ -213,6 +221,7 @@ pub unsafe extern "C" fn swr_v1_server_run_state(
             context,
             call,
             state,
+            send: core::ptr::null_mut(),
         },
         operation,
         arg,
@@ -233,11 +242,32 @@ pub unsafe extern "C" fn swr_v1_server_run_guarded(
     call: ServerGuardedCall,
     state: *const ServerState,
 ) -> ServerReply {
+    // SAFETY: the existing contract is forwarded; null selects native bookkeeping.
+    unsafe {
+        swr_v1_server_run_guarded_send(operation, arg, context, call, state, core::ptr::null_mut())
+    }
+}
+
+/// Runs a guarded operation with per-send loans refreshed by its native effects.
+///
+/// # Safety
+/// The guarded entry contract holds. `send` is null or a live invocation record;
+/// each readiness bit promises its pointed cells remain live and synchronized.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_run_guarded_send(
+    operation: u32,
+    arg: u64,
+    context: *mut c_void,
+    call: ServerGuardedCall,
+    state: *const ServerState,
+    send: *mut ServerSendBookkeeping,
+) -> ServerReply {
     match run(
         &mut Native {
             context,
             call,
             state,
+            send,
         },
         operation,
         arg,
