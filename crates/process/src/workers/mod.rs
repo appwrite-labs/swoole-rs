@@ -1,6 +1,6 @@
 //! The server's worker side: event workers (upstream's `src/server/worker.cc`), the
 //! base-mode reactor processes (upstream's `src/server/reactor_process.cc`), task workers
-//! (`src/server/task_worker.cc`), the manager (upstream's `src/server/manager.cc`) and the
+//! (upstream's `src/server/task_worker.cc`), the manager (upstream's `src/server/manager.cc`) and the
 //! process-mode factory (`src/server/process.cc`, which now holds the others' ops too), and thread mode
 //! (`src/server/thread.cc`). Native code keeps
 //! the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust

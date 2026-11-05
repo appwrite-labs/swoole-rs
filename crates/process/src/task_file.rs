@@ -14,6 +14,7 @@ use swoole_rs_corebase::{
 };
 
 use crate::process_pool::SW_IPC_MAX_SIZE;
+use crate::task_sync::TaskServer;
 use crate::worker_globals::swr_v1_worker_global_get;
 
 /// What reading a task's temporary file did.
@@ -31,7 +32,7 @@ pub struct TaskFileRead {
     pub read: usize,
 }
 
-fn errno() -> i32 {
+pub(crate) fn errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
@@ -90,7 +91,7 @@ pub unsafe fn swr_v1_process_task_file_read(
 }
 
 /// `SW_TASK_TMP_PATH_SIZE`.
-const TASK_TMP_PATH_SIZE: usize = 256;
+pub(crate) const TASK_TMP_PATH_SIZE: usize = 256;
 
 /// The payload descriptor written into `EventData::data` when a task spills to a
 /// temp file (matches `swoole::PacketTask`).
@@ -237,12 +238,23 @@ pub struct PacketPtr {
     data: *mut c_char,
 }
 
-/// What the task methods below borrow from native: `SwooleG.task_tmpfile` and
-/// `String::extend`.
+/// What the task methods borrow from native: `SwooleG.task_tmpfile`,
+/// `String::extend`, the server's task state and `make_tmpfile`.
 #[repr(C)]
 pub struct TaskNative {
     pub tmpfile: unsafe extern "C" fn() -> *const c_char,
     pub extend: unsafe extern "C" fn(string: *mut StringRecord, size: usize),
+    /// Fills `out` with the server's task state for `mtask` (or null), with this
+    /// worker's result slot when `with_result`; returns `mtask`'s count (0 without one).
+    pub server: unsafe extern "C" fn(
+        serv: *mut c_void,
+        mtask: *mut c_void,
+        with_result: bool,
+        out: *mut TaskServer,
+    ) -> u16,
+    /// `make_tmpfile()`, closed, its path copied into the `SW_TASK_TMP_PATH_SIZE`
+    /// bytes at `path`: false when it could not be created (`errno` says why).
+    pub make_tmpfile: unsafe extern "C" fn(path: *mut c_char) -> bool,
 }
 
 static NATIVE: AtomicPtr<TaskNative> = AtomicPtr::new(ptr::null_mut());
@@ -256,7 +268,7 @@ pub unsafe extern "C" fn swr_v1_process_task_set_native(native: *const TaskNativ
     NATIVE.store(native.cast_mut(), Ordering::Release);
 }
 
-fn native() -> &'static TaskNative {
+pub(crate) fn native() -> &'static TaskNative {
     // SAFETY: native registers its static table before any server runs a task.
     unsafe { &*NATIVE.load(Ordering::Acquire) }
 }
@@ -594,7 +606,23 @@ mod tests {
                 (*string).size = size;
             }
         }
-        static NATIVE_TABLE: TaskNative = TaskNative { tmpfile, extend };
+        unsafe extern "C" fn server(
+            _: *mut c_void,
+            _: *mut c_void,
+            _: bool,
+            _: *mut crate::task_sync::TaskServer,
+        ) -> u16 {
+            0
+        }
+        unsafe extern "C" fn make_tmpfile(_: *mut c_char) -> bool {
+            false
+        }
+        static NATIVE_TABLE: TaskNative = TaskNative {
+            tmpfile,
+            extend,
+            server,
+            make_tmpfile,
+        };
 
         /// An `EventData`-sized, 8-aligned buffer.
         fn event() -> Vec<u64> {

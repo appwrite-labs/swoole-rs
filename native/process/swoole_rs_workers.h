@@ -17,6 +17,8 @@ void swr_v1_workers_set_factory_call(swr_v1_workers_call call);
  * (crates/process/src/workers/entry.rs) from its objects and runs the operation. */
 typedef int64_t (*swr_v1_workers_enter)(uint32_t operation, void *object, void *other, void *extra, uint64_t arg);
 void swr_v1_workers_set_enter(swr_v1_workers_enter enter);
+/* Server::finish's result, as workers_enter's extra. */
+typedef struct { const char *data; size_t length; } swr_v1_workers_bytes;
 /* OP_SIGNAL_SET's argument: the signal number (-1 for SIGRTMIN) in the low word and
  * the handler in the high word: 0 none, 1 SIG_IGN, 2 `own`. Defined in worker.cc. */
 void swr_workers_signal_set(uint64_t arg, void (*own)(int));
