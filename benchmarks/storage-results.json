@@ -1,0 +1,2512 @@
+{
+  "execution_status": "complete",
+  "min_ms": 100,
+  "scope": "Rust public-ABI microbenchmarks; no PHP, sockets or server throughput. System allocator accounting disabled during timing. Peak requested bytes excludes allocator metadata and RSS. 7 alternating whole-workload trials, warmup before each trial; no CPU pinning.",
+  "sources": {
+    "baseline": {
+      ".cargo/config.toml": "3aa814d156ee2a130c2799b3d7f7f227b128ebd92ec9628ea49eba8f4f102c9c",
+      "Cargo.lock": "c22e05758d32b4499d23d41986990dbbd7b2ace0209d5e0a5669197c302cd2a4",
+      "Cargo.toml": "2e7893e2d2afdb3a9d2585a65d8d8c793dd0ad66ca2b26ef30413c0536d8e65c",
+      "crates/base64/Cargo.toml": "7bf94cc2ab321532d59eb585e9ad8b459b895e3592d562f0fb10d1748adea68a",
+      "crates/base64/src/lib.rs": "59b8fb9d7c34a68c6bb01b61c97010c6311c8623270ec97162931d33ea518bbc",
+      "crates/buffer/Cargo.toml": "c2fc6218a68f1ebf4aed44c3b14730e07f5c4c47cce7a18e2aa221e97b133f2d",
+      "crates/buffer/src/lib.rs": "719b14c2c6ef611a0cf23d8d1e328ed7f698e5ea1fdc251d25f27f52fd5aec5a",
+      "crates/buffer/src/string/allocation.rs": "5239f32a640af5744f45843a432ee8a14328da8e04c606ca82f93f2fd1704f0d",
+      "crates/buffer/src/string/compatibility.rs": "ae0ff1b6de70683de07971f548cb489021037d9293ce35fc21ffb7d08b5b6c5b",
+      "crates/buffer/src/string/fields.rs": "709a12979527fa813e641ea869981b2312513a9f32b9a2e6533f5be5f35eed47",
+      "crates/buffer/src/string/formatting.rs": "3603adb7395fc7aad171cfa1f4147b470526f75a75f0f75124d0368025f2e1fe",
+      "crates/buffer/src/string/ownership.rs": "35a15a628a1a14b36d7e94f20c2adcdf5b68e9ce15cfd80de0656354ca575159",
+      "crates/buffer/src/string/policy.rs": "241ed9f3513fab04fe8d6f9f6d376ae277d72060b123ddf157e20fa88e1ddb7f",
+      "crates/buffer/src/string/random.rs": "eeae373c5d452d90cf67a54309fa03f84052c76fa310ad18a03c840a768a333b",
+      "crates/buffer/src/string/scan.rs": "5844ecb04f028be6f9037446fedbad76802383b9d4324f4060629d1be0f58836",
+      "crates/buffer/src/string.rs": "64b9a5ebc1c980a24b07bf35010b019f790e385506ce34001a7cbe89353a9bae",
+      "crates/buffer/src/typed.rs": "2f665bedc59f473ed035ae391a82f95661206881cca93691ff00ee909c27b887",
+      "crates/clients/Cargo.toml": "e7ebb80c23ec332e7af5ca1422cdcd9c9803806b87bd42da8c5d96a0db19f38e",
+      "crates/clients/src/async_client.rs": "74dad90e8119896a8445385beaa7e6526d0f82ac5c4588044ce7aa6702b8e3c0",
+      "crates/clients/src/coro_client.rs": "735a0fbe200bd460636c0f79984bbecf8834cfed6dbe9bd9b133c44fde0c89c3",
+      "crates/clients/src/http_connection.rs": "27ea57ee908a7c9a83932d8b6ff354a3dd877b9871f78fab3b82189f534900e8",
+      "crates/clients/src/http_format.rs": "bb0be5f2a60bacaefa9d45f5b80e65da242e1fcafcb0ca8e4508a4807b3d70fc",
+      "crates/clients/src/http_response.rs": "cdce96444649dcd32ce02a3184e836c02ce0540c8a4f046b15cf4c505c1f69e2",
+      "crates/clients/src/ip.rs": "5e392386da5cb0b56dac03ba1d20d03bed1b6041fe150ff652c9fae7343264ef",
+      "crates/clients/src/lib.rs": "cd7306b216a3c69350c2fc096d47362dbf326e81efef3e6d71996087ad89f8fa",
+      "crates/clients/src/object.rs": "0dd42cf3fcc9abb97a815ef74bbb52a84132d44c5d227983606f3fa320f360cd",
+      "crates/clients/src/pool.rs": "84ac4e3a46e8fb4b3d33a6b48c5108176853e0d4fbd6031922f0f757672ea22a",
+      "crates/clients/src/resolver.rs": "711e7491bccd461972f4ceab1ac687a07cbea5b5d97ef0a01648dca7f16e7d9f",
+      "crates/corebase/Cargo.toml": "e8b02c67af63f63d202dc9553822681c3fadb8ec09b4303ebe9ac2de6dc21e2a",
+      "crates/corebase/src/hook.rs": "e2caec6e640bb00b68a5323f5d68127fc163eb7c5fad3b0f8c56aec331d4c2ab",
+      "crates/corebase/src/lib.rs": "2b6e62a00001903fcf33d77d0a280d99f7cc71d477f4546e8e518bba9d8ba888",
+      "crates/corebase/src/lifecycle.rs": "d2f80e870d65aa46035e997f4a234b756f42613d6fe5ec01796b88225b6d147f",
+      "crates/corebase/src/random.rs": "0a8aef8e276eeba3f1f688db436a534f75acebd2711700faeaa85d115ec30373",
+      "crates/coroutine/Cargo.toml": "9618b34fd79c94cfdcf7a631cce0f19799834f8ab209598ad5374d2012def01e",
+      "crates/coroutine/src/bailout.rs": "aecb16ed0e44d7aa2304079c7986c555308b9387672d0205aef14c86baea4920",
+      "crates/coroutine/src/channel.rs": "0b12b08ccd467b1e322947ba29594ac3516e0910d46f93aa81e42aab63e5e65d",
+      "crates/coroutine/src/context.rs": "c0168048a7df8dbdc38b9d5083a2cc7ed20158c68388bda7fe53eefa5d98d05f",
+      "crates/coroutine/src/creation.rs": "0959bf4c173859f588cabfb7ea36548b3c091dad9932a2ab939dfe7e21b81e6d",
+      "crates/coroutine/src/entry.rs": "8cf6d06b480d45036e81fd1fc5f6af0c8f9e2e7c6df8ae1c79c19bb712fd08c5",
+      "crates/coroutine/src/identity.rs": "7d8884e8e793a3870ffb00d02493d288cafa85554b6e7e696eef72a59118ae7d",
+      "crates/coroutine/src/lib.rs": "c640fee3483a125f2f8921a82315f9b7a80f49999f91f2d913153d70af425b73",
+      "crates/coroutine/src/registry.rs": "135237165af63493fbe24207df738ebd3ebe8e794b537dd7a9fbbfb513bd8af2",
+      "crates/coroutine/src/scheduler.rs": "14438e9eb1b80a7bf7ba176d0987df46087067be01829cff185a77f816ed7c1a",
+      "crates/coroutine/src/stack.rs": "779557d08a5fed48d53f4895cdfad69e0cb509db143f4439e02a2fc3e26d753b",
+      "crates/coroutine/src/status.rs": "fe2f49e70902530ea14a63ecbd0f56d75663ec1f6519fad7dece795d74d6131d",
+      "crates/coroutine/src/swap.rs": "811f5087f6b57c6a62833a6c6e3a30bbd10da98a4170aa81866d8b067d30fcf0",
+      "crates/coroutine/src/timing.rs": "21fa7aef47bbfc181f911d92ede0cd19b3bfbea6c3ed21eb97f0690239d41832",
+      "crates/coroutine/src/tokens.rs": "9196087e0d7ca8bd814f4a50075496c4ef308266477eb6f1957ee1894f1460fa",
+      "crates/crc32/Cargo.toml": "e2f9855fc162edbcb29856fa9b6d770d1c7eaab481e401ee948cd50668c3fd3e",
+      "crates/crc32/src/lib.rs": "3e7bf06f59c1087dc070b531f81386bab23a9e6829bea0cc40c961312276c55f",
+      "crates/error/Cargo.toml": "565bfd641669a261466955609a421d733e843353024fca76bf3f941e158ebc94",
+      "crates/error/src/lib.rs": "69aee686ff4947c7710456124b79956ca61633aa7644a8bce9d4fd32607e831d",
+      "crates/error/src/state.rs": "20fb3456d67e949dbc0d2f5e0d096d183f27160621247cd0acf6f28cbc285718",
+      "crates/ffi/Cargo.toml": "0678bfa1eb38173aca9695fbdfbc043b33080f3155c0b04f26c9a6646b2eadc2",
+      "crates/ffi/src/lib.rs": "62ce653feed3cf17413e5a8d7be9b63f5650e77c54fdf32da9817df8f5fea78c",
+      "crates/framing/Cargo.toml": "58548884c81fbb2835afb7f27782636f266799a632c86e1a295589755d778634",
+      "crates/framing/src/lib.rs": "1488fd7daa2677f6893ee935d87dcad37fa8bef426af7899e6938f7241a98695",
+      "crates/framing/src/mime.rs": "4717ef517e186e78ee92f4bb9af85ec3298802fb1f9129a59c55b553d68de96f",
+      "crates/hooks/Cargo.toml": "7519744686d4707b50c8adeae38e1be2ec7b21e59c58eb564ec7df57b518e16f",
+      "crates/hooks/src/lib.rs": "6fb6b78256ee3a5b8da008c8ecb7190820450146dd61674334b298b034048790",
+      "crates/http/Cargo.toml": "2c51355cff4c4532ef35cda0e07d285b8ba23e5e34a01c1271d038180fe8cbac",
+      "crates/http/src/conditional.rs": "79dfbfb44d77b23c0fda90e9592aaa8b200db55b4c86868b08512d62db26dc13",
+      "crates/http/src/cookie_flow.rs": "19d4d24f922950127a976c43882b86971ee488f4688acd944a3203d3ef056bfd",
+      "crates/http/src/directory.rs": "5a4e50b36228c86a6fc726cab11fc7dda80d46706ea4aa373c6f2c0758b3ba57",
+      "crates/http/src/dispatch.rs": "ed9a9dc3f5bc2b6d716205dbc81345d330d7a9872b30f4708f098b3cc01cadf2",
+      "crates/http/src/framing.rs": "ef33e0347108adeee27f487e4c38534c96a53b6c0508476580e65a217f0f4f6c",
+      "crates/http/src/headers.rs": "b0d6678da707a6a18c534cb429e2cf98a9d73d7cec959e7a5f4ff0d72980b8a6",
+      "crates/http/src/index_page.rs": "66c98c113586a41fb1c972bdd682502b77f821ca5114add71974a34c92b76a47",
+      "crates/http/src/lib.rs": "5e602e6239d69fb225381942171d1c4433cfcc7ffefab1a9b845b1a08e790e3e",
+      "crates/http/src/maps.rs": "ab6eb1660a74fc1a3b061cbfe6f3de52a871c6963806cce61b776d4257edc66a",
+      "crates/http/src/multipart.rs": "f42cd1c444ede43fd575f919d8606066c425e7f50b0f262fcb9814c67e6543fe",
+      "crates/http/src/multipart_emit.rs": "3fc71d19a234decf2d8ee8ecbdce36c70c00733f24e3df2ddf0b603ba5a467d1",
+      "crates/http/src/multipart_upload.rs": "12504230bc042a129510fdaf1a61dbd5fe09c6336941c975559d517167dd3ed6",
+      "crates/http/src/proxy.rs": "0508302f043f7f976f46c6cde467f0af79a7a5fc3b5c03d3d59957ad69656423",
+      "crates/http/src/range.rs": "4357d6cfe7cab9fa658c690352029a7dab663cb22b4fa90fab03e189463d4af3",
+      "crates/http/src/range_response.rs": "958407c63c0fea6be67135bd7524def4ebbd91f79bd1cf5b1d520249b6411869",
+      "crates/http/src/request_context.rs": "3d951de34dadc9f941a4be1c9f6a692d28adfe0030da6ac52007840532e8e364",
+      "crates/http/src/request_lifecycle.rs": "9a3a890da8383a877e43d9a53b1928ead999b9a5b378030207a456078996e410",
+      "crates/http/src/rewrite.rs": "ca900ccee5366c0fe4cf588fdf7216f9f5ed621c0d525fac94a156d78ad49149",
+      "crates/http/src/rewrite_store.rs": "975df5a4371b7c2d8074450873d99599f333127116a4ae6135614976fda5ba65",
+      "crates/http/src/static_body.rs": "eeac8c3813b331a371a82424bbc1f267ebdd4bf7e4e2bf817091ac3fd55995ee",
+      "crates/http/src/static_config.rs": "fb073bc923920645ed2d5943b9f36813fac66aff00c20ded75dbb0cf88cb906e",
+      "crates/http/src/static_context/range.rs": "d2313dbf075f9aae0a7496882680699b21809cbc8d2ab24cfefba6a9b40f0dc2",
+      "crates/http/src/static_context/selection.rs": "02e4c2511901a68c84d1a3c1c37a1f36898e4450114746262d60595ae0ce64ff",
+      "crates/http/src/static_context/serve.rs": "77329a5a5a2044fc9bc51d9b1e7c921697f2d2762fae9b4efc1a61c3221d507a",
+      "crates/http/src/static_context.rs": "885b3c206eb70a7d08357007d1644560c83e6574b36ea00049a1e15d6bddd4dd",
+      "crates/http/src/static_headers.rs": "ccfcdb129145dc7f891a89e009a069417b818b0b733933151d280caba154a6d7",
+      "crates/http/src/static_meta.rs": "644eff6f85218ad778282c9cece8a24ebb3795ab2ad6d1ac9dfacf53c1089c92",
+      "crates/http/src/static_path.rs": "6152ee88200a5c5fd6b1a50497c8d1901cd516d5aaf6bab5af58bc836aa0f023",
+      "crates/http/src/static_select.rs": "307aadf8aaf7d272297c754e56f2c32d0be291769a13fa4cdcb9531b9ba0c408",
+      "crates/http/src/status_buffer.rs": "dde32e61ac0256b507a61ba78cc47d45e2a84b7952440a9b39fa46f8ba1899c3",
+      "crates/http/src/tasks.rs": "0918aa49ab4269170a9a6267db3856395ef48a22fd098c3dbbcfc0bac111aeab",
+      "crates/http2/Cargo.toml": "2d29d81e2f5b2d2fd3c405b67f816aa16849e3e3fae2227d2f6caf56320f52bc",
+      "crates/http2/src/connection.rs": "afa77a656317ac90703b0ee43f02c829dd37999a739d89bbd627e5628e6df6e6",
+      "crates/http2/src/decompression.rs": "b91654e1d0275823cd3fd7837a24cd4dcba812f049820bd7c1f319157ed81151",
+      "crates/http2/src/files.rs": "02a2934762350c4fc9b4c7f8551aab584e30c236a10a9ce14ad6818e12f8627a",
+      "crates/http2/src/lib.rs": "6f04cbc6578f4aff2c3b5a1b1742d5e59930896e1dc27a1b0f1ebfcd8a78f385",
+      "crates/http2/src/queue_faults.rs": "a967fcca8898968d75f39cd2bc47ca5517050869c11056fedd977471b2321057",
+      "crates/http2/src/receive.rs": "4406c26575d5e587b6067b2f7868ec12ca77ed00354c6dd7a94009234d0215ba",
+      "crates/http2/src/send_queue.rs": "0ded1ac46298de57802392e659d7c3133e8d87429a8ce8921a57f4dcfa036d40",
+      "crates/httpbindings/Cargo.toml": "703574a8eb60379da7939548133b0b38ab826593c340c97aecb840745582972e",
+      "crates/httpbindings/src/emission.rs": "74d97b2103fce6aa377ce8c9535654110439a854fd5a0133cb0f5f6e4d6fba61",
+      "crates/httpbindings/src/file.rs": "aed095a1daf701b0ddbca67eb741224edc1f366cb04c74088db2951a154c36a4",
+      "crates/httpbindings/src/lib.rs": "f304ff7e18d2aa41186d8ca758ab61237b2cf74282d49aba1774a7ccd9f32d71",
+      "crates/httpbindings/src/payload.rs": "2b6778b9fc5b6ca6da949677b3e19997999764376bc699b3cbf1b57e4308d07f",
+      "crates/httpbindings/src/request.rs": "a629651540148034f7679a7548b49946cc257649dc9bea3d65527112f11e4b73",
+      "crates/httpbindings/src/response.rs": "f2dc6acc71d2cae8cecb0467bbe0b1ddf15e85648b35f391508cd1fd404c39e8",
+      "crates/httpbindings/src/server.rs": "6fe9c5698fe2971231f5fcd0bb45d782b2e91a13a2cd16f49e3fa8481f1a362d",
+      "crates/httpbindings/src/settings.rs": "6a102c308d398d4059ddfeacf927e94112bdec1eb2199db9bfaa36779b39762f",
+      "crates/locks/Cargo.toml": "200f8cec246aa5ba9975bde58c8ee67407701f2b0634bd8204a6b98898497bb7",
+      "crates/locks/src/lib.rs": "deab20fc781be5d68918d86083635be066e8012b85f33a24d4b4745187b2fa8e",
+      "crates/memory/Cargo.toml": "30ba94c481caa385f544d90736f961e177532ecdc099bd3f2b255d5b9917bcbb",
+      "crates/memory/src/channel.rs": "d3b961ace514ceeebcb23a6bb7e08a2cfa48947f759f254a70f2485c52cc64ef",
+      "crates/memory/src/fixed.rs": "d64ff2de7a8274b3499d7375b6c77f5a9f9f4b5ebf7a1cfd74c9cbc8508f8904",
+      "crates/memory/src/global.rs": "372d829f0bf6dee93f047795982d66db79cbc7846fd451834d80bc8d86301d1b",
+      "crates/memory/src/heap.rs": "4006b7ea0fff0c1978f0a8833d1b9b57bf44be46678e9e70e8511115139c25e5",
+      "crates/memory/src/lib.rs": "e3b7fd4c17f440f8532766fbcce7e4ad6757e71cc841fc05e519fcfdd6ed437d",
+      "crates/memory/src/mapping.rs": "312ea89169429a2e9b182d07a626e263897c2eb65c37ca6e6cac61b3ad9c60da",
+      "crates/memory/src/mapping_operation.rs": "a413873bc1396f118389783066bdd672dfccc55c31df7cabfd79327b38ee8a47",
+      "crates/memory/src/ring.rs": "a052734a258c71429872c84abe26a0f8ad178a31b9d203f7dec050c226873a04",
+      "crates/memory/src/table.rs": "c32e3aef0e11b8c2264e638a89636790bda38e1dcb798da0d344494aa3c17cf9",
+      "crates/memory/src/table_columns.rs": "6c4e4d7059aa15ec4095859890fce79279b4c10ab90f54a0007c5c1acb5bc66a",
+      "crates/memory/src/table_columns_v2.rs": "2cfadc9811d6edf4fe6ff113c2148ca3056ee8f9064e0887cacc5353d2627b41",
+      "crates/memory/src/table_records.rs": "5fce1dafc580e699ddfb6e155fd597206eeeb9e673c59a505b45b8024fc059c1",
+      "crates/ossupport/Cargo.toml": "0b998815475f98feef0e7b8f943fe0af957ab193b8b8b226b7919ccb2956c3d9",
+      "crates/ossupport/src/file_content.rs": "694ef38d97fc0aed0774467f3ac680efe35c37aab1897f621057398a9087b837",
+      "crates/ossupport/src/file_io.rs": "2123492135b62c8db722ba86227b72ab19d53ef75cf10ccbb46643758fda0003",
+      "crates/ossupport/src/file_line.rs": "cfa07c8a33b7d9dc08db15f4e02a09504dd4e9fa8815f10a37c875942888afa3",
+      "crates/ossupport/src/lib.rs": "8f138c48facb2fa4108e175439431c1c407bc8364bad65e240816e8bc0746b7d",
+      "crates/ossupport/src/random_bytes.rs": "f820c2e3e885ff3b095cbee83b43e2a24e6379426268a3b81b0136c2a6d0f803",
+      "crates/ossupport/src/read_content.rs": "20d3079dbcd5be351ef41ee8c5bd471103f223e5f08edbd77608be86c6e4dfb4",
+      "crates/ossupport/src/sendfile_fallback.rs": "26d5f5777aed9cc03aa18a7c0f1567675cf6550b5f2da0a1578d274644e060ba",
+      "crates/phpcollections/Cargo.toml": "6bd55a817ed77bc3d01091d0fa0463c404a3da3d80c294b4199d76bb8fabc3df",
+      "crates/phpcollections/src/lib.rs": "978e1234e1d07f33b96ddf0af6c7fe9013bc5d5aa7011cd673d98169b5ce56d5",
+      "crates/phpcoroutines/Cargo.toml": "ea96b23583f421628d2a16e34a9f77c707c6ac2cefde4611703c7cb96a18c4d1",
+      "crates/phpcoroutines/src/activation.rs": "b2ea142646ee7927c1bd915cb2c56d1c7a616f682094b010ff9d25b1464ad3fa",
+      "crates/phpcoroutines/src/allocation.rs": "c962540b471047f15e3edf501a6f649b221491cdbbb51a5de9ff724d58f641c3",
+      "crates/phpcoroutines/src/autoload.rs": "bb39131b18ef0d9fa7e17d1d4592614517f3c140e4642134f3542aa9a6a0827a",
+      "crates/phpcoroutines/src/bootstrap.rs": "f5d6772f5bceb019a8364225f10610f3f56bcca458f471d185a9bc61d8b3f8c2",
+      "crates/phpcoroutines/src/config_state.rs": "af1db38acd2607b72bdb895b2996cc6148f2f79e81f12722fce6c97768b35faa",
+      "crates/phpcoroutines/src/configure.rs": "f2e939709e431e50b7a049d0a905652216c4c9a9b16d481a2d7ecce40fb144dd",
+      "crates/phpcoroutines/src/context.rs": "89235f39ebf110920d516d8f3b8e37ca8608a1da1e8b39e36f1e55912fe5c64a",
+      "crates/phpcoroutines/src/context_lifecycle.rs": "8c8b61dc58d1846c229eaa6e4f3711cd636c0467ac29fc67ec7da53d983c785a",
+      "crates/phpcoroutines/src/context_metadata.rs": "03775a8308ea6f1a988333d31dae4b1e7b2bf9b9cda8ece5c012a5177bba64b8",
+      "crates/phpcoroutines/src/control.rs": "8a348b2a9e0fe2da1b4641bc775fc94cf8db2a032a748b34fa051a541b1864df",
+      "crates/phpcoroutines/src/create.rs": "1210add0fa32c43bdb6bc3b8ab39dc4799f063d39588063f04422ac46fef2fc3",
+      "crates/phpcoroutines/src/deferred.rs": "e3bade20a904406d7319958bf455e07f96681912598037524120709daa45b346",
+      "crates/phpcoroutines/src/exit.rs": "d9cb7f4df642a7a1217b1410b9554d903bf18595caa32fe6bdff709c0bf8fa17",
+      "crates/phpcoroutines/src/fiber.rs": "b3f448e22871cf7ed6ddc6e519429d5b14eb58ae3c21dd793aa705ebfa28517f",
+      "crates/phpcoroutines/src/interrupt.rs": "845cb3d9c011ab9aecffbbfe3d03048058e9dcd88b3f24549be9c368a52d9227",
+      "crates/phpcoroutines/src/introspection.rs": "c3eb0f718adb33914aaa2f9b1136f3bada269d8675f511d3bb9a5c19788462cf",
+      "crates/phpcoroutines/src/join.rs": "7273cf5514e6b32f0aa7472283e7ca35dbc683c31e6a7b9d6bcef11a2be5da04",
+      "crates/phpcoroutines/src/lib.rs": "6eb56ee4510da1480550b3874c8549edb24395397c31972bf3addc48196d3b5c",
+      "crates/phpcoroutines/src/method_catalogue.rs": "b79a00845d0267b247780da04648fabc3e2e27c5639e1a2be57a601bf56b2db8",
+      "crates/phpcoroutines/src/options.rs": "91c962b6803686e54e0f42662a37d14eec7e421b7d9ec9b0f3d902afda466168",
+      "crates/phpcoroutines/src/scheduler_callback.rs": "deefe25327b6dfb8072683b3fdc784462881d026a57b6c0ceac4400da327b83c",
+      "crates/phpcoroutines/src/scheduler_control.rs": "62a29b168ba654af231589e751124e530588d6f00ce81aff7243c09c6639e931",
+      "crates/phpcoroutines/src/scheduler_phase.rs": "acec0ee709b6df1126645584801597341846c0fe31ec2ad34554169db42be20e",
+      "crates/phpcoroutines/src/scheduler_slot.rs": "84a6fd52170abda59985a0593f8eb3b503289e6c0914bad79fa1b070bb9aa5f4",
+      "crates/phpcoroutines/src/stack_bounds.rs": "ebf646deea3e83b8844e02fda81508dd6a1311bb2df9008b0c8ec2026b40357f",
+      "crates/phpcoroutines/src/stats.rs": "7354286d26f8762cb5d1ac8cb99c5ad82a2cb68a5d07455435f990787c2c12d1",
+      "crates/phpcoroutines/src/system.rs": "17795044625c709097ac65fd40294c99a336212c8aa9b2f2029019d35293cb36",
+      "crates/phpcoroutines/src/transfer.rs": "faa0fff55b3ce32fdfe9200b091821a3cefbfe2f5cfe19d0d5ff666f60ed0a21",
+      "crates/phpcoroutines/src/yield_registry.rs": "2aec1db550808f8966d4f18f5e31ce27745b56ad43710f7093b16bd12cc1b659",
+      "crates/phpevents/Cargo.toml": "d652229c28feee5a487f11a4b3d0d011dfbc7e4d48ec5188ad91f95bb1ecf142",
+      "crates/phpevents/src/admission.rs": "ea9c4dd77db54da32fe0a281f2117f0054dda0e6d789cda08f5eb72d5a26b5de",
+      "crates/phpevents/src/aliases.rs": "4d27d4c3c255da5f24ecb9c1f7dbe7529f86b1ccd783314d4dd4ee2ea05528df",
+      "crates/phpevents/src/callback_slots.rs": "a4062f71c26c4c7a73e3d092dabb04128deb9054bacdac3d656a79c19cd81bfa",
+      "crates/phpevents/src/descriptors.rs": "1e7d30931de2358423a577f2a8d2ad90f5bea31e720ead93a9d8a4809ee3e111",
+      "crates/phpevents/src/dispatch.rs": "5456f6c9ed4e261137b1c8a5e098a409bf914a176bf854107a7ea0b53a543742",
+      "crates/phpevents/src/event_loop.rs": "82afb20df4ffeba26af18567d3da015cdbfb895419facb9a36574d59a5f3f653",
+      "crates/phpevents/src/lib.rs": "d95e09721f3d742e543a6093857c9620ef6b9f90adeb860c99ee69b41c0839fd",
+      "crates/phpevents/src/operations.rs": "152d085382719d133fc97065debe31d5bdb03fcf3c5b26e6290b6ed1bd20b61f",
+      "crates/phpevents/src/query.rs": "935bc9621666e8014b1be4051b6414a99cd5e9273d13f8fd54f516d5a9e7a63b",
+      "crates/phpevents/src/registration.rs": "5eb334680cea45322be15852318711b3f91c97ac18f1a8e25eb72a30e2eb8f70",
+      "crates/phpevents/src/registry.rs": "46f604de4e6e14e5aa97e1b2689627e8aa2c9f760eae6ec0fb8f11aecaf3c15a",
+      "crates/phpevents/src/streams.rs": "9ad5ed9f1411ac48ed3b2c5ec1ea8785469f84cc6c1d3353402f21dee12de486",
+      "crates/phpevents/src/updates.rs": "44db8d2149da099febf0097603b8555e78bd11825d827f6be65544a47120fc55",
+      "crates/phphelpers/Cargo.toml": "03d0793a53c6e26a859fa9509257b6c855b6b4e0264e3884d1c0a32b5d169252",
+      "crates/phphelpers/src/asynchronous.rs": "ccce66a11a04d6627be40547953f5eede587e20fd9b4e22c7bbebf75433189ed",
+      "crates/phphelpers/src/facade.rs": "bbc01fcdb6fca75639877935c475c2ec2fe432e82db44308e200ed02bc5217a7",
+      "crates/phphelpers/src/known_strings.rs": "10f22f00ba7cfe93ff90bd842ba7ed634933cc0f857fa720b0c0362945db3cce",
+      "crates/phphelpers/src/lib.rs": "1141d1fcc2fdfc1c06ed02c9134539456a7e545c9b44b3af8a79d578b290a7d4",
+      "crates/phphelpers/src/registration.rs": "1e1d3f7c69f64b8156c3d3424a4735576cb4418be6bad0914dbd4b339ff36749",
+      "crates/ports/Cargo.toml": "4835afbb633902faf8861ef9bd396a741d2c7e8d45c3cafb5c1e9452a85e1d10",
+      "crates/ports/src/lib.rs": "171e65bd9014f969188667fef806ccb402ad08a4a9698e91ba67c591aae81b6b",
+      "crates/process/Cargo.toml": "74ecdadffe3642b671e5d144884efd6769c6ab149e3130852e7bdba6ffea0be6",
+      "crates/process/src/lib.rs": "a97a05ec7bcf77976e161059e4251613485435835f3b40d61483b2b4633adb0f",
+      "crates/protocols/Cargo.toml": "b565bb405eec41c0854f8a336d2d053b0ce1a6c8f388cddebf9c39d028786d19",
+      "crates/protocols/src/bus.rs": "ec7af1d42fc287ad32c4f11935a86e40c01a9b19d0820b65213365e22746d92d",
+      "crates/protocols/src/lib.rs": "231cea6e235565e57a65be31539fe24c0c53dead46fbb84cebda5a4cdcfa5abc",
+      "crates/protocols/src/mqtt.rs": "427b97aedb1dcda6b803459a2c7470eadc5263d6748f4e069b88ee166822693e",
+      "crates/protocols/src/pool.rs": "6392ea1f4d4588348fca5014f627840bb7cc368b8f0f6f3f2d2cebfb2eee9df7",
+      "crates/protocols/src/redis.rs": "dcb5d2a791bea898d3ef582ff64d6bfbfa2562ff40d5cd310ccd47f66ccc7fee",
+      "crates/protocols/src/reply.rs": "fad4ef064d427928a3bfc7f08092c2647b5ec435b82b66d40c5073c5600a39bf",
+      "crates/protocols/src/socks.rs": "7fd7fee78408f818314e13a19ad400780c80efc5961ad9187a10b1aea865ce78",
+      "crates/reactor/Cargo.toml": "721d69cbe6fac0ba92cbcaf4e83452743de7ab9f33b2f9f93a4ff1a36eecfdff",
+      "crates/reactor/src/backend.rs": "a621d1e8cba482c9f8b56377340ecc39e8466abea81d66b1bfdc18d2dd3e44b3",
+      "crates/reactor/src/batch.rs": "2f89e06a8e28237531636b0faaf1efb47734bdd6898f87756893118ca03e1808",
+      "crates/reactor/src/blocking.rs": "013554fc23608654d3612802dcb609f8ced9b963ceba04adbd4f66e385612043",
+      "crates/reactor/src/builtins.rs": "96a231fecc56b696ce429d3b2a858009cea74afa939e31368079976bf50b4d70",
+      "crates/reactor/src/callbacks.rs": "fcba5afa334821707ad6f3b1eddd55d0b49683e8a6b1e72c2058a4305f07bfe0",
+      "crates/reactor/src/connect.rs": "acd5dfbb6fcbc992b7e73d9b1efa69ecb052bf491292ee12e5113658b24440ae",
+      "crates/reactor/src/deferred.rs": "e0449caad633cfa154bc01aa56a32e6f759ce1d763e59349a718dd55799ba435",
+      "crates/reactor/src/fd_options.rs": "fb2f574a32531a377ef893cf94eb28776ee3c89c5930a71c8d69bd0d5b5bbd7e",
+      "crates/reactor/src/flush.rs": "4714c904357e67f00b9d1706b495e857ff2741a034c4b5da7aece157f15aa3bb",
+      "crates/reactor/src/handlers.rs": "d57da73ce58a6bdd5866e9436e65c900f6b123565b43f10eec3709e5b5f85280",
+      "crates/reactor/src/initialize.rs": "ce2e812794d0d60498ab610feb4277baa94a69d27617ff2eaa83a863c5e6812f",
+      "crates/reactor/src/iov_owned.rs": "053b986c7301c9295acf91906fa1bae417121d8000e21f10e1da8eeb8f631a25",
+      "crates/reactor/src/iov_progress.rs": "c47280c5746cce554538c2365f63df23264e752955d9faabb5ae1eca5d4a359b",
+      "crates/reactor/src/lib.rs": "da7c268c833920dd465fadf0c2d153f5cb428df13fd1ead2838779c2dc62531b",
+      "crates/reactor/src/ordinary_io.rs": "98750ce4ae23c8697e711b13617af051e25635d3d186dcfdaac16677099b3aec",
+      "crates/reactor/src/output.rs": "a99784df92047a9ac29dd83f3897e945c86dceafbc385e23ace3f531c02236f8",
+      "crates/reactor/src/output_workflow.rs": "9647c6decad9a0a67069e158743a5b630024abcaa6db5a6411b14908b0d8b4c2",
+      "crates/reactor/src/owner.rs": "60ec3519ab2dc1771c0ac7f9d2634fdcd2ed17d67571b3124995d0136d0a3c3b",
+      "crates/reactor/src/poll.rs": "2866e0c92f31896168dcffa2409e61b373930a5e4276cbcec7225d16b0fd5225",
+      "crates/reactor/src/ready_workflow.rs": "48014a8f93ad25838a5f482282ece2a058c0538d18b516c114ab23fc69e548d9",
+      "crates/reactor/src/registration.rs": "c86931d170a83406325ffc573508440aa574ac2d47c88efecc06b1455b2eb00e",
+      "crates/reactor/src/signal_dispatch.rs": "d13086bf63e220dee23210e1d3688c08013832b4420c375db9afd1c4eea8b59f",
+      "crates/reactor/src/socket_iterators.rs": "301a3a8bd9589808f87a7fd7167f5ce66921ac07936c4ad7290d8a86e97cc86a",
+      "crates/reactor/src/socket_options.rs": "b76c7f4757dc49e3b0dbdb6d8ac1aab5e792c7c55056bf9f7bac539996631ef5",
+      "crates/reactor/src/socket_policy.rs": "bef78f5b65ceaa11015ac1ebb170c46278490aac67239505083f1847a2fd4877",
+      "crates/reactor/src/sockets.rs": "7ce096865198d48eca8ebcd1002e5a5af23918a7c6ae20037039f064a6a918c8",
+      "crates/reactor/src/wait.rs": "e68e9dae2d7121ce1bc86f17d745fa845fc0a3d9888dc4a1aaad1273b1a1d1c2",
+      "crates/reactor/src/write_arguments.rs": "0898dad1084e864cc925d05266e7e900d5ab7b217aadbb3356108aade22161a4",
+      "crates/reactor/src/write_workflow.rs": "16bfa5b2f71a1864253ab842264df53212b60113a43c176ba50e5b5abec14fad",
+      "crates/timer/Cargo.toml": "4aae97fdaf1c1a2d15b45fb84e8ccd3c724e3e93145003d8a7f3a0f37374d6d1",
+      "crates/timer/src/lib.rs": "5f4f79b45fe8329bee543c35bf034892a5c3622069a0c1947e06d9095d810647",
+      "crates/timer/src/runtime.rs": "11f197060c9ea74daec5cd2654d2bdce1bd713dabd5af5f182f045f79a477bb7",
+      "crates/tls/Cargo.toml": "2136df39ba29d80e30e303589036422ed891130d2dc28e73b488692fbac8f486",
+      "crates/tls/src/lib.rs": "ce60b4799624f0082dd8c50d47e9d5160dba7bda400a91b271302b1b18fac1ff",
+      "crates/utilities/Cargo.toml": "85dd84ab7104ab01d237461eb5679026b5a6b0e3e9adc9dc821f6bb0e8ce14db",
+      "crates/utilities/src/bytes/span.rs": "13f63b08844f57e2aed5da8f24248ac44d5c4e72b063d00fb194f1b39beac6a4",
+      "crates/utilities/src/bytes.rs": "c23c5d03751628e4a6cfc214a810f1567a8dd9ba66c1be2287207d06be5f4abd",
+      "crates/utilities/src/frontdoor.rs": "d8f411f8fee0675ef78543462b7c0a85b4a53915a9cafc35bad7c90f01e257dc",
+      "crates/utilities/src/lib.rs": "f8c1a268e2952febd28040ec24e86bce6a54f270396ff2cd3def3322dcd292c7",
+      "crates/utilities/src/logger_state/path.rs": "f17d0e03e15c6bc68290166b9382899cdf798fc68b9783909344dbac1e436e78",
+      "crates/utilities/src/logger_state.rs": "00572064ca54157e65f1ed388b39afed6f83fe6a18ba2a6a45c915d1194f21a4",
+      "crates/websocket/Cargo.toml": "caa4d596b09696048886d2df39ffe3e81f2f9901ad7bee577effc5c22089bb05",
+      "crates/websocket/src/codec.rs": "0de10858bb7e0d641088323c1402a669529fcaf6160872080f6f64323186b772",
+      "crates/websocket/src/lib.rs": "694a4895556ad8d2535cc9f09d178e9b61120dfcfbfa03d9009cb90f9a952f8c",
+      "crates/websocket/tests/kernel.rs": "8609b281c872ba1c93537de269f80aeb14a7dce1417395bfe439d444edc96360",
+      "crates/wrappers/Cargo.toml": "892eddce94bf47d527286a60c7fbb8f63785224dfee510220cfb4825bddf7121",
+      "crates/wrappers/src/lib.rs": "49bc4f3ba8a564863a3d795d77aea6a0a6c87b6e21bc2b532410f4d89eac5454",
+      "rust-toolchain.toml": "10c67ce85265f8fc5b1a52b416af1a553e56ad96ca9843da6579e2854741e084"
+    },
+    "candidate": {
+      ".cargo/config.toml": "3aa814d156ee2a130c2799b3d7f7f227b128ebd92ec9628ea49eba8f4f102c9c",
+      "Cargo.lock": "c22e05758d32b4499d23d41986990dbbd7b2ace0209d5e0a5669197c302cd2a4",
+      "Cargo.toml": "2e7893e2d2afdb3a9d2585a65d8d8c793dd0ad66ca2b26ef30413c0536d8e65c",
+      "crates/base64/Cargo.toml": "7bf94cc2ab321532d59eb585e9ad8b459b895e3592d562f0fb10d1748adea68a",
+      "crates/base64/src/lib.rs": "59b8fb9d7c34a68c6bb01b61c97010c6311c8623270ec97162931d33ea518bbc",
+      "crates/buffer/Cargo.toml": "c2fc6218a68f1ebf4aed44c3b14730e07f5c4c47cce7a18e2aa221e97b133f2d",
+      "crates/buffer/src/lib.rs": "fc9aa53f28439b70ee77bcbc0bfb8763bf9f376368937fe07b53e315d798441f",
+      "crates/buffer/src/string/allocation.rs": "5239f32a640af5744f45843a432ee8a14328da8e04c606ca82f93f2fd1704f0d",
+      "crates/buffer/src/string/compatibility.rs": "ae0ff1b6de70683de07971f548cb489021037d9293ce35fc21ffb7d08b5b6c5b",
+      "crates/buffer/src/string/fields.rs": "709a12979527fa813e641ea869981b2312513a9f32b9a2e6533f5be5f35eed47",
+      "crates/buffer/src/string/formatting.rs": "3603adb7395fc7aad171cfa1f4147b470526f75a75f0f75124d0368025f2e1fe",
+      "crates/buffer/src/string/ownership.rs": "35a15a628a1a14b36d7e94f20c2adcdf5b68e9ce15cfd80de0656354ca575159",
+      "crates/buffer/src/string/policy.rs": "241ed9f3513fab04fe8d6f9f6d376ae277d72060b123ddf157e20fa88e1ddb7f",
+      "crates/buffer/src/string/random.rs": "eeae373c5d452d90cf67a54309fa03f84052c76fa310ad18a03c840a768a333b",
+      "crates/buffer/src/string/scan.rs": "5844ecb04f028be6f9037446fedbad76802383b9d4324f4060629d1be0f58836",
+      "crates/buffer/src/string.rs": "64b9a5ebc1c980a24b07bf35010b019f790e385506ce34001a7cbe89353a9bae",
+      "crates/buffer/src/typed.rs": "126fd5dab69568f3aee0d120a50e1d35296bd96ffec33c64f5e161334caf8926",
+      "crates/clients/Cargo.toml": "e7ebb80c23ec332e7af5ca1422cdcd9c9803806b87bd42da8c5d96a0db19f38e",
+      "crates/clients/src/async_client.rs": "74dad90e8119896a8445385beaa7e6526d0f82ac5c4588044ce7aa6702b8e3c0",
+      "crates/clients/src/coro_client.rs": "735a0fbe200bd460636c0f79984bbecf8834cfed6dbe9bd9b133c44fde0c89c3",
+      "crates/clients/src/http_connection.rs": "27ea57ee908a7c9a83932d8b6ff354a3dd877b9871f78fab3b82189f534900e8",
+      "crates/clients/src/http_format.rs": "bb0be5f2a60bacaefa9d45f5b80e65da242e1fcafcb0ca8e4508a4807b3d70fc",
+      "crates/clients/src/http_response.rs": "cdce96444649dcd32ce02a3184e836c02ce0540c8a4f046b15cf4c505c1f69e2",
+      "crates/clients/src/ip.rs": "5e392386da5cb0b56dac03ba1d20d03bed1b6041fe150ff652c9fae7343264ef",
+      "crates/clients/src/lib.rs": "cd7306b216a3c69350c2fc096d47362dbf326e81efef3e6d71996087ad89f8fa",
+      "crates/clients/src/object.rs": "0dd42cf3fcc9abb97a815ef74bbb52a84132d44c5d227983606f3fa320f360cd",
+      "crates/clients/src/pool.rs": "84ac4e3a46e8fb4b3d33a6b48c5108176853e0d4fbd6031922f0f757672ea22a",
+      "crates/clients/src/resolver.rs": "711e7491bccd461972f4ceab1ac687a07cbea5b5d97ef0a01648dca7f16e7d9f",
+      "crates/corebase/Cargo.toml": "e8b02c67af63f63d202dc9553822681c3fadb8ec09b4303ebe9ac2de6dc21e2a",
+      "crates/corebase/src/hook.rs": "e2caec6e640bb00b68a5323f5d68127fc163eb7c5fad3b0f8c56aec331d4c2ab",
+      "crates/corebase/src/lib.rs": "2b6e62a00001903fcf33d77d0a280d99f7cc71d477f4546e8e518bba9d8ba888",
+      "crates/corebase/src/lifecycle.rs": "d2f80e870d65aa46035e997f4a234b756f42613d6fe5ec01796b88225b6d147f",
+      "crates/corebase/src/random.rs": "0a8aef8e276eeba3f1f688db436a534f75acebd2711700faeaa85d115ec30373",
+      "crates/coroutine/Cargo.toml": "9618b34fd79c94cfdcf7a631cce0f19799834f8ab209598ad5374d2012def01e",
+      "crates/coroutine/src/bailout.rs": "aecb16ed0e44d7aa2304079c7986c555308b9387672d0205aef14c86baea4920",
+      "crates/coroutine/src/channel.rs": "0b12b08ccd467b1e322947ba29594ac3516e0910d46f93aa81e42aab63e5e65d",
+      "crates/coroutine/src/context.rs": "c0168048a7df8dbdc38b9d5083a2cc7ed20158c68388bda7fe53eefa5d98d05f",
+      "crates/coroutine/src/creation.rs": "0959bf4c173859f588cabfb7ea36548b3c091dad9932a2ab939dfe7e21b81e6d",
+      "crates/coroutine/src/entry.rs": "8cf6d06b480d45036e81fd1fc5f6af0c8f9e2e7c6df8ae1c79c19bb712fd08c5",
+      "crates/coroutine/src/identity.rs": "7d8884e8e793a3870ffb00d02493d288cafa85554b6e7e696eef72a59118ae7d",
+      "crates/coroutine/src/lib.rs": "c02604cd211a10bba73f6fb3fbc860909d8e9dc137b5e4aefdb4584422abc07c",
+      "crates/coroutine/src/registry.rs": "97fb6ec14b87876b2bd2645a38ea2779818efa6ad82afe2e838b60dd9134d061",
+      "crates/coroutine/src/scheduler.rs": "14438e9eb1b80a7bf7ba176d0987df46087067be01829cff185a77f816ed7c1a",
+      "crates/coroutine/src/stack.rs": "779557d08a5fed48d53f4895cdfad69e0cb509db143f4439e02a2fc3e26d753b",
+      "crates/coroutine/src/status.rs": "fe2f49e70902530ea14a63ecbd0f56d75663ec1f6519fad7dece795d74d6131d",
+      "crates/coroutine/src/swap.rs": "811f5087f6b57c6a62833a6c6e3a30bbd10da98a4170aa81866d8b067d30fcf0",
+      "crates/coroutine/src/timing.rs": "21fa7aef47bbfc181f911d92ede0cd19b3bfbea6c3ed21eb97f0690239d41832",
+      "crates/coroutine/src/tokens.rs": "9196087e0d7ca8bd814f4a50075496c4ef308266477eb6f1957ee1894f1460fa",
+      "crates/crc32/Cargo.toml": "e2f9855fc162edbcb29856fa9b6d770d1c7eaab481e401ee948cd50668c3fd3e",
+      "crates/crc32/src/lib.rs": "3e7bf06f59c1087dc070b531f81386bab23a9e6829bea0cc40c961312276c55f",
+      "crates/error/Cargo.toml": "565bfd641669a261466955609a421d733e843353024fca76bf3f941e158ebc94",
+      "crates/error/src/lib.rs": "69aee686ff4947c7710456124b79956ca61633aa7644a8bce9d4fd32607e831d",
+      "crates/error/src/state.rs": "20fb3456d67e949dbc0d2f5e0d096d183f27160621247cd0acf6f28cbc285718",
+      "crates/ffi/Cargo.toml": "0678bfa1eb38173aca9695fbdfbc043b33080f3155c0b04f26c9a6646b2eadc2",
+      "crates/ffi/src/lib.rs": "62ce653feed3cf17413e5a8d7be9b63f5650e77c54fdf32da9817df8f5fea78c",
+      "crates/framing/Cargo.toml": "58548884c81fbb2835afb7f27782636f266799a632c86e1a295589755d778634",
+      "crates/framing/src/lib.rs": "1488fd7daa2677f6893ee935d87dcad37fa8bef426af7899e6938f7241a98695",
+      "crates/framing/src/mime.rs": "4717ef517e186e78ee92f4bb9af85ec3298802fb1f9129a59c55b553d68de96f",
+      "crates/hooks/Cargo.toml": "7519744686d4707b50c8adeae38e1be2ec7b21e59c58eb564ec7df57b518e16f",
+      "crates/hooks/src/lib.rs": "6fb6b78256ee3a5b8da008c8ecb7190820450146dd61674334b298b034048790",
+      "crates/http/Cargo.toml": "2c51355cff4c4532ef35cda0e07d285b8ba23e5e34a01c1271d038180fe8cbac",
+      "crates/http/src/conditional.rs": "79dfbfb44d77b23c0fda90e9592aaa8b200db55b4c86868b08512d62db26dc13",
+      "crates/http/src/cookie_flow.rs": "19d4d24f922950127a976c43882b86971ee488f4688acd944a3203d3ef056bfd",
+      "crates/http/src/directory.rs": "1eb51aa6ced84ada1c5ab3fa38abd5e58ee5540506ce98326fa0ee101ad6dccc",
+      "crates/http/src/dispatch.rs": "ed9a9dc3f5bc2b6d716205dbc81345d330d7a9872b30f4708f098b3cc01cadf2",
+      "crates/http/src/framing.rs": "ef33e0347108adeee27f487e4c38534c96a53b6c0508476580e65a217f0f4f6c",
+      "crates/http/src/headers.rs": "b0d6678da707a6a18c534cb429e2cf98a9d73d7cec959e7a5f4ff0d72980b8a6",
+      "crates/http/src/index_page.rs": "66c98c113586a41fb1c972bdd682502b77f821ca5114add71974a34c92b76a47",
+      "crates/http/src/lib.rs": "5e602e6239d69fb225381942171d1c4433cfcc7ffefab1a9b845b1a08e790e3e",
+      "crates/http/src/maps.rs": "ab6eb1660a74fc1a3b061cbfe6f3de52a871c6963806cce61b776d4257edc66a",
+      "crates/http/src/multipart.rs": "f42cd1c444ede43fd575f919d8606066c425e7f50b0f262fcb9814c67e6543fe",
+      "crates/http/src/multipart_emit.rs": "3fc71d19a234decf2d8ee8ecbdce36c70c00733f24e3df2ddf0b603ba5a467d1",
+      "crates/http/src/multipart_upload.rs": "12504230bc042a129510fdaf1a61dbd5fe09c6336941c975559d517167dd3ed6",
+      "crates/http/src/proxy.rs": "0508302f043f7f976f46c6cde467f0af79a7a5fc3b5c03d3d59957ad69656423",
+      "crates/http/src/range.rs": "4357d6cfe7cab9fa658c690352029a7dab663cb22b4fa90fab03e189463d4af3",
+      "crates/http/src/range_response.rs": "958407c63c0fea6be67135bd7524def4ebbd91f79bd1cf5b1d520249b6411869",
+      "crates/http/src/request_context.rs": "3d951de34dadc9f941a4be1c9f6a692d28adfe0030da6ac52007840532e8e364",
+      "crates/http/src/request_lifecycle.rs": "9a3a890da8383a877e43d9a53b1928ead999b9a5b378030207a456078996e410",
+      "crates/http/src/rewrite.rs": "ca900ccee5366c0fe4cf588fdf7216f9f5ed621c0d525fac94a156d78ad49149",
+      "crates/http/src/rewrite_store.rs": "975df5a4371b7c2d8074450873d99599f333127116a4ae6135614976fda5ba65",
+      "crates/http/src/static_body.rs": "eeac8c3813b331a371a82424bbc1f267ebdd4bf7e4e2bf817091ac3fd55995ee",
+      "crates/http/src/static_config.rs": "fb073bc923920645ed2d5943b9f36813fac66aff00c20ded75dbb0cf88cb906e",
+      "crates/http/src/static_context/range.rs": "d2313dbf075f9aae0a7496882680699b21809cbc8d2ab24cfefba6a9b40f0dc2",
+      "crates/http/src/static_context/selection.rs": "02e4c2511901a68c84d1a3c1c37a1f36898e4450114746262d60595ae0ce64ff",
+      "crates/http/src/static_context/serve.rs": "77329a5a5a2044fc9bc51d9b1e7c921697f2d2762fae9b4efc1a61c3221d507a",
+      "crates/http/src/static_context.rs": "885b3c206eb70a7d08357007d1644560c83e6574b36ea00049a1e15d6bddd4dd",
+      "crates/http/src/static_headers.rs": "ccfcdb129145dc7f891a89e009a069417b818b0b733933151d280caba154a6d7",
+      "crates/http/src/static_meta.rs": "644eff6f85218ad778282c9cece8a24ebb3795ab2ad6d1ac9dfacf53c1089c92",
+      "crates/http/src/static_path.rs": "6152ee88200a5c5fd6b1a50497c8d1901cd516d5aaf6bab5af58bc836aa0f023",
+      "crates/http/src/static_select.rs": "307aadf8aaf7d272297c754e56f2c32d0be291769a13fa4cdcb9531b9ba0c408",
+      "crates/http/src/status_buffer.rs": "dde32e61ac0256b507a61ba78cc47d45e2a84b7952440a9b39fa46f8ba1899c3",
+      "crates/http/src/tasks.rs": "0918aa49ab4269170a9a6267db3856395ef48a22fd098c3dbbcfc0bac111aeab",
+      "crates/http2/Cargo.toml": "2d29d81e2f5b2d2fd3c405b67f816aa16849e3e3fae2227d2f6caf56320f52bc",
+      "crates/http2/src/connection.rs": "afa77a656317ac90703b0ee43f02c829dd37999a739d89bbd627e5628e6df6e6",
+      "crates/http2/src/decompression.rs": "b91654e1d0275823cd3fd7837a24cd4dcba812f049820bd7c1f319157ed81151",
+      "crates/http2/src/files.rs": "02a2934762350c4fc9b4c7f8551aab584e30c236a10a9ce14ad6818e12f8627a",
+      "crates/http2/src/lib.rs": "6f04cbc6578f4aff2c3b5a1b1742d5e59930896e1dc27a1b0f1ebfcd8a78f385",
+      "crates/http2/src/queue_faults.rs": "a967fcca8898968d75f39cd2bc47ca5517050869c11056fedd977471b2321057",
+      "crates/http2/src/receive.rs": "4406c26575d5e587b6067b2f7868ec12ca77ed00354c6dd7a94009234d0215ba",
+      "crates/http2/src/send_queue.rs": "0ded1ac46298de57802392e659d7c3133e8d87429a8ce8921a57f4dcfa036d40",
+      "crates/httpbindings/Cargo.toml": "703574a8eb60379da7939548133b0b38ab826593c340c97aecb840745582972e",
+      "crates/httpbindings/src/emission.rs": "74d97b2103fce6aa377ce8c9535654110439a854fd5a0133cb0f5f6e4d6fba61",
+      "crates/httpbindings/src/file.rs": "aed095a1daf701b0ddbca67eb741224edc1f366cb04c74088db2951a154c36a4",
+      "crates/httpbindings/src/lib.rs": "f304ff7e18d2aa41186d8ca758ab61237b2cf74282d49aba1774a7ccd9f32d71",
+      "crates/httpbindings/src/payload.rs": "2b6778b9fc5b6ca6da949677b3e19997999764376bc699b3cbf1b57e4308d07f",
+      "crates/httpbindings/src/request.rs": "a629651540148034f7679a7548b49946cc257649dc9bea3d65527112f11e4b73",
+      "crates/httpbindings/src/response.rs": "f2dc6acc71d2cae8cecb0467bbe0b1ddf15e85648b35f391508cd1fd404c39e8",
+      "crates/httpbindings/src/server.rs": "6fe9c5698fe2971231f5fcd0bb45d782b2e91a13a2cd16f49e3fa8481f1a362d",
+      "crates/httpbindings/src/settings.rs": "6a102c308d398d4059ddfeacf927e94112bdec1eb2199db9bfaa36779b39762f",
+      "crates/locks/Cargo.toml": "200f8cec246aa5ba9975bde58c8ee67407701f2b0634bd8204a6b98898497bb7",
+      "crates/locks/src/lib.rs": "deab20fc781be5d68918d86083635be066e8012b85f33a24d4b4745187b2fa8e",
+      "crates/memory/Cargo.toml": "30ba94c481caa385f544d90736f961e177532ecdc099bd3f2b255d5b9917bcbb",
+      "crates/memory/src/channel.rs": "d3b961ace514ceeebcb23a6bb7e08a2cfa48947f759f254a70f2485c52cc64ef",
+      "crates/memory/src/fixed.rs": "d64ff2de7a8274b3499d7375b6c77f5a9f9f4b5ebf7a1cfd74c9cbc8508f8904",
+      "crates/memory/src/global.rs": "372d829f0bf6dee93f047795982d66db79cbc7846fd451834d80bc8d86301d1b",
+      "crates/memory/src/heap.rs": "9c461cb90a080c679fd40e2d796d74efc97c2e6c1c3b0cd18d093602cef5cfec",
+      "crates/memory/src/lib.rs": "362e8b66a2d35dea6217fd6fb26ce0b9d6787bd0838d8ca8e3bf6cf367569584",
+      "crates/memory/src/mapping.rs": "312ea89169429a2e9b182d07a626e263897c2eb65c37ca6e6cac61b3ad9c60da",
+      "crates/memory/src/mapping_operation.rs": "a413873bc1396f118389783066bdd672dfccc55c31df7cabfd79327b38ee8a47",
+      "crates/memory/src/ring.rs": "a052734a258c71429872c84abe26a0f8ad178a31b9d203f7dec050c226873a04",
+      "crates/memory/src/table.rs": "c32e3aef0e11b8c2264e638a89636790bda38e1dcb798da0d344494aa3c17cf9",
+      "crates/memory/src/table_columns.rs": "6c4e4d7059aa15ec4095859890fce79279b4c10ab90f54a0007c5c1acb5bc66a",
+      "crates/memory/src/table_columns_v2.rs": "2cfadc9811d6edf4fe6ff113c2148ca3056ee8f9064e0887cacc5353d2627b41",
+      "crates/memory/src/table_records.rs": "5fce1dafc580e699ddfb6e155fd597206eeeb9e673c59a505b45b8024fc059c1",
+      "crates/ossupport/Cargo.toml": "0b998815475f98feef0e7b8f943fe0af957ab193b8b8b226b7919ccb2956c3d9",
+      "crates/ossupport/src/file_content.rs": "694ef38d97fc0aed0774467f3ac680efe35c37aab1897f621057398a9087b837",
+      "crates/ossupport/src/file_io.rs": "2123492135b62c8db722ba86227b72ab19d53ef75cf10ccbb46643758fda0003",
+      "crates/ossupport/src/file_line.rs": "cfa07c8a33b7d9dc08db15f4e02a09504dd4e9fa8815f10a37c875942888afa3",
+      "crates/ossupport/src/lib.rs": "8f138c48facb2fa4108e175439431c1c407bc8364bad65e240816e8bc0746b7d",
+      "crates/ossupport/src/random_bytes.rs": "f820c2e3e885ff3b095cbee83b43e2a24e6379426268a3b81b0136c2a6d0f803",
+      "crates/ossupport/src/read_content.rs": "20d3079dbcd5be351ef41ee8c5bd471103f223e5f08edbd77608be86c6e4dfb4",
+      "crates/ossupport/src/sendfile_fallback.rs": "26d5f5777aed9cc03aa18a7c0f1567675cf6550b5f2da0a1578d274644e060ba",
+      "crates/phpcollections/Cargo.toml": "6bd55a817ed77bc3d01091d0fa0463c404a3da3d80c294b4199d76bb8fabc3df",
+      "crates/phpcollections/src/lib.rs": "978e1234e1d07f33b96ddf0af6c7fe9013bc5d5aa7011cd673d98169b5ce56d5",
+      "crates/phpcoroutines/Cargo.toml": "ea96b23583f421628d2a16e34a9f77c707c6ac2cefde4611703c7cb96a18c4d1",
+      "crates/phpcoroutines/src/activation.rs": "b2ea142646ee7927c1bd915cb2c56d1c7a616f682094b010ff9d25b1464ad3fa",
+      "crates/phpcoroutines/src/allocation.rs": "c962540b471047f15e3edf501a6f649b221491cdbbb51a5de9ff724d58f641c3",
+      "crates/phpcoroutines/src/autoload.rs": "bb39131b18ef0d9fa7e17d1d4592614517f3c140e4642134f3542aa9a6a0827a",
+      "crates/phpcoroutines/src/bootstrap.rs": "f5d6772f5bceb019a8364225f10610f3f56bcca458f471d185a9bc61d8b3f8c2",
+      "crates/phpcoroutines/src/config_state.rs": "af1db38acd2607b72bdb895b2996cc6148f2f79e81f12722fce6c97768b35faa",
+      "crates/phpcoroutines/src/configure.rs": "f2e939709e431e50b7a049d0a905652216c4c9a9b16d481a2d7ecce40fb144dd",
+      "crates/phpcoroutines/src/context.rs": "89235f39ebf110920d516d8f3b8e37ca8608a1da1e8b39e36f1e55912fe5c64a",
+      "crates/phpcoroutines/src/context_lifecycle.rs": "8c8b61dc58d1846c229eaa6e4f3711cd636c0467ac29fc67ec7da53d983c785a",
+      "crates/phpcoroutines/src/context_metadata.rs": "03775a8308ea6f1a988333d31dae4b1e7b2bf9b9cda8ece5c012a5177bba64b8",
+      "crates/phpcoroutines/src/control.rs": "8a348b2a9e0fe2da1b4641bc775fc94cf8db2a032a748b34fa051a541b1864df",
+      "crates/phpcoroutines/src/create.rs": "1210add0fa32c43bdb6bc3b8ab39dc4799f063d39588063f04422ac46fef2fc3",
+      "crates/phpcoroutines/src/deferred.rs": "e3bade20a904406d7319958bf455e07f96681912598037524120709daa45b346",
+      "crates/phpcoroutines/src/exit.rs": "d9cb7f4df642a7a1217b1410b9554d903bf18595caa32fe6bdff709c0bf8fa17",
+      "crates/phpcoroutines/src/fiber.rs": "b3f448e22871cf7ed6ddc6e519429d5b14eb58ae3c21dd793aa705ebfa28517f",
+      "crates/phpcoroutines/src/interrupt.rs": "845cb3d9c011ab9aecffbbfe3d03048058e9dcd88b3f24549be9c368a52d9227",
+      "crates/phpcoroutines/src/introspection.rs": "c3eb0f718adb33914aaa2f9b1136f3bada269d8675f511d3bb9a5c19788462cf",
+      "crates/phpcoroutines/src/join.rs": "7273cf5514e6b32f0aa7472283e7ca35dbc683c31e6a7b9d6bcef11a2be5da04",
+      "crates/phpcoroutines/src/lib.rs": "6eb56ee4510da1480550b3874c8549edb24395397c31972bf3addc48196d3b5c",
+      "crates/phpcoroutines/src/method_catalogue.rs": "b79a00845d0267b247780da04648fabc3e2e27c5639e1a2be57a601bf56b2db8",
+      "crates/phpcoroutines/src/options.rs": "91c962b6803686e54e0f42662a37d14eec7e421b7d9ec9b0f3d902afda466168",
+      "crates/phpcoroutines/src/scheduler_callback.rs": "deefe25327b6dfb8072683b3fdc784462881d026a57b6c0ceac4400da327b83c",
+      "crates/phpcoroutines/src/scheduler_control.rs": "62a29b168ba654af231589e751124e530588d6f00ce81aff7243c09c6639e931",
+      "crates/phpcoroutines/src/scheduler_phase.rs": "acec0ee709b6df1126645584801597341846c0fe31ec2ad34554169db42be20e",
+      "crates/phpcoroutines/src/scheduler_slot.rs": "84a6fd52170abda59985a0593f8eb3b503289e6c0914bad79fa1b070bb9aa5f4",
+      "crates/phpcoroutines/src/stack_bounds.rs": "ebf646deea3e83b8844e02fda81508dd6a1311bb2df9008b0c8ec2026b40357f",
+      "crates/phpcoroutines/src/stats.rs": "7354286d26f8762cb5d1ac8cb99c5ad82a2cb68a5d07455435f990787c2c12d1",
+      "crates/phpcoroutines/src/system.rs": "17795044625c709097ac65fd40294c99a336212c8aa9b2f2029019d35293cb36",
+      "crates/phpcoroutines/src/transfer.rs": "faa0fff55b3ce32fdfe9200b091821a3cefbfe2f5cfe19d0d5ff666f60ed0a21",
+      "crates/phpcoroutines/src/yield_registry.rs": "2aec1db550808f8966d4f18f5e31ce27745b56ad43710f7093b16bd12cc1b659",
+      "crates/phpevents/Cargo.toml": "d652229c28feee5a487f11a4b3d0d011dfbc7e4d48ec5188ad91f95bb1ecf142",
+      "crates/phpevents/src/admission.rs": "ea9c4dd77db54da32fe0a281f2117f0054dda0e6d789cda08f5eb72d5a26b5de",
+      "crates/phpevents/src/aliases.rs": "4d27d4c3c255da5f24ecb9c1f7dbe7529f86b1ccd783314d4dd4ee2ea05528df",
+      "crates/phpevents/src/callback_slots.rs": "a4062f71c26c4c7a73e3d092dabb04128deb9054bacdac3d656a79c19cd81bfa",
+      "crates/phpevents/src/descriptors.rs": "1e7d30931de2358423a577f2a8d2ad90f5bea31e720ead93a9d8a4809ee3e111",
+      "crates/phpevents/src/dispatch.rs": "5456f6c9ed4e261137b1c8a5e098a409bf914a176bf854107a7ea0b53a543742",
+      "crates/phpevents/src/event_loop.rs": "82afb20df4ffeba26af18567d3da015cdbfb895419facb9a36574d59a5f3f653",
+      "crates/phpevents/src/lib.rs": "d95e09721f3d742e543a6093857c9620ef6b9f90adeb860c99ee69b41c0839fd",
+      "crates/phpevents/src/operations.rs": "152d085382719d133fc97065debe31d5bdb03fcf3c5b26e6290b6ed1bd20b61f",
+      "crates/phpevents/src/query.rs": "935bc9621666e8014b1be4051b6414a99cd5e9273d13f8fd54f516d5a9e7a63b",
+      "crates/phpevents/src/registration.rs": "5eb334680cea45322be15852318711b3f91c97ac18f1a8e25eb72a30e2eb8f70",
+      "crates/phpevents/src/registry.rs": "46f604de4e6e14e5aa97e1b2689627e8aa2c9f760eae6ec0fb8f11aecaf3c15a",
+      "crates/phpevents/src/streams.rs": "9ad5ed9f1411ac48ed3b2c5ec1ea8785469f84cc6c1d3353402f21dee12de486",
+      "crates/phpevents/src/updates.rs": "44db8d2149da099febf0097603b8555e78bd11825d827f6be65544a47120fc55",
+      "crates/phphelpers/Cargo.toml": "03d0793a53c6e26a859fa9509257b6c855b6b4e0264e3884d1c0a32b5d169252",
+      "crates/phphelpers/src/asynchronous.rs": "ccce66a11a04d6627be40547953f5eede587e20fd9b4e22c7bbebf75433189ed",
+      "crates/phphelpers/src/facade.rs": "bbc01fcdb6fca75639877935c475c2ec2fe432e82db44308e200ed02bc5217a7",
+      "crates/phphelpers/src/known_strings.rs": "10f22f00ba7cfe93ff90bd842ba7ed634933cc0f857fa720b0c0362945db3cce",
+      "crates/phphelpers/src/lib.rs": "1141d1fcc2fdfc1c06ed02c9134539456a7e545c9b44b3af8a79d578b290a7d4",
+      "crates/phphelpers/src/registration.rs": "1e1d3f7c69f64b8156c3d3424a4735576cb4418be6bad0914dbd4b339ff36749",
+      "crates/ports/Cargo.toml": "4835afbb633902faf8861ef9bd396a741d2c7e8d45c3cafb5c1e9452a85e1d10",
+      "crates/ports/src/lib.rs": "171e65bd9014f969188667fef806ccb402ad08a4a9698e91ba67c591aae81b6b",
+      "crates/process/Cargo.toml": "74ecdadffe3642b671e5d144884efd6769c6ab149e3130852e7bdba6ffea0be6",
+      "crates/process/src/lib.rs": "a97a05ec7bcf77976e161059e4251613485435835f3b40d61483b2b4633adb0f",
+      "crates/protocols/Cargo.toml": "b565bb405eec41c0854f8a336d2d053b0ce1a6c8f388cddebf9c39d028786d19",
+      "crates/protocols/src/bus.rs": "ec7af1d42fc287ad32c4f11935a86e40c01a9b19d0820b65213365e22746d92d",
+      "crates/protocols/src/lib.rs": "231cea6e235565e57a65be31539fe24c0c53dead46fbb84cebda5a4cdcfa5abc",
+      "crates/protocols/src/mqtt.rs": "427b97aedb1dcda6b803459a2c7470eadc5263d6748f4e069b88ee166822693e",
+      "crates/protocols/src/pool.rs": "6392ea1f4d4588348fca5014f627840bb7cc368b8f0f6f3f2d2cebfb2eee9df7",
+      "crates/protocols/src/redis.rs": "dcb5d2a791bea898d3ef582ff64d6bfbfa2562ff40d5cd310ccd47f66ccc7fee",
+      "crates/protocols/src/reply.rs": "fad4ef064d427928a3bfc7f08092c2647b5ec435b82b66d40c5073c5600a39bf",
+      "crates/protocols/src/socks.rs": "7fd7fee78408f818314e13a19ad400780c80efc5961ad9187a10b1aea865ce78",
+      "crates/reactor/Cargo.toml": "721d69cbe6fac0ba92cbcaf4e83452743de7ab9f33b2f9f93a4ff1a36eecfdff",
+      "crates/reactor/src/backend.rs": "a621d1e8cba482c9f8b56377340ecc39e8466abea81d66b1bfdc18d2dd3e44b3",
+      "crates/reactor/src/batch.rs": "2f89e06a8e28237531636b0faaf1efb47734bdd6898f87756893118ca03e1808",
+      "crates/reactor/src/blocking.rs": "013554fc23608654d3612802dcb609f8ced9b963ceba04adbd4f66e385612043",
+      "crates/reactor/src/builtins.rs": "96a231fecc56b696ce429d3b2a858009cea74afa939e31368079976bf50b4d70",
+      "crates/reactor/src/callbacks.rs": "fcba5afa334821707ad6f3b1eddd55d0b49683e8a6b1e72c2058a4305f07bfe0",
+      "crates/reactor/src/connect.rs": "acd5dfbb6fcbc992b7e73d9b1efa69ecb052bf491292ee12e5113658b24440ae",
+      "crates/reactor/src/deferred.rs": "e0449caad633cfa154bc01aa56a32e6f759ce1d763e59349a718dd55799ba435",
+      "crates/reactor/src/fd_options.rs": "fb2f574a32531a377ef893cf94eb28776ee3c89c5930a71c8d69bd0d5b5bbd7e",
+      "crates/reactor/src/flush.rs": "4714c904357e67f00b9d1706b495e857ff2741a034c4b5da7aece157f15aa3bb",
+      "crates/reactor/src/handlers.rs": "d57da73ce58a6bdd5866e9436e65c900f6b123565b43f10eec3709e5b5f85280",
+      "crates/reactor/src/initialize.rs": "ce2e812794d0d60498ab610feb4277baa94a69d27617ff2eaa83a863c5e6812f",
+      "crates/reactor/src/iov_owned.rs": "053b986c7301c9295acf91906fa1bae417121d8000e21f10e1da8eeb8f631a25",
+      "crates/reactor/src/iov_progress.rs": "c47280c5746cce554538c2365f63df23264e752955d9faabb5ae1eca5d4a359b",
+      "crates/reactor/src/lib.rs": "da7c268c833920dd465fadf0c2d153f5cb428df13fd1ead2838779c2dc62531b",
+      "crates/reactor/src/ordinary_io.rs": "98750ce4ae23c8697e711b13617af051e25635d3d186dcfdaac16677099b3aec",
+      "crates/reactor/src/output.rs": "a99784df92047a9ac29dd83f3897e945c86dceafbc385e23ace3f531c02236f8",
+      "crates/reactor/src/output_workflow.rs": "9647c6decad9a0a67069e158743a5b630024abcaa6db5a6411b14908b0d8b4c2",
+      "crates/reactor/src/owner.rs": "60ec3519ab2dc1771c0ac7f9d2634fdcd2ed17d67571b3124995d0136d0a3c3b",
+      "crates/reactor/src/poll.rs": "2866e0c92f31896168dcffa2409e61b373930a5e4276cbcec7225d16b0fd5225",
+      "crates/reactor/src/ready_workflow.rs": "48014a8f93ad25838a5f482282ece2a058c0538d18b516c114ab23fc69e548d9",
+      "crates/reactor/src/registration.rs": "c86931d170a83406325ffc573508440aa574ac2d47c88efecc06b1455b2eb00e",
+      "crates/reactor/src/signal_dispatch.rs": "d13086bf63e220dee23210e1d3688c08013832b4420c375db9afd1c4eea8b59f",
+      "crates/reactor/src/socket_iterators.rs": "301a3a8bd9589808f87a7fd7167f5ce66921ac07936c4ad7290d8a86e97cc86a",
+      "crates/reactor/src/socket_options.rs": "b76c7f4757dc49e3b0dbdb6d8ac1aab5e792c7c55056bf9f7bac539996631ef5",
+      "crates/reactor/src/socket_policy.rs": "bef78f5b65ceaa11015ac1ebb170c46278490aac67239505083f1847a2fd4877",
+      "crates/reactor/src/sockets.rs": "a95c9132283e66f31ddbf2ae64d7a16a5dbb4fe7d8489a9e95562bfe6e1c89d0",
+      "crates/reactor/src/wait.rs": "e68e9dae2d7121ce1bc86f17d745fa845fc0a3d9888dc4a1aaad1273b1a1d1c2",
+      "crates/reactor/src/write_arguments.rs": "0898dad1084e864cc925d05266e7e900d5ab7b217aadbb3356108aade22161a4",
+      "crates/reactor/src/write_workflow.rs": "16bfa5b2f71a1864253ab842264df53212b60113a43c176ba50e5b5abec14fad",
+      "crates/storage.rs": "8cbe1815aac2afe209e04ab22292da593bbcdcd138daa00244dcdaa758027d76",
+      "crates/timer/Cargo.toml": "4aae97fdaf1c1a2d15b45fb84e8ccd3c724e3e93145003d8a7f3a0f37374d6d1",
+      "crates/timer/src/heap.rs": "c28b2c72bb44fde5ba7f0a2285c3ed5cc609cc59377a063b175b49b6f38e13a8",
+      "crates/timer/src/lib.rs": "e9d3bc349c457eab2fdde1bf95f6e366387e4df6cf0076939bf322d362edcde1",
+      "crates/timer/src/runtime.rs": "11f197060c9ea74daec5cd2654d2bdce1bd713dabd5af5f182f045f79a477bb7",
+      "crates/tls/Cargo.toml": "2136df39ba29d80e30e303589036422ed891130d2dc28e73b488692fbac8f486",
+      "crates/tls/src/lib.rs": "ce60b4799624f0082dd8c50d47e9d5160dba7bda400a91b271302b1b18fac1ff",
+      "crates/utilities/Cargo.toml": "85dd84ab7104ab01d237461eb5679026b5a6b0e3e9adc9dc821f6bb0e8ce14db",
+      "crates/utilities/src/bytes/span.rs": "13f63b08844f57e2aed5da8f24248ac44d5c4e72b063d00fb194f1b39beac6a4",
+      "crates/utilities/src/bytes.rs": "c23c5d03751628e4a6cfc214a810f1567a8dd9ba66c1be2287207d06be5f4abd",
+      "crates/utilities/src/frontdoor.rs": "d8f411f8fee0675ef78543462b7c0a85b4a53915a9cafc35bad7c90f01e257dc",
+      "crates/utilities/src/lib.rs": "f8c1a268e2952febd28040ec24e86bce6a54f270396ff2cd3def3322dcd292c7",
+      "crates/utilities/src/logger_state/path.rs": "f17d0e03e15c6bc68290166b9382899cdf798fc68b9783909344dbac1e436e78",
+      "crates/utilities/src/logger_state.rs": "00572064ca54157e65f1ed388b39afed6f83fe6a18ba2a6a45c915d1194f21a4",
+      "crates/websocket/Cargo.toml": "caa4d596b09696048886d2df39ffe3e81f2f9901ad7bee577effc5c22089bb05",
+      "crates/websocket/src/codec.rs": "0de10858bb7e0d641088323c1402a669529fcaf6160872080f6f64323186b772",
+      "crates/websocket/src/lib.rs": "694a4895556ad8d2535cc9f09d178e9b61120dfcfbfa03d9009cb90f9a952f8c",
+      "crates/websocket/tests/kernel.rs": "8609b281c872ba1c93537de269f80aeb14a7dce1417395bfe439d444edc96360",
+      "crates/wrappers/Cargo.toml": "892eddce94bf47d527286a60c7fbb8f63785224dfee510220cfb4825bddf7121",
+      "crates/wrappers/src/lib.rs": "49bc4f3ba8a564863a3d795d77aea6a0a6c87b6e21bc2b532410f4d89eac5454",
+      "rust-toolchain.toml": "10c67ce85265f8fc5b1a52b416af1a553e56ad96ca9843da6579e2854741e084"
+    }
+  },
+  "repeat": 7,
+  "baseline_source": "/Users/loks0n/src/loks0n/swoole-rs/target/performance",
+  "diff_sha256": "2a6a2cb3e9d48e481adb8ef7b9c1d9f5c97bf4e944351df28c6ba6004affc941",
+  "host": "macOS-26.6.2-arm64-arm-64bit",
+  "cpu": "Apple M4 Pro",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: aarch64-apple-darwin\nrelease: 1.99.0\nLLVM version: 23.1.1\n",
+  "revision": "4a71237c75c2c7948fca37c7ced5cfc644247ae4",
+  "harness_sha256": "8163470faa06ebc98149b7611fbba86698b1f7048eb047f35893133be65d32a5",
+  "binaries": {
+    "baseline": {
+      "path": "/Users/loks0n/src/loks0n/swoole-rs/target/storage-bench/baseline/target/release/storage-bench",
+      "sha256": "e8cf6ec889317398728069e77cad0fe0cc588137c448b9a077a8c5b6176c0ec3"
+    },
+    "candidate": {
+      "path": "/Users/loks0n/src/loks0n/swoole-rs/target/storage-bench/candidate/target/release/storage-bench",
+      "sha256": "e4588939e960073350a8c1fb1ea15f0be35475c25b984ec8c1437a6102e387ff"
+    }
+  },
+  "workloads": {
+    "buffer-1k": {
+      "rounds": 81596,
+      "calibration_rounds": 4000,
+      "calibration": {
+        "baseline": {
+          "checksum": 304384000,
+          "nanoseconds": 10380417
+        },
+        "candidate": {
+          "checksum": 304384000,
+          "nanoseconds": 4902250
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 6209129216,
+          "nanoseconds": 206481917
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 6209129216,
+          "nanoseconds": 95537791
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 6209129216,
+          "nanoseconds": 94819791
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 6209129216,
+          "nanoseconds": 204109875
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 6209129216,
+          "nanoseconds": 202727584
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 6209129216,
+          "nanoseconds": 94948084
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 6209129216,
+          "nanoseconds": 98493417
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 6209129216,
+          "nanoseconds": 254467250
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 6209129216,
+          "nanoseconds": 203453833
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 6209129216,
+          "nanoseconds": 93091167
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 6209129216,
+          "nanoseconds": 93766167
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 6209129216,
+          "nanoseconds": 203051333
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 6209129216,
+          "nanoseconds": 206694542
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 6209129216,
+          "nanoseconds": 98214042
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 6209129216,
+          "allocations": 5222147,
+          "peak_requested_bytes": 133184
+        },
+        "candidate": {
+          "checksum": 6209129216,
+          "allocations": 132,
+          "peak_requested_bytes": 134752
+        }
+      },
+      "median_ns": {
+        "baseline": 204109875,
+        "candidate": 94948084
+      },
+      "speedup": 2.1496997769854946
+    },
+    "buffer-16k": {
+      "rounds": 145997,
+      "calibration_rounds": 4000,
+      "calibration": {
+        "baseline": {
+          "checksum": 264784000,
+          "nanoseconds": 3128375
+        },
+        "candidate": {
+          "checksum": 264784000,
+          "nanoseconds": 2739792
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 9664417412,
+          "nanoseconds": 110269750
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 9664417412,
+          "nanoseconds": 93126166
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 9664417412,
+          "nanoseconds": 88957708
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 9664417412,
+          "nanoseconds": 104217417
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 9664417412,
+          "nanoseconds": 105207125
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 9664417412,
+          "nanoseconds": 89514667
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 9664417412,
+          "nanoseconds": 89573875
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 9664417412,
+          "nanoseconds": 104574417
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 9664417412,
+          "nanoseconds": 104485084
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 9664417412,
+          "nanoseconds": 89318750
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 9664417412,
+          "nanoseconds": 92844250
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 9664417412,
+          "nanoseconds": 107195916
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 9664417412,
+          "nanoseconds": 107940042
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 9664417412,
+          "nanoseconds": 93660500
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 9664417412,
+          "allocations": 583991,
+          "peak_requested_bytes": 131264
+        },
+        "candidate": {
+          "checksum": 9664417412,
+          "allocations": 12,
+          "peak_requested_bytes": 131392
+        }
+      },
+      "median_ns": {
+        "baseline": 105207125,
+        "candidate": 89573875
+      },
+      "speedup": 1.1745291247029337
+    },
+    "buffer-cold-1k": {
+      "rounds": 37506,
+      "calibration_rounds": 4000,
+      "calibration": {
+        "baseline": {
+          "checksum": 304384000,
+          "nanoseconds": 10665000
+        },
+        "candidate": {
+          "checksum": 304384000,
+          "nanoseconds": 11262042
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 2854056576,
+          "nanoseconds": 100746208
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 2854056576,
+          "nanoseconds": 102347625
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 2854056576,
+          "nanoseconds": 103315542
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 2854056576,
+          "nanoseconds": 101837458
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 2854056576,
+          "nanoseconds": 100115708
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 2854056576,
+          "nanoseconds": 102275708
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 2854056576,
+          "nanoseconds": 102332750
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 2854056576,
+          "nanoseconds": 100509750
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 2854056576,
+          "nanoseconds": 100758167
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 2854056576,
+          "nanoseconds": 102222917
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 2854056576,
+          "nanoseconds": 102069375
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 2854056576,
+          "nanoseconds": 100164417
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 2854056576,
+          "nanoseconds": 101792042
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 2854056576,
+          "nanoseconds": 102627292
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 2854056576,
+          "allocations": 2475398,
+          "peak_requested_bytes": 133184
+        },
+        "candidate": {
+          "checksum": 2854056576,
+          "allocations": 2475398,
+          "peak_requested_bytes": 133216
+        }
+      },
+      "median_ns": {
+        "baseline": 100746208,
+        "candidate": 102332750
+      },
+      "speedup": 0.984496243871097
+    },
+    "directory-1024": {
+      "rounds": 1422,
+      "calibration_rounds": 500,
+      "calibration": {
+        "baseline": {
+          "checksum": 512000,
+          "nanoseconds": 42952208
+        },
+        "candidate": {
+          "checksum": 512000,
+          "nanoseconds": 35183833
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 1456128,
+          "nanoseconds": 122140875
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 1456128,
+          "nanoseconds": 99220416
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 1456128,
+          "nanoseconds": 99061458
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 1456128,
+          "nanoseconds": 122762792
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 1456128,
+          "nanoseconds": 122403833
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 1456128,
+          "nanoseconds": 100039375
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 1456128,
+          "nanoseconds": 99418750
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 1456128,
+          "nanoseconds": 121781750
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 1456128,
+          "nanoseconds": 121891750
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 1456128,
+          "nanoseconds": 99558833
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 1456128,
+          "nanoseconds": 99063042
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 1456128,
+          "nanoseconds": 121583625
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 1456128,
+          "nanoseconds": 120960375
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 1456128,
+          "nanoseconds": 98394958
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 1456128,
+          "allocations": 1471373,
+          "peak_requested_bytes": 80928
+        },
+        "candidate": {
+          "checksum": 1456128,
+          "allocations": 30887,
+          "peak_requested_bytes": 72760
+        }
+      },
+      "median_ns": {
+        "baseline": 121891750,
+        "candidate": 99220416
+      },
+      "speedup": 1.228494647714438
+    },
+    "directory-17": {
+      "rounds": 81393,
+      "calibration_rounds": 10000,
+      "calibration": {
+        "baseline": {
+          "checksum": 170000,
+          "nanoseconds": 12345792
+        },
+        "candidate": {
+          "checksum": 170000,
+          "nanoseconds": 12286166
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 1383681,
+          "nanoseconds": 101497542
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 1383681,
+          "nanoseconds": 97036000
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 1383681,
+          "nanoseconds": 95922459
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 1383681,
+          "nanoseconds": 101205583
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 1383681,
+          "nanoseconds": 102023000
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 1383681,
+          "nanoseconds": 96556375
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 1383681,
+          "nanoseconds": 96847042
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 1383681,
+          "nanoseconds": 99835541
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 1383681,
+          "nanoseconds": 99367708
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 1383681,
+          "nanoseconds": 99306959
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 1383681,
+          "nanoseconds": 98907458
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 1383681,
+          "nanoseconds": 100798208
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 1383681,
+          "nanoseconds": 99896208
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 1383681,
+          "nanoseconds": 95000833
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 1383681,
+          "allocations": 1790664,
+          "peak_requested_bytes": 1735
+        },
+        "candidate": {
+          "checksum": 1383681,
+          "allocations": 895341,
+          "peak_requested_bytes": 1698
+        }
+      },
+      "median_ns": {
+        "baseline": 100798208,
+        "candidate": 96847042
+      },
+      "speedup": 1.0407980039287106
+    },
+    "registry-128": {
+      "rounds": 121044,
+      "calibration_rounds": 2000,
+      "calibration": {
+        "baseline": {
+          "checksum": 16512000,
+          "nanoseconds": 5996583
+        },
+        "candidate": {
+          "checksum": 16512000,
+          "nanoseconds": 1652292
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 999339264,
+          "nanoseconds": 352296667
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 999339264,
+          "nanoseconds": 102140875
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 999339264,
+          "nanoseconds": 99804958
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 999339264,
+          "nanoseconds": 350111417
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 999339264,
+          "nanoseconds": 350234375
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 999339264,
+          "nanoseconds": 102365167
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 999339264,
+          "nanoseconds": 100130084
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 999339264,
+          "nanoseconds": 351344500
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 999339264,
+          "nanoseconds": 355347333
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 999339264,
+          "nanoseconds": 101619250
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 999339264,
+          "nanoseconds": 99165542
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 999339264,
+          "nanoseconds": 350671916
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 999339264,
+          "nanoseconds": 355821208
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 999339264,
+          "nanoseconds": 99944292
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 999339264,
+          "allocations": 15493640,
+          "peak_requested_bytes": 5728
+        },
+        "candidate": {
+          "checksum": 999339264,
+          "allocations": 10,
+          "peak_requested_bytes": 6560
+        }
+      },
+      "median_ns": {
+        "baseline": 351344500,
+        "candidate": 100130084
+      },
+      "speedup": 3.508880507880129
+    },
+    "registry-cold-1": {
+      "rounds": 1400348,
+      "calibration_rounds": 100000,
+      "calibration": {
+        "baseline": {
+          "checksum": 100000,
+          "nanoseconds": 7156250
+        },
+        "candidate": {
+          "checksum": 100000,
+          "nanoseconds": 7141083
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 1400348,
+          "nanoseconds": 90664584
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 1400348,
+          "nanoseconds": 95021583
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 1400348,
+          "nanoseconds": 94550042
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 1400348,
+          "nanoseconds": 90468250
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 1400348,
+          "nanoseconds": 93365583
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 1400348,
+          "nanoseconds": 95473458
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 1400348,
+          "nanoseconds": 92150625
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 1400348,
+          "nanoseconds": 91464708
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 1400348,
+          "nanoseconds": 92477750
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 1400348,
+          "nanoseconds": 92683583
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 1400348,
+          "nanoseconds": 93524292
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 1400348,
+          "nanoseconds": 92040833
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 1400348,
+          "nanoseconds": 94005375
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 1400348,
+          "nanoseconds": 93617500
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 1400348,
+          "allocations": 4201044,
+          "peak_requested_bytes": 104
+        },
+        "candidate": {
+          "checksum": 1400348,
+          "allocations": 4201044,
+          "peak_requested_bytes": 128
+        }
+      },
+      "median_ns": {
+        "baseline": 92040833,
+        "candidate": 93617500
+      },
+      "speedup": 0.9831584158944642
+    },
+    "registry-cold-128": {
+      "rounds": 68535,
+      "calibration_rounds": 2000,
+      "calibration": {
+        "baseline": {
+          "checksum": 16512000,
+          "nanoseconds": 7279250
+        },
+        "candidate": {
+          "checksum": 16512000,
+          "nanoseconds": 2918250
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 565824960,
+          "nanoseconds": 241293667
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 565824960,
+          "nanoseconds": 98991417
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 565824960,
+          "nanoseconds": 100366875
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 565824960,
+          "nanoseconds": 236993750
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 565824960,
+          "nanoseconds": 239576292
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 565824960,
+          "nanoseconds": 100442166
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 565824960,
+          "nanoseconds": 98767209
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 565824960,
+          "nanoseconds": 233923500
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 565824960,
+          "nanoseconds": 237849625
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 565824960,
+          "nanoseconds": 100429875
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 565824960,
+          "nanoseconds": 101015500
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 565824960,
+          "nanoseconds": 234269333
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 565824960,
+          "nanoseconds": 236898291
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 565824960,
+          "nanoseconds": 99829250
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 565824960,
+          "allocations": 9320760,
+          "peak_requested_bytes": 5728
+        },
+        "candidate": {
+          "checksum": 565824960,
+          "allocations": 685350,
+          "peak_requested_bytes": 6560
+        }
+      },
+      "median_ns": {
+        "baseline": 236993750,
+        "candidate": 100366875
+      },
+      "speedup": 2.3612745739069787
+    },
+    "registry-512": {
+      "rounds": 10027,
+      "calibration_rounds": 2000,
+      "calibration": {
+        "baseline": {
+          "checksum": 262656000,
+          "nanoseconds": 23926292
+        },
+        "candidate": {
+          "checksum": 262656000,
+          "nanoseconds": 19946583
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 1316825856,
+          "nanoseconds": 118522750
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 1316825856,
+          "nanoseconds": 101188583
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 1316825856,
+          "nanoseconds": 99236625
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 1316825856,
+          "nanoseconds": 120273375
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 1316825856,
+          "nanoseconds": 116265542
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 1316825856,
+          "nanoseconds": 98720125
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 1316825856,
+          "nanoseconds": 100336292
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 1316825856,
+          "nanoseconds": 119251666
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 1316825856,
+          "nanoseconds": 119601417
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 1316825856,
+          "nanoseconds": 98075708
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 1316825856,
+          "nanoseconds": 104388125
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 1316825856,
+          "nanoseconds": 121298959
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 1316825856,
+          "nanoseconds": 125652875
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 1316825856,
+          "nanoseconds": 105789083
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 1316825856,
+          "allocations": 5133834,
+          "peak_requested_bytes": 22816
+        },
+        "candidate": {
+          "checksum": 1316825856,
+          "allocations": 3850379,
+          "peak_requested_bytes": 22840
+        }
+      },
+      "median_ns": {
+        "baseline": 119601417,
+        "candidate": 100336292
+      },
+      "speedup": 1.192005550693462
+    },
+    "heap-128": {
+      "rounds": 59934,
+      "calibration_rounds": 2000,
+      "calibration": {
+        "baseline": {
+          "checksum": 16512000,
+          "nanoseconds": 8073000
+        },
+        "candidate": {
+          "checksum": 16512000,
+          "nanoseconds": 3337042
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 494815104,
+          "nanoseconds": 226048750
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 494815104,
+          "nanoseconds": 104481125
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 494815104,
+          "nanoseconds": 100704833
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 494815104,
+          "nanoseconds": 237485291
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 494815104,
+          "nanoseconds": 261533334
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 494815104,
+          "nanoseconds": 100566083
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 494815104,
+          "nanoseconds": 101553125
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 494815104,
+          "nanoseconds": 223487000
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 494815104,
+          "nanoseconds": 227315958
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 494815104,
+          "nanoseconds": 98156666
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 494815104,
+          "nanoseconds": 99099583
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 494815104,
+          "nanoseconds": 220323500
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 494815104,
+          "nanoseconds": 221937167
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 494815104,
+          "nanoseconds": 99207000
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 494815104,
+          "allocations": 7611621,
+          "peak_requested_bytes": 4136
+        },
+        "candidate": {
+          "checksum": 494815104,
+          "allocations": 4,
+          "peak_requested_bytes": 4184
+        }
+      },
+      "median_ns": {
+        "baseline": 226048750,
+        "candidate": 100566083
+      },
+      "speedup": 2.247763294111793
+    },
+    "heap-512": {
+      "rounds": 6464,
+      "calibration_rounds": 2000,
+      "calibration": {
+        "baseline": {
+          "checksum": 262656000,
+          "nanoseconds": 33825208
+        },
+        "candidate": {
+          "checksum": 262656000,
+          "nanoseconds": 30943083
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 848904192,
+          "nanoseconds": 110980000
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 848904192,
+          "nanoseconds": 101884875
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 848904192,
+          "nanoseconds": 102294583
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 848904192,
+          "nanoseconds": 112375750
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 848904192,
+          "nanoseconds": 109610250
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 848904192,
+          "nanoseconds": 104567416
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 848904192,
+          "nanoseconds": 102502584
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 848904192,
+          "nanoseconds": 108808750
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 848904192,
+          "nanoseconds": 110292125
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 848904192,
+          "nanoseconds": 101644000
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 848904192,
+          "nanoseconds": 99894042
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 848904192,
+          "nanoseconds": 109982417
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 848904192,
+          "nanoseconds": 108851667
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 848904192,
+          "nanoseconds": 100051917
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 848904192,
+          "allocations": 3303107,
+          "peak_requested_bytes": 16424
+        },
+        "candidate": {
+          "checksum": 848904192,
+          "allocations": 2475716,
+          "peak_requested_bytes": 16448
+        }
+      },
+      "median_ns": {
+        "baseline": 109982417,
+        "candidate": 101884875
+      },
+      "speedup": 1.0794773709051515
+    },
+    "heap-1": {
+      "rounds": 28203773,
+      "calibration_rounds": 200000,
+      "calibration": {
+        "baseline": {
+          "checksum": 200000,
+          "nanoseconds": 709125
+        },
+        "candidate": {
+          "checksum": 200000,
+          "nanoseconds": 736791
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 28203773,
+          "nanoseconds": 100512125
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 28203773,
+          "nanoseconds": 100267334
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 28203773,
+          "nanoseconds": 100655125
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 28203773,
+          "nanoseconds": 100441458
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 28203773,
+          "nanoseconds": 100839458
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 28203773,
+          "nanoseconds": 100124875
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 28203773,
+          "nanoseconds": 101344042
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 28203773,
+          "nanoseconds": 100817958
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 28203773,
+          "nanoseconds": 101313833
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 28203773,
+          "nanoseconds": 100529375
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 28203773,
+          "nanoseconds": 100486250
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 28203773,
+          "nanoseconds": 101015833
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 28203773,
+          "nanoseconds": 100855709
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 28203773,
+          "nanoseconds": 100760041
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 28203773,
+          "allocations": 3,
+          "peak_requested_bytes": 72
+        },
+        "candidate": {
+          "checksum": 28203773,
+          "allocations": 3,
+          "peak_requested_bytes": 96
+        }
+      },
+      "median_ns": {
+        "baseline": 100839458,
+        "candidate": 100529375
+      },
+      "speedup": 1.0030845014206047
+    },
+    "reactor-4096": {
+      "rounds": 9649,
+      "calibration_rounds": 1000,
+      "calibration": {
+        "baseline": {
+          "checksum": 8390656000,
+          "nanoseconds": 15087292
+        },
+        "candidate": {
+          "checksum": 8390656000,
+          "nanoseconds": 10364250
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 80961439744,
+          "nanoseconds": 145382791
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 80961439744,
+          "nanoseconds": 115459125
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 80961439744,
+          "nanoseconds": 99631250
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 80961439744,
+          "nanoseconds": 144119000
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 80961439744,
+          "nanoseconds": 143266667
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 80961439744,
+          "nanoseconds": 97047833
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 80961439744,
+          "nanoseconds": 96580125
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 80961439744,
+          "nanoseconds": 142067750
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 80961439744,
+          "nanoseconds": 146915125
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 80961439744,
+          "nanoseconds": 107590334
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 80961439744,
+          "nanoseconds": 125473500
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 80961439744,
+          "nanoseconds": 145162875
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 80961439744,
+          "nanoseconds": 143026625
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 80961439744,
+          "nanoseconds": 99887500
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 80961439744,
+          "allocations": 24,
+          "peak_requested_bytes": 240912
+        },
+        "candidate": {
+          "checksum": 80961439744,
+          "allocations": 24,
+          "peak_requested_bytes": 208144
+        }
+      },
+      "median_ns": {
+        "baseline": 144119000,
+        "candidate": 99887500
+      },
+      "speedup": 1.4428131648104117
+    },
+    "reactor-65536": {
+      "rounds": 653,
+      "calibration_rounds": 64,
+      "calibration": {
+        "baseline": {
+          "checksum": 137441050624,
+          "nanoseconds": 15430625
+        },
+        "candidate": {
+          "checksum": 137441050624,
+          "nanoseconds": 9805459
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 1402328219648,
+          "nanoseconds": 154703042
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 1402328219648,
+          "nanoseconds": 95868583
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 1402328219648,
+          "nanoseconds": 97009125
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 1402328219648,
+          "nanoseconds": 157542292
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 1402328219648,
+          "nanoseconds": 158573459
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 1402328219648,
+          "nanoseconds": 95879750
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 1402328219648,
+          "nanoseconds": 96925250
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 1402328219648,
+          "nanoseconds": 157386542
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 1402328219648,
+          "nanoseconds": 157552500
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 1402328219648,
+          "nanoseconds": 97088542
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 1402328219648,
+          "nanoseconds": 96103416
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 1402328219648,
+          "nanoseconds": 160524625
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 1402328219648,
+          "nanoseconds": 154870667
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 1402328219648,
+          "nanoseconds": 92967333
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 1402328219648,
+          "allocations": 32,
+          "peak_requested_bytes": 3856032
+        },
+        "candidate": {
+          "checksum": 1402328219648,
+          "allocations": 32,
+          "peak_requested_bytes": 3331744
+        }
+      },
+      "median_ns": {
+        "baseline": 157542292,
+        "candidate": 96103416
+      },
+      "speedup": 1.6392996061659244
+    },
+    "timer-512": {
+      "rounds": 17890,
+      "calibration_rounds": 2000,
+      "calibration": {
+        "baseline": {
+          "checksum": 1048039424,
+          "nanoseconds": 13048583
+        },
+        "candidate": {
+          "checksum": 1048039424,
+          "nanoseconds": 11179958
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 9374867456,
+          "nanoseconds": 114970041
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 9374867456,
+          "nanoseconds": 97363500
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 9374867456,
+          "nanoseconds": 97067167
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 9374867456,
+          "nanoseconds": 116915833
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 9374867456,
+          "nanoseconds": 117227292
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 9374867456,
+          "nanoseconds": 97382750
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 9374867456,
+          "nanoseconds": 97833084
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 9374867456,
+          "nanoseconds": 115988000
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 9374867456,
+          "nanoseconds": 115511959
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 9374867456,
+          "nanoseconds": 97472709
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 9374867456,
+          "nanoseconds": 96380000
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 9374867456,
+          "nanoseconds": 116211459
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 9374867456,
+          "nanoseconds": 116168500
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 9374867456,
+          "nanoseconds": 96567167
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 9374867456,
+          "allocations": 18,
+          "peak_requested_bytes": 54904
+        },
+        "candidate": {
+          "checksum": 9374867456,
+          "allocations": 26,
+          "peak_requested_bytes": 67232
+        }
+      },
+      "median_ns": {
+        "baseline": 116168500,
+        "candidate": 97363500
+      },
+      "speedup": 1.1931421939433156
+    },
+    "timer-4096": {
+      "rounds": 2268,
+      "calibration_rounds": 250,
+      "calibration": {
+        "baseline": {
+          "checksum": 8389361664,
+          "nanoseconds": 13198250
+        },
+        "candidate": {
+          "checksum": 8389361664,
+          "nanoseconds": 11025500
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 76096323584,
+          "nanoseconds": 125647500
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 76096323584,
+          "nanoseconds": 105123375
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 76096323584,
+          "nanoseconds": 104780250
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 76096323584,
+          "nanoseconds": 126101375
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 76096323584,
+          "nanoseconds": 125684125
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 76096323584,
+          "nanoseconds": 105066666
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 76096323584,
+          "nanoseconds": 106009834
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 76096323584,
+          "nanoseconds": 125993209
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 76096323584,
+          "nanoseconds": 127142083
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 76096323584,
+          "nanoseconds": 105142542
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 76096323584,
+          "nanoseconds": 104965375
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 76096323584,
+          "nanoseconds": 126435625
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 76096323584,
+          "nanoseconds": 125245792
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 76096323584,
+          "nanoseconds": 105247792
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 76096323584,
+          "allocations": 24,
+          "peak_requested_bytes": 438392
+        },
+        "candidate": {
+          "checksum": 76096323584,
+          "allocations": 35,
+          "peak_requested_bytes": 536736
+        }
+      },
+      "median_ns": {
+        "baseline": 125993209,
+        "candidate": 105123375
+      },
+      "speedup": 1.1985270545204623
+    },
+    "timer-churn-512": {
+      "rounds": 7646,
+      "calibration_rounds": 2000,
+      "calibration": {
+        "baseline": {
+          "checksum": 262656000,
+          "nanoseconds": 29700250
+        },
+        "candidate": {
+          "checksum": 262656000,
+          "nanoseconds": 26158916
+        }
+      },
+      "trials": [
+        {
+          "engine": "baseline",
+          "trial": 0,
+          "checksum": 1004133888,
+          "nanoseconds": 113425167
+        },
+        {
+          "engine": "candidate",
+          "trial": 0,
+          "checksum": 1004133888,
+          "nanoseconds": 98161041
+        },
+        {
+          "engine": "candidate",
+          "trial": 1,
+          "checksum": 1004133888,
+          "nanoseconds": 99437916
+        },
+        {
+          "engine": "baseline",
+          "trial": 1,
+          "checksum": 1004133888,
+          "nanoseconds": 113018583
+        },
+        {
+          "engine": "baseline",
+          "trial": 2,
+          "checksum": 1004133888,
+          "nanoseconds": 113426292
+        },
+        {
+          "engine": "candidate",
+          "trial": 2,
+          "checksum": 1004133888,
+          "nanoseconds": 98099333
+        },
+        {
+          "engine": "candidate",
+          "trial": 3,
+          "checksum": 1004133888,
+          "nanoseconds": 98952041
+        },
+        {
+          "engine": "baseline",
+          "trial": 3,
+          "checksum": 1004133888,
+          "nanoseconds": 112873000
+        },
+        {
+          "engine": "baseline",
+          "trial": 4,
+          "checksum": 1004133888,
+          "nanoseconds": 113350166
+        },
+        {
+          "engine": "candidate",
+          "trial": 4,
+          "checksum": 1004133888,
+          "nanoseconds": 99247875
+        },
+        {
+          "engine": "candidate",
+          "trial": 5,
+          "checksum": 1004133888,
+          "nanoseconds": 98999583
+        },
+        {
+          "engine": "baseline",
+          "trial": 5,
+          "checksum": 1004133888,
+          "nanoseconds": 113203750
+        },
+        {
+          "engine": "baseline",
+          "trial": 6,
+          "checksum": 1004133888,
+          "nanoseconds": 113678875
+        },
+        {
+          "engine": "candidate",
+          "trial": 6,
+          "checksum": 1004133888,
+          "nanoseconds": 98897959
+        }
+      ],
+      "allocation_probe": {
+        "baseline": {
+          "checksum": 1004133888,
+          "allocations": 18,
+          "peak_requested_bytes": 54904
+        },
+        "candidate": {
+          "checksum": 1004133888,
+          "allocations": 26,
+          "peak_requested_bytes": 67232
+        }
+      },
+      "median_ns": {
+        "baseline": 113350166,
+        "candidate": 98952041
+      },
+      "speedup": 1.1455060942098203
+    }
+  }
+}

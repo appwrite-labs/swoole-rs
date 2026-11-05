@@ -167,7 +167,7 @@ pub unsafe extern "C" fn swr_v1_buffer_typed_pop(buffer: *mut Buffer, out: *mut 
         return INVALID;
     }
     let queue = unsafe { &mut *buffer };
-    let Mode::Typed(cursor) = &mut queue.mode else {
+    let Mode::Typed(_) = &mut queue.mode else {
         return INVALID;
     };
     let Some(entry) = queue.entries.pop_front() else {
@@ -176,6 +176,7 @@ pub unsafe extern "C" fn swr_v1_buffer_typed_pop(buffer: *mut Buffer, out: *mut 
     let effect = match entry {
         Entry::Data(bytes) => {
             queue.length -= bytes.len() as u32;
+            queue.recycle(bytes);
             Detached::default()
         }
         Entry::TypedToken(token) => Detached {
@@ -183,6 +184,9 @@ pub unsafe extern "C" fn swr_v1_buffer_typed_pop(buffer: *mut Buffer, out: *mut 
             dispose: token.dispose,
         },
         Entry::Native(_) => unreachable!("legacy push rejects typed mode"),
+    };
+    let Mode::Typed(cursor) = &mut queue.mode else {
+        unreachable!()
     };
     cursor.offset = 0;
     cursor.generation = cursor.generation.wrapping_add(1);

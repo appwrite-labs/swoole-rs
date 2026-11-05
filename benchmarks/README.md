@@ -52,3 +52,12 @@ For native buffer comparisons, retain both pop-only and `--peek-front` reports
 from `tests/modules/buffer/benchmark.py`. The latter reads one byte per DATA
 front before pop, exercising repeated cached-front calls and verifying a checksum
 outside timing. They are different workloads, not a before/after speedup ratio.
+
+## Rust storage layouts
+
+`storage.py` compares an untouched baseline checkout with current Rust storage
+implementations using a common optimized public-ABI harness. It covers buffers,
+directory names, registry/heap nodes, reactor traversal and timer queues, with
+separate allocation probes and calibrated alternating trials. See
+[results, trade-offs, validation and reproduction](../docs/storage-performance.md).
+These microbenchmarks do not establish PHP/server throughput.

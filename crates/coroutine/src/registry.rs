@@ -7,6 +7,7 @@
 use core::ffi::{c_long, c_void};
 use core::ptr;
 
+#[derive(Clone, Copy)]
 struct Entry {
     cid: c_long,
     token: usize,
@@ -48,6 +49,7 @@ impl Policy {
     }
 }
 struct Registry {
+    pool: crate::storage::Pool<Entry>,
     count: usize,
     first: *mut Entry,
     buckets: Vec<*mut Entry>,
@@ -57,6 +59,7 @@ struct Registry {
 impl Registry {
     fn new(policy: Policy) -> Self {
         Self {
+            pool: Default::default(),
             count: 0,
             first: ptr::null_mut(),
             buckets: Vec::new(),
@@ -104,14 +107,20 @@ impl Registry {
         if !found.is_null() {
             return Ok(found);
         }
-        let entry = try_box(Entry {
-            cid,
-            token: 0,
-            previous: ptr::null_mut(),
-            next: ptr::null_mut(),
-        })?;
-        self.prepare_order()?;
-        let raw = Box::into_raw(entry);
+        let entry = self
+            .pool
+            .insert(Entry {
+                cid,
+                token: 0,
+                previous: ptr::null_mut(),
+                next: ptr::null_mut(),
+            })
+            .ok_or(())?;
+        if self.prepare_order().is_err() {
+            unsafe { self.pool.remove(entry) };
+            return Err(());
+        }
+        let raw = entry.as_ptr();
         self.link_order(raw);
         self.count += 1;
         Ok(raw)
@@ -129,7 +138,7 @@ impl Registry {
             return false;
         }
         unsafe {
-            let entry = Box::from_raw(pointer);
+            let entry = *pointer;
             let bucket = cid as usize % self.buckets.len();
             if self.buckets[bucket] == pointer {
                 self.buckets[bucket] = if !entry.next.is_null()
@@ -149,6 +158,7 @@ impl Registry {
                 (*entry.next).previous = entry.previous;
             }
             self.count -= 1;
+            self.pool.remove(core::ptr::NonNull::new_unchecked(pointer));
         }
         true
     }
@@ -388,8 +398,9 @@ impl Registry {
         while !cursor.is_null() {
             // Metadata only: opaque Native tokens have no Rust destructor.
             unsafe {
-                let entry = Box::from_raw(cursor);
-                cursor = entry.next;
+                let next = (*cursor).next;
+                self.pool.remove(core::ptr::NonNull::new_unchecked(cursor));
+                cursor = next;
             }
         }
         self.first = ptr::null_mut();
@@ -825,6 +836,7 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn gnu_candidate_growth_runs_clear_and_long_boundaries() {
         let mut registry = Registry {
+            pool: Default::default(),
             count: 0,
             first: ptr::null_mut(),
             buckets: Vec::new(),
@@ -888,6 +900,7 @@ mod tests {
             (18_446_744_073_709_551_557, usize::MAX)
         );
         let mut registry = Registry {
+            pool: Default::default(),
             count: 0,
             first: ptr::null_mut(),
             buckets: Vec::new(),

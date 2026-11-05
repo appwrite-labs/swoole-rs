@@ -8,14 +8,17 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, DefaultHasher};
 use std::ptr;
 
-const NONE: usize = usize::MAX;
+const NONE: usize = u32::MAX as usize;
+fn link(value: u32) -> usize {
+    value as usize
+}
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
 type Index = HashMap<i32, usize, BuildHasherDefault<DefaultHasher>>;
 struct Node {
     key: i32,
     token: usize,
-    next: usize,
-    previous: usize,
+    next: u32,
+    previous: u32,
     generation: u64,
     live: bool,
 }
@@ -86,7 +89,7 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
                 if self.nodes[id].key == fd {
                     return Some(id);
                 }
-                id = self.nodes[id].next;
+                id = link(self.nodes[id].next);
             }
             None
         }
@@ -103,6 +106,10 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
         #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
         self.index.try_reserve(1).map_err(|_| -2)?;
         let id = if self.free == NONE {
+            // A real socket registry cannot exhaust the u32 slot domain.
+            if self.nodes.len() == u32::MAX as usize {
+                return Err(-2);
+            }
             self.nodes.try_reserve(1).map_err(|_| -2)?;
             self.nodes.len()
         } else {
@@ -118,15 +125,15 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
         let node = Node {
             key: fd,
             token,
-            next: NONE,
-            previous: self.tail,
+            next: u32::MAX,
+            previous: self.tail as u32,
             generation,
             live: true,
         };
         if id == self.nodes.len() {
             self.nodes.push(node);
         } else {
-            self.free = self.nodes[id].next;
+            self.free = link(self.nodes[id].next);
             self.nodes[id] = node;
         }
         #[cfg(any(target_vendor = "apple", target_os = "linux"))]
@@ -136,7 +143,7 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
             if self.tail == NONE {
                 self.head = id;
             } else {
-                self.nodes[self.tail].next = id;
+                self.nodes[self.tail].next = id as u32;
             }
             self.tail = id;
         }
@@ -158,7 +165,7 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
         }
         #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
         self.index.remove(&fd);
-        let (previous, next) = (self.nodes[id].previous, self.nodes[id].next);
+        let (previous, next) = (link(self.nodes[id].previous), link(self.nodes[id].next));
         #[cfg(any(target_vendor = "apple", target_os = "linux"))]
         {
             let bucket = fd as usize % self.buckets.len();
@@ -175,16 +182,16 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
         if previous == NONE {
             self.head = next;
         } else {
-            self.nodes[previous].next = next;
+            self.nodes[previous].next = next as u32;
         }
         if next == NONE {
             self.tail = previous;
         } else {
-            self.nodes[next].previous = previous;
+            self.nodes[next].previous = previous as u32;
         }
         self.nodes[id].live = false;
         self.nodes[id].token = 0;
-        self.nodes[id].next = self.free;
+        self.nodes[id].next = self.free as u32;
         self.free = id;
     }
     fn next(&self, cursor: &mut ReactorSocketCursor) -> Result<Option<ReactorSocketEntry>, i32> {
@@ -201,11 +208,10 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
             if !current.live || current.generation != cursor.generation {
                 return Err(-1);
             }
-            current.next
+            link(current.next)
         };
         if id == NONE {
-            cursor.done = 1;
-            return Ok(None);
+            return finished(cursor);
         }
         let node = &self.nodes[id];
         cursor.current = id;
@@ -216,6 +222,12 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
             token: node.token,
         }))
     }
+}
+
+#[cold]
+fn finished(cursor: &mut ReactorSocketCursor) -> Result<Option<ReactorSocketEntry>, i32> {
+    cursor.done = 1;
+    Ok(None)
 }
 
 #[cfg(any(target_vendor = "apple", target_os = "linux"))]
@@ -233,7 +245,7 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
             self.head = NONE;
             self.tail = NONE;
             while current != NONE {
-                let next = self.nodes[current].next;
+                let next = link(self.nodes[current].next);
                 Self::link_into(
                     &mut self.nodes,
                     &mut self.head,
@@ -248,7 +260,7 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
             let mut previous_bucket = self.nodes[previous].key as usize % count;
             buckets[previous_bucket] = previous;
             loop {
-                let current = self.nodes[previous].next;
+                let current = link(self.nodes[previous].next);
                 if current == NONE {
                     break;
                 }
@@ -261,22 +273,22 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
                     previous_bucket = bucket;
                 } else {
                     // A later run joins its earlier bucket at that bucket's head.
-                    let next = self.nodes[current].next;
-                    self.nodes[previous].next = next;
+                    let next = link(self.nodes[current].next);
+                    self.nodes[previous].next = next as u32;
                     if next == NONE {
                         self.tail = previous;
                     } else {
-                        self.nodes[next].previous = previous;
+                        self.nodes[next].previous = previous as u32;
                     }
                     let head = buckets[bucket];
-                    let before = self.nodes[head].previous;
-                    self.nodes[current].next = head;
-                    self.nodes[current].previous = before;
-                    self.nodes[head].previous = current;
+                    let before = link(self.nodes[head].previous);
+                    self.nodes[current].next = head as u32;
+                    self.nodes[current].previous = before as u32;
+                    self.nodes[head].previous = current as u32;
                     if before == NONE {
                         self.head = current;
                     } else {
-                        self.nodes[before].next = current;
+                        self.nodes[before].next = current as u32;
                     }
                     buckets[bucket] = current;
                 }
@@ -351,19 +363,19 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
         let previous = if old_head == NONE {
             NONE
         } else {
-            nodes[old_head].previous
+            link(nodes[old_head].previous)
         };
-        nodes[id].next = next;
-        nodes[id].previous = previous;
+        nodes[id].next = next as u32;
+        nodes[id].previous = previous as u32;
         if previous == NONE {
             *head = id;
         } else {
-            nodes[previous].next = id;
+            nodes[previous].next = id as u32;
         }
         if next == NONE {
             *tail = id;
         } else {
-            nodes[next].previous = id;
+            nodes[next].previous = id as u32;
         }
         buckets[bucket] = id;
     }
@@ -394,7 +406,7 @@ impl<const GNU_CANDIDATE: bool> ReactorSocketStore<GNU_CANDIDATE> {
         while id != NONE {
             let node = &self.nodes[id];
             copy.put(node.key, node.token)?;
-            id = node.next;
+            id = link(node.next);
         }
         Ok(copy)
     }

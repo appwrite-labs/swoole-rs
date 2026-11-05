@@ -1,4 +1,5 @@
 //! Thread-confined indexed timer queue; native code retains callbacks and tokens.
+mod heap;
 mod runtime;
 pub use runtime::*;
 use std::alloc::{Layout, alloc, dealloc};
@@ -78,7 +79,7 @@ impl Hasher for TimerIdHasher {
 
 #[derive(Default)]
 pub struct Timer {
-    heap: Vec<TimerView>,
+    heap: heap::Heap,
     positions: HashMap<i64, usize, BuildHasherDefault<TimerIdHasher>>,
     last_id: i64,
     round: u64,
@@ -89,57 +90,49 @@ pub struct Timer {
     closing: bool,
 }
 impl Timer {
+    fn index(&self, id: i64) -> Option<usize> {
+        self.positions
+            .get(&id)
+            .map(|&slot| self.heap.position(slot))
+    }
     fn up(&mut self, mut index: usize) {
-        let entry = self.heap[index];
+        let slot = self.heap.slot(index);
+        let deadline = self.heap[index].deadline;
         while index > 0 {
             let parent = (index - 1) / 2;
-            if self.heap[parent].deadline <= entry.deadline {
+            if self.heap.deadline(parent) <= deadline {
                 break;
             }
-            self.heap[index] = self.heap[parent];
-            *self
-                .positions
-                .get_mut(&self.heap[index].id)
-                .expect("retained timer index") = index;
+            self.heap.place(index, self.heap.slot(parent));
             index = parent;
         }
-        self.heap[index] = entry;
-        *self
-            .positions
-            .get_mut(&entry.id)
-            .expect("retained timer index") = index;
+        self.heap.place(index, slot);
     }
     fn down(&mut self, mut index: usize) {
-        let entry = self.heap[index];
+        let slot = self.heap.slot(index);
+        let deadline = self.heap[index].deadline;
         while let Some(left) = index.checked_mul(2).and_then(|i| i.checked_add(1)) {
             if left >= self.heap.len() {
                 break;
             }
             let right = left + 1;
             let child = if right < self.heap.len()
-                && self.heap[right].deadline < self.heap[left].deadline
+                && self.heap.deadline(right) < self.heap.deadline(left)
             {
                 right
             } else {
                 left
             };
-            if entry.deadline <= self.heap[child].deadline {
+            if deadline <= self.heap.deadline(child) {
                 break;
             }
-            self.heap[index] = self.heap[child];
-            *self
-                .positions
-                .get_mut(&self.heap[index].id)
-                .expect("retained timer index") = index;
+            self.heap.place(index, self.heap.slot(child));
             index = child;
         }
-        self.heap[index] = entry;
-        *self
-            .positions
-            .get_mut(&entry.id)
-            .expect("retained timer index") = index;
+        self.heap.place(index, slot);
     }
     fn repair(&mut self, index: usize) {
+        self.heap.refresh(index);
         if index > 0 && self.heap[index].deadline < self.heap[(index - 1) / 2].deadline {
             self.up(index);
         } else {
@@ -253,7 +246,7 @@ pub unsafe extern "C" fn swr_v1_timer_add(
     };
     let index = state.heap.len();
     state.heap.push(view);
-    state.positions.insert(id, index);
+    state.positions.insert(id, state.heap.slot(index));
     state.up(index);
     state.last_id = id;
     state.last_time = now;
@@ -275,7 +268,7 @@ pub unsafe extern "C" fn swr_v1_timer_get(
         return INVALID;
     }
     let state = unsafe { &*queue };
-    let Some(&index) = state.positions.get(&id) else {
+    let Some(index) = state.index(id) else {
         return NOT_FOUND;
     };
     unsafe {
@@ -300,7 +293,7 @@ pub unsafe extern "C" fn swr_v1_timer_update(
     if state.closing {
         return CLOSING;
     }
-    let Some(&index) = state.positions.get(&id) else {
+    let Some(index) = state.index(id) else {
         return NOT_FOUND;
     };
     if state.heap[index].removed != 0 {
@@ -327,7 +320,7 @@ pub unsafe extern "C" fn swr_v1_timer_remove(
         return INVALID;
     }
     let state = unsafe { &mut *queue };
-    let Some(&index) = state.positions.get(&id) else {
+    let Some(index) = state.index(id) else {
         return NOT_FOUND;
     };
     if state.heap[index].removed != 0 {
@@ -418,7 +411,7 @@ pub unsafe extern "C" fn swr_v1_timer_complete(
     if !state.selecting || state.active_id != id {
         return INVALID;
     }
-    let Some(&index) = state.positions.get(&id) else {
+    let Some(index) = state.index(id) else {
         return INVALID;
     };
     let view = state.heap[index];
@@ -554,7 +547,7 @@ pub unsafe extern "C" fn swr_v1_timer_close(queue: *mut Timer) -> i32 {
     }
     let state = unsafe { &mut *queue };
     state.closing = true;
-    if let Some(&index) = state.positions.get(&state.active_id) {
+    if let Some(index) = state.index(state.active_id) {
         state.heap[index].removed = 1;
     }
     OK
@@ -688,7 +681,8 @@ mod tests {
             let state = unsafe { &*self.0 };
             assert_eq!(state.heap.len(), state.positions.len());
             for (i, entry) in state.heap.iter().enumerate() {
-                assert_eq!(state.positions.get(&entry.id), Some(&i));
+                assert_eq!(state.positions.get(&entry.id), Some(&state.heap.slot(i)));
+                assert_eq!(state.index(entry.id), Some(i));
                 if i != 0 {
                     assert!(state.heap[(i - 1) / 2].deadline <= entry.deadline);
                 }
@@ -951,13 +945,13 @@ mod tests {
         FAIL_AFTER.set(None);
         assert_eq!(status, NOMEM);
         assert!(handle.is_null());
-        for nth in 0..=2 {
+        for nth in 0..=3 {
             let q = Owned::new();
             let mut out = TimerView::default();
             FAIL_AFTER.set(Some(nth));
             let status = unsafe { swr_v1_timer_add(q.0, 10, 5, 0, ptr::dangling_mut(), &mut out) };
             FAIL_AFTER.set(None);
-            if nth < 2 {
+            if nth < 3 {
                 assert_eq!(status, NOMEM);
                 assert_eq!(out, TimerView::default());
                 assert_eq!(q.stats().count, 0);

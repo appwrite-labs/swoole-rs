@@ -8,12 +8,23 @@ use std::{
 
 #[derive(Default)]
 pub struct HttpDirectory {
-    names: Vec<Vec<u8>>,
+    names: Vec<std::ops::Range<usize>>,
+    bytes: Vec<u8>,
     pending: bool,
 }
 const ALLOCATION: i32 = -3;
 
 impl HttpDirectory {
+    fn name(&self, index: usize) -> Option<&[u8]> {
+        self.names.get(index).map(|span| &self.bytes[span.clone()])
+    }
+    fn copy_name(&mut self, name: &[u8]) -> Result<std::ops::Range<usize>, i32> {
+        self.names.try_reserve(1).map_err(|_| ALLOCATION)?;
+        self.bytes.try_reserve(name.len()).map_err(|_| ALLOCATION)?;
+        let start = self.bytes.len();
+        self.bytes.extend_from_slice(name);
+        Ok(start..self.bytes.len())
+    }
     pub(crate) fn len(&self) -> usize {
         self.names.len()
     }
@@ -23,23 +34,22 @@ impl HttpDirectory {
         }
         Ok(self
             .names
-            .binary_search_by(|entry| entry.as_slice().cmp(name))
+            .binary_search_by(|entry| self.bytes[entry.clone()].cmp(name))
             .is_ok())
     }
     pub(crate) fn scan_append(&mut self, name: &[u8]) -> Result<(), i32> {
-        let mut copy = Vec::new();
-        if self.names.try_reserve(1).is_err() || copy.try_reserve(name.len()).is_err() {
-            return Err(ALLOCATION);
-        }
-        copy.extend_from_slice(name);
-        self.names.push(copy);
+        let span = self.copy_name(name)?;
+        self.names.push(span);
         self.pending = true;
         Ok(())
     }
     pub(crate) fn scan_finish(&mut self) {
         if self.pending {
-            self.names.sort_unstable();
-            self.names.dedup();
+            let bytes = &self.bytes;
+            self.names
+                .sort_unstable_by(|a, b| bytes[a.clone()].cmp(&bytes[b.clone()]));
+            self.names
+                .dedup_by(|a, b| bytes[a.clone()] == bytes[b.clone()]);
             self.pending = false;
         }
     }
@@ -84,17 +94,13 @@ pub unsafe extern "C" fn swr_v2_http_directory_clone(
         return INVALID;
     }
     let mut copy = HttpDirectory::default();
-    if copy.names.try_reserve_exact(source.names.len()).is_err() {
+    if copy.names.try_reserve_exact(source.names.len()).is_err()
+        || copy.bytes.try_reserve_exact(source.bytes.len()).is_err()
+    {
         return ALLOCATION;
     }
-    for name in &source.names {
-        let mut bytes = Vec::new();
-        if bytes.try_reserve_exact(name.len()).is_err() {
-            return ALLOCATION;
-        }
-        bytes.extend_from_slice(name);
-        copy.names.push(bytes);
-    }
+    copy.names.extend_from_slice(&source.names);
+    copy.bytes.extend_from_slice(&source.bytes);
     let owner = unsafe { alloc(Layout::new::<HttpDirectory>()).cast::<HttpDirectory>() };
     if owner.is_null() {
         return ALLOCATION;
@@ -126,17 +132,16 @@ pub unsafe extern "C" fn swr_v2_http_directory_insert(
     }
     let index = match owner
         .names
-        .binary_search_by(|entry| entry.as_slice().cmp(name))
+        .binary_search_by(|entry| owner.bytes[entry.clone()].cmp(name))
     {
         Ok(_) => return 0,
         Err(index) => index,
     };
-    let mut copy = Vec::new();
-    if owner.names.try_reserve(1).is_err() || copy.try_reserve(name.len()).is_err() {
-        return ALLOCATION;
-    }
-    copy.extend_from_slice(name);
-    owner.names.insert(index, copy);
+    let span = match owner.copy_name(name) {
+        Ok(span) => span,
+        Err(error) => return error,
+    };
+    owner.names.insert(index, span);
     1
 }
 /// Append copied scan input without per-entry ordered-vector shifting. This
@@ -228,7 +233,7 @@ pub unsafe extern "C" fn swr_v2_http_directory_page(
         if owner.pending {
             return INVALID;
         }
-        let Some(name) = owner.names.get(index) else {
+        let Some(name) = owner.name(index) else {
             return INVALID;
         };
         HttpProxyText {
@@ -317,8 +322,12 @@ mod tests {
                 assert!(!copy.is_null());
                 assert_ne!(owner, copy);
                 assert_eq!((*owner).names, (*copy).names);
-                for (original, cloned) in (*owner).names.iter().zip(&(*copy).names) {
-                    assert_ne!(original.as_ptr(), cloned.as_ptr());
+                assert_eq!((*owner).bytes, (*copy).bytes);
+                for i in 0..(*owner).len() {
+                    assert_ne!(
+                        (*owner).name(i).unwrap().as_ptr(),
+                        (*copy).name(i).unwrap().as_ptr()
+                    );
                 }
                 let extra = b"separate.txt";
                 assert_eq!(
@@ -404,8 +413,10 @@ mod tests {
             expected.len()
         );
         assert_eq!(
-            unsafe { &*owner }.names.iter().collect::<Vec<_>>(),
-            expected.iter().collect::<Vec<_>>()
+            (0..unsafe { &*owner }.len())
+                .map(|i| unsafe { &*owner }.name(i).unwrap())
+                .collect::<Vec<_>>(),
+            expected.iter().map(Vec::as_slice).collect::<Vec<_>>()
         );
         for name in expected {
             assert_eq!(
@@ -441,8 +452,10 @@ mod tests {
         );
         unsafe { swr_v2_http_directory_scan_finish(owner) };
         assert_eq!(
-            unsafe { &*owner }.names.iter().collect::<Vec<_>>(),
-            expected.iter().collect::<Vec<_>>()
+            (0..unsafe { &*owner }.len())
+                .map(|i| unsafe { &*owner }.name(i).unwrap())
+                .collect::<Vec<_>>(),
+            expected.iter().map(Vec::as_slice).collect::<Vec<_>>()
         );
         assert_eq!(
             unsafe { swr_v2_http_directory_count(owner) },

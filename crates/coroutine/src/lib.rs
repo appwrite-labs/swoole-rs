@@ -1,6 +1,8 @@
 //! Coroutine policy and sole channel token storage. Native code owns payloads
 //! and executes callbacks, stack switches, timers and destructors after return.
 
+#[path = "../../storage.rs"]
+mod storage;
 mod tokens;
 pub use tokens::*;
 mod channel;

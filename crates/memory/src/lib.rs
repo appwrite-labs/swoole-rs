@@ -6,6 +6,8 @@ pub mod global;
 pub mod heap;
 pub mod mapping;
 pub mod ring;
+#[path = "../../storage.rs"]
+mod storage;
 
 #[cfg(test)]
 #[path = "../../../tests/modules/memory/allocation.rs"]
