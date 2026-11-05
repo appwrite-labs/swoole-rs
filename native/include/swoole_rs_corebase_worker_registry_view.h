@@ -6,6 +6,26 @@
 namespace swoole { namespace detail {
 // Collection ends before native effects. No registry borrow or snapshot-creation
 // frame spans signalling, wait callbacks or native vector allocation.
+// A borrowed configuration view; the existing Rust registry owns the ordered
+// list. Its allocation and lifetime are shared with the server configuration.
+template<typename Worker> class PendingWorkers {
+    swr_v1_process_worker_registry *registry_;
+  public:
+    struct iterator {
+        void *const *position;
+        Worker *operator*() const { return static_cast<Worker *>(*position); }
+        iterator &operator++() { ++position; return *this; }
+        bool operator!=(const iterator &other) const { return position != other.position; }
+    };
+    explicit PendingWorkers(swr_v1_process_worker_registry *registry): registry_(registry) {}
+    size_t size() const { return swr_v1_process_worker_registry_pending_count(registry_); }
+    bool empty() const { return size()==0; }
+    Worker *operator[](size_t index) const { return static_cast<Worker *>(data()[index]); }
+    void push_back(Worker *worker) { swr_v1_process_worker_registry_pending_add(registry_,worker); }
+    void *const *data() const { return swr_v1_process_worker_registry_pending_data(registry_); }
+    iterator begin() const { return {data()}; }
+    iterator end() const { auto *p=data(); auto n=size(); return {n ? p+n : p}; }
+};
 template<typename Worker> class RegisteredWorkers {
     swr_v1_worker_snapshot snapshot_{};
   public:

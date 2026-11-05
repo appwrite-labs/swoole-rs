@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <sys/types.h>
+#include "swoole_rs_ossupport_msg_queue.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -103,6 +104,9 @@ int swr_v1_os_get_cpu_affinity(void *set);
 long swr_v1_os_thread_native_id(void);
 int swr_v1_os_thread_set_name(const char *name);
 int swr_v1_os_thread_get_name(char *buf, size_t len);
+bool swr_v1_os_msg_queue_init(swr_v1_os_msg_queue *, key_t, bool, int);
+void swr_v1_os_msg_queue_blocking(swr_v1_os_msg_queue *, bool);
+bool swr_v1_os_msg_queue_remove(swr_v1_os_msg_queue *);
 /* SysV message queue. open defaults perms outside (0, 01000) to 0666; push
  * retries EINTR: 0 sent, 1 EAGAIN (quiet), 2 failed (warn); errno intact. */
 typedef struct { int id; int perms; } swr_v1_os_msg_open_t;
