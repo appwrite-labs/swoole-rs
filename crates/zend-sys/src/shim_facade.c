@@ -36,3 +36,10 @@ int swr_zend_try_facade_name(zval *value, zend_string **result) {
     return bailed;
 }
 uint32_t swr_zval_facade_refcount(const zval *value) { return zval_refcount_p(value); }
+
+int swr_zend_try_facade_throw(zend_class_entry *ce, const char *message, zend_long code) {
+    int bailed = 0;
+    zend_try { zend_throw_exception(ce, message, code); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
