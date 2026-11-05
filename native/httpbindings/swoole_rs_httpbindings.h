@@ -138,7 +138,6 @@ size_t swr_hsc_package_max_length(void *sock);
 void swr_hsc_extend(void *buffer, size_t size);
 void swr_hsc_send_all(void *sock, const char *data, size_t length);
 void *swr_hsc_context(void *sock, struct _zval_struct *connection);
-void swr_hsc_add_server(void *context, swr_hsc_peer_t *peer);
 /* HTTP/2 on the connection: the server's SETTINGS frame and frame-length
  * protocol, each frame (*retval as recv_packet; the read buffer's data), and
  * the sessions' request handler (a struct swr_h2s_request). */

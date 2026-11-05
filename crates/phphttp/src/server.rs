@@ -121,7 +121,7 @@ fn new_zval() -> zval {
     unsafe { std::mem::zeroed() }
 }
 
-fn add(table: *mut HashTable, name: Key, string: *mut zend_string) {
+pub(crate) fn add(table: *mut HashTable, name: Key, string: *mut zend_string) {
     let mut value = new_zval();
     // SAFETY: a string the table takes over (or an interned one).
     unsafe { swr_zval_str(&raw mut value, string) };
@@ -129,7 +129,7 @@ fn add(table: *mut HashTable, name: Key, string: *mut zend_string) {
     unsafe { zend_hash_add_new(table, key(name), &raw mut value) };
 }
 
-fn add_long(table: *mut HashTable, name: Key, long: zend_long) {
+pub(crate) fn add_long(table: *mut HashTable, name: Key, long: zend_long) {
     let mut value = new_zval();
     // SAFETY: writes a long into a local zval.
     unsafe { swoole_rs_zend::value::set_long(&raw mut value, long) };

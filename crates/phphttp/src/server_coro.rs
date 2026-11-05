@@ -7,7 +7,7 @@
 use crate::{
     context::{self, CompressionTypes},
     host::{self, Context},
-    parse::{find, swr_v1_phphttp_parse},
+    parse::{Key, find, swr_v1_phphttp_parse},
     send, websocket,
 };
 use std::{
@@ -302,7 +302,6 @@ unsafe extern "C" {
     fn swr_hsc_extend(buffer: *mut Buffer, size: usize);
     fn swr_hsc_send_all(socket: *mut c_void, data: *const c_char, length: usize);
     fn swr_hsc_context(socket: *mut c_void, connection: *mut zval) -> *mut Context;
-    fn swr_hsc_add_server(context: *mut Context, peer: *mut Peer);
     fn swr_hsc_http2_begin(socket: *mut c_void);
     fn swr_hsc_recv_packet(socket: *mut c_void, retval: *mut isize) -> *const c_char;
     /// The HTTP/2 sessions' request handler, C++ (a `swr_h2s_request`).
@@ -934,7 +933,7 @@ fn on_accept(call: &Call) {
         zconn,
         buffer,
     };
-    let result = serve(&conn, &mut peer);
+    let result = serve(&conn, &peer);
     // SAFETY: the address strings `swr_hsc_peer` made.
     unsafe { z::swr_zend_string_release(peer.remote_addr) };
     // SAFETY: as above.
@@ -944,6 +943,22 @@ fn on_accept(call: &Call) {
         unsafe { z::zend_hash_index_del(server.clients(), cid.cast_unsigned()) };
     }
     bailout::defer(result);
+}
+
+/// `$request->server`'s addresses and ports of the connection.
+fn add_peer(context: *mut Context, peer: &Peer) {
+    // SAFETY: the request's `server` array.
+    let table = unsafe { value::table(send::state(context).request.zserver.ptr) };
+    // SAFETY: the loop's address string, referenced once more by the array.
+    crate::server::add(table, Key::RemoteAddr, unsafe {
+        z::swr_zend_string_copy(peer.remote_addr)
+    });
+    crate::server::add_long(table, Key::RemotePort, peer.remote_port.into());
+    // SAFETY: as above.
+    crate::server::add(table, Key::ServerAddr, unsafe {
+        z::swr_zend_string_copy(peer.server_addr)
+    });
+    crate::server::add_long(table, Key::ServerPort, peer.server_port.into());
 }
 
 /// Release a context the loop still holds: its request and response objects.
@@ -957,7 +972,7 @@ fn release(context: *mut Context) {
 }
 
 /// The request loop: parse each request on the connection and run its handler.
-fn serve(conn: &Connection, peer: &mut Peer) -> Result<(), bailout::Bailout> {
+fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
     let mut context: *mut Context = ptr::null_mut();
     let mut header_completed = false;
     let mut crlf_offset = 0;
@@ -1049,8 +1064,7 @@ fn serve(conn: &Connection, peer: &mut Peer) -> Result<(), bailout::Bailout> {
                 total = usize::try_from(conn.buffer().offset).unwrap_or(0);
             }
         }
-        // SAFETY: a live context and the connection's addresses.
-        unsafe { swr_hsc_add_server(context, peer) };
+        add_peer(context, peer);
         if send::state(context).parser.error == HPE_PAUSED_H2_UPGRADE
             && conn.buffer().length >= HTTP2_PRI.len()
             && conn.data(0, HTTP2_PRI.len()) == HTTP2_PRI
