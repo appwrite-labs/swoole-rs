@@ -43,13 +43,10 @@ bool swr_v1_tls_set_dhparam(SSL_CTX *ctx, const struct swr_v1_tls_config *config
 /* DTLS BIO decisions: copied scalars only. */
 struct swr_v1_tls_read_plan { int32_t length; uint8_t consume, retry; };
 struct swr_v1_tls_control_plan { long result; uint32_t effect; };
-struct swr_v1_tls_read_plan swr_v1_tls_read(uint8_t empty, uint16_t front, int32_t requested, uint8_t peek);
 /* Native OpenSSL command -> module-local tag; observed value only for tags0..2.
  * 0 EOF,1 GET_CLOSE,2 PENDING,3 SET_CLOSE,4 success,5 GET_PEER,6 MTU,
  * 7 overhead,8 PEEK,9 zero, other unknown. Effects0 none/1 shutdown/2 peer/3 peek/4 warning. */
-struct swr_v1_tls_control_plan swr_v1_tls_control(uint32_t tag, long observed);
 /* Negative failure0; zero pending1; positive publish2. BoringSSL keeps native SSL_is_dtls. */
-uint32_t swr_v1_tls_listen(int32_t result);
 #ifdef __cplusplus
 }
 #endif

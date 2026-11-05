@@ -300,7 +300,9 @@
         "ext-src/swoole_thread_arraylist.cc",
         "ext-src/swoole_thread_barrier.cc",
         "ext-src/swoole_thread_map.cc",
-        "ext-src/swoole_thread_queue.cc"
+        "ext-src/swoole_thread_queue.cc",
+        "include/swoole_pipe.h",
+        "src/os/unix_socket.cc"
       ],
       "abi_contract": "docs/process-abi-v1.md",
       "feature_bit_reserved": 524288
@@ -645,7 +647,8 @@
       ],
       "upstream_patch_targets": [
         "src/protocol/ssl.cc",
-        "src/protocol/dtls.cc"
+        "src/protocol/dtls.cc",
+        "include/swoole_dtls.h"
       ],
       "abi_contract": "docs/tls-dtls-abi-v1.md",
       "feature_bit_reserved": 262144

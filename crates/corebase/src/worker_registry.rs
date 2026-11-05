@@ -23,6 +23,7 @@ struct Entry {
 pub struct WorkerRegistry {
     workers: HashMap<c_int, Entry>,
     detached: HashSet<c_int>,
+    pending_users: Vec<*mut c_void>,
 }
 
 impl WorkerRegistry {
@@ -518,4 +519,42 @@ mod category_compat_tests {
             );
         }
     }
+}
+
+/// Append one pending user worker before Server creation, preserving insertion order.
+/// The returned index is its original pre-start worker ID.
+/// # Safety
+/// `registry` is live and exclusively loaned; `worker` remains a native loan.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_pending_add(
+    registry: *mut WorkerRegistry,
+    worker: *mut c_void,
+) -> usize {
+    // SAFETY: configuration exclusively lends the registry for this leaf append.
+    let registry = unsafe { &mut *registry };
+    let index = registry.pending_users.len();
+    registry.pending_users.push(worker);
+    index
+}
+
+/// # Safety
+/// `registry` is live and pending-list configuration is not concurrently mutated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_pending_count(
+    registry: *const WorkerRegistry,
+) -> usize {
+    // SAFETY: this read is serialized with pending-list configuration.
+    unsafe { &*registry }.pending_users.len()
+}
+
+/// Borrow the original ordered pending worker list. No Rust frame remains while
+/// native code initializes worker resources; the list is immutable after creation.
+/// # Safety
+/// `registry` is live; the loan ends before any append or registry destruction.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_pending_data(
+    registry: *const WorkerRegistry,
+) -> *const *mut c_void {
+    // SAFETY: configuration lends the live registry without concurrent mutation.
+    unsafe { &*registry }.pending_users.as_ptr()
 }

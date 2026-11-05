@@ -35,8 +35,9 @@ pub use system::{
 pub use system::{swr_v1_os_get_cpu_affinity, swr_v1_os_set_cpu_affinity};
 mod msg_queue;
 pub use msg_queue::{
-    MsgOpen, MsgPop, swr_v1_os_msg_flags, swr_v1_os_msg_open, swr_v1_os_msg_pop,
-    swr_v1_os_msg_push, swr_v1_os_msg_remove,
+    MsgOpen, MsgPop, QueueRecord, swr_v1_os_msg_flags, swr_v1_os_msg_open, swr_v1_os_msg_pop,
+    swr_v1_os_msg_push, swr_v1_os_msg_queue_blocking, swr_v1_os_msg_queue_init,
+    swr_v1_os_msg_queue_remove, swr_v1_os_msg_remove,
 };
 mod pool;
 pub use pool::{

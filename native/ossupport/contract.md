@@ -75,3 +75,8 @@ steps; `swr_v1_os_file_open`/`close` and `swr_v1_os_tmpfile` back `File::open`,
 
 Still native: the fork and setsid in `swoole_daemon`, the resolver request types
 and handlers, `swoole_thread_id_to_str`, File storage and UnixSocket construction.
+
+`QueueRecord` is the canonical inline `MsgQueue` record, emitted by cbindgen.
+Initialization and blocking-flag/removal updates run in Rust without adding an
+allocation or changing native value-copy behavior. Native code retains the
+platform-specific `msqid_ds` view and original warning/last-error ordering.

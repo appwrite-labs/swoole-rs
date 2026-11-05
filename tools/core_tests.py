@@ -25,7 +25,13 @@ from tools.harness import run_isolated, write_report  # noqa: E402
 
 SELECTION = 'file(GLOB_RECURSE core_test_files core-tests/src/*.cpp thirdparty/llhttp/*.c)'
 # Upstream's test helpers (not assertions) that write state the hybrid moved behind accessors.
-ADAPTATIONS = {'core-tests/src/_lib/process.cpp': [('worker.pid = pid;', 'worker.set_pid(pid);')]}
+ADAPTATIONS = {
+    'core-tests/src/_lib/process.cpp': [('worker.pid = pid;', 'worker.set_pid(pid);')],
+    # Failure cleanup still shuts down the actual listener after a failed sender.
+    'core-tests/src/os/process_pool.cpp': [
+        ('pool.stream_info_->socket->shutdown(SHUT_RDWR);',
+         'static_cast<swoole::network::Socket *>(swr_v1_process_pool_ipc_listener(pool.ipc_))->shutdown(SHUT_RDWR);')],
+}
 # The original ftruncate case creates this file with mode 000 and leaves it behind.
 # Give each engine a private path; keep the open flags, mode and every assertion.
 ABSOLUTE_FIXTURES = {'coroutine_hook.ftruncate': ('core-tests/src/coroutine/hook.cpp', '/tmp/123.txt')}
@@ -119,6 +125,8 @@ def main():
                         write_changed(tree / path.relative_to(staged), path.read_bytes())
                 write_changed(tree / 'config.h', args.config.read_bytes())
                 for path, edits in (ADAPTATIONS.items() if engine == 'hybrid' and b'#define SWOOLE_RS_PROCESS 1' in args.config.read_bytes() else []):
+                    if path not in args.file and '/_lib/' not in path:
+                        continue
                     text = (staged / path).read_text()
                     for old, new in edits:
                         if text.count(old) != 1:

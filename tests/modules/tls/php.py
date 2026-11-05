@@ -141,7 +141,7 @@ def main():
         report['runner_sha256']=sha(args.runner)
         archive_symbols=command(['nm','-g',args.artifacts/'libswoole_rs_ffi.a'])
         names=sorted(set(re.findall(r'\b[Tt] _?swr_v1_tls_([A-Za-z0-9_]+)\s*$',archive_symbols,re.M)))
-        assert set(['context_create','read','control','listen'])<=set(names),'Published archive lacks TLS exports'
+        assert set(['context_create','dtls_new','dtls_append','dtls_read','dtls_control','dtls_listen'])<=set(names),'Published archive lacks TLS exports'
         report['archive_tls_exports']=names
         report['caller_proof']={};crypto={}
         for name,filename,selected in [('hybrid','swoole.so',True),('upstream','reference.so',False)]:
