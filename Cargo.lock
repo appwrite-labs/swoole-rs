@@ -792,6 +792,7 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
+ "swoole-rs-process",
 ]
 
 [[package]]
@@ -831,6 +832,8 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
+ "swoole-rs-buffer",
+ "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
  "swoole-rs-reactor",

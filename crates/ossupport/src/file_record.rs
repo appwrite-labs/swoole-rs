@@ -59,6 +59,12 @@ impl FileRecord {
     pub const fn descriptor(&self) -> c_int {
         self.fd
     }
+
+    /// The path it was opened with (`File::get_path()`).
+    #[must_use]
+    pub fn path(&self) -> &[u8] {
+        &self.path
+    }
 }
 impl Drop for FileRecord {
     fn drop(&mut self) {

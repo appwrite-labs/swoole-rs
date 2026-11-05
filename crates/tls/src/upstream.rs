@@ -13,14 +13,20 @@ use crate::{
 };
 use openssl_sys::{SSL, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, stack_st_X509};
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::socket_upstream::{signal_dispatch, socket_set_fd_option};
+use swoole_rs_reactor::socket_upstream::{
+    make_socket_typed, signal_dispatch, socket_cork, socket_set_fd_option, socket_uncork,
+};
 use swoole_rs_reactor::{
-    ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND, SocketAddress, SocketRecord, SyncHooks,
-    cpp_socket_what_event_want, swr_v1_reactor_poll_events_to, swr_v1_socket_iov_owned,
-    swr_v1_socket_record_peek, swr_v1_socket_record_recv, swr_v1_socket_record_send,
-    swr_v1_socket_recvfrom, swr_v1_socket_ssl_sendfile, swr_v1_socket_sync,
+    CLASS_STREAM, CLASS_TCP, OutputHooks, ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
+    SYNC_SENDFILE, SocketAddress, SocketFileRequest, SocketRecord, SyncHooks,
+    cpp_socket_what_event_want, swr_v1_reactor_poll_events_to, swr_v1_socket_file_check,
+    swr_v1_socket_file_cork, swr_v1_socket_file_free, swr_v1_socket_file_length,
+    swr_v1_socket_file_new, swr_v1_socket_file_sent, swr_v1_socket_handle_send_owned,
+    swr_v1_socket_iov_owned, swr_v1_socket_record_peek, swr_v1_socket_record_recv,
+    swr_v1_socket_record_send, swr_v1_socket_recvfrom, swr_v1_socket_sendfile_chunk,
+    swr_v1_socket_ssl_sendfile, swr_v1_socket_sync, type_is,
 };
 
 // SAFETY: libc's, libssl's and libcrypto's own declarations.
@@ -41,8 +47,18 @@ unsafe extern "C" {
     fn peer_certificate(ssl: *const SSL) -> *mut X509;
 }
 
-/// `SW_LOG_NOTICE`, `SW_ERROR_SSL_VERIFY_FAILED` and `SW_ERROR_SSL_BAD_PROTOCOL`.
+/// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY`, `SW_ERROR_INVALID_PARAMS`,
+/// `SW_ERROR_SSL_VERIFY_FAILED` and `SW_ERROR_SSL_BAD_PROTOCOL`.
 const LOG_NOTICE: c_int = 3;
+const LOG_WARNING: c_int = 4;
+const FILE_EMPTY: c_int = 702;
+const INVALID_PARAMS: c_int = 505;
+/// `SW_SOCKET_CORK_MIN_SIZE` and the typed queue's `SWR_BUFFER_EMPTY`.
+const CORK_MIN_SIZE: usize = 65536;
+/// `SW_FD_STREAM_SERVER` and `SW_SOCK_CLOEXEC`.
+const FD_STREAM_SERVER: c_int = 1;
+const SOCK_CLOEXEC: c_int = 1 << 3;
+const BUFFER_EMPTY: i32 = 1;
 const VERIFY_FAILED: c_int = 1014;
 const BAD_PROTOCOL: c_int = 1016;
 /// `swReturnCode`'s `SW_CLOSE`, `SW_SOCKET_RETRY_COUNT`, `SW_EVENT_READ` and `SW_EVENT_WRITE`.
@@ -574,6 +590,7 @@ enum Io {
     SendTo(*const SocketAddress),
     RecvFrom(*mut libc::sockaddr, *mut libc::socklen_t),
     Writev(*const libc::iovec, usize),
+    Sendfile(*mut SocketFileRequest),
 }
 
 unsafe extern "C" fn sync_prepare(call: *mut c_void) {
@@ -628,6 +645,8 @@ unsafe extern "C" fn sync_io(
             // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
             unsafe { swr_v1_socket_recvfrom(fd, buffer, length, flags, address, size, RETRY_COUNT) }
         }
+        // SAFETY: the call's live record and request.
+        Io::Sendfile(request) => unsafe { send_chunk(*socket, request) }.0,
         Io::Writev(vectors, count) => {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1007,9 +1026,32 @@ pub unsafe extern "C" fn socket_ssl_sendfile(
     size: usize,
 ) -> isize {
     // SAFETY: as the caller promises.
+    let fd = unsafe { file_fd(file) };
+    // SAFETY: as the caller promises.
+    unsafe { ssl_sendfile(socket, fd, offset, size) }
+}
+
+/// A `File`'s descriptor: its first member is its Rust record.
+///
+/// # Safety
+/// `file` is a live `File`.
+unsafe fn file_fd(file: *const c_void) -> c_int {
+    // SAFETY: as the caller promises.
     let owner = unsafe { *file.cast::<*mut swoole_rs_ossupport::FileRecord>() };
     // SAFETY: the File's live record.
-    let fd = unsafe { swoole_rs_ossupport::swr_v1_os_file_record_fd(owner, false) };
+    unsafe { swoole_rs_ossupport::swr_v1_os_file_record_fd(owner, false) }
+}
+
+/// `Socket::ssl_sendfile` over a descriptor.
+///
+/// # Safety
+/// `socket` is a live record holding an SSL and `offset` writable.
+unsafe fn ssl_sendfile(
+    socket: *mut SocketRecord,
+    fd: c_int,
+    offset: *mut libc::off_t,
+    size: usize,
+) -> isize {
     // SAFETY: the record's output flag, read while it stays live.
     let nobufs = unsafe { &raw mut (*socket).kernel_nobufs };
     // SAFETY: the caller's offset, and tls_send for this record.
@@ -1023,14 +1065,380 @@ pub unsafe extern "C" fn socket_ssl_sendfile(
     result.value
 }
 
-/// Whether `ssl_shutdown` writes the `close_notify` alert: `--fix-halfclose` (M15)
-/// builds register it (`SW_HALFCLOSE_TLS_SHUTDOWN`).
-static SHUTDOWN_REPAIRED: AtomicBool = AtomicBool::new(false);
+/// `Socket::sendfile` over a descriptor: through OpenSSL when the socket holds an
+/// SSL, else the platform's sendfile.
+///
+/// # Safety
+/// `socket` is a live record and `offset` writable.
+unsafe fn sendfile(
+    socket: *mut SocketRecord,
+    fd: c_int,
+    offset: *mut libc::off_t,
+    length: usize,
+) -> isize {
+    // SAFETY: as the caller promises.
+    let record = unsafe { &*socket };
+    let (out, ssl) = (record.fd, record.ssl);
+    if !ssl.is_null() {
+        // SAFETY: as the caller promises.
+        return unsafe { ssl_sendfile(socket, fd, offset, length) };
+    }
+    // `swoole_sendfile` (src/os/sendfile.cc): the platform's sendfile.
+    // SAFETY: the socket's and the file's descriptors, and the caller's offset.
+    let sent = unsafe { swoole_rs_ossupport::swr_v1_os_sendfile(out, fd, offset, length) };
+    if cfg!(not(target_os = "linux")) && sent.warn != 0 {
+        log::sys_warning(c"swoole_sendfile", format_args!("sendfile failed"));
+    }
+    sent.result
+}
 
-/// Selects the repaired `ssl_shutdown` (M15's `SW_HALFCLOSE_TLS_SHUTDOWN`).
+/// `ssize_t Socket::sendfile(const File &fp, off_t *offset, size_t length)`.
+///
+/// # Safety
+/// `socket` is a live record, `file` a live `File` and `offset` writable.
+#[cfg_attr(
+    all(feature = "upstream-symbols", target_os = "macos"),
+    unsafe(export_name = "_ZN6swoole7network6Socket8sendfileERKNS_4FileEPxm")
+)]
+#[cfg_attr(
+    all(feature = "upstream-symbols", not(target_os = "macos")),
+    unsafe(export_name = "_ZN6swoole7network6Socket8sendfileERKNS_4FileEPlm")
+)]
+pub unsafe extern "C" fn socket_sendfile(
+    socket: *mut SocketRecord,
+    file: *const c_void,
+    offset: *mut libc::off_t,
+    length: usize,
+) -> isize {
+    // SAFETY: as the caller promises.
+    let fd = unsafe { file_fd(file) };
+    // SAFETY: as the caller promises.
+    unsafe { sendfile(socket, fd, offset, length) }
+}
+
+/// One chunk of `request`'s remaining range through `sendfile`, advancing its
+/// offset: what `sendfile` returned and the chunk's size.
+///
+/// # Safety
+/// `socket` is a live record and `request` a live request.
+unsafe fn send_chunk(socket: *mut SocketRecord, request: *mut SocketFileRequest) -> (isize, usize) {
+    // SAFETY: as the caller promises.
+    let request = unsafe { &mut *request };
+    let fd = request.descriptor();
+    let fields = request.fields();
+    let chunk = swr_v1_socket_sendfile_chunk(fields.begin, fields.end);
+    // SAFETY: the live record, the request's descriptor and its offset.
+    (
+        unsafe { sendfile(socket, fd, &raw mut fields.begin, chunk) },
+        chunk,
+    )
+}
+
+/// `check_sendfile_parameters`'s origin.
+const CHECK_ORIGIN: &CStr = c"network::check_sendfile_parameters";
+
+/// A sendfile request for `filename` from `offset`, checked against `length` with
+/// `check_sendfile_parameters`'s warnings; null (the request freed) when it fails.
+///
+/// # Safety
+/// `filename` is NUL-terminated.
+unsafe fn file_request(
+    filename: *const c_char,
+    offset: libc::off_t,
+    length: usize,
+) -> *mut SocketFileRequest {
+    // SAFETY: as the caller promises.
+    let request = unsafe { swr_v1_socket_file_new(filename, offset) }.owner;
+    assert!(!request.is_null(), "out of memory for a sendfile request");
+    // SAFETY: the new request.
+    let status = unsafe { swr_v1_socket_file_check(request, length) };
+    if status == 0 {
+        return request;
+    }
+    // SAFETY: as the caller promises.
+    let name = unsafe { CStr::from_ptr(filename) }.to_string_lossy();
+    match status {
+        1 => log::sys_warning(CHECK_ORIGIN, format_args!("open('{name}') failed")),
+        2 => {
+            log::sys_warning(c"File::stat", format_args!("fstat() failed"));
+            log::sys_warning(CHECK_ORIGIN, format_args!("fstat('{name}') failed"));
+        }
+        3 => log::error_log(
+            LOG_WARNING,
+            FILE_EMPTY,
+            CHECK_ORIGIN,
+            format_args!("cannot send empty file '{name}'"),
+        ),
+        _ => {
+            // SAFETY: the new request.
+            let begin = unsafe { (*request).fields().begin };
+            log::error_log(
+                LOG_WARNING,
+                INVALID_PARAMS,
+                CHECK_ORIGIN,
+                format_args!("length[{length}] or offset[{begin}] is invalid"),
+            );
+        }
+    }
+    // SAFETY: the request made above, which nothing else holds.
+    unsafe { swr_v1_socket_file_free(request) };
+    std::ptr::null_mut()
+}
+
+/// `int Socket::sendfile_sync(const char *filename, off_t offset, size_t length)`:
+/// corked for a large file, through `wait_for`'s loop.
+///
+/// # Safety
+/// `socket` is a live record and `filename` NUL-terminated.
+#[cfg_attr(
+    all(feature = "upstream-symbols", target_os = "macos"),
+    unsafe(export_name = "_ZN6swoole7network6Socket13sendfile_syncEPKcxm")
+)]
+#[cfg_attr(
+    all(feature = "upstream-symbols", not(target_os = "macos")),
+    unsafe(export_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm")
+)]
+pub unsafe extern "C" fn socket_sendfile_sync(
+    socket: *mut SocketRecord,
+    filename: *const c_char,
+    offset: libc::off_t,
+    length: usize,
+) -> c_int {
+    // SAFETY: as the caller promises.
+    let request = unsafe { file_request(filename, offset, length) };
+    if request.is_null() {
+        return -1;
+    }
+    // SAFETY: the live request.
+    let total = unsafe { swr_v1_socket_file_length(request) };
+    // SAFETY: as the caller promises.
+    let corked = total > CORK_MIN_SIZE && unsafe { socket_cork(socket) };
+    // SAFETY: the request outlives the loop, and the loop's buffer is unused.
+    let rv = unsafe {
+        sync(
+            socket,
+            Io::Sendfile(request),
+            SYNC_SENDFILE,
+            std::ptr::null(),
+            total,
+            0,
+            true,
+        )
+    };
+    if corked {
+        // SAFETY: as the caller promises.
+        unsafe { socket_uncork(socket) };
+    }
+    // SAFETY: the request made above, which the loop no longer holds.
+    unsafe { swr_v1_socket_file_free(request) };
+    if rv < 0 { -1 } else { 0 }
+}
+
+/// A failed Rust queue status. Native `Buffer` raises it as a C++ exception that
+/// nothing catches, so the process ends either way; here it aborts.
+fn buffer_check(status: i32) {
+    if status != 0 {
+        std::process::abort();
+    }
+}
+
+/// A socket's `out_buffer` queue: `Buffer`'s first member is its Rust handle.
+///
+/// # Safety
+/// `socket` is a live record with an output buffer.
+unsafe fn out_queue(socket: *mut SocketRecord) -> *mut swoole_rs_buffer::Buffer {
+    // SAFETY: as the caller promises.
+    let buffer = unsafe { (*socket).output.out_buffer };
+    // SAFETY: the live Buffer's first member.
+    unsafe { *buffer.cast::<*mut swoole_rs_buffer::Buffer>() }
+}
+
+unsafe extern "C" fn output_send(socket: *mut c_void, data: *const c_void, length: usize) -> isize {
+    // SAFETY: the output hooks lend their live record and the queue's bytes.
+    unsafe { socket_send(socket.cast(), data, length, 0) }
+}
+
+unsafe extern "C" fn output_cork(socket: *mut c_void) -> bool {
+    // SAFETY: the output hooks lend their live record.
+    unsafe { socket_cork(socket.cast()) }
+}
+
+unsafe extern "C" fn output_uncork(socket: *mut c_void) {
+    // SAFETY: the output hooks lend their live record.
+    unsafe { socket_uncork(socket.cast()) };
+}
+
+unsafe extern "C" fn output_sent(socket: *mut c_void) {
+    // SAFETY: the output hooks lend their live record.
+    let record = unsafe { &mut *socket.cast::<SocketRecord>() };
+    if !record.output.send_timer.is_null() {
+        record.last_sent_time = steady_ms();
+    }
+}
+
+/// The queued output's native effects (`output_hooks`).
+fn output_hooks(socket: *mut SocketRecord) -> OutputHooks {
+    OutputHooks {
+        socket: socket.cast(),
+        kernel_nobufs: socket
+            .cast::<u8>()
+            .wrapping_add(std::mem::offset_of!(SocketRecord, kernel_nobufs))
+            .cast(),
+        send: output_send,
+        cork: output_cork,
+        uncork: output_uncork,
+        sent: output_sent,
+    }
+}
+
+/// `int Socket::handle_send()`: sends the queue's front.
+///
+/// # Safety
+/// `socket` is a live record with a nonempty output buffer.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket11handle_sendEv")
+)]
+pub unsafe extern "C-unwind" fn socket_handle_send(socket: *mut SocketRecord) -> c_int {
+    let hooks = output_hooks(socket);
+    // SAFETY: as the caller promises.
+    let queue = unsafe { out_queue(socket) };
+    // SAFETY: the live record, its queue and the hooks over them.
+    let output = unsafe { swr_v1_socket_handle_send_owned(socket, queue, &raw const hooks) };
+    buffer_check(output.status);
+    if output.result.warn == 1 {
+        // SAFETY: as the caller promises.
+        let fd = unsafe { (*socket).fd };
+        log::sys_warning(
+            c"Socket::handle_send",
+            format_args!("send to fd[{fd}] failed"),
+        );
+    }
+    if let Some(dispose) = output.detached.dispose {
+        // SAFETY: the popped chunk's token, now ours to dispose.
+        unsafe { dispose(output.detached.token) };
+    }
+    output.result.code
+}
+
+/// `--fix-halfclose` (M15): `ssl_shutdown` writes the `close_notify` alert, and
+/// `handle_sendfile` retries a sendfile interrupted before any progress instead of
+/// dropping the file. Native code registers it (`SW_HALFCLOSE_TLS_SHUTDOWN`).
+static HALFCLOSE_REPAIRS: AtomicBool = AtomicBool::new(false);
+
+/// Selects M15's repairs (`SW_HALFCLOSE_TLS_SHUTDOWN`).
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_set_tls_shutdown_repaired(repaired: bool) {
-    SHUTDOWN_REPAIRED.store(repaired, Ordering::Relaxed);
+pub extern "C" fn swr_v1_socket_set_halfclose_repairs(repaired: bool) {
+    HALFCLOSE_REPAIRS.store(repaired, Ordering::Relaxed);
+}
+
+/// `int Socket::handle_sendfile()`: sends a chunk of the queue's front file.
+///
+/// # Safety
+/// `socket` is a live record whose output buffer's front is a sendfile request.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket15handle_sendfileEv")
+)]
+pub unsafe extern "C-unwind" fn socket_handle_sendfile(socket: *mut SocketRecord) -> c_int {
+    let hooks = output_hooks(socket);
+    // SAFETY: as the caller promises.
+    let queue = unsafe { out_queue(socket) };
+    let mut front = swoole_rs_buffer::TypedFront::default();
+    // SAFETY: the live queue and a local.
+    buffer_check(unsafe { swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front) });
+    let request = front.token.cast::<SocketFileRequest>();
+    // SAFETY: the front's live request and the hooks over the live record.
+    unsafe { swr_v1_socket_file_cork(request, &raw const hooks) };
+    // SAFETY: the record and the front's live request.
+    let (rv, requested) = unsafe { send_chunk(socket, request) };
+    if rv < 0 && errno() == libc::EINTR && HALFCLOSE_REPAIRS.load(Ordering::Relaxed) {
+        return 0;
+    }
+    // SAFETY: the front's live request, the record and the hooks over them.
+    let result =
+        unsafe { swr_v1_socket_file_sent(request, socket, &raw const hooks, rv, requested) };
+    if result.warn == 2 {
+        // SAFETY: the front's live request.
+        let request = unsafe { &mut *request };
+        let at = request.fields().begin;
+        let name = String::from_utf8_lossy(request.path());
+        log::sys_warning(
+            c"Socket::handle_sendfile",
+            format_args!("sendfile({name}, {at}, {}) failed", result.requested),
+        );
+    }
+    if result.pop {
+        let mut detached = swoole_rs_buffer::TypedDetached::default();
+        // SAFETY: the live queue and a local.
+        let status = unsafe { swoole_rs_buffer::swr_v1_buffer_typed_pop(queue, &raw mut detached) };
+        if status != BUFFER_EMPTY {
+            buffer_check(status);
+            if let Some(dispose) = detached.dispose {
+                // SAFETY: the popped request, now ours to dispose.
+                unsafe { dispose(detached.token) };
+            }
+        }
+    }
+    result.code
+}
+
+/// Frees a queued sendfile request when the typed queue pops or drains it.
+///
+/// # Safety
+/// `token` is a request from `swr_v1_socket_file_checked`, not yet freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_socket_file_dispose(token: *mut c_void) {
+    // SAFETY: as the caller promises.
+    unsafe { swr_v1_socket_file_free(token.cast()) };
+}
+
+/// `sendfile_async`'s request for `filename` from `offset`, checked against `length`
+/// with `check_sendfile_parameters`'s warnings; null when it fails.
+///
+/// # Safety
+/// `filename` is NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_socket_file_checked(
+    filename: *const c_char,
+    offset: libc::off_t,
+    length: usize,
+) -> *mut SocketFileRequest {
+    // SAFETY: as the caller promises.
+    unsafe { file_request(filename, offset, length) }
+}
+
+/// `ssize_t Socket::send_async(const void *data, size_t length)`: through the event
+/// loop when there is one, else `send_sync`.
+///
+/// # Safety
+/// `socket` is a live record and `data` denotes `length` readable bytes.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_ZN6swoole7network6Socket10send_asyncEPKvm")]
+pub unsafe extern "C-unwind" fn socket_send_async(
+    socket: *mut SocketRecord,
+    data: *const c_void,
+    length: usize,
+) -> isize {
+    // SAFETY: src/wrapper/event.cc's.
+    unsafe extern "C-unwind" {
+        #[link_name = "_Z25swoole_event_is_availablev"]
+        fn swoole_event_is_available() -> bool;
+        #[link_name = "_Z18swoole_event_writePN6swoole7network6SocketEPKvm"]
+        fn swoole_event_write(
+            socket: *mut SocketRecord,
+            data: *const c_void,
+            length: usize,
+        ) -> isize;
+    }
+    // SAFETY: no preconditions.
+    if unsafe { swoole_event_is_available() } {
+        // SAFETY: as the caller promises.
+        unsafe { swoole_event_write(socket, data, length) }
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { socket_send_sync(socket, data, length, 0) }
+    }
 }
 
 /// `bool Socket::ssl_shutdown()`.
@@ -1044,7 +1452,7 @@ pub extern "C" fn swr_v1_socket_set_tls_shutdown_repaired(repaired: bool) {
 pub unsafe extern "C" fn socket_ssl_shutdown(socket: *mut SocketRecord) -> bool {
     // SAFETY: as the caller promises.
     let record = unsafe { &mut *socket };
-    let repaired = SHUTDOWN_REPAIRED.load(Ordering::Relaxed);
+    let repaired = HALFCLOSE_REPAIRS.load(Ordering::Relaxed);
     let (ssl, quiet, closed) = (
         record.ssl.cast(),
         record.ssl_quiet_shutdown != 0,
@@ -1148,6 +1556,157 @@ pub unsafe extern "C" fn socket_ssl_create(
     -1
 }
 
+/// `void Socket::free()`, which native code registers: it defers the close to the
+/// event loop through a `std::function`.
+static SOCKET_FREE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Registers `Socket::free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_socket_set_free(free: unsafe extern "C-unwind" fn(*mut SocketRecord)) {
+    SOCKET_FREE.store(free as *mut c_void, Ordering::Relaxed);
+}
+
+/// `void Socket::free()`: closes and frees the socket, deferred to the event loop
+/// when there is one. Unregistered (outside the hybrid), a socket without timers or
+/// buffers is released at once.
+///
+/// # Safety
+/// `socket` is a live record nothing else uses afterwards.
+unsafe fn socket_free(socket: *mut SocketRecord) {
+    let free = SOCKET_FREE.load(Ordering::Relaxed);
+    if free.is_null() {
+        // SAFETY: as the caller promises.
+        unsafe { swoole_rs_reactor::swr_v1_socket_release(socket) };
+        // SAFETY: as the caller promises.
+        unsafe { swoole_rs_reactor::swr_v1_socket_dealloc(socket) };
+        return;
+    }
+    // SAFETY: only `swr_v1_socket_set_free` stores it, from that function type.
+    let free: unsafe extern "C-unwind" fn(*mut SocketRecord) = unsafe { std::mem::transmute(free) };
+    // SAFETY: as the caller promises.
+    unsafe { free(socket) };
+}
+
+/// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
+/// when it is invalid.
+///
+/// # Safety
+/// `socket` is a live record and `host` NUL-terminated.
+unsafe fn bind_host(socket: *mut SocketRecord, host: *const c_char, port: c_int) -> c_int {
+    // SAFETY: as the caller promises.
+    let kind = unsafe { (*socket).socket_type };
+    // SAFETY: an all-zero address is a valid, empty one.
+    let mut address: SocketAddress = unsafe { std::mem::zeroed() };
+    // SAFETY: as the caller promises.
+    let length = unsafe { CStr::from_ptr(host) }.count_bytes();
+    // SAFETY: the local address and the caller's host.
+    let error = unsafe {
+        swoole_rs_clients::address::swr_v1_clients_address_assign(
+            (&raw mut address.addr).cast(),
+            &raw mut address.len,
+            kind,
+            host,
+            length,
+            port,
+            None,
+        )
+    };
+    if error != 0 {
+        log::set_last_error(error);
+        return -1;
+    }
+    // SAFETY: the live record and the address assigned above.
+    unsafe {
+        swoole_rs_reactor::swr_v1_socket_bind(socket, (&raw const address.addr).cast(), address.len)
+    }
+}
+
+/// `Socket *make_server_socket(SocketType, const char *address, int port, int backlog)`:
+/// a bound (and, for a stream, listening) socket, or null after a warning.
+///
+/// # Safety
+/// `address` is NUL-terminated.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii")
+)]
+pub unsafe extern "C-unwind" fn make_server_socket(
+    kind: c_int,
+    address: *const c_char,
+    port: c_int,
+    backlog: c_int,
+) -> *mut SocketRecord {
+    const ORIGIN: &CStr = c"make_server_socket";
+    let socket = make_socket_typed(kind, FD_STREAM_SERVER, SOCK_CLOEXEC);
+    if socket.is_null() {
+        log::sys_warning(ORIGIN, format_args!("socket() failed"));
+        return socket;
+    }
+    // SAFETY: the new record.
+    let fd = unsafe { (*socket).fd };
+    // Only TCP sockets need to rebind addresses held by TIME_WAIT. Enabling reuse for
+    // datagram sockets can allow duplicate binds.
+    if type_is(kind, CLASS_TCP) {
+        let enable: c_int = 1;
+        // SAFETY: the new socket's descriptor and a local option.
+        let set = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                (&raw const enable).cast(),
+                libc::socklen_t::try_from(std::mem::size_of::<c_int>()).unwrap_or(4),
+            )
+        };
+        if set < 0 {
+            log::sys_warning(
+                ORIGIN,
+                format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),
+            );
+        }
+    }
+    // SAFETY: as the caller promises.
+    let host = unsafe { CStr::from_ptr(address) }.to_string_lossy();
+    // SAFETY: the new record and the caller's address.
+    if unsafe { bind_host(socket, address, port) } < 0 {
+        log::sys_warning(
+            ORIGIN,
+            format_args!("bind({fd}, {host}:{port}, {backlog}) failed"),
+        );
+        // SAFETY: the new record, which nothing else holds.
+        return unsafe { discard(socket) };
+    }
+    if type_is(kind, CLASS_STREAM) {
+        // SAFETY: the new record.
+        if unsafe { swoole_rs_reactor::swr_v1_socket_listen(socket, backlog) } < 0 {
+            log::sys_warning(
+                ORIGIN,
+                format_args!("listen({fd}, {host}:{port}, {backlog}) failed"),
+            );
+            // SAFETY: the new record, which nothing else holds.
+            return unsafe { discard(socket) };
+        }
+    }
+    // SAFETY: the new record.
+    if unsafe { swoole_rs_reactor::swr_v1_socket_get_name(socket) } < 0 {
+        log::sys_warning(ORIGIN, format_args!("getsockname({fd}) failed"));
+        // SAFETY: the new record, which nothing else holds.
+        return unsafe { discard(socket) };
+    }
+    socket
+}
+
+/// Frees a socket `make_server_socket` gave up on.
+///
+/// # Safety
+/// As `socket_free`.
+unsafe fn discard(socket: *mut SocketRecord) -> *mut SocketRecord {
+    // SAFETY: as the caller promises.
+    unsafe { socket_free(socket) };
+    std::ptr::null_mut()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1249,10 +1808,117 @@ mod tests {
 
     #[test]
     fn shutdown_repair_is_registered() {
-        swr_v1_socket_set_tls_shutdown_repaired(true);
-        assert!(SHUTDOWN_REPAIRED.load(Ordering::Relaxed));
-        swr_v1_socket_set_tls_shutdown_repaired(false);
-        assert!(!SHUTDOWN_REPAIRED.load(Ordering::Relaxed));
+        swr_v1_socket_set_halfclose_repairs(true);
+        assert!(HALFCLOSE_REPAIRS.load(Ordering::Relaxed));
+        swr_v1_socket_set_halfclose_repairs(false);
+        assert!(!HALFCLOSE_REPAIRS.load(Ordering::Relaxed));
+    }
+
+    /// A connected pair of Unix stream records.
+    fn pair() -> (SocketRecord, SocketRecord) {
+        let mut fds = [0; 2];
+        assert_eq!(
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) },
+            0
+        );
+        (
+            SocketRecord::with_fd(fds[0], 0),
+            SocketRecord::with_fd(fds[1], 0),
+        )
+    }
+
+    fn temp_file(name: &str, contents: &[u8]) -> (std::path::PathBuf, std::ffi::CString) {
+        let path = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        std::fs::write(&path, contents).unwrap();
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        (path, name)
+    }
+
+    fn read_all(socket: &SocketRecord, length: usize) -> Vec<u8> {
+        let mut data = vec![0u8; length];
+        let mut done = 0;
+        while done < length {
+            let n =
+                unsafe { libc::read(socket.fd, data.as_mut_ptr().add(done).cast(), length - done) };
+            assert!(n > 0);
+            done += n.cast_unsigned();
+        }
+        data
+    }
+
+    #[test]
+    fn sendfile_sync_sends_the_range_and_rejects_a_bad_one() {
+        let (mut left, right) = pair();
+        let (path, name) = temp_file("swoole-sendfile-sync", b"0123456789");
+        let sent = unsafe { socket_sendfile_sync(&raw mut left, name.as_ptr(), 2, 5) };
+        assert_eq!(sent, 0);
+        assert_eq!(read_all(&right, 5), b"23456");
+        let rejected = unsafe { socket_sendfile_sync(&raw mut left, name.as_ptr(), 20, 0) };
+        assert_eq!(rejected, -1, "offset past the end");
+        let missing =
+            unsafe { socket_sendfile_sync(&raw mut left, c"/nonexistent/x".as_ptr(), 0, 0) };
+        assert_eq!(missing, -1);
+        std::fs::remove_file(path).unwrap();
+        unsafe { libc::close(left.fd) };
+        unsafe { libc::close(right.fd) };
+    }
+
+    #[test]
+    fn queued_file_and_data_drain_through_the_handlers() {
+        let (mut left, right) = pair();
+        let mut queue: *mut swoole_rs_buffer::Buffer = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { swoole_rs_buffer::swr_v1_buffer_typed_create(65536, &raw mut queue) },
+            0
+        );
+        // `Buffer`'s only member is its Rust handle.
+        let mut native = Box::new(queue);
+        left.output.out_buffer = (&raw mut *native).cast();
+        let (path, name) = temp_file("swoole-sendfile-async", b"abcdef");
+        let socket = &raw mut left;
+        let request = unsafe { swr_v1_socket_file_checked(name.as_ptr(), 1, 0) };
+        assert!(!request.is_null());
+        let dispose = Some(swr_v1_socket_file_dispose as unsafe extern "C" fn(*mut c_void));
+        let queued = unsafe {
+            swoole_rs_buffer::swr_v1_buffer_typed_push(queue, 1, request.cast(), dispose)
+        };
+        assert_eq!(queued, 0);
+        assert!(
+            unsafe { swr_v1_socket_file_checked(c"/nonexistent/x".as_ptr(), 0, 0) }.is_null(),
+            "a file that won't open is refused"
+        );
+        assert_eq!(unsafe { socket_handle_sendfile(socket) }, 0);
+        assert_eq!(read_all(&right, 5), b"bcdef");
+        assert_eq!(
+            unsafe { swoole_rs_buffer::swr_v1_buffer_append(queue, b"tail".as_ptr(), 4) },
+            0
+        );
+        assert_eq!(unsafe { socket_handle_send(socket) }, 0);
+        assert_eq!(read_all(&right, 4), b"tail");
+        let (mut length, mut count) = (0, 0);
+        unsafe { swoole_rs_buffer::swr_v1_buffer_stats(queue, &raw mut length, &raw mut count) };
+        assert_eq!((length, count), (0, 0), "both chunks popped");
+        assert_eq!(unsafe { swoole_rs_buffer::swr_v1_buffer_release(queue) }, 0);
+        std::fs::remove_file(path).unwrap();
+        unsafe { libc::close(left.fd) };
+        unsafe { libc::close(right.fd) };
+    }
+
+    #[test]
+    fn make_server_socket_binds_and_listens() {
+        let socket = unsafe { make_server_socket(1, c"127.0.0.1".as_ptr(), 0, 8) };
+        assert!(!socket.is_null());
+        let record = unsafe { &*socket };
+        assert_eq!((record.bound, record.listened), (1, 1));
+        assert_ne!(
+            u16::from_be(unsafe { record.info.addr.inet_v4.sin_port }),
+            0,
+            "getsockname filled the port"
+        );
+        unsafe { socket_free(socket) };
+        let invalid = unsafe { make_server_socket(1, c"not an address".as_ptr(), 0, 8) };
+        assert!(invalid.is_null());
+        assert_ne!(log::last_error(), 0);
     }
 
     #[test]

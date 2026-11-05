@@ -1,36 +1,9 @@
 diff --git a/src/network/socket.cc b/src/network/socket.cc
-index 7bf2a55..6a026b0 100644
+index ed3945714..7bf2a5596 100644
 --- a/src/network/socket.cc
 +++ b/src/network/socket.cc
 @@ -16,2 +16,4 @@
- 
-+// M15: Socket::ssl_shutdown (crates/tls/src/socket.rs) writes the close_notify alert.
+
++// M15: Socket::ssl_shutdown and handle_sendfile (crates/tls/src/upstream.rs) apply the repairs.
 +#define SW_HALFCLOSE_TLS_SHUTDOWN 1
  #include "swoole_socket.h"
-@@ -1528,4 +1530,7 @@ bool Socket::ssl_shutdown() {
- 
--    ssl_clear_error();
-+    int mode = SSL_get_shutdown(ssl);
-+    SSL_set_shutdown(ssl, mode | SSL_RECEIVED_SHUTDOWN | SSL_SENT_SHUTDOWN);
-+
-     int n = SSL_shutdown(ssl);
-+    ssl_closed_ = 1;
-     swoole_trace("SSL_shutdown: %d", n);
-@@ -1534,3 +1539,3 @@ bool Socket::ssl_shutdown() {
-     /* before 0.9.8m SSL_shutdown() returned 0 instead of -1 on errors */
--    if (n < 0) {
-+    if (n != 1 && ERR_peek_error()) {
-         sslerr = SSL_get_error(ssl, n);
-@@ -1539,6 +1544,2 @@ bool Socket::ssl_shutdown() {
- 
--    ssl_want_read = sslerr == SSL_ERROR_WANT_READ;
--    ssl_want_write = sslerr == SSL_ERROR_WANT_WRITE;
--    ssl_closed_ = !(ssl_want_read || ssl_want_write);
--
-     if (!(n == 1 || sslerr == 0 || sslerr == SSL_ERROR_ZERO_RETURN)) {
-@@ -1546,4 +1547,3 @@ bool Socket::ssl_shutdown() {
-         const char *error_string = ssl_get_error_reason(&reason);
--        swoole_warning("SSL_shutdown() failed, reason=%d, error_string=%s",
--                       reason, error_string ? error_string : "no OpenSSL reason available");
-+        swoole_warning("SSL_shutdown() failed, reason=%d, error_string=%s", reason, error_string);
-         return false;

@@ -19,6 +19,25 @@ pub struct SocketFileRequest {
     fields: SocketFileFields,
 }
 
+impl SocketFileRequest {
+    /// The file's descriptor, -1 when it failed to open.
+    #[must_use]
+    pub const fn descriptor(&self) -> c_int {
+        self.file.descriptor()
+    }
+
+    /// The path it was opened with.
+    #[must_use]
+    pub fn path(&self) -> &[u8] {
+        self.file.path()
+    }
+
+    /// The range still to send and the cork state.
+    pub const fn fields(&mut self) -> &mut SocketFileFields {
+        &mut self.fields
+    }
+}
+
 /// Stable slots for the native compatibility view; the request owns all of them.
 #[repr(C)]
 pub struct SocketFilePrepared {
@@ -86,52 +105,6 @@ pub unsafe extern "C" fn swr_v1_socket_file_new(
 pub unsafe extern "C" fn swr_v1_socket_file_free(owner: *mut SocketFileRequest) {
     // SAFETY: forwards the unique owner contract.
     unsafe { crate::owner::release(owner) };
-}
-
-/// Complete a native copy constructor only after its throwing string copy succeeded.
-/// # Safety
-/// Distinct live owners; destination is the empty, fd=-1 request from new(null).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_file_copy_empty(
-    owner: *mut SocketFileRequest,
-    source: *const SocketFileRequest,
-) -> bool {
-    // SAFETY: source is live and distinct from the exclusive destination.
-    let source = unsafe { &*source };
-    let Some(file) = source.file.try_copy() else {
-        return false;
-    };
-    let fields = source.fields;
-    let open_error = source.open_error;
-    // SAFETY: the destination is live/exclusive and owns no descriptor yet.
-    let owner = unsafe { &mut *owner };
-    debug_assert_eq!(
-        owner.file.descriptor(),
-        -1,
-        "copy constructor destination must not own a descriptor"
-    );
-    owner.file = file;
-    owner.fields = fields;
-    owner.open_error = open_error;
-    true
-}
-
-/// Copy only the scalar fields after the native File assignment returned.
-/// # Safety
-/// Both owners are live and destination is exclusive.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_file_copy_fields(
-    owner: *mut SocketFileRequest,
-    source: *const SocketFileRequest,
-) {
-    // SAFETY: the source is live; copy before writing, including self assignment.
-    let fields = unsafe { (*source).fields };
-    // SAFETY: the same live source supplies its captured open error.
-    let open_error = unsafe { (*source).open_error };
-    // SAFETY: the destination is exclusively lent.
-    unsafe { (*owner).fields = fields };
-    // SAFETY: the destination remains exclusively lent.
-    unsafe { (*owner).open_error = open_error };
 }
 
 /// Range validation over the owned descriptor: 0 valid,1 open,2 stat,3 empty,4 range.
@@ -236,7 +209,7 @@ mod tests {
     use std::ffi::CString;
 
     #[test]
-    fn request_owns_descriptor_range_and_copied_slots() {
+    fn request_owns_descriptor_and_range() {
         let path = std::env::temp_dir().join(format!("swoole-request-{}", std::process::id()));
         std::fs::write(&path, b"abcdef").unwrap();
         let name = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
@@ -247,15 +220,6 @@ mod tests {
             assert_eq!(swr_v1_socket_file_check(request.owner, 0), 0);
             assert_eq!((*request.fields).end, 6);
             assert_eq!(swr_v1_socket_file_length(request.owner), 4);
-            let copied = swr_v1_socket_file_new(ptr::null(), 0);
-            assert!(swr_v1_socket_file_copy_empty(copied.owner, request.owner));
-            assert_eq!((*copied.file).descriptor(), fd);
-            (*copied.fields).begin = 3;
-            assert_eq!((*request.fields).begin, 2);
-            assert_eq!(swr_v1_socket_file_length(copied.owner), 3);
-            swoole_rs_ossupport::swr_v1_os_file_record_fd(copied.file, true);
-            swr_v1_socket_file_free(copied.owner);
-            assert!(libc::fcntl(fd, libc::F_GETFD) >= 0);
             swr_v1_socket_file_free(request.owner);
             assert_eq!(libc::fcntl(fd, libc::F_GETFD), -1);
             assert_eq!(
