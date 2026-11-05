@@ -99,30 +99,13 @@ void swoole_socket_coro_set_timeout(void *socket, double timeout, int type);
 double swoole_socket_coro_get_timeout(void *socket, int type);
 void swoole_socket_coro_proxy(void *socket, bool http, const char *host, size_t host_length, int64_t port,
                               const char *user, size_t user_length, const char *password, size_t password_length);
-/* SSL: ENABLE is enable_ssl_encrypt(), ENABLED ssl_is_enable(), the file options
- * report whether the file exists, HAS_* whether one is set; the rest set text or
- * value and return true, or false when the build lacks them (ssl_supports). */
-enum {
-    SWR_PHPCLIENTS_SSL_ENABLE,
-    SWR_PHPCLIENTS_SSL_ENABLED,
-    SWR_PHPCLIENTS_SSL_PROTOCOLS,
-    SWR_PHPCLIENTS_SSL_DISABLE_COMPRESS,
-    SWR_PHPCLIENTS_SSL_CERT_FILE,
-    SWR_PHPCLIENTS_SSL_KEY_FILE,
-    SWR_PHPCLIENTS_SSL_HAS_CERT_FILE,
-    SWR_PHPCLIENTS_SSL_HAS_KEY_FILE,
-    SWR_PHPCLIENTS_SSL_PASSPHRASE,
-    SWR_PHPCLIENTS_SSL_HOST_NAME,
-    SWR_PHPCLIENTS_SSL_VERIFY_PEER,
-    SWR_PHPCLIENTS_SSL_ALLOW_SELF_SIGNED,
-    SWR_PHPCLIENTS_SSL_CAFILE,
-    SWR_PHPCLIENTS_SSL_CAPATH,
-    SWR_PHPCLIENTS_SSL_VERIFY_DEPTH,
-    SWR_PHPCLIENTS_SSL_CIPHERS,
-    SWR_PHPCLIENTS_SSL_ECDH_CURVE,
-    SWR_PHPCLIENTS_SSL_GREASE,
-};
-bool swoole_socket_coro_ssl_option(void *socket, int option, const char *text, size_t length, int64_t value);
+/* enable_ssl_encrypt(): false when TLS was already on. */
+bool swoole_socket_coro_enable_ssl(void *socket);
+/* The socket's SSLContext owner, which crates/tls configures; NULL while TLS is off. */
+struct swr_v1_tls_owner;
+const struct swr_v1_tls_owner *swoole_socket_coro_ssl_context(void *socket);
+/* Whether the build has the optional SSL settings. */
+enum { SWR_PHPCLIENTS_SSL_HOST_NAME, SWR_PHPCLIENTS_SSL_GREASE };
 bool swoole_socket_coro_ssl_supports(int option);
 /* The socket's domain, and its type into *type. */
 int swoole_socket_coro_family(void *socket, int *type);
@@ -297,21 +280,10 @@ enum {
     SWOOLE_CLIENT_OPT_BIND = 7,           /* text, length: address; value: port; returns bind() */
     SWOOLE_CLIENT_OPT_TCP_NODELAY = 8,    /* returns false when setsockopt failed (errno) */
     SWOOLE_CLIENT_OPT_OPEN_SSL = 9,       /* returns open_ssl */
-    SWOOLE_CLIENT_OPT_SSL_PROTOCOLS = 10,
-    SWOOLE_CLIENT_OPT_SSL_DISABLE_COMPRESS = 11,
-    SWOOLE_CLIENT_OPT_SSL_CERT_FILE = 12, /* returns whether the file exists */
-    SWOOLE_CLIENT_OPT_SSL_KEY_FILE = 13,  /* as above */
-    SWOOLE_CLIENT_OPT_SSL_PASSPHRASE = 14,
-    SWOOLE_CLIENT_OPT_SSL_HOST_NAME = 15,
-    SWOOLE_CLIENT_OPT_SSL_VERIFY_PEER = 16,
-    SWOOLE_CLIENT_OPT_SSL_ALLOW_SELF_SIGNED = 17,
-    SWOOLE_CLIENT_OPT_SSL_CAFILE = 18,
-    SWOOLE_CLIENT_OPT_SSL_CAPATH = 19,
-    SWOOLE_CLIENT_OPT_SSL_VERIFY_DEPTH = 20,
-    SWOOLE_CLIENT_OPT_SSL_CIPHERS = 21,
-    SWOOLE_CLIENT_OPT_SSL_FILES = 22,     /* returns 1: a cert file is set, | 2: a key file is */
 };
 int64_t swoole_client_option(void *cli, int option, int64_t value, const char *text, size_t length);
+/* The client's SSLContext owner, which crates/tls configures; NULL while TLS is off. */
+const struct swr_v1_tls_owner *swoole_client_ssl_context(void *cli);
 /* set_http_proxy (http) or set_socks5_proxy. */
 void swoole_client_proxy(void *cli,
                          bool http,

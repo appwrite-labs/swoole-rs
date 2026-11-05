@@ -8,6 +8,7 @@ use libc::{c_int, c_void};
 use std::ptr;
 use swoole_rs_framing::Protocol;
 use swoole_rs_phptable::{self as table, Owned};
+use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::{
     E_ERROR, bailout,
     sys::{IS_STRING, zend_ini_parse_quantity, zval},
@@ -29,19 +30,6 @@ const LOW_WATERMARK: c_int = 6;
 const BIND: c_int = 7;
 const TCP_NODELAY: c_int = 8;
 const OPEN_SSL: c_int = 9;
-const SSL_PROTOCOLS: c_int = 10;
-const SSL_DISABLE_COMPRESS: c_int = 11;
-const SSL_CERT_FILE: c_int = 12;
-const SSL_KEY_FILE: c_int = 13;
-const SSL_PASSPHRASE: c_int = 14;
-const SSL_HOST_NAME: c_int = 15;
-const SSL_VERIFY_PEER: c_int = 16;
-const SSL_ALLOW_SELF_SIGNED: c_int = 17;
-const SSL_CAFILE: c_int = 18;
-const SSL_CAPATH: c_int = 19;
-const SSL_VERIFY_DEPTH: c_int = 20;
-const SSL_CIPHERS: c_int = 21;
-const SSL_FILES: c_int = 22;
 
 /// The options array of one `set()`/`connect()`.
 struct Options(*const zval);
@@ -323,21 +311,36 @@ fn proxy(
     }
 }
 
-/// `php_swoole_client_check_ssl_setting(cli, settings)`.
+/// `php_swoole_client_check_ssl_setting(cli, settings)`, written into the
+/// client's `SSLContext` (crates/tls).
 pub(crate) fn apply_ssl(cli: Cli, settings: *const zval) {
+    // SAFETY: a live client.
+    let owner = unsafe { native::swoole_client_ssl_context(cli) }.cast::<tls::OwnedTlsContext>();
+    if owner.is_null() {
+        return;
+    }
+    // SAFETY: the live client's context, which nothing else writes during the call.
+    let value = |value| unsafe { tls::set_value(owner, value) };
     let options = Options(settings);
+    let text = |key: &str, which| {
+        if let Some(text) = options.string(key) {
+            // SAFETY: as above.
+            unsafe { tls::set_text(owner, which, text.bytes()) };
+        }
+    };
     if let Some(protocols) = options.long("ssl_protocols") {
-        option(cli, SSL_PROTOCOLS, protocols);
+        value(Value::Protocols(protocols));
     }
     if let Some(compress) = options.truthy("ssl_compress") {
-        option(cli, SSL_DISABLE_COMPRESS, i64::from(!compress));
+        value(Value::DisableCompress(!compress));
     }
-    for (key, file, name) in [
-        ("ssl_cert_file", SSL_CERT_FILE, "cert"),
-        ("ssl_key_file", SSL_KEY_FILE, "key"),
+    for (key, which, name) in [
+        ("ssl_cert_file", Text::CertFile, "cert"),
+        ("ssl_key_file", Text::KeyFile, "key"),
     ] {
         if let Some(path) = options.string(key)
-            && text_option(cli, file, 0, path.bytes()) == 0
+            // SAFETY: as above.
+            && !unsafe { tls::set_text(owner, which, path.bytes()) }
         {
             let path = c_text(path.bytes());
             report(
@@ -348,28 +351,25 @@ pub(crate) fn apply_ssl(cli: Cli, settings: *const zval) {
             return;
         }
     }
-    let text = |key: &str, which: c_int| {
-        if let Some(value) = options.string(key) {
-            text_option(cli, which, 0, value.bytes());
-        }
-    };
-    text("ssl_passphrase", SSL_PASSPHRASE);
-    text("ssl_host_name", SSL_HOST_NAME);
+    text("ssl_passphrase", Text::Passphrase);
+    text("ssl_host_name", Text::HostName);
     if let Some(on) = options.truthy("ssl_verify_peer") {
-        option(cli, SSL_VERIFY_PEER, i64::from(on));
+        value(Value::VerifyPeer(on));
     }
     if let Some(on) = options.truthy("ssl_allow_self_signed") {
-        option(cli, SSL_ALLOW_SELF_SIGNED, i64::from(on));
+        value(Value::AllowSelfSigned(on));
     }
-    text("ssl_cafile", SSL_CAFILE);
-    text("ssl_capath", SSL_CAPATH);
+    text("ssl_cafile", Text::Cafile);
+    text("ssl_capath", Text::Capath);
     if let Some(depth) = options.long("ssl_verify_depth") {
-        option(cli, SSL_VERIFY_DEPTH, clamp(depth, 0, u8::MAX.into()));
+        let depth = clamp(depth, 0, u8::MAX.into());
+        value(Value::VerifyDepth(u8::try_from(depth).unwrap_or(u8::MAX)));
     }
-    text("ssl_ciphers", SSL_CIPHERS);
-    match option(cli, SSL_FILES, 0) {
-        1 => report(ErrorKind::Fatal, E_ERROR, "ssl require key file"),
-        2 => report(ErrorKind::Fatal, E_ERROR, "ssl require cert file"),
+    text("ssl_ciphers", Text::Ciphers);
+    // SAFETY: as above.
+    match unsafe { tls::has_files(owner) } {
+        (true, false) => report(ErrorKind::Fatal, E_ERROR, "ssl require key file"),
+        (false, true) => report(ErrorKind::Fatal, E_ERROR, "ssl require cert file"),
         _ => {}
     }
 }

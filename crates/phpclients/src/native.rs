@@ -200,14 +200,10 @@ unsafe extern "C" {
         password: *const c_char,
         password_length: size_t,
     );
-    /// One `SWR_PHPCLIENTS_SSL_*` option.
-    pub(crate) fn swoole_socket_coro_ssl_option(
-        socket: Socket,
-        option: c_int,
-        text: *const c_char,
-        length: size_t,
-        value: i64,
-    ) -> bool;
+    /// `enable_ssl_encrypt()`: false when TLS was already on.
+    pub(crate) fn swoole_socket_coro_enable_ssl(socket: Socket) -> bool;
+    /// The socket's `SSLContext` owner; null while TLS is off.
+    pub(crate) fn swoole_socket_coro_ssl_context(socket: Socket) -> *const c_void;
     /// Whether the build has an optional SSL option (host name, grease).
     pub(crate) fn swoole_socket_coro_ssl_supports(option: c_int) -> bool;
     /// The socket's domain, and its type into `kind`.
@@ -275,6 +271,8 @@ unsafe extern "C" {
         text: *const c_char,
         length: size_t,
     ) -> i64;
+    /// The client's `SSLContext` owner; null while TLS is off.
+    pub(crate) fn swoole_client_ssl_context(cli: Cli) -> *const c_void;
     /// `set_http_proxy` (`http`) or `set_socks5_proxy`.
     pub(crate) fn swoole_client_proxy(
         cli: Cli,
