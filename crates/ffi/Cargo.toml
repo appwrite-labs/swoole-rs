@@ -26,7 +26,7 @@ reactor = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols", "dep:s
 
 coroutine = ["dep:swoole-rs-coroutine"]
 
-hooks = ["dep:swoole-rs-hooks", "swoole-rs-hooks/upstream-symbols", "dep:swoole-rs-phpruntime"]
+hooks = ["dep:swoole-rs-hooks", "swoole-rs-hooks/upstream-symbols", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/upstream-symbols"]
 # Not a module: the hybrid adds it when configured with --enable-iouring.
 iouring = ["hooks", "swoole-rs-hooks/iouring"]
 # Not modules: the hybrid adds each when configured with its hook

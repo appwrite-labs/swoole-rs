@@ -441,10 +441,22 @@ fn in_coroutine() -> bool {
     unsafe { (ops().in_coroutine)() != 0 }
 }
 
-/// `PHPCoroutine::disable_unsafe_function` (`disable`) or `enable_unsafe_function`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpruntime_unsafe_functions(disable: u8) {
-    functions::unsafe_functions(disable != 0);
+/// `PHPCoroutine::disable_unsafe_function()`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole12PHPCoroutine23disable_unsafe_functionEv")
+)]
+pub extern "C" fn disable_unsafe_function() {
+    functions::unsafe_functions(true);
+}
+
+/// `PHPCoroutine::enable_unsafe_function()`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole12PHPCoroutine22enable_unsafe_functionEv")
+)]
+pub extern "C" fn enable_unsafe_function() {
+    functions::unsafe_functions(false);
 }
 
 /// RINIT: on the main thread, a new hook table with `exit` and `putenv`
@@ -478,11 +490,12 @@ pub extern "C" fn swr_v1_phpruntime_rshutdown() -> u8 {
 /// `php_swoole_get_original_handler(name, length)`.
 /// # Safety
 /// `name` points to `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_original_handler(
-    name: *const c_char,
-    length: usize,
-) -> zif_handler {
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z31php_swoole_get_original_handlerPKcm")
+)]
+#[must_use]
+pub unsafe extern "C" fn original_handler(name: *const c_char, length: usize) -> zif_handler {
     // SAFETY: per the caller.
     let name = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) };
     functions::original_handler(name)
