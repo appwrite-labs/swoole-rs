@@ -109,7 +109,8 @@ bool swr_v1_server_record_layout(uint32_t kind, size_t size, size_t alignment, c
     F(const SWR_SERVER_NATIVE(Allocator) *, recv_buffer_allocator) \
     F(size_t, recv_buffer_size) \
     F(int, manager_alarm) \
-    F(uint64_t, message_queue_key)
+    F(uint64_t, message_queue_key) \
+    F(uint32_t, mode_)
 
 typedef struct swr_v1_server_config {
 #define SWR_SERVER_CONFIG_DECLARE(type, name) type name;

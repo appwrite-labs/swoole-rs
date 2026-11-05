@@ -1,0 +1,22 @@
+diff --git a/include/swoole_server.h b/include/swoole_server.h
+index b72116e..68e2719 100644
+--- a/include/swoole_server.h
++++ b/include/swoole_server.h
+@@ -44,2 +44,3 @@
+ #include <string>
++#include <type_traits>
+ #include <queue>
+@@ -492,2 +493,4 @@ class Server : public detail::ServerFields {
+     };
++    static_assert(std::is_same<std::underlying_type<Mode>::type, uint32_t>::value,
++                  "canonical Server mode retains the native enum word");
+ 
+@@ -573,3 +576,3 @@ class Server : public detail::ServerFields {
+     Mode get_mode() const {
+-        return mode_;
++        return static_cast<Mode>(mode_);
+     };
+@@ -1257,3 +1260,2 @@ class Server : public detail::ServerFields {
+   private:
+-    enum Mode mode_;
+     decltype(swr_v1_server_tables::connection_list) &connection_list = tables_->connection_list;

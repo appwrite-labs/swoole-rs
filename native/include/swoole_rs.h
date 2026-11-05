@@ -531,6 +531,28 @@ typedef struct swr_v1_phpswoole_allocator {
 extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_php_allocator;
 extern const swr_v1_phpswoole_allocator swr_v1_phpswoole_zend_string_allocator;
 
+enum { SWR_SERVER_RUN_LC_START = 350 };
+enum {
+    SWR_SERVER_OP_LC_CLEAR_ERROR = 1200,
+    SWR_SERVER_OP_LC_CHECK = 1201,
+    SWR_SERVER_OP_LC_BEFORE_START = 1202,
+    SWR_SERVER_OP_LC_CLAIM_START = 1203,
+    SWR_SERVER_LOG_LC_STARTED = 1204,
+    SWR_SERVER_OP_LC_DAEMONIZE = 1205,
+    SWR_SERVER_OP_LC_REDIRECT = 1206,
+    SWR_SERVER_OP_LC_DAEMON = 1207,
+    SWR_SERVER_OP_LC_PREPARE_WORKERS = 1208,
+    SWR_SERVER_OP_LC_START_TIME = 1209,
+    SWR_SERVER_OP_LC_FACTORY_START = 1210,
+    SWR_SERVER_OP_LC_WRITE_PID = 1211,
+    SWR_SERVER_OP_LC_START_BASE = 1212,
+    SWR_SERVER_OP_LC_START_PROCESS = 1213,
+    SWR_SERVER_OP_LC_START_THREAD = 1214,
+    SWR_SERVER_OP_LC_ABORT = 1215,
+    SWR_SERVER_OP_LC_DESTROY = 1216,
+    SWR_SERVER_OP_LC_UNLINK_PID = 1217,
+};
+
 #ifdef __cplusplus
 }
 #endif

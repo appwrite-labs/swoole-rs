@@ -958,6 +958,27 @@ pub const ADMIN_MEMORY: u32 = 14;
 pub const ADMIN_PORTS: u32 = 15;
 pub const ADMIN_PORT: u32 = 16;
 
+// Complete startup, with native callbacks/fork/resource effects contained by Host.
+pub const RUN_LC_START: u32 = 350;
+pub const OP_LC_CLEAR_ERROR: u32 = 1200;
+pub const OP_LC_CHECK: u32 = 1201;
+pub const OP_LC_BEFORE_START: u32 = 1202;
+pub const OP_LC_CLAIM_START: u32 = 1203;
+pub const LOG_LC_STARTED: u32 = 1204;
+pub const OP_LC_DAEMONIZE: u32 = 1205;
+pub const OP_LC_REDIRECT: u32 = 1206;
+pub const OP_LC_DAEMON: u32 = 1207;
+pub const OP_LC_PREPARE_WORKERS: u32 = 1208;
+pub const OP_LC_START_TIME: u32 = 1209;
+pub const OP_LC_FACTORY_START: u32 = 1210;
+pub const OP_LC_WRITE_PID: u32 = 1211;
+pub const OP_LC_START_BASE: u32 = 1212;
+pub const OP_LC_START_PROCESS: u32 = 1213;
+pub const OP_LC_START_THREAD: u32 = 1214;
+pub const OP_LC_ABORT: u32 = 1215;
+pub const OP_LC_DESTROY: u32 = 1216;
+pub const OP_LC_UNLINK_PID: u32 = 1217;
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

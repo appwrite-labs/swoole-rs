@@ -306,6 +306,7 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
             control::init_signals(h)?;
             SW_OK
         }
+        ops::RUN_LC_START => startup::start(h)?,
         RUN_CREATE => startup::create(h)?,
         RUN_START_CHECK => startup::start_check(h)?,
         RUN_START_MASTER_THREAD => startup::start_master_thread(h)?,

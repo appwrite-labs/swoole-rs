@@ -75,14 +75,16 @@ pub(crate) unsafe fn native_fact(
     arg: u64,
 ) -> Option<u64> {
     use crate::ops::{
-        OP_IS_STARTED, OP_MANAGER_PID, OP_MASTER_PID, OP_MAXFD, OP_MINFD, OP_SESSION_ROUND,
-        OP_SET_MAXFD, OP_SET_MINFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB,
-        OP_ST_GS_CONCURRENCY_ZERO,
+        OP_IS_STARTED, OP_LC_CLAIM_START, OP_LC_START_TIME, OP_MANAGER_PID, OP_MASTER_PID,
+        OP_MAXFD, OP_MINFD, OP_SESSION_ROUND, OP_SET_MAXFD, OP_SET_MINFD, OP_ST_GS_CONCURRENCY,
+        OP_ST_GS_CONCURRENCY_SUB, OP_ST_GS_CONCURRENCY_ZERO,
     };
     use core::sync::atomic::Ordering;
     if !matches!(
         op,
         OP_IS_STARTED
+            | OP_LC_CLAIM_START
+            | OP_LC_START_TIME
             | OP_MASTER_PID
             | OP_MANAGER_PID
             | OP_MAXFD
@@ -109,6 +111,24 @@ pub(crate) unsafe fn native_fact(
     Some(match op {
         // SAFETY: each leaf field read uses the native owner's lifetime and synchronization.
         OP_IS_STARTED => u64::from(unsafe { (*gs).start.load(Ordering::Relaxed) }),
+        OP_LC_CLAIM_START => {
+            // SAFETY: the shared start flag is an aligned canonical atomic slot.
+            u64::from(
+                unsafe {
+                    (*gs)
+                        .start
+                        .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                }
+                .is_ok(),
+            )
+        }
+        OP_LC_START_TIME => {
+            // SAFETY: libc time accepts a null output pointer and performs no callback.
+            let now = unsafe { libc::time(core::ptr::null_mut()) };
+            // SAFETY: startup owns this timestamp before publishing worker processes.
+            unsafe { (*gs).start_time = now };
+            0
+        }
         // SAFETY: master pid is assigned before workers can read it.
         OP_MASTER_PID => i64::from(unsafe { (*gs).master_pid }).cast_unsigned(),
         // SAFETY: manager pid follows the original native lifecycle synchronization.
@@ -205,6 +225,27 @@ mod tests {
     use crate::ops::{OP_MAXFD, OP_SET_MAXFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB};
     use crate::state::{swr_v1_server_state_free, swr_v1_server_state_new};
     use core::sync::atomic::Ordering;
+
+    #[test]
+    fn startup_claim_and_timestamp_use_canonical_shared_slots() {
+        let state = swr_v1_server_state_new();
+        let mut counters = ServerCounters::default();
+        unsafe {
+            (*(*state).config()).gs = (&raw mut counters).cast();
+            assert_eq!(
+                native_fact(state, crate::ops::OP_LC_CLAIM_START, 0),
+                Some(1)
+            );
+            assert_eq!(
+                native_fact(state, crate::ops::OP_LC_CLAIM_START, 0),
+                Some(0)
+            );
+            assert_eq!(counters.start.load(Ordering::SeqCst), 1);
+            assert_eq!(native_fact(state, crate::ops::OP_LC_START_TIME, 0), Some(0));
+            assert_ne!(counters.start_time, 0);
+            swr_v1_server_state_free(state);
+        }
+    }
 
     #[test]
     fn shared_counter_updates_survive_a_worker_fork() {

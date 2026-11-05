@@ -79,6 +79,9 @@ pub struct ServerConfig {
     pub recv_buffer_size: usize,
     pub manager_alarm: c_int,
     pub message_queue_key: u64,
+    /// The native enum's complete unsigned word. Zero means an external Host
+    /// still supplies mode; every native Server constructor publishes its mode.
+    pub mode_: u32,
 }
 
 impl Drop for ServerConfig {
@@ -171,6 +174,7 @@ impl Default for ServerConfig {
             recv_buffer_size: 65_536,
             manager_alarm: 0,
             message_queue_key: 0,
+            mode_: 0,
         }
     }
 }
@@ -232,12 +236,14 @@ pub(crate) unsafe fn native_fact(
         FIELD_CPU_NUM, FIELD_DISPATCH_MODE, FIELD_HEARTBEAT_INTERVAL, FIELD_REACTOR_NUM,
         FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_UNSAFE_EVENT, FIELD_WORKER_NUM,
         OP_ACCEPT_TIMER_CLEAR, OP_CONNECTION_LIST, OP_DELAY_RECEIVE, OP_DISABLE_NOTIFY, OP_FIELD,
-        OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_RUNNING, OP_SET_FIELD, OP_SET_MAX_CONNECTION,
-        OP_SET_RUNNING, OP_SET_WARNING, OP_SINGLE_THREAD,
+        OP_LC_DAEMONIZE, OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_MODE, OP_RUNNING, OP_SET_FIELD,
+        OP_SET_MAX_CONNECTION, OP_SET_RUNNING, OP_SET_WARNING, OP_SINGLE_THREAD,
     };
     if !matches!(
         op,
-        OP_SINGLE_THREAD
+        OP_MODE
+            | OP_LC_DAEMONIZE
+            | OP_SINGLE_THREAD
             | OP_DELAY_RECEIVE
             | OP_DISABLE_NOTIFY
             | OP_RUNNING
@@ -265,6 +271,9 @@ pub(crate) unsafe fn native_fact(
     // SAFETY: no native callback runs during this leaf table access.
     let tables = unsafe { &mut *tables };
     Some(match op {
+        OP_MODE if config.mode_ != 0 => u64::from(config.mode_),
+        OP_MODE => return None,
+        OP_LC_DAEMONIZE => u64::from(config.daemonize),
         OP_SINGLE_THREAD => u64::from(config.single_thread),
         OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
@@ -331,6 +340,24 @@ mod tests {
     use super::*;
     use crate::ops::{FIELD_WORKER_NUM, OP_FIELD, OP_RUNNING, OP_SET_FIELD, OP_SET_RUNNING};
     use crate::state::{swr_v1_server_state_free, swr_v1_server_state_new};
+
+    #[test]
+    fn canonical_mode_retains_word_bits_and_unconfigured_host_fallback() {
+        let state = swr_v1_server_state_new();
+        unsafe {
+            let config = swr_v1_server_config_get(state);
+            assert_eq!((*config).mode_, 0);
+            assert_eq!(native_fact(state, crate::ops::OP_MODE, 0), None);
+            for mode in [1, 2, 3, u32::MAX] {
+                (*config).mode_ = mode;
+                assert_eq!(
+                    native_fact(state, crate::ops::OP_MODE, 0),
+                    Some(u64::from(mode))
+                );
+            }
+            swr_v1_server_state_free(state);
+        }
+    }
 
     #[test]
     fn runtime_defaults_and_native_views_share_owned_slots() {

@@ -24,7 +24,7 @@ use crate::ops::{
     OP_TASK_POOL_SETUP, OP_TIMER_DETACHED, OP_TIMER_REINIT, TRACE_REACTOR_THREADS, TRACE_RELEASE,
     TRACE_TASK_WORKERS,
 };
-use crate::{Host, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
+use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
 
 /// `SW_MAX_THREAD_NCPU`, `SW_MAX_WORKER_NCPU`, `SW_TIMER_MIN_SEC`, `SW_BUFFER_MIN_SIZE`;
 /// native asserts each.
@@ -53,6 +53,55 @@ fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
 fn set_field<H: Host>(h: &mut H, id: u32, value: u64) -> crate::Effect<()> {
     h.op(OP_SET_FIELD, u64::from(id) | (value << 8))?;
     Ok(())
+}
+
+/// Complete startup ordering. This frame retains only scalars and the native
+/// Host loan across the daemon effect; no Rust allocation or lock spans fork.
+/// Native effects perform callbacks, stdio/PID I/O, factory and worker execution.
+pub(crate) fn start<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    use crate::ops::{
+        LOG_LC_STARTED, OP_LC_ABORT, OP_LC_BEFORE_START, OP_LC_CHECK, OP_LC_CLAIM_START,
+        OP_LC_CLEAR_ERROR, OP_LC_DAEMON, OP_LC_DAEMONIZE, OP_LC_DESTROY, OP_LC_FACTORY_START,
+        OP_LC_PREPARE_WORKERS, OP_LC_REDIRECT, OP_LC_START_BASE, OP_LC_START_PROCESS,
+        OP_LC_START_THREAD, OP_LC_START_TIME, OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_SET_RUNNING,
+    };
+    h.get(OP_LC_CLEAR_ERROR)?;
+    if h.signed(OP_LC_CHECK)? < 0 {
+        return Ok(SW_ERR);
+    }
+    h.get(OP_LC_BEFORE_START)?;
+    if !h.is(OP_LC_CLAIM_START)? {
+        h.get(LOG_LC_STARTED)?;
+        return Ok(SW_ERR);
+    }
+    if h.is(OP_LC_DAEMONIZE)? {
+        h.get(OP_LC_REDIRECT)?;
+        if h.signed(OP_LC_DAEMON)? < 0 {
+            return Ok(SW_ERR);
+        }
+    }
+    h.get(OP_LC_START_TIME)?;
+    h.get(OP_LC_PREPARE_WORKERS)?;
+    h.op(OP_SET_RUNNING, 1)?;
+    if !h.is(OP_LC_FACTORY_START)? {
+        return Ok(SW_ERR);
+    }
+    h.get(OP_LC_WRITE_PID)?;
+    let result = match h.get(OP_MODE)? {
+        MODE_BASE => h.signed(OP_LC_START_BASE)?,
+        MODE_PROCESS => h.signed(OP_LC_START_PROCESS)?,
+        MODE_THREAD => h.signed(OP_LC_START_THREAD)?,
+        _ => {
+            h.get(OP_LC_ABORT)?;
+            return Ok(SW_ERR);
+        }
+    };
+    if result < 0 {
+        return Ok(SW_ERR);
+    }
+    h.get(OP_LC_DESTROY)?;
+    h.get(OP_LC_UNLINK_PID)?;
+    Ok(SW_OK)
 }
 
 /// `Server::create` after the global before-create hook: shared memory, bounded
@@ -334,6 +383,134 @@ mod tests {
     use super::*;
     use crate::script::Script;
     use crate::{Host, MODE_BASE};
+
+    fn start_script(mode: u64, daemon: bool) -> Script {
+        use crate::ops::*;
+        Script::with(&[
+            (OP_MODE, mode),
+            (OP_LC_CLAIM_START, 1),
+            (OP_LC_FACTORY_START, 1),
+            (OP_LC_DAEMONIZE, u64::from(daemon)),
+        ])
+    }
+
+    struct StopAt {
+        script: Script,
+        index: usize,
+        kind: u32,
+    }
+    impl Host for StopAt {
+        fn state(&mut self) -> crate::Effect<&crate::ServerState> {
+            self.script.state()
+        }
+        fn op(&mut self, op: u32, arg: u64) -> crate::Effect<u64> {
+            let value = self.script.op(op, arg)?;
+            if self.script.log.len() == self.index {
+                Err(crate::NativeFault(self.kind))
+            } else {
+                Ok(value)
+            }
+        }
+    }
+
+    #[test]
+    fn startup_orders_daemon_publication_factory_mode_and_pid_cleanup() {
+        use crate::ops::*;
+        for (mode, run) in [
+            (MODE_BASE, OP_LC_START_BASE),
+            (MODE_PROCESS, OP_LC_START_PROCESS),
+            (MODE_THREAD, OP_LC_START_THREAD),
+        ] {
+            for daemon in [false, true] {
+                let mut script = start_script(mode, daemon);
+                assert_eq!(start(&mut script).unwrap(), SW_OK);
+                let mut expected = vec![
+                    OP_LC_CLEAR_ERROR,
+                    OP_LC_CHECK,
+                    OP_LC_BEFORE_START,
+                    OP_LC_CLAIM_START,
+                    OP_LC_DAEMONIZE,
+                ];
+                if daemon {
+                    expected.extend([OP_LC_REDIRECT, OP_LC_DAEMON]);
+                }
+                expected.extend([
+                    OP_LC_START_TIME,
+                    OP_LC_PREPARE_WORKERS,
+                    OP_SET_RUNNING,
+                    OP_LC_FACTORY_START,
+                    OP_LC_WRITE_PID,
+                    OP_MODE,
+                    run,
+                    OP_LC_DESTROY,
+                    OP_LC_UNLINK_PID,
+                ]);
+                assert_eq!(
+                    script.log.iter().map(|&(op, _)| op).collect::<Vec<_>>(),
+                    expected
+                );
+                assert_eq!(script.args(OP_SET_RUNNING), [1]);
+            }
+        }
+    }
+
+    #[test]
+    fn startup_failure_keeps_original_early_return_and_pid_lifetime() {
+        use crate::ops::*;
+        for (operation, answer, absent) in [
+            (OP_LC_CHECK, (-1_i64).cast_unsigned(), OP_LC_BEFORE_START),
+            (OP_LC_CLAIM_START, 0, OP_LC_DAEMONIZE),
+            (OP_LC_DAEMON, (-1_i64).cast_unsigned(), OP_LC_START_TIME),
+            (OP_LC_FACTORY_START, 0, OP_LC_WRITE_PID),
+            (OP_LC_START_PROCESS, (-1_i64).cast_unsigned(), OP_LC_DESTROY),
+        ] {
+            let mut script = start_script(MODE_PROCESS, true);
+            script.facts.insert(operation, answer);
+            assert_eq!(start(&mut script).unwrap(), SW_ERR);
+            assert_eq!(script.called(absent), 0);
+            assert_eq!(script.called(OP_LC_UNLINK_PID), 0);
+            assert_eq!(
+                script.called(LOG_LC_STARTED),
+                usize::from(operation == OP_LC_CLAIM_START)
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_mode_requests_native_abort_without_truncating_the_mode_word() {
+        use crate::ops::*;
+        for mode in [0, u64::from(u32::MAX)] {
+            let mut script = start_script(mode, false);
+            assert_eq!(start(&mut script).unwrap(), SW_ERR);
+            assert_eq!(script.called(OP_LC_ABORT), 1);
+            assert_eq!(
+                script.called(OP_LC_START_BASE)
+                    + script.called(OP_LC_START_PROCESS)
+                    + script.called(OP_LC_START_THREAD),
+                0
+            );
+            assert_eq!(script.called(OP_LC_DESTROY), 0);
+        }
+    }
+
+    #[test]
+    fn startup_stops_on_each_typed_result_without_executing_later_effects() {
+        let mut baseline = start_script(MODE_PROCESS, true);
+        assert_eq!(start(&mut baseline).unwrap(), SW_OK);
+        for index in 1..=baseline.log.len() {
+            for kind in 1..=4 {
+                let mut stopped = StopAt {
+                    script: start_script(MODE_PROCESS, true),
+                    index,
+                    kind,
+                };
+                assert!(
+                    matches!(start(&mut stopped), Err(crate::NativeFault(value)) if value == kind)
+                );
+                assert_eq!(stopped.script.log, baseline.log[..index]);
+            }
+        }
+    }
 
     /// A script whose fields live in a table that `OP_SET_FIELD` writes.
     struct Fields {
