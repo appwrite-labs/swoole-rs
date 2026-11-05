@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 #define SWR_CORE_ALLOCATOR_FIELDS                                              \
   void *(*malloc)(size_t);                                                     \
   void *(*calloc)(size_t, size_t);                                             \
@@ -76,6 +77,15 @@ void swr_v1_core_set_last_error(int);
  * 1 swoole_warning, 2 swoole_notice, 3 swoole_error_log(level, code); origin is __SW_FUNC__. */
 typedef void (*swr_v1_core_log_host)(int kind, int level, int code, const char *origin, const char *message);
 void swr_v1_core_set_log_host(swr_v1_core_log_host);
+/* base.cc's C++ functions Rust calls (crates/corebase/src/native.rs), registered
+ * once with the log macros, so the Rust archive links without base.cc. */
+typedef struct {
+    pid_t (*fork)(int flags);
+    bool (*isset_hook)(int kind);
+    void (*call_hook)(int kind, void *arg);
+    bool (*get_env)(const char *name, int *value);
+} swr_v1_core_native_host;
+void swr_v1_core_set_native_host(swr_v1_core_native_host);
 #ifdef __cplusplus
 }
 namespace swoole {

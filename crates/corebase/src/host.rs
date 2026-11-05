@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
-//! Whole host operations from base.cc. Rust makes the system calls; native code
-//! keeps only the warnings, whose formats must stay literals in the log macros.
+//! Whole host operations from base.cc, under their C++ symbols with
+//! `upstream-symbols`. Logs name the function as upstream's `__SW_FUNC__` did.
 
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
@@ -45,13 +45,17 @@ fn dup2(from: c_int, to: c_int) -> c_int {
     unsafe { libc::dup2(from, to) }
 }
 
-/// `swoole_shell_exec`: run `command` under `/bin/sh -c` with its stdout (and
-/// stderr when `get_error_stream`) on a pipe. Returns the read end, -1 when
-/// `pipe` fails, or -2 when `fork` fails (errno kept for the native warning).
+/// `int swoole_shell_exec(const char *command, pid_t *pid, bool get_error_stream)`:
+/// run `command` under `/bin/sh -c` with its stdout (and stderr when
+/// `get_error_stream`) on a pipe. Returns the read end, or -1 when `pipe` or
+/// `fork` fails (the latter warns).
 /// # Safety
 /// `command` is a NUL-terminated string and `pid` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_shell_exec(
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z17swoole_shell_execPKcPib")
+)]
+pub unsafe extern "C" fn swoole_shell_exec(
     command: *const c_char,
     pid: *mut libc::pid_t,
     get_error_stream: bool,
@@ -70,7 +74,8 @@ pub unsafe extern "C" fn swr_v1_corebase_shell_exec(
         close(read);
         close(write);
         set_errno(error);
-        return -2;
+        crate::log::sys_warning(c"swoole_shell_exec", format_args!("fork() failed"));
+        return -1;
     }
     if child == 0 {
         close(read);
@@ -234,9 +239,13 @@ pub unsafe extern "C" fn swoole_hex2dec(hex: *const c_char, parsed: *mut usize) 
     unsafe { crate::swr_v1_corebase_hex_mode(hex, parsed, u8::from(c_char::MIN != 0)) }
 }
 
-/// `swoole_print_backtrace` without Boost: up to 16 frames, one symbol per line.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_corebase_print_backtrace() {
+/// `void swoole_print_backtrace()`: up to 16 frames, one symbol per line (upstream's
+/// build without Boost.Stacktrace).
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z22swoole_print_backtracev")
+)]
+pub extern "C" fn swoole_print_backtrace() {
     #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
     {
         let mut frames = [ptr::null_mut::<c_void>(); 16];
@@ -472,17 +481,19 @@ pub extern "C" fn swoole_rand(min: c_int, max: c_int) -> c_int {
 
 static DEV_RANDOM: AtomicI32 = AtomicI32::new(-1);
 
-/// `swoole_system_random`: four bytes from a cached `/dev/urandom` descriptor
-/// mapped onto `min..=max`; [`swoole_rand`] when it can't be opened.
-/// A short read sets `read_failed` (errno kept) and returns -1.
-/// # Safety
-/// `read_failed` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_system_random(
-    min: c_int,
-    max: c_int,
-    read_failed: *mut bool,
-) -> c_int {
+/// `int swoole_system_random(int min, int max)`: four bytes from a cached
+/// `/dev/urandom` descriptor mapped onto `min..=max`; [`swoole_rand`] when it can't
+/// be opened. A short read warns and returns -1.
+///
+/// # Panics
+/// Unless `max > min`, as upstream asserts.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z20swoole_system_randomii")
+)]
+pub extern "C" fn swoole_system_random(min: c_int, max: c_int) -> c_int {
+    assert!(max > min, "swoole_system_random: max > min");
     let mut fd = DEV_RANDOM.load(Ordering::Relaxed);
     if fd == -1 {
         // SAFETY: a NUL-terminated path.
@@ -496,8 +507,10 @@ pub unsafe extern "C" fn swr_v1_corebase_system_random(
     // SAFETY: `value` is four writable bytes.
     let read = unsafe { libc::read(fd, value.as_mut_ptr().cast(), 4) };
     if read < 4 {
-        // SAFETY: the caller lends a writable flag.
-        unsafe { read_failed.write(true) };
+        crate::log::sys_warning(
+            c"swoole_system_random",
+            format_args!("read() from /dev/urandom failed"),
+        );
         return -1;
     }
     // Upstream's `min + (random % (max - min + 1))` in unsigned arithmetic.
@@ -507,20 +520,93 @@ pub unsafe extern "C" fn swr_v1_corebase_system_random(
     min.cast_unsigned().wrapping_add(offset).cast_signed()
 }
 
-/// `swoole_redirect_stdout(int)`: `dup2` onto stdout then stderr; `errors`
-/// receives each call's errno, 0 when it succeeded.
-/// # Safety
-/// `errors` is writable for two ints.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_redirect_stdout(new_fd: c_int, errors: *mut c_int) {
-    for (slot, target) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
-        .into_iter()
-        .enumerate()
-    {
-        let error = if dup2(new_fd, target) < 0 { errno() } else { 0 };
-        // SAFETY: `slot < 2`, inside the caller's two ints.
-        unsafe { errors.wrapping_add(slot).write(error) };
+/// `dup2` onto stdout, then stderr: each call's errno, 0 when it succeeded.
+fn redirect(new_fd: c_int) -> [c_int; 2] {
+    [libc::STDOUT_FILENO, libc::STDERR_FILENO]
+        .map(|target| if dup2(new_fd, target) < 0 { errno() } else { 0 })
+}
+
+/// `void swoole_redirect_stdout(int new_fd)`: `dup2` onto stdout, then stderr.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z22swoole_redirect_stdouti")
+)]
+pub extern "C" fn swoole_redirect_stdout(new_fd: c_int) {
+    let failed = redirect(new_fd);
+    let origin = c"swoole_redirect_stdout";
+    if failed[0] != 0 {
+        crate::log::sys_warning_errno(
+            failed[0],
+            origin,
+            format_args!("dup2(STDOUT_FILENO) failed"),
+        );
     }
+    if failed[1] != 0 {
+        crate::log::sys_warning_errno(
+            failed[1],
+            origin,
+            format_args!("dup2(STDERR_FILENO) failed"),
+        );
+    }
+}
+
+/// `void swoole_redirect_stdout(const char *file)`: append to `file`, created 0644.
+/// # Safety
+/// `file` is a NUL-terminated path.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z22swoole_redirect_stdoutPKc")
+)]
+pub unsafe extern "C" fn swoole_redirect_stdout_file(file: *const c_char) {
+    // SAFETY: a NUL-terminated path, as the caller promises.
+    let fd = unsafe { libc::open(file, libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT, 0o644) };
+    if fd >= 0 {
+        swoole_redirect_stdout(fd);
+        close(fd);
+    } else {
+        // SAFETY: as above.
+        let file = unsafe { CStr::from_ptr(file) }.to_string_lossy();
+        crate::log::sys_warning(
+            c"swoole_redirect_stdout",
+            format_args!("open('{file}') failed"),
+        );
+    }
+}
+
+/// `void swoole_print_backtrace_on_error()`: the backtrace and the host's own,
+/// when `print_backtrace_on_error` is set.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z31swoole_print_backtrace_on_errorv")
+)]
+pub extern "C" fn swoole_print_backtrace_on_error() {
+    if !crate::swr_v1_core_print_backtrace_on_error() {
+        return;
+    }
+    swoole_print_backtrace();
+    let host = crate::swr_v1_core_print_backtrace();
+    if !host.is_null() {
+        // SAFETY: the host stored a `void (*)()` in `SwooleG.print_backtrace`.
+        let host: extern "C" fn() = unsafe { std::mem::transmute(host) };
+        host();
+    }
+}
+
+thread_local! {
+    static EXITING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// `void swoole_exit(int status)`. Concurrent exits from several threads can
+/// crash, so callers queue on a lock that the exiting thread keeps; an exit
+/// handler on that thread that exits again goes straight through.
+#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z11swoole_exiti"))]
+pub extern "C" fn swoole_exit(status: c_int) -> ! {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if !EXITING.replace(true) {
+        std::mem::forget(LOCK.lock());
+    }
+    // SAFETY: exit(3) never returns.
+    unsafe { exit(status) }
 }
 
 /// Commit libc formatting's bounded result and terminator. Native keeps only
@@ -632,12 +718,10 @@ mod tests {
 
     #[test]
     fn system_random_reads_urandom_into_the_range() {
-        let mut failed = false;
         for _ in 0..100 {
-            let value = unsafe { swr_v1_corebase_system_random(10, 20, &raw mut failed) };
+            let value = swoole_system_random(10, 20);
             assert!((10..=20).contains(&value), "{value} out of range");
         }
-        assert!(!failed, "no short read");
     }
 
     #[test]
@@ -695,9 +779,8 @@ mod tests {
     #[test]
     fn shell_exec_pipes_the_command_output() {
         let mut pid = 0;
-        let fd = unsafe {
-            swr_v1_corebase_shell_exec(c"echo out; echo err >&2".as_ptr(), &raw mut pid, true)
-        };
+        let fd =
+            unsafe { swoole_shell_exec(c"echo out; echo err >&2".as_ptr(), &raw mut pid, true) };
         assert!(fd >= 0 && pid > 0, "spawned");
         let mut output = Vec::new();
         let mut chunk = [0u8; 64];
@@ -716,8 +799,6 @@ mod tests {
 
     #[test]
     fn redirect_reports_each_dup2_errno() {
-        let mut errors = [-1; 2];
-        unsafe { swr_v1_corebase_redirect_stdout(-1, errors.as_mut_ptr()) };
-        assert_eq!(errors, [libc::EBADF, libc::EBADF]);
+        assert_eq!(redirect(-1), [libc::EBADF, libc::EBADF]);
     }
 }
