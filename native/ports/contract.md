@@ -1,9 +1,9 @@
 # ListenPort policy ABI (ports)
 
 Pinned upstream: Swoole 6.2.4, commit c7e514509451beafd4d70ce5b78943d51e76381c.
-Feature bit 8388608 (`ports`). Patches
-`src/server/port.cc` and the Port glue in `ext-src/swoole_server.cc` (upstream's
-`ext-src/swoole_server_port.cc` is deleted). Declarations are in
+Feature bit 8388608 (`ports`). Upstream's `src/server/port.cc` and
+`ext-src/swoole_server_port.cc` are deleted; their native glue is in
+`src/server/master.cc` and `ext-src/swoole_server.cc`. Declarations are in
 [swoole_rs_ports.h](swoole_rs_ports.h). Tests: `tests/modules/ports/README.md`.
 
 ## General rules

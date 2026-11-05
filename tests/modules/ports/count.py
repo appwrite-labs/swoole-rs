@@ -24,11 +24,9 @@ def main(signatures=None,witness=None,scope=None,support=None,source_path="src/s
     p=argparse.ArgumentParser(description=scope);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True,help='Rust archive of the hybrid build under test');p.add_argument('--output',type=Path,required=True);p.add_argument('--core',type=Path,help='Configured pinned build tree for the original whole-SDK compile');p.add_argument('--sdk-origin',type=Path,help='Original configured src path when compiling a verified private SDK copy');p.add_argument('--php-config',default='php-config');p.add_argument('--openssl-root',type=Path);p.add_argument('--include',type=Path,action='append',default=[]);p.add_argument('--sanitize',action='store_true');p.add_argument('--rust-asan',action='store_true');a=p.parse_args();overlay.SOURCE=a.source
     if a.rust_asan and (not a.sanitize or '__asan_report_' not in subprocess.check_output(['nm','-u',str(a.archive)],text=True,stderr=subprocess.DEVNULL)):p.error('Actual Rust ASan archive and native sanitizer flag required')
     folder=a.output.resolve().with_suffix('');folder.mkdir(parents=True,exist_ok=True)
-    # Original side from the pin, selected side from the hybrid build's fully patched tree,
-    # where swoole_server_port.cc's remaining glue lives in swoole_server.cc.
+    # Original side from the pin, selected side from the hybrid build's fully patched tree.
     hybrid_source,hybrid_flags=hybrid_tree(a.archive)
-    moved={'ext-src/swoole_server_port.cc':'ext-src/swoole_server.cc'}
-    sides={'original':overlay.original,'selected':lambda path:(hybrid_source/moved.get(path,path)).read_text()}
+    sides={'original':overlay.original,'selected':lambda path:overlay.selected(hybrid_source,path)}
     report={'scope':scope,'pin':overlay.PIN,'hybrid_tree':str(hybrid_source),'method_signatures':signatures,'native_instrumented':a.sanitize,'rust_instrumented':a.rust_asan,'support':{},'sdk':[],'passed':False}
     # Each side's files share names in their own folder; the witness includes them by name.
     for side,read in sides.items():

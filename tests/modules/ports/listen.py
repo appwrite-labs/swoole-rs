@@ -23,7 +23,7 @@ def main():
     report={'scope':__doc__,'pin':overlay.PIN,'platform':sys.platform,'results':[],'passed':False,'native_instrumented':a.sanitize};outputs=[]
     for engine in ['upstream','rust']:
         directory=folder/engine;directory.mkdir(exist_ok=True)
-        raw=extract(overlay.original('src/server/port.cc') if engine=='upstream' else (hybrid_tree(a.archive)[0]/'src/server/port.cc').read_text());(directory/'listen.inc').write_text(raw)
+        raw=extract(overlay.original('src/server/port.cc') if engine=='upstream' else overlay.selected(hybrid_tree(a.archive)[0],'src/server/port.cc'));(directory/'listen.inc').write_text(raw)
         command=['c++','-std=c++14','-O1','-UNDEBUG','-DSWOOLE_RS_PORTS','-I'+str(ROOT/'native/ports'),'-I'+str(directory),str(Path(__file__).with_suffix('.cc')),*([str(a.archive.resolve())] if engine=='rust' else []),'-lpthread','-o',str(directory/'witness')]
         if sys.platform=='linux':command+=['-ldl','-lm']
         if a.sanitize:command+=['-fsanitize=address,undefined','-fno-sanitize-recover=all','-g']

@@ -19,7 +19,7 @@ class Checkpoints(unittest.TestCase):
             with self.subTest(stop=stop),tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);build=root/'hybrid';archive=build/'rust-prefix/lib/test.a';archive.parent.mkdir(parents=True);archive.write_bytes(b'inert metadata fixture')
                 (build/'rust-prefix/include').mkdir();(build/'src/include').mkdir(parents=True);(build/'src/src/server').mkdir(parents=True);(build/'src/config.h').write_text('')
-                (build/'src/include/swoole.h').write_text('');(build/'src/src/server/port.cc').write_text('size_t ListenPort::get_connection_num() const {\n}\n')
+                (build/'src/include/swoole.h').write_text('');(build/'src/src/server/master.cc').write_text('size_t ListenPort::get_connection_num() const {\n}\n')
                 core=root/'sdk';(core/'include').mkdir(parents=True)
                 for p in [core/'config.h',core/'include/swoole_server.h',core/'include/swoole_atomic.h']:p.write_text('inert header metadata')
                 output=root/'report.json';calls=[]
