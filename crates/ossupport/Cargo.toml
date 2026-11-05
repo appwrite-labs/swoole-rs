@@ -9,7 +9,7 @@ name = "swoole_rs_ossupport"
 crate-type = ["rlib"]
 
 [features]
-# Define src/os/file.cc's functions under their C++ symbols. Only crates/ffi, whose builds
+# Define src/os/file.cc's and base.cc's Rust functions under their C++ symbols. Only crates/ffi, whose builds
 # apply the ossupport patch that deletes the C++ definitions, turns it on.
 upstream-symbols = []
 

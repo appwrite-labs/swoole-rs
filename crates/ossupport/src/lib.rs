@@ -29,7 +29,8 @@ pub use file_record::*;
 pub use swoole_rs_corebase::swr_v1_os_random_bytes;
 mod system;
 pub use system::{
-    IsolationWarn, swr_v1_os_daemon_detach, swr_v1_os_is_root_user, swr_v1_os_set_isolation,
+    IsolationWarn, swoole_random_bytes, swoole_thread_get_name, swoole_thread_set_name,
+    swr_v1_os_daemon_detach, swr_v1_os_is_root_user, swr_v1_os_set_isolation,
     swr_v1_os_set_process_death_signal, swr_v1_os_thread_get_name, swr_v1_os_thread_native_id,
     swr_v1_os_thread_set_name,
 };
