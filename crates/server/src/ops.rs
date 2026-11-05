@@ -812,7 +812,7 @@ pub const RUN_ST_FOREACH: u32 = 307;
 pub const RUN_ST_SEND: u32 = 308;
 pub const RUN_ST_CLEAR_TIMER: u32 = 309;
 /// Direct public log reopen, independent of installed master signal handlers.
-pub const RUN_REOPEN_LOGGER: u32 = 310;
+pub const RUN_REOPEN_LOGGER: u32 = 311;
 
 /// The command name is taken; a new command pipe, whether it is ready; the command
 /// joins `commands` and `command_handlers` with id arg.
@@ -989,12 +989,19 @@ mod tests {
     fn numbers_match_the_header() {
         let header = header();
         let mut checked = 0;
+        let mut operations = HashMap::new();
         for line in include_str!("ops.rs").lines() {
             let Some(rest) = line.strip_prefix("pub const ") else {
                 continue;
             };
             let (name, value) = rest.split_once(": u32 = ").unwrap();
             let value: u32 = value.trim_end_matches(';').parse().unwrap();
+            if name.starts_with("RUN_") {
+                assert!(
+                    operations.insert(value, name).is_none(),
+                    "duplicate operation {value}: {name}"
+                );
+            }
             let native = format!("SWR_SERVER_{name}");
             assert_eq!(header.get(&native), Some(&value), "{native}");
             checked += 1;
