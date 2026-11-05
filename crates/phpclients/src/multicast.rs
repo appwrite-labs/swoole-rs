@@ -392,6 +392,10 @@ fn membership(
 
 /// The RFC 3678 requests: `name` is the request itself.
 #[cfg(not(target_vendor = "apple"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "shares the signature of the Apple variant, which can fail"
+)]
 fn change(
     s: Sock,
     level: c_int,
