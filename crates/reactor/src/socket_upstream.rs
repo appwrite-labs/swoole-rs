@@ -24,21 +24,10 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// `swoole_signal_dispatch`, which a blocking call runs when interrupted; none
-/// outside the hybrid.
+/// `swoole_signal_dispatch`, which a blocking call runs when interrupted.
 #[must_use]
 pub fn signal_dispatch() -> Option<unsafe extern "C" fn()> {
-    #[cfg(feature = "upstream-symbols")]
-    {
-        // SAFETY: crates/process defines it under its upstream symbol.
-        unsafe extern "C" {
-            #[link_name = "_Z22swoole_signal_dispatchv"]
-            safe fn swoole_signal_dispatch();
-        }
-        Some(swoole_signal_dispatch)
-    }
-    #[cfg(not(feature = "upstream-symbols"))]
-    None
+    Some(swoole_rs_process::signal::swoole_signal_dispatch)
 }
 
 /// A static member of reference type (`static double &Socket::default_dns_timeout`),

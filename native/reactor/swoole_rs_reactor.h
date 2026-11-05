@@ -259,6 +259,8 @@ int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_
 int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);
 /* --fix-halfclose's close_notify and interrupted-sendfile repairs (SW_HALFCLOSE_TLS_SHUTDOWN). */
 void swr_v1_socket_set_halfclose_repairs(bool repaired);
+/* Socket::free, which defers through a std::function. */
+void swr_v1_socket_set_free(void (*free)(struct swr_v1_socket *));
 /* An IOVector's cursor. */
 typedef struct {
     struct iovec *iterator;

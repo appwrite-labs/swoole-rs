@@ -44,7 +44,7 @@ index 4940e4f..b20946c 100644
 -
  struct Address {
 diff --git a/src/network/socket.cc b/src/network/socket.cc
-index ddf78d6..1c2f5e0 100644
+index ddf78d6..9eb7e5c 100644
 --- a/src/network/socket.cc
 +++ b/src/network/socket.cc
 @@ -33,12 +33,2 @@ namespace network {
@@ -93,7 +93,7 @@ index ddf78d6..1c2f5e0 100644
 -    swoole_signal_dispatch();
 -}
  #ifndef SW_HALFCLOSE_TLS_SHUTDOWN
-@@ -91,41 +51,3 @@ static void socket_signal_dispatch() {
+@@ -91,41 +51,6 @@ static void socket_signal_dispatch() {
  #endif
 -static const bool socket_signal_registered = (swr_v1_socket_set_signal_dispatch(socket_signal_dispatch),
 -                                              swr_v1_socket_set_tls_shutdown_repaired(SW_HALFCLOSE_TLS_SHUTDOWN),
@@ -134,9 +134,12 @@ index ddf78d6..1c2f5e0 100644
 -    if (corked) uncork();
 -    return rv < 0 ? SW_ERR : SW_OK;
 -}
-+static const bool socket_halfclose_registered = (swr_v1_socket_set_halfclose_repairs(SW_HALFCLOSE_TLS_SHUTDOWN), true);
++static const bool socket_registered =
++    (swr_v1_socket_set_halfclose_repairs(SW_HALFCLOSE_TLS_SHUTDOWN),
++     swr_v1_socket_set_free([](swr_v1_socket *socket) { static_cast<Socket *>(socket)->free(); }),
++     true);
  
-@@ -168,74 +90,10 @@ int Socket::bind(const std::string &_host, int port) {
+@@ -168,74 +93,10 @@ int Socket::bind(const std::string &_host, int port) {
  
 -// Queued output's sends, classification, corking and request order are Rust's
 -// (crates/reactor/src/output.rs); the buffer, chunks, requests and warnings stay here.
@@ -217,7 +220,7 @@ index ddf78d6..1c2f5e0 100644
 +    out_buffer->typed_sendfile(request.get(), swr_v1_socket_file_dispose);
 +    request.release();
      return SW_OK;
-@@ -246,10 +104,2 @@ static_assert(SW_ERROR_SSL_BAD_CLIENT == 1015 && SW_ERROR_SSL_RESET == 1017 && S
+@@ -246,10 +107,2 @@ static_assert(SW_ERROR_SSL_BAD_CLIENT == 1015 && SW_ERROR_SSL_RESET == 1017 && S
  
 -ssize_t Socket::send_async(const void *_buf, size_t _n) {
 -    if (!swoole_event_is_available()) {
@@ -228,7 +231,7 @@ index ddf78d6..1c2f5e0 100644
 -}
 -
  SocketType Socket::convert_to_type(std::string &host) {
-@@ -293,32 +143,2 @@ static_assert(SW_SSL_STATE_READY == 1 && SW_SSL_STATE_WAIT_STREAM == 2 && SW_ERR
+@@ -293,32 +146,2 @@ static_assert(SW_SSL_STATE_READY == 1 && SW_SSL_STATE_WAIT_STREAM == 2 && SW_ERR
  
 -using network::Socket;
 -

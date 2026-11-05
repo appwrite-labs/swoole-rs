@@ -13,7 +13,7 @@ use crate::{
 };
 use openssl_sys::{SSL, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, stack_st_X509};
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::{
     make_socket_typed, signal_dispatch, socket_cork, socket_set_fd_option, socket_uncork,
@@ -1066,7 +1066,7 @@ unsafe fn ssl_sendfile(
 }
 
 /// `Socket::sendfile` over a descriptor: through OpenSSL when the socket holds an
-/// SSL, else `swoole_sendfile`.
+/// SSL, else the platform's sendfile.
 ///
 /// # Safety
 /// `socket` is a live record and `offset` writable.
@@ -1083,27 +1083,13 @@ unsafe fn sendfile(
         // SAFETY: as the caller promises.
         return unsafe { ssl_sendfile(socket, fd, offset, length) };
     }
-    #[cfg(feature = "upstream-symbols")]
-    {
-        // SAFETY: src/os/sendfile.cc's, which picks the platform's sendfile.
-        unsafe extern "C" {
-            #[cfg_attr(target_os = "macos", link_name = "_Z15swoole_sendfileiiPxm")]
-            #[cfg_attr(not(target_os = "macos"), link_name = "_Z15swoole_sendfileiiPlm")]
-            fn swoole_sendfile(
-                out: c_int,
-                fd: c_int,
-                offset: *mut libc::off_t,
-                length: usize,
-            ) -> isize;
-        }
-        // SAFETY: the socket's and the file's descriptors, and the caller's offset.
-        unsafe { swoole_sendfile(out, fd, offset, length) }
+    // `swoole_sendfile` (src/os/sendfile.cc): the platform's sendfile.
+    // SAFETY: the socket's and the file's descriptors, and the caller's offset.
+    let sent = unsafe { swoole_rs_ossupport::swr_v1_os_sendfile(out, fd, offset, length) };
+    if cfg!(not(target_os = "linux")) && sent.warn != 0 {
+        log::sys_warning(c"swoole_sendfile", format_args!("sendfile failed"));
     }
-    #[cfg(not(feature = "upstream-symbols"))]
-    {
-        // SAFETY: the socket's and the file's descriptors, and the caller's offset.
-        unsafe { swoole_rs_ossupport::swr_v1_os_sendfile_copy(out, fd, offset, length) }.result
-    }
+    sent.result
 }
 
 /// `ssize_t Socket::sendfile(const File &fp, off_t *offset, size_t length)`.
@@ -1248,23 +1234,12 @@ pub unsafe extern "C" fn socket_sendfile_sync(
     if rv < 0 { -1 } else { 0 }
 }
 
-/// `Buffer::check(status)`: native code raises a failed Rust queue status as a C++
-/// exception, which unwinds through the `C-unwind` frames calling it.
+/// A failed Rust queue status. Native `Buffer` raises it as a C++ exception that
+/// nothing catches, so the process ends either way; here it aborts.
 fn buffer_check(status: i32) {
-    if status == 0 {
-        return;
+    if status != 0 {
+        std::process::abort();
     }
-    #[cfg(feature = "upstream-symbols")]
-    {
-        // SAFETY: src/core/buffer.cc's static member.
-        unsafe extern "C-unwind" {
-            #[link_name = "_ZN6swoole6Buffer5checkEi"]
-            fn check(status: i32);
-        }
-        // SAFETY: throws for any status but OK.
-        unsafe { check(status) };
-    }
-    std::process::abort();
 }
 
 /// A socket's `out_buffer` queue: `Buffer`'s first member is its Rust handle.
@@ -1581,30 +1556,35 @@ pub unsafe extern "C" fn socket_ssl_create(
     -1
 }
 
+/// `void Socket::free()`, which native code registers: it defers the close to the
+/// event loop through a `std::function`.
+static SOCKET_FREE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Registers `Socket::free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_socket_set_free(free: unsafe extern "C-unwind" fn(*mut SocketRecord)) {
+    SOCKET_FREE.store(free as *mut c_void, Ordering::Relaxed);
+}
+
 /// `void Socket::free()`: closes and frees the socket, deferred to the event loop
-/// when there is one. Outside the hybrid, a socket without timers or buffers is
-/// released at once.
+/// when there is one. Unregistered (outside the hybrid), a socket without timers or
+/// buffers is released at once.
 ///
 /// # Safety
 /// `socket` is a live record nothing else uses afterwards.
 unsafe fn socket_free(socket: *mut SocketRecord) {
-    #[cfg(feature = "upstream-symbols")]
-    {
-        // SAFETY: src/network/socket.cc's.
-        unsafe extern "C-unwind" {
-            #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-            fn free(socket: *mut SocketRecord);
-        }
-        // SAFETY: as the caller promises.
-        unsafe { free(socket) };
-    }
-    #[cfg(not(feature = "upstream-symbols"))]
-    {
+    let free = SOCKET_FREE.load(Ordering::Relaxed);
+    if free.is_null() {
         // SAFETY: as the caller promises.
         unsafe { swoole_rs_reactor::swr_v1_socket_release(socket) };
         // SAFETY: as the caller promises.
         unsafe { swoole_rs_reactor::swr_v1_socket_dealloc(socket) };
+        return;
     }
+    // SAFETY: only `swr_v1_socket_set_free` stores it, from that function type.
+    let free: unsafe extern "C-unwind" fn(*mut SocketRecord) = unsafe { std::mem::transmute(free) };
+    // SAFETY: as the caller promises.
+    unsafe { free(socket) };
 }
 
 /// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
