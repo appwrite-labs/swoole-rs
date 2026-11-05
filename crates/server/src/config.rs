@@ -222,6 +222,7 @@ pub unsafe extern "C" fn swr_v1_server_config_init(
 ///
 /// # Safety
 /// The caller lends a live state and synchronizes its field access as for the native view.
+#[inline(always)]
 pub(crate) unsafe fn native_fact(
     state: *const crate::ServerState,
     op: u32,

@@ -68,6 +68,7 @@ pub unsafe extern "C" fn swr_v1_server_shared_init(storage: *mut core::ffi::c_vo
 ///
 /// # Safety
 /// The state is live and native callers keep the shared allocation mapped for this operation.
+#[inline(always)]
 pub(crate) unsafe fn native_fact(
     state: *const crate::ServerState,
     op: u32,
