@@ -493,6 +493,7 @@ dependencies = [
  "openssl-sys",
  "swoole-rs-corebase",
  "swoole-rs-reactor",
+ "swoole-rs-tls",
  "swoole-rs-uring-sys",
 ]
 

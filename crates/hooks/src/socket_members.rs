@@ -33,7 +33,7 @@ const _: () = assert!(
 );
 
 /// The record inside the native `Socket` at `this`.
-fn record(this: *const c_void) -> *mut CoSocket {
+pub(crate) fn record(this: *const c_void) -> *mut CoSocket {
     this.wrapping_byte_add(size_of::<*const c_void>())
         .cast_mut()
         .cast()

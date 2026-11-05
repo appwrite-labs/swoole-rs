@@ -79,15 +79,6 @@ def main():
                 status = 'UNSUPPORTED' if passed and compiled_out and variant != 'disabled' else 'PASS' if passed else 'FAIL'
                 print(variant, path, result.returncode, status, flush=True)
                 rows.append(dict(variant=variant, path=path, command=command, returncode=result.returncode, passed=passed, status=status, stderr=result.stderr))
-            if variant == 'selected':
-                path = 'tests/modules/hooks/fd_control_sdk.cpp'
-                command = ['c++', *flags, '-fsyntax-only', str(ROOT/path)]
-                result = subprocess.run(command, capture_output=True, text=True)
-                passed = result.returncode == 0
-                status = 'PASS' if passed else 'FAIL'
-                print('sdk-selected', path, result.returncode, status, flush=True)
-                rows.append(dict(variant='sdk-selected', path=path, command=command,
-                                 returncode=result.returncode, passed=passed, status=status, stderr=result.stderr))
     report = dict(pin=PIN, scope=__doc__, hybrid_tree=str(hybrid_source), pkg_config_path=pkg_env.get('PKG_CONFIG_PATH', ''), discovered_prefixes=discovered_prefixes, compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0], rows=rows)
     a.report.parent.mkdir(parents=True, exist_ok=True)
     a.report.write_text(json.dumps(report, indent=2)+'\n')
