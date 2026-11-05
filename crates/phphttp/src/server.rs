@@ -55,7 +55,7 @@ struct Receive {
     websocket_status: u8,
     /// The port speaks HTTP and has `onRequest`.
     http: bool,
-    /// The port speaks WebSocket and has `onMessage`.
+    /// The port speaks WebSocket and has `onMessage` (asked only when `http` is false).
     websocket: bool,
     http2: bool,
     /// The session's addresses may be cached.
@@ -82,19 +82,22 @@ unsafe extern "C" {
     fn swr_http_host_worker(worker: *mut Worker) -> bool;
     /// `swoole_event_defer` of `swr_v1_phphttp_server_deferred`.
     fn swr_http_host_defer(context: *mut Context);
-    /// `get_connection_verify_no_ssl` and its port's facts (null: closed).
+    /// `get_connection_verify_no_ssl` and the facts `route` reads (null: closed).
     fn swr_http_host_receive(
         server: *mut c_void,
         session: i64,
         server_fd: c_int,
         out: *mut Receive,
     ) -> *mut c_void;
-    /// A new context for the server's request, holding its data (`zdata`).
+    /// A new context for the server's request, holding its data (`zdata`), and the
+    /// rest of the connection's facts.
     fn swr_http_host_receive_context(
         server: *mut c_void,
+        conn: *mut c_void,
         session: i64,
         request: *mut c_void,
         zdata: *mut *mut zval,
+        out: *mut Receive,
     ) -> *mut Context;
     /// `PHP_SWOOLE_HOOK_BEFORE_REQUEST`, when one is set, then the connection's
     /// `websocket_status` (parsing an upgrade request sets it).
@@ -234,8 +237,17 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_receive(
         return route;
     }
     let mut zdata = ptr::null_mut();
-    // SAFETY: as above; the request's data moves into the context.
-    let ctx = unsafe { swr_http_host_receive_context(server, session, request, &raw mut zdata) };
+    // SAFETY: as above, with the live connection; the request's data moves into the context.
+    let ctx = unsafe {
+        swr_http_host_receive_context(
+            server,
+            conn,
+            session,
+            request,
+            &raw mut zdata,
+            &raw mut facts,
+        )
+    };
     let result = handle(server, conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
         if route == REQUEST {
             // SAFETY: a live context; false leaves it queued.
