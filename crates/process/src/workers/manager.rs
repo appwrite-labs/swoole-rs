@@ -29,9 +29,9 @@ use super::ops::{
     OP_SIGNAL_DISPATCH, OP_SPAWN_EVENT_WORKER, OP_SPAWN_TASK_WORKER, OP_SPAWN_USER_WORKER,
     OP_START_TASK_POOL, OP_STOP_MESSAGE_WORKER, OP_TASK_POOL_WORKER_NUM, OP_TASK_WORKER_NUM,
     OP_TASK_WORKER_PID, OP_TIMER_AVAILABLE, OP_TIMER_FREE, OP_TIMER_SELECT, OP_UNREGISTER_PID,
-    OP_USER_WORKER_MAP_NUM, OP_USER_WORKER_MAP_PID, OP_USER_WORKER_NUM, OP_WAIT_ERROR,
-    OP_WAIT_STATUS, OP_WORKER_BY_PID, OP_WORKER_NUM, OP_WORKER_TYPE, RUN_MANAGER_MAIN,
-    RUN_MANAGER_SIGNAL, RUN_READ_WORKER_MESSAGE, RUN_RELOAD, RUN_RESTART_WORKER, RUN_START_MANAGER,
+    OP_USER_WORKER_NUM, OP_WAIT_ERROR, OP_WAIT_STATUS, OP_WORKER_BY_PID, OP_WORKER_NUM,
+    OP_WORKER_REGISTRY, OP_WORKER_TYPE, RUN_MANAGER_MAIN, RUN_MANAGER_SIGNAL,
+    RUN_READ_WORKER_MESSAGE, RUN_RELOAD, RUN_RESTART_WORKER, RUN_START_MANAGER,
 };
 use super::{
     HANDLER_NONE, HANDLER_OWN, Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK,
@@ -39,6 +39,7 @@ use super::{
 };
 use crate::reaper::{RELOAD_KILL_ONE, RELOAD_NONE, RELOAD_SIGNALLED, RELOAD_SKIP, ReapHost};
 use crate::reload_task::{ReloadTask, Warn};
+use crate::worker_registry::{CATEGORY_USER, WorkerRegistry};
 
 /// `swoole::WorkerType`.
 const TASK_WORKER: u64 = 4;
@@ -193,9 +194,7 @@ fn wait<H: Host>(h: &mut H) {
                 pids.push(pid(h.op(OP_TASK_WORKER_PID, worker)));
             }
         }
-        for worker in 0..h.get(OP_USER_WORKER_MAP_NUM) {
-            pids.push(pid(h.op(OP_USER_WORKER_MAP_PID, worker)));
-        }
+        pids.extend(user_worker_pids(h));
         *manager.kill_workers.borrow_mut() = pids;
         // Twice max_wait_time, so as not to race the workers' own deadline.
         alarm(u32::try_from(max_wait_time.saturating_mul(2)).unwrap_or(u32::MAX));
@@ -208,6 +207,14 @@ fn wait<H: Host>(h: &mut H) {
         alarm(0);
     }
     h.get(OP_ON_MANAGER_STOP);
+}
+
+fn user_worker_pids<H: Host>(h: &mut H) -> Vec<c_int> {
+    let address = usize::try_from(h.get(OP_WORKER_REGISTRY)).unwrap_or(0);
+    // SAFETY: the manager's server owns this registry throughout the call. No
+    // callback runs or registry mutation occurs while its pids are copied.
+    unsafe { (address as *const WorkerRegistry).as_ref() }
+        .map_or_else(Vec::new, |registry| registry.pids(CATEGORY_USER).collect())
 }
 
 fn pid(value: u64) -> c_int {
@@ -514,6 +521,36 @@ mod tests {
         ]);
         assert_eq!(run_op(&mut h, RUN_START_MANAGER, 0), SW_ERR);
         assert_eq!(h.called(LOG_FORK_MANAGER), 1);
+    }
+
+    #[test]
+    fn shutdown_user_pids_snapshot_the_registry_without_filtering_pid_values() {
+        use crate::worker_registry::{
+            swr_v1_process_worker_registry_detach, swr_v1_process_worker_registry_free,
+            swr_v1_process_worker_registry_new, swr_v1_process_worker_registry_register,
+            swr_v1_process_worker_registry_unregister,
+        };
+        let registry = swr_v1_process_worker_registry_new();
+        let mut worker = 0u8;
+        let pointer = core::ptr::from_mut(&mut worker).cast();
+        let mut h = Script::with(&[(OP_WORKER_REGISTRY, registry as u64)]);
+        unsafe {
+            for pid in [10, 0, -7] {
+                swr_v1_process_worker_registry_register(registry, pid, pointer, CATEGORY_USER);
+            }
+            swr_v1_process_worker_registry_register(registry, 20, pointer, 1);
+            let mut before = user_worker_pids(&mut h);
+            before.sort_unstable();
+            assert_eq!(before, [-7, 0, 10]);
+            swr_v1_process_worker_registry_unregister(registry, 10);
+            swr_v1_process_worker_registry_detach(registry, 0);
+            swr_v1_process_worker_registry_register(registry, -7, pointer, 1);
+            swr_v1_process_worker_registry_register(registry, 11, pointer, CATEGORY_USER);
+            assert_eq!(user_worker_pids(&mut h), [11]);
+            assert_eq!(before, [-7, 0, 10]);
+            swr_v1_process_worker_registry_free(registry);
+        }
+        assert_eq!(user_worker_pids(&mut Script::default()), [] as [i32; 0]);
     }
 
     #[test]
