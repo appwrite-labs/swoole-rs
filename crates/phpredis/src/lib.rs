@@ -1,7 +1,7 @@
 //! PHP `Swoole\Redis\Server` in Rust: registration, constants,
 //! `setHandler`/`getHandler`/`format` and the request dispatch over the
 //! protocols crate's RESP walk and reply framing. C++ keeps the Server and
-//! answers through `swr_redis_host_*` (`ext-src/swoole_redis_server.cc`); a
+//! answers through `swr_redis_host_*` (`ext-src/swoole_server.cc`); a
 //! handler runs there inside `zend_try`, and its trampoline re-raises a
 //! bailout once the Rust frames are gone (docs/zend.md).
 //!
@@ -115,16 +115,27 @@ handlers! {
     zim_swoole_redis_server_format => format::method;
 }
 
+/// `Swoole\Redis\Server`, as C++ reads it; MINIT writes it.
+#[unsafe(no_mangle)]
+pub static mut swoole_redis_server_ce: *mut zend_class_entry = ptr::null_mut();
+
+unsafe extern "C" {
+    /// `Swoole\Server`, registered before this class.
+    static swoole_server_ce: *mut zend_class_entry;
+    /// `Swoole\Exception` (crates/phpswoole).
+    static swoole_exception_ce: *mut zend_class_entry;
+}
+
 /// MINIT: `Swoole\Redis\Server` extending `Swoole\Server`, and its reply type
 /// constants. Its objects are the parent's (it installs no handlers).
 /// # Safety
 /// Called once, at MINIT, after `Swoole\Server` is registered.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpredis_minit(
-    server: *mut zend_class_entry,
-    exception: *mut zend_class_entry,
-) -> *mut zend_class_entry {
-    EXCEPTION.store(exception, Relaxed);
+pub unsafe extern "C" fn php_swoole_redis_server_minit(_module_number: c_int) {
+    // SAFETY: MINIT registered the parent; nothing writes it now.
+    let server = unsafe { swoole_server_ce };
+    // SAFETY: as above.
+    EXCEPTION.store(unsafe { swoole_exception_ce }, Relaxed);
     // SAFETY: MINIT, with a static table and the registered parent.
     unsafe {
         SERVER.register_child(
@@ -140,23 +151,25 @@ pub unsafe extern "C" fn swr_v1_phpredis_minit(
         // SAFETY: MINIT, after `register`.
         unsafe { SERVER.constant_long(name, value) };
     }
-    SERVER.entry()
+    // SAFETY: MINIT, before anything reads it.
+    unsafe { swoole_redis_server_ce = SERVER.entry() };
 }
 
-/// RSHUTDOWN: free the handlers. True if a destructor bailed out; the C++
-/// caller re-raises it.
+/// RSHUTDOWN: free the handlers, then re-raise a destructor's bailout.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpredis_rshutdown() -> bool {
+pub extern "C" fn php_swoole_redis_server_rshutdown() {
     let handlers: Vec<usize> =
         HANDLERS.with_borrow_mut(|map| map.drain().map(|(_, h)| h).collect());
-    let mut bailed = false;
+    let mut result = Ok(());
     for handler in handlers {
         // SAFETY: a callable `swr_redis_host_callable` made, freed once; the
         // body is C++.
-        bailed |=
-            unsafe { bailout::trap(swr_redis_host_callable_free, handler as *mut c_void) }.is_err();
+        let freed = unsafe { bailout::trap(swr_redis_host_callable_free, handler as *mut c_void) };
+        if freed.is_err() {
+            result = freed;
+        }
     }
-    bailed
+    bailout::raise(result);
 }
 
 /// `redis_handler_key`: `_handler_` and the command, lowercased.

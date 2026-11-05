@@ -98,7 +98,6 @@ unsafe extern "C" {
     fn php_swoole_http_client_coro_minit(module_number: c_int);
     fn php_swoole_http2_client_coro_minit(module_number: c_int);
     fn php_swoole_server_minit(module_number: c_int);
-    fn php_swoole_server_port_minit(module_number: c_int);
     fn php_swoole_http_request_minit(module_number: c_int);
     fn php_swoole_http_response_minit(module_number: c_int);
     fn php_swoole_http_cookie_minit(module_number: c_int);
@@ -186,7 +185,6 @@ pub(crate) fn startup(module_number: c_int) {
         M(ops.optional_client_minit),
         // server
         M(php_swoole_server_minit),
-        M(php_swoole_server_port_minit),
         M(php_swoole_http_request_minit),
         M(php_swoole_http_response_minit),
         M(php_swoole_http_cookie_minit),

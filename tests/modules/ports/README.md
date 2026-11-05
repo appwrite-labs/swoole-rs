@@ -45,7 +45,8 @@ Exact-body model gates share the `count.py` runner (`main()`), which extracts th
 named bodies (original from the pin, selected from the hybrid build's tree), compiles
 each side's witness translation unit and links them to the archive. With `--core`
 (a configured pinned tree) it syntax checks the full original `port.cc` /
-`swoole_server_port.cc` there and the selected ones in the hybrid build's tree:
+`swoole_server_port.cc` there and the selected ones in the hybrid build's tree
+(`swoole_server.cc`, which holds what is left of `swoole_server_port.cc`):
 
 ```text
 python3 tests/modules/ports/NAME.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --output REPORT [--core CONFIGURED_CORE] [--sanitize] [--rust-asan] [--openssl-root DIR] [--php-config PATH] [--sdk-origin ORIGINAL_SRC] [--include DIR]
