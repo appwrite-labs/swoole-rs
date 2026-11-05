@@ -1,13 +1,8 @@
-//! `Socket::recv_packet` of the coroutine socket: one packet, length-prefixed,
-//! EOF-delimited or whatever one `recv` returns, read into the socket's read
-//! buffer. Native code keeps the availability check, the read timer and the
-//! buffer's allocation, and passes the socket's effects in `PacketOps`.
-use core::ffi::c_void;
-
+//! Coroutine packet framing directly over the socket's record and installed host.
 /// `SW_BUFFER_SIZE_BIG`: the most one EOF-protocol `recv` asks for.
 const BIG: usize = 65536;
 
-/// The leading fields of `swoole::String`, in its order.
+/// A view of the native read String, refreshed after every resize.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ReadBuffer {
@@ -17,96 +12,71 @@ pub struct ReadBuffer {
     pub str: *mut u8,
 }
 
-/// The socket's protocol settings and effects. Every callback gets `context`.
-#[repr(C)]
-pub struct PacketOps {
-    pub context: *mut c_void,
-    /// The socket's read buffer; `extend` and `reduce` may move its bytes.
-    pub buffer: *mut ReadBuffer,
-    pub length_check: bool,
-    pub eof_check: bool,
-    pub eof: *const u8,
-    pub eof_len: u8,
-    pub length_type: u8,
-    pub length_size: u8,
-    pub length_offset: u16,
-    pub max_length: u32,
-    /// `Socket::recv` and `Socket::recv_all`.
-    pub recv: unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> isize,
-    pub recv_all: unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> isize,
-    /// `protocol.get_package_length` over the first `length` bytes; stores
-    /// `PacketLength::header_len`.
-    pub package_length: unsafe extern "C" fn(*mut c_void, *const u8, u32, *mut u32) -> isize,
-    pub extend: unsafe extern "C" fn(*mut c_void, usize),
-    pub reduce: unsafe extern "C" fn(*mut c_void, libc::off_t),
-    /// Sets the socket error: 0 no package length, 1 too large (with a warning
-    /// naming `length`), 2 no EOF within `package_max_length`.
-    pub fail: unsafe extern "C" fn(*mut c_void, u32, isize),
-    /// `errCode == ETIMEDOUT`.
-    pub timed_out: unsafe extern "C" fn(*mut c_void) -> bool,
+struct Packet {
+    socket: *mut crate::co_socket::CoSocket,
+    view: ReadBuffer,
+    protocol: crate::co_socket::Protocol,
+    length_check: bool,
+    eof_check: bool,
 }
 
-struct Packet<'a> {
-    ops: &'a PacketOps,
-}
-
-impl Packet<'_> {
+impl Packet {
     fn buffer(&self) -> ReadBuffer {
-        // SAFETY: `buffer` is the live read buffer for the whole call (swr_v1_hook_recv_packet).
-        unsafe { self.ops.buffer.read() }
+        self.view
     }
-
-    fn set_length(&self, length: usize) {
-        // SAFETY: as in `buffer`; no reference into it is held across callbacks.
-        unsafe { (*self.ops.buffer).length = length };
+    fn set_length(&mut self, length: usize) {
+        self.view.length = length;
     }
-
-    fn set_offset(&self, offset: usize) {
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "upstream assigns size_t to off_t"
-        )]
-        // SAFETY: as in `set_length`.
-        unsafe {
-            (*self.ops.buffer).offset = offset as libc::off_t;
-        };
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "upstream assigns size_t to off_t"
+    )]
+    fn set_offset(&mut self, offset: usize) {
+        self.view.offset = offset as libc::off_t;
     }
-
-    /// `String::clear`.
-    fn clear(&self) {
+    fn clear(&mut self) {
         self.set_length(0);
         self.set_offset(0);
     }
-
-    fn recv(&self, at: usize, length: usize) -> isize {
-        let buffer = self.buffer();
-        // SAFETY: `at` is within the buffer's `size` bytes, as upstream's pointer was.
-        unsafe { (self.ops.recv)(self.ops.context, buffer.str.wrapping_add(at), length) }
+    fn sync(&mut self, action: u32, size: usize) {
+        // SAFETY: this operation exclusively owns its live record and String view.
+        unsafe {
+            (crate::co_io::host().read_buffer)(self.socket, &raw mut self.view, action, size);
+        };
     }
-
-    fn fail(&self, kind: u32, length: isize) {
-        // SAFETY: a native effect on the live socket in `context`.
-        unsafe { (self.ops.fail)(self.ops.context, kind, length) };
+    fn receive(&mut self, at: usize, length: usize, all: bool) -> isize {
+        self.sync(1, 0);
+        // SAFETY: the native receive borrows the requested free space in the buffer.
+        unsafe {
+            (crate::co_io::host().recv)(self.socket, self.view.str.wrapping_add(at), length, all)
+        }
     }
-
+    fn recv(&mut self, at: usize, length: usize) -> isize {
+        self.receive(at, length, false)
+    }
+    fn fail(&mut self, kind: u32, length: isize) {
+        self.sync(1, 0);
+        // SAFETY: a diagnostic on the live record.
+        unsafe { (crate::co_io::host().packet_fail)(self.socket, kind, length) };
+    }
     fn timed_out(&self) -> bool {
-        // SAFETY: a native read of the live socket in `context`.
-        unsafe { (self.ops.timed_out)(self.ops.context) }
+        // SAFETY: the live record, read without retaining a borrow across callbacks.
+        unsafe { (*self.socket).err_code == libc::ETIMEDOUT }
     }
-
-    fn extend(&self, size: usize) {
-        // SAFETY: a native effect on the live read buffer; `buffer` is re-read after it.
-        unsafe { (self.ops.extend)(self.ops.context, size) };
+    fn extend(&mut self, size: usize) {
+        self.sync(2, size);
     }
 
     /// `recv_packet_with_length_protocol`.
-    fn length_protocol(&self) -> isize {
-        let ops = self.ops;
-        let mut header_len = u32::from(ops.length_offset) + u32::from(ops.length_size);
+    fn length_protocol(&mut self) -> isize {
+        let protocol = self.protocol;
+        let mut header_len =
+            u32::from(protocol.package_length_offset) + u32::from(protocol.package_length_size);
         let buffered = self.buffer().length;
         // A custom package_length_func has neither a size nor a type.
         let mut known = buffered > 0
-            && (buffered >= header_len as usize || ops.length_size == 0 && ops.length_type == 0);
+            && (buffered >= header_len as usize
+                || protocol.package_length_size == 0 && protocol.package_length_type == 0);
         loop {
             if !known {
                 let buffer = self.buffer();
@@ -126,11 +96,10 @@ impl Packet<'_> {
                 clippy::cast_possible_truncation,
                 reason = "upstream's (uint32_t) read_buffer->length"
             )]
-            // SAFETY: the buffer's first `length` bytes are initialized; `header` is writable.
+            // SAFETY: native code reads the initialized prefix and writes header length.
             let packet = unsafe {
-                (ops.package_length)(
-                    ops.context,
-                    buffer.str,
+                (crate::co_io::host().package_length)(
+                    self.socket,
                     buffer.length as u32,
                     &raw mut header,
                 )
@@ -145,7 +114,7 @@ impl Packet<'_> {
                 }
                 continue;
             }
-            if packet.unsigned_abs() > ops.max_length as usize {
+            if packet.unsigned_abs() > protocol.package_max_length as usize {
                 self.clear();
                 self.fail(1, packet);
                 return -1;
@@ -159,14 +128,7 @@ impl Packet<'_> {
                 self.extend(wanted);
             }
             let buffer = self.buffer();
-            // SAFETY: the buffer now holds `wanted` bytes, as upstream's pointer assumed.
-            let mut received = unsafe {
-                (ops.recv_all)(
-                    ops.context,
-                    buffer.str.wrapping_add(buffer.length),
-                    wanted - buffer.length,
-                )
-            };
+            let mut received = self.receive(buffer.length, wanted - buffer.length, true);
             if received > 0 {
                 let length = buffer.length + received.unsigned_abs();
                 self.set_length(length);
@@ -181,11 +143,16 @@ impl Packet<'_> {
     }
 
     /// `recv_packet_with_eof_protocol`.
-    fn eof_protocol(&self) -> isize {
-        let ops = self.ops;
+    fn eof_protocol(&mut self) -> isize {
+        let protocol = self.protocol;
         // SAFETY: `eof` points to `eof_len` bytes of the socket's protocol.
-        let eof = unsafe { core::slice::from_raw_parts(ops.eof, usize::from(ops.eof_len)) };
-        let maximum = ops.max_length as usize;
+        let eof = unsafe {
+            core::slice::from_raw_parts(
+                protocol.package_eof.as_ptr(),
+                usize::from(protocol.package_eof_len),
+            )
+        };
+        let maximum = protocol.package_max_length as usize;
         let mut buffered = self.buffer().length > 0;
         loop {
             if !buffered {
@@ -240,40 +207,71 @@ fn find(buffer: &ReadBuffer, needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-/// `Socket::recv_packet` after its availability check, read timer and
-/// `get_read_buffer`: the packet's length, or `recv`'s result.
+/// `Socket::recv_packet`, including availability, timer and buffer allocation.
 ///
 /// # Safety
-/// `ops` and its buffer are live and exclusively this socket's for the call;
-/// its callbacks act on the socket in `context`.
+/// `socket` is a live record; the installed host acts on its native owner.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_recv_packet(ops: *const PacketOps) -> isize {
-    // SAFETY: the caller passes a live table (see above).
-    let ops = unsafe { &*ops };
-    let packet = Packet { ops };
-    let offset = packet.buffer().offset;
-    // Unprocessed data.
-    if offset > 0 {
-        // SAFETY: a native effect on the live read buffer.
-        unsafe { (ops.reduce)(ops.context, offset) };
+pub unsafe extern "C" fn swr_v1_hook_co_socket_recv_packet(
+    socket: *mut crate::co_socket::CoSocket,
+    timeout: f64,
+) -> isize {
+    use crate::co_io::{Timer, available};
+    use crate::shutdown::READ;
+    // SAFETY: the live record.
+    if !unsafe { available(socket, READ) } {
+        return -1;
     }
-    let received = if ops.length_check {
+    // SAFETY: availability established the live network record.
+    let network = unsafe { (*socket).socket };
+    // SAFETY: the live network record.
+    let timeout = if timeout == 0.0 {
+        // SAFETY: the live network record.
+        unsafe { (*network).timeouts.read }
+    } else {
+        timeout
+    };
+    // SAFETY: the live record; timer stops before this returns.
+    let mut timer = unsafe { Timer::new(socket, READ, timeout) };
+    if !timer.start() {
+        return 0;
+    }
+    // SAFETY: read the settings before any native effect may yield.
+    let record = unsafe { &*socket };
+    let mut packet = Packet {
+        socket,
+        view: ReadBuffer {
+            length: 0,
+            size: 0,
+            offset: 0,
+            str: core::ptr::null_mut(),
+        },
+        protocol: record.protocol,
+        length_check: record.open_length_check,
+        eof_check: record.open_eof_check,
+    };
+    packet.sync(0, 0);
+    let offset = packet.buffer().offset;
+    if offset > 0 {
+        packet.sync(3, usize::try_from(offset).unwrap_or(0));
+    }
+    let received = if packet.length_check {
         packet.length_protocol()
-    } else if ops.eof_check {
+    } else if packet.eof_check {
         packet.eof_protocol()
     } else {
-        let buffer = packet.buffer();
-        let received = packet.recv(0, buffer.size);
+        let received = packet.recv(0, packet.buffer().size);
         if received > 0 {
             packet.set_length(received.unsigned_abs());
             packet.set_offset(received.unsigned_abs());
         }
         received
     };
-    // Keep incomplete length-prefixed packets for a subsequent read after a timeout.
-    if received <= 0 && !(ops.length_check && received < 0 && packet.timed_out()) {
+    if received <= 0 && !(packet.length_check && received < 0 && packet.timed_out()) {
         packet.clear();
     }
+    packet.sync(1, 0);
+    timer.stop();
     received
 }
 
@@ -284,8 +282,10 @@ pub unsafe extern "C" fn swr_v1_hook_recv_packet(ops: *const PacketOps) -> isize
     clippy::cast_sign_loss,
     reason = "the test socket drives the native integer interfaces with small lengths"
 )]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::buffered::swr_v1_hook_co_socket_recv_buffered;
+    use core::ffi::c_void;
     use std::collections::VecDeque;
 
     /// A socket whose `recv` hands out `chunks` in order, then 0 (EOF).
@@ -295,6 +295,8 @@ mod tests {
         chunks: VecDeque<Vec<u8>>,
         failures: Vec<u32>,
         timed_out: bool,
+        gets: usize,
+        receives: usize,
     }
 
     unsafe fn fake<'a>(context: *mut c_void) -> &'a mut Fake {
@@ -303,6 +305,7 @@ mod tests {
 
     unsafe extern "C" fn recv(context: *mut c_void, at: *mut u8, length: usize) -> isize {
         let fake = unsafe { fake(context) };
+        fake.receives += 1;
         let Some(mut chunk) = fake.chunks.pop_front() else {
             return 0;
         };
@@ -339,27 +342,88 @@ mod tests {
         6 + u32::from_be_bytes(bytes.try_into().unwrap()) as isize
     }
 
-    unsafe extern "C" fn extend(context: *mut c_void, size: usize) {
-        let fake = unsafe { fake(context) };
-        fake.storage.resize(size, 0);
-        fake.buffer.str = fake.storage.as_mut_ptr();
-        fake.buffer.size = size;
-    }
-
-    unsafe extern "C" fn reduce(context: *mut c_void, offset: libc::off_t) {
-        let fake = unsafe { fake(context) };
-        let offset = offset as usize;
-        fake.storage.copy_within(offset..fake.buffer.length, 0);
-        fake.buffer.length -= offset;
-        fake.buffer.offset = 0;
-    }
-
     unsafe extern "C" fn fail(context: *mut c_void, kind: u32, _: isize) {
         unsafe { fake(context) }.failures.push(kind);
     }
 
-    unsafe extern "C" fn timed_out(context: *mut c_void) -> bool {
-        unsafe { fake(context) }.timed_out
+    fn socket_for(
+        fake: &mut Fake,
+        length_check: bool,
+        eof: &[u8],
+        max_length: u32,
+    ) -> crate::co_socket::TestSocket {
+        crate::co_io::test_host::install();
+        let mut socket = crate::co_socket::TestSocket::new();
+        socket.0.resolve_context = core::ptr::from_mut(fake).cast();
+        socket.0.open_length_check = length_check;
+        socket.0.open_eof_check = !eof.is_empty();
+        socket.0.err_code = if fake.timed_out { libc::ETIMEDOUT } else { 0 };
+        let p = &mut socket.0.protocol;
+        p.package_eof[..eof.len()].copy_from_slice(eof);
+        p.package_eof_len = eof.len() as u8;
+        p.package_length_type = b'N';
+        p.package_length_size = 4;
+        p.package_length_offset = 2;
+        p.package_max_length = max_length;
+        unsafe { (*socket.0.socket).timeouts.read = -1.0 };
+        socket
+    }
+
+    pub(crate) unsafe extern "C" fn read_buffer(
+        socket: *mut crate::co_socket::CoSocket,
+        view: *mut ReadBuffer,
+        action: u32,
+        size: usize,
+    ) {
+        let ctx = unsafe { (*socket).resolve_context };
+        let fake = unsafe { fake(ctx) };
+        if action == 0 {
+            fake.gets += 1;
+        }
+        if action != 0 {
+            fake.buffer = unsafe { *view };
+        }
+        if action == 2 {
+            fake.storage.resize(size, 0);
+            fake.buffer.str = fake.storage.as_mut_ptr();
+            fake.buffer.size = size;
+        }
+        if action == 3 {
+            fake.storage.copy_within(size..fake.buffer.length, 0);
+            fake.buffer.length -= size;
+            fake.buffer.offset = 0;
+        }
+        unsafe { *view = fake.buffer };
+    }
+    pub(crate) unsafe extern "C" fn receive(
+        socket: *mut crate::co_socket::CoSocket,
+        at: *mut u8,
+        size: usize,
+        all: bool,
+    ) -> isize {
+        let ctx = unsafe { (*socket).resolve_context };
+        if all {
+            unsafe { recv_all(ctx, at, size) }
+        } else {
+            unsafe { recv(ctx, at, size) }
+        }
+    }
+    pub(crate) unsafe extern "C" fn get_length(
+        socket: *mut crate::co_socket::CoSocket,
+        size: u32,
+        header: *mut u32,
+    ) -> isize {
+        let ctx = unsafe { (*socket).resolve_context };
+        let at = unsafe { fake(ctx) }.buffer.str;
+        unsafe { package_length(ctx, at, size, header) }
+    }
+    pub(crate) unsafe extern "C" fn failure(
+        socket: *mut crate::co_socket::CoSocket,
+        kind: u32,
+        length: isize,
+    ) {
+        let ctx = unsafe { (*socket).resolve_context };
+        unsafe { fail(ctx, kind, length) };
     }
 
     fn run(
@@ -380,31 +444,14 @@ mod tests {
             chunks: chunks.iter().map(|chunk| chunk.to_vec()).collect(),
             failures: Vec::new(),
             timed_out: false,
+            gets: 0,
+            receives: 0,
         });
         fake.buffer.str = fake.storage.as_mut_ptr();
-        let context = (&raw mut *fake).cast::<c_void>();
-        let ops = PacketOps {
-            context,
-            buffer: &raw mut fake.buffer,
-            length_check,
-            eof_check: !eof.is_empty(),
-            eof: eof.as_ptr(),
-            eof_len: eof.len() as u8,
-            length_type: b'N',
-            length_size: 4,
-            length_offset: 2,
-            max_length,
-            recv,
-            recv_all,
-            package_length,
-            extend,
-            reduce,
-            fail,
-            timed_out,
-        };
+        let mut socket = socket_for(&mut fake, length_check, eof, max_length);
         let mut results = Vec::new();
         loop {
-            let result = unsafe { swr_v1_hook_recv_packet(&raw const ops) };
+            let result = unsafe { swr_v1_hook_co_socket_recv_packet(socket.ptr(), 0.0) };
             results.push(result);
             if result <= 0 {
                 break;
@@ -461,28 +508,15 @@ mod tests {
                 chunks: VecDeque::from([wire.clone()]),
                 failures: Vec::new(),
                 timed_out,
+                gets: 0,
+                receives: 0,
             });
             fake.buffer.str = fake.storage.as_mut_ptr();
-            let ops = PacketOps {
-                context: (&raw mut *fake).cast(),
-                buffer: &raw mut fake.buffer,
-                length_check: true,
-                eof_check: false,
-                eof: b"".as_ptr(),
-                eof_len: 0,
-                length_type: b'N',
-                length_size: 4,
-                length_offset: 2,
-                max_length: 1024,
-                recv,
-                recv_all,
-                package_length,
-                extend,
-                reduce,
-                fail,
-                timed_out: self::timed_out,
-            };
-            assert_eq!(unsafe { swr_v1_hook_recv_packet(&raw const ops) }, expected);
+            let mut socket = socket_for(&mut fake, true, b"", 1024);
+            assert_eq!(
+                unsafe { swr_v1_hook_co_socket_recv_packet(socket.ptr(), 0.0) },
+                expected
+            );
             assert_eq!(fake.buffer.length, kept);
         }
     }
@@ -492,5 +526,98 @@ mod tests {
         let (results, fake) = run(&[b"abc", b"de"], 16, false, b"", 1024);
         assert_eq!(results, [3, 2, 0]);
         assert_eq!(fake.buffer.length, 0);
+    }
+    fn buffered_fixture() -> (Box<Fake>, crate::co_socket::TestSocket) {
+        let mut fake = Box::new(Fake {
+            storage: vec![0; 8],
+            buffer: ReadBuffer {
+                length: 0,
+                size: 8,
+                offset: 0,
+                str: core::ptr::null_mut(),
+            },
+            chunks: VecDeque::from([b"abcdefghij".to_vec()]),
+            failures: vec![],
+            timed_out: false,
+            gets: 0,
+            receives: 0,
+        });
+        fake.buffer.str = fake.storage.as_mut_ptr();
+        let socket = socket_for(&mut fake, false, b"", 1024);
+        (fake, socket)
+    }
+
+    #[test]
+    fn buffered_record_reads_publish_the_buffer_across_receives() {
+        let (fake, mut socket) = buffered_fixture();
+        let mut out = [0; 4];
+        for (length, expected) in [(3, &b"abc"[..]), (4, &b"defg"[..]), (4, &b"hij"[..])] {
+            assert_eq!(
+                unsafe {
+                    swr_v1_hook_co_socket_recv_buffered(socket.ptr(), out.as_mut_ptr(), length)
+                },
+                expected.len() as isize
+            );
+            assert_eq!(&out[..expected.len()], expected);
+        }
+        assert_eq!(
+            (
+                fake.gets,
+                fake.receives,
+                fake.buffer.length,
+                fake.buffer.offset
+            ),
+            (3, 2, 2, 2)
+        );
+    }
+
+    #[test]
+    fn unavailable_record_reads_do_not_allocate_or_receive() {
+        let (fake, mut socket) = buffered_fixture();
+        socket.0.sock_fd = -1;
+        let mut out = [0; 1];
+        assert_eq!(
+            unsafe { swr_v1_hook_co_socket_recv_buffered(socket.ptr(), out.as_mut_ptr(), 1) },
+            -1
+        );
+        assert_eq!(
+            unsafe { swr_v1_hook_co_socket_recv_packet(socket.ptr(), 0.0) },
+            -1
+        );
+        assert_eq!(socket.0.err_code, libc::EBADF);
+        assert_eq!((fake.gets, fake.receives), (0, 0));
+    }
+
+    #[test]
+    fn packet_timer_failure_precedes_buffer_allocation() {
+        let (fake, mut socket) = buffered_fixture();
+        crate::co_io::test_host::TIMER_OK.set(false);
+        assert_eq!(
+            unsafe { swr_v1_hook_co_socket_recv_packet(socket.ptr(), 1.0) },
+            0
+        );
+        assert_eq!((fake.gets, fake.receives), (0, 0));
+        crate::co_io::test_host::TIMER_OK.set(true);
+        assert_eq!(
+            unsafe { swr_v1_hook_co_socket_recv_packet(socket.ptr(), 1.0) },
+            8
+        );
+        assert_eq!(
+            (
+                fake.gets,
+                fake.receives,
+                fake.buffer.length,
+                fake.buffer.offset
+            ),
+            (1, 1, 8, 8)
+        );
+        assert_eq!(
+            unsafe { swr_v1_hook_co_socket_recv_packet(socket.ptr(), 1.0) },
+            2
+        );
+        assert_eq!(
+            (&fake.storage[..2], fake.buffer.length, fake.buffer.offset),
+            (&b"ij"[..], 2, 2)
+        );
     }
 }

@@ -10,7 +10,10 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include "swoole_rs_hooks.h"
+#include "swoole_socket.h"
+#define SWOOLE_RS_REACTOR 1
+#include "swoole_rs_socket.h"
+#include "swoole_rs_co_socket.h"
 static std::vector<std::string> trace;
 static void record(std::string value){trace.push_back(value);}
 static std::string number(double value){std::ostringstream out;out<<std::hexfloat<<value;return out.str();}
@@ -18,12 +21,17 @@ static std::string number(double value){std::ostringstream out;out<<std::hexfloa
 #define SW_EVENT_WRITE 1024
 #define SW_WAIT 2
 using EventBarrier=std::function<bool()>;
+#undef SW_BUFFER_SIZE_STD
 #define SW_BUFFER_SIZE_STD 4
+#undef SW_BUFFER_SIZE_BIG
 #define SW_BUFFER_SIZE_BIG 8
 #define SW_ERROR_PACKAGE_LENGTH_NOT_FOUND 1781
 #define SW_ERROR_PACKAGE_LENGTH_TOO_LARGE 1782
+#undef sw_unlikely
 #define sw_unlikely(value) (value)
+#undef swoole_trace_log
 #define swoole_trace_log(kind,format,result,length) record("trace:"+std::to_string(result)+":"+std::to_string(length))
+#undef swoole_error_log
 #define swoole_error_log(level,error,format,address,port,length) record("diagnostic:"+std::string(address)+":"+std::to_string(port)+":"+std::to_string(length))
 #define ACTUAL_BODIES "original-packet.inc"
 namespace original {

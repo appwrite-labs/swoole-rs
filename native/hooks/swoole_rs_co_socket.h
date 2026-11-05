@@ -92,7 +92,16 @@ typedef struct {
     /* socket->ssl_shutdown() and socket->check_liveness(). */
     void (*ssl_shutdown)(swr_v1_co_socket *);
     bool (*liveness)(swr_v1_co_socket *);
+    /* The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes view. */
+    void (*read_buffer)(swr_v1_co_socket *, swr_v1_hook_read_buffer *view, uint32_t action, size_t size);
+    ssize_t (*recv)(swr_v1_co_socket *, char *, size_t, bool all);
+    /* The native protocol callback/trace and packet error diagnostics. */
+    ssize_t (*package_length)(swr_v1_co_socket *, uint32_t size, uint32_t *header_length);
+    void (*packet_fail)(swr_v1_co_socket *, uint32_t kind, ssize_t length);
 } swr_v1_hook_co_socket_host_t;
+/* Complete packet/buffer reads, including availability, buffer and timer. */
+ssize_t swr_v1_hook_co_socket_recv_packet(swr_v1_co_socket *socket, double timeout);
+ssize_t swr_v1_hook_co_socket_recv_buffered(swr_v1_co_socket *socket, char *out, size_t size);
 /* The lifecycle (crates/hooks/src/lifecycle.rs): shutdown(how), cancel(event), close()
    (the socket may be gone after it returns true), check_liveness() and connect(addr). */
 bool swr_v1_hook_co_socket_shutdown(swr_v1_co_socket *socket, int how);
