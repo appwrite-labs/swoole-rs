@@ -20,7 +20,7 @@ use crate::ops::{
 use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
 use crate::{Host, MODE_BASE};
 use core::ffi::{c_char, c_int};
-use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 
@@ -31,6 +31,8 @@ pub struct ServerState {
     round: AtomicU32,
     /// `command_current_id`: the id the next command gets, from 1.
     next_command: AtomicI32,
+    config: AtomicPtr<crate::config::ServerConfig>,
+    tables: AtomicPtr<crate::records::ServerTables>,
 }
 
 impl Default for ServerState {
@@ -44,7 +46,17 @@ impl ServerState {
         Self {
             round: AtomicU32::new(0),
             next_command: AtomicI32::new(1),
+            config: AtomicPtr::new(core::ptr::null_mut()),
+            tables: AtomicPtr::new(core::ptr::null_mut()),
         }
+    }
+
+    pub(crate) fn config(&self) -> *mut crate::config::ServerConfig {
+        self.config.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn tables(&self) -> *mut crate::records::ServerTables {
+        self.tables.load(Ordering::Relaxed)
     }
 
     /// The round before this call; it wraps as `sw_atomic_fetch_add` does.
@@ -57,7 +69,16 @@ impl ServerState {
 /// The result is freed once with `swr_v1_server_state_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
-    Box::into_raw(Box::new(ServerState::new()))
+    let state = ServerState::new();
+    state.config.store(
+        Box::into_raw(Box::new(crate::config::ServerConfig::default())),
+        Ordering::Relaxed,
+    );
+    state.tables.store(
+        Box::into_raw(Box::new(crate::records::ServerTables::default())),
+        Ordering::Relaxed,
+    );
+    Box::into_raw(Box::new(state))
 }
 
 /// # Safety
@@ -67,6 +88,22 @@ pub unsafe extern "C" fn swr_v1_server_state_free(state: *mut ServerState) {
     if !state.is_null() {
         // SAFETY: the caller transfers the box back.
         drop(unsafe { Box::from_raw(state) });
+    }
+}
+
+impl Drop for ServerState {
+    fn drop(&mut self) {
+        let tables = *self.tables.get_mut();
+        if !tables.is_null() {
+            // SAFETY: this state owns its unique table-view box; the shared arena is a loan.
+            drop(unsafe { Box::from_raw(tables) });
+        }
+        let config = *self.config.get_mut();
+        if !config.is_null() {
+            // SAFETY: this state owns the unique configuration allocation made in state_new;
+            // native reference views have ended before the base owner frees the state.
+            drop(unsafe { Box::from_raw(config) });
+        }
     }
 }
 

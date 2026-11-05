@@ -1,16 +1,16 @@
 diff --git a/include/swoole_server.h b/include/swoole_server.h
-index 13c79c3..ac8e859 100644
+index 233097a..fb595fe 100644
 --- a/include/swoole_server.h
 +++ b/include/swoole_server.h
-@@ -646,2 +646,6 @@ enum ServerEventType {
- class Server {
+@@ -488,2 +488,6 @@ enum ServerEventType {
+ class Server : public detail::ServerFields {
 +    // The native halves of crates/process/src/workers, one per source file.
 +    template <int>
 +    friend struct WorkersNative;
 +
    public:
 diff --git a/src/server/reactor_process.cc b/src/server/reactor_process.cc
-index cfca061..3557103 100644
+index 38529a0..7645cfa 100644
 --- a/src/server/reactor_process.cc
 +++ b/src/server/reactor_process.cc
 @@ -17,2 +17,3 @@

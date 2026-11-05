@@ -12,18 +12,29 @@
 use core::ffi::c_void;
 
 mod admin;
+mod config;
 mod conn_io;
 mod connection;
 mod control;
 mod dispatch;
 mod json;
+mod layout;
 pub mod local_addr;
 pub mod ops;
+pub mod port_config;
 mod reactor_io;
 mod reactor_thread;
+mod records;
 mod send;
 mod startup;
 mod state;
+
+pub use records::{
+    ConnectionRecord, ServerTables, SessionRecord, swr_v1_server_connection, swr_v1_server_session,
+    swr_v1_server_session_fd, swr_v1_server_tables_get,
+};
+
+pub use config::{ServerConfig, swr_v1_server_config_get, swr_v1_server_config_init};
 
 pub use state::{
     ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
@@ -74,14 +85,25 @@ static NO_STATE: ServerState = ServerState::new();
 struct Native {
     context: *mut c_void,
     call: ServerCall,
+    state: *const ServerState,
 }
 
 impl Host for Native {
     fn op(&mut self, op: u32, arg: u64) -> u64 {
+        if !self.state.is_null() {
+            // SAFETY: run_state lends live synchronized records; this leaf access ends before callbacks.
+            if let Some(value) = unsafe { config::native_fact(self.state, op, arg) } {
+                return value;
+            }
+        }
         // SAFETY: a native fact or effect on the live server in `context`.
         unsafe { (self.call)(self.context, op, arg) }
     }
     fn state(&mut self) -> &ServerState {
+        if !self.state.is_null() {
+            // SAFETY: run_state lends this state for the entire operation.
+            return unsafe { &*self.state };
+        }
         let address = usize::try_from(self.get(ops::OP_STATE)).unwrap_or(0);
         let state = core::ptr::with_exposed_provenance::<ServerState>(address);
         // SAFETY: native code passes `Server::state_`, which lives as long as the server.
@@ -101,7 +123,40 @@ pub unsafe extern "C" fn swr_v1_server_run(
     context: *mut c_void,
     call: ServerCall,
 ) -> i64 {
-    run(&mut Native { context, call }, operation, arg)
+    run(
+        &mut Native {
+            context,
+            call,
+            state: core::ptr::null(),
+        },
+        operation,
+        arg,
+    )
+}
+
+/// Runs a server operation directly over the server's owned records.
+/// Native callbacks are used only for effects/loans outside those records.
+///
+/// # Safety
+/// `state` is null or live for the call; `context` and callbacks lend synchronized
+/// server objects and catch any native/PHP bailout before returning to Rust.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_run_state(
+    operation: u32,
+    arg: u64,
+    context: *mut c_void,
+    call: ServerCall,
+    state: *const ServerState,
+) -> i64 {
+    run(
+        &mut Native {
+            context,
+            call,
+            state,
+        },
+        operation,
+        arg,
+    )
 }
 
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
