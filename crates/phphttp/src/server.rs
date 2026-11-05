@@ -645,6 +645,7 @@ mod tests {
             websocket,
             http2,
             cache: false,
+            coroutine: false,
         }
     }
 
