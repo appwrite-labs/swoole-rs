@@ -487,7 +487,13 @@ void swr_v1_phpswoole_minit(int32_t module_number, uint32_t flags, const swr_v1_
                             struct _zend_class_entry **exception, struct _zend_object_handlers *exception_handlers,
                             struct _zend_class_entry **error);
 struct _zend_function_entry;
-const struct _zend_function_entry *swr_v1_phpswoole_functions(const struct _zend_function_entry *optional);
+struct _zend_execute_data;
+struct _zval_struct;
+typedef void (*swr_php_function)(struct _zend_execute_data *, struct _zval_struct *);
+/* Null disables a family; arrays have 23/35/36 entries. FTP SSL alone may be null. */
+const struct _zend_function_entry *swr_v1_phpswoole_functions(const swr_php_function *stdext,
+                                                          const swr_php_function *ssh2,
+                                                          const swr_php_function *ftp);
 /* The module's MSHUTDOWN, RINIT and RSHUTDOWN: 0 on success. */
 int swr_v1_phpswoole_mshutdown(int _kind, int module_number);
 int swr_v1_phpswoole_rinit(int _kind, int module_number);

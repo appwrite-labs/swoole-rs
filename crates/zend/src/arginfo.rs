@@ -60,10 +60,21 @@ pub const fn entry<const N: usize>(
     arginfo: &'static ArgInfo<N>,
     flags: u32,
 ) -> zend_function_entry {
+    let mut entry = definition(name, arginfo, flags);
+    entry.handler = Some(handler);
+    entry
+}
+
+/// A function's immutable metadata before its native handler is lent at module load.
+#[must_use]
+pub const fn definition<const N: usize>(
+    name: &'static CStr,
+    arginfo: &'static ArgInfo<N>,
+    flags: u32,
+) -> zend_function_entry {
     // SAFETY: all-null, as PHP_ME leaves PHP 8.4's frameless and doc-comment fields.
     let mut entry: zend_function_entry = unsafe { mem::zeroed() };
     entry.fname = name.as_ptr();
-    entry.handler = Some(handler);
     entry.arg_info = arginfo.0.as_ptr();
     #[expect(
         clippy::cast_possible_truncation,
