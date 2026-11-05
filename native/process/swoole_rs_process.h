@@ -95,6 +95,7 @@ typedef struct swr_v1_worker_record {
     void *ptr;
 } swr_v1_worker_record;
 void swr_v1_worker_add_request_count(swr_v1_worker_record *);
+void swr_v1_worker_reset_counters(swr_v1_worker_record *, uint32_t *);
 void swr_v1_worker_init(swr_v1_worker_record *worker);
 void swr_v1_worker_shutdown(swr_v1_worker_record *worker);
 bool swr_v1_worker_exceeded_max_requests(const swr_v1_worker_record *worker);
@@ -258,6 +259,7 @@ typedef struct {
 } swr_v1_server_workers;
 void swr_v1_process_server_workers_start(const swr_v1_server_workers *, void *, swr_v1_worker_record *const *);
 swr_v1_worker_record *swr_v1_process_server_worker(const swr_v1_server_workers *, uint16_t);
+swr_v1_worker_record *swr_v1_process_server_worker_by_pid(const swr_v1_server_workers *, const swr_v1_process_worker_registry *, int);
 
 typedef struct {
     int64_t (*call)(void *pool, void *worker, uint32_t op, uint64_t arg);

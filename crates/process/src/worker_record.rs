@@ -222,6 +222,41 @@ pub unsafe extern "C" fn swr_v1_worker_exceeded_max_requests(worker: *const Work
     count >= limit
 }
 
+/// Reset one retired worker's counters and remove its concurrency from the
+/// Server's canonical shared counter. The CAS and underflow clamp preserve the
+/// existing reset protocol, without per-field native callbacks.
+/// # Safety
+/// `worker` loans a live canonical record under the native retirement protocol;
+/// its concurrency and `total` are aligned atomic u32 slots. The caller owns the
+/// three request/response/dispatch counter resets, as the native method did.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_worker_reset_counters(worker: *mut WorkerRecord, total: *mut u32) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    // SAFETY: the caller lends this aligned canonical worker concurrency slot.
+    let slot = unsafe { &raw mut (*worker).concurrency };
+    // SAFETY: concurrency is an aligned u32 accessed atomically by native workers.
+    let concurrency = unsafe { AtomicU32::from_ptr(slot) };
+    let value = concurrency.load(Ordering::SeqCst);
+    if value > 0
+        && concurrency
+            .compare_exchange(value, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    {
+        // SAFETY: the caller lends the aligned live shared Server concurrency slot.
+        let total = unsafe { AtomicU32::from_ptr(total) };
+        total.fetch_sub(value, Ordering::SeqCst);
+        if total.load(Ordering::SeqCst).cast_signed() < 0 {
+            total.store(0, Ordering::SeqCst);
+        }
+    }
+    // SAFETY: the retirement protocol owns this worker's request-counter reset.
+    unsafe { (*worker).request_count = 0 };
+    // SAFETY: the same protocol owns this response-counter reset.
+    unsafe { (*worker).response_count = 0 };
+    // SAFETY: the same protocol owns this dispatch-counter reset.
+    unsafe { (*worker).dispatch_count = 0 };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +266,38 @@ mod tests {
     // `swoole::Worker` against the `swr_v1_worker_record` mirror in swoole_rs_process.h,
     // which has these same `#[repr(C)]` fields. Here just sanity-check the Rust record's
     // alignment and that the accessors read/write the right field.
+    #[test]
+    fn retirement_resets_counters_preserving_identity_and_clamps_underflow() {
+        let mut record: WorkerRecord = unsafe { core::mem::zeroed() };
+        record.pid = 17;
+        record.id = 29;
+        record.concurrency = 3;
+        record.request_count = 7;
+        record.response_count = 8;
+        record.dispatch_count = 9;
+        let mut total = 7;
+        unsafe { swr_v1_worker_reset_counters(&raw mut record, &raw mut total) };
+        assert_eq!(
+            (record.pid, record.id, total, record.concurrency),
+            (17, 29, 4, 0)
+        );
+        assert_eq!(
+            (
+                record.request_count,
+                record.response_count,
+                record.dispatch_count
+            ),
+            (0, 0, 0)
+        );
+        record.concurrency = 9;
+        total = 3;
+        unsafe { swr_v1_worker_reset_counters(&raw mut record, &raw mut total) };
+        assert_eq!((record.concurrency, total), (0, 0));
+        total = 13;
+        unsafe { swr_v1_worker_reset_counters(&raw mut record, &raw mut total) };
+        assert_eq!(total, 13);
+    }
+
     #[test]
     fn record_is_pointer_aligned() {
         assert_eq!(align_of::<WorkerRecord>(), 8);

@@ -193,10 +193,67 @@ pub unsafe extern "C" fn swr_v1_server_connection(
     connection
 }
 
+/// Retire a dead base-mode worker's sessions, preserving IDs and reserved bits.
+/// The table traversal stays entirely in Rust instead of crossing the native
+/// boundary for each slot and worker-ID comparison.
+/// # Safety
+/// `state` loans its mapped complete 1,048,576-slot session table; the native
+/// worker-retirement protocol synchronizes these per-field accesses.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_sessions_retire(
+    state: *const crate::ServerState,
+    worker_id: u32,
+) {
+    // SAFETY: the caller retains the live state and its table-view allocation.
+    let tables = unsafe { &*state }.tables();
+    // SAFETY: the native retirement call loans the complete mapped session table.
+    let sessions = unsafe { (*tables).session_list };
+    for index in 0..1_048_576 {
+        let session = sessions.wrapping_add(index);
+        // SAFETY: this is one initialized slot's native 8-bit reactor-ID field.
+        let reactor = unsafe { (*session).reactor_bits } & 0xff;
+        if reactor == worker_id {
+            // SAFETY: retire exactly this worker's FD while retaining all other
+            // slot fields; no whole-record borrow overlaps native session activity.
+            unsafe { (*session).fd = 0 };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::{swr_v1_server_state_free, swr_v1_server_state_new};
+
+    #[test]
+    fn retirement_scans_table_edges_without_truncating_worker_identity() {
+        let state = swr_v1_server_state_new();
+        let mut sessions: Vec<_> = (0..1_048_576)
+            .map(|id| SessionRecord {
+                id,
+                fd: 23,
+                reactor_bits: 0x5a12_3402,
+            })
+            .collect();
+        sessions[0].reactor_bits = 0x5a12_3401;
+        sessions[1_048_575].reactor_bits = 0x5a12_3401;
+        unsafe {
+            (*swr_v1_server_tables_get(state)).session_list = sessions.as_mut_ptr();
+            swr_v1_server_sessions_retire(state, 257);
+        }
+        assert!(sessions.iter().all(|slot| slot.fd == 23));
+        unsafe { swr_v1_server_sessions_retire(state, 1) };
+        for (index, slot) in sessions.iter().enumerate() {
+            let edge = index == 0 || index == 1_048_575;
+            assert_eq!(slot.id, i64::try_from(index).unwrap());
+            assert_eq!(
+                slot.reactor_bits,
+                if edge { 0x5a12_3401 } else { 0x5a12_3402 }
+            );
+            assert_eq!(slot.fd, if edge { 0 } else { 23 });
+        }
+        unsafe { swr_v1_server_state_free(state) };
+    }
 
     #[test]
     fn sessions_validate_reused_slots_tls_and_iteration() {
