@@ -214,6 +214,10 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         }
         RUN_HEALTHY => i64::from(connection::healthy(h, f64::from_bits(arg))),
         RUN_SHUTDOWN => i64::from(control::shutdown(h)),
+        ops::RUN_REOPEN_LOGGER => {
+            control::reopen_logger(h);
+            1
+        }
         RUN_SIGNAL => {
             control::signal(h, i32::try_from(arg).unwrap_or(0));
             SW_OK

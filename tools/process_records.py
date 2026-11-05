@@ -16,6 +16,7 @@ for record,file,view in [('WorkerGlobalRecord','worker_globals','SWR_WORKER_GLOB
  for name,ty in fields:
   if name in callbacks:decl=callbacks[name]
   else:decl=refinements.get(name,types.get(ty,ty))+' '+renames.get(name,name)
+  if record=='PoolRecord' and name=='registry':decl='union { swr_v1_process_worker_registry *registry_; swr_v1_process_worker_registry *map_; }'
   if record=='PoolRecord' and name in ['message_box','message_bus','reload_task']:decl+=' = nullptr'
   text+='    '+decl+';'+(' '+chr(92)+chr(10) if name!=fields[-1][0] else chr(10))
 text += '#endif\n#endif\n'

@@ -811,6 +811,8 @@ pub const RUN_ST_FOREACH: u32 = 307;
 /// `Server::send`: context session, data and length.
 pub const RUN_ST_SEND: u32 = 308;
 pub const RUN_ST_CLEAR_TIMER: u32 = 309;
+/// Direct public log reopen, independent of installed master signal handlers.
+pub const RUN_REOPEN_LOGGER: u32 = 310;
 
 /// The command name is taken; a new command pipe, whether it is ready; the command
 /// joins `commands` and `command_handlers` with id arg.

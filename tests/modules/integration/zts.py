@@ -76,7 +76,7 @@ def main():
         inputs = producer['inputs']
         sdk_options = shlex.split(report['php_config'])
         if (not any(option in sdk_options for option in ['--enable-zts', '--enable-zts=yes', '--enable-maintainer-zts'])
-                or inputs.get('php') != report['php'][0] or inputs.get('php_config') != report['php_config']):
+                or inputs.get('php') != report['php'][0] or inputs.get('php_config') != report['php_config'].strip()):
             raise ValueError('Require a Rust producer compiled with the matching ZTS PHP_CONFIG; Zend C shims are SDK-dependent')
         archive = a.rust_export.parent / 'libswoole_rs_php.a'
         artifact = producer['rust_php_compilation']['artifact']

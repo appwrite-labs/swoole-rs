@@ -80,7 +80,7 @@
     sw_atomic_t round_id; \
     Worker * workers; \
     std::vector<std::shared_ptr<UnixSocket>> * pipes; \
-    swr_v1_process_worker_registry * registry_; \
+    union { swr_v1_process_worker_registry *registry_; swr_v1_process_worker_registry *map_; }; \
     MsgQueue * queue; \
     swr_v1_process_pool_ipc * ipc_; \
     Channel * message_box = nullptr; \

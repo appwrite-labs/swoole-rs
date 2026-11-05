@@ -75,6 +75,24 @@ pub unsafe extern "C" fn swr_v1_process_worker_registry_register(
     registry.workers.insert(pid, Entry { worker, category });
 }
 
+/// Insert a worker without replacing an existing PID, matching `ProcessPool::add_worker`.
+/// # Safety
+/// `registry` is live; `worker` is an opaque native loan.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_insert(
+    registry: *mut WorkerRegistry,
+    pid: c_int,
+    worker: *mut c_void,
+    category: c_int,
+) {
+    // SAFETY: the caller lends the registry exclusively for this leaf mutation.
+    let registry = unsafe { &mut *registry };
+    registry
+        .workers
+        .entry(pid)
+        .or_insert(Entry { worker, category });
+}
+
 /// Remove the worker at `pid`. Returns whether one was present.
 ///
 /// # Safety
@@ -204,7 +222,14 @@ mod tests {
         let a = std::ptr::from_mut(&mut worker_a).cast::<c_void>();
         unsafe {
             swr_v1_process_worker_registry_register(reg, 100, a, CATEGORY_EVENT);
+            let mut worker_b = 1_u8;
+            let b = std::ptr::from_mut(&mut worker_b).cast::<c_void>();
+            swr_v1_process_worker_registry_insert(reg, 100, b, CATEGORY_USER);
             assert_eq!(swr_v1_process_worker_registry_lookup(reg, 100), a);
+            assert_eq!(
+                swr_v1_process_worker_registry_lookup_category(reg, 100, CATEGORY_EVENT),
+                a
+            );
             assert!(swr_v1_process_worker_registry_lookup(reg, 999).is_null());
             assert!(swr_v1_process_worker_registry_unregister(reg, 100));
             assert!(!swr_v1_process_worker_registry_unregister(reg, 100));

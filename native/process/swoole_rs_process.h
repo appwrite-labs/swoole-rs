@@ -61,6 +61,7 @@ swr_v1_signalfd_received swr_v1_signalfd_receive(int fd);
 typedef struct swr_v1_process_worker_registry swr_v1_process_worker_registry;
 swr_v1_process_worker_registry *swr_v1_process_worker_registry_new(void);
 void swr_v1_process_worker_registry_free(swr_v1_process_worker_registry *);
+void swr_v1_process_worker_registry_insert(swr_v1_process_worker_registry *, int pid, void *worker, int category);
 void swr_v1_process_worker_registry_register(swr_v1_process_worker_registry *, int pid, void *worker, int category);
 bool swr_v1_process_worker_registry_unregister(swr_v1_process_worker_registry *, int pid);
 void *swr_v1_process_worker_registry_lookup_category(const swr_v1_process_worker_registry *, int, int);
