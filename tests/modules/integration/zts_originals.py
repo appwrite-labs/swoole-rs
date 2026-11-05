@@ -38,9 +38,10 @@ def main():
         report['scope'] = 'Read-only Coroutine statistics on this real ZTS pair; no Coroutine/Event/callback creation, scheduler/lifetime, originals or performance qualification.'
     try:
         zts = json.loads(a.zts_report.read_text())
-        if zts.get('passed') is not True or zts.get('php', [None, False])[1] is not True:
+        if zts.get('passed') is not True or zts.get('php', [None, False])[1] != 1:
             raise ValueError('Successful real ZTS producer required')
         engines = zts['engines']
+        dependencies = tuple(zts.get('php_extensions', ['sockets']))
         if len(engines) != 2 or {r['name'] for r in engines} != {'native', 'selected'}:
             raise ValueError('Exact native/selected ZTS pair required')
         archive = Path(zts['work']) / 'rust-prefix/lib/libswoole_rs_php.a'
@@ -49,7 +50,7 @@ def main():
         for row in engines:
             if sha(row['extension']) != row['extension_sha256']:
                 raise ValueError('ZTS extension changed: ' + row['name'])
-            actual = Engine(row['name'], Path(row['extension']), a.php, ('sockets',)).metadata()
+            actual = Engine(row['name'], Path(row['extension']), a.php, dependencies).metadata()
             if (actual['php'], actual['zts'], actual['rust_feature_bits']) != (
                     zts['php'][0], True, row['metadata']['rust_feature_bits']):
                 raise ValueError('Actual PHP/ZTS/feature identity differs')
@@ -66,7 +67,7 @@ def main():
             identity = sha(fixture)
             report.update(fixture=str(fixture), results=[])
             for engine in engines:
-                command = Engine(engine['name'], Path(engine['extension']), a.php, ('sockets',)).command(fixture)
+                command = Engine(engine['name'], Path(engine['extension']), a.php, dependencies).command(fixture)
                 report['executed'] = True
                 result = run_isolated(command, timeout=30, cwd=work)
                 observed = dict(engine=engine['name'], command=command, exit=result.returncode,
@@ -102,7 +103,7 @@ def main():
                 row = dict(fixture=str(fixture), expected_checks=count, results=observations)
                 report['fixtures'].append(row)
                 for engine in engines:
-                    command = Engine(engine['name'], Path(engine['extension']), a.php, ('sockets',)).command(fixture)
+                    command = Engine(engine['name'], Path(engine['extension']), a.php, dependencies).command(fixture)
                     report['executed'] = True
                     result = run_isolated(command, timeout=30, cwd=work)
                     observed = dict(engine=engine['name'], command=command, exit=result.returncode,

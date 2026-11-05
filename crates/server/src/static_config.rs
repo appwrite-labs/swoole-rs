@@ -33,15 +33,24 @@ fn table(state: &ServerState, kind: usize) -> Arc<Mutex<Strings>> {
     )
 }
 
-/// Share the current MIME table identity. Replacing the Server's optional
+/// Share the current collection identity. Replacing the Server's optional
 /// collection leaves already-bound contexts holding the original table.
 /// # Safety
 /// `state` is live; the result needs one `_owner_free`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_static_owner(state: *const ServerState) -> *const c_void {
+pub unsafe extern "C" fn swr_v1_server_static_owner(
+    state: *const ServerState,
+    kind: u32,
+) -> *const c_void {
     // SAFETY: the caller lends a live Server state.
     let state = unsafe { &*state };
-    Arc::into_raw(table(state, 2)).cast()
+    let Ok(kind) = usize::try_from(kind) else {
+        return core::ptr::null();
+    };
+    if kind >= 3 {
+        return core::ptr::null();
+    }
+    Arc::into_raw(table(state, kind)).cast()
 }
 /// # Safety
 /// `handle` is one live strong reference from `_static_owner`/clone.
@@ -218,7 +227,7 @@ mod tests {
     fn shared_context_owner_observes_mutation_and_outlives_native_server() {
         let state = Box::new(ServerState::new());
         unsafe {
-            let handle = swr_v1_server_static_owner(&raw const *state);
+            let handle = swr_v1_server_static_owner(&raw const *state, 2);
             assert!(!swr_v1_server_static_mime(handle, core::ptr::null(), 0));
             swr_v1_server_static_config(&raw const *state, 2, 4, b"text/html".as_ptr(), 9);
             assert!(swr_v1_server_static_mime(handle, core::ptr::null(), 0));

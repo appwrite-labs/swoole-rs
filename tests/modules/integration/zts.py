@@ -54,9 +54,12 @@ def main():
         report['thread_consumer_status'] = 'not_run'
         require_build_space(work)
         php = subprocess.check_output([a.php, '-n', '-r', 'echo json_encode([PHP_VERSION,PHP_ZTS]);'], text=True)
-        if json.loads(php)[1] is not True:
+        if json.loads(php)[1] != 1:
             raise ValueError('Actual PHP executable is not ZTS')
         report['php'] = json.loads(php)
+        sockets_builtin = subprocess.check_output([a.php, '-n', '-r', "echo extension_loaded('sockets') ? 'yes' : 'no';"], text=True)
+        dependencies = () if sockets_builtin == 'yes' else ('sockets',)
+        report['php_extensions'] = list(dependencies)
         report['php_config'] = subprocess.check_output([a.php_config, '--configure-options'], text=True)
         if subprocess.check_output([a.php_config, '--version'], text=True).strip() != report['php'][0]:
             raise ValueError('PHP and SDK versions differ')
@@ -131,20 +134,22 @@ def main():
             row['native_compilation'] = native_compilation(source, log)
             row['extension'] = str(extension)
             row['extension_sha256'] = sha(extension)
-            row['metadata'] = Engine(name, extension, a.php, ('sockets',)).metadata()
-            check = subprocess.run([a.php, '-n', '-d', 'extension=sockets', '-d', 'extension=' + str(extension),
-                                    '-r', 'echo json_encode(class_exists("Swoole\\\\Thread\\\\Lock"));'],
+            row['metadata'] = Engine(name, extension, a.php, dependencies).metadata()
+            check = subprocess.run(Engine(name, extension, a.php, dependencies).command(
+                                    '-r', 'echo json_encode(class_exists("Swoole\\\\Thread\\\\Lock"));'),
                                    text=True, capture_output=True, timeout=30)
             row['thread_class_probe'] = dict(exit=check.returncode, stdout=check.stdout, stderr=check.stderr)
-            row['passed'] = (row['metadata']['zts'] is True and row['metadata']['rust_feature_bits'] ==
+            row['passed'] = (row['metadata']['zts'] == 1 and row['metadata']['rust_feature_bits'] ==
                              (producer['migrated_feature_bits'] if name == 'selected' else 0)
+                             and 'php_sockets' in row['metadata']['capabilities']
                              and check.returncode == 0 and check.stdout == 'true' and not check.stderr)
             write_report(output, report)
             if not row['passed']:
                 raise ValueError('ZTS startup identity/capability differs')
         if a.locks_threads:
             consumer_output = output.with_name(output.stem + '-locks-threads.json')
-            command = [sys.executable, str(consumer), '--php', a.php, '--php-extension', 'sockets',
+            command = [sys.executable, str(consumer), '--php', a.php,
+                       *[arg for extension in dependencies for arg in ['--php-extension', extension]],
                        '--output', str(consumer_output)]
             for row in report['engines']:
                 command += ['--engine', row['name'] + '=' + row['extension']]

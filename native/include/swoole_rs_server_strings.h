@@ -60,7 +60,7 @@ class ServerStrings {
         return *this;
     }
     operator std::vector<std::string>() const { return {begin(),end()}; }
-    const void *share() const { return swr_v1_server_static_owner(state_); }
+    const void *share() const { return swr_v1_server_static_owner(state_,kind_); }
 };
 // Existing native coroutine-server sets retain their original shared_ptr owner;
 // Server MIME sets share the Rust owner. Neither path snapshots retained bytes.
