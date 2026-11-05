@@ -1,0 +1,25 @@
+diff --git a/src/network/dns.cc b/src/network/dns.cc
+index 7902582..abdd5c6 100644
+--- a/src/network/dns.cc
++++ b/src/network/dns.cc
+@@ -23,3 +23,2 @@
+ #include <vector>
+-#include <unordered_map>
+ #ifndef SWOOLE_RS_CLIENTS
+@@ -121,3 +120,2 @@ static uint16_t dns_request_id = 1;
+ 
+-static std::string parse_ip_address(void *vaddr, int type);
+ 
+@@ -137,12 +135,2 @@ std::string get_ip_by_hosts(const std::string &search_domain) {
+ 
+-static std::string parse_ip_address(void *vaddr, int type) {
+-    const uint8_t version = type == AF_INET ? 4 : (type == AF_INET6 ? 6 : 0);
+-    if (version == 0) {
+-        assert(0);
+-        return {};
+-    }
+-    const auto plan = swr_v1_clients_ip_text(version, static_cast<const uint8_t *>(vaddr));
+-    return std::string(reinterpret_cast<const char *>(plan.bytes), plan.length);
+-}
+-
+ std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int family, double timeout) {
