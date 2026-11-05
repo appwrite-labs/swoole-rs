@@ -8,6 +8,7 @@
     )
 )]
 mod file;
+mod file_record;
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 pub use file::swr_v1_os_sendfile;
 pub use file::{
@@ -16,6 +17,7 @@ pub use file::{
     swr_v1_os_file_read_line, swr_v1_os_file_size, swr_v1_os_file_size_path,
     swr_v1_os_file_write_all, swr_v1_os_random_bytes, swr_v1_os_sendfile_copy, swr_v1_os_tmpfile,
 };
+pub use file_record::*;
 mod system;
 pub use system::{
     IsolationWarn, swr_v1_os_daemon_detach, swr_v1_os_is_root_user, swr_v1_os_set_isolation,
