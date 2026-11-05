@@ -50,6 +50,22 @@ def main():
                          *([str(args.archive.resolve())] if engine=='hybrid' else []),
                          '-fsanitize=address,undefined','-fno-sanitize-recover=all','-o',str(binary)]
                 if sys.platform.startswith('linux'):command+=['-ldl','-lm']
+                # Inspect the real SDK caller before linking: selected Thread operations
+                # must consume the Rust owner ABI, while the native caller must not.
+                obj=work/(engine+'-'+standard+'.o')
+                caller=command[:command.index(str(Path(__file__).with_suffix('.cc')))]+[
+                    '-c',str(Path(__file__).with_suffix('.cc')),'-o',str(obj)]
+                compiled=run_isolated(caller,timeout=120)
+                report['commands'].append(dict(engine=engine,standard=standard,scope='caller imports',argv=caller,
+                    exit=compiled.returncode,stdout=compiled.stdout,stderr=compiled.stderr))
+                if compiled.returncode:raise ValueError('Actual Thread SDK caller compilation failed')
+                imports=run_isolated(['nm','-u',str(obj)],timeout=20)
+                names=['start','join_check','join_complete','detach','move','alive','status','enter','exit','joinable','id']
+                required={'swr_v1_core_thread_'+name:('swr_v1_core_thread_'+name) in imports.stdout for name in names}
+                report['commands'][-1].update(undefined_symbols=imports.stdout,required_rust_calls=required)
+                if imports.returncode or imports.stderr:raise ValueError('SDK caller symbol inventory failed')
+                if engine=='hybrid' and not all(required.values()):raise ValueError('Selected SDK caller missed Rust Thread ownership')
+                if engine=='native' and 'swr_v1_core_thread_' in imports.stdout:raise ValueError('Native SDK caller consumes Rust Thread ownership')
                 result=run_isolated(command,timeout=120)
                 report['commands'].append(dict(engine=engine,standard=standard,argv=command,exit=result.returncode,stdout=result.stdout,stderr=result.stderr))
                 if result.returncode:raise ValueError('Actual Thread SDK compilation failed')

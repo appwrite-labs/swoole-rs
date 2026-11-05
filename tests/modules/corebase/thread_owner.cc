@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
         } else {
             Thread first; first.start([] {});
             if (mode == "occupied-start") first.start([] {});
-            else if (mode == "self-move") first = std::move(first);
+            else if (mode == "self-move") { Thread &alias = first; first = std::move(alias); }
             else if (mode == "occupied-move") {
                 Thread second; second.start([] {}); first = std::move(second);
             } else assert(mode == "joinable-dtor");
