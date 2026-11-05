@@ -1,27 +1,31 @@
 //! The `coroutine::Socket` members of `src/coroutine/socket.cc` that are whole Rust
 //! operations, defined under their upstream (Itanium) symbols when the hybrid
 //! links this crate (`upstream-symbols`): the reactor callbacks, the
-//! local and peer names, the timeouts, the buffered and packet reads, `listen`.
+//! local and peer names, the timeouts and options, the buffered and packet reads,
+//! `bind` of an address and `listen`.
 //! Upstream's `GoogleTest` suites call them through the class's own declarations.
 //!
 //! Each takes the native object (`this`). `Socket` is dynamic and its one base is
 //! the record (`swr_v1_co_socket`, not dynamic, pointer-aligned), so under the
 //! Itanium ABI the record follows the vtable pointer; socket.cc asserts that shape.
 use crate::buffered::{swr_v1_hook_co_socket_recv_buffered, swr_v1_hook_recv_line};
-use crate::co_io::{available, errno, host, set_err};
+use crate::co_io::{available, errno, host, set_err, swr_v1_hook_co_socket_default_err};
 use crate::co_socket::{CoSocket, swr_v1_hook_co_socket_peer_name};
 use crate::packet::swr_v1_hook_co_socket_recv_packet;
 use crate::shutdown::READ;
 use crate::socket_wait::{swr_v1_hook_co_socket_error_event, swr_v1_hook_socket_ready};
 use core::ffi::{c_int, c_void};
 use core::mem::{align_of, size_of};
+use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
-    Event, SocketAddress, SocketRecord, swr_v1_socket_get_name, swr_v1_socket_listen,
-    swr_v1_socket_set_timeout, swr_v1_socket_timeout,
+    Event, SocketAddress, SocketRecord, swr_v1_socket_bind, swr_v1_socket_get_name,
+    swr_v1_socket_listen, swr_v1_socket_set_timeout, swr_v1_socket_timeout,
 };
 
 /// `SW_EVENT_WRITE`.
 const WRITE: u32 = 1 << 10;
+/// `sizeof(int)`.
+const INT_LENGTH: libc::socklen_t = c_int::BITS / 8;
 
 const _: () = assert!(
     align_of::<CoSocket>() <= size_of::<*const c_void>(),
@@ -246,6 +250,133 @@ pub unsafe extern "C" fn recv_packet(this: *mut c_void, timeout: f64) -> isize {
     unsafe { swr_v1_hook_co_socket_recv_packet(record(this), timeout) }
 }
 
+/// `Socket::set_option(level, optname, optval, optlen)`: `setsockopt`, warning on failure.
+///
+/// # Safety
+/// `this` is a live, open native socket and `value` holds `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole9coroutine6Socket10set_optionEiiPKvj")
+)]
+#[must_use]
+pub unsafe extern "C" fn set_option(
+    this: *const c_void,
+    level: c_int,
+    name: c_int,
+    value: *const c_void,
+    length: libc::socklen_t,
+) -> bool {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { &*record(this) };
+    // SAFETY: the open socket's network::Socket record.
+    let fd = unsafe { (*socket.socket).fd };
+    // SAFETY: as the caller promises.
+    if unsafe { libc::setsockopt(fd, level, name, value, length) } < 0 {
+        log::sys_warning(
+            c"Socket::set_option",
+            format_args!(
+                "setsockopt({}, {level}, {name}, {length}) failed",
+                socket.sock_fd
+            ),
+        );
+        return false;
+    }
+    true
+}
+
+/// `Socket::set_option(level, optname, optval)` of an `int`.
+///
+/// # Safety
+/// `this` is a live, open native socket.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole9coroutine6Socket10set_optionEiii")
+)]
+#[must_use]
+pub unsafe extern "C" fn set_int_option(
+    this: *const c_void,
+    level: c_int,
+    name: c_int,
+    value: c_int,
+) -> bool {
+    // SAFETY: as the caller promises; `value` is an `int`.
+    unsafe { set_option(this, level, name, (&raw const value).cast(), INT_LENGTH) }
+}
+
+/// `Socket::get_option(level, optname, optval, optlen)`: `getsockopt`, warning on failure.
+///
+/// # Safety
+/// `this` is a live, open native socket; `value` holds `*length` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole9coroutine6Socket10get_optionEiiPvPj")
+)]
+pub unsafe extern "C" fn get_option(
+    this: *const c_void,
+    level: c_int,
+    name: c_int,
+    value: *mut c_void,
+    length: *mut libc::socklen_t,
+) -> bool {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { &*record(this) };
+    // SAFETY: the open socket's network::Socket record.
+    let fd = unsafe { (*socket.socket).fd };
+    // SAFETY: as the caller promises.
+    if unsafe { libc::getsockopt(fd, level, name, value, length) } < 0 {
+        log::sys_warning(
+            c"Socket::get_option",
+            format_args!("getsockopt({}, {level}, {name}) failed", socket.sock_fd),
+        );
+        return false;
+    }
+    true
+}
+
+/// `Socket::get_option(level, optname, optval)` into an `int`.
+///
+/// # Safety
+/// `this` is a live, open native socket and `value` a writable `int`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole9coroutine6Socket10get_optionEiiPi")
+)]
+pub unsafe extern "C" fn get_int_option(
+    this: *const c_void,
+    level: c_int,
+    name: c_int,
+    value: *mut c_int,
+) -> bool {
+    let mut length = INT_LENGTH;
+    // SAFETY: as the caller promises.
+    unsafe { get_option(this, level, name, value.cast(), &raw mut length) }
+}
+
+/// `Socket::bind(sa, len)`.
+///
+/// # Safety
+/// `this` is a live, open native socket and `address` holds `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket4bindEPK8sockaddrj")
+)]
+pub unsafe extern "C" fn bind(
+    this: *mut c_void,
+    address: *const libc::sockaddr,
+    length: libc::socklen_t,
+) -> bool {
+    let socket = record(this);
+    // SAFETY: as the caller promises.
+    let network = unsafe { (*socket).socket };
+    // SAFETY: its network::Socket record; the address as the caller promises.
+    if unsafe { swr_v1_socket_bind(network, address, length) } < 0 {
+        // SAFETY: as the caller promises.
+        unsafe { swr_v1_hook_co_socket_default_err(socket, log::last_error()) };
+        return false;
+    }
+    true
+}
+
 /// `Socket::listen(backlog)`: `SW_BACKLOG` for a non-positive backlog; a listening
 /// socket's TLS is the server side.
 ///
@@ -399,5 +530,44 @@ mod tests {
         assert!(!unsafe { listen(object.this(), 0) });
         assert_eq!(object.0.record.err_code, libc::EBADF);
         assert_eq!(object.0.record.backlog, 0);
+    }
+
+    #[test]
+    fn options_go_to_the_network_sockets_descriptor() {
+        let mut object = Object::new();
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+        object.0.record.socket_mut().fd = fd;
+        assert!(unsafe { set_int_option(object.this(), libc::SOL_SOCKET, libc::SO_REUSEADDR, 1) });
+        let mut value = 0;
+        assert!(unsafe {
+            get_int_option(
+                object.this(),
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                &raw mut value,
+            )
+        });
+        assert_ne!(value, 0);
+        unsafe { libc::close(fd) };
+        object.0.record.socket_mut().fd = -1;
+        assert!(!unsafe { set_int_option(object.this(), libc::SOL_SOCKET, libc::SO_REUSEADDR, 1) });
+        assert!(!unsafe {
+            get_int_option(
+                object.this(),
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                &raw mut value,
+            )
+        });
+    }
+
+    #[test]
+    fn a_failed_bind_takes_errno_without_a_last_error() {
+        install();
+        let mut object = Object::new();
+        let address: libc::sockaddr_in = unsafe { core::mem::zeroed() };
+        let length = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
+        assert!(!unsafe { bind(object.this(), (&raw const address).cast(), length) });
+        assert_eq!(object.0.record.err_code, libc::EBADF);
     }
 }
