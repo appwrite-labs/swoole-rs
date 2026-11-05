@@ -115,7 +115,8 @@ def run_status(workflow, sha, run):
              else 'cancelled' if run['conclusion'] == 'cancelled' else 'failed')
     jobs = json.loads(gh('run', 'view', str(run['databaseId']), '--json', 'jobs'))['jobs']
     return {'workflow': workflow, 'commit': sha, 'state': state, 'run': run['databaseId'], 'url': run['url'],
-            'jobs': [{'name': job['name'], 'state': job['conclusion'] or job['status'], 'seconds': seconds(job)}
+            'jobs': [{'name': job['name'], 'id': job.get('databaseId'),
+                      'state': job['conclusion'] or job['status'], 'seconds': seconds(job)}
                      for job in jobs]}
 
 
@@ -156,7 +157,20 @@ def wait(workflow, sha, deadline, poll):
 def failure_logs(result):
     """The tail of each failed job's log, so a failure can be read without another call."""
     if result['state'] != 'failed':
-        return result
+        tails = {}
+        for job in result.get('jobs', []):
+            if job['state'] == 'failure' and job.get('id'):
+                try:
+                    log = gh('api', f"repos/{{owner}}/{{repo}}/actions/jobs/{job['id']}/logs", '--allow-escape-sequences')
+                except subprocess.CalledProcessError as error:
+                    tails[job['name']] = ['Job log unavailable: ' + error.stderr.strip()]
+                    continue
+                lines = log.splitlines()
+                errors = [index for index, line in enumerate(lines) if '##[error]' in line]
+                if errors:
+                    lines = lines[:errors[-1] + 1]
+                tails[job['name']] = lines[-LOG_LINES:]
+        return {**result, 'logs': tails} if tails else result
     try:
         log = gh('run', 'view', str(result['run']), '--log-failed')
     except subprocess.CalledProcessError:
@@ -249,7 +263,8 @@ def completed_main():
 
 def diagnostics(result):
     if result['state'] in ('passed', 'failed'):
-        result = failure_logs(phase_changes(result))
+        result = phase_changes(result)
+    result = failure_logs(result)
     if 'failed_phases' in result:
         for job in [job for job in result.get('logs', {}) if job.split(' (')[0] == PHASES_JOB]:
             result['logs'].pop(job)
