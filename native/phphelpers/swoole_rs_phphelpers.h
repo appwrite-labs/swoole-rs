@@ -14,38 +14,15 @@ extern "C" {
 enum SwrPhpAsyncAction { SWR_PHP_ASYNC_DONE=0, SWR_PHP_ASYNC_OBSERVE_COROUTINE=1,
     SWR_PHP_ASYNC_DIRECT=2, SWR_PHP_ASYNC_DISPATCH=3 };
 uint32_t swr_v1_phphelpers_async(uint32_t *phase, uint8_t blocking, uint8_t coroutine);
-/* Native parsing/string-length/array-count observation occurs before this call. */
-uint8_t swr_v1_phphelpers_empty(size_t count);
-/* Public native String/CharPtr lifecycle; initialized phase0, copied observations.
- * op0 release;1 copy assignment;2 move assignment;3 release/copy;4 retain/take.
- * Observe means native presence for0, self identity for1; no other reads.
- * Native executes every action only after Rust returns, then refreshes facts. */
-enum SwrPhpStringAction { SWR_PHP_STRING_DONE=0, SWR_PHP_STRING_OBSERVE=1,
-    SWR_PHP_STRING_RELEASE=2, SWR_PHP_STRING_RESET=3, SWR_PHP_STRING_COPY=4,
-    SWR_PHP_STRING_MOVE=5, SWR_PHP_STRING_RESET_SOURCE=6, SWR_PHP_STRING_ALIAS=7 };
-uint32_t swr_v1_phphelpers_string_plan(uint32_t *phase, uint32_t operation, uint8_t observation);
-/* Native KeyValue ctor0/insert1/dtor2; Variable retained-copy3/move4.
+/* Native KeyValue ctor0/insert1/dtor2.
  * Phase0; key presence observed freshly on request. Native storage/effects only. */
 enum SwrPhpValueAction { SWR_PHP_FACADE_DONE=0, SWR_PHP_FACADE_OBSERVE_KEY=1,
     SWR_PHP_FACADE_RETAIN_KEY=2, SWR_PHP_FACADE_NULL_KEY=3,
     SWR_PHP_FACADE_DEREFERENCE=4, SWR_PHP_FACADE_COPY=5, SWR_PHP_FACADE_RETAIN=6,
     SWR_PHP_FACADE_INSERT_STRING=7, SWR_PHP_FACADE_INSERT_INDEX=8,
     SWR_PHP_FACADE_RETAIN_INSERTED=9, SWR_PHP_FACADE_RELEASE_KEY=10,
-    SWR_PHP_FACADE_DESTROY=11, SWR_PHP_FACADE_RESET_SOURCE=12 };
+    SWR_PHP_FACADE_DESTROY=11 };
 uint32_t swr_v1_phphelpers_value_plan(uint32_t *phase, uint32_t operation, uint8_t key_present);
-/* Inline Callable duplicate: native allocation precedes phase0. */
-enum SwrPhpDuplicateAction { SWR_PHP_DUPLICATE_DONE=0, SWR_PHP_DUPLICATE_CACHE=1,
-    SWR_PHP_DUPLICATE_VALUE=2, SWR_PHP_DUPLICATE_RETAIN=3,
-    SWR_PHP_DUPLICATE_OBSERVE_NAME=4, SWR_PHP_DUPLICATE_NAME=5 };
-uint32_t swr_v1_phphelpers_duplicate_plan(uint32_t *phase, uint8_t name_present);
-/* Native callable factory0 / nullable factory1, phase0; observations lazy. */
-enum SwrPhpFactoryAction { SWR_PHP_FACTORY_NULL=0, SWR_PHP_FACTORY_OBSERVE_READY=1,
-    SWR_PHP_FACTORY_DELETE=2, SWR_PHP_FACTORY_RETURN=3,
-    SWR_PHP_FACTORY_OBSERVE_POINTER=4, SWR_PHP_FACTORY_OBSERVE_NULL=5,
-    SWR_PHP_FACTORY_CREATE=6, SWR_PHP_FACTORY_OBSERVE_CREATED=7,
-    SWR_PHP_FACTORY_NULL_ERROR=8, SWR_PHP_FACTORY_INVALID_ERROR=9 };
-uint32_t swr_v1_phphelpers_factory_plan(uint32_t *phase, uint32_t operation,
-                                      uint8_t observation, uint8_t allow_null);
 /* Whole sparse/indirect iterator policy; native bounds/storage/API decoding. */
 enum SwrPhpIteratorAction { SWR_PHP_ITERATOR_DONE=0, SWR_PHP_ITERATOR_OBSERVE_END=1,
     SWR_PHP_ITERATOR_READ_VALUE=2, SWR_PHP_ITERATOR_OBSERVE_POINTER=3,

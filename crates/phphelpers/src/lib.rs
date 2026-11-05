@@ -10,12 +10,6 @@ mod asynchronous;
 mod facade;
 mod known_strings;
 
-/// Empty string/array predicate over a count observed by the native Zend shim.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphelpers_empty(count: usize) -> u8 {
-    u8::from(count == 0)
-}
-
 fn merge_action(phase: &mut u32, inserted: u8, existing_array: u8) -> u32 {
     let (action, next) = match *phase {
         0 => (1, 1),
