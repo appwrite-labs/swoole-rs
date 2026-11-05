@@ -229,7 +229,11 @@ jobs:
         if: always()
         with:
           name: phases-stdext
-          path: target/reports/dev/*/loop.json
+          # Keep structured per-engine outcomes and logs; never SDK mirrors,
+          # compiled helpers, exported engines, archives or build caches.
+          path: |
+            target/reports/dev/*/*.json
+            target/reports/dev/*/*.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
