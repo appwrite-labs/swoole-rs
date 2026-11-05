@@ -1,12 +1,16 @@
-//! Opt-in owned POSIX descriptor storage. Public C++ fields retain their layout;
-//! allocation-local release metadata is independent of those mutable fields.
+//! Owned POSIX descriptor spans and their cursor. The allocation header owns the
+//! complete `IOVector`; native callers borrow views instead of mirroring counters.
 use crate::ReactorIovProgress;
 use crate::iov_progress::progress;
+use crate::socket_rw::{IovState, TlsIo};
 use std::alloc::{Layout, alloc, dealloc};
 use std::ptr;
 
-struct Header {
+pub struct ReactorIov {
     layout: Layout,
+    original: *mut libc::iovec,
+    count: i32,
+    state: IovState,
 }
 #[repr(C)]
 pub struct ReactorIovAllocation {
@@ -17,11 +21,11 @@ pub struct ReactorIovAllocation {
 }
 fn allocation_layout(count: usize) -> Option<(Layout, usize)> {
     let descriptors = Layout::array::<libc::iovec>(count.checked_mul(2)?).ok()?;
-    let (layout, offset) = Layout::new::<Header>().extend(descriptors).ok()?;
+    let (layout, offset) = Layout::new::<ReactorIov>().extend(descriptors).ok()?;
     Some((layout.pad_to_align(), offset))
 }
 fn descriptor_offset() -> usize {
-    std::mem::size_of::<Header>().next_multiple_of(std::mem::align_of::<libc::iovec>())
+    std::mem::size_of::<ReactorIov>().next_multiple_of(std::mem::align_of::<libc::iovec>())
 }
 /// Construct both actual descriptor spans, not a Native mirror. Payload bytes
 /// are neither read nor owned. Native throws only after this function returns.
@@ -50,6 +54,7 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_owned_new(
     if count > i32::MAX / 2 {
         return refused(-2);
     }
+    let signed_count = count;
     let count = count.unsigned_abs() as usize;
     let Some((layout, offset)) = allocation_layout(count) else {
         return refused(-2);
@@ -64,7 +69,19 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_owned_new(
     let original = allocation.wrapping_add(offset).cast::<libc::iovec>();
     let iterator = original.wrapping_add(count);
     // SAFETY: the header slot at the start of the fresh allocation is aligned and writable.
-    unsafe { allocation.cast::<Header>().write(Header { layout }) };
+    unsafe {
+        allocation.cast::<ReactorIov>().write(ReactorIov {
+            layout,
+            original,
+            count: signed_count,
+            state: IovState {
+                iterator,
+                remain_count: signed_count,
+                index: 0,
+                offset_bytes: 0,
+            },
+        });
+    };
     if count != 0 {
         // SAFETY: for `count > 0` the caller lends `count` readable, initialized iovecs at
         // `source`, disjoint from this fresh allocation; `original` has room for `count`.
@@ -96,9 +113,94 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_owned_free(original: *mut libc::iove
     // starts `descriptor_offset()` bytes before it.
     let allocation = original.cast::<u8>().wrapping_sub(descriptor_offset());
     // SAFETY: as above; the header was written at allocation time.
-    let header = unsafe { allocation.cast::<Header>().read() };
+    let header = unsafe { allocation.cast::<ReactorIov>().read() };
     // SAFETY: allocated with `header.layout`; exclusively owned and released once.
     unsafe { dealloc(allocation, header.layout) };
+}
+
+/// Construct an opaque cursor in the descriptor allocation; no extra allocation.
+/// # Safety
+/// `source` lends `count` initialized iovecs and `status` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_reactor_iov_create(
+    source: *const libc::iovec,
+    count: i32,
+    status: *mut i32,
+) -> *mut ReactorIov {
+    // SAFETY: the caller lends the initialized descriptor span.
+    let result = unsafe { swr_v1_reactor_iov_owned_new(source, count) };
+    // SAFETY: writable output per the contract.
+    unsafe { status.write(result.status) };
+    if result.status != 0 {
+        return ptr::null_mut();
+    }
+    result
+        .original
+        .cast::<u8>()
+        .wrapping_sub(descriptor_offset())
+        .cast()
+}
+
+/// Release an opaque cursor and both spans; payload bytes stay borrowed.
+/// # Safety
+/// `owner` is the unique live cursor returned by create, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_reactor_iov_destroy(owner: *mut ReactorIov) {
+    if !owner.is_null() {
+        // SAFETY: live owner whose original allocation base is unchanged.
+        let original = unsafe { (*owner).original };
+        // SAFETY: the unique descriptor allocation is released once.
+        unsafe { swr_v1_reactor_iov_owned_free(original) };
+    }
+}
+
+/// Observe the cursor. No reference to the owner escapes the call.
+/// # Safety
+/// `owner` is a live immutable cursor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_reactor_iov_view(owner: *const ReactorIov) -> IovState {
+    // SAFETY: live immutable owner per the contract.
+    unsafe { (*owner).state }
+}
+
+/// Sum the unchanged original descriptors.
+/// # Safety
+/// `owner` is a live immutable cursor with readable original descriptors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_reactor_iov_length(owner: *const ReactorIov) -> usize {
+    // SAFETY: live immutable owner per the contract.
+    let owner = unsafe { &*owner };
+    // SAFETY: creation copied this original span, which stays live until destroy.
+    unsafe { swr_v1_reactor_iov_owned_length(owner.original, owner.count) }
+}
+
+/// Advance owned descriptors and counters together.
+/// # Safety
+/// `owner` is live/exclusive and `n` is in the original defined progress domain.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_reactor_iov_advance(owner: *mut ReactorIov, n: isize) {
+    // SAFETY: live exclusive cursor per the contract.
+    let owner = unsafe { &mut *owner };
+    // SAFETY: its state owns the remaining initialized descriptor span.
+    unsafe { owner.state.update(n) };
+}
+
+/// Read/write through an owned `IOVector` without copying state through C++.
+/// # Safety
+/// `owner` is live/exclusive; each payload is valid for the direction and the
+/// optional nonthrowing TLS effect is valid for `socket`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_socket_iov_owned(
+    fd: i32,
+    write: bool,
+    owner: *mut ReactorIov,
+    tls: Option<TlsIo>,
+    socket: *mut std::ffi::c_void,
+) -> isize {
+    // SAFETY: live exclusive owner per the contract.
+    let state = unsafe { &raw mut (*owner).state };
+    // SAFETY: the payload and TLS effect contracts are forwarded unchanged.
+    unsafe { crate::socket_rw::swr_v1_socket_iov(fd, write, state, tls, socket) }
 }
 /// Sum the live original descriptor span with C `size_t` wrapping semantics.
 /// # Safety
@@ -161,6 +263,42 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_owned_progress(
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_cursor_keeps_original_length_and_updates_live_state() {
+        for count in [0, 1, 3, 17, 65] {
+            let mut bytes = [0u8; 128];
+            let source: Vec<_> = (0..count)
+                .map(|i| libc::iovec {
+                    iov_base: bytes.as_mut_ptr().wrapping_add(i).cast(),
+                    iov_len: 1,
+                })
+                .collect();
+            unsafe {
+                let mut status = 9;
+                let owner =
+                    swr_v1_reactor_iov_create(source.as_ptr(), count as i32, &raw mut status);
+                assert_eq!(status, 0);
+                assert!(!owner.is_null());
+                let initial = swr_v1_reactor_iov_view(owner);
+                assert_eq!(initial.remain_count, count as i32);
+                assert_eq!(initial.index, 0);
+                assert_eq!(initial.offset_bytes, 0);
+                assert_eq!(swr_v1_reactor_iov_length(owner), count);
+                if count > 0 {
+                    swr_v1_reactor_iov_advance(owner, 1);
+                    let next = swr_v1_reactor_iov_view(owner);
+                    assert_eq!(next.remain_count, count as i32 - 1);
+                    assert_eq!(next.index, 1);
+                    assert_eq!(next.offset_bytes, 0);
+                    assert_eq!(swr_v1_reactor_iov_length(owner), count);
+                    assert_eq!(source[0].iov_len, 1);
+                    assert_eq!(source[0].iov_base, bytes.as_mut_ptr().cast());
+                }
+                swr_v1_reactor_iov_destroy(owner);
+            }
+        }
+    }
     #[test]
     fn iov_owned_positive_construct_copy_length_cursor_and_release() {
         for count in [1, 3, 17, 65] {

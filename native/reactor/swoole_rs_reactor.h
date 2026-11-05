@@ -338,6 +338,14 @@ typedef struct {
     size_t offset_bytes;
 } swr_v1_socket_iov_state;
 ssize_t swr_v1_socket_iov(int fd, bool write, swr_v1_socket_iov_state *state, swr_v1_socket_tls_io tls, void *socket);
+/* The descriptor allocation owns its cursor; payloads remain borrowed. */
+typedef struct swr_v1_reactor_iov swr_v1_reactor_iov;
+swr_v1_reactor_iov *swr_v1_reactor_iov_create(const struct iovec *source, int32_t count, int32_t *status);
+void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
+swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner);
+size_t swr_v1_reactor_iov_length(const swr_v1_reactor_iov *owner);
+void swr_v1_reactor_iov_advance(swr_v1_reactor_iov *owner, intptr_t n);
+ssize_t swr_v1_socket_iov_owned(int fd, bool write, swr_v1_reactor_iov *owner, swr_v1_socket_tls_io tls, void *socket);
 /* Socket::wait_for and the *_sync methods: Rust runs the loop (prepare, retry
  * classification, ENOBUFS backoff, poll, timeout) and each kind's progress rule;
  * native code gives the socket's flags and performs each I/O call. Returns the

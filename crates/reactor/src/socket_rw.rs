@@ -184,8 +184,9 @@ pub unsafe extern "C" fn swr_v1_socket_catch_pipe_error(
     }
 }
 
-/// An `IOVector`'s cursor, copied in and back by native code.
+/// An `IOVector`'s cursor, owned with its descriptor allocation.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct IovState {
     pub iterator: *mut libc::iovec,
     pub remain_count: c_int,
@@ -198,7 +199,7 @@ impl IovState {
     ///
     /// # Safety
     /// `iterator` names `remain_count` writable initialized iovecs.
-    unsafe fn update(&mut self, n: isize) {
+    pub(crate) unsafe fn update(&mut self, n: isize) {
         // SAFETY: the caller's live iterator and counters.
         let reply = unsafe {
             crate::swr_v1_reactor_iov_owned_progress(

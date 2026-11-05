@@ -416,6 +416,7 @@ def plan(args, reports):
                '--build-root', ROOT / 'target/native-originals/coroutine', '--jobs', args.jobs,
                '--sanitize', *native_options, *report('coroutine-native-originals'))
     if 'corebase' in modules:
+        script('corebase-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src', *report('corebase-constants'))
         includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
                     if sys.platform == 'darwin' else [])
         script('corebase-native', 'tests/modules/corebase/differential.py', '--source', ROOT / 'target/upstream/src',

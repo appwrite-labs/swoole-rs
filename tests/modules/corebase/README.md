@@ -15,6 +15,10 @@ native-TU gates.
 
 ## Registered gates
 
+- `constants.py --source PINNED --output R` (`corebase-constants`): compares 326
+  core/error identifiers and defaults against the clean pin, including C++ types,
+  sizes, signedness and string bytes in Apple and non-Apple configuration branches.
+
 - `differential.py --source CONFIGURED_PINNED --archive A --output R [--sanitize] [--signed-char | --unsigned-char] [--include DIR]`
   (`corebase-native`): compiles the complete original `base.cc` (pinned) and
   the hybrid build's `base.cc` (the build `A` comes from, with its headers and
