@@ -39,10 +39,11 @@ HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql'
 # Modules a module cannot build without: Table and its PHP facade share a layout; the
 # HTTP/2 server's sessions (http2) own httpbindings' contexts, and its coroutine server
 # runs them; network::Client (clients) reads the reactor's socket record;
-# process's Thread resource tables share the locks/atomics/barrier owner.
+# HTTP/WebSocket bindings borrow process's Server-object getter; process's Thread
+# resource tables share the locks/atomics/barrier owner.
 REQUIRES = {'tls': ('reactor',), 'reactor': ('ossupport',), 'memory': ('phpcollections',),
             'phpcollections': ('memory',), 'hooks': ('reactor', 'tls'), 'http2': ('httpbindings',),
-            'httpbindings': ('http2',), 'clients': ('reactor',), 'process': ('locks',)}
+            'httpbindings': ('http2', 'process'), 'clients': ('reactor',), 'process': ('locks',)}
 # --fix-halfclose's repairs in the reactor thread's read, write and close paths are Rust's
 # (crates/server/src/conn_io.rs), which only the reactor module's patches call.
 HALFCLOSE_REQUIRES = ('reactor',)
