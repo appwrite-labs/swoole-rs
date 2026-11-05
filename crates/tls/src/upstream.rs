@@ -21,7 +21,7 @@ use swoole_rs_reactor::socket_upstream::{
 use swoole_rs_reactor::{
     CLASS_STREAM, CLASS_TCP, OutputHooks, ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
     SYNC_SENDFILE, SocketAddress, SocketFileRequest, SocketRecord, SyncHooks,
-    cpp_socket_what_event_want, swr_v1_reactor_poll_events_to, swr_v1_socket_file_check,
+    cpp_socket_what_event_want, steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_file_check,
     swr_v1_socket_file_cork, swr_v1_socket_file_free, swr_v1_socket_file_length,
     swr_v1_socket_file_new, swr_v1_socket_file_sent, swr_v1_socket_handle_send_owned,
     swr_v1_socket_iov_owned, swr_v1_socket_record_peek, swr_v1_socket_record_recv,
@@ -466,26 +466,6 @@ pub unsafe extern "C" fn socket_ssl_connect(socket: *mut SocketRecord) -> c_int 
         ));
     }
     result.code
-}
-
-/// `swoole::time<std::chrono::milliseconds>(true)`: the steady clock in milliseconds.
-extern "C" fn steady_ms() -> f64 {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    #[cfg(target_vendor = "apple")]
-    let clock = libc::CLOCK_UPTIME_RAW;
-    #[cfg(not(target_vendor = "apple"))]
-    let clock = libc::CLOCK_MONOTONIC;
-    // SAFETY: a writable timespec.
-    unsafe { libc::clock_gettime(clock, &raw mut now) };
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "upstream converts the millisecond count to double too"
-    )]
-    let ms = (now.tv_sec * 1000 + now.tv_nsec / 1_000_000) as f64;
-    ms
 }
 
 unsafe extern "C" fn tls_peek(socket: *mut c_void, buffer: *mut c_void, length: usize) -> isize {

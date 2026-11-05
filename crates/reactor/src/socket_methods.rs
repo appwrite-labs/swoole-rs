@@ -16,6 +16,27 @@ const BACKLOG: c_int = 512;
 /// one its timers read.
 pub type SteadyMs = unsafe extern "C" fn() -> f64;
 
+/// `swoole::time<std::chrono::milliseconds>(true)`: the steady clock in milliseconds.
+#[must_use]
+pub extern "C" fn steady_ms() -> f64 {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    #[cfg(target_vendor = "apple")]
+    let clock = libc::CLOCK_UPTIME_RAW;
+    #[cfg(not(target_vendor = "apple"))]
+    let clock = libc::CLOCK_MONOTONIC;
+    // SAFETY: a writable timespec.
+    unsafe { libc::clock_gettime(clock, &raw mut now) };
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "upstream converts the millisecond count to double too"
+    )]
+    let ms = (now.tv_sec * 1000 + now.tv_nsec / 1_000_000) as f64;
+    ms
+}
+
 fn status(ok: bool) -> c_int {
     if ok { OK } else { ERR }
 }

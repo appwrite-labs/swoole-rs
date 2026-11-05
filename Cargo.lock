@@ -803,7 +803,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-process",
  "swoole-rs-reactor",
- "swoole-rs-tls",
 ]
 
 [[package]]

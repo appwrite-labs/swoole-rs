@@ -22,4 +22,3 @@ libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-process = { path = "../process" }
 swoole-rs-reactor = { path = "../reactor" }
-swoole-rs-tls = { path = "../tls" }
