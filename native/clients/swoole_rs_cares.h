@@ -15,7 +15,7 @@ struct swr_v1_clients_cares_ops {
     uint8_t (*canceled)(void *);
     uint8_t (*timedout)(void *);
     void (*resume)(void *);
-    void (*defer)(void (*)(void *), void *);
+    void (*defer)(void (*)(void *), void (*)(void *), void *);
     void *(*make)(int32_t, void *);
     int32_t (*events)(void *);
     void (*add)(void *, int32_t);

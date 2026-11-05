@@ -1,12 +1,33 @@
 diff --git a/src/network/dns.cc b/src/network/dns.cc
-index ae1223a..7902582 100644
+index ae1223a..8974a47 100644
 --- a/src/network/dns.cc
 +++ b/src/network/dns.cc
-@@ -34,2 +34,3 @@
+@@ -23,3 +23,2 @@
+ #include <vector>
+-#include <unordered_map>
+ #ifndef SWOOLE_RS_CLIENTS
+@@ -34,2 +33,3 @@
  #include <ares.h>
 +#include "swoole_rs_cares.h"
  #endif
-@@ -193,190 +194,81 @@ std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int fam
+@@ -120,3 +120,2 @@ static uint16_t dns_request_id = 1;
+ 
+-static std::string parse_ip_address(void *vaddr, int type);
+ 
+@@ -136,12 +135,2 @@ std::string get_ip_by_hosts(const std::string &search_domain) {
+ 
+-static std::string parse_ip_address(void *vaddr, int type) {
+-    const uint8_t version = type == AF_INET ? 4 : (type == AF_INET6 ? 6 : 0);
+-    if (version == 0) {
+-        assert(0);
+-        return {};
+-    }
+-    const auto plan = swr_v1_clients_ip_text(version, static_cast<const uint8_t *>(vaddr));
+-    return std::string(reinterpret_cast<const char *>(plan.bytes), plan.length);
+-}
+-
+ std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int family, double timeout) {
+@@ -193,190 +182,74 @@ std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int fam
  #ifdef SW_USE_CARES
 -struct ResolvContext {
 -    ares_channel channel;
@@ -20,26 +41,16 @@ index ae1223a..7902582 100644
 -    std::vector<std::string> result;
 -};
 +static void cares_trace(uint8_t kind, int32_t a, int32_t b, size_t c) {
-+#ifdef SW_LOG_TRACE_OPEN
-+    if (SW_LOG_TRACE < swoole_get_log_level() || !(SW_TRACE_CARES & SwooleG.trace_flags)) {
-+        return;
-+    }
-+    char detail[256];
-+    switch (kind) {
-+    case 0: sw_snprintf(detail, sizeof(detail), "[event callback] readable event, fd=%d", a); break;
-+    case 1: sw_snprintf(detail, sizeof(detail), "[event callback] writable event, fd=%d", a); break;
-+    case 2: sw_snprintf(detail, sizeof(detail), "[sock_state_cb], fd=%d, readable=%d, writable=%d", a, b, int(c)); break;
-+    case 3: sw_snprintf(detail, sizeof(detail), "[del event], fd=%d", a); break;
-+    case 4: sw_snprintf(detail, sizeof(detail), "[set event] fd=%d, events=%d", a, b); break;
-+    case 5: sw_snprintf(detail, sizeof(detail), "[add event] fd=%d, events=%d", a, b); break;
-+    case 6: sw_snprintf(detail, sizeof(detail), "[cares callback] status=%d, timeouts=%d", a, b); break;
-+    case 7: sw_snprintf(detail, sizeof(detail), "lookup success, result_count=%lu", c); break;
-+    default: return;
-+    }
-+    const char *function = kind == 7 ? "dns_lookup_impl_with_cares" : "operator()";
-+    auto length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s(:%d): %s", function, __LINE__, detail);
-+    sw_logger()->put(SW_LOG_TRACE, sw_error, length);
-+#endif
++    swoole_log_as("coroutine::dns_lookup_impl_with_cares", switch (kind) {
++    case 0: swoole_trace_log(SW_TRACE_CARES, "[event callback] readable event, fd=%d", a); break;
++    case 1: swoole_trace_log(SW_TRACE_CARES, "[event callback] writable event, fd=%d", a); break;
++    case 2: swoole_trace_log(SW_TRACE_CARES, "[sock_state_cb], fd=%d, readable=%d, writable=%d", a, b, int(c)); break;
++    case 3: swoole_trace_log(SW_TRACE_CARES, "[del event], fd=%d", a); break;
++    case 4: swoole_trace_log(SW_TRACE_CARES, "[set event] fd=%d, events=%d", a, b); break;
++    case 5: swoole_trace_log(SW_TRACE_CARES, "[add event] fd=%d, events=%d", a, b); break;
++    case 6: swoole_trace_log(SW_TRACE_CARES, "[cares callback] status=%d, timeouts=%d", a, b); break;
++    case 7: swoole_trace_log(SW_TRACE_CARES, "lookup success, result_count=%lu", c); break;
++    });
 +}
  
 -std::vector<std::string> dns_lookup_impl_with_cares(const char *domain, int family, double timeout) {
@@ -85,37 +96,7 @@ index ae1223a..7902582 100644
 -        int events = 0;
 -        if (readable) {
 -            events |= SW_EVENT_READ;
-+        sw_reactor()->add_destroy_callback([](void *) { swr_v1_clients_cares_cleanup(); }, nullptr);
-+    },
-+    []() -> void * { return Coroutine::get_current_safe(); },
-+    [](void *co) -> uint8_t { return static_cast<Coroutine *>(co)->is_suspending(); },
-+    [](void *co, double timeout) { static_cast<Coroutine *>(co)->yield_ex(timeout); },
-+    [](void *co) -> uint8_t { return static_cast<Coroutine *>(co)->is_canceled(); },
-+    [](void *co) -> uint8_t { return static_cast<Coroutine *>(co)->is_timedout(); },
-+    [](void *co) { static_cast<Coroutine *>(co)->resume(); },
-+    [](void (*callback)(void *), void *data) { swoole_event_defer(callback, data); },
-+    [](int32_t fd, void *data) -> void * {
-+        auto *socket = make_socket(fd, SW_FD_CARES);
-+        socket->object = data;
-+        return socket;
-+    },
-+    [](void *socket) -> int32_t { return static_cast<network::Socket *>(socket)->events; },
-+    [](void *socket, int32_t events) { swoole_event_add(static_cast<network::Socket *>(socket), events); },
-+    [](void *socket, int32_t events) { swoole_event_set(static_cast<network::Socket *>(socket), events); },
-+    [](void *socket) { swoole_event_del(static_cast<network::Socket *>(socket)); },
-+    [](void *socket) {
-+        auto *wrapper = static_cast<network::Socket *>(socket);
-+        wrapper->fd = -1;
-+        wrapper->free();
-+    },
-+    [](int32_t error) { swoole_set_last_error(error); },
-+    [](uint8_t kind, int32_t value) {
-+        switch (kind) {
-+        case 0: swoole_warning("error events, fd=%d", value); break;
-+        case 1: swoole_warning("ares_init_options() failed, Error: %s[%d]", ares_strerror(value), value); break;
-+        case 2: swoole_warning("not support to set port of dns server"); break;
-+        case 3: swoole_warning("not support to set dns server"); break;
-         }
+-        }
 -        if (writable) {
 -            events |= SW_EVENT_WRITE;
 -        }
@@ -229,6 +210,40 @@ index ae1223a..7902582 100644
 -    if (ctx.error || ctx.completed) {
 -        goto _destroy;
 -    }
++        sw_reactor()->add_destroy_callback([](void *) { swr_v1_clients_cares_cleanup(); }, nullptr);
++    },
++    []() -> void * { return Coroutine::get_current_safe(); },
++    [](void *co) -> uint8_t { return static_cast<Coroutine *>(co)->is_suspending(); },
++    [](void *co, double timeout) { static_cast<Coroutine *>(co)->yield_ex(timeout); },
++    [](void *co) -> uint8_t { return static_cast<Coroutine *>(co)->is_canceled(); },
++    [](void *co) -> uint8_t { return static_cast<Coroutine *>(co)->is_timedout(); },
++    [](void *co) { static_cast<Coroutine *>(co)->resume(); },
++    [](void (*callback)(void *), void (*release)(void *), void *data) {
++        std::shared_ptr<void> owner(data, release);
++        swoole_event_defer([callback, owner](void *) { callback(owner.get()); }, nullptr);
++    },
++    [](int32_t fd, void *data) -> void * {
++        auto *socket = make_socket(fd, SW_FD_CARES);
++        socket->object = data;
++        return socket;
++    },
++    [](void *socket) -> int32_t { return static_cast<network::Socket *>(socket)->events; },
++    [](void *socket, int32_t events) { swoole_event_add(static_cast<network::Socket *>(socket), events); },
++    [](void *socket, int32_t events) { swoole_event_set(static_cast<network::Socket *>(socket), events); },
++    [](void *socket) { swoole_event_del(static_cast<network::Socket *>(socket)); },
++    [](void *socket) {
++        auto *wrapper = static_cast<network::Socket *>(socket);
++        wrapper->fd = -1;
++        wrapper->free();
++    },
++    [](int32_t error) { swoole_set_last_error(error); },
++    [](uint8_t kind, int32_t value) {
++        swoole_log_as("coroutine::dns_lookup_impl_with_cares", switch (kind) {
++        case 0: swoole_warning("error events, fd=%d", value); break;
++        case 1: swoole_warning("ares_init_options() failed, Error: %s[%d]", ares_strerror(value), value); break;
++        case 2: swoole_warning("not support to set port of dns server"); break;
++        case 3: swoole_warning("not support to set dns server"); break;
++        });
 +    },
 +    cares_trace,
 +};

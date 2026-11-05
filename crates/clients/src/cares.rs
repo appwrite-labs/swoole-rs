@@ -27,7 +27,11 @@ pub(crate) struct Ops {
     canceled: unsafe extern "C" fn(*mut c_void) -> u8,
     timedout: unsafe extern "C" fn(*mut c_void) -> u8,
     resume: unsafe extern "C" fn(*mut c_void),
-    defer: unsafe extern "C" fn(unsafe extern "C" fn(*mut c_void), *mut c_void),
+    defer: unsafe extern "C" fn(
+        unsafe extern "C" fn(*mut c_void),
+        unsafe extern "C" fn(*mut c_void),
+        *mut c_void,
+    ),
     make: unsafe extern "C" fn(i32, *mut c_void) -> *mut c_void,
     events: unsafe extern "C" fn(*mut c_void) -> i32,
     add: unsafe extern "C" fn(*mut c_void, i32),
@@ -69,12 +73,24 @@ unsafe fn query_mut<'a>(state: *mut c_void) -> &'a mut Query {
     unsafe { &mut *state.cast::<Query>() }
 }
 unsafe extern "C" fn complete(data: *mut c_void) {
-    // SAFETY: the native deferred queue transfers this one completion owner once.
-    let task = unsafe { Box::from_raw(data.cast::<Completion>()) };
-    if !task.retired.load(Ordering::Relaxed) {
-        // SAFETY: a non-retired query retains its suspended coroutine until this resume.
-        unsafe { (task.resume)(task.coroutine) };
+    let (retired, coroutine, resume) = {
+        // SAFETY: the native queue's captured owner keeps this payload live during invocation.
+        let task = unsafe { &*data.cast::<Completion>() };
+        (
+            task.retired.load(Ordering::Relaxed),
+            task.coroutine,
+            task.resume,
+        )
+    };
+    if !retired {
+        // SAFETY: no Rust payload borrow spans resume; reentrant queue destruction may drop it.
+        unsafe { resume(coroutine) };
     }
+}
+unsafe extern "C" fn release_completion(data: *mut c_void) {
+    // SAFETY: the last native captured owner transfers this Rust allocation exactly once,
+    // whether the queue invoked or discarded its callback.
+    drop(unsafe { Box::from_raw(data.cast::<Completion>()) });
 }
 unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: i32) {
     // SAFETY: c-ares returns this query's stable callback userdata.
@@ -181,7 +197,7 @@ unsafe extern "C" fn host(
             resume: ops.resume,
         }));
         // SAFETY: the native deferred queue takes this owned completion payload once.
-        unsafe { (ops.defer)(complete, task.cast()) };
+        unsafe { (ops.defer)(complete, release_completion, task.cast()) };
         // SAFETY: a completion was queued, so further SDK callbacks cannot enqueue it again.
         unsafe { query_mut(data).coroutine = ptr::null_mut() };
     } else {
@@ -345,4 +361,65 @@ pub(crate) unsafe extern "C" fn swr_v1_clients_cares_lookup(
 )]
 fn millis(timeout: f64) -> i32 {
     (timeout * 1000.0) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Resume {
+        payload: *mut c_void,
+        calls: usize,
+    }
+    unsafe extern "C" fn resume_and_discard(context: *mut c_void) {
+        let context = unsafe { &mut *context.cast::<Resume>() };
+        context.calls += 1;
+        unsafe { release_completion(context.payload) };
+    }
+    #[test]
+    fn completion_queue_discard_releases_token() {
+        let retired = Arc::new(AtomicBool::new(true));
+        let payload = Box::into_raw(Box::new(Completion {
+            retired: retired.clone(),
+            coroutine: ptr::null_mut(),
+            resume: resume_and_discard,
+        }));
+        assert_eq!(
+            Arc::strong_count(&retired),
+            2,
+            "queue retains retirement token"
+        );
+        unsafe { complete(payload.cast()) };
+        assert_eq!(
+            Arc::strong_count(&retired),
+            2,
+            "retired callback does not consume queue custody"
+        );
+        unsafe { release_completion(payload.cast()) };
+        assert_eq!(
+            Arc::strong_count(&retired),
+            1,
+            "discard releases payload without invocation"
+        );
+    }
+    #[test]
+    fn completion_can_be_discarded_during_resume() {
+        let retired = Arc::new(AtomicBool::new(false));
+        let mut context = Resume {
+            payload: ptr::null_mut(),
+            calls: 0,
+        };
+        let payload = Box::into_raw(Box::new(Completion {
+            retired: retired.clone(),
+            coroutine: (&raw mut context).cast(),
+            resume: resume_and_discard,
+        }));
+        context.payload = payload.cast();
+        unsafe { complete(payload.cast()) };
+        assert_eq!(context.calls, 1, "resume was delivered exactly once");
+        assert_eq!(
+            Arc::strong_count(&retired),
+            1,
+            "reentrant queue destruction released the token"
+        );
+    }
 }
