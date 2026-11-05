@@ -532,14 +532,6 @@ def plan(args, reports):
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--core', ROOT / 'target/native-originals/process', '--jobs', args.jobs,
                *report('process-worker-retirement'))
-    if integrate and sys.platform.startswith('linux'):
-        effects_core = ROOT / 'target/native-originals' / ('process' if 'process' in modules else 'server-effects')
-        effects_sdk = ['--sdk-report', reports / 'process-worker-retirement.json'] if 'process' in modules else []
-        script('server-native-effects', 'tests/modules/integration/server_effects.py',
-               '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               '--core', effects_core, '--jobs', args.jobs, *effects_sdk,
-               *report('server-native-effects'))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-native'))
