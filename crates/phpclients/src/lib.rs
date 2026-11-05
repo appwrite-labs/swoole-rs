@@ -21,6 +21,7 @@ mod http_client;
 mod http_native;
 mod http_request;
 mod llhttp;
+mod multicast;
 mod native;
 mod net;
 mod resolver;
