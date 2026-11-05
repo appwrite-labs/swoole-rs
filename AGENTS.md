@@ -9,6 +9,9 @@ commit exports as a timestamped patch file, so parallel PRs never renumber.
 
 Preserve upstream test assertions and expected outputs. Never mark unsupported,
 SKIP or XFAIL as passed, or weaken capability probes to hide behavior failures.
+When an upstream GoogleTest is all that keeps a C++ file in the build, port it to
+Rust (one Rust test per TEST, same inputs and expected values, mapped in the
+module's tests README) and stop building it.
 Run original PHPT tests with PHP's official runner through corpus/upstream/run.py,
 not upstream's tests/start.sh: its cleanup can kill unrelated processes.
 Keep module tests under tests/modules/<module>/.
