@@ -1,26 +1,95 @@
-//! Static file locations, ordered index names and compression MIME types.
-//! The configuration is published before workers start. Native iterators are
-//! borrowed views; they never retain an independent owning collection.
+//! Server static configuration, shared with contexts using its original identity.
+//! Native views never retain an independent owning collection.
 use crate::ServerState;
+use core::ffi::c_void;
+use std::sync::{Arc, Mutex};
 
+#[derive(Default)]
+struct Strings {
+    values: Vec<Vec<u8>>,
+    enabled: bool,
+}
 pub(crate) struct StaticConfig {
-    values: [Vec<Vec<u8>>; 3],
-    enabled: [bool; 3],
+    tables: [Arc<Mutex<Strings>>; 3],
 }
 impl StaticConfig {
-    pub(crate) const fn new() -> Self {
+    fn new() -> Self {
         Self {
-            values: [Vec::new(), Vec::new(), Vec::new()],
-            enabled: [false; 3],
+            tables: std::array::from_fn(|_| Arc::default()),
         }
     }
 }
+fn owner(state: &ServerState) -> &Mutex<StaticConfig> {
+    state
+        .static_config
+        .get_or_init(|| Mutex::new(StaticConfig::new()))
+}
+fn table(state: &ServerState, kind: usize) -> Arc<Mutex<Strings>> {
+    Arc::clone(
+        &owner(state)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tables[kind],
+    )
+}
 
-/// Query or alter a collection: 0 count, 1 enabled, 2 enable, 3 clear/disable,
-/// 4 insert unique bytes, 5 find (count when absent). Index names retain order.
+/// Share the current MIME table identity. Replacing the Server's optional
+/// collection leaves already-bound contexts holding the original table.
 /// # Safety
-/// `state` is live; insertion/search lends `length` readable bytes (a non-null
-/// pointer even when empty). Mutation occurs before worker publication.
+/// `state` is live; the result needs one `_owner_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_static_owner(state: *const ServerState) -> *const c_void {
+    // SAFETY: the caller lends a live Server state.
+    let state = unsafe { &*state };
+    Arc::into_raw(table(state, 2)).cast()
+}
+/// # Safety
+/// `handle` is one live strong reference from `_static_owner`/clone.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_static_owner_clone(handle: *const c_void) -> *const c_void {
+    // SAFETY: the raw Arc retains at least one strong reference.
+    unsafe {
+        Arc::increment_strong_count(handle.cast::<Mutex<Strings>>());
+    }
+    handle
+}
+/// # Safety
+/// `handle` is null or one unreleased raw strong reference.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_static_owner_free(handle: *const c_void) {
+    if !handle.is_null() {
+        // SAFETY: the caller transfers exactly one raw strong reference back.
+        drop(unsafe { Arc::from_raw(handle.cast::<Mutex<Strings>>()) });
+    }
+}
+/// MIME membership: null input queries whether the optional set exists.
+/// # Safety
+/// `handle` is live; non-null `data` lends `length` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_static_mime(
+    handle: *const c_void,
+    data: *const u8,
+    length: usize,
+) -> bool {
+    // SAFETY: the native context retains its raw Arc throughout this leaf call.
+    let strings = unsafe { &*handle.cast::<Mutex<Strings>>() };
+    let strings = strings
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if data.is_null() {
+        return strings.enabled;
+    }
+    // SAFETY: the caller lends exactly this byte range.
+    let bytes = unsafe { core::slice::from_raw_parts(data, length) };
+    strings.values.iter().any(|value| value == bytes)
+}
+
+/// 0 count, 1 enabled, 2 enable, 3 replace with absent, 4 insert unique,
+/// 5 find (count when absent), 6 append preserving duplicates. The named index
+/// setter does its original duplicate lookup before appending.
+/// # Safety
+/// `state` is live; insertion/search lends `length` readable bytes (non-null even
+/// when empty). Writes use the original configuration's synchronization.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_static_config(
     state: *const ServerState,
@@ -35,44 +104,46 @@ pub unsafe extern "C" fn swr_v1_server_static_config(
     if kind >= 3 {
         return 0;
     }
-    // SAFETY: the caller lends the live server's configuration owner.
+    // SAFETY: the caller lends a live Server state.
     let state = unsafe { &*state };
-    let mut config = state
-        .static_config
+    if operation == 3 {
+        // Assignment replaces the shared_ptr identity; contexts holding the old
+        // table continue to observe it, rather than a copy or the new collection.
+        owner(state)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tables[kind] = Arc::default();
+        return 0;
+    }
+    let table = table(state, kind);
+    let mut strings = table
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match operation {
-        0 => config.values[kind].len(),
-        1 => usize::from(config.enabled[kind]),
+        0 => strings.values.len(),
+        1 => usize::from(strings.enabled),
         2 => {
-            config.enabled[kind] = true;
+            strings.enabled = true;
             0
         }
-        3 => {
-            config.values[kind].clear();
-            config.enabled[kind] = false;
-            0
-        }
-        4 | 5 => {
-            // SAFETY: these two operations lend the specified readable byte range.
+        4..=6 => {
+            // SAFETY: these operations lend the specified input range.
             let bytes = unsafe { core::slice::from_raw_parts(data, length) };
-            let found = config.values[kind].iter().position(|value| value == bytes);
-            if operation == 4 {
-                config.enabled[kind] = true;
-                if found.is_none() {
-                    config.values[kind].push(bytes.to_vec());
+            let found = strings.values.iter().position(|value| value == bytes);
+            if operation == 4 || operation == 6 {
+                strings.enabled = true;
+                if operation == 6 || found.is_none() {
+                    strings.values.push(bytes.to_vec());
                 }
             }
-            found.unwrap_or(config.values[kind].len())
+            found.unwrap_or(strings.values.len())
         }
         _ => 0,
     }
 }
-
 /// # Safety
-/// `state` is live and `length` writable. The returned bytes are a borrowed
-/// immutable view, valid until configuration clear/server destruction. Mutations
-/// happen before workers start and no clear races a published reader.
+/// `state` is live and `length` writable. Bytes remain borrowed until collection
+/// replacement or server destruction; no replacement races a native reader.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_static_text(
     state: *const ServerState,
@@ -80,16 +151,19 @@ pub unsafe extern "C" fn swr_v1_server_static_text(
     index: usize,
     length: *mut usize,
 ) -> *const u8 {
-    // SAFETY: the caller lends a live server state.
+    // SAFETY: the caller lends a live Server state.
     let state = unsafe { &*state };
-    let config = state
-        .static_config
+    let Ok(kind) = usize::try_from(kind) else {
+        return core::ptr::null();
+    };
+    if kind >= 3 {
+        return core::ptr::null();
+    }
+    let table = table(state, kind);
+    let strings = table
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let value = config
-        .values
-        .get(kind as usize)
-        .and_then(|values| values.get(index));
+    let value = strings.values.get(index);
     // SAFETY: the caller supplies writable output length.
     unsafe {
         length.write(value.map_or(0, Vec::len));
@@ -128,10 +202,33 @@ mod tests {
                 "MIME configuration preserves upstream's case-sensitive byte keys"
             );
             assert_eq!(input(0, 0, b""), 0, "each collection owns separate state");
+            input(1, 6, b"index.php");
+            assert_eq!(
+                input(1, 0, b""),
+                3,
+                "direct public vector assignment/appends preserve duplicates"
+            );
             input(1, 3, b"");
             assert_eq!(input(1, 1, b""), 0);
             assert_eq!(input(1, 0, b""), 0);
             assert!(swr_v1_server_static_text(&raw const state, 1, 0, &raw mut length).is_null());
+        }
+    }
+    #[test]
+    fn shared_context_owner_observes_mutation_and_outlives_native_server() {
+        let state = Box::new(ServerState::new());
+        unsafe {
+            let handle = swr_v1_server_static_owner(&raw const *state);
+            assert!(!swr_v1_server_static_mime(handle, core::ptr::null(), 0));
+            swr_v1_server_static_config(&raw const *state, 2, 4, b"text/html".as_ptr(), 9);
+            assert!(swr_v1_server_static_mime(handle, core::ptr::null(), 0));
+            assert!(swr_v1_server_static_mime(handle, b"text/html".as_ptr(), 9));
+            let copy = swr_v1_server_static_owner_clone(handle);
+            drop(state);
+            swr_v1_server_static_owner_free(handle);
+            assert!(swr_v1_server_static_mime(copy, b"text/html".as_ptr(), 9));
+            assert!(!swr_v1_server_static_mime(copy, b"image/png".as_ptr(), 9));
+            swr_v1_server_static_owner_free(copy);
         }
     }
 }

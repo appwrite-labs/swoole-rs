@@ -235,6 +235,8 @@ def plan(args, reports):
         script('error-php', 'tests/modules/error/php.py', '--source', ROOT / 'target/upstream/src',
                *php, *engines, *report('error-php'))
     if 'http' in modules:
+        script('http-server-config-owners', 'tests/modules/http/server_config_owners.py',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-server-config-owners'))
         script('http-context', 'tests/modules/http/context_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-context'))
         for name, runner in [('http-proxy', 'proxy_gate.py'), ('http-static', 'static_gate.py'), ('http-conditionals', 'conditional_gate.py'), ('http-rewrites', 'rewrite_gate.py'), ('http-dispatch', 'dispatch_gate.py'), ('http-locales', 'locale_gate.py')]:

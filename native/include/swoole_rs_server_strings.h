@@ -45,7 +45,7 @@ class ServerStrings {
     void enable() { operation(2); }
     void insert(const std::string &value) { operation(4,value.data(),value.size()); }
     void emplace(const std::string &value) { insert(value); }
-    void emplace_back(const std::string &value) { insert(value); }
+    void emplace_back(const std::string &value) { operation(6,value.data(),value.size()); }
     iterator begin() const { return {this,0}; }
     iterator end() const { return {this,size()}; }
     iterator find(const std::string &value) const { return {this,operation(5,value.data(),value.size())}; }
@@ -56,13 +56,38 @@ class ServerStrings {
     }
     template<typename Collection> ServerStrings &operator=(const std::shared_ptr<Collection> &values) {
         operation(3);
-        if (values) { enable(); for (const auto &value:*values) insert(value); }
+        if (values) { enable(); for (const auto &value:*values) operation(6,value.data(),value.size()); }
         return *this;
     }
     operator std::vector<std::string>() const { return {begin(),end()}; }
-    operator std::shared_ptr<std::unordered_set<std::string>>() const {
-        return bool(*this) ? std::make_shared<std::unordered_set<std::string>>(begin(),end()) : nullptr;
+    const void *share() const { return swr_v1_server_static_owner(state_); }
+};
+// Existing native coroutine-server sets retain their original shared_ptr owner;
+// Server MIME sets share the Rust owner. Neither path snapshots retained bytes.
+class ServerMimeTypes {
+    const void *rust_ = nullptr;
+    std::shared_ptr<std::unordered_set<std::string>> native_;
+    void clear() { swr_v1_server_static_owner_free(rust_); rust_ = nullptr; native_.reset(); }
+  public:
+    ServerMimeTypes() = default;
+    ServerMimeTypes(std::nullptr_t) {}
+    ServerMimeTypes(const ServerMimeTypes &other): rust_(other.rust_ ? swr_v1_server_static_owner_clone(other.rust_) : nullptr), native_(other.native_) {}
+    ~ServerMimeTypes() { swr_v1_server_static_owner_free(rust_); }
+    ServerMimeTypes &operator=(const ServerMimeTypes &other) {
+        if (this != &other) { clear(); rust_=other.rust_ ? swr_v1_server_static_owner_clone(other.rust_) : nullptr; native_=other.native_; }
+        return *this;
     }
+    ServerMimeTypes &operator=(std::nullptr_t) { clear(); return *this; }
+    ServerMimeTypes &operator=(const ServerStrings &values) { clear(); rust_=bool(values) ? values.share() : nullptr; return *this; }
+    ServerMimeTypes &operator=(const std::shared_ptr<std::unordered_set<std::string>> &values) { clear(); native_=values; return *this; }
+    ServerMimeTypes *operator->() { return this; }
+    const ServerMimeTypes *operator->() const { return this; }
+    explicit operator bool() const { return rust_ ? swr_v1_server_static_mime(rust_,nullptr,0) : bool(native_); }
+    bool find(const std::string &value) const {
+        return rust_ ? swr_v1_server_static_mime(rust_,reinterpret_cast<const uint8_t *>(value.data()),value.size())
+                     : native_ && native_->find(value)!=native_->end();
+    }
+    bool end() const { return false; }
 };
 }}
 #endif

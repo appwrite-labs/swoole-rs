@@ -37,7 +37,10 @@ mod shared;
 mod startup;
 mod state;
 mod static_config;
-pub use static_config::{swr_v1_server_static_config, swr_v1_server_static_text};
+pub use static_config::{
+    swr_v1_server_static_config, swr_v1_server_static_mime, swr_v1_server_static_owner,
+    swr_v1_server_static_owner_clone, swr_v1_server_static_owner_free, swr_v1_server_static_text,
+};
 
 pub use records::{
     ConnectionRecord, ServerTables, SessionRecord, swr_v1_server_connection, swr_v1_server_session,

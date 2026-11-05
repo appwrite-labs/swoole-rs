@@ -41,7 +41,11 @@ the three implementation `unordered_map` fields are replaced by this owner.
 Static locations, ordered unique index names and MIME configuration also live in
 Rust. The original public collection operations used by production and core gates
 remain borrowed native views. Index order, binary names, optional empty versus
-absent configuration and case-sensitive membership are preserved.
+absent configuration and case-sensitive membership are preserved. Direct public
+index-vector assignment/appends retain duplicates; the named index setter keeps
+its original uniqueness policy. Native HTTP contexts retain strong Rust MIME
+table references, so mutations remain visible, collection replacement preserves
+the old context identity, and the table can outlive the Server facade.
 
 - Callbacks may change settings or maps, close connections, dispatch again or
   destroy an event/coroutine; facts are refreshed at each original observation
