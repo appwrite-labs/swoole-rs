@@ -5,17 +5,16 @@
 #define SWOOLE_RS_PROCESS_VIEWS_H
 // Generated from crates/process/src/{worker_record,process_pool}.rs.
 // Typed native loans only; Rust owns the record layouts and operations.
-struct WorkerGlobalFields {
-    uint32_t id;
-    uint8_t type;
-    int pid;
-    bool shutdown;
-    bool running;
-    uint32_t max_request;
-    Worker * worker;
-    Worker * worker_copy;
+#define SWR_WORKER_GLOBAL_RECORD_FIELDS \
+    uint32_t id; \
+    uint8_t type; \
+    int pid; \
+    bool shutdown; \
+    bool running; \
+    uint32_t max_request; \
+    Worker * worker; \
+    Worker * worker_copy; \
     time_t exit_time;
-};
 #define SWR_WORKER_RECORD_FIELDS \
     int pid; \
     uint32_t id; \
@@ -41,53 +40,52 @@ struct WorkerGlobalFields {
     network::Socket * pipe_worker; \
     network::Socket * pipe_current; \
     void * ptr;
-struct PoolFields {
-    bool running;
-    bool reload_init;
-    bool read_message;
-    bool started;
-    bool schedule_by_sysvmsg;
-    bool async;
-    uint8_t ipc_mode;
-    ProtocolType protocol_type_;
-    int master_pid;
-    uint32_t max_wait_time;
-    uint64_t reload_count;
-    time_t reload_last_time;
-    uint8_t type;
-    uint16_t start_id;
-    uint8_t use_msgqueue;
-    uint8_t use_socket;
-    uint32_t max_packet_size_;
-    key_t msgqueue_key;
-    uint32_t worker_num;
-    uint32_t max_request;
-    uint32_t max_request_grace;
-    uint8_t scheduler_warning;
-    time_t warning_time;
-    void (*onStart)(ProcessPool *);
-    void (*onShutdown)(ProcessPool *);
-    void (*onBeforeReload)(ProcessPool *);
-    void (*onAfterReload)(ProcessPool *);
-    int (*onTask)(ProcessPool *, Worker *, EventData *);
-    void (*onWorkerStart)(ProcessPool *, Worker *);
-    void (*onMessage)(ProcessPool *, RecvData *);
-    void (*onWorkerExit)(ProcessPool *, Worker *);
-    void (*onWorkerStop)(ProcessPool *, Worker *);
-    void (*onWorkerError)(ProcessPool *, Worker *, const ExitStatus &);
-    void (*onWorkerMessage)(ProcessPool *, EventData *);
-    int (*onWorkerNotFound)(ProcessPool *, const ExitStatus &);
-    int (*main_loop)(ProcessPool *, Worker *);
-    sw_atomic_t round_id;
-    Worker * workers;
-    std::vector<std::shared_ptr<UnixSocket>> * pipes;
-    swr_v1_process_worker_registry * registry_;
-    MsgQueue * queue;
-    swr_v1_process_pool_ipc * ipc_;
-    Channel * message_box = nullptr;
-    MessageBus * message_bus = nullptr;
-    swr_v1_process_reload_task * reload_task = nullptr;
+#define SWR_POOL_RECORD_FIELDS \
+    bool running; \
+    bool reload_init; \
+    bool read_message; \
+    bool started; \
+    bool schedule_by_sysvmsg; \
+    bool async; \
+    uint8_t ipc_mode; \
+    ProtocolType protocol_type_; \
+    int master_pid; \
+    uint32_t max_wait_time; \
+    uint64_t reload_count; \
+    time_t reload_last_time; \
+    uint8_t type; \
+    uint16_t start_id; \
+    uint8_t use_msgqueue; \
+    uint8_t use_socket; \
+    uint32_t max_packet_size_; \
+    key_t msgqueue_key; \
+    uint32_t worker_num; \
+    uint32_t max_request; \
+    uint32_t max_request_grace; \
+    uint8_t scheduler_warning; \
+    time_t warning_time; \
+    void (*onStart)(ProcessPool *); \
+    void (*onShutdown)(ProcessPool *); \
+    void (*onBeforeReload)(ProcessPool *); \
+    void (*onAfterReload)(ProcessPool *); \
+    int (*onTask)(ProcessPool *, Worker *, EventData *); \
+    void (*onWorkerStart)(ProcessPool *, Worker *); \
+    void (*onMessage)(ProcessPool *, RecvData *); \
+    void (*onWorkerExit)(ProcessPool *, Worker *); \
+    void (*onWorkerStop)(ProcessPool *, Worker *); \
+    void (*onWorkerError)(ProcessPool *, Worker *, const ExitStatus &); \
+    void (*onWorkerMessage)(ProcessPool *, EventData *); \
+    int (*onWorkerNotFound)(ProcessPool *, const ExitStatus &); \
+    int (*main_loop)(ProcessPool *, Worker *); \
+    sw_atomic_t round_id; \
+    Worker * workers; \
+    std::vector<std::shared_ptr<UnixSocket>> * pipes; \
+    swr_v1_process_worker_registry * registry_; \
+    MsgQueue * queue; \
+    swr_v1_process_pool_ipc * ipc_; \
+    Channel * message_box = nullptr; \
+    MessageBus * message_bus = nullptr; \
+    swr_v1_process_reload_task * reload_task = nullptr; \
     void * ptr;
-};
 #endif
 #endif

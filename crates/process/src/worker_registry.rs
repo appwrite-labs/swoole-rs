@@ -106,6 +106,24 @@ pub unsafe extern "C" fn swr_v1_process_worker_registry_lookup(
         .map_or(std::ptr::null_mut(), |entry| entry.worker)
 }
 
+/// Look up a registered worker of the specified category only.
+/// # Safety
+/// `registry` is a live handle; returned pointers remain native loans.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_lookup_category(
+    registry: *const WorkerRegistry,
+    pid: c_int,
+    category: c_int,
+) -> *mut c_void {
+    // SAFETY: the caller lends a live registry for this leaf query.
+    let registry = unsafe { &*registry };
+    registry
+        .workers
+        .get(&pid)
+        .filter(|entry| entry.category == category)
+        .map_or(core::ptr::null_mut(), |entry| entry.worker)
+}
+
 /// Detach the worker at `pid`: it has been replaced and exits on its own, so it
 /// leaves the lookup and its exit is later reaped by
 /// [`swr_v1_process_worker_registry_reap_detached`].
@@ -285,5 +303,45 @@ mod tests {
     #[test]
     fn free_handles_null() {
         unsafe { swr_v1_process_worker_registry_free(std::ptr::null_mut()) };
+    }
+}
+
+#[cfg(test)]
+mod category_compat_tests {
+    use super::*;
+    #[test]
+    fn user_lookup_cannot_return_an_event_worker_index_entry() {
+        let mut registry = WorkerRegistry::default();
+        unsafe {
+            swr_v1_process_worker_registry_register(
+                &raw mut registry,
+                30,
+                core::ptr::without_provenance_mut(11),
+                1,
+            );
+            swr_v1_process_worker_registry_register(
+                &raw mut registry,
+                40,
+                core::ptr::without_provenance_mut(13),
+                CATEGORY_USER,
+            );
+            assert!(
+                swr_v1_process_worker_registry_lookup_category(
+                    &raw const registry,
+                    30,
+                    CATEGORY_USER
+                )
+                .is_null()
+            );
+            assert_eq!(
+                swr_v1_process_worker_registry_lookup_category(
+                    &raw const registry,
+                    40,
+                    CATEGORY_USER
+                )
+                .addr(),
+                13
+            );
+        }
     }
 }

@@ -40,6 +40,29 @@ pub struct WorkerRecord {
     ptr: *mut c_void,
 }
 
+/// First event worker with this pid, preserving array order and public raw writes.
+/// # Safety
+/// `workers` is null or lends `count` initialized canonical Worker records.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_worker_array_lookup(
+    workers: *mut WorkerRecord,
+    count: u32,
+    pid: c_int,
+) -> *mut WorkerRecord {
+    if workers.is_null() {
+        return core::ptr::null_mut();
+    }
+    for index in 0..usize::try_from(count).unwrap_or(0) {
+        // SAFETY: the caller lends this complete initialized array.
+        let worker = unsafe { workers.add(index) };
+        // SAFETY: each array element is live, including its public pid slot.
+        if unsafe { (*worker).pid } == pid {
+            return worker;
+        }
+    }
+    core::ptr::null_mut()
+}
+
 /// The worker's status (`SW_WORKER_IDLE`/`BUSY`/…).
 ///
 /// # Safety
@@ -257,6 +280,27 @@ mod tests {
             assert_eq!(swr_v1_worker_id(&raw const record), 7);
             // id and pid are adjacent words; neither disturbs the other
             assert_eq!(swr_v1_worker_pid(&raw const record), 4242);
+        }
+    }
+}
+
+#[cfg(test)]
+mod public_pid_array_tests {
+    use super::*;
+    #[test]
+    fn public_pid_writes_and_duplicates_keep_first_array_match_including_zero() {
+        let mut workers: [WorkerRecord; 3] = unsafe { core::mem::zeroed() };
+        let first = workers.as_mut_ptr();
+        unsafe {
+            assert_eq!(swr_v1_worker_array_lookup(first, 3, 0), first);
+            first.cast::<c_int>().write(9);
+            first.add(1).cast::<c_int>().write(9);
+            assert_eq!(swr_v1_worker_array_lookup(first, 3, 9), first);
+            first.cast::<c_int>().write(4);
+            assert_eq!(swr_v1_worker_array_lookup(first, 3, 9), first.add(1));
+            assert_eq!(swr_v1_worker_array_lookup(first, 3, 0), first.add(2));
+            assert!(swr_v1_worker_array_lookup(first, 3, 77).is_null());
+            assert!(swr_v1_worker_array_lookup(core::ptr::null_mut(), 0, 0).is_null());
         }
     }
 }

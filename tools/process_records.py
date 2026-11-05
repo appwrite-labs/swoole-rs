@@ -9,16 +9,15 @@ callbacks={'on_start':'void (*onStart)(ProcessPool *)','on_shutdown':'void (*onS
 types={'bool':'bool','u8':'uint8_t','u16':'uint16_t','u32':'uint32_t','u64':'uint64_t','i64':'int64_t','usize':'size_t','c_int':'int','*mut c_void':'void *','*mut WorkerRecord':'Worker *','*mut WorkerRegistry':'swr_v1_process_worker_registry *','*mut PoolIpc':'swr_v1_process_pool_ipc *','*mut ReloadTask':'swr_v1_process_reload_task *'}
 refinements={'pool':'ProcessPool *','queue':'MsgQueue *','lock':'Mutex *','pipe_object':'UnixSocket *','pipe_master':'network::Socket *','pipe_worker':'network::Socket *','pipe_current':'network::Socket *','pipes':'std::vector<std::shared_ptr<UnixSocket>> *','message_box':'Channel *','message_bus':'MessageBus *','round_id':'sw_atomic_t','protocol_type':'ProtocolType','dispatch_count':'sw_atomic_long_t','request_count':'sw_atomic_long_t','response_count':'sw_atomic_long_t','start_time':'time_t','reload_last_time':'time_t','warning_time':'time_t','msgqueue_key':'key_t','exit_time':'time_t'}
 text='#ifndef SWR_PROCESS_NATIVE_VIEW_CONTEXT\n#include "swoole_process_pool.h"\n#else\n#ifndef SWOOLE_RS_PROCESS_VIEWS_H\n#define SWOOLE_RS_PROCESS_VIEWS_H\n// Generated from crates/process/src/{worker_record,process_pool}.rs.\n// Typed native loans only; Rust owns the record layouts and operations.\n'
-for record,file,view in [('WorkerGlobalRecord','worker_globals','WorkerGlobalFields'),('WorkerRecord','worker_record','WorkerFields'),('PoolRecord','process_pool','PoolFields')]:
+for record,file,view in [('WorkerGlobalRecord','worker_globals','SWR_WORKER_GLOBAL_RECORD_FIELDS'),('WorkerRecord','worker_record','SWR_WORKER_RECORD_FIELDS'),('PoolRecord','process_pool','SWR_POOL_RECORD_FIELDS')]:
  s=Path('crates/process/src/'+file+'.rs').read_text().split('pub struct '+record+' {',1)[1].split('\n}',1)[0]
  fields=re.findall(r'^    (?:pub )?(\w+): ([^,]+),',s,re.M)
- text+=('#define SWR_WORKER_RECORD_FIELDS '+chr(92)+chr(10) if record=='WorkerRecord' else 'struct '+view+' {'+chr(10))
+ text+='#define '+view+' '+chr(92)+chr(10)
  for name,ty in fields:
   if name in callbacks:decl=callbacks[name]
   else:decl=refinements.get(name,types.get(ty,ty))+' '+renames.get(name,name)
   if record=='PoolRecord' and name in ['message_box','message_bus','reload_task']:decl+=' = nullptr'
-  text+='    '+decl+';'+(' '+chr(92)+chr(10) if record=='WorkerRecord' and name!=fields[-1][0] else chr(10))
- if record!='WorkerRecord':text+='};\n'
+  text+='    '+decl+';'+(' '+chr(92)+chr(10) if name!=fields[-1][0] else chr(10))
 text += '#endif\n#endif\n'
 output = Path('native/process/swoole_rs_process_views.h')
 parser = argparse.ArgumentParser(description=__doc__)

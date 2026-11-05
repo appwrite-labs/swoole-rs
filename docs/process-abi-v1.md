@@ -33,11 +33,13 @@ state has no TLS destructor; worker stop explicitly releases a detached copy.
 PID, worker ID, session ID and fd remain distinct identities. Worker direct
 public fields and `Worker::*` member-pointer types remain source-compatible
 with upstream; the native declarations expand canonical Rust record fields in
-the Worker class itself.
+the Worker, Pool and WorkerGlobal classes themselves.
 
 Server command names, ids, accepted process types, handler slots and outstanding
 reply callbacks live in Rust tables. Native code constructs, invokes and destroys
-`std::function` payloads outside Rust frames. The native member guard drains the
+`std::function` payloads after the registry/core orchestration calls return; no
+registry borrow or lock spans callable work. Existing PHP callers retain their
+caught bailout boundaries. The native member guard drains the
 callable slots before the Rust base owner dies; no registry lock spans callbacks.
 The production `add_command`, `command` and handler/reply methods remain public;
 the three implementation `unordered_map` fields are replaced by this owner.

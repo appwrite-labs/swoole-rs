@@ -1,6 +1,7 @@
 //! Command names, metadata, handler custody and outstanding reply callbacks.
 //! Native callable objects are opaque values: Rust never invokes or destroys a
-//! callable, so a Zend bailout cannot cross a Rust frame. Native teardown drains
+//! callable. Registry borrows/locks end before the native caller resumes callable
+//! work, with the caller's existing PHP bailout boundaries. Native teardown drains
 //! these tables before freeing the server state.
 use crate::ServerState;
 use core::ffi::c_void;
