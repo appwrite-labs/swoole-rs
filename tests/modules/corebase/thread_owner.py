@@ -23,7 +23,8 @@ def queries(source):
     body=(source/'src/os/base.cc').read_text()
     begin=body.index('long swoole_thread_get_native_id()')
     end=body.index('\nnamespace swoole {',begin)
-    return ('#include "swoole_thread.h"\n#include <sstream>\n'
+    module_header='#include "swoole_rs_ossupport.h"\n' if '#include "swoole_rs_ossupport.h"' in body else ''
+    return ('#include "swoole_thread.h"\n#include <sstream>\n'+module_header+
             '#if defined(__linux__)\n#include <sys/syscall.h>\n#endif\n'
             'thread_local swoole::ThreadGlobal SwooleTG;\n'+body[begin:end])
 
@@ -35,9 +36,18 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args();args.output.parent.mkdir(parents=True,exist_ok=True)
     work=args.output.parent/('thread-owner-'+uuid.uuid4().hex);work.mkdir()
-    report=dict(passed=False,scope=__doc__,work=str(work),commands=[],runs=[],sdk={})
+    report=dict(passed=False,scope=__doc__,work=str(work),commands=[],runs=[],sdk={},driver_sha256=sha(Path(__file__)),fixture_sha256=sha(Path(__file__).with_suffix('.cc')))
     try:
         selected,flags=hybrid_tree(args.archive)
+        # A separately compiled SDK consumer must also find the complete owner
+        # API in the production extension, including methods unused by its core.
+        extension=selected/'modules/swoole.so'
+        options=['-gU'] if sys.platform=='darwin' else ['-D','--defined-only']
+        symbols=run_isolated(['nm',*options,str(extension)],timeout=30)
+        names=['start','join_check','join_complete','detach','move','alive','status','enter','exit','joinable','id']
+        exports={'swr_v1_core_thread_'+name:('swr_v1_core_thread_'+name) in symbols.stdout for name in names}
+        report['production_exports']=dict(extension=str(extension),extension_sha256=sha(extension),symbols=exports)
+        if symbols.returncode or symbols.stderr or not all(exports.values()):raise ValueError('Production extension omits a public Thread SDK operation')
         for engine,source,extra in [('native',args.reference.resolve(),[]),('hybrid',selected,flags)]:
             if not (source/'config.h').is_file():raise ValueError('Require a configured matching SDK')
             report['sdk'][engine]={str(path.relative_to(source)):sha(path) for path in [source/'config.h',source/'include/swoole_thread.h',source/'src/os/base.cc']}
