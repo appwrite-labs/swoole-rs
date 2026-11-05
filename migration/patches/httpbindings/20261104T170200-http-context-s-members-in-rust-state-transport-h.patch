@@ -1,13 +1,13 @@
 diff --git a/ext-src/php_swoole_http.h b/ext-src/php_swoole_http.h
-index 6123d8e..22e934b 100644
+index 59b95c0..a4e283d 100644
 --- a/ext-src/php_swoole_http.h
 +++ b/ext-src/php_swoole_http.h
-@@ -53,4 +53,2 @@
+@@ -54,4 +54,2 @@
  
 -#define HTTP_API
 -
  #include <nghttp2/nghttp2.h>
-@@ -177,2 +175,10 @@ struct ContextState {
+@@ -178,2 +176,10 @@ struct ContextState {
      void *compressed_;
 +    // And what upstream kept as C++ members: the handler (`private_data_2`),
 +    // the server's request hooks, a coroutine server's settings.
@@ -18,10 +18,10 @@ index 6123d8e..22e934b 100644
 +    void *upload_tmp_dir_;
 +    void *compression_types_;
  };
-@@ -181,24 +187,5 @@ static_assert(sizeof(ContextState) == SWR_PHPHTTP_STATE_SIZE, "crates/phphttp/sr
+@@ -182,24 +188,5 @@ static_assert(sizeof(ContextState) == SWR_PHPHTTP_STATE_SIZE, "crates/phphttp/sr
  struct Context : ContextState {
 -#ifdef SW_HAVE_COMPRESSION
--    std::shared_ptr<std::unordered_set<std::string>> compression_types;
+-    ::swoole::detail::ServerMimeTypes compression_types;
 -#endif
 -
      std::shared_ptr<String> continue_frame_buffer;
@@ -43,7 +43,7 @@ index 6123d8e..22e934b 100644
 -    void bind(zval *zsock);
 -    void copy(const Context *ctx);
      bool init_multipart_parser(const char *boundary_str, int boundary_len) {
-@@ -217,5 +204,5 @@ struct Context : ContextState {
+@@ -218,5 +205,5 @@ struct Context : ContextState {
  
 -    HTTP_API bool set_header(const char *, size_t, zval *, bool);
 -    HTTP_API bool set_header(const char *, size_t, const char *, size_t, bool);

@@ -178,6 +178,46 @@ const RECORD_4_OFFSETS: &[usize] = &[
     offset_of!(crate::port_config::PortConfig, ptr),
 ];
 
+const RECORD_5_OFFSETS: &[usize] = &[
+    offset_of!(crate::shared::ServerCounters, master_pid),
+    offset_of!(crate::shared::ServerCounters, manager_pid),
+    offset_of!(crate::shared::ServerCounters, session_round),
+    offset_of!(crate::shared::ServerCounters, start),
+    offset_of!(crate::shared::ServerCounters, shutdown),
+    offset_of!(crate::shared::ServerCounters, max_fd),
+    offset_of!(crate::shared::ServerCounters, min_fd),
+    offset_of!(crate::shared::ServerCounters, onstart_called),
+    offset_of!(crate::shared::ServerCounters, start_time),
+    offset_of!(crate::shared::ServerCounters, connection_num),
+    offset_of!(crate::shared::ServerCounters, connection_nums),
+    offset_of!(crate::shared::ServerCounters, tasking_num),
+    offset_of!(crate::shared::ServerCounters, max_concurrency),
+    offset_of!(crate::shared::ServerCounters, concurrency),
+    offset_of!(crate::shared::ServerCounters, abort_count),
+    offset_of!(crate::shared::ServerCounters, accept_count),
+    offset_of!(crate::shared::ServerCounters, close_count),
+    offset_of!(crate::shared::ServerCounters, dispatch_count),
+    offset_of!(crate::shared::ServerCounters, request_count),
+    offset_of!(crate::shared::ServerCounters, response_count),
+    offset_of!(crate::shared::ServerCounters, total_recv_bytes),
+    offset_of!(crate::shared::ServerCounters, total_send_bytes),
+    offset_of!(crate::shared::ServerCounters, pipe_packet_msg_id),
+    offset_of!(crate::shared::ServerCounters, task_count),
+    offset_of!(crate::shared::ServerCounters, spinlock),
+];
+const RECORD_6_OFFSETS: &[usize] = &[
+    offset_of!(crate::shared::PortCounters, connection_num),
+    offset_of!(crate::shared::PortCounters, connection_nums),
+    offset_of!(crate::shared::PortCounters, abort_count),
+    offset_of!(crate::shared::PortCounters, accept_count),
+    offset_of!(crate::shared::PortCounters, close_count),
+    offset_of!(crate::shared::PortCounters, dispatch_count),
+    offset_of!(crate::shared::PortCounters, request_count),
+    offset_of!(crate::shared::PortCounters, response_count),
+    offset_of!(crate::shared::PortCounters, total_recv_bytes),
+    offset_of!(crate::shared::PortCounters, total_send_bytes),
+];
+
 /// Checks the native layout against its canonical Rust record.
 ///
 /// # Safety
@@ -222,6 +262,18 @@ pub(crate) unsafe extern "C" fn swr_v1_server_record_layout(
             size == size_of::<Record>()
                 && alignment == align_of::<Record>()
                 && actual == RECORD_4_OFFSETS
+        }
+        5 => {
+            type Record = crate::shared::ServerCounters;
+            size == size_of::<Record>()
+                && alignment == align_of::<Record>()
+                && actual == RECORD_5_OFFSETS
+        }
+        6 => {
+            type Record = crate::shared::PortCounters;
+            size == size_of::<Record>()
+                && alignment == align_of::<Record>()
+                && actual == RECORD_6_OFFSETS
         }
         _ => false,
     }

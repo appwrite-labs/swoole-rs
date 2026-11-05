@@ -1,8 +1,8 @@
 diff --git a/ext-src/php_swoole_http.h b/ext-src/php_swoole_http.h
-index 612a101..a222593 100644
+index 6a8f0e5..7454673 100644
 --- a/ext-src/php_swoole_http.h
 +++ b/ext-src/php_swoole_http.h
-@@ -161,2 +161,10 @@ struct ContextState {
+@@ -162,2 +162,10 @@ struct ContextState {
      alignas(8) unsigned char parse_[SWR_PHPHTTP_PARSE_SIZE];
 +    // The response header and compression are Rust too (crates/phphttp/src/header.rs).
 +    Response response;
@@ -13,7 +13,7 @@ index 612a101..a222593 100644
 +    uchar send_header_;
 +    uchar content_compressed;
  };
-@@ -166,10 +174,4 @@ struct Context : ContextState {
+@@ -167,10 +175,4 @@ struct Context : ContextState {
      uchar end_ : 1;
 -    uchar send_header_ : 1;
 -#ifdef SW_HAVE_COMPRESSION
@@ -24,24 +24,24 @@ index 612a101..a222593 100644
      uchar websocket_compression : 1;
 -    uchar upgrade : 1;
      uchar detached : 1;
-@@ -182,4 +184,2 @@ struct Context : ContextState {
+@@ -183,4 +185,2 @@ struct Context : ContextState {
  #ifdef SW_HAVE_COMPRESSION
 -    int8_t compression_level;
 -    uint32_t compression_min_length;
-     std::shared_ptr<std::unordered_set<std::string>> compression_types;
-@@ -191,4 +191,2 @@ struct Context : ContextState {
+     ::swoole::detail::ServerMimeTypes compression_types;
+@@ -192,4 +192,2 @@ struct Context : ContextState {
  
 -    Response response;
 -
      std::string upload_tmp_dir;
-@@ -271,3 +269,5 @@ struct Context : ContextState {
+@@ -272,3 +270,5 @@ struct Context : ContextState {
      const char *get_content_encoding() const;
 -    bool compress(const char *data, size_t length);
 +    bool compress(const char *data, size_t length) {
 +        return swr_v1_phphttp_compress(this, data, length);
 +    }
  #endif
-@@ -278,4 +278,20 @@ struct Context : ContextState {
+@@ -279,4 +279,20 @@ struct Context : ContextState {
    private:
 -    void build_header(String *http_buffer, const char *body, size_t length);
 -    ssize_t build_trailer(String *http_buffer) const;

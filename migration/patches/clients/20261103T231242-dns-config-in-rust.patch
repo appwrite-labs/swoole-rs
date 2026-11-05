@@ -1,17 +1,16 @@
 diff --git a/include/swoole.h b/include/swoole.h
-index 432d4ce..437ac44 100644
+index 2f20ee0..9fb5f4a 100644
 --- a/include/swoole.h
 +++ b/include/swoole.h
-@@ -757,3 +757,2 @@ struct Global {
+@@ -651,6 +651,4 @@ struct Global : private CoreConfigOwner {
      //-----------------------[DNS]-----------------------------
 -    DnsServer dns_server;
-     double dns_cache_refresh_time;
-@@ -761,3 +760,2 @@ struct Global {
-     std::string dns_resolvconf_path;
+     double &dns_cache_refresh_time = config_.fields->dns_cache_refresh_time;
+     RustStringView dns_resolvconf_path{config_.strings[1]};
 -    std::string dns_hosts_path;
      std::list<NameResolver> name_resolvers;
 diff --git a/src/network/dns.cc b/src/network/dns.cc
-index 53efbe6..6f2bd83 100644
+index 044ff22..ae1223a 100644
 --- a/src/network/dns.cc
 +++ b/src/network/dns.cc
 @@ -32,4 +32,2 @@

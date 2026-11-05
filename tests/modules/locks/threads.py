@@ -14,7 +14,7 @@ def main():
     for engine in parse_engines(a.engine,a.php,a.php_extension):
         metadata=engine.metadata();report['engines'].append(metadata)
         row={'engine':engine.name,'command':engine.command(fixture),'passed':False};report['results'].append(row)
-        if metadata.get('zts') is not True:row['error']='Real ZTS metadata required';continue
+        if metadata.get('zts') != 1:row['error']='Real ZTS metadata required';continue
         r=run_isolated(row['command'],timeout=45);row.update(exit=r.returncode,stdout=r.stdout,stderr=r.stderr)
         if r.returncode==0:
             try:
