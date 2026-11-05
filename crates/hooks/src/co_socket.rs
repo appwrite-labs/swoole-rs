@@ -12,25 +12,7 @@ use core::mem::{offset_of, size_of};
 use core::ptr;
 use swoole_rs_reactor::{SocketAddress, SocketRecord};
 
-/// `swoole::Protocol`, whole (`split_by_eof` is a C++ `bool`).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Protocol {
-    pub split_by_eof: bool,
-    pub package_eof: [u8; 8],
-    pub package_eof_len: u8,
-    /// A C `char`.
-    pub package_length_type: u8,
-    pub package_length_size: u8,
-    pub package_length_offset: u16,
-    pub package_body_offset: u16,
-    pub package_max_length: u32,
-    pub private_data_1: *mut c_void,
-    pub private_data_2: *mut c_void,
-    pub on_package: *mut c_void,
-    pub get_package_length: *mut c_void,
-    pub get_package_length_size: *mut c_void,
-}
+pub use swoole_rs_corebase::net_types::Protocol;
 
 /// `coroutine::Socket`'s scalar fields. Native objects (`String`, `Allocator`,
 /// `NameResolver::Context`) are opaque here.

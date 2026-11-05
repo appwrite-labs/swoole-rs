@@ -1,8 +1,8 @@
 //! `network::Client` (src/network/client.cc) in Rust: its state and every
 //! operation over it, from construction to close. The C++ `Client` is a facade
 //! that holds this behind `state_` and the members of C++ types (the callbacks,
-//! the proxies, the TLS context, the protocol, the input buffer and the
-//! addresses); Rust reaches those through [`Native`], one static table the C++
+//! the proxies and the TLS context); the public POD fields use [`ClientRecord`].
+//! Rust reaches native effects through [`Native`], one static table the C++
 //! side defines once. The socket is the reactor's record, read and written here
 //! directly.
 //!
@@ -13,9 +13,11 @@
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
 use std::ffi::{CStr, CString};
+use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_reactor::{
     SocketRecord, swr_v1_socket_buffer_size, swr_v1_socket_catch_error, swr_v1_socket_clean,
-    swr_v1_socket_defaults, swr_v1_socket_domain_and_type, swr_v1_socket_set_timeout,
+    swr_v1_socket_defaults, swr_v1_socket_domain_and_type, swr_v1_socket_get_peer_name,
+    swr_v1_socket_set_timeout,
 };
 
 /// The flags `swr_v1_clients_flag` reads (`SWR_CLIENTS_*`).
@@ -146,7 +148,7 @@ pub struct BufferView {
 /// C++ `Client *`.
 #[repr(C)]
 pub struct Native {
-    /// `make_socket(type, fd_type, flags)` into `cli->socket`: the record or null.
+    /// `make_socket(type, fd_type, flags)`: the record or null; Rust publishes it.
     pub make_socket: unsafe extern "C" fn(
         cli: *mut c_void,
         kind: c_int,
@@ -241,16 +243,44 @@ pub struct Native {
     /// The input buffer (`BUFFER_*`).
     pub buffer:
         unsafe extern "C" fn(cli: *mut c_void, op: c_int, length: usize, view: *mut BufferView),
-    /// With `open_eof_check` or `open_length_check`, receives through the protocol
-    /// into `*received` (0 when a callback released the client) and returns true.
-    pub recv_framed: unsafe extern "C" fn(cli: *mut c_void, received: *mut isize) -> bool,
+    /// Receives through the selected EOF/length protocol; returns zero when a
+    /// callback released the client or threw.
+    pub recv_framed: unsafe extern "C" fn(cli: *mut c_void, eof: bool) -> isize,
 }
+
+/// The public, trivially copyable fields of `network::Client`. C++ keeps typed
+/// aliases in its base record; protocol callbacks and addresses retain their
+/// original identity and lifetime, including direct SDK field writes.
+#[repr(C)]
+pub struct ClientRecord {
+    pub http2: bool,
+    pub open_length_check: bool,
+    pub open_eof_check: bool,
+    pub protocol: Protocol,
+    pub server_addr: SocketAddress,
+    pub remote_addr: SocketAddress,
+    pub socket: *mut SocketRecord,
+    pub object: *mut c_void,
+    pub buffer: *mut c_void,
+}
+
+const _: () = {
+    use core::mem::{offset_of, size_of};
+    assert!(
+        offset_of!(ClientRecord, protocol) == 8
+            && offset_of!(ClientRecord, server_addr) == 72
+            && offset_of!(ClientRecord, remote_addr) == 72 + size_of::<SocketAddress>()
+            && offset_of!(ClientRecord, socket) == 72 + 2 * size_of::<SocketAddress>()
+            && size_of::<ClientRecord>() == 96 + 2 * size_of::<SocketAddress>(),
+        "network::Client's public record layout moved"
+    );
+};
 
 /// One client's state.
 pub struct Client {
     cli: *mut c_void,
+    record: *mut ClientRecord,
     native: &'static Native,
-    socket: *mut SocketRecord,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -303,10 +333,15 @@ impl Handle {
         self.get().set(name, value);
     }
 
+    fn socket_ptr(self) -> *mut SocketRecord {
+        // SAFETY: the live client's canonical public base record.
+        unsafe { (*self.get().record).socket }
+    }
+
     fn socket(self) -> &'static mut SocketRecord {
         // SAFETY: a constructed client's socket record, live until the client is
         // destroyed (an async one's free is deferred past its callbacks).
-        unsafe { &mut *self.get().socket }
+        unsafe { &mut *self.socket_ptr() }
     }
 
     fn has(self, which: c_int) -> bool {
@@ -447,14 +482,22 @@ fn is_dgram(kind: c_int) -> bool {
 /// allocation failed; a client whose socket failed has a null `socket`.
 ///
 /// # Safety
-/// `cli` is the C++ client being constructed and `native` the static table.
+/// `cli` is the C++ client being constructed, `record` its writable trivial base,
+/// `on_package` its package callback, and `native` the static table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_new(
     cli: *mut c_void,
     native: &'static Native,
+    record: *mut ClientRecord,
+    on_package: *mut c_void,
     kind: c_int,
     is_async: bool,
 ) -> *mut Client {
+    // SAFETY: the native base is writable, trivial storage, before any callback
+    // can observe it. All-zero pointers, bools, addresses and Protocol are valid.
+    let defaults = unsafe { core::mem::zeroed() };
+    // SAFETY: writable, disjoint base storage of the constructing client.
+    unsafe { record.write(defaults) };
     let stream = is_stream(kind);
     let fd_type = if stream {
         FD_STREAM_CLIENT
@@ -462,14 +505,14 @@ pub unsafe extern "C" fn swr_v1_clients_new(
         FD_DGRAM_CLIENT
     };
     let flags = if is_async { SOCK_NONBLOCK } else { 0 } | SOCK_CLOEXEC;
-    // SAFETY: the C++ client stores and returns its new socket.
+    // SAFETY: native constructs and returns the socket for this client.
     let socket = unsafe { (native.make_socket)(cli, kind, fd_type, flags) };
     // C++ warns of a failed socket() with its errno.
     let error = errno();
     let client = Box::new(Client {
         cli,
+        record,
         native,
-        socket,
         flags: Cell::new(0),
         domain: 0,
         sock_flags: Cell::new(0),
@@ -484,6 +527,15 @@ pub unsafe extern "C" fn swr_v1_clients_new(
         set_errno(error);
         return Box::into_raw(client);
     }
+    // SAFETY: the base belongs to this constructing client and is disjoint
+    // from the socket. Failed socket construction deliberately leaves defaults zero.
+    let fields = unsafe { &mut *record };
+    fields.socket = socket;
+    fields.remote_addr.kind = kind;
+    fields.protocol.package_length_type = b'N';
+    fields.protocol.package_length_size = 4;
+    fields.protocol.package_max_length = 2 * 1024 * 1024;
+    fields.protocol.on_package = on_package;
     let mut client = client;
     // SAFETY: the new socket record, which nothing else holds yet.
     let record = unsafe { &mut *socket };
@@ -504,7 +556,7 @@ pub unsafe extern "C" fn swr_v1_clients_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_free(client: *mut Client) {
     let this = Handle(client);
-    if !this.get().socket.is_null() {
+    if !this.socket_ptr().is_null() {
         if !this.flag(CLOSED) {
             close(this);
         }
@@ -521,6 +573,31 @@ pub unsafe extern "C" fn swr_v1_clients_free(client: *mut Client) {
     }
     // SAFETY: a Box from swr_v1_clients_new, released once (see above).
     drop(unsafe { Box::from_raw(client) });
+}
+
+/// `Client::get_peer_name`: datagram peers are value snapshots of the last
+/// received address; streams ask the kernel through the socket's operation.
+///
+/// # Safety
+/// `client` is live and `address` is writable Address storage, possibly the
+/// client's own remote address (the copy permits aliasing).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_get_peer_name(
+    client: *const Client,
+    address: *mut SocketAddress,
+) -> c_int {
+    let this = Handle(client.cast_mut());
+    if is_dgram(this.socket().socket_type) {
+        // SAFETY: the live public record; copy the value before writing so an
+        // SDK caller may request the result in remote_addr itself.
+        let remote = unsafe { (*this.get().record).remote_addr };
+        // SAFETY: the caller supplied writable Address storage.
+        unsafe { address.write(remote) };
+        OK
+    } else {
+        // SAFETY: the live socket and caller-supplied writable Address storage.
+        unsafe { swr_v1_socket_get_peer_name(this.socket_ptr(), address) }
+    }
 }
 
 /// One of the flags above; false for any other.
@@ -557,7 +634,7 @@ pub unsafe extern "C" fn swr_v1_clients_watermark(client: *mut Client, high: boo
 /// `Client::close()`: -1 without a socket or when already closed, 0 when `onClose`
 /// released the client, else `close(2)`'s result.
 fn close(this: Handle) -> c_int {
-    if this.get().socket.is_null() || this.flag(CLOSED) {
+    if this.socket_ptr().is_null() || this.flag(CLOSED) {
         return ERR;
     }
     this.set(CLOSED, true);
@@ -610,7 +687,7 @@ pub unsafe extern "C" fn swr_v1_clients_close(client: *mut Client) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_shutdown(client: *mut Client, how: c_int) -> c_int {
     let this = Handle(client);
-    if this.get().socket.is_null() || this.flag(CLOSED) {
+    if this.socket_ptr().is_null() || this.flag(CLOSED) {
         return ERR;
     }
     let fd = this.socket().fd;
@@ -1188,9 +1265,16 @@ pub unsafe extern "C" fn swr_v1_clients_on_read(client: *mut Client) -> c_int {
         }
         return OK;
     }
-    let mut n = 0;
-    // SAFETY: the live client's protocol and buffer.
-    if unsafe { (this.native().recv_framed)(this.cli(), &raw mut n) } {
+    // SAFETY: the record is live; no reference crosses the receiving callback,
+    // which may destroy the client.
+    let (eof, length) = unsafe {
+        let fields = &*this.get().record;
+        (fields.open_eof_check, fields.open_length_check)
+    };
+    if eof || length {
+        // SAFETY: native receives using the live protocol and buffer; it returns
+        // zero if a callback destroys the client or throws.
+        let n = unsafe { (this.native().recv_framed)(this.cli(), eof) };
         if n < 0 && !this.flag(CLOSED) {
             close(this);
         }

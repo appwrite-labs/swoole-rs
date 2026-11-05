@@ -16,6 +16,8 @@ struct Mock {
     /// The callback that releases the client's socket object (as a PHP close would).
     releases: Option<c_int>,
     socket: Option<Box<SocketRecord>>,
+    record: Option<Box<core::mem::MaybeUninit<ClientRecord>>>,
+    fail_socket: bool,
 }
 
 thread_local! {
@@ -41,6 +43,10 @@ extern "C" fn make_socket(
     flags: c_int,
 ) -> *mut SocketRecord {
     log(format!("make {kind} {fd_type} {flags}"));
+    if mock(|m| m.fail_socket) {
+        set_errno(libc::EMFILE);
+        return core::ptr::null_mut();
+    }
     let mut socket = Box::new(SocketRecord::new());
     socket.socket_type = kind;
     socket.fd = -1;
@@ -206,8 +212,9 @@ extern "C" fn buffer(_: *mut c_void, op: c_int, _: usize, view: *mut BufferView)
         }
     };
 }
-extern "C" fn recv_framed(_: *mut c_void, _: *mut isize) -> bool {
-    false
+extern "C" fn recv_framed(_: *mut c_void, eof: bool) -> isize {
+    log(format!("framed {eof}"));
+    0
 }
 
 static NATIVE: Native = Native {
@@ -243,6 +250,22 @@ static NATIVE: Native = Native {
     recv_framed,
 };
 
+unsafe fn new_client(kind: c_int, is_async: bool) -> *mut Client {
+    let mut record = Box::new(core::mem::MaybeUninit::uninit());
+    let pointer = record.as_mut_ptr();
+    mock(|m| m.record = Some(record));
+    unsafe {
+        swr_v1_clients_new(
+            core::ptr::without_provenance_mut(8),
+            &NATIVE,
+            pointer,
+            core::ptr::without_provenance_mut(16),
+            kind,
+            is_async,
+        )
+    }
+}
+
 /// A client of `kind`, its construction log dropped; the socket's object is set.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| {
@@ -253,14 +276,7 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
         }
     });
     // SAFETY: the double stands in for the C++ client.
-    let client = unsafe {
-        swr_v1_clients_new(
-            core::ptr::without_provenance_mut(8),
-            &NATIVE,
-            kind,
-            is_async,
-        )
-    };
+    let client = unsafe { new_client(kind, is_async) };
     taken();
     client
 }
@@ -289,8 +305,7 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
         }
     });
     // SAFETY: the double stands in for the C++ client.
-    let client =
-        unsafe { swr_v1_clients_new(core::ptr::without_provenance_mut(8), &NATIVE, 1, true) };
+    let client = unsafe { new_client(1, true) };
     assert_eq!(taken(), ["make 1 17 12"]);
     assert!(flag(client, ASYNC) && flag(client, STREAM));
     assert_eq!(
@@ -299,8 +314,7 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
     );
     free(client);
     assert_eq!(taken(), ["event 2 0", "buffer 4", "free true"]);
-    let client =
-        unsafe { swr_v1_clients_new(core::ptr::without_provenance_mut(8), &NATIVE, 2, false) };
+    let client = unsafe { new_client(2, false) };
     assert_eq!(taken(), ["make 2 18 8"]);
     free(client);
 }
@@ -583,4 +597,78 @@ fn datagram_sends_fail_when_short_and_dtls_sends_as_a_stream() {
     );
     assert_eq!(taken(), ["io 2 4"]);
     free(client);
+}
+
+#[test]
+fn public_record_defaults_and_direct_framing_writes_drive_reads() {
+    let client = client(1, true, true);
+    let fields = Handle(client).get().record;
+    unsafe {
+        assert!(!(*fields).http2 && !(*fields).open_eof_check && !(*fields).open_length_check);
+        assert_eq!((*fields).remote_addr.kind, 1);
+        assert_eq!((*fields).server_addr.len, 0);
+        assert_eq!((*fields).protocol.package_length_type, b'N');
+        assert_eq!((*fields).protocol.package_length_size, 4);
+        assert_eq!((*fields).protocol.package_max_length, 2 * 1024 * 1024);
+        assert_eq!(
+            (*fields).protocol.on_package,
+            core::ptr::without_provenance_mut(16)
+        );
+        assert_eq!((*fields).socket, Handle(client).socket_ptr());
+        assert!((*fields).object.is_null() && (*fields).buffer.is_null());
+        (*fields).open_length_check = true;
+        assert_eq!(swr_v1_clients_on_read(client), OK);
+        assert!(taken().contains(&"framed false".to_owned()));
+        (*fields).open_eof_check = true;
+        assert_eq!(swr_v1_clients_on_read(client), OK);
+        assert!(taken().contains(&"framed true".to_owned()));
+    }
+    free(client);
+}
+
+#[test]
+fn datagram_peer_snapshot_is_independent_and_may_target_its_source() {
+    let client = client(2, false, false);
+    let fields = Handle(client).get().record;
+    unsafe {
+        (*fields).remote_addr.len = 17;
+        (*fields).remote_addr.kind = 4;
+        let mut result = core::mem::MaybeUninit::uninit();
+        assert_eq!(
+            swr_v1_clients_get_peer_name(client, result.as_mut_ptr()),
+            OK
+        );
+        let result = result.assume_init();
+        (*fields).remote_addr.len = 29;
+        assert_eq!(result.len, 17);
+        assert_eq!(result.kind, 4);
+        assert_eq!(
+            swr_v1_clients_get_peer_name(client, &raw mut (*fields).remote_addr),
+            OK
+        );
+        assert_eq!((*fields).remote_addr.len, 29);
+    }
+    free(client);
+}
+
+#[test]
+fn failed_socket_leaves_zero_protocol_and_addresses_without_teardown_effects() {
+    mock(|m| {
+        *m = Mock {
+            fail_socket: true,
+            ..Mock::default()
+        }
+    });
+    unsafe {
+        let client = new_client(1, false);
+        assert_eq!(errno(), libc::EMFILE);
+        let fields = &*Handle(client).get().record;
+        assert!(fields.socket.is_null());
+        assert_eq!(fields.remote_addr.kind, 0);
+        assert_eq!(fields.protocol.package_length_size, 0);
+        assert!(fields.protocol.on_package.is_null());
+        taken();
+        free(client);
+        assert_eq!(taken(), Vec::<String>::new());
+    }
 }

@@ -44,7 +44,7 @@ pub use static_config::{
 
 pub use records::{
     ConnectionRecord, ServerTables, SessionRecord, swr_v1_server_connection, swr_v1_server_session,
-    swr_v1_server_session_fd, swr_v1_server_tables_get,
+    swr_v1_server_session_fd, swr_v1_server_sessions_retire, swr_v1_server_tables_get,
 };
 
 pub use shared::{
@@ -141,13 +141,16 @@ struct Native<C> {
 }
 
 impl<C: NativeCall> Host for Native<C> {
+    // Constant opcodes erase unrelated fact-table branches before native effects.
+    #[inline(always)]
     fn op(&mut self, op: u32, arg: u64) -> Effect<u64> {
         if !self.state.is_null() {
             // SAFETY: run_state lends live synchronized records; this leaf access ends before callbacks.
-            let fact = unsafe { config::native_fact(self.state, op, arg) };
+            if let Some(value) = unsafe { config::native_fact(self.state, op, arg) } {
+                return Ok(value);
+            }
             // SAFETY: the same call lends synchronized shared records, without holding callbacks.
-            let fact = fact.or_else(|| unsafe { shared::native_fact(self.state, op, arg) });
-            if let Some(value) = fact {
+            if let Some(value) = unsafe { shared::native_fact(self.state, op, arg) } {
                 return Ok(value);
             }
         }

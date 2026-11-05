@@ -129,6 +129,7 @@ typedef struct swr_v1_server_tables {
 
 int swr_v1_server_session_fd(const swr_v1_server_state *state, long id);
 void *swr_v1_server_session(const swr_v1_server_state *state, long id);
+void swr_v1_server_sessions_retire(const swr_v1_server_state *state, uint32_t worker_id);
 void *swr_v1_server_connection(const swr_v1_server_state *state, long key, uint32_t kind);
 swr_v1_server_tables *swr_v1_server_tables_get(swr_v1_server_state *state);
 swr_v1_server_state *swr_v1_server_state_new(void);

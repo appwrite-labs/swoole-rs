@@ -141,14 +141,16 @@ typedef struct {
     /* Of the shared buffer (its length set to length) or the input buffer (grown by length). */
     bool (*http_handshake)(void *cli, bool shared, size_t length);
     void (*buffer)(void *cli, int op, size_t length, swr_v1_clients_buffer_view *view);
-    /* With open_eof_check or open_length_check: the protocol's receive into *received (0 once
-     * a callback released the client or threw) and true. */
-    bool (*recv_framed)(void *cli, ssize_t *received);
+    /* Receive through the selected EOF/length protocol; zero once a callback
+     * released the client or threw. */
+    ssize_t (*recv_framed)(void *cli, bool eof);
 } swr_v1_clients_native;
 /* Client::Client: the state, with cli->socket made (null when socket() failed, errno kept). */
-swr_v1_clients *swr_v1_clients_new(void *cli, const swr_v1_clients_native *native, int kind, bool is_async);
+struct swr_v1_clients_record;
+swr_v1_clients *swr_v1_clients_new(void *cli, const swr_v1_clients_native *native, struct swr_v1_clients_record *record, void *on_package, int kind, bool is_async);
 /* Client::~Client, then the state's release. */
 void swr_v1_clients_free(swr_v1_clients *client);
+int swr_v1_clients_get_peer_name(const swr_v1_clients *client, void *address);
 bool swr_v1_clients_flag(const swr_v1_clients *client, uint32_t name);
 void swr_v1_clients_set_flag(swr_v1_clients *client, uint32_t name, bool value);
 /* buffer_high_watermark (high) or buffer_low_watermark, for the C++ Client's reference views. */

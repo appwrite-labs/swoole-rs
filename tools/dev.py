@@ -526,6 +526,12 @@ def plan(args, reports):
         script('clients-address-record', 'tests/modules/clients/address_record.py',
                '--core-build', ROOT / 'target/native-originals/clients',
                '--native-report', reports / 'clients-native-originals.json', *report('clients-address-record'))
+    if integrate and 'process' in modules and sys.platform.startswith('linux'):
+        script('process-worker-retirement', 'tests/modules/process/worker_retirement.py',
+               '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--core', ROOT / 'target/native-originals/process', '--jobs', args.jobs,
+               *report('process-worker-retirement'))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-native'))
