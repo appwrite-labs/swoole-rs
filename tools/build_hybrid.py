@@ -420,6 +420,10 @@ def build(args, parser):
     # The Rust io_uring engine replaces upstream's when the build enables io_uring.
     cargo_extra = [feature for feature, switch in HOOK_SWITCHES.items()
                    if 'hooks' in args.module and any(flag.startswith(switch) for flag in args.configure)]
+    cares = next((flag for flag in reversed(args.configure)
+                  if flag in {'--enable-cares', '--disable-cares'} or flag.startswith('--enable-cares=')), None)
+    if 'clients' in args.module and cares not in {None, '--disable-cares', '--enable-cares=no'}:
+        cargo_extra.append('cares')
     if args.backend == 'rust':
         rust_inputs = rust_sources(args.module, cargo_extra)
         cargo_started = time.monotonic()

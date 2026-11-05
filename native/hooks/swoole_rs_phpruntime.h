@@ -86,6 +86,9 @@ int swr_v1_phpruntime_socket_cast(struct _php_stream *stream, int castas, void *
 int swr_v1_phpruntime_socket_stat(struct _php_stream *stream, struct _php_stream_statbuf *ssb);
 int swr_v1_phpruntime_socket_set_option(
     struct _php_stream *stream, int option, int value, void *ptrparam, uint8_t *bailout);
+struct _php_stream *swr_v1_phpruntime_transport_factory(const char *proto, size_t protolen,
+    const char *name, size_t namelen, const char *persistent, int options, int flags,
+    struct timeval *time, struct _php_stream_context *context, uint8_t *bailed);
 struct _php_stream *swr_v1_phpruntime_socket_create(const char *proto,
                                                     size_t protolen,
                                                     const char *resourcename,
@@ -113,31 +116,24 @@ int swr_v1_phpruntime_socket_poll(int fd, int events, int timeout);
 
 /* Defined by ext-src/swoole_runtime.cc for those streams: the coroutine socket
  * (a SocketImpl *) is still C++, so each operation is one call. */
-void *swoole_runtime_socket_create(int type, bool ssl);
-void *swoole_runtime_socket_from_fd(int fd, int domain, int type, int protocol);
-void swoole_runtime_socket_free(void *socket);
-int swoole_runtime_socket_fd(void *socket);
-int swoole_runtime_socket_domain(void *socket);
-int swoole_runtime_socket_type(void *socket);
+uint8_t swoole_runtime_socket_new(int type, void **out);
+struct swr_v1_co_socket;
+struct swr_v1_co_socket *swoole_runtime_socket_base(void *socket);
+uint8_t swoole_runtime_socket_from_fd(int fd, int domain, int type, int protocol, void **out);
+uint8_t swoole_runtime_socket_free(void *socket);
 /* The coroutine socket's network::Socket record (get_socket()), or null. */
-void *swoole_runtime_socket_record(void *socket);
 /* errCode, with errMsg in *message when message is not null. */
-int swoole_runtime_socket_error(void *socket, const char **message);
 /* set_err(code). */
-void swoole_runtime_socket_set_error(void *socket, int code);
 /* errCode = code. */
-void swoole_runtime_socket_set_error_code(void *socket, int code);
 /* op: 0 send_sync, 1 recv_sync, 2 send_all, 3 send_once, 4 recv, 5 recv_once,
  * 6 peek, 7 send. */
 ssize_t swoole_runtime_socket_io(void *socket, int op, char *buf, size_t length);
 ssize_t swoole_runtime_socket_recvfrom(
     void *socket, char *buf, size_t length, struct sockaddr *addr, socklen_t *addrlen);
-bool swoole_runtime_socket_close(void *socket);
+bool swoole_runtime_socket_close(void *socket, uint8_t *bailed);
 /* setsockopt(level, name, value); logged: the coroutine socket's, which logs
  * a failure. */
 void swoole_runtime_socket_option(void *socket, int level, int name, int value, bool logged);
-void swoole_runtime_socket_zero_copy(void *socket);
-void swoole_runtime_socket_timeout(void *socket, double timeout, int type);
 bool swoole_runtime_socket_bind(void *socket, const char *host, int port);
 bool swoole_runtime_socket_connect(void *socket, const char *host, int port);
 bool swoole_runtime_socket_listen(void *socket, int backlog);

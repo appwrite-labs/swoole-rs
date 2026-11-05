@@ -8,6 +8,8 @@
 )]
 
 pub mod address;
+#[cfg(feature = "cares")]
+mod cares;
 pub mod client;
 pub mod dns;
 pub mod http_format;

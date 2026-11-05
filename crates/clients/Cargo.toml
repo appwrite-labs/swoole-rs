@@ -8,7 +8,13 @@ publish = false
 name = "swoole_rs_clients"
 crate-type = ["rlib"]
 
+[features]
+cares = ["dep:swoole-rs-cares-sys", "swoole-rs-cares-sys/libcares"]
+
 [dependencies]
+swoole-rs-cares-sys = { path = "../cares-sys", optional = true }
+swoole-rs-error = { path = "../error" }
+swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-base64 = { path = "../base64" }
 swoole-rs-websocket = { path = "../websocket" }
 swoole-rs-reactor = { path = "../reactor" }

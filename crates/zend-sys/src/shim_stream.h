@@ -52,4 +52,13 @@ int swr_zend_stream_xport_op(const php_stream_xport_param *param);
 unsigned swr_zend_stream_xport_flags(const php_stream_xport_param *param);
 /* A crypto parameter's op. */
 int swr_zend_stream_crypto_op(const php_stream_xport_crypto_param *param);
+/* One stream free effect inside zend_try; Rust chooses the PHP_STREAM_FREE flags. */
+int swr_zend_try_stream_free(php_stream *stream, int flags);
+/* Invoke one PHP transport factory with its native debug ABI, inside zend_try. */
+php_stream *swr_zend_try_stream_factory(void *factory, const char *proto, size_t protolen,
+    const char *name, size_t namelen, const char *persistent, int options, int flags,
+    struct timeval *timeout, php_stream_context *context, bool *bailed);
+/* Individual allocator/close effects below owned Rust stream frames. */
+int swr_zend_try_stream_alloc(const php_stream_ops *, void *, const char *, php_stream **);
+int swr_zend_try_stream_close(php_stream *);
 #endif

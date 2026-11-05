@@ -144,3 +144,22 @@ int swr_zend_try_facade_creation_error(zend_class_entry *ce) {
     zend_catch { bailed = 1; } zend_end_try();
     return bailed;
 }
+
+int swr_zend_try_facade_object_init(zend_object *object, zend_class_entry *ce) {
+    int bailed = 0;
+    zend_try { zend_object_std_init(object, ce); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_facade_properties_init(zend_object *object, zend_class_entry *ce) {
+    int bailed = 0;
+    zend_try { object_properties_init(object, ce); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_facade_object_dtor(zend_object *object) {
+    int bailed = 0;
+    zend_try { zend_object_std_dtor(object); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
