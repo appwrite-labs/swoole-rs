@@ -3,6 +3,7 @@
 //! `master.cc` kept: worker scheduling, commands, the DTLS accept, the document
 //! root, pipe sockets, worker counters, aborts, connection iteration, sends, timers
 //! and the startup error message.
+use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
     FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_DTLS_BIND,
     LOG_ST_DTLS_CONNECT, LOG_ST_ROOT_MISSING, LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_IS_STARTED,
@@ -18,7 +19,8 @@ use crate::ops::{
 };
 #[cfg(test)]
 use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
-use crate::{Host, MODE_BASE};
+use crate::send::send_to_connection;
+use crate::{Host, MODE_BASE, MODE_PROCESS, SW_OK};
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::cell::RefCell;
@@ -347,8 +349,17 @@ fn foreach_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
 }
 
 /// `Server::send`: through the factory, then the server's, port's and worker's counts.
-fn send<H: Host>(h: &mut H) -> crate::Effect<bool> {
-    if !h.is(OP_ST_FINISH)? {
+/// A base or thread mode worker that owns the session sends it here, as
+/// `BaseFactory::finish` would, without a second trip through native code.
+fn send<H: Host>(h: &mut H, data: *const SendData) -> crate::Effect<bool> {
+    // SAFETY: native code lends the live `SendData` it built for the call.
+    let here = h.get(OP_MODE)? != MODE_PROCESS && sends_here(h, unsafe { &*data })?;
+    let sent = if here {
+        send_to_connection(h, u64::from(SEND_DATA))? == SW_OK
+    } else {
+        h.is(OP_ST_FINISH)?
+    };
+    if !sent {
         return Ok(false);
     }
     h.get(OP_ST_COUNT_SEND)?;
@@ -407,7 +418,10 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
             foreach_connection(h)?;
             0
         }
-        RUN_ST_SEND => i64::from(send(h)?),
+        RUN_ST_SEND => i64::from(send(
+            h,
+            core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0)),
+        )?),
         RUN_ST_CLEAR_TIMER => {
             clear_timer(h)?;
             0
@@ -605,11 +619,54 @@ mod tests {
         foreach_connection(&mut s).unwrap();
         assert_eq!(s.args(OP_ST_VISIT), vec![3, 5, 6]);
 
-        let mut s = Script::with(&[(OP_ST_FINISH, 1)]);
-        assert!(send(&mut s).unwrap());
+        let data = four_bytes();
+        let process = |facts: &[(u32, u64)]| {
+            let mut s = Script::with(&[(OP_MODE, MODE_PROCESS)]);
+            s.facts.extend(facts.iter().copied());
+            s
+        };
+        let mut s = process(&[(OP_ST_FINISH, 1)]);
+        assert!(send(&mut s, &raw const data).unwrap());
         assert_eq!(s.called(OP_ST_COUNT_SEND), 1);
+        let mut s = process(&[]);
+        assert!(!send(&mut s, &raw const data).unwrap());
+        assert_eq!(s.called(OP_ST_COUNT_SEND), 0);
+    }
+
+    /// A 4-byte send to session 1.
+    fn four_bytes() -> SendData {
+        SendData {
+            info: swoole_rs_corebase::DataHead {
+                fd: 1,
+                kind: SEND_DATA,
+                len: 4,
+                ..Default::default()
+            },
+            data: core::ptr::null(),
+        }
+    }
+
+    #[test]
+    fn base_mode_sends_here_without_the_factory() {
+        use crate::ops::{OP_SC_SEND, OP_SC_VERIFY, OP_SC_WRITABLE};
+        use crate::send::{DIRECT_SEND, FOUND, OUT_EMPTY};
+        let data = four_bytes();
+        let mut s = Script::with(&[
+            (OP_SC_VERIFY, FOUND | OUT_EMPTY | DIRECT_SEND | (4 << 32)),
+            (OP_SC_SEND, 4),
+            (OP_SC_WRITABLE, 1),
+        ]);
+        assert!(send(&mut s, &raw const data).unwrap());
+        assert_eq!(
+            (
+                s.called(OP_ST_FINISH),
+                s.called(OP_SC_SEND),
+                s.called(OP_ST_COUNT_SEND)
+            ),
+            (0, 1, 1)
+        );
         let mut s = Script::default();
-        assert!(!send(&mut s).unwrap());
+        assert!(!send(&mut s, &raw const data).unwrap(), "no session");
         assert_eq!(s.called(OP_ST_COUNT_SEND), 0);
     }
 
