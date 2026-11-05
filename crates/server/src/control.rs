@@ -76,7 +76,7 @@ pub(crate) fn signal<H: Host>(h: &mut H, signo: i32) {
 
 /// `Server::signal_handler_reopen_logger`: the log file reopens, and in process mode
 /// the manager is told to reopen its own.
-fn reopen_logger<H: Host>(h: &mut H) {
+pub(crate) fn reopen_logger<H: Host>(h: &mut H) {
     h.get(OP_SIGNAL_REOPEN);
     if h.get(OP_MODE) == MODE_PROCESS {
         let manager = h.get(OP_MANAGER_PID);
