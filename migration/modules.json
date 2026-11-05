@@ -645,7 +645,8 @@
       ],
       "upstream_patch_targets": [
         "src/protocol/ssl.cc",
-        "src/protocol/dtls.cc"
+        "src/protocol/dtls.cc",
+        "include/swoole_dtls.h"
       ],
       "abi_contract": "docs/tls-dtls-abi-v1.md",
       "feature_bit_reserved": 262144

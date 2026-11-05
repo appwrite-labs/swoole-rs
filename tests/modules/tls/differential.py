@@ -116,7 +116,13 @@ def main():
     def verify_calls(executable, selected):
         nm=run(['nm','-g',executable]).stdout
         disassembly=run(['otool','-tvV',executable] if system=='Darwin' else ['objdump','-d','-C',executable]).stdout
-        names=['init','error','owner_new','owner_bind','owner_layout','owner_create','owner_set_capath','owner_set_ciphers','owner_set_client_certificate','owner_set_ecdh_curve','owner_set_dhparam','read','control','listen']
+        names=['init','error','owner_new','owner_bind','owner_layout','owner_create','owner_set_capath','owner_set_ciphers','owner_set_client_certificate','owner_set_ecdh_curve','owner_set_dhparam','dtls_read','dtls_control','dtls_listen','dtls_methods','dtls_methods_publish','dtls_methods_take']
+        # The SSL originals compile the complete DTLS TU but do not construct a Session.
+        # The actual drivers must additionally prove their inline native owner leaves.
+        if executable.name != 'original-tests':
+            names += ['dtls_new','dtls_clear','dtls_free']
+            if not args.allocation and not args.crypto_allocation:
+                names += ['dtls_append']
         calls={name:bool(re.search(r'\b(?:bl|callq?|b|jmpq?)\s+[^\n]*\b_?swr_v1_tls_'+name+r'\b',disassembly)) for name in names}
         definitions={name:bool(re.search(r'\b[Tt] _?swr_v1_tls_'+name+r'\s*$',nm,re.M)) for name in names}
         if selected and (not all(calls.values()) or not all(definitions.values())):
@@ -151,7 +157,7 @@ def main():
         report['hybrid_tree'] = str(hybrid_source)
         for name in ['ssl.cc','dtls.cc']:
             shutil.copyfile(hybrid_source/'src/protocol'/name, patched/'src/protocol'/name)
-        for name, required in [('ssl.cc',['owner_create','owner_set_capath']),('dtls.cc',['read','control','listen'])]:
+        for name, required in [('ssl.cc',['owner_create','owner_set_capath']),('dtls.cc',['dtls_read','dtls_control','dtls_listen','dtls_methods','dtls_methods_publish','dtls_methods_take'])]:
             old=original/'src/protocol'/name;new=patched/'src/protocol'/name
             if old.read_bytes()==new.read_bytes() or any('swr_v1_tls_'+fn+'(' not in new.read_text() for fn in required):
                 raise ValueError('Overlay skipped or missing actual caller: '+name)
