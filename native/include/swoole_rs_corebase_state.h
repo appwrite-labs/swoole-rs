@@ -11,6 +11,14 @@
   void *(*realloc)(void *, size_t);                                            \
   void (*free)(void *)
 #ifdef __cplusplus
+// Standalone corebase consumers do not apply the integration logging overlay.
+// Keep the same origin scope for the two native diagnostic leaves.
+#ifndef swoole_log_as
+static constexpr const char *sw_log_origin = nullptr;
+#undef __SW_FUNC__
+#define __SW_FUNC__ (sw_log_origin ? sw_log_origin : swoole::Logger::get_pretty_name(__PRETTY_FUNCTION__).c_str())
+#define swoole_log_as(origin, ...) do { const char *const sw_log_origin = origin; (void) sw_log_origin; __VA_ARGS__; } while (0)
+#endif
 namespace swoole {
 struct Allocator {
   SWR_CORE_ALLOCATOR_FIELDS;
