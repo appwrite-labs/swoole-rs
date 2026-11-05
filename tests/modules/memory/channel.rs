@@ -258,246 +258,57 @@ fn every_short_copy_width_and_spilled_record_preserves_exact_payload_and_boundar
     }
 }
 
-fn fields(c: &mut Channel) -> Fields {
-    Fields {
-        head: ptr::addr_of_mut!(c.head),
-        tail: ptr::addr_of_mut!(c.tail),
-        size: ptr::addr_of_mut!(c.size),
-        head_tag: ptr::addr_of_mut!(c.head_tag),
-        tail_tag: ptr::addr_of_mut!(c.tail_tag),
-        num: ptr::addr_of_mut!(c.num),
-        max_num: ptr::addr_of_mut!(c.max_num),
-        bytes: ptr::addr_of_mut!(c.bytes),
-        flags: ptr::addr_of_mut!(c.flags),
-        maxlen: ptr::addr_of_mut!(c.maxlen),
-        mem: ptr::addr_of_mut!(c.mem),
-    }
-}
-fn empty_channel() -> Channel {
-    Channel {
-        head: 0,
-        tail: 0,
-        size: 0,
-        head_tag: 0,
-        tail_tag: 0,
-        num: 0,
-        max_num: 0,
-        bytes: 0,
-        flags: 0,
-        maxlen: 0,
-        mem: ptr::null_mut(),
-    }
-}
 #[test]
-fn field_storage_matches_frozen_snapshot_and_payload_for_twenty_thousand_operations() {
-    assert_eq!(std::mem::size_of::<Fields>(), 88);
-    let mut plan = StoragePlan::default();
-    let mut current = empty_channel();
-    let fields = fields(&mut current);
-    let mut memory = [0xa5; 128 + 32 + 4];
-    let mut old_memory = memory;
-    unsafe {
+fn record_locks_signals_and_prints_like_native_channel() {
+    for flags in [0, LOCK, NOTIFY, LOCK | NOTIFY] {
+        let bytes = swr_v1_memory_channel_bytes(128, 32);
+        assert_eq!(bytes, size_of::<Record>() + 128 + 32 + 4);
+        let mut memory = vec![0u64; bytes.div_ceil(8)];
+        let record = memory.as_mut_ptr().cast::<Record>();
         assert_eq!(
-            swr_v1_memory_channel_storage_plan(128, 32, 6, 80, &raw mut plan),
+            unsafe { swr_v1_memory_channel_init(record, 128, 32, flags) },
             0
         );
+        let queue = record.cast::<Channel>();
+        assert_eq!(unsafe { (*queue).mem }, record.wrapping_add(1).cast());
+        if flags & LOCK != 0 {
+            unsafe { swr_v1_memory_channel_lock(record, true) };
+        }
         assert_eq!(
-            swr_v1_memory_channel_storage_init(
-                &raw const fields,
-                &raw const plan,
-                memory.as_mut_ptr().cast()
-            ),
+            unsafe { swr_v1_memory_channel_in(queue, b"life".as_ptr().cast(), 4) },
             0
         );
-        let mut snapshot = fields.load();
-        snapshot.mem = old_memory.as_mut_ptr();
-        let mut seed = 0x1234u64;
-        for _ in 0..20000 {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            if seed & 3 != 0 {
-                let data = vec![seed as u8; (seed % 33) as usize];
-                assert_eq!(
-                    swr_v1_memory_channel_storage_in(
-                        &raw const fields,
-                        data.as_ptr().cast(),
-                        data.len() as i32
-                    ),
-                    swr_v1_memory_channel_in(
-                        &raw mut snapshot,
-                        data.as_ptr().cast(),
-                        data.len() as i32
-                    )
-                );
-            } else {
-                let mut output = [0xcd; 34];
-                let mut old_output = output;
-                let capacity = if seed & 32 == 0 { 32 } else { 0 };
-                assert_eq!(
-                    swr_v1_memory_channel_storage_out(
-                        &raw const fields,
-                        output.as_mut_ptr().cast(),
-                        capacity
-                    ),
-                    swr_v1_memory_channel_out(
-                        &raw mut snapshot,
-                        old_output.as_mut_ptr().cast(),
-                        capacity,
-                        1
-                    )
-                );
-                assert_eq!(output, old_output);
-            }
-            let c = fields.load();
-            assert_eq!(
-                (c.head, c.tail, c.head_tag, c.tail_tag, c.num, c.bytes),
-                (
-                    snapshot.head,
-                    snapshot.tail,
-                    snapshot.head_tag,
-                    snapshot.tail_tag,
-                    snapshot.num,
-                    snapshot.bytes
-                )
-            );
-            assert_eq!(memory, old_memory);
-            assert_eq!((c.size, c.maxlen, c.flags, c.max_num), (128, 32, 6, 0));
+        if flags & LOCK != 0 {
+            unsafe { swr_v1_memory_channel_lock(record, false) };
         }
-    }
-}
-#[test]
-fn field_constructor_validates_plan_and_scalar_addresses_before_initialization() {
-    for (size, maxlen) in [(0, 0), (1, 0), (32, 32), (128, 32)] {
-        let mut plan = StoragePlan::default();
-        let mut c = empty_channel();
-        let fields = fields(&mut c);
-        let mut memory = vec![0xab; size + maxlen + 4];
-        unsafe {
+        let mut output = [0u8; 32];
+        assert_eq!(
+            unsafe { swr_v1_memory_channel_out(queue, output.as_mut_ptr().cast(), 32, 0) },
+            4
+        );
+        assert_eq!(
+            unsafe { swr_v1_memory_channel_out(queue, output.as_mut_ptr().cast(), 32, 1) },
+            4
+        );
+        assert_eq!(&output[..4], b"life");
+        if flags & NOTIFY != 0 {
             assert_eq!(
-                swr_v1_memory_channel_storage_plan(size, maxlen, -1, 80, &raw mut plan),
-                0
+                unsafe { swr_v1_memory_channel_signal(record, true) },
+                0,
+                "notify"
             );
-            assert_eq!(plan.total, 80 + size + maxlen + 4);
             assert_eq!(
-                swr_v1_memory_channel_storage_init(
-                    &raw const fields,
-                    &raw const plan,
-                    memory.as_mut_ptr().cast()
-                ),
-                0
+                unsafe { swr_v1_memory_channel_signal(record, false) },
+                0,
+                "wait"
             );
         }
-        assert_eq!(
-            (c.size, c.maxlen, c.flags, c.num, c.bytes),
-            (size, maxlen as i32, -1, 0, 0)
-        );
-        assert_eq!(c.mem, memory.as_mut_ptr());
-        assert_eq!(memory, vec![0xab; size + maxlen + 4]);
+        unsafe { swr_v1_memory_channel_close(record) };
     }
-    for (size, maxlen, header) in [
-        (1, 2, 80),
-        (usize::MAX, 1, 80),
-        (isize::MAX as usize, 0, 80),
-        (128, 32, 0),
-    ] {
-        let mut plan = StoragePlan::default();
-        assert_eq!(
-            unsafe { swr_v1_memory_channel_storage_plan(size, maxlen, 0, header, &raw mut plan) },
-            -1
-        );
-        assert_eq!(
-            (
-                plan.total,
-                plan.size,
-                plan.header_size,
-                plan.maxlen,
-                plan.flags
-            ),
-            (0, 0, 0, 0, 0)
-        );
-    }
-    let mut plan = StoragePlan::default();
-    let mut c = empty_channel();
-    let mut fields = fields(&mut c);
-    let mut memory = [0xabu8; 164];
-    unsafe {
-        assert_eq!(
-            swr_v1_memory_channel_storage_plan(128, 32, 0, 80, &raw mut plan),
-            0
-        );
-        plan.total += 1;
-        assert_eq!(
-            swr_v1_memory_channel_storage_init(
-                &raw const fields,
-                &raw const plan,
-                memory.as_mut_ptr().cast()
-            ),
-            -1
-        );
-        assert_eq!(c.size, 0);
-        plan.total -= 1;
-        fields.head = ptr::null_mut();
-        assert_eq!(
-            swr_v1_memory_channel_storage_init(
-                &raw const fields,
-                &raw const plan,
-                memory.as_mut_ptr().cast()
-            ),
-            -1
-        );
-        assert_eq!(
-            swr_v1_memory_channel_storage_in(&raw const fields, memory.as_ptr().cast(), 1),
-            -1
-        );
-        assert_eq!(
-            swr_v1_memory_channel_storage_out(&raw const fields, memory.as_mut_ptr().cast(), 32),
-            -1
-        );
-    }
-    assert_eq!(c.size, 0);
-    assert_eq!(memory, [0xab; 164]);
-}
-
-#[test]
-fn lifecycle_plans_preserve_native_effect_selection_and_release_order() {
-    assert_eq!(std::mem::size_of::<Lifecycle>(), 20);
-    let cases: &[(i32, &[u32], &[u32])] = &[
-        (0, &[1, 3], &[8]),
-        (2, &[1, 3, 4], &[6, 8]),
-        (4, &[1, 3, 5], &[7, 8]),
-        (6, &[1, 3, 4, 5], &[6, 7, 8]),
-        (8, &[2, 3], &[9]),
-        (10, &[2, 3, 4], &[6, 9]),
-        (12, &[2, 3, 5], &[7, 9]),
-        (14, &[2, 3, 4, 5], &[6, 7, 9]),
-    ];
-    for &(flags, constructor, teardown) in cases {
-        // Unrelated bits do not create owners or alter teardown custody.
-        for extra in [0, 1, i32::MIN] {
-            for (phase, expected) in [(0, constructor), (1, teardown)] {
-                let mut plan = Lifecycle::default();
-                assert_eq!(
-                    unsafe { swr_v1_memory_channel_lifecycle(flags | extra, phase, &raw mut plan) },
-                    0
-                );
-                assert_eq!(plan.count as usize, expected.len());
-                assert_eq!(&plan.actions[..expected.len()], expected);
-                assert!(plan.actions[expected.len()..].iter().all(|a| *a == 0));
-            }
-        }
-    }
-    let mut invalid = Lifecycle {
-        count: 4,
-        actions: [9; 4],
-    };
+    assert_eq!(swr_v1_memory_channel_bytes(8, 16), 0, "maxlen above size");
+    assert_eq!(swr_v1_memory_channel_bytes(usize::MAX, 4), 0, "overflow");
     assert_eq!(
-        unsafe { swr_v1_memory_channel_lifecycle(14, 2, &raw mut invalid) },
-        -1
-    );
-    assert_eq!((invalid.count, invalid.actions), (0, [0; 4]));
-    assert_eq!(
-        unsafe { swr_v1_memory_channel_lifecycle(14, 0, ptr::null_mut()) },
+        unsafe { swr_v1_memory_channel_init(ptr::null_mut(), 128, 32, 0) },
         -1
     );
 }

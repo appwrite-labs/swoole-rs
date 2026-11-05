@@ -24,10 +24,9 @@ pub mod ring;
 mod allocation_tests;
 
 pub use channel::{
-    swr_v1_memory_channel_full, swr_v1_memory_channel_in, swr_v1_memory_channel_lifecycle,
-    swr_v1_memory_channel_out, swr_v1_memory_channel_storage_in,
-    swr_v1_memory_channel_storage_init, swr_v1_memory_channel_storage_out,
-    swr_v1_memory_channel_storage_plan,
+    swr_v1_memory_channel_bytes, swr_v1_memory_channel_close, swr_v1_memory_channel_full,
+    swr_v1_memory_channel_in, swr_v1_memory_channel_init, swr_v1_memory_channel_lock,
+    swr_v1_memory_channel_out, swr_v1_memory_channel_print, swr_v1_memory_channel_signal,
 };
 pub use fixed::{
     swr_v1_memory_arena_lifecycle, swr_v1_memory_fixed_alloc, swr_v1_memory_fixed_construct,

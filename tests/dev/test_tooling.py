@@ -584,8 +584,8 @@ class Lanes(unittest.TestCase):
         self.assertIn('--source-ref', commands['utilities-php-logger'])
         self.assertIn('--archive', commands['httpbindings-server'])
         self.assertNotIn('httpbindings-php', commands)
-        self.assertIn('--source', commands['memory-source-compatibility'])
-        self.assertIn('--archive', commands['memory-source-compatibility'])
+        self.assertIn('--source', commands['memory-table-compatibility'])
+        self.assertIn('--archive', commands['memory-table-compatibility'])
         self.assertIn('--build-manifest', commands['phpcollections-runtime'])
         self.assertIn('--archive', commands['phpcollections-runtime'])
         for phase in ['ports-count', 'ports-settings']:

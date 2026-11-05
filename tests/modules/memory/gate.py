@@ -21,6 +21,7 @@ from tools.harness import ROOT, run_isolated, write_report
 from tools.build_hybrid import hybrid_tree, module_patches
 
 from tools.build_upstream import COMMIT as PIN
+INLINED = {'src/core/channel.cc': 'include/swoole_channel.h'}
 SOURCES = ['src/core/heap.cc', 'src/core/channel.cc', 'src/memory/fixed_pool.cc', 'src/memory/global_memory.cc', 'src/memory/ring_buffer.cc', 'src/memory/shared_memory.cc', 'src/memory/table.cc']
 
 
@@ -97,7 +98,8 @@ def main():
                         def expressions(path):
                             return Counter(re.sub(r'\s+', '', value) for value in re.findall(r'\bassert\s*\((.*?)\);', path.read_text(), re.S))
                         original = expressions(directory / 'upstream' / source)
-                        selected = expressions(hybrid / source)
+                        # A source whose methods moved inline keeps its assertions in its header.
+                        selected = expressions(hybrid / INLINED.get(source, source))
                         missing = original - selected
                         if missing:
                             raise ValueError(f'Original assertions removed from {source}: {dict(missing)}')
@@ -124,7 +126,7 @@ def main():
                 command = compiler + ['-std=c++17', '-O2', '-g', '-fvisibility=hidden', *headers]
                 command += shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))
                 command += ['-shared', '-fPIC', '-Wl,-Bsymbolic'] if linux else ['-dynamiclib', '-undefined', 'dynamic_lookup']
-                command += [*[str(sources / source) for source in SOURCES], str(Path(__file__).with_name('probe.cc')), str(Path(__file__).with_name('benchmark.cc'))]
+                command += [*[str(sources / source) for source in SOURCES if variant == 'upstream' or source not in INLINED], str(Path(__file__).with_name('probe.cc')), str(Path(__file__).with_name('benchmark.cc'))]
                 environment = dict(os.environ)
                 if variant == 'rust':
                     command.append(str(archive))
