@@ -1,6 +1,7 @@
 #include "swoole_rs_corebase_resolver.h"
 #include <cassert>
 #include <cstring>
+#include <cstdint>
 #include <exception>
 #include <netdb.h>
 #include <new>
@@ -26,6 +27,8 @@ static bool diagnostic(void *pointer, int family) {
     catch (...) { state.exception = std::current_exception(); return false; }
 }
 int main() {
+    const auto failed_await = swr_v1_core_resolver_finish(-1, 4003, reinterpret_cast<const int *>(uintptr_t{1}), 4003, 712);
+    assert(failed_await.failed && failed_await.error == 712);
     auto request = swr_v1_core_resolver_create(AF_INET, SOCK_STREAM, 0, "127.0.0.1", 9, "", 0);
     assert(request.owner);
     request.fields->error = 55;
