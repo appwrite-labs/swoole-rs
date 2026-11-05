@@ -31,7 +31,7 @@ unsafe fn living<'a>(record: *const CoreThread) -> &'a AtomicU8 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_thread_joinable(record: *const CoreThread) -> bool {
     // SAFETY: the controlling thread alone reads/writes the OS handle.
-    unsafe { (*record).handle != 0 }
+    unsafe { (*record).handle != libc::pthread_t::default() }
 }
 /// # Safety
 /// A live record whose running thread may publish its state concurrently.
@@ -82,7 +82,7 @@ pub unsafe extern "C" fn swr_v1_core_thread_move(
     // SAFETY: as above.
     unsafe { living(destination) }.store(u8::from(alive), Ordering::Release);
     // SAFETY: the controlling thread alone reads/writes both handles.
-    if unsafe { (*destination).handle != 0 } {
+    if unsafe { (*destination).handle != libc::pthread_t::default() } {
         return false;
     }
     // SAFETY: source's controlling thread transfers its unique handle.
@@ -93,7 +93,7 @@ pub unsafe extern "C" fn swr_v1_core_thread_move(
     }
     // SAFETY: source is now moved from (also valid for a nonjoinable self-move).
     unsafe {
-        (*source).handle = 0;
+        (*source).handle = libc::pthread_t::default();
     }
     true
 }
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn swr_v1_core_thread_start(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_thread_join_check(record: *const CoreThread) -> c_int {
     // SAFETY: the controlling thread alone reads/writes its owned handle.
-    if unsafe { (*record).handle == 0 } {
+    if unsafe { (*record).handle == libc::pthread_t::default() } {
         libc::EINVAL
     } else {
         0
@@ -152,7 +152,7 @@ pub unsafe extern "C" fn swr_v1_core_thread_join_complete(
     if code == 0 {
         // SAFETY: successful native join consumed exactly this owner handle.
         unsafe {
-            (*record).handle = 0;
+            (*record).handle = libc::pthread_t::default();
         }
     }
     code
@@ -163,7 +163,7 @@ pub unsafe extern "C" fn swr_v1_core_thread_join_complete(
 pub unsafe extern "C" fn swr_v1_core_thread_detach(record: *mut CoreThread) -> c_int {
     // SAFETY: exclusive access to the owner handle.
     let handle = unsafe { (*record).handle };
-    if handle == 0 {
+    if handle == libc::pthread_t::default() {
         return libc::EINVAL;
     }
     // SAFETY: this is the owner's current joinable pthread handle.
@@ -171,7 +171,7 @@ pub unsafe extern "C" fn swr_v1_core_thread_detach(record: *mut CoreThread) -> c
     if code == 0 {
         // SAFETY: a successful detach consumed this handle; failures preserve it.
         unsafe {
-            (*record).handle = 0;
+            (*record).handle = libc::pthread_t::default();
         }
     }
     code
@@ -231,7 +231,10 @@ mod tests {
             assert!(swr_v1_core_thread_alive(&raw const *owner));
             assert!(swr_v1_core_thread_joinable(&raw const *owner));
             assert_eq!(swr_v1_core_thread_status(&raw const *owner), 0);
-            assert_ne!(swr_v1_core_thread_id(&raw const *owner), 0);
+            assert_ne!(
+                swr_v1_core_thread_id(&raw const *owner),
+                libc::pthread_t::default()
+            );
             context.release.store(true, Ordering::Release);
             assert_eq!(join(&raw mut *owner), 0);
             assert!(!swr_v1_core_thread_alive(&raw const *owner));
