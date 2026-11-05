@@ -94,6 +94,10 @@ RACY = {'tests/swoole_websocket_server/send_close_frame.phpt':
         'worker 0 gives the pool a fixed 100 ms to restart the SIGTERMed worker 1 before '
         'getProcess(1); on a loaded runner both engines miss it (upstream failed re-runs in 3 '
         'merge-tier runs, #703)',
+        'tests/swoole_curl/multi/bug4393.phpt':
+        'it asserts two concurrent requests to live www.qq.com and www.baidu.com finish within '
+        "3.0 s; that's the runner's WAN latency, and upstream misses it too (9.23 s, 3.26 s, "
+        '3.17 s in 3 of 20 merge-tier runs; hybrid 6.66 s in 1, #1210)',
         'tests/swoole_server/shutdown_in_master.phpt':
         'shutdown() from onStart, before the random 1-4 workers are up, sometimes hangs until '
         'the deadline on both engines (upstream 2/8, hybrid 3/8, #438)',
