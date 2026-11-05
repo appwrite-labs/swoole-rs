@@ -107,3 +107,9 @@ cd tests/modules/ports && python3 -m unittest test_configured_flags test_count_c
 
 Open: broader Server originals, getSocket/platform/real TLS coverage,
 exceptions/bailout/teardown, production sanitizer runs and benchmarks.
+
+`ports-sni-originals` runs the two unchanged pinned HTTP-server SNI PHPTs on
+the loaded production extension through PHP's official runner. Candidate loops
+require the selected extension to pass every case; integrate/compare loops run
+both native and selected engines. Missing SSL support remains a failure of this
+required gate, never a passing capability exclusion.

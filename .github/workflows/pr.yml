@@ -116,6 +116,13 @@ jobs:
       # Shared headers must also compile with the callers omitted by the full migration.
       - run: python3 tools/check_partial.py --base origin/${{ github.base_ref }}
       - run: ccache --show-stats
+      # Exercise SNI's deferred port resolution on the production extension before merging.
+      - run: >
+          python3 corpus/upstream/run.py
+          --manifest tests/modules/ports/sni-originals.json
+          --php-extension curl --require-all --isolate-cases
+          --engine hybrid=$(echo target/hybrid/rust-*-halfclose)/modules/swoole.so
+          --output target/reports/ports-sni-originals.json
       # 12-hyperf needs composer; it runs in the merge tier.
       - run: >
           python3 corpus/run.py
