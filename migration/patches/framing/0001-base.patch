@@ -2,7 +2,7 @@ diff --git a/src/protocol/base.cc b/src/protocol/base.cc
 index cc8a1e5..28528f8 100644
 --- a/src/protocol/base.cc
 +++ b/src/protocol/base.cc
-@@ -21,418 +21,142 @@
+@@ -21,418 +21,141 @@
  #include "swoole_protocol.h"
 -
 +#include "swoole_rs_framing.h"
@@ -387,7 +387,6 @@ index cc8a1e5..28528f8 100644
 -                }
 -                buffer->extend(extend_size);
 -            }
-+        case SWR_FRAMING_OP_CLEAR: buffer->clear(); break;
 +        default: result = rare(r, op, arg);
          }
 -        // no eof
