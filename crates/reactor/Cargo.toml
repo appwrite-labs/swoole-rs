@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-corebase = { path = "../corebase" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
