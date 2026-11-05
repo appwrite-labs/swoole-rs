@@ -31,8 +31,7 @@ pub struct ReadPlan {
 /// Native callers only copy initialized datagrams with nonnegative requested length.
 /// Negative lengths in the pinned BIO adapter lead to an invalid native memmove;
 /// this scalar plan preserves the signed result without forming any Rust slice.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_read(empty: u8, front: u16, requested: i32, peek: u8) -> ReadPlan {
+fn read_plan(empty: u8, front: u16, requested: i32, peek: u8) -> ReadPlan {
     if empty != 0 {
         ReadPlan {
             length: -1,
@@ -57,8 +56,7 @@ pub struct ControlPlan {
 
 // Tags are decoded from the actual compiled OpenSSL macros by native code.
 // Effects: 0 none, 1 set shutdown, 2 copy peer, 3 set peek, 4 warn unknown.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_control(tag: u32, observed: c_long) -> ControlPlan {
+fn control_plan(tag: u32, observed: c_long) -> ControlPlan {
     let (result, effect) = match tag {
         0..=2 => (observed, 0), // EOF, shutdown, total queued bytes
         3 => (0, 1),
@@ -74,8 +72,7 @@ pub extern "C" fn swr_v1_tls_control(tag: u32, observed: c_long) -> ControlPlan 
 }
 
 /// 0: failure/warn, 1: pending success, 2: success and publish listened.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_listen(result: i32) -> u32 {
+fn listen_plan(result: i32) -> u32 {
     match result.cmp(&0) {
         core::cmp::Ordering::Less => 0,
         core::cmp::Ordering::Equal => 1,
@@ -91,7 +88,7 @@ mod tests {
         for front in [0, 1, 255, 65535] {
             for requested in [0, 1, 256, 65536, i32::MAX] {
                 for peek in [0, 1] {
-                    let p = swr_v1_tls_read(0, front, requested, peek);
+                    let p = read_plan(0, front, requested, peek);
                     assert_eq!(p.length, i32::from(front).min(requested));
                     assert_eq!(p.consume, u8::from(peek == 0));
                     assert_eq!(p.retry, 0);
@@ -99,7 +96,7 @@ mod tests {
             }
         }
         assert_eq!(
-            swr_v1_tls_read(1, 0, 0, 0),
+            read_plan(1, 0, 0, 0),
             ReadPlan {
                 length: -1,
                 consume: 0,
@@ -111,32 +108,32 @@ mod tests {
     fn control_observations_and_effects() {
         for value in [c_long::MIN, -1, 0, 1, c_long::MAX] {
             for tag in 0..=2 {
-                assert_eq!(swr_v1_tls_control(tag, value).result, value);
+                assert_eq!(control_plan(tag, value).result, value);
             }
         }
         assert_eq!(
-            swr_v1_tls_control(3, 99),
+            control_plan(3, 99),
             ControlPlan {
                 result: 0,
                 effect: 1
             }
         );
         assert_eq!(
-            swr_v1_tls_control(5, 0),
+            control_plan(5, 0),
             ControlPlan {
                 result: 1,
                 effect: 2
             }
         );
         assert_eq!(
-            swr_v1_tls_control(8, 0),
+            control_plan(8, 0),
             ControlPlan {
                 result: 1,
                 effect: 3
             }
         );
         assert_eq!(
-            swr_v1_tls_control(u32::MAX, 0),
+            control_plan(u32::MAX, 0),
             ControlPlan {
                 result: 0,
                 effect: 4
@@ -146,11 +143,11 @@ mod tests {
     #[test]
     fn listen_pending_is_success_without_publication() {
         for x in [i32::MIN, -1] {
-            assert_eq!(swr_v1_tls_listen(x), 0);
+            assert_eq!(listen_plan(x), 0);
         }
-        assert_eq!(swr_v1_tls_listen(0), 1);
+        assert_eq!(listen_plan(0), 1);
         for x in [1, i32::MAX] {
-            assert_eq!(swr_v1_tls_listen(x), 2);
+            assert_eq!(listen_plan(x), 2);
         }
     }
 }
@@ -167,3 +164,8 @@ pub use info::*;
 
 mod constants;
 pub use constants::*;
+
+#[cfg(unix)]
+mod dtls;
+#[cfg(unix)]
+pub use dtls::*;

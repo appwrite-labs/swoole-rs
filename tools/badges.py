@@ -5,7 +5,7 @@
 
 replaced.json  upstream first-party lines (src/, ext-src/, include/; not the embedded
                PHP library) that the all-modules patch set deletes, over the pinned total:
-               the net diff after applying every patch, so glue a patch adds and a later
+               the minimal net diff after applying every patch, so glue a patch adds and a later
                one removes never counts.
 graduated.json leaf modules that are always on (Phase 3).
 phpt.json      pinned PHPTs passing on the hybrid in a merge-tier gate (--phpt: that
@@ -50,7 +50,8 @@ def replaced(source, patches):
         for patch in patches:
             apply_patch_verified(tree, ROOT / patch['path'], patch['upstream_paths'], patch['sha256'])
         deleted = 0
-        for line in git('diff', '--numstat', cwd=tree).splitlines():
+        # Added glue must not earn credit by changing Git's greedy alignment.
+        for line in git('diff', '--diff-algorithm=minimal', '--numstat', cwd=tree).splitlines():
             _, removed, path = line.split('\t')
             if first_party(path) and removed != '-':
                 deleted += int(removed)

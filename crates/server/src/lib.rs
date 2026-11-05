@@ -112,18 +112,35 @@ pub struct ServerReply {
 }
 /// A callback catches every abnormal native effect before returning.
 pub type ServerGuardedCall = unsafe extern "C" fn(*mut c_void, u32, u64) -> ServerReply;
-enum Call {
-    Legacy(ServerCall),
-    Guarded(ServerGuardedCall),
+trait NativeCall {
+    /// # Safety
+    /// The context is live for the callback, whose native unwind contract holds.
+    unsafe fn invoke(&self, context: *mut c_void, op: u32, arg: u64) -> Effect<u64>;
 }
-
-struct Native {
+impl NativeCall for ServerCall {
+    unsafe fn invoke(&self, context: *mut c_void, op: u32, arg: u64) -> Effect<u64> {
+        // SAFETY: the caller lends the context under the legacy nonthrowing contract.
+        Ok(unsafe { self(context, op, arg) })
+    }
+}
+impl NativeCall for ServerGuardedCall {
+    unsafe fn invoke(&self, context: *mut c_void, op: u32, arg: u64) -> Effect<u64> {
+        // SAFETY: native captures abnormalities below this Rust frame.
+        let reply = unsafe { self(context, op, arg) };
+        if reply.fault == 0 {
+            Ok(reply.value)
+        } else {
+            Err(NativeFault(reply.fault))
+        }
+    }
+}
+struct Native<C> {
     context: *mut c_void,
-    call: Call,
+    call: C,
     state: *const ServerState,
 }
 
-impl Host for Native {
+impl<C: NativeCall> Host for Native<C> {
     fn op(&mut self, op: u32, arg: u64) -> Effect<u64> {
         if !self.state.is_null() {
             // SAFETY: run_state lends live synchronized records; this leaf access ends before callbacks.
@@ -134,22 +151,10 @@ impl Host for Native {
                 return Ok(value);
             }
         }
-        match self.call {
-            Call::Legacy(call) => {
-                // SAFETY: legacy callers promise a nonthrowing effect on the live context.
-                Ok(unsafe { call(self.context, op, arg) })
-            }
-            Call::Guarded(call) => {
-                // SAFETY: native captures abnormalities below this Rust frame.
-                let reply = unsafe { call(self.context, op, arg) };
-                if reply.fault == 0 {
-                    Ok(reply.value)
-                } else {
-                    Err(NativeFault(reply.fault))
-                }
-            }
-        }
+        // SAFETY: the entrypoint lends this context with C's native effect contract.
+        unsafe { self.call.invoke(self.context, op, arg) }
     }
+
     fn state(&mut self) -> Effect<&ServerState> {
         if !self.state.is_null() {
             // SAFETY: run_state lends this state for the entire operation.
@@ -177,7 +182,7 @@ pub unsafe extern "C" fn swr_v1_server_run(
     run(
         &mut Native {
             context,
-            call: Call::Legacy(call),
+            call,
             state: core::ptr::null(),
         },
         operation,
@@ -203,7 +208,7 @@ pub unsafe extern "C" fn swr_v1_server_run_state(
     run(
         &mut Native {
             context,
-            call: Call::Legacy(call),
+            call,
             state,
         },
         operation,
@@ -228,7 +233,7 @@ pub unsafe extern "C" fn swr_v1_server_run_guarded(
     match run(
         &mut Native {
             context,
-            call: Call::Guarded(call),
+            call,
             state,
         },
         operation,

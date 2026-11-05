@@ -82,3 +82,13 @@ Ordering kept from upstream:
 Original inventory: 287 Process/ProcessPool/Server PHPTs; corpus
 `10-task-workers`. Tests must use isolated process groups, private files, IPC and
 ports, and must not kill by name.
+
+The pending user-worker sequence lives in the Server's existing Rust worker
+registry. Its native view borrows the ordered pointers only until the next
+configuration append; startup publishes IDs over the canonical worker records.
+Resource construction, fork hooks and callback entrypoints remain native.
+
+`SocketPairRecord` defines the inline pipe-pair storage. Generated native fields
+and constructor assertions check every offset, size and alignment. Rust creates
+the descriptors and configures the fixed nonlogging buffer/timeout leaves;
+blocking changes, diagnostics, waits and socket destruction keep native frames.

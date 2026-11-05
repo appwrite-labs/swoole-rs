@@ -8,10 +8,12 @@
 )]
 pub mod affinity;
 pub mod command;
+pub mod pipe;
 pub mod pool;
 pub mod process_pool;
 pub mod reaper;
 pub mod reload_task;
+pub mod server_workers;
 pub mod signal;
 #[cfg(any(
     target_os = "macos",

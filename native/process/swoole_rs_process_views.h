@@ -3,7 +3,7 @@
 #else
 #ifndef SWOOLE_RS_PROCESS_VIEWS_H
 #define SWOOLE_RS_PROCESS_VIEWS_H
-// Generated from crates/process/src/{worker_record,process_pool}.rs.
+// Generated from crates/process/src/{worker_globals,worker_record,process_pool,pipe}.rs.
 // Typed native loans only; Rust owns the record layouts and operations.
 #define SWR_WORKER_GLOBAL_RECORD_FIELDS \
     uint32_t id; \
@@ -87,5 +87,11 @@
     MessageBus * message_bus = nullptr; \
     swr_v1_process_reload_task * reload_task = nullptr; \
     void * ptr;
+#define SWR_SOCKET_PAIR_RECORD_FIELDS \
+    bool blocking; \
+    double timeout; \
+    int socks[2]; \
+    network::Socket * master_socket; \
+    network::Socket * worker_socket;
 #endif
 #endif
