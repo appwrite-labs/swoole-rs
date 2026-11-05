@@ -13,7 +13,7 @@ use swoole_rs_phpstubs::thread_arraylist;
 use swoole_rs_phpstubs::thread_map;
 use swoole_rs_phpstubs::thread_queue;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Object, set_object,
+    Call, Class, Invalid, Object, bailout, set_object,
     string::bytes,
     sys::{
         _zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG,
@@ -372,6 +372,9 @@ fn construct_array(call: &Call, list: bool) {
         Some(array) => unsafe { Array::from(array) },
         None => Arc::default(),
     };
+    if bailout::pending() {
+        return;
+    }
     *slot::<Array>(call) = Arc::into_raw(shared);
 }
 
@@ -740,6 +743,9 @@ fn queue_push(call: &Call) {
     };
     // SAFETY: in a handler, with a passed argument.
     let item = unsafe { Item::store(call.zval(1)) };
+    if bailout::pending() {
+        return;
+    }
     if notify > 0 {
         queue.push_notify(item, notify == NOTIFY_ALL);
     } else {

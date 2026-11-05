@@ -10,6 +10,7 @@ use std::{
     sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 use swoole_rs_zend::{
+    bailout,
     string::bytes,
     sys::{
         IS_DOUBLE, IS_LONG, IS_NULL, swr_zend_array_init, swr_zend_hash_foreach_kv,
@@ -45,6 +46,9 @@ impl Array {
         ) {
             // SAFETY: the table `from` passed, live for the loop.
             let table = unsafe { &mut *context.cast::<Table<Item>>() };
+            if bailout::pending() {
+                return;
+            }
             let key = if key.is_null() {
                 #[expect(clippy::cast_possible_wrap, reason = "Zend's int keys are zend_long")]
                 Key::Int(index as i64)
@@ -53,7 +57,10 @@ impl Array {
                 Key::Str(unsafe { bytes(key) }.into())
             };
             // SAFETY: a live element.
-            table.add(key, unsafe { Item::store(value) });
+            let item = unsafe { Item::store(value) };
+            if !bailout::pending() {
+                table.add(key, item);
+            }
         }
         let mut table = Table::default();
         // SAFETY: per the caller; `table` outlives the loop.
@@ -69,6 +76,9 @@ impl Array {
     pub(crate) unsafe fn push(&self, value: *mut zval) {
         // SAFETY: per the caller.
         let item = unsafe { Item::store(value) };
+        if bailout::pending() {
+            return;
+        }
         self.write().push(item);
     }
 
@@ -106,6 +116,9 @@ impl Array {
     pub(crate) unsafe fn set(&self, key: Key, value: *mut zval) {
         // SAFETY: per the caller.
         let item = unsafe { Item::store(value) };
+        if bailout::pending() {
+            return;
+        }
         self.write().update(key, item);
     }
 
@@ -118,7 +131,11 @@ impl Array {
             return false;
         }
         // SAFETY: per the caller.
-        table.add(key, unsafe { Item::store(value) })
+        let item = unsafe { Item::store(value) };
+        if bailout::pending() {
+            return false;
+        }
+        table.add(key, item)
     }
 
     /// `strkey_update` / `intkey_update`: false unless the key exists.
@@ -130,7 +147,11 @@ impl Array {
             return false;
         }
         // SAFETY: per the caller.
-        table.update(key, unsafe { Item::store(value) });
+        let item = unsafe { Item::store(value) };
+        if bailout::pending() {
+            return false;
+        }
+        table.update(key, item);
         true
     }
 
@@ -147,12 +168,17 @@ impl Array {
         }
         // SAFETY: per the caller.
         let counter = unsafe { Item::counter(delta, out) };
+        if bailout::pending() {
+            return;
+        }
         let item = match key {
             // SAFETY: per the caller.
             Key::Int(_) => unsafe { Item::store(delta) },
             Key::Str(_) => counter,
         };
-        table.update(key, item);
+        if !bailout::pending() {
+            table.update(key, item);
+        }
     }
 
     /// `index_offsetGet`: false when `index` is not below the count.
@@ -180,6 +206,9 @@ impl Array {
     pub(crate) unsafe fn index_set(&self, index: i64, value: *mut zval) -> bool {
         // SAFETY: per the caller.
         let item = unsafe { Item::store(value) };
+        if bailout::pending() {
+            return false;
+        }
         let mut table = self.write();
         let count = length(&table);
         if index > count {
@@ -206,14 +235,22 @@ impl Array {
         }
         if index == -1 || index == count {
             // SAFETY: per the caller.
-            table.push(unsafe { Item::counter(delta, out) });
+            let item = unsafe { Item::counter(delta, out) };
+            if bailout::pending() {
+                return false;
+            }
+            table.push(item);
         } else if let Some(item) = table.get_mut(&Key::Int(index)) {
             // SAFETY: per the caller.
             unsafe { item.add(delta, out) };
         } else {
             // Upstream dereferences a missing item here (a negative index).
             // SAFETY: per the caller.
-            table.update(Key::Int(index), unsafe { Item::counter(delta, out) });
+            let item = unsafe { Item::counter(delta, out) };
+            if bailout::pending() {
+                return false;
+            }
+            table.update(Key::Int(index), item);
         }
         true
     }
@@ -414,9 +451,13 @@ pub extern "C" fn swr_v1_phpthread_array_new() -> *mut c_void {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpthread_array_from(array: *mut zend_array) -> *mut c_void {
     // SAFETY: per the caller.
-    let shared = handle(unsafe { Array::from(array) });
-    finish();
-    shared
+    let shared = unsafe { Array::from(array) };
+    if bailout::pending() {
+        drop(shared);
+        finish();
+        return std::ptr::null_mut();
+    }
+    handle(shared)
 }
 
 /// `argv->append(value)`.

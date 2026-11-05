@@ -7,7 +7,8 @@
 extern "C" {
 #endif
 enum swr_zend_guard_kind { SWR_ZEND_RETURN = 0, SWR_ZEND_BAILOUT = 1, SWR_ZEND_THREAD_EXIT = 2 };
-/* body must be native. The return value is a swr_zend_guard_kind. */
+/* body must be native and contain C++ exceptions before returning to this C
+ * scope. The return value is a swr_zend_guard_kind. */
 int swr_zend_try(void (*body)(void *), void *argument);
 typedef struct swr_zend_guard {
     volatile struct swr_zend_guard *previous;

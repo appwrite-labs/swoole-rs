@@ -9,7 +9,7 @@ class ExitDestructor {
 }
 class ExitSerialization {
     public function __serialize(): array {
-        if ($GLOBALS['mode'] === 'serialize') guarded(fn() => escape());
+        if (in_array($GLOBALS['mode'], ['serialize', 'shared-set', 'shared-queue'], true)) guarded(fn() => escape());
         return [];
     }
     public function __unserialize(array $data): void {
@@ -19,15 +19,20 @@ class ExitSerialization {
 if (Thread::getInfo()['is_main_thread']) {
     $mode = $argv[1];
     $after = new Thread\Atomic(0);
-    $worker = new Thread(__FILE__, $mode, $after);
+    $map = new Thread\Map(['kept' => 'value']);
+    $queue = new Thread\Queue();
+    $worker = new Thread(__FILE__, $mode, $after, $map, $queue);
     if (!$worker->join()) throw new RuntimeException('join failed');
     $normal = in_array($mode, ['return', 'exception'], true);
     $expected = $normal ? 0 : 235;
     if ($worker->getExitStatus() !== $expected || $after->get() !== ($normal ? 1 : 0)) {
         throw new RuntimeException('exit or post-callback behavior changed');
     }
+    if ($map['kept'] !== 'value' || $queue->count() !== 0) {
+        throw new RuntimeException('failed operation changed shared state');
+    }
     if (function_exists('swr_guard_counts')) {
-        $count = in_array($mode, ['nested', 'coroutine', 'serialize', 'unserialize'], true) ? 2 : 1;
+        $count = in_array($mode, ['nested', 'coroutine', 'serialize', 'unserialize', 'shared-set', 'shared-queue'], true) ? 2 : 1;
         if (swr_guard_counts() !== [$count, $count, $count, $count * 4096, $count * 4096 * 42]) {
             throw new RuntimeException('Rust owners were not dropped before native exit relay');
         }
@@ -35,7 +40,7 @@ if (Thread::getInfo()['is_main_thread']) {
     echo json_encode([$mode, $worker->getExitStatus(), $after->get()]), "\n";
     exit;
 }
-[$mode, $after] = Thread::getArguments();
+[$mode, $after, $map, $queue] = Thread::getArguments();
 if ($mode === 'exception') {
     try {
         guarded(function () { throw new RuntimeException('kept'); });
@@ -62,6 +67,10 @@ if ($mode === 'exception') {
 } elseif ($mode === 'unserialize') {
     $map = new Thread\Map(['object' => new ExitSerialization()]);
     guarded(fn() => $map['object']);
+} elseif ($mode === 'shared-set') {
+    guarded(function () use ($map) { $map['kept'] = new ExitSerialization(); });
+} elseif ($mode === 'shared-queue') {
+    guarded(fn() => $queue->push(new ExitSerialization()));
 } elseif ($mode === 'exit') {
     guarded(fn() => exit(235));
 } elseif ($mode === 'return') {

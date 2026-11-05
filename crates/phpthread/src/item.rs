@@ -6,7 +6,7 @@ use crate::{array::Array, barrier, classes, host::host, queue::Queue, request};
 use std::{cmp::Ordering, ffi::c_int, ptr, sync::Arc};
 use swoole_rs_phplocks::{self as phplocks, Resource, Shareable};
 use swoole_rs_zend::{
-    bailout::Bailout,
+    bailout::{self, Bailout},
     string::bytes,
     sys::{
         _zval_struct__bindgen_ty_1, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT,
@@ -373,12 +373,20 @@ impl Item {
         match &mut self.value {
             Value::Double(value) => {
                 // SAFETY: per the caller.
-                *value += unsafe { swoole_rs_zend::value::get_double(delta) };
+                let delta = unsafe { swoole_rs_zend::value::get_double(delta) };
+                if bailout::pending() {
+                    return;
+                }
+                *value += delta;
                 set(out, IS_DOUBLE, zend_value { dval: *value });
             }
             Value::Long(value) | Value::Bare(value) => {
                 // SAFETY: per the caller.
-                *value = value.wrapping_add(unsafe { swoole_rs_zend::value::get_long(delta) });
+                let delta = unsafe { swoole_rs_zend::value::get_long(delta) };
+                if bailout::pending() {
+                    return;
+                }
+                *value = value.wrapping_add(delta);
                 set(out, IS_LONG, zend_value { lval: *value });
             }
             // Upstream adds to a pointer here; leave the value alone.

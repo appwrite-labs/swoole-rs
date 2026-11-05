@@ -14,6 +14,7 @@ void swr_zend_hash_foreach_kv(const HashTable *table,
     ZEND_HASH_FOREACH_KEY_VAL((HashTable *) table, index, key, value) {
         ZVAL_DEREF(value);
         each(key, index, value, context);
+        if (swr_zend_guard_pending()) break;
     }
     ZEND_HASH_FOREACH_END();
 }

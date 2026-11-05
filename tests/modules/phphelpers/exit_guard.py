@@ -75,7 +75,7 @@ def main():
             raise ValueError('Actual PHP SDK owner witness did not compile')
         report['helper_sha256'] = sha(helper)
         modes = ['return', 'exception', 'custom', 'exit', 'nested', 'coroutine', 'error',
-                 'destructor', 'serialize', 'unserialize']
+                 'destructor', 'serialize', 'unserialize', 'shared-set', 'shared-queue']
         for mode in modes:
             expected = json.dumps([mode, 0 if mode in ['return', 'exception'] else 235,
                                    int(mode in ['return', 'exception'])], separators=(',', ':')) + '\n'
@@ -104,7 +104,7 @@ def main():
         selected_name = selected['name']
         required = [row for row in report['results'] if row['engine'] == selected_name]
         baseline = [row for row in report['results'] if row['engine'] != selected_name]
-        report['selected_contract_passed'] = len(required) == 10 and all(row['passed'] for row in required)
+        report['selected_contract_passed'] = len(required) == len(modes) and all(row['passed'] for row in required)
         report['native_baseline_failures'] = [dict(mode=row['mode'], exit=row['exit'],
                                                   stdout=row['stdout'], stderr=row['stderr'])
                                               for row in baseline if not row['passed']]
@@ -113,7 +113,7 @@ def main():
         # lifecycle assertion; they are never excluded or counted as passed.
         report['native_passes_lost'] = [row['mode'] for row in baseline if row['passed'] and
                                        not next(other for other in required if other['mode'] == row['mode'])['passed']]
-        report['passed'] = report['selected_contract_passed'] and len(baseline) == 10 and not report['native_passes_lost']
+        report['passed'] = report['selected_contract_passed'] and len(baseline) == len(modes) and not report['native_passes_lost']
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'
     write_report(output, report)
