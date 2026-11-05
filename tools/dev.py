@@ -389,7 +389,7 @@ def plan(args, reports):
         # not only the protocol-plan and scalar-setting mini gates.
         sni_engines = engines if integrate or args.compare else ['--engine', f'hybrid={hybrid}']
         script('ports-sni-originals', 'corpus/upstream/run.py', '--source', manifest.parent / 'src',
-               '--manifest', 'tests/modules/ports/sni-originals.json', *php, *sni_engines,
+               '--manifest', 'tests/modules/ports/sni-originals.json', *php_for('curl', 'sockets'), *sni_engines,
                '--require-all', '--isolate-cases', *report('ports-sni-originals'))
         if integrate:
             for name, runner in [('ports-configuration', 'configuration.py')]:

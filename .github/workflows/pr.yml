@@ -124,7 +124,7 @@ jobs:
       - run: >
           python3 corpus/upstream/run.py
           --manifest tests/modules/ports/sni-originals.json
-          --php-extension curl --require-all --isolate-cases
+          --php-extension curl --php-extension sockets --require-all --isolate-cases
           --engine hybrid=$(echo target/hybrid/rust-*-halfclose)/modules/swoole.so
           --output target/reports/ports-sni-originals.json
       # 12-hyperf needs composer; it runs in the merge tier.
