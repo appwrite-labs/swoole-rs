@@ -45,6 +45,7 @@ clients = ["dep:swoole-rs-clients", "dep:swoole-rs-inflate", "dep:swoole-rs-phpc
 httpbindings = ["dep:swoole-rs-httpbindings", "dep:swoole-rs-phphttp"]
 http2 = ["dep:swoole-rs-http2", "dep:swoole-rs-phphttp2"]
 ports = ["dep:swoole-rs-ports", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/port"]
+stdext = ["phphelpers", "swoole-rs-phpstdext/active"]
 phphelpers = ["dep:swoole-rs-phphelpers", "dep:swoole-rs-phpstdext"]
 phpcollections = ["dep:swoole-rs-phpcollections"]
 phpevents = ["dep:swoole-rs-phpevents"]

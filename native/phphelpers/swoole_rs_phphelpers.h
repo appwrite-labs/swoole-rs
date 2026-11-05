@@ -99,15 +99,9 @@ struct _zval_struct;
 struct _zend_array;
 struct _zend_string;
 struct _zend_execute_data;
-/* The PHP library calls C++ lends at MINIT. */
-typedef struct {
-    void (*json_decode)(struct _zval_struct *value, const char *text, size_t length, int64_t options, int64_t depth);
-    /* php_pcre_match_impl of a cached compiled regex (RETVAL_FALSE if it does
-     * not compile); flags count as passed when num_args >= 3. */
-    void (*pcre_match)(struct _zend_string *regex, struct _zend_string *subject, struct _zval_struct *value,
-                       uint8_t global, uint32_t num_args, int64_t flags, int64_t offset);
-} SwrPhpStdextOps;
-void swr_v1_phpstdext_minit(const SwrPhpStdextOps *ops);
+void swr_v1_phpstdext_minit(void);
+int swr_v1_phpstdext_assign(struct _zend_execute_data *frame);
+int swr_v1_phpstdext_assign_op(struct _zend_execute_data *frame);
 /* User opcode handlers: INIT_METHOD_CALL, UNSET_DIM and FE_RESET_RW. */
 int swr_v1_phpstdext_method_call(struct _zend_execute_data *frame);
 int swr_v1_phpstdext_unset(struct _zend_execute_data *frame);
