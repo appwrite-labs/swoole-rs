@@ -50,6 +50,15 @@ pub struct Host {
     pub ssl_shutdown: unsafe extern "C" fn(*mut CoSocket),
     /// `socket->check_liveness()`, errno set when it fails.
     pub liveness: unsafe extern "C" fn(*mut CoSocket) -> bool,
+    /// The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes the view.
+    pub read_buffer:
+        unsafe extern "C" fn(*mut CoSocket, *mut crate::packet::ReadBuffer, u32, usize),
+    /// `Socket::recv/recv_all` (all selects the latter).
+    pub recv: unsafe extern "C" fn(*mut CoSocket, *mut u8, usize, bool) -> isize,
+    /// The native protocol callback and its trace.
+    pub package_length: unsafe extern "C" fn(*mut CoSocket, u32, *mut u32) -> isize,
+    /// Packet error diagnostics, with the same kinds as the packet receive.
+    pub packet_fail: unsafe extern "C" fn(*mut CoSocket, u32, isize),
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
@@ -560,6 +569,10 @@ pub(crate) mod test_host {
         release,
         ssl_shutdown,
         liveness,
+        read_buffer: crate::packet::tests::read_buffer,
+        recv: crate::packet::tests::receive,
+        package_length: crate::packet::tests::get_length,
+        packet_fail: crate::packet::tests::failure,
     };
 }
 

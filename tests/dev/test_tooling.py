@@ -874,9 +874,12 @@ class ChangedModules(unittest.TestCase):
         self.assertEqual(self.changed('migration/patches/halfclose/0003-send-tls-close-notify.patch'), sorted(dev.MODULES))
 
     def test_selection_adds_the_modules_a_module_cannot_build_without(self):
-        # build_hybrid.py refuses phpcollections without memory (its table).
-        selected = dev.selected_modules(SimpleNamespace(module=['phpcollections'], all_modules=False))
-        self.assertIn('memory', selected)
+        # Table and its PHP reader must agree on the core layout, from either entry point.
+        for module in ['phpcollections', 'memory']:
+            with self.subTest(module=module):
+                selected = dev.selected_modules(SimpleNamespace(module=[module], all_modules=False))
+                self.assertIn('memory', selected)
+                self.assertIn('phpcollections', selected)
 
 
 class FocusedPhases(unittest.TestCase):

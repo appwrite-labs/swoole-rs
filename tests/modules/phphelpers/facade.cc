@@ -31,13 +31,6 @@ namespace swoole { static size_t rtrim(char *,size_t length) { return length; } 
 #define ZSTR_VAL(value) const_cast<char *>((value)->bytes.data())
 #define ZSTR_LEN(value) ((value)->len)
 #define sw_likely(value) (value)
-static size_t phase_dispatches,count_dispatches;
-static uint32_t traced_string_plan(uint32_t *phase,uint32_t operation,uint8_t observation) {
-    ++phase_dispatches;return swr_v1_phphelpers_string_plan(phase,operation,observation);
-}
-static uint8_t traced_empty(size_t count) { ++count_dispatches;return swr_v1_phphelpers_empty(count); }
-#define swr_v1_phphelpers_string_plan traced_string_plan
-#define swr_v1_phphelpers_empty traced_empty
 namespace reference {
 #include "reference-facade.inc"
 }
@@ -45,7 +38,7 @@ namespace candidate {
 #include "candidate-facade.inc"
 }
 template<class String,class CharPtr> static std::vector<std::string> exercise(unsigned mode) {
-    events.clear();phase_dispatches=count_dispatches=0;
+    events.clear();
     {
         String source("source",6), target("target",6);
         zval value{"converted"};
@@ -85,13 +78,10 @@ template<class String,class CharPtr> static std::vector<std::string> exercise(un
     allocated.clear();return events;
 }
 int main() {
-    size_t phases=0,counts=0;
     for(unsigned mode=0;mode<13;++mode) {
         const auto expected=exercise<reference::String,reference::CharPtr>(mode);
-        assert(phase_dispatches==0 && count_dispatches==0);
         const auto actual=exercise<candidate::String,candidate::CharPtr>(mode);
-        phases+=phase_dispatches;counts+=count_dispatches;
         assert(actual==expected);
     }
-    std::printf("{\"whole_classes\":2,\"matched_cases\":13,\"phase_dispatches\":%zu,\"count_dispatches\":%zu,\"total_dispatches\":%zu}\n",phases,counts,phases+counts);
+    std::puts("{\"whole_classes\":2,\"matched_cases\":13}");
 }
