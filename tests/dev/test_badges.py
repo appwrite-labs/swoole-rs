@@ -1,6 +1,9 @@
 """tools/badges.py counts upstream lines the patch set deletes (net), graduated leaves and passing PHPTs."""
 from pathlib import Path
 import subprocess
+import os
+import random
+from unittest.mock import patch
 import sys
 import tempfile
 import unittest
@@ -39,6 +42,32 @@ class Badges(unittest.TestCase):
             rows = [{'path': str(first), 'upstream_paths': ['src/a.cc'], 'sha256': None},
                     {'path': str(second), 'upstream_paths': ['src/a.cc'], 'sha256': None}]
             self.assertEqual(badges.replaced(source, rows), (3, 10))
+
+    def test_added_glue_cannot_invent_original_deletions_in_repeated_lines(self):
+        # A small alphabet models repeated braces/branches in a rewritten TU.
+        # Default diff heuristics report 999 -> 1001 removals after this pure
+        # addition. Minimal matching correctly reports 930 -> 927 instead.
+        generator = random.Random(1967)
+        for _ in range(3):
+            original = [str(generator.randrange(12)) for _ in range(1800)]
+            candidate = [str(generator.randrange(12)) for _ in range(2200)]
+        glue = ['0', '1', '2', '3', '4', '5', '0', '1', '2', '3', '4', '5', '0']
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            (source / 'src').mkdir(parents=True)
+            (source / 'src/a.cc').write_text('\n'.join([*original, 'sentinel']) + '\n')
+            first, second = Path(directory) / 'first.patch', Path(directory) / 'second.patch'
+            first.write_text(diff('src/a.cc', original, candidate, 'sentinel'))
+            second.write_text(diff('src/a.cc', [], glue, candidate[0]))
+            rows = [{'path': str(path), 'upstream_paths': ['src/a.cc'], 'sha256': None}
+                    for path in [first, second]]
+            for algorithm in ['myers', 'histogram']:
+                # Host preferences must not change the published measurement.
+                environment = {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'diff.algorithm',
+                               'GIT_CONFIG_VALUE_0': algorithm}
+                with self.subTest(algorithm=algorithm), patch.dict(os.environ, environment):
+                    self.assertEqual(badges.replaced(source, rows[:1]), (930, 1801))
+                    self.assertEqual(badges.replaced(source, rows), (927, 1801))
 
     def test_phpt_counts_hybrid_passes_over_every_pinned_test(self):
         rows = [{'test': 'a', 'engine': 'upstream', 'status': 'passed'}, {'test': 'a', 'engine': 'hybrid', 'status': 'passed'},
