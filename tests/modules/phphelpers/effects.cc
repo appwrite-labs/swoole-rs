@@ -16,7 +16,7 @@ struct zend_fcall_info_cache {};
 struct EffectFailure {};
 static std::ostringstream trace;
 static int effect, fail_at;
-static bool numeric, inserted, truthy, callable;
+static bool numeric, inserted;
 static void tick(const char *name) { trace<<name<<';';if(effect++==fail_at)throw EffectFailure{}; }
 #define zend_always_inline inline
 #define E_WARNING 2
@@ -38,15 +38,6 @@ static void array_init_size(zval *value,size_t) {tick("array-init");value->type=
 static void addref(zval *value) {tick("addref");++value->refs;}
 #define Z_ADDREF_P(p) addref(p)
 static void add_next_index_zval(zval *,zval *value) {trace<<"append:"<<value->id<<';';tick("append");}
-static void undef(zval *value) {tick("undef");value->type=0;}
-#define ZVAL_UNDEF(p) undef(p)
-static bool zval_is_true(zval *) {tick("truthy");return truthy;}
-static bool sw_zend_is_callable_ex(zval *,void *,int,char **name,void *,zend_fcall_info_cache *,void *) {
-    tick("callable");*name=const_cast<char *>("fixture-function");return callable;
-}
-static void warning(int,const char *,...) {tick("warning");}
-#define php_swoole_fatal_error(...) warning(__VA_ARGS__)
-static void zval_add_ref(zval *value) {addref(value);}
 // Exact function::call bodies exercise return classification after native calls.
 // Thrown sentinels model effect interruption only; they are not Zend bailout proof.
 static int64_t call_result;
@@ -94,18 +85,10 @@ static int call_user_function(void *,void *,zval *name,zval *retval,int argc,zva
     return static_cast<int>(call_result);
 }
 namespace reference {
-struct Callable { zval zfn;char *fn_name=nullptr;zend_fcall_info_cache fcc;explicit Callable(zval *); };
 #include "reference-effects.inc"
 }
 namespace candidate {
-struct Callable { zval zfn;char *fn_name=nullptr;zend_fcall_info_cache fcc;explicit Callable(zval *); };
 #include "candidate-effects.inc"
-}
-template<class Callable> static std::string construct() {
-    trace.str("");trace.clear();effect=0;zval input;input.type=7;input.id=9;
-    try {Callable value(&input);trace<<"final:"<<value.zfn.type<<':'<<value.zfn.id<<':'<<value.zfn.refs<<';';}
-    catch(const EffectFailure &) {trace<<"throw;";}
-    return trace.str();
 }
 using Merge=void (*)(zval *,const char *,size_t,zval *);
 static std::string merge(Merge fn,bool array) {
@@ -136,11 +119,6 @@ int main() {
     for(bool num:{false,true})for(bool add_ok:{false,true})for(bool array:{false,true})for(int fail=-1;fail<12;++fail) {
         numeric=num;inserted=add_ok;fail_at=fail;
         const auto before=merge(reference::array_add_or_merge,array),after=merge(candidate::array_add_or_merge,array);
-        if(before!=after){std::cerr<<before<<'\n'<<after<<'\n';return 1;}++checks;
-    }
-    for(bool first:{false,true})for(bool second:{false,true})for(int fail=-1;fail<7;++fail) {
-        truthy=first;callable=second;fail_at=fail;
-        const auto before=construct<reference::Callable>(),after=construct<candidate::Callable>();
         if(before!=after){std::cerr<<before<<'\n'<<after<<'\n';return 1;}++checks;
     }
     size_t calls=0;

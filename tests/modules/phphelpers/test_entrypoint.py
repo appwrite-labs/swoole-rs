@@ -23,7 +23,7 @@ class EntrypointOutcomes(unittest.TestCase):
                 engines.append(SimpleNamespace(name=name,metadata=lambda identity=identity:identity,command=lambda *args,name=name:[name,*args]))
             results=[SimpleNamespace(returncode=7,stdout='native first failure',stderr='native diagnostic'),
                      SimpleNamespace(returncode=0,stdout='{"fixture":true}',stderr='')]
-            def build(*args):
+            def build(*args, **kwargs):
                 args[2]['helper_compilation']={'sdk_php':'fixture'}
                 return helper
             argv=['entrypoint.py','--sdk-report',str(sdk),'--engine','native=fixture','--engine','hybrid=fixture',

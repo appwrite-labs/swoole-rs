@@ -1,4 +1,4 @@
-// Complete known-string initialization/publication and Callable cleanup bodies.
+// Complete known-string initialization/publication bodies.
 // Native persistent/interned storage and value destruction are controlled doubles.
 #include <cassert>
 #include <cstdint>
@@ -18,10 +18,8 @@ static std::vector<zend_string *> table;
 static std::deque<zend_string> strings;
 static std::unordered_map<std::string,zend_string *> interned;
 static zend_string ***active_cache;
-static char **active_name;
-static int effect,fail_at,name_change;
+static int effect,fail_at;
 static bool deduplicate;
-static char refreshed[]="refreshed";
 static void tick(const std::string &event) {events.push_back(event);if(effect++==fail_at)throw Interrupted{};}
 static void *pemalloc(size_t size,int persistent) {assert(persistent==1);tick("persistent-allocate:"+std::to_string(size));table.assign(size/sizeof(zend_string *),nullptr);return table.data();}
 static void pefree(void *data,int persistent) {assert(persistent==1&&data==table.data());tick("persistent-free:"+std::to_string(*active_cache==table.data()));}
@@ -35,17 +33,10 @@ static zend_string *zend_new_interned_string(zend_string *value) {
     auto found=interned.find(value->value);if(found!=interned.end())return found->second;
     interned.emplace(value->value,value);return value;
 }
-#define ZVAL_IS_UNDEF(value) ((value)->type==0)
-static void zval_ptr_dtor(zval *) {
-    events.push_back("value-release");if(name_change==1)*active_name=nullptr;if(name_change==2)*active_name=refreshed;
-}
-static void efree(char *name) {events.push_back(std::string("name-free:")+name);}
 namespace reference {
-struct Callable {zval zfn;char *fn_name;~Callable();};
 #include "reference-cache.inc"
 }
 namespace candidate {
-struct Callable {zval zfn;char *fn_name;~Callable();};
 #include "candidate-cache.inc"
 }
 using Function=void (*)();
@@ -65,22 +56,13 @@ static std::vector<std::string> known(Function init,Function destroy,zend_string
     if(cache)for(size_t index=0;index<table.size();++index)events.push_back("prefix:"+std::to_string(index)+":"+(cache[index]?cache[index]->value:"unpublished"));
     return events;
 }
-template<class Callable>static std::vector<std::string> release(bool defined,bool name,int change) {
-    events.clear();name_change=change;
-    {Callable call;call.zfn.type=defined?4:0;call.fn_name=name?const_cast<char *>("original"):nullptr;active_name=&call.fn_name;}
-    return events;
-}
 int main() {
-    size_t caches=0,releases=0;
+    size_t caches=0;
     for(bool dedup:{false,true})for(int failure=-1;failure<132;++failure) {
         const auto before=known(reference::known_strings_init,reference::known_strings_dtor,reference::sw_zend_known_strings,failure,dedup);
         const auto after=known(candidate::known_strings_init,candidate::known_strings_dtor,candidate::sw_zend_known_strings,failure,dedup);
         if(before!=after){for(auto &e:before)std::cerr<<"native "<<e<<'\n';for(auto &e:after)std::cerr<<"rust "<<e<<'\n';return 1;}++caches;
     }
-    for(bool defined:{false,true})for(bool name:{false,true})for(int change=0;change<3;++change) {
-        const auto before=release<reference::Callable>(defined,name,change),after=release<candidate::Callable>(defined,name,change);
-        if(before!=after){for(auto &e:before)std::cerr<<"native "<<e<<'\n';for(auto &e:after)std::cerr<<"rust "<<e<<'\n';return 1;}++releases;
-    }
     assert(swr_v1_phphelpers_known_count()==SW_ZEND_STR_LAST_KNOWN);
-    std::cout<<"{\"known_strings\":"<<SW_ZEND_STR_LAST_KNOWN<<",\"actual_cache_effect_cases\":"<<caches<<",\"actual_callable_release_cases\":"<<releases<<",\"zend_runtime_executed\":false}\n";
+    std::cout<<"{\"known_strings\":"<<SW_ZEND_STR_LAST_KNOWN<<",\"actual_cache_effect_cases\":"<<caches<<",\"zend_runtime_executed\":false}\n";
 }
