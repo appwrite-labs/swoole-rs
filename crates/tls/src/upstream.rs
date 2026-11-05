@@ -939,9 +939,12 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_read_x509(
     // SAFETY: as the caller promises.
     let written = unsafe { swr_v1_socket_ssl_pem(cert, buffer, length, consume) };
     match written {
-        -1 => log::warning(c"_ssl_read_x509_file", format_args!("BIO_new() failed")),
+        -1 => log::warning(
+            c"network::_ssl_read_x509_file",
+            format_args!("BIO_new() failed"),
+        ),
         -2 => log::warning(
-            c"_ssl_read_x509_file",
+            c"network::_ssl_read_x509_file",
             format_args!("PEM_write_bio_X509() failed"),
         ),
         _ => return written,
