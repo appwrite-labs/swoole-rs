@@ -244,6 +244,22 @@ pub unsafe extern "C" fn swr_v1_timer_get(
     OK
 }
 
+/// The token `id` was added with, or null. Native code applies every view it is
+/// handed to its token, so a lookup that only needs the token copies no view.
+/// # Safety
+/// The handle is null or live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_timer_token(queue: *const Timer, id: i64) -> *mut c_void {
+    // SAFETY: null or a live handle from create, not concurrently mutated.
+    let Some(state) = (unsafe { queue.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    state
+        .index(id)
+        .and_then(|index| state.heap.get(index))
+        .map_or(ptr::null_mut(), |view| view.token)
+}
+
 /// # Safety
 /// Handle and output are valid, exclusive and disjoint per ABI v1.
 #[unsafe(no_mangle)]
@@ -1108,6 +1124,21 @@ mod tests {
             }
             q.invariant();
         }
+    }
+
+    #[test]
+    fn token_finds_live_timers_only() {
+        let q = Owned::new();
+        let view = q.add(0, 5, false, 7);
+        assert_eq!(unsafe { swr_v1_timer_token(q.0, view.id) }, view.token);
+        assert!(unsafe { swr_v1_timer_token(q.0, view.id + 1) }.is_null());
+        assert!(unsafe { swr_v1_timer_token(ptr::null(), view.id) }.is_null());
+        let mut out = TimerView::default();
+        assert_eq!(
+            unsafe { swr_v1_timer_remove(q.0, view.id, &raw mut out) },
+            RELEASE
+        );
+        assert!(unsafe { swr_v1_timer_token(q.0, view.id) }.is_null());
     }
 
     #[test]
