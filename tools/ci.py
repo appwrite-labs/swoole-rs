@@ -5,6 +5,8 @@
                              replaced by a newer push to main follows the newer run
   ci.py status [--commit SHA]  the same, without waiting
   ci.py next                 the claimable issues in claim order (exit 2 when there are none)
+  ci.py stuck                auto-merge PRs that conflict with main or failed a required check,
+                             oldest first (exit 2 when there are none)
 
 For a pull request: `ci.py wait --workflow pr.yml --commit BRANCH` for its PR tier (a branch
 auto-merge deleted resolves through its PR), or `ci.py wait --pr N` to wait for it to merge and
@@ -313,6 +315,30 @@ def claimable():
             for issue in sorted(issues, key=lambda issue: (priority(issue), issue['created_at']))]
 
 
+REQUIRED = ('rust', 'tooling', 'hybrid')
+
+
+def stuck():
+    """Open auto-merge PRs that won't merge by themselves: conflicting with main, or with a
+    failed required check on their head. Oldest first, each with what blocks it."""
+    pulls = [pull for pull in map(json.loads, gh(
+        'api', '--paginate', 'repos/{owner}/{repo}/pulls?state=open&per_page=100', '--jq', '.[]').splitlines())
+        if pull.get('auto_merge')]
+    rows = []
+    for pull in sorted(pulls, key=lambda pull: pull['created_at']):
+        # mergeable_state is only on the single-PR endpoint; 'dirty' means conflicts.
+        detail = json.loads(gh('api', f"repos/{{owner}}/{{repo}}/pulls/{pull['number']}"))
+        checks = map(json.loads, gh('api', f"repos/{{owner}}/{{repo}}/commits/{pull['head']['sha']}/check-runs?per_page=100",
+                                    '--jq', '.check_runs[]').splitlines())
+        blocking = (['conflicts'] if detail.get('mergeable_state') == 'dirty' else []) + sorted(
+            {check['name'] for check in checks
+             if check['name'] in REQUIRED and check.get('conclusion') in ('failure', 'timed_out', 'cancelled')})
+        if blocking:
+            rows.append({'number': pull['number'], 'title': pull['title'], 'created': pull['created_at'],
+                         'blocking': blocking})
+    return rows
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -325,16 +351,16 @@ def main(argv=None):
         command.add_argument('--timeout', type=int, default=3600, help='seconds (default 3600)')
         command.add_argument('--poll', type=float, default=15, help=argparse.SUPPRESS)
         command.add_argument('--json', action='store_true')
-    command = commands.add_parser('next')
-    command.add_argument('--json', action='store_true')
+    for name in ['next', 'stuck']:
+        commands.add_parser(name).add_argument('--json', action='store_true')
     args = parser.parse_args(argv)
-    if args.command == 'next':
+    if args.command in ('next', 'stuck'):
         try:
-            queue = claimable()
+            queue = claimable() if args.command == 'next' else stuck()
         except subprocess.CalledProcessError as failure:
             sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
-        print(json.dumps(queue, indent=1) if args.json else
-              '\n'.join(f"#{issue['number']} {issue['priority']} {issue['title']}" for issue in queue))
+        print(json.dumps(queue, indent=1) if args.json else '\n'.join(
+            f"#{row['number']} {row.get('priority') or ', '.join(row['blocking'])} {row['title']}" for row in queue))
         return 0 if queue else 2
     deadline = time.monotonic() + args.timeout
     global RETRY_DEADLINE, RETRY_BASE

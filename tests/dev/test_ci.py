@@ -32,7 +32,7 @@ if deleted:
     sys.stderr.write('HTTP 422: No commit found for SHA\\n')
     sys.exit(1)
 elif args[:2] == ['api', '--paginate']:
-    for issue in data.get('issues', []):
+    for issue in data.get('open_pulls' if '/pulls?' in args[2] else 'issues', []):
         print(json.dumps(issue))
 elif args[0] == 'api' and '/pulls?' in args[1]:
     print('e' * 40)
@@ -41,6 +41,9 @@ elif args[0] == 'api' and '/pulls/' in args[1]:
     pull = queue.pop(0) if len(queue) > 1 else queue[0]
     save()
     print(json.dumps({'html_url': 'p', 'merged': False, 'merge_commit_sha': None, **pull}))
+elif args[0] == 'api' and '/check-runs' in args[1]:
+    for check in data.get('checks', {}).get(args[1].split('/')[-2], []):
+        print(json.dumps(check))
 elif args[0] == 'api' and '-X' in args:
     pass
 elif args[0] == 'api' and '/compare/' in args[1]:
@@ -188,6 +191,25 @@ class Ci(unittest.TestCase):
         self.assertIn('api --paginate repos/{owner}/{repo}/issues?state=open&labels=status:ready&per_page=100 '
                       '--jq .[]', self.gh_calls)
         code, result, _ = self.ci('next', runs={}, flags=('--json',), issues=[])
+        self.assertEqual((code, result), (2, []))
+
+    def test_stuck_lists_auto_merge_prs_that_conflict_or_failed_a_required_check(self):
+        def pull(number, created, auto=True):
+            return {'number': number, 'title': f't{number}', 'created_at': created,
+                    'auto_merge': {'merge_method': 'squash'} if auto else None, 'head': {'sha': f'sha{number}'}}
+        open_pulls = [pull(1, '2026-11-03T00:00:00Z'), pull(2, '2026-11-01T00:00:00Z'), pull(3, '2026-11-02T00:00:00Z'),
+                      pull(4, '2026-10-01T00:00:00Z', auto=False), pull(5, '2026-10-02T00:00:00Z')]
+        pulls = {str(n): [{'mergeable_state': state}] for n, state in
+                 [(1, 'dirty'), (2, 'blocked'), (3, 'clean'), (4, 'dirty'), (5, 'blocked')]}
+        checks = {'sha1': [], 'sha2': [{'name': 'hybrid', 'conclusion': 'failure'}, {'name': 'rust', 'conclusion': 'timed_out'},
+                                       {'name': 'gates', 'conclusion': 'failure'}],
+                  'sha3': [{'name': 'rust', 'conclusion': 'success'}, {'name': 'gates', 'conclusion': 'failure'}],
+                  'sha5': [{'name': 'tooling', 'conclusion': None}]}
+        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=open_pulls, pulls=pulls, checks=checks)
+        # 3 only fails the informative gates, 4 has no auto-merge and 5 is still running.
+        self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
+                         (0, [(2, ['hybrid', 'rust']), (1, ['conflicts'])]))
+        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[])
         self.assertEqual((code, result), (2, []))
 
     def test_transient_gh_failures_are_retried(self):
