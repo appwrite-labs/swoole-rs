@@ -362,8 +362,7 @@ pub(crate) fn compression_type(state: &State, kind: Option<&[u8]>) -> bool {
 /// `worker_max_concurrency` (false: not now).
 /// # Safety
 /// `ctx` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_before_request(ctx: *mut Context) -> bool {
+pub(crate) unsafe fn before_request(ctx: *mut Context) -> bool {
     let state = send::state(ctx);
     if state.before_request == 0 {
         return true;
