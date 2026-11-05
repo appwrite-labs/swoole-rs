@@ -879,6 +879,13 @@ class ChangedModules(unittest.TestCase):
                 self.assertIn('memory', selected)
                 self.assertIn('phpcollections', selected)
 
+        # Client/hook selection must close the two-hop reactor→File owner dependency.
+        for module in ['clients', 'hooks', 'reactor']:
+            with self.subTest(module=module):
+                selected = dev.selected_modules(SimpleNamespace(module=[module], all_modules=False))
+                self.assertIn('reactor', selected)
+                self.assertIn('ossupport', selected)
+
 
 class FocusedPhases(unittest.TestCase):
     def test_explicit_selection_keeps_canonical_order_and_records_omitted_gates(self):

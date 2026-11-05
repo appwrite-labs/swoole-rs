@@ -122,6 +122,7 @@ bool swr_v1_socket_release(swr_v1_socket *socket);
  * flags on success; _set_timeout's setsockopt, then write_timeout (send) or read_timeout. */
 swr_v1_socket_option_result swr_v1_socket_set_fd_option(swr_v1_socket *socket, int nonblock, int cloexec);
 bool swr_v1_socket_set_kernel_timeout(swr_v1_socket *socket, bool send, double timeout);
+swr_v1_socket_output_result swr_v1_socket_file_sent(swr_v1_socket_file_request *owner, swr_v1_socket *socket, const swr_v1_socket_output_hooks *hooks, ssize_t sent, size_t requested);
 /* recv/send/peek with EINTR and dont_restart, through `tls` when the record holds an
  * SSL; recv/send count bytes and, with a timer, stamp the time from `now`. A recv
  * that would block after POLLHUP returns 0. */

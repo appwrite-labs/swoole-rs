@@ -33,7 +33,7 @@ def main():
         while depth:
             depth += (original[end] == '{') - (original[end] == '}'); end += 1
         # Keep the original test body and every assertion byte unchanged.
-        driver = '''#include "swoole_file.h"
+        driver = '''#include "swoole_socket.h"
 #include <cassert>
 using namespace swoole;
 #define TEST(group,name) void name()
@@ -60,6 +60,25 @@ int main(int argc, char **argv) {
  assert(file.read(bytes, 3) == 2); assert(std::string(bytes, 2) == "az");
  const int fd = file.get_fd(); file.release(); assert(!file.ready()); assert(!file.close());
  assert(fcntl(fd, F_GETFD) >= 0); assert(::close(fd) == 0);
+
+ int request_fd;
+ {
+  network::SendfileRequest request(path.c_str(), 1);
+  assert(request.file.ready()); assert(request.file.get_path() == path);
+  request_fd = request.file.get_fd();
+  assert(request.begin == 1); assert(request.end == 0); assert(request.corked == 0);
+  request.end = 2; auto snapshot = request.begin; request.begin = 0; assert(snapshot == 1);
+  auto *begin_slot = &request.begin; *begin_slot = 1; assert(request.begin == 1);
+  network::SendfileRequest copy(request);
+  assert(copy.file.get_fd() == request_fd); assert(copy.file.get_path() == path);
+  copy.begin = 0; assert(request.begin == 1); copy.file.release();
+  network::SendfileRequest assigned_request(path.c_str(), 0);
+  int overwritten = assigned_request.file.get_fd();
+  assigned_request = request; assert(::close(overwritten) == 0);
+  assert(assigned_request.begin == 1); assert(assigned_request.end == 2);
+  assert(assigned_request.file.get_path() == path); assigned_request.file.release();
+ }
+ assert(fcntl(request_fd, F_GETFD) == -1); assert(errno == EBADF);
  assert(File::exists(path)); assert(File::remove(path)); assert(!File::exists(path));
 }
 '''
@@ -77,7 +96,7 @@ int main(int argc, char **argv) {
             for engine in ['native', 'rust']:
                 binary = work / engine / 'consumer'; binary.parent.mkdir(exist_ok=True)
                 compile = ['c++', '-std=c++14', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function',
-                           '-ffunction-sections', '-fdata-sections', *(flags if engine == 'rust' else ['-I' + str(native / 'include')]), str(source)]
+                           '-ffunction-sections', '-fdata-sections', *(flags if engine == 'rust' else ['-I' + str(native / 'include')]), *subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True).split(), str(source)]
                 compile += [str(args.archive.resolve())] if engine == 'rust' else [str(original_file)]
                 compile += [*link, '-o', str(binary)]
                 for command in [compile, [str(binary), str(binary.parent)]]:

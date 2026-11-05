@@ -16,7 +16,7 @@ fi
 install() {
     apt-get $APT install -yq --no-install-recommends \
         php-dev libclang-dev php-sqlite3 php-curl php-xml php-mbstring python3 python3-pytest composer \
-        libpcre2-dev libssl-dev zlib1g-dev pkg-config cmake g++ make autoconf git \
+        libpcre2-dev libssl-dev libc-ares-dev zlib1g-dev pkg-config cmake g++ make autoconf git \
         ca-certificates curl libgtest-dev libnghttp2-dev libpq-dev libcurl4-openssl-dev libbrotli-dev unixodbc-dev libsqlite3-dev ccache locales procps "$@"
 }
 # Cached indexes (refreshed weekly by the cache key) are enough when every package

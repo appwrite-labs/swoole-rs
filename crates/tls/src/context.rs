@@ -51,17 +51,21 @@ unsafe extern "C" {
         callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
     );
     fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *mut SSL_CTX, data: *mut c_void);
+    fn SSL_CTX_get_default_passwd_cb(
+        ctx: *mut SSL_CTX,
+    ) -> Option<extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int>;
+    fn SSL_CTX_get_default_passwd_cb_userdata(ctx: *mut SSL_CTX) -> *mut c_void;
 }
 
 /// `swSSLVersion`'s protocol bits.
-const SSLV2: u32 = 1 << 1;
-const SSLV3: u32 = 1 << 2;
-const TLSV1: u32 = 1 << 3;
-const TLSV1_1: u32 = 1 << 4;
-const TLSV1_2: u32 = 1 << 5;
-const TLSV1_3: u32 = 1 << 6;
-const DTLS: u32 = 1 << 7;
-const ALL: u32 = SSLV2 | SSLV3 | TLSV1 | TLSV1_1 | TLSV1_2 | TLSV1_3;
+const SSLV2: u32 = crate::constants::SslVersion::SW_SSL_SSLv2 as u32;
+const SSLV3: u32 = crate::constants::SslVersion::SW_SSL_SSLv3 as u32;
+const TLSV1: u32 = crate::constants::SslVersion::SW_SSL_TLSv1 as u32;
+const TLSV1_1: u32 = crate::constants::SslVersion::SW_SSL_TLSv1_1 as u32;
+const TLSV1_2: u32 = crate::constants::SslVersion::SW_SSL_TLSv1_2 as u32;
+const TLSV1_3: u32 = crate::constants::SslVersion::SW_SSL_TLSv1_3 as u32;
+const DTLS: u32 = crate::constants::SslVersion::SW_SSL_DTLS as u32;
+const ALL: u32 = crate::constants::SW_SSL_ALL.unsigned_abs();
 
 /// `OPENSSL_INIT_LOAD_CONFIG | OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS`.
 const INIT_OPTIONS: u64 = 0x40 | 0x0020_0000 | 0x2;
@@ -74,6 +78,15 @@ const BIO_CTRL_DGRAM_GET_PEER: c_int = 46;
 pub struct TlsStr {
     pub data: *const c_char,
     pub length: usize,
+}
+
+impl From<swoole_rs_corebase::CoreStringView> for TlsStr {
+    fn from(value: swoole_rs_corebase::CoreStringView) -> Self {
+        Self {
+            data: value.data,
+            length: value.length,
+        }
+    }
 }
 
 impl TlsStr {
@@ -131,10 +144,17 @@ pub struct TlsConfig {
 }
 
 /// One upstream method: its log name and the configuration it reads.
+#[derive(Clone, Copy)]
+pub(crate) struct PasswordBinding {
+    pub userdata: *mut c_void,
+    pub callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
+}
+
 struct Method<'a> {
     config: &'a TlsConfig,
     ctx: *mut SSL_CTX,
     function: &'static CStr,
+    password: Option<PasswordBinding>,
 }
 
 impl Method<'_> {
@@ -314,6 +334,7 @@ impl Method<'_> {
             config: self.config,
             ctx: self.ctx,
             function,
+            password: self.password,
         }
     }
 
@@ -360,11 +381,17 @@ impl Method<'_> {
         unsafe { SSL_CTX_set_read_ahead(ctx, 1) };
 
         if !config.passphrase.is_empty() {
-            PASSPHRASE_OF.get_or_init(|| config.passphrase_of);
-            // SAFETY: a live context; the owner outlives it (it frees the context).
-            unsafe { SSL_CTX_set_default_passwd_cb_userdata(ctx, config.owner.cast_mut()) };
-            // SAFETY: a live context; a plain function.
-            unsafe { SSL_CTX_set_default_passwd_cb(ctx, password_callback) };
+            let binding = self.password.unwrap_or_else(|| {
+                PASSPHRASE_OF.get_or_init(|| config.passphrase_of);
+                PasswordBinding {
+                    userdata: config.owner.cast_mut(),
+                    callback: password_callback,
+                }
+            });
+            // SAFETY: a live context; the binding's owner outlives the borrowed context.
+            unsafe { SSL_CTX_set_default_passwd_cb_userdata(ctx, binding.userdata) };
+            // SAFETY: a live context; a plain callback with the binding's userdata.
+            unsafe { SSL_CTX_set_default_passwd_cb(ctx, binding.callback) };
         }
         if !config.cert_file.is_empty() {
             let file = config.cert_file;
@@ -499,6 +526,33 @@ extern "C" fn verify_callback(_ok: c_int, _store: *mut X509_STORE_CTX) -> c_int 
     1
 }
 
+/// # Safety
+/// ctx is live; data remains live for subsequent password callbacks.
+pub(crate) unsafe fn bind_password(
+    ctx: *mut SSL_CTX,
+    data: *mut c_void,
+    callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
+) {
+    // SAFETY: a live context and stable callback data.
+    unsafe { SSL_CTX_set_default_passwd_cb_userdata(ctx, data) };
+    // SAFETY: the callback accepts that data and OpenSSL's output buffer.
+    unsafe { SSL_CTX_set_default_passwd_cb(ctx, callback) };
+}
+
+/// # Safety
+/// ctx is live; this observes the current callback binding without invoking it.
+pub(crate) unsafe fn password_binding_matches(
+    ctx: *mut SSL_CTX,
+    data: *mut c_void,
+    callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
+) -> bool {
+    // SAFETY: a live OpenSSL context.
+    let actual = unsafe { SSL_CTX_get_default_passwd_cb(ctx) };
+    // SAFETY: a live OpenSSL context.
+    let userdata = unsafe { SSL_CTX_get_default_passwd_cb_userdata(ctx) };
+    actual.is_some_and(|actual| std::ptr::fn_addr_eq(actual, callback)) && userdata == data
+}
+
 /// Native code's passphrase reader, the same function for every context.
 static PASSPHRASE_OF: OnceLock<PassphraseOf> = OnceLock::new();
 
@@ -513,6 +567,17 @@ extern "C" fn password_callback(
         return 0;
     };
     let passphrase = passphrase_of(owner.cast_const());
+    // SAFETY: OpenSSL lends the buffer; the reader lends the live passphrase bytes.
+    unsafe { copy_password(buffer, capacity, passphrase) }
+}
+
+/// # Safety
+/// Passphrase bytes remain live; buffer holds capacity writable bytes when positive.
+pub(crate) unsafe fn copy_password(
+    buffer: *mut c_char,
+    capacity: c_int,
+    passphrase: TlsStr,
+) -> c_int {
     let Ok(length) = c_int::try_from(passphrase.length) else {
         return 0;
     };
@@ -632,6 +697,7 @@ pub extern "C" fn swr_v1_tls_init() -> c_int {
 /// `swoole_ssl_destroy`: the next init allocates fresh indexes.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_tls_destroy() {
+    crate::swr_v1_tls_info_log(None);
     INITIALIZED.store(false, Ordering::Release);
 }
 
@@ -680,6 +746,16 @@ pub extern "C" fn swr_v1_tls_error() -> *const c_char {
 /// `config` is a live view whose strings are NUL-terminated and outlive the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_tls_context_create(config: *mut TlsConfig) -> *mut SSL_CTX {
+    // SAFETY: forwards the caller's live configuration view.
+    unsafe { create_context(config, None) }
+}
+
+/// # Safety
+/// Config and any password binding remain live throughout the borrowed context.
+pub(crate) unsafe fn create_context(
+    config: *mut TlsConfig,
+    password: Option<PasswordBinding>,
+) -> *mut SSL_CTX {
     // SAFETY: the caller's live view.
     let config = unsafe { &mut *config };
     let method = if config.protocols & DTLS != 0 {
@@ -698,6 +774,7 @@ pub unsafe extern "C" fn swr_v1_tls_context_create(config: *mut TlsConfig) -> *m
         config,
         ctx,
         function: c"SSLContext::create",
+        password,
     };
     if ctx.is_null() {
         create.ssl_error(b"SSL_CTX_new() failed");
@@ -725,6 +802,7 @@ macro_rules! method {
                 config: unsafe { &*config },
                 ctx,
                 function: $function,
+                password: None,
             }
             .$body()
         }
