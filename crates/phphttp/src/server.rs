@@ -60,6 +60,8 @@ struct Receive {
     http2: bool,
     /// The session's addresses may be cached.
     cache: bool,
+    /// The server's `enable_coroutine`: handlers run in a new coroutine.
+    coroutine: bool,
 }
 
 /// `swr_http_worker`: the counters of the worker serving requests.
@@ -78,8 +80,7 @@ unsafe extern "C" {
     fn swr_http_host_address(server: *mut c_void, conn: *mut c_void, local: bool) -> *const c_char;
     /// False when this process is no server worker.
     fn swr_http_host_worker(worker: *mut Worker) -> bool;
-    /// `swoole_event_defer`: run the queued request's handler, then release
-    /// its objects.
+    /// `swoole_event_defer` of `swr_v1_phphttp_server_deferred`.
     fn swr_http_host_defer(context: *mut Context);
     /// `get_connection_verify_no_ssl` and its port's facts (null: closed).
     fn swr_http_host_receive(
@@ -192,11 +193,10 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_addresses(
     add(table, Key::RemoteAddr, remote);
 }
 
-/// `php_swoole_http_server_onReceive` up to the handler's call: route the
-/// data to another protocol's `onReceive`, or parse it into a new context
-/// (`*context`) and pick its handler. `REQUEST` leaves the call to the
-/// trampoline; after `DONE` it only releases the context's objects. A
-/// bailout (a handshake's `onOpen`) is raised last, over this frame only.
+/// `php_swoole_http_server_onReceive`: route the data to another protocol's
+/// `onReceive`, or parse it into a new context and run its handler. A
+/// bailout (a handshake's `onOpen`, the handler's `exit()`) is raised last,
+/// over this frame only.
 /// # Safety
 /// `server` is the live server and `request` its `RecvData`.
 #[unsafe(no_mangle)]
@@ -205,7 +205,6 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_receive(
     request: *mut c_void,
     session: i64,
     server_fd: c_int,
-    context: *mut *mut Context,
 ) -> c_int {
     let mut facts = Receive {
         last_recv_time: 0.0,
@@ -217,6 +216,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_receive(
         websocket: false,
         http2: false,
         cache: false,
+        coroutine: false,
     };
     // SAFETY: the live server; fills a local struct.
     let conn = unsafe { swr_http_host_receive(server, session, server_fd, &raw mut facts) };
@@ -236,12 +236,49 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_receive(
     let mut zdata = ptr::null_mut();
     // SAFETY: as above; the request's data moves into the context.
     let ctx = unsafe { swr_http_host_receive_context(server, session, request, &raw mut zdata) };
-    // SAFETY: per the caller.
-    unsafe { *context = ctx };
-    let result = handle(server, conn, ctx, zdata, session, server_fd, &facts);
-    let route = *result.as_ref().unwrap_or(&DONE);
-    bailout::raise(result.map(|_| ()));
-    route
+    let result = handle(server, conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
+        if route == REQUEST {
+            // SAFETY: a live context; false leaves it queued.
+            if !unsafe { context::before_request(ctx) } {
+                return Ok(());
+            }
+            call(ctx, facts.coroutine)?;
+        }
+        release_objects(ctx);
+        Ok(())
+    });
+    bailout::raise(result);
+    DONE
+}
+
+/// `http_server_process_request`: the handler with the request's objects.
+fn call(ctx: *mut Context, coroutine: bool) -> Result<(), bailout::Bailout> {
+    let state = state(ctx);
+    let mut args = [state.request.zobject.value, state.response.zobject.value];
+    // SAFETY: the handler and the request's two objects.
+    match unsafe { swr_hsc_call(state.callback, args.as_mut_ptr(), coroutine) } {
+        -1 => return Err(bailout::Bailout),
+        0 => {
+            host::notice("Swoole\\Http\\Server->onRequest handler error");
+            context::send(ctx, SERVICE_UNAVAILABLE);
+            context::close(ctx);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// A queued request's turn (`swr_http_host_defer`): run its handler, then
+/// release its objects.
+/// # Safety
+/// `ctx` is a queued server request's live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_server_deferred(ctx: *mut Context, coroutine: bool) {
+    let result = call(ctx, coroutine);
+    if result.is_ok() {
+        release_objects(ctx);
+    }
+    bailout::raise(result);
 }
 
 /// Where `onReceive` sends data before any parsing.
@@ -451,7 +488,7 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
             return Ok(());
         }
         // SAFETY: a live context.
-        if !unsafe { context::swr_v1_phphttp_before_request(ctx) } {
+        if !unsafe { context::before_request(ctx) } {
             return Ok(());
         }
     }
@@ -608,6 +645,7 @@ mod tests {
             websocket,
             http2,
             cache: false,
+            coroutine: false,
         }
     }
 
