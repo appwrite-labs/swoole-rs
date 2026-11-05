@@ -138,8 +138,12 @@ fn connect(host: &CStr, port: u16, options: &Options) -> Result<c_int, Bailout> 
 
 /// `php_async_socket_poll`: wait `timeout` ms for `fd` to be writable
 /// (`POLLOUT` in `events`) or readable; -1 if it is not a coroutine socket.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpruntime_socket_poll(fd: c_int, events: c_int, timeout: c_int) -> c_int {
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "php_async_socket_poll")
+)]
+#[must_use]
+pub extern "C" fn socket_poll(fd: c_int, events: c_int, timeout: c_int) -> c_int {
     let Some(socket) = Socket::of_fd(fd) else {
         return -1;
     };

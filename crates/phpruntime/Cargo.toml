@@ -12,6 +12,8 @@ crate-type = ["rlib"]
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
+# Defines the Rust bodies under their upstream C++ symbols.
+upstream-symbols = []
 php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:openssl-sys", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php"]
 
 [dependencies]
