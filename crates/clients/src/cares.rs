@@ -13,7 +13,7 @@ use std::{
     },
 };
 use swoole_rs_cares_sys as sdk;
-use swoole_rs_corebase::constants::EventType;
+use swoole_rs_corebase::constants::{EventType, SW_DNS_SERVER_PORT};
 use swoole_rs_error::ErrorCode;
 
 /// Static native reactor/coroutine effects. No query state resides in this table.
@@ -275,7 +275,7 @@ pub(crate) unsafe extern "C" fn swr_v1_clients_cares_lookup(
             if metadata.server_api != 0 {
                 // SAFETY: the wrapper uses the actual SDK node layout for this version.
                 unsafe { sdk::swrs_cares_server(channel, server, port) };
-                if metadata.server_api == 1 && port != 53 {
+                if metadata.server_api == 1 && u32::from(port) != SW_DNS_SERVER_PORT {
                     // SAFETY: report the original unsupported-port warning.
                     unsafe { (ops.warning)(2, 0) };
                 }

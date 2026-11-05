@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <string.h>
 
+_Static_assert(ARES_SOCKET_BAD == -1, "POSIX invalid socket sentinel");
 _Static_assert(sizeof(ares_socket_t) == sizeof(int), "Swoole uses POSIX integer descriptors");
 struct metadata {
     int library_all, success, cancelled, timeout, timeout_ms, tries, socket_state, lookups, server_api;

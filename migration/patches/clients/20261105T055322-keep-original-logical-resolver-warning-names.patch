@@ -1,0 +1,23 @@
+diff --git a/src/network/dns.cc b/src/network/dns.cc
+index abdd5c6..6f7fd27 100644
+--- a/src/network/dns.cc
++++ b/src/network/dns.cc
+@@ -243,8 +243,14 @@ static const swr_v1_clients_cares_ops cares_ops = {
+     [](uint8_t kind, int32_t value) {
++        if (SW_LOG_WARNING < swoole_get_log_level()) { return; }
++        size_t length = 0;
+         switch (kind) {
+-        case 0: swoole_warning("error events, fd=%d", value); break;
+-        case 1: swoole_warning("ares_init_options() failed, Error: %s[%d]", ares_strerror(value), value); break;
+-        case 2: swoole_warning("not support to set port of dns server"); break;
+-        case 3: swoole_warning("not support to set dns server"); break;
++        case 0: length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "operator()(): error events, fd=%d", value); break;
++        case 1: length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE,
++            "dns_lookup_impl_with_cares(): ares_init_options() failed, Error: %s[%d]", ares_strerror(value), value); break;
++        case 2: length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE,
++            "dns_lookup_impl_with_cares(): not support to set port of dns server"); break;
++        case 3: length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE,
++            "dns_lookup_impl_with_cares(): not support to set dns server"); break;
+         }
++        sw_logger()->put(SW_LOG_WARNING, sw_error, length);
+     },

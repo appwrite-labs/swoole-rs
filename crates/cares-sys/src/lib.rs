@@ -43,7 +43,6 @@ unsafe extern "C" {
     pub fn ares_process_fd(channel: *mut Channel, read: c_int, write: c_int);
     pub fn ares_cancel(channel: *mut Channel);
     pub fn ares_destroy(channel: *mut Channel);
-    pub fn ares_strerror(code: c_int) -> *const c_char;
     pub fn swrs_cares_metadata() -> *const Metadata;
     pub fn swrs_cares_init(
         channel: *mut *mut Channel,
