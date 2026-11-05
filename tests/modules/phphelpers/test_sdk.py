@@ -1,5 +1,6 @@
 """Optional discovery failures cannot discard available required dependency flags."""
 import importlib.util
+import itertools
 from pathlib import Path
 import shlex
 import sys
@@ -9,6 +10,37 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 spec=importlib.util.spec_from_file_location('phphelpers_sdk',Path(__file__).with_name('sdk.py'))
 sdk=importlib.util.module_from_spec(spec);spec.loader.exec_module(sdk)
+
+
+class CompilationMatrix(unittest.TestCase):
+    def report(self):
+        report={'feature_profiles':{'native':[],'hybrid':['SWOOLE_RS_PHPHELPERS']},
+                'sources':['ext-src/php_swoole.cc','ext-src/php_swoole_cxx.cc','ext-src/swoole_stdext.cc','ext-src/php_swoole_cxx.h'],
+                'cpp_standards':['c++14','c++17']}
+        report['commands']=[dict(engine=engine,stdext_enabled=enabled,unit=unit,cpp_standard=standard,returncode=0)
+                            for engine,enabled,unit,standard in itertools.product(
+                                report['feature_profiles'],[False,True],report['sources'][:3],report['cpp_standards'])]
+        return report
+
+    def test_complete_expanded_matrix(self):
+        report=self.report()
+        self.assertEqual(len(report['commands']),24)
+        self.assertTrue(sdk.compilation_matrix_passed(report))
+
+    def test_missing_duplicate_extra_failed_and_wrong_profile_rejected(self):
+        for defect in ['missing','duplicate','extra','failed','wrong_profile']:
+            with self.subTest(defect=defect):
+                report=self.report()
+                if defect=='missing':report['commands'].pop()
+                elif defect=='duplicate':report['commands'][-1]=dict(report['commands'][0])
+                elif defect=='extra':report['commands'].append(dict(report['commands'][0]))
+                elif defect=='failed':report['commands'][0]['returncode']=1
+                else:report['commands'][0]['stdext_enabled']='False'
+                self.assertFalse(sdk.compilation_matrix_passed(report))
+
+    def test_empty_inventory_rejected(self):
+        report=self.report();report['sources']=[];report['commands']=[]
+        self.assertFalse(sdk.compilation_matrix_passed(report))
 
 
 class DependencyFlags(unittest.TestCase):

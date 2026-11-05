@@ -487,6 +487,11 @@ mod tests {
     }
     #[test]
     fn actual_backend_waits_read_pipe_and_close_ownership_before_destroy_hook() {
+        if crate::isolated_process::run_in_child(
+            "reactor_state::tests::actual_backend_waits_read_pipe_and_close_ownership_before_destroy_hook",
+        ) {
+            return;
+        }
         #[cfg(target_os = "linux")]
         let native_kind = 1;
         #[cfg(not(target_os = "linux"))]
@@ -555,6 +560,29 @@ mod tests {
                 libc::close(fds[0]);
                 libc::close(fds[1]);
             }
+        }
+    }
+    #[test]
+    fn owner_drop_preserves_a_reopened_backend_descriptor_number() {
+        if crate::isolated_process::run_in_child(
+            "reactor_state::tests::owner_drop_preserves_a_reopened_backend_descriptor_number",
+        ) {
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        let kind = 1;
+        #[cfg(not(target_os = "linux"))]
+        let kind = 2;
+        unsafe {
+            let state = swr_v1_reactor_state_new();
+            assert_eq!(swr_v1_reactor_state_open(state.owner, kind, 4), 0);
+            let fd = swr_v1_reactor_state_descriptor(state.owner);
+            swr_v1_reactor_state_close_backend(state.owner);
+            assert_eq!(swr_v1_reactor_state_descriptor(state.owner), -1);
+            assert_eq!((*state.fields).native_handle, fd);
+            crate::isolated_process::replacement_survives(fd, || {
+                swr_v1_reactor_state_free(state.owner);
+            });
         }
     }
 }

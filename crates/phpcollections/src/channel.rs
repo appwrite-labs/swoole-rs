@@ -122,6 +122,22 @@ pub unsafe extern "C" fn swr_v1_phpcollections_channel_minit(
     use_shortname: u8,
     ops: *const Ops,
 ) {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result = unsafe { init_phpcollections_channel_minit(module_number, use_shortname, ops) };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
+    }
+}
+
+unsafe fn init_phpcollections_channel_minit(
+    module_number: i32,
+    use_shortname: u8,
+    ops: *const Ops,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: per the caller, a static table.
     if let Some(ops) = unsafe { ops.as_ref() } {
         OPS.get_or_init(|| ops);
@@ -130,9 +146,9 @@ pub unsafe extern "C" fn swr_v1_phpcollections_channel_minit(
     unsafe { CHANNEL.register(c"Swoole\\Coroutine\\Channel", METHODS.as_ptr(), configure) };
     if use_shortname != 0 {
         // SAFETY: MINIT, after registration.
-        unsafe { CHANNEL.alias(c"Co\\Channel") };
+        unsafe { CHANNEL.alias(c"Co\\Channel") }?;
         // SAFETY: as above.
-        unsafe { CHANNEL.alias(c"Chan") };
+        unsafe { CHANNEL.alias(c"Chan") }?;
     }
     // SAFETY: as above.
     unsafe { CHANNEL.property_long(c"capacity", 0) };
@@ -142,6 +158,8 @@ pub unsafe extern "C" fn swr_v1_phpcollections_channel_minit(
         // SAFETY: MINIT, with the module's number.
         unsafe { register_long_constant(name, value, module_number) };
     }
+
+    Ok(())
 }
 
 /// Not serializable, clone and unset denied, custom object and destructor.

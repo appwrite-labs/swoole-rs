@@ -798,11 +798,7 @@ fn get_option(call: &Call) {
     };
     if length == 1 {
         let byte = other.to_ne_bytes()[0];
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "`char`, whose sign is the platform's"
-        )]
-        call.set_long(i64::from(byte as c_char));
+        call.set_long(i64::from(c_char::from_ne_bytes([byte])));
     } else {
         call.set_long(i64::from(other));
     }

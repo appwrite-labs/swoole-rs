@@ -12,7 +12,13 @@ def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--sanitize',action='store_true');p.add_argument('--rust-sanitized',action='store_true');a=p.parse_args()
  if a.rust_sanitized and not a.sanitize:p.error('--rust-sanitized requires --sanitize')
  out=a.output.parent/(a.output.stem+'-artifacts');out.mkdir(parents=True,exist_ok=True);gate.LOG=out/'commands';gate.LOG.mkdir(exist_ok=True);archive=a.archive
- original,selected=gate.sources(a.source,archive,'src/network/dns.cc');signature='static std::string parse_ip_address(void *vaddr, int type) {';before=gate.body(original,signature);after=gate.body(selected,signature)
+ original,_=gate.sources(a.source,archive,'src/network/dns.cc');signature='static std::string parse_ip_address(void *vaddr, int type) {';before=gate.body(original,signature)
+ # The production DNS and c-ares owners call this formatter export directly.
+ # Only adapt its fixed byte span to the pinned control's std::string result.
+ after=r'''static std::string parse_ip_address(void *vaddr, int type) {
+    auto text = swr_v1_clients_ip_text(type == AF_INET ? 4 : 6, static_cast<const uint8_t *>(vaddr));
+    return {reinterpret_cast<const char *>(text.bytes), text.length};
+}'''
  base=gate.run(['git','-C',a.source,'show',f'{gate.PIN}:src/core/base.cc']);printf=gate.body(base,'size_t sw_snprintf(char *buf, size_t size, const char *format, ...) {')
  prelude=r'''
 #include "swoole_rs_clients.h"

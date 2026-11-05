@@ -170,3 +170,14 @@ output effect is trapped below the Rust formatting owner, and the outer C++
 MINFO callback resumes a bailout after Rust cleanup. The module witness checks
 all ten definitions, access modes, update/restore behavior, information rows and
 an output handler that exits, against actual NTS and ZTS native controls.
+
+The experimental stdext profile also selects the `stdext` FFI Cargo feature
+(`phpstdext/active`). This keeps direct private Zend VM providers aligned with
+native `SW_STDEXT`; disabling the native profile leaves stdext PHP functions
+unregistered and its Rust crate inactive. `tools/build_hybrid.py` derives the
+feature from the effective configure options, including explicit overrides.
+Feature-enabled Rust checks use `--features php,active`. The assignment handlers
+own operand selection, COW type metadata, reference branches, result publication
+and temporary destruction in Rust. Native functions expose individual private
+Zend VM effects; PCRE cache references are retained and released by a Rust owner
+around a contained native match call.

@@ -1395,6 +1395,22 @@ pub unsafe extern "C" fn swr_v1_phphttp2_client_minit(
     shortname: bool,
     module: c_int,
 ) {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result = unsafe { init_phphttp2_client_minit(exception, shortname, module) };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
+    }
+}
+
+unsafe fn init_phphttp2_client_minit(
+    exception: *mut zend_class_entry,
+    shortname: bool,
+    module: c_int,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: MINIT, with a static table.
     unsafe {
         CLIENT.register(
@@ -1408,7 +1424,7 @@ pub unsafe extern "C" fn swr_v1_phphttp2_client_minit(
     }
     if shortname {
         // SAFETY: MINIT, after `register`.
-        unsafe { CLIENT.alias(c"Co\\Http2\\Client") };
+        unsafe { CLIENT.alias(c"Co\\Http2\\Client") }?;
     }
     // SAFETY: MINIT, extending Swoole's registered exception class.
     unsafe {
@@ -1421,7 +1437,7 @@ pub unsafe extern "C" fn swr_v1_phphttp2_client_minit(
     }
     if shortname {
         // SAFETY: as above.
-        unsafe { EXCEPTION.alias(c"Co\\Http2\\Client\\Exception") };
+        unsafe { EXCEPTION.alias(c"Co\\Http2\\Client\\Exception") }?;
     }
     // SAFETY: MINIT, without METHODS.as_ptr().
     unsafe {
@@ -1495,6 +1511,8 @@ pub unsafe extern "C" fn swr_v1_phphttp2_client_minit(
         // SAFETY: MINIT of `module`.
         unsafe { register_long_constant(name, number, module) };
     }
+
+    Ok(())
 }
 
 fn this<'a>(call: &Call) -> &'a mut Data {

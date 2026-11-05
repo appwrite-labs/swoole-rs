@@ -99,15 +99,9 @@ struct _zval_struct;
 struct _zend_array;
 struct _zend_string;
 struct _zend_execute_data;
-/* The PHP library calls C++ lends at MINIT. */
-typedef struct {
-    void (*json_decode)(struct _zval_struct *value, const char *text, size_t length, int64_t options, int64_t depth);
-    /* php_pcre_match_impl of a cached compiled regex (RETVAL_FALSE if it does
-     * not compile); flags count as passed when num_args >= 3. */
-    void (*pcre_match)(struct _zend_string *regex, struct _zend_string *subject, struct _zval_struct *value,
-                       uint8_t global, uint32_t num_args, int64_t flags, int64_t offset);
-} SwrPhpStdextOps;
-void swr_v1_phpstdext_minit(const SwrPhpStdextOps *ops);
+void swr_v1_phpstdext_minit(void);
+int swr_v1_phpstdext_assign(struct _zend_execute_data *frame);
+int swr_v1_phpstdext_assign_op(struct _zend_execute_data *frame);
 /* User opcode handlers: INIT_METHOD_CALL, UNSET_DIM and FE_RESET_RW. */
 int swr_v1_phpstdext_method_call(struct _zend_execute_data *frame);
 int swr_v1_phpstdext_unset(struct _zend_execute_data *frame);
@@ -120,6 +114,19 @@ void swr_v1_phpstdext_copy_type(struct _zval_struct *container, struct _zend_arr
  * if not, Zend has thrown. */
 bool swr_v1_phpstdext_operation(struct _zend_array *ht, bool concat);
 #endif
+struct _zend_execute_data;
+bool swr_v1_phphelpers_callable_frame(struct _zval_struct *value, struct _zval_struct *object,
+    struct _zend_execute_data *frame, uint32_t flags, char **name, size_t *length,
+    struct _zend_fcall_info_cache *cache, char **error);
+char *swr_v1_phphelpers_url_encode(const char *value, size_t count, size_t *length);
+char *swr_v1_phphelpers_http_query(struct _zval_struct *value, size_t *length, void *buffer);
+bool swr_v1_phphelpers_unset_class_valid(struct _zend_object *object);
+void swr_v1_phphelpers_unset_deny(struct _zend_object *object, struct _zend_string *member, void **cache);
+struct _zend_internal_arg_info;
+int swr_v1_phphelpers_function_alias(struct _zend_array *source, const char *origin, size_t origin_length,
+    struct _zend_array *target, const char *alias, size_t alias_length,
+    const struct _zend_internal_arg_info *info, void (*assert_internal)(uint8_t));
+int swr_v1_phphelpers_class_alias(const char *name, size_t length, struct _zend_class_entry *entry);
 #ifdef __cplusplus
 }
 #endif

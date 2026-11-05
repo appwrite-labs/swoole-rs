@@ -24,6 +24,7 @@ mod frame;
 mod function;
 mod helpers;
 mod object;
+pub mod registration;
 pub mod string;
 pub mod value;
 

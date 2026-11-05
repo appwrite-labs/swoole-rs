@@ -96,7 +96,7 @@ struct Socket {
     formatter_signature='static std::string parse_ip_address(void *vaddr, int type) {'
     native += '\nstatic uint16_t dns_request_id=1;\n'+gate.body(original,formatter_signature)+'\n'+gate.body(original,parser_signature)
     # The hybrid's DNS server is Rust state; the driver sets it to SwooleG's.
-    rust += '\nstatic uint16_t dns_request_id=1;\n'+'\n'.join(gate.body(selected,signature) for signature in ['static void assign_text(','static swoole::DnsServer swoole_dns_server() {',formatter_signature])+'\n'+gate.body(selected,parser_signature)
+    rust += '\nstatic uint16_t dns_request_id=1;\n'+'\n'.join(gate.body(selected,signature) for signature in ['static void assign_text(','static swoole::DnsServer swoole_dns_server() {'])+'\n'+gate.body(selected,parser_signature)
     driver=r'''
 int main(){
     size_t count=0;

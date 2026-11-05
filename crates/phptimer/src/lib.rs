@@ -122,6 +122,22 @@ pub unsafe extern "C" fn swr_v1_phptimer_minit(
     array_iterator: *mut zend_class_entry,
     ops: *const Ops,
 ) {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result = unsafe { init_phptimer_minit(module_number, array_iterator, ops) };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
+    }
+}
+
+unsafe fn init_phptimer_minit(
+    module_number: i32,
+    array_iterator: *mut zend_class_entry,
+    ops: *const Ops,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: per the caller, a static table.
     if let Some(ops) = unsafe { ops.as_ref() } {
         OPS.get_or_init(|| ops);
@@ -138,7 +154,7 @@ pub unsafe extern "C" fn swr_v1_phptimer_minit(
         );
     }
     // SAFETY: MINIT, after registration, with the class's own table.
-    unsafe { TIMER.function_aliases(METHODS.as_ptr(), &ALIASES) };
+    unsafe { TIMER.function_aliases(METHODS.as_ptr(), &ALIASES) }?;
     // SAFETY: MINIT, with the module's number.
     unsafe { register_long_constant(c"SWOOLE_TIMER_MIN_MS", MIN_MS, module_number) };
     // SAFETY: as above.
@@ -152,6 +168,8 @@ pub unsafe extern "C" fn swr_v1_phptimer_minit(
     let max_sec = MAX_MS as f64 / 1000.0;
     // SAFETY: as above.
     unsafe { register_double_constant(c"SWOOLE_TIMER_MAX_SEC", max_sec, module_number) };
+
+    Ok(())
 }
 
 /// The C++ trampoline's body: run the callable; 1 if it bailed out, which the

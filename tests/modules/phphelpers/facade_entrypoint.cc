@@ -178,8 +178,83 @@ PHP_FUNCTION(m26_facade_oom) {
     else { zend::CharPtr value(input.data(),input.size()); }
     RETURN_TRUE;
 }
-static const zend_function_entry functions[]={PHP_FE(m26_facade_custody,arginfo_m26_facade) PHP_FE(m26_private_custody,arginfo_m26_facade) PHP_FE(m26_facade_oom,arginfo_m26_oom) PHP_FE_END};
+
+static int alias_registered, alias_missing, class_alias_registered;
+static zend_object_handlers query_handlers, guard_handlers;
+static size_t query_reads;
+static HashTable *query_properties(zend_object *object) {
+    ++query_reads;
+    return zend_std_get_properties(object);
+}
+static zend_object *guard_create(zend_class_entry *ce) {
+    return sw_zend_create_object(ce, &guard_handlers);
+}
+ZEND_BEGIN_ARG_INFO_EX(arginfo_m26_utility,0,0,2)
+    ZEND_ARG_INFO(0, callback)
+    ZEND_ARG_TYPE_INFO(0, data, IS_OBJECT, 0)
+ZEND_END_ARG_INFO()
+PHP_FUNCTION(m26_utility_custody) {
+    zval *callback, *data;
+    ZEND_PARSE_PARAMETERS_START(2,2) Z_PARAM_ZVAL(callback) Z_PARAM_OBJECT(data) ZEND_PARSE_PARAMETERS_END();
+    array_init(return_value);
+    zend_fcall_info_cache cache{};
+    char *name=nullptr, *error=nullptr;
+    size_t length=0;
+    bool callable=sw_zend_is_callable_at_frame(callback,nullptr,execute_data,0,&name,&length,&cache,&error);
+    add_assoc_bool(return_value,"callable",callable);
+    add_assoc_stringl(return_value,"name",name,length);
+    efree(name);
+    if(error) efree(error);
+    size_t only_length=0;
+    sw_zend_is_callable_at_frame(callback,nullptr,execute_data,0,nullptr,&only_length,&cache,nullptr);
+    add_assoc_bool(return_value,"optional_name",only_length==length);
+    auto *encoded=php_swoole_url_encode("A\0 B",4,&length);
+    add_assoc_stringl(return_value,"encoded",encoded,length);
+    efree(encoded);
+    smart_str form{};
+    auto *object=Z_OBJ_P(data);
+    auto *handlers=object->handlers;
+    object->handlers=&query_handlers;
+    query_reads=0;
+    auto *query=php_swoole_http_build_query(data,&length,&form);
+    object->handlers=handlers;
+    add_assoc_stringl(return_value,"query",query,length);
+    add_assoc_long(return_value,"query_reads",query_reads);
+    zval invalid; ZVAL_LONG(&invalid,42);
+    length=73;
+    add_assoc_bool(return_value,"invalid_query",php_swoole_http_build_query(&invalid,&length,&form)==nullptr);
+    add_assoc_bool(return_value,"cleared",form.s==nullptr && form.a==0 && length==73);
+    smart_str_free(&form);
+    add_assoc_long(return_value,"alias_registered",alias_registered);
+    add_assoc_long(return_value,"alias_missing",alias_missing);
+    add_assoc_long(return_value,"class_alias_registered",class_alias_registered);
+}
+ZEND_BEGIN_ARG_INFO_EX(arginfo_m26_alias,0,0,1)
+    ZEND_ARG_TYPE_INFO(0, value, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+PHP_FUNCTION(m26_alias_source) {
+    char *text;size_t length;
+    ZEND_PARSE_PARAMETERS_START(1,1) Z_PARAM_STRING(text,length) ZEND_PARSE_PARAMETERS_END();
+    RETURN_STRINGL(text,length);
+}
+PHP_MINIT_FUNCTION(m26_facade) {
+    (void) type; (void) module_number;
+    query_handlers=std_object_handlers;
+    query_handlers.get_properties=query_properties;
+    guard_handlers=std_object_handlers;
+    guard_handlers.unset_property=sw_zend_class_unset_property_deny;
+    zend_class_entry entry;
+    INIT_CLASS_ENTRY(entry,"M26Guard",nullptr);
+    auto *guard=zend_register_internal_class(&entry);
+    guard->create_object=guard_create;
+    zend_declare_property_null(guard,ZEND_STRL("fixed"),ZEND_ACC_PUBLIC);
+    class_alias_registered=sw_zend_register_class_alias(ZEND_STRL("M26GuArDAlias"),guard);
+    alias_registered=SW_FUNCTION_ALIAS(CG(function_table),"M26_ALIAS_SOURCE",CG(function_table),"m26_alias_target",arginfo_m26_alias);
+    alias_missing=SW_FUNCTION_ALIAS(CG(function_table),"m26_absent_source",CG(function_table),"m26_alias_absent",arginfo_m26_alias);
+    return SUCCESS;
+}
+static const zend_function_entry functions[]={PHP_FE(m26_facade_custody,arginfo_m26_facade) PHP_FE(m26_private_custody,arginfo_m26_facade) PHP_FE(m26_facade_oom,arginfo_m26_oom) PHP_FE(m26_utility_custody,arginfo_m26_utility) PHP_FE(m26_alias_source,arginfo_m26_alias) PHP_FE_END};
 extern "C" {
-zend_module_entry m26_facade_module_entry={STANDARD_MODULE_HEADER,"m26_facade",functions,nullptr,nullptr,nullptr,nullptr,nullptr,"0",STANDARD_MODULE_PROPERTIES};
+zend_module_entry m26_facade_module_entry={STANDARD_MODULE_HEADER,"m26_facade",functions,PHP_MINIT(m26_facade),nullptr,nullptr,nullptr,nullptr,"0",STANDARD_MODULE_PROPERTIES};
 ZEND_GET_MODULE(m26_facade)
 }
