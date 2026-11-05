@@ -125,7 +125,8 @@ manual setup:
 - keeps the toolchain and crate registry in named volumes (`swr-rustup-<arch>`,
   `swr-cargo-<arch>`), and cargo output in `target/docker/`
 - inside the container, installs the pinned toolchain, runs `cargo fetch --locked`,
-  builds `target/upstream` (cached), and passes the image's PHP extensions to
+  builds `target/upstream` (cached; concurrent entries in one worktree take turns at
+  these steps, under `flock target/upstream/prepare.lock`, then run together), and passes the image's PHP extensions to
   `candidate`/`integrate` unless the command names its own
 - adds `--with-prerequisites` to a `--phase` selection, so the builds and reports a
   phase needs run first
