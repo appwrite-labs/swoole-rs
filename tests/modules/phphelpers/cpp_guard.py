@@ -37,7 +37,7 @@ def main():
             raise ValueError('Require an actual selected production engine')
         report['engine'] = identity
         report['attestation'] = attest(args.export / 'build-manifest.json', args.export / 'libswoole_rs_ffi.a',
-                                       identity, args.source_ref, 0)
+                                       identity, args.source_ref, 8192)
         receipt = json.loads((args.export / 'export.json').read_text())
         manifest = json.loads((args.export / 'build-manifest.json').read_text())
         prefix = Path(receipt['files']['libswoole_rs_ffi.a']['source']).parents[1]
