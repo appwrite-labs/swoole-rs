@@ -44,7 +44,7 @@ def selected_archive(pytestconfig):
 def allocation_fixture(directory):
     """The unchanged production Rust source behind a one-shot failing GlobalAlloc."""
     rust_hash = sha(RUST_SOURCE)
-    build = run_isolated(['cargo', 'build', '-p', 'swoole-rs-buffer', '--release', '--offline', '--locked',
+    build = run_isolated(['cargo', 'build', '-p', 'swoole-rs-buffer', '-p', 'swoole-rs-corebase', '--release', '--offline', '--locked',
                           '--message-format=json'], timeout=60)
     assert build.returncode == 0, build.stderr
     artifacts = [json.loads(line) for line in build.stdout.splitlines() if line.startswith('{')]
@@ -54,6 +54,8 @@ def allocation_fixture(directory):
     fixture = directory / 'libbuffer_model.a'
     compiled = run_compiler(['rustc', '--edition=2024', '--crate-type=staticlib', '--crate-name=swr_buffer_model',
                              '-C', 'opt-level=3', '-C', 'panic=abort',  # as the release profile builds its dependencies
+                             *[arg for path in sorted({path.parent for path in libraries.values()})
+                               for arg in ['-L', f'dependency={path}']],
                              *[arg for name, path in sorted(libraries.items()) for arg in ['--extern', f'{name}={path}']],
                              str(Path(__file__).with_name('model_allocator.rs')), '-o', str(fixture)], timeout=60)
     assert compiled['returncode'] == 0, compiled['stderr']
