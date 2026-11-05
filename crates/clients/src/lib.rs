@@ -17,11 +17,9 @@ pub mod ip;
 pub mod pool;
 pub mod ws;
 
-use address::{
-    TCP, TCP6, UDP, UDP6, UNIX_DGRAM, UNIX_STREAM, swr_v1_clients_address_assign_record,
-};
+use address::{TCP, TCP6, UDP, UDP6, UNIX_DGRAM, UNIX_STREAM};
 use std::ffi::c_int;
-use swoole_rs_corebase::net_types::SocketAddress;
+use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct UrlPlan {
@@ -88,14 +86,14 @@ fn url_plan(url: &[u8]) -> UrlPlan {
 pub const URL_INVALID: c_int = -1;
 pub const URL_PORT_RANGE: c_int = -2;
 
-/// The socket type, host and port `Address::assign(url)` assigns for a `unix://`,
-/// `udg://`, `tcp://` or `udp://` URL.
+/// The socket type, host span and port `Address::assign(url)` assigns for a
+/// `unix://`, `udg://`, `tcp://` or `udp://` URL.
 ///
 /// # Errors
 /// `URL_INVALID` outside the grammar, `URL_PORT_RANGE` for a port past `int`.
-pub fn url(url: &[u8]) -> Result<(c_int, &[u8], c_int), c_int> {
+pub fn url(url: &[u8]) -> Result<(c_int, Range<usize>, c_int), c_int> {
     let plan = url_plan(url);
-    let host = &url[plan.host_offset..plan.host_offset + plan.host_length];
+    let host = plan.host_offset..plan.host_offset + plan.host_length;
     match (plan.kind, plan.datagram) {
         (0, _) => Err(URL_INVALID),
         (3, datagram) => Ok((if datagram { UNIX_DGRAM } else { UNIX_STREAM }, host, 0)),
@@ -118,39 +116,40 @@ pub fn url(url: &[u8]) -> Result<(c_int, &[u8], c_int), c_int> {
     }
 }
 
-/// `Address::assign(url)` into the record, its host resolved: 0, an `SW_ERROR_*`
-/// code for the last error, or a `URL_*` outcome.
-///
+/// [`url`] for native: `outcome` 0 with the rest set, or a `URL_*` outcome.
+#[repr(C)]
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct UrlAssign {
+    pub outcome: c_int,
+    pub kind: c_int,
+    pub host_offset: usize,
+    pub host_length: usize,
+    pub port: c_int,
+}
+
 /// # Safety
-/// `address` is a writable record; `url` denotes `length` readable bytes (or is
-/// null for 0).
+/// `data` denotes `length` readable bytes, or is null for 0. No pointer is retained.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_address_url(
-    address: *mut SocketAddress,
-    data: *const u8,
-    length: usize,
-) -> c_int {
+pub unsafe extern "C" fn swr_v1_clients_url(data: *const u8, length: usize) -> UrlAssign {
     if data.is_null() || length == 0 {
-        return URL_INVALID;
+        return UrlAssign {
+            outcome: URL_INVALID,
+            ..UrlAssign::default()
+        };
     }
     // SAFETY: the caller lends `length` readable bytes.
-    let (kind, host, port) = match url(unsafe { std::slice::from_raw_parts(data, length) }) {
-        Ok(assigned) => assigned,
-        Err(outcome) => return outcome,
-    };
-    // The host may hold a NUL; assign reads it as a C string of its length.
-    let mut text = host.to_vec();
-    text.push(0);
-    // SAFETY: the caller's record and the NUL-terminated host copy.
-    unsafe {
-        swr_v1_clients_address_assign_record(
-            address,
+    match url(unsafe { std::slice::from_raw_parts(data, length) }) {
+        Ok((kind, host, port)) => UrlAssign {
+            outcome: 0,
             kind,
-            text.as_ptr().cast(),
-            host.len(),
+            host_offset: host.start,
+            host_length: host.len(),
             port,
-            true,
-        )
+        },
+        Err(outcome) => UrlAssign {
+            outcome,
+            ..UrlAssign::default()
+        },
     }
 }
 
@@ -377,19 +376,25 @@ mod tests {
         }
     }
     #[test]
-    fn url_assigns_the_record() {
-        let mut address: SocketAddress = unsafe { std::mem::zeroed() };
-        let mut url = |url: &[u8]| unsafe {
-            let error = swr_v1_clients_address_url(&raw mut address, url.as_ptr(), url.len());
-            (error, address.kind)
-        };
-        assert_eq!(url(b"tcp://127.0.0.1:080"), (0, TCP));
-        assert_eq!(url(b"tcp://1.2.3.4:8x").0, URL_INVALID);
-        assert_eq!(url(b"tcp://1.2.3.4:99999999999").0, URL_PORT_RANGE);
-        assert_eq!(url(b"tcp://1.2.3.4:70000").0, 723);
-        assert_eq!(url(b"udp://[::1]:53"), (0, UDP6));
-        assert_eq!(url(b"udg:///tmp/a.sock"), (0, UNIX_DGRAM));
-        assert_eq!(url(b"http://a:1").0, URL_INVALID);
+    fn url_outcomes() {
+        let url = |url: &[u8]| unsafe { swr_v1_clients_url(url.as_ptr(), url.len()) };
+        let plan = url(b"tcp://127.0.0.1:080");
+        assert_eq!(
+            (
+                plan.outcome,
+                plan.kind,
+                plan.host_offset,
+                plan.host_length,
+                plan.port
+            ),
+            (0, TCP, 6, 9, 80)
+        );
+        assert_eq!(url(b"tcp://1.2.3.4:8x").outcome, URL_INVALID);
+        assert_eq!(url(b"tcp://1.2.3.4:99999999999").outcome, URL_PORT_RANGE);
+        assert_eq!(url(b"tcp://1.2.3.4:2147483647").port, i32::MAX);
+        assert_eq!(url(b"udp://[::1]:53").kind, UDP6);
+        assert_eq!(url(b"udg:///tmp/a.sock").kind, UNIX_DGRAM);
+        assert_eq!(url(b"http://a:1").outcome, URL_INVALID);
     }
     #[test]
     fn port() {

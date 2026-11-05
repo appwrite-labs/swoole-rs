@@ -713,7 +713,7 @@ fn client_url(data: &[u8]) -> (i32, i32, i32, Vec<u8>) {
 /// (or both find the port past `int`, where `std::stoi` throws).
 pub fn clients_url(bytes: &[u8]) {
     let got = match swoole_rs_clients::url(bytes) {
-        Ok((kind, host, port)) => (1, kind, port, host.to_vec()),
+        Ok((kind, host, port)) => (1, kind, port, bytes[host].to_vec()),
         Err(swoole_rs_clients::URL_PORT_RANGE) => (-1, 0, 0, Vec::new()),
         Err(_) => (0, 0, 0, Vec::new()),
     };

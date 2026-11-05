@@ -1,5 +1,5 @@
 diff --git a/src/network/address.cc b/src/network/address.cc
-index b93fd07..b371a6d 100644
+index b93fd07..bc33902 100644
 --- a/src/network/address.cc
 +++ b/src/network/address.cc
 @@ -22,3 +22,3 @@
@@ -7,35 +7,18 @@ index b93fd07..b371a6d 100644
 -#include <locale>
 +#include <stdexcept>
  
-@@ -57,10 +57,4 @@ void Address::set_port(int _port) {
- 
--static int address_resolve(int family, const char *name, char *address) {
--    return gethostbyname(family, name, address);
--}
--
- bool Address::assign(SocketType _type, const std::string &_host, int _port, bool _resolve_name) {
--    type = _type;
--    const int error = swr_v1_clients_address_assign(
--        &addr, &len, _type, _host.c_str(), _host.length(), _port, _resolve_name ? address_resolve : nullptr);
-+    const int error = swr_v1_clients_address_assign_record(this, _type, _host.c_str(), _host.length(), _port, _resolve_name);
-     if (error != 0) {
-@@ -77,30 +71,15 @@ const char *Address::type_str(SocketType type) {
+@@ -77,30 +77,12 @@ const char *Address::type_str(SocketType type) {
  bool Address::assign(const std::string &url) {
 -    // The old static regexes capture the process C++ locale on first use.
 -    // Preserve its digit facet and std::stoi exceptions instead of substituting
 -    // Rust numeric parsing or silently accepting a new URL grammar.
 -    static const std::locale url_locale;
--    const auto plan = swr_v1_clients_url(reinterpret_cast<const uint8_t *>(url.data()), url.size());
+     const auto plan = swr_v1_clients_url(reinterpret_cast<const uint8_t *>(url.data()), url.size());
 -    if (plan.kind == 3) {
 -        type = plan.datagram ? SW_SOCK_UNIX_DGRAM : SW_SOCK_UNIX_STREAM;
 -        return assign(type, url.substr(plan.host_offset, plan.host_length), 0);
-+    const int error = swr_v1_clients_address_url(this, url.data(), url.size());
-+    if (error == SWR_CLIENTS_URL_PORT_RANGE) {
++    if (plan.outcome == SWR_CLIENTS_URL_PORT_RANGE) {
 +        throw std::out_of_range("stoi");
-+    }
-+    if (error == SWR_CLIENTS_URL_INVALID) {
-+        swoole_error_log(SW_LOG_NOTICE, SW_ERROR_BAD_HOST_ADDR, "Invalid address '%s'", url.c_str());
-+        return false;
      }
 -    if (plan.kind == 1 || plan.kind == 2) {
 -        const auto &facet = std::use_facet<std::ctype<char>>(url_locale);
@@ -53,13 +36,14 @@ index b93fd07..b371a6d 100644
 -                                  : (plan.datagram ? SW_SOCK_UDP : SW_SOCK_TCP);
 -            return assign(type, host, port);
 -        }
-+    if (error != 0) {
-+        swoole_set_last_error(error);
++    if (plan.outcome == SWR_CLIENTS_URL_INVALID) {
++        swoole_error_log(SW_LOG_NOTICE, SW_ERROR_BAD_HOST_ADDR, "Invalid address '%s'", url.c_str());
 +        return false;
      }
 -    swoole_error_log(SW_LOG_NOTICE, SW_ERROR_BAD_HOST_ADDR, "Invalid address '%s'", url.c_str());
 -    return false;
-+    return true;
++    type = static_cast<SocketType>(plan.kind);
++    return assign(type, url.substr(plan.host_offset, plan.host_length), plan.port);
  }
 diff --git a/src/network/client.cc b/src/network/client.cc
 index 15293a5..7cf1483 100644

@@ -33,11 +33,11 @@ struct swr_v1_clients_ip_plan swr_v1_clients_ip(uint8_t version, const uint8_t *
 uint8_t swr_v1_clients_loopback(uint8_t version, const uint8_t *address);
 struct swr_v1_clients_ip_text_plan { uint8_t bytes[40]; uint32_t length; };
 struct swr_v1_clients_ip_text_plan swr_v1_clients_ip_text(uint8_t version, const uint8_t *address);
-/* Address::assign(type, host, port, resolve_name) over the record: 0 or an SW_ERROR_* code. */
-int swr_v1_clients_address_assign_record(void *address, int kind, const char *host, size_t host_length, int port, bool resolve);
-/* Address::assign(url): 0, an SW_ERROR_* code, or one of these. */
+/* Address::assign(url): outcome 0 with the type, host span and port to assign, or
+ * INVALID (native logs the notice) or PORT_RANGE (std::stoi's out_of_range). */
 enum { SWR_CLIENTS_URL_INVALID = -1, SWR_CLIENTS_URL_PORT_RANGE = -2 };
-int swr_v1_clients_address_url(void *address, const char *data, size_t length);
+struct swr_v1_clients_url_plan { int outcome, kind; size_t host_offset, host_length; int port; };
+struct swr_v1_clients_url_plan swr_v1_clients_url(const uint8_t *data, size_t length);
 uint8_t swr_v1_clients_port(int32_t port, uint8_t for_connect);
 struct swr_v1_clients_host_match { uint32_t found; size_t offset, length; };
 /* Line already has its first '#' replaced by NUL, as in the pinned caller.

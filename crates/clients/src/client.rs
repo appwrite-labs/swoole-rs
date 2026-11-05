@@ -1108,12 +1108,15 @@ unsafe fn address_of(
 ) -> Option<SocketAddress> {
     // SAFETY: an all-zero sockaddr union, length and type, as `Address` starts.
     let mut address: SocketAddress = unsafe { core::mem::zeroed() };
-    let kind = this.socket().socket_type;
-    // SAFETY: the local record and the caller's host.
+    address.kind = this.socket().socket_type;
+    let resolve = resolve
+        .then_some(swoole_rs_corebase::swr_v1_clients_gethostbyname as crate::address::Resolve);
+    // SAFETY: the local record's union and length, and the caller's host.
     let error = unsafe {
-        crate::address::swr_v1_clients_address_assign_record(
-            &raw mut address,
-            kind,
+        crate::address::swr_v1_clients_address_assign(
+            (&raw mut address.addr).cast(),
+            &raw mut address.len,
+            address.kind,
             host,
             host_length,
             port,

@@ -12,7 +12,7 @@ symbol is excluded from production artifacts.
 
 | Area | Exports | Rust responsibility |
 | --- | --- | --- |
-| Address | `address_url`, `address_assign_record`, `port`, `ip`, `loopback`, `ip_text` | URL grammar and port; whole assignment; port validity; numeric bytes, original loopback policy and DNS text |
+| Address | `url`, `port`, `ip`, `loopback`, `ip_text` | URL grammar, type and port; port validity; numeric bytes, original loopback policy and DNS text |
 | Hosts/resolver settings | `hosts_match`, `resolv_line`, `dns_endpoint` | Borrowed line/token spans; locale/`strtol` stay native |
 | DNS codec | `domain_encode`, `domain_decode` | Bounded label encoding/decoding with native `char` signedness |
 | Client | `new`, `free`, `connect`, `send`, `recv`, `close`, `shutdown`, `on_*`, … | `network::Client`: state and every operation (see below) |
@@ -58,14 +58,12 @@ its own buffers on destruction, so allocation topology differs.
   `clients_address_assign`: port check, then the sockaddr union and length for
   IPv4/IPv6/raw (literal, else native `gethostbyname` through a function pointer
   when resolving) or Unix (length limit, `strlcpy` copy); it returns the
-  `SW_ERROR_*` code native sets as the last error. `clients_address_assign_record`
-  is the whole method over the record: `type` first, then the above, resolving
-  through `clients_gethostbyname`.
-- `Address::assign(url)` is `clients_address_url`: the pinned regexes' grammar,
-  ASCII port digits (the classic locale's `\d`) and `std::stoi`'s range, which
-  Rust reports for native to throw `std::out_of_range`; native logs the invalid
-  URL notice.
-  `Address::verify_ip` is `clients_verify_ip` into native `tmp_address`.
+  `SW_ERROR_*` code native sets as the last error. Native sets `type` first.
+- `Address::assign(url)` is `clients_url`: the pinned regexes' grammar, the type,
+  ASCII port digits (the classic locale's `\d`) and `std::stoi`'s `int` range,
+  which native throws as `std::out_of_range`. Native logs the invalid-URL notice
+  and assigns the host span.
+- `Address::verify_ip` is `clients_verify_ip` into native `tmp_address`.
 - Unsupported families and Apple scoped-IPv6 parsing go to the platform's
   `inet_pton` from Rust, errno included.
 

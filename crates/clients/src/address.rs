@@ -178,39 +178,6 @@ pub unsafe extern "C" fn swr_v1_clients_address_assign(
     }
 }
 
-/// `Address::assign(type, host, port, resolve_name)` over the whole record: `kind`
-/// becomes its type even when the assignment fails; 0, or the `SW_ERROR_*` code for
-/// native to set as the last error. Resolution is `network::gethostbyname`.
-///
-/// # Safety
-/// `address` is a writable record; `host` as for [`swr_v1_clients_address_assign`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_address_assign_record(
-    address: *mut SocketAddress,
-    kind: c_int,
-    host: *const c_char,
-    host_length: usize,
-    port: c_int,
-    resolve: bool,
-) -> c_int {
-    // SAFETY: the caller lends a writable record.
-    let address = unsafe { &mut *address };
-    address.kind = kind;
-    let resolve = resolve.then_some(swoole_rs_corebase::swr_v1_clients_gethostbyname as Resolve);
-    // SAFETY: the record's union and length; the host as the caller promises.
-    unsafe {
-        swr_v1_clients_address_assign(
-            (&raw mut address.addr).cast(),
-            &raw mut address.len,
-            kind,
-            host,
-            host_length,
-            port,
-            resolve,
-        )
-    }
-}
-
 // Address::addr_str and verify_ip deliberately share one per-thread buffer.
 // Its pointer stays valid until thread exit and each operation overwrites it.
 thread_local! {
