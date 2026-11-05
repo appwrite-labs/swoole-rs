@@ -4,6 +4,7 @@
 //! (`native/process/swoole_rs_phpserver_server.h`); lifecycle.rs owns the Server
 //! objects.
 use std::{
+    cell::RefCell,
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
@@ -99,21 +100,6 @@ pub struct ServerHost {
     call: unsafe extern "C" fn(*mut c_void, c_int, *mut zval, *mut zval) -> bool,
 }
 
-/// `swr_phpserver_classes`: what C++ keeps of the registration.
-#[repr(C)]
-pub struct ServerClasses {
-    server: *mut zend_class_entry,
-    task: *mut zend_class_entry,
-    event: *mut zend_class_entry,
-    packet: *mut zend_class_entry,
-    pipe_message: *mut zend_class_entry,
-    status_info: *mut zend_class_entry,
-    task_result: *mut zend_class_entry,
-    connection_iterator: *mut zend_class_entry,
-    server_handlers: *const zend_object_handlers,
-    task_handlers: *const zend_object_handlers,
-}
-
 static HOST: AtomicPtr<ServerHost> = AtomicPtr::new(ptr::null_mut());
 
 fn host() -> &'static ServerHost {
@@ -144,6 +130,47 @@ pub(crate) struct ServerData {
 
 /// `SW_THREAD`, as MINIT was told.
 pub(crate) static THREAD: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// Each thread's `ServerPortProperty` per port `object_id` (`SW_THREAD`):
+    /// every worker thread has its own port objects for the shared ports.
+    static PORT_PROPERTIES: RefCell<Vec<*mut c_void>> = const { RefCell::new(Vec::new()) };
+}
+
+/// `php_swoole_server_{get,set}_port_property`: the port's `ServerPortProperty`,
+/// kept per thread in thread mode and in the port's own `slot` (`port->ptr`)
+/// otherwise. `set` stores `property` first; a get returns null for a port this
+/// thread has none for.
+/// # Safety
+/// `slot` is the port's `ptr` field.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_port_property(
+    object_id: u16,
+    slot: *mut *mut c_void,
+    property: *mut c_void,
+    set: bool,
+) -> *mut c_void {
+    if !THREAD.load(Ordering::Relaxed) {
+        if set {
+            // SAFETY: the port's field, per the contract.
+            unsafe { *slot = property };
+        }
+        // SAFETY: as above.
+        return unsafe { *slot };
+    }
+    let index = usize::from(object_id);
+    PORT_PROPERTIES.with_borrow_mut(|properties| {
+        if set {
+            if properties.len() <= index {
+                properties.resize(index + 1, ptr::null_mut());
+            }
+            if let Some(entry) = properties.get_mut(index) {
+                *entry = property;
+            }
+        }
+        properties.get(index).copied().unwrap_or(ptr::null_mut())
+    })
+}
 
 /// `ConnectionIterator`.
 #[repr(C)]
@@ -426,15 +453,15 @@ unsafe extern "C" {
 /// MINIT, as `php_swoole_server_minit` did.
 /// # Safety
 /// Called once, at MINIT, with a host table that lives for the process and a
-/// writable `classes`; `sockets` is `SWOOLE_SOCKETS_SUPPORT`.
+/// writable `handlers`; `sockets` is `SWOOLE_SOCKETS_SUPPORT`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpserver_minit(
     table: *const ServerHost,
     thread: bool,
     sockets: bool,
     module: c_int,
-    classes: *mut ServerClasses,
-) {
+    handlers: *mut *const zend_object_handlers,
+) -> *mut zend_class_entry {
     HOST.store(table.cast_mut(), Ordering::Release);
     THREAD.store(thread, Ordering::Relaxed);
     let methods = if sockets {
@@ -469,13 +496,11 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
     }
     // SAFETY: MINIT, with the class just registered.
     unsafe { declare(TASK.entry(), TASK_PROPERTIES) };
-    let mut data = [ptr::null_mut(); 5];
-    for (entry, (class, (name, properties))) in data.iter_mut().zip(DATA.iter().zip(DATA_CLASSES)) {
+    for (class, (name, properties)) in DATA.iter().zip(DATA_CLASSES) {
         // SAFETY: MINIT; `SW_INIT_CLASS_ENTRY_DATA_OBJECT` has no methods.
         unsafe { class.register(name, ptr::null(), |_, _| {}) };
-        *entry = class.entry();
         // SAFETY: MINIT, with the class just registered.
-        unsafe { declare(*entry, properties) };
+        unsafe { declare(class.entry(), properties) };
     }
     // SAFETY: MINIT, with a static table.
     unsafe {
@@ -515,22 +540,9 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
         // SAFETY: MINIT of `module`.
         unsafe { register_long_constant(name, value, module) };
     }
-    let [event, packet, pipe_message, status_info, task_result] = data;
     // SAFETY: the caller's writable out-parameter.
-    unsafe {
-        classes.write(ServerClasses {
-            server,
-            task: TASK.entry(),
-            event,
-            packet,
-            pipe_message,
-            status_info,
-            task_result,
-            connection_iterator: iterator,
-            server_handlers: SERVER.handlers(),
-            task_handlers: TASK.handlers(),
-        });
-    }
+    unsafe { handlers.write(SERVER.handlers()) };
+    server
 }
 
 /// The constants `php_swoole_server_minit` registers, in its order (the values
