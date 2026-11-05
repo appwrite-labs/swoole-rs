@@ -101,7 +101,13 @@ pub unsafe extern "C" fn php_swoole_set_aio_option(options: *mut zend_array) {
         swr_v1_core_set_iouring_workers(bounded(long(value), 0));
     }
     if let Some(value) = get(options, c"iouring_flag") {
-        swr_v1_core_set_iouring_flag(long(value));
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the native setter assigned the PHP int64_t to uint32_t"
+        )]
+        let flag = long(value) as u32;
+        swr_v1_core_set_iouring_flag(flag);
     }
 }
 
