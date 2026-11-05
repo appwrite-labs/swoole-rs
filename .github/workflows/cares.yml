@@ -33,6 +33,7 @@ jobs:
           restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       - run: cargo clippy --locked -p swoole-rs-clients --features cares --all-targets -- -D warnings
+      - run: cargo test --locked -p swoole-rs-clients --features cares completion_
       # The control is the pinned reference itself, unpatched.
       - run: |
           python3 tools/build_upstream.py --configure=--enable-cares
