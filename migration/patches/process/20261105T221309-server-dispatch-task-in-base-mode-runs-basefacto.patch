@@ -20,12 +20,10 @@ index a9274d5..066e8f3 100644
 +uint64_t base_factory_call(Server *serv, SendData *send, uint32_t op, uint64_t arg);
 +
  // The ops each received message makes, in a small frame of their own: the rest of
-@@ -899,3 +902,8 @@ static uint64_t reactor_thread_hot_call(void *context, uint32_t op, uint64_t arg
+@@ -899,3 +902,6 @@ static uint64_t reactor_thread_hot_call(void *context, uint32_t op, uint64_t arg
          }
 -        return 0;
 +        return (uintptr_t) &ctx->task;
-+    case SWR_SERVER_OP_MODE:
-+        return serv->get_mode();
 +    case SWR_SERVER_OP_POP_PTR:
 +    case SWR_SERVER_OP_BASE_PASS:
 +        return base_factory_call(serv, &ctx->task, op, arg);
