@@ -16,7 +16,9 @@
 mod asynchronous;
 mod constants;
 mod functions;
+#[cfg(feature = "module-info")]
 mod info;
+#[cfg(feature = "module-info")]
 mod info_inventory;
 mod ini;
 mod interfaces;
@@ -27,6 +29,7 @@ mod table;
 mod vm;
 
 pub use asynchronous::php_swoole_set_aio_option;
+#[cfg(feature = "module-info")]
 pub use info::swr_v1_phpswoole_minfo;
 pub use ini::swr_v1_phpswoole_register_ini;
 pub use module::{

@@ -112,6 +112,16 @@ int main(void) {
                 self.assertIn(definitions[0][-2], {'B', 'D', 'G', 'S'},
                               f'{label} public status array is not mutable exported data')
 
+    def test_module_information_exports_follow_profile(self):
+        options = ['-gU'] if sys.platform == 'darwin' else ['-D', '--defined-only']
+        defined = run(['nm', *options, str(ARGS.hybrid)]).stdout
+        symbols = set(re.findall(r'\b_?(swr_v[0-9]+_\w+)\b', defined))
+        self.assertEqual('swr_v1_phpswoole_minfo' in symbols, bool(ARGS.feature_bits & 16777216))
+        options = ['-u'] if sys.platform == 'darwin' else ['-D', '--undefined-only']
+        undefined = run(['nm', *options, str(ARGS.hybrid)]).stdout
+        for effect in ['swr_cpp_phpswoole_info_ftp', 'swr_cpp_phpswoole_info_ssh2']:
+            self.assertNotIn(effect, undefined, 'Module information imports an unavailable native SDK effect')
+
     def test_reference_has_no_bridge_marker(self):
         result = self.php(ARGS.reference, '-r', 'echo extension_loaded("swoole") ? "loaded\\n" : "missing\\n"; '
                           'echo defined("SWOOLE_RS_ABI_VERSION") || defined("SWOOLE_RS_FEATURE_BITS") ? "bridge\\n" : "upstream\\n";')
@@ -259,5 +269,6 @@ if __name__ == '__main__':
         if not path.is_file():
             parser.error(f'Missing built artifact: {path}; build reference and hybrid first')
     tests = ['BridgeTests.test_reference_has_no_bridge_marker', 'BridgeTests.test_hybrid_markers_and_phpinfo',
-             'BridgeTests.test_selected_abi_exports', 'BridgeTests.test_public_http_status_array_export'] if ARGS.startup_only else []
+             'BridgeTests.test_selected_abi_exports', 'BridgeTests.test_public_http_status_array_export',
+             'BridgeTests.test_module_information_exports_follow_profile'] if ARGS.startup_only else []
     unittest.main(argv=[sys.argv[0], *tests], verbosity=2)
