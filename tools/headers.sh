@@ -27,6 +27,20 @@ for config in crates/*/cbindgen*.toml; do
         mv "$generated" "$header"
     fi
 done
+# The typed SDK hook inventory also owns the C call-site dispatch aliases.
+generated=$(mktemp)
+header=native/hooks/php_swoole_ssh2_hook.h
+cargo run --quiet --locked -p swoole-rs-ssh2 --bin ssh2-headers > "$generated"
+if [ "$1" = --check ]; then
+    if ! cmp -s "$generated" "$header"; then
+        echo "$header is stale; run tools/headers.sh" >&2
+        diff -u "$header" "$generated" >&2 || true
+        status=1
+    fi
+    rm -f "$generated"
+else
+    mv "$generated" "$header"
+fi
 if [ "$1" = --check ]; then
     python3 tools/process_records.py --check || status=1
     python3 tools/headers.py || status=1

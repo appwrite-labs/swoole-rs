@@ -115,6 +115,10 @@ jobs:
       - run: python3 tools/build_hybrid.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2 $(python3 -c "from tools.build_hybrid import SELECTABLE; print(' '.join('--module ' + m for m in SELECTABLE))")
       # Shared headers must also compile with the callers omitted by the full migration.
       - run: python3 tools/check_partial.py --base origin/${{ github.base_ref }}
+      # Compare SDK alias defaults independently of remote SSH service availability.
+      - run: |
+          cargo build --locked --release -p swoole-rs-ffi --features ssh2
+          python3 tests/modules/hooks/ssh2_aliases.py --source target/upstream/src --archive target/release/libswoole_rs_ffi.a --output target/reports/ssh2-aliases.json
       - run: ccache --show-stats
       # 12-hyperf needs composer; it runs in the merge tier.
       - run: >
