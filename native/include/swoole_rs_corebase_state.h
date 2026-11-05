@@ -31,23 +31,11 @@ class AsyncThreads;
 class Iouring;
 } // namespace swoole
 typedef swoole::Allocator swr_v1_core_allocator;
-typedef swoole::String swr_v1_core_string_object;
-typedef swoole::Reactor swr_v1_core_reactor_object;
-typedef swoole::Timer swr_v1_core_timer_object;
-typedef swoole::MessageBus swr_v1_core_bus_object;
-typedef swoole::AsyncThreads swr_v1_core_async_object;
-typedef swoole::Iouring swr_v1_core_uring_object;
 extern "C" {
 #else
 typedef struct {
   SWR_CORE_ALLOCATOR_FIELDS;
 } swr_v1_core_allocator;
-typedef void swr_v1_core_string_object;
-typedef void swr_v1_core_reactor_object;
-typedef void swr_v1_core_timer_object;
-typedef void swr_v1_core_bus_object;
-typedef void swr_v1_core_async_object;
-typedef void swr_v1_core_uring_object;
 #endif
 #undef SWR_CORE_ALLOCATOR_FIELDS
 typedef struct swr_v1_core_config swr_v1_core_config;
@@ -81,20 +69,6 @@ void swr_v1_core_config_copy_hooks(swr_v1_core_config *,
                                    const swr_v1_core_config *);
 swr_v1_core_string_view_t
 swr_v1_core_config_task_path(const swr_v1_core_config *);
-typedef struct {
-  uint16_t id;
-  uint8_t kind;
-  bool main_thread;
-  swr_v1_core_string_object *buffer_stack;
-  swr_v1_core_reactor_object *reactor;
-  swr_v1_core_timer_object *timer;
-  swr_v1_core_bus_object *message_bus;
-  swr_v1_core_async_object *async_threads;
-  swr_v1_core_uring_object *iouring;
-  bool signal_blocking_all;
-} swr_v1_core_thread_fields;
-swr_v1_core_thread_fields *swr_v1_core_thread_new(void);
-void swr_v1_core_thread_free(swr_v1_core_thread_fields *);
 /* The thread's last error is Rust's (crates/corebase/src/log.rs). */
 int swr_v1_core_last_error(void);
 void swr_v1_core_set_last_error(int);
@@ -102,8 +76,6 @@ void swr_v1_core_set_last_error(int);
  * 1 swoole_warning, 2 swoole_notice, 3 swoole_error_log(level, code); origin is __SW_FUNC__. */
 typedef void (*swr_v1_core_log_host)(int kind, int level, int code, const char *origin, const char *message);
 void swr_v1_core_set_log_host(swr_v1_core_log_host);
-void swr_v1_core_thread_copy(swr_v1_core_thread_fields *,
-                             const swr_v1_core_thread_fields *);
 #ifdef __cplusplus
 }
 namespace swoole {
@@ -115,39 +87,23 @@ protected:
   CoreConfigOwner &operator=(const CoreConfigOwner &) = delete;
   ~CoreConfigOwner() { swr_v1_core_config_free(config_.owner); }
 };
-class CoreThreadOwner {
-protected:
-  swr_v1_core_thread_fields *thread_ = swr_v1_core_thread_new();
-  CoreThreadOwner() = default;
-  CoreThreadOwner(const CoreThreadOwner &) = delete;
-  CoreThreadOwner &operator=(const CoreThreadOwner &) = delete;
-  ~CoreThreadOwner() { swr_v1_core_thread_free(thread_); }
-};
-struct ThreadGlobal : private CoreThreadOwner {
-  ThreadGlobal() = default;
-  ThreadGlobal(const ThreadGlobal &source) : ThreadGlobal() {
-    swr_v1_core_thread_copy(thread_, source.thread_);
-  }
-  ThreadGlobal &operator=(const ThreadGlobal &source) {
-    swr_v1_core_thread_copy(thread_, source.thread_);
-    return *this;
-  }
-  uint16_t &id = thread_->id;
-  uint8_t &type = thread_->kind;
-  bool &main_thread = thread_->main_thread;
-  String *&buffer_stack = thread_->buffer_stack;
-  Reactor *&reactor = thread_->reactor;
-  Timer *&timer = thread_->timer;
-  MessageBus *&message_bus = thread_->message_bus;
-  AsyncThreads *&async_threads = thread_->async_threads;
+// Trivial, so `thread_local SwooleTG = {}` is constant-initialized and other
+// translation units reach it without a TLS init wrapper.
+struct ThreadGlobal {
+  uint16_t id;
+  uint8_t type;
+  bool main_thread;
+  String *buffer_stack;
+  Reactor *reactor;
+  Timer *timer;
+  MessageBus *message_bus;
+  AsyncThreads *async_threads;
 #ifdef SW_USE_IOURING
-  Iouring *&iouring = thread_->iouring;
+  Iouring *iouring;
 #endif
-  bool &signal_blocking_all = thread_->signal_blocking_all;
+  bool signal_blocking_all;
 };
 static_assert(sizeof(swr_v1_core_allocator) == 4 * sizeof(void *),
               "allocator callback ABI");
-static_assert(offsetof(swr_v1_core_thread_fields, buffer_stack) == 8,
-              "thread scalar ABI");
 } // namespace swoole
 #endif
