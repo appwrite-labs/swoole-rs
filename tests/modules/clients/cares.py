@@ -67,12 +67,16 @@ def main():
     p.add_argument('--php-extension', action='append', default=[])
     p.add_argument('--output', type=Path, required=True)
     a = p.parse_args()
-    report = {'passed': False, 'engines': [], 'cases': []}
+    report = {'passed': False, 'engines': [], 'backend_info': [], 'cases': []}
     a.output.parent.mkdir(parents=True, exist_ok=True)
+    a.output.write_text(json.dumps(report, indent=2) + '\n')
     observations = {}
     for engine in parse_engines(a.engine, a.php, a.php_extension):
         report['engines'].append(engine.metadata())
         info = run_isolated(engine.command('--ri', 'swoole'), timeout=10)
+        report['backend_info'].append(dict(engine=engine.name, exit=info.returncode,
+                                           stdout=info.stdout, stderr=info.stderr))
+        a.output.write_text(json.dumps(report, indent=2) + '\n')
         if info.returncode or info.stderr or 'c-ares =>' not in info.stdout:
             raise ValueError('This witness requires a real c-ares-enabled extension')
         for mode in ('a', 'aaaa', 'immediate', 'concurrent', 'nxdomain', 'timeout', 'cancel'):
