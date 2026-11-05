@@ -165,15 +165,15 @@ def main():
         archive=args.archive.resolve()
         # Mac two-level DSO binding otherwise leaves Socket::ssl_create using the
         # DSO's separate ex_data authority while these actual protocol TUs own
-        # another. Compile each side's own socket.cc into its driver.
+        # another. Compile the original socket.cc into its driver; the hybrid has none,
+        # its Socket methods being Rust's, linked into the driver from the archive.
         # Linux binds flat: the executable's protocol TUs already interpose the DSO's, and a second
         # copy of socket.cc there is an ODR violation that ASan aborts on.
         socket_sources={'original':[],'rust':[]}
         if sys.platform=='darwin' and (args.peers or (args.crypto_allocation and args.crypto_operation=='dtls-init')):
-            for folder in [original,patched]: (folder/'src/network').mkdir()
+            (original/'src/network').mkdir()
             (original/'src/network/socket.cc').write_text(run(['git','-C',args.reference.resolve(),'show',pin+':src/network/socket.cc']).stdout)
-            shutil.copyfile(hybrid_source/'src/network/socket.cc', patched/'src/network/socket.cc')
-            socket_sources={label:[folder/'src/network/socket.cc'] for label,folder in [('original',original),('rust',patched)]}
+            socket_sources['original']=[original/'src/network/socket.cc']
             report['native_socket_caller']={'pin':pin,'upstream_path':'src/network/socket.cc','backend':"each side's own Socket caller",
                 'purpose':'One protocol/ex_data authority with actual native Socket caller; full DSO supplies remaining dependencies',
                 'excluded':'No selected M15 Socket policy or full integrated PHP coverage claim'}

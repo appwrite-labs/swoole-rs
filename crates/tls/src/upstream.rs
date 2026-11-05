@@ -1408,6 +1408,62 @@ pub unsafe extern "C" fn swr_v1_socket_file_checked(
     unsafe { file_request(filename, offset, length) }
 }
 
+/// `int Socket::sendfile_async(const char *filename, off_t offset, size_t length)`:
+/// the checked request queued behind the output, which is created on first use.
+///
+/// # Safety
+/// `socket` is a live record and `filename` NUL-terminated.
+#[cfg(feature = "upstream-symbols")]
+#[cfg_attr(
+    target_os = "macos",
+    unsafe(export_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKcxm")
+)]
+#[cfg_attr(
+    not(target_os = "macos"),
+    unsafe(export_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKclm")
+)]
+pub unsafe extern "C-unwind" fn socket_sendfile_async(
+    socket: *mut SocketRecord,
+    filename: *const c_char,
+    offset: libc::off_t,
+    length: usize,
+) -> c_int {
+    // SAFETY: src/core/buffer.cc's constructor, over operator new's storage for the
+    // one-handle Buffer; both throw on failure.
+    unsafe extern "C-unwind" {
+        #[link_name = "_Znwm"]
+        fn operator_new(size: usize) -> *mut c_void;
+        #[link_name = "_ZN6swoole6BufferC1Ej"]
+        fn buffer_new(buffer: *mut c_void, chunk_size: u32);
+    }
+    // SAFETY: as the caller promises.
+    let request = unsafe { file_request(filename, offset, length) };
+    if request.is_null() {
+        return -1;
+    }
+    // SAFETY: as the caller promises.
+    if unsafe { (*socket).output.out_buffer }.is_null() {
+        // SAFETY: `new Buffer(SW_SEND_BUFFER_SIZE)`; Buffer is its handle alone.
+        let buffer = unsafe { operator_new(size_of::<*mut c_void>()) };
+        // SAFETY: fresh storage for one Buffer.
+        unsafe { buffer_new(buffer, 65536) };
+        // SAFETY: as the caller promises.
+        unsafe { (*socket).output.out_buffer = buffer };
+    }
+    let dispose = Some(swr_v1_socket_file_dispose as unsafe extern "C" fn(*mut c_void));
+    // SAFETY: the socket's output buffer exists now.
+    let queue = unsafe { out_queue(socket) };
+    // SAFETY: the live output queue now owns the request.
+    let status =
+        unsafe { swoole_rs_buffer::swr_v1_buffer_typed_push(queue, 1, request.cast(), dispose) };
+    if status != 0 {
+        // SAFETY: the queue refused the request, which is still ours.
+        unsafe { swr_v1_socket_file_free(request) };
+        buffer_check(status);
+    }
+    0
+}
+
 /// `ssize_t Socket::send_async(const void *data, size_t length)`: through the event
 /// loop when there is one, else `send_sync`.
 ///

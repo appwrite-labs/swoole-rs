@@ -1,10 +1,10 @@
 # Queued TLS shutdown
 
-Changes `src/network/socket.cc` and `src/server/reactor_thread.cc`.
-`Socket::ssl_shutdown` and `Socket::handle_sendfile` run in `crates/tls/src/upstream.rs`;
-the halfclose patch 20261104T005648 defines `SW_HALFCLOSE_TLS_SHUTDOWN`,
-which socket.cc registers with Rust (`swr_v1_socket_set_halfclose_repairs`)
-to select the repaired shutdown and pass EINTR from `handle_sendfile` back to the reactor.
+Changes `src/server/reactor_thread.cc`.
+`Socket::ssl_shutdown` and `Socket::handle_sendfile` run in `crates/tls/src/upstream.rs`.
+reactor_thread.cc registers M15's `SW_HALFCLOSE_PREQUEUE` with Rust
+(`swr_v1_socket_set_halfclose_repairs`), which selects the repaired shutdown and
+passes EINTR from `handle_sendfile` back to the reactor.
 No public layout, signature, Rust ABI or second queue.
 
 ## Socket::ssl_shutdown

@@ -1,9 +1,0 @@
-diff --git a/src/network/socket.cc b/src/network/socket.cc
-index ed3945714..7bf2a5596 100644
---- a/src/network/socket.cc
-+++ b/src/network/socket.cc
-@@ -16,2 +16,4 @@
-
-+// M15: Socket::ssl_shutdown and handle_sendfile (crates/tls/src/upstream.rs) apply the repairs.
-+#define SW_HALFCLOSE_TLS_SHUTDOWN 1
- #include "swoole_socket.h"

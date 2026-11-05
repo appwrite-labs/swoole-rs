@@ -1,7 +1,9 @@
-# Socket I/O (`src/network/socket.cc`)
+# Socket I/O
 
-Ordinary, blocking and datagram I/O, connect, options, timeouts and fcntl are
-upstream's code (#336). Rust keeps the IOVector storage and progress below and
+`src/network/socket.cc` is deleted. Its members that need C++ (exceptions,
+`std::string`, `std::vector`) are inline in `swoole_rs_socket_methods.h`, and
+`free`, whose deferral is a `std::function`, is in `src/reactor/base.cc`; the rest are Rust (`crates/reactor/src/socket_upstream.rs`,
+`crates/tls/src/upstream.rs`). The IOVector storage and progress are below and
 the output paths in [output.md](output.md).
 
 ## IOVector
