@@ -63,23 +63,25 @@ interest methods in `swoole_reactor.h` are upstream's code (#336).
 
 ## Wait
 
-`wait()` on all three backends is one Rust call, `swr_v1_reactor_run` (#336, #391).
-Rust runs upstream's loop: before/begin/kernel wait/result/end/once sequencing,
+`Reactor::wait()` is one Rust call over the reactor state, `swr_v1_reactor_wait`
+(#336, #391, #448); the backends no longer have a `wait()`. Rust runs upstream's
+`ReactorEpoll`/`ReactorKqueue`/`ReactorPoll::wait`: `before_wait`, begin, the kernel
+wait over the state's own arrays (zero timeout while deferred work is queued),
+`catch_error`'s EINTR test, result, end and once sequencing,
 decoding each `pollfd`, `epoll_event` or `kevent` entry (idle poll entries and
 null kqueue tokens are skipped) and the readiness order per socket: read, write,
 error unless read or write already ran, then the oneshot removal, each guarded by
 a fresh `removed` read. kqueue routes socket, signal and unknown entries. An
 uncaught wait failure returns 0 for poll and `SW_ERR` for epoll/kqueue.
 
-Native passes the kernel wait and the effects upstream reaches through `Reactor`
-(`before_wait`, begin/end callbacks, `catch_error`, handlers via `get_handler`,
-`del`/`_del`, warnings, epoll's io_uring EINTR handler) as `swr_v1_reactor_wait_ops`
-function pointers; `running` and `once` are read through pointers. `Socket::removed`
-and `event_hup` are bitfields, so small shims read and set them.
+Native passes the effects that hold `std::function`s or log (begin/end callbacks,
+the `del`/`_del` oneshot removal, each backend's warnings under its upstream
+function name, epoll's io_uring EINTR handler, kqueue signals) as
+`swr_v1_reactor_wait_ops`, and `defer_tasks` as a slot read before each wait.
+Handlers run from the Rust tables as `handler(reactor, event)`.
 
-The kqueue timeout reply gives a positive millisecond timeout priority over
-deferred work, keeps exact second/nanosecond arithmetic, and otherwise passes a
-null timeout; Native builds the `timespec`.
+The kqueue timeout gives a positive millisecond timeout priority over deferred
+work, keeps exact second/nanosecond arithmetic, and otherwise passes a null timeout.
 
 ## kqueue signals
 

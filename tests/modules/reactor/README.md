@@ -10,7 +10,7 @@ Most gates take the pinned upstream source and a Rust FFI archive:
     python3 tests/modules/reactor/NAME.py --source target/upstream/src \
         --archive PATH/libswoole_rs_ffi.a --sanitize --report OUT.json
 
-`NAME` is one of `forwarding`, `wait`, `callbacks`, `callback_queues`,
+`NAME` is one of `forwarding`, `callbacks`, `callback_queues`,
 `initialize`, `builtins`, `backend_storage`, `flush` and `poll_snapshot`.
 Each extracts the original function bodies from the pin and the patched ones
 from the archive's hybrid tree (`hybrid_tree`, #796), compiles them against
@@ -18,7 +18,8 @@ native facades and the archive, and checks that both variants behave the same.
 The 53 ordinary queued-output compositions formerly in `output.cc` now call the
 shipped Rust exports in `crates/reactor/src/output.rs`'s
 `ordinary_data_positive_matrix` and `ordinary_file_positive_matrix` tests. `reactor-unit` runs them; the redundant
-`reactor-output` phase is removed. `forwarding.py` retains the native forwarding
+`reactor-output` phase is removed. The wait frame formerly in `wait.cc` is
+`wait_loop.rs`'s `whole_wait_runs_upstreams_frame_on_each_backend`. `forwarding.py` retains the native forwarding
 cases and all native/corrected/hybrid Socket syntax and disabled-feature checks.
 `clean` is covered by the Rust socketpair test and is not extracted by name.
 A PR moving the remaining forwarding decisions ports their cases into Rust and

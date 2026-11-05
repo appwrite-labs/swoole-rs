@@ -39,8 +39,8 @@ def main():
             fields = ('swr_v1_reactor_poll_snapshot *snapshot_;\n' if label == 'Selected' else '') + 'pollfd *events_; Socket **event_sockets_; int max_events_;'
             methods = []
             if label == 'Selected':
-                if 'swr_v1_reactor_state_open' not in source or 'swr_v1_reactor_state_wait' not in source:
-                    raise ValueError('Production poll must use the Rust backend owner and wait')
+                if 'swr_v1_reactor_state_open' not in source:
+                    raise ValueError('Production poll must use the Rust backend owner')
                 methods = [
                     name+'::'+name+'(Reactor *reactor,int count):ReactorImpl(reactor) { if(count<0) throw std::bad_array_new_length(); snapshot_=swr_v1_reactor_poll_new(count); if(!snapshot_) throw std::bad_alloc(); events_=swr_v1_reactor_poll_data(snapshot_); event_sockets_=reinterpret_cast<Socket **>(swr_v1_reactor_poll_sockets(snapshot_)); max_events_=count; reactor_->max_event_num=count; }',
                     name+'::~'+name+'(){ swr_v1_reactor_poll_free(snapshot_); }',

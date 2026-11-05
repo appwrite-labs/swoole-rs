@@ -282,7 +282,7 @@ def plan(args, reports):
                        '--selected-export', selected_export / 'export.json', '--native-export', native_export / 'export.json',
                        '--require-batch', *(['--require-typed-buffer'] if typed_buffer(args) else []),
                        *extra, *report(phase))
-        for name in ['wait', 'callbacks', 'initialize', 'builtins']:
+        for name in ['callbacks', 'initialize', 'builtins']:
             phase = 'reactor-' + name.replace('_', '-')
             script(phase, 'tests/modules/reactor/' + name + '.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',

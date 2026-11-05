@@ -127,7 +127,6 @@
  "reactor-production-owned-defer": 7,
  "reactor-production-socket-output": 6,
  "reactor-production-supported": 6,
- "reactor-wait": 4,
  "reference-build": 12,
  "reference-identity": 1,
  "string-allocation": 11,
