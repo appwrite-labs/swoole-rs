@@ -148,30 +148,20 @@ bool swr_v1_reactor_handlers_isset(const swr_v1_reactor_handlers *, int fd_type,
 swr_v1_reactor_handler swr_v1_reactor_handlers_get(const swr_v1_reactor_handlers *, uint32_t kind, int fd_type, bool error_only);
 void swr_v1_reactor_handlers_set_default(swr_v1_reactor_handlers *, uint32_t kind, swr_v1_reactor_handler);
 const swr_v1_reactor_handler *swr_v1_reactor_handlers_default(const swr_v1_reactor_handlers *, uint32_t kind);
+/* Reactor::wait()'s native effects (swr_v1_reactor_wait); each receives the reactor. */
 typedef struct {
-    void *context;
-    uint32_t backend;
-    const void *events;     /* pollfd, epoll_event or kevent entries */
-    void *const *sockets;   /* poll: the socket of each pollfd entry */
-    const bool *running, *once;
-    int (*wait)(void *, int *entries); /* the kernel wait; poll stores its entry count */
-    void (*before_wait)(void *);
+    void *reactor;               /* each handler runs as handler(reactor, event) */
+    void *const *deferred;       /* Reactor::defer_tasks, read before each kernel wait */
     void (*begin)(void *);
-    int (*catch_error)(void *);
     void (*end)(void *, int timed_out);
     int (*interrupted)(void *); /* nullable: epoll io_uring builds only */
     void (*interrupt)(void *);  /* nullable */
-    void (*wait_failed)(void *);
-    int16_t reactor_id;
-    const swr_v1_reactor_handlers *handlers; /* each runs as handler(reactor, event) */
-    void *reactor;
-    swr_v1_reactor_event *event; /* filled for each ready socket */
-    void (*handler_failed)(void *, uint32_t kind);
+    void (*wait_failed)(void *, int entries); /* entries: poll's */
+    void (*handler_failed)(void *, uint32_t kind, const swr_v1_reactor_event *event);
     void (*remove)(void *, void *socket);
     void (*signal)(void *signal);      /* nullable: kqueue only */
-    void (*unknown)(void *, int filter); /* nullable: kqueue only */
+    void (*unknown)(void *, int filter); /* kqueue only */
 } swr_v1_reactor_wait_ops;
-int32_t swr_v1_reactor_run(const swr_v1_reactor_wait_ops *);
 typedef struct { size_t size, alignment, fields[6]; } swr_v1_reactor_backend_layout;
 #if defined(__linux__) && !defined(__ANDROID__)
 typedef struct swr_v1_reactor_epoll_events swr_v1_reactor_epoll_events;
@@ -452,8 +442,8 @@ void swr_v1_reactor_state_free(swr_v1_reactor_state *);
 int swr_v1_reactor_state_open(swr_v1_reactor_state *, int kind, int count);
 void swr_v1_reactor_state_close_backend(swr_v1_reactor_state *);
 swr_v1_reactor_backend_view swr_v1_reactor_state_backend(swr_v1_reactor_state *);
-int swr_v1_reactor_state_wait(swr_v1_reactor_state *, bool deferred, int *entries);
-void swr_v1_reactor_state_before_wait(swr_v1_reactor_state *);
+/* Reactor::wait() on the state's backend: 0 when it stops (or poll fails), -1 when epoll/kqueue fail. */
+int32_t swr_v1_reactor_wait(swr_v1_reactor_state *, const swr_v1_reactor_wait_ops *);
 int swr_v1_reactor_state_descriptor(const swr_v1_reactor_state *);
 int swr_v1_reactor_state_limit(const swr_v1_reactor_state *);
 int swr_v1_reactor_state_socket(swr_v1_reactor_state *, void *socket, uint32_t op, int events);

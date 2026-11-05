@@ -40,10 +40,10 @@ PHP_FUNCTION(swr_reactor_supported) {
     ZEND_PARSE_PARAMETERS_NONE();array_init(return_value);
     image(return_value,"method_image","_ZN6swoole7ReactorC1EiNS0_4TypeE");
     image(return_value,"storage_image","swr_v1_reactor_poll_new");
-    image(return_value,"batch_image","swr_v1_reactor_run");
+    image(return_value,"batch_image","swr_v1_reactor_wait");
     image(return_value,"state_image","swr_v1_reactor_state_new");
     image(return_value,"backend_owner_image","swr_v1_reactor_state_open");
-    image(return_value,"kernel_wait_image","swr_v1_reactor_state_wait");
+    image(return_value,"kernel_wait_image","swr_v1_reactor_wait");
     image(return_value,"registry_owner_image","swr_v1_reactor_state_socket");
     zval owner_rows;array_init(&owner_rows);
     auto owner_check=[&](bool value) { add_next_index_bool(&owner_rows,value); };

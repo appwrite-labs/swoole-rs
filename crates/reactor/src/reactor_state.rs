@@ -34,9 +34,9 @@ pub struct ReactorFields {
 }
 
 pub struct ReactorState {
-    fields: ReactorFields,
+    pub(crate) fields: ReactorFields,
     registry: Registry,
-    handlers: Handlers,
+    pub(crate) handlers: Handlers,
     backend: Backend,
     backend_fd: c_int,
     backend_limit: c_int,
@@ -243,8 +243,7 @@ pub unsafe extern "C" fn swr_v1_reactor_state_backend(
 /// Actual kernel wait over the owner's stable arrays. No native callbacks run.
 /// # Safety
 /// owner is live/exclusive; entries is writable for one int.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_state_wait(
+pub(crate) unsafe fn kernel_wait(
     owner: *mut ReactorState,
     deferred: bool,
     entries: *mut c_int,
@@ -331,8 +330,7 @@ pub unsafe extern "C" fn swr_v1_reactor_state_wait(
 /// The wait loop's initial state transition, over the actual borrowed slots.
 /// # Safety
 /// owner is live/exclusive and no native callback is active.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_state_before_wait(owner: *mut ReactorState) {
+pub(crate) unsafe fn before_wait(owner: *mut ReactorState) {
     // SAFETY: the caller lends the state exclusively.
     let fields = unsafe { &mut (*owner).fields };
     fields.start = true;
@@ -479,7 +477,7 @@ mod tests {
             assert_eq!(socket.events, 0);
             assert_eq!(socket.removed, 1);
             assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 0);
-            swr_v1_reactor_state_before_wait(state.owner);
+            before_wait(state.owner);
             assert!((*fields).running && (*fields).start);
             assert_eq!((*fields).timeout_msec, -1);
             swr_v1_reactor_state_free(state.owner);
@@ -537,10 +535,7 @@ mod tests {
                 (*state.fields).timeout_msec = 0;
                 let view = swr_v1_reactor_state_backend(state.owner);
                 let mut entries = 0;
-                assert_eq!(
-                    swr_v1_reactor_state_wait(state.owner, false, &raw mut entries),
-                    1
-                );
+                assert_eq!(kernel_wait(state.owner, false, &raw mut entries), 1);
                 assert_eq!(
                     view.events,
                     swr_v1_reactor_state_backend(state.owner).events
