@@ -57,8 +57,8 @@ the old context identity, and the table can outlive the Server facade.
   destroy an event/coroutine; facts are refreshed at each original observation
   point.
 - `fork` and `fork_exec` run natively with no Rust frame across the parent/child
-  split. `fork_exec` failure returns pid 0 as upstream. No inherited Rust mutex
-  or global state.
+  split. `fork_exec` failure returns pid 0 as upstream. Registry and configuration
+  operations release their Rust locks before native fork paths run.
 - Signal handlers stay async-signal-safe: no Rust allocation, I/O, formatting,
   mutex or unwinding in a signal frame. The one callback there is upstream's:
   the immediate handler runs `swoole_signal_callback` when the thread has no
