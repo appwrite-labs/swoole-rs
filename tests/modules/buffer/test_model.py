@@ -2,7 +2,9 @@
 
 The published archive runs normally; a separate fixture recompiles the unchanged
 production Rust source with a test-only one-shot failing GlobalAlloc, replaying each
-baseline allocation ordinal. Fixed seeds, bounded lengths, one owning thread;
+baseline allocation ordinal. Required storage reports NOMEM; best-effort cache
+admission may recover while the same model checks payload and ownership. Fixed
+seeds, bounded lengths, one owning thread;
 sanitizers cover the C++ side only.
 """
 import hashlib

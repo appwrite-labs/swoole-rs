@@ -57,7 +57,7 @@ static swr_v1_buffer_view inspect(swr_v1_buffer *buffer, const Model &model) {
     }
     return view;
 }
-static uint64_t abi_sequence(uint64_t seed, uint32_t chunk, size_t steps) {
+static uint64_t abi_sequence(uint64_t seed, uint32_t chunk, size_t steps, uint64_t *recovered = nullptr) {
     active_seed = seed; active_step = 0; active_chunk = chunk;
     Random random{seed}; Model model;
     // Stable token addresses survive container growth and remain unique until release.
@@ -67,6 +67,9 @@ static uint64_t abi_sequence(uint64_t seed, uint32_t chunk, size_t steps) {
     if (status == SWR_BUFFER_NOMEM) { check(!buffer, "failed create output"); return 1; }
     check(status == SWR_BUFFER_OK && buffer, "create");
     uint64_t failures = 0;
+#ifdef MODEL_FAILURES
+    bool entries_reserved = false, cache_admitted = false;
+#endif
     auto pop = [&]() {
         inspect(buffer, model);
         ++pops;
@@ -96,6 +99,19 @@ static uint64_t abi_sequence(uint64_t seed, uint32_t chunk, size_t steps) {
                 status = swr_v1_buffer_appendv(buffer, vectors, 5, offset);
             }
             check(status == SWR_BUFFER_OK || status == SWR_BUFFER_NOMEM, "append status");
+#ifdef MODEL_FAILURES
+            // Only the best-effort cache admission after payload publication can
+            // recover an allocator failure. Required queue/payload storage still
+            // reports NOMEM; every ordinary model assertion remains below.
+            if (status == SWR_BUFFER_OK && !suffix.empty()) {
+                const bool admission = entries_reserved && !cache_admitted;
+                if (recovered && swr_model_failures() && failures == 0 && *recovered == 0) {
+                    check(admission, "allocation failure recovered outside cache admission");
+                    ++*recovered;
+                } else if (admission) cache_admitted = true;
+                entries_reserved = true;
+            }
+#endif
             if (status == SWR_BUFFER_OK) append_model(model, suffix, chunk); else ++failures;
             const auto after = inspect(buffer, model);
             if (before.data) check(after.data == before.data, "append invalidated front allocation");
@@ -104,7 +120,12 @@ static uint64_t abi_sequence(uint64_t seed, uint32_t chunk, size_t steps) {
             tokens.emplace_back(new uint64_t(tokens.size() + 1));
             status = swr_v1_buffer_push_native(buffer, tokens.back().get());
             check(status == SWR_BUFFER_OK || status == SWR_BUFFER_NOMEM, "native push status");
-            if (status == SWR_BUFFER_OK) model.push_back({{}, tokens.back().get(), 0}); else ++failures;
+            if (status == SWR_BUFFER_OK) {
+                model.push_back({{}, tokens.back().get(), 0});
+#ifdef MODEL_FAILURES
+                entries_reserved = true;
+#endif
+            } else ++failures;
             if (before.data) check(inspect(buffer, model).data == before.data, "native push invalidated data view");
         } else if (operation == 4 && !model.empty() && !model.front().token) {
             // ABI offsets belong to the consumer. Mutate a consumed byte through
@@ -133,6 +154,38 @@ static uint64_t abi_sequence(uint64_t seed, uint32_t chunk, size_t steps) {
         check(*tokens[i] == i + 1, "opaque native token payload changed");
     return failures;
 }
+
+#ifdef MODEL_FAILURES
+static void cache_admission_failures() {
+    for (int64_t ordinal : {0, 1}) {
+        active_seed = 0; active_step = 0; active_chunk = 8; active_failure = ordinal;
+        swr_model_fail_after(-1);
+        swr_v1_buffer *buffer = nullptr;
+        check(swr_v1_buffer_create(8, &buffer) == SWR_BUFFER_OK, "cache control create");
+        Model model; const std::vector<uint8_t> bytes = {'a', 'b', 'c'};
+        check(swr_v1_buffer_append(buffer, bytes.data(), bytes.size()) == SWR_BUFFER_OK, "cache control first append");
+        append_model(model, bytes, 8);
+        const auto before = inspect(buffer, model);
+        swr_model_fail_after(ordinal);
+        const int status = swr_v1_buffer_append(buffer, bytes.data(), bytes.size());
+        check(swr_model_failures() == 1, "cache control allocation failure not delivered once");
+        // The first allocation is required payload storage, the next is optional
+        // cache admission. Failure of the latter cannot undo a published append.
+        check(status == (ordinal == 0 ? SWR_BUFFER_NOMEM : SWR_BUFFER_OK), "required/optional allocation status");
+        if (status == SWR_BUFFER_OK) append_model(model, bytes, 8);
+        check(inspect(buffer, model).data == before.data, "cache control invalidated front allocation");
+        while (!model.empty()) {
+            inspect(buffer, model);
+            void *token = reinterpret_cast<void *>(uintptr_t(1));
+            check(swr_v1_buffer_pop(buffer, &token) == SWR_BUFFER_OK && !token, "cache control pop");
+            model.pop_front();
+        }
+        inspect(buffer, model);
+        check(swr_v1_buffer_release(buffer) == SWR_BUFFER_OK, "cache control release");
+    }
+    swr_model_fail_after(-1); active_failure = -1;
+}
+#endif
 
 static std::deque<Item> expected_callbacks;
 static uint64_t callbacks = 0;
@@ -195,7 +248,7 @@ static void facade_sequence(uint64_t seed) {
 int main() {
     try {
         const uint64_t seeds[] = {1, 7, 42, 0x12345678, 0xdeadbeef, 0x9e3779b97f4a7c15ULL};
-        uint64_t replay_runs = 0, injected = 0;
+        uint64_t replay_runs = 0, injected = 0, recoveries = 0;
         for (uint32_t chunk : {0u, 1u, 4u, 16u}) for (uint64_t seed : seeds) {
 #ifdef MODEL_FAILURES
             swr_model_fail_after(-1);
@@ -206,18 +259,26 @@ int main() {
             for (uint64_t failure = 0; failure < allocations; ++failure) {
                 active_failure = failure;
                 swr_model_fail_after(failure);
-                check(abi_sequence(seed, chunk, 64) == 1 && swr_model_failures() == 1, "allocation replay did not hit once");
+                uint64_t recovered = 0;
+                const uint64_t surfaced = abi_sequence(seed, chunk, 64, &recovered);
+                check(surfaced + recovered == 1 && swr_model_failures() == 1, "allocation replay did not hit once");
+                recoveries += recovered;
                 ++replay_runs; ++injected;
             }
             swr_model_fail_after(-1);
             active_failure = -1;
 #endif
         }
+#ifdef MODEL_FAILURES
+        check(recoveries != 0, "cache admission allocation recovery unvisited");
+        cache_admission_failures();
+#endif
         for (uint64_t seed : seeds) facade_sequence(seed);
         check(append_calls && vector_calls && native_calls && consumes && pops && release_refusals, "unvisited operation category");
         std::cout << "{\"seeds\":[1,7,42,305419896,3735928559,11400714819323198485],"
                   << "\"chunk_sizes\":[0,1,4,16],\"steps_per_sequence\":64,\"baseline_sequences\":24,"
                   << "\"allocation_replay_sequences\":" << replay_runs << ",\"injected_failures\":" << injected
+                  << ",\"recovered_cache_failures\":" << recoveries
                   << ",\"facade_sequences\":6,\"callbacks\":" << callbacks
                   << ",\"operations\":{\"append\":" << append_calls << ",\"appendv\":" << vector_calls
                   << ",\"native_push\":" << native_calls << ",\"partial_consume\":" << consumes
