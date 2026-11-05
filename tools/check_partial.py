@@ -2,6 +2,7 @@
 """Syntax-check shared-header consumers in partial trees, reusing a configured full build."""
 import argparse
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -103,9 +104,14 @@ def check_profile(name, modules, record, configured, headers, output):
         commands = [syntax_command(line) for line in dry.splitlines() if '--mode=compile ' in line]
         if len(commands) != len(selected_units):
             raise ValueError(f'{name}: missing compiler commands for selected consumers')
-        for command in commands:
-            print(shlex.join(command), file=stream, flush=True)
-            subprocess.run(command, cwd=work, env=env, stdout=stream, stderr=subprocess.STDOUT, check=True)
+        def compile_unit(command):
+            return subprocess.run(command, cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as pool:
+            for command, result in zip(commands, pool.map(compile_unit, commands)):
+                print(shlex.join(command), file=stream)
+                stream.write(result.stdout)
+                stream.flush()
+                result.check_returncode()
     return {'profile': name, 'modules': sorted(modules), 'units': selected_units, 'log': str(log)}
 
 
