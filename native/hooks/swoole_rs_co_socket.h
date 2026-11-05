@@ -147,6 +147,13 @@ bool swr_v1_hook_co_socket_cancel(swr_v1_co_socket *socket, uint32_t event);
 bool swr_v1_hook_co_socket_close(swr_v1_co_socket *socket);
 bool swr_v1_hook_co_socket_check_liveness(swr_v1_co_socket *socket);
 bool swr_v1_hook_co_socket_connect(swr_v1_co_socket *socket, const struct sockaddr *addr, socklen_t length);
+/* Pure preparation/commit; native virtual poll runs between the two calls. */
+struct swr_v1_hook_fd_wait_t { swr_v1_socket *socket; double timeout; };
+int swr_v1_hook_fd_timeout(swr_v1_co_socket *socket, int which, double timeout, bool connect);
+int swr_v1_hook_fd_poll_fake(struct pollfd *fd, int timeout, swr_v1_co_socket *socket);
+struct pollfd swr_v1_hook_fd_poll(int fd, int event);
+swr_v1_hook_fd_wait_t swr_v1_hook_fd_wait(swr_v1_co_socket *socket, uint32_t event, double timeout);
+void swr_v1_hook_fd_wait_restore(swr_v1_hook_fd_wait_t wait);
 void swr_v1_hook_co_socket_host(const swr_v1_hook_co_socket_host_t *host);
 /* set_err(e), check_return_value, is_available, get_bound_cid, check_bound_co,
    get_event_str (a static string) and TimeoutController::has_timedout (startup is
