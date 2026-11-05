@@ -21,13 +21,9 @@ typedef struct { uint32_t status; int32_t error; } swr_v1_process_affinity_outco
 #if defined(__linux__) || defined(__FreeBSD__)
 swr_v1_process_affinity_outcome swr_v1_process_worker_affinity(uint32_t worker_id, const int32_t *available, int32_t available_len, bool thread);
 #endif
-typedef struct { uint32_t status; int32_t error; int32_t fd; size_t read; } swr_v1_process_task_file_read_result;
-swr_v1_process_task_file_read_result swr_v1_process_task_file_read(const char *path, uint8_t *buffer, size_t length, bool peek);
-/* Pack a task payload into EventData::data: inline when it fits in dest_cap, else a
- * temp file (from `template`, an mkstemp pattern) whose path+length land in dest as
- * a PacketTask. Native builds the header and sets info.len/flag from this. */
-typedef struct { bool ok, tmpfile; size_t info_len; } swr_v1_process_task_pack_result;
-swr_v1_process_task_pack_result swr_v1_process_task_pack(uint8_t *dest, size_t dest_cap, const uint8_t *data, size_t len, const char *template_);
+/* SwooleG.task_tmpfile and String::extend, for Server::task_pack and task_unpack. */
+typedef struct { const char *(*tmpfile)(void); void (*extend)(void *string, size_t size); } swr_v1_task_native;
+void swr_v1_process_task_set_native(const swr_v1_task_native *native);
 /* Laid out as swoole::Signal. */
 typedef struct { uintptr_t handler; uint16_t signo; bool activated; } swr_v1_signal_slot;
 extern swr_v1_signal_slot swr_v1_signals[128];

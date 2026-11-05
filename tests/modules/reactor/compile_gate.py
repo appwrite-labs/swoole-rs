@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile unchanged and hybrid full backend translation units as C++14.
+"""Compile unchanged and hybrid backend translation units, where the hybrid keeps them, as C++14.
 
 original: the pinned tree. patched: the hybrid build's tree with its switches and
 headers (hybrid_tree, #796). disabled: the same tree without SWOOLE_RS_REACTOR must
@@ -46,7 +46,10 @@ with tempfile.TemporaryDirectory(prefix='swr-reactor-compile-') as tmp:
              'disabled': (hybrid_source, [flag for flag in hybrid_flags if flag != '-DSWOOLE_RS_REACTOR'] + ['-I'+str(hybrid_source)])}
     for variant, (root, flags) in trees.items():
         for name in [*backends, 'stream']:
-            cmd = ['c++', *common, *flags, '-c', str(root/(('src/network/' if name == 'stream' else 'src/reactor/')+name+'.cc')), '-o', str(tree/(variant+'-'+name+'.o'))]
+            source = root/(('src/network/' if name == 'stream' else 'src/reactor/')+name+'.cc')
+            if variant != 'original' and not source.exists():
+                continue  # the hybrid deletes the backend units: base.cc calls Rust's (#448)
+            cmd = ['c++', *common, *flags, '-c', str(source), '-o', str(tree/(variant+'-'+name+'.o'))]
             result = subprocess.run(cmd, capture_output=True, text=True)
             passed = result.returncode == 0 if variant != 'disabled' else (result.returncode != 0 and 'Reactor overlay requires --enable-swoole-rs-reactor' in result.stderr)
             print(variant, name, result.returncode, 'PASS' if passed else 'FAIL', flush=True)

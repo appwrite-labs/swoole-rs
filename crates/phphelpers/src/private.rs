@@ -4,7 +4,7 @@ use std::{
     ptr,
 };
 use swoole_rs_zend::{
-    bailout, string,
+    bailout,
     sys::{
         self, zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_object,
         zend_object_handlers, zend_string, zval,
@@ -48,46 +48,6 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_dup(value: *const zval) -
     // SAFETY: the destination has space for one initialized slot.
     unsafe { dest.write(value) };
     dest
-}
-
-/// # Safety
-/// `value` is a live request-allocated zval, consumed once.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_free(value: *mut zval) {
-    // SAFETY: release the value before its containing allocation, as upstream does.
-    unsafe { destroy(value) };
-    if !bailout::pending() {
-        // SAFETY: the caller owns this Zend request allocation.
-        unsafe { sys::swr_zend_efree(value.cast()) };
-    }
-    bailout::finish();
-}
-
-/// # Safety
-/// A non-interned request string with capacity `allocated`; `length` is within that capacity.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_string_recycle(
-    mut value: *mut zend_string,
-    allocated: usize,
-    length: usize,
-    page_size: usize,
-) -> *mut zend_string {
-    if allocated != length {
-        if allocated > page_size && allocated > length.wrapping_mul(2) {
-            // SAFETY: a non-interned, exclusively owned request string.
-            let mut resized = ptr::null_mut();
-            // SAFETY: the request string's realloc executes in the C trap.
-            bailed(unsafe { sys::swr_zend_try_facade_realloc(value, length, &raw mut resized) });
-            bailout::finish();
-            value = resized;
-        } else {
-            // SAFETY: length does not exceed the original allocation.
-            unsafe { (*value).len = length };
-        }
-    }
-    // SAFETY: the current allocation contains length bytes and their trailing NUL.
-    unsafe { string::val(value).wrapping_add(length).write(0) };
-    value
 }
 
 /// # Safety
@@ -205,23 +165,6 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_property(
 }
 
 /// # Safety
-/// Live internal scope/object and name, with a declared property owned by the object.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_property_array(
-    scope: *mut zend_class_entry,
-    value: *mut zval,
-    name: *const c_char,
-    length: usize,
-) -> *mut zval {
-    // SAFETY: the source holds a live object.
-    let object = unsafe { swoole_rs_zend::value::obj_of(value) };
-    // SAFETY: materialize and read the declared array property.
-    let result = unsafe { array_property(scope, object, name, length) };
-    bailout::finish();
-    result
-}
-
-/// # Safety
 /// Live internal object and scope; name identifies declared property metadata.
 #[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn swr_v1_phphelpers_property_offset(
@@ -254,98 +197,6 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_property_offset(
     property
 }
 
-/// # Safety
-/// Live internal object/scope and property name; returned storage belongs to the object.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_property_optional(
-    scope: *mut zend_class_entry,
-    value: *mut zval,
-    name: *mut zend_string,
-    silent: bool,
-) -> *mut zval {
-    // SAFETY: the caller supplies an initialized string.
-    let name_length = unsafe { (*name).len };
-    // SAFETY: a registered object's zval.
-    let object = unsafe { swoole_rs_zend::value::obj_of(value) };
-    // SAFETY: zero is an initialized undefined scratch slot.
-    let mut temporary: zval = unsafe { std::mem::zeroed() };
-    // SAFETY: caller guarantees the result belongs to the object's property storage.
-    let result = unsafe {
-        read(
-            scope,
-            object,
-            string::val(name).cast(),
-            name_length,
-            silent,
-            &raw mut temporary,
-        )
-    };
-    bailout::finish();
-    // SAFETY: a successful property read returned a live zval.
-    if matches!(unsafe { type_of(result) }, sys::IS_NULL | sys::IS_UNDEF) {
-        ptr::null_mut()
-    } else {
-        result
-    }
-}
-
-/// # Safety
-/// A live callable frame; copying its arguments takes independent references.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_params_keep(frame: *mut zend_fcall_info) {
-    // SAFETY: the frame's argument count is initialized.
-    let count = unsafe { (*frame).param_count } as usize;
-    if count == 0 {
-        return;
-    }
-    // SAFETY: Zend allocation, initialized to the original ecalloc representation.
-    let params = unsafe { super::owned::alloc_request(count * size_of::<zval>()) }.cast::<zval>();
-    bailout::finish();
-    // SAFETY: fresh allocation holding count zvals.
-    unsafe { params.write_bytes(0, count) };
-    for index in 0..count {
-        // SAFETY: the original frame holds count live argument slots.
-        let source = unsafe { (*frame).params }.wrapping_add(index);
-        // SAFETY: each source slot is initialized.
-        let value = unsafe { source.read() };
-        let dest = params.wrapping_add(index);
-        // SAFETY: each destination is an independent slot of the new allocation.
-        unsafe { dest.write(value) };
-        // SAFETY: retain the payload reference now owned by this argument slot.
-        unsafe { sys::swr_zval_try_addref(dest) };
-    }
-    // SAFETY: publish only after all argument references have been retained.
-    unsafe { (*frame).params = params };
-}
-
-/// # Safety
-/// The frame owns its persisted request argument array and its payload references.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_params_free(frame: *mut zend_fcall_info) {
-    let mut index = 0;
-    // SAFETY: reread the live count after each destructor, matching the original loop.
-    if unsafe { (*frame).param_count } != 0 {
-        // SAFETY: each iteration checks the current argument bound.
-        while index < unsafe { (*frame).param_count } as usize {
-            // SAFETY: the frame owns this live argument slot.
-            let value = unsafe { (*frame).params }.wrapping_add(index);
-            // SAFETY: release the argument inside the C trap before advancing.
-            unsafe { destroy(value) };
-            if bailout::pending() {
-                break;
-            }
-            index += 1;
-        }
-        if !bailout::pending() {
-            // SAFETY: the live frame still owns its persisted request allocation.
-            let params = unsafe { (*frame).params };
-            // SAFETY: all argument payloads have been released.
-            unsafe { sys::swr_zend_efree(params.cast()) };
-        }
-    }
-    bailout::finish();
-}
-
 unsafe fn closure(cache: *const zend_fcall_info_cache) -> *mut zend_object {
     // SAFETY: a resolved cache holds a live function handler.
     let handler = unsafe { (*cache).function_handler };
@@ -362,25 +213,7 @@ unsafe fn closure(cache: *const zend_fcall_info_cache) -> *mut zend_object {
 }
 
 /// # Safety
-/// A resolved callable cache; the owner accounts for the independent object/closure references.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_cache_keep(cache: *mut zend_fcall_info_cache) {
-    // SAFETY: the cache is initialized.
-    let object = unsafe { (*cache).object };
-    if !object.is_null() {
-        // SAFETY: take a reference to the bound live object.
-        unsafe { sys::swr_zend_object_addref(object) };
-    }
-    // SAFETY: a resolved cache; closure projection does not execute PHP.
-    let closure = unsafe { closure(cache) };
-    if !closure.is_null() {
-        // SAFETY: take a separate closure reference, even if it is also the bound object.
-        unsafe { sys::swr_zend_object_addref(closure) };
-    }
-}
-
-/// # Safety
-/// A resolved cache owns the references added by `cache_keep`; each release may execute PHP.
+/// A resolved cache owns the references Zend added when resolving it; each release may execute PHP.
 #[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn swr_v1_phphelpers_cache_free(cache: *mut zend_fcall_info_cache) {
     // SAFETY: read the initialized cache without keeping a Rust borrow across PHP.

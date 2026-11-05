@@ -10,6 +10,7 @@ use core::ffi::c_void;
 
 mod event_worker;
 mod factory;
+pub mod factory_methods;
 mod manager;
 pub mod ops;
 mod reactor_process;
@@ -17,7 +18,14 @@ mod task_worker;
 pub mod thread;
 
 /// One native fact or effect in `context`.
-pub type WorkersCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> u64;
+///
+/// Effects run native callbacks (`onUserWorkerStart`, `onBeforeReload`, ...). A
+/// PHP bailout longjmps over these frames to the PHP entry's `zend_try`, as it does
+/// over upstream's C++ frames. A C++ exception has no first-party handler above
+/// `Server::start` upstream, so it terminates the process; `C-unwind` makes that
+/// defined here: under `panic = "abort"` it aborts at this call instead of
+/// unwinding a `C` frame.
+pub type WorkersCall = unsafe extern "C-unwind" fn(context: *mut c_void, op: u32, arg: u64) -> u64;
 
 pub(crate) const SW_OK: i64 = 0;
 pub(crate) const SW_ERR: i64 = -1;
@@ -106,7 +114,10 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         | ops::RUN_THREAD_RELOAD
         | ops::RUN_THREAD_TERMINATE_MANAGER
         | ops::RUN_START_WORKER_THREADS
-        | ops::RUN_STOP_WORKER_THREADS => thread::run(h, operation, arg),
+        | ops::RUN_STOP_WORKER_THREADS
+        | ops::RUN_THREAD_BODY
+        | ops::RUN_THREAD_MAIN
+        | ops::RUN_THREAD_FACTORY_START => thread::run(h, operation, arg),
         _ => event_worker::run(h, operation, arg),
     }
 }

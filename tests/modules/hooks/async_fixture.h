@@ -9,15 +9,20 @@ struct GetaddrinfoRequest:AsyncRequest {
  GetaddrinfoRequest(const std::string &name,int family,int kind,int protocol,const std::string &service){record("addr-request:"+name+":"+std::to_string(family)+":"+std::to_string(kind)+":"+std::to_string(protocol)+":"+service);}
  void parse_result(std::vector<std::string> &result){record("addr:parse");if(ready)result.push_back("native-result");}
 };
+// Upstream's layout: the hybrid's async hands the event to Rust (crates/hooks/src/offload.rs).
 struct AsyncEvent {
+ size_t task_id=0;
+ uint8_t canceled=0;
+ int error=0;
+ std::shared_ptr<AsyncRequest> data;
+ ssize_t retval=0;
+ void *pipe_socket=nullptr;
+ double timestamp=0;
  void *object=nullptr;
  void (*handler)(AsyncEvent *)=nullptr;
  void (*callback)(AsyncEvent *)=nullptr;
- std::shared_ptr<AsyncRequest> data;
- uint8_t canceled=0;
- ssize_t retval=0;
- int error=0;
 };
+static_assert(sizeof(AsyncEvent)==80,"crates/hooks/src/offload.rs mirrors AsyncEvent");
 static bool dispatch_ok=true,yield_ok=true,context_canceled=false,queued=false,worker_canceled=false;
 static int worker_error=0,request_error=0,last_error=0;
 static ssize_t worker_result=1;
@@ -43,7 +48,7 @@ struct Coroutine {
 Coroutine *Coroutine::current=nullptr;
 namespace async {
 using Handler=void(*)(AsyncEvent *);
-static AsyncEvent *dispatch(AsyncEvent *event){
+static AsyncEvent *dispatch(const AsyncEvent *event){
  record("dispatch:"+std::to_string(event->handler!=nullptr)+":"+std::to_string(event->callback!=nullptr));
  if(!dispatch_ok)return nullptr;
  worker=*event;worker.canceled=worker_canceled;worker.error=worker_error;worker.retval=worker_result;queued=true;
@@ -63,6 +68,7 @@ struct System {
 };
 bool async(async::Handler,AsyncEvent &,double);
 bool async(const std::function<void()> &);
+bool async_job(void (*)(void *),void *);
 #include ACTUAL_BODIES
 }
 static void typed_handler(AsyncEvent *event){record("handler:typed");event->error=worker_error;event->retval=worker_result;}

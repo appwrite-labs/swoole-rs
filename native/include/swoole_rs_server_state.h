@@ -127,7 +127,6 @@ typedef struct swr_v1_server_tables {
     SWR_SERVER_NATIVE(ReactorThread) *reactor_threads;
 } swr_v1_server_tables;
 
-int swr_v1_server_session_fd(const swr_v1_server_state *state, long id);
 void *swr_v1_server_session(const swr_v1_server_state *state, long id);
 void swr_v1_server_sessions_retire(const swr_v1_server_state *state, uint32_t worker_id);
 void *swr_v1_server_connection(const swr_v1_server_state *state, long key, uint32_t kind);

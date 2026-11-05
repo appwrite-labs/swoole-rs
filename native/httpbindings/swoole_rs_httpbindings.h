@@ -246,7 +246,6 @@ bool swr_v1_phphttp_send(void *ctx, const char *data, size_t length);
 bool swr_v1_phphttp_close(void *ctx);
 void swr_v1_phphttp_context_bind(void *ctx, void *server, struct _zval_struct *socket);
 void swr_v1_phphttp_context_copy(void *ctx, const void *from);
-bool swr_v1_phphttp_before_request(void *ctx);
 bool swr_http_host_server_send(void *server, int64_t fd, const char *data, size_t length);
 bool swr_http_host_server_sendfile(void *server, int64_t fd, struct _zend_string *file, int64_t offset, size_t length);
 bool swr_http_host_server_close(void *server, int64_t fd);
@@ -263,13 +262,8 @@ bool swr_http_host_server_compression_type(void *server, const char *type, size_
  * trapped once its Rust frames are done. `object` is a swoole::websocket::FrameObject. */
 struct _zend_class_entry *swr_v1_phphttp_websocket_minit(int module_number, struct _zend_class_entry *http_server,
     bool serializable, bool zlib, struct _zend_class_entry **frame);
-/* Fills args[2] (server, Frame) and *data and returns SWR_WS_MESSAGE_DISPATCH: the
- * caller calls onMessage, then swr_v1_phphttp_websocket_message_done. Otherwise SW_OK/SW_ERR. */
-enum { SWR_WS_MESSAGE_DISPATCH = 1 };
-int swr_v1_phphttp_websocket_message(void *server, void *request, int64_t fd, uint16_t ext_flags,
-                                     struct _zval_struct *args, struct _zval_struct *data);
-void swr_v1_phphttp_websocket_message_done(void *server, int64_t fd, bool failed, struct _zval_struct *args,
-                                           struct _zval_struct *data);
+/* swoole_websocket_onMessage: SW_OK/SW_ERR. It calls onMessage through swr_ws_host_call. */
+int swr_v1_phphttp_websocket_message(void *server, void *request, int64_t fd, int server_fd, uint16_t ext_flags);
 void swr_v1_phphttp_websocket_frame_object(void *object, struct _zval_struct *data, int64_t opcode, int64_t flags,
     int64_t code);
 struct _zend_string *swr_v1_phphttp_websocket_pack(const void *object);
@@ -329,22 +323,23 @@ typedef struct { uint32_t *concurrency; uint32_t *server_concurrency; uint32_t m
 const char *swr_http_host_address(void *server, void *conn, bool local);
 bool swr_http_host_worker(swr_http_worker *worker);
 void swr_http_host_defer(void *context);
-/* php_swoole_http_server_onReceive up to the handler's call. It returns what
- * the trampoline does next: return SW_ERR (CLOSED), hand the data to the TCP,
- * WebSocket or HTTP/2 onReceive, call the context's handler (REQUEST; it is
- * the context's callback) or only release the context's objects (DONE).
- * It asks C++ for the connection and port facts (null: closed), a new context
- * holding the request data, the before-request hook, the port's onHandshake or
- * onRequest, and a notice. */
+/* php_swoole_http_server_onReceive. It returns what the trampoline does next:
+ * return SW_ERR (CLOSED), hand the data to the TCP, WebSocket or HTTP/2
+ * onReceive, or return SW_OK (DONE: Rust parsed the request and ran its
+ * handler). It asks C++ for the connection and port facts (null: closed), a
+ * new context holding the request data, the before-request hook, the port's
+ * onHandshake or onRequest, a notice and zend::function::call (swr_hsc_call).
+ * swr_http_host_defer defers swr_v1_phphttp_server_deferred, a queued
+ * request's handler. */
 enum {
     SWR_PHPHTTP_RECEIVE_CLOSED = 0,
     SWR_PHPHTTP_RECEIVE_TCP = 1,
     SWR_PHPHTTP_RECEIVE_WEBSOCKET = 2,
     SWR_PHPHTTP_RECEIVE_HTTP2 = 3,
-    SWR_PHPHTTP_RECEIVE_REQUEST = 4,
     SWR_PHPHTTP_RECEIVE_DONE = 5,
 };
-int swr_v1_phphttp_server_receive(void *server, void *request, int64_t session, int server_fd, void **context);
+int swr_v1_phphttp_server_receive(void *server, void *request, int64_t session, int server_fd);
+void swr_v1_phphttp_server_deferred(void *ctx, bool coroutine);
 typedef struct {
     double last_recv_time;
     int64_t local_port;
@@ -355,6 +350,7 @@ typedef struct {
     bool websocket;
     bool http2;
     bool cache;
+    bool coroutine;
 } swr_http_receive;
 void *swr_http_host_receive(void *server, int64_t session, int server_fd, swr_http_receive *out);
 void *swr_http_host_receive_context(void *server, int64_t session, void *request, struct _zval_struct **zdata);

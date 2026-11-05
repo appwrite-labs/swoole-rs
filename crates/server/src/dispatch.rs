@@ -1,26 +1,19 @@
-//! Choosing a worker, sends from workers, listen ports, and the base-mode factory.
+//! Choosing a worker, sends from workers, and listen ports.
 use crate::ops::{
-    END_CLOSE, FIELD_DISPATCH_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM,
-    LOG_BASE_ALLOC_CONNECTIONS, LOG_BASE_ALLOC_NUMS, LOG_BASE_ALLOC_PORT_NUMS,
-    LOG_CLOSED_BY_SERVER, LOG_END_NO_SESSION, LOG_FDS_START, LOG_FILE_EMPTY, LOG_HOST_TOO_LONG,
-    LOG_INVALID_PORT, LOG_INVALID_SESSION, LOG_LISTEN_PID, LOG_NOT_ACTIVE, LOG_NOT_REGULAR,
-    LOG_PORT_CREATED, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME, LOG_SENDWAIT, LOG_SESSION_CLOSED,
-    LOG_SESSION_CLOSING, LOG_STAT, LOG_TOO_MANY_PORTS, LOG_UNKNOWN_EVENT, OP_ALLOC_CONNECTION_NUMS,
-    OP_ALLOC_CONNECTIONS, OP_ALLOC_PORT_CONNECTION_NUMS, OP_BASE_REACTORS, OP_CLOSE_ACTIVELY,
-    OP_CLOSE_CALLBACK, OP_CLOSE_DONE, OP_CLOSE_RESET, OP_CONN_ACTIVE, OP_CONN_CLOSED,
-    OP_CONN_CLOSING_FLAG, OP_CONN_FORCE, OP_CONN_RESETTING, OP_CONN_UID, OP_CONN_WORKER,
-    OP_DGRAM_PORT, OP_DISPATCH_FUNC, OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_FD_CONN,
-    OP_FEEDBACK_SEND, OP_FEEDBACK_THREAD, OP_FIELD, OP_FORWARD_CLOSE, OP_FORWARD_SEND,
-    OP_HAS_DISPATCH_FUNC, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_INFO_CONN, OP_IP_KEY, OP_IS_CREATED,
-    OP_IS_MASTER, OP_MODE, OP_NEW_BASE_FACTORY, OP_NEW_PORT_TYPE, OP_NOT_EXIST, OP_NOTIFY_ACCEPT,
-    OP_PIN_WORKER, OP_PIPE_NOBUFS, OP_PORT_COUNT, OP_PORT_IMPORT, OP_PORT_NEW, OP_PORT_NUMBER,
-    OP_PORT_PUSH, OP_PORT_SOCKET, OP_PORT_TYPE, OP_SEND_HERE, OP_SEND_KIND_OK, OP_SEND_SYNC,
-    OP_SENDFILE_FINISH, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX,
-    OP_SENDFILE_OFFSET, OP_SESSION_FD, OP_SESSION_FOREIGN, OP_SET_CLOSING, OP_SOCKET_CONN,
-    OP_SOCKET_NOBUFS, OP_STREAM_PORT, OP_SYSTEMD_FDS, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN,
-    OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WORKER_IDLE, TRACE_FORWARD,
+    FIELD_DISPATCH_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_FDS_START, LOG_FILE_EMPTY,
+    LOG_HOST_TOO_LONG, LOG_INVALID_PORT, LOG_INVALID_SESSION, LOG_LISTEN_PID, LOG_NOT_REGULAR,
+    LOG_PORT_CREATED, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME, LOG_SENDWAIT, LOG_STAT,
+    LOG_TOO_MANY_PORTS, OP_CONN_UID, OP_CONN_WORKER, OP_DGRAM_PORT, OP_DISPATCH_FUNC,
+    OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_FD_CONN, OP_FEEDBACK_SEND, OP_FEEDBACK_THREAD,
+    OP_FIELD, OP_HAS_DISPATCH_FUNC, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IP_KEY, OP_IS_CREATED,
+    OP_IS_MASTER, OP_MODE, OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PIPE_NOBUFS, OP_PORT_COUNT,
+    OP_PORT_IMPORT, OP_PORT_NEW, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_SOCKET, OP_PORT_TYPE,
+    OP_SEND_SYNC, OP_SENDFILE_FINISH, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX,
+    OP_SENDFILE_OFFSET, OP_SOCKET_CONN, OP_SOCKET_NOBUFS, OP_STREAM_PORT, OP_SYSTEMD_FDS,
+    OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES,
+    OP_WORKER_IDLE,
 };
-use crate::{Host, MODE_PROCESS, SW_OK, state};
+use crate::{Host, MODE_PROCESS, state};
 use core::ffi::c_char;
 
 /// `Server::DispatchMode`, `DISPATCH_RESULT_USERFUNC_FALLBACK`; native asserts each.
@@ -33,8 +26,7 @@ const DISPATCH_CO_REQ_LB: u64 = 9;
 const DISPATCH_CONCURRENT_LB: u64 = 10;
 const USERFUNC_FALLBACK: i64 = -3;
 
-/// `SocketType`, `SW_SOCK_SSL`, `SW_MAX_LISTEN_PORT`, `SW_SYSTEMD_FDS_START`;
-/// `Server::CLOSE_RESET`, `CLOSE_ACTIVELY`.
+/// `SocketType`, `SW_SOCK_SSL`, `SW_MAX_LISTEN_PORT`, `SW_SYSTEMD_FDS_START`.
 const SOCK_UDP: u64 = 2;
 const SOCK_UDP6: u64 = 4;
 const SOCK_UNIX_STREAM: u64 = 5;
@@ -42,8 +34,6 @@ const SOCK_UNIX_DGRAM: u64 = 6;
 const SOCK_SSL: u64 = 1 << 9;
 const MAX_LISTEN_PORT: u64 = 60000;
 const SYSTEMD_FDS_START: i64 = 3;
-const CLOSE_RESET: u64 = 1 << 1;
-const CLOSE_ACTIVELY: u64 = 1 << 2;
 
 fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
     h.op(OP_FIELD, u64::from(id))
@@ -261,96 +251,10 @@ pub(crate) fn systemd_sockets<H: Host>(h: &mut H) -> crate::Effect<i64> {
     Ok(imported)
 }
 
-/// `Server::create_base_factory`: one reactor per worker and per-worker counters.
-pub(crate) fn base_create<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    h.get(OP_BASE_REACTORS)?;
-    if !h.is(OP_ALLOC_CONNECTIONS)? {
-        h.get(LOG_BASE_ALLOC_CONNECTIONS)?;
-        return Ok(0);
-    }
-    if !h.is(OP_ALLOC_CONNECTION_NUMS)? {
-        h.get(LOG_BASE_ALLOC_NUMS)?;
-        return Ok(0);
-    }
-    for port in 0..h.get(OP_PORT_COUNT)? {
-        if h.op(OP_ALLOC_PORT_CONNECTION_NUMS, port)? == 0 {
-            h.get(LOG_BASE_ALLOC_PORT_NUMS)?;
-            return Ok(0);
-        }
-    }
-    h.get(OP_NEW_BASE_FACTORY)?;
-    Ok(1)
-}
-
-/// `BaseFactory::notify`: only active stream connections the server has not closed.
-pub(crate) fn base_notify<H: Host>(h: &mut H) -> crate::Effect<bool> {
-    if !h.is(OP_INFO_CONN)? || !h.is(OP_CONN_ACTIVE)? {
-        h.get(LOG_NOT_ACTIVE)?;
-        return Ok(false);
-    }
-    if h.is(OP_CONN_CLOSED)? {
-        h.get(LOG_CLOSED_BY_SERVER)?;
-        return Ok(false);
-    }
-    h.get(OP_NOTIFY_ACCEPT)?;
-    Ok(true)
-}
-
-/// `BaseFactory::end` up to closing the socket: forward to the session's worker, or
-/// mark the connection and run `onClose`.
-pub(crate) fn base_end<H: Host>(h: &mut H, session: u64, flags: u64) -> crate::Effect<i64> {
-    if h.op(OP_SESSION_FD, session)? == 0 {
-        h.get(LOG_END_NO_SESSION)?;
-        return Ok(0);
-    }
-    if h.is(OP_SESSION_FOREIGN)? {
-        h.get(TRACE_FORWARD)?;
-        return Ok(i64::from(h.is(OP_FORWARD_CLOSE)?));
-    }
-    if h.op(OP_VERIFY_CONN, session)? == 0 {
-        h.get(OP_NOT_EXIST)?;
-        return Ok(0);
-    }
-    if flags & CLOSE_RESET != 0 {
-        h.get(OP_CLOSE_RESET)?;
-    }
-    if flags & CLOSE_ACTIVELY != 0 {
-        h.get(OP_CLOSE_ACTIVELY)?;
-    }
-    if h.is(OP_CONN_CLOSING_FLAG)? {
-        h.get(LOG_SESSION_CLOSING)?;
-        return Ok(0);
-    }
-    if !(h.is(OP_CONN_FORCE)? || h.is(OP_CONN_RESETTING)?) && h.is(OP_CONN_CLOSED)? {
-        h.get(LOG_SESSION_CLOSED)?;
-        return Ok(0);
-    }
-    h.op(OP_SET_CLOSING, 1)?;
-    h.get(OP_CLOSE_CALLBACK)?;
-    h.get(OP_CLOSE_DONE)?;
-    Ok(i64::from(END_CLOSE))
-}
-
-/// `BaseFactory::finish`: send here, or forward data and files to the session's worker.
-pub(crate) fn base_finish<H: Host>(h: &mut H) -> crate::Effect<bool> {
-    if !h.is(OP_SESSION_FOREIGN)? {
-        return Ok(h.signed(OP_SEND_HERE)? == SW_OK);
-    }
-    // 1: logged as `BaseFactory::finish`, not `BaseFactory::end`.
-    h.op(TRACE_FORWARD, 1)?;
-    Ok(if h.is(OP_SEND_KIND_OK)? {
-        h.is(OP_FORWARD_SEND)?
-    } else {
-        h.get(LOG_UNKNOWN_EVENT)?;
-        false
-    })
-}
-
-/// The dispatch, port and base-factory operations of `swr_v1_server_run`.
+/// The dispatch and port operations of `swr_v1_server_run`.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use crate::ops::{
-        RUN_ADD_PORT, RUN_BASE_CREATE, RUN_BASE_END, RUN_BASE_FINISH, RUN_BASE_NOTIFY,
-        RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS, RUN_KERNEL_NOBUFS,
+        RUN_ADD_PORT, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS, RUN_KERNEL_NOBUFS,
         RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
     };
     Ok(match operation {
@@ -364,11 +268,7 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
         RUN_SENDFILE => i64::from(sendfile(h, arg.cast_signed())?),
         RUN_ADD_PORT => add_port(h)?,
         RUN_SYSTEMD_SOCKETS => systemd_sockets(h)?,
-        RUN_BASE_CREATE => base_create(h)?,
-        RUN_BASE_NOTIFY => i64::from(base_notify(h)?),
-        RUN_BASE_END => base_end(h, arg & 0xffff_ffff_ffff, arg >> 48)?,
-        RUN_BASE_FINISH => i64::from(base_finish(h)?),
-        _ => crate::SW_ERR,
+        _ => crate::base_factory::run(h, operation, arg)?.unwrap_or(crate::SW_ERR),
     })
 }
 
@@ -569,59 +469,5 @@ mod tests {
         assert_eq!(s.args(OP_PORT_IMPORT), vec![3, 4, 5], "from fd 3");
         let mut s = Script::with(&[(OP_ENV_LISTEN_PID, i64::MIN.cast_unsigned())]);
         assert_eq!(systemd_sockets(&mut s).unwrap(), 0, "no LISTEN_PID");
-    }
-
-    #[test]
-    fn base_factory() {
-        let mut s = Script::with(&[
-            (OP_ALLOC_CONNECTIONS, 1),
-            (OP_ALLOC_CONNECTION_NUMS, 1),
-            (OP_PORT_COUNT, 2),
-        ])
-        .queue(OP_ALLOC_PORT_CONNECTION_NUMS, &[1, 0]);
-        assert_eq!(base_create(&mut s).unwrap(), 0, "second port failed");
-        assert_eq!(s.called(LOG_BASE_ALLOC_PORT_NUMS), 1, "warned");
-
-        let mut s = Script::with(&[(OP_INFO_CONN, 1), (OP_CONN_ACTIVE, 1)]);
-        assert!(base_notify(&mut s).unwrap(), "notified");
-        let mut s = Script::with(&[(OP_INFO_CONN, 1), (OP_CONN_ACTIVE, 1), (OP_CONN_CLOSED, 1)]);
-        assert!(!base_notify(&mut s).unwrap(), "closed by server");
-
-        let mut s = Script::with(&[
-            (OP_SESSION_FD, 1),
-            (OP_SESSION_FOREIGN, 1),
-            (OP_FORWARD_CLOSE, 1),
-        ]);
-        assert_eq!(base_end(&mut s, 1, 0).unwrap(), 1, "forwarded");
-        let mut s = Script::with(&[(OP_SESSION_FD, 1), (OP_VERIFY_CONN, 1)]);
-        assert_eq!(
-            base_end(&mut s, 1, CLOSE_RESET | CLOSE_ACTIVELY).unwrap(),
-            i64::from(END_CLOSE),
-            "closing"
-        );
-        assert_eq!(
-            s.called(OP_CLOSE_RESET) + s.called(OP_CLOSE_ACTIVELY),
-            2,
-            "flags"
-        );
-        let mut s = Script::with(&[(OP_SESSION_FD, 1), (OP_VERIFY_CONN, 1), (OP_CONN_CLOSED, 1)]);
-        assert_eq!(base_end(&mut s, 1, 0).unwrap(), 0, "already closed");
-        let mut s = Script::with(&[
-            (OP_SESSION_FD, 1),
-            (OP_VERIFY_CONN, 1),
-            (OP_CONN_CLOSED, 1),
-            (OP_CONN_FORCE, 1),
-        ]);
-        assert_eq!(
-            base_end(&mut s, 1, 0).unwrap(),
-            i64::from(END_CLOSE),
-            "forced close proceeds"
-        );
-
-        let mut s = Script::with(&[(OP_SESSION_FOREIGN, 1)]);
-        assert!(!base_finish(&mut s).unwrap(), "unknown event");
-        assert_eq!(s.called(LOG_UNKNOWN_EVENT), 1, "warned");
-        let mut s = Script::with(&[]);
-        assert!(base_finish(&mut s).unwrap(), "sent here");
     }
 }

@@ -169,8 +169,6 @@ swr_v1_reactor_epoll_events *swr_v1_reactor_epoll_new(size_t);
 void swr_v1_reactor_epoll_free(swr_v1_reactor_epoll_events *);
 struct epoll_event *swr_v1_reactor_epoll_data(swr_v1_reactor_epoll_events *);
 swr_v1_reactor_backend_layout swr_v1_reactor_epoll_layout(void);
-/* epoll_ctl for op 0 add, 1 set (MOD), 2 del, with the socket as token; the kernel's result. */
-int swr_v1_reactor_epoll_ctl(int epfd, uint32_t op, int fd, void *socket, int events);
 #endif
 #if (defined(__APPLE__) && TARGET_OS_OSX) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
 typedef struct swr_v1_reactor_kqueue_events swr_v1_reactor_kqueue_events;
@@ -178,12 +176,6 @@ swr_v1_reactor_kqueue_events *swr_v1_reactor_kqueue_new(size_t);
 void swr_v1_reactor_kqueue_free(swr_v1_reactor_kqueue_events *);
 struct kevent *swr_v1_reactor_kqueue_data(swr_v1_reactor_kqueue_events *);
 swr_v1_reactor_backend_layout swr_v1_reactor_kqueue_layout(void);
-/* ReactorKqueue add/set/del's kevent calls; errno is the kernel's. add: 0, or the failed
- * filter (1 read, 2 write). set: 0, or 1 read add, 2 read delete, 3 write add, 4 write delete.
- * del: each failed filter's errno in errors (0 if it took); -1 stops at one not EBADF/ENOENT. */
-int swr_v1_reactor_kqueue_add(int kq, int fd, void *socket, int events);
-int swr_v1_reactor_kqueue_set(int kq, int fd, void *socket, int events);
-int swr_v1_reactor_kqueue_del(int kq, int fd, void *socket, int events, int *errors);
 #endif
 typedef struct swr_v1_reactor_poll_snapshot swr_v1_reactor_poll_snapshot;
 typedef struct { size_t size, alignment, fd, events, revents; } swr_v1_reactor_poll_layout_info;
@@ -234,16 +226,7 @@ typedef struct { uint32_t offset, length, close_wait; } swr_v1_stream_view_actio
 int32_t swr_v1_stream_prepare(uint8_t *, size_t);
 int32_t swr_v1_stream_length(const uint8_t *, size_t);
 swr_v1_stream_view_action swr_v1_stream_view(uint32_t);
-/* network::Socket's descriptor options, syscall included. fd_option: -1 leaves a
- * flag alone. warnings: fd_option 1 F_GETFL, 2 F_SETFL, 4 F_GETFD, 8 F_SETFD failed;
- * cork/uncork 1 TCP_CORK, 2 TCP_NODELAY failed. */
-typedef struct { bool ok; uint32_t warnings; } swr_v1_socket_option_result;
-typedef struct { uint8_t tcp_nopush, tcp_nodelay; } swr_v1_socket_cork_state;
-swr_v1_socket_option_result swr_v1_socket_fd_option(int fd, int nonblock, int cloexec);
-int swr_v1_socket_tcp_nopush(int fd, int nopush);
-bool swr_v1_socket_tcp_nodelay(int fd, int nodelay);
-swr_v1_socket_option_result swr_v1_socket_cork(int fd, swr_v1_socket_cork_state *state);
-swr_v1_socket_option_result swr_v1_socket_uncork(int fd, bool enable_tcp_nodelay, swr_v1_socket_cork_state *state);
+/* network::Socket's buffer sizes, setsockopt included. */
 bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
  * write_timeout), embedded in this order (Socket static_asserts it). set_timeout
@@ -251,17 +234,11 @@ bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
  * swr_v1_socket_timeout is the slot one SW_TIMEOUT_* value names, else NULL. */
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
 void swr_v1_socket_set_timeout(swr_v1_socket_timeouts *timeouts, double timeout, int kind);
-const double *swr_v1_socket_timeout(const swr_v1_socket_timeouts *timeouts, int kind);
-/* network::Socket's descriptor I/O. status 0 ready; 1 timed out (wait) or
- * EINPROGRESS (connect); 2 failed with errno `error`. */
-typedef struct { int status, error; } swr_v1_socket_io_result;
+/* Socket::wait_event's signal dispatch (swoole_signal_dispatch), registered once. */
+void swr_v1_socket_set_signal_dispatch(void (*dispatch)(void));
 struct sockaddr;
-swr_v1_socket_io_result swr_v1_socket_wait(int fd, int16_t events, int timeout_ms, bool dont_restart, void (*dispatch)(void));
-void swr_v1_socket_clean(int fd);
 ssize_t swr_v1_socket_recvfrom(int fd, void *buffer, size_t length, int flags, struct sockaddr *address, socklen_t *address_length, uint32_t retries);
 int swr_v1_socket_accept(int fd, struct sockaddr *address, socklen_t *address_length, bool nonblock, bool *listener_cloexec);
-swr_v1_socket_io_result swr_v1_socket_connect(int fd, const struct sockaddr *address, socklen_t length);
-swr_v1_socket_io_result swr_v1_socket_pending_error(int fd);
 /* sendfile's range check (fstat included) and chunk size: 0 with *end set, 1
  * fstat failed (errno set), 2 empty file, 3 range outside the file. */
 int swr_v1_socket_sendfile_range(int file_fd, off_t begin, size_t length, off_t *end);
@@ -279,41 +256,14 @@ typedef struct {
  * is set, else default_event. */
 void swr_v1_socket_ssl_clear(swr_v1_socket_tls *tls);
 int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_event);
-/* Socket::ssl_recv/ssl_send: ERR_clear_error, SSL_read/SSL_write and SSL_get_error,
- * setting tls's want flags. Native code then logs (protocol_error) and sets errno
- * (error, when nonzero). */
-typedef struct {
-    ssize_t value;
-    int error;
-    bool protocol_error;
-} swr_v1_socket_ssl_io_result;
-swr_v1_socket_ssl_io_result swr_v1_socket_ssl_recv(swr_v1_socket_tls *tls, struct ssl_st *ssl, void *buffer, size_t length);
-swr_v1_socket_ssl_io_result swr_v1_socket_ssl_send(swr_v1_socket_tls *tls, struct ssl_st *ssl, const void *buffer, size_t length);
-/* Socket::ssl_accept/ssl_connect: one SSL_accept/SSL_connect step and its
- * classification, setting tls's want flags and state. Native code sets the last
- * error (when nonzero), then logs: 1 bad client, 2 failed handshake with ssl_error,
- * 3 peer closed (connect). code is the method's return value. */
-typedef struct {
-    int code;
-    int last_error;
-    int log;
-    int ssl_error;
-} swr_v1_socket_ssl_handshake_result;
-swr_v1_socket_ssl_handshake_result swr_v1_socket_ssl_accept(swr_v1_socket_tls *tls, struct ssl_st *ssl, bool dtls);
-swr_v1_socket_ssl_handshake_result swr_v1_socket_ssl_connect(swr_v1_socket_tls *tls, struct ssl_st *ssl);
 /* Socket::ssl_check_host: X509_check_host on the peer certificate (consumed; may be
- * null): 0 none, 1 match, 2 no match. Socket::ssl_verify: the verify error that
- * rejects the peer, or X509_V_OK (a self-signed leaf passes when allowed). */
+ * null): 0 none, 1 match, 2 no match. */
 int swr_v1_socket_ssl_check_host(struct x509_st *cert, const char *name, size_t length);
-long swr_v1_socket_ssl_verify(const struct ssl_st *ssl, bool allow_self_signed);
 /* PEM export of a certificate into at most length bytes (-1 BIO_new failed, -2
- * PEM_write_bio_X509 failed; frees cert when consume); the oldest queued error's
- * reason string (popped) and reason code (peeked); a new SSL on fd from context
+ * PEM_write_bio_X509 failed; frees cert when consume); a new SSL on fd from context
  * (0, or 1 SSL_new, 2 SSL_set_fd with *error, 3 SSL_set_ex_data failed), clearing
  * tls's want flags first and its state on success. */
 int swr_v1_socket_ssl_pem(struct x509_st *cert, char *buffer, size_t length, bool consume);
-const char *swr_v1_socket_ssl_error_reason(int *reason);
-int swr_v1_socket_ssl_peek_reason(void);
 /* Socket::ssl_shutdown: 1 true, 0 false, 2 false after the caller warns with
  * ssl_get_error_reason. `repaired` is --fix-halfclose's close_notify repair. */
 int swr_v1_socket_ssl_shutdown(swr_v1_socket_tls *tls, struct ssl_st *ssl, uint8_t *closed, bool quiet, bool repaired);
@@ -327,17 +277,13 @@ typedef struct {
     int warn;
 } swr_v1_socket_ssl_sendfile_result;
 swr_v1_socket_ssl_sendfile_result swr_v1_socket_ssl_sendfile(int file_fd, off_t *offset, size_t size, swr_v1_socket_tls_io send, void *socket, bool *kernel_nobufs);
-/* Socket::readv/writev: readv(2)/writev(2) over state's remaining iovecs, or tls one
- * iovec at a time until one comes up short; advances state like
- * IOVector::update_iterator and retries EINTR. Native code copies the IOVector's
- * cursor in and back. */
+/* An IOVector's cursor. */
 typedef struct {
     struct iovec *iterator;
     int remain_count;
     int index;
     size_t offset_bytes;
 } swr_v1_socket_iov_state;
-ssize_t swr_v1_socket_iov(int fd, bool write, swr_v1_socket_iov_state *state, swr_v1_socket_tls_io tls, void *socket);
 /* The descriptor allocation owns its cursor; payloads remain borrowed. */
 typedef struct swr_v1_reactor_iov swr_v1_reactor_iov;
 typedef struct {
@@ -356,7 +302,6 @@ void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
 swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner);
 size_t swr_v1_reactor_iov_length(const swr_v1_reactor_iov *owner);
 void swr_v1_reactor_iov_advance(swr_v1_reactor_iov *owner, intptr_t n);
-ssize_t swr_v1_socket_iov_owned(int fd, bool write, swr_v1_reactor_iov *owner, swr_v1_socket_tls_io tls, void *socket);
 /* File requests own the actual File record and all range/cork slots. Native
  * views retain source-level File/std::string interfaces; only Rust closes fd. */
 typedef struct swr_v1_os_file_record swr_v1_os_file_record;
@@ -379,10 +324,7 @@ void swr_v1_socket_file_cork(swr_v1_socket_file_request *owner, const swr_v1_soc
  * native code gives the socket's flags and performs each I/O call. Returns the
  * bytes moved or -1 with the last error and errno set. */
 enum {
-    SWR_SOCKET_SYNC_SEND = 0,     /* all of length, retrying short writes */
-    SWR_SOCKET_SYNC_RECV = 1,     /* once, or all of length under MSG_WAITALL */
-    SWR_SOCKET_SYNC_ONCE = 2,     /* one call that moves bytes */
-    SWR_SOCKET_SYNC_SENDFILE = 3, /* all of length; a zero return is an error */
+    SWR_SOCKET_SYNC_SENDFILE = 3, /* all of length; a zero return is an error (Socket::sendfile_sync) */
 };
 typedef struct {
     void *socket;
@@ -419,8 +361,6 @@ static inline bool swr_socket_type_is(int socket_type, uint8_t classes) {
 }
 bool swr_v1_socket_domain_and_type(int socket_type, int *domain, int *kind);
 swr_v1_socket_host_type_plan swr_v1_socket_host_type(const uint8_t *host, size_t length);
-/* swoole::socket: socket(2) with SW_SOCK_NONBLOCK/SW_SOCK_CLOEXEC applied. */
-int swr_v1_socket_open(int domain, int kind, int protocol, int flags);
 
 /* One owner for Reactor public slots, registry, handlers and kernel resources. */
 typedef struct swr_v1_reactor_state swr_v1_reactor_state;
@@ -445,8 +385,16 @@ swr_v1_reactor_backend_view swr_v1_reactor_state_backend(swr_v1_reactor_state *)
 /* Reactor::wait() on the state's backend: 0 when it stops (or poll fails), -1 when epoll/kqueue fail. */
 int32_t swr_v1_reactor_wait(swr_v1_reactor_state *, const swr_v1_reactor_wait_ops *);
 int swr_v1_reactor_state_descriptor(const swr_v1_reactor_state *);
-int swr_v1_reactor_state_limit(const swr_v1_reactor_state *);
 int swr_v1_reactor_state_socket(swr_v1_reactor_state *, void *socket, uint32_t op, int events);
+/* Logs message as from origin: code 0 is swoole_sys_warning (errno is the kernel's), else
+ * swoole_error_log(SW_LOG_WARNING, code, ...); then the backtrace on error. */
+typedef void (*swr_v1_reactor_change_log)(const char *origin, int code, const char *message);
+/* Reactor::add (op 0), set (1) or del (2) on the state's backend, checks and registry included:
+ * 0, -1 after logging the failure, or -2 when add cannot allocate. */
+int swr_v1_reactor_change(swr_v1_reactor_state *, void *socket, uint32_t op, int events, swr_v1_reactor_change_log log);
+/* Reactor's interest helpers over swr_v1_reactor_change: add_event (kind 0) and del_event (1) of
+ * event, add_read_event (2), add_write_event (3), remove_read_event (4), remove_write_event (5). */
+int swr_v1_reactor_interest(swr_v1_reactor_state *, void *socket, uint32_t kind, int event, swr_v1_reactor_change_log log);
 #ifdef __cplusplus
 }
 static_assert(sizeof(swr_v1_reactor_builtin_reply) == 8, "reactor builtin reply ABI");

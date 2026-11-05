@@ -124,18 +124,10 @@ enum {
 };
 bool swoole_socket_coro_ssl_option(void *socket, int option, const char *text, size_t length, int64_t value);
 bool swoole_socket_coro_ssl_supports(int option);
-/* ext/sockets' helpers, run inside zend_try. op: 0 getsockopt_ipv6_rfc3542,
- * 1 setsockopt_ip_mcast, 2 setsockopt_ipv6_mcast, 3 setsockopt_ipv6_rfc3542,
- * 4 add4_to_if_index(address) into index. */
-typedef struct {
-    void *socket;
-    int op, level, name;
-    struct _zval_struct *value;
-    const void *address;
-    unsigned index;
-    int result;
-} swoole_socket_coro_sockopt_call;
-void swoole_socket_coro_sockopt(void *call);
+/* The socket's domain, and its type into *type. */
+int swoole_socket_coro_family(void *socket, int *type);
+/* socket->errCode = code, nothing else. */
+void swoole_socket_coro_set_err_code(void *socket, int code);
 /* getsockopt(SOL_TCP, TCP_INFO) into array: 1; 0 when name is not TCP_INFO (or
  * the build has none); -1 when it failed. */
 int swoole_socket_coro_tcp_info(void *socket, int name, struct _zval_struct *array);

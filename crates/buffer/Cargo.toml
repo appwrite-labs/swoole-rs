@@ -4,9 +4,16 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+# Define swoole::String's methods under their C++ symbols. Only crates/ffi, whose builds
+# apply the buffer patch that deletes the C++ definitions, turns it on.
+upstream-symbols = []
+
 [dependencies]
 itoa = "1.0.18"
 memchr = "2.8.3"
+swoole-rs-base64 = { path = "../base64" }
+swoole-rs-corebase = { path = "../corebase" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"

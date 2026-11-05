@@ -1,0 +1,900 @@
+// SPDX-License-Identifier: Apache-2.0
+// Compatibility derived from Swoole v6.2.4 src/network/socket.cc (Swoole contributors).
+//! The TLS methods of `network::Socket` that are whole Rust operations, last
+//! error, errno and logs included. With `upstream-symbols` (the hybrid's reactor
+//! build) they are defined under their upstream (Itanium) symbols and
+//! `socket.cc` no longer defines them.
+use crate::{
+    SocketTls, SslHandshakeResult, SslIoResult, swr_v1_socket_ssl_accept, swr_v1_socket_ssl_clear,
+    swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason, swr_v1_socket_ssl_peek_reason,
+    swr_v1_socket_ssl_recv, swr_v1_socket_ssl_send, swr_v1_socket_ssl_verify,
+};
+use openssl_sys::{SSL, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, stack_st_X509};
+use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
+use swoole_rs_corebase::log;
+use swoole_rs_reactor::socket_upstream::{signal_dispatch, socket_set_fd_option};
+use swoole_rs_reactor::{
+    ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND, SocketAddress, SocketRecord, SyncHooks,
+    cpp_socket_what_event_want, swr_v1_reactor_poll_events_to, swr_v1_socket_iov_owned,
+    swr_v1_socket_record_peek, swr_v1_socket_record_recv, swr_v1_socket_record_send,
+    swr_v1_socket_recvfrom, swr_v1_socket_sync,
+};
+
+// SAFETY: libc's, libssl's and libcrypto's own declarations.
+unsafe extern "C" {
+    fn inet_ntop(
+        family: c_int,
+        address: *const c_void,
+        buffer: *mut c_char,
+        size: libc::socklen_t,
+    ) -> *const c_char;
+    fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
+    fn X509_verify_cert_error_string(error: c_long) -> *const c_char;
+    fn SSL_get_peer_cert_chain(ssl: *const SSL) -> *mut stack_st_X509;
+}
+
+/// `SW_LOG_NOTICE`, `SW_ERROR_SSL_VERIFY_FAILED` and `SW_ERROR_SSL_BAD_PROTOCOL`.
+const LOG_NOTICE: c_int = 3;
+const VERIFY_FAILED: c_int = 1014;
+const BAD_PROTOCOL: c_int = 1016;
+/// `swReturnCode`'s `SW_CLOSE`, `SW_SOCKET_RETRY_COUNT`, `SW_EVENT_READ` and `SW_EVENT_WRITE`.
+const CLOSE: c_int = 3;
+const RETRY_COUNT: u32 = 10;
+const EVENT_READ: c_int = 1 << 9;
+const EVENT_WRITE: c_int = 1 << 10;
+
+fn errno() -> c_int {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+fn set_errno(value: c_int) {
+    #[cfg(target_os = "linux")]
+    // SAFETY: this thread's errno slot.
+    let slot = unsafe { libc::__errno_location() };
+    #[cfg(not(target_os = "linux"))]
+    // SAFETY: this thread's errno slot.
+    let slot = unsafe { libc::__error() };
+    // SAFETY: the slot is this thread's live errno.
+    unsafe { *slot = value };
+}
+
+/// A C string for `%s`, which glibc prints as `(null)` when null.
+///
+/// # Safety
+/// `text` is null or NUL-terminated.
+unsafe fn text(text: *const c_char) -> String {
+    if text.is_null() {
+        return "(null)".into();
+    }
+    // SAFETY: as the caller promises.
+    unsafe { CStr::from_ptr(text) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
+fn peer(info: &SocketAddress) -> (String, c_int) {
+    let mut buffer = [0 as c_char; 46];
+    let (family, address, port): (c_int, *const c_void, u16) = match info.kind {
+        // SAFETY: TCP, UDP and raw sockets hold the IPv4 union member.
+        1 | 2 | 7 => unsafe {
+            (
+                libc::AF_INET,
+                (&raw const info.addr.inet_v4.sin_addr).cast(),
+                info.addr.inet_v4.sin_port,
+            )
+        },
+        // SAFETY: TCP6, UDP6 and raw6 sockets hold the IPv6 union member.
+        3 | 4 | 8 => unsafe {
+            (
+                libc::AF_INET6,
+                (&raw const info.addr.inet_v6.sin6_addr).cast(),
+                info.addr.inet_v6.sin6_port,
+            )
+        },
+        5 | 6 => {
+            // SAFETY: Unix sockets hold the Unix union member's NUL-terminated path.
+            let path = unsafe { text((&raw const info.addr.un.sun_path).cast()) };
+            return (path, 0);
+        }
+        _ => return ("unknown".into(), 0),
+    };
+    // SAFETY: the address is the selected family's, and the buffer holds the longest IPv6 text.
+    let host = unsafe { inet_ntop(family, address, buffer.as_mut_ptr(), 46) };
+    // SAFETY: inet_ntop returned null or the NUL-terminated buffer.
+    (unsafe { text(host) }, c_int::from(u16::from_be(port)))
+}
+
+/// The record's TLS state group, which `SocketTls` mirrors.
+fn tls(socket: &mut SocketRecord) -> *mut SocketTls {
+    (&raw mut socket.tls).cast()
+}
+
+/// `static const char *Socket::ssl_get_error_reason(int *reason)`.
+///
+/// # Safety
+/// `reason` is null or writable.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket20ssl_get_error_reasonEPi")
+)]
+pub unsafe extern "C" fn socket_ssl_get_error_reason(reason: *mut c_int) -> *const c_char {
+    // SAFETY: as the caller promises.
+    unsafe { swr_v1_socket_ssl_error_reason(reason) }
+}
+
+/// `STACK_OF(X509) *Socket::ssl_get_peer_cert_chain() const`.
+///
+/// # Safety
+/// `socket` is a live record.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole7network6Socket23ssl_get_peer_cert_chainEv")
+)]
+pub unsafe extern "C" fn socket_ssl_get_peer_cert_chain(
+    socket: *const SocketRecord,
+) -> *mut stack_st_X509 {
+    // SAFETY: as the caller promises.
+    let ssl = unsafe { (*socket).ssl };
+    if ssl.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the record's live SSL.
+    unsafe { SSL_get_peer_cert_chain(ssl.cast()) }
+}
+
+/// `bool Socket::ssl_verify(bool allow_self_signed) const`.
+///
+/// # Safety
+/// `socket` is a live record holding an SSL.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole7network6Socket10ssl_verifyEb")
+)]
+pub unsafe extern "C" fn socket_ssl_verify(
+    socket: *const SocketRecord,
+    allow_self_signed: bool,
+) -> bool {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { &*socket };
+    // SAFETY: the record's live SSL.
+    let error = unsafe { swr_v1_socket_ssl_verify(socket.ssl.cast(), allow_self_signed) };
+    if error == c_long::from(X509_V_OK) {
+        return true;
+    }
+    let fd = socket.fd;
+    if error == c_long::from(X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT) {
+        log::error_log(
+            LOG_NOTICE,
+            VERIFY_FAILED,
+            c"Socket::ssl_verify",
+            format_args!("self signed certificate from fd#{fd} is not allowed"),
+        );
+    } else {
+        // SAFETY: OpenSSL's static string table.
+        let reason = unsafe { X509_verify_cert_error_string(error) };
+        // SAFETY: null or NUL-terminated.
+        let reason = unsafe { text(reason) };
+        log::error_log(
+            LOG_NOTICE,
+            VERIFY_FAILED,
+            c"Socket::ssl_verify",
+            format_args!("can not verify peer from fd#{fd} with error#{error}: {reason}"),
+        );
+    }
+    false
+}
+
+/// `void Socket::ssl_catch_error() const`.
+///
+/// # Safety
+/// `socket` is a live record.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole7network6Socket15ssl_catch_errorEv")
+)]
+pub unsafe extern "C" fn socket_ssl_catch_error(socket: *const SocketRecord) {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { &*socket };
+    let (host, port) = peer(&socket.info);
+    let reason = swr_v1_socket_ssl_peek_reason();
+    log::error_log(
+        LOG_NOTICE,
+        BAD_PROTOCOL,
+        c"Socket::ssl_catch_error",
+        format_args!(
+            "SSL connection#{}[{host}:{port}] protocol error[{reason}]",
+            socket.fd
+        ),
+    );
+}
+
+/// `ssl_io`: the protocol error's log, then errno.
+///
+/// # Safety
+/// `socket` is a live record.
+unsafe fn ssl_io(socket: *const SocketRecord, result: SslIoResult) -> isize {
+    if result.protocol_error {
+        // SAFETY: as the caller promises.
+        unsafe { socket_ssl_catch_error(socket) };
+    }
+    if result.error != 0 {
+        set_errno(result.error);
+    }
+    result.value
+}
+
+/// `ssize_t Socket::ssl_recv(void *buf, size_t n)`.
+///
+/// # Safety
+/// `socket` is a live record holding an SSL, and `buffer` denotes `length` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket8ssl_recvEPvm")
+)]
+pub unsafe extern "C" fn socket_ssl_recv(
+    socket: *mut SocketRecord,
+    buffer: *mut c_void,
+    length: usize,
+) -> isize {
+    // SAFETY: as the caller promises.
+    let record = unsafe { &mut *socket };
+    let (tls, ssl) = (tls(record), record.ssl.cast());
+    // SAFETY: the record's TLS group and SSL, and the caller's buffer.
+    let result = unsafe { swr_v1_socket_ssl_recv(tls, ssl, buffer, length) };
+    // SAFETY: as the caller promises.
+    unsafe { ssl_io(socket, result) }
+}
+
+/// `ssize_t Socket::ssl_send(const void *buf, size_t n)`: a DTLS socket sends at
+/// most `chunk_size` bytes.
+///
+/// # Safety
+/// `socket` is a live record holding an SSL, and `buffer` denotes `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket8ssl_sendEPKvm")
+)]
+pub unsafe extern "C" fn socket_ssl_send(
+    socket: *mut SocketRecord,
+    buffer: *const c_void,
+    length: usize,
+) -> isize {
+    // SAFETY: as the caller promises.
+    let record = unsafe { &mut *socket };
+    let chunk = record.chunk_size as usize;
+    let length = if record.dtls != 0 && chunk != 0 && length > chunk {
+        chunk
+    } else {
+        length
+    };
+    let (tls, ssl) = (tls(record), record.ssl.cast());
+    // SAFETY: the record's TLS group and SSL, and the caller's buffer.
+    let result = unsafe { swr_v1_socket_ssl_send(tls, ssl, buffer, length) };
+    // SAFETY: as the caller promises.
+    unsafe { ssl_io(socket, result) }
+}
+
+unsafe extern "C" fn tls_recv(socket: *mut c_void, buffer: *mut c_void, length: usize) -> isize {
+    // SAFETY: the vector loop lends the record it was given and its buffer.
+    unsafe { socket_ssl_recv(socket.cast(), buffer, length) }
+}
+
+unsafe extern "C" fn tls_send(socket: *mut c_void, buffer: *mut c_void, length: usize) -> isize {
+    // SAFETY: the vector loop lends the record it was given and its buffer.
+    unsafe { socket_ssl_send(socket.cast(), buffer, length) }
+}
+
+/// `readv`/`writev` over `IOVector`, whose first member is its owner, through
+/// OpenSSL when the socket holds an SSL.
+///
+/// # Safety
+/// `socket` is a live record and `vector` a live `IOVector`.
+unsafe fn vector_io(socket: *mut SocketRecord, vector: *const c_void, write: bool) -> isize {
+    // SAFETY: as the caller promises.
+    let owner = unsafe { *vector.cast::<*mut ReactorIov>() };
+    // SAFETY: as the caller promises.
+    let record = unsafe { &*socket };
+    let (fd, ssl) = (record.fd, record.ssl);
+    let io = (!ssl.is_null()).then_some(if write { tls_send } else { tls_recv });
+    // SAFETY: the vector's owner and, with an SSL, a TLS call valid for the record.
+    unsafe { swr_v1_socket_iov_owned(fd, write, owner, io, socket.cast()) }
+}
+
+/// `ssize_t Socket::readv(IOVector *)`.
+///
+/// # Safety
+/// `socket` is a live record and `vector` a live `IOVector`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket5readvEPNS0_8IOVectorE")
+)]
+pub unsafe extern "C" fn socket_readv(socket: *mut SocketRecord, vector: *const c_void) -> isize {
+    // SAFETY: as the caller promises.
+    unsafe { vector_io(socket, vector, false) }
+}
+
+/// `ssize_t Socket::writev(IOVector *)`.
+///
+/// # Safety
+/// `socket` is a live record and `vector` a live `IOVector`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket6writevEPNS0_8IOVectorE")
+)]
+pub unsafe extern "C" fn socket_writev(socket: *mut SocketRecord, vector: *const c_void) -> isize {
+    // SAFETY: as the caller promises.
+    unsafe { vector_io(socket, vector, true) }
+}
+
+/// `ssize_t Socket::ssl_readv(IOVector *)`.
+///
+/// # Safety
+/// `socket` is a live record holding an SSL and `vector` a live `IOVector`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket9ssl_readvEPNS0_8IOVectorE")
+)]
+pub unsafe extern "C" fn socket_ssl_readv(
+    socket: *mut SocketRecord,
+    vector: *const c_void,
+) -> isize {
+    // SAFETY: as the caller promises.
+    unsafe { vector_io(socket, vector, false) }
+}
+
+/// `ssize_t Socket::ssl_writev(IOVector *)`.
+///
+/// # Safety
+/// `socket` is a live record holding an SSL and `vector` a live `IOVector`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket10ssl_writevEPNS0_8IOVectorE")
+)]
+pub unsafe extern "C" fn socket_ssl_writev(
+    socket: *mut SocketRecord,
+    vector: *const c_void,
+) -> isize {
+    // SAFETY: as the caller promises.
+    unsafe { vector_io(socket, vector, true) }
+}
+
+fn handshake(result: SslHandshakeResult) {
+    if result.last_error != 0 {
+        log::set_last_error(result.last_error);
+    }
+}
+
+/// `ReturnCode Socket::ssl_accept()`.
+///
+/// # Safety
+/// `socket` is a live record holding an SSL.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket10ssl_acceptEv")
+)]
+pub unsafe extern "C" fn socket_ssl_accept(socket: *mut SocketRecord) -> c_int {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { &mut *socket };
+    let (tls, ssl) = (tls(socket), socket.ssl.cast());
+    // SAFETY: the record's TLS group and SSL.
+    let result = unsafe { swr_v1_socket_ssl_accept(tls, ssl, socket.dtls != 0) };
+    handshake(result);
+    if result.log == 1 {
+        let mut reason = 0;
+        // SAFETY: `reason` is a local.
+        let error = unsafe { swr_v1_socket_ssl_error_reason(&raw mut reason) };
+        // SAFETY: null or OpenSSL's static text.
+        let error = unsafe { text(error) };
+        let (host, port) = peer(&socket.info);
+        log::warning(
+            c"Socket::ssl_accept",
+            format_args!("bad SSL client[{host}:{port}], reason={reason}, error_string={error}"),
+        );
+    } else if result.log == 2 {
+        let code = errno();
+        // SAFETY: strerror has no memory preconditions.
+        let message = unsafe { libc::strerror(code) };
+        // SAFETY: strerror's NUL-terminated text.
+        let message = unsafe { text(message) };
+        log::warning(
+            c"Socket::ssl_accept",
+            format_args!(
+                "SSL_do_handshake() failed. Error: {message}[{}|{code}]",
+                result.ssl_error
+            ),
+        );
+    }
+    result.code
+}
+
+/// `int Socket::ssl_connect()`.
+///
+/// # Safety
+/// `socket` is a live record holding an SSL.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket11ssl_connectEv")
+)]
+pub unsafe extern "C" fn socket_ssl_connect(socket: *mut SocketRecord) -> c_int {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { &mut *socket };
+    let (tls, ssl) = (tls(socket), socket.ssl.cast());
+    // SAFETY: the record's TLS group and SSL.
+    let result = unsafe { swr_v1_socket_ssl_connect(tls, ssl) };
+    handshake(result);
+    if result.log == 2 {
+        // SAFETY: this thread's OpenSSL error queue.
+        let error = unsafe { openssl_sys::ERR_get_error() };
+        let mut buffer = [0 as c_char; 512];
+        // SAFETY: at most the buffer's length, NUL-terminated.
+        unsafe { ERR_error_string_n(error, buffer.as_mut_ptr(), buffer.len()) };
+        // SAFETY: NUL-terminated by ERR_error_string_n.
+        let message = unsafe { text(buffer.as_ptr()) };
+        let (host, port) = peer(&socket.info);
+        log::notice(format_args!(
+            "ssl_connect(fd={}) to server[{host}:{port}] failed. Error: {message}[{}|{}]",
+            socket.fd,
+            result.ssl_error,
+            crate::socket::error_reason(error)
+        ));
+    }
+    result.code
+}
+
+/// `swoole::time<std::chrono::milliseconds>(true)`: the steady clock in milliseconds.
+extern "C" fn steady_ms() -> f64 {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    #[cfg(target_vendor = "apple")]
+    let clock = libc::CLOCK_UPTIME_RAW;
+    #[cfg(not(target_vendor = "apple"))]
+    let clock = libc::CLOCK_MONOTONIC;
+    // SAFETY: a writable timespec.
+    unsafe { libc::clock_gettime(clock, &raw mut now) };
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "upstream converts the millisecond count to double too"
+    )]
+    let ms = (now.tv_sec * 1000 + now.tv_nsec / 1_000_000) as f64;
+    ms
+}
+
+unsafe extern "C" fn tls_peek(socket: *mut c_void, buffer: *mut c_void, length: usize) -> isize {
+    // SAFETY: the peek lends the record holding an SSL it was given.
+    let ssl = unsafe { (*socket.cast::<SocketRecord>()).ssl };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "SSL_peek takes an int length, as upstream passes it"
+    )]
+    let length = length as c_int;
+    // SAFETY: the record's SSL and the caller's buffer.
+    unsafe { openssl_sys::SSL_peek(ssl.cast(), buffer, length) as isize }
+}
+
+/// `ssize_t Socket::recv(void *, size_t, int)`.
+///
+/// # Safety
+/// `socket` is a live record and `buffer` denotes `length` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket4recvEPvmi")
+)]
+pub unsafe extern "C" fn socket_recv(
+    socket: *mut SocketRecord,
+    buffer: *mut c_void,
+    length: usize,
+    flags: c_int,
+) -> isize {
+    // SAFETY: as the caller promises; the TLS call and clock are valid for it.
+    unsafe { swr_v1_socket_record_recv(socket, buffer, length, flags, tls_recv, steady_ms) }
+}
+
+/// `ssize_t Socket::send(const void *, size_t, int)`.
+///
+/// # Safety
+/// `socket` is a live record and `buffer` denotes `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket4sendEPKvmi")
+)]
+pub unsafe extern "C" fn socket_send(
+    socket: *mut SocketRecord,
+    buffer: *const c_void,
+    length: usize,
+    flags: c_int,
+) -> isize {
+    // SAFETY: as the caller promises; the TLS call and clock are valid for it.
+    unsafe { swr_v1_socket_record_send(socket, buffer, length, flags, tls_send, steady_ms) }
+}
+
+/// `ssize_t Socket::peek(void *, size_t, int) const`.
+///
+/// # Safety
+/// `socket` is a live record and `buffer` denotes `length` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole7network6Socket4peekEPvmi")
+)]
+pub unsafe extern "C" fn socket_peek(
+    socket: *mut SocketRecord,
+    buffer: *mut c_void,
+    length: usize,
+    flags: c_int,
+) -> isize {
+    // SAFETY: as the caller promises; the TLS call is valid for it.
+    unsafe { swr_v1_socket_record_peek(socket, buffer, length, flags, tls_peek) }
+}
+
+/// `bool Socket::check_liveness()`: a nonblocking one-byte peek that neither
+/// ends the stream nor fails with an error that closes it.
+///
+/// # Safety
+/// `socket` is a live record.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket14check_livenessEv")
+)]
+pub unsafe extern "C" fn socket_check_liveness(socket: *mut SocketRecord) -> bool {
+    let mut byte = 0u8;
+    set_errno(0);
+    // SAFETY: as the caller promises, and a one-byte buffer.
+    let peeked = unsafe { socket_peek(socket, (&raw mut byte).cast(), 1, libc::MSG_DONTWAIT) };
+    // SAFETY: as the caller promises; the peek has returned.
+    let record = unsafe { &mut *socket };
+    !(peeked == 0 || (peeked < 0 && record.catch_error(errno()) == CLOSE))
+}
+
+/// One blocking call: the socket and its I/O's operands.
+struct Call {
+    socket: *mut SocketRecord,
+    io: Io,
+}
+
+/// The I/O a blocking call repeats, with the operands beyond the loop's buffer.
+#[derive(Clone, Copy)]
+enum Io {
+    Send,
+    Recv,
+    Read,
+    Write,
+    SendTo(*const SocketAddress),
+    RecvFrom(*mut libc::sockaddr, *mut libc::socklen_t),
+    Writev(*const libc::iovec, usize),
+}
+
+unsafe extern "C" fn sync_prepare(call: *mut c_void) {
+    // SAFETY: `sync` lends its live call.
+    let socket = unsafe { (*call.cast::<Call>()).socket };
+    // SAFETY: the call's live record.
+    let record = unsafe { &mut *socket };
+    let (nonblock, ssl, tls) = (record.output.nonblock, record.ssl, tls(record));
+    if nonblock == 0 {
+        // SAFETY: the call's live record.
+        unsafe { socket_set_fd_option(socket, 1, -1) };
+    }
+    if !ssl.is_null() {
+        // SAFETY: the record's TLS group.
+        unsafe { swr_v1_socket_ssl_clear(tls) };
+    }
+}
+
+unsafe extern "C" fn sync_events(call: *mut c_void, event: c_int) -> i16 {
+    // SAFETY: `sync` lends its live call.
+    let socket = unsafe { (*call.cast::<Call>()).socket };
+    // SAFETY: the call's live record.
+    swr_v1_reactor_poll_events_to(unsafe { cpp_socket_what_event_want(socket, event) })
+}
+
+unsafe extern "C" fn sync_io(
+    call: *mut c_void,
+    buffer: *mut c_void,
+    length: usize,
+    flags: c_int,
+) -> isize {
+    // SAFETY: `sync` lends its live call.
+    let Call { socket, io } = unsafe { &*call.cast::<Call>() };
+    // SAFETY: the call's live record.
+    let fd = unsafe { (**socket).fd };
+    match *io {
+        // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
+        Io::Send => unsafe { socket_send(*socket, buffer, length, flags) },
+        // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
+        Io::Recv => unsafe { socket_recv(*socket, buffer, length, flags) },
+        // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
+        Io::Read => unsafe { libc::read(fd, buffer, length) },
+        // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
+        Io::Write => unsafe { libc::write(fd, buffer, length) },
+        Io::SendTo(address) => {
+            // SAFETY: the caller's live `network::Address`.
+            let size = unsafe { (*address).len };
+            // SAFETY: the loop's buffer, and the address's storage is its first member.
+            unsafe { libc::sendto(fd, buffer, length, flags, address.cast(), size) }
+        }
+        Io::RecvFrom(address, size) => {
+            // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
+            unsafe { swr_v1_socket_recvfrom(fd, buffer, length, flags, address, size, RETRY_COUNT) }
+        }
+        Io::Writev(vectors, count) => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                reason = "writev takes an int count, as upstream passes it"
+            )]
+            let count = count as c_int;
+            // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
+            unsafe { libc::writev(fd, vectors, count) }
+        }
+    }
+}
+
+/// `Socket::wait_for`'s loop (`crates/reactor/src/socket_sync.rs`) around `io`,
+/// waiting for writability (else readability) up to the socket's timeout.
+///
+/// # Safety
+/// `socket` is a live record, `buffer` denotes `length` bytes valid for `io`, and
+/// `io`'s operands are valid for it.
+unsafe fn sync(
+    socket: *mut SocketRecord,
+    io: Io,
+    kind: c_int,
+    buffer: *const c_void,
+    length: usize,
+    flags: c_int,
+    write: bool,
+) -> isize {
+    let call = Call { socket, io };
+    // SAFETY: as the caller promises.
+    let record = unsafe { &mut *socket };
+    let timeout = if write {
+        record.timeouts.write
+    } else {
+        record.timeouts.read
+    };
+    let hooks = SyncHooks {
+        socket: (&raw const call).cast_mut().cast(),
+        fd: record.fd,
+        dont_restart: record.dont_restart != 0,
+        kernel_nobufs: &raw mut record.kernel_nobufs,
+        prepare: sync_prepare,
+        events: sync_events,
+        io: sync_io,
+        set_last_error: log::swr_v1_core_set_last_error,
+        dispatch: signal_dispatch(),
+    };
+    let event = if write { EVENT_WRITE } else { EVENT_READ };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "sec2msec's long is passed on as an int, as upstream does"
+    )]
+    let timeout_ms = (timeout * 1000.0) as c_long as c_int;
+    let buffer = buffer.cast_mut();
+    // SAFETY: the hooks are valid for this call, as is the caller's buffer.
+    unsafe {
+        swr_v1_socket_sync(
+            &raw const hooks,
+            kind,
+            buffer,
+            length,
+            flags,
+            event,
+            timeout_ms,
+        )
+    }
+}
+
+/// `ssize_t Socket::send_sync(const void *, size_t, int)`.
+///
+/// # Safety
+/// `socket` is a live record and `buffer` denotes `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket9send_syncEPKvmi")
+)]
+pub unsafe extern "C" fn socket_send_sync(
+    socket: *mut SocketRecord,
+    buffer: *const c_void,
+    length: usize,
+    flags: c_int,
+) -> isize {
+    // SAFETY: as the caller promises.
+    unsafe { sync(socket, Io::Send, SYNC_SEND, buffer, length, flags, true) }
+}
+
+/// `ssize_t Socket::recv_sync(void *, size_t, int)`: `MSG_WAITALL` is cleared for
+/// each call, since under nonblocking I/O it would spin on EAGAIN.
+///
+/// # Safety
+/// `socket` is a live record and `buffer` denotes `length` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket9recv_syncEPvmi")
+)]
+pub unsafe extern "C" fn socket_recv_sync(
+    socket: *mut SocketRecord,
+    buffer: *mut c_void,
+    length: usize,
+    flags: c_int,
+) -> isize {
+    // SAFETY: as the caller promises.
+    unsafe { sync(socket, Io::Recv, SYNC_RECV, buffer, length, flags, false) }
+}
+
+/// `ssize_t Socket::read_sync(void *, size_t)`.
+///
+/// # Safety
+/// `socket` is a live record and `buffer` denotes `length` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket9read_syncEPvm")
+)]
+pub unsafe extern "C" fn socket_read_sync(
+    socket: *mut SocketRecord,
+    buffer: *mut c_void,
+    length: usize,
+) -> isize {
+    // SAFETY: as the caller promises.
+    unsafe { sync(socket, Io::Read, SYNC_ONCE, buffer, length, 0, false) }
+}
+
+/// `ssize_t Socket::write_sync(const void *, size_t)`.
+///
+/// # Safety
+/// `socket` is a live record and `buffer` denotes `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket10write_syncEPKvm")
+)]
+pub unsafe extern "C" fn socket_write_sync(
+    socket: *mut SocketRecord,
+    buffer: *const c_void,
+    length: usize,
+) -> isize {
+    // SAFETY: as the caller promises.
+    unsafe { sync(socket, Io::Write, SYNC_ONCE, buffer, length, 0, true) }
+}
+
+/// `ssize_t Socket::sendto_sync(const Address &, const void *, size_t, int)`.
+///
+/// # Safety
+/// `socket` is a live record, `address` a live `network::Address` and `buffer`
+/// denotes `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket11sendto_syncERKNS0_7AddressEPKvmi")
+)]
+pub unsafe extern "C" fn socket_sendto_sync(
+    socket: *mut SocketRecord,
+    address: *const SocketAddress,
+    buffer: *const c_void,
+    length: usize,
+    flags: c_int,
+) -> isize {
+    let io = Io::SendTo(address);
+    // SAFETY: as the caller promises.
+    unsafe { sync(socket, io, SYNC_ONCE, buffer, length, flags, true) }
+}
+
+/// `ssize_t Socket::recvfrom_sync(char *, size_t, int, sockaddr *, socklen_t *)`.
+///
+/// # Safety
+/// `socket` is a live record, `buffer` denotes `length` writable bytes, and
+/// `address` and `size` are as recvfrom(2) takes them.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket13recvfrom_syncEPcmiP8sockaddrPj")
+)]
+pub unsafe extern "C" fn socket_recvfrom_sync(
+    socket: *mut SocketRecord,
+    buffer: *mut c_void,
+    length: usize,
+    flags: c_int,
+    address: *mut libc::sockaddr,
+    size: *mut libc::socklen_t,
+) -> isize {
+    let io = Io::RecvFrom(address, size);
+    // SAFETY: as the caller promises.
+    unsafe { sync(socket, io, SYNC_ONCE, buffer, length, flags, false) }
+}
+
+/// `ssize_t Socket::recvfrom_sync(char *, size_t, int, Address *)`, into the
+/// address's storage and length.
+///
+/// # Safety
+/// `socket` is a live record, `buffer` denotes `length` writable bytes, and
+/// `address` is a live `network::Address`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket13recvfrom_syncEPcmiPNS0_7AddressE")
+)]
+pub unsafe extern "C" fn socket_recvfrom_sync_address(
+    socket: *mut SocketRecord,
+    buffer: *mut c_void,
+    length: usize,
+    flags: c_int,
+    address: *mut SocketAddress,
+) -> isize {
+    // SAFETY: as the caller promises.
+    let address = unsafe { &mut *address };
+    let (storage, size) = (&raw mut address.addr, &raw mut address.len);
+    // SAFETY: as the caller promises.
+    unsafe { socket_recvfrom_sync(socket, buffer, length, flags, storage.cast(), size) }
+}
+
+/// `ssize_t Socket::writev_sync(const iovec *, size_t)`.
+///
+/// # Safety
+/// `socket` is a live record and `vectors` denotes `count` readable `iovec`s.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket11writev_syncEPK5iovecm")
+)]
+pub unsafe extern "C" fn socket_writev_sync(
+    socket: *mut SocketRecord,
+    vectors: *const libc::iovec,
+    count: usize,
+) -> isize {
+    let io = Io::Writev(vectors, count);
+    // SAFETY: as the caller promises.
+    unsafe { sync(socket, io, SYNC_ONCE, std::ptr::null(), 0, 0, true) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_prints_the_address_as_upstream() {
+        let mut socket = SocketRecord::new();
+        socket.info.kind = 1;
+        socket.info.addr.inet_v4.sin_addr.s_addr = u32::from_be_bytes([127, 0, 0, 1]).to_be();
+        socket.info.addr.inet_v4.sin_port = 9501u16.to_be();
+        assert_eq!(peer(&socket.info), ("127.0.0.1".into(), 9501));
+        socket.info.kind = 3;
+        socket.info.addr.inet_v6.sin6_addr.s6_addr =
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert_eq!(peer(&socket.info).0, "::1");
+        socket.info.kind = 0;
+        assert_eq!(peer(&socket.info), ("unknown".into(), 0));
+    }
+
+    #[test]
+    fn cert_chain_without_ssl_is_null() {
+        let socket = SocketRecord::new();
+        assert!(unsafe { socket_ssl_get_peer_cert_chain(&raw const socket) }.is_null());
+    }
+
+    #[test]
+    fn blocking_calls_and_liveness_over_a_socket_pair() {
+        let mut fds = [0; 2];
+        assert_eq!(
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) },
+            0
+        );
+        let mut left = SocketRecord::with_fd(fds[0], 0);
+        let mut right = SocketRecord::with_fd(fds[1], 0);
+        let sent = unsafe { socket_send_sync(&raw mut left, b"ping".as_ptr().cast(), 4, 0) };
+        assert_eq!(sent, 4);
+        assert!(unsafe { socket_check_liveness(&raw mut right) });
+        let mut buffer = [0u8; 4];
+        let received = unsafe {
+            socket_recv_sync(
+                &raw mut right,
+                buffer.as_mut_ptr().cast(),
+                4,
+                libc::MSG_WAITALL,
+            )
+        };
+        assert_eq!((received, &buffer), (4, b"ping"));
+        assert_eq!(right.total_recv_bytes, 4);
+        assert_ne!(right.output.nonblock, 0);
+        unsafe { libc::close(fds[0]) };
+        assert!(!unsafe { socket_check_liveness(&raw mut right) });
+        unsafe { libc::close(fds[1]) };
+    }
+}

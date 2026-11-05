@@ -14,8 +14,9 @@ Swoole's internals are C++ classes, not a C API, so the seam uses hand-written
   exception/bailout handling stay in the PHP-facing C++ layer.
 - PHP values stay on their owning thread. Upstream owns the reactor and
   scheduling; no Tokio runtime drives Swoole descriptors.
-- Keep the upstream implementation selectable at build time until the
-  replacement passes the corpus, upstream tests and benchmarks, then delete it.
+- Build and test only the all-modules hybrid; the pinned upstream build is the
+  oracle. Delete an upstream body once its replacement passes the corpus,
+  upstream tests and benchmarks.
 
 Mature third-party libraries (HTTP parsers, TLS, compression, database
 clients) are not rewritten unless doing so removes a dependency or fixes a
@@ -37,9 +38,9 @@ A module graduates when:
    micro-benchmarks and timings are reported but don't gate.
 4. It has no open `p0`/`p1` `kind:bug` issues.
 
-A graduated module is listed in `GRADUATED` in `tools/build_hybrid.py`. Every
-Rust build applies its patches, sets its feature bit and links its crate; there
-is no `--module` or `--enable-swoole-rs-` switch, no `SWOOLE_RS_` guard and no
+Every Rust build applies every module's patches, sets its feature bit and links
+its crate. A graduated module is listed in `GRADUATED` in `tools/build_hybrid.py`
+and also has no `--enable-swoole-rs-` switch, no `SWOOLE_RS_` guard and no
 cargo feature. Reference builds (`tools/build_upstream.py`,
 `build_hybrid.py --backend upstream`) stay pristine: they are the oracle that
 differential tests compare against, not a fallback.

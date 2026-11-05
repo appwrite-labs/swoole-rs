@@ -141,18 +141,6 @@ pub(crate) unsafe fn duplicate_bytes(
     target
 }
 
-/// # Safety
-/// `slot` exclusively holds a Zend request allocation or null; release clears it.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_bytes_free(slot: *mut *mut c_char) {
-    // SAFETY: the caller owns the initialized slot.
-    let value = unsafe { slot.replace(ptr::null_mut()) };
-    if !value.is_null() {
-        // SAFETY: the slot held a Zend request allocation.
-        unsafe { sys::swr_zend_efree(value.cast::<c_void>()) };
-    }
-}
-
 /// Allocate the owning zval. C++'s public `value` aliases this stable Rust storage.
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn swr_v1_phphelpers_variable_new() -> *mut zval {
@@ -290,20 +278,5 @@ pub(crate) unsafe fn alloc_request(size: usize) -> *mut c_void {
     if unsafe { sys::swr_zend_try_facade_alloc(size, &raw mut result) } != 0 {
         bailout::Bailout.defer();
     }
-    result
-}
-
-/// # Safety
-/// A borrowed readable span. The result belongs to Zend request memory or libc as requested.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_bytes_dup(
-    text: *const c_char,
-    length: usize,
-    request: bool,
-    lower: bool,
-) -> *mut c_char {
-    // SAFETY: forward the span to the internal allocator without holding an owned Rust value.
-    let result = unsafe { duplicate_bytes(text, length, request, lower) };
-    bailout::finish();
     result
 }

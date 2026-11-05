@@ -60,14 +60,12 @@ void swr_v1_phpruntime_minit(int32_t module_number,
 uint8_t swr_v1_phpruntime_set_hook_flags(struct _zend_execute_data *frame, struct _zval_struct *value, uint32_t min);
 /* PHPCoroutine::enable_hook: bit 0 applied, bit 1 a trapped bailout. */
 uint8_t swr_v1_phpruntime_enable_hook(uint32_t flags);
-void swr_v1_phpruntime_unsafe_functions(uint8_t disable);
 /* RINIT: 1 on the main thread (C++ then saves the original stream ops). */
 uint8_t swr_v1_phpruntime_rinit(void);
 /* The transport factory PHP had registered for proto (saved at RINIT), or NULL. */
 void *swr_v1_phpruntime_original_transport(const char *proto, size_t length);
 /* RSHUTDOWN: 1 if a bailout was trapped. */
 uint8_t swr_v1_phpruntime_rshutdown(void);
-swr_v1_phpruntime_handler swr_v1_phpruntime_original_handler(const char *name, size_t length);
 /* swoole_user_func_handler: 1 if the call bailed out. */
 uint8_t swr_v1_phpruntime_user_func(struct _zend_execute_data *frame, struct _zval_struct *value);
 
@@ -111,8 +109,6 @@ int swr_v1_phpruntime_connect_to_host(const char *host,
                                       unsigned short bindport,
                                       long sockopts,
                                       uint8_t *bailout);
-/* php_async_socket_poll. */
-int swr_v1_phpruntime_socket_poll(int fd, int events, int timeout);
 
 /* Defined by ext-src/swoole_runtime.cc for those streams: the coroutine socket
  * (a SocketImpl *) is still C++, so each operation is one call. */

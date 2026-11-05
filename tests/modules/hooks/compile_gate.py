@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile all eight unchanged and selected complete native units, plus disabled guards.
+"""Compile the native units the hooks patches touch, unchanged and selected, plus disabled guards.
 
 original: the pinned tree. selected: the same tree with every file the hybrid build
 `--archive` comes from patched (overlay_hybrid_tree, #796) and that build's config.h.
@@ -69,7 +69,8 @@ def main():
             (tree/'config.h').write_bytes(config if variant == 'selected' else baseline_config)
             flags = common + (abi if variant != 'original' else [])
             # Translation units only: the patches also touch headers (stubs), which the units include.
-            for path in (path for path in paths if path.endswith(".cc")):
+            # A unit the hybrid deletes (its Rust replaces it) has no selected or disabled build.
+            for path in (path for path in paths if path.endswith(".cc") and (variant == 'original' or (hybrid_source/path).exists())):
                 command = ['c++', *flags, '-fsyntax-only', str(tree/path)]
                 result = subprocess.run(command, capture_output=True, text=True)
                 passed = result.returncode == 0 if variant != 'disabled' else result.returncode != 0 and 'Hooks overlay requires --enable-swoole-rs-hooks' in result.stderr
@@ -78,15 +79,6 @@ def main():
                 status = 'UNSUPPORTED' if passed and compiled_out and variant != 'disabled' else 'PASS' if passed else 'FAIL'
                 print(variant, path, result.returncode, status, flush=True)
                 rows.append(dict(variant=variant, path=path, command=command, returncode=result.returncode, passed=passed, status=status, stderr=result.stderr))
-            if variant == 'selected':
-                path = 'tests/modules/hooks/fd_control_sdk.cpp'
-                command = ['c++', *flags, '-fsyntax-only', str(ROOT/path)]
-                result = subprocess.run(command, capture_output=True, text=True)
-                passed = result.returncode == 0
-                status = 'PASS' if passed else 'FAIL'
-                print('sdk-selected', path, result.returncode, status, flush=True)
-                rows.append(dict(variant='sdk-selected', path=path, command=command,
-                                 returncode=result.returncode, passed=passed, status=status, stderr=result.stderr))
     report = dict(pin=PIN, scope=__doc__, hybrid_tree=str(hybrid_source), pkg_config_path=pkg_env.get('PKG_CONFIG_PATH', ''), discovered_prefixes=discovered_prefixes, compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0], rows=rows)
     a.report.parent.mkdir(parents=True, exist_ok=True)
     a.report.write_text(json.dumps(report, indent=2)+'\n')

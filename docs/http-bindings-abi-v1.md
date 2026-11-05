@@ -1,6 +1,6 @@
 # PHP HTTP bindings boundary (M23)
 
-Feature value 2097152 (`--module httpbindings`). Upstream targets:
+Feature value 2097152. Upstream targets:
 `ext-src/swoole_http_{cookie,request,response,server,server_coro}.cc`.
 `php_swoole_http.h`, `php_swoole_http_server.h`, stubs/arginfo and class
 declarations are unchanged. Follows the

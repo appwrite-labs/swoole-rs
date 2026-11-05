@@ -1,998 +1,911 @@
-//! Owned String planning and byte mutation. Frozen planning APIs allocate nothing.
-//! Only the additive system edit calls libc; custom/Zend allocation remains native.
-use super::{INVALID, NOMEM, OK, OVERFLOW};
-#[cfg(test)]
-use std::mem::MaybeUninit;
+// SPDX-License-Identifier: Apache-2.0
+// Compatibility derived from Swoole v6.2.4 src/core/string.cc and include/swoole_string.h
+// (Swoole contributors).
+//! `swoole::String`: the C++ object itself (its layout pinned on both sides), and
+//! every method upstream gives a body. With `upstream-symbols` (the hybrid's build)
+//! each is defined under its upstream (Itanium) symbol and the C++ sources no
+//! longer define it.
+//!
+//! An allocation failure aborts: upstream throws `std::bad_alloc`, which no
+//! first-party code catches. Arithmetic wraps, as upstream's `size_t` does, and
+//! the casts are upstream's C casts.
+use std::ffi::{c_char, c_int, c_void};
+use std::mem::offset_of;
 use std::ptr;
 
-pub const RESERVE: u32 = 0;
-pub const APPEND: u32 = 1;
-pub const WRITE: u32 = 2;
-pub const REPEAT: u32 = 3;
-pub const REDUCE: u32 = 4;
-pub const POP: u32 = 5;
-pub const DROP: u32 = 6;
-pub const TERMINATE: u32 = 7;
-pub const COPY: u32 = 8;
-pub const APPEND_I32: u32 = 9;
-const NO_SOURCE: usize = usize::MAX;
+/// `swoole::Allocator`.
+#[repr(C)]
+pub struct Allocator {
+    pub malloc: unsafe extern "C" fn(usize) -> *mut c_void,
+    pub calloc: unsafe extern "C" fn(usize, usize) -> *mut c_void,
+    pub realloc: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
+    pub free: unsafe extern "C" fn(*mut c_void),
+}
 
+/// `SwooleG.std_allocator`, which only ever holds libc's allocator.
+pub static STD_ALLOCATOR: Allocator = Allocator {
+    malloc: libc::malloc,
+    calloc: libc::calloc,
+    realloc: libc::realloc,
+    free: libc::free,
+};
+
+/// `swoole::String` (`string.cc` asserts the same layout).
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub struct StringState {
-    pub data: *mut u8,
+pub struct CppString {
     pub length: usize,
-    pub capacity: usize,
+    pub size: usize,
     pub offset: i64,
+    pub str: *mut u8,
+    pub allocator: *const Allocator,
 }
-#[repr(C)]
-pub struct StringEdit {
-    pub operation: u32,
-    pub data: *const u8,
-    pub length: usize,
-    pub count: usize,
-    pub offset: i64,
-    pub alignment: usize,
-    pub page: usize,
+
+const _: () = assert!(
+    size_of::<CppString>() == 40
+        && offset_of!(CppString, offset) == 16
+        && offset_of!(CppString, str) == 24
+        && offset_of!(CppString, allocator) == 32
+        && size_of::<Allocator>() == 32,
+    "swoole::String's layout"
+);
+
+/// `(size_t) off_t`.
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "upstream's C cast"
+)]
+const fn unsigned(value: i64) -> usize {
+    value as usize
 }
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct StringPlan {
-    pub capacity: usize,
-    pub length: usize,
-    pub offset: i64,
-    pub source_offset: usize,
-    /// 0: no allocation, 1: malloc, 2: realloc. Native executes this request.
-    pub allocation: u32,
+
+/// `(off_t) size_t`.
+#[expect(clippy::cast_possible_wrap, reason = "upstream's C cast")]
+const fn signed(value: usize) -> i64 {
+    value as i64
 }
-impl StringPlan {
-    const ZERO: Self = Self {
-        capacity: 0,
+
+/// `SW_MEM_ALIGNED_SIZE`.
+const fn aligned(size: usize) -> usize {
+    size.wrapping_add(7) & !7
+}
+
+/// `swoole_size_align(size, swoole_pagesize())`.
+fn page_aligned(size: usize) -> usize {
+    let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
+    size.wrapping_add(page.wrapping_sub(size % page))
+}
+
+/// # Safety
+/// `data` is readable for `length` bytes, or `length` is zero.
+unsafe fn bytes<'a>(data: *const u8, length: usize) -> &'a [u8] {
+    if length == 0 {
+        return &[];
+    }
+    // SAFETY: the caller's readable range.
+    unsafe { std::slice::from_raw_parts(data, length) }
+}
+
+/// `swoole_strnstr`: the first `needle` in `haystack`, both lengths cut to its `uint32_t`.
+///
+/// # Safety
+/// Both are readable for their cut lengths.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "swoole_strnstr's uint32_t lengths"
+)]
+unsafe fn strnstr(
+    haystack: *const u8,
+    haystack_length: usize,
+    needle: *const u8,
+    needle_length: usize,
+) -> Option<usize> {
+    let (haystack_length, needle_length) = (
+        haystack_length as u32 as usize,
+        needle_length as u32 as usize,
+    );
+    debug_assert!(needle_length > 0, "swoole_strnstr's needle is not empty");
+    if needle_length > haystack_length {
+        return None;
+    }
+    // SAFETY: the caller's readable range.
+    let haystack = unsafe { bytes(haystack, haystack_length) };
+    // SAFETY: as above.
+    let needle = unsafe { bytes(needle, needle_length) };
+    memchr::memmem::find(haystack, needle)
+}
+
+/// An allocator's result, aborting on failure as `std::bad_alloc` would.
+fn checked(pointer: *mut c_void) -> *mut u8 {
+    if pointer.is_null() {
+        std::process::abort();
+    }
+    pointer.cast()
+}
+
+/// # Safety
+/// `allocator` is live.
+unsafe fn allocator<'a>(allocator: *const Allocator) -> &'a Allocator {
+    // SAFETY: as the caller promises.
+    unsafe { &*allocator }
+}
+
+/// The C++ side of `String::split`: calls the `StringExplodeHandler` it lends.
+pub type SplitCall = unsafe extern "C" fn(*const c_void, *const c_char, usize) -> bool;
+
+impl CppString {
+    pub const EMPTY: Self = Self {
         length: 0,
+        size: 0,
         offset: 0,
-        source_offset: NO_SOURCE,
-        allocation: 0,
+        str: ptr::null_mut(),
+        allocator: ptr::null(),
     };
-}
-fn aligned(size: usize, alignment: usize) -> Result<usize, i32> {
-    if !alignment.is_power_of_two() {
-        return Err(INVALID);
-    }
-    let size = size.checked_add(alignment - 1).ok_or(OVERFLOW)? & !(alignment - 1);
-    if size > isize::MAX as usize {
-        Err(OVERFLOW)
-    } else {
-        Ok(size)
-    }
-}
 
-// Upstream `swoole_size_align(size, pagesize)` (include/swoole.h): `size + (page -
-// size % page)`. Unlike `aligned`, it always adds up to a whole page, so an already
-// page-aligned size grows by one more page. The grow paths (`String::write`,
-// `String::append_random_bytes`) size their reserve with it, so match it exactly.
-fn page_align(size: usize, page: usize) -> Result<usize, i32> {
-    if !page.is_power_of_two() {
-        return Err(INVALID);
-    }
-    let size = size.checked_add(page - size % page).ok_or(OVERFLOW)?;
-    if size > isize::MAX as usize {
-        Err(OVERFLOW)
-    } else {
-        Ok(size)
-    }
-}
-impl StringState {
-    fn validate(&self) -> Result<(), i32> {
-        if self.length > self.capacity
-            || self.capacity > isize::MAX as usize
-            || (self.capacity != 0 && self.data.is_null())
-        {
-            return Err(INVALID);
-        }
-        Ok(())
-    }
-    fn input_offset(&self, data: *const u8, length: usize) -> Result<usize, i32> {
-        if length > isize::MAX as usize {
-            return Err(OVERFLOW);
-        }
-        if length != 0 && data.is_null() {
-            return Err(INVALID);
-        }
-        let (input, base) = (data as usize, self.data as usize);
-        if !self.data.is_null() && input >= base && input - base < self.capacity {
-            let offset = input - base;
-            if length > self.capacity - offset {
-                return Err(INVALID);
-            }
-            Ok(offset)
+    /// `String::alloc`: a fresh buffer, from the standard allocator when `with` is null.
+    pub fn alloc(&mut self, size: usize, with: *const Allocator) {
+        let with = if with.is_null() {
+            &raw const STD_ALLOCATOR
         } else {
-            Ok(NO_SOURCE)
+            with
+        };
+        let size = aligned(size);
+        self.length = 0;
+        self.size = size;
+        self.offset = 0;
+        // SAFETY: `with` is null (replaced above) or a live allocator, as every String's is.
+        let malloc = unsafe { allocator(with) }.malloc;
+        // SAFETY: an allocator's malloc.
+        self.str = checked(unsafe { malloc(size) });
+        self.allocator = with;
+    }
+
+    /// The destructor's body.
+    pub fn dispose(&mut self) {
+        if !self.allocator.is_null() && !self.str.is_null() {
+            // SAFETY: a String's allocator is live.
+            let free = unsafe { allocator(self.allocator) }.free;
+            // SAFETY: `str` is this allocator's live allocation.
+            unsafe { free(self.str.cast()) };
         }
     }
-    fn plan(&self, edit: &StringEdit) -> Result<StringPlan, i32> {
-        if edit.operation == DROP {
-            return Ok(StringPlan::ZERO);
+
+    /// `String::copy`.
+    pub fn copy_from(&mut self, source: &Self) {
+        self.alloc(source.size, source.allocator);
+        // SAFETY: the new allocation holds `source.size >= source.length` bytes.
+        unsafe { ptr::copy_nonoverlapping(source.str, self.str, source.length) };
+        self.length = source.length;
+        self.offset = source.offset;
+    }
+
+    /// `String::move`.
+    pub fn move_from(&mut self, source: &mut Self) {
+        self.str = source.str;
+        self.length = source.length;
+        self.offset = source.offset;
+        self.size = source.size;
+        self.allocator = source.allocator;
+        source.str = ptr::null_mut();
+        source.length = 0;
+        source.size = 0;
+        source.offset = 0;
+    }
+
+    fn view(&self) -> &[u8] {
+        // SAFETY: `str` holds `length` bytes.
+        unsafe { bytes(self.str, self.length) }
+    }
+
+    pub fn reserve(&mut self, new_size: usize) {
+        if self.size == 0 {
+            self.alloc(new_size, ptr::null());
+            return;
         }
-        self.validate()?;
-        let mut plan = StringPlan {
-            capacity: self.capacity,
-            length: self.length,
-            offset: self.offset,
-            ..StringPlan::ZERO
-        };
-        if matches!(edit.operation, APPEND | WRITE | REPEAT | COPY) {
-            plan.source_offset = self.input_offset(edit.data, edit.length)?;
+        let new_size = aligned(new_size);
+        // SAFETY: a String with a buffer has a live allocator.
+        let realloc = unsafe { allocator(self.allocator) }.realloc;
+        // SAFETY: `str` is this allocator's live allocation.
+        self.str = checked(unsafe { realloc(self.str.cast(), new_size) });
+        self.size = new_size;
+    }
+
+    pub fn extend(&mut self, new_size: usize) {
+        debug_assert!(new_size > self.size, "String::extend grows");
+        self.reserve(new_size);
+    }
+
+    /// `String::append(const char *, size_t)`.
+    ///
+    /// # Safety
+    /// `data` is readable for `length` bytes after any reallocation.
+    pub unsafe fn append(&mut self, data: *const u8, length: usize) {
+        let new_size = self.length.wrapping_add(length);
+        if new_size > self.size {
+            self.reserve(new_size);
         }
-        match edit.operation {
-            RESERVE => {
-                plan.capacity = aligned(edit.length, edit.alignment)?;
-                if plan.capacity < self.length {
-                    return Err(INVALID);
-                }
-                plan.allocation = if self.data.is_null() || plan.capacity == 0 {
-                    1
-                } else {
-                    2
-                };
-            }
-            COPY => {
-                // count is source capacity; page is the direct same-object fact.
-                // Copy targets are initialized empty before native allocation.
-                if !self.data.is_null()
-                    || self.capacity != 0
-                    || edit.page > 1
-                    || edit.length > edit.count
-                {
-                    return Err(INVALID);
-                }
-                plan.capacity = aligned(edit.count, edit.alignment)?;
-                plan.length = if edit.page == 0 { edit.length } else { 0 };
-                plan.offset = if edit.page == 0 { edit.offset } else { 0 };
-                plan.allocation = 1;
-            }
-            TERMINATE => {
-                // count1 marks a borrowed writable span: only in-place NUL is legal.
-                if edit.count > 1 || (edit.count == 1 && self.length == self.capacity) {
-                    return Err(INVALID);
-                }
-                if self.length == self.capacity {
-                    plan.capacity =
-                        aligned(self.length.checked_add(1).ok_or(OVERFLOW)?, edit.alignment)?;
-                    plan.allocation = if self.data.is_null() { 1 } else { 2 };
-                }
-            }
-            APPEND | WRITE | REPEAT | APPEND_I32 => {
-                let at = if edit.operation == WRITE {
-                    usize::try_from(edit.offset).map_err(|_| INVALID)?
-                } else {
-                    self.length
-                };
-                let added = if edit.operation == REPEAT {
-                    if edit.count == 0 {
-                        return Err(INVALID);
-                    }
-                    edit.length.checked_mul(edit.count).ok_or(OVERFLOW)?
-                } else if edit.operation == APPEND_I32 {
-                    let value = i32::try_from(edit.offset).map_err(|_| INVALID)?;
-                    itoa::Buffer::new().format(value).len()
-                } else {
-                    edit.length
-                };
-                let end = at.checked_add(added).ok_or(OVERFLOW)?;
-                if end > isize::MAX as usize {
-                    return Err(OVERFLOW);
-                }
-                plan.length = self.length.max(end);
-                if end > self.capacity {
-                    let capacity = if edit.operation == WRITE {
-                        page_align(end.checked_mul(2).ok_or(OVERFLOW)?, edit.page)?
-                    } else {
-                        end
-                    };
-                    plan.capacity = aligned(capacity, edit.alignment)?;
-                    plan.allocation = if self.data.is_null() { 1 } else { 2 };
-                }
-            }
-            REDUCE => {
-                let offset = usize::try_from(edit.offset).map_err(|_| INVALID)?;
-                if offset > self.length {
-                    return Err(INVALID);
-                }
-                if offset != 0 {
-                    plan.length -= offset;
-                    plan.offset = 0;
-                }
-            }
-            POP => {
-                let offset = usize::try_from(self.offset).map_err(|_| INVALID)?;
-                plan.length = self.length.checked_sub(offset).ok_or(INVALID)?;
-                plan.capacity = aligned(edit.length.max(plan.length), edit.alignment)?;
-                plan.offset = 0;
-                plan.allocation = 1;
-            }
-            _ => return Err(INVALID),
+        // SAFETY: the buffer holds `new_size` bytes; `data` is readable.
+        unsafe { ptr::copy(data, self.str.wrapping_add(self.length), length) };
+        self.length = new_size;
+    }
+
+    /// `String::write(off_t, const char *, size_t)`.
+    ///
+    /// # Safety
+    /// `data` is readable for `length` bytes.
+    pub unsafe fn write(&mut self, offset: i64, data: *const u8, length: usize) {
+        let new_length = unsigned(offset).wrapping_add(length);
+        if new_length > self.size {
+            self.reserve(page_aligned(new_length.wrapping_mul(2)));
         }
-        Ok(plan)
+        // SAFETY: the buffer holds `new_length` bytes; `data` is readable.
+        unsafe { ptr::copy(data, self.str.wrapping_add(unsigned(offset)), length) };
+        if new_length > self.length {
+            self.length = new_length;
+        }
+    }
+
+    pub fn set_null_terminated(&mut self) {
+        if self.length == self.size {
+            self.extend(self.length.wrapping_add(1));
+        }
+        // SAFETY: `length < size`.
+        unsafe { self.str.wrapping_add(self.length).write(0) };
+    }
+
+    /// The first `delimiter` at or after `start`.
+    ///
+    /// # Safety
+    /// `delimiter` holds `delimiter_length` bytes.
+    unsafe fn find(
+        &self,
+        start: usize,
+        delimiter: *const u8,
+        delimiter_length: usize,
+    ) -> Option<usize> {
+        // SAFETY: `str` holds `length` bytes, so `length - start` from `start`; the delimiter is readable.
+        unsafe {
+            strnstr(
+                self.str.wrapping_add(start),
+                self.length.wrapping_sub(start),
+                delimiter,
+                delimiter_length,
+            )
+        }
+    }
+
+    /// `String::split`: each `delimiter`-terminated chunk from `offset` to `handler`.
+    ///
+    /// # Safety
+    /// `delimiter` holds `delimiter_length > 0` bytes; `call` is safe with `handler`.
+    pub unsafe fn split(
+        &mut self,
+        delimiter: *const u8,
+        delimiter_length: usize,
+        call: SplitCall,
+        handler: *const c_void,
+    ) -> isize {
+        let mut start = unsigned(self.offset);
+        let mut first = self.offset;
+        // SAFETY: as the caller promises.
+        let mut found = unsafe { self.find(start, delimiter, delimiter_length) };
+        while let Some(position) = found {
+            let length = position + delimiter_length;
+            let chunk = self.str.wrapping_add(start.wrapping_sub(unsigned(first)));
+            // SAFETY: the chunk lies inside `str`; `call` accepts `handler`.
+            if !unsafe { call(handler, chunk.cast(), length.wrapping_add(unsigned(first))) } {
+                return -1;
+            }
+            self.offset = self.offset.wrapping_add(signed(length));
+            start = unsigned(self.offset);
+            // SAFETY: as the caller promises, over the buffer as the handler left it.
+            found = unsafe { self.find(start, delimiter, delimiter_length) };
+            first = 0;
+        }
+        if first == self.offset {
+            self.offset = signed(self.length.wrapping_sub(delimiter_length));
+        }
+        start.wrapping_sub(unsigned(first)).cast_signed()
+    }
+
+    /// `String::grow`: counts `increment` more bytes, doubling a buffer they fill.
+    pub fn grow(&mut self, increment: usize) {
+        self.length = self.length.wrapping_add(increment);
+        if self.length == self.size {
+            self.reserve(self.size.wrapping_mul(2));
+        }
+    }
+
+    pub fn extend_align(&mut self, new_size: usize) {
+        let mut size = aligned(self.size.wrapping_mul(2));
+        while size < new_size {
+            size = size.wrapping_mul(2);
+        }
+        self.reserve(size);
+    }
+
+    pub fn release(&mut self) -> *mut u8 {
+        let data = self.str;
+        self.str = ptr::null_mut();
+        self.size = 0;
+        self.length = 0;
+        self.offset = 0;
+        data
+    }
+
+    /// # Safety
+    /// `data` holds `length` bytes.
+    pub unsafe fn repeat(&mut self, data: *const u8, length: usize, count: usize) {
+        debug_assert!(count > 0, "String::repeat repeats");
+        if length == 1 {
+            if self.size < self.length.wrapping_add(count) {
+                self.reserve(self.length.wrapping_add(count));
+            }
+            // SAFETY: `data` holds one byte.
+            let byte = unsafe { *data };
+            // SAFETY: the buffer holds `length + count` bytes.
+            unsafe { ptr::write_bytes(self.str.wrapping_add(self.length), byte, count) };
+            self.length = self.length.wrapping_add(count);
+        } else {
+            for _ in 0..count {
+                // SAFETY: as the caller promises.
+                unsafe { self.append(data, length) };
+            }
+        }
+    }
+
+    pub fn append_random_bytes(&mut self, length: usize, base64: bool) -> bool {
+        let encoded = length.wrapping_add(2) / 3 * 4 + 1;
+        let new_size =
+            self.length
+                .wrapping_add(length)
+                .wrapping_add(if base64 { encoded } else { 0 });
+        if new_size > self.size {
+            self.reserve(page_aligned(new_size.wrapping_mul(2)));
+        }
+        let at = self.str.wrapping_add(self.length);
+        // SAFETY: the buffer holds `length` free bytes at `at`.
+        let mut n = unsafe { swoole_rs_corebase::swr_v1_os_random_bytes(at.cast(), length) };
+        if n != length {
+            return false;
+        }
+        if base64 {
+            let mut out = vec![0u8; encoded];
+            // SAFETY: `at` holds `length` bytes; `out` holds their encoding and NUL.
+            n = unsafe { swoole_rs_base64::swr_v1_base64_encode(at, length, out.as_mut_ptr()) };
+            // SAFETY: the buffer's free space holds the encoding.
+            unsafe { ptr::copy_nonoverlapping(out.as_ptr(), at, n) };
+        }
+        self.length = self.length.wrapping_add(n);
+        true
+    }
+
+    pub fn pop(&mut self, init_size: usize) -> *mut u8 {
+        debug_assert!(
+            self.length >= unsigned(self.offset),
+            "String::pop's offset is inside"
+        );
+        let value = self.str;
+        let length = self.length.wrapping_sub(unsigned(self.offset));
+        let size = aligned(if length == 0 {
+            init_size
+        } else {
+            length.max(init_size)
+        });
+        // SAFETY: a String that pops has a live allocator.
+        let malloc = unsafe { allocator(self.allocator) }.malloc;
+        // SAFETY: an allocator's malloc.
+        let new_value: *mut u8 = unsafe { malloc(size) }.cast();
+        if new_value.is_null() {
+            return ptr::null_mut();
+        }
+        self.str = new_value;
+        self.size = size;
+        self.length = length;
+        if length > 0 {
+            let from = value.wrapping_add(unsigned(self.offset));
+            // SAFETY: the old buffer holds `length` bytes from `offset`; the new one `size >= length`.
+            unsafe { ptr::copy_nonoverlapping(from, new_value, length) };
+        }
+        self.offset = 0;
+        value
+    }
+
+    pub fn reduce(&mut self, offset: i64) {
+        debug_assert!(
+            offset >= 0 && unsigned(offset) <= self.length,
+            "String::reduce's offset is inside"
+        );
+        if offset == 0 {
+            return;
+        }
+        self.length = self.length.wrapping_sub(unsigned(offset));
+        self.offset = 0;
+        if self.length == 0 {
+            return;
+        }
+        let from = self.str.wrapping_add(unsigned(offset));
+        // SAFETY: both ranges lie inside `str`.
+        unsafe { ptr::copy(from, self.str, self.length) };
+    }
+
+    pub fn print(&self, value: bool) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "upstream's (int) length"
+        )]
+        let precision = self.length as c_int;
+        if value {
+            // SAFETY: the arguments match the format; `str` holds `length` bytes.
+            unsafe {
+                libc::printf(
+                    c"String[length=%zu,size=%zu,offset=%jd]=%.*s\n".as_ptr(),
+                    self.length,
+                    self.size,
+                    self.offset,
+                    precision,
+                    self.str,
+                )
+            };
+        } else {
+            // SAFETY: the arguments match the format.
+            unsafe {
+                libc::printf(
+                    c"String[length=%zu,size=%zu,offset=%jd]=%p\n".as_ptr(),
+                    self.length,
+                    self.size,
+                    self.offset,
+                    self.str,
+                )
+            };
+        }
     }
 }
 
-/// Compute a request without allocation, byte mutation, or callbacks.
+/// Defines each listed function under its upstream symbol with `upstream-symbols`.
+/// `off_t` is `long long` on macOS and `long` on Linux, which the symbols spell.
+macro_rules! upstream {
+    ($($linux:literal, $macos:literal => $item:item)*) => {$(
+        #[cfg_attr(all(feature = "upstream-symbols", not(target_os = "macos")), unsafe(export_name = $linux))]
+        #[cfg_attr(all(feature = "upstream-symbols", target_os = "macos"), unsafe(export_name = $macos))]
+        $item
+    )*};
+}
+
 /// # Safety
-/// PODs are valid/aligned/disjoint. Owned storage and input satisfy the local
-/// String contract. State/edit remain unchanged until apply; plan is caller-owned.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_string_prepare(
-    state: *const StringState,
-    edit: *const StringEdit,
-    output: *mut StringPlan,
-) -> i32 {
-    if output.is_null() {
-        return INVALID;
+/// `this` is a live String that only the caller uses.
+unsafe fn of<'a>(this: *mut CppString) -> &'a mut CppString {
+    // SAFETY: as the caller promises.
+    unsafe { &mut *this }
+}
+
+/// # Safety
+/// `this` is a live String.
+unsafe fn read<'a>(this: *const CppString) -> &'a CppString {
+    // SAFETY: as the caller promises.
+    unsafe { &*this }
+}
+
+// Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and
+// elsewhere the caller ignores it. Each has a complete (C1/D1) and base (C2/D2) symbol.
+upstream! {
+    "_ZN6swoole6StringC1EmPKNS_9AllocatorE", "_ZN6swoole6StringC1EmPKNS_9AllocatorE" =>
+    /// `String(size_t, const Allocator *)`.
+    /// # Safety
+    /// `this` is writable; `with` is null or live.
+    pub unsafe extern "C" fn swr_string_new(this: *mut CppString, size: usize, with: *const Allocator) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.alloc(size, with);
+        this
     }
-    let result = if state.is_null() || edit.is_null() {
-        Err(INVALID)
-    } else {
-        // SAFETY: both are non-null (checked above), valid, aligned PODs.
-        let state = unsafe { &*state };
+    "_ZN6swoole6StringC2EmPKNS_9AllocatorE", "_ZN6swoole6StringC2EmPKNS_9AllocatorE" =>
+    /// # Safety
+    /// As `swr_string_new`.
+    pub unsafe extern "C" fn swr_string_new_base(this: *mut CppString, size: usize, with: *const Allocator) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        unsafe { swr_string_new(this, size, with) }
+    }
+    "_ZN6swoole6StringC1EPKcm", "_ZN6swoole6StringC1EPKcm" =>
+    /// `String(const char *, size_t)`: a NUL-terminated copy.
+    /// # Safety
+    /// `this` is writable; `data` holds `length` bytes.
+    pub unsafe extern "C" fn swr_string_from(this: *mut CppString, data: *const u8, length: usize) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        let string = unsafe { of(this) };
+        string.alloc(length.wrapping_add(1), ptr::null());
+        // SAFETY: the allocation holds `length + 1` bytes; `data` is readable.
+        unsafe { ptr::copy_nonoverlapping(data, string.str, length) };
         // SAFETY: as above.
-        let edit = unsafe { &*edit };
-        state.plan(edit)
-    };
-    match result {
-        Ok(plan) => {
-            // SAFETY: `output` is non-null (checked above), aligned, writable and disjoint.
-            unsafe { output.write(plan) };
-            OK
-        }
-        Err(status) => {
+        unsafe { string.str.wrapping_add(length).write(0) };
+        string.length = length;
+        this
+    }
+    "_ZN6swoole6StringC2EPKcm", "_ZN6swoole6StringC2EPKcm" =>
+    /// # Safety
+    /// As `swr_string_from`.
+    pub unsafe extern "C" fn swr_string_from_base(this: *mut CppString, data: *const u8, length: usize) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        unsafe { swr_string_from(this, data, length) }
+    }
+    "_ZN6swoole6StringC1ERKS0_", "_ZN6swoole6StringC1ERKS0_" =>
+    /// `String(const String &)`.
+    /// # Safety
+    /// `this` is writable; `source` is live.
+    pub unsafe extern "C" fn swr_string_copy(this: *mut CppString, source: *const CppString) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        let source = unsafe { read(source) };
+        // SAFETY: as above.
+        unsafe { of(this) }.copy_from(source);
+        this
+    }
+    "_ZN6swoole6StringC2ERKS0_", "_ZN6swoole6StringC2ERKS0_" =>
+    /// # Safety
+    /// As `swr_string_copy`.
+    pub unsafe extern "C" fn swr_string_copy_base(this: *mut CppString, source: *const CppString) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        unsafe { swr_string_copy(this, source) }
+    }
+    "_ZN6swoole6StringC1EOS0_", "_ZN6swoole6StringC1EOS0_" =>
+    /// `String(String &&)`.
+    /// # Safety
+    /// `this` is writable; `source` is another live String.
+    pub unsafe extern "C" fn swr_string_move(this: *mut CppString, source: *mut CppString) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        let source = unsafe { of(source) };
+        // SAFETY: as above.
+        unsafe { of(this) }.move_from(source);
+        this
+    }
+    "_ZN6swoole6StringC2EOS0_", "_ZN6swoole6StringC2EOS0_" =>
+    /// # Safety
+    /// As `swr_string_move`.
+    pub unsafe extern "C" fn swr_string_move_base(this: *mut CppString, source: *mut CppString) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        unsafe { swr_string_move(this, source) }
+    }
+    "_ZN6swoole6StringD1Ev", "_ZN6swoole6StringD1Ev" =>
+    /// `~String()`.
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_drop(this: *mut CppString) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.dispose();
+        this
+    }
+    "_ZN6swoole6StringD2Ev", "_ZN6swoole6StringD2Ev" =>
+    /// # Safety
+    /// As `swr_string_drop`.
+    pub unsafe extern "C" fn swr_string_drop_base(this: *mut CppString) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        unsafe { swr_string_drop(this) }
+    }
+    "_ZN6swoole6StringaSERKS0_", "_ZN6swoole6StringaSERKS0_" =>
+    /// `String &operator=(const String &)`.
+    /// # Safety
+    /// Both are live.
+    pub unsafe extern "C" fn swr_string_assign_copy(this: *mut CppString, source: *const CppString) -> *mut CppString {
+        if !ptr::eq(this, source) {
+            // SAFETY: as the caller promises, and they differ.
+            let string = unsafe { of(this) };
+            string.dispose();
             // SAFETY: as above.
-            unsafe { output.write(StringPlan::ZERO) };
-            status
+            string.copy_from(unsafe { read(source) });
         }
+        this
     }
-}
-
-/// Apply a validated request after native allocation succeeds.
-/// # Safety
-/// PODs, output and storage are disjoint/valid. Plan/state/edit match prepare.
-/// Replacement is the requested allocation (with matching allocator provenance),
-/// or the unchanged old pointer for allocation 0. A successful realloc may have
-/// invalidated old data; apply reads only its metadata and rebases interior input.
-/// Output transfers detached malloc/pop/drop storage, never realloc's old owner.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_string_apply(
-    state: *mut StringState,
-    edit: *const StringEdit,
-    plan: *const StringPlan,
-    replacement: *mut u8,
-    detached: *mut *mut u8,
-) -> i32 {
-    if detached.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above), aligned, writable and disjoint.
-    unsafe { detached.write(ptr::null_mut()) };
-    if state.is_null() || edit.is_null() || plan.is_null() {
-        return INVALID;
-    }
-    // SAFETY: all three are non-null (checked above), valid, aligned, disjoint PODs.
-    let state = unsafe { &mut *state };
-    // SAFETY: as above.
-    let edit = unsafe { &*edit };
-    // SAFETY: as above.
-    let plan = unsafe { &*plan };
-    // Revalidation reads metadata only, including after successful native realloc.
-    if !matches!(state.plan(edit), Ok(expected) if expected == *plan) {
-        return INVALID;
-    }
-    // SAFETY: the plan was revalidated against this state and edit just above.
-    unsafe { apply_plan(state, edit, plan, replacement, detached) }
-}
-
-unsafe fn apply_plan(
-    state: &mut StringState,
-    edit: &StringEdit,
-    plan: &StringPlan,
-    replacement: *mut u8,
-    detached: *mut *mut u8,
-) -> i32 {
-    if plan.allocation != 0 && replacement.is_null() {
-        return INVALID;
-    }
-    if plan.allocation == 0 && edit.operation != DROP && replacement != state.data {
-        return INVALID;
-    }
-    let data = if plan.allocation == 0 {
-        state.data
-    } else {
-        replacement
-    };
-    // `plan` was produced by `StringState::plan` for exactly this state and edit, so every
-    // destination range below lies within `plan.capacity` bytes of `data`, every source
-    // range lies within the edit's input (or, after rebasing, within `data`), and
-    // overlapping moves use `ptr::copy`. `replacement` is the requested allocation, or
-    // the unchanged storage when no allocation was needed.
-    let source = if plan.source_offset == NO_SOURCE {
-        edit.data
-    } else {
-        data.wrapping_add(plan.source_offset)
-    };
-    match edit.operation {
-        APPEND | WRITE => {
-            if edit.length != 0 {
-                let at = if edit.operation == WRITE {
-                    let Ok(at) = usize::try_from(edit.offset) else {
-                        return INVALID;
-                    };
-                    at
-                } else {
-                    state.length
-                };
-                // SAFETY: as above.
-                unsafe { ptr::copy(source, data.wrapping_add(at), edit.length) };
-            }
+    "_ZN6swoole6StringaSEOS0_", "_ZN6swoole6StringaSEOS0_" =>
+    /// `String &operator=(String &&)`.
+    /// # Safety
+    /// Both are live.
+    pub unsafe extern "C" fn swr_string_assign_move(this: *mut CppString, source: *mut CppString) -> *mut CppString {
+        if !ptr::eq(this, source) {
+            // SAFETY: as the caller promises, and they differ.
+            let string = unsafe { of(this) };
+            string.dispose();
+            // SAFETY: as above.
+            string.move_from(unsafe { of(source) });
         }
-        APPEND_I32 => {
-            let mut buffer = itoa::Buffer::new();
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "APPEND_I32 carries a C int in offset"
-            )]
-            let value = edit.offset as i32;
-            let text = buffer.format(value);
-            // SAFETY: as above; `text` is a local buffer, disjoint from `data`.
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    text.as_ptr(),
-                    data.wrapping_add(state.length),
-                    text.len(),
-                );
-            };
-        }
-        COPY => {
-            if plan.length != 0 {
-                // SAFETY: as above.
-                unsafe { ptr::copy_nonoverlapping(source, data, plan.length) };
-            }
-        }
+        this
+    }
+    "_ZNK6swoole6String8containsEPKcm", "_ZNK6swoole6String8containsEPKcm" =>
+    /// # Safety
+    /// `this` is live; `needle` holds `length > 0` bytes.
+    #[must_use]
+    pub unsafe extern "C" fn swr_string_contains(this: *const CppString, needle: *const u8, length: usize) -> bool {
+        // SAFETY: as the caller promises.
+        let string = unsafe { read(this) };
         // SAFETY: as above.
-        TERMINATE => unsafe { data.wrapping_add(state.length).write(0) },
-        REPEAT => {
-            let added = plan.length - state.length;
-            if added != 0 {
-                let destination = data.wrapping_add(state.length);
-                if edit.length == 1 {
-                    // SAFETY: as above.
-                    let byte = unsafe { *source };
-                    // SAFETY: as above.
-                    unsafe { ptr::write_bytes(destination, byte, added) };
-                } else {
-                    // SAFETY: as above.
-                    unsafe { ptr::copy(source, destination, edit.length) };
-                    let mut filled = edit.length;
-                    while filled < added {
-                        let copied = filled.min(added - filled);
-                        // SAFETY: as above; doubling copies from the filled prefix into the
-                        // disjoint range that follows it.
-                        unsafe {
-                            ptr::copy_nonoverlapping(
-                                destination,
-                                destination.wrapping_add(filled),
-                                copied,
-                            );
-                        };
-                        filled += copied;
-                    }
-                }
-            }
-        }
-        REDUCE => {
-            if edit.offset != 0 && plan.length != 0 {
-                let Ok(from) = usize::try_from(edit.offset) else {
-                    return INVALID;
-                };
-                // SAFETY: as above.
-                unsafe { ptr::copy(data.wrapping_add(from), data, plan.length) };
-            }
-        }
-        POP if plan.length != 0 => {
-            let Ok(from) = usize::try_from(state.offset) else {
-                return INVALID;
-            };
-            // SAFETY: as above; POP copies from the old storage into the fresh allocation.
-            unsafe { ptr::copy_nonoverlapping(state.data.wrapping_add(from), data, plan.length) };
-        }
-        _ => {}
+        unsafe { strnstr(string.str, string.length, needle, length) }.is_some()
     }
-    if edit.operation == DROP || (plan.allocation == 1 && !state.data.is_null()) {
-        // SAFETY: the caller passes a valid, aligned, writable `detached` slot.
-        unsafe { detached.write(state.data) };
+    "_ZNK6swoole6String11starts_withEPKcm", "_ZNK6swoole6String11starts_withEPKcm" =>
+    /// # Safety
+    /// `this` is live; `needle` holds `length` bytes.
+    #[must_use]
+    pub unsafe extern "C" fn swr_string_starts_with(this: *const CppString, needle: *const u8, length: usize) -> bool {
+        // SAFETY: as the caller promises.
+        let needle = unsafe { bytes(needle, length) };
+        // SAFETY: as above.
+        unsafe { read(this) }.view().starts_with(needle)
     }
-    *state = StringState {
-        data: if edit.operation == DROP {
-            ptr::null_mut()
-        } else {
-            data
-        },
-        length: plan.length,
-        capacity: plan.capacity,
-        offset: plan.offset,
-    };
-    OK
+    "_ZNK6swoole6String9ends_withEPKcm", "_ZNK6swoole6String9ends_withEPKcm" =>
+    /// # Safety
+    /// `this` is live; `needle` holds `length` bytes.
+    #[must_use]
+    pub unsafe extern "C" fn swr_string_ends_with(this: *const CppString, needle: *const u8, length: usize) -> bool {
+        // SAFETY: as the caller promises.
+        let needle = unsafe { bytes(needle, length) };
+        // SAFETY: as above.
+        unsafe { read(this) }.view().ends_with(needle)
+    }
+    "_ZNK6swoole6String6equalsEPKcm", "_ZNK6swoole6String6equalsEPKcm" =>
+    /// # Safety
+    /// `this` is live; `data` holds `length` bytes.
+    #[must_use]
+    pub unsafe extern "C" fn swr_string_equals(this: *const CppString, data: *const u8, length: usize) -> bool {
+        // SAFETY: as the caller promises.
+        let data = unsafe { bytes(data, length) };
+        // SAFETY: as above.
+        unsafe { read(this) }.view() == data
+    }
+    "_ZN6swoole6String4growEm", "_ZN6swoole6String4growEm" =>
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_grow(this: *mut CppString, increment: usize) {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.grow(increment);
+    }
+    "_ZNK6swoole6String6substrEmm", "_ZNK6swoole6String6substrEmm" =>
+    /// `String substr(size_t, size_t) const`. The C++ ABI returns a class with a
+    /// destructor in caller memory (`sret`), as C does a 40-byte struct.
+    /// # Safety
+    /// `this` is live.
+    #[must_use]
+    pub unsafe extern "C" fn swr_string_substr(this: *const CppString, offset: usize, length: usize) -> CppString {
+        // SAFETY: as the caller promises.
+        let string = unsafe { read(this) };
+        let mut result = CppString::EMPTY;
+        if offset.wrapping_add(length) <= string.length {
+            result.alloc(length, ptr::null());
+            // SAFETY: the range lies inside `str`.
+            unsafe { result.append(string.str.wrapping_add(offset), length) };
+        }
+        result
+    }
+    "_ZN6swoole6String6extendEv", "_ZN6swoole6String6extendEv" =>
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_extend_double(this: *mut CppString) {
+        // SAFETY: as the caller promises.
+        let string = unsafe { of(this) };
+        string.extend(string.size.wrapping_mul(2));
+    }
+    "_ZN6swoole6String6extendEm", "_ZN6swoole6String6extendEm" =>
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_extend(this: *mut CppString, new_size: usize) {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.extend(new_size);
+    }
+    "_ZN6swoole6String12extend_alignEm", "_ZN6swoole6String12extend_alignEm" =>
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_extend_align(this: *mut CppString, new_size: usize) {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.extend_align(new_size);
+    }
+    "_ZN6swoole6String7reserveEm", "_ZN6swoole6String7reserveEm" =>
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_reserve(this: *mut CppString, new_size: usize) {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.reserve(new_size);
+    }
+    "_ZN6swoole6String7releaseEv", "_ZN6swoole6String7releaseEv" =>
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_release(this: *mut CppString) -> *mut u8 {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.release()
+    }
+    "_ZN6swoole6String6repeatEPKcmm", "_ZN6swoole6String6repeatEPKcmm" =>
+    /// # Safety
+    /// `this` is live; `data` holds `length` bytes.
+    pub unsafe extern "C" fn swr_string_repeat(this: *mut CppString, data: *const u8, length: usize, count: usize) {
+        // SAFETY: as the caller promises.
+        let string = unsafe { of(this) };
+        // SAFETY: as above.
+        unsafe { string.repeat(data, length, count) };
+    }
+    "_ZN6swoole6String6appendEPKcm", "_ZN6swoole6String6appendEPKcm" =>
+    /// # Safety
+    /// `this` is live; `data` holds `length` bytes.
+    pub unsafe extern "C" fn swr_string_append(this: *mut CppString, data: *const u8, length: usize) {
+        // SAFETY: as the caller promises.
+        let string = unsafe { of(this) };
+        // SAFETY: as above.
+        unsafe { string.append(data, length) };
+    }
+    "_ZN6swoole6String6appendEi", "_ZN6swoole6String6appendEi" =>
+    /// `append(int)`: its decimal text.
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_append_int(this: *mut CppString, value: c_int) {
+        let mut buffer = itoa::Buffer::new();
+        let text = buffer.format(value);
+        // SAFETY: as the caller promises.
+        let string = unsafe { of(this) };
+        // SAFETY: `text` is local.
+        unsafe { string.append(text.as_ptr(), text.len()) };
+    }
+    "_ZN6swoole6String6appendERKS0_", "_ZN6swoole6String6appendERKS0_" =>
+    /// `append(const String &)`, which may be `this`.
+    /// # Safety
+    /// Both are live.
+    pub unsafe extern "C" fn swr_string_append_string(this: *mut CppString, source: *const CppString) {
+        // SAFETY: as the caller promises.
+        let length = unsafe { read(source) }.length;
+        // SAFETY: as above; `source` is read again only through its pointer.
+        let string = unsafe { of(this) };
+        let new_size = string.length.wrapping_add(length);
+        if new_size > string.size {
+            string.reserve(new_size);
+        }
+        // SAFETY: read after any reallocation, which `source` may share.
+        let data = unsafe { read(source) }.str;
+        // SAFETY: the buffer holds `new_size` bytes; `source` holds `length`.
+        unsafe { ptr::copy(data, string.str.wrapping_add(string.length), length) };
+        string.length = new_size;
+    }
+    "_ZN6swoole6String19append_random_bytesEmb", "_ZN6swoole6String19append_random_bytesEmb" =>
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_append_random_bytes(this: *mut CppString, length: usize, base64: bool) -> bool {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.append_random_bytes(length, base64)
+    }
+    "_ZN6swoole6String5writeElRKS0_", "_ZN6swoole6String5writeExRKS0_" =>
+    /// # Safety
+    /// Both are live.
+    pub unsafe extern "C" fn swr_string_write_string(this: *mut CppString, offset: i64, source: *const CppString) {
+        // SAFETY: as the caller promises.
+        let source = unsafe { read(source) };
+        // SAFETY: as above.
+        let string = unsafe { of(this) };
+        // SAFETY: `source` holds `length` bytes.
+        unsafe { string.write(offset, source.str, source.length) };
+    }
+    "_ZN6swoole6String5writeElPKcm", "_ZN6swoole6String5writeExPKcm" =>
+    /// # Safety
+    /// `this` is live; `data` holds `length` bytes.
+    pub unsafe extern "C" fn swr_string_write(this: *mut CppString, offset: i64, data: *const u8, length: usize) {
+        // SAFETY: as the caller promises.
+        let string = unsafe { of(this) };
+        // SAFETY: as above.
+        unsafe { string.write(offset, data, length) };
+    }
+    "_ZN6swoole6String19set_null_terminatedEv", "_ZN6swoole6String19set_null_terminatedEv" =>
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_set_null_terminated(this: *mut CppString) {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.set_null_terminated();
+    }
+    "_ZNK6swoole6String5printEb", "_ZNK6swoole6String5printEb" =>
+    /// `print(bool)`, through C's stdout as upstream.
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_print(this: *const CppString, value: bool) {
+        // SAFETY: as the caller promises.
+        unsafe { read(this) }.print(value);
+    }
+    "_ZN6swoole6String3popEm", "_ZN6swoole6String3popEm" =>
+    /// `pop(size_t)`: hands over the buffer and keeps the bytes after `offset` in a new one.
+    /// # Safety
+    /// `this` is live with an allocator.
+    pub unsafe extern "C" fn swr_string_pop(this: *mut CppString, init_size: usize) -> *mut u8 {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.pop(init_size)
+    }
+    "_ZN6swoole6String6reduceEl", "_ZN6swoole6String6reduceEx" =>
+    /// `reduce(off_t)`: moves the bytes after `offset` to the head.
+    /// # Safety
+    /// `this` is live.
+    pub unsafe extern "C" fn swr_string_reduce(this: *mut CppString, offset: i64) {
+        // SAFETY: as the caller promises.
+        unsafe { of(this) }.reduce(offset);
+    }
 }
 
-/// Execute an edit immediately if no allocation is needed; otherwise return 1
-/// with a plan and no mutation. Existing prepare/apply remain compatible.
+/// `String::split`, for the C++ method that lends its handler.
+///
 /// # Safety
-/// Same POD/input and ownership requirements as prepare/apply. Outputs are valid,
-/// aligned and disjoint; no callbacks or allocation run during this function.
+/// As `CppString::split`, with `this` live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_string_edit_in_place(
-    state: *mut StringState,
-    edit: *const StringEdit,
-    output: *mut StringPlan,
-    detached: *mut *mut u8,
-) -> i32 {
-    if !detached.is_null() {
-        // SAFETY: non-null (checked above), aligned, writable and disjoint.
-        unsafe { detached.write(ptr::null_mut()) };
-    }
-    if state.is_null() || edit.is_null() || output.is_null() || detached.is_null() {
-        if !output.is_null() {
-            // SAFETY: non-null (checked above), aligned, writable and disjoint.
-            unsafe { output.write(StringPlan::ZERO) };
-        }
-        return INVALID;
-    }
-    // SAFETY: both are non-null (checked above), valid, aligned, disjoint PODs.
-    let state = unsafe { &mut *state };
+pub unsafe extern "C" fn swr_v1_string_split(
+    this: *mut CppString,
+    delimiter: *const u8,
+    delimiter_length: usize,
+    call: SplitCall,
+    handler: *const c_void,
+) -> isize {
+    // SAFETY: as the caller promises.
+    let string = unsafe { of(this) };
     // SAFETY: as above.
-    let edit = unsafe { &*edit };
-    let plan = match state.plan(edit) {
-        Ok(plan) => plan,
-        Err(status) => {
-            // SAFETY: `output` is non-null (checked above), aligned, writable and disjoint.
-            unsafe { output.write(StringPlan::ZERO) };
-            return status;
-        }
-    };
-    // SAFETY: as above.
-    unsafe { output.write(plan) };
-    if plan.allocation != 0 {
-        return 1;
-    }
-    // SAFETY: `plan` was just computed for this state and edit and needs no allocation.
-    unsafe { apply_plan(state, edit, &plan, state.data, detached) }
-}
-
-/// Execute an edit on uniquely owned standard-libc storage in one call.
-/// # Safety
-/// PODs, output and input satisfy prepare/apply disjointness and ownership rules.
-/// Native must verify all four allocator function pointers against the actual C
-/// malloc/calloc/realloc/free symbols on every call. No custom/Zend callback or
-/// foreign exception/bailout may execute through these standard C symbols.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_string_edit_system(
-    state: *mut StringState,
-    edit: *const StringEdit,
-    detached: *mut *mut u8,
-) -> i32 {
-    unsafe extern "C" {
-        fn malloc(size: usize) -> *mut std::ffi::c_void;
-        fn realloc(pointer: *mut std::ffi::c_void, size: usize) -> *mut std::ffi::c_void;
-    }
-    if detached.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above), aligned, writable and disjoint.
-    unsafe { detached.write(ptr::null_mut()) };
-    if state.is_null() || edit.is_null() {
-        return INVALID;
-    }
-    // These references borrow only disjoint POD metadata, never the allocation.
-    // SAFETY: both are non-null (checked above), valid, aligned, disjoint PODs.
-    let state = unsafe { &mut *state };
-    // SAFETY: as above.
-    let edit = unsafe { &*edit };
-    let plan = match state.plan(edit) {
-        Ok(plan) => plan,
-        Err(status) => return status,
-    };
-    let replacement = match plan.allocation {
-        // SAFETY: the standard C allocator; null is handled below.
-        1 => unsafe { malloc(plan.capacity).cast::<u8>() },
-        // SAFETY: `state.data` is uniquely owned standard-libc storage (the caller verifies
-        // the allocator symbols); no borrow of it survives this call.
-        2 => unsafe { realloc(state.data.cast(), plan.capacity).cast::<u8>() },
-        _ => state.data,
-    };
-    if plan.allocation != 0 && replacement.is_null() {
-        return NOMEM;
-    }
-    // No slice/borrow of old storage survived realloc. The private plan cannot
-    // be changed by a caller between planning and apply; frozen apply still
-    // independently validates external plans. Interior input is rebased here.
-    // SAFETY: as described above; `replacement` is the requested allocation.
-    unsafe { apply_plan(state, edit, &plan, replacement, detached) }
-}
-
-/// Append directly into existing capacity without a storage snapshot or plan.
-/// Returns 1 (unchanged) if native allocation through the general edit is needed.
-/// # Safety
-/// Data/input are valid byte ranges, and length is aligned, writable, and disjoint
-/// from both. Internal byte aliases are allowed; ownership remains with caller.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_string_append_in_place(
-    data: *mut u8,
-    length: *mut usize,
-    capacity: usize,
-    input: *const u8,
-    count: usize,
-) -> i32 {
-    if length.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above), aligned and readable.
-    let used = unsafe { *length };
-    let state = StringState {
-        data,
-        length: used,
-        capacity,
-        offset: 0,
-    };
-    if let Err(status) = state
-        .validate()
-        .and_then(|()| state.input_offset(input, count).map(|_| ()))
-    {
-        return status;
-    }
-    let Some(end) = used
-        .checked_add(count)
-        .filter(|&end| isize::try_from(end).is_ok())
-    else {
-        return OVERFLOW;
-    };
-    if end > capacity {
-        return 1;
-    }
-    if count != 0 {
-        // SAFETY: validated state and input; `used + count <= capacity`, inside `data`.
-        // `ptr::copy` allows the internal aliases the contract permits.
-        unsafe { ptr::copy(input, data.wrapping_add(used), count) };
-    }
-    // SAFETY: as for the read above, and writable.
-    unsafe { length.write(end) };
-    OK
-}
-
-mod object;
-pub use object::*;
-mod random;
-pub use random::*;
-mod formatting;
-pub use formatting::*;
-mod allocation;
-pub use allocation::*;
-mod ownership;
-pub use ownership::{StringOwnershipPlan, swr_v1_string_ownership_plan};
-mod policy;
-mod scan;
-pub use policy::{
-    StringFormatPlan, StringRandomPlan, StringTransition, swr_v1_string_capacity,
-    swr_v1_string_format_plan, swr_v1_string_grow, swr_v1_string_random_plan,
-    swr_v1_string_transition,
-};
-pub use scan::{
-    StringSplitCursor, StringSplitPlan, StringSplitStep, swr_v1_string_match, swr_v1_string_range,
-    swr_v1_string_split_next, swr_v1_string_split_plan,
-};
-
-/// Format an i32 without allocation, including a trailing NUL; return byte count.
-/// Null output returns zero without mutation. All valid numbers use 1..=11 bytes.
-/// # Safety
-/// Non-null output must be writable for twelve bytes. No borrow escapes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_string_format_i32(value: i32, output: *mut u8) -> usize {
-    if output.is_null() {
-        return 0;
-    }
-    let mut buffer = itoa::Buffer::new();
-    let text = buffer.format(value);
-    // SAFETY: non-null (checked above) and writable for 12 bytes; at most 11 digits plus NUL.
-    unsafe { ptr::copy_nonoverlapping(text.as_ptr(), output, text.len()) };
-    // SAFETY: as above.
-    unsafe { output.wrapping_add(text.len()).write(0) };
-    text.len()
-}
-
-/// Format and append a decimal i32 without allocation. Existing append statuses:
-/// zero succeeds, one requests native allocation with all bytes/length unchanged.
-/// # Safety
-/// Existing append pointer, ownership and disjointness rules apply.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_string_append_i32(
-    data: *mut u8,
-    length: *mut usize,
-    capacity: usize,
-    value: i32,
-) -> i32 {
-    let mut buffer = itoa::Buffer::new();
-    let text = buffer.format(value);
-    // SAFETY: forwards the caller's append contract; `text` is a local, disjoint input.
-    unsafe { swr_v1_string_append_in_place(data, length, capacity, text.as_ptr(), text.len()) }
+    unsafe { string.split(delimiter, delimiter_length, call, handler) }
 }
 
 #[cfg(test)]
-mod number_tests {
-    use super::*;
-    #[test]
-    fn integer_edit_preserves_capacity_offset_and_failure_prefix() {
-        for value in [i32::MIN, -123_456_789, -1, 0, 1, i32::MAX] {
-            let expected = value.to_string();
-            for used in [0, 2, 11, 16, 31, 32] {
-                let mut bytes = [b'x'; 64];
-                let mut state = StringState {
-                    data: bytes.as_mut_ptr(),
-                    length: used,
-                    capacity: 32,
-                    offset: 1,
-                };
-                let edit = StringEdit {
-                    operation: APPEND_I32,
-                    data: ptr::null(),
-                    length: 0,
-                    count: 0,
-                    offset: i64::from(value),
-                    alignment: 8,
-                    page: 4096,
-                };
-                let plan = state.plan(&edit).unwrap();
-                let end = used + expected.len();
-                assert_eq!(plan.length, end);
-                assert_eq!(plan.capacity, if end > 32 { (end + 7) & !7 } else { 32 });
-                assert_eq!(plan.offset, 1);
-                if plan.allocation != 0 {
-                    let mut detached = ptr::null_mut();
-                    assert_eq!(
-                        unsafe {
-                            apply_plan(&mut state, &edit, &plan, ptr::null_mut(), &raw mut detached)
-                        },
-                        INVALID
-                    );
-                    assert_eq!((state.length, state.capacity, state.offset), (used, 32, 1));
-                    assert_eq!(bytes, [b'x'; 64]);
-                } else {
-                    let data = state.data;
-                    assert_eq!(
-                        unsafe { apply_plan(&mut state, &edit, &plan, data, &mut ptr::null_mut()) },
-                        OK
-                    );
-                    assert_eq!(&bytes[used..end], expected.as_bytes());
-                    assert!(
-                        bytes[..used]
-                            .iter()
-                            .chain(bytes[end..].iter())
-                            .all(|b| *b == b'x')
-                    );
-                }
-            }
-        }
-        let state = StringState {
-            data: ptr::null_mut(),
-            length: 0,
-            capacity: 0,
-            offset: 0,
-        };
-        let edit = StringEdit {
-            operation: APPEND_I32,
-            data: ptr::null(),
-            length: 0,
-            count: 0,
-            offset: i64::from(i32::MAX) + 1,
-            alignment: 8,
-            page: 4096,
-        };
-        assert_eq!(state.plan(&edit).map(|_| ()), Err(INVALID));
-    }
-    #[test]
-    fn integer_format_matches_display_without_overwriting_guards() {
-        let mut seed = 731u32;
-        for value in [i32::MIN, i32::MAX, -1, 0, 1]
-            .into_iter()
-            .chain((0..65536).map(|_| {
-                seed ^= seed << 13;
-                seed ^= seed >> 17;
-                seed ^= seed << 5;
-                seed.cast_signed()
-            }))
-        {
-            let expected = value.to_string();
-            let mut output = [255u8; 14];
-            let length = unsafe { swr_v1_string_format_i32(value, output.as_mut_ptr().add(1)) };
-            assert_eq!(&output[1..=length], expected.as_bytes());
-            assert_eq!(output[length + 1], 0);
-            assert_eq!((output[0], output[13]), (255, 255));
-            let mut data = [255; 16];
-            data[..3].copy_from_slice(b"abc");
-            let mut used = 3;
-            assert_eq!(
-                unsafe { swr_v1_string_append_i32(data.as_mut_ptr(), &raw mut used, 15, value) },
-                OK
-            );
-            assert_eq!(&data[..3], b"abc");
-            assert_eq!(&data[3..used], expected.as_bytes());
-            assert_eq!(data[15], 255);
-            used = 0;
-            assert_eq!(
-                unsafe { swr_v1_string_append_i32(ptr::null_mut(), &raw mut used, 0, value) },
-                1
-            );
-            assert_eq!(used, 0);
-        }
-        let mut bytes = [255; 12];
-        let mut used = 1;
-        for (data, length, capacity) in [
-            (bytes.as_mut_ptr(), ptr::null_mut(), 12),
-            (ptr::null_mut(), &raw mut used, 12),
-            (bytes.as_mut_ptr(), &raw mut used, 0),
-            (bytes.as_mut_ptr(), &raw mut used, usize::MAX),
-        ] {
-            assert_eq!(
-                unsafe { swr_v1_string_append_i32(data, length, capacity, 0) },
-                INVALID
-            );
-            assert_eq!(used, 1);
-            assert_eq!(bytes, [255; 12]);
-        }
-        assert_eq!(
-            unsafe { swr_v1_string_append_i32(bytes.as_mut_ptr(), &raw mut used, 1, 0) },
-            1
-        );
-        assert_eq!((used, bytes), (1, [255; 12]));
-        assert_eq!(unsafe { swr_v1_string_format_i32(0, ptr::null_mut()) }, 0);
-    }
-}
-
-#[cfg(test)]
-mod terminator_tests {
-    use super::*;
-    #[test]
-    fn terminator_preserves_length_offset_and_allocation_prefix() {
-        let mut bytes = [91u8; 16];
-        let mut state = StringState {
-            data: bytes.as_mut_ptr(),
-            length: 3,
-            capacity: 8,
-            offset: 2,
-        };
-        let edit = StringEdit {
-            operation: TERMINATE,
-            data: ptr::null(),
-            length: 0,
-            count: 0,
-            offset: 0,
-            alignment: 8,
-            page: 4096,
-        };
-        let mut plan = MaybeUninit::uninit();
-        let mut detached = ptr::null_mut();
-        assert_eq!(
-            unsafe {
-                swr_v1_string_edit_in_place(
-                    &raw mut state,
-                    &raw const edit,
-                    plan.as_mut_ptr(),
-                    &raw mut detached,
-                )
-            },
-            OK
-        );
-        assert_eq!((state.length, state.capacity, state.offset), (3, 8, 2));
-        assert_eq!(bytes[3], 0);
-        assert_eq!(&bytes[..3], &[91; 3]);
-        assert_eq!(&bytes[4..], &[91; 12]);
-        state.length = 8;
-        let before = bytes;
-        assert_eq!(
-            unsafe {
-                swr_v1_string_edit_in_place(
-                    &raw mut state,
-                    &raw const edit,
-                    plan.as_mut_ptr(),
-                    &raw mut detached,
-                )
-            },
-            1
-        );
-        let plan = unsafe { plan.assume_init() };
-        assert_eq!(
-            (plan.capacity, plan.length, plan.offset, plan.allocation),
-            (16, 8, 2, 2)
-        );
-        assert_eq!(bytes, before);
-        let mut replacement = [92u8; 16];
-        replacement[..8].copy_from_slice(&bytes[..8]); // Native realloc retains initialized bytes.
-        assert_eq!(
-            unsafe {
-                swr_v1_string_apply(
-                    &raw mut state,
-                    &raw const edit,
-                    &raw const plan,
-                    replacement.as_mut_ptr(),
-                    &raw mut detached,
-                )
-            },
-            OK
-        );
-        assert_eq!((state.length, state.capacity, state.offset), (8, 16, 2));
-        assert_eq!(&replacement[..8], &bytes[..8]);
-        assert_eq!(replacement[8], 0);
-        assert_eq!(&replacement[9..], &[92; 7]);
-        assert!(detached.is_null());
-        let mut borrowed = StringState {
-            data: bytes.as_mut_ptr(),
-            length: 8,
-            capacity: 8,
-            offset: 1,
-        };
-        let borrowed_edit = StringEdit { count: 1, ..edit };
-        let mut rejected = MaybeUninit::uninit();
-        let before = bytes;
-        assert_eq!(
-            unsafe {
-                swr_v1_string_edit_in_place(
-                    &raw mut borrowed,
-                    &raw const borrowed_edit,
-                    rejected.as_mut_ptr(),
-                    &raw mut detached,
-                )
-            },
-            INVALID
-        );
-        assert_eq!(bytes, before);
-        assert_eq!(
-            (borrowed.length, borrowed.capacity, borrowed.offset),
-            (8, 8, 1)
-        );
-        borrowed.length = 2;
-        assert_eq!(
-            unsafe {
-                swr_v1_string_edit_in_place(
-                    &raw mut borrowed,
-                    &raw const borrowed_edit,
-                    rejected.as_mut_ptr(),
-                    &raw mut detached,
-                )
-            },
-            OK
-        );
-        assert_eq!(bytes[2], 0);
-    }
-}
-
-#[cfg(test)]
-mod copy_tests {
-    use super::*;
-    #[test]
-    fn copy_edit_plans_capacity_and_metadata_before_exact_byte_publication() {
-        let source = *b"a\0bxxxx";
-        let edit = StringEdit {
-            operation: COPY,
-            data: source.as_ptr(),
-            length: 3,
-            count: 7,
-            offset: 2,
-            alignment: 8,
-            page: 0,
-        };
-        let mut target = StringState {
-            data: ptr::null_mut(),
-            length: 0,
-            capacity: 0,
-            offset: 0,
-        };
-        let mut plan = StringPlan::ZERO;
-        let mut detached = ptr::null_mut();
-        let mut allocation = [0xcd; 9];
-        unsafe {
-            assert_eq!(
-                swr_v1_string_prepare(&raw const target, &raw const edit, &raw mut plan),
-                OK
-            );
-            assert_eq!(
-                (plan.capacity, plan.length, plan.offset, plan.allocation),
-                (8, 3, 2, 1)
-            );
-            assert_eq!(
-                swr_v1_string_apply(
-                    &raw mut target,
-                    &raw const edit,
-                    &raw const plan,
-                    allocation.as_mut_ptr(),
-                    &raw mut detached
-                ),
-                OK
-            );
-        }
-        assert_eq!(&allocation[..3], b"a\0b");
-        assert_eq!(&allocation[3..], &[0xcd; 6]);
-        assert_eq!((target.length, target.capacity, target.offset), (3, 8, 2));
-        assert!(detached.is_null());
-        // Private direct same-object copy resets before its allocation, as native.
-        let same = StringEdit { page: 1, ..edit };
-        target = StringState {
-            data: ptr::null_mut(),
-            length: 0,
-            capacity: 0,
-            offset: 0,
-        };
-        unsafe {
-            assert_eq!(
-                swr_v1_string_prepare(&raw const target, &raw const same, &raw mut plan),
-                OK
-            );
-        };
-        assert_eq!((plan.capacity, plan.length, plan.offset), (8, 0, 0));
-        let invalid = StringEdit { count: 2, ..edit };
-        unsafe {
-            assert_eq!(
-                swr_v1_string_prepare(&raw const target, &raw const invalid, &raw mut plan),
-                INVALID
-            );
-        };
-        assert!(plan == StringPlan::ZERO);
-    }
-}
-
-#[cfg(test)]
-mod capacity_tests {
+mod tests {
     use super::*;
 
-    // Upstream swoole_size_align (include/swoole.h): size + (page - size % page).
-    fn swoole_size_align(size: usize, page: usize) -> usize {
-        size + (page - size % page)
+    fn new(text: &[u8]) -> CppString {
+        let mut s = CppString::EMPTY;
+        unsafe { swr_string_from(&raw mut s, text.as_ptr(), text.len()) };
+        s
     }
 
     #[test]
-    fn page_align_always_adds_a_whole_page_like_upstream() {
-        let page = 4096usize;
-        for size in [0usize, 1, 100, 2048, 4095, 4096, 8192, 2048 * 2] {
-            assert_eq!(
-                page_align(size, page).unwrap(),
-                swoole_size_align(size, page),
-                "size={size}"
-            );
-        }
-        // The bug this fixes: a page-aligned size grows by a whole extra page,
-        // whereas `aligned` leaves it untouched.
-        assert_eq!(page_align(4096, page).unwrap(), 8192);
-        assert_eq!(aligned(4096, page).unwrap(), 4096);
+    fn append_grows_and_reduce_moves() {
+        let mut s = new(b"abc");
+        assert_eq!((s.length, s.size), (3, 8));
+        unsafe { swr_string_append(&raw mut s, b"defghijkl".as_ptr(), 9) };
+        assert_eq!((s.view(), s.size), (&b"abcdefghijkl"[..], 16));
+        unsafe { swr_string_append_int(&raw mut s, -42) };
+        s.reduce(3);
+        assert_eq!(s.view(), b"defghijkl-42");
+        unsafe { swr_string_append_string(&raw mut s, &raw const s) };
+        assert_eq!(s.view(), b"defghijkl-42defghijkl-42");
+        s.set_null_terminated();
+        assert_eq!(unsafe { *s.str.add(s.length) }, 0);
+        s.dispose();
+    }
+
+    unsafe extern "C" fn collect(
+        handler: *const c_void,
+        data: *const c_char,
+        length: usize,
+    ) -> bool {
+        let chunks = unsafe { &mut *handler.cast_mut().cast::<Vec<Vec<u8>>>() };
+        chunks.push(unsafe { bytes(data.cast(), length) }.to_vec());
+        true
     }
 
     #[test]
-    fn write_capacity_matches_upstream_for_a_page_aligned_double() {
-        let page = 4096usize;
-        let mut bytes = [0u8; 8];
-        let state = StringState {
-            data: bytes.as_mut_ptr(),
-            length: 0,
-            capacity: 0,
-            offset: 0,
-        };
-        let source = [0u8; 2048];
-        // end = offset + length = 2048, so the doubled reserve (4096) is page-aligned.
-        let edit = StringEdit {
-            operation: WRITE,
-            data: source.as_ptr(),
-            length: 2048,
-            count: 0,
-            offset: 0,
-            alignment: 8,
-            page,
-        };
-        let plan = state.plan(&edit).unwrap();
-        // Upstream reserves swoole_size_align(2048 * 2, page) = 8192, not 4096.
-        assert_eq!(plan.capacity, swoole_size_align(2048 * 2, page));
-        assert_eq!(plan.capacity, 8192);
+    fn split_hands_each_chunk_and_keeps_the_tail() {
+        let mut s = new(b"a\r\nbc\r\nd\r");
+        let mut chunks: Vec<Vec<u8>> = Vec::new();
+        let ret = unsafe { s.split(b"\r\n".as_ptr(), 2, collect, (&raw mut chunks).cast()) };
+        assert_eq!(chunks, [b"a\r\n".to_vec(), b"bc\r\n".to_vec()]);
+        assert_eq!((ret, s.offset), (7, 7));
+        // No delimiter after the offset: it moves to the last place one could start.
+        assert_eq!(
+            unsafe { s.split(b"\r\n".as_ptr(), 2, collect, (&raw mut chunks).cast()) },
+            0
+        );
+        assert_eq!((chunks.len(), s.offset), (2, 7));
+        s.dispose();
+    }
+
+    #[test]
+    fn substr_copy_move_and_release() {
+        let mut s = new(b"hello world");
+        let mut sub = unsafe { swr_string_substr(&raw const s, 6, 5) };
+        assert_eq!(sub.view(), b"world");
+        assert!(
+            unsafe { swr_string_substr(&raw const s, 6, 6) }
+                .str
+                .is_null()
+        );
+        let mut moved = CppString::EMPTY;
+        moved.move_from(&mut sub);
+        assert!(sub.str.is_null() && moved.view() == b"world");
+        let mut copied = CppString::EMPTY;
+        copied.copy_from(&moved);
+        assert!(unsafe { swr_string_contains(&raw const copied, b"orl".as_ptr(), 3) });
+        assert!(unsafe { swr_string_ends_with(&raw const copied, b"ld".as_ptr(), 2) });
+        unsafe { libc::free(moved.release().cast()) };
+        copied.dispose();
+        s.dispose();
     }
 }

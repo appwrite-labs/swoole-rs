@@ -76,17 +76,16 @@ pub const RUN_SENDFILE: u32 = 40;
 /// `Server::add_port`: context type, host and port; 1 with the port in the context.
 pub const RUN_ADD_PORT: u32 = 41;
 pub const RUN_SYSTEMD_SOCKETS: u32 = 42;
-// `BaseFactory` (`src/server/base.cc`).
+// `BaseFactory` (`src/server/base.cc`, `crates/server/src/base_factory.rs`).
 /// `Server::create_base_factory`: 1 with the factory in the context.
 pub const RUN_BASE_CREATE: u32 = 43;
-/// `BaseFactory::notify`: context event head.
+/// `BaseFactory::notify(arg)`: arg the `DataHead`.
 pub const RUN_BASE_NOTIFY: u32 = 44;
-/// `BaseFactory::end(arg)`: 0 or 1 as returned, or `END_CLOSE` when native code
-/// closes the connection's socket.
+/// `BaseFactory::end`: arg the session id, with the close flags from bit 48.
 pub const RUN_BASE_END: u32 = 45;
-/// `BaseFactory::finish`: context send data.
+/// `BaseFactory::finish(arg)`, `BaseFactory::dispatch(arg)`: arg and context the `SendData`.
 pub const RUN_BASE_FINISH: u32 = 46;
-pub const END_CLOSE: u32 = 2;
+pub const RUN_BASE_DISPATCH: u32 = 47;
 
 // Server facts.
 pub const OP_MODE: u32 = 0;
@@ -647,42 +646,31 @@ pub const OP_ALLOC_CONNECTIONS: u32 = 501;
 pub const OP_ALLOC_CONNECTION_NUMS: u32 = 502;
 pub const OP_ALLOC_PORT_CONNECTION_NUMS: u32 = 503;
 pub const OP_NEW_BASE_FACTORY: u32 = 504;
-/// Selects `get_connection(info->fd)`; active; closed by the server.
-pub const OP_INFO_CONN: u32 = 505;
-pub const OP_CONN_ACTIVE: u32 = 506;
-pub const OP_CONN_CLOSED: u32 = 507;
-/// The head becomes the session's, then `worker_accept_event`.
-pub const OP_NOTIFY_ACCEPT: u32 = 508;
-/// The session arg has an fd; it belongs to another worker.
-pub const OP_SESSION_FD: u32 = 509;
-pub const OP_SESSION_FOREIGN: u32 = 510;
-/// The close forwarded to the session's worker; whether it was written.
-pub const OP_FORWARD_CLOSE: u32 = 511;
-pub const OP_NOT_EXIST: u32 = 512;
-/// Sets `close_reset`, `close_actively`.
-pub const OP_CLOSE_RESET: u32 = 513;
-pub const OP_CLOSE_ACTIVELY: u32 = 514;
-pub const OP_CONN_CLOSING_FLAG: u32 = 515;
-/// `closing = arg`; `onClose` when `if_do_close_callback`; `closing = 0`, `close_errno = 0`.
-pub const OP_SET_CLOSING: u32 = 516;
-pub const OP_CLOSE_CALLBACK: u32 = 517;
-pub const OP_CLOSE_DONE: u32 = 518;
-pub const OP_CONN_RESETTING: u32 = 519;
-/// The send's type is `SEND_DATA` or `SEND_FILE`; forward it; send it here.
-pub const OP_SEND_KIND_OK: u32 = 520;
-pub const OP_FORWARD_SEND: u32 = 521;
-pub const OP_SEND_HERE: u32 = 522;
+/// `swoole_get_worker_id()`.
+pub const OP_WORKER_ID: u32 = 505;
+/// `worker_accept_event` of the `DataHead` at arg.
+pub const OP_ACCEPT_EVENT: u32 = 506;
+/// The context send's data is the whole consumed receive buffer of the connection at arg.
+pub const OP_POP_PTR: u32 = 507;
+/// The worker message bus takes the `SendData` at arg, then `worker_accept_event` of it.
+pub const OP_BASE_PASS: u32 = 508;
+/// The `SendData` at arg written to the pipe of its session's worker; whether it was.
+pub const OP_FORWARD: u32 = 509;
+/// `onClose` is set; it runs with the `DataHead` at arg.
+pub const OP_HAS_ON_CLOSE: u32 = 510;
+pub const OP_ON_CLOSE: u32 = 511;
+/// The output buffer of the socket at arg is empty; `close_connection` of it, the result;
+/// a close chunk queued behind its output, then (`--fix-halfclose`) its read event removed:
+/// whether that succeeded.
+pub const OP_OUT_EMPTY: u32 = 512;
+pub const OP_CLOSE_SOCKET: u32 = 513;
+pub const OP_QUEUE_CLOSE: u32 = 514;
+/// `send_to_connection` of the context send, the result.
+pub const OP_SEND_HERE: u32 = 515;
 
 pub const LOG_BASE_ALLOC_CONNECTIONS: u32 = 530;
 pub const LOG_BASE_ALLOC_NUMS: u32 = 531;
 pub const LOG_BASE_ALLOC_PORT_NUMS: u32 = 532;
-pub const LOG_NOT_ACTIVE: u32 = 533;
-pub const LOG_CLOSED_BY_SERVER: u32 = 534;
-pub const LOG_END_NO_SESSION: u32 = 535;
-pub const LOG_SESSION_CLOSING: u32 = 536;
-pub const LOG_SESSION_CLOSED: u32 = 537;
-pub const LOG_UNKNOWN_EVENT: u32 = 538;
-pub const TRACE_FORWARD: u32 = 539;
 
 // Reactor threads' close, peer-close and pipe-write paths and thread setup
 // (`crates/server/src/reactor_io.rs`); far from the other ranges.
@@ -957,6 +945,32 @@ pub const ADMIN_MANAGER: u32 = 13;
 pub const ADMIN_MEMORY: u32 = 14;
 pub const ADMIN_PORTS: u32 = 15;
 pub const ADMIN_PORT: u32 = 16;
+
+// `Server::start` (`RUN_START`). `OP_LC_CLAIM_START`, `OP_LC_START_TIME` and
+// `OP_LC_DAEMONIZE` read and write the Rust records; the rest are native effects.
+pub const RUN_START: u32 = 320;
+pub const OP_LC_CLEAR_ERROR: u32 = 1200;
+/// `Server::start_check()`.
+pub const OP_LC_CHECK: u32 = 1201;
+/// The `SW_GLOBAL_HOOK_BEFORE_SERVER_START` hook, if set.
+pub const OP_LC_BEFORE_START: u32 = 1202;
+/// Whether this call set `gs->start` from 0 to 1.
+pub const OP_LC_CLAIM_START: u32 = 1203;
+pub const LOG_LC_ONLY_ONE: u32 = 1204;
+pub const OP_LC_DAEMONIZE: u32 = 1205;
+/// Redirects stdout/stderr (to the log file or `/dev/null`), then `swoole_daemon(0, 1)`.
+pub const OP_LC_DAEMON: u32 = 1206;
+pub const OP_LC_START_TIME: u32 = 1207;
+/// Publishes the event workers to their pool and numbers the user workers.
+pub const OP_LC_PREPARE_WORKERS: u32 = 1208;
+/// `factory_->start()`.
+pub const OP_LC_FACTORY_START: u32 = 1209;
+pub const OP_LC_WRITE_PID: u32 = 1210;
+pub const OP_LC_UNLINK_PID: u32 = 1211;
+/// `start_reactor_processes()`, `start_reactor_threads()`, `start_worker_threads()`.
+pub const OP_LC_START_BASE: u32 = 1212;
+pub const OP_LC_START_PROCESS: u32 = 1213;
+pub const OP_LC_START_THREAD: u32 = 1214;
 
 #[cfg(test)]
 mod tests {

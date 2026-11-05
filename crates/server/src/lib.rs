@@ -18,6 +18,7 @@ pub use commands::{
 };
 
 mod admin;
+mod base_factory;
 mod commands;
 mod config;
 mod conn_io;
@@ -33,6 +34,7 @@ mod reactor_io;
 mod reactor_thread;
 mod records;
 mod send;
+pub mod server_methods;
 mod shared;
 mod startup;
 mod state;
@@ -44,7 +46,7 @@ pub use static_config::{
 
 pub use records::{
     ConnectionRecord, ServerTables, SessionRecord, swr_v1_server_connection, swr_v1_server_session,
-    swr_v1_server_session_fd, swr_v1_server_sessions_retire, swr_v1_server_tables_get,
+    swr_v1_server_sessions_retire, swr_v1_server_tables_get,
 };
 
 pub use shared::{
@@ -308,6 +310,7 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
         }
         RUN_CREATE => startup::create(h)?,
         RUN_START_CHECK => startup::start_check(h)?,
+        ops::RUN_START => startup::start(h)?,
         RUN_START_MASTER_THREAD => startup::start_master_thread(h)?,
         RUN_STORE_LISTEN_SOCKET => {
             startup::store_listen_socket(h)?;

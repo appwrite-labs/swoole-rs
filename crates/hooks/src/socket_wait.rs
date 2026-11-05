@@ -215,7 +215,6 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_wait(
 ///
 /// # Safety
 /// `state` is a live handle; an installed barrier's state is live.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_socket_ready(
     state: *mut SocketState,
     event: u32,
@@ -252,7 +251,6 @@ pub unsafe extern "C" fn swr_v1_hook_socket_ready(
 ///
 /// # Safety
 /// `socket` is a live record, not borrowed elsewhere for the call.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_poll(
     socket: *mut CoSocket,
     event: u32,
@@ -290,7 +288,6 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_poll(
 /// # Safety
 /// `socket` is a live record and `event_socket` the live `network::Socket` the
 /// event came from; a resumed coroutine may free the record but not `event_socket`.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_error_event(
     socket: *mut CoSocket,
     owner: *const c_void,

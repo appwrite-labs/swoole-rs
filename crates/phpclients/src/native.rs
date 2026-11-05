@@ -15,19 +15,6 @@ pub(crate) struct LengthCallable {
     pub(crate) value: *mut zval,
 }
 
-/// `swoole_socket_coro_sockopt_call`.
-#[repr(C)]
-pub(crate) struct SockoptCall {
-    pub(crate) socket: Socket,
-    pub(crate) op: c_int,
-    pub(crate) level: c_int,
-    pub(crate) name: c_int,
-    pub(crate) value: *mut zval,
-    pub(crate) address: *const c_void,
-    pub(crate) index: u32,
-    pub(crate) result: c_int,
-}
-
 unsafe extern "C" {
     /// `php_swoole_error(level, "%s", message)`, or with `fatal`
     /// `php_swoole_fatal_error`.
@@ -223,8 +210,10 @@ unsafe extern "C" {
     ) -> bool;
     /// Whether the build has an optional SSL option (host name, grease).
     pub(crate) fn swoole_socket_coro_ssl_supports(option: c_int) -> bool;
-    /// ext/sockets' helpers over a [`SockoptCall`]; run inside `zend_try`.
-    pub(crate) fn swoole_socket_coro_sockopt(call: *mut c_void);
+    /// The socket's domain, and its type into `kind`.
+    pub(crate) fn swoole_socket_coro_family(socket: Socket, kind: *mut c_int) -> c_int;
+    /// `socket->errCode = code`, nothing else.
+    pub(crate) fn swoole_socket_coro_set_err_code(socket: Socket, code: c_int);
     /// `TCP_INFO` into `array`: 1, 0 when `name` is not it, -1 when it failed.
     pub(crate) fn swoole_socket_coro_tcp_info(
         socket: Socket,

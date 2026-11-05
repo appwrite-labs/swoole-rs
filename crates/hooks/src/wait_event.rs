@@ -37,13 +37,12 @@ struct Waiter {
     revents: u32,
 }
 
-/// The reactor fired `event` on a waiter's socket: the coroutine for native code to
-/// resume (deferred) on the first event, else null.
+/// The reactor fired `event` on a waiter's socket: the coroutine to resume
+/// (deferred) on the first event, else null.
 ///
 /// # Safety
 /// `waiter` is the socket's object, a parked `swr_v1_hook_wait_event`'s.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_event_ready(waiter: *mut c_void, event: i32) -> *mut c_void {
+pub(crate) unsafe fn event_ready(waiter: *mut c_void, event: i32) -> *mut c_void {
     // SAFETY: the waiter lives in its parked frame, and only this thread touches it.
     let waiter = unsafe { &mut *waiter.cast::<Waiter>() };
     let plan = swr_v1_hook_event_waiter(waiter.revents, event.cast_unsigned());
@@ -222,8 +221,8 @@ mod tests {
     }
     /// The reactor fires an error then a read before the deferred resume runs.
     unsafe extern "C" fn fires_error(co: *mut c_void, _: f64) -> i32 {
-        assert_eq!(unsafe { swr_v1_hook_event_ready(WAITER.get(), ERROR) }, co);
-        assert!(unsafe { swr_v1_hook_event_ready(WAITER.get(), READ) }.is_null());
+        assert_eq!(unsafe { event_ready(WAITER.get(), ERROR) }, co);
+        assert!(unsafe { event_ready(WAITER.get(), READ) }.is_null());
         0
     }
     unsafe extern "C" fn times_out(_: *mut c_void, _: f64) -> i32 {
@@ -294,7 +293,7 @@ mod tests {
                 let raw = (&raw mut waiter).cast();
                 let mut wakes = 0;
                 for fired in [event, WRITE] {
-                    let co = unsafe { swr_v1_hook_event_ready(raw, fired) };
+                    let co = unsafe { event_ready(raw, fired) };
                     if !co.is_null() {
                         assert_eq!(co, CO);
                         wakes += 1;

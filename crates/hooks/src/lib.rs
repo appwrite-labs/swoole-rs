@@ -18,10 +18,12 @@ pub mod dns_cache;
 pub mod fd_control;
 pub mod file_io;
 pub mod flock;
+pub mod hooked;
 pub mod lifecycle;
 pub mod offload;
 pub mod packet;
 pub mod poll;
+pub mod reactor_handlers;
 pub mod resolve;
 pub mod sendfile;
 pub mod setup;
@@ -29,6 +31,7 @@ pub mod shutdown;
 pub mod sleep;
 pub mod socket_extra;
 pub mod socket_map;
+pub mod socket_members;
 pub mod socket_wait;
 pub mod stdio;
 pub mod timers;
@@ -42,12 +45,6 @@ pub mod uring_tls;
 pub mod vector;
 pub mod wait_event;
 pub mod wait_signal;
-
-/// The original per-hook guard. Some DNS hooks intentionally do not use it.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_no_coro(reactor: bool, coroutine: bool) -> bool {
-    !reactor || !coroutine
-}
 
 /// 1 install, -1 restore, 0 retain. Requested flags and installed flags differ.
 #[unsafe(no_mangle)]

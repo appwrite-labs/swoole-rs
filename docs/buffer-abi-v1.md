@@ -71,28 +71,12 @@ them. `Buffer::append(const char *, uint32_t)` goes through the same
 `swr_v1_buffer_append` → generic `appendv` path as vector input; the generic
 path is not specialized for one descriptor.
 
-## Additive String operations
+## String
 
-Module-local operations in `native/buffer/` extend this contract for `String`
-(see `native/buffer/string-contract.md`). Common rules:
-
-- Rust never calls supplied allocator callbacks, Zend callbacks or C++ code that
-  can throw or bail out. Native allocation, callbacks and Zend effects run after
-  Rust returns, with fresh inputs passed for the next phase.
-- System allocator path: only uniquely owned standard-libc storage enters it.
-  Native code compares the actual `malloc`/`calloc`/`realloc`/`free` pointers on
-  every call; custom or Zend allocators use the native path. Visible capacities,
-  allocation order, `malloc(0)`, zero-size resize and failure atomicity match
-  upstream. No reference into an allocation survives `realloc`.
-- Metadata transitions (move, release, clear, capacity) are planned in Rust on
-  copied POD snapshots; the opaque allocator token is never dereferenced.
-- POSIX `struct iovec` input can be appended directly through an additive
-  export, with the same ownership, aliasing, offset and overflow rules as above.
-  Size, alignment and field offsets are checked per target.
-- Whole-operation continuation (APPEND/WRITE/APPEND_I32/REPEAT/COPY/POP and
-  termination): public `String` fields stay authoritative; Rust publishes only
-  explicit per-phase writes and keeps the original per-append repeat cadence.
-  The v1 direct prepare/apply exports keep their fused-repeat behavior.
+`swoole::String` is defined in Rust (`crates/buffer/src/string.rs`): the C++ class
+keeps its fields, which Rust mirrors with layout asserts on both sides, and Rust
+defines every method with a body under its upstream symbol. `String::split` stays a
+three-line C++ method that lends its `std::function` handler to Rust.
 
 ## Typed mode
 

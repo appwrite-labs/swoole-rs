@@ -1,8 +1,8 @@
 //! Thread mode (`src/server/thread.cc`): every worker is a thread, and a manager
 //! thread rejoins and respawns each one that exits and walks reloads one worker
 //! at a time. Rust owns the manager's state ([`ThreadManager`]: its wait queue,
-//! the reload request and the reload's progress); native keeps the threads, the
-//! thread bodies and the server.
+//! the reload request and the reload's progress) and each thread's body; native
+//! keeps the threads, the message bus, the callbacks and the server.
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,22 +11,41 @@ use std::time::Duration;
 
 use super::event_worker::EVENT_WORKER;
 use super::ops::{
-    LOG_CANNOT_RELOAD, LOG_NOTIFY_MANAGER, LOG_RELOADING, OP_ABORT, OP_ALL_CORE_WORKER_NUM,
-    OP_CALL_WORKER_ERROR, OP_EVENT_FREE, OP_EVENT_INIT, OP_HAS_TIMER, OP_IS_MANAGER,
-    OP_JOIN_THREAD, OP_KILL_WORKER, OP_MANAGER_THREAD_ID, OP_ON_AFTER_RELOAD, OP_ON_BEFORE_RELOAD,
-    OP_PORT_ADD, OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_LISTEN, OP_RUNNING, OP_SELECT_WORKER,
-    OP_SET_MASTER_THREAD_ID, OP_SET_NOT_SUPPORTED, OP_SPAWN_EVENT_THREAD, OP_SPAWN_MANAGER_THREAD,
-    OP_SPAWN_TASK_THREAD, OP_SPAWN_USER_THREAD, OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET,
-    OP_TASK_WORKER_NUM, OP_TERMINATE_MANAGER_THREAD, OP_THREAD_EXIT_STATUS, OP_THREAD_MANAGER,
+    LOG_CANNOT_RELOAD, LOG_MANAGER_ABNORMAL, LOG_NOTIFY_MANAGER, LOG_RELOADING, OP_ABORT,
+    OP_ALL_CORE_WORKER_NUM, OP_CALL_WORKER_ERROR, OP_CREATE_EVENT_WORKERS, OP_CREATE_MESSAGE_BUS,
+    OP_CREATE_USER_WORKERS, OP_CREATE_WORKER_PIPES, OP_DESTROY_MESSAGE_BUS, OP_EVENT_FREE,
+    OP_EVENT_INIT, OP_GET_WORKER, OP_HAS_TIMER, OP_IS_MANAGER, OP_JOIN_THREAD, OP_KILL_WORKER,
+    OP_MANAGER_THREAD_ID, OP_ON_AFTER_RELOAD, OP_ON_BEFORE_RELOAD, OP_ON_MANAGER_START,
+    OP_ON_MANAGER_STOP, OP_ON_USER_WORKER_START, OP_ON_WORKER_START, OP_ON_WORKER_STOP,
+    OP_POOL_MAIN_LOOP, OP_PORT_ADD, OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_LISTEN,
+    OP_REACTOR_THREAD_MAIN, OP_RUNNING, OP_SELECT_WORKER, OP_SET_MASTER_THREAD_ID,
+    OP_SET_NOT_SUPPORTED, OP_SPAWN_THREAD, OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET,
+    OP_TASK_START_CHECK, OP_TASK_WORKER_NUM, OP_TERMINATE_MANAGER_THREAD, OP_THREAD_ENTER,
+    OP_THREAD_EXIT, OP_THREAD_EXIT_STATUS, OP_THREAD_MANAGER, OP_TIMER_CREATE, OP_TIMER_FREE,
     OP_TIMER_NEXT_MSEC, OP_TIMER_SELECT, OP_USER_WORKER_NUM, OP_WORKER_ID, OP_WORKER_NUM,
-    OP_WORKER_TYPE, RUN_START_WORKER_THREADS, RUN_STOP_WORKER_THREADS, RUN_THREAD_MANAGER_WAIT,
+    OP_WORKER_THREAD_START, OP_WORKER_TYPE, RUN_START_WORKER_THREADS, RUN_STOP_WORKER_THREADS,
+    RUN_THREAD_BODY, RUN_THREAD_FACTORY_START, RUN_THREAD_MAIN, RUN_THREAD_MANAGER_WAIT,
     RUN_THREAD_RELOAD, RUN_THREAD_TERMINATE_MANAGER, TRACE_MANAGER_EXITED, TRACE_MANAGER_WAKE,
 };
 use super::{Host, SW_ERR, SW_OK};
+use crate::methods::{swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type};
+use crate::worker_globals::swr_v1_worker_globals;
+use crate::worker_record::{
+    WorkerRecord, swr_v1_worker_set_pid, swr_v1_worker_set_status, swr_v1_worker_set_type,
+};
 
 /// `swoole::WorkerType`.
+const MANAGER: u64 = 3;
 const TASK_WORKER: u64 = 4;
 const USER_WORKER: u64 = 5;
+/// `SW_WORKER_IDLE`.
+const WORKER_IDLE: u8 = 2;
+
+/// `OP_SPAWN_THREAD`'s, `RUN_THREAD_BODY`'s and `RUN_THREAD_MAIN`'s argument:
+/// the thread's slot and the kind of worker it runs.
+fn thread_arg(id: u64, kind: u64) -> u64 {
+    id | (kind << 32)
+}
 
 /// What the manager thread waits for.
 enum Wake {
@@ -252,6 +271,15 @@ pub(super) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
             SW_OK
         }
         RUN_START_WORKER_THREADS => start(h),
+        RUN_THREAD_BODY => {
+            body(h, arg);
+            SW_OK
+        }
+        RUN_THREAD_MAIN => {
+            thread_main(h, arg);
+            SW_OK
+        }
+        RUN_THREAD_FACTORY_START => i64::from(factory_start(h)),
         RUN_STOP_WORKER_THREADS => {
             h.get(OP_TERMINATE_MANAGER_THREAD);
             for worker in 0..h.get(OP_ALL_CORE_WORKER_NUM) {
@@ -296,9 +324,9 @@ fn restart<H: Host>(h: &mut H, worker: *mut c_void) {
     }
     h.op(OP_JOIN_THREAD, id);
     match h.get(OP_WORKER_TYPE) {
-        EVENT_WORKER => h.op(OP_SPAWN_EVENT_THREAD, id),
-        TASK_WORKER => h.op(OP_SPAWN_TASK_THREAD, id),
-        USER_WORKER => h.op(OP_SPAWN_USER_THREAD, id),
+        kind @ (EVENT_WORKER | TASK_WORKER | USER_WORKER) => {
+            h.op(OP_SPAWN_THREAD, thread_arg(id, kind))
+        }
         _ => h.get(OP_ABORT),
     };
 }
@@ -369,16 +397,19 @@ fn start<H: Host>(h: &mut H) -> i64 {
     let workers = h.get(OP_WORKER_NUM);
     let task_workers = h.get(OP_TASK_WORKER_NUM);
     for worker in 0..task_workers {
-        h.op(OP_SPAWN_TASK_THREAD, workers + worker);
+        h.op(OP_SPAWN_THREAD, thread_arg(workers + worker, TASK_WORKER));
     }
     for worker in 0..workers {
-        h.op(OP_SPAWN_EVENT_THREAD, worker);
+        h.op(OP_SPAWN_THREAD, thread_arg(worker, EVENT_WORKER));
     }
     for worker in 0..h.get(OP_USER_WORKER_NUM) {
-        h.op(OP_SPAWN_USER_THREAD, task_workers + workers + worker);
+        h.op(
+            OP_SPAWN_THREAD,
+            thread_arg(task_workers + workers + worker, USER_WORKER),
+        );
     }
     let id = h.get(OP_MANAGER_THREAD_ID);
-    h.op(OP_SPAWN_MANAGER_THREAD, id);
+    h.op(OP_SPAWN_THREAD, thread_arg(id, MANAGER));
     if h.signed(OP_EVENT_INIT) < 0 {
         return SW_ERR;
     }
@@ -397,10 +428,200 @@ fn start<H: Host>(h: &mut H) -> i64 {
     h.signed(OP_START_MASTER_THREAD)
 }
 
+/// `ThreadFactory::start`: the pipes and the event, task and user workers' records.
+fn factory_start<H: Host>(h: &mut H) -> bool {
+    h.is(OP_CREATE_WORKER_PIPES)
+        && h.is(OP_CREATE_EVENT_WORKERS)
+        && (h.get(OP_TASK_WORKER_NUM) == 0 || h.signed(OP_TASK_START_CHECK) >= 0)
+        && (h.get(OP_USER_WORKER_NUM) == 0 || h.is(OP_CREATE_USER_WORKERS))
+}
+
+/// A thread's body (`ThreadFactory::spawn_*`): enter the thread as its worker
+/// (or the manager), run its main inside the server's `worker_thread_start`,
+/// then leave, telling the manager thread when a worker exited.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the kind, slot and native thread id narrow as the C++ setters' parameters do"
+)]
+fn body<H: Host>(h: &mut H, arg: u64) {
+    let (id, kind) = (arg & u64::from(u32::MAX), arg >> 32);
+    let pid = h.op(OP_THREAD_ENTER, id) as i32;
+    swoole_set_worker_type(kind as i32);
+    swoole_set_worker_id(id as u32);
+    swoole_set_worker_pid(pid);
+    let message_bus = kind == TASK_WORKER || kind == USER_WORKER;
+    if message_bus {
+        h.get(OP_CREATE_MESSAGE_BUS);
+    }
+    let mut worker = core::ptr::null_mut::<WorkerRecord>();
+    if kind == MANAGER {
+        h.get(OP_TIMER_CREATE);
+    } else {
+        worker = usize::try_from(h.op(OP_GET_WORKER, id)).unwrap_or(0) as *mut WorkerRecord;
+        // SAFETY: native lends the server's live record for this slot, which this thread runs.
+        unsafe { swr_v1_worker_set_type(worker, kind as u8) };
+        // SAFETY: as above.
+        unsafe { swr_v1_worker_set_pid(worker, pid) };
+        if kind == TASK_WORKER {
+            // SAFETY: as above.
+            unsafe { swr_v1_worker_set_status(worker, WORKER_IDLE) };
+        }
+        // SAFETY: this thread's live worker-globals record.
+        unsafe { (*swr_v1_worker_globals()).worker = worker };
+    }
+    h.op(OP_WORKER_THREAD_START, arg);
+    if message_bus {
+        h.get(OP_DESTROY_MESSAGE_BUS);
+    }
+    if kind == MANAGER {
+        if h.is(OP_RUNNING) {
+            h.get(LOG_MANAGER_ABNORMAL);
+        }
+        h.get(OP_TIMER_FREE);
+    } else {
+        manager(h).push(Wake::Exited(worker.cast()));
+    }
+    h.op(OP_THREAD_EXIT, id);
+}
+
+/// What a thread runs inside `worker_thread_start`.
+fn thread_main<H: Host>(h: &mut H, arg: u64) {
+    match arg >> 32 {
+        EVENT_WORKER => {
+            h.op(OP_REACTOR_THREAD_MAIN, arg & u64::from(u32::MAX));
+        }
+        TASK_WORKER => {
+            h.get(OP_ON_WORKER_START);
+            h.get(OP_POOL_MAIN_LOOP);
+            h.get(OP_ON_WORKER_STOP);
+        }
+        USER_WORKER => {
+            h.get(OP_ON_USER_WORKER_START);
+        }
+        _ => {
+            h.get(OP_ON_MANAGER_START);
+            wait(h);
+            h.get(OP_ON_MANAGER_STOP);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worker_record::{swr_v1_worker_pid, swr_v1_worker_status, swr_v1_worker_type};
     use crate::workers::script::Script;
+
+    #[test]
+    fn a_task_thread_runs_as_its_worker_with_a_message_bus_and_reports_its_exit() {
+        let manager = ThreadManager::default();
+        // SAFETY (test): a zeroed record stands in for the server's.
+        let mut record: WorkerRecord = unsafe { core::mem::zeroed() };
+        let worker = core::ptr::from_mut(&mut record);
+        let address = worker as u64;
+        let (h, globals) = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let mut h = Script::with(&[
+                        (OP_THREAD_MANAGER, handle(&manager)),
+                        (OP_THREAD_ENTER, 4321),
+                        (OP_GET_WORKER, address),
+                    ]);
+                    run_op(&mut h, RUN_THREAD_BODY, thread_arg(6, TASK_WORKER));
+                    let g = swr_v1_worker_globals();
+                    // SAFETY (test): this thread's record.
+                    let globals = unsafe { ((*g).id, (*g).kind, (*g).pid, (*g).worker as u64) };
+                    (h, globals)
+                })
+                .join()
+                .unwrap()
+        });
+        assert_eq!(globals, (6, 4, 4321, address));
+        // SAFETY (test): the thread above has ended.
+        let fields = unsafe { (swr_v1_worker_type(worker), swr_v1_worker_pid(worker)) };
+        assert_eq!(fields, (4, 4321));
+        // SAFETY (test): as above.
+        assert_eq!(unsafe { swr_v1_worker_status(worker) }, WORKER_IDLE);
+        assert_eq!(
+            h.effects(&[OP_THREAD_MANAGER]),
+            vec![
+                OP_THREAD_ENTER,
+                OP_CREATE_MESSAGE_BUS,
+                OP_GET_WORKER,
+                OP_WORKER_THREAD_START,
+                OP_DESTROY_MESSAGE_BUS,
+                OP_THREAD_EXIT,
+            ]
+        );
+        assert_eq!(
+            h.args(OP_WORKER_THREAD_START),
+            vec![thread_arg(6, TASK_WORKER)]
+        );
+        assert!(matches!(manager.next(5), Some(Wake::Exited(w)) if w as u64 == address));
+    }
+
+    #[test]
+    fn the_manager_thread_owns_a_timer_and_warns_if_it_exits_while_running() {
+        let manager = ThreadManager::default();
+        let mut h = Script::with(&[(OP_THREAD_MANAGER, handle(&manager)), (OP_RUNNING, 1)]);
+        std::thread::scope(|scope| {
+            scope.spawn(|| run_op(&mut h, RUN_THREAD_BODY, thread_arg(9, MANAGER)));
+        });
+        assert_eq!(
+            h.effects(&[OP_THREAD_MANAGER, OP_RUNNING]),
+            vec![
+                OP_THREAD_ENTER,
+                OP_TIMER_CREATE,
+                OP_WORKER_THREAD_START,
+                LOG_MANAGER_ABNORMAL,
+                OP_TIMER_FREE,
+                OP_THREAD_EXIT,
+            ]
+        );
+        assert!(manager.next(1).is_none());
+        // Its main waits on the queue between the server's callbacks.
+        manager.push(Wake::Exit);
+        let mut h = Script::with(&[(OP_THREAD_MANAGER, handle(&manager))]);
+        run_op(&mut h, RUN_THREAD_MAIN, thread_arg(9, MANAGER));
+        assert_eq!(h.called(OP_ON_MANAGER_START), 1);
+        assert_eq!(h.called(OP_ON_MANAGER_STOP), 1);
+    }
+
+    #[test]
+    fn each_worker_kind_runs_its_own_main() {
+        let mut h = Script::default();
+        run_op(&mut h, RUN_THREAD_MAIN, thread_arg(2, EVENT_WORKER));
+        run_op(&mut h, RUN_THREAD_MAIN, thread_arg(3, TASK_WORKER));
+        run_op(&mut h, RUN_THREAD_MAIN, thread_arg(4, USER_WORKER));
+        assert_eq!(h.args(OP_REACTOR_THREAD_MAIN), vec![2]);
+        assert_eq!(
+            h.effects(&[]),
+            vec![
+                OP_REACTOR_THREAD_MAIN,
+                OP_ON_WORKER_START,
+                OP_POOL_MAIN_LOOP,
+                OP_ON_WORKER_STOP,
+                OP_ON_USER_WORKER_START,
+            ]
+        );
+    }
+
+    #[test]
+    fn factory_start_stops_at_the_first_failure() {
+        let mut h = Script::with(&[
+            (OP_CREATE_WORKER_PIPES, 1),
+            (OP_CREATE_EVENT_WORKERS, 1),
+            (OP_TASK_WORKER_NUM, 1),
+            (OP_TASK_START_CHECK, u64::MAX),
+        ]);
+        assert_eq!(run_op(&mut h, RUN_THREAD_FACTORY_START, 0), 0);
+        assert_eq!(h.called(OP_CREATE_USER_WORKERS), 0);
+        h.facts.insert(OP_TASK_START_CHECK, 0);
+        h.facts.insert(OP_USER_WORKER_NUM, 1);
+        assert_eq!(run_op(&mut h, RUN_THREAD_FACTORY_START, 0), 0);
+        h.facts.insert(OP_CREATE_USER_WORKERS, 1);
+        assert_eq!(run_op(&mut h, RUN_THREAD_FACTORY_START, 0), 1);
+    }
 
     #[test]
     fn worker_types_are_upstreams() {
@@ -434,7 +655,7 @@ mod tests {
         assert_eq!(h.args(OP_SELECT_WORKER), vec![0x1000]);
         assert_eq!(h.called(OP_CALL_WORKER_ERROR), 1);
         assert_eq!(h.args(OP_JOIN_THREAD), vec![3]);
-        assert_eq!(h.args(OP_SPAWN_TASK_THREAD), vec![3]);
+        assert_eq!(h.args(OP_SPAWN_THREAD), vec![thread_arg(3, TASK_WORKER)]);
         assert_eq!(h.called(OP_TIMER_SELECT), 1);
     }
 
@@ -494,10 +715,16 @@ mod tests {
         ])
         .queue(OP_PORT_DGRAM, &[1, 0]);
         assert_eq!(run_op(&mut h, RUN_START_WORKER_THREADS, 0), SW_OK);
-        assert_eq!(h.args(OP_SPAWN_TASK_THREAD), vec![2]);
-        assert_eq!(h.args(OP_SPAWN_EVENT_THREAD), vec![0, 1]);
-        assert_eq!(h.args(OP_SPAWN_USER_THREAD), vec![3]);
-        assert_eq!(h.args(OP_SPAWN_MANAGER_THREAD), vec![4]);
+        assert_eq!(
+            h.args(OP_SPAWN_THREAD),
+            vec![
+                thread_arg(2, TASK_WORKER),
+                thread_arg(0, EVENT_WORKER),
+                thread_arg(1, EVENT_WORKER),
+                thread_arg(3, USER_WORKER),
+                thread_arg(4, MANAGER),
+            ]
+        );
         assert_eq!(h.args(OP_PORT_ADD), vec![1]);
     }
 

@@ -11,6 +11,8 @@ extern "C" {
 #endif
 typedef uint64_t (*swr_v1_workers_call)(void *context, uint32_t op, uint64_t arg);
 int64_t swr_v1_workers_run(uint32_t operation, uint64_t arg, void *context, swr_v1_workers_call call);
+/* process.cc's FactoryContext call, which the Rust Factory methods run over. */
+void swr_v1_workers_set_factory_call(swr_v1_workers_call call);
 /* OP_SIGNAL_SET's argument: the signal number (-1 for SIGRTMIN) in the low word and
  * the handler in the high word: 0 none, 1 SIG_IGN, 2 `own`. Defined in worker.cc. */
 void swr_workers_signal_set(uint64_t arg, void (*own)(int));
@@ -79,6 +81,9 @@ void swr_v1_thread_manager_exited(const void *manager, void *worker);
 #define SWR_WORKERS_RUN_THREAD_TERMINATE_MANAGER 47
 #define SWR_WORKERS_RUN_START_WORKER_THREADS 48
 #define SWR_WORKERS_RUN_STOP_WORKER_THREADS 49
+#define SWR_WORKERS_RUN_THREAD_BODY 50
+#define SWR_WORKERS_RUN_THREAD_MAIN 51
+#define SWR_WORKERS_RUN_THREAD_FACTORY_START 52
 #define SWR_WORKERS_OP_BUS_READ 0
 #define SWR_WORKERS_OP_BUS_POP 1
 #define SWR_WORKERS_OP_ON_WORKER_ERROR 2
@@ -457,18 +462,26 @@ void swr_v1_thread_manager_exited(const void *manager, void *worker);
 #define SWR_WORKERS_TRACE_MANAGER_WAKE 376
 #define SWR_WORKERS_OP_SELECT_WORKER 377
 #define SWR_WORKERS_OP_THREAD_EXIT_STATUS 378
-#define SWR_WORKERS_OP_SPAWN_EVENT_THREAD 379
-#define SWR_WORKERS_OP_SPAWN_TASK_THREAD 380
-#define SWR_WORKERS_OP_SPAWN_USER_THREAD 381
 #define SWR_WORKERS_LOG_CANNOT_RELOAD 382
 #define SWR_WORKERS_OP_SET_NOT_SUPPORTED 383
 #define SWR_WORKERS_LOG_NOTIFY_MANAGER 384
-#define SWR_WORKERS_OP_SPAWN_MANAGER_THREAD 385
 #define SWR_WORKERS_OP_PORT_DGRAM 386
 #define SWR_WORKERS_OP_SET_MASTER_THREAD_ID 387
 #define SWR_WORKERS_OP_START_MASTER_THREAD 388
 #define SWR_WORKERS_OP_EVENT_BEGIN 389
 #define SWR_WORKERS_OP_EVENT_END 390
+#define SWR_WORKERS_OP_SPAWN_THREAD 391
+#define SWR_WORKERS_OP_THREAD_ENTER 392
+#define SWR_WORKERS_OP_THREAD_EXIT 393
+#define SWR_WORKERS_OP_CREATE_MESSAGE_BUS 394
+#define SWR_WORKERS_OP_DESTROY_MESSAGE_BUS 395
+#define SWR_WORKERS_OP_GET_WORKER 396
+#define SWR_WORKERS_OP_WORKER_THREAD_START 397
+#define SWR_WORKERS_OP_REACTOR_THREAD_MAIN 398
+#define SWR_WORKERS_OP_TIMER_CREATE 399
+#define SWR_WORKERS_LOG_MANAGER_ABNORMAL 400
+#define SWR_WORKERS_OP_CREATE_WORKER_PIPES 401
+#define SWR_WORKERS_OP_TASK_START_CHECK 402
 /* END NUMBERED */
 #ifdef __cplusplus
 }

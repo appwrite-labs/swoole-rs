@@ -98,8 +98,6 @@ uint32_t swr_v1_hook_co_socket_accepted(swr_v1_co_socket *socket,
                                         const swr_v1_co_socket *server);
 /* pop_read_buffer / pop_write_buffer. */
 void *swr_v1_hook_co_socket_pop_buffer(swr_v1_co_socket *socket, bool write);
-/* getpeername: 0, or the errno to set. */
-int swr_v1_hook_co_socket_peer_name(const swr_v1_co_socket *socket, swoole::network::Address *address);
 
 /* What the Rust operations need from C++ (crates/hooks/src/co_io.rs), installed once. */
 typedef struct {
@@ -139,7 +137,6 @@ typedef struct {
 } swr_v1_hook_co_socket_host_t;
 /* Complete packet/buffer reads, including availability, buffer and timer. */
 ssize_t swr_v1_hook_co_socket_recv_packet(swr_v1_co_socket *socket, double timeout);
-ssize_t swr_v1_hook_co_socket_recv_buffered(swr_v1_co_socket *socket, char *out, size_t size);
 /* The lifecycle (crates/hooks/src/lifecycle.rs): shutdown(how), cancel(event), close()
    (the socket may be gone after it returns true), check_liveness() and connect(addr). */
 bool swr_v1_hook_co_socket_shutdown(swr_v1_co_socket *socket, int how);
@@ -147,20 +144,10 @@ bool swr_v1_hook_co_socket_cancel(swr_v1_co_socket *socket, uint32_t event);
 bool swr_v1_hook_co_socket_close(swr_v1_co_socket *socket);
 bool swr_v1_hook_co_socket_check_liveness(swr_v1_co_socket *socket);
 bool swr_v1_hook_co_socket_connect(swr_v1_co_socket *socket, const struct sockaddr *addr, socklen_t length);
-/* poll(event, timeout); the reactor's error callback (owner is the native object over
-   socket, which the resumed writer may free); recvfrom(buffer, length) through the
-   socket's own recvfrom into its network::Socket's peer address. */
-bool swr_v1_hook_co_socket_poll(swr_v1_co_socket *socket, uint32_t event, double timeout);
-void swr_v1_hook_co_socket_error_event(swr_v1_co_socket *socket, const void *owner, const swr_v1_socket *event_socket);
+/* recvfrom(buffer, length) through the socket's own recvfrom into its
+   network::Socket's peer address. */
 ssize_t swr_v1_hook_co_socket_recvfrom(
     swr_v1_co_socket *socket, void *buffer, size_t length, ssize_t (*call)(swr_v1_co_socket *, void *, size_t, sockaddr *, socklen_t *));
-/* Pure preparation/commit; native virtual poll runs between the two calls. */
-struct swr_v1_hook_fd_wait_t { swr_v1_socket *socket; double timeout; };
-int swr_v1_hook_fd_timeout(swr_v1_co_socket *socket, int which, double timeout, bool connect);
-int swr_v1_hook_fd_poll_fake(struct pollfd *fd, int timeout, swr_v1_co_socket *socket);
-struct pollfd swr_v1_hook_fd_poll(int fd, int event);
-swr_v1_hook_fd_wait_t swr_v1_hook_fd_wait(swr_v1_co_socket *socket, uint32_t event, double timeout);
-void swr_v1_hook_fd_wait_restore(swr_v1_hook_fd_wait_t wait);
 void swr_v1_hook_co_socket_host(const swr_v1_hook_co_socket_host_t *host);
 /* set_err(e), check_return_value, is_available, get_bound_cid, check_bound_co,
    get_event_str (a static string) and TimeoutController::has_timedout (startup is

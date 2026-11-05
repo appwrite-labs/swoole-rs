@@ -14,6 +14,7 @@ use std::ffi::{CStr, c_char, c_int};
 use std::slice;
 
 pub mod lifecycle;
+pub mod methods;
 pub mod read;
 
 const _: () = {

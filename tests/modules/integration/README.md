@@ -4,7 +4,7 @@ Build the pinned reference and Rust hybrid, then run:
 
 ```sh
 python3 tests/modules/integration/test_bridge.py
-python3 tests/modules/integration/test_bridge.py --hybrid target/hybrid/rust-websocket/modules/swoole.so
+python3 tests/modules/integration/test_bridge.py --hybrid target/hybrid/rust/modules/swoole.so
 ```
 
 Requires PHP, C/C++ compilers, `ar`, `make`, and the hybrid's existing libtool

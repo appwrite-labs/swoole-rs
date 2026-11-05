@@ -1,6 +1,6 @@
 # TLS/DTLS boundary (M21)
 
-Feature value 262144 (`--module tls`). Upstream targets: `src/protocol/ssl.cc`,
+Feature value 262144. Upstream targets: `src/protocol/ssl.cc`,
 `src/protocol/dtls.cc` and `include/swoole_dtls.h`. OpenSSL 3 keeps all cryptography and the TLS/DTLS
 engine; Rust binds it through `openssl-sys`.
 

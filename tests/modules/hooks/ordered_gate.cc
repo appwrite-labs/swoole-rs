@@ -49,18 +49,17 @@ namespace selected {
 }
 #undef poll
 
-/* 4..1003 and 1023..1059 moved to Rust: the hook_* families (crates/phpruntime),
-   socket_poll_trigger_event (crates/hooks/src/poll.rs), and the coroutine Socket's
+/* 0..1003 and 1023..1059 moved to Rust: hook.cc (its guard is socket.cc's host
+   table's coroutine test), the hook_* families (crates/phpruntime), socket_poll_trigger_event (crates/hooks/src/poll.rs), and the coroutine Socket's
    transfers and TimerController (crates/hooks/src/transfer.rs and co_io.rs, ported_*). */
 #define CASES(NS) \
 static std::vector<std::string> run_##NS(int scenario){using namespace NS;trace.clear();errno=0;Coroutine co;Coroutine::current=&co;SwooleTG.reactor=&co;System::canceled=false; \
- if(scenario<4){SwooleTG.reactor=scenario&1?&co:nullptr;Coroutine::current=scenario&2?&co:nullptr;record("no-coro:"+std::to_string(is_no_coro()));} \
  if(scenario>=1003 && scenario<1023){int k=scenario-1003;int calls=0;bool rv=wait_for([&](){record("callback:"+std::to_string(calls));if(k>=10 && calls==k-10)System::canceled=true;return ++calls>k%10+14;});record("wait-result:"+std::to_string(rv));} \
  if(scenario>=1059 && scenario<1061){int calls=0;try{wait_for([&]()->bool{record("callback:"+std::to_string(calls));if(calls++==scenario-1059+2)throw std::runtime_error("nativecallback");return false;});}catch(const std::runtime_error &){record("callback:exception");}} \
  return trace;}
 CASES(original)
 CASES(selected)
 int main(){
- for(int scenario=0;scenario<1061;++scenario){auto a=run_original(scenario),b=run_selected(scenario);if(a!=b){std::fprintf(stderr,"mismatch scenario %d\n",scenario);for(auto &s:a)std::fprintf(stderr,"original %s\n",s.c_str());for(auto &s:b)std::fprintf(stderr,"selected %s\n",s.c_str());return 1;}}
- std::puts("26 actual pinned/selected ordered native scenarios passed (facade execution, no real runtime claim)");
+ for(int scenario=1003;scenario<1061;++scenario){auto a=run_original(scenario),b=run_selected(scenario);if(a!=b){std::fprintf(stderr,"mismatch scenario %d\n",scenario);for(auto &s:a)std::fprintf(stderr,"original %s\n",s.c_str());for(auto &s:b)std::fprintf(stderr,"selected %s\n",s.c_str());return 1;}}
+ std::puts("22 actual pinned/selected ordered native scenarios passed (facade execution, no real runtime claim)");
 }

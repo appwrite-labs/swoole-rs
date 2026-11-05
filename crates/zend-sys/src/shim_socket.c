@@ -25,6 +25,11 @@ HashTable *swr_zend_object_properties(zval *object) {
     return Z_OBJPROP_P(object);
 }
 
+HashTable *swr_zend_convert_to_array(zval *value) {
+    convert_to_array(value);
+    return Z_ARRVAL_P(value);
+}
+
 const char *swr_zend_zval_value_name(const zval *value) {
 #if PHP_VERSION_ID >= 80300
     return zend_zval_value_name(value);

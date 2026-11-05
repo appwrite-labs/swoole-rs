@@ -1,4 +1,5 @@
 #include <cassert>
+#include <new>
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
@@ -19,18 +20,23 @@ static bool swoole_isset_hook(int) {trace.push_back(20);return hook_enabled;}
 static bool swoole_is_main_thread() {trace.push_back(30);return main_observations++==0?first_main:second_main;}
 static void swoole_signal_dispatch() {assert(false && "Not executed by constructor profile");}
 static void malloc_trim(int) {assert(false && "Not executed by constructor profile");}
+#define swoole_log_as(origin, ...) __VA_ARGS__
+#define swoole_sys_warning(...) assert(false && "Not executed by constructor profile")
 namespace swoole {
 class Reactor;
 static void swoole_call_hook(int,Reactor*) {trace.push_back(21);}
 struct CallbackManager {void execute() {assert(false);}};
 struct Task {void (*callback)(void*)=nullptr;void *data=nullptr;};
 using DeferCallback=Task;
-struct ReactorImpl {bool ready(){trace.push_back(10);return true;}};
+// The hybrid's backend sets ready_ when it opens; upstream's ready() reads it back.
+struct ReactorImpl {bool ready(){return true;}};
 static ReactorImpl native_backend;
 #include "initialize-class.inc"
 static ReactorImpl *make_reactor_epoll(Reactor*,int n){trace.push_back(100+n);return &native_backend;}
 static ReactorImpl *make_reactor_kqueue(Reactor*,int n){trace.push_back(200+n);return &native_backend;}
 static ReactorImpl *make_reactor_poll(Reactor*,int n){trace.push_back(300+n);return &native_backend;}
+// The hybrid opens every backend through the Rust state; kind is the factory.
+static int swr_v1_reactor_state_open(Reactor *r,int kind,int n){trace.push_back(kind*100+n);r->ready_=true;return 0;}
 #include "initialize-method.inc"
 }
 int main(){
@@ -65,7 +71,7 @@ int main(){
 #endif
         default:expected.push_back(307);break;
         }
-        expected.insert(expected.end(),{10,20});if(hook)expected.push_back(21);
+        expected.push_back(20);if(hook)expected.push_back(21);
         expected.insert(expected.end(),{41,51,42,30});if(first_main)expected.push_back(43);
         expected.push_back(44);
 #ifdef SW_USE_MALLOC_TRIM

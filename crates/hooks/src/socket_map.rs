@@ -41,7 +41,7 @@ fn set_errno(code: c_int) {
 }
 
 /// `fd`'s socket, or null with errno `ENOTSOCK`.
-#[unsafe(no_mangle)]
+#[must_use]
 pub extern "C" fn swr_v1_hook_socket_get(fd: c_int) -> *mut c_void {
     let socket = sockets()
         .as_ref()
@@ -54,7 +54,7 @@ pub extern "C" fn swr_v1_hook_socket_get(fd: c_int) -> *mut c_void {
 }
 
 /// Whether `fd` has a socket.
-#[unsafe(no_mangle)]
+#[must_use]
 pub extern "C" fn swr_v1_hook_socket_exists(fd: c_int) -> bool {
     sockets().as_ref().is_some_and(|map| map.contains_key(&fd))
 }
@@ -62,7 +62,6 @@ pub extern "C" fn swr_v1_hook_socket_exists(fd: c_int) -> bool {
 /// Map `fd` to `socket`. With `replace` an existing socket gives way (`map[fd] =`),
 /// else the new one does (`emplace`). Returns the socket the map no longer holds,
 /// for native code to delete, or null.
-#[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_socket_insert(
     fd: c_int,
     socket: *mut c_void,
@@ -82,7 +81,7 @@ pub extern "C" fn swr_v1_hook_socket_insert(
 
 /// Take `fd`'s socket out of the map, for native code to delete; null with errno
 /// `ENOTSOCK` if there is none.
-#[unsafe(no_mangle)]
+#[must_use]
 pub extern "C" fn swr_v1_hook_socket_remove(fd: c_int) -> *mut c_void {
     let socket = sockets()
         .as_mut()
@@ -108,7 +107,6 @@ thread_local! {
 ///
 /// # Safety
 /// `close` and `delete` act on live sockets from this map.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_socket_close(
     fd: c_int,
     close: unsafe extern "C" fn(*mut c_void) -> bool,

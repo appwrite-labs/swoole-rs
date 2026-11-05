@@ -155,7 +155,7 @@ on a Rust-raised warning.
   --workspace --all-features` (the `rust` job installs PHP headers and libclang).
 - Syntax-check the patched C++ (see the brief in AGENTS.md's module rules), then
   the hybrid and the family's PHPTs on Linux:
-  `python3 tools/dev.py docker -- tools/build_hybrid.py --module <module> --jobs 4`
+  `python3 tools/dev.py docker -- tools/build_hybrid.py --jobs 4`
   and `corpus/upstream/run.py --case ...` against both engines.
 - A callgrind A/B of a tight method loop against upstream, in the PR.
 - Alpine (musl) builds build scripts with `-C target-feature=-crt-static`
