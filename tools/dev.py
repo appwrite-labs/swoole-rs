@@ -56,6 +56,8 @@ CORE_TESTS = {
     'hooks': (['coroutine/hook.cpp', 'coroutine/socket.cpp', 'coroutine/system.cpp'],
               {'coroutine_socket.tcp6': 'needs IPv6', 'coroutine_system.getaddrinfo': NETWORK,
                'coroutine_system.getaddrinfo_timeout': UNCACHED,
+               'coroutine_hook.sendmsg_and_recvmsg': "its child reads the parent's freed stack when the parent's close completes "
+                                                     'first (SIGSEGV in ~15% of runs on both engines)',
                **{'coroutine_socket.' + name: PROXY for name in [
                    'https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy', 'https_get_with_http_proxy']}},
               {'core/base.cpp': 'base.file_put_contents'}),

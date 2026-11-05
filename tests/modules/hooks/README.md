@@ -57,6 +57,8 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   further failures and skips.
 - Native originals (101, Linux): reference 93 pass/8 fail, Rust 94 pass/7
   fail. Both fail tcp6, four external proxy cases and two DNS cases; the
+  excluded `coroutine_hook.sendmsg_and_recvmsg` segfaults in ~15% of runs on
+  both (its child reads the finished parent's stack); the
   reference TLS verify case timed out. An earlier run showed TLS SIGPIPE in both
   engines.
 - macOS (clang): `packet_gate.py` stops at a narrowing error in the selected
