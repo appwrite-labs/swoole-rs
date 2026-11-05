@@ -4,25 +4,21 @@
 //! `native/hooks/swoole_rs_phpruntime.h`).
 use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};
 use std::{ffi::CStr, ptr::NonNull};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_hooks::{co_io::swr_v1_hook_co_socket_set_err, co_socket::CoSocket};
+use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_timeout};
 use swoole_rs_zend::{bailout::Bailout, sys::zval};
 
 unsafe extern "C" {
-    fn swoole_runtime_socket_create(kind: c_int, ssl: bool) -> *mut c_void;
+    fn swoole_runtime_socket_new(kind: c_int, out: *mut *mut c_void) -> u8;
+    fn swoole_runtime_socket_base(socket: *mut c_void) -> *mut c_void;
     fn swoole_runtime_socket_from_fd(
         fd: c_int,
         domain: c_int,
         kind: c_int,
         protocol: c_int,
-    ) -> *mut c_void;
-    fn swoole_runtime_socket_free(socket: *mut c_void);
-    fn swoole_runtime_socket_fd(socket: *mut c_void) -> c_int;
-    fn swoole_runtime_socket_domain(socket: *mut c_void) -> c_int;
-    fn swoole_runtime_socket_type(socket: *mut c_void) -> c_int;
-    fn swoole_runtime_socket_record(socket: *mut c_void) -> *mut SocketRecord;
-    fn swoole_runtime_socket_error(socket: *mut c_void, message: *mut *const c_char) -> c_int;
-    fn swoole_runtime_socket_set_error(socket: *mut c_void, code: c_int);
-    fn swoole_runtime_socket_set_error_code(socket: *mut c_void, code: c_int);
+        out: *mut *mut c_void,
+    ) -> u8;
+    fn swoole_runtime_socket_free(socket: *mut c_void) -> u8;
     fn swoole_runtime_socket_io(
         socket: *mut c_void,
         op: c_int,
@@ -36,7 +32,7 @@ unsafe extern "C" {
         addr: *mut sockaddr,
         addrlen: *mut socklen_t,
     ) -> ssize_t;
-    fn swoole_runtime_socket_close(socket: *mut c_void) -> bool;
+    fn swoole_runtime_socket_close(socket: *mut c_void, bailed: *mut u8) -> bool;
     fn swoole_runtime_socket_option(
         socket: *mut c_void,
         level: c_int,
@@ -44,8 +40,6 @@ unsafe extern "C" {
         value: c_int,
         logged: bool,
     );
-    fn swoole_runtime_socket_zero_copy(socket: *mut c_void);
-    fn swoole_runtime_socket_timeout(socket: *mut c_void, timeout: f64, kind: c_int);
     fn swoole_runtime_socket_bind(socket: *mut c_void, host: *const c_char, port: c_int) -> bool;
     fn swoole_runtime_socket_connect(socket: *mut c_void, host: *const c_char, port: c_int)
     -> bool;
@@ -127,7 +121,9 @@ impl Drop for Socket {
     fn drop(&mut self) {
         if self.owned {
             // SAFETY: the socket is owned and live.
-            unsafe { swoole_runtime_socket_free(self.raw()) };
+            if unsafe { swoole_runtime_socket_free(self.raw()) } != 0 {
+                Bailout.defer();
+            }
         }
     }
 }
@@ -135,14 +131,29 @@ impl Drop for Socket {
 impl Socket {
     /// `new SocketImpl(kind)`, encrypting with `ssl`; `None` without an fd.
     pub(crate) fn new(kind: i32, ssl: bool) -> Option<Self> {
-        // SAFETY: plain construction.
-        Self::owned(unsafe { swoole_runtime_socket_create(kind, ssl) })
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: a contained native constructor writes its uniquely owned core socket.
+        if unsafe { swoole_runtime_socket_new(kind, &raw mut raw) } != 0 {
+            Bailout.defer();
+            return None;
+        }
+        let socket = Self::wrap(raw, true)?;
+        if ssl {
+            socket.ssl_encrypt();
+        }
+        (socket.fd() >= 0).then_some(socket)
     }
 
     /// `new SocketImpl(fd, domain, kind, protocol)`.
     pub(crate) fn from_fd(fd: i32, domain: i32, kind: i32, protocol: i32) -> Option<Self> {
-        // SAFETY: plain construction; the socket owns the fd.
-        let socket = unsafe { swoole_runtime_socket_from_fd(fd, domain, kind, protocol) };
+        let mut socket = std::ptr::null_mut();
+        // SAFETY: the contained native constructor takes this descriptor and writes its owner.
+        if unsafe { swoole_runtime_socket_from_fd(fd, domain, kind, protocol, &raw mut socket) }
+            != 0
+        {
+            Bailout.defer();
+            return None;
+        }
         Self::wrap(socket, true)
     }
 
@@ -161,39 +172,37 @@ impl Socket {
         })
     }
 
-    /// Own `socket`, a fresh `SocketImpl *` or null; `None` when it is null or
-    /// has no fd.
-    fn owned(socket: *mut c_void) -> Option<Self> {
-        let socket = Self::wrap(socket, true)?;
-        (socket.fd() >= 0).then_some(socket)
-    }
-
     fn raw(&self) -> *mut c_void {
         self.socket.as_ptr()
     }
 
+    /// A compiler-adjusted base projection; `coroutine::Socket` has virtual methods.
+    fn co_ptr(&self) -> *mut CoSocket {
+        // SAFETY: the native cast returns the actual embedded Rust record of this live socket.
+        unsafe { swoole_runtime_socket_base(self.raw()) }.cast()
+    }
+
     pub(crate) fn fd(&self) -> i32 {
-        // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_fd(self.raw()) }
+        // SAFETY: read one scalar from the live coroutine socket, without retaining a record borrow.
+        unsafe { (*self.co_ptr()).sock_fd }
     }
 
     pub(crate) fn domain(&self) -> i32 {
-        // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_domain(self.raw()) }
+        // SAFETY: the live native object embeds this actual Rust record.
+        unsafe { (*self.co_ptr()).sock_domain }
     }
 
-    pub(crate) fn kind(&self) -> i32 {
-        // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_type(self.raw()) }
+    pub(crate) fn socket_type(&self) -> i32 {
+        // SAFETY: the live native object embeds this actual Rust record.
+        unsafe { (*self.co_ptr()).sock_type }
     }
 
-    /// The coroutine socket's `network::Socket` record (`get_socket()`), or null.
-    /// It changes when the socket is reinitialised, so it is read on every use.
+    /// The network record can change during reinitialization; read its pointer on each use.
+    /// The closure performs only immediate operations and never suspends or invokes PHP.
     fn with_record<T>(&self, absent: T, f: impl FnOnce(&mut SocketRecord) -> T) -> T {
-        // SAFETY: a live socket.
-        let record = unsafe { swoole_runtime_socket_record(self.raw()) };
-        // SAFETY: the record, when set, is live, and only this thread touches it
-        // while `f` runs.
+        // SAFETY: copy the current network pointer from this live coroutine record.
+        let record = unsafe { (*self.co_ptr()).socket };
+        // SAFETY: no other network record borrow exists during this immediate closure.
         match unsafe { record.as_mut() } {
             Some(record) => f(record),
             None => absent,
@@ -206,15 +215,14 @@ impl Socket {
 
     /// `errCode`.
     pub(crate) fn error(&self) -> i32 {
-        // SAFETY: a live socket; no message wanted.
-        unsafe { swoole_runtime_socket_error(self.raw(), std::ptr::null_mut()) }
+        // SAFETY: copy the error scalar from this live record.
+        unsafe { (*self.co_ptr()).err_code }
     }
 
     /// `errMsg`, if set.
     pub(crate) fn message(&self) -> Option<&CStr> {
-        let mut message = std::ptr::null();
-        // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_error(self.raw(), &raw mut message) };
+        // SAFETY: copy the current borrowed native message pointer; no record borrow escapes.
+        let message = unsafe { (*self.co_ptr()).err_msg };
         // SAFETY: errMsg is null or a NUL-terminated string the socket keeps.
         (!message.is_null()).then(|| unsafe { CStr::from_ptr(message) })
     }
@@ -222,13 +230,13 @@ impl Socket {
     /// `set_err(code)`.
     pub(crate) fn set_error(&self, code: i32) {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_set_error(self.raw(), code) };
+        unsafe { swr_v1_hook_co_socket_set_err(self.co_ptr(), code) };
     }
 
     /// `errCode = code`.
     pub(crate) fn set_error_code(&self, code: i32) {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_set_error_code(self.raw(), code) };
+        unsafe { (*self.co_ptr()).err_code = code };
     }
 
     /// One transfer of `length` bytes at `buf`.
@@ -258,9 +266,15 @@ impl Socket {
         unsafe { swoole_runtime_socket_recvfrom(self.raw(), buf, length, addr, addrlen) }
     }
 
-    pub(crate) fn close(&self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_close(self.raw()) }
+    pub(crate) fn close(&self) -> Result<bool, Bailout> {
+        let mut bailed = 0;
+        // SAFETY: the owned socket remains live and its close contains PHP callback bailouts.
+        let result = unsafe { swoole_runtime_socket_close(self.raw(), &raw mut bailed) };
+        if bailed == 0 {
+            Ok(result)
+        } else {
+            Err(Bailout)
+        }
     }
 
     /// `setsockopt(level, name, value)`; `logged` through the coroutine
@@ -276,12 +290,14 @@ impl Socket {
 
     pub(crate) fn set_zero_copy(&self) {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_zero_copy(self.raw()) };
+        unsafe { (*self.co_ptr()).zero_copy = true };
     }
 
     pub(crate) fn set_timeout(&self, seconds: f64, kind: i32) {
-        // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_timeout(self.raw(), seconds, kind) };
+        self.with_record((), |record| {
+            // SAFETY: this immediate closure exclusively accesses the live timeout group.
+            unsafe { swr_v1_socket_set_timeout(&raw mut record.timeouts, seconds, kind) };
+        });
     }
 
     pub(crate) fn bind(&self, host: &CStr, port: i32) -> bool {

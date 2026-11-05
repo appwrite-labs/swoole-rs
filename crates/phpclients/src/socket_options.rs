@@ -100,7 +100,7 @@ pub(crate) struct Protocol {
     package_length_offset: u16,
     package_body_offset: u16,
     package_max_length: u32,
-    private_data_1: *mut c_void,
+    pub(crate) private_data_1: *mut c_void,
     private_data_2: *mut c_void,
     on_package: *mut c_void,
     get_package_length: Option<LengthFunc>,
@@ -1039,16 +1039,8 @@ fn domain(fd: c_int) -> Option<c_int> {
 /// `php_swoole_create_socket_from_fd(fd, kind)` inside `zend_try`: null when
 /// no socket could be made (after upstream's warning).
 fn from_fd(fd: c_int, kind: c_int) -> Result<*mut zend_object, Bailout> {
-    let mut call = native::ImportCall {
-        fd,
-        kind,
-        nonblock: 0,
-        stream: ptr::null_mut(),
-        object: ptr::null_mut(),
-    };
-    // SAFETY: C++ that may report a PHP error, with its arguments.
-    unsafe { bailout::trap(native::swoole_socket_coro_import, (&raw mut call).cast()) }?;
-    Ok(call.object)
+    // SAFETY: transfer this descriptor through the real Rust object/custody constructor.
+    unsafe { crate::socket::owner::from_fd(fd, kind) }
 }
 
 /// `swoole_coroutine_socketpair(int $domain, int $type, int $protocol): array|false`.
@@ -1150,26 +1142,20 @@ fn import(call: &Call) {
         warn_sys("fcntl(F_GETFL) failed", errno());
         return call.set_bool(false);
     }
-    let mut adopt = native::ImportCall {
-        fd,
-        kind,
-        nonblock: flags & libc::O_NONBLOCK,
-        stream: stream_zval,
-        object: ptr::null_mut(),
+    // SAFETY: the stream argument and native descriptor classification stay live through import.
+    let object = match unsafe {
+        crate::socket::owner::import_stream(fd, kind, flags & libc::O_NONBLOCK, stream_zval)
+    } {
+        Ok(object) => object,
+        Err(error) => return error.defer(),
     };
-    // SAFETY: C++ that may report a PHP error, with its arguments.
-    let trapped =
-        unsafe { bailout::trap(native::swoole_socket_coro_import, (&raw mut adopt).cast()) };
-    if let Err(bailout) = trapped {
-        return bailout.defer();
-    }
-    if adopt.object.is_null() {
+    if object.is_null() {
         return call.set_bool(false);
     }
     // SAFETY: the stream the object now holds.
     unsafe { swr_zend_stream_unbuffer(stream) };
     // SAFETY: the return slot takes the new object's only reference.
-    unsafe { set_object(call.return_value(), adopt.object) };
+    unsafe { set_object(call.return_value(), object) };
 }
 
 swoole_rs_zend::handlers! {

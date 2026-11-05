@@ -41,6 +41,45 @@ impl<T> Object<T> {
         std
     }
 
+    /// Create an object while containing every allocation bailout below this frame.
+    /// The class's create handler raises an error only after handling this result.
+    /// # Errors
+    /// A Zend allocation or initialization bailed out.
+    /// # Safety
+    /// The same class/layout/all-zero-data contract as [`Self::create`].
+    pub unsafe fn try_create(
+        class: &Class,
+        ce: *mut zend_class_entry,
+    ) -> Result<*mut zend_object, crate::bailout::Bailout> {
+        let mut allocation = std::ptr::null_mut();
+        // SAFETY: Zend allocates enough space for this layout and the class's properties.
+        crate::bailout::trapped(unsafe {
+            crate::sys::swr_zend_try_facade_object_alloc(size_of::<Self>(), ce, &raw mut allocation)
+        })?;
+        let object = Self::std(allocation.cast::<Self>());
+        // SAFETY: the fresh aligned allocation contains the standard object's storage.
+        crate::bailout::trapped(unsafe {
+            crate::sys::swr_zend_try_facade_object_init(object, ce)
+        })?;
+        // SAFETY: the standard object has been initialized with this class.
+        crate::bailout::trapped(unsafe {
+            crate::sys::swr_zend_try_facade_properties_init(object, ce)
+        })?;
+        // SAFETY: this initialized object is not shared until it is returned.
+        unsafe { (*object).handlers = class.handlers() };
+        Ok(object)
+    }
+
+    /// The standard destructor, with PHP property-destructor bailouts contained.
+    /// # Errors
+    /// A property destructor bailed out.
+    /// # Safety
+    /// The same live-object contract as [`Self::dtor`].
+    pub unsafe fn try_dtor(object: *mut zend_object) -> Result<(), crate::bailout::Bailout> {
+        // SAFETY: Zend is freeing this initialized standard object.
+        crate::bailout::trapped(unsafe { crate::sys::swr_zend_try_facade_object_dtor(object) })
+    }
+
     /// Swoole's `SW_SET_CLASS_CUSTOM_OBJECT`: the class creates `Object<T>`s
     /// with `create` and frees them with `free`.
     pub fn install(
