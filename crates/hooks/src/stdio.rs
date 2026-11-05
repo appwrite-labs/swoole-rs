@@ -60,6 +60,8 @@ pub struct Host {
     pub uring_statx: bool,
     /// `HAVE_IOURING_FTRUNCATE`: so does `ftruncate`.
     pub uring_ftruncate: bool,
+    /// `swoole_set_last_error`.
+    pub set_last_error: unsafe extern "C" fn(c_int),
 }
 
 // SAFETY: native's table is static and read-only, and `uring` points to another.
@@ -76,7 +78,7 @@ pub unsafe extern "C" fn swr_v1_hook_set_host(host: *const Host) {
     HOST.store(host.cast_mut(), Ordering::Release);
 }
 
-fn host() -> Option<&'static Host> {
+pub(crate) fn host() -> Option<&'static Host> {
     // SAFETY: `swr_v1_hook_set_host` stores null or a static table.
     unsafe { HOST.load(Ordering::Acquire).as_ref() }
 }
@@ -284,6 +286,7 @@ pub(crate) mod tests {
         static MODE: Cell<Mode> = const { Cell::new(Mode::Here) };
         static OFFLOADED: Cell<u32> = const { Cell::new(0) };
         static SLEPT: Cell<f64> = const { Cell::new(0.0) };
+        pub(crate) static LAST_ERROR: Cell<c_int> = const { Cell::new(0) };
     }
 
     unsafe extern "C" fn in_coroutine() -> bool {
@@ -320,7 +323,11 @@ pub(crate) mod tests {
         uring: std::ptr::null(),
         uring_statx: false,
         uring_ftruncate: false,
+        set_last_error,
     };
+    unsafe extern "C" fn set_last_error(error: c_int) {
+        LAST_ERROR.set(error);
+    }
 
     /// `call` under the test host in `mode`.
     pub(crate) fn with<T>(mode: Mode, call: impl FnOnce() -> T) -> T {
