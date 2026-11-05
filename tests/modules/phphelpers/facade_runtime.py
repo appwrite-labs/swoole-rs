@@ -31,8 +31,9 @@ def main():
     try:
         sdk=json.loads(a.sdk_report.read_text())
         if not sdk.get('passed'):raise ValueError('Require a completed native/hybrid SDK qualification')
-        files={name:Path(__file__).with_name(name) for name in ['facade_entrypoint.cc','facade_entrypoint.php']}
+        files={name:Path(__file__).with_name(name) for name in ['facade_entrypoint.cc','facade_entrypoint.php','facade_oom.php']}
         fixture=work/'facade_entrypoint.php';shutil.copy2(files['facade_entrypoint.php'],fixture)
+        oom=work/'facade_oom.php';shutil.copy2(files['facade_oom.php'],oom)
         engines=[]
         if not a.prepare_only:
             engines=parse_engines(a.engine,a.php,a.php_extension);report['engines']=[engine.metadata() for engine in engines]
@@ -77,6 +78,20 @@ def main():
         if not a.prepare_only:
             if len(report['results'])!=len(plans) or not all(row['passed'] for row in report['results']):raise ValueError('Facade runtime failed; original statuses retained')
             if len({json.dumps(row['summary'],sort_keys=True) for row in report['results']})!=1:raise ValueError('Facade outputs differ across profiles/engines')
+        report['oom_results']=[]
+        for engine,identity,profile in plans:
+            helper=report['helper_profiles'][profile]
+            for mode in range(3):
+                command=engine.command('-d','extension='+helper['path'],'-d','memory_limit=16M',str(oom),str(mode))
+                result=run_isolated(command,timeout=30)
+                diagnostic=result.stdout+result.stderr
+                row=dict(engine=engine.name,profile=profile,mode=mode,command=command,exit=result.returncode,
+                         stdout=result.stdout,stderr=result.stderr,extension_sha256_after=sha(identity['extension']))
+                row['passed']=(result.returncode==255 and 'Allowed memory size of 16777216 bytes exhausted' in diagnostic
+                               and 'UNREACHABLE' not in diagnostic and row['extension_sha256_after']==identity['sha256'])
+                report['oom_results'].append(row)
+        if not a.prepare_only and not all(row['passed'] for row in report['oom_results']):
+            raise ValueError('Facade allocation-failure containment failed; original engine outcomes retained')
         if not a.prepare_only:
             receipt=report['source_attestation']
             if sha(a.build_manifest)!=receipt['manifest_sha256'] or sha(a.archive)!=receipt['archive_sha256']:raise ValueError('Production input changed')

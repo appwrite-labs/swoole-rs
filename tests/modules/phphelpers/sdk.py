@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tarfile
 import uuid
-from gate import ROOT,PIN,sha
+from source import ROOT,PIN,sha
 from tools.build_hybrid import hybrid_tree, module_patches
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated,write_report

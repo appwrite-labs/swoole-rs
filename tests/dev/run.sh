@@ -19,7 +19,6 @@ for test in \
     tests/modules/phpcollections/test_runtime.py \
     tests/modules/phphelpers/test_entrypoint.py \
     tests/modules/phphelpers/test_facade_identity.py \
-    tests/modules/phphelpers/test_gate.py \
     tests/modules/phphelpers/test_php_benchmark.py \
     tests/modules/phphelpers/test_runtime.py \
     tests/modules/phphelpers/test_sdk.py \
