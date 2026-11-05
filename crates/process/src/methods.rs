@@ -438,8 +438,8 @@ mod tests {
             assert_eq!(swoole_get_worker_pid(), 4321, "pid");
             assert_eq!(swoole_get_worker_type(), 4, "type");
             assert_eq!(
-                swoole_get_worker_symbol().to_ne_bytes(),
-                [b'^'],
+                swoole_get_worker_symbol(),
+                std::ffi::c_char::from_ne_bytes(*b"^"),
                 "task worker mark"
             );
             swoole_set_worker_type(-1);

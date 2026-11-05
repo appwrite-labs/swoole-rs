@@ -1,6 +1,6 @@
 # PHP Table and coroutine Channel boundary (M27)
 
-Feature value 33554432 (`--module phpcollections`). Upstream targets:
+Feature value 33554432. Upstream targets:
 `ext-src/swoole_table.cc`, `ext-src/swoole_channel_coro.cc`. Public headers,
 stubs/arginfo, Table/Channel/row/column layouts, M12 storage, M06 channel
 lifetime and M16 locking are unchanged. Follows the

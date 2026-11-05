@@ -256,41 +256,14 @@ typedef struct {
  * is set, else default_event. */
 void swr_v1_socket_ssl_clear(swr_v1_socket_tls *tls);
 int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_event);
-/* Socket::ssl_recv/ssl_send: ERR_clear_error, SSL_read/SSL_write and SSL_get_error,
- * setting tls's want flags. Native code then logs (protocol_error) and sets errno
- * (error, when nonzero). */
-typedef struct {
-    ssize_t value;
-    int error;
-    bool protocol_error;
-} swr_v1_socket_ssl_io_result;
-swr_v1_socket_ssl_io_result swr_v1_socket_ssl_recv(swr_v1_socket_tls *tls, struct ssl_st *ssl, void *buffer, size_t length);
-swr_v1_socket_ssl_io_result swr_v1_socket_ssl_send(swr_v1_socket_tls *tls, struct ssl_st *ssl, const void *buffer, size_t length);
-/* Socket::ssl_accept/ssl_connect: one SSL_accept/SSL_connect step and its
- * classification, setting tls's want flags and state. Native code sets the last
- * error (when nonzero), then logs: 1 bad client, 2 failed handshake with ssl_error,
- * 3 peer closed (connect). code is the method's return value. */
-typedef struct {
-    int code;
-    int last_error;
-    int log;
-    int ssl_error;
-} swr_v1_socket_ssl_handshake_result;
-swr_v1_socket_ssl_handshake_result swr_v1_socket_ssl_accept(swr_v1_socket_tls *tls, struct ssl_st *ssl, bool dtls);
-swr_v1_socket_ssl_handshake_result swr_v1_socket_ssl_connect(swr_v1_socket_tls *tls, struct ssl_st *ssl);
 /* Socket::ssl_check_host: X509_check_host on the peer certificate (consumed; may be
- * null): 0 none, 1 match, 2 no match. Socket::ssl_verify: the verify error that
- * rejects the peer, or X509_V_OK (a self-signed leaf passes when allowed). */
+ * null): 0 none, 1 match, 2 no match. */
 int swr_v1_socket_ssl_check_host(struct x509_st *cert, const char *name, size_t length);
-long swr_v1_socket_ssl_verify(const struct ssl_st *ssl, bool allow_self_signed);
 /* PEM export of a certificate into at most length bytes (-1 BIO_new failed, -2
- * PEM_write_bio_X509 failed; frees cert when consume); the oldest queued error's
- * reason string (popped) and reason code (peeked); a new SSL on fd from context
+ * PEM_write_bio_X509 failed; frees cert when consume); a new SSL on fd from context
  * (0, or 1 SSL_new, 2 SSL_set_fd with *error, 3 SSL_set_ex_data failed), clearing
  * tls's want flags first and its state on success. */
 int swr_v1_socket_ssl_pem(struct x509_st *cert, char *buffer, size_t length, bool consume);
-const char *swr_v1_socket_ssl_error_reason(int *reason);
-int swr_v1_socket_ssl_peek_reason(void);
 /* Socket::ssl_shutdown: 1 true, 0 false, 2 false after the caller warns with
  * ssl_get_error_reason. `repaired` is --fix-halfclose's close_notify repair. */
 int swr_v1_socket_ssl_shutdown(swr_v1_socket_tls *tls, struct ssl_st *ssl, uint8_t *closed, bool quiet, bool repaired);
@@ -304,17 +277,13 @@ typedef struct {
     int warn;
 } swr_v1_socket_ssl_sendfile_result;
 swr_v1_socket_ssl_sendfile_result swr_v1_socket_ssl_sendfile(int file_fd, off_t *offset, size_t size, swr_v1_socket_tls_io send, void *socket, bool *kernel_nobufs);
-/* Socket::readv/writev: readv(2)/writev(2) over state's remaining iovecs, or tls one
- * iovec at a time until one comes up short; advances state like
- * IOVector::update_iterator and retries EINTR. Native code copies the IOVector's
- * cursor in and back. */
+/* An IOVector's cursor. */
 typedef struct {
     struct iovec *iterator;
     int remain_count;
     int index;
     size_t offset_bytes;
 } swr_v1_socket_iov_state;
-ssize_t swr_v1_socket_iov(int fd, bool write, swr_v1_socket_iov_state *state, swr_v1_socket_tls_io tls, void *socket);
 /* The descriptor allocation owns its cursor; payloads remain borrowed. */
 typedef struct swr_v1_reactor_iov swr_v1_reactor_iov;
 typedef struct {
@@ -333,7 +302,6 @@ void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
 swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner);
 size_t swr_v1_reactor_iov_length(const swr_v1_reactor_iov *owner);
 void swr_v1_reactor_iov_advance(swr_v1_reactor_iov *owner, intptr_t n);
-ssize_t swr_v1_socket_iov_owned(int fd, bool write, swr_v1_reactor_iov *owner, swr_v1_socket_tls_io tls, void *socket);
 /* File requests own the actual File record and all range/cork slots. Native
  * views retain source-level File/std::string interfaces; only Rust closes fd. */
 typedef struct swr_v1_os_file_record swr_v1_os_file_record;
@@ -356,10 +324,7 @@ void swr_v1_socket_file_cork(swr_v1_socket_file_request *owner, const swr_v1_soc
  * native code gives the socket's flags and performs each I/O call. Returns the
  * bytes moved or -1 with the last error and errno set. */
 enum {
-    SWR_SOCKET_SYNC_SEND = 0,     /* all of length, retrying short writes */
-    SWR_SOCKET_SYNC_RECV = 1,     /* once, or all of length under MSG_WAITALL */
-    SWR_SOCKET_SYNC_ONCE = 2,     /* one call that moves bytes */
-    SWR_SOCKET_SYNC_SENDFILE = 3, /* all of length; a zero return is an error */
+    SWR_SOCKET_SYNC_SENDFILE = 3, /* all of length; a zero return is an error (Socket::sendfile_sync) */
 };
 typedef struct {
     void *socket;

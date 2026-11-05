@@ -341,6 +341,9 @@ dependencies = [
  "itoa",
  "libc",
  "memchr",
+ "swoole-rs-base64",
+ "swoole-rs-corebase",
+ "swoole-rs-ossupport",
 ]
 
 [[package]]

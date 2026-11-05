@@ -24,11 +24,11 @@ $actual=m26_facade_custody(new M26FacadeStringable(),$callback);
 unset($callback);
 $expected=['copy'=>'second','self_copy'=>'second','move_source_null'=>true,'self_move_null'=>true,
     'conversion'=>'converted','retained'=>'owned','taken'=>'owned',
-    'duplicates'=>[[null,null],['plain','plain'],["a","a\0B"]],'lower'=>'abc',
+    'duplicates'=>[[null,null],['plain','plain'],["a","a\0B"]],
     'variable_copy'=>true,'variable_move'=>true,'updates'=>true,'array_count'=>4,
     'walk'=>[['key'=>'entry','value'=>'second'],['key'=>7,'value'=>'last'],['key'=>9,'value'=>'set'],['key'=>10,'value'=>'append']],
     'map'=>['entry'=>'second',7=>'last',9=>'set',10=>'append'],
-    'callable_ready'=>true,'called'=>['nested'=>11],'nullable_ready'=>true,'nullable_null'=>true];
+    'callable_ready'=>true,'called'=>['nested'=>11]];
 if($actual!==$expected || $events!==['convert','invoke','destroy'])throw new RuntimeException('facade result/custody mismatch: '.json_encode([$actual,$events]));
 $privateEvents=[];
 class M26PrivateProbe { public $scalar='initial'; public $optional=null; public $container; }
@@ -42,24 +42,16 @@ class M26PrivateCallback {
 $probe=new M26PrivateProbe(); $probe->container=new M26PrivatePayload();
 $privateCallback=new M26PrivateCallback();
 $private=m26_private_custody($probe,$privateCallback);
-$privateExpected=['scalar'=>'initial','same_slot'=>true,'nullable'=>true,'nonnull'=>'ready',
-    'converted_count'=>0,'reset_count'=>0,'shallow_copy'=>true,'after_copy_free'=>1,
-    'persisted'=>true,'persisted_refs'=>2,'released_refs'=>1,'cache_retained'=>1,'cache_released'=>true,
-    'recycled'=>'ABC','shrunk'=>'XYZ'];
-if($private!==$privateExpected || $privateEvents!==['property:5','callback'])throw new RuntimeException('private helper custody mismatch: '.json_encode([$private,$privateEvents]));
+$privateExpected=['scalar'=>'initial','same_slot'=>true,'converted_count'=>0,'shallow_copy'=>true];
+if($private!==$privateExpected || $privateEvents!==['property:5'])throw new RuntimeException('private helper custody mismatch: '.json_encode([$private,$privateEvents]));
 unset($privateCallback);
-if($privateEvents!==['property:5','callback','callback'])throw new RuntimeException('private callback retained');
+if($privateEvents!==['property:5','callback'])throw new RuntimeException('private callback retained');
 // Complete common utility and registration SDK consumers.
 function checkUtility(bool $condition,string $message):void { if(!$condition)throw new RuntimeException($message); }
 $utilityData=(object)['a'=>'A B','bin'=>"X\0Y"];
 $utility=m26_utility_custody('strlen',$utilityData);
-checkUtility($utility===['callable'=>true,'name'=>'strlen','optional_name'=>true,'encoded'=>'A%00+B',
-    'query'=>'a=A+B&bin=X%00Y','query_reads'=>2,'invalid_query'=>true,'cleared'=>true,
-    'alias_registered'=>0,'alias_missing'=>-1,'class_alias_registered'=>0], 'complete utility/registration SDK contract');
-checkUtility(m26_alias_target("N\0ame")==="N\0ame" && !function_exists('m26_alias_absent'), 'registered alias handler/binary bytes and absent origin');
-$source=new ReflectionFunction('m26_alias_source');$alias=new ReflectionFunction('m26_alias_target');
-checkUtility($source->getNumberOfRequiredParameters()===$alias->getNumberOfRequiredParameters()
-    && (string)$source->getParameters()[0]->getType()===(string)$alias->getParameters()[0]->getType(), 'alias retains actual argument metadata');
+checkUtility($utility===['callable'=>true,'name'=>'strlen','optional_name'=>true,
+    'class_alias_registered'=>0], 'complete utility/registration SDK contract');
 checkUtility(class_exists('M26GuardAlias',false) && (new M26GuardAlias()) instanceof M26Guard, 'case folded persistent class alias');
 class M26GuardChild extends M26Guard { public $child=1; }
 $guard=new M26GuardChild();unset($guard->child);

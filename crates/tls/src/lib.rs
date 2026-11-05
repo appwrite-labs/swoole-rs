@@ -16,6 +16,8 @@ mod context;
 #[cfg(unix)]
 mod socket;
 #[cfg(unix)]
+pub mod upstream;
+#[cfg(unix)]
 pub use context::*;
 #[cfg(unix)]
 pub use socket::*;

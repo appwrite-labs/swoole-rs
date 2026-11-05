@@ -1,15 +1,15 @@
 # M26 common PHP helpers and optional stdext
 
 M26 covers `ext-src/php_swoole_cxx.cc`, `ext-src/swoole_stdext.cc` and the
-common Zend owning facades in `ext-src/php_swoole_cxx.h` and shared property/call/value operations in `ext-src/php_swoole_private.h`. String, Variable,
-KeyValue and Callable own Rust handles; Rust also implements CharPtr allocation
-and release, sparse ArrayIterator walks and Array updates. C++ keeps the
+common Zend owning facades in `ext-src/php_swoole_cxx.h` and shared property/call/value operations in `ext-src/php_swoole_private.h`. String, Variable
+and Callable own Rust handles; Rust also implements sparse ArrayIterator walks
+and Array updates. C++ keeps the
 source-compatible constructors and methods. The contract is
 [docs/phphelpers-abi-v1.md](../../../docs/phphelpers-abi-v1.md).
 
 `ext-src/swoole_stdext.cc` and the
-KeyValue/ArrayIterator/Array methods in `ext-src/php_swoole_cxx.h`.
-String, CharPtr, Variable, inline Callable methods and callable factories keep
+ArrayIterator/Array methods in `ext-src/php_swoole_cxx.h`.
+String, Variable, inline Callable methods and callable factories keep
 the upstream implementation until their state moves into Rust. The contract is
 [docs/phphelpers-abi-v1.md](../../../docs/phphelpers-abi-v1.md).
 
@@ -25,7 +25,7 @@ The C++ known-string global remains a borrowed ABI view.
 
 | Rust ownership / operations | Native leaf effects |
 | --- | --- |
-| String, CharPtr, Variable, KeyValue, Callable lifetimes and factories | Zend allocators/refcount macros; trapped PHP calls and diagnostics |
+| String, Variable, Callable lifetimes and factories | Zend allocators/refcount macros; trapped PHP calls and diagnostics |
 | ArrayIterator sparse/indirect cursor; Array updates | Trapped hash insertion/replacement |
 | Function/merge operations; 64 known strings and their pointer cache | Trapped Zend invocation/hash effects; persistent allocation/interning |
 | `php_swoole_async` admission | `std::function` storage, native invocation/async/yield |
@@ -80,7 +80,7 @@ All take `--engine native=DSO --engine selected=DSO`, `--build-manifest`,
   child diagnostics (`entrypoint.php`, `entrypoint-child.php`).
 - `facade_runtime.py --sdk-report SDK.json [--prepare-only]`
   (`phphelpers-facade-runtime`): builds native and hybrid-header
-  helpers from `facade_entrypoint.cc`, requires the remaining KeyValue, iterator
+  helpers from `facade_entrypoint.cc`, requires the remaining iterator
   and call-result Rust imports in selected helpers and none in native, rejects
   retired String/Callable step-plan imports, checks the production
   header/local ABI against the SDK, then runs `facade_entrypoint.php`. Header
@@ -132,7 +132,7 @@ None of these is a PHPT, Rust unit test or fuzz target.
 
 ## Owning Zend facades (#1063)
 
-String, CharPtr, Variable, KeyValue, Array/ArrayIterator and Callable now execute
+String, Variable, Array/ArrayIterator and Callable now execute
 their ownership and operations in Rust against the actual Zend SDK. Their former
 modeled C++ fixtures (13/9/4681/14 cases) copied private class bodies and supplied
 fake Zend layouts; those assumptions are retired. All 4,681 bounded sparse/indirect walks now run as Rust unit tests against real

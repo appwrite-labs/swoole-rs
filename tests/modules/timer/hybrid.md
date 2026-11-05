@@ -7,7 +7,7 @@ supplies runtime dependencies). macOS or Linux:
 
 ```sh
 python3 -m pytest tests/modules/timer/test_adapter.py --sanitize \
-  --manifest target/hybrid/rust-timer/build-manifest.json
+  --manifest target/hybrid/rust/build-manifest.json
 ```
 
 Before running, it rejects a mutable build, wrong upstream pin, missing timer

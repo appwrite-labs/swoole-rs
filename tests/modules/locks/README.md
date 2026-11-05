@@ -12,7 +12,7 @@ ownership, timeout, ordering, fork and coroutine contracts, and
 edit the patches with `tools/patches.py`.
 
 ```sh
-python3 tools/build_hybrid.py --module locks --dev --jobs 2
+python3 tools/build_hybrid.py --dev --jobs 2
 python3 tests/modules/locks/gate.py --source target/upstream/src \
   --archive target/release/libswoole_rs_ffi.a --sanitize
 ```
@@ -60,7 +60,7 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
 - `zts/Dockerfile` and `zts/build.py`: PHP 8.5 ZTS image and a build of
   reference and Rust thread-enabled extensions inside it (expects the repo at
   `/work`, the pinned upstream at `/reference` and a prior Linux
-  `dev-rust-locks` build).
+  `dev-rust` build).
 
 ## Known failures
 

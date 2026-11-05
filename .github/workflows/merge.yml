@@ -120,7 +120,7 @@ jobs:
           services="--configure=--enable-swoole-pgsql --configure=--enable-mysqlnd --configure=--with-swoole-odbc=unixODBC,/usr --configure=--with-swoole-firebird"
           services="$services --configure=--enable-swoole-curl --configure=--with-swoole-ssh2"
           python3 tools/build_hybrid.py --backend upstream --php-sockets $services | tee upstream.log
-          python3 tools/build_hybrid.py --php-sockets $services $(python3 -c 'from tools.build_hybrid import SELECTABLE; print(*(f"--module {m}" for m in SELECTABLE))') | tee hybrid.log
+          python3 tools/build_hybrid.py --php-sockets $services | tee hybrid.log
           mkdir -p target/phpt
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
           cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
@@ -158,7 +158,7 @@ jobs:
           key: ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
-      - run: python3 tools/build_hybrid.py $(python3 -c 'from tools.build_hybrid import SELECTABLE; print(*(f"--module {m}" for m in SELECTABLE))') | tee hybrid.log
+      - run: python3 tools/build_hybrid.py | tee hybrid.log
       - run: >
           python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits.json
           --workload plaintext --workload echo-1k --workload json --workload service-health
@@ -197,7 +197,7 @@ jobs:
       - run: cargo fetch --locked
       - run: |
           python3 tools/build_hybrid.py --backend upstream --stdext | tee upstream.log
-          python3 tools/build_hybrid.py --stdext $(python3 -c 'from tools.build_hybrid import SELECTABLE; print(*(f"--module {m}" for m in SELECTABLE))') | tee hybrid.log
+          python3 tools/build_hybrid.py --stdext | tee hybrid.log
           mkdir -p target/phpt
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
           cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
@@ -253,8 +253,7 @@ jobs:
     uses: ./.github/workflows/zts.yml
 
   # The opt-in --fix-halfclose repair (M15) is its own build variant, so its gates run
-  # here; full-gates builds without it. Its read, write and close paths are the reactor
-  # module's (HALFCLOSE_REQUIRES in tools/build_hybrid.py).
+  # here; full-gates builds without it.
   halfclose:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -273,7 +272,7 @@ jobs:
           key: ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
-      - run: python3 tools/dev.py integrate --fix-halfclose --module reactor --php-extension sockets --phase 'halfclose-*' --with-prerequisites
+      - run: python3 tools/dev.py integrate --fix-halfclose --php-extension sockets --phase 'halfclose-*' --with-prerequisites
       # tools/ci.py reads phases* artifacts for new and fixed phases.
       - uses: actions/upload-artifact@v4
         if: always()
@@ -446,19 +445,19 @@ jobs:
       - run: .devcontainer/install-alpine.sh && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: python3 tools/build_upstream.py --php-sockets
       - run: cargo fetch --locked
-      - run: python3 tools/build_hybrid.py --php-sockets $(python3 -c "from tools.build_hybrid import SELECTABLE; print(' '.join('--module ' + m for m in SELECTABLE))")
+      - run: python3 tools/build_hybrid.py --php-sockets
       - run: python3 corpus/thirdparty/hyperf.py --prepare
       - run: >
           python3 corpus/run.py $PHP_EXTENSIONS --require-all
           $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
           --engine upstream=target/upstream/src/modules/swoole.so
-          --engine hybrid=$(echo target/hybrid/rust-*-php-sockets)/modules/swoole.so
+          --engine hybrid=target/hybrid/rust-php-sockets/modules/swoole.so
           --output target/reports/alpine-corpus.json
       - if: always()
         run: >
           python3 corpus/upstream/run.py $PHP_EXTENSIONS
           --engine upstream=target/upstream/src/modules/swoole.so
-          --engine hybrid=$(echo target/hybrid/rust-*-php-sockets)/modules/swoole.so
+          --engine hybrid=target/hybrid/rust-php-sockets/modules/swoole.so
           --output target/reports/alpine-phpt.json
       - uses: actions/upload-artifact@v4
         if: always()

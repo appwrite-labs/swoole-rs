@@ -22,11 +22,11 @@ utilities = ["dep:swoole-rs-utilities"]
 locks = ["dep:swoole-rs-locks", "dep:swoole-rs-phplocks"]
 wrappers = ["dep:swoole-rs-wrappers"]
 
-reactor = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols", "dep:swoole-rs-tls"]
+reactor = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols", "dep:swoole-rs-tls", "swoole-rs-tls/upstream-symbols"]
 
 coroutine = ["dep:swoole-rs-coroutine"]
 
-hooks = ["dep:swoole-rs-hooks", "dep:swoole-rs-phpruntime"]
+hooks = ["dep:swoole-rs-hooks", "swoole-rs-hooks/upstream-symbols", "dep:swoole-rs-phpruntime"]
 # Not a module: the hybrid adds it when configured with --enable-iouring.
 iouring = ["hooks", "swoole-rs-hooks/iouring"]
 # Not modules: the hybrid adds each when configured with its hook
@@ -55,7 +55,7 @@ phpcoroutines = ["dep:swoole-rs-phpcoroutines"]
 
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }
-swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
 swoole-rs-timer = { path = "../timer" }
 swoole-rs-base64 = { path = "../base64" }
 swoole-rs-crc32 = { path = "../crc32" }

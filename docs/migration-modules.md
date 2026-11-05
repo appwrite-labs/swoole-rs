@@ -22,15 +22,14 @@ prerequisites and dependency cycles, and prints the resulting waves.
 Each module's patches live in `migration/patches/<module>/` and apply in
 file-name order; their destinations are read from their diff headers.
 `tools/build_hybrid.py` applies them to a fresh clone of the pinned reference
-(see [hybrid build](hybrid-build.md)). Selecting a module with `--module NAME`
-sets its feature bit in `swr_v1_feature_bits()`. Leaving it out keeps the
-upstream implementation.
+(see [hybrid build](hybrid-build.md)). Every Rust build applies every module and
+sets its feature bit in `swr_v1_feature_bits()`.
 
 ## Modules
 
 Feature values come from `MODULES` in `tools/build_hybrid.py`.
 
-| ID | `--module` | Feature | Upstream targets | Scope |
+| ID | Name | Feature | Upstream targets | Scope |
 | --- | --- | ---: | --- | --- |
 | M00 | (always) | — | `config.m4`, `CMakeLists.txt`, `ext-src/php_swoole.cc`, `include/swoole_server.h`, `src/server/master.cc` | ABI base (`native/include/`, `crates/ffi/`), build registration, startup ABI check. See [ABI v1](abi-v1.md). |
 | M01 | `buffer` | 2 | `src/core/buffer.cc`, `src/core/string.cc` and headers | Output buffer queue and `String` storage. [Contract](buffer-abi-v1.md). Graduated: always on. |

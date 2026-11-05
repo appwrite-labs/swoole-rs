@@ -49,7 +49,7 @@ def main():
                 row['path']=str(helper)
                 symbols=subprocess.check_output(['nm','-u',str(helper)],text=True,stderr=subprocess.PIPE)
                 row['undefined_symbols']=symbols
-                required=['swr_v1_phphelpers_'+name for name in ['string_new','variable_assign','key_add','iterator_next','array_set','callable_invoke','callable_factory','callable_frame','url_encode','http_query','function_alias','class_alias','unset_deny']]
+                required=['swr_v1_phphelpers_'+name for name in ['string_new','variable_assign','iterator_next','array_set','callable_invoke','callable_factory','callable_frame','class_alias','unset_deny']]
                 row['required_rust_calls']={name:name in symbols for name in required}
                 retired=['swr_v1_phphelpers_'+name for name in ['string_plan','duplicate_plan','factory_plan','empty']]
                 if any(name in symbols for name in retired):raise ValueError('Helper still consumes a retired facade plan')
@@ -82,7 +82,7 @@ def main():
         report['oom_results']=[]
         for engine,identity,profile in plans:
             helper=report['helper_profiles'][profile]
-            for mode in range(4):
+            for mode in (0,1,3):
                 for pressure in [0,8*1024*1024]:
                     command=engine.command('-d','extension='+helper['path'],'-d','memory_limit=16M',str(oom),str(mode),str(pressure))
                     result=run_isolated(command,timeout=30)

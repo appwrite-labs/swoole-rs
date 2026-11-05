@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile all eight unchanged and selected complete native units, plus disabled guards.
+"""Compile the native units the hooks patches touch, unchanged and selected, plus disabled guards.
 
 original: the pinned tree. selected: the same tree with every file the hybrid build
 `--archive` comes from patched (overlay_hybrid_tree, #796) and that build's config.h.
@@ -69,7 +69,8 @@ def main():
             (tree/'config.h').write_bytes(config if variant == 'selected' else baseline_config)
             flags = common + (abi if variant != 'original' else [])
             # Translation units only: the patches also touch headers (stubs), which the units include.
-            for path in (path for path in paths if path.endswith(".cc")):
+            # A unit the hybrid deletes (its Rust replaces it) has no selected or disabled build.
+            for path in (path for path in paths if path.endswith(".cc") and (variant == 'original' or (hybrid_source/path).exists())):
                 command = ['c++', *flags, '-fsyntax-only', str(tree/path)]
                 result = subprocess.run(command, capture_output=True, text=True)
                 passed = result.returncode == 0 if variant != 'disabled' else result.returncode != 0 and 'Hooks overlay requires --enable-swoole-rs-hooks' in result.stderr

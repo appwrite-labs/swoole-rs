@@ -1,9 +1,7 @@
 """Only the Swoole stage of appwrite/docker-base changes, and it keeps Appwrite's configure flags."""
-import re
 import unittest
 
 from tools.appwrite_base import rewrite
-from tools.build_hybrid import SELECTABLE
 
 DOCKERFILE = '''FROM php AS compile
 RUN apk add git
@@ -32,10 +30,6 @@ class AppwriteBase(unittest.TestCase):
             self.assertIn('--configure=--enable-brotli --configure=--with-openssl-dir=/usr', out)
             self.assertNotIn('--configure=--enable-sockets', out)  # --php-sockets covers it
             self.assertEqual('build_hybrid.py' in out, variant == 'hybrid')
-
-    def test_hybrid_selects_every_selectable_module(self):
-        # A graduated module is always on, and build_hybrid.py rejects it as --module.
-        self.assertEqual(re.findall(r'--module (\w+)', rewrite(DOCKERFILE, 'hybrid')), SELECTABLE)
 
     def test_unknown_shape_is_refused(self):
         with self.assertRaises(ValueError):

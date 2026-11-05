@@ -1,6 +1,6 @@
 # Coroutine scheduler and channel boundary (M06)
 
-Feature value 32768 (`--module coroutine`). Upstream targets:
+Feature value 32768. Upstream targets:
 `src/coroutine/{base,context,thread_context,channel}.cc` and their headers.
 Follows the [policy/effect split](abi-v1.md#policyeffect-split).
 
