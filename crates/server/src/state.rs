@@ -369,7 +369,12 @@ fn send<H: Host>(h: &mut H, data: *const SendData) -> crate::Effect<bool> {
     // SAFETY: native code lends the live `SendData` it built for the call.
     let here = h.get(OP_MODE)? != MODE_PROCESS && sends_here(h, unsafe { &*data })?;
     let sent = if here {
-        send_to_connection(h, u64::from(SEND_DATA))? == SW_OK
+        // SAFETY: as above.
+        let send = unsafe { &*data };
+        match h.send_now(send)? {
+            Some(sent) if sent == i64::from(send.info.len) => true,
+            first => send_to_connection(h, u64::from(SEND_DATA), first)? == SW_OK,
+        }
     } else {
         h.is(OP_ST_FINISH)?
     };
