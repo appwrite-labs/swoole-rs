@@ -327,6 +327,11 @@ mod tests {
 
     #[test]
     fn owner_io_copy_release_and_close() {
+        if crate::isolated_process::run_in_child(
+            "file_record::tests::owner_io_copy_release_and_close",
+        ) {
+            return;
+        }
         let (path, fd) = temporary();
         unsafe {
             let owner = swr_v1_os_file_record_new(fd, path.as_ptr(), path.as_bytes().len());
@@ -443,6 +448,22 @@ mod tests {
             libc::close(second_fd);
             libc::unlink(first_path.as_ptr());
             libc::unlink(second_path.as_ptr());
+        }
+    }
+    #[test]
+    fn owner_drop_preserves_a_reopened_file_descriptor_number() {
+        if crate::isolated_process::run_in_child(
+            "file_record::tests::owner_drop_preserves_a_reopened_file_descriptor_number",
+        ) {
+            return;
+        }
+        unsafe {
+            let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+            assert!(fd >= 0);
+            let owner = swr_v1_os_file_record_new(fd, ptr::null(), 0);
+            assert!(swr_v1_os_file_record_close(owner));
+            assert_eq!(swr_v1_os_file_record_fd(owner, false), -1);
+            crate::isolated_process::replacement_survives(fd, || swr_v1_os_file_record_free(owner));
         }
     }
 }
