@@ -107,6 +107,10 @@ int swr_v1_os_thread_get_name(char *buf, size_t len);
 bool swr_v1_os_msg_queue_init(swr_v1_os_msg_queue *, key_t, bool, int);
 void swr_v1_os_msg_queue_blocking(swr_v1_os_msg_queue *, bool);
 bool swr_v1_os_msg_queue_remove(swr_v1_os_msg_queue *);
+/* stat: false leaves errno. set_capacity: 0 set, 1 IPC_STAT failed (quiet),
+ * 2 IPC_SET failed (warn). */
+bool swr_v1_os_msg_queue_stat(const swr_v1_os_msg_queue *, size_t *num, size_t *bytes);
+int swr_v1_os_msg_queue_set_capacity(const swr_v1_os_msg_queue *, size_t bytes);
 /* SysV message queue. open defaults perms outside (0, 01000) to 0666; push
  * retries EINTR: 0 sent, 1 EAGAIN (quiet), 2 failed (warn); errno intact. */
 typedef struct { int id; int perms; } swr_v1_os_msg_open_t;

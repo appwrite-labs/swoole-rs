@@ -13,6 +13,7 @@ mod global;
 mod hook;
 mod host;
 mod lifecycle;
+pub mod log;
 pub mod net_types;
 mod random;
 mod thread;

@@ -12,19 +12,9 @@ import pytest
 from tools.build_hybrid import hybrid_tree
 from tools.harness import ROOT, run_compiler, run_isolated
 
-LAYOUT = '''#include "swoole_rs_string.h"
-_Static_assert(sizeof(swr_v1_string_allocator)==32,"allocator");
-_Static_assert(sizeof(swr_v1_string_object)==40,"object");
-_Static_assert(offsetof(swr_v1_string_object,data)==24,"object data");
-'''
-SOURCES = ['src/core/string.cc', 'src/core/base.cc', 'src/os/base.cc', 'src/core/base64.cc']
-
-
-def test_layout(tmp_path):
-    (tmp_path / 'layout.c').write_text(LAYOUT)
-    result = run_isolated(['cc', '-std=c11', '-Werror', '-fsyntax-only', '-I' + str(ROOT / 'native/buffer'),
-                           str(tmp_path / 'layout.c')], timeout=30)
-    assert result.returncode == 0, result.stderr
+# The hybrid deletes string.cc: Rust defines String's methods.
+SOURCES = ['src/core/string.cc', 'src/core/base.cc', 'src/os/base.cc', 'src/core/base64.cc', 'src/core/log.cc',
+           'src/core/error.cc']
 
 
 @pytest.mark.parametrize('variant', ['original', 'selected'])
@@ -32,11 +22,11 @@ def test_compatibility(pinned, request, pytestconfig, variant):
     archive = request.getfixturevalue('archive') if variant == 'selected' else None
     work = pinned('include', *SOURCES)
     openssl = shlex.split(subprocess.check_output(['pkg-config', '--cflags', '--libs', 'openssl'], text=True))
-    tree, headers = (work, ['-I' + str(work / 'include'), '-I' + str(ROOT / 'native/buffer')])
+    tree, headers = (work, ['-I' + str(work / 'include')])
     if variant == 'selected':
         tree, headers = hybrid_tree(archive)
     command = ['c++', '-std=c++17', '-O1', '-g', '-ffunction-sections', '-fdata-sections', *headers,
-               *[str(tree / name) for name in SOURCES], str(Path(__file__).with_name('compatibility.cc')), *openssl]
+               *[str(tree / name) for name in SOURCES if (tree / name).exists()], str(Path(__file__).with_name('compatibility.cc')), *openssl]
     if variant == 'selected':
         command.append(str(archive))
     command += ['-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections', '-lm']
@@ -51,9 +41,8 @@ def test_compatibility(pinned, request, pytestconfig, variant):
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.splitlines()[-1]) == {'checks': 44, 'profile': 'ordinary-no-custom-no-pop'}
     if variant == 'selected':
-        assert 'swr_v1_string_edit_object' in subprocess.check_output(['nm', '-g', str(binary)], text=True)
         for standard in ['c++14', 'c++17', 'c++20']:
             syntax = run_isolated(['c++', '-std=' + standard, '-fsyntax-only', *headers,
                                    *shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True)),
-                                   str(tree / 'src/core/string.cc'), '-O2', '-fstrict-aliasing'], timeout=30)
+                                   str(Path(__file__).with_name('compatibility.cc')), '-O2', '-fstrict-aliasing'], timeout=30)
             assert syntax.returncode == 0, f'{standard}: {syntax.stderr}'

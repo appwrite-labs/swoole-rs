@@ -426,7 +426,6 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_pop_buffer(
 ///
 /// # Safety
 /// `socket` is a live record; `address` points to a writable address.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_peer_name(
     socket: *const CoSocket,
     address: *mut SocketAddress,

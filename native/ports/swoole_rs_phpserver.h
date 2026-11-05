@@ -37,8 +37,9 @@ typedef struct {
     void (*socket)(void *port, struct _zval_struct *return_value);
 } swr_v1_phpserver_port_host;
 
-/* Bind a new port object to its ListenPort and Server; returns its ServerPortProperty. */
-void *swr_v1_phpserver_port_bind(struct _zend_object *object, void *port, void *server);
+/* php_swoole_server_port_set_ptr and _get_property: the object's ListenPort and ServerPortProperty. */
+void swr_v1_phpserver_port_set(struct _zend_object *object, void *port);
+void *swr_v1_phpserver_port_object_property(struct _zend_object *object);
 /* The object's ListenPort; E_ERROR "Invalid instance of %s" (no return) when unbound. */
 void *swr_v1_phpserver_port_port(struct _zend_object *object);
 /* Drop the callables and the port's link, as the Server does at shutdown. */

@@ -1,7 +1,7 @@
 //! The backends' kernel registration (upstream `ReactorEpoll`/`ReactorKqueue`
 //! `add`, `set` and `del`): the event-mask translation and the `epoll_ctl` or
 //! `kevent` calls in upstream's order. Each returns which call failed, with `errno`
-//! as the kernel left it, so native logs upstream's message for it.
+//! as the kernel left it, for `swr_v1_reactor_change`'s warnings.
 use std::ffi::{c_int, c_void};
 
 const SW_EVENT_DEAULT: c_int = 1 << 8;
@@ -51,8 +51,7 @@ mod epoll {
     ///
     /// # Safety
     /// `socket` stays valid while registered; the wait loop hands it back to native.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn swr_v1_reactor_epoll_ctl(
+    pub(crate) unsafe fn epoll_ctl(
         epfd: c_int,
         op: u32,
         fd: c_int,
@@ -94,16 +93,10 @@ mod epoll {
                 assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
                 let epfd = libc::epoll_create1(0);
                 let token = 7 as *mut c_void;
-                assert_eq!(
-                    swr_v1_reactor_epoll_ctl(epfd, 0, fds[0], token, SW_EVENT_READ),
-                    0
-                );
-                assert_eq!(
-                    swr_v1_reactor_epoll_ctl(epfd, 1, fds[0], token, SW_EVENT_WRITE),
-                    0
-                );
-                assert_eq!(swr_v1_reactor_epoll_ctl(epfd, 2, fds[0], token, 0), 0);
-                assert_eq!(swr_v1_reactor_epoll_ctl(epfd, 2, fds[0], token, 0), -1);
+                assert_eq!(epoll_ctl(epfd, 0, fds[0], token, SW_EVENT_READ), 0);
+                assert_eq!(epoll_ctl(epfd, 1, fds[0], token, SW_EVENT_WRITE), 0);
+                assert_eq!(epoll_ctl(epfd, 2, fds[0], token, 0), 0);
+                assert_eq!(epoll_ctl(epfd, 2, fds[0], token, 0), -1);
                 libc::close(epfd);
                 libc::close(fds[0]);
                 libc::close(fds[1]);
@@ -113,7 +106,7 @@ mod epoll {
 }
 
 #[cfg(target_os = "linux")]
-pub use epoll::*;
+pub(crate) use epoll::*;
 
 #[cfg(any(
     target_os = "macos",
@@ -122,7 +115,7 @@ pub use epoll::*;
     target_os = "netbsd",
     target_os = "dragonfly"
 ))]
-pub use kqueue::*;
+pub(crate) use kqueue::*;
 
 #[cfg(any(
     target_os = "macos",
@@ -189,8 +182,7 @@ mod kqueue {
     ///
     /// # Safety
     /// `socket` stays valid while registered; the wait loop hands it back to native.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn swr_v1_reactor_kqueue_add(
+    pub(crate) unsafe fn kqueue_add(
         kq: c_int,
         fd: c_int,
         socket: *mut c_void,
@@ -209,9 +201,8 @@ mod kqueue {
     /// delete, 3 write add, 4 write delete.
     ///
     /// # Safety
-    /// As for [`swr_v1_reactor_kqueue_add`].
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn swr_v1_reactor_kqueue_set(
+    /// As for [`kqueue_add`].
+    pub(crate) unsafe fn kqueue_set(
         kq: c_int,
         fd: c_int,
         socket: *mut c_void,
@@ -242,8 +233,7 @@ mod kqueue {
     ///
     /// # Safety
     /// `errors` points to two writable ints.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn swr_v1_reactor_kqueue_del(
+    pub(crate) unsafe fn kqueue_del(
         kq: c_int,
         fd: c_int,
         socket: *mut c_void,
@@ -281,28 +271,19 @@ mod kqueue {
                 assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
                 let kq = libc::kqueue();
                 let token = 7 as *mut c_void;
+                assert_eq!(kqueue_add(kq, fds[0], token, SW_EVENT_READ), 0);
                 assert_eq!(
-                    swr_v1_reactor_kqueue_add(kq, fds[0], token, SW_EVENT_READ),
+                    kqueue_set(kq, fds[0], token, SW_EVENT_READ | SW_EVENT_WRITE),
                     0
                 );
-                assert_eq!(
-                    swr_v1_reactor_kqueue_set(kq, fds[0], token, SW_EVENT_READ | SW_EVENT_WRITE),
-                    0
-                );
-                assert_eq!(
-                    swr_v1_reactor_kqueue_set(kq, fds[0], token, SW_EVENT_READ),
-                    0
-                );
+                assert_eq!(kqueue_set(kq, fds[0], token, SW_EVENT_READ), 0);
                 // The write filter is gone, so deleting it again reports ENOENT and continues.
                 let both = SW_EVENT_READ | SW_EVENT_WRITE;
-                assert_eq!(
-                    swr_v1_reactor_kqueue_del(kq, fds[0], token, both, errors.as_mut_ptr()),
-                    0
-                );
+                assert_eq!(kqueue_del(kq, fds[0], token, both, errors.as_mut_ptr()), 0);
                 assert_eq!(errors, [0, libc::ENOENT]);
                 // A bad descriptor fails the first call.
-                assert_eq!(swr_v1_reactor_kqueue_add(kq, -1, token, SW_EVENT_READ), 1);
-                assert_eq!(swr_v1_reactor_kqueue_set(kq, -1, token, SW_EVENT_WRITE), 2);
+                assert_eq!(kqueue_add(kq, -1, token, SW_EVENT_READ), 1);
+                assert_eq!(kqueue_set(kq, -1, token, SW_EVENT_WRITE), 2);
                 libc::close(kq);
                 libc::close(fds[0]);
                 libc::close(fds[1]);

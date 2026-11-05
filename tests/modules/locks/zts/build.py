@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 from tools.build_hybrid import module_patches
 from tools.build_upstream import COMMIT as PIN
 source=Path('/reference')
-record=json.loads((ROOT/'target/linux-dev/target/hybrid/dev-rust-locks/build-manifest.json').read_text())
+record=json.loads((ROOT/'target/linux-dev/target/hybrid/dev-rust/build-manifest.json').read_text())
 prefix=ROOT/'target/linux-dev'/Path(record['extension']).parents[2].relative_to('/work')/'rust-prefix'
 archive=prefix/'lib/libswoole_rs_ffi.a'
 base=ROOT/'target/zts-build'

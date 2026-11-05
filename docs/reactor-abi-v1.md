@@ -1,6 +1,6 @@
 # Reactor boundary (M05)
 
-Feature value 16384 (`--module reactor`). Upstream targets: `src/reactor/`,
+Feature value 16384. Upstream targets: `src/reactor/`,
 `src/network/{socket,stream}.cc`, `src/server/{base,reactor_thread}.cc`,
 `ext-src/swoole_admin_server.cc`, `include/swoole_{reactor,socket}.h`. Follows
 the [policy/effect split](abi-v1.md#policyeffect-split).

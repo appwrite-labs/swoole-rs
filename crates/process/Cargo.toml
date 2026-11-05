@@ -8,6 +8,11 @@ license = "Apache-2.0"
 name = "swoole_rs_process"
 crate-type = ["rlib"]
 
+[features]
+# Define the upstream C++ symbols of the methods `crates/process/src/methods.rs` holds;
+# only the hybrid, which deletes their C++ definitions, enables it.
+upstream-symbols = []
+
 [lints]
 workspace = true
 

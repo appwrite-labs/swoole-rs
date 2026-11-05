@@ -40,7 +40,7 @@ see [local development](docs/development.md).
 
 ```sh
 git config core.hooksPath .githooks   # pre-commit: fmt, clippy, manifest, tooling tests (~30s)
-python3 tools/dev.py integrate --module timer
+python3 tools/dev.py integrate --module timer   # the timer gates, on the all-modules build
 ```
 
 CI has two tiers. [PR](.github/workflows/pr.yml) runs Rust tests, tooling tests and the

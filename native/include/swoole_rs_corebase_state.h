@@ -85,7 +85,6 @@ typedef struct {
   uint16_t id;
   uint8_t kind;
   bool main_thread;
-  int32_t error;
   swr_v1_core_string_object *buffer_stack;
   swr_v1_core_reactor_object *reactor;
   swr_v1_core_timer_object *timer;
@@ -96,6 +95,13 @@ typedef struct {
 } swr_v1_core_thread_fields;
 swr_v1_core_thread_fields *swr_v1_core_thread_new(void);
 void swr_v1_core_thread_free(swr_v1_core_thread_fields *);
+/* The thread's last error is Rust's (crates/corebase/src/log.rs). */
+int swr_v1_core_last_error(void);
+void swr_v1_core_set_last_error(int);
+/* Native's log macros, registered once: kind 0 swoole_sys_warning (errno = code),
+ * 1 swoole_warning, 2 swoole_notice, 3 swoole_error_log(level, code); origin is __SW_FUNC__. */
+typedef void (*swr_v1_core_log_host)(int kind, int level, int code, const char *origin, const char *message);
+void swr_v1_core_set_log_host(swr_v1_core_log_host);
 void swr_v1_core_thread_copy(swr_v1_core_thread_fields *,
                              const swr_v1_core_thread_fields *);
 #ifdef __cplusplus
@@ -129,7 +135,6 @@ struct ThreadGlobal : private CoreThreadOwner {
   uint16_t &id = thread_->id;
   uint8_t &type = thread_->kind;
   bool &main_thread = thread_->main_thread;
-  int32_t &error = thread_->error;
   String *&buffer_stack = thread_->buffer_stack;
   Reactor *&reactor = thread_->reactor;
   Timer *&timer = thread_->timer;

@@ -1,6 +1,6 @@
 # OS support and async worker boundary (M20)
 
-Feature value 131072 (`--module ossupport`). Upstream targets:
+Feature value 131072. Upstream targets:
 `src/os/{async_thread,base,file,msg_queue,sendfile,unix_socket}.cc`.
 `src/os/timer.cc` belongs to M03. Follows the
 [policy/effect split](abi-v1.md#policyeffect-split).

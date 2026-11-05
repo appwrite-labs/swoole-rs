@@ -1,9 +1,20 @@
-//! `Server::task_unpack` for a task too large for the pipe: its payload is in a
-//! temporary file. Open it, read `length` bytes into the native buffer (`File::read_all`:
-//! pread from offset 0, retrying EINTR/EAGAIN, stopping at EOF or another error),
-//! close it and unlink it unless the task is only peeked. Native code keeps sizing the
-//! buffer, the warnings and the packet.
-use std::ffi::{CStr, c_char, c_int};
+//! A server task's payload: `Server::task_pack` puts it inline, or in a temporary
+//! file when it is too large for the pipe; `Server::task_unpack` reads it back
+//! (`File::read_all`: pread from offset 0, retrying EINTR/EAGAIN, stopping at EOF or
+//! another error) and unlinks the file unless the task is only peeked;
+//! `Server::task_dump` prints it. Native lends the file template and grows the
+//! receiving `String` ([`TaskNative`]).
+use std::ffi::{CStr, c_char, c_int, c_long, c_void};
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+use swoole_rs_corebase::constants::TaskFlag;
+use swoole_rs_corebase::{
+    datahead_dump, log, microtime, swr_v1_core_current_task_id, swr_v1_core_set_current_task_id,
+};
+
+use crate::process_pool::SW_IPC_MAX_SIZE;
+use crate::worker_globals::swr_v1_worker_global_get;
 
 /// What reading a task's temporary file did.
 #[repr(C)]
@@ -28,8 +39,7 @@ fn errno() -> i32 {
 ///
 /// # Safety
 /// `path` is a NUL-terminated string and `buffer` is writable for `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_task_file_read(
+pub unsafe fn swr_v1_process_task_file_read(
     path: *const c_char,
     buffer: *mut u8,
     length: usize,
@@ -145,8 +155,7 @@ fn make_tmpfile(buf: &mut [u8; TASK_TMP_PATH_SIZE]) -> c_int {
 /// `dest` is writable for `dest_cap` bytes (at least `sizeof(PacketTask)` for the
 /// temp-file case); `data` lends `len` readable bytes; `template` is a
 /// NUL-terminated mkstemp pattern.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_task_pack(
+pub unsafe fn swr_v1_process_task_pack(
     dest: *mut u8,
     dest_cap: usize,
     data: *const u8,
@@ -193,6 +202,280 @@ pub unsafe extern "C" fn swr_v1_process_task_pack(
         tmpfile: true,
         info_len: size_of::<PacketTask>(),
     }
+}
+
+/// `swoole::EventData`'s header (`DataHead`, include/swoole.h), which native
+/// asserts is 40 bytes; the payload follows it.
+#[repr(C)]
+pub struct EventHead {
+    fd: c_long,
+    msg_id: u64,
+    len: u32,
+    reactor_id: i16,
+    kind: u8,
+    flags: u8,
+    server_fd: u16,
+    ext_flags: u16,
+    reserved: u32,
+    time: f64,
+}
+
+/// `swoole::String`'s fields.
+#[repr(C)]
+pub struct StringRecord {
+    length: usize,
+    size: usize,
+    offset: libc::off_t,
+    str: *mut c_char,
+    allocator: *const c_void,
+}
+
+/// `swoole::PacketPtr`.
+#[repr(C)]
+pub struct PacketPtr {
+    length: usize,
+    data: *mut c_char,
+}
+
+/// What the task methods below borrow from native: `SwooleG.task_tmpfile` and
+/// `String::extend`.
+#[repr(C)]
+pub struct TaskNative {
+    pub tmpfile: unsafe extern "C" fn() -> *const c_char,
+    pub extend: unsafe extern "C" fn(string: *mut StringRecord, size: usize),
+}
+
+static NATIVE: AtomicPtr<TaskNative> = AtomicPtr::new(ptr::null_mut());
+
+/// Registers native's table once at load.
+///
+/// # Safety
+/// `native` lives as long as the process.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_task_set_native(native: *const TaskNative) {
+    NATIVE.store(native.cast_mut(), Ordering::Release);
+}
+
+fn native() -> &'static TaskNative {
+    // SAFETY: native registers its static table before any server runs a task.
+    unsafe { &*NATIVE.load(Ordering::Acquire) }
+}
+
+/// `SW_SERVER_EVENT_TASK`.
+const EVENT_TASK: u8 = 8;
+const TMPFILE: u16 = TaskFlag::SW_TASK_TMPFILE as u16;
+const PEEK: u16 = TaskFlag::SW_TASK_PEEK as u16;
+
+fn payload(task: *mut EventHead) -> *mut u8 {
+    task.wrapping_add(1).cast()
+}
+
+/// `Server::task_dump`: the header, and the temporary file's name if it has one.
+///
+/// # Safety
+/// `task` is a live `EventData`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server9task_dumpEPNS_9EventDataE")
+)]
+pub unsafe extern "C" fn task_dump(task: *mut EventHead) {
+    let mut buf = [0 as c_char; 1024];
+    // SAFETY: `task` starts with its header; `buf` is writable for its length.
+    unsafe { datahead_dump(task.cast(), buf.as_mut_ptr(), buf.len()) };
+    // SAFETY: `dump` NUL-terminated `buf`.
+    unsafe { libc::printf(c"%s".as_ptr(), buf.as_ptr()) };
+    // SAFETY: the caller lends a live task.
+    if unsafe { (*task).ext_flags } & TMPFILE != 0 {
+        // SAFETY: as above.
+        let pkg = unsafe { packet_task(task) };
+        // Upstream prints the payload's length in bytes of the file's name.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "printf's int precision, as upstream's (int) cast"
+        )]
+        let precision = pkg.length as c_int;
+        // SAFETY: the name is NUL-terminated.
+        unsafe {
+            libc::printf(
+                c"Task[tmpfile]=%.*s\n".as_ptr(),
+                precision,
+                pkg.tmpfile.as_ptr().cast::<c_char>(),
+            )
+        };
+    }
+}
+
+/// A tmpfile task's `PacketTask`, copied as upstream does: all but its last
+/// byte, so the name stays NUL-terminated.
+///
+/// # Safety
+/// `task` is a live `EventData`.
+unsafe fn packet_task(task: *mut EventHead) -> PacketTask {
+    let mut pkg = PacketTask {
+        length: 0,
+        tmpfile: [0; TASK_TMP_PATH_SIZE],
+    };
+    // SAFETY: the payload holds at least `sizeof(PacketTask)` bytes.
+    unsafe {
+        ptr::copy_nonoverlapping(
+            payload(task),
+            (&raw mut pkg).cast::<u8>(),
+            size_of::<PacketTask>() - 1,
+        );
+    }
+    pkg
+}
+
+/// `Server::task_pack`: a task header from this worker, with `data` inline or
+/// in a temporary file.
+///
+/// # Safety
+/// `task` is a writable `EventData`; `data` lends `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server9task_packEPNS_9EventDataEPKvm")
+)]
+pub unsafe extern "C" fn task_pack(
+    task: *mut EventHead,
+    data: *const c_void,
+    length: usize,
+) -> bool {
+    let id = swr_v1_core_current_task_id();
+    swr_v1_core_set_current_task_id(id.wrapping_add(1));
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the worker id, narrowed to DataHead's int16_t reactor_id as upstream does"
+    )]
+    let reactor_id = swr_v1_worker_global_get(0) as i16;
+    let head = EventHead {
+        fd: id,
+        msg_id: 0,
+        len: 0,
+        reactor_id,
+        kind: EVENT_TASK,
+        flags: 0,
+        server_fd: 0,
+        ext_flags: 0,
+        reserved: 0,
+        time: microtime(),
+    };
+    // SAFETY: the caller lends a writable task.
+    unsafe { task.write(head) };
+    let capacity = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or(0) - size_of::<EventHead>();
+    // SAFETY: native's table returns `SwooleG.task_tmpfile`'s NUL-terminated text.
+    let template = unsafe { (native().tmpfile)() };
+    // SAFETY: the payload holds `capacity` bytes; `data` lends `length`.
+    let packed =
+        unsafe { swr_v1_process_task_pack(payload(task), capacity, data.cast(), length, template) };
+    if !packed.ok {
+        log::warning(
+            c"Server::task_pack",
+            format_args!("write to tmpfile failed"),
+        );
+        return false;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "at most sizeof(PacketTask) or the pipe's capacity, in DataHead's uint32_t len"
+    )]
+    let len = packed.info_len as u32;
+    // SAFETY: as above.
+    unsafe { (*task).len = len };
+    if packed.tmpfile {
+        // SAFETY: as above.
+        unsafe { (*task).ext_flags |= TMPFILE };
+    }
+    true
+}
+
+/// `Server::task_unpack`: the task's payload, read into `buffer` from its
+/// temporary file if it has one.
+///
+/// # Safety
+/// `task` is a live `EventData`, `buffer` a live `String` and `packet` writable.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(
+        export_name = "_ZN6swoole6Server11task_unpackEPNS_9EventDataEPNS_6StringEPNS_9PacketPtrE"
+    )
+)]
+pub unsafe extern "C" fn task_unpack(
+    task: *mut EventHead,
+    buffer: *mut StringRecord,
+    packet: *mut PacketPtr,
+) -> bool {
+    // SAFETY: the caller lends a live task.
+    let flags = unsafe { (*task).ext_flags };
+    if flags & TMPFILE == 0 {
+        // SAFETY: as above.
+        let length = unsafe { (*task).len } as usize;
+        // SAFETY: the caller lends a writable packet.
+        unsafe {
+            packet.write(PacketPtr {
+                length,
+                data: payload(task).cast(),
+            });
+        }
+        return true;
+    }
+    // SAFETY: as above.
+    let pkg = unsafe { packet_task(task) };
+    // SAFETY: the caller lends a live String.
+    if unsafe { (*buffer).size } < pkg.length {
+        // SAFETY: as above; `String::extend` reallocates it.
+        unsafe { (native().extend)(buffer, pkg.length) };
+    }
+    // SAFETY: as above.
+    let str = unsafe { (*buffer).str };
+    let path = pkg.tmpfile.as_ptr().cast::<c_char>();
+    // SAFETY: `str` holds at least `pkg.length` bytes; `path` is NUL-terminated.
+    let read =
+        unsafe { swr_v1_process_task_file_read(path, str.cast(), pkg.length, flags & PEEK != 0) };
+    if read.status != 0 {
+        if read.error != 0 {
+            // SAFETY: this thread's errno.
+            unsafe { *errno_location() = read.error };
+        }
+        // SAFETY: `path` is NUL-terminated.
+        let name = unsafe { CStr::from_ptr(path) }.to_string_lossy();
+        if read.status == 1 {
+            log::sys_warning(c"Server::task_unpack", format_args!("open({name}) failed"));
+        } else if read.status == 3 {
+            log::sys_warning(
+                c"Server::task_unpack",
+                format_args!(
+                    "pread({}, {str:p}, {}, {}) failed",
+                    read.fd,
+                    pkg.length - read.read,
+                    read.read
+                ),
+            );
+        }
+        return false;
+    }
+    // SAFETY: the caller lends a live String.
+    unsafe { (*buffer).length = pkg.length };
+    // SAFETY: the caller lends a writable packet.
+    unsafe {
+        packet.write(PacketPtr {
+            length: pkg.length,
+            data: str,
+        });
+    }
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn errno_location() -> *mut c_int {
+    // SAFETY: always callable; returns this thread's errno.
+    unsafe { libc::__errno_location() }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn errno_location() -> *mut c_int {
+    // SAFETY: always callable; returns this thread's errno.
+    unsafe { libc::__error() }
 }
 
 #[cfg(test)]
@@ -296,5 +579,97 @@ mod tests {
         let path = std::str::from_utf8(&path_bytes[..nul]).unwrap();
         assert_eq!(std::fs::read(path).unwrap(), payload);
         std::fs::remove_file(path).ok();
+    }
+
+    mod methods {
+        use super::super::*;
+
+        unsafe extern "C" fn tmpfile() -> *const c_char {
+            c"/tmp/swr-task-method-XXXXXX".as_ptr()
+        }
+        unsafe extern "C" fn extend(string: *mut StringRecord, size: usize) {
+            let grown = Box::leak(vec![0 as c_char; size].into_boxed_slice());
+            unsafe {
+                (*string).str = grown.as_mut_ptr();
+                (*string).size = size;
+            }
+        }
+        static NATIVE_TABLE: TaskNative = TaskNative { tmpfile, extend };
+
+        /// An `EventData`-sized, 8-aligned buffer.
+        fn event() -> Vec<u64> {
+            vec![0; 8192 / 8 + 8]
+        }
+
+        fn empty_string() -> StringRecord {
+            StringRecord {
+                length: 0,
+                size: 0,
+                offset: 0,
+                str: ptr::null_mut(),
+                allocator: ptr::null(),
+            }
+        }
+
+        #[test]
+        fn a_small_task_packs_inline_and_unpacks_in_place() {
+            unsafe { swr_v1_process_task_set_native(&raw const NATIVE_TABLE) };
+            let mut buf = event();
+            let task = buf.as_mut_ptr().cast::<EventHead>();
+            swr_v1_core_set_current_task_id(41);
+            assert!(unsafe { task_pack(task, c"hello".as_ptr().cast(), 5) });
+            let head = unsafe { &*task };
+            assert_eq!(
+                (head.fd, head.len, head.kind, head.ext_flags),
+                (41, 5, 8, 0)
+            );
+            assert!(head.time > 0.0);
+            assert_eq!(swr_v1_core_current_task_id(), 42);
+            let mut string = empty_string();
+            let mut packet = PacketPtr {
+                length: 0,
+                data: ptr::null_mut(),
+            };
+            assert!(unsafe { task_unpack(task, &raw mut string, &raw mut packet) });
+            assert_eq!(packet.length, 5);
+            assert_eq!(packet.data, payload(task).cast());
+            assert!(string.str.is_null());
+        }
+
+        #[test]
+        fn a_large_task_spills_to_a_file_that_unpacking_reads_and_removes() {
+            unsafe { swr_v1_process_task_set_native(&raw const NATIVE_TABLE) };
+            let data = vec![7u8; 9000];
+            let mut buf = event();
+            let task = buf.as_mut_ptr().cast::<EventHead>();
+            assert!(unsafe { task_pack(task, data.as_ptr().cast(), data.len()) });
+            let head = unsafe { &*task };
+            assert_eq!(
+                (head.len as usize, head.ext_flags),
+                (size_of::<PacketTask>(), TMPFILE)
+            );
+            let pkg = unsafe { packet_task(task) };
+            let path = unsafe { CStr::from_ptr(pkg.tmpfile.as_ptr().cast()) }
+                .to_str()
+                .unwrap()
+                .to_owned();
+            assert!(path.starts_with("/tmp/swr-task-method-"));
+            let mut string = empty_string();
+            let mut packet = PacketPtr {
+                length: 0,
+                data: ptr::null_mut(),
+            };
+            assert!(unsafe { task_unpack(task, &raw mut string, &raw mut packet) });
+            assert_eq!(
+                (string.length, string.size, packet.length),
+                (9000, 9000, 9000)
+            );
+            assert_eq!(packet.data, string.str);
+            let read = unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), 9000) };
+            assert_eq!(read, data.as_slice());
+            assert!(!std::path::Path::new(&path).exists());
+            // A second unpack finds no file.
+            assert!(!unsafe { task_unpack(task, &raw mut string, &raw mut packet) });
+        }
     }
 }

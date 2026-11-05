@@ -44,11 +44,11 @@ extracts the ID).
 ```sh
 cargo test --locked -p swoole-rs-timer
 cargo clippy --locked -p swoole-rs-timer --all-targets -- -D warnings
-python3 tools/build_hybrid.py --module timer
+python3 tools/build_hybrid.py
 python3 -m pytest tests/modules/timer --sanitize \
-  --manifest target/hybrid/rust-timer/build-manifest.json \
+  --manifest target/hybrid/rust/build-manifest.json \
   --engine upstream=target/upstream/src/modules/swoole.so \
-  --engine timer=target/hybrid/rust-timer/modules/swoole.so
+  --engine timer=target/hybrid/rust/modules/swoole.so
 ```
 
 The gates are pytest files (`pip install pytest`); options and fixtures are in

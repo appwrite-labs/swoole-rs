@@ -475,14 +475,14 @@ mod tests {
             #[cfg(target_os = "linux")]
             if kind == 1 {
                 assert_eq!(
-                    crate::swr_v1_reactor_epoll_ctl(descriptor, 0, fds[0], token, events),
+                    crate::registration::epoll_ctl(descriptor, 0, fds[0], token, events),
                     0
                 );
             }
             #[cfg(not(target_os = "linux"))]
             if kind == 2 {
                 assert_eq!(
-                    crate::swr_v1_reactor_kqueue_add(descriptor, fds[0], token, events),
+                    crate::registration::kqueue_add(descriptor, fds[0], token, events),
                     0
                 );
             }

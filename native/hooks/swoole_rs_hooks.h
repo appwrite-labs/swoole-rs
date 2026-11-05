@@ -28,6 +28,7 @@ typedef struct swr_v1_hook_host {
     const void *uring;             /* &Iouring::host with io_uring, else NULL */
     bool uring_statx;              /* HAVE_IOURING_STATX */
     bool uring_ftruncate;          /* HAVE_IOURING_FTRUNCATE */
+    void (*set_last_error)(int error);
 } swr_v1_hook_host;
 void swr_v1_hook_set_host(const swr_v1_hook_host *host);
 int swr_v1_hook_close_fd(int fd, swr_v1_hook_offload offload);
@@ -61,8 +62,6 @@ int swr_v1_hook_socket_close(int fd, bool (*close)(void *socket), void (*delete_
 int32_t swr_v1_hook_transition(uint32_t requested, uint32_t installed, uint32_t bit);
 uint32_t swr_v1_hook_filter(uint32_t flags, uint32_t unavailable);
 bool swr_v1_hook_file_result(bool open, int64_t result);
-typedef struct { int32_t result; bool invalid; } swr_v1_hook_flock_outcome;
-swr_v1_hook_flock_outcome swr_v1_hook_coroutine_flock(int32_t fd, int32_t operation, int (*coroutine_sleep)(double), double initial, double maximum);
 /* A hooked stream socket name's host and port, as parse_ip_address_ex splits it.
  * Status 0 parsed; 1 bracketed IPv6 without "]:"; 2 no ':' before the last byte. */
 typedef struct { int32_t status; size_t host_offset, host_length; int32_t port; } swr_v1_hooks_address_plan;
@@ -184,8 +183,7 @@ typedef struct {
     int (*name)(void *);
     int (*call)(void *, int argument);
 } swr_v1_hook_setup_ops;
-bool swr_v1_hook_bind(const swr_v1_hook_setup_ops *ops, bool host);
-bool swr_v1_hook_listen(const swr_v1_hook_setup_ops *ops, int backlog, int *stored);
+bool swr_v1_hook_bind(const swr_v1_hook_setup_ops *ops);
 bool swr_v1_hook_accept(const swr_v1_hook_setup_ops *ops);
 /* Coroutine Socket::sendfile's loop over [*offset, end): 0 all sent, 1 a send
  * returned zero, 2 one failed (errno set), 3 the wait failed. */
@@ -270,20 +268,6 @@ void *swr_v1_hook_socket_co(const swr_v1_hook_socket_state *state, uint32_t even
 void swr_v1_hook_socket_bind(swr_v1_hook_socket_state *state, uint32_t event, void *co);
 void *swr_v1_hook_socket_bound_co(const swr_v1_hook_socket_state *state, uint32_t event);
 uint32_t swr_v1_hook_socket_event_name(const swr_v1_hook_socket_state *state, uint32_t event);
-/* The readable/writable callbacks' choice of coroutine to resume (null for none). */
-void *swr_v1_hook_socket_ready(swr_v1_hook_socket_state *state, uint32_t event, bool hup);
-/* Socket::recv_with_buffer after the availability check, over the read buffer's fields, and
-   recv_line over recv_with_buffer (read). recv may yield; the fields stay current across it. */
-typedef struct {
-    char *str;
-    size_t size;
-    size_t *length;
-    off_t *offset;
-} swr_v1_hook_buffer_fields;
-typedef ssize_t (*swr_v1_hook_read)(void *, char *buffer, size_t length);
-ssize_t swr_v1_hook_recv_buffered(const swr_v1_hook_buffer_fields *buffer, swr_v1_hook_read recv, void *context, char *out,
-                                  size_t length);
-ssize_t swr_v1_hook_recv_line(swr_v1_hook_read read, void *context, char *out, size_t limit);
 #ifdef __cplusplus
 }
 // Callables stay on the native stack. Rust returns before every IO, errno

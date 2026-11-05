@@ -7,7 +7,6 @@ pub struct CoreThreadFields {
     pub id: u16,
     pub kind: u8,
     pub main_thread: bool,
-    pub error: i32,
     pub buffer_stack: *mut c_void,
     pub reactor: *mut c_void,
     pub timer: *mut c_void,
@@ -54,15 +53,13 @@ mod tests {
             let copy = swr_v1_core_thread_new();
             (*source).id = 42;
             (*source).kind = 3;
-            (*source).error = 17;
             let mut token = 9u8;
             (*source).timer = ptr::from_mut(&mut token).cast();
             swr_v1_core_thread_copy(copy, source);
-            assert_eq!(((*copy).id, (*copy).kind, (*copy).error), (42, 3, 17));
+            assert_eq!(((*copy).id, (*copy).kind), (42, 3));
             assert_eq!((*copy).timer, (*source).timer);
             (*copy).id = 71;
-            (*copy).error = 0;
-            assert_eq!(((*source).id, (*source).error), (42, 17));
+            assert_eq!((*source).id, 42);
             swr_v1_core_thread_free(source);
             assert_eq!(
                 ((*copy).id, (*copy).timer),

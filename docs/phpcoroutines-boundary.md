@@ -1,6 +1,6 @@
 # PHP coroutine frontend boundary (M29)
 
-Feature value 134217728 (`--module phpcoroutines`, `SWOOLE_RS_PHPCOROUTINES`).
+Feature value 134217728 (`SWOOLE_RS_PHPCOROUTINES`).
 Follows [docs/zend.md](zend.md).
 
 `crates/phpcoroutines` is upstream's `PHPCoroutine` and `swoole_coroutine.cc`:

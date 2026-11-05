@@ -22,13 +22,16 @@ def main():
     a=p.parse_args()
     unit='src/coroutine/system.cc'
     originals,selected,hybrid=sources(a.source,a.archive,[unit])
-    signatures=['static void async_task_completed(', 'bool async(async::Handler handler,', 'struct AsyncLambdaTask {', 'static void async_lambda_handler(', 'static void async_lambda_callback(', 'bool async(const std::function<void()> &fn)', 'int System::sleep(', 'std::string gethostbyname_impl_with_async(', 'std::vector<std::string> System::getaddrinfo(']
+    dns=['int System::sleep(', 'std::string gethostbyname_impl_with_async(', 'std::vector<std::string> System::getaddrinfo(']
+    # Upstream's async bodies; the hybrid's hand the same event to Rust (crates/hooks/src/offload.rs).
+    signatures={'original':['static void async_task_completed(', 'bool async(async::Handler handler,', 'struct AsyncLambdaTask {', 'static void async_lambda_handler(', 'static void async_lambda_callback(', 'bool async(const std::function<void()> &fn)']+dns,
+                'selected':['static void *co_current(', 'static void co_park(', 'static bool co_park_for(', 'static void co_resume(', 'static void *async_dispatch(', 'static const swr_v1_hook_async_ops async_ops =', 'bool async(async::Handler handler,', 'bool async_job(void (*job)(void *), void *context) {', 'bool async(const std::function<void()> &fn)']+dns}
     a.report.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='swr-hooks-async-', dir=a.report.parent) as directory:
         tree=Path(directory)
         for variant in ['original','selected']:
             texts=originals if variant=='original' else selected
-            bodies=[block(texts[unit],signature)+(';' if signature.startswith('struct ') else '') for signature in signatures]
+            bodies=[block(texts[unit],signature)+(';' if signature.startswith(('struct ','static const ')) else '') for signature in signatures[variant]]
             (tree/(variant+'-async.inc')).write_text('\n'.join(bodies))
         command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'native/include'),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/async_gate.cc'),str(a.archive.resolve()),'-lpthread','-o',str(tree/'async')]
         if a.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']

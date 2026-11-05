@@ -30,6 +30,7 @@ pub mod shutdown;
 pub mod sleep;
 pub mod socket_extra;
 pub mod socket_map;
+pub mod socket_members;
 pub mod socket_wait;
 pub mod stdio;
 pub mod timers;

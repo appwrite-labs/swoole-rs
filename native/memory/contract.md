@@ -90,40 +90,31 @@ objects cannot be mixed in.
 
 ## Core channel
 
-Snapshot API: a borrowed, independent 64-byte POD of configuration and cursors.
-The C++ Channel, lock and pipe never cross Rust. Storage is the logical ring plus
-the original maxlen+4 overflow space. Rust owns payload and unaligned 32-bit length
-coding, head/tail wrap tags and message/byte accounting.
+`swr_v1_memory_channel` is `swoole::Channel`'s whole record: the queue state, a
+process-shared mutex and the notification pipe (read end first). The C++ struct
+derives from it and adds only inline methods, which keep upstream's assertions
+and diagnostics. Native allocates `channel_bytes(size,maxlen)` bytes (the record
+plus the ring and its maxlen+4 overflow space) from the heap or, for
+`SW_CHAN_SHM`, a shared mapping, and frees them after `channel_close`. Rust owns
+the payload and unaligned 32-bit length coding, head/tail wrap tags, message/byte
+accounting, the mutex and the pipe.
 
+- `channel_bytes` returns 0 for `size < maxlen`, `maxlen > INT32_MAX` or overflow.
+- `channel_init(record,size,maxlen,flags)`: 0, -1 invalid, 1 `pipe()` failed
+  (errno intact), 2 mutex failed; nothing to release on failure. Flag values
+  2/4/8 are compile-time checked; other bits are ignored.
 - in returns 0/-1; out returns length/-1. Zero-length messages are valid.
 - consume=0 peeks without mutation; consume=1 pops.
 - Too-short output, invalid lengths and wrap tags outside 0/1 fail without
   mutating state, storage or output.
 - Partial wrap uses the pinned overflow-space behavior.
-- Thread/process concurrency requires native locks; unlocked in/out require caller
-  serialization as upstream.
-
-Scalar field storage (additive):
-
-- `channel_storage_plan(size,maxlen,flags,header_size,out)`: 32-byte plan with
-  checked header + ring + overflow length. Native passes `sizeof(Channel)`.
-  Invalid plans zero output and return -1.
-- `channel_storage_init(fields,plan,payload)`: writes all eleven scalar slots via
-  an 88-byte descriptor of typed field addresses (aligned, disjoint, exclusive).
-  Payload extent must be size+maxlen+4. Native keeps the original flat aggregate
-  and public header layout; Lock/Pipe never enter Rust.
-- `channel_storage_in/out`: load scalars, publish only producer (tail/tag) or
-  consumer (head/tag) cursors plus count/bytes. No allocation. Const peek uses the
-  snapshot API.
-- `channel_lifecycle(flags,phase,out)`: 20-byte action plan. Phase 0: heap/shared
-  allocation, scalar init, optional lock, optional notification pipe. Phase 1:
-  optional lock delete, optional pipe close/delete, heap/shared release. Actions
-  1..9 are in the header; flag values 2/4/8 are compile-time checked; other bits
-  ignored. Invalid phase zeroes output and returns -1. Native RAII owns
-  construction rollback (pipe/lock destroyed before storage is freed).
+- `channel_lock(record,lock)` locks or unlocks the mutex; push, pop and peek take
+  it around in/out as upstream. Unlocked in/out require caller serialization.
+- `channel_signal(record,notify)`: notify writes one 8-byte token, wait reads one
+  (blocking, retrying `EINTR`); 0 or -1.
+- `channel_print` writes upstream's text through C stdio.
 - `channel_full(state)`: 40-byte snapshot of head/tail, size/bytes, count and tags;
-  returns 0/1, -1 for NULL. Uses explicit unsigned wrapping arithmetic. The public
-  header forwards `full()` to it without changing fields or signatures.
+  returns 0/1, -1 for NULL. Uses explicit unsigned wrapping arithmetic.
 
 ## Global memory pages
 

@@ -22,11 +22,11 @@ utilities = ["dep:swoole-rs-utilities"]
 locks = ["dep:swoole-rs-locks", "dep:swoole-rs-phplocks"]
 wrappers = ["dep:swoole-rs-wrappers"]
 
-reactor = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols", "dep:swoole-rs-tls"]
+reactor = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols", "dep:swoole-rs-tls", "swoole-rs-tls/upstream-symbols"]
 
 coroutine = ["dep:swoole-rs-coroutine"]
 
-hooks = ["dep:swoole-rs-hooks", "dep:swoole-rs-phpruntime"]
+hooks = ["dep:swoole-rs-hooks", "swoole-rs-hooks/upstream-symbols", "dep:swoole-rs-phpruntime"]
 # Not a module: the hybrid adds it when configured with --enable-iouring.
 iouring = ["hooks", "swoole-rs-hooks/iouring"]
 # Not modules: the hybrid adds each when configured with its hook
@@ -40,12 +40,12 @@ ssh2 = ["hooks", "dep:swoole-rs-ssh2"]
 
 ossupport = ["dep:swoole-rs-ossupport"]
 tls = ["dep:swoole-rs-tls"]
-process = ["dep:swoole-rs-process", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/server", "dep:swoole-rs-phpprocess", "dep:swoole-rs-phpthread"]
+process = ["dep:swoole-rs-process", "swoole-rs-process/upstream-symbols", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/server", "dep:swoole-rs-phpprocess", "dep:swoole-rs-phpthread"]
 cares = ["clients", "swoole-rs-clients/cares"]
 clients = ["dep:swoole-rs-clients", "dep:swoole-rs-inflate", "dep:swoole-rs-phpclients"]
 httpbindings = ["dep:swoole-rs-httpbindings", "dep:swoole-rs-phphttp"]
 http2 = ["dep:swoole-rs-http2", "dep:swoole-rs-phphttp2"]
-ports = ["dep:swoole-rs-ports", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/port"]
+ports = ["dep:swoole-rs-ports", "swoole-rs-ports/upstream-symbols", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/port"]
 stdext = ["phphelpers", "swoole-rs-phpstdext/active"]
 phphelpers = ["dep:swoole-rs-phphelpers", "dep:swoole-rs-phpstdext", "swoole-rs-phpswoole?/module-info"]
 phpcollections = ["dep:swoole-rs-phpcollections"]
@@ -55,7 +55,7 @@ phpcoroutines = ["dep:swoole-rs-phpcoroutines"]
 
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }
-swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
 swoole-rs-timer = { path = "../timer" }
 swoole-rs-base64 = { path = "../base64" }
 swoole-rs-crc32 = { path = "../crc32" }
@@ -71,7 +71,7 @@ swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpredis = { path = "../phpredis", optional = true }
 swoole-rs-wrappers = { path = "../wrappers", optional = true }
 swoole-rs-framing = { path = "../framing" }
-swoole-rs-server = { path = "../server" }
+swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
 swoole-rs-reactor = { path = "../reactor", optional = true }
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-coroutine = { path = "../coroutine", optional = true }

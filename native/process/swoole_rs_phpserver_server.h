@@ -95,25 +95,14 @@ typedef struct {
     bool (*call)(void *server, int which, struct _zval_struct *argument, struct _zval_struct *retval);
 } swr_v1_phpserver_host;
 
-typedef struct {
-    struct _zend_class_entry *server;
-    struct _zend_class_entry *task;
-    struct _zend_class_entry *event;
-    struct _zend_class_entry *packet;
-    struct _zend_class_entry *pipe_message;
-    struct _zend_class_entry *status_info;
-    struct _zend_class_entry *task_result;
-    struct _zend_class_entry *connection_iterator;
-    const struct _zend_object_handlers *server_handlers;
-    const struct _zend_object_handlers *task_handlers;
-} swr_phpserver_classes;
+/* php_swoole_server_{get,set}_port_property: per thread in thread mode, else in
+ * the port's `ptr` (`slot`). With `set`, stores `property` first. */
+void *swr_v1_phpserver_port_property(uint16_t object_id, void **slot, void *property, bool set);
 
-/* MINIT: register the classes, properties and constants. */
-void swr_v1_phpserver_minit(const swr_v1_phpserver_host *table,
-                            bool thread,
-                            bool sockets,
-                            int module,
-                            swr_phpserver_classes *classes);
+/* MINIT: register the classes, properties and constants; returns Swoole\Server's
+ * class and its object handlers (for SW_INIT_CLASS_ENTRY_EX's subclasses). */
+struct _zend_class_entry *swr_v1_phpserver_minit(const swr_v1_phpserver_host *table, bool thread, bool sockets,
+                                                 int module, const struct _zend_object_handlers **handlers);
 #ifdef __cplusplus
 }
 #endif

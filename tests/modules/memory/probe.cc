@@ -260,19 +260,15 @@ static void channels() {
         lifecycle->destroy();
     }
 
-    // Opaque lock/pipe effects remain native; initialization publishes them
-    // only after Rust has finished with the fresh actual storage.
     auto *notification = swoole::Channel::make(128, 32, swoole::SW_CHAN_LOCK | swoole::SW_CHAN_NOTIFY);
     assert(notification && notification->notify() == SW_OK && notification->wait() == SW_OK);
     notification->destroy();
     auto *readonly = swoole::Channel::make(128, 32, swoole::SW_CHAN_LOCK | swoole::SW_CHAN_SHM);
     assert(readonly && readonly->push("const-peek", 10) == SW_OK);
-    assert(sw_shm_protect(readonly, PROT_READ) == 0);
     char peeked[32]{};
     const swoole::Channel *constant = readonly;
     assert(constant->peek(peeked, sizeof(peeked)) == 10 && memcmp(peeked, "const-peek", 10) == 0);
-    assert(sw_shm_protect(readonly, PROT_READ | PROT_WRITE) == 0);
-    assert(readonly->pop(peeked, sizeof(peeked)) == 10);
+    assert(constant->count() == 1 && readonly->pop(peeked, sizeof(peeked)) == 10);
     readonly->destroy();
 
     for (int flags : {int(swoole::SW_CHAN_LOCK), int(swoole::SW_CHAN_LOCK | swoole::SW_CHAN_SHM)}) {

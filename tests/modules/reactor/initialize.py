@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='swr-initialize-') as tmp:
         time_t last_malloc_trim_time=0;size_t event_num=0;
         using Effect=void(*)();Effect write=nullptr,writev=nullptr,close=nullptr,default_write_handler=nullptr;
         static void _write(){}static void _writev(){}static void _close(){}static void _writable_callback(){}
-        void set_default_write_handler(Effect h){default_write_handler=h;}
+        void set_default_write_handler(Effect h){default_write_handler=h;}Reactor *handle(){return this;}
         std::map<int,std::function<void(Reactor*)>> ends;
         std::map<int,std::function<bool(Reactor*,size_t&)>> exits;
         void set_end_callback(EndCallback key,const std::function<void(Reactor*)>&f){trace.push_back(40+key);ends[key]=f;}

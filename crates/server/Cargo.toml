@@ -12,6 +12,11 @@ crate-type = ["rlib"]
 [lints]
 workspace = true
 
+[features]
+# Define the upstream C++ symbols of the methods `crates/server/src/server_methods.rs` holds;
+# only the hybrid's archive, whose master.cc no longer defines them, turns it on.
+upstream-symbols = []
+
 [dependencies]
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }

@@ -20,9 +20,11 @@ and kernel IO are faked; these are policy/order checks, not runtime proof.
   `wait_for`'s retry and cancel. The coroutine Socket's transfers and
   `TimerController` moved to Rust with their cases (`ported_*` tests in
   `crates/hooks/src/transfer.rs` and `co_io.rs`).
-- `async_gate.py` (434 cases): async event/lambda/sleep/DNS bodies, including
-  dispatch rejection, timeout/cancel completion, late canceled completion,
-  resume-deletes-event lifetime and errno capture.
+- `async_gate.py` (426 cases): async event/lambda/sleep/DNS bodies, including
+  dispatch rejection, timeout/cancel completion, late canceled completion and
+  errno capture. The hybrid side's `async` is the patched one-liner over
+  `swr_v1_hook_async` (`crates/hooks/src/offload.rs`), driven through the same
+  facade with upstream's `AsyncEvent` layout.
 - `packet_gate.py` (624 cases): length/EOF/raw framing paths and vectored
   all-transfer paths with EAGAIN/EINTR/error/partial progress.
 - The socket policy gate's bodies (the bound-coroutine checks, `set_err`,

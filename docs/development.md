@@ -16,9 +16,10 @@ python3 tools/dev.py candidate \
   --expect 'Original pack assertions pass'
 
 # Immutable build, fmt/Clippy, module gates, all applications and all original
-# PHPTs, with upstream as control.
+# PHPTs, with upstream as control. Every build has every module; --module only
+# chooses whose gates run (graduated modules' always do).
 python3 tools/dev.py integrate --module timer
-python3 tools/dev.py integrate --all-modules   # every registered module; used by CI
+python3 tools/dev.py integrate --all-modules   # every module's gates; used by CI
 ```
 
 - `--plan` prints the commands without running them.
@@ -43,11 +44,11 @@ in the same run; the planner refuses missing prerequisites.
 ## Incremental builds
 
 ```sh
-python3 tools/build_hybrid.py --dev --module timer
+python3 tools/build_hybrid.py --dev
 ```
 
 Dev builds live under `target/hybrid/dev/` with aliases like
-`target/hybrid/dev-rust-timer/` and never replace the immutable
+`target/hybrid/dev-rust/` and never replace the immutable
 aliases. `build-manifest.json` marks them `development`; `last-run.json` records
 phase timings and whether make/relink/configure ran.
 
@@ -125,7 +126,8 @@ manual setup:
 - keeps the toolchain and crate registry in named volumes (`swr-rustup-<arch>`,
   `swr-cargo-<arch>`), and cargo output in `target/docker/`
 - inside the container, installs the pinned toolchain, runs `cargo fetch --locked`,
-  builds `target/upstream` (cached), and passes the image's PHP extensions to
+  builds `target/upstream` (cached; concurrent entries in one worktree take turns at
+  these steps, under `flock target/upstream/prepare.lock`, then run together), and passes the image's PHP extensions to
   `candidate`/`integrate` unless the command names its own
 - adds `--with-prerequisites` to a `--phase` selection, so the builds and reports a
   phase needs run first

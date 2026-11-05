@@ -1,7 +1,7 @@
 # Buffer and String gates
 
 Gates for the Rust `swoole::Buffer` queue (`crates/buffer`) and `swoole::String`
-storage (`crates/buffer/src/string`, gates in [string/](string/profiles.md)).
+(`crates/buffer/src/string.rs`, gates in [string/](string/)).
 Native runners compile the upstream side from pinned upstream
 `c7e514509451beafd4d70ce5b78943d51e76381c`, extracted into a disposable tree, and
 the Rust side from the patched tree and headers of the hybrid build the supplied
@@ -50,7 +50,7 @@ adds a previous hybrid build to the comparison.
 
 ## Rust ASan
 
-`test_native.py` and `string/test_gate.py` accept `--rust-asan` with
+`test_native.py` accepts `--rust-asan` with
 `--sanitize` for an archive built with Rust ASan. They refuse archives without
 `__asan_report_` imports. Build such an archive on Linux with
 `RUSTC_BOOTSTRAP=1 RUSTFLAGS='-Zsanitizer=address -Zexternal-clangrt=yes' cargo build --locked --offline -p swoole-rs-buffer --release --target=aarch64-unknown-linux-gnu`;
@@ -72,8 +72,6 @@ instrumented archive fails to link because Apple's runtime lacks
   is missing because the build lacks `SWOOLE_SOCKETS_SUPPORT`.
 - The lifecycle half-close case fails on upstream (truncated response) and on any
   hybrid built without the separate half-close fix.
-- Optimized timing blocks default activation: String cold growth about 0.74x and
-  write/reduce about 0.89x upstream (see [string/algorithms.md](string/algorithms.md)).
 
 ## Ownership
 
@@ -83,11 +81,8 @@ instrumented archive fails to link because Apple's runtime lacks
 | Native sendfile/close tokens and callback invocation | C++, after Rust returns; DATA pop callbacks are noexcept |
 | `BufferChunk` public view and mutable send offset | C++ caches the public view; callers keep its identity |
 | POSIX iovec adaptation | C++ copies descriptors (8 on stack, heap fallback); Rust traverses and chunks |
-| String growth, reservations, append/write/repeat/reduce/pop | Rust plans and applies edits; the standard libc allocator is called directly, custom/Zend allocation stays native |
-| Binary search, delimiter scan, comparison, substring bounds | Rust (`memchr::memmem`); `split` returns to native before each handler call |
-| Decimal integers | Rust `itoa` |
-| Formatting/random output | Rust reservation/offset policy; printf varargs, entropy and base64 stay native |
-| String move/clear/release and accessors | Native public metadata; no hidden Rust owner |
+| `swoole::String`'s methods (growth, edits, copy/move, search, split, random bytes) | Rust, under the upstream symbols, calling the String's own allocator |
+| `split`'s `std::function` handler, `format_impl`'s printf varargs, inline accessors | C++ |
 
 The ltrim/rtrim/strnpos/strnstr original String tests exercise native helpers in
 `include/swoole_util.h` and `include/swoole.h`, not Rust code.
@@ -107,15 +102,15 @@ Kept, each with what nothing else reaches:
   across the Rust boundary; no PHPT throws from a native destructor.
 - `buffer-posix-iovec`: the C++ iovec adapter (stack/heap descriptor copy) against
   upstream under sanitizers; the Rust unit tests start after that adapter.
-- `buffer-string-compatibility`: C11 layout asserts and C++14/17/20 whole-TU builds.
-- `string-{split,integer,ownership,allocation,format,random,copy,transitions}`:
-  custom-allocator custody, caught OOM and callback continuations through the
-  C++ facade under ASan/UBSan; PHPTs only use the default allocator.
+- `buffer-string-compatibility`: positive String edits and C++14/17/20 whole-TU builds.
 - `buffer-network`: `Http\Response::sendfile` with an offset and a length behind
   4 MiB of queued output; no original PHPT passes a length.
 
 Deleted:
 
+- `string-{split,integer,ownership,allocation,format,random,copy,transitions}`:
+  they drove the String step-machine exports, which whole Rust methods under the
+  upstream symbols replaced; `string-originals` runs upstream's assertions on them.
 - `buffer-facade`: `buffer-model` runs the same six seeded `facade_sequence`s of
   `model.cc` against the Rust facade, with DATA callbacks checked as well.
 - `string-production-{random,compatibility,format,allocation,ownership,integer,split,copy}`:

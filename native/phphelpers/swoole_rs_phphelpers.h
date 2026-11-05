@@ -18,8 +18,6 @@ struct _zend_string *swr_v1_phphelpers_string_get(const SwrPhpString *);
 void swr_v1_phphelpers_string_free(SwrPhpString *);
 void swr_v1_phphelpers_string_trim(const SwrPhpString *);
 char *swr_v1_phphelpers_string_dup(const SwrPhpString *, bool);
-char *swr_v1_phphelpers_bytes_dup(const char *, size_t, bool, bool);
-void swr_v1_phphelpers_bytes_free(char **);
 struct _zval_struct *swr_v1_phphelpers_variable_new(void);
 void swr_v1_phphelpers_variable_assign(struct _zval_struct *, const struct _zval_struct *);
 void swr_v1_phphelpers_variable_free(struct _zval_struct *);
@@ -28,7 +26,6 @@ void swr_v1_phphelpers_variable_string(struct _zval_struct *, const char *, size
 void swr_v1_phphelpers_variable_move(struct _zval_struct *, struct _zval_struct *);
 void swr_v1_phphelpers_variable_ref(struct _zval_struct *, bool);
 struct _Bucket;
-typedef struct SwrPhpKeyValue SwrPhpKeyValue;
 typedef struct {
     struct _zval_struct *value;
     struct _zend_string *key;
@@ -36,10 +33,6 @@ typedef struct {
     struct _Bucket *end;
     uint64_t index;
 } SwrPhpIterator;
-SwrPhpKeyValue *swr_v1_phphelpers_key_new(uint64_t, struct _zend_string *, struct _zval_struct *);
-void swr_v1_phphelpers_key_add(SwrPhpKeyValue *, struct _zval_struct *);
-void swr_v1_phphelpers_key_free(SwrPhpKeyValue *);
-struct _zval_struct *swr_v1_phphelpers_key_value(SwrPhpKeyValue *);
 SwrPhpIterator swr_v1_phphelpers_iterator_new(struct _Bucket *, struct _Bucket *, bool);
 void swr_v1_phphelpers_iterator_next(SwrPhpIterator *);
 size_t swr_v1_phphelpers_array_count(const struct _zval_struct *);
@@ -60,17 +53,9 @@ struct _zend_object_handlers;
 struct _zend_fcall_info;
 struct _zval_struct *swr_v1_phphelpers_zval_alloc(void);
 struct _zval_struct *swr_v1_phphelpers_zval_dup(const struct _zval_struct *);
-void swr_v1_phphelpers_zval_free(struct _zval_struct *);
-struct _zend_string *swr_v1_phphelpers_string_recycle(struct _zend_string *, size_t, size_t, size_t);
 struct _zend_object *swr_v1_phphelpers_object_new(struct _zend_class_entry *, const struct _zend_object_handlers *);
-struct _zend_object *swr_v1_phphelpers_object_deny(struct _zend_class_entry *);
 struct _zval_struct *swr_v1_phphelpers_property(struct _zend_class_entry *, struct _zval_struct *, const char *, size_t, bool, bool);
-struct _zval_struct *swr_v1_phphelpers_property_array(struct _zend_class_entry *, struct _zval_struct *, const char *, size_t);
 struct _zval_struct *swr_v1_phphelpers_property_offset(struct _zend_class_entry *, struct _zval_struct *, struct _zend_string *);
-struct _zval_struct *swr_v1_phphelpers_property_optional(struct _zend_class_entry *, struct _zval_struct *, struct _zend_string *, bool);
-void swr_v1_phphelpers_params_keep(struct _zend_fcall_info *);
-void swr_v1_phphelpers_params_free(struct _zend_fcall_info *);
-void swr_v1_phphelpers_cache_keep(struct _zend_fcall_info_cache *);
 void swr_v1_phphelpers_cache_free(struct _zend_fcall_info_cache *);
 int swr_v1_phphelpers_call(struct _zval_struct *, struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *, struct _zval_struct *, bool, void (*)(const char *));
 int swr_v1_phphelpers_call_anyway(struct _zend_fcall_info *, struct _zend_fcall_info_cache *);
@@ -118,14 +103,8 @@ struct _zend_execute_data;
 bool swr_v1_phphelpers_callable_frame(struct _zval_struct *value, struct _zval_struct *object,
     struct _zend_execute_data *frame, uint32_t flags, char **name, size_t *length,
     struct _zend_fcall_info_cache *cache, char **error);
-char *swr_v1_phphelpers_url_encode(const char *value, size_t count, size_t *length);
-char *swr_v1_phphelpers_http_query(struct _zval_struct *value, size_t *length, void *buffer);
 bool swr_v1_phphelpers_unset_class_valid(struct _zend_object *object);
 void swr_v1_phphelpers_unset_deny(struct _zend_object *object, struct _zend_string *member, void **cache);
-struct _zend_internal_arg_info;
-int swr_v1_phphelpers_function_alias(struct _zend_array *source, const char *origin, size_t origin_length,
-    struct _zend_array *target, const char *alias, size_t alias_length,
-    const struct _zend_internal_arg_info *info, void (*assert_internal)(uint8_t));
 int swr_v1_phphelpers_class_alias(const char *name, size_t length, struct _zend_class_entry *entry);
 #ifdef __cplusplus
 }

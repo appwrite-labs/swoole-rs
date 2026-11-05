@@ -23,9 +23,11 @@ mod write;
 #[cfg(unix)]
 pub use write::*;
 #[cfg(unix)]
+mod change;
+#[cfg(unix)]
 mod registration;
 #[cfg(unix)]
-pub use registration::*;
+pub use change::*;
 #[cfg(unix)]
 mod registry;
 #[cfg(unix)]
@@ -94,6 +96,8 @@ pub use socket_methods::*;
 mod socket_record;
 #[cfg(unix)]
 pub use socket_record::*;
+#[cfg(unix)]
+pub mod socket_upstream;
 
 const INVALID: i32 = -1;
 /// Encode the stream's four-byte network-order body length. The supplied total

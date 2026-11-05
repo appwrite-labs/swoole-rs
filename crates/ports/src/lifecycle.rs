@@ -330,8 +330,12 @@ unsafe extern "C" {
 ///
 /// # Safety
 /// Both are NUL-terminated strings, live for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_sni_match(
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort25ssl_matches_wildcard_nameEPKcS2_")
+)]
+pub unsafe extern "C" fn ssl_matches_wildcard_name(
     subject: *const c_char,
     cert: *const c_char,
 ) -> bool {
@@ -392,7 +396,7 @@ mod tests {
             std::ffi::CString::new(subject).unwrap(),
             std::ffi::CString::new(cert).unwrap(),
         );
-        unsafe { swr_v1_ports_sni_match(s.as_ptr(), c.as_ptr()) }
+        unsafe { ssl_matches_wildcard_name(s.as_ptr(), c.as_ptr()) }
     }
 
     #[test]

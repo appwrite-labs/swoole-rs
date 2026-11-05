@@ -875,7 +875,6 @@ pub unsafe extern "C" fn swr_v1_process_pool_schedule(
 /// # Safety
 /// `hooks` and the pool are live; `pipe` is the chosen pipe end (unused with a
 /// queue); `data` holds `length` bytes, at most `sizeof(EventData)` with a queue.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_process_worker_send(
     hooks: *const PoolHooks,
     pool: *mut c_void,
