@@ -34,6 +34,12 @@ pub extern "C" fn swr_v1_socket_set_signal_dispatch(dispatch: unsafe extern "C" 
     SIGNAL_DISPATCH.get_or_init(|| dispatch);
 }
 
+/// The registered `swoole_signal_dispatch`, which a blocking call runs when interrupted.
+#[must_use]
+pub fn signal_dispatch() -> Option<unsafe extern "C" fn()> {
+    SIGNAL_DISPATCH.get().copied()
+}
+
 /// `void Socket::clean() const`.
 ///
 /// # Safety
@@ -51,6 +57,7 @@ pub unsafe extern "C" fn socket_clean(socket: *const SocketRecord) {
 ///
 /// # Safety
 /// `socket` is a live record.
+#[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7network6Socket10wait_eventEii")
@@ -67,7 +74,7 @@ pub unsafe extern "C" fn socket_wait_event(
         crate::swr_v1_reactor_poll_events_to(events),
         timeout_ms,
         socket.dont_restart != 0,
-        SIGNAL_DISPATCH.get().copied(),
+        signal_dispatch(),
     );
     match result.status {
         0 => OK,
