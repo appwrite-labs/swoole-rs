@@ -60,13 +60,15 @@ migration moves fastest when a PR moves a group of state together with the
 operations over it and deletes their upstream bodies, and it only ever moves into
 Rust.
 
-1. Claim the first issue `python3 tools/ci.py next` prints (see Tickets).
+1. If `python3 tools/ci.py stuck` lists a PR (conflicting, or a required check
+   failed), get the oldest one merged first, whoever opened it. Otherwise claim
+   the first issue `python3 tools/ci.py next` prints (see Tickets).
 2. Branch from `main` and commit; `git config core.hooksPath .githooks` enables
    the quick pre-commit checks.
 3. Push, open a PR whose body says `Closes #n` and what you checked, run
    `gh pr merge --auto --squash <pr>`, and go straight on to the next issue in
-   the same turn. Opening the PR ends your part: auto-merge lands it, and the
-   merge tier and *Red main* catch anything it breaks, so don't wait for either.
+   the same turn. Don't wait: auto-merge lands it, step 1 catches it if it
+   sticks, and the merge tier and *Red main* catch anything it breaks.
    File follow-ups as `status:ready` sub-issues of the same goal as you find them.
 
 Nobody needs to approve your next step, so keep the loop going on your own. Under
@@ -89,7 +91,7 @@ misbehaves either.
 ## Reviewer agents
 
 Interchangeable and disposable, like executors. Each picks an area (a module, a
-tool, a CI tier, recently merged PRs) and checks that the work already there is
+tool, a CI tier, recently merged PRs, stuck PRs) and checks that the work already there is
 right: bugs, inconsistencies between code, tests and docs, and gaps inside work
 that claims to be complete.
 
