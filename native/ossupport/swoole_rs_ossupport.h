@@ -30,6 +30,23 @@ void swr_v1_os_pool_notify_one(const swr_v1_os_pool *pool);
 /* Reads up to 128 completed event tokens from the pipe and hands each to
  * complete; returns the count, or -1 with errno intact. */
 ssize_t swr_v1_os_pool_complete(int fd, void (*complete)(uintptr_t event));
+struct stat;
+/* AsyncFile owns its descriptor in Rust. The native close effect
+ * ends before the owner is freed; all remaining IO uses the coroutine C ABI. */
+typedef struct swr_v1_os_async_file swr_v1_os_async_file;
+swr_v1_os_async_file *swr_v1_os_async_file_new(void);
+swr_v1_os_async_file *swr_v1_os_async_file_clone(const swr_v1_os_async_file *);
+void swr_v1_os_async_file_assign(swr_v1_os_async_file *, const swr_v1_os_async_file *);
+void swr_v1_os_async_file_free(swr_v1_os_async_file *);
+int swr_v1_os_async_file_fd(const swr_v1_os_async_file *);
+bool swr_v1_os_async_file_open(swr_v1_os_async_file *, const char *, int, mode_t);
+ssize_t swr_v1_os_async_file_read(const swr_v1_os_async_file *, void *, size_t);
+ssize_t swr_v1_os_async_file_write(const swr_v1_os_async_file *, const void *, size_t);
+bool swr_v1_os_async_file_sync(const swr_v1_os_async_file *);
+bool swr_v1_os_async_file_truncate(const swr_v1_os_async_file *, off_t);
+bool swr_v1_os_async_file_stat(const swr_v1_os_async_file *, struct stat *);
+off_t swr_v1_os_async_file_offset(const swr_v1_os_async_file *, off_t, int);
+int swoole_coroutine_close(int);
 /* Rust-owned File state; Native path-view updates retain exceptions outside Rust. */
 struct stat;
 typedef struct swr_v1_os_file_record swr_v1_os_file_record;
