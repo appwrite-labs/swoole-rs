@@ -1,7 +1,7 @@
 # Clients local ABI
 
 Opt-in feature bit 1048576 (`clients`). ABI: `docs/clients-resolver-abi-v1.md`,
-`swoole_rs_clients.h`, `swoole_rs_clients_pool.h`. Converted sources require
+`swoole_rs_clients.h`. Converted sources require
 `SWOOLE_RS_CLIENTS`. Patched upstream files: `ext-src/swoole_client.cc`,
 `ext-src/swoole_client_async.cc`, `ext-src/swoole_client_coro.cc`,
 `ext-src/swoole_http_client_coro.cc`, `ext-src/swoole_name_resolver.cc`,
@@ -37,8 +37,9 @@ parsers, crypto, descriptors and callbacks stay native.
 ## Persistent pool
 
 `Swoole\Client` (crates/phpclients) holds one lazily created pool handle and
-calls the pool directly; `swoole_rs_clients_pool.h` is the RAII adapter the
-pool gate drives.
+calls the pool directly. The former C++ RAII facade had no production callers
+and is retired; its FIFO, binary-key, fork, teardown and failure-prefix cases
+run directly against the pool exports in `crates/clients/src/pool.rs`.
 Rust stores binary keys and FIFO queues of opaque Client tokens using a
 deterministic hasher and fallible allocation; there is no C++ map/queue. Only
 native code closes or deletes Client tokens; dropping the Rust container never

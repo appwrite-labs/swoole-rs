@@ -643,10 +643,10 @@ class Lanes(unittest.TestCase):
         for family in ['header']:
             self.assertIn('--core-report', commands['http2-' + family])
             self.assertLess(list(commands).index('http2-native'), list(commands).index('http2-' + family))
-        for name in ['clients-pool', 'clients-http-format', 'clients-ip', 'clients-ip-text']:
+        for name in ['clients-http-format', 'clients-ip', 'clients-ip-text']:
             self.assertIn('--archive', commands[name])
             self.assertIn('--sanitize', commands[name])
-        self.assertNotIn('--faults', commands['clients-pool'])
+        self.assertNotIn('clients-pool', commands)  # Its cases run in clients-unit.
         for family in ['http', 'dns', 'lifecycle', 'pool', 'resolver', 'pool_fork', 'http_connection', 'http_format', 'coro', 'async']:
             command = commands['clients-php-' + family]
             self.assertIn('--build-manifest', command)
