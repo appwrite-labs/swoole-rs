@@ -38,12 +38,11 @@ def main():
                 (build / name).write_text('#include "trace.h"\n')
             for name in ['swoole_protocol.h', 'swoole_mime_type.h']:
                 (build / name).write_text(read('include/' + name))
-            string = read('src/core/string.cc')
+            # String::split is Rust's (crates/buffer, with its own gates); both engines drive
+            # the framing callers through the pinned body over trace.h's String.
+            string = original('src/core/string.cc')
             start = string.index('ssize_t String::split(')
-            # The fragment keeps the Rust ABI includes and status helper of the file it comes from.
-            includes = ''.join(line + '\n' for line in string.splitlines() if line.startswith('#include "swoole_rs_'))
-            helper = string[string.index('void check_string_status('):string.index('\n}\n', string.index('void check_string_status(')) + 3] if 'void check_string_status(' in string else ''
-            (build / 'split.cpp').write_text('#include "trace.h"\n#include <stdexcept>\n' + includes + 'namespace swoole {\n' + helper + string[start:string.index('\n}  // namespace', start)] + '\n}\n')
+            (build / 'split.cpp').write_text('#include "trace.h"\n#include <stdexcept>\nnamespace swoole {\n' + string[start:string.index('\n}  // namespace', start)] + '\n}\n')
             for path in PATHS:
                 (build / Path(path).name).write_text(read(path))
             binary = build / engine
