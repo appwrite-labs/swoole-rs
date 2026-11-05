@@ -41,7 +41,7 @@ def test_native(tmp_path, pytestconfig):
     local = Path(__file__).resolve().parent
     command = shlex.split(os.environ.get('CXX', 'c++')) + [
         '-std=c++17', '-O1', '-g', '-ffunction-sections', '-fdata-sections', '-I' + str(local), *flags,
-        str(hybrid / 'src/core/buffer.cc'), str(hybrid / 'src/core/string.cc'), str(original), str(local / 'hybrid.cc'), str(archive),
+        str(hybrid / 'src/core/buffer.cc'), str(original), str(local / 'hybrid.cc'), str(archive),
         '-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections', '-lc', '-lm']
     command += ['-Dswr_v1_buffer_' + name + '=swr_test_buffer_' + name
                 for name in ['append', 'stats', 'front', 'pop', 'front_plan', 'advance']]
