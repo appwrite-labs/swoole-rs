@@ -50,9 +50,8 @@ def stage(work, export, source, reference, root):
             raise ValueError('Frozen SDK ABI differs: ' + path)
         # Production installs all declared ABI headers in one prefix include directory.
         (sdk / Path(path).name).write_bytes(data)
-    logger_overlay = any('include/swoole_log.h' in row['upstream_paths'] for row in patches)
     (sdk / 'config.h').write_bytes((export / 'config.h').read_bytes())
     # macro_profile.py re-verifies headers_sha256 before reusing this SDK.
-    return dict(logger_state_abi=2 if logger_overlay else 1, header_patches=patches,
+    return dict(header_patches=patches,
                 string_header_sha256=digest((sdk / 'swoole_string.h').read_bytes()),
                 headers_sha256={str(p): digest(p.read_bytes()) for p in sdk.rglob('*') if p.is_file()})

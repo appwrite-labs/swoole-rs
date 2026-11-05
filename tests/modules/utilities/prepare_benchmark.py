@@ -16,10 +16,8 @@ from gate import ROOT, PIN, oracle
 from bytes_gate import SIGNATURES, body
 from tools.harness import run_isolated, write_report
 from tools.build_hybrid import module_patches
-from overlay import apply_owned
 from tools.build_upstream import require_build_space
 
-LOGGER_WORKLOADS = ['logger-filtered', 'logger-normal', 'logger-truncated', 'logger-micros', 'logger-unlocked-stream', 'logger-stable-rotation']
 WORKLOADS = [f'hash-{algorithm}-{length}' for algorithm in range(3) for length in [32, 256, 4096]] + [f'lowercase-{length}' for length in [32, 256, 4096]] + ['pretty', 'micros', 'line', 'truncated-line', 'trim-left', 'trim-right', 'find-binary', 'find-casefold', 'find-reverse', *['compare-'+str(i) for i in range(6)], 'partition-before', 'partition-after', 'policy-level', 'policy-label', 'policy-rotation', 'wait-ready', 'wake-ready']
 
 
@@ -40,19 +38,6 @@ def prepare_oracles(source, attempt, report):
     for include in ['#include <linux/futex.h>\n', '#include <sys/syscall.h>\n']:
         wait = wait.replace(include, '')
     (attempt/'benchmark-wait.inc').write_text(wait)
-    log = original('src/core/log.cc')
-    file = attempt/'src/core/log.cc'; file.parent.mkdir(parents=True); file.write_text(log)
-    patch = ROOT/'migration/patches/utilities/0002-log.patch'
-    report['overlay_application'] = apply_owned(attempt, patch)
-    base = original('src/core/base.cc')
-    put = base[base.index('size_t sw_snprintf('):base.index('size_t sw_vsnprintf(')]
-    for engine, content in [('reference', log), ('candidate', file.read_text())]:
-        actual = content[content.index('void Logger::put('):content.index('\n}  // namespace swoole')]
-        actual = actual.replace('std::chrono::', 'fixture_clock::')
-        fixture = 'FixtureLogger' if engine == 'reference' else 'OwnedFixtureLogger'
-        put += 'namespace '+engine+' { struct Logger : '+fixture+' { __attribute__((noinline)) void put(int, const char *, size_t); };\n'+actual+'\n}\n'
-    (attempt/'benchmark-put.inc').write_text(put)
-    report['logger_substitutions'] = {'std::chrono::': 'fixture_clock:: (fixed date only; elapsed clock reads remain exclusively --measure)'}
 
 
 def main():
@@ -68,7 +53,7 @@ def main():
     attempt.mkdir()
     report = dict(passed=False, created_utc=datetime.now(timezone.utc).isoformat(), upstream_pin=PIN,
                   scope='Optimized exact pinned utility bodies versus published Rust calls. Correctness preparation only; no elapsed timing, speed, PHP, full logger concurrency/calendar/rotation or activation claim. Native string allocation remains for pretty-name facade.',
-                  attempt=str(attempt), platform=platform.platform(), workloads=WORKLOADS+LOGGER_WORKLOADS, checks=[])
+                  attempt=str(attempt), platform=platform.platform(), workloads=WORKLOADS, checks=[])
     try:
         require_build_space(ROOT)
         archive = args.archive.resolve(strict=True)
@@ -121,7 +106,7 @@ def main():
         if sha(frozen) != report['archive_sha256']: raise ValueError('Archive changed during capture')
         extracted = attempt/'oracle.inc'; extracted.write_text(oracle(args.source))
         report['binaries'] = []
-        for filename, workloads in [('benchmark.cc', WORKLOADS), ('benchmark_logger.cc', LOGGER_WORKLOADS)]:
+        for filename, workloads in [('benchmark.cc', WORKLOADS)]:
             driver = attempt/filename; shutil.copy2(Path(__file__).with_name(filename), driver)
             binary = attempt/Path(filename).stem
             command = ['c++', '-std=c++17', '-O3', '-UNDEBUG', '-funsigned-char', '-Wall', '-Wextra', '-Werror', '-Wno-implicit-fallthrough', '-Wno-ignored-qualifiers', '-I'+str(attempt), str(driver), str(frozen), '-lm', '-lpthread', '-o', str(binary)]
@@ -151,7 +136,7 @@ def main():
                             row['error'] = str(error)
             artifact['measure_command_template'] = [str(binary), '--measure', 'ENGINE', 'WORKLOAD', 'ITERATIONS']
         report['compiler'] = subprocess.check_output(['c++', '--version'], text=True)
-        report['passed'] = (len(report['checks']) == 2*len(WORKLOADS+LOGGER_WORKLOADS) and
+        report['passed'] = (len(report['checks']) == 2*len(WORKLOADS) and
                             all(row['returncode'] == 0 and 'error' not in row for row in report['checks']) and
                             all(row['compile']['returncode'] == 0 for row in report['binaries']))
     except Exception as error:

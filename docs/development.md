@@ -113,7 +113,7 @@ Tooling tests: `tests/dev/run.sh` (parallel; prints only failing files), or `pyt
 ### One command: `dev.py docker`
 
 ```sh
-python3 tools/dev.py docker -- integrate --module utilities --phase utilities-logger-owned-state
+python3 tools/dev.py docker -- integrate --module utilities --phase utilities-logger-originals
 ```
 
 Runs any `dev.py` command in the dev image for this host's architecture, with no

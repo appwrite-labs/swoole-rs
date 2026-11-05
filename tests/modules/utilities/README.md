@@ -23,8 +23,6 @@ python3 tests/modules/utilities/bytes_gate.py --source /pinned/reference \
   --archive /inputs/libswoole_rs_ffi.a --output target/utilities-bytes.json
 python3 tests/modules/utilities/wait.py --source /pinned/reference \
   --archive /inputs/libswoole_rs_ffi.a --sanitize --output target/utilities-wait.json
-python3 tests/modules/utilities/put.py --source /pinned/reference \
-  --archive /inputs/libswoole_rs_ffi.a --sanitize --threads --output target/utilities-put.json
 ```
 
 | Script (dev.py phase) | Checks |
@@ -32,40 +30,22 @@ python3 tests/modules/utilities/put.py --source /pinned/reference \
 | `gate.py` (`utilities-native`) | Pinned vs Rust: defined hashes, pretty ranges, levels/labels/rotation, exact line/microsecond formatting, truncation, NUL and errno, thread/shared-mapping spin witnesses; signed and unsigned char |
 | `bytes_gate.py` (`utilities-bytes`) | All 16 pinned inline helpers vs the hybrid build's headers: binary/NUL input, bounds/sentinels/errno, locale classification and casefold, both char modes |
 | `wait.py` (`utilities-wait`) | Wait/wake result, errno and word; real shared fork wake, Linux futex wait channel and fallback, macOS polling |
-| `put.py --threads` (`utilities-put-threads`) | Complete `Logger::put` bodies with four threads, real mutex/stdio: 16,384 ordered records and 1,024 stream/flag publications per engine |
 
 `--rust-asan` (with `--sanitize`) additionally requires the utility Rust objects
 to carry ASan imports (`rust_asan.py`). On macOS the installed Apple and Rust ASan
 runtimes are incompatible: use `--native-ubsan-only --asan-runtime
 /absolute/path/to/librustc-stable_rt.asan.dylib`. Rust's std stays uninstrumented.
 
-`put.py` requires `--threads`; the old non-thread, configuration, lifecycle and
-redirect native-field models were removed because they cannot exercise the
-Rust-owned Logger state. The `utilities-put` phase (no `--threads`) now exits
-with a usage error. The thread fixture replaces `localtime` with `localtime_r` and
-uses a literal date to avoid the original static-`tm` race; it does not cover
-concurrent calendar/configuration/open-close or TSan.
-
 Defined domains exclude empty search needles, reverse-search underflow and
 undefined signed-char ctype inputs. Reverse search omits offset 0;
 case-insensitive search keeps the exact-first-byte guard and host `strncasecmp`.
 Unavailable locales (for example Linux `en_US.UTF-8`) are unqualified.
 
-## Whole-class Logger (`logger_state.py`)
+## Logger
 
-```sh
-python3 tests/modules/utilities/logger_state.py --source /pinned/reference \
-  --native-export NATIVE_EXPORT --sdk-ref COMMIT \
-  --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --output target/logger-state.json
-```
-
-Compiles pinned `log.cc` against the native export's SDK (`coherent_sdk.py`) and
-the hybrid build's `log.cc` against that build's headers into separate DSOs, then runs `logger_state_public.cc` against each:
-30 public checks (defaults/clamping, file/reopen/close paths, unowned streams,
-reset/backtrace retention, rotation, descriptor redirection), stream replacement,
-1,024 records during 128 concurrent reopens and 42 filename values. The selected
-build also runs the C11 `logger_path_c.c` consumer. Accepts the same
-sanitizer flags as above. Registered as `utilities-logger-owned-state`.
+The Logger is Rust (`crates/utilities/src/logger.rs`); its crate tests cover
+files, rotation, diagnostics and concurrent `put` with `reopen`. The upstream
+`log.cpp` GoogleTests run against it through `storage.py`'s originals families below.
 
 ## Loaded PHP consumers
 
@@ -133,10 +113,10 @@ python3 -m unittest discover -s tests/modules/utilities -p 'test_*.py'
 ```
 
 Requires an immutable optimized release archive whose manifest matches the
-current utility sources, header and patches. Builds `benchmark.cc` and
-`benchmark_logger.cc` at `-O3` and runs all 40 workloads in check mode (no clock;
-`elapsed_ns` must be 0): hash, pretty, formatting, trim/search/compare/partition,
-enum policy, ready-word wait/wake, six complete `put` bodies, and lowercase at
+current utility sources, header and patches. Builds `benchmark.cc` at `-O3` and
+runs all 34 workloads in check mode (no clock; `elapsed_ns` must be 0): hash,
+pretty, formatting, trim/search/compare/partition, enum policy, ready-word
+wait/wake, and lowercase at
 32/256/4096 bytes. Measurement uses the printed `--measure` template and must run
 without concurrent workloads; none has run.
 

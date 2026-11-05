@@ -244,7 +244,7 @@ def main():
         report['selected_inline_imports'] = dict(exit=symbols.returncode, stdout=symbols.stdout, stderr=symbols.stderr)
         required = (['swr_v1_string_'] if coherent else ['swr_v2_utils_ltrim', 'swr_v2_utils_rtrim', 'swr_v2_utils_search', 'swr_v1_utils_compare', 'swr_v1_utils_partition'] if args.inline_originals else [])
         if logger_layout and args.backtrace:
-            required += ['swr_v1_utils_log_state_scalar_set']
+            required += ['swr_v1_logger_set']
         if symbols.returncode or any(name not in symbols.stdout for name in required):
             raise ValueError('Selected inline helper lacks required Rust utility imports')
         exports = run_isolated(['nm', *(['-D'] if sys.platform.startswith('linux') else []), '-g', selected['extension']], timeout=30)

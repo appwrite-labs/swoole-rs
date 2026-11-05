@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdio.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -62,137 +63,37 @@ size_t swr_v1_utils_log_line(uint8_t *, size_t, const uint8_t *, int32_t, uint8_
                            int32_t, int32_t, int32_t, const uint8_t *, int32_t);
 /* Exact microsecond suffix, same output bounds and count convention. */
 size_t swr_v1_utils_log_micros(uint8_t *, size_t, int64_t);
-/* Callback-free logger redirect sequencing. Initialize phase=0. All descriptor
- * operations, field updates and diagnostics execute natively between steps. */
-enum SwrUtilsRedirectAction {
-    SWR_UTILS_REDIRECT_INVALID = 0, SWR_UTILS_REDIRECT_DUP_OUT = 1,
-    SWR_UTILS_REDIRECT_DUP_ERR = 2, SWR_UTILS_REDIRECT_ENABLE = 3,
-    SWR_UTILS_REDIRECT_RESTORE_OUT = 4, SWR_UTILS_REDIRECT_RESTORE_ERR = 5,
-    SWR_UTILS_REDIRECT_CLOSE_OUT = 6, SWR_UTILS_REDIRECT_CLOSE_ERR = 7,
-    SWR_UTILS_REDIRECT_DONE = 8, SWR_UTILS_REDIRECT_NO_FILE = 20,
-    SWR_UTILS_REDIRECT_ALREADY = 21, SWR_UTILS_REDIRECT_NOT_ENABLED = 22,
-    SWR_UTILS_REDIRECT_DUP_OUT_FAILED = 23, SWR_UTILS_REDIRECT_DUP_ERR_FAILED = 24,
-    SWR_UTILS_REDIRECT_RESTORE_OUT_FAILED = 25, SWR_UTILS_REDIRECT_RESTORE_ERR_FAILED = 26
+/* swoole::Logger (crates/utilities/src/logger.rs). Diagnostics, worker identity,
+ * backtraces and stdout redirection call back into the host (src/core/log.cc)
+ * after the logger's lock is released. */
+typedef struct SwrLogger SwrLogger;
+struct SwrLoggerIdentity { int worker_id, worker_pid; char worker_symbol; };
+struct SwrLoggerHost {
+    void (*effect)(int what, int value, const char *text);
+    void (*identity)(struct SwrLoggerIdentity *);
 };
-uint32_t swr_v1_utils_redirect_step(uint32_t *phase, uint8_t enable, uint8_t opened,
-                                     uint8_t redirected, int32_t result);
-/* Logger file operations open=0, close=1, reopen=2. Scalar facts only; phase=0.
- * All IO, allocation, warning and field writes execute after Rust returns. */
-enum SwrUtilsLogFileAction {
-    SWR_UTILS_LOG_FILE_INVALID = 0, SWR_UTILS_LOG_FILE_DONE = 1,
-    SWR_UTILS_LOG_FILE_CLOSE = 2, SWR_UTILS_LOG_FILE_ASSIGN_PATH = 3,
-    SWR_UTILS_LOG_FILE_ROTATE_PATH = 4, SWR_UTILS_LOG_FILE_PLAIN_PATH = 5,
-    SWR_UTILS_LOG_FILE_OPEN = 6, SWR_UTILS_LOG_FILE_OPENED = 7,
-    SWR_UTILS_LOG_FILE_FAILED = 8, SWR_UTILS_LOG_FILE_SAVE_PATH = 9,
-    SWR_UTILS_LOG_FILE_REOPEN_SAVED = 10, SWR_UTILS_LOG_FILE_REDIRECT = 11
+void swr_logger_host(int what, int value, const char *text);
+void swr_logger_host_identity(struct SwrLoggerIdentity *);
+enum SwrLoggerSetting {
+    SWR_LOGGER_ROTATION = 0, SWR_LOGGER_MICROSECONDS = 1,
+    SWR_LOGGER_BACKTRACE = 2, SWR_LOGGER_RESET = 3
 };
-uint32_t swr_v1_utils_log_file_step(uint32_t *phase, uint32_t operation, uint8_t opened,
-                                  int32_t rotation, uint8_t redirected, int32_t descriptor);
-/* Caller phase=0; refreshed Logger facts, no retained state or native effects. */
-enum SwrUtilsLogPutAction {
-    SWR_UTILS_LOG_PUT_INVALID = 0, SWR_UTILS_LOG_PUT_DONE = 1,
-    SWR_UTILS_LOG_PUT_DATE = 2, SWR_UTILS_LOG_PUT_ROTATE = 3,
-    SWR_UTILS_LOG_PUT_MICROS = 4, SWR_UTILS_LOG_PUT_IDENTITY = 5,
-    SWR_UTILS_LOG_PUT_FORMAT = 6, SWR_UTILS_LOG_PUT_LOCK = 7,
-    SWR_UTILS_LOG_PUT_FILE_LOCK = 8, SWR_UTILS_LOG_PUT_WRITE = 9,
-    SWR_UTILS_LOG_PUT_FLUSH = 10, SWR_UTILS_LOG_PUT_FILE_UNLOCK = 11,
-    SWR_UTILS_LOG_PUT_UNLOCK = 12, SWR_UTILS_LOG_PUT_BACKTRACE = 13,
-    SWR_UTILS_LOG_PUT_SKIP = 14
-};
-/* Observe only the corresponding field in these caller-owned phases. */
-enum SwrUtilsLogPutObservationPhase {
-    SWR_UTILS_LOG_PUT_FILTER_PHASE = 0, SWR_UTILS_LOG_PUT_ROTATION_PHASE = 1,
-    SWR_UTILS_LOG_PUT_MICROS_PHASE = 2, SWR_UTILS_LOG_PUT_FILE_LOCK_PHASE = 6,
-    SWR_UTILS_LOG_PUT_FILE_UNLOCK_PHASE = 9, SWR_UTILS_LOG_PUT_BACKTRACE_PHASE = 11
-};
-uint32_t swr_v1_utils_log_put_step(uint32_t *phase, int32_t level, int32_t threshold,
-                                 int32_t rotation, uint8_t microseconds, uint8_t opened, uint8_t backtrace);
-/* Complete emission controller; frozen put_step remains unchanged. Native
- * rotation scope must finish (including temporary string destruction) before
- * entering micros phase. No Rust frame spans comparison/locks/identity effects. */
-enum SwrUtilsLogEmitAction {
-    SWR_UTILS_LOG_EMIT_ROTATION_LOCK = 15, SWR_UTILS_LOG_EMIT_ROTATION_REOPEN = 16,
-    SWR_UTILS_LOG_EMIT_ROTATION_UNLOCK = 17, SWR_UTILS_LOG_EMIT_PROCESS_ID = 18,
-    SWR_UTILS_LOG_EMIT_WORKER_SYMBOL = 19
-};
-enum SwrUtilsLogEmitObservationPhase {
-    SWR_UTILS_LOG_EMIT_PATH_PHASE = 14, SWR_UTILS_LOG_EMIT_FORMAT_PHASE = 4
-};
-uint32_t swr_v1_utils_log_emit_step(uint32_t *phase, int32_t level, int32_t threshold,
-                                  int32_t rotation, uint8_t microseconds, uint8_t opened,
-                                  uint8_t backtrace, uint8_t path_changed,
-                                  uint8_t acquired, int32_t worker_pid);
-/* Configuration operations reset=0/date=1/stream=2, exclusive phase starts0.
- * Native effects occur after return. Defaults output needed only for reset;
- * static date-format pointer is immutable. Public Logger layout is unchanged. */
-struct SwrUtilsLogDefaults {
-    const char *date_format;
-    int32_t rotation, level;
-    uint8_t microseconds;
-};
-enum SwrUtilsLogConfigAction {
-    SWR_UTILS_LOG_CONFIG_INVALID = 0, SWR_UTILS_LOG_CONFIG_DONE = 1,
-    SWR_UTILS_LOG_CONFIG_RESET = 2, SWR_UTILS_LOG_CONFIG_FORMAT_DATE = 3,
-    SWR_UTILS_LOG_CONFIG_REJECT_DATE = 4, SWR_UTILS_LOG_CONFIG_ASSIGN_DATE = 5,
-    SWR_UTILS_LOG_CONFIG_CLOSE = 6, SWR_UTILS_LOG_CONFIG_ASSIGN_STREAM = 7
-};
-uint32_t swr_v1_utils_log_config_step(uint32_t *phase, uint32_t operation,
-                                    uint8_t opened, size_t formatted,
-                                    struct SwrUtilsLogDefaults *defaults);
-/* Selected Logger state ABI2: sole owned logical/string storage. Native FILE,
- * descriptors and mutex remain outside Rust. All effects follow return.
- * Handles are single-owner, live until destroy; configuration is quiescent.
- * Text pointers remain valid until the corresponding mutation or destruction.
- * put/reopen retain native locking; no Rust reference spans a native effect.
- * Mutations publish complete replacements only. Map status to native exceptions
- * after return; exact allocation topology/failure parity remains unqualified. */
-struct SwrUtilsLogState;
-enum SwrUtilsLogStateStatus {
-    SWR_UTILS_STATE_OK = 0, SWR_UTILS_STATE_LENGTH = 1,
-    SWR_UTILS_STATE_CAPACITY = 2, SWR_UTILS_STATE_ALLOCATION = 3,
-    SWR_UTILS_STATE_INVALID = 4
-};
-enum SwrUtilsLogStateScalar {
-    SWR_UTILS_STATE_OPENED = 0, SWR_UTILS_STATE_REDIRECTED = 1,
-    SWR_UTILS_STATE_BACKTRACE = 2, SWR_UTILS_STATE_LEVEL = 3,
-    SWR_UTILS_STATE_MICROS = 4, SWR_UTILS_STATE_ROTATION = 5
-};
-enum SwrUtilsLogStateText {
-    SWR_UTILS_STATE_FILE = 0, SWR_UTILS_STATE_REAL_FILE = 1, SWR_UTILS_STATE_DATE = 2
-};
-uint32_t swr_v1_utils_log_state_create(size_t native_max, struct SwrUtilsLogState **);
-void swr_v1_utils_log_state_destroy(struct SwrUtilsLogState *);
-int32_t swr_v1_utils_log_state_scalar_get(const struct SwrUtilsLogState *, uint32_t field);
-uint32_t swr_v1_utils_log_state_scalar_set(const struct SwrUtilsLogState *, uint32_t field, int32_t value);
-const char *swr_v1_utils_log_state_text_get(const struct SwrUtilsLogState *, uint32_t field);
-/* input is readable length bytes (null iff length0), may alias current text. */
-uint32_t swr_v1_utils_log_state_text_set(const struct SwrUtilsLogState *, uint32_t field, const uint8_t *input, size_t length);
-uint32_t swr_v1_utils_log_state_text_copy(const struct SwrUtilsLogState *, uint32_t source, uint32_t target);
-void swr_v1_utils_log_state_reset(const struct SwrUtilsLogState *);
-void swr_v1_utils_log_state_clear(const struct SwrUtilsLogState *, uint8_t failed_open);
-uint32_t swr_v1_utils_log_state_file_step(const struct SwrUtilsLogState *, uint32_t *phase, uint32_t operation, int32_t descriptor);
-uint32_t swr_v1_utils_log_state_redirect_step(const struct SwrUtilsLogState *, uint32_t *phase, uint8_t enable, int32_t result);
-uint32_t swr_v1_utils_log_state_config_step(const struct SwrUtilsLogState *, uint32_t *phase, uint32_t operation, size_t formatted);
-uint32_t swr_v1_utils_log_state_emit_step(const struct SwrUtilsLogState *, uint32_t *phase, int32_t level,
-                                        uint8_t path_changed, uint8_t acquired, int32_t worker_pid);
-/* Scoped Rust filename owner. Operation0 captures logical C filename before
- * close; operation1 captures external binary file bytes before calendar effects.
- * Inputs are copied; no Rust frame survives native effects. output starts null;
- * reserve/owner allocation are fallible and publish only a completed value.
- * get borrows until destroy/adopt. adopt consumes on success only and transfers
- * bytes to resolved state without another allocation; caller quiescence applies.
- * emit compares the value with fresh resolved C filename only at phase14.
- * Native RAII retains scope; exact allocation/exception topology is unqualified. */
-struct SwrUtilsLogPath;
-uint32_t swr_v1_utils_log_path_create(const struct SwrUtilsLogState *, uint32_t operation,
-    const uint8_t *input, size_t length, struct SwrUtilsLogPath **);
-/* Complete captured file+dot+date after calendar return, atomically on success. */
-uint32_t swr_v1_utils_log_path_rotate(struct SwrUtilsLogPath *, const uint8_t *date, size_t date_length);
-const char *swr_v1_utils_log_path_get(const struct SwrUtilsLogPath *, size_t *length);
-void swr_v1_utils_log_path_destroy(struct SwrUtilsLogPath *);
-uint32_t swr_v1_utils_log_path_adopt(const struct SwrUtilsLogState *, struct SwrUtilsLogPath *);
-uint32_t swr_v1_utils_log_path_emit_step(const struct SwrUtilsLogState *, uint32_t *phase,
-    int32_t level, const struct SwrUtilsLogPath *, uint8_t acquired, int32_t worker_pid);
+SwrLogger *swr_v1_logger_new(FILE *stdout_stream, struct SwrLoggerHost host);
+void swr_v1_logger_free(SwrLogger *);
+bool swr_v1_logger_open(const SwrLogger *, const char *file);
+void swr_v1_logger_reopen(const SwrLogger *);
+void swr_v1_logger_close(const SwrLogger *);
+void swr_v1_logger_set_stream(const SwrLogger *, FILE *stream);
+void swr_v1_logger_put(const SwrLogger *, int level, const char *content, size_t length);
+int swr_v1_logger_level(const SwrLogger *);
+void swr_v1_logger_set_level(const SwrLogger *, int level);
+void swr_v1_logger_set(const SwrLogger *, enum SwrLoggerSetting, int value);
+bool swr_v1_logger_set_date_format(const SwrLogger *, const char *format);
+bool swr_v1_logger_redirect(const SwrLogger *, bool enable);
+bool swr_v1_logger_is_opened(const SwrLogger *);
+/* get_file (false) or get_real_file (true), valid until the file next changes. */
+const char *swr_v1_logger_file(const SwrLogger *, bool real);
+size_t swr_v1_logger_rotation_date(const SwrLogger *, uint8_t (*date)[16]);
 /* Additive complete inline publication ABI; all v1 declarations stay frozen.
  * Cursor/range are caller-owned and quiescent. ltrim length0 does not read the
  * cursor slot; rtrim length0 performs no access. Defined host ctype inputs only.

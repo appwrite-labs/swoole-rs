@@ -529,9 +529,6 @@ def plan(args, reports):
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-native'))
         script('utilities-bytes', 'tests/modules/utilities/bytes_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('utilities-bytes'))
-        script('utilities-put-threads', 'tests/modules/utilities/put.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', '--threads',
-               *report('utilities-put-threads'))
         if sys.platform.startswith('linux'):  # Rust implements only the futex path; others run upstream's registry.
             script('utilities-wait', 'tests/modules/utilities/wait.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-wait'))
@@ -545,10 +542,6 @@ def plan(args, reports):
                    *php_for('curl'), *utility_engines, '--build-manifest', manifest,
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                    '--source-ref', utility_source, '--' + family + '-originals', *report(name))
-        script('utilities-logger-owned-state', 'tests/modules/utilities/logger_state.py', '--source', ROOT / 'target/upstream/src',
-               '--native-export', native_export,
-               '--sdk-ref', utility_source,
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('utilities-logger-owned-state'))
         script('utilities-lowercase-runtime', 'tests/modules/utilities/lowercase_runtime.py',
                '--source', manifest.parent / 'src', *php_for('sockets'), *engines,
                '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
