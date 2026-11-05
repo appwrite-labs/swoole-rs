@@ -11,6 +11,8 @@ int swr_zend_stream_socketd(zval *zstream, php_stream **stream, int *fd);
 void swr_zend_stream_unbuffer(php_stream *stream);
 /* Z_OBJPROP_P(object). */
 HashTable *swr_zend_object_properties(zval *object);
+/* convert_to_array(value), then Z_ARRVAL_P(value). */
+HashTable *swr_zend_convert_to_array(zval *value);
 /* zend_zval_value_name (PHP 8.3+), else zend_zval_type_name. */
 const char *swr_zend_zval_value_name(const zval *value);
 #endif

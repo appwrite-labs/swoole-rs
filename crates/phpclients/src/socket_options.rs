@@ -5,6 +5,7 @@
 //! arguments in upstream's order and stops where upstream's fatal error would;
 //! the coroutine socket's fields stay C++, reached through `native`.
 use crate::{
+    multicast,
     native::{self, ErrorKind, Socket},
     net::{self, warn_sys},
     socket::open,
@@ -144,7 +145,7 @@ fn type_size(kind: u8) -> u8 {
 /// A bailout is pending: upstream never ran past it.
 pub(crate) struct Stop;
 
-fn checked() -> Result<(), Stop> {
+pub(crate) fn checked() -> Result<(), Stop> {
     if bailout::pending() {
         Err(Stop)
     } else {
@@ -153,7 +154,7 @@ fn checked() -> Result<(), Stop> {
 }
 
 /// `bytes` as C text, cut at a NUL as `%s` reads it.
-fn text(bytes: &[u8]) -> CString {
+pub(crate) fn text(bytes: &[u8]) -> CString {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     CString::new(&bytes[..end]).unwrap_or_default()
 }
@@ -184,7 +185,7 @@ fn truth(value: *mut zval) -> bool {
     unsafe { swr_zend_is_true(value) }
 }
 
-fn long(value: *mut zval) -> Result<i64, Stop> {
+pub(crate) fn long(value: *mut zval) -> Result<i64, Stop> {
     // SAFETY: a live setting.
     let long = unsafe { get_long(value) };
     checked().map(|()| long)
@@ -197,7 +198,7 @@ fn double(value: *mut zval) -> Result<f64, Stop> {
 }
 
 /// `zend::String(value)`'s bytes.
-fn string(value: *mut zval) -> Result<Vec<u8>, Stop> {
+pub(crate) fn string(value: *mut zval) -> Result<Vec<u8>, Stop> {
     // SAFETY: a live setting; an owned reference, released below.
     let string = unsafe { get_string(value) };
     // SAFETY: live until released.
@@ -661,43 +662,29 @@ pub(crate) fn enable_ssl(socket: Socket) -> bool {
 }
 
 /// The coroutine socket's descriptor, from its `network::Socket` record.
-fn fd(socket: Socket) -> c_int {
+pub(crate) fn fd(socket: Socket) -> c_int {
     // SAFETY: an open socket has a record.
     let record = unsafe { native::swoole_client_coro_socket_record(socket) };
     // SAFETY: as above.
     unsafe { (*record).fd }
 }
 
-fn errno() -> c_int {
+pub(crate) fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 /// `getsockopt` into `T`, with the length it reported.
-fn getsockopt<T>(fd: c_int, level: c_int, name: c_int, out: &mut T) -> Option<socklen_t> {
+pub(crate) fn getsockopt<T>(
+    fd: c_int,
+    level: c_int,
+    name: c_int,
+    out: &mut T,
+) -> Option<socklen_t> {
     let mut length = socklen_t::try_from(size_of::<T>()).unwrap_or(0);
     // SAFETY: `out` is writable for `length` bytes.
     let status =
         unsafe { libc::getsockopt(fd, level, name, ptr::from_mut(out).cast(), &raw mut length) };
     (status == 0).then_some(length)
-}
-
-/// One ext/sockets helper inside `zend_try`: its result, or `None` if it bailed
-/// out.
-fn sockopt(call: &mut native::SockoptCall) -> Option<c_int> {
-    // SAFETY: C++ that may report a PHP error, with its arguments.
-    let trapped = unsafe {
-        bailout::trap(
-            native::swoole_socket_coro_sockopt,
-            ptr::from_mut(call).cast(),
-        )
-    };
-    match trapped {
-        Ok(()) => Some(call.result),
-        Err(bailout) => {
-            bailout.defer();
-            None
-        }
-    }
 }
 
 /// `getOption(int $level, int $opt_name): mixed`.
@@ -719,33 +706,21 @@ fn get_option(call: &Call) {
         warn_sys(&format!("getsockopt({fd}, {level}, {name})"), errno());
         call.set_bool(false);
     };
-    let mut ext = native::SockoptCall {
-        socket,
-        op: 0,
-        level: level_int,
-        name: name_int,
-        value: call.return_value(),
-        address: ptr::null(),
-        index: 0,
-        result: 0,
-    };
     if level == i64::from(libc::IPPROTO_IP) && name == i64::from(libc::IP_MULTICAST_IF) {
         let mut address = libc::in_addr { s_addr: 0 };
         if getsockopt(fd, level_int, name_int, &mut address).is_none() {
             return failed();
         }
-        ext.op = 4;
-        ext.address = (&raw const address).cast();
-        return match sockopt(&mut ext) {
-            Some(0) => call.set_long(i64::from(ext.index)),
-            Some(_) => call.set_bool(false),
-            None => {}
+        return match multicast::interface_index(address) {
+            Ok(Some(index)) => call.set_long(i64::from(index)),
+            Ok(None) => call.set_bool(false),
+            Err(Stop) => {}
         };
     } else if level == i64::from(libc::IPPROTO_IPV6) {
-        match sockopt(&mut ext) {
-            Some(0) | None => return,
-            Some(-1) => return call.set_bool(false),
-            Some(_) => {}
+        match multicast::get_ipv6(socket, level_int, name_int, call.return_value()) {
+            Ok(0) | Err(Stop) => return,
+            Ok(-1) => return call.set_bool(false),
+            Ok(_) => {}
         }
     }
     if name == i64::from(libc::SO_LINGER) {
@@ -867,30 +842,14 @@ fn set_option(call: &Call) {
         reason = "upstream passes them as int"
     )]
     let (level_int, name_int) = (level as c_int, name as c_int);
-    let mut ext = native::SockoptCall {
-        socket,
-        op: 1,
-        level: level_int,
-        name: name_int,
-        value,
-        address: ptr::null(),
-        index: 0,
-        result: 0,
-    };
     let mut plain = false;
     if level == i64::from(libc::IPPROTO_IP) || level == i64::from(libc::IPPROTO_IPV6) {
-        let ipv6 = level == i64::from(libc::IPPROTO_IPV6);
-        ext.op = if ipv6 { 2 } else { 1 };
-        let Some(mut result) = sockopt(&mut ext) else {
-            return;
+        let result = if level == i64::from(libc::IPPROTO_IPV6) {
+            multicast::set_ipv6(socket, level_int, name_int, value)
+        } else {
+            multicast::set_ip(socket, level_int, name_int, value)
         };
-        if ipv6 && result == 1 {
-            ext.op = 3;
-            let Some(again) = sockopt(&mut ext) else {
-                return;
-            };
-            result = again;
-        }
+        let Ok(result) = result else { return };
         match result {
             1 => plain = true,
             0 => return call.set_bool(true),
