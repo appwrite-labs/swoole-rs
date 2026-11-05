@@ -1,4 +1,5 @@
-//! Event workers (`src/server/worker.cc`): signals, the event switch, start/stop
+//! Event workers (upstream's `src/server/worker.cc`; process.cc's `WorkerContext`):
+//! signals, the event switch, start/stop
 //! callbacks, the async stop and its exit wait, and the process-mode main loop.
 //! The context holds the server, the current worker and, per operation, the
 //! received event, reactor or exit status.
@@ -18,19 +19,20 @@ use super::ops::{
     OP_IS_EVENT_WORKER, OP_LISTEN_PIPE, OP_MAX_WAIT_TIME, OP_MODE, OP_ON_BEFORE_SHUTDOWN,
     OP_ON_BUFFER_EMPTY, OP_ON_BUFFER_FULL, OP_ON_CONNECT, OP_ON_FINISH, OP_ON_PIPE_MESSAGE,
     OP_ON_WORKER_ERROR, OP_ON_WORKER_EXIT, OP_ON_WORKER_START, OP_ON_WORKER_STOP,
-    OP_OTHER_PIPE_NONBLOCK, OP_POOL_RUNNING, OP_PORT_COUNT, OP_PORT_DEL, OP_PROTECT_SESSIONS,
-    OP_PUSH_STOP_MESSAGE, OP_REACTOR_DESTROYED, OP_REACTOR_ID, OP_REACTOR_IF_EXIT, OP_REACTOR_NUM,
-    OP_REACTOR_STOP, OP_REACTOR_TIMEOUT, OP_REACTOR_WAIT, OP_REACTOR_WAIT_EXIT, OP_RECV_CONN,
-    OP_RELOAD_ASYNC, OP_REOPEN_LOGGER, OP_RESET_WORKER_COUNTER, OP_ROOT_USER, OP_SEND_SHUTDOWN,
-    OP_SERVER_HOOK_WORKER_START, OP_SET_ISOLATION, OP_SET_REACTOR_TIMEOUT, OP_SIGNAL_LIVE,
-    OP_STOP_ASYNC, OP_STORE_CLIENT_CERT, OP_THREAD_SHUTDOWN, OP_UNLIMIT_PIPES,
-    OP_UNREAD_PIPE_MASTER, OP_UNREAD_PIPE_WORKER, OP_UNREAD_THREAD_PIPE, OP_WORKER_ENTER,
-    OP_WORKER_EXISTS, OP_WORKER_ID, OP_WORKER_NUM, OP_WORKER_SHUTDOWN, OP_WORKER_SIGNAL_INIT,
-    OP_WORKER_START_CALLBACK, OP_WORKER_STATUS, OP_WORKER_STOP_CALLBACK, OP_WORKER_STOPPED,
-    OP_WORKER_TYPE, RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_CALL_WORKER_START,
-    RUN_CALL_WORKER_STOP, RUN_CLEAN_CONNECTIONS, RUN_DRAIN_PIPES, RUN_KILL_WORKER,
-    RUN_PIPE_RECEIVE, RUN_SIGNAL_INIT, RUN_START_EVENT_WORKER, RUN_STOP_ASYNC, RUN_TRY_EXIT,
-    RUN_WORKER_SIGNAL, RUN_WORKER_START, STATUS_IDLE, TASK_PACKET, TASK_RECEIVE,
+    OP_OTHER_PIPE_NONBLOCK, OP_PIPE_EVENT_WRITE, OP_PIPE_SEND_SYNC, OP_POOL_RUNNING, OP_PORT_COUNT,
+    OP_PORT_DEL, OP_PROTECT_SESSIONS, OP_PUSH_STOP_MESSAGE, OP_REACTOR_DESTROYED, OP_REACTOR_ID,
+    OP_REACTOR_IF_EXIT, OP_REACTOR_NUM, OP_REACTOR_STOP, OP_REACTOR_TIMEOUT, OP_REACTOR_WAIT,
+    OP_REACTOR_WAIT_EXIT, OP_RECV_CONN, OP_RELOAD_ASYNC, OP_REOPEN_LOGGER, OP_RESET_WORKER_COUNTER,
+    OP_ROOT_USER, OP_SEND_SHUTDOWN, OP_SERVER_HOOK_WORKER_START, OP_SET_ISOLATION,
+    OP_SET_REACTOR_TIMEOUT, OP_SIGNAL_LIVE, OP_STOP_ASYNC, OP_STORE_CLIENT_CERT,
+    OP_THREAD_SHUTDOWN, OP_UNLIMIT_PIPES, OP_UNREAD_PIPE_MASTER, OP_UNREAD_PIPE_WORKER,
+    OP_UNREAD_THREAD_PIPE, OP_WORKER_ENTER, OP_WORKER_EXISTS, OP_WORKER_ID, OP_WORKER_NUM,
+    OP_WORKER_SHUTDOWN, OP_WORKER_SIGNAL_INIT, OP_WORKER_START_CALLBACK, OP_WORKER_STATUS,
+    OP_WORKER_STOP_CALLBACK, OP_WORKER_STOPPED, OP_WORKER_TYPE, RUN_ACCEPT_EVENT,
+    RUN_CALL_WORKER_ERROR, RUN_CALL_WORKER_START, RUN_CALL_WORKER_STOP, RUN_CLEAN_CONNECTIONS,
+    RUN_DRAIN_PIPES, RUN_KILL_WORKER, RUN_PIPE_RECEIVE, RUN_SEND_TO_REACTOR_THREAD,
+    RUN_SIGNAL_INIT, RUN_START_EVENT_WORKER, RUN_STOP_ASYNC, RUN_TRY_EXIT, RUN_WORKER_SIGNAL,
+    RUN_WORKER_START, STATUS_IDLE, TASK_PACKET, TASK_RECEIVE,
 };
 use super::{
     HANDLER_IGNORE, HANDLER_NONE, HANDLER_OWN, Host, MODE_BASE, MODE_PROCESS, MODE_THREAD,
@@ -72,6 +74,16 @@ pub(super) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         }
         RUN_CLEAN_CONNECTIONS => clean_connections(h),
         RUN_START_EVENT_WORKER => return start_event_worker(h),
+        // `Server::send_to_reactor_thread`: `arg` bytes of the event to the session's
+        // reactor pipe, through the event loop when there is one.
+        RUN_SEND_TO_REACTOR_THREAD => {
+            let op = if h.is(OP_EVENT_AVAILABLE) {
+                OP_PIPE_EVENT_WRITE
+            } else {
+                OP_PIPE_SEND_SYNC
+            };
+            return h.op(op, arg).cast_signed();
+        }
         _ => return SW_ERR,
     }
     SW_OK
@@ -392,6 +404,16 @@ mod tests {
 
     fn run_op(h: &mut Script, operation: u32, arg: u64) -> i64 {
         crate::workers::run(h, operation, arg)
+    }
+
+    #[test]
+    fn send_to_reactor_thread_writes_through_the_loop_when_there_is_one() {
+        for (available, write) in [(1, OP_PIPE_EVENT_WRITE), (0, OP_PIPE_SEND_SYNC)] {
+            let mut h = Script::with(&[(OP_EVENT_AVAILABLE, available), (write, 48)]);
+            assert_eq!(run_op(&mut h, RUN_SEND_TO_REACTOR_THREAD, 48), 48);
+            assert_eq!(h.args(write), [48]);
+            assert_eq!(h.log.len(), 2);
+        }
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Base-mode reactor processes (`src/server/reactor_process.cc`): every worker
+//! Base-mode reactor processes (upstream's `src/server/reactor_process.cc`;
+//! process.cc's `ReactorProcessContext`): every worker
 //! accepts, reads and runs callbacks itself. The context holds the server and,
 //! per operation, the pool, worker, reactor, event and connection.
 use super::ops::{

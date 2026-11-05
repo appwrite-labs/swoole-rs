@@ -15,7 +15,7 @@ int64_t swr_v1_workers_run(uint32_t operation, uint64_t arg, void *context, swr_
 void swr_v1_workers_set_factory_call(swr_v1_workers_call call);
 /* process.cc's workers_enter: builds the context of a Rust Server method's operation
  * (crates/process/src/workers/entry.rs) from its objects and runs the operation. */
-typedef int64_t (*swr_v1_workers_enter)(uint32_t operation, void *object, void *other, uint64_t arg);
+typedef int64_t (*swr_v1_workers_enter)(uint32_t operation, void *object, void *other, void *extra, uint64_t arg);
 void swr_v1_workers_set_enter(swr_v1_workers_enter enter);
 /* OP_SIGNAL_SET's argument: the signal number (-1 for SIGRTMIN) in the low word and
  * the handler in the high word: 0 none, 1 SIG_IGN, 2 `own`. Defined in worker.cc. */
@@ -88,6 +88,7 @@ void swr_v1_thread_manager_exited(const void *manager, void *worker);
 #define SWR_WORKERS_RUN_THREAD_BODY 50
 #define SWR_WORKERS_RUN_THREAD_MAIN 51
 #define SWR_WORKERS_RUN_THREAD_FACTORY_START 52
+#define SWR_WORKERS_RUN_SEND_TO_REACTOR_THREAD 53
 #define SWR_WORKERS_OP_BUS_READ 0
 #define SWR_WORKERS_OP_BUS_POP 1
 #define SWR_WORKERS_OP_ON_WORKER_ERROR 2
@@ -486,6 +487,8 @@ void swr_v1_thread_manager_exited(const void *manager, void *worker);
 #define SWR_WORKERS_LOG_MANAGER_ABNORMAL 400
 #define SWR_WORKERS_OP_CREATE_WORKER_PIPES 401
 #define SWR_WORKERS_OP_TASK_START_CHECK 402
+#define SWR_WORKERS_OP_PIPE_EVENT_WRITE 403
+#define SWR_WORKERS_OP_PIPE_SEND_SYNC 404
 /* END NUMBERED */
 #ifdef __cplusplus
 }
