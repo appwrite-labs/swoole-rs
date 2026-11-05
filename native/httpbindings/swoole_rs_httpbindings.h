@@ -352,7 +352,8 @@ typedef struct {
     bool coroutine;
 } swr_http_receive;
 void *swr_http_host_receive(void *server, int64_t session, int server_fd, swr_http_receive *out);
-void *swr_http_host_receive_context(void *server, int64_t session, void *request, struct _zval_struct **zdata);
+void *swr_http_host_receive_context(void *server, void *conn, int64_t session, void *request,
+                                    struct _zval_struct **zdata, swr_http_receive *out);
 uint8_t swr_http_host_before_request(void *context, void *conn);
 void *swr_http_host_callback(void *server, int server_fd, bool handshake);
 void swr_http_host_notice(const char *message);
