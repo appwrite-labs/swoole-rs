@@ -30,7 +30,10 @@ Rust owns the worker/PID registry, pool records and reload/IPC state. Shared
 worker, connection/session and counter storage remains in its original shared
 arena, with canonical Rust layouts and checked native views. Thread-local worker
 state has no TLS destructor; worker stop explicitly releases a detached copy.
-PID, worker ID, session ID and fd remain distinct identities.
+PID, worker ID, session ID and fd remain distinct identities. Worker direct
+public fields and `Worker::*` member-pointer types remain source-compatible
+with upstream; the native declarations expand canonical Rust record fields in
+the Worker class itself.
 
 Server command names, ids, accepted process types, handler slots and outstanding
 reply callbacks live in Rust tables. Native code constructs, invokes and destroys

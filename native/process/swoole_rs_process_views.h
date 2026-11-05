@@ -16,32 +16,31 @@ struct WorkerGlobalFields {
     Worker * worker_copy;
     time_t exit_time;
 };
-struct WorkerFields {
-    uint32_t : 32;
-    uint32_t : 32;
-    ProcessPool * pool;
-    MsgQueue * queue;
-    bool shared;
-    bool redirect_stdout;
-    bool redirect_stdin;
-    bool redirect_stderr;
-    uint8_t : 8;
-    uint8_t : 8;
-    uint8_t msgqueue_mode;
-    uint8_t child_process;
-    uint32_t concurrency;
-    time_t start_time;
-    sw_atomic_long_t dispatch_count;
-    sw_atomic_long_t request_count;
-    sw_atomic_long_t response_count;
-    size_t coroutine_num;
-    Mutex * lock;
-    UnixSocket * pipe_object;
-    network::Socket * pipe_master;
-    network::Socket * pipe_worker;
-    network::Socket * pipe_current;
+#define SWR_WORKER_RECORD_FIELDS \
+    int pid; \
+    uint32_t id; \
+    ProcessPool * pool; \
+    MsgQueue * queue; \
+    bool shared; \
+    bool redirect_stdout; \
+    bool redirect_stdin; \
+    bool redirect_stderr; \
+    uint8_t status; \
+    uint8_t type; \
+    uint8_t msgqueue_mode; \
+    uint8_t child_process; \
+    uint32_t concurrency; \
+    time_t start_time; \
+    sw_atomic_long_t dispatch_count; \
+    sw_atomic_long_t request_count; \
+    sw_atomic_long_t response_count; \
+    size_t coroutine_num; \
+    Mutex * lock; \
+    UnixSocket * pipe_object; \
+    network::Socket * pipe_master; \
+    network::Socket * pipe_worker; \
+    network::Socket * pipe_current; \
     void * ptr;
-};
 struct PoolFields {
     bool running;
     bool reload_init;

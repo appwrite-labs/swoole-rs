@@ -12,15 +12,13 @@ text='#ifndef SWR_PROCESS_NATIVE_VIEW_CONTEXT\n#include "swoole_process_pool.h"\
 for record,file,view in [('WorkerGlobalRecord','worker_globals','WorkerGlobalFields'),('WorkerRecord','worker_record','WorkerFields'),('PoolRecord','process_pool','PoolFields')]:
  s=Path('crates/process/src/'+file+'.rs').read_text().split('pub struct '+record+' {',1)[1].split('\n}',1)[0]
  fields=re.findall(r'^    (?:pub )?(\w+): ([^,]+),',s,re.M)
- text+='struct '+view+' {\n'
+ text+=('#define SWR_WORKER_RECORD_FIELDS '+chr(92)+chr(10) if record=='WorkerRecord' else 'struct '+view+' {'+chr(10))
  for name,ty in fields:
-  if record=='WorkerRecord' and name in ['pid','id','status','kind']:
-   text+=('    uint32_t : 32;\n' if name in ['pid','id'] else '    uint8_t : 8;\n');continue
   if name in callbacks:decl=callbacks[name]
-  else:decl=refinements.get(name,types.get(ty,ty))+' '+(renames.get(name,name) if record in {'PoolRecord','WorkerGlobalRecord'} else name)
+  else:decl=refinements.get(name,types.get(ty,ty))+' '+renames.get(name,name)
   if record=='PoolRecord' and name in ['message_box','message_bus','reload_task']:decl+=' = nullptr'
-  text+='    '+decl+';\n'
- text+='};\n'
+  text+='    '+decl+';'+(' '+chr(92)+chr(10) if record=='WorkerRecord' and name!=fields[-1][0] else chr(10))
+ if record!='WorkerRecord':text+='};\n'
 text += '#endif\n#endif\n'
 output = Path('native/process/swoole_rs_process_views.h')
 parser = argparse.ArgumentParser(description=__doc__)
