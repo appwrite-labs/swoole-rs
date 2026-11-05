@@ -113,6 +113,8 @@ enum Mode {
 
 pub struct Buffer {
     entries: VecDeque<Entry>,
+    recycled: Vec<Vec<u8>>,
+    recycled_bytes: usize,
     chunk_size: u32,
     length: u32,
     mode: Mode,
@@ -140,6 +142,8 @@ impl Buffer {
         unsafe {
             handle.write(Self {
                 entries: VecDeque::new(),
+                recycled: Vec::new(),
+                recycled_bytes: 0,
                 chunk_size: if chunk_size == 0 {
                     i32::MAX as u32
                 } else {
@@ -151,6 +155,34 @@ impl Buffer {
         };
         // SAFETY: a global allocation with `Box`'s layout, initialized above.
         Ok(unsafe { Box::from_raw(handle) })
+    }
+
+    // Limit idle retention to 64 KiB and 64 descriptors per queue. Recycling is
+    // best-effort and cannot make detach fail or invoke a native disposer.
+    fn recycle(&mut self, mut bytes: Vec<u8>) {
+        if self.recycled.len() == self.recycled.capacity()
+            || bytes.capacity() > 65536 - self.recycled_bytes
+            || self.recycled.len() == 64
+        {
+            return;
+        }
+        self.recycled_bytes += bytes.capacity();
+        bytes.clear();
+        self.recycled.push(bytes);
+    }
+    fn block(&mut self, size: usize) -> Result<Vec<u8>, i32> {
+        if let Some(index) = self
+            .recycled
+            .iter()
+            .rposition(|bytes| bytes.capacity() >= size)
+        {
+            let bytes = self.recycled.swap_remove(index);
+            self.recycled_bytes -= bytes.capacity();
+            return Ok(bytes);
+        }
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(size).map_err(|_| NOMEM)?;
+        Ok(bytes)
     }
 
     fn front_view(&self) -> Option<BufferView> {
@@ -169,6 +201,7 @@ impl Buffer {
         let token = match entry {
             Entry::Data(bytes) => {
                 self.length -= chunk_length(&bytes);
+                self.recycle(bytes);
                 ptr::null_mut()
             }
             Entry::Native(token) => token,
@@ -221,6 +254,7 @@ impl Buffer {
         if !slice_fits::<Entry>(new_count) || !slice_fits::<u8>(remaining.min(chunk_size)) {
             return OVERFLOW;
         }
+        let repeated = self.entries.capacity() != 0;
         let old_count = self.entries.len();
         if self.entries.try_reserve(chunks).is_err() {
             return NOMEM;
@@ -234,11 +268,13 @@ impl Buffer {
         let mut left = remaining;
         while left != 0 {
             let size = left.min(chunk_size);
-            let mut bytes: Vec<u8> = Vec::new();
-            if bytes.try_reserve_exact(size).is_err() {
-                self.entries.truncate(old_count);
-                return NOMEM;
-            }
+            let mut bytes = match self.block(size) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.entries.truncate(old_count);
+                    return error;
+                }
+            };
             let mut filled = 0;
             while filled < size {
                 let part = &iov[index];
@@ -268,6 +304,11 @@ impl Buffer {
             left -= size;
         }
         self.length = new_length;
+        // Optional cache admission follows successful payload publication. It
+        // cannot change append success or make detach allocate.
+        if repeated && self.recycled.capacity() == 0 {
+            self.recycled.try_reserve(chunks.min(64)).unwrap_or(());
+        }
         OK
     }
 }
@@ -657,7 +698,7 @@ mod tests {
 
     // Failure injection affects this test thread only, including actual Vec and
     // VecDeque allocation paths. Production has no allocator wrapper or state.
-    thread_local! { static FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) }; }
+    thread_local! { pub(super) static FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) }; }
     struct FailAllocator;
     fn fail_allocation() -> bool {
         FAIL_AFTER
@@ -757,17 +798,17 @@ mod tests {
         }
     }
 
-    struct Owned(*mut Buffer);
+    pub(super) struct Owned(pub(super) *mut Buffer);
     impl Owned {
-        fn new(size: u32) -> Self {
+        pub(super) fn new(size: u32) -> Self {
             let mut buffer = ptr::null_mut();
             assert_eq!(unsafe { swr_v1_buffer_create(size, &raw mut buffer) }, OK);
             Self(buffer)
         }
-        fn append(&self, bytes: &[u8]) -> i32 {
+        pub(super) fn append(&self, bytes: &[u8]) -> i32 {
             unsafe { swr_v1_buffer_append(self.0, bytes.as_ptr(), bytes.len()) }
         }
-        fn stats(&self) -> (u32, usize) {
+        pub(super) fn stats(&self) -> (u32, usize) {
             let (mut length, mut count) = (0, 0);
             assert_eq!(
                 unsafe { swr_v1_buffer_stats(self.0, &raw mut length, &raw mut count) },
@@ -775,12 +816,12 @@ mod tests {
             );
             (length, count)
         }
-        fn view(&self) -> BufferView {
+        pub(super) fn view(&self) -> BufferView {
             let mut view = BufferView::ZERO;
             assert_eq!(unsafe { swr_v1_buffer_front(self.0, &raw mut view) }, OK);
             view
         }
-        fn pop(&self) -> *mut c_void {
+        pub(super) fn pop(&self) -> *mut c_void {
             let mut token = ptr::null_mut();
             assert_eq!(unsafe { swr_v1_buffer_pop(self.0, &raw mut token) }, OK);
             token
@@ -1158,6 +1199,12 @@ mod tests {
             assert_eq!(unsafe { swr_v1_buffer_push_native(buffer.0, token) }, OK);
             assert_eq!(buffer.append(b"old"), OK);
             assert!(!unsafe { &*buffer.0 }.entries.as_slices().1.is_empty());
+            // Keep the cold-allocation sweep visiting every payload allocation;
+            // warm-cache behavior is exercised separately.
+            unsafe {
+                (*buffer.0).recycled.clear();
+                (*buffer.0).recycled_bytes = 0;
+            }
             let before = buffer.stats();
             let front = buffer.view();
             FAIL_AFTER.set(Some(nth));
@@ -1198,3 +1245,7 @@ mod tests {
 }
 
 pub mod string;
+
+#[cfg(test)]
+#[path = "../../../tests/modules/buffer/recycling.rs"]
+mod recycling_tests;
