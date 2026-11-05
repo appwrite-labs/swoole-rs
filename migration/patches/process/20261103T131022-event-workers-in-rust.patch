@@ -1,8 +1,8 @@
 diff --git a/include/swoole_server.h b/include/swoole_server.h
-index 233097a..fb595fe 100644
+index 8e591b5..0250b94 100644
 --- a/include/swoole_server.h
 +++ b/include/swoole_server.h
-@@ -488,2 +488,6 @@ enum ServerEventType {
+@@ -453,2 +453,6 @@ enum ServerEventType {
  class Server : public detail::ServerFields {
 +    // The native halves of crates/process/src/workers, one per source file.
 +    template <int>

@@ -98,6 +98,14 @@ typedef struct {
 } swr_v1_http_conditional_state;
 const char *swr_v1_http_date_format(uint32_t);
 int32_t swr_v1_http_conditional(swr_v1_http_conditional_state *);
+typedef struct {
+    size_t tm_size, tm_align;
+    bool (*parse)(const char *, const char *, void *);
+    int64_t (*to_time)(void *);
+    void *(*to_gmt)(int64_t);
+} swr_v3_http_calendar;
+int32_t swr_v3_http_conditional(const char *, size_t, uint32_t, const int64_t *, const long *, const swr_v3_http_calendar *);
+size_t swr_v3_http_date(const int64_t *, uint8_t *, size_t);
 enum swr_v1_http_path_action {
     SWR_HTTP_PATH_SKIP=0, SWR_HTTP_PATH_SERVE=1, SWR_HTTP_PATH_LOCATIONS=2,
     SWR_HTTP_PATH_DIRECTORY=3, SWR_HTTP_PATH_STAT=4, SWR_HTTP_PATH_CANONICAL=5,

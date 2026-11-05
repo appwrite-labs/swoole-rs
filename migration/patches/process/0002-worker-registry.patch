@@ -1,15 +1,8 @@
 diff --git a/src/server/manager.cc b/src/server/manager.cc
-index 7b493ce..40c8f31 100644
+index feb970c..3334932 100644
 --- a/src/server/manager.cc
 +++ b/src/server/manager.cc
-@@ -192,2 +192,6 @@ void Manager::wait(Server *_server) {
-                 _server->detached_processes.insert(worker_stop_msg.pid);
-+                // The detached pid keeps living under its old pid; drop it from the
-+                // lookup so get_worker_by_pid no longer resolves it to the reused slot.
-+                swr_v1_process_worker_registry_unregister(
-+                    static_cast<swr_v1_process_worker_registry *>(_server->worker_registry), worker_stop_msg.pid);
-             }
-@@ -403,2 +407,6 @@ pid_t Server::restart_worker_process(const ExitStatus &exit_status) {
+@@ -401,2 +401,6 @@ pid_t Server::restart_worker_process(const ExitStatus &exit_status) {
  
 +    // Drop the stale pid; the respawn below registers the new one.
 +    swr_v1_process_worker_registry_unregister(
@@ -17,7 +10,7 @@ index 7b493ce..40c8f31 100644
 +
      factory_->check_worker_exit_status(exited_worker, exit_status);
 diff --git a/src/server/process.cc b/src/server/process.cc
-index 7b91acd..326096a 100644
+index dd57866..3a89539 100644
 --- a/src/server/process.cc
 +++ b/src/server/process.cc
 @@ -17,2 +17,3 @@
@@ -32,15 +25,7 @@ index 7b91acd..326096a 100644
 +}
 +
  using network::Socket;
-@@ -135,2 +141,3 @@ pid_t Factory::spawn_event_worker(Worker *worker) const {
+@@ -128,2 +134,3 @@ pid_t Factory::spawn_event_worker(Worker *worker) const {
          worker->pid = pid;
-+        swr_v1_process_worker_registry_register(worker_registry_of(server_), pid, worker);
-         return pid;
-@@ -153,2 +160,3 @@ pid_t Factory::spawn_user_worker(Worker *worker) const {
-         server_->user_worker_map.erase(worker->pid);
-+        swr_v1_process_worker_registry_unregister(worker_registry_of(server_), worker->pid);
-     }
-@@ -176,2 +184,3 @@ pid_t Factory::spawn_user_worker(Worker *worker) const {
-         server_->user_worker_map.emplace(pid, worker);
 +        swr_v1_process_worker_registry_register(worker_registry_of(server_), pid, worker);
          return pid;

@@ -1,8 +1,8 @@
 diff --git a/include/swoole_server.h b/include/swoole_server.h
-index b643e34..89fd665 100644
+index 9e22c4b..0cd05ab 100644
 --- a/include/swoole_server.h
 +++ b/include/swoole_server.h
-@@ -408,23 +408,8 @@ class ProcessFactory : public Factory {
+@@ -373,23 +373,8 @@ class ProcessFactory : public Factory {
  
 -struct ThreadReloadTask {
 -    Server *server_;
@@ -30,7 +30,7 @@ index b643e34..89fd665 100644
 +    // The manager thread's state (crates/process/src/workers/thread.rs).
 +    void *manager_;
      void at_thread_enter(WorkerId id, int process_type);
-@@ -433,4 +418,2 @@ class ThreadFactory : public BaseFactory {
+@@ -398,4 +383,2 @@ class ThreadFactory : public BaseFactory {
      void destroy_message_bus();
 -    void do_reload();
 -    void push_to_wait_queue(Worker *worker);

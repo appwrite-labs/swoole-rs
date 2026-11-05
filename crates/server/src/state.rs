@@ -75,10 +75,14 @@ impl ServerState {
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
     let state = ServerState::new();
-    state.config.store(
-        Box::into_raw(Box::new(crate::config::ServerConfig::default())),
-        Ordering::Relaxed,
-    );
+    let config = crate::config::ServerConfig {
+        worker_registry: swoole_rs_corebase::worker_registry::swr_v1_process_worker_registry_new()
+            .cast(),
+        ..crate::config::ServerConfig::default()
+    };
+    state
+        .config
+        .store(Box::into_raw(Box::new(config)), Ordering::Relaxed);
     state.tables.store(
         Box::into_raw(Box::new(crate::records::ServerTables::default())),
         Ordering::Relaxed,

@@ -1,5 +1,5 @@
 diff --git a/ext-src/swoole_admin_server.cc b/ext-src/swoole_admin_server.cc
-index 8e3510f..f9cd7fc 100644
+index 0446c11..3591f36 100644
 --- a/ext-src/swoole_admin_server.cc
 +++ b/ext-src/swoole_admin_server.cc
 @@ -80,3 +80,3 @@ static void admin_connections(Server *serv, std::vector<void *> &list) {
@@ -110,7 +110,7 @@ index 6439612..8f925a9 100644
 +        ZVAL_LONG(&args[1], worker->get_id());
          ZVAL_LONG(&args[2], exit_status.get_pid());
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index 3ed87ec..6388eb1 100644
+index 2436314..a3670a8 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -149,7 +149,7 @@ struct WorkerGlobal {
@@ -138,7 +138,7 @@ index 3ed87ec..6388eb1 100644
 +    }
  };
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index 65a4afd..b39fe68 100644
+index 9c9c117..22fc05b 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
 @@ -237,3 +237,3 @@ int ProcessPool::start_check() {
@@ -206,27 +206,27 @@ index 65a4afd..b39fe68 100644
 -            swoole_sys_warning("[Worker #%d]failed to read data from pipe", worker->id);
 +            swoole_sys_warning("[Worker #%d]failed to read data from pipe", worker->get_id());
              worker->shutdown();
-@@ -849,3 +849,3 @@ void ProcessPool::set_start_id(int _start_id) {
+@@ -845,3 +845,3 @@ void ProcessPool::set_start_id(int _start_id) {
      for (uint32_t i = 0; i < worker_num; i++) {
 -        workers[i].id = start_id + i;
 +        workers[i].set_id(start_id + i);
      }
-@@ -876,3 +876,3 @@ bool ProcessPool::detach() {
+@@ -872,3 +872,3 @@ bool ProcessPool::detach() {
      msg.pid = worker->get_pid();
 -    msg.worker_id = worker->id;
 +    msg.worker_id = worker->get_id();
      if (push_message(SW_WORKER_MESSAGE_STOP, &msg, sizeof(msg)) < 0) {
-@@ -1113,3 +1113,3 @@ ssize_t Worker::send_pipe_message(const void *buf, size_t n, int flags) const {
+@@ -1107,3 +1107,3 @@ ssize_t Worker::send_pipe_message(const void *buf, size_t n, int flags) const {
  
 -        msg.mtype = id + 1;
 +        msg.mtype = get_id() + 1;
          memcpy(&msg.buf, buf, n);
-@@ -1132,3 +1132,3 @@ void Worker::report_error(const ExitStatus &exit_status) const {
+@@ -1126,3 +1126,3 @@ void Worker::report_error(const ExitStatus &exit_status) const {
                     exit_status.get_pid(),
 -                   id,
 +                   get_id(),
                     exit_status.get_code(),
-@@ -1177,5 +1177,5 @@ void ReloadTask::kill_all(int signal_number) {
+@@ -1171,5 +1171,5 @@ void ReloadTask::kill_all(int signal_number) {
          } else if (action == 2) {
 -            swoole_sys_warning("failed to kill(%d, SIGTERM) worker#[%d]", kv.first, kv.second->id);
 +            swoole_sys_warning("failed to kill(%d, SIGTERM) worker#[%d]", kv.first, kv.second->get_id());
@@ -234,31 +234,31 @@ index 65a4afd..b39fe68 100644
 -            swoole_warning("force kill worker process(pid=%d, id=%d)", kv.first, kv.second->id);
 +            swoole_warning("force kill worker process(pid=%d, id=%d)", kv.first, kv.second->get_id());
          }
-@@ -1201,3 +1201,3 @@ void ReloadTask::kill_one(int signal_number) {
+@@ -1195,3 +1195,3 @@ void ReloadTask::kill_one(int signal_number) {
          } else if (action == 2) {
 -            swoole_sys_warning("kill(%d, SIGTERM) [%d] failed", pid, iter->second->id);
 +            swoole_sys_warning("kill(%d, SIGTERM) [%d] failed", pid, iter->second->get_id());
          }
 diff --git a/src/server/master.cc b/src/server/master.cc
-index da79734..fbe22cf 100644
+index 0245871..bd3d836 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -328,3 +328,3 @@ int Server::start() {
+@@ -325,3 +325,3 @@ int Server::start() {
          pool->workers[i].pool = pool;
 -        pool->workers[i].id = i;
 +        pool->workers[i].set_id(i);
          pool->workers[i].set_type(SW_WORKER);
-@@ -335,3 +335,3 @@ int Server::start() {
+@@ -332,3 +332,3 @@ int Server::start() {
          for (auto worker : user_worker_list) {
 -            worker->id = worker_num + task_worker_num + i;
 +            worker->set_id(worker_num + task_worker_num + i);
              i++;
-@@ -545,3 +545,3 @@ bool Server::command(WorkerId process_id,
+@@ -504,3 +504,3 @@ bool Server::command(WorkerId process_id,
          return false;
 -    } else if (is_base_mode() && sw_worker()->id != 0) {
 +    } else if (is_base_mode() && sw_worker()->get_id() != 0) {
          swoole_error_log(SW_LOG_NOTICE, SW_ERROR_INVALID_PARAMS, "command() can only be used in worker process 0");
-@@ -769,5 +769,5 @@ int Server::add_worker(Worker *worker) {
+@@ -732,5 +732,5 @@ int Server::add_worker(Worker *worker) {
      user_worker_list.push_back(worker);
 -    worker->id = user_worker_list.size() - 1;
 +    worker->set_id(user_worker_list.size() - 1);
@@ -266,13 +266,13 @@ index da79734..fbe22cf 100644
 -    return worker->id;
 +    return worker->get_id();
  }
-@@ -835,3 +835,3 @@ void Server::abort_worker(Worker *worker) const {
+@@ -806,3 +806,3 @@ void Server::abort_worker(Worker *worker) const {
              Session *session = get_session(i);
 -            if (session->reactor_id == worker->id) {
 +            if (session->reactor_id == worker->get_id()) {
                  session->fd = 0;
 diff --git a/src/server/process.cc b/src/server/process.cc
-index 529fd05..693a4db 100644
+index fc7dcaa..ae1db20 100644
 --- a/src/server/process.cc
 +++ b/src/server/process.cc
 @@ -26,7 +26,7 @@ namespace swoole {
@@ -288,26 +288,21 @@ index 529fd05..693a4db 100644
 +// msgqueue_mode offsets bracket every reserved field, so layout drift still fails the build.
 +static_assert(offsetof(Worker, pool) == offsetof(swr_v1_worker_record, pool), "Worker.pool drift");
  static_assert(offsetof(Worker, msgqueue_mode) == offsetof(swr_v1_worker_record, msgqueue_mode),
-@@ -112,3 +112,3 @@ void Factory::kill_task_workers() const {
+@@ -117,3 +117,3 @@ void Factory::kill_task_workers() const {
      SW_LOOP_N(server_->task_worker_num) {
 -        swoole_trace_log(SW_TRACE_SERVER, "wait worker#%d[pid=%d]", pool->workers[i].id, pool->workers[i].get_pid());
 +        swoole_trace_log(SW_TRACE_SERVER, "wait worker#%d[pid=%d]", pool->workers[i].get_id(), pool->workers[i].get_pid());
          if (swoole_waitpid(pool->workers[i].get_pid(), &status, 0) < 0) {
-@@ -127,3 +127,3 @@ pid_t Factory::spawn_event_worker(Worker *worker) const {
+@@ -132,3 +132,3 @@ pid_t Factory::spawn_event_worker(Worker *worker) const {
          worker->set_pid(getpid());
 -        swoole_set_worker_id(worker->id);
 +        swoole_set_worker_id(worker->get_id());
          swoole_set_worker_pid(worker->get_pid());
-@@ -162,3 +162,3 @@ pid_t Factory::spawn_user_worker(Worker *worker) const {
+@@ -166,3 +166,3 @@ pid_t Factory::spawn_user_worker(Worker *worker) const {
          swoole_set_worker_type(SW_USER_WORKER);
 -        swoole_set_worker_id(worker->id);
 +        swoole_set_worker_id(worker->get_id());
          swoole_set_worker_pid(worker->get_pid());
-@@ -175,3 +175,3 @@ pid_t Factory::spawn_user_worker(Worker *worker) const {
-         worker->set_pid(pid);
--        server_->get_worker(worker->id)->set_pid(pid);
-+        server_->get_worker(worker->get_id())->set_pid(pid);
-         server_->user_worker_map.emplace(pid, worker);
 diff --git a/src/server/reactor_process.cc b/src/server/reactor_process.cc
 index 0a4316b..38529a0 100644
 --- a/src/server/reactor_process.cc
@@ -353,7 +348,7 @@ index 0a4316b..38529a0 100644
 +        hook_args[1] = (void *) (uintptr_t) worker->get_id();
          serv->call_hook(HOOK_WORKER_CLOSE, hook_args);
 diff --git a/src/server/task_worker.cc b/src/server/task_worker.cc
-index 7377762..1692cb2 100644
+index a87d464..9fb7776 100644
 --- a/src/server/task_worker.cc
 +++ b/src/server/task_worker.cc
 @@ -83,3 +83,3 @@ static int TaskWorker_call_command_handler(const ProcessPool *pool, const Worker

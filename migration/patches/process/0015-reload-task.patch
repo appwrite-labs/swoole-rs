@@ -1,5 +1,5 @@
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index 6388eb1..5efbcf9 100644
+index a3670a8..841f286 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -35,3 +35,2 @@
@@ -37,39 +37,40 @@ index 6388eb1..5efbcf9 100644
 +// Reports a reload kill (SWR_RELOAD_WARN_*) with the failed kill's errno still set.
 +void reload_warn(int kind, int pid, uint32_t worker_id);
  
-@@ -358,3 +333,3 @@ struct ProcessPool {
-     std::vector<std::shared_ptr<UnixSocket>> *pipes;
--    std::unordered_map<pid_t, Worker *> *map_;
-+    swr_v1_process_worker_registry *registry_;
-     MsgQueue *queue;
 @@ -363,3 +338,3 @@ struct ProcessPool {
      MessageBus *message_bus = nullptr;
 -    ReloadTask *reload_task = nullptr;
 +    swr_v1_process_reload_task *reload_task = nullptr;
  
-@@ -436,2 +411,3 @@ struct ProcessPool {
+@@ -393,3 +368,4 @@ struct ProcessPool {
+      * SW_PROTOCOL_TASK
+-     * ===========================================================     * The `EventData` structure must be sent as a single message and cannot be split into multiple transmissions.
++     * ==================================================================
++     * The `EventData` structure must be sent as a single message and cannot be split into multiple transmissions.
+      * If the length of the message content exceeds the size limit of the data field in EventData,
+@@ -402,3 +378,4 @@ struct ProcessPool {
+      * SW_PROTOCOL_MESSAGE
+-     * ===========================================================     * When sending the `EventData` structure, the message can be split into multiple transmissions.
++     * ==================================================================
++     * When sending the `EventData` structure, the message can be split into multiple transmissions.
+      * When sending data in multiple parts, you must set a unique `info.msg_id`.
+@@ -412,3 +389,4 @@ struct ProcessPool {
+      * SW_PROTOCOL_STREAM
+-     * ===========================================================     *  +-------------------------------+-------------------------------+
++     * ==================================================================
++     *  +-------------------------------+-------------------------------+
+      *  | Payload Length     ( 4 byte, network byte order)              |
+@@ -433,2 +411,3 @@ struct ProcessPool {
      bool reload();
 +    void drop_reload_task();
      void reopen_logger();
-@@ -474,4 +450,2 @@ struct ProcessPool {
+@@ -471,4 +450,2 @@ struct ProcessPool {
      void at_worker_exit(Worker *worker);
 -
 -    bool wait_detached_worker(std::unordered_set<pid_t> &detached_workers, pid_t pid);
  };
-diff --git a/include/swoole_server.h b/include/swoole_server.h
-index d836f52..31fec33 100644
---- a/include/swoole_server.h
-+++ b/include/swoole_server.h
-@@ -714,7 +714,2 @@ class Server : public detail::ServerFields {
-     std::unordered_map<pid_t, Worker *> user_worker_map;
--    /**
--     * When asynchronous restart is enabled, the old worker process will be detached first, and a new worker process
--     * will be created immediately. The old process will live and die by itself
--     */
--    std::unordered_set<pid_t> detached_processes;
- 
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index b39fe68..a788be5 100644
+index 22fc05b..cec0100 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
 @@ -49,2 +49,12 @@ static inline swReturnCode catch_system_error(int error) {
@@ -85,11 +86,6 @@ index b39fe68..a788be5 100644
 +}
 +
  static inline void worker_end_callback() {
-@@ -109,3 +119,3 @@ int ProcessPool::create(uint32_t _worker_num, key_t _msgqueue_key, swIPCMode _ip
- 
--    map_ = new std::unordered_map<pid_t, Worker *>;
-+    registry_ = swr_v1_process_worker_registry_new();
-     ipc_mode = _ipc_mode;
 @@ -416,2 +426,9 @@ swResultCode ProcessPool::dispatch_sync(EventData *data, int *dst_worker_id) {
  
 +void ProcessPool::drop_reload_task() {
@@ -114,37 +110,7 @@ index b39fe68..a788be5 100644
 +                swr_v1_process_reload_task_set_timer(task, nullptr);
 +            }, reload_task));
      }
-@@ -479,3 +502,3 @@ bool ProcessPool::shutdown() {
- pid_t ProcessPool::spawn(Worker *worker) {
--    map_->erase(worker->get_pid());
-+    swr_v1_process_worker_registry_unregister(registry_, worker->get_pid());
-     pid_t pid = swoole_fork(0);
-@@ -508,4 +531,3 @@ pid_t ProcessPool::spawn(Worker *worker) {
-         worker->set_pid(pid);
--        // insert new process
--        map_->emplace(std::make_pair(pid, worker));
-+        add_worker(worker);
-     }
-@@ -824,3 +846,3 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
- void ProcessPool::add_worker(Worker *worker) const {
--    map_->emplace(worker->get_pid(), worker);
-+    swr_v1_process_worker_registry_register(registry_, worker->get_pid(), worker, 0);
- }
-@@ -828,3 +850,3 @@ void ProcessPool::add_worker(Worker *worker) const {
- bool ProcessPool::del_worker(const Worker *worker) const {
--    return map_->erase(worker->get_pid()) > 0;
-+    return swr_v1_process_worker_registry_unregister(registry_, worker->get_pid());
- }
-@@ -832,7 +854,3 @@ bool ProcessPool::del_worker(const Worker *worker) const {
- Worker *ProcessPool::get_worker_by_pid(pid_t pid) const {
--    const auto iter = map_->find(pid);
--    if (iter == map_->end()) {
--        return nullptr;
--    }
--    return iter->second;
-+    return registry_ ? static_cast<Worker *>(swr_v1_process_worker_registry_lookup(registry_, pid)) : nullptr;
- }
-@@ -853,12 +871,2 @@ void ProcessPool::set_start_id(int _start_id) {
+@@ -849,12 +872,2 @@ void ProcessPool::set_start_id(int _start_id) {
  
 -bool ProcessPool::wait_detached_worker(std::unordered_set<pid_t> &detached_workers, pid_t pid) {
 -    auto iter = detached_workers.find(pid);
@@ -157,38 +123,18 @@ index b39fe68..a788be5 100644
 -}
 -
  bool ProcessPool::detach() {
-@@ -887,4 +895,2 @@ bool ProcessPool::detach() {
- int ProcessPool::wait() {
--    std::unordered_set<pid_t> detached_workers;
--
-     while (running) {
-@@ -917,4 +923,3 @@ int ProcessPool::wait() {
-                 spawn(exit_worker);
--                detached_workers.insert(worker_stop_msg.pid);
--                map_->erase(worker_stop_msg.pid);
-+                swr_v1_process_worker_registry_detach(registry_, worker_stop_msg.pid);
-             }
-@@ -938,3 +943,4 @@ int ProcessPool::wait() {
+@@ -932,3 +945,4 @@ int ProcessPool::wait() {
                  reload_init = false;
 -                reload_task->add_workers(workers, worker_num);
 +                swr_v1_process_reload_task_add_workers(
 +                    reload_task, reinterpret_cast<swr_v1_worker_record *>(workers), worker_num);
                  goto _kill_worker;
-@@ -948,4 +954,4 @@ int ProcessPool::wait() {
-                     onWorkerNotFound(this, exit_status);
--                } else {
--                    wait_detached_worker(detached_workers, exit_status.get_pid());
-+                } else if (!swr_v1_process_worker_registry_reap_detached(registry_, exit_status.get_pid())) {
-+                    swoole_warning("received an exit signal from an unknown child process[pid=%d]", exit_status.get_pid());
-                 }
-@@ -962,5 +968,4 @@ int ProcessPool::wait() {
-             spawn(exit_worker);
--            map_->erase(exit_status.get_pid());
+@@ -960,3 +974,3 @@ int ProcessPool::wait() {
              if (reload_task) {
 -                reload_task->remove(exit_status.get_pid());
 +                swr_v1_process_reload_task_remove(reload_task, exit_status.get_pid());
              }
-@@ -970,5 +975,4 @@ int ProcessPool::wait() {
+@@ -966,5 +980,4 @@ int ProcessPool::wait() {
          if (reload_task && !reload_init) {
 -            if (reload_task->is_completed()) {
 -                delete reload_task;
@@ -196,26 +142,17 @@ index b39fe68..a788be5 100644
 +            if (swr_v1_process_reload_task_completed(reload_task)) {
 +                drop_reload_task();
                  if (onAfterReload) {
-@@ -978,3 +982,3 @@ int ProcessPool::wait() {
+@@ -974,3 +987,3 @@ int ProcessPool::wait() {
              _kill_worker:
 -                reload_task->kill_one();
 +                swr_v1_process_reload_task_kill_one(reload_task, SIGTERM, reload_warn);
              }
-@@ -988,3 +992,3 @@ int ProcessPool::wait() {
+@@ -984,3 +997,3 @@ int ProcessPool::wait() {
  
 -    delete reload_task;
 +    drop_reload_task();
  
-@@ -1047,6 +1051,4 @@ void ProcessPool::destroy() {
- 
--    if (map_) {
--        delete map_;
--        map_ = nullptr;
--    }
-+    swr_v1_process_worker_registry_free(registry_);
-+    registry_ = nullptr;
- 
-@@ -1138,76 +1140,2 @@ void Worker::report_error(const ExitStatus &exit_status) const {
+@@ -1132,76 +1145,2 @@ void Worker::report_error(const ExitStatus &exit_status) const {
  
 -void ReloadTask::add_workers(Worker *list, size_t n) {
 -    SW_LOOP_N(n) {
@@ -293,7 +230,7 @@ index b39fe68..a788be5 100644
 -}
  }  // namespace swoole
 diff --git a/src/server/manager.cc b/src/server/manager.cc
-index 27b9263..1b4c8c9 100644
+index cbfdee4..995b69a 100644
 --- a/src/server/manager.cc
 +++ b/src/server/manager.cc
 @@ -24,4 +24,2 @@
@@ -301,15 +238,7 @@ index 27b9263..1b4c8c9 100644
 -#include <unordered_map>
 -#include <unordered_set>
  #include <vector>
-@@ -191,6 +189,3 @@ void Manager::wait(Server *_server) {
-                 }
--                _server->detached_processes.insert(worker_stop_msg.pid);
--                // The detached pid keeps living under its old pid; drop it from the
--                // lookup so get_worker_by_pid no longer resolves it to the reused slot.
--                swr_v1_process_worker_registry_unregister(
-+                swr_v1_process_worker_registry_detach(
-                     static_cast<swr_v1_process_worker_registry *>(_server->worker_registry), worker_stop_msg.pid);
-@@ -223,5 +218,9 @@ void Manager::wait(Server *_server) {
+@@ -219,5 +217,9 @@ void Manager::wait(Server *_server) {
                  auto reload_task = pool->reload_task;
 -                reload_task->add_workers(_server->workers, _server->worker_num);
 +                swr_v1_process_reload_task_add_workers(
@@ -321,12 +250,12 @@ index 27b9263..1b4c8c9 100644
 +                        reinterpret_cast<swr_v1_worker_record *>(_server->get_task_worker_pool()->workers),
 +                        _server->task_worker_num);
                  }
-@@ -237,3 +236,3 @@ void Manager::wait(Server *_server) {
+@@ -233,3 +235,3 @@ void Manager::wait(Server *_server) {
                  if (_server->reload_async) {
 -                    reload_task->kill_all(SIGTERM);
 +                    swr_v1_process_reload_task_kill_all(reload_task, SIGTERM, reload_warn);
                  } else {
-@@ -251,4 +250,6 @@ void Manager::wait(Server *_server) {
+@@ -247,4 +249,6 @@ void Manager::wait(Server *_server) {
                  }
 -                auto reload_task = pool->reload_task;
 -                reload_task->add_workers(_server->get_task_worker_pool()->workers, _server->task_worker_num);
@@ -335,12 +264,12 @@ index 27b9263..1b4c8c9 100644
 +                    reinterpret_cast<swr_v1_worker_record *>(_server->get_task_worker_pool()->workers),
 +                    _server->task_worker_num);
                  goto _kill_worker;
-@@ -270,3 +271,3 @@ void Manager::wait(Server *_server) {
+@@ -266,3 +270,3 @@ void Manager::wait(Server *_server) {
              if (pool->reload_task) {
 -                pool->reload_task->remove(exit_status.get_pid());
 +                swr_v1_process_reload_task_remove(pool->reload_task, exit_status.get_pid());
              }
-@@ -277,5 +278,4 @@ void Manager::wait(Server *_server) {
+@@ -273,5 +277,4 @@ void Manager::wait(Server *_server) {
              // reload finish
 -            if (pool->reload_task->is_completed()) {
 -                delete pool->reload_task;
@@ -348,37 +277,13 @@ index 27b9263..1b4c8c9 100644
 +            if (swr_v1_process_reload_task_completed(pool->reload_task)) {
 +                pool->drop_reload_task();
                  if (_server->onAfterReload != nullptr) {
-@@ -285,3 +285,3 @@ void Manager::wait(Server *_server) {
+@@ -281,3 +284,3 @@ void Manager::wait(Server *_server) {
              _kill_worker:
 -                pool->reload_task->kill_one(SIGTERM);
 +                swr_v1_process_reload_task_kill_one(pool->reload_task, SIGTERM, reload_warn);
              }
-@@ -290,3 +290,3 @@ void Manager::wait(Server *_server) {
+@@ -286,3 +289,3 @@ void Manager::wait(Server *_server) {
  
 -    delete pool->reload_task;
 +    pool->drop_reload_task();
  
-@@ -398,3 +398,4 @@ pid_t Server::restart_worker_process(const ExitStatus &exit_status) {
-         // Exception: Received an exit signal from an unknown process
--        if (detached_processes.find(exited_pid) == detached_processes.end()) {
-+        if (!swr_v1_process_worker_registry_reap_detached(
-+                static_cast<swr_v1_process_worker_registry *>(worker_registry), exited_pid)) {
-             swoole_warning("Unknown type child process [%d] exited", exited_pid);
-@@ -402,3 +403,2 @@ pid_t Server::restart_worker_process(const ExitStatus &exit_status) {
-             swoole_trace_log(SW_TRACE_SERVER, "Detached process [%d] exited normally", exited_pid);
--            detached_processes.erase(exited_pid);
-         }
-diff --git a/src/server/master.cc b/src/server/master.cc
-index fbe22cf..204e0f8 100644
---- a/src/server/master.cc
-+++ b/src/server/master.cc
-@@ -453,7 +453,4 @@ Worker *Server::get_worker_by_pid(pid_t worker_pid) const {
- 
--    if (get_task_worker_pool()->map_) {
--        const auto iter = get_task_worker_pool()->map_->find(worker_pid);
--        if (iter != get_task_worker_pool()->map_->end()) {
--            return iter->second;
--        }
-+    if (Worker *worker = get_task_worker_pool()->get_worker_by_pid(worker_pid)) {
-+        return worker;
-     }

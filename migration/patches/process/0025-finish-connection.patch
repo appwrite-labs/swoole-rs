@@ -1,5 +1,5 @@
 diff --git a/src/server/task_worker.cc b/src/server/task_worker.cc
-index ff9bafa..cb7d0c8 100644
+index 5a6c513..fc956e4 100644
 --- a/src/server/task_worker.cc
 +++ b/src/server/task_worker.cc
 @@ -453,4 +453,7 @@ bool Server::finish(const char *data, size_t data_len, int flags, const EventDat

@@ -9,6 +9,11 @@ use crate::{
     swr_v2_http_tasks_push, swr_v2_http_tasks_snapshot,
 };
 use std::alloc::{Layout, alloc};
+mod filesystem;
+pub use filesystem::{
+    HttpStaticIo, swr_v3_http_context_directory, swr_v3_http_context_serve,
+    swr_v3_http_context_stat,
+};
 mod range;
 mod selection;
 mod serve;
@@ -182,6 +187,18 @@ impl HttpStaticContext {
         0
     }
 }
+/// Stable borrowed modification-time slot, valid until the context is dropped.
+/// # Safety
+/// Owner is null or live. Callers read the slot only under the context's existing synchronization.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v3_http_context_mtime(owner: *const HttpStaticContext) -> *const i64 {
+    if owner.is_null() {
+        return core::ptr::null();
+    }
+    // SAFETY: the live owner retains its facts at a stable address until drop.
+    unsafe { &raw const (*owner).facts.mtime }
+}
+
 /// # Safety
 /// Input URL initialized/disjoint; capacity is the selected native `PATH_MAX`.
 /// Returned context has unique custody and must be destroyed once.

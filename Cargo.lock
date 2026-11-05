@@ -497,6 +497,7 @@ dependencies = [
 name = "swoole-rs-http"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "memchr",
  "swoole-rs-base64",
  "swoole-rs-corebase",
