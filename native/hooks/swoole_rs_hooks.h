@@ -133,8 +133,18 @@ void swr_v1_hook_dns_cache_set(int domain, const char *name, size_t length, cons
 double swr_v1_hook_timeval(double seconds, double micros);
 typedef struct { uint32_t flags; bool conflict; } swr_v1_hook_curl_plan;
 swr_v1_hook_curl_plan swr_v1_hook_curl_flags(uint32_t flags, uint32_t native, uint32_t php);
-enum swr_hook_async_action { SWR_HOOK_ASYNC_REJECT = 0, SWR_HOOK_ASYNC_YIELD = 1, SWR_HOOK_ASYNC_COMPLETE = 2, SWR_HOOK_ASYNC_CANCEL = 3, SWR_HOOK_ASYNC_RESUME = 4 };
-int32_t swr_v1_hook_async_action(uint32_t phase, bool cancellable, bool success);
+/* coroutine::async over the AsyncThreads pool. The event is upstream's AsyncEvent
+ * (layout asserted in system.cc); dispatch is async::dispatch. */
+typedef struct {
+    void *(*current)(void);                       /* Coroutine::get_current_safe() */
+    void *(*dispatch)(const void *event);         /* async::dispatch */
+    void (*park)(void *co);                       /* co->yield() */
+    bool (*park_for)(void *co, double timeout);   /* co->yield_ex(timeout) */
+    void (*resume)(void *co);
+    int (*last_error)(void);
+} swr_v1_hook_async_ops;
+bool swr_v1_hook_async(void *event, void (*handler)(void *event), double timeout, const swr_v1_hook_async_ops *ops);
+bool swr_v1_hook_async_job(void (*job)(void *), void *context, const swr_v1_hook_async_ops *ops);
 int32_t swr_v1_hook_dns_error(int32_t error, int32_t asynchronous_timeout, int32_t resolve_timeout);
 double swr_v1_hook_sleep_timeout(double seconds, double minimum);
 typedef struct { size_t length, size; int64_t offset; char *str; } swr_v1_hook_read_buffer;
