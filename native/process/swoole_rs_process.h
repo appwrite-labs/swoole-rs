@@ -105,6 +105,15 @@ typedef struct swr_v1_worker_record {
     void *ptr;
 } swr_v1_worker_record;
 void swr_v1_worker_add_request_count(swr_v1_worker_record *);
+void swr_v1_worker_init(swr_v1_worker_record *worker);
+void swr_v1_worker_shutdown(swr_v1_worker_record *worker);
+bool swr_v1_worker_exceeded_max_requests(const swr_v1_worker_record *worker);
+void *swr_v1_worker_globals(void);
+int64_t swr_v1_worker_global_get(uint32_t field);
+void swr_v1_worker_global_set(uint32_t field, int64_t value);
+void swr_v1_worker_global_max_requests(uint32_t max_request, uint32_t grace, int (*random)(int,int));
+void swr_v1_worker_global_detach(swr_v1_worker_record *worker);
+void swr_v1_worker_global_stopped(void);
 uint8_t swr_v1_worker_status(const swr_v1_worker_record *);
 void swr_v1_worker_set_status(swr_v1_worker_record *, uint8_t status);
 uint8_t swr_v1_worker_type(const swr_v1_worker_record *);

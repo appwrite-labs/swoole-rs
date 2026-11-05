@@ -11,7 +11,14 @@
 )]
 use core::ffi::c_void;
 
+pub use commands::{
+    CommandInfo, swr_v1_server_command_add, swr_v1_server_command_at,
+    swr_v1_server_command_callback, swr_v1_server_command_drain, swr_v1_server_command_find,
+    swr_v1_server_command_handler, swr_v1_server_command_request,
+};
+
 mod admin;
+mod commands;
 mod config;
 mod conn_io;
 mod connection;
@@ -26,12 +33,20 @@ mod reactor_io;
 mod reactor_thread;
 mod records;
 mod send;
+mod shared;
 mod startup;
 mod state;
+mod static_config;
+pub use static_config::{swr_v1_server_static_config, swr_v1_server_static_text};
 
 pub use records::{
     ConnectionRecord, ServerTables, SessionRecord, swr_v1_server_connection, swr_v1_server_session,
     swr_v1_server_session_fd, swr_v1_server_tables_get,
+};
+
+pub use shared::{
+    PortCounters, ServerCounters, swr_v1_server_port_connections, swr_v1_server_port_shared_init,
+    swr_v1_server_shared_init,
 };
 
 pub use config::{ServerConfig, swr_v1_server_config_get, swr_v1_server_config_init};
@@ -92,7 +107,10 @@ impl Host for Native {
     fn op(&mut self, op: u32, arg: u64) -> u64 {
         if !self.state.is_null() {
             // SAFETY: run_state lends live synchronized records; this leaf access ends before callbacks.
-            if let Some(value) = unsafe { config::native_fact(self.state, op, arg) } {
+            let fact = unsafe { config::native_fact(self.state, op, arg) };
+            // SAFETY: the same call lends synchronized shared records, without holding callbacks.
+            let fact = fact.or_else(|| unsafe { shared::native_fact(self.state, op, arg) });
+            if let Some(value) = fact {
                 return value;
             }
         }

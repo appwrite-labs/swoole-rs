@@ -4,6 +4,8 @@
  * (SWR_WORKERS_RUN_*) and asks native code for each fact or effect through
  * `call(context, op, arg)` (SWR_WORKERS_OP_* and SWR_WORKERS_LOG_*). */
 #include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,7 +16,15 @@ int64_t swr_v1_workers_run(uint32_t operation, uint64_t arg, void *context, swr_
 void swr_workers_signal_set(uint64_t arg, void (*own)(int));
 /* Thread mode's manager state (crates/process/src/workers/thread.rs), owned by
  * ThreadFactory: its wait queue, reload request and reload progress. */
+typedef struct {
+    void *(*create)(void);
+    void (*destroy)(void *);
+    int32_t (*join)(void *);
+} swr_v1_thread_ops;
 void *swr_v1_thread_manager_new(void);
+bool swr_v1_thread_manager_threads_init(const void *manager, size_t count, const swr_v1_thread_ops *ops);
+void *swr_v1_thread_manager_thread(const void *manager, size_t index);
+int32_t swr_v1_thread_manager_join_all(const void *manager);
 void swr_v1_thread_manager_free(void *manager);
 /* A worker thread exited: wake the manager thread to rejoin and respawn it. */
 void swr_v1_thread_manager_exited(const void *manager, void *worker);

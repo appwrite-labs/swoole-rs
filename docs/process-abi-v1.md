@@ -2,15 +2,18 @@
 
 Feature value 524288 (`--module process`). Upstream targets:
 `src/server/{worker,task_worker,process,manager,reactor_process}.cc` and
-`src/os/{process_pool,pipe,signal,wait}.cc`. Public Server/Factory/Worker/
-ProcessPool/ReloadTask/Signal/EventData layouts and PHP bindings are unchanged.
+`src/os/{process_pool,pipe,signal,wait}.cc`. Production Server/Factory/Worker/ProcessPool methods and PHP bindings are preserved.
+Worker/Pool and TLS WorkerGlobal fields are native views of canonical Rust records;
+Server private storage and its command container implementation are Rust-owned.
 Follows the [policy/effect split](abi-v1.md#policyeffect-split).
 
 Rust implements state transitions, worker/task selection, progress/retry/error,
-reload and exit policy. Native code executes syscalls, atomic read-modify-writes
-(not split into separate read and write decisions), queue/container mutation,
-allocation, timer/reactor operations, context switches, callbacks, exceptions and
-Zend escapes. Signedness, width, casts, wrapping, errno and last_error match
+reload and exit policy. Native code executes the remaining syscalls, queue transport, native object
+construction, timer/reactor operations, context switches, callbacks, exceptions
+and Zend escapes. Rust owns shared Server/Port counter records and operations,
+the TLS worker identity/request/stop state, and ThreadFactory slot custody. The
+thread table releases its lock before native join callbacks; native thread body
+and Zend bailout traps remain in their original native frames. Signedness, width, casts, wrapping, errno and last_error match
 upstream. Exceptions: Rust makes the syscalls of worker CPU pinning, of reading a task's temporary file and of the signal table's sigaction and signalfd paths.
 
 `ProcessPool`'s IPC is Rust (`crates/process/src/pool.rs`): the stream
@@ -22,11 +25,23 @@ message bus, timers and callbacks. Hooks that can reach PHP run inside the
 extension's `zend_try` trap; a bailout ends the loop, and its native caller
 re-raises it once no Rust frame is left (`swr_v1_process_bailout`).
 
-There is one native store each for workers, PIDs, reload snapshots, task results,
-connections/sessions, signals, waiters and child status, and one IPC transport.
-No Rust registry, scheduler, signal queue, async pool, message reassembler,
-runtime or background thread. PID, worker ID, session ID and fd are distinct
-identities; stale ones never match a new occupant.
+Rust owns the worker/PID registry, pool records and reload/IPC state. Shared
+worker, connection/session and counter storage remains in its original shared
+arena, with canonical Rust layouts and checked native views. Thread-local worker
+state has no TLS destructor; worker stop explicitly releases a detached copy.
+PID, worker ID, session ID and fd remain distinct identities.
+
+Server command names, ids, accepted process types, handler slots and outstanding
+reply callbacks live in Rust tables. Native code constructs, invokes and destroys
+`std::function` payloads outside Rust frames. The native member guard drains the
+callable slots before the Rust base owner dies; no registry lock spans callbacks.
+The production `add_command`, `command` and handler/reply methods remain public;
+the three implementation `unordered_map` fields are replaced by this owner.
+
+Static locations, ordered unique index names and MIME configuration also live in
+Rust. The original public collection operations used by production and core gates
+remain borrowed native views. Index order, binary names, optional empty versus
+absent configuration and case-sensitive membership are preserved.
 
 - Callbacks may change settings or maps, close connections, dispatch again or
   destroy an event/coroutine; facts are refreshed at each original observation

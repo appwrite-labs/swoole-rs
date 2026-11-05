@@ -5,6 +5,17 @@
 #define SWOOLE_RS_PROCESS_VIEWS_H
 // Generated from crates/process/src/{worker_record,process_pool}.rs.
 // Typed native loans only; Rust owns the record layouts and operations.
+struct WorkerGlobalFields {
+    uint32_t id;
+    uint8_t type;
+    int pid;
+    bool shutdown;
+    bool running;
+    uint32_t max_request;
+    Worker * worker;
+    Worker * worker_copy;
+    time_t exit_time;
+};
 struct WorkerFields {
     uint32_t : 32;
     uint32_t : 32;

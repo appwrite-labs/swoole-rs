@@ -1,5 +1,5 @@
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 204e0f8..3bf8fa6 100644
+index 51835f3..125459f 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
 @@ -25,2 +25,3 @@
@@ -11,15 +11,15 @@ index 204e0f8..3bf8fa6 100644
 -    if (!is_started()) {
 -        return false;
 -    }
-     auto iter = commands.find(name);
--    if (iter == commands.end()) {
-+    const bool found = iter != commands.end();
+     swr_v1_server_command_info command;
+-    if (!find_command(name, &command)) {
++    const bool found = find_command(name, &command);
 +    swr_v1_process_command_input input{is_started(),
 +                                       found,
 +                                       is_process_mode(),
 +                                       is_base_mode(),
 +                                       is_master(),
-+                                       found ? iter->second.accepted_process_types : 0,
++                                       found ? command.accepted_types : 0,
 +                                       is_base_mode() && sw_worker() ? (uint32_t) sw_worker()->get_id() : 0,
 +                                       process_id,
 +                                       (int) process_type,
@@ -85,8 +85,8 @@ index 204e0f8..3bf8fa6 100644
 +    if (!route.request) {
 +        return false;
      }
-@@ -558,65 +592,18 @@ bool Server::command(WorkerId process_id,
-     int64_t request_id = command_current_request_id++;
+@@ -558,64 +592,17 @@ bool Server::command(WorkerId process_id,
+     int64_t request_id = store_command_callback(fn);
 -    Socket *pipe_sock;
 -
 -    SendData task{};
@@ -97,15 +97,14 @@ index 204e0f8..3bf8fa6 100644
 -    task.info.len = msg.length();
 -    task.data = msg.c_str();
 -
-     command_callbacks[request_id] = fn;
- 
--    if (!(process_type & iter->second.accepted_process_types)) {
+-
+-    if (!(process_type & command.accepted_types)) {
 -        swoole_error_log(SW_LOG_NOTICE, SW_ERROR_OPERATION_NOT_SUPPORT, "unsupported [process_type]");
 -    _fail:
--        command_callbacks.erase(request_id);
+-        release_command_callback(request_id);
 -        return false;
 -    }
--
+ 
 -    if (process_type == Command::REACTOR_THREAD) {
 -        if (!is_process_mode()) {
 -            swoole_error_log(SW_LOG_NOTICE, SW_ERROR_OPERATION_NOT_SUPPORT, "unsupported [server_mode]");
@@ -162,7 +161,7 @@ index 204e0f8..3bf8fa6 100644
          }
 -        memset(&buf.info, 0, sizeof(buf.info));
          buf.info.type = SW_SERVER_EVENT_COMMAND_REQUEST;
-@@ -624,20 +611,23 @@ bool Server::command(WorkerId process_id,
+@@ -623,20 +610,23 @@ bool Server::command(WorkerId process_id,
          buf.info.server_fd = command_id;
 -        buf.info.len = msg.length();
 -        memcpy(buf.data, msg.c_str(), msg.length());
@@ -197,7 +196,7 @@ index 204e0f8..3bf8fa6 100644
 +                                 &task);
 +    }
 +    if (!sent) {
-+        command_callbacks.erase(request_id);
++        release_command_callback(request_id);
      }
 -    return true;
 +    return sent;
