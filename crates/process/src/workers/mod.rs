@@ -113,7 +113,10 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         | ops::RUN_THREAD_RELOAD
         | ops::RUN_THREAD_TERMINATE_MANAGER
         | ops::RUN_START_WORKER_THREADS
-        | ops::RUN_STOP_WORKER_THREADS => thread::run(h, operation, arg),
+        | ops::RUN_STOP_WORKER_THREADS
+        | ops::RUN_THREAD_BODY
+        | ops::RUN_THREAD_MAIN
+        | ops::RUN_THREAD_FACTORY_START => thread::run(h, operation, arg),
         _ => event_worker::run(h, operation, arg),
     }
 }
