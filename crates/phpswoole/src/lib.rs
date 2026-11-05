@@ -1,8 +1,8 @@
 //! The swoole module host (with the `php` feature, see docs/zend.md): the global
 //! constants, `Swoole\Exception` and `Swoole\Error`, the global functions of
 //! `php_swoole.cc`, the module's function table and its lifecycle (MINIT's
-//! sequence, MSHUTDOWN, RINIT, RSHUTDOWN). C++ keeps the module globals' ini
-//! entries and Swoole's core, error, logger and MIME state, which it lends as a
+//! sequence, MSHUTDOWN, RINIT, RSHUTDOWN), INI definitions and information rows.
+//! C++ keeps Swoole's core, error, logger and MIME state, which it lends as a
 //! table of operations.
 #![cfg(feature = "php")]
 #![cfg_attr(
@@ -16,6 +16,9 @@
 mod asynchronous;
 mod constants;
 mod functions;
+mod info;
+mod info_inventory;
+mod ini;
 mod interfaces;
 mod memory;
 mod module;
@@ -24,6 +27,8 @@ mod table;
 mod vm;
 
 pub use asynchronous::php_swoole_set_aio_option;
+pub use info::swr_v1_phpswoole_minfo;
+pub use ini::swr_v1_phpswoole_register_ini;
 pub use module::{
     Globals, php_swoole_parse_to_size, php_swoole_register_shutdown_function,
     swr_v1_phpswoole_init_globals, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,

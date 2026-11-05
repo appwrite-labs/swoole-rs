@@ -114,3 +114,34 @@ unsigned swr_zend_stream_xport_flags(const php_stream_xport_param *param) {
 int swr_zend_stream_crypto_op(const php_stream_xport_crypto_param *param) {
     return param->op;
 }
+
+int swr_zend_try_stream_free(php_stream *stream, int flags) {
+    int bailed = 0;
+    zend_try { php_stream_free(stream, flags); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+
+php_stream *swr_zend_try_stream_factory(void *factory, const char *proto, size_t protolen,
+    const char *name, size_t namelen, const char *persistent, int options, int flags,
+    struct timeval *timeout, php_stream_context *context, bool *bailed) {
+    php_stream *stream = NULL;
+    zend_try {
+        stream = ((php_stream_transport_factory) factory)(proto, protolen, name, namelen,
+            persistent, options, flags, timeout, context STREAMS_CC);
+    } zend_catch { *bailed = true; } zend_end_try();
+    return stream;
+}
+
+int swr_zend_try_stream_alloc(const php_stream_ops *ops, void *abstract, const char *persistent, php_stream **stream) {
+    int bailed = 0;
+    zend_try { *stream = php_stream_alloc_rel(ops, abstract, persistent, "r+"); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}
+int swr_zend_try_stream_close(php_stream *stream) {
+    int bailed = 0;
+    zend_try { php_stream_close(stream); }
+    zend_catch { bailed = 1; } zend_end_try();
+    return bailed;
+}

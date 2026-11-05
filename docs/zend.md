@@ -160,3 +160,13 @@ on a Rust-raised warning.
 - A callgrind A/B of a tight method loop against upstream, in the PR.
 - Alpine (musl) builds build scripts with `-C target-feature=-crt-static`
   (merge tier); a static build script cannot `dlopen` libclang.
+
+The module host owns its persistent INI definitions and ordered information rows
+in `crates/phpswoole`. INI update callbacks remain Zend's native handlers; their
+second argument is the address of the native globals in NTS and the address of
+the globals id in ZTS. The information inventory generates only compiler
+capability bits for C++; library version strings remain native facts. Each PHP
+output effect is trapped below the Rust formatting owner, and the outer C++
+MINFO callback resumes a bailout after Rust cleanup. The module witness checks
+all ten definitions, access modes, update/restore behavior, information rows and
+an output handler that exits, against actual NTS and ZTS native controls.

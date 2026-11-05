@@ -42,6 +42,19 @@ pub struct Globals {
     in_autoload: *mut HashTable,
 }
 
+pub(crate) const INI_OFFSETS: [usize; 10] = [
+    std::mem::offset_of!(Globals, enable_library),
+    std::mem::offset_of!(Globals, enable_fiber_mock),
+    std::mem::offset_of!(Globals, enable_preemptive_scheduler),
+    std::mem::offset_of!(Globals, display_errors),
+    std::mem::offset_of!(Globals, use_shortname),
+    std::mem::offset_of!(Globals, socket_buffer_size),
+    std::mem::offset_of!(Globals, blocking_detection),
+    std::mem::offset_of!(Globals, blocking_threshold),
+    std::mem::offset_of!(Globals, profile),
+    std::mem::offset_of!(Globals, leak_detection),
+];
+
 /// `php_swoole_req_status`.
 const RINIT_BEGIN: c_int = 0;
 pub(crate) const RINIT_END: c_int = 1;

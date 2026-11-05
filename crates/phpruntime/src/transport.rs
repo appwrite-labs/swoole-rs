@@ -63,8 +63,12 @@ pub unsafe extern "C" fn swr_v1_phpruntime_original_transport(
     proto: *const c_char,
     length: usize,
 ) -> *mut c_void {
-    // SAFETY: the caller's bytes.
-    let proto = unsafe { std::slice::from_raw_parts(proto.cast::<u8>(), length) };
+    // SAFETY: the caller lends exactly length bytes of the protocol name.
+    original(unsafe { std::slice::from_raw_parts(proto.cast::<u8>(), length) })
+}
+
+/// The original, process-lived PHP factory for an exact borrowed protocol name.
+pub(crate) fn original(proto: &[u8]) -> *mut c_void {
     NAMES
         .iter()
         .position(|name| name.to_bytes() == proto)

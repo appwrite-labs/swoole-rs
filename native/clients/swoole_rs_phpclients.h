@@ -30,15 +30,28 @@ void swr_v1_phpclients_socket_minit(struct _zend_class_entry *exception,
  * socket (a SocketImpl *) is still C++, so each operation is one call. */
 void swoole_rs_php_error(int level, bool fatal, const char *message);
 void swoole_socket_coro_unconstructed(void);
-void *swoole_socket_coro_create(int64_t domain, int64_t type, int64_t protocol, int *error);
 /* socket_coro_init's socket half: zero copy and the zend string allocator, then
  * its fd, domain, type and protocol into fields. */
 void swoole_socket_coro_adopt(void *socket, int64_t *fields);
 /* A Coroutine\Socket object over socket, as socket_coro_init leaves it;
  * reference: the object does not own the socket. */
 struct _zend_object *swr_v1_phpclients_socket_object(void *socket, bool reference);
-void swoole_socket_coro_release(struct _zend_object *object);
-void swoole_socket_coro_close(struct _zend_object *object);
+uint8_t swoole_socket_coro_new_family(int domain, int kind, int protocol, void **result);
+void swr_v1_phpclients_socket_error_properties(const struct _zval_struct *, int code, const char *message);
+uint8_t swoole_socket_coro_new_type(int kind, void **result);
+uint8_t swoole_socket_coro_new_fd(int fd, int kind, void **result);
+uint8_t swoole_socket_coro_new_fd_family(int fd, int domain, int kind, int protocol, void **result);
+int swoole_socket_coro_fd(void *socket);
+struct _zend_object *swr_v1_phpclients_socket_create(int kind);
+struct _zend_object *swr_v1_phpclients_socket_from_fd(int fd, int kind);
+struct _zend_object *swr_v1_phpclients_socket_from_fd_family(int fd, int domain, int kind, int protocol);
+struct _zend_object *swr_v1_phpclients_socket_dup(int fd, int kind);
+void *swr_v1_phpclients_socket_pointer(const struct _zval_struct *);
+bool swr_v1_phpclients_socket_closed(const struct _zval_struct *);
+uint8_t swoole_socket_coro_destroy(void *socket);
+void swoole_socket_coro_move_fd(void *socket);
+uint8_t swoole_socket_coro_close_native(void *socket);
+uint8_t swoole_socket_coro_callable_free(void *callable);
 bool swoole_socket_coro_is_closed(void *socket);
 int swoole_socket_coro_error(void *socket, const char **message);
 void swoole_socket_coro_set_error(void *socket, int code, const char *message);
@@ -129,12 +142,6 @@ int swoole_socket_coro_tcp_info(void *socket, int name, struct _zval_struct *arr
 /* php_swoole_create_socket_from_fd(fd, type), run inside zend_try; with a
  * stream (import), the object holds it and nonblock is set. Null when none
  * could be made. */
-typedef struct {
-    int fd, type, nonblock;
-    struct _zval_struct *stream;
-    struct _zend_object *object;
-} swoole_socket_coro_import_call;
-void swoole_socket_coro_import(void *call);
 
 /* PHP Coroutine\Client (crates/phpclients): MINIT and, from
  * ext-src/swoole_client_coro.cc, what its methods need beyond the socket calls. */

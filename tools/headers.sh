@@ -41,6 +41,19 @@ if [ "$1" = --check ]; then
 else
     mv "$generated" "$header"
 fi
+generated=$(mktemp)
+header=native/phphelpers/swoole_rs_phpswoole_info.h
+cargo run --quiet --locked -p swoole-rs-phpswoole --bin module-info-header > "$generated"
+if [ "$1" = --check ]; then
+    if ! cmp -s "$generated" "$header"; then
+        echo "$header is stale; run tools/headers.sh" >&2
+        diff -u "$header" "$generated" >&2 || true
+        status=1
+    fi
+    rm -f "$generated"
+else
+    mv "$generated" "$header"
+fi
 if [ "$1" = --check ]; then
     python3 tools/process_records.py --check || status=1
     python3 tools/headers.py || status=1

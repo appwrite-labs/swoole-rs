@@ -24,7 +24,7 @@ use swoole_rs_zend::{
         zend_hash_move_forward_ex, zend_hash_str_find, zend_object, zend_object_handlers,
         zend_string, zval, zval_ptr_dtor,
     },
-    throw_constructed_twice, throw_exception, type_of, unset_property_deny, value,
+    throw_constructed_twice, type_of, unset_property_deny, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -32,6 +32,9 @@ use swoole_rs_zend::{method_table, sys as z};
 const BUFFER_SIZE_BIG: i64 = 65536;
 /// `SW_BACKLOG`.
 const BACKLOG: i64 = 512;
+#[path = "socket_owner.rs"]
+pub(crate) mod owner;
+
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
 const EVENT_READ: i64 = 1 << 9;
 const EVENT_WRITE: i64 = 1 << 10;
@@ -42,7 +45,8 @@ const HAVE_AI_IDN: u32 = 4;
 /// `IOV_MAX` on Linux and Apple.
 const IOV_MAX: u32 = 1024;
 
-/// `struct SocketObject { SocketImpl *socket; zval zstream; bool reference; zend_object std; }`.
+/// Rust owns the core pointer, imported stream and reference flag. Native SDK
+/// facades access them only through the typed Rust entry points below.
 #[repr(C)]
 pub(crate) struct Data {
     socket: Socket,
@@ -56,18 +60,29 @@ static SOCKET: Class = Class::new();
 static EXCEPTION: Class = Class::new();
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates this class or a subclass; zeroed data is a null
-    // socket, an undefined stream and no reference, as upstream starts.
-    unsafe { SocketObject::create(&SOCKET, ce) }
+    // SAFETY: Zend creates this class or a subclass with zero-initializable data.
+    let object = match unsafe { SocketObject::try_create(&SOCKET, ce) } {
+        Ok(object) => object,
+        Err(error) => {
+            error.defer();
+            ptr::null_mut()
+        }
+    };
+    swoole_rs_zend::bailout::finish();
+    object
 }
 
 /// Upstream does not close here: the engine may be shutting down, and closing
 /// would resume other coroutines.
 unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees a socket object.
-    unsafe { native::swoole_socket_coro_release(std) };
-    // SAFETY: as above.
-    unsafe { SocketObject::dtor(std) };
+    // SAFETY: Zend transfers the object's core/resource custody to this final release.
+    let released = unsafe { owner::release(std) };
+    let result = released.and_then(|()| {
+        // SAFETY: core custody has finished; now run the object's property destructors.
+        unsafe { SocketObject::try_dtor(std) }
+    });
+    swoole_rs_zend::bailout::defer(result);
+    swoole_rs_zend::bailout::finish();
 }
 
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
@@ -254,11 +269,10 @@ pub(crate) fn strerror<'a>(code: c_int) -> &'a CStr {
 
 /// errCode and errMsg.
 fn set_error(call: &Call, code: c_int, message: &CStr) {
-    let object = call.this();
-    // SAFETY: `$this` is a live instance of the registered class.
-    unsafe { value::update_long(SOCKET.entry(), object, c"errCode", i64::from(code)) };
-    // SAFETY: as above.
-    unsafe { value::update_string(SOCKET.entry(), object, c"errMsg", message) };
+    // SAFETY: the registered class and current method object remain live through both property updates.
+    swoole_rs_zend::bailout::defer(unsafe {
+        owner::error_properties(SOCKET.entry(), call.this(), code, message)
+    });
 }
 
 /// `socket_coro_sync_properties`: errCode and errMsg from the socket.
@@ -293,8 +307,12 @@ pub(crate) fn warn(fatal: bool, message: &str) {
 /// `zend_throw_exception_ex(swoole_socket_coro_exception_ce, code, ...)`.
 fn throw(code: c_int, message: &str) {
     let message = CString::new(message).unwrap_or_default();
-    // SAFETY: from a handler, with the registered exception class.
-    unsafe { throw_exception(EXCEPTION.entry(), &message, i64::from(code)) };
+    // SAFETY: the registered exception and owned diagnostic string remain live through the trapped throw.
+    if unsafe { z::swr_zend_try_facade_throw(EXCEPTION.entry(), message.as_ptr(), i64::from(code)) }
+        != 0
+    {
+        swoole_rs_zend::bailout::Bailout.defer();
+    }
 }
 
 /// `swoole_pagesize()`.
@@ -359,16 +377,16 @@ fn construct(call: &Call) {
     let Ok((domain, kind, protocol)) = parsed else {
         return call.set_bool(false);
     };
-    let data = this(call);
-    if !data.socket.is_null() {
+    if !this(call).socket.is_null() {
         // SAFETY: from a handler, with `$this` live.
         unsafe { throw_constructed_twice(call.this()) };
         return call.set_bool(false);
     }
-    let mut error = 0;
-    // SAFETY: `error` is a writable local.
-    let socket =
-        unsafe { native::swoole_socket_coro_create(domain, kind, protocol, &raw mut error) };
+    // SAFETY: the native constructor arguments are parsed and no mutable object borrow spans effects.
+    let (socket, error) = match unsafe { owner::construct_core(domain, kind, protocol) } {
+        Ok(result) => result,
+        Err(error) => return error.defer(),
+    };
     if socket.is_null() {
         let text = strerror(error).to_string_lossy();
         throw(
@@ -377,16 +395,16 @@ fn construct(call: &Call) {
         );
         return call.set_bool(false);
     }
-    data.socket = socket;
+    this(call).socket = socket;
     // SAFETY: `$this` now holds its socket.
-    unsafe { init(call.this()) };
+    swoole_rs_zend::bailout::defer(unsafe { init(call.this()) });
 }
 
 /// `socket_coro_init`: zero copy and the zend string allocator, then the fd,
 /// domain, type and protocol properties.
 /// # Safety
 /// `object` is a live socket object holding its socket.
-unsafe fn init(object: *mut zend_object) {
+unsafe fn init(object: *mut zend_object) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     let mut fields = [0_i64; 4];
     // SAFETY: per the caller.
     let socket = unsafe { SocketObject::data(object) }.socket;
@@ -396,9 +414,10 @@ unsafe fn init(object: *mut zend_object) {
         .into_iter()
         .zip(fields)
     {
-        // SAFETY: a live instance of the registered class.
-        unsafe { value::update_long(SOCKET.entry(), object, name, field) };
+        // SAFETY: a live instance of the registered class; each update contains PHP bailouts.
+        unsafe { owner::update_long(SOCKET.entry(), object, name, field) }?;
     }
+    Ok(())
 }
 
 /// A `Coroutine\Socket` object over `socket`, as `socket_coro_init` leaves it;
@@ -410,14 +429,15 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_object(
     socket: *mut libc::c_void,
     reference: bool,
 ) -> *mut zend_object {
-    // SAFETY: a new object of the registered class.
-    let object = unsafe { create(SOCKET.entry()) };
-    // SAFETY: the object just created, not yet shared.
-    let data = unsafe { SocketObject::data(object) };
-    data.socket = socket;
-    data.reference = reference;
-    // SAFETY: the object holds its socket.
-    unsafe { init(object) };
+    // SAFETY: the native caller transfers this live core socket and its ownership mode.
+    let object = match unsafe { owner::make_object(socket, reference) } {
+        Ok(object) => object,
+        Err(error) => {
+            error.defer();
+            ptr::null_mut()
+        }
+    };
+    swoole_rs_zend::bailout::finish();
     object
 }
 
@@ -469,13 +489,16 @@ fn accept(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: a new object of the registered class.
-    let client = unsafe { create(SOCKET.entry()) };
+    let client = match unsafe { SocketObject::try_create(&SOCKET, SOCKET.entry()) } {
+        Ok(client) => client,
+        Err(error) => return error.defer(),
+    };
     // SAFETY: the object just created, not yet shared.
     unsafe { SocketObject::data(client) }.socket = connection;
     // SAFETY: the return slot takes the new object's only reference.
     unsafe { set_object(call.return_value(), client) };
     // SAFETY: the object holds its socket.
-    unsafe { init(client) };
+    swoole_rs_zend::bailout::defer(unsafe { init(client) });
 }
 
 /// `connect(string $host, int $port = 0, float $timeout = 0): bool`.
@@ -1032,9 +1055,11 @@ fn close(call: &Call) {
         warn(false, "cannot close the referenced resource");
         return call.set_bool(false);
     }
-    // SAFETY: `$this` holds an open socket it owns.
-    unsafe { native::swoole_socket_coro_close(call.this()) };
-    call.set_bool(true);
+    // SAFETY: the current PHP method keeps this open, owned socket object live.
+    match unsafe { owner::close(call.this()) } {
+        Ok(()) => call.set_bool(true),
+        Err(error) => error.defer(),
+    }
 }
 
 /// `getsockname(): array|false`.
@@ -1159,6 +1184,119 @@ swoole_rs_zend::handlers! {
     zim_swoole_socket_coro_setProtocol => set_protocol;
     zim_swoole_socket_coro_sslHandshake => ssl_handshake;
     zim_swoole_socket_coro_isClosed => is_closed;
+}
+
+/// # Safety
+/// A native Swoole socket kind; the resulting object owns its new core socket.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpclients_socket_create(kind: i32) -> *mut zend_object {
+    // SAFETY: the SDK caller supplies its original constructor kind.
+    let result = match unsafe { owner::create_kind(kind) } {
+        Ok(object) => object,
+        Err(error) => {
+            error.defer();
+            ptr::null_mut()
+        }
+    };
+    swoole_rs_zend::bailout::finish();
+    result
+}
+/// # Safety
+/// Transfer one descriptor classified by its native Swoole socket kind.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpclients_socket_from_fd(fd: i32, kind: i32) -> *mut zend_object {
+    // SAFETY: the SDK caller transfers this descriptor to its new object.
+    let result = match unsafe { owner::from_fd(fd, kind) } {
+        Ok(object) => object,
+        Err(error) => {
+            error.defer();
+            ptr::null_mut()
+        }
+    };
+    swoole_rs_zend::bailout::finish();
+    result
+}
+/// # Safety
+/// Transfer the descriptor with its native domain/type/protocol classification.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpclients_socket_from_fd_family(
+    fd: i32,
+    domain: i32,
+    kind: i32,
+    protocol: i32,
+) -> *mut zend_object {
+    // SAFETY: the native SDK lends the original constructor arguments and transfers the fd.
+    let result = match unsafe { owner::from_fd_family(fd, domain, kind, protocol) } {
+        Ok(object) => object,
+        Err(error) => {
+            error.defer();
+            ptr::null_mut()
+        }
+    };
+    swoole_rs_zend::bailout::finish();
+    result
+}
+/// # Safety
+/// Borrow a valid source descriptor, as the original SDK dup helper does.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpclients_socket_dup(fd: i32, kind: i32) -> *mut zend_object {
+    // SAFETY: the SDK caller keeps the source descriptor live through dup.
+    let result = match unsafe { owner::duplicate(fd, kind) } {
+        Ok(object) => object,
+        Err(error) => {
+            error.defer();
+            ptr::null_mut()
+        }
+    };
+    swoole_rs_zend::bailout::finish();
+    result
+}
+/// # Safety
+/// The argument is a live Coroutine Socket object zval.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpclients_socket_pointer(value: *const zval) -> *mut libc::c_void {
+    // SAFETY: the native SDK supplies an initialized object zval of this class.
+    let object = unsafe { value::obj_of(value) };
+    // SAFETY: this live object has the registered SocketObject layout.
+    unsafe { socket_of(object) }
+}
+/// # Safety
+/// The argument is a live Coroutine Socket object zval, constructed or unconstructed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpclients_socket_closed(value: *const zval) -> bool {
+    // SAFETY: the SDK argument is a live object zval of this class.
+    let object = unsafe { value::obj_of(value) };
+    // SAFETY: copy the object's optional core socket pointer.
+    let socket = unsafe { socket_of(object) };
+    // SAFETY: a non-null core socket remains live while this object is borrowed.
+    socket.is_null() || unsafe { native::swoole_socket_coro_is_closed(socket) }
+}
+
+/// # Safety
+/// A live SDK socket object zval and borrowed diagnostic message, as the original helper requires.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpclients_socket_error_properties(
+    value: *const zval,
+    code: i32,
+    message: *const c_char,
+) {
+    // SAFETY: update Swoole's thread-local error before the property effects, as upstream does.
+    unsafe { native::swoole_rs_set_last_error(code) };
+    // SAFETY: the SDK supplies an initialized object zval of this class.
+    let object = unsafe { value::obj_of(value) };
+    // SAFETY: the live object's actual class is the original SDK helper's scope.
+    let scope = unsafe { (*object).ce };
+    let message = if message.is_null() {
+        c""
+    } else {
+        // SAFETY: a non-null diagnostic message is a borrowed NUL-terminated native string.
+        unsafe { CStr::from_ptr(message) }
+    };
+    // SAFETY: scope, object and message satisfy the SDK helper's live-argument contract.
+    swoole_rs_zend::bailout::defer(unsafe {
+        owner::error_properties(scope, object, code, message)
+    });
+    swoole_rs_zend::bailout::finish();
 }
 
 #[cfg(test)]
