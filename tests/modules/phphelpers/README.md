@@ -1,6 +1,13 @@
 # M26 common PHP helpers and optional stdext
 
 M26 covers `ext-src/php_swoole_cxx.cc`, `ext-src/swoole_stdext.cc` and the
+common Zend owning facades in `ext-src/php_swoole_cxx.h`. String, Variable,
+KeyValue and Callable own Rust handles; Rust also implements CharPtr allocation
+and release, sparse ArrayIterator walks and Array updates. C++ keeps the
+source-compatible constructors and methods. The contract is
+[docs/phphelpers-abi-v1.md](../../../docs/phphelpers-abi-v1.md).
+
+`ext-src/swoole_stdext.cc` and the
 KeyValue/ArrayIterator/Array methods in `ext-src/php_swoole_cxx.h`.
 String, CharPtr, Variable, inline Callable methods and callable factories keep
 the upstream implementation until their state moves into Rust. The contract is
@@ -37,9 +44,7 @@ modeled native storage and effects, one fixture per family (`effects.cc`, `cache
 
 | Family | Matched cases per host |
 | --- | --- |
-| Known cache / Callable cleanup | 266 / 12 |
-| String+CharPtr / KeyValue+Variable / inline Callable | 13 / 9 / 14 |
-| ArrayIterator / Array updates | 4681 bounded walks / 2 status profiles |
+| Known cache | 266 |
 
 These are modeled counts, not Zend runtime coverage; `phphelpers-facade-runtime`
 runs the facades in real PHP on both engines. The facades' sizes are not compared,
@@ -139,3 +144,14 @@ All five phases are kept, none deleted:
 
 None of these is a PHPT, Rust unit test or fuzz target.
 
+
+## Owning Zend facades (#1063)
+
+String, CharPtr, Variable, KeyValue, Array/ArrayIterator and Callable now execute
+their ownership and operations in Rust against the actual Zend SDK. Their former
+modeled C++ fixtures (13/9/4681/14 cases) copied private class bodies and supplied
+fake Zend layouts; those assumptions are retired. The SDK compile and loaded
+facade runtime remain mandatory, with the original PHP expectations unchanged:
+copy/self-copy/move/self-move, binary duplication, PHP conversion reentry,
+sparse keys and updates, callback duplication/invocation and destructor timing.
+The policy gate still compares the remaining native call/merge/cache bodies.

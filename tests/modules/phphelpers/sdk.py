@@ -86,7 +86,7 @@ def main():
         headers={engine:mirror/'ext-src/php_swoole_cxx.h' for engine,mirror in mirrors.items()}
         # entrypoint.py checks this against the pinned public header ABI.
         report['mirror_sha256']={'ext-src/php_swoole_cxx.h':sha(headers['native'])}
-        report['sources']=sorted(name for patch in module_patches(ROOT/'migration/patches/phphelpers') for name in patch['upstream_paths'])
+        report['sources']=sorted({name for patch in module_patches(ROOT/'migration/patches/phphelpers') for name in patch['upstream_paths']})
         includes=shlex.split(subprocess.check_output([a.php_config,'--includes'],text=True))
         report['php_version']=subprocess.check_output([a.php_config,'--version'],text=True).strip()
         report['php_includes']=includes
