@@ -23,7 +23,6 @@ pub(crate) const OP_EXTEND: u32 = 3;
 /// `onPackage` of arg bytes from the buffer start.
 pub(crate) const OP_DISPATCH: u32 = 4;
 pub(crate) const OP_REDUCE: u32 = 5;
-pub(crate) const OP_CLEAR: u32 = 6;
 /// `buffer->split` on the EOF, each part to `onPackage`.
 pub(crate) const OP_SPLIT: u32 = 7;
 pub(crate) const OP_SSL_PENDING: u32 = 8;
@@ -145,6 +144,11 @@ impl Recv {
     fn set_offset(&self, offset: i64) {
         // SAFETY: as in `set_length`.
         unsafe { (*self.buffer).offset = offset };
+    }
+    /// `buffer->clear()`.
+    fn clear(&self) {
+        self.set_length(0);
+        self.set_offset(0);
     }
     fn eof_len(&self) -> usize {
         // SAFETY: `protocol` is live for this receive; callbacks may change it only inside `op`.
@@ -277,7 +281,7 @@ impl Recv {
                         self.op(OP_REDUCE, offset.unsigned_abs())?;
                         At::GetLength
                     } else {
-                        self.op(OP_CLEAR, 0)?;
+                        self.clear();
                         if !self.flag(FLAG_TLS) {
                             return Ok(SW_OK);
                         }
@@ -323,7 +327,7 @@ impl Recv {
                 if self.flag(FLAG_REMOVED) {
                     return Ok(SW_OK);
                 }
-                self.op(OP_CLEAR, 0)?;
+                self.clear();
                 if self.flag(FLAG_TLS) && self.op(OP_SSL_PENDING, 0)? > 0 {
                     continue;
                 }
@@ -372,7 +376,7 @@ impl Recv {
             let offset = self.length().saturating_sub(self.eof_len());
             self.set_offset(offset.cast_signed() as i64);
         } else {
-            self.op(OP_CLEAR, 0)?;
+            self.clear();
         }
         Ok(i32::from(self.flag(FLAG_TLS)))
     }
@@ -517,12 +521,6 @@ mod tests {
                     self.buffer.offset = 0;
                     0
                 }
-                OP_CLEAR => {
-                    self.events.push("clear".into());
-                    self.buffer.length = 0;
-                    self.buffer.offset = 0;
-                    0
-                }
                 OP_SPLIT => {
                     let mut end = 0;
                     while let Some(at) = self.storage[end..length]
@@ -573,9 +571,13 @@ mod tests {
                 "length:1",
                 "extend:4",
                 "recv:3",
-                "package:\x03abc",
-                "clear"
+                "package:\x03abc"
             ]
+        );
+        assert_eq!(
+            (native.buffer.length, native.buffer.offset),
+            (0, 0),
+            "cleared"
         );
         // The next call finds the next header and waits for its body.
         native.events.clear();
@@ -599,9 +601,13 @@ mod tests {
                 "package:\x01a",
                 "reduce:2",
                 "length:1",
-                "package:\0",
-                "clear"
+                "package:\0"
             ]
+        );
+        assert_eq!(
+            (native.buffer.length, native.buffer.offset),
+            (0, 0),
+            "cleared"
         );
         native.events.clear();
         native.protocol.package_max_length = 4;
@@ -627,13 +633,12 @@ mod tests {
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(
             native.events,
-            [
-                "recv:4",
-                "extend:64",
-                "recv:60",
-                "package:abcde\r\n",
-                "clear"
-            ]
+            ["recv:4", "extend:64", "recv:60", "package:abcde\r\n"]
+        );
+        assert_eq!(
+            (native.buffer.length, native.buffer.offset),
+            (0, 0),
+            "cleared"
         );
     }
 

@@ -1,0 +1,8 @@
+diff --git a/src/protocol/base.cc b/src/protocol/base.cc
+index 28528f8..410b4b0 100644
+--- a/src/protocol/base.cc
++++ b/src/protocol/base.cc
+@@ -130,3 +130,2 @@ int64_t call(void *context, uint32_t op, uint64_t arg) noexcept {
+         }
+-        case SWR_FRAMING_OP_CLEAR: buffer->clear(); break;
+         default: result = rare(r, op, arg);
