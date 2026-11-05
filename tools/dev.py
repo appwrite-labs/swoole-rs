@@ -439,6 +439,13 @@ def plan(args, reports):
                '--build-root', ROOT / 'target/native-originals/coroutine', '--jobs', args.jobs,
                '--sanitize', *native_options, *report('coroutine-native-originals'))
     if 'ossupport' in modules:
+        script('ossupport-async-file-owner', 'tests/modules/ossupport/async_file.py', '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-async-file-owner'))
+        if integrate and sys.platform == 'linux':
+            script('ossupport-async-file-originals', 'tests/modules/ossupport/async_file_originals.py',
+                   '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
+                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+                   '--jobs', args.jobs, *report('ossupport-async-file-originals'))
         script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-file-owner'))
     if 'corebase' in modules:
