@@ -830,9 +830,13 @@ def docker_image():
 # build, then dev.py with the image's PHP extensions unless the command names its own.
 DOCKER_SCRIPT = r'''set -e
 git config --global --add safe.directory '*'
+# Entries of one worktree and architecture share target/upstream: prepare it one at a time.
+{
+flock 9
 rustup install >/dev/null
 cargo fetch --locked -q
 python3 tools/build_upstream.py > target/upstream/build-upstream.log 2>&1 || { tail -20 target/upstream/build-upstream.log; exit 1; }
+} 9>target/upstream/prepare.lock
 # A repository script (benchmarks/callgrind.py, a gate) runs as itself.
 case "$1" in *.py) exec python3 "$@" ;; esac
 extensions=
