@@ -19,8 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/install
-        with:
-          packages: libc-ares-dev
       # Restored only: the pinned reference is rebuilt with c-ares below, never saved.
       - uses: actions/cache/restore@v4
         with:
@@ -45,6 +43,11 @@ jobs:
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
       - id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      - run: >
+          python3 tests/modules/integration/test_bridge.py --startup-only
+          ${{ steps.extensions.outputs.args }}
+          --reference target/upstream/src/modules/swoole.so
+          --hybrid "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)"
       - run: |
           python3 tests/modules/clients/cares.py ${{ steps.extensions.outputs.args }} \
             --engine upstream=target/phpt/upstream.so --engine hybrid=target/phpt/hybrid.so \

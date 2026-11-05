@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #ifndef SWOOLE_RS_CARES_H
 #define SWOOLE_RS_CARES_H
+#ifdef SW_USE_CARES
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -34,4 +35,5 @@ void swr_v1_clients_cares_lookup(const struct swr_v1_clients_cares_ops *ops, con
 #ifdef __cplusplus
 }
 #endif
+#endif /* SW_USE_CARES */
 #endif
