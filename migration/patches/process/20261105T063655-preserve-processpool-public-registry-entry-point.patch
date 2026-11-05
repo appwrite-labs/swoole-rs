@@ -1,5 +1,5 @@
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index d98d509..07fcba9 100644
+index a0f8520..c79d39e 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -240,2 +240,4 @@ struct ProcessPool {

@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 typedef struct swr_v2_http_context swr_v2_http_context;
+const int64_t *swr_v3_http_context_mtime(const swr_v2_http_context *);
 typedef struct {
     size_t filesize;
     int64_t mtime;
@@ -16,6 +17,19 @@ typedef struct {
     uint32_t event, observed, has_locations, has_index, autoindex;
     swr_v1_http_proxy_text value;
 } swr_v2_http_serve_observation;
+/* Immutable synchronous filesystem primitives; null selects direct Rust libc.
+ * Callbacks retain no arguments and must not throw or perform a Zend bailout. */
+typedef struct {
+    bool (*stat)(const char *, swr_v2_http_observation *);
+    char *(*canonical)(const char *, char *);
+    void *(*open)(const char *);
+    const char *(*read)(void *);
+    void (*close)(void *);
+} swr_v3_http_static_io;
+int32_t swr_v3_http_context_stat(swr_v2_http_context *, const swr_v3_http_static_io *);
+int32_t swr_v3_http_context_directory(swr_v2_http_context *, const swr_v3_http_static_io *);
+int32_t swr_v3_http_context_serve(swr_v2_http_context *, const swr_v1_http_proxy_text *,
+    const swr_v2_http_serve_observation *, const swr_v3_http_static_io *);
 /* Events begin0/config, locations-finished1, stat2, canonical3, MIME4. Native
  * effects run after return; canonical bytes are copied during this call only. */
 int32_t swr_v2_http_context_serve(swr_v2_http_context *, const swr_v1_http_proxy_text *,

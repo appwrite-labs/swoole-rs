@@ -29,7 +29,7 @@ pub mod task_sync;
 pub mod wait;
 pub mod worker_globals;
 pub mod worker_record;
-pub mod worker_registry;
+pub use swoole_rs_corebase::worker_registry;
 pub mod workers;
 use std::ffi::c_int;
 /// SIGRTMIN is a runtime value on Linux and undefined elsewhere (upstream guards

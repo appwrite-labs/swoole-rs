@@ -1,5 +1,5 @@
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index b92e28a..768967c 100644
+index 78fe693..6dbe914 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -110,14 +110,2 @@ class ExitStatus {
@@ -204,7 +204,7 @@ index 3b92454..8f3ce25 100644
 +    return swr_v1_worker_symbol(swoole_get_worker_type());
  }
 diff --git a/src/server/manager.cc b/src/server/manager.cc
-index 22f8e4c..e8ab962 100644
+index 43ff84f..e6f5037 100644
 --- a/src/server/manager.cc
 +++ b/src/server/manager.cc
 @@ -212,3 +212,3 @@ uint64_t ManagerContext::call(void *context, uint32_t op, uint64_t arg) {

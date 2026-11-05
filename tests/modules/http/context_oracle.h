@@ -31,3 +31,41 @@ inline void set_mtime(struct stat *value,time_t mtime){
 CONTEXT_EFFECTS(upstream_context)
 CONTEXT_EFFECTS(candidate_context)
 #undef CONTEXT_EFFECTS
+
+namespace candidate_context {
+inline bool static_io_stat(const char *path, swr_v2_http_observation *out) noexcept {
+    struct stat value{};
+    if (candidate_context::lstat(path, &value) != 0) return false;
+    out->filesize = value.st_size;
+#ifdef __MACH__
+    out->mtime = value.st_mtimespec.tv_sec;
+#else
+    out->mtime = value.st_mtim.tv_sec;
+#endif
+    out->kind = (S_ISDIR(value.st_mode) ? SWR_HTTP_PATH_IS_DIRECTORY : 0u) |
+        (S_ISREG(value.st_mode) ? SWR_HTTP_PATH_FILE : 0u) |
+        (S_ISLNK(value.st_mode) ? SWR_HTTP_PATH_LINK : 0u);
+    return true;
+}
+inline char *static_io_canonical(const char *path, char *out) noexcept { return candidate_context::realpath(path, out); }
+inline void *static_io_open(const char *path) noexcept { return candidate_context::opendir(path); }
+inline const char *static_io_read(void *opaque) noexcept {
+    auto *entry = candidate_context::readdir(static_cast<candidate_context::DIR *>(opaque));
+    return entry ? entry->d_name : nullptr;
+}
+inline void static_io_close(void *opaque) noexcept { candidate_context::closedir(static_cast<candidate_context::DIR *>(opaque)); }
+inline const swr_v3_http_static_io static_io{static_io_stat,static_io_canonical,static_io_open,static_io_read,static_io_close};
+inline int32_t static_io_stat_context(swr_v2_http_context *context, const swr_v3_http_static_io *) {
+    return swr_v3_http_context_stat(context, &static_io);
+}
+inline int32_t static_io_directory(swr_v2_http_context *context, const swr_v3_http_static_io *) {
+    return swr_v3_http_context_directory(context, &static_io);
+}
+inline int32_t static_io_serve(swr_v2_http_context *context, const swr_v1_http_proxy_text *root,
+    const swr_v2_http_serve_observation *observation, const swr_v3_http_static_io *) {
+    return swr_v3_http_context_serve(context, root, observation, &static_io);
+}
+}
+#define swr_v3_http_context_stat candidate_context::static_io_stat_context
+#define swr_v3_http_context_directory candidate_context::static_io_directory
+#define swr_v3_http_context_serve candidate_context::static_io_serve

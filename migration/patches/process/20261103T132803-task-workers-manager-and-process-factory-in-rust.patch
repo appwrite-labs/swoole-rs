@@ -1,5 +1,5 @@
 diff --git a/src/server/manager.cc b/src/server/manager.cc
-index d1a32f8..43ff84f 100644
+index bee2ca7..43ff84f 100644
 --- a/src/server/manager.cc
 +++ b/src/server/manager.cc
 @@ -22,29 +22,39 @@
@@ -64,7 +64,7 @@ index d1a32f8..43ff84f 100644
 -void Manager::timer_callback(Timer *timer, TimerNode *tnode) {
 +static void Manager_timer_callback(Timer *timer, TimerNode *tnode) {
      auto *serv = static_cast<Server *>(tnode->data);
-@@ -55,288 +65,332 @@ void Manager::timer_callback(Timer *timer, TimerNode *tnode) {
+@@ -55,286 +65,332 @@ void Manager::timer_callback(Timer *timer, TimerNode *tnode) {
  
 -int Server::start_manager_process() {
 -    if (!create_event_workers()) {
@@ -292,19 +292,18 @@ index d1a32f8..43ff84f 100644
 -                    Worker *worker = _server->get_worker(worker_stop_msg.worker_id);
 -                    _server->factory_->spawn_event_worker(worker);
 -                }
--                swr_v1_process_worker_registry_detach(
--                    static_cast<swr_v1_process_worker_registry *>(_server->worker_registry), worker_stop_msg.pid);
+-                swr_v1_process_worker_registry_detach(static_cast<swr_v1_process_worker_registry *>(_server->worker_registry), worker_stop_msg.pid);
 -            }
 -            pool->read_message = false;
--        }
--
--        if (sw_timer()) {
--            sw_timer()->select();
 +        return 0;
 +    case SWR_WORKERS_OP_ON_MANAGER_START:
 +        if (serv->onManagerStart) {
 +            serv->onManagerStart(serv);
          }
+-
+-        if (sw_timer()) {
+-            sw_timer()->select();
+-        }
 -    };
 -    host.wait_failed = [](void *) { swoole_sys_warning("wait() failed"); };
 -    host.start_reload = [](void *ctx) -> uint32_t {
@@ -505,10 +504,9 @@ index d1a32f8..43ff84f 100644
 +        if (serv->onBeforeReload != nullptr) {
 +            serv->onBeforeReload(serv);
          }
--        if (!_server->user_worker_map.empty()) {
--            for (auto &kv : _server->user_worker_map) {
--                kill_workers.push_back(kv.second->get_pid());
--            }
+-        for (auto *worker : detail::RegisteredWorkers<Worker>(
+-                 static_cast<swr_v1_process_worker_registry *>(_server->worker_registry), SWR_WORKER_USER)) {
+-            kill_workers.push_back(worker->pid);
 +        return 0;
 +    case SWR_WORKERS_OP_RELOAD_ADD_EVENT_WORKERS:
 +        swr_v1_process_reload_task_add_workers(serv->get_event_worker_pool()->reload_task,
@@ -669,7 +667,7 @@ index d1a32f8..43ff84f 100644
 +    default:
 +        abort();
      }
-@@ -344,37 +398,5 @@ void Manager::reopen_logger() const {
+@@ -342,37 +398,5 @@ void Manager::reopen_logger() const {
  
 -void Manager::signal_handler(int signo) {
 -    Server *_server = sw_server();
@@ -710,15 +708,14 @@ index d1a32f8..43ff84f 100644
 +    ManagerContext ctx{this};
 +    return ctx.run(SWR_WORKERS_RUN_START_MANAGER);
  }
-@@ -385,32 +407,5 @@ void Manager::signal_handler(int signo) {
+@@ -383,31 +407,5 @@ void Manager::signal_handler(int signo) {
  pid_t Server::restart_worker_process(const ExitStatus &exit_status) {
 -    pid_t exited_pid = exit_status.get_pid();
 -    Worker *exited_worker = get_worker_by_pid(exited_pid);
 -
 -    if (exited_worker == nullptr) {
 -        // Exception: Received an exit signal from an unknown process
--        if (!swr_v1_process_worker_registry_reap_detached(
--                static_cast<swr_v1_process_worker_registry *>(worker_registry), exited_pid)) {
+-        if (!swr_v1_process_worker_registry_reap_detached(static_cast<swr_v1_process_worker_registry *>(worker_registry), exited_pid)) {
 -            swoole_warning("Unknown type child process [%d] exited", exited_pid);
 -        } else {
 -            swoole_trace_log(SW_TRACE_SERVER, "Detached process [%d] exited normally", exited_pid);
@@ -746,7 +743,7 @@ index d1a32f8..43ff84f 100644
 +    return ctx.run(SWR_WORKERS_RUN_RESTART_WORKER,
 +                   (uint64_t) (uint32_t) exit_status.get_pid() | ((uint64_t) (uint32_t) exit_status.get_status() << 32));
  }
-@@ -421,27 +416,4 @@ pid_t Server::restart_worker_process(const ExitStatus &exit_status) {
+@@ -418,27 +416,4 @@ pid_t Server::restart_worker_process(const ExitStatus &exit_status) {
  void Server::read_worker_message(ProcessPool *pool, EventData *msg) {
 -    if (msg->info.type != SW_SERVER_EVENT_COMMAND_REQUEST) {
 -        swoole_warning("unknown worker message type[%d]", msg->info.type);
@@ -776,7 +773,7 @@ index d1a32f8..43ff84f 100644
 +    ManagerContext ctx{static_cast<Server *>(pool->ptr), nullptr, msg};
 +    ctx.run(SWR_WORKERS_RUN_READ_WORKER_MESSAGE);
  }
-@@ -449,25 +421,4 @@ void Server::read_worker_message(ProcessPool *pool, EventData *msg) {
+@@ -446,25 +421,4 @@ void Server::read_worker_message(ProcessPool *pool, EventData *msg) {
  bool Server::reload(bool reload_all_workers) const {
 -    if (is_thread_mode()) {
 -        return reload_worker_threads(reload_all_workers);
@@ -805,14 +802,14 @@ index d1a32f8..43ff84f 100644
 +    return ctx.run(SWR_WORKERS_RUN_RELOAD, reload_all_workers);
  }
 diff --git a/src/server/process.cc b/src/server/process.cc
-index 8679bbd..1bfa37f 100644
+index 1069f23..bc3ae7e 100644
 --- a/src/server/process.cc
 +++ b/src/server/process.cc
 @@ -18,2 +18,3 @@
  #include "swoole_rs_process.h"
 +#include "swoole_rs_workers.h"
  
-@@ -50,33 +51,355 @@ using network::Socket;
+@@ -46,33 +47,355 @@ using network::Socket;
  
 -Factory *Server::create_process_factory() {
 -    /**
@@ -850,7 +847,9 @@ index 8679bbd..1bfa37f 100644
 -    sw_shm_free(connection_list);
 -    delete[] reactor_threads;
 +    static uint64_t call(void *context, uint32_t op, uint64_t arg);
-+
+ 
+-    reactor_thread_barrier.destroy();
+-    gs->manager_barrier.destroy();
 +    int64_t run(uint32_t operation, uint64_t arg = 0) {
 +        return swr_v1_workers_run(operation, arg, this, call);
 +    }
@@ -1054,9 +1053,7 @@ index 8679bbd..1bfa37f 100644
 +        Socket *sock = mb->get_pipe_socket(target->pipe_master);
 +        return mb->write(sock, &_task);
 +    }
- 
--    reactor_thread_barrier.destroy();
--    gs->manager_barrier.destroy();
++
 +    case SWR_WORKERS_OP_SEND_LEN:
 +        return send->info.len;
 +    case SWR_WORKERS_OP_OUTPUT_BUFFER_SIZE:
@@ -1148,7 +1145,7 @@ index 8679bbd..1bfa37f 100644
 +        ev.reactor_id = conn->reactor_id;
 +        return (int64_t) serv->send_to_worker_from_worker(
 +            serv->get_worker(static_cast<int>(arg)), &ev, sizeof(ev), SW_PIPE_MASTER);
-+    }
+     }
 +    case SWR_WORKERS_OP_CONN_CLOSING:
 +        return conn->closing;
 +    case SWR_WORKERS_LOG_SESSION_CLOSING:
@@ -1173,7 +1170,7 @@ index 8679bbd..1bfa37f 100644
 +        serv->onClose(serv, &info);
 +        conn->closing = 0;
 +        return 0;
-     }
++    }
 +    case SWR_WORKERS_OP_CLEAR_CLOSE_ERRNO:
 +        conn->close_errno = 0;
 +        return 0;
@@ -1193,7 +1190,7 @@ index 8679bbd..1bfa37f 100644
 +    FactoryContext ctx{this};
 +    ctx.run(SWR_WORKERS_RUN_DESTROY_PROCESS_FACTORY);
  }
-@@ -107,16 +430,4 @@ void Factory::kill_event_workers() const {
+@@ -108,16 +431,4 @@ void Factory::kill_event_workers() const {
  void Factory::kill_task_workers() const {
 -    int status;
 -    if (server_->task_worker_num == 0) {
@@ -1212,7 +1209,7 @@ index 8679bbd..1bfa37f 100644
 +    FactoryContext ctx{server_};
 +    ctx.run(SWR_WORKERS_RUN_KILL_TASK_WORKERS);
  }
-@@ -124,28 +435,4 @@ void Factory::kill_task_workers() const {
+@@ -125,28 +436,4 @@ void Factory::kill_task_workers() const {
  pid_t Factory::spawn_event_worker(Worker *worker) const {
 -    pid_t pid = swoole_fork(0);
 -
@@ -1243,12 +1240,11 @@ index 8679bbd..1bfa37f 100644
 +    FactoryContext ctx{server_, worker};
 +    return ctx.run(SWR_WORKERS_RUN_SPAWN_EVENT_WORKER);
  }
-@@ -153,33 +440,4 @@ pid_t Factory::spawn_event_worker(Worker *worker) const {
+@@ -154,30 +441,4 @@ pid_t Factory::spawn_event_worker(Worker *worker) const {
  pid_t Factory::spawn_user_worker(Worker *worker) const {
 -    pid_t pid = swoole_fork(0);
--    if (worker->get_pid()) {
--        server_->user_worker_map.erase(worker->get_pid());
--        swr_v1_process_worker_registry_unregister(worker_registry_of(server_), worker->get_pid());
+-    if (worker->pid) {
+-        swr_v1_process_worker_registry_unregister(static_cast<swr_v1_process_worker_registry *>(server_->worker_registry), worker->pid);
 -    }
 -    if (pid < 0) {
 -        swoole_sys_warning("failed to spawn the user worker");
@@ -1270,16 +1266,14 @@ index 8679bbd..1bfa37f 100644
 -         * worker: local memory
 -         * user_workers: shared memory
 -         */
--        worker->set_pid(pid);
--        server_->get_worker(worker->get_id())->set_pid(pid);
--        server_->user_worker_map.emplace(pid, worker);
--        swr_v1_process_worker_registry_register(worker_registry_of(server_), pid, worker, SWR_WORKER_USER);
+-        server_->get_worker(worker->id)->pid = worker->pid = pid;
+-        swr_v1_process_worker_registry_insert(static_cast<swr_v1_process_worker_registry *>(server_->worker_registry), pid, worker, SWR_WORKER_USER);
 -        return pid;
 -    }
 +    FactoryContext ctx{server_, worker};
 +    return ctx.run(SWR_WORKERS_RUN_SPAWN_USER_WORKER);
  }
-@@ -191,6 +449,4 @@ pid_t Factory::spawn_task_worker(Worker *worker) const {
+@@ -189,6 +450,4 @@ pid_t Factory::spawn_task_worker(Worker *worker) const {
  void Factory::check_worker_exit_status(Worker *worker, const ExitStatus &exit_status) const {
 -    if (exit_status.get_status() != 0) {
 -        worker->report_error(exit_status);
@@ -1288,7 +1282,7 @@ index 8679bbd..1bfa37f 100644
 +    FactoryContext ctx{server_, worker, nullptr, &exit_status};
 +    ctx.run(SWR_WORKERS_RUN_CHECK_EXIT_STATUS);
  }
-@@ -198,13 +454,4 @@ void Factory::check_worker_exit_status(Worker *worker, const ExitStatus &exit_st
+@@ -196,13 +455,4 @@ void Factory::check_worker_exit_status(Worker *worker, const ExitStatus &exit_st
  bool ProcessFactory::shutdown() {
 -    int status;
 -
@@ -1304,7 +1298,7 @@ index 8679bbd..1bfa37f 100644
 +    FactoryContext ctx{server_};
 +    return ctx.run(SWR_WORKERS_RUN_PROCESS_FACTORY_SHUTDOWN);
  }
-@@ -212,20 +459,4 @@ bool ProcessFactory::shutdown() {
+@@ -210,20 +460,4 @@ bool ProcessFactory::shutdown() {
  bool Server::create_worker_pipes() {
 -    SW_LOOP_N(worker_num) {
 -        auto _sock = new UnixSocket(true, SOCK_DGRAM);
@@ -1327,7 +1321,7 @@ index 8679bbd..1bfa37f 100644
 +    FactoryContext ctx{this};
 +    return ctx.run(SWR_WORKERS_RUN_CREATE_WORKER_PIPES);
  }
-@@ -233,6 +464,4 @@ bool Server::create_worker_pipes() {
+@@ -231,6 +465,4 @@ bool Server::create_worker_pipes() {
  bool ProcessFactory::start() {
 -    if (!server_->create_worker_pipes()) {
 -        return false;
@@ -1336,7 +1330,7 @@ index 8679bbd..1bfa37f 100644
 +    FactoryContext ctx{server_};
 +    return ctx.run(SWR_WORKERS_RUN_PROCESS_FACTORY_START);
  }
-@@ -253,57 +482,4 @@ bool ProcessFactory::notify(DataHead *ev) {
+@@ -251,57 +483,4 @@ bool ProcessFactory::notify(DataHead *ev) {
  bool ProcessFactory::dispatch(SendData *task) {
 -    // the task->info.fd is real fd, not session_id, it will be converted to session after dispatch
 -    int fd = static_cast<int>(task->info.fd);
@@ -1396,7 +1390,7 @@ index 8679bbd..1bfa37f 100644
 +    FactoryContext ctx{server_, nullptr, task};
 +    return ctx.run(SWR_WORKERS_RUN_PROCESS_DISPATCH);
  }
-@@ -314,56 +490,4 @@ static bool process_is_supported_send_yield(Server *serv, const Connection *conn
+@@ -312,56 +491,4 @@ static bool process_is_supported_send_yield(Server *serv, const Connection *conn
  bool ProcessFactory::finish(SendData *resp) {
 -    /**
 -     * More than the output buffer
@@ -1455,12 +1449,12 @@ index 8679bbd..1bfa37f 100644
 +    FactoryContext ctx{server_, nullptr, resp};
 +    return ctx.run(SWR_WORKERS_RUN_PROCESS_FINISH);
  }
-@@ -372,4 +496,2 @@ bool ProcessFactory::end(SessionId session_id, int flags) {
+@@ -370,4 +497,2 @@ bool ProcessFactory::end(SessionId session_id, int flags) {
      SendData _send{};
 -    DataHead info{};
 -
      _send.info.fd = session_id;
-@@ -377,63 +499,4 @@ bool ProcessFactory::end(SessionId session_id, int flags) {
+@@ -375,63 +500,4 @@ bool ProcessFactory::end(SessionId session_id, int flags) {
      _send.info.type = SW_SERVER_EVENT_CLOSE;
 -
 -    Connection *conn = server_->get_connection_verify_no_ssl(session_id);

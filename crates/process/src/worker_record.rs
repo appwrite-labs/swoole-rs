@@ -49,18 +49,17 @@ pub unsafe extern "C" fn swr_v1_worker_array_lookup(
     count: u32,
     pid: c_int,
 ) -> *mut WorkerRecord {
-    if workers.is_null() {
-        return core::ptr::null_mut();
+    // SAFETY: the caller lends the complete initialized canonical array and its PID slots.
+    unsafe {
+        crate::worker_registry::swr_v1_process_worker_registry_find_array(
+            workers.cast(),
+            count,
+            core::mem::size_of::<WorkerRecord>(),
+            core::mem::offset_of!(WorkerRecord, pid),
+            pid,
+        )
     }
-    for index in 0..usize::try_from(count).unwrap_or(0) {
-        // SAFETY: the caller lends this complete initialized array.
-        let worker = unsafe { workers.add(index) };
-        // SAFETY: each array element is live, including its public pid slot.
-        if unsafe { (*worker).pid } == pid {
-            return worker;
-        }
-    }
-    core::ptr::null_mut()
+    .cast()
 }
 
 /// The worker's status (`SW_WORKER_IDLE`/`BUSY`/…).

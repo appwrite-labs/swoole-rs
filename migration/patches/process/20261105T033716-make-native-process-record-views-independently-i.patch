@@ -1,5 +1,5 @@
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index 9ef379f..f0a3606 100644
+index 9155482..0254212 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -135,3 +135,5 @@ struct WorkerGlobal {

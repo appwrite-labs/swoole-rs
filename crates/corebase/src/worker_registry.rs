@@ -1,12 +1,6 @@
-//! The server's worker lookup, owned in Rust behind an opaque handle. It maps a
-//! worker's pid to its native `Worker*` and category, replacing
-//! `Server::get_worker_by_pid`'s event-worker scan and user-map branch and the
-//! `kill_event_workers` / `kill_user_workers` loops. Native registers a worker when
-//! it spawns and unregisters it when it is reaped or detached; fork, signalling and
-//! every `Worker` field stay native. A `ProcessPool` (the task pool, or a
-//! `Swoole\Process\Pool`) keeps its own registry of its workers. Each registry also
-//! holds the detached set: pids of workers that asked to be replaced before exiting,
-//! which the manager reaps without restarting.
+//! Always-on PID/category and detached-worker ownership shared by Server and `ProcessPool`.
+//! Worker pointers are opaque loans: their records retain their own layout and lifetime
+//! contracts. Signalling and wait effects run only after a PID snapshot is collected.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_int, c_void};
@@ -16,7 +10,8 @@ use std::ffi::{c_int, c_void};
 // workers live in the task pool and are not registered).
 
 /// User workers in the server registry (`SWR_WORKER_USER`).
-pub(crate) const CATEGORY_USER: c_int = 2;
+/// cbindgen:ignore
+pub const CATEGORY_USER: c_int = 2;
 
 struct Entry {
     worker: *mut c_void,
@@ -31,12 +26,44 @@ pub struct WorkerRegistry {
 }
 
 impl WorkerRegistry {
-    pub(crate) fn pids(&self, category: c_int) -> impl Iterator<Item = c_int> + '_ {
+    pub fn pids(&self, category: c_int) -> impl Iterator<Item = c_int> + '_ {
         self.workers
             .iter()
             .filter(move |(_, entry)| entry.category == category)
             .map(|(pid, _)| *pid)
     }
+}
+
+/// Scan a caller-owned record array in its original order, including direct PID writes.
+/// This accepts both the original native Worker and its canonical Rust layout, without
+/// per-record callbacks or a cached PID index that could miss an earlier duplicate.
+/// # Safety
+/// `array` is null or a live array of `count` records, each `stride` bytes, with an
+/// initialized `c_int` PID at `pid_offset`. Reads follow the caller's synchronization.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_find_array(
+    array: *mut c_void,
+    count: u32,
+    stride: usize,
+    pid_offset: usize,
+    pid: c_int,
+) -> *mut c_void {
+    if array.is_null() {
+        return core::ptr::null_mut();
+    }
+    for index in 0..usize::try_from(count).unwrap_or_default() {
+        let record = array.cast::<u8>().wrapping_add(index.wrapping_mul(stride));
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "Byte-strided native records may be unaligned; the only access uses read_unaligned"
+        )]
+        let slot = record.wrapping_add(pid_offset).cast::<c_int>();
+        // SAFETY: the caller lends this record's initialized PID bytes; no whole-record borrow.
+        if unsafe { slot.read_unaligned() } == pid {
+            return record.cast();
+        }
+    }
+    core::ptr::null_mut()
 }
 
 /// Create an empty registry. Native frees it with [`swr_v1_process_worker_registry_free`].
@@ -173,6 +200,74 @@ pub unsafe extern "C" fn swr_v1_process_worker_registry_reap_detached(
     registry.detached.remove(&pid)
 }
 
+/// A detached native read view of a Rust worker-pointer vector. Capacity is opaque deallocation metadata.
+#[repr(C)]
+#[derive(Default)]
+pub struct WorkerSnapshot {
+    pub data: *mut *mut c_void,
+    pub length: usize,
+    pub capacity: usize,
+}
+
+/// Collect opaque worker pointers before native signalling, waiting or allocation effects can reenter.
+/// Returns false on allocation failure, leaving `output` untouched.
+/// # Safety
+/// `registry` is null or live and synchronized. `output` lends writable disjoint
+/// storage; on success its buffer is freed once by `_snapshot_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_snapshot(
+    registry: *const WorkerRegistry,
+    category: c_int,
+    output: *mut WorkerSnapshot,
+) -> bool {
+    let mut values = Vec::new();
+    if !registry.is_null() {
+        // SAFETY: the caller lends a live registry for this leaf collection.
+        let registry = unsafe { &*registry };
+        if values.try_reserve_exact(registry.workers.len()).is_err() {
+            return false;
+        }
+        values.extend(
+            registry
+                .workers
+                .values()
+                .filter(|entry| entry.category == category)
+                .map(|entry| entry.worker),
+        );
+    }
+    let snapshot = WorkerSnapshot {
+        data: if values.capacity() == 0 {
+            core::ptr::null_mut()
+        } else {
+            values.as_mut_ptr()
+        },
+        length: values.len(),
+        capacity: values.capacity(),
+    };
+    // SAFETY: the caller lends disjoint writable output storage.
+    unsafe { output.write(snapshot) };
+    core::mem::forget(values);
+    true
+}
+
+/// Release a successful worker snapshot; its slots become empty so cleanup is repeatable.
+/// # Safety
+/// `snapshot` lends live initialized slots from `_snapshot`; its buffer metadata
+/// has not been modified or freed separately.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_snapshot_free(
+    snapshot: *mut WorkerSnapshot,
+) {
+    // SAFETY: the caller lends initialized snapshot slots for their final release.
+    let value = unsafe { snapshot.read() };
+    if value.capacity != 0 {
+        // SAFETY: this is the exact pointer/length/capacity of the forgotten Rust vector.
+        drop(unsafe { Vec::from_raw_parts(value.data, value.length, value.capacity) });
+    }
+    // SAFETY: the caller lends these slots exclusively until cleanup returns.
+    unsafe { snapshot.write(WorkerSnapshot::default()) };
+}
+
 /// Terminate every worker of `category`: send `signo` to each, then wait for each.
 /// `kill_fn(pid, signo)` sends the signal; `wait_fn(pid, &status, 0)` reaps (it is
 /// `swoole_waitpid`, which services signals and timers across `EINTR`); `warn_fn(pid)`
@@ -235,6 +330,60 @@ mod tests {
             assert!(!swr_v1_process_worker_registry_unregister(reg, 100));
             assert!(swr_v1_process_worker_registry_lookup(reg, 100).is_null());
             swr_v1_process_worker_registry_free(reg);
+        }
+    }
+
+    #[test]
+    fn array_lookup_reads_unaligned_slots_and_keeps_first_match_after_raw_writes() {
+        let mut bytes = [0_u8; 26];
+        let array = bytes.as_mut_ptr().cast::<c_void>();
+        unsafe {
+            assert_eq!(
+                swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 0),
+                array
+            );
+            bytes[3..7].copy_from_slice(&9_i32.to_ne_bytes());
+            assert_eq!(
+                swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 0),
+                array.cast::<u8>().add(13).cast()
+            );
+            bytes[3..7].copy_from_slice(&0_i32.to_ne_bytes());
+            assert_eq!(
+                swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 0),
+                array
+            );
+            assert!(swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 7).is_null());
+            assert!(
+                swr_v1_process_worker_registry_find_array(core::ptr::null_mut(), 2, 13, 3, 0)
+                    .is_null()
+            );
+        }
+    }
+
+    #[test]
+    fn native_pointer_snapshot_outlives_registry_mutation_and_destruction() {
+        let reg = registry();
+        let mut first = 1_u8;
+        let mut second = 2_u8;
+        let a = core::ptr::from_mut(&mut first).cast();
+        let b = core::ptr::from_mut(&mut second).cast();
+        let mut snapshot = WorkerSnapshot::default();
+        unsafe {
+            swr_v1_process_worker_registry_register(reg, 10, a, CATEGORY_USER);
+            swr_v1_process_worker_registry_register(reg, 20, b, CATEGORY_EVENT);
+            assert!(swr_v1_process_worker_registry_snapshot(
+                reg,
+                CATEGORY_USER,
+                &raw mut snapshot
+            ));
+            swr_v1_process_worker_registry_unregister(reg, 10);
+            swr_v1_process_worker_registry_free(reg);
+            assert_eq!(snapshot.length, 1);
+            assert_eq!(*snapshot.data, a);
+            swr_v1_process_worker_registry_snapshot_free(&raw mut snapshot);
+            assert!(snapshot.data.is_null());
+            assert_eq!((snapshot.length, snapshot.capacity), (0, 0));
+            swr_v1_process_worker_registry_snapshot_free(&raw mut snapshot);
         }
     }
 

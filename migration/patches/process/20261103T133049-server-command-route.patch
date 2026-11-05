@@ -1,12 +1,12 @@
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 51835f3..125459f 100644
+index bd3d836..a830b78 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
 @@ -25,2 +25,3 @@
  #include "swoole_hash.h"
 +#include "swoole_rs_process_command.h"
  
-@@ -530,26 +531,59 @@ bool Server::command(WorkerId process_id,
+@@ -492,26 +493,59 @@ bool Server::command(WorkerId process_id,
                       const Command::Callback &fn) {
 -    if (!is_started()) {
 -        return false;
@@ -85,7 +85,7 @@ index 51835f3..125459f 100644
 +    if (!route.request) {
 +        return false;
      }
-@@ -558,64 +592,17 @@ bool Server::command(WorkerId process_id,
+@@ -520,64 +554,17 @@ bool Server::command(WorkerId process_id,
      int64_t request_id = store_command_callback(fn);
 -    Socket *pipe_sock;
 -
@@ -161,7 +161,7 @@ index 51835f3..125459f 100644
          }
 -        memset(&buf.info, 0, sizeof(buf.info));
          buf.info.type = SW_SERVER_EVENT_COMMAND_REQUEST;
-@@ -623,20 +610,23 @@ bool Server::command(WorkerId process_id,
+@@ -585,20 +572,23 @@ bool Server::command(WorkerId process_id,
          buf.info.server_fd = command_id;
 -        buf.info.len = msg.length();
 -        memcpy(buf.data, msg.c_str(), msg.length());

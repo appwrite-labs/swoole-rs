@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "swoole_rs_corebase_worker_registry.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -51,29 +52,6 @@ void swr_v1_signalfd_close(void);
 bool swr_v1_signalfd_clear(void);
 swr_v1_signalfd_received swr_v1_signalfd_receive(int fd);
 #endif
-/* Rust-owned worker lookup: pid -> native Worker* and category. Replaces
- * Server::get_worker_by_pid's event-worker scan and user-map branch and the
- * kill_event_workers / kill_user_workers loops. The handle lives on Server; native
- * registers a worker at spawn, unregisters at reap/detach. Task workers live in the
- * task pool, not here. */
-#define SWR_WORKER_EVENT 1
-#define SWR_WORKER_USER 2
-typedef struct swr_v1_process_worker_registry swr_v1_process_worker_registry;
-swr_v1_process_worker_registry *swr_v1_process_worker_registry_new(void);
-void swr_v1_process_worker_registry_free(swr_v1_process_worker_registry *);
-void swr_v1_process_worker_registry_insert(swr_v1_process_worker_registry *, int pid, void *worker, int category);
-void swr_v1_process_worker_registry_register(swr_v1_process_worker_registry *, int pid, void *worker, int category);
-bool swr_v1_process_worker_registry_unregister(swr_v1_process_worker_registry *, int pid);
-void *swr_v1_process_worker_registry_lookup_category(const swr_v1_process_worker_registry *, int, int);
-void *swr_v1_process_worker_registry_lookup(const swr_v1_process_worker_registry *, int pid);
-void swr_v1_process_worker_registry_detach(swr_v1_process_worker_registry *, int pid);
-bool swr_v1_process_worker_registry_reap_detached(swr_v1_process_worker_registry *, int pid);
-/* Send signo to every worker of category, then wait for each. kill_fn/wait_fn are
- * swoole_kill / swoole_waitpid; warn_fn reports a wait failure. */
-void swr_v1_process_worker_registry_terminate(const swr_v1_process_worker_registry *, int category, int signo,
-                                              int (*kill_fn)(int pid, int signo),
-                                              int (*wait_fn)(int pid, int *status, int options),
-                                              void (*warn_fn)(int pid));
 /* Byte-exact mirror of swoole::Worker (include/swoole_process_pool.h), whose layout
  * Rust owns (crates/process/src/worker_record.rs). A static_assert in the process
  * patch locks sizeof/offsetof of swoole::Worker to this mirror, so a layout drift

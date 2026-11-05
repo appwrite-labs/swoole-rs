@@ -1,5 +1,5 @@
 diff --git a/src/server/process.cc b/src/server/process.cc
-index 326096a..829e58a 100644
+index 3a89539..0547e27 100644
 --- a/src/server/process.cc
 +++ b/src/server/process.cc
 @@ -26,2 +26,7 @@ static inline swr_v1_process_worker_registry *worker_registry_of(const Server *s
@@ -10,26 +10,7 @@ index 326096a..829e58a 100644
 +}
 +
  using network::Socket;
-@@ -69,16 +74,4 @@ ProcessFactory::~ProcessFactory() = default;
- void Factory::kill_user_workers() const {
--    if (server_->user_worker_map.empty()) {
--        return;
--    }
--
--    for (const auto &kv : server_->user_worker_map) {
--        swoole_kill(kv.second->pid, SIGTERM);
--    }
--
--    for (const auto &kv : server_->user_worker_map) {
--        int _stat_loc;
--        if (swoole_waitpid(kv.second->pid, &_stat_loc, 0) < 0) {
--            swoole_sys_warning("waitpid(%d) failed", kv.second->pid);
--        }
--    }
-+    swr_v1_process_worker_registry_terminate(
-+        worker_registry_of(server_), SWR_WORKER_USER, SIGTERM, swoole_kill, swoole_waitpid, worker_waitpid_warn);
- }
-@@ -89,18 +82,4 @@ void Factory::kill_user_workers() const {
+@@ -82,18 +87,4 @@ void Factory::kill_user_workers() const {
  void Factory::kill_event_workers() const {
 -    int status;
 -
@@ -50,13 +31,8 @@ index 326096a..829e58a 100644
 +    swr_v1_process_worker_registry_terminate(
 +        worker_registry_of(server_), SWR_WORKER_EVENT, SIGTERM, swoole_kill, swoole_waitpid, worker_waitpid_warn);
  }
-@@ -141,3 +120,3 @@ pid_t Factory::spawn_event_worker(Worker *worker) const {
+@@ -134,3 +125,3 @@ pid_t Factory::spawn_event_worker(Worker *worker) const {
          worker->pid = pid;
 -        swr_v1_process_worker_registry_register(worker_registry_of(server_), pid, worker);
 +        swr_v1_process_worker_registry_register(worker_registry_of(server_), pid, worker, SWR_WORKER_EVENT);
-         return pid;
-@@ -184,3 +163,3 @@ pid_t Factory::spawn_user_worker(Worker *worker) const {
-         server_->user_worker_map.emplace(pid, worker);
--        swr_v1_process_worker_registry_register(worker_registry_of(server_), pid, worker);
-+        swr_v1_process_worker_registry_register(worker_registry_of(server_), pid, worker, SWR_WORKER_USER);
          return pid;

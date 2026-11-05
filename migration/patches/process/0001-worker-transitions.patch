@@ -1,5 +1,5 @@
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index 143d001..e7b3ac3 100644
+index 750fd93..0f57e9c 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
 @@ -17,2 +17,7 @@
@@ -10,7 +10,7 @@ index 143d001..e7b3ac3 100644
 +#endif
 +#include "swoole_rs_process.h"
  #include "swoole_socket.h"
-@@ -1166,6 +1171,8 @@ void ReloadTask::kill_all(int signal_number) {
+@@ -1160,6 +1165,8 @@ void ReloadTask::kill_all(int signal_number) {
      for (auto &kv : workers) {
 -        if (swoole_kill(kv.first, signal_number) < 0) {
 -            if (errno == ECHILD || errno == ESRCH) {
@@ -23,7 +23,7 @@ index 143d001..e7b3ac3 100644
 +            continue;
 +        } else if (action == 2) {
              swoole_sys_warning("failed to kill(%d, SIGTERM) worker#[%d]", kv.first, kv.second->id);
-@@ -1187,7 +1194,9 @@ void ReloadTask::kill_one(int signal_number) {
+@@ -1181,7 +1188,9 @@ void ReloadTask::kill_one(int signal_number) {
          }
 -        if (swoole_kill(pid, signal_number) < 0) {
 -            if (errno == ECHILD || errno == ESRCH) {
@@ -513,7 +513,7 @@ index a4a523e..f192fb6 100644
 +    return swr_v1_wait_count();
  }
 diff --git a/src/server/manager.cc b/src/server/manager.cc
-index ee4229d..7b493ce 100644
+index 2d5d311..feb970c 100644
 --- a/src/server/manager.cc
 +++ b/src/server/manager.cc
 @@ -17,2 +17,7 @@
@@ -536,7 +536,7 @@ index ee4229d..7b493ce 100644
 -            } else if (reload_task_worker) {  // only reload task workers
 +            } else if (reload_action == 2) {  // only reload task workers
                  pool->reload_init = reload_task_worker = false;
-@@ -352,14 +359,16 @@ void Manager::signal_handler(int signo) {
+@@ -351,14 +358,16 @@ void Manager::signal_handler(int signo) {
  
 -    switch (signo) {
 -    case SIGTERM:
@@ -560,12 +560,12 @@ index ee4229d..7b493ce 100644
 -    case SIGALRM:
 +    case 5:
          if (manager->force_kill) {
-@@ -368,3 +377,3 @@ void Manager::signal_handler(int signo) {
+@@ -367,3 +376,3 @@ void Manager::signal_handler(int signo) {
          break;
 -    case SIGWINCH:
 +    case 6:
          manager->reopen_logger();
-@@ -372,7 +381,2 @@ void Manager::signal_handler(int signo) {
+@@ -371,7 +380,2 @@ void Manager::signal_handler(int signo) {
      default:
 -#ifdef SIGRTMIN
 -        if (signo == SIGRTMIN) {
@@ -574,7 +574,7 @@ index ee4229d..7b493ce 100644
 -#endif
          break;
 diff --git a/src/server/task_worker.cc b/src/server/task_worker.cc
-index 324abb3..7377762 100644
+index e8c9b21..a87d464 100644
 --- a/src/server/task_worker.cc
 +++ b/src/server/task_worker.cc
 @@ -18,2 +18,7 @@

@@ -279,40 +279,40 @@ index d9c3bc3..5ebf71a 100644
 -}
 -#endif
 diff --git a/include/swoole_server.h b/include/swoole_server.h
-index fb595fe..b643e34 100644
+index 0250b94..9e22c4b 100644
 --- a/include/swoole_server.h
 +++ b/include/swoole_server.h
-@@ -292,6 +292,2 @@ struct ListenPort : detail::PortFields {
+@@ -283,6 +283,2 @@ struct ListenPort : detail::PortFields {
  
 -    uint32_t get_ssl_protocols() const {
 -        return ssl_context->protocols;
 -    }
 -
      bool has_sni_contexts() const {
-@@ -588,4 +584,2 @@ class Server : public detail::ServerFields {
+@@ -553,4 +549,2 @@ class Server : public detail::ServerFields {
  
 -    int worker_uid = 0;
 -    int worker_groupid = 0;
  
-@@ -600,3 +594,2 @@ class Server : public detail::ServerFields {
+@@ -565,3 +559,2 @@ class Server : public detail::ServerFields {
  
 -    time_t reload_time = 0;
  
-@@ -666,6 +659,2 @@ class Server : public detail::ServerFields {
+@@ -631,6 +624,2 @@ class Server : public detail::ServerFields {
  
 -    network::Socket *get_worker_pipe_worker(WorkerId id) const {
 -        return get_worker(id)->pipe_worker;
 -    }
 -
      network::Socket *get_pipe_socket_in_message_bus(network::Socket *_socket) {
-@@ -889,6 +878,2 @@ class Server : public detail::ServerFields {
+@@ -872,6 +861,2 @@ class Server : public detail::ServerFields {
  
 -    uint32_t get_worker_buffer_num() const {
 -        return is_base_mode() ? 1 : reactor_num + dgram_port_num;
 -    }
 -
      ProcessPool *get_task_worker_pool() const {
-@@ -940,14 +925,2 @@ class Server : public detail::ServerFields {
+@@ -923,14 +908,2 @@ class Server : public detail::ServerFields {
  
 -    bool is_support_send_yield() const {
 -        return is_hash_dispatch_mode();
@@ -327,21 +327,21 @@ index fb595fe..b643e34 100644
 -    }
 -
      bool if_forward_message(const Session *session) const {
-@@ -965,6 +938,2 @@ class Server : public detail::ServerFields {
+@@ -948,6 +921,2 @@ class Server : public detail::ServerFields {
  
 -    Pipe *get_pipe_object(int pipe_fd) const {
 -        return static_cast<Pipe *>(connection_list[pipe_fd].object);
 -    }
 -
      size_t get_all_worker_num() const {
-@@ -1025,6 +994,2 @@ class Server : public detail::ServerFields {
+@@ -1008,6 +977,2 @@ class Server : public detail::ServerFields {
  
 -    bool is_worker_process() const {
 -        return !is_thread_mode() && (is_worker() || is_task_worker());
 -    }
 -
      bool is_reactor_thread() {
-@@ -1063,6 +1028,2 @@ class Server : public detail::ServerFields {
+@@ -1046,6 +1011,2 @@ class Server : public detail::ServerFields {
  
 -    static bool is_dgram_event(uint8_t type) {
 -        return type == SW_SERVER_EVENT_RECV_DGRAM;
