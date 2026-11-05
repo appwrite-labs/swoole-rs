@@ -63,7 +63,7 @@ def main():
                 bodies.append('extern "C" int16_t swr_v1_reactor_poll_events_to(int);\nextern "C" int swr_v1_reactor_poll_events_from(int16_t);')
                 bodies.extend(block(selected['include/swoole_reactor.h'], name) for name in translations)
             (tree/(variant+'.inc')).write_text('\n'.join(bodies))
-        command = ['c++', '-std=c++14', '-O1', '-g', '-I'+str(tree), '-I'+str(ROOT/'native/hooks'), str(ROOT/'tests/modules/hooks/ordered_gate.cc'), str(a.archive.resolve()), '-o', str(tree/'ordered'), '-lpthread']
+        command = ['c++', '-std=c++14', '-O1', '-g', '-I'+str(tree), '-I'+str(ROOT/'native/hooks'), str(ROOT/'tests/modules/hooks/ordered_gate.cc'), str(a.archive.resolve()), '-o', str(tree/'ordered'), '-lssl', '-lcrypto', '-lpthread']
         if a.sanitize:
             command.extend(['-fsanitize=address,undefined', '-fno-omit-frame-pointer'])
         if __import__('sys').platform.startswith('linux'):
