@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+# Define Socket's TLS methods under their C++ symbols; only the reactor overlay, whose
+# patches delete the C++ definitions, turns it on (crates/ffi's reactor feature).
+upstream-symbols = []
+
 [dependencies]
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-reactor = { path = "../reactor" }
