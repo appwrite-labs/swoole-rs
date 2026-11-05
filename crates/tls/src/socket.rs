@@ -1,7 +1,7 @@
 //! `network::Socket`'s TLS operations, OpenSSL calls included: creating the SSL,
 //! handshake steps, reads and writes, host and verify checks, PEM export and error
-//! reasons, and the socket's TLS state group they set. Native code keeps errno, the
-//! last error and logs, which need the socket's address.
+//! reasons, and the socket's TLS state group they set. `upstream` defines the
+//! `Socket` methods over them, errno, the last error and logs included.
 use openssl_sys::{
     BIO_ctrl, BIO_free_all, BIO_new, BIO_read, BIO_s_mem, ERR_clear_error, ERR_get_error,
     ERR_reason_error_string, PEM_write_bio_X509, SSL, SSL_CTX, SSL_ERROR_SSL, SSL_ERROR_SYSCALL,
@@ -403,7 +403,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_pem(
 
 /// OpenSSL 3's `ERR_GET_REASON`: a system error's reason is its errno.
 /// openssl-sys's port returns `ERR_LIB_SYS` (2) for those instead.
-fn error_reason(error: std::os::raw::c_ulong) -> c_int {
+pub(crate) fn error_reason(error: std::os::raw::c_ulong) -> c_int {
     const SYSTEM_FLAG: std::os::raw::c_ulong = 1 << 31;
     if error & SYSTEM_FLAG == 0 {
         openssl_sys::ERR_GET_REASON(error)

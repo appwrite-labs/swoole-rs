@@ -22,7 +22,7 @@ utilities = ["dep:swoole-rs-utilities"]
 locks = ["dep:swoole-rs-locks", "dep:swoole-rs-phplocks"]
 wrappers = ["dep:swoole-rs-wrappers"]
 
-reactor = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols", "dep:swoole-rs-tls"]
+reactor = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols", "dep:swoole-rs-tls", "swoole-rs-tls/upstream-symbols"]
 
 coroutine = ["dep:swoole-rs-coroutine"]
 
