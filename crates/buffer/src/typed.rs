@@ -1,5 +1,5 @@
-//! Typed first-party cursor family. Legacy mutable chunk APIs remain separate.
-use super::{Buffer, EMPTY, Entry, INVALID, Mode, NOMEM, OK, c_void, create_buffer};
+//! The queue's front cursor and its native tokens (sendfile requests, CLOSE markers).
+use super::{Buffer, EMPTY, Entry, INVALID, NOMEM, OK, c_void, create_buffer};
 
 type Dispose = Option<unsafe extern "C" fn(*mut c_void)>;
 
@@ -9,6 +9,7 @@ pub(super) struct Token {
     dispose: Dispose,
 }
 
+#[derive(Default)]
 pub(super) struct Cursor {
     offset: u32,
     generation: u64,
@@ -38,16 +39,7 @@ pub struct Detached {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_buffer_typed_create(size: u32, out: *mut *mut Buffer) -> i32 {
     // SAFETY: forwards the caller's aligned, writable, disjoint output.
-    unsafe {
-        create_buffer(
-            size,
-            Mode::Typed(Cursor {
-                offset: 0,
-                generation: 0,
-            }),
-            out,
-        )
-    }
+    unsafe { create_buffer(size, out) }
 }
 
 /// Transfer a native sendfile token, or enqueue a payload-free CLOSE marker.
@@ -66,13 +58,11 @@ pub unsafe extern "C" fn swr_v1_buffer_typed_push(
     }
     // SAFETY: `buffer` is non-null (checked above), live and exclusive.
     let queue = unsafe { &mut *buffer };
-    if !matches!(queue.mode, Mode::Typed(_))
-        || !match kind {
-            1 => !value.is_null() && dispose.is_some(),
-            2 => value.is_null() == dispose.is_none(),
-            _ => false,
-        }
-    {
+    if !match kind {
+        1 => !value.is_null() && dispose.is_some(),
+        2 => value.is_null() == dispose.is_none(),
+        _ => false,
+    } {
         return INVALID;
     }
     if queue.entries.try_reserve(1).is_err() {
@@ -102,9 +92,7 @@ pub unsafe extern "C" fn swr_v1_buffer_typed_front(buffer: *const Buffer, out: *
     }
     // SAFETY: `buffer` is non-null (checked above) and live.
     let queue = unsafe { &*buffer };
-    let Mode::Typed(cursor) = &queue.mode else {
-        return INVALID;
-    };
+    let cursor = &queue.cursor;
     let mut result = Front {
         offset: cursor.offset,
         generation: cursor.generation,
@@ -120,7 +108,6 @@ pub unsafe extern "C" fn swr_v1_buffer_typed_front(buffer: *const Buffer, out: *
             result.kind = token.kind;
             result.token = token.value;
         }
-        Some(Entry::Native(_)) => return INVALID,
     }
     // SAFETY: `out` is non-null (checked above), aligned, writable and disjoint.
     unsafe { out.write(result) };
@@ -143,9 +130,7 @@ pub unsafe extern "C" fn swr_v1_buffer_typed_consume(
     }
     // SAFETY: `buffer` is non-null (checked above), live and exclusive.
     let queue = unsafe { &mut *buffer };
-    let Mode::Typed(cursor) = &mut queue.mode else {
-        return INVALID;
-    };
+    let cursor = &mut queue.cursor;
     let Some(Entry::Data(bytes)) = queue.entries.front() else {
         return INVALID;
     };
@@ -175,9 +160,6 @@ pub unsafe extern "C" fn swr_v1_buffer_typed_pop(buffer: *mut Buffer, out: *mut 
     }
     // SAFETY: `buffer` is non-null (checked above), live and exclusive.
     let queue = unsafe { &mut *buffer };
-    let Mode::Typed(_) = &mut queue.mode else {
-        return INVALID;
-    };
     let Some(entry) = queue.entries.pop_front() else {
         return EMPTY;
     };
@@ -191,13 +173,9 @@ pub unsafe extern "C" fn swr_v1_buffer_typed_pop(buffer: *mut Buffer, out: *mut 
             token: token.value,
             dispose: token.dispose,
         },
-        Entry::Native(_) => unreachable!("legacy push rejects typed mode"),
     };
-    let Mode::Typed(cursor) = &mut queue.mode else {
-        unreachable!()
-    };
-    cursor.offset = 0;
-    cursor.generation = cursor.generation.wrapping_add(1);
+    queue.cursor.offset = 0;
+    queue.cursor.generation = queue.cursor.generation.wrapping_add(1);
     // SAFETY: `out` is non-null (checked above), aligned, writable and disjoint.
     unsafe { out.write(effect) };
     OK

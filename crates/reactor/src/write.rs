@@ -207,7 +207,7 @@ pub unsafe extern "C" fn swr_v1_reactor_write(
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use swoole_rs_buffer::{swr_v1_buffer_create, swr_v1_buffer_release};
+    use swoole_rs_buffer::{swr_v1_buffer_release, swr_v1_buffer_typed_create};
 
     #[derive(Default)]
     struct Native {
@@ -257,7 +257,7 @@ mod tests {
         errno: c_int,
     ) -> (WriteResult, Vec<&'static str>, u32) {
         let mut fresh = std::ptr::null_mut();
-        assert_eq!(unsafe { swr_v1_buffer_create(0, &raw mut fresh) }, 0);
+        assert_eq!(unsafe { swr_v1_buffer_typed_create(0, &raw mut fresh) }, 0);
         NATIVE.with_borrow_mut(|n| {
             *n = Native {
                 sends,
@@ -384,7 +384,10 @@ mod tests {
             failed(1, 0)
         );
         let mut held_buffer = std::ptr::null_mut();
-        assert_eq!(unsafe { swr_v1_buffer_create(0, &raw mut held_buffer) }, 0);
+        assert_eq!(
+            unsafe { swr_v1_buffer_typed_create(0, &raw mut held_buffer) },
+            0
+        );
         assert_eq!(
             unsafe { swr_v1_buffer_append(held_buffer, b"12345".as_ptr(), 5) },
             0

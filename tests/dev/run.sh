@@ -24,7 +24,6 @@ for test in \
     tests/modules/phphelpers/test_sdk.py \
     tests/modules/ports/test_configured_flags.py \
     tests/modules/ports/test_count_checkpoints.py \
-    tests/modules/reactor/test_buffer_typed_identity.py \
     tests/modules/tls/test_gate.py \
     tests/modules/tls/test_php.py \
     tests/modules/utilities/test_prepare_benchmark.py \

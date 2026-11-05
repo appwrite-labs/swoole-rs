@@ -56,10 +56,10 @@ index 2c8ef8d..4940e4f 100644
 +    swr_v1_socket_file_request *handle() const { return prepared_.owner; }
  };
 diff --git a/src/network/socket.cc b/src/network/socket.cc
-index a6bca0f..cd1a021 100644
+index f6559b5..1260b7a 100644
 --- a/src/network/socket.cc
 +++ b/src/network/socket.cc
-@@ -53,15 +53,18 @@ static_assert(SW_SENDFILE_CHUNK_SIZE == 65536, "swr_v1_socket_sendfile_chunk's c
+@@ -55,15 +55,18 @@ static_assert(SW_SENDFILE_CHUNK_SIZE == 65536, "swr_v1_socket_sendfile_chunk's c
  
 -static bool check_sendfile_parameters(const File *file, off_t begin, size_t length, off_t *end) {
 -    auto filename = file->get_path().c_str();
@@ -89,7 +89,7 @@ index a6bca0f..cd1a021 100644
 +        swoole_error_log(SW_LOG_WARNING, SW_ERROR_INVALID_PARAMS,
 +                         "length[%ld] or offset[%ld] is invalid", length, (long) task->begin);
          return false;
-@@ -111,19 +114,11 @@ static ssize_t socket_sync(Socket *socket, int kind, void *buffer, size_t length
+@@ -113,19 +116,11 @@ static ssize_t socket_sync(Socket *socket, int kind, void *buffer, size_t length
  int Socket::sendfile_sync(const char *filename, off_t offset, size_t length) {
 -    off_t end;
 -    File file(filename, O_RDONLY);
@@ -116,23 +116,17 @@ index a6bca0f..cd1a021 100644
 -
 +    if (corked) uncork();
      return rv < 0 ? SW_ERR : SW_OK;
-@@ -362,9 +357,5 @@ int Socket::handle_sendfile() {
-     Buffer *buffer = out_buffer;
--#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
-     auto *task = static_cast<SendfileRequest *>(buffer->typed_front().token);
--#else
--    auto *task = (SendfileRequest *) buffer->front()->value.ptr;
--#endif
+@@ -366,3 +361,3 @@ int Socket::handle_sendfile() {
      auto hooks = output_hooks(this);
 -    swr_v1_socket_sendfile_cork(&hooks, &task->corked, task->begin, task->end, SW_SOCKET_CORK_MIN_SIZE);
 +    swr_v1_socket_file_cork(task->handle(), &hooks);
  
-@@ -375,3 +366,3 @@ int Socket::handle_sendfile() {
+@@ -376,3 +371,3 @@ int Socket::handle_sendfile() {
  
 -    auto result = swr_v1_socket_sendfile_sent(&hooks, rv, sendn, &task->corked, task->begin, task->end);
 +    auto result = swr_v1_socket_file_sent(task->handle(), this, &hooks, rv, sendn);
      if (result.warn == 2) {
-@@ -379,11 +370,3 @@ int Socket::handle_sendfile() {
+@@ -380,11 +375,3 @@ int Socket::handle_sendfile() {
      }
 -    if (result.close_wait) {
 -        close_wait = 1;
@@ -145,17 +139,11 @@ index a6bca0f..cd1a021 100644
 -    }
 +    if (result.pop) buffer->pop();
      return result.code;
-@@ -435,8 +418,3 @@ extern "C" void swr_socket_dispose_typed_sendfile(void *token) {
+@@ -425,2 +412,3 @@ extern "C" void swr_socket_dispose_typed_sendfile(void *token) {
  
--#if !defined(SWOOLE_RS_BUFFER_TYPED) || !SWOOLE_RS_BUFFER_TYPED
--static void Socket_sendfile_destructor(BufferChunk *chunk) {
--    auto *task = static_cast<SendfileRequest *>(chunk->value.ptr);
--    delete task;
--}
--#endif
 +
- 
-@@ -450,35 +428,9 @@ ssize_t Socket::sendfile(const File &fp, off_t *offset, size_t length) {
+ ssize_t Socket::sendfile(const File &fp, off_t *offset, size_t length) {
+@@ -433,29 +421,9 @@ ssize_t Socket::sendfile(const File &fp, off_t *offset, size_t length) {
  
 -struct SendfileAsync {
 -    Socket *socket;
@@ -182,13 +170,7 @@ index a6bca0f..cd1a021 100644
 -        },
 -        [](void *context) {
 -            auto *request = static_cast<SendfileAsync *>(context);
--#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 -            request->socket->out_buffer->typed_sendfile(request->task.release(), swr_socket_dispose_typed_sendfile);
--#else
--            BufferChunk *chunk = request->socket->out_buffer->alloc(BufferChunk::TYPE_SENDFILE, 0);
--            chunk->value.ptr = request->task.release();
--            chunk->destroy = Socket_sendfile_destructor;
--#endif
 -        });
 +    std::unique_ptr<SendfileRequest> task(new SendfileRequest(filename, offset));
 +    if (!check_sendfile_parameters(task.get(), length)) return SW_ERR;

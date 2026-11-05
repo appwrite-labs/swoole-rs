@@ -222,17 +222,6 @@ PHP_FUNCTION(swr_reactor_output_supported) {
     image(return_value,"request_sent_image","swr_v1_socket_file_sent");
     image(return_value,"request_free_image","swr_v1_socket_file_free");
     image(return_value,"buffer_constructor_image","_ZN6swoole6BufferC1Ej");
-#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
-    add_assoc_long(return_value,"typed_buffer_compiled",1);
-    image(return_value,"typed_buffer_front_image","_ZNK6swoole6Buffer11typed_frontEv");
-    image(return_value,"typed_buffer_create_image","swr_v1_buffer_typed_create");
-    image(return_value,"typed_buffer_push_image","swr_v1_buffer_typed_push");
-    image(return_value,"typed_buffer_front_image_rust","swr_v1_buffer_typed_front");
-    image(return_value,"typed_buffer_consume_image","swr_v1_buffer_typed_consume");
-    image(return_value,"typed_buffer_pop_image","swr_v1_buffer_typed_pop");
-#else
-    add_assoc_long(return_value,"typed_buffer_compiled",0);
-#endif
     zval rows;array_init(&rows);auto check=[&](bool value){add_next_index_bool(&rows,value);if(!value)throw std::runtime_error("ordinary output assertion failed");};unsigned cases=0;
     try {
         std::string payload;for(unsigned i=0;i<47;++i)payload+=static_cast<char>(i);
@@ -248,14 +237,9 @@ PHP_FUNCTION(swr_reactor_output_supported) {
             OrdinaryOutputPair pair;auto *socket=pair.socket;check(socket&&socket->fd>=0);
             check(socket->sendfile_async(file.path,offset,length)==SW_OK);check(socket->out_buffer&&socket->out_buffer->count()==1);
             size_t expected=length?length:payload.size()-offset;
-#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
-            // The selected build's request is Rust's (crates/reactor/src/file_output.rs).
-            auto *task=static_cast<swr_v1_socket_file_request*>(socket->out_buffer->typed_front().token);
+            // The request is Rust's (crates/reactor/src/file_output.rs).
+            auto *task=static_cast<swr_v1_socket_file_request*>(socket->out_buffer->front()->value.ptr);
             check(task!=nullptr);check(swr_v1_socket_file_length(task)==expected);
-#else
-            auto *task=static_cast<network::SendfileRequest*>(socket->out_buffer->front()->value.ptr);
-            check(task->begin==offset&&task->end==static_cast<off_t>(offset+expected));check(task->corked==0);
-#endif
             unsigned attempts=0;while(!socket->out_buffer->empty()){
                 if(++attempts>16||socket->handle_sendfile()!=SW_OK)throw std::runtime_error("ordinary positive queued sendfile failed");
             }

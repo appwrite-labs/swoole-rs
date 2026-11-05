@@ -53,23 +53,22 @@ fn run(name: &str, rounds: usize) -> u64 {
                 let bytes = vec![0xa5; 65536];
                 let mut owner = ptr::null_mut();
                 let chunk = if name == "buffer-16k" { 16384 } else { 1024 };
-                assert_eq!(buffer::swr_v1_buffer_create(chunk, &mut owner), 0);
+                assert_eq!(buffer::swr_v1_buffer_typed_create(chunk, &mut owner), 0);
                 for _ in 0..rounds {
                     assert_eq!(
                         buffer::swr_v1_buffer_append(owner, bytes.as_ptr(), bytes.len()),
                         0
                     );
-                    let mut view = std::mem::zeroed();
-                    while buffer::swr_v1_buffer_front(owner, &mut view) == 0 {
-                        let view: &buffer::BufferView = &view;
+                    let mut view = buffer::TypedFront::default();
+                    while buffer::swr_v1_buffer_typed_front(owner, &mut view) == 0 {
                         sum = sum.wrapping_add(*view.data as u64 + view.length as u64);
-                        let mut token = ptr::null_mut();
-                        assert_eq!(buffer::swr_v1_buffer_pop(owner, &mut token), 0);
-                        assert!(token.is_null());
+                        let mut detached = buffer::TypedDetached::default();
+                        assert_eq!(buffer::swr_v1_buffer_typed_pop(owner, &mut detached), 0);
+                        assert!(detached.token.is_null());
                     }
                     if name == "buffer-cold-1k" {
                         assert_eq!(buffer::swr_v1_buffer_release(owner), 0);
-                        assert_eq!(buffer::swr_v1_buffer_create(chunk, &mut owner), 0);
+                        assert_eq!(buffer::swr_v1_buffer_typed_create(chunk, &mut owner), 0);
                     }
                 }
                 assert_eq!(buffer::swr_v1_buffer_release(owner), 0);

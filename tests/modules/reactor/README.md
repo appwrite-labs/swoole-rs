@@ -30,7 +30,6 @@ cover them, so the `forwarding.py` facade is gone.
 Compile and declaration gates:
 
 - `compile_gate.py --source S --archive A --report R`: original and hybrid backend translation units compile as C++14.
-- `buffer_typed_compile.py --source S --archive A --report R`: the hybrid tree's typed Buffer callers compile.
 - `declarations.py --archive A --report R`: every `swr_v1_reactor_*`/`swr_v1_stream_*` declaration in the header is defined in the archive.
 
 
@@ -61,5 +60,5 @@ single-filter kqueue records only.
 
     cd tests/modules/reactor && python3 -m unittest test_*.py
 
-`test_buffer_typed_identity.py` and `test_sockets_source.py` read historical
-commits with `git show` and fail in checkouts that lack them.
+`test_sockets_source.py` reads historical
+commits with `git show` and fails in checkouts that lack them.

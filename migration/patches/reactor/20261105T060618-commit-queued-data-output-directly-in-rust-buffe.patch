@@ -1,34 +1,24 @@
 diff --git a/src/network/socket.cc b/src/network/socket.cc
-index 5a71934..7209aa7 100644
+index 1260b7a..3288303 100644
 --- a/src/network/socket.cc
 +++ b/src/network/socket.cc
-@@ -25,2 +25,3 @@
+@@ -24,2 +24,3 @@
  #include "swoole_rs_reactor.h"
 +#include "swoole_rs_socket_queue.h"
  #include <limits>
-@@ -381,34 +382,8 @@ int Socket::handle_sendfile() {
+@@ -383,24 +384,8 @@ int Socket::handle_sendfile() {
  int Socket::handle_send() {
 -    Buffer *buffer = out_buffer;
--#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 -    auto view = buffer->typed_front();
 -    const char *data = reinterpret_cast<const char *>(view.data);
 -    uint32_t length = view.length, offset = view.offset;
--#else
--    BufferChunk *chunk = buffer->front();
--    const char *data = chunk->value.str;
--    uint32_t length = chunk->length, offset = chunk->offset;
--#endif
      auto hooks = output_hooks(this);
 -    auto result = swr_v1_socket_handle_send(&hooks, reinterpret_cast<const uint8_t *>(data), length, offset);
 -    if (result.warn == 1) {
 -        swoole_sys_warning("send to fd[%d] failed", fd);
 -    }
 -    if (result.set_offset) {
--#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 -        buffer->typed_consume(view, result.offset - view.offset);
--#else
--        chunk->offset = result.offset;
--#endif
 -    }
 -    if (result.close_wait) {
 -        close_wait = 1;

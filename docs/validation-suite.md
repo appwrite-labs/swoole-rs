@@ -7,7 +7,6 @@ PHPTs (see [hybrid build](hybrid-build.md)). `EXT` is a path to a built
 
 | Check | Command |
 | --- | --- |
-| Seeded buffer queue model | `python3 -m pytest tests/modules/buffer/test_model.py --sanitize --manifest MANIFEST` ([details](../tests/modules/buffer/model.md)) |
 | Buffer backpressure/lifecycle | `python3 tests/modules/buffer/lifecycle.py --engine upstream=EXT --engine hybrid=EXT`, or corpus project `11-buffer-lifecycle` |
 | Native buffer benchmark | `python3 tests/modules/buffer/benchmark.py --build-manifest target/hybrid/rust/build-manifest.json --iterations 50000 --repeat 5 --output target/reports/buffer-benchmark.json` (`--peek-front` reads each front before pop; `--previous-build-manifest` adds an older build to the same trial series) |
 | Original upstream PHPTs | `python3 corpus/upstream/run.py --engine NAME=EXT --require-all` |

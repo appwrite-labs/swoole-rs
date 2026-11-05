@@ -20,10 +20,8 @@ allocation, a user callback, an exception or a bailout.
 - A DATA chunk counts toward queued length until it is popped. Advancing its public
   offset does not reduce the Rust queue's accounting. Native token chunks do not
   count DATA bytes.
-- DATA destroy callbacks run before the Rust pop, while bytes are live, outside
-  Rust, with native noexcept termination. Native tokens are detached from Rust
-  first, then their destructor runs once. Do not merge these two orders into one
-  Rust `Drop`.
+- Queued DATA has no destroy callback. Native tokens are detached from Rust
+  first, then their disposer runs once, outside Rust.
 - No borrowed view or Rust guard survives an external effect.
 
 ## Branches to preserve

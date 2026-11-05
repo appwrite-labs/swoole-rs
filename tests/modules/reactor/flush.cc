@@ -9,23 +9,26 @@ constexpr int SW_OK=0, SW_ERR=-1, SW_EVENT_WRITE=1<<10;
 static std::vector<std::string> effects;
 struct BufferChunk { enum Type { TYPE_DATA, TYPE_SENDFILE, TYPE_CLOSE }; Type type; };
 extern "C" {
-int32_t swr_v1_buffer_create(uint32_t, swr_v1_buffer **);
+struct swr_v1_buffer_typed_detached { void *token; void (*dispose)(void *); };
+int32_t swr_v1_buffer_typed_create(uint32_t, swr_v1_buffer **);
 int32_t swr_v1_buffer_append(swr_v1_buffer *, const uint8_t *, size_t);
-int32_t swr_v1_buffer_pop(swr_v1_buffer *, void **);
+int32_t swr_v1_buffer_typed_pop(swr_v1_buffer *, swr_v1_buffer_typed_detached *);
 int32_t swr_v1_buffer_release(swr_v1_buffer *);
 }
 // The selected bodies read emptiness from the Rust queue, so it mirrors the chunk list.
 struct Buffer {
     std::deque<BufferChunk> chunks;
     swr_v1_buffer *rs = nullptr;
-    Buffer() { assert(swr_v1_buffer_create(1, &rs) == 0); }
+    Buffer() { assert(swr_v1_buffer_typed_create(1, &rs) == 0); }
     ~Buffer() { swr_v1_buffer_release(rs); }
     void push(BufferChunk::Type type) { chunks.push_back({type}); assert(swr_v1_buffer_append(rs, reinterpret_cast<const uint8_t *>("x"), 1) == 0); }
-    void pop() { chunks.pop_front(); void *token = nullptr; assert(swr_v1_buffer_pop(rs, &token) == 0); }
+    void pop() { chunks.pop_front(); swr_v1_buffer_typed_detached detached{}; assert(swr_v1_buffer_typed_pop(rs, &detached) == 0); }
     void clear() { while (!chunks.empty()) pop(); }
     swr_v1_buffer *handle() const { return rs; }
     static bool empty(Buffer *b) { return !b || b->chunks.empty(); }
     BufferChunk *front() { return &chunks.front(); }
+    struct Front { int kind; };
+    Front typed_front() const { return {chunks.front().type}; }
 };
 // swoole::network::Socket's write-path block layout, as the selected bodies expect.
 struct Socket {

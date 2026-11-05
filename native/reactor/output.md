@@ -32,9 +32,9 @@ removed.
 - The originally captured Buffer pointer is kept, not replaced by a fresh
   `socket->out_buffer`.
 
-## Typed server Buffer (`SWOOLE_RS_BUFFER_TYPED`)
+## Server Buffer
 
-On whenever the Rust Buffer and the Rust reactor are both built. Socket send/sendfile, reactor writable dispatch,
+Socket send/sendfile, reactor writable dispatch,
 `BaseFactory::end` and `ReactorThread_onPipeWrite/onWrite` consume the single
 typed Rust queue. Rust owns bytes, ordered kind/token custody, current DATA
 offset, generation and byte accounting. Native send/sendfile run after copied
@@ -43,6 +43,3 @@ pop keeps full queued-byte accounting until detach. Publication stores the
 opaque token and disposer together; the Native `unique_ptr` releases custody in
 the next pure workflow phase. Sendfile request construction/validation and
 disposal stay Native.
-
-The master enqueue hunk is kept separately in
-`server-buffer-master-handoff.patch` and is not applied by the reactor overlay.

@@ -15,12 +15,10 @@ unless built that way and declared with `--rust-asan` (see below).
 | Command | Checks |
 | --- | --- |
 | `baseline.py --sanitize` | Pinned upstream only: original `core-tests/src/memory/buffer.cpp` assertions (64 seeded runs) plus a scatter/gather matrix that records upstream defects. |
-| `test_native.py --manifest M --sanitize` (or `--archive A`) | Same originals against the patched facade and Rust queue; the matrix must have zero byte/accounting mismatches. Also C ABI validation, native-token ownership, cached front identity, DATA callbacks on live bytes and quiescent fork. |
-| `test_model.py --manifest M --sanitize` (or `--archive A`) | Six seeded 64-step sequences against an independent C++ reference queue, six facade sequences, and a fixture that replays each sequence once per allocation ordinal with that allocation failing. Failed operations must leave queue state unchanged. Details: [model.md](model.md). |
+| `test_native.py --manifest M --sanitize` (or `--archive A`) | The same originals (64 runs, `originals.cc`) against the hybrid build's `buffer.cc` and the Rust queue, through upstream's `front()`/`pop()`. |
 | `test_iovec.py --archive A [--sanitize]` | Twelve positive POSIX iovec append cases; native and selected layout and observation counts must match. |
 | `test_callbacks.py --archive A` | A throwing destroy callback must reach `std::terminate` (exit 77) for DATA pop, native-token pop and teardown in both engines. |
 | `test_typed.py --archive A [--sanitize]` | Typed queue facade compiled and run under C++14/17/20. |
-| `test_typed_layout.py --archive A` | `Buffer`/`BufferChunk` sizes and offsets under typed ON/omitted/zero; omitted and zero must preprocess to the same declaration as the control header. |
 
 Run as `python3 tests/modules/buffer/<script>`; `S` is the pinned upstream
 checkout (`target/upstream/src`).
@@ -68,6 +66,9 @@ instrumented archive fails to link because Apple's runtime lacks
   or read out of bounds. Rust rejects or handles these explicitly.
 - Upstream frees DATA storage before its destroy callback; the Rust facade runs
   DATA callbacks on live bytes (`docs/buffer-abi-v1.md`).
+- Queued DATA is immutable: writing `front()->offset` does nothing (partial sends
+  commit through `typed_consume`), and `alloc` takes only `TYPE_CLOSE`. No caller in
+  the build relies on either, and upstream's `buffer.cpp` does neither.
 - `swoole_server/sendfile_02.phpt` fails in both engines: `Swoole\Client::getSocket()`
   is missing because the build lacks `SWOOLE_SOCKETS_SUPPORT`.
 - The lifecycle half-close case fails on upstream (truncated response) and on any
@@ -94,9 +95,6 @@ Kept, each with what nothing else reaches:
 - `buffer-native` and `string-originals` run upstream's own
   `core-tests/src/memory/buffer.cpp` and `core-tests/src/core/string.cpp`, which
   no other phase builds.
-- `buffer-model`: allocation-failure replay at every allocation ordinal, plus the
-  legacy facade sequences (DATA callbacks on live bytes), under ASan/UBSan.
-- `buffer-typed-layout`: ABI layout of `Buffer`/`BufferChunk` under each macro value.
 - `buffer-typed`: the typed facade's only C++14/17/20 builds, under sanitizers.
 - `buffer-callbacks`: a throwing destroy callback must reach `std::terminate`
   across the Rust boundary; no PHPT throws from a native destructor.
@@ -111,8 +109,10 @@ Deleted:
 - `string-{split,integer,ownership,allocation,format,random,copy,transitions}`:
   they drove the String step-machine exports, which whole Rust methods under the
   upstream symbols replaced; `string-originals` runs upstream's assertions on them.
-- `buffer-facade`: `buffer-model` runs the same six seeded `facade_sequence`s of
-  `model.cc` against the Rust facade, with DATA callbacks checked as well.
+- `buffer-facade`, `buffer-model` and `buffer-typed-layout` (#1333): they drove
+  the untyped facade, a branch the shipped extension never compiled, or compared
+  the layouts of the two. The crate's unit tests keep the allocation-failure
+  sweeps over the one queue.
 - `string-production-{random,compatibility,format,allocation,ownership,integer,split,copy}`:
   each replayed the matching `gate.py` profile (or `test_compatibility.py`)
   body, check for check, from an addon loaded beside the built extension. The

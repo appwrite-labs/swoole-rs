@@ -1,10 +1,9 @@
 # POSIX iovec append (`swr_v1_buffer_append_iovec`)
 
 `swr_v1_buffer_append_iovec` accepts the target's real C `struct iovec` array
-(through the pinned `libc` 0.2.191 binding) and a signed byte offset. It never casts
-a C++ object to the POD descriptor used by `swr_v1_buffer_appendv`, which is
-unchanged. Both functions share the same descriptor traversal, validation, chunk
-allocation/copy, accounting and transactional rollback.
+(through the pinned `libc` 0.2.191 binding) and a signed byte offset. It shares
+`swr_v1_buffer_append`'s descriptor traversal, validation, chunk allocation/copy,
+accounting and transactional rollback.
 
 The native `append(iovec)` body forwards the descriptor array directly and
 translates the status after Rust returns. There is no native staging loop and no

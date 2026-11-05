@@ -1,9 +1,9 @@
 diff --git a/src/server/base.cc b/src/server/base.cc
 deleted file mode 100644
-index f08b255..0000000
+index 4c70824..0000000
 --- a/src/server/base.cc
 +++ /dev/null
-@@ -1,190 +0,0 @@
+@@ -1,186 +0,0 @@
 -/*
 - +----------------------------------------------------------------------+
 - | Swoole                                                               |
@@ -101,11 +101,7 @@ index f08b255..0000000
 -    case SWR_SERVER_OP_CLOSE_SOCKET:
 -        return (int64_t) Server::close_connection(SwooleTG.reactor, socket);
 -    case SWR_SERVER_OP_QUEUE_CLOSE:
--#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 -        socket->out_buffer->typed_close();
--#else
--        socket->out_buffer->alloc(BufferChunk::TYPE_CLOSE, 0);
--#endif
 -#ifdef SW_HALFCLOSE_DRAIN
 -        return SwooleTG.reactor->remove_read_event(socket) == SW_OK;
 -#else
@@ -195,10 +191,10 @@ index f08b255..0000000
 -
 -}  // namespace swoole
 diff --git a/src/server/master.cc b/src/server/master.cc
-index f183240..b76ae63 100644
+index ff5b309..fee578f 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -112,2 +112,25 @@ static_assert(sizeof(ServerRustContext) == 136 && offsetof(ServerRustContext, ob
+@@ -110,2 +110,25 @@ static_assert(sizeof(ServerRustContext) == 136 && offsetof(ServerRustContext, ob
  
 +static_assert(Server::CLOSE_RESET == (1 << 1) && Server::CLOSE_ACTIVELY == (1 << 2) &&
 +                  SW_EVENT_DATA_POP_PTR == (1 << 6) && SW_SERVER_EVENT_CLOSE_FORWARD == 7 &&
@@ -224,7 +220,7 @@ index f183240..b76ae63 100644
 +}
 +
  TimerCallback Server::get_timeout_callback(ListenPort *port, Reactor *reactor, Connection *conn) const {
-@@ -487,75 +510,2 @@ bool Server::command(WorkerId process_id,
+@@ -485,75 +508,2 @@ bool Server::command(WorkerId process_id,
  
 -/**
 - * @process Worker
@@ -300,7 +296,7 @@ index f183240..b76ae63 100644
 -}
 -
  void Server::call_hook(HookType type, void *arg) {
-@@ -565,23 +515,2 @@ void Server::call_hook(HookType type, void *arg) {
+@@ -563,23 +513,2 @@ void Server::call_hook(HookType type, void *arg) {
  
 -/**
 - * [Worker]
@@ -324,7 +320,7 @@ index f183240..b76ae63 100644
 -}
 -
  void Server::init_signal_handler() const {
-@@ -2049,2 +1978,63 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
+@@ -2043,2 +1972,59 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
          return 0;
 +    case SWR_SERVER_OP_BASE_REACTORS:
 +        serv->reactor_num = serv->worker_num;
@@ -376,11 +372,7 @@ index f183240..b76ae63 100644
 +        return (int64_t) Server::close_connection(SwooleTG.reactor, reinterpret_cast<Socket *>(arg));
 +    case SWR_SERVER_OP_QUEUE_CLOSE: {
 +        auto *socket = reinterpret_cast<Socket *>(arg);
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 +        socket->out_buffer->typed_close();
-+#else
-+        socket->out_buffer->alloc(BufferChunk::TYPE_CLOSE, 0);
-+#endif
 +#ifdef SW_HALFCLOSE_DRAIN
 +        return SwooleTG.reactor->remove_read_event(socket) == SW_OK;
 +#else
@@ -388,7 +380,7 @@ index f183240..b76ae63 100644
 +#endif
 +    }
      default:
-@@ -2105,2 +2095,24 @@ static uint64_t server_call(void *context, uint32_t op, uint64_t arg) {
+@@ -2097,2 +2083,24 @@ static uint64_t server_call(void *context, uint32_t op, uint64_t arg) {
      }
 +    case SWR_SERVER_OP_ACCEPT_EVENT:
 +        serv->worker_accept_event(reinterpret_cast<DataHead *>(arg));
@@ -413,7 +405,7 @@ index f183240..b76ae63 100644
 +    case SWR_SERVER_OP_SEND_HERE:
 +        return (int64_t) serv->send_to_connection(ctx->send);
      default:
-@@ -2110,2 +2122,9 @@ static uint64_t server_call(void *context, uint32_t op, uint64_t arg) {
+@@ -2102,2 +2110,9 @@ static uint64_t server_call(void *context, uint32_t op, uint64_t arg) {
  
 +// reactor_thread.cc: a BaseFactory op over the task it dispatches.
 +uint64_t base_factory_call(Server *serv, SendData *send, uint32_t op, uint64_t arg) {
@@ -424,10 +416,10 @@ index f183240..b76ae63 100644
 +
  }  // namespace swoole
 diff --git a/src/server/reactor_thread.cc b/src/server/reactor_thread.cc
-index 066e8f3..1a1e871 100644
+index f2c6699..ecac7b8 100644
 --- a/src/server/reactor_thread.cc
 +++ b/src/server/reactor_thread.cc
-@@ -852,3 +852,3 @@ static uint64_t reactor_thread_call(void *context, uint32_t op, uint64_t arg) {
+@@ -842,3 +842,3 @@ static uint64_t reactor_thread_call(void *context, uint32_t op, uint64_t arg) {
  
 -// src/server/base.cc: a BaseFactory op over the task it dispatches.
 +// src/server/master.cc: a BaseFactory op over the task it dispatches.

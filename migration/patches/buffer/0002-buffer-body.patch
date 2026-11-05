@@ -1,21 +1,20 @@
 diff --git a/src/core/buffer.cc b/src/core/buffer.cc
-index e466a08d3..af6f72f4f 100644
+index e466a08..4d27d5f 100644
 --- a/src/core/buffer.cc
 +++ b/src/core/buffer.cc
-@@ -19,2 +19,7 @@
+@@ -19,2 +19,6 @@
  
 +#include <memory>
 +#include <stdexcept>
 +#include "swoole_rs_buffer_posix.h"
-+#include "swoole_rs_buffer_facade.h"
 +
  namespace swoole {
-@@ -28,3 +33,3 @@ BufferChunk::BufferChunk(Type type, uint32_t size) : type(type), size(size) {
+@@ -28,3 +32,3 @@ BufferChunk::BufferChunk(Type type, uint32_t size) : type(type), size(size) {
  BufferChunk::~BufferChunk() {
 -    if (type == TYPE_DATA) {
 +    if (type == TYPE_DATA && !rs_borrowed_) {
          delete[] value.str;
-@@ -36,48 +41,129 @@ BufferChunk::~BufferChunk() {
+@@ -36,48 +40,93 @@ BufferChunk::~BufferChunk() {
  
 +static void check_buffer_status(int32_t status) {
 +    switch (status) {
@@ -32,14 +31,8 @@ index e466a08d3..af6f72f4f 100644
 +
  Buffer::Buffer(uint32_t _chunk_size) {
 -    chunk_size = _chunk_size == 0 ? INT_MAX : _chunk_size;
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 +    check_buffer_status(swr_v1_buffer_typed_create(_chunk_size, &rs_buffer_));
-+#else
-+    check_buffer_status(swr_v1_buffer_create(_chunk_size, &rs_buffer_));
-+#endif
-+#if !defined(SWOOLE_RS_BUFFER_TYPED) || !SWOOLE_RS_BUFFER_TYPED
-+    rs_front_.rs_borrowed_ = true;
-+#endif
++    front_.rs_borrowed_ = true;
  }
  
 -BufferChunk *Buffer::alloc(BufferChunk::Type type, uint32_t size) {
@@ -56,85 +49,73 @@ index e466a08d3..af6f72f4f 100644
 -    total_length -= chunk->size;
 -    delete chunk;
 -    queue_.pop();
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 +extern "C" void swr_buffer_dispose_legacy_close(void *token) {
 +    delete static_cast<BufferChunk *>(token);
  }
-+#endif
  
 -Buffer::~Buffer() {
 -    while (!queue_.empty()) {
 -        pop();
 +BufferChunk *Buffer::alloc(BufferChunk::Type type, uint32_t size) {
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 +    if (type != BufferChunk::TYPE_CLOSE || size != 0) {
 +        throw std::invalid_argument("Typed buffer rejects mutable legacy DATA/sendfile chunks");
      }
 +    std::unique_ptr<BufferChunk> chunk(new BufferChunk(type, size));
 +    check_buffer_status(swr_v1_buffer_typed_push(rs_buffer_, 2, chunk.get(), swr_buffer_dispose_legacy_close));
 +    return chunk.release();
-+#else
-+    std::unique_ptr<BufferChunk> chunk(new BufferChunk(type, size));
-+    check_buffer_status(swr_v1_buffer_push_native(rs_buffer_, chunk.get()));
-+    return chunk.release();
-+#endif
  }
  
 -void Buffer::append(const char *data, uint32_t size) {
 -    uint32_t _length = size;
 -    auto _pos = data;
--
--    assert(size > 0);
 +BufferChunk *Buffer::front() const {
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
-+    check_buffer_status(SWR_BUFFER_INVALID);
-+    return nullptr;
-+#else
-+    swr_v1_buffer_view view{};
-+    int32_t status = swr_v1_buffer_front_plan(rs_buffer_, &rs_front_, &view);
++    TypedFront view{};
++    int32_t status = swr_v1_buffer_typed_front(rs_buffer_, &view);
 +    if (status == SWR_BUFFER_EMPTY) return nullptr;
 +    check_buffer_status(status);
-+    if (view.kind == 2) {
-+        rs_front_.value.str = reinterpret_cast<char *>(view.data);
-+        rs_front_.length = view.length;
-+        rs_front_.size = view.capacity;
-+        rs_front_.offset = 0;
-+        rs_front_.destroy = nullptr;
++    if (view.kind == BufferChunk::TYPE_CLOSE && view.token) {
++        return static_cast<BufferChunk *>(view.token);  // alloc()'s own chunk
 +    }
-+    return static_cast<BufferChunk *>(view.token);
-+#endif
++    front_.type = static_cast<BufferChunk::Type>(view.kind);
++    front_.value.ptr = view.kind == BufferChunk::TYPE_DATA ? static_cast<void *>(view.data) : view.token;
++    front_.length = front_.size = view.length;
++    front_.offset = view.offset;
++    return &front_;
 +}
  
--    // buffer enQueue
--    while (_length > 0) {
--        uint32_t _n = _length >= chunk_size ? chunk_size : _length;
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
+-    assert(size > 0);
 +Buffer::TypedFront Buffer::typed_front() const {
 +    TypedFront view{};
 +    check_buffer_status(swr_v1_buffer_typed_front(rs_buffer_, &view));
 +    return view;
 +}
  
--        BufferChunk *chunk = alloc(BufferChunk::TYPE_DATA, _n);
+-    // buffer enQueue
+-    while (_length > 0) {
+-        uint32_t _n = _length >= chunk_size ? chunk_size : _length;
 +void Buffer::typed_consume(const TypedFront &front, uint32_t count) {
 +    check_buffer_status(swr_v1_buffer_typed_consume(rs_buffer_, front.generation, front.offset, count));
 +}
  
--        total_length += _n;
+-        BufferChunk *chunk = alloc(BufferChunk::TYPE_DATA, _n);
 +void Buffer::typed_close() {
 +    check_buffer_status(swr_v1_buffer_typed_push(rs_buffer_, 2, nullptr, nullptr));
 +}
  
--        memcpy(chunk->value.str, _pos, _n);
--        chunk->length = _n;
+-        total_length += _n;
 +void Buffer::typed_sendfile(void *token, swr_v1_buffer_dispose dispose) {
 +    check_buffer_status(swr_v1_buffer_typed_push(rs_buffer_, 1, token, dispose));
 +}
-+#endif
-+
+ 
+-        memcpy(chunk->value.str, _pos, _n);
+-        chunk->length = _n;
 +void Buffer::advance(bool drain) {
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 +    for (;;) {
++        // A destroy set on front()'s view runs as upstream's chunk destructor would.
++        if (auto destroy = front_.destroy) {
++            front_.destroy = nullptr;
++            [&]() noexcept { destroy(&front_); }();
++        }
 +        swr_v1_buffer_typed_detached effect{};
 +        int32_t status = swr_v1_buffer_typed_pop(rs_buffer_, &effect);
 +        if (status == SWR_BUFFER_EMPTY) return;
@@ -142,25 +123,6 @@ index e466a08d3..af6f72f4f 100644
 +        if (effect.dispose) effect.dispose(effect.token);
 +        if (!drain) return;
 +    }
-+#else
-+    for (;;) {
-+        swr_v1_buffer_advance_result effect{};
-+        check_buffer_status(swr_v1_buffer_advance(rs_buffer_, drain, rs_front_.destroy != nullptr, &effect));
-+        if (effect.action == 1) {
-+            auto *chunk = static_cast<BufferChunk *>(effect.token);
-+            [](BufferChunk *view) noexcept { view->destroy(view); }(chunk);
-+            chunk->destroy = nullptr;
-+            continue;
-+        }
-+        if (effect.reset_view) {
-+            rs_front_.value.str = nullptr;
-+            rs_front_.length = rs_front_.size = rs_front_.offset = 0;
-+        }
-+        if (effect.action == 0) return;
-+        delete static_cast<BufferChunk *>(effect.token);
-+        if (!drain) return;
-+    }
-+#endif
 +}
  
 -        swoole_trace_log(
@@ -175,7 +137,7 @@ index e466a08d3..af6f72f4f 100644
 +void Buffer::append(const char *data, uint32_t size) {
 +    check_buffer_status(swr_v1_buffer_append(rs_buffer_, reinterpret_cast<const uint8_t *>(data), size));
  }
-@@ -85,61 +171,21 @@ void Buffer::append(const char *data, uint32_t size) {
+@@ -85,61 +134,21 @@ void Buffer::append(const char *data, uint32_t size) {
  void Buffer::append(const iovec *iov, size_t iovcnt, off_t offset) {
 -    size_t _length = 0;
 +    check_buffer_status(swr_v1_buffer_append_iovec(rs_buffer_, iov, iovcnt, offset));

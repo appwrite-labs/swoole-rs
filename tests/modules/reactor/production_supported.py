@@ -13,7 +13,6 @@ from tools.harness import ROOT,Engine,parse_engines,run_isolated,write_report
 from tools import hybrid_identity as shared
 from tools.hybrid_identity import attest,sha
 from tools.build_upstream import require_build_space
-import buffer_typed_identity as typed_buffer
 
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--source',type=Path,required=True)
@@ -28,7 +27,6 @@ p.add_argument('--php-config',default='php-config')
 p.add_argument('--php-extension',action='append',default=[])
 p.add_argument('--output',type=Path,required=True)
 p.add_argument('--require-owned-defer',action='store_true',help='Require the selected Rust deferred queue imports/origins and a Native control; builtins profile only')
-p.add_argument('--require-typed-buffer',action='store_true',help='Require literal typed Buffer request/SDK/source for every profile; Buffer execution credit only in existing socket-output profile')
 p.add_argument('--require-batch',action='store_true',help='Refuse older production sources before compiling/running the consumer')
 profiles=p.add_mutually_exclusive_group()
 profiles.add_argument('--callbacks',action='store_true',help='Separate genuine ordered callback-storage profile; require new matching production source')
@@ -46,13 +44,6 @@ def run(command):
     if r.returncode or r.stderr:raise ValueError('Command failed or warned; initial output retained')
     return r.stdout
 try:
-    report['require_typed_buffer']=a.require_typed_buffer
-    report['typed_buffer_execution_requested']=bool(a.require_typed_buffer and a.socket_output)
-    if a.require_typed_buffer:
-        inputs=json.loads(a.build_manifest.read_text())['inputs']
-        report['typed_buffer_requests']={'selected':typed_buffer.requested(inputs,True),'native':typed_buffer.requested(json.loads((a.native_export.parent/'build-manifest.json').read_text())['inputs'],False)}
-        files={name:subprocess.check_output(['git','-C',str(ROOT),'show',a.source_ref+':'+name]) for name in (*typed_buffer.SOURCES,*typed_buffer.PATCHES)}
-        typed_buffer.prepared(inputs,files)
     if a.require_owned_defer:
         if not a.builtins:raise ValueError('--require-owned-defer requires --builtins')
     report['require_owned_defer']=a.require_owned_defer
@@ -88,9 +79,6 @@ try:
         if json.loads(manifest.read_text())['extension_sha256']!=row['sha256']:raise ValueError('Actual extension/manifest mismatch')
         if row['php']!=subprocess.check_output([a.php_config,'--version'],text=True).strip():raise ValueError('PHP compile SDK mismatch')
         mirror=work/(engine.name+'-headers');row['headers']=shared.headers(a.source,export,manifest,mirror)
-        if a.require_typed_buffer:
-            config=mirror/'include/config.h'
-            row['typed_buffer_sdk']={'path':str(config),'enabled':typed_buffer.configured(config.read_text(),selected)}
         addon=work/(engine.name+'-addon.so')
         command=['c++','-std=c++17','-O2','-fPIC','-shared','-DHAVE_CONFIG_H',*shlex.split(subprocess.check_output([a.php_config,'--includes'],text=True)),*shlex.split(subprocess.check_output(['pkg-config','--cflags','openssl'],text=True)),'-I'+str(mirror/'include'),'-MD','-MF',str(addon)+'.d',addon_source,'-o',addon]
         command+=['-undefined','dynamic_lookup'] if sys.platform=='darwin' else ['-ldl']
@@ -110,7 +98,6 @@ try:
             if any(symbol not in undefined for symbol in symbols):raise ValueError('Addon must call all genuine production Socket output methods')
             if result['cases']!=9 or any(result[key]!=str(engine.extension) for key in ['sendfile_image','request_image']):raise ValueError('Actual output method origins/cases differ')
             if selected and any(result[key]!=str(engine.extension) for key in ['send_policy_image','sendfile_cork_image','sendfile_sent_image','request_policy_image','request_owner_image','request_range_image','request_sent_image','request_free_image']):raise ValueError('Actual compiled Rust output/parameters origins differ')
-        if a.require_typed_buffer and a.socket_output:typed_buffer.consumer(result,undefined,str(engine.extension),selected)
         if a.require_owned_defer:
             defer_symbol='_ZN6swoole7Reactor5deferERKNSt3__18functionIFvPvEEES3_' if sys.platform=='darwin' else '_ZN6swoole7Reactor5deferERKSt8functionIFvPvEES2_'
             imports={line.split()[-1].lstrip('_') for line in undefined.splitlines() if line.split()}
@@ -125,8 +112,6 @@ try:
         if selected and not (a.callbacks or a.builtins or a.socket_output or a.blocking) and report['selected_batch_decoder_compiled'] and result['batch_image']!=str(engine.extension):raise ValueError('Compiled Rust decoder origin differs')
         if any(sha(mirror/name)!=digest for name,digest in row['headers']['files_sha256'].items()):raise ValueError('Attested headers changed')
         report['results'].append(dict(engine=engine.name,**result))
-    report['typed_buffer_execution_qualified']=bool(a.require_typed_buffer and a.socket_output)
-    report['typed_buffer_scope']='existing9/78output consumer plus exact constructor/front/source/origins' if a.require_typed_buffer and a.socket_output else 'capability/source/SDK preconditions only; no typed Buffer execution claim' if a.require_typed_buffer else 'not requested'
     report['passed']=True
 except Exception as error:
     report['error']=f'{type(error).__name__}: {error}'

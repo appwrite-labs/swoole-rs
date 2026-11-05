@@ -12,15 +12,6 @@ LINK = ['-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections', 
 SANITIZE = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
 
 
-def untyped_hybrid(archive):
-    """The hybrid build's tree and flags with SWOOLE_RS_BUFFER_TYPED off. Builds with the Rust
-    reactor turn the typed queue on, which replaces the legacy Buffer API (front() rejects every
-    call). The legacy-facade fixtures run the same patched sources in the untyped configuration
-    that builds without the reactor use; test_typed.py covers the typed one."""
-    source, flags = hybrid_tree(archive)
-    return source, [flag for flag in flags if flag != '-DSWOOLE_RS_BUFFER_TYPED']
-
-
 def build_and_run(command, binary, *arguments, timeout=60):
     compiled = run_compiler([*map(str, command), '-o', str(binary)], timeout=60)
     assert compiled['returncode'] == 0, compiled['stderr']
@@ -30,7 +21,7 @@ def build_and_run(command, binary, *arguments, timeout=60):
 def native_and_selected(tree, test_source, archive, sanitize, *defines):
     """Outcome JSON of one test compiled against pinned buffer.cc, then against the hybrid build's
     buffer.cc and headers with its Rust archive."""
-    hybrid, flags = untyped_hybrid(archive)
+    hybrid, flags = hybrid_tree(archive)
     outcomes = {}
     for name in ['native', 'selected']:
         headers = ['-I' + str(tree / 'include'), *INCLUDES] if name == 'native' else ['-DSWOOLE_RS_BUFFER', *flags]
