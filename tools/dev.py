@@ -360,6 +360,9 @@ def plan(args, reports):
                 name = 'clients-php-' + family
                 script(name, 'tests/modules/clients/' + runner, '--build-manifest', manifest,
                        *php_for('curl', 'sockets'), *engines, *report(name))
+    if 'phpevents' in modules:
+        script('phpevents-lifecycle', 'tests/modules/phpevents/lifecycle.py', *php_for('curl', 'sockets'), *engines,
+               *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []), *report('phpevents-lifecycle'))
     if 'phpcollections' in modules:
         if integrate:
             script('phpcollections-runtime', 'tests/modules/phpcollections/php_runtime.py', *php_for('curl'), *engines,
@@ -392,6 +395,12 @@ def plan(args, reports):
                        '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        '--source-ref', 'HEAD', *report('phphelpers-runtime'))
     if 'ports' in modules:
+        # SNI resolves its port inside the callback; exercise the production wrapper,
+        # not only the protocol-plan and scalar-setting mini gates.
+        sni_engines = engines if integrate or args.compare else ['--engine', f'hybrid={hybrid}']
+        script('ports-sni-originals', 'corpus/upstream/run.py', '--source', manifest.parent / 'src',
+               '--manifest', 'tests/modules/ports/sni-originals.json', *php_for('curl', 'sockets'), *sni_engines,
+               '--require-all', '--isolate-cases', *report('ports-sni-originals'))
         if integrate:
             for name, runner in [('ports-configuration', 'configuration.py')]:
                 script(name, 'tests/modules/ports/' + runner, *php_for('curl', 'sockets'), *engines,

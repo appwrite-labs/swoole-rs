@@ -10,7 +10,7 @@
 mod array;
 mod asynchronous;
 #[cfg(feature = "php")]
-mod callable;
+pub mod callable;
 #[cfg(feature = "php")]
 mod common;
 #[cfg(feature = "php")]
@@ -19,3 +19,6 @@ mod known_strings;
 mod owned;
 #[cfg(feature = "php")]
 mod private;
+
+#[cfg(feature = "php")]
+pub use private::function_call;
