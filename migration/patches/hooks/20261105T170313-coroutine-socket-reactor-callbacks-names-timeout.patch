@@ -7,17 +7,17 @@ index c8116e0..e630845 100644
 -    static int ready_event_callback(Event *event, EventType type);
      static int error_event_callback(Reactor *reactor, Event *event);
 diff --git a/src/coroutine/socket.cc b/src/coroutine/socket.cc
-index 52dd89f..0d65e24 100644
+index 52dd89f..dfc7b0a 100644
 --- a/src/coroutine/socket.cc
 +++ b/src/coroutine/socket.cc
 @@ -37,2 +37,8 @@ namespace coroutine {
  static_assert(SW_EVENT_READ == 1 << 9 && SW_EVENT_WRITE == 1 << 10, "swr_v1_hook_socket_* event bits");
 +// Rust defines the reactor callbacks and the members it runs whole under their
-+// upstream symbols (crates/hooks/src/methods.rs); it finds the record one pointer
++// upstream symbols (crates/hooks/src/socket_members.rs); it finds the record one pointer
 +// into a Socket.
 +static_assert(std::is_polymorphic<Socket>::value && !std::is_polymorphic<swr_v1_co_socket>::value &&
 +                  alignof(swr_v1_co_socket) <= sizeof(void *),
-+              "coroutine::Socket's layout for crates/hooks/src/methods.rs");
++              "coroutine::Socket's layout for crates/hooks/src/socket_members.rs");
  
 @@ -49,28 +55,2 @@ void Socket::timer_callback(Timer *timer, TimerNode *tnode) {
  

@@ -8,7 +8,7 @@ publish = false
 crate-type = ["rlib", "staticlib"]
 
 [features]
-# Define the upstream C++ symbols of the coroutine::Socket members `src/methods.rs`
+# Define the upstream C++ symbols of the coroutine::Socket members `src/socket_members.rs`
 # holds; only the hybrid, which deletes their C++ definitions, enables it.
 upstream-symbols = []
 # The io_uring engine (upstream's --enable-iouring), over the system liburing.
