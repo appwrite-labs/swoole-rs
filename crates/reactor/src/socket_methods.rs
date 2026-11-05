@@ -311,7 +311,10 @@ pub unsafe extern "C" fn swr_v1_socket_record_peek(
 /// # Safety
 /// `socket` is the live zero-offset Rust socket record borrowed by its C++ facade.
 #[must_use]
-#[unsafe(export_name = "_ZNK6swoole7network6Socket15what_event_wantEi")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole7network6Socket15what_event_wantEi")
+)]
 pub unsafe extern "C" fn cpp_socket_what_event_want(
     socket: *const SocketRecord,
     default: c_int,
