@@ -21,6 +21,7 @@ pub mod signal;
     target_os = "dragonfly"
 ))]
 pub mod signal_kqueue;
+mod signal_loop;
 #[cfg(target_os = "linux")]
 pub mod signalfd;
 pub mod task_file;

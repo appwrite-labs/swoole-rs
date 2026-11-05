@@ -238,6 +238,9 @@ def plan(args, reports):
     if 'error' in modules:
         script('error-native', 'tools/core_check.py', '--module', 'error',
                '--build-manifest', manifest, '--sanitize', *report('error-native'))
+    if 'process' in modules:
+        script('process-signals', 'tests/modules/process/signals.py',
+               *php, *engines, *report('process-signals'))
     if 'error' in modules and integrate:
         script('error-php', 'tests/modules/error/php.py', '--source', ROOT / 'target/upstream/src',
                *php, *engines, *report('error-php'))
