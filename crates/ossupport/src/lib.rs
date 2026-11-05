@@ -10,6 +10,7 @@
 mod async_file;
 pub use async_file::*;
 mod file;
+mod file_api;
 mod file_record;
 #[cfg(any(
     target_os = "linux",
@@ -19,12 +20,13 @@ mod file_record;
 ))]
 pub use file::swr_v1_os_sendfile;
 pub use file::{
-    FileContents, FileIo, FileSize, Sendfile, swr_v1_os_file_close, swr_v1_os_file_contents_open,
-    swr_v1_os_file_open, swr_v1_os_file_put_open, swr_v1_os_file_read_all,
-    swr_v1_os_file_read_line, swr_v1_os_file_size, swr_v1_os_file_size_path,
-    swr_v1_os_file_write_all, swr_v1_os_random_bytes, swr_v1_os_sendfile_copy, swr_v1_os_tmpfile,
+    FileIo, FileSize, Sendfile, swr_v1_os_file_close, swr_v1_os_file_open, swr_v1_os_file_read_all,
+    swr_v1_os_file_read_line, swr_v1_os_file_size, swr_v1_os_file_write_all,
+    swr_v1_os_sendfile_copy, swr_v1_os_tmpfile,
 };
+pub use file_api::*;
 pub use file_record::*;
+pub use swoole_rs_corebase::swr_v1_os_random_bytes;
 mod system;
 pub use system::{
     IsolationWarn, swr_v1_os_daemon_detach, swr_v1_os_is_root_user, swr_v1_os_set_isolation,

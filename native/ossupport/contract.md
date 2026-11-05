@@ -43,16 +43,17 @@ so the native `swoole_sys_warning` sees its errno.
   each call's progress; Darwin retries with the length the interrupted call
   reported. `swr_v1_os_sendfile_copy` (`!HAVE_SENDFILE`): one 64 KiB `pread` and
   one `write`, no retries. Linux keeps its direct `sendfile`.
-- `swr_v1_os_random_bytes`: `getrandom` on Linux/Android (retrying `EINTR`/`EAGAIN`,
-  a zero result repeats), `arc4random_buf` elsewhere.
+- `swr_v1_os_random_bytes` (in corebase, so String's `append_random_bytes` reaches
+  it): `getrandom` on Linux/Android (retrying `EINTR`/`EAGAIN`, a zero result
+  repeats), `arc4random_buf` elsewhere.
 
-- `swr_v1_os_file_contents_open` / `swr_v1_os_file_put_open`: the open and
-  empty/too-large checks of `file_get_contents` / `file_put_contents`, in upstream
-  order; on success the descriptor stays open for native to read into its
-  `String` (or write) and close. `swr_v1_os_file_size_path` is
-  `file_get_size(filename)`.
-
-`File::read_content` stays native: it grows a native `String`.
+- `file_api.rs` is the rest of `src/os/file.cc`, which the patch deletes:
+  `swoole_tmpfile`, both `file_get_size` overloads, `File::stat`, `write_all` and
+  `read_all` under their upstream symbols (File keeps its Rust record as its first
+  member), and the `std::string` helpers (`file_get_contents`, `file_put_contents`,
+  `file_get_size(filename)`, `file_exists`) plus `File::read_content`, which the
+  header calls with `c_str()` and the String to fill. Logs name the function as
+  upstream's `__SW_FUNC__` does.
 
 ## SysV message queue
 

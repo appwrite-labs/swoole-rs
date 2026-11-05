@@ -60,27 +60,14 @@ int swr_v1_os_file_record_open(swr_v1_os_file_record *owner, const char *path, s
 int swr_v1_os_file_record_assign(swr_v1_os_file_record *owner, const swr_v1_os_file_record *source, swr_v1_os_file_path_update update, void *context);
 ssize_t swr_v1_os_file_record_io(const swr_v1_os_file_record *owner, uint32_t operation, void *buffer, size_t length, off_t offset);
 off_t swr_v1_os_file_record_control(const swr_v1_os_file_record *owner, uint32_t operation, off_t value);
-bool swr_v1_os_file_record_stat(const swr_v1_os_file_record *owner, struct stat *output);
-/* File IO. Each call returns right after a failing syscall, errno intact, so
- * native logs the upstream warning. */
-typedef struct { size_t done; bool failed; } swr_v1_os_file_io;
-swr_v1_os_file_io swr_v1_os_file_record_all(const swr_v1_os_file_record *owner, bool write, void *buffer, size_t length);
-int swr_v1_os_file_open(int fd, const char *path, int flags, int mode);
-bool swr_v1_os_file_close(int fd);
-int swr_v1_os_tmpfile(char *filename);
-swr_v1_os_file_io swr_v1_os_file_write_all(int fd, bool append, const void *data, size_t length);
-swr_v1_os_file_io swr_v1_os_file_read_all(int fd, void *buf, size_t length);
 ssize_t swr_v1_os_file_read_line(int fd, void *buf, size_t n);
-/* size, or -1 with the error to publish (errno or EISDIR). */
-typedef struct { int64_t size; int error; } swr_v1_os_file_size_t;
-swr_v1_os_file_size_t swr_v1_os_file_size(int fd);
-swr_v1_os_file_size_t swr_v1_os_file_size_path(const char *path);
-/* status 0: fd open for native to read/write and close; otherwise fd is -1:
- * 1 open failed (errno intact), 2 size unknown (publish error), 3 empty,
- * 4 too large. */
-typedef struct { int fd; uint32_t status; int64_t size; int error; } swr_v1_os_file_contents_t;
-swr_v1_os_file_contents_t swr_v1_os_file_contents_open(const char *path, uint64_t maximum);
-swr_v1_os_file_contents_t swr_v1_os_file_put_open(const char *path, uint64_t length, uint64_t maximum);
+/* src/os/file.cc's std::string helpers and File::read_content; `content` is a
+ * swoole::String (default-constructed, or File's fresh one). */
+ssize_t swr_v1_os_file_get_size_path(const char *path);
+bool swr_v1_os_file_get_contents(const char *path, void *content);
+bool swr_v1_os_file_put_contents(const char *path, const void *data, size_t length);
+bool swr_v1_os_file_exists(const char *path);
+void swr_v1_os_file_read_content(swr_v1_os_file_record *owner, void *content);
 /* warn: copy fallback 1 pread, 2 write; kqueue sendfile 1 sendfile. */
 typedef struct { ssize_t result; uint32_t warn; } swr_v1_os_sendfile_t;
 swr_v1_os_sendfile_t swr_v1_os_sendfile_copy(int out_fd, int in_fd, off_t *offset, size_t size);

@@ -38,7 +38,7 @@ firebird = ["hooks", "dep:swoole-rs-firebird"]
 curl = ["hooks", "dep:swoole-rs-curl"]
 ssh2 = ["hooks", "dep:swoole-rs-ssh2"]
 
-ossupport = ["dep:swoole-rs-ossupport"]
+ossupport = ["dep:swoole-rs-ossupport", "swoole-rs-ossupport/upstream-symbols"]
 tls = ["dep:swoole-rs-tls"]
 process = ["dep:swoole-rs-process", "swoole-rs-process/upstream-symbols", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/server", "dep:swoole-rs-phpprocess", "dep:swoole-rs-phpthread"]
 cares = ["clients", "swoole-rs-clients/cares"]
