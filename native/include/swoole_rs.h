@@ -496,9 +496,7 @@ typedef struct swr_v1_phpswoole_ops {
     void (*dns_lookup)(const char *domain, int32_t family, double timeout, void (*push)(void *list, const char *address),
                        void *list);
 } swr_v1_phpswoole_ops;
-void swr_v1_phpswoole_minit(int32_t module_number, uint32_t flags, const swr_v1_phpswoole_ops *ops,
-                            struct _zend_class_entry **exception, struct _zend_object_handlers *exception_handlers,
-                            struct _zend_class_entry **error);
+void swr_v1_phpswoole_minit(int32_t module_number, uint32_t flags, const swr_v1_phpswoole_ops *ops);
 struct _zend_function_entry;
 struct _zend_execute_data;
 struct _zval_struct;

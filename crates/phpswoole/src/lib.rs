@@ -16,6 +16,7 @@
 mod asynchronous;
 mod constants;
 mod functions;
+mod implicit;
 #[cfg(feature = "module-info")]
 mod info;
 #[cfg(feature = "module-info")]
@@ -25,6 +26,7 @@ mod interfaces;
 mod memory;
 mod module;
 mod options;
+mod serialize;
 mod table;
 mod vm;
 
@@ -38,6 +40,7 @@ pub use module::{
     swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
 };
 pub use options::{php_swoole_set_global_option, sw_zval_is_serializable};
+pub use serialize::{php_swoole_serialize, php_swoole_unserialize};
 pub use table::swr_v1_phpswoole_functions;
 
 use std::{
@@ -175,22 +178,27 @@ fn ops() -> &'static HostOps {
     OPS.get().copied().unwrap_or_else(|| std::process::abort())
 }
 
+/// `Swoole\Exception`, its handlers (which its subclasses copy) and
+/// `Swoole\Error`, as C++ reads them; MINIT writes them.
+#[unsafe(no_mangle)]
+pub static mut swoole_exception_ce: *mut zend_class_entry = ptr::null_mut();
+#[unsafe(no_mangle)]
+// SAFETY: a table of nullable pointers and an offset, for which zero is valid.
+pub static mut swoole_exception_handlers: zend_object_handlers = unsafe { std::mem::zeroed() };
+#[unsafe(no_mangle)]
+pub static mut swoole_error_ce: *mut zend_class_entry = ptr::null_mut();
+
 /// MINIT after the module globals and ini entries: the global constants, then
-/// `Swoole\Exception` and `Swoole\Error`, whose entries (and
-/// `Swoole\Exception`'s handlers, which its subclasses copy) are written to
-/// the C++ globals, the short-name function aliases, then Swoole's core and
-/// every family (`module::startup`).
+/// `Swoole\Exception` and `Swoole\Error` (`swoole_exception_ce`,
+/// `swoole_exception_handlers` and `swoole_error_ce`), the short-name function
+/// aliases, then Swoole's core and every family (`module::startup`).
 /// # Safety
-/// Called once, at MINIT, with the module's number, a static operations table
-/// and writable class-entry globals.
+/// Called once, at MINIT, with the module's number and a static operations table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_minit(
     module_number: i32,
     flags: u32,
     ops: *const HostOps,
-    exception: *mut *mut zend_class_entry,
-    exception_handlers: *mut zend_object_handlers,
-    error: *mut *mut zend_class_entry,
 ) {
     // SAFETY: per the caller, a static table.
     if let Some(ops) = unsafe { ops.as_ref() } {
@@ -206,16 +214,16 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(
     unsafe { EXCEPTION.register_child(c"Swoole\\Exception", ptr::null(), parent, |_, _| {}) };
     // SAFETY: registered above, so its handlers are set.
     let handlers = unsafe { *EXCEPTION.handlers() };
-    // SAFETY: per the caller, a writable global; subclasses copy it.
-    unsafe { exception_handlers.write(handlers) };
+    // SAFETY: MINIT, before any family copies it.
+    unsafe { swoole_exception_handlers = handlers };
     // SAFETY: Zend registers Error before any extension's MINIT.
     let parent = unsafe { zend_ce_error };
     // SAFETY: MINIT, extending Error, with no methods.
     unsafe { ERROR.register_child(c"Swoole\\Error", ptr::null(), parent, |_, _| {}) };
-    // SAFETY: per the caller, writable globals.
-    unsafe { exception.write(EXCEPTION.entry()) };
+    // SAFETY: MINIT, before any family reads them.
+    unsafe { swoole_exception_ce = EXCEPTION.entry() };
     // SAFETY: as above.
-    unsafe { error.write(ERROR.entry()) };
+    unsafe { swoole_error_ce = ERROR.entry() };
     // SAFETY: MINIT, after Zend registered the module's functions.
     if let Err(error) = unsafe { table::register_aliases(flags) } {
         error.defer();

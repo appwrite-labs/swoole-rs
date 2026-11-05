@@ -76,7 +76,6 @@ uint8_t swr_v1_phpevents_error(struct swr_v1_phpevents_error_event *);
 int32_t swr_v1_phpevents_init(void);
 int32_t swr_v1_phpevents_fd(struct _zval_struct *);
 void swr_v1_phpevents_wait(void);
-void swr_v1_phpevents_exit(void);
 void swr_v1_phpevents_shutdown(void);
 void swr_v1_phpevents_minit(const struct swr_v1_phpevents_ops *ops);
 /* Reactor read (0) or write (1) handler of a user socket: SW_OK, SW_ERR, or 1
