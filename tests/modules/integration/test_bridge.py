@@ -152,7 +152,7 @@ int main(void) {
             (2048, 'src/wrapper/event.cc', 'Wrapper overlay requires --enable-swoole-rs-wrappers'),
             (16384, 'src/network/socket.cc', 'Reactor overlay requires --enable-swoole-rs-reactor'),
             (32768, 'src/coroutine/base.cc', 'Coroutine overlay requires --enable-swoole-rs-coroutine'),
-            (65536, 'src/coroutine/hook.cc', 'Hooks overlay requires --enable-swoole-rs-hooks'),
+            (65536, 'src/coroutine/socket.cc', 'Hooks overlay requires --enable-swoole-rs-hooks'),
             (131072, 'src/os/async_thread.cc', 'OS support overlay requires --enable-swoole-rs-ossupport'),
             (262144, 'src/protocol/ssl.cc', 'TLS overlay requires explicit module activation'),
             (524288, 'src/server/worker.cc', 'Process overlay requires --enable-swoole-rs-process'),
