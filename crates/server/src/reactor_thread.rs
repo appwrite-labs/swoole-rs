@@ -324,10 +324,17 @@ pub(crate) fn resume_receiving<H: Host>(h: &mut H) -> crate::Effect<()> {
 }
 
 /// `Server::dispatch_task`: one received data frame to a worker, counting the bytes
-/// queued for it until the worker takes them.
+/// queued for it until the worker takes them. Base and thread mode run
+/// `BaseFactory::dispatch` here rather than through the native factory.
 pub(crate) fn dispatch_task<H: Host>(h: &mut H, len: u64) -> crate::Effect<i64> {
-    h.op(OP_TASK_INIT, len)?;
-    if !h.is(OP_FACTORY_DISPATCH)? {
+    let task = h.op(OP_TASK_INIT, len)?;
+    let dispatched = if h.get(OP_MODE)? == MODE_PROCESS {
+        h.is(OP_FACTORY_DISPATCH)?
+    } else {
+        let task = core::ptr::with_exposed_provenance_mut(usize::try_from(task).unwrap_or(0));
+        crate::base_factory::dispatch(h, task)?
+    };
+    if !dispatched {
         if len > 0 {
             h.op(OP_QUEUE_SUB, len)?;
         }
@@ -628,16 +635,40 @@ mod tests {
 
     #[test]
     fn dispatch_counts_queued_bytes() {
-        let mut s = Script::with(&[(OP_FACTORY_DISPATCH, 1)]);
+        let process = |dispatched| {
+            Script::with(&[(OP_MODE, MODE_PROCESS), (OP_FACTORY_DISPATCH, dispatched)])
+        };
+        let mut s = process(1);
         assert_eq!(dispatch_task(&mut s, 10).unwrap(), SW_OK, "dispatched");
         assert_eq!(s.args(OP_TASK_INIT), vec![10], "queued");
         assert_eq!(s.called(OP_COUNT_DISPATCH), 1, "counted");
 
-        let mut s = Script::default();
+        let mut s = process(0);
         assert_eq!(dispatch_task(&mut s, 0).unwrap(), SW_ERR, "failed");
         assert_eq!(s.called(OP_QUEUE_SUB), 0, "nothing queued");
-        let mut s = Script::default();
+        let mut s = process(0);
         assert_eq!(dispatch_task(&mut s, 10).unwrap(), SW_ERR, "failed");
         assert_eq!(s.args(OP_QUEUE_SUB), vec![10], "unqueued");
+    }
+
+    #[test]
+    fn base_mode_dispatches_without_the_factory() {
+        use crate::ops::OP_BASE_PASS;
+        // A non-stream event needs no connection table.
+        let mut task = crate::base_factory::SendData {
+            info: swoole_rs_corebase::DataHead {
+                kind: 9,
+                ..Default::default()
+            },
+            data: core::ptr::null(),
+        };
+        let address = u64::try_from((&raw mut task).expose_provenance()).unwrap();
+        let mut s = Script::with(&[(OP_TASK_INIT, address)]);
+        assert_eq!(dispatch_task(&mut s, 0).unwrap(), SW_OK, "dispatched");
+        assert_eq!(
+            (s.called(OP_FACTORY_DISPATCH), s.args(OP_BASE_PASS)),
+            (0, vec![address])
+        );
+        assert_eq!(s.called(OP_COUNT_DISPATCH), 1, "counted");
     }
 }
