@@ -24,7 +24,7 @@ pub(crate) struct SendData {
 }
 
 /// `ServerEventType`.
-const SEND_DATA: u8 = 2;
+pub(crate) const SEND_DATA: u8 = 2;
 const SEND_FILE: u8 = 3;
 const CLOSE_FORWARD: u8 = 7;
 /// `SW_EVENT_DATA_POP_PTR`; `Server::CLOSE_RESET`, `CLOSE_ACTIVELY`.
@@ -303,12 +303,17 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
     Ok(h.op(OP_QUEUE_CLOSE, address(socket))? != 0)
 }
 
+/// Whether `BaseFactory::finish` sends `send` from this worker: it owns the session.
+pub(crate) fn sends_here<H: Host>(h: &mut H, send: &SendData) -> crate::Effect<bool> {
+    let worker = worker_id(h)?;
+    Ok(session(h, send.info.fd)?.is_none_or(|(owner, _)| owner == worker))
+}
+
 /// `BaseFactory::finish`: send here, or forward data and files to the session's worker.
 pub(crate) fn finish<H: Host>(h: &mut H, data: *const SendData) -> crate::Effect<bool> {
     // SAFETY: native code lends a live `SendData` for the call.
     let send = unsafe { &*data };
-    let worker = worker_id(h)?;
-    if session(h, send.info.fd)?.is_none_or(|(owner, _)| owner == worker) {
+    if sends_here(h, send)? {
         return Ok(h.signed(OP_SEND_HERE)? == SW_OK);
     }
     if send.info.kind == SEND_DATA || send.info.kind == SEND_FILE {
