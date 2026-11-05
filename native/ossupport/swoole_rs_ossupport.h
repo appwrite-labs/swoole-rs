@@ -68,24 +68,6 @@ bool swr_v1_os_file_get_contents(const char *path, void *content);
 bool swr_v1_os_file_put_contents(const char *path, const void *data, size_t length);
 bool swr_v1_os_file_exists(const char *path);
 void swr_v1_os_file_read_content(swr_v1_os_file_record *owner, void *content);
-/* warn: copy fallback 1 pread, 2 write; kqueue sendfile 1 sendfile. */
-typedef struct { ssize_t result; uint32_t warn; } swr_v1_os_sendfile_t;
-swr_v1_os_sendfile_t swr_v1_os_sendfile_copy(int out_fd, int in_fd, off_t *offset, size_t size);
-#if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__FreeBSD__)
-swr_v1_os_sendfile_t swr_v1_os_sendfile(int out_fd, int in_fd, off_t *offset, size_t size);
-#endif
-/* src/os/base.cc process and thread identity. Isolation reports each failed step
- * as it happens (errno intact): 1 group lookup, 2 user lookup, 3 setgid,
- * 4 setuid, 5 chdir("/"), 6 chroot. The root check, death signal, thread id
- * and names and swoole_random_bytes are crates/ossupport's under their own symbols. */
-/* Darwin daemon steps before fork: 0 done, 1 chdir, 2 open, 3 dup2 failed. */
-int swr_v1_os_daemon_detach(bool nochdir, bool noclose);
-void swr_v1_os_set_isolation(const char *group, const char *user, const char *root,
-                             void (*warn)(uint32_t step, void *context), void *context);
-#if defined(__linux__) || defined(__FreeBSD__)
-int swr_v1_os_set_cpu_affinity(const void *set);
-int swr_v1_os_get_cpu_affinity(void *set);
-#endif
 bool swr_v1_os_msg_queue_init(swr_v1_os_msg_queue *, key_t, bool, int);
 void swr_v1_os_msg_queue_blocking(swr_v1_os_msg_queue *, bool);
 bool swr_v1_os_msg_queue_remove(swr_v1_os_msg_queue *);

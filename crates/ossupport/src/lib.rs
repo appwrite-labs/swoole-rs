@@ -20,22 +20,23 @@ mod file_record;
 ))]
 pub use file::swr_v1_os_sendfile;
 pub use file::{
-    FileIo, FileSize, Sendfile, swr_v1_os_file_close, swr_v1_os_file_open, swr_v1_os_file_read_all,
-    swr_v1_os_file_read_line, swr_v1_os_file_size, swr_v1_os_file_write_all,
-    swr_v1_os_sendfile_copy, swr_v1_os_tmpfile,
+    FileIo, FileSize, Sendfile, swoole_sendfile, swr_v1_os_file_close, swr_v1_os_file_open,
+    swr_v1_os_file_read_all, swr_v1_os_file_read_line, swr_v1_os_file_size,
+    swr_v1_os_file_write_all, swr_v1_os_sendfile_copy, swr_v1_os_tmpfile,
 };
 pub use file_api::*;
 pub use file_record::*;
 pub use swoole_rs_corebase::swr_v1_os_random_bytes;
 mod system;
-pub use system::{
-    IsolationWarn, swoole_random_bytes, swoole_thread_get_name, swoole_thread_set_name,
-    swr_v1_os_daemon_detach, swr_v1_os_is_root_user, swr_v1_os_set_isolation,
-    swr_v1_os_set_process_death_signal, swr_v1_os_thread_get_name, swr_v1_os_thread_native_id,
-    swr_v1_os_thread_set_name,
-};
+#[cfg(feature = "upstream-symbols")]
+pub use system::swoole_daemon;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
-pub use system::{swr_v1_os_get_cpu_affinity, swr_v1_os_set_cpu_affinity};
+pub use system::swoole_get_cpu_affinity;
+pub use system::{
+    swoole_random_bytes, swoole_thread_get_name, swoole_thread_set_name, swr_v1_os_is_root_user,
+    swr_v1_os_set_isolation, swr_v1_os_set_process_death_signal, swr_v1_os_thread_get_name,
+    swr_v1_os_thread_native_id, swr_v1_os_thread_set_name,
+};
 mod msg_queue;
 pub use msg_queue::{
     MsgOpen, MsgPop, QueueRecord, swr_v1_os_msg_flags, swr_v1_os_msg_open, swr_v1_os_msg_pop,
