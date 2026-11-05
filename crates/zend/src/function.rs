@@ -4,8 +4,8 @@ use crate::{
     Call, Class,
     sys::{
         _zval_struct__bindgen_ty_1, IS_UNDEF, add_assoc_bool_ex, swr_zend_class_set_create_object,
-        swr_zend_register_function_alias, zend_class_entry, zend_function_entry,
-        zend_internal_arg_info, zend_object, zend_object_handlers, zval,
+        zend_class_entry, zend_function_entry, zend_internal_arg_info, zend_object,
+        zend_object_handlers, zval,
     },
 };
 use std::{ffi::CStr, mem::offset_of, ptr};
@@ -24,38 +24,52 @@ impl Class {
     /// the method has in `methods`.
     /// # Safety
     /// At MINIT, after `register` with `methods`.
+    /// # Errors
+    /// Stops at a contained allocation or registration bailout.
     pub unsafe fn function_aliases(
         &self,
         methods: *const zend_function_entry,
         aliases: &[(&CStr, &CStr)],
-    ) {
+    ) -> Result<(), crate::bailout::Bailout> {
         for (method, alias) in aliases {
             // SAFETY: per the caller.
-            unsafe { self.function_alias(method, alias, arg_info(methods, method)) };
+            unsafe { self.function_alias(method, alias, arg_info(methods, method)) }?;
         }
+        Ok(())
     }
 
     /// Swoole's `SW_FUNCTION_ALIAS(&ce->function_table, method, CG(function_table),
     /// alias, arg_info)`: the global function `alias` runs static `method`.
     /// # Safety
     /// At MINIT, after `register`; `arg_info` is the method's static arginfo.
+    /// # Errors
+    /// Returns a contained PHP allocation or registration bailout.
     pub unsafe fn function_alias(
         &self,
         method: &CStr,
         alias: &CStr,
         arg_info: *const zend_internal_arg_info,
-    ) {
-        // SAFETY: per the caller; Zend copies both names.
+    ) -> Result<(), crate::bailout::Bailout> {
+        let entry = self.entry();
+        // SAFETY: the class entry is process-lived. Project the raw table pointer
+        // without holding a mutable Rust reference across Zend registration.
+        let source = unsafe { &raw mut (*entry).function_table };
+        // SAFETY: Zend initializes the compiler's table before module startup.
+        let target = unsafe { crate::sys::swr_zend_facade_compiler_functions() };
+        // SAFETY: the names and arginfo remain live through the guarded registration.
         unsafe {
-            swr_zend_register_function_alias(
-                self.entry(),
+            crate::registration::function_alias(
+                source,
                 method.as_ptr(),
                 method.count_bytes(),
+                target,
                 alias.as_ptr(),
                 alias.count_bytes(),
                 arg_info,
-            );
+                None,
+            )
         }
+        .map(|_| ())
     }
 }
 

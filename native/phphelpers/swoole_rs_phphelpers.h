@@ -120,6 +120,19 @@ void swr_v1_phpstdext_copy_type(struct _zval_struct *container, struct _zend_arr
  * if not, Zend has thrown. */
 bool swr_v1_phpstdext_operation(struct _zend_array *ht, bool concat);
 #endif
+struct _zend_execute_data;
+bool swr_v1_phphelpers_callable_frame(struct _zval_struct *value, struct _zval_struct *object,
+    struct _zend_execute_data *frame, uint32_t flags, char **name, size_t *length,
+    struct _zend_fcall_info_cache *cache, char **error);
+char *swr_v1_phphelpers_url_encode(const char *value, size_t count, size_t *length);
+char *swr_v1_phphelpers_http_query(struct _zval_struct *value, size_t *length, void *buffer);
+bool swr_v1_phphelpers_unset_class_valid(struct _zend_object *object);
+void swr_v1_phphelpers_unset_deny(struct _zend_object *object, struct _zend_string *member, void **cache);
+struct _zend_internal_arg_info;
+int swr_v1_phphelpers_function_alias(struct _zend_array *source, const char *origin, size_t origin_length,
+    struct _zend_array *target, const char *alias, size_t alias_length,
+    const struct _zend_internal_arg_info *info, void (*assert_internal)(uint8_t));
+int swr_v1_phphelpers_class_alias(const char *name, size_t length, struct _zend_class_entry *entry);
 #ifdef __cplusplus
 }
 #endif

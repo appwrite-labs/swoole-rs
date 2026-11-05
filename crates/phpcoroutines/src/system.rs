@@ -91,6 +91,20 @@ method_table! {
 /// Called once, at MINIT, with a static operations table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpcoroutines_system_minit(ops: *const SystemOps) {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result = unsafe { init_phpcoroutines_system_minit(ops) };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
+    }
+}
+
+unsafe fn init_phpcoroutines_system_minit(
+    ops: *const SystemOps,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: per the caller, a static table.
     if let Some(ops) = unsafe { ops.as_ref() } {
         OPS.get_or_init(|| ops);
@@ -99,8 +113,10 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_system_minit(ops: *const SystemOps
     unsafe { SYSTEM.register_static(c"Swoole\\Coroutine\\System", METHODS.as_ptr()) };
     if host::flag(host::SHORTNAME) {
         // SAFETY: MINIT, after registration.
-        unsafe { SYSTEM.alias(c"Co\\System") };
+        unsafe { SYSTEM.alias(c"Co\\System") }?;
     }
+
+    Ok(())
 }
 
 swoole_rs_zend::handlers! {

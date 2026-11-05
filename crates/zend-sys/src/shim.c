@@ -53,13 +53,6 @@ void swr_zval_str(zval *value, zend_string *string) {
     ZVAL_STR(value, string);
 }
 
-int swr_zend_register_class_alias(const char *name, size_t length, zend_class_entry *ce) {
-    zend_string *alias = zend_string_init(name, length, 1);
-    zend_str_tolower(ZSTR_VAL(alias), length);
-    alias = zend_new_interned_string(alias);
-    return zend_register_class_alias_ex(ZSTR_VAL(alias), ZSTR_LEN(alias), ce, 1);
-}
-
 int swr_zend_try(void (*body)(void *), void *arg) {
     volatile int bailed = 0;
     zend_try {

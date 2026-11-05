@@ -1,11 +1,10 @@
 //! Internal classes registered at MINIT, with their object handlers.
 use crate::sys::{
     CONST_PERSISTENT, ZEND_ACC_PUBLIC, std_object_handlers, swr_zend_register_class,
-    swr_zend_register_class_alias, zend_class_entry, zend_declare_class_constant_long,
-    zend_declare_property_bool, zend_declare_property_long, zend_declare_property_null,
-    zend_declare_property_string, zend_function_entry, zend_hash_find, zend_long, zend_object,
-    zend_object_handlers, zend_register_double_constant, zend_register_long_constant, zend_string,
-    zend_throw_error,
+    zend_class_entry, zend_declare_class_constant_long, zend_declare_property_bool,
+    zend_declare_property_long, zend_declare_property_null, zend_declare_property_string,
+    zend_function_entry, zend_hash_find, zend_long, zend_object, zend_object_handlers,
+    zend_register_double_constant, zend_register_long_constant, zend_string, zend_throw_error,
 };
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -133,9 +132,14 @@ impl Class {
     /// Swoole's `SW_CLASS_ALIAS`: `name` (no leading backslash) names this class too.
     /// # Safety
     /// At MINIT, after `register`.
-    pub unsafe fn alias(&self, name: &CStr) {
-        // SAFETY: per the caller; Zend copies the name.
-        unsafe { swr_zend_register_class_alias(name.as_ptr(), name.count_bytes(), self.entry()) };
+    /// # Errors
+    /// Returns a contained PHP allocation or alias registration bailout.
+    pub unsafe fn alias(&self, name: &CStr) -> Result<(), crate::bailout::Bailout> {
+        // SAFETY: per the caller; the Rust registry owns the full alias construction.
+        unsafe {
+            crate::registration::class_alias(name.as_ptr(), name.count_bytes(), self.entry(), false)
+        }
+        .map(|_| ())
     }
 
     /// The handlers this class's objects use (null before MINIT).

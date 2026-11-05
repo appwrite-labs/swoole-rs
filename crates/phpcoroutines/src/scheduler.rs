@@ -61,12 +61,26 @@ method_table! {
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpcoroutines_scheduler_minit() {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result = unsafe { init_phpcoroutines_scheduler_minit() };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
+    }
+}
+
+unsafe fn init_phpcoroutines_scheduler_minit() -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: MINIT, with a static table.
     unsafe { SCHEDULER.register(c"Swoole\\Coroutine\\Scheduler", METHODS.as_ptr(), configure) };
     if host::flag(host::SHORTNAME) {
         // SAFETY: MINIT, after registration.
-        unsafe { SCHEDULER.alias(c"Co\\Scheduler") };
+        unsafe { SCHEDULER.alias(c"Co\\Scheduler") }?;
     }
+
+    Ok(())
 }
 
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
