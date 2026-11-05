@@ -2,13 +2,14 @@
 //! current coroutine to the direction, the `io_uring` request (or the TLS transfer
 //! over it), the result check, and the loops built on them (`recv_all`,
 //! `send_all`, `readv`/`writev` and their `_all` forms, the TLS vector loops),
-//! plus `connect` and `poll`. Native code keeps the socket's availability, its
+//! plus `accept`'s request, `connect` and `poll`. Native code keeps the socket's availability, its
 //! result check and `get_name`, and passes them in [`UringSocketOps`].
 use crate::shutdown::{SocketState, swr_v1_hook_socket_bind, swr_v1_hook_socket_connect};
 use crate::uring::{
-    Host, swr_v1_uring_connect, swr_v1_uring_poll, swr_v1_uring_read, swr_v1_uring_readv,
-    swr_v1_uring_recv, swr_v1_uring_recvfrom, swr_v1_uring_recvmsg, swr_v1_uring_send,
-    swr_v1_uring_sendmsg, swr_v1_uring_write, swr_v1_uring_writev,
+    Host, swr_v1_uring_accept, swr_v1_uring_connect, swr_v1_uring_poll, swr_v1_uring_read,
+    swr_v1_uring_readv, swr_v1_uring_recv, swr_v1_uring_recvfrom, swr_v1_uring_recvmsg,
+    swr_v1_uring_send, swr_v1_uring_sendmsg, swr_v1_uring_sendto, swr_v1_uring_write,
+    swr_v1_uring_writev,
 };
 use crate::uring_tls::{Tls, swr_v1_uring_tls_recv, swr_v1_uring_tls_send};
 use core::ffi::{c_int, c_void};
@@ -67,6 +68,7 @@ pub const SEND: c_int = 3;
 pub const RECVMSG: c_int = 4;
 pub const SENDMSG: c_int = 5;
 pub const RECVFROM: c_int = 6;
+pub const SENDTO: c_int = 7;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -121,7 +123,8 @@ impl UringSocketOps {
     ) -> isize {
         let read = matches!(op, READ | RECV | RECVMSG | RECVFROM);
         let event = if read { EVENT_READ } else { EVENT_WRITE };
-        if !self.available(event) {
+        // sendto checked availability before resolving the host.
+        if op != SENDTO && !self.available(event) {
             return -1;
         }
         // SAFETY: the caller's buffers, valid as for the system call.
@@ -164,6 +167,12 @@ impl UringSocketOps {
             RECVMSG => unsafe { swr_v1_uring_recvmsg(host, fd, extra.cast(), flags, rt) },
             // SAFETY: as above.
             SENDMSG => unsafe { swr_v1_uring_sendmsg(host, fd, extra.cast(), flags, wt) },
+            SENDTO => {
+                // SAFETY: the caller's address length.
+                let length = unsafe { *extra_length };
+                // SAFETY: the caller's buffer and address.
+                unsafe { swr_v1_uring_sendto(host, fd, buf, n, 0, extra.cast(), length, wt) }
+            }
             // SAFETY: as above.
             _ => unsafe { swr_v1_uring_recvfrom(host, fd, buf, n, extra.cast(), extra_length, rt) },
         }
@@ -225,7 +234,8 @@ impl UringSocketOps {
 
 /// One scalar operation: `op` is 0 read, 1 write, 2 recv, 3 send (TLS when the
 /// socket has it), 4 recvmsg and 5 sendmsg (`extra` the msghdr, with `flags`),
-/// 6 recvfrom (`extra`/`extra_length` the address).
+/// 6 recvfrom (`extra`/`extra_length` the address), 7 sendto (to that address,
+/// without a second availability check).
 ///
 /// # Safety
 /// `ops` is live; the buffers are valid as for the system call.
@@ -324,6 +334,33 @@ pub unsafe extern "C" fn swr_v1_hook_uring_vector(
     };
     ops.check(result);
     transfer_result(result, total)
+}
+
+/// `accept`'s request: the ring's accept into `addr`/`length` (close-on-exec,
+/// non-blocking) under the read timeout, reading bound to the current coroutine.
+/// A failure sets the socket's error from errno.
+///
+/// # Safety
+/// `ops` is live; `addr`/`length` are valid as for accept(2).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_uring_accept(
+    ops: *const UringSocketOps,
+    addr: *mut libc::sockaddr,
+    length: *mut libc::socklen_t,
+) -> c_int {
+    // SAFETY: the caller's live table.
+    let ops = unsafe { &*ops };
+    let (host, tls) = (ops.host(), ops.tls);
+    let flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
+    // SAFETY: the caller's address buffer.
+    let fd = ops.bound(EVENT_READ, || unsafe {
+        swr_v1_uring_accept(host, tls.fd, addr, length, flags, tls.read_timeout)
+    });
+    if fd < 0 {
+        // SAFETY: the live socket's error.
+        unsafe { (ops.set_err)(ops.socket, errno()) };
+    }
+    fd
 }
 
 /// `connect(addr, len)` through the ring under the connect timeout.
@@ -538,6 +575,71 @@ mod tests {
                 libc::close(fds[1]);
                 swr_v1_hook_socket_state_free(state);
             }
+        });
+    }
+
+    #[test]
+    fn accepts_and_sends_to_an_address() {
+        use std::net::{TcpListener, TcpStream, UdpSocket};
+        use std::os::fd::AsRawFd;
+        with_engine(|| {
+            let state = swr_v1_hook_socket_state_new();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let server = ops(listener.as_raw_fd(), state);
+            // SAFETY: zeroed storage is a valid sockaddr_storage.
+            let mut addr: libc::sockaddr_storage = unsafe { core::mem::zeroed() };
+            let mut length = libc::socklen_t::try_from(core::mem::size_of_val(&addr)).unwrap();
+            // SAFETY: a local table and address buffer.
+            let fd = unsafe {
+                swr_v1_hook_uring_accept(&raw const server, (&raw mut addr).cast(), &raw mut length)
+            };
+            assert!(fd >= 0);
+            assert_eq!(
+                addr.ss_family,
+                libc::sa_family_t::try_from(libc::AF_INET).unwrap()
+            );
+            // SAFETY: the accepted descriptor.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            assert_ne!(flags & libc::O_NONBLOCK, 0, "accepted non-blocking");
+            // SAFETY: as above.
+            unsafe { libc::close(fd) };
+            drop(client);
+
+            let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let to = ops(sender.as_raw_fd(), state);
+            let target = libc::sockaddr_in {
+                sin_family: libc::sa_family_t::try_from(libc::AF_INET).unwrap(),
+                sin_port: receiver.local_addr().unwrap().port().to_be(),
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+                },
+                sin_zero: [0; 8],
+            };
+            let mut target_length =
+                libc::socklen_t::try_from(core::mem::size_of_val(&target)).unwrap();
+            let mut message = *b"ping";
+            // SAFETY: a local table, buffer and address.
+            let sent = unsafe {
+                swr_v1_hook_uring_io(
+                    &raw const to,
+                    SENDTO,
+                    message.as_mut_ptr().cast(),
+                    4,
+                    (&raw const target).cast_mut().cast(),
+                    &raw mut target_length,
+                    0,
+                )
+            };
+            assert_eq!(sent, 4);
+            let mut received = [0u8; 4];
+            assert_eq!(receiver.recv(&mut received).unwrap(), 4);
+            assert_eq!(&received, b"ping");
+            // sendto checks availability itself, before resolving the host.
+            assert_eq!(logged(), ["check 4"]);
+            // SAFETY: the state made above.
+            unsafe { swr_v1_hook_socket_state_free(state) };
         });
     }
 }
