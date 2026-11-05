@@ -1,172 +1,17 @@
 diff --git a/config.m4 b/config.m4
-index 230b1c0..e26466e 100644
+index 230b1c0..7bab110 100644
 --- a/config.m4
 +++ b/config.m4
-@@ -38,2 +38,102 @@ PHP_ARG_ENABLE([swoole],
+@@ -38,2 +38,7 @@ PHP_ARG_ENABLE([swoole],
  
 +PHP_ARG_WITH([swoole-rs],
 +  [Rust migration bridge prefix],
 +  [AS_HELP_STRING([--with-swoole-rs=DIR],
 +    [Link the optional Rust migration bridge from DIR])], [no], [no])
 +
-+PHP_ARG_ENABLE([swoole-rs-memory],
-+  [Rust memory subsystem],
-+  [AS_HELP_STRING([--enable-swoole-rs-memory],
-+    [Use the Rust memory subsystem (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-utilities],
-+  [Rust utilities subsystem],
-+  [AS_HELP_STRING([--enable-swoole-rs-utilities],
-+    [Use the Rust utilities subsystem (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-locks],
-+  [Rust locks subsystem],
-+  [AS_HELP_STRING([--enable-swoole-rs-locks],
-+    [Use the Rust locks subsystem (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-wrappers],
-+  [Rust wrapper policies],
-+  [AS_HELP_STRING([--enable-swoole-rs-wrappers],
-+    [Use the Rust wrapper policies (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-reactor],
-+  [Rust reactor policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-reactor],
-+    [Use Rust reactor policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-corebase],
-+  [Rust corebase policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-corebase],
-+    [Use Rust corebase policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-coroutine],
-+  [Rust coroutine scheduler/channel policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-coroutine],
-+    [Use Rust coroutine policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-hooks],
-+  [Rust coroutine I/O and runtime hook policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-hooks],
-+    [Use Rust hook policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-ossupport],
-+  [Rust OS support policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-ossupport],
-+    [Use Rust OS support policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-tls],
-+  [Rust TLS and DTLS policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-tls],
-+    [Use Rust TLS and DTLS policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-process],
-+  [Rust worker process and IPC policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-process],
-+    [Use Rust worker process and IPC policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-clients],
-+  [Rust first-party client and resolver policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-clients],
-+    [Use Rust client policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-httpbindings],
-+  [Rust HTTP PHP binding policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-httpbindings],
-+    [Use Rust HTTP PHP binding policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-http2],
-+  [Rust first-party HTTP2 policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-http2],
-+    [Use Rust HTTP2 policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-ports],
-+  [Rust ListenPort configuration policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-ports],
-+    [Use Rust ListenPort policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-phphelpers],
-+  [Rust common PHP helper policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-phphelpers],
-+    [Use Rust PHP helper policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-phpcollections],
-+  [Rust PHP collection policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-phpcollections],
-+    [Use Rust PHP collection policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-phpevents],
-+  [Rust PHP Event frontend policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-phpevents],
-+    [Use Rust PHP Event policy (requires --with-swoole-rs)])], [no], [no])
-+
-+PHP_ARG_ENABLE([swoole-rs-phpcoroutines],
-+  [Rust PHP Coroutine frontend policy],
-+  [AS_HELP_STRING([--enable-swoole-rs-phpcoroutines],
-+    [Use Rust PHP Coroutine policy (requires --with-swoole-rs)])], [no], [no])
-+
  PHP_ARG_ENABLE([mysqlnd],
-@@ -1301,2 +1401,157 @@ EOF
+@@ -1301,2 +1306,25 @@ EOF
  
-+    if test "$PHP_SWOOLE_RS_MEMORY" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust memory subsystem requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_UTILITIES" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust utilities subsystem requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_LOCKS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust locks subsystem requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_WRAPPERS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust wrapper policies require --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_REACTOR" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust reactor policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_COROUTINE" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust coroutine policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_COREBASE" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust corebase policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_HOOKS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust hook policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_OSSUPPORT" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust OS support policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_TLS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust TLS policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_PROCESS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust process policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_CLIENTS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust client policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_HTTPBINDINGS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust HTTP PHP binding policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_HTTP2" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust HTTP2 policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_PORTS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust ListenPort policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_PHPHELPERS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust PHP helper policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_PHPCOLLECTIONS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust PHP collection policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_PHPCOLLECTIONS" != "no" && test "$PHP_SWOOLE_RS_MEMORY" = "no"; then
-+        AC_MSG_ERROR([Rust PHP collections require --enable-swoole-rs-memory for TableV2 storage])
-+    fi
-+    if test "$PHP_SWOOLE_RS_PHPEVENTS" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust PHP Event policy requires --with-swoole-rs=DIR])
-+    fi
-+    if test "$PHP_SWOOLE_RS_PHPCOROUTINES" != "no" && test "$PHP_SWOOLE_RS" = "no"; then
-+        AC_MSG_ERROR([Rust PHP Coroutine policy requires --with-swoole-rs=DIR])
-+    fi
 +    if test "$PHP_SWOOLE_RS" != "no"; then
 +        if test "$PHP_SWOOLE_RS" = "yes"; then
 +            AC_MSG_ERROR([--with-swoole-rs requires a prefix directory])
@@ -177,79 +22,7 @@ index 230b1c0..e26466e 100644
 +        if test ! -f "$PHP_SWOOLE_RS/lib/libswoole_rs_ffi.a"; then
 +            AC_MSG_ERROR([Rust bridge archive missing: $PHP_SWOOLE_RS/lib/libswoole_rs_ffi.a])
 +        fi
-+        dnl Buffer is graduated; with the Rust reactor, server callers use the typed Buffer queue.
-+        if test "$PHP_SWOOLE_RS_REACTOR" != "no"; then
-+            AC_LANG_PUSH([C++])
-+            swr_buffer_typed_CPPFLAGS="$CPPFLAGS"
-+            CPPFLAGS="$CPPFLAGS -I$PHP_SWOOLE_RS/include"
-+            AC_MSG_CHECKING([for the staged typed Buffer facade])
-+            AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
-+#define SWOOLE_RS_REACTOR 1
-+#define SWOOLE_RS_BUFFER_TYPED 1
-+#include "swoole_rs_buffer_typed.h"
-+int main(void) { return 0; }
-+            ]])], [AC_MSG_RESULT([yes])], [AC_MSG_FAILURE([Typed Buffer consumers require their concrete staged facade])])
-+            CPPFLAGS="$swr_buffer_typed_CPPFLAGS"
-+            AC_LANG_POP([C++])
-+            AC_DEFINE(SWOOLE_RS_BUFFER_TYPED, 1, [Server callers use the typed Rust Buffer queue])
-+        fi
-+        if test "$PHP_SWOOLE_RS_MEMORY" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_MEMORY, 1, [Use the Rust memory subsystem])
-+        fi
-+        if test "$PHP_SWOOLE_RS_UTILITIES" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_UTILITIES, 1, [Use the Rust utilities subsystem])
-+        fi
-+        if test "$PHP_SWOOLE_RS_LOCKS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_LOCKS, 1, [Use the Rust locks subsystem])
-+        fi
-+        if test "$PHP_SWOOLE_RS_WRAPPERS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_WRAPPERS, 1, [Use the Rust wrapper policies])
-+        fi
-+        if test "$PHP_SWOOLE_RS_REACTOR" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_REACTOR, 1, [Use Rust reactor policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_COREBASE" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_COREBASE, 1, [Use Rust corebase policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_COROUTINE" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_COROUTINE, 1, [Use Rust coroutine scheduler/channel policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_HOOKS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_HOOKS, 1, [Use Rust coroutine I/O and runtime hook policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_OSSUPPORT" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_OSSUPPORT, 1, [Use Rust OS support policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_TLS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_TLS, 1, [Use Rust TLS and DTLS policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_PROCESS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_PROCESS, 1, [Use Rust worker process and IPC policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_CLIENTS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_CLIENTS, 1, [Use Rust first-party client and resolver policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_HTTPBINDINGS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_HTTPBINDINGS, 1, [Use Rust HTTP PHP binding policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_HTTP2" != "no"; then
-+            AC_DEFINE(SW_USE_RUST_HTTP2, 1, [Use Rust first-party HTTP2 policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_PORTS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_PORTS, 1, [Use Rust ListenPort configuration policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_PHPHELPERS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_PHPHELPERS, 1, [Use Rust common PHP helper policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_PHPCOLLECTIONS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_PHPCOLLECTIONS, 1, [Use Rust PHP collection policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_PHPEVENTS" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_PHPEVENTS, 1, [Use Rust PHP Event frontend policy])
-+        fi
-+        if test "$PHP_SWOOLE_RS_PHPCOROUTINES" != "no"; then
-+            AC_DEFINE(SWOOLE_RS_PHPCOROUTINES, 1, [Use Rust PHP Coroutine frontend policy])
-+        fi
++        AC_DEFINE(SWOOLE_RS_BUFFER_TYPED, 1, [Server callers use the typed Rust Buffer queue])
 +        PHP_ADD_INCLUDE([$PHP_SWOOLE_RS/include])
 +        dnl Rust's static archive needs the target's native system libraries.
 +        PHP_ADD_LIBRARY(m, 1, SWOOLE_SHARED_LIBADD)
@@ -264,7 +37,7 @@ index 230b1c0..e26466e 100644
 +
      if test "$PHP_MYSQLND" = "yes"; then
 diff --git a/ext-src/php_swoole.cc b/ext-src/php_swoole.cc
-index 66f2386..034a056 100644
+index 66f2386..561d7aa 100644
 --- a/ext-src/php_swoole.cc
 +++ b/ext-src/php_swoole.cc
 @@ -21,2 +21,7 @@
@@ -275,7 +48,7 @@ index 66f2386..034a056 100644
 +#endif
 +
  BEGIN_EXTERN_C()
-@@ -614,2 +619,91 @@ static void sw_after_fork(void *args) {
+@@ -614,2 +619,13 @@ static void sw_after_fork(void *args) {
  PHP_MINIT_FUNCTION(swoole) {
 +#ifdef SWOOLE_RS_BRIDGE
 +    const uint32_t rust_abi = swr_v1_abi_version();
@@ -285,89 +58,11 @@ index 66f2386..034a056 100644
 +        return FAILURE;
 +    }
 +    const uint64_t rust_features = swr_v1_feature_bits();
-+    if ((rust_features & 64) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing memory feature");
-+        return FAILURE;
-+    }
-+    if ((rust_features & 512) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing utilities feature");
-+        return FAILURE;
-+    }
-+    if ((rust_features & 1024) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing locks feature");
-+        return FAILURE;
-+    }
-+    if ((rust_features & 2048) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing wrappers feature");
-+        return FAILURE;
-+    }
-+    if ((rust_features & 16384) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing reactor feature");
-+        return FAILURE;
-+    }
-+#ifdef SWOOLE_RS_COREBASE
-+    if ((rust_features & 8192) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing corebase feature");
-+        return FAILURE;
-+    }
-+#endif
-+    if ((rust_features & 32768) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing coroutine feature");
-+        return FAILURE;
-+    }
-+    if ((rust_features & 65536) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing hooks feature");
-+        return FAILURE;
-+    }
-+    if ((rust_features & 131072) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing ossupport feature");
-+        return FAILURE;
-+    }
-+    if ((rust_features & 262144) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing tls feature");
-+        return FAILURE;
-+    }
-+    if ((rust_features & 524288) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing process feature");
-+        return FAILURE;
-+    }
-+    if ((swr_v1_feature_bits() & 1048576) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing clients feature");
-+        return FAILURE;
-+    }
-+    if ((swr_v1_feature_bits() & 2097152) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing httpbindings feature");
-+        return FAILURE;
-+    }
-+    if ((swr_v1_feature_bits() & 4194304) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing http2 feature");
-+        return FAILURE;
-+    }
-+    if ((swr_v1_feature_bits() & 8388608) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing ports feature");
-+        return FAILURE;
-+    }
-+    if ((swr_v1_feature_bits() & 16777216) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing phphelpers feature");
-+        return FAILURE;
-+    }
-+    if ((swr_v1_feature_bits() & 33554432) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing phpcollections feature");
-+        return FAILURE;
-+    }
-+    if ((swr_v1_feature_bits() & 67108864) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing phpevents feature");
-+        return FAILURE;
-+    }
-+    if ((swr_v1_feature_bits() & 134217728) == 0) {
-+        php_error_docref(nullptr, E_WARNING, "Rust bridge missing phpcoroutines feature");
-+        return FAILURE;
-+    }
 +    SW_REGISTER_LONG_CONSTANT("SWOOLE_RS_ABI_VERSION", rust_abi);
 +    SW_REGISTER_LONG_CONSTANT("SWOOLE_RS_FEATURE_BITS", rust_features);
 +#endif
      ZEND_INIT_MODULE_GLOBALS(swoole, php_swoole_init_globals, nullptr);
-@@ -1106,2 +1200,7 @@ PHP_MINFO_FUNCTION(swoole) {
+@@ -1106,2 +1122,7 @@ PHP_MINFO_FUNCTION(swoole) {
      php_info_print_table_row(2, "Version", SWOOLE_VERSION);
 +#ifdef SWOOLE_RS_BRIDGE
 +    snprintf(buf, sizeof(buf), "ABI %u, features %llu", static_cast<unsigned>(swr_v1_abi_version()),

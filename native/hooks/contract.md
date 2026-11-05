@@ -1,6 +1,6 @@
 # Coroutine I/O policy contract
 
-Opt-in feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
+Feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
 `swoole_rs_hooks.h`. Patched upstream files: `ext-src/swoole_runtime.cc`,
 `include/swoole_coroutine_socket.h`, `src/coroutine/file_lock.cc` (deleted),
 `src/coroutine/hook.cc` (deleted),

@@ -124,7 +124,7 @@ def main():
                     if path.is_file():
                         write_changed(tree / path.relative_to(staged), path.read_bytes())
                 write_changed(tree / 'config.h', args.config.read_bytes())
-                for path, edits in (ADAPTATIONS.items() if engine == 'hybrid' and b'#define SWOOLE_RS_PROCESS 1' in args.config.read_bytes() else []):
+                for path, edits in (ADAPTATIONS.items() if engine == 'hybrid' else []):
                     if path not in args.file and '/_lib/' not in path:
                         continue
                     text = (staged / path).read_text()

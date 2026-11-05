@@ -1,6 +1,6 @@
 # Wrapper boundary
 
-Opt-in feature bit 2048 (`wrappers`). Header: `swoole_rs_wrappers.h`. Patched
+Feature bit 2048 (`wrappers`). Header: `swoole_rs_wrappers.h`. Patched
 upstream files: `src/wrapper/event.cc`, `src/wrapper/http.cc`. Supported targets:
 macOS and Linux. No panic, C++ exception or Zend bailout may cross the ABI.
 

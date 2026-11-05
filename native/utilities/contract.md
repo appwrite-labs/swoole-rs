@@ -1,6 +1,6 @@
 # Utilities ABI
 
-Opt-in feature bit 512 (`SWOOLE_RS_UTILITIES`). Patches `src/core/misc.cc`,
+Feature bit 512 (`utilities`). Patches `src/core/misc.cc`,
 `src/core/log.cc`, `include/swoole_util.h`, `include/swoole.h` and
 `include/swoole_log.h`. Declarations are in
 [swoole_rs_utilities.h](swoole_rs_utilities.h). Tests:

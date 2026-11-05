@@ -1,6 +1,6 @@
 # Locks and atomics ABI
 
-Opt-in feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. Patched upstream
+Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. Patched upstream
 files: `ext-src/swoole_atomic.cc`, `ext-src/swoole_thread_atomic.cc`,
 `ext-src/swoole_thread_lock.cc`, `src/lock/barrier.cc`, `src/lock/coroutine_lock.cc`,
 `src/lock/mutex.cc`, `src/lock/rw_lock.cc`, `src/lock/spin_lock.cc`.

@@ -1,7 +1,7 @@
 # ListenPort policy ABI (ports)
 
 Pinned upstream: Swoole 6.2.4, commit c7e514509451beafd4d70ce5b78943d51e76381c.
-Opt-in feature bit 8388608 (`SWOOLE_RS_PORTS`); off by default. Patches
+Feature bit 8388608 (`ports`). Patches
 `src/server/port.cc` and `ext-src/swoole_server_port.cc`. Declarations are in
 [swoole_rs_ports.h](swoole_rs_ports.h). Tests: `tests/modules/ports/README.md`.
 

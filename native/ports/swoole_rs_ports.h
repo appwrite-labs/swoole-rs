@@ -1,8 +1,5 @@
 #ifndef SWOOLE_RS_PORTS_H
 #define SWOOLE_RS_PORTS_H
-#ifndef SWOOLE_RS_PORTS
-#error "ListenPort overlay requires --enable-swoole-rs-ports"
-#endif
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>

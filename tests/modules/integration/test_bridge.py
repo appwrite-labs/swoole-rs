@@ -19,7 +19,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import MODULES, SELECTABLE
 from tools.private_copy import copy_private
 
 
@@ -152,12 +151,6 @@ int main(void) {
         command = shlex.split(lines[0])
         self.assertEqual(command.count('-lswoole_rs_php'), 1, 'Rust archive missing from link recipe')
         cases = [(999, 0, 'Rust bridge ABI mismatch: expected 1, got 999')]
-        # Graduated modules are always on, so only selectable modules can be missing.
-        for name in SELECTABLE:
-            bit = MODULES[name][1]
-            if ARGS.feature_bits & bit:
-                label = 'WebSocket kernel' if name == 'websocket' else name
-                cases.append((1, ARGS.feature_bits & ~bit, f'Rust bridge missing {label} feature'))
         # Hide the real queries once (LTO merges them into objects with other code, so
         # they cannot be removed as members). Each case gets an independent copy of that real archive.
         with tempfile.TemporaryDirectory(prefix='swoole-rs-abi-preparation-') as directory:

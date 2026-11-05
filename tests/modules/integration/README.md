@@ -16,8 +16,7 @@ select extensions with `--reference`/`--hybrid`, and PHP with `--php`.
 The tests execute C and C++ consumers, check the real reference/hybrid PHP
 markers and PHPinfo, and prove PHP rejects an incompatible bridge ABI. That
 negative test relinks existing hybrid objects against a temporary C archive
-returning ABI 999. For a WebSocket-enabled build it also proves startup rejects
-an ABI-1 archive missing the required feature bit. Temporary fixtures export all
+returning ABI 999. Temporary fixtures export all
 required symbols so the loader reaches the actual module startup check on Linux.
 It runs libtool in a temporary directory and loads only the
 temporary extension. It neither rebuilds sources nor replaces published modules.

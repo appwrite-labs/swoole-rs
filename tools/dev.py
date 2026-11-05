@@ -18,7 +18,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.harness import ROOT, write_report
-from tools.build_hybrid import GRADUATED, MODULES, SELECTABLE, profile_suffix, build_alias
+from tools.build_hybrid import GRADUATED, MODULES, profile_suffix, build_alias
 from tools.build_upstream import require_build_space
 from tools.dev_report import read_json
 from tools.private_copy import copy_private
@@ -929,7 +929,7 @@ def main():
     parser.add_argument('--older-than', type=float, default=24, metavar='HOURS',
                         help='prune: delete target/ build output untouched for this long')
     selection = parser.add_mutually_exclusive_group()
-    selection.add_argument('--module', choices=SELECTABLE, action='append', help="Run this module's gates (graduated modules' always run)")
+    selection.add_argument('--module', choices=sorted(MODULES), action='append', help="Run this module's gates (graduated modules' always run)")
     selection.add_argument('--all-modules', action='store_true', help="Run every module's gates")
     selection.add_argument('--changed-since', metavar='REF', help='Run the gates of the modules a diff from REF touches (all for shared build inputs)')
     parser.add_argument('--stdext', action='store_true', help='Build and compare genuine enabled experimental stdext profiles')

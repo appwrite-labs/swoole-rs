@@ -27,7 +27,7 @@ byte-identical; the M05 hunks continue after their prefixes.
 
 ## Rust-owned storage
 
-Every `SWOOLE_RS_REACTOR` (`--enable-swoole-rs-reactor`) build uses Rust
+Every Rust build uses Rust
 storage for IOVector arrays ([socket-io.md](socket-io.md)), the `defer_tasks`
 and `destroy_callbacks` FIFOs ([callbacks.md](callbacks.md)). These change the
 private Reactor layout, so every selected SDK consumer must rebuild. The socket

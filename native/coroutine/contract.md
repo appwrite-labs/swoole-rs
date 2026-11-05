@@ -1,8 +1,6 @@
 # M06 coroutine core
 
-Implements `docs/coroutine-abi-v1.md`. Selected with `SWOOLE_RS_COROUTINE`
-(`--enable-swoole-rs-coroutine`); disabled selection keeps the original source
-exactly. Header: `swoole_rs_coroutine.h`.
+Implements `docs/coroutine-abi-v1.md`. Header: `swoole_rs_coroutine.h`.
 
 | Patch | Upstream files |
 | --- | --- |

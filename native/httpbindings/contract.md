@@ -1,6 +1,6 @@
 # PHP HTTP binding policy
 
-Opt-in feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`
+Feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`
 and `swoole_rs_httpbindings.h`. Patched upstream files:
 `ext-src/swoole_http_cookie.cc`, `ext-src/swoole_http_request.cc`,
 `ext-src/swoole_http_response.cc`, `ext-src/swoole_http_server_coro.cc`. Public PHP headers, class layouts,

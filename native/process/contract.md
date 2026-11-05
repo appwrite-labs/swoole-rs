@@ -1,6 +1,6 @@
 # Worker, task and reload transitions v1
 
-Opt-in feature bit 524288 (`process`). ABI: `docs/process-abi-v1.md` and
+Feature bit 524288 (`process`). ABI: `docs/process-abi-v1.md` and
 `swoole_rs_process.h`. Callers are in `src/server/worker.cc`,
 `src/server/task_worker.cc`, `src/server/manager.cc` and `src/os/process_pool.cc`.
 

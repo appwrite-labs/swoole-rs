@@ -112,9 +112,7 @@ def main():
                                                   *([mirror/'rust-prefix/include'] if engine=='hybrid' else []),*a.include]],
                     *includes,*shlex.split(report['pkg_config']['stdout'])]
         feature_names=sorted(set(re.findall(r'^#define (SWOOLE_RS_[A-Z0-9_]+)\b',config.read_text(),re.M)))
-        if 'SWOOLE_RS_PHPHELPERS' not in feature_names:raise ValueError('Selected export does not enable phphelpers')
-        # Native undefines every switch; hybrid keeps its build's own. A phphelpers-only
-        # profile over the fully patched tree would trip other modules' #error guards.
+        # Native undefines every switch; hybrid keeps its build's own.
         report['feature_profiles']={'native':[],'hybrid':feature_names}
         report['selected_header_sha256']=sha(headers['hybrid'])
         escapes=[str(a.source.resolve()),str(hybrid.resolve())]

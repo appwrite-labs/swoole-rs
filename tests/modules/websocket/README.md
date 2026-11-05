@@ -10,7 +10,7 @@ upstream. The kernel ABI is in `docs/abi-v1.md` and
 
 ```sh
 cargo test -p swoole-rs-websocket
-cargo build --release -p swoole-rs-ffi --features websocket
+cargo build --release -p swoole-rs-ffi
 python3 -m pytest tests/modules/websocket/test_kernel.py --sanitize --archive target/release/libswoole_rs_ffi.a
 ```
 
@@ -23,8 +23,7 @@ instruments the C++ caller only.
 
 Pass `--archive /absolute/libswoole_rs_ffi.a` for an archive copied by a hybrid
 build. The default `target/release/libswoole_rs_ffi.a` is overwritten by builds
-with other feature flags; rebuild it with `--features websocket` first. A
-bridge-only archive has no kernel exports and must fail to link.
+with other feature flags; rebuild it first.
 
 `test_prefix.py` compares the pinned C++ `get_package_length` with Rust for all valid
 header prefixes. It reads a hybrid `--manifest` and refuses an archive or

@@ -39,9 +39,9 @@ A module graduates when:
 4. It has no open `p0`/`p1` `kind:bug` issues.
 
 Every Rust build applies every module's patches, sets its feature bit and links
-its crate. A graduated module is listed in `GRADUATED` in `tools/build_hybrid.py`
-and also has no `--enable-swoole-rs-` switch, no `SWOOLE_RS_` guard and no
-cargo feature. Reference builds (`tools/build_upstream.py`,
+its crate; no module has a configure switch, a `SWOOLE_RS_<MODULE>` guard or a
+cargo feature. A graduated module is listed in `GRADUATED` in
+`tools/build_hybrid.py`, and `dev.py` runs its gates on every run. Reference builds (`tools/build_upstream.py`,
 `build_hybrid.py --backend upstream`) stay pristine: they are the oracle that
 differential tests compare against, not a fallback.
 

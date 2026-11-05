@@ -1,6 +1,6 @@
 # CRC32
 
-ABI: `docs/core-abi-v1.md`, `native/include/swoole_rs_crc32.h`. Opt-in feature
+ABI: `docs/core-abi-v1.md`, `native/include/swoole_rs_crc32.h`. Feature
 bit 16. The overlay removes the whole algorithm from `src/core/crc32.cc`; the
 native `swoole_crc32` entry point forwards borrowed bytes to Rust. Omit the
 overlay to keep the original for comparison.
