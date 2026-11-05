@@ -61,14 +61,28 @@ fn heap_oom_is_transactional_and_removal_never_allocates() {
         }
         for nth in 0..=2 {
             let mut heap = ptr::null_mut();
-            assert_eq!(swr_v1_memory_heap_create(1, 0, &raw mut heap), 0);
+            assert_eq!(swr_v1_memory_heap_create(129, 0, &raw mut heap), 0);
             let first = swr_v1_memory_heap_push(heap, 10, ptr::without_provenance_mut(1));
             assert!(!first.is_null());
+            // Exhaust the bounded slab so this sweep still covers both vector
+            // growth and node allocation, preserving the cold-failure checks.
+            for id in 2..=129 {
+                assert!(
+                    !swr_v1_memory_heap_push(heap, 10, ptr::without_provenance_mut(id)).is_null()
+                );
+            }
             FAIL_AFTER.set(Some(nth));
-            let second = swr_v1_memory_heap_push(heap, 5, ptr::without_provenance_mut(2));
+            let second = swr_v1_memory_heap_push(heap, 5, ptr::without_provenance_mut(130));
             FAIL_AFTER.set(None);
-            assert_eq!(swr_v1_memory_heap_count(heap), if nth < 2 { 1 } else { 2 });
+            assert_eq!(
+                swr_v1_memory_heap_count(heap),
+                if nth < 2 { 129 } else { 130 }
+            );
             assert_eq!(second.is_null(), nth < 2);
+            assert!(
+                (0..swr_v1_memory_heap_count(heap))
+                    .any(|i| swr_v1_memory_heap_at(heap, i) == first)
+            );
             FAIL_AFTER.set(Some(0));
             let removed = swr_v1_memory_heap_remove(heap, first);
             let no_allocation = FAIL_AFTER.replace(None);
