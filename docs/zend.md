@@ -219,3 +219,24 @@ The ZTS witness retains each Native observation as passed or failed and requires
 all selected lifecycle modes, Rust Box/Vec destruction, typed provenance and
 native C++ unwind/capture/rethrow checks. Its Native coroutine/cancellation
 failures remain failed observations; no original PHPT expectation is changed.
+
+### Dormant native C++ custody outcome
+
+The additive scope outcome `SWR_ZEND_NATIVE_EXCEPTION` (3) transports an
+exception already captured into a qualified native frame outside all Rust
+owners. `swr_zend_guard_mark_cpp` publishes that custody only after capture;
+it does not capture C++ itself. Ordinary C++ capture stays inside each native
+effect body. The pending outcome survives a plain native Zend catch, and a
+subsequent Thread relay cannot relabel it. Rust owners drop before native
+resume targets the next same-context scope or immediate coroutine resumer.
+The native holder clears outcome3 only after Rust returns, then rethrows.
+NativeEffectProvider's function-pointer layout does not change. Server maps
+provider3 to separate fault4 and relays only after Invocation destruction.
+
+This common transport is dormant in production until its consumers and native
+outer custody are qualified. The test-only producer proves that a captured
+exception cannot be consumed as ordinary Zend bailout and followed by PHP
+publication; it also checks physical Box/Vec cleanup and native exception
+payload destruction after outer rethrow/catch. It neither enables arbitrary
+native callback ownership nor changes OS pthread cancellation behavior. Forced
+unwinding remains excluded; PHP coroutine cancellation is a separate contract.

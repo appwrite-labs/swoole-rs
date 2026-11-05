@@ -62,7 +62,8 @@ int swr_zend_try(void (*body)(void *), void *arg) {
         bailed = 1;
     }
     SWR_ZEND_END_TRY();
-    return bailed ? (swr_zend_guard_pending() ? SWR_ZEND_THREAD_EXIT : SWR_ZEND_BAILOUT) : SWR_ZEND_RETURN;
+    int pending = swr_zend_guard_pending();
+    return bailed ? (pending ? pending : SWR_ZEND_BAILOUT) : SWR_ZEND_RETURN;
 }
 
 typedef struct {

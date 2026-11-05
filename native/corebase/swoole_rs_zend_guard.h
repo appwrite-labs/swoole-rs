@@ -6,7 +6,12 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-enum swr_zend_guard_kind { SWR_ZEND_RETURN = 0, SWR_ZEND_BAILOUT = 1, SWR_ZEND_THREAD_EXIT = 2 };
+enum swr_zend_guard_kind {
+    SWR_ZEND_RETURN = 0,
+    SWR_ZEND_BAILOUT = 1,
+    SWR_ZEND_THREAD_EXIT = 2,
+    SWR_ZEND_NATIVE_EXCEPTION = 3
+};
 /* body must be native and contain C++ exceptions before returning to this C
  * scope. The return value is a swr_zend_guard_kind. This ABI does not contain
  * forced unwinding or pthread cancellation across Rust. PHP coroutine cancel
@@ -25,6 +30,12 @@ void swr_zend_guard_scope_cleanup(volatile swr_zend_guard *);
 void *swr_zend_guard_target(void);
 int swr_zend_guard_pending(void);
 void swr_zend_guard_mark(void);
+/* The C++ exception_ptr must already be held by a qualified native frame
+ * outside every Rust owner. Capture happens inside the native effect body.
+ * Production producers stay disabled until all consumers relay this outcome. */
+void swr_zend_guard_mark_cpp(void);
+/* Thread exit clears at its request boundary. Native C++ custody clears only
+ * after all Rust owners return, immediately before native rethrow. */
 void swr_zend_guard_clear(void);
 void swr_zend_guard_resume(void);
 #ifdef __cplusplus

@@ -4,7 +4,7 @@
 static void *(*current_context)(void);
 static void (*resume_exit)(void);
 ZEND_TLS volatile swr_zend_guard *guards;
-ZEND_TLS int thread_exit;
+ZEND_TLS int pending_kind;
 
 void swr_zend_guard_register(void *(*context)(void), void (*resume)(void)) {
     current_context = context;
@@ -47,11 +47,21 @@ void *swr_zend_guard_target(void) {
     return NULL;
 }
 
-int swr_zend_guard_pending(void) { return thread_exit; }
-void swr_zend_guard_mark(void) { thread_exit = 2; }
-void swr_zend_guard_clear(void) { thread_exit = 0; }
+int swr_zend_guard_pending(void) { return pending_kind; }
+void swr_zend_guard_mark(void) {
+    if (pending_kind != SWR_ZEND_NATIVE_EXCEPTION) pending_kind = SWR_ZEND_THREAD_EXIT;
+}
+void swr_zend_guard_mark_cpp(void) { pending_kind = SWR_ZEND_NATIVE_EXCEPTION; }
+void swr_zend_guard_clear(void) { pending_kind = 0; }
 
 void swr_zend_guard_resume(void) {
-    if (thread_exit && resume_exit) resume_exit();
+    if (pending_kind) {
+        void *target = swr_zend_guard_target();
+        if (target) {
+            EG(bailout) = target;
+            zend_bailout();
+        }
+        if (resume_exit) resume_exit();
+    }
     zend_bailout();
 }

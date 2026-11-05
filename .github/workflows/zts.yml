@@ -53,6 +53,12 @@ jobs:
             --php-config "$PWD/target/php-zts/bin/php-config" \
             --engine upstream=target/phpt/upstream.so --engine hybrid=target/phpt/hybrid.so \
             --export target/phpt/guard-sdk --source-ref "$GITHUB_SHA" --output target/phpt/guard.json
+      - name: Captured native C++ custody across Zend catches
+        run: |
+          python3 tests/modules/phphelpers/cpp_guard.py --php "$PWD/target/php-zts/bin/php" \
+            --php-config "$PWD/target/php-zts/bin/php-config" \
+            --engine hybrid=target/phpt/hybrid.so --export target/phpt/guard-sdk \
+            --source-ref "$GITHUB_SHA" --output target/phpt/cpp-guard.json
       - run: |
           families="--module swoole_thread --module swoole_atomic --module swoole_lock"
           options="--manifest target/phpt/manifest.json --timeout 30 --php $PWD/target/php-zts/bin/php"
@@ -80,5 +86,6 @@ jobs:
             target/phpt/zts/
             target/phpt/recheck/
             target/phpt/guard.json
+            target/phpt/cpp-guard.json
             target/phpt/server-exit-companion.json
             target/phpt/server-exit-*/
