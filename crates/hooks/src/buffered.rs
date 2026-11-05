@@ -29,7 +29,6 @@ pub type Read = unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> isize;
 /// # Safety
 /// `buffer` describes a live buffer that only this call touches, except through
 /// `recv`, which reads into its free space; `out` holds `length` bytes.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_recv_buffered(
     buffer: *const BufferFields,
     recv: Read,
@@ -96,7 +95,6 @@ pub unsafe extern "C" fn swr_v1_hook_recv_buffered(
 ///
 /// # Safety
 /// `out` holds `limit` bytes and one more.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_recv_line(
     read: Read,
     context: *mut c_void,
@@ -172,7 +170,6 @@ fn buffer(socket: *mut CoSocket) -> Context {
 ///
 /// # Safety
 /// `socket` is live; `out` holds `size` writable bytes and cannot overlap its buffer.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_recv_buffered(
     socket: *mut CoSocket,
     out: *mut u8,

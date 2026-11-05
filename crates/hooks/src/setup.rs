@@ -1,4 +1,4 @@
-//! The coroutine socket's server setup as whole operations: `bind`, `listen` and
+//! The coroutine socket's server setup as whole operations: `bind` of a host and
 //! `accept` (the would-block wait and retry). Native code keeps the availability
 //! check, the timer with its coroutine wait, `set_err` and the `network::Socket`
 //! calls that update that object's fields, and passes them in [`SetupOps`].
@@ -7,8 +7,6 @@ use core::ffi::{c_int, c_void};
 /// `SW_EVENT_NULL`, `SW_EVENT_READ` and `SW_EVENT_WRITE`.
 const EVENT_NULL: c_int = 0;
 const EVENT_READ: c_int = 1 << 9;
-/// `SW_BACKLOG`.
-const BACKLOG: c_int = 512;
 /// `fail` codes besides an error number.
 const LAST_ERROR: c_int = -1;
 
@@ -24,9 +22,8 @@ pub struct SetupOps {
     pub wait: unsafe extern "C" fn(*mut c_void, c_int) -> bool,
     /// `network::Socket::get_name`, which records the local address.
     pub name: unsafe extern "C" fn(*mut c_void) -> c_int,
-    /// The operation's `network::Socket` call: `bind` of its address, `listen`
-    /// of `argument`, or `accept` (0 with a connection kept, else -1 with errno);
-    /// it sets errno.
+    /// The operation's `network::Socket` call: `bind` of its address, or `accept`
+    /// (0 with a connection kept, else -1 with errno); it sets errno.
     pub call: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
 }
 
@@ -57,47 +54,20 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// `Socket::bind(addr, len)` (`host` false) and `Socket::bind(host, port)` (`host`
-/// true, which first checks availability and has `call` set `SO_REUSEADDR`, then
-/// records the bound address).
+/// `Socket::bind(host, port)`: checks availability, has `call` set `SO_REUSEADDR`
+/// and bind, then records the bound address.
 ///
 /// # Safety
 /// `ops` is live for the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_bind(ops: *const SetupOps, host: bool) -> bool {
-    // SAFETY: the caller passes a live table (see above).
-    let ops = unsafe { &*ops };
-    if host && !ops.available(EVENT_NULL) {
-        return false;
-    }
-    if ops.call(0) < 0 || (host && ops.name() < 0) {
-        ops.fail(LAST_ERROR);
-        return false;
-    }
-    true
-}
-
-/// `Socket::listen(backlog)`: listens with `SW_BACKLOG` for a non-positive backlog
-/// and stores the one used in `*stored`.
-///
-/// # Safety
-/// `ops` is live for the call and `stored` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_listen(
-    ops: *const SetupOps,
-    backlog: c_int,
-    stored: *mut c_int,
-) -> bool {
+pub unsafe extern "C" fn swr_v1_hook_bind(ops: *const SetupOps) -> bool {
     // SAFETY: the caller passes a live table (see above).
     let ops = unsafe { &*ops };
     if !ops.available(EVENT_NULL) {
         return false;
     }
-    let backlog = if backlog <= 0 { BACKLOG } else { backlog };
-    // SAFETY: the caller's backlog field.
-    unsafe { stored.write(backlog) };
-    if ops.call(backlog) < 0 {
-        ops.fail(errno());
+    if ops.call(0) < 0 || ops.name() < 0 {
+        ops.fail(LAST_ERROR);
         return false;
     }
     true
@@ -212,25 +182,16 @@ mod tests {
     }
 
     #[test]
-    fn bind_listen_and_accept_rules() {
+    fn bind_and_accept_rules() {
         let ops = ops();
         reset(true, true, &[0]);
         // SAFETY: local table.
-        assert!(unsafe { swr_v1_hook_bind(&raw const ops, true) });
+        assert!(unsafe { swr_v1_hook_bind(&raw const ops) });
         assert_eq!(logged(), ["available 0", "call 0", "name"]);
         reset(true, true, &[-libc::EADDRINUSE]);
         // SAFETY: as above.
-        assert!(!unsafe { swr_v1_hook_bind(&raw const ops, false) });
-        assert_eq!(logged(), ["call 0", "fail -1"]);
-
-        let mut stored = 0;
-        reset(true, true, &[0]);
-        // SAFETY: local table and field.
-        assert!(unsafe { swr_v1_hook_listen(&raw const ops, 0, &raw mut stored) });
-        assert_eq!(
-            (stored, logged()),
-            (512, vec!["available 0".to_string(), "call 512".into()])
-        );
+        assert!(!unsafe { swr_v1_hook_bind(&raw const ops) });
+        assert_eq!(logged(), ["available 0", "call 0", "fail -1"]);
 
         reset(true, true, &[-libc::EAGAIN, 0]);
         // SAFETY: local table.
