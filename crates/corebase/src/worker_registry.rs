@@ -1,12 +1,6 @@
-//! The server's worker lookup, owned in Rust behind an opaque handle. It maps a
-//! worker's pid to its native `Worker*` and category, replacing
-//! `Server::get_worker_by_pid`'s event-worker scan and user-map branch and the
-//! `kill_event_workers` / `kill_user_workers` loops. Native registers a worker when
-//! it spawns and unregisters it when it is reaped or detached; fork, signalling and
-//! every `Worker` field stay native. A `ProcessPool` (the task pool, or a
-//! `Swoole\Process\Pool`) keeps its own registry of its workers. Each registry also
-//! holds the detached set: pids of workers that asked to be replaced before exiting,
-//! which the manager reaps without restarting.
+//! Always-on PID/category and detached-worker ownership shared by Server and `ProcessPool`.
+//! Worker pointers are opaque loans: their records retain their own layout and lifetime
+//! contracts. Signalling and wait effects run only after a PID snapshot is collected.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_int, c_void};
@@ -16,7 +10,8 @@ use std::ffi::{c_int, c_void};
 // workers live in the task pool and are not registered).
 
 /// User workers in the server registry (`SWR_WORKER_USER`).
-pub(crate) const CATEGORY_USER: c_int = 2;
+/// cbindgen:ignore
+pub const CATEGORY_USER: c_int = 2;
 
 struct Entry {
     worker: *mut c_void,
@@ -31,12 +26,44 @@ pub struct WorkerRegistry {
 }
 
 impl WorkerRegistry {
-    pub(crate) fn pids(&self, category: c_int) -> impl Iterator<Item = c_int> + '_ {
+    pub fn pids(&self, category: c_int) -> impl Iterator<Item = c_int> + '_ {
         self.workers
             .iter()
             .filter(move |(_, entry)| entry.category == category)
             .map(|(pid, _)| *pid)
     }
+}
+
+/// Scan a caller-owned record array in its original order, including direct PID writes.
+/// This accepts both the original native Worker and its canonical Rust layout, without
+/// per-record callbacks or a cached PID index that could miss an earlier duplicate.
+/// # Safety
+/// `array` is null or a live array of `count` records, each `stride` bytes, with an
+/// initialized `c_int` PID at `pid_offset`. Reads follow the caller's synchronization.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_find_array(
+    array: *mut c_void,
+    count: u32,
+    stride: usize,
+    pid_offset: usize,
+    pid: c_int,
+) -> *mut c_void {
+    if array.is_null() {
+        return core::ptr::null_mut();
+    }
+    for index in 0..usize::try_from(count).unwrap_or_default() {
+        let record = array.cast::<u8>().wrapping_add(index.wrapping_mul(stride));
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "Byte-strided native records may be unaligned; the only access uses read_unaligned"
+        )]
+        let slot = record.wrapping_add(pid_offset).cast::<c_int>();
+        // SAFETY: the caller lends this record's initialized PID bytes; no whole-record borrow.
+        if unsafe { slot.read_unaligned() } == pid {
+            return record.cast();
+        }
+    }
+    core::ptr::null_mut()
 }
 
 /// Create an empty registry. Native frees it with [`swr_v1_process_worker_registry_free`].
@@ -235,6 +262,33 @@ mod tests {
             assert!(!swr_v1_process_worker_registry_unregister(reg, 100));
             assert!(swr_v1_process_worker_registry_lookup(reg, 100).is_null());
             swr_v1_process_worker_registry_free(reg);
+        }
+    }
+
+    #[test]
+    fn array_lookup_reads_unaligned_slots_and_keeps_first_match_after_raw_writes() {
+        let mut bytes = [0_u8; 26];
+        let array = bytes.as_mut_ptr().cast::<c_void>();
+        unsafe {
+            assert_eq!(
+                swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 0),
+                array
+            );
+            bytes[3..7].copy_from_slice(&9_i32.to_ne_bytes());
+            assert_eq!(
+                swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 0),
+                array.cast::<u8>().add(13).cast()
+            );
+            bytes[3..7].copy_from_slice(&0_i32.to_ne_bytes());
+            assert_eq!(
+                swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 0),
+                array
+            );
+            assert!(swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 7).is_null());
+            assert!(
+                swr_v1_process_worker_registry_find_array(core::ptr::null_mut(), 2, 13, 3, 0)
+                    .is_null()
+            );
         }
     }
 
