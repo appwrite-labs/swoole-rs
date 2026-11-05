@@ -86,6 +86,8 @@ pub const RUN_BASE_END: u32 = 45;
 /// `BaseFactory::finish(arg)`, `BaseFactory::dispatch(arg)`: arg and context the `SendData`.
 pub const RUN_BASE_FINISH: u32 = 46;
 pub const RUN_BASE_DISPATCH: u32 = 47;
+/// One native op, arg the op: the operands are in the context (`server_methods.rs`).
+pub const RUN_NATIVE_OP: u32 = 48;
 
 // Server facts.
 pub const OP_MODE: u32 = 0;
@@ -671,6 +673,16 @@ pub const OP_SEND_HERE: u32 = 515;
 pub const LOG_BASE_ALLOC_CONNECTIONS: u32 = 530;
 pub const LOG_BASE_ALLOC_NUMS: u32 = 531;
 pub const LOG_BASE_ALLOC_PORT_NUMS: u32 = 532;
+
+// The `Server` methods' native effects (`crates/server/src/server_methods.rs`).
+/// `factory_->end(session_id, number)`.
+pub const OP_FACTORY_END: u32 = 540;
+/// `factory_->notify(object)`.
+pub const OP_FACTORY_NOTIFY: u32 = 541;
+/// `Server::task_pack(object, data, offset)`: the byte count rides in `offset`.
+pub const OP_TASK_PACK: u32 = 542;
+/// `send_to_worker_from_worker(get_worker(number), object, length, master | nonblock) > 0`.
+pub const OP_PIPE_TO_WORKER: u32 = 543;
 
 // Reactor threads' close, peer-close and pipe-write paths and thread setup
 // (`crates/server/src/reactor_io.rs`); far from the other ranges.

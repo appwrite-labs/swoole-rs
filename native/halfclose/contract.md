@@ -7,7 +7,7 @@ unchanged.
 
 | Patch | Upstream files |
 | --- | --- |
-| 0001-drain-before-close | `src/server/base.cc`, `src/server/master.cc` |
+| 0001-drain-before-close | `src/server/master.cc`; `BaseFactory::end` runs in `crates/server/src/base_factory.rs`, and its queued-close op in `master.cc` stops reading under the same `SW_HALFCLOSE_DRAIN` |
 | 0002-preserve-prequeue-response | `src/server/reactor_thread.cc` |
 | 0003-send-tls-close-notify | `src/network/socket.cc` |
 | 20261103T195726-drain-before-close-in-rust-send-to-connection | `src/server/master.cc`: `send_to_connection` runs in `crates/server/src/send.rs`, so 0001's `master.cc` hunks give way to `SW_HALFCLOSE_DRAIN`, which selects the same pause, resume and queued-close behaviour there |

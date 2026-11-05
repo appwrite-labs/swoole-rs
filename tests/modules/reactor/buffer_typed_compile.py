@@ -20,7 +20,7 @@ def main():
  if '-DSWOOLE_RS_BUFFER_TYPED' not in flags:p.error('the hybrid build does not use the typed Buffer queue')
  report=dict(pin=PIN,scope=__doc__,hybrid_tree=str(tree),hybrid_flags=flags,rows=[])
  linux=sys.platform.startswith('linux')
- for name in ['src/core/buffer.cc','src/network/socket.cc','src/reactor/base.cc','src/server/base.cc','src/server/reactor_thread.cc','src/server/master.cc']:
+ for name in ['src/core/buffer.cc','src/network/socket.cc','src/reactor/base.cc','src/server/reactor_thread.cc','src/server/master.cc']:
   command=['c++','-std=c++14','-fsyntax-only','-DHAVE_EPOLL=1' if linux else '-DHAVE_KQUEUE=1',*flags,'-I'+str(tree)]
   command+=subprocess.check_output(['pkg-config','--cflags','openssl'],text=True).split()
   command+=[str(tree/name)]

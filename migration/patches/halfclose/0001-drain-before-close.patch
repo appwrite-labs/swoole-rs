@@ -1,12 +1,3 @@
-diff --git a/src/server/base.cc b/src/server/base.cc
-index cf0058ddd..5d8b7421f 100644
---- a/src/server/base.cc
-+++ b/src/server/base.cc
-@@ -198,3 +198,3 @@ bool BaseFactory::end(SessionId session_id, int flags) {
-         conn->close_queued = 1;
--        return true;
-+        return SwooleTG.reactor->remove_read_event(_socket) == SW_OK;
-     }
 diff --git a/src/server/master.cc b/src/server/master.cc
 index 29e9f7212..1e1ae6459 100644
 --- a/src/server/master.cc
