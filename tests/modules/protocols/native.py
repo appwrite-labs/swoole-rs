@@ -39,7 +39,8 @@ def main():
     sources = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in TARGETS}
     headers = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in ['include/swoole_proxy.h', 'include/swoole_redis.h']}
     candidate = hybrid_tree(args.archive)[0]
-    candidates = {p: (candidate / p).read_text() for p in TARGETS}
+    # The hybrid's PHP request parser is Rust; only the pinned one is read.
+    candidates = {p: (candidate / p).read_text() for p in TARGETS[:3]}
     candidate_proxy_header = (candidate / 'include/swoole_proxy.h').read_text()
     archive = args.archive.resolve(strict=True)
     local = Path(__file__).resolve().parent

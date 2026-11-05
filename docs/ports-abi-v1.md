@@ -1,7 +1,8 @@
 # ListenPort and PHP Port boundary (M25)
 
 Feature value 8388608. Upstream targets:
-`src/server/port.cc`, `ext-src/swoole_server_port.cc`. Follows the
+`src/server/port.cc`, `ext-src/swoole_server_port.cc` (deleted; its glue is in
+`ext-src/swoole_server.cc`). Follows the
 [policy/effect split](abi-v1.md#policyeffect-split).
 
 Rust owns callback-free policy: native defaults, protocol selection,

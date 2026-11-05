@@ -1,7 +1,7 @@
-/* PHP Swoole\Redis\Server (crates/phpredis): MINIT registers the class and
- * returns it; RSHUTDOWN frees the handlers (true: a destructor bailed out);
- * onReceive on a Redis port parses the request and runs its handler
- * (SW_OK/SW_ERR, or SWR_PHPREDIS_BAILED: the caller re-raises the bailout). */
+/* PHP Swoole\Redis\Server (crates/phpredis, which also defines its MINIT and
+ * RSHUTDOWN hooks and swoole_redis_server_ce): onReceive on a Redis port parses
+ * the request and runs its handler (SW_OK/SW_ERR, or SWR_PHPREDIS_BAILED: the
+ * caller re-raises the bailout). */
 #ifndef SWOOLE_RS_PHPREDIS_H
 #define SWOOLE_RS_PHPREDIS_H
 #include <stdbool.h>
@@ -14,10 +14,8 @@ struct _zend_class_entry;
 struct _zval_struct;
 struct _zend_object;
 #define SWR_PHPREDIS_BAILED (-2)
-struct _zend_class_entry *swr_v1_phpredis_minit(struct _zend_class_entry *server, struct _zend_class_entry *exception);
-bool swr_v1_phpredis_rshutdown(void);
 int swr_v1_phpredis_receive(void *server, void *request);
-/* What it asks of the Server, the request and Zend (ext-src/swoole_redis_server.cc).
+/* What it asks of the Server, the request and Zend (ext-src/swoole_server.cc).
  * swr_redis_host_call is 1 called, 0 failed, -1 bailed out; swr_redis_host_callable
  * is false if creating the callable bailed out. */
 void swr_redis_host_recv_data(void *server, void *request, struct _zval_struct *data);
