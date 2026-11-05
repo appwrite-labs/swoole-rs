@@ -3,7 +3,11 @@
 //! thread id and thread names. Native code logs; Rust runs the syscalls.
 use libc::{c_char, c_int, c_long, c_void};
 
-#[unsafe(no_mangle)]
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z19swoole_is_root_userv")
+)]
 pub extern "C" fn swr_v1_os_is_root_user() -> bool {
     // SAFETY: geteuid has no preconditions.
     unsafe { libc::geteuid() == 0 }
@@ -102,7 +106,10 @@ pub unsafe extern "C" fn swr_v1_os_set_isolation(
 
 /// `swoole_set_process_death_signal`: Linux `PR_SET_PDEATHSIG`, FreeBSD
 /// `PROC_PDEATHSIG_CTL`, a no-op elsewhere.
-#[unsafe(no_mangle)]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z31swoole_set_process_death_signali")
+)]
 pub extern "C" fn swr_v1_os_set_process_death_signal(signal: c_int) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: PR_SET_PDEATHSIG takes the signal number by value.
@@ -186,7 +193,11 @@ pub unsafe extern "C" fn swr_v1_os_get_cpu_affinity(set: *mut CpuSet) -> c_int {
 }
 
 /// `swoole_thread_get_native_id`: the kernel's id for the calling thread.
-#[unsafe(no_mangle)]
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z27swoole_thread_get_native_idv")
+)]
 pub extern "C" fn swr_v1_os_thread_native_id() -> c_long {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
@@ -220,7 +231,7 @@ pub extern "C" fn swr_v1_os_thread_native_id() -> c_long {
 /// `swoole_thread_set_name` for the calling thread; returns the pthread error.
 /// # Safety
 /// `name` is a valid NUL-terminated string.
-#[unsafe(no_mangle)]
+#[must_use]
 pub unsafe extern "C" fn swr_v1_os_thread_set_name(name: *const c_char) -> c_int {
     #[cfg(target_vendor = "apple")]
     {
@@ -239,7 +250,6 @@ pub unsafe extern "C" fn swr_v1_os_thread_set_name(name: *const c_char) -> c_int
 /// `swoole_thread_get_name` for the calling thread; returns the pthread error.
 /// # Safety
 /// `buf` points to `len` writable bytes.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_os_thread_get_name(buf: *mut c_char, len: usize) -> c_int {
     #[cfg(target_os = "android")]
     {
@@ -262,6 +272,51 @@ pub unsafe extern "C" fn swr_v1_os_thread_get_name(buf: *mut c_char, len: usize)
         // SAFETY: `buf` has `len` writable bytes per the contract.
         unsafe { libc::pthread_getname_np(thread, buf, len) }
     }
+}
+
+/// `check_pthread_return_value`: a pthread error becomes the last error.
+fn pthread_ok(rc: c_int) -> bool {
+    if rc != 0 {
+        swoole_rs_corebase::log::set_last_error(rc);
+    }
+    rc == 0
+}
+
+/// `bool swoole_thread_set_name(const char *name)`.
+/// # Safety
+/// `name` is a valid NUL-terminated string.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z22swoole_thread_set_namePKc")
+)]
+pub unsafe extern "C" fn swoole_thread_set_name(name: *const c_char) -> bool {
+    // SAFETY: as the caller promises.
+    pthread_ok(unsafe { swr_v1_os_thread_set_name(name) })
+}
+
+/// `bool swoole_thread_get_name(char *buf, size_t len)`.
+/// # Safety
+/// `buf` points to `len` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z22swoole_thread_get_namePcm")
+)]
+pub unsafe extern "C" fn swoole_thread_get_name(buf: *mut c_char, len: usize) -> bool {
+    // SAFETY: as the caller promises.
+    pthread_ok(unsafe { swr_v1_os_thread_get_name(buf, len) })
+}
+
+/// `size_t swoole_random_bytes(char *buf, size_t size)`, over corebase's.
+/// # Safety
+/// `buf` points to `size` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z19swoole_random_bytesPcm")
+)]
+pub unsafe extern "C" fn swoole_random_bytes(buf: *mut c_char, size: usize) -> usize {
+    // SAFETY: as the caller promises.
+    unsafe { swoole_rs_corebase::swr_v1_os_random_bytes(buf.cast(), size) }
 }
 
 #[cfg(test)]
@@ -344,6 +399,10 @@ mod tests {
             );
             let name = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
             assert_eq!(name, c"swr-worker", "same name");
+            assert!(unsafe { swoole_thread_set_name(c"swr-upstream".as_ptr()) });
+            assert!(unsafe { swoole_thread_get_name(buf.as_mut_ptr(), buf.len()) });
+            let name = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
+            assert_eq!(name, c"swr-upstream", "upstream wrappers");
         })
         .join()
         .unwrap_or_else(|_| unreachable!());
