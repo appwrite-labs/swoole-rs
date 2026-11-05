@@ -429,7 +429,7 @@ def plan(args, reports):
             script(phase, 'tests/modules/ports/' + name + '.py', '--source', ROOT / 'target/upstream/src',
                    *(['--core', ROOT / 'target/hybrid' / native_variant / 'src'] if integrate else []), '--sanitize', *port_options,
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(phase))
-    if {'coroutine', 'hooks'} & set(modules) and integrate:
+    if 'coroutine' in modules and integrate:
         native_options = ['--php-prefix', subprocess.check_output(['php-config', '--prefix'], text=True).strip()] if sys.platform == 'darwin' else []
         if 'hooks' in modules:
             native_options += ['--socket-scopes']
