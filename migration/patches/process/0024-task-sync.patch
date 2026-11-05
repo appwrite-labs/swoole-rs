@@ -1,8 +1,8 @@
 diff --git a/include/swoole_server.h b/include/swoole_server.h
-index 4a4804b..13c79c3 100644
+index 31fec33..233097a 100644
 --- a/include/swoole_server.h
 +++ b/include/swoole_server.h
-@@ -676,4 +676,2 @@ class Server {
+@@ -518,4 +518,2 @@ class Server : public detail::ServerFields {
          }
 -
 -        int find(TaskId task_id);

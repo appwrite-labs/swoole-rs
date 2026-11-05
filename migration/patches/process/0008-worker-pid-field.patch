@@ -86,10 +86,10 @@ index 117fa6e..3ed87ec 100644
 +    }
  };
 diff --git a/include/swoole_server.h b/include/swoole_server.h
-index dee191c..4daff3f 100644
+index 923c316..d836f52 100644
 --- a/include/swoole_server.h
 +++ b/include/swoole_server.h
-@@ -1223,3 +1223,3 @@ class Server {
+@@ -867,3 +867,3 @@ class Server : public detail::ServerFields {
      pid_t get_worker_pid(WorkerId worker_id) const {
 -        return get_worker(worker_id)->pid;
 +        return get_worker(worker_id)->get_pid();
@@ -183,10 +183,10 @@ index 1901dd0..27b9263 100644
 +        swoole_kill(worker->get_pid(), SIGWINCH);
      }
 diff --git a/src/server/master.cc b/src/server/master.cc
-index a37776c..94a3140 100644
+index 5c43264..da79734 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -795,3 +795,3 @@ Worker *Server::get_worker_by_pid(pid_t worker_pid) const {
+@@ -447,3 +447,3 @@ Worker *Server::get_worker_by_pid(pid_t worker_pid) const {
          Worker *worker = get_worker(i);
 -        if (worker_pid == worker->pid) {
 +        if (worker_pid == worker->get_pid()) {

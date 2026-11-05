@@ -1,0 +1,41 @@
+#ifndef SWOOLE_RS_SERVER_VIEW_H
+#define SWOOLE_RS_SERVER_VIEW_H
+#include "swoole_rs_server_state.h"
+#include <cstdlib>
+
+namespace swoole { namespace detail {
+// Borrowed original API views over the configuration allocation owned by Rust.
+// The base owner outlives every derived native callback/container during teardown.
+class ServerFields {
+  protected:
+    swr_v1_server_state *state_;
+    swr_v1_server_config *config_;
+    swr_v1_server_tables *tables_;
+  public:
+#define SWR_SERVER_CONFIG_REFERENCE(type, name) decltype(swr_v1_server_config::name) &name;
+    SWR_SERVER_CONFIG_FIELDS(SWR_SERVER_CONFIG_REFERENCE)
+#undef SWR_SERVER_CONFIG_REFERENCE
+    ServerFields(uint32_t cpu_num, uint32_t max_sockets, long timezone, const void *allocator)
+        : state_(swr_v1_server_state_new()), config_(swr_v1_server_config_get(state_)),
+          tables_(swr_v1_server_tables_get(state_))
+#define SWR_SERVER_CONFIG_BIND(type, name) , name(config_->name)
+          SWR_SERVER_CONFIG_FIELDS(SWR_SERVER_CONFIG_BIND)
+#undef SWR_SERVER_CONFIG_BIND
+    {
+        { const size_t offsets[] = {offsetof(swr_v1_server_config,reactor_num),offsetof(swr_v1_server_config,worker_num),offsetof(swr_v1_server_config,dgram_port_num),offsetof(swr_v1_server_config,dispatch_mode),offsetof(swr_v1_server_config,scheduler_warning),offsetof(swr_v1_server_config,max_request),offsetof(swr_v1_server_config,max_request_grace),offsetof(swr_v1_server_config,udp_socket_ipv4),offsetof(swr_v1_server_config,udp_socket_ipv6),offsetof(swr_v1_server_config,dgram_socket),offsetof(swr_v1_server_config,max_wait_time),offsetof(swr_v1_server_config,worker_max_concurrency),offsetof(swr_v1_server_config,daemonize),offsetof(swr_v1_server_config,have_dgram_sock),offsetof(swr_v1_server_config,have_stream_sock),offsetof(swr_v1_server_config,open_cpu_affinity),offsetof(swr_v1_server_config,disable_notify),offsetof(swr_v1_server_config,discard_timeout_request),offsetof(swr_v1_server_config,http_parse_cookie),offsetof(swr_v1_server_config,http_parse_post),offsetof(swr_v1_server_config,http_parse_files),offsetof(swr_v1_server_config,http_compression),offsetof(swr_v1_server_config,websocket_compression),offsetof(swr_v1_server_config,enable_static_handler),offsetof(swr_v1_server_config,http_autoindex),offsetof(swr_v1_server_config,enable_unsafe_event),offsetof(swr_v1_server_config,enable_delay_receive),offsetof(swr_v1_server_config,enable_reuse_port),offsetof(swr_v1_server_config,reload_async),offsetof(swr_v1_server_config,event_object),offsetof(swr_v1_server_config,task_object),offsetof(swr_v1_server_config,task_enable_coroutine),offsetof(swr_v1_server_config,send_yield),offsetof(swr_v1_server_config,enable_coroutine),offsetof(swr_v1_server_config,single_thread),offsetof(swr_v1_server_config,running),offsetof(swr_v1_server_config,cpu_affinity_available),offsetof(swr_v1_server_config,cpu_affinity_available_num),offsetof(swr_v1_server_config,pipe_command),offsetof(swr_v1_server_config,send_timeout),offsetof(swr_v1_server_config,heartbeat_check_interval),offsetof(swr_v1_server_config,warning_time),offsetof(swr_v1_server_config,timezone_),offsetof(swr_v1_server_config,master_timer),offsetof(swr_v1_server_config,heartbeat_timer),offsetof(swr_v1_server_config,output_buffer_size),offsetof(swr_v1_server_config,input_buffer_size),offsetof(swr_v1_server_config,max_queued_bytes),offsetof(swr_v1_server_config,ipc_max_size),offsetof(swr_v1_server_config,private_data_1),offsetof(swr_v1_server_config,private_data_2),offsetof(swr_v1_server_config,private_data_3),offsetof(swr_v1_server_config,private_data_4),offsetof(swr_v1_server_config,factory_),offsetof(swr_v1_server_config,manager_),offsetof(swr_v1_server_config,task_worker_num),offsetof(swr_v1_server_config,task_ipc_mode),offsetof(swr_v1_server_config,task_max_request),offsetof(swr_v1_server_config,task_max_request_grace),offsetof(swr_v1_server_config,task_results),offsetof(swr_v1_server_config,worker_registry),offsetof(swr_v1_server_config,user_workers),offsetof(swr_v1_server_config,workers),offsetof(swr_v1_server_config,gs),offsetof(swr_v1_server_config,upload_max_filesize),offsetof(swr_v1_server_config,http_compression_level),offsetof(swr_v1_server_config,compression_min_length),offsetof(swr_v1_server_config,recv_buffer_allocator),offsetof(swr_v1_server_config,recv_buffer_size),offsetof(swr_v1_server_config,manager_alarm),offsetof(swr_v1_server_config,message_queue_key)};
+          if (!swr_v1_server_record_layout(0, sizeof(swr_v1_server_config), alignof(swr_v1_server_config), offsets, sizeof(offsets)/sizeof(size_t))) std::abort(); }
+        { const size_t offsets[] = {offsetof(swr_v1_server_tables,connection_list),offsetof(swr_v1_server_tables,session_list),offsetof(swr_v1_server_tables,port_gs_list),offsetof(swr_v1_server_tables,max_connection),offsetof(swr_v1_server_tables,enable_accept_timer),offsetof(swr_v1_server_tables,reactor_pipe_num),offsetof(swr_v1_server_tables,reactor_threads)};
+          if (!swr_v1_server_record_layout(1, sizeof(swr_v1_server_tables), alignof(swr_v1_server_tables), offsets, sizeof(offsets)/sizeof(size_t))) std::abort(); }
+        { const size_t offsets[] = {offsetof(Session,id),offsetof(Session,fd)};
+          if (!swr_v1_server_record_layout(2, sizeof(Session), alignof(Session), offsets, sizeof(offsets)/sizeof(size_t))) std::abort(); }
+        { const size_t offsets[] = {offsetof(Connection,active),offsetof(Connection,socket_type),offsetof(Connection,fd),offsetof(Connection,worker_id),offsetof(Connection,session_id),offsetof(Connection,ssl),offsetof(Connection,ssl_ready),offsetof(Connection,overflow),offsetof(Connection,high_watermark),offsetof(Connection,http_upgrade),offsetof(Connection,http2_stream),offsetof(Connection,websocket_compression),offsetof(Connection,close_actively),offsetof(Connection,close_queued),offsetof(Connection,closing),offsetof(Connection,close_reset),offsetof(Connection,peer_closed),offsetof(Connection,protect),offsetof(Connection,close_notify),offsetof(Connection,close_force),offsetof(Connection,reactor_id),offsetof(Connection,close_errno),offsetof(Connection,recv_queued_bytes),offsetof(Connection,send_queued_bytes),offsetof(Connection,waiting_time),offsetof(Connection,local_port),offsetof(Connection,local_addr_index),offsetof(Connection,timer),offsetof(Connection,info),offsetof(Connection,object),offsetof(Connection,socket),offsetof(Connection,connect_time),offsetof(Connection,last_recv_time),offsetof(Connection,last_send_time),offsetof(Connection,last_dispatch_time),offsetof(Connection,uid),offsetof(Connection,websocket_status),offsetof(Connection,websocket_buffer),offsetof(Connection,ssl_client_cert),offsetof(Connection,ssl_client_cert_pid),offsetof(Connection,lock),offsetof(Connection,closed),offsetof(Connection,server_fd)};
+          if (!swr_v1_server_record_layout(3, sizeof(Connection), alignof(Connection), offsets, sizeof(offsets)/sizeof(size_t))) std::abort(); }
+        swr_v1_server_config_init(state_, cpu_num, max_sockets, timezone, allocator);
+    }
+    swr_v1_server_state *state_handle() const { return state_; }
+    ~ServerFields() { swr_v1_server_state_free(state_); }
+    ServerFields(const ServerFields &) = delete;
+    ServerFields &operator=(const ServerFields &) = delete;
+};
+} }
+#endif

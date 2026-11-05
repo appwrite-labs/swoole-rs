@@ -65,7 +65,9 @@ def build_alias(backend, modules, suffix='', *, dev=False):
 
 
 def headers_for(modules):
-    headers = [ROOT / 'native/include/swoole_rs.h']
+    headers = [ROOT / 'native/include/swoole_rs.h', ROOT / 'native/include/swoole_rs_server_state.h',
+               ROOT / 'native/include/swoole_rs_server_view.h', ROOT / 'native/include/swoole_rs_server_records.h', ROOT / 'native/include/swoole_rs_port_state.h']
+    headers.extend((ROOT / 'native/include').glob('swoole_rs_corebase_*.h'))
     for module in modules:
         contract = ROOT / 'native/include' / f'swoole_rs_{module}.h'
         if contract.is_file():

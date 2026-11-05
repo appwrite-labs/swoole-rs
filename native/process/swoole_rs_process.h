@@ -7,7 +7,9 @@
 extern "C" {
 #endif
 typedef struct { uint32_t status; int32_t error; } swr_v1_process_affinity_outcome;
+#if defined(__linux__) || defined(__FreeBSD__)
 swr_v1_process_affinity_outcome swr_v1_process_worker_affinity(uint32_t worker_id, const int32_t *available, int32_t available_len, bool thread);
+#endif
 typedef struct { uint32_t status; int32_t error; int32_t fd; size_t read; } swr_v1_process_task_file_read_result;
 swr_v1_process_task_file_read_result swr_v1_process_task_file_read(const char *path, uint8_t *buffer, size_t length, bool peek);
 /* Pack a task payload into EventData::data: inline when it fits in dest_cap, else a
@@ -102,6 +104,7 @@ typedef struct swr_v1_worker_record {
     void *pipe_current;
     void *ptr;
 } swr_v1_worker_record;
+void swr_v1_worker_add_request_count(swr_v1_worker_record *);
 uint8_t swr_v1_worker_status(const swr_v1_worker_record *);
 void swr_v1_worker_set_status(swr_v1_worker_record *, uint8_t status);
 uint8_t swr_v1_worker_type(const swr_v1_worker_record *);
