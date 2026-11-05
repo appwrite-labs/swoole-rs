@@ -61,6 +61,24 @@ int swoole_libssh2_userauth_publickey_frommemory(const struct swr_v1_ssh2_ops *o
 int swoole_libssh2_userauth_hostbased_fromfile_ex(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION *session, const char *username, unsigned int username_len, const char *publickey, const char *privatekey, const char *passphrase, const char *hostname, unsigned int hostname_len, const char *local_username, unsigned int local_username_len);
 int swoole_libssh2_userauth_keyboard_interactive_ex(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION *session, const char *username, unsigned int username_len, LIBSSH2_USERAUTH_KBDINT_RESPONSE_FUNC((*response_callback)));
 int swoole_libssh2_userauth_authenticated(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION *session);
+int swoole_libssh2_session_disconnect(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION * session, const char * description);
+LIBSSH2_CHANNEL * swoole_libssh2_channel_open_session(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION * session);
+int swoole_libssh2_channel_shell(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL * channel);
+int swoole_libssh2_channel_exec(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL * channel, const char * command);
+int swoole_libssh2_channel_read(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL * channel, char * buf, size_t buflen);
+int swoole_libssh2_channel_write(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL * channel, const char * buf, size_t buflen);
+LIBSSH2_CHANNEL * swoole_libssh2_channel_direct_tcpip(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION * session, const char * host, int port);
+int swoole_libssh2_sftp_fstat(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SFTP_HANDLE * handle, LIBSSH2_SFTP_ATTRIBUTES * attrs);
+LIBSSH2_SFTP_HANDLE * swoole_libssh2_sftp_open(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SFTP * sftp, const char * filename, unsigned long flags, long mode);
+LIBSSH2_SFTP_HANDLE * swoole_libssh2_sftp_opendir(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SFTP * sftp, const char * path);
+int swoole_libssh2_sftp_readdir(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SFTP_HANDLE * handle, char * buffer, size_t buffer_maxlen, LIBSSH2_SFTP_ATTRIBUTES * attrs);
+int swoole_libssh2_sftp_close(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SFTP_HANDLE * handle);
+int swoole_libssh2_sftp_unlink(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SFTP * sftp, const char * filename);
+int swoole_libssh2_sftp_rename(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SFTP * sftp, const char * sourcefile, const char * destfile);
+int swoole_libssh2_sftp_mkdir(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SFTP * sftp, const char * path, long mode);
+int swoole_libssh2_sftp_rmdir(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SFTP * sftp, const char * path);
+int swoole_libssh2_userauth_publickey_fromfile(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION * session, const char * username, const char * publickey, const char * privatekey, const char * passphrase);
+int swoole_libssh2_userauth_keyboard_interactive(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION * session, const char * username, LIBSSH2_USERAUTH_KBDINT_RESPONSE_FUNC((*response_callback)));
 #ifdef __cplusplus
 }
 #endif
