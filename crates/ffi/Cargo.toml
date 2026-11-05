@@ -14,7 +14,7 @@ default = []
 # it). Only the extension's archive has PHP; the native gates' archive leaves it
 # off so it holds no Zend references (docs/zend.md).
 php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpredis", "swoole-rs-phpredis/php",
-       "swoole-rs-phplocks?/php", "swoole-rs-phpruntime?/php", "swoole-rs-phpserver?/php", "swoole-rs-phpprocess?/php", "swoole-rs-phpthread?/php", "swoole-rs-phpclients?/php", "swoole-rs-phphttp?/php", "swoole-rs-phphttp2?/php", "swoole-rs-phpstdext?/php", "swoole-rs-phpcollections?/php", "swoole-rs-phpevents?/php", "swoole-rs-phpcoroutines?/php"]
+       "swoole-rs-phplocks?/php", "swoole-rs-phpruntime?/php", "swoole-rs-phpserver?/php", "swoole-rs-phpprocess?/php", "swoole-rs-phpthread?/php", "swoole-rs-phpclients?/php", "swoole-rs-phphttp?/php", "swoole-rs-phphttp2?/php", "swoole-rs-phpstdext?/php", "swoole-rs-phphelpers?/php", "swoole-rs-phpcollections?/php", "swoole-rs-phpevents?/php", "swoole-rs-phpcoroutines?/php"]
 
 memory = ["dep:swoole-rs-memory"]
 

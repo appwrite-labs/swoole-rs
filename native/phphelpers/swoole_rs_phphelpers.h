@@ -6,6 +6,55 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* Complete ownership operations for the source-compatible Zend facades.
+ * Handles and zvals are owned by Rust; pointers borrowed from them expire at release. */
+struct _zval_struct;
+struct _zend_string;
+typedef struct SwrPhpString SwrPhpString;
+SwrPhpString *swr_v1_phphelpers_string_new(const char *, size_t);
+SwrPhpString *swr_v1_phphelpers_string_value(struct _zval_struct *);
+SwrPhpString *swr_v1_phphelpers_string_take(struct _zend_string *, bool);
+struct _zend_string *swr_v1_phphelpers_string_get(const SwrPhpString *);
+void swr_v1_phphelpers_string_free(SwrPhpString *);
+void swr_v1_phphelpers_string_trim(const SwrPhpString *);
+char *swr_v1_phphelpers_string_dup(const SwrPhpString *, bool);
+char *swr_v1_phphelpers_bytes_dup(const char *, size_t, bool, bool);
+void swr_v1_phphelpers_bytes_free(char **);
+struct _zval_struct *swr_v1_phphelpers_variable_new(void);
+void swr_v1_phphelpers_variable_assign(struct _zval_struct *, const struct _zval_struct *);
+void swr_v1_phphelpers_variable_free(struct _zval_struct *);
+void swr_v1_phphelpers_variable_reset(struct _zval_struct *);
+void swr_v1_phphelpers_variable_string(struct _zval_struct *, const char *, size_t);
+void swr_v1_phphelpers_variable_move(struct _zval_struct *, struct _zval_struct *);
+void swr_v1_phphelpers_variable_ref(struct _zval_struct *, bool);
+struct _Bucket;
+typedef struct SwrPhpKeyValue SwrPhpKeyValue;
+typedef struct {
+    struct _zval_struct *value;
+    struct _zend_string *key;
+    struct _Bucket *current;
+    struct _Bucket *end;
+    uint64_t index;
+} SwrPhpIterator;
+SwrPhpKeyValue *swr_v1_phphelpers_key_new(uint64_t, struct _zend_string *, struct _zval_struct *);
+void swr_v1_phphelpers_key_add(SwrPhpKeyValue *, struct _zval_struct *);
+void swr_v1_phphelpers_key_free(SwrPhpKeyValue *);
+struct _zval_struct *swr_v1_phphelpers_key_value(SwrPhpKeyValue *);
+SwrPhpIterator swr_v1_phphelpers_iterator_new(struct _Bucket *, struct _Bucket *, bool);
+void swr_v1_phphelpers_iterator_next(SwrPhpIterator *);
+size_t swr_v1_phphelpers_array_count(const struct _zval_struct *);
+bool swr_v1_phphelpers_array_set(struct _zval_struct *, uint64_t, struct _zval_struct *, bool);
+struct _zend_fcall_info_cache;
+struct _zend_class_entry;
+typedef struct SwrPhpCallable SwrPhpCallable;
+SwrPhpCallable *swr_v1_phphelpers_callable_new(struct _zval_struct *, void (*)(const char *));
+SwrPhpCallable *swr_v1_phphelpers_callable_factory(struct _zval_struct *, const char *, bool, struct _zend_class_entry *, void (*)(const char *));
+void swr_v1_phphelpers_callable_free(SwrPhpCallable *);
+struct _zend_fcall_info_cache *swr_v1_phphelpers_callable_cache(SwrPhpCallable *);
+bool swr_v1_phphelpers_callable_ready(const SwrPhpCallable *);
+SwrPhpCallable *swr_v1_phphelpers_callable_copy(const SwrPhpCallable *);
+bool swr_v1_phphelpers_callable_invoke(SwrPhpCallable *, uint32_t, struct _zval_struct *, struct _zval_struct *);
+uint32_t swr_v1_phphelpers_callable_refs(const SwrPhpCallable *);
 /* Native Zend storage/effects remain authoritative. Borrowed initialized spans
  * are used only during each call. No callback or allocation occurs in Rust. */
 /* Common Native async admission: initialized phase0; blocking skips context.
@@ -14,32 +63,11 @@ extern "C" {
 enum SwrPhpAsyncAction { SWR_PHP_ASYNC_DONE=0, SWR_PHP_ASYNC_OBSERVE_COROUTINE=1,
     SWR_PHP_ASYNC_DIRECT=2, SWR_PHP_ASYNC_DISPATCH=3 };
 uint32_t swr_v1_phphelpers_async(uint32_t *phase, uint8_t blocking, uint8_t coroutine);
-/* Native KeyValue ctor0/insert1/dtor2.
- * Phase0; key presence observed freshly on request. Native storage/effects only. */
-enum SwrPhpValueAction { SWR_PHP_FACADE_DONE=0, SWR_PHP_FACADE_OBSERVE_KEY=1,
-    SWR_PHP_FACADE_RETAIN_KEY=2, SWR_PHP_FACADE_NULL_KEY=3,
-    SWR_PHP_FACADE_DEREFERENCE=4, SWR_PHP_FACADE_COPY=5, SWR_PHP_FACADE_RETAIN=6,
-    SWR_PHP_FACADE_INSERT_STRING=7, SWR_PHP_FACADE_INSERT_INDEX=8,
-    SWR_PHP_FACADE_RETAIN_INSERTED=9, SWR_PHP_FACADE_RELEASE_KEY=10,
-    SWR_PHP_FACADE_DESTROY=11 };
-uint32_t swr_v1_phphelpers_value_plan(uint32_t *phase, uint32_t operation, uint8_t key_present);
-/* Whole sparse/indirect iterator policy; native bounds/storage/API decoding. */
-enum SwrPhpIteratorAction { SWR_PHP_ITERATOR_DONE=0, SWR_PHP_ITERATOR_OBSERVE_END=1,
-    SWR_PHP_ITERATOR_READ_VALUE=2, SWR_PHP_ITERATOR_OBSERVE_POINTER=3,
-    SWR_PHP_ITERATOR_OBSERVE_INDIRECT=4, SWR_PHP_ITERATOR_DEREFERENCE=5,
-    SWR_PHP_ITERATOR_OBSERVE_UNDEFINED=6, SWR_PHP_ITERATOR_ADVANCE=7,
-    SWR_PHP_ITERATOR_OBSERVE_KEY=8, SWR_PHP_ITERATOR_PUBLISH_STRING=9,
-    SWR_PHP_ITERATOR_PUBLISH_INDEX=10 };
-uint32_t swr_v1_phphelpers_iterator_plan(uint32_t *phase, uint8_t observation);
 /* Read-only known bytes retain frozen SW_ZEND_KNOWN_STRINGS enum order.
  * Native global persistent/interned pointer storage remains authoritative.
  * Cursor/length are independent initialized native size_t storage. */
 size_t swr_v1_phphelpers_known_count(void);
 const char *swr_v1_phphelpers_known_next(size_t *cursor, size_t *length);
-enum SwrPhpReleaseAction { SWR_PHP_RELEASE_DONE=0, SWR_PHP_RELEASE_OBSERVE_VALUE=1,
-    SWR_PHP_RELEASE_VALUE=2, SWR_PHP_RELEASE_OBSERVE_NAME=3, SWR_PHP_RELEASE_NAME=4 };
-/* Phase0, freshly observed value-defined then name-present AFTER native dtor. */
-uint32_t swr_v1_phphelpers_release(uint32_t *, uint8_t observation);
 enum SwrPhpKeyedMergeAction { SWR_PHP_KEYED_DONE=0,
     SWR_PHP_KEYED_ADD_INDEX=1, SWR_PHP_KEYED_ADD_STRING=2,
     SWR_PHP_KEYED_FIND_INDEX=3, SWR_PHP_KEYED_FIND_STRING=4,
@@ -59,10 +87,6 @@ enum SwrPhpCallAction { SWR_PHP_CALL_NULL=0, SWR_PHP_CALL_DIRECT=1,
  * invoke/observe actions. Native cleanup and fatal execution occur after return. */
 uint32_t swr_v1_phphelpers_call_plan(uint32_t *, uint32_t mode, uint8_t has_retval,
                                    int64_t result, uint8_t exception);
-enum SwrPhpCallableAction { SWR_PHP_CALLABLE_DONE=0, SWR_PHP_CALLABLE_TRUTH=1,
-    SWR_PHP_CALLABLE_CHECK=2, SWR_PHP_CALLABLE_ILLEGAL=3,
-    SWR_PHP_CALLABLE_INVALID=4, SWR_PHP_CALLABLE_RETAIN=5 };
-uint32_t swr_v1_phphelpers_callable(uint32_t *, uint8_t truthy, uint8_t valid);
 
 #ifdef SW_STDEXT
 /* stdext (crates/phpstdext): typed arrays and methods on scalars, linked only
