@@ -78,6 +78,11 @@ def main():
             row['runtime'] = dict(command=list(map(str, command)), exit=result.returncode,
                                   stdout=result.stdout, stderr=result.stderr, helper_sha256=helper_sha)
             row['passed'] = result.returncode == 0 and result.stdout == 'cpp-chain: ok\n' and not result.stderr
+            command = engine.command('-d', 'extension=' + str(helper), work / 'cpp_guard.php', 'coroutine')
+            result = run_isolated(command, timeout=30)
+            row['coroutine'] = dict(command=list(map(str, command)), exit=result.returncode,
+                                    stdout=result.stdout, stderr=result.stderr)
+            row['passed'] = row['passed'] and result.returncode == 0 and result.stdout == 'cpp-chain: ok\n' and not result.stderr
             if sha(helper) != helper_sha:
                 raise ValueError('Native witness bytes changed')
             write_report(output, report)
