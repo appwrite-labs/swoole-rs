@@ -6,7 +6,7 @@ Pin `c7e514509451beafd4d70ce5b78943d51e76381c`.
 
 ```sh
 python3 tests/modules/hooks/ordered_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --sanitize --report OWN/ordered.json
-python3 tests/modules/hooks/compile_gate.py --source PINNED_SOURCE --config ACTUAL_GENERATED_CONFIG --report OWN/compile.json
+python3 tests/modules/hooks/compile_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --report OWN/compile.json
 ```
 
 `async_gate.py` and `packet_gate.py` take the same arguments. Each `*_gate.py` extracts the pinned function bodies and
@@ -35,7 +35,8 @@ and kernel IO are faked; these are policy/order checks, not runtime proof.
   with upstream's body transcribed over the same fakes).
 
 `compile_gate.py` compiles all eight original and patched translation units as
-C++14 using the given `config.h`, and checks that each overlay refuses to
+C++14: the pinned ones, then the pin with every file the hybrid build patched
+(`overlay_hybrid_tree`) under that build's `config.h`. It checks that each overlay refuses to
 compile when `config.h` does not define `SWOOLE_RS_HOOKS`. io_uring units are
 reported UNSUPPORTED when the config does not enable `SW_USE_IOURING`.
 

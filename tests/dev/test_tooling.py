@@ -510,7 +510,7 @@ class Lanes(unittest.TestCase):
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
         for name in ['hooks-ordered','hooks-async-policy','hooks-packet-policy','hooks-compile']:
             self.assertIn(name,commands)
-        self.assertIn('--config',commands['hooks-compile'])
+        self.assertIn('--archive',commands['hooks-compile'])
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-hybrid',
                      'crc32-consumers-upstream','crc32-consumers-hybrid',
                      'coroutine-native-originals','corebase-mkdir','corebase-startup','corebase-record-views']:
