@@ -73,7 +73,7 @@ def main():
     typed = fixture.with_name('server_effects_prefix.cc')
     report = dict(passed=False, scope=__doc__, archive=str(archive), archive_sha256=sha(archive),
                   sources={path.name: sha(path) for path in [fixture, register, typed]},
-                  injected_provider_qualified=False, actual_php_qualified=False,
+                  injected_provider_qualified=False, actual_php_qualified=False, actual_sticky_cpp_producer_qualified=False,
                   rust_instrumented=False, pthread_forced_unwind_qualified=False)
     try:
         if sys.platform != 'linux':
@@ -117,7 +117,7 @@ def main():
                     argv += ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
                 command(report, argv)
                 observed = command(report, [probe], timeout=30)
-                if not re.fullmatch(r'production Server typed prefix propagation: \d+ trials, 3 Rust String drops PASS\n', observed.stdout):
+                if not re.fullmatch(r'production Server typed prefix propagation: \d+ trials, 4 Rust String drops PASS\n', observed.stdout):
                     raise ValueError('Typed prefix/drop witness did not complete')
         report['injected_provider_qualified'] = True
         if a.php:

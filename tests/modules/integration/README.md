@@ -72,19 +72,21 @@ String is released before the captured exception is rethrown. Other hosts report
 that drop observation as unmeasured.
 
 `ServerReply` preserves fault1 for ordinary C++, fault2 for Zend bailout and
-fault3 for sticky whole-thread exit. The native invocation snapshots the optional
+fault3 for sticky whole-thread exit, and fault4 for externally held ordinary
+C++ provenance from the native OS entry. The native invocation snapshots the optional
 MINIT provider once. Its C trap encloses ordinary C++ capture; Rust stops on the
 first fault and releases local owners. C++ rethrow naturally destroys invocation;
 Zend/thread resume happens after the invocation and its exception_ptr custody
-leave scope. PHP-disabled SDKs keep the unregistered provider path, without Zend
+leave scope; fault4 relays to the provider rather than rethrowing across an
+outer Rust thread frame. PHP-disabled SDKs keep the unregistered provider path, without Zend
 relocations. The legacy nonthrowing ABI remains; forced unwind is outside this
 contract.
 
 `server_effects.py` (`server-native-effects`, Linux integrate) reuses the completed
 worker-retirement SDK when available, otherwise builds untouched original IPC
 GoogleTests. It checks real production SDK absent/registered-provider behavior
-across registration and Server translation units in C++14/17, last exception
-payload release before nonlocal resume, and no later effects. Separate actual
+across registration and Server translation units in C++14/17, last local exception
+payload release before nonlocal resume, separate external C++ custody, and no later effects. Separate actual
 archive probes check typed fault prefixes and production Rust String release,
 with native ASan/UBSan runs; Rust instrumentation is not claimed.
 

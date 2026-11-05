@@ -12,6 +12,10 @@ extern const swoole_rs::NativeEffectProvider *test_provider();
 static std::jmp_buf boundary;
 static bool armed, token_destroyed;
 static int requested, invoked, stopped_at;
+static bool external_destroyed;
+struct ExternalToken { ~ExternalToken() { external_destroyed = true; } };
+struct ExternalMarker { std::shared_ptr<ExternalToken> token = std::make_shared<ExternalToken>(); };
+static std::exception_ptr external_exception;
 struct Token { ~Token() { token_destroyed = true; } };
 struct Marker : std::runtime_error {
     std::shared_ptr<Token> token;
@@ -26,12 +30,21 @@ static void callback(void *) {
 int test_invoke(void (*body)(void *), void *context) {
     ++invoked;
     body(context);
-    return armed && stopped_at == invoked ? requested : 0;
+    if (!armed || stopped_at != invoked) return 0;
+    if (requested == 3) {
+        // The native OS entry owns this separate payload. Server must relay the
+        // sticky outcome without rethrowing it through an outer Rust frame.
+        external_destroyed = false;
+        try { throw ExternalMarker(); }
+        catch (...) { external_exception = std::current_exception(); }
+    }
+    return requested;
 }
 void test_resume() {
     assert(armed && requested > 0);
     assert(token_destroyed && "native Invocation exception_ptr owner must be destroyed before nonlocal resume");
     assert(invoked == stopped_at && "Rust must stop all effects after a fault");
+    if (requested == 3) assert(external_exception && !external_destroyed);
     std::longjmp(boundary, requested);
 }
 static swoole::Server *server() {
@@ -63,7 +76,7 @@ int main() {
     register_test_provider();
     assert(swoole_rs::native_effect_provider() == test_provider());
     ordinary(true);
-    for (int kind : {1, 2}) {
+    for (int kind : {1, 2, 3}) {
         auto *value = server();
         requested = kind;
         armed = true;
@@ -71,6 +84,14 @@ int main() {
         int resumed = setjmp(boundary);
         if (!resumed) { value->destroy(); assert(false); }
         assert(resumed == kind && token_destroyed && invoked == stopped_at);
+        if (kind == 3) {
+            bool caught = false;
+            try { std::rethrow_exception(external_exception); }
+            catch (const ExternalMarker &) { caught = true; }
+            assert(caught && !external_destroyed);
+            external_exception = nullptr;
+            assert(external_destroyed);
+        }
         armed = false;
         value->destroy();
         delete value;

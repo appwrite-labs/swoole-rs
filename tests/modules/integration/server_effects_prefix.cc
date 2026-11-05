@@ -57,7 +57,7 @@ int main() {
             auto op = baseline.trace[index];
             auto first = std::find(baseline.trace.begin(), baseline.trace.end(), op);
             if (static_cast<size_t>(first - baseline.trace.begin()) != index) continue;
-            for (uint32_t kind : {1u, 2u, 3u}) {
+            for (uint32_t kind : {1u, 2u, 3u, 4u}) {
                 Context context;
                 context.fail = op;
                 context.kind = kind;
