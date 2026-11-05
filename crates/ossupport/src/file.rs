@@ -311,7 +311,7 @@ pub struct Sendfile {
 
 /// Linux's direct sendfile syscall, preserving a nullable offset and its errno.
 /// # Safety
-/// offset is null or an exclusively writable off_t; descriptors follow sendfile(2).
+/// offset is null or an exclusively writable `off_t`; descriptors follow sendfile(2).
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_os_sendfile(
