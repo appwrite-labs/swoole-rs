@@ -212,7 +212,7 @@ void swr_zend_autoload_forget(zend_string *lc_name) {
 
 int swr_zend_autoload_try(swr_zend_autoload_handler handler, zend_string *name, zend_string *lc_name,
                           zend_class_entry **result) {
-    int bailed = 0;
+    volatile int bailed = 0;
     SWR_ZEND_TRY {
         *result = handler(name, lc_name);
     }
@@ -254,7 +254,7 @@ void swr_zend_exit_status(zend_execute_data *execute_data, zval *status) {
 
 int swr_zend_try_parse_str_or_long(zval *arg, zend_string **string, zend_long *number_out, uint32_t number,
                                    bool *parsed) {
-    int bailed = 0;
+    volatile int bailed = 0;
     *parsed = false;
     SWR_ZEND_TRY {
         *parsed = zend_parse_arg_str_or_long_slow(arg, string, number_out, number);
@@ -288,7 +288,7 @@ void swr_zend_coroutine_fcc_discard(zend_fcall_info_cache *fcc) {
 }
 
 int swr_zend_coroutine_print_trace(int skip_last, int options, int limit) {
-    int bailed = 0;
+    volatile int bailed = 0;
     SWR_ZEND_TRY {
         zval backtrace;
         zend_fetch_debug_backtrace(&backtrace, skip_last, options, limit);

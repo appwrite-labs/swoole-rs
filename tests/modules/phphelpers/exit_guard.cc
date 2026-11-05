@@ -5,15 +5,18 @@
 ZEND_TSRMLS_CACHE_DEFINE()
 #endif
 
-extern "C" int swr_exit_guard_test_owner(void (*body)(void *), void *, void (*dropped)(size_t));
-static std::atomic<size_t> entered{0}, dropped{0}, returned{0}, bytes{0};
+extern "C" int swr_exit_guard_test_owner(void (*body)(void *), void *, void (*dropped)(const unsigned char *, size_t));
+static std::atomic<size_t> entered{0}, dropped{0}, returned{0}, bytes{0}, checksum{0};
 struct Call { zval *callback; zval result{}; };
 static void invoke(void *argument) {
     auto *call = static_cast<Call *>(argument);
     call_user_function(EG(function_table), nullptr, call->callback, &call->result, 0, nullptr);
     zval_ptr_dtor(&call->result);
 }
-static void owner_dropped(size_t length) {
+static void owner_dropped(const unsigned char *data, size_t length) {
+    size_t sum = 0;
+    for (size_t i = 0; i < length; ++i) sum += data[i];
+    checksum.fetch_add(sum);
     dropped.fetch_add(1);
     bytes.fetch_add(length);
 }
@@ -36,6 +39,7 @@ PHP_FUNCTION(swr_guard_counts) {
     add_next_index_long(return_value, dropped.load());
     add_next_index_long(return_value, returned.load());
     add_next_index_long(return_value, bytes.load());
+    add_next_index_long(return_value, checksum.load());
 }
 ZEND_BEGIN_ARG_INFO_EX(arginfo_owned, 0, 0, 1)
     ZEND_ARG_INFO(0, callback)

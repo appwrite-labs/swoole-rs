@@ -86,7 +86,7 @@ uint32_t swr_zend_tracer_lineno(void) {
 }
 
 int swr_zend_try_write(const char *text, size_t length) {
-    int bailed = 0;
+    volatile int bailed = 0;
     SWR_ZEND_TRY {
         ZEND_WRITE(text, length);
     }

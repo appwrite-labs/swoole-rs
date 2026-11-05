@@ -8,13 +8,13 @@ unsafe extern "C" {
 
 struct Owner {
     bytes: Vec<u8>,
-    dropped: unsafe extern "C" fn(usize),
+    dropped: unsafe extern "C" fn(*const u8, usize),
 }
 
 impl Drop for Owner {
     fn drop(&mut self) {
         // The witness callback only increments native atomics and cannot escape.
-        unsafe { (self.dropped)(self.bytes.len()) };
+        unsafe { (self.dropped)(self.bytes.as_ptr(), self.bytes.len()) };
     }
 }
 
@@ -22,9 +22,10 @@ impl Drop for Owner {
 pub unsafe extern "C" fn swr_exit_guard_test_owner(
     body: unsafe extern "C" fn(*mut c_void),
     argument: *mut c_void,
-    dropped: unsafe extern "C" fn(usize),
+    dropped: unsafe extern "C" fn(*const u8, usize),
 ) -> c_int {
-    let owner = Owner { bytes: vec![42; 4096], dropped };
+    let owner = Box::new(Owner { bytes: vec![42; 4096], dropped });
+    std::hint::black_box(&owner);
     let outcome = unsafe { swr_zend_try(body, argument) };
     drop(owner);
     outcome

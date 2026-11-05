@@ -46,7 +46,15 @@ def main():
         for path in sources.values():
             (work / path.name).write_bytes(path.read_bytes())
         report['sources'] = {name: sha(path) for name, path in sources.items()}
-        report['header_sha256'] = sha(a.export / 'include/swoole_rs_zend_guard.h')
+        receipt = json.loads((a.export / 'export.json').read_text())
+        manifest = json.loads((a.export / 'build-manifest.json').read_text())
+        prefix = Path(receipt['files']['libswoole_rs_ffi.a']['source']).parents[1]
+        header = prefix / 'include/swoole_rs_zend_guard.h'
+        expected_header = manifest['inputs']['headers_sha256']['native/corebase/swoole_rs_zend_guard.h']
+        if sha(header) != expected_header:
+            raise ValueError('Actual completed SDK guard header differs from its build manifest')
+        (work / header.name).write_bytes(header.read_bytes())
+        report['header_sha256'] = sha(work / header.name)
         library = work / 'libexit_guard_owner.a'
         command = ['rustc', '--edition=2024', '--crate-type=staticlib', '-Copt-level=3', '-Cpanic=abort',
                    str(work / sources['rust'].name), '-o', str(library)]
@@ -58,7 +66,7 @@ def main():
         includes = shlex.split(subprocess.check_output([a.php_config, '--includes'], text=True))
         helper = work / 'exit_guard.so'
         command = ['c++', '-std=c++17', '-O2', '-shared', '-fPIC', '-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1',
-                   *includes, '-I' + str(a.export / 'include'), str(work / sources['cpp'].name), str(library),
+                   *includes, '-I' + str(work), str(work / sources['cpp'].name), str(library),
                    '-lpthread', '-ldl', '-lm', '-o', str(helper)]
         result = run_isolated(command, timeout=120)
         report['cpp_compile'] = dict(command=command, exit=result.returncode, stdout=result.stdout, stderr=result.stderr)
