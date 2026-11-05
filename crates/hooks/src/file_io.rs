@@ -4,45 +4,13 @@
 //! the log; each warning reaches it on the pool thread with the failing call's errno.
 use crate::stdio::{Offload, offloaded};
 use libc::{c_char, c_int, c_void, size_t};
-
-/// Which warning native code logs, as the function upstream logged it from.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileWarning {
-    /// `read_file`: `open(%s, O_RDONLY) failed`
-    OpenRead = 0,
-    /// `read_file`: `flock(%s, LOCK_SH) failed`
-    LockShared = 1,
-    /// `read_file`: `flock(%s, LOCK_UN) failed`
-    UnlockRead = 2,
-    /// `write_file`: `open(%s, %d) failed`, with the flags.
-    OpenWrite = 3,
-    /// `write_file`: `flock(%s, LOCK_EX) failed`
-    LockExclusive = 4,
-    /// `write_file`: `fsync(%s) failed`
-    Sync = 5,
-    /// `write_file`: `flock(%s, LOCK_UN) failed`
-    UnlockWrite = 6,
-    /// `File::read_all`: `pread(%d, %p, %lu, %lu) failed`
-    Pread = 7,
-    /// `File::write_all`: `pwrite(%d, %p, %lu, %lu) failed`
-    Pwrite = 8,
-}
+use std::ffi::CStr;
 
 /// Native code's side of a whole-file operation.
 #[repr(C)]
 pub struct FileOps {
-    /// Log `warning` with errno `error`. `number` is the open flags or the fd; `buf`,
-    /// `remaining` and `done` describe a failed `pread`/`pwrite`.
-    pub warn: unsafe extern "C" fn(
-        warning: FileWarning,
-        error: c_int,
-        file: *const c_char,
-        number: c_int,
-        buf: *const c_void,
-        remaining: size_t,
-        done: size_t,
-    ),
+    /// `swoole_sys_warning("%s", message)` with errno `error`, logged as from `origin`.
+    pub warn: unsafe extern "C" fn(error: c_int, origin: *const c_char, message: *const c_char),
     /// Give `out`'s `String` (created on first use) `length` bytes of content and at
     /// least `size` bytes of room; returns its buffer.
     pub buffer: unsafe extern "C" fn(out: *mut c_void, length: size_t, size: size_t) -> *mut c_char,
@@ -140,9 +108,20 @@ struct Job<'a> {
 }
 
 impl Job<'_> {
-    fn warn(&self, warning: FileWarning, error: c_int, number: c_int) {
-        // SAFETY: native code's logger, with the caller's file name.
-        unsafe { (self.ops.warn)(warning, error, self.file, number, std::ptr::null(), 0, 0) };
+    /// Log `message` with errno `error` as from `origin`.
+    fn log(&self, origin: &CStr, error: c_int, message: impl Into<Vec<u8>>) {
+        let mut message = message.into();
+        message.push(0);
+        // SAFETY: native code's logger with two C strings.
+        unsafe { (self.ops.warn)(error, origin.as_ptr(), message.as_ptr().cast()) };
+    }
+
+    /// `"{call}({file}{args}) failed"` from `origin`, with the current errno.
+    fn warn(&self, origin: &CStr, call: &str, args: &str) {
+        // SAFETY: the caller passes a C string.
+        let file = unsafe { CStr::from_ptr(self.file) }.to_bytes();
+        let message = [call.as_bytes(), b"(", file, args.as_bytes(), b") failed"].concat();
+        self.log(origin, errno(), message);
     }
 
     fn buffer(&self, length: usize, size: usize) -> *mut c_char {
@@ -152,17 +131,17 @@ impl Job<'_> {
 
     fn read(&self, lock: bool) {
         let Some(fd) = Fd::open(self.file, libc::O_RDONLY) else {
-            return self.warn(FileWarning::OpenRead, errno(), 0);
+            return self.warn(c"System::read_file", "open", ", O_RDONLY");
         };
         if lock && !fd.flock(libc::LOCK_SH) {
-            return self.warn(FileWarning::LockShared, errno(), 0);
+            return self.warn(c"System::read_file", "flock", ", LOCK_SH");
         }
         match usize::try_from(fd.size()) {
             Ok(size) if size > 0 => self.read_all(&fd, size),
             _ => self.read_content(&fd),
         }
         if lock && !fd.flock(libc::LOCK_UN) {
-            self.warn(FileWarning::UnlockRead, errno(), 0);
+            self.warn(c"System::read_file", "flock", ", LOCK_UN");
         }
     }
 
@@ -179,17 +158,9 @@ impl Job<'_> {
                     offset(done),
                 )
             },
-            // SAFETY: native code's logger.
-            |error, done| unsafe {
-                (self.ops.warn)(
-                    FileWarning::Pread,
-                    error,
-                    self.file,
-                    fd.0,
-                    buf.cast(),
-                    size - done,
-                    done,
-                );
+            |error, done| {
+                let message = format!("pread({}, {buf:p}, {}, {done}) failed", fd.0, size - done);
+                self.log(c"File::read_all", error, message);
             },
         );
         self.terminate(read, size + 1);
@@ -223,11 +194,11 @@ impl Job<'_> {
 
     fn write(&self, data: *const c_void, length: usize, lock: bool, flags: c_int) -> isize {
         let Some(fd) = Fd::open(self.file, flags) else {
-            self.warn(FileWarning::OpenWrite, errno(), flags);
+            self.warn(c"System::write_file", "open", &format!(", {flags}"));
             return -1;
         };
         if lock && !fd.flock(libc::LOCK_EX) {
-            self.warn(FileWarning::LockExclusive, errno(), 0);
+            self.warn(c"System::write_file", "flock", ", LOCK_EX");
             return -1;
         }
         let append = flags & libc::O_APPEND != 0;
@@ -244,25 +215,21 @@ impl Job<'_> {
                     unsafe { libc::pwrite(fd.0, from, length - done, offset(done)) }
                 }
             },
-            // SAFETY: native code's logger.
-            |error, done| unsafe {
-                (self.ops.warn)(
-                    FileWarning::Pwrite,
-                    error,
-                    self.file,
+            |error, done| {
+                let message = format!(
+                    "pwrite({}, {data:p}, {}, {done}) failed",
                     fd.0,
-                    data,
-                    length - done,
-                    done,
+                    length - done
                 );
+                self.log(c"File::write_all", error, message);
             },
         );
         // SAFETY: fsync has no memory preconditions.
         if flags & WRITE_FSYNC != 0 && unsafe { libc::fsync(fd.0) } != 0 {
-            self.warn(FileWarning::Sync, errno(), 0);
+            self.warn(c"System::write_file", "fsync", "");
         }
         if lock && !fd.flock(libc::LOCK_UN) {
-            self.warn(FileWarning::UnlockWrite, errno(), 0);
+            self.warn(c"System::write_file", "flock", ", LOCK_UN");
         }
         isize::try_from(written).unwrap_or(isize::MAX)
     }
@@ -324,19 +291,18 @@ mod tests {
     use std::ffi::CString;
 
     thread_local! {
-        static WARNINGS: RefCell<Vec<(FileWarning, c_int)>> = const { RefCell::new(Vec::new()) };
+        static WARNINGS: RefCell<Vec<(String, c_int)>> = const { RefCell::new(Vec::new()) };
     }
 
-    unsafe extern "C" fn warn(
-        warning: FileWarning,
-        error: c_int,
-        _: *const c_char,
-        _: c_int,
-        _: *const c_void,
-        _: size_t,
-        _: size_t,
-    ) {
-        WARNINGS.with(|warnings| warnings.borrow_mut().push((warning, error)));
+    unsafe extern "C" fn warn(error: c_int, origin: *const c_char, message: *const c_char) {
+        // SAFETY: two C strings from `Job::log`.
+        let (origin, message) = unsafe { (CStr::from_ptr(origin), CStr::from_ptr(message)) };
+        let line = format!(
+            "{}(): {}",
+            origin.to_str().unwrap(),
+            message.to_str().unwrap()
+        );
+        WARNINGS.with(|warnings| warnings.borrow_mut().push((line, error)));
     }
 
     /// A `String` stand-in: `(content, set)`.
@@ -379,7 +345,7 @@ mod tests {
         }
     }
 
-    fn warnings() -> Vec<(FileWarning, c_int)> {
+    fn warnings() -> Vec<(String, c_int)> {
         WARNINGS.with(RefCell::take)
     }
 
@@ -431,8 +397,17 @@ mod tests {
         assert_eq!(
             warnings(),
             [
-                (FileWarning::OpenRead, libc::ENOENT),
-                (FileWarning::OpenWrite, libc::ENOENT)
+                (
+                    "System::read_file(): open(/nonexistent-swr/file, O_RDONLY) failed".into(),
+                    libc::ENOENT
+                ),
+                (
+                    format!(
+                        "System::write_file(): open(/nonexistent-swr/file, {}) failed",
+                        libc::O_CREAT | libc::O_WRONLY
+                    ),
+                    libc::ENOENT
+                ),
             ]
         );
     }

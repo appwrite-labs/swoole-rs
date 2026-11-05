@@ -33,27 +33,10 @@ void swr_v1_hook_set_host(const swr_v1_hook_host *host);
 int swr_v1_hook_close_fd(int fd, swr_v1_hook_offload offload);
 bool swr_v1_hook_no_coro(bool reactor, bool coroutine);
 /* System::read_file / write_file: the whole operation on the pool (offload). Each
- * warning reaches warn on the pool thread with the failing call's errno, named by
- * the function upstream logged it from. */
-typedef enum swr_v1_hook_file_warning {
-    SWR_HOOK_FILE_OPEN_READ,      /* read_file: open(file, O_RDONLY) */
-    SWR_HOOK_FILE_LOCK_SHARED,    /* read_file: flock(file, LOCK_SH) */
-    SWR_HOOK_FILE_UNLOCK_READ,    /* read_file: flock(file, LOCK_UN) */
-    SWR_HOOK_FILE_OPEN_WRITE,     /* write_file: open(file, number = flags) */
-    SWR_HOOK_FILE_LOCK_EXCLUSIVE, /* write_file: flock(file, LOCK_EX) */
-    SWR_HOOK_FILE_SYNC,           /* write_file: fsync(file) */
-    SWR_HOOK_FILE_UNLOCK_WRITE,   /* write_file: flock(file, LOCK_UN) */
-    SWR_HOOK_FILE_PREAD,          /* File::read_all: pread(number = fd, buf, remaining, done) */
-    SWR_HOOK_FILE_PWRITE,         /* File::write_all: pwrite(number = fd, buf, remaining, done) */
-} swr_v1_hook_file_warning;
+ * warning reaches warn on the pool thread, formatted as upstream logged it. */
 typedef struct swr_v1_hook_file_ops {
-    void (*warn)(swr_v1_hook_file_warning warning,
-                 int error,
-                 const char *file,
-                 int number,
-                 const void *buf,
-                 size_t remaining,
-                 size_t done);
+    /* swoole_sys_warning("%s", message) with errno = error, logged as from origin. */
+    void (*warn)(int error, const char *origin, const char *message);
     /* out's String (created on first use): length bytes of content, room for size; its buffer. */
     char *(*buffer)(void *out, size_t length, size_t size);
 } swr_v1_hook_file_ops;
