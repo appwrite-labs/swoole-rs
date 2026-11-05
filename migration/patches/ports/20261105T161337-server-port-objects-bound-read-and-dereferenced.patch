@@ -1,0 +1,117 @@
+diff --git a/ext-src/php_swoole_server.h b/ext-src/php_swoole_server.h
+index 1a7d5c4..8398185 100644
+--- a/ext-src/php_swoole_server.h
++++ b/ext-src/php_swoole_server.h
+@@ -110,3 +110,2 @@ swServer *php_swoole_server_get_and_check_server(zval *zobject);
+ swServer *php_swoole_server_get_ptr(zval *zobject);
+-void php_swoole_server_port_deref(zend_object *object);
+ void php_swoole_server_set_websocket_option(swoole::ListenPort *port, zend_array *vht);
+diff --git a/ext-src/swoole_server.cc b/ext-src/swoole_server.cc
+index 0de9eda..203c935 100644
+--- a/ext-src/swoole_server.cc
++++ b/ext-src/swoole_server.cc
+@@ -27,2 +27,3 @@
+ #include "swoole_rs_phpserver_lifecycle.h"
++#include "swoole_rs_phpserver.h"
+ #include "swoole_msg_queue.h"
+@@ -962,5 +963,2 @@ void task_log_expired(int64_t task_id) {
+ // ports and the C++ callbacks it installs.
+-extern ListenPort *php_swoole_server_port_get_and_check_ptr(zval *zobject);
+-extern void php_swoole_server_port_set_ptr(zval *zobject, ListenPort *port);
+-extern ServerPortProperty *php_swoole_server_port_get_property(zval *zobject);
+ extern Worker *php_swoole_process_get_and_check_worker(const zval *zobject);
+@@ -1091,7 +1089,4 @@ zval *lifecycle_port_object(void *server, void *port) {
+     object_init_ex(zport, swoole_server_port_ce);
+-    php_swoole_server_port_set_ptr(zport, ls);
+-    ServerPortProperty *property = php_swoole_server_port_get_property(zport);
+-    property->serv = as_server(server);
+-    property->port = ls;
+-    php_swoole_server_set_port_property(ls, property);
++    auto *property = swr_v1_phpserver_port_bind(Z_OBJ_P(zport), ls, server);
++    php_swoole_server_set_port_property(ls, static_cast<ServerPortProperty *>(property));
+     return zport;
+@@ -1099,3 +1094,3 @@ zval *lifecycle_port_object(void *server, void *port) {
+ void lifecycle_port_facts(zval *zport, swr_phpserver_port_facts *facts) {
+-    ListenPort *port = php_swoole_server_port_get_and_check_ptr(zport);
++    auto *port = static_cast<ListenPort *>(swr_v1_phpserver_port_port(Z_OBJ_P(zport)));
+     facts->port = port;
+@@ -1306,3 +1301,3 @@ void lifecycle_release(void *server, bool destroy) {
+ void lifecycle_port_release(zval *zport) {
+-    php_swoole_server_port_deref(Z_OBJ_P(zport));
++    swr_v1_phpserver_port_deref(Z_OBJ_P(zport));
+     efree(zport);
+diff --git a/ext-src/swoole_server_port.cc b/ext-src/swoole_server_port.cc
+index 21b0e0a..dd01c29 100644
+--- a/ext-src/swoole_server_port.cc
++++ b/ext-src/swoole_server_port.cc
+@@ -69,56 +69,2 @@ zend_class_entry *swoole_server_port_ce;
+ 
+-struct ServerPortObject {
+-    ListenPort *port;
+-    ServerPortProperty property;
+-    zend_object std;
+-};
+-
+-static sw_inline ServerPortObject *php_swoole_server_port_fetch_object(zend_object *obj) {
+-    return (ServerPortObject *) ((char *) obj - offsetof(ServerPortObject, std));
+-}
+-
+-static sw_inline ListenPort *php_swoole_server_port_get_ptr(zval *zobject) {
+-    return php_swoole_server_port_fetch_object(Z_OBJ_P(zobject))->port;
+-}
+-
+-ListenPort *php_swoole_server_port_get_and_check_ptr(zval *zobject) {
+-    ListenPort *port = php_swoole_server_port_get_ptr(zobject);
+-    if (UNEXPECTED(!port)) {
+-        php_swoole_fatal_error(E_ERROR, "Invalid instance of %s", SW_Z_OBJCE_NAME_VAL_P(zobject));
+-    }
+-    return port;
+-}
+-
+-void php_swoole_server_port_set_ptr(zval *zobject, ListenPort *port) {
+-    php_swoole_server_port_fetch_object(Z_OBJ_P(zobject))->port = port;
+-}
+-
+-ServerPortProperty *php_swoole_server_port_get_property(zval *zobject) {
+-    return &php_swoole_server_port_fetch_object(Z_OBJ_P(zobject))->property;
+-}
+-
+-// Dereference from server object
+-void php_swoole_server_port_deref(zend_object *object) {
+-    ServerPortObject *server_port = php_swoole_server_port_fetch_object(object);
+-    ServerPortProperty *property = &server_port->property;
+-    if (property->serv) {
+-        for (auto &callback : property->callbacks) {
+-            if (callback) {
+-                sw_callable_free(callback);
+-                callback = nullptr;
+-            }
+-        }
+-        property->serv = nullptr;
+-    }
+-
+-    ListenPort *port = server_port->port;
+-    if (port) {
+-        if (port->protocol.private_data_1) {
+-            sw_callable_free(port->protocol.private_data_1);
+-            port->protocol.private_data_1 = nullptr;
+-        }
+-        server_port->port = nullptr;
+-    }
+-}
+-
+ static bool port_apply_settings(ListenPort *port, ServerPortProperty *property, HashTable *vht);
+@@ -146,2 +92,5 @@ void port_callable_free(void *callable) {
+ }
++void **port_length_slot(void *port) {
++    return &static_cast<ListenPort *>(port)->protocol.private_data_1;
++}
+ void port_hook(void *server, uint32_t hook) {
+@@ -207,6 +156,4 @@ void port_socket(void *port, zval *return_value) {
+ void php_swoole_server_port_minit(int module_number) {
+-    static_assert(offsetof(ServerPortObject, property) == sizeof(void *) &&
+-                  offsetof(ServerPortObject, std) == 16 * sizeof(void *), "crates/phpserver port layout");
+     static const swr_v1_phpserver_port_host host = {
+-        port_invalid, php_swoole_server_port_deref, port_started, port_warn, port_callable_create,
++        port_invalid, port_length_slot, port_started, port_warn, port_callable_create,
+         port_callable_free, port_hook, port_settings, port_finish, port_socket,
