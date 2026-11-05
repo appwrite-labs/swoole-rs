@@ -13,7 +13,7 @@ upstream fails up to 9 re-runs as well (a test both engines almost always fail, 
 otherwise it is a regression. If upstream passes every re-run, any failed hybrid re-run is a regression
 and passing them all is a pass on re-run. The hybrid re-runs until it has both passed and
 failed, so one failed re-run of a test racy on both engines doesn't decide it. A hybrid that both passed and failed its
-re-runs gets more upstream re-runs (up to 9 in all) before that verdict: a test racy
+re-runs gets more upstream re-runs (up to 24 in all) before that verdict: a test racy
 on both engines then shows an upstream failure too. Only regressions fail the gate, and
 a flagged test without hybrid re-runs stays one.
 
@@ -44,9 +44,11 @@ TIMED_OUT = re.compile(r'process timed out|exceeded its isolated group deadline'
 # The official runner's own abort after a passing test (#200).
 ABORTED = re.compile(r'corrupted double-linked list[\s\S]*Aborted')
 RERUNS = 3
-# Upstream re-runs for a test the hybrid both passed and failed on re-run, or failed
-# every re-run of after upstream failed one.
+# Upstream re-runs for a test the hybrid failed every re-run of after upstream failed
+# one (#998), and for a test the hybrid both passed and failed on re-run (#1285: an
+# upstream race failing 5-10% of runs shows in 24 runs far more often than in 9).
 EXTENDED_RERUNS = 9
+MIXED_RERUNS = 24
 STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 
 
@@ -135,9 +137,9 @@ def recheck(tests, rechecked):
 
 def pending(tests, rechecked, engine='upstream', results=()):
     """Flagged tests still worth re-running on `engine`. Upstream stops at its first failed
-    re-run; `upstream-extended` continues upstream, to 9 re-runs, for a test the hybrid
-    both passed and failed, or failed every re-run of after upstream failed one, until
-    upstream passes one. Another engine stops once its verdict is settled (a pass after an upstream
+    re-run; `upstream-extended` continues upstream, to 24 re-runs for a test the hybrid
+    both passed and failed, or to 9 for one it failed every re-run of after upstream
+    failed one, until upstream passes one. Another engine stops once its verdict is settled (a pass after an upstream
     failure, otherwise both a pass and a failure, which earns those upstream re-runs) or its
     budget is spent: one re-run if its first failure timed out, nine once upstream failed a
     re-run (a test racy on both engines may fail several hybrid re-runs before one passes),
@@ -149,17 +151,17 @@ def pending(tests, rechecked, engine='upstream', results=()):
 
     def within(statuses, budget):
         return len(conclusive(statuses)) < budget and len(statuses) < 2 * budget
-    if engine in ('upstream', 'upstream-extended'):
-        def extended(test):
+    if engine == 'upstream':
+        return [test for test in tests if all(status in ('passed', 'inconclusive') for status in runs[test]['upstream'])
+                and within(runs[test]['upstream'], RERUNS)]
+    if engine == 'upstream-extended':
+        def budget(test):
             hybrid = conclusive(runs[test].get('hybrid', []))
             upstream = conclusive(runs[test].get('upstream', []))
             if 'failed' not in upstream:
-                return 'passed' in hybrid and 'failed' in hybrid
-            return bool(hybrid) and 'passed' not in hybrid and 'passed' not in upstream
-        budget = EXTENDED_RERUNS if engine == 'upstream-extended' else RERUNS
-        return [test for test in tests if (extended(test) if engine == 'upstream-extended' else
-                                           all(status in ('passed', 'inconclusive') for status in runs[test].get('upstream', [])))
-                and within(runs[test].get('upstream', []), budget)]
+                return MIXED_RERUNS if 'passed' in hybrid and 'failed' in hybrid else 0
+            return EXTENDED_RERUNS if hybrid and 'passed' not in hybrid and 'passed' not in upstream else 0
+        return [test for test in tests if within(runs[test]['upstream'], budget(test))]
     timed_out = {row['test'] for row in results if row['engine'] == engine and row.get('timed_out')}
     left = []
     for test in tests:
