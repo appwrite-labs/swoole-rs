@@ -1,11 +1,8 @@
 diff --git a/ext-src/php_swoole_private.h b/ext-src/php_swoole_private.h
-index ecfff99..cfad183 100644
+index ecfff99..0b3f3ea 100644
 --- a/ext-src/php_swoole_private.h
 +++ b/ext-src/php_swoole_private.h
-@@ -132,2 +132,6 @@ BEGIN_EXTERN_C()
+@@ -132,2 +132,3 @@ BEGIN_EXTERN_C()
  //---------------------------------------------------------
-+#ifndef SWOOLE_RS_HOOKS
-+enum { PHP_SWOOLE_FD_CO_CURL = SW_FD_STREAM_CLIENT + 10 };
-+#endif
 +
  enum php_swoole_req_status {

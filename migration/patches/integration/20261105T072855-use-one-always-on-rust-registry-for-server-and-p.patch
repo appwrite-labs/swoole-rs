@@ -141,40 +141,22 @@ index b53ec20..2d5d311 100644
 -            detached_processes.erase(exited_pid);
          }
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 906421e..281113b 100644
+index fae6ffa..7218272 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -401,7 +401,2 @@ Server::~Server() {
+@@ -399,5 +399,2 @@ Server::~Server() {
      }
--#ifdef SWOOLE_RS_PROCESS
 -    // Backstop for the path where destroy() did not run (null-safe after it did).
 -    swr_v1_process_worker_registry_free(static_cast<swr_v1_process_worker_registry *>(worker_registry));
 -    worker_registry = nullptr;
--#endif
      sw_free(cpu_affinity_available);
-@@ -433,35 +428,11 @@ Worker *Server::get_worker(uint16_t worker_id) const {
+@@ -429,18 +426,11 @@ Worker *Server::get_worker(uint16_t worker_id) const {
  Worker *Server::get_worker_by_pid(pid_t worker_pid) const {
--#ifdef SWOOLE_RS_PROCESS
 -    // Event and user workers are in the Rust registry; task workers stay in the
 -    // task pool's map_ (a ProcessPool is generic and also runs without a Server).
 -    if (Worker *worker = static_cast<Worker *>(swr_v1_process_worker_registry_lookup(
 -            static_cast<swr_v1_process_worker_registry *>(worker_registry), worker_pid))) {
 -        return worker;
--    }
--#else
--    SW_LOOP_N(worker_num) {
--        Worker *worker = get_worker(i);
--        if (worker_pid == worker->pid) {
--            return worker;
--        }
--    }
--#endif
--
--    if (get_task_worker_pool()->map_) {
--        const auto iter = get_task_worker_pool()->map_->find(worker_pid);
--        if (iter != get_task_worker_pool()->map_->end()) {
--            return iter->second;
--        }
 +    static_assert(sizeof(decltype(Worker::pid)) == sizeof(int), "worker pid ABI");
 +    if (auto *worker = static_cast<Worker *>(swr_v1_process_worker_registry_find_array(
 +            workers, worker_num, sizeof(Worker), offsetof(Worker, pid), worker_pid))) return worker;
@@ -183,32 +165,27 @@ index 906421e..281113b 100644
 +        if (auto *worker = tasks->get_worker_by_pid(worker_pid)) return worker;
      }
 -
--#ifndef SWOOLE_RS_PROCESS
--    if (!user_worker_map.empty()) {
--        const auto iter = user_worker_map.find(worker_pid);
--        if (iter != user_worker_map.end()) {
+-    if (get_task_worker_pool()->map_) {
+-        const auto iter = get_task_worker_pool()->map_->find(worker_pid);
+-        if (iter != get_task_worker_pool()->map_->end()) {
 -            return iter->second;
 -        }
 -    }
--#endif
+-
 -
 -    return nullptr;
 +    return static_cast<Worker *>(swr_v1_process_worker_registry_lookup_category(
 +        static_cast<swr_v1_process_worker_registry *>(worker_registry), worker_pid, SWR_WORKER_USER));
  }
-@@ -475,6 +446,2 @@ int Server::create() {
+@@ -454,4 +444,2 @@ int Server::create() {
  
--#ifdef SWOOLE_RS_PROCESS
 -    worker_registry = swr_v1_process_worker_registry_new();
--#endif
 -
      if (swoole_isset_hook(SW_GLOBAL_HOOK_BEFORE_SERVER_CREATE)) {
-@@ -503,6 +470,2 @@ void Server::stop_master_thread() {
+@@ -480,4 +468,2 @@ void Server::stop_master_thread() {
  void Server::destroy() {
--#ifdef SWOOLE_RS_PROCESS
 -    swr_v1_process_worker_registry_free(static_cast<swr_v1_process_worker_registry *>(worker_registry));
 -    worker_registry = nullptr;
--#endif
      if (!factory_) {
 diff --git a/src/server/process.cc b/src/server/process.cc
 index 7b91acd..dd57866 100644

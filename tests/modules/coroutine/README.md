@@ -33,8 +33,7 @@ python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --sourc
 
 - `compile_gate.py` compiles `base`, `channel`, `context` and `thread_context`
   from the pin (original) and from the archive's hybrid tree with its switches
-  (patched, `hybrid_tree`); without `SWOOLE_RS_COROUTINE` (disabled) `base` and
-  `channel` must fail closed with their guard message.
+  (patched, `hybrid_tree`).
 - `rust_asan.py` runs crates/coroutine's unit tests under Rust ASan (the plain
   run is `coroutine-unit`).
 - The scheduler, coroutine state, the live map, Channel and stacks

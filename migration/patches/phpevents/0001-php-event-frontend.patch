@@ -1,16 +1,13 @@
 diff --git a/ext-src/swoole_event.cc b/ext-src/swoole_event.cc
-index 0892eba..c964d1f 100644
+index 0892eba..0b385bd 100644
 --- a/ext-src/swoole_event.cc
 +++ b/ext-src/swoole_event.cc
-@@ -22,2 +22,7 @@
+@@ -22,2 +22,4 @@
  
-+#ifndef SWOOLE_RS_PHPEVENTS
-+#error "PHP Event overlay requires --enable-swoole-rs-phpevents"
-+#endif
 +#include "swoole_rs_phpevents.h"
 +
  BEGIN_EXTERN_C()
-@@ -29,24 +34,11 @@ using swoole::network::Socket;
+@@ -29,24 +31,11 @@ using swoole::network::Socket;
  
 -static std::unordered_map<int, Socket *> event_socket_map;
 -
@@ -43,7 +40,7 @@ index 0892eba..c964d1f 100644
 +PHP_FUNCTION(swoole_event_del);
 +PHP_FUNCTION(swoole_event_write);
  static PHP_FUNCTION(swoole_event_wait);
-@@ -54,6 +46,6 @@ static PHP_FUNCTION(swoole_event_rshutdown);
+@@ -54,6 +43,6 @@ static PHP_FUNCTION(swoole_event_rshutdown);
  static PHP_FUNCTION(swoole_event_exit);
 -static PHP_FUNCTION(swoole_event_defer);
 -static PHP_FUNCTION(swoole_event_cycle);
@@ -53,7 +50,7 @@ index 0892eba..c964d1f 100644
 -static PHP_FUNCTION(swoole_event_isset);
 +PHP_FUNCTION(swoole_event_isset);
  SW_EXTERN_C_END
-@@ -78,79 +70,18 @@ static const zend_function_entry swoole_event_methods[] =
+@@ -78,79 +67,18 @@ static const zend_function_entry swoole_event_methods[] =
  
 -void php_swoole_event_minit(int module_number) {
 -    SW_INIT_CLASS_ENTRY(swoole_event, "Swoole\\Event", nullptr, swoole_event_methods);
@@ -144,7 +141,7 @@ index 0892eba..c964d1f 100644
 +static int event_readable_callback(Reactor *reactor, Event *event) {
 +    return event_ready(event, 0);
  }
-@@ -158,20 +89,3 @@ static int event_readable_callback(Reactor *reactor, Event *event) {
+@@ -158,20 +86,3 @@ static int event_readable_callback(Reactor *reactor, Event *event) {
  static int event_writable_callback(Reactor *reactor, Event *event) {
 -    auto *peo = static_cast<EventObject *>(event->socket->object);
 -
@@ -166,7 +163,7 @@ index 0892eba..c964d1f 100644
 -    return SW_OK;
 +    return event_ready(event, 1);
  }
-@@ -204,7 +118,5 @@ static int event_error_callback(Reactor *reactor, Event *event) {
+@@ -204,7 +115,5 @@ static int event_error_callback(Reactor *reactor, Event *event) {
  static void event_defer_callback(void *data) {
 -    auto *cb = static_cast<zend::Callable *>(data);
 -    if (UNEXPECTED(!zend::function::call(cb, 0, nullptr, nullptr, php_swoole_is_enable_coroutine()))) {
@@ -176,16 +173,16 @@ index 0892eba..c964d1f 100644
      }
 -    delete cb;
  }
-@@ -212,5 +124,4 @@ static void event_defer_callback(void *data) {
+@@ -212,5 +121,14 @@ static void event_defer_callback(void *data) {
  static void event_cycle_callback(void *data) {
 -    auto *cb = static_cast<zend::Callable *>(data);
 -    if (UNEXPECTED(!zend::function::call(cb, 0, nullptr, nullptr, php_swoole_is_enable_coroutine()))) {
 -        php_swoole_error(E_WARNING, "%s::end callback handler error", ZSTR_VAL(swoole_event_ce->name));
 +    if (swr_v1_phpevents_cycle(data)) {
 +        zend_bailout();
-     }
-@@ -218,2 +129,78 @@ static void event_cycle_callback(void *data) {
- 
++    }
++}
++
 +static void event_check_reactor() {
 +    php_swoole_check_reactor();
 +
@@ -193,9 +190,9 @@ index 0892eba..c964d1f 100644
 +        swoole_event_set_handler(SW_FD_USER, SW_EVENT_READ, event_readable_callback);
 +        swoole_event_set_handler(SW_FD_USER, SW_EVENT_WRITE, event_writable_callback);
 +        swoole_event_set_handler(SW_FD_USER, SW_EVENT_ERROR, event_error_callback);
-+    }
-+}
-+
+     }
+@@ -218,2 +136,68 @@ static void event_cycle_callback(void *data) {
+ 
 +static DeferCallback *event_cycle_task(uint8_t before) {
 +    return before ? &sw_reactor()->future_task : &sw_reactor()->idle_task;
 +}
@@ -263,7 +260,7 @@ index 0892eba..c964d1f 100644
 +}
 +
  int php_swoole_reactor_init() {
-@@ -385,268 +372,2 @@ php_socket *php_swoole_convert_to_socket(int sock) {
+@@ -385,268 +369,2 @@ php_socket *php_swoole_convert_to_socket(int sock) {
  
 -static void event_check_reactor() {
 -    php_swoole_check_reactor();
@@ -532,7 +529,7 @@ index 0892eba..c964d1f 100644
 -}
 -
  static PHP_FUNCTION(swoole_event_exit) {
-@@ -687,30 +408 @@ static PHP_FUNCTION(swoole_event_dispatch) {
+@@ -687,30 +405 @@ static PHP_FUNCTION(swoole_event_dispatch) {
  }
 -
 -static PHP_FUNCTION(swoole_event_isset) {

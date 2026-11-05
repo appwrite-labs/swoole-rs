@@ -1,17 +1,14 @@
 diff --git a/src/memory/fixed_pool.cc b/src/memory/fixed_pool.cc
-index e7bfd9aa9..6bd53f4e5 100644
+index e7bfd9a..bd4d81b 100644
 --- a/src/memory/fixed_pool.cc
 +++ b/src/memory/fixed_pool.cc
-@@ -17,2 +17,8 @@
+@@ -17,2 +17,5 @@
  #include "swoole_memory.h"
-+#ifndef SWOOLE_RS_MEMORY
-+#error "Memory overlay requires --enable-swoole-rs-memory"
-+#endif
 +#include "swoole_rs_memory.h"
 +#include <type_traits>
 +#include <new>
  
-@@ -20,29 +26,8 @@ namespace swoole {
+@@ -20,29 +23,8 @@ namespace swoole {
  
 -struct FixedPoolSlice {
 -    uint8_t lock;
@@ -47,7 +44,7 @@ index e7bfd9aa9..6bd53f4e5 100644
 +              std::is_trivially_destructible<FixedPoolImpl>::value, "native header construction has no effects");
 +static_assert(sizeof(FixedPoolImpl) == 48 && sizeof(FixedPoolSlice) == 24, "preserved 64-bit pool layout");
  
-@@ -52,24 +37,15 @@ struct FixedPoolImpl {
+@@ -52,24 +34,15 @@ struct FixedPoolImpl {
  FixedPool::FixedPool(uint32_t slice_num, uint32_t slice_size, bool shared) {
 -    if (slice_num < 2) {
 +    swr_v1_memory_fixed_layout_result plan{};
@@ -82,7 +79,7 @@ index e7bfd9aa9..6bd53f4e5 100644
 -    impl->init();
 +    impl = header;
  }
-@@ -80,16 +56,13 @@ FixedPool::FixedPool(uint32_t slice_num, uint32_t slice_size, bool shared) {
+@@ -80,16 +53,13 @@ FixedPool::FixedPool(uint32_t slice_num, uint32_t slice_size, bool shared) {
  FixedPool::FixedPool(uint32_t slice_size, void *memory, size_t size, bool shared) {
 -    impl = (FixedPoolImpl *) memory;
 -    memory = (char *) memory + sizeof(*impl);
@@ -96,19 +93,19 @@ index e7bfd9aa9..6bd53f4e5 100644
 +    if (swr_v1_memory_fixed_layout(0, slice_size, size, 0, &plan) != 0 ||
 +        !memory || reinterpret_cast<uintptr_t>(memory) % alignof(FixedPoolImpl) != 0 ||
 +        reinterpret_cast<uintptr_t>(memory) > UINTPTR_MAX - plan.total) {
-+        throw Exception(SW_ERROR_INVALID_PARAMS);
-+    }
-+    auto *header = new (memory) FixedPoolImpl;
-+    if (swr_v1_memory_fixed_construct(header, &plan, shared, 0) != 0) {
          throw Exception(SW_ERROR_INVALID_PARAMS);
      }
 -    impl->slice_num = slice_num;
 -    impl->memory = memory;
 -    impl->allocated = false;
 -    impl->init();
++    auto *header = new (memory) FixedPoolImpl;
++    if (swr_v1_memory_fixed_construct(header, &plan, shared, 0) != 0) {
++        throw Exception(SW_ERROR_INVALID_PARAMS);
++    }
 +    impl = header;
  }
-@@ -104,66 +77,21 @@ size_t FixedPool::sizeof_struct_impl() {
+@@ -104,66 +74,21 @@ size_t FixedPool::sizeof_struct_impl() {
  
 -/**
 - * linked list
@@ -188,11 +185,7 @@ index e7bfd9aa9..6bd53f4e5 100644
 -    return slice->data;
 +    return result;
  }
-@@ -171,27 +99,10 @@ void *FixedPool::alloc(uint32_t size) {
- void FixedPool::free(void *ptr) {
-     auto *slice = reinterpret_cast<FixedPoolSlice *>(static_cast<char *>(ptr) - sizeof(FixedPoolSlice));
- 
-     assert(ptr > impl->memory && static_cast<char *>(ptr) < static_cast<char *>(impl->memory) + impl->size);
+@@ -175,23 +100,6 @@ void FixedPool::free(void *ptr) {
      assert(slice->lock == 1);
 -
 -    impl->slice_use--;
@@ -220,7 +213,7 @@ index e7bfd9aa9..6bd53f4e5 100644
 +    assert(status == 0);
 +    (void) status;
  }
-@@ -199,10 +110,5 @@ void FixedPool::free(void *ptr) {
+@@ -199,10 +107,5 @@ void FixedPool::free(void *ptr) {
  FixedPool::~FixedPool() {
 -    if (!impl->allocated) {
 -        return;
@@ -234,7 +227,7 @@ index e7bfd9aa9..6bd53f4e5 100644
 +    if (action == 4) ::sw_shm_free(impl);
 +    else if (action == 3) ::sw_free(impl);
  }
-@@ -210,22 +116,13 @@ FixedPool::~FixedPool() {
+@@ -210,22 +113,13 @@ FixedPool::~FixedPool() {
  void FixedPool::debug(int max_lines) const {
 -    int line = 0;
 -    FixedPoolSlice *slice = impl->head;

@@ -1,27 +1,24 @@
 diff --git a/src/memory/shared_memory.cc b/src/memory/shared_memory.cc
-index 8188278c9..553a0b4b9 100644
+index 8188278..6c5ca21 100644
 --- a/src/memory/shared_memory.cc
 +++ b/src/memory/shared_memory.cc
-@@ -17,2 +17,7 @@
+@@ -17,2 +17,4 @@
  #include "swoole_memory.h"
 +#include "swoole_file.h"
-+#ifndef SWOOLE_RS_MEMORY
-+#error "Memory overlay requires --enable-swoole-rs-memory"
-+#endif
 +#include "swoole_rs_memory.h"
  
-@@ -27,4 +32,2 @@ namespace swoole {
+@@ -27,4 +29,2 @@ namespace swoole {
  struct SharedMemory {
 -    size_t size_;
 -
      static void *alloc(size_t size);
-@@ -32,5 +35,2 @@ struct SharedMemory {
+@@ -32,5 +32,2 @@ struct SharedMemory {
  
 -    static SharedMemory *fetch_object(void *ptr) {
 -        return reinterpret_cast<SharedMemory *>(static_cast<char *>(ptr) - sizeof(SharedMemory));
 -    }
  };
-@@ -38,33 +38,48 @@ struct SharedMemory {
+@@ -38,33 +35,48 @@ struct SharedMemory {
  void *SharedMemory::alloc(size_t size) {
 -    void *mem;
 -    int tmpfd = -1;
@@ -94,7 +91,7 @@ index 8188278c9..553a0b4b9 100644
      }
 +    return status == 0 ? effect.memory : nullptr;
  }
-@@ -72,7 +87,19 @@ void *SharedMemory::alloc(size_t size) {
+@@ -72,7 +84,19 @@ void *SharedMemory::alloc(size_t size) {
  void SharedMemory::free(void *ptr) {
 -    SharedMemory *object = SharedMemory::fetch_object(ptr);
 -    size_t size = object->size_;
@@ -118,14 +115,14 @@ index 8188278c9..553a0b4b9 100644
      }
 +    assert(status == 0);
  }
-@@ -88,3 +115,5 @@ void *sw_shm_malloc(size_t size) {
+@@ -88,3 +112,5 @@ void *sw_shm_malloc(size_t size) {
  void *sw_shm_calloc(size_t num, size_t _size) {
 -    return SharedMemory::alloc(num * _size);
 +    size_t requested = 0;
 +    if (swr_v1_memory_mapping_product(num, _size, &requested) != 0) return nullptr;
 +    return SharedMemory::alloc(requested);
  }
-@@ -92,4 +121,21 @@ void *sw_shm_calloc(size_t num, size_t _size) {
+@@ -92,4 +118,21 @@ void *sw_shm_calloc(size_t num, size_t _size) {
  int sw_shm_protect(void *ptr, int flags) {
 -    SharedMemory *object = SharedMemory::fetch_object(ptr);
 -    return mprotect(object, object->size_, flags);
@@ -149,7 +146,7 @@ index 8188278c9..553a0b4b9 100644
 +    if (status != 0) { errno = EINVAL; return -1; }
 +    return effect.result;
  }
-@@ -101,10 +147,23 @@ void sw_shm_free(void *ptr) {
+@@ -101,10 +144,23 @@ void sw_shm_free(void *ptr) {
  void *sw_shm_realloc(void *ptr, size_t new_size) {
 -    SharedMemory *object = SharedMemory::fetch_object(ptr);
 -    void *new_ptr = sw_shm_malloc(new_size);

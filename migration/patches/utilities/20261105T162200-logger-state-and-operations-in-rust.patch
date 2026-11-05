@@ -120,24 +120,22 @@ index 92e7f22..5601687 100644
 +        swr_v1_logger_set(logger, SWR_LOGGER_BACKTRACE, 1);
      }
 diff --git a/src/core/log.cc b/src/core/log.cc
-index 965dcc6..5a699bd 100644
+index 0394132..9030051 100644
 --- a/src/core/log.cc
 +++ b/src/core/log.cc
-@@ -18,12 +18,2 @@
+@@ -18,311 +18,12 @@
  
 -#include <cstring>
 -#include <new>
 -#include <memory>
 -#include <stdexcept>
 -#include <fcntl.h>
--
+ 
 -#include <string>
 -#include <chrono>  // NOLINT [build/c++11]
 -
 -#include "swoole_rs_utilities.h"
- #ifndef SWOOLE_RS_UTILITIES
-@@ -32,300 +22,11 @@
- 
+-
 -namespace swoole {
 -
 -static void state_check(uint32_t status) {

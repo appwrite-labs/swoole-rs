@@ -1,16 +1,13 @@
 diff --git a/ext-src/swoole_runtime.cc b/ext-src/swoole_runtime.cc
-index 0f7b169..36caf7b 100644
+index 0f7b169..c35f325 100644
 --- a/ext-src/swoole_runtime.cc
 +++ b/ext-src/swoole_runtime.cc
-@@ -17,2 +17,7 @@
+@@ -17,2 +17,4 @@
  #include "php_swoole_cxx.h"
-+#ifndef SWOOLE_RS_HOOKS
-+#error "Hooks overlay requires --enable-swoole-rs-hooks"
-+#endif
 +#include "swoole_rs_hooks.h"
 +
  #include "php_swoole_api.h"
-@@ -442,28 +447,7 @@ void php_swoole_runtime_mshutdown() {
+@@ -442,28 +444,7 @@ void php_swoole_runtime_mshutdown() {
  static inline char *parse_ip_address_ex(const char *str, size_t str_len, int *portno, int get_err, zend_string **err) {
 -    char *colon;
 -    char *host = nullptr;
@@ -43,14 +40,14 @@ index 0f7b169..36caf7b 100644
 +            *err = plan.status == 1 ? strpprintf(0, "Failed to parse IPv6 address \"%s\"", str)
 +                                    : strpprintf(0, "Failed to parse address \"%s\"", str);
          }
-@@ -471,4 +455,4 @@ static inline char *parse_ip_address_ex(const char *str, size_t str_len, int *po
+@@ -471,4 +452,4 @@ static inline char *parse_ip_address_ex(const char *str, size_t str_len, int *po
      }
 -
 -    return host;
 +    *portno = plan.port;
 +    return estrndup(str + plan.host_offset, plan.host_length);
  }
-@@ -1389,80 +1373,62 @@ static void hook_stream_factory(uint32_t *flags_ptr) {
+@@ -1389,80 +1370,62 @@ static void hook_stream_factory(uint32_t *flags_ptr) {
  
 -    if (flags & PHPCoroutine::HOOK_TCP) {
 -        if (!(runtime_hook_flags & PHPCoroutine::HOOK_TCP)) {
@@ -188,7 +185,7 @@ index 0f7b169..36caf7b 100644
 +        } else {
 +            php_stream_xport_unregister("tls");
          }
-@@ -1474,20 +1440,14 @@ static void hook_stream_ops(uint32_t flags) {
+@@ -1474,20 +1437,14 @@ static void hook_stream_ops(uint32_t flags) {
      // file
 -    if (flags & PHPCoroutine::HOOK_FILE) {
 -        if (!(runtime_hook_flags & PHPCoroutine::HOOK_FILE)) {
@@ -219,7 +216,7 @@ index 0f7b169..36caf7b 100644
 +    } else if (transition_stdio < 0) {
 +        memcpy(&php_stream_stdio_ops, &ori_php_stream_stdio_ops, sizeof(php_stream_stdio_ops));
      }
-@@ -1497,10 +1457,7 @@ static void hook_pdo_driver(uint32_t flags) {
+@@ -1497,10 +1454,7 @@ static void hook_pdo_driver(uint32_t flags) {
  #ifdef SW_USE_PGSQL
 -    if (flags & PHPCoroutine::HOOK_PDO_PGSQL) {
 -        if (!(runtime_hook_flags & PHPCoroutine::HOOK_PDO_PGSQL)) {
@@ -235,7 +232,7 @@ index 0f7b169..36caf7b 100644
 +    } else if (transition_pdo_pgsql < 0) {
 +        swoole_pgsql_set_blocking(true);
      }
-@@ -1508,10 +1465,7 @@ static void hook_pdo_driver(uint32_t flags) {
+@@ -1508,10 +1462,7 @@ static void hook_pdo_driver(uint32_t flags) {
  #ifdef SW_USE_ODBC
 -    if (flags & PHPCoroutine::HOOK_PDO_ODBC) {
 -        if (!(runtime_hook_flags & PHPCoroutine::HOOK_PDO_ODBC)) {
@@ -251,7 +248,7 @@ index 0f7b169..36caf7b 100644
 +    } else if (transition_pdo_odbc < 0) {
 +        swoole_odbc_set_blocking(true);
      }
-@@ -1519,10 +1473,7 @@ static void hook_pdo_driver(uint32_t flags) {
+@@ -1519,10 +1470,7 @@ static void hook_pdo_driver(uint32_t flags) {
  #ifdef SW_USE_ORACLE
 -    if (flags & PHPCoroutine::HOOK_PDO_ORACLE) {
 -        if (!(runtime_hook_flags & PHPCoroutine::HOOK_PDO_ORACLE)) {
@@ -267,7 +264,7 @@ index 0f7b169..36caf7b 100644
 +    } else if (transition_pdo_oracle < 0) {
 +        swoole_oracle_set_blocking(1);
      }
-@@ -1530,10 +1481,7 @@ static void hook_pdo_driver(uint32_t flags) {
+@@ -1530,10 +1478,7 @@ static void hook_pdo_driver(uint32_t flags) {
  #ifdef SW_USE_SQLITE
 -    if (flags & PHPCoroutine::HOOK_PDO_SQLITE) {
 -        if (!(runtime_hook_flags & PHPCoroutine::HOOK_PDO_SQLITE)) {
@@ -283,7 +280,7 @@ index 0f7b169..36caf7b 100644
 +    } else if (transition_pdo_sqlite < 0) {
 +        swoole_sqlite_set_blocking(true);
      }
-@@ -1541,10 +1489,7 @@ static void hook_pdo_driver(uint32_t flags) {
+@@ -1541,10 +1486,7 @@ static void hook_pdo_driver(uint32_t flags) {
  #ifdef SW_USE_FIREBIRD
 -    if (flags & PHPCoroutine::HOOK_PDO_FIREBIRD) {
 -        if (!(runtime_hook_flags & PHPCoroutine::HOOK_PDO_FIREBIRD)) {
@@ -299,7 +296,7 @@ index 0f7b169..36caf7b 100644
 +    } else if (transition_pdo_firebird < 0) {
 +        swoole_firebird_set_blocking(true);
      }
-@@ -1555,108 +1500,96 @@ static void hook_all_func(uint32_t flags) {
+@@ -1555,108 +1497,96 @@ static void hook_all_func(uint32_t flags) {
      // stream func
 -    if (flags & PHPCoroutine::HOOK_STREAM_FUNCTION) {
 -        if (!(runtime_hook_flags & PHPCoroutine::HOOK_STREAM_FUNCTION)) {
@@ -496,7 +493,7 @@ index 0f7b169..36caf7b 100644
 +
 +        detach_parent_class("Swoole\\Coroutine\\Socket");
      }
-@@ -1665,60 +1598,58 @@ static void hook_all_func(uint32_t flags) {
+@@ -1665,60 +1595,58 @@ static void hook_all_func(uint32_t flags) {
      // curl native
 -    if (flags & PHPCoroutine::HOOK_NATIVE_CURL) {
 -        if (flags & PHPCoroutine::HOOK_CURL) {
@@ -613,7 +610,7 @@ index 0f7b169..36caf7b 100644
 +        SW_UNHOOK_FUNC(curl_multi_remove_handle);
 +        SW_UNHOOK_FUNC(curl_multi_close);
      }
-@@ -1726,58 +1657,52 @@ static void hook_all_func(uint32_t flags) {
+@@ -1726,58 +1654,52 @@ static void hook_all_func(uint32_t flags) {
      // curl
 -    if (flags & PHPCoroutine::HOOK_CURL) {
 -        if (!(runtime_hook_flags & PHPCoroutine::HOOK_CURL)) {
@@ -720,7 +717,7 @@ index 0f7b169..36caf7b 100644
 +        SW_UNHOOK_FUNC(dns_get_record);
 +        SW_UNHOOK_FUNC(gethostbyaddr);
      }
-@@ -1786,5 +1711,5 @@ static void hook_all_func(uint32_t flags) {
+@@ -1786,5 +1708,5 @@ static void hook_all_func(uint32_t flags) {
  static void hook_mongodb(uint32_t flags) {
 -    if (flags & PHPCoroutine::HOOK_MONGODB) {
 +    if (swr_v1_hook_transition(flags, runtime_hook_flags, PHPCoroutine::HOOK_MONGODB) > 0) {
@@ -728,7 +725,7 @@ index 0f7b169..36caf7b 100644
 -        if (!(runtime_hook_flags & PHPCoroutine::HOOK_MONGODB) && !class_exists(alias_name)) {
 +        if (!class_exists(alias_name)) {
              zend::String class_name(R"(Swoole\MongoDB\Client)");
-@@ -1810,10 +1735,7 @@ bool PHPCoroutine::enable_hook(uint32_t flags) {
+@@ -1810,10 +1732,7 @@ bool PHPCoroutine::enable_hook(uint32_t flags) {
  
 -    if (!extension_loaded("sockets")) {
 -        sw_unset_bit(flags, HOOK_SOCKETS);
@@ -742,7 +739,7 @@ index 0f7b169..36caf7b 100644
      }
 +    flags = swr_v1_hook_filter(flags, unavailable);
  
-@@ -1873,2 +1795,19 @@ static PHP_METHOD(swoole_runtime, setHookFlags) {
+@@ -1873,2 +1792,19 @@ static PHP_METHOD(swoole_runtime, setHookFlags) {
  
 +// The sleep family's checks, duration and sleep are Rust's (crates/hooks/src/sleep.rs).
 +static int32_t hooks_coroutine_sleep(double seconds) {
@@ -762,7 +759,7 @@ index 0f7b169..36caf7b 100644
 +}
 +
  static PHP_FUNCTION(swoole_sleep) {
-@@ -1880,12 +1819,7 @@ static PHP_FUNCTION(swoole_sleep) {
+@@ -1880,12 +1816,7 @@ static PHP_FUNCTION(swoole_sleep) {
  
 -    if (num < 0) {
 -        zend_argument_value_error(1, "must be greater than or equal to 0");
@@ -778,7 +775,7 @@ index 0f7b169..36caf7b 100644
 -    }
 +    RETURN_LONG(outcome.value);
  }
-@@ -1899,13 +1833,5 @@ static PHP_FUNCTION(swoole_usleep) {
+@@ -1899,13 +1830,5 @@ static PHP_FUNCTION(swoole_usleep) {
  
 -    if (num < 0) {
 -        zend_argument_value_error(1, "must be greater than or equal to 0");
@@ -793,7 +790,7 @@ index 0f7b169..36caf7b 100644
 -        usleep((unsigned int) num);
 -    }
  }
-@@ -1920,28 +1846,12 @@ static PHP_FUNCTION(swoole_time_nanosleep) {
+@@ -1920,28 +1843,12 @@ static PHP_FUNCTION(swoole_time_nanosleep) {
  
 -    if (tv_sec < 0) {
 -        zend_argument_value_error(1, "must be greater than or equal to 0");
@@ -830,13 +827,13 @@ index 0f7b169..36caf7b 100644
 +    } else if (outcome.status == 3) {
 +        php_swoole_error(E_WARNING, "nanoseconds was not in the range 0 to 999 999 999 or seconds was negative");
      }
-@@ -1959,3 +1869,4 @@ static PHP_FUNCTION(swoole_time_sleep_until) {
+@@ -1959,3 +1866,4 @@ static PHP_FUNCTION(swoole_time_sleep_until) {
  
 -    if (UNEXPECTED(!(target_secs >= 0 && target_secs <= top_target_sec))) {
 +    const auto outcome = swr_v1_hooks_sleep_until(target_secs, top_target_sec, hooks_sleeper());
 +    if (outcome.status == 1) {
          zend_argument_value_error(1, "must be between 0 and %" PRIu64, (uint64_t) top_target_sec);
-@@ -1963,11 +1874,3 @@ static PHP_FUNCTION(swoole_time_sleep_until) {
+@@ -1963,11 +1871,3 @@ static PHP_FUNCTION(swoole_time_sleep_until) {
      }
 -
 -    using namespace std::chrono;
@@ -849,7 +846,7 @@ index 0f7b169..36caf7b 100644
 -    if (target_time <= now) {
 +    if (outcome.status == 3) {
          php_error_docref(NULL, E_WARNING, "Argument #1 ($timestamp) must be greater than or equal to the current time");
-@@ -1975,10 +1878,2 @@ static PHP_FUNCTION(swoole_time_sleep_until) {
+@@ -1975,10 +1875,2 @@ static PHP_FUNCTION(swoole_time_sleep_until) {
      }
 -
 -    const auto sleep_duration = target_time - now;
@@ -861,27 +858,24 @@ index 0f7b169..36caf7b 100644
 -    }
      RETURN_TRUE;
 diff --git a/include/swoole_coroutine_socket.h b/include/swoole_coroutine_socket.h
-index cffe31a..803879e 100644
+index cffe31a..5a471a4 100644
 --- a/include/swoole_coroutine_socket.h
 +++ b/include/swoole_coroutine_socket.h
-@@ -20,2 +20,7 @@
+@@ -20,2 +20,4 @@
  #include "swoole_socket.h"
-+#ifndef SWOOLE_RS_HOOKS
-+#error "Hooks overlay requires --enable-swoole-rs-hooks"
-+#endif
 +#include "swoole_rs_hooks.h"
 +
  #include "swoole_coroutine.h"
-@@ -33,3 +38,2 @@ namespace coroutine {
+@@ -33,3 +35,2 @@ namespace coroutine {
   */
 -using EventBarrier = std::function<bool()>;
  
-@@ -68,3 +72,3 @@ class Socket {
+@@ -68,3 +69,3 @@ class Socket {
      bool is_connected() const {
 -        return connected && !is_closed();
 +        return swr_v1_hook_socket_flags(state_).connected && !is_closed();
      }
-@@ -287,13 +291,3 @@ class Socket {
+@@ -287,13 +288,3 @@ class Socket {
      Coroutine *get_bound_co(const EventType event) const {
 -        if (event & SW_EVENT_READ) {
 -            if (read_co) {
@@ -896,25 +890,25 @@ index cffe31a..803879e 100644
 -        return nullptr;
 +        return static_cast<Coroutine *>(swr_v1_hook_socket_bound_co(state_, event));
      }
-@@ -346,3 +340,3 @@ class Socket {
+@@ -346,3 +337,3 @@ class Socket {
      void set_timeout(const timeval *timeout, int _type = SW_TIMEOUT_ALL) const {
 -        set_timeout((double) timeout->tv_sec + ((double) timeout->tv_usec / 1000 / 1000), _type);
 +        set_timeout(swr_v1_hook_timeval((double) timeout->tv_sec, (double) timeout->tv_usec), _type);
      }
-@@ -413,6 +407,2 @@ class Socket {
+@@ -413,6 +404,2 @@ class Socket {
  
 -    Coroutine *read_co = nullptr;
 -    Coroutine *write_co = nullptr;
 -
 -    EventType want_event = SW_EVENT_NULL;
  
-@@ -430,5 +420,2 @@ class Socket {
+@@ -430,5 +417,2 @@ class Socket {
  
 -    EventBarrier *recv_barrier = nullptr;
 -    EventBarrier *send_barrier = nullptr;
 -
      bool ssl_is_server = false;
-@@ -440,5 +427,5 @@ class Socket {
+@@ -440,5 +424,5 @@ class Socket {
  
 -    bool connected = false;
 -    bool shutdown_read = false;
@@ -923,11 +917,11 @@ index cffe31a..803879e 100644
 +    Coroutine *event_co(uint32_t event) const { return static_cast<Coroutine *>(swr_v1_hook_socket_co(state_, event)); }
 +    void bind_co(uint32_t event, Coroutine *co) { swr_v1_hook_socket_bind(state_, event, co); }
  
-@@ -454,2 +441,3 @@ class Socket {
+@@ -454,2 +438,3 @@ class Socket {
      static int writable_event_callback(Reactor *reactor, Event *event);
 +    static int ready_event_callback(Event *event, EventType type);
      static int error_event_callback(Reactor *reactor, Event *event);
-@@ -462,6 +450,6 @@ class Socket {
+@@ -462,6 +447,6 @@ class Socket {
      void check_return_value(ssize_t retval) {
 -        if (retval >= 0) {
 -            set_err(0);
@@ -938,7 +932,7 @@ index cffe31a..803879e 100644
 +        case 2: set_err(errno); break;
 +        default: break;
          }
-@@ -483,7 +471,8 @@ class Socket {
+@@ -483,7 +468,8 @@ class Socket {
  
 -    bool add_event(EventType event);
 -    bool wait_event(EventType event, const void **_buf = nullptr, size_t _n = 0);
@@ -952,7 +946,7 @@ index cffe31a..803879e 100644
 +                    size_t _n = 0);
 +    swr_v1_hook_wait_ops wait_ops();
  
-@@ -493,8 +482,6 @@ class Socket {
+@@ -493,8 +479,6 @@ class Socket {
          }
 -        if (sw_unlikely(is_closed())) {
 -            set_err(EBADF);
@@ -965,7 +959,7 @@ index cffe31a..803879e 100644
 +        if (sw_unlikely(status != 0)) {
 +            set_err(status == 1 ? EBADF : SW_ERROR_CO_SOCKET_CLOSE_WAIT);
              return false;
-@@ -530,2 +517,10 @@ class Socket {
+@@ -530,2 +514,10 @@ class Socket {
  
 +    ssize_t vector_all(network::IOVector *io_vector, TimerController *timer, bool write);
 +    enum { TRANSFER_ALL = 1, TRANSFER_EINTR = 2, TRANSFER_CHECKED = 4 };
@@ -977,29 +971,24 @@ index cffe31a..803879e 100644
 +
    public:
 diff --git a/include/swoole_iouring.h b/include/swoole_iouring.h
-index 060a261..90fd428 100644
+index 060a261..577092d 100644
 --- a/include/swoole_iouring.h
 +++ b/include/swoole_iouring.h
 @@ -16,2 +16,3 @@
  
 +
  #pragma once
-@@ -19,5 +20,8 @@
- #include "swoole_coroutine.h"
-+#ifndef SWOOLE_RS_HOOKS
-+#error "Hooks overlay requires --enable-swoole-rs-hooks"
-+#endif
- 
+@@ -21,3 +22,3 @@
  #ifdef SW_USE_IOURING
 -#include <liburing.h>
 +#include "swoole_rs_uring.h"
  
-@@ -27,3 +31,3 @@ enum swIouringFlag {
+@@ -27,3 +28,3 @@ enum swIouringFlag {
      SW_IOURING_DEFAULT = 0,
 -    SW_IOURING_SQPOLL = IORING_SETUP_SQPOLL,
 +    SW_IOURING_SQPOLL = 1U << 1,  // IORING_SETUP_SQPOLL
  };
-@@ -31,15 +35,6 @@ enum swIouringFlag {
+@@ -31,15 +32,6 @@ enum swIouringFlag {
  namespace swoole {
 -
 -struct IouringEvent;
@@ -1018,7 +1007,7 @@ index 060a261..90fd428 100644
 -    std::queue<IouringEvent *> waiting_tasks;
 +    swr_v1_uring *engine = nullptr;
      network::Socket *ring_socket = nullptr;
-@@ -47,23 +42,15 @@ class Iouring {
+@@ -47,23 +39,15 @@ class Iouring {
  
 -    IouringEvent *ready_events[SW_IOURING_QUEUE_SIZE];
 -    io_uring_cqe *cqes[SW_IOURING_QUEUE_SIZE];
@@ -1051,12 +1040,12 @@ index 060a261..90fd428 100644
 +    static const swr_v1_uring_host host;
 +
      ~Iouring();
-@@ -71,3 +58,3 @@ class Iouring {
+@@ -71,3 +55,3 @@ class Iouring {
      bool is_empty_waiting_tasks() const {
 -        return waiting_tasks.empty();
 +        return swr_v1_uring_waiting_num(engine) == 0;
      }
-@@ -75,15 +62,3 @@ class Iouring {
+@@ -75,15 +59,3 @@ class Iouring {
      uint64_t get_task_num() const {
 -        return task_num;
 -    }
@@ -1073,21 +1062,21 @@ index 060a261..90fd428 100644
 -        return get_sq_capacity() - get_sq_space_left();
 +        return swr_v1_uring_task_num(engine);
      }
-@@ -91,3 +66,3 @@ class Iouring {
+@@ -91,3 +63,3 @@ class Iouring {
      size_t get_waiting_task_num() const {
 -        return waiting_tasks.size();
 +        return swr_v1_uring_waiting_num(engine);
      }
-@@ -95,3 +70,3 @@ class Iouring {
+@@ -95,3 +67,3 @@ class Iouring {
      float get_sq_usage_percent() const {
 -        return (float) get_sq_used() / get_sq_capacity() * 100.0f;
 +        return swr_v1_uring_sq_usage_percent(engine);
      }
-@@ -104,3 +79,2 @@ class Iouring {
+@@ -104,3 +76,2 @@ class Iouring {
      static int listen(int fd, int backlog);
 -    static int sleep(int tv_sec, int tv_nsec, int flags = 0);
      static int sleep(double seconds);
-@@ -144,3 +118,2 @@ class Iouring {
+@@ -144,3 +115,2 @@ class Iouring {
  
 -    static std::unordered_map<std::string, int> list_all_opcode();
      static int callback(Reactor *reactor, Event *event);
@@ -1122,14 +1111,11 @@ index 06e9f5b..7f49cb6 100644
 +
      ssize_t ssl_readv(network::IOVector *io_vector);
 diff --git a/src/coroutine/file_lock.cc b/src/coroutine/file_lock.cc
-index 6a4aacf..58ab349 100644
+index 6a4aacf..8fbddf6 100644
 --- a/src/coroutine/file_lock.cc
 +++ b/src/coroutine/file_lock.cc
-@@ -19,33 +19,15 @@
+@@ -19,33 +19,12 @@
  #include "swoole_coroutine.h"
-+#ifndef SWOOLE_RS_HOOKS
-+#error "Hooks overlay requires --enable-swoole-rs-hooks"
-+#endif
 +#include "swoole_rs_hooks.h"
 +
  #include "swoole_coroutine_api.h"
@@ -1168,7 +1154,7 @@ index 6a4aacf..58ab349 100644
 +static int flock_sleep(double seconds) {
 +    return System::sleep(seconds);
  }
-@@ -53,22 +35,10 @@ static inline int lock_release(int fd) {
+@@ -53,22 +32,10 @@ static inline int lock_release(int fd) {
  int swoole_coroutine_flock(int fd, int operation) {
 -    Coroutine *co = Coroutine::get_current();
 -    if (sw_unlikely(SwooleTG.reactor == nullptr || !co)) {
@@ -1199,33 +1185,30 @@ index 6a4aacf..58ab349 100644
 +    return outcome.result;
  }
 diff --git a/src/coroutine/hook.cc b/src/coroutine/hook.cc
-index 964a906..18870bd 100644
+index 964a906..c776f7b 100644
 --- a/src/coroutine/hook.cc
 +++ b/src/coroutine/hook.cc
-@@ -27,2 +27,7 @@
+@@ -27,2 +27,4 @@
  #include "swoole_coroutine_system.h"
-+#ifndef SWOOLE_RS_HOOKS
-+#error "Hooks overlay requires --enable-swoole-rs-hooks"
-+#endif
 +#include "swoole_rs_hooks.h"
 +
  #include "swoole_socket_impl.h"
-@@ -33,3 +38,2 @@ using swoole::Coroutine;
+@@ -33,3 +35,2 @@ using swoole::Coroutine;
  using swoole::EventType;
 -using swoole::translate_events_from_poll;
  using swoole::translate_events_to_poll;
-@@ -37,3 +41,2 @@ using swoole::async::dispatch;
+@@ -37,3 +38,2 @@ using swoole::async::dispatch;
  using swoole::coroutine::async;
 -using swoole::coroutine::PollSocket;
  using swoole::coroutine::System;
-@@ -46,2 +49,6 @@ using swoole::Iouring;
+@@ -46,2 +46,6 @@ using swoole::Iouring;
  
 +namespace swoole::coroutine {
 +extern const swr_v1_hook_poll_ops poll_ops;  // system.cc
 +}
 +
  static std::unordered_map<int, std::shared_ptr<SocketImpl>> socket_map;
-@@ -56,3 +63,12 @@ static int fdatasync(int fd) {
+@@ -56,3 +60,12 @@ static int fdatasync(int fd) {
  static sw_inline bool is_no_coro() {
 -    return SwooleTG.reactor == nullptr || !Coroutine::get_current();
 +    return swr_v1_hook_no_coro(SwooleTG.reactor != nullptr,
@@ -1239,7 +1222,7 @@ index 964a906..18870bd 100644
 +static swr_v1_hook_offload hook_offload() {
 +    return is_no_coro() ? nullptr : hook_async;
  }
-@@ -195,22 +211,3 @@ int swoole_coroutine_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+@@ -195,22 +208,3 @@ int swoole_coroutine_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
  
 -    std::unordered_map<int, PollSocket> _fds;
 -    for (nfds_t i = 0; i < nfds; i++) {
@@ -1263,7 +1246,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_poll(fds, nfds, timeout, &swoole::coroutine::poll_ops);
  }
-@@ -251,9 +248,3 @@ uint8_t swoole_coroutine_socket_exists(int fd) {
+@@ -251,9 +245,3 @@ uint8_t swoole_coroutine_socket_exists(int fd) {
  FILE *swoole_coroutine_fopen(const char *pathname, const char *mode) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return fopen(pathname, mode);
@@ -1274,7 +1257,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_fopen(pathname, mode, hook_offload());
  }
-@@ -261,9 +252,3 @@ FILE *swoole_coroutine_fopen(const char *pathname, const char *mode) {
+@@ -261,9 +249,3 @@ FILE *swoole_coroutine_fopen(const char *pathname, const char *mode) {
  FILE *swoole_coroutine_fdopen(int fd, const char *mode) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return fdopen(fd, mode);
@@ -1285,7 +1268,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_fdopen(fd, mode, hook_offload());
  }
-@@ -271,9 +256,3 @@ FILE *swoole_coroutine_fdopen(int fd, const char *mode) {
+@@ -271,9 +253,3 @@ FILE *swoole_coroutine_fdopen(int fd, const char *mode) {
  FILE *swoole_coroutine_freopen(const char *pathname, const char *mode, FILE *stream) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return freopen(pathname, mode, stream);
@@ -1296,7 +1279,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_freopen(pathname, mode, stream, hook_offload());
  }
-@@ -281,9 +260,3 @@ FILE *swoole_coroutine_freopen(const char *pathname, const char *mode, FILE *str
+@@ -281,9 +257,3 @@ FILE *swoole_coroutine_freopen(const char *pathname, const char *mode, FILE *str
  size_t swoole_coroutine_fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return fread(ptr, size, nmemb, stream);
@@ -1307,7 +1290,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_fread(ptr, size, nmemb, stream, hook_offload());
  }
-@@ -291,9 +264,3 @@ size_t swoole_coroutine_fread(void *ptr, size_t size, size_t nmemb, FILE *stream
+@@ -291,9 +261,3 @@ size_t swoole_coroutine_fread(void *ptr, size_t size, size_t nmemb, FILE *stream
  size_t swoole_coroutine_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return fwrite(ptr, size, nmemb, stream);
@@ -1318,7 +1301,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_fwrite(ptr, size, nmemb, stream, hook_offload());
  }
-@@ -301,9 +268,3 @@ size_t swoole_coroutine_fwrite(const void *ptr, size_t size, size_t nmemb, FILE
+@@ -301,9 +265,3 @@ size_t swoole_coroutine_fwrite(const void *ptr, size_t size, size_t nmemb, FILE
  char *swoole_coroutine_fgets(char *s, int size, FILE *stream) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return fgets(s, size, stream);
@@ -1329,7 +1312,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_fgets(s, size, stream, hook_offload());
  }
-@@ -311,9 +272,3 @@ char *swoole_coroutine_fgets(char *s, int size, FILE *stream) {
+@@ -311,9 +269,3 @@ char *swoole_coroutine_fgets(char *s, int size, FILE *stream) {
  int swoole_coroutine_fputs(const char *s, FILE *stream) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return fputs(s, stream);
@@ -1340,7 +1323,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_fputs(s, stream, hook_offload());
  }
-@@ -321,9 +276,3 @@ int swoole_coroutine_fputs(const char *s, FILE *stream) {
+@@ -321,9 +273,3 @@ int swoole_coroutine_fputs(const char *s, FILE *stream) {
  int swoole_coroutine_feof(FILE *stream) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return feof(stream);
@@ -1351,7 +1334,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_feof(stream, hook_offload());
  }
-@@ -331,9 +280,3 @@ int swoole_coroutine_feof(FILE *stream) {
+@@ -331,9 +277,3 @@ int swoole_coroutine_feof(FILE *stream) {
  int swoole_coroutine_fflush(FILE *stream) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return fflush(stream);
@@ -1362,7 +1345,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_fflush(stream, hook_offload());
  }
-@@ -341,9 +284,3 @@ int swoole_coroutine_fflush(FILE *stream) {
+@@ -341,9 +281,3 @@ int swoole_coroutine_fflush(FILE *stream) {
  int swoole_coroutine_fclose(FILE *stream) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return fclose(stream);
@@ -1373,7 +1356,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_fclose(stream, hook_offload());
  }
-@@ -351,9 +288,3 @@ int swoole_coroutine_fclose(FILE *stream) {
+@@ -351,9 +285,3 @@ int swoole_coroutine_fclose(FILE *stream) {
  DIR *swoole_coroutine_opendir(const char *name) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return opendir(name);
@@ -1384,7 +1367,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_opendir(name, hook_offload());
  }
-@@ -361,9 +292,3 @@ DIR *swoole_coroutine_opendir(const char *name) {
+@@ -361,9 +289,3 @@ DIR *swoole_coroutine_opendir(const char *name) {
  struct dirent *swoole_coroutine_readdir(DIR *dirp) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return readdir(dirp);
@@ -1395,7 +1378,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_readdir(dirp, hook_offload());
  }
-@@ -371,9 +296,3 @@ struct dirent *swoole_coroutine_readdir(DIR *dirp) {
+@@ -371,9 +293,3 @@ struct dirent *swoole_coroutine_readdir(DIR *dirp) {
  int swoole_coroutine_closedir(DIR *dirp) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return closedir(dirp);
@@ -1406,7 +1389,7 @@ index 964a906..18870bd 100644
 -    return retval;
 +    return swr_v1_hook_closedir(dirp, hook_offload());
  }
-@@ -449,13 +368,8 @@ hostent *swoole_coroutine_gethostbyname(const char *name) {
+@@ -449,13 +365,8 @@ hostent *swoole_coroutine_gethostbyname(const char *name) {
  int swoole_coroutine_open(const char *pathname, int flags, mode_t mode) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return open(pathname, flags, mode);
@@ -1424,7 +1407,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_open(pathname, flags, mode, hook_offload());
  }
-@@ -533,13 +447,8 @@ ssize_t swoole_coroutine_write(int sockfd, const void *buf, size_t count) {
+@@ -533,13 +444,8 @@ ssize_t swoole_coroutine_write(int sockfd, const void *buf, size_t count) {
  int swoole_coroutine_fstat(int fd, struct stat *statbuf) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return fstat(fd, statbuf);
@@ -1442,7 +1425,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_fstat(fd, statbuf, hook_offload());
  }
-@@ -547,13 +456,8 @@ int swoole_coroutine_fstat(int fd, struct stat *statbuf) {
+@@ -547,13 +453,8 @@ int swoole_coroutine_fstat(int fd, struct stat *statbuf) {
  int swoole_coroutine_stat(const char *path, struct stat *statbuf) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return stat(path, statbuf);
@@ -1460,7 +1443,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_stat(path, statbuf, hook_offload());
  }
-@@ -561,13 +465,8 @@ int swoole_coroutine_stat(const char *path, struct stat *statbuf) {
+@@ -561,13 +462,8 @@ int swoole_coroutine_stat(const char *path, struct stat *statbuf) {
  int swoole_coroutine_lstat(const char *path, struct stat *statbuf) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return lstat(path, statbuf);
@@ -1478,7 +1461,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_lstat(path, statbuf, hook_offload());
  }
-@@ -575,13 +474,8 @@ int swoole_coroutine_lstat(const char *path, struct stat *statbuf) {
+@@ -575,13 +471,8 @@ int swoole_coroutine_lstat(const char *path, struct stat *statbuf) {
  int swoole_coroutine_unlink(const char *pathname) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return unlink(pathname);
@@ -1496,7 +1479,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_unlink(pathname, hook_offload());
  }
-@@ -589,13 +483,8 @@ int swoole_coroutine_unlink(const char *pathname) {
+@@ -589,13 +480,8 @@ int swoole_coroutine_unlink(const char *pathname) {
  int swoole_coroutine_mkdir(const char *pathname, mode_t mode) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return mkdir(pathname, mode);
@@ -1514,7 +1497,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_mkdir(pathname, mode, hook_offload());
  }
-@@ -603,13 +492,8 @@ int swoole_coroutine_mkdir(const char *pathname, mode_t mode) {
+@@ -603,13 +489,8 @@ int swoole_coroutine_mkdir(const char *pathname, mode_t mode) {
  int swoole_coroutine_rmdir(const char *pathname) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return rmdir(pathname);
@@ -1532,7 +1515,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_rmdir(pathname, hook_offload());
  }
-@@ -617,13 +501,8 @@ int swoole_coroutine_rmdir(const char *pathname) {
+@@ -617,13 +498,8 @@ int swoole_coroutine_rmdir(const char *pathname) {
  int swoole_coroutine_rename(const char *oldpath, const char *newpath) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return rename(oldpath, newpath);
@@ -1550,7 +1533,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_rename(oldpath, newpath, hook_offload());
  }
-@@ -631,13 +510,8 @@ int swoole_coroutine_rename(const char *oldpath, const char *newpath) {
+@@ -631,13 +507,8 @@ int swoole_coroutine_rename(const char *oldpath, const char *newpath) {
  int swoole_coroutine_fsync(int fd) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return fsync(fd);
@@ -1568,7 +1551,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_fsync(fd, hook_offload());
  }
-@@ -645,21 +519,8 @@ int swoole_coroutine_fsync(int fd) {
+@@ -645,21 +516,8 @@ int swoole_coroutine_fsync(int fd) {
  int swoole_coroutine_fdatasync(int fd) {
 -    if (sw_unlikely(is_no_coro())) {
 -#ifdef HAVE_FDATASYNC
@@ -1594,7 +1577,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_fdatasync(fd, hook_offload());
  }
-@@ -667,13 +528,8 @@ int swoole_coroutine_fdatasync(int fd) {
+@@ -667,13 +525,8 @@ int swoole_coroutine_fdatasync(int fd) {
  int swoole_coroutine_ftruncate(int fd, off_t length) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return ftruncate(fd, length);
@@ -1612,7 +1595,7 @@ index 964a906..18870bd 100644
  #endif
 +    return swr_v1_hook_ftruncate(fd, length, hook_offload());
  }
-@@ -681,9 +537,3 @@ int swoole_coroutine_ftruncate(int fd, off_t length) {
+@@ -681,9 +534,3 @@ int swoole_coroutine_ftruncate(int fd, off_t length) {
  off_t swoole_coroutine_lseek(int fd, off_t offset, int whence) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return lseek(fd, offset, whence);
@@ -1623,7 +1606,7 @@ index 964a906..18870bd 100644
 -    return ret;
 +    return swr_v1_hook_lseek(fd, offset, whence, hook_offload());
  }
-@@ -691,9 +541,3 @@ off_t swoole_coroutine_lseek(int fd, off_t offset, int whence) {
+@@ -691,9 +538,3 @@ off_t swoole_coroutine_lseek(int fd, off_t offset, int whence) {
  ssize_t swoole_coroutine_readlink(const char *pathname, char *buf, size_t len) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return readlink(pathname, buf, len);
@@ -1634,7 +1617,7 @@ index 964a906..18870bd 100644
 -    return ret;
 +    return swr_v1_hook_readlink(pathname, buf, len, hook_offload());
  }
-@@ -701,9 +545,3 @@ ssize_t swoole_coroutine_readlink(const char *pathname, char *buf, size_t len) {
+@@ -701,9 +542,3 @@ ssize_t swoole_coroutine_readlink(const char *pathname, char *buf, size_t len) {
  int swoole_coroutine_statvfs(const char *path, struct statvfs *buf) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return statvfs(path, buf);
@@ -1645,7 +1628,7 @@ index 964a906..18870bd 100644
 -    return ret;
 +    return swr_v1_hook_statvfs(path, buf, hook_offload());
  }
-@@ -711,9 +549,3 @@ int swoole_coroutine_statvfs(const char *path, struct statvfs *buf) {
+@@ -711,9 +546,3 @@ int swoole_coroutine_statvfs(const char *path, struct statvfs *buf) {
  int swoole_coroutine_access(const char *pathname, int mode) {
 -    if (sw_unlikely(is_no_coro())) {
 -        return access(pathname, mode);
@@ -1657,24 +1640,23 @@ index 964a906..18870bd 100644
 +    return swr_v1_hook_access(pathname, mode, hook_offload());
  }
 diff --git a/src/coroutine/iouring.cc b/src/coroutine/iouring.cc
-index 63ca2f2..2e240ee 100644
+index 63ca2f2..827fcff 100644
 --- a/src/coroutine/iouring.cc
 +++ b/src/coroutine/iouring.cc
-@@ -21,34 +21,11 @@
+@@ -21,2 +21,4 @@
  #include "swoole_iouring.h"
--#include "swoole_coroutine_system.h"
--
--#ifdef SW_USE_IOURING
++#include "swoole_rs_hooks.h"
++
+ #include "swoole_coroutine_system.h"
+@@ -24,31 +26,3 @@
+ #ifdef SW_USE_IOURING
 -#ifdef HAVE_IOURING_FUTEX
 -#ifndef FUTEX2_SIZE_U32
 -#define FUTEX2_SIZE_U32 0x02
 -#endif
 -#include <linux/futex.h>
-+#ifndef SWOOLE_RS_HOOKS
-+#error "Hooks overlay requires --enable-swoole-rs-hooks"
- #endif
-+#include "swoole_rs_hooks.h"
- 
+-#endif
+-
 -#if IO_URING_VERSION_MAJOR < 2 || (IO_URING_VERSION_MAJOR == 2 && IO_URING_VERSION_MINOR < 8)
 -#error "The version of liburing required must be greater than or equal to 2.8."
 -#endif
@@ -1694,13 +1676,11 @@ index 63ca2f2..2e240ee 100644
 -    } while (0)
 -
 -#define TIMEOUT_EVENT (-1)
-+#include "swoole_coroutine_system.h"
- 
-+#ifdef SW_USE_IOURING
+-
  using swoole::Coroutine;
 -using swoole::coroutine::System;
  
-@@ -56,47 +33,32 @@ namespace swoole {
+@@ -56,47 +30,32 @@ namespace swoole {
  //-------------------------------------------------------------------------------
 -enum IouringEventFlag {
 -    SW_URING_TIMEOUT = 1U << 0,
@@ -1774,7 +1754,7 @@ index 63ca2f2..2e240ee 100644
 +        break;
 +    case 2:
          swoole_sys_error("Failed to initialize io_uring instance; grant the process permission to use io_uring "
-@@ -104,37 +66,19 @@ Iouring::Iouring(Reactor *_reactor) {
+@@ -104,37 +63,19 @@ Iouring::Iouring(Reactor *_reactor) {
          return;
 -    }
 -
@@ -1824,7 +1804,7 @@ index 63ca2f2..2e240ee 100644
 -    ring_socket = make_socket(ring.ring_fd, SW_FD_IOURING);
 +    ring_socket = make_socket(swr_v1_uring_fd(engine), SW_FD_IOURING);
      ring_socket->object = this;
-@@ -160,6 +104,6 @@ Iouring::Iouring(Reactor *_reactor) {
+@@ -160,6 +101,6 @@ Iouring::Iouring(Reactor *_reactor) {
          }
 -        SwooleTG.iouring->submit(true);
 +        swr_v1_uring_submit(SwooleTG.iouring->engine);
@@ -1833,7 +1813,7 @@ index 63ca2f2..2e240ee 100644
 -    reactor->iouring_interrupt_handler = [this](Reactor *reactor) { wakeup(); };
 +    reactor->iouring_interrupt_handler = [this](Reactor *reactor) { swr_v1_uring_wakeup(engine); };
  
-@@ -182,197 +126,3 @@ Iouring::~Iouring() {
+@@ -182,197 +123,3 @@ Iouring::~Iouring() {
  
 -    io_uring_queue_exit(&ring);
 -}
@@ -2032,7 +2012,7 @@ index 63ca2f2..2e240ee 100644
 -    } while (true);
 +    swr_v1_uring_close(engine);
  }
-@@ -389,53 +139,33 @@ Iouring *Iouring::get_instance() {
+@@ -389,53 +136,33 @@ Iouring *Iouring::get_instance() {
  
 -ssize_t Iouring::execute(IouringEvent *event) {
 -    auto iouring = get_instance();
@@ -2108,14 +2088,14 @@ index 63ca2f2..2e240ee 100644
 +int Iouring::open(const char *pathname, int flags, mode_t mode) {
 +    return swr_v1_uring_open_file(&host, pathname, flags, mode);
  }
-@@ -443,5 +173,3 @@ bool Iouring::cancel(IouringEvent *prev_event) {
+@@ -443,5 +170,3 @@ bool Iouring::cancel(IouringEvent *prev_event) {
  int Iouring::socket(int domain, int type, int protocol, int flags) {
 -    INIT_EVENT(IORING_OP_SOCKET);
 -    io_uring_prep_socket(&event.data, domain, type, protocol, flags);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_socket(&host, domain, type, protocol, flags);
  }
-@@ -449,6 +177,3 @@ int Iouring::socket(int domain, int type, int protocol, int flags) {
+@@ -449,6 +174,3 @@ int Iouring::socket(int domain, int type, int protocol, int flags) {
  int Iouring::connect(int fd, const struct sockaddr *addr, socklen_t len, double timeout) {
 -    INIT_EVENT(IORING_OP_CONNECT);
 -    io_uring_prep_connect(&event.data, fd, addr, len);
@@ -2123,7 +2103,7 @@ index 63ca2f2..2e240ee 100644
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_connect(&host, fd, addr, len, timeout);
  }
-@@ -456,9 +181,3 @@ int Iouring::connect(int fd, const struct sockaddr *addr, socklen_t len, double
+@@ -456,9 +178,3 @@ int Iouring::connect(int fd, const struct sockaddr *addr, socklen_t len, double
  int Iouring::bind(int fd, const struct sockaddr *addr, socklen_t len) {
 -#if 1
 -    return ::bind(fd, addr, len);
@@ -2134,7 +2114,7 @@ index 63ca2f2..2e240ee 100644
 -#endif
 +    return swr_v1_uring_bind(fd, addr, len);
  }
-@@ -466,7 +185,3 @@ int Iouring::bind(int fd, const struct sockaddr *addr, socklen_t len) {
+@@ -466,7 +182,3 @@ int Iouring::bind(int fd, const struct sockaddr *addr, socklen_t len) {
  int Iouring::listen(int fd, int backlog) {
 -#if 1
 -    return ::listen(fd, backlog);
@@ -2143,7 +2123,7 @@ index 63ca2f2..2e240ee 100644
 -#endif
 +    return swr_v1_uring_listen(fd, backlog);
  }
-@@ -474,16 +189,3 @@ int Iouring::listen(int fd, int backlog) {
+@@ -474,16 +186,3 @@ int Iouring::listen(int fd, int backlog) {
  int Iouring::sleep(double seconds) {
 -    IouringTimeout ts;
 -    DOUBLE_TO_TIMESPEC(seconds, &ts);
@@ -2161,7 +2141,7 @@ index 63ca2f2..2e240ee 100644
 -    return errno == ETIME ? SW_OK : SW_ERR;
 +    return swr_v1_uring_sleep(&host, seconds);
  }
-@@ -491,6 +193,3 @@ int Iouring::sleep(int tv_sec, int tv_nsec, int flags) {
+@@ -491,6 +190,3 @@ int Iouring::sleep(int tv_sec, int tv_nsec, int flags) {
  int Iouring::accept(int fd, struct sockaddr *addr, socklen_t *len, int flags, double timeout) {
 -    INIT_EVENT(IORING_OP_ACCEPT);
 -    io_uring_prep_accept(&event.data, fd, addr, len, flags);
@@ -2169,7 +2149,7 @@ index 63ca2f2..2e240ee 100644
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_accept(&host, fd, addr, len, flags, timeout);
  }
-@@ -498,6 +197,3 @@ int Iouring::accept(int fd, struct sockaddr *addr, socklen_t *len, int flags, do
+@@ -498,6 +194,3 @@ int Iouring::accept(int fd, struct sockaddr *addr, socklen_t *len, int flags, do
  ssize_t Iouring::recv(int fd, void *buf, size_t len, int flags, double timeout) {
 -    INIT_EVENT(IORING_OP_RECV);
 -    io_uring_prep_recv(&event.data, fd, buf, len, flags);
@@ -2177,7 +2157,7 @@ index 63ca2f2..2e240ee 100644
 -    return execute(&event);
 +    return swr_v1_uring_recv(&host, fd, buf, len, flags, timeout);
  }
-@@ -505,6 +201,3 @@ ssize_t Iouring::recv(int fd, void *buf, size_t len, int flags, double timeout)
+@@ -505,6 +198,3 @@ ssize_t Iouring::recv(int fd, void *buf, size_t len, int flags, double timeout)
  ssize_t Iouring::send(int fd, const void *buf, size_t len, int flags, double timeout) {
 -    INIT_EVENT(IORING_OP_SEND);
 -    io_uring_prep_send(&event.data, fd, buf, len, flags);
@@ -2185,7 +2165,7 @@ index 63ca2f2..2e240ee 100644
 -    return execute(&event);
 +    return swr_v1_uring_send(&host, fd, buf, len, flags, timeout);
  }
-@@ -512,6 +205,3 @@ ssize_t Iouring::send(int fd, const void *buf, size_t len, int flags, double tim
+@@ -512,6 +202,3 @@ ssize_t Iouring::send(int fd, const void *buf, size_t len, int flags, double tim
  ssize_t Iouring::recvmsg(int fd, struct msghdr *message, int flags, double timeout) {
 -    INIT_EVENT(IORING_OP_RECVMSG);
 -    io_uring_prep_recvmsg(&event.data, fd, message, flags);
@@ -2193,7 +2173,7 @@ index 63ca2f2..2e240ee 100644
 -    return execute(&event);
 +    return swr_v1_uring_recvmsg(&host, fd, message, flags, timeout);
  }
-@@ -519,6 +209,3 @@ ssize_t Iouring::recvmsg(int fd, struct msghdr *message, int flags, double timeo
+@@ -519,6 +206,3 @@ ssize_t Iouring::recvmsg(int fd, struct msghdr *message, int flags, double timeo
  ssize_t Iouring::sendmsg(int fd, const struct msghdr *message, int flags, double timeout) {
 -    INIT_EVENT(IORING_OP_SENDMSG);
 -    io_uring_prep_sendmsg(&event.data, fd, message, flags);
@@ -2201,7 +2181,7 @@ index 63ca2f2..2e240ee 100644
 -    return execute(&event);
 +    return swr_v1_uring_sendmsg(&host, fd, message, flags, timeout);
  }
-@@ -527,6 +214,3 @@ ssize_t Iouring::sendto(
+@@ -527,6 +211,3 @@ ssize_t Iouring::sendto(
      int fd, const void *buf, size_t n, int flags, const struct sockaddr *addr, socklen_t len, double timeout) {
 -    INIT_EVENT(IORING_OP_SENDTO);
 -    io_uring_prep_sendto(&event.data, fd, buf, n, flags, addr, len);
@@ -2209,7 +2189,7 @@ index 63ca2f2..2e240ee 100644
 -    return execute(&event);
 +    return swr_v1_uring_sendto(&host, fd, buf, n, flags, addr, len, timeout);
  }
-@@ -534,8 +218,3 @@ ssize_t Iouring::sendto(
+@@ -534,8 +215,3 @@ ssize_t Iouring::sendto(
  ssize_t Iouring::recvfrom(int fd, void *_buf, size_t _n, sockaddr *_addr, socklen_t *_socklen, double timeout) {
 -    auto rv = recv(fd, _buf, _n, MSG_PEEK, timeout);
 -    if (rv > 0) {
@@ -2219,7 +2199,7 @@ index 63ca2f2..2e240ee 100644
 -    }
 +    return swr_v1_uring_recvfrom(&host, fd, _buf, _n, _addr, _socklen, timeout);
  }
-@@ -543,6 +222,3 @@ ssize_t Iouring::recvfrom(int fd, void *_buf, size_t _n, sockaddr *_addr, sockle
+@@ -543,6 +219,3 @@ ssize_t Iouring::recvfrom(int fd, void *_buf, size_t _n, sockaddr *_addr, sockle
  ssize_t Iouring::readv(int fd, const struct iovec *iovec, int count, double timeout) {
 -    INIT_EVENT(IORING_OP_READV);
 -    io_uring_prep_readv(&event.data, fd, iovec, count, -1);
@@ -2227,7 +2207,7 @@ index 63ca2f2..2e240ee 100644
 -    return execute(&event);
 +    return swr_v1_uring_readv(&host, fd, iovec, count, timeout);
  }
-@@ -550,6 +226,3 @@ ssize_t Iouring::readv(int fd, const struct iovec *iovec, int count, double time
+@@ -550,6 +223,3 @@ ssize_t Iouring::readv(int fd, const struct iovec *iovec, int count, double time
  ssize_t Iouring::writev(int fd, const struct iovec *iovec, int count, double timeout) {
 -    INIT_EVENT(IORING_OP_WRITEV);
 -    io_uring_prep_writev(&event.data, fd, iovec, count, -1);
@@ -2235,7 +2215,7 @@ index 63ca2f2..2e240ee 100644
 -    return execute(&event);
 +    return swr_v1_uring_writev(&host, fd, iovec, count, timeout);
  }
-@@ -557,99 +230,3 @@ ssize_t Iouring::writev(int fd, const struct iovec *iovec, int count, double tim
+@@ -557,99 +227,3 @@ ssize_t Iouring::writev(int fd, const struct iovec *iovec, int count, double tim
  ssize_t Iouring::sendfile(int out_fd, int in_fd, off_t *offset, size_t size, double timeout) {
 -    if (size == 0) {
 -        return 0;
@@ -2336,21 +2316,21 @@ index 63ca2f2..2e240ee 100644
 -#endif
 +    return swr_v1_uring_sendfile(&host, out_fd, in_fd, offset, size, timeout, splice_pages);
  }
-@@ -657,5 +234,3 @@ ssize_t Iouring::sendfile(int out_fd, int in_fd, off_t *offset, size_t size, dou
+@@ -657,5 +231,3 @@ ssize_t Iouring::sendfile(int out_fd, int in_fd, off_t *offset, size_t size, dou
  int Iouring::shutdown(int fd, int how) {
 -    INIT_EVENT(IORING_OP_SHUTDOWN);
 -    io_uring_prep_shutdown(&event.data, fd, how);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_shutdown(&host, fd, how);
  }
-@@ -663,5 +238,3 @@ int Iouring::shutdown(int fd, int how) {
+@@ -663,5 +235,3 @@ int Iouring::shutdown(int fd, int how) {
  int Iouring::close(int fd) {
 -    INIT_EVENT(IORING_OP_CLOSE);
 -    io_uring_prep_close(&event.data, fd);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_close_fd(&host, fd);
  }
-@@ -669,6 +242,3 @@ int Iouring::close(int fd) {
+@@ -669,6 +239,3 @@ int Iouring::close(int fd) {
  ssize_t Iouring::read(int fd, void *buf, size_t size, double timeout) {
 -    INIT_EVENT(IORING_OP_READ);
 -    io_uring_prep_read(&event.data, fd, buf, size, -1);
@@ -2358,7 +2338,7 @@ index 63ca2f2..2e240ee 100644
 -    return execute(&event);
 +    return swr_v1_uring_read(&host, fd, buf, size, timeout);
  }
-@@ -676,6 +246,3 @@ ssize_t Iouring::read(int fd, void *buf, size_t size, double timeout) {
+@@ -676,6 +243,3 @@ ssize_t Iouring::read(int fd, void *buf, size_t size, double timeout) {
  ssize_t Iouring::write(int fd, const void *buf, size_t size, double timeout) {
 -    INIT_EVENT(IORING_OP_WRITE);
 -    io_uring_prep_write(&event.data, fd, buf, size, -1);
@@ -2366,56 +2346,56 @@ index 63ca2f2..2e240ee 100644
 -    return execute(&event);
 +    return swr_v1_uring_write(&host, fd, buf, size, timeout);
  }
-@@ -683,5 +250,3 @@ ssize_t Iouring::write(int fd, const void *buf, size_t size, double timeout) {
+@@ -683,5 +247,3 @@ ssize_t Iouring::write(int fd, const void *buf, size_t size, double timeout) {
  int Iouring::rename(const char *oldpath, const char *newpath) {
 -    INIT_EVENT(IORING_OP_RENAMEAT);
 -    io_uring_prep_rename(&event.data, oldpath, newpath);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_rename(&host, oldpath, newpath);
  }
-@@ -689,5 +254,3 @@ int Iouring::rename(const char *oldpath, const char *newpath) {
+@@ -689,5 +251,3 @@ int Iouring::rename(const char *oldpath, const char *newpath) {
  int Iouring::mkdir(const char *pathname, mode_t mode) {
 -    INIT_EVENT(IORING_OP_MKDIRAT);
 -    io_uring_prep_mkdir(&event.data, pathname, mode);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_mkdir(&host, pathname, mode);
  }
-@@ -695,5 +258,3 @@ int Iouring::mkdir(const char *pathname, mode_t mode) {
+@@ -695,5 +255,3 @@ int Iouring::mkdir(const char *pathname, mode_t mode) {
  int Iouring::unlink(const char *pathname) {
 -    INIT_EVENT(IORING_OP_UNLINK_FILE);
 -    io_uring_prep_unlink(&event.data, pathname, 0);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_unlink(&host, pathname);
  }
-@@ -701,5 +262,3 @@ int Iouring::unlink(const char *pathname) {
+@@ -701,5 +259,3 @@ int Iouring::unlink(const char *pathname) {
  int Iouring::rmdir(const char *pathname) {
 -    INIT_EVENT(IORING_OP_UNLINK_DIR);
 -    io_uring_prep_unlink(&event.data, pathname, AT_REMOVEDIR);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_rmdir(&host, pathname);
  }
-@@ -707,5 +266,3 @@ int Iouring::rmdir(const char *pathname) {
+@@ -707,5 +263,3 @@ int Iouring::rmdir(const char *pathname) {
  int Iouring::fsync(int fd) {
 -    INIT_EVENT(IORING_OP_FSYNC);
 -    io_uring_prep_fsync(&event.data, fd, 0);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_fsync(&host, fd);
  }
-@@ -713,5 +270,3 @@ int Iouring::fsync(int fd) {
+@@ -713,5 +267,3 @@ int Iouring::fsync(int fd) {
  int Iouring::fdatasync(int fd) {
 -    INIT_EVENT(IORING_OP_FDATASYNC);
 -    io_uring_prep_fsync(&event.data, fd, IORING_FSYNC_DATASYNC);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_fdatasync(&host, fd);
  }
-@@ -720,5 +275,3 @@ int Iouring::fdatasync(int fd) {
+@@ -720,5 +272,3 @@ int Iouring::fdatasync(int fd) {
  int Iouring::ftruncate(int fd, off_t length) {
 -    INIT_EVENT(IORING_OP_FTRUNCATE);
 -    io_uring_prep_ftruncate(&event.data, fd, length);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_ftruncate(&host, fd, length);
  }
-@@ -726,56 +279,5 @@ int Iouring::ftruncate(int fd, off_t length) {
+@@ -726,56 +276,5 @@ int Iouring::ftruncate(int fd, off_t length) {
  
 -static inline int siginfo_to_status(const siginfo_t *info) {
 -    int status = 0;
@@ -2473,7 +2453,7 @@ index 63ca2f2..2e240ee 100644
 -    return retval;
 +    return swr_v1_uring_fstat(&host, fd, statbuf);
  }
-@@ -783,12 +285,3 @@ int Iouring::fstat(int fd, struct stat *statbuf) {
+@@ -783,12 +282,3 @@ int Iouring::fstat(int fd, struct stat *statbuf) {
  int Iouring::stat(const char *path, struct stat *statbuf) {
 -    struct statx statxbuf;
 -    INIT_EVENT(IORING_OP_FSTAT);
@@ -2487,21 +2467,21 @@ index 63ca2f2..2e240ee 100644
 -    return retval;
 +    return swr_v1_uring_stat(&host, path, statbuf);
  }
-@@ -798,5 +291,3 @@ int Iouring::stat(const char *path, struct stat *statbuf) {
+@@ -798,5 +288,3 @@ int Iouring::stat(const char *path, struct stat *statbuf) {
  int Iouring::futex_wait(uint32_t *futex) {
 -    INIT_EVENT(IORING_OP_FUTEX_WAIT);
 -    io_uring_prep_futex_wait(&event.data, futex, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32, 0);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_futex_wait(&host, futex);
  }
-@@ -804,5 +295,3 @@ int Iouring::futex_wait(uint32_t *futex) {
+@@ -804,5 +292,3 @@ int Iouring::futex_wait(uint32_t *futex) {
  int Iouring::futex_wakeup(uint32_t *futex) {
 -    INIT_EVENT(IORING_OP_FUTEX_WAKE);
 -    io_uring_prep_futex_wake(&event.data, futex, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32, 0);
 -    return static_cast<int>(execute(&event));
 +    return swr_v1_uring_futex_wakeup(&host, futex);
  }
-@@ -815,20 +304,3 @@ pid_t Iouring::wait(int *stat_loc, double timeout) {
+@@ -815,20 +301,3 @@ pid_t Iouring::wait(int *stat_loc, double timeout) {
  pid_t Iouring::waitpid(pid_t _pid, int *stat_loc, int options, double timeout) {
 -    if (options & WNOHANG) {
 -        return ::waitpid(_pid, stat_loc, options);
@@ -2523,7 +2503,7 @@ index 63ca2f2..2e240ee 100644
 -    return rc;
 +    return swr_v1_uring_waitpid(&host, _pid, stat_loc, options, timeout);
  }
-@@ -842,17 +314,3 @@ int Iouring::poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+@@ -842,17 +311,3 @@ int Iouring::poll(struct pollfd *fds, nfds_t nfds, int timeout) {
      }
 -
 -    if (timeout == 0) {
@@ -2542,33 +2522,30 @@ index 63ca2f2..2e240ee 100644
 -    return rc;
 +    return swr_v1_uring_poll(&host, fds, timeout);
  }
-@@ -861,3 +319,3 @@ int Iouring::callback(Reactor *reactor, Event *event) {
+@@ -861,3 +316,3 @@ int Iouring::callback(Reactor *reactor, Event *event) {
      auto *iouring = static_cast<Iouring *>(event->socket->object);
 -    return iouring->wakeup() ? SW_OK : SW_ERR;
 +    return swr_v1_uring_wakeup(iouring->engine) ? SW_OK : SW_ERR;
  }
 diff --git a/src/coroutine/socket.cc b/src/coroutine/socket.cc
-index 5a16f4c..2862827 100644
+index 5a16f4c..c294907 100644
 --- a/src/coroutine/socket.cc
 +++ b/src/coroutine/socket.cc
-@@ -20,2 +20,7 @@
+@@ -20,2 +20,4 @@
  #include "swoole_string.h"
-+#ifndef SWOOLE_RS_HOOKS
-+#error "Hooks overlay requires --enable-swoole-rs-hooks"
-+#endif
 +#include "swoole_rs_hooks.h"
 +
  #include "swoole_util.h"
-@@ -25,2 +30,4 @@
+@@ -25,2 +27,4 @@
  #include "swoole_coroutine_socket.h"
 +
 +#include <exception>
  #include "swoole_coroutine_system.h"
-@@ -29,2 +36,3 @@ namespace swoole {
+@@ -29,2 +33,3 @@ namespace swoole {
  namespace coroutine {
 +static_assert(SW_EVENT_READ == 1 << 9 && SW_EVENT_WRITE == 1 << 10, "swr_v1_hook_socket_* event bits");
  TimeoutType Socket::timeout_type_list[4] = {SW_TIMEOUT_DNS, SW_TIMEOUT_CONNECT, SW_TIMEOUT_READ, SW_TIMEOUT_WRITE};
-@@ -36,6 +44,6 @@ void Socket::timer_callback(Timer *timer, TimerNode *tnode) {
+@@ -36,6 +41,6 @@ void Socket::timer_callback(Timer *timer, TimerNode *tnode) {
          socket->read_timer = nullptr;
 -        socket->read_co->resume();
 +        socket->event_co(SW_EVENT_READ)->resume();
@@ -2577,7 +2554,7 @@ index 5a16f4c..2862827 100644
 -        socket->write_co->resume();
 +        socket->event_co(SW_EVENT_WRITE)->resume();
      } else {
-@@ -46,16 +54,3 @@ void Socket::timer_callback(Timer *timer, TimerNode *tnode) {
+@@ -46,16 +51,3 @@ void Socket::timer_callback(Timer *timer, TimerNode *tnode) {
  int Socket::readable_event_callback(Reactor *reactor, Event *event) {
 -    auto *socket = static_cast<Socket *>(event->socket->object);
 -    socket->set_err(0);
@@ -2595,7 +2572,7 @@ index 5a16f4c..2862827 100644
 -    return SW_OK;
 +    return ready_event_callback(event, SW_EVENT_READ);
  }
-@@ -63,15 +58,13 @@ int Socket::readable_event_callback(Reactor *reactor, Event *event) {
+@@ -63,15 +55,13 @@ int Socket::readable_event_callback(Reactor *reactor, Event *event) {
  int Socket::writable_event_callback(Reactor *reactor, Event *event) {
 +    return ready_event_callback(event, SW_EVENT_WRITE);
 +}
@@ -2619,7 +2596,7 @@ index 5a16f4c..2862827 100644
      }
 -
      return SW_OK;
-@@ -81,10 +74,10 @@ int Socket::error_event_callback(Reactor *reactor, Event *event) {
+@@ -81,10 +71,10 @@ int Socket::error_event_callback(Reactor *reactor, Event *event) {
      auto *socket = static_cast<Socket *>(event->socket->object);
 -    if (socket->write_co) {
 +    if (socket->event_co(SW_EVENT_WRITE)) {
@@ -2634,7 +2611,7 @@ index 5a16f4c..2862827 100644
 -        socket->read_co->resume();
 +        socket->event_co(SW_EVENT_READ)->resume();
      }
-@@ -93,37 +86,2 @@ int Socket::error_event_callback(Reactor *reactor, Event *event) {
+@@ -93,37 +83,2 @@ int Socket::error_event_callback(Reactor *reactor, Event *event) {
  
 -bool Socket::add_event(const EventType event) {
 -    bool ret = true;
@@ -2672,14 +2649,14 @@ index 5a16f4c..2862827 100644
 -#endif
 -
  /**
-@@ -135,4 +93,4 @@ static const char *get_wait_event_name(Socket *socket, EventType event) {
+@@ -135,4 +90,4 @@ static const char *get_wait_event_name(Socket *socket, EventType event) {
   */
 -bool Socket::wait_event(const EventType event, const void **_buf, size_t _n) {
 -    EventType added_event = event;
 +bool Socket::wait_event(
 +    const EventType event, swr_v1_hook_barrier barrier, void *barrier_state, const void **_buf, size_t _n) {
      Coroutine *co = Coroutine::get_current_safe();
-@@ -141,76 +99,54 @@ bool Socket::wait_event(const EventType event, const void **_buf, size_t _n) {
+@@ -141,76 +96,54 @@ bool Socket::wait_event(const EventType event, const void **_buf, size_t _n) {
      }
 -    if (sw_unlikely(socket->close_wait)) {
 -        set_err(SW_ERROR_CO_SOCKET_CLOSE_WAIT);
@@ -2807,12 +2784,12 @@ index 5a16f4c..2862827 100644
 +        },
 +    };
  }
-@@ -395,3 +331,3 @@ Socket::Socket(network::Socket *sock, const Socket *server_sock) {
+@@ -395,3 +328,3 @@ Socket::Socket(network::Socket *sock, const Socket *server_sock) {
      protocol = server_sock->protocol;
 -    connected = true;
 +    swr_v1_hook_socket_connect(state_);
      ssl_context = server_sock->ssl_context;
-@@ -458,8 +394,6 @@ void Socket::set_timeout(double timeout, int _type) const {
+@@ -458,8 +391,6 @@ void Socket::set_timeout(double timeout, int _type) const {
  const char *Socket::get_event_str(const EventType event) const {
 -    if (event == SW_EVENT_READ) {
 -        return "reading";
@@ -2825,7 +2802,7 @@ index 5a16f4c..2862827 100644
 +    case 1: return "writing";
 +    default: return "reading or writing";
      }
-@@ -504,8 +438,10 @@ bool Socket::connect(const sockaddr *addr, socklen_t addrlen) {
+@@ -504,8 +435,10 @@ bool Socket::connect(const sockaddr *addr, socklen_t addrlen) {
      }
 -    int retval;
 +    int retval, action;
@@ -2840,18 +2817,18 @@ index 5a16f4c..2862827 100644
 +    if (action != 0) {
 +        if (action < 0) {
              set_err(errno);
-@@ -520,3 +456,4 @@ bool Socket::connect(const sockaddr *addr, socklen_t addrlen) {
+@@ -520,3 +453,4 @@ bool Socket::connect(const sockaddr *addr, socklen_t addrlen) {
              } else {
 -                if (socket->get_option(SOL_SOCKET, SO_ERROR, &errCode) < 0 || errCode != 0) {
 +                int option_result = socket->get_option(SOL_SOCKET, SO_ERROR, &errCode);
 +                if (swr_v1_hook_connect_option(option_result, option_result < 0 ? 0 : errCode)) {
                      set_err(errCode);
-@@ -527,3 +464,3 @@ bool Socket::connect(const sockaddr *addr, socklen_t addrlen) {
+@@ -527,3 +461,3 @@ bool Socket::connect(const sockaddr *addr, socklen_t addrlen) {
      }
 -    connected = true;
 +    swr_v1_hook_socket_connect(state_);
      socket->get_name();
-@@ -593,5 +530,5 @@ bool Socket::connect(const std::string &_host, int _port, int flags) {
+@@ -593,5 +527,5 @@ bool Socket::connect(const std::string &_host, int _port, int flags) {
          /* locked like wait_event */
 -        read_co = write_co = Coroutine::get_current_safe();
 +        bind_co(SW_EVENT_RDWR, Coroutine::get_current_safe());
@@ -2859,7 +2836,7 @@ index 5a16f4c..2862827 100644
 -            read_co = write_co = nullptr;
 +            bind_co(SW_EVENT_RDWR, nullptr);
          };
-@@ -616,16 +553,23 @@ bool Socket::connect(const std::string &_host, int _port, int flags) {
+@@ -616,16 +550,23 @@ bool Socket::connect(const std::string &_host, int _port, int flags) {
      network::Address server_addr;
 -
 -    for (int i = 0; i < 2; i++) {
@@ -2897,7 +2874,7 @@ index 5a16f4c..2862827 100644
 +        set_err(swoole_get_last_error(), swoole_strerror(swoole_get_last_error()));
 +        return false;
      }
-@@ -661,9 +605,6 @@ bool Socket::check_liveness() {
+@@ -661,9 +602,6 @@ bool Socket::check_liveness() {
      }
 -    if (!socket->check_liveness()) {
 -        const int error = errno;
@@ -2911,7 +2888,7 @@ index 5a16f4c..2862827 100644
 +    set_err(swr_v1_hook_liveness_error(alive, error, ECONNRESET));
 +    return alive;
  }
-@@ -692,13 +633,80 @@ bool Socket::poll(EventType _type, double timeout) {
+@@ -692,13 +630,80 @@ bool Socket::poll(EventType _type, double timeout) {
  
 -ssize_t Socket::recv(void *_buf, size_t _n) {
 -    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
@@ -3001,7 +2978,7 @@ index 5a16f4c..2862827 100644
 +ssize_t Socket::recv(void *_buf, size_t _n) {
 +    return transfer(SW_EVENT_READ, _buf, _n, 0, [this](char *at, size_t len) { return socket->recv(at, len, 0); });
  }
-@@ -706,13 +714,3 @@ ssize_t Socket::recv(void *_buf, size_t _n) {
+@@ -706,13 +711,3 @@ ssize_t Socket::recv(void *_buf, size_t _n) {
  ssize_t Socket::send(const void *_buf, size_t _n) {
 -    if (sw_unlikely(!is_available(SW_EVENT_WRITE))) {
 -        return -1;
@@ -3016,7 +2993,7 @@ index 5a16f4c..2862827 100644
 -    return retval;
 +    return transfer(SW_EVENT_WRITE, _buf, _n, 0, [this](char *at, size_t len) { return socket->send(at, len, 0); });
  }
-@@ -720,12 +718,3 @@ ssize_t Socket::send(const void *_buf, size_t _n) {
+@@ -720,12 +715,3 @@ ssize_t Socket::send(const void *_buf, size_t _n) {
  ssize_t Socket::read(void *_buf, size_t _n) {
 -    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
 -        return -1;
@@ -3030,7 +3007,7 @@ index 5a16f4c..2862827 100644
 -    return retval;
 +    return transfer(SW_EVENT_READ, _buf, _n, 0, [this](char *at, size_t len) { return socket->read(at, len); });
  }
-@@ -733,25 +722,7 @@ ssize_t Socket::read(void *_buf, size_t _n) {
+@@ -733,25 +719,7 @@ ssize_t Socket::read(void *_buf, size_t _n) {
  ssize_t Socket::recv_line(void *_buf, size_t maxlen) {
 -    size_t n = 0;
 -    ssize_t m = 0;
@@ -3061,7 +3038,7 @@ index 5a16f4c..2862827 100644
 +        static_cast<char *>(_buf),
 +        maxlen);
  }
-@@ -762,32 +733,10 @@ ssize_t Socket::recv_with_buffer(void *_buf, size_t _n) {
+@@ -762,32 +730,10 @@ ssize_t Socket::recv_with_buffer(void *_buf, size_t _n) {
      }
 -
      String *buffer = get_read_buffer();
@@ -3101,7 +3078,7 @@ index 5a16f4c..2862827 100644
 +        static_cast<char *>(_buf),
 +        _n);
  }
-@@ -795,13 +744,3 @@ ssize_t Socket::recv_with_buffer(void *_buf, size_t _n) {
+@@ -795,13 +741,3 @@ ssize_t Socket::recv_with_buffer(void *_buf, size_t _n) {
  ssize_t Socket::write(const void *_buf, size_t _n) {
 -    if (sw_unlikely(!is_available(SW_EVENT_WRITE))) {
 -        return -1;
@@ -3116,7 +3093,7 @@ index 5a16f4c..2862827 100644
 -    return retval;
 +    return transfer(SW_EVENT_WRITE, _buf, _n, 0, [this](char *at, size_t len) { return socket->write(at, len); });
  }
-@@ -809,13 +748,3 @@ ssize_t Socket::write(const void *_buf, size_t _n) {
+@@ -809,13 +745,3 @@ ssize_t Socket::write(const void *_buf, size_t _n) {
  ssize_t Socket::readv(network::IOVector *io_vector) {
 -    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
 -        return -1;
@@ -3131,7 +3108,7 @@ index 5a16f4c..2862827 100644
 -    return retval;
 +    return transfer(SW_EVENT_READ, nullptr, 0, 0, [this, io_vector](char *, size_t) { return socket->readv(io_vector); });
  }
-@@ -826,44 +755,4 @@ ssize_t Socket::readv_all(network::IOVector *io_vector) {
+@@ -826,44 +752,4 @@ ssize_t Socket::readv_all(network::IOVector *io_vector) {
      }
 -    ssize_t total_bytes = 0;
      TimerController timer(&read_timer, socket->read_timeout, this, timer_callback);
@@ -3177,7 +3154,7 @@ index 5a16f4c..2862827 100644
 -    return total_bytes;
 +    return vector_all(io_vector, &timer, false);
  }
-@@ -871,13 +760,3 @@ ssize_t Socket::readv_all(network::IOVector *io_vector) {
+@@ -871,13 +757,3 @@ ssize_t Socket::readv_all(network::IOVector *io_vector) {
  ssize_t Socket::writev(network::IOVector *io_vector) {
 -    if (sw_unlikely(!is_available(SW_EVENT_WRITE))) {
 -        return -1;
@@ -3192,7 +3169,7 @@ index 5a16f4c..2862827 100644
 -    return retval;
 +    return transfer(SW_EVENT_WRITE, nullptr, 0, 0, [this, io_vector](char *, size_t) { return socket->writev(io_vector); });
  }
-@@ -888,44 +767,47 @@ ssize_t Socket::writev_all(network::IOVector *io_vector) {
+@@ -888,44 +764,47 @@ ssize_t Socket::writev_all(network::IOVector *io_vector) {
      }
 -    ssize_t total_bytes = 0;
      TimerController timer(&write_timer, socket->write_timeout, this, timer_callback);
@@ -3279,7 +3256,7 @@ index 5a16f4c..2862827 100644
 -    return total_bytes;
 +    return swr_v1_hook_vector_all(&ops);
  }
-@@ -933,35 +815,3 @@ ssize_t Socket::writev_all(network::IOVector *io_vector) {
+@@ -933,35 +812,3 @@ ssize_t Socket::writev_all(network::IOVector *io_vector) {
  ssize_t Socket::recv_all(void *_buf, size_t _n) {
 -    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
 -        return -1;
@@ -3316,7 +3293,7 @@ index 5a16f4c..2862827 100644
 -    return retval < 0 && total_bytes == 0 ? -1 : total_bytes;
 +    return transfer(SW_EVENT_READ, _buf, _n, TRANSFER_ALL, [this](char *at, size_t len) { return socket->recv(at, len, 0); });
  }
-@@ -969,35 +819,3 @@ ssize_t Socket::recv_all(void *_buf, size_t _n) {
+@@ -969,35 +816,3 @@ ssize_t Socket::recv_all(void *_buf, size_t _n) {
  ssize_t Socket::send_all(const void *_buf, size_t _n) {
 -    if (sw_unlikely(!is_available(SW_EVENT_WRITE))) {
 -        return -1;
@@ -3353,7 +3330,7 @@ index 5a16f4c..2862827 100644
 -    return retval < 0 && total_bytes == 0 ? -1 : total_bytes;
 +    return transfer(SW_EVENT_WRITE, _buf, _n, TRANSFER_ALL, [this](char *at, size_t len) { return socket->send(at, len, 0); });
  }
-@@ -1005,12 +823,3 @@ ssize_t Socket::send_all(const void *_buf, size_t _n) {
+@@ -1005,12 +820,3 @@ ssize_t Socket::send_all(const void *_buf, size_t _n) {
  ssize_t Socket::recvmsg(struct msghdr *msg, int flags) {
 -    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
 -        return -1;
@@ -3367,7 +3344,7 @@ index 5a16f4c..2862827 100644
 -    return retval;
 +    return transfer(SW_EVENT_READ, nullptr, 0, 0, [this, msg, flags](char *, size_t) { return ::recvmsg(sock_fd, msg, flags); });
  }
-@@ -1021,20 +830,43 @@ ssize_t Socket::recvmsg(struct msghdr *msg, int flags) {
+@@ -1021,20 +827,43 @@ ssize_t Socket::recvmsg(struct msghdr *msg, int flags) {
  ssize_t Socket::sendmsg(const struct msghdr *msg, int flags) {
 -    if (sw_unlikely(!is_available(SW_EVENT_WRITE))) {
 -        return -1;
@@ -3426,7 +3403,7 @@ index 5a16f4c..2862827 100644
 +    auto ops = setup.ops();
 +    return swr_v1_hook_bind(&ops, false);
  }
-@@ -1042,23 +874,12 @@ bool Socket::bind(const sockaddr *sa, socklen_t len) {
+@@ -1042,23 +871,12 @@ bool Socket::bind(const sockaddr *sa, socklen_t len) {
  bool Socket::bind(const std::string &address, const int port) {
 -    if (sw_unlikely(!is_available(SW_EVENT_NULL))) {
 -        return false;
@@ -3460,7 +3437,7 @@ index 5a16f4c..2862827 100644
 +    auto ops = setup.ops();
 +    return swr_v1_hook_bind(&ops, true);
  }
-@@ -1066,8 +887,6 @@ bool Socket::bind(const std::string &address, const int port) {
+@@ -1066,8 +884,6 @@ bool Socket::bind(const std::string &address, const int port) {
  bool Socket::listen(int backlog) {
 -    if (sw_unlikely(!is_available(SW_EVENT_NULL))) {
 -        return false;
@@ -3473,7 +3450,7 @@ index 5a16f4c..2862827 100644
 +    auto ops = setup.ops();
 +    if (!swr_v1_hook_listen(&ops, backlog, &this->backlog)) {
          return false;
-@@ -1085,12 +904,10 @@ Socket *Socket::accept(double timeout) {
+@@ -1085,12 +901,10 @@ Socket *Socket::accept(double timeout) {
      }
 -    network::Socket *conn = socket->accept();
 -    if (conn == nullptr && errno == EAGAIN) {
@@ -3493,7 +3470,7 @@ index 5a16f4c..2862827 100644
 +    auto ops = setup.ops();
 +    if (!swr_v1_hook_accept(&ops)) {
          return nullptr;
-@@ -1256,20 +1073,32 @@ bool Socket::sendfile(const char *filename, off_t offset, size_t length) {
+@@ -1256,20 +1070,32 @@ bool Socket::sendfile(const char *filename, off_t offset, size_t length) {
  
 +    // The send loop is Rust's (crates/hooks/src/sendfile.rs); these are its effects.
      TimerController timer(&write_timer, socket->write_timeout, this, timer_callback);
@@ -3542,11 +3519,11 @@ index 5a16f4c..2862827 100644
      }
 -    return true;
  }
-@@ -1281,3 +1110,2 @@ ssize_t Socket::sendto(const std::string &host, int port, const void *_buf, size
+@@ -1281,3 +1107,2 @@ ssize_t Socket::sendto(const std::string &host, int port, const void *_buf, size
  
 -    ssize_t retval = 0;
      network::Address addr;
-@@ -1290,26 +1118,32 @@ ssize_t Socket::sendto(const std::string &host, int port, const void *_buf, size
+@@ -1290,26 +1115,32 @@ ssize_t Socket::sendto(const std::string &host, int port, const void *_buf, size
      auto ip_addr = host;
 -
 -    SW_LOOP_N(2) {
@@ -3601,7 +3578,7 @@ index 5a16f4c..2862827 100644
 +        return result;
 +    });
  }
-@@ -1329,138 +1163,7 @@ ssize_t Socket::recvfrom(void *_buf, size_t _n) {
+@@ -1329,138 +1160,7 @@ ssize_t Socket::recvfrom(void *_buf, size_t _n) {
  ssize_t Socket::recvfrom(void *_buf, size_t _n, sockaddr *_addr, socklen_t *_socklen) {
 -    if (sw_unlikely(!is_available(SW_EVENT_READ))) {
 -        return -1;
@@ -3745,7 +3722,7 @@ index 5a16f4c..2862827 100644
 +        return result;
 +    });
  }
-@@ -1490,24 +1193,78 @@ ssize_t Socket::recv_packet(double timeout) {
+@@ -1490,24 +1190,78 @@ ssize_t Socket::recv_packet(double timeout) {
      get_read_buffer();
 -
 -    // unprocessed data
@@ -3845,7 +3822,7 @@ index 5a16f4c..2862827 100644
 +    ssize_t recv_bytes = swr_v1_hook_recv_packet(&ops);
 +    context.store();
      return recv_bytes;
-@@ -1517,33 +1274,12 @@ bool Socket::shutdown(int _how) {
+@@ -1517,33 +1271,12 @@ bool Socket::shutdown(int _how) {
      set_err(0);
 -    int error = 0;
 -    if (!is_connected() || (_how == SHUT_RD && shutdown_read) || (_how == SHUT_WR && shutdown_write)) {
@@ -3889,7 +3866,7 @@ index 5a16f4c..2862827 100644
 +    if (error == 0) {
 +        return true;
      }
-@@ -1557,18 +1293,36 @@ void Socket::ssl_close() const {
+@@ -1557,18 +1290,36 @@ void Socket::ssl_close() const {
  
 +// Rust decides the cancel and close; these are the socket's effects.
 +swr_v1_hook_socket_ops Socket::lifecycle_ops() {
@@ -3941,7 +3918,7 @@ index 5a16f4c..2862827 100644
 +    const swr_v1_hook_socket_ops ops = lifecycle_ops();
 +    return swr_v1_hook_cancel(&ops, event);
  }
-@@ -1583,24 +1337,4 @@ bool Socket::cancel(const EventType event) {
+@@ -1583,24 +1334,4 @@ bool Socket::cancel(const EventType event) {
  bool Socket::close() {
 -    if (is_closed()) {
 -        set_err(EBADF);
@@ -3968,11 +3945,11 @@ index 5a16f4c..2862827 100644
 +    const swr_v1_hook_socket_ops ops = lifecycle_ops();
 +    return swr_v1_hook_close(&ops);
  }
-@@ -1625,2 +1359,3 @@ Socket::~Socket() {
+@@ -1625,2 +1356,3 @@ Socket::~Socket() {
      delete write_buffer;
 +    swr_v1_hook_socket_state_free(state_);
      if (socket == nullptr) {
-@@ -1636,8 +1371,11 @@ Socket::~Socket() {
+@@ -1636,8 +1368,11 @@ Socket::~Socket() {
  bool Socket::TimerController::start() {
 -    if (timeout != 0 && !*timer_pp) {
 +    auto actions = swr_v1_hook_timer(0, enabled, timeout != 0 && *timer_pp != nullptr, false, timeout);
@@ -3989,7 +3966,7 @@ index 5a16f4c..2862827 100644
 +    }
 +    if (actions & SWR_HOOK_TIMER_SENTINEL) {
          *timer_pp = reinterpret_cast<TimerNode *>(-1);
-@@ -1648,6 +1386,9 @@ bool Socket::TimerController::start() {
+@@ -1648,6 +1383,9 @@ bool Socket::TimerController::start() {
  Socket::TimerController::~TimerController() {
 -    if (enabled && *timer_pp) {
 -        if (*timer_pp != reinterpret_cast<TimerNode *>(-1)) {
@@ -4003,7 +3980,7 @@ index 5a16f4c..2862827 100644
 +    }
 +    if (actions & SWR_HOOK_TIMER_CLEAR) {
          *timer_pp = nullptr;
-@@ -1686,13 +1427,17 @@ bool Socket::TimeoutController::has_timedout(TimeoutType _type) {
+@@ -1686,13 +1424,17 @@ bool Socket::TimeoutController::has_timedout(TimeoutType _type) {
      SW_ASSERT_1BYTE(_type);
 -    if (timeout > 0) {
 -        if (sw_unlikely(startup_time == 0)) {
@@ -4032,19 +4009,16 @@ index 5a16f4c..2862827 100644
 +        break;
      }
 diff --git a/src/coroutine/system.cc b/src/coroutine/system.cc
-index e6ef9c2..32545c3 100644
+index e6ef9c2..2bbe2d3 100644
 --- a/src/coroutine/system.cc
 +++ b/src/coroutine/system.cc
-@@ -17,3 +17,7 @@
+@@ -17,3 +17,4 @@
  #include "swoole_coroutine_system.h"
 -#include "swoole_lru_cache.h"
-+#ifndef SWOOLE_RS_HOOKS
-+#error "Hooks overlay requires --enable-swoole-rs-hooks"
-+#endif
 +#include "swoole_rs_hooks.h"
 +
  #include "swoole_signal.h"
-@@ -25,18 +29,4 @@ namespace coroutine {
+@@ -25,18 +26,4 @@ namespace coroutine {
  
 -static struct {
 -    size_t capacity;
@@ -4064,7 +4038,7 @@ index e6ef9c2..32545c3 100644
 -    dns_cache.expire = expire;
 +    swr_v1_hook_dns_cache_expire(expire);
  }
-@@ -44,6 +34,3 @@ void System::set_dns_cache_expire(time_t expire) {
+@@ -44,6 +31,3 @@ void System::set_dns_cache_expire(time_t expire) {
  void System::set_dns_cache_capacity(size_t capacity) {
 -    dns_cache.capacity = capacity;
 -    clear_dns_cache();
@@ -4072,7 +4046,7 @@ index e6ef9c2..32545c3 100644
 -    dns_cache.data = nullptr;
 +    swr_v1_hook_dns_cache_capacity(capacity);
  }
-@@ -51,7 +38,3 @@ void System::set_dns_cache_capacity(size_t capacity) {
+@@ -51,7 +35,3 @@ void System::set_dns_cache_capacity(size_t capacity) {
  void System::clear_dns_cache() {
 -    if (dns_cache.data) {
 -        dns_cache.data->clear();
@@ -4081,7 +4055,7 @@ index e6ef9c2..32545c3 100644
 -    dns_cache.hit_count = 0;
 +    swr_v1_hook_dns_cache_clear();
  }
-@@ -59,7 +42,3 @@ void System::clear_dns_cache() {
+@@ -59,7 +39,3 @@ void System::clear_dns_cache() {
  float System::get_dns_cache_hit_ratio() {
 -    auto total = dns_cache.hit_count + dns_cache.miss_count;
 -    if (total == 0) {
@@ -4090,21 +4064,21 @@ index e6ef9c2..32545c3 100644
 -    return (float) dns_cache.hit_count / (float) total;
 +    return swr_v1_hook_dns_cache_hit_ratio();
  }
-@@ -71,5 +50,3 @@ int System::sleep(double sec) {
+@@ -71,5 +47,3 @@ int System::sleep(double sec) {
      Coroutine *co = Coroutine::get_current_safe();
 -    if (sec < SW_TIMER_MIN_SEC) {
 -        sec = SW_TIMER_MIN_SEC;
 -    }
 +    sec = swr_v1_hook_sleep_timeout(sec, SW_TIMER_MIN_SEC);
      co->yield_ex(sec);
-@@ -140,5 +117,3 @@ std::string gethostbyname_impl_with_async(const std::string &hostname, int domai
+@@ -140,5 +114,3 @@ std::string gethostbyname_impl_with_async(const std::string &hostname, int domai
      if (ev.retval == -1) {
 -        if (ev.error == SW_ERROR_AIO_TIMEOUT) {
 -            ev.error = SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT;
 -        }
 +        ev.error = swr_v1_hook_dns_error(ev.error, SW_ERROR_AIO_TIMEOUT, SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT);
          swoole_set_last_error(ev.error);
-@@ -150,25 +125,10 @@ std::string gethostbyname_impl_with_async(const std::string &hostname, int domai
+@@ -150,25 +122,10 @@ std::string gethostbyname_impl_with_async(const std::string &hostname, int domai
  
 -std::string System::gethostbyname(const std::string &hostname, int domain, double timeout) {
 -    if (dns_cache.data == nullptr && dns_cache.capacity != 0) {
@@ -4136,7 +4110,7 @@ index e6ef9c2..32545c3 100644
 +    if (swr_v1_hook_dns_cache_get(domain, hostname.data(), hostname.size(), &result, dns_assign)) {
 +        return result;
      }
-@@ -188,6 +148,3 @@ std::string System::gethostbyname(const std::string &hostname, int domain, doubl
+@@ -188,6 +145,3 @@ std::string System::gethostbyname(const std::string &hostname, int domain, doubl
  
 -    if (dns_cache.data && !result.empty()) {
 -        dns_cache.data->set(cache_key, std::make_shared<std::string>(result), dns_cache.expire);
@@ -4144,14 +4118,14 @@ index e6ef9c2..32545c3 100644
 -
 +    swr_v1_hook_dns_cache_set(domain, hostname.data(), hostname.size(), result.data(), result.size());
      return result;
-@@ -209,5 +166,3 @@ std::vector<std::string> System::getaddrinfo(
+@@ -209,5 +163,3 @@ std::vector<std::string> System::getaddrinfo(
      if (ev.retval == -1 || req->error != 0) {
 -        if (ev.error == SW_ERROR_AIO_TIMEOUT) {
 -            ev.error = SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT;
 -        }
 +        ev.error = swr_v1_hook_dns_error(ev.error, SW_ERROR_AIO_TIMEOUT, SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT);
          swoole_set_last_error(ev.error);
-@@ -220,58 +175,32 @@ std::vector<std::string> System::getaddrinfo(
+@@ -220,58 +172,32 @@ std::vector<std::string> System::getaddrinfo(
  
 -struct SignalListener {
 -    Coroutine *co;
@@ -4231,7 +4205,7 @@ index e6ef9c2..32545c3 100644
 +        return;
 +    }
      if (!sw_reactor()->isset_exit_condition(Reactor::EXIT_CONDITION_CO_SIGNAL_LISTENER)) {
-@@ -281,85 +210,67 @@ int System::wait_signal(const std::vector<int> &signals, double timeout) {
+@@ -281,85 +207,67 @@ int System::wait_signal(const std::vector<int> &signals, double timeout) {
      }
 -
      SwooleG.signal_async_listener_num++;
@@ -4347,12 +4321,12 @@ index e6ef9c2..32545c3 100644
 -    }
 +static void *poll_timer_add(double timeout, void *task) {
 +    return swoole_timer_add(timeout, false, poll_timer_expired, task);
-+}
-+
-+static void poll_timer_del(void *timer) {
-+    swoole_timer_del(static_cast<TimerNode *>(timer));
  }
  
++static void poll_timer_del(void *timer) {
++    swoole_timer_del(static_cast<TimerNode *>(timer));
++}
++
 +static void poll_defer(void *task) {
 +    sw_reactor()->defer(swr_v1_hook_poll_completed, task);
 +}
@@ -4364,17 +4338,17 @@ index e6ef9c2..32545c3 100644
 -    socket_poll_trigger_event(reactor, (CoroPollTask *) event->socket->object, event->fd, SW_EVENT_READ);
 +    swr_v1_hook_poll_ready(event->socket->object, event->fd, SW_EVENT_READ);
      return SW_OK;
-@@ -368,3 +279,3 @@ static int socket_poll_read_callback(Reactor *reactor, Event *event) {
+@@ -368,3 +276,3 @@ static int socket_poll_read_callback(Reactor *reactor, Event *event) {
  static int socket_poll_write_callback(Reactor *reactor, Event *event) {
 -    socket_poll_trigger_event(reactor, (CoroPollTask *) event->socket->object, event->fd, SW_EVENT_WRITE);
 +    swr_v1_hook_poll_ready(event->socket->object, event->fd, SW_EVENT_WRITE);
      return SW_OK;
-@@ -373,3 +284,3 @@ static int socket_poll_write_callback(Reactor *reactor, Event *event) {
+@@ -373,3 +281,3 @@ static int socket_poll_write_callback(Reactor *reactor, Event *event) {
  static int socket_poll_error_callback(Reactor *reactor, Event *event) {
 -    socket_poll_trigger_event(reactor, (CoroPollTask *) event->socket->object, event->fd, SW_EVENT_ERROR);
 +    swr_v1_hook_poll_ready(event->socket->object, event->fd, SW_EVENT_ERROR);
      return SW_OK;
-@@ -378,55 +289,12 @@ static int socket_poll_error_callback(Reactor *reactor, Event *event) {
+@@ -378,55 +286,12 @@ static int socket_poll_error_callback(Reactor *reactor, Event *event) {
  bool System::socket_poll(std::unordered_map<int, PollSocket> &fds, double timeout) {
 -    if (timeout == 0) {
 -        auto *event_list = static_cast<struct pollfd *>(sw_calloc(fds.size(), sizeof(struct pollfd)));
@@ -4417,12 +4391,12 @@ index e6ef9c2..32545c3 100644
 -        }
 -        fd.second.socket->object = &task;
 -        tasked_num++;
-+        list.push_back({fd.first, fd.second.events, fd.second.revents});
-     }
+-    }
 -
 -    if (sw_unlikely(tasked_num == 0)) {
 -        return false;
--    }
++        list.push_back({fd.first, fd.second.events, fd.second.revents});
+     }
 -
 -    if (timeout > 0) {
 -        task.timer = swoole_timer_add(timeout, false, socket_poll_timeout, &task);
@@ -4437,7 +4411,7 @@ index e6ef9c2..32545c3 100644
 -    return task.success;
 +    return retval;
  }
-@@ -462,6 +330,7 @@ struct EventWaiter {
+@@ -462,6 +327,7 @@ struct EventWaiter {
  static inline void event_waiter_callback(Reactor *reactor, EventWaiter *waiter, EventType event) {
 -    if (waiter->revents == 0) {
 +    auto plan = swr_v1_hook_event_waiter(waiter->revents, event);
@@ -4447,7 +4421,7 @@ index e6ef9c2..32545c3 100644
 -    waiter->revents |= event;
 +    waiter->revents = plan.revents;
  }
-@@ -486,45 +355,17 @@ static int event_waiter_error_callback(Reactor *reactor, Event *event) {
+@@ -486,45 +352,17 @@ static int event_waiter_error_callback(Reactor *reactor, Event *event) {
   */
 -int System::wait_event(int fd, int events, double timeout) {
 -    events &= SW_EVENT_READ | SW_EVENT_WRITE;
@@ -4505,27 +4479,27 @@ index e6ef9c2..32545c3 100644
 +    }
 +    return waited.result;
  }
-@@ -574,3 +415,3 @@ void System::init_reactor(Reactor *reactor) {
+@@ -574,3 +412,3 @@ void System::init_reactor(Reactor *reactor) {
  static void async_task_completed(AsyncEvent *event) {
 -    if (event->canceled) {
 +    if (swr_v1_hook_async_action(2, true, event->canceled) == SWR_HOOK_ASYNC_REJECT) {
          return;
-@@ -592,3 +433,3 @@ bool async(async::Handler handler, AsyncEvent &event, double timeout) {
+@@ -592,3 +430,3 @@ bool async(async::Handler handler, AsyncEvent &event, double timeout) {
      AsyncEvent *_ev = async::dispatch(&event);
 -    if (_ev == nullptr) {
 +    if (swr_v1_hook_async_action(0, true, _ev != nullptr) == SWR_HOOK_ASYNC_REJECT) {
          return false;
-@@ -596,3 +437,3 @@ bool async(async::Handler handler, AsyncEvent &event, double timeout) {
+@@ -596,3 +434,3 @@ bool async(async::Handler handler, AsyncEvent &event, double timeout) {
  
 -    if (!co->yield_ex(timeout)) {
 +    if (swr_v1_hook_async_action(1, true, co->yield_ex(timeout)) == SWR_HOOK_ASYNC_CANCEL) {
          event.canceled = _ev->canceled = true;
-@@ -635,3 +476,3 @@ bool async(const std::function<void()> &fn) {
+@@ -635,3 +473,3 @@ bool async(const std::function<void()> &fn) {
      AsyncEvent *_ev = async::dispatch(&event);
 -    if (_ev == nullptr) {
 +    if (swr_v1_hook_async_action(0, false, _ev != nullptr) == SWR_HOOK_ASYNC_REJECT) {
          return false;
-@@ -645,16 +486,23 @@ bool async(const std::function<void()> &fn) {
+@@ -645,16 +483,23 @@ bool async(const std::function<void()> &fn) {
  bool wait_for(const std::function<bool(void)> &fn) {
 +    uint32_t phase = 0;
      double second = SW_FILE_LOCK_DEFAULT_SECOND;
@@ -4558,18 +4532,15 @@ index e6ef9c2..32545c3 100644
 -    return true;
  }
 diff --git a/src/coroutine/uring_socket.cc b/src/coroutine/uring_socket.cc
-index 758765a..fc7ab8f 100644
+index 758765a..f1b91a4 100644
 --- a/src/coroutine/uring_socket.cc
 +++ b/src/coroutine/uring_socket.cc
-@@ -20,2 +20,7 @@
+@@ -20,2 +20,4 @@
  #include "swoole_uring_socket.h"
-+#ifndef SWOOLE_RS_HOOKS
-+#error "Hooks overlay requires --enable-swoole-rs-hooks"
-+#endif
 +#include "swoole_rs_hooks.h"
 +
  #include "swoole_coroutine_socket.h"
-@@ -35,5 +40,5 @@ bool UringSocket::connect(const sockaddr *addr, socklen_t addrlen) {
+@@ -35,5 +37,5 @@ bool UringSocket::connect(const sockaddr *addr, socklen_t addrlen) {
  
 -    write_co = read_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_RDWR, Coroutine::get_current_safe());
@@ -4577,12 +4548,12 @@ index 758765a..fc7ab8f 100644
 -    write_co = read_co = nullptr;
 +    bind_co(SW_EVENT_RDWR, nullptr);
      if (retval < 0) {
-@@ -42,3 +47,3 @@ bool UringSocket::connect(const sockaddr *addr, socklen_t addrlen) {
+@@ -42,3 +44,3 @@ bool UringSocket::connect(const sockaddr *addr, socklen_t addrlen) {
  
 -    connected = true;
 +    swr_v1_hook_socket_connect(state_);
      socket->get_name();
-@@ -56,5 +61,5 @@ UringSocket *UringSocket::accept(double timeout) {
+@@ -56,5 +58,5 @@ UringSocket *UringSocket::accept(double timeout) {
  
 -    read_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
@@ -4590,7 +4561,7 @@ index 758765a..fc7ab8f 100644
 -    read_co = nullptr;
 +    bind_co(SW_EVENT_READ, nullptr);
  
-@@ -121,5 +126,5 @@ ssize_t UringSocket::read(void *_buf, size_t _n) {
+@@ -121,5 +123,5 @@ ssize_t UringSocket::read(void *_buf, size_t _n) {
      }
 -    read_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
@@ -4598,7 +4569,7 @@ index 758765a..fc7ab8f 100644
 -    read_co = nullptr;
 +    bind_co(SW_EVENT_READ, nullptr);
      check_return_value(retval);
-@@ -132,5 +137,5 @@ ssize_t UringSocket::write(const void *_buf, size_t _n) {
+@@ -132,5 +134,5 @@ ssize_t UringSocket::write(const void *_buf, size_t _n) {
      }
 -    write_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_WRITE, Coroutine::get_current_safe());
@@ -4606,7 +4577,7 @@ index 758765a..fc7ab8f 100644
 -    write_co = nullptr;
 +    bind_co(SW_EVENT_WRITE, nullptr);
      check_return_value(retval);
-@@ -143,5 +148,5 @@ ssize_t UringSocket::recvmsg(msghdr *msg, int flags) {
+@@ -143,5 +145,5 @@ ssize_t UringSocket::recvmsg(msghdr *msg, int flags) {
      }
 -    read_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
@@ -4614,7 +4585,7 @@ index 758765a..fc7ab8f 100644
 -    read_co = nullptr;
 +    bind_co(SW_EVENT_READ, nullptr);
      check_return_value(retval);
-@@ -154,5 +159,5 @@ ssize_t UringSocket::sendmsg(const msghdr *msg, int flags) {
+@@ -154,5 +156,5 @@ ssize_t UringSocket::sendmsg(const msghdr *msg, int flags) {
      }
 -    write_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_WRITE, Coroutine::get_current_safe());
@@ -4622,7 +4593,7 @@ index 758765a..fc7ab8f 100644
 -    write_co = nullptr;
 +    bind_co(SW_EVENT_WRITE, nullptr);
      check_return_value(retval);
-@@ -165,5 +170,5 @@ ssize_t UringSocket::recvfrom(void *_buf, size_t _n, sockaddr *_addr, socklen_t
+@@ -165,5 +167,5 @@ ssize_t UringSocket::recvfrom(void *_buf, size_t _n, sockaddr *_addr, socklen_t
      }
 -    read_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
@@ -4630,7 +4601,7 @@ index 758765a..fc7ab8f 100644
 -    read_co = nullptr;
 +    bind_co(SW_EVENT_READ, nullptr);
      check_return_value(retval);
-@@ -201,5 +206,5 @@ ssize_t UringSocket::sendto(const std::string &host, int port, const void *_buf,
+@@ -201,5 +203,5 @@ ssize_t UringSocket::sendto(const std::string &host, int port, const void *_buf,
  
 -    write_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_WRITE, Coroutine::get_current_safe());
@@ -4638,7 +4609,7 @@ index 758765a..fc7ab8f 100644
 -    write_co = nullptr;
 +    bind_co(SW_EVENT_WRITE, nullptr);
  
-@@ -217,5 +222,5 @@ ssize_t UringSocket::recv(void *_buf, size_t _n) {
+@@ -217,5 +219,5 @@ ssize_t UringSocket::recv(void *_buf, size_t _n) {
      ssize_t retval;
 -    read_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
@@ -4646,12 +4617,12 @@ index 758765a..fc7ab8f 100644
 -        retval = ssl_recv(_buf, _n);
 +        retval = swr_v1_uring_tls_recv(tls(), _buf, _n);
      } else {
-@@ -223,3 +228,3 @@ ssize_t UringSocket::recv(void *_buf, size_t _n) {
+@@ -223,3 +225,3 @@ ssize_t UringSocket::recv(void *_buf, size_t _n) {
      }
 -    read_co = nullptr;
 +    bind_co(SW_EVENT_READ, nullptr);
  
-@@ -235,5 +240,5 @@ ssize_t UringSocket::send(const void *_buf, size_t _n) {
+@@ -235,5 +237,5 @@ ssize_t UringSocket::send(const void *_buf, size_t _n) {
      ssize_t retval;
 -    write_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_WRITE, Coroutine::get_current_safe());
@@ -4659,12 +4630,12 @@ index 758765a..fc7ab8f 100644
 -        retval = ssl_send(_buf, _n);
 +        retval = swr_v1_uring_tls_send(tls(), _buf, _n);
      } else {
-@@ -241,3 +246,3 @@ ssize_t UringSocket::send(const void *_buf, size_t _n) {
+@@ -241,3 +243,3 @@ ssize_t UringSocket::send(const void *_buf, size_t _n) {
      }
 -    write_co = nullptr;
 +    bind_co(SW_EVENT_WRITE, nullptr);
  
-@@ -253,10 +258,11 @@ ssize_t UringSocket::recv_all(void *_buf, size_t _n) {
+@@ -253,10 +255,11 @@ ssize_t UringSocket::recv_all(void *_buf, size_t _n) {
          retval = recv((char *) _buf + total_bytes, _n - total_bytes);
 -        if (retval <= 0) {
 +        auto plan = swr_v1_hook_transfer(retval, total_bytes, _n, false);
@@ -4680,7 +4651,7 @@ index 758765a..fc7ab8f 100644
 -    return retval < 0 && total_bytes == 0 ? -1 : total_bytes;
 +    return swr_v1_hook_transfer_result(retval, total_bytes);
  }
-@@ -269,10 +275,11 @@ ssize_t UringSocket::send_all(const void *_buf, size_t _n) {
+@@ -269,10 +272,11 @@ ssize_t UringSocket::send_all(const void *_buf, size_t _n) {
          retval = send((char *) _buf + total_bytes, _n - total_bytes);
 -        if (retval <= 0) {
 +        auto plan = swr_v1_hook_transfer(retval, total_bytes, _n, false);
@@ -4696,42 +4667,42 @@ index 758765a..fc7ab8f 100644
 -    return retval < 0 && total_bytes == 0 ? -1 : total_bytes;
 +    return swr_v1_hook_transfer_result(retval, total_bytes);
  }
-@@ -322,3 +329,3 @@ bool UringSocket::sendfile(const char *filename, off_t offset, size_t length) {
+@@ -322,3 +326,3 @@ bool UringSocket::sendfile(const char *filename, off_t offset, size_t length) {
  
 -    write_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_WRITE, Coroutine::get_current_safe());
      if (is_ssl()) {
-@@ -328,3 +335,3 @@ bool UringSocket::sendfile(const char *filename, off_t offset, size_t length) {
+@@ -328,3 +332,3 @@ bool UringSocket::sendfile(const char *filename, off_t offset, size_t length) {
      }
 -    write_co = nullptr;
 +    bind_co(SW_EVENT_WRITE, nullptr);
  
-@@ -339,3 +346,3 @@ ssize_t UringSocket::readv(network::IOVector *io_vector) {
+@@ -339,3 +343,3 @@ ssize_t UringSocket::readv(network::IOVector *io_vector) {
  
 -    read_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_READ, Coroutine::get_current_safe());
      do {
-@@ -348,3 +355,3 @@ ssize_t UringSocket::readv(network::IOVector *io_vector) {
+@@ -348,3 +352,3 @@ ssize_t UringSocket::readv(network::IOVector *io_vector) {
      } while (retval < 0 && errno == EINTR);
 -    read_co = nullptr;
 +    bind_co(SW_EVENT_READ, nullptr);
  
-@@ -360,3 +367,3 @@ ssize_t UringSocket::writev(network::IOVector *io_vector) {
+@@ -360,3 +364,3 @@ ssize_t UringSocket::writev(network::IOVector *io_vector) {
  
 -    write_co = Coroutine::get_current_safe();
 +    bind_co(SW_EVENT_WRITE, Coroutine::get_current_safe());
      do {
-@@ -369,3 +376,3 @@ ssize_t UringSocket::writev(network::IOVector *io_vector) {
+@@ -369,3 +373,3 @@ ssize_t UringSocket::writev(network::IOVector *io_vector) {
      } while (retval < 0 && errno == EINTR);
 -    write_co = nullptr;
 +    bind_co(SW_EVENT_WRITE, nullptr);
  
-@@ -388,3 +395,3 @@ ssize_t UringSocket::readv_all(network::IOVector *io_vector) {
+@@ -388,3 +392,3 @@ ssize_t UringSocket::readv_all(network::IOVector *io_vector) {
      check_return_value(retval);
 -    return retval < 0 && total_bytes == 0 ? -1 : total_bytes;
 +    return swr_v1_hook_transfer_result(retval, total_bytes);
  }
-@@ -404,116 +411,36 @@ ssize_t UringSocket::writev_all(network::IOVector *io_vector) {
+@@ -404,116 +408,36 @@ ssize_t UringSocket::writev_all(network::IOVector *io_vector) {
      check_return_value(retval);
 -    return retval < 0 && total_bytes == 0 ? -1 : total_bytes;
 +    return swr_v1_hook_transfer_result(retval, total_bytes);
@@ -4751,9 +4722,7 @@ index 758765a..fc7ab8f 100644
 -            set_err(SW_ERROR_SSL_BAD_PROTOCOL);
 -            return false;
 -        }
-+const swr_v1_uring_tls_host UringSocket::tls_host = {
-+    &Iouring::host, tls_set_err, tls_check_failure, tls_buffer, ssl_bio_perform, SW_ERROR_SSL_BAD_PROTOCOL, SW_ERROR_SSL_RESET};
- 
+-
 -        ssize_t written = 0;
 -        while (written < nread) {
 -            ssize_t n = uring_send(buf->str + written, nread - written);
@@ -4771,7 +4740,9 @@ index 758765a..fc7ab8f 100644
 -            }
 -        }
 -    }
--
++const swr_v1_uring_tls_host UringSocket::tls_host = {
++    &Iouring::host, tls_set_err, tls_check_failure, tls_buffer, ssl_bio_perform, SW_ERROR_SSL_BAD_PROTOCOL, SW_ERROR_SSL_RESET};
+ 
 -    return true;
 +void UringSocket::tls_set_err(void *socket, int code) {
 +    static_cast<UringSocket *>(socket)->set_err(code);
@@ -4873,22 +4844,22 @@ index 758765a..fc7ab8f 100644
 +                  ERR_GET_REASON(err_code));
 +    self->set_err(SW_ERROR_SSL_BAD_PROTOCOL, error_buf);
  }
-@@ -557,3 +484,3 @@ bool UringSocket::ssl_handshake() {
+@@ -557,3 +481,3 @@ bool UringSocket::ssl_handshake() {
          }
 -        if (ssl_bio_perform(rs, fn)) {
 +        if (swr_v1_uring_tls_perform(tls(), rs, fn)) {
              continue;
-@@ -578,3 +505,3 @@ ssize_t UringSocket::ssl_readv(network::IOVector *io_vector) {
+@@ -578,3 +502,3 @@ ssize_t UringSocket::ssl_readv(network::IOVector *io_vector) {
      do {
 -        retval = ssl_recv(io_vector->get_iterator()->iov_base, io_vector->get_iterator()->iov_len);
 +        retval = swr_v1_uring_tls_recv(tls(), io_vector->get_iterator()->iov_base, io_vector->get_iterator()->iov_len);
          total_bytes += retval > 0 ? retval : 0;
-@@ -590,3 +517,3 @@ ssize_t UringSocket::ssl_writev(network::IOVector *io_vector) {
+@@ -590,3 +514,3 @@ ssize_t UringSocket::ssl_writev(network::IOVector *io_vector) {
      do {
 -        retval = ssl_send(io_vector->get_iterator()->iov_base, io_vector->get_iterator()->iov_len);
 +        retval = swr_v1_uring_tls_send(tls(), io_vector->get_iterator()->iov_base, io_vector->get_iterator()->iov_len);
          total_bytes += retval > 0 ? retval : 0;
-@@ -598,32 +525,2 @@ ssize_t UringSocket::ssl_writev(network::IOVector *io_vector) {
+@@ -598,32 +522,2 @@ ssize_t UringSocket::ssl_writev(network::IOVector *io_vector) {
  
 -ssize_t UringSocket::ssl_recv(void *_buf, size_t _n) {
 -    while (true) {
@@ -4921,37 +4892,37 @@ index 758765a..fc7ab8f 100644
 -}
 -
  ssize_t UringSocket::ssl_sendfile(const File &file, off_t *offset, size_t size) {
-@@ -640,3 +537,3 @@ ssize_t UringSocket::ssl_sendfile(const File &file, off_t *offset, size_t size)
+@@ -640,3 +534,3 @@ ssize_t UringSocket::ssl_sendfile(const File &file, off_t *offset, size_t size)
  
 -        ssize_t ret = ssl_send(buf, n);
 +        ssize_t ret = swr_v1_uring_tls_send(tls(), buf, n);
          if (ret > 0) {
-@@ -677,3 +574,3 @@ ssize_t UringSocket::send_once(const void *buf, size_t count) {
+@@ -677,3 +571,3 @@ ssize_t UringSocket::send_once(const void *buf, size_t count) {
  
 -        if (!ssl_bio_prepare()) {
 +        if (!swr_v1_uring_tls_prepare(tls())) {
              return -1;
-@@ -681,3 +578,3 @@ ssize_t UringSocket::send_once(const void *buf, size_t count) {
+@@ -681,3 +575,3 @@ ssize_t UringSocket::send_once(const void *buf, size_t count) {
  
 -        if (socket->ssl_want_read == 1 && !ssl_bio_read()) {
 +        if (socket->ssl_want_read == 1 && !swr_v1_uring_tls_read(tls())) {
              return -1;
-@@ -685,3 +582,3 @@ ssize_t UringSocket::send_once(const void *buf, size_t count) {
+@@ -685,3 +579,3 @@ ssize_t UringSocket::send_once(const void *buf, size_t count) {
  
 -        if (socket->ssl_want_write == 1 && !ssl_bio_write()) {
 +        if (socket->ssl_want_write == 1 && !swr_v1_uring_tls_write(tls())) {
              return -1;
-@@ -706,3 +603,3 @@ ssize_t UringSocket::recv_once(void *buf, size_t count) {
+@@ -706,3 +600,3 @@ ssize_t UringSocket::recv_once(void *buf, size_t count) {
  
 -        if (!ssl_bio_prepare()) {
 +        if (!swr_v1_uring_tls_prepare(tls())) {
              return -1;
-@@ -710,3 +607,3 @@ ssize_t UringSocket::recv_once(void *buf, size_t count) {
+@@ -710,3 +604,3 @@ ssize_t UringSocket::recv_once(void *buf, size_t count) {
  
 -        if (socket->ssl_want_read == 1 && !ssl_bio_read()) {
 +        if (socket->ssl_want_read == 1 && !swr_v1_uring_tls_read(tls())) {
              return -1;
-@@ -714,3 +611,3 @@ ssize_t UringSocket::recv_once(void *buf, size_t count) {
+@@ -714,3 +608,3 @@ ssize_t UringSocket::recv_once(void *buf, size_t count) {
  
 -        if (socket->ssl_want_write == 1 && !ssl_bio_write()) {
 +        if (socket->ssl_want_write == 1 && !swr_v1_uring_tls_write(tls())) {

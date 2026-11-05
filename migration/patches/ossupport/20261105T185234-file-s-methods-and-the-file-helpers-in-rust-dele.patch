@@ -77,10 +77,10 @@ index 95e202d..6fcc961 100644
  
 diff --git a/src/os/file.cc b/src/os/file.cc
 deleted file mode 100644
-index c5f7458..0000000
+index a22ef54..0000000
 --- a/src/os/file.cc
 +++ /dev/null
-@@ -1,148 +0,0 @@
+@@ -1,145 +0,0 @@
 -/*
 - +----------------------------------------------------------------------+
 - | Swoole                                                               |
@@ -99,9 +99,6 @@ index c5f7458..0000000
 -
 -#include "swoole_file.h"
 -
--#ifndef SWOOLE_RS_OSSUPPORT
--#error "OS support overlay requires --enable-swoole-rs-ossupport"
--#endif
 -#include "swoole_rs_ossupport.h"
 -
 -int swoole_tmpfile(char *filename) {

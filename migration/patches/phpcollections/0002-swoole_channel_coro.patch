@@ -1,16 +1,13 @@
 diff --git a/ext-src/swoole_channel_coro.cc b/ext-src/swoole_channel_coro.cc
-index 75bb2eb..dfaead5 100644
+index 75bb2eb..5d34845 100644
 --- a/ext-src/swoole_channel_coro.cc
 +++ b/ext-src/swoole_channel_coro.cc
-@@ -21,2 +21,7 @@
+@@ -21,2 +21,4 @@
  
-+#ifndef SWOOLE_RS_PHPCOLLECTIONS
-+#error "PHP collections overlay requires --enable-swoole-rs-phpcollections"
-+#endif
 +#include "swoole_rs_phpcollections.h"
 +
  #include "swoole_coroutine_channel.h"
-@@ -29,19 +34,14 @@ using swoole::coroutine::Channel;
+@@ -29,19 +31,14 @@ using swoole::coroutine::Channel;
  
 -static zend_class_entry *swoole_channel_coro_ce;
 -static zend_object_handlers swoole_channel_coro_handlers;
@@ -41,7 +38,7 @@ index 75bb2eb..dfaead5 100644
 +PHP_METHOD(swoole_channel_coro, isEmpty);
 +PHP_METHOD(swoole_channel_coro, isFull);
  SW_EXTERN_C_END
-@@ -63,155 +63,21 @@ static const zend_function_entry swoole_channel_coro_methods[] =
+@@ -63,155 +60,21 @@ static const zend_function_entry swoole_channel_coro_methods[] =
  
 -static ChannelObject *channel_coro_fetch_object(zend_object *obj) {
 -    return reinterpret_cast<ChannelObject *>(reinterpret_cast<char *>(obj) - swoole_channel_coro_handlers.offset);

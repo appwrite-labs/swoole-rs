@@ -1,16 +1,13 @@
 diff --git a/src/network/socket.cc b/src/network/socket.cc
-index ed39457..02480c6 100644
+index ed39457..a86758e 100644
 --- a/src/network/socket.cc
 +++ b/src/network/socket.cc
-@@ -21,2 +21,7 @@
+@@ -21,2 +21,4 @@
  #include "swoole_timer.h"
-+#ifndef SWOOLE_RS_REACTOR
-+#error "Reactor overlay requires --enable-swoole-rs-reactor"
-+#endif
 +#include "swoole_rs_reactor.h"
 +#include <limits>
  
-@@ -35,8 +40,8 @@ uint32_t Socket::default_buffer_size = SW_SOCKET_BUFFER_SIZE;
+@@ -35,8 +37,8 @@ uint32_t Socket::default_buffer_size = SW_SOCKET_BUFFER_SIZE;
  IOVector::IOVector(const iovec *_iov, int _iovcnt) {
 -    iov = new iovec[_iovcnt + _iovcnt];
 -    iov_iterator = iov + _iovcnt;
@@ -24,12 +21,12 @@ index ed39457..02480c6 100644
 -    memcpy(iov, _iov, sizeof(*_iov) * _iovcnt);
 -    memcpy(iov_iterator, _iov, sizeof(*_iov) * _iovcnt);
  }
-@@ -44,3 +49,3 @@ IOVector::IOVector(const iovec *_iov, int _iovcnt) {
+@@ -44,3 +46,3 @@ IOVector::IOVector(const iovec *_iov, int _iovcnt) {
  IOVector::~IOVector() {
 -    delete[] iov;
 +    swr_v1_reactor_iov_owned_free(iov);
  }
-@@ -48,39 +53,9 @@ IOVector::~IOVector() {
+@@ -48,39 +50,9 @@ IOVector::~IOVector() {
  void IOVector::update_iterator(ssize_t _n) {
 -    size_t total_bytes = 0;
 -    size_t _offset_bytes = 0;
@@ -76,7 +73,7 @@ index ed39457..02480c6 100644
 +    offset_bytes = reply.offset_bytes;
 +    if (reply.action == 1) iov_iterator += reply.advance;
  }
-@@ -245,12 +220,7 @@ swReturnCode Socket::connect_async(const Address &sa) {
+@@ -245,12 +217,7 @@ swReturnCode Socket::connect_async(const Address &sa) {
      set_nonblock();
 -    while (true) {
 -        auto ret = connect(sa);
@@ -94,7 +91,7 @@ index ed39457..02480c6 100644
 +        errno = result.error;
 +        return result.status == 1 ? SW_WAIT : SW_ERROR;
      }
-@@ -269,11 +239,5 @@ int Socket::connect_sync(const Address &sa) {
+@@ -269,11 +236,5 @@ int Socket::connect_sync(const Address &sa) {
      }
 -    int err;
 -    socklen_t len = sizeof(len);
@@ -109,7 +106,7 @@ index ed39457..02480c6 100644
 +    if (pending.status != 0) {
 +        swoole_set_last_error(pending.error);
          return SW_ERR;
-@@ -288,5 +252,7 @@ int Socket::connect_sync(const Address &sa) {
+@@ -288,5 +249,7 @@ int Socket::connect_sync(const Address &sa) {
  void Socket::clean() const {
 -    char buf[2048];
 -    while (::recv(fd, buf, sizeof(buf), MSG_DONTWAIT) > 0) {
@@ -120,7 +117,7 @@ index ed39457..02480c6 100644
 +static void socket_signal_dispatch() {
 +    swoole_signal_dispatch();
  }
-@@ -297,32 +263,14 @@ void Socket::clean() const {
+@@ -297,32 +260,14 @@ void Socket::clean() const {
  int Socket::wait_event(int timeout_ms, int _events) const {
 -    pollfd event;
 -    event.fd = fd;
@@ -163,27 +160,27 @@ index ed39457..02480c6 100644
      }
 -
      return SW_OK;
-@@ -376,14 +324,8 @@ Socket *Socket::accept() {
+@@ -376,14 +321,8 @@ Socket *Socket::accept() {
      socket->info.len = sizeof(socket->info);
 -#ifdef HAVE_ACCEPT4
 -    int flags = SOCK_CLOEXEC;
 -    if (nonblock) {
 -        flags |= SOCK_NONBLOCK;
--    }
--    socket->fd = ::accept4(fd, reinterpret_cast<sockaddr *>(&socket->info.addr), &socket->info.len, flags);
--#else
--    socket->fd = ::accept(fd, (struct sockaddr *) &socket->info.addr, &socket->info.len);
--    if (socket->fd >= 0) {
--        set_fd_option(nonblock, 1);
 +    bool listener_cloexec = false;
 +    socket->fd = swr_v1_socket_accept(fd, reinterpret_cast<sockaddr *>(&socket->info.addr), &socket->info.len,
 +                                      nonblock, &listener_cloexec);
 +    if (listener_cloexec) {
 +        cloexec = 1;
      }
+-    socket->fd = ::accept4(fd, reinterpret_cast<sockaddr *>(&socket->info.addr), &socket->info.len, flags);
+-#else
+-    socket->fd = ::accept(fd, (struct sockaddr *) &socket->info.addr, &socket->info.len);
+-    if (socket->fd >= 0) {
+-        set_fd_option(nonblock, 1);
+-    }
 -#endif
      if (socket->fd < 0) {
-@@ -415,11 +357,3 @@ ssize_t Socket::sendto_sync(const Address &sa, const void *_buf, size_t _n, int
+@@ -415,11 +354,3 @@ ssize_t Socket::sendto_sync(const Address &sa, const void *_buf, size_t _n, int
  ssize_t Socket::recvfrom(char *buf, size_t len, int flags, sockaddr *addr, socklen_t *addr_len) const {
 -    ssize_t n = 0;
 -    SW_LOOP_N(SW_SOCKET_RETRY_COUNT) {
@@ -196,7 +193,7 @@ index ed39457..02480c6 100644
 -    return n;
 +    return swr_v1_socket_recvfrom(fd, buf, len, flags, addr, addr_len, SW_SOCKET_RETRY_COUNT);
  }
-@@ -497,12 +431,7 @@ int Socket::get_peer_name(Address *sa) const {
+@@ -497,12 +428,7 @@ int Socket::get_peer_name(Address *sa) const {
  int Socket::set_tcp_nopush(int nopush) {
 -#ifdef TCP_CORK
 -    if (set_option(IPPROTO_TCP, TCP_CORK, nopush) == SW_ERR) {
@@ -212,27 +209,27 @@ index ed39457..02480c6 100644
 +    tcp_nopush = nopush;
 +    return 0;
  }
-@@ -526,3 +455,3 @@ int Socket::bind(const struct sockaddr *sa, socklen_t len) {
+@@ -526,3 +452,3 @@ int Socket::bind(const struct sockaddr *sa, socklen_t len) {
  int Socket::listen(int backlog) {
 -    if (::listen(fd, backlog <= 0 ? SW_BACKLOG : backlog) < 0) {
 +    if (!swr_v1_socket_listen(fd, backlog, SW_BACKLOG)) {
          return SW_ERR;
-@@ -534,3 +463,3 @@ int Socket::listen(int backlog) {
+@@ -534,3 +460,3 @@ int Socket::listen(int backlog) {
  bool Socket::set_buffer_size(uint32_t _buffer_size) const {
 -    return set_send_buffer_size(_buffer_size) && set_recv_buffer_size(_buffer_size);
 +    return swr_v1_socket_buffer_size(fd, true, true, _buffer_size);
  }
-@@ -538,3 +467,3 @@ bool Socket::set_buffer_size(uint32_t _buffer_size) const {
+@@ -538,3 +464,3 @@ bool Socket::set_buffer_size(uint32_t _buffer_size) const {
  bool Socket::set_recv_buffer_size(uint32_t _buffer_size) const {
 -    return set_option(SOL_SOCKET, SO_RCVBUF, _buffer_size) == 0;
 +    return swr_v1_socket_buffer_size(fd, true, false, _buffer_size);
  }
-@@ -542,3 +471,3 @@ bool Socket::set_recv_buffer_size(uint32_t _buffer_size) const {
+@@ -542,3 +468,3 @@ bool Socket::set_recv_buffer_size(uint32_t _buffer_size) const {
  bool Socket::set_send_buffer_size(uint32_t _buffer_size) const {
 -    return set_option(SOL_SOCKET, SO_SNDBUF, _buffer_size) == 0;
 +    return swr_v1_socket_buffer_size(fd, false, true, _buffer_size);
  }
-@@ -553,25 +482,26 @@ bool Socket::check_liveness() {
+@@ -553,25 +479,26 @@ bool Socket::check_liveness() {
  bool Socket::set_tcp_nodelay(int nodelay) {
 -    if (set_option(IPPROTO_TCP, TCP_NODELAY, nodelay) == SW_ERR) {
 +    if (!swr_v1_socket_tcp_nodelay(fd, nodelay)) {
@@ -276,7 +273,7 @@ index ed39457..02480c6 100644
 +    swr_v1_socket_cork_state state{tcp_nopush, tcp_nodelay};
 +    return socket_cork_result(this, state, swr_v1_socket_cork(fd, &state), "ON", "OFF");
  }
-@@ -579,17 +509,4 @@ bool Socket::cork() {
+@@ -579,17 +506,4 @@ bool Socket::cork() {
  bool Socket::uncork() {
 -    if (!tcp_nopush) {
 -        return false;
@@ -296,7 +293,7 @@ index ed39457..02480c6 100644
 +    swr_v1_socket_cork_state state{tcp_nopush, tcp_nodelay};
 +    return socket_cork_result(this, state, swr_v1_socket_uncork(fd, enable_tcp_nodelay, &state), "OFF", "ON");
  }
-@@ -604,12 +521,7 @@ Socket *Socket::dup() const {
+@@ -604,12 +518,7 @@ Socket *Socket::dup() const {
  static bool _set_timeout(int fd, int type, double timeout) {
 -    timeval timeo;
 -    timeo.tv_sec = (int) timeout;
@@ -311,7 +308,7 @@ index ed39457..02480c6 100644
      }
 +    return true;
  }
-@@ -617,57 +529,16 @@ static bool _set_timeout(int fd, int type, double timeout) {
+@@ -617,57 +526,16 @@ static bool _set_timeout(int fd, int type, double timeout) {
  static bool _fcntl_set_option(int sock, int nonblock, int cloexec) {
 -    int opts, ret;
 -
@@ -381,7 +378,7 @@ index ed39457..02480c6 100644
 +    }
 +    return result.ok;
  }
-@@ -745,14 +616,21 @@ bool Socket::set_kernel_write_timeout(double timeout) {
+@@ -745,14 +613,21 @@ bool Socket::set_kernel_write_timeout(double timeout) {
  int Socket::handle_sendfile() {
 +    static_assert(SW_WAIT == 2 && SW_CLOSE == 3 && SW_ERROR == 4, "Native write classifications");
      Buffer *buffer = out_buffer;
@@ -412,7 +409,7 @@ index ed39457..02480c6 100644
 +        case 2: task->corked = static_cast<int>(reply.value); break;
 +        case 3: {
      size_t sendn = get_sendfile_chunk_size(task->begin, task->end);
-@@ -761,34 +639,20 @@ int Socket::handle_sendfile() {
+@@ -761,34 +636,20 @@ int Socket::handle_sendfile() {
      swoole_trace("rv=%ld|begin=%ld|sendn=%lu|end=%lu", rv, (long) task->begin, sendn, task->end);
 -
 -    if (rv <= 0) {
@@ -461,7 +458,7 @@ index ed39457..02480c6 100644
 -
 -    return SW_OK;
  }
-@@ -799,42 +663,61 @@ int Socket::handle_sendfile() {
+@@ -799,42 +660,61 @@ int Socket::handle_sendfile() {
  int Socket::handle_send() {
 +    static_assert(SW_WAIT == 2 && SW_CLOSE == 3 && SW_ERROR == 4, "Native write classifications");
      Buffer *buffer = out_buffer;
@@ -556,11 +553,11 @@ index ed39457..02480c6 100644
 +
 +#if !defined(SWOOLE_RS_BUFFER_TYPED) || !SWOOLE_RS_BUFFER_TYPED
  static void Socket_sendfile_destructor(BufferChunk *chunk) {
-@@ -843,2 +726,3 @@ static void Socket_sendfile_destructor(BufferChunk *chunk) {
+@@ -843,2 +723,3 @@ static void Socket_sendfile_destructor(BufferChunk *chunk) {
  }
 +#endif
  
-@@ -853,43 +737,50 @@ ssize_t Socket::sendfile(const File &fp, off_t *offset, size_t length) {
+@@ -853,43 +734,50 @@ ssize_t Socket::sendfile(const File &fp, off_t *offset, size_t length) {
  int Socket::sendfile_async(const char *filename, off_t offset, size_t length) {
 -    std::unique_ptr<SendfileRequest> task(new SendfileRequest(filename, offset));
 -
@@ -645,7 +642,7 @@ index ed39457..02480c6 100644
 +    ssize_t total_bytes =
 +        swr_v1_socket_recv(fd, _buf, _n, _flags, nonblock, dont_restart, ssl ? socket_tls_recv : nullptr, this);
  
-@@ -913,11 +804,3 @@ ssize_t Socket::recv(void *_buf, size_t _n, int _flags) {
+@@ -913,11 +801,3 @@ ssize_t Socket::recv(void *_buf, size_t _n, int _flags) {
  ssize_t Socket::send(const void *_buf, size_t _n, int _flags) {
 -    ssize_t retval;
 -
@@ -658,7 +655,7 @@ index ed39457..02480c6 100644
 -    } while (retval < 0 && (errno == EINTR && !dont_restart));
 +    ssize_t retval = swr_v1_socket_send(fd, _buf, _n, _flags, dont_restart, ssl ? socket_tls_send : nullptr, this);
  
-@@ -1006,11 +889,3 @@ ssize_t Socket::writev(IOVector *io_vector) {
+@@ -1006,11 +886,3 @@ ssize_t Socket::writev(IOVector *io_vector) {
  ssize_t Socket::peek(void *_buf, size_t _n, int _flags) const {
 -    ssize_t retval;
 -    _flags |= MSG_PEEK;
@@ -671,7 +668,7 @@ index ed39457..02480c6 100644
 -    } while (retval < 0 && errno == EINTR);
 +    ssize_t retval = swr_v1_socket_peek(fd, _buf, _n, _flags, ssl ? socket_tls_peek : nullptr, const_cast<Socket *>(this));
  
-@@ -1022,34 +897,3 @@ ssize_t Socket::peek(void *_buf, size_t _n, int _flags) const {
+@@ -1022,34 +894,3 @@ ssize_t Socket::peek(void *_buf, size_t _n, int _flags) const {
  int Socket::catch_error(const int err) {
 -    switch (err) {
 -    case EFAULT:
@@ -707,7 +704,7 @@ index ed39457..02480c6 100644
 -    }
 +    return swr_v1_socket_catch_error(err, &kernel_nobufs);
  }
-@@ -1057,21 +901,3 @@ int Socket::catch_error(const int err) {
+@@ -1057,21 +898,3 @@ int Socket::catch_error(const int err) {
  SocketType Socket::convert_to_type(const int domain, const int type) {
 -    if (domain == AF_INET && type == SOCK_STREAM) {
 -        return SW_SOCK_TCP;
@@ -730,7 +727,7 @@ index ed39457..02480c6 100644
 -    }
 +    return static_cast<SocketType>(swr_v1_socket_type(domain, type));
  }
-@@ -1079,11 +905,5 @@ SocketType Socket::convert_to_type(const int domain, const int type) {
+@@ -1079,11 +902,5 @@ SocketType Socket::convert_to_type(const int domain, const int type) {
  SocketType Socket::convert_to_type(std::string &host) {
 -    if (host.compare(0, 6, "unix:/", 0, 6) == 0) {
 -        host = host.substr(sizeof("unix:") - 1);
@@ -745,7 +742,7 @@ index ed39457..02480c6 100644
 +    host.erase(0, plan.erase);
 +    return static_cast<SocketType>(plan.socket_type);
  }
-@@ -1091,40 +911,3 @@ SocketType Socket::convert_to_type(std::string &host) {
+@@ -1091,40 +908,3 @@ SocketType Socket::convert_to_type(std::string &host) {
  int Socket::get_domain_and_type(SocketType type, int *sock_domain, int *sock_type) {
 -    switch (type) {
 -    case SW_SOCK_TCP6:
@@ -787,7 +784,7 @@ index ed39457..02480c6 100644
 -    return SW_OK;
 +    return swr_v1_socket_domain_and_type(type, sock_domain, sock_type) ? SW_OK : SW_ERR;
  }
-@@ -1799,30 +1582,4 @@ Socket *make_socket(SocketType type, FdType fd_type, int sock_domain, int sock_t
+@@ -1799,30 +1579,4 @@ Socket *make_socket(SocketType type, FdType fd_type, int sock_domain, int sock_t
  int socket(int sock_domain, int sock_type, int socket_protocol, int flags) {
 -    bool nonblock = flags & SW_SOCK_NONBLOCK;
 -    bool cloexec = flags & SW_SOCK_CLOEXEC;

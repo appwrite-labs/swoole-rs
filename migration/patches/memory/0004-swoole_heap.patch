@@ -1,8 +1,8 @@
 diff --git a/include/swoole_heap.h b/include/swoole_heap.h
-index c43632570..7cb6776cb 100644
+index c436325..d65e1a8 100644
 --- a/include/swoole_heap.h
 +++ b/include/swoole_heap.h
-@@ -18,4 +18,12 @@
+@@ -18,4 +18,9 @@
  
 +#ifdef HAVE_CONFIG_H
 +#include "config.h"
@@ -10,19 +10,16 @@ index c43632570..7cb6776cb 100644
 +
  #include <cstddef>
  #include <cstdint>
-+#ifndef SWOOLE_RS_MEMORY
-+#error "Memory overlay requires --enable-swoole-rs-memory"
-+#endif
 +#include "swoole_rs_memory.h"
  
-@@ -40,4 +48,4 @@ class Heap {
+@@ -40,4 +45,4 @@ class Heap {
      size_t count() const {
 -        return num - 1;
 -    }
 +        return swr_v1_memory_heap_count(rust_);
 +}
  
-@@ -52,17 +60,7 @@ class Heap {
+@@ -52,17 +57,7 @@ class Heap {
      HeapNode *top() const {
 -        if (num == 1) {
 -            return nullptr;

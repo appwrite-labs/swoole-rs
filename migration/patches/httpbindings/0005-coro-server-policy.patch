@@ -1,15 +1,12 @@
 diff --git a/ext-src/swoole_http_server_coro.cc b/ext-src/swoole_http_server_coro.cc
-index 110c04133..7d1ad5f58 100644
+index 110c041..5e0e76c 100644
 --- a/ext-src/swoole_http_server_coro.cc
 +++ b/ext-src/swoole_http_server_coro.cc
-@@ -17,2 +17,6 @@
+@@ -17,2 +17,3 @@
  #include "php_swoole_http_server.h"
-+#ifndef SWOOLE_RS_HTTPBINDINGS
-+#error "HTTP PHP binding overlay requires --enable-swoole-rs-httpbindings"
-+#endif
 +#include "swoole_rs_httpbindings.h"
  #include "php_swoole_websocket.h"
-@@ -123,9 +127,6 @@ class HttpServer {
+@@ -123,9 +124,6 @@ class HttpServer {
          for (auto &handler : handlers) {
 -            if (handler.second == default_handler) {
 -                continue;
@@ -23,7 +20,7 @@ index 110c04133..7d1ad5f58 100644
 +                    {reinterpret_cast<const uint8_t *>(ctx->request.path), ctx->request.path_len},
 +                    {reinterpret_cast<const uint8_t *>(handler.first.data()), handler.first.size()}) == 1) return handler.second;
          }
-@@ -437,36 +438,29 @@ static PHP_METHOD(swoole_http_server_coro, start) {
+@@ -437,36 +435,29 @@ static PHP_METHOD(swoole_http_server_coro, start) {
      zval *ztmp;
 -    // parse cookie header
 -    if (php_swoole_array_get_value(vht, "http_parse_cookie", ztmp)) {
@@ -85,7 +82,7 @@ index 110c04133..7d1ad5f58 100644
 +        case SWR_HTTPBINDINGS_SETTING_MINIMUM: hs->compression_min_length = zval_get_long(ztmp); break;
 +        case SWR_HTTPBINDINGS_SETTING_TYPES: {
          hs->compression_types = std::make_shared<std::unordered_set<std::string>>();
-@@ -484,7 +478,9 @@ static PHP_METHOD(swoole_http_server_coro, start) {
+@@ -484,7 +475,9 @@ static PHP_METHOD(swoole_http_server_coro, start) {
          }
 -    }
 +            break;
@@ -99,7 +96,7 @@ index 110c04133..7d1ad5f58 100644
 +            break;
 +        case SWR_HTTPBINDINGS_SETTING_UPLOAD: {
          zend::String str_v(ztmp);
-@@ -498,3 +494,9 @@ static PHP_METHOD(swoole_http_server_coro, start) {
+@@ -498,3 +491,9 @@ static PHP_METHOD(swoole_http_server_coro, start) {
          hs->upload_tmp_dir = str_v.dup();
 +            break;
 +        }
@@ -109,11 +106,11 @@ index 110c04133..7d1ad5f58 100644
      }
 +settings_done:
  
-@@ -504,2 +506,3 @@ static PHP_METHOD(swoole_http_server_coro, start) {
+@@ -504,2 +503,3 @@ static PHP_METHOD(swoole_http_server_coro, start) {
          auto conn = sock->accept();
 +        long cid = 0;
          if (conn) {
-@@ -507,27 +510,18 @@ static PHP_METHOD(swoole_http_server_coro, start) {
+@@ -507,27 +507,18 @@ static PHP_METHOD(swoole_http_server_coro, start) {
              php_swoole_init_socket_object(&zsocket, conn);
 -            long cid = PHPCoroutine::create(&fci_cache, 1, &zsocket, zcallback.ptr());
 +            cid = PHPCoroutine::create(&fci_cache, 1, &zsocket, zcallback.ptr());

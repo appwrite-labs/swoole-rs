@@ -22,7 +22,7 @@ shipped Rust exports in `crates/reactor/src/output.rs`'s
 `wait_loop.rs`'s `whole_wait_runs_upstreams_frame_on_each_backend`. The backends' add, set,
 del and constructors are `swr_v1_reactor_change` and `swr_v1_reactor_state_open`; `change.rs` and
 `reactor_state.rs` test them over real pipes, so the `backend_storage` and `poll_snapshot` facades are gone. `forwarding.py` retains the native forwarding
-cases and all native/corrected/hybrid Socket syntax and disabled-feature checks.
+cases and all native/corrected/hybrid Socket syntax checks.
 `clean` is covered by the Rust socketpair test and is not extracted by name.
 A PR moving the remaining forwarding decisions ports their cases into Rust and
 removes the corresponding facade, as `iov_owned` became `iov_vector_*` tests.

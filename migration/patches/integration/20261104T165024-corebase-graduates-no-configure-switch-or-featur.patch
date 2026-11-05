@@ -23,15 +23,15 @@ index 0c61ecb..9ac9633 100644
 -        fi
          if test "$PHP_SWOOLE_RS_COROUTINE" != "no"; then
 diff --git a/ext-src/php_swoole.cc b/ext-src/php_swoole.cc
-index cf02597..a4806db 100644
+index cc29b17..3824ace 100644
 --- a/ext-src/php_swoole.cc
 +++ b/ext-src/php_swoole.cc
-@@ -569,8 +569,2 @@ PHP_MINIT_FUNCTION(swoole) {
- #endif
+@@ -559,8 +559,2 @@ PHP_MINIT_FUNCTION(swoole) {
+     }
 -#ifdef SWOOLE_RS_COREBASE
 -    if ((rust_features & 8192) == 0) {
 -        php_error_docref(nullptr, E_WARNING, "Rust bridge missing corebase feature");
 -        return FAILURE;
 -    }
 -#endif
- #ifdef SWOOLE_RS_COROUTINE
+     if ((rust_features & 32768) == 0) {

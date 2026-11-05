@@ -2,8 +2,7 @@
 """Compile unchanged and hybrid backend translation units, where the hybrid keeps them, as C++14.
 
 original: the pinned tree. patched: the hybrid build's tree with its switches and
-headers (hybrid_tree, #796). disabled: the same tree without SWOOLE_RS_REACTOR must
-refuse to compile.
+headers (hybrid_tree, #796).
 """
 from pathlib import Path
 import argparse
@@ -42,8 +41,7 @@ with tempfile.TemporaryDirectory(prefix='swr-reactor-compile-') as tmp:
     common = ['-std=c++14', '-O1', '-g', '-DHAVE_EPOLL' if linux else '-DHAVE_KQUEUE',
               *subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True).split()]
     trees = {'original': (tree, ['-I'+str(tree/'include'), '-I'+str(tree)]),
-             'patched': (hybrid_source, [*hybrid_flags, '-I'+str(hybrid_source)]),
-             'disabled': (hybrid_source, [flag for flag in hybrid_flags if flag != '-DSWOOLE_RS_REACTOR'] + ['-I'+str(hybrid_source)])}
+             'patched': (hybrid_source, [*hybrid_flags, '-I'+str(hybrid_source)])}
     for variant, (root, flags) in trees.items():
         for name in [*backends, 'stream']:
             source = root/(('src/network/' if name == 'stream' else 'src/reactor/')+name+'.cc')
@@ -51,7 +49,7 @@ with tempfile.TemporaryDirectory(prefix='swr-reactor-compile-') as tmp:
                 continue  # the hybrid deletes the backend units: base.cc calls Rust's (#448)
             cmd = ['c++', *common, *flags, '-c', str(source), '-o', str(tree/(variant+'-'+name+'.o'))]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            passed = result.returncode == 0 if variant != 'disabled' else (result.returncode != 0 and 'Reactor overlay requires --enable-swoole-rs-reactor' in result.stderr)
+            passed = result.returncode == 0
             print(variant, name, result.returncode, 'PASS' if passed else 'FAIL', flush=True)
             rows.append(dict(variant=variant, backend=name, command=cmd, returncode=result.returncode, passed=passed, stderr=result.stderr))
 a.report.parent.mkdir(parents=True, exist_ok=True)

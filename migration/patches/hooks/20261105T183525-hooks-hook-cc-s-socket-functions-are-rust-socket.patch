@@ -1,9 +1,9 @@
 diff --git a/src/coroutine/hook.cc b/src/coroutine/hook.cc
 deleted file mode 100644
-index 7d830ab..0000000
+index 69bcc5a..0000000
 --- a/src/coroutine/hook.cc
 +++ /dev/null
-@@ -1,328 +0,0 @@
+@@ -1,325 +0,0 @@
 -/*
 -  +----------------------------------------------------------------------+
 -  | Swoole                                                               |
@@ -24,9 +24,6 @@ index 7d830ab..0000000
 -#include <poll.h>
 -
 -#include "swoole_coroutine_system.h"
--#ifndef SWOOLE_RS_HOOKS
--#error "Hooks overlay requires --enable-swoole-rs-hooks"
--#endif
 -#include "swoole_rs_hooks.h"
 -
 -#include "swoole_socket_impl.h"
@@ -333,10 +330,10 @@ index 7d830ab..0000000
 -
 -SW_EXTERN_C_END
 diff --git a/src/coroutine/socket.cc b/src/coroutine/socket.cc
-index be54471..49f99cf 100644
+index a7d88e9..2e1c510 100644
 --- a/src/coroutine/socket.cc
 +++ b/src/coroutine/socket.cc
-@@ -865 +865,52 @@ ssize_t Socket::send_once(const void *buf, size_t count) {
+@@ -862 +862,52 @@ ssize_t Socket::send_once(const void *buf, size_t count) {
  }  // namespace swoole
 +
 +// hook.cc's socket functions are Rust (crates/hooks/src/hooked.rs), as are the hooked
