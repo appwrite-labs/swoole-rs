@@ -217,6 +217,30 @@ class Ci(unittest.TestCase):
         code, result, _ = self.ci('status', '--commit', 'abc1234', runs={})
         self.assertEqual((code, result['state']), (2, 'none'))
 
+    def test_unfinished_head_shows_completed_failures_without_changing_its_state(self):
+        history = [{'databaseId': 6, 'conclusion': 'cancelled', 'url': 'u6', 'headSha': 'f' * 40},
+                   {'databaseId': 5, 'conclusion': 'failure', 'status': 'completed', 'url': 'u5', 'headSha': 'e' * 40},
+                   {'databaseId': 4, 'conclusion': 'cancelled', 'url': 'u4', 'headSha': 'd' * 40},
+                   {'databaseId': 3, 'conclusion': 'success', 'url': 'u3', 'headSha': 'b' * 40}]
+        phases = {'5': [['socket', False, ['actual failure']]], '3': [['socket', True]]}
+        jobs = {'5': [['full-gates', 'failure']], '3': [['full-gates', 'success']]}
+        for conclusion, state, expected_code in [('running', 'running', 2), (None, 'none', 2),
+                                                  ('cancelled', 'cancelled', 3)]:
+            with self.subTest(conclusion=conclusion):
+                code, result, _ = self.ci('status', runs={'c' * 40: [] if conclusion is None else [conclusion]},
+                                          history=history, phases=phases, jobs=jobs)
+                self.assertEqual((code, result['state'], result['commit']), (expected_code, state, 'c' * 40))
+                completed = result['last_completed']
+                self.assertEqual((completed['commit'], completed['url'], completed['state']), ('e' * 40, 'u5', 'failed'))
+                self.assertEqual((completed['previous_run'], completed['new_failures']), ('u3', ['socket']))
+                self.assertEqual(completed['phase_logs'], {'socket': ['actual failure']})
+
+    def test_pr_status_does_not_query_main_history(self):
+        code, result, _ = self.ci('status', '--workflow', 'pr.yml', runs={'c' * 40: ['running']})
+        self.assertEqual(code, 2)
+        self.assertNotIn('last_completed', result)
+        self.assertFalse(any('--branch main' in call for call in self.gh_calls))
+
 
 if __name__ == '__main__':
     unittest.main()
