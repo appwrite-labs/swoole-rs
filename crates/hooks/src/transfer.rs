@@ -8,6 +8,7 @@ use crate::co_socket::CoSocket;
 use crate::shutdown::{READ, WRITE};
 use crate::socket_wait::wait;
 use core::ffi::c_void;
+use swoole_rs_corebase::net_types::AddressStorage;
 
 /// The transfer of `length` bytes at `buffer`; sets errno when it fails. A native
 /// call must not throw.
@@ -172,6 +173,60 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_transfer(
     };
     timer.stop();
     result
+}
+
+/// The socket's own `recvfrom(buffer, length, addr, addrlen)` (native, virtual).
+pub type RecvFrom = unsafe extern "C" fn(
+    *mut CoSocket,
+    *mut c_void,
+    usize,
+    *mut libc::sockaddr,
+    *mut libc::socklen_t,
+) -> isize;
+
+/// `Socket::recvfrom(buffer, length)`: `call` receives into the `network::Socket`'s
+/// peer address, whose path a local socket's unnamed peer leaves empty.
+///
+/// # Safety
+/// `socket` is a live record, not borrowed elsewhere for the call; `buffer` holds
+/// `length` bytes; `call` transfers on the record.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_recvfrom(
+    socket: *mut CoSocket,
+    buffer: *mut c_void,
+    length: usize,
+    call: RecvFrom,
+) -> isize {
+    // SAFETY: as the caller promises.
+    if !unsafe { available(socket, READ) } {
+        return -1;
+    }
+    // SAFETY: as the caller promises.
+    let record = unsafe { &*socket };
+    // SAFETY: an available record is open; the network::Socket outlives the call,
+    // and this borrow ends before it.
+    let network = unsafe { record.record() };
+    let local = network.is_local();
+    network.info.len = socklen(size_of::<AddressStorage>());
+    let info = &raw mut network.info;
+    let addr = &raw mut network.info.addr;
+    let addrlen = &raw mut network.info.len;
+    // SAFETY: the native receive into the record's peer address.
+    let result = unsafe { call(socket, buffer, length, addr.cast(), addrlen) };
+    // SAFETY: as above; nothing else borrows it now.
+    let info = unsafe { &mut *info };
+    if result >= 0
+        && local
+        && info.len as usize <= core::mem::offset_of!(libc::sockaddr_un, sun_path)
+    {
+        // SAFETY: every member of the storage is plain bytes.
+        unsafe { info.addr.un.sun_path[0] = 0 };
+    }
+    result
+}
+
+fn socklen(length: usize) -> libc::socklen_t {
+    libc::socklen_t::try_from(length).unwrap_or(libc::socklen_t::MAX)
 }
 
 #[cfg(test)]
@@ -460,5 +515,53 @@ mod tests {
         assert_eq!(result, -1);
         // A zero timeout starts no timer.
         assert!(!take().iter().any(|e| e.starts_with("timer")));
+    }
+
+    unsafe extern "C" fn peer(
+        socket: *mut CoSocket,
+        _: *mut c_void,
+        _: usize,
+        addr: *mut libc::sockaddr,
+        length: *mut libc::socklen_t,
+    ) -> isize {
+        let result = RESULTS.with_borrow_mut(VecDeque::pop_front).unwrap_or(0);
+        let expected = unsafe { &raw mut (*socket).record().info };
+        log(format!(
+            "recvfrom:{}:{}",
+            addr == unsafe { &raw mut (*expected).addr.ss },
+            unsafe { *length }
+        ));
+        unsafe { (*addr.cast::<libc::sockaddr_un>()).sun_path[0] = 1 };
+        unsafe { *length = 2 };
+        result
+    }
+
+    // Upstream's recvfrom(buf, n): is_available, `info.len = sizeof(info.addr)`,
+    // the virtual recvfrom, and an empty path for a local socket's unnamed peer.
+    #[test]
+    fn recvfrom_fills_the_sockets_peer_and_clears_a_local_unnamed_path() {
+        let size = size_of::<swoole_rs_corebase::net_types::AddressStorage>();
+        for (socket_type, result, cleared) in [(6, 4, true), (6, -1, false), (1, 4, false)] {
+            install();
+            let mut socket = TestSocket::new();
+            unsafe { socket.0.record() }.socket_type = socket_type;
+            RESULTS.set([result].into());
+            let got = unsafe {
+                swr_v1_hook_co_socket_recvfrom(socket.ptr(), core::ptr::null_mut(), 8, peer)
+            };
+            assert_eq!(got, result);
+            assert_eq!(take(), [format!("recvfrom:true:{size}")]);
+            let info = unsafe { socket.0.record() }.info;
+            assert_eq!(unsafe { info.addr.un.sun_path[0] }, i8::from(!cleared) as _);
+        }
+        install();
+        let mut socket = TestSocket::new();
+        socket.0.sock_fd = -1;
+        assert_eq!(
+            unsafe { swr_v1_hook_co_socket_recvfrom(socket.ptr(), core::ptr::null_mut(), 8, peer) },
+            -1
+        );
+        assert!(!take().iter().any(|e| e.starts_with("recvfrom")));
+        socket.0.sock_fd = 100;
     }
 }
