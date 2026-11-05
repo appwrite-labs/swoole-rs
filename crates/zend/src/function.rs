@@ -86,7 +86,6 @@ impl Call {
 /// (declared properties undefined), which Zend then releases.
 /// # Safety
 /// Installed as `create_object`, so Zend passes a registered class.
-#[unsafe(export_name = "swr_v1_phphelpers_object_deny")]
 pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: a registered class.
     let mut object = ptr::null_mut();

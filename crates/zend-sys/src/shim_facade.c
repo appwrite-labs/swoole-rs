@@ -1,14 +1,5 @@
 #include "shim.h"
 #include "shim_facade.h"
-zval *swr_zend_try_key_update(HashTable *table, zend_string *key, zend_ulong index, zval *value) {
-    zval *result = NULL;
-    SWR_ZEND_TRY {
-        result = key ? zend_hash_update(table, key, value) : zend_hash_index_update(table, index, value);
-    } SWR_ZEND_CATCH {
-        result = NULL;
-    } SWR_ZEND_END_TRY();
-    return result;
-}
 int swr_zend_try_array_insert(zval *array, zend_ulong index, zval *value, bool append, int *result) {
     volatile int bailed = 0;
     SWR_ZEND_TRY {

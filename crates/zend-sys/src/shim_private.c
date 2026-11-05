@@ -115,12 +115,6 @@ int swr_zend_try_facade_value_string(zval *value, const char *text, size_t lengt
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
-int swr_zend_try_facade_realloc(zend_string *string, size_t length, zend_string **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_string_realloc(string, length, 0); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
 int swr_zend_try_facade_object_alloc(size_t size, zend_class_entry *ce, void **result) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { *result = zend_object_alloc(size, ce); }
@@ -165,8 +159,6 @@ int swr_zend_try_facade_object_dtor(zend_object *object) {
     return bailed;
 }
 
-#include "ext/standard/url.h"
-#include "ext/standard/php_http.h"
 int swr_zend_try_facade_callable_frame(zval *value, zend_object *object, zend_execute_data *frame,
                                       uint32_t flags, zend_fcall_info_cache *cache, char **error, bool *result) {
     volatile int bailed = 0;
@@ -180,35 +172,6 @@ int swr_zend_try_facade_callable_name(zval *value, zend_object *object, zend_str
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
-int swr_zend_try_facade_url(const char *value, size_t length, zend_string **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = php_url_encode(value, length); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_hash(zval *value, HashTable **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = HASH_OF(value); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_query(HashTable *table, smart_str *buffer) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY {
-#if PHP_VERSION_ID < 80300
-        php_url_encode_hash_ex(table, buffer, NULL, 0, NULL, 0, NULL, 0, NULL, NULL, PHP_QUERY_RFC1738);
-#else
-        php_url_encode_hash_ex(table, buffer, NULL, 0, NULL, NULL, NULL, PHP_QUERY_RFC1738);
-#endif
-    } SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_smart_zero(smart_str *buffer) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { smart_str_0(buffer); } SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-void swr_zend_facade_smart_free(smart_str *buffer) { smart_str_free(buffer); }
 
 int swr_zend_try_facade_register_functions(const zend_function_entry *entries, HashTable *table, int type, int *result) {
     volatile int bailed = 0;

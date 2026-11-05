@@ -82,92 +82,6 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_frame(
     result
 }
 
-/// Encode and duplicate the bytes in Zend request memory, returning an efree-owned buffer.
-/// # Safety
-/// `value` is readable for `count` bytes; `length` is writable.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_url_encode(
-    value: *const c_char,
-    count: usize,
-    length: *mut usize,
-) -> *mut c_char {
-    let mut encoded = ptr::null_mut::<zend_string>();
-    // SAFETY: the SDK lends the source span; PHP allocates the owned result below this trap.
-    if unsafe { z::swr_zend_try_facade_url(value, count, &raw mut encoded) } != 0 {
-        Bailout.defer();
-        bailout::finish();
-        return ptr::null_mut();
-    }
-    // SAFETY: the encoder returned an owned initialized string.
-    let count = unsafe { (*encoded).len };
-    // SAFETY: preserve the original publication before duplicate allocation.
-    unsafe { length.write(count) };
-    // SAFETY: duplicate the live binary encoded string into request memory.
-    let result =
-        unsafe { super::owned::duplicate_bytes(string::val(encoded).cast(), count, true, false) };
-    // SAFETY: the temporary string owns no user-code destructor.
-    unsafe { z::swr_zend_string_release(encoded) };
-    bailout::finish();
-    result
-}
-
-/// Append PHP's query encoding to the caller's actual `smart_str` owner.
-/// # Safety
-/// `value` is a live zval; `buffer` points to its caller's initialized `smart_str`;
-/// `length` is writable. The caller owns the buffer and returned borrowed bytes.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_http_query(
-    value: *mut zval,
-    length: *mut usize,
-    buffer: *mut c_void,
-) -> *mut c_char {
-    let buffer = buffer.cast::<z::smart_str>();
-    let mut table = ptr::null_mut();
-    // SAFETY: HASH_OF runs on the live value and any native handler is contained.
-    if unsafe { z::swr_zend_try_facade_hash(value, &raw mut table) } != 0 {
-        Bailout.defer();
-        bailout::finish();
-        return ptr::null_mut();
-    }
-    if table.is_null() {
-        // SAFETY: the caller's smart buffer is initialized and remains exclusively borrowed.
-        unsafe { z::swr_zend_facade_smart_free(buffer) };
-        return ptr::null_mut();
-    }
-    // HASH_OF is evaluated twice upstream: an object's native get_properties
-    // handler may observe each evaluation, so reload it before encoding.
-    // SAFETY: this is the second original HASH_OF effect, independently contained.
-    if unsafe { z::swr_zend_try_facade_hash(value, &raw mut table) } != 0 {
-        Bailout.defer();
-        bailout::finish();
-        return ptr::null_mut();
-    }
-    // SAFETY: PHP borrows the real table and mutates the caller-owned smart buffer within its trap.
-    if unsafe { z::swr_zend_try_facade_query(table, buffer) } != 0 {
-        Bailout.defer();
-        bailout::finish();
-        return ptr::null_mut();
-    }
-    // SAFETY: the caller's buffer remains live through this call.
-    let string = unsafe { (*buffer).s };
-    if string.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: null termination may grow this buffer, and that allocation is contained.
-    if unsafe { z::swr_zend_try_facade_smart_zero(buffer) } != 0 {
-        Bailout.defer();
-        bailout::finish();
-        return ptr::null_mut();
-    }
-    // SAFETY: smart_str_0 may have reallocated; reload the owned string.
-    let string = unsafe { (*buffer).s };
-    // SAFETY: the buffer holds a live string after successful termination.
-    let count = unsafe { (*string).len };
-    // SAFETY: the SDK lends this writable output.
-    unsafe { length.write(count) };
-    string::val(string).cast()
-}
-
 /// Preserve the native SDK's declared-property unset guard using the shared Rust implementation.
 /// # Safety
 /// Zend supplies a live object, member name and optional property-cache slot.
@@ -202,44 +116,6 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_unset_class_valid(
     }
     // SAFETY: the root class is still process-lived; 1 is ZEND_INTERNAL_CLASS.
     (unsafe { (*root).type_ }) == 1
-}
-
-/// Register a complete function alias for a native SDK consumer.
-/// # Safety
-/// The tables, binary names and arginfo follow Zend's persistent registration
-/// contract. The assertion callback is native-only and cannot unwind or bail out.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_function_alias(
-    source: *mut z::HashTable,
-    origin: *const c_char,
-    origin_length: usize,
-    target: *mut z::HashTable,
-    alias: *const c_char,
-    alias_length: usize,
-    info: *const z::zend_internal_arg_info,
-    assert_internal: Option<unsafe extern "C" fn(u8)>,
-) -> c_int {
-    // SAFETY: the native SDK lends every registration input through this call.
-    let result = unsafe {
-        swoole_rs_zend::registration::function_alias(
-            source,
-            origin,
-            origin_length,
-            target,
-            alias,
-            alias_length,
-            info,
-            assert_internal,
-        )
-    };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            bailout::finish();
-            -1
-        }
-    }
 }
 
 /// Register the native SDK's lowercase persistent class alias.
