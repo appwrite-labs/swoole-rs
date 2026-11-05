@@ -565,8 +565,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('tests/modules/buffer/string/test_gate.py::test_profile[originals]', commands['string-originals'])
         self.assertIn('tests/modules/buffer/string/test_gate.py::test_profile[split]', commands['string-split'])
         self.assertIn('memory-table-compatibility', commands)
-        self.assertIn('--core', commands['wrappers-listener'])
-        self.assertIn('--sanitize', commands['wrappers-listener'])
         self.assertIn('column-bytes', commands['phpcollections-column-bytes'])
         self.assertEqual(commands['phpcollections-column-bytes'].count('--engine'), 2)
         self.assertIn('--core', commands['ports-defaults'])

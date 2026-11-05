@@ -39,9 +39,6 @@ void swr_v1_wrappers_request_free(SwrWrapperRequest *);
 int32_t swr_v1_wrappers_request_view(const SwrWrapperRequest *, SwrWrapperView *);
 int32_t swr_v1_wrappers_header(SwrWrapperRequest *, const uint8_t *, size_t);
 int32_t swr_v1_wrappers_header_kind(const SwrWrapperRequest *, uint32_t method, const uint8_t *, size_t, uint8_t multipart);
-void swr_v1_wrappers_disposition_begin(SwrWrapperRequest *);
-int32_t swr_v1_wrappers_parameter(SwrWrapperRequest *, const uint8_t *, size_t, const uint8_t *, size_t);
-int32_t swr_v1_wrappers_disposition_end(SwrWrapperRequest *);
 /* Initialized immutable disposition bytes, disjoint from request-owned buffers.
  * No pointer retained; host-libc whitespace, first NUL, last duplicate and
  * filename-presence precedence. Publishes only selected form/input metadata. */

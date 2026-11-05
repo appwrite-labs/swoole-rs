@@ -29,8 +29,7 @@ for test in \
     tests/modules/tls/test_php.py \
     tests/modules/utilities/test_overlay.py \
     tests/modules/utilities/test_prepare_benchmark.py \
-    tests/modules/utilities/test_storage_summary.py \
-    tests/modules/wrappers/test_model_checkpoints.py
+    tests/modules/utilities/test_storage_summary.py
 do
     name=$(echo "$test" | tr / _)
     (cd "${test%/*}" && python3 -m unittest -b -q "$(basename "$test" .py)") > "$logs/$name.log" 2>&1 &

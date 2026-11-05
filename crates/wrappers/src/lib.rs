@@ -124,10 +124,6 @@ pub struct Request {
     form: Vec<u8>,
     input: Vec<u8>,
     body: Vec<u8>,
-    name: Vec<u8>,
-    filename: Vec<u8>,
-    has_name: bool,
-    has_filename: bool,
     completed: bool,
     started: bool,
     binding: http::Binding,
@@ -279,61 +275,6 @@ pub unsafe extern "C" fn swr_v1_wrappers_header_kind(
     } else {
         0
     }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_wrappers_disposition_begin(p: *mut Request) {
-    // SAFETY: `p` is null or a live request handle from `swr_v1_wrappers_request_new`, with no other active use.
-    if let Some(s) = unsafe { p.as_mut() } {
-        s.name.clear();
-        s.filename.clear();
-        s.has_name = false;
-        s.has_filename = false;
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_wrappers_parameter(
-    p: *mut Request,
-    key: *const u8,
-    key_len: usize,
-    value: *const u8,
-    value_len: usize,
-) -> i32 {
-    // SAFETY: `p` is null or a live request handle from `swr_v1_wrappers_request_new`, with no other active use.
-    let s = unsafe { p.as_mut() };
-    // SAFETY: `key` lends `key_len` initialized bytes (or is unused when `key_len` is 0).
-    let key = unsafe { bytes(key, key_len) };
-    // SAFETY: `value` lends `value_len` initialized bytes (or is unused when `value_len` is 0).
-    let value = unsafe { bytes(value, value_len) };
-    let (Some(s), Some(key), Some(value)) = (s, key, value) else {
-        return -1;
-    };
-    // The pinned wrapper uses case-sensitive std::unordered_map keys here.
-    if key == b"name" {
-        if assign(&mut s.name, value) != 0 {
-            return -1;
-        }
-        s.has_name = true;
-    } else if key == b"filename" {
-        if assign(&mut s.filename, value) != 0 {
-            return -1;
-        }
-        s.has_filename = true;
-    }
-    0
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_wrappers_disposition_end(p: *mut Request) -> i32 {
-    // SAFETY: `p` is null or a live request handle from `swr_v1_wrappers_request_new`, with no other active use.
-    let Some(s) = (unsafe { p.as_mut() }) else {
-        return -1;
-    };
-    if s.has_filename {
-        assign(&mut s.input, &s.filename)
-    } else if s.has_name {
-        assign(&mut s.form, &s.name)
-    } else {
-        -1
-    } // Defined rejection instead of pinned end-iterator dereference UB.
 }
 /// Decode the wrapper's Content-Disposition parameters directly into its sole
 /// request metadata. Unlike generic cookie callbacks, no native scratch buffer,
@@ -515,6 +456,9 @@ pub extern "C" fn swr_v1_wrappers_event_direction(event: i32) -> i32 {
         _ => 0,
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod allocation_failures {
