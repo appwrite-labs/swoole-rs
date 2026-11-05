@@ -83,6 +83,10 @@ python3 tools/build_hybrid.py --module timer
 feature values are listed in [migration modules](migration-modules.md).
 [Graduated](migration.md#graduation) modules are in every Rust build and take
 no `--module`.
+
+`memory` and `phpcollections` must be selected together: the core Table layout
+and its PHP reader must match. The development lanes add the companion module
+automatically; direct builder calls need both `--module` flags.
 Upstream keeps PHP objects, socket/reactor ownership, protocol dispatch and
 native callbacks unless a selected module replaces them.
 
