@@ -4,7 +4,7 @@ use std::ptr;
 use swoole_rs_corebase::StringSlot;
 
 pub struct SocketExtra {
-    strings: [StringSlot; 3],
+    pub(crate) strings: [StringSlot; 3],
 }
 #[repr(C)]
 pub struct PreparedSocketExtra {

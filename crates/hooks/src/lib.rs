@@ -277,3 +277,6 @@ mod tests {
         assert_eq!(swr_v1_hook_filter(u32::MAX, 5), u32::MAX ^ 5);
     }
 }
+
+mod socket_scope;
+pub use socket_scope::*;
