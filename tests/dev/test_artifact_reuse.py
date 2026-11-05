@@ -19,7 +19,7 @@ class ArtifactReuse(unittest.TestCase):
             folder.mkdir(parents=True)
             (alias/'modules').mkdir(parents=True)
             manifest = dict(build_mode='immutable', configure=[],
-                            inputs=dict(modules=args.module if label=='selected' else [], fix_halfclose=False))
+                            inputs=dict(modules=dev.selected_modules(args) if label=='selected' else [], fix_halfclose=False))
             values = {'swoole.so':label.encode(), 'build-manifest.json':json.dumps(manifest).encode()}
             for name, value in values.items():
                 (folder/name).write_bytes(value)
@@ -33,7 +33,7 @@ class ArtifactReuse(unittest.TestCase):
             with self.subTest(mutation=mutation), TemporaryDirectory() as temporary:
                 root=Path(temporary);args=self.fixture(root)
                 if mutation=='export': (args.artifacts_from/'selected-export/swoole.so').write_bytes(b'changed')
-                if mutation=='alias': (root/'target/hybrid/rust-memory/modules/swoole.so').write_bytes(b'changed')
+                if mutation=='alias': (root/'target/hybrid'/dev.build_variant(args)/'modules/swoole.so').write_bytes(b'changed')
                 if mutation=='configuration': args.fix_halfclose=True
                 with patch.object(dev,'ROOT',root), patch.object(dev.subprocess,'check_output',return_value='different' if mutation=='source' else 'frozen'):
                     if mutation=='none': self.assertEqual(set(dev.verify_artifact_report(args)),{'native','selected'})
@@ -58,7 +58,7 @@ class ArtifactReuse(unittest.TestCase):
                         receipt['producer_source_ref'] = receipt_origin
                     receipt['files']['build-manifest.json']['sha256'] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
                     receipt_path.write_text(json.dumps(receipt))
-                    variant = 'upstream' if label == 'native' else 'rust-memory'
+                    variant = 'upstream' if label == 'native' else dev.build_variant(args)
                     (root / 'target/hybrid' / variant / 'build-manifest.json').write_bytes(manifest_path.read_bytes())
                     with patch.object(dev, 'ROOT', root), patch.object(dev.subprocess, 'check_output', return_value='frozen'):
                         if receipt_origin == manifest_origin == 'frozen':

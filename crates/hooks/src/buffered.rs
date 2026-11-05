@@ -1,6 +1,10 @@
 //! `Socket::recv_with_buffer` and `Socket::recv_line` of the coroutine socket:
 //! reads served from the socket's read buffer, refilled by one `recv`. Native code
 //! keeps the buffer, which it lends as `BufferFields`, and the `recv`.
+use crate::co_io::{available, host};
+use crate::co_socket::CoSocket;
+use crate::packet::ReadBuffer;
+use crate::shutdown::READ;
 use core::ffi::c_void;
 
 /// The fields of the socket's read buffer (`swoole::String`).
@@ -123,6 +127,80 @@ pub unsafe extern "C" fn swr_v1_hook_recv_line(
         count += 1;
     }
     count.cast_signed()
+}
+
+struct Context {
+    socket: *mut CoSocket,
+    view: ReadBuffer,
+}
+
+impl Context {
+    fn sync(&mut self, action: u32, size: usize) {
+        // SAFETY: the record and view remain live and exclusive for this operation.
+        unsafe { (host().read_buffer)(self.socket, &raw mut self.view, action, size) };
+    }
+}
+
+unsafe fn context<'a>(at: *mut c_void) -> &'a mut Context {
+    // SAFETY: the buffered read lends its live Context to every callback.
+    unsafe { &mut *at.cast::<Context>() }
+}
+
+unsafe extern "C" fn record_recv(at: *mut c_void, buffer: *mut u8, size: usize) -> isize {
+    // SAFETY: the buffered read's live context.
+    let ctx = unsafe { context(at) };
+    ctx.sync(1, 0);
+    // SAFETY: the caller lends the buffer's free space to the native receive.
+    unsafe { (host().recv)(ctx.socket, buffer, size, false) }
+}
+
+fn buffer(socket: *mut CoSocket) -> Context {
+    let mut ctx = Context {
+        socket,
+        view: ReadBuffer {
+            length: 0,
+            size: 0,
+            offset: 0,
+            str: core::ptr::null_mut(),
+        },
+    };
+    ctx.sync(0, 0);
+    ctx
+}
+
+/// `Socket::recv_with_buffer`, including availability and lazy buffer allocation.
+///
+/// # Safety
+/// `socket` is live; `out` holds `size` writable bytes and cannot overlap its buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_recv_buffered(
+    socket: *mut CoSocket,
+    out: *mut u8,
+    size: usize,
+) -> isize {
+    // SAFETY: the live record.
+    if !unsafe { available(socket, READ) } {
+        return -1;
+    }
+    let mut ctx = buffer(socket);
+    let view = BufferFields {
+        str: ctx.view.str,
+        size: ctx.view.size,
+        length: &raw mut ctx.view.length,
+        offset: &raw mut ctx.view.offset,
+    };
+    // SAFETY: the exclusive buffer fields and output remain live for the receive.
+    let result = unsafe {
+        swr_v1_hook_recv_buffered(
+            &raw const view,
+            record_recv,
+            (&raw mut ctx).cast(),
+            out,
+            size,
+        )
+    };
+    ctx.sync(1, 0);
+    result
 }
 
 #[cfg(test)]

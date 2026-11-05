@@ -1,9 +1,9 @@
 # M26 common PHP helpers and optional stdext
 
 M26 covers `ext-src/php_swoole_cxx.cc`, `ext-src/swoole_stdext.cc` and the
-String/KeyValue/ArrayIterator/Array/Variable/CharPtr/inline Callable methods and
-callable factories in `ext-src/php_swoole_cxx.h`. Public declarations, layout and
-macros stay frozen. The contract is
+KeyValue/ArrayIterator/Array methods in `ext-src/php_swoole_cxx.h`.
+String, CharPtr, Variable, inline Callable methods and callable factories keep
+the upstream implementation until their state moves into Rust. The contract is
 [docs/phphelpers-abi-v1.md](../../../docs/phphelpers-abi-v1.md).
 
 `ext-src/swoole_stdext.cc` (typed arrays, methods on arrays/strings/streams and
@@ -19,7 +19,7 @@ exceptions/bailouts stay native.
 | --- | --- |
 | Callable construction/release, keyed merge (index vs string route), bool/named call lifecycles | Values/refcounts, numeric-key classification, HashTable APIs, lookup, diagnostics and invocation |
 | 64 known strings | Persistent/interned pointer table |
-| String/CharPtr/KeyValue/Variable/Callable custody and factories; one release decision per String/CharPtr teardown | Allocation/copy/move/refcounts, storage, callbacks, destruction and errors |
+| KeyValue custody | Key/value storage, allocation, refcounts and destruction |
 | ArrayIterator traversal; Array update status | Bucket bounds/kinds/indirection, cursor/key storage and HashTable updates |
 | `php_swoole_async` admission (blocking short-circuit, one nonblocking context query) | `std::function` capture/storage, invocation, async/yield, exceptions/bailout |
 
@@ -58,12 +58,10 @@ python3 tests/modules/phphelpers/sdk.py --source PINNED --sdk-export IMMUTABLE/e
 ```
 
 `sdk.py` (`phphelpers-sdk`) compiles 16 actual-TU profiles (native/hybrid x
-stdext off/on x two `.cc` files x C++14/17), checks seven class
-size/alignment witnesses agree, compiles four optimized `php_swoole_async` caller
-objects and checks their Rust imports. Native is the pin with every `SWOOLE_RS_*`
+stdext off/on x two `.cc` files x C++14/17), compiles four optimized
+`php_swoole_async` caller objects and checks their Rust imports. Native is the pin with every `SWOOLE_RS_*`
 switch off; hybrid is the export's own build tree (patched headers,
-`rust-prefix/include` and its switches). It also compares declarations outside 68
-inline bodies and 10 verbatim macros against the pinned header. Missing optional
+`rust-prefix/include` and its switches). Missing optional
 packages (for example libpq) keep their error but do not drop other flags. Its
 report (per-command dependency hashes, `selected_header_sha256`, the native public
 header hash) is the input for `entrypoint.py`, `facade_runtime.py`,
@@ -89,8 +87,9 @@ All take `--engine native=DSO --engine selected=DSO`, `--build-manifest`,
   child diagnostics (`entrypoint.php`, `entrypoint-child.php`).
 - `facade_runtime.py --sdk-report SDK.json [--prepare-only]`
   (`phphelpers-facade-runtime`): builds native and hybrid-header
-  helpers from `facade_entrypoint.cc`, requires all seven Rust
-  facade imports in selected helpers and none in native, checks the production
+  helpers from `facade_entrypoint.cc`, requires the remaining KeyValue, iterator
+  and call-result Rust imports in selected helpers and none in native, rejects
+  retired String/Callable step-plan imports, checks the production
   header/local ABI against the SDK, then runs `facade_entrypoint.php`. Header
   variants against one DSO are not separate production feature builds.
 
@@ -117,8 +116,7 @@ for t in tests/modules/phphelpers/test_*.py; do python3 -m unittest "$t"; done
 
 ## Open gates
 
-Loaded runtime for the keyed-merge routing, String/CharPtr release decision and
-String dup/edup routing awaits a matching production build. The 48 optional DB
+Loaded runtime for the keyed-merge routing awaits a matching production build. The 48 optional DB
 async callers have no runtime qualification (6 SQLite and 11 ODBC compile on
 macOS; 31 Oracle/Firebird callers are not compiled). Whole caller/lifetime/fatal/
 OOM/DEBUG/ZTS coverage, other architectures, separate production feature builds,
@@ -133,8 +131,8 @@ All five phases are kept, none deleted:
   under ASan/UBSan.
 - `phphelpers-async`: the `php_swoole_async` dispatch bodies, the C11 ABI
   consumer, and C++14/17 builds with and without sanitizers.
-- `phphelpers-sdk`: the only full-file compiles (24 profiles), the class layout
-  witnesses and the Rust import checks. Its report is also the input that
+- `phphelpers-sdk`: the full-file compiles (16 profiles) and Rust import checks.
+  Its report is also the input that
   `phpcoroutines-sdk` and the stdext loaded checks read.
 - `phphelpers-async-sqlite-sdk`, `phphelpers-async-odbc-sdk`: the only builds of
   the optional SQLite and ODBC consumers with their feature enabled.

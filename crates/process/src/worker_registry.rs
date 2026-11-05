@@ -15,6 +15,9 @@ use std::ffi::{c_int, c_void};
 // `SWR_WORKER_*` constants in the C header (event workers and user workers; task
 // workers live in the task pool and are not registered).
 
+/// User workers in the server registry (`SWR_WORKER_USER`).
+pub(crate) const CATEGORY_USER: c_int = 2;
+
 struct Entry {
     worker: *mut c_void,
     category: c_int,
@@ -25,6 +28,15 @@ struct Entry {
 pub struct WorkerRegistry {
     workers: HashMap<c_int, Entry>,
     detached: HashSet<c_int>,
+}
+
+impl WorkerRegistry {
+    pub(crate) fn pids(&self, category: c_int) -> impl Iterator<Item = c_int> + '_ {
+        self.workers
+            .iter()
+            .filter(move |(_, entry)| entry.category == category)
+            .map(|(pid, _)| *pid)
+    }
 }
 
 /// Create an empty registry. Native frees it with [`swr_v1_process_worker_registry_free`].
@@ -144,12 +156,7 @@ pub unsafe extern "C" fn swr_v1_process_worker_registry_terminate(
 ) {
     // SAFETY: the caller lends a live registry handle.
     let registry = unsafe { &*registry };
-    let pids: Vec<c_int> = registry
-        .workers
-        .iter()
-        .filter(|(_, entry)| entry.category == category)
-        .map(|(pid, _)| *pid)
-        .collect();
+    let pids: Vec<c_int> = registry.pids(category).collect();
     for &pid in &pids {
         kill_fn(pid, signo);
     }
@@ -167,7 +174,6 @@ mod tests {
     use std::cell::RefCell;
 
     const CATEGORY_EVENT: c_int = 1;
-    const CATEGORY_USER: c_int = 2;
 
     fn registry() -> *mut WorkerRegistry {
         swr_v1_process_worker_registry_new()

@@ -15,11 +15,12 @@ For `php_swoole_cxx`, Rust owns callback-free callable/merge decisions. Zend
 values, HashTables, COW, GC, allocators/destructors and the known-string
 storage stay native.
 
-For the header classes, public names, signatures, field types and order,
-visibility, object layout and macros are identical across native, M26-only and
-combined builds; feature selection never changes class layout. Rust plans
-lifecycle sequencing and iterator decisions only. Self-assignment,
-initialization, copy/move/reset, duplicate-key ownership and failure order match
-upstream. Plain getters and forwarders stay native.
+String, CharPtr, Variable, inline Callable helpers and callable factories retain
+upstream's bodies and Zend-owned state. Their former step-plan loops merely
+repeated those native effects over FFI and are removed. KeyValue custody,
+ArrayIterator traversal and Array update-result policy remain in Rust; native
+storage and effects preserve upstream initialization, copy/move/reset,
+duplicate-key ownership and failure order. SDK compilation and loaded helper
+fixtures compare behavior without freezing upstream class text or layout.
 
 The 31 stdext PHPTs need `--stdext` (`SW_STDEXT`), which default builds disable.
