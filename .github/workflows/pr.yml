@@ -61,7 +61,7 @@ jobs:
         run: |
           changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           echo "$changed"
-          if echo "$changed" | grep -qE '^(migration/patches/|native/|tools/(build_(hybrid|upstream)|arginfo)\.py$|crates/phpstubs/|\.github/|\.devcontainer/)'; then
+          if echo "$changed" | grep -qE '^(migration/patches/|native/|tools/(build_(hybrid|upstream)|check_partial|arginfo)\.py$|crates/phpstubs/|\.github/|\.devcontainer/)'; then
             echo hybrid=true >> "$GITHUB_OUTPUT"
           fi
           if echo "$changed" | grep -qE '^(migration/patches/hooks/|crates/(hooks|uring[^/]*)/|\.github/workflows/iouring\.yml$|\.devcontainer/install\.sh$)'; then
@@ -113,6 +113,8 @@ jobs:
       - run: cargo fetch --locked
       # With the optional cURL and ssh2 hooks (the merge tier's phpt-build runs their PHPTs).
       - run: python3 tools/build_hybrid.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2 $(python3 -c "from tools.build_hybrid import SELECTABLE; print(' '.join('--module ' + m for m in SELECTABLE))")
+      # Shared headers must also compile with the callers omitted by the full migration.
+      - run: python3 tools/check_partial.py --base origin/${{ github.base_ref }}
       - run: ccache --show-stats
       # 12-hyperf needs composer; it runs in the merge tier.
       - run: >
