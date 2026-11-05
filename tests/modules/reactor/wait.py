@@ -23,7 +23,8 @@ def main():
     args=parser.parse_args()
     if args.report.exists():raise ValueError('Choose a unique wait receipt path')
     hybrid_source=hybrid(args.archive)[0]
-    with tempfile.TemporaryDirectory(prefix='swr-wait-') as temporary:
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='swr-wait-', dir=args.report.parent) as temporary:
         tree=Path(temporary)
         fragments=[]
         for backend in ['poll', 'epoll' if sys.platform.startswith('linux') else 'kqueue']:
@@ -35,6 +36,20 @@ def main():
                 methods=[]
                 body,_=block(text,text.index('int '+original_type+'::wait()'))
                 body=body.replace('int '+original_type+'::wait()', 'int wait()')
+                if label == 'Selected':
+                    if 'swr_v1_reactor_state_wait' not in body or 'swr_v1_reactor_state_backend' not in body:
+                        raise ValueError('Production wait must use the Rust backend owner')
+                    sockets = 'reinterpret_cast<void **>(event_sockets_)' if backend == 'poll' else 'nullptr'
+                    kind = {'poll':'SWR_REACTOR_POLL','epoll':'SWR_REACTOR_EPOLL','kqueue':'SWR_REACTOR_KQUEUE'}[backend]
+                    body = body.replace('auto backend = swr_v1_reactor_state_backend(reactor_->handle());', 'swr_v1_reactor_backend_view backend{events_, '+sockets+', '+kind+'};')
+                    kernel = {
+                        'poll': '(*entries = context->self->set_events(), native_poll(context->self->events_, *entries, reactor->get_timeout_msec()))',
+                        'epoll': 'native_epoll_wait(context->self->epfd_, context->self->events_, reactor->max_event_num, reactor->get_timeout_msec())',
+                        'kqueue': '([&] { auto timeout=swr_v1_reactor_kqueue_timeout(reactor->timeout_msec, reactor->timeout_msec <= 0 && reactor->defer_tasks != nullptr); timespec time{timeout.seconds,timeout.nanoseconds}; return native_kevent(context->self->epfd_, nullptr, 0, context->self->events_, context->self->event_max_, timeout.finite ? &time : nullptr); })()',
+                    }[backend]
+                    body = body.replace('swr_v1_reactor_state_wait(reactor->handle(), reactor->defer_tasks != nullptr, entries)', kernel)
+                    body = body.replace('self->descriptor()', 'self->epfd_')
+
                 body=body.replace('struct kevent','NativeKevent').replace('::kevent(', 'native_kevent(').replace('epoll_wait(', 'native_epoll_wait(').replace('poll(events_', 'native_poll(events_').replace('::poll(', '::native_poll(')
                 if backend=='kqueue':
                     helpers=['bool fetch_event(', 'void del_once_socket('] if label=='Original' else []

@@ -103,7 +103,14 @@ CONTROLS = {'tls': ('coroutine',)}
 
 def selected_modules(args):
     chosen = MODULES if getattr(args, 'all_modules', False) else args.module or []
-    chosen = set(chosen) | {extra for module in chosen for extra in CONTROLS.get(module, ()) + REQUIRES.get(module, ())}
+    chosen = set(chosen)
+    pending = list(chosen)
+    while pending:
+        module = pending.pop()
+        for dependency in CONTROLS.get(module, ()) + REQUIRES.get(module, ()):
+            if dependency not in chosen:
+                chosen.add(dependency)
+                pending.append(dependency)
     if getattr(args, 'fix_halfclose', False):
         chosen |= set(HALFCLOSE_REQUIRES)
     return sorted(chosen | set(GRADUATED))

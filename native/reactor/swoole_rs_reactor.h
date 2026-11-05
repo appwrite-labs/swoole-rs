@@ -8,9 +8,19 @@
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
+struct iovec;
 #ifdef __cplusplus
+namespace swoole { class Reactor; namespace network { struct Socket; } }
+typedef ssize_t (*swr_v1_reactor_write_fn)(swoole::Reactor *, swoole::network::Socket *, const void *, size_t);
+typedef ssize_t (*swr_v1_reactor_writev_fn)(swoole::Reactor *, swoole::network::Socket *, const struct iovec *, size_t);
+typedef int (*swr_v1_reactor_close_fn)(swoole::Reactor *, swoole::network::Socket *);
 extern "C" {
 
+#endif
+#ifndef __cplusplus
+typedef ssize_t (*swr_v1_reactor_write_fn)(void *, void *, const void *, size_t);
+typedef ssize_t (*swr_v1_reactor_writev_fn)(void *, void *, const struct iovec *, size_t);
+typedef int (*swr_v1_reactor_close_fn)(void *, void *);
 #endif
 /* Socket's queued output: handle_send sends the rest of the front data chunk and
  * classifies the result; handle_sendfile corks (sendfile_cork), lets native code
@@ -357,6 +367,23 @@ swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner)
 size_t swr_v1_reactor_iov_length(const swr_v1_reactor_iov *owner);
 void swr_v1_reactor_iov_advance(swr_v1_reactor_iov *owner, intptr_t n);
 ssize_t swr_v1_socket_iov_owned(int fd, bool write, swr_v1_reactor_iov *owner, swr_v1_socket_tls_io tls, void *socket);
+/* File requests own the actual File record and all range/cork slots. Native
+ * views retain source-level File/std::string interfaces; only Rust closes fd. */
+typedef struct swr_v1_os_file_record swr_v1_os_file_record;
+typedef struct swr_v1_socket_file_request swr_v1_socket_file_request;
+typedef struct { int8_t corked; off_t begin; off_t end; } swr_v1_socket_file_fields;
+typedef struct {
+    swr_v1_socket_file_request *owner;
+    swr_v1_os_file_record *file;
+    swr_v1_socket_file_fields *fields;
+} swr_v1_socket_file_prepared;
+swr_v1_socket_file_prepared swr_v1_socket_file_new(const char *filename, off_t offset);
+void swr_v1_socket_file_free(swr_v1_socket_file_request *owner);
+bool swr_v1_socket_file_copy_empty(swr_v1_socket_file_request *owner, const swr_v1_socket_file_request *source);
+void swr_v1_socket_file_copy_fields(swr_v1_socket_file_request *owner, const swr_v1_socket_file_request *source);
+int swr_v1_socket_file_check(swr_v1_socket_file_request *owner, size_t length);
+size_t swr_v1_socket_file_length(const swr_v1_socket_file_request *owner);
+void swr_v1_socket_file_cork(swr_v1_socket_file_request *owner, const swr_v1_socket_output_hooks *hooks);
 /* Socket::wait_for and the *_sync methods: Rust runs the loop (prepare, retry
  * classification, ENOBUFS backoff, poll, timeout) and each kind's progress rule;
  * native code gives the socket's flags and performs each I/O call. Returns the
@@ -404,6 +431,32 @@ bool swr_v1_socket_domain_and_type(int socket_type, int *domain, int *kind);
 swr_v1_socket_host_type_plan swr_v1_socket_host_type(const uint8_t *host, size_t length);
 /* swoole::socket: socket(2) with SW_SOCK_NONBLOCK/SW_SOCK_CLOEXEC applied. */
 int swr_v1_socket_open(int domain, int kind, int protocol, int flags);
+
+/* One owner for Reactor public slots, registry, handlers and kernel resources. */
+typedef struct swr_v1_reactor_state swr_v1_reactor_state;
+typedef struct {
+    int kind; void *ptr; int native_handle; uint32_t max_event_num;
+    bool ready, running, start, once, wait_exit, destroyed, bailout, timed_out;
+    int32_t timeout_msec; uint16_t id; uint32_t max_socket; time_t last_malloc_trim_time;
+    swr_v1_reactor_write_fn write;
+    swr_v1_reactor_writev_fn writev;
+    swr_v1_reactor_close_fn close;
+} swr_v1_reactor_fields;
+typedef struct {
+    swr_v1_reactor_state *owner; swr_v1_reactor_fields *fields;
+    swr_v1_reactor_registry *registry; swr_v1_reactor_handlers *handlers;
+} swr_v1_reactor_prepared;
+typedef struct { void *events; void **sockets; uint32_t backend; } swr_v1_reactor_backend_view;
+swr_v1_reactor_prepared swr_v1_reactor_state_new(void);
+void swr_v1_reactor_state_free(swr_v1_reactor_state *);
+int swr_v1_reactor_state_open(swr_v1_reactor_state *, int kind, int count);
+void swr_v1_reactor_state_close_backend(swr_v1_reactor_state *);
+swr_v1_reactor_backend_view swr_v1_reactor_state_backend(swr_v1_reactor_state *);
+int swr_v1_reactor_state_wait(swr_v1_reactor_state *, bool deferred, int *entries);
+void swr_v1_reactor_state_before_wait(swr_v1_reactor_state *);
+int swr_v1_reactor_state_descriptor(const swr_v1_reactor_state *);
+int swr_v1_reactor_state_limit(const swr_v1_reactor_state *);
+int swr_v1_reactor_state_socket(swr_v1_reactor_state *, void *socket, uint32_t op, int events);
 #ifdef __cplusplus
 }
 static_assert(sizeof(swr_v1_reactor_builtin_reply) == 8, "reactor builtin reply ABI");

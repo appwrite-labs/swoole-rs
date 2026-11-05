@@ -119,14 +119,17 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_cork(
     cork_min: libc::off_t,
 ) {
     // SAFETY: the caller lends its hooks and request field for this call.
-    let (hooks, corked) = (unsafe { &*hooks }, unsafe { &mut *corked });
-    if *corked == 0 {
+    let hooks = unsafe { &*hooks };
+    // SAFETY: the caller lends the stable cork slot; copy before the native effect.
+    if unsafe { *corked } == 0 {
         // SAFETY: the caller's socket.
-        *corked = if end - begin > cork_min && unsafe { (hooks.cork)(hooks.socket) } {
+        let next = if end - begin > cork_min && unsafe { (hooks.cork)(hooks.socket) } {
             1
         } else {
             -1
         };
+        // SAFETY: the effect returned and the caller still lends this slot exclusively.
+        unsafe { *corked = next };
     }
 }
 
@@ -146,7 +149,7 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_sent(
     end: libc::off_t,
 ) -> OutputResult {
     // SAFETY: the caller lends its hooks and request field for this call.
-    let (hooks, corked) = (unsafe { &*hooks }, unsafe { &mut *corked });
+    let hooks = unsafe { &*hooks };
     let result = OutputResult::default();
     if sent <= 0 {
         match classify(hooks) {
@@ -181,10 +184,12 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_sent(
     if begin != end {
         return result;
     }
-    if *corked == 1 {
+    // SAFETY: the caller lends a live cork slot; no borrow crosses uncork.
+    if unsafe { *corked } == 1 {
         // SAFETY: the caller's socket.
         unsafe { (hooks.uncork)(hooks.socket) };
-        *corked = 0;
+        // SAFETY: uncork returned; the caller still lends the stable slot.
+        unsafe { *corked = 0 };
     }
     OutputResult {
         pop: true,
