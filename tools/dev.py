@@ -347,6 +347,7 @@ def plan(args, reports):
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report(name))
         if integrate:
             for family, runner in [('http', 'php_http.py'), ('dns', 'php_dns.py'), ('lifecycle', 'php_lifecycle.py'),
+                                   ('socket-custody', 'socket_custody.py'),
                                    ('pool', 'php_pool.py'), ('resolver', 'php_resolver.py'), ('pool_fork', 'php_pool_fork.py'),
                                    ('http_connection', 'php_http_connection.py'), ('http_format', 'php_http_format.py'),
                                    ('coro', 'php_coro.py'), ('async', 'php_async.py'), ('coro_io', 'php_coro_io.py')]:
