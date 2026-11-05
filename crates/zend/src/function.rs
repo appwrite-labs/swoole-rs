@@ -5,15 +5,10 @@ use crate::{
     sys::{
         _zval_struct__bindgen_ty_1, IS_UNDEF, add_assoc_bool_ex, swr_zend_class_set_create_object,
         swr_zend_register_function_alias, zend_class_entry, zend_function_entry,
-        zend_internal_arg_info, zend_object, zend_object_handlers, zend_objects_new, zend_string,
-        zend_throw_error, zval,
+        zend_internal_arg_info, zend_object, zend_object_handlers, zval,
     },
 };
-use std::{
-    ffi::{CStr, c_char},
-    mem::offset_of,
-    ptr,
-};
+use std::{ffi::CStr, mem::offset_of, ptr};
 
 impl Class {
     /// Register a class of static methods that cannot be instantiated
@@ -77,9 +72,15 @@ impl Call {
 /// (declared properties undefined), which Zend then releases.
 /// # Safety
 /// Installed as `create_object`, so Zend passes a registered class.
+#[unsafe(export_name = "swr_v1_phphelpers_object_deny")]
 pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: a registered class.
-    let object = unsafe { zend_objects_new(ce) };
+    let mut object = ptr::null_mut();
+    // SAFETY: Zend's allocation failure is contained in the C leaf.
+    if unsafe { crate::sys::swr_zend_try_facade_objects_new(ce, &raw mut object) } != 0 {
+        crate::bailout::Bailout.defer();
+    }
+    crate::bailout::finish();
     // SAFETY: class entries live for the process.
     let class = unsafe { &*ce };
     let count = usize::try_from(class.default_properties_count).unwrap_or(0);
@@ -95,14 +96,11 @@ pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut z
             };
         }
     }
-    // SAFETY: a printf format whose `%s` takes the NUL-terminated class name.
-    unsafe {
-        zend_throw_error(
-            ptr::null_mut(),
-            c"The object of %s can not be created for security reasons".as_ptr(),
-            text(class.name),
-        );
+    // SAFETY: Zend's error construction is trapped before this callback returns.
+    if unsafe { crate::sys::swr_zend_try_facade_creation_error(ce) } != 0 {
+        crate::bailout::Bailout.defer();
     }
+    crate::bailout::finish();
     object
 }
 
@@ -127,13 +125,6 @@ fn arg_info(methods: *const zend_function_entry, method: &CStr) -> *const zend_i
         }
         entry = entry.wrapping_add(1);
     }
-}
-
-/// `ZSTR_VAL`.
-fn text(string: *const zend_string) -> *const c_char {
-    string
-        .wrapping_byte_add(offset_of!(zend_string, val))
-        .cast()
 }
 
 #[cfg(test)]

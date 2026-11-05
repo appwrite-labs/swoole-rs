@@ -104,7 +104,81 @@ PHP_FUNCTION(m26_facade_custody) {
         add_assoc_bool(return_value,"nullable_null",sw_callable_create_ex(nullptr,"callback",true)==nullptr);
     }
 }
-static const zend_function_entry functions[]={PHP_FE(m26_facade_custody,arginfo_m26_facade) PHP_FE_END};
+PHP_FUNCTION(m26_private_custody) {
+    zval *object, *callback;
+    ZEND_PARSE_PARAMETERS_START(2,2)
+        Z_PARAM_OBJECT(object)
+        Z_PARAM_ZVAL(callback)
+    ZEND_PARSE_PARAMETERS_END();
+    array_init(return_value);
+    auto *scope = Z_OBJCE_P(object);
+    auto *scalar = sw_zend_read_property(scope, object, ZEND_STRL("scalar"), 1);
+    add_assoc_stringl(return_value, "scalar", Z_STRVAL_P(scalar), Z_STRLEN_P(scalar));
+    auto *name = zend_string_init(ZEND_STRL("scalar"), false);
+    auto *direct = sw_zend_read_property_ex(scope, object, name, 1);
+    add_assoc_bool(return_value, "same_slot", direct == scalar);
+    zend_string_release(name);
+    name = zend_string_init(ZEND_STRL("optional"), false);
+    add_assoc_bool(return_value, "nullable", sw_zend_read_property_not_null_ex(scope, object, name, 1) == nullptr);
+    zend_update_property_string(scope, Z_OBJ_P(object), ZEND_STRL("optional"), "ready");
+    auto *optional = sw_zend_read_property_not_null_ex(scope, object, name, 1);
+    add_assoc_stringl(return_value, "nonnull", Z_STRVAL_P(optional), Z_STRLEN_P(optional));
+    zend_string_release(name);
+    auto *array = sw_zend_read_and_convert_property_array(scope, object, ZEND_STRL("container"), 1);
+    add_assoc_long(return_value, "converted_count", zend_hash_num_elements(Z_ARRVAL_P(array)));
+    add_next_index_long(array, 7);
+    array = sw_zend_update_and_read_property_array(scope, object, ZEND_STRL("container"));
+    add_assoc_long(return_value, "reset_count", zend_hash_num_elements(Z_ARRVAL_P(array)));
+    auto *heap = sw_malloc_zval(); ZVAL_STRING(heap, "heap");
+    auto *copy = sw_zval_dup(heap);
+    add_assoc_bool(return_value, "shallow_copy", Z_STR_P(copy) == Z_STR_P(heap) && Z_REFCOUNT_P(heap) == 1);
+    Z_TRY_ADDREF_P(copy); sw_zval_free(copy);
+    add_assoc_long(return_value, "after_copy_free", Z_REFCOUNT_P(heap));
+    sw_zval_free(heap);
+    zval args[2]; ZVAL_STRINGL(&args[0], "a\0B", 3); ZVAL_LONG(&args[1], 19);
+    zend_fcall_info frame{}; frame.param_count=2; frame.params=args;
+    sw_zend_fci_params_persist(&frame);
+    add_assoc_bool(return_value, "persisted", frame.params != args && Z_STR_P(&frame.params[0]) == Z_STR_P(&args[0]) && Z_LVAL(frame.params[1]) == 19);
+    add_assoc_long(return_value, "persisted_refs", Z_REFCOUNT(args[0]));
+    sw_zend_fci_params_discard(&frame);
+    add_assoc_long(return_value, "released_refs", Z_REFCOUNT(args[0]));
+    zval_ptr_dtor(&args[0]);
+    zend_fcall_info info{}; zend_fcall_info_cache cache{};
+    if (zend_fcall_info_init(callback, 0, &info, &cache, nullptr, nullptr) != SUCCESS) RETURN_FALSE;
+    auto before=Z_REFCOUNT_P(callback);
+    sw_zend_fci_cache_persist(&cache);
+    add_assoc_long(return_value, "cache_retained", Z_REFCOUNT_P(callback)-before);
+    sw_zend_fci_cache_discard(&cache);
+    add_assoc_bool(return_value, "cache_released", Z_REFCOUNT_P(callback)==before);
+    zval owned; object_init_ex(&owned, Z_OBJCE_P(callback));
+    if (zend_fcall_info_init(&owned, 0, &info, &cache, nullptr, nullptr) != SUCCESS) RETURN_FALSE;
+    sw_zend_fci_cache_persist(&cache);
+    zval_ptr_dtor(&owned); ZVAL_UNDEF(&owned);
+    sw_zend_fci_cache_discard(&cache);
+    auto *shortened=zend_string_init("ABCxxxxx",8,false);
+    shortened=sw_zend_string_recycle(shortened,8,3);
+    add_assoc_stringl(return_value,"recycled",ZSTR_VAL(shortened),ZSTR_LEN(shortened));
+    zend_string_release(shortened);
+    auto length=2*swoole_pagesize()+16;
+    auto *large=zend_string_alloc(length,false); memcpy(ZSTR_VAL(large),"XYZ",4);
+    large=sw_zend_string_recycle(large,length,3);
+    add_assoc_stringl(return_value,"shrunk",ZSTR_VAL(large),ZSTR_LEN(large));
+    zend_string_release(large);
+}
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_m26_oom,0,0,1)
+    ZEND_ARG_TYPE_INFO(0, mode, IS_LONG, 0)
+ZEND_END_ARG_INFO()
+PHP_FUNCTION(m26_facade_oom) {
+    zend_long mode;
+    ZEND_PARSE_PARAMETERS_START(1,1) Z_PARAM_LONG(mode) ZEND_PARSE_PARAMETERS_END();
+    std::string input((mode==3 ? 32 : 24)*1024*1024, 'x');
+    if(mode==0) { zend::String value(input); }
+    else if(mode==1) { zend::Variable value(input); }
+    else { zend::CharPtr value(input.data(),input.size()); }
+    RETURN_TRUE;
+}
+static const zend_function_entry functions[]={PHP_FE(m26_facade_custody,arginfo_m26_facade) PHP_FE(m26_private_custody,arginfo_m26_facade) PHP_FE(m26_facade_oom,arginfo_m26_oom) PHP_FE_END};
 extern "C" {
 zend_module_entry m26_facade_module_entry={STANDARD_MODULE_HEADER,"m26_facade",functions,nullptr,nullptr,nullptr,nullptr,nullptr,"0",STANDARD_MODULE_PROPERTIES};
 ZEND_GET_MODULE(m26_facade)

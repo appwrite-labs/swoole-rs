@@ -1,8 +1,7 @@
 //! Immutable known-string bytes in frozen native enum order. Zend's mutable
-//! persistent/interned pointer table remains singular and native-owned.
-use std::ffi::c_char;
+//! persistent/interned pointer table is allocated and published by Rust.
 
-const STRINGS: [&[u8]; 64] = [
+pub(crate) const STRINGS: [&[u8]; 64] = [
     b"type\0",
     b"host\0",
     b"user-agent\0",
@@ -68,63 +67,3 @@ const STRINGS: [&[u8]; 64] = [
     b"HTTP/1.1\0",
     b"HTTP/2\0",
 ];
-
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn swr_v1_phphelpers_known_count() -> usize {
-    STRINGS.len()
-}
-
-/// # Safety
-/// Cursor and length are independent aligned native-owned writable storage.
-/// Cursor is initialized; returned bytes are immutable static NUL-terminated data.
-/// Zend allocation/interning and publication happen after Rust returns.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_known_next(
-    cursor: *mut usize,
-    length: *mut usize,
-) -> *const c_char {
-    if cursor.is_null() || length.is_null() {
-        return std::ptr::null();
-    }
-    // SAFETY: non-null (checked above), aligned, initialized cursor storage.
-    let index = unsafe { cursor.read() };
-    let Some(bytes) = STRINGS.get(index) else {
-        return std::ptr::null();
-    };
-    // The cursor is initialized input; length is write-only output and may be
-    // uninitialized. Never form a typed reference to that output storage.
-    // SAFETY: non-null (checked above), aligned, writable output.
-    unsafe { length.write(bytes.len() - 1) };
-    // SAFETY: as for the read above.
-    unsafe { cursor.write(index + 1) };
-    bytes.as_ptr().cast()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::mem::MaybeUninit;
-    #[test]
-    fn known_output_initializes_once_and_end_preserves_output() {
-        let mut cursor = 0;
-        for expected in STRINGS {
-            let mut length = MaybeUninit::<usize>::uninit();
-            let name =
-                unsafe { swr_v1_phphelpers_known_next(&raw mut cursor, length.as_mut_ptr()) };
-            assert_eq!(name, expected.as_ptr().cast());
-            assert_eq!(unsafe { length.assume_init() }, expected.len() - 1);
-        }
-        let mut length = 37;
-        assert!(
-            unsafe { swr_v1_phphelpers_known_next(&raw mut cursor, &raw mut length) }.is_null()
-        );
-        assert_eq!(length, 37);
-        assert_eq!(cursor, STRINGS.len());
-        cursor = 0;
-        assert!(
-            unsafe { swr_v1_phphelpers_known_next(&raw mut cursor, std::ptr::null_mut()) }
-                .is_null()
-        );
-        assert_eq!(cursor, 0);
-    }
-}

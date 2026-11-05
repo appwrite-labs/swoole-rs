@@ -55,38 +55,41 @@ bool swr_v1_phphelpers_callable_ready(const SwrPhpCallable *);
 SwrPhpCallable *swr_v1_phphelpers_callable_copy(const SwrPhpCallable *);
 bool swr_v1_phphelpers_callable_invoke(SwrPhpCallable *, uint32_t, struct _zval_struct *, struct _zval_struct *);
 uint32_t swr_v1_phphelpers_callable_refs(const SwrPhpCallable *);
-/* Native Zend storage/effects remain authoritative. Borrowed initialized spans
- * are used only during each call. No callback or allocation occurs in Rust. */
+struct _zend_object;
+struct _zend_object_handlers;
+struct _zend_fcall_info;
+struct _zval_struct *swr_v1_phphelpers_zval_alloc(void);
+struct _zval_struct *swr_v1_phphelpers_zval_dup(const struct _zval_struct *);
+void swr_v1_phphelpers_zval_free(struct _zval_struct *);
+struct _zend_string *swr_v1_phphelpers_string_recycle(struct _zend_string *, size_t, size_t, size_t);
+struct _zend_object *swr_v1_phphelpers_object_new(struct _zend_class_entry *, const struct _zend_object_handlers *);
+struct _zend_object *swr_v1_phphelpers_object_deny(struct _zend_class_entry *);
+struct _zval_struct *swr_v1_phphelpers_property(struct _zend_class_entry *, struct _zval_struct *, const char *, size_t, bool, bool);
+struct _zval_struct *swr_v1_phphelpers_property_array(struct _zend_class_entry *, struct _zval_struct *, const char *, size_t);
+struct _zval_struct *swr_v1_phphelpers_property_offset(struct _zend_class_entry *, struct _zval_struct *, struct _zend_string *);
+struct _zval_struct *swr_v1_phphelpers_property_optional(struct _zend_class_entry *, struct _zval_struct *, struct _zend_string *, bool);
+void swr_v1_phphelpers_params_keep(struct _zend_fcall_info *);
+void swr_v1_phphelpers_params_free(struct _zend_fcall_info *);
+void swr_v1_phphelpers_cache_keep(struct _zend_fcall_info_cache *);
+void swr_v1_phphelpers_cache_free(struct _zend_fcall_info_cache *);
+int swr_v1_phphelpers_call(struct _zval_struct *, struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *, struct _zval_struct *, bool, void (*)(const char *));
+int swr_v1_phphelpers_call_anyway(struct _zend_fcall_info *, struct _zend_fcall_info_cache *);
+bool swr_v1_phphelpers_function_call(struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *, struct _zval_struct *, bool,
+    int64_t (*)(struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *), void (*)(const char *));
+void swr_v1_phphelpers_named_call(const char *, size_t, uint32_t, struct _zval_struct *, struct _zval_struct *);
+union _zend_function;
+struct _zend_array;
+void swr_v1_phphelpers_array_merge(struct _zval_struct *, const char *, size_t, struct _zval_struct *);
+void swr_v1_phphelpers_known_init(struct _zend_string ***);
+void swr_v1_phphelpers_known_free(struct _zend_string ***);
+union _zend_function *swr_v1_phphelpers_function_find(const struct _zend_array *, const char *, size_t);
+/* The remaining async admission seam borrows native facts only. */
 /* Common Native async admission: initialized phase0; blocking skips context.
  * Native observes context only on request, then invokes fn/async after return.
  * No callback/context representation or frame crosses these Native effects. */
 enum SwrPhpAsyncAction { SWR_PHP_ASYNC_DONE=0, SWR_PHP_ASYNC_OBSERVE_COROUTINE=1,
     SWR_PHP_ASYNC_DIRECT=2, SWR_PHP_ASYNC_DISPATCH=3 };
 uint32_t swr_v1_phphelpers_async(uint32_t *phase, uint8_t blocking, uint8_t coroutine);
-/* Read-only known bytes retain frozen SW_ZEND_KNOWN_STRINGS enum order.
- * Native global persistent/interned pointer storage remains authoritative.
- * Cursor/length are independent initialized native size_t storage. */
-size_t swr_v1_phphelpers_known_count(void);
-const char *swr_v1_phphelpers_known_next(size_t *cursor, size_t *length);
-enum SwrPhpKeyedMergeAction { SWR_PHP_KEYED_DONE=0,
-    SWR_PHP_KEYED_ADD_INDEX=1, SWR_PHP_KEYED_ADD_STRING=2,
-    SWR_PHP_KEYED_FIND_INDEX=3, SWR_PHP_KEYED_FIND_STRING=4,
-    SWR_PHP_KEYED_APPEND=5, SWR_PHP_KEYED_PROMOTE_INDEX=6,
-    SWR_PHP_KEYED_PROMOTE_STRING=7 };
-/* Same lifecycle/observations as frozen merge; native numeric-key classification
- * precedes phase0. Rust selects API routes at the existing dispatch points. */
-uint32_t swr_v1_phphelpers_merge_keyed(uint32_t *, uint8_t inserted,
-                                    uint8_t existing_array, uint8_t numeric_key);
-uint8_t swr_v1_phphelpers_call_success(int64_t result, uint8_t coroutine);
-enum SwrPhpCallAction { SWR_PHP_CALL_NULL=0, SWR_PHP_CALL_DIRECT=1,
-    SWR_PHP_CALL_COROUTINE=2, SWR_PHP_CALL_NAMED=3, SWR_PHP_CALL_RELEASE_NAME=4,
-    SWR_PHP_CALL_OBSERVE_EXCEPTION=5, SWR_PHP_CALL_FATAL=6,
-    SWR_PHP_CALL_TRUE=7, SWR_PHP_CALL_FALSE=8, SWR_PHP_CALL_VARIABLE=9 };
-/* Phase0, modes direct0/coroutine1/named2. Native named-call allocation and local
- * Variable construction precede phase0; result and exception refreshed only after
- * invoke/observe actions. Native cleanup and fatal execution occur after return. */
-uint32_t swr_v1_phphelpers_call_plan(uint32_t *, uint32_t mode, uint8_t has_retval,
-                                   int64_t result, uint8_t exception);
 
 #ifdef SW_STDEXT
 /* stdext (crates/phpstdext): typed arrays and methods on scalars, linked only

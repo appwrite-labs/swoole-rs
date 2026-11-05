@@ -1,7 +1,7 @@
 # M26 common PHP helpers and optional stdext
 
 M26 covers `ext-src/php_swoole_cxx.cc`, `ext-src/swoole_stdext.cc` and the
-common Zend owning facades in `ext-src/php_swoole_cxx.h`. String, Variable,
+common Zend owning facades in `ext-src/php_swoole_cxx.h` and shared property/call/value operations in `ext-src/php_swoole_private.h`. String, Variable,
 KeyValue and Callable own Rust handles; Rust also implements CharPtr allocation
 and release, sparse ArrayIterator walks and Array updates. C++ keeps the
 source-compatible constructors and methods. The contract is
@@ -20,41 +20,29 @@ crates (docs/zend.md); only the `ASSIGN_DIM`/`ASSIGN_DIM_OP` handlers (PHP's
 
 Rust owns the facade values and their operations through typed Zend layouts.
 Version-dependent Zend leaf effects remain C; calls that can execute PHP trap
-bailouts there before returning to Rust. Function/merge adapters still use
-copied-scalar policy, and the known-string pointer table stays native.
+bailouts there before returning to Rust. Function/merge calls and known-string allocation/publication also execute in Rust.
+The C++ known-string global remains a borrowed ABI view.
 
 | Rust ownership / operations | Native leaf effects |
 | --- | --- |
 | String, CharPtr, Variable, KeyValue, Callable lifetimes and factories | Zend allocators/refcount macros; trapped PHP calls and diagnostics |
 | ArrayIterator sparse/indirect cursor; Array updates | Trapped hash insertion/replacement |
-| Function/merge policy; 64 known strings | Native call/merge effects; persistent/interned pointer cache |
+| Function/merge operations; 64 known strings and their pointer cache | Trapped Zend invocation/hash effects; persistent allocation/interning |
 | `php_swoole_async` admission | `std::function` storage, native invocation/async/yield |
 
 Edit the three overlays with `tools/patches.py`; see
 [hybrid build](../../../docs/hybrid-build.md#editing-patches).
 
-## Body gate (`gate.py`, `phphelpers-policy`)
+## Common-helper qualification
 
-```sh
-python3 tests/modules/phphelpers/gate.py --source PINNED --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --sanitize --output BODY.json
-```
-
-Runs complete pinned and hybrid-tree (`hybrid_tree`) `php_swoole_cxx` bodies against
-modeled native storage and effects, one fixture per family (`effects.cc`, `cache.cc`, ...):
-
-| Family | Matched cases per host |
-| --- | --- |
-| Known cache | 266 |
-
-These are modeled counts, not Zend runtime coverage; `phphelpers-facade-runtime`
-runs the facades in real PHP on both engines. The facades' sizes are not compared,
-so a facade can hold a Rust handle; the PR that moves a facade's bodies into Rust
-ports its fixture's cases into crates/phphelpers and deletes the fixture.
-
-`async_gate.py --source PINNED --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --output UNIQUE.json`
-(`phphelpers-async`) runs the original and selected `php_swoole_async` bodies with
-inert recorders (8 dispatch cases), the C11 `async_abi.c` consumer, and C++14/17
-with and without ASan/UBSan. It checks the native fallback is unchanged.
+The common owning values, calls, merge and known-cache bodies execute in Rust.
+Their old C++-body policy fixture is retired; copying deleted bodies into fake
+Zend layouts no longer qualifies production. `phphelpers-sdk` compiles the
+actual native and selected headers, and `phphelpers-facade-runtime`,
+`phphelpers-entrypoint` and `phphelpers-runtime` execute both engines against
+unchanged PHP observations. Rust tests cover all 4,681 bounded sparse/indirect
+walks against actual Zend layouts. The separate async body gate remains while
+its native closure/coroutine effects still use that boundary.
 
 ## SDK compile checks
 
@@ -129,11 +117,8 @@ performance and default activation remain open.
 
 ## Gate audit (#493)
 
-All five phases are kept, none deleted:
+The live qualification phases are:
 
-- `phphelpers-policy`: complete pinned and selected bodies against modeled
-  native effects, for the remaining function/merge/cache adapters,
-  under ASan/UBSan.
 - `phphelpers-async`: the `php_swoole_async` dispatch bodies, the C11 ABI
   consumer, and C++14/17 builds with and without sanitizers.
 - `phphelpers-sdk`: the full-file compiles (16 profiles) and Rust import checks.
@@ -154,4 +139,4 @@ fake Zend layouts; those assumptions are retired. All 4,681 bounded sparse/indir
 Zend Bucket/zval layouts. The SDK compile and loaded facade runtime remain mandatory, with the original PHP expectations unchanged:
 copy/self-copy/move/self-move, binary duplication, PHP conversion reentry,
 sparse keys and updates, callback duplication/invocation and destructor timing.
-The policy gate still compares the remaining native call/merge/cache bodies.
+The obsolete call/merge/cache policy phase is retired after those complete operations move to Rust.

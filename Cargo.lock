@@ -508,6 +508,8 @@ name = "swoole-rs-locks"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-error",
 ]
 
 [[package]]
