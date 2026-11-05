@@ -6,19 +6,13 @@
 extern "C" {
 #endif
 /* Stateless LP64 clock/backend facade; no callback, allocation or errno change.
- * Native code retains clock acquisition, syscalls, signals and public layouts.
+ * Native code retains clock acquisition, signals and public layouts.
  * Original defined signed-arithmetic/conversion ranges remain the parity scope. */
 typedef struct { int64_t seconds, fraction; } swr_timer_native_time;
 /* manual=0, reactor=1, system=2; inputs are copied native booleans. */
 uint32_t swr_v1_timer_backend(uint32_t manual, uint32_t reactor);
-/* timeval microseconds; zero/negative disarm. */
-swr_timer_native_time swr_v1_timer_system_interval(int64_t milliseconds);
-/* timespec nanoseconds, truncation toward zero. */
-swr_timer_native_time swr_v1_timer_realtime_split(int64_t nanoseconds);
-/* Positive carry only, narrowed through native int before its int product;
- * do not normalize a negative result fraction upward. Signed native overflow
- * remains outside the parity scope. */
-swr_timer_native_time swr_v1_timer_realtime_add(int64_t seconds, int64_t nanoseconds, int64_t milliseconds);
+/* setitimer(ITIMER_REAL) every milliseconds, zero/negative disarm: 0, or -1 with errno. */
+int swr_v1_timer_system_set(int64_t milliseconds);
 int64_t swr_v1_timer_relative_msec(int64_t absolute, int64_t base);
 int64_t swr_v1_timer_rearm_after_add(int64_t current, int64_t delay);
 /* Valid independent deadline output; 1 writes result, 0 leaves output unchanged. */
