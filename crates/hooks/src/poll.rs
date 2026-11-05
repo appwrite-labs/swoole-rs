@@ -222,7 +222,6 @@ pub unsafe extern "C" fn swr_v1_hook_socket_poll(
 ///
 /// # Safety
 /// `fds` holds `nfds` pollfds; `ops` as in [`PollOps`]; runs in a coroutine.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_poll(
     fds: *mut libc::pollfd,
     nfds: libc::nfds_t,

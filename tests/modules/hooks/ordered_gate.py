@@ -44,7 +44,6 @@ def main():
     p.add_argument('--sanitize', action='store_true')
     a = p.parse_args()
     signatures = {
-        'src/coroutine/hook.cc': ['static sw_inline bool is_no_coro()'],
         'src/coroutine/system.cc': ['bool wait_for('],
     }
     # The poll event translations the hooks call: poll.cc's at the pin, the hybrid

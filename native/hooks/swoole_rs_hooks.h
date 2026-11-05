@@ -19,20 +19,6 @@
 extern "C" {
 #endif
 typedef bool (*swr_v1_hook_offload)(void (*job)(void *), void *context);
-/* What the hooked file, sleep and resolver functions (Rust, under upstream's
- * swoole_coroutine_<name>) need of native; hook.cc registers it at load (swr_v1_hook_set_host). */
-typedef struct swr_v1_hook_host {
-    bool (*in_coroutine)(void);    /* a reactor and a coroutine are running */
-    swr_v1_hook_offload offload;   /* swoole::coroutine::async */
-    int (*sleep)(double seconds);  /* System::sleep */
-    const void *uring;             /* &Iouring::host with io_uring, else NULL */
-    bool uring_statx;              /* HAVE_IOURING_STATX */
-    bool uring_ftruncate;          /* HAVE_IOURING_FTRUNCATE */
-    void (*set_last_error)(int error);
-} swr_v1_hook_host;
-void swr_v1_hook_set_host(const swr_v1_hook_host *host);
-int swr_v1_hook_close_fd(int fd, swr_v1_hook_offload offload);
-bool swr_v1_hook_no_coro(bool reactor, bool coroutine);
 /* System::read_file / write_file: the whole operation on the pool (offload). Each
  * warning reaches warn on the pool thread, formatted as upstream logged it. */
 typedef struct swr_v1_hook_file_ops {
@@ -50,15 +36,6 @@ ssize_t swr_v1_hook_write_file(const char *file,
                                int flags,
                                const swr_v1_hook_file_ops *ops,
                                swr_v1_hook_offload offload);
-/* The hooked fds' coroutine sockets: lookups lend the pointer until the fd's
- * close or unwrap removes it; native code deletes what insert/remove hand back. */
-void *swr_v1_hook_socket_get(int fd);
-bool swr_v1_hook_socket_exists(int fd);
-void *swr_v1_hook_socket_insert(int fd, void *socket, bool replace);
-void *swr_v1_hook_socket_remove(int fd);
-/* swoole_coroutine_close for a coroutine socket: 0 closed, -1 failed, 1 no socket.
- * Removed sockets are deleted after this thread's outermost close returns. */
-int swr_v1_hook_socket_close(int fd, bool (*close)(void *socket), void (*delete_socket)(void *socket));
 int32_t swr_v1_hook_transition(uint32_t requested, uint32_t installed, uint32_t bit);
 uint32_t swr_v1_hook_filter(uint32_t flags, uint32_t unavailable);
 bool swr_v1_hook_file_result(bool open, int64_t result);
@@ -122,7 +99,37 @@ void swr_v1_hook_poll_ready(void *task, int fd, int event);
 void swr_v1_hook_poll_completed(void *task);
 void swr_v1_hook_poll_timeout(void *task);
 bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout, const swr_v1_hook_poll_ops *ops);
-int swr_v1_hook_poll(struct pollfd *fds, nfds_t nfds, int timeout, const swr_v1_hook_poll_ops *ops);
+/* The native coroutine socket (SocketImpl: coroutine::Socket, or UringSocket with
+ * --enable-uring-socket): new, delete, and the calls whose body is the class's. */
+typedef struct swr_v1_hook_socket_ops {
+    void *(*open)(int domain, int type, int protocol); /* new SocketImpl(domain, type, protocol) */
+    void *(*wrap)(int fd);                             /* new SocketImpl(fd, SW_SOCK_RAW) */
+    void (*free)(void *socket);
+    ssize_t (*send)(void *socket, const void *buf, size_t n);
+    ssize_t (*recv)(void *socket, void *buf, size_t n);
+    ssize_t (*peek)(void *socket, void *buf, size_t n);
+    ssize_t (*write)(void *socket, const void *buf, size_t n);
+    ssize_t (*read)(void *socket, void *buf, size_t n);
+    ssize_t (*sendmsg)(void *socket, const struct msghdr *msg, int flags);
+    ssize_t (*recvmsg)(void *socket, struct msghdr *msg, int flags);
+    bool (*connect)(void *socket, const struct sockaddr *addr, socklen_t length);
+    void *(*accept)(void *socket);             /* accept(0) */
+    bool (*poll)(void *socket, uint32_t event); /* poll(event) */
+} swr_v1_hook_socket_ops;
+/* What the hooked functions (Rust, under upstream's swoole_coroutine_<name>) need
+ * of native; registered at load (swr_v1_hook_set_host). */
+typedef struct swr_v1_hook_host {
+    bool (*in_coroutine)(void);    /* a reactor and a coroutine are running */
+    swr_v1_hook_offload offload;   /* swoole::coroutine::async */
+    int (*sleep)(double seconds);  /* System::sleep */
+    const void *uring;             /* &Iouring::host with io_uring, else NULL */
+    bool uring_statx;              /* HAVE_IOURING_STATX */
+    bool uring_ftruncate;          /* HAVE_IOURING_FTRUNCATE */
+    void (*set_last_error)(int error);
+    const swr_v1_hook_poll_ops *poll; /* System's, for the hooked poll */
+    swr_v1_hook_socket_ops socket;
+} swr_v1_hook_host;
+void swr_v1_hook_set_host(const swr_v1_hook_host *host);
 void swr_v1_hook_dns_cache_expire(int64_t expire);
 void swr_v1_hook_dns_cache_capacity(size_t capacity);
 void swr_v1_hook_dns_cache_clear(void);

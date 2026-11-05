@@ -3,7 +3,7 @@
 Opt-in feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
 `swoole_rs_hooks.h`. Patched upstream files: `ext-src/swoole_runtime.cc`,
 `include/swoole_coroutine_socket.h`, `src/coroutine/file_lock.cc` (deleted),
-`src/coroutine/hook.cc`,
+`src/coroutine/hook.cc` (deleted),
 `src/coroutine/iouring.cc`, `src/coroutine/socket.cc`,
 `src/coroutine/system.cc`, `src/coroutine/uring_socket.cc`.
 
@@ -16,13 +16,16 @@ declarations and layouts are unchanged.
 
 ## Hooks and file locks
 
-- The hooked fds' socket map is Rust's (`hook_socket_{get,exists,insert,remove}`):
-  fd to a lent `SocketImpl *`, no reference count. A lookup sets `ENOTSOCK` when
-  absent; insert and remove hand back the socket the map let go of, which native
-  code deletes. Hooked `close` removes it only after `Socket::close()` succeeds.
-
-- `hook_no_coro` keeps the reactor/current-coroutine guard only at its existing
-  call site; DNS hooks without that guard are unchanged.
+- hook.cc's socket functions (`swoole_coroutine_socket`, `send`, `recv`,
+  `sendmsg`, `recvmsg`, `connect`, `accept`, `poll`, `poll_fake`, `close`, `read`,
+  `write`, `socket_create`, `socket_unwrap`, `socket_exists`, the timeouts and
+  `socket_wait_event`, and `swoole_coroutine_get_socket_object[_ex]` under their C++
+  symbols) are Rust. The hooked fds' socket map is Rust's too: fd to a lent
+  `SocketImpl *`, no reference count; hooked `close` removes it only after
+  `Socket::close()` succeeds. The host's `socket` table is what depends on the
+  class (`coroutine::Socket` or `UringSocket`): its constructors, `delete` and
+  the virtual calls. A C++ exception or a pthread cancellation in one of those
+  calls, or in a libc call a hook falls back to, aborts at the Rust frame.
 - `swoole_coroutine_flock` is Rust, exported under that name: outside a
   coroutine or with `LOCK_NB` it is plain flock; `LOCK_UN` unlocks;
   `LOCK_EX`/`LOCK_SH` retry `flock(op | LOCK_NB)` only on -1/EWOULDBLOCK,
@@ -133,8 +136,9 @@ are still never uninstalled.
   `mkdir`, `rmdir`, `rename`, `fsync`, `fdatasync`, `ftruncate`, `lseek`,
   `readlink`, `statvfs`, `access`), `sleep`, `usleep`, `getaddrinfo` and
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
-  hook.cc registers a host table while the library loads (`swr_v1_hook_set_host`): its
-  coroutine test, `async`, `System::sleep` and, in an io_uring build, `Iouring::host`.
+  socket.cc registers a host table while the library loads (`swr_v1_hook_set_host`): its
+  coroutine test, `async`, `System::sleep`, the poll table, the socket table and, in an
+  io_uring build, `Iouring::host`.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;
   outside a coroutine the libc call runs in place; inside one it runs through native
   `async`, which parks the coroutine and restores the worker's errno; a refused

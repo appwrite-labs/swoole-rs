@@ -62,9 +62,13 @@ pub struct Host {
     pub uring_ftruncate: bool,
     /// `swoole_set_last_error`.
     pub set_last_error: unsafe extern "C" fn(c_int),
+    /// `System`'s coroutine poll table, for the hooked `poll`.
+    pub poll: *const crate::poll::PollOps,
+    /// The hooked fds' native sockets.
+    pub socket: crate::hooked::SocketOps,
 }
 
-// SAFETY: native's table is static and read-only, and `uring` points to another.
+// SAFETY: native's table is static and read-only; `uring` and `poll` point to others.
 unsafe impl Sync for Host {}
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(std::ptr::null_mut());
@@ -83,12 +87,15 @@ pub(crate) fn host() -> Option<&'static Host> {
     unsafe { HOST.load(Ordering::Acquire).as_ref() }
 }
 
+/// The host inside a coroutine (hook.cc's `!is_no_coro()`), else none.
+pub(crate) fn coroutine() -> Option<&'static Host> {
+    // SAFETY: native reads its reactor and coroutine.
+    host().filter(|host| unsafe { (host.in_coroutine)() })
+}
+
 /// Native `async` inside a coroutine, else none: the call runs here.
 fn offload() -> Option<Offload> {
-    // SAFETY: native reads its reactor and coroutine.
-    host()
-        .filter(|host| unsafe { (host.in_coroutine)() })
-        .map(|host| host.offload)
+    coroutine().map(|host| host.offload)
 }
 
 /// The ring's host inside a coroutine when `io_uring` takes this call (`gate`).
@@ -184,7 +191,7 @@ hooked! {
 ///
 /// # Safety
 /// `offload` is native `async` or none.
-#[unsafe(no_mangle)]
+#[must_use]
 pub unsafe extern "C" fn swr_v1_hook_close_fd(fd: c_int, offload: Option<Offload>) -> c_int {
     // SAFETY: closing an fd touches no memory.
     let call = || unsafe { libc::close(fd) };
@@ -324,6 +331,8 @@ pub(crate) mod tests {
         uring_statx: false,
         uring_ftruncate: false,
         set_last_error,
+        poll: std::ptr::null(),
+        socket: crate::hooked::tests::OPS,
     };
     unsafe extern "C" fn set_last_error(error: c_int) {
         LAST_ERROR.set(error);

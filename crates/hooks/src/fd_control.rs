@@ -33,7 +33,6 @@ unsafe fn set_timeout(record: *mut SocketRecord, timeout: f64, kind: c_int) {
 ///
 /// # Safety
 /// `socket` is null or a live, exclusively accessed coroutine socket.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_fd_timeout(
     socket: *mut CoSocket,
     which: c_int,
@@ -65,7 +64,6 @@ pub unsafe extern "C" fn swr_v1_hook_fd_timeout(
 ///
 /// # Safety
 /// `fd` points to one writable pollfd. `socket` is null or a live record.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_fd_poll_fake(
     fd: *mut pollfd,
     timeout: c_int,
@@ -85,7 +83,7 @@ pub unsafe extern "C" fn swr_v1_hook_fd_poll_fake(
 }
 
 /// Prepare the native no-socket poll; its cancellation point runs after Rust returns.
-#[unsafe(no_mangle)]
+#[must_use]
 pub extern "C" fn swr_v1_hook_fd_poll(fd: c_int, event: c_int) -> pollfd {
     pollfd {
         fd,
@@ -98,7 +96,6 @@ pub extern "C" fn swr_v1_hook_fd_poll(fd: c_int, event: c_int) -> pollfd {
 ///
 /// # Safety
 /// `socket` and its network socket are live and exclusively accessed for this call.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_fd_wait(
     socket: *mut CoSocket,
     event: u32,
@@ -125,7 +122,6 @@ pub unsafe extern "C" fn swr_v1_hook_fd_wait(
 ///
 /// # Safety
 /// `wait` is the copied preparation result; its socket remains live after poll.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_fd_wait_restore(wait: FdWait) {
     // SAFETY: the caller returns the saved, still-live canonical socket.
     unsafe { set_timeout(wait.socket, wait.timeout, ALL) };

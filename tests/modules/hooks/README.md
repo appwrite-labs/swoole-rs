@@ -16,8 +16,7 @@ scenarios through each, comparing effects and order. Syscalls, contexts, TLS
 and kernel IO are faked; these are policy/order checks, not runtime proof.
 `--sanitize` adds ASan/UBSan to C++ only, not the Rust archive.
 
-- `ordered_gate.py` (26 cases): the hook guard's short circuit and
-  `wait_for`'s retry and cancel. The coroutine Socket's transfers and
+- `ordered_gate.py` (22 cases): `wait_for`'s retry and cancel. The coroutine Socket's transfers and
   `TimerController` moved to Rust with their cases (`ported_*` tests in
   `crates/hooks/src/transfer.rs` and `co_io.rs`).
 - `async_gate.py` (434 cases): async event/lambda/sleep/DNS bodies, including
@@ -81,10 +80,3 @@ under ASan/UBSan. Neither a PHPT nor the Rust unit tests reach that C++ glue.
 
 A body these gates slice may move into Rust: the PR that moves it ports the
 gate's cases for it into a `crates/hooks` test and drops the body from the gate.
-
-`fd_control_sdk.cpp` is a complete native SDK consumer for the hooked-fd timeout,
-fake-poll and wait operations. Link it against the configured core SDK and exact
-production archive. It checks real fd routing, directional timeout effects,
-fallback poll syscalls, and an injected virtual `SocketImpl::poll` throw with
-C++ destructor/exception custody. Rust preparation has returned before that
-virtual call; it does not test or claim foreign unwinding through Rust.
