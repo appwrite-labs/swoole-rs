@@ -6,7 +6,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from gate import ROOT, PIN, body
+from source import ROOT, PIN, body
 sys.path.insert(0, str(ROOT))
 from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import require_build_space

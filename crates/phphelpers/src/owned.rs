@@ -28,7 +28,12 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_string_new(
     length: usize,
 ) -> *mut StringValue {
     // SAFETY: the caller supplies the readable span; Zend allocates its own copy.
-    let value = unsafe { sys::swr_zend_string_init(text, length) };
+    let mut value = ptr::null_mut();
+    // SAFETY: the C leaf contains allocation failure before returning to Rust.
+    if unsafe { sys::swr_zend_try_facade_string(text, length, &raw mut value) } != 0 {
+        bailout::Bailout.defer();
+    }
+    bailout::finish();
     Box::into_raw(Box::new(StringValue(value)))
 }
 
@@ -107,8 +112,7 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_string_trim(handle: *const Str
 
 /// # Safety
 /// A readable span. The result uses Zend request memory when `request`, libc otherwise.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_bytes_dup(
+pub(crate) unsafe fn duplicate_bytes(
     text: *const c_char,
     length: usize,
     request: bool,
@@ -116,7 +120,7 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_bytes_dup(
 ) -> *mut c_char {
     let target = if request {
         // SAFETY: a request allocation of the span and trailing NUL.
-        unsafe { sys::swr_zend_emalloc(length + 1) }
+        unsafe { alloc_request(length + 1) }
     } else {
         // SAFETY: libc allocation with no borrowed memory.
         unsafe { libc::malloc(length + 1) }
@@ -152,8 +156,12 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_bytes_free(slot: *mut *mut c_c
 /// Allocate the owning zval. C++'s public `value` aliases this stable Rust storage.
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn swr_v1_phphelpers_variable_new() -> *mut zval {
-    // SAFETY: zero is Zend's undefined zval, with all spare fields initialized.
-    Box::into_raw(Box::new(unsafe { std::mem::zeroed() }))
+    // SAFETY: allocate one aligned slot, trapping request-memory failure in C.
+    let value = unsafe { alloc_request(size_of::<zval>()) }.cast::<zval>();
+    bailout::finish();
+    // SAFETY: all-zero bytes initialize Zend's undefined zval, including its spare fields.
+    unsafe { value.write_bytes(0, 1) };
+    value
 }
 
 /// # Safety
@@ -175,11 +183,10 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_variable_assign(
 /// `value` is a uniquely owned zval allocated by `variable_new`; may run PHP destructors.
 #[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn swr_v1_phphelpers_variable_free(value: *mut zval) {
-    // SAFETY: per the caller, the Box is consumed once.
-    let mut value = unsafe { Box::from_raw(value) };
-    // SAFETY: the C shim contains any destructor bailout before Rust drops its Box.
-    bailout::defer(unsafe { bailout::trap(sys::swr_zend_zval_release, (&raw mut *value).cast()) });
-    drop(value);
+    // SAFETY: release the owned payload in the C trap before freeing its stable slot.
+    bailout::defer(unsafe { bailout::trap(sys::swr_zend_zval_release, value.cast()) });
+    // SAFETY: variable_new allocated this stable slot from the request allocator.
+    unsafe { sys::swr_zend_efree(value.cast()) };
     bailout::finish();
 }
 
@@ -209,14 +216,16 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_string_dup(
         return ptr::null_mut();
     }
     // SAFETY: the source remains live and copying does not change it.
-    unsafe {
-        swr_v1_phphelpers_bytes_dup(
+    let result = unsafe {
+        duplicate_bytes(
             bytes.as_ptr().cast(),
             duplicate_length(bytes, request),
             request,
             false,
         )
-    }
+    };
+    bailout::finish();
+    result
 }
 
 /// # Safety
@@ -228,7 +237,10 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_variable_string(
     length: usize,
 ) {
     // SAFETY: a readable span; Zend takes a fresh string reference.
-    unsafe { sys::swr_zend_set_stringl(value, text, length) };
+    if unsafe { sys::swr_zend_try_facade_value_string(value, text, length) } != 0 {
+        bailout::Bailout.defer();
+    }
+    bailout::finish();
 }
 
 /// # Safety
@@ -268,4 +280,30 @@ fn duplicate_length(bytes: &[u8], request: bool) -> usize {
             .position(|byte| *byte == 0)
             .unwrap_or(bytes.len())
     }
+}
+
+/// # Safety
+/// The returned request allocation is uninitialized; null carries a deferred bailout.
+pub(crate) unsafe fn alloc_request(size: usize) -> *mut c_void {
+    let mut result = ptr::null_mut();
+    // SAFETY: the C leaf allocates aligned request storage and traps allocation failure.
+    if unsafe { sys::swr_zend_try_facade_alloc(size, &raw mut result) } != 0 {
+        bailout::Bailout.defer();
+    }
+    result
+}
+
+/// # Safety
+/// A borrowed readable span. The result belongs to Zend request memory or libc as requested.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn swr_v1_phphelpers_bytes_dup(
+    text: *const c_char,
+    length: usize,
+    request: bool,
+    lower: bool,
+) -> *mut c_char {
+    // SAFETY: forward the span to the internal allocator without holding an owned Rust value.
+    let result = unsafe { duplicate_bytes(text, length, request, lower) };
+    bailout::finish();
+    result
 }

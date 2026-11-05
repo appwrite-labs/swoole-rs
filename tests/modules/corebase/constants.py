@@ -38,7 +38,7 @@ def main():
 template<class T, bool = std::is_enum<T>::value> struct Signed {static constexpr bool value = std::is_signed<T>::value;};
 template<class T> struct Signed<T,true> {static constexpr bool value = std::is_signed<typename std::underlying_type<T>::type>::value;};
 template<class T> void emit(const char *name, const T &value) {
- std::cout << name << ':' << sizeof(T) << ':' << Signed<T>::value << ':' << std::is_enum<T>::value << ':' << std::setprecision(30) << static_cast<long double>(value) << '\\n';
+ std::cout << name << ':' << sizeof(T) << ':' << Signed<T>::value << ':' << std::is_enum<T>::value << ':' << Signed<decltype(+value)>::value << ':' << sizeof(+value) << ':' << std::setprecision(30) << static_cast<long double>(value) << '\\n';
 }
 template<size_t N> void emit(const char *name, const char (&value)[N]) {
  std::cout << name << ':' << N << ':';

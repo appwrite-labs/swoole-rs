@@ -364,8 +364,6 @@ def plan(args, reports):
     if 'phphelpers' in modules:
         script('phphelpers-async', 'tests/modules/phphelpers/async_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('phphelpers-async'))
-        script('phphelpers-policy', 'tests/modules/phphelpers/gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('phphelpers-policy'))
         if integrate:
             script('phphelpers-sdk', 'tests/modules/phphelpers/sdk.py', '--source', ROOT / 'target/upstream/src',
                    '--sdk-export', selected_export / 'export.json', *report('phphelpers-sdk'))

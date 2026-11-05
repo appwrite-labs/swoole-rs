@@ -187,44 +187,18 @@
 #define SW_IPC_MAX_SIZE 8192
 #endif
 
-enum swPipeType
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swPipeType {
   SW_PIPE_WORKER = 0,
   SW_PIPE_MASTER = 1,
   SW_PIPE_NONBLOCK = 2,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swPipeType swPipeType;
-#else
-typedef uint32_t swPipeType;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swPipeType;
 
-enum swResultCode
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : int32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swResultCode {
   SW_OK = 0,
   SW_ERR = -1,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swResultCode swResultCode;
-#else
-typedef int32_t swResultCode;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swResultCode;
 
-enum swReturnCode
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swReturnCode {
   SW_SUCCESS = 0,
   SW_CONTINUE = 1,
   SW_WAIT = 2,
@@ -233,20 +207,9 @@ enum swReturnCode
   SW_READY = 5,
   SW_INVALID = 6,
   SW_REDUCE_SIZE = 7,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swReturnCode swReturnCode;
-#else
-typedef uint32_t swReturnCode;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swReturnCode;
 
-enum swFdType
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swFdType {
   SW_FD_SESSION = 0,
   SW_FD_STREAM_SERVER = 1,
   SW_FD_DGRAM_SERVER = 2,
@@ -263,37 +226,15 @@ enum swFdType
   SW_FD_USER = 16,
   SW_FD_STREAM_CLIENT = 17,
   SW_FD_DGRAM_CLIENT = 18,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swFdType swFdType;
-#else
-typedef uint32_t swFdType;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swFdType;
 
-enum swSocketFlag
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swSocketFlag {
   SW_SOCK_NONBLOCK = 4,
   SW_SOCK_CLOEXEC = 8,
   SW_SOCK_SSL = 512,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swSocketFlag swSocketFlag;
-#else
-typedef uint32_t swSocketFlag;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swSocketFlag;
 
-enum swSocketType
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swSocketType {
   SW_SOCK_TCP = 1,
   SW_SOCK_UDP = 2,
   SW_SOCK_TCP6 = 3,
@@ -302,40 +243,18 @@ enum swSocketType
   SW_SOCK_UNIX_DGRAM = 6,
   SW_SOCK_RAW = 7,
   SW_SOCK_RAW6 = 8,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swSocketType swSocketType;
-#else
-typedef uint32_t swSocketType;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swSocketType;
 
-enum swTimeoutType
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swTimeoutType {
   SW_TIMEOUT_DNS = 1,
   SW_TIMEOUT_CONNECT = 2,
   SW_TIMEOUT_READ = 4,
   SW_TIMEOUT_WRITE = 8,
   SW_TIMEOUT_RDWR = 12,
   SW_TIMEOUT_ALL = 15,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swTimeoutType swTimeoutType;
-#else
-typedef uint32_t swTimeoutType;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swTimeoutType;
 
-enum swEventType
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swEventType {
   SW_EVENT_NULL = 0,
   SW_EVENT_DEAULT = 256,
   SW_EVENT_READ = 512,
@@ -343,55 +262,22 @@ enum swEventType
   SW_EVENT_RDWR = 1536,
   SW_EVENT_ERROR = 2048,
   SW_EVENT_ONCE = 4096,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swEventType swEventType;
-#else
-typedef uint32_t swEventType;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swEventType;
 
-enum swForkType
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swForkType {
   SW_FORK_SPAWN = 0,
   SW_FORK_EXEC = 2,
   SW_FORK_DAEMON = 4,
   SW_FORK_PRECHECK = 8,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swForkType swForkType;
-#else
-typedef uint32_t swForkType;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swForkType;
 
-enum swTraverseOperation
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swTraverseOperation {
   SW_TRAVERSE_KEEP = 0,
   SW_TRAVERSE_REMOVE = 1,
   SW_TRAVERSE_STOP = 2,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swTraverseOperation swTraverseOperation;
-#else
-typedef uint32_t swTraverseOperation;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swTraverseOperation;
 
-enum swEventDataFlag
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swEventDataFlag {
   SW_EVENT_DATA_NORMAL = 0,
   SW_EVENT_DATA_PTR = 2,
   SW_EVENT_DATA_CHUNK = 4,
@@ -399,20 +285,9 @@ enum swEventDataFlag
   SW_EVENT_DATA_END = 16,
   SW_EVENT_DATA_OBJ_PTR = 32,
   SW_EVENT_DATA_POP_PTR = 64,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swEventDataFlag swEventDataFlag;
-#else
-typedef uint32_t swEventDataFlag;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swEventDataFlag;
 
-enum swTaskFlag
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swTaskFlag {
   SW_TASK_TMPFILE = 1,
   SW_TASK_SERIALIZE = 2,
   SW_TASK_NONBLOCK = 4,
@@ -421,44 +296,15 @@ enum swTaskFlag
   SW_TASK_COROUTINE = 32,
   SW_TASK_PEEK = 64,
   SW_TASK_NOREPLY = 128,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swTaskFlag swTaskFlag;
-#else
-typedef uint32_t swTaskFlag;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swTaskFlag;
 
-enum swDNSLookupFlag
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swDNSLookupFlag {
   SW_DNS_LOOKUP_RANDOM = 2048,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swDNSLookupFlag swDNSLookupFlag;
-#else
-typedef uint32_t swDNSLookupFlag;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swDNSLookupFlag;
 
-enum swEventInitFlag
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
- {
+typedef enum swEventInitFlag {
   SW_EVENTLOOP_WAIT_EXIT = 1,
-};
-#ifndef __cplusplus
-#if __STDC_VERSION__ >= 202311L
-typedef enum swEventInitFlag swEventInitFlag;
-#else
-typedef uint32_t swEventInitFlag;
-#endif // __STDC_VERSION__ >= 202311L
-#endif // __cplusplus
+} swEventInitFlag;
 
 #define SW_PIPE_READ SW_PIPE_WORKER
 

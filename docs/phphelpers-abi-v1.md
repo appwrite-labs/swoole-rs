@@ -24,7 +24,10 @@ Rust calls Zend directly through the typed SDK and existing macro shims. Only
 leaf Zend effects which can execute PHP use C `zend_try` shims; no operation
 table or native phase loop implements these families. PHP warning reporting
 uses the existing C++ fatal-error reporter, trapped before Rust continues.
-The known-string pointer cache and function/merge adapter policy remain native.
+Rust also owns the known-string pointer cache lifecycle, direct/named/coroutine
+call orchestration, keyed merging, heap-zval custody, string recycling, object
+creation, property operations and retained fcall arguments/caches. C++ keeps the
+known-string global as a borrowed ABI view and the coroutine-core creation leaf.
 SDK compilation and loaded helper fixtures compare behavior without freezing
 upstream class text or layout; the PHP facade expectations remain unchanged.
 

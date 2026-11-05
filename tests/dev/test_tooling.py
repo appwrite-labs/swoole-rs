@@ -628,13 +628,11 @@ class Lanes(unittest.TestCase):
         self.assertLess(list(commands).index('build'), list(commands).index('phphelpers-sdk'))
         self.assertLess(list(stdext).index('phphelpers-sdk'), list(stdext).index('phphelpers-entrypoint'))
         self.assertIn('--build-manifest', stdext['phphelpers-runtime'])
-        self.assertIn('--archive', commands['phphelpers-policy'])
+        self.assertNotIn('phphelpers-policy', commands)
         asynchronous = commands['phphelpers-async']
         self.assertIn('tests/modules/phphelpers/async_gate.py', ' '.join(asynchronous))
         for flag in ['--source', '--archive', '--output']:
             self.assertIn(flag, asynchronous)
-        self.assertEqual(asynchronous[asynchronous.index('--archive') + 1],
-                         commands['phphelpers-policy'][commands['phphelpers-policy'].index('--archive') + 1])
         self.assertLess(list(commands).index('build'), list(commands).index('phphelpers-async'))
         self.assertNotIn('--sanitize', asynchronous)  # Intrinsic separate Native sanitizer controls.
         self.assertIn('--archive', commands['ports-policy'])

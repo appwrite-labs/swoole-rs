@@ -1,9 +1,8 @@
 # Locks validation
 
 Opt-in Rust implementations (feature bit 1024) cover mutex, reader/writer,
-spin, barrier and coroutine-lock policy. PHP Lock and Thread Lock keep their
-native Zend facades and call Rust through the real classes. Atomic/Long and
-Thread Atomic/Long are Rust classes (`crates/phplocks`, see
+spin, barrier and complete coroutine-lock ownership. PHP Lock, Coroutine Lock,
+Thread Lock, Atomic/Long and Thread Atomic/Long are Rust classes (`crates/phplocks`, see
 [docs/zend.md](../../../docs/zend.md)) over the same atomic words. See
 [native/locks/contract.md](../../../native/locks/contract.md) for geometry,
 ownership, timeout, ordering, fork and coroutine contracts, and
@@ -42,7 +41,8 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
   builds the upstream tree and the archive's hybrid tree (Linux) and runs the 14 unchanged
   lock GTests one process each.
 - `state.py --engine ... [--require-zts]` (`locks-state`, integrate lane): paired PHP witness (`state.php`) for
-  integer wrap, CAS, lock behaviour and coroutine mutual exclusion; under ZTS
+  integer wrap, CAS, lock behaviour, coroutine mutual exclusion, owner reentrancy,
+  nonblocking contention, cancellation, constructor/clone/serialization rules; under ZTS
   also real threads sharing 32/64-bit atomics. Observations must match.
 - `threads.py --engine ... --php-extension sockets`: real ZTS threads with a
   barrier, 20,000 increments per Thread Atomic width and 2,000 mutex-protected
