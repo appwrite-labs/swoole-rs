@@ -1,7 +1,12 @@
-//! Process and thread identity helpers from upstream `src/os/base.cc`: root
-//! check, user/group/chroot isolation, parent-death signal, CPU affinity, native
-//! thread id and thread names. Native code logs; Rust runs the syscalls.
-use libc::{c_char, c_int, c_long, c_void};
+// SPDX-License-Identifier: Apache-2.0
+// Compatibility derived from Swoole v6.2.4 src/os/base.cc (Swoole contributors).
+//! Upstream `src/os/base.cc`, under its C++ symbols with `upstream-symbols`: the
+//! root check, daemonizing, user/group/chroot isolation, parent-death signal, CPU
+//! affinity, native thread id and thread names. Logs name the function as
+//! upstream's `__SW_FUNC__` did.
+use libc::{c_char, c_int, c_long};
+use std::ffi::CStr;
+use swoole_rs_corebase::log;
 
 #[must_use]
 #[cfg_attr(
@@ -14,42 +19,150 @@ pub extern "C" fn swr_v1_os_is_root_user() -> bool {
 }
 
 /// `swoole_daemon`'s Darwin steps before the fork: `chdir("/")` unless `nochdir`,
-/// then stdin/stdout/stderr onto `/dev/null` unless `noclose`. 0 done, or the
-/// failed step for native's warning: 1 chdir, 2 open, 3 dup2.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_daemon_detach(nochdir: bool, noclose: bool) -> c_int {
+/// then stdin/stdout/stderr onto `/dev/null` unless `noclose`. Logs the failed step.
+#[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
+fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
     // SAFETY: a static C string.
     if !nochdir && unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
-        return 1;
+        log::sys_warning(c"swoole_daemon", format_args!("chdir() failed"));
+        return false;
     }
     if noclose {
-        return 0;
+        return true;
     }
     // SAFETY: a static C string.
     let fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
     if fd < 0 {
-        return 2;
+        log::sys_warning(c"swoole_daemon", format_args!("open() failed"));
+        return false;
     }
     // SAFETY: dup2 onto the standard descriptors, as upstream.
     let redirected = (0..3).all(|target| unsafe { libc::dup2(fd, target) } >= 0);
+    if !redirected {
+        log::sys_warning(c"swoole_daemon", format_args!("dup2() failed"));
+    }
     // SAFETY: the descriptor opened above.
     unsafe { libc::close(fd) };
-    if redirected { 0 } else { 3 }
+    redirected
 }
 
-/// A failed `swoole_set_isolation` step, reported as it happens (errno intact):
-/// 1 group lookup, 2 user lookup, 3 setgid, 4 setuid, 5 `chdir("/")`, 6 chroot.
-pub type IsolationWarn = extern "C" fn(step: u32, context: *mut c_void);
+/// The C++ functions `swoole_daemon` calls (`src/core/base.cc`).
+#[cfg(feature = "upstream-symbols")]
+mod host {
+    use libc::{c_int, pid_t};
+    /// `SW_FORK_DAEMON`, `SW_FORK_PRECHECK` and `SW_GLOBAL_HOOK_AFTER_FORK`.
+    #[cfg(target_vendor = "apple")]
+    pub(super) const FORK_DAEMON: c_int = 4;
+    #[cfg(not(target_vendor = "apple"))]
+    pub(super) const FORK_PRECHECK: c_int = 8;
+    #[cfg(not(target_vendor = "apple"))]
+    pub(super) const HOOK_AFTER_FORK: c_int = 12;
+    unsafe extern "C" {
+        #[link_name = "_Z11swoole_forki"]
+        pub(super) fn swoole_fork(flags: c_int) -> pid_t;
+        #[cfg(not(target_vendor = "apple"))]
+        pub(super) fn swoole_isset_hook(kind: c_int) -> bool;
+        #[cfg(not(target_vendor = "apple"))]
+        pub(super) fn swoole_call_hook(kind: c_int, arg: *mut libc::c_void);
+    }
+}
 
-/// # Safety
-/// `name` is a valid NUL-terminated string.
-unsafe fn present(name: *const c_char) -> bool {
-    // SAFETY: a valid C string has at least its terminator.
-    unsafe { *name != 0 }
+/// `int swoole_daemon(int nochdir, int noclose)`. Darwin's `daemon(3)` is
+/// deprecated, so it detaches, forks and calls `setsid` itself.
+#[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
+#[unsafe(export_name = "_Z13swoole_daemonii")]
+#[must_use]
+pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
+    if !daemon_detach(nochdir != 0, noclose != 0) {
+        return -1;
+    }
+    // SAFETY: upstream's fork; it rejects a coroutine or async-thread caller itself.
+    let pid = unsafe { host::swoole_fork(host::FORK_DAEMON) };
+    if pid < 0 {
+        log::sys_warning(c"swoole_daemon", format_args!("fork() failed"));
+        return -1;
+    }
+    if pid > 0 {
+        // SAFETY: the parent leaves without running exit handlers, as upstream.
+        unsafe { libc::_exit(0) };
+    }
+    // SAFETY: setsid has no memory preconditions.
+    if unsafe { libc::setsid() } < 0 {
+        log::sys_warning(c"swoole_daemon", format_args!("setsid() failed"));
+        return -1;
+    }
+    0
+}
+
+/// `int swoole_daemon(int nochdir, int noclose)`: `daemon(3)`, then the
+/// after-fork hooks, since the pid changed (PHP 8.5 refreshes its memory
+/// manager after a fork, and `daemon(3)` forks behind its back).
+#[cfg(all(feature = "upstream-symbols", not(target_vendor = "apple")))]
+#[unsafe(export_name = "_Z13swoole_daemonii")]
+#[must_use]
+pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
+    // SAFETY: upstream's fork precheck; it forks nothing.
+    if unsafe { host::swoole_fork(host::FORK_PRECHECK) } < 0 {
+        return -1;
+    }
+    // SAFETY: daemon has no memory preconditions.
+    let rv = unsafe { libc::daemon(nochdir, noclose) };
+    // SAFETY: upstream's hook table, read on this thread.
+    if rv == 0 && unsafe { host::swoole_isset_hook(host::HOOK_AFTER_FORK) } {
+        // SAFETY: as above; the after-fork hooks take no argument.
+        unsafe { host::swoole_call_hook(host::HOOK_AFTER_FORK, std::ptr::null_mut()) };
+    }
+    rv
 }
 
 /// `swoole_set_isolation`: look up the group and user, switch gid then uid, then
-/// chroot and `chdir("/")`; empty names skip their step.
+/// chroot and `chdir("/")`; empty names skip their step. `warn` hears each failed
+/// step as it happens (errno intact): 1 group lookup, 2 user lookup, 3 setgid,
+/// 4 setuid, 5 `chdir("/")`, 6 chroot.
+fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(u32)) {
+    let mut gid = None;
+    if !group.is_empty() {
+        // SAFETY: a valid C string; the entry is read before the next lookup.
+        let entry = unsafe { libc::getgrnam(group.as_ptr()) };
+        // SAFETY: getgrnam returned null or a valid entry.
+        gid = unsafe { entry.as_ref() }.map(|entry| entry.gr_gid);
+        if gid.is_none() {
+            warn(1);
+        }
+    }
+    let mut uid = None;
+    if !user.is_empty() {
+        // SAFETY: a valid C string; the entry is read before the next lookup.
+        let entry = unsafe { libc::getpwnam(user.as_ptr()) };
+        // SAFETY: getpwnam returned null or a valid entry.
+        uid = unsafe { entry.as_ref() }.map(|entry| entry.pw_uid);
+        if uid.is_none() {
+            warn(2);
+        }
+    }
+    // SAFETY: setgid has no memory preconditions.
+    if gid.is_some_and(|gid| unsafe { libc::setgid(gid) } < 0) {
+        warn(3);
+    }
+    // SAFETY: setuid has no memory preconditions.
+    if uid.is_some_and(|uid| unsafe { libc::setuid(uid) } < 0) {
+        warn(4);
+    }
+    if !root.is_empty() {
+        // SAFETY: a valid C string.
+        if unsafe { libc::chroot(root.as_ptr()) } == 0 {
+            // SAFETY: a static C string.
+            if unsafe { libc::chdir(c"/".as_ptr()) } < 0 {
+                warn(5);
+            }
+        } else {
+            warn(6);
+        }
+    }
+}
+
+/// `swoole_set_isolation(group, user, chroot)`, which the header calls with each
+/// `std::string`'s `c_str()`.
 /// # Safety
 /// `group`, `user` and `root` are valid NUL-terminated strings.
 #[unsafe(no_mangle)]
@@ -57,51 +170,27 @@ pub unsafe extern "C" fn swr_v1_os_set_isolation(
     group: *const c_char,
     user: *const c_char,
     root: *const c_char,
-    warn: IsolationWarn,
-    context: *mut c_void,
 ) {
-    let mut gid = None;
-    // SAFETY: valid C string per the contract.
-    if unsafe { present(group) } {
-        // SAFETY: valid C string; the entry is read before the next lookup.
-        let entry = unsafe { libc::getgrnam(group) };
-        // SAFETY: getgrnam returned null or a valid entry.
-        gid = unsafe { entry.as_ref() }.map(|entry| entry.gr_gid);
-        if gid.is_none() {
-            warn(1, context);
-        }
-    }
-    let mut uid = None;
-    // SAFETY: valid C string per the contract.
-    if unsafe { present(user) } {
-        // SAFETY: valid C string; the entry is read before the next lookup.
-        let entry = unsafe { libc::getpwnam(user) };
-        // SAFETY: getpwnam returned null or a valid entry.
-        uid = unsafe { entry.as_ref() }.map(|entry| entry.pw_uid);
-        if uid.is_none() {
-            warn(2, context);
-        }
-    }
-    // SAFETY: setgid has no memory preconditions.
-    if gid.is_some_and(|gid| unsafe { libc::setgid(gid) } < 0) {
-        warn(3, context);
-    }
-    // SAFETY: setuid has no memory preconditions.
-    if uid.is_some_and(|uid| unsafe { libc::setuid(uid) } < 0) {
-        warn(4, context);
-    }
-    // SAFETY: valid C string per the contract.
-    if unsafe { present(root) } {
-        // SAFETY: valid C string per the contract.
-        if unsafe { libc::chroot(root) } == 0 {
-            // SAFETY: a static C string.
-            if unsafe { libc::chdir(c"/".as_ptr()) } < 0 {
-                warn(5, context);
-            }
-        } else {
-            warn(6, context);
-        }
-    }
+    // SAFETY: valid C strings per the contract.
+    let group = unsafe { CStr::from_ptr(group) };
+    // SAFETY: as above.
+    let user = unsafe { CStr::from_ptr(user) };
+    // SAFETY: as above.
+    let root = unsafe { CStr::from_ptr(root) };
+    let origin = c"swoole_set_isolation";
+    let (g, u, r) = (
+        group.to_string_lossy(),
+        user.to_string_lossy(),
+        root.to_string_lossy(),
+    );
+    isolate(group, user, root, |step| match step {
+        1 => log::warning(origin, format_args!("get group [{g}] info failed")),
+        2 => log::warning(origin, format_args!("get user [{u}] info failed")),
+        3 => log::sys_warning(origin, format_args!("setgid to [{g}] failed")),
+        4 => log::sys_warning(origin, format_args!("setuid to [{u}] failed")),
+        5 => log::sys_warning(origin, format_args!("chdir('/') failed")),
+        _ => log::sys_warning(origin, format_args!("chroot('{r}') failed")),
+    });
 }
 
 /// `swoole_set_process_death_signal`: Linux `PR_SET_PDEATHSIG`, FreeBSD
@@ -138,39 +227,19 @@ type CpuSet = libc::cpuset_t;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 type CpuSet = libc::cpu_set_t;
 
-/// `swoole_set_cpu_affinity`: the whole process.
-/// # Safety
-/// `set` points to a valid `cpu_set_t`.
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_set_cpu_affinity(set: *const CpuSet) -> c_int {
-    #[cfg(target_os = "freebsd")]
-    // SAFETY: `set` is a valid `cpu_set_t` per the contract.
-    unsafe {
-        libc::cpuset_setaffinity(
-            libc::CPU_LEVEL_WHICH,
-            libc::CPU_WHICH_PID,
-            -1,
-            size_of::<CpuSet>(),
-            set,
-        )
-    }
-    #[cfg(not(target_os = "freebsd"))]
-    {
-        // SAFETY: getpid has no preconditions. Upstream pins the process's main
-        // thread (tid == pid), not the calling thread.
-        let pid = unsafe { libc::getpid() };
-        // SAFETY: `set` is a valid `cpu_set_t` per the contract.
-        unsafe { libc::sched_setaffinity(pid, size_of::<CpuSet>(), set) }
-    }
-}
-
-/// `swoole_get_cpu_affinity`: the whole process.
+/// `int swoole_get_cpu_affinity(cpu_set_t *set)`: the whole process.
 /// # Safety
 /// `set` points to a writable `cpu_set_t`.
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_get_cpu_affinity(set: *mut CpuSet) -> c_int {
+#[cfg_attr(
+    all(feature = "upstream-symbols", target_os = "freebsd"),
+    unsafe(export_name = "_Z23swoole_get_cpu_affinityP7_cpuset")
+)]
+#[cfg_attr(
+    all(feature = "upstream-symbols", not(target_os = "freebsd")),
+    unsafe(export_name = "_Z23swoole_get_cpu_affinityP9cpu_set_t")
+)]
+pub unsafe extern "C" fn swoole_get_cpu_affinity(set: *mut CpuSet) -> c_int {
     #[cfg(target_os = "freebsd")]
     // SAFETY: `set` is a writable `cpu_set_t` per the contract.
     unsafe {
@@ -322,51 +391,15 @@ pub unsafe extern "C" fn swoole_random_bytes(buf: *mut c_char, size: usize) -> u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static STEPS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
-    extern "C" fn record(step: u32, _context: *mut c_void) {
-        STEPS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(step);
-    }
 
     #[test]
     fn isolation_reports_unknown_names_and_skips_empty_steps() {
-        unsafe {
-            swr_v1_os_set_isolation(
-                c"".as_ptr(),
-                c"".as_ptr(),
-                c"".as_ptr(),
-                record,
-                std::ptr::null_mut(),
-            );
-        }
-        assert!(
-            STEPS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_empty(),
-            "nothing to do"
-        );
+        let mut steps = Vec::new();
+        isolate(c"", c"", c"", |step| steps.push(step));
+        assert!(steps.is_empty(), "nothing to do");
         let missing = c"swr-no-such-name";
-        unsafe {
-            swr_v1_os_set_isolation(
-                missing.as_ptr(),
-                missing.as_ptr(),
-                c"".as_ptr(),
-                record,
-                std::ptr::null_mut(),
-            );
-        }
-        assert_eq!(
-            *STEPS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            [1, 2],
-            "both lookups fail and nothing is switched"
-        );
+        isolate(missing, missing, c"", |step| steps.push(step));
+        assert_eq!(steps, [1, 2], "both lookups fail and nothing is switched");
     }
 
     #[test]

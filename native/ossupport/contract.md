@@ -65,17 +65,22 @@ Module tests use a private queue and remove it.
 
 ## Process and thread identity
 
-`system.rs` (upstream `src/os/base.cc`): root check, `swoole_set_isolation`
-(reporting each failed step through a native callback so warnings keep their
-order and errno), parent-death signal, process CPU affinity (`getpid()`, as
-upstream), native thread id and thread names.
+`system.rs` is upstream `src/os/base.cc`, which the patch deletes. Under their
+upstream symbols: the root check, `swoole_daemon` (Darwin detaches, forks and
+calls `setsid` itself; elsewhere `daemon(3)` and the after-fork hooks, through the
+C++ `swoole_fork`, `swoole_isset_hook` and `swoole_call_hook`), the parent-death
+signal, `swoole_get_cpu_affinity` (`getpid()`, as upstream), the native thread id
+and thread names. `swoole_set_isolation` is an inline header call with each
+`std::string`'s `c_str()`; Rust logs each failed step as it happens, errno intact.
+`file.rs`'s `swoole_sendfile` is upstream `src/os/sendfile.cc`, also deleted.
 
-`swr_v1_os_daemon_detach` runs Darwin `swoole_daemon`'s `chdir`/`/dev/null`
-steps; `swr_v1_os_file_open`/`close` and `swr_v1_os_tmpfile` back `File::open`,
-`File::close` and `swoole_tmpfile`.
+`swr_v1_os_file_open`/`close` and `swr_v1_os_tmpfile` back `File::open`,
+`File::close` and `swoole_tmpfile`. The resolver request constructors and the
+`gethostbyname`/`getaddrinfo` async handlers are inline in `swoole_async.h`.
+Unused upstream helpers left with the file: `swoole_set_cpu_affinity` and
+`swoole_thread_id_to_str`.
 
-Still native: the fork and setsid in `swoole_daemon`, the resolver request types
-and handlers, `swoole_thread_id_to_str`, File storage and UnixSocket construction.
+Still native: File storage and UnixSocket construction.
 
 `QueueRecord` is the canonical inline `MsgQueue` record, emitted by cbindgen.
 Initialization and blocking-flag/removal updates run in Rust without adding an

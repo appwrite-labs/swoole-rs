@@ -205,7 +205,6 @@ pub struct Sendfile {
 /// # Safety
 /// offset is null or an exclusively writable `off_t`; descriptors follow sendfile(2).
 #[cfg(any(target_os = "linux", target_os = "android"))]
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_os_sendfile(
     out_fd: c_int,
     in_fd: c_int,
@@ -221,7 +220,6 @@ pub unsafe extern "C" fn swr_v1_os_sendfile(
 /// bytes at `*offset`, written once; the offset advances by what was written.
 /// # Safety
 /// `offset` points to a valid, exclusively borrowed `off_t`.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_os_sendfile_copy(
     out_fd: c_int,
     in_fd: c_int,
@@ -298,7 +296,6 @@ fn sendfile_once(out_fd: c_int, in_fd: c_int, at: off_t, length: &mut off_t) -> 
 /// # Safety
 /// `offset` points to a valid, exclusively borrowed `off_t`.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_os_sendfile(
     out_fd: c_int,
     in_fd: c_int,
@@ -333,6 +330,59 @@ pub unsafe extern "C" fn swr_v1_os_sendfile(
                 };
             }
         }
+    }
+}
+
+/// `ssize_t swoole_sendfile(int out_fd, int in_fd, off_t *offset, size_t size)`
+/// (upstream `src/os/sendfile.cc`): Linux's syscall, the kqueue platforms' loop,
+/// or one copied chunk where there is no `sendfile`. `off_t` mangles as `long`,
+/// or Darwin's `long long`.
+/// # Safety
+/// As `swr_v1_os_sendfile` (`swr_v1_os_sendfile_copy` without a `sendfile`).
+#[cfg_attr(
+    all(feature = "upstream-symbols", target_vendor = "apple"),
+    unsafe(export_name = "_Z15swoole_sendfileiiPxm")
+)]
+#[cfg_attr(
+    all(feature = "upstream-symbols", not(target_vendor = "apple")),
+    unsafe(export_name = "_Z15swoole_sendfileiiPlm")
+)]
+pub unsafe extern "C" fn swoole_sendfile(
+    out_fd: c_int,
+    in_fd: c_int,
+    offset: *mut off_t,
+    size: usize,
+) -> isize {
+    let origin = c"swoole_sendfile";
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "freebsd"
+    ))]
+    {
+        // SAFETY: as the caller promises.
+        let sent = unsafe { swr_v1_os_sendfile(out_fd, in_fd, offset, size) };
+        if sent.warn != 0 {
+            swoole_rs_corebase::log::sys_warning(origin, format_args!("sendfile failed"));
+        }
+        sent.result
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "freebsd"
+    )))]
+    {
+        // SAFETY: as the caller promises.
+        let sent = unsafe { swr_v1_os_sendfile_copy(out_fd, in_fd, offset, size) };
+        match sent.warn {
+            1 => swoole_rs_corebase::log::sys_warning(origin, format_args!("pread() failed")),
+            2 => swoole_rs_corebase::log::sys_warning(origin, format_args!("write() failed")),
+            _ => {}
+        }
+        sent.result
     }
 }
 
