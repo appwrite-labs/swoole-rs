@@ -1,19 +1,28 @@
-//! The `Server` methods of the deleted worker-side files (`src/server/manager.cc`),
-//! defined under their upstream (Itanium) symbols when the hybrid links this crate
-//! (`upstream-symbols`). Each one enters native code with its operation and objects;
-//! process.cc's `workers_enter` builds the context the C++ forward built and runs
-//! the operation over it.
-use core::ffi::{c_int, c_void};
+//! The `Server` methods of the deleted worker-side files (`src/server/manager.cc`,
+//! `worker.cc` and `reactor_process.cc`), defined under their upstream (Itanium)
+//! symbols when the hybrid links this crate (`upstream-symbols`). Each one enters
+//! native code with its operation and objects; process.cc's `workers_enter` builds
+//! the context the C++ forward built and runs the operation over it.
+use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 use std::sync::OnceLock;
 
-use super::ops::{RUN_READ_WORKER_MESSAGE, RUN_RELOAD, RUN_RESTART_WORKER, RUN_START_MANAGER};
+use super::ops::{
+    RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_CALL_WORKER_START, RUN_CALL_WORKER_STOP,
+    RUN_CLEAN_CONNECTIONS, RUN_DRAIN_PIPES, RUN_KILL_WORKER, RUN_REACTOR_PROCESS_MAIN,
+    RUN_REACTOR_PROCESS_START, RUN_READ_WORKER_MESSAGE, RUN_RELOAD, RUN_RESTART_WORKER,
+    RUN_SEND_TO_REACTOR_THREAD, RUN_SIGNAL_INIT, RUN_START_EVENT_WORKER, RUN_START_MANAGER,
+    RUN_STOP_ASYNC, RUN_WORKER_SIGNAL, RUN_WORKER_START,
+};
+use crate::methods::{Narrow, send_pipe_message};
+use crate::worker_record::WorkerRecord;
 
-/// process.cc's `workers_enter(operation, object, other, arg)`.
+/// process.cc's `workers_enter(operation, object, other, extra, arg)`.
 pub type WorkersEnter = unsafe extern "C-unwind" fn(
     operation: u32,
     object: *mut c_void,
     other: *mut c_void,
+    extra: *mut c_void,
     arg: u64,
 ) -> i64;
 
@@ -26,84 +35,154 @@ pub extern "C" fn swr_v1_workers_set_enter(enter: WorkersEnter) {
     ENTER.get_or_init(|| enter);
 }
 
-/// Runs `operation` with `arg` over the context native code builds from `object` and `other`.
+/// Runs `operation` with `arg` over the context native code builds from the objects.
 ///
 /// # Safety
-/// `object` and `other` are what `operation`'s context takes, live for the call.
-unsafe fn enter(operation: u32, object: *mut c_void, other: *mut c_void, arg: u64) -> i64 {
+/// The objects are what `operation`'s context takes, live for the call.
+unsafe fn enter<R: Narrow>(
+    operation: u32,
+    object: *const c_void,
+    other: *const c_void,
+    extra: *const c_void,
+    arg: u64,
+) -> R {
     let Some(&enter) = ENTER.get() else {
         // process.cc registers before any Server exists.
         std::process::abort()
     };
     // SAFETY: as the caller guarantees.
-    unsafe { enter(operation, object, other, arg) }
+    R::narrow(unsafe {
+        enter(
+            operation,
+            object.cast_mut(),
+            other.cast_mut(),
+            extra.cast_mut(),
+            arg,
+        )
+    })
 }
 
-/// `Server::start_manager_process()`.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server21start_manager_processEv")
-)]
-pub unsafe extern "C" fn start_manager_process(serv: *mut c_void) -> c_int {
-    // SAFETY: as the caller guarantees.
-    let result = unsafe { enter(RUN_START_MANAGER, serv, ptr::null_mut(), 0) };
-    c_int::try_from(result).unwrap_or(-1)
+const NONE: *const c_void = ptr::null();
+
+/// A method's object as `enter` takes it.
+trait Object {
+    fn object(self) -> *const c_void;
 }
 
-/// `Server::restart_worker_process(exit_status)`: the new worker's pid, or -1.
-///
-/// # Safety
-/// `serv` is a live `Server` and `exit_status` a live `ExitStatus`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server22restart_worker_processERKNS_10ExitStatusE")
-)]
-pub unsafe extern "C" fn restart_worker_process(
-    serv: *mut c_void,
-    exit_status: *const c_void,
-) -> c_int {
-    // SAFETY: as the caller guarantees.
-    let pid = unsafe { enter(RUN_RESTART_WORKER, serv, exit_status.cast_mut(), 0) };
-    c_int::try_from(pid).unwrap_or(-1)
+impl<T> Object for *const T {
+    fn object(self) -> *const c_void {
+        self.cast()
+    }
 }
 
-/// `Server::read_worker_message(pool, msg)`, the manager's `onWorkerMessage`.
-///
-/// # Safety
-/// `pool` is the server's live event worker pool and `msg` a live message.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole6Server19read_worker_messageEPNS_11ProcessPoolEPNS_9EventDataE"
-    )
-)]
-pub unsafe extern "C" fn read_worker_message(pool: *mut c_void, msg: *mut c_void) {
-    // SAFETY: as the caller guarantees.
-    unsafe { enter(RUN_READ_WORKER_MESSAGE, pool, msg, 0) };
+impl<T> Object for *mut T {
+    fn object(self) -> *const c_void {
+        self.cast_const().cast()
+    }
 }
 
-/// `Server::reload(reload_all_workers)`.
+/// Each `Server` method that enters one operation: its symbol, Rust name,
+/// parameters, return type, and the operation's objects and argument.
+macro_rules! methods {
+    ($($(#[$attr:meta])* $symbol:literal fn $name:ident($($p:ident: $t:ty),*) -> $r:ty
+        = $op:ident($object:expr, $other:expr, $extra:expr, $arg:expr);)*) => {$(
+        #[doc = concat!("`", $symbol, "`.")]
+        ///
+        /// # Safety
+        /// The pointers are live objects of the types the C++ method takes.
+        $(#[$attr])*
+        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
+        pub unsafe extern "C" fn $name($($p: $t),*) -> $r {
+            // SAFETY: as the caller guarantees.
+            unsafe { enter($op, $object.object(), $other.object(), $extra.object(), $arg) }
+        }
+    )*};
+}
+
+methods! {
+    "_ZN6swoole6Server21start_manager_processEv"
+    fn start_manager_process(serv: *mut c_void) -> c_int = RUN_START_MANAGER(serv, NONE, NONE, 0);
+    "_ZN6swoole6Server22restart_worker_processERKNS_10ExitStatusE"
+    fn restart_worker_process(serv: *mut c_void, exit_status: *const c_void) -> c_int
+        = RUN_RESTART_WORKER(serv, exit_status, NONE, 0);
+    "_ZN6swoole6Server19read_worker_messageEPNS_11ProcessPoolEPNS_9EventDataE"
+    fn read_worker_message(pool: *mut c_void, msg: *mut c_void) -> ()
+        = RUN_READ_WORKER_MESSAGE(pool, msg, NONE, 0);
+    #[must_use]
+    "_ZNK6swoole6Server6reloadEb"
+    fn reload(serv: *const c_void, reload_all_workers: bool) -> bool
+        = RUN_RELOAD(serv, NONE, NONE, u64::from(reload_all_workers));
+
+    "_ZNK6swoole6Server18worker_signal_initEv"
+    fn worker_signal_init(serv: *const c_void) -> () = RUN_SIGNAL_INIT(serv, NONE, NONE, 0);
+    "_ZN6swoole6Server21worker_signal_handlerEi"
+    fn worker_signal_handler(signo: c_int) -> ()
+        = RUN_WORKER_SIGNAL(NONE, NONE, NONE, i64::from(signo).cast_unsigned());
+    "_ZN6swoole6Server19worker_accept_eventEPNS_8DataHeadE"
+    fn worker_accept_event(serv: *mut c_void, info: *mut c_void) -> ()
+        = RUN_ACCEPT_EVENT(serv, NONE, info, 0);
+    "_ZN6swoole6Server21worker_start_callbackEPNS_6WorkerE"
+    fn worker_start_callback(serv: *mut c_void, worker: *mut c_void) -> ()
+        = RUN_WORKER_START(serv, worker, NONE, 0);
+    "_ZN6swoole6Server20worker_stop_callbackEPNS_6WorkerE"
+    fn worker_stop_callback(serv: *mut c_void, worker: *mut c_void) -> ()
+        = RUN_CALL_WORKER_STOP(serv, worker, NONE, 0);
+    "_ZN6swoole6Server26call_worker_start_callbackEPNS_6WorkerE"
+    fn call_worker_start_callback(serv: *mut c_void, worker: *mut c_void) -> ()
+        = RUN_CALL_WORKER_START(serv, worker, NONE, 0);
+    "_ZN6swoole6Server25call_worker_stop_callbackEPNS_6WorkerE"
+    fn call_worker_stop_callback(serv: *mut c_void, worker: *mut c_void) -> ()
+        = RUN_CALL_WORKER_STOP(serv, worker, NONE, 0);
+    "_ZN6swoole6Server26call_worker_error_callbackEPNS_6WorkerERKNS_10ExitStatusE"
+    fn call_worker_error_callback(serv: *mut c_void, worker: *mut c_void, status: *const c_void) -> ()
+        = RUN_CALL_WORKER_ERROR(serv, worker, status, 0);
+    #[must_use]
+    "_ZN6swoole6Server11kill_workerEi"
+    fn kill_worker(serv: *mut c_void, worker_id: c_int) -> bool
+        = RUN_KILL_WORKER(serv, NONE, NONE, i64::from(worker_id).cast_unsigned());
+    "_ZN6swoole6Server17stop_async_workerEPNS_6WorkerE"
+    fn stop_async_worker(serv: *mut c_void, worker: *mut c_void) -> ()
+        = RUN_STOP_ASYNC(serv, worker, NONE, 0);
+    "_ZNK6swoole6Server17drain_worker_pipeEv"
+    fn drain_worker_pipe(serv: *const c_void) -> () = RUN_DRAIN_PIPES(serv, NONE, NONE, 0);
+    "_ZN6swoole6Server24clean_worker_connectionsEPNS_6WorkerE"
+    fn clean_worker_connections(serv: *mut c_void, worker: *mut c_void) -> ()
+        = RUN_CLEAN_CONNECTIONS(serv, worker, NONE, 0);
+    "_ZN6swoole6Server18start_event_workerEPNS_6WorkerE"
+    fn start_event_worker(serv: *mut c_void, worker: *mut c_void) -> c_int
+        = RUN_START_EVENT_WORKER(serv, worker, NONE, 0);
+    #[must_use]
+    "_ZNK6swoole6Server22send_to_reactor_threadEPKNS_9EventDataEml"
+    fn send_to_reactor_thread(serv: *const c_void, ev_data: *const c_void, sendn: usize, session_id: c_long) -> isize
+        = RUN_SEND_TO_REACTOR_THREAD(serv, ev_data, &raw const session_id, sendn as u64);
+
+    "_ZN6swoole6Server23start_reactor_processesEv"
+    fn start_reactor_processes(serv: *mut c_void) -> c_int
+        = RUN_REACTOR_PROCESS_START(serv, NONE, NONE, 0);
+    "_ZN6swoole6Server25reactor_process_main_loopEPNS_11ProcessPoolEPNS_6WorkerE"
+    fn reactor_process_main_loop(pool: *mut c_void, worker: *mut c_void) -> c_int
+        = RUN_REACTOR_PROCESS_MAIN(pool, worker, NONE, 0);
+}
+
+/// `Server::send_to_worker_from_worker(dst_worker, buf, len, flags)`: the worker's
+/// `send_pipe_message`.
 ///
 /// # Safety
-/// `serv` is a live `Server`.
+/// `dst_worker` is a live worker of a live pool; `buf` holds `len` bytes.
 #[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server6reloadEb")
+    unsafe(export_name = "_ZN6swoole6Server26send_to_worker_from_workerEPKNS_6WorkerEPKvmi")
 )]
-pub unsafe extern "C" fn reload(serv: *const c_void, reload_all_workers: bool) -> bool {
+pub unsafe extern "C" fn send_to_worker_from_worker(
+    _serv: *mut c_void,
+    dst_worker: *const WorkerRecord,
+    buf: *const u8,
+    len: usize,
+    flags: c_int,
+) -> isize {
     // SAFETY: as the caller guarantees.
-    unsafe {
-        enter(
-            RUN_RELOAD,
-            serv.cast_mut(),
-            ptr::null_mut(),
-            u64::from(reload_all_workers),
-        ) != 0
-    }
+    unsafe { send_pipe_message(dst_worker, buf, len, flags) }
 }
 
 #[cfg(test)]
@@ -111,22 +190,30 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// Each entry: operation, object, other, arg.
-    static SEEN: Mutex<Vec<(u32, usize, usize, u64)>> = Mutex::new(Vec::new());
+    /// Operation, object, other, extra (or the session it points to), arg.
+    type Entry = (u32, usize, usize, usize, u64);
+    static SEEN: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
     unsafe extern "C-unwind" fn fake(
         operation: u32,
         object: *mut c_void,
         other: *mut c_void,
+        extra: *mut c_void,
         arg: u64,
     ) -> i64 {
+        let extra = if operation == RUN_SEND_TO_REACTOR_THREAD {
+            // SAFETY: send_to_reactor_thread lends its session id.
+            usize::try_from(unsafe { *extra.cast::<c_long>() }).unwrap_or(0)
+        } else {
+            extra.addr()
+        };
         SEEN.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((operation, object.addr(), other.addr(), arg));
-        if operation == RUN_RESTART_WORKER {
-            1234
-        } else {
-            1
+            .push((operation, object.addr(), other.addr(), extra, arg));
+        match operation {
+            RUN_RESTART_WORKER => 1234,
+            RUN_SEND_TO_REACTOR_THREAD => -1,
+            _ => 1,
         }
     }
 
@@ -140,6 +227,12 @@ mod tests {
             assert_eq!(restart_worker_process(at(0x10), at(0x20)), 1234);
             read_worker_message(at(0x30), at(0x40));
             assert!(reload(at(0x10), true));
+            worker_signal_handler(15);
+            worker_accept_event(at(0x10), at(0x50));
+            call_worker_error_callback(at(0x10), at(0x20), at(0x60));
+            assert!(kill_worker(at(0x10), -1));
+            assert_eq!(send_to_reactor_thread(at(0x10), at(0x70), 48, 9), -1);
+            assert_eq!(reactor_process_main_loop(at(0x30), at(0x20)), 1);
         }
         let seen = SEEN
             .lock()
@@ -147,10 +240,16 @@ mod tests {
         assert_eq!(
             *seen,
             [
-                (RUN_START_MANAGER, 0x10, 0, 0),
-                (RUN_RESTART_WORKER, 0x10, 0x20, 0),
-                (RUN_READ_WORKER_MESSAGE, 0x30, 0x40, 0),
-                (RUN_RELOAD, 0x10, 0, 1),
+                (RUN_START_MANAGER, 0x10, 0, 0, 0),
+                (RUN_RESTART_WORKER, 0x10, 0x20, 0, 0),
+                (RUN_READ_WORKER_MESSAGE, 0x30, 0x40, 0, 0),
+                (RUN_RELOAD, 0x10, 0, 0, 1),
+                (RUN_WORKER_SIGNAL, 0, 0, 0, 15),
+                (RUN_ACCEPT_EVENT, 0x10, 0, 0x50, 0),
+                (RUN_CALL_WORKER_ERROR, 0x10, 0x20, 0x60, 0),
+                (RUN_KILL_WORKER, 0x10, 0, 0, u64::MAX),
+                (RUN_SEND_TO_REACTOR_THREAD, 0x10, 0x70, 9, 48),
+                (RUN_REACTOR_PROCESS_MAIN, 0x30, 0x20, 0, 0),
             ]
         );
     }

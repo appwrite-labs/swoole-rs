@@ -42,7 +42,7 @@ fn native() -> *const PoolNative {
 }
 
 /// A method's C++ return type, from the `i64` an export returns.
-trait Narrow {
+pub(crate) trait Narrow {
     fn narrow(value: i64) -> Self;
 }
 
@@ -53,6 +53,16 @@ impl Narrow for () {
 impl Narrow for bool {
     fn narrow(value: i64) -> bool {
         value != 0
+    }
+}
+
+impl Narrow for isize {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the C++ method's (ssize_t) conversion of the export's result"
+    )]
+    fn narrow(value: i64) -> isize {
+        value as isize
     }
 }
 
