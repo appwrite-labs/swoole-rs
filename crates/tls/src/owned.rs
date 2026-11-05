@@ -215,22 +215,34 @@ extern "C" fn slot_password(
 pub unsafe extern "C" fn swr_v1_tls_owner_detach(owner: *const OwnedTlsContext) {
     // SAFETY: the live owner remains owned during compatibility-view destruction.
     let owner = unsafe { &*owner };
-    // SAFETY: exclusive registration observation and change.
-    let identity = unsafe { *owner.native_identity.get() };
+    // SAFETY: the compatibility identity remains valid through binding teardown.
+    unsafe { detach_bound_password(owner) };
     // SAFETY: no callback is active while its native view detaches.
     unsafe { *owner.native_identity.get() = ptr::null_mut() };
+}
+/// # Safety
+/// owner is live/exclusive, including its current context and password lease.
+unsafe fn detach_bound_password(owner: &OwnedTlsContext) {
+    // SAFETY: exclusive registration observation.
+    let identity = unsafe { *owner.native_identity.get() };
     // SAFETY: observe which context this owner bound to the native identity.
     let bound = unsafe { *owner.bound_password_context.get() };
-    // SAFETY: a synchronized field read; the shared context still owns its SSL_CTX.
+    // SAFETY: a synchronized field read; the owner retains the current SSL_CTX.
     let ctx = unsafe { (*owner.fields.get()).context };
     if !ctx.is_null() && ctx == bound && !identity.is_null()
-        // SAFETY: the live owned context can be observed; custom bindings are preserved.
-        && unsafe { crate::context::password_binding_matches(ctx,identity,native_password) }
+        // SAFETY: the live context may be inspected; preserve custom bindings.
+        && unsafe { crate::context::password_binding_matches(ctx, identity, native_password) }
     {
-        let slot = Arc::as_ptr(&owner.strings[PASSPHRASE]).cast_mut().cast();
-        // SAFETY: the callback data's Rust slot outlives every borrowed context use.
-        unsafe { crate::context::bind_password(ctx, slot, slot_password) };
+        // SAFETY: copied contexts retain this same password lease independently.
+        let password = unsafe { &*owner.context_password.get() };
+        if let Some(password) = password {
+            let slot = Arc::as_ptr(password).cast_mut().cast();
+            // SAFETY: every context owner keeps this stable slot alive after rebinding.
+            unsafe { crate::context::bind_password(ctx, slot, slot_password) };
+        }
     }
+    // SAFETY: replacing/detaching this native binding ends this owner's tracking.
+    unsafe { *owner.bound_password_context.get() = ptr::null_mut() };
 }
 /// # Safety
 /// owner and native cache views are live/exclusive, and its logger does not throw.
@@ -269,6 +281,8 @@ pub unsafe extern "C" fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) 
     let fields = unsafe { (*owner).fields.get() };
     // SAFETY: synchronized owner observation; the old OpenSSL reference is still owned.
     let previous = unsafe { (*fields).context };
+    // SAFETY: a replaced context may remain alive in a value copy; detach its native identity first.
+    unsafe { detach_bound_password(state) };
     // SAFETY: no callback is active; publish the resulting OpenSSL reference.
     unsafe { (*fields).context = ctx };
     // SAFETY: create's normalized protocol mask belongs to the same owner.
@@ -402,6 +416,10 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
     }
     // SAFETY: synchronized observation of the destination's previous owned reference.
     let previous = unsafe { (*destination.fields.get()).context };
+    if previous != fields.context {
+        // SAFETY: the old context's remaining copies must not retain this replaced native identity.
+        unsafe { detach_bound_password(destination) };
+    }
     // SAFETY: slots are stable and exclusive; publish the copied scalar values/reference.
     unsafe { *destination.fields.get() = fields };
     // SAFETY: private ownership metadata copied without any native callback.
@@ -642,6 +660,77 @@ mod tests {
                 swoole_rs_reactor::swr_v1_socket_dealloc(socket);
                 swr_v1_tls_owner_detach(prepared.owner);
                 swr_v1_tls_owner_free(prepared.owner);
+            }
+        }
+    }
+    #[test]
+    fn source_replacement_detaches_older_shared_password_bindings() {
+        unsafe {
+            for replace_by_assignment in [false, true] {
+                let source = swr_v1_tls_owner_new(warning);
+                let copy = swr_v1_tls_owner_new(warning);
+                let mut native = [source.owner];
+                let identity = native.as_mut_ptr().cast();
+                swr_v1_tls_owner_bind(source.owner, identity);
+                assert_eq!(
+                    swoole_rs_corebase::swr_v1_core_string_set(
+                        source.strings[PASSPHRASE],
+                        c"before".as_ptr(),
+                        6
+                    ),
+                    0
+                );
+                assert!(swr_v1_tls_owner_create(source.owner));
+                let older = (*source.fields).context;
+                assert_eq!(swr_v1_tls_owner_assign(copy.owner, source.owner).status, 0);
+                if replace_by_assignment {
+                    let replacement = swr_v1_tls_owner_new(warning);
+                    assert_eq!(
+                        swoole_rs_corebase::swr_v1_core_string_set(
+                            replacement.strings[PASSPHRASE],
+                            c"after".as_ptr(),
+                            5
+                        ),
+                        0
+                    );
+                    assert!(swr_v1_tls_owner_create(replacement.owner));
+                    assert_eq!(
+                        swr_v1_tls_owner_assign(source.owner, replacement.owner).status,
+                        0
+                    );
+                    swr_v1_tls_owner_free(replacement.owner);
+                } else {
+                    assert_eq!(
+                        swoole_rs_corebase::swr_v1_core_string_set(
+                            source.strings[PASSPHRASE],
+                            c"after".as_ptr(),
+                            5
+                        ),
+                        0
+                    );
+                    assert!(swr_v1_tls_owner_create(source.owner));
+                    assert!(crate::context::password_binding_matches(
+                        (*source.fields).context,
+                        identity,
+                        native_password
+                    ));
+                }
+                let password = (*copy.owner).context_password.get();
+                let slot = Arc::as_ptr((&*password).as_ref().unwrap());
+                assert!(crate::context::password_binding_matches(
+                    older,
+                    slot.cast_mut().cast(),
+                    slot_password
+                ));
+                swr_v1_tls_owner_detach(source.owner);
+                swr_v1_tls_owner_free(source.owner);
+                let mut output = [0u8; 16];
+                assert_eq!(
+                    slot_password(output.as_mut_ptr().cast(), 16, 0, slot.cast_mut().cast()),
+                    5
+                );
+                assert_eq!(&output[..6], b"after\0");
+                swr_v1_tls_owner_free(copy.owner);
             }
         }
     }
