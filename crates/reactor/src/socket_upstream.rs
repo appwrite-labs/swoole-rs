@@ -7,7 +7,6 @@
 use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketRecord};
 use std::ffi::{CStr, c_int};
-use std::sync::OnceLock;
 use swoole_rs_corebase::log;
 
 /// `SW_OK`, `SW_ERR`; `swReturnCode`'s `SW_WAIT`, `SW_ERROR` and `SW_READY`.
@@ -25,20 +24,72 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-static SIGNAL_DISPATCH: OnceLock<unsafe extern "C" fn()> = OnceLock::new();
-
-/// Registers `swoole_signal_dispatch`, which `wait_event` runs when poll is
-/// interrupted; later registrations are ignored.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_set_signal_dispatch(dispatch: unsafe extern "C" fn()) {
-    SIGNAL_DISPATCH.get_or_init(|| dispatch);
-}
-
-/// The registered `swoole_signal_dispatch`, which a blocking call runs when interrupted.
+/// `swoole_signal_dispatch`, which a blocking call runs when interrupted; none
+/// outside the hybrid.
 #[must_use]
 pub fn signal_dispatch() -> Option<unsafe extern "C" fn()> {
-    SIGNAL_DISPATCH.get().copied()
+    #[cfg(feature = "upstream-symbols")]
+    {
+        // SAFETY: crates/process defines it under its upstream symbol.
+        unsafe extern "C" {
+            #[link_name = "_Z22swoole_signal_dispatchv"]
+            safe fn swoole_signal_dispatch();
+        }
+        Some(swoole_signal_dispatch)
+    }
+    #[cfg(not(feature = "upstream-symbols"))]
+    None
 }
+
+/// A static member of reference type (`static double &Socket::default_dns_timeout`),
+/// which native code reads as a pointer to the referenced object.
+#[repr(transparent)]
+pub struct NativeRef<T>(*mut T);
+
+// SAFETY: native code reads and assigns the referenced defaults as upstream does
+// its plain statics; the pointer itself never changes.
+unsafe impl<T> Sync for NativeRef<T> {}
+
+/// `Socket::default_dns_timeout`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket19default_dns_timeoutE")
+)]
+pub static DEFAULT_DNS_TIMEOUT: NativeRef<f64> =
+    // SAFETY: the field's address; nothing is read or written here.
+    NativeRef(unsafe { &raw mut crate::swr_v1_socket_defaults.timeouts.dns });
+/// `Socket::default_connect_timeout`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket23default_connect_timeoutE")
+)]
+pub static DEFAULT_CONNECT_TIMEOUT: NativeRef<f64> =
+    // SAFETY: the field's address; nothing is read or written here.
+    NativeRef(unsafe { &raw mut crate::swr_v1_socket_defaults.timeouts.connect });
+/// `Socket::default_read_timeout`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket20default_read_timeoutE")
+)]
+pub static DEFAULT_READ_TIMEOUT: NativeRef<f64> =
+    // SAFETY: the field's address; nothing is read or written here.
+    NativeRef(unsafe { &raw mut crate::swr_v1_socket_defaults.timeouts.read });
+/// `Socket::default_write_timeout`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket21default_write_timeoutE")
+)]
+pub static DEFAULT_WRITE_TIMEOUT: NativeRef<f64> =
+    // SAFETY: the field's address; nothing is read or written here.
+    NativeRef(unsafe { &raw mut crate::swr_v1_socket_defaults.timeouts.write });
+/// `Socket::default_buffer_size`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket19default_buffer_sizeE")
+)]
+pub static DEFAULT_BUFFER_SIZE: NativeRef<u32> =
+    // SAFETY: the field's address; nothing is read or written here.
+    NativeRef(unsafe { &raw mut crate::swr_v1_socket_defaults.buffer_size });
 
 /// `void Socket::clean() const`.
 ///

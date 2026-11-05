@@ -153,4 +153,8 @@ static_assert(offsetof(swr_v1_socket, connect_timeout) - offsetof(swr_v1_socket,
                   offsetof(swr_v1_socket, write_timeout) - offsetof(swr_v1_socket, dns_timeout) ==
                       offsetof(swr_v1_socket_timeouts, write),
               "network::Socket embeds swr_v1_socket_timeouts");
+static_assert(SW_SOCKET_DEFAULT_DNS_TIMEOUT == 60 && SW_SOCKET_DEFAULT_CONNECT_TIMEOUT == 10 &&
+                  SW_SOCKET_DEFAULT_READ_TIMEOUT == 60 && SW_SOCKET_DEFAULT_WRITE_TIMEOUT == 60 &&
+                  SW_SOCKET_BUFFER_SIZE == 8388608,
+              "swr_v1_socket_defaults, which Socket::default_* reference (crates/reactor/src/socket_upstream.rs)");
 #endif

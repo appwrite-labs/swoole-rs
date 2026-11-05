@@ -234,8 +234,6 @@ bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
  * swr_v1_socket_timeout is the slot one SW_TIMEOUT_* value names, else NULL. */
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
 void swr_v1_socket_set_timeout(swr_v1_socket_timeouts *timeouts, double timeout, int kind);
-/* Socket::wait_event's signal dispatch (swoole_signal_dispatch), registered once. */
-void swr_v1_socket_set_signal_dispatch(void (*dispatch)(void));
 struct sockaddr;
 ssize_t swr_v1_socket_recvfrom(int fd, void *buffer, size_t length, int flags, struct sockaddr *address, socklen_t *address_length, uint32_t retries);
 int swr_v1_socket_accept(int fd, struct sockaddr *address, socklen_t *address_length, bool nonblock, bool *listener_cloexec);
@@ -259,8 +257,8 @@ int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_
 /* _ssl_read_x509_file: a certificate as PEM into at most length bytes, warning and
  * returning -1 on failure; frees cert when consume. */
 int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);
-/* --fix-halfclose's close_notify repair for Socket::ssl_shutdown (SW_HALFCLOSE_TLS_SHUTDOWN). */
-void swr_v1_socket_set_tls_shutdown_repaired(bool repaired);
+/* --fix-halfclose's close_notify and interrupted-sendfile repairs (SW_HALFCLOSE_TLS_SHUTDOWN). */
+void swr_v1_socket_set_halfclose_repairs(bool repaired);
 /* An IOVector's cursor. */
 typedef struct {
     struct iovec *iterator;
@@ -286,8 +284,7 @@ void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
 swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner);
 size_t swr_v1_reactor_iov_length(const swr_v1_reactor_iov *owner);
 void swr_v1_reactor_iov_advance(swr_v1_reactor_iov *owner, intptr_t n);
-/* File requests own the actual File record and all range/cork slots. Native
- * views retain source-level File/std::string interfaces; only Rust closes fd. */
+/* Sendfile requests own their file and range; Rust sends and frees them. */
 typedef struct swr_v1_os_file_record swr_v1_os_file_record;
 typedef struct swr_v1_socket_file_request swr_v1_socket_file_request;
 typedef struct { int8_t corked; off_t begin; off_t end; } swr_v1_socket_file_fields;
@@ -298,9 +295,11 @@ typedef struct {
 } swr_v1_socket_file_prepared;
 swr_v1_socket_file_prepared swr_v1_socket_file_new(const char *filename, off_t offset);
 void swr_v1_socket_file_free(swr_v1_socket_file_request *owner);
-bool swr_v1_socket_file_copy_empty(swr_v1_socket_file_request *owner, const swr_v1_socket_file_request *source);
-void swr_v1_socket_file_copy_fields(swr_v1_socket_file_request *owner, const swr_v1_socket_file_request *source);
 int swr_v1_socket_file_check(swr_v1_socket_file_request *owner, size_t length);
+/* Socket::sendfile_async's request, checked with check_sendfile_parameters' warnings
+ * (null when it fails), and the typed queue's disposer for it. */
+swr_v1_socket_file_request *swr_v1_socket_file_checked(const char *filename, off_t offset, size_t length);
+void swr_v1_socket_file_dispose(void *token);
 size_t swr_v1_socket_file_length(const swr_v1_socket_file_request *owner);
 void swr_v1_socket_file_cork(swr_v1_socket_file_request *owner, const swr_v1_socket_output_hooks *hooks);
 /* Socket::wait_for and the *_sync methods: Rust runs the loop (prepare, retry

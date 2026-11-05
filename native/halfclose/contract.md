@@ -9,10 +9,9 @@ unchanged.
 | --- | --- |
 | 0001-drain-before-close | `src/server/master.cc`; `BaseFactory::end` runs in `crates/server/src/base_factory.rs`, and its queued-close op in `master.cc` stops reading under the same `SW_HALFCLOSE_DRAIN` |
 | 0002-preserve-prequeue-response | `src/server/reactor_thread.cc` |
-| 0003-send-tls-close-notify | `src/network/socket.cc` |
 | 20261103T195726-drain-before-close-in-rust-send-to-connection | `src/server/master.cc`: `send_to_connection` runs in `crates/server/src/send.rs`, so 0001's `master.cc` hunks give way to `SW_HALFCLOSE_DRAIN`, which selects the same pause, resume and queued-close behaviour there |
 | 20261104T004135-prequeue-in-rust-reactor-thread-paths | `src/server/reactor_thread.cc`: the read, write and close paths run in `crates/server/src/conn_io.rs`, so 0002's hunks give way to `SW_HALFCLOSE_PREQUEUE`, which selects the same behaviour there. Only the reactor module's patches call them, so `--fix-halfclose` builds with `--module reactor` |
-| 20261104T005648-tls-close-notify-repair-in-rust-ssl-shutdown | `src/network/socket.cc`: `ssl_shutdown` runs in `crates/tls/src/socket.rs`, so 0003's method hunks give way to `SW_HALFCLOSE_TLS_SHUTDOWN`, which selects the repaired shutdown there |
+| 20261104T005648-tls-close-notify-repair-in-rust-ssl-shutdown | `src/network/socket.cc`: `ssl_shutdown` and `handle_sendfile` run in `crates/tls/src/upstream.rs`, so the patch only defines `SW_HALFCLOSE_TLS_SHUTDOWN`, which selects the repaired close_notify and returns EINTR from `handle_sendfile` to the reactor there |
 
 ## Queued close
 
