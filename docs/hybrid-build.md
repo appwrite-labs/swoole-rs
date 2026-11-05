@@ -1,9 +1,9 @@
 # Hybrid build
 
 The hybrid build links a Rust static library into upstream Swoole's PHP
-extension through [ABI v1](abi-v1.md). With no modules selected, the Rust side
-supplies only the version/feature queries and all behavior is upstream. One
-Swoole extension is loaded per PHP process.
+extension through [ABI v1](abi-v1.md). Every Rust build applies every module's
+patches; there are no partial builds. One Swoole extension is loaded per PHP
+process.
 
 The reference is Swoole v6.2.4, commit
 `c7e514509451beafd4d70ce5b78943d51e76381c`, at `target/upstream/src/`. The
@@ -14,9 +14,9 @@ clone. Do not edit the reference to develop a patch.
 ## Editing patches
 
 Each module's patches are a branch of the pinned upstream, one commit per patch
-file named after it, over a `base: …` commit holding the patches every build
-applies first (the modules ahead of it that it depends on, the graduated ones
-and M00), so a module can edit lines an earlier module already changed:
+file named after it, over a `base: …` commit holding the patches the build
+applies first (every module ahead of it in build order), so a module can edit
+lines an earlier module already changed:
 
 ```sh
 python3 tools/patches.py checkout phphelpers   # target/patches/phphelpers, branch patches/phphelpers
@@ -74,24 +74,12 @@ Rust/Cargo. Run from the repository root.
 python3 tools/check_migration.py
 python3 tools/build_upstream.py
 
-python3 tools/build_hybrid.py                      # bridge and graduated modules
-python3 tools/build_hybrid.py --backend upstream   # patched build, Rust bridge disabled
-python3 tools/build_hybrid.py --module timer
+python3 tools/build_hybrid.py                      # every module
+python3 tools/build_hybrid.py --backend upstream   # bridge patch only, Rust bridge disabled
 ```
 
-`--backend rust` is the default; `--module` requires it. Module names and
-feature values are listed in [migration modules](migration-modules.md).
-[Graduated](migration.md#graduation) modules are in every Rust build and take
-no `--module`.
-
-`memory` and `phpcollections` must be selected together: the core Table layout
-and its PHP reader must match. The development lanes add the companion module
-automatically; direct builder calls need both `--module` flags.
-Upstream keeps PHP objects, socket/reactor ownership, protocol dispatch and
-native callbacks unless a selected module replaces them.
-`httpbindings` (and its paired `http2`) also requires `process`, which supplies
-the non-fatal PHP Server-object getter; `process` requires `locks` and
-`phpcoroutines` for the selected Thread exit relay.
+`--backend rust` is the default. Module names and feature values are listed in
+[migration modules](migration-modules.md).
 
 Shared options (also on `build_upstream.py`): `--jobs N`, `--php-config PATH`,
 `--phpize PATH`, `--openssl-dir PREFIX`, `--stdext`, `--php-sockets`,
@@ -104,9 +92,8 @@ Stable paths point to the latest build of each variant:
 | Variant | PHP extension |
 | --- | --- |
 | Reference | `target/upstream/src/modules/swoole.so` |
-| ABI bridge | `target/hybrid/rust/modules/swoole.so` |
+| Hybrid | `target/hybrid/rust/modules/swoole.so` |
 | Upstream fallback | `target/hybrid/upstream/modules/swoole.so` |
-| Modules | `target/hybrid/rust-<module>[-<module>…]/modules/swoole.so` |
 
 Builds live in `target/hybrid/builds/<input-sha256>/` with `src`, `modules`,
 `rust-prefix/` (archive and headers), `state.json`, `build-manifest.json` and
@@ -114,7 +101,7 @@ Builds live in `target/hybrid/builds/<input-sha256>/` with `src`, `modules`,
 stable path; record the resolved path and SHA-256 that runners print. The
 clones share Git objects with the reference checkout, so keep it in place.
 
-The input hash covers backend/modules, pinned commit, ordered patch hashes and
+The input hash covers backend, pinned commit, ordered patch hashes and
 destinations, builder hashes, configure arguments and pkg-config CPPFLAGS,
 exported headers, the Rust archive, toolchain versions and compiler environment.
 A cached build is reused only if its source diff, pin and artifact checksum
@@ -137,11 +124,10 @@ All default off and get their own alias suffix and manifest input.
 | Switch | Requires | Effect |
 | --- | --- | --- |
 | `--fix-halfclose` | — | M15 native patches: drain queued output before close. No Rust feature bit. Changes behavior relative to the reference; does not make general TCP half-close work. |
-| `--reactor-{iov,defer,sockets}-owned` | `--module reactor` | Rust-owned iov/defer/sockets storage. |
 
 ## Timer module
 
-The timer queue (feature value 4) is graduated: always on, no `--module` switch.
+The timer queue has feature value 4.
 `tests/modules/timer/test_fork.py` checks forking from an active timer callback,
 which aborted the child in the first adapter; it passes on Linux and macOS.
 

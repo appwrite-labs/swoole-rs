@@ -1,6 +1,6 @@
 # Coroutine I/O and runtime hooks boundary (M07)
 
-Feature value 65536 (`--module hooks`). Upstream targets:
+Feature value 65536. Upstream targets:
 `src/coroutine/{hook,socket,system,file,file_lock,iouring,uring_socket}.cc`,
 `ext-src/swoole_runtime.cc`, `include/swoole_coroutine_socket.h` (inline Socket
 method bodies only; public layout unchanged). Follows the

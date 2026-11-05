@@ -19,7 +19,7 @@ class ArtifactReuse(unittest.TestCase):
             folder.mkdir(parents=True)
             (alias/'modules').mkdir(parents=True)
             manifest = dict(build_mode='immutable', configure=[],
-                            inputs=dict(modules=dev.selected_modules(args) if label=='selected' else [], fix_halfclose=False))
+                            inputs=dict(modules=sorted(dev.MODULES) if label=='selected' else [], fix_halfclose=False))
             values = {'swoole.so':label.encode(), 'build-manifest.json':json.dumps(manifest).encode()}
             for name, value in values.items():
                 (folder/name).write_bytes(value)

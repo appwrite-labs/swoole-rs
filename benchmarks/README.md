@@ -47,8 +47,8 @@ git worktree add target/worktrees/base origin/main
 (cd target/worktrees/base && python3 tools/build_upstream.py && python3 tools/build_hybrid.py)
 python3 tools/build_hybrid.py
 python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --profiles \
-  --engine base=target/worktrees/base/target/hybrid/rust-buffer/modules/swoole.so \
-  --engine branch=target/hybrid/rust-buffer/modules/swoole.so
+  --engine base=target/worktrees/base/target/hybrid/rust/modules/swoole.so \
+  --engine branch=target/hybrid/rust/modules/swoole.so
 git worktree remove --force target/worktrees/base
 ```
 

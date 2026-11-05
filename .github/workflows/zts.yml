@@ -41,7 +41,7 @@ jobs:
       - run: |
           php="--php-config $PWD/target/php-zts/bin/php-config --phpize $PWD/target/php-zts/bin/phpize --configure=--enable-swoole-thread"
           python3 tools/build_upstream.py $php
-          python3 tools/build_hybrid.py $php $(python3 -c 'from tools.build_hybrid import SELECTABLE; print(*(f"--module {m}" for m in SELECTABLE))') --export target/phpt/guard-sdk | tee hybrid.log
+          python3 tools/build_hybrid.py $php --export target/phpt/guard-sdk | tee hybrid.log
           mkdir -p target/phpt
           cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
           cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
