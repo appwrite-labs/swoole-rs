@@ -2,26 +2,21 @@
 
 ## Socket output progression
 
-`crates/reactor/src/output.rs` runs each operation whole, calling back into
-Native through `swr_v1_socket_output_hooks` (send, cork, uncork, send time):
+`Socket::handle_send`, `handle_sendfile`, `sendfile`, `sendfile_sync` and
+`send_async` are Rust (`crates/tls/src/upstream.rs`), over the policies in
+`crates/reactor/src/output.rs` and the requests in `file_output.rs`:
 
 - `handle_send` sends the unsent tail of the front data chunk and classifies the
   result with `catch_error`: pop when it all went, store the advanced offset (and
   `send_wait`) after a short write, `send_wait`/`close_wait` or a warning on
   failure.
-- `handle_sendfile` corks once when more than `SW_SOCKET_CORK_MIN_SIZE` remain
-  (`sendfile_cork`). Native code then makes the sendfile call and trace, the
-  point where the halfclose repair (M15) inserts its EINTR early return when
-  selected. `sendfile_sent` classifies the result, records the send time,
-  then uncorks and pops once the request is done.
-- `sendfile_async` runs the request's construction and range check, the output
-  buffer's creation and the enqueue, in that order.
-
-Native code keeps Buffer/BufferChunk, SendfileRequest/File and `unique_ptr`
-storage, the sendfile call, warnings, and applies each returned result (pop,
-offset, wait flags). `check_sendfile_parameters` uses
-`swr_v1_socket_sendfile_range` (fstat included) and the chunk size
-`swr_v1_socket_sendfile_chunk`.
+- `handle_sendfile` corks once when more than `SW_SOCKET_CORK_MIN_SIZE` remain,
+  sends a chunk (returning EINTR to the reactor when the halfclose repair, M15,
+  is built), classifies the result, records the send time, then uncorks and pops
+  once the request is done.
+- `sendfile_async` stays C++ only to create the output `Buffer`: the request's
+  construction and range check are `swr_v1_socket_file_checked`, and the queue
+  frees it with `swr_v1_socket_file_dispose`.
 
 ## Writable callback
 

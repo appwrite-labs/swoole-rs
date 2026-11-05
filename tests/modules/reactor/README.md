@@ -10,7 +10,7 @@ Most gates take the pinned upstream source and a Rust FFI archive:
     python3 tests/modules/reactor/NAME.py --source target/upstream/src \
         --archive PATH/libswoole_rs_ffi.a --sanitize --report OUT.json
 
-`NAME` is one of `forwarding`, `callbacks`, `callback_queues`,
+`NAME` is one of `callbacks`, `callback_queues`,
 `initialize`, `builtins` and `flush`.
 Each extracts the original function bodies from the pin and the patched ones
 from the archive's hybrid tree (`hybrid_tree`, #796), compiles them against
@@ -21,11 +21,8 @@ shipped Rust exports in `crates/reactor/src/output.rs`'s
 `reactor-output` phase is removed. The wait frame formerly in `wait.cc` is
 `wait_loop.rs`'s `whole_wait_runs_upstreams_frame_on_each_backend`. The backends' add, set,
 del and constructors are `swr_v1_reactor_change` and `swr_v1_reactor_state_open`; `change.rs` and
-`reactor_state.rs` test them over real pipes, so the `backend_storage` and `poll_snapshot` facades are gone. `forwarding.py` retains the native forwarding
-cases and all native/corrected/hybrid Socket syntax checks.
-`clean` is covered by the Rust socketpair test and is not extracted by name.
-A PR moving the remaining forwarding decisions ports their cases into Rust and
-removes the corresponding facade, as `iov_owned` became `iov_vector_*` tests.
+`reactor_state.rs` test them over real pipes, so the `backend_storage` and `poll_snapshot` facades are gone. `Socket::sendfile` and `send_async` are Rust (`crates/tls/src/upstream.rs`), whose tests
+cover them, so the `forwarding.py` facade is gone.
 
 `reactor-native-originals` (`tools/core_tests.py`) runs upstream's own
 `network/socket.cpp` and `network/stream.cpp` GoogleTests on both engines.

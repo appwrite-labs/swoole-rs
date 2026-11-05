@@ -280,9 +280,6 @@ def plan(args, reports):
                '--source', ROOT / 'target/upstream/src', '--sanitize',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'reactor-callback-queues.json')
-        script('reactor-forwarding', 'tests/modules/reactor/forwarding.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
-               '--report', reports / 'reactor-forwarding.json')
         script('reactor-flush', 'tests/modules/reactor/flush.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
                '--report', reports / 'reactor-flush.json')

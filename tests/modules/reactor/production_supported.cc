@@ -247,13 +247,15 @@ PHP_FUNCTION(swr_reactor_output_supported) {
         for(off_t offset:{off_t(0),off_t(2)})for(size_t length:{size_t(0),size_t(1),size_t(7)}){
             OrdinaryOutputPair pair;auto *socket=pair.socket;check(socket&&socket->fd>=0);
             check(socket->sendfile_async(file.path,offset,length)==SW_OK);check(socket->out_buffer&&socket->out_buffer->count()==1);
+            size_t expected=length?length:payload.size()-offset;
 #if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
-            auto *task=static_cast<network::SendfileRequest*>(socket->out_buffer->typed_front().token);
+            // The selected build's request is Rust's (crates/reactor/src/file_output.rs).
+            auto *task=static_cast<swr_v1_socket_file_request*>(socket->out_buffer->typed_front().token);
+            check(task!=nullptr);check(swr_v1_socket_file_length(task)==expected);
 #else
             auto *task=static_cast<network::SendfileRequest*>(socket->out_buffer->front()->value.ptr);
-#endif
-            size_t expected=length?length:payload.size()-offset;
             check(task->begin==offset&&task->end==static_cast<off_t>(offset+expected));check(task->corked==0);
+#endif
             unsigned attempts=0;while(!socket->out_buffer->empty()){
                 if(++attempts>16||socket->handle_sendfile()!=SW_OK)throw std::runtime_error("ordinary positive queued sendfile failed");
             }
