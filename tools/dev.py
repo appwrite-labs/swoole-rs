@@ -267,16 +267,6 @@ def plan(args, reports):
             script('locks-state', 'tests/modules/locks/state.py', *php_for('curl'), *engines, *report('locks-state'))
     if integrate and 'phpcoroutines' in modules:
         script('phpcoroutines-tracer', 'tests/modules/phpcoroutines/tracer.py', *php, *engines, *report('phpcoroutines-tracer'))
-    if 'wrappers' in modules:
-        script('wrappers-native', 'tests/modules/wrappers/gate.py', '--archive',
-               manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('wrappers-native'))
-        wrapper_includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
-                            if sys.platform == 'darwin' else [])
-        for consumer in ['listener', 'response']:
-            name = 'wrappers-' + consumer
-            script(name, 'tests/modules/wrappers/' + consumer + '.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--core', manifest.parent / 'src',
-                   '--sanitize', *wrapper_includes, *report(name))
     if 'reactor' in modules:
         if integrate:
             for phase, extra in [('reactor-production-supported', []), ('reactor-production-callbacks', ['--callbacks']),

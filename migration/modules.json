@@ -522,8 +522,7 @@
       "owned_paths": [
         "crates/wrappers/",
         "native/wrappers/",
-        "migration/patches/wrappers/",
-        "tests/modules/wrappers/"
+        "migration/patches/wrappers/"
       ],
       "phpt_families": [
         "swoole_event",
