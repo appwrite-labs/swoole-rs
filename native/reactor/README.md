@@ -59,7 +59,8 @@ python3 tests/modules/reactor/builtins.py --source PINNED --archive PRIVATE_TARG
 Other gates under `tests/modules/reactor/` take the same
 `--source/--archive/--report [--sanitize]` arguments: `backend_storage.py`,
 `poll_snapshot.py`, `wait.py`, `initialize.py`, `callbacks.py`,
-`callback_queues.py`, `flush.py` and `output.py` (optionally `--forwarding`).
+`callback_queues.py`, `flush.py` and `forwarding.py`.
+The queued-output 53-case matrix lives in the Rust `output` unit tests.
 
 These gates extract the complete original and selected method bodies and run
 them against Native effect facades with positive inputs only. Error,

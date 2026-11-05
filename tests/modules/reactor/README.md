@@ -10,14 +10,19 @@ Most gates take the pinned upstream source and a Rust FFI archive:
     python3 tests/modules/reactor/NAME.py --source target/upstream/src \
         --archive PATH/libswoole_rs_ffi.a --sanitize --report OUT.json
 
-`NAME` is one of `output`, `wait`, `callbacks`, `callback_queues`,
+`NAME` is one of `forwarding`, `wait`, `callbacks`, `callback_queues`,
 `initialize`, `builtins`, `backend_storage`, `flush` and `poll_snapshot`.
 Each extracts the original function bodies from the pin and the patched ones
 from the archive's hybrid tree (`hybrid_tree`, #796), compiles them against
 native facades and the archive, and checks that both variants behave the same.
-`output.py` also takes `--forwarding`. A PR that moves one of these bodies into
-Rust ports the gate's cases into crates/reactor's unit tests and deletes it there,
-as `iov_owned` became `iov_owned.rs`'s `iov_vector_*` tests.
+The 53 ordinary queued-output compositions formerly in `output.cc` now call the
+shipped Rust exports in `crates/reactor/src/output.rs`'s
+`ordinary_data_positive_matrix` and `ordinary_file_positive_matrix` tests. `reactor-unit` runs them; the redundant
+`reactor-output` phase is removed. `forwarding.py` retains the native forwarding
+cases and all native/corrected/hybrid Socket syntax and disabled-feature checks.
+`clean` is covered by the Rust socketpair test and is not extracted by name.
+A PR moving the remaining forwarding decisions ports their cases into Rust and
+removes the corresponding facade, as `iov_owned` became `iov_vector_*` tests.
 
 `reactor-native-originals` (`tools/core_tests.py`) runs upstream's own
 `network/socket.cpp` and `network/stream.cpp` GoogleTests on both engines.

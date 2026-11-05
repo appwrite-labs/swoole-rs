@@ -224,6 +224,7 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         sends: Vec<usize>,
+        supplied: Vec<u8>,
         each: isize,
         errno: c_int,
         corks: u32,
@@ -249,10 +250,12 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn send(_: *mut c_void, _: *const c_void, length: usize) -> isize {
+    unsafe extern "C" fn send(_: *mut c_void, data: *const c_void, length: usize) -> isize {
         FAKE.with(|fake| {
             let mut fake = fake.borrow_mut();
             fake.sends.push(length);
+            fake.supplied =
+                unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }.to_vec();
             set_errno(fake.errno);
             if fake.each < 0 {
                 -1
@@ -480,5 +483,196 @@ mod tests {
             ERR
         );
         assert_eq!(log, b"pbep");
+    }
+    // The 53 ordinary compositions from the old output.cc source-body facade.
+    // Call the shipped Rust policies directly; the native buffer/request effects
+    // are scripted here, while production_supported checks the real C++ binding.
+    #[test]
+    fn ordinary_data_positive_matrix() {
+        let data = b"abcdef\0ghijklmnop";
+        let mut nobufs = false;
+        let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
+        let mut cases = 0;
+        for remaining in [1_u32, 7, 13] {
+            for sent in 1..=remaining {
+                reset(isize::try_from(sent).unwrap(), 0, false);
+                let result = unsafe {
+                    swr_v1_socket_handle_send(&raw const hooks, data.as_ptr(), remaining + 3, 3)
+                };
+                assert_eq!(result.code, if sent == remaining { OK } else { ERR });
+                FAKE.with_borrow(|fake| {
+                    assert_eq!(fake.supplied, data[3..3 + remaining as usize]);
+                    assert_eq!(fake.sends.len(), 1);
+                });
+                assert_eq!(result.pop, sent == remaining);
+                assert_eq!(result.send_wait, sent < remaining);
+                if sent < remaining {
+                    assert_eq!(result.offset, 3 + sent);
+                }
+                assert!(!result.close_wait);
+                cases += 1;
+            }
+        }
+
+        assert_eq!(cases, 21);
+    }
+
+    struct Request {
+        fd: c_int,
+        length: usize,
+        begin: libc::off_t,
+        end: libc::off_t,
+        buffer: bool,
+        occupied: bool,
+        timer: bool,
+        last_sent_time: u64,
+        sends: u32,
+        destroy: Option<unsafe extern "C" fn(*mut c_void)>,
+    }
+    unsafe extern "C" fn timed_sent(context: *mut c_void) {
+        unsafe { sent(context) };
+        let request = unsafe { &mut *context.cast::<Request>() };
+        if request.timer {
+            request.last_sent_time = 123;
+        }
+    }
+    unsafe extern "C" fn prepare(context: *mut c_void) -> bool {
+        let request = unsafe { &mut *context.cast::<Request>() };
+        unsafe {
+            crate::swr_v1_socket_sendfile_range(
+                request.fd,
+                request.begin,
+                request.length,
+                &raw mut request.end,
+            ) == 0
+        }
+    }
+    unsafe extern "C" fn buffer(context: *mut c_void) {
+        unsafe { (*context.cast::<Request>()).buffer = true };
+    }
+    unsafe extern "C" fn dispose(context: *mut c_void) {
+        unsafe { (*context.cast::<Request>()).occupied = false };
+    }
+    unsafe extern "C" fn enqueue(context: *mut c_void) {
+        let request = unsafe { &mut *context.cast::<Request>() };
+        assert!(request.buffer && !request.occupied);
+        request.occupied = true;
+        request.destroy = Some(dispose);
+    }
+
+    #[test]
+    fn ordinary_file_positive_matrix() {
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+
+        let path = std::env::temp_dir().join(format!("swr-ordinary-output-{}", std::process::id()));
+        let mut file = std::fs::File::create(&path).unwrap();
+        assert_eq!(file.write(b"0123456789012345678901234567890").unwrap(), 31);
+        let mut nobufs = false;
+        let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
+        let mut cases = 0;
+        for existing in [false, true] {
+            for length in [0_usize, 1, 7, 19] {
+                for timer in [false, true] {
+                    for cork_ok in [false, true] {
+                        let file = std::fs::File::open(&path).unwrap();
+                        let mut request = Request {
+                            fd: file.as_raw_fd(),
+                            length,
+                            begin: 2,
+                            end: 0,
+                            buffer: existing,
+                            occupied: false,
+                            timer,
+                            last_sent_time: 0,
+                            sends: 0,
+                            destroy: None,
+                        };
+                        let context = (&raw mut request).cast();
+                        let file_hooks = OutputHooks {
+                            socket: context,
+                            sent: timed_sent,
+                            ..hooks
+                        };
+                        assert_eq!(
+                            unsafe {
+                                swr_v1_socket_sendfile_async(context, prepare, buffer, enqueue)
+                            },
+                            OK
+                        );
+                        assert!(request.buffer);
+                        let actual_length = if length == 0 { 29 } else { length };
+                        assert_eq!(
+                            (request.begin, request.end),
+                            (2, libc::off_t::try_from(actual_length + 2).unwrap())
+                        );
+                        assert!(std::ptr::fn_addr_eq(
+                            request.destroy.unwrap(),
+                            dispose as unsafe extern "C" fn(*mut c_void)
+                        ));
+                        let mut remaining = actual_length;
+                        let (mut iterations, mut popped, mut corked) = (0, 0, 0);
+                        reset(0, 0, cork_ok);
+                        while remaining != 0 {
+                            unsafe {
+                                swr_v1_socket_sendfile_cork(
+                                    &raw const file_hooks,
+                                    &raw mut corked,
+                                    request.begin,
+                                    request.end,
+                                    8,
+                                );
+                            };
+                            let sent = 3.min(remaining.min(7));
+                            let requested =
+                                crate::swr_v1_socket_sendfile_chunk(request.begin, request.end);
+                            assert!(sent <= requested);
+                            request.sends += 1;
+                            request.begin += libc::off_t::try_from(sent).unwrap();
+                            remaining -= sent;
+                            let result = unsafe {
+                                swr_v1_socket_sendfile_sent(
+                                    &raw const file_hooks,
+                                    isize::try_from(sent).unwrap(),
+                                    requested,
+                                    &raw mut corked,
+                                    request.begin,
+                                    request.end,
+                                )
+                            };
+                            assert_eq!(result.code, OK);
+                            if result.pop {
+                                unsafe { request.destroy.unwrap()(context) };
+                                popped += 1;
+                            }
+                            assert!(!result.send_wait && !result.close_wait);
+                            iterations += 1;
+                            if remaining != 0 {
+                                assert_eq!(
+                                    request.begin,
+                                    libc::off_t::try_from(actual_length + 2 - remaining).unwrap()
+                                );
+                                assert_eq!(
+                                    request.end,
+                                    libc::off_t::try_from(actual_length + 2).unwrap()
+                                );
+                            }
+                        }
+                        FAKE.with_borrow(|fake| {
+                            assert_eq!(fake.sent, iterations);
+                            assert_eq!(fake.corks, u32::from(actual_length > 8));
+                            assert_eq!(fake.uncorks, u32::from(actual_length > 8 && cork_ok));
+                        });
+                        assert_eq!(request.sends, iterations);
+                        assert_eq!(popped, 1);
+                        assert!(!request.occupied);
+                        assert_eq!(request.last_sent_time, if timer { 123 } else { 0 });
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(cases, 32);
     }
 }
