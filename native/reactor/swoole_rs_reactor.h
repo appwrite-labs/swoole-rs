@@ -340,6 +340,17 @@ typedef struct {
 ssize_t swr_v1_socket_iov(int fd, bool write, swr_v1_socket_iov_state *state, swr_v1_socket_tls_io tls, void *socket);
 /* The descriptor allocation owns its cursor; payloads remain borrowed. */
 typedef struct swr_v1_reactor_iov swr_v1_reactor_iov;
+typedef struct {
+    struct iovec *original;
+    int32_t count;
+    swr_v1_socket_iov_state state;
+} swr_v1_reactor_iov_fields;
+typedef struct {
+    swr_v1_reactor_iov *owner;
+    swr_v1_reactor_iov_fields *fields;
+    int32_t status;
+} swr_v1_reactor_iov_prepared;
+swr_v1_reactor_iov_prepared swr_v1_reactor_iov_prepare(const struct iovec *source, int32_t count);
 swr_v1_reactor_iov *swr_v1_reactor_iov_create(const struct iovec *source, int32_t count, int32_t *status);
 void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
 swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner);

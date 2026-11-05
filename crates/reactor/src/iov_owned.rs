@@ -8,9 +8,16 @@ use std::ptr;
 
 pub struct ReactorIov {
     layout: Layout,
-    original: *mut libc::iovec,
-    count: i32,
-    state: IovState,
+    fields: ReactorIovFields,
+}
+
+/// Stable public slots borrowed by the native facade. Payload and descriptor
+/// replacement obey the same live-span requirements as the original interface.
+#[repr(C)]
+pub struct ReactorIovFields {
+    pub original: *mut libc::iovec,
+    pub count: i32,
+    pub state: IovState,
 }
 #[repr(C)]
 pub struct ReactorIovAllocation {
@@ -72,13 +79,15 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_owned_new(
     unsafe {
         allocation.cast::<ReactorIov>().write(ReactorIov {
             layout,
-            original,
-            count: signed_count,
-            state: IovState {
-                iterator,
-                remain_count: signed_count,
-                index: 0,
-                offset_bytes: 0,
+            fields: ReactorIovFields {
+                original,
+                count: signed_count,
+                state: IovState {
+                    iterator,
+                    remain_count: signed_count,
+                    index: 0,
+                    offset_bytes: 0,
+                },
             },
         });
     };
@@ -148,9 +157,39 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_create(
 pub unsafe extern "C" fn swr_v1_reactor_iov_destroy(owner: *mut ReactorIov) {
     if !owner.is_null() {
         // SAFETY: live owner whose original allocation base is unchanged.
-        let original = unsafe { (*owner).original };
+        let original = unsafe { (*owner).fields.original };
         // SAFETY: the unique descriptor allocation is released once.
         unsafe { swr_v1_reactor_iov_owned_free(original) };
+    }
+}
+
+/// Allocate and expose stable public field slots for the native constructor.
+#[repr(C)]
+pub struct ReactorIovPrepared {
+    pub owner: *mut ReactorIov,
+    pub fields: *mut ReactorIovFields,
+    pub status: i32,
+}
+/// # Safety
+/// Source obeys create's descriptor-span contract. Public slots remain valid until destroy.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_reactor_iov_prepare(
+    source: *const libc::iovec,
+    count: i32,
+) -> ReactorIovPrepared {
+    let mut status = 0;
+    // SAFETY: forwards the source span; status is a writable local.
+    let owner = unsafe { swr_v1_reactor_iov_create(source, count, &raw mut status) };
+    let fields = if owner.is_null() {
+        ptr::null_mut()
+    } else {
+        // SAFETY: the freshly allocated owner contains these stable slots.
+        unsafe { &raw mut (*owner).fields }
+    };
+    ReactorIovPrepared {
+        owner,
+        fields,
+        status,
     }
 }
 
@@ -160,7 +199,7 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_destroy(owner: *mut ReactorIov) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_reactor_iov_view(owner: *const ReactorIov) -> IovState {
     // SAFETY: live immutable owner per the contract.
-    unsafe { (*owner).state }
+    unsafe { (*owner).fields.state }
 }
 
 /// Sum the unchanged original descriptors.
@@ -171,7 +210,7 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_length(owner: *const ReactorIov) -> 
     // SAFETY: live immutable owner per the contract.
     let owner = unsafe { &*owner };
     // SAFETY: creation copied this original span, which stays live until destroy.
-    unsafe { swr_v1_reactor_iov_owned_length(owner.original, owner.count) }
+    unsafe { swr_v1_reactor_iov_owned_length(owner.fields.original, owner.fields.count) }
 }
 
 /// Advance owned descriptors and counters together.
@@ -182,7 +221,7 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_advance(owner: *mut ReactorIov, n: i
     // SAFETY: live exclusive cursor per the contract.
     let owner = unsafe { &mut *owner };
     // SAFETY: its state owns the remaining initialized descriptor span.
-    unsafe { owner.state.update(n) };
+    unsafe { owner.fields.state.update(n) };
 }
 
 /// Read/write through an owned `IOVector` without copying state through C++.
@@ -198,7 +237,7 @@ pub unsafe extern "C" fn swr_v1_socket_iov_owned(
     socket: *mut std::ffi::c_void,
 ) -> isize {
     // SAFETY: live exclusive owner per the contract.
-    let state = unsafe { &raw mut (*owner).state };
+    let state = unsafe { &raw mut (*owner).fields.state };
     // SAFETY: the payload and TLS effect contracts are forwarded unchanged.
     unsafe { crate::socket_rw::swr_v1_socket_iov(fd, write, state, tls, socket) }
 }
