@@ -42,6 +42,39 @@ unsafe extern "C" {
     fn toupper(value: c_int) -> c_int;
 }
 
+/// `SWOOLE_VERSION`, `SWOOLE_VERSION_ID` and `SWOOLE_API_VERSION_ID` of the pin;
+/// core-tests' `base.version` compares the functions below with the header's.
+const VERSION: &std::ffi::CStr = c"6.2.4";
+const VERSION_ID: c_int = 60204;
+const API_VERSION_ID: c_int = 0x0202_208a;
+
+/// `const char *swoole_version(void)`.
+#[must_use]
+#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "swoole_version"))]
+pub extern "C" fn swoole_version() -> *const c_char {
+    VERSION.as_ptr()
+}
+
+/// `int swoole_version_id(void)`.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "swoole_version_id")
+)]
+pub extern "C" fn swoole_version_id() -> c_int {
+    VERSION_ID
+}
+
+/// `int swoole_api_version_id(void)`.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "swoole_api_version_id")
+)]
+pub extern "C" fn swoole_api_version_id() -> c_int {
+    API_VERSION_ID
+}
+
 /// Parse the successful, representable portion of `std::stoi` using the host
 /// decimal parser. Native code retains the throwing path and output publication.
 /// # Safety

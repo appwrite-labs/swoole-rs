@@ -130,6 +130,7 @@ base.cc: `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
 struct tag), `swoole_hex2dec` (in the target's plain-char mode), `swoole_dump_bin`
 (over crates/framing's unpack),
 `DataHead::dump`, both `swoole_rand` overloads, `swoole_random_int`, and
+`swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names), and
 `sw_malloc`/`sw_free`/`sw_calloc`/`sw_realloc`, which call libc's allocator
 directly (`SwooleG.std_allocator` only ever held it). The `corebase-native` gate
 checks the hybrid base.o leaves the first four to the Rust archive.
