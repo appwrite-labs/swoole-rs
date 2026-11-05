@@ -207,6 +207,9 @@ fn construct(call: &Call) {
         for n in 2..=call.num_args() {
             // SAFETY: in a handler, with a passed argument.
             unsafe { argv.push(call.zval(n)) };
+            if bailout::pending() {
+                return;
+            }
         }
         handle(argv)
     } else {

@@ -181,3 +181,41 @@ own operand selection, COW type metadata, reference branches, result publication
 and temporary destruction in Rust. Native functions expose individual private
 Zend VM effects; PCRE cache references are retained and released by a Rust owner
 around a contained native match call.
+
+## Native scope and whole-thread exit transport
+
+`swoole_rs_zend_guard.h` defines native scope outcomes: normal return (0),
+ordinary Zend bailout (1), and pending whole-thread exit (2). A scope belongs to
+its current native PHP coroutine. A custom exit can use only that coroutine's
+live native scope; otherwise it yields to its immediate resumer. The pending
+exit remains sticky until the native Thread request boundary. Rust relays the
+outcome after dropping its owners; no request/bootstrap ownership is implied by
+this prerequisite. Thread-enabled hybrid builds require an explicit
+`phpcoroutines` selection, including profiles retaining native Process code;
+`process` therefore depends on `phpcoroutines` as well as `locks`.
+
+Native scope records unlink explicitly for Zend longjmp and use compiler
+cleanup with C `-fexceptions` for native C++ unwinding. Callbacks invoked below
+Rust must capture ordinary C++ exceptions inside the native body, return a typed
+fault, and rethrow only after Rust returns and native custody is destroyed.
+Cleanup of a native-only C++ caller does not authorize C++ exceptions, forced
+unwinding or pthread cancellation across Rust. PHP coroutine cancellation is a
+separate cooperative operation covered by the runtime witness.
+
+`swoole_rs_native_effect.h` supplies an optional C++14 provider containing only
+native invoke/resume function pointers. Its inline slot is shared across a
+linked program's translation units. PHP MINIT registers a static provider
+before module initialization, requests and worker publication. Registration
+never races consumers or replaces the provider. Standalone PHP-disabled SDK
+consumers retain a null slot without any Zend references; consumers select it
+once per outer native invocation. A nonlocal resume must run after all native
+invocation custody has been destroyed.
+This is not permission for an arbitrary native facade destructor called during
+another Rust Drop to invoke a facade export which resumes immediately. Facade
+exports retain their outermost-Rust entry contract; nested consumers must use
+a deferred outcome and their own qualified native outer boundary.
+
+The ZTS witness retains each Native observation as passed or failed and requires
+all selected lifecycle modes, Rust Box/Vec destruction, typed provenance and
+native C++ unwind/capture/rethrow checks. Its Native coroutine/cancellation
+failures remain failed observations; no original PHPT expectation is changed.

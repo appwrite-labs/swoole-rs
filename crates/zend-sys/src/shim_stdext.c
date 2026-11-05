@@ -1,3 +1,4 @@
+#include "shim.h"
 #include "shim_stdext.h"
 #include "SAPI.h"
 #include "php_variables.h"
@@ -15,26 +16,26 @@ zend_function *swr_zend_compiled_function_find(const char *name, size_t length) 
 }
 
 int swr_zend_try_call_known(zend_function *fn, zval *retval, uint32_t argc, zval *argv) {
-    int bailed = 0;
-    zend_try {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY {
         zend_call_known_function(fn, NULL, NULL, retval, argc, argv, NULL);
     }
-    zend_catch {
+    SWR_ZEND_CATCH {
         bailed = 1;
     }
-    zend_end_try();
+    SWR_ZEND_END_TRY();
     return bailed;
 }
 
 int swr_zend_try_lookup_class(zend_string *name, zend_class_entry **ce) {
-    int bailed = 0;
-    zend_try {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY {
         *ce = zend_lookup_class(name);
     }
-    zend_catch {
+    SWR_ZEND_CATCH {
         bailed = 1;
     }
-    zend_end_try();
+    SWR_ZEND_END_TRY();
     return bailed;
 }
 
@@ -65,24 +66,24 @@ void swr_zend_hash_foreach_key(const HashTable *table,
 }
 
 int swr_zend_try_stdext_separate(zval *value) {
-    int bailed = 0;
-    zend_try { SEPARATE_ARRAY(value); } zend_catch { bailed = 1; } zend_end_try();
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { SEPARATE_ARRAY(value); } SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
 int swr_zend_try_stdext_append(HashTable *table, zval *value, zval **result) {
-    int bailed = 0;
-    zend_try { *result = zend_hash_next_index_insert(table, value); }
-    zend_catch { bailed = 1; } zend_end_try();
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { *result = zend_hash_next_index_insert(table, value); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
 int swr_zend_try_stdext_nogc_dtor(zval *value) {
-    int bailed = 0;
-    zend_try { zval_ptr_dtor_nogc(value); } zend_catch { bailed = 1; } zend_end_try();
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { zval_ptr_dtor_nogc(value); } SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
 int swr_zend_try_stdext_cannot_add(void) {
-    int bailed = 0;
-    zend_try { zend_throw_error(NULL, "Cannot add element to the array as the next element is already occupied"); }
-    zend_catch { bailed = 1; } zend_end_try();
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { zend_throw_error(NULL, "Cannot add element to the array as the next element is already occupied"); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

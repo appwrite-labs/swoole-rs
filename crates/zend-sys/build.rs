@@ -42,6 +42,7 @@ mod php {
         sources.sort();
         // The directory too: a new shim must rerun this.
         println!("cargo::rerun-if-changed=src");
+        println!("cargo::rerun-if-changed=../../native/corebase/swoole_rs_zend_guard.h");
         for file in &sources {
             println!("cargo::rerun-if-changed={}", file.display());
         }
@@ -72,6 +73,9 @@ mod php {
                     .filter(|p| p.extension().is_some_and(|e| e == "c")),
             )
             .includes(&includes)
+            // Run native scope cleanup when a C++ caller unwinds through a C
+            // shim. Zend longjmp uses the explicit cleanup in the guard macros.
+            .flag("-fexceptions")
             .warnings(true)
             .compile("swoole_rs_zend_shim");
     }

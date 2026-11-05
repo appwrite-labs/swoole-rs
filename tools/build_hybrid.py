@@ -43,7 +43,7 @@ HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql'
 # resource tables share the locks/atomics/barrier owner.
 REQUIRES = {'tls': ('reactor',), 'reactor': ('ossupport',), 'memory': ('phpcollections',),
             'phpcollections': ('memory',), 'hooks': ('reactor', 'tls'), 'http2': ('httpbindings',),
-            'httpbindings': ('http2', 'process'), 'clients': ('reactor',), 'process': ('locks',)}
+            'httpbindings': ('http2', 'process'), 'clients': ('reactor',), 'process': ('locks', 'phpcoroutines')}
 # --fix-halfclose's repairs in the reactor thread's read, write and close paths are Rust's
 # (crates/server/src/conn_io.rs), which only the reactor module's patches call.
 HALFCLOSE_REQUIRES = ('reactor',)
@@ -400,6 +400,10 @@ def main():
     missing = set(HALFCLOSE_REQUIRES if args.fix_halfclose else ()) - set(args.module)
     if missing:
         parser.error('--fix-halfclose requires ' + ' '.join('--module ' + name for name in sorted(missing)))
+    if (args.backend == 'rust' and any(option == '--enable-swoole-thread' or
+            option.startswith('--enable-swoole-thread=') and option.split('=', 1)[1] != 'no'
+            for option in args.configure) and 'phpcoroutines' not in args.module):
+        parser.error('--enable-swoole-thread requires --module phpcoroutines for whole-thread exit relay')
     with exclusive(ROOT / 'target/hybrid/.builder.lock'):
         return build(args, parser)
 

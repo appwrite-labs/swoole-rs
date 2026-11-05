@@ -1,3 +1,4 @@
+#include "shim.h"
 /* Swoole's coroutine socket streams (crates/phpruntime). */
 #include "shim_stream.h"
 #include "ext/standard/file.h"
@@ -32,14 +33,14 @@ void swr_zend_stream_avoid_blocking(php_stream *stream) {
 }
 
 int swr_zend_stream_progress(php_stream *stream, size_t bytes) {
-    int bailed = 0;
-    zend_try {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY {
         php_stream_notify_progress_increment(PHP_STREAM_CONTEXT(stream), bytes, 0);
     }
-    zend_catch {
+    SWR_ZEND_CATCH {
         bailed = 1;
     }
-    zend_end_try();
+    SWR_ZEND_END_TRY();
     return bailed;
 }
 
@@ -116,9 +117,9 @@ int swr_zend_stream_crypto_op(const php_stream_xport_crypto_param *param) {
 }
 
 int swr_zend_try_stream_free(php_stream *stream, int flags) {
-    int bailed = 0;
-    zend_try { php_stream_free(stream, flags); }
-    zend_catch { bailed = 1; } zend_end_try();
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { php_stream_free(stream, flags); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
 
@@ -126,22 +127,22 @@ php_stream *swr_zend_try_stream_factory(void *factory, const char *proto, size_t
     const char *name, size_t namelen, const char *persistent, int options, int flags,
     struct timeval *timeout, php_stream_context *context, bool *bailed) {
     php_stream *stream = NULL;
-    zend_try {
+    SWR_ZEND_TRY {
         stream = ((php_stream_transport_factory) factory)(proto, protolen, name, namelen,
             persistent, options, flags, timeout, context STREAMS_CC);
-    } zend_catch { *bailed = true; } zend_end_try();
+    } SWR_ZEND_CATCH { *bailed = true; } SWR_ZEND_END_TRY();
     return stream;
 }
 
 int swr_zend_try_stream_alloc(const php_stream_ops *ops, void *abstract, const char *persistent, php_stream **stream) {
-    int bailed = 0;
-    zend_try { *stream = php_stream_alloc_rel(ops, abstract, persistent, "r+"); }
-    zend_catch { bailed = 1; } zend_end_try();
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { *stream = php_stream_alloc_rel(ops, abstract, persistent, "r+"); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
 int swr_zend_try_stream_close(php_stream *stream) {
-    int bailed = 0;
-    zend_try { php_stream_close(stream); }
-    zend_catch { bailed = 1; } zend_end_try();
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { php_stream_close(stream); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

@@ -55,14 +55,14 @@ void swr_zval_str(zval *value, zend_string *string) {
 
 int swr_zend_try(void (*body)(void *), void *arg) {
     volatile int bailed = 0;
-    zend_try {
+    SWR_ZEND_TRY {
         body(arg);
     }
-    zend_catch {
+    SWR_ZEND_CATCH {
         bailed = 1;
     }
-    zend_end_try();
-    return bailed;
+    SWR_ZEND_END_TRY();
+    return bailed ? (swr_zend_guard_pending() ? SWR_ZEND_THREAD_EXIT : SWR_ZEND_BAILOUT) : SWR_ZEND_RETURN;
 }
 
 typedef struct {

@@ -1,3 +1,4 @@
+#include "shim.h"
 #include "shim_tracer.h"
 #include "ext/standard/php_math.h"
 #include "ext/json/php_json.h"
@@ -85,14 +86,14 @@ uint32_t swr_zend_tracer_lineno(void) {
 }
 
 int swr_zend_try_write(const char *text, size_t length) {
-    int bailed = 0;
-    zend_try {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY {
         ZEND_WRITE(text, length);
     }
-    zend_catch {
+    SWR_ZEND_CATCH {
         bailed = 1;
     }
-    zend_end_try();
+    SWR_ZEND_END_TRY();
     return bailed;
 }
 
