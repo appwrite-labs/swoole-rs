@@ -60,14 +60,16 @@ migration moves fastest when a PR moves a group of state together with the
 operations over it and deletes their upstream bodies, and it only ever moves into
 Rust.
 
-1. Claim the first issue `python3 tools/ci.py next` prints (see Tickets).
+1. If `python3 tools/ci.py stuck` lists a PR (conflicting, or a required check
+   failed), fix the oldest one first, whoever opened it. Otherwise claim the first
+   issue `python3 tools/ci.py next` prints (see Tickets).
 2. Branch from `main` and commit; `git config core.hooksPath .githooks` enables
    the quick pre-commit checks.
 3. Push, open a PR whose body says `Closes #n` and what you checked, run
    `gh pr merge --auto --squash <pr>`, and go straight on to the next issue in
    the same turn. Opening the PR ends your part: auto-merge lands it, and the
-   merge tier and *Red main* catch anything it breaks, so don't wait for either.
-   File follow-ups as `status:ready` sub-issues of the same goal as you find them.
+   merge tier, *Red main* and `ci.py stuck` catch anything it breaks, so don't
+   wait for either. File follow-ups as `status:ready` sub-issues of the same goal as you find them.
 
 Nobody needs to approve your next step, so keep the loop going on your own. Under
 `/loop`, schedule each wakeup for 60 seconds, whatever the wakeup tool suggests:
@@ -89,8 +91,8 @@ misbehaves either.
 ## Reviewer agents
 
 Interchangeable and disposable, like executors. Each picks an area (a module, a
-tool, a CI tier, recently merged PRs) and checks that the work already there is
-right: bugs, inconsistencies between code, tests and docs, and gaps inside work
+tool, a CI tier, recently merged PRs, stuck PRs) and checks that the work already
+there is right: bugs, inconsistencies between code, tests and docs, and gaps inside work
 that claims to be complete.
 
 Judge work against what it set out to do: the issue, the PR description, the
@@ -143,7 +145,7 @@ compare-and-swap):
 
 ## CI CLI
 
-`tools/ci.py` (`wait`, `status`; see `--help`) is the only way agents watch
+`tools/ci.py` (`wait`, `status`, `next`, `stuck`; see `--help`) is the only way agents watch
 CI; GitHub's auto-merge does the merging. It needs a checkout, `gh` and Python, so it works in every session.
 The pre-commit and pre-push hooks remind you of the next command. Agents
 improve it: add a subcommand when an agent would otherwise improvise (polling,
