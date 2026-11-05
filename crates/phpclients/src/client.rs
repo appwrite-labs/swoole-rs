@@ -113,11 +113,26 @@ pub unsafe extern "C" fn swr_v1_phpclients_client_minit(
     shortname: bool,
     client_class: *mut *mut zend_class_entry,
 ) {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result = unsafe { init_phpclients_client_minit(shortname, client_class) };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
+    }
+}
+
+unsafe fn init_phpclients_client_minit(
+    shortname: bool,
+    client_class: *mut *mut zend_class_entry,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: MINIT, with a static table.
     unsafe { CLIENT.register(c"Swoole\\Coroutine\\Client", METHODS.as_ptr(), configure) };
     if shortname {
         // SAFETY: MINIT, after `register`.
-        unsafe { CLIENT.alias(c"Co\\Client") };
+        unsafe { CLIENT.alias(c"Co\\Client") }?;
     }
     let ce = CLIENT.entry();
     // SAFETY: MINIT, with the class just registered (each call below too).
@@ -145,6 +160,8 @@ pub unsafe extern "C" fn swr_v1_phpclients_client_minit(
     }
     // SAFETY: per the caller, a writable slot.
     unsafe { *client_class = ce };
+
+    Ok(())
 }
 
 fn this<'a>(call: &Call) -> &'a mut Data {

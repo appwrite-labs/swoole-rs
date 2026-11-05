@@ -145,6 +145,18 @@ unsafe extern "C" {
 /// Called once, at MINIT, with a static operations table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpevents_minit(ops: *const Ops) {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result = unsafe { init_phpevents_minit(ops) };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
+    }
+}
+
+unsafe fn init_phpevents_minit(ops: *const Ops) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: per the caller, a static table.
     if let Some(ops) = unsafe { ops.as_ref() } {
         OPS.get_or_init(|| ops);
@@ -152,7 +164,9 @@ pub unsafe extern "C" fn swr_v1_phpevents_minit(ops: *const Ops) {
     // SAFETY: MINIT, with a static table.
     unsafe { EVENT.register_static(c"Swoole\\Event", METHODS.as_ptr()) };
     // SAFETY: MINIT, after registration, with the class's own table.
-    unsafe { EVENT.function_aliases(METHODS.as_ptr(), &ALIASES) };
+    unsafe { EVENT.function_aliases(METHODS.as_ptr(), &ALIASES) }?;
+
+    Ok(())
 }
 
 /// A NUL-terminated message on the stack.

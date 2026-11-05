@@ -146,12 +146,33 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_minit(
     ai: u32,
     socket_class: *mut *mut zend_class_entry,
 ) {
+    // SAFETY: the native MINIT entry lends these original startup arguments.
+    let result = unsafe {
+        init_phpclients_socket_minit(exception, shortname, sockets, module, ai, socket_class)
+    };
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
+    }
+}
+
+unsafe fn init_phpclients_socket_minit(
+    exception: *mut zend_class_entry,
+    shortname: bool,
+    sockets: bool,
+    module: c_int,
+    ai: u32,
+    socket_class: *mut *mut zend_class_entry,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: MINIT, with a static table.
     unsafe { SOCKET.register(c"Swoole\\Coroutine\\Socket", METHODS.as_ptr(), configure) };
     let ce = SOCKET.entry();
     if shortname {
         // SAFETY: MINIT, with the class just registered.
-        unsafe { SOCKET.alias(c"Co\\Socket") };
+        unsafe { SOCKET.alias(c"Co\\Socket") }?;
     }
     let readonly = ZEND_ACC_PUBLIC | ZEND_ACC_READONLY;
     for name in [c"fd", c"domain", c"type", c"protocol"] {
@@ -180,7 +201,7 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_minit(
     }
     if shortname {
         // SAFETY: as above.
-        unsafe { EXCEPTION.alias(c"Co\\Socket\\Exception") };
+        unsafe { EXCEPTION.alias(c"Co\\Socket\\Exception") }?;
     }
     // SAFETY: the module registry is complete before any MINIT runs.
     let loaded = unsafe { zend_hash_str_find(&raw const module_registry, c"sockets".as_ptr(), 7) };
@@ -195,6 +216,8 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_minit(
     crate::net::EXCEPTION_PARENT.store(exception, std::sync::atomic::Ordering::Release);
     // SAFETY: per the caller, a writable slot.
     unsafe { *socket_class = ce };
+
+    Ok(())
 }
 
 /// `socket_coro_register_constants`.

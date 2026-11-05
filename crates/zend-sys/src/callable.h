@@ -23,9 +23,4 @@ int swr_zend_callable_release_quiet(swr_zend_callable *callable);
 /* zval_ptr_dtor of a zval, as a body for swr_zend_try (it may run destructors). */
 void swr_zend_zval_release(void *value);
 
-/* Swoole's sw_zend_register_function_alias: register `alias` in the global
- * function table with the handler of `ce`'s method `origin`. */
-int swr_zend_register_function_alias(zend_class_entry *ce, const char *origin, size_t origin_length,
-                                     const char *alias, size_t alias_length,
-                                     const zend_internal_arg_info *arg_info);
 #endif

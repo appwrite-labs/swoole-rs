@@ -1,9 +1,8 @@
 //! The string and array predicates, `swoole_parse_str`, and the PCRE and JSON
 //! functions, whose library calls C++ lends as [`Ops`].
 use std::{
-    ffi::c_char,
+    ffi::{c_char, c_void},
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
     Call, handlers,
@@ -14,41 +13,81 @@ use swoole_rs_zend::{
     value::table,
 };
 
-/// The PHP library calls C++ makes for stdext (`swr_v1_phpstdext_minit`).
-#[repr(C)]
-pub struct Ops {
-    /// Swoole's `zend::json_decode`.
-    json_decode: unsafe extern "C" fn(
+unsafe extern "C" {
+    fn swr_cpp_phpstdext_pcre_cache(regex: *mut zend_string, result: *mut *mut c_void) -> u8;
+    fn swr_cpp_phpstdext_pcre_retain(entry: *mut c_void);
+    fn swr_cpp_phpstdext_pcre_release(entry: *mut c_void);
+    fn swr_cpp_phpstdext_pcre_match(
+        entry: *mut c_void,
+        subject: *mut zend_string,
+        count: *mut zval,
+        result: *mut zval,
+        global: bool,
+        flags_passed: bool,
+        flags: i64,
+        offset: i64,
+    ) -> u8;
+    fn swr_cpp_phpstdext_json_decode(
         value: *mut zval,
         text: *const c_char,
         length: usize,
-        options: zend_long,
-        depth: zend_long,
-    ),
-    /// `php_pcre_match_impl` of a cached compiled `regex` (`RETVAL_FALSE` if it
-    /// does not compile); `flags` counts as passed when `num_args >= 3`.
-    pcre_match: unsafe extern "C" fn(
-        regex: *mut zend_string,
-        subject: *mut zend_string,
-        value: *mut zval,
-        global: u8,
-        num_args: u32,
-        flags: zend_long,
-        offset: zend_long,
-    ),
+        options: i64,
+        depth: i64,
+    ) -> u8;
 }
 
-static OPS: AtomicPtr<Ops> = AtomicPtr::new(ptr::null_mut());
-
-/// # Safety
-/// At MINIT; `ops` lives for the process.
-pub(crate) unsafe fn install(ops: *const Ops) {
-    OPS.store(ops.cast_mut(), Ordering::Relaxed);
+/// A retained PHP PCRE cache entry. Release is native refcount/memory work and
+/// cannot run PHP code, so a contained matching bailout still drops this owner.
+struct Pattern(*mut c_void);
+impl Drop for Pattern {
+    fn drop(&mut self) {
+        // SAFETY: this owner retains exactly one live compiled-pattern reference.
+        unsafe { swr_cpp_phpstdext_pcre_release(self.0) };
+    }
 }
 
-fn ops() -> &'static Ops {
-    // SAFETY: set at MINIT, before any PHP code runs, and lives for the process.
-    unsafe { &*OPS.load(Ordering::Relaxed) }
+unsafe fn match_pattern(
+    regex: *mut zend_string,
+    subject: *mut zend_string,
+    value: *mut zval,
+    global: u8,
+    num_args: u32,
+    flags: zend_long,
+    offset: zend_long,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+    let mut compiled = ptr::null_mut();
+    // SAFETY: both argument strings stay live; compilation warnings are trapped below Rust.
+    swoole_rs_zend::bailout::trapped(i32::from(unsafe {
+        swr_cpp_phpstdext_pcre_cache(regex, &raw mut compiled)
+    }))?;
+    if compiled.is_null() {
+        // SAFETY: like RETVAL_FALSE, write the caller's fresh return slot type.
+        unsafe {
+            (*value).u1 = swoole_rs_zend::sys::_zval_struct__bindgen_ty_1 {
+                type_info: swoole_rs_zend::sys::IS_FALSE,
+            }
+        };
+        return Ok(());
+    }
+    // SAFETY: PHP's live cache entry is retained before any matching effect.
+    unsafe { swr_cpp_phpstdext_pcre_retain(compiled) };
+    let compiled = Pattern(compiled);
+    // SAFETY: all-zero initializes the native function's count zval to undefined.
+    let mut count = unsafe { std::mem::zeroed::<zval>() };
+    // SAFETY: PHP borrows the retained pattern, subject and writable result slots
+    // inside a native trap, below the Pattern owner and all caller frames.
+    swoole_rs_zend::bailout::trapped(i32::from(unsafe {
+        swr_cpp_phpstdext_pcre_match(
+            compiled.0,
+            subject,
+            &raw mut count,
+            value,
+            global == 1,
+            num_args >= 3,
+            flags,
+            offset,
+        )
+    }))
 }
 
 /// `PHP_JSON_OBJECT_AS_ARRAY`.
@@ -121,9 +160,10 @@ fn pcre_match(call: &Call, global: u8) {
     let Ok((Some(subject), Some(regex), flags, offset)) = parsed else {
         return;
     };
-    // SAFETY: live argument strings and the return slot.
-    unsafe {
-        (ops().pcre_match)(
+    // SAFETY: the original argument strings and return slot remain live while
+    // the Rust owner retains, matches and releases PHP's real cached pattern.
+    let result = unsafe {
+        match_pattern(
             regex,
             subject,
             call.return_value(),
@@ -131,8 +171,9 @@ fn pcre_match(call: &Call, global: u8) {
             call.num_args(),
             flags,
             offset,
-        );
-    }
+        )
+    };
+    swoole_rs_zend::bailout::defer(result);
 }
 
 fn json_decode_assoc(call: &Call) {
@@ -161,13 +202,14 @@ fn json_decode(call: &Call, assoc: bool) {
         options & !OBJECT_AS_ARRAY
     };
     // SAFETY: the argument's bytes live for the call; the return slot.
-    unsafe {
-        (ops().json_decode)(
+    let bailed = unsafe {
+        swr_cpp_phpstdext_json_decode(
             call.return_value(),
             text.as_ptr().cast(),
             text.len(),
             options,
             depth,
-        );
-    }
+        )
+    };
+    swoole_rs_zend::bailout::defer(swoole_rs_zend::bailout::trapped(i32::from(bailed)));
 }
