@@ -3,7 +3,7 @@
 //! Canonical legacy event, socket and configuration identifiers. Both native
 //! headers and Rust operations use these definitions.
 
-#[repr(i32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -14,7 +14,7 @@ pub enum ResultCode {
     SW_ERR = -1,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -31,7 +31,7 @@ pub enum ReturnCode {
     SW_REDUCE_SIZE = 7,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -56,7 +56,7 @@ pub enum FdType {
     SW_FD_DGRAM_CLIENT = 18,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -68,7 +68,7 @@ pub enum SocketFlag {
     SW_SOCK_SSL = 512,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -85,7 +85,7 @@ pub enum SocketType {
     SW_SOCK_RAW6 = 8,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -100,7 +100,7 @@ pub enum TimeoutType {
     SW_TIMEOUT_ALL = 15,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -116,7 +116,7 @@ pub enum EventType {
     SW_EVENT_ONCE = 4096,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -129,7 +129,7 @@ pub enum ForkType {
     SW_FORK_PRECHECK = 8,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -141,7 +141,7 @@ pub enum TraverseOperation {
     SW_TRAVERSE_STOP = 2,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -157,7 +157,7 @@ pub enum EventDataFlag {
     SW_EVENT_DATA_POP_PTR = 64,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -174,7 +174,7 @@ pub enum TaskFlag {
     SW_TASK_NOREPLY = 128,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -184,7 +184,7 @@ pub enum DNSLookupFlag {
     SW_DNS_LOOKUP_RANDOM = 2048,
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
@@ -198,7 +198,7 @@ pub enum PipeType {
 pub const SW_PIPE_READ: PipeType = PipeType::SW_PIPE_WORKER;
 pub const SW_PIPE_WRITE: PipeType = PipeType::SW_PIPE_MASTER;
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     non_camel_case_types,
