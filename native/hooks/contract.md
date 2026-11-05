@@ -147,11 +147,13 @@ are still never uninstalled.
 
 ## Async tasks, DNS and io_uring
 
-- Async admission/yield/callback: dispatch failure returns before yielding;
-  cancellable yield failure selects native cancellation publication; an
-  already-canceled completion never reads `event.object` or resumes. Typed-event
-  cancellation publishes canceled -> retval -> last-error; success publishes
-  canceled -> error/errno -> retval. Callback resume may delete the event.
+- `coroutine::async` (both forms) is Rust, `hook_async` and `hook_async_job`: it
+  fills the event (Rust mirrors `AsyncEvent`'s layout; system.cc asserts it), parks
+  and resumes the coroutine, and publishes the result. Native passes
+  `async::dispatch` and the coroutine operations; `async(std::function)` is a
+  trampoline into `hook_async_job`. A refused dispatch returns false before
+  parking; a timeout or cancel marks the pool's copy canceled, so its completion
+  never touches the parked task.
 - DNS async-timeout error mapping is scalar policy in both host/address lookup
   wrappers; requests, parsing and c-ares/libc stay native. The DNS cache
   (`hook_dns_cache_*`: LRU, expiry, family key, hit/miss counters) is Rust.

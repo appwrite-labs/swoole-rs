@@ -19,6 +19,7 @@ pub mod fd_control;
 pub mod file_io;
 pub mod flock;
 pub mod lifecycle;
+pub mod offload;
 pub mod packet;
 pub mod poll;
 pub mod resolve;
@@ -164,21 +165,6 @@ pub extern "C" fn swr_v1_hook_curl_flags(flags: u32, native: u32, php: u32) -> C
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_timeval(seconds: f64, micros: f64) -> f64 {
     seconds + micros / 1000.0 / 1000.0
-}
-
-/// Async phases: dispatch admission, cancellable yield, completion callback.
-/// 0 stop, 1 yield, 2 publish completion, 3 publish cancellation, 4 resume.
-/// Native dispatch/event storage, error publication and context execution stay native.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_async_action(phase: u32, cancellable: bool, success: bool) -> i32 {
-    match phase {
-        0 => i32::from(success),
-        1 if cancellable && !success => 3,
-        1 => 2,
-        2 if success => 0,
-        2 => 4,
-        _ => -1,
-    }
 }
 
 #[unsafe(no_mangle)]
