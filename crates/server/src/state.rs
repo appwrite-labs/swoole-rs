@@ -33,6 +33,9 @@ pub struct ServerState {
     next_command: AtomicI32,
     config: AtomicPtr<crate::config::ServerConfig>,
     tables: AtomicPtr<crate::records::ServerTables>,
+    pub(crate) static_config:
+        std::sync::OnceLock<std::sync::Mutex<crate::static_config::StaticConfig>>,
+    pub(crate) commands: std::sync::Mutex<crate::commands::Commands>,
 }
 
 impl Default for ServerState {
@@ -48,6 +51,8 @@ impl ServerState {
             next_command: AtomicI32::new(1),
             config: AtomicPtr::new(core::ptr::null_mut()),
             tables: AtomicPtr::new(core::ptr::null_mut()),
+            static_config: std::sync::OnceLock::new(),
+            commands: std::sync::Mutex::new(crate::commands::Commands::new()),
         }
     }
 

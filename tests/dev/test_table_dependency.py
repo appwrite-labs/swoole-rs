@@ -1,4 +1,4 @@
-"""Table and its PHP facade require matching implementations before build setup."""
+"""Coupled owners require matching implementations before build setup."""
 from contextlib import nullcontext, redirect_stderr
 import io
 import unittest
@@ -8,7 +8,7 @@ from tools import build_hybrid
 
 class TableDependency(unittest.TestCase):
     def test_missing_companion_fails_before_lock_build_or_reference_setup(self):
-        for module, companion in [('phpcollections', 'memory'), ('memory', 'phpcollections')]:
+        for module, companion in [('phpcollections', 'memory'), ('memory', 'phpcollections'), ('process', 'locks')]:
             with self.subTest(module=module):
                 stderr = io.StringIO()
                 with patch('sys.argv', ['build_hybrid', '--module', module]), \

@@ -1,27 +1,27 @@
 diff --git a/ext-src/php_swoole_http.h b/ext-src/php_swoole_http.h
-index 6b2406d..6123d8e 100644
+index c853663..59b95c0 100644
 --- a/ext-src/php_swoole_http.h
 +++ b/ext-src/php_swoole_http.h
-@@ -174,2 +174,5 @@ struct ContextState {
+@@ -175,2 +175,5 @@ struct ContextState {
      void *private_data;
 +    // Rust's: the response being sent and the compressed body.
 +    void *write_buffer_;
 +    void *compressed_;
  };
-@@ -178,7 +181,4 @@ static_assert(sizeof(ContextState) == SWR_PHPHTTP_STATE_SIZE, "crates/phphttp/sr
+@@ -179,7 +182,4 @@ static_assert(sizeof(ContextState) == SWR_PHPHTTP_STATE_SIZE, "crates/phphttp/sr
  struct Context : ContextState {
 -    String *write_buffer;
 -
  #ifdef SW_HAVE_COMPRESSION
-     std::shared_ptr<std::unordered_set<std::string>> compression_types;
+     ::swoole::detail::ServerMimeTypes compression_types;
 -    std::shared_ptr<String> zlib_buffer;
  #endif
-@@ -227,4 +227,2 @@ struct Context : ContextState {
+@@ -228,4 +228,2 @@ struct Context : ContextState {
  
 -    String *get_write_buffer();
 -
      String *get_http2_data_buffer() {
-@@ -262,12 +260,2 @@ struct Context : ContextState {
+@@ -263,12 +261,2 @@ struct Context : ContextState {
  
 -#ifdef SW_HAVE_COMPRESSION
 -    void set_compression_method(const char *accept_encoding, size_t length) {
@@ -34,7 +34,7 @@ index 6b2406d..6123d8e 100644
 -#endif
 -
      void free() {
-@@ -342,3 +330,2 @@ swoole::http::Context *php_swoole_http_response_get_context(const zval *zobject)
+@@ -343,3 +331,2 @@ swoole::http::Context *php_swoole_http_response_get_context(const zval *zobject)
  void php_swoole_http_response_set_context(const zval *zobject, swoole::http::Context *ctx);
 -zend_string *php_swoole_http_get_date();
  
@@ -182,10 +182,10 @@ index fd94ac2..df2ea2c 100644
 -
  int swr_http_host_http2(void *context, int op, zend_string *data, int64_t offset, size_t length) {
 diff --git a/ext-src/swoole_http_server.cc b/ext-src/swoole_http_server.cc
-index 3b9bc30..ec55278 100644
+index e13f8fd..91e79b0 100644
 --- a/ext-src/swoole_http_server.cc
 +++ b/ext-src/swoole_http_server.cc
-@@ -225,3 +225,2 @@ void swr_http_host_context_delete(void *context) {
+@@ -229,3 +229,2 @@ void swr_http_host_context_delete(void *context) {
      delete ctx->request.h2_data_buffer;
 -    delete ctx->write_buffer;
      delete ctx;

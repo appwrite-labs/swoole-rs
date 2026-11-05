@@ -11,6 +11,7 @@ use std::ffi::{c_int, c_void};
 /// types and padding match the pinned C++ struct; the pointer and atomic fields are
 /// opaque storage here (owned by C++ for now). Only the scalar process fields are
 /// migrated behind the accessors below.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct WorkerRecord {
     pid: c_int,
@@ -37,6 +38,29 @@ pub struct WorkerRecord {
     pipe_worker: *mut c_void,
     pipe_current: *mut c_void,
     ptr: *mut c_void,
+}
+
+/// First event worker with this pid, preserving array order and public raw writes.
+/// # Safety
+/// `workers` is null or lends `count` initialized canonical Worker records.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_worker_array_lookup(
+    workers: *mut WorkerRecord,
+    count: u32,
+    pid: c_int,
+) -> *mut WorkerRecord {
+    if workers.is_null() {
+        return core::ptr::null_mut();
+    }
+    for index in 0..usize::try_from(count).unwrap_or(0) {
+        // SAFETY: the caller lends this complete initialized array.
+        let worker = unsafe { workers.add(index) };
+        // SAFETY: each array element is live, including its public pid slot.
+        if unsafe { (*worker).pid } == pid {
+            return worker;
+        }
+    }
+    core::ptr::null_mut()
 }
 
 /// The worker's status (`SW_WORKER_IDLE`/`BUSY`/…).
@@ -155,6 +179,50 @@ pub(crate) unsafe extern "C" fn swr_v1_worker_add_request_count(worker: *mut Wor
     unsafe { (*worker).request_count = count.wrapping_add(1) };
 }
 
+/// Initializes the current worker's counters and local running state.
+///
+/// # Safety
+/// `worker` is a writable initialized worker record owned by this worker loop.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_worker_init(worker: *mut WorkerRecord) {
+    // SAFETY: time's null output argument requests the current native timestamp.
+    let now = unsafe { libc::time(core::ptr::null_mut()) };
+    // SAFETY: worker initialization owns its start timestamp update.
+    unsafe { (*worker).start_time = now };
+    // SAFETY: worker initialization owns its request counter reset.
+    unsafe { (*worker).request_count = 0 };
+    // SAFETY: the caller owns the worker's lifecycle/status transition.
+    unsafe { swr_v1_worker_set_status(worker, 2) };
+    crate::worker_globals::swr_v1_worker_global_set(3, 1);
+    crate::worker_globals::swr_v1_worker_global_set(4, 0);
+}
+
+/// Marks the current worker exited and publishes its local shutdown state.
+///
+/// # Safety
+/// `worker` is the writable current worker record for this thread/process.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_worker_shutdown(worker: *mut WorkerRecord) {
+    // SAFETY: the caller owns the current worker's status transition.
+    unsafe { swr_v1_worker_set_status(worker, 3) };
+    crate::worker_globals::swr_v1_worker_global_set(4, 1);
+}
+
+/// Checks the current thread's request limit against the shared worker count.
+///
+/// # Safety
+/// `worker` is a readable live worker record; its owning loop synchronizes the count.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_worker_exceeded_max_requests(worker: *const WorkerRecord) -> bool {
+    let limit = crate::worker_globals::swr_v1_worker_global_get(5).cast_unsigned();
+    if limit == 0 {
+        return false;
+    }
+    // SAFETY: the caller lends the loop's initialized counter; preserve native unsigned word bits.
+    let count = unsafe { (*worker).request_count }.cast_unsigned();
+    count >= limit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +280,27 @@ mod tests {
             assert_eq!(swr_v1_worker_id(&raw const record), 7);
             // id and pid are adjacent words; neither disturbs the other
             assert_eq!(swr_v1_worker_pid(&raw const record), 4242);
+        }
+    }
+}
+
+#[cfg(test)]
+mod public_pid_array_tests {
+    use super::*;
+    #[test]
+    fn public_pid_writes_and_duplicates_keep_first_array_match_including_zero() {
+        let mut workers: [WorkerRecord; 3] = unsafe { core::mem::zeroed() };
+        let first = workers.as_mut_ptr();
+        unsafe {
+            assert_eq!(swr_v1_worker_array_lookup(first, 3, 0), first);
+            first.cast::<c_int>().write(9);
+            first.add(1).cast::<c_int>().write(9);
+            assert_eq!(swr_v1_worker_array_lookup(first, 3, 9), first);
+            first.cast::<c_int>().write(4);
+            assert_eq!(swr_v1_worker_array_lookup(first, 3, 9), first.add(1));
+            assert_eq!(swr_v1_worker_array_lookup(first, 3, 0), first.add(2));
+            assert!(swr_v1_worker_array_lookup(first, 3, 77).is_null());
+            assert!(swr_v1_worker_array_lookup(core::ptr::null_mut(), 0, 0).is_null());
         }
     }
 }

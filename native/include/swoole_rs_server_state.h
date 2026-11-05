@@ -19,6 +19,24 @@ extern "C" {
 #endif
 
 typedef struct swr_v1_server_state swr_v1_server_state;
+typedef struct { const uint8_t *name; size_t length; int32_t id; int32_t accepted_types; } swr_v1_server_command_info;
+bool swr_v1_server_command_add(const swr_v1_server_state *, const uint8_t *, size_t, int32_t, int32_t, void *);
+bool swr_v1_server_command_find(const swr_v1_server_state *, const uint8_t *, size_t, swr_v1_server_command_info *);
+void swr_v1_server_command_attach(const swr_v1_server_state *, int32_t, void *);
+void *swr_v1_server_command_handler(const swr_v1_server_state *, int32_t);
+int64_t swr_v1_server_command_request(const swr_v1_server_state *, void *);
+void *swr_v1_server_command_callback(const swr_v1_server_state *, int64_t, bool);
+bool swr_v1_server_command_at(const swr_v1_server_state *, size_t, swr_v1_server_command_info *);
+void *swr_v1_server_command_drain(const swr_v1_server_state *, bool);
+const void *swr_v1_server_static_owner(const swr_v1_server_state *, uint32_t);
+const void *swr_v1_server_static_owner_clone(const void *);
+void swr_v1_server_static_owner_free(const void *);
+bool swr_v1_server_static_mime(const void *, const uint8_t *, size_t);
+size_t swr_v1_server_static_config(const swr_v1_server_state *, uint32_t, uint32_t, const uint8_t *, size_t);
+const uint8_t *swr_v1_server_static_text(const swr_v1_server_state *, uint32_t, size_t, size_t *);
+void swr_v1_server_shared_init(void *storage);
+void swr_v1_server_port_shared_init(void *storage);
+size_t swr_v1_server_port_connections(const void *storage, uint32_t workers);
 bool swr_v1_server_record_layout(uint32_t kind, size_t size, size_t alignment, const size_t *offsets, size_t count);
 #define SWR_SERVER_CONFIG_FIELDS(F) \
     F(uint16_t, reactor_num) \

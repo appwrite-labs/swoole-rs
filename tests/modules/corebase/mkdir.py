@@ -91,7 +91,7 @@ def main():
                 # Each engine builds from its own tree: the pin, or the hybrid build.
                 flags = [*common, *(hybrid_flags if engine == 'rust' else pinned_flags)]
                 run(['c++', *flags, cpp, *([archive] if engine == 'rust' else []), *link, '-o', binary])
-                report.setdefault('actual_calls', {})[engine] = prove_calls(binary, ['mkdir_next'],
+                report.setdefault('actual_calls', {})[engine] = prove_calls(binary, ['mkdir_complete'],
                     engine == 'rust', run, args.output.with_suffix('.' + engine))
                 outputs[engine] = run([binary], data=mkdir_cases())
                 args.output.with_suffix('.' + engine + '.jsonl').write_bytes(outputs[engine])

@@ -44,6 +44,28 @@ struct Reload {
     reloaded: u16,
 }
 
+/// Native thread primitives. Handles are shared-pointer objects owned by the Rust table;
+/// thread bodies and their Zend bailout boundaries stay native.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ThreadOps {
+    pub create: unsafe extern "C" fn() -> *mut c_void,
+    pub destroy: unsafe extern "C" fn(*mut c_void),
+    pub join: unsafe extern "C" fn(*mut c_void) -> i32,
+}
+
+struct NativeThread {
+    handle: *mut c_void,
+    ops: ThreadOps,
+}
+
+impl Drop for NativeThread {
+    fn drop(&mut self) {
+        // SAFETY: the table owns this unique shared-pointer object, after the factory joined it.
+        unsafe { (self.ops.destroy)(self.handle) };
+    }
+}
+
 /// The thread factory's manager state, behind `ThreadFactory`'s opaque handle.
 #[derive(Default)]
 pub struct ThreadManager {
@@ -52,10 +74,12 @@ pub struct ThreadManager {
     reloading: AtomicBool,
     reload_all: AtomicBool,
     reload: Mutex<Option<Reload>>,
+    threads: Mutex<Vec<NativeThread>>,
 }
 
 // SAFETY: the queued `Worker *` values are opaque tokens handed back to native
-// code on the manager thread; Rust never dereferences them.
+// code on the manager thread; Rust never dereferences them. Native thread slots
+// are likewise opaque, have a fixed lifetime and are destroyed only after joining.
 unsafe impl Send for ThreadManager {}
 // SAFETY: as above; every other field is synchronised.
 unsafe impl Sync for ThreadManager {}
@@ -104,13 +128,88 @@ pub extern "C" fn swr_v1_thread_manager_new() -> *mut ThreadManager {
 /// Free a manager state.
 ///
 /// # Safety
-/// `manager` is null or a live handle from `_new`, not freed before.
+/// `manager` is null or a live handle from `_new`, not freed before; any started
+/// native thread slots have already been joined.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_thread_manager_free(manager: *mut ThreadManager) {
     if !manager.is_null() {
         // SAFETY: the caller hands back the handle `_new` leaked.
         drop(unsafe { Box::from_raw(manager) });
     }
+}
+
+/// Allocates the factory's fixed thread table before any worker starts.
+///
+/// # Safety
+/// The manager is fresh and exclusive. Primitives return owned handles or null,
+/// never throw/bail out, and remain callable until the manager is freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_thread_manager_threads_init(
+    manager: *const ThreadManager,
+    count: usize,
+    ops: *const ThreadOps,
+) -> bool {
+    // SAFETY: the native constructor lends its fresh manager exclusively.
+    let manager = unsafe { &*manager };
+    if !lock(&manager.threads).is_empty() {
+        return false;
+    }
+    // SAFETY: the constructor lends initialized, stable native primitive addresses.
+    let ops = unsafe { *ops };
+    let mut threads = Vec::new();
+    if threads.try_reserve_exact(count).is_err() {
+        return false;
+    }
+    for _ in 0..count {
+        // SAFETY: create transfers one owned shared-pointer object, without callbacks or unwinding.
+        let handle = unsafe { (ops.create)() };
+        if handle.is_null() {
+            return false;
+        }
+        threads.push(NativeThread { handle, ops });
+    }
+    *lock(&manager.threads) = threads;
+    true
+}
+
+/// Borrows a stable native thread slot from the fixed Rust-owned table.
+///
+/// # Safety
+/// The initialized manager lives until the native caller releases this view.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_thread_manager_thread(
+    manager: *const ThreadManager,
+    index: usize,
+) -> *mut c_void {
+    // SAFETY: the factory lends its live initialized table.
+    let manager = unsafe { &*manager };
+    lock(&manager.threads)
+        .get(index)
+        .map_or(std::ptr::null_mut(), |thread| thread.handle)
+}
+
+/// Joins every joinable native thread, preserving a native system error as its code.
+///
+/// # Safety
+/// The live manager's table is immutable and no other actor joins these slots.
+/// The native join primitive catches exceptions and cannot bail out.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_thread_manager_join_all(manager: *const ThreadManager) -> i32 {
+    // SAFETY: factory shutdown lends its live table until every join returns.
+    let manager = unsafe { &*manager };
+    let count = lock(&manager.threads).len();
+    for index in 0..count {
+        let (handle, join) = {
+            let threads = lock(&manager.threads);
+            (threads[index].handle, threads[index].ops.join)
+        };
+        // SAFETY: the fixed table keeps this slot alive, without a mutex/borrow held over joining.
+        let error = unsafe { join(handle) };
+        if error != 0 {
+            return error;
+        }
+    }
+    0
 }
 
 /// Queue a worker thread's exit for the manager thread (`at_thread_exit`).
@@ -407,5 +506,96 @@ mod tests {
         // SAFETY (test): a live handle.
         unsafe { swr_v1_thread_manager_exited(&raw const manager, 0x10 as *mut c_void) };
         assert!(matches!(manager.next(5), Some(Wake::Exited(w)) if w as usize == 0x10));
+    }
+}
+
+#[cfg(test)]
+mod native_thread_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::Relaxed};
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+    static CREATED: AtomicUsize = AtomicUsize::new(0);
+    static DESTROYED: AtomicUsize = AtomicUsize::new(0);
+    static FAIL_AT: AtomicUsize = AtomicUsize::new(usize::MAX);
+    static MANAGER: AtomicPtr<ThreadManager> = AtomicPtr::new(std::ptr::null_mut());
+
+    unsafe extern "C" fn create() -> *mut c_void {
+        let index = CREATED.fetch_add(1, Relaxed);
+        if index == FAIL_AT.load(Relaxed) {
+            return std::ptr::null_mut();
+        }
+        Box::into_raw(Box::new(index)).cast()
+    }
+    unsafe extern "C" fn destroy(handle: *mut c_void) {
+        drop(unsafe { Box::from_raw(handle.cast::<usize>()) });
+        DESTROYED.fetch_add(1, Relaxed);
+    }
+    unsafe extern "C" fn join(_: *mut c_void) -> i32 {
+        let manager = unsafe { &*MANAGER.load(Relaxed) };
+        // Joining can execute native cleanup; the Rust table mutex must be released.
+        if manager.threads.try_lock().is_ok() {
+            0
+        } else {
+            libc::EDEADLK
+        }
+    }
+    static OPS: ThreadOps = ThreadOps {
+        create,
+        destroy,
+        join,
+    };
+
+    fn reset() {
+        CREATED.store(0, Relaxed);
+        DESTROYED.store(0, Relaxed);
+        FAIL_AT.store(usize::MAX, Relaxed);
+    }
+
+    #[test]
+    fn owns_fixed_slots_and_joins_without_holding_a_table_lock() {
+        let _serial = lock(&SERIAL);
+        reset();
+        let manager = swr_v1_thread_manager_new();
+        MANAGER.store(manager, Relaxed);
+        unsafe {
+            assert!(swr_v1_thread_manager_threads_init(
+                manager,
+                3,
+                &raw const OPS
+            ));
+            let first = swr_v1_thread_manager_thread(manager, 0);
+            assert!(!first.is_null());
+            assert_eq!(swr_v1_thread_manager_thread(manager, 0), first);
+            assert!(swr_v1_thread_manager_thread(manager, 3).is_null());
+            assert!(!swr_v1_thread_manager_threads_init(
+                manager,
+                1,
+                &raw const OPS
+            ));
+            assert_eq!(swr_v1_thread_manager_join_all(manager), 0);
+            swr_v1_thread_manager_free(manager);
+        }
+        assert_eq!(CREATED.load(Relaxed), 3);
+        assert_eq!(DESTROYED.load(Relaxed), 3);
+    }
+
+    #[test]
+    fn failed_initialization_releases_every_created_native_slot() {
+        let _serial = lock(&SERIAL);
+        reset();
+        FAIL_AT.store(2, Relaxed);
+        let manager = swr_v1_thread_manager_new();
+        unsafe {
+            assert!(!swr_v1_thread_manager_threads_init(
+                manager,
+                4,
+                &raw const OPS
+            ));
+            assert!(swr_v1_thread_manager_thread(manager, 0).is_null());
+            swr_v1_thread_manager_free(manager);
+        }
+        assert_eq!(CREATED.load(Relaxed), 3);
+        assert_eq!(DESTROYED.load(Relaxed), 2);
     }
 }

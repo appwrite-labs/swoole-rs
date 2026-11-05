@@ -75,6 +75,24 @@ pub unsafe extern "C" fn swr_v1_process_worker_registry_register(
     registry.workers.insert(pid, Entry { worker, category });
 }
 
+/// Insert a worker without replacing an existing PID, matching `ProcessPool::add_worker`.
+/// # Safety
+/// `registry` is live; `worker` is an opaque native loan.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_insert(
+    registry: *mut WorkerRegistry,
+    pid: c_int,
+    worker: *mut c_void,
+    category: c_int,
+) {
+    // SAFETY: the caller lends the registry exclusively for this leaf mutation.
+    let registry = unsafe { &mut *registry };
+    registry
+        .workers
+        .entry(pid)
+        .or_insert(Entry { worker, category });
+}
+
 /// Remove the worker at `pid`. Returns whether one was present.
 ///
 /// # Safety
@@ -104,6 +122,24 @@ pub unsafe extern "C" fn swr_v1_process_worker_registry_lookup(
         .workers
         .get(&pid)
         .map_or(std::ptr::null_mut(), |entry| entry.worker)
+}
+
+/// Look up a registered worker of the specified category only.
+/// # Safety
+/// `registry` is a live handle; returned pointers remain native loans.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_worker_registry_lookup_category(
+    registry: *const WorkerRegistry,
+    pid: c_int,
+    category: c_int,
+) -> *mut c_void {
+    // SAFETY: the caller lends a live registry for this leaf query.
+    let registry = unsafe { &*registry };
+    registry
+        .workers
+        .get(&pid)
+        .filter(|entry| entry.category == category)
+        .map_or(core::ptr::null_mut(), |entry| entry.worker)
 }
 
 /// Detach the worker at `pid`: it has been replaced and exits on its own, so it
@@ -186,7 +222,14 @@ mod tests {
         let a = std::ptr::from_mut(&mut worker_a).cast::<c_void>();
         unsafe {
             swr_v1_process_worker_registry_register(reg, 100, a, CATEGORY_EVENT);
+            let mut worker_b = 1_u8;
+            let b = std::ptr::from_mut(&mut worker_b).cast::<c_void>();
+            swr_v1_process_worker_registry_insert(reg, 100, b, CATEGORY_USER);
             assert_eq!(swr_v1_process_worker_registry_lookup(reg, 100), a);
+            assert_eq!(
+                swr_v1_process_worker_registry_lookup_category(reg, 100, CATEGORY_EVENT),
+                a
+            );
             assert!(swr_v1_process_worker_registry_lookup(reg, 999).is_null());
             assert!(swr_v1_process_worker_registry_unregister(reg, 100));
             assert!(!swr_v1_process_worker_registry_unregister(reg, 100));
@@ -285,5 +328,45 @@ mod tests {
     #[test]
     fn free_handles_null() {
         unsafe { swr_v1_process_worker_registry_free(std::ptr::null_mut()) };
+    }
+}
+
+#[cfg(test)]
+mod category_compat_tests {
+    use super::*;
+    #[test]
+    fn user_lookup_cannot_return_an_event_worker_index_entry() {
+        let mut registry = WorkerRegistry::default();
+        unsafe {
+            swr_v1_process_worker_registry_register(
+                &raw mut registry,
+                30,
+                core::ptr::without_provenance_mut(11),
+                1,
+            );
+            swr_v1_process_worker_registry_register(
+                &raw mut registry,
+                40,
+                core::ptr::without_provenance_mut(13),
+                CATEGORY_USER,
+            );
+            assert!(
+                swr_v1_process_worker_registry_lookup_category(
+                    &raw const registry,
+                    30,
+                    CATEGORY_USER
+                )
+                .is_null()
+            );
+            assert_eq!(
+                swr_v1_process_worker_registry_lookup_category(
+                    &raw const registry,
+                    40,
+                    CATEGORY_USER
+                )
+                .addr(),
+                13
+            );
+        }
     }
 }

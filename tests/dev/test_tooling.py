@@ -100,7 +100,7 @@ class Overlays(unittest.TestCase):
                 (root / 'native' / name).touch()
             with patch.object(build_hybrid, 'ROOT', root):
                 selected = build_hybrid.headers_for(['websocket'])
-                self.assertEqual({p.name for p in selected}, {'swoole_rs.h', 'swoole_rs_server_state.h', 'swoole_rs_server_view.h', 'swoole_rs_server_records.h', 'swoole_rs_port_state.h', 'swoole_rs_websocket.h', 'codec.h', 'swoole_rs_corebase_constants.h'})
+                self.assertEqual({p.name for p in selected}, {'swoole_rs.h', 'swoole_rs_server_state.h', 'swoole_rs_server_view.h', 'swoole_rs_server_records.h', 'swoole_rs_port_state.h', 'swoole_rs_server_shared.h', 'swoole_rs_server_strings.h', 'swoole_rs_websocket.h', 'codec.h', 'swoole_rs_corebase_constants.h'})
                 (root / 'native/websocket/swoole_rs.h').touch()
                 with self.assertRaises(ValueError):
                     build_hybrid.headers_for(['websocket'])
@@ -512,7 +512,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--config',commands['hooks-compile'])
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-hybrid',
                      'crc32-consumers-upstream','crc32-consumers-hybrid',
-                     'coroutine-native-originals','corebase-mkdir','corebase-startup']:
+                     'coroutine-native-originals','corebase-mkdir','corebase-startup','corebase-record-views']:
             self.assertIn(name,commands)
         self.assertIn('--sanitize',commands['coroutine-native-originals'])
         self.assertNotIn('--inventory-only',commands['coroutine-native-originals'])
