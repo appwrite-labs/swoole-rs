@@ -12,6 +12,8 @@ struct SSLContext;
 struct Global;
 struct Socks5Proxy;
 struct HttpProxy;
+struct GethostbynameRequest;
+struct GetaddrinfoRequest;
 namespace coroutine {
 class Socket;
 }
@@ -23,6 +25,8 @@ class RustStringView {
   friend struct Global;
   friend struct Socks5Proxy;
   friend struct HttpProxy;
+  friend struct GethostbynameRequest;
+  friend struct GetaddrinfoRequest;
   friend class coroutine::Socket;
   const swr_v1_core_string *slot_;
   bool owned_ = false;

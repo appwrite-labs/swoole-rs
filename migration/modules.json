@@ -582,7 +582,10 @@
       "upstream_patch_targets": [
         "include/swoole.h",
         "include/swoole_config.h",
-        "src/core/base.cc"
+        "src/core/base.cc",
+        "include/swoole_async.h",
+        "src/os/base.cc",
+        "src/network/dns.cc"
       ],
       "abi_contract": "native/corebase/contract.md",
       "feature_bit_reserved": 8192
