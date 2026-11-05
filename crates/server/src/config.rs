@@ -232,12 +232,13 @@ pub(crate) unsafe fn native_fact(
         FIELD_CPU_NUM, FIELD_DISPATCH_MODE, FIELD_HEARTBEAT_INTERVAL, FIELD_REACTOR_NUM,
         FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_UNSAFE_EVENT, FIELD_WORKER_NUM,
         OP_ACCEPT_TIMER_CLEAR, OP_CONNECTION_LIST, OP_DELAY_RECEIVE, OP_DISABLE_NOTIFY, OP_FIELD,
-        OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_RUNNING, OP_SET_FIELD, OP_SET_MAX_CONNECTION,
-        OP_SET_RUNNING, OP_SET_WARNING, OP_SINGLE_THREAD,
+        OP_LC_DAEMONIZE, OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_RUNNING, OP_SET_FIELD,
+        OP_SET_MAX_CONNECTION, OP_SET_RUNNING, OP_SET_WARNING, OP_SINGLE_THREAD,
     };
     if !matches!(
         op,
         OP_SINGLE_THREAD
+            | OP_LC_DAEMONIZE
             | OP_DELAY_RECEIVE
             | OP_DISABLE_NOTIFY
             | OP_RUNNING
@@ -269,6 +270,7 @@ pub(crate) unsafe fn native_fact(
         OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
         OP_RUNNING => u64::from(config.running),
+        OP_LC_DAEMONIZE => u64::from(config.daemonize),
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
         OP_MAX_CONNECTION => u64::from(tables.max_connection),
         OP_CONNECTION_LIST => u64::from(!tables.connection_list.is_null()),

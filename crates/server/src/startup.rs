@@ -24,7 +24,7 @@ use crate::ops::{
     OP_TASK_POOL_SETUP, OP_TIMER_DETACHED, OP_TIMER_REINIT, TRACE_REACTOR_THREADS, TRACE_RELEASE,
     TRACE_TASK_WORKERS,
 };
-use crate::{Host, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
+use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
 
 /// `SW_MAX_THREAD_NCPU`, `SW_MAX_WORKER_NCPU`, `SW_TIMER_MIN_SEC`, `SW_BUFFER_MIN_SIZE`;
 /// native asserts each.
@@ -53,6 +53,52 @@ fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
 fn set_field<H: Host>(h: &mut H, id: u32, value: u64) -> crate::Effect<()> {
     h.op(OP_SET_FIELD, u64::from(id) | (value << 8))?;
     Ok(())
+}
+
+/// `Server::start`. This frame holds only scalars and the Host loan: a bailout
+/// from an effect longjmps over it as over upstream's C++ frame, and nothing it
+/// owns spans the daemon fork or the factory's worker forks.
+pub(crate) fn start<H: Host>(h: &mut H) -> crate::Effect<i64> {
+    use crate::ops::{
+        LOG_LC_ONLY_ONE, OP_IS_CREATED, OP_LC_BEFORE_START, OP_LC_CHECK, OP_LC_CLAIM_START,
+        OP_LC_CLEAR_ERROR, OP_LC_DAEMON, OP_LC_DAEMONIZE, OP_LC_FACTORY_START,
+        OP_LC_PREPARE_WORKERS, OP_LC_START_BASE, OP_LC_START_PROCESS, OP_LC_START_THREAD,
+        OP_LC_START_TIME, OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_SET_RUNNING,
+    };
+    h.get(OP_LC_CLEAR_ERROR)?;
+    if h.signed(OP_LC_CHECK)? < 0 {
+        return Ok(SW_ERR);
+    }
+    h.get(OP_LC_BEFORE_START)?;
+    // Cannot start two servers at the same time; use process->exec.
+    if !h.is(OP_LC_CLAIM_START)? {
+        h.get(LOG_LC_ONLY_ONE)?;
+        return Ok(SW_ERR);
+    }
+    if h.is(OP_LC_DAEMONIZE)? && h.signed(OP_LC_DAEMON)? < 0 {
+        return Ok(SW_ERR);
+    }
+    h.get(OP_LC_START_TIME)?;
+    h.get(OP_LC_PREPARE_WORKERS)?;
+    h.op(OP_SET_RUNNING, 1)?;
+    if !h.is(OP_LC_FACTORY_START)? {
+        return Ok(SW_ERR);
+    }
+    h.get(OP_LC_WRITE_PID)?;
+    let started = match h.get(OP_MODE)? {
+        MODE_BASE => h.signed(OP_LC_START_BASE)?,
+        MODE_PROCESS => h.signed(OP_LC_START_PROCESS)?,
+        MODE_THREAD => h.signed(OP_LC_START_THREAD)?,
+        _ => std::process::abort(),
+    };
+    if started < 0 {
+        return Ok(SW_ERR);
+    }
+    if h.is(OP_IS_CREATED)? {
+        destroy(h)?;
+    }
+    h.get(OP_LC_UNLINK_PID)?;
+    Ok(SW_OK)
 }
 
 /// `Server::create` after the global before-create hook: shared memory, bounded
@@ -334,6 +380,94 @@ mod tests {
     use super::*;
     use crate::script::Script;
     use crate::{Host, MODE_BASE};
+
+    fn starting(mode: u64, daemon: bool) -> Script {
+        use crate::ops::{OP_IS_CREATED, OP_LC_CLAIM_START, OP_LC_DAEMONIZE, OP_LC_FACTORY_START};
+        Script::with(&[
+            (OP_MODE, mode),
+            (OP_IS_CREATED, 1),
+            (OP_LC_CLAIM_START, 1),
+            (OP_LC_FACTORY_START, 1),
+            (OP_LC_DAEMONIZE, u64::from(daemon)),
+        ])
+    }
+
+    #[test]
+    fn start_orders_the_daemon_workers_factory_mode_and_pid_file() {
+        use crate::ops::*;
+        for (mode, run) in [
+            (MODE_BASE, OP_LC_START_BASE),
+            (MODE_PROCESS, OP_LC_START_PROCESS),
+            (MODE_THREAD, OP_LC_START_THREAD),
+        ] {
+            for daemon in [false, true] {
+                let mut s = starting(mode, daemon);
+                assert_eq!(start(&mut s).unwrap(), SW_OK);
+                let mut expected = vec![
+                    OP_LC_CLEAR_ERROR,
+                    OP_LC_CHECK,
+                    OP_LC_BEFORE_START,
+                    OP_LC_CLAIM_START,
+                    OP_LC_DAEMONIZE,
+                ];
+                if daemon {
+                    expected.push(OP_LC_DAEMON);
+                }
+                expected.extend([
+                    OP_LC_START_TIME,
+                    OP_LC_PREPARE_WORKERS,
+                    OP_SET_RUNNING,
+                    OP_LC_FACTORY_START,
+                    OP_LC_WRITE_PID,
+                    OP_MODE,
+                    run,
+                    OP_IS_CREATED,
+                    TRACE_RELEASE,
+                ]);
+                let ops: Vec<u32> = s.log.iter().map(|&(op, _)| op).collect();
+                assert_eq!(
+                    ops[..expected.len()],
+                    expected,
+                    "mode {mode}, daemon {daemon}"
+                );
+                assert_eq!(ops.last(), Some(&OP_LC_UNLINK_PID));
+                assert_eq!(s.args(OP_SET_RUNNING), [1]);
+            }
+        }
+    }
+
+    #[test]
+    fn start_failures_return_before_later_effects() {
+        use crate::ops::*;
+        let failed = (-1_i64).cast_unsigned();
+        for (op, answer, absent) in [
+            (OP_LC_CHECK, failed, OP_LC_BEFORE_START),
+            (OP_LC_CLAIM_START, 0, OP_LC_DAEMONIZE),
+            (OP_LC_DAEMON, failed, OP_LC_START_TIME),
+            (OP_LC_FACTORY_START, 0, OP_LC_WRITE_PID),
+            (OP_LC_START_PROCESS, failed, TRACE_RELEASE),
+        ] {
+            let mut s = starting(MODE_PROCESS, true);
+            s.facts.insert(op, answer);
+            assert_eq!(start(&mut s).unwrap(), SW_ERR);
+            assert_eq!(s.called(absent), 0, "{op}");
+            assert_eq!(s.called(OP_LC_UNLINK_PID), 0, "the PID file stays");
+            assert_eq!(
+                s.called(LOG_LC_ONLY_ONE),
+                usize::from(op == OP_LC_CLAIM_START)
+            );
+        }
+    }
+
+    #[test]
+    fn start_skips_destroy_once_the_factory_is_gone() {
+        use crate::ops::*;
+        let mut s = starting(MODE_BASE, false);
+        s.facts.insert(OP_IS_CREATED, 0);
+        assert_eq!(start(&mut s).unwrap(), SW_OK);
+        assert_eq!(s.called(TRACE_RELEASE), 0);
+        assert_eq!(s.called(OP_LC_UNLINK_PID), 1);
+    }
 
     /// A script whose fields live in a table that `OP_SET_FIELD` writes.
     struct Fields {

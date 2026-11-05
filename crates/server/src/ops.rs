@@ -958,6 +958,32 @@ pub const ADMIN_MEMORY: u32 = 14;
 pub const ADMIN_PORTS: u32 = 15;
 pub const ADMIN_PORT: u32 = 16;
 
+// `Server::start` (`RUN_START`). `OP_LC_CLAIM_START`, `OP_LC_START_TIME` and
+// `OP_LC_DAEMONIZE` read and write the Rust records; the rest are native effects.
+pub const RUN_START: u32 = 320;
+pub const OP_LC_CLEAR_ERROR: u32 = 1200;
+/// `Server::start_check()`.
+pub const OP_LC_CHECK: u32 = 1201;
+/// The `SW_GLOBAL_HOOK_BEFORE_SERVER_START` hook, if set.
+pub const OP_LC_BEFORE_START: u32 = 1202;
+/// Whether this call set `gs->start` from 0 to 1.
+pub const OP_LC_CLAIM_START: u32 = 1203;
+pub const LOG_LC_ONLY_ONE: u32 = 1204;
+pub const OP_LC_DAEMONIZE: u32 = 1205;
+/// Redirects stdout/stderr (to the log file or `/dev/null`), then `swoole_daemon(0, 1)`.
+pub const OP_LC_DAEMON: u32 = 1206;
+pub const OP_LC_START_TIME: u32 = 1207;
+/// Publishes the event workers to their pool and numbers the user workers.
+pub const OP_LC_PREPARE_WORKERS: u32 = 1208;
+/// `factory_->start()`.
+pub const OP_LC_FACTORY_START: u32 = 1209;
+pub const OP_LC_WRITE_PID: u32 = 1210;
+pub const OP_LC_UNLINK_PID: u32 = 1211;
+/// `start_reactor_processes()`, `start_reactor_threads()`, `start_worker_threads()`.
+pub const OP_LC_START_BASE: u32 = 1212;
+pub const OP_LC_START_PROCESS: u32 = 1213;
+pub const OP_LC_START_THREAD: u32 = 1214;
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
