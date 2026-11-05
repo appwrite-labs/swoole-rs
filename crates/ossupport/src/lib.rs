@@ -42,3 +42,11 @@ pub use pool::{
     swr_v1_os_pool_join, swr_v1_os_pool_notify_one, swr_v1_os_pool_queue_size,
     swr_v1_os_pool_release, swr_v1_os_pool_task_id, swr_v1_os_pool_worker_num,
 };
+
+#[cfg(test)]
+mod isolated_process {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/support/isolated_process.rs"
+    ));
+}
