@@ -1,5 +1,5 @@
 diff --git a/ext-src/php_swoole_cxx.h b/ext-src/php_swoole_cxx.h
-index 32b8a0fce..90dff7ecd 100644
+index 9ad8bd3..df5afd9 100644
 --- a/ext-src/php_swoole_cxx.h
 +++ b/ext-src/php_swoole_cxx.h
 @@ -19,2 +19,5 @@
@@ -8,7 +8,7 @@ index 32b8a0fce..90dff7ecd 100644
 +#include "swoole_rs_phphelpers.h"
 +#endif
  #include "php_swoole_coroutine.h"
-@@ -196,2 +199,14 @@ std::unordered_map<std::string, uint64_t> sw_socket_parse_tcp_info(tcp_info *inf
+@@ -195,2 +198,14 @@ std::unordered_map<std::string, uint64_t> sw_socket_parse_tcp_info(tcp_info *inf
  static inline bool php_swoole_async(bool blocking, const std::function<void(void)> &fn) {
 +#ifdef SWOOLE_RS_PHPHELPERS
 +    uint32_t phase = 0;
@@ -23,122 +23,39 @@ index 32b8a0fce..90dff7ecd 100644
 +    }
 +#else
      if (!blocking && swoole_coroutine_is_in()) {
-@@ -202,2 +217,3 @@ static inline bool php_swoole_async(bool blocking, const std::function<void(void
+@@ -201,2 +216,3 @@ static inline bool php_swoole_async(bool blocking, const std::function<void(void
      }
 +#endif
  }
-@@ -225,2 +241,14 @@ class String {
-     String(zend_string *v, bool copy) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        str = nullptr;
-+        uint32_t phase = 0;
-+        bool observation = copy;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_string_plan(&phase, 4, observation)) {
-+            case SWR_PHP_STRING_COPY: str = zend_string_copy(v); break;
-+            case SWR_PHP_STRING_ALIAS: str = v; break;
-+            default: return;
-+            }
-+        }
-+#else
-         if (copy) {
-@@ -230,2 +258,4 @@ class String {
+@@ -229,2 +245,3 @@ class String {
          }
 +    
-+#endif
      }
-@@ -242,2 +272,13 @@ class String {
-     String &operator=(zval *v) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        uint32_t phase = 0;
-+        bool observation = false;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_string_plan(&phase, 3, observation)) {
-+            case SWR_PHP_STRING_RELEASE: release(); break;
-+            case SWR_PHP_STRING_COPY: str = zval_get_string(v); break;
-+            default: return *this;
-+            }
-+        }
-+#else
-         release();
-@@ -245,2 +286,4 @@ class String {
+@@ -244,2 +261,3 @@ class String {
          return *this;
 +    
-+#endif
      }
-@@ -248,2 +291,14 @@ class String {
-     String &operator=(String &&o) noexcept {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        uint32_t phase = 0;
-+        bool observation = false;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_string_plan(&phase, 2, observation)) {
-+            case SWR_PHP_STRING_RELEASE: release(); break;
-+            case SWR_PHP_STRING_MOVE: str = o.str; break;
-+            case SWR_PHP_STRING_RESET_SOURCE: o.str = nullptr; break;
-+            default: return *this;
-+            }
-+        }
-+#else
-         release();
-@@ -252,2 +307,4 @@ class String {
+@@ -251,2 +269,3 @@ class String {
          return *this;
 +    
-+#endif
      }
-@@ -255,2 +312,14 @@ class String {
-     String &operator=(const String &o) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        uint32_t phase = 0;
-+        bool observation = false;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_string_plan(&phase, 1, observation)) {
-+            case SWR_PHP_STRING_OBSERVE: observation = &o == this; break;
-+            case SWR_PHP_STRING_RELEASE: release(); break;
-+            case SWR_PHP_STRING_COPY: str = zend_string_copy(o.str); break;
-+            default: return *this;
-+            }
-+        }
-+#else
-         if (&o == this) {
-@@ -261,2 +330,4 @@ class String {
+@@ -260,2 +279,3 @@ class String {
          return *this;
 +    
-+#endif
      }
-@@ -284,3 +355,8 @@ class String {
-     char *dup() const {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        return sw_likely(!swr_v1_phphelpers_empty(len())) ? sw_strndup(val(), len()) : nullptr;
-+#else
+@@ -284,2 +304,3 @@ class String {
          return sw_likely(len() > 0) ? sw_strndup(val(), len()) : nullptr;
 +    
-+#endif
      }
-@@ -288,3 +364,8 @@ class String {
-     char *edup() const {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        return sw_likely(!swr_v1_phphelpers_empty(len())) ? estrndup(val(), len()) : nullptr;
-+#else
+@@ -288,2 +309,3 @@ class String {
          return sw_likely(len() > 0) ? estrndup(val(), len()) : nullptr;
 +    
-+#endif
      }
-@@ -292,2 +373,8 @@ class String {
-     void release() {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        if (!swr_v1_phphelpers_empty(str != nullptr)) {
-+            zend_string_release(str);
-+            str = nullptr;
-+        }
-+#else
-         if (str) {
-@@ -296,2 +383,4 @@ class String {
+@@ -295,2 +317,3 @@ class String {
          }
 +    
-+#endif
      }
-@@ -313,2 +402,20 @@ class KeyValue {
+@@ -312,2 +335,20 @@ class KeyValue {
      KeyValue(zend_ulong _index, zend_string *_key, zval *_zvalue) {
 +#ifdef SWOOLE_RS_PHPHELPERS
 +        index = _index;
@@ -159,12 +76,12 @@ index 32b8a0fce..90dff7ecd 100644
 +        }
 +#else
          index = _index;
-@@ -318,2 +425,4 @@ class KeyValue {
+@@ -317,2 +358,4 @@ class KeyValue {
          Z_TRY_ADDREF(zvalue);
 +    
 +#endif
      }
-@@ -321,2 +430,17 @@ class KeyValue {
+@@ -320,2 +363,17 @@ class KeyValue {
      void add_to(zval *zarray) {
 +#ifdef SWOOLE_RS_PHPHELPERS
 +        HashTable *ht = Z_ARRVAL_P(zarray);
@@ -182,12 +99,12 @@ index 32b8a0fce..90dff7ecd 100644
 +        }
 +#else
          HashTable *ht = Z_ARRVAL_P(zarray);
-@@ -324,2 +448,4 @@ class KeyValue {
+@@ -323,2 +381,4 @@ class KeyValue {
          Z_TRY_ADDREF_P(dest_elem);
 +    
 +#endif
      }
-@@ -327,2 +453,14 @@ class KeyValue {
+@@ -326,2 +386,14 @@ class KeyValue {
      ~KeyValue() {
 +#ifdef SWOOLE_RS_PHPHELPERS
 +        uint32_t phase = 0;
@@ -202,12 +119,12 @@ index 32b8a0fce..90dff7ecd 100644
 +        }
 +#else
          if (key) {
-@@ -331,2 +469,4 @@ class KeyValue {
+@@ -330,2 +402,4 @@ class KeyValue {
          zval_ptr_dtor(&zvalue);
 +    
 +#endif
      }
-@@ -380,2 +520,21 @@ class ArrayIterator {
+@@ -379,2 +453,21 @@ class ArrayIterator {
      void skipUndefBucket() {
 +#ifdef SWOOLE_RS_PHPHELPERS
 +        uint32_t phase = 0;
@@ -229,12 +146,12 @@ index 32b8a0fce..90dff7ecd 100644
 +        }
 +#else
          while (_ptr != pe) {
-@@ -398,2 +557,4 @@ class ArrayIterator {
+@@ -397,2 +490,4 @@ class ArrayIterator {
          }
 +    
 +#endif
      }
-@@ -421,3 +582,8 @@ class Array {
+@@ -420,3 +515,8 @@ class Array {
      bool set(zend_ulong index, zval *value) const {
 +#ifdef SWOOLE_RS_PHPHELPERS
 +        return swr_v1_phphelpers_call_success(add_index_zval(arr, index, value), 0) != 0;
@@ -243,7 +160,7 @@ index 32b8a0fce..90dff7ecd 100644
 +    
 +#endif
      }
-@@ -425,3 +591,8 @@ class Array {
+@@ -424,3 +524,8 @@ class Array {
      bool append(zval *value) const {
 +#ifdef SWOOLE_RS_PHPHELPERS
 +        return swr_v1_phphelpers_call_success(add_next_index_zval(arr, value), 0) != 0;
@@ -252,210 +169,39 @@ index 32b8a0fce..90dff7ecd 100644
 +    
 +#endif
      }
-@@ -468,4 +639,18 @@ class Variable {
-     Variable(const Variable &&src) noexcept {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        value = {};
-+        uint32_t phase = 0;
-+        bool key_present = false;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_value_plan(&phase, 3, key_present)) {
-+            case SWR_PHP_FACADE_COPY: value = src.value; break;
-+            case SWR_PHP_FACADE_RETAIN: add_ref(); break;
-+            default: return;
-+            }
-+        }
-+#else
-         value = src.value;
+@@ -469,2 +574,3 @@ class Variable {
          add_ref();
 +    
-+#endif
      }
-@@ -473,4 +658,18 @@ class Variable {
-     Variable(Variable &&src) noexcept {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        value = {};
-+        uint32_t phase = 0;
-+        bool key_present = false;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_value_plan(&phase, 4, key_present)) {
-+            case SWR_PHP_FACADE_COPY: value = src.value; break;
-+            case SWR_PHP_FACADE_RESET_SOURCE: src.reset(); break;
-+            default: return;
-+            }
-+        }
-+#else
-         value = src.value;
+@@ -474,2 +580,3 @@ class Variable {
          src.reset();
 +    
-+#endif
      }
-@@ -483,2 +682,13 @@ class Variable {
-     Variable &operator=(const Variable &src) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        uint32_t phase = 0;
-+        bool key_present = false;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_value_plan(&phase, 3, key_present)) {
-+            case SWR_PHP_FACADE_COPY: value = src.value; break;
-+            case SWR_PHP_FACADE_RETAIN: add_ref(); break;
-+            default: return *this;
-+            }
-+        }
-+#else
-         value = src.value;
-@@ -486,2 +696,4 @@ class Variable {
+@@ -485,2 +592,3 @@ class Variable {
          return *this;
 +    
-+#endif
      }
-@@ -489,4 +701,17 @@ class Variable {
-     void assign(zval *zvalue) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        uint32_t phase = 0;
-+        bool key_present = false;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_value_plan(&phase, 3, key_present)) {
-+            case SWR_PHP_FACADE_COPY: value = *zvalue; break;
-+            case SWR_PHP_FACADE_RETAIN: add_ref(); break;
-+            default: return;
-+            }
-+        }
-+#else
-         value = *zvalue;
+@@ -490,2 +598,3 @@ class Variable {
          add_ref();
 +    
-+#endif
      }
-@@ -537,2 +762,8 @@ class CharPtr {
-     void release() {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        if (!swr_v1_phphelpers_empty(str_ != nullptr)) {
-+            efree(str_);
-+            str_ = nullptr;
-+        }
-+#else
-         if (str_) {
-@@ -541,2 +772,4 @@ class CharPtr {
+@@ -540,2 +649,3 @@ class CharPtr {
          }
 +    
-+#endif
      }
-@@ -544,4 +777,17 @@ class CharPtr {
-     void assign(const char *str, size_t len) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        uint32_t phase = 0;
-+        bool observation = false;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_string_plan(&phase, 3, observation)) {
-+            case SWR_PHP_STRING_RELEASE: release(); break;
-+            case SWR_PHP_STRING_COPY: str_ = estrndup(str, len); break;
-+            default: return;
-+            }
-+        }
-+#else
-         release();
+@@ -545,2 +655,3 @@ class CharPtr {
          str_ = estrndup(str, len);
 +    
-+#endif
      }
-@@ -549,4 +795,17 @@ class CharPtr {
-     void assign_tolower(const char *str, size_t len) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        uint32_t phase = 0;
-+        bool observation = false;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_string_plan(&phase, 3, observation)) {
-+            case SWR_PHP_STRING_RELEASE: release(); break;
-+            case SWR_PHP_STRING_COPY: str_ = zend_str_tolower_dup(str, len); break;
-+            default: return;
-+            }
-+        }
-+#else
-         release();
+@@ -550,2 +661,3 @@ class CharPtr {
          str_ = zend_str_tolower_dup(str, len);
 +    
-+#endif
      }
-@@ -588,2 +847,19 @@ class Callable {
-     Callable *dup() const {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        auto copy = new Callable();
-+        copy->fcc = {};
-+        ZVAL_UNDEF(&copy->zfn);
-+        uint32_t phase = 0;
-+        bool name_present = false;
-+        for (;;) {
-+            switch (swr_v1_phphelpers_duplicate_plan(&phase, name_present)) {
-+            case SWR_PHP_DUPLICATE_CACHE: copy->fcc = fcc; break;
-+            case SWR_PHP_DUPLICATE_VALUE: copy->zfn = zfn; break;
-+            case SWR_PHP_DUPLICATE_RETAIN: zval_add_ref(&copy->zfn); break;
-+            case SWR_PHP_DUPLICATE_OBSERVE_NAME: name_present = fn_name != nullptr; break;
-+            case SWR_PHP_DUPLICATE_NAME: copy->fn_name = estrdup(fn_name); break;
-+            default: return copy;
-+            }
-+        }
-+#else
-         auto copy = new Callable();
-@@ -596,2 +872,4 @@ class Callable {
+@@ -591,2 +703,3 @@ class Callable {
          return copy;
 +    
-+#endif
      }
-@@ -599,3 +877,8 @@ class Callable {
-     bool call(uint32_t argc, zval *argv, zval *retval) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+        return swr_v1_phphelpers_call_success(sw_zend_call_function_ex(&zfn, &fcc, argc, argv, retval), 0) != 0;
-+#else
+@@ -595,2 +708,3 @@ class Callable {
          return sw_zend_call_function_ex(&zfn, &fcc, argc, argv, retval) == SUCCESS;
 +    
-+#endif
      }
-@@ -830,2 +1113,15 @@ static inline void sw_callable_free(void *ptr) {
- static inline zend::Callable *sw_callable_create(zval *zfn) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+    auto fn = new zend::Callable(zfn);
-+    uint32_t phase = 0;
-+    bool observation = false;
-+    for (;;) {
-+        switch (swr_v1_phphelpers_factory_plan(&phase, 0, observation, 0)) {
-+        case SWR_PHP_FACTORY_OBSERVE_READY: observation = fn->ready(); break;
-+        case SWR_PHP_FACTORY_DELETE: delete fn; break;
-+        case SWR_PHP_FACTORY_RETURN: return fn;
-+        default: return nullptr;
-+        }
-+    }
-+#else
-     auto fn = new zend::Callable(zfn);
-@@ -837,2 +1133,3 @@ static inline zend::Callable *sw_callable_create(zval *zfn) {
-     }
-+#endif
- }
-@@ -840,2 +1137,23 @@ static inline zend::Callable *sw_callable_create(zval *zfn) {
- static inline zend::Callable *sw_callable_create_ex(zval *zfn, const char *fname, bool allow_null = true) {
-+#ifdef SWOOLE_RS_PHPHELPERS
-+    uint32_t phase = 0;
-+    bool observation = false;
-+    zend::Callable *cb = nullptr;
-+    for (;;) {
-+        switch (swr_v1_phphelpers_factory_plan(&phase, 1, observation, allow_null)) {
-+        case SWR_PHP_FACTORY_OBSERVE_POINTER: observation = zfn != nullptr; break;
-+        case SWR_PHP_FACTORY_OBSERVE_NULL: observation = ZVAL_IS_NULL(zfn); break;
-+        case SWR_PHP_FACTORY_CREATE: cb = sw_callable_create(zfn); break;
-+        case SWR_PHP_FACTORY_OBSERVE_CREATED: observation = cb != nullptr; break;
-+        case SWR_PHP_FACTORY_RETURN: return cb;
-+        case SWR_PHP_FACTORY_NULL_ERROR:
-+            zend_throw_exception_ex(swoole_exception_ce, SW_ERROR_INVALID_PARAMS, "%s must be of type callable, null given", fname);
-+            break;
-+        case SWR_PHP_FACTORY_INVALID_ERROR:
-+            zend_throw_exception_ex(swoole_exception_ce, SW_ERROR_INVALID_PARAMS, "%s must be of type callable, %s given", fname, zend_zval_type_name(zfn));
-+            break;
-+        default: return nullptr;
-+        }
-+    }
-+#else
-     if (zfn == nullptr || ZVAL_IS_NULL(zfn)) {
-@@ -857,2 +1175,3 @@ static inline zend::Callable *sw_callable_create_ex(zval *zfn, const char *fname
-     return cb;
-+#endif
- }
