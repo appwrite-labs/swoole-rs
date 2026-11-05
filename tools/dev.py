@@ -277,7 +277,7 @@ def plan(args, reports):
                        '--selected-export', selected_export / 'export.json', '--native-export', native_export / 'export.json',
                        '--require-batch', *(['--require-typed-buffer'] if typed_buffer(args) else []),
                        *extra, *report(phase))
-        for name in ['output', 'wait', 'callbacks', 'initialize', 'builtins']:
+        for name in ['wait', 'callbacks', 'initialize', 'builtins']:
             phase = 'reactor-' + name.replace('_', '-')
             script(phase, 'tests/modules/reactor/' + name + '.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
@@ -286,10 +286,9 @@ def plan(args, reports):
                '--source', ROOT / 'target/upstream/src', '--sanitize',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'reactor-callback-queues.json')
-        for phase, flag in [('reactor-forwarding', '--forwarding')]:
-            script(phase, 'tests/modules/reactor/output.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', flag,
-                   '--report', reports / (phase + '.json'))
+        script('reactor-forwarding', 'tests/modules/reactor/forwarding.py', '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
+               '--report', reports / 'reactor-forwarding.json')
         script('reactor-backend-storage', 'tests/modules/reactor/backend_storage.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
                '--report', reports / 'reactor-backend-storage.json')
