@@ -7,8 +7,6 @@ license = "Apache-2.0"
 description = "The swoole module host: global constants, Swoole\\Exception/Error and the global functions"
 
 [features]
-# Its native SDK effects exist only in the M26 PHP helper overlay.
-module-info = []
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
 php = ["dep:swoole-rs-corebase", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-error", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php"]
 

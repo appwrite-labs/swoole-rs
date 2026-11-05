@@ -6,9 +6,10 @@
 //! upstream, and is raised once this frame is the only Rust one left.
 use crate::ops;
 use std::{
-    ffi::{CStr, CString, c_char, c_int},
+    ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
 };
+use swoole_rs_corebase::{swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace};
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING,
     bailout::{self, Bailout},
@@ -16,7 +17,8 @@ use swoole_rs_zend::{
     string::bytes,
     sys::{
         HashTable, swr_zend_compiling_preload, swr_zend_execute_ex_reset,
-        swr_zend_execute_ex_restore, swr_zend_function_find, swr_zend_register_shutdown_function,
+        swr_zend_execute_ex_restore, swr_zend_fatal_error, swr_zend_function_find,
+        swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
         swr_zend_runtime_call_handler, swr_zend_sapi_name, swr_zend_signals_uncheck,
         swr_zend_stream_constant_no_close, swr_zend_string_release, swr_zend_temporary_directory,
         swr_zend_try_hook, swr_zend_try_minit, zend_execute_data, zend_string, zval,
@@ -24,12 +26,12 @@ use swoole_rs_zend::{
     value,
 };
 
-/// `zend_swoole_globals` (`php_swoole.h`); `php_swoole.cc` asserts the layout.
+/// `zend_swoole_globals` (`php_swoole.h`); `php_swoole_cxx.cc` asserts the layout.
 #[repr(C)]
 pub struct Globals {
     pub(crate) display_errors: bool,
     cli: bool,
-    use_shortname: bool,
+    pub(crate) use_shortname: bool,
     enable_preemptive_scheduler: bool,
     enable_library: bool,
     enable_fiber_mock: bool,
@@ -195,9 +197,17 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_name_resolver_minit),
         M(ops.optional_minit),
         M(php_swoole_tracer_minit),
+        H(php_hooks),
         H(ops.ready),
     ];
     bailout::defer(run(&steps, module_number));
+}
+
+/// MINIT's end: Swoole's fatal errors become `Swoole\Error`s and its
+/// backtraces PHP's (`SwooleG.fatal_error` and `SwooleG.print_backtrace`).
+unsafe extern "C" fn php_hooks() {
+    swr_v1_core_set_fatal_error(swr_zend_fatal_error as *const () as *mut c_void);
+    swr_v1_core_set_print_backtrace(swr_zend_print_stack_trace as *const () as *mut c_void);
 }
 
 /// `swoole_globals`' defaults (`php_swoole_init_globals`), before the ini
@@ -445,7 +455,7 @@ mod tests {
 
     #[test]
     fn globals_match_zend_swoole_globals() {
-        // php_swoole.cc asserts the same offsets on the C++ side.
+        // php_swoole_cxx.cc asserts the same offsets on the C++ side.
         assert_eq!(offset_of!(Globals, blocking_threshold), 8);
         assert_eq!(offset_of!(Globals, socket_buffer_size), 24);
         assert_eq!(offset_of!(Globals, req_status), 32);

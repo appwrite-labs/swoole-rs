@@ -53,7 +53,6 @@ struct _zend_object_handlers;
 struct _zend_fcall_info;
 struct _zval_struct *swr_v1_phphelpers_zval_alloc(void);
 struct _zval_struct *swr_v1_phphelpers_zval_dup(const struct _zval_struct *);
-struct _zend_object *swr_v1_phphelpers_object_new(struct _zend_class_entry *, const struct _zend_object_handlers *);
 struct _zval_struct *swr_v1_phphelpers_property(struct _zend_class_entry *, struct _zval_struct *, const char *, size_t, bool, bool);
 struct _zval_struct *swr_v1_phphelpers_property_offset(struct _zend_class_entry *, struct _zval_struct *, struct _zend_string *);
 void swr_v1_phphelpers_cache_free(struct _zend_fcall_info_cache *);

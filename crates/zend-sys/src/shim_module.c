@@ -30,14 +30,6 @@ int swr_zend_try_minit(void (*hook)(int module_number), int module_number) {
     return bailed;
 }
 
-void *swr_zend_ecalloc(size_t nmemb, size_t size) {
-    return ecalloc(nmemb, size);
-}
-
-void *swr_zend_erealloc(void *ptr, size_t size) {
-    return erealloc(ptr, size);
-}
-
 const char *swr_zend_sapi_name(void) {
     return sapi_module.name;
 }

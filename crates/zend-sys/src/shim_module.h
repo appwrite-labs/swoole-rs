@@ -9,10 +9,6 @@
 int swr_zend_try_hook(void (*hook)(void));
 int swr_zend_try_minit(void (*hook)(int module_number), int module_number);
 
-/* ecalloc and erealloc (swr_zend_emalloc and swr_zend_efree are shim.h's). */
-void *swr_zend_ecalloc(size_t nmemb, size_t size);
-void *swr_zend_erealloc(void *ptr, size_t size);
-
 /* sapi_module.name. */
 const char *swr_zend_sapi_name(void);
 /* php_get_temporary_directory(). */

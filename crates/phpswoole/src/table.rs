@@ -332,8 +332,7 @@ unsafe fn join(
 /// Native lends only their handler addresses, in upstream's order.
 /// # Safety
 /// Each non-null array is static, with 23 stdext, 35 SSH2 or 36 FTP entries.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpswoole_functions(
+pub(crate) unsafe fn functions(
     stdext: *const Option<Handler>,
     ssh2: *const Option<Handler>,
     ftp: *const Option<Handler>,
