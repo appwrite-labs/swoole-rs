@@ -98,7 +98,7 @@ def main():
                                  scope='Reused exact producer Rust archive; no Rust compilation occurred in this SDK.')
         packed = subprocess.check_output(['git', '-C', str(a.source), 'archive', COMMIT])
         args = SimpleNamespace(jobs=a.jobs, php_config=a.php_config, phpize=a.phpize,
-                               stdext='--enable-swoole-stdext' in producer['configure'],
+                               stdext='--enable-swoole-stdext' in producer['configure'], php_sockets=True,
                                openssl_dir=None, ccache=shutil.which('ccache'))
         prefix = work / 'rust-prefix'
         (prefix / 'include').mkdir(parents=True)
@@ -122,7 +122,7 @@ def main():
             row = dict(name=name, patch_proofs=[], passed=False)
             report['engines'].append(row)
             write_report(output, report)
-            extra = ['--enable-swoole-thread', '--enable-sockets']
+            extra = ['--enable-swoole-thread']
             if name == 'selected':
                 for patch in patches:
                     row['patch_proofs'].append(apply_patch_verified(source, a.checkout / patch['path'],

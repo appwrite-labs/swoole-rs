@@ -151,7 +151,7 @@ def main():
              '--group', 'swoole_stdext', '--module', 'phphelpers', '--requires', 'stdext', '--output', manifest])
         report['executed'] = True
         run([sys.executable, a.checkout / 'corpus/upstream/run.py', '--source', source, '--manifest', manifest,
-             '--php', a.php, '--php-extension', 'sockets', '--require-all', '--isolate-cases', '--output', originals,
+             '--php', a.php, *[arg for extension in dependencies for arg in ['--php-extension', extension]], '--require-all', '--isolate-cases', '--output', originals,
              *[arg for row in engines for arg in ['--engine', row['name'] + '=' + row['extension']]]])
         outcome = json.loads(originals.read_text())
         report['originals'] = dict(path=str(originals), outcome=outcome)

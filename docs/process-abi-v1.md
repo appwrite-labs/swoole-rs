@@ -1,6 +1,7 @@
 # Workers, processes and IPC boundary (M08)
 
-Feature value 524288 (`--module process`). Upstream targets:
+Feature value 524288 (`--module process --module locks`): the Thread resource
+tables share the lock/atomic/barrier owner, including real ZTS builds. Upstream targets:
 `src/server/{worker,task_worker,process,manager,reactor_process}.cc` and
 `src/os/{process_pool,pipe,signal,wait}.cc`. Production Server/Factory/Worker/ProcessPool methods and PHP bindings are preserved.
 Worker/Pool and TLS WorkerGlobal fields are native views of canonical Rust records;
