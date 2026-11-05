@@ -172,7 +172,19 @@ ZEND_END_ARG_INFO()
 PHP_FUNCTION(m26_facade_oom) {
     zend_long mode;
     ZEND_PARSE_PARAMETERS_START(1,1) Z_PARAM_LONG(mode) ZEND_PARSE_PARAMETERS_END();
-    std::string input((mode==3 ? 32 : 24)*1024*1024, 'x');
+    if (PG(memory_limit) <= 0) {
+        zend_throw_error(nullptr, "OOM witness requires a positive request memory limit");
+        return;
+    }
+    const size_t limit = static_cast<size_t>(PG(memory_limit));
+    const size_t live = zend_memory_usage(true);
+    const size_t headroom = live < limit ? limit - live : 0;
+    // Exceed the soft budget without reaching twice the limit, regardless of
+    // request startup usage. The separate hard case still requests twice it.
+    const size_t requested = mode == 3 ? limit * 2 : headroom + limit / 4;
+    fprintf(stderr, "oom-input: mode=%ld limit=%zu live=%zu requested=%zu\n",
+            static_cast<long>(mode), limit, live, requested);
+    std::string input(requested, 'x');
     if(mode==0) { zend::String value(input); }
     else if(mode==1) { zend::Variable value(input); }
     else { zend::CharPtr value(input.data(),input.size()); }

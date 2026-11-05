@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "swoole_rs_corebase_native_exception.h"
+#include "swoole_rs_server_state.h"
+#include "swoole_rs_corebase.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -26,10 +28,21 @@ struct Context {
     uint32_t fail = UINT32_MAX;
     int kind = 0;
     bool nested = false;
+    swr_v1_server_state *state = nullptr;
+    ~Context() { swr_v1_server_state_free(state); }
+    void records(bool enabled) {
+        if (!enabled) return;
+        state = swr_v1_server_state_new();
+        assert(state);
+        swr_v1_server_config_init(state, 1, 1024, 0, nullptr);
+        auto *config = swr_v1_server_config_get(state);
+        config->task_worker_num = 1;
+        config->task_ipc_mode = 4;
+    }
 };
 static ServerReply effect(void *, uint32_t, uint64_t);
 static int64_t invoke(Context &context, uint32_t operation) {
-    return context.exception.finish(swr_v1_server_run_guarded(operation, 0, &context, effect, nullptr));
+    return context.exception.finish(swr_v1_server_run_guarded(operation, 0, &context, effect, context.state));
 }
 static ServerReply effect(void *opaque, uint32_t op, uint64_t arg) {
     auto &context = *static_cast<Context *>(opaque);
@@ -45,6 +58,7 @@ static ServerReply effect(void *opaque, uint32_t op, uint64_t arg) {
 #endif
             if (context.nested) {
                 Context child;
+                child.records(context.state != nullptr);
                 child.fail = SWR_SERVER_OP_ON_SHUTDOWN;
                 child.kind = context.kind;
                 invoke(child, SWR_SERVER_RUN_DESTROY);
@@ -79,11 +93,14 @@ static ServerReply effect(void *opaque, uint32_t op, uint64_t arg) {
 }
 int main() {
     static_assert(sizeof(ServerReply) == 16 && offsetof(ServerReply, fault) == 8, "native reply layout");
+    assert(swr_v1_core_init());
     size_t trials = 0;
-    for (uint32_t operation : {SWR_SERVER_RUN_CREATE, SWR_SERVER_RUN_DESTROY}) {
+    for (bool records : {false, true}) for (uint32_t operation : {SWR_SERVER_RUN_CREATE, SWR_SERVER_RUN_DESTROY}) {
         Context baseline;
+        baseline.records(records);
         assert(invoke(baseline, operation) == 0);
         assert(!baseline.trace.empty());
+        if (records) assert(std::find(baseline.trace.begin(), baseline.trace.end(), SWR_SERVER_OP_FIELD) == baseline.trace.end());
         for (size_t index = 0; index < baseline.trace.size(); index++) {
             // Use first occurrence: repeated effects fail at their first call.
             auto op = baseline.trace[index];
@@ -92,6 +109,7 @@ int main() {
             if (first != index) continue;
             for (int kind : {0, 1}) for (bool nested : {false, true}) {
                 Context context;
+                context.records(records);
                 context.fail = op;
                 context.kind = kind;
                 context.nested = nested;

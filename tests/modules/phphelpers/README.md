@@ -140,3 +140,10 @@ Zend Bucket/zval layouts. The SDK compile and loaded facade runtime remain manda
 copy/self-copy/move/self-move, binary duplication, PHP conversion reentry,
 sparse keys and updates, callback duplication/invocation and destructor timing.
 The obsolete call/merge/cache policy phase is retired after those complete operations move to Rust.
+
+The facade request-allocation probes exercise the original 16 MiB soft bailout and
+32 MiB hard limit with both ordinary startup usage and 8 MiB of retained request data.
+Soft inputs are sized from the actual Zend heap headroom; every exit, diagnostic,
+reachability and engine-identity assertion remains enforced. The stdext phase
+artifact retains per-engine JSON and logs, including the live-heap/input sizes.
+These probes do not inject Rust/libc allocation failures.

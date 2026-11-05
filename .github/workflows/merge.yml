@@ -166,12 +166,14 @@ jobs:
           --php-extension pdo --php-extension pdo_sqlite
           --engine hybrid=$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)
           --engine upstream=target/upstream/src/modules/swoole.so
-          --output callgrind.json | tee -a "$GITHUB_STEP_SUMMARY"
+          --profiles target/callgrind/profiles --output callgrind.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: callgrind
-          path: callgrind.json
+          path: |
+            callgrind.json
+            target/callgrind/profiles/
 
   # swoole_stdext needs the experimental --stdext build, which changes PHP itself
   # (typed arrays, methods on scalars), so it gets its own engines and its own gate.
@@ -227,7 +229,11 @@ jobs:
         if: always()
         with:
           name: phases-stdext
-          path: target/reports/dev/*/loop.json
+          # Keep structured per-engine outcomes and logs; never SDK mirrors,
+          # compiled helpers, exported engines, archives or build caches.
+          path: |
+            target/reports/dev/*/*.json
+            target/reports/dev/*/*.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
