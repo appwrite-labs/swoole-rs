@@ -210,6 +210,10 @@ never races consumers or replaces the provider. Standalone PHP-disabled SDK
 consumers retain a null slot without any Zend references; consumers select it
 once per outer native invocation. A nonlocal resume must run after all native
 invocation custody has been destroyed.
+This is not permission for an arbitrary native facade destructor called during
+another Rust Drop to invoke a facade export which resumes immediately. Facade
+exports retain their outermost-Rust entry contract; nested consumers must use
+a deferred outcome and their own qualified native outer boundary.
 
 The ZTS witness retains each Native observation as passed or failed and requires
 all selected lifecycle modes, Rust Box/Vec destruction, typed provenance and
