@@ -71,9 +71,29 @@ claimed. Linux additionally wraps `free` to prove the production Rust task-path
 String is released before the captured exception is rethrown. Other hosts report
 that drop observation as unmeasured.
 
-`ServerReply` carries an ordinary C++ exception outcome; the native invocation
-owns its `exception_ptr`. Rust uses `Result` to stop before any later effect and
-release local owners, then the native caller rethrows. The legacy nonthrowing
-Server ABI remains. This guard does not transport Zend bailout, custom whole-thread
-exit or pthread forced unwind. Generic callback ownership remains gated on their
-separate composed transport (#1145/#1167).
+`ServerReply` preserves fault1 for ordinary C++, fault2 for Zend bailout and
+fault3 for sticky whole-thread exit, and fault4 for externally held ordinary
+C++ provenance from the native OS entry. The native invocation snapshots the optional
+MINIT provider once. Its C trap encloses ordinary C++ capture; Rust stops on the
+first fault and releases local owners. C++ rethrow naturally destroys invocation;
+Zend/thread resume happens after the invocation and its exception_ptr custody
+leave scope; fault4 relays to the provider rather than rethrowing across an
+outer Rust thread frame. PHP-disabled SDKs keep the unregistered provider path, without Zend
+relocations. The legacy nonthrowing ABI remains; forced unwind is outside this
+contract.
+
+`server_effects.py` (`server-native-effects`, Linux integrate) reuses the completed
+worker-retirement SDK when available, otherwise builds untouched original IPC
+GoogleTests. It checks real production SDK absent/registered-provider behavior
+across registration and Server translation units in C++14/17, last local exception
+payload release before nonlocal resume, separate external C++ custody, and no later effects. Separate actual
+archive probes check typed fault prefixes and production Rust String release,
+with native ASan/UBSan runs; Rust instrumentation is not claimed.
+
+Optional `--php`, `--php-config`, `--native-extension`, `--selected-extension` and
+`--selected-source` inputs run a real ZTS pair through a companion resolving Core
+Server methods from the loaded production DSO. Its PHP callback covers return,
+fatal, custom whole-thread exit and a returned object's destructor through the
+native Variable facade free. Status and post-call Atomic assertions are exact.
+This fixture starts no server loop or fork. Abandoned fixture Server lifetime ends
+with its isolated process; this does not qualify wider server lifetime or leaks.
