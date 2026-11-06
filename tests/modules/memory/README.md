@@ -67,8 +67,8 @@ python3 tests/modules/memory/core.py --source /absolute/pinned/upstream \
   --build-root /private/memory-build --output /private/reports/memory-core.json
 ```
 
-Runs the 20 unchanged original fixed_pool/global_memory/ringbuffer/table/heap/
-channel GoogleTests against both the full native library and the memory overlay.
+Runs the 19 unchanged original fixed_pool/global_memory/ringbuffer/table/channel
+GoogleTests against both the full native library and the memory overlay.
 Linux only; needs CMake, GTest, PHP headers and the upstream native dependencies.
 The build root must be outside the reference and the repository. Original test
 sources are checked against their pinned hashes after overlays, native assertions
@@ -118,7 +118,7 @@ Verifies the prepared extension, source snapshot and binaries against the
 manifest hashes, then runs alternating upstream/rust pairs (`--trials` 3-15,
 `--loops`) and reports per-case medians and `rust_over_upstream` ratios. All
 trials must produce one checksum and exactly the manifest's timing cases. Run
-without concurrent workloads. Measured heap/ring/channel cases are slower than
+without concurrent workloads. Measured ring/channel cases are slower than
 upstream, which blocks default activation.
 
 ## Unit tests
@@ -136,7 +136,7 @@ and `memory-table-compatibility` compiled the hybrid `src/memory` C++ bodies, an
 went with them (#1500):
 
 - `memory-native`: the FFI checksum differential of the pinned and overlaid
-  pools, heap, channel, mapping and table. It also checks that every native
+  pools, channel, mapping and table. It also checks that every native
   `assert` survives the overlays (a deleted source's as `// assert(...);`-marked
   Rust asserts in `crates/memory/src/members.rs`) and that headers reject a
   build without the memory feature.

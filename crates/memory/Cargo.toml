@@ -9,7 +9,7 @@ name = "swoole_rs_memory"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-# The pools', heap's and table's members under their upstream C++ symbols (crates/ffi enables it).
+# The pools' and table's members under their upstream C++ symbols (crates/ffi enables it).
 upstream-symbols = []
 
 [dependencies]
