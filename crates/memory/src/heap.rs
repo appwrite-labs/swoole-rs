@@ -370,6 +370,121 @@ pub unsafe extern "C" fn swr_v1_memory_heap_pop(heap: *mut c_void) -> *mut c_voi
     heap.pop()
 }
 
+/// Defines each listed function under its upstream `swoole::Heap` symbol with
+/// `upstream-symbols`. `uint64_t` is `unsigned long long` on macOS and `unsigned long`
+/// on Linux, which the symbols spell.
+macro_rules! upstream {
+    ($($linux:literal, $macos:literal => $item:item)*) => {$(
+        #[cfg_attr(all(feature = "upstream-symbols", not(target_os = "macos")), unsafe(export_name = $linux))]
+        #[cfg_attr(all(feature = "upstream-symbols", target_os = "macos"), unsafe(export_name = $macos))]
+        $item
+    )*};
+}
+
+/// `swoole::Heap` (`include/swoole_heap.h`): the Rust heap behind its one member.
+/// Its constructor stays C++, since it throws.
+#[repr(C)]
+pub struct CppHeap {
+    rust: *mut c_void,
+}
+
+/// The Rust heap of `this`.
+///
+/// # Safety
+/// `this` is a constructed `swoole::Heap`.
+unsafe fn rust(this: *const CppHeap) -> *mut c_void {
+    // SAFETY: as the caller promises.
+    unsafe { (*this).rust }
+}
+
+upstream! {
+    "_ZN6swoole4HeapD1Ev", "_ZN6swoole4HeapD1Ev" =>
+    /// `Heap::~Heap()`; `this` is a constructed Heap, destroyed once.
+    pub unsafe extern "C" fn swr_heap_destroy(this: *mut CppHeap) {
+        // SAFETY: `this` is a constructed Heap.
+        let heap = unsafe { rust(this) };
+        // SAFETY: `this` is a live Heap whose heap `heap_create` made.
+        unsafe { swr_v1_memory_heap_release(heap) }
+    }
+    "_ZN6swoole4HeapD2Ev", "_ZN6swoole4HeapD2Ev" =>
+    /// The base-object destructor, the same as the complete one.
+    pub unsafe extern "C" fn swr_heap_destroy_base(this: *mut CppHeap) {
+        // SAFETY: as `swr_heap_destroy`.
+        unsafe { swr_heap_destroy(this) }
+    }
+    "_ZNK6swoole4Heap7compareEmm", "_ZNK6swoole4Heap7compareEyy" =>
+    /// `int Heap::compare(uint64_t a, uint64_t b) const`.
+    #[must_use]
+    pub unsafe extern "C" fn swr_heap_compare(this: *const CppHeap, a: u64, b: u64) -> i32 {
+        // SAFETY: `this` is a constructed Heap.
+        let heap = unsafe { rust(this) };
+        // SAFETY: `heap` is live.
+        unsafe { swr_v1_memory_heap_compare(heap, a, b) }
+    }
+    "_ZN6swoole4Heap4pushEmPv", "_ZN6swoole4Heap4pushEyPv" =>
+    /// `HeapNode *Heap::push(uint64_t priority, void *data)`.
+    pub unsafe extern "C" fn swr_heap_push(this: *mut CppHeap, priority: u64, data: *mut c_void) -> *mut Node {
+        // SAFETY: `this` is a constructed Heap.
+        let heap = unsafe { rust(this) };
+        // SAFETY: `this` is a live Heap that only the caller uses.
+        unsafe { swr_v1_memory_heap_push(heap, priority, data) }
+    }
+    "_ZNK6swoole4Heap15change_priorityEmPNS_8HeapNodeE", "_ZNK6swoole4Heap15change_priorityEyPNS_8HeapNodeE" =>
+    /// `void Heap::change_priority(uint64_t new_priority, HeapNode *ptr) const`.
+    pub unsafe extern "C" fn swr_heap_change_priority(this: *const CppHeap, priority: u64, node: *mut Node) {
+        // SAFETY: `this` is a constructed Heap.
+        let heap = unsafe { rust(this) };
+        // SAFETY: `this` is a live Heap that only the caller uses.
+        let status = unsafe { swr_v1_memory_heap_update(heap, priority, node) };
+        debug_assert_eq!(status, 0, "a node of this heap");
+    }
+    "_ZN6swoole4Heap6removeEPNS_8HeapNodeE", "_ZN6swoole4Heap6removeEPNS_8HeapNodeE" =>
+    /// `void Heap::remove(HeapNode *node)`.
+    pub unsafe extern "C" fn swr_heap_remove(this: *mut CppHeap, node: *mut Node) {
+        // SAFETY: `this` is a constructed Heap.
+        let heap = unsafe { rust(this) };
+        // SAFETY: `this` is a live Heap that only the caller uses.
+        let status = unsafe { swr_v1_memory_heap_remove(heap, node) };
+        debug_assert_eq!(status, 0, "a node of this heap");
+    }
+    "_ZN6swoole4Heap3popEv", "_ZN6swoole4Heap3popEv" =>
+    /// `void *Heap::pop()`.
+    pub unsafe extern "C" fn swr_heap_pop(this: *mut CppHeap) -> *mut c_void {
+        // SAFETY: `this` is a constructed Heap.
+        let heap = unsafe { rust(this) };
+        // SAFETY: `this` is a live Heap that only the caller uses.
+        unsafe { swr_v1_memory_heap_pop(heap) }
+    }
+    "_ZNK6swoole4Heap4peekEv", "_ZNK6swoole4Heap4peekEv" =>
+    /// `void *Heap::peek() const`: the top node's data, or null.
+    #[must_use]
+    pub unsafe extern "C" fn swr_heap_peek(this: *const CppHeap) -> *mut c_void {
+        // SAFETY: `this` is a constructed Heap.
+        let heap = unsafe { rust(this) };
+        // SAFETY: `heap` is live.
+        let top = unsafe { swr_v1_memory_heap_at(heap, 0) };
+        if top.is_null() {
+            return ptr::null_mut();
+        }
+        // SAFETY: a non-null top is a live node of this heap.
+        unsafe { (*top).data }
+    }
+    "_ZNK6swoole4Heap5printEv", "_ZNK6swoole4Heap5printEv" =>
+    /// `void Heap::print() const`: each node, numbered from 1, on stdout.
+    pub unsafe extern "C" fn swr_heap_print(this: *const CppHeap) {
+        // SAFETY: `this` is a live Heap.
+        let heap = unsafe { rust(this) };
+        let (mut index, mut node) = (0, Node { priority: 0, position: 0, data: ptr::null_mut() });
+        // SAFETY: `heap` is live; `index` and `node` are writable locals.
+        while unsafe { swr_v1_memory_heap_debug_step(heap, &raw mut index, &raw mut node) } == 1 {
+            #[expect(clippy::cast_possible_wrap, reason = "upstream's (long) priority")]
+            let priority = node.priority as std::ffi::c_long;
+            // SAFETY: the arguments match the format.
+            unsafe { libc::printf(c"#%zu\tpriority=%ld, data=%p\n".as_ptr(), index, priority, node.data) };
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "../../../tests/modules/memory/heap.rs"]
 #[expect(

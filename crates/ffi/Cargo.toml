@@ -35,7 +35,7 @@ swoole-rs-base64 = { path = "../base64" }
 swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-protocols = { path = "../protocols" }
-swoole-rs-memory = { path = "../memory" }
+swoole-rs-memory = { path = "../memory", features = ["upstream-symbols"] }
 swoole-rs-http = { path = "../http" }
 swoole-rs-utilities = { path = "../utilities", features = ["upstream-symbols"] }
 swoole-rs-locks = { path = "../locks" }

@@ -96,6 +96,9 @@ def main():
                     assertions = {}
                     for source in sorted({*SOURCES, *[path for patch in overlay for path in patch['upstream_paths']]}):
                         def expressions(path):
+                            # A source the hybrid deleted keeps none, so the original's all count as removed.
+                            if not path.exists():
+                                return Counter()
                             return Counter(re.sub(r'\s+', '', value) for value in re.findall(r'\bassert\s*\((.*?)\);', path.read_text(), re.S))
                         original = expressions(directory / 'upstream' / source)
                         # A source whose methods moved inline keeps its assertions in its header.
@@ -122,7 +125,7 @@ def main():
                 command = compiler + ['-std=c++17', '-O2', '-g', '-fvisibility=hidden', *headers]
                 command += shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))
                 command += ['-shared', '-fPIC', '-Wl,-Bsymbolic'] if linux else ['-dynamiclib', '-undefined', 'dynamic_lookup']
-                command += [*[str(sources / source) for source in SOURCES if variant == 'upstream' or source not in INLINED], str(Path(__file__).with_name('probe.cc')), str(Path(__file__).with_name('benchmark.cc'))]
+                command += [*[str(sources / source) for source in SOURCES if (sources / source).exists()], str(Path(__file__).with_name('probe.cc')), str(Path(__file__).with_name('benchmark.cc'))]
                 environment = dict(os.environ)
                 if variant == 'rust':
                     # The probes' own switch to the Rust Table's accessors (table_compat.h).
