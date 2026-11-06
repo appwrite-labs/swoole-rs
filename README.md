@@ -5,8 +5,7 @@
 [![Graduated leaf modules](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fgraduated.json)](https://github.com/loks0n/swoole-rs/issues/125)
 [![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/loks0n/swoole-rs/issues/58)
 
-Progress ([roadmap](docs/migration.md#roadmap)): phases 2 and 3 are done; open are
-[Phase 1, green baseline](https://github.com/loks0n/swoole-rs/issues/20),
+Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 3 are done; open are
 [Phase 4, deepen thin modules](https://github.com/loks0n/swoole-rs/issues/439),
 [Phase 5, Zend surface and host](https://github.com/loks0n/swoole-rs/issues/754),
 [speed](https://github.com/loks0n/swoole-rs/issues/366), [differential fuzzing](https://github.com/loks0n/swoole-rs/issues/100) and
