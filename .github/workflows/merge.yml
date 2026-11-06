@@ -453,12 +453,14 @@ jobs:
           --engine upstream=target/upstream/src/modules/swoole.so
           --engine hybrid=target/hybrid/rust-php-sockets/modules/swoole.so
           --output target/reports/alpine-corpus.json
+      # gate.py fails only what passes on upstream and not on the hybrid (no re-runs: no bash).
       - if: always()
-        run: >
-          python3 corpus/upstream/run.py $PHP_EXTENSIONS
-          --engine upstream=target/upstream/src/modules/swoole.so
-          --engine hybrid=target/hybrid/rust-php-sockets/modules/swoole.so
-          --output target/reports/alpine-phpt.json
+        run: |
+          python3 corpus/upstream/run.py $PHP_EXTENSIONS \
+            --engine upstream=target/upstream/src/modules/swoole.so \
+            --engine hybrid=target/hybrid/rust-php-sockets/modules/swoole.so \
+            --output target/reports/alpine-phpt.json || [ $? -eq 1 ]
+          python3 corpus/upstream/gate.py target/reports/alpine-phpt.json --output target/reports/alpine-gate.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
