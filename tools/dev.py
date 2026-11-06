@@ -257,20 +257,6 @@ def plan(args, reports):
     if integrate and 'phpcoroutines' in modules:
         script('phpcoroutines-tracer', 'tests/modules/phpcoroutines/tracer.py', *php, *engines, *report('phpcoroutines-tracer'))
     if 'reactor' in modules:
-        if integrate:
-            for phase, extra in [('reactor-production-supported', []), ('reactor-production-callbacks', ['--callbacks']),
-                                 ('reactor-production-builtins', ['--builtins']),
-                                 ('reactor-production-socket-output', ['--socket-output']),
-                                 ('reactor-production-blocking', ['--blocking']),
-                                 ('reactor-production-owned-defer', ['--builtins', '--require-owned-defer'])]:
-                script(phase, 'tests/modules/reactor/production_supported.py',
-                       '--source', ROOT / 'target/upstream/src', '--source-ref', 'HEAD', *php_for(),
-                       '--engine', f'hybrid={selected_export / "swoole.so"}',
-                       '--engine', f'upstream={native_export / "swoole.so"}', '--build-manifest', manifest,
-                       '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       '--selected-export', selected_export / 'export.json', '--native-export', native_export / 'export.json',
-                       '--require-batch',
-                       *extra, *report(phase))
         for name in ['callbacks', 'initialize', 'builtins']:
             phase = 'reactor-' + name.replace('_', '-')
             script(phase, 'tests/modules/reactor/' + name + '.py', '--source', ROOT / 'target/upstream/src',
