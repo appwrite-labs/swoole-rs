@@ -48,10 +48,32 @@ struct swr_v1_phpruntime_ops {
     swr_v1_phpruntime_handler gethostbyname;
     swr_v1_phpruntime_handler exit;
     swr_v1_phpruntime_handler putenv;
+    /* Bodies for swr_zend_try: php_swoole_socket_set_ssl, openssl_x509_read,
+     * Coroutine::get_current_safe() and php_swoole_convert_to_fd. */
+    void (*set_ssl)(void *call);      /* struct swr_v1_phpruntime_ssl_call */
+    void (*x509_read)(void *call);    /* struct swr_v1_phpruntime_x509_call */
+    void (*coroutine_check)(void *unused);
+    void (*convert_to_fd)(void *call); /* struct swr_v1_phpruntime_fd_call */
+    void (*check_reactor)(void);
+    const char *(*strerror)(int code);
+};
+struct swr_v1_phpruntime_ssl_call {
+    void *socket;
+    struct _zval_struct *settings;
+    bool result;
+};
+struct swr_v1_phpruntime_x509_call {
+    const char *pem;
+    size_t length;
+    struct _zval_struct *retval;
+};
+struct swr_v1_phpruntime_fd_call {
+    struct _zval_struct *value;
+    int fd;
 };
 void swr_v1_phpruntime_minit(int32_t module_number,
                              const struct swr_v1_phpruntime_ops *ops);
-/* RINIT: 1 on the main thread (C++ then saves the original stream ops). */
+/* RINIT: 1 on the main thread (the plain wrapper then saves the original stream ops). */
 uint8_t swr_v1_phpruntime_rinit(void);
 
 /* The coroutine socket streams: the "socket/coroutine" operations and
@@ -59,58 +81,49 @@ uint8_t swr_v1_phpruntime_rinit(void);
 struct _php_stream;
 struct _php_stream *swr_v1_phpruntime_stream_from_socket(int fd, int domain, int kind, int protocol);
 
-/* Defined by ext-src/swoole_runtime.cc for those streams: the coroutine socket
- * (a SocketImpl *) is still C++, so each operation is one call. */
-uint8_t swoole_runtime_socket_new(int type, void **out);
+/* Defined by thirdparty/php/streams/plain_wrapper.c, which keeps PHP's originals:
+ * RINIT, and the stream_ops entry. */
+void php_swoole_runtime_rinit(void);
+void php_swoole_runtime_stream_ops(uint8_t stdio, uint8_t hook);
+
+/* What the coroutine streams need of the native coroutine socket (a SocketImpl *;
+ * its virtual calls reach UringSocket), defined by src/coroutine/system.cc. make
+ * and close are bodies for swr_zend_try over a swr_v1_runtime_socket_call. */
 struct swr_v1_co_socket;
-struct swr_v1_co_socket *swoole_runtime_socket_base(void *socket);
-uint8_t swoole_runtime_socket_from_fd(int fd, int domain, int type, int protocol, void **out);
-uint8_t swoole_runtime_socket_free(void *socket);
-/* The coroutine socket's network::Socket record (get_socket()), or null. */
-/* errCode, with errMsg in *message when message is not null. */
-/* set_err(code). */
-/* errCode = code. */
-/* op: 0 send_sync, 1 recv_sync, 2 send_all, 3 send_once, 4 recv, 5 recv_once,
- * 6 peek, 7 send. */
-ssize_t swoole_runtime_socket_io(void *socket, int op, char *buf, size_t length);
-ssize_t swoole_runtime_socket_recvfrom(
-    void *socket, char *buf, size_t length, struct sockaddr *addr, socklen_t *addrlen);
-bool swoole_runtime_socket_close(void *socket, uint8_t *bailed);
-/* setsockopt(level, name, value); logged: the coroutine socket's, which logs
- * a failure. */
-void swoole_runtime_socket_option(void *socket, int level, int name, int value, bool logged);
-bool swoole_runtime_socket_bind(void *socket, const char *host, int port);
-bool swoole_runtime_socket_connect(void *socket, const char *host, int port);
-bool swoole_runtime_socket_listen(void *socket, int backlog);
-void *swoole_runtime_socket_accept(void *socket);
-bool swoole_runtime_socket_shutdown(void *socket, int how);
-bool swoole_runtime_socket_check_liveness(void *socket);
-bool swoole_runtime_socket_ssl_enabled(void *socket);
-bool swoole_runtime_socket_ssl_available(void *socket);
-void swoole_runtime_socket_ssl_encrypt(void *socket);
-bool swoole_runtime_socket_ssl_handshake(void *socket);
-void swoole_runtime_socket_ssl_close(void *socket);
-/* each(arg, pem, length) of the peer certificate, or of its chain. */
-void swoole_runtime_socket_peer_certs(void *socket, bool chain, void (*each)(void *, const char *, size_t), void *arg);
-/* php_swoole_socket_set_ssl inside zend_try: -1 if it bailed out. */
-int swoole_runtime_socket_set_ssl(void *socket, struct _zval_struct *settings);
-/* openssl_x509_read(pem) into retval inside zend_try: 1 if it bailed out. */
-uint8_t swoole_runtime_x509_read(const char *pem, size_t length, struct _zval_struct *retval);
-/* Inside zend_try, 1 if it bailed out: kind 0 php_error_docref(NULL, ..),
- * 1 php_swoole_error, 2 php_swoole_fatal_error, of level and "%s" message. */
-uint8_t swoole_runtime_error(int kind, int level, const char *message);
-void swoole_runtime_check_reactor(void);
-/* poll(SW_EVENT_WRITE or SW_EVENT_READ, timeout). */
-bool swoole_runtime_socket_poll(void *socket, bool write, double timeout);
-const char *swoole_runtime_strerror(int code);
-/* Coroutine::get_current_safe() inside zend_try: 1 if it bailed out. */
-uint8_t swoole_runtime_coroutine_check(void);
-/* php_swoole_convert_to_fd(value) into *fd inside zend_try: 1 if it bailed out. */
-uint8_t swoole_runtime_convert_to_fd(struct _zval_struct *value, int *fd);
-/* System::socket_poll of count (fd, events) rows, merged by fd as stream_select
- * merges them; the polled fds and their revents in the poll set's order. */
-bool swoole_runtime_poll(
-    const int *fds, const int *events, size_t count, double timeout, int *ready, int *revents, size_t *size);
+struct swr_v1_runtime_socket_call {
+    void *socket; /* make's result, close's socket */
+    int fd, domain, type, protocol; /* make: new SocketImpl(type) when fd < 0 */
+    bool result; /* close's */
+};
+struct swr_v1_runtime_socket_ops {
+    void (*make)(void *call);
+    void (*close)(void *call);
+    void (*free)(void *socket);
+    struct swr_v1_co_socket *(*base)(void *socket);
+    /* op: 0 send_sync, 1 recv_sync, 2 send_all, 3 send_once, 4 recv, 5 recv_once,
+     * 6 peek, 7 send. */
+    ssize_t (*io)(void *socket, int op, char *buf, size_t length);
+    ssize_t (*recvfrom)(void *socket, char *buf, size_t length, struct sockaddr *addr, socklen_t *addrlen);
+    /* setsockopt(level, name, value); logged: the coroutine socket's, which logs a failure. */
+    void (*option)(void *socket, int level, int name, int value, bool logged);
+    bool (*bind)(void *socket, const char *host, int port);
+    bool (*connect)(void *socket, const char *host, int port);
+    bool (*listen)(void *socket, int backlog);
+    void *(*accept)(void *socket);
+    bool (*ssl_enabled)(void *socket);
+    void (*ssl_encrypt)(void *socket);
+    bool (*ssl_handshake)(void *socket);
+    void (*ssl_close)(void *socket);
+    /* each(arg, pem, length) of the peer certificate, or of its chain. */
+    void (*peer_certs)(void *socket, bool chain, void (*each)(void *, const char *, size_t), void *arg);
+    /* poll(SW_EVENT_WRITE or SW_EVENT_READ, timeout). */
+    bool (*poll)(void *socket, bool write, double timeout);
+    /* System::socket_poll of count (fd, events) rows, merged by fd as stream_select
+     * merges them; the polled fds and their revents in the poll set's order. */
+    bool (*poll_set)(const int *fds, const int *events, size_t count, double timeout, int *ready, int *revents,
+                     size_t *size);
+};
+extern const struct swr_v1_runtime_socket_ops swr_v1_runtime_socket;
 #ifdef __cplusplus
 }
 #endif

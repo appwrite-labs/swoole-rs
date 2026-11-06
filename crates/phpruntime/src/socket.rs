@@ -1,82 +1,119 @@
 //! The coroutine socket (`SocketImpl`) is still C++: what the streams need of
-//! it, and of Swoole's PHP error reporting, is one call each, defined in the
-//! patched `ext-src/swoole_runtime.cc` (declared in
-//! `native/hooks/swoole_rs_phpruntime.h`).
+//! it is `swr_v1_runtime_socket`, a table `src/coroutine/system.cc` defines
+//! (virtual calls reach `UringSocket`); what they need of Swoole's PHP side is
+//! in the runtime's [`Ops`](crate::Ops). Both are declared in
+//! `native/hooks/swoole_rs_phpruntime.h`.
 use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};
 use std::{ffi::CStr, ptr::NonNull};
-use swoole_rs_hooks::{co_io::swr_v1_hook_co_socket_set_err, co_socket::CoSocket};
+use swoole_rs_hooks::{
+    co_io::swr_v1_hook_co_socket_set_err,
+    co_socket::CoSocket,
+    lifecycle::{swr_v1_hook_co_socket_check_liveness, swr_v1_hook_co_socket_shutdown},
+};
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_timeout};
-use swoole_rs_zend::{bailout::Bailout, sys::zval};
+use swoole_rs_zend::{
+    bailout::{self, Bailout},
+    php_error,
+    sys::zval,
+};
 
-unsafe extern "C" {
-    fn swoole_runtime_socket_new(kind: c_int, out: *mut *mut c_void) -> u8;
-    fn swoole_runtime_socket_base(socket: *mut c_void) -> *mut c_void;
-    fn swoole_runtime_socket_from_fd(
-        fd: c_int,
-        domain: c_int,
-        kind: c_int,
-        protocol: c_int,
-        out: *mut *mut c_void,
-    ) -> u8;
-    fn swoole_runtime_socket_free(socket: *mut c_void) -> u8;
-    fn swoole_runtime_socket_io(
-        socket: *mut c_void,
-        op: c_int,
-        buf: *mut c_char,
-        length: size_t,
-    ) -> ssize_t;
-    fn swoole_runtime_socket_recvfrom(
-        socket: *mut c_void,
-        buf: *mut c_char,
-        length: size_t,
-        addr: *mut sockaddr,
-        addrlen: *mut socklen_t,
-    ) -> ssize_t;
-    fn swoole_runtime_socket_close(socket: *mut c_void, bailed: *mut u8) -> bool;
-    fn swoole_runtime_socket_option(
-        socket: *mut c_void,
-        level: c_int,
-        name: c_int,
-        value: c_int,
-        logged: bool,
-    );
-    fn swoole_runtime_socket_bind(socket: *mut c_void, host: *const c_char, port: c_int) -> bool;
-    fn swoole_runtime_socket_connect(socket: *mut c_void, host: *const c_char, port: c_int)
-    -> bool;
-    fn swoole_runtime_socket_listen(socket: *mut c_void, backlog: c_int) -> bool;
-    fn swoole_runtime_socket_accept(socket: *mut c_void) -> *mut c_void;
-    fn swoole_runtime_socket_shutdown(socket: *mut c_void, how: c_int) -> bool;
-    fn swoole_runtime_socket_check_liveness(socket: *mut c_void) -> bool;
-    fn swoole_runtime_socket_ssl_enabled(socket: *mut c_void) -> bool;
-    fn swoole_runtime_socket_ssl_available(socket: *mut c_void) -> bool;
-    fn swoole_runtime_socket_ssl_encrypt(socket: *mut c_void);
-    fn swoole_runtime_socket_ssl_handshake(socket: *mut c_void) -> bool;
-    fn swoole_runtime_socket_ssl_close(socket: *mut c_void);
-    fn swoole_runtime_socket_peer_certs(
-        socket: *mut c_void,
-        chain: bool,
-        each: unsafe extern "C" fn(*mut c_void, *const c_char, size_t),
-        arg: *mut c_void,
-    );
-    fn swoole_runtime_socket_set_ssl(socket: *mut c_void, settings: *mut zval) -> c_int;
-    fn swoole_runtime_x509_read(pem: *const c_char, length: size_t, retval: *mut zval) -> u8;
-    fn swoole_runtime_error(kind: c_int, level: c_int, message: *const c_char) -> u8;
-    fn swoole_runtime_check_reactor();
-    fn swoole_runtime_socket_poll(socket: *mut c_void, write: bool, timeout: f64) -> bool;
-    fn swoole_runtime_strerror(code: c_int) -> *const c_char;
-    fn swoole_runtime_coroutine_check() -> u8;
-    fn swoole_runtime_convert_to_fd(value: *mut zval, fd: *mut c_int) -> u8;
-    fn swoole_runtime_poll(
-        fds: *const c_int,
-        events: *const c_int,
-        count: size_t,
-        timeout: f64,
-        ready: *mut c_int,
-        revents: *mut c_int,
-        size: *mut size_t,
-    ) -> bool;
+use crate::ops;
+
+/// `swr_v1_runtime_socket_call`: `make`'s and `close`'s arguments and results.
+#[repr(C)]
+struct SocketCall {
+    socket: *mut c_void,
+    fd: c_int,
+    domain: c_int,
+    kind: c_int,
+    protocol: c_int,
+    result: bool,
 }
 
+type Body = unsafe extern "C" fn(*mut c_void);
+
+/// `swr_v1_runtime_socket_ops`.
+#[repr(C)]
+struct SocketOps {
+    make: Body,
+    close: Body,
+    free: Body,
+    base: unsafe extern "C" fn(*mut c_void) -> *mut CoSocket,
+    io: unsafe extern "C" fn(*mut c_void, c_int, *mut c_char, size_t) -> ssize_t,
+    recvfrom: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_char,
+        size_t,
+        *mut sockaddr,
+        *mut socklen_t,
+    ) -> ssize_t,
+    option: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, bool),
+    bind: unsafe extern "C" fn(*mut c_void, *const c_char, c_int) -> bool,
+    connect: unsafe extern "C" fn(*mut c_void, *const c_char, c_int) -> bool,
+    listen: unsafe extern "C" fn(*mut c_void, c_int) -> bool,
+    accept: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    ssl_enabled: unsafe extern "C" fn(*mut c_void) -> bool,
+    ssl_encrypt: unsafe extern "C" fn(*mut c_void),
+    ssl_handshake: unsafe extern "C" fn(*mut c_void) -> bool,
+    ssl_close: unsafe extern "C" fn(*mut c_void),
+    peer_certs: unsafe extern "C" fn(
+        *mut c_void,
+        bool,
+        unsafe extern "C" fn(*mut c_void, *const c_char, size_t),
+        *mut c_void,
+    ),
+    poll: unsafe extern "C" fn(*mut c_void, bool, f64) -> bool,
+    poll_set: unsafe extern "C" fn(
+        *const c_int,
+        *const c_int,
+        size_t,
+        f64,
+        *mut c_int,
+        *mut c_int,
+        *mut size_t,
+    ) -> bool,
+}
+
+unsafe extern "C" {
+    static swr_v1_runtime_socket: SocketOps;
+}
+
+/// The native table: static and read-only.
+fn native() -> &'static SocketOps {
+    // SAFETY: system.cc defines the table as a constant.
+    unsafe { &swr_v1_runtime_socket }
+}
+
+/// `swr_v1_phpruntime_ssl_call`.
+#[repr(C)]
+struct SslCall {
+    socket: *mut c_void,
+    settings: *mut zval,
+    result: bool,
+}
+
+/// `swr_v1_phpruntime_x509_call`.
+#[repr(C)]
+struct X509Call {
+    pem: *const c_char,
+    length: size_t,
+    retval: *mut zval,
+}
+
+/// `swr_v1_phpruntime_fd_call`.
+#[repr(C)]
+struct FdCall {
+    value: *mut zval,
+    fd: c_int,
+}
+
+/// `body(call)` under `zend_try`.
+/// # Safety
+/// `body` is a native body that takes a `T`.
+unsafe fn trap<T>(body: Body, call: &mut T) -> Result<(), Bailout> {
+    // SAFETY: per the caller; `call` is live for the call.
+    unsafe { bailout::trap(body, (&raw mut *call).cast()) }
+}
 /// `SW_SOCK_*`.
 pub(crate) mod kind {
     pub(crate) const TCP: i32 = 1;
@@ -94,7 +131,7 @@ pub(crate) mod timeout {
     pub(crate) const ALL: i32 = 0xf;
 }
 
-/// `swoole_runtime_socket_io` operations.
+/// The table's `io` operations.
 #[derive(Clone, Copy)]
 pub(crate) enum Io {
     SendSync = 0,
@@ -120,8 +157,8 @@ pub(crate) struct Socket {
 impl Drop for Socket {
     fn drop(&mut self) {
         if self.owned {
-            // SAFETY: the socket is owned and live.
-            if unsafe { swoole_runtime_socket_free(self.raw()) } != 0 {
+            // SAFETY: the socket is owned and live; `free` is native.
+            if unsafe { bailout::trap(native().free, self.raw()) }.is_err() {
                 Bailout.defer();
             }
         }
@@ -131,13 +168,7 @@ impl Drop for Socket {
 impl Socket {
     /// `new SocketImpl(kind)`, encrypting with `ssl`; `None` without an fd.
     pub(crate) fn new(kind: i32, ssl: bool) -> Option<Self> {
-        let mut raw = std::ptr::null_mut();
-        // SAFETY: a contained native constructor writes its uniquely owned core socket.
-        if unsafe { swoole_runtime_socket_new(kind, &raw mut raw) } != 0 {
-            Bailout.defer();
-            return None;
-        }
-        let socket = Self::wrap(raw, true)?;
+        let socket = Self::make(-1, 0, kind, 0)?;
         if ssl {
             socket.ssl_encrypt();
         }
@@ -146,15 +177,25 @@ impl Socket {
 
     /// `new SocketImpl(fd, domain, kind, protocol)`.
     pub(crate) fn from_fd(fd: i32, domain: i32, kind: i32, protocol: i32) -> Option<Self> {
-        let mut socket = std::ptr::null_mut();
-        // SAFETY: the contained native constructor takes this descriptor and writes its owner.
-        if unsafe { swoole_runtime_socket_from_fd(fd, domain, kind, protocol, &raw mut socket) }
-            != 0
-        {
+        Self::make(fd, domain, kind, protocol)
+    }
+
+    /// The native `make`: `new SocketImpl(kind)` when `fd` is negative.
+    fn make(fd: i32, domain: i32, kind: i32, protocol: i32) -> Option<Self> {
+        let mut call = SocketCall {
+            socket: std::ptr::null_mut(),
+            fd,
+            domain,
+            kind,
+            protocol,
+            result: false,
+        };
+        // SAFETY: `make` takes a `SocketCall` and writes the uniquely owned socket.
+        if unsafe { trap(native().make, &mut call) }.is_err() {
             Bailout.defer();
             return None;
         }
-        Self::wrap(socket, true)
+        Self::wrap(call.socket, true)
     }
 
     /// The coroutine socket of hooked `fd`, if any.
@@ -179,7 +220,7 @@ impl Socket {
     /// A compiler-adjusted base projection; `coroutine::Socket` has virtual methods.
     fn co_ptr(&self) -> *mut CoSocket {
         // SAFETY: the native cast returns the actual embedded Rust record of this live socket.
-        unsafe { swoole_runtime_socket_base(self.raw()) }.cast()
+        unsafe { (native().base)(self.raw()) }
     }
 
     pub(crate) fn fd(&self) -> i32 {
@@ -244,7 +285,7 @@ impl Socket {
     /// `buf` holds `length` bytes (writable for the receiving operations).
     pub(crate) unsafe fn io(&self, op: Io, buf: *mut c_char, length: usize) -> isize {
         // SAFETY: per the caller.
-        unsafe { swoole_runtime_socket_io(self.raw(), op as c_int, buf, length) }
+        unsafe { (native().io)(self.raw(), op as c_int, buf, length) }
     }
 
     /// `catch_write_error`/`catch_read_error` of `code`, which are one rule.
@@ -263,25 +304,28 @@ impl Socket {
         addrlen: *mut socklen_t,
     ) -> isize {
         // SAFETY: per the caller.
-        unsafe { swoole_runtime_socket_recvfrom(self.raw(), buf, length, addr, addrlen) }
+        unsafe { (native().recvfrom)(self.raw(), buf, length, addr, addrlen) }
     }
 
     pub(crate) fn close(&self) -> Result<bool, Bailout> {
-        let mut bailed = 0;
-        // SAFETY: the owned socket remains live and its close contains PHP callback bailouts.
-        let result = unsafe { swoole_runtime_socket_close(self.raw(), &raw mut bailed) };
-        if bailed == 0 {
-            Ok(result)
-        } else {
-            Err(Bailout)
-        }
+        let mut call = SocketCall {
+            socket: self.raw(),
+            fd: -1,
+            domain: 0,
+            kind: 0,
+            protocol: 0,
+            result: false,
+        };
+        // SAFETY: `close` takes a `SocketCall` of this live socket; PHP callbacks may bail out.
+        unsafe { trap(native().close, &mut call) }?;
+        Ok(call.result)
     }
 
     /// `setsockopt(level, name, value)`; `logged` through the coroutine
     /// socket, which logs a failure.
     pub(crate) fn set_option(&self, level: i32, name: i32, value: i32, logged: bool) {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_option(self.raw(), level, name, value, logged) };
+        unsafe { (native().option)(self.raw(), level, name, value, logged) };
     }
 
     pub(crate) fn set_nodelay(&self, value: i32) {
@@ -302,34 +346,34 @@ impl Socket {
 
     pub(crate) fn bind(&self, host: &CStr, port: i32) -> bool {
         // SAFETY: a live socket and a NUL-terminated host.
-        unsafe { swoole_runtime_socket_bind(self.raw(), host.as_ptr(), port) }
+        unsafe { (native().bind)(self.raw(), host.as_ptr(), port) }
     }
 
     pub(crate) fn connect(&self, host: &CStr, port: i32) -> bool {
         // SAFETY: a live socket and a NUL-terminated host.
-        unsafe { swoole_runtime_socket_connect(self.raw(), host.as_ptr(), port) }
+        unsafe { (native().connect)(self.raw(), host.as_ptr(), port) }
     }
 
     pub(crate) fn listen(&self, backlog: i32) -> bool {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_listen(self.raw(), backlog) }
+        unsafe { (native().listen)(self.raw(), backlog) }
     }
 
     /// `accept()`: the connection, if any.
     pub(crate) fn accept(&self) -> Option<Self> {
         // SAFETY: a live socket; the connection is new and owned.
-        Self::wrap(unsafe { swoole_runtime_socket_accept(self.raw()) }, true)
+        Self::wrap(unsafe { (native().accept)(self.raw()) }, true)
     }
 
     pub(crate) fn shutdown(&self, how: i32) -> bool {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_shutdown(self.raw(), how) }
+        unsafe { swr_v1_hook_co_socket_shutdown(self.co_ptr(), how) }
     }
 
     /// `poll(SW_EVENT_WRITE or SW_EVENT_READ, timeout)`.
     pub(crate) fn poll(&self, write: bool, timeout: f64) -> bool {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_poll(self.raw(), write, timeout) }
+        unsafe { (native().poll)(self.raw(), write, timeout) }
     }
 
     /// `get_err()`: `swoole_strerror(errCode)`.
@@ -339,19 +383,22 @@ impl Socket {
 
     pub(crate) fn check_liveness(&self) -> bool {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_check_liveness(self.raw()) }
+        unsafe { swr_v1_hook_co_socket_check_liveness(self.co_ptr()) }
     }
 
     /// `ssl_is_enable()`: encryption is configured.
     pub(crate) fn ssl_enabled(&self) -> bool {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_ssl_enabled(self.raw()) }
+        unsafe { (native().ssl_enabled)(self.raw()) }
     }
 
     /// `ssl_is_available()`: the handshake has completed.
     pub(crate) fn ssl_available(&self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_ssl_available(self.raw()) }
+        let co = self.co_ptr();
+        // SAFETY: a scalar of the live coroutine socket.
+        let connected = !unsafe { (*co).socket }.is_null();
+        // SAFETY: as above.
+        connected && unsafe { (*co).ssl_handshaked }
     }
 
     /// The connection's `SSL *`, or null.
@@ -361,17 +408,17 @@ impl Socket {
 
     pub(crate) fn ssl_encrypt(&self) {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_ssl_encrypt(self.raw()) };
+        unsafe { (native().ssl_encrypt)(self.raw()) };
     }
 
     pub(crate) fn ssl_handshake(&self) -> bool {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_ssl_handshake(self.raw()) }
+        unsafe { (native().ssl_handshake)(self.raw()) }
     }
 
     pub(crate) fn ssl_close(&self) {
         // SAFETY: a live socket.
-        unsafe { swoole_runtime_socket_ssl_close(self.raw()) };
+        unsafe { (native().ssl_close)(self.raw()) };
     }
 
     /// The peer certificate (one PEM, maybe empty), or its chain.
@@ -386,7 +433,7 @@ impl Socket {
         let mut certs: Vec<Vec<u8>> = Vec::new();
         // SAFETY: a live socket; `each` gets the vector, live for the call.
         unsafe {
-            swoole_runtime_socket_peer_certs(self.raw(), chain, each, (&raw mut certs).cast());
+            (native().peer_certs)(self.raw(), chain, each, (&raw mut certs).cast());
         }
         certs
     }
@@ -397,11 +444,14 @@ impl Socket {
     /// # Safety
     /// `settings` is a live array.
     pub(crate) unsafe fn set_ssl(&self, settings: *mut zval) -> Result<bool, Bailout> {
-        // SAFETY: per the caller.
-        match unsafe { swoole_runtime_socket_set_ssl(self.raw(), settings) } {
-            -1 => Err(Bailout),
-            result => Ok(result != 0),
-        }
+        let mut call = SslCall {
+            socket: self.raw(),
+            settings,
+            result: false,
+        };
+        // SAFETY: per the caller; `set_ssl` takes an `SslCall`.
+        unsafe { trap(ops().set_ssl, &mut call) }?;
+        Ok(call.result)
     }
 }
 
@@ -411,11 +461,13 @@ impl Socket {
 /// # Safety
 /// `retval` is writable.
 pub(crate) unsafe fn x509_read(pem: &[u8], retval: *mut zval) -> Result<(), Bailout> {
-    // SAFETY: per the caller; `pem` holds its bytes.
-    if unsafe { swoole_runtime_x509_read(pem.as_ptr().cast(), pem.len(), retval) } != 0 {
-        return Err(Bailout);
-    }
-    Ok(())
+    let mut call = X509Call {
+        pem: pem.as_ptr().cast(),
+        length: pem.len(),
+        retval,
+    };
+    // SAFETY: per the caller; `pem` holds its bytes; `x509_read` takes an `X509Call`.
+    unsafe { trap(ops().x509_read, &mut call) }
 }
 
 /// How a warning is raised.
@@ -433,24 +485,26 @@ pub(crate) enum Report {
 /// # Errors
 /// The error handler bailed out.
 pub(crate) fn report(kind: Report, level: i32, message: &CStr) -> Result<(), Bailout> {
-    // SAFETY: called while PHP runs; both strings are NUL-terminated.
-    let bailed = unsafe { swoole_runtime_error(kind as c_int, level, message.as_ptr()) };
-    if bailed != 0 {
-        return Err(Bailout);
-    }
-    Ok(())
+    let report = match kind {
+        // SAFETY: called while PHP runs.
+        Report::Docref => return unsafe { php_error(level, message) },
+        Report::Swoole => ops().error,
+        Report::Fatal => ops().fatal_error,
+    };
+    // SAFETY: called while PHP runs; the reporter is C++.
+    unsafe { bailout::report_level(report, level, message) }
 }
 
 /// `php_swoole_check_reactor()`.
 pub(crate) fn check_reactor() {
     // SAFETY: called while PHP runs.
-    unsafe { swoole_runtime_check_reactor() };
+    unsafe { (ops().check_reactor)() };
 }
 
 /// `swoole_strerror(code)`.
 pub(crate) fn strerror(code: i32) -> &'static CStr {
     // SAFETY: a lookup.
-    let message = unsafe { swoole_runtime_strerror(code) };
+    let message = unsafe { (ops().strerror)(code) };
     // SAFETY: Swoole's static message table or strerror's text.
     unsafe { CStr::from_ptr(message) }
 }
@@ -460,11 +514,8 @@ pub(crate) fn strerror(code: i32) -> &'static CStr {
 /// # Errors
 /// The fatal error bailed out.
 pub(crate) fn coroutine_check() -> Result<(), Bailout> {
-    // SAFETY: called while PHP runs.
-    if unsafe { swoole_runtime_coroutine_check() } != 0 {
-        return Err(Bailout);
-    }
-    Ok(())
+    // SAFETY: called while PHP runs; the body ignores its argument.
+    unsafe { bailout::trap(ops().coroutine_check, std::ptr::null_mut()) }
 }
 
 /// `php_swoole_convert_to_fd(value)`: an fd, or negative after a warning.
@@ -473,12 +524,10 @@ pub(crate) fn coroutine_check() -> Result<(), Bailout> {
 /// # Safety
 /// `value` is a live zval.
 pub(crate) unsafe fn convert_to_fd(value: *mut zval) -> Result<i32, Bailout> {
-    let mut fd = -1;
-    // SAFETY: per the caller.
-    if unsafe { swoole_runtime_convert_to_fd(value, &raw mut fd) } != 0 {
-        return Err(Bailout);
-    }
-    Ok(fd)
+    let mut call = FdCall { value, fd: -1 };
+    // SAFETY: per the caller; `convert_to_fd` takes an `FdCall`.
+    unsafe { trap(ops().convert_to_fd, &mut call) }?;
+    Ok(call.fd)
 }
 
 /// `System::socket_poll` of `(fd, events)` rows merged by fd, in the order
@@ -492,7 +541,7 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
     let mut size = 0;
     // SAFETY: each buffer holds `rows.len()` entries, at least the poll set.
     let polled = unsafe {
-        swoole_runtime_poll(
+        (native().poll_set)(
             fds.as_ptr(),
             events.as_ptr(),
             rows.len(),
