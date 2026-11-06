@@ -2,7 +2,8 @@
 
 Feature bit 262144 (`tls`). Patches `src/protocol/ssl.cc` and
 `src/protocol/dtls.cc`. Declarations are in [swoole_rs_tls.h](swoole_rs_tls.h).
-Tests: `tests/modules/tls/README.md`. Requires OpenSSL 3 (rejected at compile
+Tests: `crates/tls` unit tests, upstream `core-tests/src/protocol/ssl.cpp` on both engines
+(`tls-native-originals`) and the ssl/dtls PHPT families. Requires OpenSSL 3 (rejected at compile
 time otherwise).
 
 ## SSLContext (`crates/tls/src/context.rs`)

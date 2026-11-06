@@ -33,7 +33,7 @@ python3 tools/dev.py integrate --all-modules   # every module's gates; used by C
   switches from [hybrid build](hybrid-build.md) are forwarded to the builder or
   runners.
 - `--gtest-prefix /abs/prefix` points native coroutine originals at a
-  C++14-compatible GoogleTest (see below).
+  C++14-compatible GoogleTest (1.12.1; Homebrew's 1.18 rejects C++14).
 
 Edit and candidate stop at the first failure; integrate runs every phase and
 fails if any failed. Each run writes logs, exit codes, phase durations,
@@ -161,39 +161,7 @@ builds `.devcontainer/` automatically and injects `GH_TOKEN`, so the clone and t
 hooks line are the only steps. Keep builds, profiles and clones under the
 environment's own disk; `python3 tools/dev.py prune` clears a day's leavings.
 
-## Native core-tests
-
-`tools/native_core.py` builds upstream's CMake/GoogleTest `core-tests` binary from
-pinned Git blobs, optionally over a hybrid build's all-modules tree and Rust
-archive, in a private content-addressed tree.
-
-```sh
-python3 tools/native_core.py \
-  --source target/upstream/src --config target/upstream/src/config.h \
-  --archive target/hybrid/builds/BUILD_ID/rust-prefix/lib/libswoole_rs_ffi.a \
-  --exclude-unit core-tests/src/coroutine/iouring.cpp \
-  --case 'reactor.*' --case stream.send --jobs 2 \
-  --output target/reports/native-reactor.json
-```
-
-Omit `--archive` for the upstream control. No tests run without
-`--case` (exact names or globs). Each selected case needs exactly one matching
-XML result. Excluded units are reported unsupported and keep the overall exit
-status 1.
-
-- On Linux the reference fails to compile `core-tests/src/coroutine/iouring.cpp`
-  (tests use optional declarations without guards), so `--exclude-unit` it.
-  macOS has further Linux-only compile assumptions.
-- The binary is copied to `src/bin/core-tests` before running: pinned `main.cpp`
-  finds fixtures relative to `argv[0]/../`.
-- macOS needs CMake, nghttp2, libpq, OpenSSL and a C++14-compatible GoogleTest.
-  Homebrew GoogleTest 1.18 rejects C++14; build 1.12.1 into a prefix and put it
-  first in `CMAKE_PREFIX_PATH` and `PKG_CONFIG_PATH`, followed by the OpenSSL and
-  libpq pkgconfig directories. Pass `--php-dir /opt/homebrew --openssl-dir
-  /opt/homebrew/opt/openssl@3`, and add nghttp2's `pkg-config --libs-only-L` output to
-  `LDFLAGS` (pinned CMake links nghttp2 by bare name).
-- `--ccache PATH` uses a private 1 GiB cache with `-fdebug-prefix-map`, so
-  relocated trees reuse compiler output.
+## Extension identity
 
 `tools/extension_identity.py` records the identity of an extension binary that
 has no build manifest.

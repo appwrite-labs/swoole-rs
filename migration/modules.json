@@ -646,8 +646,7 @@
       "owned_paths": [
         "crates/tls/",
         "native/tls/",
-        "migration/patches/tls/",
-        "tests/modules/tls/"
+        "migration/patches/tls/"
       ],
       "phpt_families": [
         "swoole_socket_coro"
