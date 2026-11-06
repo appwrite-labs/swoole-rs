@@ -4,24 +4,26 @@
 //! back to the worker that sent the task. The context holds the server, the pool,
 //! the worker and, per operation, the task or the result being finished.
 use super::event_worker::signal_init;
+use super::log::{
+    LOG_COROUTINE_MSGQUEUE, LOG_FINISH_IN_PIPE, LOG_FINISH_NOREPLY, LOG_LARGE_PACK,
+    LOG_NO_TASK_WORKERS, LOG_SEND_RESULT,
+};
 use super::ops::{
-    EVENT_COMMAND_REQUEST, EVENT_PIPE_MESSAGE, EVENT_SHUTDOWN, LOG_COROUTINE_MSGQUEUE,
-    LOG_FINISH_IN_PIPE, LOG_FINISH_NOREPLY, LOG_INVALID_SOURCE, LOG_LARGE_PACK,
-    LOG_NO_TASK_WORKERS, LOG_READ_TASK, LOG_RESULT_WRITE, LOG_SEND_RESULT, LOG_UNKNOWN_COMMAND,
-    OP_ADD_REQUEST_COUNT, OP_ALL_CORE_WORKER_NUM, OP_COMMAND_REPLY, OP_CREATE_TASK_WORKER,
-    OP_ENABLE_SIGNALFD, OP_EVENT_AVAILABLE, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT,
-    OP_EXCEEDED_MAX_REQUEST, OP_FAIL_REACTOR, OP_FINISH_COUNT, OP_FINISH_HEADER, OP_HAS_COMMAND,
-    OP_INFO_TYPE, OP_LISTEN_TASK_PIPE, OP_LOCK_WORKER, OP_NOTIFY_RESULT, OP_NOTIFY_WOULD_BLOCK,
-    OP_ON_PIPE_MESSAGE, OP_ON_TASK, OP_ON_TASK_POOL, OP_OPEN_RESULT_FILE, OP_PACK_RESULT,
-    OP_POOL_INIT, OP_READ_TASK, OP_RESULT_IN_SHM, OP_SELECT_TASK, OP_SEND_PIPE, OP_SEND_STREAM,
-    OP_SEND_TIMED_OUT, OP_SET_ASYNC_LOOP, OP_SET_LATEST_TASK, OP_SET_SYSVMSG, OP_SOURCE_WORKER,
-    OP_STOP_ASYNC, OP_STREAM_CONNECTION, OP_TASK_ENABLE_COROUTINE, OP_TASK_EXT_FLAGS,
-    OP_TASK_IPC_MODE, OP_TASK_WORKER_NUM, OP_UNLIMIT_BUS_PIPES, OP_UNLOCK_WORKER,
-    OP_UNPACK_COMMAND, OP_WAIT_NOTIFY_WRITABLE, OP_WORKER_ENTER, OP_WORKER_INIT,
-    OP_WORKER_SHUTDOWN, OP_WORKER_START_CALLBACK, OP_WORKER_STATUS, OP_WORKER_STOP_CALLBACK,
-    OP_WRITE_RESULT_FILE, OP_ZERO_RESULT, RUN_FINISH, RUN_INIT_TASK_WORKERS, RUN_TASK_COMMAND,
-    RUN_TASK_LOOP_ASYNC, RUN_TASK_ON_PIPE, RUN_TASK_ON_START, RUN_TASK_ON_STOP, RUN_TASK_ON_TASK,
-    STATUS_BUSY, STATUS_IDLE,
+    EVENT_COMMAND_REQUEST, EVENT_PIPE_MESSAGE, EVENT_SHUTDOWN, LOG_INVALID_SOURCE, LOG_READ_TASK,
+    LOG_RESULT_WRITE, LOG_UNKNOWN_COMMAND, OP_ADD_REQUEST_COUNT, OP_ALL_CORE_WORKER_NUM,
+    OP_COMMAND_REPLY, OP_CREATE_TASK_WORKER, OP_ENABLE_SIGNALFD, OP_EVENT_AVAILABLE, OP_EVENT_FREE,
+    OP_EVENT_INIT, OP_EVENT_WAIT, OP_EXCEEDED_MAX_REQUEST, OP_FAIL_REACTOR, OP_FINISH_COUNT,
+    OP_FINISH_HEADER, OP_HAS_COMMAND, OP_INFO_TYPE, OP_LISTEN_TASK_PIPE, OP_LOCK_WORKER,
+    OP_NOTIFY_RESULT, OP_NOTIFY_WOULD_BLOCK, OP_ON_PIPE_MESSAGE, OP_ON_TASK, OP_ON_TASK_POOL,
+    OP_OPEN_RESULT_FILE, OP_PACK_RESULT, OP_POOL_INIT, OP_READ_TASK, OP_RESULT_IN_SHM,
+    OP_SELECT_TASK, OP_SEND_PIPE, OP_SEND_STREAM, OP_SEND_TIMED_OUT, OP_SET_ASYNC_LOOP,
+    OP_SET_LATEST_TASK, OP_SET_SYSVMSG, OP_SOURCE_WORKER, OP_STOP_ASYNC, OP_STREAM_CONNECTION,
+    OP_TASK_ENABLE_COROUTINE, OP_TASK_EXT_FLAGS, OP_TASK_IPC_MODE, OP_TASK_WORKER_NUM,
+    OP_UNLIMIT_BUS_PIPES, OP_UNLOCK_WORKER, OP_UNPACK_COMMAND, OP_WAIT_NOTIFY_WRITABLE,
+    OP_WORKER_ENTER, OP_WORKER_INIT, OP_WORKER_SHUTDOWN, OP_WORKER_START_CALLBACK,
+    OP_WORKER_STATUS, OP_WORKER_STOP_CALLBACK, OP_WRITE_RESULT_FILE, OP_ZERO_RESULT, RUN_FINISH,
+    RUN_INIT_TASK_WORKERS, RUN_TASK_COMMAND, RUN_TASK_LOOP_ASYNC, RUN_TASK_ON_PIPE,
+    RUN_TASK_ON_START, RUN_TASK_ON_STOP, RUN_TASK_ON_TASK, STATUS_BUSY, STATUS_IDLE,
 };
 use super::{HANDLER_NONE, Host, SW_ERR, SW_OK};
 
@@ -64,7 +66,7 @@ fn init<H: Host>(h: &mut H) -> bool {
     // Make the task worker support asynchronous.
     if h.is(OP_TASK_ENABLE_COROUTINE) {
         if mode == TASK_IPC_MSGQUEUE || mode == TASK_IPC_PREEMPTIVE {
-            h.get(LOG_COROUTINE_MSGQUEUE);
+            h.log(LOG_COROUTINE_MSGQUEUE, 0, 0);
             return false;
         }
         h.get(OP_SET_ASYNC_LOOP);
@@ -169,17 +171,17 @@ fn loop_async<H: Host>(h: &mut H) -> i64 {
 /// notify pipe (blocking ones). `flags` are added to the result's flags.
 fn finish<H: Host>(h: &mut H, flags: u64) -> bool {
     if h.get(OP_TASK_WORKER_NUM) < 1 {
-        h.get(LOG_NO_TASK_WORKERS);
+        h.log(LOG_NO_TASK_WORKERS, 0, 0);
         return false;
     }
     h.get(OP_SELECT_TASK);
     if u32::try_from(h.get(OP_INFO_TYPE)).ok() == Some(EVENT_PIPE_MESSAGE) {
-        h.get(LOG_FINISH_IN_PIPE);
+        h.log(LOG_FINISH_IN_PIPE, 0, 0);
         return false;
     }
     let task_flags = h.get(OP_TASK_EXT_FLAGS);
     if task_flags & TASK_NOREPLY != 0 {
-        h.get(LOG_FINISH_NOREPLY);
+        h.log(LOG_FINISH_NOREPLY, 0, 0);
         return false;
     }
     if !h.is(OP_SOURCE_WORKER) {
@@ -188,7 +190,7 @@ fn finish<H: Host>(h: &mut H, flags: u64) -> bool {
     }
     let retval = if task_flags & TASK_NONBLOCK != 0 {
         if !h.is(OP_PACK_RESULT) {
-            h.get(LOG_LARGE_PACK);
+            h.log(LOG_LARGE_PACK, 0, 0);
             return false;
         }
         // The callback flag wins over the coroutine flag.
@@ -209,7 +211,7 @@ fn finish<H: Host>(h: &mut H, flags: u64) -> bool {
         if task_flags & TASK_WAITALL != 0 {
             if h.is(OP_OPEN_RESULT_FILE) {
                 if !h.is(OP_PACK_RESULT) {
-                    h.get(LOG_LARGE_PACK);
+                    h.log(LOG_LARGE_PACK, 0, 0);
                     h.get(OP_ZERO_RESULT);
                 }
                 h.op(OP_FINISH_HEADER, flags);
@@ -220,7 +222,7 @@ fn finish<H: Host>(h: &mut H, flags: u64) -> bool {
             }
         } else if !h.is(OP_RESULT_IN_SHM) {
             h.get(OP_UNLOCK_WORKER);
-            h.get(LOG_LARGE_PACK);
+            h.log(LOG_LARGE_PACK, 0, 0);
             return false;
         } else {
             h.op(OP_FINISH_HEADER, flags);
@@ -236,9 +238,9 @@ fn finish<H: Host>(h: &mut H, flags: u64) -> bool {
     };
     if retval < 0 {
         if h.is(OP_SEND_TIMED_OUT) {
-            h.op(LOG_SEND_RESULT, 1);
+            h.log(LOG_SEND_RESULT, 1, 0);
         } else {
-            h.op(LOG_SEND_RESULT, 0);
+            h.log(LOG_SEND_RESULT, 0, 0);
         }
         return false;
     }

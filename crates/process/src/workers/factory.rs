@@ -3,29 +3,32 @@
 //! and the workers' sends and closes back through them. The context holds the
 //! server and, per operation, the worker, the data sent and its connection.
 use super::event_worker::EVENT_WORKER;
+use super::log::{
+    LOG_CONN_NOT_ACTIVE, LOG_END_CLOSED, LOG_END_NOT_EXIST, LOG_FORK_EVENT, LOG_FORK_USER,
+    LOG_INVALID_TARGET, LOG_OVERFLOW, LOG_SESSION_CLOSED, LOG_SESSION_CLOSING,
+    LOG_SESSION_NOT_EXIST, LOG_TOO_LARGE,
+};
 use super::ops::{
     EVENT_CLOSE, EVENT_RECV_DATA, EVENT_SEND_DATA, EVENT_SEND_FILE, LOG_ALLOC_CONNECTIONS,
-    LOG_CONN_NOT_ACTIVE, LOG_END_CLOSED, LOG_END_NOT_EXIST, LOG_FORK_EVENT, LOG_FORK_USER,
-    LOG_INVALID_TARGET, LOG_KILL_MANAGER, LOG_OVERFLOW, LOG_SESSION_CLOSED, LOG_SESSION_CLOSING,
-    LOG_SESSION_NOT_EXIST, LOG_TOO_LARGE, LOG_WAIT_MANAGER, LOG_WAIT_TASK_WORKER,
-    OP_ALLOC_CONNECTIONS, OP_CALL_WORKER_ERROR, OP_CLEAR_CLOSE_ERRNO, OP_CONN_CLOSE_ACTIVELY,
-    OP_CONN_CLOSE_FORCE, OP_CONN_CLOSE_RESET, OP_CONN_CLOSED, OP_CONN_CLOSING, OP_CONN_FD,
-    OP_CONN_OVERFLOW, OP_CONN_PEER_CLOSED, OP_COUNT_DISPATCH, OP_CREATE_PIPE_BUFFERS,
-    OP_CREATE_WORKER_PIPE, OP_CURRENT_WORKER_ID, OP_DELETE_REACTOR_THREADS, OP_DESTROY_BARRIERS,
-    OP_DESTROY_MESSAGE_BOX, OP_DO_CLOSE_CALLBACK, OP_ENTER_CHILD, OP_EXIT, OP_EXIT_STATUS,
-    OP_FINISH_CLOSE, OP_FORGET_USER_WORKER, OP_FORK, OP_FORWARD_CLOSE, OP_FREE_CONNECTIONS,
-    OP_HAS_MESSAGE_BOX, OP_HASH_DISPATCH, OP_INIT_BARRIERS, OP_INIT_IPC_MAX_SIZE, OP_IS_WORKER,
-    OP_KILL_MANAGER, OP_KILL_TASK_POOL, OP_MODE, OP_NEW_PROCESS_FACTORY, OP_NEW_REACTOR_THREADS,
-    OP_ON_CLOSE, OP_ON_USER_WORKER_START, OP_OUTPUT_BUFFER_SIZE, OP_POOL_MAIN_LOOP,
-    OP_REGISTER_USER_WORKER, OP_REGISTER_WORKER, OP_REPORT_ERROR, OP_SCHEDULE_CONN,
-    OP_SCHEDULE_WORKER, OP_SEND_CONN_ACTIVE, OP_SEND_LEN, OP_SEND_TYPE, OP_SEND_YIELD,
-    OP_SESSION_CONN, OP_SET_CLOSE_ACTIVELY, OP_SET_CLOSE_RESET, OP_SET_REACTOR_PIPE_NUM,
-    OP_SET_SEND_YIELD, OP_START_EVENT_WORKER, OP_START_MANAGER, OP_STREAM_EVENT,
-    OP_TASK_WORKER_NUM, OP_TO_SESSION, OP_TRACE_CLOSE, OP_WAIT_MANAGER, OP_WAIT_TASK_WORKER,
-    OP_WORKER_NUM, OP_WORKER_PID, OP_WRITE_TO_REACTOR, OP_WRITE_TO_WORKER, RUN_CHECK_EXIT_STATUS,
-    RUN_CREATE_PROCESS_FACTORY, RUN_CREATE_WORKER_PIPES, RUN_DESTROY_PROCESS_FACTORY,
-    RUN_KILL_TASK_WORKERS, RUN_PROCESS_DISPATCH, RUN_PROCESS_END, RUN_PROCESS_FACTORY_SHUTDOWN,
-    RUN_PROCESS_FACTORY_START, RUN_PROCESS_FINISH, RUN_SPAWN_EVENT_WORKER, RUN_SPAWN_USER_WORKER,
+    LOG_KILL_MANAGER, LOG_WAIT_MANAGER, LOG_WAIT_TASK_WORKER, OP_ALLOC_CONNECTIONS,
+    OP_CALL_WORKER_ERROR, OP_CLEAR_CLOSE_ERRNO, OP_CONN_CLOSE_ACTIVELY, OP_CONN_CLOSE_FORCE,
+    OP_CONN_CLOSE_RESET, OP_CONN_CLOSED, OP_CONN_CLOSING, OP_CONN_FD, OP_CONN_OVERFLOW,
+    OP_CONN_PEER_CLOSED, OP_COUNT_DISPATCH, OP_CREATE_PIPE_BUFFERS, OP_CREATE_WORKER_PIPE,
+    OP_CURRENT_WORKER_ID, OP_DELETE_REACTOR_THREADS, OP_DESTROY_BARRIERS, OP_DESTROY_MESSAGE_BOX,
+    OP_DO_CLOSE_CALLBACK, OP_ENTER_CHILD, OP_EXIT, OP_EXIT_STATUS, OP_FINISH_CLOSE,
+    OP_FORGET_USER_WORKER, OP_FORK, OP_FORWARD_CLOSE, OP_FREE_CONNECTIONS, OP_HAS_MESSAGE_BOX,
+    OP_HASH_DISPATCH, OP_INIT_BARRIERS, OP_INIT_IPC_MAX_SIZE, OP_IS_WORKER, OP_KILL_MANAGER,
+    OP_KILL_TASK_POOL, OP_MODE, OP_NEW_PROCESS_FACTORY, OP_NEW_REACTOR_THREADS, OP_ON_CLOSE,
+    OP_ON_USER_WORKER_START, OP_OUTPUT_BUFFER_SIZE, OP_POOL_MAIN_LOOP, OP_REGISTER_USER_WORKER,
+    OP_REGISTER_WORKER, OP_REPORT_ERROR, OP_SCHEDULE_CONN, OP_SCHEDULE_WORKER, OP_SEND_CONN_ACTIVE,
+    OP_SEND_FD, OP_SEND_LEN, OP_SEND_TYPE, OP_SEND_YIELD, OP_SESSION_CONN, OP_SET_CLOSE_ACTIVELY,
+    OP_SET_CLOSE_RESET, OP_SET_REACTOR_PIPE_NUM, OP_SET_SEND_YIELD, OP_START_EVENT_WORKER,
+    OP_START_MANAGER, OP_STREAM_EVENT, OP_TASK_WORKER_NUM, OP_TO_SESSION, OP_TRACE_CLOSE,
+    OP_WAIT_MANAGER, OP_WAIT_TASK_WORKER, OP_WORKER_NUM, OP_WORKER_PID, OP_WRITE_TO_REACTOR,
+    OP_WRITE_TO_WORKER, RUN_CHECK_EXIT_STATUS, RUN_CREATE_PROCESS_FACTORY, RUN_CREATE_WORKER_PIPES,
+    RUN_DESTROY_PROCESS_FACTORY, RUN_KILL_TASK_WORKERS, RUN_PROCESS_DISPATCH, RUN_PROCESS_END,
+    RUN_PROCESS_FACTORY_SHUTDOWN, RUN_PROCESS_FACTORY_START, RUN_PROCESS_FINISH,
+    RUN_SPAWN_EVENT_WORKER, RUN_SPAWN_USER_WORKER,
 };
 use super::{Host, MODE_BASE, SW_ERR, SW_OK};
 
@@ -111,7 +114,7 @@ fn kill_task_workers<H: Host>(h: &mut H) {
 fn spawn_event_worker<H: Host>(h: &mut H) -> i64 {
     let pid = h.signed(OP_FORK);
     if pid < 0 {
-        h.get(LOG_FORK_EVENT);
+        h.log(LOG_FORK_EVENT, 0, 0);
         return SW_ERR;
     }
     if pid > 0 {
@@ -137,7 +140,7 @@ fn spawn_user_worker<H: Host>(h: &mut H) -> i64 {
         h.op(OP_FORGET_USER_WORKER, previous);
     }
     if pid < 0 {
-        h.get(LOG_FORK_USER);
+        h.log(LOG_FORK_USER, 0, 0);
         return SW_ERR;
     }
     if pid == 0 {
@@ -170,14 +173,15 @@ fn dispatch<H: Host>(h: &mut H) -> bool {
     let target = h.signed(OP_SCHEDULE_WORKER);
     if target < 0 {
         if target != DISPATCH_DISCARD_PACKET && target != DISPATCH_CLOSE_CONNECTION {
-            h.op(LOG_INVALID_TARGET, target.cast_unsigned());
+            h.log(LOG_INVALID_TARGET, target, 0);
         }
         return false;
     }
     let kind = u32::try_from(h.get(OP_SEND_TYPE)).unwrap_or(u32::MAX);
     if h.is(OP_STREAM_EVENT) {
         if !h.is(OP_SEND_CONN_ACTIVE) {
-            h.get(LOG_CONN_NOT_ACTIVE);
+            let fd = h.signed(OP_SEND_FD);
+            h.log(LOG_CONN_NOT_ACTIVE, kind.into(), fd);
             return false;
         }
         // The server closed it: drop the data, unless this is its forced close.
@@ -194,20 +198,23 @@ fn dispatch<H: Host>(h: &mut H) -> bool {
 
 /// `ProcessFactory::finish`: a worker sends to a client through its reactor thread.
 fn finish<H: Host>(h: &mut H) -> bool {
-    if h.get(OP_SEND_LEN) > h.get(OP_OUTPUT_BUFFER_SIZE) {
-        h.get(LOG_TOO_LARGE);
+    let (len, size) = (h.signed(OP_SEND_LEN), h.signed(OP_OUTPUT_BUFFER_SIZE));
+    if len > size {
+        h.log(LOG_TOO_LARGE, len, size);
         return false;
     }
     let kind = u32::try_from(h.get(OP_SEND_TYPE)).unwrap_or(u32::MAX);
     let close = kind == EVENT_CLOSE;
     if h.op(OP_SESSION_CONN, u64::from(close)) == 0 {
         if !close {
-            h.get(LOG_SESSION_NOT_EXIST);
+            let session = h.signed(OP_SEND_FD);
+            h.log(LOG_SESSION_NOT_EXIST, session, 0);
         }
         return false;
     }
     if (h.is(OP_CONN_CLOSED) || h.is(OP_CONN_PEER_CLOSED)) && !close {
-        h.get(LOG_SESSION_CLOSED);
+        let session = h.signed(OP_SEND_FD);
+        h.log(LOG_SESSION_CLOSED, len, session);
         return false;
     }
     if h.is(OP_CONN_OVERFLOW) && (kind == EVENT_SEND_DATA || kind == EVENT_SEND_FILE) {
@@ -218,7 +225,8 @@ fn finish<H: Host>(h: &mut H) -> bool {
         {
             h.get(OP_SET_SEND_YIELD);
         } else {
-            h.get(LOG_OVERFLOW);
+            let session = h.signed(OP_SEND_FD);
+            h.log(LOG_OVERFLOW, session, 0);
         }
         return false;
     }
@@ -229,7 +237,8 @@ fn finish<H: Host>(h: &mut H) -> bool {
 /// worker that owns the connection.
 fn end<H: Host>(h: &mut H, flags: u64) -> bool {
     if h.op(OP_SESSION_CONN, 1) == 0 {
-        h.get(LOG_END_NOT_EXIST);
+        let session = h.signed(OP_SEND_FD);
+        h.log(LOG_END_NOT_EXIST, session, 0);
         return false;
     }
     // Reset the send buffer: close immediately.
@@ -259,11 +268,13 @@ fn end<H: Host>(h: &mut H, flags: u64) -> bool {
         }
     }
     if h.is(OP_CONN_CLOSING) {
-        h.get(LOG_SESSION_CLOSING);
+        let session = h.signed(OP_SEND_FD);
+        h.log(LOG_SESSION_CLOSING, session, 0);
         return false;
     }
     if !(h.is(OP_CONN_CLOSE_FORCE) || h.is(OP_CONN_CLOSE_RESET)) && h.is(OP_CONN_CLOSED) {
-        h.get(LOG_END_CLOSED);
+        let session = h.signed(OP_SEND_FD);
+        h.log(LOG_END_CLOSED, session, 0);
         return false;
     }
     if h.is(OP_DO_CLOSE_CALLBACK) {

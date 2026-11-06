@@ -30,6 +30,8 @@ static void corebase_log(int kind, int level, int code, const char *origin, cons
     case 0: errno = code; swoole_log_as(origin, swoole_sys_warning("%s", message)); break;
     case 1: swoole_log_as(origin, swoole_warning("%s", message)); break;
     case 2: swoole_notice("%s", message); break;
+    case 4: swoole_info("%s", message); break;
+    case 5: errno = code; swoole_log_as(origin, swoole_sys_error("%s", message)); break;
     default: swoole_log_as(origin, swoole_error_log(level, code, "%s", message)); break;
     }
 }

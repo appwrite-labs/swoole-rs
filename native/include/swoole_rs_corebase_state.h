@@ -71,7 +71,8 @@ swr_v1_core_config_task_path(const swr_v1_core_config *);
 int swr_v1_core_last_error(void);
 void swr_v1_core_set_last_error(int);
 /* Native's log macros, registered once: kind 0 swoole_sys_warning (errno = code),
- * 1 swoole_warning, 2 swoole_notice, 3 swoole_error_log(level, code); origin is __SW_FUNC__. */
+ * 1 swoole_warning, 2 swoole_notice, 3 swoole_error_log(level, code), 4 swoole_info,
+ * 5 swoole_sys_error (errno = code); origin is __SW_FUNC__. */
 typedef void (*swr_v1_core_log_host)(int kind, int level, int code, const char *origin, const char *message);
 void swr_v1_core_set_log_host(swr_v1_core_log_host);
 /* The C++ effects Rust's lifecycles run (crates/corebase/src/native.rs), which

@@ -47,6 +47,10 @@ pub const LOG_WARNING: c_int = 1;
 pub const LOG_NOTICE: c_int = 2;
 /// `swoole_error_log(level, code, ...)`.
 pub const LOG_ERROR: c_int = 3;
+/// `swoole_info`.
+pub const LOG_INFO: c_int = 4;
+/// `swoole_sys_error`, with errno set to the code first; it exits the process.
+pub const LOG_SYS_ERROR: c_int = 5;
 
 /// Native's log macros: `kind` is a `LOG_*`, `level` and `code` are what that
 /// macro takes, and `message` is the formatted text after `__SW_FUNC__`'s part.
@@ -98,6 +102,17 @@ pub fn warning(origin: &CStr, message: fmt::Arguments<'_>) {
 /// `swoole_notice`.
 pub fn notice(message: fmt::Arguments<'_>) {
     emit(LOG_NOTICE, 0, 0, c"", message);
+}
+
+/// `swoole_info`.
+pub fn info(message: fmt::Arguments<'_>) {
+    emit(LOG_INFO, 0, 0, c"", message);
+}
+
+/// `swoole_sys_error` from `origin`, with this thread's errno as on entry; the
+/// process exits.
+pub fn sys_error(origin: &CStr, message: fmt::Arguments<'_>) {
+    emit(LOG_SYS_ERROR, 0, errno(), origin, message);
 }
 
 /// `swoole_error_log(level, code, ...)` from `origin`.
