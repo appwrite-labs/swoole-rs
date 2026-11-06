@@ -53,7 +53,12 @@ pub struct ServerState {
     texts: [StringSlot; TEXT_COUNT],
     /// `Server::lock_`, the connection list's fd range lock: whether it is held.
     locked: (std::sync::Mutex<bool>, std::sync::Condvar),
+    /// The reactor threads and the heartbeat thread, by `start_thread`'s `arg`.
+    threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
 }
+
+/// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
+type ThreadEntry = unsafe extern "C" fn(*mut core::ffi::c_void, u64);
 
 /// `ServerState::texts`' slots (`SWR_SERVER_TEXT_*`).
 pub(crate) const TEXT_PID_FILE: usize = 3;
@@ -80,6 +85,7 @@ impl ServerState {
             upload_tmp_dir: std::sync::Mutex::new(None),
             texts: [const { StringSlot::new() }; TEXT_COUNT],
             locked: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
+            threads: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -123,6 +129,42 @@ impl ServerState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
         released.notify_one();
+    }
+
+    /// Starts a thread running `entry(serv, arg)`, which `take_thread(arg)` hands back.
+    /// A null `entry` starts nothing; a thread that can't start aborts, as
+    /// `std::thread`'s uncaught `system_error` does.
+    pub(crate) fn start_thread(&self, entry: u64, serv: u64, arg: u64) {
+        let entry = core::ptr::with_exposed_provenance_mut::<core::ffi::c_void>(
+            usize::try_from(entry).unwrap_or(0),
+        );
+        if entry.is_null() {
+            return;
+        }
+        // SAFETY: native code answered with a `void (*)(void *, uint64_t)`.
+        let entry = unsafe { core::mem::transmute::<*mut core::ffi::c_void, ThreadEntry>(entry) };
+        let serv = usize::try_from(serv).unwrap_or(0);
+        let thread = std::thread::Builder::new().spawn(move || {
+            // SAFETY: the server outlives its threads, which it joins before it goes.
+            unsafe { entry(core::ptr::with_exposed_provenance_mut(serv), arg) };
+        });
+        let Ok(thread) = thread else {
+            std::process::abort();
+        };
+        self.threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((arg, thread));
+    }
+
+    /// The running thread `start_thread` started with `arg`, if any.
+    pub(crate) fn take_thread(&self, arg: u64) -> Option<std::thread::JoinHandle<()>> {
+        let mut threads = self
+            .threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = threads.iter().position(|(id, _)| *id == arg)?;
+        Some(threads.swap_remove(index).1)
     }
 
     /// `Server::ports.push_back(port)`; the port's `object_id` is the new count.

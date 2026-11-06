@@ -9,20 +9,19 @@ use crate::ops::{
     OP_CONN_SESSION, OP_CONN_UNREAD, OP_COUNT_DISPATCH, OP_DELAY_RECEIVE, OP_DESTROY_CALLBACK,
     OP_DGRAM_BUFFER, OP_DISABLE_NOTIFY, OP_DISPATCH_CERT, OP_DTLS_ACCEPT, OP_ERRNO, OP_EVENT_FREE,
     OP_EVENT_INIT, OP_EVENT_WAIT, OP_FACTORY_DISPATCH, OP_FIELD, OP_FORCE_CLOSE, OP_HAS_ON_CONNECT,
-    OP_HAVE_DGRAM, OP_HEARTBEAT_THREAD, OP_HEARTBEAT_TIMER, OP_HEARTBEAT_TIMER_CLEAR, OP_INCOMING,
-    OP_JOIN_HEARTBEAT, OP_KILL_SELF, OP_MASTER_REACTOR_ID, OP_MAXFD, OP_MICROTIME, OP_MINFD,
-    OP_MODE, OP_NOTIFY_CONNECT, OP_ON_FINISH, OP_ON_PIPE_MESSAGE, OP_PACKET_DISPATCH,
-    OP_PACKET_INIT, OP_PEER_CERT, OP_PIPE_FD, OP_PIPE_POP, OP_PIPE_READ, OP_PIPE_SEND,
-    OP_PIPE_TYPE, OP_PORT_COUNT, OP_PORT_DEL, OP_PORT_DGRAM, OP_PORT_DTLS, OP_PORT_FD,
-    OP_PORT_LISTEN, OP_PORT_READ, OP_PORT_REMOVED, OP_QUEUE_FULL, OP_QUEUE_SUB, OP_REACTOR_BARRIER,
-    OP_REACTOR_CLOSE, OP_REACTOR_DEL, OP_REACTOR_ID, OP_REACTOR_NUM, OP_REACTOR_THREAD_TYPE,
-    OP_RECVFROM, OP_RESUME_READ, OP_RESUME_TIMER, OP_RUNNING, OP_SEND_CLOSE_FORCE, OP_SESSION_CONN,
-    OP_SESSION_HANDLERS, OP_SET_WAITING_TIME, OP_SINGLE_THREAD, OP_SPAWN_REACTOR_THREAD,
-    OP_SSL_ACCEPT, OP_SSL_READY, OP_SSL_VERIFY, OP_START_MASTER_THREAD, OP_STOP_THREAD_WORKER,
+    OP_HAVE_DGRAM, OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER, OP_HEARTBEAT_TIMER_CLEAR, OP_INCOMING,
+    OP_KILL_SELF, OP_MASTER_REACTOR_ID, OP_MAXFD, OP_MICROTIME, OP_MINFD, OP_MODE,
+    OP_NOTIFY_CONNECT, OP_ON_FINISH, OP_ON_PIPE_MESSAGE, OP_PACKET_DISPATCH, OP_PACKET_INIT,
+    OP_PEER_CERT, OP_PIPE_FD, OP_PIPE_POP, OP_PIPE_READ, OP_PIPE_SEND, OP_PIPE_TYPE, OP_PORT_COUNT,
+    OP_PORT_DEL, OP_PORT_DGRAM, OP_PORT_DTLS, OP_PORT_FD, OP_PORT_LISTEN, OP_PORT_READ,
+    OP_PORT_REMOVED, OP_QUEUE_FULL, OP_QUEUE_SUB, OP_REACTOR_BARRIER, OP_REACTOR_CLOSE,
+    OP_REACTOR_DEL, OP_REACTOR_ID, OP_REACTOR_NUM, OP_REACTOR_THREAD_ENTRY, OP_REACTOR_THREAD_TYPE,
+    OP_RECVFROM, OP_RESUME_READ, OP_RESUME_TIMER, OP_RUNNING, OP_SEND_CLOSE_FORCE, OP_SERVER,
+    OP_SESSION_CONN, OP_SESSION_HANDLERS, OP_SET_WAITING_TIME, OP_SINGLE_THREAD, OP_SSL_ACCEPT,
+    OP_SSL_READY, OP_SSL_VERIFY, OP_START_MASTER_THREAD, OP_STOP_THREAD_WORKER,
     OP_STORE_LISTEN_SOCKET, OP_TASK_INIT, OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT,
-    OP_THREAD_JOIN, OP_THREAD_JOINABLE, OP_THREAD_NOTIFY, OP_THREAD0_INIT, OP_VERIFY_PEER,
-    OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM, OP_WORKER_PIPE_UNREAD, OP_WORKER_START,
-    OP_WORKER_STOP,
+    OP_THREAD_NOTIFY, OP_THREAD0_INIT, OP_VERIFY_PEER, OP_WAIT_EXIT, OP_WAITING_TIME,
+    OP_WORKER_NUM, OP_WORKER_PIPE_UNREAD, OP_WORKER_START, OP_WORKER_STOP, TRACE_HEARTBEAT_JOIN,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
 
@@ -31,6 +30,8 @@ pub(crate) const SW_CONTINUE: i64 = 1;
 pub(crate) const SW_WAIT: i64 = 2;
 pub(crate) const SW_ERROR: i64 = 4;
 pub(crate) const SW_READY: i64 = 5;
+/// The heartbeat thread's `ServerState::start_thread` key; reactor threads use their ids.
+const HEARTBEAT: u64 = u64::MAX;
 /// The longest resume back-off, in milliseconds.
 const MAX_WAITING_TIME: u64 = 1024;
 
@@ -266,16 +267,18 @@ pub(crate) fn start_reactor_threads<H: Host>(h: &mut H) -> crate::Effect<i64> {
         h.get(OP_THREAD0_INIT)?;
     } else {
         h.get(OP_MASTER_REACTOR_ID)?;
+        let (entry, serv) = (h.get(OP_REACTOR_THREAD_ENTRY)?, h.get(OP_SERVER)?);
         for thread in 0..h.get(OP_REACTOR_NUM)? {
-            h.op(OP_SPAWN_REACTOR_THREAD, thread)?;
+            h.state()?.start_thread(entry, serv, thread);
         }
     }
     if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))? >= 1 {
-        h.get(if single {
-            OP_HEARTBEAT_TIMER
+        if single {
+            h.get(OP_HEARTBEAT_TIMER)?;
         } else {
-            OP_HEARTBEAT_THREAD
-        })?;
+            let (entry, serv) = (h.get(OP_HEARTBEAT_ENTRY)?, h.get(OP_SERVER)?);
+            h.state()?.start_thread(entry, serv, HEARTBEAT);
+        }
     }
     h.signed(OP_START_MASTER_THREAD)
 }
@@ -350,15 +353,18 @@ pub(crate) fn join_reactor_threads<H: Host>(h: &mut H) -> crate::Effect<()> {
     if h.is(OP_SINGLE_THREAD)? {
         return Ok(());
     }
-    if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))? > 0 {
-        h.get(OP_JOIN_HEARTBEAT)?;
+    if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))? > 0
+        && let Some(heartbeat) = h.state()?.take_thread(HEARTBEAT)
+    {
+        h.get(TRACE_HEARTBEAT_JOIN)?;
+        heartbeat.join().unwrap_or_default();
     }
     for thread in 0..h.get(OP_REACTOR_NUM)? {
-        if h.op(OP_THREAD_JOINABLE, thread)? == 0 {
+        let Some(joining) = h.state()?.take_thread(thread) else {
             continue;
-        }
+        };
         h.op(OP_THREAD_NOTIFY, thread)?;
-        h.op(OP_THREAD_JOIN, thread)?;
+        joining.join().unwrap_or_default();
     }
     Ok(())
 }
@@ -587,14 +593,36 @@ mod tests {
         );
     }
 
+    static RAN: std::sync::Mutex<Vec<(usize, u64)>> = std::sync::Mutex::new(Vec::new());
+
+    unsafe extern "C" fn record(serv: *mut core::ffi::c_void, arg: u64) {
+        RAN.lock().unwrap().push((serv.addr(), arg));
+    }
+
     #[test]
     fn start_and_join_threads() {
-        let mut s = Script::with(&[(OP_PORT_COUNT, 2), (OP_REACTOR_NUM, 3), (OP_FIELD, 5)])
-            .queue(OP_PORT_DGRAM, &[1, 0]);
+        let entry = (record as unsafe extern "C" fn(_, _)) as usize as u64;
+        let mut s = Script::with(&[
+            (OP_PORT_COUNT, 2),
+            (OP_REACTOR_NUM, 3),
+            (OP_FIELD, 5),
+            (OP_REACTOR_THREAD_ENTRY, entry),
+            (OP_HEARTBEAT_ENTRY, entry),
+            (OP_SERVER, 64),
+        ])
+        .queue(OP_PORT_DGRAM, &[1, 0]);
         assert_eq!(start_reactor_threads(&mut s).unwrap(), SW_OK, "master ran");
         assert_eq!(s.args(OP_PORT_LISTEN), vec![1], "stream port listens");
-        assert_eq!(s.args(OP_SPAWN_REACTOR_THREAD), vec![0, 1, 2], "threads");
-        assert_eq!(s.called(OP_HEARTBEAT_THREAD), 1, "heartbeat thread");
+        join_reactor_threads(&mut s).unwrap();
+        let mut ran = RAN.lock().unwrap().clone();
+        ran.sort_unstable();
+        assert_eq!(
+            ran,
+            vec![(64, 0), (64, 1), (64, 2), (64, HEARTBEAT)],
+            "threads"
+        );
+        assert_eq!(s.args(OP_THREAD_NOTIFY), vec![0, 1, 2], "each told to stop");
+        assert_eq!(s.called(TRACE_HEARTBEAT_JOIN), 1, "heartbeat joined");
 
         let mut s = Script::with(&[(OP_PORT_COUNT, 1), (OP_PORT_LISTEN, u64::MAX)]);
         assert_eq!(
@@ -604,11 +632,10 @@ mod tests {
         );
         assert_eq!(s.called(OP_EVENT_FREE), 1, "loop freed");
 
-        let mut s =
-            Script::with(&[(OP_REACTOR_NUM, 2), (OP_FIELD, 1)]).queue(OP_THREAD_JOINABLE, &[0, 1]);
+        let mut s = Script::with(&[(OP_REACTOR_NUM, 2), (OP_FIELD, 1)]);
         join_reactor_threads(&mut s).unwrap();
-        assert_eq!(s.called(OP_JOIN_HEARTBEAT), 1, "heartbeat joined");
-        assert_eq!(s.args(OP_THREAD_JOIN), vec![1], "joinable thread");
+        assert_eq!(s.called(OP_THREAD_NOTIFY), 0, "none started");
+        assert_eq!(s.called(TRACE_HEARTBEAT_JOIN), 0, "no heartbeat");
     }
 
     #[test]
