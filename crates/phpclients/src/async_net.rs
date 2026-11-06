@@ -62,6 +62,8 @@ const ON_CLOSE: c_int = 3;
 const ON_ERROR: c_int = 4;
 const ON_BUFFER_FULL: c_int = 5;
 const ON_BUFFER_EMPTY: c_int = 6;
+/// `SW_SSL_STATE_WAIT_STREAM`.
+const SSL_STATE_WAIT_STREAM: u32 = 2;
 /// `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
 const DNS_RESOLVE_FAILED: c_int = 711;
 
@@ -87,22 +89,18 @@ method_table! {
     ];
 }
 
-/// MINIT, as `php_swoole_client_async_minit` did: objects come from the
-/// parent's `create_object`, which Zend inherits.
+/// `php_swoole_client_async_minit`: objects come from the parent's
+/// `create_object`, which Zend inherits.
 /// # Safety
-/// Called once, at MINIT, after the parent's, with upstream's static method
-/// table and a writable class-entry slot.
+/// Called once, at MINIT, after `Swoole\Client`'s.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_async_minit(
-    client_class: *mut zend_class_entry,
-    async_class: *mut *mut zend_class_entry,
-) {
+pub unsafe extern "C" fn php_swoole_client_async_minit(_module_number: c_int) {
     // SAFETY: MINIT, with a static table and the registered parent.
     unsafe {
         ASYNC.register_child(
             c"Swoole\\Async\\Client",
             METHODS.as_ptr(),
-            client_class,
+            net::CLIENT.entry(),
             configure,
         );
     }
@@ -119,8 +117,6 @@ pub unsafe extern "C" fn swr_v1_phpclients_async_minit(
         // SAFETY: MINIT, with the class just registered.
         unsafe { declare_property_null(ce, name, ZEND_ACC_PRIVATE) };
     }
-    // SAFETY: per the caller, a writable slot.
-    unsafe { *async_class = ce };
 }
 
 fn callbacks<'a>(data: &net::Data) -> Option<&'a mut [*mut c_void; 7]> {
@@ -597,7 +593,7 @@ fn enable_ssl(call: &Call) {
     replace(object, SSL_READY, callable);
     conn.ssl_wait = true;
     // SAFETY: a live client with TLS.
-    unsafe { native::swoole_client_ssl_wait_stream(conn.cli) };
+    unsafe { (*conn.socket()).tls.state = SSL_STATE_WAIT_STREAM };
     call.set_bool(true);
 }
 

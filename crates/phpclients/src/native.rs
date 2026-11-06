@@ -3,8 +3,17 @@
 //! `Socket` class (`SocketImpl`) is still C++, so each operation a method needs
 //! is one call over its opaque pointer, plus Swoole's PHP error reporting.
 use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
+use std::ffi::CStr;
+use swoole_rs_clients::{
+    address::{swr_v1_clients_address_host, swr_v1_clients_address_port},
+    client::ClientRecord,
+};
 use swoole_rs_phpruntime::co;
+use swoole_rs_reactor::{SocketAddress, SocketRecord};
 use swoole_rs_zend::sys::{zend_object, zend_string, zval};
+
+/// `SW_LOG_WARNING`.
+const LOG_WARNING: c_int = 4;
 
 /// A `SocketImpl *`.
 pub(crate) type Socket = *mut libc::c_void;
@@ -186,55 +195,17 @@ unsafe extern "C" {
     /// `php_swoole_error`, `_fatal_error`, `_sys_error` or `_core_error`
     /// (`kind`, [`ErrorKind`]) of `level` with `"%s"` and `message`.
     pub(crate) fn swoole_client_php_error(kind: c_int, level: c_int, message: *const c_char);
-    /// `swoole_error_log(SW_LOG_WARNING, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, ...)`,
-    /// named as upstream's `recv`.
-    pub(crate) fn swoole_client_package_too_big(length: c_int);
     /// `new Client(type, async)`; null, with errno in `error`, without a socket.
     pub(crate) fn swoole_client_create(kind: c_int, is_async: bool, error: *mut c_int) -> Cli;
-    pub(crate) fn swoole_client_fd(cli: Cli) -> c_int;
     /// The client's `ClientState` (crates/clients).
     pub(crate) fn swoole_client_state(cli: Cli) -> *mut c_void;
-    pub(crate) fn swoole_client_has_socket(cli: Cli) -> bool;
-    pub(crate) fn swoole_client_socket_type(cli: Cli) -> c_int;
-    pub(crate) fn swoole_client_has_ssl(cli: Cli) -> bool;
-    pub(crate) fn swoole_client_check_liveness(cli: Cli) -> bool;
-    /// `getsockopt(SO_ERROR)`: whether it succeeded.
-    pub(crate) fn swoole_client_socket_error(cli: Cli, error: *mut c_int) -> bool;
-    /// `socket->catch_error(error)`.
-    pub(crate) fn swoole_client_catch_error(cli: Cli, error: c_int) -> c_int;
-    pub(crate) fn swoole_client_framing(cli: Cli, framing: *mut Framing);
-    /// getsockname: the address, the port in `port`; null on failure.
-    pub(crate) fn swoole_client_sockname(cli: Cli, port: *mut c_int) -> *const c_char;
-    pub(crate) fn swoole_client_peername(
-        cli: Cli,
-        address: *mut c_char,
-        size: size_t,
-        port: *mut c_int,
-    ) -> bool;
-    pub(crate) fn swoole_client_peer_cert(cli: Cli) -> *mut zend_string;
     /// `php_swoole_convert_to_socket(fd)` into `zsocket`.
     pub(crate) fn swoole_client_export_socket(cli: Cli, zsocket: *mut zval) -> bool;
-    /// Merge `settings` into the `setting` property.
-    pub(crate) fn swoole_client_merge_setting(object: *mut zend_object, settings: *const zval);
     /// Install the async callbacks in `events`, raised on `object`.
     pub(crate) fn swoole_client_async_listen(cli: Cli, object: *mut zend_object, events: u32);
     pub(crate) fn swoole_client_has_on_error(cli: Cli) -> bool;
-    /// `socket->ssl_state = SW_SSL_STATE_WAIT_STREAM`.
-    pub(crate) fn swoole_client_ssl_wait_stream(cli: Cli);
-    /// `swoole_get_last_error()`.
-    pub(crate) fn swoole_client_last_error() -> c_int;
     /// Run one [`ClientCall`]; a `bailout::trap` body.
     pub(crate) fn swoole_client_run(call: *mut c_void);
-    /// `&cli->protocol`, whose head crates/framing mirrors.
-    pub(crate) fn swoole_client_protocol(cli: Cli) -> *mut c_void;
-    /// Write one `SWOOLE_CLIENT_OPT_*` into the client (`crate::settings`).
-    pub(crate) fn swoole_client_option(
-        cli: Cli,
-        option: c_int,
-        value: i64,
-        text: *const c_char,
-        length: size_t,
-    ) -> i64;
     /// The client's `SSLContext` owner; null while TLS is off.
     pub(crate) fn swoole_client_ssl_context(cli: Cli) -> *const c_void;
     /// `set_http_proxy` (`http`) or `set_socks5_proxy`.
@@ -251,24 +222,79 @@ unsafe extern "C" {
     );
 }
 
+/// The client's public record: `network::Client`'s only base, at its start.
+/// # Safety
+/// `cli` is a live `network::Client *`, and nothing else touches its record
+/// while the borrow lasts.
+pub(crate) unsafe fn client<'a>(cli: Cli) -> &'a mut ClientRecord {
+    // SAFETY: per the caller.
+    unsafe { &mut *cli.cast::<ClientRecord>() }
+}
+
+/// The client's socket record (`cli->socket`), or null.
+/// # Safety
+/// `cli` is a live client.
+pub(crate) unsafe fn client_socket(cli: Cli) -> *mut SocketRecord {
+    // SAFETY: per the caller.
+    unsafe { client(cli) }.socket
+}
+
+/// The client's socket record.
+/// # Safety
+/// `cli` is a live client with a socket, which nothing else touches while the
+/// borrow lasts.
+pub(crate) unsafe fn client_socket_mut<'a>(cli: Cli) -> &'a mut SocketRecord {
+    // SAFETY: per the caller.
+    let socket = unsafe { client_socket(cli) };
+    // SAFETY: as above.
+    unsafe { &mut *socket }
+}
+
+/// The peer certificate of `socket`, a live record with TLS, as a new string,
+/// or null: `ssl_get_peer_certificate` into a buffer of `sw_tg_buffer()`'s size.
+pub(crate) unsafe fn peer_cert(socket: *mut SocketRecord) -> *mut zend_string {
+    let mut buffer = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
+    // SAFETY: a live record with TLS and a writable buffer.
+    let length = unsafe {
+        swoole_rs_tls::upstream::socket_ssl_get_peer_certificate_pem(
+            socket,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+        )
+    };
+    match usize::try_from(length) {
+        Ok(length) => swoole_rs_zend::string::copy(&buffer[..length]),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// The address and port of `address`: `get_addr()` and `get_port()`.
+pub(crate) fn address(address: &SocketAddress) -> (&CStr, c_int) {
+    // SAFETY: a live address; the text lives until this thread's next
+    // presentation, after the caller copies it.
+    let host = unsafe { swr_v1_clients_address_host(address) };
+    // SAFETY: as above, NUL-terminated.
+    let host = unsafe { CStr::from_ptr(host) };
+    // SAFETY: as above.
+    (host, unsafe { swr_v1_clients_address_port(address) })
+}
+
+/// `swoole_error_log(SW_LOG_WARNING, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, ...)`
+/// from upstream's `recv`, which the log line names.
+pub(crate) fn package_too_big(length: c_int) {
+    swoole_rs_corebase::log::error_log(
+        LOG_WARNING,
+        swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int,
+        c"zim_swoole_client_recv",
+        format_args!("Package is too big. package_length={length}"),
+    );
+}
+
 /// A `network::Client *`.
 pub(crate) type Cli = *mut c_void;
 
 /// crates/clients' per-client state.
 pub(crate) type ClientState = swoole_rs_clients::client::Client;
-
-/// `struct swoole_client_framing`.
-#[repr(C)]
-#[derive(Default)]
-pub(crate) struct Framing {
-    pub(crate) eof_check: bool,
-    pub(crate) length_check: bool,
-    pub(crate) eof_length: u8,
-    pub(crate) eof: [u8; 8],
-    pub(crate) max_length: u32,
-    pub(crate) length_offset: u16,
-    pub(crate) length_size: u8,
-}
 
 /// `SWOOLE_CLIENT_ERROR*`: which reporter `swoole_client_php_error` uses.
 #[derive(Clone, Copy)]
@@ -460,24 +486,12 @@ pub(crate) unsafe fn swoole_client_coro_has_ssl(socket: Socket) -> bool {
     !record.is_null() && !unsafe { (*record).ssl }.is_null()
 }
 
-/// The peer certificate as a new string, or null: `ssl_get_peer_certificate`
-/// into a buffer of `sw_tg_buffer()`'s size.
+/// The peer certificate as a new string, or null.
 pub(crate) unsafe fn swoole_client_coro_peer_cert(socket: Socket) -> *mut zend_string {
-    let mut buffer = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
     // SAFETY: per the caller.
     let record = unsafe { swoole_client_coro_socket_record(socket) };
-    // SAFETY: a live record with TLS and a writable buffer.
-    let length = unsafe {
-        swoole_rs_tls::upstream::socket_ssl_get_peer_certificate_pem(
-            record,
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-        )
-    };
-    match usize::try_from(length) {
-        Ok(length) => swoole_rs_zend::string::copy(&buffer[..length]),
-        Err(_) => std::ptr::null_mut(),
-    }
+    // SAFETY: per the caller, a socket with TLS.
+    unsafe { peer_cert(record) }
 }
 
 pub(crate) unsafe fn swoole_client_coro_verify_peer(
