@@ -26,24 +26,28 @@ use crate::ops::{
     OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_CONN_LAST_RECV, OP_CONN_PROTECT,
     OP_CONN_RESET, OP_CONN_UID, OP_CONN_WORKER, OP_COUNT_ACCEPT, OP_DGRAM_PORT, OP_DIRECT_SEND,
     OP_ERRNO, OP_EVENT_FD, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HAS_PORT, OP_HOST_MAXSIZE,
-    OP_HOST_SIZE, OP_KILL_TERM, OP_KILL_WINCH, OP_LAST_RECEIVED, OP_LAST_SENT, OP_NEW_PORT_TYPE,
-    OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PORT_HEARTBEAT, OP_PORT_IDLE_TIME, OP_PORT_NODELAY,
-    OP_PORT_NUMBER, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL, OP_PORT_TYPE, OP_REACTOR_ADD_READ,
-    OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_HAS_SEND_TIMER,
-    OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET,
-    OP_SC_TOUCH_SEND, OP_SC_WRITABLE, OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN,
-    OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SESSION_BIND,
-    OP_SESSION_CLAIM, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF,
-    OP_SET_SNDBUF, OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SOCKET_CONN,
-    OP_SOCKET_NOBUFS, OP_SSL_CLEAR, OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT,
-    OP_ST_TIMER, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING,
-    OP_WARNING_RESET, OP_WARNING_TIME, OP_WRONG_OPERATION,
+    OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH, OP_LAST_RECEIVED,
+    OP_LAST_SENT, OP_NEW_PORT_TYPE, OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PORT_HEARTBEAT,
+    OP_PORT_IDLE_TIME, OP_PORT_NODELAY, OP_PORT_NUMBER, OP_PORT_RCVBUF, OP_PORT_SNDBUF,
+    OP_PORT_SSL, OP_PORT_TYPE, OP_REACTOR_ADD_READ, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE,
+    OP_SC_ADVANCE, OP_SC_DEL, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW,
+    OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_WRITABLE, OP_SC_YIELD_ERROR,
+    OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
+    OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SESSION_BIND, OP_SESSION_CLAIM,
+    OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF,
+    OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SOCKET_CONN, OP_SOCKET_NOBUFS,
+    OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR, OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH,
+    OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS,
+    OP_ST_W_RESET_COUNTS, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN,
+    OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES,
+    OP_WRONG_OPERATION,
 };
 use crate::port_config::PortConfig;
 use crate::records::{ConnectionRecord, SessionRecord};
 use crate::server_methods::NativeContext;
 use crate::shared::{PortCounters, ServerCounters};
 use crate::{MODE_BASE, MODE_PROCESS, ServerState};
+use swoole_rs_process::worker_record::WorkerRecord;
 
 const SW_LOG_TRACE: c_int = 1;
 const SW_LOG_NOTICE: c_int = 3;
@@ -51,6 +55,8 @@ const SW_LOG_WARNING: c_int = 4;
 const SW_LOG_ERROR: c_int = 5;
 const SW_SOCK_TCP: c_int = 1;
 const SW_SOCK_TCP6: c_int = 3;
+/// `SW_MASTER`, the master's worker type.
+const SW_MASTER: c_int = 1;
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 /// `sizeof(Session)`, `sizeof(sw_atomic_t)` and `sizeof(SendfileTask)`.
@@ -132,6 +138,10 @@ impl Objects<'_> {
     fn port_gs(&self) -> &PortCounters {
         // SAFETY: the port's slot in `port_gs_list`, once the server is created.
         unsafe { &*self.port().gs.cast::<PortCounters>() }
+    }
+    fn worker(&self) -> &mut WorkerRecord {
+        // SAFETY: the ops reading it run with a live worker as the context's object.
+        unsafe { &mut *self.ctx.object.cast::<WorkerRecord>() }
     }
     fn data(&self) -> std::borrow::Cow<'_, str> {
         // SAFETY: the ops reading it pass a NUL-terminated string.
@@ -987,6 +997,74 @@ pub(crate) unsafe fn answer(
             o.conn().last_send_time = swoole_rs_corebase::microtime();
             0
         }
+
+        // The server's state and the worker records.
+        OP_STATE => core::ptr::from_ref(state).expose_provenance() as u64,
+        OP_IS_CREATED => u64::from(!o.config().factory_.is_null()),
+        OP_IS_MASTER => {
+            u64::from(swoole_rs_process::methods::swoole_get_worker_type() == SW_MASTER)
+        }
+        OP_SC_YIELD_ERROR => {
+            log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
+            0
+        }
+        OP_SPIN_LOCK => {
+            let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
+            // SAFETY: the shared counters' aligned lock word, which every holder takes
+            // this way (`sw_spinlock`, with `SW_SPINLOCK_LOOP_N`).
+            unsafe {
+                swoole_rs_utilities::swr_v1_utils_spinlock(o.gs().spinlock.as_ptr(), cpus, 1024);
+            };
+            0
+        }
+        OP_SPIN_UNLOCK => {
+            // `sw_spinlock_release`: a release store of 0.
+            o.gs()
+                .spinlock
+                .store(0, core::sync::atomic::Ordering::Release);
+            0
+        }
+        OP_WORKER_COROUTINES | OP_WORKER_CONCURRENCY => {
+            let at = usize::try_from(arg).unwrap_or(usize::MAX);
+            let worker = o.config().workers.cast::<WorkerRecord>().wrapping_add(at);
+            // SAFETY: an event worker of the server's array, which the caller indexes.
+            let worker = unsafe { &*worker };
+            if op == OP_WORKER_COROUTINES {
+                worker.coroutine_num as u64
+            } else {
+                u64::from(worker.concurrency)
+            }
+        }
+        OP_ST_W_CONCURRENCY => u64::from(o.worker().concurrency),
+        OP_ST_W_CONCURRENCY_CAS => {
+            #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint32_t) arg")]
+            let expected = arg as u32;
+            // SAFETY: the worker's aligned `sw_atomic_t`, shared with other processes.
+            let cell =
+                unsafe { core::sync::atomic::AtomicU32::from_ptr(&raw mut o.worker().concurrency) };
+            // `sw_atomic_value_cmp_set`: the value before, swapped or not.
+            let before = cell.compare_exchange(expected, 0, SeqCst, SeqCst);
+            u64::from(before.unwrap_or_else(|value| value))
+        }
+        OP_ST_W_RESET_COUNTS => {
+            let worker = o.worker();
+            worker.request_count = 0;
+            worker.response_count = 0;
+            worker.dispatch_count = 0;
+            0
+        }
+        OP_SENDFILE_NAME => {
+            // `swoole_strlcpy(req->filename, data, SW_IPC_BUFFER_SIZE - sizeof(*req))`.
+            let name = o.ctx.buffer.wrapping_add(SENDFILE_TASK_SIZE);
+            // SAFETY: sendfile's NUL-terminated name.
+            let source = unsafe { CStr::from_ptr(o.ctx.data.cast()) }.to_bytes();
+            let length = source.len().min(IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1);
+            // SAFETY: the task buffer holds `SW_IPC_BUFFER_SIZE` bytes after its head.
+            unsafe { core::ptr::copy_nonoverlapping(source.as_ptr(), name.cast(), length) };
+            // SAFETY: as above; `length` leaves room for the NUL.
+            unsafe { name.wrapping_add(length).write(0) };
+            name.expose_provenance() as u64
+        }
         _ => return None,
     })
 }
@@ -1076,5 +1154,44 @@ mod tests {
         }
         assert_eq!(ctx.length, 5);
         assert_eq!(ctx.data, data[3..].as_ptr().cast());
+    }
+
+    #[test]
+    fn concurrency_swap_returns_the_value_before_like_sw_atomic_value_cmp_set() {
+        let state = crate::swr_v1_server_state_new();
+        let mut ctx = context();
+        // SAFETY: every WorkerRecord field is a pointer or integer; zero is valid.
+        let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
+        worker.concurrency = 3;
+        ctx.object = (&raw mut worker).cast();
+        // SAFETY: the context's worker is live above.
+        unsafe {
+            assert_eq!(
+                answer(&raw mut ctx, state, OP_ST_W_CONCURRENCY_CAS, 2, || 0),
+                Some(3)
+            );
+            assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 3);
+            assert_eq!(
+                answer(&raw mut ctx, state, OP_ST_W_CONCURRENCY_CAS, 3, || 0),
+                Some(3)
+            );
+            assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 0);
+            crate::swr_v1_server_state_free(state);
+        }
+    }
+
+    #[test]
+    fn sendfile_name_is_copied_after_the_task_head() {
+        let state = crate::swr_v1_server_state_new();
+        let mut ctx = context();
+        let mut buffer = [0xffu8; 64];
+        ctx.buffer = buffer.as_mut_ptr().cast();
+        ctx.data = c"/tmp/a".as_ptr().cast();
+        // SAFETY: the context's buffer and name are live above.
+        let name = unsafe { answer(&raw mut ctx, state, OP_SENDFILE_NAME, 0, || 0) };
+        // SAFETY: created above and not used again.
+        unsafe { crate::swr_v1_server_state_free(state) };
+        assert_eq!(name, Some(buffer.as_ptr().wrapping_add(16).addr() as u64));
+        assert_eq!(&buffer[16..23], b"/tmp/a\0");
     }
 }
