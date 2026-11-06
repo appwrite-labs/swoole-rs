@@ -336,11 +336,6 @@ pub extern "C" fn swr_v1_phpcoroutines_cid() -> c_long {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_activated() -> u8 {
-    u8::from(activated())
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phpcoroutines_hook_flags() -> u32 {
     CONFIG.with(|c| c.hook_flags.get())
 }
@@ -350,14 +345,12 @@ pub extern "C" fn swr_v1_phpcoroutines_set_hook_flags(flags: u32) {
     CONFIG.with(|c| c.hook_flags.set(flags));
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_set_max_num(max: u64) {
+pub(crate) fn set_max_num(max: u64) {
     CONFIG.with(|c| c.max_num.set(max));
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_set_deadlock_check(enable: u8) {
-    CONFIG.with(|c| c.deadlock_check.set(enable != 0));
+pub(crate) fn set_deadlock_check(enable: bool) {
+    CONFIG.with(|c| c.deadlock_check.set(enable));
 }
 
 #[unsafe(no_mangle)]
