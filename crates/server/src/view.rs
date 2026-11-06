@@ -91,6 +91,43 @@ pub unsafe fn add_rewrite_rule(serv: *mut c_void, pattern: &[u8], replacement: &
     crate::static_config::add_rewrite_rule(unsafe { state(serv) }, pattern, replacement);
 }
 
+/// The static handler's collection `kind` (0 locations, 1 index files): whether
+/// it is set, and a copy of its values.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[must_use]
+pub unsafe fn static_strings(serv: *mut c_void, kind: u32) -> (bool, Vec<Vec<u8>>) {
+    // SAFETY: per the caller.
+    crate::static_config::strings(unsafe { state(serv) }, kind)
+}
+
+/// `apply_rewrite_rules` on a static context: true when a rule applied.
+///
+/// # Safety
+/// `serv` is a live `Server` and `context` a live context no one else uses meanwhile.
+pub unsafe fn static_rewrite(
+    serv: *mut c_void,
+    context: *mut swoole_rs_http::HttpStaticContext,
+) -> bool {
+    // SAFETY: per the caller.
+    let state = unsafe { state(serv) };
+    // SAFETY: the live state and the caller's context.
+    unsafe { crate::swr_v1_server_static_rewrite(state, context) }
+}
+
+/// `document_root`, copied.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[must_use]
+pub unsafe fn document_root(serv: *mut c_void) -> Vec<u8> {
+    // SAFETY: per the caller.
+    unsafe { state(serv) }
+        .text(crate::state::TEXT_DOCUMENT_ROOT)
+        .to_vec()
+}
+
 /// `upload_tmp_dir.c_str()`: the directory up to its first NUL.
 ///
 /// # Safety

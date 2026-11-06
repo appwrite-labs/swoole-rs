@@ -682,11 +682,14 @@ dependencies = [
  "swoole-rs-framing",
  "swoole-rs-http2",
  "swoole-rs-inflate",
+ "swoole-rs-phpcoroutines",
  "swoole-rs-phphttp",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
+ "swoole-rs-phpswoole",
  "swoole-rs-phptable",
  "swoole-rs-reactor",
+ "swoole-rs-server",
  "swoole-rs-zend",
 ]
 
@@ -850,6 +853,7 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-framing",
  "swoole-rs-http",
  "swoole-rs-ossupport",
  "swoole-rs-process",

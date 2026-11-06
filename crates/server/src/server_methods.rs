@@ -10,7 +10,9 @@ use core::ptr;
 use std::sync::OnceLock;
 
 use crate::base_factory::{SEND_DATA, SendData};
-use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER, OP_TASK_PACK};
+use crate::ops::{
+    OP_CONN_MAX_LENGTH, OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER, OP_TASK_PACK,
+};
 use crate::ops::{
     RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_BASE_DISPATCH, RUN_BASE_END,
     RUN_BASE_FINISH, RUN_BASE_NOTIFY, RUN_DISABLE_ACCEPT, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
@@ -542,6 +544,18 @@ base_methods! {
 unsafe fn native_op(op: u32, ctx: &mut NativeContext) -> bool {
     // SAFETY: as the caller guarantees.
     unsafe { run(RUN_NATIVE_OP, op.into(), ctx) != 0 }
+}
+
+/// `Server::get_package_max_length(conn)`.
+///
+/// # Safety
+/// `serv` is a live `Server` and `conn` one of its connections.
+pub unsafe fn package_max_length(serv: *mut c_void, conn: *mut c_void) -> u32 {
+    let mut ctx = NativeContext::new(serv);
+    ctx.conn = conn;
+    // SAFETY: as the caller guarantees.
+    let length = unsafe { run(RUN_NATIVE_OP, OP_CONN_MAX_LENGTH.into(), &mut ctx) };
+    u32::try_from(length).unwrap_or_default()
 }
 
 /// `Server::CLOSE_RESET`, `Server::CLOSE_ACTIVELY`.

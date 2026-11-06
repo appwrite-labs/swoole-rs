@@ -27,6 +27,11 @@ php = [
     "dep:swoole-rs-corebase",
     "dep:swoole-rs-error",
     "dep:swoole-rs-framing",
+    "dep:swoole-rs-phpcoroutines",
+    "swoole-rs-phpcoroutines/php",
+    "dep:swoole-rs-server",
+    "dep:swoole-rs-phpswoole",
+    "swoole-rs-phpswoole/php",
 ]
 
 [dependencies]
@@ -43,6 +48,9 @@ swoole-rs-buffer = { path = "../buffer", optional = true }
 swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-error = { path = "../error", optional = true }
 swoole-rs-framing = { path = "../framing", optional = true }
+swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
+swoole-rs-server = { path = "../server", optional = true }
+swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 
 [lints]
 workspace = true

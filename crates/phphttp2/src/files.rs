@@ -1,166 +1,103 @@
 //! The HTTP/2 server's file responses: the static handler's (upstream's
 //! `http2_server_is_static_file` and `http2_server_send_range_file`) and
-//! `Response::sendfile`'s (`http2_server_send_file`). The `StaticHandler`
-//! and the file reads (`swoole::File`, `coroutine::async`,
-//! `System::read_file`) stay C++, reached through `swr_h2s_static_*` and
-//! `swr_h2s_file_*` (`ext-src/swoole_http2_server.cc`).
+//! `Response::sendfile`'s (`http2_server_send_file`), over crates/server's
+//! `StaticHandler`.
 use crate::server::{Value, begin_file, finish_file, of, respond, send_body, set, zval_of};
-use libc::{c_char, c_int, c_void};
-use std::ptr;
+use libc::{c_char, c_void};
+use std::ffi::CString;
 use swoole_rs_http2::{sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_phphttp::http2::Field;
+use swoole_rs_server::static_handler::{StaticHandler, page_404};
 use swoole_rs_zend::{
     bailout, string,
-    sys::{IS_STRING, swr_zend_string_release, zend_hash_str_find, zend_string, zval},
+    sys::{IS_STRING, zend_hash_str_find, zend_string, zval},
     type_of, value,
 };
 
-/// `SWR_H2S_STATIC_*`: what `swr_h2s_static` runs or reads.
-const SERVE: c_int = 0;
-const STATUS: c_int = 1;
-const INDEX: c_int = 2;
-const AUTOINDEX: c_int = 3;
-const FILESIZE: c_int = 4;
-const CONTENT_LENGTH: c_int = 5;
-const TASKS: c_int = 6;
-/// `SWR_H2S_TEXT_*`: what `swr_h2s_static_text` makes.
-const INDEX_PAGE: c_int = 0;
-const LAST_MODIFIED: c_int = 1;
-const CONTENT_TYPE: c_int = 2;
-const FILENAME: c_int = 3;
-const END_PART: c_int = 4;
-const PART_HEADER: c_int = 5;
-const PAGE_404: c_int = 6;
 /// `sw_rs_http2_file_mode`'s modes.
 const MODE_EMPTY: u32 = 0;
 const MODE_MULTI: u32 = 1;
 const MODE_SINGLE: u32 = 2;
 /// `SW_HTTP_NOT_FOUND`, `SW_HTTP_NOT_MODIFIED` and `SW_HTTP_PARTIAL_CONTENT`.
-const NOT_FOUND: i64 = 404;
+const NOT_FOUND: i32 = 404;
 const NOT_MODIFIED: u32 = 304;
-const PARTIAL_CONTENT: i64 = 206;
+const PARTIAL_CONTENT: i32 = 206;
 
 unsafe extern "C" {
-    fn swr_h2s_static_new(server: *mut c_void, url: *const c_char, length: usize) -> *mut c_void;
-    fn swr_h2s_static_free(handler: *mut c_void);
-    fn swr_h2s_static(handler: *mut c_void, op: c_int) -> i64;
-    fn swr_h2s_static_text(handler: *mut c_void, which: c_int, task: usize) -> *mut zend_string;
-    fn swr_h2s_static_modified(handler: *mut c_void, date: *const c_char, length: usize) -> bool;
-    fn swr_h2s_static_range(handler: *mut c_void, range: *const c_char, if_range: *const c_char);
-    fn swr_h2s_static_task(handler: *mut c_void, task: usize, offset: *mut i64, length: *mut usize);
-    fn swr_h2s_file_open(path: *const c_char) -> *mut c_void;
-    fn swr_h2s_file_read(
-        file: *mut c_void,
-        offset: i64,
-        buf: *mut c_char,
-        length: usize,
-        r#async: bool,
-    ) -> isize;
-    fn swr_h2s_file_close(file: *mut c_void);
-    fn swr_h2s_file_content(
-        path: *const c_char,
-        length: *mut usize,
-        owner: *mut *mut c_void,
-    ) -> *const c_char;
-    fn swr_h2s_file_content_free(owner: *mut c_void);
-    fn swr_h2s_in_coroutine() -> bool;
-}
-
-/// A string `swr_h2s_static_text` made, released on drop.
-struct Owned(*mut zend_string);
-
-impl Owned {
-    fn bytes(&self) -> &[u8] {
-        // SAFETY: a live string this owns.
-        unsafe { string::bytes(self.0) }
-    }
-
-    fn as_ptr(&self) -> *const c_char {
-        // SAFETY: as above; Zend strings are NUL-terminated.
-        unsafe { string::bytes(self.0) }.as_ptr().cast()
-    }
-}
-
-impl Drop for Owned {
-    fn drop(&mut self) {
-        // SAFETY: the reference the host returned.
-        unsafe { swr_zend_string_release(self.0) };
-    }
-}
-
-/// A `swoole::http_server::StaticHandler` for the request's URI.
-struct Handler(*mut c_void);
-
-impl Handler {
-    fn new(server: *mut c_void, url: &[u8]) -> Self {
-        // SAFETY: the live server and the URI's bytes, which C++ copies.
-        Self(unsafe { swr_h2s_static_new(server, url.as_ptr().cast(), url.len()) })
-    }
-
-    fn run(&self, op: c_int) -> i64 {
-        // SAFETY: the live handler.
-        unsafe { swr_h2s_static(self.0, op) }
-    }
-
-    fn yes(&self, op: c_int) -> bool {
-        self.run(op) != 0
-    }
-
-    fn count(&self, op: c_int) -> usize {
-        usize::try_from(self.run(op)).unwrap_or_default()
-    }
-
-    fn text(&self, which: c_int, task: usize) -> Owned {
-        // SAFETY: the live handler; the result is a new string.
-        Owned(unsafe { swr_h2s_static_text(self.0, which, task) })
-    }
-
-    fn modified(&self, date: &[u8]) -> bool {
-        // SAFETY: the live handler and the date's bytes.
-        unsafe { swr_h2s_static_modified(self.0, date.as_ptr().cast(), date.len()) }
-    }
-
-    fn task(&self, task: usize) -> (i64, usize) {
-        let (mut offset, mut length) = (0, 0);
-        // SAFETY: the live handler, one of its tasks and local outputs.
-        unsafe { swr_h2s_static_task(self.0, task, &raw mut offset, &raw mut length) };
-        (offset, length)
-    }
-}
-
-impl Drop for Handler {
-    fn drop(&mut self) {
-        // SAFETY: the handler `new` made, freed once.
-        unsafe { swr_h2s_static_free(self.0) };
-    }
+    /// `swoole::coroutine::async_job`: `job(context)` on the thread pool while
+    /// the coroutine waits; false if the pool refused it.
+    #[link_name = "_ZN6swoole9coroutine9async_jobEPFvPvES1_"]
+    fn async_job(job: unsafe extern "C" fn(*mut c_void), context: *mut c_void) -> bool;
+    /// `System::read_file(file, lock)`: the content goes to `put` (false: unreadable).
+    fn swr_v1_system_read_file(
+        file: *const c_char,
+        lock: bool,
+        put: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
+        out: *mut c_void,
+    ) -> bool;
 }
 
 /// A file opened read-only, closed on drop.
-struct File(*mut c_void);
+struct File(libc::c_int);
 
 impl File {
-    fn open(path: &Owned) -> Option<Self> {
+    fn open(path: &[u8]) -> Option<Self> {
+        let path = CString::new(path).ok()?;
         // SAFETY: a NUL-terminated path.
-        let file = unsafe { swr_h2s_file_open(path.as_ptr()) };
-        (!file.is_null()).then_some(Self(file))
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
+        (fd >= 0).then_some(Self(fd))
     }
 
     /// One read of up to `buf.len()` bytes at `offset`, on the thread pool
     /// when `pooled`; `None` if it failed.
     fn read(&self, offset: i64, buf: &mut [u8], pooled: bool) -> Option<usize> {
-        // SAFETY: the open file and a writable buffer that outlives the read.
-        let n = unsafe {
-            swr_h2s_file_read(self.0, offset, buf.as_mut_ptr().cast(), buf.len(), pooled)
+        let mut read = Read {
+            fd: self.0,
+            offset,
+            buf: buf.as_mut_ptr(),
+            length: buf.len(),
+            result: -1,
         };
-        usize::try_from(n).ok()
+        let context = (&raw mut read).cast();
+        if pooled {
+            // SAFETY: the read's context outlives the job, which the coroutine waits for.
+            if !unsafe { async_job(read_job, context) } {
+                return None;
+            }
+        } else {
+            // SAFETY: as above, on this thread.
+            unsafe { read_job(context) };
+        }
+        usize::try_from(read.result).ok()
     }
 }
 
 impl Drop for File {
     fn drop(&mut self) {
-        // SAFETY: the file `open` made, closed once.
-        unsafe { swr_h2s_file_close(self.0) };
+        // SAFETY: the descriptor `open` made, closed once.
+        unsafe { libc::close(self.0) };
     }
+}
+
+/// One `pread` for [`File::read`].
+struct Read {
+    fd: libc::c_int,
+    offset: i64,
+    buf: *mut u8,
+    length: usize,
+    result: isize,
+}
+
+unsafe extern "C" fn read_job(context: *mut c_void) {
+    // SAFETY: the `Read` `File::read` lends.
+    let read = unsafe { &mut *context.cast::<Read>() };
+    // SAFETY: the buffer's `length` writable bytes.
+    read.result = unsafe { libc::pread(read.fd, read.buf.cast(), read.length, read.offset) };
+}
+
+/// The text up to its first NUL, as a C string reads it.
+fn c_text(text: &[u8]) -> &[u8] {
+    text.split(|&byte| byte == 0).next().unwrap_or_default()
 }
 
 fn set_header(ctx: *mut c_void, name: &[u8], value: &[u8]) {
@@ -204,56 +141,55 @@ fn serve(server: *mut c_void, ctx: *mut c_void) -> bool {
         return false;
     };
     // SAFETY: the request's live string.
-    let handler = Handler::new(server, unsafe { string::bytes(uri) });
-    if !handler.yes(SERVE) {
+    let uri = unsafe { string::bytes(uri) };
+    // SAFETY: the live server.
+    let Some(handler) = (unsafe { StaticHandler::new(server, uri) }) else {
+        return false;
+    };
+    if !handler.try_serve() {
         return false;
     }
-    if handler.run(STATUS) == NOT_FOUND {
+    if handler.status() == NOT_FOUND {
         set(ctx, Field::Status, 404);
-        respond(ctx, handler.text(PAGE_404, 0).bytes());
+        respond(ctx, &page_404());
         return true;
     }
     // if http_index_files is enabled, need to search the index file first.
-    if !handler.yes(INDEX) {
+    if !handler.try_serve_index_file() {
         return false;
     }
     // no index file in the directory: with http_autoindex, list the directory.
-    if handler.yes(AUTOINDEX) {
-        respond(ctx, handler.text(INDEX_PAGE, 0).bytes());
+    if handler.lists_directory() {
+        respond(ctx, &handler.index_page());
         return true;
     }
-    set_header(
-        ctx,
-        b"Last-Modified",
-        handler.text(LAST_MODIFIED, 0).bytes(),
-    );
+    set_header(ctx, b"Last-Modified", &handler.date_last_modified());
     let zheader = zval_of(ctx, Value::Header);
     if let Some(since) = entry(zheader, b"if-modified-since") {
         // SAFETY: the header's live string.
         let since = unsafe { string::bytes(since) };
-        if !since.is_empty() && handler.modified(since) {
+        if !since.is_empty() && handler.is_modified(since) {
             set(ctx, Field::Status, NOT_MODIFIED);
             return true;
         }
     }
     let text = |key: &[u8]| {
-        entry(zheader, key).map_or(ptr::null(), |found| {
-            // SAFETY: a live, NUL-terminated header string.
-            unsafe { string::bytes(found) }.as_ptr().cast()
+        entry(zheader, key).map(|found| {
+            // SAFETY: a live header string.
+            c_text(unsafe { string::bytes(found) })
         })
     };
-    // SAFETY: the live handler and NUL-terminated header values (or null).
-    unsafe { swr_h2s_static_range(handler.0, text(b"range"), text(b"if-range")) };
-    let status = handler.run(STATUS);
+    handler.parse_range(text(b"range"), text(b"if-range"));
+    let status = handler.status();
     set(
         ctx,
         Field::Status,
         u32::try_from(status).unwrap_or_default(),
     );
-    if handler.count(TASKS) == 1 {
+    let tasks = handler.tasks();
+    if let [task] = tasks.as_slice() {
         if status == PARTIAL_CONTENT {
-            let (offset, length) = handler.task(0);
-            let range = content_range(offset, length, handler.count(FILESIZE));
+            let range = content_range(task.offset, task.length, handler.filesize());
             set_header(ctx, b"Content-Range", range.as_bytes());
         } else {
             set_header(ctx, b"Accept-Ranges", b"bytes");
@@ -281,31 +217,33 @@ fn content_range(offset: i64, length: usize, size: usize) -> String {
 
 /// `http2_server_send_range_file`: the file's ranges, the stream (and so the
 /// context) held while a coroutine reads it.
-fn send_ranges(ctx: *mut c_void, handler: &Handler) -> bool {
+fn send_ranges(ctx: *mut c_void, handler: &StaticHandler) -> bool {
     let _held = of(ctx);
-    let content_type = handler.text(CONTENT_TYPE, 0);
-    let trailer = begin_file(ctx, content_type.bytes(), handler.count(CONTENT_LENGTH));
+    let trailer = begin_file(ctx, &handler.content_type(), handler.content_length());
     if trailer < 0 {
         return false;
     }
     let end_stream = trailer == 0;
-    let tasks = handler.count(TASKS);
-    let first = if tasks == 1 { handler.task(0).1 } else { 0 };
-    let mode = sw_rs_http2_file_mode(tasks, first);
+    let tasks = handler.tasks();
+    let first = if let [task] = tasks.as_slice() {
+        task.length
+    } else {
+        0
+    };
+    let mode = sw_rs_http2_file_mode(tasks.len(), first);
     let mut error = false;
     if mode != MODE_EMPTY {
-        let Some(file) = File::open(&handler.text(FILENAME, 0)) else {
+        let Some(file) = File::open(&handler.filename()) else {
             return false;
         };
         if mode == MODE_MULTI {
-            for task in 0..tasks {
-                if !body(ctx, handler.text(PART_HEADER, task).bytes(), false) {
+            for task in &tasks {
+                if !body(ctx, c_text(&task.part_header), false) {
                     error = true;
                     break;
                 }
-                let (offset, length) = handler.task(task);
-                let mut buf = vec![0; length];
-                if file.read(offset, &mut buf, false).is_none() {
+                let mut buf = vec![0; task.length];
+                if file.read(task.offset, &mut buf, false).is_none() {
                     return false;
                 }
                 if !body(ctx, &buf, false) {
@@ -313,15 +251,13 @@ fn send_ranges(ctx: *mut c_void, handler: &Handler) -> bool {
                     break;
                 }
             }
-            if !error && !body(ctx, handler.text(END_PART, 0).bytes(), end_stream) {
+            if !error && !body(ctx, &handler.end_part(), end_stream) {
                 error = true;
             }
-        } else if mode == MODE_SINGLE {
-            let (offset, length) = handler.task(0);
-            let mut buf = vec![0; length];
-            // SAFETY: reads the current coroutine.
-            let pooled = unsafe { swr_h2s_in_coroutine() };
-            let Some(read) = file.read(offset, &mut buf, pooled) else {
+        } else if let (MODE_SINGLE, [task]) = (mode, tasks.as_slice()) {
+            let mut buf = vec![0; task.length];
+            let pooled = swoole_rs_phpcoroutines::in_coroutine();
+            let Some(read) = file.read(task.offset, &mut buf, pooled) else {
                 return false;
             };
             buf.truncate(read);
@@ -349,25 +285,42 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_send_file(
     set(ctx, Field::AcceptCompression, 0);
     // SAFETY: a live string.
     let path = unsafe { string::bytes(file) };
-    let (mut available, mut owner) = (0, ptr::null_mut());
-    // SAFETY: a NUL-terminated path and local outputs.
-    let data =
-        unsafe { swr_h2s_file_content(path.as_ptr().cast(), &raw mut available, &raw mut owner) };
-    if data.is_null() {
+    let Some(content) = content(path) else {
         return false;
-    }
-    let sent = send_content(ctx, path, bytes(data, available), offset, length);
-    // SAFETY: the content `swr_h2s_file_content` lent, freed once.
-    unsafe { swr_h2s_file_content_free(owner) };
-    sent
+    };
+    send_content(ctx, path, &content, offset, length)
 }
 
-fn bytes<'a>(data: *const c_char, length: usize) -> &'a [u8] {
-    if length == 0 {
-        return &[];
+unsafe extern "C" fn put(out: *mut c_void, data: *const c_char, length: usize) {
+    // SAFETY: `length` readable bytes.
+    let data = unsafe { std::slice::from_raw_parts(data.cast(), length) };
+    // SAFETY: the `Vec` `content` lends.
+    unsafe { (*out.cast::<Vec<u8>>()).extend_from_slice(data) };
+}
+
+/// The file's whole content (`System::read_file` in a coroutine), `None` if unreadable.
+fn content(path: &[u8]) -> Option<Vec<u8>> {
+    let path = CString::new(c_text(path)).ok()?;
+    let mut content = Vec::new();
+    if swoole_rs_phpcoroutines::in_coroutine() {
+        // SAFETY: a NUL-terminated path; `put` appends to `content`.
+        let read = unsafe {
+            swr_v1_system_read_file(path.as_ptr(), false, put, (&raw mut content).cast())
+        };
+        return read.then_some(content);
     }
-    // SAFETY: per every caller, `length` readable bytes.
-    unsafe { std::slice::from_raw_parts(data.cast(), length) }
+    let file = File::open(path.as_bytes())?;
+    let mut buf = [0u8; 8192];
+    loop {
+        // SAFETY: the open descriptor and a writable buffer.
+        let n = unsafe { libc::read(file.0, buf.as_mut_ptr().cast(), buf.len()) };
+        let Ok(n) = usize::try_from(n) else { break };
+        if n == 0 {
+            break;
+        }
+        content.extend_from_slice(&buf[..n]);
+    }
+    Some(content)
 }
 
 fn send_content(ctx: *mut c_void, path: &[u8], content: &[u8], offset: i64, length: usize) -> bool {

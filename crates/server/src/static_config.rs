@@ -37,6 +37,15 @@ fn table(state: &ServerState, kind: usize) -> Arc<Mutex<Strings>> {
         .unwrap_or_default()
 }
 
+/// Collection `kind`: whether it is set, and a copy of its values.
+pub(crate) fn strings(state: &ServerState, kind: u32) -> (bool, Vec<Vec<u8>>) {
+    let table = table(state, usize::try_from(kind).unwrap_or(usize::MAX));
+    let strings = table
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    (strings.enabled, strings.values.clone())
+}
+
 /// Share the current collection identity. Replacing the Server's optional
 /// collection leaves already-bound contexts holding the original table.
 /// # Safety

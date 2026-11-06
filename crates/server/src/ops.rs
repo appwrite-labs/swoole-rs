@@ -370,6 +370,8 @@ pub const OP_DESTROY_TASK_WORKERS: u32 = 208;
 /// Frees the session list, port statistics and workers, then the factory, and
 /// clears `SwooleG.server`.
 pub const OP_FREE_SERVER: u32 = 209;
+/// `get_package_max_length(conn)`: the connection's port's `protocol.package_max_length`.
+pub const OP_CONN_MAX_LENGTH: u32 = 210;
 
 pub const LOG_ALLOC_SESSIONS: u32 = 220;
 pub const LOG_ALLOC_PORT_GS: u32 = 221;

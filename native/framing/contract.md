@@ -37,8 +37,9 @@ framing feature; the module is opt-in.
   (upstream's is hash order).
 - Lookup is case-sensitive on mutation, uses the last dot, and handles no-dot,
   trailing-dot and embedded-NUL input. Case mapping uses host libc `tolower`.
-- C++ (`StaticHandler`, the HTTP/2 server) calls `swr_v1_framing_mime_get` and
-  `swr_v1_framing_mime_exists`; an invalid extent looks up the empty suffix.
+- C++'s `StaticHandler` calls `swr_v1_framing_mime_get` and
+  `swr_v1_framing_mime_exists` (crates/server's Rust one calls `mime::get` and
+  `mime::exists`); an invalid extent looks up the empty suffix.
 
 ## Deliberate differences from upstream
 
