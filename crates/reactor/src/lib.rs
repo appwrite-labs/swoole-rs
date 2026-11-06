@@ -102,6 +102,8 @@ pub mod reactor_upstream;
 pub mod signal_upstream;
 #[cfg(unix)]
 pub mod socket_upstream;
+#[cfg(all(unix, feature = "upstream-symbols", not(test)))]
+pub mod wait_upstream;
 
 const INVALID: i32 = -1;
 /// Encode the stream's four-byte network-order body length. The supplied total

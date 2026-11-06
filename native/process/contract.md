@@ -55,12 +55,13 @@ which run after Rust returns.
   reading one `signalfd_siginfo` into a call/warn/ignore decision. Native keeps
   the reactor `Socket` around the descriptor, its handler, exit condition and
   destroy callback, `SwooleG.signal_fd`, the warnings and the handler call.
-- Coroutine waitpid (`src/os/wait.cc`, without io_uring) is Rust: the children
+- Coroutine waitpid (`src/os/wait.cc` at the pin; its facades are now
+  `crates/reactor/src/wait_upstream.rs`) is Rust: the children
   reaped before anyone waited, the any-child FIFO and the per-PID waiters, the
   last WNOHANG try after SIGCHLD registration, the yield, and the SIGCHLD reaper
   that hands each child out and resumes its coroutine. Native passes the
-  coroutine operations (current, yield, resume, timed out), registers SIGCHLD and
-  the reactor callbacks, and sets errno/last error on a timeout. The waiting
+  coroutine operations (current, yield, resume, timed out); the C++ left is
+  base.cc's three accessors for the current coroutine, resume and is_timedout. The waiting
   coroutine's Rust frame stays on its stack across the yield; no value with a
   destructor is live there, and no RefCell borrow spans a yield or resume.
 
