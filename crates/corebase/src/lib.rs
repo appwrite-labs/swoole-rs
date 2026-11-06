@@ -536,6 +536,17 @@ mod tests {
         assert_eq!(prefixes(b"/"), [] as [std::vec::Vec<u8>; 0]);
     }
 
+    /// Upstream `TEST(base, mkdir_recursive)`: a PATH_MAX-byte random path is refused.
+    #[test]
+    fn base_mkdir_recursive() {
+        let max = libc::PATH_MAX as usize;
+        let (mut dir, mut scratch) = (vec![0u8; max + 1], vec![0u8; max]);
+        unsafe { crate::random::swoole_random_string(dir.as_mut_ptr().cast(), max) };
+        let status =
+            unsafe { swr_v1_corebase_mkdir_complete(dir.as_ptr(), max, scratch.as_mut_ptr(), max) };
+        assert_ne!(status, 0);
+    }
+
     #[test]
     fn wrapped_product_precedes_division() {
         assert_eq!(swoole_common_multiple(65536, 65536), 0);
