@@ -588,7 +588,6 @@ dependencies = [
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-framing",
  "swoole-rs-inflate",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",

@@ -399,15 +399,6 @@ pub const FIELD_UNSAFE_EVENT: u32 = 5;
 pub const FIELD_TASK_IPC_MODE: u32 = 6;
 pub const FIELD_CPU_NUM: u32 = 7;
 
-// Server callbacks for `OP_CALLBACK` and its logs.
-pub const CB_CONNECT: u32 = 0;
-pub const CB_CLOSE: u32 = 1;
-pub const CB_BUFFER_FULL: u32 = 2;
-pub const CB_BUFFER_EMPTY: u32 = 3;
-pub const CB_TASK: u32 = 4;
-pub const CB_RECEIVE: u32 = 5;
-pub const CB_PACKET: u32 = 6;
-
 // Reactor threads. Ops 0-144 keep their meaning where master.cc's reactor-thread ops answer them.
 /// `swReturnCode` of `socket->ssl_accept()`.
 pub const OP_SSL_ACCEPT: u32 = 250;

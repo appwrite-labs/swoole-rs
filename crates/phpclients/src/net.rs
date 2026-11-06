@@ -4,7 +4,7 @@
 //! the `recv` framing buffer). A `SWOOLE_KEEP` connection outlives its object
 //! in the pool. Each method parses as upstream's ZPP block does; operations
 //! that can run PHP code go through `swoole_client_run` inside `zend_try`.
-use crate::native::{self, Cli, ClientCall, ErrorKind, Framing, Op};
+use crate::native::{self, Cli, ClientCall, ErrorKind, Op};
 use libc::{c_char, c_int, c_void};
 use std::{
     ffi::{CStr, CString},
@@ -12,7 +12,9 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_clients::{client as state, pool, swr_v1_clients_port};
+use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_phpstubs::client;
+use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object,
     bailout::{self, Bailout},
@@ -105,14 +107,24 @@ impl Conn {
         }
     }
 
+    /// `cli->socket`, or null.
+    pub(crate) fn socket(&self) -> *mut SocketRecord {
+        // SAFETY: a live client.
+        unsafe { native::client_socket(self.cli) }
+    }
+
+    pub(crate) fn has_socket(&self) -> bool {
+        !self.socket().is_null()
+    }
+
     pub(crate) fn fd(&self) -> c_int {
         // SAFETY: a live client with a socket.
-        unsafe { native::swoole_client_fd(self.cli) }
+        unsafe { (*self.socket()).fd }
     }
 
     fn socket_type(&self) -> i64 {
         // SAFETY: as above.
-        i64::from(unsafe { native::swoole_client_socket_type(self.cli) })
+        i64::from(unsafe { (*self.socket()).socket_type })
     }
 
     pub(crate) fn is_stream(&self) -> bool {
@@ -121,7 +133,7 @@ impl Conn {
 
     pub(crate) fn has_ssl(&self) -> bool {
         // SAFETY: as above.
-        unsafe { native::swoole_client_has_ssl(self.cli) }
+        !unsafe { (*self.socket()).ssl }.is_null()
     }
 }
 
@@ -327,8 +339,7 @@ pub(crate) fn set_last_error(code: c_int) {
 }
 
 pub(crate) fn last_error() -> c_int {
-    // SAFETY: a plain read of Swoole's thread error.
-    unsafe { native::swoole_client_last_error() }
+    swoole_rs_corebase::log::last_error()
 }
 
 /// `errCode = code`.
@@ -415,25 +426,34 @@ pub(crate) fn release(object: *mut zend_object, conn: *mut Conn) -> Result<(), B
 /// warning say it is not connected.
 pub(crate) fn connected<'a>(call: &Call) -> Option<&'a mut Conn> {
     let object = call.this();
-    if let Some(conn) = conn(call) {
-        // SAFETY: a live client.
-        if unsafe { native::swoole_client_has_socket(conn.cli) } {
-            if conn.flag(state::ACTIVE) {
+    if let Some(conn) = conn(call)
+        && conn.has_socket()
+    {
+        if conn.flag(state::ACTIVE) {
+            return Some(conn);
+        }
+        if conn.flag(state::ASYNC_CONNECT) {
+            conn.set_flag(state::ASYNC_CONNECT, false);
+            let mut error: c_int = -1;
+            #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
+            let mut length = size_of::<c_int>() as libc::socklen_t;
+            // SAFETY: the client's socket; writable locals of the sizes given.
+            if unsafe {
+                libc::getsockopt(
+                    conn.fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_ERROR,
+                    (&raw mut error).cast(),
+                    &raw mut length,
+                )
+            } == 0
+                && error == 0
+            {
+                conn.set_flag(state::ACTIVE, true);
                 return Some(conn);
             }
-            if conn.flag(state::ASYNC_CONNECT) {
-                conn.set_flag(state::ASYNC_CONNECT, false);
-                let mut error: c_int = -1;
-                // SAFETY: a live client; `error` is a writable local.
-                if unsafe { native::swoole_client_socket_error(conn.cli, &raw mut error) }
-                    && error == 0
-                {
-                    conn.set_flag(state::ACTIVE, true);
-                    return Some(conn);
-                }
-                let conn = ptr::from_mut(conn);
-                bailed(release(object, conn))?;
-            }
+            let conn = ptr::from_mut(conn);
+            bailed(release(object, conn))?;
         }
     }
     set_last_error(NO_CONNECTION);
@@ -534,8 +554,8 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
                 unsafe { pool::swr_v1_clients_pool_take(handle, key.as_ptr(), key.len()) }.cast();
             // SAFETY: a pooled connection, now this object's.
             let pooled = unsafe { &mut *conn };
-            // SAFETY: a live client with a socket.
-            if unsafe { native::swoole_client_check_liveness(pooled.cli) } {
+            // SAFETY: a live client's socket.
+            if unsafe { swoole_rs_tls::upstream::socket_check_liveness(pooled.socket()) } {
                 pooled.reuse_count += 1;
                 // SAFETY: a live client object.
                 let ce = unsafe { (*object).ce };
@@ -657,7 +677,15 @@ fn set(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: `$this` is live; `settings` is a live array.
-    unsafe { native::swoole_client_merge_setting(call.this(), settings) };
+    unsafe {
+        z::swr_zend_property_merge(
+            CLIENT.entry(),
+            call.this(),
+            c"setting".as_ptr(),
+            7,
+            settings,
+        );
+    };
     call.set_bool(true);
 }
 
@@ -875,9 +903,10 @@ fn recv_failed(call: &Call, error: c_int) {
 
 /// `recv` under `open_eof_check`: one package up to and including the EOF,
 /// keeping what follows for the next call.
-fn recv_eof(call: &Call, conn: &mut Conn, framing: &Framing) {
-    let eof = &framing.eof[..usize::from(framing.eof_length).min(framing.eof.len())];
-    let max = framing.max_length as usize;
+fn recv_eof(call: &Call, conn: &mut Conn, framing: &Protocol) {
+    let eof =
+        &framing.package_eof[..usize::from(framing.package_eof_len).min(framing.package_eof.len())];
+    let max = framing.package_max_length as usize;
     if conn.buffer_size == 0 {
         conn.buffer_size = BUFFER_SIZE_BIG;
         conn.buffer.clear();
@@ -947,14 +976,15 @@ fn position(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 fn recv_length(
     call: &Call,
     conn: &mut Conn,
-    framing: &Framing,
+    framing: &Protocol,
     mut length: i64,
 ) -> Option<(*mut zend_string, i64)> {
     if conn.buffer_size == 0 {
         conn.buffer_size = BUFFER_SIZE_STD;
     }
     conn.buffer.clear();
-    let header = usize::from(framing.length_offset) + usize::from(framing.length_size);
+    let header =
+        usize::from(framing.package_length_offset) + usize::from(framing.package_length_size);
     loop {
         let have = conn.buffer.len();
         let want = header.saturating_sub(have);
@@ -995,15 +1025,12 @@ fn recv_length(
         // SAFETY: a fresh string whose reference the return slot takes.
         unsafe { call.set_string(package) };
         return None;
-    } else if length > i64::from(framing.max_length) {
+    } else if length > i64::from(framing.package_max_length) {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "upstream prints (int) buf_len"
         )]
-        // SAFETY: Swoole's logger.
-        unsafe {
-            native::swoole_client_package_too_big(length as c_int);
-        };
+        native::package_too_big(length as c_int);
         call.set_empty_string();
         return None;
     } else if length == have {
@@ -1059,12 +1086,18 @@ fn recv(call: &Call) {
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
     };
-    let mut framing = Framing::default();
-    // SAFETY: a live client; `framing` is a writable local.
-    unsafe { native::swoole_client_framing(conn.cli, &raw mut framing) };
-    let (package, read) = if framing.eof_check {
+    let (eof_check, length_check, framing) = {
+        // SAFETY: a live client, whose record nothing else touches meanwhile.
+        let record = unsafe { native::client(conn.cli) };
+        (
+            record.open_eof_check,
+            record.open_length_check,
+            record.protocol,
+        )
+    };
+    let (package, read) = if eof_check {
         return recv_eof(call, conn, &framing);
-    } else if framing.length_check {
+    } else if length_check {
         let Some(received) = recv_length(call, conn, &framing, length) else {
             return;
         };
@@ -1104,8 +1137,7 @@ pub(crate) fn is_connected(call: &Call) {
     let Some(conn) = conn(call) else {
         return call.set_bool(false);
     };
-    // SAFETY: a live client.
-    if !unsafe { native::swoole_client_has_socket(conn.cli) } {
+    if !conn.has_socket() {
         return call.set_bool(false);
     }
     call.set_bool(conn.flag(state::ACTIVE));
@@ -1116,18 +1148,17 @@ fn getsockname(call: &Call) {
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
     };
-    let mut port = 0;
-    // SAFETY: a live client; `port` is a writable local.
-    let address = unsafe { native::swoole_client_sockname(conn.cli, &raw mut port) };
-    if address.is_null() {
+    let socket = conn.socket();
+    // SAFETY: a live client's socket.
+    if unsafe { swoole_rs_reactor::swr_v1_socket_get_name(socket) } < 0 {
         let error = errno();
         warn_sys("getsockname() failed", error);
         set_err_code(call.this(), error);
         return call.set_bool(false);
     }
-    // SAFETY: the socket's NUL-terminated address.
-    let address = unsafe { CStr::from_ptr(address) };
-    address_array(call, port, address);
+    // SAFETY: as above, its address just read.
+    let (host, port) = native::address(unsafe { &(*socket).info });
+    address_array(call, port, host);
 }
 
 /// `['port' => $port, 'host' => $host]`.
@@ -1143,20 +1174,17 @@ fn getpeername(call: &Call) {
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
     };
-    let mut address = [0 as c_char; 128];
-    let mut port = 0;
-    // SAFETY: a live client; writable locals.
-    if !unsafe {
-        native::swoole_client_peername(conn.cli, address.as_mut_ptr(), address.len(), &raw mut port)
-    } {
+    // SAFETY: plain old data, which the call below writes.
+    let mut address: SocketAddress = unsafe { std::mem::zeroed() };
+    // SAFETY: a live client; a writable local.
+    if unsafe { state::swr_v1_clients_get_peer_name(conn.state(), &raw mut address) } < 0 {
         let error = errno();
         warn_sys("getpeername() failed", error);
         set_err_code(call.this(), error);
         return call.set_bool(false);
     }
-    // SAFETY: the shim wrote a NUL-terminated address.
-    let address = unsafe { CStr::from_ptr(address.as_ptr()) };
-    address_array(call, port, address);
+    let (host, port) = native::address(&address);
+    address_array(call, port, host);
 }
 
 /// `getSocket()`: the client's socket as an ext/sockets `Socket`.
@@ -1198,10 +1226,7 @@ fn close(call: &Call) {
     let object = call.this();
     let conn_ptr = this(call).conn;
     // SAFETY: the object's connection, if any.
-    let Some(conn) = (unsafe { conn_ptr.as_mut() }).filter(|conn| {
-        // SAFETY: a live client.
-        unsafe { native::swoole_client_has_socket(conn.cli) }
-    }) else {
+    let Some(conn) = (unsafe { conn_ptr.as_mut() }).filter(|conn| conn.has_socket()) else {
         warn(ErrorKind::Fatal, "client is not connected to the server");
         return call.set_bool(false);
     };
@@ -1209,11 +1234,10 @@ fn close(call: &Call) {
         warn(ErrorKind::Error, "client socket is closed");
         return call.set_bool(false);
     }
-    // SAFETY: a live client.
     if force
         || !conn.keep
-        // SAFETY: a live client.
-        || unsafe { native::swoole_client_catch_error(conn.cli, last_error()) } == CLOSE
+        // SAFETY: a live client's socket.
+        || unsafe { (*conn.socket()).catch_error(last_error()) } == CLOSE
     {
         let Some(result) = bailed(conn.call(Op::Close).run()) else {
             return call.set_bool(false);
@@ -1287,7 +1311,7 @@ fn get_peer_cert(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: a live client with TLS.
-    let cert = unsafe { native::swoole_client_peer_cert(conn.cli) };
+    let cert = unsafe { native::peer_cert(conn.socket()) };
     if cert.is_null() {
         return call.set_bool(false);
     }

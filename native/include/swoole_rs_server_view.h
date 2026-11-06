@@ -2,8 +2,71 @@
 #define SWOOLE_RS_SERVER_VIEW_H
 #include "swoole_rs_server_state.h"
 #include <cstdlib>
+#include <type_traits>
+#include <utility>
 
 namespace swoole { namespace detail {
+// A view of one Rust-owned callback slot. Assigning a callable boxes it, and the slot's
+// `drop` frees the box: building and destroying a C++ lambda is the one part Rust can't
+// do. Rust may store its own `invoke` with a null `ctx`.
+template <class Sig> class Callback;
+template <class R, class... A> class Callback<R(A...)> : swr_v1_server_callback {
+    template <class T> static R call(void *boxed, A... args) {
+        return static_cast<R>((*static_cast<T *>(boxed))(std::forward<A>(args)...));
+    }
+    template <class T> static bool engaged(const T &f, std::true_type) {
+        return static_cast<bool>(f);
+    }
+    template <class T> static bool engaged(const T &, std::false_type) {
+        return true;
+    }
+    template <class T> static void destroy(void *boxed) noexcept {
+        delete static_cast<T *>(boxed);
+    }
+    void clear() {
+        auto *old_drop = drop;
+        auto *old_ctx = ctx;
+        invoke = nullptr;
+        ctx = nullptr;
+        drop = nullptr;
+        if (old_drop) old_drop(old_ctx);
+    }
+
+  public:
+    Callback() = delete;
+    Callback(const Callback &) = delete;
+    Callback &operator=(const Callback &) = delete;
+    Callback &operator=(std::nullptr_t) {
+        clear();
+        return *this;
+    }
+    // A null function pointer or an empty std::function empties the slot, as it
+    // empties a std::function.
+    template <class F> Callback &operator=(F &&f) {
+        using T = typename std::decay<F>::type;
+        T *boxed = engaged<T>(f, std::is_constructible<bool, const T &>{}) ? new T(std::forward<F>(f)) : nullptr;
+        clear();
+        if (boxed) {
+            ctx = boxed;
+            drop = &destroy<T>;
+            invoke = reinterpret_cast<void (*)(void)>(&call<T>);
+        }
+        return *this;
+    }
+    explicit operator bool() const {
+        return invoke != nullptr;
+    }
+    R operator()(A... args) const {
+        return reinterpret_cast<R (*)(void *, A...)>(invoke)(ctx, std::forward<A>(args)...);
+    }
+    friend bool operator==(const Callback &c, std::nullptr_t) {
+        return !c;
+    }
+    friend bool operator!=(const Callback &c, std::nullptr_t) {
+        return bool(c);
+    }
+};
+
 // Borrowed original API views over the configuration allocation owned by Rust.
 // The base owner outlives every derived native callback/container during teardown.
 class ServerFields {
@@ -11,13 +74,24 @@ class ServerFields {
     swr_v1_server_state *state_;
     swr_v1_server_config *config_;
     swr_v1_server_tables *tables_;
+    swr_v1_server_callback *callbacks_;
+    // `Callback<Sig> &onX = callback(SWR_SERVER_CB_X);` binds a member to its slot.
+    struct Slot {
+        swr_v1_server_callback *slot;
+        template <class Sig> operator Callback<Sig> &() const {
+            return *reinterpret_cast<Callback<Sig> *>(slot);
+        }
+    };
+    Slot callback(int index) const {
+        return {callbacks_ + index};
+    }
   public:
 #define SWR_SERVER_CONFIG_REFERENCE(type, name) decltype(swr_v1_server_config::name) &name;
     SWR_SERVER_CONFIG_FIELDS(SWR_SERVER_CONFIG_REFERENCE)
 #undef SWR_SERVER_CONFIG_REFERENCE
     ServerFields(uint32_t cpu_num, uint32_t max_sockets, long timezone, const void *allocator)
         : state_(swr_v1_server_state_new()), config_(swr_v1_server_config_get(state_)),
-          tables_(swr_v1_server_tables_get(state_))
+          tables_(swr_v1_server_tables_get(state_)), callbacks_(swr_v1_server_callbacks_get(state_))
 #define SWR_SERVER_CONFIG_BIND(type, name) , name(config_->name)
           SWR_SERVER_CONFIG_FIELDS(SWR_SERVER_CONFIG_BIND)
 #undef SWR_SERVER_CONFIG_BIND
@@ -34,6 +108,8 @@ class ServerFields {
           if (!swr_v1_server_record_layout(5,sizeof(ServerCounters),alignof(ServerCounters),offsets,sizeof(offsets)/sizeof(size_t))) std::abort(); }
         { const size_t offsets[] = {offsetof(PortCounters,connection_num),offsetof(PortCounters,connection_nums),offsetof(PortCounters,abort_count),offsetof(PortCounters,accept_count),offsetof(PortCounters,close_count),offsetof(PortCounters,dispatch_count),offsetof(PortCounters,request_count),offsetof(PortCounters,response_count),offsetof(PortCounters,total_recv_bytes),offsetof(PortCounters,total_send_bytes)};
           if (!swr_v1_server_record_layout(6,sizeof(PortCounters),alignof(PortCounters),offsets,sizeof(offsets)/sizeof(size_t))) std::abort(); }
+        { const size_t offsets[] = {offsetof(swr_v1_server_callback,invoke),offsetof(swr_v1_server_callback,ctx),offsetof(swr_v1_server_callback,drop)};
+          if (!swr_v1_server_record_layout(7,sizeof(swr_v1_server_callback)*SWR_SERVER_CB_COUNT,alignof(swr_v1_server_callback),offsets,sizeof(offsets)/sizeof(size_t))) std::abort(); }
         swr_v1_server_config_init(state_, cpu_num, max_sockets, timezone, allocator);
     }
     swr_v1_server_state *state_handle() const { return state_; }

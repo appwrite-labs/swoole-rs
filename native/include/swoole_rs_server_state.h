@@ -39,6 +39,23 @@ void swr_v1_server_shared_init(void *storage);
 void swr_v1_server_port_shared_init(void *storage);
 size_t swr_v1_server_port_connections(const void *storage, uint32_t workers);
 bool swr_v1_server_record_layout(uint32_t kind, size_t size, size_t alignment, const size_t *offsets, size_t count);
+/* One of the server's callbacks (crates/server/src/callbacks.rs). Rust owns the slot and
+   calls `drop(ctx)` when the slot is cleared or the state freed. */
+typedef struct swr_v1_server_callback {
+    void (*invoke)(void);
+    void *ctx;
+    void (*drop)(void *);
+} swr_v1_server_callback;
+/* The slots, in callbacks.rs's order. */
+enum {
+    SWR_SERVER_CB_CONNECT, SWR_SERVER_CB_CLOSE, SWR_SERVER_CB_BUFFER_FULL, SWR_SERVER_CB_BUFFER_EMPTY,
+    SWR_SERVER_CB_TASK, SWR_SERVER_CB_RECEIVE, SWR_SERVER_CB_PACKET, SWR_SERVER_CB_START,
+    SWR_SERVER_CB_BEFORE_SHUTDOWN, SWR_SERVER_CB_SHUTDOWN, SWR_SERVER_CB_MANAGER_START, SWR_SERVER_CB_MANAGER_STOP,
+    SWR_SERVER_CB_WORKER_ERROR, SWR_SERVER_CB_BEFORE_RELOAD, SWR_SERVER_CB_AFTER_RELOAD, SWR_SERVER_CB_PIPE_MESSAGE,
+    SWR_SERVER_CB_WORKER_START, SWR_SERVER_CB_WORKER_STOP, SWR_SERVER_CB_WORKER_EXIT, SWR_SERVER_CB_USER_WORKER_START,
+    SWR_SERVER_CB_FINISH, SWR_SERVER_CB_DISPATCH_FUNC, SWR_SERVER_CB_COUNT,
+};
+swr_v1_server_callback *swr_v1_server_callbacks_get(swr_v1_server_state *state);
 #define SWR_SERVER_CONFIG_FIELDS(F) \
     F(uint16_t, reactor_num) \
     F(uint32_t, worker_num) \
