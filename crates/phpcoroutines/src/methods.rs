@@ -121,8 +121,7 @@ fn kernel_coroutine(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: C++ creates the coroutine.
-    unsafe { (host::ops().kernel_coroutine)(count, sleep) };
+    host::kernel_coroutine(count, sleep);
 }
 
 /// `Co::exists(int $cid)`.
@@ -131,8 +130,7 @@ fn exists(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: C++ looks the coroutine up.
-    call.set_bool(!unsafe { (host::ops().by_cid)(cid) }.is_null());
+    call.set_bool(!host::by_cid(cid).is_null());
 }
 
 per_thread! {
@@ -166,10 +164,8 @@ fn yield_(call: &Call) {
     let co = host::current_safe();
     let cid = host::cid(co);
     YIELDED.with(|y| y.borrow_mut().insert(cid, co));
-    // SAFETY: the running coroutine.
-    unsafe { (host::ops().yield_cancelable)(co, cancel_yield) };
-    // SAFETY: as above.
-    if unsafe { (host::ops().is_canceled)(co) } != 0 {
+    host::yield_cancelable(co, cancel_yield);
+    if host::is_canceled(co) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         call.set_bool(false);
         return;
@@ -220,8 +216,7 @@ impl Join {
             return;
         }
         let resume = Box::new((this.co, Rc::clone(&this.canceled)));
-        // SAFETY: C++ runs `join_resume` once with the box.
-        unsafe { (host::ops().defer)(join_resume, Box::into_raw(resume).cast()) };
+        host::defer(join_resume, Box::into_raw(resume).cast());
     }
 
     /// Stop waiting for the contexts registered so far.
@@ -302,9 +297,9 @@ fn join(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: the running coroutine; this frame lives on its stack, which no
-    // bailout unwinds while it waits.
-    if unsafe { (host::ops().yield_ex)(co, timeout) } == 0 {
+    // This frame lives on the running coroutine's stack, which no bailout
+    // unwinds while it waits.
+    if !host::yield_ex(co, timeout) {
         join.forget();
         join.canceled.set(true);
         call.set_bool(false);
@@ -317,14 +312,12 @@ fn join(call: &Call) {
 /// when `throw`.
 pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entry) -> bool {
     if !throw {
-        // SAFETY: C++ looks the coroutine up.
-        let co = unsafe { (host::ops().by_cid)(cid) };
+        let co = host::by_cid(cid);
         if co.is_null() {
             host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
             return false;
         }
-        // SAFETY: a live coroutine.
-        return unsafe { (host::ops().cancel)(co) } != 0;
+        return host::cancel(co);
     }
     let task = context::by_cid(cid);
     // SAFETY: null or a live context.
@@ -383,8 +376,7 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         unsafe { swr_zend_coroutine_redirect(context::vm(task)) };
     }
     // Even an irrevocable wait ends: the exception terminates the coroutine.
-    // SAFETY: a live coroutine.
-    unsafe { (host::ops().cancel)(co) };
+    host::cancel(co);
     true
 }
 
@@ -413,8 +405,7 @@ fn set_time_limit(call: &Call) {
     }
     let cid = host::cid(co);
     let ctx = context::current_task();
-    // SAFETY: C++ adds a timer calling `time_limit(cid)`.
-    let timer = unsafe { (host::ops().timer_add)(timeout, cid, time_limit) };
+    let timer = host::timer_add(timeout, cid, time_limit);
     if timer.is_null() {
         call.set_bool(false);
         return;
@@ -422,8 +413,7 @@ fn set_time_limit(call: &Call) {
     // SAFETY: the running coroutine's context.
     let old = mem::replace(&mut unsafe { context::at(ctx) }.timer_limit, timer);
     if !old.is_null() {
-        // SAFETY: the timer this context owned.
-        unsafe { (host::ops().timer_del)(old) };
+        host::timer_del(old);
     }
     call.set_bool(true);
 }
@@ -440,15 +430,13 @@ unsafe extern "C" fn time_limit(cid: c_long) {
 /// `Co::isCanceled()`.
 fn is_canceled(call: &Call) {
     let co = host::current_safe();
-    // SAFETY: the running coroutine.
-    call.set_bool(unsafe { (host::ops().is_canceled)(co) } != 0);
+    call.set_bool(host::is_canceled(co));
 }
 
 /// `Co::stats()`.
 fn stats(call: &Call) {
     let mut stats = host::Stats::default();
-    // SAFETY: C++ fills the counters.
-    unsafe { (host::ops().stats)(&raw mut stats) };
+    host::stats(&mut stats);
     call.set_array();
     let values: [(&std::ffi::CStr, i64); 9] = [
         (c"event_num", stats.event_num),
@@ -510,8 +498,7 @@ fn get_context(call: &Call) {
     let ctx = if cid == 0 {
         context::current_task()
     } else {
-        // SAFETY: C++ looks the coroutine up.
-        unsafe { (host::ops().task_by_cid)(cid) }.cast::<Context>()
+        host::task_by_cid(cid).cast::<Context>()
     };
     if ctx.is_null() {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
@@ -550,8 +537,7 @@ fn get_elapsed(call: &Call) {
         return;
     };
     let elapsed = if runtime::activated() {
-        // SAFETY: C++ reads the coroutine's clock.
-        unsafe { (host::ops().elapsed)(cid) }
+        host::elapsed(cid)
     } else {
         -1
     };
@@ -688,8 +674,7 @@ fn print_back_trace(call: &Call) {
 /// `Co::list()`/`Co::listCoroutines()`: a `Coroutine\Iterator` of the ids.
 fn list(call: &Call) {
     let mut cids: Vec<c_long> = vec![0; host::count()];
-    // SAFETY: C++ copies at most `len` ids.
-    let count = unsafe { (host::ops().list)(cids.as_mut_ptr(), cids.len()) };
+    let count = host::list(&mut cids);
     // SAFETY: all-zero is IS_UNDEF, then an array.
     let mut ids: zval = unsafe { mem::zeroed() };
     // SAFETY: a writable zval.
@@ -728,8 +713,7 @@ fn list(call: &Call) {
 /// `Co::getExecuteTime()` (`SW_CORO_TIME` builds).
 fn get_execute_time(call: &Call) {
     let time = if runtime::activated() {
-        // SAFETY: C++ reads the running coroutine's clock.
-        unsafe { (host::ops().execute_time)(0) }
+        host::execute_time(0)
     } else {
         -1
     };

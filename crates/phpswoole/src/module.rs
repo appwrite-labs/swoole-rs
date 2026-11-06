@@ -31,17 +31,17 @@ use swoole_rs_zend::{
 #[repr(C)]
 pub struct Globals {
     pub(crate) display_errors: bool,
-    cli: bool,
-    pub(crate) use_shortname: bool,
-    enable_preemptive_scheduler: bool,
-    enable_library: bool,
-    enable_fiber_mock: bool,
+    pub cli: bool,
+    pub use_shortname: bool,
+    pub enable_preemptive_scheduler: bool,
+    pub enable_library: bool,
+    pub enable_fiber_mock: bool,
     blocking_detection: bool,
     blocking_threshold: i64,
     profile: bool,
     leak_detection: bool,
     socket_buffer_size: i64,
-    pub(crate) req_status: c_int,
+    pub req_status: c_int,
     in_autoload: *mut HashTable,
 }
 
@@ -61,7 +61,7 @@ pub(crate) const INI_OFFSETS: [usize; 10] = [
 /// `php_swoole_req_status`.
 const RINIT_BEGIN: c_int = 0;
 pub(crate) const RINIT_END: c_int = 1;
-pub(crate) const CALL_USER_SHUTDOWNFUNC_BEGIN: c_int = 2;
+pub const CALL_USER_SHUTDOWNFUNC_BEGIN: c_int = 2;
 const RSHUTDOWN_BEGIN: c_int = 3;
 const RSHUTDOWN_END: c_int = 4;
 /// `SW_SOCKET_BUFFER_SIZE` and `SW_ERROR_PHP_FATAL_ERROR`.
@@ -72,7 +72,8 @@ const SUCCESS: c_int = 0;
 
 /// This thread's module globals, which C++ reads and writes too: access them
 /// through the pointer, one field at a time.
-pub(crate) fn globals() -> *mut Globals {
+#[must_use]
+pub fn globals() -> *mut Globals {
     // SAFETY: C++'s getter.
     unsafe { (ops().globals)() }
 }

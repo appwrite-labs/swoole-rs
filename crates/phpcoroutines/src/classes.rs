@@ -105,27 +105,28 @@ method_table! {
     ];
 }
 
+unsafe extern "C" {
+    static spl_ce_ArrayIterator: *mut zend_class_entry;
+    static spl_ce_ArrayObject: *mut zend_class_entry;
+}
+
 /// `php_swoole_coroutine_minit`.
 /// # Safety
-/// Called once, at MINIT, with registered parent classes and a static operations table.
+/// Called once, at MINIT, after `Swoole\Exception` and SPL's classes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_minit(
-    module_number: i32,
-    exception: *mut zend_class_entry,
-    array_iterator: *mut zend_class_entry,
-    array_object: *mut zend_class_entry,
-    ops: *const host::Ops,
-) {
-    // SAFETY: the native MINIT entry lends these original startup arguments.
-    let result = unsafe {
-        init_phpcoroutines_minit(module_number, exception, array_iterator, array_object, ops)
-    };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-        }
+pub unsafe extern "C" fn php_swoole_coroutine_minit(module_number: i32) {
+    // SAFETY: crates/phpswoole's MINIT wrote it first.
+    let exception = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
+    // SAFETY: SPL registers its classes before any extension's MINIT.
+    let array_iterator = unsafe { spl_ce_ArrayIterator };
+    // SAFETY: as above.
+    let array_object = unsafe { spl_ce_ArrayObject };
+    // SAFETY: MINIT, once, with the registered parent classes.
+    let result =
+        unsafe { init_phpcoroutines_minit(module_number, exception, array_iterator, array_object) };
+    if let Err(error) = result {
+        error.defer();
+        swoole_rs_zend::bailout::finish();
     }
 }
 
@@ -134,12 +135,7 @@ unsafe fn init_phpcoroutines_minit(
     exception: *mut zend_class_entry,
     array_iterator: *mut zend_class_entry,
     array_object: *mut zend_class_entry,
-    ops: *const host::Ops,
 ) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    // SAFETY: per the caller, a static table.
-    if let Some(ops) = unsafe { ops.as_ref() } {
-        host::install(ops);
-    }
     let shortname = host::flag(host::SHORTNAME);
     let alias = |class: &Class, name: &CStr| -> Result<(), swoole_rs_zend::bailout::Bailout> {
         if shortname {
@@ -251,15 +247,17 @@ unsafe fn init_phpcoroutines_minit(
 
 /// `php_swoole_coroutine_rinit`.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_rinit() {
+pub extern "C" fn php_swoole_coroutine_rinit() {
     context::init_main();
 }
 
-/// `php_swoole_coroutine_rshutdown`: 1 if deactivation bailed out.
+/// `php_swoole_coroutine_rshutdown`: a bailout in deactivation is raised.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_rshutdown() -> u8 {
+pub extern "C" fn php_swoole_coroutine_rshutdown() {
     AUTOLOADING.with(|a| a.borrow_mut().clear());
-    u8::from(runtime::shutdown())
+    if runtime::shutdown() {
+        runtime::raise();
+    }
 }
 
 /// `exit` in a coroutine or a started server: `SWOOLE_EXIT_*` flags, or 0.
@@ -342,19 +340,12 @@ fn exit(call: &Call) {
         }
         return;
     }
-    // SAFETY: the running frame and its return slot.
-    if unsafe { (host::ops().exit_original)(call.frame(), call.return_value()) } != 0 {
+    if host::exit_original(call.frame(), call.return_value()) {
         return;
     }
-    let (text, length) = if message.is_null() {
-        (ptr::null(), 0)
-    } else {
-        // SAFETY: as above.
-        let bytes = unsafe { swoole_rs_zend::string::bytes(message) };
-        (bytes.as_ptr().cast(), bytes.len())
-    };
-    // SAFETY: C++ writes the message and exits; nothing here needs a drop.
-    unsafe { (host::ops().exit_fallback)(text, length, code) };
+    // SAFETY: as above.
+    let text = (!message.is_null()).then(|| unsafe { swoole_rs_zend::string::bytes(message) });
+    host::exit_fallback(text, code);
 }
 
 /// `SW_RETURN_PROPERTY(name)` of `$this`.
@@ -476,8 +467,7 @@ unsafe extern "C" fn autoload(
         Some(false) => return ptr::null_mut(),
         Some(true) => {
             drop(key);
-            // SAFETY: the running coroutine; the owner resumes it.
-            unsafe { (host::ops().yield_)(current) };
+            host::yield_(current);
             return waiter.ce;
         }
         None => {}

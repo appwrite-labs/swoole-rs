@@ -5,6 +5,7 @@
 #define SWOOLE_RS_ZEND_SHIM_COROUTINE_H
 
 #include "shim.h"
+#include "callable.h"
 #include "zend_fibers.h"
 #include "zend_observer.h"
 #include "zend_builtin_functions.h"
@@ -62,6 +63,13 @@ void swr_zend_coroutine_output_reset(void);
 void swr_zend_coroutine_vm_destroy(void);
 /* init_main_context: EG(main_fiber_context), then save_context into `vm`. */
 zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm);
+/* A coroutine's body (main_func) inside zend_first_try: call the function
+ * `enter` returns and report an uncaught exception on this coroutine's stack
+ * (zend_exception_error, E_ERROR), then run `defers`, its defer tasks, which
+ * bail out on an exception; a bailout's exception is reported too. 1 if an
+ * exception or bailout ended it. */
+int swr_zend_coroutine_run(swr_zend_callable *(*enter)(void *context), void (*defers)(void *context),
+                           void *context);
 /* The VM stack bytes in use from `stack` (the running one if `running`) down
  * its chain (get_stack_usage). */
 size_t swr_zend_coroutine_stack_usage(zend_vm_stack stack, bool running);

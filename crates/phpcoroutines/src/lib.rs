@@ -5,10 +5,11 @@
 //! preemptive scheduler, `Swoole\Coroutine`'s methods, `go()`/`defer()`, the
 //! exit and `@` handlers and the coroutine-aware autoloader.
 //!
-//! The coroutine core stays C++ and lends its operations as a table. The
-//! coroutine's entry stays a C++ function that runs the user callable and its
-//! defer tasks inside `zend_first_try`, so a bailout never crosses a Rust frame;
-//! Rust frames that may switch coroutines own nothing that needs a drop.
+//! Rust reads the coroutine core's state directly; `host.rs` names what it
+//! asks of the rest of Swoole, including native/phpcoroutines/coroutine.cc for
+//! the C++ objects. The coroutine's entry runs the user callable and its defer
+//! tasks inside the zend-sys shim's `zend_first_try`; Rust frames that may
+//! switch coroutines or bail out own nothing that needs a drop.
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),

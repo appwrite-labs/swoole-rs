@@ -207,8 +207,7 @@ fn start(call: &Call) {
         refuse(call, "started", "start");
         return;
     }
-    // SAFETY: C++ initialises the reactor.
-    if unsafe { (host::ops().reactor_init)() } < 0 {
+    if host::reactor_init() < 0 {
         call.set_bool(false);
         return;
     }
@@ -239,8 +238,7 @@ fn start(call: &Call) {
             return;
         }
     }
-    // SAFETY: C++ runs the event loop.
-    unsafe { (host::ops().event_wait)() };
+    host::event_wait();
     // SAFETY: the queue is empty and owned by this object.
     drop(unsafe { Box::from_raw(list) });
     let scheduler = this(call);
@@ -296,8 +294,7 @@ pub unsafe extern "C" fn php_swoole_set_coroutine_option(options: *mut zend_arra
         runtime::swr_v1_phpcoroutines_set_preemptive(u8::from(truthy(value)));
     }
     if let Some(value) = get(options, c"c_stack_size").or_else(|| get(options, c"stack_size")) {
-        // SAFETY: C++ parses the size and sets the coroutine stack size.
-        unsafe { (host::ops().set_stack_size)(value) };
+        host::set_stack_size(value);
     }
     if let Some(value) = get(options, c"name_resolver") {
         // SAFETY: a live zval.
@@ -305,8 +302,7 @@ pub unsafe extern "C" fn php_swoole_set_coroutine_option(options: *mut zend_arra
             // SAFETY: an array argument.
             let table = unsafe { value::table(value) };
             let add = |resolver: *mut zval| {
-                // SAFETY: C++ adds the resolver.
-                unsafe { (host::ops().add_name_resolver)(resolver) };
+                host::add_name_resolver(resolver);
                 true
             };
             // SAFETY: the array is live and the closure does not modify it.
@@ -370,17 +366,14 @@ fn set(call: &Call) {
     };
     // SAFETY: an array argument.
     let options = unsafe { value::table(options) };
-    // SAFETY: C++'s global options.
-    unsafe { (host::ops().set_global_option)(options) };
+    host::set_global_option(options);
     // SAFETY: a live array.
     unsafe { php_swoole_set_coroutine_option(options) };
     if let Some(value) = get(options, c"dns_cache_expire") {
-        // SAFETY: C++'s DNS cache.
-        unsafe { (host::ops().set_dns_cache_expire)(long(value)) };
+        host::set_dns_cache_expire(long(value));
     }
     if let Some(value) = get(options, c"dns_cache_capacity") {
-        // SAFETY: as above.
-        unsafe { (host::ops().set_dns_cache_capacity)(long(value)) };
+        host::set_dns_cache_capacity(long(value));
     }
     // SAFETY: a live array and key.
     let condition = unsafe { zend_hash_str_find(options, c"exit_condition".as_ptr(), 14) };
@@ -396,18 +389,10 @@ fn set_exit_condition(condition: *mut zval) -> Result<(), Bailout> {
     release_exit_condition()?;
     // SAFETY: a live zval; no argument name, so no exception class is read;
     // C++'s warning reporter.
-    let handle = unsafe {
-        kept::factory(
-            condition,
-            ptr::null(),
-            true,
-            ptr::null_mut(),
-            host::ops().warning,
-        )
-    }?;
+    let handle =
+        unsafe { kept::factory(condition, ptr::null(), true, ptr::null_mut(), host::warning) }?;
     EXIT_CONDITION.with(|c| c.set(handle));
-    // SAFETY: C++ sets or clears the reactor's user exit condition.
-    unsafe { (host::ops().set_exit_condition)(u8::from(!handle.is_null())) };
+    host::set_exit_condition(!handle.is_null());
     Ok(())
 }
 
@@ -444,14 +429,7 @@ fn can_exit() -> Result<bool, Bailout> {
     // SAFETY: the kept callable, no arguments and a result slot, which (as
     // upstream's) is not released.
     if !unsafe { kept::invoke(handle, 0, ptr::null_mut(), &raw mut retval) }? {
-        // SAFETY: C++'s reporter, inside a trap.
-        unsafe {
-            bailout::report_level(
-                host::ops().fatal_error,
-                E_ERROR,
-                c"Coroutine can_exit callback handler error",
-            )
-        }?;
+        host::try_fatal_error(E_ERROR, c"Coroutine can_exit callback handler error")?;
     }
     // SAFETY: the executor's pending exception, if any.
     let exception = unsafe { z::swr_zend_facade_exception() };

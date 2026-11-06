@@ -169,6 +169,31 @@ zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm) {
     return EG(main_fiber_context);
 }
 
+static int coroutine_catch(void) {
+    if (UNEXPECTED(EG(exception))) {
+        zend_exception_error(EG(exception), E_ERROR);
+        return 1;
+    }
+    return 0;
+}
+
+int swr_zend_coroutine_run(swr_zend_callable *(*enter)(void *context), void (*defers)(void *context),
+                           void *context) {
+    volatile int caught = 0;
+    zend_first_try {
+        swr_zend_callable *call = enter(context);
+        zend_call_function(&call->fci, &call->fcc);
+        caught = coroutine_catch();
+        defers(context);
+    }
+    zend_catch {
+        coroutine_catch();
+        caught = 1;
+    }
+    zend_end_try();
+    return caught;
+}
+
 size_t swr_zend_coroutine_stack_usage(zend_vm_stack stack, bool running) {
     if (running) {
         stack = EG(vm_stack);

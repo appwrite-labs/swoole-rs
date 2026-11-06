@@ -7,7 +7,7 @@
 //!
 //! The heap hooks are C (their signatures follow the PHP build), and call back
 //! here with the hooks removed while Rust may allocate.
-use crate::{context, runtime};
+use crate::{context, host::now_us, runtime};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
@@ -133,21 +133,6 @@ const fn undef() -> zval {
     unsafe { mem::zeroed() }
 }
 
-/// `swoole::time<std::chrono::microseconds>(true)`: the steady clock.
-fn now_us() -> c_long {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    #[cfg(target_vendor = "apple")]
-    let clock = libc::CLOCK_UPTIME_RAW;
-    #[cfg(not(target_vendor = "apple"))]
-    let clock = libc::CLOCK_MONOTONIC;
-    // SAFETY: a writable timespec.
-    unsafe { libc::clock_gettime(clock, &raw mut now) };
-    now.tv_sec * 1_000_000 + now.tv_nsec / 1000
-}
-
 /// `swoole_thread_get_native_id()`.
 fn native_thread_id() -> c_long {
     #[cfg(target_vendor = "apple")]
@@ -166,8 +151,7 @@ fn native_thread_id() -> c_long {
 
 /// `swoole_coroutine_get_id()`: the running coroutine, -1 outside one.
 fn coroutine_id() -> c_long {
-    // SAFETY: C++ reads the running coroutine.
-    unsafe { (crate::host::ops().current_cid)() }
+    crate::host::current_cid()
 }
 
 /// `tracer_get_file_and_line`: `file:line` of the running user code, or
