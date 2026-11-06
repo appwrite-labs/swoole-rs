@@ -169,6 +169,9 @@ impl<C: NativeCall> Host for Native<C> {
             if let Some(value) = unsafe { shared::native_fact(self.state, op, arg) } {
                 return Ok(value);
             }
+        }
+        // Only the guarded runner lends master.cc's context; the hot runners skip the call.
+        if !self.master.is_null() {
             let (context, call) = (self.context, &self.call);
             let port_count = || {
                 // SAFETY: the guarded runner's live context; `PORT_COUNT` is a native leaf fact.
