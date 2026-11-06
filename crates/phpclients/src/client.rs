@@ -1,8 +1,8 @@
 //! `Swoole\Coroutine\Client`: registration, the object and every method. The
-//! client owns a `Coroutine\Socket` (`zsocket`), created on connect by C++
-//! (`swoole_client_coro_create_socket`, which also hooks the socket's close);
-//! each method parses as upstream's ZPP block does and makes one call into
-//! the C++ socket (`crate::native`).
+//! client owns a `Coroutine\Socket` (`zsocket`), created on connect
+//! (`create_socket`, which also hooks the socket's close); each method parses
+//! as upstream's ZPP block does and makes one call on the coroutine socket
+//! (`crate::native`).
 use crate::{
     native::{self, Socket, Transfer},
     socket::{socket_of, strerror, warn},
@@ -14,6 +14,7 @@ use std::{
     ptr,
 };
 use swoole_rs_error::swr_v1_error_strerror;
+use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_zend::{
     Call, Class, Object, declare_bool, declare_long, declare_string, set_object, string,
@@ -34,6 +35,8 @@ const SOCK_TCP: i64 = 1;
 const SOCK_TCP6: i64 = 3;
 const SOCK_UNIX_STREAM: i64 = 5;
 const SOCK_UNIX_DGRAM: i64 = 6;
+/// `SW_SOCK_SSL`.
+const SOCK_SSL: i64 = 1 << 9;
 /// `SW_PHP_CLIENT_BUFFER_SIZE`.
 const BUFFER_SIZE: i64 = 65535;
 /// `SW_ERROR_CLIENT_NO_CONNECTION`.
@@ -188,9 +191,13 @@ extern "C" fn system_error(code: i32) -> *const c_char {
 
 /// `php_swoole_socket_set_error_properties(ZEND_THIS, code, message)`.
 fn report(call: &Call, code: c_int, message: &CStr) {
+    report_object(call.this(), code, message);
+}
+
+/// `php_swoole_socket_set_error_properties(zobject, code, message)`.
+fn report_object(object: *mut zend_object, code: c_int, message: &CStr) {
     // SAFETY: a plain store into Swoole's thread error.
     unsafe { native::swoole_rs_set_last_error(code) };
-    let object = call.this();
     // SAFETY: `$this` is live.
     let ce = unsafe { (*object).ce };
     // SAFETY: `$this` is a live instance of `ce`.
@@ -199,18 +206,22 @@ fn report(call: &Call, code: c_int, message: &CStr) {
     unsafe { value::update_string(ce, object, c"errMsg", message) };
 }
 
-/// `php_swoole_socket_set_error_properties(ZEND_THIS, code)`: `swoole_strerror(code)`.
-fn report_code(call: &Call, code: c_int) {
+/// `swoole_strerror(code)`.
+fn error_message<'a>(code: c_int) -> &'a CStr {
     // SAFETY: known and system messages are static; the unknown-message buffer
     // is only used on the PHP thread, as upstream's is.
     let message = unsafe { swr_v1_error_strerror(code, Some(system_error)) };
-    let message = if message.is_null() {
+    if message.is_null() {
         c""
     } else {
         // SAFETY: a NUL-terminated message.
         unsafe { CStr::from_ptr(message) }
-    };
-    report(call, code, message);
+    }
+}
+
+/// `php_swoole_socket_set_error_properties(ZEND_THIS, code)`: `swoole_strerror(code)`.
+fn report_code(call: &Call, code: c_int) {
+    report(call, code, error_message(code));
 }
 
 /// `php_swoole_socket_set_error_properties(ZEND_THIS, socket)`.
@@ -225,6 +236,112 @@ fn report_socket(call: &Call, socket: Socket) {
         unsafe { CStr::from_ptr(message) }
     };
     report(call, code, message);
+}
+
+/// The client's `setting` property.
+/// # Safety
+/// `object` is a live client.
+unsafe fn setting(object: *mut zend_object) -> *mut zval {
+    // SAFETY: per the caller; the class declares `setting`.
+    unsafe { swoole_rs_phptable::property(object, c"setting") }
+}
+
+/// Merge `settings` into the client's `setting` property.
+/// # Safety
+/// `object` is a live client and `settings` a live array.
+unsafe fn merge_setting(object: *mut zend_object, settings: *const zval) {
+    // SAFETY: per the caller.
+    unsafe {
+        z::swr_zend_property_merge(
+            CLIENT.entry(),
+            object,
+            c"setting".as_ptr(),
+            7,
+            settings.cast_mut(),
+        );
+    };
+}
+
+/// `zval_get_long` of the client's `type` property.
+/// # Safety
+/// `object` is a live client.
+unsafe fn type_property(object: *mut zend_object) -> i64 {
+    // SAFETY: per the caller; the class declares `type`.
+    let kind = unsafe { swoole_rs_phptable::property(object, c"type") };
+    // SAFETY: a live property.
+    unsafe { value::get_long(kind) }
+}
+
+/// `client_coro_socket_dtor`: the socket is going; the client lets go of it.
+unsafe extern "C" fn socket_closed(data: *mut libc::c_void, _socket: *mut libc::c_void) {
+    // SAFETY: the client outlives the hook on its socket.
+    let data = unsafe { &mut *data.cast::<Data>() };
+    if !data.socket.is_null() {
+        // SAFETY: the client's live socket.
+        let protocol = &mut unsafe { co::record(data.socket) }.protocol;
+        if !protocol.private_data_1.is_null() {
+            // SAFETY: the length callable this socket owns.
+            if unsafe { native::swoole_socket_coro_callable_free(protocol.private_data_1) } != 0 {
+                swoole_rs_zend::bailout::Bailout.defer();
+            }
+            protocol.private_data_1 = ptr::null_mut();
+        }
+    }
+    data.socket = ptr::null_mut();
+    // SAFETY: `zobject` names the live client.
+    let object = unsafe { value::obj_of(&raw const data.zobject) };
+    // SAFETY: as above.
+    let ce = unsafe { (*object).ce };
+    // SAFETY: a live instance of `ce`.
+    unsafe { z::zend_update_property_null(ce, object, c"socket".as_ptr(), 6) };
+    // SAFETY: as above.
+    unsafe { value::update_bool(ce, object, c"connected", false) };
+    // SAFETY: the client's reference to its socket object.
+    unsafe { zval_ptr_dtor(&raw mut data.zsocket) };
+    data.zsocket.u1.type_info = z::IS_NULL;
+}
+
+/// `client_coro_create_socket`: a `Coroutine\Socket` for the client's
+/// `type`, published in its `socket` and `fd` properties; null on failure,
+/// with errCode/errMsg set.
+/// # Safety
+/// `object` is a live client without a socket.
+unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Socket {
+    #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
+    let socket_kind = socket_type(kind) as i32;
+    // SAFETY: crates/phpclients' constructor.
+    let created = unsafe { crate::socket::swr_v1_phpclients_socket_create(socket_kind) };
+    // SAFETY: per the caller.
+    let ce = unsafe { (*object).ce };
+    if created.is_null() {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        report_object(object, code, error_message(code));
+        return ptr::null_mut();
+    }
+    // SAFETY: per the caller.
+    let data = unsafe { ClientObject::data(object) };
+    // SAFETY: the client takes the new object's reference.
+    unsafe { set_object(&raw mut data.zsocket, created) };
+    // SAFETY: a `Coroutine\Socket` object.
+    let socket = unsafe { socket_of(created) };
+    // SAFETY: a live socket; the client outlives the hook.
+    unsafe { co::close_hook(socket, socket_closed, std::ptr::from_mut(data).cast()) };
+    // SAFETY: as above.
+    let record = unsafe { co::record(socket) };
+    // SAFETY: a live instance of `ce`.
+    unsafe { value::update_long(ce, object, c"fd", i64::from(record.sock_fd)) };
+    // SAFETY: as above.
+    unsafe { swoole_rs_zend::update_property(ce, object, c"socket", &raw mut data.zsocket) };
+    record.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator().cast();
+    record.zero_copy = true;
+    // SAFETY: a live socket.
+    if kind & SOCK_SSL != 0 && !unsafe { co::enable_ssl(socket) } {
+        report_object(object, libc::EISCONN, error_message(libc::EISCONN));
+        // SAFETY: the client and its socket's hook argument.
+        unsafe { socket_closed(std::ptr::from_mut(data).cast(), socket) };
+        return ptr::null_mut();
+    }
+    socket
 }
 
 /// A reference to the client's socket object for the rest of the call, so a
@@ -275,20 +392,20 @@ fn socket_for_connect(call: &Call, port: i64) -> Option<Socket> {
     }
     let object = call.this();
     // SAFETY: `$this` is live.
-    let kind = unsafe { native::swoole_client_coro_type_property(object) };
+    let kind = unsafe { type_property(object) };
     let tcp = matches!(socket_type(kind), SOCK_TCP | SOCK_TCP6);
     if tcp && !verify_port(port) {
         warn(true, "The port is invalid");
         return None;
     }
     // SAFETY: `$this` is live and has no socket.
-    let socket = unsafe { native::swoole_client_coro_create_socket(object, kind) };
+    let socket = unsafe { create_socket(object, kind) };
     if socket.is_null() {
         return None;
     }
     data.socket = socket;
     // SAFETY: `$this` is live.
-    let settings = unsafe { native::swoole_client_coro_setting(object) };
+    let settings = unsafe { setting(object) };
     // SAFETY: Zend returns a live property zval.
     if !settings.is_null() && unsafe { type_of(settings) } == IS_ARRAY {
         crate::socket_options::apply(socket, settings, crate::socket_options::ALL);
@@ -354,7 +471,7 @@ fn set(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: `$this` is live; `settings` is a live array.
-    unsafe { native::swoole_client_coro_merge_setting(call.this(), settings) };
+    unsafe { merge_setting(call.this(), settings) };
     let socket = this(call).socket;
     if socket.is_null() {
         return call.set_bool(true);
@@ -775,7 +892,7 @@ fn enable_ssl(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: `$this` is live.
-    let settings = unsafe { native::swoole_client_coro_setting(call.this()) };
+    let settings = unsafe { setting(call.this()) };
     // SAFETY: Zend returns a live property zval.
     let array = !settings.is_null() && unsafe { type_of(settings) } == IS_ARRAY;
     // SAFETY: as above, an array.

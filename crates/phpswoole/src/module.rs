@@ -111,7 +111,8 @@ unsafe extern "C" {
     fn php_swoole_socket_coro_minit(module_number: c_int);
     fn php_swoole_client_minit(module_number: c_int);
     fn php_swoole_client_async_minit(module_number: c_int);
-    fn php_swoole_client_coro_minit(module_number: c_int);
+    /// crates/phpclients' `Coroutine\Client`.
+    fn swr_v1_phpclients_client_minit(shortname: bool, client_class: *mut *mut zend_class_entry);
     fn php_swoole_http_client_coro_minit(module_number: c_int);
     /// crates/phphttp2's `Coroutine\Http2\Client`, `Http2\Request` and `Http2\Response`.
     fn swr_v1_phphttp2_client_minit(
@@ -201,7 +202,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_socket_coro_minit),
         M(php_swoole_client_minit),
         M(php_swoole_client_async_minit),
-        M(php_swoole_client_coro_minit),
+        M(client_coro_minit),
         M(php_swoole_http_client_coro_minit),
         M(http2_client_coro_minit),
         M(ops.optional_client_minit),
@@ -221,6 +222,15 @@ pub(crate) fn startup(module_number: c_int) {
         H(ops.ready),
     ];
     bailout::defer(run(&steps, module_number));
+}
+
+/// `php_swoole_client_coro_minit`.
+unsafe extern "C" fn client_coro_minit(_module_number: c_int) {
+    // SAFETY: the module's globals, live from MINIT.
+    let shortname = unsafe { (*globals()).use_shortname };
+    let mut class = ptr::null_mut();
+    // SAFETY: Rust's MINIT, once, with a writable slot.
+    unsafe { swr_v1_phpclients_client_minit(shortname, &raw mut class) };
 }
 
 /// `php_swoole_http2_client_coro_minit`.

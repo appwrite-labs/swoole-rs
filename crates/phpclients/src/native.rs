@@ -3,6 +3,7 @@
 //! `Socket` class (`SocketImpl`) is still C++, so each operation a method needs
 //! is one call over its opaque pointer, plus Swoole's PHP error reporting.
 use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
+use swoole_rs_phpruntime::co;
 use swoole_rs_zend::sys::{zend_object, zend_string, zval};
 
 /// A `SocketImpl *`.
@@ -134,43 +135,6 @@ unsafe extern "C" {
     ) -> bool;
     pub(crate) fn swoole_socket_coro_cancel(socket: Socket, event: c_int) -> bool;
     pub(crate) fn swoole_socket_coro_ssl_handshake(socket: Socket) -> bool;
-    /// `php_swoole_check_reactor()`.
-    pub(crate) fn swoole_rs_check_reactor();
-    /// `swoole_set_last_error(code)`.
-    pub(crate) fn swoole_rs_set_last_error(code: c_int);
-    /// `client_coro_create_socket`: a `Coroutine\Socket` for the client's
-    /// `type`, published in its `socket` and `fd` properties; null on failure,
-    /// with errCode/errMsg set.
-    pub(crate) fn swoole_client_coro_create_socket(object: *mut zend_object, kind: i64) -> Socket;
-    /// Merge `settings` into the client's `setting` property.
-    pub(crate) fn swoole_client_coro_merge_setting(object: *mut zend_object, settings: *const zval);
-    /// The client's `setting` property.
-    pub(crate) fn swoole_client_coro_setting(object: *mut zend_object) -> *mut zval;
-    /// `zval_get_long` of the client's `type` property.
-    pub(crate) fn swoole_client_coro_type_property(object: *mut zend_object) -> i64;
-    /// `set_timeout(timeout, SW_TIMEOUT_CONNECT)`, then `connect(host, port, flags)`.
-    pub(crate) fn swoole_client_coro_connect(
-        socket: Socket,
-        host: *const c_char,
-        port: i64,
-        timeout: f64,
-        flags: i64,
-    ) -> bool;
-    /// `set_timeout(timeout, SW_TIMEOUT_RDWR)`.
-    pub(crate) fn swoole_client_coro_rdwr_timeout(socket: Socket, timeout: f64);
-    pub(crate) fn swoole_client_coro_close(socket: Socket) -> bool;
-    /// The coroutine socket's `network::Socket` record (`get_socket()`), or null.
-    pub(crate) fn swoole_client_coro_socket_record(
-        socket: Socket,
-    ) -> *mut swoole_rs_reactor::SocketRecord;
-    pub(crate) fn swoole_client_coro_type(socket: Socket) -> c_int;
-    /// `open_length_check || open_eof_check`.
-    pub(crate) fn swoole_client_coro_packet_mode(socket: Socket) -> bool;
-    pub(crate) fn swoole_client_coro_is_connected(socket: Socket) -> bool;
-    pub(crate) fn swoole_client_coro_has_ssl(socket: Socket) -> bool;
-    /// The peer certificate as a new string, or null.
-    pub(crate) fn swoole_client_coro_peer_cert(socket: Socket) -> *mut zend_string;
-    pub(crate) fn swoole_client_coro_verify_peer(socket: Socket, allow_self_signed: bool) -> bool;
     /// `open_length_check` (0), `open_eof_check` (1) or `http2` (2) = `value`.
     pub(crate) fn swoole_socket_coro_set_flag(socket: Socket, flag: c_int, value: bool);
     /// `&protocol`, a `swoole::Protocol`.
@@ -416,4 +380,110 @@ pub(crate) unsafe fn record<'a>(socket: Socket) -> Option<&'a mut swoole_rs_reac
     let record = unsafe { swoole_client_coro_socket_record(socket) };
     // SAFETY: as above.
     unsafe { record.as_mut() }
+}
+
+/// `php_swoole_check_reactor()`; a `swr_zend_try_hook` body.
+pub(crate) unsafe extern "C" fn swoole_rs_check_reactor() {
+    swoole_rs_phpruntime::check_reactor();
+}
+
+/// `swoole_set_last_error(code)`.
+pub(crate) unsafe fn swoole_rs_set_last_error(code: c_int) {
+    swoole_rs_corebase::log::set_last_error(code);
+}
+
+/// `SW_TIMEOUT_CONNECT` and `SW_TIMEOUT_RDWR`.
+const TIMEOUT_CONNECT: c_int = 1 << 1;
+const TIMEOUT_RDWR: c_int = (1 << 2) | (1 << 3);
+
+/// `set_timeout(timeout, SW_TIMEOUT_CONNECT)`, then `connect(host, port, flags)`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "upstream's int port and flags"
+)]
+pub(crate) unsafe fn swoole_client_coro_connect(
+    socket: Socket,
+    host: *const c_char,
+    port: i64,
+    timeout: f64,
+    flags: i64,
+) -> bool {
+    // SAFETY: per the caller.
+    unsafe { co::set_timeout(socket, timeout, TIMEOUT_CONNECT) };
+    // SAFETY: a NUL-terminated host.
+    let length = unsafe { libc::strlen(host) };
+    // SAFETY: per the caller.
+    unsafe { co::connect(socket, host, length, port as c_int, flags as c_int) }
+}
+
+/// `set_timeout(timeout, SW_TIMEOUT_RDWR)`.
+pub(crate) unsafe fn swoole_client_coro_rdwr_timeout(socket: Socket, timeout: f64) {
+    // SAFETY: per the caller.
+    unsafe { co::set_timeout(socket, timeout, TIMEOUT_RDWR) };
+}
+
+pub(crate) unsafe fn swoole_client_coro_close(socket: Socket) -> bool {
+    // SAFETY: per the caller.
+    unsafe { co::close(socket) }
+}
+
+/// The coroutine socket's `network::Socket` record (`get_socket()`), or null.
+pub(crate) unsafe fn swoole_client_coro_socket_record(
+    socket: Socket,
+) -> *mut swoole_rs_reactor::SocketRecord {
+    // SAFETY: per the caller.
+    unsafe { co::record(socket) }.socket
+}
+
+pub(crate) unsafe fn swoole_client_coro_type(socket: Socket) -> c_int {
+    // SAFETY: per the caller.
+    unsafe { co::record(socket) }.kind
+}
+
+/// `open_length_check || open_eof_check`.
+pub(crate) unsafe fn swoole_client_coro_packet_mode(socket: Socket) -> bool {
+    // SAFETY: per the caller.
+    let record = unsafe { co::record(socket) };
+    record.open_length_check || record.open_eof_check
+}
+
+pub(crate) unsafe fn swoole_client_coro_is_connected(socket: Socket) -> bool {
+    // SAFETY: per the caller.
+    unsafe { co::is_connected(socket) }
+}
+
+/// `get_ssl() != nullptr`.
+pub(crate) unsafe fn swoole_client_coro_has_ssl(socket: Socket) -> bool {
+    // SAFETY: per the caller.
+    let record = unsafe { swoole_client_coro_socket_record(socket) };
+    // SAFETY: an open socket's record.
+    !record.is_null() && !unsafe { (*record).ssl }.is_null()
+}
+
+/// The peer certificate as a new string, or null: `ssl_get_peer_certificate`
+/// into a buffer of `sw_tg_buffer()`'s size.
+pub(crate) unsafe fn swoole_client_coro_peer_cert(socket: Socket) -> *mut zend_string {
+    let mut buffer = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
+    // SAFETY: per the caller.
+    let record = unsafe { swoole_client_coro_socket_record(socket) };
+    // SAFETY: a live record with TLS and a writable buffer.
+    let length = unsafe {
+        swoole_rs_tls::upstream::socket_ssl_get_peer_certificate_pem(
+            record,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+        )
+    };
+    match usize::try_from(length) {
+        Ok(length) => swoole_rs_zend::string::copy(&buffer[..length]),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+pub(crate) unsafe fn swoole_client_coro_verify_peer(
+    socket: Socket,
+    allow_self_signed: bool,
+) -> bool {
+    // SAFETY: per the caller.
+    unsafe { co::ssl_verify(socket, allow_self_signed) }
 }

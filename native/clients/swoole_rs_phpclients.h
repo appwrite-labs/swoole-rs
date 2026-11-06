@@ -118,28 +118,6 @@ int swoole_socket_coro_tcp_info(void *socket, int name, struct _zval_struct *arr
  * stream (import), the object holds it and nonblock is set. Null when none
  * could be made. */
 
-/* PHP Coroutine\Client (crates/phpclients): MINIT and, from
- * ext-src/swoole_client_coro.cc, what its methods need beyond the socket calls. */
-void swr_v1_phpclients_client_minit(bool shortname,
-                                    struct _zend_class_entry **client_class);
-void swoole_rs_check_reactor(void);
-void swoole_rs_set_last_error(int code);
-void *swoole_client_coro_create_socket(struct _zend_object *object, int64_t type);
-void swoole_client_coro_merge_setting(struct _zend_object *object, const struct _zval_struct *settings);
-struct _zval_struct *swoole_client_coro_setting(struct _zend_object *object);
-int64_t swoole_client_coro_type_property(struct _zend_object *object);
-bool swoole_client_coro_connect(void *socket, const char *host, int64_t port, double timeout, int64_t flags);
-void swoole_client_coro_rdwr_timeout(void *socket, double timeout);
-bool swoole_client_coro_close(void *socket);
-/* The coroutine socket's network::Socket record (get_socket()), or null. */
-void *swoole_client_coro_socket_record(void *socket);
-int swoole_client_coro_type(void *socket);
-bool swoole_client_coro_packet_mode(void *socket);
-bool swoole_client_coro_is_connected(void *socket);
-bool swoole_client_coro_has_ssl(void *socket);
-struct _zend_string *swoole_client_coro_peer_cert(void *socket);
-bool swoole_client_coro_verify_peer(void *socket, bool allow_self_signed);
-
 /* PHP Coroutine\Http\Client (crates/phpclients): MINIT, the methods that can
  * call PHP (the C++ trampolines re-raise a bailout they return), the socket's
  * close hook and the Set-Cookie parser the HTTP/2 client shares. */
