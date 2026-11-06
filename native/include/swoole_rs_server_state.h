@@ -35,6 +35,8 @@ void swr_v1_server_static_owner_free(const void *);
 bool swr_v1_server_static_mime(const void *, const uint8_t *, size_t);
 size_t swr_v1_server_static_config(const swr_v1_server_state *, uint32_t, uint32_t, const uint8_t *, size_t);
 const uint8_t *swr_v1_server_static_text(const swr_v1_server_state *, uint32_t, size_t, size_t *);
+/* upload_tmp_dir's bytes and their length (crates/server/src/state.rs). */
+const uint8_t *swr_v1_server_upload_tmp_dir(const swr_v1_server_state *, size_t *);
 void swr_v1_server_shared_init(void *storage);
 void swr_v1_server_port_shared_init(void *storage);
 size_t swr_v1_server_port_connections(const void *storage, uint32_t workers);

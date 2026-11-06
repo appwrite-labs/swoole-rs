@@ -53,34 +53,25 @@ pub unsafe fn config<'a>(serv: *mut c_void) -> &'a mut ServerConfig {
     unsafe { &mut *config }
 }
 
-/// `upload_tmp_dir`: the directory up to its first NUL, as
-/// `std::string::c_str()` read it.
+/// `upload_tmp_dir = dir`.
 ///
 /// # Safety
-/// `serv` is a live `Server`.
+/// `serv` is a live `Server`, not started.
 pub unsafe fn set_upload_tmp_dir(serv: *mut c_void, dir: &[u8]) {
-    let dir = dir.split(|&byte| byte == 0).next().unwrap_or_default();
     // SAFETY: per the caller.
-    let state = unsafe { state(serv) };
-    *state
-        .upload_tmp_dir
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = CString::new(dir).ok();
+    unsafe { state(serv) }.set_upload_tmp_dir(dir);
 }
 
-/// `upload_tmp_dir`, `/tmp` until `set()` names one.
+/// `upload_tmp_dir.c_str()`: the directory up to its first NUL.
 ///
 /// # Safety
 /// `serv` is a live `Server`.
 #[must_use]
 pub unsafe fn upload_tmp_dir(serv: *mut c_void) -> CString {
     // SAFETY: per the caller.
-    let state = unsafe { state(serv) };
-    let dir = state
-        .upload_tmp_dir
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    dir.clone().unwrap_or_else(|| c"/tmp".to_owned())
+    let dir = unsafe { state(serv) }.upload_tmp_dir();
+    let dir = dir.split(|&byte| byte == 0).next().unwrap_or_default();
+    CString::new(dir).unwrap_or_default()
 }
 
 /// `http_compression_types` lists `kind`; `None` asks whether it lists any.

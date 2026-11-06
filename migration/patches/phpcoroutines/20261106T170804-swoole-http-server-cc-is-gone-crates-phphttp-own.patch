@@ -268,3 +268,17 @@ index 79cf2a6..824f3a3 100644
 -    std::string upload_tmp_dir = "/tmp";
 -
      /**
+diff --git a/src/protocol/http.cc b/src/protocol/http.cc
+index 2e7372f..dd0cf6c 100644
+--- a/src/protocol/http.cc
++++ b/src/protocol/http.cc
+@@ -168,6 +168,5 @@ static_assert(offsetof(multipart_parser, boundary_length) == 24 && offsetof(mult
+ bool Request::init_multipart_parser(const Server *server) {
+-    return swr_v1_http_request_multipart_init(this,
+-                                              reinterpret_cast<const uint8_t *>(server->upload_tmp_dir.data()),
+-                                              server->upload_tmp_dir.size(),
+-                                              server->upload_max_filesize);
++    size_t length = 0;
++    const uint8_t *dir = swr_v1_server_upload_tmp_dir(server->state_handle(), &length);
++    return swr_v1_http_request_multipart_init(this, dir, length, server->upload_max_filesize);
+ }
