@@ -7,15 +7,19 @@ struct Snapshot {
  std::string type,end,filename,date;
  size_t length=0;int status=0,error=0;bool mime_identity=false,content_identity=false,modified=false;
 };
-static void install_rules(std::shared_ptr<std::vector<swoole::http_server::RewriteRule>> &store,
-                          std::vector<swoole::http_server::RewriteRule> rules) {
- store=std::make_shared<std::vector<swoole::http_server::RewriteRule>>(std::move(rules));
+static void install_rules(upstream_context::Server &server,std::vector<upstream_context::RewriteRule> rules) {
+ server.rewrite_rules=std::make_shared<std::vector<upstream_context::RewriteRule>>(std::move(rules));
+}
+// The selected server's rules are Rust's: a regex rule goes in between its `~` delimiters.
+static void install_rules(candidate_context::Server &server,std::vector<upstream_context::RewriteRule> rules) {
+ for(const auto &rule:rules){const std::string pattern=rule.is_regex?"~"+rule.pattern+"~":rule.pattern;
+  swr_v1_server_static_rewrite_add(server.state,reinterpret_cast<const uint8_t *>(pattern.data()),pattern.size(),reinterpret_cast<const uint8_t *>(rule.replacement.data()),rule.replacement.size());}
 }
 template<typename Server>static void configure_location(Server &server){server.locations->insert("/");}
 template<typename Server>static void configure_indexes(Server &server,const std::vector<std::string> &names){server.http_index_files=std::make_shared<std::vector<std::string>>(names);}
 template<typename Server>static void configure_rules(Server &server,unsigned mode){
  if(!mode)return;
- using Rule=swoole::http_server::RewriteRule;
+ using Rule=upstream_context::RewriteRule;
  std::vector<Rule> rules;
  switch(mode){
  case 1:rules.push_back({"/file","/normal",false});break;
@@ -26,7 +30,7 @@ template<typename Server>static void configure_rules(Server &server,unsigned mod
  case 6:rules.push_back({"/file","/file",false});rules.push_back({"^/file","/should-not-apply",true});break;
  default:throw std::logic_error("unknown normal rule mode");
  }
- install_rules(server.rewrite_rules,std::move(rules));
+ install_rules(server,std::move(rules));
 }
 static Snapshot old_file(size_t size,const std::string &url,const char *range,const char *date,const std::string &mime,unsigned repeat,unsigned rewrite,bool locations=false){
  using namespace upstream_context;

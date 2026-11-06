@@ -104,7 +104,6 @@ mod text {
 pub struct SettingsHost {
     get: unsafe extern "C" fn(*mut c_void, u32) -> i64,
     text: unsafe extern "C" fn(*mut c_void, u32, *const c_char, usize),
-    rewrite: unsafe extern "C" fn(*mut c_void, *const c_char, usize, *const c_char, usize),
     parse_size: unsafe extern "C" fn(*mut zval) -> i64,
     global_options: unsafe extern "C" fn(*mut c_void) -> bool,
     dispatch_func: unsafe extern "C" fn(*mut c_void, *mut zval) -> bool,
@@ -811,16 +810,8 @@ fn rewrite_rules(s: &Settings) -> Step {
             // SAFETY: a live key.
             unsafe { bytes(key) }
         };
-        // SAFETY: a live server and the rule's bytes, which C++ copies.
-        unsafe {
-            (host().rewrite)(
-                rules.settings.serv,
-                pattern.as_ptr().cast(),
-                pattern.len(),
-                replacement.as_ptr().cast(),
-                replacement.len(),
-            );
-        }
+        // SAFETY: a live server.
+        unsafe { view::add_rewrite_rule(rules.settings.serv, pattern, replacement) };
         true
     }
     struct Rules<'a> {

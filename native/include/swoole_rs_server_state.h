@@ -41,6 +41,10 @@ void swr_v1_server_static_owner_free(const void *);
 bool swr_v1_server_static_mime(const void *, const uint8_t *, size_t);
 size_t swr_v1_server_static_config(const swr_v1_server_state *, uint32_t, uint32_t, const uint8_t *, size_t);
 const uint8_t *swr_v1_server_static_text(const swr_v1_server_state *, uint32_t, size_t, size_t *);
+/* url_rewrite_rules (crates/server/src/static_config.rs): add one, and rewrite a static context's URL. */
+void swr_v1_server_static_rewrite_add(const swr_v1_server_state *, const uint8_t *, size_t, const uint8_t *, size_t);
+struct swr_v2_http_context;
+bool swr_v1_server_static_rewrite(const swr_v1_server_state *, struct swr_v2_http_context *);
 /* upload_tmp_dir's bytes and their length (crates/server/src/state.rs). */
 const uint8_t *swr_v1_server_upload_tmp_dir(const swr_v1_server_state *, size_t *);
 /* Server's text members, which Rust owns (crates/server/src/state.rs). */

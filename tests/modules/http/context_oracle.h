@@ -7,7 +7,7 @@
 #include <iostream>
 #include <unordered_map>
 #define CONTEXT_EFFECTS(ns) namespace ns { \
-using String=IndexBuffer;using RewriteRule=swoole::http_server::RewriteRule; \
+using String=IndexBuffer;struct RewriteRule{std::string pattern,replacement;bool is_regex;}; \
 inline std::vector<std::string> names,trace;inline std::string mime="text/plain"; \
 inline size_t file_size=100;inline time_t file_time=1700000000;inline std::string directory_name,link_name,canonical_name; \
 struct DIR {size_t next=0;struct dirent entry{};}; \

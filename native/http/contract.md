@@ -186,13 +186,12 @@ progress instead of looping.
 
 ### Rewrite rules
 
-- `swr_v1_http_rewrite_rule` returns the pattern span and regex flag. Only a paired
-  leading/trailing `~` (length ≥ 2) is stripped.
-- `Server::apply_rewrite_rules` drives the static context's rewrite steps
-  (`swr_v2_http_context_rewrite_*`). Native keeps the rule container and
-  `std::regex`, including `regex_error` continuation. A literal match publishes and stops even when the output equals the
-  input; an unchanged regex result falls through to the next rule. The intermediate
-  suffix allocation is gone.
+- Rust owns the rules (`RewriteRules` in `crates/http/src/rewrite.rs`, held by the
+  server's static configuration). Only a paired leading/trailing `~` (length ≥ 2)
+  makes a regex. `swr_v1_server_static_rewrite` rewrites the static context's URL
+  at upstream's `apply_rewrite_rules` point. A literal match publishes and stops even
+  when the output equals the input; an unchanged regex result, or a pattern that
+  doesn't compile, falls through to the next rule.
 
 ### Range parsing and formatting
 

@@ -99,8 +99,9 @@ class Sides:
                 print(result.stderr, file=sys.stderr); return False
         return True
 
-    def build(self, binary, units, archive, report):
-        """Compile each (side, source) unit with its side's flags, then link them with the archive."""
+    def build(self, binary, units, archive, report, gc_sections=False):
+        """Compile each (side, source) unit with its side's flags, then link them with the archive.
+        gc_sections drops the archive's unreached references to C++ (the server state's)."""
         objects = []
         for side, source in units:
             objects.append(self.tree/(Path(source).name+'.o'))
@@ -110,7 +111,7 @@ class Sides:
             if result.returncode:
                 print(result.stderr, file=sys.stderr); return False
         command = ['c++', *self.sanitize, *map(str, objects), str(archive), '-lm', *openssl('--libs'), '-o', str(binary)]
-        if sys.platform.startswith('linux'): command += ['-ldl', '-lpthread', '-lrt', '-lutil']
+        if sys.platform.startswith('linux'): command += ['-ldl', '-lpthread', '-lrt', '-lutil', *(['-Wl,--gc-sections'] if gc_sections else [])]
         result = run_isolated(command, timeout=60)
         report['compile'].append({'command': command, 'returncode': result.returncode, 'stderr': result.stderr})
         if result.returncode:

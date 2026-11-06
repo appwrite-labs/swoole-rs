@@ -36,7 +36,7 @@ marked `[R]` also take `--rust-sanitize`. `tools/dev.py` registers each as an
 | `proxy_gate.py` [R] | Proxy auth packing/handshake with actual base64 |
 | `static_gate.py` [R] | Static response method, send order, HEAD/keep-alive changes |
 | `conditional_gate.py` | Date callers with libc `strptime`/`gmtime`/`mktime` |
-| `rewrite_gate.py` [R] | `add_rewrite_rule`/`apply_rewrite_rules`, rewriting the Rust static context |
+| `rewrite_gate.py` [R] | Pinned `add_rewrite_rule`/`apply_rewrite_rules` (std::regex) against the server's Rust rules (`swr_v1_server_static_rewrite`) |
 | `dispatch_gate.py` [R] | Route and proxy-init bodies |
 | `locale_gate.py` | Case-insensitive helpers against libc `strncasecmp` across available locales |
 | `cookie_flow_gate.py` [R] | Cookie callback flow |

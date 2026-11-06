@@ -2,10 +2,8 @@
 
 `StaticHandler` (the only one since #752; HTTP/1 and HTTP/2 both use it) holds two
 pointers: the external Server and one unique opaque Rust context. It has no native
-strings, containers or stat object. `Server::apply_rewrite_rules`, its friend,
-reads the Server's `rewrite_rules` at the original rewrite boundary and drives the
-context's rewrite steps. The class layout differs from upstream's; SDKs that use
-it must be rebuilt.
+strings, containers or stat object. The class layout differs from upstream's; SDKs
+that use it must be rebuilt.
 
 ## What the context owns
 
@@ -45,13 +43,10 @@ operation after Rust returns. No Rust frame or borrow spans an effect.
   applies the terminal status. Each `try_serve` resets the phase/URL-length scratch
   but keeps the handler's last/base-length fields. The Server location container
   and its iteration stay native.
-- **Rewrite**: `HttpRewriteState::step` handles first-match iteration for both the
-  context and legacy `Server::apply_rewrite_rules`. Native reads one rule from the
-  config vector and runs only the requested regex construct/search/replace; the
-  regex object never reaches Rust. A literal prefix match is allocated, filled and
-  published in Rust and always stops selection. A regex result equal to the current
-  URL continues to the next rule. Native keeps the null/empty-rules short circuit.
-  `rewrite_rules` is read fresh at the original `try_serve` point.
+- **Rewrite**: `try_serve` first calls `swr_v1_server_static_rewrite`, which applies
+  the server's Rust-owned rules (`RewriteRules`) to the context's current URL. A
+  literal prefix match always stops selection; a regex result equal to the current
+  URL continues to the next rule.
 - **Directory and index**: Native keeps the `DIR*` and exposes each `readdir` name
   only until the next effect, then closes before Rust sorts and dedups. Rust returns
   a scalar cursor into the configured index vector, and native passes back the one

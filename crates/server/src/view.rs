@@ -82,6 +82,15 @@ pub unsafe fn set_upload_tmp_dir(serv: *mut c_void, dir: &[u8]) {
     unsafe { state(serv) }.set_upload_tmp_dir(dir);
 }
 
+/// `url_rewrite_rules`: add one rule.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+pub unsafe fn add_rewrite_rule(serv: *mut c_void, pattern: &[u8], replacement: &[u8]) {
+    // SAFETY: per the caller.
+    crate::static_config::add_rewrite_rule(unsafe { state(serv) }, pattern, replacement);
+}
+
 /// `upload_tmp_dir.c_str()`: the directory up to its first NUL.
 ///
 /// # Safety

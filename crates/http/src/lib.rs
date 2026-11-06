@@ -58,8 +58,7 @@ pub use request::{
     swr_v1_http_request_protocol, swr_v3_http_request_clean, swr_v3_http_request_init,
 };
 mod rewrite;
-pub use rewrite::HttpRewriteState;
-pub use rewrite::swr_v1_http_rewrite_rule;
+pub use rewrite::RewriteRules;
 mod static_context;
 pub use static_context::*;
 mod static_body;
