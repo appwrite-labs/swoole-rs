@@ -47,9 +47,10 @@ def main():
         'src/coroutine/system.cc': ['bool wait_for('],
     }
     # The poll event translations the hooks call: poll.cc's at the pin, the hybrid
-    # header's inline calls into the reactor's Rust (swr_v1_reactor_poll_events_*).
+    # header's (native/reactor/swoole_reactor.h) inline calls into the reactor's Rust (swr_v1_reactor_poll_events_*).
     translations = ['int16_t translate_events_to_poll(', 'int translate_events_from_poll(']
-    originals, selected, hybrid = sources(a.source, a.archive, [*signatures, 'src/reactor/poll.cc', 'include/swoole_reactor.h'])
+    originals, selected, hybrid = sources(a.source, a.archive, [*signatures, 'src/reactor/poll.cc'])
+    reactor_header = (ROOT/'native/reactor/swoole_reactor.h').read_text()
     with tempfile.TemporaryDirectory(prefix='swr-hooks-order-') as temp:
         tree = Path(temp)
         for variant in ['original', 'selected']:
@@ -61,7 +62,7 @@ def main():
                 bodies.extend(block(originals['src/reactor/poll.cc'], name) for name in translations)
             else:
                 bodies.append('extern "C" int16_t swr_v1_reactor_poll_events_to(int);\nextern "C" int swr_v1_reactor_poll_events_from(int16_t);')
-                bodies.extend(block(selected['include/swoole_reactor.h'], name) for name in translations)
+                bodies.extend(block(reactor_header, name) for name in translations)
             (tree/(variant+'.inc')).write_text('\n'.join(bodies))
         command = ['c++', '-std=c++14', '-O1', '-g', '-I'+str(tree), '-I'+str(ROOT/'native/hooks'), str(ROOT/'tests/modules/hooks/ordered_gate.cc'), str(a.archive.resolve()), '-o', str(tree/'ordered'), '-lssl', '-lcrypto', '-lpthread']
         if a.sanitize:

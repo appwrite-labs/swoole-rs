@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='swr-callbacks-') as temporary:
     original={name:subprocess.check_output(['git','-C',str(a.source),'show',PIN+':'+name],text=True) for name in ['include/swoole_reactor.h','src/reactor/base.cc']}
     try:
         for variant in ['original','selected']:
-            header=original['include/swoole_reactor.h'] if variant=='original' else (hybrid_source/'include/swoole_reactor.h').read_text()
+            header=original['include/swoole_reactor.h'] if variant=='original' else (ROOT/'native/reactor/swoole_reactor.h').read_text()
             base=original['src/reactor/base.cc'] if variant=='original' else (hybrid_source/'src/wrapper/event.cc').read_text()
             fields='std::map<int,std::function<void(Reactor*)>> end_callbacks; std::map<int,std::function<bool(Reactor*,size_t&)>> exit_conditions;' if variant=='original' else 'ReactorCallbacks callbacks_;'
             cls='''namespace swoole { class Reactor { public:
