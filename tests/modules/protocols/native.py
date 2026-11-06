@@ -81,7 +81,7 @@ def main():
                    '-I' + str(tree), '-I' + str(local), '-I' + str(ROOT / 'native/protocols'), '-I'+str(ROOT/'native/include'),
                    str(local / 'native.cc'), str(archive), '-lc', '-lm']
         if sys.platform.startswith('linux'):
-            command += ['-ldl', '-lpthread', '-lrt', '-lutil']
+            command += ['-ldl', '-lpthread', '-lrt', '-lutil', '-Wl,--gc-sections']
         if args.sanitize:
             command += ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
         report['compile'] = run_compiler(command + ['-o', str(binary)])
