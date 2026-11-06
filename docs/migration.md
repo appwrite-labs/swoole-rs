@@ -74,13 +74,13 @@ Progress is measured by the upstream first-party lines (`src/`, `ext-src/`,
 all-modules patch set deletes (`tools/badges.py`). At the start of the roadmap
 (2026-10-25) about 77k of 89k were still compiled in; at `82fa505` (2026-11-06)
 18.7k of 90k remain (79.2% replaced). A pinned line a patch moves to another
-file is still compiled, so it counts as kept where it now lives. The migration is done when nothing remains
-apart from declared third-party code.
+file is still compiled, so it counts as kept where it now lives. The migration
+is done when nothing remains apart from declared third-party code.
 
-1. **Green baseline** ([#20](https://github.com/loks0n/swoole-rs/issues/20), open).
+1. **Green baseline** ([#20](https://github.com/loks0n/swoole-rs/issues/20), done).
    A build with every module passes the merge tier on `main`: corpus, selected
-   PHPTs and benchmarks against upstream. Last green run:
-   [`3cd1411`](https://github.com/loks0n/swoole-rs/actions/runs/40701810400) (2026-10-28).
+   PHPTs and benchmarks against upstream
+   ([`82fa505`](https://github.com/loks0n/swoole-rs/actions/runs/42225525530), 2026-11-06).
 2. **Wider oracle** ([#58](https://github.com/loks0n/swoole-rs/issues/58), done).
 3. **Graduate and delete** ([#125](https://github.com/loks0n/swoole-rs/issues/125), done).
    The nine leaf modules and corebase are Rust only; the per-module switches are
