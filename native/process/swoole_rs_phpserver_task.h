@@ -20,17 +20,6 @@ struct _zval_struct;
 #define SWR_PHPSERVER_EVENT_DATA_ALIGN 8
 
 typedef struct {
-    bool started;
-    bool worker;      /* is_worker() */
-    bool task_worker; /* is_task_worker() */
-    bool task_object; /* task_enable_coroutine || task_object */
-    bool task_coroutine;
-    bool event_object;
-    bool enable_coroutine;
-    int64_t task_worker_num;
-} swr_phpserver_task_facts;
-
-typedef struct {
     int64_t id;
     int64_t worker_id; /* get_task_src_worker_id */
     double time;
@@ -38,7 +27,6 @@ typedef struct {
 } swr_phpserver_task_info;
 
 typedef struct {
-    void (*facts)(void *server, swr_phpserver_task_facts *facts);
     /* Server::task_pack of the payload into `buf` (an EventData): the task id, or -1 (fd and len reset). */
     int64_t (*pack)(void *buf, const char *data, size_t length);
     /* Server::task_unpack of `buf`: its payload and ext_flags. */

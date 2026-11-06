@@ -576,10 +576,11 @@ const CONSTANTS: &[(&CStr, i64)] = &[
 pub(crate) use swoole_rs_corebase::log::set_last_error;
 pub(crate) use swoole_rs_phpswoole::display_errors;
 
-/// `swoole_get_worker_type()`'s `SW_MASTER`, `SW_EVENT_WORKER` and `SW_TASK_WORKER`.
+/// `swoole_get_worker_type()`'s `SW_MASTER`, `SW_EVENT_WORKER`, `SW_MANAGER` and `SW_TASK_WORKER`.
 pub(crate) const MASTER: c_int = 1;
-const EVENT_WORKER: c_int = 2;
-const TASK_WORKER: c_int = 4;
+pub(crate) const EVENT_WORKER: c_int = 2;
+pub(crate) const MANAGER: c_int = 3;
+pub(crate) const TASK_WORKER: c_int = 4;
 /// `Server::MODE_PROCESS`.
 const MODE_PROCESS: u8 = 2;
 

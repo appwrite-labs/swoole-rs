@@ -50,11 +50,8 @@ const SW_ERR: c_int = -1;
 /// `DATA`'s `Swoole\Server\TaskResult`.
 const TASK_RESULT: usize = 4;
 
-/// `swr_phpserver_task_facts`.
-#[repr(C)]
-#[derive(Default)]
+/// What the task methods read of the Server.
 struct Facts {
-    started: bool,
     worker: bool,
     task_worker: bool,
     task_object: bool,
@@ -77,7 +74,6 @@ struct Info {
 /// `swr_v1_phpserver_task_host`.
 #[repr(C)]
 pub struct TaskHost {
-    facts: unsafe extern "C" fn(*mut c_void, *mut Facts),
     pack: unsafe extern "C" fn(*mut c_void, *const c_char, usize) -> i64,
     unpack: unsafe extern "C" fn(*mut c_void, *mut *const c_char, *mut usize, *mut u32) -> bool,
     log_unserialize: unsafe extern "C" fn(i64, usize),
@@ -165,10 +161,18 @@ fn pending<R>(server: *mut c_void, f: impl FnOnce(&mut Pending) -> R) -> R {
 }
 
 fn facts(server: *mut c_void) -> Facts {
-    let mut facts = Facts::default();
-    // SAFETY: a live server and a writable view.
-    unsafe { (host().facts)(server, &raw mut facts) };
-    facts
+    // SAFETY: a live server.
+    let config = unsafe { swoole_rs_server::view::config(server) };
+    let worker_type = crate::server::worker_type();
+    Facts {
+        worker: worker_type == crate::server::EVENT_WORKER,
+        task_worker: worker_type == crate::server::TASK_WORKER,
+        task_object: config.task_enable_coroutine || config.task_object,
+        task_coroutine: config.task_enable_coroutine,
+        event_object: config.event_object,
+        enable_coroutine: config.enable_coroutine,
+        task_worker_num: i64::from(config.task_worker_num),
+    }
 }
 
 fn info(server: *mut c_void, req: *mut c_void) -> Info {
