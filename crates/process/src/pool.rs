@@ -666,6 +666,41 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_address(
     true
 }
 
+/// `ProcessPool::dispatch_sync(data, len)`: connect to the stream listener, send
+/// `data` length-prefixed (big-endian) and close; false on any failure. A unix
+/// listener records port 0, which a TCP one can't be reached on.
+///
+/// # Safety
+/// `ipc` is null or a live handle.
+pub(crate) unsafe fn swr_v1_process_pool_ipc_send_sync(ipc: *const PoolIpc, data: &[u8]) -> bool {
+    use std::io::Write;
+    fn send(mut socket: impl Write, data: &[u8]) -> std::io::Result<()> {
+        let len = u32::try_from(data.len()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        socket.write_all(&len.to_be_bytes())?;
+        socket.write_all(data)
+    }
+    // SAFETY: the caller's live handle, or null.
+    let Some(stream) = (unsafe { ipc.as_ref() }).and_then(|ipc| ipc.stream.as_ref()) else {
+        return false;
+    };
+    let Some(file) = &stream.file else {
+        return false;
+    };
+    if stream.port == 0 {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::OsStr::from_bytes(file.as_bytes());
+        return std::os::unix::net::UnixStream::connect(path)
+            .and_then(|socket| send(socket, data))
+            .is_ok();
+    }
+    let (Ok(host), Ok(port)) = (file.to_str(), u16::try_from(stream.port)) else {
+        return false;
+    };
+    std::net::TcpStream::connect((host, port))
+        .and_then(|socket| send(socket, data))
+        .is_ok()
+}
+
 /// Keep the listener the native side created.
 ///
 /// # Safety

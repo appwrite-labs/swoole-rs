@@ -28,7 +28,7 @@ deleted file mode 100644
 index c79d39e..0000000
 --- a/include/swoole_process_pool.h
 +++ /dev/null
-@@ -1,268 +0,0 @@
+@@ -1,267 +0,0 @@
 -/*
 -  +----------------------------------------------------------------------+
 -  | Swoole                                                               |
@@ -268,7 +268,6 @@ index c79d39e..0000000
 -    swResultCode dispatch(EventData *data, int *worker_id);
 -    int response(const char *data, uint32_t length) const;
 -    swResultCode dispatch_sync(EventData *data, int *dst_worker_id);
--    swResultCode dispatch_sync(const char *data, uint32_t len) const;
 -    void add_worker(Worker *worker) const;
 -    bool del_worker(const Worker *worker) const;
 -    Worker *get_worker_by_pid(pid_t pid) const;
@@ -301,7 +300,7 @@ diff --git a/include/swoole_server.h b/include/swoole_server.h
 index 4b7a915..4deabd4 100644
 --- a/include/swoole_server.h
 +++ b/include/swoole_server.h
-@@ -24,3 +24,253 @@
+@@ -24,3 +24,252 @@
  #include "swoole_protocol.h"
 -#include "swoole_process_pool.h"
 +// Workers and process pools (was include/swoole_process_pool.h).
@@ -525,7 +524,6 @@ index 4b7a915..4deabd4 100644
 +    swResultCode dispatch(EventData *data, int *worker_id);
 +    int response(const char *data, uint32_t length) const;
 +    swResultCode dispatch_sync(EventData *data, int *dst_worker_id);
-+    swResultCode dispatch_sync(const char *data, uint32_t len) const;
 +    void add_worker(Worker *worker) const;
 +    bool del_worker(const Worker *worker) const;
 +    Worker *get_worker_by_pid(pid_t pid) const;

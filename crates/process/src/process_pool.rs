@@ -185,7 +185,6 @@ pub const OP_WORKER_INIT: u32 = 43;
 pub const OP_EVENT_INIT: u32 = 44;
 pub const OP_BOX_PUSH: u32 = 45;
 pub const OP_STREAM_SEND: u32 = 46;
-pub const OP_SYNC_SEND: u32 = 47;
 pub const CB_START: c_int = 1;
 pub const CB_BEFORE_RELOAD: c_int = 2;
 pub const CB_SHUTDOWN: c_int = 3;
@@ -303,8 +302,14 @@ fn effect(op: u32, arg: u64) -> Option<i64> {
         fn swoole_timer_free();
         #[link_name = "_Z19swoole_timer_selectv"]
         fn swoole_timer_select();
+        #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
+        fn swoole_timer_del(node: *mut c_void) -> bool;
         #[link_name = "_Z17swoole_event_waitv"]
         fn swoole_event_wait() -> c_int;
+        #[link_name = "_Z25swoole_event_is_availablev"]
+        fn swoole_event_is_available() -> bool;
+        #[link_name = "_Z11swoole_forki"]
+        fn swoole_fork(flags: c_int) -> c_int;
         #[link_name = "_Z14swoole_waitpidiPii"]
         fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     }
@@ -341,8 +346,21 @@ fn effect(op: u32, arg: u64) -> Option<i64> {
             }
             0
         }
+        OP_TIMER_DEL => {
+            // SAFETY: a node of the thread's timer, deleted once.
+            unsafe {
+                swoole_timer_del(ptr::with_exposed_provenance_mut(
+                    usize::try_from(arg).unwrap_or(0),
+                ))
+            };
+            0
+        }
         // SAFETY: the thread's event loop.
         OP_EVENT_WAIT => i64::from(unsafe { swoole_event_wait() }),
+        // SAFETY: as above.
+        OP_EVENT_AVAILABLE => i64::from(unsafe { swoole_event_is_available() }),
+        // SAFETY: src/core/base.cc's fork, with its process bookkeeping.
+        OP_FORK => i64::from(unsafe { swoole_fork(0) }),
         OP_WAITPID => {
             let mut status = 0;
             // SAFETY: `status` is writable.
@@ -1068,19 +1086,19 @@ impl<H: PoolHost> Pool<H> {
     /// `ProcessPool::dispatch`/`dispatch_sync(EventData *)`: to the stream
     /// listener, or a worker's pipe or queue.
     fn dispatch(&mut self, event: *mut u8, worker_id: *mut c_int, blocking: bool) -> i64 {
-        if self.use_socket() != 0 {
-            return self.op(
-                if blocking {
-                    OP_SYNC_SEND
-                } else {
-                    OP_STREAM_SEND
-                },
-                event as u64,
-            );
-        }
         // SAFETY: the caller's EventData.
         let size =
             unsafe { event.wrapping_add(EVENT_LEN).cast::<u32>().read_unaligned() } + HEAD_SIZE;
+        if self.use_socket() != 0 && blocking {
+            // SAFETY: the caller's EventData holds `size` bytes.
+            let data = unsafe { std::slice::from_raw_parts(event, size as usize) };
+            // SAFETY: a socket pool's IPC state.
+            let sent = unsafe { crate::pool::swr_v1_process_pool_ipc_send_sync(self.ipc(), data) };
+            return if sent { SW_OK } else { SW_ERR };
+        }
+        if self.use_socket() != 0 {
+            return self.op(OP_STREAM_SEND, event as u64);
+        }
         let p = self.p;
         // SAFETY: the pool's shared counter, in place.
         let round_id = unsafe { &raw mut (*p).round_id };
@@ -1720,8 +1738,57 @@ mod tests {
         let mut event = [0u8; 64];
         let mut worker_id = -1;
         pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, false);
-        pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, true);
-        assert_eq!(ops(&pool), [OP_STREAM_SEND, OP_SYNC_SEND]);
+        assert_eq!(ops(&pool), [OP_STREAM_SEND]);
+    }
+
+    #[test]
+    fn a_socket_pool_sends_a_blocking_dispatch_length_prefixed() {
+        use std::io::Read;
+        let path = std::env::temp_dir().join(format!("swr-pool-sync-{}.sock", std::process::id()));
+        std::fs::remove_file(&path).ok();
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let file = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let mut fixture = Fixture::new(0);
+        let mut pool = fixture.pool(Script::default());
+        record(&mut pool).use_socket = 1;
+        let ipc = swr_v1_process_pool_ipc_new(true);
+        // SAFETY: a live handle and string.
+        unsafe { crate::pool::swr_v1_process_pool_ipc_address(ipc, file.as_ptr(), 0) };
+        record(&mut pool).ipc = ipc;
+        let mut event = [0u8; 64];
+        event[EVENT_LEN] = 3;
+        event[HEAD_SIZE as usize..][..3].copy_from_slice(b"abc");
+        let mut worker_id = -1;
+        assert_eq!(
+            pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, true),
+            SW_OK
+        );
+        let mut received = Vec::new();
+        listener
+            .accept()
+            .unwrap()
+            .0
+            .read_to_end(&mut received)
+            .unwrap();
+        assert_eq!(received[..4], 43u32.to_be_bytes());
+        assert_eq!(received[4..], event[..43]);
+        assert_eq!(ops(&pool), [] as [u32; 0]);
+        std::fs::remove_file(&path).unwrap();
+        record(&mut pool).ipc = ptr::null_mut();
+        // SAFETY: the handle made above; it has no listener to close.
+        unsafe { swr_v1_process_pool_ipc_free(ipc, close) };
+        // A pool whose listener is gone fails.
+        let ipc = swr_v1_process_pool_ipc_new(true);
+        // SAFETY: as above.
+        unsafe { crate::pool::swr_v1_process_pool_ipc_address(ipc, file.as_ptr(), 0) };
+        record(&mut pool).ipc = ipc;
+        assert_eq!(
+            pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, true),
+            SW_ERR
+        );
+        record(&mut pool).ipc = ptr::null_mut();
+        // SAFETY: as above.
+        unsafe { swr_v1_process_pool_ipc_free(ipc, close) };
     }
 
     #[test]

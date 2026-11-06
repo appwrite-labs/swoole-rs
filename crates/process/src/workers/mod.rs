@@ -63,9 +63,133 @@ struct Native {
 
 impl Host for Native {
     fn op(&mut self, op: u32, arg: u64) -> u64 {
+        // Unit tests link no upstream objects, so native does these ops there.
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        if let Some(result) = effect(op) {
+            return result;
+        }
         // SAFETY: a native fact or effect on the live objects in `context`.
         unsafe { (self.call)(self.context, op, arg) }
     }
+}
+
+/// The `OP_*` facts and effects over thread- and process-wide state (the event
+/// loop, the timer, the last error, the worker globals) rather than the objects
+/// in a context. They mean the same in every context, so Rust does them; `None`
+/// for the rest, which native code does.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+fn effect(op: u32) -> Option<u64> {
+    use core::ffi::c_int;
+    use swoole_rs_corebase::log::{last_error, set_last_error};
+    // SAFETY: src/wrapper/event.cc's, src/wrapper/timer.cc's, src/core/error.cc's
+    // and crates/ossupport's functions, under their upstream symbols.
+    unsafe extern "C" {
+        #[link_name = "_Z17swoole_event_initi"]
+        fn swoole_event_init(flags: c_int) -> c_int;
+        #[link_name = "_Z17swoole_event_freev"]
+        fn swoole_event_free() -> c_int;
+        #[link_name = "_Z25swoole_event_is_availablev"]
+        fn swoole_event_is_available() -> bool;
+        #[link_name = "_Z17swoole_event_waitv"]
+        fn swoole_event_wait() -> c_int;
+        #[link_name = "_Z19swoole_timer_createb"]
+        fn swoole_timer_create(manually_trigger: bool) -> *mut c_void;
+        #[link_name = "_Z25swoole_timer_is_availablev"]
+        fn swoole_timer_is_available() -> bool;
+        #[link_name = "_Z17swoole_timer_freev"]
+        fn swoole_timer_free();
+        #[link_name = "_Z19swoole_timer_selectv"]
+        fn swoole_timer_select();
+        #[link_name = "_Z26swoole_timer_get_next_msecv"]
+        fn swoole_timer_get_next_msec() -> i64;
+        #[link_name = "_Z27swoole_clear_last_error_msgv"]
+        fn swoole_clear_last_error_msg();
+        #[link_name = "_Z31swoole_set_process_death_signali"]
+        fn swoole_set_process_death_signal(signal: c_int);
+    }
+    /// `SW_ERROR_OPERATION_NOT_SUPPORT`, `SW_ERROR_OUTPUT_SEND_YIELD`, `SW_ERROR_SOCKET_POLL_TIMEOUT`.
+    const NOT_SUPPORT: c_int = 507;
+    const SEND_YIELD: c_int = 1010;
+    const POLL_TIMEOUT: c_int = 6002;
+    let int = |value: c_int| i64::from(value).cast_unsigned();
+    let globals = crate::worker_globals::swr_v1_worker_globals();
+    Some(match op {
+        // SAFETY: this thread's event loop.
+        ops::OP_EVENT_INIT => int(unsafe { swoole_event_init(0) }),
+        ops::OP_EVENT_FREE => {
+            // SAFETY: as above.
+            unsafe { swoole_event_free() };
+            0
+        }
+        // SAFETY: as above.
+        ops::OP_EVENT_AVAILABLE => u64::from(unsafe { swoole_event_is_available() }),
+        // SAFETY: as above.
+        ops::OP_EVENT_WAIT => int(unsafe { swoole_event_wait() }),
+        ops::OP_TIMER_CREATE => {
+            // SAFETY: this thread's timer.
+            unsafe { swoole_timer_create(true) };
+            0
+        }
+        ops::OP_TIMER_AVAILABLE | ops::OP_HAS_TIMER => {
+            // SAFETY: as above.
+            u64::from(unsafe { swoole_timer_is_available() })
+        }
+        ops::OP_TIMER_FREE => {
+            // In the function that closes the timer, the scheduler is called again;
+            // therefore, it is essential to set the scheduler to null after the timer has been consumed.
+            // SAFETY: as above.
+            if unsafe { swoole_timer_is_available() } {
+                // SAFETY: the thread's timer, freed once.
+                unsafe { swoole_timer_free() };
+            }
+            0
+        }
+        ops::OP_TIMER_SELECT => {
+            // SAFETY: as above.
+            unsafe { swoole_timer_select() };
+            0
+        }
+        // SAFETY: as above.
+        ops::OP_TIMER_NEXT_MSEC => unsafe { swoole_timer_get_next_msec() }.cast_unsigned(),
+        // SAFETY: a plain syscall.
+        ops::OP_ROOT_USER => u64::from(unsafe { libc::geteuid() } == 0),
+        ops::OP_DEATH_SIGNAL => {
+            // SAFETY: a syscall wrapper.
+            unsafe { swoole_set_process_death_signal(libc::SIGTERM) };
+            0
+        }
+        // SAFETY: this thread's worker globals.
+        ops::OP_HAS_CURRENT_WORKER => u64::from(!unsafe { (*globals).worker }.is_null()),
+        // SAFETY: as above.
+        ops::OP_EXIT_TIME => unsafe { (*globals).exit_time }.cast_unsigned(),
+        ops::OP_WORKER_STOPPED => {
+            crate::worker_globals::swr_v1_worker_global_stopped();
+            0
+        }
+        ops::OP_CLEAR_LAST_ERROR => {
+            set_last_error(0);
+            // SAFETY: this thread's error message.
+            unsafe { swoole_clear_last_error_msg() };
+            0
+        }
+        ops::OP_SET_SEND_YIELD => {
+            set_last_error(SEND_YIELD);
+            0
+        }
+        ops::OP_SET_NOT_SUPPORTED => {
+            set_last_error(NOT_SUPPORT);
+            0
+        }
+        ops::OP_SEND_TIMED_OUT => {
+            let errno = std::io::Error::last_os_error().raw_os_error();
+            u64::from(
+                errno == Some(libc::EAGAIN)
+                    || errno == Some(libc::ETIMEDOUT)
+                    || last_error() == POLL_TIMEOUT,
+            )
+        }
+        _ => return None,
+    })
 }
 
 /// Runs one worker-side operation (`ops::RUN_*`) with `arg`; the result is the

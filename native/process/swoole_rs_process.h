@@ -294,7 +294,6 @@ int swr_v1_process_reap_wait(void *_ctx, bool nonblock, int *status, int *error)
 #define SWR_POOL_OP_EVENT_INIT 44
 #define SWR_POOL_OP_BOX_PUSH 45
 #define SWR_POOL_OP_STREAM_SEND 46
-#define SWR_POOL_OP_SYNC_SEND 47
 #define SWR_POOL_CB_START 1
 #define SWR_POOL_CB_BEFORE_RELOAD 2
 #define SWR_POOL_CB_SHUTDOWN 3
