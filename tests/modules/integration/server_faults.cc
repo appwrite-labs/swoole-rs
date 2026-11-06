@@ -42,7 +42,7 @@ struct Context {
 };
 static ServerReply effect(void *, uint32_t, uint64_t);
 static int64_t invoke(Context &context, uint32_t operation) {
-    return context.exception.finish(swr_v1_server_run_guarded(operation, 0, &context, effect, context.state));
+    return context.exception.finish(swr_v1_server_run_guarded(operation, 0, &context, effect, context.state, nullptr));
 }
 static ServerReply effect(void *opaque, uint32_t op, uint64_t arg) {
     auto &context = *static_cast<Context *>(opaque);

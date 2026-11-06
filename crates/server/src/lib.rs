@@ -28,6 +28,7 @@ mod dispatch;
 mod json;
 mod layout;
 pub mod local_addr;
+mod master_ops;
 pub mod ops;
 pub mod port_config;
 mod reactor_io;
@@ -150,6 +151,9 @@ struct Native<C> {
     context: *mut c_void,
     call: C,
     state: *const ServerState,
+    /// master.cc's context, whose records `master_ops` answers ops from; null
+    /// for the other runners.
+    master: *mut server_methods::NativeContext,
 }
 
 impl<C: NativeCall> Host for Native<C> {
@@ -163,6 +167,17 @@ impl<C: NativeCall> Host for Native<C> {
             }
             // SAFETY: the same call lends synchronized shared records, without holding callbacks.
             if let Some(value) = unsafe { shared::native_fact(self.state, op, arg) } {
+                return Ok(value);
+            }
+            let (context, call) = (self.context, &self.call);
+            let port_count = || {
+                // SAFETY: the guarded runner's live context; `PORT_COUNT` is a native leaf fact.
+                unsafe { call.invoke(context, ops::OP_PORT_COUNT, 0) }.unwrap_or(0)
+            };
+            // SAFETY: the guarded runner lends master.cc's live context with its state.
+            let answer =
+                unsafe { master_ops::answer(self.master, self.state, op, arg, port_count) };
+            if let Some(value) = answer {
                 return Ok(value);
             }
         }
@@ -209,6 +224,7 @@ pub unsafe extern "C" fn swr_v1_server_run(
             context,
             call,
             state: core::ptr::null(),
+            master: core::ptr::null_mut(),
         },
         operation,
         arg,
@@ -235,6 +251,7 @@ pub unsafe extern "C" fn swr_v1_server_run_state(
             context,
             call,
             state,
+            master: core::ptr::null_mut(),
         },
         operation,
         arg,
@@ -244,6 +261,7 @@ pub unsafe extern "C" fn swr_v1_server_run_state(
 
 /// Run one operation with typed abnormal-effect propagation. No effect after the
 /// first fault executes; local Rust owners are dropped before this returns.
+/// `master` is master.cc's context (inside `context`), whose records Rust reads.
 /// # Safety
 /// Context/state remain live and synchronized; call catches all native unwinds,
 /// bailouts and thread exits before returning, and owns their pending payload.
@@ -254,12 +272,14 @@ pub unsafe extern "C" fn swr_v1_server_run_guarded(
     context: *mut c_void,
     call: ServerGuardedCall,
     state: *const ServerState,
+    master: *mut server_methods::NativeContext,
 ) -> ServerReply {
     match run(
         &mut Native {
             context,
             call,
             state,
+            master,
         },
         operation,
         arg,
@@ -431,6 +451,7 @@ mod mode_tests {
             context: core::ptr::null_mut(),
             call: unreachable as super::ServerCall,
             state,
+            master: core::ptr::null_mut(),
         };
         assert_eq!(host.get(OP_MODE), Ok(2));
         // SAFETY: created above and not used again.

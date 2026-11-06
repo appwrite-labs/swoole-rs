@@ -29,8 +29,9 @@ int64_t swr_v1_server_run_state(uint32_t operation, uint64_t arg, void *context,
  * This does not transport Zend bailout, pthread_exit or cancellation unwinds. */
 typedef struct ServerReply { uint64_t value; uint32_t fault; } ServerReply;
 typedef ServerReply (*ServerGuardedCall)(void *context, uint32_t op, uint64_t arg);
+/* master: master.cc's ServerRustContext, whose records Rust reads (crates/server/src/master_ops.rs). */
 ServerReply swr_v1_server_run_guarded(uint32_t operation, uint64_t arg, void *context,
-    ServerGuardedCall call, const struct swr_v1_server_state *state);
+    ServerGuardedCall call, const struct swr_v1_server_state *state, void *master);
 /* master.cc's guarded runner, which the Server methods crates/server/src/server_methods.rs defines call. */
 void swr_v1_server_set_native(int64_t (*run)(uint32_t operation, uint64_t arg, void *context));
 
