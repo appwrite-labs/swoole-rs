@@ -2,10 +2,10 @@
 //! interface addresses, keyed by interface name.
 use crate::ops;
 use std::{
-    ffi::{CStr, c_char, c_int},
+    ffi::{CStr, CString, c_char, c_int},
     io, ptr,
 };
-use swoole_rs_zend::{Call, E_WARNING, handlers, message, php_error, set_key};
+use swoole_rs_zend::{Call, E_WARNING, handlers, php_error, set_key};
 
 handlers! {
     zif_swoole_get_local_ip => local_ip;
@@ -13,8 +13,9 @@ handlers! {
 }
 
 /// `php_swoole_sys_error(E_WARNING, what)`: record errno as the last error and
-/// warn with its message if Swoole displays errors.
-fn sys_warning(what: &str) {
+/// warn with its message if Swoole displays errors; a bailout of the
+/// warning is deferred.
+pub fn sys_warning(what: &[u8]) {
     let code = io::Error::last_os_error().raw_os_error().unwrap_or(0);
     // SAFETY: C++'s setter.
     unsafe { (ops().set_last_error)(code) };
@@ -26,9 +27,17 @@ fn sys_warning(what: &str) {
     let reason = unsafe { libc::strerror(code) };
     // SAFETY: a NUL-terminated message.
     let reason = unsafe { CStr::from_ptr(reason) };
-    let text = message!("{what}, Error: {}[{code}]", reason.to_string_lossy());
+    let mut text = what.to_vec();
+    text.extend_from_slice(format!(", Error: {}[{code}]", reason.to_string_lossy()).as_bytes());
+    // printf's %s stops at the first NUL.
+    text.truncate(
+        text.iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(text.len()),
+    );
+    let text = CString::new(text).unwrap_or_default();
     // SAFETY: a handler, with a NUL-terminated message.
-    swoole_rs_zend::bailout::defer(unsafe { php_error(E_WARNING, text.as_cstr()) });
+    swoole_rs_zend::bailout::defer(unsafe { php_error(E_WARNING, &text) });
 }
 
 /// The host's interfaces (`getifaddrs`), freed on drop.
@@ -114,7 +123,7 @@ unsafe fn printable(address: *const libc::sockaddr) -> Option<Vec<u8>> {
 fn local_ip(call: &Call) {
     // Upstream lists the interfaces before parsing the arguments.
     let Some(interfaces) = Interfaces::new() else {
-        sys_warning("getifaddrs() failed");
+        sys_warning(b"getifaddrs() failed");
         call.set_bool(false);
         return;
     };
@@ -168,7 +177,7 @@ fn local_mac(call: &Call) {
     // SAFETY: plain socket creation.
     let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
     if sock < 0 {
-        sys_warning("socket creation failed");
+        sys_warning(b"socket creation failed");
         call.set_bool(false);
         return;
     }
@@ -186,7 +195,7 @@ fn local_mac(call: &Call) {
     conf.ifc_ifcu.ifcu_req = buffer.as_mut_ptr();
     // SAFETY: a socket and an ifconf over a live buffer.
     if unsafe { libc::ioctl(sock, SIOCGIFCONF, &raw mut conf) } < 0 {
-        sys_warning("ioctl SIOCGIFCONF failed");
+        sys_warning(b"ioctl SIOCGIFCONF failed");
         // SAFETY: our socket.
         unsafe { libc::close(sock) };
         call.set_bool(false);
@@ -225,7 +234,7 @@ fn local_mac(call: &Call) {
 #[cfg(target_os = "macos")]
 fn local_mac(call: &Call) {
     let Some(interfaces) = Interfaces::new() else {
-        sys_warning("getifaddrs failed");
+        sys_warning(b"getifaddrs failed");
         call.set_bool(false);
         return;
     };

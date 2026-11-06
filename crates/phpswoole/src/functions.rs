@@ -256,6 +256,15 @@ fn mime_type_delete(call: &Call) {
     }
 }
 
+/// `mime_type::get(path)`: a static type text.
+#[must_use]
+pub fn mime_type(path: &CStr) -> &'static CStr {
+    // SAFETY: C++'s table, with a live NUL-terminated path.
+    let kind = unsafe { (ops().mime_get)(path.as_ptr()) };
+    // SAFETY: the table's entries outlive the module.
+    unsafe { CStr::from_ptr(kind) }
+}
+
 fn mime_type_get(call: &Call) {
     if let Some([filename]) = strings(call) {
         // SAFETY: C++'s table, with a live argument string.

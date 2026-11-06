@@ -21,6 +21,12 @@ struct _zend_class_entry;
 struct _zend_execute_data;
 struct _zval_struct;
 struct _zend_fcall_info_cache;
+struct swr_v1_runtime_callable_call {
+    void *callable;
+    uint32_t argc;
+    struct _zval_struct *argv;
+    bool result;
+};
 typedef void (*swr_v1_phpruntime_handler)(struct _zend_execute_data *execute_data, struct _zval_struct *return_value);
 struct swr_v1_phpruntime_ops {
     uint32_t features;
@@ -39,6 +45,8 @@ struct swr_v1_phpruntime_ops {
     void *(*callable)(struct _zval_struct *name);
     void (*callable_free)(void *callable);
     void *(*callable_dup)(void *callable);
+    /* call->result = callable->call(argc, argv, nullptr); a bailout goes on. */
+    void (*callable_call)(void *call);
     struct _zend_fcall_info_cache *(*callable_fcc)(void *callable);
     void (*log_warning)(const char *message);
     void (*fatal_error)(int32_t level, const char *message);
@@ -93,6 +101,7 @@ void php_swoole_runtime_stream_ops(uint8_t stdio, uint8_t hook);
  * and close are bodies for swr_zend_try over a swr_v1_runtime_socket_call. */
 struct swr_v1_co_socket;
 struct swr_v1_tls_owner;
+struct swr_v1_core_proxy;
 struct swr_v1_runtime_socket_call {
     void *socket; /* make's result, close's socket */
     int fd, domain, type, protocol; /* make: without fd when fd < 0 */
@@ -140,6 +149,8 @@ struct swr_v1_runtime_socket_ops {
                   size_t user_length, const char *password, size_t password_length);
     /* The SSLContext's owner, which crates/tls configures; NULL while TLS is off. */
     const struct swr_v1_tls_owner *(*ssl_context)(void *socket);
+    /* The HTTP proxy's owner (crates/corebase's ProxyState); NULL without one. */
+    struct swr_v1_core_proxy *(*http_proxy)(void *socket);
 };
 extern const struct swr_v1_runtime_socket_ops swr_v1_runtime_socket;
 #ifdef __cplusplus

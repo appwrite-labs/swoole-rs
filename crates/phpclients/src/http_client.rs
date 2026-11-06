@@ -2,8 +2,8 @@
 //! state and every operation over it (connect and keep-alive, request
 //! building with multipart uploads, the response loop and llhttp's callbacks,
 //! decompression, downloads, the WebSocket upgrade, push and receive). The
-//! coroutine socket, WebSocket framing, files and callables stay C++ and are
-//! reached one call at a time (`crate::http_native`).
+//! coroutine socket, files and callables are reached through
+//! `crate::http_native`, as is WebSocket framing, which stays C++.
 use crate::{
     http_native as native,
     http_request::{self as request, Compress},
@@ -28,6 +28,7 @@ use std::{
 };
 use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_inflate::Inflate;
+use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_phptable::{self as table, Owned};
 use swoole_rs_zend::{
@@ -193,9 +194,8 @@ fn warn(fatal: bool, message: &CStr) {
 }
 
 /// `php_swoole_sys_error(E_WARNING, "%s", message)`.
-fn sys_error(message: &CStr) {
-    // SAFETY: C++'s reporter, from a handler; errno is the failed call's.
-    bailout::defer(unsafe { bailout::report(native::swoole_http_client_coro_sys_error, message) });
+fn sys_error(message: &[u8]) {
+    swoole_rs_phpswoole::sys_warning(message);
 }
 
 fn ce() -> *mut zend_class_entry {
@@ -568,7 +568,7 @@ impl Client {
                 // SAFETY: the callable the client owns, if any.
                 unsafe { native::swoole_http_client_coro_callable_free(self.write_func) };
                 // SAFETY: a live zval.
-                self.write_func = unsafe { native::swoole_http_client_coro_callable(found) };
+                self.write_func = unsafe { swoole_rs_phpruntime::callable_create(found) };
             }
             // SAFETY: the client's WebSocket state and a live array.
             unsafe { native::swoole_http_client_coro_ws_apply(self.ws, settings) };
@@ -620,7 +620,7 @@ impl Client {
         // SAFETY: the conn lives as long as the client.
         unsafe { (*self.conn).socket = socket };
         // SAFETY: a live socket.
-        if self.ssl && !unsafe { native::swoole_http_client_coro_enable_ssl(socket) } {
+        if self.ssl && !unsafe { co::enable_ssl(socket) } {
             self.set_socket_error(socket, CONNECT_FAILED);
             self.close(true);
             return false;
@@ -1022,7 +1022,7 @@ impl Client {
         self.path = path.to_vec();
         // SAFETY: the client's resolve context.
         unsafe {
-            native::swoole_http_client_coro_resolve_reset(self.resolve, self.use_default_port);
+            native::swoole_name_resolver_context_reset(self.resolve, self.use_default_port);
         };
         let mut attempt = 0;
         while attempt < u32::from(self.max_retries) + 1 {
@@ -1076,17 +1076,11 @@ impl Client {
                 native::swoole_http_client_coro_read_buffer(socket, &raw mut length, &raw mut size)
             };
             // SAFETY: the read buffer has `size` bytes, `length` of them used.
-            received = unsafe {
-                native::swoole_http_client_coro_recv(
-                    socket,
-                    buffer.wrapping_add(length),
-                    size - length,
-                )
-            };
+            received = unsafe { co::recv(socket, buffer.wrapping_add(length), size - length) };
             if received <= 0 {
                 if received == 0 {
                     // SAFETY: a live socket.
-                    unsafe { native::swoole_http_client_coro_set_err(socket, libc::ECONNRESET) };
+                    unsafe { co::set_err(socket, libc::ECONNRESET) };
                     if total > 0 && !self.parser.keep_alive() {
                         self.parser.finish();
                         success = true;
@@ -1105,7 +1099,7 @@ impl Client {
                     if length == size {
                         // SAFETY: as above.
                         unsafe {
-                            native::swoole_http_client_coro_set_err(socket, INVALID_PROTOCOL);
+                            co::set_err(socket, INVALID_PROTOCOL);
                         };
                         break;
                     }
@@ -1133,7 +1127,7 @@ impl Client {
             }
             if self.parser.error != llhttp::OK {
                 // SAFETY: as above.
-                unsafe { native::swoole_http_client_coro_set_err(socket, INVALID_PROTOCOL) };
+                unsafe { co::set_err(socket, INVALID_PROTOCOL) };
                 break;
             }
             if self.event_stream && self.parser.needs_eof() {
@@ -1304,7 +1298,7 @@ impl Client {
             unsafe { swoole_rs_set_last_error(HANDSHAKE_FAILED) };
             warn(true, c"websocket handshake failed, cannot push data");
             // SAFETY: a plain read of Swoole's thread error.
-            let last = unsafe { native::swoole_http_client_coro_last_error() };
+            let last = swoole_rs_corebase::log::last_error();
             props::long(object, c"errCode", i64::from(last));
             props::string(
                 object,
@@ -1334,7 +1328,7 @@ impl Client {
                 // SAFETY: a plain store into Swoole's thread error.
                 unsafe { swoole_rs_set_last_error(PACK_FAILED) };
                 // SAFETY: a plain read of Swoole's thread error.
-                let last = unsafe { native::swoole_http_client_coro_last_error() };
+                let last = swoole_rs_corebase::log::last_error();
                 props::long(object, c"errCode", i64::from(last));
                 props::string(object, c"errMsg", c"websocket frame pack failed");
                 false
@@ -1385,7 +1379,7 @@ impl Client {
         }
         props::bool(self.object, c"connected", false);
         // SAFETY: as above.
-        if !unsafe { native::swoole_http_client_coro_close(socket) } {
+        if !unsafe { co::close(socket) } {
             socket_error_properties(self.object, socket);
             return false;
         }
@@ -1736,17 +1730,6 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
     ClientObject::install(entry, handlers, create, free);
 }
 
-// C++ trampolines over the `calling!` bodies below, which re-raise a bailout
-// from the `write_func` callback once the Rust frames are gone.
-unsafe extern "C" {
-    fn zim_swoole_http_client_coro_execute(frame: *mut z::zend_execute_data, value: *mut zval);
-    fn zim_swoole_http_client_coro_get(frame: *mut z::zend_execute_data, value: *mut zval);
-    fn zim_swoole_http_client_coro_post(frame: *mut z::zend_execute_data, value: *mut zval);
-    fn zim_swoole_http_client_coro_download(frame: *mut z::zend_execute_data, value: *mut zval);
-    fn zim_swoole_http_client_coro_upgrade(frame: *mut z::zend_execute_data, value: *mut zval);
-    fn zim_swoole_http_client_coro_recv(frame: *mut z::zend_execute_data, value: *mut zval);
-}
-
 method_table! {
     static METHODS = [
         c"__construct" => zim_swoole_http_client_coro___construct, &http_client_coro::arginfo_class_Swoole_Coroutine_Http_Client___construct, z::ZEND_ACC_PUBLIC;
@@ -2076,7 +2059,7 @@ fn add_file(call: &Call) {
     // SAFETY: a NUL-terminated path and a writable stat buffer.
     if unsafe { libc::stat(c_path.as_ptr(), stat.as_mut_ptr()) } < 0 {
         let message = [&b"stat("[..], c_path.to_bytes(), b") failed"].concat();
-        sys_error(&c_bytes(&message));
+        sys_error(&message);
         return call.set_bool(false);
     }
     // SAFETY: stat filled it.
@@ -2084,7 +2067,7 @@ fn add_file(call: &Call) {
     if size == 0 {
         let shown = filename.map_or(&b"(null)"[..], |filename| filename);
         let message = [&b"cannot send empty file["[..], shown, b"]"].concat();
-        sys_error(&c_bytes(&message));
+        sys_error(&message);
         return call.set_bool(false);
     }
     if size <= offset {
@@ -2094,7 +2077,7 @@ fn add_file(call: &Call) {
     }
     if length > size - offset {
         let message = format!("parameter $length[{length}] exceeds the file size");
-        sys_error(&CString::new(message).unwrap_or_default());
+        sys_error(message.as_bytes());
         return call.set_bool(false);
     }
     if length == 0 {
@@ -2180,30 +2163,29 @@ fn path_arg<'a>(call: &Call) -> Option<&'a [u8]> {
     path
 }
 
-/// A method that can run PHP: its body, and whether it trapped a bailout.
+/// A method that can run PHP: its body says whether the `write_func`
+/// callback bailed out, which goes on once the body's frames are gone.
 macro_rules! calling {
     ($($name:ident => $body:ident;)*) => {$(
-        /// A Zend handler body for a C++ trampoline.
+        /// A Zend handler.
         /// # Safety
-        /// Called by the trampoline with Zend's live frame and return slot.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(
-            frame: *mut swoole_rs_zend::sys::zend_execute_data,
-            value: *mut zval,
-        ) -> bool {
-            // SAFETY: per the trampoline.
-            $body(&unsafe { Call::new(frame, value) })
+        /// Called by Zend with its live frame and return slot.
+        unsafe extern "C" fn $name(frame: *mut z::zend_execute_data, value: *mut zval) {
+            // SAFETY: per Zend.
+            if $body(&unsafe { Call::new(frame, value) }) {
+                bailout::raise(Err(bailout::Bailout));
+            }
         }
     )*};
 }
 
 calling! {
-    swr_v1_phpclients_http_client_execute => execute;
-    swr_v1_phpclients_http_client_get => get;
-    swr_v1_phpclients_http_client_post => post;
-    swr_v1_phpclients_http_client_download => download;
-    swr_v1_phpclients_http_client_upgrade => upgrade;
-    swr_v1_phpclients_http_client_recv => recv;
+    zim_swoole_http_client_coro_execute => execute;
+    zim_swoole_http_client_coro_get => get;
+    zim_swoole_http_client_coro_post => post;
+    zim_swoole_http_client_coro_download => download;
+    zim_swoole_http_client_coro_upgrade => upgrade;
+    zim_swoole_http_client_coro_recv => recv;
 }
 
 fn execute(call: &Call) -> bool {

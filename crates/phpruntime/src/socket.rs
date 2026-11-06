@@ -108,6 +108,7 @@ struct SocketOps {
         size_t,
     ),
     ssl_context: unsafe extern "C" fn(*mut c_void) -> *const c_void,
+    http_proxy: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
 }
 
 unsafe extern "C" {
@@ -606,8 +607,9 @@ pub mod co {
     use swoole_rs_hooks::{
         TimeoutScope,
         co_io::{
-            swr_v1_hook_co_socket_bound_cid, swr_v1_hook_co_socket_owned_err,
-            swr_v1_hook_co_socket_set_err,
+            swr_v1_hook_co_socket_bound_cid, swr_v1_hook_co_socket_check_bound,
+            swr_v1_hook_co_socket_owned_err, swr_v1_hook_co_socket_set_err,
+            swr_v1_hook_co_socket_timed_out,
         },
         lifecycle::{
             swr_v1_hook_co_socket_cancel, swr_v1_hook_co_socket_check_liveness,
@@ -691,6 +693,26 @@ pub mod co {
             let record = unsafe { record(socket) };
             // SAFETY: its live record.
             Self(unsafe { swr_v1_hook_timeout_scope(record, timeout, kind) })
+        }
+
+        /// `TimeoutController::has_timedout(kind)`: the first call starts the
+        /// clock; later ones shrink the socket's timeout to what is left, or
+        /// set `ETIMEDOUT` once none is.
+        pub fn timed_out(&mut self, kind: c_int) -> bool {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |now| now.as_secs_f64());
+            let scope = &mut self.0;
+            // SAFETY: the scope's socket is live, per `set`.
+            unsafe {
+                swr_v1_hook_co_socket_timed_out(
+                    scope.socket,
+                    scope.timeout,
+                    &raw mut scope.startup,
+                    now,
+                    kind,
+                )
+            }
         }
     }
 
@@ -1053,6 +1075,51 @@ pub mod co {
     pub unsafe fn get_timeout(socket: Socket, kind: c_int) -> f64 {
         // SAFETY: per the caller; the member is not virtual.
         unsafe { socket_members::get_timeout(socket, kind) }
+    }
+
+    /// `check_bound_co(event)`: a fatal error if another coroutine holds it.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn check_bound(socket: Socket, event: u32) {
+        // SAFETY: per the caller.
+        let record = unsafe { record(socket) };
+        // SAFETY: a live record.
+        unsafe { swr_v1_hook_co_socket_check_bound(record, event) };
+    }
+
+    /// `ssl_is_enable()`.
+    /// # Safety
+    /// `socket` is live.
+    #[must_use]
+    pub unsafe fn ssl_enabled(socket: Socket) -> bool {
+        // SAFETY: per the caller.
+        unsafe { (native().ssl_enabled)(socket) }
+    }
+
+    /// The HTTP proxy's `ProxyState`, or null.
+    /// # Safety
+    /// `socket` is live.
+    #[must_use]
+    pub unsafe fn http_proxy(socket: Socket) -> *mut c_void {
+        // SAFETY: per the caller.
+        unsafe { (native().http_proxy)(socket) }
+    }
+
+    /// `ssl_get_peer_cert()`: empty (with the socket's error set) without one.
+    /// # Safety
+    /// `socket` is live and has TLS.
+    #[must_use]
+    pub unsafe fn peer_cert(socket: Socket) -> Vec<u8> {
+        unsafe extern "C" fn each(arg: *mut c_void, pem: *const c_char, length: usize) {
+            // SAFETY: `pem` holds `length` bytes and `arg` is the vector below.
+            let pem = unsafe { std::slice::from_raw_parts(pem.cast::<u8>(), length) };
+            // SAFETY: as above.
+            unsafe { &mut *arg.cast::<Vec<u8>>() }.extend_from_slice(pem);
+        }
+        let mut cert = Vec::new();
+        // SAFETY: per the caller; `each` runs once, synchronously.
+        unsafe { (native().peer_certs)(socket, false, each, (&raw mut cert).cast()) };
+        cert
     }
 
     /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
