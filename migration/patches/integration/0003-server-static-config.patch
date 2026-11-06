@@ -1,12 +1,9 @@
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 29e9f7212..188990f71 100644
+index 2b7dca8..4edd302 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -1548,3 +1548,7 @@ int Server::send_to_connection(const SendData *_send) const {
+@@ -1550,3 +1550,3 @@ int Server::send_to_connection(const SendData *_send) const {
      if (_send->info.type == SW_SERVER_EVENT_CLOSE) {
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
+-        _socket->out_buffer->alloc(BufferChunk::TYPE_CLOSE, 0);
 +        _socket->out_buffer->typed_close();
-+#else
-         _socket->out_buffer->alloc(BufferChunk::TYPE_CLOSE, 0);
-+#endif
          conn->close_queued = 1;

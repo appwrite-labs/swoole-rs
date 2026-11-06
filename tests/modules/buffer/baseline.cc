@@ -9,15 +9,12 @@
 void original_buffer_append_iov();
 swoole::Global SwooleG{};
 static uint32_t random_state = 1;
-#ifndef SWR_BUFFER_HYBRID_GATE
-// The hybrid gate links the Rust archive, which defines swoole_rand.
 int swoole_rand(int minimum, int maximum) {
     random_state ^= random_state << 13;
     random_state ^= random_state >> 17;
     random_state ^= random_state << 5;
     return minimum + int(random_state % uint32_t(maximum - minimum + 1));
 }
-#endif
 
 static void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
@@ -117,10 +114,6 @@ int main() {
                               << ",\"expected_remaining\":" << expected << ",\"actual_remaining\":" << buffer.length() << '}';
                 }
                 const bool copied_equal = std::equal(copied.begin(), copied.end(), bytes.begin() + offset, bytes.end());
-#ifdef SWR_BUFFER_HYBRID_GATE
-                require(copied_equal, "Hybrid scatter/gather copied wrong bytes");
-                require(!mismatch, "Hybrid pop accounting differs from copied length");
-#endif
                 copied_mismatches += !copied_equal;
                 mismatches += mismatch;
                 std::cout << "],\"copied_bytes_equal\":" << (copied_equal ? "true" : "false")
@@ -137,17 +130,9 @@ int main() {
         swoole::Buffer underflow(4);
         underflow.append(&vector, 1, 3);
         require(underflow.length() == 3 && underflow.front()->length == 3, "Minimal reproducer copied length changed");
-#ifndef SWR_BUFFER_HYBRID_GATE
         require(underflow.front()->size == 4, "Pinned baseline allocation changed");
-#else
-        require(underflow.front()->size == 3, "Hybrid chunk capacity must equal copied bytes");
-#endif
         underflow.pop();
-#ifdef SWR_BUFFER_HYBRID_GATE
-        require(underflow.empty() && underflow.length() == 0, "Hybrid reproduced upstream underflow");
-#else
         require(underflow.empty() && underflow.length() == UINT32_MAX, "Expected pinned baseline underflow not reproduced");
-#endif
         {
             swoole::Buffer buffer(4);
             for (unsigned id = 1; id <= 3; ++id) {

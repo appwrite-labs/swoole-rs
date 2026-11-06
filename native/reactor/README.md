@@ -33,8 +33,7 @@ and `destroy_callbacks` FIFOs ([callbacks.md](callbacks.md)). These change the
 private Reactor layout, so every selected SDK consumer must rebuild. The socket
 map stays upstream's `std::unordered_map`: a Rust registry can only reproduce
 its iteration order per C++ standard library, and existed only for Apple libc++.
-`SWOOLE_RS_BUFFER_TYPED` (on with Rust Buffer and reactor) makes Server callers
-use the typed Rust Buffer queue ([output.md](output.md)).
+Server callers use the typed Rust Buffer queue ([output.md](output.md)).
 
 ## Contents
 

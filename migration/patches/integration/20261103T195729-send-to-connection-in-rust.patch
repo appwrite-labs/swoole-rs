@@ -1,8 +1,8 @@
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 7328b22..5c638ac 100644
+index b143de4..0b76a3a 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -690,179 +690,8 @@ int Server::schedule_worker(int fd, SendData *data) {
+@@ -667,175 +667,8 @@ int Server::schedule_worker(int fd, SendData *data) {
  int Server::send_to_connection(const SendData *_send) const {
 -    const SessionId session_id = _send->info.fd;
 -    const char *_send_data = _send->data;
@@ -125,11 +125,7 @@ index 7328b22..5c638ac 100644
 -
 -    // close connection
 -    if (_send->info.type == SW_SERVER_EVENT_CLOSE) {
--#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 -        _socket->out_buffer->typed_close();
--#else
--        _socket->out_buffer->alloc(BufferChunk::TYPE_CLOSE, 0);
--#endif
 -        conn->close_queued = 1;
 -    } else if (_send->info.type == SW_SERVER_EVENT_SEND_FILE) {
 -        auto *task = (SendfileTask *) _send_data;
@@ -188,7 +184,7 @@ index 7328b22..5c638ac 100644
 +    ctx.length = _send->info.len;
 +    return server_run(SWR_SERVER_RUN_SC_SEND, _send->info.type, &ctx);
  }
-@@ -2206,2 +2035,154 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
+@@ -2179,2 +2012,150 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
  
 +    case SWR_SERVER_OP_SC_VERIFY:
 +        ctx->conn = ctx->send->info.type != SW_SERVER_EVENT_CLOSE ? serv->get_connection_verify(ctx->session_id)
@@ -281,11 +277,7 @@ index 7328b22..5c638ac 100644
 +        }
 +        return 0;
 +    case SWR_SERVER_OP_SC_QUEUE_CLOSE:
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 +        sock->out_buffer->typed_close();
-+#else
-+        sock->out_buffer->alloc(BufferChunk::TYPE_CLOSE, 0);
-+#endif
 +        conn->close_queued = 1;
 +        return 0;
 +    case SWR_SERVER_OP_SC_SENDFILE: {

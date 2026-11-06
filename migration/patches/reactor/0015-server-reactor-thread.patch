@@ -1,12 +1,12 @@
 diff --git a/src/server/reactor_thread.cc b/src/server/reactor_thread.cc
-index 526789f..db4b417 100644
+index f165dca..48dec4c 100644
 --- a/src/server/reactor_thread.cc
 +++ b/src/server/reactor_thread.cc
-@@ -19,2 +19,3 @@
+@@ -22,2 +22,3 @@
  #include "swoole_util.h"
 +#include "swoole_rs.h"
  
-@@ -35,100 +36,162 @@ static void ReactorThread_resume_data_receiving(Timer *timer, TimerNode *tnode);
+@@ -38,100 +39,162 @@ static void ReactorThread_resume_data_receiving(Timer *timer, TimerNode *tnode);
  
 -static inline ReturnCode ReactorThread_verify_ssl_state(Reactor *reactor, ListenPort *port, Socket *_socket) {
 -    auto serv = static_cast<Server *>(reactor->ptr);
@@ -255,7 +255,7 @@ index 526789f..db4b417 100644
                  reactor->close(reactor, session->socket);
 -                return SW_OK;
              }
-@@ -137,29 +200,315 @@ _do_recvfrom:
+@@ -140,29 +203,315 @@ _do_recvfrom:
              ev.type = SW_SERVER_EVENT_INCOMING;
 -            ev.fd = conn->session_id;
 -            ev.reactor_id = conn->reactor_id;
@@ -553,13 +553,13 @@ index 526789f..db4b417 100644
 +            joining->notify_pipe->send_sync((void *) &ev, sizeof(ev));
 +        }
 +        return 0;
-+    }
+     }
 +    case SWR_SERVER_OP_THREAD_JOIN:
 +        serv->get_thread((int) arg)->thread.join();
 +        return 0;
 +    default:
 +        return 0;
-     }
++    }
 +}
  
 -    pkt->length = ret;
@@ -590,7 +590,7 @@ index 526789f..db4b417 100644
 +    ctx.event = event;
 +    return reactor_thread_run(SWR_SERVER_RUN_PACKET_RECEIVED, 0, &ctx);
  }
-@@ -307,53 +656,4 @@ static int ReactorThread_onClose(Reactor *reactor, Event *event) {
+@@ -310,53 +659,4 @@ static int ReactorThread_onClose(Reactor *reactor, Event *event) {
  void ReactorThread::shutdown(Reactor *reactor) {
 -    auto *serv = static_cast<Server *>(reactor->ptr);
 -    // stop listen UDP Port
@@ -646,7 +646,7 @@ index 526789f..db4b417 100644
 +    ReactorThreadContext ctx{static_cast<Server *>(reactor->ptr), reactor, this};
 +    reactor_thread_run(SWR_SERVER_RUN_THREAD_SHUTDOWN, 0, &ctx);
  }
-@@ -361,30 +661,4 @@ void ReactorThread::shutdown(Reactor *reactor) {
+@@ -364,30 +664,4 @@ void ReactorThread::shutdown(Reactor *reactor) {
  int ReactorThread::close_connection(Reactor *reactor, SessionId session_id) {
 -    auto *serv = static_cast<Server *>(reactor->ptr);
 -    Connection *conn = serv->get_connection_verify_no_ssl(session_id);
@@ -679,7 +679,7 @@ index 526789f..db4b417 100644
 +    ReactorThreadContext ctx{static_cast<Server *>(reactor->ptr), reactor, this};
 +    return reactor_thread_run(SWR_SERVER_RUN_THREAD_CLOSE, session_id, &ctx);
  }
-@@ -395,66 +669,5 @@ int ReactorThread::close_connection(Reactor *reactor, SessionId session_id) {
+@@ -398,66 +672,5 @@ int ReactorThread::close_connection(Reactor *reactor, SessionId session_id) {
  static int ReactorThread_onPipeRead(Reactor *reactor, Event *ev) {
 -    SendData _send;
      auto *serv = static_cast<Server *>(reactor->ptr);
@@ -748,7 +748,7 @@ index 526789f..db4b417 100644
 +    ReactorThreadContext ctx{serv, reactor, serv->get_thread(reactor->id), ev};
 +    return reactor_thread_run(SWR_SERVER_RUN_PIPE_READ, 0, &ctx);
  }
-@@ -526,17 +739,4 @@ static int ReactorThread_onPipeWrite(Reactor *reactor, Event *ev) {
+@@ -520,17 +733,4 @@ static int ReactorThread_onPipeWrite(Reactor *reactor, Event *ev) {
  void Server::init_reactor(Reactor *reactor) {
 -    // support 64K packet
 -    if (have_dgram_sock) {
@@ -768,7 +768,7 @@ index 526789f..db4b417 100644
 +    ReactorThreadContext ctx{this, reactor};
 +    reactor_thread_run(SWR_SERVER_RUN_INIT_REACTOR, 0, &ctx);
  }
-@@ -700,20 +900,6 @@ static int ReactorThread_onWrite(Reactor *reactor, Event *ev) {
+@@ -690,20 +890,6 @@ static int ReactorThread_onWrite(Reactor *reactor, Event *ev) {
  void Server::heartbeat_check(Timer *timer, TimerNode *tnode) {
 -    double now = microtime();
      auto reactor = static_cast<Reactor *>(tnode->data);
@@ -791,7 +791,7 @@ index 526789f..db4b417 100644
 +    ReactorThreadContext ctx{serv, reactor, serv->get_thread(reactor->id)};
 +    reactor_thread_run(SWR_SERVER_RUN_HEARTBEAT_CHECK, 0, &ctx);
  }
-@@ -724,58 +910,19 @@ void Server::heartbeat_check(Timer *timer, TimerNode *tnode) {
+@@ -714,58 +900,19 @@ void Server::heartbeat_check(Timer *timer, TimerNode *tnode) {
  int Server::start_reactor_threads() {
 -    if (swoole_event_init(0) < 0) {
 -        return SW_ERR;
@@ -866,7 +866,7 @@ index 526789f..db4b417 100644
 -    return start_master_thread(reactor);
 +    });
  }
-@@ -868,32 +1015,4 @@ void ReactorThread::clean() {
+@@ -858,32 +1005,4 @@ void ReactorThread::clean() {
  void Server::reactor_thread_main_loop(Server *serv, int reactor_id) {
 -    ReactorThread *thread = serv->get_thread(reactor_id);
 -    thread->id = reactor_id;
@@ -901,7 +901,7 @@ index 526789f..db4b417 100644
 +    ReactorThreadContext ctx{serv};
 +    reactor_thread_run(SWR_SERVER_RUN_REACTOR_THREAD_MAIN, reactor_id, &ctx);
  }
-@@ -902,16 +1021,7 @@ static void ReactorThread_resume_data_receiving(Timer *timer, TimerNode *tnode)
+@@ -892,16 +1011,7 @@ static void ReactorThread_resume_data_receiving(Timer *timer, TimerNode *tnode)
      auto *_socket = static_cast<Socket *>(tnode->data);
 -    auto *conn = static_cast<Connection *>(_socket->object);
 -
@@ -923,7 +923,7 @@ index 526789f..db4b417 100644
 +    ctx.timer = timer;
 +    reactor_thread_run(SWR_SERVER_RUN_RESUME_RECEIVING, 0, &ctx);
  }
-@@ -923,43 +1033,8 @@ int Server::dispatch_task(const Protocol *proto, Socket *_socket, const RecvData
+@@ -913,43 +1023,8 @@ int Server::dispatch_task(const Protocol *proto, Socket *_socket, const RecvData
      auto *serv = static_cast<Server *>(proto->private_data_2);
 -    SendData task;
 -
@@ -973,7 +973,7 @@ index 526789f..db4b417 100644
 +    ctx.rdata = rdata;
 +    return reactor_thread_run(SWR_SERVER_RUN_DISPATCH_TASK, 0, &ctx);
  }
-@@ -977,22 +1052,10 @@ void Server::join_heartbeat_thread() {
+@@ -967,22 +1042,10 @@ void Server::join_heartbeat_thread() {
  void Server::join_reactor_thread() {
 -    if (single_thread) {
 -        return;
@@ -1003,7 +1003,7 @@ index 526789f..db4b417 100644
 +        return reactor_thread_call(c, op, arg);
 +    });
  }
-@@ -1004,21 +1067,4 @@ void Server::start_heartbeat_thread() {
+@@ -994,21 +1057,4 @@ void Server::start_heartbeat_thread() {
          swoole_set_thread_type(reactor_num + 1);
 -
 -        while (running) {

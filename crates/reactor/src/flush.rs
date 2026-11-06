@@ -133,7 +133,8 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use swoole_rs_buffer::{
-        swr_v1_buffer_append, swr_v1_buffer_create, swr_v1_buffer_pop, swr_v1_buffer_release,
+        TypedDetached, swr_v1_buffer_append, swr_v1_buffer_release, swr_v1_buffer_typed_create,
+        swr_v1_buffer_typed_pop,
     };
 
     #[derive(Default)]
@@ -158,8 +159,8 @@ mod tests {
         let (result, buffer, close_wait, output) = NATIVE
             .with_borrow_mut(|n| (n.sends.remove(0), n.buffer, n.close_wait_on_fail, n.output));
         if result >= 0 {
-            let mut token = std::ptr::null_mut();
-            unsafe { swr_v1_buffer_pop(buffer as *mut Buffer, &raw mut token) };
+            let mut detached = TypedDetached::default();
+            unsafe { swr_v1_buffer_typed_pop(buffer as *mut Buffer, &raw mut detached) };
         } else if close_wait {
             unsafe { (*(output as *mut SocketOutput)).close_wait = 1 };
         }
@@ -223,7 +224,7 @@ mod tests {
         close_wait: bool,
     ) -> (c_int, Vec<&'static str>) {
         let mut buffer = std::ptr::null_mut();
-        assert_eq!(unsafe { swr_v1_buffer_create(1, &raw mut buffer) }, 0);
+        assert_eq!(unsafe { swr_v1_buffer_typed_create(1, &raw mut buffer) }, 0);
         for _ in 0..entries {
             assert_eq!(unsafe { swr_v1_buffer_append(buffer, b"x".as_ptr(), 1) }, 0);
         }

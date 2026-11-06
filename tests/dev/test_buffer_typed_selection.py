@@ -1,4 +1,4 @@
-"""Every build has the Rust reactor and graduated Buffer, so typed Buffer is always on; there is no switch."""
+"""Every build has the one typed Buffer queue; there is no switch."""
 from pathlib import Path
 import subprocess
 import sys
@@ -17,15 +17,10 @@ class TypedBufferSelection(unittest.TestCase):
                                benchmark=False, compare=False, fix_halfclose=False)
         commands = dict(dev.plan(args, ROOT/'target/reports/typed-unit'))
         self.assertTrue(all('--buffer-typed' not in command for command in commands.values()))
-        for name, command in commands.items():
-            if 'tests/modules/reactor/production_supported.py' in command:
-                self.assertIn('--require-typed-buffer', command, name)
         command = commands['buffer-typed']
         self.assertIn('--sanitize', command)
         archive = command[command.index('--archive')+1]
         self.assertEqual(archive, commands['reactor-flush'][commands['reactor-flush'].index('--archive')+1])
-        compile_command = commands['reactor-buffer-typed-compile']
-        self.assertEqual(compile_command[compile_command.index('--archive')+1], archive)
 
     def test_the_old_switch_is_gone(self):
         for command in [[sys.executable, 'tools/dev.py', 'integrate', '--module', 'reactor', '--buffer-typed', '--plan'],

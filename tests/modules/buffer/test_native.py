@@ -1,4 +1,4 @@
-"""The hybrid build's buffer.cc and string.cc with the original core-test Buffer assertions
+"""Upstream's core-tests/src/memory/buffer.cpp assertions against the hybrid build's buffer.cc
 and the selected Rust archive (--manifest), or a supplied --archive."""
 import hashlib
 import json
@@ -10,7 +10,8 @@ import sys
 
 import pytest
 
-from native import SOURCE, build_and_run, untyped_hybrid
+from native import LINK, SOURCE, build_and_run
+from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import COMMIT
 
 
@@ -35,20 +36,15 @@ def test_native(tmp_path, pytestconfig):
         assert sanitize, 'Rust ASan archive requires the native sanitizer runtime'
         assert '__asan_report_' in subprocess.run(['nm', '-u', str(archive)], capture_output=True, text=True).stdout, \
             'Selected archive lacks Rust ASan report imports'
-    hybrid, flags = untyped_hybrid(archive)
+    hybrid, flags = hybrid_tree(archive)
     original = tmp_path / 'buffer.cpp'
     original.write_bytes(subprocess.check_output(['git', '-C', str(SOURCE), 'show', f'{COMMIT}:core-tests/src/memory/buffer.cpp']))
     local = Path(__file__).resolve().parent
     command = shlex.split(os.environ.get('CXX', 'c++')) + [
         '-std=c++17', '-O1', '-g', '-ffunction-sections', '-fdata-sections', '-I' + str(local), *flags,
-        str(hybrid / 'src/core/buffer.cc'), str(original), str(local / 'hybrid.cc'), str(archive),
-        '-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections', '-lc', '-lm']
-    command += ['-Dswr_v1_buffer_' + name + '=swr_test_buffer_' + name
-                for name in ['append', 'stats', 'front', 'pop', 'front_plan', 'advance']]
-    if sys.platform == 'linux':
-        command += ['-ldl', '-lpthread', '-lrt', '-lutil']
+        str(hybrid / 'src/core/buffer.cc'), str(original), str(local / 'originals.cc'), str(archive), *LINK]
     if sanitize:
         command.append('-fsanitize=address,undefined')
     result = build_and_run(command, tmp_path / 'hybrid', timeout=20)
     assert result.returncode == 0, result.stderr
-    json.loads(result.stdout)
+    assert json.loads(result.stdout) == {'original_assertion_runs': 64}

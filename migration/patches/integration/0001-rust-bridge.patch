@@ -1,5 +1,5 @@
 diff --git a/config.m4 b/config.m4
-index 230b1c0..7bab110 100644
+index 230b1c0..fe1fbd6 100644
 --- a/config.m4
 +++ b/config.m4
 @@ -38,2 +38,7 @@ PHP_ARG_ENABLE([swoole],
@@ -10,7 +10,7 @@ index 230b1c0..7bab110 100644
 +    [Link the optional Rust migration bridge from DIR])], [no], [no])
 +
  PHP_ARG_ENABLE([mysqlnd],
-@@ -1301,2 +1306,25 @@ EOF
+@@ -1301,2 +1306,24 @@ EOF
  
 +    if test "$PHP_SWOOLE_RS" != "no"; then
 +        if test "$PHP_SWOOLE_RS" = "yes"; then
@@ -22,7 +22,6 @@ index 230b1c0..7bab110 100644
 +        if test ! -f "$PHP_SWOOLE_RS/lib/libswoole_rs_ffi.a"; then
 +            AC_MSG_ERROR([Rust bridge archive missing: $PHP_SWOOLE_RS/lib/libswoole_rs_ffi.a])
 +        fi
-+        AC_DEFINE(SWOOLE_RS_BUFFER_TYPED, 1, [Server callers use the typed Rust Buffer queue])
 +        PHP_ADD_INCLUDE([$PHP_SWOOLE_RS/include])
 +        dnl Rust's static archive needs the target's native system libraries.
 +        PHP_ADD_LIBRARY(m, 1, SWOOLE_SHARED_LIBADD)

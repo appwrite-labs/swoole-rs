@@ -1,13 +1,13 @@
 diff --git a/src/server/reactor_thread.cc b/src/server/reactor_thread.cc
-index 959a135..36ccea1 100644
+index bc54830..7d65696 100644
 --- a/src/server/reactor_thread.cc
 +++ b/src/server/reactor_thread.cc
-@@ -36,3 +36,3 @@ static void ReactorThread_resume_data_receiving(Timer *timer, TimerNode *tnode);
+@@ -39,3 +39,3 @@ static void ReactorThread_resume_data_receiving(Timer *timer, TimerNode *tnode);
  
 -static_assert(SW_CONTINUE == 1 && SW_ERROR == 4 && SW_READY == 5, "crates/server/src/reactor_thread.rs return codes");
 +static_assert(SW_CONTINUE == 1 && SW_WAIT == 2 && SW_ERROR == 4 && SW_READY == 5, "crates/server/src/reactor_thread.rs return codes");
  static_assert(SW_SERVER_EVENT_CLOSE_FORCE == SWR_SERVER_EVENT_CLOSE_FORCE &&
-@@ -79,2 +79,99 @@ static double f64_from(uint64_t bits) {
+@@ -82,2 +82,99 @@ static double f64_from(uint64_t bits) {
  
 +#ifdef SW_HALFCLOSE_PREQUEUE
 +#define SWR_CN_BUILT_PREQUEUE SWR_CN_PREQUEUE
@@ -107,7 +107,7 @@ index 959a135..36ccea1 100644
 +}
 +
  static uint64_t reactor_thread_call(void *context, uint32_t op, uint64_t arg) {
-@@ -574,2 +671,175 @@ static uint64_t reactor_thread_call(void *context, uint32_t op, uint64_t arg) {
+@@ -571,2 +668,171 @@ static uint64_t reactor_thread_call(void *context, uint32_t op, uint64_t arg) {
      }
 +    case SWR_SERVER_OP_RD_DTLS: {
 +#ifdef SW_SUPPORT_DTLS
@@ -138,11 +138,7 @@ index 959a135..36ccea1 100644
 +        if (Buffer::empty(sock->out_buffer)) {
 +            return 0;
 +        }
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 +        return 1 + sock->out_buffer->typed_front().kind;
-+#else
-+        return 1 + sock->out_buffer->front()->type;
-+#endif
 +    case SWR_SERVER_OP_WR_CLOSE:
 +        return (int64_t) reactor->close(reactor, sock);
 +    case SWR_SERVER_OP_WR_SENDFILE:
@@ -283,7 +279,7 @@ index 959a135..36ccea1 100644
 +        return (int64_t) Reactor::_close(reactor, sock);
 +
      default:
-@@ -584,7 +854,23 @@ static uint64_t reactor_thread_hot_call(void *context, uint32_t op, uint64_t arg
+@@ -581,7 +847,23 @@ static uint64_t reactor_thread_hot_call(void *context, uint32_t op, uint64_t arg
      Server *serv = ctx->serv;
 -    Socket *sock = ctx->sock;
      Connection *conn = ctx->conn;
@@ -310,7 +306,7 @@ index 959a135..36ccea1 100644
 +        return result;
 +    }
      case SWR_SERVER_OP_TASK_INIT:
-@@ -600,11 +886,12 @@ static uint64_t reactor_thread_hot_call(void *context, uint32_t op, uint64_t arg
+@@ -597,11 +879,12 @@ static uint64_t reactor_thread_hot_call(void *context, uint32_t op, uint64_t arg
          swoole_log_as("Server::dispatch_task", swoole_trace("dispatch task, size=%u bytes", ctx->rdata->info.len));
 -        return ctx->rdata->info.len;
 -    case SWR_SERVER_OP_QUEUE_ADD:
@@ -332,7 +328,7 @@ index 959a135..36ccea1 100644
 +                                           conn->recv_queued_bytes));
 +        }
          return 0;
-@@ -629,9 +916,2 @@ static int64_t reactor_thread_run(uint32_t operation, uint64_t arg, ReactorThrea
+@@ -626,9 +909,2 @@ static int64_t reactor_thread_run(uint32_t operation, uint64_t arg, ReactorThrea
  
 -static inline ReturnCode ReactorThread_verify_ssl_state(Reactor *reactor, ListenPort *port, Socket *_socket) {
 -    ReactorThreadContext ctx{static_cast<Server *>(reactor->ptr), reactor};
@@ -342,7 +338,7 @@ index 959a135..36ccea1 100644
 -}
 -
  /**
-@@ -645,105 +925,21 @@ static int ReactorThread_onPacketReceived(Reactor *reactor, Event *event) {
+@@ -642,105 +918,21 @@ static int ReactorThread_onPacketReceived(Reactor *reactor, Event *event) {
  
 -/**
 - * close connection
@@ -463,7 +459,7 @@ index 959a135..36ccea1 100644
 - * close the connection
 - */
  static int ReactorThread_onClose(Reactor *reactor, Event *event) {
-@@ -751,34 +947,17 @@ static int ReactorThread_onClose(Reactor *reactor, Event *event) {
+@@ -748,34 +940,17 @@ static int ReactorThread_onClose(Reactor *reactor, Event *event) {
      int fd = event->fd;
 -    DataHead notify_ev{};
 -    Socket *socket = event->socket;
@@ -509,7 +505,7 @@ index 959a135..36ccea1 100644
 -    return SW_ERR;
 +    return reactor_thread_run(SWR_SERVER_RUN_PEER_CLOSE, facts, &ctx);
  }
-@@ -819,65 +998,7 @@ static int ReactorThread_onRead(Reactor *reactor, Event *event) {
+@@ -816,65 +991,7 @@ static int ReactorThread_onRead(Reactor *reactor, Event *event) {
      auto *serv = static_cast<Server *>(reactor->ptr);
 -    Connection *conn = serv->get_connection(event->fd);
 -    /**
@@ -580,7 +576,7 @@ index 959a135..36ccea1 100644
 +    ctx.conn = serv->get_connection(event->fd);
 +    return reactor_thread_run(SWR_SERVER_RUN_RT_READ, read_facts(&ctx), &ctx);
  }
-@@ -885,88 +1006,6 @@ static int ReactorThread_onRead(Reactor *reactor, Event *event) {
+@@ -882,84 +999,6 @@ static int ReactorThread_onRead(Reactor *reactor, Event *event) {
  static int ReactorThread_onWrite(Reactor *reactor, Event *ev) {
 -    int ret;
 -    auto serv = static_cast<Server *>(reactor->ptr);
@@ -617,11 +613,7 @@ index 959a135..36ccea1 100644
 -    }
 -
 -    while (!Buffer::empty(socket->out_buffer)) {
--#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 -        const auto kind = socket->out_buffer->typed_front().kind;
--#else
--        const auto kind = socket->out_buffer->front()->type;
--#endif
 -        if (kind == BufferChunk::TYPE_CLOSE) {
 -            return reactor->close(reactor, socket);
 -        } else if (kind == BufferChunk::TYPE_SENDFILE) {
@@ -673,7 +665,7 @@ index 959a135..36ccea1 100644
 +    ctx.sock = ev->socket;
 +    return reactor_thread_run(SWR_SERVER_RUN_RT_WRITE, write_facts(&ctx), &ctx);
  }
-@@ -1036,3 +1075,3 @@ int Server::dispatch_task(const Protocol *proto, Socket *_socket, const RecvData
+@@ -1029,3 +1068,3 @@ int Server::dispatch_task(const Protocol *proto, Socket *_socket, const RecvData
      ctx.rdata = rdata;
 -    return reactor_thread_run(SWR_SERVER_RUN_DISPATCH_TASK, 0, &ctx);
 +    return reactor_thread_run(SWR_SERVER_RUN_DISPATCH_TASK, rdata->info.len, &ctx);

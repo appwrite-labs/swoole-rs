@@ -44,10 +44,10 @@ index 4940e4f..b20946c 100644
 -
  struct Address {
 diff --git a/src/network/socket.cc b/src/network/socket.cc
-index ddf78d6..9eb7e5c 100644
+index 967edd2..931f13e 100644
 --- a/src/network/socket.cc
 +++ b/src/network/socket.cc
-@@ -33,12 +33,2 @@ namespace network {
+@@ -31,12 +31,2 @@ namespace network {
  
 -static_assert(SW_SOCKET_DEFAULT_DNS_TIMEOUT == 60 && SW_SOCKET_DEFAULT_CONNECT_TIMEOUT == 10 &&
 -                  SW_SOCKET_DEFAULT_READ_TIMEOUT == 60 && SW_SOCKET_DEFAULT_WRITE_TIMEOUT == 60 &&
@@ -60,7 +60,7 @@ index ddf78d6..9eb7e5c 100644
 -uint32_t &Socket::default_buffer_size = swr_v1_socket_defaults.buffer_size;
 -
  static swr_v1_reactor_iov *check_iov(swr_v1_reactor_iov_prepared prepared) {
-@@ -58,32 +48,2 @@ static_assert(SW_SOCK_NONBLOCK == 1 << 2 && SW_SOCK_CLOEXEC == 1 << 3 && SW_ERRO
+@@ -56,32 +46,2 @@ static_assert(SW_SOCK_NONBLOCK == 1 << 2 && SW_SOCK_CLOEXEC == 1 << 3 && SW_ERRO
  
 -static swr_v1_socket_output_hooks output_hooks(Socket *socket);
 -
@@ -93,7 +93,7 @@ index ddf78d6..9eb7e5c 100644
 -    swoole_signal_dispatch();
 -}
  #ifndef SW_HALFCLOSE_TLS_SHUTDOWN
-@@ -91,41 +51,6 @@ static void socket_signal_dispatch() {
+@@ -89,41 +49,6 @@ static void socket_signal_dispatch() {
  #endif
 -static const bool socket_signal_registered = (swr_v1_socket_set_signal_dispatch(socket_signal_dispatch),
 -                                              swr_v1_socket_set_tls_shutdown_repaired(SW_HALFCLOSE_TLS_SHUTDOWN),
@@ -139,7 +139,7 @@ index ddf78d6..9eb7e5c 100644
 +     swr_v1_socket_set_free([](swr_v1_socket *socket) { static_cast<Socket *>(socket)->free(); }),
 +     true);
  
-@@ -168,74 +93,10 @@ int Socket::bind(const std::string &_host, int port) {
+@@ -166,72 +91,10 @@ int Socket::bind(const std::string &_host, int port) {
  
 -// Queued output's sends, classification, corking and request order are Rust's
 -// (crates/reactor/src/output.rs); the buffer, chunks, requests and warnings stay here.
@@ -193,11 +193,9 @@ index ddf78d6..9eb7e5c 100644
 -    return output.result.code;
 -}
 -
--#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 -extern "C" void swr_socket_dispose_typed_sendfile(void *token) {
 -    delete static_cast<SendfileRequest *>(token);
 -}
--#endif
 -
 -ssize_t Socket::sendfile(const File &fp, off_t *offset, size_t length) {
 -    if (ssl) {
@@ -220,7 +218,7 @@ index ddf78d6..9eb7e5c 100644
 +    out_buffer->typed_sendfile(request.get(), swr_v1_socket_file_dispose);
 +    request.release();
      return SW_OK;
-@@ -246,10 +107,2 @@ static_assert(SW_ERROR_SSL_BAD_CLIENT == 1015 && SW_ERROR_SSL_RESET == 1017 && S
+@@ -242,10 +105,2 @@ static_assert(SW_ERROR_SSL_BAD_CLIENT == 1015 && SW_ERROR_SSL_RESET == 1017 && S
  
 -ssize_t Socket::send_async(const void *_buf, size_t _n) {
 -    if (!swoole_event_is_available()) {
@@ -231,7 +229,7 @@ index ddf78d6..9eb7e5c 100644
 -}
 -
  SocketType Socket::convert_to_type(std::string &host) {
-@@ -293,32 +146,2 @@ static_assert(SW_SSL_STATE_READY == 1 && SW_SSL_STATE_WAIT_STREAM == 2 && SW_ERR
+@@ -289,32 +144,2 @@ static_assert(SW_SSL_STATE_READY == 1 && SW_SSL_STATE_WAIT_STREAM == 2 && SW_ERR
  
 -using network::Socket;
 -

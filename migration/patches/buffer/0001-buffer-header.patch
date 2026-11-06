@@ -1,46 +1,40 @@
 diff --git a/include/swoole_buffer.h b/include/swoole_buffer.h
-index 5d0dd58..1400def 100644
+index 5d0dd58..080e497 100644
 --- a/include/swoole_buffer.h
 +++ b/include/swoole_buffer.h
-@@ -19,2 +19,6 @@
+@@ -19,2 +19,4 @@
  #include <queue>
 +#include "swoole_rs_buffer.h"
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 +#include "swoole_rs_buffer_typed.h"
-+#endif
  #include <sys/uio.h>
-@@ -31,2 +35,3 @@ struct BufferChunk {
+@@ -31,2 +33,3 @@ struct BufferChunk {
      Type type;
 +    bool rs_borrowed_ = false;
      uint32_t length = 0;
-@@ -48,6 +53,8 @@ struct BufferChunk {
+@@ -48,6 +51,6 @@ struct BufferChunk {
  class Buffer {
 -    // 0: don't use chunk
 -    uint32_t chunk_size;
 -    uint32_t total_length = 0;
 -    std::queue<BufferChunk *> queue_;
 +    swr_v1_buffer *rs_buffer_;
-+#if !defined(SWOOLE_RS_BUFFER_TYPED) || !SWOOLE_RS_BUFFER_TYPED
-+    mutable BufferChunk rs_front_{BufferChunk::TYPE_DATA, 0};
-+    mutable bool rs_front_valid_ = false; // Retained layout slot; Rust owns cache validity.
-+#endif
++    // front()'s view of the first entry, which the queue owns.
++    mutable BufferChunk front_{BufferChunk::TYPE_DATA, 0};
 +    void advance(bool drain);
  
-@@ -59,5 +66,10 @@ class Buffer {
+@@ -59,5 +62,8 @@ class Buffer {
  
 -    BufferChunk *front() const {
 -        return queue_.front();
 -    }
 +    BufferChunk *front() const;
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 +    using TypedFront = swr_v1_buffer_typed_front_result;
 +    TypedFront typed_front() const;
 +    void typed_consume(const TypedFront &front, uint32_t count);
 +    void typed_close();
 +    void typed_sendfile(void *token, swr_v1_buffer_dispose dispose);
-+#endif
  
-@@ -67,16 +79,8 @@ class Buffer {
+@@ -67,16 +73,8 @@ class Buffer {
  
 -    uint32_t length() const {
 -        return total_length;

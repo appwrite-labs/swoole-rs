@@ -269,7 +269,7 @@ def plan(args, reports):
                        '--engine', f'upstream={native_export / "swoole.so"}', '--build-manifest', manifest,
                        '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        '--selected-export', selected_export / 'export.json', '--native-export', native_export / 'export.json',
-                       '--require-batch', '--require-typed-buffer',
+                       '--require-batch',
                        *extra, *report(phase))
         for name in ['callbacks', 'initialize', 'builtins']:
             phase = 'reactor-' + name.replace('_', '-')
@@ -286,12 +286,7 @@ def plan(args, reports):
         script('reactor-compile', 'tests/modules/reactor/compile_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'reactor-compile.json')
-    pytest('buffer-typed-layout', 'tests/modules/buffer/test_typed_layout.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a')
     pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
-    script('reactor-buffer-typed-compile', 'tests/modules/reactor/buffer_typed_compile.py',
-           '--source', ROOT / 'target/upstream/src',
-           '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-           '--report', reports / 'reactor-buffer-typed-compile.json')
     if 'coroutine' in modules:
         if integrate:
             script('coroutine-production-stack', 'tests/modules/coroutine/production_stack.py',
@@ -587,8 +582,6 @@ def plan(args, reports):
         pytest('buffer-posix-iovec', 'tests/modules/buffer/test_iovec.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
         pytest('string-originals', 'tests/modules/buffer/string/test_gate.py',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
-        if integrate:
-            pytest('buffer-model', 'tests/modules/buffer/test_model.py', '--manifest', manifest, '--sanitize')
         pytest('buffer-network', 'tests/modules/buffer/test_network.py', *php, *engines)
     if 'websocket' in modules:
         archive = manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a'

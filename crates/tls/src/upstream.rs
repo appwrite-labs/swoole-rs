@@ -1423,8 +1423,9 @@ pub unsafe extern "C-unwind" fn socket_sendfile_async(
     }
     // SAFETY: as the caller promises.
     if unsafe { (*socket).output.out_buffer }.is_null() {
-        // SAFETY: `new Buffer(SW_SEND_BUFFER_SIZE)`; Buffer is its handle alone.
-        let buffer = unsafe { operator_new(size_of::<*mut c_void>()) };
+        // SAFETY: `new Buffer(SW_SEND_BUFFER_SIZE)`: the handle, then front()'s
+        // 40-byte BufferChunk view (include/swoole_buffer.h).
+        let buffer = unsafe { operator_new(size_of::<*mut c_void>() + 40) };
         // SAFETY: fresh storage for one Buffer.
         unsafe { buffer_new(buffer, 65536) };
         // SAFETY: as the caller promises.

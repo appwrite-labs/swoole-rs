@@ -61,59 +61,9 @@ impl Descriptor for libc::iovec {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct BufferView {
-    pub kind: u32,
-    pub length: u32,
-    pub capacity: u32,
-    pub data: *mut u8,
-    pub token: *mut c_void,
-}
-impl BufferView {
-    const ZERO: Self = Self {
-        kind: 0,
-        length: 0,
-        capacity: 0,
-        data: ptr::null_mut(),
-        token: ptr::null_mut(),
-    };
-}
-
 enum Entry {
     Data(Vec<u8>),
-    Native(*mut c_void),
     TypedToken(typed::Token),
-}
-impl Entry {
-    fn view(&self) -> BufferView {
-        match self {
-            Self::Data(bytes) => BufferView {
-                kind: 0,
-                length: chunk_length(bytes),
-                capacity: chunk_length(bytes),
-                data: bytes.as_ptr().cast_mut(),
-                token: ptr::null_mut(),
-            },
-            Self::TypedToken(_) => unreachable!("typed entries never enter the legacy facade"),
-            Self::Native(token) => BufferView {
-                kind: 1,
-                token: *token,
-                ..BufferView::ZERO
-            },
-        }
-    }
-}
-
-struct Detached {
-    token: *mut c_void,
-    reset_view: u32,
-}
-
-enum Mode {
-    // Borrowed identity only; never dereferenced, owned or freed by Rust.
-    Legacy(*mut c_void),
-    Typed(typed::Cursor),
 }
 
 pub struct Buffer {
@@ -122,7 +72,7 @@ pub struct Buffer {
     recycled_bytes: usize,
     chunk_size: u32,
     length: u32,
-    mode: Mode,
+    cursor: typed::Cursor,
 }
 
 // Validate representability before any slice construction or allocation.
@@ -131,9 +81,9 @@ fn slice_fits<T>(count: usize) -> bool {
 }
 
 impl Buffer {
-    // One initialized owning value for both ordinary modes. No raw exported C
-    // operation is used as an internal constructor or mutates a published owner.
-    fn try_new(chunk_size: u32, mode: Mode) -> Result<Box<Self>, i32> {
+    // No raw exported C operation is used as an internal constructor or mutates
+    // a published owner.
+    fn try_new(chunk_size: u32) -> Result<Box<Self>, i32> {
         #[expect(
             clippy::cast_ptr_alignment,
             reason = "alloc honours Layout::new::<Buffer>()"
@@ -155,7 +105,7 @@ impl Buffer {
                     chunk_size
                 },
                 length: 0,
-                mode,
+                cursor: typed::Cursor::default(),
             });
         };
         // SAFETY: a global allocation with `Box`'s layout, initialized above.
@@ -188,33 +138,6 @@ impl Buffer {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(size).map_err(|_| NOMEM)?;
         Ok(bytes)
-    }
-
-    fn front_view(&self) -> Option<BufferView> {
-        self.entries.front().map(Entry::view)
-    }
-
-    // Cache invalidation and accounting precede DATA deallocation. Native
-    // identities are returned untouched; no reference spans a Native effect.
-    fn detach(&mut self) -> Option<Detached> {
-        let entry = self.entries.pop_front()?;
-        let Mode::Legacy(view) = &mut self.mode else {
-            unreachable!("typed entries detach through the typed operation")
-        };
-        let reset_view = u32::from(!view.is_null());
-        *view = ptr::null_mut();
-        let token = match entry {
-            Entry::Data(bytes) => {
-                self.length -= chunk_length(&bytes);
-                self.recycle(bytes);
-                ptr::null_mut()
-            }
-            Entry::Native(token) => token,
-            Entry::TypedToken(_) => {
-                unreachable!("typed entries detach through the typed operation")
-            }
-        };
-        Some(Detached { token, reset_view })
     }
 
     // Expose the contiguous export's single descriptor to the optimizer.
@@ -326,13 +249,13 @@ impl Buffer {
 }
 
 // Admission/output initialization stays ahead of the first allocator effect.
-unsafe fn create_buffer(chunk_size: u32, mode: Mode, output: *mut *mut Buffer) -> i32 {
+unsafe fn create_buffer(chunk_size: u32, output: *mut *mut Buffer) -> i32 {
     if output.is_null() {
         return INVALID;
     }
     // SAFETY: non-null (checked above), aligned, writable pointer storage.
     unsafe { output.write(ptr::null_mut()) };
-    match Buffer::try_new(chunk_size, mode) {
+    match Buffer::try_new(chunk_size) {
         Ok(owner) => {
             // SAFETY: as above.
             unsafe { output.write(Box::into_raw(owner)) };
@@ -342,18 +265,9 @@ unsafe fn create_buffer(chunk_size: u32, mode: Mode, output: *mut *mut Buffer) -
     }
 }
 
-/// Create an independently owned queue, writing null on failure.
-/// # Safety
-/// `output` must be writable and aligned; see the frozen buffer ABI contract.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_create(chunk_size: u32, output: *mut *mut Buffer) -> i32 {
-    // SAFETY: forwards the caller's writable, aligned output.
-    unsafe { create_buffer(chunk_size, Mode::Legacy(ptr::null_mut()), output) }
-}
-
 /// Drop a queue only after all native tokens have been detached.
 /// # Safety
-/// A nonnull handle must be live, uniquely owned, and issued by create.
+/// A nonnull handle must be live, uniquely owned, and issued by `swr_v1_buffer_typed_create`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_buffer_release(buffer: *mut Buffer) -> i32 {
     if buffer.is_null() {
@@ -364,7 +278,7 @@ pub unsafe extern "C" fn swr_v1_buffer_release(buffer: *mut Buffer) -> i32 {
     if queue
         .entries
         .iter()
-        .any(|e| matches!(e, Entry::Native(_) | Entry::TypedToken(_)))
+        .any(|e| matches!(e, Entry::TypedToken(_)))
     {
         return PENDING_NATIVE;
     }
@@ -389,37 +303,6 @@ pub unsafe extern "C" fn swr_v1_buffer_append(
     let queue = unsafe { &mut *buffer };
     // SAFETY: the borrowed input follows the frozen ABI's validity rules.
     unsafe { queue.appendv(&[BufferIovec { data, length }], 0) }
-}
-
-/// Copy the concatenated vector suffix atomically into new queue entries.
-/// # Safety
-/// Handle, descriptors and borrowed data satisfy the frozen ABI contract.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_appendv(
-    buffer: *mut Buffer,
-    iov: *const BufferIovec,
-    count: usize,
-    offset: u64,
-) -> i32 {
-    if buffer.is_null() {
-        return INVALID;
-    }
-    if !slice_fits::<BufferIovec>(count) {
-        return OVERFLOW;
-    }
-    if count != 0 && iov.is_null() {
-        return INVALID;
-    }
-    let parts = if count == 0 {
-        &[]
-    } else {
-        // SAFETY: non-null, `count` fits isize (checked above), readable descriptors.
-        unsafe { slice::from_raw_parts(iov, count) }
-    };
-    // SAFETY: `buffer` is non-null (checked above), live and exclusive.
-    let queue = unsafe { &mut *buffer };
-    // SAFETY: the borrowed input follows the frozen ABI's validity rules.
-    unsafe { queue.appendv(parts, offset) }
 }
 
 /// Diagnostics for the actual external C input layout; no conversion credit.
@@ -471,214 +354,6 @@ pub unsafe extern "C" fn swr_v1_buffer_append_iovec(
     let queue = unsafe { &mut *buffer };
     // SAFETY: the borrowed input follows the frozen ABI's validity rules.
     unsafe { queue.appendv(parts, offset.unsigned_abs()) }
-}
-
-/// Transfer one opaque native token to the queue on success.
-/// # Safety
-/// Handle is live and exclusive; token is unique and owned by the caller.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_push_native(buffer: *mut Buffer, token: *mut c_void) -> i32 {
-    if buffer.is_null() || token.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `buffer` is non-null (checked above), live and exclusive.
-    let queue = unsafe { &mut *buffer };
-    if !matches!(queue.mode, Mode::Legacy(_)) {
-        return INVALID;
-    }
-    let Some(count) = queue.entries.len().checked_add(1) else {
-        return OVERFLOW;
-    };
-    if !slice_fits::<Entry>(count) {
-        return OVERFLOW;
-    }
-    if queue.entries.try_reserve(1).is_err() {
-        return NOMEM;
-    }
-    queue.entries.push_back(Entry::Native(token));
-    OK
-}
-
-/// Borrow the current front; appends never invalidate its data pointer.
-/// # Safety
-/// Handle is live and output is writable, aligned and disjoint from the queue.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_front(
-    buffer: *const Buffer,
-    output: *mut BufferView,
-) -> i32 {
-    if output.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned, writable and disjoint.
-    unsafe { output.write(BufferView::ZERO) };
-    if buffer.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `buffer` is non-null (checked above) and live.
-    let queue = unsafe { &*buffer };
-    if !matches!(queue.mode, Mode::Legacy(_)) {
-        return INVALID;
-    }
-    let Some(view) = queue.front_view() else {
-        return EMPTY;
-    };
-    // SAFETY: `output` is non-null (checked above), aligned, writable and disjoint.
-    unsafe { output.write(view) };
-    OK
-}
-
-/// Detach one entry, returning any native token to its owner.
-/// # Safety
-/// Handle is live and exclusive; output is writable, aligned and disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_pop(
-    buffer: *mut Buffer,
-    native_token: *mut *mut c_void,
-) -> i32 {
-    if native_token.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `native_token` is non-null (checked above), aligned, writable and disjoint.
-    unsafe { native_token.write(ptr::null_mut()) };
-    if buffer.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `buffer` is non-null (checked above), live and exclusive.
-    let queue = unsafe { &mut *buffer };
-    if !matches!(queue.mode, Mode::Legacy(_)) {
-        return INVALID;
-    }
-    queue.mode = Mode::Legacy(ptr::null_mut());
-    match queue.detach() {
-        None => EMPTY,
-        Some(detached) => {
-            if !detached.token.is_null() {
-                // SAFETY: `native_token` is non-null (checked above), aligned and writable.
-                unsafe { native_token.write(detached.token) };
-            }
-            OK
-        }
-    }
-}
-
-/// Select the facade front without interpreting the stable native view identity.
-/// # Safety
-/// The live exclusive handle, nonnull stable facade identity and disjoint output
-/// obey the additive facade contract. The native object outlives the handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_front_plan(
-    buffer: *mut Buffer,
-    facade_view: *mut c_void,
-    output: *mut BufferView,
-) -> i32 {
-    if output.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned, writable and disjoint.
-    unsafe { output.write(BufferView::ZERO) };
-    if buffer.is_null() || facade_view.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `buffer` is non-null (checked above), live and exclusive.
-    let queue = unsafe { &mut *buffer };
-    let Mode::Legacy(cached) = queue.mode else {
-        return INVALID;
-    };
-    if !cached.is_null() {
-        if cached != facade_view {
-            return INVALID;
-        }
-        // SAFETY: `output` is non-null (checked above), aligned, writable and disjoint.
-        unsafe {
-            output.write(BufferView {
-                kind: 3,
-                token: facade_view,
-                ..BufferView::ZERO
-            });
-        };
-        return OK;
-    }
-    let Some(mut view) = queue.front_view() else {
-        return EMPTY;
-    };
-    if view.kind == 0 {
-        queue.mode = Mode::Legacy(facade_view);
-        view.kind = 2;
-        view.token = facade_view;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned, writable and disjoint.
-    unsafe { output.write(view) };
-    OK
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct BufferAdvance {
-    pub action: u32,
-    pub reset_view: u32,
-    pub token: *mut c_void,
-}
-impl BufferAdvance {
-    const ZERO: Self = Self {
-        action: 0,
-        reset_view: 0,
-        token: ptr::null_mut(),
-    };
-}
-
-/// Select removal/drain effects, returning before every native callback/delete.
-/// # Safety
-/// The live exclusive handle and disjoint output obey the facade contract.
-/// `cached_destroy` is a fresh boolean observation of the native cached view;
-/// callbacks must complete before another plan and cannot reenter the handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_advance(
-    buffer: *mut Buffer,
-    drain: u32,
-    cached_destroy: u32,
-    output: *mut BufferAdvance,
-) -> i32 {
-    if output.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned, writable and disjoint.
-    unsafe { output.write(BufferAdvance::ZERO) };
-    if buffer.is_null() || drain > 1 || cached_destroy > 1 {
-        return INVALID;
-    }
-    // SAFETY: `buffer` is non-null (checked above), live and exclusive.
-    let queue = unsafe { &mut *buffer };
-    let Mode::Legacy(cached) = queue.mode else {
-        return INVALID;
-    };
-    if !cached.is_null() && cached_destroy != 0 {
-        // SAFETY: `output` is non-null (checked above), aligned, writable and disjoint.
-        unsafe {
-            output.write(BufferAdvance {
-                action: 1,
-                token: cached,
-                ..BufferAdvance::ZERO
-            });
-        };
-        return OK;
-    }
-    let mut result = BufferAdvance::ZERO;
-    while let Some(detached) = queue.detach() {
-        result.reset_view |= detached.reset_view;
-        if !detached.token.is_null() {
-            result.action = 2;
-            result.token = detached.token;
-            break;
-        }
-        if drain == 0 {
-            result.action = 2;
-            break;
-        }
-    }
-    // SAFETY: `output` is non-null (checked above), aligned, writable and disjoint.
-    unsafe { output.write(result) };
-    OK
 }
 
 /// Read byte accounting and queue entry count.
@@ -748,74 +423,22 @@ mod tests {
     #[global_allocator]
     static ALLOCATOR: FailAllocator = FailAllocator;
 
-    #[test]
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "one end-to-end facade scenario"
-    )]
-    fn facade_plans_preserve_identity_live_callback_bytes_and_raw_api_compatibility() {
-        let b = Owned::new(2);
-        let mut identity = 0u8;
-        let identity = (&raw mut identity).cast();
-        let mut view = BufferView::ZERO;
-        let mut effect = BufferAdvance::ZERO;
-        let mut native = 7u8;
-        let native = (&raw mut native).cast();
-        unsafe {
-            assert_eq!(swr_v1_buffer_append(b.0, b"abcde".as_ptr(), 5), OK);
-            assert_eq!(swr_v1_buffer_front_plan(b.0, identity, &raw mut view), OK);
-            assert_eq!((view.kind, view.length, view.token), (2, 2, identity));
-            let data = view.data;
-            assert_eq!(swr_v1_buffer_front_plan(b.0, identity, &raw mut view), OK);
-            assert_eq!((view.kind, view.token), (3, identity));
-            assert_eq!(swr_v1_buffer_append(b.0, b"fg".as_ptr(), 2), OK);
-            assert_eq!(swr_v1_buffer_advance(b.0, 2, 1, &raw mut effect), INVALID);
-            assert_eq!(effect.action, 0);
-            assert_eq!(swr_v1_buffer_advance(b.0, 0, 1, &raw mut effect), OK);
-            assert_eq!(
-                (effect.action, effect.reset_view, effect.token),
-                (1, 0, identity)
-            );
-            assert_eq!(slice::from_raw_parts(data, 2), b"ab");
-            assert_eq!((&*b.0).length, 7); // callback observes data before any detach
-            assert_eq!(swr_v1_buffer_advance(b.0, 0, 0, &raw mut effect), OK);
-            assert_eq!(
-                (effect.action, effect.reset_view, effect.token),
-                (2, 1, ptr::null_mut())
-            );
-            assert_eq!((&*b.0).length, 5);
-            assert_eq!(swr_v1_buffer_front_plan(b.0, identity, &raw mut view), OK);
-            assert_eq!(view.kind, 2);
-            let mut detached = ptr::null_mut();
-            assert_eq!(swr_v1_buffer_pop(b.0, &raw mut detached), OK);
-            assert!(matches!((&*b.0).mode, Mode::Legacy(view) if view.is_null()));
-            assert_eq!(swr_v1_buffer_front_plan(b.0, identity, &raw mut view), OK);
-            assert_eq!((view.kind, view.length), (2, 1));
-            assert_eq!(swr_v1_buffer_push_native(b.0, native), OK);
-            assert_eq!(swr_v1_buffer_release(b.0), PENDING_NATIVE);
-            assert!(matches!((&*b.0).mode, Mode::Legacy(view) if view == identity)); // failed release is unchanged
-            assert_eq!(swr_v1_buffer_advance(b.0, 1, 0, &raw mut effect), OK);
-            assert_eq!(
-                (effect.action, effect.reset_view, effect.token),
-                (2, 1, native)
-            );
-            assert_eq!((&*b.0).length, 0);
-            assert_eq!(swr_v1_buffer_advance(b.0, 1, 0, &raw mut effect), OK);
-            assert_eq!((effect.action, effect.reset_view), (0, 0));
-            assert_eq!(
-                swr_v1_buffer_front_plan(b.0, identity, &raw mut view),
-                EMPTY
-            );
-            assert!(view.token.is_null());
-        }
-    }
-
     pub(super) struct Owned(pub(super) *mut Buffer);
+    unsafe extern "C" fn keep(_: *mut c_void) {}
     impl Owned {
         pub(super) fn new(size: u32) -> Self {
             let mut buffer = ptr::null_mut();
-            assert_eq!(unsafe { swr_v1_buffer_create(size, &raw mut buffer) }, OK);
+            assert_eq!(
+                unsafe { swr_v1_buffer_typed_create(size, &raw mut buffer) },
+                OK
+            );
             Self(buffer)
+        }
+        pub(super) fn push(&self, token: *mut c_void) -> i32 {
+            unsafe { swr_v1_buffer_typed_push(self.0, 1, token, Some(keep)) }
+        }
+        pub(super) fn appendv(&self, iov: &[BufferIovec], offset: u64) -> i32 {
+            unsafe { (*self.0).appendv(iov, offset) }
         }
         pub(super) fn append(&self, bytes: &[u8]) -> i32 {
             unsafe { swr_v1_buffer_append(self.0, bytes.as_ptr(), bytes.len()) }
@@ -828,15 +451,21 @@ mod tests {
             );
             (length, count)
         }
-        pub(super) fn view(&self) -> BufferView {
-            let mut view = BufferView::ZERO;
-            assert_eq!(unsafe { swr_v1_buffer_front(self.0, &raw mut view) }, OK);
+        pub(super) fn view(&self) -> TypedFront {
+            let mut view = TypedFront::default();
+            assert_eq!(
+                unsafe { swr_v1_buffer_typed_front(self.0, &raw mut view) },
+                OK
+            );
             view
         }
         pub(super) fn pop(&self) -> *mut c_void {
-            let mut token = ptr::null_mut();
-            assert_eq!(unsafe { swr_v1_buffer_pop(self.0, &raw mut token) }, OK);
-            token
+            let mut detached = TypedDetached::default();
+            assert_eq!(
+                unsafe { swr_v1_buffer_typed_pop(self.0, &raw mut detached) },
+                OK
+            );
+            detached.token
         }
     }
     impl Drop for Owned {
@@ -967,15 +596,11 @@ mod tests {
             let buffer = Owned::new(4);
             let contiguous = Owned::new(4);
             assert_eq!(contiguous.append(&combined[offset..]), OK);
-            assert_eq!(
-                unsafe { swr_v1_buffer_appendv(buffer.0, iov.as_ptr(), iov.len(), offset as u64) },
-                OK
-            );
+            assert_eq!(buffer.appendv(&iov, offset as u64), OK);
             assert_eq!(buffer.stats(), contiguous.stats());
             let mut actual = Vec::new();
             while buffer.stats().1 != 0 {
                 let view = buffer.view();
-                assert_eq!(view.length, view.capacity);
                 assert!(view.length > 0 && view.length <= 4);
                 actual.extend_from_slice(unsafe {
                     slice::from_raw_parts(view.data, view.length as usize)
@@ -1017,7 +642,7 @@ mod tests {
         let mut value = 42u32;
         let token = ptr::from_mut(&mut value).cast();
         assert_eq!(buffer.append(b"abcdef"), OK);
-        assert_eq!(unsafe { swr_v1_buffer_push_native(buffer.0, token) }, OK);
+        assert_eq!(buffer.push(token), OK);
         assert_eq!(buffer.append(b"g"), OK);
         assert_eq!(unsafe { swr_v1_buffer_release(buffer.0) }, PENDING_NATIVE);
         assert_eq!(buffer.stats(), (7, 4));
@@ -1040,18 +665,9 @@ mod tests {
             data: ptr::null(),
             length: 1,
         };
-        assert_eq!(
-            unsafe { swr_v1_buffer_appendv(buffer.0, &raw const invalid, 1, 1) },
-            INVALID
-        );
-        assert_eq!(
-            unsafe { swr_v1_buffer_appendv(buffer.0, ptr::null(), 0, 1) },
-            INVALID
-        );
-        assert_eq!(
-            unsafe { swr_v1_buffer_appendv(buffer.0, ptr::null(), 0, 0) },
-            OK
-        );
+        assert_eq!(buffer.appendv(&[invalid], 1), INVALID);
+        assert_eq!(buffer.appendv(&[], 1), INVALID);
+        assert_eq!(buffer.appendv(&[], 0), OK);
         assert_eq!(
             unsafe { swr_v1_buffer_append(buffer.0, ptr::null(), 0) },
             OK
@@ -1060,22 +676,15 @@ mod tests {
             unsafe { swr_v1_buffer_append(buffer.0, ptr::dangling(), usize::MAX) },
             OVERFLOW
         );
+        assert_eq!(buffer.push(ptr::null_mut()), INVALID);
         assert_eq!(
-            unsafe { swr_v1_buffer_appendv(buffer.0, ptr::dangling(), usize::MAX, 0) },
-            OVERFLOW
-        );
-        assert_eq!(
-            unsafe { swr_v1_buffer_push_native(buffer.0, ptr::null_mut()) },
-            INVALID
-        );
-        assert_eq!(
-            unsafe { swr_v1_buffer_pop(buffer.0, ptr::null_mut()) },
+            unsafe { swr_v1_buffer_typed_pop(buffer.0, ptr::null_mut()) },
             INVALID
         );
         assert_eq!(buffer.stats(), (3, 1));
         let mut view = buffer.view();
         assert_eq!(
-            unsafe { swr_v1_buffer_front(ptr::null(), &raw mut view) },
+            unsafe { swr_v1_buffer_typed_front(ptr::null(), &raw mut view) },
             INVALID
         );
         assert_eq!(view.length, 0);
@@ -1088,15 +697,18 @@ mod tests {
         assert_eq!((length, count), (123, 456));
         buffer.pop();
         assert_eq!(
-            unsafe { swr_v1_buffer_front(buffer.0, &raw mut view) },
+            unsafe { swr_v1_buffer_typed_front(buffer.0, &raw mut view) },
             EMPTY
         );
-        let mut token = ptr::dangling_mut();
+        let mut detached = TypedDetached {
+            token: ptr::dangling_mut(),
+            dispose: None,
+        };
         assert_eq!(
-            unsafe { swr_v1_buffer_pop(buffer.0, &raw mut token) },
+            unsafe { swr_v1_buffer_typed_pop(buffer.0, &raw mut detached) },
             EMPTY
         );
-        assert!(token.is_null());
+        assert!(detached.token.is_null());
         assert_eq!(unsafe { swr_v1_buffer_release(ptr::null_mut()) }, OK);
     }
 
@@ -1171,7 +783,7 @@ mod tests {
     fn every_allocation_failure_is_atomic() {
         let mut handle = ptr::dangling_mut();
         FAIL_AFTER.set(Some(0));
-        let status = unsafe { swr_v1_buffer_create(4, &raw mut handle) };
+        let status = unsafe { swr_v1_buffer_typed_create(4, &raw mut handle) };
         FAIL_AFTER.set(None);
         assert_eq!(status, NOMEM);
         assert!(handle.is_null());
@@ -1208,7 +820,7 @@ mod tests {
             buffer.pop();
             let mut native = 7u32;
             let token = ptr::from_mut(&mut native).cast();
-            assert_eq!(unsafe { swr_v1_buffer_push_native(buffer.0, token) }, OK);
+            assert_eq!(buffer.push(token), OK);
             assert_eq!(buffer.append(b"old"), OK);
             assert!(!unsafe { &*buffer.0 }.entries.as_slices().1.is_empty());
             // Keep the cold-allocation sweep visiting every payload allocation;
@@ -1233,8 +845,10 @@ mod tests {
             );
             assert_eq!(buffer.view().data, front.data);
             assert_eq!(unsafe { slice::from_raw_parts(front.data, 4) }, b"ijkl");
-            assert!(matches!(unsafe { &*buffer.0 }.entries.get(before.1 - 2),
-                            Some(Entry::Native(value)) if *value == token));
+            assert!(matches!(
+                unsafe { &*buffer.0 }.entries.get(before.1 - 2),
+                Some(Entry::TypedToken(_))
+            ));
             let mut returned = 0;
             while buffer.stats().1 != 0 {
                 let popped = buffer.pop();
@@ -1248,8 +862,7 @@ mod tests {
         let empty = Owned::new(4);
         let mut native = 7;
         FAIL_AFTER.set(Some(0));
-        let status =
-            unsafe { swr_v1_buffer_push_native(empty.0, ptr::from_mut(&mut native).cast()) };
+        let status = empty.push(ptr::from_mut(&mut native).cast());
         FAIL_AFTER.set(None);
         assert_eq!(status, NOMEM);
         assert_eq!(empty.stats(), (0, 0));

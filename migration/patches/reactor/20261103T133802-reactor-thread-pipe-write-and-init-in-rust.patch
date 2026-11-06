@@ -1,28 +1,22 @@
 diff --git a/src/server/reactor_thread.cc b/src/server/reactor_thread.cc
-index 77886bd..026c599 100644
+index b39dd5b..81fb469 100644
 --- a/src/server/reactor_thread.cc
 +++ b/src/server/reactor_thread.cc
-@@ -62,2 +62,5 @@ struct ReactorThreadContext {
+@@ -65,2 +65,5 @@ struct ReactorThreadContext {
      SendData task;
 +    // The worker-pipe message at the front of the output buffer.
 +    const EventData *front = nullptr;
 +    size_t front_length = 0;
  };
-@@ -491,2 +494,120 @@ static uint64_t reactor_thread_call(void *context, uint32_t op, uint64_t arg) {
+@@ -494,2 +497,114 @@ static uint64_t reactor_thread_call(void *context, uint32_t op, uint64_t arg) {
          return 0;
 +    case SWR_SERVER_OP_RT_BUF_EMPTY:
 +        return Buffer::empty(ctx->event->socket->out_buffer);
 +    case SWR_SERVER_OP_RT_FRONT: {
 +        Buffer *buffer = ctx->event->socket->out_buffer;
-+#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 +        const auto view = buffer->typed_front();
 +        ctx->front = reinterpret_cast<const EventData *>(view.data);
 +        ctx->front_length = view.length;
-+#else
-+        const BufferChunk *chunk = buffer->front();
-+        ctx->front = reinterpret_cast<const EventData *>(chunk->value.str);
-+        ctx->front_length = chunk->length;
-+#endif
 +        return 0;
 +    }
 +    case SWR_SERVER_OP_RT_FRONT_STREAM:
@@ -129,7 +123,7 @@ index 77886bd..026c599 100644
 +        return 0;
 +    }
      default:
-@@ -680,60 +801,4 @@ static int ReactorThread_onPipeRead(Reactor *reactor, Event *ev) {
+@@ -683,51 +798,4 @@ static int ReactorThread_onPipeRead(Reactor *reactor, Event *ev) {
  static int ReactorThread_onPipeWrite(Reactor *reactor, Event *ev) {
 -    int ret;
 -
@@ -137,13 +131,8 @@ index 77886bd..026c599 100644
 -    Buffer *buffer = ev->socket->out_buffer;
 -
 -    while (!Buffer::empty(buffer)) {
--#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 -        const auto view = buffer->typed_front();
 -        const auto *send_data = reinterpret_cast<EventData *>(view.data);
--#else
--        const BufferChunk *chunk = buffer->front();
--        const auto *send_data = reinterpret_cast<EventData *>(chunk->value.str);
--#endif
 -
 -        // server actively closed connection, should discard the data
 -        if (Server::is_stream_event(send_data->info.type)) {
@@ -170,11 +159,7 @@ index 77886bd..026c599 100644
 -            }
 -        }
 -
--#if defined(SWOOLE_RS_BUFFER_TYPED) && SWOOLE_RS_BUFFER_TYPED
 -        ret = ev->socket->send(view.data, view.length, 0);
--#else
--        ret = ev->socket->send(chunk->value.str, chunk->length, 0);
--#endif
 -        if (ret < 0) {
 -            return (ev->socket->catch_write_error(errno) == SW_WAIT) ? SW_OK : SW_ERR;
 -        } else {
@@ -192,7 +177,7 @@ index 77886bd..026c599 100644
 +    ReactorThreadContext ctx{static_cast<Server *>(reactor->ptr), reactor, nullptr, ev};
 +    return reactor_thread_run(SWR_SERVER_RUN_RT_PIPE_WRITE, 0, &ctx);
  }
-@@ -932,80 +997,4 @@ int Server::start_reactor_threads() {
+@@ -922,80 +990,4 @@ int Server::start_reactor_threads() {
  int ReactorThread::init(Server *serv, Reactor *reactor, uint16_t reactor_id) {
 -    reactor->ptr = serv;
 -    reactor->id = reactor_id;

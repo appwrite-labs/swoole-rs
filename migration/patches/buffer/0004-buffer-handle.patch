@@ -1,8 +1,8 @@
 diff --git a/include/swoole_buffer.h b/include/swoole_buffer.h
-index 1400def..445d2d8 100644
+index 080e497..993bcb4 100644
 --- a/include/swoole_buffer.h
 +++ b/include/swoole_buffer.h
-@@ -86,2 +86,9 @@ class Buffer {
+@@ -80,2 +80,9 @@ class Buffer {
      }
 +
 +    // For Rust operations on the queue itself (the reactor's write path).
@@ -13,10 +13,10 @@ index 1400def..445d2d8 100644
 +    static void check(int32_t status);
  };
 diff --git a/src/core/buffer.cc b/src/core/buffer.cc
-index af6f72f..14e8892 100644
+index 4d27d5f..ce02b8c 100644
 --- a/src/core/buffer.cc
 +++ b/src/core/buffer.cc
-@@ -174,2 +174,6 @@ void Buffer::append(const iovec *iov, size_t iovcnt, off_t offset) {
+@@ -137,2 +137,6 @@ void Buffer::append(const iovec *iov, size_t iovcnt, off_t offset) {
  
 +void Buffer::check(int32_t status) {
 +    check_buffer_status(status);
