@@ -57,30 +57,36 @@ bool swoole_get_env(const char *name, int *value) {
     return true;
 }
 
-static const swr_v1_core_native_host host = {
-    swoole_get_env,
-    [] { return static_cast<void *>(&SwooleTG); },
-    [] { SwooleG = {}; },
-    [](bool allocate) {
+// The C++ effects Rust's lifecycles run (crates/corebase/src/native.rs). One function, not a
+// table: a sanitizer keeps every global alive, and a table would keep these leaves with it in
+// the gates that link this file without the timer, event and signal code.
+static uintptr_t effect(int effect, uintptr_t argument) {
+    switch (effect) {
+    case 0: return reinterpret_cast<uintptr_t>(&SwooleTG);
+    case 1: SwooleG = {}; break;
+    case 2:
         delete SwooleTG.buffer_stack;  // Rust allocates only when there is none
-        SwooleTG.buffer_stack = allocate ? new swoole::String(SW_STACK_BUFFER_SIZE) : nullptr;
-    },
-    [] { return static_cast<void *>(new swoole::GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true)); },
-    [](void *pool) { delete static_cast<swoole::MemoryPool *>(pool); },
-    [](int operation) {
-        operation == 0 ? SwooleG.logger->close() : operation == 1 ? SwooleG.logger->reopen() : delete SwooleG.logger;
-    },
-    swoole_signal_clear,
-    swoole_signal_block_all,
-    swoole_timer_is_available,
-    swoole_timer_free,
-    swoole_event_is_available,
-    swoole_event_free,
-    swoole_coroutine_is_in,
-};
+        SwooleTG.buffer_stack = argument ? new swoole::String(SW_STACK_BUFFER_SIZE) : nullptr;
+        break;
+    case 3: return reinterpret_cast<uintptr_t>(new swoole::GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true));
+    case 4: delete reinterpret_cast<swoole::MemoryPool *>(argument); break;
+    case 5: SwooleG.logger->close(); break;
+    case 6: SwooleG.logger->reopen(); break;
+    case 7: delete SwooleG.logger; break;
+    case 8: swoole_signal_clear(); break;
+    case 9: swoole_signal_block_all(); break;
+    case 10: return swoole_timer_is_available();
+    case 11: swoole_timer_free(); break;
+    case 12: return swoole_event_is_available();
+    case 13: swoole_event_free(); break;
+    case 14: return swoole_coroutine_is_in();
+    default: std::abort();
+    }
+    return 0;
+}
 
 void swoole_init() {
-    swr_v1_core_set_native_host(&host);
+    swr_v1_core_set_native_host({swoole_get_env, effect});
     if (!swr_v1_core_init()) {
         return;
     }
