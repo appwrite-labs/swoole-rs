@@ -157,7 +157,7 @@ def main():
             binary = tree / 'benchmark'
             command = compiler + ['-std=c++17', '-O3', '-DNDEBUG', '-ffunction-sections', '-fdata-sections',
                                   '-I' + str(source / 'include'), '-I' + str(include),
-                                  str(source / 'src/core/buffer.cc'), str(local / 'benchmark.cc')]
+                                  *([str(source / 'src/core/buffer.cc')] if engine == 'upstream' else []), str(local / 'benchmark.cc')]
             if engine in builds:
                 command += ['-DSWOOLE_RS_BUFFER', str(archive), '-lm']
                 if sys.platform == 'linux':

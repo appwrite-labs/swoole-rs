@@ -10,6 +10,17 @@
 #include <stdexcept>
 #include <string>
 swoole::Global SwooleG{};
+// The first entry's unsent bytes: upstream's front() view, the Rust Buffer's typed_front().
+struct Head { const char *data; uint32_t length, size, offset; };
+static Head head(const swoole::Buffer &buffer) {
+#ifdef SWOOLE_RS_BUFFER
+    const auto front = buffer.typed_front();
+    return {reinterpret_cast<const char *>(front.data), front.length, front.length, front.offset};
+#else
+    const auto *front = buffer.front();
+    return {front->value.str, front->length, front->size, front->offset};
+#endif
+}
 static unsigned checks = 0;
 static void check(bool ok, const char *what) { if (!ok) throw std::runtime_error(what); ++checks; }
 int main() {
@@ -38,9 +49,9 @@ int main() {
                 check(buffer.count() == (expected.size() + effective - 1) / effective, "positive vector chunk count");
                 std::string copied;
                 while (!buffer.empty()) {
-                    auto *front = buffer.front();
-                    check(front->offset == 0 && front->length <= front->size, "initialized front span");
-                    copied.append(front->value.str, front->length);
+                    const auto front = head(buffer);
+                    check(front.offset == 0 && front.length <= front.size, "initialized front span");
+                    copied.append(front.data, front.length);
                     buffer.pop();
                     check(buffer.length() == expected.size() - copied.size(), "positive vector pop accounting");
                 }

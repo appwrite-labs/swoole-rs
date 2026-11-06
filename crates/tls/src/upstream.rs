@@ -1408,14 +1408,6 @@ pub unsafe extern "C-unwind" fn socket_sendfile_async(
     offset: libc::off_t,
     length: usize,
 ) -> c_int {
-    // SAFETY: src/core/buffer.cc's constructor, over operator new's storage for the
-    // one-handle Buffer; both throw on failure.
-    unsafe extern "C-unwind" {
-        #[link_name = "_Znwm"]
-        fn operator_new(size: usize) -> *mut c_void;
-        #[link_name = "_ZN6swoole6BufferC1Ej"]
-        fn buffer_new(buffer: *mut c_void, chunk_size: u32);
-    }
     // SAFETY: as the caller promises.
     let request = unsafe { file_request(filename, offset, length) };
     if request.is_null() {
@@ -1423,13 +1415,9 @@ pub unsafe extern "C-unwind" fn socket_sendfile_async(
     }
     // SAFETY: as the caller promises.
     if unsafe { (*socket).output.out_buffer }.is_null() {
-        // SAFETY: `new Buffer(SW_SEND_BUFFER_SIZE)`: the handle, then front()'s
-        // 40-byte BufferChunk view (include/swoole_buffer.h).
-        let buffer = unsafe { operator_new(size_of::<*mut c_void>() + 40) };
-        // SAFETY: fresh storage for one Buffer.
-        unsafe { buffer_new(buffer, 65536) };
+        let buffer = swoole_rs_buffer::cpp::new_buffer(65536);
         // SAFETY: as the caller promises.
-        unsafe { (*socket).output.out_buffer = buffer };
+        unsafe { (*socket).output.out_buffer = buffer.cast() };
     }
     let dispose = Some(swr_v1_socket_file_dispose as unsafe extern "C" fn(*mut c_void));
     // SAFETY: the socket's output buffer exists now.

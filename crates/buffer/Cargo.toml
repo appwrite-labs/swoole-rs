@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [features]
-# Define swoole::String's methods under their C++ symbols. Only crates/ffi, whose builds
+# Define swoole::String's and swoole::Buffer's methods under their C++ symbols. Only crates/ffi, whose builds
 # apply the buffer patch that deletes the C++ definitions, turns it on.
 upstream-symbols = []
 

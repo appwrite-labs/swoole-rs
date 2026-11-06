@@ -463,16 +463,6 @@ impl CppString {
     }
 }
 
-/// Defines each listed function under its upstream symbol with `upstream-symbols`.
-/// `off_t` is `long long` on macOS and `long` on Linux, which the symbols spell.
-macro_rules! upstream {
-    ($($linux:literal, $macos:literal => $item:item)*) => {$(
-        #[cfg_attr(all(feature = "upstream-symbols", not(target_os = "macos")), unsafe(export_name = $linux))]
-        #[cfg_attr(all(feature = "upstream-symbols", target_os = "macos"), unsafe(export_name = $macos))]
-        $item
-    )*};
-}
-
 /// # Safety
 /// `this` is a live String that only the caller uses.
 unsafe fn of<'a>(this: *mut CppString) -> &'a mut CppString {

@@ -5,8 +5,6 @@
  "base64-consumers-hybrid": 1,
  "base64-consumers-upstream": 1,
  "base64-unit": 21,
- "buffer-callbacks": 4,
- "buffer-native": 8,
  "buffer-network": 6,
  "buffer-posix-iovec": 8,
  "buffer-string-compatibility": 17,

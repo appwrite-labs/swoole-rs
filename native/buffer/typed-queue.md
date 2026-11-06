@@ -9,16 +9,14 @@ no native descriptor queue or DATA offset mirror.
   only the Rust cursor. Generation and offset are checked before publishing.
 - Native callback and token disposal run after Rust returns. Rust stores native
   function addresses but never calls them.
-- Ordinary CLOSE markers and sendfile ownership allocate nothing. Upstream's
-  `alloc(TYPE_CLOSE)` gets a real native `BufferChunk`, pushed into the same queue
-  with a native disposer.
+- CLOSE markers and sendfile ownership allocate nothing.
 
 ## Layout
 
-- The C++ Buffer holds the Rust pointer and `front()`'s borrowed `BufferChunk`
-  view. The public `BufferChunk` is unchanged (40 B).
+- The C++ Buffer holds only the Rust pointer; its methods are Rust
+  (`crates/buffer/src/cpp.rs`). `BufferChunk` is just its `Type` enum.
 - C/Rust front and detach layouts are checked by `typed.cc` and the crate's tests.
 - Creation uses one fallible `Box` and a raw admission/publication adapter.
   Teardown pairs `Box::into_raw` with `Box::from_raw`.
 
-Tests: `tests/modules/buffer/test_typed.py`, `test_native.py`.
+Tests: `tests/modules/buffer/test_typed.py`, the crate's `cpp` tests.

@@ -34,13 +34,6 @@ int main() {
         require(queue.typed_front().kind == 2);
         queue.pop();
         require(queue.empty() && queue.length() == 0);
-        // The frozen optional Native correction still calls the genuine legacy
-        // CLOSE constructor. Its typed token is consumed explicitly, not at exit.
-        auto *legacy_close = queue.alloc(swoole::BufferChunk::TYPE_CLOSE, 0);
-        require(queue.typed_front().token == legacy_close);
-        require(queue.typed_front().kind == 2);
-        queue.pop();
-        require(queue.empty());
     }
     std::cout << "{\"schemas\":4,\"checks\":" << checks << ",\"buffer_size\":" << sizeof(swoole::Buffer) << "}\n";
 }
