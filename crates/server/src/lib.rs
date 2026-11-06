@@ -89,12 +89,16 @@ pub(crate) type Effect<T> = Result<T, NativeFault>;
 /// What Rust asks of the server it runs on.
 pub(crate) trait Host {
     fn op(&mut self, op: u32, arg: u64) -> Effect<u64>;
+    // Inlined so each caller's constant op reaches `op`'s fact tables (#1435).
+    #[inline(always)]
     fn get(&mut self, op: u32) -> Effect<u64> {
         self.op(op, 0)
     }
+    #[inline(always)]
     fn is(&mut self, op: u32) -> Effect<bool> {
         Ok(self.get(op)? != 0)
     }
+    #[inline(always)]
     fn signed(&mut self, op: u32) -> Effect<i64> {
         Ok(self.get(op)?.cast_signed())
     }
@@ -198,6 +202,8 @@ impl<C: NativeCall> Host for Native<C> {
         Ok(unsafe { send::send_now(self.state, send) })
     }
 
+    // A null test on the hot runners; out of line it cost ~33 instructions a message (#1435).
+    #[inline(always)]
     fn state(&mut self) -> Effect<&ServerState> {
         if !self.state.is_null() {
             // SAFETY: run_state lends this state for the entire operation.
