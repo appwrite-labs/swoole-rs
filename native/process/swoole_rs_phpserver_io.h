@@ -16,10 +16,6 @@ struct _zend_string;
 typedef struct {
     /* !serv->is_worker_thread() && serv->is_started() */
     bool (*closed)(void *server);
-    /* The primary port's on()/getCallback() (0/1), called as a PHP method into `retval`;
-     * true if a bailout was trapped. */
-    bool (*port_call)(struct _zend_object *object, int which, struct _zval_struct *name, struct _zval_struct *callable,
-                      struct _zval_struct *retval);
     /* add_port (get_port in a worker thread) and its Port object into return_value; false if none. */
     bool (*listen)(struct _zend_object *object, const char *host, int64_t port, int64_t type,
                    struct _zval_struct *return_value);

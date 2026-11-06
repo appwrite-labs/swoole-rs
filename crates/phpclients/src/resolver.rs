@@ -329,8 +329,10 @@ unsafe fn call_method(
 ) -> Result<(), bailout::Bailout> {
     // SAFETY: per the caller.
     let object = unsafe { value::obj_of(object) };
+    let args = [arg];
+    let args = if arg.is_null() { &[] } else { &args[..] };
     // SAFETY: as above; Zend writes `retval`.
-    unsafe { bailout::call_method(object, ptr::null_mut(), method, retval, arg) }
+    unsafe { bailout::call_method(object, ptr::null_mut(), method, retval, args) }
 }
 
 /// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` `resolver`

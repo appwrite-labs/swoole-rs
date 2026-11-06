@@ -1234,7 +1234,7 @@ fn delegate(call: &Call, method: &[u8]) {
             SERVER.entry(),
             method,
             &raw mut retval,
-            call.zval(1),
+            &[call.zval(1)],
         )
     };
     if let Err(bailout) = called {

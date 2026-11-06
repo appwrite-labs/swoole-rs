@@ -29,9 +29,6 @@ typedef struct {
     /* zend::function::call(cb, argc, args, nullptr, coroutine) in zend_try:
      * 0 failed, 1 succeeded, 2 bailed out. */
     int (*call)(void *callback, uint32_t argc, struct _zval_struct *args, bool coroutine);
-    /* zend::function::call("\\Swoole\\Server\\Helper::<name>", argc, args) in
-     * zend_try; true if it bailed out. */
-    bool (*helper)(const char *name, uint32_t argc, struct _zval_struct *args);
     void (*recv_data)(void *server, struct _zval_struct *data, void *request);
     void (*close)(void *server, int64_t session_id);
     /* onWorkerStart's native preparation: hooks and the message bus allocator. */

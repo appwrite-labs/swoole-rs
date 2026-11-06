@@ -140,7 +140,6 @@ pub struct LifecycleHost {
     port_facts: unsafe extern "C" fn(*mut zval, *mut PortFacts),
     set_protocols: unsafe extern "C" fn(*mut c_void, u32, bool),
     isset_callback: unsafe extern "C" fn(*mut c_void, *mut c_void, c_int) -> bool,
-    port_set: unsafe extern "C" fn(*mut zval, *mut zval) -> bool,
     kind: unsafe extern "C" fn(*mut zend_object) -> c_int,
     create_server: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     start: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> c_int,
@@ -169,7 +168,6 @@ pub struct LifecycleHost {
         *mut c_void,
     ) -> bool,
     call: unsafe extern "C" fn(*mut c_void, u32, *mut zval, *mut zval) -> c_int,
-    before_start_helper: unsafe extern "C" fn(*mut zval) -> bool,
     co_current: unsafe extern "C" fn(*mut bool) -> *mut c_void,
     co_suspending: unsafe extern "C" fn(*mut c_void) -> bool,
     co_yield: unsafe extern "C" fn(*mut c_void),
@@ -1051,8 +1049,18 @@ fn before_start(object: *mut zend_object, serv: *mut c_void) -> Result<(), Stop>
         let port_setting = unsafe { swr_zend_property_slot(port_object, c"setting".as_ptr(), 7) };
         // SAFETY: a declared property's slot.
         if port_setting.is_null() || unsafe { type_of(port_setting) } == IS_NULL {
-            // SAFETY: the Port object and the server's settings.
-            trapped(unsafe { (host.port_set)(zport, setting) })?;
+            // `$port->set($setting)`, Port's own method.
+            // SAFETY: the live Port object, its class and the server's settings.
+            let set = unsafe {
+                bailout::call_method(
+                    port_object,
+                    crate::PORT.entry(),
+                    b"set",
+                    ptr::null_mut(),
+                    &[setting],
+                )
+            };
+            trapped(set.is_err())?;
         }
     }
     for &zport in &ports {
@@ -1112,9 +1120,15 @@ fn before_start(object: *mut zend_object, serv: *mut c_void) -> Result<(), Stop>
         // SAFETY: a live server and the settings array.
         unsafe { (host.copy_setting)(serv, setting) };
     }
-    let mut zserv = crate::dispatch::server_zval(serv);
+    if !swoole_rs_phpswoole::enable_library() {
+        return Ok(());
+    }
+    let mut zserv = [crate::dispatch::server_zval(serv)];
     // SAFETY: the server's object zval.
-    trapped(unsafe { (host.before_start_helper)(&raw mut zserv) })
+    let called = unsafe {
+        swoole_rs_phphelpers::named_call(br"\Swoole\Server\Helper::onBeforeStart", &mut zserv)
+    };
+    trapped(called.is_err())
 }
 
 fn start(call: &Call) {

@@ -707,6 +707,7 @@ dependencies = [
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
+ "swoole-rs-phphelpers",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-ports",

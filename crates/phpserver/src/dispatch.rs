@@ -53,7 +53,6 @@ pub struct DispatchHost {
     zserv: unsafe extern "C" fn(*mut c_void) -> *mut zval,
     port_callback: unsafe extern "C" fn(*mut c_void, c_int, c_int) -> *mut c_void,
     call: unsafe extern "C" fn(*mut c_void, u32, *mut zval, bool) -> c_int,
-    helper: unsafe extern "C" fn(*const c_char, u32, *mut zval) -> bool,
     recv_data: unsafe extern "C" fn(*mut c_void, *mut zval, *mut c_void),
     close: unsafe extern "C" fn(*mut c_void, i64),
     worker_start: unsafe extern "C" fn(*mut c_void),
@@ -163,10 +162,9 @@ fn helper(facts: &Facts, name: &CStr, args: &mut [zval]) -> bool {
     if !facts.enable_library {
         return false;
     }
-    #[expect(clippy::cast_possible_truncation, reason = "at most two arguments")]
-    let argc = args.len() as u32;
-    // SAFETY: a static name and `argc` initialised arguments.
-    unsafe { (host().helper)(name.as_ptr(), argc, args.as_mut_ptr()) }
+    let name = [br"\Swoole\Server\Helper::", name.to_bytes()].concat();
+    // SAFETY: initialised arguments.
+    unsafe { swoole_rs_phphelpers::named_call(&name, args) }.is_err()
 }
 
 fn facts(server: *mut c_void) -> Facts {

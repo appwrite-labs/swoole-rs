@@ -4,10 +4,10 @@
 
 #include "shim.h"
 
-/* zend_call_method(object, scope, NULL, name, length, retval, arg ? 1 : 0, arg, NULL)
+/* zend_call_method(object, scope, NULL, name, length, retval, argc, arg1, arg2)
  * inside zend_try: 1 if it bailed out. A null scope is the object's class. */
 int swr_zend_try_call_method(zend_object *object, zend_class_entry *scope, const char *name, size_t length,
-                             zval *retval, zval *arg);
+                             zval *retval, uint32_t argc, zval *arg1, zval *arg2);
 /* zval_dtor (zval_ptr_dtor_nogc) inside zend_try: 1 if it bailed out. */
 int swr_zend_try_zval_dtor(zval *value);
 #endif
