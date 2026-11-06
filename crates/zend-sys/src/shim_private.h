@@ -12,8 +12,8 @@ void swr_zend_facade_object_release(void *);
 zend_object *swr_zend_facade_exception(void);
 void swr_zend_facade_exception_error(void *);
 int swr_zend_try_facade_user_call(zval *, uint32_t, zval *, zval *, int *);
-int swr_zend_try_facade_coroutine(int64_t (*)(zend_fcall_info_cache *, uint32_t, zval *),
-                                  zend_fcall_info_cache *, uint32_t, zval *, int64_t *);
+int swr_zend_try_facade_coroutine(long (*)(zend_fcall_info_cache *, uint32_t, zval *, zval *, uint8_t *),
+                                  zend_fcall_info_cache *, uint32_t, zval *, long *);
 int swr_zend_try_facade_append(zval *, zval *);
 int swr_zend_try_facade_array_two(zval *);
 int swr_zend_try_facade_add_index(HashTable *, zend_ulong, zval *, zval **);

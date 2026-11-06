@@ -1,6 +1,6 @@
 //! Shared object/property and callback custody operations for native PHP callers.
 use std::{
-    ffi::{c_char, c_int},
+    ffi::{c_char, c_int, c_long},
     ptr,
 };
 use swoole_rs_zend::{
@@ -327,18 +327,23 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_call_anyway(
     result
 }
 
+/// `swr_v1_phpcoroutines_create`: the new cid, with 1 in its last argument
+/// when activation bailed out.
+pub type Create =
+    unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval, *mut zval, *mut u8) -> c_long;
+
 /// Invoke directly or create a coroutine, preserving the immediate fatal-exception check.
 /// # Errors
 /// PHP bailed out; no jump is resumed while a Rust caller owns its state.
 /// # Safety
-/// A live resolved cache, argument span and optional return slot. `create` is the C++ core leaf.
+/// A live resolved cache, argument span and optional return slot. `create` is the coroutine leaf.
 pub unsafe fn function_call(
     cache: *mut zend_fcall_info_cache,
     argc: u32,
     argv: *mut zval,
     retval: *mut zval,
     coroutine: bool,
-    create: unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval) -> i64,
+    create: Create,
     report: unsafe extern "C" fn(*const c_char),
 ) -> Result<bool, bailout::Bailout> {
     let success = if coroutine {
@@ -350,7 +355,7 @@ pub unsafe fn function_call(
                 }
             };
         }
-        let mut result = -1;
+        let mut result: c_long = -1;
         // SAFETY: the native coroutine leaf runs inside the C trap; no Rust borrow spans a switch.
         bailed(unsafe {
             sys::swr_zend_try_facade_coroutine(Some(create), cache, argc, argv, &raw mut result)
@@ -410,6 +415,8 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_named_call(
     bailout::finish();
 }
 
+/// [`function_call`] for C++: 1 when the call succeeded, 0 when it failed,
+/// -1 when it bailed out, which the caller re-raises.
 /// # Safety
 /// The native caller lends a live cache, arguments and return slot and native coroutine/warning leaves.
 #[unsafe(no_mangle)]
@@ -419,12 +426,15 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_function_call(
     argv: *mut zval,
     retval: *mut zval,
     coroutine: bool,
-    create: unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval) -> i64,
+    create: Create,
     report: unsafe extern "C" fn(*const c_char),
-) -> bool {
+) -> c_int {
     // SAFETY: forward the native caller's initialized call data and contained native leaves.
-    let result = unsafe { function_call(cache, argc, argv, retval, coroutine, create, report) }
-        .unwrap_or(false);
-    bailout::finish();
-    result
+    let result = unsafe { function_call(cache, argc, argv, retval, coroutine, create, report) };
+    let called = c_int::from(matches!(result, Ok(true)));
+    if bailout::relay_to_c(result.map(drop)) {
+        -1
+    } else {
+        called
+    }
 }
