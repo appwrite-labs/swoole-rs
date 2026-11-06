@@ -8,6 +8,10 @@ publish = false
 name = "swoole_rs_memory"
 crate-type = ["rlib", "staticlib"]
 
+[features]
+# Heap's members under their upstream C++ symbols (crates/ffi enables it).
+upstream-symbols = []
+
 [dependencies]
 libc = "=0.2.191"
 swoole-rs-locks = { path = "../locks" }
