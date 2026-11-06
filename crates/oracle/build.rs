@@ -253,8 +253,8 @@ fn protocols() {
     .unwrap();
 }
 
-/// The `Address` methods, the hosts lookup, the Set-Cookie split and the DNS name
-/// decode from the pinned sources, copied unchanged for shim/clients.cc.
+/// The `Address` methods, the hosts lookup, the Set-Cookie split, the DNS name
+/// codec and the socket DNS lookup from the pinned sources, copied unchanged for shim/clients.cc.
 fn clients() {
     let address =
         fs::read_to_string("upstream/src/network/address.cc").expect("vendored address.cc");
@@ -284,6 +284,31 @@ fn clients() {
         .iter()
         .map(|signature| definition(&dns, signature) + "\n")
         .collect::<String>(),
+    )
+    .unwrap();
+    let records = [
+        "enum RecordType {",
+        "struct RecordHeader {",
+        "struct Q_FLAGS {",
+        "struct RR_FLAGS {",
+    ];
+    let functions = [
+        "static int domain_encode(const char *src, int n, char *dest) {",
+        "static void domain_decode(char *str) {",
+        "static std::string parse_ip_address(void *vaddr, int type) {",
+        "std::vector<std::string> dns_lookup_impl_with_socket(",
+    ];
+    fs::write(
+        out("clients_dns_lookup.inc"),
+        records
+            .iter()
+            .map(|signature| definition(&dns, signature) + ";\n")
+            .chain(
+                functions
+                    .iter()
+                    .map(|signature| definition(&dns, signature) + "\n"),
+            )
+            .collect::<String>(),
     )
     .unwrap();
     let coro = fs::read_to_string("upstream/ext-src/swoole_http_client_coro.cc")

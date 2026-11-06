@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The clients gates' shared helpers: the pinned and patched text of a source file,
-a function body cut from it, and a command runner that records its evidence."""
+"""The clients gates' shared helpers: a function body cut from a source file and a
+command runner that records its evidence."""
 import base64
 import json
 from pathlib import Path
@@ -9,13 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import COMMIT as PIN
-
-
-def sources(source, archive, path):
-    """PATH at the pin, and in the fully patched tree of the hybrid build ARCHIVE comes from."""
-    return run(['git', '-C', source, 'show', f'{PIN}:{path}']), (hybrid_tree(archive)[0] / path).read_text()
 
 
 LOG = None

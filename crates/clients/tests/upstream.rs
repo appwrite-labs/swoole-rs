@@ -5,9 +5,14 @@ use swoole_rs_clients::address::{
     Resolve, swr_v1_clients_address_assign, swr_v1_clients_address_loopback,
     swr_v1_clients_address_string, swr_v1_clients_address_verify,
 };
-use swoole_rs_clients::dns::{swr_v1_clients_hosts_lookup, swr_v1_clients_set_hosts_path};
+use swoole_rs_clients::dns::{
+    INVALID_DOMAIN, swr_v1_clients_dns_query, swr_v1_clients_hosts_lookup,
+    swr_v1_clients_set_hosts_path,
+};
+use swoole_rs_clients::ip::swr_v1_clients_ip_text;
 use swoole_rs_clients::{
-    URL_INVALID, URL_PORT_RANGE, swr_v1_clients_cookie, swr_v1_clients_port, swr_v1_clients_url,
+    URL_INVALID, URL_PORT_RANGE, swr_v1_clients_cookie, swr_v1_clients_domain_decode,
+    swr_v1_clients_domain_encode, swr_v1_clients_port, swr_v1_clients_url,
 };
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_oracle::clients as upstream;
@@ -617,4 +622,376 @@ fn hosts_lookup_matches_upstream() {
         cases, 2360,
         "13 files of 12 names and 256 of 4, in both locales"
     );
+}
+
+/// `SW_BUFFER_SIZE_STD`, the DNS packet, and the room after its 12-byte header.
+const PACKET: usize = 8192;
+const QUESTION: usize = PACKET - 12;
+
+/// The bounds `swr_v1_clients_dns_query` puts on the Rust encoder, over `n` bytes
+/// of the NUL-terminated `source`.
+fn rust_encode(source: &[u8], n: usize, dest: &mut [u8]) -> c_int {
+    if n > QUESTION - 3 || source[n] == b'.' {
+        return INVALID_DOMAIN;
+    }
+    // SAFETY: `source` holds `n` bytes and `dest` at least `QUESTION`; they don't overlap.
+    unsafe { swr_v1_clients_domain_encode(source.as_ptr(), n, dest.as_mut_ptr(), QUESTION) }
+}
+
+fn upstream_encode(source: &[u8], n: usize, dest: &mut [u8]) -> c_int {
+    // SAFETY: `source` is NUL-terminated after `n` bytes and `dest` holds `n + 3`.
+    unsafe {
+        upstream::domain_encode(
+            source.as_ptr().cast(),
+            c_int::try_from(n).unwrap_or(c_int::MAX),
+            dest.as_mut_ptr().cast(),
+        )
+    }
+}
+
+fn signed_char() -> bool {
+    c_char::MIN != 0
+}
+
+/// `domain_encode` over every byte at label lengths 1 to 256, odd dots and two
+/// labels of 128 bytes split at every point, plus the trailing-dot rejection at a
+/// shorter `n`.
+#[test]
+fn domain_encode_matches_upstream() {
+    let mut domains: Vec<Vec<u8>> = [
+        "",
+        "a",
+        "www.apple.com",
+        "localhost",
+        ".",
+        "a.",
+        ".a",
+        "a..b",
+        "a b.c",
+        "a:b.c",
+    ]
+    .iter()
+    .map(|domain| domain.as_bytes().to_vec())
+    .collect();
+    for byte in 0..=255u8 {
+        for length in [1, 2, 4, 63, 127, 128, 255, 256] {
+            domains.push(vec![byte; length]);
+        }
+    }
+    for n in 1..=127 {
+        domains.push([&vec![b'a'; n][..], b".", &vec![b'b'; 128 - n], b".example"].concat());
+    }
+    for domain in &domains {
+        let source = c_str(domain);
+        let (mut expected, mut actual) = (vec![b'!'; PACKET], vec![b'!'; PACKET]);
+        assert_eq!(
+            (rust_encode(&source, domain.len(), &mut actual), actual),
+            (
+                upstream_encode(&source, domain.len(), &mut expected),
+                expected
+            ),
+            "{domain:?}"
+        );
+    }
+    assert_eq!(domains.len(), 2185);
+    let (mut expected, mut actual) = ([0u8; 32], [0u8; 32]);
+    assert_eq!(
+        (rust_encode(b"a.\0", 1, &mut actual), actual),
+        (upstream_encode(b"a.\0", 1, &mut expected), expected)
+    );
+}
+
+fn rust_decode(name: &mut [u8], capacity: usize) {
+    // SAFETY: `name` holds at least `capacity` initialized bytes.
+    unsafe {
+        swr_v1_clients_domain_decode(name.as_mut_ptr(), capacity, u8::from(signed_char()));
+    }
+}
+
+fn upstream_decode(name: &mut [u8]) {
+    // SAFETY: `name` is NUL-terminated within its bytes.
+    unsafe { upstream::domain_decode(name.as_mut_ptr().cast()) }
+}
+
+/// `domain_decode` over three encoded labels of every length mix, then over rows
+/// whose first label's length byte runs into an embedded NUL: the whole buffer,
+/// padding included, must match.
+#[test]
+fn domain_decode_matches_upstream() {
+    let labels = [
+        "a".to_string(),
+        "www".to_string(),
+        "example".to_string(),
+        "com".to_string(),
+        "a".repeat(63),
+        "z".repeat(127),
+    ];
+    let mut cases = 0;
+    for a in &labels {
+        for b in &labels {
+            for c in &labels {
+                let domain = c_str(format!("{a}.{b}.{c}").as_bytes());
+                let mut expected = vec![b'!'; PACKET];
+                upstream_encode(&domain, domain.len() - 1, &mut expected);
+                let mut actual = expected.clone();
+                let initialized = c_len(&expected) + 1;
+                upstream_decode(&mut expected);
+                rust_decode(&mut actual, initialized);
+                assert_eq!(actual, expected, "{domain:?}");
+                cases += 1;
+            }
+        }
+    }
+    let last = if signed_char() { 127 } else { 255 };
+    for byte in 1..=last {
+        for offset in [1, 2, 3] {
+            let mut expected = vec![0u8; PACKET];
+            expected[0] = byte;
+            expected[1..=usize::from(byte)].fill(b'a');
+            expected[usize::from(byte).min(offset)] = 0;
+            let mut actual = expected.clone();
+            upstream_decode(&mut expected);
+            rust_decode(&mut actual, PACKET);
+            assert_eq!(actual, expected, "{byte} {offset}");
+            cases += 1;
+        }
+    }
+    assert_eq!(cases, 216 + 3 * usize::from(last));
+}
+
+fn c_len(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(bytes.len())
+}
+
+/// One lookup's addresses, socket calls and last errors, and the query sent.
+#[derive(Debug, Default, PartialEq)]
+struct Lookup {
+    addresses: Vec<Vec<u8>>,
+    effects: Vec<Vec<u8>>,
+    query: Vec<u8>,
+}
+
+unsafe extern "C" fn upstream_effect(
+    context: *mut c_void,
+    kind: c_int,
+    text: *const c_char,
+    length: usize,
+) {
+    // SAFETY: the context is the `Lookup` the oracle call borrows; `text` holds `length` bytes.
+    let (lookup, text) = unsafe {
+        (
+            &mut *context.cast::<Lookup>(),
+            std::slice::from_raw_parts(text.cast::<u8>(), length).to_vec(),
+        )
+    };
+    match kind {
+        0 => lookup.addresses.push(text),
+        1 => lookup.effects.push(text),
+        _ => lookup.query = text,
+    }
+}
+
+/// The socket double the Rust lookup runs over: the fixture, its errCode and the lookup.
+struct Exchange {
+    record_type: c_int,
+    receive_mode: c_int,
+    send_success: bool,
+    canceled: bool,
+    bad_id: bool,
+    lookup: Lookup,
+}
+
+unsafe extern "C" fn sent(context: *mut c_void, data: *const u8, length: usize) -> bool {
+    // SAFETY: the context is the `Exchange` the query borrows; `data` holds `length` bytes.
+    let (exchange, data) = unsafe {
+        (
+            &mut *context.cast::<Exchange>(),
+            std::slice::from_raw_parts(data, length),
+        )
+    };
+    exchange.lookup.effects.push(b"send".to_vec());
+    exchange.lookup.query = data.to_vec();
+    exchange.send_success
+}
+
+/// The patched caller's `recv`: a failed receive reports `-ECANCELED` when the
+/// socket's errCode is ECANCELED.
+unsafe extern "C" fn received(context: *mut c_void, data: *mut u8, capacity: usize) -> isize {
+    // SAFETY: the context is the `Exchange` the query borrows.
+    let exchange = unsafe { &mut *context.cast::<Exchange>() };
+    exchange.lookup.effects.push(b"receive".to_vec());
+    // SAFETY: the query holds its bytes and `data` holds `capacity`.
+    let n = unsafe {
+        upstream::dns_answer(
+            exchange.record_type,
+            exchange.receive_mode,
+            exchange.bad_id,
+            exchange.lookup.query.as_ptr().cast(),
+            exchange.lookup.query.len(),
+            data.cast(),
+            capacity,
+        )
+    };
+    if n <= 0 && exchange.canceled {
+        -isize::try_from(libc::ECANCELED).unwrap_or(0)
+    } else {
+        n
+    }
+}
+
+unsafe extern "C" fn pushed(context: *mut c_void, text: *const u8, length: usize) {
+    // SAFETY: the context is the `Exchange` the query borrows; `text` holds `length` bytes.
+    let (exchange, text) = unsafe {
+        (
+            &mut *context.cast::<Exchange>(),
+            std::slice::from_raw_parts(text, length),
+        )
+    };
+    exchange.lookup.addresses.push(text.to_vec());
+}
+
+/// `dns_lookup_impl_with_socket` over a UDP socket double, for A, AAAA and CNAME
+/// answers, with and without a timeout, a failed send, a failed, short or whole
+/// receive, cancellation and a mismatched id. The Rust side is the patched
+/// caller: its socket calls, `swr_v1_clients_dns_query` and the last error it sets.
+#[test]
+fn dns_lookup_matches_upstream() {
+    let mut request_id = 1u16;
+    let mut cases = 0;
+    for domain in [c"a.co", c"abc.test", c"long.example"] {
+        for record_type in [1, 28, 5] {
+            let family = if record_type == 28 {
+                libc::AF_INET6
+            } else {
+                libc::AF_INET
+            };
+            for timeout in [0.0, 0.1] {
+                for send_success in [false, true] {
+                    for receive_mode in [0, 1, 2] {
+                        for canceled in [false, true] {
+                            for bad_id in [false, true] {
+                                let mut expected = Lookup::default();
+                                // SAFETY: `domain` is NUL-terminated and `expected` outlives the call.
+                                unsafe {
+                                    upstream::dns_lookup(
+                                        domain.as_ptr(),
+                                        family,
+                                        timeout,
+                                        record_type,
+                                        receive_mode,
+                                        send_success,
+                                        canceled,
+                                        bad_id,
+                                        (&raw mut expected).cast(),
+                                        upstream_effect,
+                                    );
+                                }
+                                let mut exchange = Exchange {
+                                    record_type,
+                                    receive_mode,
+                                    send_success,
+                                    canceled,
+                                    bad_id,
+                                    lookup: Lookup::default(),
+                                };
+                                if timeout > 0.0 {
+                                    exchange.lookup.effects.push(b"timeout".to_vec());
+                                }
+                                // SAFETY: `domain` is NUL-terminated; the callbacks take `exchange`.
+                                let error = unsafe {
+                                    swr_v1_clients_dns_query(
+                                        domain.as_ptr(),
+                                        family,
+                                        request_id,
+                                        (&raw mut exchange).cast(),
+                                        sent,
+                                        received,
+                                        pushed,
+                                        signed_char(),
+                                    )
+                                };
+                                request_id = request_id.wrapping_add(1);
+                                if error != 0 && error != INVALID_DOMAIN {
+                                    exchange
+                                        .lookup
+                                        .effects
+                                        .push(format!("error:{error}").into_bytes());
+                                }
+                                assert_eq!(
+                                    exchange.lookup, expected,
+                                    "{domain:?} {record_type} {timeout} {send_success} {receive_mode} {canceled} {bad_id}"
+                                );
+                                cases += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 432);
+}
+
+/// `parse_ip_address` against `swr_v1_clients_ip_text`, which the DNS and c-ares
+/// lookups call, for both families over every two-byte pattern, every byte at
+/// every position over zeros and ones, and 65,536 pseudo-random addresses: the
+/// text, errno and the input bytes after.
+#[test]
+fn ip_text_matches_upstream() {
+    let mut cases = 0;
+    let mut compare = |address: &mut [u8; 32]| {
+        for (family, version) in [(libc::AF_INET, 4), (libc::AF_INET6, 6)] {
+            let saved = *address;
+            let mut text = [0 as c_char; 64];
+            set_errno(17);
+            // SAFETY: `address` holds 32 bytes and `text` 64.
+            let length = unsafe {
+                upstream::ip_text(
+                    address.as_mut_ptr().cast(),
+                    family,
+                    text.as_mut_ptr(),
+                    text.len(),
+                )
+            };
+            let expected = (bytes(&text[..length]), errno(), *address);
+            set_errno(17);
+            // SAFETY: `address` holds the 16 bytes either version reads.
+            let actual = unsafe { swr_v1_clients_ip_text(version, address.as_ptr()) };
+            let length = usize::try_from(actual.length).unwrap_or(0);
+            assert_eq!(
+                (actual.bytes[..length].to_vec(), errno(), *address),
+                expected,
+                "{saved:?} {family}"
+            );
+            cases += 1;
+        }
+    };
+    let mut bytes = [0u8; 32];
+    for n in 0..=u16::MAX {
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = n.to_le_bytes()[index % 2];
+        }
+        compare(&mut bytes);
+    }
+    for position in 0..16 {
+        for n in 0..=255 {
+            for fill in [0, 255] {
+                bytes.fill(fill);
+                bytes[position] = n;
+                compare(&mut bytes);
+            }
+        }
+    }
+    let mut random = 1_234_567u32;
+    for _ in 0..65536 {
+        for byte in &mut bytes {
+            random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *byte = random.to_be_bytes()[0];
+        }
+        compare(&mut bytes);
+    }
+    assert_eq!(cases, 2 * (65536 + 16 * 256 * 2 + 65536));
 }

@@ -8,30 +8,25 @@ The persistent client pool is also Rust-owned.
 
 ## Actual-body differentials
 
-Every `*_gate.py` takes the same arguments:
+`crates/clients/tests/upstream.rs` runs the Rust code against the pinned C++ in
+`swoole-rs-oracle`: the Set-Cookie split, the `Address` methods (`verify_ip`,
+`verify_port`, both `assign`s, `is_loopback_addr`), the hosts-file lookup, the DNS
+name codec, the DNS address text and the socket DNS lookup
+(`dns_lookup_impl_with_socket` over a UDP socket double).
+`clients-native-originals` runs upstream's own `network/client.cpp`, `dns.cpp`
+and `address.cpp` GoogleTests on the hybrid tree.
+
+`http_format_gate.py` compiles the pinned request formatter calls and
+`sw_snprintf` next to `swr_v1_clients_http_format` from the hybrid build's archive
+and compares them at bounded capacities:
 
 ```sh
-python3 tests/modules/clients/codec_gate.py --source /path/to/pinned-git \
+python3 tests/modules/clients/http_format_gate.py --source /path/to/pinned-git \
   --archive /path/to/libswoole_rs_ffi.a --output target/clients.json [--sanitize] [--rust-sanitized]
 ```
 
-Each gate extracts the original function bodies from the pin and the patched ones
-from the hybrid build `--archive` comes from (`hybrid_tree`), compiles both into
-one program with native effect-recording doubles, and compares return values,
-state, errors and effect order. `--sanitize` adds native ASan/UBSan;
-`--rust-sanitized` records that the archive was ASan-built (requires
-`--sanitize`). None of these are whole-TU, live-socket or PHP runtime tests.
-Once a body moves into Rust, its cases move to a `crates/clients` test against
-the pinned C++ in `swoole-rs-oracle` (`tests/upstream.rs`), as the Set-Cookie
-split, the `Address` methods (`verify_ip`, `verify_port`, both `assign`s,
-`is_loopback_addr`) and the hosts-file lookup did. `clients-native-originals` runs upstream's own
-`network/client.cpp`, `dns.cpp` and `address.cpp` GoogleTests on the hybrid tree.
-
-| Gate | Bodies covered |
-|---|---|
-| `codec_gate.py` | DNS domain encode/decode and whole query/response callers |
-| `http_format_gate.py` | Request formatting against the pinned `sw_snprintf` |
-| `ip_text_gate.py` | DNS numeric IP formatting |
+`--sanitize` adds native ASan/UBSan; `--rust-sanitized` records that the archive
+was ASan-built (requires `--sanitize`).
 
 `python3 -m unittest discover -s tests/modules/clients -p 'test_*.py'` checks
 that the gates' shared command recorder (`gate.py`) keeps non-UTF-8 diagnostics.
@@ -71,8 +66,8 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 
 - macOS Rust ASan archives fail to link (`___asan_version_mismatch_check_v8`);
   Rust ASan runs on Linux only.
-- `codec_gate.py` case counts differ by platform because plain `char` is signed
-  on macOS and unsigned on Linux.
+- `domain_decode_matches_upstream`'s case count differs by platform because plain
+  `char` is signed on macOS and unsigned on Linux.
 - Some inputs are outside the compared domain and are not compared; Rust stops at
   bounds on them.
 - The Rust pool frees its container buffers at teardown; the original leaks
