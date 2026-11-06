@@ -42,7 +42,6 @@ struct _zend_fcall_info;
 struct _zval_struct *swr_v1_phphelpers_zval_alloc(void);
 struct _zval_struct *swr_v1_phphelpers_zval_dup(const struct _zval_struct *);
 struct _zval_struct *swr_v1_phphelpers_property(struct _zend_class_entry *, struct _zval_struct *, const char *, size_t, bool, bool);
-struct _zval_struct *swr_v1_phphelpers_property_offset(struct _zend_class_entry *, struct _zval_struct *, struct _zend_string *);
 void swr_v1_phphelpers_cache_free(struct _zend_fcall_info_cache *);
 int swr_v1_phphelpers_call(struct _zval_struct *, struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *, struct _zval_struct *, bool, void (*)(const char *));
 int swr_v1_phphelpers_call_anyway(struct _zend_fcall_info *, struct _zend_fcall_info_cache *);
@@ -84,12 +83,6 @@ void swr_v1_phpstdext_copy_type(struct _zval_struct *container, struct _zend_arr
  * if not, Zend has thrown. */
 bool swr_v1_phpstdext_operation(struct _zend_array *ht, bool concat);
 #endif
-struct _zend_execute_data;
-bool swr_v1_phphelpers_callable_frame(struct _zval_struct *value, struct _zval_struct *object,
-    struct _zend_execute_data *frame, uint32_t flags, char **name, size_t *length,
-    struct _zend_fcall_info_cache *cache, char **error);
-bool swr_v1_phphelpers_unset_class_valid(struct _zend_object *object);
-void swr_v1_phphelpers_unset_deny(struct _zend_object *object, struct _zend_string *member, void **cache);
 int swr_v1_phphelpers_class_alias(const char *name, size_t length, struct _zend_class_entry *entry);
 #ifdef __cplusplus
 }

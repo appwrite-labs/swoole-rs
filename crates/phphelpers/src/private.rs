@@ -5,10 +5,7 @@ use std::{
 };
 use swoole_rs_zend::{
     bailout,
-    sys::{
-        self, zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_object, zend_string,
-        zval,
-    },
+    sys::{self, zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_object, zval},
     type_of,
 };
 
@@ -173,39 +170,6 @@ unsafe fn property(
                 property = unsafe { read(scope, object, name, length, silent, &raw mut temporary) };
             }
         }
-    }
-    property
-}
-
-/// # Safety
-/// Live internal object and scope; name identifies declared property metadata.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_property_offset(
-    scope: *mut zend_class_entry,
-    value: *mut zval,
-    name: *mut zend_string,
-) -> *mut zval {
-    // SAFETY: borrow the registered class's property metadata table without an enduring reference.
-    let table = unsafe { &raw const (*scope).properties_info };
-    // SAFETY: the declared property exists in this table.
-    let entry = unsafe { sys::zend_hash_find(table, name) };
-    // SAFETY: property metadata is a pointer-valued initialized zval.
-    let payload = unsafe { (*entry).value };
-    // SAFETY: Zend's properties_info table stores zend_property_info pointers.
-    let info = unsafe { payload.ptr }.cast::<sys::zend_property_info>();
-    // SAFETY: the object matches the registered scope.
-    let object = unsafe { swoole_rs_zend::value::obj_of(value) };
-    // SAFETY: a declared property's offset is inside the object's allocation.
-    let offset = unsafe { (*info).offset } as usize;
-    let property = object.wrapping_byte_add(offset).cast::<zval>();
-    // SAFETY: compare Zend's distinguished uninitialized-value address, as the original does.
-    if property == unsafe { sys::swr_zend_uninitialized_zval() } {
-        // SAFETY: the writable property slot is initialized to null.
-        unsafe {
-            (*property).u1 = sys::_zval_struct__bindgen_ty_1 {
-                type_info: sys::IS_NULL,
-            }
-        };
     }
     property
 }
