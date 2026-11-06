@@ -12,10 +12,10 @@
 use core::ffi::c_void;
 
 pub use commands::{
-    CommandInfo, swr_v1_server_command_add, swr_v1_server_command_at, swr_v1_server_command_attach,
-    swr_v1_server_command_callback, swr_v1_server_command_drain, swr_v1_server_command_find,
-    swr_v1_server_command_handler, swr_v1_server_command_request,
+    CommandFn, CommandInfo, CommandReply, swr_v1_server_command_at, swr_v1_server_command_handler,
+    swr_v1_server_command_result,
 };
+pub use server_methods::{swr_v1_server_add_command, swr_v1_server_command};
 
 mod admin;
 mod base_factory;

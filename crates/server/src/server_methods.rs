@@ -16,8 +16,8 @@ use crate::ops::{
     RUN_BASE_FINISH, RUN_BASE_NOTIFY, RUN_DISABLE_ACCEPT, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
     RUN_IDLE_WORKERS, RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_REOPEN_LOGGER, RUN_SC_SEND,
     RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN,
-    RUN_ST_ABORT, RUN_ST_CLEAR_TIMER, RUN_ST_FOREACH, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
-    RUN_STOP_MASTER_THREAD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_FOREACH,
+    RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_STOP_MASTER_THREAD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
 use crate::records::ConnectionRecord;
 use swoole_rs_corebase::DataHead;
@@ -673,6 +673,63 @@ pub unsafe extern "C" fn base_factory_end(
     let arg = session_id.cast_unsigned() | (i64::from(flags).cast_unsigned() << 48);
     // SAFETY: as the caller guarantees.
     unsafe { on_base(factory, ptr::null_mut(), RUN_BASE_END, arg) }
+}
+
+/// `Server::add_command(name, accepted_process_types, handler)`: whether the
+/// command joined. The handler's context lives as long as the server.
+///
+/// # Safety
+/// `serv` is a live `Server`; `name` holds `length` bytes; `handler.invoke` is a
+/// `commands::Handler`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_add_command(
+    serv: *mut c_void,
+    name: *const c_char,
+    length: usize,
+    accepted_types: c_int,
+    handler: crate::CommandFn,
+) -> bool {
+    let add = crate::commands::AddCommand {
+        // SAFETY: per the caller.
+        name: unsafe { core::slice::from_raw_parts(name.cast(), length) },
+        accepted_types,
+        handler,
+    };
+    let arg = core::ptr::from_ref(&add).expose_provenance() as u64;
+    // SAFETY: as the caller guarantees; `add` lives for the call.
+    unsafe { run(RUN_ST_ADD_COMMAND, arg, &mut NativeContext::new(serv)) != 0 }
+}
+
+/// `Server::command(process_id, process_type, name, message, callback)`: whether
+/// the request went. Its reply reaches `callback` once, perhaps before this returns.
+///
+/// # Safety
+/// `serv` is a live `Server`; `name` and `message` hold their lengths in bytes;
+/// `callback.invoke` is a `commands::Callback` whose context lives until it is called.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_command(
+    serv: *mut c_void,
+    process_id: u32,
+    process_type: c_int,
+    name: *const c_char,
+    name_length: usize,
+    message: *const c_char,
+    length: usize,
+    callback: crate::CommandFn,
+) -> bool {
+    let send = crate::commands::SendCommand {
+        serv,
+        process_id,
+        process_type,
+        // SAFETY: per the caller.
+        name: unsafe { core::slice::from_raw_parts(name.cast(), name_length) },
+        // SAFETY: per the caller.
+        message: unsafe { core::slice::from_raw_parts(message.cast(), length) },
+        callback,
+    };
+    let arg = core::ptr::from_ref(&send).expose_provenance() as u64;
+    // SAFETY: as the caller guarantees; `send` lives for the call.
+    unsafe { run(RUN_ST_COMMAND, arg, &mut NativeContext::new(serv)) != 0 }
 }
 
 #[cfg(test)]
