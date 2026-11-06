@@ -282,10 +282,9 @@ def plan(args, reports):
         script('hooks-compile', 'tests/modules/hooks/compile_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--report', reports / 'hooks-compile.json')
     if 'clients' in modules:
-        for name, runner in [('clients-codec', 'codec_gate.py'), ('clients-http-format', 'http_format_gate.py'),
-                             ('clients-ip-text', 'ip_text_gate.py')]:
-            script(name, 'tests/modules/clients/' + runner, '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report(name))
+        script('clients-http-format', 'tests/modules/clients/http_format_gate.py', '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
+               *report('clients-http-format'))
         if integrate:
             for family, runner in [('http', 'php_http.py'), ('dns', 'php_dns.py'), ('lifecycle', 'php_lifecycle.py'),
                                    ('socket-custody', 'socket_custody.py'),

@@ -1,9 +1,13 @@
-// The pinned Address methods, hosts lookup, Set-Cookie split and DNS name decode
-// behind C entry points: build.rs copies each body unchanged into an .inc.
+// The pinned Address methods, hosts lookup, Set-Cookie split, DNS name codec,
+// address text and socket DNS lookup behind C entry points: build.rs copies each body unchanged into an .inc.
 #include <arpa/inet.h>
 #include <sys/un.h>
 #include <algorithm>
 #include <array>
+#include <cassert>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -254,5 +258,139 @@ void swr_oracle_clients_cookie(const char *at, size_t length, size_t *key, size_
 // domain_decode in place over a NUL-terminated name.
 void swr_oracle_clients_domain_decode(char *str) {
     upstream_clients::domain_decode(str);
+}
+}
+
+// dns_lookup_impl_with_socket and its codec, over a UDP socket double that
+// answers the query it was sent with one record of the fixture's type.
+namespace upstream_dns {
+using uchar = unsigned char;
+#define SW_OK 0
+#define SW_ERR -1
+#define SW_BUFFER_SIZE_STD 8192
+#define SW_ERROR_DNSLOOKUP_NO_SERVER 714
+#define SW_ERROR_CO_CANCELED 10017
+#define sw_memset_zero(p, n) std::memset(p, 0, n)
+#define sw_unlikely(x) __builtin_expect(!!(x), 0)
+// As upstream src/core/base.cc.
+static size_t sw_snprintf(char *buf, size_t size, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    int retval = vsnprintf(buf, size, format, args);
+    va_end(args);
+    if (size == 0) {
+        return retval;
+    } else if (sw_unlikely(retval < 0)) {
+        retval = 0;
+        buf[0] = '\0';
+    } else if (sw_unlikely(retval >= (int) size)) {
+        retval = size - 1;
+        buf[retval] = '\0';
+    }
+    return retval;
+}
+#define swoole_warning(...) ((void) 0)
+static constexpr int SW_SOCK_UDP = 2;
+struct Fixture {
+    int record_type, receive_mode;
+    bool send_success, canceled, bad_id;
+};
+static thread_local const Fixture *fixture;
+static thread_local void *context;
+static thread_local void (*effect)(void *, int, const char *, size_t);
+static void record(int kind, const std::string &text) {
+    effect(context, kind, text.data(), text.size());
+}
+static void swoole_set_last_error(int code) {
+    record(1, "error:" + std::to_string(code));
+}
+static bool swoole_load_resolv_conf() {
+    return false;
+}
+static struct {
+    struct {
+        std::string host = "127.0.0.1";
+        int port = 53;
+    } dns_server;
+} SwooleG;
+static thread_local std::vector<char> sent_query;
+struct Socket {
+    int errCode = fixture->canceled ? ECANCELED : EIO;
+    explicit Socket(int) {}
+    void set_timeout(double) {
+        record(1, "timeout");
+    }
+    bool sendto(const std::string &, int, const char *data, size_t length) {
+        sent_query.assign(data, data + length);
+        record(1, "send");
+        record(2, std::string(data, length));
+        return fixture->send_success;
+    }
+    ssize_t recv(void *buffer, size_t capacity);
+};
+}  // namespace upstream_dns
+
+extern "C" {
+// The socket double's answer to the query it was sent, into buffer: -1 when
+// receive_mode is 0, the first 3 bytes when 1, all of it when 2.
+ssize_t swr_oracle_clients_dns_answer(int record_type, int receive_mode, bool bad_id, const char *query,
+                                      size_t length, char *buffer, size_t capacity) {
+    if (receive_mode == 0) return -1;
+    std::vector<unsigned char> response(query, query + length);
+    response[6] = 0;
+    response[7] = 1;
+    if (bad_id) response[0] ^= 1;
+    std::vector<unsigned char> payload;
+    if (record_type == 1) payload = {127, 0, 0, 1};
+    else if (record_type == 28) payload = {0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    else payload = {5, 'a', 'l', 'i', 'a', 's', 4, 't', 'e', 's', 't', 0};
+    for (unsigned char byte : std::vector<unsigned char>{
+             0xc0, 0x0c, 0, (unsigned char) record_type, 0, 1, 0, 0, 0, 0, 0, (unsigned char) payload.size()})
+        response.push_back(byte);
+    for (auto byte : payload) response.push_back(byte);
+    size_t received = receive_mode == 1 ? 3 : response.size();
+    if (received > capacity) std::abort();
+    std::memcpy(buffer, response.data(), received);
+    return received;
+}
+}
+
+namespace upstream_dns {
+ssize_t Socket::recv(void *buffer, size_t capacity) {
+    record(1, "receive");
+    return swr_oracle_clients_dns_answer(fixture->record_type, fixture->receive_mode, fixture->bad_id,
+                                         sent_query.data(), sent_query.size(), static_cast<char *>(buffer), capacity);
+}
+static thread_local uint16_t dns_request_id = 1;
+#include "clients_dns_lookup.inc"
+}  // namespace upstream_dns
+
+extern "C" {
+// domain_encode over n bytes of a NUL-terminated src into dest.
+int swr_oracle_clients_domain_encode(const char *src, int n, char *dest) {
+    return upstream_dns::domain_encode(src, n, dest);
+}
+
+// parse_ip_address of a 4- or 16-byte address into text; its length.
+size_t swr_oracle_clients_ip_text(void *address, int family, char *text, size_t capacity) {
+    const auto result = upstream_dns::parse_ip_address(address, family);
+    const size_t length = std::min(result.size(), capacity);
+    std::memcpy(text, result.data(), length);
+    return length;
+}
+
+// dns_lookup_impl_with_socket with request ids from 1 per thread. Each address
+// goes to effect(context, 0, ...), each socket call and last error set as
+// effect(context, 1, ...) and the query sent as effect(context, 2, ...).
+void swr_oracle_clients_dns_lookup(const char *domain, int family, double timeout, int record_type,
+                                   int receive_mode, bool send_success, bool canceled, bool bad_id, void *context,
+                                   void (*effect)(void *, int, const char *, size_t)) {
+    const upstream_dns::Fixture fixture{record_type, receive_mode, send_success, canceled, bad_id};
+    upstream_dns::fixture = &fixture;
+    upstream_dns::context = context;
+    upstream_dns::effect = effect;
+    for (const auto &address : upstream_dns::dns_lookup_impl_with_socket(domain, family, timeout)) {
+        effect(context, 0, address.data(), address.size());
+    }
 }
 }

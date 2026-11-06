@@ -452,7 +452,7 @@ pub mod protocols {
 }
 
 pub mod clients {
-    use std::ffi::{c_char, c_int};
+    use std::ffi::{c_char, c_int, c_void};
 
     /// What the pinned `Address::assign(type, host, port, resolve)` leaves in a
     /// record filled with 0x73, type -1, length 987, errno 17 and last error 11.
@@ -546,5 +546,50 @@ pub mod clients {
         /// `domain_decode` in place over a NUL-terminated name.
         #[link_name = "swr_oracle_clients_domain_decode"]
         pub fn domain_decode(name: *mut c_char);
+        /// `domain_encode` over `n` bytes of the NUL-terminated `src` into `dest`.
+        #[link_name = "swr_oracle_clients_domain_encode"]
+        pub fn domain_encode(src: *const c_char, n: c_int, dest: *mut c_char) -> c_int;
+        /// `dns_lookup_impl_with_socket` (request ids from 1 per thread) over a UDP
+        /// socket double that answers the query it was sent with one record of
+        /// `record_type` (1 A, 28 AAAA, else a CNAME): `receive_mode` 0 fails the
+        /// receive, 1 receives 3 bytes, 2 the whole answer; `bad_id` flips the answer's
+        /// id. Each address goes to `effect(context, 0, ..)`, each socket call and
+        /// last error set (`timeout`, `send`, `receive`, `error:N`) as kind 1 and the
+        /// query sent as kind 2.
+        /// `parse_ip_address` of the 4- (`AF_INET`) or 16-byte address into `text`;
+        /// its length.
+        #[link_name = "swr_oracle_clients_ip_text"]
+        pub fn ip_text(
+            address: *mut c_void,
+            family: c_int,
+            text: *mut c_char,
+            capacity: usize,
+        ) -> usize;
+        /// The socket double's answer to the `length`-byte `query` it was sent, into
+        /// `buffer`: -1 when `receive_mode` is 0, its first 3 bytes when 1, all of it
+        /// when 2.
+        #[link_name = "swr_oracle_clients_dns_answer"]
+        pub fn dns_answer(
+            record_type: c_int,
+            receive_mode: c_int,
+            bad_id: bool,
+            query: *const c_char,
+            length: usize,
+            buffer: *mut c_char,
+            capacity: usize,
+        ) -> isize;
+        #[link_name = "swr_oracle_clients_dns_lookup"]
+        pub fn dns_lookup(
+            domain: *const c_char,
+            family: c_int,
+            timeout: f64,
+            record_type: c_int,
+            receive_mode: c_int,
+            send_success: bool,
+            canceled: bool,
+            bad_id: bool,
+            context: *mut c_void,
+            effect: unsafe extern "C" fn(*mut c_void, c_int, *const c_char, usize),
+        );
     }
 }
