@@ -20,13 +20,13 @@ def build_and_run(command, binary, *arguments, timeout=60):
 
 def native_and_selected(tree, test_source, archive, sanitize, *defines):
     """Outcome JSON of one test compiled against pinned buffer.cc, then against the hybrid build's
-    buffer.cc and headers with its Rust archive."""
-    hybrid, flags = hybrid_tree(archive)
+    headers with its Rust archive, which defines Buffer."""
+    _, flags = hybrid_tree(archive)
     outcomes = {}
     for name in ['native', 'selected']:
         headers = ['-I' + str(tree / 'include'), *INCLUDES] if name == 'native' else ['-DSWOOLE_RS_BUFFER', *flags]
         command = ['c++', '-std=c++17', '-O1', '-g', *defines, '-ffunction-sections', '-fdata-sections',
-                   *headers, (tree if name == 'native' else hybrid) / 'src/core/buffer.cc', test_source]
+                   *headers, *([tree / 'src/core/buffer.cc'] if name == 'native' else []), test_source]
         if name == 'selected':
             command.append(archive)
         command += LINK + (SANITIZE if sanitize else [])

@@ -2,14 +2,14 @@
 
 Declarations: `native/include/swoole_rs_buffer.h` and
 `native/buffer/swoole_rs_buffer_typed.h`. Feature value 2 (graduated: always on).
-Upstream targets: `src/core/buffer.cc`, `include/swoole_buffer.h`,
+Upstream targets: `src/core/buffer.cc` (deleted), `include/swoole_buffer.h`,
 `src/core/string.cc`, `include/swoole_string.h`.
 
 Rust owns one queue and its data allocations. Entries are Rust data, sendfile
 tokens or CLOSE markers; the front cursor (offset and generation) is Rust's too
-([typed-queue.md](../native/buffer/typed-queue.md)). The C++ `Buffer` holds the
-Rust handle and one borrowed `BufferChunk` view that `front()` fills from the
-current front. There is no second queue or side map.
+([typed-queue.md](../native/buffer/typed-queue.md)). The C++ `Buffer` holds only the
+Rust handle, and its methods are Rust under their upstream symbols
+(`crates/buffer/src/cpp.rs`). There is no second queue or side map.
 
 ## Ownership and accounting
 
@@ -26,11 +26,11 @@ current front. There is no second queue or side map.
 - Queue length counts copied Rust bytes, including already-sent bytes until the
   chunk is popped. Pop subtracts the entry's copied length. Total length cannot
   exceed `UINT32_MAX`. Tokens count zero bytes.
-- Rust never dereferences, calls or frees a token or its disposer; pop hands both
-  back and C++ disposes after Rust returns. Data pointers survive append; pop
+- The queue never dereferences, calls or frees a token or its disposer; pop hands
+  both back, and `Buffer::pop` runs the disposer after the queue call returns. Data pointers survive append; pop
   invalidates the removed front.
 - `release(NULL)` succeeds. Release with pending tokens fails without mutation;
-  otherwise it drops remaining data and the handle. C++ teardown drains and
+  otherwise it drops remaining data and the handle. `~Buffer` drains and
   disposes tokens first. Null required outputs return `INVALID` without being
   dereferenced. Failed front/create/pop zero their output; failed stats leaves
   outputs unchanged.
@@ -38,29 +38,22 @@ current front. There is no second queue or side map.
 ## Errors, threads, fork
 
 Allocation is fallible. On failure no entry, view or accounting changes. No
-panic, exception or callback crosses the seam. The facade maps `NOMEM` to
-`std::bad_alloc`, `OVERFLOW` to `std::length_error` and `INVALID` to
-`std::invalid_argument` after the Rust call returns. Existing `void` append
-signatures remain and never drop bytes silently.
+panic, exception or callback crosses the seam. `Buffer`'s methods abort on any
+failed status, where `buffer.cc` threw `std::bad_alloc`, `std::length_error` or
+`std::invalid_argument` that nothing caught. Existing `void` append signatures
+remain and never drop bytes silently.
 
 One owner uses a handle at a time. Sequential transfer between threads is fine
 once views are no longer used. A quiescent fork gives parent and child
 independent copy-on-write queues; each releases its own. No Rust threads, locks
 or global state exist.
 
-## Upstream's `front()`, `pop()` and `alloc()`
+## Upstream's `front()` and `alloc()`
 
-`front()` returns the borrowed view of the current entry (null when empty): DATA
-with `value.str`, `length` = `size` = copied bytes and `offset` = the Rust cursor;
-a sendfile token in `value.ptr`; or, for a CLOSE pushed by `alloc`, that chunk
-itself. `pop()` detaches one entry, first running (noexcept, on live bytes) a
-`destroy` the caller set on the view. `alloc()` takes `TYPE_CLOSE` with size 0 and
-queues a real `BufferChunk` with a native disposer.
-
-Deliberate differences: queued DATA is immutable, so writing the view's `offset`
-does nothing (partial sends commit through `typed_consume`), and
-`alloc` refuses `TYPE_DATA` and `TYPE_SENDFILE` (sendfile goes through
-`typed_sendfile`). No caller in the build does either.
+Gone, with `BufferChunk`'s fields and `destroy` callback. Callers read the first
+entry with `typed_front()` (DATA bytes, the Rust cursor's offset, or a sendfile
+token), commit sends with `typed_consume()`, queue a close with `typed_close()`
+and drop the entry with `pop()`.
 
 Pinned upstream underflows: six bytes, chunk size 4, vector offset 3 creates a
 chunk of capacity 4 and length 3; pop then reports length `UINT32_MAX`. Rust

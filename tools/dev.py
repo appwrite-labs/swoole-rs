@@ -577,8 +577,6 @@ def plan(args, reports):
                    '--source', manifest.parent / 'src', '--manifest', ROOT / 'tests/modules/buffer/originals.json',
                    '--case', 'tests/swoole_server/sendfile_02.phpt', *php_for('curl', 'sockets'),
                    *engines, '--require-all', '--isolate-cases', *report('php-sockets-sendfile-original'))
-        pytest('buffer-native', 'tests/modules/buffer/test_native.py', '--manifest', manifest, '--sanitize')
-        pytest('buffer-callbacks', 'tests/modules/buffer/test_callbacks.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a')
         pytest('buffer-posix-iovec', 'tests/modules/buffer/test_iovec.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
         pytest('string-originals', 'tests/modules/buffer/string/test_gate.py',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')

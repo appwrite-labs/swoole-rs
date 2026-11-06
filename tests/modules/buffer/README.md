@@ -15,10 +15,16 @@ unless built that way and declared with `--rust-asan` (see below).
 | Command | Checks |
 | --- | --- |
 | `baseline.py --sanitize` | Pinned upstream only: original `core-tests/src/memory/buffer.cpp` assertions (64 seeded runs) plus a scatter/gather matrix that records upstream defects. |
-| `test_native.py --manifest M --sanitize` (or `--archive A`) | The same originals (64 runs, `originals.cc`) against the hybrid build's `buffer.cc` and the Rust queue, through upstream's `front()`/`pop()`. |
 | `test_iovec.py --archive A [--sanitize]` | Twelve positive POSIX iovec append cases; native and selected layout and observation counts must match. |
-| `test_callbacks.py --archive A` | A throwing destroy callback must reach `std::terminate` (exit 77) for DATA pop, native-token pop and teardown in both engines. |
 | `test_typed.py --archive A [--sanitize]` | Typed queue facade compiled and run under C++14/17/20. |
+
+`swoole::Buffer`'s methods are Rust (`crates/buffer/src/cpp.rs`) under their upstream
+symbols; `src/core/buffer.cc` is not built. Upstream's `core-tests/src/memory/buffer.cpp`
+is ported there, one Rust test per `TEST`:
+
+| Upstream `TEST` | Rust test |
+| --- | --- |
+| `buffer.append_iov` | `cpp::tests::append_iov` (64 seeded runs of the same lengths, offsets and checks) |
 
 Run as `python3 tests/modules/buffer/<script>`; `S` is the pinned upstream
 checkout (`target/upstream/src`).
@@ -64,11 +70,9 @@ instrumented archive fails to link because Apple's runtime lacks
   boundary copies the wrong vector (four cases). Empty vectors and offsets at or
   beyond the total length are not executed against upstream because it can loop
   or read out of bounds. Rust rejects or handles these explicitly.
-- Upstream frees DATA storage before its destroy callback; the Rust facade runs
-  DATA callbacks on live bytes (`docs/buffer-abi-v1.md`).
-- Queued DATA is immutable: writing `front()->offset` does nothing (partial sends
-  commit through `typed_consume`), and `alloc` takes only `TYPE_CLOSE`. No caller in
-  the build relies on either, and upstream's `buffer.cpp` does neither.
+- `Buffer` has no `front()`, `alloc()` or `BufferChunk` objects: callers read the
+  first entry with `typed_front()`, commit partial sends with `typed_consume()` and
+  queue a close with `typed_close()`. Nothing in the build set a chunk's `destroy`.
 - `swoole_server/sendfile_02.phpt` fails in both engines: `Swoole\Client::getSocket()`
   is missing because the build lacks `SWOOLE_SOCKETS_SUPPORT`.
 - The lifecycle half-close case fails on upstream (truncated response) and on any
@@ -79,9 +83,8 @@ instrumented archive fails to link because Apple's runtime lacks
 | Responsibility | Owner |
 | --- | --- |
 | Queue chunks, bytes, count, offset validation, failure rollback | Rust |
-| Native sendfile/close tokens and callback invocation | C++, after Rust returns; DATA pop callbacks are noexcept |
-| `BufferChunk` public view and mutable send offset | C++ caches the public view; callers keep its identity |
-| POSIX iovec adaptation | C++ copies descriptors (8 on stack, heap fallback); Rust traverses and chunks |
+| `swoole::Buffer`'s methods, sendfile tokens and their disposers | Rust, under the upstream symbols |
+| POSIX iovec adaptation | Rust reads the `iovec` array in place |
 | `swoole::String`'s methods (growth, edits, copy/move, search, split, random bytes) | Rust, under the upstream symbols, calling the String's own allocator |
 | `split`'s `std::function` handler, `format_impl`'s printf varargs, inline accessors | C++ |
 
@@ -92,19 +95,20 @@ The ltrim/rtrim/strnpos/strnstr original String tests exercise native helpers in
 
 Kept, each with what nothing else reaches:
 
-- `buffer-native` and `string-originals` run upstream's own
-  `core-tests/src/memory/buffer.cpp` and `core-tests/src/core/string.cpp`, which
+- `string-originals` runs upstream's own `core-tests/src/core/string.cpp`, which
   no other phase builds.
 - `buffer-typed`: the typed facade's only C++14/17/20 builds, under sanitizers.
-- `buffer-callbacks`: a throwing destroy callback must reach `std::terminate`
-  across the Rust boundary; no PHPT throws from a native destructor.
-- `buffer-posix-iovec`: the C++ iovec adapter (stack/heap descriptor copy) against
-  upstream under sanitizers; the Rust unit tests start after that adapter.
+- `buffer-posix-iovec`: `Buffer::append(iovec)` through the C++ ABI against
+  upstream under sanitizers.
 - `buffer-string-compatibility`: positive String edits and C++14/17/20 whole-TU builds.
 - `buffer-network`: `Http\Response::sendfile` with an offset and a length behind
   4 MiB of queued output; no original PHPT passes a length.
 
 Deleted:
+
+- `buffer-native` and `buffer-callbacks` (#1361): `buffer.cc` left the build, so
+  `buffer.cpp`'s assertions are the crate's `append_iov` test, and `BufferChunk`'s
+  `destroy` callback, which those gates threw from, no longer exists.
 
 - `string-{split,integer,ownership,allocation,format,random,copy,transitions}`:
   they drove the String step-machine exports, which whole Rust methods under the
