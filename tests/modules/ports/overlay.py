@@ -12,3 +12,12 @@ from tools.build_upstream import COMMIT as PIN
 
 def original(path):
     return subprocess.check_output(['git', '-C', str(SOURCE), 'show', f'{PIN}:{path}'], text=True)
+
+
+# Upstream files the hybrid deleted, and the hybrid file holding what is left of each.
+MOVED = {'src/server/port.cc': 'src/server/master.cc', 'ext-src/swoole_server_port.cc': 'ext-src/swoole_server.cc'}
+
+
+def selected(tree, path):
+    """The hybrid tree's text for an upstream path, following MOVED."""
+    return (Path(tree) / MOVED.get(path, path)).read_text()
