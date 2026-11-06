@@ -1,7 +1,11 @@
 # Reactor construction and backends
 
-Covers `src/reactor/base.cc` construction and the poll/epoll/kqueue backends
-(`src/reactor/{poll,epoll,kqueue}.cc`).
+Covers `Reactor` construction and the poll/epoll/kqueue backends
+(`src/reactor/{poll,epoll,kqueue}.cc`). `src/reactor/base.cc` is deleted: its
+write path, handler tables, `change`, `interest` and `_close` are Rust
+(`crates/reactor/src/reactor_upstream.rs`, `crates/tls/src/reactor_write.rs`), and
+the members over C++ objects (the `std::function` callbacks and tasks, the
+constructor, destructor and `wait()`) are at the end of `src/wrapper/event.cc`.
 
 ## Construction
 

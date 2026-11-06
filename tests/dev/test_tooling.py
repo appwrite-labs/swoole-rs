@@ -465,8 +465,8 @@ class Lanes(unittest.TestCase):
         for name in ['phphelpers-facade-runtime', 'phphelpers-entrypoint', 'phphelpers-runtime']:
             self.assertNotIn(name, commands)
         self.assertNotIn('--module', commands['build'])
-        self.assertIn('--archive', commands['reactor-flush'])
-        self.assertIn('--sanitize', commands['reactor-flush'])
+        self.assertIn('--archive', commands['reactor-builtins'])
+        self.assertIn('--sanitize', commands['reactor-builtins'])
         self.assertIn('corebase-native',commands)
         self.assertIn('ossupport-async-file-owner', commands)
         self.assertIn('http-context', commands)

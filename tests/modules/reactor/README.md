@@ -10,7 +10,7 @@ Most gates take the pinned upstream source and a Rust FFI archive:
     python3 tests/modules/reactor/NAME.py --source target/upstream/src \
         --archive PATH/libswoole_rs_ffi.a --sanitize --report OUT.json
 
-`NAME` is one of `callbacks`, `initialize`, `builtins` and `flush`.
+`NAME` is one of `callbacks`, `initialize` and `builtins`.
 Each extracts the original function bodies from the pin and the patched ones
 from the archive's hybrid tree (`hybrid_tree`, #796), compiles them against
 native facades and the archive, and checks that both variants behave the same.

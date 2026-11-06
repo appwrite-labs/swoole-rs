@@ -1,8 +1,8 @@
 # Socket I/O
 
 `src/network/socket.cc` is deleted. Its members that need C++ (exceptions,
-`std::string`, `std::vector`) are inline in `swoole_rs_socket_methods.h`, and
-`free`, whose deferral is a `std::function`, is in `src/reactor/base.cc`; the rest are Rust (`crates/reactor/src/socket_upstream.rs`,
+`std::string`, `std::vector`) are inline in `swoole_rs_socket_methods.h`; the
+rest, `free` included, are Rust (`crates/reactor/src/socket_upstream.rs`,
 `crates/tls/src/upstream.rs`). The IOVector storage and progress are below and
 the output paths in [output.md](output.md).
 

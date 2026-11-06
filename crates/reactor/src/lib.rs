@@ -97,6 +97,8 @@ mod socket_record;
 #[cfg(unix)]
 pub use socket_record::*;
 #[cfg(unix)]
+pub mod reactor_upstream;
+#[cfg(unix)]
 pub mod socket_upstream;
 
 const INVALID: i32 = -1;

@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory(prefix='swr-initialize-') as tmp:
     };'''.replace('ENUMS',enums)
     try:
         for variant in ['original','selected']:
-            base=original['src/reactor/base.cc'] if variant=='original' else (selected_tree/'src/reactor/base.cc').read_text()
+            base=original['src/reactor/base.cc'] if variant=='original' else (selected_tree/'src/wrapper/event.cc').read_text()
             # The selected deferred queue is Rust's (swr_v1_reactor_run_defer).
             (t/'initialize-class.inc').write_text(cls if variant=='original' else cls.replace('CallbackManager *defer_tasks','swr_v1_reactor_deferred *defer_tasks'))
             helpers=''

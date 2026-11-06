@@ -31,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix='swr-callbacks-') as temporary:
     try:
         for variant in ['original','selected']:
             header=original['include/swoole_reactor.h'] if variant=='original' else (hybrid_source/'include/swoole_reactor.h').read_text()
-            base=original['src/reactor/base.cc'] if variant=='original' else (hybrid_source/'src/reactor/base.cc').read_text()
+            base=original['src/reactor/base.cc'] if variant=='original' else (hybrid_source/'src/wrapper/event.cc').read_text()
             fields='std::map<int,std::function<void(Reactor*)>> end_callbacks; std::map<int,std::function<bool(Reactor*,size_t&)>> exit_conditions;' if variant=='original' else 'ReactorCallbacks callbacks_;'
             cls='''namespace swoole { class Reactor { public:
                 using EndCallback=int;using ExitCondition=int;
