@@ -112,8 +112,9 @@ struct swr_v1_phpcoroutines_ops {
     void (*exit_fallback)(const char *message, size_t length, long status);
     /* Swoole\Coroutine\Scheduler and Co::set(): php_swoole_reactor_init(),
      * php_swoole_event_wait(), php_swoole_set_global_option(), the coroutine
-     * stack size (php_swoole_parse_to_size), a name resolver, the DNS cache and
-     * the reactor's user exit condition (a callable, or anything else to clear it) */
+     * stack size (php_swoole_parse_to_size), a name resolver, the DNS cache,
+     * installing (1) or clearing (0) the reactor's user exit condition, which
+     * calls swr_v1_phpcoroutines_can_exit, and sw_callable_warning */
     int (*reactor_init)(void);
     void (*event_wait)(void);
     void (*set_global_option)(struct _zend_array *options);
@@ -121,7 +122,8 @@ struct swr_v1_phpcoroutines_ops {
     void (*add_name_resolver)(struct _zval_struct *resolver);
     void (*set_dns_cache_expire)(long expire);
     void (*set_dns_cache_capacity)(long capacity);
-    void (*set_exit_condition)(struct _zval_struct *condition);
+    void (*set_exit_condition)(uint8_t set);
+    void (*warning)(const char *message);
 };
 
 /* MINIT: the classes, constants, opcode handlers and the autoload hook. */
@@ -155,8 +157,9 @@ uint32_t swr_v1_phpcoroutines_hook_flags(void);
 void swr_v1_phpcoroutines_set_hook_flags(uint32_t flags);
 /* PHPCoroutine::set_hook_flags: the flags, recorded in the options too. */
 void swr_v1_phpcoroutines_set_hook_option(uint32_t flags);
-/* php_swoole_set_coroutine_option. */
-void swr_v1_phpcoroutines_set_option(struct _zend_array *options);
+/* The reactor's user exit condition: 1 when it bailed out (the caller
+ * re-raises); in *exit, whether the reactor may exit. */
+uint8_t swr_v1_phpcoroutines_can_exit(uint8_t *exit);
 /* Swoole\Coroutine\System: the platform constants its defaults use and
  * swoole::coroutine::System's operations. Results that are C++ strings or
  * lists are written into the return slot by C++. */
@@ -185,8 +188,6 @@ struct swr_v1_phpcoroutines_system_ops {
     long (*wait_event)(int fd, long events, double timeout);
 };
 void swr_v1_phpcoroutines_system_minit(const struct swr_v1_phpcoroutines_system_ops *ops);
-/* Swoole\Coroutine\Scheduler, at MINIT. */
-void swr_v1_phpcoroutines_scheduler_minit(void);
 void swr_v1_phpcoroutines_set_max_num(uint64_t max);
 void swr_v1_phpcoroutines_set_deadlock_check(uint8_t enable);
 void swr_v1_phpcoroutines_set_preemptive(uint8_t enable);

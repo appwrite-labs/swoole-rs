@@ -1,31 +1,42 @@
-//! `Swoole\Coroutine\Scheduler` and the coroutine options (`Co::set()`,
-//! `Co::getOptions()`, `php_swoole_set_coroutine_option`) that
-//! `swoole_coroutine_scheduler.cc` held.
+//! `Swoole\Coroutine\Scheduler`, the coroutine options (`Co::set()`,
+//! `Co::getOptions()`, `php_swoole_set_coroutine_option`) and the reactor's
+//! user exit condition: what `swoole_coroutine_scheduler.cc` held.
 use crate::{host, runtime};
 use std::{
     cell::Cell,
     collections::VecDeque,
-    ffi::{CStr, c_long, c_void},
+    ffi::{CStr, c_int, c_long, c_void},
     mem, ptr,
 };
+use swoole_rs_phphelpers::callable as kept;
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::{
-    Call, Callable, Class, E_WARNING, Object,
+    Call, Callable, Class, E_ERROR, E_WARNING, Object,
     bailout::{self, Bailout},
     class_name, message,
     sys::{
-        IS_ARRAY, IS_ARRAY_EX, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
+        IS_ARRAY, IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
         swr_zend_array_init, swr_zend_callable, swr_zval_get_long, swr_zval_is_true, zend_array,
         zend_array_destroy, zend_array_dup, zend_class_entry, zend_hash_merge, zend_hash_str_find,
         zend_object, zend_object_handlers, zval, zval_add_ref, zval_ptr_dtor,
     },
-    unset_property_deny, value,
+    type_of, unset_property_deny, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
 per_thread! {
     /// `PHPCoroutine::options`: what `Co::set()` was given.
     static OPTIONS: Cell<*mut zend_array> = Cell::new(ptr::null_mut());
+    /// `exit_condition_fci_cache`: `Co::set()`'s `exit_condition` callable.
+    static EXIT_CONDITION: Cell<*mut kept::Callable> = Cell::new(ptr::null_mut());
+}
+
+unsafe extern "C" {
+    /// Unlinks the first PHP name resolver `same` accepts; its zval, or null.
+    fn swoole_name_resolver_php_remove(
+        same: unsafe extern "C" fn(*mut zval, *mut zval) -> bool,
+        resolver: *mut zval,
+    ) -> *mut zval;
 }
 
 /// One `add()` or `parallel()`: its kept callable and how many coroutines run it.
@@ -60,7 +71,7 @@ method_table! {
 /// # Safety
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_scheduler_minit() {
+pub unsafe extern "C" fn php_swoole_coroutine_scheduler_minit(_module_number: c_int) {
     // SAFETY: the native MINIT entry lends these original startup arguments.
     let result = unsafe { init_phpcoroutines_scheduler_minit() };
     match result {
@@ -260,7 +271,7 @@ fn truthy(value: *mut zval) -> bool {
 /// # Safety
 /// `options` is a live array.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_set_option(options: *mut zend_array) {
+pub unsafe extern "C" fn php_swoole_set_coroutine_option(options: *mut zend_array) {
     if let Some(value) = get(options, c"max_coro_num").or_else(|| get(options, c"max_coroutine")) {
         let max = long(value);
         let max = if max <= 0 {
@@ -362,7 +373,7 @@ fn set(call: &Call) {
     // SAFETY: C++'s global options.
     unsafe { (host::ops().set_global_option)(options) };
     // SAFETY: a live array.
-    unsafe { swr_v1_phpcoroutines_set_option(options) };
+    unsafe { php_swoole_set_coroutine_option(options) };
     if let Some(value) = get(options, c"dns_cache_expire") {
         // SAFETY: C++'s DNS cache.
         unsafe { (host::ops().set_dns_cache_expire)(long(value)) };
@@ -374,9 +385,107 @@ fn set(call: &Call) {
     // SAFETY: a live array and key.
     let condition = unsafe { zend_hash_str_find(options, c"exit_condition".as_ptr(), 14) };
     if !condition.is_null() {
-        // SAFETY: C++ sets or clears the reactor's exit condition.
-        unsafe { (host::ops().set_exit_condition)(condition) };
+        bailout::raise(set_exit_condition(condition));
     }
+}
+
+/// `php_swoole_coroutine_set_exit_condition`: keep `condition` if it is
+/// callable (warning otherwise) and install or clear the reactor's user exit
+/// condition to match.
+fn set_exit_condition(condition: *mut zval) -> Result<(), Bailout> {
+    release_exit_condition()?;
+    // SAFETY: a live zval; no argument name, so no exception class is read;
+    // C++'s warning reporter.
+    let handle = unsafe {
+        kept::factory(
+            condition,
+            ptr::null(),
+            true,
+            ptr::null_mut(),
+            host::ops().warning,
+        )
+    }?;
+    EXIT_CONDITION.with(|c| c.set(handle));
+    // SAFETY: C++ sets or clears the reactor's user exit condition.
+    unsafe { (host::ops().set_exit_condition)(u8::from(!handle.is_null())) };
+    Ok(())
+}
+
+fn release_exit_condition() -> Result<(), Bailout> {
+    let handle = EXIT_CONDITION.with(|c| c.replace(ptr::null_mut()));
+    if handle.is_null() {
+        return Ok(());
+    }
+    // SAFETY: the kept callable, not used again.
+    unsafe { kept::release(handle) }
+}
+
+/// `php_swoole_coroutine_reactor_can_exit`: call the exit condition; whether
+/// the reactor may exit goes in `*exit`. 1 when it bailed out, which C++
+/// re-raises.
+/// # Safety
+/// `exit` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpcoroutines_can_exit(exit: *mut u8) -> u8 {
+    let result = can_exit();
+    // SAFETY: per the caller.
+    unsafe { exit.write(u8::from(matches!(result, Ok(true)))) };
+    u8::from(bailout::relay_to_c(result.map(drop)))
+}
+
+fn can_exit() -> Result<bool, Bailout> {
+    let handle = EXIT_CONDITION.with(Cell::get);
+    if handle.is_null() {
+        return Ok(true);
+    }
+    // SAFETY: all-zero is a zval; it is made null.
+    let mut retval: zval = unsafe { mem::zeroed() };
+    retval.u1.type_info = IS_NULL;
+    // SAFETY: the kept callable, no arguments and a result slot, which (as
+    // upstream's) is not released.
+    if !unsafe { kept::invoke(handle, 0, ptr::null_mut(), &raw mut retval) }? {
+        // SAFETY: C++'s reporter, inside a trap.
+        unsafe {
+            bailout::report_level(
+                host::ops().fatal_error,
+                E_ERROR,
+                c"Coroutine can_exit callback handler error",
+            )
+        }?;
+    }
+    // SAFETY: the executor's pending exception, if any.
+    let exception = unsafe { z::swr_zend_facade_exception() };
+    if !exception.is_null() {
+        // SAFETY: zend_exception_error(EG(exception), E_ERROR), inside a trap.
+        unsafe { bailout::trap(z::swr_zend_facade_exception_error, exception.cast()) }?;
+    }
+    // SAFETY: the callable's result.
+    Ok(unsafe { type_of(&raw const retval) } != IS_FALSE)
+}
+
+unsafe extern "C" fn any(_: *mut zval, _: *mut zval) -> bool {
+    true
+}
+
+/// RSHUTDOWN: drop the PHP name resolvers and the exit condition.
+#[unsafe(no_mangle)]
+pub extern "C" fn php_swoole_coroutine_scheduler_rshutdown() {
+    bailout::raise(rshutdown());
+}
+
+fn rshutdown() -> Result<(), Bailout> {
+    loop {
+        // SAFETY: C++'s resolver list; every PHP resolver matches.
+        let resolver = unsafe { swoole_name_resolver_php_remove(any, ptr::null_mut()) };
+        if resolver.is_null() {
+            break;
+        }
+        // SAFETY: zval_dtor of the unlinked resolver, inside a trap.
+        unsafe { bailout::trap(z::swr_zend_zval_release, resolver.cast()) }?;
+        // SAFETY: emalloc'd by the resolver's registration; nothing refers to it.
+        unsafe { z::swr_zend_efree(resolver.cast()) };
+    }
+    release_exit_condition()
 }
 
 /// `Co::getOptions()`/`Scheduler::getOptions()`.
