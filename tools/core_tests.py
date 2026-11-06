@@ -34,6 +34,8 @@ ADAPTATIONS = {
         ('pool.stream_info_->socket->shutdown(SHUT_RDWR);',
          'static_cast<swoole::network::Socket *>(swr_v1_process_pool_ipc_listener(pool.ipc_))->shutdown(SHUT_RDWR);')],
 }
+# Headers the hybrid folded into another one; the hybrid's core-tests include the survivor.
+MOVED_HEADERS = {'swoole_process_pool.h': 'swoole_server.h'}
 # The original ftruncate case creates this file with mode 000 and leaves it behind.
 # Give each engine a private path; keep the open flags, mode and every assertion.
 ABSOLUTE_FIXTURES = {'coroutine_hook.ftruncate': ('core-tests/src/coroutine/hook.cpp', '/tmp/123.txt')}
@@ -139,6 +141,13 @@ def main():
                             raise ValueError(f'Test helper changed: {path}')
                         text = text.replace(old, new)
                     write_changed(tree / path, text.encode())
+                for path in (tree / 'core-tests').rglob('*') if engine == 'hybrid' else []:
+                    if path.suffix not in ('.h', '.cpp'):
+                        continue
+                    text = path.read_text()
+                    for old, new in MOVED_HEADERS.items():
+                        text = text.replace(f'#include "{old}"', f'#include "{new}"')
+                    write_changed(path, text.encode())
                 for name, (path, original) in ABSOLUTE_FIXTURES.items():
                     if path not in args.file:
                         continue
