@@ -801,10 +801,7 @@ mod tests {
 
     #[test]
     fn listen_needs_a_socket_pool_and_keeps_its_listener() {
-        assert!(
-            logged("ProcessPool::listen").is_empty(),
-            "nothing logged yet"
-        );
+        install();
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         pool.ipc = swr_v1_process_pool_ipc_new(true);

@@ -624,6 +624,9 @@ mod tests {
             make_tmpfile,
         };
 
+        /// `task_pack` draws from the process-wide task id, so its tests take turns.
+        static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
         /// An `EventData`-sized, 8-aligned buffer.
         fn event() -> Vec<u64> {
             vec![0; 8192 / 8 + 8]
@@ -641,6 +644,7 @@ mod tests {
 
         #[test]
         fn a_small_task_packs_inline_and_unpacks_in_place() {
+            let _turn = TASK_ID.lock();
             unsafe { swr_v1_process_task_set_native(&raw const NATIVE_TABLE) };
             let mut buf = event();
             let task = buf.as_mut_ptr().cast::<EventHead>();
@@ -666,6 +670,7 @@ mod tests {
 
         #[test]
         fn a_large_task_spills_to_a_file_that_unpacking_reads_and_removes() {
+            let _turn = TASK_ID.lock();
             unsafe { swr_v1_process_task_set_native(&raw const NATIVE_TABLE) };
             let data = vec![7u8; 9000];
             let mut buf = event();
