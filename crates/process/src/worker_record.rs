@@ -189,7 +189,7 @@ pub(crate) unsafe fn set_pool(worker: *mut WorkerRecord, pool: *mut c_void) {
 /// # Safety
 /// The caller owns this worker's counter update, as in its worker event loop.
 #[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_worker_add_request_count(worker: *mut WorkerRecord) {
+pub unsafe extern "C" fn swr_v1_worker_add_request_count(worker: *mut WorkerRecord) {
     // SAFETY: the worker loop owns the original non-atomic counter update.
     let count = unsafe { (*worker).request_count };
     // SAFETY: the same worker loop owns this write; wrapping preserves the native word bits.

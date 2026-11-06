@@ -24,7 +24,7 @@ use crate::ops::{
     OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM, OP_WORKER_PIPE_UNREAD, OP_WORKER_START,
     OP_WORKER_STOP,
 };
-use crate::{Host, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
+use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
 
 /// `swReturnCode` values.
 pub(crate) const SW_CONTINUE: i64 = 1;
@@ -328,11 +328,12 @@ pub(crate) fn resume_receiving<H: Host>(h: &mut H) -> crate::Effect<()> {
 /// `BaseFactory::dispatch` here rather than through the native factory.
 pub(crate) fn dispatch_task<H: Host>(h: &mut H, len: u64) -> crate::Effect<i64> {
     let task = h.op(OP_TASK_INIT, len)?;
-    let dispatched = if h.get(OP_MODE)? == MODE_PROCESS {
+    let mode = h.get(OP_MODE)?;
+    let dispatched = if mode == MODE_PROCESS {
         h.is(OP_FACTORY_DISPATCH)?
     } else {
         let task = core::ptr::with_exposed_provenance_mut(usize::try_from(task).unwrap_or(0));
-        crate::base_factory::dispatch(h, task)?
+        crate::base_factory::dispatch(h, task, mode == MODE_BASE)?
     };
     if !dispatched {
         if len > 0 {

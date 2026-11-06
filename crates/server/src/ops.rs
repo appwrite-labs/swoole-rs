@@ -652,8 +652,8 @@ pub const OP_NEW_BASE_FACTORY: u32 = 504;
 pub const OP_WORKER_ID: u32 = 505;
 /// `worker_accept_event` of the `DataHead` at arg.
 pub const OP_ACCEPT_EVENT: u32 = 506;
-/// The context send's data is the whole consumed receive buffer of the connection at arg.
-pub const OP_POP_PTR: u32 = 507;
+/// `onReceive` of the `RecvData` at arg: whether it returned `SW_OK`.
+pub const OP_ON_RECEIVE: u32 = 507;
 /// The worker message bus takes the `SendData` at arg, then `worker_accept_event` of it.
 pub const OP_BASE_PASS: u32 = 508;
 /// The `SendData` at arg written to the pipe of its session's worker; whether it was.
