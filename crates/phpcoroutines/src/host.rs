@@ -88,7 +88,8 @@ pub struct Ops {
     pub(crate) add_name_resolver: unsafe extern "C" fn(*mut zval),
     pub(crate) set_dns_cache_expire: unsafe extern "C" fn(c_long),
     pub(crate) set_dns_cache_capacity: unsafe extern "C" fn(c_long),
-    pub(crate) set_exit_condition: unsafe extern "C" fn(*mut zval),
+    pub(crate) set_exit_condition: unsafe extern "C" fn(u8),
+    pub(crate) warning: unsafe extern "C" fn(*const c_char),
 }
 
 /// `swr_v1_phpcoroutines_*` flag bits.

@@ -14,6 +14,12 @@ C++ keeps the arginfo method tables, the coroutine core's operations (lent as
 `swr_v1_phpcoroutines_ops`) and the coroutine's entry function, which runs the
 user callable and its defer tasks inside `zend_first_try` so a bailout never
 crosses a Rust frame. `PHPCoroutine` remains as the entry points other C++
-calls (`create`, hook flags, the scheduler's configuration).
+calls (hook flags, the scheduler's configuration); C++ starts coroutines with
+`swr_v1_phpcoroutines_create`.
 
-`swoole_coroutine_scheduler.cc` and `swoole_coroutine_system.cc` are upstream's.
+`swoole_coroutine_scheduler.cc` is out of the build: `Swoole\Coroutine\Scheduler`,
+the coroutine options and the reactor's user exit condition are Rust
+(`scheduler.rs`), under upstream's `php_swoole_coroutine_scheduler_minit`,
+`_rshutdown` and `php_swoole_set_coroutine_option` symbols. C++ keeps only the
+reactor side of the exit condition, which calls `swr_v1_phpcoroutines_can_exit`.
+`swoole_coroutine_system.cc` is upstream's.
