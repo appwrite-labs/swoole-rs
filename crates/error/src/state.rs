@@ -2,6 +2,7 @@
 //! Process-local ignored errors; native code owns the handle and exception boundary.
 use std::alloc::{Layout, alloc, dealloc};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub struct IgnoredErrors(HashSet<i32>);
 
@@ -65,6 +66,28 @@ pub unsafe extern "C" fn swr_v1_error_ignored_release(state: *mut IgnoredErrors)
         // SAFETY: `state` came from `alloc` with this layout and its value was just dropped.
         unsafe { dealloc(state.cast(), Layout::new::<IgnoredErrors>()) };
     }
+}
+
+/// The process-global set behind `swoole_ignore_error` and `swoole_is_ignored_error`.
+static IGNORED: AtomicPtr<IgnoredErrors> = AtomicPtr::new(std::ptr::null_mut());
+
+/// `swr_v1_error_ignore` on the process-global set; `swoole_ignore_error` throws on -2.
+/// # Safety
+/// Access must be serialized, as upstream's unsynchronized set requires.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_error_ignore_global(code: i32) -> i32 {
+    // SAFETY: the slot holds null or this API's live handle, and access is serialized.
+    unsafe { swr_v1_error_ignore(IGNORED.as_ptr(), code) }
+}
+
+/// `bool swoole_is_ignored_error(int)`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z23swoole_is_ignored_errori")
+)]
+pub extern "C" fn swoole_is_ignored_error(code: i32) -> bool {
+    // SAFETY: the slot holds null or this API's live handle, which is never released.
+    unsafe { swr_v1_error_is_ignored(IGNORED.load(Ordering::Relaxed), code) != 0 }
 }
 
 #[cfg(test)]

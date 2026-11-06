@@ -75,12 +75,7 @@ pub(crate) unsafe extern "C" fn swoole_rs_php_error(
 
 /// `swoole_strerror(code)`.
 pub(crate) fn swoole_strerror(code: c_int) -> *const c_char {
-    extern "C" fn system(code: c_int) -> *const c_char {
-        // SAFETY: libc's message table.
-        unsafe { libc::strerror(code) }
-    }
-    // SAFETY: a pure lookup.
-    unsafe { swoole_rs_error::swr_v1_error_strerror(code, Some(system)) }
+    swoole_rs_error::swoole_strerror(code)
 }
 
 /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.

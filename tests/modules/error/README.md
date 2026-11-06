@@ -13,20 +13,21 @@ lifetime rules are in `native/error/contract.md`.
 
 Rust behaviour:
 
-- Codes below 500 go to the native OS `strerror` callback; known codes return
+- `src/core/error.cc` is not built: `swoole_strerror` and
+  `swoole_is_ignored_error` are Rust under their upstream symbols.
+- Codes below 500 go to the OS `strerror`; known codes return
   immutable pointers; other codes are formatted without allocation.
 - Unknown messages use one mutable 32-byte buffer. Apple colon spelling, NUL,
   trailing bytes and pointer reuse match native. Callers must serialize
   unknown-buffer calls, as upstream requires; known lookups are thread-safe.
-- Ignored errors use a lazy process-local Rust HashSet behind an opaque native
-  handle: idempotent insert, fallible allocation, copied-on-fork state and
-  destruction match native. Concurrent mutation is excluded; initialized
-  read-only access may be concurrent. Native code throws `bad_alloc` after Rust
-  returns.
+- Ignored errors use a lazy process-local Rust HashSet in a Rust static:
+  idempotent insert, fallible allocation and copied-on-fork state match native.
+  Concurrent mutation is excluded; initialized read-only access may be
+  concurrent. Native code throws `bad_alloc` after Rust returns.
 
-Native code keeps the OS call, C++ exception construction/throw, the opaque
-handle holder/destructor and the shared `sw_error` storage. No Zend values, PHP
-callbacks or bailout enter Rust.
+Native code (`native/error/error.cc`) keeps C++ exception construction/throw and
+the thread_local `sw_error` accessors. No Zend values, PHP callbacks or bailout
+enter Rust.
 
 ## Correctness
 
@@ -39,7 +40,8 @@ python3 tests/modules/error/php.py --source PINNED_REFERENCE --engine upstream=C
 ```
 
 `differential.py` compiles the complete pinned `error.cc` (from Git objects) and
-the hybrid build's `error.cc` with that build's headers (`HYBRID_ARCHIVE` is
+the hybrid build's native error shim with that build's headers, against the
+archive's Rust `swoole_strerror` and `swoole_is_ignored_error` (`HYBRID_ARCHIVE` is
 `<build>/rust-prefix/lib/libswoole_rs_ffi.a`);
 only dependency declarations and external buffer storage are stubbed. It checks
 all 130 messages, 10414 numeric inputs, the original exception/state

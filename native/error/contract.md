@@ -29,17 +29,22 @@ known/system/unknown paths have not been re-measured.
 ## Ignored-error set
 
 `swoole_rs_error_state.h` declares `swr_v1_error_ignore`,
-`swr_v1_error_is_ignored` and `swr_v1_error_ignored_release`. The native
-process-global holder lazily owns an opaque Rust `HashSet<i32>`; null is the
-empty initial state.
+`swr_v1_error_is_ignored`, `swr_v1_error_ignored_release` and
+`swr_v1_error_ignore_global`. The process-global set behind `swoole_ignore_error`
+and `swoole_is_ignored_error` is a Rust static that lazily owns an opaque
+`HashSet<i32>`; null is the empty initial state.
 
 - Insert is idempotent and accepts any int32. If allocation fails, the existing
   set is kept, a failed first insert leaves the holder null, and Rust returns
   -2 without unwinding. The native wrapper then raises `std::bad_alloc`.
-- Native global destruction releases the handle. No callbacks or Zend values
-  are retained.
+- The global set lives until exit. No callbacks or Zend values are retained.
 - The set is process-local and copied on fork; it is not shared memory. It has no
   synchronization: callers must keep writes apart from other reads and writes.
   Concurrent reads after initialization are safe.
+
+`src/core/error.cc` is not built. `swoole_strerror` and `swoole_is_ignored_error`
+are Rust under their upstream symbols; `native/error/error.cc` keeps what stable
+Rust can't express: the throwing `swoole_throw_error`, `swoole_ignore_error` and
+`Exception` constructor, and the thread_local `sw_error` accessors.
 
 Tests: `tests/modules/error/`.

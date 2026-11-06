@@ -158,6 +158,8 @@ int32_t swr_v1_error_is_ignored(const struct SwrErrorIgnored *state, int32_t cod
 
 void swr_v1_error_ignored_release(struct SwrErrorIgnored *state);
 
+int32_t swr_v1_error_ignore_global(int32_t code);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
