@@ -211,6 +211,28 @@ fn http_range() {
     }
 }
 
+/// `Server::select_static_handler` from the pinned `static_handler.cc` and
+/// `get_status_message` from the pinned http.cc, copied unchanged for
+/// `shim/http_static_select.cc`.
+fn http_static_select() {
+    let handler = fs::read_to_string("upstream/src/server/static_handler.cc")
+        .expect("vendored static_handler.cc");
+    let http = fs::read_to_string("upstream/src/protocol/http.cc").expect("vendored http.cc");
+    fs::write(
+        out("http_static_select.inc"),
+        definition(&handler, "bool Server::select_static_handler(") + "\n",
+    )
+    .unwrap();
+    fs::write(
+        out("http_static_select_status.inc"),
+        slice(&http, "static thread_local char http_status_message[", "\n")
+            + "\n"
+            + &definition(&http, "const char *get_status_message(")
+            + "\n",
+    )
+    .unwrap();
+}
+
 /// MQTT's length decoder and RESP's parse from the pinned mqtt.cc and redis.cc
 /// (upstream) and from them with the protocols overlay patch applied (candidate,
 /// calling Rust), copied unchanged for shim/protocols.cc, with redis's states.
@@ -507,6 +529,7 @@ fn main() {
     framing_stream();
     http_frame();
     http_range();
+    http_static_select();
     protocols();
     resp_stream();
     clients();
@@ -535,6 +558,10 @@ fn main() {
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/http_range_context.cc")
         .compile("swoole_candidate_http_range");
+    cpp()
+        .include(env::var("OUT_DIR").unwrap())
+        .file("shim/http_static_select.cc")
+        .compile("swoole_upstream_http_static_select");
     cpp()
         .define("SWR_FRAME_ENGINE", "upstream")
         .define("SWR_FRAME_INC", "\"http_frame_upstream.inc\"")

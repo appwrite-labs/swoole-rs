@@ -34,13 +34,12 @@ marked `[R]` also take `--rust-sanitize`. `tools/dev.py` registers each as an
 | Script | Checks |
 | --- | --- |
 | `proxy_gate.py` [R] | Proxy auth packing/handshake with actual base64 |
-| `static_gate.py` [R] | Static response method, send order, HEAD/keep-alive changes |
-| `conditional_gate.py` | Date callers with libc `strptime`/`gmtime`/`mktime` |
+| `conditional_gate.py` | Date callers with libc `strptime`/`gmtime`/`mktime`; candidate from `context_facade.cc` |
 | `rewrite_gate.py` [R] | Pinned `add_rewrite_rule`/`apply_rewrite_rules` (std::regex) against the server's Rust rules (`swr_v1_server_static_rewrite`) |
 | `dispatch_gate.py` [R] | Route and proxy-init bodies |
 | `locale_gate.py` | Case-insensitive helpers against libc `strncasecmp` across available locales |
 | `cookie_flow_gate.py` [R] | Cookie callback flow |
-| `context_gate.py` [R] | The whole `StaticHandler` (paths, locations, rewrites, index files and pages, ranges, content types, dates) against the pinned class |
+| `context_gate.py` [R] | The whole `StaticHandler` (paths, locations, rewrites, index files and pages, ranges, content types, dates) against the pinned class; the candidate is `context_facade.cc` over the Rust context |
 
 Locale semantic runs must be unsanitized: under ASan the macOS interceptor
 compares `C0`/`E0` with ASCII rules where libc in `en_US.ISO8859-1` treats them
@@ -113,3 +112,10 @@ Deleted (6 duplicates and one ported phase):
 - `http-binding-reflection`: ported into `api-surface`. `tools/php_api_inventory.php`
   now records parameter default values, class modifiers and default properties
   for every Swoole class, not just these five.
+- `http-static`: compared `select_static_handler`'s C++ body with upstream's.
+  `src/server/static_handler.cc` has left the build and the HTTP/1 static response
+  is Rust (`crates/server/src/static_select.rs`). Its three case groups run there as
+  `former_static_gate_response_branches`, `_range_extremes` and
+  `_sends_change_the_request`, against the pinned body compiled in crates/oracle
+  (`shim/http_static_select.cc`), with the same scenarios and comparisons. The
+  context and conditional gates now take their candidate from `context_facade.cc`.

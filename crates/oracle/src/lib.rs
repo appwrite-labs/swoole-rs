@@ -405,6 +405,79 @@ pub mod http_range {
     pub const CANDIDATE: ParseRange = swr_oracle_http_range_candidate;
 }
 
+pub mod http_static_select {
+    use std::ffi::{c_char, c_int, c_void};
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct Text {
+        pub data: *const c_char,
+        pub length: usize,
+    }
+
+    impl Text {
+        #[must_use]
+        pub fn of(bytes: &[u8]) -> Self {
+            Self {
+                data: bytes.as_ptr().cast(),
+                length: bytes.len(),
+            }
+        }
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct Task {
+        pub offset: i64,
+        pub length: usize,
+        pub part_header: [u8; 256],
+    }
+
+    /// The facade's answers: the handler's facts, the request's and what each
+    /// send does to it.
+    #[repr(C)]
+    pub struct Scenario {
+        pub serve: c_int,
+        pub modified: c_int,
+        pub index_ok: c_int,
+        pub index: c_int,
+        pub autoindex: c_int,
+        pub directory: c_int,
+        pub status: c_int,
+        pub date: Text,
+        pub last_modified: Text,
+        pub mime: Text,
+        pub content_type: Text,
+        pub body: Text,
+        pub filename: Text,
+        pub end_part: Text,
+        pub modified_header: Text,
+        pub filesize: usize,
+        pub content_length: usize,
+        pub tasks: *const Task,
+        pub task_count: usize,
+        pub throw_on_send: c_int,
+        pub send_result: c_int,
+        pub toggle_keep_on_send: u32,
+        pub toggle_method_on_send: u32,
+        pub head: c_int,
+        pub keep_alive: c_int,
+    }
+
+    pub type Line = unsafe extern "C" fn(out: *mut c_void, line: *const c_char, length: usize);
+
+    unsafe extern "C" {
+        /// The pinned `Server::select_static_handler` over the scenario's facade:
+        /// each traced call, send and the request's final state go to `line`
+        /// (see `shim/http_static_select.cc`). The result, or 2 if it threw.
+        pub fn swr_oracle_static_select(
+            scenario: *const Scenario,
+            line: Line,
+            out: *mut c_void,
+        ) -> c_int;
+    }
+}
+
 pub mod protocols {
     use std::ffi::c_char;
 

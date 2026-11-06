@@ -20,7 +20,6 @@ def main():
         archive = prepare_archive(args, tree, report)
         if not archive: write_report(args.output, report); return 1
         sides = Sides(args.source, args.archive, tree, path)
-        if not sides.native(report, path): write_report(args.output, report); return 1
         text = sides.original(path); extracted = tree/'upstream_rewrite.cc'
         parts = [body(text, 'void Server::add_rewrite_rule('), body(text, 'bool Server::apply_rewrite_rules(')]
         extracted.write_text('#include "rewrite_oracle.h"\nnamespace upstream_rewrite {\n'+'\n'.join(parts)+'\n}\n')

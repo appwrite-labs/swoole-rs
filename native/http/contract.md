@@ -206,18 +206,6 @@ progress instead of looping.
   EOVERFLOW) with the first byte reset to NUL and count 0; with capacity 0 it
   returns `SIZE_MAX`. Header capacity must fit `INT_MAX` (the caller uses 512).
 
-### Response body
-
-`swr_v1_http_static_body` takes a POD `{count, cursor, phase, head}` and returns
-the next native action: 0 = done, 1 = allocate/copy filename, 2 = part header,
-3 = file task, 4 = ending part, 5 = free task, 6 = read keep-alive, 7 = close. HEAD
-is read after the header send, so a callback that changes the method still
-affects the body; keep-alive is read only after the sends and frees. A single
-zero-length task still allocates, copies and frees. Each multipart task (even zero
-length) sends part header then file, followed by the ending part. Send errors are
-ignored as before. This only covers the final file/range path; 404, 304 and
-autoindex keep their native flow.
-
 ### StaticHandler helpers
 
 - `swr_v1_http_static_boundary` returns the static prefix and 24 random characters
@@ -227,25 +215,6 @@ autoindex keep their native flow.
   one task the MIME catalog reference is returned directly. Capacity 0 returns the
   exact size without a terminator; otherwise the whole value must fit.
 - `swr_v1_http_static_catch` sets 404 only for the terminal matched location.
-
-### Static-response selection
-
-`swr_v1_http_static_select` uses 12 bytes of caller scratch (phase, head,
-range_kind as three `uint32_t`).
-
-| Phase | Input | Decision |
-| --- | --- | --- |
-| 0 | try_serve result | skip, or check status |
-| 1 | current status | 404, or build dates |
-| 2 | conditional header length | call is_modified only if non-empty |
-| 3 | is_modified result | 304, or index selection |
-| 4 | try_serve_index_file result | skip, or inspect index facts |
-| 5 | has-index 1 / autoindex 2 / directory 4 | autoindex only for exactly 6; otherwise parse ranges, copy tasks |
-| 6 | current method | HEAD (tag 3) uses zero length + MIME |
-| 7 | task count, status after MIME | one task: 206 → range 1, else range 2; other counts 0 |
-
-Phase 8 is terminal. An unknown phase or invalid phase-5 bits returns INVALID
-without changing the scratch.
 
 ### Index selection, routing, status
 
@@ -271,5 +240,5 @@ without changing the scratch.
 - [static-tasks-v2.md](static-tasks-v2.md): `swr_v2_http_tasks_*`
 - [static-context-v2.md](static-context-v2.md): `swr_v2_http_context_*`
 
-Tests: `tests/modules/http/` (for example `gate.py`, `static_gate.py`,
+Tests: `tests/modules/http/` (for example `gate.py`, `context_gate.py`,
 `proxy_gate.py`, `cookie_flow_gate.py`).

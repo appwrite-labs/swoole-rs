@@ -42,6 +42,7 @@ mod startup;
 mod state;
 mod static_config;
 pub mod static_handler;
+pub mod static_select;
 pub mod view;
 pub use static_config::{
     swr_v1_server_static_config, swr_v1_server_static_mime, swr_v1_server_static_owner,

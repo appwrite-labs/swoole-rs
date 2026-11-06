@@ -69,23 +69,6 @@ typedef struct {
     int64_t content_length, range_offset; size_t range_length, filesize;
     uint32_t variant, keep_alive, range_kind;
 } swr_v1_http_static_header;
-/* Static response selection scratch; values are copied only at their phase.
- * No native owner/borrow/callback enters Rust. See contract.md for effect order. */
-typedef struct { uint32_t phase, head, range_kind; } swr_v1_http_static_selection;
-enum swr_v1_http_static_select_action {
-    SWR_HTTP_SELECT_SKIP=0, SWR_HTTP_SELECT_STATUS=1, SWR_HTTP_SELECT_NOT_FOUND=2,
-    SWR_HTTP_SELECT_DATES=3, SWR_HTTP_SELECT_CHECK_MODIFIED=4, SWR_HTTP_SELECT_NOT_MODIFIED=5,
-    SWR_HTTP_SELECT_INDEX=6, SWR_HTTP_SELECT_INSPECT_INDEX=7, SWR_HTTP_SELECT_AUTOINDEX=8,
-    SWR_HTTP_SELECT_FILE=9, SWR_HTTP_SELECT_FILE_HEADER=10, SWR_HTTP_SELECT_READY=11
-};
-int32_t swr_v1_http_static_select(swr_v1_http_static_selection *, size_t, int32_t);
-enum swr_v1_http_static_body_action {
-    SWR_HTTP_BODY_DONE=0, SWR_HTTP_BODY_ALLOCATE=1, SWR_HTTP_BODY_PART_HEADER=2,
-    SWR_HTTP_BODY_FILE=3, SWR_HTTP_BODY_END_PART=4, SWR_HTTP_BODY_FREE=5,
-    SWR_HTTP_BODY_KEEP_ALIVE=6, SWR_HTTP_BODY_CLOSE=7
-};
-typedef struct { size_t count, cursor; uint32_t phase, head; } swr_v1_http_static_body_state;
-int32_t swr_v1_http_static_body(swr_v1_http_static_body_state *, size_t, uint32_t);
 enum swr_v1_http_date_action {
     SWR_HTTP_DATE_IGNORE=0, SWR_HTTP_DATE_GMT=1, SWR_HTTP_DATE_UTC=2,
     SWR_HTTP_DATE_RFC850=3, SWR_HTTP_DATE_ASCTIME=4, SWR_HTTP_DATE_FILE_GMT=5,

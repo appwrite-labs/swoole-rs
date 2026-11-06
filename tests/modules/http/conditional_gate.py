@@ -17,8 +17,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='swr-http-conditional-') as temp:
         tree = Path(temp); path = 'src/server/static_handler.cc'
         sides = Sides(args.source, args.archive, tree, path)
-        if not sides.native(report, path): write_report(args.output, report); return 1
-        for namespace, text in [('upstream_conditional', sides.original(path)), ('candidate_conditional', sides.selected(path))]:
+        for namespace, text in [('upstream_conditional', sides.original(path)), ('candidate_conditional', (local/'context_facade.cc').read_text())]:
             extracted = tree/(namespace+'.cc')
             # Keep the actual generic declaration used by legacy and V2 callers.
             prefix = 'template<typename Handler>\n' if 'template<typename Handler>\nstatic bool conditional_file_date(' in text else ''

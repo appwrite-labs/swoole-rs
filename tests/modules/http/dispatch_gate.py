@@ -29,7 +29,7 @@ def main():
         paths = ['src/protocol/http.cc', 'src/server/static_handler.cc']
         dependencies_paths = ['src/core/base.cc', 'src/core/base64.cc']
         sides = Sides(args.source, args.archive, tree, 'thirdparty/multipart_parser.h', *paths, *dependencies_paths)
-        if not sides.native(report, *paths): write_report(args.output, report); return 1
+        if not sides.native(report, paths[0]): write_report(args.output, report); return 1
         route_signatures = ['ssize_t get_package_length(', 'uint8_t get_package_length_size(', 'int dispatch_frame(']
         proxy_signatures = ['HttpProxy *HttpProxy::create(', 'std::string HttpProxy::get_auth_str(']
         for namespace, text in [('upstream_dispatch', sides.original(paths[0])), ('candidate_dispatch', sides.selected(paths[0]))]:

@@ -1,5 +1,7 @@
 #pragma once
-#include "swoole_static_handler.h"
+#include "swoole_server.h"
+#include "swoole_http.h"
+#include <set>
 #include "swoole_rs_http_context.h"
 #include "index_buffer.h"
 #include <dirent.h>

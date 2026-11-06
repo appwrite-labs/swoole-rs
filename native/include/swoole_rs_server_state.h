@@ -45,6 +45,8 @@ const uint8_t *swr_v1_server_static_text(const swr_v1_server_state *, uint32_t, 
 void swr_v1_server_static_rewrite_add(const swr_v1_server_state *, const uint8_t *, size_t, const uint8_t *, size_t);
 struct swr_v2_http_context;
 bool swr_v1_server_static_rewrite(const swr_v1_server_state *, struct swr_v2_http_context *);
+/* Server::select_static_handler(request, conn) (crates/server/src/static_select.rs). */
+bool swr_v1_server_static_select(void *server, const void *request, const void *conn);
 /* upload_tmp_dir's bytes and their length (crates/server/src/state.rs). */
 const uint8_t *swr_v1_server_upload_tmp_dir(const swr_v1_server_state *, size_t *);
 /* Server's text members, which Rust owns (crates/server/src/state.rs). */
