@@ -56,7 +56,7 @@ def main():
         run(c_command)
         link = ['c++', abi, archive, '-lpthread', '-lm', '-o', work / 'async-abi']
         if sys.platform == 'linux':
-            link += ['-ldl']
+            link += ['-ldl', '-Wl,--gc-sections']
         run(link)
         run([work / 'async-abi'])
         for standard in ['c++14', 'c++17']:
@@ -66,7 +66,7 @@ def main():
                            '-DSWOOLE_RS_PHPHELPERS', '-I' + str(work), '-I' + str(ROOT / 'native/phphelpers'),
                            Path(__file__).with_name('async_ordinary.cc'), archive, '-lpthread', '-lm', '-o', binary]
                 if sys.platform == 'linux':
-                    command += ['-ldl']
+                    command += ['-ldl', '-Wl,--gc-sections']
                 if sanitize:
                     command += ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
                 run(command)
