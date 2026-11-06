@@ -538,32 +538,30 @@ PHP_FUNCTION(swoole_exit);
 extern php_stream_wrapper sw_php_plain_files_wrapper;
 SW_EXTERN_C_END
 
-using swoole::PHPCoroutine;
-
 static void runtime_pdo(uint32_t flag, uint8_t blocking) {
     switch (flag) {
 #ifdef SW_USE_PGSQL
-    case PHPCoroutine::HOOK_PDO_PGSQL:
+    case SWR_HOOK_PDO_PGSQL:
         swoole_pgsql_set_blocking(blocking);
         break;
 #endif
 #ifdef SW_USE_ODBC
-    case PHPCoroutine::HOOK_PDO_ODBC:
+    case SWR_HOOK_PDO_ODBC:
         swoole_odbc_set_blocking(blocking);
         break;
 #endif
 #ifdef SW_USE_ORACLE
-    case PHPCoroutine::HOOK_PDO_ORACLE:
+    case SWR_HOOK_PDO_ORACLE:
         swoole_oracle_set_blocking(blocking);
         break;
 #endif
 #ifdef SW_USE_SQLITE
-    case PHPCoroutine::HOOK_PDO_SQLITE:
+    case SWR_HOOK_PDO_SQLITE:
         swoole_sqlite_set_blocking(blocking);
         break;
 #endif
 #ifdef SW_USE_FIREBIRD
-    case PHPCoroutine::HOOK_PDO_FIREBIRD:
+    case SWR_HOOK_PDO_FIREBIRD:
         swoole_firebird_set_blocking(blocking);
         break;
 #endif
@@ -576,30 +574,30 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
     static swr_v1_phpruntime_ops ops = {
         0
 #ifdef SW_USE_PGSQL
-            | PHPCoroutine::HOOK_PDO_PGSQL
+            | SWR_HOOK_PDO_PGSQL
 #endif
 #ifdef SW_USE_ODBC
-            | PHPCoroutine::HOOK_PDO_ODBC
+            | SWR_HOOK_PDO_ODBC
 #endif
 #ifdef SW_USE_ORACLE
-            | PHPCoroutine::HOOK_PDO_ORACLE
+            | SWR_HOOK_PDO_ORACLE
 #endif
 #ifdef SW_USE_SQLITE
-            | PHPCoroutine::HOOK_PDO_SQLITE
+            | SWR_HOOK_PDO_SQLITE
 #endif
 #ifdef SW_USE_FIREBIRD
-            | PHPCoroutine::HOOK_PDO_FIREBIRD
+            | SWR_HOOK_PDO_FIREBIRD
 #endif
 #ifdef SW_USE_CURL
-            | PHPCoroutine::HOOK_NATIVE_CURL
+            | SWR_HOOK_NATIVE_CURL
 #endif
         ,
         nullptr,
         []() -> uint8_t { return Coroutine::get_current() != nullptr; },
         []() -> uint8_t { return SWOOLE_G(cli); },
         [](double seconds) -> int32_t { return swoole::coroutine::System::sleep(seconds); },
-        [](uint32_t flags) { PHPCoroutine::set_hook_flags(flags); },
-        []() -> uint32_t { return PHPCoroutine::get_hook_flags(); },
+        swr_v1_phpcoroutines_set_hook_option,
+        swr_v1_phpcoroutines_hook_flags,
         []() -> uint8_t { return SWOOLE_G(enable_library); },
         []() -> uint8_t { return sw_is_main_thread(); },
         []() -> uint32_t { return sw_active_thread_count(); },

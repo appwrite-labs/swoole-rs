@@ -85,6 +85,17 @@ void swr_v1_phpruntime_minit(int32_t module_number,
                              const struct swr_v1_phpruntime_ops *ops);
 /* RINIT: 1 on the main thread (the plain wrapper then saves the original stream ops). */
 uint8_t swr_v1_phpruntime_rinit(void);
+/* PHPCoroutine::enable_hook(flags), 0 disabling every hook; a trapped bailout is raised last. */
+bool swr_v1_phpruntime_enable_hook(uint32_t flags);
+/* The hook flags that select C++'s PDO drivers and native curl (crates/phpruntime's flags). */
+enum {
+    SWR_HOOK_NATIVE_CURL = 1u << 12,
+    SWR_HOOK_PDO_PGSQL = 1u << 16,
+    SWR_HOOK_PDO_ODBC = 1u << 17,
+    SWR_HOOK_PDO_ORACLE = 1u << 18,
+    SWR_HOOK_PDO_SQLITE = 1u << 19,
+    SWR_HOOK_PDO_FIREBIRD = 1u << 20,
+};
 
 /* The coroutine socket streams: the "socket/coroutine" operations and
  * php_swoole_create_stream_from_socket. */
