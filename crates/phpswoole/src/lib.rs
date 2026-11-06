@@ -32,7 +32,8 @@ mod vm;
 
 pub use asynchronous::php_swoole_set_aio_option;
 pub use entry::{swr_v1_phpswoole_fatal_exit, swr_v1_phpswoole_module};
-pub use info::swr_v1_phpswoole_minfo;
+pub use info::{built_with, swr_v1_phpswoole_minfo};
+pub use info_inventory::Capability;
 pub use ini::swr_v1_phpswoole_register_ini;
 pub use memory::sw_zend_string_allocator;
 pub use module::{

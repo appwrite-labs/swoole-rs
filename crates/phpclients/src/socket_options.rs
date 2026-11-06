@@ -266,6 +266,36 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_settings(
     applied
 }
 
+/// `php_swoole_socket_set(socket, settings)`.
+/// # Safety
+/// As [`swr_v1_phpclients_socket_settings`].
+#[unsafe(export_name = "_Z21php_swoole_socket_setPN6swoole9coroutine6SocketEPK12_zval_struct")]
+pub unsafe extern "C" fn php_swoole_socket_set(socket: Socket, settings: *const zval) -> bool {
+    // SAFETY: per the caller.
+    unsafe { swr_v1_phpclients_socket_settings(socket, settings, ALL) }
+}
+
+/// `php_swoole_socket_set_protocol(socket, settings)`.
+/// # Safety
+/// As [`swr_v1_phpclients_socket_settings`].
+#[unsafe(export_name = "_Z30php_swoole_socket_set_protocolPN6swoole9coroutine6SocketEPK12_zval_struct")]
+pub unsafe extern "C" fn php_swoole_socket_set_protocol(
+    socket: Socket,
+    settings: *const zval,
+) -> bool {
+    // SAFETY: per the caller.
+    unsafe { swr_v1_phpclients_socket_settings(socket, settings, PROTOCOL) }
+}
+
+/// `php_swoole_socket_set_ssl(socket, settings)`.
+/// # Safety
+/// As [`swr_v1_phpclients_socket_settings`].
+#[unsafe(export_name = "_Z25php_swoole_socket_set_sslPN6swoole9coroutine6SocketEPK12_zval_struct")]
+pub unsafe extern "C" fn php_swoole_socket_set_ssl(socket: Socket, settings: *const zval) -> bool {
+    // SAFETY: per the caller.
+    unsafe { swr_v1_phpclients_socket_settings(socket, settings, SSL) }
+}
+
 /// `php_swoole_socket_set_protocol`.
 fn set_protocol(s: &Settings, socket: Socket) -> Result<bool, Stop> {
     let mut ret = true;
@@ -735,14 +765,19 @@ fn get_option(call: &Call) {
         call.add_assoc_long(c"usec", ((timeout - f64::from(sec)) * 1_000_000.0) as i64);
         return;
     }
-    // SAFETY: an open socket and the return slot.
-    match unsafe { native::swoole_socket_coro_tcp_info(socket, name_int, call.return_value()) } {
-        1 => return,
-        -1 => {
-            warn_sys(&format!("getsockopt({fd}, SOL_TCP, TCP_INFO)"), errno());
-            return;
+    #[cfg(target_os = "linux")]
+    if name_int == libc::TCP_INFO {
+        // SAFETY: an all-zero `tcp_info` is a valid out value.
+        let mut info: libc::tcp_info = unsafe { std::mem::zeroed() };
+        if getsockopt(fd, libc::SOL_TCP, libc::TCP_INFO, &mut info).is_none() {
+            return warn_sys(&format!("getsockopt({fd}, SOL_TCP, TCP_INFO)"), errno());
         }
-        _ => {}
+        call.set_array();
+        for (key, value) in native::tcp_fields(&info) {
+            #[expect(clippy::cast_possible_wrap, reason = "upstream's (zend_long) cast")]
+            call.add_assoc_long(key, value as i64);
+        }
+        return;
     }
     let mut other: c_int = 0;
     let Some(length) = getsockopt(fd, level_int, name_int, &mut other) else {

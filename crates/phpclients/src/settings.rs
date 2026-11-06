@@ -6,6 +6,7 @@ use crate::net::{self, bailed, report, warn, warn_sys};
 use libc::{c_int, c_void};
 use std::ptr;
 use swoole_rs_clients::client::{ClientRecord, OPEN_SSL};
+use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_phptable::{self as table, Owned};
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::{
@@ -26,13 +27,13 @@ const IPC_BUFFER_SIZE: u16 = 8192;
 unsafe extern "C" {
     /// `swoole::mqtt::set_protocol(protocol)`.
     #[link_name = "_ZN6swoole4mqtt12set_protocolEPNS_8ProtocolE"]
-    fn mqtt_set_protocol(protocol: *mut c_void);
+    pub(crate) fn mqtt_set_protocol(protocol: *mut Protocol);
     /// `Protocol::default_length_func`.
     #[link_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"]
-    fn default_length_func();
+    pub(crate) fn default_length_func();
     /// `php_swoole_length_func`: calls the callable in `private_data_1`.
     #[link_name = "_Z22php_swoole_length_funcPKN6swoole8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
-    fn php_swoole_length_func();
+    pub(crate) fn php_swoole_length_func();
 }
 
 /// The options array of one `set()`/`connect()`.
@@ -151,7 +152,7 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
         record.protocol.get_package_length = default_length_func as *mut c_void;
     } else if on {
         // SAFETY: the client's own protocol.
-        unsafe { mqtt_set_protocol((&raw mut record.protocol).cast()) };
+        unsafe { mqtt_set_protocol(&raw mut record.protocol) };
     }
 }
 

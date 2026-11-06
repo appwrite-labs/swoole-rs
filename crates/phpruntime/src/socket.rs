@@ -27,6 +27,7 @@ struct SocketCall {
     domain: c_int,
     kind: c_int,
     protocol: c_int,
+    family: bool,
     result: bool,
 }
 
@@ -48,10 +49,10 @@ struct SocketOps {
         *mut socklen_t,
     ) -> ssize_t,
     option: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, bool),
-    bind: unsafe extern "C" fn(*mut c_void, *const c_char, c_int) -> bool,
+    bind: unsafe extern "C" fn(*mut c_void, *const c_char, size_t, c_int) -> bool,
     connect: unsafe extern "C" fn(*mut c_void, *const c_char, size_t, c_int, c_int) -> bool,
     listen: unsafe extern "C" fn(*mut c_void, c_int) -> bool,
-    accept: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    accept: unsafe extern "C" fn(*mut c_void, f64) -> *mut c_void,
     ssl_enabled: unsafe extern "C" fn(*mut c_void) -> bool,
     ssl_encrypt: unsafe extern "C" fn(*mut c_void),
     ssl_handshake: unsafe extern "C" fn(*mut c_void) -> bool,
@@ -78,6 +79,35 @@ struct SocketOps {
         *mut c_void,
     ),
     ssl_verify: unsafe extern "C" fn(*mut c_void, bool) -> bool,
+    vector: unsafe extern "C" fn(
+        *mut c_void,
+        c_int,
+        *const libc::iovec,
+        c_int,
+        *mut c_int,
+        *mut size_t,
+    ) -> ssize_t,
+    sendfile: unsafe extern "C" fn(*mut c_void, *const c_char, i64, i64) -> bool,
+    sendto: unsafe extern "C" fn(
+        *mut c_void,
+        *const c_char,
+        size_t,
+        c_int,
+        *const c_char,
+        size_t,
+    ) -> ssize_t,
+    proxy: unsafe extern "C" fn(
+        *mut c_void,
+        bool,
+        *const c_char,
+        size_t,
+        c_int,
+        *const c_char,
+        size_t,
+        *const c_char,
+        size_t,
+    ),
+    ssl_context: unsafe extern "C" fn(*mut c_void) -> *const c_void,
 }
 
 unsafe extern "C" {
@@ -139,7 +169,7 @@ pub(crate) mod timeout {
 
 /// The table's `io` operations.
 #[derive(Clone, Copy)]
-pub(crate) enum Io {
+pub enum Io {
     SendSync = 0,
     RecvSync = 1,
     SendAll = 2,
@@ -148,6 +178,7 @@ pub(crate) enum Io {
     RecvOnce = 5,
     Peek = 6,
     Send = 7,
+    RecvAll = 8,
 }
 
 /// `SW_WAIT`.
@@ -194,6 +225,7 @@ impl Socket {
             domain,
             kind,
             protocol,
+            family: fd >= 0,
             result: false,
         };
         // SAFETY: `make` takes a `SocketCall` and writes the uniquely owned socket.
@@ -320,6 +352,7 @@ impl Socket {
             domain: 0,
             kind: 0,
             protocol: 0,
+            family: false,
             result: false,
         };
         // SAFETY: `close` takes a `SocketCall` of this live socket; PHP callbacks may bail out.
@@ -351,8 +384,8 @@ impl Socket {
     }
 
     pub(crate) fn bind(&self, host: &CStr, port: i32) -> bool {
-        // SAFETY: a live socket and a NUL-terminated host.
-        unsafe { (native().bind)(self.raw(), host.as_ptr(), port) }
+        // SAFETY: a live socket and its host's bytes.
+        unsafe { (native().bind)(self.raw(), host.as_ptr(), host.count_bytes(), port) }
     }
 
     pub(crate) fn connect(&self, host: &CStr, port: i32) -> bool {
@@ -369,7 +402,7 @@ impl Socket {
     /// `accept()`: the connection, if any.
     pub(crate) fn accept(&self) -> Option<Self> {
         // SAFETY: a live socket; the connection is new and owned.
-        Self::wrap(unsafe { (native().accept)(self.raw()) }, true)
+        Self::wrap(unsafe { (native().accept)(self.raw(), 0.0) }, true)
     }
 
     pub(crate) fn shutdown(&self, how: i32) -> bool {
@@ -566,14 +599,338 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
 /// `SocketImpl *` beyond the record: its virtual and C++-only members, through
 /// the native table.
 pub mod co {
-    use super::{Io, native};
-    use libc::{c_char, c_int, c_void};
+    pub use super::Io;
+    use super::{SocketCall, native, trap};
+    use libc::{c_char, c_int, c_void, iovec};
+    pub use swoole_rs_hooks::co_socket::CoSocket;
     use swoole_rs_hooks::{
-        co_socket::CoSocket,
-        lifecycle::swr_v1_hook_co_socket_close,
+        TimeoutScope,
+        co_io::{
+            swr_v1_hook_co_socket_bound_cid, swr_v1_hook_co_socket_owned_err,
+            swr_v1_hook_co_socket_set_err,
+        },
+        lifecycle::{
+            swr_v1_hook_co_socket_cancel, swr_v1_hook_co_socket_check_liveness,
+            swr_v1_hook_co_socket_close, swr_v1_hook_co_socket_shutdown,
+        },
         shutdown::{swr_v1_hook_socket_bound_co, swr_v1_hook_socket_flags},
-        socket_members,
+        socket_members, swr_v1_hook_timeout_restore, swr_v1_hook_timeout_scope,
     };
+    use swoole_rs_zend::bailout::Bailout;
+
+    unsafe extern "C" {
+        /// `Socket::recvfrom(buf, n)`: into the network socket's peer address.
+        #[link_name = "_ZN6swoole9coroutine6Socket8recvfromEPvm"]
+        fn native_recvfrom(socket: Socket, buf: *mut c_void, n: usize) -> isize;
+    }
+
+    /// `new SocketImpl(...)`: by `domain`, `kind` and `protocol` with `family`,
+    /// else by the `swSocketType` `kind`; over `fd` unless it is negative.
+    /// # Errors
+    /// The constructor bailed out.
+    pub fn make(
+        fd: c_int,
+        domain: c_int,
+        kind: c_int,
+        protocol: c_int,
+        family: bool,
+    ) -> Result<Socket, Bailout> {
+        let mut call = SocketCall {
+            socket: std::ptr::null_mut(),
+            fd,
+            domain,
+            kind,
+            protocol,
+            family,
+            result: false,
+        };
+        // SAFETY: `make` takes a `SocketCall` and writes the uniquely owned socket.
+        unsafe { trap(native().make, &mut call) }?;
+        Ok(call.socket)
+    }
+
+    /// `delete socket`.
+    /// # Errors
+    /// A close hook bailed out.
+    /// # Safety
+    /// `socket` is live and owned; it is gone after the call.
+    pub unsafe fn free(socket: Socket) -> Result<(), Bailout> {
+        // SAFETY: per the caller; `free` takes the socket.
+        unsafe { swoole_rs_zend::bailout::trap(native().free, socket) }
+    }
+
+    /// `close()` inside `zend_try`.
+    /// # Errors
+    /// A close hook bailed out.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn close_trapped(socket: Socket) -> Result<bool, Bailout> {
+        let mut call = SocketCall {
+            socket,
+            fd: -1,
+            domain: 0,
+            kind: 0,
+            protocol: 0,
+            family: false,
+            result: false,
+        };
+        // SAFETY: per the caller; `close` takes a `SocketCall`.
+        unsafe { trap(native().close, &mut call) }?;
+        Ok(call.result)
+    }
+
+    /// A timeout of `kind` set for the guard's life (`TimeoutSetter`).
+    pub struct Timeout(TimeoutScope);
+
+    impl Timeout {
+        /// # Safety
+        /// `socket` is live, and stays so while the guard does.
+        #[must_use]
+        pub unsafe fn set(socket: Socket, timeout: f64, kind: c_int) -> Self {
+            // SAFETY: per the caller.
+            let record = unsafe { record(socket) };
+            // SAFETY: its live record.
+            Self(unsafe { swr_v1_hook_timeout_scope(record, timeout, kind) })
+        }
+    }
+
+    impl Drop for Timeout {
+        fn drop(&mut self) {
+            // SAFETY: the scope's socket is live, per `set`.
+            unsafe { swr_v1_hook_timeout_restore(&raw const self.0) };
+        }
+    }
+
+    /// One table transfer of `length` bytes at `buf`.
+    /// # Safety
+    /// `socket` is live and `buf` holds `length` bytes, writable to receive.
+    pub unsafe fn io(socket: Socket, op: Io, buf: *mut c_char, length: usize) -> isize {
+        // SAFETY: per the caller.
+        unsafe { (native().io)(socket, op as c_int, buf, length) }
+    }
+
+    /// `recv_line(buf, length)`.
+    /// # Safety
+    /// As [`io`].
+    pub unsafe fn recv_line(socket: Socket, buf: *mut c_char, length: usize) -> isize {
+        // SAFETY: per the caller; the member is not virtual.
+        unsafe { socket_members::recv_line(socket, buf.cast(), length) }
+    }
+
+    /// `recv_with_buffer(buf, length)`.
+    /// # Safety
+    /// As [`io`].
+    pub unsafe fn recv_with_buffer(socket: Socket, buf: *mut c_char, length: usize) -> isize {
+        // SAFETY: per the caller; the member is not virtual.
+        unsafe { socket_members::recv_with_buffer(socket, buf.cast(), length) }
+    }
+
+    /// `readv`, `readv_all`, `writev` or `writev_all` (`op` 0 to 3) over
+    /// `count` vectors; where it stopped into `index` and `offset`.
+    /// # Safety
+    /// `socket` is live and the vectors are valid for the operation.
+    pub unsafe fn vector(
+        socket: Socket,
+        op: c_int,
+        vectors: *const iovec,
+        count: c_int,
+        index: *mut c_int,
+        offset: *mut usize,
+    ) -> isize {
+        // SAFETY: per the caller.
+        unsafe { (native().vector)(socket, op, vectors, count, index, offset) }
+    }
+
+    /// `recvfrom(buf, length)`, into the peer address.
+    /// # Safety
+    /// As [`io`].
+    pub unsafe fn recvfrom(socket: Socket, buf: *mut c_char, length: usize) -> isize {
+        // SAFETY: per the caller.
+        unsafe { native_recvfrom(socket, buf.cast(), length) }
+    }
+
+    /// `sendto(std::string(host, length), port, data, size)`.
+    /// # Safety
+    /// `socket` is live; `host` and `data` hold their bytes.
+    pub unsafe fn sendto(
+        socket: Socket,
+        host: *const c_char,
+        length: usize,
+        port: c_int,
+        data: *const c_char,
+        size: usize,
+    ) -> isize {
+        // SAFETY: per the caller.
+        unsafe { (native().sendto)(socket, host, length, port, data, size) }
+    }
+
+    /// `sendfile(file, offset, length)`.
+    /// # Safety
+    /// `socket` is live and `file` NUL-terminated.
+    pub unsafe fn sendfile(socket: Socket, file: *const c_char, offset: i64, length: i64) -> bool {
+        // SAFETY: per the caller.
+        unsafe { (native().sendfile)(socket, file, offset, length) }
+    }
+
+    /// `bind(std::string(host, length), port)`.
+    /// # Safety
+    /// `socket` is live and `host` holds `length` bytes.
+    pub unsafe fn bind(socket: Socket, host: *const c_char, length: usize, port: c_int) -> bool {
+        // SAFETY: per the caller.
+        unsafe { (native().bind)(socket, host, length, port) }
+    }
+
+    /// `listen(backlog)`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn listen(socket: Socket, backlog: c_int) -> bool {
+        // SAFETY: per the caller; the member is not virtual.
+        unsafe { socket_members::listen(socket, backlog) }
+    }
+
+    /// `accept(timeout)`: the new connection, or null.
+    /// # Safety
+    /// `socket` is live, in a coroutine.
+    pub unsafe fn accept(socket: Socket, timeout: f64) -> Socket {
+        // SAFETY: per the caller.
+        unsafe { (native().accept)(socket, timeout) }
+    }
+
+    /// `ssl_handshake()`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn ssl_handshake(socket: Socket) -> bool {
+        // SAFETY: per the caller.
+        unsafe { (native().ssl_handshake)(socket) }
+    }
+
+    /// The `SSLContext`'s owner, or null while TLS is off.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn ssl_context(socket: Socket) -> *const c_void {
+        // SAFETY: per the caller.
+        unsafe { (native().ssl_context)(socket) }
+    }
+
+    /// `set_http_proxy` (`http`) or `set_socks5_proxy`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn proxy(
+        socket: Socket,
+        http: bool,
+        host: &[u8],
+        port: c_int,
+        user: &[u8],
+        password: &[u8],
+    ) {
+        // SAFETY: per the caller; each slice holds its bytes.
+        unsafe {
+            (native().proxy)(
+                socket,
+                http,
+                host.as_ptr().cast(),
+                host.len(),
+                port,
+                user.as_ptr().cast(),
+                user.len(),
+                password.as_ptr().cast(),
+                password.len(),
+            );
+        }
+    }
+
+    /// `set_option(level, name, value)`, which logs a failure.
+    /// # Safety
+    /// `socket` is live and open.
+    pub unsafe fn set_option(socket: Socket, level: c_int, name: c_int, value: c_int) -> bool {
+        // SAFETY: per the caller; the member is not virtual.
+        unsafe { socket_members::set_int_option(socket, level, name, value) }
+    }
+
+    /// `getsockname()`, into the network socket's address.
+    /// # Safety
+    /// `socket` is live and open.
+    pub unsafe fn getsockname(socket: Socket) -> bool {
+        // SAFETY: per the caller; the member is not virtual.
+        unsafe { socket_members::getsockname(socket) }
+    }
+
+    /// `getpeername(address)`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn getpeername(
+        socket: Socket,
+        address: &mut swoole_rs_reactor::SocketAddress,
+    ) -> bool {
+        // SAFETY: per the caller; the member is not virtual.
+        unsafe { socket_members::getpeername(socket, address) }
+    }
+
+    /// `shutdown(how)`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn shutdown(socket: Socket, how: c_int) -> bool {
+        // SAFETY: per the caller.
+        let record = unsafe { record(socket) };
+        // SAFETY: its live record.
+        unsafe { swr_v1_hook_co_socket_shutdown(record, how) }
+    }
+
+    /// `cancel(event)`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn cancel(socket: Socket, event: u32) -> bool {
+        // SAFETY: per the caller.
+        let record = unsafe { record(socket) };
+        // SAFETY: its live record.
+        unsafe { swr_v1_hook_co_socket_cancel(record, event) }
+    }
+
+    /// `check_liveness()`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn check_liveness(socket: Socket) -> bool {
+        // SAFETY: per the caller.
+        let record = unsafe { record(socket) };
+        // SAFETY: its live record.
+        unsafe { swr_v1_hook_co_socket_check_liveness(record) }
+    }
+
+    /// `get_bound_cid(event)`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn bound_cid(socket: Socket, event: u32) -> i64 {
+        // SAFETY: per the caller.
+        let record = unsafe { record(socket) };
+        // SAFETY: its live record.
+        unsafe { swr_v1_hook_co_socket_bound_cid(record, event) }
+    }
+
+    /// `set_err(code)`: the code's message.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn set_err(socket: Socket, code: c_int) {
+        // SAFETY: per the caller.
+        let record = unsafe { record(socket) };
+        // SAFETY: its live record.
+        unsafe { swr_v1_hook_co_socket_set_err(record, code) };
+    }
+
+    /// `set_err(code, message)`, copying the message.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn set_error(socket: Socket, code: c_int, message: &[u8]) {
+        // SAFETY: per the caller.
+        let record = unsafe { record(socket) };
+        // SAFETY: its live record.
+        let status = unsafe {
+            swr_v1_hook_co_socket_owned_err(record, code, message.as_ptr().cast(), message.len())
+        };
+        if status != 0 {
+            // std::bad_alloc, which upstream leaves uncaught.
+            std::process::abort();
+        }
+    }
 
     /// `SW_EVENT_WRITE`.
     pub const WRITE: u32 = 1 << 10;

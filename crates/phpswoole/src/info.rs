@@ -139,6 +139,20 @@ impl Info {
         contained(unsafe { swr_zend_try_info_ini(module) })
     }
 }
+/// Whether C++ was compiled with `capability` (its `#if` in the inventory).
+#[must_use]
+pub fn built_with(capability: C) -> bool {
+    static FLAGS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let flags = *FLAGS.get_or_init(|| {
+        // SAFETY: a plain C record of pointers, integers and bytes, for which zero is valid.
+        let mut info: Info = unsafe { std::mem::zeroed() };
+        // SAFETY: C++ fills it with static strings and its libpq version.
+        unsafe { (crate::ops().info)(&raw mut info) };
+        info.flags
+    });
+    flags & (1 << capability as u8) != 0
+}
+
 /// `PHP_MINFO_FUNCTION(swoole)`: the module's complete PHP information table
 /// and INI entries, from C++'s compiler and library facts.
 /// # Safety

@@ -108,7 +108,12 @@ unsafe extern "C" {
     fn php_swoole_coroutine_lock_minit(module_number: c_int);
     fn php_swoole_channel_coro_minit(module_number: c_int);
     fn php_swoole_runtime_minit(module_number: c_int);
-    fn php_swoole_socket_coro_minit(module_number: c_int);
+    /// crates/phpclients' `Coroutine\Socket`.
+    fn swr_v1_phpclients_socket_minit(
+        exception: *mut zend_class_entry,
+        shortname: bool,
+        module: c_int,
+    );
     fn php_swoole_client_minit(module_number: c_int);
     fn php_swoole_client_async_minit(module_number: c_int);
     /// crates/phpclients' `Coroutine\Client`.
@@ -206,7 +211,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_channel_coro_minit),
         M(php_swoole_runtime_minit),
         // client
-        M(php_swoole_socket_coro_minit),
+        M(socket_coro_minit),
         M(php_swoole_client_minit),
         M(php_swoole_client_async_minit),
         M(client_coro_minit),
@@ -257,6 +262,16 @@ unsafe extern "C" fn tracer_minit(_module_number: c_int) {
 unsafe extern "C" fn http_request_minit(_module_number: c_int) {
     // SAFETY: Rust's MINIT, once.
     unsafe { swr_v1_phphttp_request_minit() };
+}
+
+/// `php_swoole_socket_coro_minit`.
+unsafe extern "C" fn socket_coro_minit(module_number: c_int) {
+    // SAFETY: MINIT registered `Swoole\Exception` first and nothing writes it now.
+    let exception = unsafe { crate::swoole_exception_ce };
+    // SAFETY: the module's globals, live from MINIT.
+    let shortname = unsafe { (*globals()).use_shortname };
+    // SAFETY: Rust's MINIT, once.
+    unsafe { swr_v1_phpclients_socket_minit(exception, shortname, module_number) };
 }
 
 /// `php_swoole_client_coro_minit`.
