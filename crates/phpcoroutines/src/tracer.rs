@@ -3,7 +3,7 @@
 //! Chrome-trace profiler of user functions (`swoole.profile`,
 //! `swoole_tracer_prof_begin()`/`_end()`) and blocking detection of internal
 //! functions run inside a coroutine (`swoole.blocking_detection`). The INI
-//! switches are `PHP_INI_SYSTEM`, so C++ passes them once at MINIT.
+//! switches are `PHP_INI_SYSTEM`, so crates/phpswoole passes them once at MINIT.
 //!
 //! The heap hooks are C (their signatures follow the PHP build), and call back
 //! here with the hooks removed while Rust may allocate.
@@ -11,7 +11,7 @@ use crate::{context, runtime};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
-    ffi::{CStr, c_char, c_long, c_void},
+    ffi::{CStr, c_char, c_int, c_long, c_void},
     hash::BuildHasherDefault,
     io::Write,
     mem,
@@ -36,33 +36,35 @@ handlers! {
     zif_swoole_tracer_prof_end => prof_end;
 }
 
-/// `swr_v1_phpcoroutines_tracer`: the INI switches and `sw_printf`.
-#[repr(C)]
-pub struct Config {
-    /// `sw_printf("%s", text)`: Swoole's stdout stream.
-    print: unsafe extern "C" fn(text: *const c_char),
+/// The tracer's INI switches, which are `PHP_INI_SYSTEM`: read once, at MINIT.
+struct Config {
     blocking_threshold: zend_long,
-    blocking_detection: u8,
-    profile: u8,
-    leak_detection: u8,
+    blocking_detection: bool,
+    profile: bool,
+    leak_detection: bool,
 }
 
-static CONFIG: OnceLock<&'static Config> = OnceLock::new();
+static CONFIG: OnceLock<Config> = OnceLock::new();
 
 fn config() -> Option<&'static Config> {
-    CONFIG.get().copied()
+    CONFIG.get()
+}
+
+unsafe extern "C" {
+    /// Swoole's stdout stream (crates/corebase's C shim).
+    fn sw_printf(format: *const c_char, ...) -> c_int;
 }
 
 fn leak_detection() -> bool {
-    config().is_some_and(|c| c.leak_detection != 0)
+    config().is_some_and(|c| c.leak_detection)
 }
 
 fn profile() -> bool {
-    config().is_some_and(|c| c.profile != 0)
+    config().is_some_and(|c| c.profile)
 }
 
 fn blocking_detection() -> bool {
-    config().is_some_and(|c| c.blocking_detection != 0)
+    config().is_some_and(|c| c.blocking_detection)
 }
 
 /// `zend_function.type`'s `ZEND_INTERNAL_FUNCTION`.
@@ -726,7 +728,7 @@ unsafe fn blocking_end(frame: *mut zend_execute_data) {
     message.extend_from_slice(c_bytes(trace_text));
     message.push(0);
     // SAFETY: a NUL-terminated message.
-    unsafe { (config.print)(message.as_ptr().cast()) };
+    unsafe { sw_printf(c"%s".as_ptr(), message.as_ptr()) };
     // SAFETY: our references.
     unsafe { swr_zend_string_release(duration) };
     // SAFETY: as above.
@@ -820,15 +822,21 @@ unsafe extern "C" fn observer(frame: *mut zend_execute_data) -> zend_observer_fc
 /// `php_swoole_tracer_minit`: keep the switches and observe calls when
 /// profiling or blocking detection is on.
 /// # Safety
-/// At MINIT, once, with a static configuration.
+/// At MINIT, once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_tracer_minit(tracer: *const Config) {
-    // SAFETY: per the caller, a static configuration.
-    let Some(config) = (unsafe { tracer.as_ref() }) else {
-        return;
-    };
-    CONFIG.get_or_init(|| config);
-    if config.blocking_detection != 0 || config.profile != 0 {
+pub unsafe extern "C" fn swr_v1_phpcoroutines_tracer_minit(
+    blocking_threshold: zend_long,
+    blocking_detection: bool,
+    profile: bool,
+    leak_detection: bool,
+) {
+    CONFIG.get_or_init(|| Config {
+        blocking_threshold,
+        blocking_detection,
+        profile,
+        leak_detection,
+    });
+    if blocking_detection || profile {
         // SAFETY: MINIT, when Zend takes observers.
         unsafe { z::zend_observer_fcall_register(Some(observer)) };
     }

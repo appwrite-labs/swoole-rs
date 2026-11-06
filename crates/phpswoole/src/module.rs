@@ -129,14 +129,20 @@ unsafe extern "C" {
     fn php_swoole_websocket_server_minit(module_number: c_int);
     fn php_swoole_redis_server_minit(module_number: c_int);
     fn php_swoole_name_resolver_minit(module_number: c_int);
-    fn php_swoole_tracer_minit(module_number: c_int);
+    /// crates/phpcoroutines' tracer, with its INI switches.
+    fn swr_v1_phpcoroutines_tracer_minit(
+        blocking_threshold: i64,
+        blocking_detection: bool,
+        profile: bool,
+        leak_detection: bool,
+    );
 
     fn php_swoole_runtime_mshutdown();
 
     fn php_swoole_http_server_rinit();
     fn php_swoole_coroutine_rinit();
     fn php_swoole_runtime_rinit();
-    fn php_swoole_tracer_rinit();
+    fn swr_v1_phpcoroutines_tracer_rinit();
 
     fn php_swoole_server_rshutdown();
     fn php_swoole_http_server_rshutdown();
@@ -147,7 +153,7 @@ unsafe extern "C" {
     fn php_swoole_timer_rshutdown();
     fn php_swoole_runtime_rshutdown();
     fn php_swoole_process_rshutdown();
-    fn php_swoole_tracer_rshutdown();
+    fn swr_v1_phpcoroutines_tracer_rshutdown();
 }
 
 /// One step of a phase: a family's MINIT hook, or any other hook.
@@ -217,11 +223,33 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_redis_server_minit),
         M(php_swoole_name_resolver_minit),
         M(ops.optional_minit),
-        M(php_swoole_tracer_minit),
+        M(tracer_minit),
         H(php_hooks),
         H(ops.ready),
     ];
     bailout::defer(run(&steps, module_number));
+}
+
+/// `php_swoole_tracer_minit`: blocking detection and the profiler need the
+/// fiber mock.
+unsafe extern "C" fn tracer_minit(_module_number: c_int) {
+    let globals = globals();
+    // SAFETY: the module's globals, live from MINIT.
+    let (threshold, blocking, profile, leaks) = unsafe {
+        let g = &*globals;
+        (
+            g.blocking_threshold,
+            g.blocking_detection,
+            g.profile,
+            g.leak_detection,
+        )
+    };
+    // SAFETY: Rust's MINIT, once.
+    unsafe { swr_v1_phpcoroutines_tracer_minit(threshold, blocking, profile, leaks) };
+    if blocking || profile {
+        // SAFETY: as above.
+        unsafe { (*globals).enable_fiber_mock = true };
+    }
 }
 
 /// `php_swoole_client_coro_minit`.
@@ -338,7 +366,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
         Step::Hook(php_swoole_coroutine_rinit),
         Step::Hook(php_swoole_runtime_rinit),
         Step::Hook(ops.optional_rinit),
-        Step::Hook(php_swoole_tracer_rinit),
+        Step::Hook(swr_v1_phpcoroutines_tracer_rinit),
     ];
     if let Err(bailed) = run(&steps, module_number) {
         bailout::raise(Err(bailed));
@@ -374,7 +402,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
         Step::Hook(php_swoole_runtime_rshutdown),
         Step::Hook(php_swoole_process_rshutdown),
         Step::Hook(ops.optional_rshutdown),
-        Step::Hook(php_swoole_tracer_rshutdown),
+        Step::Hook(swr_v1_phpcoroutines_tracer_rshutdown),
         Step::Hook(ops.event_free),
     ];
     if let Err(bailed) = run(&steps, module_number) {
