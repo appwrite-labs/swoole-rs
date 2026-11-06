@@ -143,7 +143,12 @@ unsafe extern "C" {
     fn swr_v1_phphttp_server_minit();
     fn swr_v1_phphttp_server_rinit();
     fn swr_v1_phphttp_server_rshutdown();
-    fn php_swoole_http_server_coro_minit(module_number: c_int);
+    /// crates/phphttp's `Swoole\Coroutine\Http\Server`.
+    fn swr_v1_phphttp_server_coro_minit(
+        exception: *mut zend_class_entry,
+        short_name: bool,
+        compression: bool,
+    ) -> *mut zend_class_entry;
     fn php_swoole_websocket_server_minit(module_number: c_int);
     fn php_swoole_redis_server_minit(module_number: c_int);
     fn php_swoole_name_resolver_minit(module_number: c_int);
@@ -233,7 +238,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(http_response_minit),
         M(php_swoole_http_cookie_minit),
         M(http_server_minit),
-        M(php_swoole_http_server_coro_minit),
+        M(http_server_coro_minit),
         M(php_swoole_websocket_server_minit),
         M(php_swoole_redis_server_minit),
         M(php_swoole_name_resolver_minit),
@@ -297,6 +302,23 @@ unsafe extern "C" fn http_response_minit(_module_number: c_int) {
 unsafe extern "C" fn http_server_minit(_module_number: c_int) {
     // SAFETY: Rust's MINIT, once, after `Swoole\Server`'s.
     unsafe { swr_v1_phphttp_server_minit() };
+}
+
+/// `php_swoole_http_server_coro_minit`.
+unsafe extern "C" fn http_server_coro_minit(_module_number: c_int) {
+    let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
+    // SAFETY: MINIT registered `Swoole\Exception` first and nothing writes it now.
+    let exception = unsafe { crate::swoole_exception_ce };
+    // SAFETY: the module's globals, live from MINIT.
+    let shortname = unsafe { (*globals()).use_shortname };
+    // SAFETY: Rust's MINIT, once.
+    unsafe {
+        swr_v1_phphttp_server_coro_minit(
+            exception,
+            shortname,
+            flags & crate::constants::COMPRESSION != 0,
+        )
+    };
 }
 
 /// `php_swoole_client_coro_minit`.

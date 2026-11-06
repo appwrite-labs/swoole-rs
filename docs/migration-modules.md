@@ -54,7 +54,7 @@ Feature values come from `MODULES` in `tools/build_hybrid.py`.
 | M20 | `ossupport` | 131072 | `src/os/{async_thread,base,file,msg_queue,sendfile,unix_socket}.cc` | OS helpers and async worker pool. [Boundary](os-support-abi-v1.md). |
 | M21 | `tls` | 262144 | `src/protocol/{ssl,dtls}.cc` | TLS/DTLS setup and BIO policy; OpenSSL unchanged. [Boundary](tls-dtls-abi-v1.md). |
 | M22 | `clients` | 1048576 | `src/network/{address,client,dns}.cc`, `ext-src/swoole_{client,client_async,client_coro,name_resolver,http_client_coro}.cc` | Address parsing, resolver, clients. [Boundary](clients-resolver-abi-v1.md). |
-| M23 | `httpbindings` | 2097152 | `ext-src/swoole_http_{cookie,request,response,server_coro}.cc` | PHP HTTP Request/Response/Cookie bindings. [Boundary](http-bindings-abi-v1.md). |
+| M23 | `httpbindings` | 2097152 | `ext-src/swoole_http_cookie.cc` | PHP HTTP Request/Response/Cookie bindings. [Boundary](http-bindings-abi-v1.md). |
 | M24 | `http2` | 4194304 | `src/protocol/http2.cc`, `ext-src/swoole_http2_{server,client_coro}.cc` | HTTP/2 frame/settings/stream policy. [Boundary](http2-abi-v1.md). |
 | M25 | `ports` | 8388608 | `src/server/port.cc`, `ext-src/swoole_server_port.cc` | ListenPort options and PHP Port. [Boundary](ports-abi-v1.md). |
 | M26 | `phphelpers` | 16777216 | `ext-src/php_swoole_cxx.{cc,h}`, `ext-src/swoole_stdext.cc` | Common PHP helpers and stdext. [Boundary](phphelpers-abi-v1.md). |

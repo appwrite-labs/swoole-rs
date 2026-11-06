@@ -30,10 +30,11 @@ int swr_zend_try_facade_user_call(zval *name, uint32_t argc, zval *argv, zval *r
     return bailed;
 }
 int swr_zend_try_facade_coroutine(long (*create)(zend_fcall_info_cache *, uint32_t, zval *, zval *, uint8_t *),
-                                  zend_fcall_info_cache *cache, uint32_t argc, zval *argv, long *result) {
+                                  zend_fcall_info_cache *cache, uint32_t argc, zval *argv, zval *callable,
+                                  long *result) {
     volatile int bailed = 0;
     uint8_t raised = 0; /* read only when nothing jumped */
-    SWR_ZEND_TRY { *result = create(cache, argc, argv, NULL, &raised); }
+    SWR_ZEND_TRY { *result = create(cache, argc, argv, callable, &raised); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed || raised;
 }

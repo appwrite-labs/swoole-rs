@@ -395,7 +395,14 @@ pub unsafe fn function_call(
         let mut result: c_long = -1;
         // SAFETY: the native coroutine leaf runs inside the C trap; no Rust borrow spans a switch.
         bailed(unsafe {
-            sys::swr_zend_try_facade_coroutine(Some(create), cache, argc, argv, &raw mut result)
+            sys::swr_zend_try_facade_coroutine(
+                Some(create),
+                cache,
+                argc,
+                argv,
+                ptr::null_mut(),
+                &raw mut result,
+            )
         });
         result >= 0
     } else {

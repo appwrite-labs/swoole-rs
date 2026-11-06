@@ -13,7 +13,9 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicU32, Ordering::Relaxed},
 };
+use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
+use swoole_rs_zend::string;
 use swoole_rs_zend::{
     Class, Object, bailout, init_object,
     sys::{
@@ -140,17 +142,6 @@ pub(crate) extern "C" fn context_new(fd: i64) -> *mut Context {
 }
 
 unsafe extern "C" {
-    /// The coroutine socket's `send_all`: true once every byte is sent.
-    fn swr_http_host_socket_send(socket: *mut c_void, data: *const c_char, length: usize) -> bool;
-    fn swr_http_host_socket_sendfile(
-        socket: *mut c_void,
-        file: *mut zend_string,
-        offset: i64,
-        length: usize,
-    ) -> bool;
-    fn swr_http_host_socket_close(socket: *mut c_void) -> bool;
-    /// `php_swoole_get_socket`: a socket object's coroutine socket.
-    fn swr_http_host_socket(socket: *mut zval) -> *mut c_void;
     /// crates/phpclients' `php_swoole_socket_is_closed`.
     #[link_name = "_Z27php_swoole_socket_is_closedPK12_zval_struct"]
     fn php_swoole_socket_is_closed(socket: *const zval) -> bool;
@@ -203,8 +194,9 @@ pub(crate) fn send_raw(ctx: *mut Context, data: *const c_char, length: usize) ->
     let state = send::state(ctx);
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
-        // SAFETY: the context's live socket and `length` bytes.
-        unsafe { swr_http_host_socket_send(target, data, length) }
+        // SAFETY: the context's live socket and `length` bytes; true once
+        // every byte is sent.
+        unsafe { co::send_all(target, data, length) }.cast_unsigned() == length
     } else {
         // SAFETY: the context's live server and `length` bytes.
         unsafe { server_send(target, fd, data, length) }
@@ -260,8 +252,15 @@ pub(crate) fn sendfile(
     let state = send::state(ctx);
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
-        // SAFETY: the context's live socket and a live file name.
-        unsafe { swr_http_host_socket_sendfile(target, file, offset, length) }
+        // SAFETY: the context's live socket and a live, NUL-terminated file name.
+        unsafe {
+            co::sendfile(
+                target,
+                string::val(file).cast(),
+                offset,
+                i64::try_from(length).unwrap_or(i64::MAX),
+            )
+        }
     } else {
         // SAFETY: a live file name.
         let name = unsafe { swoole_rs_zend::string::bytes(file) };
@@ -285,7 +284,7 @@ pub(crate) fn close(ctx: *mut Context) -> bool {
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
         // SAFETY: the context's live socket.
-        unsafe { swr_http_host_socket_close(target) }
+        unsafe { co::close(target) }
     } else {
         // SAFETY: the context's live server.
         unsafe { server_methods::close(target, fd, false) }
@@ -329,7 +328,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_context_bind(
         // SAFETY: per the caller; the context takes a reference.
         unsafe { copy_zval(&raw mut state.zsocket, socket) };
         // SAFETY: per the caller.
-        state.private_data = unsafe { swr_http_host_socket(socket) };
+        state.private_data = unsafe { swoole_rs_phpclients::php_swoole_get_socket(socket) };
     } else {
         state.private_data = server;
         // SAFETY: the context's own zval; a server's context holds no socket.

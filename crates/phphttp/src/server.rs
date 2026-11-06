@@ -357,19 +357,57 @@ fn enable_coroutine(server: *mut c_void) -> bool {
     }
 }
 
+pub(crate) use swoole_rs_phphelpers::callable::Callable;
+
+/// The handle of a port's `zend::Callable *`, whose one member it is
+/// (`php_swoole_cxx.h`).
+fn port_callable(callable: *mut c_void) -> *mut Callable {
+    // SAFETY: a live `zend::Callable`.
+    unsafe { *callable.cast::<*mut Callable>() }
+}
+
+/// `zend::function::call(callable, 2, args, nullptr, coroutine)`: whether
+/// the handler was called.
+/// # Errors
+/// It bailed out.
+pub(crate) fn call_handler(
+    callable: *mut Callable,
+    args: &mut [zval; 2],
+    coroutine: bool,
+) -> Result<bool, bailout::Bailout> {
+    // SAFETY: a live handle.
+    let cache = unsafe { swoole_rs_phphelpers::callable::cache(callable) };
+    // SAFETY: a resolved cache and the two arguments; the coroutine leaf and
+    // the reporter run inside C traps.
+    let called = unsafe {
+        swoole_rs_phphelpers::function_call(
+            cache,
+            2,
+            args.as_mut_ptr(),
+            std::ptr::null_mut(),
+            coroutine,
+            swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create,
+            swoole_rs_zend::sys::swr_zend_callable_warning,
+        )
+    };
+    called.map_err(|bailout| {
+        let _relayed = bailout::relay_to_c(Err(bailout));
+        bailout::Bailout
+    })
+}
+
 /// `http_server_process_request`: the handler with the request's objects.
 fn call(ctx: *mut Context, coroutine: bool) -> Result<(), bailout::Bailout> {
     let state = state(ctx);
     let mut args = [state.request.zobject.value, state.response.zobject.value];
-    // SAFETY: the handler and the request's two objects.
-    match unsafe { swr_hsc_call(state.callback, args.as_mut_ptr(), coroutine) } {
-        -1 => return Err(bailout::Bailout),
-        0 => {
+    match call_handler(port_callable(state.callback), &mut args, coroutine) {
+        Err(bailout) => return Err(bailout),
+        Ok(false) => {
             host::notice("Swoole\\Http\\Server->onRequest handler error");
             context::send(ctx, SERVICE_UNAVAILABLE);
             context::close(ctx);
         }
-        _ => {}
+        Ok(true) => {}
     }
     Ok(())
 }
@@ -526,8 +564,6 @@ unsafe extern "C" {
         fd: i64,
         out: *mut Http2Connection,
     ) -> *mut ConnectionRecord;
-    /// `zend::function::call(callable, 2, args)`: 1 called, 0 failed, -1 bailed out.
-    fn swr_hsc_call(callable: *mut c_void, args: *mut zval, coroutine: bool) -> c_int;
     /// The HTTP/2 server's (crates/phphttp2): the static handler, a whole
     /// response and a stream reset.
     fn swr_v1_phphttp2_server_static(server: *mut c_void, ctx: *mut Context) -> bool;
@@ -608,16 +644,15 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     }
     let state = self::state(ctx);
     let mut args = [state.request.zobject.value, state.response.zobject.value];
-    // SAFETY: the handler (or null) and the request's two objects.
-    match unsafe { swr_hsc_call(state.callback, args.as_mut_ptr(), facts.coroutine) } {
-        -1 => return Err(bailout::Bailout),
-        0 => {
+    match call_handler(port_callable(state.callback), &mut args, facts.coroutine) {
+        Err(bailout) => return Err(bailout),
+        Ok(false) => {
             let stream_id = self::state(ctx).stream_id;
             // SAFETY: the stream's live context.
             unsafe { swr_v1_phphttp2_server_reset(ctx, stream_id, HTTP2_INTERNAL_ERROR) };
             host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
         }
-        _ => {}
+        Ok(true) => {}
     }
     release_objects(ctx);
     Ok(())
