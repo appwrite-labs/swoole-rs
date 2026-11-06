@@ -66,8 +66,8 @@ const SSL_GREASE: c_int = 1;
 /// `PacketLength`.
 #[repr(C)]
 pub(crate) struct PacketLength {
-    buf: *const u8,
-    buf_size: u32,
+    pub(crate) buf: *const u8,
+    pub(crate) buf_size: u32,
     header_len: u32,
 }
 

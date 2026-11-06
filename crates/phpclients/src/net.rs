@@ -14,6 +14,7 @@ use std::{
 use swoole_rs_clients::{client as state, pool, swr_v1_clients_port};
 use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_phpstubs::client;
+use swoole_rs_phpswoole::{Capability, built_with};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object,
@@ -199,18 +200,18 @@ method_table! {
     ];
 }
 
-/// MINIT, as `php_swoole_client_minit` did.
-/// # Safety
-/// Called once, at MINIT, with Swoole's exception class and a writable
-/// class-entry slot; `sockets` is `SWOOLE_SOCKETS_SUPPORT`.
+/// `Swoole\Client`, as C++ reads it (`php_swoole_client_check`); MINIT writes it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_net_minit(
-    exception: *mut zend_class_entry,
-    sockets: bool,
-    module: c_int,
-    client_class: *mut *mut zend_class_entry,
-) {
-    let methods = if sockets {
+pub static mut swoole_client_ce: *mut zend_class_entry = ptr::null_mut();
+
+/// `php_swoole_client_minit`.
+/// # Safety
+/// Called once, at MINIT, after `Swoole\Exception` is registered.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn php_swoole_client_minit(module: c_int) {
+    // SAFETY: MINIT registered `Swoole\Exception` first and nothing writes it now.
+    let exception = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
+    let methods = if built_with(Capability::Sockets) {
         METHODS.as_ptr()
     } else {
         METHODS.without(&[c"getSocket"])
@@ -262,8 +263,8 @@ pub unsafe extern "C" fn swr_v1_phpclients_net_minit(
         unsafe { register_long_constant(name, value, module) };
     }
     EXCEPTION_PARENT.store(exception, Ordering::Release);
-    // SAFETY: per the caller, a writable slot.
-    unsafe { *client_class = ce };
+    // SAFETY: MINIT, before any reader.
+    unsafe { swoole_client_ce = ce };
 }
 
 pub(crate) fn data<'a>(object: *mut zend_object) -> &'a mut Data {
@@ -662,8 +663,10 @@ fn destruct(call: &Call) {
     if !destructing(call) || this(call).conn.is_null() {
         return;
     }
-    let mut close = ClientCall::new(call.this().cast(), Op::Destruct);
-    bailed(close.run());
+    // SAFETY: a live client object; `Swoole\Client::close` with no arguments.
+    bailed(unsafe {
+        bailout::call_method(call.this(), CLIENT.entry(), b"close", ptr::null_mut(), &[])
+    });
 }
 
 /// `set(array $settings): bool`.
