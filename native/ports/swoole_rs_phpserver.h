@@ -31,8 +31,6 @@ typedef struct {
     void (*hook)(void *server, uint32_t hook);
     /* The ListenPort settings and TLS block of set(); false: return false. */
     bool (*settings)(void *port, void *property, struct _zend_array *settings);
-    /* Helper::checkOptions and the `setting` merge; true if a bailout was trapped. */
-    bool (*finish)(struct _zend_object *object, struct _zval_struct *settings, void *property);
     /* getSocket() of a bound port. */
     void (*socket)(void *port, struct _zval_struct *return_value);
 } swr_v1_phpserver_port_host;

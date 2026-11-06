@@ -13,10 +13,10 @@ use swoole_rs_ports::{
     swr_v1_ports_event,
 };
 use swoole_rs_zend::{
-    Call, Class, Object,
+    Call, Class, Object, bailout,
     string::bytes,
     sys::{
-        _zend_bailout, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
+        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
         swr_zend_string_release, swr_zval_copy, swr_zval_get_string, zend_array, zend_class_entry,
         zend_declare_property_bool, zend_declare_property_long, zend_declare_property_null,
         zend_object, zend_object_handlers, zend_read_property, zend_update_property, zval,
@@ -62,7 +62,6 @@ pub struct PortHost {
     callable_free: unsafe extern "C" fn(*mut c_void),
     hook: unsafe extern "C" fn(*mut c_void, u32),
     settings: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut zend_array) -> bool,
-    finish: unsafe extern "C" fn(*mut zend_object, *mut zval, *mut c_void) -> bool,
     socket: unsafe extern "C" fn(*mut c_void, *mut zval),
 }
 
@@ -341,6 +340,46 @@ fn get_socket(call: &Call) {
     unsafe { (host().socket)(port, call.return_value()) };
 }
 
+/// `zsetting = sw_zend_read_and_convert_property_array(scope, object, "setting")`,
+/// then `SEPARATE_ARRAY(zsetting); php_array_merge(zsetting, settings)`: the
+/// merged property.
+pub(crate) fn merge_setting(
+    scope: *mut zend_class_entry,
+    object: *mut zend_object,
+    settings: *mut zval,
+) -> Result<*mut zval, bailout::Bailout> {
+    // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
+    let mut zobject: zval = unsafe { std::mem::zeroed() };
+    // SAFETY: a borrowed view of the live object (`ZVAL_OBJ`, no reference).
+    unsafe { swoole_rs_zend::set_object(&raw mut zobject, object) };
+    // SAFETY: the object and its class, which declares `setting`.
+    let setting =
+        unsafe { swoole_rs_phphelpers::array_property_of(scope, &raw mut zobject, c"setting") }?;
+    // SAFETY: the property, now an array, and the settings array.
+    bailout::trapped(unsafe { z::swr_zend_try_array_merge(setting, settings) })?;
+    Ok(setting)
+}
+
+/// `\Swoole\Server\Helper::checkOptions($settings)` when the library is
+/// enabled, then the merge into `$this->setting`, which the property keeps.
+fn finish(
+    call: &Call,
+    settings: *mut zval,
+    property: &mut PortProperty,
+) -> Result<(), bailout::Bailout> {
+    if swoole_rs_phpswoole::enable_library() {
+        // `zval params[1] = {*zset}`: a copy without a reference.
+        // SAFETY: the live settings argument.
+        let mut params = [unsafe { settings.read() }];
+        // SAFETY: as above.
+        unsafe {
+            swoole_rs_phphelpers::named_call(br"\Swoole\Server\Helper::checkOptions", &mut params)
+        }?;
+    }
+    property.zsetting = merge_setting(PORT.entry(), call.this(), settings)?;
+    Ok(())
+}
+
 fn set(call: &Call) {
     let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
@@ -356,11 +395,7 @@ fn set(call: &Call) {
     if !unsafe { (host().settings)(data.port, property, table) } {
         return call.set_bool(false);
     }
-    // SAFETY: `$this`, the settings argument and the port's property.
-    if unsafe { (host().finish)(call.this(), settings, property) } {
-        // SAFETY: re-raise the bailout C++ trapped, from the handler, which owns nothing.
-        unsafe { _zend_bailout(c"crates/phpserver/src/port.rs".as_ptr().cast_mut(), line!()) };
-    }
+    bailout::raise(finish(call, settings, &mut data.property));
 }
 
 swoole_rs_zend::handlers! {

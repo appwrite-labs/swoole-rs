@@ -10,7 +10,7 @@ description = "PHP Swoole\\Server family classes over the zend crates"
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
 php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "swoole-rs-phpswoole?/php"]
 # Swoole\Server\Port, over the ports crate (the ports module's patch).
-port = ["dep:swoole-rs-ports"]
+port = ["dep:swoole-rs-ports", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php", "dep:swoole-rs-phpswoole"]
 # Swoole\\Server and its data classes (the process module's patch).
 server = ["port", "dep:swoole-rs-server", "dep:swoole-rs-process", "dep:swoole-rs-clients", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php", "dep:swoole-rs-ossupport", "dep:libc", "dep:swoole-rs-corebase", "dep:swoole-rs-phpswoole", "dep:swoole-rs-utilities"]
 

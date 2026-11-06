@@ -58,8 +58,6 @@ typedef struct {
     int (*create_dir)(const char *path, size_t length);
     /* SW_THREAD's bootstrap and init_arguments, in zend_try: true if it bailed out. */
     bool (*thread_options)(struct _zend_object *object, void *settings);
-    /* The primary port's set() and the `setting` merge, in zend_try: true if it bailed out. */
-    bool (*finish)(struct _zend_object *object, struct _zval_struct *settings);
 } swr_v1_phpserver_settings_host;
 
 void swr_v1_phpserver_settings_init(const swr_v1_phpserver_settings_host *table);

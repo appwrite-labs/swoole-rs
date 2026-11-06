@@ -67,8 +67,8 @@ index 7daaf6b..e5e6a26 100644
  static bool settings_thread_options(zend_object *object, void *settings) {
 @@ -1762,3 +1758,3 @@ void php_swoole_server_minit(int module_number) {
          settings_global_options, settings_dispatch_func, settings_cpu_affinity, settings_set_cpu_affinity, settings_strerror, settings_create_dir,
--        settings_msgqueue_key_valid, settings_thread_options, settings_finish,
-+        settings_thread_options, settings_finish,
+-        settings_msgqueue_key_valid, settings_thread_options,
++        settings_thread_options,
      };
 @@ -1993,3 +1989,3 @@ static void php_swoole_server_onUserWorkerStart(Server *serv, Worker *worker) {
  
