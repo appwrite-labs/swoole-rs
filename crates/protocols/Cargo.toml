@@ -8,6 +8,10 @@ publish = false
 name = "swoole_rs_protocols"
 crate-type = ["rlib", "staticlib"]
 
+[features]
+# redis::recv_packet under its upstream symbol, over the server, tls and buffer crates.
+upstream-symbols = ["dep:swoole-rs-buffer", "dep:swoole-rs-server", "dep:swoole-rs-tls"]
+
 [lints]
 workspace = true
 
@@ -16,6 +20,6 @@ libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-reactor = { path = "../reactor" }
-swoole-rs-buffer = { path = "../buffer" }
-swoole-rs-server = { path = "../server" }
-swoole-rs-tls = { path = "../tls" }
+swoole-rs-buffer = { path = "../buffer", optional = true }
+swoole-rs-server = { path = "../server", optional = true }
+swoole-rs-tls = { path = "../tls", optional = true }
