@@ -39,8 +39,7 @@ def main():
     sources = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in TARGETS}
     headers = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in ['include/swoole_proxy.h', 'include/swoole_redis.h']}
     candidate = hybrid_tree(args.archive)[0]
-    # The hybrid's PHP request parser, MQTT length function and SOCKS5 proxy are Rust; only the pinned ones are read.
-    candidates = {TARGETS[1]: (candidate / TARGETS[1]).read_text()}
+    # Only the pinned protocol bodies are read: the candidate's are Rust, which native.cc calls.
     candidate_proxy_header = (candidate / 'include/swoole_proxy.h').read_text()
     archive = args.archive.resolve(strict=True)
     local = Path(__file__).resolve().parent
@@ -48,7 +47,6 @@ def main():
               'scope': 'Actual pinned and selected protocol facade bodies. Native String/allocation/socket IO are modeled, protocol bodies unchanged. The exact original PHP request parser loop runs with modeled Zend parameters on 10000 seeded defined wires versus Rust typed events. Full Zend request/reply callers are staged, not executed here; run request.py/reply.py against actual PHP. No live network in this gate.',
               'sanitizer_scope': 'C++ ASan/UBSan; Rust not instrumented' if args.sanitize else 'none'}
     def bodies(selected, owned):
-        redis = selected[TARGETS[1]]
         socks_header = headers['include/swoole_proxy.h']
         constants = '\n'.join(line for line in socks_header.splitlines() if line.startswith('#define SW_SOCKS5'))
         socks_types = socks_header[socks_header.index('enum swSocks5State'):socks_header.index('namespace swoole {')]
@@ -61,14 +59,15 @@ def main():
         redis_constants = '#define SW_REDIS_RETURN_NIL "$-1\\r\\n"\n'
         socks = '' if owned else selected[TARGETS[2]]
         socks_body = socks and socks[socks.index('const char *Socks5Proxy::strerror'):socks.index('}  // namespace swoole')]
-        redis_body = redis[redis.index('namespace redis {') + len('namespace redis {'):redis.index('}  // namespace redis')]
+        redis = '' if owned else selected[TARGETS[1]]
+        redis_body = redis and redis[redis.index('namespace redis {') + len('namespace redis {'):redis.index('}  // namespace redis')]
         # The candidate's mqtt::get_package_length is Rust's export under the upstream symbol (native.cc).
         mqtt = '' if owned else '\nnamespace mqtt {\n' + function(selected[TARGETS[0]], 'ssize_t get_package_length(') + '\n}'
         return (constants + '\n' + socks_types + socks_body + mqtt + '\nnamespace redis {\n' +
                 redis_constants + redis_types + redis_body + '\n}\n')
     with tempfile.TemporaryDirectory(prefix='swr-protocols-native-') as directory:
         tree = Path(directory)
-        for name, selected in [('reference', sources), ('candidate', candidates)]:
+        for name, selected in [('reference', sources), ('candidate', {})]:
             value = bodies(selected, name == 'candidate')
             (tree / f'{name}.inc').write_text(value)
         (tree/'proxy-candidate.h').write_text(candidate_proxy_header)

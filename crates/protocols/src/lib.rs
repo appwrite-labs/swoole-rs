@@ -12,12 +12,14 @@ mod mqtt;
 mod owned_proxy;
 mod redis;
 mod reply;
+mod resp_recv;
 mod socks;
 pub use bus::*;
 pub use mqtt::*;
 pub use owned_proxy::*;
 pub use redis::*;
 pub use reply::*;
+pub use resp_recv::*;
 pub use socks::*;
 
 /// # Safety

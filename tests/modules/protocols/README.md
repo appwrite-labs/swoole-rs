@@ -56,9 +56,12 @@ python3 tests/modules/protocols/native.py --source /pinned/reference \
   --archive /actual/prefix/lib/libswoole_rs_ffi.a --sanitize
 ```
 
-`native.py` compiles unchanged pinned function bodies and the patched overlay
-bodies (`adapter.inc`, `native.cc`) with modeled String allocation/socket I/O and
-compares MQTT, SOCKS, RESP and receive traces. A seeded 10,000-wire RESP corpus also runs the exact original PHP
+`native.py` compiles unchanged pinned function bodies (`adapter.inc`, `native.cc`)
+with modeled String allocation/socket I/O and compares their MQTT, SOCKS, RESP and
+receive traces with the build's Rust: the upstream-symbol exports, the hybrid
+`Socks5Proxy` header over them, and `swr_v1_resp_recv` over the modeled socket.
+The build has no `redis::format`/`parse`; `redis_reply.inc` gives them over Rust's
+codec to this gate and to `core.py`, whose `redis.*` GTests still call them. A seeded 10,000-wire RESP corpus also runs the exact original PHP
 request-parser loop with modeled Zend parameters against Rust typed events. C++
 ASan/UBSan does not instrument Rust. Failing cases print trial/seed.
 

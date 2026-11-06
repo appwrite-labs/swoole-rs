@@ -62,6 +62,17 @@ int32_t swr_v1_resp_receive_range(const uint8_t *, size_t length, size_t capacit
                                 swr_resp_request *, uint8_t *set_offset, uint8_t *range);
 /* After receive action 1: new buffer size, or 0 to keep reading without growth. */
 size_t swr_v1_resp_extend_size(size_t length, size_t size, size_t maximum, size_t page);
+/* redis::recv_packet's loop (crates/protocols/src/resp_recv.rs) over the caller's
+ * effects. buffer is a swoole::String's head; *request is null or from sw_malloc.
+ * recv: bytes received, -1 to close (SW_ERR), -2 to stop (SW_OK).
+ * dispatch: onPackage of the first length bytes: <0 failed, 1 socket removed, else 0. */
+typedef struct {
+    void *context;
+    ssize_t (*recv)(void *context, uint8_t *at, size_t n);
+    void (*extend)(void *context, size_t size);
+    int (*dispatch)(void *context, size_t length);
+} swr_resp_io;
+int swr_v1_resp_recv(const swr_resp_io *, void *buffer, swr_resp_request **request, uint32_t maximum, size_t page);
 /* MessageBus (crates/protocols/src/bus.rs). The bus owns its packets; the
  * caller allocates them (the allocator may bail out) and the receive buffer. */
 typedef struct swr_bus swr_bus;

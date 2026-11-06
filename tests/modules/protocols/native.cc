@@ -60,6 +60,32 @@ ssize_t get_package_length(const Protocol *, network::Socket *, PacketLength *pl
     return ::swoole::mqtt::get_package_length(nullptr, nullptr, reinterpret_cast<::swoole::PacketLength *>(pl));
 }
 }
+namespace redis {
+#include "redis_reply.inc"
+// Rust's receive loop (crates/protocols/src/resp_recv.rs) over this model's socket,
+// with the effects production's export performs on the real one.
+int recv_packet(Protocol *protocol, Connection *conn, String *buffer) {
+    struct Io { Protocol *protocol; Connection *conn; String *buffer; } io{protocol, conn, buffer};
+    const swr_resp_io effects{&io,
+        [](void *context, uint8_t *at, size_t n) -> ssize_t {
+            auto *c = static_cast<Io *>(context)->conn;
+            const ssize_t received = c->socket->recv(reinterpret_cast<char *>(at), n, 0);
+            if (received >= 0) return received;
+            return c->socket->catch_read_error(errno) == SW_CLOSE ? -1 : -2;
+        },
+        [](void *context, size_t size) { static_cast<Io *>(context)->buffer->extend(size); },
+        [](void *context, size_t length) -> int {
+            auto *x = static_cast<Io *>(context);
+            RecvData data{};
+            data.info.len = length;
+            data.data = x->buffer->str;
+            if (x->protocol->onPackage(x->protocol, x->conn->socket, &data) < 0) return -1;
+            return x->conn->socket->removed ? 1 : 0;
+        }};
+    return swr_v1_resp_recv(&effects, buffer, reinterpret_cast<swr_resp_request **>(&conn->object),
+                            protocol->package_max_length, swoole_pagesize());
+}
+}
 }
 // Execute the exact original PHP parser loop with only Zend allocation modeled.
 // Actual Zend callbacks, yielding and allocation are covered by request.py.
