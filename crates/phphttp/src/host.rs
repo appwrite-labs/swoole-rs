@@ -1,13 +1,9 @@
-//! What the methods ask of `swoole::http::Context`, implemented in ext-src
-//! (`native/httpbindings/swoole_rs_httpbindings.h`) until the context moves to
-//! Rust. `Context` is that object, opaque here.
+//! What the methods share: a `swoole::http::Context`'s state bits and fd, and
+//! Swoole's error reporting. `Context` is that object, opaque here.
 use std::cmp::Ordering;
-use std::ffi::{CString, c_char, c_int, c_void};
+use std::ffi::{CString, c_int, c_void};
 use swoole_rs_corebase::log;
-use swoole_rs_zend::{
-    bailout,
-    sys::{zend_long, zend_string, zval},
-};
+use swoole_rs_zend::{E_WARNING, bailout, sys::zend_long};
 
 pub(crate) type Context = c_void;
 
@@ -37,30 +33,6 @@ pub(crate) const SERVER_IS_NOT_REGULAR_FILE: c_int = 9013;
 /// `SW_HTTP_HEADER_KEY_SIZE`.
 pub(crate) const HEADER_KEY_SIZE: usize = 128;
 
-unsafe extern "C" {
-    pub(crate) fn swr_http_host_error(code: c_int, always: c_int, message: *const c_char);
-    pub(crate) fn swr_http_host_after(context: *mut Context) -> bool;
-    pub(crate) fn swr_http_host_http2(
-        context: *mut Context,
-        op: c_int,
-        data: *mut zend_string,
-        offset: i64,
-        length: usize,
-    ) -> c_int;
-    pub(crate) fn swr_http_host_file_type(context: *mut Context, file: *mut zend_string);
-    pub(crate) fn swr_http_host_redirect(
-        context: *mut Context,
-        url: *mut zval,
-        code: *mut zval,
-        return_value: *mut zval,
-    ) -> bool;
-    pub(crate) fn swr_http_host_goaway(
-        context: *mut Context,
-        code: zend_long,
-        debug: *mut zend_string,
-    ) -> bool;
-}
-
 /// Re-raise a bailout a host call trapped. Host calls that can run user code
 /// (a header value's `__toString`, `exit()` in it) trap a bailout in C++ and
 /// report it; the handler finishes, then raises it as its last step
@@ -72,11 +44,7 @@ pub(crate) fn raise(bailed: bool) {
     bailout::finish();
 }
 
-/// `swoole_set_last_error(code)`.
-pub(crate) fn set_last_error(code: c_int) {
-    // SAFETY: no message, so only the thread's last error changes.
-    unsafe { swr_http_host_error(code, 0, std::ptr::null()) };
-}
+pub(crate) use swoole_rs_corebase::log::set_last_error;
 
 /// `php_swoole_error(E_WARNING, ...)`: a runtime notice, shown when Swoole's
 /// `display_errors` is on.
@@ -96,11 +64,15 @@ pub(crate) fn report(code: c_int, always: bool, message: impl Into<Vec<u8>>) {
     if let Some(nul) = message.iter().position(|&byte| byte == 0) {
         message.truncate(nul);
     }
-    let message = CString::new(message).unwrap_or_default();
-    // SAFETY: C++'s reporter, printing the message through "%s".
-    bailout::defer(unsafe {
-        bailout::report_code(swr_http_host_error, code, c_int::from(always), &message)
-    });
+    if bailout::pending() {
+        return;
+    }
+    set_last_error(code);
+    if always || swoole_rs_phpswoole::display_errors() {
+        let message = CString::new(message).unwrap_or_default();
+        // SAFETY: a warning, printed through "%s".
+        bailout::defer(unsafe { swoole_rs_zend::php_error(E_WARNING, &message) });
+    }
 }
 
 /// Swoole's log line as `func` would print it: `swoole_error_log(level, error)`

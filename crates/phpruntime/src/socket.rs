@@ -995,6 +995,14 @@ pub mod co {
         unsafe { (native().io)(socket, Io::SendAll as c_int, data.cast_mut(), length) }
     }
 
+    /// `send(data, length)`.
+    /// # Safety
+    /// `socket` is live and `data` holds `length` readable bytes.
+    pub unsafe fn send(socket: Socket, data: *const c_char, length: usize) -> isize {
+        // SAFETY: per the caller; a send only reads the buffer.
+        unsafe { (native().io)(socket, Io::Send as c_int, data.cast_mut(), length) }
+    }
+
     /// `recv(data, length)`.
     /// # Safety
     /// `socket` is live and `data` holds `length` writable bytes.

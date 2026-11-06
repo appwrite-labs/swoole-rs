@@ -14,6 +14,8 @@ use std::{
     ptr,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
+use swoole_rs_buffer::string::CppString;
+use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_websocket::{
     DecodedFrame, INVALID_CONTROL, swr_v1_ws_control_invalid, swr_v1_ws_decode, swr_v1_ws_encode,
@@ -159,13 +161,6 @@ unsafe extern "C" {
     /// `conn->websocket_compression` of a verified connection.
     fn swr_ws_host_set_compression(server: *mut Server, fd: zend_long, compression: bool);
     fn swr_ws_host_co_protocol(context: *mut Context);
-    fn swr_ws_host_set_header(
-        context: *mut Context,
-        key: *const c_char,
-        key_length: usize,
-        value: *const c_char,
-        value_length: usize,
-    ) -> bool;
 }
 
 method_table! {
@@ -683,7 +678,7 @@ fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags:
 }
 
 /// A zval holding `string`'s reference.
-fn zval_of(string: *mut zend_string) -> zval {
+pub(crate) fn zval_of(string: *mut zend_string) -> zval {
     // SAFETY: a zval is plain data.
     let mut out: zval = unsafe { std::mem::zeroed() };
     // SAFETY: an empty slot takes the reference.
@@ -1092,17 +1087,8 @@ pub(crate) fn upgrading(server: *mut c_void, fd: zend_long) {
 
 /// Set a response header as `Context::set_header(..., false)`.
 fn set_header(context: *mut Context, key: &[u8], value: &[u8]) -> Result<(), bailout::Bailout> {
-    // SAFETY: a live context; C++ copies both and traps a bailout.
-    let bailed = unsafe {
-        swr_ws_host_set_header(
-            context,
-            key.as_ptr().cast(),
-            key.len(),
-            value.as_ptr().cast(),
-            value.len(),
-        )
-    };
-    if bailed {
+    crate::response::set_header_bytes(context, key, value);
+    if bailout::pending() {
         Err(bailout::Bailout)
     } else {
         Ok(())
@@ -1382,16 +1368,25 @@ pub(crate) const SETTING_COMPRESSION: u8 = 1 << 4;
 /// `SW_WEBSOCKET_DEFAULT_BUFFER`.
 const DEFAULT_BUFFER: usize = 4096;
 
-// The coroutine socket, C++'s.
-unsafe extern "C" {
-    fn swr_ws_host_sock_recv(
-        sock: *mut c_void,
-        timeout: f64,
-        data: *mut *mut u8,
-        length: *mut usize,
-    ) -> isize;
-    fn swr_ws_host_sock_send(sock: *mut c_void, data: *const c_char, length: usize);
-    fn swr_ws_host_sock_fd(sock: *mut c_void) -> c_int;
+/// `sock->recv_packet(timeout)` on a coroutine socket, with the packet: its
+/// read buffer's bytes.
+fn sock_recv(sock: *mut c_void, timeout: f64) -> (isize, *mut u8, usize) {
+    // SAFETY: a live `SocketImpl *`, in a coroutine.
+    let received = unsafe { co::recv_packet(sock, timeout) };
+    if received <= 0 {
+        return (received, ptr::null_mut(), 0);
+    }
+    // SAFETY: as above.
+    let buffer = unsafe { co::record(sock) }.read_buffer.cast::<CppString>();
+    // SAFETY: a packet read leaves it in the socket's read buffer.
+    let buffer = unsafe { &*buffer };
+    (received, buffer.str, buffer.length)
+}
+
+/// `sock->get_fd()`.
+pub(crate) fn sock_fd(sock: *mut c_void) -> c_int {
+    // SAFETY: a live `SocketImpl *`.
+    unsafe { co::record(sock) }.sock_fd
 }
 
 /// A message being assembled from fragments: its payload so far, and the
@@ -1415,7 +1410,7 @@ fn reply(settings: u32, sock: *mut c_void, opcode: u8, payload: &[u8]) {
     if let Some(frame) = encode(payload, opcode, flags) {
         let frame = frame.bytes();
         // SAFETY: the live socket and the encoded frame.
-        unsafe { swr_ws_host_sock_send(sock, frame.as_ptr().cast(), frame.len()) };
+        unsafe { co::send(sock, frame.as_ptr().cast(), frame.len()) };
     }
 }
 
@@ -1424,8 +1419,7 @@ fn deliver(return_value: *mut zval, sock: *mut c_void, opcode: u8, payload: &mut
     construct(return_value, zend_long::from(opcode), payload, flags);
     // SAFETY: the frame took its own reference.
     unsafe { zval_ptr_dtor(payload) };
-    // SAFETY: the live socket.
-    let fd = unsafe { swr_ws_host_sock_fd(sock) };
+    let fd = sock_fd(sock);
     // SAFETY: the frame just created.
     let object = unsafe { obj_of(return_value) };
     // SAFETY: a live Frame, which declares `fd`.
@@ -1477,11 +1471,7 @@ pub(crate) fn recv(
 ) {
     let func = c"websocket::recv_frame";
     loop {
-        let mut data = ptr::null_mut();
-        let mut length = 0;
-        // SAFETY: the live socket and local outputs.
-        let received =
-            unsafe { swr_ws_host_sock_recv(sock, timeout, &raw mut data, &raw mut length) };
+        let (received, data, length) = sock_recv(sock, timeout);
         if received < 0 {
             set_type(return_value, IS_FALSE);
             return;

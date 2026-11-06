@@ -119,13 +119,6 @@ unsafe extern "C" {
     fn swr_h2s_query(array: *mut zval, query: *const c_char, length: usize);
     fn swr_h2s_path(ctx: *mut c_void, path: *const c_char, length: usize);
     fn swr_h2s_multipart(ctx: *mut c_void, value: *const c_char, length: usize) -> bool;
-    fn swr_h2s_set_header(
-        ctx: *mut c_void,
-        name: *const c_char,
-        name_length: usize,
-        value: *const c_char,
-        length: usize,
-    );
     fn swr_h2s_in_coroutine() -> bool;
     fn swr_h2s_error(code: c_int, always: c_int, message: *const c_char);
 }
@@ -907,7 +900,9 @@ pub(crate) fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
     }
 }
 
-/// `http2_server_respond`: `length` body bytes (null at 0).
+/// `http2_server_respond`: `length` body bytes (null at 0). Like the
+/// response's other operations (crates/phphttp), it leaves a bailout pending
+/// for its Rust caller.
 /// # Safety
 /// `ctx` is a live HTTP/2 stream context and `data` covers `length` bytes.
 #[unsafe(no_mangle)]
@@ -916,9 +911,7 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_respond(
     data: *const c_char,
     length: usize,
 ) -> bool {
-    let done = respond(ctx, bytes(data, length));
-    bailout::finish();
-    done
+    respond(ctx, bytes(data, length))
 }
 
 /// `swoole_http2_server_write`: a chunk, the header first.
@@ -930,9 +923,7 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_write(
     data: *const c_char,
     length: usize,
 ) -> bool {
-    let done = write(ctx, bytes(data, length));
-    bailout::finish();
-    done
+    write(ctx, bytes(data, length))
 }
 
 fn write(ctx: *mut c_void, chunk: &[u8]) -> bool {
@@ -967,16 +958,7 @@ pub(crate) fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -
     // SAFETY: a live table.
     let present = unsafe { zend_hash_str_find(table, c"content-type".as_ptr(), 12) };
     if present.is_null() {
-        // SAFETY: a live context; C++ copies both.
-        unsafe {
-            swr_h2s_set_header(
-                ctx,
-                c"content-type".as_ptr(),
-                12,
-                content_type.as_ptr().cast(),
-                content_type.len(),
-            );
-        };
+        swoole_rs_phphttp::set_header_bytes(ctx, b"content-type", content_type);
     }
     let body = Body {
         data: ptr::null(),

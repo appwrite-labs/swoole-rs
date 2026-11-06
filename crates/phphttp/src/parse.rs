@@ -271,10 +271,8 @@ pub(crate) enum Property {
 }
 
 /// MINIT: intern the keys and find the array properties' slots.
-/// # Safety
 /// Called once at MINIT, after `Swoole\Http\Request` is registered.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_parse_minit(codecs: u32) {
+pub(crate) fn minit(codecs: u32) {
     CAPABILITIES.store(codecs, Relaxed);
     for (slot, name) in KEYS.iter().zip(KEY_NAMES) {
         // SAFETY: MINIT, so the string is interned permanently.
