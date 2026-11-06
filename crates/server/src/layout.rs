@@ -220,6 +220,8 @@ const RECORD_6_OFFSETS: &[usize] = &[
     offset_of!(crate::shared::PortCounters, total_send_bytes),
 ];
 
+const RECORD_7_OFFSETS: &[usize] = &[0, size_of::<usize>(), 2 * size_of::<usize>()];
+
 /// Checks the native layout against its canonical Rust record.
 ///
 /// # Safety
@@ -276,6 +278,12 @@ pub(crate) unsafe extern "C" fn swr_v1_server_record_layout(
             size == size_of::<Record>()
                 && alignment == align_of::<Record>()
                 && actual == RECORD_6_OFFSETS
+        }
+        7 => {
+            type Record = crate::callbacks::ServerCallbacks;
+            size == size_of::<Record>()
+                && alignment == align_of::<Record>()
+                && actual == RECORD_7_OFFSETS
         }
         _ => false,
     }

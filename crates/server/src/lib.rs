@@ -19,6 +19,7 @@ pub use commands::{
 
 mod admin;
 mod base_factory;
+mod callbacks;
 mod commands;
 mod config;
 mod conn_io;
@@ -56,6 +57,7 @@ pub use shared::{
     swr_v1_server_shared_init,
 };
 
+pub use callbacks::swr_v1_server_callbacks_get;
 pub use config::{ServerConfig, swr_v1_server_config_get, swr_v1_server_config_init};
 
 pub use state::{
@@ -171,6 +173,10 @@ impl<C: NativeCall> Host for Native<C> {
             }
             // SAFETY: the same call lends synchronized shared records, without holding callbacks.
             if let Some(value) = unsafe { shared::native_fact(self.state, op, arg) } {
+                return Ok(value);
+            }
+            // SAFETY: as above; a slot is read or cleared, never called.
+            if let Some(value) = callbacks::native_fact(unsafe { &*self.state }, op, arg) {
                 return Ok(value);
             }
         }

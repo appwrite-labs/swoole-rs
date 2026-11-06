@@ -41,6 +41,8 @@ pub struct ServerState {
     /// `Server::ports`, published to `ServerTables::ports` on each push.
     /// The ports are native's to delete, in `~Server`.
     ports: std::sync::Mutex<Vec<AtomicPtr<core::ffi::c_void>>>,
+    /// The on* members and `dispatch_func` (`callbacks.rs`).
+    pub(crate) callbacks: crate::callbacks::ServerCallbacks,
 }
 
 impl Default for ServerState {
@@ -59,6 +61,7 @@ impl ServerState {
             static_config: std::sync::OnceLock::new(),
             commands: std::sync::Mutex::new(crate::commands::Commands::new()),
             ports: std::sync::Mutex::new(Vec::new()),
+            callbacks: crate::callbacks::ServerCallbacks::new(),
         }
     }
 
