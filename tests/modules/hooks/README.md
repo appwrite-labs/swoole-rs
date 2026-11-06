@@ -46,6 +46,12 @@ reported UNSUPPORTED when the config does not enable `SW_USE_IOURING`.
 upstream's own `core-tests/src/coroutine/{hook,socket,system}.cpp` GoogleTests
 unchanged on the reference and on the hybrid tree.
 
+`core-tests/src/memory/lru_cache.cpp` no longer builds (`include/swoole_lru_cache.h`
+is deleted). Its TESTs are Rust tests over the DNS cache's `Lru` in
+`crates/hooks/src/dns_cache.rs`, with the same inputs and expected values:
+`lru_cache.basic` is `lru_cache_basic`, `lru_cache.memory_free` is
+`lru_cache_memory_free` and `lru_cache.lru_kick` is `lru_cache_lru_kick`.
+
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Known failures

@@ -7,8 +7,8 @@ use std::ffi::c_void;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-struct Entry {
-    address: Vec<u8>,
+struct Entry<T> {
+    value: T,
     /// Unix time it expires at, or 0 for never.
     expires: i64,
     /// Its place in `Lru::order`.
@@ -16,15 +16,15 @@ struct Entry {
 }
 
 /// Upstream's `LRUCache`: expired entries keep their slot until replaced or evicted.
-struct Lru {
+struct Lru<T> {
     capacity: usize,
-    entries: HashMap<Vec<u8>, Entry>,
+    entries: HashMap<Vec<u8>, Entry<T>>,
     /// Least recently used first.
     order: BTreeMap<u64, Vec<u8>>,
     clock: u64,
 }
 
-impl Lru {
+impl<T> Lru<T> {
     fn new(capacity: usize) -> Self {
         Self {
             capacity,
@@ -43,20 +43,19 @@ impl Lru {
         }
     }
 
-    fn get(&mut self, key: &[u8], now: i64) -> Option<Vec<u8>> {
+    fn get(&mut self, key: &[u8], now: i64) -> Option<&T> {
         let entry = self.entries.get(key)?;
         if entry.expires < now && entry.expires > 0 {
             return None;
         }
-        let address = entry.address.clone();
         self.touch(key);
-        Some(address)
+        self.entries.get(key).map(|entry| &entry.value)
     }
 
-    fn set(&mut self, key: &[u8], address: &[u8], expire: i64, now: i64) {
+    fn set(&mut self, key: &[u8], value: T, expire: i64, now: i64) {
         let expires = if expire <= 0 { 0 } else { now + expire };
         if let Some(entry) = self.entries.get_mut(key) {
-            entry.address = address.to_vec();
+            entry.value = value;
             entry.expires = expires;
         } else {
             if self.entries.len() == self.capacity
@@ -65,13 +64,20 @@ impl Lru {
                 self.entries.remove(&oldest);
             }
             let entry = Entry {
-                address: address.to_vec(),
+                value,
                 expires,
                 used: 0,
             };
             self.entries.insert(key.to_vec(), entry);
         }
         self.touch(key);
+    }
+
+    #[cfg(test)]
+    fn del(&mut self, key: &[u8]) {
+        if let Some(entry) = self.entries.remove(key) {
+            self.order.remove(&entry.used);
+        }
     }
 
     fn clear(&mut self) {
@@ -83,7 +89,7 @@ impl Lru {
 struct Cache {
     capacity: usize,
     expire: i64,
-    lru: Option<Lru>,
+    lru: Option<Lru<Vec<u8>>>,
     hits: usize,
     misses: usize,
 }
@@ -188,7 +194,9 @@ pub unsafe extern "C" fn swr_v1_hook_dns_cache_get(
             return false;
         };
         // SAFETY: the caller's precondition.
-        let found = lru.get(&unsafe { key(domain, name, length) }, now());
+        let found = lru
+            .get(&unsafe { key(domain, name, length) }, now())
+            .cloned();
         if found.is_some() {
             cache.hits += 1;
         } else {
@@ -229,7 +237,7 @@ pub unsafe extern "C" fn swr_v1_hook_dns_cache_set(
     // SAFETY: the caller's precondition.
     lru.set(
         &unsafe { key(domain, name, length) },
-        address,
+        address.to_vec(),
         expire,
         now(),
     );
@@ -244,20 +252,110 @@ mod tests {
         let mut lru = Lru::new(2);
         lru.set(b"a", b"1", 0, 100);
         lru.set(b"b", b"2", 10, 100);
-        assert_eq!(lru.get(b"a", 105), Some(b"1".to_vec()));
+        assert_eq!(lru.get(b"a", 105), Some(&b"1"));
         lru.set(b"c", b"3", 0, 105);
         assert_eq!(lru.get(b"b", 105), None, "b was least recently used");
-        assert_eq!(lru.get(b"c", 105), Some(b"3".to_vec()));
+        assert_eq!(lru.get(b"c", 105), Some(&b"3"));
         lru.set(b"d", b"4", 1, 100);
-        assert_eq!(
-            lru.get(b"d", 101),
-            Some(b"4".to_vec()),
-            "expiry is exclusive"
-        );
+        assert_eq!(lru.get(b"d", 101), Some(&b"4"), "expiry is exclusive");
         assert_eq!(lru.get(b"d", 102), None);
         lru.set(b"d", b"5", 0, 102);
-        assert_eq!(lru.get(b"d", 999), Some(b"5".to_vec()));
+        assert_eq!(lru.get(b"d", 999), Some(&b"5"));
         assert_eq!(lru.entries.len(), 2);
+    }
+
+    // Upstream's core-tests/src/memory/lru_cache.cpp, one test per TEST: `shared_ptr`
+    // is `Rc`, pointer identity is `Rc::ptr_eq`, and `lru_cache_test_class`'s
+    // destructor counter is `Counted`'s. Every `set` there has no expiry, so `now` is 0.
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct Counted(Rc<Cell<usize>>);
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    fn same<T>(found: Option<&Rc<T>>, value: &Rc<T>) -> bool {
+        found.is_some_and(|found| Rc::ptr_eq(found, value))
+    }
+
+    #[test]
+    fn lru_cache_basic() {
+        let mut cache = Lru::new(2);
+        let val = Rc::new(String::from("hello"));
+        let val1 = Rc::new(String::from("hello1"));
+
+        cache.set(b"test", Rc::clone(&val), 0, 0);
+        assert!(same(cache.get(b"test", 0), &val));
+
+        cache.set(b"test", Rc::clone(&val1), 0, 0);
+        assert!(same(cache.get(b"test", 0), &val1));
+
+        cache.del(b"test");
+        assert!(cache.get(b"test", 0).is_none());
+
+        cache.set(b"test", Rc::clone(&val), 0, 0);
+        assert!(same(cache.get(b"test", 0), &val));
+
+        cache.clear();
+        assert!(cache.get(b"test", 0).is_none());
+    }
+
+    #[test]
+    fn lru_cache_memory_free() {
+        let dtor_num = Rc::new(Cell::new(0));
+        let mut cache = Lru::new(2);
+        let val = Rc::new(Counted(Rc::clone(&dtor_num)));
+        cache.set(b"test", Rc::clone(&val), 0, 0);
+        assert!(same(cache.get(b"test", 0), &val));
+        drop(val);
+        assert_eq!(dtor_num.get(), 0);
+        cache.clear();
+        assert_eq!(dtor_num.get(), 1);
+    }
+
+    #[test]
+    fn lru_cache_lru_kick() {
+        let dtor_num = Rc::new(Cell::new(0));
+        let counted = || Rc::new(Counted(Rc::clone(&dtor_num)));
+        let mut cache = Lru::new(2);
+        let val = counted();
+        let val1 = counted();
+        let val2 = counted();
+        let val3 = counted();
+
+        cache.set(b"test", Rc::clone(&val), 0, 0);
+        assert!(same(cache.get(b"test", 0), &val));
+        drop(val);
+        assert_eq!(dtor_num.get(), 0);
+
+        cache.set(b"test1", Rc::clone(&val1), 0, 0);
+        assert!(same(cache.get(b"test1", 0), &val1));
+        drop(val1);
+        assert_eq!(dtor_num.get(), 0);
+
+        cache.set(b"test2", Rc::clone(&val2), 0, 0);
+        assert!(same(cache.get(b"test2", 0), &val2));
+        drop(val2);
+        assert_eq!(dtor_num.get(), 1);
+        assert!(cache.get(b"test", 0).is_none());
+
+        let val4 = counted();
+        cache.set(b"test1", Rc::clone(&val4), 0, 0); // update test1 and will del test2
+        assert!(same(cache.get(b"test1", 0), &val4));
+        assert_eq!(dtor_num.get(), 2);
+
+        cache.set(b"test3", Rc::clone(&val3), 0, 0);
+        assert!(same(cache.get(b"test3", 0), &val3));
+        drop(val3);
+        assert_eq!(dtor_num.get(), 3);
+        assert!(cache.get(b"test2", 0).is_none());
+
+        cache.clear();
+        assert_eq!(dtor_num.get(), 4);
     }
 
     unsafe extern "C" fn assign(out: *mut c_void, address: *const u8, length: usize) {
