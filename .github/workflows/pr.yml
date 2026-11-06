@@ -98,8 +98,6 @@ jobs:
           save-if: false
       - run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
       - uses: ./.github/actions/install
-        with:
-          packages: libssh2-1-dev
       - id: upstream
         uses: actions/cache/restore@v4
         with:
