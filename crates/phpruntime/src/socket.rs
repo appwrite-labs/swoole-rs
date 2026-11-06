@@ -77,6 +77,7 @@ struct SocketOps {
         unsafe extern "C" fn(*mut c_void, *mut c_void),
         *mut c_void,
     ),
+    ssl_verify: unsafe extern "C" fn(*mut c_void, bool) -> bool,
 }
 
 unsafe extern "C" {
@@ -670,6 +671,31 @@ pub mod co {
         // SAFETY: as above.
         unsafe { (native().ssl_encrypt)(socket) };
         true
+    }
+
+    /// `ssl_verify(allow_self_signed)`.
+    /// # Safety
+    /// `socket` is live and has TLS.
+    pub unsafe fn ssl_verify(socket: Socket, allow_self_signed: bool) -> bool {
+        // SAFETY: per the caller.
+        unsafe { (native().ssl_verify)(socket, allow_self_signed) }
+    }
+
+    /// `set_timeout(timeout, kind)`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn set_timeout(socket: Socket, timeout: f64, kind: c_int) {
+        // SAFETY: per the caller; the member is not virtual.
+        unsafe { socket_members::set_timeout(socket, timeout, kind) };
+    }
+
+    /// `get_timeout(kind)`.
+    /// # Safety
+    /// `socket` is live.
+    #[must_use]
+    pub unsafe fn get_timeout(socket: Socket, kind: c_int) -> f64 {
+        // SAFETY: per the caller; the member is not virtual.
+        unsafe { socket_members::get_timeout(socket, kind) }
     }
 
     /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.

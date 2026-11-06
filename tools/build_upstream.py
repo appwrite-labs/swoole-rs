@@ -91,6 +91,9 @@ def build_extension(source, log_path, args, extra=(), *, incremental=False, timi
     require_build_space(source)
     configure, env = extension_configuration(args, extra)
     env = compiler_cache_environment(args, env, log_path)
+    if incremental and any(not Path(name).is_file() for name in re.findall(
+            r'^\S+\.lo: (\S+)$', (source / 'Makefile').read_text(), re.MULTILINE)):
+        incremental = False  # a source left the build: configure finds the files again
     if incremental:
         for descriptor in source.rglob('*.lo'):
             text = descriptor.read_text(errors='replace')

@@ -125,6 +125,7 @@ struct swr_v1_runtime_socket_ops {
                      size_t *size);
     /* set_dtor: hook(arg, socket) runs once as the socket is destroyed. */
     void (*close_hook)(void *socket, void (*hook)(void *arg, void *socket), void *arg);
+    bool (*ssl_verify)(void *socket, bool allow_self_signed);
 };
 extern const struct swr_v1_runtime_socket_ops swr_v1_runtime_socket;
 #ifdef __cplusplus
