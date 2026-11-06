@@ -32,29 +32,6 @@ Compile and declaration gates:
 - `declarations.py --archive A --report R`: every `swr_v1_reactor_*`/`swr_v1_stream_*` declaration in the header is defined in the archive.
 
 
-## Production consumer
-
-`production_supported.py` loads the real Native and selected `swoole.so` builds,
-compiles a small PHP addon (`production_supported.cc`) against each build's
-reconstructed headers, and runs the matching `production_*.php` fixture under
-both engines:
-
-    python3 tests/modules/reactor/production_supported.py --source target/upstream/src \
-        --source-ref HEAD --engine hybrid=SELECTED/swoole.so --engine upstream=NATIVE/swoole.so \
-        --build-manifest SELECTED/build-manifest.json --archive SELECTED/libswoole_rs_ffi.a \
-        --selected-export SELECTED/export.json --native-export NATIVE/export.json \
-        --require-batch --output OUT.json
-
-Profiles: default (readiness over AF_UNIX socketpairs), `--callbacks`,
-`--builtins`, `--socket-output`, `--blocking`. `--require-owned-defer` (with `--builtins`)
-checks the Rust-owned storage imports and origins against the Native control; `--require-typed-buffer`
-refuses a selected build whose source predates the required Rust code.
-
-Known failure: the original broad production profile failed on Native kqueue (a
-missing WRITE filter deletion warned, and its assertions assumed poll ordering
-and ONCE across separate kqueue records). The supported profile covers
-single-filter kqueue records only.
-
 ## Unit tests
 
     cd tests/modules/reactor && python3 -m unittest test_*.py

@@ -606,7 +606,7 @@ mod tests {
     }
     // The 53 ordinary compositions from the old output.cc source-body facade.
     // Call the shipped Rust policies directly; the native buffer/request effects
-    // are scripted here, while production_supported checks the real C++ binding.
+    // are scripted here; the PHPT corpus and reactor-native-originals run the real binding.
     #[test]
     fn ordinary_data_positive_matrix() {
         let data = b"abcdef\0ghijklmnop";

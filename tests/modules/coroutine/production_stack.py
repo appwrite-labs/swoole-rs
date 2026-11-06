@@ -56,7 +56,8 @@ try:
             identity['patch_proof']=apply_patch_verified(mirror,patch,entry['upstream_paths'],entry['sha256'])
         target=mirror/'actual-context.inc';target.write_bytes(original.read_bytes())
         addon=work/(label+'-markers.so')
-        command=['c++','-std=c++17','-O2','-fPIC','-shared','-fvisibility=hidden','-DHAVE_CONFIG_H','-DSW_CONTEXT_DETECT_STACK_USAGE',*shlex.split(subprocess.check_output([a.php_config,'--includes'],text=True)),*shlex.split(subprocess.check_output(['pkg-config','--cflags','openssl'],text=True)),'-I'+str(mirror/'include'),'-I'+str(mirror),cpp,'-o',addon]
+        # SWOOLE_RS_COROUTINE: the addon's own switch to report the Rust marker's image.
+        command=['c++','-std=c++17','-O2','-fPIC','-shared','-fvisibility=hidden','-DHAVE_CONFIG_H',*(['-DSWOOLE_RS_COROUTINE'] if label=='selected' else []),'-DSW_CONTEXT_DETECT_STACK_USAGE',*shlex.split(subprocess.check_output([a.php_config,'--includes'],text=True)),*shlex.split(subprocess.check_output(['pkg-config','--cflags','openssl'],text=True)),'-I'+str(mirror/'include'),'-I'+str(mirror),cpp,'-o',addon]
         if sys.platform=='darwin':
             command+=['-undefined','dynamic_lookup']
         else:

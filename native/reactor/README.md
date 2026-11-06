@@ -44,7 +44,6 @@ Server callers use the typed Rust Buffer queue ([output.md](output.md)).
 - [socket-io.md](socket-io.md): the Rust-owned IOVector.
 - [output.md](output.md): Socket output queue progression, writable/drain,
   `Reactor::write_func`, typed server Buffer consumers.
-- [production.md](production.md): loaded-PHP consumer profiles.
 
 ## Checks
 

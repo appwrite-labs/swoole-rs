@@ -422,25 +422,6 @@ class Lanes(unittest.TestCase):
         self.assertEqual(build_alias('rust', '-halfclose-stdext'), 'rust-halfclose-stdext')
         self.assertEqual(build_alias('upstream', dev=True), 'dev-upstream')
 
-    def test_reactor_always_runs_owned_storage_gates(self):
-        from itertools import product
-        variants = set()
-        for repair, stdext in product([False, True], repeat=2):
-            args = SimpleNamespace(lane='integrate', module=['reactor'], all_modules=False,
-                                   php='php', php_extension=[], jobs=2, test=None, case=None,
-                                   benchmark=False, compare=False, stdext=stdext, fix_halfclose=repair)
-            commands = dict(dev.plan(args, ROOT / 'target/reports/owned-config'))
-            self.assertNotIn('-owned', ' '.join(map(str, commands['build'])))
-            for phase, flags in [('reactor-production-blocking', ['--blocking']),
-                                 ('reactor-production-owned-defer', ['--builtins', '--require-owned-defer', '--require-batch'])]:
-                for flag in flags:
-                    self.assertIn(flag, commands[phase])
-            self.assertNotIn('reactor-production-owned-sockets', commands)
-            self.assertEqual('--stdext' in commands['build'], stdext)
-            self.assertEqual('--fix-halfclose' in commands['build'], repair)
-            variants.add(dev.build_variant(args))
-        self.assertEqual(len(variants), 4)
-
     def test_linux_consumer_hooks_load_curl_without_duplicating_explicit_dependency(self):
         for explicit in [[], ['curl']]:
             args = SimpleNamespace(lane='integrate', module=['phpcollections', 'base64', 'phphelpers'], all_modules=False,
@@ -489,7 +470,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('corebase-native',commands)
         self.assertIn('ossupport-async-file-owner', commands)
         self.assertIn('http-context', commands)
-        self.assertIn('--socket-output', commands['reactor-production-socket-output'])
         self.assertIn('coroutine-compile',commands)
         self.assertIn('tests/modules/coroutine/rust_asan.py', commands['coroutine-rust-asan'])
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))

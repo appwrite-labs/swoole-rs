@@ -125,7 +125,8 @@ def main():
                 command += [*[str(sources / source) for source in SOURCES if variant == 'upstream' or source not in INLINED], str(Path(__file__).with_name('probe.cc')), str(Path(__file__).with_name('benchmark.cc'))]
                 environment = dict(os.environ)
                 if variant == 'rust':
-                    command.append(str(archive))
+                    # The probes' own switch to the Rust Table's accessors (table_compat.h).
+                    command += ['-DSWOOLE_RS_MEMORY', str(archive)]
                     if linux:
                         command += ['-ldl', '-lpthread', '-lrt', '-lutil', '-lm']
                     if args.sanitize:
