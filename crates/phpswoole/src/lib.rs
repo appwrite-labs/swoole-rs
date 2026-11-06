@@ -36,7 +36,7 @@ pub use info::swr_v1_phpswoole_minfo;
 pub use ini::swr_v1_phpswoole_register_ini;
 pub use memory::sw_zend_string_allocator;
 pub use module::{
-    Globals, php_swoole_parse_to_size, php_swoole_register_shutdown_function,
+    Globals, display_errors, php_swoole_parse_to_size, php_swoole_register_shutdown_function,
     swr_v1_phpswoole_init_globals, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,
     swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
 };

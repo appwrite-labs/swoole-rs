@@ -34,14 +34,12 @@ typedef struct {
     bool (*sendfile)(void *server, int64_t fd, const char *filename, size_t length, int64_t offset, int64_t size);
     bool (*has_pipe_message)(void *server);
     bool (*is_worker)(void *server); /* is_worker() || is_task_worker() */
-    int64_t (*worker_id)(void);
     int64_t (*core_worker_num)(void *server);
     /* send_pipe_message of the packed message (an EventData). */
     bool (*send_message)(void *server, void *message, int64_t worker_id);
     bool (*task_enable_coroutine)(void *server);
     /* A Server\Task's server; E_ERROR (does not return) when unset. */
     void *(*task_server)(struct _zend_object *task);
-    bool (*started)(void *server);
 } swr_v1_phpserver_io_host;
 
 void swr_v1_phpserver_io_init(const swr_v1_phpserver_io_host *table);

@@ -76,6 +76,13 @@ pub(crate) fn globals() -> *mut Globals {
     unsafe { (ops().globals)() }
 }
 
+/// `SWOOLE_G(display_errors)`.
+#[must_use]
+pub fn display_errors() -> bool {
+    // SAFETY: the module's globals, live from MINIT.
+    unsafe { (*globals()).display_errors }
+}
+
 type Minit = unsafe extern "C" fn(c_int);
 type Hook = unsafe extern "C" fn();
 

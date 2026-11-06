@@ -40,12 +40,10 @@ pub struct IoHost {
     sendfile: unsafe extern "C" fn(*mut c_void, i64, *const c_char, usize, i64, i64) -> bool,
     has_pipe_message: unsafe extern "C" fn(*mut c_void) -> bool,
     is_worker: unsafe extern "C" fn(*mut c_void) -> bool,
-    worker_id: unsafe extern "C" fn() -> i64,
     core_worker_num: unsafe extern "C" fn(*mut c_void) -> i64,
     send_message: unsafe extern "C" fn(*mut c_void, *mut c_void, i64) -> bool,
     task_enable_coroutine: unsafe extern "C" fn(*mut c_void) -> bool,
     task_server: unsafe extern "C" fn(*mut zend_object) -> *mut c_void,
-    started: unsafe extern "C" fn(*mut c_void) -> bool,
 }
 
 static HOST: AtomicPtr<IoHost> = AtomicPtr::new(ptr::null_mut());
@@ -355,8 +353,8 @@ fn send_message(call: &Call) {
     let Ok(worker_id) = call.arity(2, 2).and_then(|()| call.long(2, -1)) else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server; reads the process's worker id.
-    if unsafe { (host.is_worker)(serv) } && worker_id == unsafe { (host.worker_id)() } {
+    // SAFETY: a live server.
+    if unsafe { (host.is_worker)(serv) } && worker_id == crate::server::worker_id() {
         fatal(E_WARNING, c"can't send messages to self");
         return call.set_bool(false);
     }
@@ -404,7 +402,7 @@ fn task_finish(call: &Call) {
     // SAFETY: `$this` is a Task; an `E_ERROR` when it has no server.
     let serv = unsafe { (host.task_server)(call.this()) };
     // SAFETY: a live server.
-    if !unsafe { (host.started)(serv) } {
+    if !unsafe { swoole_rs_server::view::is_started(serv) } {
         fatal(E_WARNING, c"server is not running");
         return call.set_bool(false);
     }

@@ -59,8 +59,6 @@ pub struct DispatchHost {
     close: unsafe extern "C" fn(*mut c_void, i64),
     worker_start: unsafe extern "C" fn(*mut c_void),
     pid: unsafe extern "C" fn() -> i64,
-    display_errors: unsafe extern "C" fn() -> bool,
-    set_last_error: unsafe extern "C" fn(c_int),
 }
 
 static HOST: AtomicPtr<DispatchHost> = AtomicPtr::new(ptr::null_mut());
@@ -145,11 +143,8 @@ fn call(cb: *mut c_void, args: &mut [zval], coroutine: bool, event: &str) -> Cal
 /// the event there, as upstream.
 #[cold]
 fn failed(server: &zval, event: &str) -> Called {
-    let host = host();
-    // SAFETY: plain state.
-    unsafe { (host.set_last_error)(SW_ERROR_PHP_RUNTIME_NOTICE) };
-    // SAFETY: reads a setting.
-    if unsafe { (host.display_errors)() } {
+    set_last_error(SW_ERROR_PHP_RUNTIME_NOTICE);
+    if crate::server::display_errors() {
         // SAFETY: the server object.
         let object = unsafe { object_of(server) };
         // SAFETY: a live object.
@@ -611,11 +606,7 @@ pub(crate) fn handler_error(server: &zval, event: &str) -> Result<(), Bailout> {
     Ok(())
 }
 
-/// `swoole_set_last_error(code)`.
-pub(crate) fn set_last_error(code: c_int) {
-    // SAFETY: plain state.
-    unsafe { (host().set_last_error)(code) };
-}
+pub(crate) use crate::server::set_last_error;
 
 #[cfg(test)]
 mod tests {

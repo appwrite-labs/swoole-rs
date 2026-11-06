@@ -49,8 +49,6 @@ typedef struct {
     /* onWorkerStart's native preparation: hooks and the message bus allocator. */
     void (*worker_start)(void *server);
     int64_t (*pid)(void);
-    bool (*display_errors)(void);
-    void (*set_last_error)(int code);
 } swr_v1_phpserver_dispatch_host;
 
 /* Events: SWR_PHPSERVER_ON_* (the callback's server-level type for lifecycle

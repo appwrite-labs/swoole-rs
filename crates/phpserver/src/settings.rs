@@ -2,7 +2,7 @@
 //! order upstream reads them in. C++ keeps the Server's fields and the effects
 //! that need its C++ API, reached by field id through the host table
 //! (`native/process/swoole_rs_phpserver_settings.h`).
-use crate::server::{fatal, server};
+use crate::server::{display_errors, fatal, server, set_last_error};
 use std::{
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
@@ -117,8 +117,6 @@ pub struct SettingsHost {
     msgqueue_key_valid: unsafe extern "C" fn(i64) -> bool,
     thread_options: unsafe extern "C" fn(*mut zend_object, *mut c_void) -> bool,
     finish: unsafe extern "C" fn(*mut zend_object, *mut zval) -> bool,
-    set_last_error: unsafe extern "C" fn(c_int),
-    display_errors: unsafe extern "C" fn() -> bool,
 }
 
 static HOST: AtomicPtr<SettingsHost> = AtomicPtr::new(ptr::null_mut());
@@ -271,11 +269,8 @@ impl Settings {
 
 /// `php_swoole_error(E_WARNING, message)`.
 fn notice(message: &CStr) -> Step {
-    let host = host();
-    // SAFETY: plain state.
-    unsafe { (host.set_last_error)(SW_ERROR_PHP_RUNTIME_NOTICE) };
-    // SAFETY: reads a setting.
-    if unsafe { (host.display_errors)() } {
+    set_last_error(SW_ERROR_PHP_RUNTIME_NOTICE);
+    if display_errors() {
         // SAFETY: a warning from a handler.
         bailout::defer(unsafe { php_error(E_WARNING, message) });
     }
@@ -289,8 +284,7 @@ fn set(call: &Call) {
         vht: ptr::null_mut(),
     };
     if s.fact(field::WORKER_THREAD) != 0 {
-        // SAFETY: plain state.
-        unsafe { (host().set_last_error)(SW_ERROR_SERVER_UNRELATED_THREAD) };
+        set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);
         return call.set_bool(false);
     }
     if s.fact(field::STARTED) != 0 {
@@ -500,10 +494,8 @@ fn cpu_affinity_ignore(s: &Settings, value: *mut zval) -> Result<bool, Stop> {
     let count = unsafe { (host.cpu_affinity)(cpus.as_mut_ptr(), cpus.len(), &raw mut error) };
     let Ok(count) = usize::try_from(count) else {
         // php_swoole_sys_error(E_WARNING, "sched_getaffinity() failed")
-        // SAFETY: plain state.
-        unsafe { (host.set_last_error)(error) };
-        // SAFETY: reads a setting.
-        if unsafe { (host.display_errors)() } {
+        set_last_error(error);
+        if display_errors() {
             // SAFETY: plain state.
             let reason = unsafe { (host.strerror)(error) };
             // SAFETY: Swoole's static error strings.
