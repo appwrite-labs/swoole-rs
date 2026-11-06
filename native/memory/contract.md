@@ -203,6 +203,9 @@ throw on the `swr_v1_memory_*_new` status: -1 `Exception(SW_ERROR_INVALID_PARAMS
 -2 `std::bad_alloc`) and the virtual members, so each user emits the vtables.
 `Table::make` allocates through `sw_mem_pool()`'s vtable (slot 2 `alloc`, 3 `free`).
 These run allocators, mmap and logs with a Rust frame active.
+No native code calls the fixed, ring, global, arena or mapping functions this
+document describes any more, so `swoole_rs_memory.h` no longer declares them;
+#1515 makes them Rust-internal.
 
 ## Arena lifecycle
 

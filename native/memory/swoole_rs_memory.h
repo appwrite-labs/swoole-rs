@@ -14,55 +14,6 @@ typedef struct swr_v1_memory_table_row swr_v1_memory_table_link;
 typedef struct swr_v1_memory_table_column swr_v1_memory_table_column_link;
 typedef struct swr_v1_memory_table swr_v1_memory_table;
 #endif
-/* Borrowed C PODs; no callback, destructor or allocation callback enters Rust. */
-typedef struct swr_v1_memory_fixed_slice {
-    uint8_t lock;
-    struct swr_v1_memory_fixed_slice *next, *prev;
-} swr_v1_memory_fixed_slice;
-typedef struct swr_v1_memory_fixed {
-    void *memory;
-    size_t size;
-    swr_v1_memory_fixed_slice *head, *tail;
-    uint32_t slice_num, slice_use, slice_size;
-    uint8_t shared, allocated;
-} swr_v1_memory_fixed;
-typedef struct swr_v1_memory_fixed_layout_result {
-    size_t total, usable;
-    uint32_t slices, width;
-} swr_v1_memory_fixed_layout_result;
-/* owned=1: count>=2, available=0, width rounded to8. owned=0: count=0,
- * available is the borrowed arena length, original odd widths retained. */
-int32_t swr_v1_memory_fixed_layout(uint32_t count, uint32_t width, size_t available,
-                                 uint32_t owned, swr_v1_memory_fixed_layout_result *);
-/* Serialized read-only pool snapshot; output is independent/disjoint. Spare
- * subtraction preserves defined unsigned wrap; actual public widths unchanged. */
-typedef struct swr_v1_memory_fixed_usage_result { uint32_t spare, total, width; } swr_v1_memory_fixed_usage_result;
-int32_t swr_v1_memory_fixed_usage(const swr_v1_memory_fixed *, swr_v1_memory_fixed_usage_result *);
-/* Native executes the returned ownership action after Rust returns:
- *0 borrowed/no effect,1/2 heap/shared allocation,3/4 heap/shared free,-1 invalid.
- * Used by actual FixedPool and RingBuffer constructors/rollback/destructors. */
-int32_t swr_v1_memory_arena_lifecycle(uint32_t shared, uint32_t owned, uint32_t phase);
-/* Independent serialized debug cursor/output; no C++ object or native callback.
- * Cursor starts zero; step1 emits a record,0 ends,-1 rejects. max0 emits2 as pin.
- * Live arena links remain valid throughout traversal; output/cursor disjoint. */
-typedef struct swr_v1_memory_fixed_debug_cursor {
-    swr_v1_memory_fixed_slice *next;
-    uint64_t line;
-} swr_v1_memory_fixed_debug_cursor;
-typedef struct swr_v1_memory_fixed_debug_record {
-    swr_v1_memory_fixed_slice *slice, *prev, *next;
-    uint8_t *data;
-    uint64_t line;
-    uint8_t lock, self_link;
-} swr_v1_memory_fixed_debug_record;
-int32_t swr_v1_memory_fixed_debug_step(const swr_v1_memory_fixed *, swr_v1_memory_fixed_debug_cursor *,
-                                      int32_t max_lines, swr_v1_memory_fixed_debug_record *);
-/* Separate immutable plan; exclusive arena covers its complete total bytes. */
-int32_t swr_v1_memory_fixed_construct(swr_v1_memory_fixed *, const swr_v1_memory_fixed_layout_result *,
-                                    uint32_t shared, uint32_t owned);
-int32_t swr_v1_memory_fixed_init(swr_v1_memory_fixed *);
-void *swr_v1_memory_fixed_alloc(swr_v1_memory_fixed *);
-int32_t swr_v1_memory_fixed_free(swr_v1_memory_fixed *, void *);
 /* swoole::Channel: the queue state, its process-shared mutex and its notification
  * pipe (read end first). Native allocates swr_v1_memory_channel_bytes() bytes (heap
  * or shared mapping), and frees them after swr_v1_memory_channel_close(); the queue
@@ -117,58 +68,8 @@ swr_v1_memory_heap_node *swr_v1_memory_heap_push(void *, uint64_t, void *);
 int32_t swr_v1_memory_heap_update(void *, uint64_t, swr_v1_memory_heap_node *);
 int32_t swr_v1_memory_heap_remove(void *, swr_v1_memory_heap_node *);
 void *swr_v1_memory_heap_pop(void *);
-/* Rust-owned page registry/configuration. Native performs page/mutex/getpid and
- * wrapper effects after return; inherited shared pages remain attached on reset. */
-typedef struct swr_v1_memory_global_effect {
-    void *page;
-    uint32_t page_size, aligned, action;
-} swr_v1_memory_global_effect;
-enum swr_v1_memory_global_action {
-    SWR_GLOBAL_ALLOC_HEAP = 1, SWR_GLOBAL_ALLOC_SHARED = 2,
-    SWR_GLOBAL_FREE_HEAP = 3, SWR_GLOBAL_FREE_SHARED = 4, SWR_GLOBAL_RESET_SHARED = 5
-};
-/* open: -2 invalid config, -1 allocation failure,0 success; shared is0/1.
- * Outputs/descriptors disjoint from registry/pages; calls serialized by native.
- * phase0 allocation plan; phase1 validates requested before owner/reset choice;
- * phase2 drains one page in insertion order, action0 means no pages remain.
- * Native executes each free before next drain; release only after full drain.
- * No Rust reference survives a page effect or native wrapper replacement. */
-int32_t swr_v1_memory_global_open(uint32_t requested, uint32_t system_page, uint32_t shared,
-                                  int64_t creator, void **);
-int32_t swr_v1_memory_global_step(void *, uint32_t phase, int64_t current, uint32_t requested,
-                                  swr_v1_memory_global_effect *);
-int32_t swr_v1_memory_global_page_size(uint32_t requested, uint32_t system_page, uint32_t *);
-int32_t swr_v1_memory_global_request_valid(const void *, uint32_t requested, uint32_t *aligned);
-int32_t swr_v1_memory_global_create(uint32_t page_size, void **);
-int32_t swr_v1_memory_global_add_page(void *, void *page);
-int32_t swr_v1_memory_global_alloc(void *, uint32_t size, void **);
-size_t swr_v1_memory_global_capacity(const void *);
-size_t swr_v1_memory_global_memory_size(const void *);
-void *swr_v1_memory_global_pop_page(void *);
-int32_t swr_v1_memory_global_release(void *);
-/* Producer-only snapshot. Atomic slot/header synchronization is shared. */
-typedef struct swr_v1_memory_ring {
-    void *memory;
-    uint32_t size, alloc_offset, collect_offset, alloc_count;
-    uint8_t status;
-    uint32_t *free_count;
-} swr_v1_memory_ring;
-int32_t swr_v1_memory_ring_layout(uint32_t requested, uint32_t *total, uint32_t *payload);
-void *swr_v1_memory_ring_alloc(swr_v1_memory_ring *, uint32_t requested);
-int32_t swr_v1_memory_ring_free(void *memory, uint32_t size, uint32_t *free_count, void *data);
-/* Actual shared arena POD base; no C++ class layout or mutable whole-header
- * reference crosses Rust. Producer fields and atomic counter are separate. */
-typedef struct swr_v1_memory_ring_storage {
-    void *memory;
-    uint8_t shared, status;
-    uint32_t size, alloc_offset, collect_offset, alloc_count;
-    volatile uint32_t free_count;
-} swr_v1_memory_ring_storage;
-/* Fresh exclusive total-byte arena, before any producer/consumer publication. */
-int32_t swr_v1_memory_ring_construct(swr_v1_memory_ring_storage *, uint32_t total, uint32_t shared);
-void *swr_v1_memory_ring_storage_alloc(swr_v1_memory_ring_storage *, uint32_t);
-/* What swoole_memory.h's pools keep inline: their throwing constructors and virtual
- * members (crates/memory/src/members.rs). A constructor returns 0, -1 for
+/* The pools are Rust's (crates/memory/src/members.rs). These are what
+ * swoole_memory.h keeps inline: the constructors, which throw, and the virtual members. A constructor returns 0, -1 for
  * Exception(SW_ERROR_INVALID_PARAMS) or -2 for std::bad_alloc; so does global alloc. */
 int32_t swr_v1_memory_fixed_pool_new(uint32_t slices, uint32_t width, bool shared, void **output);
 int32_t swr_v1_memory_fixed_pool_borrow(uint32_t width, void *memory, size_t size, bool shared, void **output);
@@ -182,19 +83,6 @@ void swr_v1_memory_ring_buffer_free(void *ring, void *data);
 int32_t swr_v1_memory_global_memory_new(uint32_t pagesize, bool shared, void **output);
 void swr_v1_memory_global_memory_delete(void *pool);
 int32_t swr_v1_memory_global_memory_alloc(void **pool, uint32_t size, void **output);
-/* Checked native shared-mapping byte plans, including the8-byte header. */
-typedef struct swr_v1_memory_mapping_extent_result {
-    void *base;
-    size_t total;
-} swr_v1_memory_mapping_extent_result;
-/* Native supplies live mapping storage; actual 8-byte header remains in arena.
- * Outputs are separate exclusive PODs. Relocation requires disjoint mappings. */
-void *swr_v1_memory_mapping_initialize(void *base, size_t total);
-int32_t swr_v1_memory_mapping_extent(const void *payload, swr_v1_memory_mapping_extent_result *);
-int32_t swr_v1_memory_mapping_relocate(const void *old, void *new_);
-int32_t swr_v1_memory_mapping_size(size_t requested, size_t *total);
-int32_t swr_v1_memory_mapping_product(size_t count, size_t width, size_t *requested);
-int32_t swr_v1_memory_mapping_copy(size_t old_total, size_t new_total, size_t *bytes);
 /* swoole::Table (crates/memory/src/table.rs). Rust owns the table; the host
  * allocates its header (header_size() bytes, 8-aligned, shared memory) and,
  * for create, its arena (arena_size() bytes). Every row pointer here is a row
