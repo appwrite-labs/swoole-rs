@@ -203,8 +203,14 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
         exchange.send(SEND_DATA, &body);
         return true;
     }
-    let range = exchange.header(b"Range");
-    let if_range = exchange.header(b"If-Range");
+    // Upstream reads both as one call's arguments: GCC (Linux) evaluates them
+    // right to left, clang left to right.
+    let (range, if_range) = if cfg!(target_os = "linux") {
+        let if_range = exchange.header(b"If-Range");
+        (exchange.header(b"Range"), if_range)
+    } else {
+        (exchange.header(b"Range"), exchange.header(b"If-Range"))
+    };
     handler.parse_range(c_text(&range), c_text(&if_range));
     let tasks = handler.tasks();
     let status = handler.status();
