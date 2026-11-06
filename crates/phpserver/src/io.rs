@@ -36,13 +36,10 @@ pub struct IoHost {
         usize,
         i64,
     ) -> c_int,
-    is_master: unsafe extern "C" fn(*mut c_void) -> bool,
     sendfile: unsafe extern "C" fn(*mut c_void, i64, *const c_char, usize, i64, i64) -> bool,
     has_pipe_message: unsafe extern "C" fn(*mut c_void) -> bool,
-    is_worker: unsafe extern "C" fn(*mut c_void) -> bool,
     core_worker_num: unsafe extern "C" fn(*mut c_void) -> i64,
     send_message: unsafe extern "C" fn(*mut c_void, *mut c_void, i64) -> bool,
-    task_enable_coroutine: unsafe extern "C" fn(*mut c_void) -> bool,
     task_server: unsafe extern "C" fn(*mut zend_object) -> *mut c_void,
 }
 
@@ -318,8 +315,7 @@ fn sendfile(call: &Call) {
         return call.set_bool(false);
     };
     let host = host();
-    // SAFETY: a live server.
-    if unsafe { (host.is_master)(serv) } {
+    if crate::server::worker_type() == crate::server::MASTER {
         // `%s`: the name up to its first NUL.
         let shown = filename.split(|&b| b == 0).next().unwrap_or_default();
         let text = message!(
@@ -353,8 +349,7 @@ fn send_message(call: &Call) {
     let Ok(worker_id) = call.arity(2, 2).and_then(|()| call.long(2, -1)) else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server.
-    if unsafe { (host.is_worker)(serv) } && worker_id == crate::server::worker_id() {
+    if crate::server::in_worker() && worker_id == crate::server::worker_id() {
         fatal(E_WARNING, c"can't send messages to self");
         return call.set_bool(false);
     }
@@ -381,9 +376,8 @@ fn send_message(call: &Call) {
 
 fn finish(call: &Call) {
     let Some(serv) = running(call) else { return };
-    let host = host();
     // SAFETY: a live server.
-    if unsafe { (host.task_enable_coroutine)(serv) } {
+    if unsafe { swoole_rs_server::view::config(serv) }.task_enable_coroutine {
         // An `E_ERROR`: its bailout waits for the handler's last step.
         fatal(
             E_ERROR,

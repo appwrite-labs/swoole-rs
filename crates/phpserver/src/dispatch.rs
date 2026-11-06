@@ -24,9 +24,9 @@ use swoole_rs_zend::{
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
 
-/// `swr_phpserver_facts`.
-#[repr(C)]
-#[derive(Default)]
+use swoole_rs_server::view;
+
+/// What the dispatch reads of the Server, per event.
 struct Facts {
     master_pid: i64,
     manager_pid: i64,
@@ -50,7 +50,6 @@ pub struct Packet {
 /// `swr_v1_phpserver_dispatch_host`.
 #[repr(C)]
 pub struct DispatchHost {
-    facts: unsafe extern "C" fn(*mut c_void, *mut Facts),
     zserv: unsafe extern "C" fn(*mut c_void) -> *mut zval,
     port_callback: unsafe extern "C" fn(*mut c_void, c_int, c_int) -> *mut c_void,
     call: unsafe extern "C" fn(*mut c_void, u32, *mut zval, bool) -> c_int,
@@ -171,10 +170,25 @@ fn helper(facts: &Facts, name: &CStr, args: &mut [zval]) -> bool {
 }
 
 fn facts(server: *mut c_void) -> Facts {
-    let mut facts = Facts::default();
-    // SAFETY: a live server and a writable view.
-    unsafe { (host().facts)(server, &raw mut facts) };
-    facts
+    // SAFETY: a live server.
+    let config = unsafe { view::config(server) };
+    // SAFETY: as above.
+    let gs = unsafe { view::counters(server) };
+    let task_worker = crate::server::worker_type() == crate::server::TASK_WORKER;
+    Facts {
+        master_pid: i64::from(gs.master_pid),
+        manager_pid: i64::from(gs.manager_pid),
+        event_object: config.event_object,
+        enable_coroutine: config.enable_coroutine,
+        // `Server::is_enable_coroutine()`.
+        coroutine: if task_worker {
+            config.task_enable_coroutine
+        } else {
+            crate::server::worker_type() != crate::server::MANAGER && config.enable_coroutine
+        },
+        enable_library: swoole_rs_phpswoole::enable_library(),
+        task_worker,
+    }
 }
 
 fn zserv(server: *mut c_void) -> zval {

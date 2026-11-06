@@ -13,17 +13,6 @@ extern "C" {
 #endif
 struct _zval_struct;
 
-/* What the dispatch reads of the Server, per event. */
-typedef struct {
-    int64_t master_pid;
-    int64_t manager_pid;
-    bool event_object;     /* serv->event_object */
-    bool enable_coroutine; /* serv->enable_coroutine */
-    bool coroutine;        /* serv->is_enable_coroutine() */
-    bool enable_library;   /* SWOOLE_G(enable_library) */
-    bool task_worker;      /* serv->is_task_worker() */
-} swr_phpserver_facts;
-
 /* A datagram's sender, for onPacket. */
 typedef struct {
     const char *data;
@@ -34,7 +23,6 @@ typedef struct {
 } swr_phpserver_packet;
 
 typedef struct {
-    void (*facts)(void *server, swr_phpserver_facts *facts);
     struct _zval_struct *(*zserv)(void *server);
     /* php_swoole_server_get_callback(serv, server_fd, type), or null. */
     void *(*port_callback)(void *server, int server_fd, int type);

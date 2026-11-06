@@ -38,8 +38,6 @@ pub struct ServerState {
     pub(crate) static_config:
         std::sync::OnceLock<std::sync::Mutex<crate::static_config::StaticConfig>>,
     pub(crate) commands: std::sync::Mutex<crate::commands::Commands>,
-    /// `Server::mode_`, fixed by the constructor; 0 until an operation first asks.
-    mode: core::sync::atomic::AtomicU8,
 }
 
 impl Default for ServerState {
@@ -57,18 +55,6 @@ impl ServerState {
             tables: AtomicPtr::new(core::ptr::null_mut()),
             static_config: std::sync::OnceLock::new(),
             commands: std::sync::Mutex::new(crate::commands::Commands::new()),
-            mode: core::sync::atomic::AtomicU8::new(0),
-        }
-    }
-
-    /// The server's mode once an operation has read it, else 0.
-    pub(crate) fn mode(&self) -> u64 {
-        u64::from(self.mode.load(Ordering::Relaxed))
-    }
-
-    pub(crate) fn remember_mode(&self, mode: u64) {
-        if let Ok(mode) = u8::try_from(mode) {
-            self.mode.store(mode, Ordering::Relaxed);
         }
     }
 

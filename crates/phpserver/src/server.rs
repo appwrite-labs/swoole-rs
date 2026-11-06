@@ -79,7 +79,6 @@ type Each = unsafe extern "C" fn(*mut c_void, i64);
 #[repr(C)]
 pub struct ServerHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
-    role: unsafe extern "C" fn(*mut c_void, c_int) -> bool,
     worker: unsafe extern "C" fn(*mut c_void, i64, *mut i64, *mut i64) -> bool,
     client: unsafe extern "C" fn(*mut c_void, i64, *mut ServerClient) -> bool,
     stats: unsafe extern "C" fn(*mut c_void, *mut i64),
@@ -577,6 +576,24 @@ const CONSTANTS: &[(&CStr, i64)] = &[
 pub(crate) use swoole_rs_corebase::log::set_last_error;
 pub(crate) use swoole_rs_phpswoole::display_errors;
 
+/// `swoole_get_worker_type()`'s `SW_MASTER`, `SW_EVENT_WORKER`, `SW_MANAGER` and `SW_TASK_WORKER`.
+pub(crate) const MASTER: c_int = 1;
+pub(crate) const EVENT_WORKER: c_int = 2;
+pub(crate) const MANAGER: c_int = 3;
+pub(crate) const TASK_WORKER: c_int = 4;
+/// `Server::MODE_PROCESS`.
+const MODE_PROCESS: u8 = 2;
+
+/// `swoole_get_worker_type()`.
+pub(crate) fn worker_type() -> c_int {
+    swoole_rs_process::methods::swoole_get_worker_type()
+}
+
+/// `Server::is_worker() || Server::is_task_worker()`.
+pub(crate) fn in_worker() -> bool {
+    matches!(worker_type(), EVENT_WORKER | TASK_WORKER)
+}
+
 /// `swoole_get_worker_id()`, as the `int` C++ reads.
 pub(crate) fn worker_id() -> i64 {
     i64::from(swoole_rs_process::methods::swoole_get_worker_id().cast_signed())
@@ -944,9 +961,8 @@ fn sendwait(call: &Call) {
         no_payload();
         return call.set_bool(false);
     }
-    let host = host();
     // SAFETY: a live server.
-    if unsafe { (host.role)(serv, 1) } {
+    if unsafe { view::config(serv) }.mode_ == MODE_PROCESS || worker_type() == TASK_WORKER {
         fatal(
             E_WARNING,
             c"can only be used with base mode and must be within worker process",
@@ -991,9 +1007,8 @@ fn protect(call: &Call) {
 }
 
 fn get_worker_id(call: &Call) {
-    let serv = server(call);
-    // SAFETY: a live server.
-    if unsafe { (host().role)(serv, 0) } {
+    server(call);
+    if in_worker() {
         call.set_long(worker_id());
     } else {
         call.set_bool(false);

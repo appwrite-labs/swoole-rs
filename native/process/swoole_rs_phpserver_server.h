@@ -56,8 +56,6 @@ typedef struct {
 
     /* Facts and operations of the Server `server`; Rust reads its records
      * and calls its methods directly for the rest. */
-    /* 0 is_worker() || is_task_worker(); 1 is_process_mode() || is_task_worker() */
-    bool (*role)(void *server, int which);
     bool (*worker)(void *server, int64_t worker_id, int64_t *pid, int64_t *status);
     bool (*client)(void *server, int64_t session_id, swr_phpserver_client *client);
     void (*stats)(void *server, int64_t *values);

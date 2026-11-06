@@ -157,19 +157,6 @@ impl<C: NativeCall> Host for Native<C> {
     #[inline(always)]
     fn op(&mut self, op: u32, arg: u64) -> Effect<u64> {
         if !self.state.is_null() {
-            // The mode never changes after `Server`'s constructor: ask native code once.
-            if op == ops::OP_MODE {
-                // SAFETY: run_state lends the live state for the operation.
-                let state = unsafe { &*self.state };
-                let mode = state.mode();
-                if mode != 0 {
-                    return Ok(mode);
-                }
-                // SAFETY: the entrypoint lends this context with C's native effect contract.
-                let mode = unsafe { self.call.invoke(self.context, op, arg) }?;
-                state.remember_mode(mode);
-                return Ok(mode);
-            }
             // SAFETY: run_state lends live synchronized records; this leaf access ends before callbacks.
             if let Some(value) = unsafe { config::native_fact(self.state, op, arg) } {
                 return Ok(value);
@@ -427,27 +414,26 @@ mod fault_tests;
 
 #[cfg(test)]
 mod mode_tests {
-    use super::{Host, Native, ServerState, ops::OP_MODE};
+    use super::{Host, Native, ops::OP_MODE};
     use core::ffi::c_void;
 
-    /// Counts its calls in the `u64` its context points at; answers process mode.
-    unsafe extern "C" fn counting(context: *mut c_void, op: u32, _: u64) -> u64 {
-        assert_eq!(op, OP_MODE);
-        // SAFETY: the test lends a live counter.
-        unsafe { *context.cast::<u64>() += 1 };
-        2
+    /// Native code is never asked: any call fails the test.
+    unsafe extern "C" fn unreachable(_: *mut c_void, op: u32, _: u64) -> u64 {
+        panic!("native op {op}");
     }
 
     #[test]
-    fn the_mode_is_asked_once_per_server() {
-        let state = ServerState::new();
-        let mut calls = 0_u64;
+    fn the_mode_is_the_configs() {
+        let state = crate::swr_v1_server_state_new();
+        // SAFETY: a fresh state owns its config.
+        unsafe { &mut *(*state).config() }.mode_ = 2;
         let mut host = Native {
-            context: (&raw mut calls).cast(),
-            call: counting as super::ServerCall,
-            state: &raw const state,
+            context: core::ptr::null_mut(),
+            call: unreachable as super::ServerCall,
+            state,
         };
-        assert_eq!((host.get(OP_MODE), host.get(OP_MODE)), (Ok(2), Ok(2)));
-        assert_eq!(calls, 1);
+        assert_eq!(host.get(OP_MODE), Ok(2));
+        // SAFETY: created above and not used again.
+        unsafe { crate::swr_v1_server_state_free(state) };
     }
 }

@@ -83,6 +83,13 @@ pub fn display_errors() -> bool {
     unsafe { (*globals()).display_errors }
 }
 
+/// `SWOOLE_G(enable_library)`.
+#[must_use]
+pub fn enable_library() -> bool {
+    // SAFETY: as above.
+    unsafe { (*globals()).enable_library }
+}
+
 type Minit = unsafe extern "C" fn(c_int);
 type Hook = unsafe extern "C" fn();
 
