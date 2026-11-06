@@ -39,8 +39,8 @@ def main():
     sources = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in TARGETS}
     headers = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in ['include/swoole_proxy.h', 'include/swoole_redis.h']}
     candidate = hybrid_tree(args.archive)[0]
-    # The hybrid's PHP request parser and MQTT length function are Rust; only the pinned ones are read.
-    candidates = {p: (candidate / p).read_text() for p in TARGETS[1:3]}
+    # The hybrid's PHP request parser, MQTT length function and SOCKS5 proxy are Rust; only the pinned ones are read.
+    candidates = {TARGETS[1]: (candidate / TARGETS[1]).read_text()}
     candidate_proxy_header = (candidate / 'include/swoole_proxy.h').read_text()
     archive = args.archive.resolve(strict=True)
     local = Path(__file__).resolve().parent
@@ -48,21 +48,19 @@ def main():
               'scope': 'Actual pinned and selected protocol facade bodies. Native String/allocation/socket IO are modeled, protocol bodies unchanged. The exact original PHP request parser loop runs with modeled Zend parameters on 10000 seeded defined wires versus Rust typed events. Full Zend request/reply callers are staged, not executed here; run request.py/reply.py against actual PHP. No live network in this gate.',
               'sanitizer_scope': 'C++ ASan/UBSan; Rust not instrumented' if args.sanitize else 'none'}
     def bodies(selected, owned):
-        redis, socks = (selected[p] for p in TARGETS[1:3])
+        redis = selected[TARGETS[1]]
         socks_header = headers['include/swoole_proxy.h']
         constants = '\n'.join(line for line in socks_header.splitlines() if line.startswith('#define SW_SOCKS5'))
         socks_types = socks_header[socks_header.index('enum swSocks5State'):socks_header.index('namespace swoole {')]
-        if owned:
-            # The same real borrowed fields/RAII owner used in production; only
-            # method declarations are projected into the comparison namespace.
-            declarations = socks_header[socks_header.index('    ssize_t pack_negotiate_request();'):socks_header.index('}  // namespace swoole')]
-            socks_types += 'struct Socks5Proxy : ::swoole::Socks5Proxy {\n' + declarations
-        else:
-            socks_types += socks_header[socks_header.index('struct Socks5Proxy {'):socks_header.index('}  // namespace swoole')]
+        # The candidate is production's Socks5Proxy: the hybrid header over Rust's exports
+        # under upstream's symbols (crates/protocols/src/owned_proxy.rs).
+        socks_types += ('using Socks5Proxy = ::swoole::Socks5Proxy;\n' if owned else
+                        socks_header[socks_header.index('struct Socks5Proxy {'):socks_header.index('}  // namespace swoole')])
         redis_header = headers['include/swoole_redis.h']
         redis_types = redis_header[redis_header.index('enum State {'):redis_header.index('const char *get_number')]
         redis_constants = '#define SW_REDIS_RETURN_NIL "$-1\\r\\n"\n'
-        socks_body = socks[socks.index('const char *Socks5Proxy::strerror'):socks.index('}  // namespace swoole')]
+        socks = '' if owned else selected[TARGETS[2]]
+        socks_body = socks and socks[socks.index('const char *Socks5Proxy::strerror'):socks.index('}  // namespace swoole')]
         redis_body = redis[redis.index('namespace redis {') + len('namespace redis {'):redis.index('}  // namespace redis')]
         # The candidate's mqtt::get_package_length is Rust's export under the upstream symbol (native.cc).
         mqtt = '' if owned else '\nnamespace mqtt {\n' + function(selected[TARGETS[0]], 'ssize_t get_package_length(') + '\n}'
