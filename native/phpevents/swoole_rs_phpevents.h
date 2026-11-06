@@ -47,7 +47,7 @@ struct swr_v1_phpevents_ops {
     uint8_t (*has_reactor)(void);
     void (*defer_callable_free)(void *);
     uint8_t (*enabled_coroutine)(void);
-    int64_t (*create_coroutine)(void *, uint32_t, struct _zval_struct *);
+    long (*create_coroutine)(struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *, struct _zval_struct *, uint8_t *);
     void *(*socket_make)(int32_t fd, void *object);
     int32_t (*socket_add)(void *socket, int64_t events);
     int32_t (*socket_write)(void *socket, const char *data, size_t length);

@@ -29,12 +29,13 @@ int swr_zend_try_facade_user_call(zval *name, uint32_t argc, zval *argv, zval *r
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
-int swr_zend_try_facade_coroutine(int64_t (*create)(zend_fcall_info_cache *, uint32_t, zval *),
-                                  zend_fcall_info_cache *cache, uint32_t argc, zval *argv, int64_t *result) {
+int swr_zend_try_facade_coroutine(long (*create)(zend_fcall_info_cache *, uint32_t, zval *, zval *, uint8_t *),
+                                  zend_fcall_info_cache *cache, uint32_t argc, zval *argv, long *result) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = create(cache, argc, argv); }
+    uint8_t raised = 0; /* read only when nothing jumped */
+    SWR_ZEND_TRY { *result = create(cache, argc, argv, NULL, &raised); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
+    return bailed || raised;
 }
 int swr_zend_try_facade_append(zval *array, zval *value) {
     volatile int bailed = 0;

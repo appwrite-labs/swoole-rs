@@ -24,7 +24,7 @@ use std::{
     sync::OnceLock,
 };
 use swoole_rs_corebase::constants::EventType;
-use swoole_rs_phphelpers::{callable, function_call};
+use swoole_rs_phphelpers::{Create, callable, function_call};
 use swoole_rs_phpstubs::event;
 use swoole_rs_zend::{
     Call, Class,
@@ -44,7 +44,7 @@ pub struct Ops {
     /// Retire a callback after the current reactor turn.
     defer_callable_free: unsafe extern "C" fn(*mut c_void),
     enabled_coroutine: unsafe extern "C" fn() -> u8,
-    create_coroutine: unsafe extern "C" fn(*mut z::zend_fcall_info_cache, u32, *mut zval) -> i64,
+    create_coroutine: Create,
     /// `make_socket(fd, SW_FD_USER)`, non-blocking, carrying `object`.
     socket_make: unsafe extern "C" fn(fd: i32, object: *mut c_void) -> *mut c_void,
     /// `swoole_event_add`.
