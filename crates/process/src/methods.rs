@@ -1,4 +1,4 @@
-//! The `ProcessPool` and `Worker` methods of `src/os/process_pool.cc` that are
+//! The `ProcessPool` and `Worker` methods (once `src/os/process_pool.cc`) that are
 //! whole Rust operations, defined under their upstream (Itanium) symbols when
 //! the hybrid links this crate (`upstream-symbols`). Native code registers its
 //! [`PoolNative`] table once; each method runs over it as its C++ forward did.

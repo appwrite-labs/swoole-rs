@@ -1,4 +1,4 @@
-//! `ProcessPool`'s lifecycle (`src/os/process_pool.cc`): create, start, spawn,
+//! `ProcessPool`'s lifecycle (once `src/os/process_pool.cc`): create, start, spawn,
 //! stop, detach, reload, the manager's wait and shutdown, destroy and the
 //! worker-side entry into the loops of [`crate::pool`]. Rust reads and writes
 //! the pool's fields in place through [`PoolRecord`], `ProcessPool`'s layout
