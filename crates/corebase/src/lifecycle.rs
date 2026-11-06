@@ -15,10 +15,6 @@ const FORK_PRECHECK: c_int = 8;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT` and `SW_GLOBAL_HOOK_AFTER_FORK`.
 const OPERATION_NOT_SUPPORT: c_int = 507;
 const HOOK_AFTER_FORK: c_int = 12;
-/// The host's logger operations.
-const LOGGER_CLOSE: c_int = 0;
-const LOGGER_REOPEN: c_int = 1;
-const LOGGER_DELETE: c_int = 2;
 
 /// The leading members of `swoole::ThreadGlobal` (`SwooleTG`) these sequences
 /// touch; native/corebase/globals.cc asserts their offsets.
@@ -37,7 +33,7 @@ struct ThreadGlobal {
 /// This thread's `SwooleTG`. Native code changes it only inside host calls, so
 /// a copy read between them is current.
 fn thread(host: &NativeHost) -> *mut ThreadGlobal {
-    (host.thread)().cast()
+    host.thread().cast()
 }
 
 fn read<T: Copy>(host: &NativeHost, field: impl FnOnce(&ThreadGlobal) -> T) -> T {
@@ -53,10 +49,10 @@ fn read<T: Copy>(host: &NativeHost, field: impl FnOnce(&ThreadGlobal) -> T) -> T
 pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
     let Some(host) = native::host() else { return };
     if read(host, |thread| thread.buffer_stack.is_null()) {
-        (host.buffer)(true);
+        host.buffer(true);
     }
     if !main_thread {
-        (host.signal_block_all)();
+        host.signal_block_all();
     }
     // SAFETY: this thread's live record, borrowed for the write alone.
     unsafe { (*thread(host)).main_thread = main_thread };
@@ -70,13 +66,13 @@ pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
 pub extern "C-unwind" fn swoole_thread_clean(_main_thread: bool) {
     let Some(host) = native::host() else { return };
     if read(host, |thread| !thread.timer.is_null()) {
-        (host.timer_free)();
+        host.timer_free();
     }
     if read(host, |thread| !thread.reactor.is_null()) {
-        (host.event_free)();
+        host.event_free();
     }
     if read(host, |thread| !thread.buffer_stack.is_null()) {
-        (host.buffer)(false);
+        host.buffer(false);
     }
 }
 
@@ -99,15 +95,14 @@ pub extern "C" fn swoole_is_main_thread() -> bool {
 pub extern "C-unwind" fn swoole_clean() {
     crate::hook::clear();
     let Some(host) = native::host() else { return };
-    (host.signal_clear)();
+    host.signal_clear();
     swoole_thread_clean(true);
     if !crate::swr_v1_core_logger().is_null() {
-        (host.logger)(LOGGER_CLOSE);
+        host.close_logger();
     }
-    (host.logger)(LOGGER_DELETE);
-    // SAFETY: the pool `swoole_init` or the last fork made, deleted once.
-    unsafe { (host.delete_pool)(crate::swr_v1_core_memory_pool()) };
-    (host.reset)();
+    host.delete_logger();
+    host.delete_pool(crate::swr_v1_core_memory_pool());
+    host.reset();
     crate::swr_v1_core_reset();
 }
 
@@ -123,7 +118,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     };
     if flags & FORK_EXEC == 0 {
         // `SwooleG.fatal_error` may return, so each check runs.
-        if (host.coroutine_is_in)() != 0 {
+        if host.coroutine_is_in() {
             let message = c"must be forked outside the coroutine";
             // SAFETY: the frames a native longjmp skips own nothing.
             unsafe { crate::fatal_error(OPERATION_NOT_SUPPORT, message) };
@@ -150,20 +145,20 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     if pid > 0 || flags & FORK_DAEMON != 0 {
         return pid;
     }
-    if (host.timer_available)() {
-        (host.timer_free)();
+    if host.timer_available() {
+        host.timer_free();
     }
     if flags & FORK_EXEC == 0 {
         // The parent's shared pages stay with the OS.
-        crate::swr_v1_core_set_memory_pool((host.new_pool)());
-        (host.logger)(LOGGER_REOPEN);
-        if (host.event_available)() {
-            (host.event_free)();
+        crate::swr_v1_core_set_memory_pool(host.new_pool());
+        host.reopen_logger();
+        if host.event_available() {
+            host.event_free();
         }
     } else {
-        (host.logger)(LOGGER_CLOSE);
+        host.close_logger();
     }
-    (host.signal_clear)();
+    host.signal_clear();
     if crate::swoole_isset_hook(HOOK_AFTER_FORK) {
         // SAFETY: the after-fork hooks take no argument.
         unsafe { crate::swoole_call_hook(HOOK_AFTER_FORK, std::ptr::null_mut()) };

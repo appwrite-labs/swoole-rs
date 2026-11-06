@@ -76,25 +76,12 @@ typedef void (*swr_v1_core_log_host)(int kind, int level, int code, const char *
 void swr_v1_core_set_log_host(swr_v1_core_log_host);
 /* The C++ effects Rust's lifecycles run (crates/corebase/src/native.rs), which
  * native/corebase/globals.cc's swoole_init registers, so the Rust archive links
- * without C++. thread is this thread's SwooleTG; reset is SwooleG = {}; buffer
- * allocates or deletes SwooleTG.buffer_stack; logger is 0 close, 1 reopen, 2 delete. */
+ * without C++. effect runs one numbered effect (globals.cc lists them). */
 typedef struct {
     bool (*get_env)(const char *name, int *value);
-    void *(*thread)(void);
-    void (*reset)(void);
-    void (*buffer)(bool allocate);
-    void *(*new_pool)(void);
-    void (*delete_pool)(void *pool);
-    void (*logger)(int operation);
-    void (*signal_clear)(void);
-    void (*signal_block_all)(void);
-    bool (*timer_available)(void);
-    void (*timer_free)(void);
-    bool (*event_available)(void);
-    int (*event_free)(void);
-    uint8_t (*coroutine_is_in)(void);
+    uintptr_t (*effect)(int effect, uintptr_t argument);
 } swr_v1_core_native_host;
-void swr_v1_core_set_native_host(const swr_v1_core_native_host *);
+void swr_v1_core_set_native_host(swr_v1_core_native_host);
 #ifdef __cplusplus
 }
 namespace swoole {
