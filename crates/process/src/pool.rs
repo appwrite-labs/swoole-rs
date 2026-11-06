@@ -651,8 +651,7 @@ pub unsafe extern "C" fn swr_v1_process_pool_ipc_free(
 ///
 /// # Safety
 /// `ipc` is a live handle; `host` is a NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_ipc_address(
+pub(crate) unsafe fn swr_v1_process_pool_ipc_address(
     ipc: *mut PoolIpc,
     host: *const c_char,
     port: c_int,
@@ -671,11 +670,7 @@ pub unsafe extern "C" fn swr_v1_process_pool_ipc_address(
 ///
 /// # Safety
 /// `ipc` is a live handle with a stream; `socket` a native socket it now owns.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_ipc_set_listener(
-    ipc: *mut PoolIpc,
-    socket: *mut c_void,
-) {
+pub(crate) unsafe fn swr_v1_process_pool_ipc_set_listener(ipc: *mut PoolIpc, socket: *mut c_void) {
     // SAFETY: the caller's live handle.
     if let Some(stream) = (unsafe { &mut *ipc }).stream.as_mut() {
         stream.socket = socket;
@@ -734,8 +729,7 @@ pub unsafe extern "C" fn swr_v1_process_pool_ipc_connection(ipc: *const PoolIpc)
 ///
 /// # Safety
 /// `ipc` is a live handle; `data` is null or `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_ipc_respond(
+pub(crate) unsafe fn swr_v1_process_pool_ipc_respond(
     ipc: *mut PoolIpc,
     data: *const u8,
     length: u32,

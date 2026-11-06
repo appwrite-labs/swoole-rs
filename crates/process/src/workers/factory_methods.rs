@@ -35,8 +35,8 @@ const _: () = assert!(
 /// `swoole::SendData`.
 #[repr(C)]
 pub struct SendData {
-    info: DataHead,
-    data: *const c_void,
+    pub(crate) info: DataHead,
+    pub(crate) data: *const c_void,
 }
 
 static CALL: OnceLock<WorkersCall> = OnceLock::new();

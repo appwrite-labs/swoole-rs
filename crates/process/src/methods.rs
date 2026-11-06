@@ -3,11 +3,14 @@
 //! the hybrid links this crate (`upstream-symbols`). Native code registers its
 //! [`PoolNative`] table once; each method runs over it as its C++ forward did.
 
-use std::ffi::{c_int, c_void};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use crate::pool::{swr_v1_process_bailout, swr_v1_process_worker_send};
+use crate::pool::{
+    swr_v1_process_bailout, swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_respond,
+    swr_v1_process_pool_ipc_set_listener, swr_v1_process_worker_send,
+};
 use crate::process_pool::{
     PoolNative, PoolRecord, RAISE, RUN_CREATE_MESSAGE_BOX, RUN_CREATE_MESSAGE_BUS, RUN_DESTROY,
     RUN_DETACH, RUN_DROP_RELOAD_TASK, RUN_KILL_ALL, RUN_PUSH_MESSAGE, RUN_RELOAD,
@@ -16,7 +19,10 @@ use crate::process_pool::{
     swr_v1_process_pool_create, swr_v1_process_pool_dispatch_event, swr_v1_process_pool_push,
     swr_v1_process_pool_run_op, swr_v1_worker_symbol,
 };
-use crate::worker_globals::{swr_v1_worker_global_get, swr_v1_worker_global_set};
+use crate::reload_task::{WARN_KILL_ALL_FAILED, WARN_KILL_ONE_FAILED};
+use crate::worker_globals::{
+    swr_v1_worker_global_get, swr_v1_worker_global_max_requests, swr_v1_worker_global_set,
+};
 use crate::worker_record::{
     WorkerRecord, pipe_master, pipe_worker, pool_of, swr_v1_worker_exceeded_max_requests,
     swr_v1_worker_id, swr_v1_worker_pid,
@@ -364,6 +370,284 @@ pub unsafe extern "C" fn send_pipe_message(
     unsafe { swr_v1_process_worker_send(hooks, pool, pipe, queue, id, data, length, flags) }
 }
 
+/// `make_server_socket(type, host, port, backlog)`.
+pub type MakeServerSocket = unsafe extern "C" fn(
+    kind: c_int,
+    host: *const c_char,
+    port: c_int,
+    backlog: c_int,
+) -> *mut c_void;
+
+#[cfg(feature = "upstream-symbols")]
+// SAFETY: crates/tls defines it under its upstream symbol.
+unsafe extern "C" {
+    #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
+    fn make_server_socket(
+        kind: c_int,
+        host: *const c_char,
+        port: c_int,
+        backlog: c_int,
+    ) -> *mut c_void;
+}
+
+/// `ProcessPool::listen(socket_file, backlog)`: a unix stream listener.
+///
+/// # Safety
+/// `pool` is a created `ProcessPool`; `file` a NUL-terminated path.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_ZNK6swoole11ProcessPool6listenEPKci")]
+#[must_use]
+pub unsafe extern "C" fn listen_unix(
+    pool: *const PoolRecord,
+    file: *const c_char,
+    backlog: c_int,
+) -> c_int {
+    // SAFETY: as the caller guarantees; 5 is SW_SOCK_UNIX_STREAM.
+    unsafe { listen(pool, 5, file, 0, backlog, make_server_socket) }
+}
+
+/// `ProcessPool::listen(host, port, backlog)`: a TCP listener.
+///
+/// # Safety
+/// `pool` is a created `ProcessPool`; `host` a NUL-terminated address.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_ZNK6swoole11ProcessPool6listenEPKcii")]
+#[must_use]
+pub unsafe extern "C" fn listen_tcp(
+    pool: *const PoolRecord,
+    host: *const c_char,
+    port: c_int,
+    backlog: c_int,
+) -> c_int {
+    // SAFETY: as the caller guarantees; 1 is SW_SOCK_TCP.
+    unsafe { listen(pool, 1, host, port, backlog, make_server_socket) }
+}
+
+/// Both `listen`s, over `make`: only an `SW_IPC_SOCKET` pool has a stream
+/// listener, which it records with its address.
+///
+/// # Safety
+/// `pool` is a created `ProcessPool`; `host` a NUL-terminated string; `make`
+/// returns a native socket or null.
+#[must_use]
+pub unsafe fn listen(
+    pool: *const PoolRecord,
+    kind: c_int,
+    host: *const c_char,
+    port: c_int,
+    backlog: c_int,
+    make: MakeServerSocket,
+) -> c_int {
+    /// `SW_IPC_SOCKET`.
+    const IPC_SOCKET: u8 = 3;
+    // SAFETY: the caller lends a live pool.
+    let pool = unsafe { &*pool };
+    if pool.ipc_mode != IPC_SOCKET {
+        // SW_LOG_WARNING, SW_ERROR_OPERATION_NOT_SUPPORT.
+        swoole_rs_corebase::log::error_log(
+            4,
+            507,
+            c"ProcessPool::listen",
+            format_args!("not support, ipc_mode must be SW_IPC_SOCKET"),
+        );
+        return -1;
+    }
+    // SAFETY: a socket pool's IPC state; the caller's string.
+    unsafe { swr_v1_process_pool_ipc_address(pool.ipc, host, port) };
+    // SAFETY: as the caller guarantees.
+    let socket = unsafe { make(kind, host, port, backlog) };
+    if socket.is_null() {
+        return -1;
+    }
+    // SAFETY: as above; the pool now owns the listener.
+    unsafe { swr_v1_process_pool_ipc_set_listener(pool.ipc, socket) };
+    0
+}
+
+/// `ProcessPool::response(data, length)`: append to the stream connection's reply.
+///
+/// # Safety
+/// `pool` is a created `ProcessPool`; `data` is null or holds `length` bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole11ProcessPool8responseEPKcj")
+)]
+#[must_use]
+pub unsafe extern "C" fn response(pool: *const PoolRecord, data: *const u8, length: u32) -> c_int {
+    // SAFETY: the caller lends a live pool.
+    let ipc = unsafe { (*pool).ipc };
+    // SAFETY: its IPC state and the caller's bytes.
+    if unsafe { swr_v1_process_pool_ipc_respond(ipc, data, length) } {
+        0
+    } else {
+        // SW_ERROR_INVALID_PARAMS.
+        swoole_rs_corebase::log::set_last_error(505);
+        -1
+    }
+}
+
+/// `ProcessPool::send_message(worker_id, message, length)`: to the worker's
+/// master pipe, through the message bus when the pool has one.
+///
+/// # Safety
+/// `pool` is a created `ProcessPool` with a worker `worker_id`; `message` holds
+/// `length` bytes.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_ZNK6swoole11ProcessPool12send_messageEjPKcm")]
+#[must_use]
+pub unsafe extern "C" fn send_message(
+    pool: *const PoolRecord,
+    worker_id: u32,
+    message: *const c_char,
+    length: usize,
+) -> bool {
+    use crate::workers::factory_methods::SendData;
+    use swoole_rs_corebase::DataHead;
+    // SAFETY: src/protocol/message_bus.cc's method and crates/tls's.
+    unsafe extern "C" {
+        #[link_name = "_ZNK6swoole10MessageBus5writeEPNS_7network6SocketEPNS_8SendDataE"]
+        fn bus_write(bus: *mut c_void, socket: *mut c_void, data: *mut SendData) -> bool;
+        #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
+        fn send_async(socket: *mut c_void, data: *const c_void, length: usize) -> isize;
+    }
+    // SAFETY: the caller lends a live pool.
+    let pool = unsafe { &*pool };
+    // `get_worker`: the pool's record for `worker_id`.
+    let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
+    // SAFETY: as the caller guarantees.
+    let pipe = unsafe { pipe_master(pool.workers.wrapping_add(index)) };
+    if pool.message_bus.is_null() {
+        // SAFETY: the worker's pipe and the caller's bytes.
+        return unsafe { send_async(pipe, message.cast(), length) } != 0;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "DataHead's reactor_id and len are upstream's int16_t and uint32_t"
+    )]
+    let mut task = SendData {
+        info: DataHead {
+            reactor_id: swoole_get_worker_id() as i16,
+            len: length as u32,
+            ..DataHead::default()
+        },
+        data: message.cast(),
+    };
+    // SAFETY: the pool's bus, the worker's pipe and a task over the caller's bytes.
+    unsafe { bus_write(pool.message_bus, pipe, &raw mut task) }
+}
+
+/// `ProcessPool::pop_message(data, size)`: the next message in the master's box.
+///
+/// # Safety
+/// `pool` is a created `ProcessPool`; `data` is writable for `size` bytes.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_ZNK6swoole11ProcessPool11pop_messageEPvm")]
+#[must_use]
+pub unsafe extern "C" fn pop_message(
+    pool: *const PoolRecord,
+    data: *mut c_void,
+    size: usize,
+) -> c_int {
+    // SAFETY: the shared-memory channel's C++ method.
+    unsafe extern "C" {
+        #[link_name = "_ZN6swoole7Channel3popEPvi"]
+        fn channel_pop(channel: *mut c_void, data: *mut c_void, size: c_int) -> c_int;
+    }
+    // SAFETY: the caller lends a live pool.
+    let message_box = unsafe { (*pool).message_box };
+    if message_box.is_null() {
+        return -1;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "Channel::pop takes upstream's int length"
+    )]
+    let size = size as c_int;
+    // SAFETY: the pool's channel and the caller's buffer.
+    unsafe { channel_pop(message_box, data, size) }
+}
+
+/// `Worker::set_max_request(max_request, grace)`: this process's request limit.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Worker15set_max_requestEjj")
+)]
+pub extern "C" fn worker_set_max_request(_worker: *mut WorkerRecord, max_request: u32, grace: u32) {
+    // SAFETY: the original random primitive.
+    unsafe {
+        swr_v1_worker_global_max_requests(
+            max_request,
+            grace,
+            swoole_rs_corebase::swoole_system_random,
+        );
+    }
+}
+
+/// `swoole::ExitStatus`: a child's pid and `waitpid` status.
+#[repr(C)]
+pub struct ExitStatus {
+    pid: c_int,
+    status: c_int,
+}
+
+/// `Worker::report_error(exit_status)`: the abnormal exit warning.
+///
+/// # Safety
+/// `worker` is a live worker; `exit_status` a live `ExitStatus`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Worker12report_errorERKNS_10ExitStatusE")
+)]
+pub unsafe extern "C" fn worker_report_error(
+    worker: *const WorkerRecord,
+    exit_status: *const ExitStatus,
+) {
+    // SAFETY: the caller lends a live worker.
+    let id = unsafe { swr_v1_worker_id(worker) };
+    // SAFETY: the caller lends a live status.
+    let ExitStatus { pid, status } = unsafe { &*exit_status };
+    let signal = libc::WTERMSIG(*status);
+    let report = if signal == libc::SIGSEGV {
+        // SAFETY: SwooleG's message, valid until it next changes.
+        unsafe { CStr::from_ptr(swoole_rs_corebase::swr_v1_core_bug_report_message()) }
+            .to_string_lossy()
+    } else {
+        "".into()
+    };
+    swoole_rs_corebase::log::warning(
+        c"Worker::report_error",
+        format_args!(
+            "worker(pid={pid}, id={id}) abnormal exit, status={}, signal={signal}{report}",
+            libc::WEXITSTATUS(*status)
+        ),
+    );
+}
+
+/// `swoole::reload_warn`: a reload's failed or forced kill, under the
+/// `ReloadTask` method upstream logged it from; `errno` is the failed kill's.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole11reload_warnEiij")
+)]
+pub extern "C" fn reload_warn(kind: c_int, pid: c_int, worker_id: u32) {
+    use swoole_rs_corebase::log::{sys_warning, warning};
+    match kind {
+        WARN_KILL_ONE_FAILED => sys_warning(
+            c"ReloadTask::kill_one",
+            format_args!("kill({pid}, SIGTERM) [{worker_id}] failed"),
+        ),
+        WARN_KILL_ALL_FAILED => sys_warning(
+            c"ReloadTask::kill_all",
+            format_args!("failed to kill({pid}, SIGTERM) worker#[{worker_id}]"),
+        ),
+        _ => warning(
+            c"ReloadTask::kill_all",
+            format_args!("force kill worker process(pid={pid}, id={worker_id})"),
+        ),
+    }
+}
+
 /// `Worker::is_shutdown()`: the current worker's.
 #[cfg_attr(
     feature = "upstream-symbols",
@@ -454,6 +738,187 @@ pub extern "C" fn swoole_get_worker_symbol() -> std::ffi::c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pool::{
+        swr_v1_process_pool_ipc_address_of, swr_v1_process_pool_ipc_free,
+        swr_v1_process_pool_ipc_listener, swr_v1_process_pool_ipc_new,
+    };
+    use std::sync::Mutex;
+
+    /// A log line: kind, level, code, origin and message.
+    type Logged = (c_int, c_int, c_int, String, String);
+
+    static LOGGED: Mutex<Vec<Logged>> = Mutex::new(Vec::new());
+
+    unsafe extern "C" fn record(
+        kind: c_int,
+        level: c_int,
+        code: c_int,
+        origin: *const c_char,
+        message: *const c_char,
+    ) {
+        // SAFETY: the log host's NUL-terminated strings.
+        let text = |s| unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
+        if let Ok(mut logged) = LOGGED.lock() {
+            logged.push((kind, level, code, text(origin), text(message)));
+        }
+    }
+
+    /// What `origin` logged: (kind, level, code, message).
+    fn logged(origin: &str) -> Vec<(c_int, c_int, c_int, String)> {
+        LOGGED
+            .lock()
+            .map(|logged| {
+                logged
+                    .iter()
+                    .filter(|entry| entry.3 == origin)
+                    .map(|(kind, level, code, _, message)| (*kind, *level, *code, message.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Route this binary's logs to [`record`].
+    fn install() {
+        swoole_rs_corebase::log::swr_v1_core_set_log_host(record);
+    }
+
+    static LISTENER: u8 = 0;
+
+    unsafe extern "C" fn make(kind: c_int, _: *const c_char, port: c_int, _: c_int) -> *mut c_void {
+        if kind == 1 && port == 9501 {
+            (&raw const LISTENER).cast_mut().cast()
+        } else {
+            ptr::null_mut()
+        }
+    }
+
+    unsafe extern "C" fn keep(_: *mut c_void) {}
+
+    #[test]
+    fn listen_needs_a_socket_pool_and_keeps_its_listener() {
+        assert!(
+            logged("ProcessPool::listen").is_empty(),
+            "nothing logged yet"
+        );
+        // SAFETY: a zeroed record is a pool before `create`.
+        let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
+        pool.ipc = swr_v1_process_pool_ipc_new(true);
+        pool.ipc_mode = 1;
+        // SAFETY: the pool is live and the host a NUL-terminated string.
+        let refused = unsafe { listen(&raw const pool, 1, c"127.0.0.1".as_ptr(), 9501, 8, make) };
+        assert_eq!(
+            refused, -1,
+            "an SW_IPC_UNIXSOCK pool has no stream listener"
+        );
+        assert_eq!(
+            logged("ProcessPool::listen"),
+            [(
+                3,
+                4,
+                507,
+                "not support, ipc_mode must be SW_IPC_SOCKET".to_owned()
+            )],
+            "the upstream warning"
+        );
+        pool.ipc_mode = 3;
+        // SAFETY: as above.
+        let failed = unsafe { listen(&raw const pool, 1, c"127.0.0.1".as_ptr(), 9502, 8, make) };
+        assert_eq!(failed, -1, "no socket, no listener");
+        // SAFETY: the pool's IPC state.
+        assert!(
+            unsafe { swr_v1_process_pool_ipc_listener(pool.ipc) }.is_null(),
+            "none kept"
+        );
+        // SAFETY: as above.
+        let listened = unsafe { listen(&raw const pool, 1, c"127.0.0.1".as_ptr(), 9501, 8, make) };
+        assert_eq!(listened, 0, "listening");
+        // SAFETY: the pool's IPC state.
+        let listener = unsafe { swr_v1_process_pool_ipc_listener(pool.ipc) };
+        assert_eq!(
+            listener.cast_const(),
+            (&raw const LISTENER).cast(),
+            "the socket is kept"
+        );
+        let mut port = 0;
+        // SAFETY: the pool's IPC state; `port` is writable.
+        let address =
+            unsafe { CStr::from_ptr(swr_v1_process_pool_ipc_address_of(pool.ipc, &raw mut port)) };
+        assert_eq!((address, port), (c"127.0.0.1", 9501), "and its address");
+        // SAFETY: the pool's IPC state, not used again.
+        unsafe { swr_v1_process_pool_ipc_free(pool.ipc, keep) };
+    }
+
+    #[test]
+    fn a_response_needs_a_connection() {
+        // SAFETY: a zeroed record is a pool before `create`.
+        let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
+        pool.ipc = swr_v1_process_pool_ipc_new(true);
+        // SAFETY: the pool is live and the bytes readable.
+        assert_eq!(
+            unsafe { response(&raw const pool, b"ok".as_ptr(), 2) },
+            -1,
+            "no connection"
+        );
+        assert_eq!(
+            swoole_rs_corebase::log::last_error(),
+            505,
+            "SW_ERROR_INVALID_PARAMS"
+        );
+        // SAFETY: the pool's IPC state, not used again.
+        unsafe { swr_v1_process_pool_ipc_free(pool.ipc, keep) };
+    }
+
+    #[test]
+    fn reload_kills_warn_under_upstream_reload_task() {
+        install();
+        reload_warn(WARN_KILL_ALL_FAILED, 10, 1);
+        reload_warn(2, 11, 2);
+        reload_warn(WARN_KILL_ONE_FAILED, 12, 3);
+        let all = logged("ReloadTask::kill_all");
+        assert_eq!(all.len(), 2, "two kill_all warnings: {all:?}");
+        assert_eq!(
+            (all[0].0, all[0].3.as_str()),
+            (0, "failed to kill(10, SIGTERM) worker#[1]"),
+            "a system warning"
+        );
+        assert_eq!(
+            (all[1].0, all[1].3.as_str()),
+            (1, "force kill worker process(pid=11, id=2)"),
+            "a plain warning"
+        );
+        let one = logged("ReloadTask::kill_one");
+        assert_eq!(one.len(), 1, "one kill_one warning: {one:?}");
+        assert_eq!(
+            (one[0].0, one[0].3.as_str()),
+            (0, "kill(12, SIGTERM) [3] failed"),
+            "a system warning"
+        );
+    }
+
+    #[test]
+    fn an_abnormal_exit_reports_its_code_and_signal() {
+        install();
+        // SAFETY: a zeroed record is a worker before `init`.
+        let mut worker: WorkerRecord = unsafe { std::mem::zeroed() };
+        // SAFETY: a live record.
+        unsafe { crate::worker_record::swr_v1_worker_set_id(&raw mut worker, 4) };
+        let status = ExitStatus {
+            pid: 321,
+            status: 3 << 8,
+        };
+        // SAFETY: both are live.
+        unsafe { worker_report_error(&raw const worker, &raw const status) };
+        assert_eq!(
+            logged("Worker::report_error"),
+            [(
+                1,
+                0,
+                0,
+                "worker(pid=321, id=4) abnormal exit, status=3, signal=0".to_owned()
+            )],
+            "upstream's warning"
+        );
+    }
 
     #[test]
     fn worker_identity_round_trips_through_the_upstream_functions() {
