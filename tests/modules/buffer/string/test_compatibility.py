@@ -9,10 +9,11 @@ import sys
 
 import pytest
 
-from tools.build_hybrid import hybrid_tree
+from tools.build_hybrid import hybrid_tree, native_sources
 from tools.harness import ROOT, run_compiler, run_isolated
 
-# The hybrid deletes string.cc (Rust defines String's methods) and base.cc (its glue is in misc.cc).
+# The hybrid deletes string.cc (Rust defines String's methods), base.cc and misc.cc (what is left
+# of them is native/corebase/globals.cc, which it stages with its other native sources).
 SOURCES = ['src/core/string.cc', 'src/core/base.cc', 'src/core/misc.cc', 'src/os/base.cc', 'src/core/base64.cc', 'src/core/log.cc',
            'src/core/error.cc']
 
@@ -26,7 +27,7 @@ def test_compatibility(pinned, request, pytestconfig, variant):
     if variant == 'selected':
         tree, headers = hybrid_tree(archive)
     command = ['c++', '-std=c++17', '-O1', '-g', '-ffunction-sections', '-fdata-sections', *headers,
-               *[str(tree / name) for name in SOURCES if (tree / name).exists()], str(Path(__file__).with_name('compatibility.cc')), *openssl]
+               *[str(tree / name) for name in [*SOURCES, *native_sources()] if (tree / name).exists()], str(Path(__file__).with_name('compatibility.cc')), *openssl]
     if variant == 'selected':
         command.append(str(archive))
     command += ['-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections', '-lm']

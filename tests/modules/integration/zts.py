@@ -36,7 +36,7 @@ def main():
     p.add_argument('--locks-threads', action='store_true', help='After real ZTS startup, run the owned-lock/atomic/barrier consumer; no cross-owner unlock originals')
     a = p.parse_args()
     sys.path.insert(0, str(a.checkout.resolve()))
-    from tools.build_hybrid import MODULES, apply_patch_verified, headers_for, native_compilation, patches_for
+    from tools.build_hybrid import MODULES, apply_patch_verified, headers_for, native_compilation, patches_for, stage_native_sources
     from tools.build_upstream import COMMIT, build_extension, require_build_space
     from tools.check_migration import validate
     from tools.harness import Engine, write_report
@@ -132,6 +132,7 @@ def main():
                 for patch in patches:
                     row['patch_proofs'].append(apply_patch_verified(source, a.checkout / patch['path'],
                                                                    patch['upstream_paths'], patch['sha256']))
+                stage_native_sources(source)
                 extra += ['--with-swoole-rs=' + str(prefix)]
             log = work / (name + '-build.log')
             row['configure'] = build_extension(source, log, args, extra)

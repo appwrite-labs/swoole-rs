@@ -221,6 +221,63 @@ pub unsafe extern "C" fn swr_v1_core_config_set_task_path(
     }
 }
 
+/// `swoole_set_task_tmpdir` under its lock: set the path and warn as upstream
+/// does. 0 on success, a warned failure above 0, and the string store's status
+/// below 0, which native code raises.
+/// # Safety
+/// As `swr_v1_core_config_set_task_path`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_core_set_task_tmpdir(
+    owner: *mut CoreConfig,
+    input: *const u8,
+    length: usize,
+) -> i32 {
+    let mut scratch = [0u8; libc::PATH_MAX as usize];
+    // SAFETY: the caller's input; scratch is a disjoint local.
+    let result = unsafe {
+        swr_v1_core_config_set_task_path(owner, input, length, scratch.as_mut_ptr(), scratch.len())
+    };
+    let mkdir = c"swoole_mkdir_recursive";
+    match result.mkdir_status {
+        1 => {
+            let code = crate::host::errno();
+            let failed = std::ffi::CStr::from_bytes_until_nul(&scratch).unwrap_or_default();
+            let failed = failed.to_string_lossy();
+            crate::log::sys_warning_errno(code, mkdir, format_args!("mkdir('{failed}') failed"));
+        }
+        2 => crate::log::error_log(
+            LOG_WARNING,
+            NAME_TOO_LONG,
+            mkdir,
+            format_args!(
+                "mkdir() failed. Path exceeds the limit of {} characters",
+                libc::PATH_MAX - 1
+            ),
+        ),
+        _ => {}
+    }
+    let origin = c"swoole_set_task_tmpdir";
+    // SAFETY: the caller's terminated input; printf's %s stops at its first NUL.
+    let dir = unsafe { std::ffi::CStr::from_ptr(input.cast()) }.to_string_lossy();
+    match result.status {
+        1 => crate::log::warning(origin, format_args!("wrong absolute path '{dir}'")),
+        2 => crate::log::warning(origin, format_args!("create task tmp dir('{dir}') failed")),
+        3 => crate::log::warning(
+            origin,
+            format_args!(
+                "task tmp_dir is too large, the max size is '{}'",
+                crate::constants::SW_TASK_TMP_PATH_SIZE - 1
+            ),
+        ),
+        _ => {}
+    }
+    result.status
+}
+
+/// `SW_LOG_WARNING` and `SW_ERROR_NAME_TOO_LONG`.
+const LOG_WARNING: i32 = 4;
+const NAME_TOO_LONG: i32 = 504;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,4 @@
-"""The hybrid build's corebase glue (misc.cc) and actual-call proof for corebase correctness gates."""
+"""The hybrid build's corebase glue (native/corebase/globals.cc) and actual-call proof for corebase correctness gates."""
 import os
 from pathlib import Path
 import platform
@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.build_hybrid import hybrid_tree
 
-CALLS = ('parse_stoi', 'lifecycle_next')
+CALLS = ('parse_stoi',)
 # Upstream functions Rust defines under their own C++ symbols; the hybrid tree has no body.
 DEFINED = ('_Z21swoole_common_divisorjj', '_Z22swoole_common_multiplejj', '_Z22swoole_version_comparePKcS0_',
            '_Z14swoole_dec2hexmi', '_Z16swoole_type_sizec', '_Z11swoole_itoaPcl', '_Z14swoole_hex2decPKcPm')
@@ -27,12 +27,12 @@ def check_git_environment():
 
 
 def hybrid_corebase(archive):
-    """misc.cc of the hybrid build the archive came from (base.cc's remaining glue is there), the
-    flags its build compiled it with (its patched headers, Rust headers and config.h) and a
-    receipt. error.cc rides along: the log host misc.cc registers at load calls its
-    swoole_strerror and swoole_is_ignored_error."""
+    """globals.cc as the hybrid build the archive came from staged it (what is left of base.cc
+    and misc.cc), the flags its build compiled it with (its patched headers, Rust headers and
+    config.h) and a receipt. error.cc rides along: the log host globals.cc registers at load
+    calls its swoole_strerror and swoole_is_ignored_error."""
     source, flags = hybrid_tree(archive)
-    patched = (source / 'src/core/misc.cc').read_bytes()
+    patched = (source / 'src/swoole_rs_corebase_globals.cc').read_bytes()
     if any(('swr_v1_corebase_' + name + '(').encode() not in patched for name in CALLS):
         raise ValueError('Required corebase caller absent')
     if b'swr_v1_core_init()' not in patched:

@@ -29,7 +29,8 @@ pub use host::{
     swoole_system_random, swr_v1_core_format_result,
 };
 pub use lifecycle::{
-    LifecycleState, swr_v1_corebase_lifecycle_next, swr_v1_corebase_task_tmp_next,
+    swoole_clean, swoole_fork, swoole_is_main_thread, swoole_thread_clean, swoole_thread_init,
+    swr_v1_core_fork_exec,
 };
 pub use random::{swoole_random_string, swr_v1_corebase_random_char, swr_v1_os_random_bytes};
 pub use thread::*;
@@ -78,7 +79,8 @@ pub extern "C" fn swoole_api_version_id() -> c_int {
 }
 
 /// Parse the successful, representable portion of `std::stoi` using the host
-/// decimal parser. Native code retains the throwing path and output publication.
+/// decimal parser, leaving errno as it was, as a successful `std::stoi` does.
+/// Native code retains the throwing path.
 /// # Safety
 /// `input` is a valid NUL-terminated string and `output` is writable and disjoint.
 #[unsafe(no_mangle)]
@@ -89,10 +91,14 @@ pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
     if input.is_null() || output.is_null() {
         return 0;
     }
+    let saved = host::errno();
+    host::set_errno(0);
     let mut end = ptr::null_mut();
     // SAFETY: `input` is a non-null, NUL-terminated string; `end` is a live local.
     let value = unsafe { strtol(input, &raw mut end, 10) };
-    if end.cast_const() == input {
+    let range = host::errno() == libc::ERANGE;
+    host::set_errno(saved);
+    if end.cast_const() == input || range {
         return 0;
     }
     let Ok(value) = c_int::try_from(value) else {

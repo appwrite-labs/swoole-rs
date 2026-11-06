@@ -20,11 +20,11 @@ unsafe extern "C" {
     fn backtrace_symbols(frames: *const *mut c_void, size: c_int) -> *mut *mut c_char;
 }
 
-fn errno() -> c_int {
+pub(crate) fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-fn set_errno(value: c_int) {
+pub(crate) fn set_errno(value: c_int) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: returns this thread's errno slot, live for the thread.
     let slot = unsafe { libc::__errno_location() };
