@@ -37,45 +37,6 @@ int swr_zend_try_facade_coroutine(long (*create)(zend_fcall_info_cache *, uint32
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed || raised;
 }
-int swr_zend_try_facade_append(zval *array, zval *value) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { add_next_index_zval(array, value); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_array_two(zval *value) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { array_init_size(value, 2); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_add_index(HashTable *table, zend_ulong index, zval *value, zval **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_hash_index_add(table, index, value); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_add_bytes(HashTable *table, const char *key, size_t length, zval *value, zval **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_hash_str_add(table, key, length, value); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_update_index(HashTable *table, zend_ulong index, zval *value, zval **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_hash_index_update(table, index, value); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_update_bytes(HashTable *table, const char *key, size_t length, zval *value, zval **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_hash_str_update(table, key, length, value); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-bool swr_zend_facade_numeric_key(const char *key, size_t length, zend_ulong *index) {
-    return ZEND_HANDLE_NUMERIC_STR(key, length, *index);
-}
 int swr_zend_try_facade_palloc(size_t size, void **result) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { *result = pemalloc(size, 1); }
@@ -97,7 +58,6 @@ int swr_zend_try_facade_intern(zend_string *string, zend_string **result) {
 }
 HashTable *swr_zend_facade_function_table(void) { return EG(function_table); }
 
-void swr_zval_facade_addref(zval *value) { Z_ADDREF_P(value); }
 int swr_zend_try_facade_alloc(size_t size, void **result) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { *result = emalloc(size); }

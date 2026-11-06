@@ -25,18 +25,6 @@ void swr_v1_phphelpers_variable_reset(struct _zval_struct *);
 void swr_v1_phphelpers_variable_string(struct _zval_struct *, const char *, size_t);
 void swr_v1_phphelpers_variable_move(struct _zval_struct *, struct _zval_struct *);
 void swr_v1_phphelpers_variable_ref(struct _zval_struct *, bool);
-struct _Bucket;
-typedef struct {
-    struct _zval_struct *value;
-    struct _zend_string *key;
-    struct _Bucket *current;
-    struct _Bucket *end;
-    uint64_t index;
-} SwrPhpIterator;
-SwrPhpIterator swr_v1_phphelpers_iterator_new(struct _Bucket *, struct _Bucket *, bool);
-void swr_v1_phphelpers_iterator_next(SwrPhpIterator *);
-size_t swr_v1_phphelpers_array_count(const struct _zval_struct *);
-bool swr_v1_phphelpers_array_set(struct _zval_struct *, uint64_t, struct _zval_struct *, bool);
 struct _zend_fcall_info_cache;
 struct _zend_class_entry;
 typedef struct SwrPhpCallable SwrPhpCallable;
@@ -63,12 +51,8 @@ int swr_v1_phphelpers_function_call(struct _zend_fcall_info_cache *, uint32_t, s
     long (*)(struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *, struct _zval_struct *, uint8_t *),
     void (*)(const char *));
 void swr_v1_phphelpers_named_call(const char *, size_t, uint32_t, struct _zval_struct *, struct _zval_struct *);
-union _zend_function;
-struct _zend_array;
-void swr_v1_phphelpers_array_merge(struct _zval_struct *, const char *, size_t, struct _zval_struct *);
 void swr_v1_phphelpers_known_init(struct _zend_string ***);
 void swr_v1_phphelpers_known_free(struct _zend_string ***);
-union _zend_function *swr_v1_phphelpers_function_find(const struct _zend_array *, const char *, size_t);
 /* The remaining async admission seam borrows native facts only. */
 /* Common Native async admission: initialized phase0; blocking skips context.
  * Native observes context only on request, then invokes fn/async after return.
