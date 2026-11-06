@@ -43,6 +43,9 @@ pub struct ServerState {
     ports: std::sync::Mutex<Vec<AtomicPtr<core::ffi::c_void>>>,
     /// The on* members and `dispatch_func` (`callbacks.rs`).
     pub(crate) callbacks: crate::callbacks::ServerCallbacks,
+    /// `upload_tmp_dir`, the HTTP server's directory for uploaded files
+    /// (`None`: `/tmp`), as `set()` gave it.
+    upload_tmp_dir: std::sync::Mutex<Option<Box<[u8]>>>,
 }
 
 impl Default for ServerState {
@@ -62,6 +65,7 @@ impl ServerState {
             commands: std::sync::Mutex::new(crate::commands::Commands::new()),
             ports: std::sync::Mutex::new(Vec::new()),
             callbacks: crate::callbacks::ServerCallbacks::new(),
+            upload_tmp_dir: std::sync::Mutex::new(None),
         }
     }
 
@@ -109,10 +113,49 @@ impl ServerState {
         state
     }
 
+    /// `upload_tmp_dir = dir`; only before the server starts.
+    pub(crate) fn set_upload_tmp_dir(&self, dir: &[u8]) {
+        *self
+            .upload_tmp_dir
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(dir.into());
+    }
+
+    /// `upload_tmp_dir`'s bytes, valid until the next `set_upload_tmp_dir`.
+    pub(crate) fn upload_tmp_dir(&self) -> &[u8] {
+        let dir = self
+            .upload_tmp_dir
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(dir) = dir.as_deref() else {
+            return b"/tmp";
+        };
+        // SAFETY: the boxed bytes stay put until `set_upload_tmp_dir` replaces
+        // them, which only `set()` does, before any request reads them.
+        unsafe { core::slice::from_raw_parts(dir.as_ptr(), dir.len()) }
+    }
+
     /// The round before this call; it wraps as `sw_atomic_fetch_add` does.
     pub(crate) fn next_round(&self) -> u32 {
         self.round.fetch_add(1, Ordering::SeqCst)
     }
+}
+
+/// `upload_tmp_dir`'s bytes and their `length`, valid until `set()` replaces
+/// them.
+///
+/// # Safety
+/// `state` is live and `length` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_upload_tmp_dir(
+    state: *const ServerState,
+    length: *mut usize,
+) -> *const u8 {
+    // SAFETY: per the caller.
+    let dir = unsafe { &*state }.upload_tmp_dir();
+    // SAFETY: per the caller.
+    unsafe { *length = dir.len() };
+    dir.as_ptr()
 }
 
 /// # Safety

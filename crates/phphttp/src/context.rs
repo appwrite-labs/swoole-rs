@@ -6,14 +6,16 @@ use crate::{
     state::{Slot, State},
 };
 use std::{
+    borrow::Cow,
     collections::HashSet,
-    ffi::{CStr, CString, c_char, c_void},
+    ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
     rc::Rc,
     sync::atomic::{AtomicU32, Ordering::Relaxed},
 };
+use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
-    Class, Object, init_object,
+    Class, Object, bailout, init_object,
     sys::{
         IS_NULL, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree,
         swr_zend_http_property_offset, swr_zend_string_release, zend_class_entry, zend_object,
@@ -103,13 +105,19 @@ fn object(slot: &mut Slot, ce: *mut zend_class_entry, ctx: *mut Context, offset:
     unsafe { set_long(property, fd) };
 }
 
-/// `swoole_http_context_new` after `new Context()`: the request and response
-/// objects, both pointing at `ctx` and holding `fd`, and the request's
-/// `server` and `header` arrays.
-/// # Safety
-/// `ctx` is a new, value-initialised context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_context_objects(ctx: *mut Context, fd: i64) {
+/// `swoole_http_context_new`: a new context with its request and response
+/// objects, both pointing at it and holding `fd`, and the request's `server`
+/// and `header` arrays.
+#[cfg_attr(
+    target_os = "macos",
+    unsafe(export_name = "_Z23swoole_http_context_newx")
+)]
+#[cfg_attr(
+    not(target_os = "macos"),
+    unsafe(export_name = "_Z23swoole_http_context_newl")
+)]
+pub(crate) extern "C" fn context_new(fd: i64) -> *mut Context {
+    let ctx = swr_v1_phphttp_context_new();
     let state = send::state(ctx);
     object(
         &mut state.request.zobject,
@@ -128,24 +136,10 @@ pub unsafe extern "C" fn swr_v1_phphttp_context_objects(ctx: *mut Context, fd: i
     parse::property(state, Property::Server);
     parse::property(state, Property::Header);
     state.fd = fd;
+    ctx
 }
 
 unsafe extern "C" {
-    /// `Server::send` to `fd`, waiting for the socket when its buffer is full.
-    fn swr_http_host_server_send(
-        server: *mut c_void,
-        fd: i64,
-        data: *const c_char,
-        length: usize,
-    ) -> bool;
-    fn swr_http_host_server_sendfile(
-        server: *mut c_void,
-        fd: i64,
-        file: *mut zend_string,
-        offset: i64,
-        length: usize,
-    ) -> bool;
-    fn swr_http_host_server_close(server: *mut c_void, fd: i64) -> bool;
     /// The coroutine socket's `send_all`: true once every byte is sent.
     fn swr_http_host_socket_send(socket: *mut c_void, data: *const c_char, length: usize) -> bool;
     fn swr_http_host_socket_sendfile(
@@ -157,20 +151,9 @@ unsafe extern "C" {
     fn swr_http_host_socket_close(socket: *mut c_void) -> bool;
     /// `php_swoole_get_socket`: a socket object's coroutine socket.
     fn swr_http_host_socket(socket: *mut zval) -> *mut c_void;
-    /// The server's `upload_tmp_dir`, NUL-terminated.
-    fn swr_http_host_server_upload_tmp_dir(server: *mut c_void) -> *const c_char;
-    /// The server's `http_compression_types` lists `kind`; a null `kind` asks
-    /// whether it lists any.
-    fn swr_http_host_server_compression_type(
-        server: *mut c_void,
-        kind: *const c_char,
-        length: usize,
-    ) -> bool;
-    /// `php_swoole_socket_is_closed`.
-    fn swr_http_host_socket_closed(socket: *const zval) -> bool;
-    /// The server still holds the session's connection, neither closed nor
-    /// closed by the peer.
-    fn swr_http_host_connection_open(server: *mut c_void, fd: i64) -> bool;
+    /// crates/phpclients' `php_swoole_socket_is_closed`.
+    #[link_name = "_Z27php_swoole_socket_is_closedPK12_zval_struct"]
+    fn php_swoole_socket_is_closed(socket: *const zval) -> bool;
 }
 
 /// `new Context()`: a value-initialised context, which
@@ -224,7 +207,46 @@ pub(crate) fn send_raw(ctx: *mut Context, data: *const c_char, length: usize) ->
         unsafe { swr_http_host_socket_send(target, data, length) }
     } else {
         // SAFETY: the context's live server and `length` bytes.
-        unsafe { swr_http_host_server_send(target, fd, data, length) }
+        unsafe { server_send(target, fd, data, length) }
+    }
+}
+
+/// `SW_ERROR_OUTPUT_SEND_YIELD`.
+const OUTPUT_SEND_YIELD: c_int = 1010;
+
+unsafe extern "C" {
+    /// crates/phpserver's wait for the session's buffer to drain, then send:
+    /// 0 false, 1 true, 2 bailed out.
+    fn swr_v1_phpserver_send_yield(
+        server: *mut c_void,
+        session_id: i64,
+        data: *const c_char,
+        length: usize,
+    ) -> c_int;
+}
+
+/// `Server::send` to `fd`, waiting in a coroutine while the socket's buffer
+/// is full. A bailout while waiting is left for the handler to raise.
+/// # Safety
+/// `server` is the live server and `data` holds `length` bytes.
+unsafe fn server_send(server: *mut c_void, fd: i64, data: *const c_char, length: usize) -> bool {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Server::send's uint32_t length"
+    )]
+    // SAFETY: per the caller.
+    let sent = unsafe { server_methods::send(server, fd, data.cast(), length as u32) };
+    if sent || swoole_rs_corebase::log::last_error() != OUTPUT_SEND_YIELD {
+        return sent;
+    }
+    // SAFETY: per the caller.
+    match unsafe { swr_v1_phpserver_send_yield(server, fd, data, length) } {
+        1 => true,
+        2 => {
+            bailout::defer(Err(bailout::Bailout));
+            false
+        }
+        _ => false,
     }
 }
 
@@ -241,8 +263,19 @@ pub(crate) fn sendfile(
         // SAFETY: the context's live socket and a live file name.
         unsafe { swr_http_host_socket_sendfile(target, file, offset, length) }
     } else {
-        // SAFETY: the context's live server and a live file name.
-        unsafe { swr_http_host_server_sendfile(target, fd, file, offset, length) }
+        // SAFETY: a live file name.
+        let name = unsafe { swoole_rs_zend::string::bytes(file) };
+        // SAFETY: the context's live server and the file name's bytes.
+        unsafe {
+            server_methods::sendfile(
+                target,
+                fd,
+                name.as_ptr().cast(),
+                u32::try_from(name.len()).unwrap_or(u32::MAX),
+                offset,
+                length,
+            )
+        }
     }
 }
 
@@ -255,7 +288,7 @@ pub(crate) fn close(ctx: *mut Context) -> bool {
         unsafe { swr_http_host_socket_close(target) }
     } else {
         // SAFETY: the context's live server.
-        unsafe { swr_http_host_server_close(target, fd) }
+        unsafe { server_methods::close(target, fd, false) }
     }
 }
 
@@ -349,17 +382,15 @@ pub unsafe extern "C" fn swr_v1_phphttp_context_copy(ctx: *mut Context, from: *c
 
 /// `upload_tmp_dir`: the coroutine server's or `Request::create`'s, else
 /// the server's, else `/tmp`.
-pub(crate) fn upload_tmp_dir(state: &State) -> &CStr {
+pub(crate) fn upload_tmp_dir(state: &State) -> Cow<'_, CStr> {
     if let Some(directory) = &state.upload_tmp_dir {
-        return directory;
+        return Cow::Borrowed(directory);
     }
     if co_socket(state) || state.private_data.is_null() {
-        return c"/tmp";
+        return Cow::Borrowed(c"/tmp");
     }
     // SAFETY: the context's live server.
-    let directory = unsafe { swr_http_host_server_upload_tmp_dir(state.private_data) };
-    // SAFETY: the server's NUL-terminated `std::string`, which outlives its requests.
-    unsafe { CStr::from_ptr(directory) }
+    Cow::Owned(unsafe { view::upload_tmp_dir(state.private_data) })
 }
 
 /// A directory as `std::string::c_str()` reads it: up to its first NUL.
@@ -382,9 +413,8 @@ pub(crate) fn compression_type(state: &State, kind: Option<&[u8]>) -> bool {
     if co_socket(state) || state.private_data.is_null() {
         return false;
     }
-    let (data, length) = kind.map_or((ptr::null(), 0), |kind| (kind.as_ptr(), kind.len()));
-    // SAFETY: the live server and `length` bytes.
-    unsafe { swr_http_host_server_compression_type(state.private_data, data.cast(), length) }
+    // SAFETY: the context's live server.
+    unsafe { view::compression_type(state.private_data, kind) }
 }
 
 /// `onBeforeRequest`: a server's request is counted, or queued past
@@ -419,10 +449,11 @@ pub(crate) fn available(ctx: *mut Context) -> bool {
     }
     if co_socket(state) {
         // SAFETY: the context's live socket zval.
-        return !unsafe { swr_http_host_socket_closed(&raw const state.zsocket) };
+        return !unsafe { php_swoole_socket_is_closed(&raw const state.zsocket) };
     }
     // SAFETY: the server the context is bound to.
-    unsafe { swr_http_host_connection_open(state.private_data, state.fd) }
+    unsafe { view::by_session(state.private_data, state.fd) }
+        .is_some_and(|conn| conn.closed.load(Relaxed) == 0 && conn.peer_closed == 0)
 }
 
 /// `Context::free`: release the context once neither object nor an HTTP/2
@@ -484,27 +515,12 @@ mod tests {
         assert_eq!(directory(b"/tmp").as_bytes(), b"/tmp");
     }
 
-    // The server's answers, which a context bound to no server never asks for.
-    #[unsafe(no_mangle)]
-    extern "C" fn swr_http_host_server_upload_tmp_dir(_: *mut c_void) -> *const c_char {
-        c"/server".as_ptr()
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn swr_http_host_server_compression_type(
-        _: *mut c_void,
-        _: *const c_char,
-        _: usize,
-    ) -> bool {
-        true
-    }
-
     #[test]
     fn a_coroutine_servers_types_answer_without_the_server() {
         // A value-initialised context: no socket bound, no server.
         let mut state: State = unsafe { std::mem::zeroed() };
         assert!(!compression_type(&state, None));
-        assert_eq!(upload_tmp_dir(&state), c"/tmp");
+        assert_eq!(*upload_tmp_dir(&state), *c"/tmp");
         state.compression_types = Some(Rc::new(HashSet::from([b"text/html".to_vec().into()])));
         assert!(compression_type(&state, None));
         assert!(compression_type(&state, Some(b"text/html")));
@@ -513,6 +529,6 @@ mod tests {
         assert!(compression_type(&state, None), "an empty list still lists");
         assert!(!compression_type(&state, Some(b"text/html")));
         state.upload_tmp_dir = Some(directory(b"/srv"));
-        assert_eq!(upload_tmp_dir(&state), c"/srv");
+        assert_eq!(*upload_tmp_dir(&state), *c"/srv");
     }
 }

@@ -182,31 +182,20 @@ bool swr_v1_phphttp_multipart_boundary(void *context, const char *at, size_t len
 bool swr_v1_phphttp_multipart_init(void *context, const char *boundary, int length);
 bool swr_v1_phphttp_multipart_parse(void *context, const char *at, size_t length);
 
-/* Rust's side of the context: a new context's request and response objects. */
-void swr_v1_phphttp_context_objects(void *ctx, int64_t fd);
-/* Context::free (crates/phphttp/src/context.rs) and what it and the response's
- * release ask of C++: a coroutine socket's state and a server connection's. */
+/* Context::free (crates/phphttp/src/context.rs). */
 void swr_v1_phphttp_context_free(void *ctx);
-bool swr_http_host_socket_closed(const struct _zval_struct *socket);
-bool swr_http_host_connection_open(void *server, int64_t fd);
 /* The context's transport (context.rs): ctx->send and ctx->close, Context::bind
  * to a server or (`server` null) a coroutine socket object, Context::copy and
  * onBeforeRequest (false: not now). It sends through the server or the
- * coroutine socket, and reads the server's upload_tmp_dir and
- * http_compression_types (a null type asks whether it lists any). */
+ * coroutine socket. */
 bool swr_v1_phphttp_send(void *ctx, const char *data, size_t length);
 bool swr_v1_phphttp_close(void *ctx);
 void swr_v1_phphttp_context_bind(void *ctx, void *server, struct _zval_struct *socket);
 void swr_v1_phphttp_context_copy(void *ctx, const void *from);
-bool swr_http_host_server_send(void *server, int64_t fd, const char *data, size_t length);
-bool swr_http_host_server_sendfile(void *server, int64_t fd, struct _zend_string *file, int64_t offset, size_t length);
-bool swr_http_host_server_close(void *server, int64_t fd);
 bool swr_http_host_socket_send(void *sock, const char *data, size_t length);
 bool swr_http_host_socket_sendfile(void *sock, struct _zend_string *file, int64_t offset, size_t length);
 bool swr_http_host_socket_close(void *sock);
 void *swr_http_host_socket(struct _zval_struct *socket);
-const char *swr_http_host_server_upload_tmp_dir(void *server);
-bool swr_http_host_server_compression_type(void *server, const char *type, size_t length);
 
 /* Swoole\WebSocket\Server, Frame and CloseFrame (crates/phphttp/src/websocket.rs).
  * MINIT registers them and the constants, returning the server class and
@@ -250,57 +239,6 @@ bool swr_ws_host_server_compression(void *server);
 void swr_ws_host_set_compression(void *server, int64_t fd, bool compression);
 void swr_ws_host_co_protocol(void *context);
 
-/* Swoole\Http\Server's per-worker state (crates/phphttp/src/server.rs): the
- * addresses cached for keep-alive sessions (`server` a swoole::Server, `conn`
- * its swoole::Connection, `table` the request's `server` array, `loopback` 4
- * or 6 for a loopback peer) and the requests queued past
- * worker_max_concurrency. What it asks of C++: an address, the worker's
- * counters (false without a server worker) and deferring a queued request's
- * handler. */
-struct _zend_array;
-void swr_v1_phphttp_server_addresses(void *server, void *conn, struct _zend_array *table, int64_t session,
-                                     int64_t local_port, int64_t remote_port, int loopback, bool cache);
-void swr_v1_phphttp_server_close(int64_t session);
-void swr_v1_phphttp_server_rshutdown(void);
-typedef struct { uint32_t *concurrency; uint32_t *server_concurrency; uint32_t max_concurrency; bool shutdown; } swr_http_worker;
-const char *swr_http_host_address(void *server, void *conn, bool local);
-bool swr_http_host_worker(swr_http_worker *worker);
-void swr_http_host_defer(void *context);
-/* php_swoole_http_server_onReceive. It returns what the trampoline does next:
- * return SW_ERR (CLOSED), hand the data to the TCP, WebSocket or HTTP/2
- * onReceive, or return SW_OK (DONE: Rust parsed the request and ran its
- * handler). It asks C++ for the connection and port facts (null: closed), a
- * new context holding the request data, the before-request hook, the port's
- * onHandshake or onRequest, a notice and zend::function::call (swr_hsc_call).
- * swr_http_host_defer defers swr_v1_phphttp_server_deferred, a queued
- * request's handler. */
-enum {
-    SWR_PHPHTTP_RECEIVE_CLOSED = 0,
-    SWR_PHPHTTP_RECEIVE_TCP = 1,
-    SWR_PHPHTTP_RECEIVE_WEBSOCKET = 2,
-    SWR_PHPHTTP_RECEIVE_HTTP2 = 3,
-    SWR_PHPHTTP_RECEIVE_DONE = 5,
-};
-int swr_v1_phphttp_server_receive(void *server, void *request, int64_t session, int server_fd);
-void swr_v1_phphttp_server_deferred(void *ctx, bool coroutine);
-typedef struct {
-    double last_recv_time;
-    int64_t local_port;
-    int64_t remote_port;
-    int loopback;
-    uint8_t websocket_status;
-    bool http;
-    bool websocket;
-    bool http2;
-    bool cache;
-    bool coroutine;
-} swr_http_receive;
-void *swr_http_host_receive(void *server, int64_t session, int server_fd, swr_http_receive *out);
-void *swr_http_host_receive_context(void *server, void *conn, int64_t session, void *request,
-                                    struct _zval_struct **zdata, swr_http_receive *out);
-uint8_t swr_http_host_before_request(void *context, void *conn);
-void *swr_http_host_callback(void *server, int server_fd, bool handshake);
-void swr_http_host_notice(const char *message);
 #ifdef __cplusplus
 }
 #endif

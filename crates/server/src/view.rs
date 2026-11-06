@@ -10,6 +10,7 @@ use crate::port_config::PortConfig;
 use crate::{ConnectionRecord, PortCounters, ServerConfig, ServerCounters, ServerState};
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering;
+use std::ffi::CString;
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
 use swoole_rs_process::worker_record::WorkerRecord;
@@ -29,6 +30,17 @@ unsafe fn fields<'a>(serv: *mut c_void) -> &'a Fields {
     unsafe { &*serv.cast::<Fields>() }
 }
 
+/// The server's Rust-owned state.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+unsafe fn state<'a>(serv: *mut c_void) -> &'a ServerState {
+    // SAFETY: per the caller.
+    let state = unsafe { fields(serv) }.state;
+    // SAFETY: the state lives as long as the server.
+    unsafe { &*state }
+}
+
 /// The server's configuration.
 ///
 /// # Safety
@@ -39,6 +51,48 @@ pub unsafe fn config<'a>(serv: *mut c_void) -> &'a mut ServerConfig {
     let config = unsafe { fields(serv) }.config;
     // SAFETY: the config allocation lives as long as the server.
     unsafe { &mut *config }
+}
+
+/// `upload_tmp_dir = dir`.
+///
+/// # Safety
+/// `serv` is a live `Server`, not started.
+pub unsafe fn set_upload_tmp_dir(serv: *mut c_void, dir: &[u8]) {
+    // SAFETY: per the caller.
+    unsafe { state(serv) }.set_upload_tmp_dir(dir);
+}
+
+/// `upload_tmp_dir.c_str()`: the directory up to its first NUL.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[must_use]
+pub unsafe fn upload_tmp_dir(serv: *mut c_void) -> CString {
+    // SAFETY: per the caller.
+    let dir = unsafe { state(serv) }.upload_tmp_dir();
+    let dir = dir.split(|&byte| byte == 0).next().unwrap_or_default();
+    CString::new(dir).unwrap_or_default()
+}
+
+/// `http_compression_types` lists `kind`; `None` asks whether it lists any.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[must_use]
+pub unsafe fn compression_type(serv: *mut c_void, kind: Option<&[u8]>) -> bool {
+    // SAFETY: per the caller.
+    let state = unsafe { fields(serv) }.state;
+    let op = |operation, data: &[u8]| {
+        // SAFETY: the live state and a byte span (non-null even when empty).
+        unsafe {
+            crate::swr_v1_server_static_config(state, 2, operation, data.as_ptr(), data.len())
+        }
+    };
+    let types = op(1, &[]) != 0;
+    match kind {
+        Some(kind) if types => op(5, kind) != op(0, &[]),
+        _ => types,
+    }
 }
 
 /// The shared counters (`serv->gs`).
@@ -147,7 +201,7 @@ pub unsafe fn iterated<'a>(serv: *mut c_void, fd: c_int) -> Option<&'a mut Conne
 ///
 /// # Safety
 /// `port` is a live `ListenPort`.
-unsafe fn port<'a>(port: *mut c_void) -> &'a PortConfig {
+pub unsafe fn port<'a>(port: *mut c_void) -> &'a PortConfig {
     // SAFETY: the head of a live port, per the module comment.
     let config = unsafe { *port.cast::<*const PortConfig>() };
     // SAFETY: its settings live as long as it.

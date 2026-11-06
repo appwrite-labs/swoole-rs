@@ -651,6 +651,8 @@ dependencies = [
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-process",
+ "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-websocket",
  "swoole-rs-zend",
