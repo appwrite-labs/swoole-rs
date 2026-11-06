@@ -814,6 +814,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-process",
  "swoole-rs-reactor",
+ "swoole-rs-tls",
 ]
 
 [[package]]
