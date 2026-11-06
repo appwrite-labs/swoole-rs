@@ -8,31 +8,12 @@ upstream. The kernel ABI is in `docs/abi-v1.md` and
 
 ## Native kernel
 
-```sh
-cargo test -p swoole-rs-websocket
-cargo build --release -p swoole-rs-ffi
-python3 -m pytest tests/modules/websocket/test_kernel.py --sanitize --archive target/release/libswoole_rs_ffi.a
-```
-
-`test_kernel.py` calls the C exports and checks every opcode/flags combination at
-the 7/16/64-bit length boundaries, progressive incomplete masked headers,
-unaligned input/output, signed total-length overflow, unchanged short outputs,
-masking involution, and every mask-key placement across eight payload alignments
-and lengths 0-33, with bytes outside the payload unchanged. `--sanitize`
-instruments the C++ caller only.
-
-Pass `--archive /absolute/libswoole_rs_ffi.a` for an archive copied by a hybrid
-build. The default `target/release/libswoole_rs_ffi.a` is overwritten by builds
-with other feature flags; rebuild it first.
-
-`test_prefix.py` compares the pinned C++ `get_package_length` with Rust for all valid
-header prefixes. It reads a hybrid `--manifest` and refuses an archive or
-ABI header whose checksum differs from that manifest:
-
-```sh
-python3 -m pytest tests/modules/websocket/test_prefix.py --sanitize \
-  --manifest target/hybrid/rust/build-manifest.json
-```
+`cargo test -p swoole-rs-websocket` checks the C exports at every opcode/flags
+combination and 7/16/64-bit length boundary, every header prefix, signed
+total-length overflow, unchanged short outputs, masking involution, and every
+mask-key placement across eight payload alignments and lengths 0-33. The `fuzz/`
+targets `ws_frame_length`, `ws_decode` and `ws_mask` compare them with the pinned
+C++ bodies.
 
 `test_codec.py` is the differential for the codec/policy seam; see [codec.md](codec.md).
 
@@ -107,8 +88,6 @@ Instrument the Rust module itself and rerun the native gates:
 RUSTC_BOOTSTRAP=1 RUSTFLAGS='-Zsanitizer=address -Zexternal-clangrt=yes' \
   cargo rustc -p swoole-rs-websocket --release --offline --locked \
   --target-dir target/websocket-rust-asan --crate-type staticlib -v
-python3 -m pytest tests/modules/websocket/test_kernel.py --sanitize \
-  --archive target/websocket-rust-asan/release/libswoole_rs_websocket.a
 python3 -m pytest tests/modules/websocket/test_codec.py --sanitize --rust-asan \
   --archive target/websocket-rust-asan/release/libswoole_rs_websocket.a
 ```

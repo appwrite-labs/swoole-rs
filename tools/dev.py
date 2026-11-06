@@ -517,9 +517,7 @@ def plan(args, reports):
         pytest('buffer-network', 'tests/modules/buffer/test_network.py', *php, *engines)
     if 'websocket' in modules:
         archive = manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a'
-        pytest('websocket-kernel', 'tests/modules/websocket/test_kernel.py', '--archive', archive, '--sanitize')
         pytest('websocket-codec', 'tests/modules/websocket/test_codec.py', '--archive', archive, '--sanitize')
-        pytest('websocket-prefix', 'tests/modules/websocket/test_prefix.py', '--manifest', manifest, '--sanitize')
         pytest('websocket-differential', 'tests/modules/websocket/test_differential.py', *php,
                '--engine', f'upstream={reference}', '--engine', f'hybrid={hybrid}')
         pytest('websocket-invalid', 'tests/modules/websocket/test_invalid.py', *php, *engines)
