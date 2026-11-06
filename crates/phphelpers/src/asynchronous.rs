@@ -62,4 +62,51 @@ mod tests {
             );
         }
     }
+
+    /// `php_swoole_cxx.h`'s `php_swoole_async` loop over the admission, against
+    /// upstream's `!blocking && swoole_coroutine_is_in() ? async(fn) : (fn(), true)`.
+    #[test]
+    fn dispatch_matches_upstreams_branches() {
+        for blocking in [false, true] {
+            for in_coroutine in [false, true] {
+                for dispatched in [false, true] {
+                    let mut trace = Vec::new();
+                    let (mut phase, mut observed) = (0, false);
+                    let result = loop {
+                        let action = unsafe {
+                            swr_v1_phphelpers_async(
+                                &raw mut phase,
+                                blocking.into(),
+                                observed.into(),
+                            )
+                        };
+                        match action {
+                            1 => {
+                                trace.push("context");
+                                observed = in_coroutine;
+                            }
+                            3 => {
+                                trace.push("dispatch");
+                                break dispatched;
+                            }
+                            2 => {
+                                trace.push("direct");
+                                break true;
+                            }
+                            _ => break false,
+                        }
+                    };
+                    let expected: &[&str] = if blocking {
+                        &["direct"]
+                    } else if in_coroutine {
+                        &["context", "dispatch"]
+                    } else {
+                        &["context", "direct"]
+                    };
+                    assert_eq!(trace, expected);
+                    assert_eq!(result, blocking || !in_coroutine || dispatched);
+                }
+            }
+        }
+    }
 }

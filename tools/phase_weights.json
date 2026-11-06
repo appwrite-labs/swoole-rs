@@ -105,7 +105,6 @@
  "phpcoroutines-unit": 1,
  "phpevents-lifecycle": 1,
  "phpevents-unit": 9,
- "phphelpers-async": 5,
  "phphelpers-async-odbc-sdk": 16,
  "phphelpers-async-sqlite-sdk": 13,
  "phphelpers-module": 4,

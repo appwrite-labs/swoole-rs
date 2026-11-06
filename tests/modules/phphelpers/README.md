@@ -37,8 +37,8 @@ Their old C++-body policy fixture is retired; copying deleted bodies into fake
 Zend layouts no longer qualifies production. `phphelpers-sdk` compiles the
 actual native and selected headers, and `phphelpers-facade-runtime`,
 `phphelpers-entrypoint` and `phphelpers-runtime` execute both engines against
-unchanged PHP observations. The separate async body gate remains while
-its native closure/coroutine effects still use that boundary.
+unchanged PHP observations. `php_swoole_async`'s admission and its
+dispatch branches are Rust unit tests (`crates/phphelpers/src/asynchronous.rs`).
 
 ## SDK compile checks
 
@@ -115,8 +115,6 @@ performance and default activation remain open.
 
 The live qualification phases are:
 
-- `phphelpers-async`: the `php_swoole_async` dispatch bodies, the C11 ABI
-  consumer, and C++14/17 builds with and without sanitizers.
 - `phphelpers-sdk`: the full-file compiles (16 profiles) and Rust import checks.
   Its report is also the input that
   `phpcoroutines-sdk` and the stdext loaded checks read.
