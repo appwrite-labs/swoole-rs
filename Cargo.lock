@@ -802,6 +802,7 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-process",
+ "swoole-rs-reactor",
 ]
 
 [[package]]

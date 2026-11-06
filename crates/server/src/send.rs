@@ -7,6 +7,7 @@
 //! reports as `HALFCLOSE`: pause and resume then go through the reactor's
 //! read-event helpers, a resume skips closing connections, and a queued close stops
 //! reading.
+use crate::base_factory::SendData;
 use crate::ops::{
     LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA, LOG_SC_NO_SESSION_EVENT,
     LOG_SC_SOCKET_OVERFLOW, OP_ERRNO, OP_MODE, OP_PORT_IDLE_TIME, OP_SC_ADD, OP_SC_ADD_READ,
@@ -16,7 +17,14 @@ use crate::ops::{
     OP_SC_SEND, OP_SC_SENDFILE, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE,
     OP_SC_YIELD_ERROR,
 };
-use crate::{Host, MODE_PROCESS, SW_ERR, SW_OK};
+use crate::records::swr_v1_server_connection;
+use crate::{Host, MODE_PROCESS, SW_ERR, SW_OK, ServerState};
+use std::ffi::c_void;
+use swoole_rs_corebase::microtime;
+use swoole_rs_reactor::{SocketRecord, steady_ms, swr_v1_socket_record_send};
+
+/// `swr_v1_server_connection`'s `get_connection_verify` lookup.
+const VERIFIED_TLS: u32 = 3;
 
 /// `ServerEventType`.
 const SEND_DATA: u64 = 2;
@@ -52,9 +60,64 @@ pub(crate) const HALFCLOSE: u64 = 1 << 15;
 pub(crate) const OUT_EMPTY: u64 = 1 << 16;
 pub(crate) const DIRECT_SEND: u64 = 1 << 17;
 
+/// `send_to_connection`'s direct send of a base-mode `SendData`, made here when it
+/// needs nothing native: the verified connection has no overflow and its socket sends
+/// directly with no output buffer yet. `None` leaves the whole send to native code;
+/// otherwise `Socket::send`'s result after EINTR retries, and a complete send has set
+/// the connection's `last_send_time`.
+///
+/// # Safety
+/// `state` is null or live; `send` lends `info.len` readable bytes at `data`.
+pub(crate) unsafe fn send_now(state: *const ServerState, send: &SendData) -> Option<i64> {
+    // SAFETY: as the caller guarantees.
+    let tables = unsafe { state.as_ref() }?.tables();
+    // SAFETY: a live state's table view, read before any lookup.
+    if tables.is_null() || unsafe { (*tables).connection_list.is_null() } {
+        return None;
+    }
+    // SAFETY: the state owns initialized tables.
+    let conn = unsafe { swr_v1_server_connection(state, send.info.fd, VERIFIED_TLS) };
+    // SAFETY: a non-null lookup is a live connection record; nothing else runs here.
+    let conn = unsafe { conn.as_mut() }?;
+    let socket = conn.socket.cast::<SocketRecord>();
+    // SAFETY: a live connection's socket record.
+    let record = unsafe { socket.as_ref() }?;
+    if conn.overflow != 0
+        || record.direct_send == 0
+        || !record.ssl.is_null()
+        || !record.output.out_buffer.is_null()
+    {
+        return None;
+    }
+    let length = usize::try_from(send.info.len).ok()?;
+    let sent = loop {
+        // SAFETY: the live socket record; `data` holds `length` bytes.
+        let sent = unsafe {
+            swr_v1_socket_record_send(socket, send.data.cast(), length, 0, no_tls, steady_ms)
+        };
+        if sent >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            break sent;
+        }
+    };
+    if sent.cast_unsigned() == length {
+        conn.last_send_time = microtime();
+    }
+    Some(i64::try_from(sent).unwrap_or(-1))
+}
+
+/// `send_now`'s TLS call, never made: it sends only on sockets without an SSL.
+unsafe extern "C" fn no_tls(_: *mut c_void, _: *mut c_void, _: usize) -> isize {
+    -1
+}
+
 /// The context's send of type `kind` and `length` bytes; `SW_OK` or `SW_ERR`, and 0
-/// (upstream's `false`) where a send fails after the connection was found.
-pub(crate) fn send_to_connection<H: Host>(h: &mut H, kind: u64) -> crate::Effect<i64> {
+/// (upstream's `false`) where a send fails after the connection was found. `first` is
+/// what `send_now` already sent, short of all of it.
+pub(crate) fn send_to_connection<H: Host>(
+    h: &mut H,
+    kind: u64,
+    first: Option<i64>,
+) -> crate::Effect<i64> {
     let flags = h.get(OP_SC_VERIFY)?;
     if flags & FOUND == 0 {
         h.get(if kind == SEND_DATA {
@@ -112,7 +175,7 @@ pub(crate) fn send_to_connection<H: Host>(h: &mut H, kind: u64) -> crate::Effect
             h.get(OP_SC_CLOSE)?;
             return Ok(SW_OK);
         }
-        if kind != SEND_FILE && flags & DIRECT_SEND != 0 && direct_send(h, flags >> 32)? {
+        if kind != SEND_FILE && flags & DIRECT_SEND != 0 && direct_send(h, flags >> 32, first)? {
             return Ok(SW_OK);
         }
         h.get(OP_SC_ENSURE_BUFFER)?;
@@ -160,8 +223,14 @@ pub(crate) fn send_to_connection<H: Host>(h: &mut H, kind: u64) -> crate::Effect
 }
 
 /// Writes the `length` bytes straight to the socket: true when all of them went, else
-/// the rest is buffered.
-fn direct_send<H: Host>(h: &mut H, length: u64) -> crate::Effect<bool> {
+/// the rest is buffered. After `send_now`'s attempt only its progress is recorded.
+fn direct_send<H: Host>(h: &mut H, length: u64, first: Option<i64>) -> crate::Effect<bool> {
+    if let Some(sent) = first {
+        if sent > 0 {
+            h.op(OP_SC_ADVANCE, sent.cast_unsigned())?;
+        }
+        return Ok(false);
+    }
     loop {
         let sent = h.signed(OP_SC_SEND)?;
         if sent >= 0 && sent.cast_unsigned() == length {
@@ -197,20 +266,20 @@ mod tests {
     #[test]
     fn missing_session_logs_by_kind() {
         let mut s = Script::default();
-        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), SW_ERR);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA, None).unwrap(), SW_ERR);
         assert_eq!(s.called(LOG_SC_NO_SESSION_DATA), 1);
         let mut s = Script::default();
-        assert_eq!(send_to_connection(&mut s, CLOSE).unwrap(), SW_ERR);
+        assert_eq!(send_to_connection(&mut s, CLOSE, None).unwrap(), SW_ERR);
         assert_eq!(s.called(LOG_SC_NO_SESSION_EVENT), 1);
     }
 
     #[test]
     fn overflow_outside_process_mode_refuses() {
         let mut s = found(OVERFLOW | SEND_YIELD, &[(OP_MODE, MODE_BASE)]);
-        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), SW_ERR);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA, None).unwrap(), SW_ERR);
         assert_eq!(s.called(OP_SC_YIELD_ERROR), 1);
         let mut s = found(OVERFLOW, &[(OP_MODE, MODE_BASE)]);
-        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), SW_ERR);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA, None).unwrap(), SW_ERR);
         assert_eq!(s.called(LOG_SC_SOCKET_OVERFLOW), 1);
     }
 
@@ -218,7 +287,7 @@ mod tests {
     fn forced_close_closes_now() {
         for flag in [CLOSE_RESET, CLOSE_FORCE, PEER_CLOSED] {
             let mut s = found(flag, &[]);
-            assert_eq!(send_to_connection(&mut s, CLOSE).unwrap(), SW_OK);
+            assert_eq!(send_to_connection(&mut s, CLOSE, None).unwrap(), SW_OK);
             assert_eq!(s.called(OP_SC_CLOSE), 1);
         }
     }
@@ -226,38 +295,38 @@ mod tests {
     #[test]
     fn pause_and_resume() {
         let mut s = found(EVENT_READ | EVENT_WRITE, &[(OP_SC_SET, 0)]);
-        assert_eq!(send_to_connection(&mut s, PAUSE_RECV).unwrap(), SW_OK);
+        assert_eq!(send_to_connection(&mut s, PAUSE_RECV, None).unwrap(), SW_OK);
         assert_eq!(s.args(OP_SC_SET), vec![WRITE]);
         let mut s = found(EVENT_READ, &[]);
-        send_to_connection(&mut s, PAUSE_RECV).unwrap();
+        send_to_connection(&mut s, PAUSE_RECV, None).unwrap();
         assert_eq!(s.called(OP_SC_DEL), 1);
         let mut s = found(REMOVED | EVENT_READ, &[]);
-        send_to_connection(&mut s, PAUSE_RECV).unwrap();
+        send_to_connection(&mut s, PAUSE_RECV, None).unwrap();
         assert_eq!(s.called(OP_SC_DEL), 0, "already removed");
 
         let mut s = found(REMOVED | EVENT_WRITE, &[]);
-        send_to_connection(&mut s, RESUME_RECV).unwrap();
+        send_to_connection(&mut s, RESUME_RECV, None).unwrap();
         assert_eq!(s.args(OP_SC_SET), vec![READ | WRITE]);
         let mut s = found(REMOVED, &[]);
-        send_to_connection(&mut s, RESUME_RECV).unwrap();
+        send_to_connection(&mut s, RESUME_RECV, None).unwrap();
         assert_eq!(s.args(OP_SC_ADD), vec![READ]);
         let mut s = found(0, &[]);
-        send_to_connection(&mut s, RESUME_RECV).unwrap();
+        send_to_connection(&mut s, RESUME_RECV, None).unwrap();
         assert_eq!(s.called(OP_SC_ADD), 0, "still in the reactor");
     }
 
     #[test]
     fn halfclose_pause_and_resume() {
         let mut s = found(EVENT_READ | EVENT_WRITE | HALFCLOSE, &[]);
-        send_to_connection(&mut s, PAUSE_RECV).unwrap();
+        send_to_connection(&mut s, PAUSE_RECV, None).unwrap();
         assert_eq!(s.called(OP_SC_REMOVE_READ), 1);
         assert_eq!(s.called(OP_SC_SET), 0);
         let mut s = found(HALFCLOSE, &[]);
-        send_to_connection(&mut s, RESUME_RECV).unwrap();
+        send_to_connection(&mut s, RESUME_RECV, None).unwrap();
         assert_eq!(s.called(OP_SC_ADD_READ), 1, "not removed, but not reading");
         for closing in [CLOSED, PEER_CLOSED, CLOSE_QUEUED, CLOSE_NOTIFIED] {
             let mut s = found(REMOVED | closing | HALFCLOSE, &[]);
-            send_to_connection(&mut s, RESUME_RECV).unwrap();
+            send_to_connection(&mut s, RESUME_RECV, None).unwrap();
             assert_eq!(s.called(OP_SC_ADD_READ), 0);
         }
     }
@@ -265,10 +334,10 @@ mod tests {
     #[test]
     fn close_with_empty_output_closes_else_queues() {
         let mut s = found(OUT_EMPTY, &[]);
-        assert_eq!(send_to_connection(&mut s, CLOSE).unwrap(), SW_OK);
+        assert_eq!(send_to_connection(&mut s, CLOSE, None).unwrap(), SW_OK);
         assert_eq!(s.called(OP_SC_CLOSE), 1);
         let mut s = found(HALFCLOSE, &[]);
-        assert_eq!(send_to_connection(&mut s, CLOSE).unwrap(), SW_OK);
+        assert_eq!(send_to_connection(&mut s, CLOSE, None).unwrap(), SW_OK);
         assert_eq!(s.called(OP_SC_QUEUE_CLOSE), 1);
         assert_eq!(s.called(OP_SC_REMOVE_READ), 1, "halfclose stops reading");
         assert_eq!(s.called(OP_SC_ADD_WRITE), 1);
@@ -279,41 +348,56 @@ mod tests {
         let mut s =
             found(OUT_EMPTY | DIRECT_SEND | 10 << 32, &[]).queue(OP_SC_SEND, &[u64::MAX, 10]);
         s.facts.insert(OP_ERRNO, libc::EINTR.cast_unsigned().into());
-        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), SW_OK);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA, None).unwrap(), SW_OK);
         assert_eq!(s.called(OP_SC_SEND), 2);
         assert_eq!(s.called(OP_SC_TOUCH_SEND), 1);
         assert_eq!(s.called(OP_SC_APPEND), 0);
 
         let mut s = found(OUT_EMPTY | DIRECT_SEND | 10 << 32, &[]).queue(OP_SC_SEND, &[4]);
-        send_to_connection(&mut s, SEND_DATA).unwrap();
+        send_to_connection(&mut s, SEND_DATA, None).unwrap();
         assert_eq!(s.args(OP_SC_ADVANCE), vec![4]);
         assert_eq!(s.called(OP_SC_ENSURE_BUFFER), 1);
         assert_eq!(s.called(OP_SC_APPEND), 1);
 
         let mut s = found(OUT_EMPTY | DIRECT_SEND, &[]);
-        send_to_connection(&mut s, SEND_FILE).unwrap();
+        send_to_connection(&mut s, SEND_FILE, None).unwrap();
         assert_eq!(s.called(OP_SC_SEND), 0, "files are never sent directly");
         assert_eq!(s.called(OP_SC_SENDFILE), 1);
     }
 
     #[test]
+    fn a_send_made_first_is_not_repeated() {
+        let mut s = found(OUT_EMPTY | DIRECT_SEND | 10 << 32, &[]);
+        send_to_connection(&mut s, SEND_DATA, Some(4)).unwrap();
+        assert_eq!(s.called(OP_SC_SEND), 0);
+        assert_eq!(s.args(OP_SC_ADVANCE), vec![4]);
+        assert_eq!(s.called(OP_SC_APPEND), 1);
+
+        let mut s = found(OUT_EMPTY | DIRECT_SEND | 10 << 32, &[]);
+        send_to_connection(&mut s, SEND_DATA, Some(-1)).unwrap();
+        assert_eq!(s.called(OP_SC_SEND), 0, "would block: the rest is buffered");
+        assert_eq!(s.called(OP_SC_ADVANCE), 0);
+        assert_eq!(s.called(OP_SC_APPEND), 1);
+    }
+
+    #[test]
     fn buffered_send_watermarks() {
         let mut s = found(PEER_CLOSED, &[]);
-        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), 0);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA, None).unwrap(), 0);
         assert_eq!(s.called(LOG_SC_CLOSED_BY_CLIENT), 1);
 
         let mut s = found(ON_BUFFER_EMPTY, &[(OP_SC_OUT_FULL, 1)]);
-        assert_eq!(send_to_connection(&mut s, SEND_DATA).unwrap(), SW_OK);
+        assert_eq!(send_to_connection(&mut s, SEND_DATA, None).unwrap(), SW_OK);
         assert_eq!(s.called(LOG_SC_CONN_OVERFLOW), 1);
         assert_eq!(s.called(OP_SC_OVERFLOW), 1);
         assert_eq!(s.called(OP_SC_HIGH_WATERMARK), 1);
 
         let mut s = found(ON_BUFFER_FULL, &[(OP_SC_OUT_HIGH, 1)]);
-        send_to_connection(&mut s, SEND_DATA).unwrap();
+        send_to_connection(&mut s, SEND_DATA, None).unwrap();
         assert_eq!(s.called(OP_SC_NOTIFY_FULL), 1);
         let mut s = found(ON_BUFFER_FULL, &[(OP_SC_OUT_HIGH, 1)])
             .queue(OP_SC_FLAGS, &[ON_BUFFER_FULL | HIGH_WATERMARK]);
-        send_to_connection(&mut s, SEND_DATA).unwrap();
+        send_to_connection(&mut s, SEND_DATA, None).unwrap();
         assert_eq!(
             s.called(OP_SC_NOTIFY_FULL),
             0,
@@ -321,7 +405,7 @@ mod tests {
         );
 
         let mut s = found(0, &[(OP_SC_SENDFILE, u64::MAX)]);
-        assert_eq!(send_to_connection(&mut s, SEND_FILE).unwrap(), 0);
+        assert_eq!(send_to_connection(&mut s, SEND_FILE, None).unwrap(), 0);
         assert_eq!(s.called(OP_SC_ADD_WRITE), 0);
     }
 

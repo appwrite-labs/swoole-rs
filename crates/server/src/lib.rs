@@ -104,6 +104,11 @@ pub(crate) trait Host {
     fn worker_id(&mut self) -> Effect<u64> {
         self.get(ops::OP_WORKER_ID)
     }
+    /// A base-mode send made without native code (see `send::send_now`); `None`
+    /// leaves all of it to `send_to_connection`.
+    fn send_now(&mut self, _send: &base_factory::SendData) -> Effect<Option<i64>> {
+        Ok(None)
+    }
 }
 
 /// The state of a server without one, which native code never passes.
@@ -180,6 +185,11 @@ impl<C: NativeCall> Host for Native<C> {
     fn worker_id(&mut self) -> Effect<u64> {
         // The process crate owns the worker record; no native call is needed.
         Ok(u64::from(swoole_rs_process::methods::swoole_get_worker_id()))
+    }
+
+    fn send_now(&mut self, send: &base_factory::SendData) -> Effect<Option<i64>> {
+        // SAFETY: the entrypoint lends a null or live state; native code lends `send`.
+        Ok(unsafe { send::send_now(self.state, send) })
     }
 
     fn state(&mut self) -> Effect<&ServerState> {
@@ -349,7 +359,7 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
             Some(result) => result,
             None => match state::run(h, operation, arg)? {
                 Some(result) => result,
-                None if operation == ops::RUN_SC_SEND => send::send_to_connection(h, arg)?,
+                None if operation == ops::RUN_SC_SEND => send::send_to_connection(h, arg, None)?,
                 None => reactor_thread::run(h, operation, arg)?,
             },
         },
