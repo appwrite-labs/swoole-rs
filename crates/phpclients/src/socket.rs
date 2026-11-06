@@ -458,9 +458,23 @@ pub unsafe extern "C" fn php_swoole_export_socket(zobject: *mut zval, socket: So
 #[unsafe(export_name = "_Z29php_swoole_init_socket_objectP12_zval_structPN6swoole9coroutine6SocketE")]
 pub unsafe extern "C" fn php_swoole_init_socket_object(zobject: *mut zval, socket: Socket) {
     // SAFETY: per the caller.
-    let object = unsafe { socket_object(socket, true) };
+    swoole_rs_zend::bailout::raise(unsafe { init_socket_object(zobject, socket) });
+}
+
+/// [`php_swoole_init_socket_object`] for Rust callers: a bailout is returned.
+/// # Errors
+/// Making the object bailed out; `zobject` is untouched.
+/// # Safety
+/// As [`php_swoole_export_socket`].
+pub unsafe fn init_socket_object(
+    zobject: *mut zval,
+    socket: Socket,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+    // SAFETY: per the caller.
+    let object = unsafe { owner::make_object(socket, true) }?;
     // SAFETY: per the caller.
     unsafe { set_object(zobject, object) };
+    Ok(())
 }
 
 /// A `Coroutine\Socket` object over `socket`, as `socket_coro_init` leaves it;
