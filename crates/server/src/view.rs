@@ -48,6 +48,18 @@ pub unsafe fn counters<'a>(serv: *mut c_void) -> &'a ServerCounters {
     unsafe { &*gs }
 }
 
+/// The shared counters, for the settings `Server::set()` writes before the
+/// server starts.
+///
+/// # Safety
+/// As [`counters`], with no concurrent reader of the fields written.
+pub unsafe fn counters_mut<'a>(serv: *mut c_void) -> &'a mut ServerCounters {
+    // SAFETY: per the caller.
+    let gs = unsafe { config(serv) }.gs.cast::<ServerCounters>();
+    // SAFETY: `ServerGS` starts with the counters, mapped for the server's life.
+    unsafe { &mut *gs }
+}
+
 /// `Server::is_started()`.
 ///
 /// # Safety
