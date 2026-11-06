@@ -239,7 +239,7 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
     [] {
         swoole_init();
         swoole_add_hook(SW_GLOBAL_HOOK_AFTER_FORK, swr_zend_after_fork, 0);
-        SwooleG.bug_report_message += "PHP_VERSION : " PHP_VERSION "\n";
+        swr_v1_core_bug_report_append("PHP_VERSION : " PHP_VERSION "\n");
     },
     [] {
         Socket::default_buffer_size = SWOOLE_G(socket_buffer_size);
@@ -354,7 +354,7 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
             "The `print_backtrace_on_error` option requires `boost stacktrace` or `execinfo.h` to be installed",
             SW_ERROR_OPERATION_NOT_SUPPORT);
 #else
-        SwooleG.print_backtrace_on_error = on;
+        swr_v1_core_set_print_backtrace_on_error(on);
 #endif
     },
     [](const char *server, size_t length) { swoole_set_dns_server(std::string(server, length)); },
