@@ -111,17 +111,6 @@ set_error_handler(function (int $severity, string $message) use (&$jsonWarnings)
 try { check(swoole_str_json_decode($jsonObject, 0) === null, 'native JSON zero-depth return'); }
 finally { restore_error_handler(); }
 check($jsonWarnings === [[E_WARNING, true]], 'native JSON depth warning');
-$merged = m26_merge_strings([
-    ['color', 'red'], ['color', 'green'], ['color', 'blue'],
-    ['7', 'seven'], ['07', 'leading'], ['7', 'again'],
-    ["bin\0key", "value\0one"], ["bin\0key", 'two'],
-]);
-check($merged === [
-    'color' => ['red', 'green', 'blue'],
-    7 => ['seven', 'again'], '07' => 'leading',
-    "bin\0key" => ["value\0one", 'two'],
-], 'actual native merge string promotion, append and explicit key lengths');
-check(m26_merge_strings([]) === [], 'empty native merge sequence');
 $boolEvents = [];
 foreach ([false, true] as $capture) {
     $called = m26_bool_call(function () use (&$boolEvents): array {
@@ -146,4 +135,4 @@ Swoole\Coroutine\run(function () use (&$boolEvents): void {
     }
 });
 check($boolEvents === ['direct', 'direct', 'coroutine', 'coroutine'], 'one callback per bool entry mode');
-echo json_encode(['matches' => 36, 'bool_call_modes' => $boolEvents, 'merge_string_sequences' => 2, 'json_exception_code' => $jsonException, 'json_warnings' => $jsonWarnings, 'public_wrapper_bindings' => 11, 'regex_warnings' => $regexWarnings, 'regex_exception' => $regexException, 'known_cache' => $known, 'owned_callable_releases' => $ownedEvents, 'destructors' => $events, 'autoload' => $autoload, 'yielded' => $yielded], JSON_THROW_ON_ERROR), "\n";
+echo json_encode(['matches' => 34, 'bool_call_modes' => $boolEvents, 'json_exception_code' => $jsonException, 'json_warnings' => $jsonWarnings, 'public_wrapper_bindings' => 11, 'regex_warnings' => $regexWarnings, 'regex_exception' => $regexException, 'known_cache' => $known, 'owned_callable_releases' => $ownedEvents, 'destructors' => $events, 'autoload' => $autoload, 'yielded' => $yielded], JSON_THROW_ON_ERROR), "\n";

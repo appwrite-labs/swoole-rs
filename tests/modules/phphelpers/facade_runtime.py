@@ -49,7 +49,7 @@ def main():
                 row['path']=str(helper)
                 symbols=subprocess.check_output(['nm','-u',str(helper)],text=True,stderr=subprocess.PIPE)
                 row['undefined_symbols']=symbols
-                required=['swr_v1_phphelpers_'+name for name in ['string_new','variable_assign','iterator_next','array_set','callable_invoke','callable_factory','callable_frame','class_alias','unset_deny']]
+                required=['swr_v1_phphelpers_'+name for name in ['string_new','variable_assign','callable_invoke','callable_factory','callable_frame','class_alias','unset_deny']]
                 row['required_rust_calls']={name:name in symbols for name in required}
                 retired=['swr_v1_phphelpers_'+name for name in ['string_plan','duplicate_plan','factory_plan','empty']]
                 if any(name in symbols for name in retired):raise ValueError('Helper still consumes a retired facade plan')

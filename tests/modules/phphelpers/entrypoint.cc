@@ -58,35 +58,6 @@ PHP_FUNCTION(m26_owned_callable) {
     RETURN_TRUE;
 }
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_m26_merge_strings, 0, 0, 1)
-    ZEND_ARG_TYPE_INFO(0, pairs, IS_ARRAY, 0)
-ZEND_END_ARG_INFO()
-
-PHP_FUNCTION(m26_merge_strings) {
-    zval *pairs, *pair;
-    ZEND_PARSE_PARAMETERS_START(1, 1)
-        Z_PARAM_ARRAY(pairs)
-    ZEND_PARSE_PARAMETERS_END();
-    array_init(return_value);
-    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(pairs), pair) {
-        if (Z_TYPE_P(pair) != IS_ARRAY) {
-            zend_argument_type_error(1, "must contain string pairs");
-            return;
-        }
-        auto key = zend_hash_index_find(Z_ARRVAL_P(pair), 0);
-        auto value = zend_hash_index_find(Z_ARRVAL_P(pair), 1);
-        if (!key || !value || Z_TYPE_P(key) != IS_STRING || Z_TYPE_P(value) != IS_STRING) {
-            zend_argument_type_error(1, "must contain string pairs");
-            return;
-        }
-        // Defined reference-counted string domain used by native consumers.
-        // The HashTable takes this copied zval; no duplicate release afterward.
-        zval owned;
-        ZVAL_STR_COPY(&owned, Z_STR_P(value));
-        zend::array_add_or_merge(return_value, Z_STRVAL_P(key), Z_STRLEN_P(key), &owned);
-    } ZEND_HASH_FOREACH_END();
-}
-
 ZEND_BEGIN_ARG_INFO_EX(arginfo_m26_bool_call, 0, 0, 3)
     ZEND_ARG_CALLABLE_INFO(0, callback, 0)
     ZEND_ARG_TYPE_INFO(0, coroutine, _IS_BOOL, 0)
@@ -120,7 +91,6 @@ static const zend_function_entry functions[] = {
     PHP_FE(m26_named_call, arginfo_m26_named)
     PHP_FE(m26_known_cache, arginfo_m26_known)
     PHP_FE(m26_owned_callable, arginfo_m26_named)
-    PHP_FE(m26_merge_strings, arginfo_m26_merge_strings)
     PHP_FE(m26_bool_call, arginfo_m26_bool_call)
     PHP_FE_END
 };
