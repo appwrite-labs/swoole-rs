@@ -576,7 +576,7 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('phphelpers-policy', commands)
         self.assertNotIn('phphelpers-async', commands)  # Its cases run in phphelpers-unit.
         self.assertIn('--archive', commands['ports-policy'])
-        for name in ['clients-http-format', 'clients-ip', 'clients-ip-text']:
+        for name in ['clients-http-format', 'clients-ip-text']:
             self.assertIn('--archive', commands[name])
             self.assertIn('--sanitize', commands[name])
         self.assertNotIn('clients-pool', commands)  # Its cases run in clients-unit.
@@ -584,8 +584,8 @@ class Lanes(unittest.TestCase):
             command = commands['clients-php-' + family]
             self.assertIn('--build-manifest', command)
             self.assertEqual(command.count('--engine'), 2)
-        self.assertIn('--archive',commands['clients-policy'])
-        self.assertIn('--sanitize',commands['clients-policy'])
+        self.assertNotIn('clients-policy', commands)  # Its cases run in clients-unit.
+        self.assertNotIn('clients-ip', commands)  # So do these.
         self.assertIn('--archive',commands['clients-codec'])
         self.assertIn('--sanitize',commands['clients-codec'])
         self.assertIn('--archive',commands['http-locales'])

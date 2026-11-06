@@ -253,20 +253,37 @@ fn protocols() {
     .unwrap();
 }
 
-/// `Address::assign(url)`, the Set-Cookie split and the DNS name decode from the
-/// pinned sources, copied unchanged for shim/clients.cc.
+/// The `Address` methods, the hosts lookup, the Set-Cookie split and the DNS name
+/// decode from the pinned sources, copied unchanged for shim/clients.cc.
 fn clients() {
     let address =
         fs::read_to_string("upstream/src/network/address.cc").expect("vendored address.cc");
+    let methods = [
+        "static bool IN_IS_ADDR_LOOPBACK(const in_addr *a) {",
+        "bool Address::verify_ip(int family, const std::string &str) {",
+        "bool Address::verify_port(const int port, const bool for_connect) {",
+        "bool Address::assign(SocketType _type, const std::string &_host, int _port, bool _resolve_name) {",
+        "bool Address::assign(const std::string &url)",
+        "bool Address::is_loopback_addr() const {",
+    ];
     fs::write(
-        out("clients_url.inc"),
-        definition(&address, "bool Address::assign(const std::string &url)") + "\n",
+        out("clients_address.inc"),
+        methods
+            .iter()
+            .map(|signature| definition(&address, signature) + "\n")
+            .collect::<String>(),
     )
     .unwrap();
     let dns = fs::read_to_string("upstream/src/network/dns.cc").expect("vendored dns.cc");
     fs::write(
         out("clients_dns.inc"),
-        definition(&dns, "static void domain_decode(char *str) {") + "\n",
+        [
+            "static void domain_decode(char *str) {",
+            "std::string get_ip_by_hosts(const std::string &search_domain) {",
+        ]
+        .iter()
+        .map(|signature| definition(&dns, signature) + "\n")
+        .collect::<String>(),
     )
     .unwrap();
     let coro = fs::read_to_string("upstream/ext-src/swoole_http_client_coro.cc")
