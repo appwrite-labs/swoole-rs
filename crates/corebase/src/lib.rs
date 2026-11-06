@@ -10,7 +10,7 @@
 )]
 pub mod constants;
 mod global;
-mod hook;
+pub mod hook;
 mod host;
 mod lifecycle;
 pub mod log;
@@ -20,13 +20,13 @@ mod random;
 mod thread;
 pub mod worker_registry;
 pub use global::*;
-pub use hook::swr_v1_corebase_hook_add_action;
+pub use hook::{swoole_add_hook, swoole_call_hook, swoole_isset_hook};
 pub use host::{
     DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, sw_realloc,
     swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_hex2dec,
     swoole_print_backtrace, swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any,
     swoole_random_int, swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec,
-    swoole_system_random, swr_v1_core_format_result, swr_v1_corebase_wait_for,
+    swoole_system_random, swr_v1_core_format_result,
 };
 pub use lifecycle::{
     LifecycleState, swr_v1_corebase_lifecycle_next, swr_v1_corebase_task_tmp_next,
@@ -393,21 +393,6 @@ pub unsafe extern "C" fn swoole_version_compare(
     }
 }
 
-/// Return the prefix length for native `std::string` construction, including root.
-/// # Safety
-/// Nonempty input is readable for length bytes, with length at most `isize::MAX`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_dirname(input: *const u8, length: usize) -> usize {
-    if length == 0 {
-        return 0;
-    }
-    // SAFETY: nonempty input lends `length <= isize::MAX` readable bytes.
-    unsafe { slice::from_raw_parts(input, length) }
-        .iter()
-        .rposition(|&byte| byte == b'/')
-        .map_or(0, |index| index.max(1))
-}
-
 /// Native stack-owned iterator state; no retained pointer or allocation.
 #[repr(C)]
 #[derive(Default)]
@@ -623,7 +608,6 @@ mod tests {
 
     #[test]
     fn borrowed_binary_path_and_output_bounds() {
-        assert_eq!(unsafe { swr_v1_corebase_dirname(b"a\0/b".as_ptr(), 4) }, 2);
         let mut output = [0xa5; 2];
         assert_eq!(unsafe { radix(0, 10, output.as_mut_ptr(), 2) }, usize::MAX);
         assert_eq!(output, [0xa5; 2]);

@@ -44,7 +44,6 @@ typedef struct {
   uint32_t max_sockets;
   double dns_cache_refresh_time;
   swr_v1_core_allocator std_allocator;
-  void *hooks[SW_MAX_HOOK_TYPE];
 } swr_v1_core_config_fields;
 typedef struct {
   swr_v1_core_config *owner;
@@ -66,8 +65,6 @@ bool swr_v1_core_config_max_sockets(swr_v1_core_config *, uint32_t limit);
 swr_v1_core_config_copy_result
 swr_v1_core_config_copy_values(swr_v1_core_config *,
                                const swr_v1_core_config *);
-void swr_v1_core_config_copy_hooks(swr_v1_core_config *,
-                                   const swr_v1_core_config *);
 swr_v1_core_string_view_t
 swr_v1_core_config_task_path(const swr_v1_core_config *);
 /* The thread's last error is Rust's (crates/corebase/src/log.rs). */
@@ -81,8 +78,6 @@ void swr_v1_core_set_log_host(swr_v1_core_log_host);
  * once with the log macros, so the Rust archive links without base.cc. */
 typedef struct {
     pid_t (*fork)(int flags);
-    bool (*isset_hook)(int kind);
-    void (*call_hook)(int kind, void *arg);
     bool (*get_env)(const char *name, int *value);
 } swr_v1_core_native_host;
 void swr_v1_core_set_native_host(swr_v1_core_native_host);

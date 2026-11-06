@@ -9,9 +9,11 @@ import argparse
 import io
 import json
 import os
+import random
 from pathlib import Path
 import re
 import shutil
+import string
 import subprocess
 import sys
 import tarfile
@@ -35,6 +37,11 @@ ADAPTATIONS = {
 # The original ftruncate case creates this file with mode 000 and leaves it behind.
 # Give each engine a private path; keep the open flags, mode and every assertion.
 ABSOLUTE_FIXTURES = {'coroutine_hook.ftruncate': ('core-tests/src/coroutine/hook.cpp', '/tmp/123.txt')}
+
+
+# core-tests' TEST_TMP_FILE: base.file_put_contents (core/base.cpp) writes 65535 random
+# alphanumerics and a NUL, and coroutine/hook.cpp's cases read it.
+TMP_FILE = Path('/tmp/swoole_core_test_file')
 
 
 def private_fixture(tree, name):
@@ -98,8 +105,8 @@ def main():
     parser.add_argument('--build-root', type=Path, required=True, help='Private writable build directory')
     parser.add_argument('--file', action='append', required=True, help='core-tests/src/... file whose TEST()s run')
     parser.add_argument('--exclude', action='append', default=[], metavar='SUITE.NAME=REASON')
-    parser.add_argument('--fixture', action='append', default=[], metavar='FILE=SUITE.NAME',
-                        help='An upstream test that must pass first because the cases read what it writes')
+    parser.add_argument('--tmp-file', action='store_true',
+                        help=f'Write {TMP_FILE} first, as base.file_put_contents does, because the cases read it')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--timeout', type=int, default=90, help='Seconds per test')
     parser.add_argument('--output', type=Path, required=True)
@@ -107,7 +114,6 @@ def main():
     if sys.platform != 'linux':
         parser.error('core-tests build on Linux only')
     excluded = dict(entry.split('=', 1) for entry in args.exclude)
-    fixtures = dict(entry.split('=', 1) for entry in args.fixture)
     report = {'pin': PIN, 'scope': __doc__, 'files': args.file, 'excluded': excluded, 'engines': [], 'results': [], 'passed': False}
     artifacts = args.output.resolve().with_name(args.output.stem + '-artifacts')
     try:
@@ -147,7 +153,7 @@ def main():
                 cmake = (staged / 'CMakeLists.txt').read_text()
                 if cmake.count(SELECTION) != 1:
                     raise ValueError('Upstream core-tests target selection changed')
-                cmake = cmake.replace(SELECTION, 'file(GLOB core_test_files ' + ' '.join(['core-tests/src/main.cpp', 'core-tests/src/_lib/*.cpp', *fixtures, *args.file]) + ')')
+                cmake = cmake.replace(SELECTION, 'file(GLOB core_test_files ' + ' '.join(['core-tests/src/main.cpp', 'core-tests/src/_lib/*.cpp', *args.file]) + ')')
                 if hybrid_cmake:
                     cmake += f'\n{hybrid_cmake}target_link_libraries(lib-swoole "{args.archive.resolve()}")\n'
                 write_changed(tree / 'CMakeLists.txt', cmake.encode())
@@ -164,9 +170,8 @@ def main():
                 binary = tree / 'bin/core-tests'
                 binary.parent.mkdir(exist_ok=True)
                 shutil.copy2(tree / 'build/bin/core-tests', binary)
-                for name in fixtures.values():
-                    if run_case(binary, tree, name, logs, args.timeout) != 'passed':
-                        raise RuntimeError(f'{engine} fixture {name} failed: {logs / (name + ".log")}')
+                if args.tmp_file:
+                    TMP_FILE.write_bytes(''.join(random.choices(string.ascii_letters + string.digits, k=65535)).encode() + b'\0')
                 for name in inventory:
                     status = 'excluded' if name in excluded else run_case(binary, tree, name, logs, args.timeout)
                     report['results'].append({'engine': engine, 'name': name, 'status': status})

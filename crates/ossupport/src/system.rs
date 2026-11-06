@@ -92,7 +92,7 @@ pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
 #[unsafe(export_name = "_Z13swoole_daemonii")]
 #[must_use]
 pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
-    // base.cc's `swoole_fork` and hooks; without base.cc nothing can be forked.
+    // base.cc's `swoole_fork`; without base.cc nothing can be forked.
     let Some(host) = swoole_rs_corebase::native::host() else {
         return -1;
     };
@@ -102,10 +102,9 @@ pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     }
     // SAFETY: daemon has no memory preconditions.
     let rv = unsafe { libc::daemon(nochdir, noclose) };
-    // SAFETY: upstream's hook table, read on this thread.
-    if rv == 0 && unsafe { (host.isset_hook)(HOOK_AFTER_FORK) } {
-        // SAFETY: as above; the after-fork hooks take no argument.
-        unsafe { (host.call_hook)(HOOK_AFTER_FORK, std::ptr::null_mut()) };
+    if rv == 0 {
+        // SAFETY: the after-fork hooks take no argument.
+        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_AFTER_FORK, std::ptr::null_mut()) };
     }
     rv
 }
