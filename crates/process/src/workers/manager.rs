@@ -8,11 +8,13 @@ use core::cell::{Cell, RefCell};
 use core::ffi::{c_int, c_void};
 
 use super::event_worker::EVENT_WORKER;
+use super::log::{
+    LOG_FORK_EVENT_WORKER, LOG_FORK_MANAGER, LOG_FORK_USER_WORKER, LOG_KILL_TIMEOUT,
+    LOG_NO_TASK_RELOAD, LOG_RELOAD_SINGLE_PROCESS, LOG_RELOADING, LOG_START_TASK_POOL,
+    LOG_UNKNOWN_CHILD, LOG_UNKNOWN_MESSAGE, LOG_UNKNOWN_WORKER_TYPE, LOG_WAIT_FAILED,
+};
 use super::ops::{
-    EVENT_COMMAND_REQUEST, LOG_FORK_EVENT_WORKER, LOG_FORK_MANAGER, LOG_FORK_USER_WORKER,
-    LOG_KILL_TIMEOUT, LOG_NO_TASK_RELOAD, LOG_RELOAD_SINGLE_PROCESS, LOG_RELOADING,
-    LOG_START_TASK_POOL, LOG_UNKNOWN_CHILD, LOG_UNKNOWN_COMMAND, LOG_UNKNOWN_MESSAGE,
-    LOG_UNKNOWN_WORKER_TYPE, LOG_WAIT_FAILED, OP_ADD_MANAGER_TIMER, OP_ALL_WORKER_NUM,
+    EVENT_COMMAND_REQUEST, LOG_UNKNOWN_COMMAND, OP_ADD_MANAGER_TIMER, OP_ALL_WORKER_NUM,
     OP_ANY_WORKER_PID, OP_CHECK_EXIT_STATUS, OP_COMMAND_REPLY, OP_CREATE_EVENT_WORKERS,
     OP_CREATE_MESSAGE_BOX, OP_CREATE_USER_WORKERS, OP_DEATH_SIGNAL, OP_DETACH_STOPPED,
     OP_DROP_RELOAD_TASK, OP_EVENT_FREE, OP_EVENT_WORKER_PID, OP_FORK_MANAGER, OP_HAS_COMMAND,
@@ -83,8 +85,9 @@ pub(super) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         }
         RUN_RESTART_WORKER => restart(h, arg),
         RUN_READ_WORKER_MESSAGE => {
-            if u32::try_from(h.get(OP_INFO_TYPE)).ok() != Some(EVENT_COMMAND_REQUEST) {
-                h.get(LOG_UNKNOWN_MESSAGE);
+            let kind = h.get(OP_INFO_TYPE);
+            if u32::try_from(kind).ok() != Some(EVENT_COMMAND_REQUEST) {
+                h.log(LOG_UNKNOWN_MESSAGE, kind.cast_signed(), 0);
             } else if !h.is(OP_HAS_COMMAND) {
                 h.get(LOG_UNKNOWN_COMMAND);
             } else {
@@ -112,7 +115,7 @@ fn start<H: Host>(h: &mut H) -> i64 {
     if h.get(OP_MODE) == MODE_BASE {
         main(h);
     } else if h.signed(OP_FORK_MANAGER) < 0 {
-        h.get(LOG_FORK_MANAGER);
+        h.log(LOG_FORK_MANAGER, 0, 0);
         return SW_ERR;
     }
     SW_OK
@@ -122,20 +125,20 @@ fn start<H: Host>(h: &mut H) -> i64 {
 fn main<H: Host>(h: &mut H) {
     h.get(OP_SET_MANAGER_PID);
     if h.get(OP_TASK_WORKER_NUM) > 0 && h.signed(OP_START_TASK_POOL) == SW_ERR {
-        h.get(LOG_START_TASK_POOL);
+        h.log(LOG_START_TASK_POOL, 0, 0);
         return;
     }
     // After the task pool starts, which sets the process type to SW_MASTER.
     h.get(OP_SET_MANAGER_TYPE);
     for worker in 0..h.get(OP_WORKER_NUM) {
         if h.op(OP_SPAWN_EVENT_WORKER, worker).cast_signed() < 0 {
-            h.get(LOG_FORK_EVENT_WORKER);
+            h.log(LOG_FORK_EVENT_WORKER, 0, 0);
             return;
         }
     }
     for worker in 0..h.get(OP_USER_WORKER_NUM) {
         if h.op(OP_SPAWN_USER_WORKER, worker).cast_signed() < 0 {
-            h.get(LOG_FORK_USER_WORKER);
+            h.log(LOG_FORK_USER_WORKER, 0, 0);
             return;
         }
     }
@@ -306,7 +309,7 @@ unsafe extern "C" fn reap_service(ctx: *mut c_void) {
 const WORKER_MESSAGE_STOP: u64 = 1;
 
 unsafe extern "C" fn reap_wait_failed(ctx: *mut c_void) {
-    reaping(ctx).host.get(LOG_WAIT_FAILED);
+    reaping(ctx).host.log(LOG_WAIT_FAILED, 0, 0);
 }
 
 /// Start a requested reload: of every worker, or of the task workers only.
@@ -315,7 +318,7 @@ unsafe extern "C" fn reap_start_reload(ctx: *mut c_void) -> u32 {
     if manager.reload_all_workers.get() {
         host.op(OP_SET_RELOAD_INIT, 0);
         manager.reload_all_workers.set(false);
-        host.op(LOG_RELOADING, 1);
+        host.log(LOG_RELOADING, 1, 0);
         host.get(OP_ON_BEFORE_RELOAD);
         host.get(OP_RELOAD_ADD_EVENT_WORKERS);
         if host.get(OP_TASK_WORKER_NUM) > 0 {
@@ -333,10 +336,10 @@ unsafe extern "C" fn reap_start_reload(ctx: *mut c_void) -> u32 {
         host.op(OP_SET_RELOAD_INIT, 0);
         manager.reload_task_workers.set(false);
         if host.get(OP_TASK_WORKER_NUM) == 0 {
-            host.get(LOG_NO_TASK_RELOAD);
+            host.log(LOG_NO_TASK_RELOAD, 0, 0);
             return RELOAD_SKIP;
         }
-        host.op(LOG_RELOADING, 0);
+        host.log(LOG_RELOADING, 0, 0);
         host.get(OP_ON_BEFORE_RELOAD);
         host.get(OP_RELOAD_ADD_TASK_WORKERS);
         RELOAD_KILL_ONE
@@ -414,7 +417,7 @@ fn signal<H: Host>(h: &mut H, signo: i32) {
         if manager.force_kill.get() {
             // Manager::terminate_all_worker
             alarm(0);
-            h.get(LOG_KILL_TIMEOUT);
+            h.log(LOG_KILL_TIMEOUT, 0, 0);
             for &pid in manager.kill_workers.borrow().iter() {
                 kill(pid, libc::SIGKILL);
             }
@@ -439,7 +442,7 @@ fn restart<H: Host>(h: &mut H, exited: u64) -> i64 {
     if h.op(OP_WORKER_BY_PID, pid) == 0 {
         // A child that is not a worker: a detached worker finishing, or unknown.
         if h.op(OP_REAP_DETACHED, pid) == 0 {
-            h.op(LOG_UNKNOWN_CHILD, pid);
+            h.log(LOG_UNKNOWN_CHILD, pid.cast_signed(), 0);
         }
         return SW_ERR;
     }
@@ -450,8 +453,12 @@ fn restart<H: Host>(h: &mut H, exited: u64) -> i64 {
         EVENT_WORKER => h.signed(OP_RESPAWN_EVENT_WORKER),
         TASK_WORKER => h.signed(OP_RESPAWN_TASK_WORKER),
         USER_WORKER => h.signed(OP_RESPAWN_USER_WORKER),
-        _ => {
-            h.op(LOG_UNKNOWN_WORKER_TYPE, pid);
+        kind => {
+            h.log(
+                LOG_UNKNOWN_WORKER_TYPE,
+                pid.cast_signed(),
+                kind.cast_signed(),
+            );
             SW_ERR
         }
     }
@@ -464,7 +471,7 @@ fn reload<H: Host>(h: &mut H, all: bool) -> bool {
     }
     let manager_pid = h.signed(OP_MANAGER_PID);
     if manager_pid == 0 {
-        h.get(LOG_RELOAD_SINGLE_PROCESS);
+        h.log(LOG_RELOAD_SINGLE_PROCESS, 0, 0);
         return false;
     }
     // SAFETY: getpid has no preconditions.

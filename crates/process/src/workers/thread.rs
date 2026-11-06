@@ -11,9 +11,12 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use super::event_worker::EVENT_WORKER;
+use super::log::{
+    LOG_CANNOT_RELOAD, LOG_MANAGER_ABNORMAL, LOG_NOTIFY_MANAGER, LOG_RELOADING,
+    LOG_THREAD_UNSUPPORTED,
+};
 use super::ops::{
-    LOG_CALLOC_CONNECTIONS, LOG_CANNOT_RELOAD, LOG_MANAGER_ABNORMAL, LOG_NOTIFY_MANAGER,
-    LOG_RELOADING, LOG_THREAD_UNSUPPORTED, OP_ABORT, OP_ALL_CORE_WORKER_NUM, OP_ALL_WORKER_NUM,
+    LOG_CALLOC_CONNECTIONS, OP_ABORT, OP_ALL_CORE_WORKER_NUM, OP_ALL_WORKER_NUM,
     OP_CALL_WORKER_ERROR, OP_CALLOC_CONNECTIONS, OP_CREATE_EVENT_WORKERS, OP_CREATE_MESSAGE_BUS,
     OP_CREATE_USER_WORKERS, OP_CREATE_WORKER_PIPES, OP_DELETE_REACTOR_THREADS,
     OP_DESTROY_MESSAGE_BUS, OP_EVENT_FREE, OP_EVENT_INIT, OP_FREE_THREAD_CONNECTIONS,
@@ -314,7 +317,7 @@ pub(super) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
 /// connection list and one pipe each; null without thread support or memory.
 fn create_factory<H: Host>(h: &mut H) -> i64 {
     if !h.is(OP_THREAD_SUPPORTED) {
-        h.get(LOG_THREAD_UNSUPPORTED);
+        h.log(LOG_THREAD_UNSUPPORTED, 0, 0);
         return 0;
     }
     h.get(OP_THREAD_REACTOR_NUM);
@@ -401,9 +404,9 @@ fn do_reload<H: Host>(h: &mut H, manager: &ThreadManager) {
 
 /// `ThreadFactory::reload`: start a reload, in the manager thread or by asking it.
 fn reload<H: Host>(h: &mut H, all: bool) -> bool {
-    let what = u64::from(all);
+    let what = i64::from(all);
     if h.get(OP_TASK_WORKER_NUM) == 0 && !all {
-        h.op(LOG_CANNOT_RELOAD, what);
+        h.log(LOG_CANNOT_RELOAD, what, 0);
         return false;
     }
     let manager = manager(h);
@@ -418,10 +421,10 @@ fn reload<H: Host>(h: &mut H, all: bool) -> bool {
     }
     manager.reload_all.store(all, Ordering::Release);
     if h.is(OP_IS_MANAGER) {
-        h.op(LOG_RELOADING, what);
+        h.log(LOG_RELOADING, what, 0);
         do_reload(h, manager);
     } else {
-        h.op(LOG_NOTIFY_MANAGER, what);
+        h.log(LOG_NOTIFY_MANAGER, what, 0);
         manager.push(Wake::Reload);
     }
     true
@@ -511,7 +514,7 @@ fn body<H: Host>(h: &mut H, arg: u64) {
     }
     if kind == MANAGER {
         if h.is(OP_RUNNING) {
-            h.get(LOG_MANAGER_ABNORMAL);
+            h.log(LOG_MANAGER_ABNORMAL, 0, 0);
         }
         h.get(OP_TIMER_FREE);
     } else {

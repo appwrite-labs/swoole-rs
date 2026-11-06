@@ -741,7 +741,7 @@ pub extern "C" fn swoole_get_worker_symbol() -> std::ffi::c_char {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::pool::{
         swr_v1_process_pool_ipc_address_of, swr_v1_process_pool_ipc_free,
@@ -769,7 +769,7 @@ mod tests {
     }
 
     /// What `origin` logged: (kind, level, code, message).
-    fn logged(origin: &str) -> Vec<(c_int, c_int, c_int, String)> {
+    pub(crate) fn logged(origin: &str) -> Vec<(c_int, c_int, c_int, String)> {
         LOGGED
             .lock()
             .map(|logged| {
@@ -783,7 +783,7 @@ mod tests {
     }
 
     /// Route this binary's logs to [`record`].
-    fn install() {
+    pub(crate) fn install() {
         swoole_rs_corebase::log::swr_v1_core_set_log_host(record);
     }
 

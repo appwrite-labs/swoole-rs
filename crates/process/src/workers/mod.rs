@@ -12,6 +12,7 @@ pub mod entry;
 mod event_worker;
 mod factory;
 pub mod factory_methods;
+mod log;
 mod manager;
 pub mod ops;
 mod reactor_process;
@@ -48,6 +49,10 @@ pub(crate) trait Host {
     }
     fn signed(&mut self, op: u32) -> i64 {
         self.get(op).cast_signed()
+    }
+    /// Logs `log::LOG_*` with its values.
+    fn log(&mut self, op: u32, a: i64, b: i64) {
+        log::emit(op, a, b);
     }
 }
 
@@ -213,6 +218,9 @@ pub(crate) mod script {
                 return answers.remove(0);
             }
             self.facts.get(&op).copied().unwrap_or(0)
+        }
+        fn log(&mut self, op: u32, a: i64, _: i64) {
+            self.log.push((op, a.cast_unsigned()));
         }
     }
 }
