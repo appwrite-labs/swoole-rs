@@ -1,5 +1,5 @@
 //! `Swoole\Process\Pool`: registration, objects, methods and the pool's event
-//! callbacks. C++ keeps the `ProcessPool` (`src/os/process_pool.cc`) and reaches
+//! callbacks. C++ keeps the `ProcessPool` (`src/server/process.cc`) and reaches
 //! it for Rust through the pool host table.
 use crate::{
     host::host as process_host,
