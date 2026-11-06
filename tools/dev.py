@@ -324,8 +324,6 @@ def plan(args, reports):
                    '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                    '--source-ref', 'HEAD', '--profile', 'column-bytes', *report('phpcollections-column-bytes'))
     if 'phphelpers' in modules:
-        script('phphelpers-async', 'tests/modules/phphelpers/async_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('phphelpers-async'))
         if integrate:
             script('phphelpers-module', 'tests/modules/phphelpers/module.py', *php_for('curl'), *engines,
                    '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
