@@ -15,7 +15,7 @@ def original(path):
 
 
 # Upstream files the hybrid deleted, and the hybrid file holding what is left of each.
-MOVED = {'src/server/port.cc': 'src/server/master.cc', 'ext-src/swoole_server_port.cc': 'ext-src/swoole_server.cc'}
+MOVED = {'src/core/base.cc': 'src/core/misc.cc', 'src/server/port.cc': 'src/server/master.cc', 'ext-src/swoole_server_port.cc': 'ext-src/swoole_server.cc'}
 
 
 def selected(tree, path):
