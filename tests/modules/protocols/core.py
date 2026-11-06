@@ -25,6 +25,9 @@ from tools.build_hybrid import overlay_hybrid_tree
 from tools.build_upstream import COMMIT as PIN
 ASSERTIONS = ['core-tests/src/protocol/redis.cpp', 'core-tests/src/server/message_bus.cpp', 'core-tests/src/server/mqtt.cpp']
 SELECTED = ['core-tests/src/main.cpp', 'core-tests/src/_lib/redis.cpp', *ASSERTIONS]
+# The hybrid builds no redis::format/parse (nothing but redis.cpp calls them), so its
+# assertions reach Rust's RESP codec through the protocols gates' adapter.
+REDIS_REPLY = 'core-tests/src/_lib/redis_reply.cpp'
 
 
 def sha(path):
@@ -145,7 +148,14 @@ def main():
                 selection = 'file(GLOB_RECURSE core_test_files core-tests/src/*.cpp thirdparty/llhttp/*.c)'
                 if cmake.count(selection) != 1:
                     raise ValueError('Original core target selection changed')
-                cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(SELECTED) + ')')
+                selected = SELECTED
+                if engine == 'rust':
+                    reply = (Path(__file__).resolve().parent / 'redis_reply.inc').read_text()
+                    write_changed(tree / REDIS_REPLY, ('#include "swoole_string.h"\n#include "swoole_redis.h"\n'
+                                                       '#include "swoole_rs_protocols.h"\nnamespace swoole {\nnamespace redis {\n'
+                                                       + reply + '}  // namespace redis\n}  // namespace swoole\n').encode())
+                    selected = [*SELECTED, REDIS_REPLY]
+                cmake = cmake.replace(selection, 'set(core_test_files ' + ' '.join(selected) + ')')
                 if engine == 'rust':
                     cmake += f'\n{hybrid_cmake}target_link_libraries(lib-swoole "{archive}")\n'
                 write_changed(tree / 'CMakeLists.txt', cmake.encode())
