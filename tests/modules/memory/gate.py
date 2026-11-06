@@ -22,7 +22,7 @@ from tools.build_hybrid import hybrid_tree, module_patches
 
 from tools.build_upstream import COMMIT as PIN
 INLINED = {'src/core/channel.cc': 'include/swoole_channel.h'}
-SOURCES = ['src/core/heap.cc', 'src/core/channel.cc', 'src/memory/fixed_pool.cc', 'src/memory/global_memory.cc', 'src/memory/ring_buffer.cc', 'src/memory/shared_memory.cc', 'src/memory/table.cc']
+SOURCES = ['src/core/channel.cc', 'src/memory/fixed_pool.cc', 'src/memory/global_memory.cc', 'src/memory/ring_buffer.cc', 'src/memory/shared_memory.cc', 'src/memory/table.cc']
 
 
 def sha(path):
@@ -47,7 +47,7 @@ def main():
         parser.error('Benchmark preparation requires an unsanitized optimized build')
     prepared = {}
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'passed': False, 'upstream_commit': PIN,
-              'scope': 'Original native algorithms versus actual Rust-backed fixed/global/ring pools, heap, channel, mapping and table facades; native runtime allocation/locking/pipe dependencies supplied by the extension built from the same headers (pinned for upstream, hybrid for rust). New assertions, not original GoogleTests. C++ sanitizers instrument only the Rust-backed native probe/facades, not Rust or PHP.',
+              'scope': 'Original native algorithms versus actual Rust-backed fixed/global/ring pools, channel, mapping and table facades; native runtime allocation/locking/pipe dependencies supplied by the extension built from the same headers (pinned for upstream, hybrid for rust). New assertions, not original GoogleTests. C++ sanitizers instrument only the Rust-backed native probe/facades, not Rust or PHP.',
               'commands': [], 'results': []}
     try:
         if sys.platform != 'darwin' and not sys.platform.startswith('linux'):
@@ -115,7 +115,7 @@ def main():
                 compiler = shlex.split(os.environ.get('CXX', 'c++'))
                 if variant == 'rust':
                     guard = tree / 'guard.cc'
-                    guard.write_text('#include "swoole_heap.h"\n')
+                    guard.write_text('#include "swoole_channel.h"\n')
                     configured = tree / 'configured-memory'
                     configured.mkdir()
                     (configured / 'config.h').write_text('')
@@ -124,7 +124,7 @@ def main():
                     accepted = run_isolated(command, cwd=ROOT, timeout=15)
                     report['configured_feature_guard'] = {'command': command, 'exit_code': accepted.returncode, 'stderr': accepted.stderr}
                     if accepted.returncode:
-                        raise ValueError('Heap header failed to compile against config.h')
+                        raise ValueError('Channel header failed to compile against config.h')
                 binary = tree / ('probe.so' if linux else 'probe.dylib')
                 command = compiler + ['-std=c++17', '-O2', '-g', '-fvisibility=hidden', *headers]
                 command += shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))
@@ -210,7 +210,7 @@ def main():
                     if sha(stored) != digest:
                         raise ValueError(f'Source changed during preparation: {relative}')
                 report['source_snapshot'] = str(snapshot)
-                write_report(args.prepare_benchmark / 'manifest.json', {'source_snapshot': str(snapshot), 'frozen_sha256': frozen_hashes, 'upstream_commit': PIN, 'variants': prepared, 'correctness': report['results'], 'timing_cases': ['fixed_ns', 'heap_ns', 'channel_ns', 'ring_ns', 'global_ns', 'table_ns', 'table_clear8_ns', 'table_clear33_ns', 'fixed_construct_owned_ns', 'fixed_construct_borrowed_ns', 'table_schema17_ns', 'table_columns65_ns', 'table_names65_ns', 'table_long_names65_ns'], 'scope': 'Optimized native facades, C++ -O2 and release Rust, no sanitizers. Timing requires exclusive integrator lease; PHP startup excluded. Existing pool operations exclude setup; explicit fixed_construct cases include arena construction/destruction and owned native allocation/free. Column schema17 includes factory/unique declarations/one traversal/drain for min(loops,256) rounds; columns65 excludes setup/teardown. Names65 workloads include borrowed names and whole-byte consumer hashing; short and 80-byte embedded-NUL prefixes, setup/teardown excluded. Rust-owned Table versus the pinned Table. No PHP/original-suite parity or full-workload performance claim.'})
+                write_report(args.prepare_benchmark / 'manifest.json', {'source_snapshot': str(snapshot), 'frozen_sha256': frozen_hashes, 'upstream_commit': PIN, 'variants': prepared, 'correctness': report['results'], 'timing_cases': ['fixed_ns', 'channel_ns', 'ring_ns', 'global_ns', 'table_ns', 'table_clear8_ns', 'table_clear33_ns', 'fixed_construct_owned_ns', 'fixed_construct_borrowed_ns', 'table_schema17_ns', 'table_columns65_ns', 'table_names65_ns', 'table_long_names65_ns'], 'scope': 'Optimized native facades, C++ -O2 and release Rust, no sanitizers. Timing requires exclusive integrator lease; PHP startup excluded. Existing pool operations exclude setup; explicit fixed_construct cases include arena construction/destruction and owned native allocation/free. Column schema17 includes factory/unique declarations/one traversal/drain for min(loops,256) rounds; columns65 excludes setup/teardown. Names65 workloads include borrowed names and whole-byte consumer hashing; short and 80-byte embedded-NUL prefixes, setup/teardown excluded. Rust-owned Table versus the pinned Table. No PHP/original-suite parity or full-workload performance claim.'})
             if not report['passed']:
                 report['error'] = 'Native and Rust traces differ'
     except Exception as error:

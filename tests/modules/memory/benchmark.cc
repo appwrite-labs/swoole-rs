@@ -1,5 +1,4 @@
 #include "swoole_memory.h"
-#include "swoole_heap.h"
 #include "swoole_channel.h"
 #include "swoole_table.h"
 #include "table_compat.h"
@@ -126,7 +125,7 @@ extern "C" __attribute__((visibility("default"))) int swr_memory_columns_check(v
 // Called only in an integrator-reserved timing window, optimized and unsanitized.
 extern "C" __attribute__((visibility("default"))) int swr_memory_benchmark(unsigned loops) {
     if (loops == 0 || loops > 1000000) return 2;
-    uint64_t checksum = 0, fixed_ns, heap_ns, channel_ns, ring_ns, global_ns, table_ns, table_clear8_ns, table_clear33_ns, fixed_construct_owned_ns, fixed_construct_borrowed_ns, table_schema17_ns, table_columns65_ns, table_names65_ns, table_long_names65_ns;
+    uint64_t checksum = 0, fixed_ns, channel_ns, ring_ns, global_ns, table_ns, table_clear8_ns, table_clear33_ns, fixed_construct_owned_ns, fixed_construct_borrowed_ns, table_schema17_ns, table_columns65_ns, table_names65_ns, table_long_names65_ns;
     const unsigned schema_rounds = std::min(loops, 256u);
     {
         swoole::FixedPool pool(1024, 64, false);
@@ -136,16 +135,6 @@ extern "C" __attribute__((visibility("default"))) int swr_memory_benchmark(unsig
             p[0] = i; checksum += p[0]; pool.free(p);
         }
         fixed_ns = elapsed(start);
-    }
-    {
-        swoole::Heap heap(128, swoole::Heap::MIN_HEAP);
-        for (unsigned i = 1; i <= 64; ++i) assert(heap.push(i, reinterpret_cast<void *>(uintptr_t(i))));
-        auto start = Clock::now();
-        for (unsigned i = 0; i < loops; ++i) {
-            auto *token = heap.pop(); assert(token); checksum += reinterpret_cast<uintptr_t>(token);
-            assert(heap.push(i % 128, token));
-        }
-        heap_ns = elapsed(start);
     }
     {
         auto *channel = swoole::Channel::make(65536, 64, swoole::SW_CHAN_LOCK); assert(channel);
@@ -237,8 +226,8 @@ extern "C" __attribute__((visibility("default"))) int swr_memory_benchmark(unsig
         else table_names65_ns = duration;
         table->destroy();
     }
-    printf("{\"loops\":%u,\"checksum\":%llu,\"fixed_ns\":%llu,\"heap_ns\":%llu,\"channel_ns\":%llu,\"ring_ns\":%llu,\"global_ns\":%llu,\"table_ns\":%llu,\"table_clear8_ns\":%llu,\"table_clear33_ns\":%llu,\"fixed_construct_owned_ns\":%llu,\"fixed_construct_borrowed_ns\":%llu,\"table_schema_rounds\":%u,\"table_schema17_ns\":%llu,\"table_columns65_ns\":%llu,\"table_names65_ns\":%llu,\"table_long_names65_ns\":%llu}\n", loops,
-           (unsigned long long) checksum, (unsigned long long) fixed_ns, (unsigned long long) heap_ns,
+    printf("{\"loops\":%u,\"checksum\":%llu,\"fixed_ns\":%llu,\"channel_ns\":%llu,\"ring_ns\":%llu,\"global_ns\":%llu,\"table_ns\":%llu,\"table_clear8_ns\":%llu,\"table_clear33_ns\":%llu,\"fixed_construct_owned_ns\":%llu,\"fixed_construct_borrowed_ns\":%llu,\"table_schema_rounds\":%u,\"table_schema17_ns\":%llu,\"table_columns65_ns\":%llu,\"table_names65_ns\":%llu,\"table_long_names65_ns\":%llu}\n", loops,
+           (unsigned long long) checksum, (unsigned long long) fixed_ns,
            (unsigned long long) channel_ns, (unsigned long long) ring_ns, (unsigned long long) global_ns, (unsigned long long) table_ns,
            (unsigned long long) table_clear8_ns, (unsigned long long) table_clear33_ns,
            (unsigned long long) fixed_construct_owned_ns, (unsigned long long) fixed_construct_borrowed_ns, schema_rounds,

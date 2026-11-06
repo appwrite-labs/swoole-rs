@@ -1,5 +1,4 @@
 #include "swoole_memory.h"
-#include "swoole_heap.h"
 #include "swoole_channel.h"
 #include "swoole_table.h"
 #include "table_compat.h"
@@ -94,39 +93,6 @@ static void fixed_pools() {
         for (int i = 16; i >= 0; --i) assert(pool.alloc(0) == pointers[i]);
         observe(width);
     }
-}
-
-static void heaps() {
-    for (auto type : {swoole::Heap::MIN_HEAP, swoole::Heap::MAX_HEAP}) {
-        swoole::Heap heap(2, type);
-        std::map<uintptr_t, swoole::HeapNode *> model;
-        uint64_t seed = 17;
-        for (uintptr_t id = 1; id < 10000; ++id) {
-            auto value = random_step(seed);
-            if (value % 4 == 0) { auto *node = heap.push(value % 100, reinterpret_cast<void *>(id)); assert(node); model[id] = node; }
-            else if (value % 4 == 1 && !model.empty()) {
-                auto it = model.begin(); std::advance(it, value % model.size());
-                heap.remove(it->second); model.erase(it);
-            } else if (value % 4 == 2 && !model.empty()) {
-                auto it = model.begin(); std::advance(it, value % model.size());
-                heap.change_priority(value % 100, it->second);
-            } else {
-                auto *top = heap.top();
-                if (!model.empty()) {
-                    assert(top);
-                    uint64_t priority = top->priority;
-                    for (const auto &kv : model) assert(type == swoole::Heap::MIN_HEAP ? priority <= kv.second->priority : priority >= kv.second->priority);
-                    auto token = reinterpret_cast<uintptr_t>(top->data);
-                    assert(heap.pop() == reinterpret_cast<void *>(token)); model.erase(token); observe(token); observe(priority);
-                } else assert(heap.pop() == nullptr);
-            }
-            assert(heap.count() == model.size());
-        }
-        while (heap.count()) { auto *top = heap.top(); observe(top->priority); observe(reinterpret_cast<uintptr_t>(heap.pop())); }
-    }
-    swoole::Heap equal(3, swoole::Heap::MIN_HEAP);
-    for (uintptr_t id = 1; id <= 3; ++id) equal.push(1, reinterpret_cast<void *>(id));
-    for (uintptr_t id : {1, 3, 2}) assert(equal.pop() == reinterpret_cast<void *>(id));
 }
 
 static void mapping_growth() {
@@ -485,23 +451,6 @@ static void collection_diagnostics() {
         }
         pool.free(allocated);
     }
-    for (auto type : {swoole::Heap::MIN_HEAP, swoole::Heap::MAX_HEAP}) {
-        swoole::Heap heap(4, type);
-        assert(capture_diagnostic([&] { heap.print(); }).empty());
-        assert(heap.peek() == nullptr);
-        int tokens[4] = {0, 1, 2, 3};
-        const uint64_t priorities[4] = {9, 3, 5, 3};
-        swoole::HeapNode *nodes[4];
-        for (int i = 0; i < 4; ++i) { nodes[i] = heap.push(priorities[i], &tokens[i]); assert(nodes[i]); }
-        std::sort(nodes, nodes + 4, [](const swoole::HeapNode *a, const swoole::HeapNode *b) { return a->position < b->position; });
-        std::string expected;
-        for (const auto *node : nodes) {
-            char line[160]; const int length = snprintf(line, sizeof(line), "#%u\tpriority=%ld, data=%p\n", node->position, (long) node->priority, node->data);
-            assert(length > 0 && static_cast<size_t>(length) < sizeof(line)); expected.append(line, length);
-        }
-        assert(capture_diagnostic([&] { heap.print(); }) == expected);
-        assert(heap.peek() == heap.top()->data);
-    }
 }
 
 static size_t lookup_callback_calls;
@@ -698,8 +647,8 @@ static void versioned_columns() {
 
 extern "C" __attribute__((visibility("default"))) int swr_memory_probe() {
     try {
-        fixed_pools(); heaps(); channels(); global_pools(); ring_pools(); mapping_growth(); tables(); collection_diagnostics(); lookup_callback_boundary(); clear_batch_boundaries(); value_write_boundaries(); versioned_columns();
-        printf("{\"passed\":true,\"checksum\":%llu,\"fixed_widths\":5,\"heap_steps\":19998,\"channel_steps\":40000,\"channel_variable_fork_records\":1025,\"thread_messages\":5000,\"fork_cases\":7,\"global_allocations\":4000,\"ring_steps\":60000,\"ring_thread_messages\":5000,\"table_steps\":20000,\"table_contended_updates\":8000,\"fixed_diagnostic_cases\":12,\"heap_diagnostic_cases\":4,\"native_hash_callback_cases\":6,\"native_clear_batch_schemas\":5,\"native_value_boundary_cases\":6,\"versioned_column_schemas\":4,\"uncreated_column_teardown\":1,\"versioned_column_reader_updates\":2048,\"versioned_column_fork_cases\":4}\n", (unsigned long long) checksum);
+        fixed_pools(); channels(); global_pools(); ring_pools(); mapping_growth(); tables(); collection_diagnostics(); lookup_callback_boundary(); clear_batch_boundaries(); value_write_boundaries(); versioned_columns();
+        printf("{\"passed\":true,\"checksum\":%llu,\"fixed_widths\":5,\"channel_steps\":40000,\"channel_variable_fork_records\":1025,\"thread_messages\":5000,\"fork_cases\":7,\"global_allocations\":4000,\"ring_steps\":60000,\"ring_thread_messages\":5000,\"table_steps\":20000,\"table_contended_updates\":8000,\"fixed_diagnostic_cases\":12,\"native_hash_callback_cases\":6,\"native_clear_batch_schemas\":5,\"native_value_boundary_cases\":6,\"versioned_column_schemas\":4,\"uncreated_column_teardown\":1,\"versioned_column_reader_updates\":2048,\"versioned_column_fork_cases\":4}\n", (unsigned long long) checksum);
         return 0;
     } catch (const std::exception &error) { fprintf(stderr, "%s\n", error.what()); return 99; }
 }

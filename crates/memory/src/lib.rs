@@ -51,10 +51,9 @@ pub use global::{
     swr_v1_memory_global_request_valid, swr_v1_memory_global_step,
 };
 pub use heap::{
-    swr_v1_memory_heap_at, swr_v1_memory_heap_compare, swr_v1_memory_heap_count,
-    swr_v1_memory_heap_create, swr_v1_memory_heap_debug_step, swr_v1_memory_heap_pop,
-    swr_v1_memory_heap_push, swr_v1_memory_heap_release, swr_v1_memory_heap_remove,
-    swr_v1_memory_heap_update,
+    swr_v1_memory_heap_at, swr_v1_memory_heap_count, swr_v1_memory_heap_create,
+    swr_v1_memory_heap_pop, swr_v1_memory_heap_push, swr_v1_memory_heap_release,
+    swr_v1_memory_heap_remove, swr_v1_memory_heap_update,
 };
 
 pub use ring::{

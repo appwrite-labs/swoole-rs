@@ -49,25 +49,6 @@ typedef struct swr_v1_memory_channel_capacity {
     uint8_t head_tag, tail_tag;
 } swr_v1_memory_channel_capacity;
 int32_t swr_v1_memory_channel_full(const swr_v1_memory_channel_capacity *);
-/* Rust-owned opaque heap; public node POD layout stays unchanged. */
-typedef struct swr_v1_memory_heap_node {
-    uint64_t priority;
-    uint32_t position;
-    void *data;
-} swr_v1_memory_heap_node;
-/* Independent snapshot and index; serialized with heap mutations. Each step
- * copies one live node and advances index in Rust; terminal output is cleared.
- *1 record,0 end,-1 invalid; native printf executes only after return. */
-int32_t swr_v1_memory_heap_debug_step(const void *, size_t *, swr_v1_memory_heap_node *);
-int32_t swr_v1_memory_heap_create(size_t capacity, uint32_t max, void **);
-void swr_v1_memory_heap_release(void *);
-size_t swr_v1_memory_heap_count(const void *);
-swr_v1_memory_heap_node *swr_v1_memory_heap_at(const void *, size_t index);
-int32_t swr_v1_memory_heap_compare(const void *, uint64_t a, uint64_t b);
-swr_v1_memory_heap_node *swr_v1_memory_heap_push(void *, uint64_t, void *);
-int32_t swr_v1_memory_heap_update(void *, uint64_t, swr_v1_memory_heap_node *);
-int32_t swr_v1_memory_heap_remove(void *, swr_v1_memory_heap_node *);
-void *swr_v1_memory_heap_pop(void *);
 /* The pools are Rust's (crates/memory/src/members.rs). These are what
  * swoole_memory.h keeps inline: the constructors, which throw, and the virtual members. A constructor returns 0, -1 for
  * Exception(SW_ERROR_INVALID_PARAMS) or -2 for std::bad_alloc; so does global alloc. */

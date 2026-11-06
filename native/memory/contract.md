@@ -64,28 +64,25 @@ end. Native performs the printf.
 
 ## Heap
 
-Rust owns a vector of stable, individually allocated node PODs. Native `HeapNode`
-fields and 1-based position keep their pinned layout. The private C++ `Heap`
-layout becomes one opaque pointer, so a full native rebuild is required; old
-objects cannot be mixed in.
+Rust only: no native code uses the heap since `include/swoole_heap.h` left the
+build. Rust owns a vector of stable, individually allocated node PODs with
+upstream's `HeapNode` fields and 1-based position.
 
 - create takes min/max as exactly 0/1, zeroes output first, returns 0/-1.
 - push returns a stable node or NULL; on OOM logical contents are unchanged
   (capacity may grow).
-- count/at/compare do not mutate or allocate. update/remove return 0/-1 and do
+- count/at do not mutate or allocate. update/remove return 0/-1 and do
   not allocate. Call them only on live nodes from the same heap.
 - pop returns the data token or NULL when empty (NULL is also a valid token).
 - remove/pop use swap-last and strict priority comparison with the pinned
   left-child tie choice; equal priorities give the original 1/3/2 three-node order.
   No FIFO guarantee.
 - peek/at views stay valid until that node is popped/removed or the heap is
-  destroyed. Native callers must not delete nodes. Destruction frees nodes, not
-  their data tokens.
+  destroyed. Callers must not free nodes. Destruction frees nodes, not their data
+  tokens.
 - The heap retains at most one removed 24-byte node for reuse by a later push; a
   second removal frees the previous spare. Vector growth is checked before taking
   the spare.
-- `heap_debug_step` copies one node to a frozen node POD and advances a cursor;
-  native code prints.
 
 ## Core channel
 
@@ -260,10 +257,10 @@ python3 tests/modules/memory/benchmark.py --prepared target/memory-benchmark \
 ```
 
 Trials alternate upstream/Rust order and compare workload checksums. Cases: fixed
-alloc/free, heap pop/push, locked channel push/pop, ring alloc/free, global 64-byte
+alloc/free, locked channel push/pop, ring alloc/free, global 64-byte
 alloc, table row/column lookup/read-modify-write.
 
 Known regression: the most recent measured Rust/upstream elapsed-time ratios were
-fixed 1.068, heap 1.187, channel 1.437, ring 2.074, global 1.099, table 1.061.
+fixed 1.068, channel 1.437, ring 2.074, global 1.099, table 1.061.
 These block default activation. Later seams (ring storage ABI, lookup/clear/value
 resume steps) add crossings and have not been measured.

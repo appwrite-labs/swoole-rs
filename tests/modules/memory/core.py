@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the 20 unchanged original M12 GoogleTests in private Linux build trees."""
+"""Run the 19 unchanged original M12 GoogleTests in private Linux build trees."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -22,7 +22,7 @@ from tools.build_hybrid import overlay_hybrid_tree
 from tools.build_upstream import COMMIT as PIN
 ASSERTIONS = ['core-tests/src/memory/' + name + '.cpp' for name in
               ['fixed_pool', 'global_memory', 'ringbuffer', 'table']]
-ASSERTIONS += ['core-tests/src/core/' + name + '.cpp' for name in ['heap', 'channel']]
+ASSERTIONS += ['core-tests/src/core/' + name + '.cpp' for name in ['channel']]
 
 
 def sha(path):
@@ -106,8 +106,8 @@ def main():
             stage(source, staged)
             inventory = [{'name': f'{group}.{name}', 'path': path, 'sha256': sha(staged / path)}
                 for path in ASSERTIONS for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', (staged / path).read_text())]
-            if len(inventory) != 20 or len({case['name'] for case in inventory}) != 20:
-                raise ValueError('Original 20-case inventory differs')
+            if len(inventory) != 19 or len({case['name'] for case in inventory}) != 19:
+                raise ValueError('Original 19-case inventory differs')
             report['inventory'] = inventory
             unknown = set(args.case) - {case['name'] for case in inventory}
             if unknown:

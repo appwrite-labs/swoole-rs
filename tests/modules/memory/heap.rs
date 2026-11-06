@@ -113,53 +113,41 @@ fn root_pop_zero_one_and_tied_min_max_boundaries_keep_swap_last_order() {
     }
 }
 
+/// Upstream core-tests/src/core/heap.cpp `TEST(heap, random)`: a max heap of
+/// `SIZE` (100) holding `SIZE * 2 - 1` nodes with random priorities in
+/// [10000, 99999]; peek and every pop return a node whose priority is the one
+/// pushed for its value. Upstream's single `print()` call is diagnostic output
+/// with no assertion; `Heap::print` left with `include/swoole_heap.h`.
 #[test]
-fn diagnostic_snapshot_preserves_storage_order_positions_tokens_and_empty_peek() {
+fn heap_random() {
+    use std::hash::BuildHasher;
+    struct Pair {
+        pri: u64,
+        val: usize,
+    }
+    const SIZE: usize = 100;
+    let random = std::hash::RandomState::new();
     unsafe {
-        for max in 0..=1 {
-            let mut heap = ptr::null_mut();
-            assert_eq!(swr_v1_memory_heap_create(4, max, &raw mut heap), 0);
-            let mut index = 0;
-            let mut output = Node {
-                priority: 99,
-                position: 1,
-                data: ptr::dangling_mut(),
-            };
-            assert_eq!(
-                swr_v1_memory_heap_debug_step(heap, &raw mut index, &raw mut output),
-                0
-            );
-            assert_eq!((output.priority, output.position, index), (0, 0, 0));
-            assert!(output.data.is_null());
-            let mut tokens = [1u64, 2, 3, 4];
-            for (priority, token) in [9, 3, 5, 3].into_iter().zip(tokens.iter_mut()) {
-                assert!(
-                    !swr_v1_memory_heap_push(
-                        heap,
-                        priority,
-                        std::ptr::from_mut::<u64>(token).cast()
-                    )
-                    .is_null()
-                );
-            }
-            for i in 0..4 {
-                let actual = swr_v1_memory_heap_at(heap, i);
-                assert_eq!(
-                    swr_v1_memory_heap_debug_step(heap, &raw mut index, &raw mut output),
-                    1
-                );
-                assert_eq!(index, i + 1);
-                assert_eq!(
-                    (output.priority, output.position, output.data),
-                    ((*actual).priority, (*actual).position, (*actual).data)
-                );
-            }
-            assert_eq!(
-                swr_v1_memory_heap_debug_step(heap, &raw mut index, &raw mut output),
-                0
-            );
-            assert!(output.data.is_null());
-            swr_v1_memory_heap_release(heap);
+        let mut pq = ptr::null_mut();
+        assert_eq!(swr_v1_memory_heap_create(SIZE, 1, &raw mut pq), 0);
+        assert!(swr_v1_memory_heap_at(pq, 0).is_null());
+        let mut map = BTreeMap::new();
+        for i in 0..SIZE * 2 - 1 {
+            let pri = 10000 + random.hash_one(i) % 90000;
+            let ns = Box::into_raw(Box::new(Pair { pri, val: i }));
+            assert!(!swr_v1_memory_heap_push(pq, pri, ns.cast()).is_null());
+            map.insert(i, pri);
         }
+        let n = (*swr_v1_memory_heap_at(pq, 0)).data.cast::<Pair>();
+        assert_eq!(map[&(*n).val], (*n).pri);
+        loop {
+            let n = swr_v1_memory_heap_pop(pq).cast::<Pair>();
+            if n.is_null() {
+                break;
+            }
+            assert_eq!(map[&(*n).val], (*n).pri);
+            drop(Box::from_raw(n));
+        }
+        swr_v1_memory_heap_release(pq);
     }
 }
