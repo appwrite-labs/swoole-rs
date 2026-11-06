@@ -113,35 +113,6 @@ pub unsafe extern "C" fn swoole_shell_exec(
     read
 }
 
-/// `sw_wait_for`: poll `ready` with doubling sleeps until it holds or
-/// `timeout_ms` is spent, the last sleep trimmed to the remaining time.
-/// # Safety
-/// `ready` may be called with `context` repeatedly and must not unwind.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_wait_for(
-    ready: unsafe extern "C" fn(*mut c_void) -> bool,
-    context: *mut c_void,
-    mut timeout_ms: c_int,
-) -> bool {
-    let mut sleep_msec: c_int = 1;
-    while timeout_ms >= 0 {
-        // SAFETY: the caller's predicate over its own context.
-        if unsafe { ready(context) } {
-            return true;
-        }
-        // SAFETY: usleep(3) has no memory preconditions.
-        unsafe { libc::usleep(sleep_msec.wrapping_mul(1000).cast_unsigned()) };
-        sleep_msec = sleep_msec.wrapping_mul(2);
-        if timeout_ms > 0 && timeout_ms - sleep_msec < 0 {
-            sleep_msec = timeout_ms;
-            timeout_ms = 0;
-        } else {
-            timeout_ms -= sleep_msec;
-        }
-    }
-    false
-}
-
 fn put(format: &CStr, value: c_uint) {
     // SAFETY: `format` takes exactly one unsigned argument.
     unsafe { printf(format.as_ptr(), value) };
@@ -731,21 +702,6 @@ mod tests {
             .unwrap()
             .as_secs_f64();
         assert!((microtime() - now).abs() < 1.0, "within a second");
-    }
-
-    #[test]
-    fn wait_for_polls_until_ready_or_timeout() {
-        unsafe extern "C" fn countdown(context: *mut c_void) -> bool {
-            let left = unsafe { &mut *context.cast::<u32>() };
-            *left = left.saturating_sub(1);
-            *left == 0
-        }
-        let mut left = 3u32;
-        assert!(unsafe { swr_v1_corebase_wait_for(countdown, (&raw mut left).cast(), 100) });
-        let mut never = u32::MAX;
-        assert!(!unsafe { swr_v1_corebase_wait_for(countdown, (&raw mut never).cast(), 5) });
-        // Sleeps of 1 and 2 ms, then the trimmed last 3 ms: three polls in all.
-        assert_eq!(u32::MAX - never, 3);
     }
 
     #[test]

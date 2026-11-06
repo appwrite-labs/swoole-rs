@@ -1,7 +1,9 @@
 # Core base helpers
 
-Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. Callers are
-in `src/core/base.cc` and the readers of the `SwooleG` fields Rust owns. No
+Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. `src/core/base.cc`
+is gone: what is left of it (the globals, the native effects of the lifecycle
+sequences and the std::string/std::function APIs) sits at the end of
+`src/core/misc.cc`. Other callers are the readers of the `SwooleG` fields Rust owns. No
 public C++ signature changes; `swoole::Global` loses the fields Rust owns.
 
 Rust holds numeric/byte/path comparison and formatting policy. Apart from the
@@ -37,10 +39,8 @@ bailout or panic crosses the ABI. All spans and pointer differences fit
   `bad_alloc` point), saves and clears errno, captures ERANGE and restores errno.
   Output is written only on success; on no-conversion or out-of-range it reruns
   native `std::stoi` so the original exception is thrown.
-- `dirname`: returns the last-slash prefix length, preserving root and
-  binary/NUL bytes; no slash returns empty.
-- `hook_add_action`: stateless decision for hook-list creation and front/back
-  insertion. Native allocates and mutates the list and owns callbacks.
+- The global hook table (`hook.rs`) is Rust's: `swoole_add_hook`,
+  `swoole_call_hook` (over the list as the call began) and `swoole_isset_hook`.
 
 ## `mkdir_next`
 
@@ -68,15 +68,13 @@ on DONE.
 | --- | --- | --- |
 | 1 | thread init | is main thread |
 | 2 | thread cleanup | - |
-| 3 | Global cleanup | native hook count |
+| 3 | Global cleanup | - |
 | 4 | `swoole_fork` | - |
 | 5 | `swoole_fork_exec` | - |
 
 Native shims perform exactly one requested effect per step.
 
-- Global cleanup observes hook slots one at a time (a destructor may add a later
-  list before its observation point), keeps deleting-list pointers published and
-  never revisits a deleted slot. Then: clear signals, clean the thread,
+- Global cleanup releases the hook lists, then: clear signals, clean the thread,
   conditionally close the current logger, delete the logger and memory pool, and
   reset Global last. Pointers are re-read after each close/delete.
 - Thread init: observe the stack buffer, allocate when absent, block signals only
@@ -109,7 +107,7 @@ alike) compiles unchanged. A view can't be copied, so passing one through `...`
 fails to compile instead of printing garbage. `SwooleG = {}` leaves the record
 alone; `swr_v1_core_reset` clears it. `max_sockets` stays native because the
 core-tests copy it with `auto`; `std_allocator` (its address is taken), the
-strings, containers, hook lists and `user_exit_condition` are C++ objects.
+strings, containers and `user_exit_condition` are C++ objects.
 
 `swr_v1_core_init` is `swoole_init`'s guard: false when already initialised,
 otherwise it resets the record and sets running, coroutines on, the page size,
@@ -136,14 +134,16 @@ directly (`SwooleG.std_allocator` only ever held it). The `corebase-native` gate
 checks the hybrid base.o leaves the first four to the Rust archive.
 
 Whole operations in Rust (`host.rs`), with native code keeping only their
-warnings: `swoole_shell_exec`, `sw_wait_for` (through a non-throwing predicate
-trampoline), `swoole_dump_ascii`/`_hex`, `swoole_print_backtrace` without Boost,
+warnings: `swoole_shell_exec`, `swoole_dump_ascii`/`_hex`, `swoole_print_backtrace` without Boost,
 `microtime`, `DataHead::dump`, `swoole_rand`/`swoole_random_int` (a per-thread
 xoshiro256** seeded by getentropy), `swoole_system_random` and
 `swoole_redirect_stdout(int)` (each dup2's errno is handed back for its warning).
 
-Still native: varargs, the rest of `SwooleG` and TLS, C++ containers/objects, filesystem IO, hook
-traversal and other runtime operations.
+`sw_snprintf`, `sw_vsnprintf` and `sw_printf` are C variadics, so they're a C
+shim in the Rust archive (`crates/corebase/src/format.c`, C linkage).
+
+Still native: the rest of `SwooleG` and TLS, C++ containers/objects, filesystem IO
+and other runtime operations.
 
 The lower `swoole::Thread` owns a generated `CoreThread` record: Rust controls
 its pthread handle, status publication, moves, joins and detaches. The C++ SDK

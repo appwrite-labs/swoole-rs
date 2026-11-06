@@ -1,4 +1,4 @@
-//! Remaining core configuration: stable allocator/limit/hook slots and owned
+//! Remaining core configuration: stable allocator/limit slots and owned
 //! task/resolver paths. Native containers and callbacks keep their existing guard.
 use crate::{CoreStringView, StringSlot, swr_v1_core_string_set, swr_v1_core_string_view};
 use std::{cell::UnsafeCell, ffi::c_void, ptr};
@@ -17,7 +17,6 @@ pub struct CoreConfigFields {
     pub max_sockets: u32,
     pub dns_cache_refresh_time: f64,
     pub std_allocator: CoreAllocator,
-    pub hooks: [*mut c_void; crate::constants::SW_MAX_HOOK_TYPE as usize],
 }
 pub struct CoreConfig {
     fields: UnsafeCell<CoreConfigFields>,
@@ -133,23 +132,6 @@ pub unsafe extern "C" fn swr_v1_core_config_copy_values(
         status: 0,
         index: 0,
     }
-}
-/// Copy hook pointers only after native resolver-container assignment completes.
-/// # Safety
-/// destination/source are live and synchronized; foreign callback custody is unchanged.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_config_copy_hooks(
-    destination: *mut CoreConfig,
-    source: *const CoreConfig,
-) {
-    // SAFETY: both stable owners are lent through a leaf value copy.
-    let destination = unsafe { &*destination };
-    // SAFETY: source is unchanged through this leaf operation.
-    let source = unsafe { &*source };
-    // SAFETY: copy the opaque callback slots without invoking/destroying anything.
-    let hooks = unsafe { (*source.fields.get()).hooks };
-    // SAFETY: destination fields are exclusive through publication.
-    unsafe { (*destination.fields.get()).hooks = hooks };
 }
 /// The exact current path without materializing a native reference cache.
 /// # Safety

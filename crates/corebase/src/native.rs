@@ -3,16 +3,14 @@
 //! them once, with its log macros (`swr_v1_core_set_native_host`), so the archive
 //! keeps no link-time reference to C++: the native gates link it without base.cc.
 
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_int};
 use std::sync::OnceLock;
 
-/// base.cc's `swoole_fork`, `swoole_isset_hook`, `swoole_call_hook` and `swoole_get_env`.
+/// base.cc's `swoole_fork` and `swoole_get_env`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NativeHost {
     pub fork: unsafe extern "C" fn(flags: c_int) -> libc::pid_t,
-    pub isset_hook: unsafe extern "C" fn(kind: c_int) -> bool,
-    pub call_hook: unsafe extern "C" fn(kind: c_int, arg: *mut c_void),
     /// Throws, as `std::stoi` does, on a malformed value.
     pub get_env: unsafe extern "C-unwind" fn(name: *const c_char, value: *mut c_int) -> bool,
 }

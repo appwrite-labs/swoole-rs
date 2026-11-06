@@ -17,9 +17,6 @@ uint8_t swr_v1_corebase_parse_stoi(const char *input, int32_t *output);
 unsigned long swr_v1_corebase_hex(const char *input, size_t *parsed);
 /* Actual native callers supply their compiler plain-char mode. */
 unsigned long swr_v1_corebase_hex_mode(const char *input, size_t *parsed, uint8_t native_char_signed);
-/* Nonempty input is readable for length bytes; length <= PTRDIFF_MAX.
- * Returns prefix length; native std::string construction happens afterward. */
-size_t swr_v1_corebase_dirname(const uint8_t *input, size_t length);
 /* Stack-owned state; zero initialize once, keep state/output unchanged between
  * steps. No pointer retained; native IO occurs after return. Stop on !=1.
  * Return 0 done, 1 NUL-cut prefix ready, 2 path too long, 3 invalid arguments.
@@ -33,8 +30,7 @@ int32_t swr_v1_corebase_mkdir_next(const uint8_t *input, size_t input_length, ui
 /* Zeroed stack cursor, never a native owner/registry. Execute each returned
  * action after Rust returns, then supply a copied boolean when requested.
  * 0 finishes; UINT32_MAX rejects invalid cursor/operation. No retained pointer.
- * THREAD_INIT argument is main-thread bool; THREAD_CLEAN ignores it;
- * CLEAN argument is native hook-slot count. cursor.index selects hook slot.
+ * THREAD_INIT argument is main-thread bool; THREAD_CLEAN and CLEAN ignore it.
  * FORK/FORK_EXEC use pinned native flags; after FORK_CALL, observed is
  * 0=failure, 1=child, 2=parent. Other observations are copied booleans.
  * Preserve operation/argument and stop on DONE/invalid. No Rust frame spans
@@ -50,7 +46,6 @@ enum swr_v1_corebase_lifecycle_action {
     SWR_COREBASE_PUBLISH_MAIN = 4, SWR_COREBASE_OBSERVE_TIMER = 5,
     SWR_COREBASE_FREE_TIMER = 6, SWR_COREBASE_OBSERVE_REACTOR = 7,
     SWR_COREBASE_FREE_REACTOR = 8, SWR_COREBASE_DELETE_BUFFER = 9,
-    SWR_COREBASE_OBSERVE_HOOK = 10, SWR_COREBASE_DELETE_HOOK = 11,
     SWR_COREBASE_CLEAR_SIGNALS = 12, SWR_COREBASE_CLEAN_THREAD = 13,
     SWR_COREBASE_OBSERVE_LOGGER = 14, SWR_COREBASE_CLOSE_LOGGER = 15,
     SWR_COREBASE_DELETE_LOGGER = 16, SWR_COREBASE_DELETE_POOL = 17,
@@ -76,14 +71,6 @@ uint32_t swr_v1_corebase_lifecycle_next(uint32_t operation,
  * Stop on ACCEPT_TASK/REJECT_TASK/UINT32_MAX; no Rust borrow spans effects. */
 uint32_t swr_v1_corebase_task_tmp_next(struct swr_v1_corebase_lifecycle_state *state,
                                     uint64_t observed, uint32_t limit);
-enum swr_v1_corebase_hook_add_action_kind {
-    SWR_COREBASE_HOOK_CREATE_FRONT = 1,
-    SWR_COREBASE_HOOK_CREATE_BACK = 2,
-    SWR_COREBASE_HOOK_PUSH_FRONT = 3,
-    SWR_COREBASE_HOOK_PUSH_BACK = 4
-};
-/* Native owns list allocation/publication and Callback copy/insertion effects. */
-uint32_t swr_v1_corebase_hook_add_action(uint8_t list_present, int32_t push_back);
 /* One character of swoole_random_string(std::string &, size_t), drawn with swoole_rand(0, 61). */
 char swr_v1_corebase_random_char(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
@@ -97,8 +84,6 @@ char swr_v1_corebase_random_char(void);
  * swoole_redirect_stdout overloads, swoole_print_backtrace(_on_error),
  * swoole_exit and swoole_get_systemd_listen_fds; and, in crates/utilities,
  * swoole_set_log_level, swoole_get_log_level and swoole_set_log_file. */
-/* Polls ready(context) with doubling sleeps; ready must not throw. */
-bool swr_v1_corebase_wait_for(bool (*ready)(void *), void *context, int timeout_ms);
 /* Process-wide core state: upstream's SwooleG scalars. swoole::Global's members
  * of these names are swoole::RustField views over the accessor pairs below.
  * Pointers (memory pool, stdout FILE *, Logger *, Server *, the AIO pipe

@@ -22,8 +22,6 @@ enum Action {
     ObserveReactor = 7,
     FreeReactor = 8,
     DeleteBuffer = 9,
-    ObserveHook = 10,
-    DeleteHook = 11,
     ClearSignals = 12,
     CleanThread = 13,
     ObserveLogger = 14,
@@ -73,9 +71,8 @@ enum Operation {
 /// # Safety
 /// State is writable, initially zero, and exclusively owned for this call. Keep
 /// it unchanged between calls except through this function. No borrow survives
-/// return. Operation 1 takes main-thread bool, 2 ignores argument, 3 takes the
-/// native hook-slot count. Operations 4/5 sequence `fork/fork_exec` with pinned
-/// native flags as argument. After Fork, observed is 0=failure, 1=child,
+/// return. Operation 1 takes main-thread bool, 2 and 3 ignore argument.
+/// Operations 4/5 sequence `fork/fork_exec` with pinned native flags as argument. After Fork, observed is 0=failure, 1=child,
 /// 2=parent; other requested observations are copied booleans. Keep operation
 /// and argument fixed. Stop on zero/INVALID; execute each action before next.
 #[unsafe(no_mangle)]
@@ -160,20 +157,12 @@ unsafe fn next(
             (Operation::ThreadClean, 5) if observed != 0 => (6, Action::DeleteBuffer), // delete, then null buffer
             (Operation::ThreadClean, 5) => (6, Action::Next),
             (Operation::ThreadClean, 6) => return 0,
-            // clean: traverse live native hook slots before all other cleanup.
-            (Operation::Clean, 0) if state.index < argument => (1, Action::ObserveHook), // observe hook slot
-            (Operation::Clean, 0) => (3, Action::Next),
-            (Operation::Clean, 1) if observed != 0 => (2, Action::DeleteHook), // delete native hook list
-            (Operation::Clean, 1) => (2, Action::Next),
-            (Operation::Clean, 2) => {
-                let Some(index) = state.index.checked_add(1) else {
-                    return INVALID;
-                };
-                state.index = index;
-                (0, Action::Next)
+            // clean: release the hook lists before all other cleanup.
+            (Operation::Clean, 0) => {
+                crate::hook::clear();
+                (4, Action::ClearSignals)
             }
-            (Operation::Clean, 3) => (4, Action::ClearSignals), // clear signals
-            (Operation::Clean, 4) => (5, Action::CleanThread),  // native thread cleanup
+            (Operation::Clean, 4) => (5, Action::CleanThread), // native thread cleanup
             (Operation::Clean, 5) => (6, Action::ObserveLogger), // observe logger after thread cleanup
             (Operation::Clean, 6) if observed != 0 => (7, Action::CloseLogger), // close logger
             (Operation::Clean, 6) => (7, Action::Next),
