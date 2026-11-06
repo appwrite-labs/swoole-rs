@@ -113,7 +113,6 @@ pub struct SettingsHost {
     set_cpu_affinity: unsafe extern "C" fn(*mut c_void, *const c_int, usize),
     strerror: unsafe extern "C" fn(c_int) -> *const c_char,
     create_dir: unsafe extern "C" fn(*const c_char, usize) -> c_int,
-    msgqueue_key_valid: unsafe extern "C" fn(i64) -> bool,
     thread_options: unsafe extern "C" fn(*mut zend_object, *mut c_void) -> bool,
     finish: unsafe extern "C" fn(*mut zend_object, *mut zval) -> bool,
 }
@@ -733,8 +732,8 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
     }
     if let Some(value) = s.get(c"message_queue_key") {
         let v = Settings::long(value)?;
-        // SAFETY: a plain check.
-        if v > 0 && !unsafe { (host.msgqueue_key_valid)(v) } {
+        // A positive SysV key must fit key_t's unsigned counterpart.
+        if v > i64::from(u32::MAX) {
             fatal(E_ERROR, c"message_queue_key is out of range");
             return Err(Stop);
         }
