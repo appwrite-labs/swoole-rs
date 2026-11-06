@@ -279,10 +279,10 @@ pub unsafe extern "C" fn php_swoole_set_coroutine_option(options: *mut zend_arra
         } else {
             max
         };
-        runtime::swr_v1_phpcoroutines_set_max_num(max.cast_unsigned());
+        runtime::set_max_num(max.cast_unsigned());
     }
     if let Some(value) = get(options, c"enable_deadlock_check") {
-        runtime::swr_v1_phpcoroutines_set_deadlock_check(u8::from(truthy(value)));
+        runtime::set_deadlock_check(truthy(value));
     }
     if let Some(value) = get(options, c"hook_flags") {
         #[expect(
