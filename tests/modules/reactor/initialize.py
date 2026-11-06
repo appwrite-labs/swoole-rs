@@ -39,13 +39,14 @@ with tempfile.TemporaryDirectory(prefix='swr-initialize-') as tmp:
         void set_exit_condition(ExitCondition key,const std::function<bool(Reactor*,size_t&)>&f){trace.push_back(50+key);exits[key]=f;}
         bool if_exit(){return true;}
     };'''.replace('ENUMS',enums)
-    (t/'initialize-class.inc').write_text(cls)
     try:
         for variant in ['original','selected']:
             base=original['src/reactor/base.cc'] if variant=='original' else (selected_tree/'src/reactor/base.cc').read_text()
+            # The selected deferred queue is Rust's (swr_v1_reactor_run_defer).
+            (t/'initialize-class.inc').write_text(cls if variant=='original' else cls.replace('CallbackManager *defer_tasks','swr_v1_reactor_deferred *defer_tasks'))
             helpers=''
-            if variant=='selected' and 'static void swr_reactor_run_defer(' in base:
-                helpers='\n'.join(block(base,base.index(sig))[0] for sig in ['static void swr_reactor_run_defer(','static void swr_reactor_run_task(','static void swr_reactor_try_exit(','static bool swr_reactor_exit_predicate('])+'\n'
+            if variant=='selected':
+                helpers='\n'.join(block(base,base.index(sig))[0] for sig in ['static void swr_reactor_run_task(','static void swr_reactor_try_exit(','static bool swr_reactor_exit_predicate('])+'\n'
             (t/'initialize-method.inc').write_text(helpers+block(base,base.index('Reactor::Reactor(int max_event, Type _type)'))[0])
             # Independent compile-time capability profiles; these are source
             # facades, never pretend non-target kernel implementations.

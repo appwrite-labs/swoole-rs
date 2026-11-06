@@ -190,10 +190,11 @@ mod tests {
         }
     }
 
-    /// The destroy queue keeps FIFO order and runs again empty; freeing an unrun queue
-    /// disposes of each task's data instead of calling it.
+    /// The former `callback_queues` gate (`add_destroy_callback` over the destroy queue):
+    /// for 0, 1, 17 and 65 callbacks nothing runs until the queue does, then all run in
+    /// order; a second run is empty, and one added afterwards runs on the next.
     #[test]
-    fn destroy_queue_runs_in_order_and_free_disposes_unrun_tasks() {
+    fn destroy_queue_runs_in_order_and_again_after_an_append() {
         for count in [0usize, 1, 17, 65] {
             let mut queue = ptr::null_mut();
             unsafe {
@@ -203,17 +204,31 @@ mod tests {
                         0
                     );
                 }
+                assert_eq!(take(), []);
                 swr_v1_reactor_deferred_run(queue);
                 assert_eq!(take(), (0..count).collect::<Vec<_>>());
                 swr_v1_reactor_deferred_run(queue);
                 assert_eq!(take(), []);
-                swr_v1_reactor_deferred_push(&raw mut queue, record, token(99), Some(disposed));
-                swr_v1_reactor_deferred_push(&raw mut queue, record, token(7), None);
+                swr_v1_reactor_deferred_push(&raw mut queue, record, token(99), None);
+                swr_v1_reactor_deferred_run(queue);
+                assert_eq!(take(), [99]);
                 swr_v1_reactor_deferred_free(&raw mut queue);
-                assert_eq!(take(), [1099]);
                 assert!(queue.is_null());
-                swr_v1_reactor_deferred_free(&raw mut queue);
             }
+        }
+    }
+
+    /// Freeing a queue disposes of each unrun task's data instead of calling it.
+    #[test]
+    fn free_disposes_unrun_tasks() {
+        let mut queue = ptr::null_mut();
+        unsafe {
+            swr_v1_reactor_deferred_push(&raw mut queue, record, token(99), Some(disposed));
+            swr_v1_reactor_deferred_push(&raw mut queue, record, token(7), None);
+            swr_v1_reactor_deferred_free(&raw mut queue);
+            assert_eq!(take(), [1099]);
+            assert!(queue.is_null());
+            swr_v1_reactor_deferred_free(&raw mut queue);
         }
     }
 }

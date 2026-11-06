@@ -5,12 +5,10 @@
 #include <iostream>
 #include <limits>
 #include <list>
+#include <memory>
 #include <utility>
 #include <vector>
 #include "swoole_rs_reactor.h"
-#ifdef SWOOLE_RS_REACTOR
-#include "swoole_rs_reactor_defer.h"
-#endif
 #include "builtins.inc"
 using namespace swoole;
 int main(){

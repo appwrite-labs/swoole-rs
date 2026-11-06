@@ -412,7 +412,7 @@ class Lanes(unittest.TestCase):
                                test=None, case=None, benchmark=False, compare=False,
                                stdext=False, fix_halfclose=False)
         commands = dict(dev.plan(args, ROOT / 'target/reports/real-callers'))
-        queues = commands['reactor-callback-queues']
+        queues = commands['reactor-builtins']
         self.assertIn('--sanitize', queues)
         self.assertIn('--archive', queues)
         self.assertNotIn('--engine', queues)
