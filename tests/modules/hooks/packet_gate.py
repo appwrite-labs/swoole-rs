@@ -38,7 +38,8 @@ def main():
             bodies=[block(text,signature) for signature in signatures]
             if variant=='selected':bodies.append('#include "packet_host.h"')
             (tree/(variant+'-packet.inc')).write_text('\n'.join(bodies))
-        command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'native/include'),'-I'+str(ROOT/'native/reactor'),'-I'+str(a.source/'include'),'-I'+str(a.source),*shlex.split(subprocess.check_output(['pkg-config','--cflags','openssl'],text=True)),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/packet_gate.cc'),str(a.archive.resolve()),'-lssl','-lcrypto','-lpthread','-o',str(tree/'packet')]
+        # The pin's include/ precedes native/reactor, whose swoole_socket.h replaces it only in the hybrid.
+        command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'native/include'),'-I'+str(a.source/'include'),'-I'+str(a.source),'-I'+str(ROOT/'native/reactor'),*shlex.split(subprocess.check_output(['pkg-config','--cflags','openssl'],text=True)),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/packet_gate.cc'),str(a.archive.resolve()),'-lssl','-lcrypto','-lpthread','-o',str(tree/'packet')]
         if a.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
         # --gc-sections: the archive's C++ references (Socket::send_async's event loop) are unreachable here.
         if sys.platform.startswith('linux'):command+=['-Wl,--gc-sections','-ldl','-lm']
