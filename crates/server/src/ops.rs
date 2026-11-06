@@ -494,10 +494,11 @@ pub const OP_STORE_LISTEN_SOCKET: u32 = 305;
 pub const OP_THREAD0_INIT: u32 = 306;
 /// The master reactor's and thread's id become `reactor_num`.
 pub const OP_MASTER_REACTOR_ID: u32 = 307;
-/// Starts reactor thread arg.
-pub const OP_SPAWN_REACTOR_THREAD: u32 = 308;
+/// The entry a reactor thread runs: `void (*)(void *serv, uint64_t id)`.
+pub const OP_REACTOR_THREAD_ENTRY: u32 = 308;
 pub const OP_HEARTBEAT_TIMER: u32 = 309;
-pub const OP_HEARTBEAT_THREAD: u32 = 310;
+/// The entry the heartbeat thread runs, as `OP_REACTOR_THREAD_ENTRY`'s.
+pub const OP_HEARTBEAT_ENTRY: u32 = 310;
 pub const OP_START_MASTER_THREAD: u32 = 311;
 /// The context thread is reactor thread arg: its id and the thread's message bus.
 pub const OP_THREAD_ENTER: u32 = 312;
@@ -526,13 +527,12 @@ pub const OP_QUEUE_SUB: u32 = 325;
 pub const OP_FACTORY_DISPATCH: u32 = 326;
 /// The server and port count a dispatch, and in process mode the connection's reactor thread.
 pub const OP_COUNT_DISPATCH: u32 = 327;
-pub const OP_JOIN_HEARTBEAT: u32 = 328;
-/// Reactor thread arg: joinable; notify it to shut down; join.
-pub const OP_THREAD_JOINABLE: u32 = 329;
-pub const OP_THREAD_NOTIFY: u32 = 330;
-pub const OP_THREAD_JOIN: u32 = 331;
+/// The `Server *` the thread entries take.
+pub const OP_SERVER: u32 = 328;
+/// Tells reactor thread arg to shut down.
+pub const OP_THREAD_NOTIFY: u32 = 329;
 /// Asks the connection's reactor thread to force-close session arg.
-pub const OP_SEND_CLOSE_FORCE: u32 = 332;
+pub const OP_SEND_CLOSE_FORCE: u32 = 330;
 
 pub const LOG_RECVFROM: u32 = 350;
 /// arg the session.

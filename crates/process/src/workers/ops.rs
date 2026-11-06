@@ -183,7 +183,6 @@ pub const OP_REACTOR_WAIT: u32 = 98;
 pub const OP_DRAIN_PIPES: u32 = 99;
 pub const OP_EVENT_FREE: u32 = 100;
 pub const OP_WORKER_STOP_CALLBACK: u32 = 101;
-pub const OP_FREE_BUFFER_POOL: u32 = 102;
 pub const OP_SIGNAL_SET: u32 = 103;
 pub const OP_MINFD: u32 = 104;
 pub const OP_MAXFD: u32 = 105;
@@ -618,7 +617,6 @@ pub(crate) const NUMBERED: &[(&str, u32)] = &[
     ("OP_DRAIN_PIPES", OP_DRAIN_PIPES),
     ("OP_EVENT_FREE", OP_EVENT_FREE),
     ("OP_WORKER_STOP_CALLBACK", OP_WORKER_STOP_CALLBACK),
-    ("OP_FREE_BUFFER_POOL", OP_FREE_BUFFER_POOL),
     ("OP_SIGNAL_SET", OP_SIGNAL_SET),
     ("OP_MINFD", OP_MINFD),
     ("OP_MAXFD", OP_MAXFD),

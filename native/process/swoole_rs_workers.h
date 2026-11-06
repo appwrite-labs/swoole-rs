@@ -189,7 +189,6 @@ void swr_v1_thread_manager_exited(const void *manager, void *worker);
 #define SWR_WORKERS_OP_DRAIN_PIPES 99
 #define SWR_WORKERS_OP_EVENT_FREE 100
 #define SWR_WORKERS_OP_WORKER_STOP_CALLBACK 101
-#define SWR_WORKERS_OP_FREE_BUFFER_POOL 102
 #define SWR_WORKERS_OP_SIGNAL_SET 103
 #define SWR_WORKERS_OP_MINFD 104
 #define SWR_WORKERS_OP_MAXFD 105
