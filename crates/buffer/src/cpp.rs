@@ -180,11 +180,6 @@ upstream! {
         // SAFETY: as the caller promises.
         check(unsafe { crate::swr_v1_buffer_append_iovec(queue, iov, count, offset) });
     }
-    "_ZN6swoole6Buffer5checkEi", "_ZN6swoole6Buffer5checkEi" =>
-    /// `check(status)`: aborts on a failed queue status.
-    pub extern "C" fn swr_cpp_buffer_check(status: i32) {
-        check(status);
-    }
     "_ZNK6swoole6Buffer6lengthEv", "_ZNK6swoole6Buffer6lengthEv" =>
     /// `length()`: queued bytes.
     /// # Safety

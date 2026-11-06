@@ -2,7 +2,7 @@
 
 Declarations: `native/include/swoole_rs_buffer.h` and
 `native/buffer/swoole_rs_buffer_typed.h`. Feature value 2 (graduated: always on).
-Upstream targets: `src/core/buffer.cc` (deleted), `include/swoole_buffer.h`,
+Upstream targets: `src/core/buffer.cc` (deleted), `include/swoole_buffer.h` (deleted; `native/buffer/swoole_buffer.h` replaces it),
 `src/core/string.cc`, `include/swoole_string.h`.
 
 Rust owns one queue and its data allocations. Entries are Rust data, sendfile
