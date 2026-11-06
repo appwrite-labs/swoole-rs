@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix='swr-initialize-') as tmp:
                     if caps&2:cmd+=['-DHAVE_KQUEUE']
                     if trim:cmd+=['-DSW_USE_MALLOC_TRIM']
                     if a.sanitize:cmd+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
-                    if sys.platform.startswith('linux'):cmd+=['-ldl','-lm']
+                    if sys.platform.startswith('linux'):cmd+=['-Wl,--gc-sections','-ldl','-lm']
                     for stage,command in [('compile',cmd),('execute',[str(binary)])]:
                         require_build_space(t)
                         result=run_compiler(command, timeout=60) if stage=='compile' else vars(run_isolated(command,cwd=t,timeout=60))
