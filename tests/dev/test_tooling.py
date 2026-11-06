@@ -533,7 +533,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--build-manifest', commands['utilities-php-logger'])
         self.assertIn('--archive', commands['utilities-php-logger'])
         self.assertIn('--source-ref', commands['utilities-php-logger'])
-        self.assertIn('--archive', commands['httpbindings-server'])
         self.assertNotIn('httpbindings-php', commands)
         self.assertIn('--source', commands['memory-table-compatibility'])
         self.assertIn('--archive', commands['memory-table-compatibility'])
@@ -577,11 +576,6 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('phphelpers-policy', commands)
         self.assertNotIn('phphelpers-async', commands)  # Its cases run in phphelpers-unit.
         self.assertIn('--archive', commands['ports-policy'])
-        self.assertIn('--archive', commands['http2-native'])
-        self.assertIn('--sanitize', commands['http2-native'])
-        for family in ['header']:
-            self.assertIn('--core-report', commands['http2-' + family])
-            self.assertLess(list(commands).index('http2-native'), list(commands).index('http2-' + family))
         for name in ['clients-http-format', 'clients-ip', 'clients-ip-text']:
             self.assertIn('--archive', commands[name])
             self.assertIn('--sanitize', commands[name])

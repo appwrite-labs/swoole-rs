@@ -11,45 +11,13 @@ Rust also owns the process-wide default settings.
 cover it.
 The overlay has no native fallback: patched builds define `SW_USE_RUST_HTTP2`.
 
-## Running
+## Tests
 
-From the repository root, run the core gate first. Every other gate reads its
-report and reuses its overlay and archive. The overlay is the http2 files of the
-archive's hybrid build tree (all modules' patches applied):
-
-```sh
-python3 tests/modules/http2/gate.py --source /absolute/pinned/swoole \
-  --archive /absolute/hybrid/rust-prefix/lib/libswoole_rs_ffi.a --output target/http2/core.json --sanitize
-python3 tests/modules/http2/header_calls.py --source /absolute/pinned/swoole \
-  --core-report target/http2/core.json --output target/http2/header.json
-```
-
-`header_calls.py` takes the same `--source/--core-report/--output` arguments. Add
-`--include /path/to/openssl/include` when the pinned headers need OpenSSL. Each
-output's `-artifacts` directory must not exist yet. `tools/dev.py` registers all
-of these as `http2-*` phases.
-
-Native code is built with ASan and UBSan, excluding alignment because the pinned
-inline codecs use unaligned integer casts. Rust archives are optimized and not
-instrumented.
-
-## Gates
-
-`sides.py` builds the header gate as three translation units: the pinned
-predicates against the pinned headers, the Rust lookups and the driver against
-the hybrid build's tree (from the core report's archive).
-
-- `gate.py`: compiles the original `src/protocol/http2.cc` against the pinned
-  headers, and `core_calls.cpp` against the hybrid build's headers and archive
-  (the hybrid has no `http2.cc`: Rust exports its functions under their upstream
-  symbols, and `swoole_http2.h` keeps the callback and `Socket::send` glue
-  inline), and compares the core codec calls with a recording `Socket::send`.
-- `header_calls.py`: Rust role/media header lookup against the pinned
-  locale-sensitive predicates.
-
-The server's frames, responses and request header parser are Rust too
-(`crates/phphttp2/src/server.rs`, #757); its PHPTs cover them, so they have no
-body-extraction gates.
+The codecs, settings, frame lengths and header lookups have Rust unit tests
+(`cargo test -p swoole-rs-http2`). Upstream's own `http2` GoogleTests
+(`core-tests/src/protocol/http2.cpp`) run on both engines in the
+`http2-native-originals` phase. The server's frames, responses and request header
+parser are Rust too (`crates/phphttp2/src/server.rs`, #757); its PHPTs cover them.
 
 ## Original PHPTs
 

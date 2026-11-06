@@ -287,16 +287,6 @@ def plan(args, reports):
                    '--report', reports / (name + '.json'))
         script('hooks-compile', 'tests/modules/hooks/compile_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--report', reports / 'hooks-compile.json')
-    if 'httpbindings' in modules:
-        script('httpbindings-server', 'tests/modules/httpbindings/server_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('httpbindings-server'))
-    if 'http2' in modules:
-        includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
-                    if sys.platform == 'darwin' else [])
-        script('http2-native', 'tests/modules/http2/gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *includes, *report('http2-native'))
-        script('http2-header', 'tests/modules/http2/header_calls.py', '--source', ROOT / 'target/upstream/src',
-               '--core-report', reports / 'http2-native.json', *includes, *report('http2-header'))
     if 'clients' in modules:
         for name, runner in [('clients-policy', 'gate.py'), ('clients-codec', 'codec_gate.py'),
                              ('clients-http-format', 'http_format_gate.py'),

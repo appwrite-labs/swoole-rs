@@ -892,4 +892,131 @@ mod tests {
         assert_eq!(sw_rs_http2_write_allowed(1, 3), 0);
         assert_eq!(sw_rs_http2_write_allowed(1, 2), 1);
     }
+
+    /// Upstream's `SW_STRCASEEQ` role predicates (the client and server header
+    /// parsers) over the unfolded name.
+    fn upstream_kind(role: u32, name: &[u8]) -> u32 {
+        let colon = name.first() == Some(&b':');
+        let keys: &[(&str, u32)] = match role {
+            0 if colon => &[("method", 1), ("path", 2), ("authority", 3)],
+            0 => &[
+                ("content-type", 4),
+                ("cookie", 5),
+                ("content-length", 6),
+                ("accept-encoding", 7),
+            ],
+            1 if colon => &[("status", 8)],
+            1 => &[("content-encoding", 9), ("set-cookie", 10)],
+            2 => &[
+                ("server", 11),
+                ("content-length", 6),
+                ("date", 12),
+                ("content-type", 4),
+            ],
+            _ => &[("host", 13)],
+        };
+        let text = if role < 2 && colon { &name[1..] } else { name };
+        keys.iter()
+            .find(|(key, _)| text.eq_ignore_ascii_case(key.as_bytes()))
+            .map_or(0, |(_, kind)| *kind)
+    }
+
+    fn upstream_media(value: &[u8]) -> u32 {
+        let starts = |prefix: &str| {
+            value.len() >= prefix.len()
+                && value[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+        };
+        if starts("application/x-www-form-urlencoded") {
+            1
+        } else if starts("multipart/form-data") {
+            2
+        } else if starts("gzip") {
+            3
+        } else {
+            0
+        }
+    }
+
+    /// crates/phphttp2's fold: at most 33 bytes, lowercased.
+    fn folded(bytes: &[u8]) -> ([u8; 33], usize) {
+        let mut out = [0_u8; 33];
+        let n = bytes.len().min(out.len());
+        for (slot, byte) in out.iter_mut().zip(&bytes[..n]) {
+            *slot = byte.to_ascii_lowercase();
+        }
+        (out, n)
+    }
+
+    #[test]
+    fn header_lookups_match_upstreams_predicates() {
+        let mut names: Vec<Vec<u8>> = [
+            "",
+            ":status",
+            ":STATUS",
+            ":method",
+            ":path",
+            ":authority",
+            "content-type",
+            "CONTENT-TYPE",
+            "content-length",
+            "accept-encoding",
+            "content-encoding",
+            "set-cookie",
+            "Set-Cookie",
+            "server",
+            "date",
+            "HOST",
+            "cookie",
+        ]
+        .iter()
+        .map(|name| name.as_bytes().to_vec())
+        .collect();
+        names.push(vec![b'a'; 200]);
+        for c in 0..=255_u8 {
+            names.push([&[c][..], b"status"].concat());
+            names.push([&b"content-"[..], &[c], b"ype"].concat());
+            names.push([&b"set-cookie"[..], &[c]].concat());
+        }
+        for name in &names {
+            let (bytes, n) = folded(name);
+            for role in 0..4 {
+                let mut plan = Http2HeaderPlan::default();
+                unsafe {
+                    sw_rs_http2_header_plan(role, bytes.as_ptr(), n, name.len(), 0, &raw mut plan);
+                }
+                assert_eq!(plan.kind, upstream_kind(role, name), "role {role} {name:?}");
+            }
+        }
+        let values: [&[u8]; 13] = [
+            b"",
+            b"200",
+            b"00301",
+            b"application/x-www-form-urlencoded",
+            b"APPLICATION/X-WWW-FORM-URLENCODED; charset=x",
+            b"multipart/form-data; boundary=a",
+            b"MULTIPART/FORM-DATA",
+            b"gzip",
+            b"GZip;stuff",
+            b"gzipgarbage",
+            b"a=b;c=d",
+            b"gzip\0tail",
+            &[b'a'; 40],
+        ];
+        for value in values {
+            let (bytes, n) = folded(value);
+            let kind = unsafe { sw_rs_http2_media_kind(bytes.as_ptr(), n) };
+            assert_eq!(kind, upstream_media(value), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_frame_types() {
+        for kind in [-100, -1, 10, 99, i32::MIN, i32::MAX] {
+            assert_eq!(
+                unsafe { std::ffi::CStr::from_ptr(get_type(kind)) },
+                c"UNKNOWN"
+            );
+            assert_eq!(get_type_color(kind), 1, "SW_COLOR_RED");
+        }
+    }
 }

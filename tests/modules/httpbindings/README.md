@@ -22,15 +22,9 @@ switch, refusals and reentrant rewrites) is Rust's cursor
 (`crates/httpbindings/src/settings.rs`); its unit tests compare it with
 upstream's `start` body across every subset of the twelve keys.
 
-`server_gate.py` extracts the pinned coroutine handler routing and accept loop,
-and the hybrid build's `swr_hsc_*` effects the Rust loop calls, compiles both
-against shared native effect facades (`server_oracle.h`) and the archive under
-ASan/UBSan, and compares outputs, effect order and fault exits:
-
-```sh
-python3 tests/modules/httpbindings/server_gate.py --source /readonly/pinned/git \
-  --archive HYBRID/rust-prefix/lib/libswoole_rs_ffi.a --output /private/target/server.json
-```
+The coroutine server's accept loop is Rust (`crates/httpbindings/src/server.rs`);
+its unit tests walk upstream's branches, and the pinned `swoole_http_server_coro`
+PHPTs cover it with its handler routing.
 
 Preserved native quirks (asserted by independent witnesses, not fixed): the
 pointer-size token fast path, shrinking quote-trim bound, leading-hyphen key
