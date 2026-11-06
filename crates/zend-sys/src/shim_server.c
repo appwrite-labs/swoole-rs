@@ -1,5 +1,6 @@
 #include "shim.h"
 #include "shim_server.h"
+#include "ext/standard/php_array.h"
 #include "ext/standard/php_var.h"
 #include "zend_smart_str.h"
 
@@ -33,4 +34,15 @@ bool swr_zend_unserialize(zval *out, const char *data, size_t length, size_t *of
     } SWR_ZEND_END_TRY();
     *offset = (size_t) ((const char *) cursor - data);
     return done;
+}
+
+int swr_zend_try_array_merge(zval *dest, zval *src) {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY {
+        SEPARATE_ARRAY(dest);
+        php_array_merge(Z_ARRVAL_P(dest), Z_ARRVAL_P(src));
+    } SWR_ZEND_CATCH {
+        bailed = 1;
+    } SWR_ZEND_END_TRY();
+    return bailed;
 }

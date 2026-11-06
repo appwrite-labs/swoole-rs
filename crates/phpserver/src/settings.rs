@@ -114,7 +114,6 @@ pub struct SettingsHost {
     strerror: unsafe extern "C" fn(c_int) -> *const c_char,
     create_dir: unsafe extern "C" fn(*const c_char, usize) -> c_int,
     thread_options: unsafe extern "C" fn(*mut zend_object, *mut c_void) -> bool,
-    finish: unsafe extern "C" fn(*mut zend_object, *mut zval) -> bool,
 }
 
 static HOST: AtomicPtr<SettingsHost> = AtomicPtr::new(ptr::null_mut());
@@ -394,16 +393,33 @@ fn set(call: &Call) {
     // Every early exit after an `E_ERROR` or a deferred bailout leaves the
     // handler, whose last step raises it.
     if let Ok(true) = options(&s, call.this()) {
-        // SAFETY: `$this` and the settings argument.
-        let bailed = unsafe { (host().finish)(call.this(), vht) };
-        if bailed {
-            bailout::defer(Err(bailout::Bailout));
-        } else {
-            call.set_bool(true);
+        match finish(call.this(), vht) {
+            Ok(()) => call.set_bool(true),
+            Err(bailed) => bailed.defer(),
         }
     } else if !bailout::pending() {
         call.set_bool(false);
     }
+}
+
+/// `$this->ports[0]->set($settings)` (Port's own method), then the merge into
+/// `$this->setting`.
+fn finish(this: *mut zend_object, settings: *mut zval) -> Result<(), bailout::Bailout> {
+    // SAFETY: `$this` is a Server object.
+    let port = unsafe { crate::lifecycle::swr_v1_phpserver_port(this, 0) };
+    // SAFETY: the primary port's object zval.
+    let port = unsafe { swoole_rs_zend::object_of(port) };
+    // SAFETY: the live Port object, its class and the settings argument.
+    unsafe {
+        bailout::call_method(
+            port,
+            crate::PORT.entry(),
+            b"set",
+            ptr::null_mut(),
+            &[settings],
+        )
+    }?;
+    crate::port::merge_setting(crate::server::SERVER.entry(), this, settings).map(|_| ())
 }
 
 /// The options, in upstream's order. `Ok(false)`: return false.

@@ -103,6 +103,44 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_property(
     silent: bool,
     array: bool,
 ) -> *mut zval {
+    // SAFETY: per the caller.
+    let property = unsafe { property(scope, value, name, length, silent, array) };
+    bailout::finish();
+    property
+}
+
+/// `sw_zend_read_and_convert_property_array(scope, value, name, length, 0)`:
+/// the object's property, made an array first when it is not one.
+/// # Errors
+/// PHP bailed out; nothing is resumed while a Rust caller owns its state.
+/// # Safety
+/// As [`swr_v1_phphelpers_property`].
+pub unsafe fn array_property_of(
+    scope: *mut zend_class_entry,
+    value: *mut zval,
+    name: &core::ffi::CStr,
+) -> Result<*mut zval, bailout::Bailout> {
+    // SAFETY: per the caller.
+    let property =
+        unsafe { property(scope, value, name.as_ptr(), name.count_bytes(), false, true) };
+    if bailout::relay_to_c(Ok(())) {
+        Err(bailout::Bailout)
+    } else {
+        Ok(property)
+    }
+}
+
+/// The property read, a bailout left pending.
+/// # Safety
+/// As [`swr_v1_phphelpers_property`].
+unsafe fn property(
+    scope: *mut zend_class_entry,
+    value: *mut zval,
+    name: *const c_char,
+    length: usize,
+    silent: bool,
+    array: bool,
+) -> *mut zval {
     // SAFETY: the source holds a live object.
     let object = unsafe { swoole_rs_zend::value::obj_of(value) };
     // SAFETY: initialize Zend's scratch return slot.
@@ -136,7 +174,6 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_property(
             }
         }
     }
-    bailout::finish();
     property
 }
 

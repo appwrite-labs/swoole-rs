@@ -21,4 +21,4 @@ mod private;
 mod utilities;
 
 #[cfg(feature = "php")]
-pub use private::{Create, function_call, named_call};
+pub use private::{Create, array_property_of, function_call, named_call};
