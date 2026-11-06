@@ -55,7 +55,30 @@ def kept(source, patches):
             _, removed, path = line.split('\t')
             if path in files and removed != '-':
                 files[path] = (total[path] - int(removed), total[path])
+        # A pinned line moved elsewhere is still compiled: it stays kept where it now lives.
+        for path, lines in moved_in(tree).items():
+            if first_party(path):
+                kept_lines, total_lines = files.get(path, (0, 0))
+                files[path] = (kept_lines + lines, total_lines)
         return files
+
+
+MOVED = '\x1b[7;35m'  # the colour moved-in lines get below, and nothing else
+
+
+def moved_in(tree):
+    """{path: pinned lines a patch moved into it}, by Git's own move detection (blocks of 20 or
+    more alphanumeric characters, so stray braces don't match)."""
+    colours = [f'color.diff.{slot}=reverse magenta' for slot in ('newMoved', 'newMovedAlternative')]
+    output = git(*[arg for colour in colours for arg in ('-c', colour)], 'diff', '--diff-algorithm=minimal',
+                 '--color=always', '--color-moved=blocks', '--color-moved-ws=allow-indentation-change', cwd=tree)
+    counts, path = {}, None
+    for line in output.splitlines():
+        if line.startswith(('\x1b[1mdiff --git ', 'diff --git ')):
+            path = line.rsplit(' b/', 1)[1].removesuffix('\x1b[m')
+        elif line.startswith(MOVED) and path:
+            counts[path] = counts.get(path, 0) + 1
+    return counts
 
 
 def replaced(files):

@@ -43,6 +43,18 @@ class Badges(unittest.TestCase):
                     {'path': str(second), 'upstream_paths': ['src/a.cc'], 'sha256': None}]
             self.assertEqual(badges.replaced(badges.kept(source, rows)), (3, 10))
 
+    def test_upstream_lines_moved_to_another_file_are_not_deleted(self):
+        moving = ['int helper(int value) {', '    return value * 2;', '}']
+        with tempfile.TemporaryDirectory() as directory:
+            source, patch_path = Path(directory) / 'source', Path(directory) / 'move.patch'
+            (source / 'src').mkdir(parents=True)
+            (source / 'src/a.cc').write_text('\n'.join([*moving, 'int a_stays;']) + '\n')
+            (source / 'src/b.cc').write_text('int b_stays;\n')
+            patch_path.write_text(diff('src/a.cc', moving, [], 'int a_stays;')
+                                  + diff('src/b.cc', [], moving, 'int b_stays;'))
+            rows = [{'path': str(patch_path), 'upstream_paths': ['src/a.cc', 'src/b.cc'], 'sha256': None}]
+            self.assertEqual(badges.replaced(badges.kept(source, rows)), (0, 5))
+
     def test_added_glue_cannot_invent_original_deletions_in_repeated_lines(self):
         # A small alphabet models repeated braces/branches in a rewritten TU.
         # Default diff heuristics report 999 -> 1001 removals after this pure
