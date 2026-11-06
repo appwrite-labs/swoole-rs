@@ -25,14 +25,14 @@ use crate::ops::{
     LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_ACCEPT, OP_BASE_REACTORS, OP_CHUNK_SIZE,
     OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_CONN_LAST_RECV, OP_CONN_PROTECT,
     OP_CONN_RESET, OP_CONN_UID, OP_CONN_WORKER, OP_COUNT_ACCEPT, OP_DGRAM_PORT, OP_DIRECT_SEND,
-    OP_ERRNO, OP_EVENT_FD, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HAS_PORT, OP_HOST_MAXSIZE,
-    OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH, OP_LAST_RECEIVED,
-    OP_LAST_SENT, OP_NEW_PORT_TYPE, OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PORT_HEARTBEAT,
-    OP_PORT_IDLE_TIME, OP_PORT_NODELAY, OP_PORT_NUMBER, OP_PORT_RCVBUF, OP_PORT_SNDBUF,
-    OP_PORT_SSL, OP_PORT_TYPE, OP_REACTOR_ADD_READ, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE,
-    OP_SC_ADVANCE, OP_SC_DEL, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW,
-    OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_WRITABLE, OP_SC_YIELD_ERROR,
-    OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
+    OP_EVENT_FD, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HAS_PORT, OP_HOST_MAXSIZE, OP_HOST_SIZE,
+    OP_IS_CREATED, OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH, OP_LAST_RECEIVED, OP_LAST_SENT,
+    OP_NEW_PORT_TYPE, OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PORT_HEARTBEAT, OP_PORT_IDLE_TIME,
+    OP_PORT_NODELAY, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL,
+    OP_PORT_TYPE, OP_REACTOR_ADD_READ, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE,
+    OP_SC_DEL, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ,
+    OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC,
+    OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
     OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SESSION_BIND, OP_SESSION_CLAIM,
     OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF,
     OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SOCKET_CONN, OP_SOCKET_NOBUFS,
@@ -154,8 +154,7 @@ impl Objects<'_> {
     }
 }
 
-/// Answers `op` when it is one of this module's, else `None`; `port_count`
-/// is `serv->ports.size()`.
+/// Answers `op` when it is one of this module's, else `None`.
 ///
 /// # Safety
 /// `ctx` is master.cc's live context for the running operation and `state`
@@ -169,7 +168,6 @@ pub(crate) unsafe fn answer(
     state: *const ServerState,
     op: u32,
     arg: u64,
-    port_count: impl FnOnce() -> u64,
 ) -> Option<u64> {
     if ctx.is_null() || state.is_null() {
         return None;
@@ -294,7 +292,7 @@ pub(crate) unsafe fn answer(
             0
         }
         LOG_ALLOC_PORT_GS => {
-            let (ports, size) = (port_count(), size_of::<PortCounters>());
+            let (ports, size) = (o.tables().ports.count, size_of::<PortCounters>());
             let m =
                 format_args!("sw_shm_calloc({ports}, {size}) for port_connection_num_array failed");
             log::sys_warning(c"Server::create", m);
@@ -628,7 +626,6 @@ pub(crate) unsafe fn answer(
         }
 
         // The server's own records.
-        OP_ERRNO => sign(std::io::Error::last_os_error().raw_os_error().unwrap_or(0)),
         OP_SIGRTMIN => sigrtmin(),
         OP_SIGNAL_FD => sign(swoole_rs_corebase::swr_v1_core_signal_fd()),
         OP_WRONG_OPERATION => {
@@ -717,6 +714,12 @@ pub(crate) unsafe fn answer(
             u64::from(port.open_tcp_nodelay && tcp())
         }
         OP_NEW_PORT_TYPE => sign(o.port().r#type),
+        OP_PORT_PUSH => {
+            // SAFETY: the context's new port, which the server owns from now on;
+            // ports are only added before the server starts.
+            unsafe { o.state.push_port(o.ctx.port) };
+            0
+        }
         OP_ST_ABORT_COUNT => {
             o.gs().abort_count.fetch_add(1, SeqCst);
             o.port_gs().abort_count.fetch_add(1, SeqCst);
@@ -1095,11 +1098,11 @@ mod tests {
         // SAFETY: a fresh state and a zeroed context.
         unsafe {
             assert_eq!(
-                answer(&raw mut ctx, state, crate::ops::OP_PORT_COUNT, 0, || 0),
+                answer(&raw mut ctx, state, crate::ops::OP_PORT_COUNT, 0),
                 None
             );
             assert_eq!(
-                answer(core::ptr::null_mut(), state, OP_SEND_TIMEOUT, 0, || 0),
+                answer(core::ptr::null_mut(), state, OP_SEND_TIMEOUT, 0),
                 None
             );
             crate::swr_v1_server_state_free(state);
@@ -1116,24 +1119,21 @@ mod tests {
             config.send_timeout = 2.5;
             config.worker_num = 6;
             assert_eq!(
-                answer(&raw mut ctx, state, OP_SEND_TIMEOUT, 0, || 0),
+                answer(&raw mut ctx, state, OP_SEND_TIMEOUT, 0),
                 Some(2.5f64.to_bits())
             );
-            answer(&raw mut ctx, state, OP_SEND_TIMEOUT_MIN, 0, || 0);
+            answer(&raw mut ctx, state, OP_SEND_TIMEOUT_MIN, 0);
             assert_eq!(config.send_timeout, 0.001);
-            answer(&raw mut ctx, state, OP_CLEAR_SEND_YIELD, 0, || 0);
+            answer(&raw mut ctx, state, OP_CLEAR_SEND_YIELD, 0);
             assert!(!config.send_yield);
-            answer(&raw mut ctx, state, OP_BASE_REACTORS, 0, || 0);
+            answer(&raw mut ctx, state, OP_BASE_REACTORS, 0);
             assert_eq!(config.reactor_num, 6);
             config.scheduler_warning = true;
-            answer(&raw mut ctx, state, OP_WARNING_RESET, 7 << 1, || 0);
+            answer(&raw mut ctx, state, OP_WARNING_RESET, 7 << 1);
             assert!(!config.scheduler_warning);
-            assert_eq!(
-                answer(&raw mut ctx, state, OP_WARNING_TIME, 0, || 0),
-                Some(7)
-            );
+            assert_eq!(answer(&raw mut ctx, state, OP_WARNING_TIME, 0), Some(7));
             // The task pool's warning stays native.
-            assert_eq!(answer(&raw mut ctx, state, OP_WARNING, 1, || 0), None);
+            assert_eq!(answer(&raw mut ctx, state, OP_WARNING, 1), None);
             crate::swr_v1_server_state_free(state);
         }
     }
@@ -1148,8 +1148,8 @@ mod tests {
         ctx.length = 8;
         // SAFETY: the context's host and data are live above.
         unsafe {
-            assert_eq!(answer(&raw mut ctx, state, OP_HOST_SIZE, 0, || 0), Some(8));
-            answer(&raw mut ctx, state, OP_SC_ADVANCE, 3, || 0);
+            assert_eq!(answer(&raw mut ctx, state, OP_HOST_SIZE, 0), Some(8));
+            answer(&raw mut ctx, state, OP_SC_ADVANCE, 3);
             crate::swr_v1_server_state_free(state);
         }
         assert_eq!(ctx.length, 5);
@@ -1167,12 +1167,12 @@ mod tests {
         // SAFETY: the context's worker is live above.
         unsafe {
             assert_eq!(
-                answer(&raw mut ctx, state, OP_ST_W_CONCURRENCY_CAS, 2, || 0),
+                answer(&raw mut ctx, state, OP_ST_W_CONCURRENCY_CAS, 2),
                 Some(3)
             );
             assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 3);
             assert_eq!(
-                answer(&raw mut ctx, state, OP_ST_W_CONCURRENCY_CAS, 3, || 0),
+                answer(&raw mut ctx, state, OP_ST_W_CONCURRENCY_CAS, 3),
                 Some(3)
             );
             assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 0);
@@ -1188,7 +1188,7 @@ mod tests {
         ctx.buffer = buffer.as_mut_ptr().cast();
         ctx.data = c"/tmp/a".as_ptr().cast();
         // SAFETY: the context's buffer and name are live above.
-        let name = unsafe { answer(&raw mut ctx, state, OP_SENDFILE_NAME, 0, || 0) };
+        let name = unsafe { answer(&raw mut ctx, state, OP_SENDFILE_NAME, 0) };
         // SAFETY: created above and not used again.
         unsafe { crate::swr_v1_server_state_free(state) };
         assert_eq!(name, Some(buffer.as_ptr().wrapping_add(16).addr() as u64));

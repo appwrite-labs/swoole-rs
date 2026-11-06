@@ -6,8 +6,9 @@
 #include <time.h>
 
 #ifdef __cplusplus
+#include <stdexcept>
 namespace swoole {
-struct Connection; struct Session; struct ServerPortGS; struct ReactorThread;
+struct Connection; struct Session; struct ServerPortGS; struct ReactorThread; struct ListenPort;
 struct EventData; struct Worker; struct ServerGS; struct TimerNode; struct Allocator; struct Manager;
 class Factory; class UnixSocket;
 namespace network { struct Socket; }
@@ -118,6 +119,22 @@ typedef struct swr_v1_server_config {
 #undef SWR_SERVER_CONFIG_DECLARE
 } swr_v1_server_config;
 
+/* Server::ports: the ListenPorts in listen order, a loan of the Rust-owned list. */
+typedef struct swr_v1_server_ports {
+    SWR_SERVER_NATIVE(ListenPort) *const *items;
+    uint32_t count;
+#ifdef __cplusplus
+    SWR_SERVER_NATIVE(ListenPort) *const *begin() const { return items; }
+    SWR_SERVER_NATIVE(ListenPort) *const *end() const { return items + count; }
+    size_t size() const { return count; }
+    bool empty() const { return count == 0; }
+    SWR_SERVER_NATIVE(ListenPort) *operator[](size_t i) const { return items[i]; }
+    SWR_SERVER_NATIVE(ListenPort) *at(size_t i) const { return i < count ? items[i] : throw std::out_of_range("ports"); }
+    SWR_SERVER_NATIVE(ListenPort) *front() const { return items[0]; }
+    SWR_SERVER_NATIVE(ListenPort) *back() const { return items[count - 1]; }
+#endif
+} swr_v1_server_ports;
+
 typedef struct swr_v1_server_tables {
     SWR_SERVER_NATIVE(Connection) *connection_list;
     SWR_SERVER_NATIVE(Session) *session_list;
@@ -126,6 +143,7 @@ typedef struct swr_v1_server_tables {
     SWR_SERVER_NATIVE(TimerNode) *enable_accept_timer;
     uint16_t reactor_pipe_num;
     SWR_SERVER_NATIVE(ReactorThread) *reactor_threads;
+    swr_v1_server_ports ports;
 } swr_v1_server_tables;
 
 void *swr_v1_server_session(const swr_v1_server_state *state, long id);

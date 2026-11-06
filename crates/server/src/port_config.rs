@@ -37,6 +37,18 @@ pub struct PortConfig {
     pub ptr: *mut c_void,
 }
 
+/// The settings of a `ListenPort`, which begins with its `PortFields` pointer to them.
+///
+/// # Safety
+/// `port` is a live `ListenPort`, and nothing else accesses its settings while
+/// the borrow lasts.
+pub(crate) unsafe fn of<'a>(port: *mut c_void) -> &'a mut PortConfig {
+    // SAFETY: per the caller; `ListenPort` is not polymorphic (master.cc asserts it).
+    let config = unsafe { *port.cast::<*mut PortConfig>() };
+    // SAFETY: the port's settings live as long as it.
+    unsafe { &mut *config }
+}
+
 /// Allocates settings before the native port acquires any resources.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig {

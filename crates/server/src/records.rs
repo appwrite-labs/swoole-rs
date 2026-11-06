@@ -69,6 +69,27 @@ pub struct ServerTables {
     pub enable_accept_timer: *mut c_void,
     pub reactor_pipe_num: u16,
     pub reactor_threads: *mut c_void,
+    /// `Server::ports`.
+    pub ports: PortList,
+}
+
+/// The `ListenPort`s in listen order: a loan of `ServerState`'s list.
+#[repr(C)]
+pub struct PortList {
+    pub items: *const *mut c_void,
+    pub count: u32,
+}
+
+impl ServerTables {
+    /// The listen ports.
+    pub(crate) fn ports(&self) -> &[*mut c_void] {
+        let PortList { items, count } = self.ports;
+        if items.is_null() {
+            return &[];
+        }
+        // SAFETY: the live buffer `ServerState::push_port` published with this length.
+        unsafe { core::slice::from_raw_parts(items, count as usize) }
+    }
 }
 
 impl Default for ServerTables {
@@ -81,6 +102,10 @@ impl Default for ServerTables {
             enable_accept_timer: core::ptr::null_mut(),
             reactor_pipe_num: 0,
             reactor_threads: core::ptr::null_mut(),
+            ports: PortList {
+                items: core::ptr::null(),
+                count: 0,
+            },
         }
     }
 }
