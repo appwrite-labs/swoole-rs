@@ -17,6 +17,7 @@ use crate::ops::{
     OP_ST_VISIT, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS,
     OP_WORKER_IDLE, TRACE_ST_SCHEDULE,
 };
+use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
 #[cfg(test)]
 use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
 use crate::send::send_to_connection;
@@ -25,6 +26,7 @@ use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
+use swoole_rs_corebase::StringSlot;
 
 /// Owned by `Server::state_`, from the constructor to the destructor. Reactor threads
 /// share it, so each counter is atomic.
@@ -46,7 +48,17 @@ pub struct ServerState {
     /// `upload_tmp_dir`, the HTTP server's directory for uploaded files
     /// (`None`: `/tmp`), as `set()` gave it.
     upload_tmp_dir: std::sync::Mutex<Option<Box<[u8]>>>,
+    /// `chroot_`, `user_`, `group_`, `pid_file` and `document_root`, in `TEXT_*`
+    /// order; native views them as `RustStringView`s.
+    texts: [StringSlot; TEXT_COUNT],
+    /// `Server::lock_`, the connection list's fd range lock: whether it is held.
+    locked: (std::sync::Mutex<bool>, std::sync::Condvar),
 }
+
+/// `ServerState::texts`' slots (`SWR_SERVER_TEXT_*`).
+pub(crate) const TEXT_PID_FILE: usize = 3;
+pub(crate) const TEXT_DOCUMENT_ROOT: usize = 4;
+const TEXT_COUNT: usize = 5;
 
 impl Default for ServerState {
     fn default() -> Self {
@@ -66,7 +78,51 @@ impl ServerState {
             ports: std::sync::Mutex::new(Vec::new()),
             callbacks: crate::callbacks::ServerCallbacks::new(),
             upload_tmp_dir: std::sync::Mutex::new(None),
+            texts: [const { StringSlot::new() }; TEXT_COUNT],
+            locked: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
         }
+    }
+
+    /// One of `texts`' slots.
+    pub(crate) fn text_slot(&self, index: usize) -> *const StringSlot {
+        self.texts
+            .get(index)
+            .map_or(core::ptr::null(), core::ptr::from_ref)
+    }
+
+    /// The bytes of one of `texts`, which no other thread sets meanwhile.
+    pub(crate) fn text(&self, index: usize) -> &[u8] {
+        let slot = self.text_slot(index);
+        if slot.is_null() {
+            return &[];
+        }
+        // SAFETY: a live slot of this state; texts are set only while the server is configured.
+        let view = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) };
+        // SAFETY: the view's bytes stay put until the slot is next set.
+        unsafe { core::slice::from_raw_parts(view.data.cast(), view.length) }
+    }
+
+    /// `Server::lock()`: blocks until this thread holds the lock.
+    pub(crate) fn lock(&self) {
+        let (held, released) = &self.locked;
+        let mut held = held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *held {
+            held = released
+                .wait(held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *held = true;
+    }
+
+    /// `Server::unlock()`, by the thread holding the lock.
+    pub(crate) fn unlock(&self) {
+        let (held, released) = &self.locked;
+        *held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        released.notify_one();
     }
 
     /// `Server::ports.push_back(port)`; the port's `object_id` is the new count.
@@ -156,6 +212,79 @@ pub unsafe extern "C" fn swr_v1_server_upload_tmp_dir(
     // SAFETY: per the caller.
     unsafe { *length = dir.len() };
     dir.as_ptr()
+}
+
+/// `Server`'s text member `index` (`SWR_SERVER_TEXT_*`), or null past the last.
+///
+/// # Safety
+/// `state` is live; the slot lives as long as it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_text_slot(
+    state: *const ServerState,
+    index: usize,
+) -> *const StringSlot {
+    // SAFETY: per the caller.
+    unsafe { &*state }.text_slot(index)
+}
+
+/// `text.c_str()`: the bytes up to the first NUL.
+fn c_path(text: &[u8]) -> CString {
+    let end = text
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(text.len());
+    CString::new(text.get(..end).unwrap_or_default()).unwrap_or_default()
+}
+
+/// Answers the ops over `texts` and the lock, which need only the state.
+///
+/// # Safety
+/// `state` is live; `OP_ST_SET_ROOT`'s `arg` addresses a NUL-terminated path.
+#[inline(always)]
+pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Option<u64> {
+    match op {
+        OP_LOCK => state.lock(),
+        OP_UNLOCK => state.unlock(),
+        OP_ST_SET_ROOT => {
+            let path = core::ptr::with_exposed_provenance::<c_char>(usize::try_from(arg).ok()?);
+            // SAFETY: per the caller.
+            let path = unsafe { CStr::from_ptr(path) }.to_bytes();
+            // SAFETY: a live slot of this state, set only while the server is configured.
+            unsafe {
+                swoole_rs_corebase::swr_v1_core_string_set(
+                    state.text_slot(TEXT_DOCUMENT_ROOT),
+                    path.as_ptr().cast(),
+                    path.len(),
+                )
+            };
+        }
+        OP_LC_WRITE_PID => {
+            let file = state.text(TEXT_PID_FILE);
+            if !file.is_empty() {
+                let file = c_path(file);
+                // SAFETY: getpid has no preconditions.
+                let pid = unsafe { libc::getpid() }.to_string();
+                // SAFETY: a terminated path and the pid's bytes.
+                unsafe {
+                    swoole_rs_ossupport::swr_v1_os_file_put_contents(
+                        file.as_ptr(),
+                        pid.as_ptr().cast(),
+                        pid.len(),
+                    )
+                };
+            }
+        }
+        OP_LC_UNLINK_PID => {
+            let file = state.text(TEXT_PID_FILE);
+            if !file.is_empty() {
+                let file = c_path(file);
+                // SAFETY: a terminated path.
+                unsafe { libc::unlink(file.as_ptr()) };
+            }
+        }
+        _ => return None,
+    }
+    Some(0)
 }
 
 /// # Safety
@@ -771,5 +900,57 @@ mod tests {
         assert_eq!(unsafe { &*state }.next_round(), 0);
         // SAFETY: freed once.
         unsafe { swr_v1_server_state_free(state) };
+    }
+
+    #[test]
+    fn texts_and_the_lock_are_answered_without_native() {
+        let state = ServerState::new();
+        let root = c"/srv/www";
+        let arg = root.as_ptr().expose_provenance() as u64;
+        assert_eq!(unsafe { native_fact(&state, OP_ST_SET_ROOT, arg) }, Some(0));
+        assert_eq!(state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
+        assert_eq!(state.text(TEXT_PID_FILE), b"");
+        assert!(state.text_slot(TEXT_COUNT).is_null());
+        assert_eq!(unsafe { native_fact(&state, OP_SET_MAXFD, 0) }, None);
+
+        let state = std::sync::Arc::new(state);
+        assert_eq!(unsafe { native_fact(&state, OP_LOCK, 0) }, Some(0));
+        let waiter = {
+            let state = std::sync::Arc::clone(&state);
+            std::thread::spawn(move || {
+                state.lock();
+                state.unlock();
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(!waiter.is_finished(), "the lock is held");
+        assert_eq!(unsafe { native_fact(&state, OP_UNLOCK, 0) }, Some(0));
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn the_pid_file_is_written_then_unlinked() {
+        // What swoole_init sets.
+        swoole_rs_corebase::swr_v1_core_set_max_file_content(64 * 1024 * 1024);
+        let state = ServerState::new();
+        // No pid_file: neither op touches the file system.
+        assert_eq!(unsafe { native_fact(&state, OP_LC_WRITE_PID, 0) }, Some(0));
+        assert_eq!(unsafe { native_fact(&state, OP_LC_UNLINK_PID, 0) }, Some(0));
+        let path = std::env::temp_dir().join(format!("swoole-rs-pid-{}", std::process::id()));
+        let bytes = path.to_str().unwrap().as_bytes();
+        unsafe {
+            swoole_rs_corebase::swr_v1_core_string_set(
+                state.text_slot(TEXT_PID_FILE),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+            )
+        };
+        assert_eq!(unsafe { native_fact(&state, OP_LC_WRITE_PID, 0) }, Some(0));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            std::process::id().to_string()
+        );
+        assert_eq!(unsafe { native_fact(&state, OP_LC_UNLINK_PID, 0) }, Some(0));
+        assert!(!path.exists());
     }
 }

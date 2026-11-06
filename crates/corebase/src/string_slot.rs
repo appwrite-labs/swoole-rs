@@ -26,14 +26,6 @@ enum Bytes {
     Inline { data: [u8; 24], length: usize },
     Heap(Vec<u8>),
 }
-impl Default for Bytes {
-    fn default() -> Self {
-        Self::Inline {
-            data: [0; 24],
-            length: 0,
-        }
-    }
-}
 pub struct StringSlot {
     bytes: UnsafeCell<Bytes>,
     cache: UnsafeCell<Option<Cache>>,
@@ -46,13 +38,21 @@ unsafe impl Send for StringSlot {}
 unsafe impl Sync for StringSlot {}
 impl Default for StringSlot {
     fn default() -> Self {
-        Self {
-            bytes: UnsafeCell::new(Bytes::default()),
-            cache: UnsafeCell::new(None),
-        }
+        Self::new()
     }
 }
 impl StringSlot {
+    /// An empty slot, for owners built in a `const fn`.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            bytes: UnsafeCell::new(Bytes::Inline {
+                data: [0; 24],
+                length: 0,
+            }),
+            cache: UnsafeCell::new(None),
+        }
+    }
     #[must_use]
     pub fn empty() -> Arc<Self> {
         Arc::new(Self::default())

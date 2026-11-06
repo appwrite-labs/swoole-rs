@@ -830,6 +830,7 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-ossupport",
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-tls",

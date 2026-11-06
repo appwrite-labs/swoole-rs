@@ -62,7 +62,7 @@ pub use config::{ServerConfig, swr_v1_server_config_get, swr_v1_server_config_in
 
 pub use state::{
     ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
-    swr_v1_server_upload_tmp_dir,
+    swr_v1_server_text_slot, swr_v1_server_upload_tmp_dir,
 };
 
 pub use admin::swr_v1_server_tcp_info;
@@ -176,8 +176,14 @@ impl<C: NativeCall> Host for Native<C> {
             if let Some(value) = unsafe { shared::native_fact(self.state, op, arg) } {
                 return Ok(value);
             }
-            // SAFETY: as above; a slot is read or cleared, never called.
-            if let Some(value) = callbacks::native_fact(unsafe { &*self.state }, op, arg) {
+            // SAFETY: as above.
+            let state = unsafe { &*self.state };
+            // A slot is read or cleared, never called.
+            if let Some(value) = callbacks::native_fact(state, op, arg) {
+                return Ok(value);
+            }
+            // SAFETY: the root path op lends its terminated path.
+            if let Some(value) = unsafe { state::native_fact(state, op, arg) } {
                 return Ok(value);
             }
         }

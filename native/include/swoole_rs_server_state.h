@@ -37,6 +37,12 @@ size_t swr_v1_server_static_config(const swr_v1_server_state *, uint32_t, uint32
 const uint8_t *swr_v1_server_static_text(const swr_v1_server_state *, uint32_t, size_t, size_t *);
 /* upload_tmp_dir's bytes and their length (crates/server/src/state.rs). */
 const uint8_t *swr_v1_server_upload_tmp_dir(const swr_v1_server_state *, size_t *);
+/* Server's text members, which Rust owns (crates/server/src/state.rs). */
+enum {
+    SWR_SERVER_TEXT_CHROOT, SWR_SERVER_TEXT_USER, SWR_SERVER_TEXT_GROUP, SWR_SERVER_TEXT_PID_FILE,
+    SWR_SERVER_TEXT_DOCUMENT_ROOT,
+};
+const struct swr_v1_core_string *swr_v1_server_text_slot(const swr_v1_server_state *, size_t);
 void swr_v1_server_shared_init(void *storage);
 void swr_v1_server_port_shared_init(void *storage);
 size_t swr_v1_server_port_connections(const void *storage, uint32_t workers);

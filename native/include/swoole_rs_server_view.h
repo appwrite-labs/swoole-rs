@@ -1,6 +1,7 @@
 #ifndef SWOOLE_RS_SERVER_VIEW_H
 #define SWOOLE_RS_SERVER_VIEW_H
 #include "swoole_rs_server_state.h"
+#include "swoole_rs_corebase_string_slot.h"
 #include <cstdlib>
 #include <type_traits>
 #include <utility>
@@ -84,6 +85,9 @@ class ServerFields {
     };
     Slot callback(int index) const {
         return {callbacks_ + index};
+    }
+    const swr_v1_core_string *text(size_t index) const {
+        return swr_v1_server_text_slot(state_, index);
     }
   public:
 #define SWR_SERVER_CONFIG_REFERENCE(type, name) decltype(swr_v1_server_config::name) &name;
