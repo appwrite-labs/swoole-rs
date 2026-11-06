@@ -41,7 +41,7 @@ class Badges(unittest.TestCase):
             second.write_text(diff('src/a.cc', ['glue 1', 'glue 2'], [], 'line 3'))
             rows = [{'path': str(first), 'upstream_paths': ['src/a.cc'], 'sha256': None},
                     {'path': str(second), 'upstream_paths': ['src/a.cc'], 'sha256': None}]
-            self.assertEqual(badges.replaced(source, rows), (3, 10))
+            self.assertEqual(badges.replaced(badges.kept(source, rows)), (3, 10))
 
     def test_added_glue_cannot_invent_original_deletions_in_repeated_lines(self):
         # A small alphabet models repeated braces/branches in a rewritten TU.
@@ -66,8 +66,8 @@ class Badges(unittest.TestCase):
                 environment = {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'diff.algorithm',
                                'GIT_CONFIG_VALUE_0': algorithm}
                 with self.subTest(algorithm=algorithm), patch.dict(os.environ, environment):
-                    self.assertEqual(badges.replaced(source, rows[:1]), (930, 1801))
-                    self.assertEqual(badges.replaced(source, rows), (927, 1801))
+                    self.assertEqual(badges.replaced(badges.kept(source, rows[:1])), (930, 1801))
+                    self.assertEqual(badges.replaced(badges.kept(source, rows)), (927, 1801))
 
     def test_phpt_counts_hybrid_passes_over_every_pinned_test(self):
         rows = [{'test': 'a', 'engine': 'upstream', 'status': 'passed'}, {'test': 'a', 'engine': 'hybrid', 'status': 'passed'},

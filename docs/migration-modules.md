@@ -62,5 +62,4 @@ Feature values come from `MODULES` in `tools/build_hybrid.py`.
 | M28 | `phpevents` | 67108864 | `ext-src/swoole_event.cc` | PHP Event frontend. |
 | M29 | `phpcoroutines` | 134217728 | `ext-src/swoole_{coroutine,coroutine_system,coroutine_scheduler,tracer}.cc`, `ext-src/php_swoole_coroutine.h` | PHP Coroutine, System and Scheduler frontend. [Boundary](phpcoroutines-boundary.md). |
 
-Shared memory, tables, threads and the remaining extension sources not listed
-above are still upstream code.
+What upstream code each file still keeps is listed in the [roadmap](migration.md#upstream-files-still-in-the-build).
