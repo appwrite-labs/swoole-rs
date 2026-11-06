@@ -41,6 +41,7 @@ struct AcceptServer{bool running=true;};
 inline AcceptSocket*AcceptSocket::accept(){oracle->event("accept");oracle->accept_server->running=false;errCode=oracle->accept_error;return oracle->accept_connection?this:nullptr;}
 struct Callback{zval value;zval*ptr(){return &value;}};
 struct PHPCoroutine{static long create(void*,int,zval*,zval*){oracle->event("create-coroutine");return oracle->cid;}};
+inline long swr_v1_phpcoroutines_create(void*c,int n,zval*a,zval*f,uint8_t*raised){*raised=0;return PHPCoroutine::create(c,n,a,f);}
 struct System{static void sleep(int){oracle->event("sleep");}};
 inline void php_swoole_init_socket_object(zval*,AcceptSocket*){oracle->event("socket-object");}
 inline void zval_dtor(zval*){oracle->event("socket-dtor");}
