@@ -271,6 +271,8 @@ pub unsafe extern "C" fn swr_v1_reactor_callbacks_clear_next(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     unsafe fn view(owner: *const ReactorCallbacks, kind: usize) -> Vec<(i32, usize)> {
         let view = unsafe { &(*owner).views[kind] };
@@ -337,12 +339,309 @@ mod tests {
                 }
                 if !owner.is_null() {
                     let kind = usize::from(action == 2);
-                    assert!(view(owner, kind).iter().all(|&(_, value)| value != token));
+                    assert!(
+                        view(owner, kind as usize)
+                            .iter()
+                            .all(|&(_, value)| value != token)
+                    );
                 }
                 released.push((action, token));
             }
             assert_eq!(released, [(2, 202), (1, 105), (1, 101)]);
             assert!(owner.is_null());
         }
+    }
+
+    type End = Rc<dyn Fn(*mut Reactor)>;
+    type Exit = Rc<dyn Fn(*mut Reactor, &mut usize) -> bool>;
+
+    thread_local! {
+        static TRACE: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+    }
+    fn push(value: i32) {
+        TRACE.with_borrow_mut(|trace| trace.push(value));
+    }
+    fn take() -> Vec<i32> {
+        TRACE.with_borrow_mut(std::mem::take)
+    }
+
+    /// event.cc's `ReactorCallbacks` glue over these exports, on the former callbacks
+    /// gate's Reactor facade (`get_event_num()` is 5). Payloads are boxed
+    /// `Option<End>`/`Option<Exit>`, the empty `std::function` a new entry starts as.
+    struct Reactor {
+        owner: *mut ReactorCallbacks,
+        timed_out: bool,
+    }
+    impl Reactor {
+        fn new() -> Self {
+            Self {
+                owner: ptr::null_mut(),
+                timed_out: false,
+            }
+        }
+        fn ensure<F>(&mut self, kind: u32, key: i32) -> *mut Option<F> {
+            let mut candidate: Option<Box<Option<F>>> = None;
+            loop {
+                let offered = candidate
+                    .as_deref_mut()
+                    .map_or(0, |c| ptr::from_mut(c) as usize);
+                let mut token = 0;
+                match unsafe {
+                    swr_v1_reactor_callbacks_ensure(
+                        &raw mut self.owner,
+                        kind,
+                        key,
+                        offered,
+                        &raw mut token,
+                    )
+                } {
+                    0 => candidate = None,
+                    1 => return token as *mut Option<F>,
+                    2 => candidate = Some(Box::new(None)),
+                    3 => return Box::into_raw(candidate.take().unwrap()),
+                    other => panic!("ensure {other}"),
+                }
+            }
+        }
+        fn set_end_callback(&mut self, key: i32, f: impl Fn(*mut Reactor) + 'static) {
+            unsafe { *self.ensure::<End>(0, key) = Some(Rc::new(f)) };
+        }
+        fn set_exit_condition(
+            &mut self,
+            key: i32,
+            f: impl Fn(*mut Reactor, &mut usize) -> bool + 'static,
+        ) {
+            unsafe { *self.ensure::<Exit>(1, key) = Some(Rc::new(f)) };
+        }
+        fn erase(&mut self, kind: u32, key: i32) -> usize {
+            let mut token = 0;
+            let result =
+                unsafe { swr_v1_reactor_callbacks_erase(self.owner, kind, key, &raw mut token) };
+            if result == 1 {
+                if kind == 0 {
+                    drop(unsafe { Box::from_raw(token as *mut Option<End>) });
+                } else {
+                    drop(unsafe { Box::from_raw(token as *mut Option<Exit>) });
+                }
+            }
+            usize::try_from(result).unwrap()
+        }
+        fn erase_end_callback(&mut self, key: i32) {
+            self.erase(0, key);
+        }
+        fn remove_exit_condition(&mut self, key: i32) -> usize {
+            self.erase(1, key)
+        }
+        fn isset_exit_condition(&self, key: i32) -> bool {
+            let mut token = 0;
+            unsafe { swr_v1_reactor_callbacks_lookup(self.owner, 1, key, &raw mut token) == 1 }
+        }
+        fn execute_end_callbacks(r: *mut Self, timed_out: bool) {
+            unsafe { (*r).timed_out = timed_out };
+            walk(r, 0, |_, token| {
+                let f = unsafe { (*(token as *const Option<End>)).clone().unwrap() };
+                f(r);
+                true
+            });
+        }
+        fn if_exit(r: *mut Self) -> bool {
+            let mut event_num = 5;
+            walk(r, 1, |_, token| {
+                let f = unsafe { (*(token as *const Option<Exit>)).clone().unwrap() };
+                f(r, &mut event_num)
+            })
+        }
+        fn copy(source: *mut Self) -> Self {
+            let mut copied = Self::new();
+            walk(source, 0, |key, token| {
+                let f = unsafe { (*(token as *const Option<End>)).clone() };
+                unsafe { *copied.ensure::<End>(0, key) = f };
+                true
+            });
+            walk(source, 1, |key, token| {
+                let f = unsafe { (*(token as *const Option<Exit>)).clone() };
+                unsafe { *copied.ensure::<Exit>(1, key) = f };
+                true
+            });
+            copied
+        }
+        /// `operator=`: copy, then swap owners; self-assignment does nothing.
+        fn assign(r: *mut Self, source: *mut Self) {
+            if r != source {
+                let mut copied = Self::copy(source);
+                unsafe { std::mem::swap(&mut (*r).owner, &mut copied.owner) };
+            }
+        }
+    }
+    impl Drop for Reactor {
+        fn drop(&mut self) {
+            loop {
+                let mut token = 0;
+                match unsafe {
+                    swr_v1_reactor_callbacks_clear_next(&raw mut self.owner, &raw mut token)
+                } {
+                    0 => return,
+                    1 => drop(unsafe { Box::from_raw(token as *mut Option<End>) }),
+                    2 => drop(unsafe { Box::from_raw(token as *mut Option<Exit>) }),
+                    other => panic!("clear {other}"),
+                }
+            }
+        }
+    }
+    /// event.cc's `swr_reactor_callbacks_walk`: entries in key order, re-read after
+    /// each call, stopping at the first false.
+    fn walk(r: *mut Reactor, kind: u32, mut call: impl FnMut(i32, usize) -> bool) -> bool {
+        let mut i = 0;
+        loop {
+            let owner = unsafe { (*r).owner };
+            if owner.is_null() {
+                return true;
+            }
+            let Some(&(key, token)) = unsafe { view(owner, kind as usize) }.get(i) else {
+                return true;
+            };
+            if !call(key, token) {
+                return false;
+            }
+            let owner = unsafe { (*r).owner };
+            let entries = unsafe { view(owner, kind as usize) };
+            i = if entries.get(i).is_some_and(|entry| entry.0 == key) {
+                i + 1
+            } else {
+                unsafe { swr_v1_reactor_callbacks_after(owner, kind, key) }
+            };
+        }
+    }
+
+    /// The former callbacks gate: an empty store, end callbacks in key order with
+    /// replacement and erasure.
+    #[test]
+    fn former_callbacks_gate_end_order() {
+        let mut empty = Reactor::new();
+        let e: *mut Reactor = &raw mut empty;
+        assert!(Reactor::if_exit(e));
+        Reactor::execute_end_callbacks(e, false);
+        assert!(!empty.timed_out);
+        assert!(!empty.isset_exit_condition(1));
+        assert_eq!(empty.remove_exit_condition(1), 0);
+        empty.erase_end_callback(1);
+
+        let mut reactor = Reactor::new();
+        let r: *mut Reactor = &raw mut reactor;
+        reactor.set_end_callback(5, |p| {
+            assert!(unsafe { (*p).timed_out });
+            push(5);
+        });
+        reactor.set_end_callback(1, |_| push(1));
+        reactor.set_end_callback(3, |_| push(3));
+        Reactor::execute_end_callbacks(r, true);
+        assert_eq!(take(), [1, 3, 5]);
+        reactor.set_end_callback(3, |_| push(99));
+        Reactor::execute_end_callbacks(r, true);
+        assert_eq!(take(), [1, 99, 5]);
+        reactor.erase_end_callback(3);
+        reactor.erase_end_callback(7);
+        Reactor::execute_end_callbacks(r, true);
+        assert_eq!(take(), [1, 5]);
+    }
+
+    /// The former callbacks gate: an end callback that adds after and before itself
+    /// and erases a later one.
+    #[test]
+    fn former_callbacks_gate_end_mutation_during_walk() {
+        let mut reactor = Reactor::new();
+        let r: *mut Reactor = &raw mut reactor;
+        reactor.set_end_callback(1, |p| {
+            push(1);
+            let p = unsafe { &mut *p };
+            p.set_end_callback(2, |_| push(2));
+            p.set_end_callback(0, |_| push(0));
+            p.erase_end_callback(3);
+        });
+        reactor.set_end_callback(3, |_| push(3));
+        reactor.set_end_callback(5, |_| push(5));
+        Reactor::execute_end_callbacks(r, false);
+        assert_eq!(take(), [1, 2, 5]);
+        assert!(!reactor.timed_out);
+    }
+
+    /// The former callbacks gate: exit conditions share the event count, stop at the
+    /// first false, and see additions and removals made during the walk.
+    #[test]
+    fn former_callbacks_gate_exit_conditions() {
+        let mut reactor = Reactor::new();
+        let r: *mut Reactor = &raw mut reactor;
+        reactor.set_exit_condition(3, |_, n| {
+            push(3);
+            assert_eq!(*n, 12);
+            true
+        });
+        reactor.set_exit_condition(1, |_, n| {
+            push(1);
+            assert_eq!(*n, 5);
+            *n += 7;
+            true
+        });
+        reactor.set_exit_condition(2, |_, n| {
+            push(2);
+            assert_eq!(*n, 12);
+            false
+        });
+        assert!(reactor.isset_exit_condition(2));
+        assert!(!Reactor::if_exit(r));
+        assert_eq!(take(), [1, 2]);
+        assert_eq!(reactor.remove_exit_condition(2), 1);
+        assert_eq!(reactor.remove_exit_condition(2), 0);
+        assert!(!reactor.isset_exit_condition(2));
+        assert!(Reactor::if_exit(r));
+        assert_eq!(take(), [1, 3]);
+
+        let mut mutating = Reactor::new();
+        let m: *mut Reactor = &raw mut mutating;
+        mutating.set_exit_condition(1, |p, n| {
+            push(1);
+            let p = unsafe { &mut *p };
+            p.set_exit_condition(2, |_, count| {
+                push(2);
+                assert_eq!(*count, 6);
+                true
+            });
+            p.remove_exit_condition(3);
+            *n += 1;
+            true
+        });
+        mutating.set_exit_condition(3, |_, _| {
+            push(3);
+            false
+        });
+        assert!(Reactor::if_exit(m));
+        assert_eq!(take(), [1, 2]);
+    }
+
+    /// The former callbacks gate: a copied reactor's callbacks are its own, and
+    /// assignment (including to itself) copies them back.
+    #[test]
+    fn former_callbacks_gate_copy_and_assign() {
+        let mut original = Reactor::new();
+        let o: *mut Reactor = &raw mut original;
+        original.set_end_callback(1, |_| push(1));
+        original.set_exit_condition(1, |_, n| *n == 5);
+        let mut copied = Reactor::copy(o);
+        let c: *mut Reactor = &raw mut copied;
+        assert_eq!(copied.remove_exit_condition(1), 1);
+        assert!(original.isset_exit_condition(1));
+        assert!(!copied.isset_exit_condition(1));
+        copied.set_end_callback(1, |_| push(2));
+        Reactor::execute_end_callbacks(o, false);
+        Reactor::execute_end_callbacks(c, false);
+        assert_eq!(take(), [1, 2]);
+        Reactor::assign(c, o);
+        assert!(copied.isset_exit_condition(1));
+        assert!(Reactor::if_exit(c));
+        Reactor::execute_end_callbacks(c, false);
+        assert_eq!(take(), [1]);
+        Reactor::assign(c, c);
+        Reactor::execute_end_callbacks(c, false);
+        assert_eq!(take(), [1]);
     }
 }

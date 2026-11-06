@@ -3,17 +3,12 @@
 `python3 tools/dev.py` registers most of these as phases when the `reactor`
 module is selected. Scripts can also be run directly from the repo root.
 
-## Source-body facades
+## Former facades
 
-Most gates take the pinned upstream source and a Rust FFI archive:
-
-    python3 tests/modules/reactor/NAME.py --source target/upstream/src \
-        --archive PATH/libswoole_rs_ffi.a --sanitize --report OUT.json
-
-`NAME` is one of `callbacks`, `initialize` and `builtins`.
-Each extracts the original function bodies from the pin and the patched ones
-from the archive's hybrid tree (`hybrid_tree`, #796), compiles them against
-native facades and the archive, and checks that both variants behave the same.
+The `callbacks`, `initialize` and `builtins` gates sliced function bodies out of
+the hybrid `src/wrapper/event.cc`. Their cases are `crates/reactor` tests named
+`former_callbacks_gate_*`, `former_initialize_gate_*` and
+`former_builtins_gate_*` (`callbacks.rs`, `initialize.rs`, `builtins.rs`).
 The 53 ordinary queued-output compositions formerly in `output.cc` now call the
 shipped Rust exports in `crates/reactor/src/output.rs`'s
 `ordinary_data_positive_matrix` and `ordinary_file_positive_matrix` tests. `reactor-unit` runs them; the redundant
