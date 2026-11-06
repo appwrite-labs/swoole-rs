@@ -204,9 +204,10 @@ unsafe fn apply(serv: *mut c_void, id: u32, v: i64) {
         f::TASK_MAX_REQUEST_GRACE => c.task_max_request_grace = v as u32,
         // SAFETY: per the caller.
         f::MAX_CONNECTION => unsafe { server_methods::set_max_connection(serv, v as u32) },
-        // SAFETY: per the caller, as above.
         f::START_SESSION_ID => {
-            unsafe { view::counters_mut(serv) }.session_round = v.min(i64::from(u32::MAX))
+            // SAFETY: per the caller, as above.
+            let counters = unsafe { view::counters_mut(serv) };
+            counters.session_round = v.min(i64::from(u32::MAX));
         }
         f::HEARTBEAT_CHECK_INTERVAL => c.heartbeat_check_interval = v as u16,
         f::MAX_REQUEST => c.max_request = v as u32,
