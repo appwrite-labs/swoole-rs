@@ -666,6 +666,7 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-framing",
  "swoole-rs-http2",
  "swoole-rs-inflate",
  "swoole-rs-phphttp",
