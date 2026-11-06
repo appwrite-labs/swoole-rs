@@ -760,7 +760,6 @@
       "owned_paths": [
         "crates/http2/",
         "crates/phphttp2/",
-        "native/http2/",
         "migration/patches/http2/",
         "tests/modules/http2/"
       ],

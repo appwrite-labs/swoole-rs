@@ -1422,7 +1422,7 @@ handlers! {
     zim_swoole_http_server_coro_start => start;
 }
 
-/// A finished HTTP/2 request (`swr_h2s_request`: the stream's context, the
+/// A finished HTTP/2 request (`SessionRequest`: the stream's context, the
 /// session's default context and the server).
 #[repr(C)]
 struct Http2Request {
@@ -1434,7 +1434,7 @@ struct Http2Request {
 /// `http2_server_onRequest`: an HTTP/2 stream's request, with the HTTP/1
 /// request's `$server` and `SERVER_PROTOCOL` `HTTP/2`.
 /// # Safety
-/// The session lends a live `swr_h2s_request`.
+/// The session lends a live `SessionRequest`.
 unsafe extern "C" fn http2_request_handler(request: *mut c_void) {
     // SAFETY: per the caller.
     let request = unsafe { &*request.cast::<Http2Request>() };

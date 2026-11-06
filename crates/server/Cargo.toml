@@ -23,6 +23,7 @@ swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-ossupport = { path = "../ossupport" }
 swoole-rs-process = { path = "../process" }
 swoole-rs-error = { path = "../error" }
+swoole-rs-framing = { path = "../framing" }
 swoole-rs-http = { path = "../http" }
 swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-tls = { path = "../tls" }

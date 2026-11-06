@@ -1,9 +1,9 @@
 //! The HTTP/2 server's frames, responses and request header blocks: upstream's
 //! `swoole_http2_server_parse` and everything it and `Response` send (headers
 //! over nghttp2's HPACK, bodies under flow control, trailers, files), over
-//! the sessions and streams of `session`. The HTTP contexts are C++'s,
-//! reached through the `swr_h2s_*` hosts of `ext-src/swoole_http2_server.cc`
-//! (`native/http2/swoole_rs_phphttp2.h`).
+//! the sessions and streams of `session`, and an async server's
+//! `onReceive` and `onClose` for its HTTP/2 connections. The HTTP contexts are
+//! crates/phphttp's.
 use crate::native::{
     Header, swoole_http2_client_coro_deflate, swoole_http2_client_coro_deflate_bound,
     swoole_http2_client_coro_deflate_table, swoole_http2_client_coro_deflater,
@@ -32,6 +32,7 @@ use swoole_rs_zend::{
         IS_ARRAY, IS_NULL, IS_STRING, add_assoc_str_ex, add_assoc_stringl_ex,
         swr_zend_hash_foreach_key, swr_zend_property_array, swr_zend_property_slot,
         swr_zend_url_decode, zend_hash_str_find, zend_object, zend_string, zend_ulong, zval,
+        zval_ptr_dtor,
     },
     type_of, value,
 };
@@ -115,14 +116,6 @@ use swoole_rs_phphttp::http2::Field;
 
 pub(crate) use swoole_rs_phphttp::http2::Value;
 
-unsafe extern "C" {
-    fn swr_h2s_query(array: *mut zval, query: *const c_char, length: usize);
-    fn swr_h2s_path(ctx: *mut c_void, path: *const c_char, length: usize);
-    fn swr_h2s_multipart(ctx: *mut c_void, value: *const c_char, length: usize) -> bool;
-    fn swr_h2s_in_coroutine() -> bool;
-    fn swr_h2s_error(code: c_int, always: c_int, message: *const c_char);
-}
-
 // --- hosts, one safe call each ---
 
 pub(crate) fn get(ctx: *mut c_void, field: Field) -> u32 {
@@ -169,11 +162,15 @@ fn report(code: c_int, always: bool, message: &[u8]) {
         .iter()
         .position(|&byte| byte == 0)
         .unwrap_or(message.len());
-    let message = CString::new(&message[..end]).unwrap_or_default();
-    // SAFETY: C++'s reporter, printing the message through "%s".
-    bailout::defer(unsafe {
-        bailout::report_code(swr_h2s_error, code, c_int::from(always), &message)
-    });
+    if bailout::pending() {
+        return;
+    }
+    swoole_rs_corebase::log::set_last_error(code);
+    if always || swoole_rs_phpswoole::display_errors() {
+        let message = CString::new(&message[..end]).unwrap_or_default();
+        // SAFETY: a warning, printed through "%s".
+        bailout::defer(unsafe { swoole_rs_zend::php_error(swoole_rs_zend::E_WARNING, &message) });
+    }
 }
 
 /// nghttp2's text for `code`.
@@ -751,7 +748,8 @@ pub(crate) fn send_body(
             // The coroutine server receives frames serially and cannot be
             // suspended, so it has no flow control.
             // SAFETY: plain reads of Swoole's state.
-            let may_suspend = get(ctx, Field::CoSocket) == 0 && unsafe { swr_h2s_in_coroutine() };
+            let may_suspend =
+                get(ctx, Field::CoSocket) == 0 && swoole_rs_phpcoroutines::in_coroutine();
             match sw_rs_http2_window_action(send_n, window, u32::from(may_suspend)) {
                 1 => warn(
                     c"Stream::send_body",
@@ -992,6 +990,63 @@ pub(crate) fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) {
 
 // --- receiving ---
 
+unsafe extern "C" {
+    #[link_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE"]
+    fn php_swoole_get_recv_data(server: *mut c_void, zdata: *mut zval, request: *mut c_void);
+}
+
+/// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
+/// connection, whose session (and settings context) the first data makes.
+/// # Safety
+/// `server` is the live server, `conn` the session's connection and `request`
+/// its `RecvData`.
+#[unsafe(export_name = "_Z29swoole_http2_server_onReceivePN6swoole6ServerEPNS_10ConnectionEPNS_8RecvDataE")]
+pub unsafe extern "C" fn swoole_http2_server_on_receive(
+    server: *mut c_void,
+    conn: *mut c_void,
+    request: *mut c_void,
+) -> c_int {
+    // SAFETY: a `RecvData` begins with its `DataHead`.
+    let session_id = unsafe { (*request.cast::<swoole_rs_corebase::DataHead>()).fd };
+    if !crate::session::swr_v1_phphttp2_session_exists(session_id) {
+        // SAFETY: the live server.
+        let default_ctx = unsafe { swoole_rs_phphttp::http2::server_context(server, session_id) };
+        // SAFETY: the live server and the session's connection.
+        let max_body_size =
+            unsafe { swoole_rs_server::server_methods::package_max_length(server, conn) };
+        // SAFETY: the session's own settings context and the server's request handler.
+        unsafe {
+            crate::session::swr_v1_phphttp2_session_new(
+                session_id,
+                default_ctx.cast(),
+                max_body_size,
+                false,
+                swoole_rs_phphttp::swr_v1_phphttp_server_http2_request,
+                ptr::null_mut(),
+            );
+        };
+    }
+    // SAFETY: all zeroes is `IS_UNDEF`.
+    let mut zdata: zval = unsafe { std::mem::zeroed() };
+    // SAFETY: the live server and its request; the data is a new string.
+    unsafe { php_swoole_get_recv_data(server, &raw mut zdata, request) };
+    // SAFETY: a string zval.
+    let data = unsafe { value::str_of(&raw mut zdata) };
+    // SAFETY: its live string.
+    let data = unsafe { string::bytes(data) };
+    // SAFETY: a whole frame.
+    let result = unsafe { swr_v1_phphttp2_session_parse(session_id, data.as_ptr().cast()) };
+    // SAFETY: the data's own reference.
+    unsafe { zval_ptr_dtor(&raw mut zdata) };
+    result
+}
+
+/// `php_swoole_http2_server_onClose`: the connection's session goes.
+#[unsafe(export_name = "_Z31php_swoole_http2_server_onClosePN6swoole6ServerEl")]
+pub extern "C" fn php_swoole_http2_server_on_close(_server: *mut c_void, session_id: i64) {
+    crate::session::swr_v1_phphttp2_session_free(session_id);
+}
+
 /// `swoole_http2_server_parse`: one frame from the peer of connection `fd`,
 /// whose session stays alive until the frame is handled.
 /// # Safety
@@ -1220,8 +1275,8 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
                 // SAFETY: a live context.
                 let body = unsafe { swoole_rs_phphttp::http2::data(ctx) };
                 let post = zval_of(ctx, Value::Post);
-                // SAFETY: the live `post` array and the body's bytes, which C++ copies.
-                unsafe { swr_h2s_query(post, body.as_ptr().cast(), body.len()) };
+                // SAFETY: the live `post` array.
+                unsafe { swoole_rs_phphttp::http2::treat_query(post, body) };
             }
             // SAFETY: a live context with a multipart parser.
             (recv::MULTIPART, _) => ok = unsafe { swoole_rs_phphttp::http2::multipart(ctx) },
@@ -1401,7 +1456,7 @@ fn request_header(
                 set(ctx, Field::Form, 1);
             } else if media == MEDIA_MULTIPART {
                 // SAFETY: a live context and the header value.
-                if !unsafe { swr_h2s_multipart(ctx, value.as_ptr().cast(), value.len()) } {
+                if !unsafe { swoole_rs_phphttp::http2::multipart_start(ctx, value) } {
                     return None;
                 }
             }
@@ -1443,14 +1498,14 @@ fn path(ctx: *mut c_void, zserver: *mut zval, value: &[u8]) {
         Some(question) => {
             let query = &value[question + 1..];
             add_string(zserver, b"query_string", query);
-            // SAFETY: the request's `$get`; C++ copies the query.
-            unsafe { swr_h2s_query(zval_of(ctx, Value::Get), query.as_ptr().cast(), query.len()) };
+            // SAFETY: the request's `$get`.
+            unsafe { swoole_rs_phphttp::http2::treat_query(zval_of(ctx, Value::Get), query) };
             &value[..question]
         }
         None => value,
     };
-    // SAFETY: a live context; C++ copies the path.
-    unsafe { swr_h2s_path(ctx, value.as_ptr().cast(), value.len()) };
+    // SAFETY: a live context without a path.
+    unsafe { swoole_rs_phphttp::http2::set_path(ctx, value) };
     // SAFETY: a live array taking the new string.
     unsafe { add_assoc_str_ex(zserver, c"request_uri".as_ptr(), 11, string::copy(path)) };
     let decoded = string::copy(path);

@@ -350,6 +350,23 @@ pub unsafe fn wake(co: Co, cancel: bool) {
     }
 }
 
+/// Running in a coroutine (`swoole_coroutine_is_in`).
+#[must_use]
+pub fn in_coroutine() -> bool {
+    !current().is_null()
+}
+
+/// Suspend the running coroutine, published in `slot` while it waits, until
+/// [`wake`]. As [`yield_`], the caller's frames must own nothing that needs a drop.
+/// # Safety
+/// In a coroutine.
+pub unsafe fn park(slot: &std::cell::Cell<Co>) {
+    let co = current();
+    slot.set(co);
+    yield_(co);
+    slot.set(std::ptr::null_mut());
+}
+
 pub(crate) fn cancel(co: Co) -> bool {
     // SAFETY: a live coroutine.
     unsafe { coroutine_cancel(co) }

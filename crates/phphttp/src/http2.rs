@@ -8,7 +8,7 @@ use crate::{
     send,
 };
 use std::{ffi::CStr, sync::atomic::Ordering::Relaxed};
-use swoole_rs_zend::sys::{zend_string, zval};
+use swoole_rs_zend::sys::{swr_zend_http_estrndup, swr_zend_treat_string, zend_string, zval};
 
 /// What the HTTP/2 server reads and writes of a context.
 #[derive(Clone, Copy)]
@@ -263,4 +263,94 @@ pub unsafe fn release_default(ctx: *mut Context) {
 /// `array` is the request's live cookie array.
 pub unsafe fn cookie(array: *mut zval, value: &[u8]) {
     parse::parse_cookie(array, value.as_ptr(), value.len());
+}
+
+/// A server connection's settings context (`default_ctx`): the server's
+/// settings, for session `fd`, kept alive and counted by the request hooks.
+/// # Safety
+/// `server` is the live server.
+#[must_use]
+pub unsafe fn server_context(server: *mut std::ffi::c_void, fd: i64) -> *mut Context {
+    let ctx = context::swr_v1_phphttp_context_new();
+    // SAFETY: a new context and the live server.
+    unsafe { context::swr_v1_phphttp_context_init(ctx, server) };
+    let state = send::state(ctx);
+    state.fd = fd;
+    state.http2 = 1;
+    state.keepalive = 1;
+    state.before_request = 1;
+    ctx
+}
+
+/// A stream's context: a copy of `default_ctx`'s settings, with its request
+/// and response objects and the request's `streamId`.
+/// # Safety
+/// `default_ctx` is a live context.
+#[must_use]
+pub unsafe fn stream_context(default_ctx: *mut Context, fd: i64, stream_id: u32) -> *mut Context {
+    let ctx = context::context_new(fd);
+    // SAFETY: two live contexts.
+    unsafe { context::swr_v1_phphttp_context_copy(ctx, default_ctx) };
+    let state = send::state(ctx);
+    state.http2 = 1;
+    state.stream_id = stream_id;
+    state.keepalive = 1;
+    // SAFETY: the request's live object.
+    let request = unsafe { swoole_rs_zend::value::obj_of(state.request.zobject.ptr) };
+    // SAFETY: a live request object, whose class declares `streamId`.
+    unsafe {
+        swoole_rs_zend::value::update_long(
+            crate::request::entry(),
+            request,
+            c"streamId",
+            i64::from(stream_id),
+        );
+    };
+    ctx
+}
+
+/// `ctx->request.path`: the `:path` up to its query.
+/// # Safety
+/// `ctx` is a live context without a path.
+pub unsafe fn set_path(ctx: *mut Context, path: &[u8]) {
+    let state = send::state(ctx);
+    // SAFETY: the path's bytes, copied into request memory the context frees.
+    state.request.path = unsafe { swr_zend_http_estrndup(path.as_ptr().cast(), path.len()) };
+    state.request.path_len = u32::try_from(path.len()).unwrap_or(u32::MAX);
+}
+
+/// A `multipart/form-data` content type's boundary starts the request's
+/// multipart parser; false when it has none.
+/// # Safety
+/// `ctx` is a live context.
+pub unsafe fn multipart_start(ctx: *mut Context, content_type: &[u8]) -> bool {
+    let (mut boundary, mut length) = (std::ptr::null_mut(), 0);
+    // SAFETY: a live context, the value's bytes and local outputs.
+    let found = unsafe {
+        parse::swr_v1_phphttp_multipart_boundary(
+            ctx.cast(),
+            content_type.as_ptr().cast(),
+            content_type.len(),
+            b"multipart/form-data".len(),
+            &raw mut boundary,
+            &raw mut length,
+        )
+    };
+    if !found {
+        return false;
+    }
+    // SAFETY: the boundary inside the value.
+    unsafe { parse::swr_v1_phphttp_multipart_init(ctx.cast(), boundary, length) };
+    send::state(ctx).parser.data = ctx.cast();
+    true
+}
+
+/// `sapi_module.treat_data(PARSE_STRING, ...)`: a query string's pairs into `array`.
+/// # Safety
+/// `array` is a live array.
+pub unsafe fn treat_query(array: *mut zval, query: &[u8]) {
+    // SAFETY: the query's bytes, copied into request memory the SAPI frees.
+    let text = unsafe { swr_zend_http_estrndup(query.as_ptr().cast(), query.len()) };
+    // SAFETY: a fresh copy and a live array.
+    unsafe { swr_zend_treat_string(text, array) };
 }

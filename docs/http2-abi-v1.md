@@ -13,7 +13,10 @@ deleted: Rust exports its functions under their upstream symbols and owns the
 process-wide default settings; `swoole_http2.h` keeps `unpack_setting_data`
 (a `std::function` callback) and `send_setting_frame` (`Socket::send`) inline.
 Server session/stream maps and client stream map/settings/windows remain. The
-empty `server_ips`/`client_ips` maps are unused.
+empty `server_ips`/`client_ips` maps are unused. `ext-src/swoole_http2_server.cc`
+is deleted too: crates/phphttp2 exports `swoole_http2_server_onReceive` and
+`php_swoole_http2_server_onClose` under their upstream symbols, and its static
+file responses run crates/server's Rust `StaticHandler`.
 
 - Settings unpack calls a native callback per item and keeps stop/error
   behavior, rereading bytes and defaults after each mutation. Zero or negative

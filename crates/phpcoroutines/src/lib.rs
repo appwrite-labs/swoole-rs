@@ -57,7 +57,7 @@ pub use classes::*;
 mod context;
 pub use context::*;
 mod host;
-pub use host::wake;
+pub use host::{in_coroutine, park, wake};
 mod methods;
 pub use methods::*;
 mod runtime;

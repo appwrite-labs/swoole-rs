@@ -1,8 +1,8 @@
 //! Upstream's `http2::Session` and `http2::Stream`: one session per HTTP/2
 //! connection, keyed by its session id, holding its streams, settings,
 //! windows and HPACK codecs. Each stream owns its request's
-//! `swoole::http::Context`, created by C++ (`swr_h2s_stream_context`) and
-//! released with the stream.
+//! `swoole::http::Context`, a copy of the session's settings context, released
+//! with the stream.
 use crate::native::swoole_http2_client_coro_hpack_free;
 use libc::c_void;
 use std::{
@@ -24,14 +24,6 @@ pub struct SessionRequest {
 
 /// `onRequest` for a finished request, C++ (a bailout is trapped around it).
 pub type SessionHandler = unsafe extern "C" fn(*mut c_void);
-
-unsafe extern "C" {
-    /// A new context for stream `id`, a copy of `default_ctx`'s settings.
-    fn swr_h2s_stream_context(default_ctx: *mut c_void, fd: i64, id: u32) -> *mut c_void;
-    /// Suspend the current coroutine, published in `*slot` while it waits.
-    fn swr_h2s_wait(slot: *mut *mut c_void);
-    fn swr_h2s_wake(coroutine: *mut c_void);
-}
 
 pub(crate) type Session = Rc<SessionState>;
 pub(crate) type Stream = Rc<StreamState>;
@@ -138,7 +130,8 @@ impl SessionState {
             return self.streams.borrow().get(&id).cloned();
         }
         // SAFETY: the session's live default context.
-        let ctx = unsafe { swr_h2s_stream_context(self.default_ctx, self.fd, id) };
+        let ctx =
+            unsafe { swoole_rs_phphttp::http2::stream_context(self.default_ctx, self.fd, id) };
         if ctx.is_null() {
             crate::server::log(
                 SW_LOG_WARNING,
@@ -200,14 +193,14 @@ impl StreamState {
     pub(crate) fn wait(&self) {
         // SAFETY: in a coroutine; the slot lives as long as the stream, which
         // the caller holds.
-        unsafe { swr_h2s_wait(self.waiting.as_ptr()) };
+        unsafe { swoole_rs_phpcoroutines::park(&self.waiting) };
     }
 
     pub(crate) fn wake(&self) {
         let coroutine = self.waiting.get();
         if !coroutine.is_null() {
             // SAFETY: the coroutine suspended in `wait`.
-            unsafe { swr_h2s_wake(coroutine) };
+            unsafe { swoole_rs_phpcoroutines::wake(coroutine, false) };
         }
     }
 }

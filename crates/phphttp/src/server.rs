@@ -529,8 +529,7 @@ fn release([local, remote]: [*mut zend_string; 2]) {
     unsafe { swr_zend_string_release(remote) };
 }
 
-/// `swr_h2s_connection_facts`: an HTTP/2 request's connection and server state.
-#[repr(C)]
+/// An HTTP/2 request's connection and server state.
 struct Http2Connection {
     last_recv_time: f64,
     local_port: i64,
@@ -543,7 +542,40 @@ struct Http2Connection {
     coroutine: bool,
 }
 
-/// `swr_h2s_request`.
+/// The session's connection (none: closed) and what onRequest reads of it
+/// and the server.
+fn http2_connection(
+    server: *mut c_void,
+    fd: i64,
+) -> Option<(*mut ConnectionRecord, Http2Connection)> {
+    // SAFETY: the live server.
+    let conn = unsafe { view::by_session(server, fd) }?;
+    // SAFETY: the connection's own address record.
+    let remote_port = i64::from(unsafe { swr_v1_clients_address_port(&raw const conn.info) });
+    // SAFETY: as above.
+    let loopback = if unsafe { swr_v1_clients_address_loopback(&raw const conn.info) } {
+        if conn.info.kind == SOCK_TCP6 { 6 } else { 4 }
+    } else {
+        0
+    };
+    // SAFETY: the live server.
+    let counters = unsafe { view::counters(server) };
+    let facts = Http2Connection {
+        last_recv_time: conn.last_recv_time,
+        local_port: i64::from(conn.local_port),
+        remote_port,
+        loopback,
+        server_fd: conn.server_fd,
+        cache: can_cache(server),
+        // SAFETY: the live server.
+        static_handler: unsafe { view::config(server) }.enable_static_handler,
+        unavailable: counters.concurrency.load(SeqCst) >= counters.max_concurrency,
+        coroutine: enable_coroutine(server),
+    };
+    Some((ptr::from_mut(conn), facts))
+}
+
+/// `SessionRequest` (crates/phphttp2).
 #[repr(C)]
 struct Http2Request {
     ctx: *mut Context,
@@ -558,12 +590,6 @@ const SERVICE_UNAVAILABLE_STATUS: c_int = 503;
 const HTTP2_INTERNAL_ERROR: u32 = 2;
 
 unsafe extern "C" {
-    /// `get_connection_by_session_id` (null: closed) and what onRequest reads.
-    fn swr_h2s_connection(
-        server: *mut c_void,
-        fd: i64,
-        out: *mut Http2Connection,
-    ) -> *mut ConnectionRecord;
     /// The HTTP/2 server's (crates/phphttp2): the static handler, a whole
     /// response and a stream reset.
     fn swr_v1_phphttp2_server_static(server: *mut c_void, ctx: *mut Context) -> bool;
@@ -579,7 +605,7 @@ unsafe extern "C" {
 /// connection, answered by the static handler or the port's `onRequest`.
 /// A bailout in the handler is raised last, over this frame only.
 /// # Safety
-/// `request` is the session's `swr_h2s_request` for a live stream context.
+/// `request` is the session's `SessionRequest` for a live stream context.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp_server_http2_request(request: *mut c_void) {
     // SAFETY: per the caller.
@@ -590,14 +616,10 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_http2_request(request: *mut c_voi
 
 fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     let (server, fd) = (state(ctx).private_data, state(ctx).fd);
-    // SAFETY: plain data, filled below.
-    let mut facts: Http2Connection = unsafe { std::mem::zeroed() };
-    // SAFETY: the live server and a local output.
-    let conn = unsafe { swr_h2s_connection(server, fd, &raw mut facts) };
-    if conn.is_null() {
+    let Some((conn, facts)) = http2_connection(server, fd) else {
         release_objects(ctx);
         return Ok(());
-    }
+    };
     state(ctx).request.version = HTTP_VERSION_2;
     // SAFETY: the live server and stream context.
     if facts.static_handler && unsafe { swr_v1_phphttp2_server_static(server, ctx) } {
@@ -798,11 +820,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn http2_connection_matches_the_c_struct() {
-        // `swr_h2s_connection_facts`, which C++ asserts is 40 bytes.
-        assert_eq!(size_of::<Http2Connection>(), 40);
-        assert_eq!(std::mem::offset_of!(Http2Connection, server_fd), 28);
-        assert_eq!(std::mem::offset_of!(Http2Connection, coroutine), 35);
+    fn http2_request_matches_the_c_struct() {
         assert_eq!(size_of::<Http2Request>(), 24);
     }
 
