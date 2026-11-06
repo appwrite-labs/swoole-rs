@@ -105,13 +105,6 @@ pub struct HostOps {
     error_log: unsafe extern "C" fn(level: i32, error: i32, message: *const c_char, length: usize),
     /// `swoole_ignore_error(code)`.
     ignore_error: unsafe extern "C" fn(code: i32),
-    mime_add: unsafe extern "C" fn(suffix: *const c_char, kind: *const c_char) -> u8,
-    mime_set: unsafe extern "C" fn(suffix: *const c_char, kind: *const c_char),
-    mime_del: unsafe extern "C" fn(suffix: *const c_char) -> u8,
-    mime_get: unsafe extern "C" fn(filename: *const c_char) -> *const c_char,
-    mime_exists: unsafe extern "C" fn(filename: *const c_char) -> u8,
-    /// Push every MIME type onto `array`.
-    mime_list: unsafe extern "C" fn(array: *mut zval),
     /// `zend::unserialize`.
     unserialize: unsafe extern "C" fn(
         value: *mut zval,

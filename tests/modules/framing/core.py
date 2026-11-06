@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the framing/MIME unchanged original M18 GoogleTests in private Linux build trees."""
+"""Run the framing module's unchanged original M18 GoogleTests in private Linux build trees."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -20,7 +20,8 @@ from tools.harness import ROOT, run_isolated, write_report
 
 from tools.build_upstream import COMMIT as PIN
 from tools.build_hybrid import overlay_hybrid_tree
-ASSERTIONS = ['core-tests/src/protocol/base.cpp', 'core-tests/src/protocol/mime_type.cpp']
+# core-tests/src/protocol/mime_type.cpp's TESTs are Rust tests in crates/framing/src/mime.rs.
+ASSERTIONS = ['core-tests/src/protocol/base.cpp']
 SELECTED = ['core-tests/src/main.cpp', *ASSERTIONS]
 
 

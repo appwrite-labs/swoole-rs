@@ -8,13 +8,14 @@ use std::{
     ffi::{CStr, c_char, c_int},
     ptr,
 };
+use swoole_rs_framing::mime;
 use swoole_rs_zend::{
     Call, E_WARNING, Invalid, handlers, php_error,
     string::val,
     sys::{
         _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, IS_FALSE, IS_NULL, IS_TRUE,
-        ZPP_ERROR_WRONG_ARG, zend_hash_func, zend_parse_arg_bool_slow, zend_string,
-        zend_wrong_parameter_error,
+        ZPP_ERROR_WRONG_ARG, add_next_index_stringl, zend_hash_func, zend_parse_arg_bool_slow,
+        zend_string, zend_wrong_parameter_error,
     },
     type_of, value,
 };
@@ -235,56 +236,57 @@ fn strings<const N: usize>(call: &Call) -> Option<[*mut zend_string; N]> {
     or_false(call, parsed)
 }
 
+/// `ZSTR_VAL` as upstream passes it on: up to the first NUL.
+fn c_text<'a>(string: *mut zend_string) -> &'a CStr {
+    // SAFETY: a live argument string, NUL-terminated as every zend_string is.
+    unsafe { CStr::from_ptr(text(string)) }
+}
+
 fn mime_type_add(call: &Call) {
     if let Some([suffix, kind]) = strings(call) {
-        // SAFETY: C++'s table, with live argument strings.
-        call.set_bool(unsafe { (ops().mime_add)(text(suffix), text(kind)) } != 0);
+        call.set_bool(mime::add(c_text(suffix).to_bytes(), c_text(kind)));
     }
 }
 
 fn mime_type_set(call: &Call) {
     if let Some([suffix, kind]) = strings(call) {
-        // SAFETY: as above.
-        unsafe { (ops().mime_set)(text(suffix), text(kind)) };
+        mime::set(c_text(suffix).to_bytes(), c_text(kind));
     }
 }
 
 fn mime_type_delete(call: &Call) {
     if let Some([suffix]) = strings(call) {
-        // SAFETY: as above.
-        call.set_bool(unsafe { (ops().mime_del)(text(suffix)) } != 0);
+        call.set_bool(mime::del(c_text(suffix).to_bytes()));
     }
 }
 
-/// `mime_type::get(path)`: a static type text.
+/// `mime_type::get(path)`: the type, which callers copy before the table changes.
 #[must_use]
-pub fn mime_type(path: &CStr) -> &'static CStr {
-    // SAFETY: C++'s table, with a live NUL-terminated path.
-    let kind = unsafe { (ops().mime_get)(path.as_ptr()) };
-    // SAFETY: the table's entries outlive the module.
-    unsafe { CStr::from_ptr(kind) }
+pub fn mime_type(path: &[u8]) -> &'static CStr {
+    // SAFETY: a table value, kept until its suffix changes, or the fallback.
+    unsafe { CStr::from_ptr(mime::get(path)) }
 }
 
 fn mime_type_get(call: &Call) {
     if let Some([filename]) = strings(call) {
-        // SAFETY: C++'s table, with a live argument string.
-        let kind = unsafe { (ops().mime_get)(text(filename)) };
-        // SAFETY: the table's entry outlives the copy.
-        unsafe { set_c_string(call, kind) };
+        call.set_bytes(mime_type(c_text(filename).to_bytes()).to_bytes());
     }
 }
 
 fn mime_type_exists(call: &Call) {
     if let Some([filename]) = strings(call) {
-        // SAFETY: as above.
-        call.set_bool(unsafe { (ops().mime_exists)(text(filename)) } != 0);
+        call.set_bool(mime::exists(c_text(filename).to_bytes()));
     }
 }
 
 fn mime_type_list(call: &Call) {
     call.set_array();
-    // SAFETY: the return slot holds an array.
-    unsafe { (ops().mime_list)(call.return_value()) };
+    let array = call.return_value();
+    mime::each(|kind| {
+        let kind = kind.to_bytes();
+        // SAFETY: the return slot holds an array; Zend copies the type.
+        unsafe { add_next_index_stringl(array, kind.as_ptr().cast(), kind.len()) };
+    });
 }
 
 fn shutdown_begin(call: &Call) {

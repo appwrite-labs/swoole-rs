@@ -46,8 +46,6 @@ unsafe extern "C" {
         offset: i64,
         length: usize,
     ) -> bool;
-    /// `swoole::mime_type::get(path)`.
-    fn swr_h2s_mime_type(path: *const c_char, length: usize) -> *const c_char;
 }
 
 /// The context's `ContextState`, its first base.
@@ -102,10 +100,7 @@ fn file_type(ctx: *mut Context, file: *mut zend_string) {
     }
     // SAFETY: a live file name.
     let path = unsafe { bytes(file) };
-    // SAFETY: the name's span.
-    let mime = unsafe { swr_h2s_mime_type(path.as_ptr().cast(), path.len()) };
-    // SAFETY: a NUL-terminated string the MIME table keeps.
-    let mime = unsafe { std::ffi::CStr::from_ptr(mime) };
+    let mime = swoole_rs_phpswoole::mime_type(path);
     // SAFETY: a live array and the type's bytes, which Zend copies.
     unsafe {
         z::add_assoc_stringl_ex(

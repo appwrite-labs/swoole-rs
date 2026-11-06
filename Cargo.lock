@@ -755,6 +755,7 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-framing",
  "swoole-rs-phpstubs",
  "swoole-rs-zend",
 ]

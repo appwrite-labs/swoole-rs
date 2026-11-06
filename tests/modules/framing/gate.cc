@@ -1,14 +1,8 @@
 #include "swoole_rs_framing.h"
-#include <algorithm>
 #include <cassert>
-#include <cctype>
-#include <clocale>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
-#include <random>
-#include <string>
-#include <vector>
 static size_t checks;
 #define CHECK(x) do { assert(x); ++checks; } while (0)
 int main(int argc, char **) {
@@ -32,40 +26,12 @@ int main(int argc, char **) {
     uint64_t huge = INT64_MAX;
     memcpy(data, &huge, 8);
     CHECK(swr_v1_framing_default('q', data, 8, 0, 8, 1, &out) == -1);
-    // Empty and invalid extents never manufacture a borrow or modify output.
-    CHECK(swr_v1_framing_mime_suffix(nullptr, 0, nullptr, 0, 1) == 0);
-    CHECK(swr_v1_framing_mime_suffix(nullptr, 1, data, sizeof(data), 1) == SIZE_MAX);
-    CHECK(swr_v1_framing_mime_suffix(data, 3, nullptr, 3, 1) == SIZE_MAX);
-    SwrFramingSpan key{}, value{};
-    CHECK(swr_v1_framing_mime_count() == 362);
-    CHECK(!swr_v1_framing_mime_entry(362, &key, &value));
-    CHECK(!swr_v1_framing_mime_entry(0, nullptr, &value));
-    for (size_t n = 0; n < 362; n++) {
-        CHECK(swr_v1_framing_mime_entry(n, &key, &value));
-        CHECK(key.data && key.len && value.data && value.len);
-        SwrFramingSpan again{}, again_value{};
-        CHECK(swr_v1_framing_mime_entry(n, &again, &again_value));
-        CHECK(key.data == again.data && value.data == again_value.data);
-    }
-    std::mt19937 rng(1241);
-    for (const char *locale: {"C", "C.UTF-8"}) {
-        if (!setlocale(LC_CTYPE, locale)) { std::cerr << "locale unavailable: " << locale << '\n'; continue; }
-        for (int n = 0; n < 5000; n++) {
-            std::string s(rng() % 100, '\0'); for (auto &c: s) c = rng();
-            size_t start = s.find_last_of('.') + 1;
-            for (uint8_t native_signed: {0, 1}) {
-                std::vector<uint8_t> output(s.size() + 2, 171);
-                auto len = swr_v1_framing_mime_suffix((const uint8_t *) s.data(), s.size(), output.data() + 1, s.size(), native_signed);
-                CHECK(len == s.size() - start);
-                CHECK(output.front() == 171 && output.back() == 171);
-                for (size_t k = 0; k < len; k++) {
-                    auto c = (uint8_t) s[start + k];
-                    CHECK(output[k + 1] == (uint8_t) std::tolower(native_signed && c == 255 ? EOF : (int) c));
-                }
-                if (len) CHECK(swr_v1_framing_mime_suffix((const uint8_t *) s.data(), s.size(), output.data() + 1, len - 1, native_signed) == SIZE_MAX);
-            }
-        }
-    }
+    // MIME lookup: the last suffix, lowercased; an empty or invalid extent finds nothing.
+    const char *json = "a.html.JSON";
+    CHECK(!strcmp(swr_v1_framing_mime_get((const uint8_t *) json, strlen(json)), "application/json"));
+    CHECK(swr_v1_framing_mime_exists((const uint8_t *) json, strlen(json)));
+    CHECK(!strcmp(swr_v1_framing_mime_get(nullptr, 0), "application/octet-stream"));
+    CHECK(!swr_v1_framing_mime_exists(nullptr, 1));
     // Null receives and a buffer longer than its allocation fail before any effect.
     static size_t effects;
     SwrFramingCall count = [](void *, uint32_t, uint64_t) -> int64_t { ++effects; return 0; };

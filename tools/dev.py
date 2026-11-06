@@ -404,7 +404,7 @@ def plan(args, reports):
             script('framing-versioned-expectation', 'corpus/upstream/versioned.py',
                    '--source', ROOT / 'target/upstream/src', '--case', 'tests/swoole_server/wrong_eof_setting.phpt',
                    *php_for('mbstring'), *engines, *report('framing-versioned-expectation'))
-            # Upstream's own framing/MIME GoogleTests, on the reference and the overlay (Linux trees).
+            # Upstream's own framing GoogleTests, on the reference and the overlay (Linux trees).
             if sys.platform.startswith('linux'):
                 script('framing-native-originals', 'tests/modules/framing/core.py', '--source', ROOT / 'target/upstream/src',
                        '--config', manifest.parent / 'src/config.h',

@@ -1,8 +1,7 @@
 # M18 framing and MIME
 
-Packet framing and the immutable MIME policy behind the optional framing feature
-(bit4096). The native C++ container and the native IO/callback/storage ABI shims
-are described in [native/framing/contract.md](../../../native/framing/contract.md).
+Packet framing and the MIME table behind the optional framing feature
+(bit4096). The native IO/callback/storage ABI shims are described in [native/framing/contract.md](../../../native/framing/contract.md).
 Default activation is not claimed.
 
 ## Gates
@@ -18,7 +17,7 @@ python3 tests/modules/framing/gate.py --archive target/libframing.a \
   --sanitize --output target/reports/framing-gate.json
 ```
 
-- `gate.py` runs the ABI, catalog, locale-suffix and malformed-input checks in
+- `gate.py` runs the ABI, MIME lookup and malformed-input checks in
   `gate.cc`. Add `--rust-asan` with an instrumented archive to also require
   that a one-past read in the invalid caller is detected.
 - `core.py --source S --config config.h --archive A --build-root DIR --output R`
@@ -28,6 +27,20 @@ python3 tests/modules/framing/gate.py --archive target/libframing.a \
   separately. Any error, skip or missing outcome fails. `--inventory-only`
   lists the tests without building.
 - Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
+
+## Ported GoogleTests
+
+`core-tests/src/protocol/mime_type.cpp` no longer builds. Its TESTs are Rust
+tests over the table in `crates/framing/src/mime.rs` (`cargo test -p
+swoole-rs-framing`), with the same inputs and expected values:
+
+| Upstream TEST | Rust test |
+| --- | --- |
+| `mime_type.get` | `mime::tests::get` |
+| `mime_type.exists` | `mime::tests::exists` |
+| `mime_type.set` | `mime::tests::set` |
+| `mime_type.add` | `mime::tests::add` |
+| `mime_type.del` | `mime::tests::del` |
 
 ## Known failures
 

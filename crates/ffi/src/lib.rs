@@ -63,9 +63,9 @@ pub use swoole_rs_phpswoole::*;
 pub use swoole_rs_phpredis::*;
 
 pub use swoole_rs_framing::{
-    swr_v1_framing_default, swr_v1_framing_hton64, swr_v1_framing_mime_count,
-    swr_v1_framing_mime_entry, swr_v1_framing_mime_fallback, swr_v1_framing_mime_suffix,
-    swr_v1_framing_recv, swr_v1_framing_unpack, swr_v1_framing_width,
+    mime::{swr_v1_framing_mime_exists, swr_v1_framing_mime_get},
+    swr_v1_framing_default, swr_v1_framing_hton64, swr_v1_framing_recv, swr_v1_framing_unpack,
+    swr_v1_framing_width,
 };
 
 pub use swoole_rs_reactor::*;

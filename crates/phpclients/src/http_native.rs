@@ -441,7 +441,7 @@ pub(crate) unsafe fn swoole_http_client_coro_peer_cert(socket: Socket) -> *mut z
 /// `mime_type::get(path)`.
 pub(crate) unsafe fn swoole_http_client_coro_mime(path: *const c_char) -> *const c_char {
     // SAFETY: the caller's NUL-terminated path.
-    swoole_rs_phpswoole::mime_type(unsafe { CStr::from_ptr(path) }).as_ptr()
+    swoole_rs_phpswoole::mime_type(unsafe { CStr::from_ptr(path) }.to_bytes()).as_ptr()
 }
 
 /// Upstream's `decompress_response` warnings: unknown `method`, or failed (-1).

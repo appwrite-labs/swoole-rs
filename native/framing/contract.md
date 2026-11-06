@@ -30,19 +30,15 @@ framing feature; the module is opt-in.
 
 ## MIME
 
-- The 362 catalog entries and the fallback bytes are immutable in Rust.
-- One native `unordered_map` is the only mutable store, because the public API
-  returns C++ container and value references. list/add/set/del/get/exists remain
-  native shims; Rust has no mutable registry or duplicate index. Construction uses
-  the original insertion order. Rehash keeps value identity, and erase keeps
-  native iterator invalidation.
+- The table (`crates/framing/src/mime.rs`) starts as the pinned 362-entry
+  catalog and is the one process-wide store PHP's `swoole_mime_type_*` functions
+  change. A `get` result stays valid until that suffix is set again or deleted,
+  as an `unordered_map` value does. `list` yields the types in suffix order
+  (upstream's is hash order).
 - Lookup is case-sensitive on mutation, uses the last dot, and handles no-dot,
-  trailing-dot and embedded-NUL input. Case mapping uses host libc. Suffix input
-  and output must be disjoint.
-- `swr_v1_framing_mime_suffix_offset` returns the offset just past the last dot
-  (0 if there is no dot) or `SIZE_MAX` for an invalid extent. `get_suffix`
-  allocates only the suffix and passes it to `swr_v1_framing_mime_suffix` for case
-  folding. No Rust borrow is held across the native allocation.
+  trailing-dot and embedded-NUL input. Case mapping uses host libc `tolower`.
+- C++ (`StaticHandler`, the HTTP/2 server) calls `swr_v1_framing_mime_get` and
+  `swr_v1_framing_mime_exists`; an invalid extent looks up the empty suffix.
 
 ## Deliberate differences from upstream
 

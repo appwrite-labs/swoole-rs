@@ -61,7 +61,7 @@ void swr_v1_phphttp2_server_reset(void *ctx, uint32_t stream_id, uint32_t code);
  * and of a file: opening it read-only (null if not), one read at an offset
  * (on the thread pool with `async`; -1 on failure), its whole content
  * (System::read_file in a coroutine; null if unreadable, `owner` freed by
- * swr_h2s_file_content_free) and its mime type. */
+ * swr_h2s_file_content_free). */
 bool swr_v1_phphttp2_server_static(void *server, void *ctx);
 enum {
     SWR_H2S_STATIC_SERVE,
@@ -93,7 +93,6 @@ ssize_t swr_h2s_file_read(void *file, int64_t offset, char *buf, size_t length, 
 void swr_h2s_file_close(void *file);
 const char *swr_h2s_file_content(const char *path, size_t *length, void **owner);
 void swr_h2s_file_content_free(void *owner);
-const char *swr_h2s_mime_type(const char *path, size_t length);
 
 /* What it asks of C++, defined by ext-src/swoole_http2_server.cc. */
 /* A stream's new context: a copy of `default_ctx`'s settings, its request's streamId set. */
