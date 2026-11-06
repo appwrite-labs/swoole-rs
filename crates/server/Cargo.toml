@@ -24,3 +24,4 @@ swoole-rs-process = { path = "../process" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-tls = { path = "../tls" }
+swoole-rs-utilities = { path = "../utilities" }
