@@ -22,6 +22,10 @@ Warnings stay in their original Native method so `__SW_FUNC__` is unchanged.
 | 0004-socket-output | `src/network/socket.cc` |
 | 0007-server-buffer-typed | `src/server/base.cc`, `src/server/reactor_thread.cc` |
 
+`include/swoole_socket.h` and `include/swoole_reactor.h` are deleted; this
+directory's `swoole_socket.h` and `swoole_reactor.h` replace them under the same
+names, so their includers are unchanged.
+
 The optional M15 half-close patches apply first when requested and stay
 byte-identical; the M05 hunks continue after their prefixes.
 

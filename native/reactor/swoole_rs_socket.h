@@ -1,7 +1,7 @@
 #ifndef SWOOLE_RS_SOCKET_H
 #define SWOOLE_RS_SOCKET_H
 /* network::Socket's fields: Rust's SocketRecord (crates/reactor/src/socket_record.rs),
- * in its order and types. swoole_socket.h includes this after network::Address and
+ * in its order and types. native/reactor/swoole_socket.h includes this after network::Address and
  * derives Socket from it, adding only methods. Rust allocates, initialises, makes,
  * accepts, duplicates and frees records; both sides assert the offsets below. The
  * upstream 1-bit flags are bytes, which keeps every value the code assigns. */

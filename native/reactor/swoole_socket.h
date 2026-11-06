@@ -1,0 +1,455 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Swoole's include/swoole_socket.h, owned here: network::Address, IOVector and Socket's
+ * methods over Rust's socket record (swoole_rs_socket.h). Upstream's file is deleted, so
+ * `#include "swoole_socket.h"` finds this copy on the Rust prefix's include path. */
+#pragma once
+
+#include "swoole.h"
+#include "swoole_ssl.h"
+#include "swoole_buffer.h"
+#include "swoole_file.h"
+
+#include "swoole_rs_reactor.h"
+
+#include <poll.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/uio.h>
+
+#include <netinet/in.h>
+#include <netinet/ip6.h>
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+#include <arpa/inet.h>
+
+#include <string>
+#include <vector>
+
+#ifndef SOCK_NONBLOCK
+#define SOCK_NONBLOCK O_NONBLOCK
+#endif
+
+enum {
+    SW_BAD_SOCKET = -1,
+};
+
+namespace swoole {
+struct GethostbynameRequest;
+struct GetaddrinfoRequest;
+
+namespace network {
+struct SendfileTask {
+    off_t offset;
+    size_t length;
+    char filename[0];
+};
+
+struct Address {
+    union {
+        sockaddr ss;
+        sockaddr_in inet_v4;
+        sockaddr_in6 inet_v6;
+        sockaddr_un un;
+    } addr;
+    socklen_t len;
+    SocketType type;
+
+    bool assign(SocketType _type, const std::string &_host, int _port = 0, bool _resolve_name = true);
+    bool assign(const std::string &url);
+
+    int get_port() const;
+    void set_port(int _port);
+    const char *get_addr() const;
+    bool is_loopback_addr() const;
+    bool empty() const;
+
+    in_addr *addr_v4() {
+        return &addr.inet_v4.sin_addr;
+    }
+
+    in6_addr *addr_v6() {
+        return &addr.inet_v6.sin6_addr;
+    }
+
+    static const char *type_str(SocketType type);
+    static const char *addr_str(int family, const void *addr);
+    static bool verify_ip(int family, const std::string &str);
+    static bool verify_port(int port, bool for_connect = false);
+};
+
+struct IOVector {
+  private:
+    swr_v1_reactor_iov *owner_;
+    explicit IOVector(swr_v1_reactor_iov_prepared prepared);
+  public:
+    iovec *&iov;
+    iovec *&iov_iterator;
+    int &count;
+    int &remain_count;
+    int &index;
+    size_t &offset_bytes;
+    IOVector(const iovec *_iov, int _iovcnt);
+    IOVector(const IOVector &) = delete;
+    IOVector &operator=(const IOVector &) = delete;
+    ~IOVector() { swr_v1_reactor_iov_destroy(owner_); }
+    void update_iterator(ssize_t n) { swr_v1_reactor_iov_advance(owner_, n); }
+    iovec *get_iterator() const { return swr_v1_reactor_iov_view(owner_).iterator; }
+    size_t length() { return swr_v1_reactor_iov_length(owner_); }
+    int get_remain_count() const { return swr_v1_reactor_iov_view(owner_).remain_count; }
+    int get_index() const { return swr_v1_reactor_iov_view(owner_).index; }
+    size_t get_offset_bytes() const { return swr_v1_reactor_iov_view(owner_).offset_bytes; }
+    swr_v1_reactor_iov *handle() const { return owner_; }
+};
+
+}  // namespace network
+}  // namespace swoole
+
+#include "swoole_rs_socket.h"
+
+namespace swoole {
+namespace network {
+// The fields are Rust's record (swoole_rs_socket.h); Rust allocates and frees it.
+struct Socket : swr_v1_socket {
+    static double &default_dns_timeout;
+    static double &default_connect_timeout;
+    static double &default_read_timeout;
+    static double &default_write_timeout;
+    static uint32_t &default_buffer_size;
+
+    Socket() {
+        swr_v1_socket_init(this);
+    }
+
+    static void *operator new(size_t) {
+        return swr_v1_socket_alloc();
+    }
+
+    static void operator delete(void *socket) {
+        swr_v1_socket_dealloc(static_cast<swr_v1_socket *>(socket));
+    }
+
+    // for reactor
+    int handle_send();
+    int handle_sendfile();
+    // socket option [kernel space]
+    bool set_buffer_size(uint32_t _buffer_size) const {
+        return swr_v1_socket_buffer_size(fd, true, true, _buffer_size);
+    }
+    bool set_recv_buffer_size(uint32_t _buffer_size) const {
+        return swr_v1_socket_buffer_size(fd, true, false, _buffer_size);
+    }
+    bool set_send_buffer_size(uint32_t _buffer_size) const {
+        return swr_v1_socket_buffer_size(fd, false, true, _buffer_size);
+    }
+    bool set_kernel_read_timeout(double timeout);
+    bool set_kernel_write_timeout(double timeout);
+
+    bool set_kernel_timeout(double timeout) {
+        return set_kernel_read_timeout(timeout) && set_kernel_write_timeout(timeout);
+    }
+
+    // socket option [user space]
+    void set_timeout(double timeout, int type = SW_TIMEOUT_ALL) {
+        swr_v1_socket_set_timeout(timeouts(), timeout, type);
+    }
+    double get_timeout(TimeoutType type) const;
+    bool has_timedout() const;
+    bool has_kernel_nobufs() {
+        return swr_v1_socket_has_kernel_nobufs(this);
+    }
+
+    bool set_nonblock() {
+        return set_fd_option(1, -1);
+    }
+
+    bool set_block() {
+        return set_fd_option(0, -1);
+    }
+
+    bool set_fd_option(int _nonblock, int _cloexec);
+
+    int set_option(int level, int optname, int optval) const {
+        return setsockopt(fd, level, optname, &optval, sizeof(optval));
+    }
+
+    int set_option(int level, int optname, const void *optval, socklen_t optlen) const {
+        return setsockopt(fd, level, optname, optval, optlen);
+    }
+
+    int get_option(int level, int optname, void *optval, socklen_t *optlen) const {
+        return getsockopt(fd, level, optname, optval, optlen);
+    }
+
+    int get_option(int level, int optname, int *optval) const {
+        socklen_t optlen = sizeof(*optval);
+        return get_option(level, optname, optval, &optlen);
+    }
+
+    int get_fd() const {
+        return fd;
+    }
+
+    const char *get_addr() const {
+        return info.get_addr();
+    }
+
+    int get_port() const {
+        return info.get_port();
+    }
+
+    uint32_t get_out_buffer_length() const {
+        return out_buffer ? out_buffer->length() : 0;
+    }
+
+    int move_fd() {
+        int sock_fd = fd;
+        fd = SW_BAD_SOCKET;
+        return sock_fd;
+    }
+
+    int get_name() {
+        return swr_v1_socket_get_name(this);
+    }
+    int get_peer_name(Address *sa) const {
+        return swr_v1_socket_get_peer_name(this, sa);
+    }
+    int set_tcp_nopush(int nopush) {
+        return swr_v1_socket_set_tcp_nopush(this, nopush);
+    }
+
+    int set_reuse_addr(int enable = 1) const {
+        return set_option(SOL_SOCKET, SO_REUSEADDR, enable);
+    }
+
+    int set_reuse_port(int enable = 1) const {
+#ifdef SO_REUSEPORT
+        return set_option(SOL_SOCKET, SO_REUSEPORT, enable);
+#endif
+        return -1;
+    }
+
+    bool set_tcp_nodelay(int nodelay = 1) {
+        return swr_v1_socket_set_tcp_nodelay(this, nodelay);
+    }
+    bool check_liveness();
+
+    int sendfile_async(const char *filename, off_t offset, size_t length);
+    int sendfile_sync(const char *filename, off_t offset, size_t length);
+    ssize_t sendfile(const File &fp, off_t *offset, size_t length);
+
+    ssize_t recv(void *_buf, size_t _n, int _flags);
+    ssize_t send(const void *_buf, size_t _n, int _flags);
+    ssize_t peek(void *_buf, size_t _n, int _flags) const;
+    Socket *accept() {
+        return static_cast<Socket *>(swr_v1_socket_accept_new(this));
+    }
+
+    Socket *dup() const {
+        return static_cast<Socket *>(swr_v1_socket_dup(this));
+    }
+
+    ssize_t readv(IOVector *io_vector);
+    ssize_t writev(IOVector *io_vector);
+
+    ssize_t writev(const iovec *iov, size_t iovcnt) const {
+        return ::writev(fd, iov, iovcnt);
+    }
+
+    int bind(const std::string &_host, int port = 0);
+
+    int bind(const Address &addr) {
+        return bind(&addr.addr.ss, addr.len);
+    }
+
+    int bind(const struct sockaddr *sa, socklen_t len) {
+        return swr_v1_socket_bind(this, sa, len);
+    }
+    int listen(int backlog = 0) {
+        return swr_v1_socket_listen(this, backlog);
+    }
+
+    void clean() const;
+    ssize_t send_sync(const void *_data, size_t _len, int flags = 0);
+    ssize_t send_async(const void *_data, size_t _len);
+    ssize_t recv_sync(void *_data, size_t _len, int flags = 0);
+    ssize_t writev_sync(const iovec *iov, size_t iovcnt);
+
+    int connect(const Address &sa) const {
+        return ::connect(fd, &sa.addr.ss, sa.len);
+    }
+
+    int connect(const Address *sa) const {
+        return ::connect(fd, &sa->addr.ss, sa->len);
+    }
+
+    int connect(const std::string &host, int port) const {
+        Address addr;
+        addr.assign(socket_type, host, port);
+        return connect(addr);
+    }
+
+    int connect_sync(const Address &sa);
+    ReturnCode connect_async(const Address &sa);
+
+    int ssl_create(SSLContext *_ssl_context, int _flags);
+    int ssl_connect();
+    ReturnCode ssl_accept();
+    ssize_t ssl_recv(void *_buf, size_t _n);
+    ssize_t ssl_send(const void *_buf, size_t _n);
+    ssize_t ssl_readv(IOVector *io_vector);
+    ssize_t ssl_writev(IOVector *io_vector);
+    ssize_t ssl_sendfile(const File &fp, off_t *offset, size_t size);
+    STACK_OF(X509) * ssl_get_peer_cert_chain() const;
+    std::vector<std::string> ssl_get_peer_cert_chain(int limit) const;
+    X509 *ssl_get_peer_certificate() const;
+    int ssl_get_peer_certificate(char *buf, size_t n) const;
+    bool ssl_get_peer_certificate(String *buf) const;
+    bool ssl_verify(bool allow_self_signed) const;
+    bool ssl_check_host(const char *tls_host_name) const;
+    bool ssl_shutdown();
+    void ssl_close();
+    static const char *ssl_get_error_reason(int *reason);
+
+    ssize_t recvfrom(char *_buf, size_t _len, int flags, Address *sa) const {
+        sa->len = sizeof(sa->addr);
+        return recvfrom(_buf, _len, flags, &sa->addr.ss, &sa->len);
+    }
+
+    ssize_t recvfrom(char *buf, size_t len, int flags, sockaddr *addr, socklen_t *addr_len) const {
+        return swr_v1_socket_recvfrom(fd, buf, len, flags, addr, addr_len, SW_SOCKET_RETRY_COUNT);
+    }
+    ssize_t recvfrom_sync(char *_buf, size_t _len, int flags, Address *sa);
+    ssize_t recvfrom_sync(char *_buf, size_t _len, int flags, sockaddr *addr, socklen_t *addr_len);
+
+    bool cork();
+    bool uncork();
+
+    bool isset_writable_event() const {
+        return events & SW_EVENT_WRITE;
+    }
+
+    int wait_event(int timeout_ms, int _events) const;
+    int what_event_want(int default_event) const;
+    void free();
+
+    static inline bool is_dgram(SocketType type) {
+        return swr_socket_type_is(type, SWR_SOCKET_DGRAM);
+    }
+
+    static inline bool is_stream(SocketType type) {
+        return swr_socket_type_is(type, SWR_SOCKET_STREAM);
+    }
+
+    static inline bool is_inet4(SocketType type) {
+        return swr_socket_type_is(type, SWR_SOCKET_INET4);
+    }
+
+    static inline bool is_inet6(SocketType type) {
+        return swr_socket_type_is(type, SWR_SOCKET_INET6);
+    }
+
+    static inline bool is_tcp(SocketType type) {
+        return swr_socket_type_is(type, SWR_SOCKET_TCP);
+    }
+
+    static inline bool is_local(SocketType type) {
+        return swr_socket_type_is(type, SWR_SOCKET_LOCAL);
+    }
+
+    bool is_stream() const {
+        return is_stream(socket_type);
+    }
+
+    bool is_tcp() const {
+        return is_tcp(socket_type);
+    }
+
+    bool is_dgram() const {
+        return is_dgram(socket_type);
+    }
+
+    bool is_inet4() const {
+        return is_inet4(socket_type);
+    }
+
+    bool is_inet6() const {
+        return is_inet6(socket_type);
+    }
+
+    bool is_local() const {
+        return is_local(socket_type);
+    }
+
+    ssize_t write(const void *_buf, size_t _len) const {
+        return ::write(fd, _buf, _len);
+    }
+
+    ssize_t read(void *_buf, size_t _len) const {
+        return ::read(fd, _buf, _len);
+    }
+
+    ssize_t read_sync(void *_buf, size_t _len);
+
+    ssize_t write_sync(const void *_buf, size_t _len);
+
+    int shutdown(int _how) const {
+        return ::shutdown(fd, _how);
+    }
+
+    ssize_t sendto_sync(const Address &dst_addr, const void *_buf, size_t _n, int flags = 0);
+
+    ssize_t sendto(const char *dst_host, int dst_port, const void *data, size_t len, int flags = 0) const {
+        Address addr;
+        if (!addr.assign(socket_type, dst_host, dst_port)) {
+            return SW_ERR;
+        }
+        return sendto(addr, data, len, flags);
+    }
+
+    ssize_t sendto(const Address &dst_addr, const void *data, size_t len, int flags = 0) const {
+        return ::sendto(fd, data, len, flags, &dst_addr.addr.ss, dst_addr.len);
+    }
+
+    int catch_error(int err) {
+        return swr_v1_socket_catch_error(err, &kernel_nobufs);
+    }
+
+    int catch_write_error(const int err) {
+        return catch_error(err);
+    }
+
+    int catch_write_pipe_error(const int err) {
+        return swr_v1_socket_catch_pipe_error(err, &kernel_nobufs);
+    }
+
+    int catch_read_error(const int err) {
+        return catch_error(err);
+    }
+
+    static SocketType convert_to_type(int domain, int type) {
+        return static_cast<SocketType>(swr_v1_socket_type(domain, type));
+    }
+    static SocketType convert_to_type(std::string &host);
+    static int get_domain_and_type(SocketType type, int *sock_domain, int *sock_type) {
+        return swr_v1_socket_domain_and_type(type, sock_domain, sock_type) ? SW_OK : SW_ERR;
+    }
+};
+
+std::string gethostbyname(int type, const std::string &name);
+int gethostbyname(int type, const char *name, char *addr);
+int gethostbyname(GethostbynameRequest *req);
+int getaddrinfo(GetaddrinfoRequest *req);
+
+}  // namespace network
+
+network::Socket *make_socket(int fd, FdType fd_type);
+network::Socket *make_socket(SocketType socket_type, FdType fd_type, int flags);
+network::Socket *make_socket(
+    SocketType type, FdType fd_type, int sock_domain, int sock_type, int socket_protocol, int flags);
+network::Socket *make_server_socket(SocketType socket_type,
+                                    const char *address,
+                                    int port = 0,
+                                    int backlog = SW_BACKLOG);
+}  // namespace swoole
+#include "swoole_rs_socket_methods.h"

@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix='swr-builtins-') as tmp:
                 ('set_exit_condition(EXIT_CONDITION_DEFAULT','static bool default_exit(Reactor *reactor,size_t &event_num)'),
             ]:
                 start=base.index(sig);fragment,_=block(base,start);cls+=definition+fragment[fragment.index('{'):]+'\n'
-            selected_header=(selected_tree/'include/swoole_reactor.h').read_text()
+            selected_header=(ROOT/'native/reactor/swoole_reactor.h').read_text()
             source_header=header if variant=='original' else selected_header
             field=('CallbackManager' if variant=='original' else 'swr_v1_reactor_deferred')+' *defer_tasks = nullptr;'
             cls=cls.replace('CallbackManager *defer_tasks=nullptr;', '\n'+field+'\nint timeout_msec=17;'+block(source_header,source_header.index('int get_timeout_msec('))[0]+'\n')

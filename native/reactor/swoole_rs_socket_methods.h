@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* The network::Socket and IOVector members Rust can't express, inline at the end of
  * swoole_socket.h: C++ exceptions, std::string and std::vector. Everything they
- * call is Rust; Socket::free, which needs std::function, is in src/reactor/base.cc. */
+ * call is Rust. */
 #pragma once
 #include "swoole_rs_socket_queue.h"
 #include <algorithm>
