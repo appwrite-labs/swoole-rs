@@ -44,6 +44,64 @@ pub struct ServerCounters {
     pub spinlock: AtomicU32,
 }
 
+/// The server's shared counters (`serv->gs`), once configured.
+pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCounters> {
+    let config = state.config();
+    if config.is_null() {
+        return None;
+    }
+    // SAFETY: a live state's configuration; its shared record stays mapped.
+    let gs = unsafe { (*config).gs }.cast::<ServerCounters>();
+    // SAFETY: a non-null `gs` is the server's shared counters.
+    unsafe { gs.as_ref() }
+}
+
+/// The counters of the port a session arrived on (`get_port_by_session_id(id)->gs`).
+fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<&PortCounters> {
+    use crate::records::swr_v1_server_connection;
+    if state.tables().is_null() {
+        return None;
+    }
+    // SAFETY: the state owns initialized tables; kind 1 is `get_connection_by_session_id`.
+    let conn = unsafe { swr_v1_server_connection(state, session_id, 1) };
+    // SAFETY: a non-null lookup is a live connection record.
+    let server_fd = unsafe { conn.as_ref() }?.server_fd;
+    // SAFETY: as above; kind 0 is `get_connection(server_fd)`.
+    let listen = unsafe { swr_v1_server_connection(state, server_fd.into(), 0) };
+    // SAFETY: a listening socket's record holds its `ListenPort` as the object.
+    let port = unsafe { listen.as_ref() }?.object;
+    if port.is_null() {
+        return None;
+    }
+    // SAFETY: a `ListenPort` starts with its settings pointer (`PortFields::port_config_`;
+    // master.cc asserts it has no vtable), whose `gs` is the port's shared counters.
+    let config = unsafe { *port.cast::<*const crate::port_config::PortConfig>() };
+    // SAFETY: a port's settings live as long as the port.
+    let gs = unsafe { config.as_ref() }?.gs;
+    // SAFETY: a non-null `gs` is the port's slot in `port_gs_list`.
+    unsafe { gs.cast::<PortCounters>().as_ref() }
+}
+
+/// `Server::send`'s counts: the server's and the session's port's responses and bytes,
+/// and the current worker's responses.
+pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) {
+    use core::sync::atomic::Ordering::SeqCst;
+    if let Some(gs) = server_counters(state) {
+        gs.response_count.fetch_add(1, SeqCst);
+        gs.total_send_bytes.fetch_add(len.into(), SeqCst);
+    }
+    if let Some(gs) = session_port_counters(state, session_id) {
+        gs.response_count.fetch_add(1, SeqCst);
+        gs.total_send_bytes.fetch_add(len.into(), SeqCst);
+    }
+    // SAFETY: this thread's worker globals; only the field is read.
+    let worker = unsafe { (*swoole_rs_process::worker_globals::swr_v1_worker_globals()).worker };
+    if !worker.is_null() {
+        // SAFETY: the current worker's record, which this worker loop owns.
+        unsafe { swoole_rs_process::worker_record::add_response_count(worker) };
+    }
+}
+
 /// Initializes a new shared allocation's server counter prefix.
 ///
 /// # Safety
@@ -220,6 +278,61 @@ mod tests {
     use crate::ops::{OP_MAXFD, OP_SET_MAXFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB};
     use crate::state::{swr_v1_server_state_free, swr_v1_server_state_new};
     use core::sync::atomic::Ordering;
+
+    #[test]
+    fn a_send_counts_on_the_server_and_its_sessions_port() {
+        use crate::port_config::{swr_v1_port_config_free, swr_v1_port_config_new};
+        use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
+        let mut server = ServerCounters::default();
+        let mut port = PortCounters::default();
+        let config = swr_v1_port_config_new(0);
+        // A `ListenPort`: its settings pointer first.
+        let mut listen = config;
+        // SAFETY: the settings were just allocated.
+        unsafe { (*config).gs = (&raw mut port).cast() };
+        // SAFETY: a connection record is plain data; zero is a closed one.
+        let mut connections: Vec<ConnectionRecord> =
+            (0..3).map(|_| unsafe { core::mem::zeroed() }).collect();
+        connections[1].object = (&raw mut listen).cast();
+        connections[2].server_fd = 1;
+        let mut sessions: Vec<SessionRecord> = (0..3)
+            .map(|id| SessionRecord {
+                id,
+                fd: 0,
+                reactor_bits: 0,
+            })
+            .collect();
+        sessions[1].fd = 2;
+        let state = swr_v1_server_state_new();
+        // SAFETY: a fresh state, its configuration and tables, all owned by this test.
+        unsafe {
+            (*(*state).config()).gs = (&raw mut server).cast();
+            *(*state).tables() = ServerTables {
+                connection_list: connections.as_mut_ptr(),
+                session_list: sessions.as_mut_ptr(),
+                max_connection: 2,
+                ..ServerTables::default()
+            };
+            count_send(&*state, 1, 4);
+            count_send(&*state, 0, 3);
+        }
+        let totals =
+            |r: &AtomicU64, b: &AtomicU64| (r.load(Ordering::Relaxed), b.load(Ordering::Relaxed));
+        assert_eq!(
+            totals(&server.response_count, &server.total_send_bytes),
+            (2, 7)
+        );
+        assert_eq!(
+            totals(&port.response_count, &port.total_send_bytes),
+            (1, 4),
+            "session 0 has no port"
+        );
+        // SAFETY: allocated above and not used again.
+        unsafe {
+            swr_v1_server_state_free(state);
+            swr_v1_port_config_free(config);
+        }
+    }
 
     #[test]
     fn shared_counter_updates_survive_a_worker_fork() {
