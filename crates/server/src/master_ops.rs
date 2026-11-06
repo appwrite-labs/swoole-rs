@@ -8,7 +8,7 @@ use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::{SocketRecord, reactor_upstream};
 
 use crate::ops::{
     CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CLOSE, CB_CONNECT, CB_RECEIVE, CB_TASK, LOG_ACCEPT_FAILED,
@@ -22,19 +22,22 @@ use crate::ops::{
     LOG_SC_NO_SESSION_DATA, LOG_SC_NO_SESSION_EVENT, LOG_SC_SOCKET_OVERFLOW, LOG_SEND_IN_MASTER,
     LOG_SENDFILE_NAME, LOG_SENDWAIT, LOG_SHUTDOWN_FAILED, LOG_SNDBUF, LOG_ST_ROOT_MISSING,
     LOG_ST_ROOT_TOO_LONG, LOG_STAT, LOG_TASK_POOL, LOG_TASK_WORKER_NUM, LOG_TOO_MANY_CONNECTIONS,
-    LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS, OP_CHUNK_SIZE, OP_CLEAR_MAX_QUEUED,
-    OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_CONN_LAST_RECV, OP_CONN_PROTECT, OP_CONN_RESET,
-    OP_CONN_UID, OP_CONN_WORKER, OP_COUNT_ACCEPT, OP_DIRECT_SEND, OP_ERRNO, OP_EVENT_FD,
-    OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HAS_PORT, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_KILL_TERM,
-    OP_KILL_WINCH, OP_LAST_RECEIVED, OP_LAST_SENT, OP_NEW_PORT_TYPE, OP_NODELAY_ENABLED,
-    OP_PIN_WORKER, OP_PORT_HEARTBEAT, OP_PORT_IDLE_TIME, OP_PORT_NODELAY, OP_PORT_NUMBER,
-    OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL, OP_PORT_TYPE, OP_SC_ADVANCE, OP_SC_HAS_SEND_TIMER,
-    OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN,
+    LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_ACCEPT, OP_BASE_REACTORS, OP_CHUNK_SIZE,
+    OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_CONN_LAST_RECV, OP_CONN_PROTECT,
+    OP_CONN_RESET, OP_CONN_UID, OP_CONN_WORKER, OP_COUNT_ACCEPT, OP_DGRAM_PORT, OP_DIRECT_SEND,
+    OP_ERRNO, OP_EVENT_FD, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HAS_PORT, OP_HOST_MAXSIZE,
+    OP_HOST_SIZE, OP_KILL_TERM, OP_KILL_WINCH, OP_LAST_RECEIVED, OP_LAST_SENT, OP_NEW_PORT_TYPE,
+    OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PORT_HEARTBEAT, OP_PORT_IDLE_TIME, OP_PORT_NODELAY,
+    OP_PORT_NUMBER, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL, OP_PORT_TYPE, OP_REACTOR_ADD_READ,
+    OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_HAS_SEND_TIMER,
+    OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET,
+    OP_SC_TOUCH_SEND, OP_SC_WRITABLE, OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN,
     OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SESSION_BIND,
-    OP_SESSION_CLAIM, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SIGNAL_FD, OP_SIGRTMIN,
-    OP_SOCK_FD, OP_SOCK_SSL, OP_SOCKET_CONN, OP_SSL_CLEAR, OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH,
-    OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN,
-    OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WRONG_OPERATION,
+    OP_SESSION_CLAIM, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF,
+    OP_SET_SNDBUF, OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SOCKET_CONN,
+    OP_SOCKET_NOBUFS, OP_SSL_CLEAR, OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT,
+    OP_ST_TIMER, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING,
+    OP_WARNING_RESET, OP_WARNING_TIME, OP_WRONG_OPERATION,
 };
 use crate::port_config::PortConfig;
 use crate::records::{ConnectionRecord, SessionRecord};
@@ -48,6 +51,8 @@ const SW_LOG_WARNING: c_int = 4;
 const SW_LOG_ERROR: c_int = 5;
 const SW_SOCK_TCP: c_int = 1;
 const SW_SOCK_TCP6: c_int = 3;
+const SW_EVENT_READ: c_int = 1 << 9;
+const SW_EVENT_WRITE: c_int = 1 << 10;
 /// `sizeof(Session)`, `sizeof(sw_atomic_t)` and `sizeof(SendfileTask)`.
 const SESSION_SIZE: usize = size_of::<SessionRecord>();
 const ATOMIC_SIZE: usize = 4;
@@ -870,6 +875,118 @@ pub(crate) unsafe fn answer(
             o.ctx.length = o.ctx.length.wrapping_sub(step);
             0
         }
+
+        // Effects through the Rust definitions of the reactor's and socket's methods.
+        OP_ACCEPT => {
+            // SAFETY: the accepting event's listening socket.
+            let listener = unsafe { (*o.ctx.event.cast::<swoole_rs_reactor::Event>()).socket };
+            // SAFETY: a live listening socket record.
+            let socket = unsafe { swoole_rs_reactor::swr_v1_socket_accept_new(listener.cast()) };
+            o.ctx.sock = socket.cast();
+            u64::from(!socket.is_null())
+        }
+        OP_SET_NODELAY => {
+            // SAFETY: the accepted socket.
+            u64::from(unsafe { swoole_rs_reactor::swr_v1_socket_set_tcp_nodelay(o.sock(), 1) })
+        }
+        OP_SET_RCVBUF | OP_SET_SNDBUF => {
+            let port = o.port();
+            let (name, size) = if op == OP_SET_RCVBUF {
+                (libc::SO_RCVBUF, port.kernel_socket_recv_buffer_size)
+            } else {
+                (libc::SO_SNDBUF, port.kernel_socket_send_buffer_size)
+            };
+            // SAFETY: a port with its listening socket.
+            let fd = unsafe { (*port.socket.cast::<SocketRecord>()).fd };
+            let length = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or(4);
+            // SAFETY: `size` is a readable int of `length` bytes.
+            sign(unsafe {
+                libc::setsockopt(fd, libc::SOL_SOCKET, name, (&raw const size).cast(), length)
+            })
+        }
+        OP_DGRAM_PORT => {
+            let port = o.port();
+            let socket = port.socket;
+            // SAFETY: the new port's socket.
+            let fd = unsafe { (*socket.cast::<SocketRecord>()).fd };
+            let size = port.socket_buffer_size.cast_unsigned();
+            swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
+            let config = o.config();
+            config.have_dgram_sock = true;
+            config.dgram_port_num = config.dgram_port_num.wrapping_add(1);
+            match arg {
+                2 => config.udp_socket_ipv4 = socket,
+                4 => config.udp_socket_ipv6 = socket,
+                _ => config.dgram_socket = socket,
+            }
+            0
+        }
+        OP_REACTOR_ADD_READ => {
+            let socket = o.conn().socket.cast();
+            // SAFETY: the context's live reactor and the connection's socket.
+            sign(unsafe {
+                reactor_upstream::reactor_change(o.ctx.reactor, socket, 0, SW_EVENT_READ)
+            })
+        }
+        OP_SC_SET => {
+            let read = if arg & 1 != 0 { SW_EVENT_READ } else { 0 };
+            let write = if arg & 2 != 0 { SW_EVENT_WRITE } else { 0 };
+            // SAFETY: the context's live reactor and socket.
+            sign(unsafe {
+                reactor_upstream::reactor_change(o.ctx.reactor, o.sock(), 1, read | write)
+            })
+        }
+        OP_SC_DEL => {
+            // SAFETY: the context's live reactor and socket.
+            sign(unsafe { reactor_upstream::reactor_change(o.ctx.reactor, o.sock(), 2, 0) })
+        }
+        OP_SC_ADD => {
+            // SAFETY: the context's live reactor and socket.
+            sign(unsafe {
+                reactor_upstream::reactor_change(o.ctx.reactor, o.sock(), 0, SW_EVENT_READ)
+            })
+        }
+        OP_SC_REMOVE_READ | OP_SC_ADD_READ | OP_SC_ADD_WRITE => {
+            let kind = match op {
+                OP_SC_REMOVE_READ => 4,
+                OP_SC_ADD_READ => 2,
+                _ => 3,
+            };
+            // SAFETY: the context's live reactor and socket.
+            let result =
+                unsafe { reactor_upstream::reactor_interest(o.ctx.reactor, o.sock(), kind, 0) };
+            if op == OP_SC_ADD_WRITE {
+                0
+            } else {
+                sign(result)
+            }
+        }
+        OP_SC_WRITABLE => u64::from(o.sock().events & SW_EVENT_WRITE != 0),
+        OP_SC_SEND => {
+            let (data, length) = (o.ctx.data, o.ctx.length as usize);
+            // SAFETY: the context's socket and the data it sends.
+            let sent =
+                unsafe { swoole_rs_tls::upstream::socket_send(o.sock(), data.cast(), length, 0) };
+            sign(sent as i64)
+        }
+        OP_SEND_SYNC => {
+            let (data, length) = (o.ctx.data, o.ctx.length as usize);
+            let socket = o.conn().socket.cast();
+            // SAFETY: the connection's socket and the data it sends.
+            let sent = unsafe {
+                swoole_rs_tls::upstream::socket_send_sync(socket, data.cast(), length, 0)
+            };
+            u64::from(usize::try_from(sent) == Ok(length))
+        }
+        OP_SOCKET_NOBUFS => {
+            let socket = o.conn().socket.cast();
+            // SAFETY: the connection's live socket.
+            u64::from(unsafe { swoole_rs_reactor::swr_v1_socket_has_kernel_nobufs(socket) })
+        }
+        OP_SC_TOUCH_SEND => {
+            o.conn().last_send_time = swoole_rs_corebase::microtime();
+            0
+        }
         _ => return None,
     })
 }
@@ -900,7 +1017,7 @@ mod tests {
         // SAFETY: a fresh state and a zeroed context.
         unsafe {
             assert_eq!(
-                answer(&raw mut ctx, state, crate::ops::OP_ACCEPT, 0, || 0),
+                answer(&raw mut ctx, state, crate::ops::OP_PORT_COUNT, 0, || 0),
                 None
             );
             assert_eq!(
