@@ -692,20 +692,24 @@ pub fn resp_parse(bytes: &[u8]) {
 const URL_LIMIT: usize = 256;
 
 fn client_url(data: &[u8]) -> (i32, i32, i32, Vec<u8>) {
-    let (mut kind, mut port, mut host, mut host_length) = (0, 0, vec![0; data.len()], 0);
+    let (mut kind, mut port, mut host, mut host_length, mut logs) =
+        (0, 0, vec![0; data.len()], 0, 0);
     // SAFETY: `data` is readable for its length; `host` has room for any substring of it.
     let status = unsafe {
         clients::url(
             data.as_ptr().cast(),
             data.len(),
+            true,
             &mut kind,
             &mut port,
             host.as_mut_ptr().cast(),
             &mut host_length,
+            &mut logs,
         )
     };
     host.truncate(host_length);
-    (status, kind, port, host)
+    // A rejected URL leaves the record's type unset.
+    (status, if status == 1 { kind } else { 0 }, port, host)
 }
 
 /// Any bytes as a client URL: `Address::assign(url)` from the pinned address.cc and

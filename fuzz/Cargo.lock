@@ -104,6 +104,8 @@ dependencies = [
  "itoa",
  "libc",
  "memchr",
+ "swoole-rs-base64",
+ "swoole-rs-corebase",
 ]
 
 [[package]]
@@ -160,6 +162,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-locks"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-error",
+]
+
+[[package]]
+name = "swoole-rs-memory"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-locks",
+]
+
+[[package]]
 name = "swoole-rs-oracle"
 version = "0.1.0"
 dependencies = [
@@ -171,6 +190,17 @@ name = "swoole-rs-ossupport"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-buffer",
+ "swoole-rs-corebase",
+]
+
+[[package]]
+name = "swoole-rs-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-memory",
 ]
 
 [[package]]
@@ -191,6 +221,7 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
+ "swoole-rs-process",
 ]
 
 [[package]]
