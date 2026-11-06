@@ -36,7 +36,7 @@ struct StaticHandler { Server *server; int status_code; StaticHandler(Server *,c
     size_t get_filesize() const; size_t get_content_length() const; const std::string &get_mimetype() const; const std::string &get_content_type(); \
     const char *get_filename() const; const std::string &get_end_part() const; int32_t get_status()const{return status_code;} void copy_filename(char *,size_t)const; size_t copy_end_part(char *,size_t)const; const std::string &get_content_type(std::string &scratch){(void)scratch;return get_content_type();} \
 }; } \
-struct Server { std::shared_ptr<std::vector<::swoole::http_server::RewriteRule>> rewrite_rules; StaticScenario scenario; std::vector<std::string> trace; std::vector<std::tuple<int,int,std::string>> events; http_server::Request *mutable_request=nullptr; unsigned send_count=0; \
+struct Server { StaticScenario scenario; std::vector<std::string> trace; std::vector<std::tuple<int,int,std::string>> events; http_server::Request *mutable_request=nullptr; unsigned send_count=0; \
     bool select_static_handler(const http_server::Request *,const Connection *); \
     int send_to_connection(const SendData *response) { trace.push_back("send"); if(scenario.throw_on_send) throw std::runtime_error("send failed"); ++send_count; \
         if(mutable_request && send_count==scenario.toggle_keep_on_send) mutable_request->keep_alive=!mutable_request->keep_alive; \

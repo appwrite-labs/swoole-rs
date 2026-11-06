@@ -503,6 +503,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "memchr",
+ "regex-automata",
  "swoole-rs-base64",
  "swoole-rs-corebase",
 ]
@@ -835,6 +836,7 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-http",
  "swoole-rs-ossupport",
  "swoole-rs-process",
  "swoole-rs-reactor",

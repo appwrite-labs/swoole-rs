@@ -60,7 +60,6 @@ pub struct HttpStaticContext {
     content: Vec<u8>,
     end: Vec<u8>,
     path: HttpStaticPath,
-    rewrite: crate::rewrite::HttpRewriteState,
     range: range::HttpContextRange,
     scan: selection::Scan,
     index_phase: selection::Index,
@@ -79,24 +78,15 @@ fn copied(input: &[u8]) -> Result<Vec<u8>, i32> {
     Ok(result)
 }
 impl HttpStaticContext {
-    pub(crate) fn rewrite_step(&mut self, count: usize, observed: u32, index: &mut usize) -> i32 {
-        self.rewrite.step(count, observed, index)
-    }
-    pub(crate) fn rewrite_literal(&mut self, pattern: &[u8], replacement: &[u8]) -> i32 {
-        let (suffix, length) =
-            match crate::rewrite::literal_suffix(self.url(), pattern, replacement.len()) {
-                Ok(Some(plan)) => plan,
-                Ok(None) => return 0,
-                Err(error) => return error,
-            };
-        let mut value = Vec::new();
-        if value.try_reserve_exact(length).is_err() {
-            return ALLOCATION;
+    /// Upstream's `apply_rewrite_rules`: rewrite the current URL by the first rule that
+    /// applies. True when one did.
+    pub fn rewrite(&mut self, rules: &crate::RewriteRules) -> bool {
+        let rewritten = rules.apply(self.url());
+        let changed = rewritten.is_some();
+        if changed {
+            self.rewritten = rewritten;
         }
-        value.extend_from_slice(replacement);
-        value.extend_from_slice(suffix);
-        self.rewritten = Some(value);
-        1
+        changed
     }
     fn path_step(&mut self, root: &[u8], facts: u32) -> i32 {
         let url = self.rewritten.as_ref().unwrap_or(&self.original);
@@ -242,7 +232,6 @@ pub unsafe extern "C" fn swr_v2_http_context_new(
                 content: Vec::new(),
                 end: Vec::new(),
                 path: HttpStaticPath::default(),
-                rewrite: crate::rewrite::HttpRewriteState::default(),
                 range: range::HttpContextRange::default(),
                 scan: selection::Scan::default(),
                 index_phase: selection::Index::default(),
@@ -497,91 +486,6 @@ pub unsafe extern "C" fn swr_v2_http_context_format(
     0
 }
 
-/// First-match iteration/classification policy over the unchanged native rule
-/// collection. Observations: begin0,literal1,regex2,unchanged3,changed4,match5.
-/// Actions: `done0,read_rule1,literal2,regex_search3,regex_replace4`. Native regex
-/// resources remain native locals across separate copied policy calls.
-/// # Safety
-/// Unique live context; aligned writable index disjoint from owner. Count is
-/// captured only at begin; configuration mutation/reentry remains unqualified.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_rewrite_step(
-    owner: *mut HttpStaticContext,
-    count: usize,
-    observed: u32,
-    index: *mut usize,
-) -> i32 {
-    // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-    let Some(owner) = (unsafe { owner.as_mut() }) else {
-        return INVALID;
-    };
-    // SAFETY: `index` is null or live, aligned and exclusively lent for this call.
-    let Some(index) = (unsafe { index.as_mut() }) else {
-        return INVALID;
-    };
-    owner.rewrite_step(count, observed, index)
-}
-/// Complete literal replacement directly in the context, including fallible
-/// size/query/fill and publication. No Native rewritten-string intermediate.
-/// # Safety
-/// Unique live context and initialized pattern/replacement spans disjoint from
-/// owner. Native config allocation/iteration completed before this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_rewrite_literal(
-    owner: *mut HttpStaticContext,
-    pattern: *const HttpProxyText,
-    replacement: *const HttpProxyText,
-) -> i32 {
-    let (Some(owner), Some(pattern), Some(replacement)) = (
-        // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-        unsafe { owner.as_mut() },
-        // SAFETY: `pattern` is null or live and aligned for this call.
-        unsafe { pattern.as_ref() },
-        // SAFETY: `replacement` is null or live and aligned for this call.
-        unsafe { replacement.as_ref() },
-    ) else {
-        return INVALID;
-    };
-    // SAFETY: the pattern span names `length` initialized bytes.
-    let pattern = unsafe { bytes(pattern.data, pattern.length) };
-    // SAFETY: the replacement span names `length` initialized bytes.
-    let replacement = unsafe { bytes(replacement.data, replacement.length) };
-    let (pattern, replacement) = match (pattern, replacement) {
-        (Ok(pattern), Ok(replacement)) => (pattern, replacement),
-        (Err(error), _) | (_, Err(error)) => return error,
-    };
-    owner.rewrite_literal(pattern, replacement)
-}
-/// Compare/admit a completed native regex replacement against the authoritative
-/// current URL. Equal output does not publish a new value or stop iteration.
-/// # Safety
-/// Unique live context and initialized native result disjoint from owner.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_rewrite_regex(
-    owner: *mut HttpStaticContext,
-    data: *const u8,
-    length: usize,
-) -> i32 {
-    // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-    let Some(owner) = (unsafe { owner.as_mut() }) else {
-        return INVALID;
-    };
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    let value = match unsafe { bytes(data, length) } {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    if value == owner.url() {
-        return 0;
-    }
-    let value = match copied(value) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    owner.rewritten = Some(value);
-    1
-}
-
 /// Context path effects reuse the original Rust FSM. operation0=resumption with
 /// fresh root/facts,1=location,2=append owned index preserving base length,
 /// 3=catch,4=append page slash,5=begin a fresh path invocation. No caller can observe a Rust path pointer.
@@ -819,103 +723,20 @@ mod tests {
         value
     }
     #[test]
-    fn rewrite_owned_binary_chains_publish_empty_and_equal_matches() {
+    fn rewrite_publishes_over_the_owned_original() {
         let original = b"/a\0tail";
         let owner = unsafe { swr_v2_http_context_new(original.as_ptr(), original.len(), 128) };
         assert!(!owner.is_null());
-        for (pattern, replacement, matched, expected) in [
-            (
-                b"/a\0".as_slice(),
-                b"/b\0".as_slice(),
-                1,
-                b"/b\0tail".as_slice(),
-            ),
-            (
-                b"/missing".as_slice(),
-                b"unused".as_slice(),
-                0,
-                b"/b\0tail".as_slice(),
-            ),
-            (b"/b\0tail".as_slice(), b"".as_slice(), 1, b"".as_slice()),
-            (b"".as_slice(), b"".as_slice(), 1, b"".as_slice()),
-        ] {
-            let span = |bytes: &[u8]| HttpProxyText {
-                data: bytes.as_ptr(),
-                length: bytes.len(),
-            };
-            assert_eq!(
-                unsafe {
-                    swr_v2_http_context_rewrite_literal(owner, &span(pattern), &span(replacement))
-                },
-                matched
-            );
-            assert_eq!(read(owner, URL), expected);
-            assert_eq!(read(owner, ORIGINAL), original);
-            assert!(unsafe { (*owner).rewritten.is_some() });
-        }
-        unsafe { swr_v2_http_context_drop(owner) };
-    }
-    #[test]
-    fn rewrite_first_match_and_direct_owned_admission_are_distinct() {
-        let owner = make();
-        let mut index = 99;
-        assert_eq!(
-            unsafe { swr_v2_http_context_rewrite_step(owner, 2, 0, &raw mut index) },
-            1
-        );
-        assert_eq!(index, 0);
-        assert_eq!(
-            unsafe { swr_v2_http_context_rewrite_step(owner, 0, 2, &raw mut index) },
-            3
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_rewrite_step(owner, 0, 5, &raw mut index) },
-            4
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_rewrite_regex(owner, b"/files?q=1".as_ptr(), 10) },
-            0
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_rewrite_step(owner, 0, 3, &raw mut index) },
-            1
-        );
-        assert_eq!(index, 1);
-        assert_eq!(
-            unsafe { swr_v2_http_context_rewrite_step(owner, 0, 1, &raw mut index) },
-            2
-        );
-        let pattern = HttpProxyText {
-            data: b"/files".as_ptr(),
-            length: 6,
-        };
-        let mut bytes = b"/normal".to_vec();
-        let replacement = HttpProxyText {
-            data: bytes.as_ptr(),
-            length: bytes.len(),
-        };
-        assert_eq!(
-            unsafe {
-                swr_v2_http_context_rewrite_literal(
-                    owner,
-                    &raw const pattern,
-                    &raw const replacement,
-                )
-            },
-            1
-        );
-        bytes.fill(b'x');
-        assert_eq!(read(owner, URL), b"/normal?q=1");
-        assert_eq!(read(owner, ORIGINAL), b"/files?q=1");
-        assert_eq!(
-            unsafe { swr_v2_http_context_rewrite_step(owner, 0, 4, &raw mut index) },
-            0
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_rewrite_step(owner, 0, 1, &raw mut index) },
-            INVALID
-        );
-        assert_eq!(index, 1);
+        let mut rules = crate::RewriteRules::default();
+        rules.add(b"/a\0", b"/b\0");
+        rules.add(b"/b\0tail", b"");
+        assert!(unsafe { (*owner).rewrite(&rules) });
+        assert_eq!(read(owner, URL), b"/b\0tail");
+        assert!(unsafe { (*owner).rewrite(&rules) });
+        assert_eq!(read(owner, URL), b"");
+        assert_eq!(read(owner, ORIGINAL), original);
+        assert!(!unsafe { (*owner).rewrite(&crate::RewriteRules::default()) });
+        assert_eq!(read(owner, URL), b"");
         unsafe { swr_v2_http_context_drop(owner) };
     }
     #[test]

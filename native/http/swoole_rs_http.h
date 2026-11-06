@@ -60,7 +60,6 @@ int32_t swr_v1_http_cookie_next(uint8_t *, size_t, size_t *, swr_v1_http_cookie 
 typedef struct { uint32_t phase, source_inside; size_t source_offset, required, cursor; swr_v1_http_cookie cookie; } swr_v2_http_cookie_flow_state;
 int32_t swr_v2_http_cookie_flow(swr_v2_http_cookie_flow_state *, const uint8_t *, size_t, uint8_t *, size_t, uint32_t, uint32_t);
 typedef struct { const uint8_t *data; size_t length; } swr_v1_http_proxy_text;
-int32_t swr_v1_http_rewrite_rule(const uint8_t *, size_t, swr_v1_http_span *, uint32_t *);
 typedef struct {
     swr_v1_http_proxy_text target, host, version, authorization;
     int32_t port; uint32_t authenticated;

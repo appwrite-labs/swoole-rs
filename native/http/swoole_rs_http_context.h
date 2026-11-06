@@ -56,17 +56,6 @@ typedef struct {
 int32_t swr_v2_http_context_range_begin(swr_v2_http_context *, size_t, uint32_t);
 int32_t swr_v2_http_context_range_step(swr_v2_http_context *, const uint8_t *, size_t);
 int32_t swr_v2_http_context_range_resume(swr_v2_http_context *, const swr_v2_http_range_observation *);
-enum swr_v2_http_rewrite_observation {
-    SWR_HTTP_REWRITE_BEGIN=0, SWR_HTTP_REWRITE_LITERAL=1, SWR_HTTP_REWRITE_REGEX=2,
-    SWR_HTTP_REWRITE_UNCHANGED=3, SWR_HTTP_REWRITE_CHANGED=4, SWR_HTTP_REWRITE_MATCH=5
-};
-enum swr_v2_http_rewrite_action {
-    SWR_HTTP_REWRITE_DONE=0, SWR_HTTP_REWRITE_READ=1, SWR_HTTP_REWRITE_APPLY_LITERAL=2,
-    SWR_HTTP_REWRITE_SEARCH=3, SWR_HTTP_REWRITE_REPLACE=4
-};
-int32_t swr_v2_http_context_rewrite_step(swr_v2_http_context *, size_t, uint32_t, size_t *);
-int32_t swr_v2_http_context_rewrite_literal(swr_v2_http_context *, const swr_v1_http_proxy_text *, const swr_v1_http_proxy_text *);
-int32_t swr_v2_http_context_rewrite_regex(swr_v2_http_context *, const uint8_t *, size_t);
 int32_t swr_v2_http_context_path(swr_v2_http_context *, uint32_t, const uint8_t *, size_t, uint32_t);
 int32_t swr_v2_http_context_directory(swr_v2_http_context *, uint32_t, const uint8_t *, size_t);
 typedef struct { size_t required, length; } swr_v2_http_page_buffer;

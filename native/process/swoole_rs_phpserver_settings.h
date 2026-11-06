@@ -42,8 +42,6 @@ typedef struct {
     int64_t (*get)(void *server, uint32_t id);
     /* A string setting, or one item of a list (SWR_PHPSERVER_TEXT_*). */
     void (*text)(void *server, uint32_t id, const char *value, size_t length);
-    void (*rewrite)(void *server, const char *pattern, size_t pattern_length, const char *replacement,
-                    size_t replacement_length);
     int64_t (*parse_size)(struct _zval_struct *value);
     /* php_swoole_set_global/coroutine/aio_option in zend_try: true if it bailed out. */
     bool (*global_options)(void *settings);

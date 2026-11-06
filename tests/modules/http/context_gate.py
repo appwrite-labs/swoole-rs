@@ -44,13 +44,14 @@ def main():
  const std::string &get_document_root()const{return root;}
  bool apply_rewrite_rules(StaticHandler *);
 };\n'''
-        candidate_server=server.replace('std::shared_ptr<std::vector<RewriteRule>> rewrite_rules;', 'RewriteRulesField rewrite_rules;')
+        # The selected side's rules are the server state's (swr_v1_server_static_rewrite).
+        candidate_server=server.replace(' std::shared_ptr<std::vector<RewriteRule>> rewrite_rules;\n','').replace(' bool apply_rewrite_rules(StaticHandler *);\n',
+            ' swr_v1_server_state *state=swr_v1_server_state_new();~Server(){swr_v1_server_state_free(state);}\n swr_v1_server_state *state_handle()const{return state;}\n')
         original_class=body(original_header,'class StaticHandler')+';\n'
-        # The selected class befriends the server that drives its rewrites: here the facade Server.
-        typed=body(selected_header,'class StaticHandler').replace('friend class swoole::Server;','friend struct Server;')+';\n'
-        headers='#pragma once\n#include "context_oracle.h"\n'
+        typed=body(selected_header,'class StaticHandler')+';\n'
+        headers='#pragma once\n#include "context_oracle.h"\n#include "swoole_rs_server_state.h"\n'
         headers+='namespace upstream_context {using swoole::starts_with; class StaticHandler;\n'+server+original_class+'}\n'
-        headers+='namespace candidate_context {using swoole::starts_with; class StaticHandler;using RewriteRulesField=std::shared_ptr<std::vector<RewriteRule>>;\n'+candidate_server+typed+'}\n'
+        headers+='namespace candidate_context {using swoole::starts_with; class StaticHandler;\n'+candidate_server+typed+'}\n'
         (tree/'context_candidate.h').write_text(headers)
         old_signatures=re.findall(r'^((?:bool|size_t|void|std::string) StaticHandler::[^\n]+?)\s*\{',original,re.M)
         v2_signatures=re.findall(r'^((?:(?:bool|size_t|void|int32_t|uint32_t|time_t|std::string|swr_v2_http_observation|const std::string &|std::vector<swr_v2_http_static_task>)\s*)?StaticHandler::[^\n{]+|StaticHandler::~StaticHandler\([^\n{]+)',selected,re.M)
@@ -71,12 +72,11 @@ def main():
                     parts += ['template<typename Handler>\n'+body(selected,'static bool conditional_file_date(')]
                 parts += [body(selected,signature) for signature in ['static void append_directory_part(', 'static int32_t resume_range_header(', 'static int32_t resume_static_path(']]
                 parts += [body(selected,signature) for signature in v2_signatures]
-                parts += [body(selected,'bool Server::apply_rewrite_rules(').replace('http_server::StaticHandler *','StaticHandler *')]
             extracted=tree/(namespace+'.cc')
             extracted.write_text('#include "context_candidate.h"\nnamespace '+namespace+' {\n'+'\n'.join(parts).replace('lstat(',namespace+'::lstat(')+'\n}\n')
         dependency=tree/'dependencies.cc';dependency.write_text('#include "context_oracle.h"\n'+body(native_base,'size_t sw_snprintf('))
         binary=tree/'gate'
         units=[('upstream',tree/'upstream_context.cc'),('candidate',tree/'candidate_context.cc'),('upstream',dependency),('candidate',local/'context_gate.cc')]
-        if not guard() or not sides.build(binary,units,archive,report):write_report(args.output,report);return 1
+        if not guard() or not sides.build(binary,units,archive,report,gc_sections=True):write_report(args.output,report);return 1
         return run(binary,['swr_v2_http_context_new','swr_v2_http_context_tasks','swr_v2_http_context_path','swr_v2_http_context_scan','swr_v2_http_context_index','swr_v2_http_context_page_step','swr_v2_http_context_page_emit','swr_v2_http_context_boundary','swr_v2_http_context_serve'],args.output,report)
 if __name__=='__main__':sys.exit(main())

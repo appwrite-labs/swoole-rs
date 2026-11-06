@@ -2,7 +2,8 @@
 //! Native views never retain an independent owning collection.
 use crate::ServerState;
 use core::ffi::c_void;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+use swoole_rs_http::{HttpStaticContext, RewriteRules};
 
 #[derive(Default)]
 struct Strings {
@@ -11,23 +12,25 @@ struct Strings {
 }
 pub(crate) struct StaticConfig {
     tables: [Arc<Mutex<Strings>>; 3],
+    rewrite_rules: RewriteRules,
 }
 impl StaticConfig {
     fn new() -> Self {
         Self {
             tables: std::array::from_fn(|_| Arc::default()),
+            rewrite_rules: RewriteRules::default(),
         }
     }
 }
-fn owner(state: &ServerState) -> &Mutex<StaticConfig> {
+fn owner(state: &ServerState) -> MutexGuard<'_, StaticConfig> {
     state
         .static_config
         .get_or_init(|| Mutex::new(StaticConfig::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 fn table(state: &ServerState, kind: usize) -> Arc<Mutex<Strings>> {
     owner(state)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .tables
         .get(kind)
         .map(Arc::clone)
@@ -119,12 +122,7 @@ pub unsafe extern "C" fn swr_v1_server_static_config(
     if operation == 3 {
         // Assignment replaces the shared_ptr identity; contexts holding the old
         // table continue to observe it, rather than a copy or the new collection.
-        if let Some(table) = owner(state)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .tables
-            .get_mut(kind)
-        {
+        if let Some(table) = owner(state).tables.get_mut(kind) {
             *table = Arc::default();
         }
         return 0;
@@ -185,6 +183,52 @@ pub unsafe extern "C" fn swr_v1_server_static_text(
     value.map_or(core::ptr::null(), Vec::as_ptr)
 }
 
+/// `url_rewrite_rules`: add one rule (upstream's `Server::add_rewrite_rule`).
+pub(crate) fn add_rewrite_rule(state: &ServerState, pattern: &[u8], replacement: &[u8]) {
+    owner(state).rewrite_rules.add(pattern, replacement);
+}
+/// # Safety
+/// `state` is live; each span lends `length` readable bytes (null only when empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_static_rewrite_add(
+    state: *const ServerState,
+    pattern: *const u8,
+    pattern_length: usize,
+    replacement: *const u8,
+    replacement_length: usize,
+) {
+    let span = |data: *const u8, length| {
+        if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: the caller lends `length` readable bytes at `data`.
+            unsafe { core::slice::from_raw_parts(data, length) }
+        }
+    };
+    // SAFETY: the caller lends a live Server state.
+    let state = unsafe { &*state };
+    add_rewrite_rule(
+        state,
+        span(pattern, pattern_length),
+        span(replacement, replacement_length),
+    );
+}
+/// Upstream's `Server::apply_rewrite_rules`: rewrite the static context's URL by the
+/// server's rules. True when a rule applied.
+/// # Safety
+/// `state` is live and `context` is a live static context no one else uses meanwhile.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_static_rewrite(
+    state: *const ServerState,
+    context: *mut HttpStaticContext,
+) -> bool {
+    // SAFETY: the caller lends a live Server state.
+    let state = unsafe { &*state };
+    // SAFETY: the caller lends the context exclusively.
+    let context = unsafe { &mut *context };
+    context.rewrite(&owner(state).rewrite_rules)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +270,32 @@ mod tests {
             assert_eq!(input(1, 1, b""), 0);
             assert_eq!(input(1, 0, b""), 0);
             assert!(swr_v1_server_static_text(&raw const state, 1, 0, &raw mut length).is_null());
+        }
+    }
+    #[test]
+    fn rewrite_rules_rewrite_the_context_url() {
+        let state = ServerState::new();
+        let url = b"/view/post/3";
+        unsafe {
+            let context = swoole_rs_http::swr_v2_http_context_new(url.as_ptr(), url.len(), 128);
+            assert!(!swr_v1_server_static_rewrite(&raw const state, context));
+            let rule = |pattern: &[u8], replacement: &[u8]| {
+                swr_v1_server_static_rewrite_add(
+                    &raw const state,
+                    pattern.as_ptr(),
+                    pattern.len(),
+                    replacement.as_ptr(),
+                    replacement.len(),
+                );
+            };
+            rule(b"~^/view/post/(\\d+)$~", b"/static/$1.html");
+            rule(b"/article/", b"/static/article/");
+            assert!(swr_v1_server_static_rewrite(&raw const state, context));
+            assert!(
+                !swr_v1_server_static_rewrite(&raw const state, context),
+                "/static/3.html matches neither"
+            );
+            swoole_rs_http::swr_v2_http_context_drop(context);
         }
     }
     #[test]
