@@ -102,6 +102,22 @@ record! {
         swr_v1_core_print_backtrace, swr_v1_core_set_print_backtrace;
 }
 
+/// `swoole_fatal_error(code, "%s", message)`: `SwooleG.fatal_error`, which exits
+/// the process or bails out; nothing when no hook is set.
+///
+/// # Safety
+/// Native code may longjmp across the caller, so the frames it skips own nothing.
+pub unsafe fn fatal_error(code: c_int, message: &std::ffi::CStr) {
+    type FatalError = unsafe extern "C" fn(code: c_int, format: *const c_char, ...);
+    let hook = swr_v1_core_fatal_error();
+    if !hook.is_null() {
+        // SAFETY: native code stores its `fatal_error` there.
+        let fatal = unsafe { std::mem::transmute::<*mut c_void, FatalError>(hook) };
+        // SAFETY: "%s" takes the NUL-terminated message.
+        unsafe { fatal(code, c"%s".as_ptr(), message.as_ptr()) };
+    }
+}
+
 /// The two `double` fields travel as their bit patterns, so the record needs
 /// no float atomics; these are the `double` views native code calls.
 macro_rules! doubles {

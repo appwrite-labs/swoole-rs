@@ -29,6 +29,14 @@ void swr_zend_efree(void *ptr) {
     efree(ptr);
 }
 
+void *swr_zend_ecalloc(size_t count, size_t size) {
+    return ecalloc(count, size);
+}
+
+void *swr_zend_erealloc(void *ptr, size_t size) {
+    return erealloc(ptr, size);
+}
+
 void swr_zval_try_addref(zval *value) {
     Z_TRY_ADDREF_P(value);
 }

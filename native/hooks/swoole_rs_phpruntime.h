@@ -86,7 +86,7 @@ struct _php_stream *swr_v1_phpruntime_stream_from_socket(int fd, int domain, int
 void php_swoole_runtime_rinit(void);
 void php_swoole_runtime_stream_ops(uint8_t stdio, uint8_t hook);
 
-/* What the coroutine streams need of the native coroutine socket (a SocketImpl *;
+/* What the coroutine streams and client classes need of the native coroutine socket (a SocketImpl *;
  * its virtual calls reach UringSocket), defined by src/coroutine/system.cc. make
  * and close are bodies for swr_zend_try over a swr_v1_runtime_socket_call. */
 struct swr_v1_co_socket;
@@ -107,7 +107,8 @@ struct swr_v1_runtime_socket_ops {
     /* setsockopt(level, name, value); logged: the coroutine socket's, which logs a failure. */
     void (*option)(void *socket, int level, int name, int value, bool logged);
     bool (*bind)(void *socket, const char *host, int port);
-    bool (*connect)(void *socket, const char *host, int port);
+    /* connect(std::string(host, length), port, flags). */
+    bool (*connect)(void *socket, const char *host, size_t length, int port, int flags);
     bool (*listen)(void *socket, int backlog);
     void *(*accept)(void *socket);
     bool (*ssl_enabled)(void *socket);
@@ -122,6 +123,8 @@ struct swr_v1_runtime_socket_ops {
      * merges them; the polled fds and their revents in the poll set's order. */
     bool (*poll_set)(const int *fds, const int *events, size_t count, double timeout, int *ready, int *revents,
                      size_t *size);
+    /* set_dtor: hook(arg, socket) runs once as the socket is destroyed. */
+    void (*close_hook)(void *socket, void (*hook)(void *arg, void *socket), void *arg);
 };
 extern const struct swr_v1_runtime_socket_ops swr_v1_runtime_socket;
 #ifdef __cplusplus
