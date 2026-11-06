@@ -855,6 +855,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-http",
+ "swoole-rs-oracle",
  "swoole-rs-ossupport",
  "swoole-rs-process",
  "swoole-rs-reactor",

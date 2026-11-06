@@ -61,10 +61,6 @@ mod rewrite;
 pub use rewrite::RewriteRules;
 mod static_context;
 pub use static_context::*;
-mod static_body;
-mod static_select;
-pub use static_body::{HttpStaticBody, swr_v1_http_static_body};
-pub use static_select::{HttpStaticSelection, swr_v1_http_static_select};
 mod tasks;
 pub use tasks::{
     HttpStaticTask, HttpTasks, swr_v2_http_tasks_begin, swr_v2_http_tasks_clear,

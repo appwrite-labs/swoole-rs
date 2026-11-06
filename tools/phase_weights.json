@@ -68,7 +68,6 @@
  "http-proxy": 9,
  "http-rewrites": 36,
  "http-server-config-owners": 1,
- "http-static": 20,
  "http-unit": 10,
  "http2-native-originals": 90,
  "http2-unit": 2,

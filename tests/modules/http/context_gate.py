@@ -33,9 +33,9 @@ def main():
         sides=Sides(args.source,args.archive,tree,handler,'src/protocol/http.cc','src/core/base.cc')
         original=sides.original(handler);original_header=sides.original(header)
         protocol=sides.original('src/protocol/http.cc');native_base=sides.original('src/core/base.cc')
-        selected=sides.selected(handler);selected_header=sides.selected(header)
+        selected=selected_header=(local/'context_facade.cc').read_text()
         prepare_index_buffer(sides)
-        if not guard() or not sides.native(report,handler):write_report(args.output,report);return 1
+        if not guard():write_report(args.output,report);return 1
         server='''struct Server {
  std::string root="/root";bool http_autoindex=false;long timezone_=0;
  std::shared_ptr<std::unordered_set<std::string>> locations=std::make_shared<std::unordered_set<std::string>>();

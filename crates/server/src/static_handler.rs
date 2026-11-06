@@ -173,7 +173,8 @@ impl StaticHandler {
             && value.kind & PATH_IS_DIRECTORY != 0
     }
 
-    fn mimetype(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn mimetype(&self) -> Vec<u8> {
         let kind = swoole_rs_framing::mime::get(&self.filename());
         // SAFETY: the table's NUL-terminated type, copied before it can change.
         unsafe { core::ffi::CStr::from_ptr(kind) }
@@ -195,6 +196,15 @@ impl StaticHandler {
             unsafe { swr_v2_http_context_boundary(self.context, random.as_ptr(), count) };
         }
         1
+    }
+
+    /// `get_date()`: now, as an HTTP date.
+    #[must_use]
+    pub fn date() -> Vec<u8> {
+        let mut value = [0u8; 64];
+        // SAFETY: a null mtime asks for now; a local output.
+        let length = unsafe { swr_v3_http_date(ptr::null(), value.as_mut_ptr(), value.len()) };
+        value[..length.min(value.len())].to_vec()
     }
 
     #[must_use]

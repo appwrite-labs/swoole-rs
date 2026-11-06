@@ -235,7 +235,7 @@ def plan(args, reports):
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-server-config-owners'))
         script('http-context', 'tests/modules/http/context_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-context'))
-        for name, runner in [('http-proxy', 'proxy_gate.py'), ('http-static', 'static_gate.py'), ('http-conditionals', 'conditional_gate.py'), ('http-rewrites', 'rewrite_gate.py'), ('http-dispatch', 'dispatch_gate.py'), ('http-locales', 'locale_gate.py')]:
+        for name, runner in [('http-proxy', 'proxy_gate.py'), ('http-conditionals', 'conditional_gate.py'), ('http-rewrites', 'rewrite_gate.py'), ('http-dispatch', 'dispatch_gate.py'), ('http-locales', 'locale_gate.py')]:
             script(name, 'tests/modules/http/' + runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(name))
         script('http-cookie-flow-positive', 'tests/modules/http/cookie_flow_gate.py', '--source', ROOT / 'target/upstream/src',

@@ -1,6 +1,6 @@
 #pragma once
 #include "swoole_server.h"
-#include "swoole_static_handler.h"
+#include "swoole_http.h"
 #include "swoole_rs_http.h"
 #include <array>
 #include <cassert>
