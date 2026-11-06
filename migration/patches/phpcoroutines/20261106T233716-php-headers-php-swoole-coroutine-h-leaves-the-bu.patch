@@ -184,3 +184,11 @@ index 5c92638..87bfa4b 100644
 +        if (swr_v1_phpcoroutines_hook_flags() > 0) {
 +            swr_v1_phpruntime_enable_hook(swr_v1_phpcoroutines_hook_flags());
          }
+diff --git a/thirdparty/php/standard/proc_open.cc b/thirdparty/php/standard/proc_open.cc
+index 0272aca..8dbbec2 100644
+--- a/thirdparty/php/standard/proc_open.cc
++++ b/thirdparty/php/standard/proc_open.cc
+@@ -20,3 +20,2 @@
+ using swoole::Coroutine;
+-using swoole::PHPCoroutine;
+ using swoole::coroutine::System;
