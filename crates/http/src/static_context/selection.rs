@@ -333,6 +333,37 @@ mod tests {
         assert_eq!(context.index(4, 1, b"", &mut cursor), 1);
     }
 
+    /// Upstream `TEST(base, intersection)`: the first configured index file the directory
+    /// holds, in configured order, or none. This loop does `swoole::intersection`'s job.
+    #[test]
+    fn base_intersection() {
+        fn intersection(candidates: &[&[u8]], names: &[&[u8]]) -> Vec<u8> {
+            let context = Context::directory();
+            context.load(names);
+            let mut cursor = 0;
+            assert_eq!(context.index(0, candidates.len(), b"", &mut cursor), 2);
+            let mut step = context.index(1, candidates.len(), b"", &mut cursor);
+            while step == 3 {
+                step = context.index(2, 0, candidates[cursor], &mut cursor);
+            }
+            assert!(step == 4 || step == 5);
+            unsafe { (*context.0).index.clone() }
+        }
+        let vec1: &[&[u8]] = &[b"index.php", b"index.html", b"default.html"];
+        let vec2: &[&[u8]] = &[
+            b".",
+            b"..",
+            b"default.html",
+            b"index.php",
+            b"test.html",
+            b"a.json",
+            b"index.php",
+        ];
+        assert_eq!(intersection(vec1, vec2), b"index.php");
+        let vec3: &[&[u8]] = &["a".as_bytes(), "zh中".as_bytes(), "、r\n".as_bytes()];
+        assert_eq!(intersection(vec1, vec3), b"");
+    }
+
     #[test]
     fn no_match_clears_old_index_before_fresh_autoindex_observation() {
         let context = Context::directory();

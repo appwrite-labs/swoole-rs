@@ -45,6 +45,19 @@ native-TU gates.
 Rust unit tests: the task-directory policy in `crates/corebase/src/lifecycle.rs`,
 the hook policy in `hook.rs`, the core state record in `global.rs`.
 
+`core-tests/src/core/base.cpp` cases whose helpers #1384 deleted, and where
+their assertions run now:
+
+| Upstream TEST | Rust test or reason |
+| --- | --- |
+| `base.datahead_dump` | `host.rs` `base_datahead_dump` (same input and assertion; `print` is gone) |
+| `base.mkdir_recursive` | `lib.rs` `base_mkdir_recursive`, over `swr_v1_corebase_mkdir_complete` |
+| `base.hook`, `base.snprintf` | `hook.rs` and `host.rs` tests |
+| `base.intersection` | `crates/http` `static_context/selection.rs` `base_intersection`, over the index-file loop that took its job |
+| `base.dirname`, `base.string_format` | none: nothing in the hybrid takes a dirname or formats into a fresh buffer, so there is no function to test |
+
+`sw_wait_for` has no upstream case; `crates/locks` `poll` keeps its backoff.
+
 `patching.py`, `cases.py` and `supervisor.py` are shared helpers.
 `supervisor.py` runs child Python tools in-process so SIGTERM/SIGINT unwind
 their process groups; a forced SIGKILL does not.

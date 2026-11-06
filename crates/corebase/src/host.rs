@@ -732,6 +732,30 @@ mod tests {
         assert_eq!((n, short[7]), (7, 0));
     }
 
+    /// Upstream `TEST(base, datahead_dump)`, its inputs and its assertion as written:
+    /// `std::string::find` returns `npos` (greater than 1) when the text is absent.
+    #[test]
+    fn base_datahead_dump() {
+        let head = DataHead {
+            fd: 123,
+            msg_id: 0,
+            len: 0,
+            reactor_id: 0,
+            kind: 0,
+            flags: 0,
+            server_fd: 0,
+            ext_flags: 0,
+            reserved: 0,
+            time: 0.0,
+        };
+        let mut buffer = [0 as c_char; 128];
+        let n = unsafe { datahead_dump(&raw const head, buffer.as_mut_ptr(), buffer.len()) };
+        let text = String::from_utf8_lossy(unsafe {
+            std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), n)
+        });
+        assert!(text.find("int fd = 123;").unwrap_or(usize::MAX) > 1);
+    }
+
     #[test]
     fn shell_exec_pipes_the_command_output() {
         let mut pid = 0;
