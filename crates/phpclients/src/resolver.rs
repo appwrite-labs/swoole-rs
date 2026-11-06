@@ -68,8 +68,6 @@ mod native {
             same: unsafe extern "C" fn(*mut zval, *mut zval) -> bool,
             resolver: *mut zval,
         ) -> *mut zval;
-        /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
-        pub(super) fn swoole_socket_coro_unconstructed();
     }
 
     /// Where a lookup writes its result.
@@ -128,7 +126,7 @@ fn context_of(object: *mut zend_object) -> Option<*mut c_void> {
     };
     if context.is_null() {
         // SAFETY: C++'s fatal-error report.
-        unsafe { native::swoole_socket_coro_unconstructed() };
+        unsafe { crate::native::swoole_socket_coro_unconstructed() };
         return None;
     }
     Some(context)

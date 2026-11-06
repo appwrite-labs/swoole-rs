@@ -121,6 +121,8 @@ pub struct Ops {
     callable: unsafe extern "C" fn(name: *mut zval) -> *mut c_void,
     /// `sw_callable_free`.
     callable_free: unsafe extern "C" fn(callable: *mut c_void),
+    /// `callable->dup()`.
+    callable_dup: unsafe extern "C" fn(callable: *mut c_void) -> *mut c_void,
     /// `callable->ptr()`.
     callable_fcc: unsafe extern "C" fn(callable: *mut c_void) -> *mut zend_fcall_info_cache,
     /// `sw_logger()->put(SW_LOG_WARNING, ..)` at that level.
@@ -163,6 +165,31 @@ static HOOKED: AtomicU32 = AtomicU32::new(0);
 fn ops() -> &'static Ops {
     // Functions run only after MINIT stored the table.
     OPS.get().copied().unwrap_or_else(|| std::process::abort())
+}
+
+/// `sw_callable_create(value)`: a `zend::Callable *`, or null after a warning.
+/// # Safety
+/// PHP is running and `value` is a live zval. The warning's handler may bail
+/// out, so the caller runs inside `zend_try` and owns nothing.
+pub unsafe fn callable_create(value: *mut zval) -> *mut c_void {
+    // SAFETY: per the caller.
+    unsafe { (ops().callable)(value) }
+}
+
+/// `sw_callable_free(callable)`.
+/// # Safety
+/// As [`callable_create`]; `callable` is one it made, freed once.
+pub unsafe fn callable_free(callable: *mut c_void) {
+    // SAFETY: per the caller.
+    unsafe { (ops().callable_free)(callable) };
+}
+
+/// `callable->dup()`.
+/// # Safety
+/// `callable` is live.
+pub unsafe fn callable_dup(callable: *mut c_void) -> *mut c_void {
+    // SAFETY: per the caller.
+    unsafe { (ops().callable_dup)(callable) }
 }
 
 const SW_ERROR_PHP_FATAL_ERROR: i64 = 503;
@@ -601,6 +628,9 @@ mod tests {
         std::ptr::null_mut()
     }
     unsafe extern "C" fn free(_: *mut c_void) {}
+    unsafe extern "C" fn callable_dup(_: *mut c_void) -> *mut c_void {
+        std::ptr::null_mut()
+    }
     unsafe extern "C" fn fcc(_: *mut c_void) -> *mut zend_fcall_info_cache {
         std::ptr::null_mut()
     }
@@ -624,6 +654,7 @@ mod tests {
         pdo,
         callable,
         callable_free: free,
+        callable_dup,
         callable_fcc: fcc,
         log_warning: log,
         fatal_error: error,

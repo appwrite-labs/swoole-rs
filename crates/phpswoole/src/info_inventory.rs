@@ -1,7 +1,7 @@
 //! Compiler capability projection shared with the generated native header.
 #[derive(Clone, Copy)]
 #[repr(u8)]
-pub(crate) enum Capability {
+pub enum Capability {
     ThreadContext,
     AsmContext,
     Debug,
@@ -38,6 +38,11 @@ pub(crate) enum Capability {
     Execinfo,
     Ssh2,
     Ftp,
+    AiV4mapped,
+    AiAll,
+    AiIdn,
+    TlsHostName,
+    BoringSsl,
 }
 pub(crate) const CAPABILITIES: &[(Capability, &str, &std::ffi::CStr)] = &[
     (
@@ -124,4 +129,13 @@ pub(crate) const CAPABILITIES: &[(Capability, &str, &std::ffi::CStr)] = &[
     (Capability::Execinfo, "defined(HAVE_EXECINFO)", c"execinfo"),
     (Capability::Ssh2, "defined(SW_HAVE_SSH2LIB)", c""),
     (Capability::Ftp, "defined(SW_HAVE_FTP)", c""),
+    (Capability::AiV4mapped, "defined(HAVE_AI_V4MAPPED)", c""),
+    (Capability::AiAll, "defined(HAVE_AI_ALL)", c""),
+    (Capability::AiIdn, "defined(HAVE_AI_IDN)", c""),
+    (
+        Capability::TlsHostName,
+        "defined(SSL_CTRL_SET_TLSEXT_HOSTNAME)",
+        c"",
+    ),
+    (Capability::BoringSsl, "defined(OPENSSL_IS_BORINGSSL)", c""),
 ];

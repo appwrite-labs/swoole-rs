@@ -1,6 +1,6 @@
 //! Emit only native compile-capability projection; Rust owns information rows.
 #[path = "../info_inventory.rs"]
-mod inventory;
+pub mod inventory;
 #[expect(clippy::print_stdout, reason = "stdout is the generated native header")]
 fn main() {
     println!(

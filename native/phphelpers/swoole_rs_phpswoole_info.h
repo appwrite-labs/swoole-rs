@@ -112,6 +112,21 @@ static uint64_t swr_cpp_phpswoole_info_flags() {
 #if defined(SW_HAVE_FTP)
     flags |= UINT64_C(1) << 35; /* "" */
 #endif
+#if defined(HAVE_AI_V4MAPPED)
+    flags |= UINT64_C(1) << 36; /* "" */
+#endif
+#if defined(HAVE_AI_ALL)
+    flags |= UINT64_C(1) << 37; /* "" */
+#endif
+#if defined(HAVE_AI_IDN)
+    flags |= UINT64_C(1) << 38; /* "" */
+#endif
+#if defined(SSL_CTRL_SET_TLSEXT_HOSTNAME)
+    flags |= UINT64_C(1) << 39; /* "" */
+#endif
+#if defined(OPENSSL_IS_BORINGSSL)
+    flags |= UINT64_C(1) << 40; /* "" */
+#endif
     return flags;
 }
 #endif

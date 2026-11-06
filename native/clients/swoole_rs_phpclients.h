@@ -5,118 +5,18 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
-#include <sys/uio.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* PHP Coroutine\Socket (crates/phpclients). Rust registers the class with its
- * method table, its exception,
- * properties and constants, and the methods are its zim_swoole_socket_coro_*
- * exports. */
 struct _zend_class_entry;
 struct _zend_object;
 struct _zval_struct;
 struct _zend_string;
-void swr_v1_phpclients_socket_minit(struct _zend_class_entry *exception,
-                                    bool shortname,
-                                    bool sockets,
-                                    int module,
-                                    uint32_t ai,
-                                    struct _zend_class_entry **socket_class);
-
-/* Defined by ext-src/swoole_socket_coro.cc for those methods: the coroutine
- * socket (a SocketImpl *) is still C++, so each operation is one call. */
+/* php_swoole_error(level, "%s", message), or with fatal php_swoole_fatal_error
+ * (crates/phpclients). */
 void swoole_rs_php_error(int level, bool fatal, const char *message);
-void swoole_socket_coro_unconstructed(void);
-/* socket_coro_init's socket half: zero copy and the zend string allocator, then
- * its fd, domain, type and protocol into fields. */
-void swoole_socket_coro_adopt(void *socket, int64_t *fields);
-/* A Coroutine\Socket object over socket, as socket_coro_init leaves it;
- * reference: the object does not own the socket. */
-struct _zend_object *swr_v1_phpclients_socket_object(void *socket, bool reference);
-uint8_t swoole_socket_coro_new_family(int domain, int kind, int protocol, void **result);
-void swr_v1_phpclients_socket_error_properties(const struct _zval_struct *, int code, const char *message);
-uint8_t swoole_socket_coro_new_type(int kind, void **result);
-uint8_t swoole_socket_coro_new_fd(int fd, int kind, void **result);
-uint8_t swoole_socket_coro_new_fd_family(int fd, int domain, int kind, int protocol, void **result);
-int swoole_socket_coro_fd(void *socket);
-struct _zend_object *swr_v1_phpclients_socket_create(int kind);
-struct _zend_object *swr_v1_phpclients_socket_from_fd(int fd, int kind);
-struct _zend_object *swr_v1_phpclients_socket_from_fd_family(int fd, int domain, int kind, int protocol);
-struct _zend_object *swr_v1_phpclients_socket_dup(int fd, int kind);
-void *swr_v1_phpclients_socket_pointer(const struct _zval_struct *);
-bool swr_v1_phpclients_socket_closed(const struct _zval_struct *);
-uint8_t swoole_socket_coro_destroy(void *socket);
-void swoole_socket_coro_move_fd(void *socket);
-uint8_t swoole_socket_coro_close_native(void *socket);
-uint8_t swoole_socket_coro_callable_free(void *callable);
-bool swoole_socket_coro_is_closed(void *socket);
-int swoole_socket_coro_error(void *socket, const char **message);
-void swoole_socket_coro_set_error(void *socket, int code, const char *message);
-bool swoole_socket_coro_bind(void *socket, const char *address, size_t length, int64_t port);
-bool swoole_socket_coro_listen(void *socket, int64_t backlog);
-void *swoole_socket_coro_accept(void *socket, double timeout);
-bool swoole_socket_coro_port_required(void *socket);
-bool swoole_socket_coro_connect(void *socket, const char *host, size_t length, int64_t port, double timeout);
-bool swoole_socket_coro_check_liveness(void *socket);
-int64_t swoole_socket_coro_bound_cid(void *socket, int64_t event);
-/* op: 0 peek, 1 recv, 2 recv_all, 3 recv_line, 4 recv_with_buffer, 5 send, 6 send_all. */
-ssize_t swoole_socket_coro_transfer(void *socket, int op, char *buffer, size_t length, double timeout);
-ssize_t swoole_socket_coro_recv_packet(void *socket, double timeout, bool clear_empty);
-char *swoole_socket_coro_pop_packet(void *socket);
-/* op: 0 readv, 1 readv_all, 2 writev, 3 writev_all. */
-ssize_t swoole_socket_coro_vector(
-    void *socket, int op, struct iovec *vectors, int count, double timeout, int *index, size_t *offset);
-bool swoole_socket_coro_sendfile(void *socket, const char *file, int64_t offset, int64_t length);
-ssize_t swoole_socket_coro_recvfrom(void *socket, char *buffer, size_t length, double timeout);
-const char *swoole_socket_coro_address(void *socket, int *port);
-ssize_t swoole_socket_coro_sendto(
-    void *socket, const char *address, size_t length, int64_t port, const char *data, size_t data_length);
-bool swoole_socket_coro_shutdown(void *socket, int64_t how);
-bool swoole_socket_coro_getsockname(void *socket);
-bool swoole_socket_coro_getpeername(void *socket, char *address, size_t size, int *port);
-bool swoole_socket_coro_cancel(void *socket, int event);
-bool swoole_socket_coro_ssl_handshake(void *socket);
-/* The settings arrays (php_swoole_socket_set, _set_protocol and _set_ssl), for
- * C++ callers: whether they all applied. A deferred bailout is raised last. */
-enum { SWR_PHPCLIENTS_SETTINGS_ALL = 0, SWR_PHPCLIENTS_SETTINGS_PROTOCOL = 1, SWR_PHPCLIENTS_SETTINGS_SSL = 2 };
-bool swr_v1_phpclients_socket_settings(void *socket, const struct _zval_struct *settings, int which);
-/* What the options and settings need from the C++ socket. flag: 0 open_length_check,
- * 1 open_eof_check, 2 http2. preset: 0 mqtt::set_protocol, 1 the default length function. */
-void swoole_socket_coro_set_flag(void *socket, int flag, bool value);
-void *swoole_socket_coro_protocol(void *socket);
-void swoole_socket_coro_protocol_preset(void *socket, int kind);
-/* package_length_func, run inside zend_try: a callable replaces any earlier one. */
-typedef struct {
-    void *socket;
-    struct _zval_struct *value;
-} swoole_socket_coro_callable;
-void swoole_socket_coro_length_callable(void *call);
-bool swoole_socket_coro_set_option(void *socket, int level, int name, int value);
-void swoole_socket_coro_set_timeout(void *socket, double timeout, int type);
-double swoole_socket_coro_get_timeout(void *socket, int type);
-void swoole_socket_coro_proxy(void *socket, bool http, const char *host, size_t host_length, int64_t port,
-                              const char *user, size_t user_length, const char *password, size_t password_length);
-/* enable_ssl_encrypt(): false when TLS was already on. */
-bool swoole_socket_coro_enable_ssl(void *socket);
-/* The socket's SSLContext owner, which crates/tls configures; NULL while TLS is off. */
-struct swr_v1_tls_owner;
-const struct swr_v1_tls_owner *swoole_socket_coro_ssl_context(void *socket);
-/* Whether the build has the optional SSL settings. */
-enum { SWR_PHPCLIENTS_SSL_HOST_NAME, SWR_PHPCLIENTS_SSL_GREASE };
-bool swoole_socket_coro_ssl_supports(int option);
-/* The socket's domain, and its type into *type. */
-int swoole_socket_coro_family(void *socket, int *type);
-/* socket->errCode = code, nothing else. */
-void swoole_socket_coro_set_err_code(void *socket, int code);
-/* getsockopt(SOL_TCP, TCP_INFO) into array: 1; 0 when name is not TCP_INFO (or
- * the build has none); -1 when it failed. */
-int swoole_socket_coro_tcp_info(void *socket, int name, struct _zval_struct *array);
-/* php_swoole_create_socket_from_fd(fd, type), run inside zend_try; with a
- * stream (import), the object holds it and nonblock is set. Null when none
- * could be made. */
 
 /* PHP Coroutine\Http\Client (crates/phpclients): MINIT, the methods that can
  * call PHP (the C++ trampolines re-raise a bailout they return), the socket's

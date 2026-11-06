@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -37,6 +38,7 @@ struct swr_v1_phpruntime_ops {
     void (*pdo)(uint32_t flag, uint8_t blocking);
     void *(*callable)(struct _zval_struct *name);
     void (*callable_free)(void *callable);
+    void *(*callable_dup)(void *callable);
     struct _zend_fcall_info_cache *(*callable_fcc)(void *callable);
     void (*log_warning)(const char *message);
     void (*fatal_error)(int32_t level, const char *message);
@@ -90,9 +92,11 @@ void php_swoole_runtime_stream_ops(uint8_t stdio, uint8_t hook);
  * its virtual calls reach UringSocket), defined by src/coroutine/system.cc. make
  * and close are bodies for swr_zend_try over a swr_v1_runtime_socket_call. */
 struct swr_v1_co_socket;
+struct swr_v1_tls_owner;
 struct swr_v1_runtime_socket_call {
     void *socket; /* make's result, close's socket */
-    int fd, domain, type, protocol; /* make: new SocketImpl(type) when fd < 0 */
+    int fd, domain, type, protocol; /* make: without fd when fd < 0 */
+    bool family; /* make: by domain, type and protocol, else by swSocketType type */
     bool result; /* close's */
 };
 struct swr_v1_runtime_socket_ops {
@@ -101,16 +105,17 @@ struct swr_v1_runtime_socket_ops {
     void (*free)(void *socket);
     struct swr_v1_co_socket *(*base)(void *socket);
     /* op: 0 send_sync, 1 recv_sync, 2 send_all, 3 send_once, 4 recv, 5 recv_once,
-     * 6 peek, 7 send. */
+     * 6 peek, 7 send, 8 recv_all. */
     ssize_t (*io)(void *socket, int op, char *buf, size_t length);
     ssize_t (*recvfrom)(void *socket, char *buf, size_t length, struct sockaddr *addr, socklen_t *addrlen);
     /* setsockopt(level, name, value); logged: the coroutine socket's, which logs a failure. */
     void (*option)(void *socket, int level, int name, int value, bool logged);
-    bool (*bind)(void *socket, const char *host, int port);
+    /* bind(std::string(host, length), port). */
+    bool (*bind)(void *socket, const char *host, size_t length, int port);
     /* connect(std::string(host, length), port, flags). */
     bool (*connect)(void *socket, const char *host, size_t length, int port, int flags);
     bool (*listen)(void *socket, int backlog);
-    void *(*accept)(void *socket);
+    void *(*accept)(void *socket, double timeout);
     bool (*ssl_enabled)(void *socket);
     void (*ssl_encrypt)(void *socket);
     bool (*ssl_handshake)(void *socket);
@@ -126,6 +131,15 @@ struct swr_v1_runtime_socket_ops {
     /* set_dtor: hook(arg, socket) runs once as the socket is destroyed. */
     void (*close_hook)(void *socket, void (*hook)(void *arg, void *socket), void *arg);
     bool (*ssl_verify)(void *socket, bool allow_self_signed);
+    /* op: 0 readv, 1 readv_all, 2 writev, 3 writev_all; where it stopped into index and offset. */
+    ssize_t (*vector)(void *socket, int op, const struct iovec *vectors, int count, int *index, size_t *offset);
+    bool (*sendfile)(void *socket, const char *file, int64_t offset, int64_t length);
+    ssize_t (*sendto)(void *socket, const char *host, size_t length, int port, const char *data, size_t size);
+    /* set_http_proxy (http) or set_socks5_proxy. */
+    void (*proxy)(void *socket, bool http, const char *host, size_t host_length, int port, const char *user,
+                  size_t user_length, const char *password, size_t password_length);
+    /* The SSLContext's owner, which crates/tls configures; NULL while TLS is off. */
+    const struct swr_v1_tls_owner *(*ssl_context)(void *socket);
 };
 extern const struct swr_v1_runtime_socket_ops swr_v1_runtime_socket;
 #ifdef __cplusplus
