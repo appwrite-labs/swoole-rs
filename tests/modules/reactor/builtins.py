@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='swr-builtins-') as tmp:
     report['pinned_callback_alias']=alias
     try:
         for variant in ['original','selected']:
-            base=original['src/reactor/base.cc'] if variant=='original' else (selected_tree/'src/reactor/base.cc').read_text()
+            base=original['src/reactor/base.cc'] if variant=='original' else (selected_tree/'src/wrapper/event.cc').read_text()
             cls='namespace swoole {\n'+alias+'\n'+task+'\n'+manager+'''
             class Reactor {public:CallbackManager *defer_tasks=nullptr;DeferCallback idle_task{},future_task{};bool running=true,wait_exit=false,accepted=true,mutate_wait=false;unsigned queries=0;
             bool if_exit(){++queries;if(mutate_wait)wait_exit=false;return accepted;}

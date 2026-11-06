@@ -31,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix='swr-callbacks-') as temporary:
     try:
         for variant in ['original','selected']:
             header=original['include/swoole_reactor.h'] if variant=='original' else (hybrid_source/'include/swoole_reactor.h').read_text()
-            base=original['src/reactor/base.cc'] if variant=='original' else (hybrid_source/'src/reactor/base.cc').read_text()
+            base=original['src/reactor/base.cc'] if variant=='original' else (hybrid_source/'src/wrapper/event.cc').read_text()
             fields='std::map<int,std::function<void(Reactor*)>> end_callbacks; std::map<int,std::function<bool(Reactor*,size_t&)>> exit_conditions;' if variant=='original' else 'ReactorCallbacks callbacks_;'
             cls='''namespace swoole { class Reactor { public:
                 using EndCallback=int;using ExitCondition=int;
@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='swr-callbacks-') as temporary:
             binary=tree/('callbacks-'+variant)
             command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/reactor'),str(ROOT/'tests/modules/reactor/callbacks.cc'),str(a.archive.resolve()),'-lpthread','-o',str(binary)]
             if a.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
-            if sys.platform.startswith('linux'):command+=['-ldl','-lm']
+            if sys.platform.startswith('linux'):command+=['-Wl,--gc-sections','-ldl','-lm']
             for stage,cmd in [('compile',command),('execute',[str(binary)])]:
                 require_build_space(tree)
                 result=run_compiler(cmd, timeout=60) if stage=='compile' else vars(run_isolated(cmd,cwd=tree,timeout=60))

@@ -1216,7 +1216,7 @@ pub unsafe extern "C" fn socket_sendfile_sync(
 
 /// A failed Rust queue status. Native `Buffer` raises it as a C++ exception that
 /// nothing catches, so the process ends either way; here it aborts.
-fn buffer_check(status: i32) {
+pub(crate) fn buffer_check(status: i32) {
     if status != 0 {
         std::process::abort();
     }
@@ -1226,7 +1226,7 @@ fn buffer_check(status: i32) {
 ///
 /// # Safety
 /// `socket` is a live record with an output buffer.
-unsafe fn out_queue(socket: *mut SocketRecord) -> *mut swoole_rs_buffer::Buffer {
+pub(crate) unsafe fn out_queue(socket: *mut SocketRecord) -> *mut swoole_rs_buffer::Buffer {
     // SAFETY: as the caller promises.
     let buffer = unsafe { (*socket).output.out_buffer };
     // SAFETY: the live Buffer's first member.

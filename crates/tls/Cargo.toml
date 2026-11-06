@@ -7,7 +7,7 @@ publish = false
 [features]
 # Define Socket's TLS methods under their C++ symbols; only the reactor overlay, whose
 # patches delete the C++ definitions, turns it on (crates/ffi's reactor feature).
-upstream-symbols = []
+upstream-symbols = ["swoole-rs-reactor/upstream-symbols"]
 
 [dependencies]
 swoole-rs-corebase = { path = "../corebase" }

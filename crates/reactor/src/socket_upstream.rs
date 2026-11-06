@@ -6,7 +6,7 @@
 //! upstream (Itanium) symbols and `socket.cc` no longer defines them.
 use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketRecord};
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_corebase::log;
 
 /// `SW_OK`, `SW_ERR`; `swReturnCode`'s `SW_WAIT`, `SW_ERROR` and `SW_READY`.
@@ -487,10 +487,10 @@ pub unsafe extern "C" fn swr_v1_reactor_log(
 /// the C++ `thread_local`.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub fn event_reactor() -> Option<(*mut c_void, crate::ReactorPrepared)> {
+pub fn event_reactor() -> Option<(*mut std::ffi::c_void, crate::ReactorPrepared)> {
     // SAFETY: src/wrapper/event.cc's.
     unsafe extern "C" {
-        fn swr_v1_event_reactor() -> *mut c_void;
+        fn swr_v1_event_reactor() -> *mut std::ffi::c_void;
     }
     // SAFETY: no preconditions.
     let reactor = unsafe { swr_v1_event_reactor() };

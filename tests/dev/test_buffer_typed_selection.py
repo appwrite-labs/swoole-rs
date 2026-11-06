@@ -20,7 +20,7 @@ class TypedBufferSelection(unittest.TestCase):
         command = commands['buffer-typed']
         self.assertIn('--sanitize', command)
         archive = command[command.index('--archive')+1]
-        self.assertEqual(archive, commands['reactor-flush'][commands['reactor-flush'].index('--archive')+1])
+        self.assertEqual(archive, commands['reactor-builtins'][commands['reactor-builtins'].index('--archive')+1])
 
     def test_the_old_switch_is_gone(self):
         for command in [[sys.executable, 'tools/dev.py', 'integrate', '--module', 'reactor', '--buffer-typed', '--plan'],

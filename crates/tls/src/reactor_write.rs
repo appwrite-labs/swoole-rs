@@ -1,0 +1,411 @@
+// SPDX-License-Identifier: Apache-2.0
+// Compatibility derived from Swoole v6.2.4 src/reactor/base.cc (Swoole contributors).
+//! The reactor's write path from base.cc (`Reactor::_write`, `_writev`,
+//! `_writable_callback` and `drain_write_buffer`), defined under their upstream
+//! symbols over the Rust socket methods. `swoole_rs_reactor`'s
+//! `swr_v1_reactor_write`, `_flush` and `_drain` decide; these are their effects.
+use crate::upstream::{
+    buffer_check, out_queue, socket_free, socket_handle_send, socket_handle_sendfile, socket_send,
+};
+use std::ffi::{c_int, c_void};
+use swoole_rs_buffer::Buffer;
+use swoole_rs_corebase::log;
+use swoole_rs_reactor::reactor_upstream::{prepared, reactor_interest};
+use swoole_rs_reactor::socket_upstream::{socket_set_fd_option, socket_wait_event};
+use swoole_rs_reactor::{
+    Event, FlushOps, SocketOutput, SocketRecord, WriteOps, WritePayload, swr_v1_socket_defaults,
+};
+
+const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
+const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
+const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int = 1201;
+const SW_EVENT_WRITE: c_int = 1 << 10;
+/// `Reactor::interest` kinds.
+const ADD_WRITE: u32 = 3;
+const REMOVE_WRITE: u32 = 5;
+
+/// One write or flush: the reactor, the socket and, for a flush, its event.
+struct Context {
+    reactor: *mut c_void,
+    socket: *mut SocketRecord,
+    event: *mut Event,
+    payload: *const WritePayload,
+}
+
+/// # Safety
+/// `context` is a live write's or flush's.
+unsafe fn context<'a>(context: *mut c_void) -> &'a Context {
+    // SAFETY: as the caller promises.
+    unsafe { &*context.cast::<Context>() }
+}
+
+/// The socket's output block and queue (null without an output buffer).
+///
+/// # Safety
+/// `socket` is a live record.
+unsafe fn output(socket: *mut SocketRecord) -> (*mut SocketOutput, *mut Buffer) {
+    // SAFETY: as the caller promises.
+    let record = unsafe { &mut *socket };
+    let queue = if record.output.out_buffer.is_null() {
+        std::ptr::null_mut()
+    } else {
+        // SAFETY: the socket's output buffer.
+        unsafe { out_queue(socket) }
+    };
+    (&raw mut record.output, queue)
+}
+
+unsafe extern "C" fn write_nonblock(context: *mut c_void) {
+    // SAFETY: a live write.
+    let socket = unsafe { self::context(context) }.socket;
+    // SAFETY: its live socket.
+    unsafe { socket_set_fd_option(socket, 1, -1) };
+}
+
+unsafe extern "C" fn write_send(context: *mut c_void) -> isize {
+    // SAFETY: a live write.
+    let context = unsafe { self::context(context) };
+    // SAFETY: its live payload.
+    let payload = unsafe { &*context.payload };
+    if !payload.data.is_null() {
+        // SAFETY: `socket->send(buf, n, 0)` over the payload's bytes.
+        return unsafe { socket_send(context.socket, payload.data.cast(), payload.length, 0) };
+    }
+    // SAFETY: its live socket.
+    let fd = unsafe { (*context.socket).fd };
+    let count = c_int::try_from(payload.count).unwrap_or(c_int::MAX);
+    // SAFETY: `socket->writev(iov, iovcnt)` over the payload's vector.
+    unsafe { libc::writev(fd, payload.iov, count) }
+}
+
+unsafe extern "C" fn write_buffer(context: *mut c_void) -> *mut Buffer {
+    // SAFETY: a live write.
+    let socket = unsafe { self::context(context) }.socket;
+    // SAFETY: its live socket.
+    let chunk_size = unsafe { (*socket).chunk_size };
+    let buffer = swoole_rs_buffer::cpp::new_buffer(chunk_size);
+    // SAFETY: `socket->out_buffer = new Buffer(socket->chunk_size)`.
+    unsafe { (*socket).output.out_buffer = buffer.cast() };
+    // SAFETY: the buffer just made.
+    unsafe { out_queue(socket) }
+}
+
+unsafe extern "C" fn write_watch(context: *mut c_void) {
+    // SAFETY: a live write.
+    let context = unsafe { self::context(context) };
+    // SAFETY: its live socket.
+    let events = unsafe { (*context.socket).events };
+    if events & SW_EVENT_WRITE == 0 {
+        // SAFETY: `reactor->add_write_event(socket)` on the live reactor.
+        unsafe { reactor_interest(context.reactor, context.socket, ADD_WRITE, 0) };
+    }
+}
+
+/// `Reactor::write_func`.
+///
+/// # Safety
+/// `reactor` is a live `Reactor`, `socket` a live record and `payload` valid.
+unsafe fn write(reactor: *mut c_void, socket: *mut SocketRecord, payload: &WritePayload) -> isize {
+    let mut context = Context {
+        reactor,
+        socket,
+        event: std::ptr::null_mut(),
+        payload,
+    };
+    let ops = WriteOps {
+        context: (&raw mut context).cast(),
+        set_nonblock: write_nonblock,
+        send: write_send,
+        create_buffer: write_buffer,
+        watch_writable: write_watch,
+    };
+    // SAFETY: as the caller promises.
+    let (output, queue) = unsafe { output(socket) };
+    // SAFETY: `Socket::default_buffer_size`, which only the main thread sets.
+    let default_size = unsafe { swr_v1_socket_defaults.buffer_size };
+    // SAFETY: the socket's flag.
+    let nobufs = unsafe { &raw mut (*socket).kernel_nobufs };
+    // SAFETY: the socket's output block, flag and queue, the payload and the ops.
+    let result = unsafe {
+        swoole_rs_reactor::swr_v1_reactor_write(
+            output,
+            nobufs,
+            queue,
+            default_size,
+            payload,
+            &raw const ops,
+        )
+    };
+    let origin = c"Reactor::write_func";
+    match result.outcome {
+        0 => return result.value,
+        1 => log::error_log(
+            log::LOG_WARNING,
+            SW_ERROR_PACKAGE_LENGTH_TOO_LARGE,
+            origin,
+            format_args!("data packet is too large, cannot exceed the socket buffer size"),
+        ),
+        2 => {
+            // SAFETY: the overflowed socket has a queue.
+            let queue = unsafe { out_queue(socket) };
+            let (mut queued, mut count) = (0u32, 0usize);
+            // SAFETY: the live queue; both outputs are local.
+            unsafe {
+                swoole_rs_buffer::swr_v1_buffer_stats(queue, &raw mut queued, &raw mut count)
+            };
+            // SAFETY: the live socket.
+            let record = unsafe { &*socket };
+            let (fd, size) = (record.fd, record.output.buffer_size);
+            log::error_log(
+                log::LOG_WARNING,
+                SW_ERROR_OUTPUT_BUFFER_OVERFLOW,
+                origin,
+                format_args!("socket#{fd} output buffer overflow: ({queued}/{size})"),
+            );
+        }
+        3 => log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0)),
+        _ => buffer_check(result.status),
+    }
+    -1
+}
+
+/// `ssize_t Reactor::_write(Reactor *, Socket *, const void *buf, size_t n)`.
+///
+/// # Safety
+/// `reactor` is a live `Reactor`, `socket` a live record and `data` holds `length` bytes.
+#[unsafe(export_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm")]
+unsafe extern "C-unwind" fn reactor_write(
+    reactor: *mut c_void,
+    socket: *mut SocketRecord,
+    data: *const c_void,
+    length: usize,
+) -> isize {
+    let payload = WritePayload {
+        data: data.cast(),
+        iov: std::ptr::null(),
+        count: 0,
+        length,
+    };
+    // SAFETY: as the caller promises.
+    unsafe { write(reactor, socket, &payload) }
+}
+
+/// `ssize_t Reactor::_writev(Reactor *, Socket *, const iovec *iov, size_t iovcnt)`:
+/// not over TLS.
+///
+/// # Safety
+/// `reactor` is a live `Reactor`, `socket` a live record and `iov` holds `count` entries.
+#[unsafe(export_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm")]
+unsafe extern "C-unwind" fn reactor_writev(
+    reactor: *mut c_void,
+    socket: *mut SocketRecord,
+    iov: *const libc::iovec,
+    count: usize,
+) -> isize {
+    // SAFETY: as the caller promises.
+    if !unsafe { (*socket).ssl }.is_null() {
+        log::error_log(
+            log::LOG_WARNING,
+            SW_ERROR_OPERATION_NOT_SUPPORT,
+            c"Reactor::_writev",
+            format_args!("does not support SSL"),
+        );
+        return -1;
+    }
+    let length = if count == 0 {
+        0
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { std::slice::from_raw_parts(iov, count) }
+            .iter()
+            .map(|entry| entry.iov_len)
+            .sum()
+    };
+    let payload = WritePayload {
+        data: std::ptr::null(),
+        iov,
+        count,
+        length,
+    };
+    // SAFETY: as the caller promises.
+    unsafe { write(reactor, socket, &payload) }
+}
+
+unsafe extern "C" fn flush_front_kind(context: *mut c_void) -> c_int {
+    // SAFETY: a live flush.
+    let socket = unsafe { self::context(context) }.socket;
+    // SAFETY: its socket has queued output.
+    let queue = unsafe { out_queue(socket) };
+    let mut front = swoole_rs_buffer::TypedFront::default();
+    // SAFETY: the live queue and a local view.
+    buffer_check(unsafe { swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front) });
+    front.kind.cast_signed()
+}
+
+unsafe extern "C" fn flush_send(context: *mut c_void) -> c_int {
+    // SAFETY: a live flush.
+    let socket = unsafe { self::context(context) }.socket;
+    // SAFETY: its live socket.
+    unsafe { socket_handle_send(socket) }
+}
+
+unsafe extern "C" fn flush_sendfile(context: *mut c_void) -> c_int {
+    // SAFETY: a live flush.
+    let socket = unsafe { self::context(context) }.socket;
+    // SAFETY: its live socket.
+    unsafe { socket_handle_sendfile(socket) }
+}
+
+unsafe extern "C" fn flush_close(context: *mut c_void) -> c_int {
+    // SAFETY: a live flush.
+    let context = unsafe { self::context(context) };
+    // SAFETY: its live reactor.
+    let fields = unsafe { prepared(context.reactor) }.fields;
+    // SAFETY: `reactor->close`, set at construction.
+    let Some(close) = (unsafe { (*fields).close }) else {
+        return -1;
+    };
+    // SAFETY: `reactor->close(reactor, socket)`.
+    unsafe { close(context.reactor, context.socket) }
+}
+
+unsafe extern "C" fn flush_trigger_close(context: *mut c_void) -> c_int {
+    // SAFETY: a live flush.
+    let context = unsafe { self::context(context) };
+    // SAFETY: its live reactor.
+    let handlers = unsafe { prepared(context.reactor) }.handlers;
+    // SAFETY: the reactor's default error handler slot.
+    let slot = unsafe { swoole_rs_reactor::swr_v1_reactor_handlers_default(handlers, 2) };
+    // SAFETY: as above.
+    let Some(handler) = (unsafe { *slot }) else {
+        return -1;
+    };
+    // SAFETY: `reactor->trigger_close_event(event)`.
+    unsafe { handler(context.reactor, context.event.cast()) }
+}
+
+unsafe extern "C" fn flush_delete_timer(context: *mut c_void) {
+    // SAFETY: src/wrapper/timer.cc's.
+    unsafe extern "C-unwind" {
+        #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
+        fn swoole_timer_del(node: *mut c_void) -> bool;
+    }
+    // SAFETY: a live flush.
+    let socket = unsafe { self::context(context) }.socket;
+    // SAFETY: its live socket.
+    let timer = unsafe { (*socket).output.send_timer };
+    // SAFETY: `swoole_timer_del(socket->send_timer)`.
+    unsafe { swoole_timer_del(timer) };
+}
+
+unsafe extern "C" fn flush_remove_write(context: *mut c_void) {
+    // SAFETY: a live flush.
+    let context = unsafe { self::context(context) };
+    // SAFETY: `reactor->remove_write_event(socket)`.
+    unsafe { reactor_interest(context.reactor, context.socket, REMOVE_WRITE, 0) };
+}
+
+unsafe extern "C" fn flush_wait_writable(context: *mut c_void) -> c_int {
+    // SAFETY: `Socket::default_write_timeout`, which only the main thread sets.
+    let timeout = unsafe { swr_v1_socket_defaults.timeouts.write };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "upstream's static_cast<int>(sec2msec(...))"
+    )]
+    let timeout = (timeout * 1000.0) as c_int;
+    // SAFETY: a live flush.
+    let socket = unsafe { self::context(context) }.socket;
+    // SAFETY: its live socket.
+    unsafe { socket_wait_event(socket, timeout, SW_EVENT_WRITE) }
+}
+
+unsafe extern "C" fn flush_removed(context: *mut c_void) -> bool {
+    // SAFETY: a live flush.
+    let socket = unsafe { self::context(context) }.socket;
+    // SAFETY: its live socket.
+    unsafe { (*socket).removed != 0 }
+}
+
+/// The flush effects; the drain adds the blocking wait.
+fn flush_ops(context: &mut Context, drain: bool) -> FlushOps {
+    FlushOps {
+        context: std::ptr::from_mut(context).cast(),
+        front_kind: flush_front_kind,
+        handle_send: flush_send,
+        handle_sendfile: flush_sendfile,
+        close: flush_close,
+        trigger_close: flush_trigger_close,
+        delete_timer: flush_delete_timer,
+        remove_write_event: flush_remove_write,
+        wait_writable: drain
+            .then_some(flush_wait_writable as unsafe extern "C" fn(*mut c_void) -> c_int),
+        removed: drain.then_some(flush_removed as unsafe extern "C" fn(*mut c_void) -> bool),
+    }
+}
+
+/// `int Reactor::_writable_callback(Reactor *reactor, Event *ev)`.
+///
+/// # Safety
+/// `reactor` is a live `Reactor` and `event` a live event naming a live socket.
+#[unsafe(export_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE")]
+unsafe extern "C-unwind" fn reactor_writable_callback(
+    reactor: *mut c_void,
+    event: *mut Event,
+) -> c_int {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { (*event).socket }.cast::<SocketRecord>();
+    let mut context = Context {
+        reactor,
+        socket,
+        event,
+        payload: std::ptr::null(),
+    };
+    let ops = flush_ops(&mut context, false);
+    // SAFETY: as the caller promises.
+    let (output, queue) = unsafe { output(socket) };
+    // SAFETY: the socket's output block and queue, and the ops over them.
+    unsafe { swoole_rs_reactor::swr_v1_reactor_flush(output, queue, &raw const ops) }
+}
+
+/// `void Reactor::drain_write_buffer(Socket *socket)`.
+///
+/// # Safety
+/// `reactor` is a live `Reactor` and `socket` a live record.
+#[unsafe(export_name = "_ZN6swoole7Reactor18drain_write_bufferEPNS_7network6SocketE")]
+unsafe extern "C-unwind" fn reactor_drain_write_buffer(
+    reactor: *mut c_void,
+    socket: *mut SocketRecord,
+) {
+    let mut event = Event {
+        // SAFETY: as the caller promises.
+        fd: unsafe { (*socket).fd },
+        reactor_id: 0,
+        fd_type: 0,
+        socket: socket.cast(),
+    };
+    let mut context = Context {
+        reactor,
+        socket,
+        event: &raw mut event,
+        payload: std::ptr::null(),
+    };
+    let ops = flush_ops(&mut context, true);
+    // SAFETY: as the caller promises.
+    let (output, queue) = unsafe { output(socket) };
+    // SAFETY: the socket's output block and queue, and the ops over them.
+    unsafe { swoole_rs_reactor::swr_v1_reactor_drain(output, queue, &raw const ops) };
+}
+
+/// `int Reactor::_close(Reactor *reactor, Socket *socket)`: frees the socket.
+///
+/// # Safety
+/// `socket` is a live record nothing uses afterwards.
+#[unsafe(export_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE")]
+unsafe extern "C-unwind" fn reactor_close(
+    _reactor: *mut c_void,
+    socket: *mut SocketRecord,
+) -> c_int {
+    // SAFETY: as the caller promises.
+    unsafe { socket_free(socket) };
+    0
+}
