@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from corpus.upstream.gate import category, compare, flagged, markdown, pending, recheck, rows, skip_reason
+from corpus.upstream.gate import category, compare, flagged, mark_reruns, markdown, pending, recheck, rows, skip_reason
 from corpus.upstream.inventory import shard
 
 
@@ -88,6 +88,9 @@ class PhptGate(unittest.TestCase):
         self.assertIn('2 regressions: pass on upstream, fail on a re-run here', summary)
         self.assertIn('1 flaky on upstream', summary)
         self.assertIn('1 passed on re-run on both engines', summary)
+        # The badge counts a hybrid pass on an ungated re-run; a regression's passing re-run doesn't count.
+        mark_reruns(results, rechecked)
+        self.assertEqual(sorted(r['test'] for r in results if r.get('rerun') == 'passed'), ['hybrid-blip', 'upstream-flake'])
 
     def test_upstream_flakes_still_gate_a_hybrid_that_always_fails(self):
         def row(test, engine, status):

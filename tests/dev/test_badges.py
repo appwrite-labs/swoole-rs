@@ -84,8 +84,9 @@ class Badges(unittest.TestCase):
     def test_phpt_counts_hybrid_passes_over_every_pinned_test(self):
         rows = [{'test': 'a', 'engine': 'upstream', 'status': 'passed'}, {'test': 'a', 'engine': 'hybrid', 'status': 'passed'},
                 {'test': 'b', 'engine': 'upstream', 'status': 'passed'}, {'test': 'b', 'engine': 'hybrid', 'status': 'failed'},
-                {'test': 'c', 'engine': 'upstream', 'status': 'skipped'}, {'test': 'c', 'engine': 'hybrid', 'status': 'skipped'}]
-        self.assertEqual(badges.phpt_passing(rows), (1, 3))
+                {'test': 'c', 'engine': 'upstream', 'status': 'skipped'}, {'test': 'c', 'engine': 'hybrid', 'status': 'skipped'},
+                {'test': 'd', 'engine': 'upstream', 'status': 'passed'}, {'test': 'd', 'engine': 'hybrid', 'status': 'failed', 'rerun': 'passed'}]
+        self.assertEqual(badges.phpt_passing(rows), (2, 4))
 
     def test_every_leaf_is_a_module(self):
         self.assertLessEqual(set(badges.LEAF), set(badges.MODULES))
