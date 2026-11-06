@@ -21,7 +21,8 @@ use swoole_rs_zend::{
         swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
         swr_zend_runtime_call_handler, swr_zend_sapi_name, swr_zend_signals_uncheck,
         swr_zend_stream_constant_no_close, swr_zend_string_release, swr_zend_temporary_directory,
-        swr_zend_try_hook, swr_zend_try_minit, zend_execute_data, zend_string, zval,
+        swr_zend_try_hook, swr_zend_try_minit, zend_class_entry, zend_execute_data, zend_string,
+        zval,
     },
     value,
 };
@@ -112,7 +113,12 @@ unsafe extern "C" {
     fn php_swoole_client_async_minit(module_number: c_int);
     fn php_swoole_client_coro_minit(module_number: c_int);
     fn php_swoole_http_client_coro_minit(module_number: c_int);
-    fn php_swoole_http2_client_coro_minit(module_number: c_int);
+    /// crates/phphttp2's `Coroutine\Http2\Client`, `Http2\Request` and `Http2\Response`.
+    fn swr_v1_phphttp2_client_minit(
+        exception: *mut zend_class_entry,
+        shortname: bool,
+        module: c_int,
+    );
     fn php_swoole_server_minit(module_number: c_int);
     fn php_swoole_http_request_minit(module_number: c_int);
     fn php_swoole_http_response_minit(module_number: c_int);
@@ -197,7 +203,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_client_async_minit),
         M(php_swoole_client_coro_minit),
         M(php_swoole_http_client_coro_minit),
-        M(php_swoole_http2_client_coro_minit),
+        M(http2_client_coro_minit),
         M(ops.optional_client_minit),
         // server
         M(php_swoole_server_minit),
@@ -215,6 +221,16 @@ pub(crate) fn startup(module_number: c_int) {
         H(ops.ready),
     ];
     bailout::defer(run(&steps, module_number));
+}
+
+/// `php_swoole_http2_client_coro_minit`.
+unsafe extern "C" fn http2_client_coro_minit(module_number: c_int) {
+    // SAFETY: MINIT registered `Swoole\Exception` first and nothing writes it now.
+    let exception = unsafe { crate::swoole_exception_ce };
+    // SAFETY: the module's globals, live from MINIT.
+    let shortname = unsafe { (*globals()).use_shortname };
+    // SAFETY: Rust's MINIT, once.
+    unsafe { swr_v1_phphttp2_client_minit(exception, shortname, module_number) };
 }
 
 /// MINIT's end: Swoole's fatal errors become `Swoole\Error`s and its

@@ -26,9 +26,11 @@ void swr_zend_class_set_create_object(zend_class_entry *ce,
 
 #include "shim_values.h"
 
-/* emalloc and efree (macros taking file and line in debug builds). */
+/* emalloc, efree, ecalloc and erealloc (macros taking file and line in debug builds). */
 void *swr_zend_emalloc(size_t size);
 void swr_zend_efree(void *ptr);
+void *swr_zend_ecalloc(size_t count, size_t size);
+void *swr_zend_erealloc(void *ptr, size_t size);
 
 /* Z_TRY_ADDREF_P and Z_TRY_DELREF_P. */
 void swr_zval_try_addref(zval *value);

@@ -49,7 +49,7 @@ struct SocketOps {
     ) -> ssize_t,
     option: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, bool),
     bind: unsafe extern "C" fn(*mut c_void, *const c_char, c_int) -> bool,
-    connect: unsafe extern "C" fn(*mut c_void, *const c_char, c_int) -> bool,
+    connect: unsafe extern "C" fn(*mut c_void, *const c_char, size_t, c_int, c_int) -> bool,
     listen: unsafe extern "C" fn(*mut c_void, c_int) -> bool,
     accept: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     ssl_enabled: unsafe extern "C" fn(*mut c_void) -> bool,
@@ -72,6 +72,11 @@ struct SocketOps {
         *mut c_int,
         *mut size_t,
     ) -> bool,
+    close_hook: unsafe extern "C" fn(
+        *mut c_void,
+        unsafe extern "C" fn(*mut c_void, *mut c_void),
+        *mut c_void,
+    ),
 }
 
 unsafe extern "C" {
@@ -350,8 +355,9 @@ impl Socket {
     }
 
     pub(crate) fn connect(&self, host: &CStr, port: i32) -> bool {
-        // SAFETY: a live socket and a NUL-terminated host.
-        unsafe { (native().connect)(self.raw(), host.as_ptr(), port) }
+        let host = host.to_bytes();
+        // SAFETY: a live socket and `host.len()` readable bytes.
+        unsafe { (native().connect)(self.raw(), host.as_ptr().cast(), host.len(), port, 0) }
     }
 
     pub(crate) fn listen(&self, backlog: i32) -> bool {
@@ -472,7 +478,7 @@ pub(crate) unsafe fn x509_read(pem: &[u8], retval: *mut zval) -> Result<(), Bail
 
 /// How a warning is raised.
 #[derive(Clone, Copy)]
-pub(crate) enum Report {
+pub enum Report {
     /// `php_error_docref(NULL, ..)`.
     Docref,
     /// `php_swoole_error`.
@@ -484,7 +490,7 @@ pub(crate) enum Report {
 /// Raise `message` at `level`, trapping a bailout of the error handler.
 /// # Errors
 /// The error handler bailed out.
-pub(crate) fn report(kind: Report, level: i32, message: &CStr) -> Result<(), Bailout> {
+pub fn report(kind: Report, level: i32, message: &CStr) -> Result<(), Bailout> {
     let report = match kind {
         // SAFETY: called while PHP runs.
         Report::Docref => return unsafe { php_error(level, message) },
@@ -496,13 +502,14 @@ pub(crate) fn report(kind: Report, level: i32, message: &CStr) -> Result<(), Bai
 }
 
 /// `php_swoole_check_reactor()`.
-pub(crate) fn check_reactor() {
+pub fn check_reactor() {
     // SAFETY: called while PHP runs.
     unsafe { (ops().check_reactor)() };
 }
 
 /// `swoole_strerror(code)`.
-pub(crate) fn strerror(code: i32) -> &'static CStr {
+#[must_use]
+pub fn strerror(code: i32) -> &'static CStr {
     // SAFETY: a lookup.
     let message = unsafe { (ops().strerror)(code) };
     // SAFETY: Swoole's static message table or strerror's text.
@@ -552,4 +559,128 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
         )
     };
     polled.then(|| ready.into_iter().zip(revents).take(size).collect())
+}
+
+/// What the client classes (crates/phpclients and crates/phphttp2) need of a
+/// `SocketImpl *` beyond the record: its virtual and C++-only members, through
+/// the native table.
+pub mod co {
+    use super::{Io, native};
+    use libc::{c_char, c_int, c_void};
+    use swoole_rs_hooks::{
+        co_socket::CoSocket,
+        lifecycle::swr_v1_hook_co_socket_close,
+        shutdown::{swr_v1_hook_socket_bound_co, swr_v1_hook_socket_flags},
+        socket_members,
+    };
+
+    /// `SW_EVENT_WRITE`.
+    pub const WRITE: u32 = 1 << 10;
+
+    /// A `SocketImpl *`.
+    pub type Socket = *mut c_void;
+
+    /// The socket's record.
+    /// # Safety
+    /// `socket` is live.
+    #[must_use]
+    pub unsafe fn record<'a>(socket: Socket) -> &'a mut CoSocket {
+        // SAFETY: per the caller; the native cast returns the embedded record.
+        let record = unsafe { (native().base)(socket) };
+        // SAFETY: as above.
+        unsafe { &mut *record }
+    }
+
+    /// `close()`; the socket may be gone after it returns true.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn close(socket: Socket) -> bool {
+        // SAFETY: per the caller.
+        let record = unsafe { record(socket) };
+        // SAFETY: a live record.
+        unsafe { swr_v1_hook_co_socket_close(record) }
+    }
+
+    /// `is_connected()`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn is_connected(socket: Socket) -> bool {
+        // SAFETY: per the caller.
+        let record = unsafe { record(socket) };
+        // SAFETY: a live socket's state handle.
+        !record.is_closed() && unsafe { swr_v1_hook_socket_flags(record.state) }.connected
+    }
+
+    /// `has_bound(event)`.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn has_bound(socket: Socket, event: u32) -> bool {
+        // SAFETY: per the caller.
+        let state = unsafe { record(socket) }.state;
+        // SAFETY: a live socket's state handle.
+        !unsafe { swr_v1_hook_socket_bound_co(state, event) }.is_null()
+    }
+
+    /// `recv_packet(timeout)`.
+    /// # Safety
+    /// `socket` is live, in a coroutine.
+    pub unsafe fn recv_packet(socket: Socket, timeout: f64) -> isize {
+        // SAFETY: per the caller; the member is not virtual.
+        unsafe { socket_members::recv_packet(socket, timeout) }
+    }
+
+    /// `send_all(data, length)`.
+    /// # Safety
+    /// `socket` is live and `data` holds `length` readable bytes.
+    pub unsafe fn send_all(socket: Socket, data: *const c_char, length: usize) -> isize {
+        // SAFETY: per the caller; a send only reads the buffer.
+        unsafe { (native().io)(socket, Io::SendAll as c_int, data.cast_mut(), length) }
+    }
+
+    /// `recv(data, length)`.
+    /// # Safety
+    /// `socket` is live and `data` holds `length` writable bytes.
+    pub unsafe fn recv(socket: Socket, data: *mut c_char, length: usize) -> isize {
+        // SAFETY: per the caller.
+        unsafe { (native().io)(socket, Io::Recv as c_int, data, length) }
+    }
+
+    /// `connect(std::string(host, length), port, flags)`.
+    /// # Safety
+    /// `socket` is live and `host` holds `length` readable bytes.
+    pub unsafe fn connect(
+        socket: Socket,
+        host: *const c_char,
+        length: usize,
+        port: c_int,
+        flags: c_int,
+    ) -> bool {
+        // SAFETY: per the caller.
+        unsafe { (native().connect)(socket, host, length, port, flags) }
+    }
+
+    /// `enable_ssl_encrypt()`: false when TLS was already on.
+    /// # Safety
+    /// `socket` is live.
+    pub unsafe fn enable_ssl(socket: Socket) -> bool {
+        // SAFETY: per the caller.
+        if unsafe { (native().ssl_enabled)(socket) } {
+            return false;
+        }
+        // SAFETY: as above.
+        unsafe { (native().ssl_encrypt)(socket) };
+        true
+    }
+
+    /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
+    /// # Safety
+    /// `socket` is live and `hook` may be called with `arg` until then.
+    pub unsafe fn close_hook(
+        socket: Socket,
+        hook: unsafe extern "C" fn(*mut c_void, *mut c_void),
+        arg: *mut c_void,
+    ) {
+        // SAFETY: per the caller.
+        unsafe { (native().close_hook)(socket, hook, arg) };
+    }
 }
