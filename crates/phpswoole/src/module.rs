@@ -121,7 +121,8 @@ unsafe extern "C" {
         module: c_int,
     );
     fn php_swoole_server_minit(module_number: c_int);
-    fn php_swoole_http_request_minit(module_number: c_int);
+    /// crates/phphttp's `Swoole\Http\Request`.
+    fn swr_v1_phphttp_request_minit() -> *mut zend_class_entry;
     fn php_swoole_http_response_minit(module_number: c_int);
     fn php_swoole_http_cookie_minit(module_number: c_int);
     fn php_swoole_http_server_minit(module_number: c_int);
@@ -214,7 +215,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(ops.optional_client_minit),
         // server
         M(php_swoole_server_minit),
-        M(php_swoole_http_request_minit),
+        M(http_request_minit),
         M(php_swoole_http_response_minit),
         M(php_swoole_http_cookie_minit),
         M(php_swoole_http_server_minit),
@@ -250,6 +251,12 @@ unsafe extern "C" fn tracer_minit(_module_number: c_int) {
         // SAFETY: as above.
         unsafe { (*globals).enable_fiber_mock = true };
     }
+}
+
+/// `php_swoole_http_request_minit`.
+unsafe extern "C" fn http_request_minit(_module_number: c_int) {
+    // SAFETY: Rust's MINIT, once.
+    unsafe { swr_v1_phphttp_request_minit() };
 }
 
 /// `php_swoole_client_coro_minit`.

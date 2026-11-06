@@ -121,6 +121,19 @@ pub unsafe fn verified<'a>(serv: *mut c_void, session_id: i64) -> Option<&'a mut
     unsafe { connection(serv, session_id, 2) }
 }
 
+/// `Server::get_connection_by_session_id(session_id)`: the session's slot,
+/// unverified.
+///
+/// # Safety
+/// As [`connection`].
+pub unsafe fn by_session<'a>(
+    serv: *mut c_void,
+    session_id: i64,
+) -> Option<&'a mut ConnectionRecord> {
+    // SAFETY: per the caller.
+    unsafe { connection(serv, session_id, 1) }
+}
+
 /// `Server::get_connection_for_iterator(fd)`.
 ///
 /// # Safety
@@ -240,6 +253,16 @@ pub unsafe fn port_by_fd(serv: *mut c_void, fd: c_int) -> *mut c_void {
     let Some(server_fd) = (unsafe { at(serv, fd) }).map(|conn| conn.server_fd) else {
         return core::ptr::null_mut();
     };
+    // SAFETY: per the caller.
+    unsafe { port_by_server_fd(serv, server_fd) }
+}
+
+/// `Server::get_port_by_server_fd(server_fd)`: the `ListenPort` listening on
+/// `server_fd`, or null.
+///
+/// # Safety
+/// As [`connection`].
+pub unsafe fn port_by_server_fd(serv: *mut c_void, server_fd: c_int) -> *mut c_void {
     // SAFETY: per the caller; a listening socket's record holds its port.
     unsafe { at(serv, server_fd) }.map_or(core::ptr::null_mut(), |listen| listen.object)
 }

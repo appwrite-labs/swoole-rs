@@ -105,11 +105,9 @@ void swr_h2s_wait(void **coroutine);
 void swr_h2s_wake(void *coroutine);
 void swr_h2s_query(struct _zval_struct *array, const char *query, size_t length);
 void swr_h2s_path(void *ctx, const char *path, size_t length);
-void swr_h2s_cookie(struct _zval_struct *array, const char *cookie, size_t length);
 bool swr_h2s_multipart(void *ctx, const char *value, size_t length);
 void swr_h2s_set_header(void *ctx, const char *name, size_t name_length, const char *value, size_t length);
 bool swr_h2s_in_coroutine(void);
-void swr_h2s_log(int level, int error, const char *func, const char *message);
 void swr_h2s_error(int code, int always, const char *message);
 
 #ifdef __cplusplus

@@ -1,7 +1,7 @@
 //! `Swoole\Http\Request`.
 use crate::{
     context::{self, Holder},
-    host::{self, COMPLETED, Context, HTTP_CONTEXT_UNAVAILABLE, HTTP2, swr_http_host_request_free},
+    host::{self, COMPLETED, Context, HTTP_CONTEXT_UNAVAILABLE, HTTP2},
     parse::{self, CAPABILITIES, Property, body, method_name},
     send,
     state::State,
@@ -36,8 +36,12 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees an object this class created.
     let ctx = unsafe { *Holder::data(std) };
     if !ctx.is_null() {
-        // SAFETY: the context the object holds; C++ releases it.
-        unsafe { swr_http_host_request_free(ctx) };
+        let state = send::state(ctx);
+        // SAFETY: the request's own `tmpfiles` slot (null when it has none).
+        unsafe { z::swr_zend_http_uploads_release(state.request.ztmpfiles.ptr) };
+        state.request.zobject.ptr = std::ptr::null_mut();
+        // SAFETY: the context the object held.
+        unsafe { context::swr_v1_phphttp_context_free(ctx) };
     }
     // SAFETY: as above.
     unsafe { Holder::dtor(std) };
@@ -125,11 +129,6 @@ fn get_data(call: &Call) {
     call.set_empty_string();
 }
 
-unsafe extern "C" {
-    /// `new Context()` and its request parser.
-    fn swr_http_host_request_new() -> *mut Context;
-}
-
 /// `SW_Z_BEST_SPEED`.
 const BEST_SPEED: i8 = 1;
 
@@ -138,8 +137,8 @@ fn create_request(call: &Call) {
     let Ok(options) = call.arity(0, 1).and_then(|()| call.array_opt(1)) else {
         return call.set_bool(false);
     };
-    // SAFETY: C++ allocates the context.
-    let ctx = unsafe { swr_http_host_request_new() };
+    let ctx = context::swr_v1_phphttp_context_new();
+    parse::init_request_parser(ctx);
     let object = call.return_value();
     // SAFETY: the return slot and the registered class.
     unsafe { init_object(object, entry()) };

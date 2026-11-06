@@ -118,7 +118,6 @@ pub(crate) use swoole_rs_phphttp::http2::Value;
 unsafe extern "C" {
     fn swr_h2s_query(array: *mut zval, query: *const c_char, length: usize);
     fn swr_h2s_path(ctx: *mut c_void, path: *const c_char, length: usize);
-    fn swr_h2s_cookie(array: *mut zval, cookie: *const c_char, length: usize);
     fn swr_h2s_multipart(ctx: *mut c_void, value: *const c_char, length: usize) -> bool;
     fn swr_h2s_set_header(
         ctx: *mut c_void,
@@ -128,7 +127,6 @@ unsafe extern "C" {
         length: usize,
     );
     fn swr_h2s_in_coroutine() -> bool;
-    fn swr_h2s_log(level: c_int, error: c_int, func: *const c_char, message: *const c_char);
     fn swr_h2s_error(code: c_int, always: c_int, message: *const c_char);
 }
 
@@ -161,9 +159,11 @@ pub(crate) fn zval_of(ctx: *mut c_void, which: Value) -> *mut zval {
 
 /// `swoole_warning` (`error` 0) or `swoole_error_log(level, error)` as `func`.
 pub(crate) fn log(level: c_int, error: c_int, func: &CStr, message: &str) {
-    let message = CString::new(message).unwrap_or_default();
-    // SAFETY: NUL-terminated strings, printed through "%s".
-    unsafe { swr_h2s_log(level, error, func.as_ptr(), message.as_ptr()) };
+    if error > 0 {
+        swoole_rs_corebase::log::error_log(level, error, func, format_args!("{message}"));
+    } else {
+        swoole_rs_corebase::log::warning(func, format_args!("{message}"));
+    }
 }
 
 fn warn(func: &CStr, message: &str) {
@@ -1425,14 +1425,8 @@ fn request_header(
             }
         }
         HEADER_COOKIE => {
-            // SAFETY: the request's `$cookie` and the header value.
-            unsafe {
-                swr_h2s_cookie(
-                    zval_of(ctx, Value::Cookie),
-                    value.as_ptr().cast(),
-                    value.len(),
-                );
-            };
+            // SAFETY: the request's `$cookie`.
+            unsafe { swoole_rs_phphttp::http2::cookie(zval_of(ctx, Value::Cookie), value) };
             return Some(false);
         }
         HEADER_CONTENT_LENGTH => {

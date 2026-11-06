@@ -5,7 +5,7 @@ use crate::{
     host::{
         self, CO_SOCKET, COOKIE, Context, DETACHED, END, HEADER, HEADER_KEY_SIZE,
         HTTP_CONTEXT_UNAVAILABLE, HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED,
-        TRAILER, UPGRADE, WEBSOCKET, swr_http_host_after, swr_http_host_goaway, swr_http_host_recv,
+        TRAILER, UPGRADE, WEBSOCKET, swr_http_host_after, swr_http_host_goaway,
         swr_http_host_redirect,
     },
     send, websocket,
@@ -21,8 +21,8 @@ use swoole_rs_phpstubs::http_response;
 use swoole_rs_zend::{
     Call, Class, Invalid, declare_long, declare_null, handlers, init_object, push_string, set_key,
     sys::{
-        IS_ARRAY, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
-        zend_string,
+        IS_ARRAY, IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long,
+        zend_object, zend_string,
     },
     type_of,
     value::{self, obj_of},
@@ -607,8 +607,25 @@ fn recv(call: &Call) {
     let run = || -> Option<()> {
         let ctx = websocket(call)?;
         let timeout = call.arity(0, 1).and_then(|()| call.double(1, 0.0)).ok()?;
-        // SAFETY: a live coroutine WebSocket context and the return slot.
-        unsafe { swr_http_host_recv(ctx, timeout, call.return_value()) };
+        let state = send::state(ctx);
+        let return_value = call.return_value();
+        let (settings, socket) = (u32::from(state.websocket_settings), state.private_data);
+        websocket::recv(
+            settings,
+            &mut state.ws_buffer,
+            socket,
+            return_value,
+            timeout,
+        );
+        // SAFETY: the frame, or the failure, `recv` left in the return slot.
+        match unsafe { type_of(return_value) } {
+            // `""`: the peer closed.
+            IS_STRING => {
+                context::close(ctx);
+            }
+            IS_NULL => call.set_bool(false),
+            _ => {}
+        }
         Some(())
     };
     or_false(call, run());
@@ -698,9 +715,6 @@ unsafe extern "C" {
     fn swr_http_host_object_kind(object: *mut z::zval, fd: *mut zend_long) -> c_int;
     /// `sw_server()`.
     fn swr_http_host_server() -> *mut c_void;
-    /// A new keep-alive context with `server`'s settings, or one with its
-    /// request parser for a socket (`server` null).
-    fn swr_http_host_response_context(server: *mut c_void) -> *mut Context;
 }
 
 /// `php_swoole_fatal_error(E_WARNING, ...)`, then `RETURN_FALSE`.
@@ -799,9 +813,10 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
         return;
     }
     let ctx = if ctx.is_null() {
-        // SAFETY: the live server, or null for the socket.
-        let ctx = unsafe { swr_http_host_response_context(server) };
+        let ctx = context::swr_v1_phphttp_context_new();
+        send::state(ctx).keepalive = 1;
         if server.is_null() {
+            crate::parse::init_request_parser(ctx);
             // `Context::init(zval *)`.
             let state = send::state(ctx);
             state.parse_cookie = 1;
@@ -811,6 +826,9 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
                 state.enable_compression = 1;
                 state.compression_level = 1;
             }
+        } else {
+            // SAFETY: the live server.
+            unsafe { context::swr_v1_phphttp_context_init(ctx, server) };
         }
         ctx
     } else {

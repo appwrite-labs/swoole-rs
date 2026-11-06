@@ -21,6 +21,13 @@ zend_long swr_zend_http_max_input_vars(void);
 /* Append `file` to the request's `tmpfiles` and register it in
  * SG(rfc1867_uploaded_files) for is_uploaded_file()/move_uploaded_file(). */
 void swr_zend_http_upload(zval *tmpfiles, const char *file, size_t length);
+/* Swoole's copy of php_default_treat_data for PARSE_STRING and PARSE_COOKIE:
+ * the variables in `str` (an emalloc'd string it frees) into `array`. False
+ * when it stopped at PG(max_input_vars), for the caller's warning. */
+bool swr_zend_http_treat_data(int arg, char *str, zval *array);
+/* Unlink the request's uploaded files and forget them in
+ * SG(rfc1867_uploaded_files). */
+void swr_zend_http_uploads_release(zval *tmpfiles);
 /* zval_get_string, as a zend::bailout::trap body (it may run __toString):
  * `arg` is a swr_zend_http_string. */
 typedef struct {
