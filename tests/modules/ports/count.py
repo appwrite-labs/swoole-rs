@@ -60,7 +60,7 @@ def main(signatures=None,witness=None,scope=None,support=None,source_path="src/s
     common=['c++','-std=c++17','-O1','-UNDEBUG']
     if a.sanitize:common+=['-fsanitize=address,undefined','-fno-sanitize-recover=all','-g']
     original=[*common,'-c','-DPORTS_SIDE=original','-I'+str(folder/'original'),str(witness),'-o',str(folder/'original.o')]
-    command=[*common,'-DPORTS_SIDE=selected','-DPORTS_DRIVER','-I'+str(folder/'selected'),*hybrid_flags,*[part for header in sorted(headers) for part in ('-include',header)],str(witness),str(folder/'original.o'),str(a.archive.resolve()),'-lpthread','-o',str(folder/'count')]
+    command=[*common,'-DPORTS_SIDE=selected','-DPORTS_DRIVER','-I'+str(folder/'selected'),*hybrid_flags,*[part for header in sorted(headers) for part in ('-include',header)],str(witness),str(folder/'original.o'),str(a.archive.resolve()),'-lpthread',*(['-Wl,--gc-sections'] if sys.platform=='linux' else []),'-o',str(folder/'count')]
     if sys.platform=='linux':command+=['-ldl','-lm']
     checked_space();r=run_isolated(original,timeout=90)
     if not r.returncode:r=run_isolated(command,timeout=90)
