@@ -41,6 +41,26 @@ unsafe fn state<'a>(serv: *mut c_void) -> &'a ServerState {
     unsafe { &*state }
 }
 
+/// `serv->onX = f`: callback slot `index` (`callbacks::CB_*`) now calls `invoke`, a
+/// Rust `extern "C"` fn taking a null `ctx` and then the member's own arguments.
+///
+/// # Safety
+/// `serv` is a live `Server` whose slot no other thread reads meanwhile, and
+/// `invoke` has the slot's signature.
+pub unsafe fn set_callback(serv: *mut c_void, index: u32, invoke: *const c_void) {
+    // SAFETY: per the caller.
+    unsafe { state(serv) }.callbacks.slot(index).set(invoke);
+}
+
+/// `serv->onX != nullptr` of callback slot `index`.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+pub unsafe fn has_callback(serv: *mut c_void, index: u32) -> bool {
+    // SAFETY: per the caller.
+    unsafe { state(serv) }.callbacks.slot(index).is_set()
+}
+
 /// The server's configuration.
 ///
 /// # Safety

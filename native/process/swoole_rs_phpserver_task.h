@@ -39,10 +39,6 @@ typedef struct {
 } swr_v1_phpserver_task_host;
 
 void swr_v1_phpserver_task_init(const swr_v1_phpserver_task_host *table);
-/* onTask/onFinish: write the callback's SW_OK/SW_ERR to *result; true if the C++ caller must
- * re-raise a bailout. */
-bool swr_v1_phpserver_on_task(void *server, void *req, int *result);
-bool swr_v1_phpserver_on_finish(void *server, void *req, int *result);
 /* php_swoole_server_task_pack: `data` (a string, or serialized) into `buf`; the task id, or -1;
  * *bailed when it bailed out. */
 int64_t swr_v1_phpserver_task_pack(struct _zval_struct *data, void *buf, bool *bailed);

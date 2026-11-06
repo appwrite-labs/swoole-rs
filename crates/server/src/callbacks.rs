@@ -14,14 +14,28 @@ use core::sync::atomic::Ordering::Relaxed;
 
 // Slots, in `SWR_SERVER_CB_*` order. The first seven are also `OP_CALLBACK`'s
 // argument and the callback its logs name.
-pub(crate) const CB_CONNECT: u32 = 0;
-pub(crate) const CB_CLOSE: u32 = 1;
-pub(crate) const CB_BUFFER_FULL: u32 = 2;
-pub(crate) const CB_BUFFER_EMPTY: u32 = 3;
-pub(crate) const CB_TASK: u32 = 4;
-pub(crate) const CB_RECEIVE: u32 = 5;
-pub(crate) const CB_PACKET: u32 = 6;
-pub(crate) const CB_DISPATCH_FUNC: u32 = 21;
+pub const CB_CONNECT: u32 = 0;
+pub const CB_CLOSE: u32 = 1;
+pub const CB_BUFFER_FULL: u32 = 2;
+pub const CB_BUFFER_EMPTY: u32 = 3;
+pub const CB_TASK: u32 = 4;
+pub const CB_RECEIVE: u32 = 5;
+pub const CB_PACKET: u32 = 6;
+pub const CB_START: u32 = 7;
+pub const CB_BEFORE_SHUTDOWN: u32 = 8;
+pub const CB_SHUTDOWN: u32 = 9;
+pub const CB_MANAGER_START: u32 = 10;
+pub const CB_MANAGER_STOP: u32 = 11;
+pub const CB_WORKER_ERROR: u32 = 12;
+pub const CB_BEFORE_RELOAD: u32 = 13;
+pub const CB_AFTER_RELOAD: u32 = 14;
+pub const CB_PIPE_MESSAGE: u32 = 15;
+pub const CB_WORKER_START: u32 = 16;
+pub const CB_WORKER_STOP: u32 = 17;
+pub const CB_WORKER_EXIT: u32 = 18;
+pub const CB_USER_WORKER_START: u32 = 19;
+pub const CB_FINISH: u32 = 20;
+pub const CB_DISPATCH_FUNC: u32 = 21;
 /// `SWR_SERVER_CB_COUNT`.
 pub(crate) const CB_COUNT: usize = 22;
 
@@ -46,6 +60,13 @@ impl CallbackSlot {
 
     pub(crate) fn is_set(&self) -> bool {
         !self.invoke.load(Relaxed).is_null()
+    }
+
+    /// `serv->onX = f` for a Rust `f` of the slot's signature, called with a
+    /// null `ctx`: frees what the slot held first.
+    pub(crate) fn set(&self, invoke: *const c_void) {
+        self.clear();
+        self.invoke.store(invoke.cast_mut(), Relaxed);
     }
 
     /// `serv->onX = nullptr`: empties the slot, then frees what it held.

@@ -27,8 +27,6 @@ typedef struct {
     void (*warn)(int kind, const char *name);
     void *(*callable_create)(struct _zval_struct *callable);
     void (*callable_free)(void *callable);
-    /* Install the Server's C++ handler for a SWR_PORTS_HOOK_* if unset. */
-    void (*hook)(void *server, uint32_t hook);
     /* The ListenPort settings and TLS block of set(); false: return false. */
     bool (*settings)(void *port, void *property, struct _zend_array *settings);
     /* getSocket() of a bound port. */

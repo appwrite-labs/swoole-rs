@@ -183,3 +183,16 @@ pub(crate) fn resume(co: Co) {
     // SAFETY: a live coroutine.
     unsafe { (ops().resume)(co) };
 }
+
+/// Wake a parked coroutine: `Coroutine::resume()`, or `cancel()` so its yield
+/// fails. As [`resume`], the caller's frames must own nothing that needs a drop.
+/// # Safety
+/// `co` is a live, parked coroutine.
+pub unsafe fn wake(co: Co, cancel: bool) {
+    if cancel {
+        // SAFETY: a live coroutine.
+        unsafe { (ops().cancel)(co) };
+    } else {
+        resume(co);
+    }
+}
