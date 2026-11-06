@@ -12,8 +12,8 @@ import pytest
 from tools.build_hybrid import hybrid_tree
 from tools.harness import ROOT, run_compiler, run_isolated
 
-# The hybrid deletes string.cc: Rust defines String's methods.
-SOURCES = ['src/core/string.cc', 'src/core/base.cc', 'src/os/base.cc', 'src/core/base64.cc', 'src/core/log.cc',
+# The hybrid deletes string.cc (Rust defines String's methods) and base.cc (its glue is in misc.cc).
+SOURCES = ['src/core/string.cc', 'src/core/base.cc', 'src/core/misc.cc', 'src/os/base.cc', 'src/core/base64.cc', 'src/core/log.cc',
            'src/core/error.cc']
 
 

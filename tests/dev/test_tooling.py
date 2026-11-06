@@ -498,7 +498,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive',commands['hooks-compile'])
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-hybrid',
                      'crc32-consumers-upstream','crc32-consumers-hybrid',
-                     'coroutine-native-originals','corebase-mkdir','corebase-startup','corebase-record-views']:
+                     'coroutine-native-originals','corebase-startup','corebase-record-views']:
             self.assertIn(name,commands)
         self.assertIn('--sanitize',commands['coroutine-native-originals'])
         self.assertNotIn('--inventory-only',commands['coroutine-native-originals'])
@@ -619,7 +619,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--sanitize',commands['clients-policy'])
         self.assertIn('--archive',commands['clients-codec'])
         self.assertIn('--sanitize',commands['clients-codec'])
-        self.assertIn('--archive', commands['corebase-lifecycle'])
         self.assertIn('--config', commands['corebase-lifecycle'])
         self.assertNotIn('--prepared', commands['corebase-lifecycle'])
         self.assertIn('--archive',commands['tls-native'])

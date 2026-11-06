@@ -1,0 +1,17 @@
+diff --git a/src/core/misc.cc b/src/core/misc.cc
+index 63f90da..2767f5b 100644
+--- a/src/core/misc.cc
++++ b/src/core/misc.cc
+@@ -107,5 +107,3 @@ static void corebase_log(int kind, int level, int code, const char *origin, cons
+ }
+-static const bool corebase_log_registered = (swr_v1_core_set_log_host(corebase_log),
+-                                             swr_v1_core_set_native_host({swoole_fork, swoole_get_env}),
+-                                             true);
++static const bool corebase_log_registered = (swr_v1_core_set_log_host(corebase_log), true);
+ 
+@@ -121,2 +119,5 @@ static void bug_report_message_init() {
+ void swoole_init() {
++    // Here, not at load: swoole_fork reaches the timer, event, signal and memory code, which
++    // a binary that links this file without calling swoole_init does not need.
++    swr_v1_core_set_native_host({swoole_fork, swoole_get_env});
+     if (!swr_v1_core_init()) {

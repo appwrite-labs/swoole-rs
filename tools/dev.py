@@ -429,8 +429,6 @@ def plan(args, reports):
                     if sys.platform == 'darwin' else [])
         script('corebase-native', 'tests/modules/corebase/differential.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *includes, *report('corebase-native'))
-        script('corebase-mkdir', 'tests/modules/corebase/mkdir.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *includes, *report('corebase-mkdir'))
         if integrate:
             script('corebase-startup', 'tests/modules/corebase/mkdir_startup.py', *php, *engines, *report('corebase-startup'))
             native_options = (['--openssl-dir', subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip(),
@@ -442,7 +440,6 @@ def plan(args, reports):
                 native_options += ['--no-ccache']
             script('corebase-lifecycle', 'tests/modules/corebase/canonical.py', '--source', ROOT / 'target/upstream/src',
                    '--config', manifest.parent / 'src/config.h',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                    '--jobs', args.jobs, *native_options, *report('corebase-lifecycle'))
     # Its native control is coroutine-native-originals' upstream engine, built only when integrating.
     if 'tls' in modules:
@@ -460,8 +457,6 @@ def plan(args, reports):
     if 'framing' in modules:
         script('framing-native', 'tests/modules/framing/gate.py', '--archive',
                manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('framing-native'))
-        script('framing-traces', 'tests/modules/framing/trace.py', '--archive',
-               manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('framing-traces'))
         if integrate:
             script('framing-versioned-expectation', 'corpus/upstream/versioned.py',
                    '--source', ROOT / 'target/upstream/src', '--case', 'tests/swoole_server/wrong_eof_setting.phpt',

@@ -476,12 +476,20 @@ fn change(
     }
 }
 
+/// Linux's request numbers, typed for its `ioctl` (`c_int` on musl, `c_ulong` on glibc).
+#[cfg(target_os = "linux")]
+const SIOCGIFNAME: libc::Ioctl = 0x8910;
+#[cfg(target_os = "linux")]
+const SIOCGIFADDR: libc::Ioctl = 0x8915;
+#[cfg(not(target_os = "linux"))]
+use libc::SIOCGIFADDR;
+
 /// `SIOCGIFNAME`: the interface's name into `request`.
 #[cfg(target_os = "linux")]
 fn interface_name(fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool {
     request.ifr_ifru.ifru_ifindex = c_int::try_from(index).unwrap_or(-1);
     // SAFETY: a writable request.
-    unsafe { libc::ioctl(fd, libc::SIOCGIFNAME, ptr::from_mut(request)) != -1 }
+    unsafe { libc::ioctl(fd, SIOCGIFNAME, ptr::from_mut(request)) != -1 }
 }
 
 /// `if_indextoname`: the interface's name into `request`.
@@ -501,7 +509,7 @@ fn interface_address(s: Sock, index: c_uint) -> Result<Option<in_addr>, Stop> {
     let mut request: libc::ifreq = zeroed();
     let named = interface_name(s.fd, index, &mut request);
     // SAFETY: a writable request.
-    if !named || unsafe { libc::ioctl(s.fd, libc::SIOCGIFADDR, &raw mut request) } == -1 {
+    if !named || unsafe { libc::ioctl(s.fd, SIOCGIFADDR, &raw mut request) } == -1 {
         let error = errno();
         warn(format!("Failed obtaining address for interface {index}: error {error}").as_bytes())?;
         return Ok(None);
