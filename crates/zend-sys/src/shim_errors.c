@@ -21,6 +21,13 @@ int swr_zend_try_zend_error(int level, const char *message) {
     SWR_TRAP(zend_error(level, "%s", message));
 }
 
+void swr_v1_core_set_last_error(int code);
+
+void swr_zend_callable_warning(const char *message) {
+    swr_v1_core_set_last_error(503); /* SW_ERROR_PHP_FATAL_ERROR */
+    php_error_docref(NULL, E_WARNING, "%s", message);
+}
+
 int swr_zend_try_report(void (*report)(const char *message), const char *message) {
     SWR_TRAP(report(message));
 }

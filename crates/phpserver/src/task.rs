@@ -3,10 +3,11 @@
 //! events. Rust owns the callbacks of pending tasks and the coroutines that
 //! wait for results (upstream's `ServerProperty::task_callbacks` and
 //! `task_coroutine_map`), and the task encoding (a string, or PHP's serialize
-//! with `SW_TASK_SERIALIZE`); C++ keeps the Server, its `task_pack`,
-//! `task_unpack` and `finish`, and the coroutine
+//! with `SW_TASK_SERIALIZE`), packed and sent by crates/process's `Server`
+//! methods. C++ keeps `task_unpack`'s thread buffer, `taskWaitMulti`'s
+//! `MultiTask`, the callables and the coroutine
 //! (`native/process/swoole_rs_phpserver_task.h`).
-use crate::dispatch::{handler_error, server_callback, server_zval, set_last_error};
+use crate::dispatch::{handler_error, invoke, server_callback, server_zval, set_last_error};
 use crate::server::{DATA, TASK, fatal, running};
 use std::{
     cell::RefCell,
@@ -14,6 +15,10 @@ use std::{
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
+};
+use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_process::{
+    process_pool::SW_IPC_MAX_SIZE, task_file, task_sync, workers::entry::finish,
 };
 use swoole_rs_zend::{
     Call, E_WARNING,
@@ -45,6 +50,9 @@ const TASKWAIT_TIMEOUT: f64 = 0.5;
 /// `SW_ERROR_PHP_FATAL_ERROR`, `SW_ERROR_TASK_DISPATCH_FAIL`.
 const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
 const SW_ERROR_TASK_DISPATCH_FAIL: c_int = 2002;
+/// `SW_ERROR_TASK_TIMEOUT`, `SW_LOG_WARNING`.
+const SW_ERROR_TASK_TIMEOUT: c_int = 2003;
+const SW_LOG_WARNING: c_int = 4;
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
 /// `DATA`'s `Swoole\Server\TaskResult`.
@@ -61,9 +69,7 @@ struct Facts {
     task_worker_num: i64,
 }
 
-/// `swr_phpserver_task_info`.
-#[repr(C)]
-#[derive(Default)]
+/// A task's `get_task_id`, `get_task_src_worker_id`, `info.time` and `info.ext_flags`.
 struct Info {
     id: i64,
     worker_id: i64,
@@ -74,33 +80,14 @@ struct Info {
 /// `swr_v1_phpserver_task_host`.
 #[repr(C)]
 pub struct TaskHost {
-    pack: unsafe extern "C" fn(*mut c_void, *const c_char, usize) -> i64,
     unpack: unsafe extern "C" fn(*mut c_void, *mut *const c_char, *mut usize, *mut u32) -> bool,
-    log_unserialize: unsafe extern "C" fn(i64, usize),
-    flag: unsafe extern "C" fn(*mut c_void, u32),
-    size: unsafe extern "C" fn(*mut c_void) -> usize,
-    info: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut Info),
-    dispatch: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_int) -> bool,
-    dispatch_wait: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        *mut c_int,
-        f64,
-        *mut zval,
-        *mut bool,
-    ) -> bool,
     dispatch_multi: unsafe extern "C" fn(*mut c_void, *mut zval, f64, *mut zval, *mut bool) -> bool,
-    tasking_done: unsafe extern "C" fn(*mut c_void),
-    bind_task: unsafe extern "C" fn(*mut zend_object, *mut c_void, *mut c_void),
-    finish: unsafe extern "C" fn(*mut c_void, *const c_char, usize, c_int, *mut c_void) -> bool,
     callable_create: unsafe extern "C" fn(*mut zval) -> *mut c_void,
     callable_free: unsafe extern "C" fn(*mut c_void),
-    call: unsafe extern "C" fn(*mut c_void, u32, *mut zval, *mut zval, bool) -> c_int,
     co_current: unsafe extern "C" fn(*mut bool) -> *mut c_void,
     co_in: unsafe extern "C" fn() -> bool,
     co_yield: unsafe extern "C" fn(*mut c_void, f64) -> bool,
     co_resume: unsafe extern "C" fn(*mut c_void),
-    log_expired: unsafe extern "C" fn(i64),
 }
 
 static HOST: AtomicPtr<TaskHost> = AtomicPtr::new(ptr::null_mut());
@@ -175,11 +162,20 @@ fn facts(server: *mut c_void) -> Facts {
     }
 }
 
-fn info(server: *mut c_void, req: *mut c_void) -> Info {
-    let mut info = Info::default();
-    // SAFETY: a live server and its task.
-    unsafe { (host().info)(server, req, &raw mut info) };
-    info
+/// An `EventData`'s `DataHead`.
+fn head<'a>(buf: *mut c_void) -> &'a mut DataHead {
+    // SAFETY: every `EventData` starts with its `DataHead`.
+    unsafe { &mut *buf.cast::<DataHead>() }
+}
+
+fn info(req: *mut c_void) -> Info {
+    let head = head(req);
+    Info {
+        id: head.fd,
+        worker_id: i64::from(head.reactor_id),
+        time: head.time,
+        flags: i64::from(head.ext_flags),
+    }
 }
 
 fn undef() -> zval {
@@ -218,11 +214,14 @@ fn encoded<R>(data: *mut zval, each: impl FnOnce(&[u8], bool) -> R) -> Result<Op
 
 /// `php_swoole_server_task_pack`: pack `data` into `buf`; the task id, or -1.
 fn encode(data: *mut zval, buf: *mut c_void) -> Result<i64, Bailout> {
-    let host = host();
     let packed = encoded(data, |payload, serialized| {
         // SAFETY: a writable `EventData` and the payload's bytes.
-        let id = unsafe { (host.pack)(buf, payload.as_ptr().cast(), payload.len()) };
-        (id, serialized)
+        if !unsafe { task_file::task_pack(buf.cast(), payload.as_ptr().cast(), payload.len()) } {
+            let head = head(buf);
+            head.fd = -1;
+            head.len = 0;
+        }
+        (head(buf).fd, serialized)
     })?;
     let Some((id, serialized)) = packed else {
         return Ok(-1);
@@ -231,8 +230,7 @@ fn encode(data: *mut zval, buf: *mut c_void) -> Result<i64, Bailout> {
         event_warning(c"large task pack failed")?;
     }
     if serialized {
-        // SAFETY: the `EventData` packed above.
-        unsafe { (host.flag)(buf, SERIALIZE) };
+        add_flags(buf, SERIALIZE);
     }
     Ok(id)
 }
@@ -257,8 +255,10 @@ fn decode(buf: *mut c_void, out: *mut zval) -> Result<bool, Bailout> {
         return Err(Bailout);
     }
     if !done {
-        // SAFETY: a log line C++ formats.
-        unsafe { (host.log_unserialize)(i64::try_from(offset).unwrap_or(i64::MAX), length) };
+        log::warning(
+            c"php_swoole_server_task_unpack",
+            format_args!("unserialize() failed, Error at offset {offset} of {length} bytes"),
+        );
     }
     Ok(done)
 }
@@ -277,7 +277,7 @@ pub(crate) fn finish_task(
             0
         };
         // SAFETY: a live server, the payload's bytes and the task, or null.
-        unsafe { (host().finish)(server, payload.as_ptr().cast(), payload.len(), flags, req) }
+        unsafe { finish(server, payload.as_ptr().cast(), payload.len(), flags, req) }
     })?;
     Ok(finished.unwrap_or(false))
 }
@@ -325,13 +325,20 @@ pub(crate) fn pack(data: *mut zval, buf: &mut EventData) -> i64 {
 }
 
 fn flag(buf: &mut EventData, flags: u32) {
-    // SAFETY: a packed `EventData`.
-    unsafe { (host().flag)(buf.ptr(), flags) };
+    add_flags(buf.ptr(), flags);
 }
 
+/// `buf->info.ext_flags |= flags`.
+fn add_flags(buf: *mut c_void, flags: u32) {
+    #[expect(clippy::cast_possible_truncation, reason = "ext_flags is a uint16_t")]
+    let flags = flags as u16;
+    head(buf).ext_flags |= flags;
+}
+
+/// `serv->task(buf, dst_worker_id)`.
 fn dispatch(server: *mut c_void, buf: &mut EventData, dst: &mut c_int) -> bool {
     // SAFETY: a live server and a packed task.
-    unsafe { (host().dispatch)(server, buf.ptr(), dst) }
+    unsafe { task_sync::task(server, buf.ptr().cast(), dst, false) }
 }
 
 /// `php_swoole_server_task_check_param`.
@@ -445,21 +452,26 @@ fn taskwait(call: &Call) {
     let host = host();
     // SAFETY: plain state.
     if !unsafe { (host.co_in)() } {
-        let mut bailed = false;
-        // SAFETY: a live server, a packed task and the return slot.
-        let done = unsafe {
-            (host.dispatch_wait)(
-                serv,
-                buf.ptr(),
-                &raw mut dst,
-                timeout,
-                call.return_value(),
-                &raw mut bailed,
-            )
-        };
-        if bailed {
-            Bailout.defer();
-        }
+        // SAFETY: a live server and a packed task.
+        let sent = unsafe { task_sync::task_sync(serv, buf.ptr().cast(), &raw mut dst, timeout) };
+        // `serv->get_task_result()`: this worker's slot of `task_results`.
+        let result = sent.then(|| {
+            // SAFETY: a live server; `task_results` holds an `EventData`
+            // (`SW_IPC_MAX_SIZE` bytes) per worker.
+            let results = unsafe { swoole_rs_server::view::config(serv) }.task_results;
+            let slot = usize::try_from(crate::server::worker_id()).unwrap_or_default();
+            let size = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or_default();
+            results
+                .cast::<u8>()
+                .wrapping_add(slot * size)
+                .cast::<c_void>()
+        });
+        let done = result.is_some_and(|result| {
+            decode(result, call.return_value()).unwrap_or_else(|bailout| {
+                bailout.defer();
+                false
+            })
+        });
         if !done {
             call.set_bool(false);
         }
@@ -641,8 +653,8 @@ fn pack_method(call: &Call) {
         return call.set_bool(false);
     }
     flag(&mut buf, NONBLOCK | NOREPLY);
-    // SAFETY: the packed task.
-    let size = unsafe { (host().size)(buf.ptr()) };
+    // `EventData::size()`.
+    let size = size_of::<DataHead>() + head(buf.ptr()).len as usize;
     // RETURN_STRINGL: `size` bytes of the buffer, copied.
     // SAFETY: the return slot and the buffer's bytes.
     unsafe {
@@ -723,15 +735,15 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_task(
 }
 
 fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
-    let host = host();
     // SAFETY: a live server.
-    unsafe { (host.tasking_done)(server) };
+    let counters = unsafe { swoole_rs_server::view::counters(server) };
+    counters.tasking_num.fetch_sub(1, Ordering::SeqCst);
     let zserv = server_zval(server);
     let Some(mut data) = unpack(req)? else {
         return Ok(SW_ERR);
     };
     let facts = facts(server);
-    let info = info(server, req);
+    let info = info(req);
     let mut args = [zserv, undef(), undef(), undef()];
     let argc = if facts.task_object {
         let ce = TASK.entry();
@@ -739,8 +751,7 @@ fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
         unsafe { init_object(&raw mut args[1], ce) };
         // SAFETY: an object zval.
         let object = unsafe { object_of(&raw const args[1]) };
-        // SAFETY: a new Task object, the server and its task.
-        unsafe { (host.bind_task)(object, server, req) };
+        crate::server::task_bind(object, server, head(req));
         set_long(ce, object, c"worker_id", info.worker_id);
         set_long(ce, object, c"id", info.id);
         set_value(ce, object, c"data", &raw mut data);
@@ -755,20 +766,9 @@ fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
     };
     let mut retval = undef();
     let cb = server_callback(server, ON_TASK);
-    // SAFETY: the server's onTask callable and `argc` initialised arguments.
-    let called = unsafe {
-        (host.call)(
-            cb,
-            argc,
-            args.as_mut_ptr(),
-            &raw mut retval,
-            facts.task_coroutine,
-        )
-    };
-    let outcome = match called {
-        2 => Err(Bailout),
-        0 => handler_error(&zserv, "onTask"),
-        _ => Ok(()),
+    let outcome = match invoke(cb, &mut args[..argc], &raw mut retval, facts.task_coroutine) {
+        Ok(false) => handler_error(&zserv, "onTask"),
+        called => called.map(drop),
     };
     if argc == 2 {
         dtor(&mut args[1]);
@@ -804,7 +804,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_finish(
 fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
     let host = host();
     let zserv = server_zval(server);
-    let info = info(server, req);
+    let info = info(req);
     let id = info.id;
     let Some(mut data) = unpack(req)? else {
         return Ok(SW_ERR);
@@ -850,20 +850,14 @@ fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
         args[2] = data;
         3
     };
-    // SAFETY: a live callable and `argc` initialised arguments.
-    let called = unsafe {
-        (host.call)(
-            cb,
-            argc,
-            args.as_mut_ptr(),
-            ptr::null_mut(),
-            facts.enable_coroutine,
-        )
-    };
-    let outcome = match called {
-        2 => Err(Bailout),
-        0 => handler_error(&zserv, "onFinish"),
-        _ => Ok(()),
+    let outcome = match invoke(
+        cb,
+        &mut args[..argc],
+        ptr::null_mut(),
+        facts.enable_coroutine,
+    ) {
+        Ok(false) => handler_error(&zserv, "onFinish"),
+        called => called.map(drop),
     };
     if flags & CALLBACK != 0
         && let Some(cb) = pending(server, |p| p.callbacks.remove(&id))
@@ -883,8 +877,12 @@ fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
 fn resume(server: *mut c_void, id: i64, mut data: zval) -> Result<(), Bailout> {
     let host = host();
     let Some(task_co) = pending(server, |p| p.coroutines.get(&id).copied()) else {
-        // SAFETY: a log line.
-        unsafe { (host.log_expired)(id) };
+        log::error_log(
+            SW_LOG_WARNING,
+            SW_ERROR_TASK_TIMEOUT,
+            c"php_swoole_server_onFinish",
+            format_args!("task[{id}] has expired"),
+        );
         dtor(&mut data);
         return Ok(());
     };

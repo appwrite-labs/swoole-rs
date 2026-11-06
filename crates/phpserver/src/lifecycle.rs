@@ -167,7 +167,6 @@ pub struct LifecycleHost {
         Done,
         *mut c_void,
     ) -> bool,
-    call: unsafe extern "C" fn(*mut c_void, u32, *mut zval, *mut zval) -> c_int,
     co_current: unsafe extern "C" fn(*mut bool) -> *mut c_void,
     co_suspending: unsafe extern "C" fn(*mut c_void) -> bool,
     co_yield: unsafe extern "C" fn(*mut c_void),
@@ -746,13 +745,12 @@ pub unsafe extern "C" fn swr_v1_phpserver_command_run(
     unsafe { swr_zval_stringl(&raw mut args[1], message, length) };
     // SAFETY: as above.
     let mut retval: zval = unsafe { std::mem::zeroed() };
-    // SAFETY: a live callable and two arguments.
-    let called = unsafe { (host().call)(callable, 2, args.as_mut_ptr(), &raw mut retval) };
+    let called = crate::dispatch::invoke(callable, &mut args, &raw mut retval, false);
     // SAFETY: the message string made above.
     unsafe { zval_ptr_dtor(&raw mut args[1]) };
     match called {
-        2 => true,
-        0 => {
+        Err(_) => true,
+        Ok(false) => {
             set_last_error(crate::server::SW_ERROR_PHP_FATAL_ERROR);
             // SAFETY: a warning, from a callback C++ runs.
             if unsafe { php_error(E_WARNING, c"Swoole\\Server: command handler error") }.is_err() {
@@ -761,7 +759,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_command_run(
             send(br#"{"data": "failed to call function", "code": -1}"#);
             false
         }
-        _ => {
+        Ok(true) => {
             // SAFETY: the call's result.
             match unsafe { swoole_rs_zend::string_of(&raw const retval) } {
                 Some(text) => send(text),

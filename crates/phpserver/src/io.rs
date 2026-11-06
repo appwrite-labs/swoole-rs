@@ -38,7 +38,6 @@ pub struct IoHost {
     has_pipe_message: unsafe extern "C" fn(*mut c_void) -> bool,
     core_worker_num: unsafe extern "C" fn(*mut c_void) -> i64,
     send_message: unsafe extern "C" fn(*mut c_void, *mut c_void, i64) -> bool,
-    task_server: unsafe extern "C" fn(*mut zend_object) -> *mut c_void,
 }
 
 static HOST: AtomicPtr<IoHost> = AtomicPtr::new(ptr::null_mut());
@@ -387,9 +386,8 @@ fn finish(call: &Call) {
 }
 
 fn task_finish(call: &Call) {
-    let host = host();
-    // SAFETY: `$this` is a Task; an `E_ERROR` when it has no server.
-    let serv = unsafe { (host.task_server)(call.this()) };
+    // `$this` is a Task; an `E_ERROR` when it has no server.
+    let serv = crate::server::task_server(call.this());
     // SAFETY: a live server.
     if !unsafe { swoole_rs_server::view::is_started(serv) } {
         fatal(E_WARNING, c"server is not running");

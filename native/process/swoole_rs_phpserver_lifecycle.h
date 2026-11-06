@@ -128,8 +128,6 @@ typedef struct {
     bool (*command)(void *server, int64_t process_id, int64_t process_type, const char *name, size_t name_length,
                     const char *data, size_t length, void *(*done)(void *context, const char *message, size_t length),
                     void *context);
-    /* zend::function::call(callable, argc, args, retval, false) in zend_try: 0 failed, 1 ok, 2 bailed out. */
-    int (*call)(void *callable, uint32_t argc, struct _zval_struct *args, struct _zval_struct *retval);
     /* Coroutine::get_current_safe() in zend_try (*bailed when it bailed out), is_suspending() and
      * yield(). */
     void *(*co_current)(bool *bailed);
