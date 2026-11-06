@@ -9,12 +9,14 @@ name = "swoole_rs_memory"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-# Heap's members under their upstream C++ symbols (crates/ffi enables it).
+# The pools', heap's and table's members under their upstream C++ symbols (crates/ffi enables it).
 upstream-symbols = []
 
 [dependencies]
 libc = "=0.2.191"
+swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-locks = { path = "../locks" }
+swoole-rs-utilities = { path = "../utilities" }
 
 [lints]
 workspace = true

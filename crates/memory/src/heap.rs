@@ -370,17 +370,6 @@ pub unsafe extern "C" fn swr_v1_memory_heap_pop(heap: *mut c_void) -> *mut c_voi
     heap.pop()
 }
 
-/// Defines each listed function under its upstream `swoole::Heap` symbol with
-/// `upstream-symbols`. `uint64_t` is `unsigned long long` on macOS and `unsigned long`
-/// on Linux, which the symbols spell.
-macro_rules! upstream {
-    ($($linux:literal, $macos:literal => $item:item)*) => {$(
-        #[cfg_attr(all(feature = "upstream-symbols", not(target_os = "macos")), unsafe(export_name = $linux))]
-        #[cfg_attr(all(feature = "upstream-symbols", target_os = "macos"), unsafe(export_name = $macos))]
-        $item
-    )*};
-}
-
 /// `swoole::Heap` (`include/swoole_heap.h`): the Rust heap behind its one member.
 /// Its constructor stays C++, since it throws.
 #[repr(C)]

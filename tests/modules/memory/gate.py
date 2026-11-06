@@ -101,8 +101,12 @@ def main():
                                 return Counter()
                             return Counter(re.sub(r'\s+', '', value) for value in re.findall(r'\bassert\s*\((.*?)\);', path.read_text(), re.S))
                         original = expressions(directory / 'upstream' / source)
-                        # A source whose methods moved inline keeps its assertions in its header.
+                        # A source whose methods moved inline keeps its assertions in its header;
+                        # a deleted one's are Rust asserts, each under a `// assert(...);` comment
+                        # (crates/memory/src/members.rs).
                         selected = expressions(hybrid / INLINED.get(source, source))
+                        if not (hybrid / source).exists() and source not in INLINED:
+                            selected = sum((expressions(path) for path in sorted((ROOT / 'crates/memory/src').glob('*.rs'))), Counter())
                         missing = original - selected
                         if missing:
                             raise ValueError(f'Original assertions removed from {source}: {dict(missing)}')

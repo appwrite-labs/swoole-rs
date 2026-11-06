@@ -14,42 +14,6 @@ typedef struct swr_v1_memory_table_row swr_v1_memory_table_link;
 typedef struct swr_v1_memory_table_column swr_v1_memory_table_column_link;
 typedef struct swr_v1_memory_table swr_v1_memory_table;
 #endif
-/* Single-use whole SharedMemory operation cursor. OS constants/results are
- * copied Native facts, never guessed Rust libc values or Native class objects.
- * phase0 starts; Native changes only memory/descriptor/result after each effect.
- * All effects run after return; state/output/live extents are disjoint. */
-typedef struct swr_v2_memory_mapping_operation {
-    size_t requested;
-    uint8_t *source, *memory;
-    size_t total;
-    uint32_t kind, phase;
-    int32_t flags, descriptor, result;
-    uint32_t anonymous;
-    int32_t anonymous_flags;
-} swr_v2_memory_mapping_operation;
-typedef struct swr_v2_memory_mapping_effect {
-    void *memory;
-    size_t size;
-    int32_t descriptor, flags;
-    uint32_t action;
-    int32_t result;
-} swr_v2_memory_mapping_effect;
-enum swr_v2_memory_mapping_kind {
-    SWR_MEMORY_MAPPING_ALLOCATE=0, SWR_MEMORY_MAPPING_RELEASE=1,
-    SWR_MEMORY_MAPPING_PROTECT=2, SWR_MEMORY_MAPPING_REALLOCATE=3
-};
-enum swr_v2_memory_mapping_action {
-    SWR_MEMORY_MAPPING_OPEN=1, SWR_MEMORY_MAPPING_MAP=2,
-    SWR_MEMORY_MAPPING_WARN_ALLOCATE=3, SWR_MEMORY_MAPPING_UNMAP=4,
-    SWR_MEMORY_MAPPING_WARN_RELEASE=5, SWR_MEMORY_MAPPING_SET_PROTECTION=6,
-    SWR_MEMORY_MAPPING_INVALID_PROTECTION=7,
-    SWR_MEMORY_MAPPING_ALLOCATE_PAYLOAD=8, SWR_MEMORY_MAPPING_RELEASE_NEW_PAYLOAD=9,
-    SWR_MEMORY_MAPPING_RELEASE_OLD_PAYLOAD=10
-};
-/*1 requests the action,0 completes (memory/result),-1 rejects control/header.
- * Existing mapping_size/product/initialize/extent/relocate contracts remain. */
-int32_t swr_v2_memory_mapping_step(swr_v2_memory_mapping_operation *, swr_v2_memory_mapping_effect *);
-
 /* Borrowed C PODs; no callback, destructor or allocation callback enters Rust. */
 typedef struct swr_v1_memory_fixed_slice {
     uint8_t lock;
@@ -203,6 +167,21 @@ typedef struct swr_v1_memory_ring_storage {
 /* Fresh exclusive total-byte arena, before any producer/consumer publication. */
 int32_t swr_v1_memory_ring_construct(swr_v1_memory_ring_storage *, uint32_t total, uint32_t shared);
 void *swr_v1_memory_ring_storage_alloc(swr_v1_memory_ring_storage *, uint32_t);
+/* What swoole_memory.h's pools keep inline: their throwing constructors and virtual
+ * members (crates/memory/src/members.rs). A constructor returns 0, -1 for
+ * Exception(SW_ERROR_INVALID_PARAMS) or -2 for std::bad_alloc; so does global alloc. */
+int32_t swr_v1_memory_fixed_pool_new(uint32_t slices, uint32_t width, bool shared, void **output);
+int32_t swr_v1_memory_fixed_pool_borrow(uint32_t width, void *memory, size_t size, bool shared, void **output);
+void swr_v1_memory_fixed_pool_delete(void *pool);
+void *swr_v1_memory_fixed_pool_alloc(void *pool);
+void swr_v1_memory_fixed_pool_free(void *pool, void *data);
+int32_t swr_v1_memory_ring_buffer_new(uint32_t size, bool shared, void **output);
+void swr_v1_memory_ring_buffer_delete(void *ring);
+void *swr_v1_memory_ring_buffer_alloc(void *ring, uint32_t size);
+void swr_v1_memory_ring_buffer_free(void *ring, void *data);
+int32_t swr_v1_memory_global_memory_new(uint32_t pagesize, bool shared, void **output);
+void swr_v1_memory_global_memory_delete(void *pool);
+int32_t swr_v1_memory_global_memory_alloc(void **pool, uint32_t size, void **output);
 /* Checked native shared-mapping byte plans, including the8-byte header. */
 typedef struct swr_v1_memory_mapping_extent_result {
     void *base;

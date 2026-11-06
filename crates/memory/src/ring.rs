@@ -22,14 +22,14 @@ pub struct Ring {
 // free_count concurrently while only the producer accesses the cursor fields.
 #[repr(C)]
 pub struct Storage {
-    memory: *mut u8,
-    shared: u8,
+    pub(crate) memory: *mut u8,
+    pub(crate) shared: u8,
     status: u8,
-    size: u32,
+    pub(crate) size: u32,
     alloc_offset: u32,
     collect_offset: u32,
     alloc_count: u32,
-    free_count: u32,
+    pub(crate) free_count: u32,
 }
 // The address of one `Storage` field, computed without dereferencing `storage`.
 fn field<T>(storage: *mut Storage, offset: usize) -> *mut T {

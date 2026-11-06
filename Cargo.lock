@@ -537,7 +537,9 @@ name = "swoole-rs-memory"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-corebase",
  "swoole-rs-locks",
+ "swoole-rs-utilities",
 ]
 
 [[package]]
