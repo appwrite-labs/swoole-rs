@@ -13,7 +13,9 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_server::view;
+use swoole_rs_server::{
+    CommandFn, CommandReply as Reply, swr_v1_server_add_command, swr_v1_server_command, view,
+};
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Message, Object, bailout, class_name, message, object_of, php_error,
     string::bytes,
@@ -119,9 +121,6 @@ struct PortInfo {
     ssl: bool,
 }
 
-type Reply = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
-type Done = unsafe extern "C" fn(*mut c_void, *const c_char, usize) -> *mut c_void;
-
 /// `swr_v1_phpserver_lifecycle_host`.
 #[repr(C)]
 pub struct LifecycleHost {
@@ -153,20 +152,8 @@ pub struct LifecycleHost {
     callable_free: unsafe extern "C" fn(*mut c_void),
     is_process: unsafe extern "C" fn(*mut zval) -> bool,
     add_process: unsafe extern "C" fn(*mut c_void, *mut zval) -> i64,
-    add_command: unsafe extern "C" fn(*mut c_void, *const c_char, usize, i64, *mut c_void) -> bool,
     json_encode: unsafe extern "C" fn(*mut zval, *mut bool) -> *mut zend_string,
     json_decode: unsafe extern "C" fn(*const c_char, usize, *mut zval),
-    command: unsafe extern "C" fn(
-        *mut c_void,
-        i64,
-        i64,
-        *const c_char,
-        usize,
-        *const c_char,
-        usize,
-        Done,
-        *mut c_void,
-    ) -> bool,
     co_current: unsafe extern "C" fn(*mut bool) -> *mut c_void,
     co_suspending: unsafe extern "C" fn(*mut c_void) -> bool,
     co_yield: unsafe extern "C" fn(*mut c_void),
@@ -715,8 +702,16 @@ fn add_command(call: &Call) {
     if callable.is_null() {
         return call.set_bool(false);
     }
-    // SAFETY: a live server, the name's bytes and the new callable.
-    if !unsafe { (host.add_command)(serv, name.as_ptr().cast(), name.len(), types, callable) } {
+    let handler = CommandFn {
+        invoke: command_run as *const c_void,
+        ctx: callable,
+    };
+    // Upstream's `(int) types`.
+    let types = c_int::from_le_bytes(types.to_le_bytes()[..4].try_into().unwrap_or_default());
+    // SAFETY: a live server, the name's bytes and the new callable, which the
+    // property keeps for the server's life.
+    if !unsafe { swr_v1_server_add_command(serv, name.as_ptr().cast(), name.len(), types, handler) }
+    {
         // SAFETY: the callable created above.
         unsafe { (host.callable_free)(callable) };
         return call.set_bool(false);
@@ -726,20 +721,19 @@ fn add_command(call: &Call) {
     call.set_bool(true);
 }
 
-/// A command handler's call (`Server::Command::Handler`): `callable($server,
-/// $message)`'s string, or upstream's JSON errors. True if it bailed out.
+/// A command handler (`Server::Command::Handler`): `callable($server, $message)`'s
+/// string, or upstream's JSON errors. A bailout is raised last, from this frame.
 /// # Safety
 /// `callable` is a command callable and `server` the running server; `reply`
 /// writes into `out`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_command_run(
+unsafe extern "C" fn command_run(
     callable: *mut c_void,
     server: *mut c_void,
     message: *const c_char,
     length: usize,
     reply: Reply,
     out: *mut c_void,
-) -> bool {
+) {
     let send = |text: &[u8]| {
         // SAFETY: per the caller.
         unsafe { reply(out, text.as_ptr().cast(), text.len()) };
@@ -754,16 +748,16 @@ pub unsafe extern "C" fn swr_v1_phpserver_command_run(
     let called = crate::dispatch::invoke(callable, &mut args, &raw mut retval, false);
     // SAFETY: the message string made above.
     unsafe { zval_ptr_dtor(&raw mut args[1]) };
-    match called {
+    let bailed = match called {
         Err(_) => true,
         Ok(false) => {
             set_last_error(crate::server::SW_ERROR_PHP_FATAL_ERROR);
             // SAFETY: a warning, from a callback C++ runs.
-            if unsafe { php_error(E_WARNING, c"Swoole\\Server: command handler error") }.is_err() {
-                return true;
+            let warned = unsafe { php_error(E_WARNING, c"Swoole\\Server: command handler error") };
+            if warned.is_ok() {
+                send(br#"{"data": "failed to call function", "code": -1}"#);
             }
-            send(br#"{"data": "failed to call function", "code": -1}"#);
-            false
+            warned.is_err()
         }
         Ok(true) => {
             // SAFETY: the call's result.
@@ -775,6 +769,9 @@ pub unsafe extern "C" fn swr_v1_phpserver_command_run(
             unsafe { zval_ptr_dtor(&raw mut retval) };
             false
         }
+    };
+    if bailed {
+        bailout::raise(Err(bailout::Bailout));
     }
 }
 
@@ -786,13 +783,14 @@ struct Wait {
     replied: bool,
 }
 
-/// The command's reply: into `return_value`, then the coroutine for C++ to
-/// resume (null: it has not yielded yet).
+/// The command's reply (`Server::Command::Callback`): into `return_value`, then
+/// the waiting coroutine resumes, if it has yielded yet.
 unsafe extern "C" fn command_done(
     context: *mut c_void,
+    _server: *mut c_void,
     message: *const c_char,
     length: usize,
-) -> *mut c_void {
+) {
     // SAFETY: `command` passes its live `Wait`.
     let wait = unsafe { &mut *context.cast::<Wait>() };
     let host = host();
@@ -805,10 +803,11 @@ unsafe extern "C" fn command_done(
     }
     // SAFETY: the waiting coroutine.
     if unsafe { (host.co_suspending)(wait.coroutine) } {
-        return wait.coroutine;
+        // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
+        unsafe { swoole_rs_phpcoroutines::wake(wait.coroutine, false) };
+    } else {
+        wait.replied = true;
     }
-    wait.replied = true;
-    ptr::null_mut()
 }
 
 fn command(call: &Call) {
@@ -849,10 +848,22 @@ fn command(call: &Call) {
     };
     // SAFETY: the encoded string, live until released.
     let data = unsafe { bytes(encoded) };
+    let callback = CommandFn {
+        invoke: command_done as *const c_void,
+        ctx: (&raw mut wait).cast(),
+    };
+    // Upstream's `(uint16_t) process_id` and `(ProcessType) process_type`.
+    let [low, high, ..] = process_id.to_le_bytes();
+    let process_id = u32::from(u16::from_le_bytes([low, high]));
+    let process_type = c_int::from_le_bytes(
+        process_type.to_le_bytes()[..4]
+            .try_into()
+            .unwrap_or_default(),
+    );
     // SAFETY: a live server, the name's and data's bytes, and `wait`, which
     // outlives the command (its callback runs before the yield below returns).
     let sent = unsafe {
-        (host.command)(
+        swr_v1_server_command(
             serv,
             process_id,
             process_type,
@@ -860,8 +871,7 @@ fn command(call: &Call) {
             name.len(),
             data.as_ptr().cast(),
             data.len(),
-            command_done,
-            (&raw mut wait).cast(),
+            callback,
         )
     };
     // SAFETY: the string encoded above.

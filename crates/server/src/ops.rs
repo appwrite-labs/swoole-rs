@@ -782,7 +782,7 @@ pub const LOG_CC_LINGER: u32 = 990;
 pub const TRACE_CC_MAXFD: u32 = 991;
 
 // Rust-owned state and the rest of `master.cc` (`crates/server/src/state.rs`).
-/// `Server::add_command`: context name (`data`), process types (`number`) and handler (`object`).
+/// `Server::add_command`: arg a `commands::AddCommand`.
 pub const RUN_ST_ADD_COMMAND: u32 = 300;
 /// `Server::accept_dtls_connection`: context port and peer address (`data`); 1 with
 /// the session in the context's `object`.
@@ -804,12 +804,13 @@ pub const RUN_ST_SEND: u32 = 308;
 pub const RUN_ST_CLEAR_TIMER: u32 = 309;
 /// Direct public log reopen, independent of installed master signal handlers.
 pub const RUN_REOPEN_LOGGER: u32 = 311;
+/// `Server::command`: arg a `commands::SendCommand`.
+pub const RUN_ST_COMMAND: u32 = 312;
 
-/// The command name is taken; a new command pipe, whether it is ready; the command
-/// joins `commands` and `command_handlers` with id arg.
-pub const OP_ST_CMD_EXISTS: u32 = 1000;
+/// Writes the command request at arg (a `commands::CommandSend`) to its process;
+/// whether it went. A new command pipe, whether it is ready.
+pub const OP_ST_CMD_SEND: u32 = 1000;
 pub const OP_ST_PIPE_COMMAND_NEW: u32 = 1001;
-pub const OP_ST_CMD_ADD: u32 = 1002;
 /// A non-blocking session socket of the port's type with its address (and port)
 /// reusable; the port's type; `OPENSSL_assert(0)`.
 pub const OP_ST_DTLS_SOCKET: u32 = 1003;

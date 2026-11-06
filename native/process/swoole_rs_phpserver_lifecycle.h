@@ -54,10 +54,6 @@ typedef struct {
     bool ssl;
 } swr_phpserver_port_info;
 
-/* addCommand's handlers: the C++ std::function calls swr_v1_phpserver_command_run, which
- * writes the reply through `reply`. */
-typedef void (*swr_phpserver_reply)(void *out, const char *data, size_t length);
-
 typedef struct {
     int64_t (*fact)(void *server, uint32_t id);
     void (*install)(void *server, uint32_t which);
@@ -106,17 +102,10 @@ typedef struct {
     /* addProcess's worker: -3 bailed out, -2 a thread that is not a user worker, -1 add_worker failed,
      * else the id. */
     int64_t (*add_process)(void *server, struct _zval_struct *process);
-    /* serv->add_command with a handler that calls swr_v1_phpserver_command_run. */
-    bool (*add_command)(void *server, const char *name, size_t length, int64_t types, void *callable);
     /* json_encode($data) as a new zend_string, or null; in zend_try (*bailed when it bailed out). */
     struct _zend_string *(*json_encode)(struct _zval_struct *data, bool *bailed);
     /* json_decode($text, true) into `out`, or false. */
     void (*json_decode)(const char *text, size_t length, struct _zval_struct *out);
-    /* serv->command(...) whose callback calls `done(context, message, length)` and resumes the
-     * coroutine it returns, if any. */
-    bool (*command)(void *server, int64_t process_id, int64_t process_type, const char *name, size_t name_length,
-                    const char *data, size_t length, void *(*done)(void *context, const char *message, size_t length),
-                    void *context);
     /* Coroutine::get_current_safe() in zend_try (*bailed when it bailed out), is_suspending() and
      * yield(). */
     void *(*co_current)(bool *bailed);
@@ -136,9 +125,6 @@ struct _zend_object *swr_v1_phpserver_create(struct _zend_class_entry *ce);
 void swr_v1_phpserver_free(struct _zend_object *object);
 /* add_port's Port object for `port`, kept by the Server object `server`. */
 struct _zval_struct *swr_v1_phpserver_add_port(struct _zend_object *object, void *port);
-/* A command handler's call: the callable's reply, written through `reply`; true if it bailed out. */
-bool swr_v1_phpserver_command_run(void *callable, void *server, const char *message, size_t length,
-                                  swr_phpserver_reply reply, void *out);
 /* php_swoole_server_send_yield: 0 false, 1 true, 2 bailed out (re-raise it). */
 int swr_v1_phpserver_send_yield(void *server, int64_t session_id, const char *data, size_t length);
 /* The Port object at `index` of the Server object, or null. */

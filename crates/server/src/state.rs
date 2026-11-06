@@ -6,22 +6,21 @@
 use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
     FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_DTLS_BIND,
-    LOG_ST_DTLS_CONNECT, LOG_ST_ROOT_MISSING, LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_IS_STARTED,
-    OP_MAXFD, OP_MINFD, OP_MODE, OP_RT_HAS_PIPE_COMMAND, OP_SET_MAXFD, OP_SET_WARNING,
-    OP_ST_ABORT_COUNT, OP_ST_CMD_ADD, OP_ST_CMD_EXISTS, OP_ST_DTLS_ADD, OP_ST_DTLS_ASSERT,
+    LOG_ST_DTLS_CONNECT, LOG_ST_ROOT_MISSING, LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MINFD,
+    OP_MODE, OP_SET_MAXFD, OP_SET_WARNING, OP_ST_ABORT_COUNT, OP_ST_DTLS_ADD, OP_ST_DTLS_ASSERT,
     OP_ST_DTLS_BIND, OP_ST_DTLS_CLEANUP, OP_ST_DTLS_CONNECT, OP_ST_DTLS_PEER, OP_ST_DTLS_SESSION,
     OP_ST_DTLS_SOCKET, OP_ST_DTLS_TYPE, OP_ST_DTLS_V6ONLY, OP_ST_FINISH, OP_ST_GS_CONCURRENCY,
     OP_ST_GS_CONCURRENCY_SUB, OP_ST_GS_CONCURRENCY_ZERO, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND,
-    OP_ST_PIPE_COMMAND_NEW, OP_ST_PIPE_FD, OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT,
-    OP_ST_SOCK_FREE, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_VALID_CONN,
-    OP_ST_VISIT, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS,
-    OP_WORKER_IDLE, TRACE_ST_SCHEDULE,
+    OP_ST_PIPE_FD, OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_SOCK_FREE,
+    OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_VALID_CONN, OP_ST_VISIT,
+    OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE,
+    TRACE_ST_SCHEDULE,
 };
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
 #[cfg(test)]
 use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
 use crate::send::send_to_connection;
-use crate::{Host, MODE_BASE, MODE_PROCESS, SW_OK};
+use crate::{Host, MODE_PROCESS, SW_OK};
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::cell::RefCell;
@@ -34,7 +33,7 @@ pub struct ServerState {
     /// `worker_round_id`: the next worker `DISPATCH_ROUND` and idle dispatch try.
     round: AtomicU32,
     /// `command_current_id`: the id the next command gets, from 1.
-    next_command: AtomicI32,
+    pub(crate) next_command: AtomicI32,
     config: AtomicPtr<crate::config::ServerConfig>,
     tables: AtomicPtr<crate::records::ServerTables>,
     pub(crate) static_config:
@@ -446,23 +445,6 @@ pub(crate) fn idle_worker<H: Host>(h: &mut H) -> crate::Effect<i64> {
     Ok(i64::from(key))
 }
 
-/// `Server::add_command`: before start, a new name, and (outside base mode) a command
-/// pipe; the command gets the next id.
-fn add_command<H: Host>(h: &mut H) -> crate::Effect<bool> {
-    if h.is(OP_IS_STARTED)? || h.is(OP_ST_CMD_EXISTS)? {
-        return Ok(false);
-    }
-    if h.get(OP_MODE)? != MODE_BASE
-        && !h.is(OP_RT_HAS_PIPE_COMMAND)?
-        && !h.is(OP_ST_PIPE_COMMAND_NEW)?
-    {
-        return Ok(false);
-    }
-    let id = h.state()?.next_command.fetch_add(1, Ordering::SeqCst);
-    h.op(OP_ST_CMD_ADD, u64::from(id.cast_unsigned()))?;
-    Ok(true)
-}
-
 /// `SocketType`.
 const SOCK_UDP: u64 = 2;
 const SOCK_UDP6: u64 = 4;
@@ -637,12 +619,25 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 /// The operations of `swr_v1_server_run` this module runs.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
-        RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT,
+        RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT,
         RUN_ST_DTLS_ACCEPT, RUN_ST_FOREACH, RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_RESET_COUNTER,
         RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
     };
     Ok(Some(match operation {
-        RUN_ST_ADD_COMMAND => i64::from(add_command(h)?),
+        RUN_ST_ADD_COMMAND => {
+            let add = core::ptr::with_exposed_provenance::<crate::commands::AddCommand>(
+                usize::try_from(arg).unwrap_or(0),
+            );
+            // SAFETY: `swr_v1_server_add_command` lends its arguments for the call.
+            i64::from(crate::commands::add_command(h, unsafe { &*add })?)
+        }
+        RUN_ST_COMMAND => {
+            let send = core::ptr::with_exposed_provenance::<crate::commands::SendCommand>(
+                usize::try_from(arg).unwrap_or(0),
+            );
+            // SAFETY: `swr_v1_server_command` lends its arguments for the call.
+            i64::from(crate::commands::command(h, unsafe { &*send })?)
+        }
         RUN_ST_DTLS_ACCEPT => i64::from(accept_dtls(h)?),
         RUN_ST_DOCUMENT_ROOT => {
             let address = usize::try_from(h.get(OP_ST_ROOT_PATH)?).unwrap_or(0);
@@ -726,28 +721,6 @@ mod tests {
         assert_eq!(busy.args(OP_WORKER_IDLE), vec![2, 0, 1, 2]);
         assert_eq!(busy.called(OP_SET_WARNING), 1);
         assert_eq!(busy.args(TRACE_ST_SCHEDULE), vec![2 | (6 << 32)]);
-    }
-
-    #[test]
-    fn commands_need_a_pipe_outside_base_mode() {
-        let mut base = Script::with(&[(OP_MODE, MODE_BASE)]);
-        assert!(add_command(&mut base).unwrap());
-        assert!(add_command(&mut base).unwrap());
-        assert_eq!(base.args(OP_ST_CMD_ADD), vec![1, 2], "ids count from 1");
-        assert_eq!(base.called(OP_ST_PIPE_COMMAND_NEW), 0);
-
-        let mut process = Script::with(&[(OP_MODE, MODE_PROCESS)]);
-        assert!(!add_command(&mut process).unwrap(), "the pipe failed");
-        assert_eq!(process.called(OP_ST_CMD_ADD), 0);
-        let mut process = Script::with(&[(OP_MODE, MODE_PROCESS), (OP_RT_HAS_PIPE_COMMAND, 1)]);
-        assert!(add_command(&mut process).unwrap());
-        assert_eq!(process.called(OP_ST_PIPE_COMMAND_NEW), 0, "made once");
-
-        for refused in [OP_IS_STARTED, OP_ST_CMD_EXISTS] {
-            let mut s = Script::with(&[(OP_MODE, MODE_BASE), (refused, 1)]);
-            assert!(!add_command(&mut s).unwrap());
-            assert_eq!(s.called(OP_ST_CMD_ADD), 0);
-        }
     }
 
     #[test]
