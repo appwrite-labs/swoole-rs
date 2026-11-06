@@ -29,28 +29,63 @@ fn incremental_headers_preserve_upstream_progress() {
 
 #[test]
 fn header_boundaries_and_flags_roundtrip_without_payload() {
+    // Every flag and opcode byte at each length boundary, written one byte into
+    // the buffer, then every prefix of the written header (and mask key) parsed.
     for length in [0, 1, 125, 126, 127, 65535, 65536, 1 << 32] {
         for opcode in 0..=255 {
-            for flags in [0, 1, 4, 32, 255] {
-                let mut output = [0xa5; 15];
+            for flags in 0..=255 {
+                let mut wire = [0xa5; 16];
                 let size = unsafe {
-                    swr_v1_ws_write_header(length, opcode, flags, output[1..].as_mut_ptr(), 10)
+                    swr_v1_ws_write_header(length, opcode, flags, wire[1..].as_mut_ptr(), 10)
                 };
-                assert_eq!(output[0], 0xa5);
-                assert_eq!(output[size + 1], 0xa5);
+                let expected_size = match length {
+                    0..=125 => 2,
+                    126..=65535 => 4,
+                    _ => 10,
+                };
+                assert_eq!(size, expected_size);
+                assert_eq!(wire[0], 0xa5);
+                assert_eq!(wire[size + 1], 0xa5);
                 assert_eq!(
-                    output[1],
+                    wire[1],
                     (opcode & 15)
                         | if flags & 1 != 0 { 128 } else { 0 }
                         | if flags & 4 != 0 { 64 } else { 0 }
                 );
-                let mut header = 0;
-                let mask_bytes = if flags & 32 != 0 { 4 } else { 0 };
-                assert_eq!(
-                    parse(&output[1..1 + size + mask_bytes], &mut header),
-                    i64::try_from(length + (size + mask_bytes) as u64).unwrap()
-                );
-                assert_eq!(header as usize, size + mask_bytes);
+                let code = match size {
+                    2 => u8::try_from(length).unwrap(),
+                    4 => 126,
+                    _ => 127,
+                };
+                assert_eq!(wire[2], if flags & 32 != 0 { 128 } else { 0 } | code);
+                if size > 2 {
+                    let decoded = wire[3..=size]
+                        .iter()
+                        .fold(0, |acc, &b| acc << 8 | u64::from(b));
+                    assert_eq!(decoded, length);
+                }
+                let full_header = size + if flags & 32 != 0 { 4 } else { 0 };
+                for available in 0..=full_header {
+                    let mut header = 99;
+                    let total = parse(&wire[1..=available], &mut header);
+                    let expected_total = if available < full_header {
+                        0
+                    } else {
+                        i64::try_from(length + full_header as u64).unwrap()
+                    };
+                    assert_eq!(
+                        total, expected_total,
+                        "length {length} flags {flags} prefix {available}"
+                    );
+                    let expected_header = if available < 2 {
+                        99
+                    } else if available < size {
+                        size
+                    } else {
+                        full_header
+                    };
+                    assert_eq!(header as usize, expected_header);
+                }
             }
         }
     }
@@ -95,16 +130,23 @@ fn invalid_pointers_lengths_and_short_outputs_do_not_write() {
         );
         assert_eq!(swr_v1_ws_frame_length(output.as_ptr(), 2, null_mut()), -1);
         assert_eq!(header, 99);
-        for (length, required) in [(0, 2), (126, 4), (65536, 10)] {
-            for capacity in 0..required {
-                assert_eq!(
-                    swr_v1_ws_write_header(length, 2, 255, output.as_mut_ptr(), capacity),
-                    0
-                );
-                assert_eq!(output, [0xa5; 10]);
+        for (length, required) in [(0, 2), (126, 4), (65536, 10), (u64::MAX, 10)] {
+            for flags in [32, 255] {
+                for capacity in 0..required {
+                    assert_eq!(
+                        swr_v1_ws_write_header(length, 2, flags, output.as_mut_ptr(), capacity),
+                        0
+                    );
+                    assert_eq!(output, [0xa5; 10]);
+                }
             }
         }
         assert_eq!(swr_v1_ws_write_header(0, 2, 0, null_mut(), 10), 0);
+        assert_eq!(swr_v1_ws_write_header(1, 2, 1, null_mut(), 10), 0);
+        assert_eq!(
+            swr_v1_ws_write_header(1, 2, 1, output.as_mut_ptr(), usize::MAX),
+            0
+        );
         assert_eq!(
             swr_v1_ws_write_header(0, 2, 0, output.as_mut_ptr(), usize::MAX),
             0
@@ -127,30 +169,55 @@ fn binary_mask_matches_known_vector_and_is_an_involution() {
     let mut hello = *b"Hello";
     unsafe { swr_v1_ws_mask(hello.as_mut_ptr(), hello.len(), key.as_ptr()) };
     assert_eq!(hello, [0x7f, 0x9f, 0x4d, 0x51, 0x58]);
-    for length in [1, 3, 4, 7, 8, 9, 255, 1024] {
+    for length in 1..=1024 {
         let mut bytes: Vec<_> = (0..length + 2).map(|x: usize| x.to_le_bytes()[0]).collect();
         let original = bytes.clone();
-        for _ in 0..2 {
-            assert_eq!(
-                unsafe { swr_v1_ws_mask(bytes[1..].as_mut_ptr(), length, key.as_ptr()) },
-                0
-            );
-            assert_eq!(bytes[0], original[0]);
-            assert_eq!(bytes[length + 1], original[length + 1]);
+        assert_eq!(
+            unsafe { swr_v1_ws_mask(bytes[1..].as_mut_ptr(), length, key.as_ptr()) },
+            0
+        );
+        for i in 0..length {
+            assert_eq!(bytes[i + 1], original[i + 1] ^ key[i % 4]);
         }
+        assert_eq!(bytes[0], original[0]);
+        assert_eq!(bytes[length + 1], original[length + 1]);
+        assert_eq!(
+            unsafe { swr_v1_ws_mask(bytes[1..].as_mut_ptr(), length, key.as_ptr()) },
+            0
+        );
         assert_eq!(bytes, original);
     }
 }
 
 #[test]
 fn masking_copies_overlapping_key_before_writing() {
-    for offset in 0..8 {
-        let mut data: Vec<_> = (0..32).collect();
-        let original = data.clone();
-        let key = &original[offset..offset + 4];
-        unsafe { swr_v1_ws_mask(data.as_mut_ptr(), data.len(), data.as_ptr().add(offset)) };
-        for (index, value) in data.iter().enumerate() {
-            assert_eq!(*value, original[index] ^ key[index % 4]);
+    // Every byte alignment and word tail, including keys partly overlapping
+    // either payload boundary: the key is read before any payload write.
+    for alignment in 0..8 {
+        for length in 0..=33 {
+            let start = 8 + alignment;
+            for key_offset in start - 4..=start + length {
+                let mut bytes: Vec<u8> = (0..64u8)
+                    .map(|i| i.wrapping_mul(37).wrapping_add(19))
+                    .collect();
+                let original = bytes.clone();
+                let base = bytes.as_mut_ptr();
+                // SAFETY: payload and key both lie inside `bytes`.
+                let result =
+                    unsafe { swr_v1_ws_mask(base.add(start), length, base.add(key_offset)) };
+                assert_eq!(result, 0);
+                for (i, value) in bytes.iter().enumerate() {
+                    let expected = if (start..start + length).contains(&i) {
+                        original[i] ^ original[key_offset + (i - start) % 4]
+                    } else {
+                        original[i]
+                    };
+                    assert_eq!(
+                        *value, expected,
+                        "alignment {alignment} length {length} key {key_offset}"
+                    );
+                }
+            }
         }
     }
 }

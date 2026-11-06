@@ -42,19 +42,18 @@ engines, 20 scenarios):
 
 ## Tests
 
-- `tests/modules/websocket/kernel.cc`: every header prefix, 7/16/64-bit length
+- `crates/websocket/tests/kernel.rs`: every header prefix, 7/16/64-bit length
   boundaries, all opcode/flag bytes, unaligned buffers, signed-size overflow,
   short outputs, XOR involution, overlapping keys.
-- `prefix.py --sanitize`: Rust vs the pinned C++ length function over 2,688
-  header prefixes, all eight alignments, masked/unmasked, four keys. Four
-  overflow inputs are Rust-only, since upstream has signed overflow there.
+- `fuzz/` `ws_frame_length`, `ws_decode`, `ws_mask`: Rust vs the pinned C++
+  bodies over any input (PR and nightly ClusterFuzzLite).
 - `differential.py`: upstream vs hybrid on 58 FIN/mask frames (lengths
   0/1/125/126/127/65,535/65,536) plus PHP string/object lifetime and pack-only
   RSV1 control cases (778 total): packed bytes, payloads, flags, close fields.
   No invalid frames.
 - `test_close.py`: coalesced frames, header/body write splits at 125/126/65,535/
   65,536, fragmented text with interleaved ping/pong, close and EOF. Write splits
-  do not guarantee receive splits; `test_prefix.py` is the deterministic length check.
+  do not guarantee receive splits; `kernel.rs` and `ws_frame_length` are the deterministic length checks.
 - Corpus `06-websocket`: handshake accept hash, broadcast to two clients, masked
   close; requires an unmasked two-byte FIN+CLOSE reply with status 1000 and EOF.
 - Original PHPTs: 15 of 34 in `tests/swoole_websocket_server/` are selected.
