@@ -1,7 +1,9 @@
 # Core base helpers
 
-Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. Callers are
-in `src/core/base.cc` and the readers of the `SwooleG` fields Rust owns. No
+Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. `src/core/base.cc`
+is gone: what is left of it (the globals, the native effects of the lifecycle
+sequences and the std::string/std::function APIs) sits at the end of
+`src/core/misc.cc`. Other callers are the readers of the `SwooleG` fields Rust owns. No
 public C++ signature changes; `swoole::Global` loses the fields Rust owns.
 
 Rust holds numeric/byte/path comparison and formatting policy. Apart from the
