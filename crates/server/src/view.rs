@@ -4,11 +4,15 @@
 //! `Server` has no virtual methods and `detail::ServerFields` is its first base,
 //! so a `Server *` points at `ServerFields { state_, config_, tables_ }`
 //! (`native/include/swoole_rs_server_view.h`). `ListenPort` likewise starts
-//! with `detail::PortFields { port_config_ }`.
+//! with `detail::PortFields { port_config_ }`. `ServerGS` puts the task and
+//! event worker pools right after the shared counters.
 use crate::port_config::PortConfig;
 use crate::{ConnectionRecord, PortCounters, ServerConfig, ServerCounters, ServerState};
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering;
+use swoole_rs_process::process_pool::PoolRecord;
+use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
+use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_reactor::SocketRecord;
 
 /// `ServerFields`, the head of every `Server`.
@@ -165,4 +169,109 @@ pub unsafe fn port_connection_num(serv: *mut c_void, port: *mut c_void) -> usize
     };
     // SAFETY: the port's live counters, with one cell per event worker.
     unsafe { crate::swr_v1_server_port_connections(gs, workers) }
+}
+
+/// `serv->get_task_worker_pool()`.
+///
+/// # Safety
+/// As [`counters`].
+pub unsafe fn task_pool(serv: *mut c_void) -> *mut PoolRecord {
+    // SAFETY: per the caller.
+    let gs = unsafe { config(serv) }.gs.cast::<u8>();
+    let offset = size_of::<ServerCounters>().next_multiple_of(align_of::<PoolRecord>());
+    gs.wrapping_add(offset).cast()
+}
+
+/// `Server::get_user_worker_num()`: the user workers added so far.
+///
+/// # Safety
+/// As [`config`].
+pub unsafe fn user_worker_num(serv: *mut c_void) -> usize {
+    // SAFETY: per the caller.
+    let registry = unsafe { config(serv) }.worker_registry;
+    // SAFETY: the server's live registry, configured only by the master.
+    unsafe {
+        swoole_rs_corebase::worker_registry::swr_v1_process_worker_registry_pending_count(
+            registry.cast(),
+        )
+    }
+}
+
+/// `Server::get_worker(id)`: event workers, then task workers, then user
+/// workers; null past the last.
+///
+/// # Safety
+/// As [`counters`].
+pub unsafe fn worker(serv: *mut c_void, id: u16) -> *mut WorkerRecord {
+    // SAFETY: per the caller.
+    let task_pool = unsafe { task_pool(serv) };
+    // SAFETY: per the caller.
+    let config = unsafe { config(serv) };
+    let view = ServerWorkers {
+        event_pool: task_pool.wrapping_add(1),
+        task_pool,
+        event_workers: config.workers.cast(),
+        user_workers: config.user_workers.cast(),
+        event_count: config.worker_num,
+        task_count: config.task_worker_num,
+        // SAFETY: per the caller.
+        user_count: unsafe { user_worker_num(serv) },
+    };
+    // SAFETY: the server's live pools and worker arrays, with their counts.
+    unsafe { swr_v1_process_server_worker(&raw const view, id) }
+}
+
+/// `Server::get_connection(fd)`.
+///
+/// # Safety
+/// As [`connection`].
+pub unsafe fn at<'a>(serv: *mut c_void, fd: c_int) -> Option<&'a mut ConnectionRecord> {
+    // SAFETY: per the caller.
+    unsafe { connection(serv, c_long::from(fd), 0) }
+}
+
+/// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on, or
+/// null.
+///
+/// # Safety
+/// As [`connection`].
+pub unsafe fn port_by_fd(serv: *mut c_void, fd: c_int) -> *mut c_void {
+    // SAFETY: per the caller.
+    let Some(server_fd) = (unsafe { at(serv, fd) }).map(|conn| conn.server_fd) else {
+        return core::ptr::null_mut();
+    };
+    // SAFETY: per the caller; a listening socket's record holds its port.
+    unsafe { at(serv, server_fd) }.map_or(core::ptr::null_mut(), |listen| listen.object)
+}
+
+/// Whether one of `serv`'s ports speaks WebSocket.
+///
+/// # Safety
+/// `port` is a live `ListenPort`.
+pub unsafe fn port_websocket(port: *mut c_void) -> bool {
+    // SAFETY: per the caller.
+    unsafe { self::port(port) }.open_websocket_protocol
+}
+
+/// `Server::is_healthy_connection(now, conn)`: protected, never received, or
+/// received within its port's heartbeat idle time.
+///
+/// # Safety
+/// As [`connection`]; `conn` is one of `serv`'s connections.
+pub unsafe fn healthy(serv: *mut c_void, now: f64, conn: &ConnectionRecord) -> bool {
+    if conn.protect != 0 || conn.last_recv_time == 0.0 {
+        return true;
+    }
+    // SAFETY: per the caller (`get_port_by_session_id`).
+    let Some(fd) = (unsafe { connection(serv, conn.session_id, 1) }).map(|conn| conn.fd) else {
+        return true;
+    };
+    // SAFETY: per the caller.
+    let port = unsafe { port_by_fd(serv, fd) };
+    if port.is_null() {
+        return true;
+    }
+    // SAFETY: the connection's live port.
+    let idle = unsafe { self::port(port) }.heartbeat_idle_time;
+    idle == 0 || conn.last_recv_time > now - f64::from(idle)
 }

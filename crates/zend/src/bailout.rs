@@ -6,9 +6,9 @@ use crate::{
     Invalid,
     sys::{
         swr_zend_guard_pending, swr_zend_guard_resume, swr_zend_parse_func, swr_zend_try,
-        swr_zend_try_call, swr_zend_try_report, swr_zend_try_report_code, swr_zend_try_report_flag,
-        swr_zend_try_report_length, swr_zend_try_report_level, zend_fcall_info,
-        zend_fcall_info_cache, zval,
+        swr_zend_try_call, swr_zend_try_call_method, swr_zend_try_report, swr_zend_try_report_code,
+        swr_zend_try_report_flag, swr_zend_try_report_length, swr_zend_try_report_level,
+        zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_object, zval,
     },
 };
 use std::{
@@ -228,6 +228,34 @@ pub unsafe fn call(
         return Err(Bailout);
     }
     Ok(result != 0)
+}
+
+/// `zend_call_method(object, scope, NULL, method, ...)` with one argument (or
+/// none when `arg` is null) inside `zend_try`. A null `scope` is the object's
+/// class; otherwise the method is `scope`'s, called on `object`.
+/// # Errors
+/// The method bailed out.
+/// # Safety
+/// `object` is a live object, `scope` null or its class or an ancestor,
+/// `retval` writable and `arg` null or a live zval.
+pub unsafe fn call_method(
+    object: *mut zend_object,
+    scope: *mut zend_class_entry,
+    method: &[u8],
+    retval: *mut zval,
+    arg: *mut zval,
+) -> Result<(), Bailout> {
+    // SAFETY: per the caller; Zend runs in the C shim's frame.
+    trapped(unsafe {
+        swr_zend_try_call_method(
+            object,
+            scope,
+            method.as_ptr().cast(),
+            method.len(),
+            retval,
+            arg,
+        )
+    })
 }
 
 /// `Z_PARAM_FUNC` of a passed argument (1-based).

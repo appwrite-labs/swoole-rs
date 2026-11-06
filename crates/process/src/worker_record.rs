@@ -184,6 +184,24 @@ pub(crate) unsafe fn set_pool(worker: *mut WorkerRecord, pool: *mut c_void) {
     unsafe { (*worker).pool = pool };
 }
 
+/// `Server::stats()`'s worker counters: request, response and dispatch
+/// counts, then the concurrency.
+///
+/// # Safety
+/// `worker` points to a live `Worker`/`WorkerRecord`.
+#[must_use]
+pub unsafe fn counters(worker: *const WorkerRecord) -> [i64; 4] {
+    // SAFETY: the caller lends a live worker record; only the field is read.
+    let request = unsafe { (*worker).request_count };
+    // SAFETY: as above.
+    let response = unsafe { (*worker).response_count };
+    // SAFETY: as above.
+    let dispatch = unsafe { (*worker).dispatch_count };
+    // SAFETY: as above.
+    let concurrency = unsafe { (*worker).concurrency };
+    [request, response, dispatch, i64::from(concurrency)]
+}
+
 /// Increments the worker's request counter with the original unsigned wrapping.
 ///
 /// # Safety

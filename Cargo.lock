@@ -703,7 +703,10 @@ dependencies = [
 name = "swoole-rs-phpserver"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-ossupport",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-ports",
