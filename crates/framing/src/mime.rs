@@ -1,5 +1,116 @@
-// Immutable catalog copied byte-for-byte from the pinned reference.
-pub(crate) static CATALOG: &[(&[u8], &[u8])] = &[
+//! Upstream's `mime_type` table (`src/protocol/mime_type.cc`): the catalog, the
+//! process-wide map PHP's `swoole_mime_type_*` functions change, and lookup by a
+//! filename's lowercased last suffix.
+use core::ffi::{CStr, c_char};
+use std::collections::BTreeMap;
+use std::ffi::CString;
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
+
+/// What `get` answers for an unknown suffix.
+pub const FALLBACK: &CStr = c"application/octet-stream";
+
+// A value's bytes stay put until its suffix is set again or deleted, as an
+// `unordered_map` value's do, so `get` can lend them past the lock.
+static MAP: LazyLock<Mutex<BTreeMap<Vec<u8>, CString>>> = LazyLock::new(|| {
+    Mutex::new(
+        CATALOG
+            .iter()
+            .filter_map(|&(suffix, kind)| Some((suffix.to_vec(), CString::new(kind).ok()?)))
+            .collect(),
+    )
+});
+
+fn map() -> MutexGuard<'static, BTreeMap<Vec<u8>, CString>> {
+    MAP.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+unsafe extern "C" {
+    fn tolower(c: i32) -> i32;
+}
+
+/// The bytes after the last dot (all of them without one), through C `tolower`
+/// as upstream's `std::transform` applies it to each `char`. A signed `char`
+/// 0xff is EOF there; other negative values, UB in C, map as unsigned.
+fn suffix(filename: &[u8]) -> Vec<u8> {
+    let start = filename
+        .iter()
+        .rposition(|&c| c == b'.')
+        .map_or(0, |n| n + 1);
+    let signed = c_char::MIN != 0;
+    filename
+        .get(start..)
+        .unwrap_or_default()
+        .iter()
+        .map(|&c| {
+            let input = if signed && c == 255 { -1 } else { i32::from(c) };
+            // SAFETY: `input` is EOF or an unsigned char value, as tolower requires.
+            unsafe { tolower(input) }.to_le_bytes()[0]
+        })
+        .collect()
+}
+
+/// `mime_type::add`: false, changing nothing, when the suffix is known.
+#[must_use]
+pub fn add(suffix: &[u8], kind: &CStr) -> bool {
+    let mut map = map();
+    if map.contains_key(suffix) {
+        return false;
+    }
+    map.insert(suffix.to_vec(), kind.to_owned());
+    true
+}
+
+/// `mime_type::set`.
+pub fn set(suffix: &[u8], kind: &CStr) {
+    map().insert(suffix.to_vec(), kind.to_owned());
+}
+
+/// `mime_type::del`: whether the suffix was known.
+#[must_use]
+pub fn del(suffix: &[u8]) -> bool {
+    map().remove(suffix).is_some()
+}
+
+/// `mime_type::get`: the type, valid until its suffix is set again or deleted.
+#[must_use]
+pub fn get(filename: &[u8]) -> *const c_char {
+    map()
+        .get(&suffix(filename))
+        .map_or(FALLBACK.as_ptr(), |kind| kind.as_ptr())
+}
+
+/// `mime_type::exists`.
+#[must_use]
+pub fn exists(filename: &[u8]) -> bool {
+    map().contains_key(&suffix(filename))
+}
+
+/// `mime_type::list`'s types, in suffix order.
+pub fn each(mut f: impl FnMut(&CStr)) {
+    for kind in map().values() {
+        f(kind);
+    }
+}
+
+/// [`get`] for C++, over `length` bytes at `filename`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_framing_mime_get(
+    filename: *const u8,
+    length: usize,
+) -> *const c_char {
+    // SAFETY: the caller lends `length` initialized bytes.
+    get(unsafe { crate::bytes(filename, length) }.unwrap_or_default())
+}
+
+/// [`exists`] for C++, over `length` bytes at `filename`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_framing_mime_exists(filename: *const u8, length: usize) -> bool {
+    // SAFETY: the caller lends `length` initialized bytes.
+    exists(unsafe { crate::bytes(filename, length) }.unwrap_or_default())
+}
+
+// Copied byte-for-byte from the pinned reference.
+static CATALOG: &[(&[u8], &[u8])] = &[
     (b"ez", b"application/andrew-inset"),
     (b"aw", b"application/applixware"),
     (b"atom", b"application/atom+xml"),
@@ -375,3 +486,74 @@ pub(crate) static CATALOG: &[(&[u8], &[u8])] = &[
     (b"xul", b"application/vnd.mozilla.xul+xml"),
     (b"7z", b"application/x-7z-compressed"),
 ];
+
+#[cfg(test)]
+mod tests {
+    //! Upstream's `core-tests/src/protocol/mime_type.cpp`, one test per `TEST`,
+    //! with its inputs and expected values. Upstream runs them in order in one
+    //! process; here they share the table under `SERIAL`, and `del` puts back
+    //! the `json` it deletes so the order doesn't matter.
+    use super::*;
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn serial() -> MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn text(kind: *const c_char) -> Vec<u8> {
+        // SAFETY: a table value or the fallback, read under `SERIAL`.
+        unsafe { CStr::from_ptr(kind) }.to_bytes().to_vec()
+    }
+
+    #[test]
+    fn get() {
+        let _serial = serial();
+        let result = text(super::get(b"test.html.json"));
+        assert_eq!(result, b"application/json");
+    }
+
+    #[test]
+    fn exists() {
+        let _serial = serial();
+        assert!(super::exists(b"test.html.json"));
+    }
+
+    #[test]
+    fn set() {
+        let _serial = serial();
+        let test_mime_type = c"application/swoole-core-test";
+        super::set(b"swoole_test", test_mime_type);
+
+        let result = text(super::get(b"test.swoole_test"));
+        assert_eq!(result, test_mime_type.to_bytes());
+    }
+
+    #[test]
+    fn add() {
+        let _serial = serial();
+        let test_mime_type = c"application/swoole-core-test2";
+        assert!(super::add(b"swoole_test2", test_mime_type));
+        assert!(!super::add(b"swoole_test2", test_mime_type));
+
+        let result = text(super::get(b"test.swoole_test2"));
+        assert_eq!(result, test_mime_type.to_bytes());
+    }
+
+    #[test]
+    fn del() {
+        let _serial = serial();
+        assert!(super::del(b"json"));
+        assert!(!super::exists(b"test.html.json"));
+        super::set(b"json", c"application/json");
+    }
+
+    #[test]
+    fn suffix_is_the_last_one_through_tolower() {
+        assert_eq!(suffix(b"a.B.JSON"), b"json");
+        assert_eq!(suffix(b"noDot"), b"nodot");
+        assert_eq!(suffix(b"trailing."), b"");
+        assert_eq!(suffix(b"x.\0Y"), b"\0y");
+        assert_eq!(CATALOG.len(), 362);
+    }
+}

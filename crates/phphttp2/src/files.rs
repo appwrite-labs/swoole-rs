@@ -63,7 +63,6 @@ unsafe extern "C" {
         owner: *mut *mut c_void,
     ) -> *const c_char;
     fn swr_h2s_file_content_free(owner: *mut c_void);
-    fn swr_h2s_mime_type(path: *const c_char, length: usize) -> *const c_char;
     fn swr_h2s_in_coroutine() -> bool;
 }
 
@@ -373,10 +372,8 @@ fn bytes<'a>(data: *const c_char, length: usize) -> &'a [u8] {
 
 fn send_content(ctx: *mut c_void, path: &[u8], content: &[u8], offset: i64, length: usize) -> bool {
     let available = sw_rs_http2_file_length(length, content.len());
-    // SAFETY: the path's bytes.
-    let content_type = unsafe { swr_h2s_mime_type(path.as_ptr().cast(), path.len()) };
-    // SAFETY: a mime type, a static NUL-terminated string.
-    let content_type = unsafe { std::ffi::CStr::from_ptr(content_type) };
+    // SAFETY: the table's type or the fallback, copied before PHP can change it.
+    let content_type = unsafe { std::ffi::CStr::from_ptr(swoole_rs_framing::mime::get(path)) };
     let trailer = begin_file(ctx, content_type.to_bytes(), available);
     if trailer < 0 {
         return false;

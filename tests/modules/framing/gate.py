@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded framing ABI, immutable catalog, locale suffix and malformed-input safety; real callers are separate."""
+"""Bounded framing ABI, MIME lookup and malformed-input safety; real callers are separate."""
 import argparse
 import json
 from pathlib import Path

@@ -464,12 +464,6 @@ typedef struct swr_v1_phpswoole_ops {
     /* swoole_error_log's tail: set the error, then put if the level passes and it isn't ignored. */
     void (*error_log)(int32_t level, int32_t error, const char *message, size_t length);
     void (*ignore_error)(int32_t code);
-    uint8_t (*mime_add)(const char *suffix, const char *type);
-    void (*mime_set)(const char *suffix, const char *type);
-    uint8_t (*mime_del)(const char *suffix);
-    const char *(*mime_get)(const char *filename);
-    uint8_t (*mime_exists)(const char *filename);
-    void (*mime_list)(struct _zval_struct *array);
     void (*unserialize)(struct _zval_struct *value, const char *buf, size_t length, struct _zend_array *options);
     void (*json_decode)(struct _zval_struct *value, const char *str, size_t length, int64_t options, int64_t depth);
     /* php_swoole_set_global_option's effects, in its order. */

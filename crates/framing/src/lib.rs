@@ -1,4 +1,4 @@
-//! The length/EOF receive loops, packet-length helpers and immutable MIME policy;
+//! The length/EOF receive loops, packet-length helpers and the MIME table;
 //! native code keeps the socket IO, callbacks and buffer allocation.
 #![expect(
     clippy::missing_safety_doc,
@@ -12,7 +12,7 @@
     )
 )]
 use std::slice;
-mod mime;
+pub mod mime;
 
 mod recv;
 pub use recv::{Protocol, swr_v1_framing_recv};
@@ -132,91 +132,4 @@ pub unsafe extern "C" fn swr_v1_framing_default(
     };
     *out = total;
     1
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Span {
-    pub data: *const u8,
-    pub len: usize,
-}
-fn span(v: &'static [u8]) -> Span {
-    Span {
-        data: v.as_ptr(),
-        len: v.len(),
-    }
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_framing_mime_count() -> usize {
-    mime::CATALOG.len()
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_framing_mime_entry(
-    index: usize,
-    key: *mut Span,
-    value: *mut Span,
-) -> u8 {
-    // SAFETY: the caller passes null or a writable Span for each output.
-    let key = unsafe { key.as_mut() };
-    // SAFETY: as above.
-    let value = unsafe { value.as_mut() };
-    let (Some(&(k, v)), Some(key), Some(value)) = (mime::CATALOG.get(index), key, value) else {
-        return 0;
-    };
-    *key = span(k);
-    *value = span(v);
-    1
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_framing_mime_fallback() -> Span {
-    span(b"application/octet-stream")
-}
-unsafe extern "C" {
-    fn tolower(c: i32) -> i32;
-}
-/// Locate the borrowed suffix before native `std::string` allocation. No pointer
-/// or borrow survives return; `usize::MAX` rejects an inaccessible input extent.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_framing_mime_suffix_offset(data: *const u8, len: usize) -> usize {
-    // SAFETY: the caller lends `len` initialized bytes at `data` for this call.
-    unsafe { bytes(data, len) }.map_or(usize::MAX, |input| {
-        input
-            .iter()
-            .rposition(|&c| c == b'.')
-            .map_or(0, |at| at + 1)
-    })
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_framing_mime_suffix(
-    data: *const u8,
-    len: usize,
-    out: *mut u8,
-    cap: usize,
-    native_signed: u8,
-) -> usize {
-    // SAFETY: the caller lends `len` initialized bytes at `data` for this call.
-    let Some(data) = (unsafe { bytes(data, len) }) else {
-        return usize::MAX;
-    };
-    let start = data.iter().rposition(|&c| c == b'.').map_or(0, |n| n + 1);
-    let suffix = data.get(start..).unwrap_or_default();
-    if suffix.len() > cap || (!suffix.is_empty() && out.is_null()) {
-        return usize::MAX;
-    }
-    for (n, &c) in suffix.iter().enumerate() {
-        // Native signed-char values below EOF violate C tolower's contract. Keep
-        // those bytes well-defined through unsigned input, rather than C UB.
-        let input = if native_signed != 0 && c == 255 {
-            -1
-        } else {
-            i32::from(c)
-        };
-        // SAFETY: `input` is EOF or an unsigned char value, as tolower requires.
-        let lower = unsafe { tolower(input) }.to_le_bytes()[0];
-        // SAFETY: `n < suffix.len() <= cap`, and the caller lends `cap` writable bytes at `out`.
-        let slot = unsafe { out.add(n) };
-        // SAFETY: as above, `slot` is writable.
-        unsafe { slot.write(lower) };
-    }
-    suffix.len()
 }
