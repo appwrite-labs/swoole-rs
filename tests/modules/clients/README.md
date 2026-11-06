@@ -8,10 +8,10 @@ The persistent client pool is also Rust-owned.
 
 ## Actual-body differentials
 
-Every `*_gate.py` and `gate.py` takes the same arguments:
+Every `*_gate.py` takes the same arguments:
 
 ```sh
-python3 tests/modules/clients/gate.py --source /path/to/pinned-git \
+python3 tests/modules/clients/codec_gate.py --source /path/to/pinned-git \
   --archive /path/to/libswoole_rs_ffi.a --output target/clients.json [--sanitize] [--rust-sanitized]
 ```
 
@@ -22,20 +22,19 @@ state, errors and effect order. `--sanitize` adds native ASan/UBSan;
 `--rust-sanitized` records that the archive was ASan-built (requires
 `--sanitize`). None of these are whole-TU, live-socket or PHP runtime tests.
 Once a body moves into Rust, its cases move to a `crates/clients` test against
-the pinned C++ in `swoole-rs-oracle`, as the Set-Cookie split did
-(`tests/upstream.rs`). `clients-native-originals` runs upstream's own
+the pinned C++ in `swoole-rs-oracle` (`tests/upstream.rs`), as the Set-Cookie
+split, the `Address` methods (`verify_ip`, `verify_port`, both `assign`s,
+`is_loopback_addr`) and the hosts-file lookup did. `clients-native-originals` runs upstream's own
 `network/client.cpp`, `dns.cpp` and `address.cpp` GoogleTests on the hybrid tree.
 
 | Gate | Bodies covered |
 |---|---|
-| `gate.py` | Address URL/port policy, hosts-file lookup (real file IO) |
 | `codec_gate.py` | DNS domain encode/decode and whole query/response callers |
 | `http_format_gate.py` | Request formatting against the pinned `sw_snprintf` |
-| `ip_gate.py` | Numeric Address validation/assignment and loopback against libc |
 | `ip_text_gate.py` | DNS numeric IP formatting |
 
 `python3 -m unittest discover -s tests/modules/clients -p 'test_*.py'` checks
-that the shared command recorder in `gate.py` keeps non-UTF-8 diagnostics.
+that the gates' shared command recorder (`gate.py`) keeps non-UTF-8 diagnostics.
 
 The persistent-pool witness runs in `clients-unit` (`pool::tests`): the same
 100,000 operations, 700,000 state checks, fork isolation, token teardown and
@@ -80,8 +79,8 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   residual queues. Neither closes the opaque Client tokens.
 - Removing temporary hosts-parser containers and IP-text string appends changes
   allocation-failure behaviour.
-- `ip_gate.py`: macOS keeps its decimal leading-zero grammar and native
-  `inet_pton` for scoped IPv6; Linux is strict.
+- `Address::verify_ip`/`assign`: macOS keeps its decimal leading-zero grammar
+  and native `inet_pton` for scoped IPv6; Linux is strict.
 - Async gate locale coverage is the C locale only.
 - The pinned `SHUT_RDWR` branch sets only `shutdown_read`; this is preserved.
 - `network::Client` itself (crates/clients/src/client.rs) is covered by its Rust

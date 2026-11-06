@@ -452,21 +452,87 @@ pub mod protocols {
 }
 
 pub mod clients {
-    use std::ffi::c_char;
+    use std::ffi::{c_char, c_int};
+
+    /// What the pinned `Address::assign(type, host, port, resolve)` leaves in a
+    /// record filled with 0x73, type -1, length 987, errno 17 and last error 11.
+    /// `addr` holds the first `address_size()` bytes of the sockaddr union.
+    #[repr(C)]
+    pub struct Assign {
+        pub addr: [u8; 128],
+        pub len: u32,
+        pub kind: c_int,
+        pub result: c_int,
+        pub error: c_int,
+        pub last_error: c_int,
+        pub dns_calls: c_int,
+        pub loopback: c_int,
+        pub dns_host_length: usize,
+        pub dns_host: [u8; 256],
+    }
 
     unsafe extern "C" {
-        /// The pinned `Address::assign(url)` over `length` bytes: 1 assigned, 0
-        /// rejected, -1 `std::stoi` threw; the host goes to `host` (`length` bytes)
-        /// and its length to `*host_length`.
+        /// The pinned `Address::assign(url)` over `length` bytes, into a recorder that
+        /// returns `accept`: its result, or -1 for `std::out_of_range` and -2 for
+        /// `std::invalid_argument`. The type (87 if unset), port, host (`length`
+        /// bytes) and error-log count it leaves go to the out parameters.
         #[link_name = "swr_oracle_clients_url"]
         pub fn url(
             data: *const c_char,
             length: usize,
-            kind: *mut i32,
-            port: *mut i32,
+            accept: bool,
+            kind: *mut c_int,
+            port: *mut c_int,
             host: *mut c_char,
             host_length: *mut usize,
-        ) -> i32;
+            logs: *mut c_int,
+        ) -> c_int;
+        /// The pinned `Address::verify_port`.
+        #[link_name = "swr_oracle_clients_verify_port"]
+        pub fn verify_port(port: c_int, for_connect: bool) -> bool;
+        /// The pinned `Address::verify_ip` over `length` bytes, run with errno 17 and
+        /// its 46-byte scratch filled with 0x53; errno and the scratch after go out.
+        #[link_name = "swr_oracle_clients_verify_ip"]
+        pub fn verify_ip(
+            family: c_int,
+            host: *const c_char,
+            length: usize,
+            error: *mut c_int,
+            scratch: *mut c_char,
+        ) -> bool;
+        /// The size of the pinned `Address`'s sockaddr union.
+        #[link_name = "swr_oracle_clients_address_size"]
+        pub fn address_size() -> usize;
+        /// The pinned `Address::assign(type, host, port, resolve)` over `length`
+        /// bytes, with a `gethostbyname` double that fails for `resolve-fail`.
+        #[link_name = "swr_oracle_clients_assign"]
+        pub fn assign(
+            kind: c_int,
+            host: *const c_char,
+            length: usize,
+            port: c_int,
+            resolve: bool,
+            out: *mut Assign,
+        );
+        /// The pinned `Address::is_loopback_addr` for `kind` over 16 address bytes.
+        #[link_name = "swr_oracle_clients_loopback"]
+        pub fn loopback(kind: c_int, bytes: *const u8) -> bool;
+        /// Which of the 256 bytes the C++ locale's ctype classes as space, with the
+        /// extra spaces of [`hosts`] when `extra_space`.
+        #[link_name = "swr_oracle_clients_spaces"]
+        pub fn spaces(extra_space: bool, spaces: *mut u8);
+        /// The pinned `get_ip_by_hosts` over the hosts file at `path`, under a C++
+        /// locale that also classes NUL, 0xff and `@` as space when `extra_space`;
+        /// the address goes to `address` and its length is returned.
+        #[link_name = "swr_oracle_clients_hosts"]
+        pub fn hosts(
+            path: *const c_char,
+            name: *const c_char,
+            length: usize,
+            extra_space: bool,
+            address: *mut c_char,
+            capacity: usize,
+        ) -> usize;
         /// `php_swoole_http_parse_set_cookies`'s split of `length` bytes: key
         /// length, value offset and value length.
         #[link_name = "swr_oracle_clients_cookie"]
