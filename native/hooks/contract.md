@@ -1,7 +1,10 @@
 # Coroutine I/O policy contract
 
 Feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
-`swoole_rs_hooks.h`. Patched upstream files: `ext-src/swoole_runtime.cc`,
+`swoole_rs_hooks.h`. Patched upstream files: `ext-src/swoole_runtime.cc` (deleted; the
+coroutine streams reach the socket through `system.cc`'s
+`swr_v1_runtime_socket`, the C++ services through `php_swoole_cxx.cc`, and
+`thirdparty/php/streams/plain_wrapper.c` builds alone),
 `include/swoole_coroutine_socket.h`, `src/coroutine/file_lock.cc` (deleted),
 `src/coroutine/hook.cc` (deleted),
 `src/coroutine/iouring.cc`, `src/coroutine/socket.cc` (deleted; the coroutine

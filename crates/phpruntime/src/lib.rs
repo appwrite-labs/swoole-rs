@@ -137,6 +137,17 @@ pub struct Ops {
     gethostbyname: zif_handler,
     exit: zif_handler,
     putenv: zif_handler,
+    /// Bodies for `bailout::trap`: `php_swoole_socket_set_ssl`,
+    /// `openssl_x509_read`, `Coroutine::get_current_safe()` and
+    /// `php_swoole_convert_to_fd`, over the calls in `socket`.
+    set_ssl: unsafe extern "C" fn(call: *mut c_void),
+    x509_read: unsafe extern "C" fn(call: *mut c_void),
+    coroutine_check: unsafe extern "C" fn(unused: *mut c_void),
+    convert_to_fd: unsafe extern "C" fn(call: *mut c_void),
+    /// `php_swoole_check_reactor()`.
+    check_reactor: unsafe extern "C" fn(),
+    /// `swoole_strerror(code)`.
+    strerror: unsafe extern "C" fn(code: i32) -> *const c_char,
 }
 
 // SAFETY: a static table of function pointers and a class entry, both
@@ -623,7 +634,17 @@ mod tests {
         gethostbyname: None,
         exit: None,
         putenv: None,
+        set_ssl: free,
+        x509_read: free,
+        coroutine_check: free,
+        convert_to_fd: free,
+        check_reactor: unchecked,
+        strerror,
     };
+    unsafe extern "C" fn unchecked() {}
+    unsafe extern "C" fn strerror(_: i32) -> *const c_char {
+        c"".as_ptr()
+    }
 
     fn run(requested: u32, installed: u32) -> (u32, Vec<String>) {
         OPS.get_or_init(|| &FAKE);
