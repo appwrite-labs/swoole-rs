@@ -2,12 +2,13 @@
 //! order upstream reads them in. C++ keeps the Server's fields and the effects
 //! that need its C++ API, reached by field id through the host table
 //! (`native/process/swoole_rs_phpserver_settings.h`).
-use crate::server::{fatal, server};
+use crate::server::{display_errors, fatal, server, set_last_error};
 use std::{
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, bailout, message, php_error,
     string::bytes,
@@ -103,8 +104,6 @@ mod text {
 #[repr(C)]
 pub struct SettingsHost {
     get: unsafe extern "C" fn(*mut c_void, u32) -> i64,
-    set: unsafe extern "C" fn(*mut c_void, u32, i64),
-    set_double: unsafe extern "C" fn(*mut c_void, f64),
     text: unsafe extern "C" fn(*mut c_void, u32, *const c_char, usize),
     rewrite: unsafe extern "C" fn(*mut c_void, *const c_char, usize, *const c_char, usize),
     parse_size: unsafe extern "C" fn(*mut zval) -> i64,
@@ -117,8 +116,6 @@ pub struct SettingsHost {
     msgqueue_key_valid: unsafe extern "C" fn(i64) -> bool,
     thread_options: unsafe extern "C" fn(*mut zend_object, *mut c_void) -> bool,
     finish: unsafe extern "C" fn(*mut zend_object, *mut zval) -> bool,
-    set_last_error: unsafe extern "C" fn(c_int),
-    display_errors: unsafe extern "C" fn() -> bool,
 }
 
 static HOST: AtomicPtr<SettingsHost> = AtomicPtr::new(ptr::null_mut());
@@ -139,7 +136,99 @@ pub unsafe extern "C" fn swr_v1_phpserver_settings_init(table: *const SettingsHo
 /// `serv->reload_async = true` (`on_before_start` with coroutines on).
 pub(crate) fn set_reload_async(serv: *mut c_void) {
     // SAFETY: a live server.
-    unsafe { (host().set)(serv, field::RELOAD_ASYNC, 1) };
+    unsafe { view::config(serv) }.reload_async = true;
+}
+
+/// The Server field `id` (`field::*`), read as C++ reads it.
+///
+/// # Safety
+/// `serv` is a live server.
+unsafe fn fact(serv: *mut c_void, id: u32) -> i64 {
+    use field as f;
+    // SAFETY: per the caller.
+    let config = unsafe { view::config(serv) };
+    match id {
+        // SAFETY: per the caller.
+        f::STARTED => i64::from(unsafe { view::is_started(serv) }),
+        f::WORKER_MAX_CONCURRENCY => i64::from(config.worker_max_concurrency),
+        // SAFETY: per the caller.
+        f::MAX_CONCURRENCY => i64::from(unsafe { view::counters(serv) }.max_concurrency),
+        f::ENABLE_COROUTINE => i64::from(config.enable_coroutine),
+        f::DISPATCH_MODE => i64::from(config.dispatch_mode),
+        f::TASK_IPC_MODE => i64::from(config.task_ipc_mode),
+        f::TASK_ENABLE_COROUTINE => i64::from(config.task_enable_coroutine),
+        // SAFETY: per the caller.
+        _ => unsafe { (host().get)(serv, id) },
+    }
+}
+
+/// `serv-><field> = v` for the Server field `id`, converted as C++ assigns it.
+///
+/// # Safety
+/// `serv` is a live server that has not started.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "C++'s implicit conversions of the int64_t setting to each field's type"
+)]
+unsafe fn apply(serv: *mut c_void, id: u32, v: i64) {
+    use field as f;
+    // SAFETY: per the caller.
+    let c = unsafe { view::config(serv) };
+    let on = v != 0;
+    // `0` is unlimited for both concurrency limits.
+    let limit = if v as u32 == 0 { u32::MAX } else { v as u32 };
+    match id {
+        f::DAEMONIZE => c.daemonize = on,
+        f::REACTOR_NUM => c.reactor_num = v as u16,
+        f::SINGLE_THREAD => c.single_thread = on,
+        f::WORKER_NUM => c.worker_num = v as u32,
+        f::MAX_WAIT_TIME => c.max_wait_time = v as u32,
+        f::MAX_QUEUED_BYTES => c.max_queued_bytes = v as u32,
+        // SAFETY: per the caller; the counters are mapped before set() runs.
+        f::MAX_CONCURRENCY => unsafe { view::counters_mut(serv) }.max_concurrency = limit,
+        f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency = limit,
+        f::ENABLE_COROUTINE => c.enable_coroutine = on,
+        f::DISPATCH_MODE => c.dispatch_mode = v as u8,
+        f::SEND_YIELD => c.send_yield = on,
+        f::DISCARD_TIMEOUT_REQUEST => c.discard_timeout_request = on,
+        f::ENABLE_UNSAFE_EVENT => c.enable_unsafe_event = on,
+        f::ENABLE_DELAY_RECEIVE => c.enable_delay_receive = on,
+        f::ENABLE_REUSE_PORT => c.enable_reuse_port = on,
+        f::TASK_OBJECT => c.task_object = on,
+        f::EVENT_OBJECT => c.event_object = on,
+        f::TASK_ENABLE_COROUTINE => c.task_enable_coroutine = on,
+        f::TASK_WORKER_NUM => c.task_worker_num = v as u32,
+        f::TASK_IPC_MODE => c.task_ipc_mode = v as u8,
+        f::TASK_MAX_REQUEST => c.task_max_request = v as u32,
+        f::TASK_MAX_REQUEST_GRACE => c.task_max_request_grace = v as u32,
+        // SAFETY: per the caller.
+        f::MAX_CONNECTION => unsafe { server_methods::set_max_connection(serv, v as u32) },
+        f::START_SESSION_ID => {
+            // SAFETY: per the caller, as above.
+            let counters = unsafe { view::counters_mut(serv) };
+            counters.session_round = v.min(i64::from(u32::MAX));
+        }
+        f::HEARTBEAT_CHECK_INTERVAL => c.heartbeat_check_interval = v as u16,
+        f::MAX_REQUEST => c.max_request = v as u32,
+        f::MAX_REQUEST_GRACE => c.max_request_grace = v as u32,
+        f::RELOAD_ASYNC => c.reload_async = on,
+        f::OPEN_CPU_AFFINITY => c.open_cpu_affinity = on,
+        f::HTTP_PARSE_COOKIE => c.http_parse_cookie = on,
+        f::HTTP_PARSE_POST => c.http_parse_post = on,
+        f::HTTP_PARSE_FILES => c.http_parse_files = on,
+        f::HTTP_COMPRESSION => c.http_compression = on,
+        f::HTTP_COMPRESSION_LEVEL => c.http_compression_level = v as u8,
+        f::COMPRESSION_MIN_LENGTH => c.compression_min_length = v as u32,
+        f::WEBSOCKET_COMPRESSION => c.websocket_compression = on,
+        f::UPLOAD_MAX_FILESIZE => c.upload_max_filesize = v as usize,
+        f::ENABLE_STATIC_HANDLER => c.enable_static_handler = on,
+        f::HTTP_AUTOINDEX => c.http_autoindex = on,
+        f::INPUT_BUFFER_SIZE => c.input_buffer_size = v as u32,
+        f::OUTPUT_BUFFER_SIZE => c.output_buffer_size = v as u32,
+        f::MESSAGE_QUEUE_KEY => c.message_queue_key = v as u64,
+        _ => unreachable!("not a Server field: {id}"),
+    }
 }
 
 /// The settings array and the Server being configured.
@@ -178,12 +267,12 @@ impl Settings {
 
     fn fact(&self, id: u32) -> i64 {
         // SAFETY: a live server.
-        unsafe { (host().get)(self.serv, id) }
+        unsafe { fact(self.serv, id) }
     }
 
     fn set(&self, id: u32, value: i64) {
-        // SAFETY: a live server.
-        unsafe { (host().set)(self.serv, id, value) };
+        // SAFETY: a live server, not started (set() checked).
+        unsafe { apply(self.serv, id, value) };
     }
 
     fn long(value: *mut zval) -> Result<i64, Stop> {
@@ -271,11 +360,8 @@ impl Settings {
 
 /// `php_swoole_error(E_WARNING, message)`.
 fn notice(message: &CStr) -> Step {
-    let host = host();
-    // SAFETY: plain state.
-    unsafe { (host.set_last_error)(SW_ERROR_PHP_RUNTIME_NOTICE) };
-    // SAFETY: reads a setting.
-    if unsafe { (host.display_errors)() } {
+    set_last_error(SW_ERROR_PHP_RUNTIME_NOTICE);
+    if display_errors() {
         // SAFETY: a warning from a handler.
         bailout::defer(unsafe { php_error(E_WARNING, message) });
     }
@@ -289,8 +375,7 @@ fn set(call: &Call) {
         vht: ptr::null_mut(),
     };
     if s.fact(field::WORKER_THREAD) != 0 {
-        // SAFETY: plain state.
-        unsafe { (host().set_last_error)(SW_ERROR_SERVER_UNRELATED_THREAD) };
+        set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);
         return call.set_bool(false);
     }
     if s.fact(field::STARTED) != 0 {
@@ -375,7 +460,7 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
         let v = unsafe { get_double(value) };
         checked()?;
         // SAFETY: a live server.
-        unsafe { (host.set_double)(s.serv, v) };
+        unsafe { view::config(s.serv) }.send_timeout = v;
     }
     s.clamped(c"dispatch_mode", f::DISPATCH_MODE, 0, i64::from(u8::MAX))?;
     match s.get(c"send_yield") {
@@ -500,10 +585,8 @@ fn cpu_affinity_ignore(s: &Settings, value: *mut zval) -> Result<bool, Stop> {
     let count = unsafe { (host.cpu_affinity)(cpus.as_mut_ptr(), cpus.len(), &raw mut error) };
     let Ok(count) = usize::try_from(count) else {
         // php_swoole_sys_error(E_WARNING, "sched_getaffinity() failed")
-        // SAFETY: plain state.
-        unsafe { (host.set_last_error)(error) };
-        // SAFETY: reads a setting.
-        if unsafe { (host.display_errors)() } {
+        set_last_error(error);
+        if display_errors() {
             // SAFETY: plain state.
             let reason = unsafe { (host.strerror)(error) };
             // SAFETY: Swoole's static error strings.

@@ -85,7 +85,6 @@ typedef struct {
     int64_t (*fact)(void *server, uint32_t id);
     void (*install)(void *server, uint32_t which);
     bool (*cli)(void);
-    void (*set_last_error)(int code);
     int (*last_error)(void);
     const char *(*strerror)(int code);
     /* 0: no server yet; 1: this worker thread's server, in *server; 2: not the main thread

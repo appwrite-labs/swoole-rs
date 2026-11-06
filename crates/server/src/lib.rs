@@ -39,6 +39,7 @@ mod shared;
 mod startup;
 mod state;
 mod static_config;
+pub mod view;
 pub use static_config::{
     swr_v1_server_static_config, swr_v1_server_static_mime, swr_v1_server_static_owner,
     swr_v1_server_static_owner_clone, swr_v1_server_static_owner_free, swr_v1_server_static_text,

@@ -10,6 +10,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
 use swoole_rs_phpstubs::server;
+use swoole_rs_server::{ConnectionRecord, server_methods, view};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Object, declare_bool, declare_long, declare_property_null,
     declare_string, php_error, register_long_constant,
@@ -28,6 +29,14 @@ use swoole_rs_zend::{method_table, sys as z};
 pub(crate) const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
 const SW_ERROR_NO_PAYLOAD: c_int = 550;
 const SW_ERROR_SESSION_NOT_EXIST: c_int = 1005;
+/// `SW_SERVER_EVENT_PAUSE_RECV` and `SW_SERVER_EVENT_RESUME_RECV`.
+const EVENT_PAUSE_RECV: c_int = 11;
+const EVENT_RESUME_RECV: c_int = 12;
+
+/// `conn->closed`.
+fn closed(conn: &ConnectionRecord) -> bool {
+    conn.closed.load(Ordering::Relaxed) != 0
+}
 /// `SW_MAX_FIND_COUNT`.
 const MAX_FIND_COUNT: i64 = 100;
 /// `SWR_PHPSERVER_STATS_*`.
@@ -70,33 +79,12 @@ type Each = unsafe extern "C" fn(*mut c_void, i64);
 #[repr(C)]
 pub struct ServerHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
-    set_last_error: unsafe extern "C" fn(c_int),
-    display_errors: unsafe extern "C" fn() -> bool,
-    started: unsafe extern "C" fn(*mut c_void) -> bool,
     role: unsafe extern "C" fn(*mut c_void, c_int) -> bool,
-    worker_id: unsafe extern "C" fn() -> i64,
-    pid: unsafe extern "C" fn(*mut c_void, c_int) -> i64,
     worker: unsafe extern "C" fn(*mut c_void, i64, *mut i64, *mut i64) -> bool,
-    close: unsafe extern "C" fn(*mut c_void, i64, bool) -> bool,
-    feedback: unsafe extern "C" fn(*mut c_void, i64, bool) -> c_int,
-    exists: unsafe extern "C" fn(*mut c_void, i64) -> c_int,
-    protect: unsafe extern "C" fn(*mut c_void, i64, bool) -> bool,
-    bind: unsafe extern "C" fn(*mut c_void, i64, u32) -> c_int,
     client: unsafe extern "C" fn(*mut c_void, i64, *mut ServerClient) -> bool,
-    sendwait: unsafe extern "C" fn(*mut c_void, i64, *const c_char, usize) -> bool,
-    reload: unsafe extern "C" fn(*mut c_void, bool) -> bool,
-    shutdown: unsafe extern "C" fn(*mut c_void) -> bool,
-    kill_worker: unsafe extern "C" fn(*mut c_void, i64) -> bool,
     stats: unsafe extern "C" fn(*mut c_void, *mut i64),
-    heartbeat_interval: unsafe extern "C" fn(*mut c_void) -> i64,
     heartbeat: unsafe extern "C" fn(*mut c_void, bool, Each, *mut c_void),
     socket: unsafe extern "C" fn(*mut c_void, i64, *mut zval),
-    min_fd: unsafe extern "C" fn(*mut c_void) -> c_int,
-    max_fd: unsafe extern "C" fn(*mut c_void) -> c_int,
-    session_fd: unsafe extern "C" fn(*mut c_void, i64) -> c_int,
-    connection_at: unsafe extern "C" fn(*mut c_void, c_int, *mut i64, *mut c_int) -> bool,
-    port_fd: unsafe extern "C" fn(*mut c_void) -> c_int,
-    connection_num: unsafe extern "C" fn(*mut c_void, *mut c_void) -> i64,
     call: unsafe extern "C" fn(*mut c_void, c_int, *mut zval, *mut zval) -> bool,
 }
 
@@ -586,13 +574,18 @@ const CONSTANTS: &[(&CStr, i64)] = &[
     (c"SWOOLE_WORKER_EXIT", 3),
 ];
 
+pub(crate) use swoole_rs_corebase::log::set_last_error;
+pub(crate) use swoole_rs_phpswoole::display_errors;
+
+/// `swoole_get_worker_id()`, as the `int` C++ reads.
+pub(crate) fn worker_id() -> i64 {
+    i64::from(swoole_rs_process::methods::swoole_get_worker_id().cast_signed())
+}
+
 /// `php_swoole_error_ex(E_WARNING, SW_ERROR_NO_PAYLOAD, "the data sent must not be empty")`.
 pub(crate) fn no_payload() {
-    let host = host();
-    // SAFETY: plain state.
-    unsafe { (host.set_last_error)(SW_ERROR_NO_PAYLOAD) };
-    // SAFETY: reads a setting.
-    if unsafe { (host.display_errors)() } {
+    set_last_error(SW_ERROR_NO_PAYLOAD);
+    if display_errors() {
         // SAFETY: from a handler; a warning.
         swoole_rs_zend::bailout::defer(unsafe {
             php_error(E_WARNING, c"the data sent must not be empty")
@@ -602,8 +595,7 @@ pub(crate) fn no_payload() {
 
 /// `php_swoole_fatal_error(level, message)`.
 pub(crate) fn fatal(level: i32, message: &CStr) {
-    // SAFETY: plain state, then a warning.
-    unsafe { (host().set_last_error)(SW_ERROR_PHP_FATAL_ERROR) };
+    set_last_error(SW_ERROR_PHP_FATAL_ERROR);
     // SAFETY: from a handler; a bailout (an `E_ERROR`, or a user error handler's
     // exit) waits for the handler's last step, so callers return after it.
     swoole_rs_zend::bailout::defer(unsafe { php_error(level, message) });
@@ -619,12 +611,6 @@ pub(crate) fn server(call: &Call) -> *mut c_void {
         unsafe { (host().invalid)(call.this()) };
     }
     serv
-}
-
-/// `SWOOLE_G(display_errors)`.
-pub(crate) fn display_errors() -> bool {
-    // SAFETY: reads a setting.
-    unsafe { (host().display_errors)() }
 }
 
 /// A new `Connection\Iterator` over `serv` and `port` (null: every port) in `target`.
@@ -644,7 +630,7 @@ pub(crate) fn new_iterator(target: &mut zval, serv: *mut c_void, port: *mut c_vo
 pub(crate) fn running(call: &Call) -> Option<*mut c_void> {
     let serv = server(call);
     // SAFETY: a live server.
-    if unsafe { (host().started)(serv) } {
+    if unsafe { view::is_started(serv) } {
         return Some(serv);
     }
     fatal(E_WARNING, c"server is not running");
@@ -661,7 +647,7 @@ fn close(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    call.set_bool(unsafe { (host().close)(serv, fd, reset) });
+    call.set_bool(unsafe { server_methods::close(serv, fd, reset) });
 }
 
 fn feedback(call: &Call, pause: bool) {
@@ -670,14 +656,17 @@ fn feedback(call: &Call, pause: bool) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    match unsafe { (host().feedback)(serv, fd, pause) } {
-        -1 => {
-            // SAFETY: plain state.
-            unsafe { (host().set_last_error)(SW_ERROR_SESSION_NOT_EXIST) };
-            call.set_bool(false);
-        }
-        result => call.set_bool(result != 0),
-    }
+    let Some(conn) = (unsafe { view::verified(serv, fd) }) else {
+        set_last_error(SW_ERROR_SESSION_NOT_EXIST);
+        return call.set_bool(false);
+    };
+    let event = if pause {
+        EVENT_PAUSE_RECV
+    } else {
+        EVENT_RESUME_RECV
+    };
+    // SAFETY: a live server and one of its connections.
+    call.set_bool(unsafe { server_methods::feedback(serv, ptr::from_mut(conn).cast(), event) });
 }
 
 fn pause(call: &Call) {
@@ -757,7 +746,7 @@ fn reload(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    call.set_bool(unsafe { (host().reload)(serv, !only_task_workers) });
+    call.set_bool(unsafe { swoole_rs_process::workers::entry::reload(serv, !only_task_workers) });
 }
 
 unsafe extern "C" fn push_session(array: *mut c_void, session_id: i64) {
@@ -771,7 +760,7 @@ fn heartbeat(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    if unsafe { (host().heartbeat_interval)(serv) } < 1 {
+    if unsafe { view::config(serv) }.heartbeat_check_interval < 1 {
         return call.set_bool(false);
     }
     call.set_array();
@@ -801,7 +790,19 @@ fn bind(call: &Call) {
     )]
     let uid = uid as u32;
     // SAFETY: a live server.
-    call.set_bool(unsafe { (host().bind)(serv, fd, uid) } == 1);
+    let Some(conn) = (unsafe { view::verified(serv, fd) }) else {
+        return call.set_bool(false);
+    };
+    let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
+    // SAFETY: the connection's aligned lock word, which every holder takes
+    // this way (`sw_spinlock`, with `SW_SPINLOCK_LOOP_N`).
+    unsafe { swoole_rs_utilities::swr_v1_utils_spinlock(conn.lock.as_ptr(), cpus, 1024) };
+    let bound = conn.uid == 0;
+    if bound {
+        conn.uid = uid;
+    }
+    conn.lock.store(0, Ordering::Release);
+    call.set_bool(bound);
 }
 
 fn get_socket(call: &Call) {
@@ -898,27 +899,26 @@ fn get_client_list(call: &Call) {
         fatal(E_WARNING, c"swoole connection list max_find_count=100");
         return call.set_bool(false);
     }
-    let host = host();
     // SAFETY: a live server.
-    let max_fd = unsafe { (host.max_fd)(serv) };
+    let counters = unsafe { view::counters(serv) };
     let start_fd = if start_session_id == 0 {
-        // SAFETY: as above.
-        unsafe { (host.min_fd)(serv) }
+        counters.min_fd
     } else {
         // SAFETY: as above.
-        match unsafe { (host.session_fd)(serv, start_session_id) } {
-            -1 => return call.set_bool(false),
-            fd => fd,
+        match unsafe { view::verified(serv, start_session_id) } {
+            None => return call.set_bool(false),
+            Some(conn) => conn.fd,
         }
     };
+    let max_fd = counters.max_fd;
     if start_fd >= max_fd {
         return call.set_bool(false);
     }
     call.set_array();
     for fd in start_fd + 1..=max_fd {
-        let (mut session_id, mut server_fd) = (0, 0);
-        // SAFETY: a live server and writable locals.
-        if unsafe { (host.connection_at)(serv, fd, &raw mut session_id, &raw mut server_fd) } {
+        // SAFETY: a live server.
+        if let Some(conn) = unsafe { view::iterated(serv, fd) } {
+            let session_id = conn.session_id;
             if session_id <= 0 {
                 continue;
             }
@@ -953,8 +953,13 @@ fn sendwait(call: &Call) {
         );
         return call.set_bool(false);
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Server::sendwait's uint32_t length, as upstream"
+    )]
+    let length = data.len() as u32;
     // SAFETY: a live server and the argument's bytes.
-    call.set_bool(unsafe { (host.sendwait)(serv, fd, data.as_ptr().cast(), data.len()) });
+    call.set_bool(unsafe { server_methods::sendwait(serv, fd, data.as_ptr().cast(), length) });
 }
 
 fn exists(call: &Call) {
@@ -963,7 +968,8 @@ fn exists(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    call.set_bool(unsafe { (host().exists)(serv, session_id) } == 1);
+    let conn = unsafe { view::verified(serv, session_id) };
+    call.set_bool(conn.is_some_and(|conn| !closed(conn) && conn.closing == 0));
 }
 
 fn protect(call: &Call) {
@@ -975,15 +981,20 @@ fn protect(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    call.set_bool(unsafe { (host().protect)(serv, session_id, value) });
+    match unsafe { view::verified(serv, session_id) } {
+        Some(conn) if !closed(conn) => {
+            conn.protect = u8::from(value);
+            call.set_bool(true);
+        }
+        _ => call.set_bool(false),
+    }
 }
 
 fn get_worker_id(call: &Call) {
     let serv = server(call);
     // SAFETY: a live server.
     if unsafe { (host().role)(serv, 0) } {
-        // SAFETY: reads the process's worker id.
-        call.set_long(unsafe { (host().worker_id)() });
+        call.set_long(worker_id());
     } else {
         call.set_bool(false);
     }
@@ -996,8 +1007,7 @@ fn worker(call: &Call, serv: *mut c_void) -> Option<(i64, i64)> {
         return None;
     };
     let worker_id = if worker_id < 0 {
-        // SAFETY: reads the process's worker id.
-        unsafe { (host().worker_id)() }
+        self::worker_id()
     } else {
         worker_id
     };
@@ -1028,19 +1038,19 @@ fn get_worker_pid(call: &Call) {
 fn get_manager_pid(call: &Call) {
     let serv = server(call);
     // SAFETY: a live server.
-    call.set_long(unsafe { (host().pid)(serv, 1) });
+    call.set_long(i64::from(unsafe { view::counters(serv) }.manager_pid));
 }
 
 fn get_master_pid(call: &Call) {
     let serv = server(call);
     // SAFETY: a live server.
-    call.set_long(unsafe { (host().pid)(serv, 0) });
+    call.set_long(i64::from(unsafe { view::counters(serv) }.master_pid));
 }
 
 fn shutdown(call: &Call) {
     let serv = server(call);
     // SAFETY: a live server.
-    call.set_bool(unsafe { (host().shutdown)(serv) });
+    call.set_bool(unsafe { server_methods::shutdown(serv) });
 }
 
 fn stop(call: &Call) {
@@ -1048,8 +1058,13 @@ fn stop(call: &Call) {
     let Ok(worker_id) = call.arity(0, 1).and_then(|()| call.long(1, -1)) else {
         return call.set_bool(false);
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Server::kill_worker's int worker id, as upstream"
+    )]
+    let worker_id = worker_id as c_int;
     // SAFETY: a live server.
-    call.set_bool(unsafe { (host().kill_worker)(serv, worker_id) });
+    call.set_bool(unsafe { swoole_rs_process::workers::entry::kill_worker(serv, worker_id) });
 }
 
 /// `php_swoole_connection_iterator_get_and_check_ptr(ZEND_THIS)`.
@@ -1072,28 +1087,25 @@ fn rewind(call: &Call) {
     let iterator = iterator(call);
     iterator.index = 0;
     // SAFETY: a live server.
-    iterator.current_fd = unsafe { (host().min_fd)(iterator.serv) };
+    iterator.current_fd = unsafe { view::counters(iterator.serv) }.min_fd;
 }
 
 fn valid(call: &Call) {
     let iterator = iterator(call);
-    let host = host();
     // SAFETY: a live server.
-    let max_fd = unsafe { (host.max_fd)(iterator.serv) };
+    let max_fd = unsafe { view::counters(iterator.serv) }.max_fd;
     for fd in iterator.current_fd..=max_fd {
-        let (mut session_id, mut server_fd) = (0, 0);
-        // SAFETY: a live server and writable locals.
-        if !unsafe {
-            (host.connection_at)(iterator.serv, fd, &raw mut session_id, &raw mut server_fd)
-        } {
+        // SAFETY: a live server.
+        let Some(conn) = (unsafe { view::iterated(iterator.serv, fd) }) else {
             continue;
-        }
+        };
+        let (session_id, server_fd) = (conn.session_id, conn.server_fd);
         if session_id <= 0 {
             continue;
         }
         if !iterator.port.is_null() {
             // SAFETY: the iterator's live port.
-            let port_fd = unsafe { (host.port_fd)(iterator.port) };
+            let port_fd = unsafe { view::port_fd(iterator.port) };
             if port_fd < 0 || server_fd != port_fd {
                 continue;
             }
@@ -1120,8 +1132,14 @@ fn key(call: &Call) {
 
 fn count(call: &Call) {
     let iterator = iterator(call);
-    // SAFETY: a live server and its port, or null.
-    call.set_long(unsafe { (host().connection_num)(iterator.serv, iterator.port) });
+    let num = if iterator.port.is_null() {
+        // SAFETY: a live server.
+        unsafe { view::connection_num(iterator.serv) }
+    } else {
+        // SAFETY: a live server and one of its ports.
+        unsafe { view::port_connection_num(iterator.serv, iterator.port) }
+    };
+    call.set_long(i64::try_from(num).unwrap_or(i64::MAX));
 }
 
 /// `offsetExists`/`offsetGet`: the server's own method, called as PHP would.

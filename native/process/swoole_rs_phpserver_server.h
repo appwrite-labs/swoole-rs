@@ -53,43 +53,17 @@ typedef struct {
 typedef struct {
     /* E_ERROR "Invalid instance of %s" (does not return). */
     void (*invalid)(struct _zend_object *object);
-    void (*set_last_error)(int code);
-    bool (*display_errors)(void);
 
-    /* Facts and operations of the Server `server`. */
-    bool (*started)(void *server);
+    /* Facts and operations of the Server `server`; Rust reads its records
+     * and calls its methods directly for the rest. */
     /* 0 is_worker() || is_task_worker(); 1 is_process_mode() || is_task_worker() */
     bool (*role)(void *server, int which);
-    int64_t (*worker_id)(void);
-    int64_t (*pid)(void *server, int which); /* 0 master, 1 manager */
     bool (*worker)(void *server, int64_t worker_id, int64_t *pid, int64_t *status);
-    bool (*close)(void *server, int64_t session_id, bool reset);
-    /* -1: no such session; else the feedback's result */
-    int (*feedback)(void *server, int64_t session_id, bool pause);
-    /* -1: no such session; 0 closed or closing; 1 open */
-    int (*exists)(void *server, int64_t session_id);
-    bool (*protect)(void *server, int64_t session_id, bool value);
-    /* -1: no such session; 0 already bound; 1 bound now */
-    int (*bind)(void *server, int64_t session_id, uint32_t uid);
     bool (*client)(void *server, int64_t session_id, swr_phpserver_client *client);
-    bool (*sendwait)(void *server, int64_t session_id, const char *data, size_t length);
-    bool (*reload)(void *server, bool all);
-    bool (*shutdown)(void *server);
-    bool (*kill_worker)(void *server, int64_t worker_id);
     void (*stats)(void *server, int64_t *values);
-    int64_t (*heartbeat_interval)(void *server);
     /* Each unhealthy session, closed first when `close`. */
     void (*heartbeat)(void *server, bool close, void (*each)(void *context, int64_t session_id), void *context);
     void (*socket)(void *server, int64_t port, struct _zval_struct *return_value);
-
-    /* Connections by fd, for getClientList and the iterator. */
-    int (*min_fd)(void *server);
-    int (*max_fd)(void *server);
-    int (*session_fd)(void *server, int64_t session_id); /* -1: no such session */
-    /* A connection at `fd`: its session and server fd. */
-    bool (*connection_at)(void *server, int fd, int64_t *session_id, int *server_fd);
-    int (*port_fd)(void *port);
-    int64_t (*connection_num)(void *server, void *port); /* port may be null */
     /* exists()/getClientInfo() called on the server object, as a method
      * (0 exists, 1 getClientInfo); true if a bailout was trapped. */
     bool (*call)(void *server, int which, struct _zval_struct *argument, struct _zval_struct *retval);

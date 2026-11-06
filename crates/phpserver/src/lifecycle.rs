@@ -127,7 +127,6 @@ pub struct LifecycleHost {
     fact: unsafe extern "C" fn(*mut c_void, u32) -> i64,
     install: unsafe extern "C" fn(*mut c_void, u32),
     cli: unsafe extern "C" fn() -> bool,
-    set_last_error: unsafe extern "C" fn(c_int),
     last_error: unsafe extern "C" fn() -> c_int,
     strerror: unsafe extern "C" fn(c_int) -> *const c_char,
     admit: unsafe extern "C" fn(*mut *mut c_void) -> c_int,
@@ -527,10 +526,7 @@ fn exception(message: &CStr, code: i64) {
     unsafe { throw_exception(ce, message, code) };
 }
 
-fn set_last_error(code: c_int) {
-    // SAFETY: plain state.
-    unsafe { (host().set_last_error)(code) };
-}
+use crate::server::set_last_error;
 
 fn class(object: *mut zend_object) -> String {
     // SAFETY: a live object.
