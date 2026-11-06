@@ -19,7 +19,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      # Restores what the merge tier's rust-cache job saves from main.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dev
+          save-if: false
       # PHP headers and libclang: zend-sys binds them under the `php` feature,
       # which --all-features turns on (every module crate, as in the hybrid).
       - uses: ./.github/actions/install
@@ -97,7 +101,7 @@ jobs:
         with:
           packages: libssh2-1-dev
       - id: upstream
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
@@ -195,7 +199,7 @@ jobs:
         uses: ./.github/actions/install
       - if: steps.touched.outputs.modules != ''
         id: upstream
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}

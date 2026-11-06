@@ -88,6 +88,38 @@ jobs:
             target/upstream/build.log
             target/hybrid/*/build-manifest.json
 
+  # The PR tier's rust job builds the dev profile with every feature and only restores,
+  # so this saves its dependencies from main under the key it restores. Warm-up only:
+  # the PR tier's rust job is the check.
+  rust-cache:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dev
+      - uses: ./.github/actions/install
+      - run: cargo clippy --locked --workspace --all-targets --all-features
+      - run: cargo test --locked --workspace --all-features --no-run
+
+  # Every merge-tier run saves a ccache of about 500 MB under its own sha, and the repo's
+  # caches share 10 GB; jobs restore the newest, so keep two and delete the rest.
+  ccache-prune:
+    needs: full-gates
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - run: >
+          gh cache list --ref refs/heads/main --key ccache-${{ runner.os }}- --sort created_at --order desc
+          --limit 100 --json id --jq '.[2:][].id' | xargs -r -n1 gh cache delete
+
   # Every pinned PHPT on upstream and on the all-modules hybrid: any test that passes
   # on upstream must pass on the hybrid (corpus/upstream/gate.py).
   phpt-build:
