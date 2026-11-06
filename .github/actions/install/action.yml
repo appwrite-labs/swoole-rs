@@ -30,8 +30,13 @@ runs:
         restore-keys: |
           apt-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-
           apt-${{ runner.os }}-${{ steps.week.outputs.week }}-
+    # The runner's first mirror, azure.archive.ubuntu.com, throttles some runners to ~40 kB/s
+    # for many minutes while archive.ubuntu.com serves the same runner at 25 MB/s (#1522).
+    # apt moves down its mirror list on errors, not on slow downloads, so drop Azure.
     - shell: bash
-      run: APT_CACHE="$PWD/.apt-cache" .devcontainer/install.sh ${{ inputs.packages }}
+      run: |
+        sudo sed -i /azure/d /etc/apt/apt-mirrors.txt
+        APT_CACHE="$PWD/.apt-cache" .devcontainer/install.sh ${{ inputs.packages }}
     - if: github.ref == 'refs/heads/main' && steps.apt.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
