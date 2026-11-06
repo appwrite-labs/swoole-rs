@@ -2,8 +2,8 @@
 
 Feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`
 and `swoole_rs_httpbindings.h`. Patched upstream files:
-`ext-src/swoole_http_cookie.cc`, `ext-src/swoole_http_response.cc`,
-`ext-src/swoole_http_server_coro.cc`; `ext-src/swoole_http_request.cc` is gone.
+`ext-src/swoole_http_cookie.cc`, `ext-src/swoole_http_server_coro.cc`;
+`ext-src/swoole_http_request.cc` and `ext-src/swoole_http_response.cc` are gone.
 Public PHP headers, class layouts and stubs/arginfo are unchanged. Rust
 allocates and frees `swoole::http::Context`, whose layout is `ContextState`.
 

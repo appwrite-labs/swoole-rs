@@ -641,13 +641,16 @@ name = "swoole-rs-phphttp"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-deflate",
  "swoole-rs-http",
  "swoole-rs-httpbindings",
  "swoole-rs-inflate",
  "swoole-rs-ossupport",
+ "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
+ "swoole-rs-phpswoole",
  "swoole-rs-server",
  "swoole-rs-websocket",
  "swoole-rs-zend",

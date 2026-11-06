@@ -10,8 +10,8 @@ use swoole_rs_zend::{
 /// `swr_v1_phpswoole_minit` flags: which `#ifdef`s the build has.
 pub(crate) const DEBUG: u32 = 1 << 0;
 pub(crate) const SHORTNAME: u32 = 1 << 1;
-const COMPRESSION: u32 = 1 << 2;
-const ZLIB: u32 = 1 << 3;
+pub(crate) const COMPRESSION: u32 = 1 << 2;
+pub(crate) const ZLIB: u32 = 1 << 3;
 const BROTLI: u32 = 1 << 4;
 const TLS1_1: u32 = 1 << 5;
 const TLS1_2: u32 = 1 << 6;

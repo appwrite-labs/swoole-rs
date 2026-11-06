@@ -71,15 +71,6 @@ pub(crate) fn buffer<R>(f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
     result
 }
 
-unsafe extern "C" {
-    fn swr_http_host_compress_other(
-        context: *mut c_void,
-        method: c_int,
-        data: *const c_char,
-        length: usize,
-    ) -> c_int;
-}
-
 /// MINIT (from the response class's): find the array properties' slots.
 pub(crate) fn minit(ce: *mut zend_class_entry) {
     for (slot, name) in OFFSETS.iter().zip(["header", "cookie", "trailer"]) {
@@ -560,7 +551,6 @@ fn compress_warning(message: &str) {
 
 /// `Context::compress`.
 fn compress(state: &mut State, data: *const c_char, length: usize) -> bool {
-    let context = ptr::from_mut(state).cast::<c_void>();
     let capabilities = CAPABILITIES.load(Relaxed);
     let method = swr_v1_httpbindings_codec(
         i32::from(state.compression_method),
@@ -575,12 +565,6 @@ fn compress(state: &mut State, data: *const c_char, length: usize) -> bool {
     if method < 0 {
         compress_warning("Unknown compression method");
         return false;
-    }
-    // SAFETY: the context and the body's span; C++ handles brotli and zstd.
-    match unsafe { swr_http_host_compress_other(context, method, data, length) } {
-        1 => return true,
-        0 => return false,
-        _ => {}
     }
     if capabilities & ZLIB == 0 {
         return false;
@@ -640,24 +624,6 @@ pub(crate) fn compress_body<'a>(
     // SAFETY: a static NUL-terminated label.
     let encoding = unsafe { CStr::from_ptr(encoding.data.cast()) };
     Some((encoding, compressed(state)))
-}
-
-/// brotli or zstd's output (C++, `swr_http_host_compress_other`), copied in
-/// as the compressed body.
-/// # Safety
-/// `context` is a live context and `data` spans `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_set_compressed(
-    context: *mut c_void,
-    data: *const c_char,
-    length: usize,
-) {
-    // SAFETY: per the caller.
-    let body = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
-    // SAFETY: per the caller.
-    let state = unsafe { &mut *context.cast::<State>() };
-    state.compressed = Some(Box::new(body.to_vec()));
-    state.content_compressed = 1;
 }
 
 #[cfg(test)]

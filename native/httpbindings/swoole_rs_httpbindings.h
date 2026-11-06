@@ -96,7 +96,6 @@ struct _zend_object;
 struct _zend_string;
 struct _zval_struct;
 struct _zend_class_entry *swr_v1_phphttp_request_minit(void);
-struct _zend_class_entry *swr_v1_phphttp_response_minit(void);
 /* Swoole\Coroutine\Http\Server (crates/phphttp/src/server_coro.rs): MINIT
  * registers it and returns the class; the HTTP/2 session's request handler
  * calls the dispatch. */
@@ -168,19 +167,14 @@ void swr_v1_phphttp_server_coro_text(const void *server, uint32_t kind, const ch
 void *swr_v1_phphttp_context(const struct _zend_object *object);
 void swr_v1_phphttp_set_context(struct _zend_object *object, void *context);
 
-/* What those methods ask of the context, implemented in ext-src over
- * swoole::http::Context until it moves to Rust. */
-void swr_http_host_error(int code, int always, const char *message);
 /* `new Context()`, which Context::free releases, and Context::init(Server *). */
 void *swr_v1_phphttp_context_new(void);
 void swr_v1_phphttp_context_init(void *ctx, void *server);
 
 /* The request parser (crates/phphttp/src/parse.rs): llhttp and multipart
  * callbacks over swoole::http::ContextState, whose layout state.rs mirrors.
- * `context` is a swoole::http::Context. MINIT passes the codecs built in
- * (1 zlib, 2 brotli, 4 zstd, 8 any). */
+ * `context` is a swoole::http::Context. */
 enum { SWR_PHPHTTP_PARSE_SIZE = 144, SWR_PHPHTTP_STATE_SIZE = 768 };
-void swr_v1_phphttp_parse_minit(uint32_t codecs);
 size_t swr_v1_phphttp_parse(void *context, const char *data, size_t length);
 void swr_v1_phphttp_parse_free(void *context);
 bool swr_v1_phphttp_multipart_boundary(void *context, const char *at, size_t length, size_t offset,
@@ -188,45 +182,13 @@ bool swr_v1_phphttp_multipart_boundary(void *context, const char *at, size_t len
 bool swr_v1_phphttp_multipart_init(void *context, const char *boundary, int length);
 bool swr_v1_phphttp_multipart_parse(void *context, const char *at, size_t length);
 
-/* brotli/zstd output (swr_http_host_compress_other) as the context's
- * compressed body (crates/phphttp/src/header.rs). */
-void swr_v1_phphttp_set_compressed(void *context, const char *data, size_t length);
-/* Context::end (crates/phphttp/src/send.rs): true if a bailout was trapped,
- * which the caller re-raises. */
-bool swr_v1_phphttp_end(void *context, struct _zend_string *data, struct _zval_struct *return_value);
-/* What send.rs asks of the context: the after-response hook (true on a
- * bailout), the HTTP/2 server's end, write and send_file (-1 on a bailout),
- * a default Content-Type, and the WebSocket handshake's compression offer and
- * connection status. */
-enum { SWR_PHPHTTP_HTTP2_END = 0, SWR_PHPHTTP_HTTP2_WRITE = 1, SWR_PHPHTTP_HTTP2_SEND_FILE = 2, SWR_PHPHTTP_HTTP2_PING = 3 };
-bool swr_http_host_after(void *context);
-int swr_http_host_http2(void *context, int op, struct _zend_string *data, int64_t offset, size_t length);
-void swr_http_host_file_type(void *context, struct _zend_string *file);
-/* What they ask of the context: brotli/zstd (1 done, 0 failed, -1 not built). */
-int swr_http_host_compress_other(void *context, int method, const char *data, size_t length);
-/* Calls that can run user code (a value's __toString while building the
- * response, exit() in it) trap a Zend bailout in C++: request_create,
- * response_free and redirect return true when one happened, and Rust
- * re-raises it (docs/zend.md). */
-bool swr_http_host_redirect(void *context, struct _zval_struct *url, struct _zval_struct *code, struct _zval_struct *return_value);
-bool swr_http_host_goaway(void *context, int64_t code, struct _zend_string *debug);
-/* Response::create asks what an object is (1 a Swoole\Server, 2 a coroutine
- * socket, whose fd it sets) and for sw_server(). */
-int swr_http_host_object_kind(struct _zval_struct *object, int64_t *fd);
-void *swr_http_host_server(void);
-/* Rust's side of the context: a new context's request and response objects,
- * Context::set_header (re-raising a bailout itself), and the RSHUTDOWN of the
- * cached Date header. */
+/* Rust's side of the context: a new context's request and response objects. */
 void swr_v1_phphttp_context_objects(void *ctx, int64_t fd);
-bool swr_v1_phphttp_set_header(void *ctx, const char *key, size_t length, struct _zval_struct *value, bool format);
-void swr_v1_phphttp_response_rshutdown(void);
 /* Context::free (crates/phphttp/src/context.rs) and what it and the response's
- * release ask of C++: a coroutine socket's state, a server connection's and
- * whether a reactor runs. */
+ * release ask of C++: a coroutine socket's state and a server connection's. */
 void swr_v1_phphttp_context_free(void *ctx);
 bool swr_http_host_socket_closed(const struct _zval_struct *socket);
 bool swr_http_host_connection_open(void *server, int64_t fd);
-bool swr_http_host_reactor(void);
 /* The context's transport (context.rs): ctx->send and ctx->close, Context::bind
  * to a server or (`server` null) a coroutine socket object, Context::copy and
  * onBeforeRequest (false: not now). It sends through the server or the
@@ -260,13 +222,10 @@ struct _zend_string *swr_v1_phphttp_websocket_pack(const void *object);
 /* websocket::recv_frame: `settings` packs in_server, open_ping_frame,
  * open_pong_frame and open_close_frame from bit 0; `slot` holds the message
  * being assembled (null when none; buffer_free releases it), `sock` is a
- * swoole::coroutine::Socket. It asks C++ to receive, send and read the fd. */
+ * swoole::coroutine::Socket. */
 void swr_v1_phphttp_websocket_recv(uint32_t settings, void **slot, void *sock, struct _zval_struct *return_value,
                                    double timeout);
 void swr_v1_phphttp_websocket_buffer_free(void **slot);
-ssize_t swr_ws_host_sock_recv(void *sock, double timeout, char **data, size_t *length);
-void swr_ws_host_sock_send(void *sock, const char *data, size_t length);
-int swr_ws_host_sock_fd(void *sock);
 /* What it asks of the Server (`server` is a swoole::Server, `context` a
  * swoole::http::Context): the checked server of `$this` (true when the check
  * bailed out), a connection's WebSocket state, sending (`wait`: yield on a
@@ -290,7 +249,6 @@ struct _zval_struct *swr_ws_host_server_zval(void *server);
 bool swr_ws_host_server_compression(void *server);
 void swr_ws_host_set_compression(void *server, int64_t fd, bool compression);
 void swr_ws_host_co_protocol(void *context);
-bool swr_ws_host_set_header(void *context, const char *key, size_t key_length, const char *value, size_t length);
 
 /* Swoole\Http\Server's per-worker state (crates/phphttp/src/server.rs): the
  * addresses cached for keep-alive sessions (`server` a swoole::Server, `conn`

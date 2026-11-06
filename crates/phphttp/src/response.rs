@@ -5,8 +5,7 @@ use crate::{
     host::{
         self, CO_SOCKET, COOKIE, Context, DETACHED, END, HEADER, HEADER_KEY_SIZE,
         HTTP_CONTEXT_UNAVAILABLE, HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED,
-        TRAILER, UPGRADE, WEBSOCKET, swr_http_host_after, swr_http_host_goaway,
-        swr_http_host_redirect,
+        TRAILER, UPGRADE, WEBSOCKET,
     },
     send, websocket,
 };
@@ -56,9 +55,23 @@ unsafe extern "C" fn free(std: *mut zend_object) {
 }
 
 unsafe extern "C" {
-    /// `sw_reactor() != nullptr`.
-    fn swr_http_host_reactor() -> bool;
+    /// `sw_reactor()`.
+    fn swr_v1_event_reactor() -> *mut c_void;
+    /// The HTTP/2 server's (crates/phphttp2).
+    fn swr_v1_phphttp2_server_goaway(
+        ctx: *mut Context,
+        code: i64,
+        data: *const c_char,
+        length: usize,
+    ) -> bool;
+    static swoole_server_ce: *mut zend_class_entry;
+    static swoole_socket_coro_ce: *mut zend_class_entry;
+    fn swr_v1_phpclients_socket_pointer(value: *const z::zval) -> *mut c_void;
 }
+
+/// `Swoole\Http\Response`, as C++ reads it; MINIT writes it.
+#[unsafe(no_mangle)]
+pub static mut swoole_http_response_ce: *mut zend_class_entry = ptr::null_mut();
 
 /// The response object is going: finish what the handler left unanswered
 /// (500 when no status was set) and release the context. True if user code
@@ -70,8 +83,8 @@ fn release(ctx: *mut Context) -> bool {
     if state.end == 0
         && (state.send_chunked != 0 || state.send_header == 0)
         && state.detached == 0
-        // SAFETY: reads a global.
-        && unsafe { swr_http_host_reactor() }
+        // SAFETY: reads a thread global.
+        && !unsafe { swr_v1_event_reactor() }.is_null()
     {
         if state.response.status == 0 {
             state.response.status = INTERNAL_SERVER_ERROR;
@@ -115,11 +128,13 @@ method_table! {
     ];
 }
 
-/// MINIT: register the class as `php_swoole_http_response_minit` did.
+/// MINIT: register the class as `php_swoole_http_response_minit` did, after
+/// `Swoole\Http\Request`'s; the parser learns the codecs built in (`codecs`:
+/// 1 zlib, 8 `SW_HAVE_COMPRESSION`).
 /// # Safety
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_response_minit() -> *mut zend_class_entry {
+pub unsafe extern "C" fn swr_v1_phphttp_response_minit(codecs: u32) {
     // SAFETY: MINIT, with a static table.
     unsafe {
         RESPONSE.register(
@@ -139,7 +154,9 @@ pub unsafe extern "C" fn swr_v1_phphttp_response_minit() -> *mut zend_class_entr
     }
     crate::header::minit(ce);
     context::response_minit(ce);
-    ce
+    // SAFETY: MINIT, before any thread reads it.
+    unsafe { swoole_http_response_ce = ce };
+    crate::parse::minit(codecs);
 }
 
 /// The registered class entry.
@@ -236,14 +253,22 @@ fn write(call: &Call) {
     }
 }
 
+/// `PHP_SWOOLE_HOOK_AFTER_RESPONSE` (`SW_GLOBAL_HOOK_USER + 3`).
+const HOOK_AFTER_RESPONSE: c_int = 27;
+
 /// `http_response_after`: the server's and the hooks' after-response step.
 fn after(ctx: *mut Context) -> Result<(), Bailout> {
-    context::after_response(ctx);
-    // SAFETY: a live context; C++ traps a bailout.
-    if unsafe { swr_http_host_after(ctx) } {
-        return Err(Bailout);
+    unsafe extern "C" fn hooks(ctx: *mut c_void) {
+        // SAFETY: the hooks take the context, as upstream passed it. The
+        // frame owns nothing a bailout out of a hook would skip.
+        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_AFTER_RESPONSE, ctx) };
     }
-    Ok(())
+    context::after_response(ctx);
+    if !swoole_rs_corebase::swoole_isset_hook(HOOK_AFTER_RESPONSE) {
+        return Ok(());
+    }
+    // SAFETY: a live context; the trap's setjmp sits in C, below `hooks`.
+    unsafe { swoole_rs_zend::bailout::trap(hooks, ctx) }
 }
 
 fn end(call: &Call) {
@@ -549,8 +574,16 @@ fn goaway(call: &Call) {
             .arity(0, 2)
             .and_then(|()| Ok((call.long(1, 0)?, call.str_or_null(2)?)));
         let (code, debug) = parsed.ok()?;
-        // SAFETY: a live HTTP/2 context and the optional debug data.
-        call.set_bool(unsafe { swr_http_host_goaway(ctx, code, nullable(debug)) });
+        let debug = nullable(debug);
+        let (data, length) = if debug.is_null() {
+            (ptr::null(), 0)
+        } else {
+            // SAFETY: a live string argument.
+            let debug = unsafe { bytes(debug) };
+            (debug.as_ptr().cast(), debug.len())
+        };
+        // SAFETY: a live HTTP/2 context and the debug data's span.
+        call.set_bool(unsafe { swr_v1_phphttp2_server_goaway(ctx, code, data, length) });
         Some(())
     };
     or_false(call, run());
@@ -682,39 +715,14 @@ pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, for
     true
 }
 
-/// `Context::set_header` for C++.
-/// # Safety
-/// `ctx` is a live context with a response, `key` covers `length` bytes and
-/// `value` is live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_set_header(
-    ctx: *mut Context,
-    key: *const c_char,
-    length: usize,
-    value: *mut z::zval,
-    format: bool,
-) -> bool {
-    let key = if length == 0 {
-        &[][..]
-    } else {
-        // SAFETY: per the caller.
-        unsafe { std::slice::from_raw_parts(key.cast(), length) }
-    };
-    let set = set_header(ctx, key, value, format);
-    swoole_rs_zend::bailout::finish();
+/// `Context::set_header(key, value, false)` of a string value. A warning's
+/// bailout waits for the caller's last step.
+pub fn set_header_bytes(ctx: *mut Context, key: &[u8], value: &[u8]) -> bool {
+    let mut value = websocket::zval_of(swoole_rs_zend::string::copy(value));
+    let set = set_header(ctx, key, &raw mut value, false);
+    // SAFETY: this frame's reference; the header array holds its own.
+    unsafe { z::zval_ptr_dtor(&raw mut value) };
     set
-}
-
-/// `swr_http_host_object_kind`'s answers.
-const SERVER_OBJECT: c_int = 1;
-const SOCKET_OBJECT: c_int = 2;
-
-unsafe extern "C" {
-    /// `SERVER_OBJECT` for a `Swoole\Server`, `SOCKET_OBJECT` (with its fd)
-    /// for a `Swoole\Coroutine\Socket`, otherwise 0.
-    fn swr_http_host_object_kind(object: *mut z::zval, fd: *mut zend_long) -> c_int;
-    /// `sw_server()`.
-    fn swr_http_host_server() -> *mut c_void;
 }
 
 /// `php_swoole_fatal_error(E_WARNING, ...)`, then `RETURN_FALSE`.
@@ -775,34 +783,36 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
     }
     // SAFETY: as above.
     if unsafe { type_of(object) } == IS_OBJECT {
-        // SAFETY: a live object zval and a local output.
-        match unsafe { swr_http_host_object_kind(object, &raw mut fd) } {
-            SERVER_OBJECT => {
-                // SAFETY: a `Swoole\Server` and a local output.
-                if unsafe { websocket::swr_ws_host_server(object, &raw mut server) } {
-                    Bailout.defer();
-                    return;
-                }
-                if !websocket::server_connection(server, fd) {
-                    return refuse(
-                        call,
-                        &format!("parameter $2 ({fd}) must be valid connection session_id"),
-                    );
-                }
+        // SAFETY: the classes MINIT registered.
+        let (server_ce, socket_ce) = unsafe { (swoole_server_ce, swoole_socket_coro_ce) };
+        if instance_of(object, server_ce) {
+            // SAFETY: a `Swoole\Server` and a local output.
+            if unsafe { websocket::swr_ws_host_server(object, &raw mut server) } {
+                Bailout.defer();
+                return;
             }
-            SOCKET_OBJECT => socket = object,
-            _ => {
+            if !websocket::server_connection(server, fd) {
                 return refuse(
                     call,
-                    "parameter $1 must be instanceof Server or Coroutine\\Socket",
+                    &format!("parameter $2 ({fd}) must be valid connection session_id"),
                 );
             }
+        } else if instance_of(object, socket_ce) {
+            socket = object;
+            // SAFETY: a `Swoole\Coroutine\Socket`.
+            fd = zend_long::from(websocket::sock_fd(unsafe {
+                swr_v1_phpclients_socket_pointer(object)
+            }));
+        } else {
+            return refuse(
+                call,
+                "parameter $1 must be instanceof Server or Coroutine\\Socket",
+            );
         }
     } else {
         // SAFETY: the argument.
         fd = unsafe { z::swr_zval_get_long(object) };
-        // SAFETY: reads a global.
-        server = unsafe { swr_http_host_server() };
+        server = swoole_rs_corebase::swr_v1_core_server();
     }
     // SAFETY: a live server.
     if !server.is_null() && !unsafe { websocket::swr_ws_host_started(server) } {
@@ -873,15 +883,21 @@ fn redirect(call: &Call) {
             return None;
         };
         let ctx = checked(call)?;
-        // SAFETY: a live context, this call's arguments and its return slot.
-        bailed = unsafe {
-            swr_http_host_redirect(
-                ctx,
-                url,
-                code.unwrap_or(ptr::null_mut()),
-                call.return_value(),
-            )
-        };
+        #[expect(clippy::cast_possible_truncation, reason = "upstream's int status")]
+        let status = code.map_or(302, |code| {
+            // SAFETY: the argument.
+            unsafe { z::swr_zval_get_long(code) as c_int }
+        });
+        send::state(ctx).response.status = status;
+        set_header(ctx, b"Location", url, false);
+        if swoole_rs_zend::bailout::pending() {
+            bailed = true;
+            return Some(());
+        }
+        match send::end(ctx, ptr::null_mut()) {
+            Ok(done) => call.set_bool(done),
+            Err(_) => bailed = true,
+        }
         Some(())
     };
     let done = run();

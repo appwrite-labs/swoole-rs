@@ -64,13 +64,6 @@ unsafe extern "C" {
     ) -> *const c_char;
     fn swr_h2s_file_content_free(owner: *mut c_void);
     fn swr_h2s_mime_type(path: *const c_char, length: usize) -> *const c_char;
-    fn swr_h2s_set_header(
-        ctx: *mut c_void,
-        name: *const c_char,
-        name_length: usize,
-        value: *const c_char,
-        length: usize,
-    );
     fn swr_h2s_in_coroutine() -> bool;
 }
 
@@ -172,16 +165,7 @@ impl Drop for File {
 }
 
 fn set_header(ctx: *mut c_void, name: &[u8], value: &[u8]) {
-    // SAFETY: a live context; C++ copies both.
-    unsafe {
-        swr_h2s_set_header(
-            ctx,
-            name.as_ptr().cast(),
-            name.len(),
-            value.as_ptr().cast(),
-            value.len(),
-        );
-    };
+    swoole_rs_phphttp::set_header_bytes(ctx, name, value);
 }
 
 /// A string entry of an array zval.
@@ -376,7 +360,6 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_send_file(
     let sent = send_content(ctx, path, bytes(data, available), offset, length);
     // SAFETY: the content `swr_h2s_file_content` lent, freed once.
     unsafe { swr_h2s_file_content_free(owner) };
-    bailout::finish();
     sent
 }
 

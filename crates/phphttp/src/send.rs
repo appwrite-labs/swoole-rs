@@ -8,9 +8,7 @@
 //! writes some of the same fields (`keepalive`), so each step re-borrows it.
 use crate::{
     context, header,
-    host::{
-        self, CO_SOCKET, Context, HTTP2, NO_PAYLOAD, swr_http_host_file_type, swr_http_host_http2,
-    },
+    host::{self, CO_SOCKET, Context, HTTP2, NO_PAYLOAD},
     state::State,
 };
 use std::{
@@ -19,19 +17,38 @@ use std::{
     ptr,
 };
 use swoole_rs_zend::{
-    bailout::Bailout,
+    bailout::{self, Bailout},
     string::bytes,
-    sys::{_zval_struct__bindgen_ty_1, IS_FALSE, IS_TRUE, zend_string, zval},
+    sys::{self as z, zend_string},
 };
 
 /// `SW_HTTP_MAX_APPEND_DATA`: a larger body is sent on its own, uncopied.
 const MAX_APPEND_DATA: usize = 16384;
 
-/// `SWR_PHPHTTP_HTTP2_*`.
+/// The HTTP/2 server's operations.
 const HTTP2_END: c_int = 0;
 const HTTP2_WRITE: c_int = 1;
 const HTTP2_SEND_FILE: c_int = 2;
 pub(crate) const HTTP2_PING: c_int = 3;
+
+// The HTTP/2 server's (crates/phphttp2): a bailout waits for the caller.
+unsafe extern "C" {
+    fn swr_v1_phphttp2_server_respond(
+        ctx: *mut Context,
+        data: *const c_char,
+        length: usize,
+    ) -> bool;
+    fn swr_v1_phphttp2_server_write(ctx: *mut Context, data: *const c_char, length: usize) -> bool;
+    fn swr_v1_phphttp2_server_ping(ctx: *mut Context) -> bool;
+    fn swr_v1_phphttp2_server_send_file(
+        ctx: *mut Context,
+        file: *mut zend_string,
+        offset: i64,
+        length: usize,
+    ) -> bool;
+    /// `swoole::mime_type::get(path)`.
+    fn swr_h2s_mime_type(path: *const c_char, length: usize) -> *const c_char;
+}
 
 /// The context's `ContextState`, its first base.
 pub(crate) fn state<'a>(ctx: *mut Context) -> &'a mut State {
@@ -50,11 +67,55 @@ pub(crate) fn http2(
     offset: i64,
     length: usize,
 ) -> Result<bool, Bailout> {
-    // SAFETY: a live HTTP/2 context; C++ traps a bailout.
-    match unsafe { swr_http_host_http2(ctx, op, data, offset, length) } {
-        -1 => Err(Bailout),
-        done => Ok(done == 1),
+    let body = of(data);
+    let (body, size) = (body.as_ptr().cast(), body.len());
+    let done = match op {
+        // SAFETY: a live HTTP/2 context and the body's span.
+        HTTP2_END => unsafe { swr_v1_phphttp2_server_respond(ctx, body, size) },
+        // SAFETY: as above.
+        HTTP2_WRITE => unsafe { swr_v1_phphttp2_server_write(ctx, body, size) },
+        // SAFETY: a live HTTP/2 context.
+        HTTP2_PING => unsafe { swr_v1_phphttp2_server_ping(ctx) },
+        // SAFETY: a live HTTP/2 stream context and file name.
+        _ => unsafe { swr_v1_phphttp2_server_send_file(ctx, data, offset, length) },
+    };
+    if bailout::pending() {
+        return Err(Bailout);
     }
+    Ok(done)
+}
+
+/// The file's `Content-Type` header, unless the response has one.
+fn file_type(ctx: *mut Context, file: *mut zend_string) {
+    // SAFETY: the response's live object zval.
+    let object = unsafe { swoole_rs_zend::value::obj_of(state(ctx).response.zobject.ptr) };
+    // SAFETY: the registered class and its object, which declares `header`.
+    let header = unsafe {
+        z::swr_zend_property_array(crate::response::entry(), object, c"header".as_ptr(), 6)
+    };
+    // SAFETY: an array zval.
+    let table = unsafe { swoole_rs_zend::value::table(header) };
+    let key = c"Content-Type";
+    // SAFETY: a live table.
+    if !unsafe { z::zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) }.is_null() {
+        return;
+    }
+    // SAFETY: a live file name.
+    let path = unsafe { bytes(file) };
+    // SAFETY: the name's span.
+    let mime = unsafe { swr_h2s_mime_type(path.as_ptr().cast(), path.len()) };
+    // SAFETY: a NUL-terminated string the MIME table keeps.
+    let mime = unsafe { std::ffi::CStr::from_ptr(mime) };
+    // SAFETY: a live array and the type's bytes, which Zend copies.
+    unsafe {
+        z::add_assoc_stringl_ex(
+            header,
+            key.as_ptr(),
+            key.count_bytes(),
+            mime.as_ptr(),
+            mime.count_bytes(),
+        );
+    };
 }
 
 /// Send a header without borrowing context state across the IO.
@@ -211,8 +272,7 @@ pub(crate) fn send_file(
     if host::flags(ctx) & HTTP2 != 0 {
         return http2(ctx, HTTP2_SEND_FILE, file, offset, length);
     }
-    // SAFETY: a live context and file name.
-    unsafe { swr_http_host_file_type(ctx, file) };
+    file_type(ctx, file);
     if state(ctx).send_header == 0 {
         state(ctx).accept_compression = 0;
         if !send_header(ctx, length)? {
@@ -230,27 +290,4 @@ pub(crate) fn send_file(
         close(ctx);
     }
     Ok(true)
-}
-
-/// `Context::end` for C++ (`Response` freed unended, `redirect`, the
-/// WebSocket handshake): its result in `return_value`; true if a bailout was
-/// trapped, which the caller re-raises.
-/// # Safety
-/// `context` is a live context, `data` a live string or null, and
-/// `return_value` writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_end(
-    context: *mut Context,
-    data: *mut zend_string,
-    return_value: *mut zval,
-) -> bool {
-    match end(context, data) {
-        Ok(done) => {
-            let type_info = if done { IS_TRUE } else { IS_FALSE };
-            // SAFETY: per the caller, a writable zval; `ZVAL_BOOL` sets only its type.
-            unsafe { (*return_value).u1 = _zval_struct__bindgen_ty_1 { type_info } };
-            false
-        }
-        Err(_) => true,
-    }
 }

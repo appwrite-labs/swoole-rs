@@ -134,7 +134,9 @@ unsafe extern "C" {
     fn php_swoole_server_minit(module_number: c_int);
     /// crates/phphttp's `Swoole\Http\Request`.
     fn swr_v1_phphttp_request_minit() -> *mut zend_class_entry;
-    fn php_swoole_http_response_minit(module_number: c_int);
+    /// crates/phphttp's `Swoole\Http\Response`, and the codecs its parser knows.
+    fn swr_v1_phphttp_response_minit(codecs: u32);
+    fn swr_v1_phphttp_response_rshutdown();
     fn php_swoole_http_cookie_minit(module_number: c_int);
     fn php_swoole_http_server_minit(module_number: c_int);
     fn php_swoole_http_server_coro_minit(module_number: c_int);
@@ -158,7 +160,6 @@ unsafe extern "C" {
 
     fn php_swoole_server_rshutdown();
     fn php_swoole_http_server_rshutdown();
-    fn php_swoole_http_response_rshutdown();
     fn php_swoole_redis_server_rshutdown();
     fn php_swoole_coroutine_rshutdown();
     fn php_swoole_coroutine_scheduler_rshutdown();
@@ -227,7 +228,7 @@ pub(crate) fn startup(module_number: c_int) {
         // server
         M(php_swoole_server_minit),
         M(http_request_minit),
-        M(php_swoole_http_response_minit),
+        M(http_response_minit),
         M(php_swoole_http_cookie_minit),
         M(php_swoole_http_server_minit),
         M(php_swoole_http_server_coro_minit),
@@ -278,6 +279,16 @@ unsafe extern "C" fn socket_coro_minit(module_number: c_int) {
     let shortname = unsafe { (*globals()).use_shortname };
     // SAFETY: Rust's MINIT, once.
     unsafe { swr_v1_phpclients_socket_minit(exception, shortname, module_number) };
+}
+
+/// `php_swoole_http_response_minit`: zlib and `SW_HAVE_COMPRESSION` are the
+/// codecs built in (brotli and zstd never are: `tools/build_upstream.py`).
+unsafe extern "C" fn http_response_minit(_module_number: c_int) {
+    use crate::constants::{COMPRESSION, ZLIB};
+    let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
+    let codecs = u32::from(flags & ZLIB != 0) | u32::from(flags & COMPRESSION != 0) << 3;
+    // SAFETY: Rust's MINIT, once, after the request class's.
+    unsafe { swr_v1_phphttp_response_minit(codecs) };
 }
 
 /// `php_swoole_client_coro_minit`.
@@ -436,7 +447,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
     let steps = [
         Step::Hook(php_swoole_server_rshutdown),
         Step::Hook(php_swoole_http_server_rshutdown),
-        Step::Hook(php_swoole_http_response_rshutdown),
+        Step::Hook(swr_v1_phphttp_response_rshutdown),
         Step::Hook(crate::asynchronous::rshutdown),
         Step::Hook(php_swoole_redis_server_rshutdown),
         Step::Hook(php_swoole_coroutine_rshutdown),

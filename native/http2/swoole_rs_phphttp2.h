@@ -49,12 +49,10 @@ void swr_v1_phphttp2_session_free(int64_t fd);
  * user code (a header's __toString, onRequest) is trapped and re-raised
  * before return. */
 int swr_v1_phphttp2_session_parse(int64_t fd, const char *buf);
-/* The same for a Rust caller, which raises a pending bailout itself. */
+/* The same for a Rust caller, which raises a pending bailout itself; so does
+ * crates/phphttp, which calls the response's end, write, ping, goaway and
+ * send_file. */
 int swr_v1_phphttp2_session_receive(int64_t fd, const char *buf);
-bool swr_v1_phphttp2_server_respond(void *ctx, const char *data, size_t length);
-bool swr_v1_phphttp2_server_write(void *ctx, const char *data, size_t length);
-bool swr_v1_phphttp2_server_ping(void *ctx);
-bool swr_v1_phphttp2_server_goaway(void *ctx, int64_t code, const char *data, size_t length);
 void swr_v1_phphttp2_server_reset(void *ctx, uint32_t stream_id, uint32_t code);
 /* File responses (crates/phphttp2/src/files.rs): the static handler's answer
  * to a request (true when it served it) and Response::sendfile's. What they
@@ -65,7 +63,6 @@ void swr_v1_phphttp2_server_reset(void *ctx, uint32_t stream_id, uint32_t code);
  * (System::read_file in a coroutine; null if unreadable, `owner` freed by
  * swr_h2s_file_content_free) and its mime type. */
 bool swr_v1_phphttp2_server_static(void *server, void *ctx);
-bool swr_v1_phphttp2_server_send_file(void *ctx, struct _zend_string *file, int64_t offset, size_t length);
 enum {
     SWR_H2S_STATIC_SERVE,
     SWR_H2S_STATIC_STATUS,
@@ -106,7 +103,6 @@ void swr_h2s_wake(void *coroutine);
 void swr_h2s_query(struct _zval_struct *array, const char *query, size_t length);
 void swr_h2s_path(void *ctx, const char *path, size_t length);
 bool swr_h2s_multipart(void *ctx, const char *value, size_t length);
-void swr_h2s_set_header(void *ctx, const char *name, size_t name_length, const char *value, size_t length);
 bool swr_h2s_in_coroutine(void);
 void swr_h2s_error(int code, int always, const char *message);
 
