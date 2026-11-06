@@ -33,11 +33,6 @@ const SW_ERROR_SESSION_NOT_EXIST: c_int = 1005;
 const EVENT_PAUSE_RECV: c_int = 11;
 const EVENT_RESUME_RECV: c_int = 12;
 
-unsafe extern "C" {
-    /// `sw_spinlock(lock)` (src/core/misc.cc).
-    fn sw_spinlock(lock: *mut u32);
-}
-
 /// `conn->closed`.
 fn closed(conn: &ConnectionRecord) -> bool {
     conn.closed.load(Ordering::Relaxed) != 0
@@ -798,8 +793,10 @@ fn bind(call: &Call) {
     let Some(conn) = (unsafe { view::verified(serv, fd) }) else {
         return call.set_bool(false);
     };
-    // SAFETY: the connection's lock, which every holder takes with `sw_spinlock`.
-    unsafe { sw_spinlock(conn.lock.as_ptr()) };
+    let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
+    // SAFETY: the connection's aligned lock word, which every holder takes
+    // this way (`sw_spinlock`, with `SW_SPINLOCK_LOOP_N`).
+    unsafe { swoole_rs_utilities::swr_v1_utils_spinlock(conn.lock.as_ptr(), cpus, 1024) };
     let bound = conn.uid == 0;
     if bound {
         conn.uid = uid;
