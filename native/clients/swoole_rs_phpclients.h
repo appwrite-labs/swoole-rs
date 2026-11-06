@@ -31,7 +31,7 @@ int swoole_http_client_coro_ws_push(
 void swoole_http_client_coro_ws_recv(void *socket, void *ws, struct _zval_struct *return_value, double timeout);
 
 /* PHP Swoole\Client and Swoole\Async\Client (crates/phpclients): MINIT
- * (php_swoole_client_async_minit is Rust's), and the async events
+ * (php_swoole_client_minit and php_swoole_client_async_minit), and the async events
  * network::Client raises, which re-raise a PHP callback's bailout as their
  * last step. For SWOOLE_CLIENT_ON_ERROR, `length` is
  * swoole_get_last_error(). */
@@ -43,13 +43,9 @@ enum {
     SWOOLE_CLIENT_ON_BUFFER_FULL = 5,
     SWOOLE_CLIENT_ON_BUFFER_EMPTY = 6,
 };
-void swr_v1_phpclients_net_minit(struct _zend_class_entry *exception,
-                                 bool sockets,
-                                 int module,
-                                 struct _zend_class_entry **client_class);
 void swr_v1_phpclients_async_event(struct _zend_object *object, int kind, const char *data, size_t length);
 
-/* Defined by ext-src/swoole_client.cc: network::Client, one call per operation. */
+/* Defined by native/clients/client.cc: network::Client, one call per operation. */
 enum { SWOOLE_CLIENT_ERROR = 0, SWOOLE_CLIENT_ERROR_FATAL = 1, SWOOLE_CLIENT_ERROR_SYS = 2, SWOOLE_CLIENT_ERROR_CORE = 3 };
 /* php_swoole_error, _fatal_error, _sys_error or _core_error(level, "%s", message). */
 void swoole_client_php_error(int kind, int level, const char *message);
@@ -94,10 +90,9 @@ enum {
     SWOOLE_CLIENT_SSL_VERIFY = 13, /* a: allow_self_signed */
     SWOOLE_CLIENT_SSL_WAIT = 14,   /* swoole_event_set(socket, SW_EVENT_WRITE) */
     SWOOLE_CLIENT_DESTROY = 15,    /* delete the timer, the length callable and the client */
-    SWOOLE_CLIENT_DESTRUCT = 16,   /* cli: the object; $this->close() as Swoole\Client::close */
     SWOOLE_CLIENT_CALLABLE = 17,   /* settings: sw_callable_create, into buffer */
     SWOOLE_CLIENT_CALLABLE_FREE = 18, /* cli: the callable */
-    SWOOLE_CLIENT_INVOKE = 19,     /* cli: the callable; settings, a: argv, argc; result: success */
+    SWOOLE_CLIENT_INVOKE = 19,     /* cli: the callable; settings, a: argv, argc; buffer: a zval * for the result, or null; result: success */
     SWOOLE_CLIENT_CONVERT_FD = 20, /* settings: php_swoole_convert_to_fd */
 };
 struct swoole_client_call {

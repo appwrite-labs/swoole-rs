@@ -3,6 +3,7 @@
 //! into `network::Client`'s record and state here.
 use crate::native::{self, Cli, ClientCall, ErrorKind, Op};
 use crate::net::{self, bailed, report, warn, warn_sys};
+use crate::socket_options::PacketLength;
 use libc::{c_int, c_void};
 use std::ptr;
 use swoole_rs_clients::client::{ClientRecord, OPEN_SSL};
@@ -10,8 +11,8 @@ use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_phptable::{self as table, Owned};
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::{
-    E_ERROR, bailout,
-    sys::{IS_STRING, zend_ini_parse_quantity, zval},
+    E_ERROR, bailout, long_zval, string,
+    sys::{self, IS_STRING, zend_ini_parse_quantity, zval, zval_ptr_dtor},
     type_of, value,
 };
 
@@ -31,9 +32,62 @@ unsafe extern "C" {
     /// `Protocol::default_length_func`.
     #[link_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"]
     pub(crate) fn default_length_func();
-    /// `php_swoole_length_func`: calls the callable in `private_data_1`.
-    #[link_name = "_Z22php_swoole_length_funcPKN6swoole8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
-    pub(crate) fn php_swoole_length_func();
+}
+
+/// `php_swoole_length_func`: the packet length the PHP callable in the
+/// protocol's `private_data_1` returns for the bytes so far, or -1. A bailout
+/// is re-raised as the last step.
+/// # Safety
+/// C++ calls it with a live protocol whose `private_data_1` is a
+/// `zend::Callable`, and a live packet of `buf_size` bytes.
+#[unsafe(export_name = "_Z22php_swoole_length_funcPKN6swoole8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE")]
+pub(crate) unsafe extern "C" fn php_swoole_length_func(
+    protocol: *const Protocol,
+    _socket: *mut c_void,
+    packet: *const PacketLength,
+) -> isize {
+    // SAFETY: per the caller.
+    let callable = unsafe { (*protocol).private_data_1 };
+    // SAFETY: as above.
+    let packet = unsafe { &*packet };
+    // SAFETY: as above.
+    let bytes = unsafe { std::slice::from_raw_parts(packet.buf, packet.buf_size as usize) };
+    let length = package_length(callable, bytes);
+    bailout::finish();
+    length
+}
+
+fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
+    let mut data = long_zval(0);
+    // SAFETY: a fresh string; the zval takes its reference.
+    unsafe { value::set_str(&raw mut data, string::copy(bytes)) };
+    let mut retval = long_zval(0);
+    let mut call = ClientCall::new(callable, Op::Invoke);
+    call.settings = &raw const data;
+    call.a = 1;
+    call.buffer = (&raw mut retval).cast();
+    let length = match call.run() {
+        Err(bailout) => {
+            bailout.defer();
+            -1
+        }
+        Ok(0) => {
+            warn(ErrorKind::Fatal, "length function handler error");
+            -1
+        }
+        Ok(_) => {
+            // SAFETY: the callable's result.
+            let length = unsafe { value::get_long(&raw const retval) };
+            // SAFETY: our reference to the result, released inside a trap.
+            bailout::defer(unsafe {
+                bailout::trap(sys::swr_zend_zval_release, (&raw mut retval).cast())
+            });
+            isize::try_from(length).unwrap_or(-1)
+        }
+    };
+    // SAFETY: our reference to the string.
+    unsafe { zval_ptr_dtor(&raw mut data) };
+    length
 }
 
 /// The options array of one `set()`/`connect()`.

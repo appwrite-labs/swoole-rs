@@ -1,7 +1,7 @@
 //! The coroutine socket's operations the methods need, over
 //! `swoole_rs_phpruntime::co` and the socket's record, plus Swoole's PHP error
-//! reporting; and what only C++ can do for `Swoole\Client` (defined in the
-//! patched `ext-src/swoole_client.cc`, declared in
+//! reporting; and what only C++ can do for `Swoole\Client` (defined in
+//! `native/clients/client.cc`, declared in
 //! `native/clients/swoole_rs_phpclients.h`).
 use crate::settings::{default_length_func, mqtt_set_protocol, php_swoole_length_func};
 use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
@@ -717,7 +717,6 @@ pub(crate) enum Op {
     SslVerify = 13,
     SslWait = 14,
     Destroy = 15,
-    Destruct = 16,
     Callable = 17,
     CallableFree = 18,
     Invoke = 19,
