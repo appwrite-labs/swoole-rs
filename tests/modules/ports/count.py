@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Ordinary stable counter storage: exact accessor bodies, actual Rust ABI and optional whole SDK compile."""
+"""The exact-body gates' shared runner: each side's named bodies, the actual Rust ABI and optional whole SDK compile."""
 import argparse
 import json
 import re
@@ -15,12 +14,12 @@ from tools.build_hybrid import hybrid_tree
 from tools.harness import run_isolated,write_report
 from tools.build_upstream import require_build_space
 
-def accessor(text,signature='size_t ListenPort::get_connection_num() const'):
+def accessor(text,signature):
     start=text.index(signature);end=text.index('\n}\n',start)+3
     return text[start:end]
 
-def main(signatures=None,witness=None,scope=None,support=None,source_path="src/server/port.cc",extra_support=None,body_extractor=accessor):
-    scope=scope or __doc__;signatures=signatures or ['size_t ListenPort::get_connection_num() const'];witness=witness or Path(__file__).with_suffix('.cc')
+def main(signatures,witness,scope=None,support=None,source_path="src/server/port.cc",extra_support=None,body_extractor=accessor):
+    scope=scope or __doc__
     p=argparse.ArgumentParser(description=scope);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True,help='Rust archive of the hybrid build under test');p.add_argument('--output',type=Path,required=True);p.add_argument('--core',type=Path,help='Configured pinned build tree for the original whole-SDK compile');p.add_argument('--sdk-origin',type=Path,help='Original configured src path when compiling a verified private SDK copy');p.add_argument('--php-config',default='php-config');p.add_argument('--openssl-root',type=Path);p.add_argument('--include',type=Path,action='append',default=[]);p.add_argument('--sanitize',action='store_true');p.add_argument('--rust-asan',action='store_true');a=p.parse_args();overlay.SOURCE=a.source
     if a.rust_asan and (not a.sanitize or '__asan_report_' not in subprocess.check_output(['nm','-u',str(a.archive)],text=True,stderr=subprocess.DEVNULL)):p.error('Actual Rust ASan archive and native sanitizer flag required')
     folder=a.output.resolve().with_suffix('');folder.mkdir(parents=True,exist_ok=True)
@@ -89,4 +88,3 @@ def main(signatures=None,witness=None,scope=None,support=None,source_path="src/s
     report['execution_status']='complete'
     report['passed']=report.get('run',{}).get('exit')==0 and all(r['exit']==0 for r in report['sdk']);write_report(a.output,report);print(json.dumps({'passed':report['passed'],'run':report.get('run'),'sdk_exits':[r['exit']for r in report['sdk']]}));return int(not report['passed'])
 
-if __name__=='__main__':sys.exit(main())

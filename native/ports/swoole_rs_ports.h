@@ -99,11 +99,6 @@ typedef struct {
 } SwrPortsDefaults;
 /* Native build maximum and bounded EOF literal length; native copy/publication after return. */
 SwrPortsDefaults swr_v1_ports_defaults(uint32_t max_length, uint32_t eof_length);
-/* Borrowed writable initialized native counter cells, aligned/valid/stable for this call.
- * No concurrent non-atomic writes. Rust uses relaxed atomic loads, not a coherent
- * aggregate snapshot or synchronization of other fields. Null selects fallback, even if
- * count is nonzero; non-null with count zero performs no cell access. */
-uint64_t swr_v1_ports_connection_count(volatile uint32_t *counters, uint32_t count, uint32_t fallback);
 enum { SWR_PORTS_EOF_SETTINGS, SWR_PORTS_LENGTH_SETTINGS };
 typedef struct {
     uint32_t kind, find_from_right;

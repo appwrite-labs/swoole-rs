@@ -98,15 +98,6 @@ failure is preserved. Known: on macOS, querying `SO_ACCEPTCONN` before listen
 returns `ENOPROTOOPT` for both native and Rust; import of an already-listening
 descriptor is untested.
 
-## Connection count: `swr_v1_ports_connection_count`
-
-`uint64_t swr_v1_ports_connection_count(volatile uint32_t *counters, uint32_t count, uint32_t fallback)`
-sums the per-worker counters with relaxed `AtomicU32` loads. Null `counters` selects
-`fallback` regardless of `count`; non-null with `count == 0` reads nothing. Cells
-must be aligned, initialized and stable for the call with no concurrent non-atomic
-writes. This is not a coherent aggregate snapshot and synchronizes no other fields.
-Native shared-memory allocation and worker lifecycle stay authoritative.
-
 ## Framing setters and defaults
 
 - `swr_v1_ports_framing_settings(SwrPortsFramingInput)` (40-byte input, 32-byte

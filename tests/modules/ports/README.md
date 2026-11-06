@@ -54,7 +54,6 @@ python3 tests/modules/ports/NAME.py --source PINNED_REFERENCE --archive SELECTED
 
 | NAME | Checks |
 | --- | --- |
-| `count` | `get_connection_num` over shared counters |
 | `settings` | EOF/length/stream setters: EOF capacity/direction, NUL bytes, every length-type byte, u16 offset truncation |
 | `defaults` | `ListenPort` constructor defaults |
 | `callback_property` | `getCallback` lowering using the real PHP binary's `zend_tolower_map` (read via FFI; needs `--php-config`) |
