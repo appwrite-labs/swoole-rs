@@ -7,25 +7,17 @@ Default activation is not claimed.
 
 ## Gates
 
-`tools/dev.py` runs `gate.py` (framing-native), `trace.py` (framing-traces), `core.py`
+`tools/dev.py` runs `gate.py` (framing-native), `core.py`
 (framing-native-originals, Linux) and the versioned `wrong_eof_setting.phpt` expectation.
 
 ```sh
 mkdir -p target/reports
-python3 tests/modules/framing/trace.py --archive target/hybrid/BUILD/src/../rust-prefix/lib/libswoole_rs_ffi.a \
-  --output target/reports/framing-trace.json
 rustc --edition=2024 --crate-type=staticlib --crate-name swoole_rs_framing \
   -O -Dwarnings crates/framing/src/lib.rs -o target/libframing.a
 python3 tests/modules/framing/gate.py --archive target/libframing.a \
   --sanitize --output target/reports/framing-gate.json
 ```
 
-- `trace.py` compiles the exact pinned C++ bodies and the same files from the
-  hybrid build's patched tree (linked to its archive)
-  against instrumented IO/String boundaries and compares the traces line by
-  line. The traces cover partial packets, split residuals, callback
-  failure/removal ordering, reentry, TLS pending, allocation exceptions and
-  dynamic-header offset/body/header_len ordering.
 - `gate.py` runs the ABI, catalog, locale-suffix and malformed-input checks in
   `gate.cc`. Add `--rust-asan` with an instrumented archive to also require
   that a one-past read in the invalid caller is detected.

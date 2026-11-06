@@ -2,7 +2,6 @@
 // Invoke actual native entrypoints; no replacement helper bodies.
 #include "swoole.h"
 #include "swoole_protocol.h"
-using swoole::dirname;
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -24,7 +23,7 @@ if(!std::setlocale(LC_ALL,loc.c_str())){std::cout<<id<<"\tUNAVAILABLE\n";continu
 a=a=="-"?"":a;b=b=="-"?"":b;
 unsigned long x=0,y=0;if(op=="type"||op=="radix"||op=="gcd"||op=="lcm")x=std::stoul(a);if(op=="radix"||op=="gcd"||op=="lcm")y=std::stoul(b);
 long signed_x=0;if(op=="decimal")signed_x=std::stol(a);
-std::string s,t;if(op=="hex"||op=="version"||op=="dirname"||op=="envstoi"||op=="envstoi_allocfail")s=decode(a);if(op=="version")t=decode(b);
+std::string s,t;if(op=="hex"||op=="version"||op=="envstoi"||op=="envstoi_allocfail")s=decode(a);if(op=="version")t=decode(b);
 errno=initial;std::string result;
 if(op=="type"){int v=swoole_type_size(static_cast<char>(x));int e=errno;result=std::to_string(v);errno=e;}
 else if(op=="radix"){char*p=swoole_dec2hex(x,int(y));int e=errno;result=encode(p);free(p);errno=e;}
@@ -32,7 +31,6 @@ else if(op=="gcd"||op=="lcm"){uint32_t v=op=="gcd"?swoole_common_divisor(x,y):sw
 else if(op=="decimal"){char buf[128];int n=swoole_itoa(buf,signed_x);int e=errno;result=std::to_string(n)+":"+encode(std::string(buf,n))+":"+std::to_string((unsigned char)buf[n]);errno=e;}
 else if(op=="hex"){size_t parsed=123;auto v=swoole_hex2dec(s.c_str(),&parsed);int e=errno;result=std::to_string(v)+":"+std::to_string(parsed);errno=e;}
 else if(op=="version"){int v=swoole_version_compare(s.c_str(),t.c_str());int e=errno;result=std::to_string(v);errno=e;}
-else if(op=="dirname"){auto v=dirname(s);int e=errno;result=encode(v);errno=e;}
 else if(op=="envstoi"||op=="envstoi_allocfail"){
     if (setenv("SWR_M19_TEST", s.c_str(), 1) != 0) return 2;
     errno = initial;

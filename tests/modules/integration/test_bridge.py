@@ -145,7 +145,7 @@ int main(void) {
         # Ask make for its expanded link recipe without executing any build step.
         # Existing .lo inputs remain read-only; libtool runs inside our scratch tree.
         source = ARGS.hybrid.resolve().parents[1]
-        recipe = run(['make', '-n', '-W', 'ext-src/php_swoole.lo', 'swoole.la'], cwd=source).stdout
+        recipe = run(['make', '-n', '-W', 'ext-src/php_swoole_cxx.lo', 'swoole.la'], cwd=source).stdout
         lines = [line for line in recipe.splitlines() if '--mode=link' in line and '-o swoole.la' in line]
         self.assertEqual(len(lines), 1, 'Expected one expanded libtool link recipe: ' + recipe)
         command = shlex.split(lines[0])

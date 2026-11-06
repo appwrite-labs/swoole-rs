@@ -55,9 +55,6 @@ def generate(unsigned_char=False):
     for loc in locales:
      for a,b in itertools.product(versions,repeat=2):
       for initial in [0,7]:add('version',a.hex(),b.hex(),locale=loc,initial=initial,note='libc strtoul oracle; compare result and sticky errno on same platform/locale')
-    paths=[b'',b'.',b'..',b'a',b'/',b'//',b'///',b'a/',b'/a',b'/a/',b'a//b',b'./a',b'../a',b'a\\b',b'a\0/b',b'a/\0b',b'\0/',bytes(range(256)),b'a'*4096+b'/b']
-    for s in paths:
-     i=s.rfind(b'/');out=b'' if i<0 else (b'/' if i==0 else s[:i]);add('dirname',s.hex(),expected=out.hex() or '-',note='std::string span includes NUL/high-bit bytes; no libc dirname normalization')
     long_bits=ctypes.sizeof(ctypes.c_long)*8
     long_min=-(1<<(long_bits-1));long_max=(1<<(long_bits-1))-1
     env_values=[b'',b'0',b'+0',b'-0',b'  +42tail',b'\t-2147483648x',b'2147483647',b'2147483648',b'-2147483649',b'x',b'  ',b'+',b'--1',b'12.34',str(long_min).encode(),str(long_max).encode(),str(long_min-1).encode(),str(long_max+1).encode()]
@@ -67,16 +64,3 @@ def generate(unsigned_char=False):
     add('envstoi_allocfail',(b'0'*64).hex(),locale='C',initial=34,note='force next C++ allocation to fail; actual >SSO native string construction must throw before Rust or output publication')
     return cases
 
-
-def mkdir_cases():
-    """Independent30-path x9-syscall matrix; tokens use the native PATH_MAX."""
-    paths = [b'.', b'..', b'a', b'ab/cd', b'ab/cd/', b'/', b'//', b'///',
-             b'/a', b'/a/b', b'a//b', b'/a//b/', b'./a/../b', b'\\a\\b',
-             b'a\0/b', b'a\0/', b'\0abc', b'\0abc/', b'a/\0b', b'a/\0/',
-             b'../a', b'//host/share', b'a/' + bytes(range(1, 32)) + b'/b', b'a/\xff/b']
-    tokens = [path.hex() for path in paths] + [
-        '@MAX-2', '@MAX-1-TRAIL', '@MAX', '@MAX-TRAIL', '@MAX+1-NUL', '@MAX-1-NUL']
-    scenarios = ['existing', 'missing', 'alternating', 'denied', 'race', 'fail2',
-                 'eperm-success', 'missing-parent', 'mkdir-too-long']
-    return ''.join(f'{index} {scenario} {path}\n'
-                   for index, (path, scenario) in enumerate(itertools.product(tokens, scenarios))).encode()

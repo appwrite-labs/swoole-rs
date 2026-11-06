@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The C++ functions of `src/core/base.cc` that Rust calls. base.cc registers
-//! them once, with its log macros (`swr_v1_core_set_native_host`), so the archive
-//! keeps no link-time reference to C++: the native gates link it without base.cc.
+//! The C++ functions of `src/core/misc.cc` that Rust calls. `swoole_init` registers
+//! them (`swr_v1_core_set_native_host`), so the archive keeps no link-time reference
+//! to C++: the native gates link it without misc.cc, or with misc.cc but no `swoole_init`.
 
 use std::ffi::{c_char, c_int};
 use std::sync::OnceLock;
 
-/// base.cc's `swoole_fork` and `swoole_get_env`.
+/// misc.cc's `swoole_fork` and `swoole_get_env`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NativeHost {
@@ -17,13 +17,13 @@ pub struct NativeHost {
 
 static HOST: OnceLock<NativeHost> = OnceLock::new();
 
-/// Registers base.cc's functions; later registrations are ignored.
+/// Registers misc.cc's functions; later registrations are ignored.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_core_set_native_host(host: NativeHost) {
     HOST.get_or_init(|| host);
 }
 
-/// base.cc's functions, once it has registered them.
+/// misc.cc's functions, once it has registered them.
 #[must_use]
 pub fn host() -> Option<&'static NativeHost> {
     HOST.get()

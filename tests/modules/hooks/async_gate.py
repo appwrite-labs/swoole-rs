@@ -33,9 +33,10 @@ def main():
             texts=originals if variant=='original' else selected
             bodies=[block(texts[unit],signature)+(';' if signature.startswith(('struct ','static const ')) else '') for signature in signatures[variant]]
             (tree/(variant+'-async.inc')).write_text('\n'.join(bodies))
-        command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'native/include'),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/async_gate.cc'),str(a.archive.resolve()),'-lpthread','-o',str(tree/'async')]
+        command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'native/include'),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/async_gate.cc'),str(a.archive.resolve()),'-lssl','-lcrypto','-lpthread','-o',str(tree/'async')]
         if a.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
-        if sys.platform.startswith('linux'):command+=['-ldl','-lm']
+        # --gc-sections: the archive's C++ references (Socket::send_async's event loop) are unreachable here.
+        if sys.platform.startswith('linux'):command+=['-Wl,--gc-sections','-ldl','-lm']
         build=subprocess.run(command,capture_output=True,text=True)
         run=subprocess.run([str(tree/'async')],capture_output=True,text=True) if build.returncode==0 else build
         print(build.stderr,end='');print(run.stdout,end='')

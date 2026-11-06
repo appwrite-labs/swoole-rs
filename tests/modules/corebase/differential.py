@@ -74,7 +74,8 @@ def main():
         with tempfile.TemporaryDirectory(prefix='swoole-corebase-') as temporary:
             work = Path(temporary)
             original_tests = run(['git', '-C', source, 'show', PIN + ':core-tests/src/core/base.cpp']).decode()
-            selected = ['dec2hex', 'hex2dec', 'version_compare', 'common_divisor', 'common_multiple', 'dirname', 'itoa', 'type_size']
+            # base.dirname is gone: #1384 deleted swoole::dirname, whose only caller it was.
+            selected = ['dec2hex', 'hex2dec', 'version_compare', 'common_divisor', 'common_multiple', 'itoa', 'type_size']
             bodies = []
             for name in selected:
                 start = original_tests.index('TEST(base, ' + name + ')')
@@ -109,7 +110,7 @@ def main():
                 run(['c++', *flags, '-c', src, '-o', obj])
                 run(['c++', *flags, ROOT / 'tests/modules/corebase/driver.cc', obj, *([archive] if engine == 'rust' else []), *link, '-o', binary])
                 report.setdefault('actual_calls', {})[engine] = prove_calls(binary,
-                    ['parse_stoi', 'dirname'],
+                    ['parse_stoi'],
                     engine == 'rust', run, args.output.with_suffix('.' + engine))
                 report.setdefault('rust_definitions', {})[engine] = prove_definitions(obj, binary, engine == 'rust', run)
                 test_binary = work / (engine + '-original-tests')

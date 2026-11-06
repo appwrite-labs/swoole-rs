@@ -21,30 +21,25 @@ native-TU gates.
 
 - `differential.py --source CONFIGURED_PINNED --archive A --output R [--sanitize] [--signed-char | --unsigned-char] [--include DIR]`
   (`corebase-native`): compiles the complete original `base.cc` (pinned) and
-  the hybrid build's `base.cc` (the build `A` comes from, with its headers and
-  `config.h`) into separate binaries with `driver.cc`, feeds both the corpus from
-  `cases.py` and requires identical output/errno, plus 934 independently
-  expected values. It also runs eight extracted upstream `TEST(base, ...)`
+  the hybrid build's `misc.cc`, where base.cc's glue went (the build `A` comes from,
+  with its headers and `config.h`), into separate binaries with `driver.cc`, feeds
+  both the corpus from `cases.py` and requires identical output/errno, plus the
+  independently expected values. It also runs seven extracted upstream `TEST(base, ...)`
   bodies (dec2hex, hex2dec, version_compare, common_divisor, common_multiple,
-  dirname, itoa, type_size) and the `allocator.cc` strndup interposer. The hybrid
+  itoa, type_size) and the `allocator.cc` strndup interposer. The hybrid
   binary must contain real calls to each Rust helper; the original none. For the
   helpers Rust defines under upstream's own symbols (gcd, lcm, version compare,
-  dec2hex) the hybrid base.o must not define them and the archive must.
+  dec2hex) the hybrid misc.o must not define them and the archive must.
   `--unsigned-char` also covers bytes 128..255.
-- `mkdir.py --source S --archive A --output R [--sanitize]` (`corebase-mkdir`):
-  270 traced `swoole_mkdir_recursive` cases (30 paths x 9 syscall scenarios,
-  through `mkdir-shim.h`/`mkdir-driver.h`) compared between original and
-  the hybrid build's `base.cc`, plus real private-filesystem checks per engine.
 - `mkdir_startup.py --engine native=... --engine rust=... --output R`
   (`corebase-startup`): PHP startup through `sys_temp_dir` (create, repeated
   slashes, file parent), comparing warnings and `swoole_last_error`. The Rust
   build manifest must contain the current corebase patch.
-- `canonical.py --source PINNED_GIT --config CONFIG_H --archive A --output R [--jobs N] [--openssl-dir P] [--php-dir P] [--ccache EXE | --no-ccache]`
-  (`corebase-lifecycle`): builds a native and an all-modules hybrid full library
-  with `tools/native_core.py`, requires the selected upstream base GTests to
-  pass in both (12 on macOS, all 33 active on Linux). Its report is also
-  consumed by `tests/modules/tls/gate.py --allocation-native-report`.
-
+- `canonical.py --source PINNED_GIT --config CONFIG_H --output R [--jobs N] [--openssl-dir P] [--php-dir P] [--ccache EXE | --no-ccache]`
+  (`corebase-lifecycle`): builds the full native library with `tools/native_core.py`
+  and requires the selected upstream base GTests to pass (12 on macOS, all 33
+  active on Linux). It is the uninstrumented control
+  `tests/modules/tls/gate.py --allocation-native-report` reads.
 ## Helpers
 
 Rust unit tests: the task-directory policy in `crates/corebase/src/lifecycle.rs`,

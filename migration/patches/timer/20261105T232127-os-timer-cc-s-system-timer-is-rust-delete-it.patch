@@ -1,14 +1,13 @@
 diff --git a/include/swoole.h b/include/swoole.h
-index b912b7a..7948048 100644
+index b912b7a..7c363ca 100644
 --- a/include/swoole.h
 +++ b/include/swoole.h
-@@ -775,4 +775,2 @@ void hook_call(void **hooks, int type, void *arg);
+@@ -775,3 +775,2 @@ void hook_call(void **hooks, int type, void *arg);
  double microtime();
 -void realtime_get(timespec *time);
--void realtime_add(timespec *time, int64_t add_msec);
- }  // namespace swoole
+ void realtime_add(timespec *time, int64_t add_msec);
 diff --git a/include/swoole_timer.h b/include/swoole_timer.h
-index 1192499..70cc413 100644
+index 785ba40..f90a3bc 100644
 --- a/include/swoole_timer.h
 +++ b/include/swoole_timer.h
 @@ -80,3 +80,2 @@ class Timer {

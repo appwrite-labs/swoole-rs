@@ -13,8 +13,8 @@ from tools.build_upstream import COMMIT
 from tools.harness import ROOT, run_isolated
 
 HERE = Path(__file__).resolve().parent
-# The hybrid deletes string.cc: Rust defines String's methods.
-SOURCES = ['src/core/string.cc', 'src/core/base.cc', 'src/os/base.cc', 'src/core/base64.cc', 'src/core/log.cc',
+# The hybrid deletes string.cc (Rust defines String's methods) and base.cc (its glue is in misc.cc).
+SOURCES = ['src/core/string.cc', 'src/core/base.cc', 'src/core/misc.cc', 'src/os/base.cc', 'src/core/base64.cc', 'src/core/log.cc',
            'src/core/error.cc']
 
 

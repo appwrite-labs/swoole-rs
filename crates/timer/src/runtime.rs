@@ -58,6 +58,29 @@ pub extern "C" fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
     }
 }
 
+/// Upstream `swoole::realtime_add(timespec *, int64_t)`: adds milliseconds to a
+/// realtime deadline, carrying whole seconds out of `tv_nsec`.
+/// # Safety
+/// `time` is a live, writable `timespec`.
+#[cfg_attr(
+    target_os = "macos",
+    unsafe(export_name = "_ZN6swoole12realtime_addEP8timespecx")
+)]
+#[cfg_attr(
+    not(target_os = "macos"),
+    unsafe(export_name = "_ZN6swoole12realtime_addEP8timespecl")
+)]
+pub unsafe extern "C" fn realtime_add(time: *mut libc::timespec, milliseconds: i64) {
+    // SAFETY: the caller passes a live, writable timespec.
+    let time = unsafe { &mut *time };
+    time.tv_sec += milliseconds / 1000;
+    time.tv_nsec += milliseconds % 1000 * 1_000_000;
+    if time.tv_nsec >= 1_000_000_000 {
+        time.tv_sec += time.tv_nsec / 1_000_000_000;
+        time.tv_nsec %= 1_000_000_000;
+    }
+}
+
 /// Native clocks remain outside Rust; overflow was outside original defined input.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_timer_relative_msec(absolute: i64, base: i64) -> i64 {
@@ -146,6 +169,18 @@ mod tests {
                 assert!((0..1_000_000).contains(&interval.fraction));
             }
         }
+    }
+
+    // core-tests/src/os/timer.cpp TEST(timer, realtime_add).
+    #[test]
+    fn realtime_add_carries_seconds() {
+        let mut ts = libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 900 * 1_000_000,
+        };
+        unsafe { realtime_add(&raw mut ts, 1905) };
+        assert_eq!(ts.tv_sec, 3);
+        assert_eq!(ts.tv_nsec, 805 * 1_000_000);
     }
 
     #[test]

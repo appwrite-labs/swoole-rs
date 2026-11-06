@@ -67,7 +67,8 @@ def main():
         if a.sanitize:
             command.extend(['-fsanitize=address,undefined', '-fno-omit-frame-pointer'])
         if __import__('sys').platform.startswith('linux'):
-            command.extend(['-ldl', '-lm'])
+            # --gc-sections: the archive's C++ references (Socket::send_async's event loop) are unreachable here.
+            command.extend(['-Wl,--gc-sections', '-ldl', '-lm'])
         build = subprocess.run(command, capture_output=True, text=True)
         run = subprocess.run([str(tree/'ordered')], capture_output=True, text=True) if build.returncode == 0 else build
         print(build.stderr, end='')
