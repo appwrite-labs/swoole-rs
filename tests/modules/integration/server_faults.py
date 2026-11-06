@@ -43,7 +43,8 @@ def main():
                            '-Wall', '-Wextra', '-Werror', *flags, str(fixture),
                            str(archive), '-pthread', '-o', str(binary)]
                 if wrapped:
-                    command += ['-DWRAP_FREE', '-Wl,--wrap=free', '-ldl', '-lm']
+                    # --gc-sections: the archive's references to C++ (event.cc's swr_v1_event_reactor) are unreachable here.
+                    command += ['-DWRAP_FREE', '-Wl,--wrap=free', '-Wl,--gc-sections', '-ldl', '-lm']
                 if sanitize:
                     command += ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
                 row = dict(standard=standard, native_sanitized=sanitize, commands=[])

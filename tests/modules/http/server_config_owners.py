@@ -22,7 +22,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix='swr-server-config-') as directory:
         executable=Path(directory)/'owners'
         command=['c++','-std=c++14','-O1','-UNDEBUG','-I'+str(prefix),str(Path(__file__).with_suffix('.cc')),str(args.archive.resolve()),'-pthread','-o',str(executable)]
-        if sys.platform.startswith('linux'):command+=['-ldl','-lm']
+        # --gc-sections: the archive's references to C++ (event.cc's swr_v1_event_reactor) are unreachable here.
+        if sys.platform.startswith('linux'):command+=['-Wl,--gc-sections','-ldl','-lm']
         result=run_isolated(command,timeout=60)
         report['compile']={'command':command,'exit_code':result.returncode,'stderr':result.stderr}
         if result.returncode==0:
