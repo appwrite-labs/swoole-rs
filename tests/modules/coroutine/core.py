@@ -244,7 +244,6 @@ def main():
                     shutil.copy2(tree / 'build/bin/core-tests', binary)
                     metadata.update(compiler_flags={name: (tree / ('build/CMakeFiles/'+name+'.dir/flags.make')).read_text() for name in ['lib-swoole', 'core-tests']}, runs=[])
                     library = tree / ('lib/libswoole.dylib' if sys.platform == 'darwin' else 'lib/libswoole.so')
-                    # tls-native takes the upstream engine as its attested native control (#416).
                     metadata.update(library_sha256=sha(library), compiled_config_sha256=sha(tree / 'config.h'))
                     symbols = subprocess.check_output(['nm', '-u', str(library)], text=True)
                     metadata['ucontext_imports'] = {name: name in symbols for name in ['getcontext', 'makecontext', 'swapcontext']}

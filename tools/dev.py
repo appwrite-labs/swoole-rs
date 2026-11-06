@@ -63,6 +63,7 @@ CORE_TESTS = {
               True),
     'http2': (['protocol/http2.cpp'], {'http2.ssl': 'needs the nghttp2 client'}, False),
     'timer': (['os/timer.cpp'], {}, False),
+    'tls': (['protocol/ssl.cpp'], {}, False),
 }
 
 
@@ -99,16 +100,9 @@ def changed_modules(base):
     return sorted(selected)
 
 
-# Gates that read another module's native-control report: tls-native attests the coroutine
-# originals' build and borrows corebase-lifecycle's uninstrumented control (#420).
-CONTROLS = {'tls': ('coroutine',)}
-
-
 def selected_modules(args):
     """The modules whose gates run. Every build has every module; this only narrows the gates."""
     chosen = set(MODULES if getattr(args, 'all_modules', False) else args.module or [])
-    for module in list(chosen):
-        chosen.update(CONTROLS.get(module, ()))
     return sorted(chosen | set(GRADUATED))
 
 
@@ -402,29 +396,9 @@ def plan(args, reports):
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *includes, *report('corebase-native'))
         if integrate:
             script('corebase-startup', 'tests/modules/corebase/mkdir_startup.py', *php, *engines, *report('corebase-startup'))
-            native_options = (['--openssl-dir', subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip(),
-                               '--php-dir', subprocess.check_output(['php-config', '--prefix'], text=True).strip()]
-                              if sys.platform == 'darwin' else [])
-            if getattr(args, 'ccache', None):
-                native_options += ['--ccache', args.ccache]
-            else:
-                native_options += ['--no-ccache']
-            script('corebase-lifecycle', 'tests/modules/corebase/canonical.py', '--source', ROOT / 'target/upstream/src',
-                   '--config', manifest.parent / 'src/config.h',
-                   '--jobs', args.jobs, *native_options, *report('corebase-lifecycle'))
-    # Its native control is coroutine-native-originals' upstream engine, built only when integrating.
     if 'tls' in modules:
         script('tls-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src',
                '--include-tls', *report('tls-constants'))
-    if 'tls' in modules and integrate and 'coroutine' in modules:
-        tls_options = ['--gtest-prefix', args.gtest_prefix] if getattr(args, 'gtest_prefix', None) else []
-        if integrate and 'corebase' in modules:
-            tls_options += ['--allocation-native-report', reports / 'corebase-lifecycle.json']
-        script('tls-native', 'tests/modules/tls/gate.py', '--source', ROOT / 'target/upstream/src',
-               '--config', manifest.parent / 'src/config.h',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               '--native-report', reports / 'coroutine-native-originals.json', '--jobs', args.jobs,
-               *tls_options, *report('tls-native'))
     if 'framing' in modules:
         script('framing-native', 'tests/modules/framing/gate.py', '--archive',
                manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('framing-native'))
