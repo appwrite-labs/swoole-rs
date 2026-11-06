@@ -87,15 +87,13 @@ pub struct PoolRecord {
 /// What native code lends every export.
 #[repr(C)]
 pub struct PoolNative {
-    /// One effect (`OP_*`, `LOG_*`) on `pool` and `worker` (null when none).
+    /// One effect (`OP_*`) on `pool` and `worker` (null when none).
     pub call:
         unsafe extern "C" fn(pool: *mut c_void, worker: *mut c_void, op: u32, arg: u64) -> i64,
     /// The callback `CB_*` in the call's `flags`, run inside the trap.
     pub callback: Step,
     /// The worker loops' hooks.
     pub hooks: *const PoolHooks,
-    /// Reports a reload's failed or forced kill.
-    pub warn: Warn,
     /// `sizeof(EventData)`.
     pub event_size: usize,
 }
@@ -188,6 +186,15 @@ pub const OP_EVENT_INIT: u32 = 44;
 pub const OP_BOX_PUSH: u32 = 45;
 pub const OP_STREAM_SEND: u32 = 46;
 pub const OP_SYNC_SEND: u32 = 47;
+pub const CB_START: c_int = 1;
+pub const CB_BEFORE_RELOAD: c_int = 2;
+pub const CB_SHUTDOWN: c_int = 3;
+pub const CB_WORKER_START: c_int = 4;
+pub const CB_MAIN_LOOP: c_int = 5;
+pub const CB_WORKER_STOP: c_int = 6;
+pub const RUN_MAIN: u32 = 13;
+// END NUMBERED
+// The warnings a pool operation logs, which [`Native`] emits itself.
 pub const LOG_NO_SYSVMSG: u32 = 48;
 pub const LOG_ALLOC: u32 = 49;
 pub const LOG_NEEDS_UNIXSOCK: u32 = 50;
@@ -197,14 +204,6 @@ pub const LOG_UNKNOWN_CHILD: u32 = 53;
 pub const LOG_WAIT_FAILED: u32 = 54;
 pub const LOG_KILL_FAILED: u32 = 55;
 pub const LOG_WAITPID_FAILED: u32 = 56;
-pub const CB_START: c_int = 1;
-pub const CB_BEFORE_RELOAD: c_int = 2;
-pub const CB_SHUTDOWN: c_int = 3;
-pub const CB_WORKER_START: c_int = 4;
-pub const CB_MAIN_LOOP: c_int = 5;
-pub const CB_WORKER_STOP: c_int = 6;
-pub const RUN_MAIN: u32 = 13;
-// END NUMBERED
 // The rest of `ProcessPool`'s operations, which only crates/process/src/methods.rs runs.
 pub const RUN_CREATE_MESSAGE_BOX: u32 = 0;
 pub const RUN_CREATE_MESSAGE_BUS: u32 = 1;
@@ -248,6 +247,14 @@ struct Native<'a> {
 
 impl PoolHost for Native<'_> {
     fn op(&mut self, worker: *mut c_void, op: u32, arg: u64) -> i64 {
+        if (LOG_NO_SYSVMSG..=LOG_WAITPID_FAILED).contains(&op) {
+            log(op, arg);
+            return 0;
+        }
+        #[cfg(feature = "upstream-symbols")]
+        if let Some(result) = effect(op, arg) {
+            return result;
+        }
         // SAFETY: a native effect on the live pool this export runs over.
         unsafe { (self.native.call)(self.pool, worker, op, arg) }
     }
@@ -269,7 +276,7 @@ impl PoolHost for Native<'_> {
     }
 
     fn warn(&self) -> Warn {
-        self.native.warn
+        crate::methods::reload_warn
     }
 
     fn event_size(&self) -> usize {
@@ -279,6 +286,129 @@ impl PoolHost for Native<'_> {
     fn close(&self) -> unsafe extern "C" fn(*mut c_void) {
         // SAFETY: native's static hooks.
         unsafe { (*self.native.hooks).close }
+    }
+}
+
+/// The `OP_*` effects that are calls into the process-wide worker, signal, timer,
+/// event and wait state: `None` for the rest, which native code does.
+#[cfg(feature = "upstream-symbols")]
+fn effect(op: u32, arg: u64) -> Option<i64> {
+    use crate::methods::{swoole_get_worker_type, swoole_set_worker_type};
+    // SAFETY: src/wrapper/timer.cc's and src/wrapper/event.cc's functions, and
+    // crates/reactor's swoole_waitpid, under their upstream symbols.
+    unsafe extern "C" {
+        #[link_name = "_Z25swoole_timer_is_availablev"]
+        fn swoole_timer_is_available() -> bool;
+        #[link_name = "_Z17swoole_timer_freev"]
+        fn swoole_timer_free();
+        #[link_name = "_Z19swoole_timer_selectv"]
+        fn swoole_timer_select();
+        #[link_name = "_Z17swoole_event_waitv"]
+        fn swoole_event_wait() -> c_int;
+        #[link_name = "_Z14swoole_waitpidiPii"]
+        fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the int the operation widened"
+    )]
+    let int = arg as c_int;
+    Some(match op {
+        OP_WORKER_TYPE => {
+            swoole_set_worker_type(int);
+            0
+        }
+        OP_IS_MASTER => i64::from(i64::from(swoole_get_worker_type()) == SW_MASTER.cast_signed()),
+        OP_CURRENT_WORKER => {
+            // SAFETY: this thread's worker globals.
+            let worker = unsafe { (*crate::worker_globals::swr_v1_worker_globals()).worker };
+            worker.expose_provenance().cast_signed() as i64
+        }
+        OP_SIGNAL_DISPATCH => {
+            crate::signal::swoole_signal_dispatch();
+            0
+        }
+        OP_TIMER_SELECT => {
+            // SAFETY: the thread's timer, when it has one.
+            unsafe { swoole_timer_select() };
+            0
+        }
+        OP_TIMER_FREE => {
+            // SAFETY: as above.
+            if unsafe { swoole_timer_is_available() } {
+                // SAFETY: the thread's timer, freed once.
+                unsafe { swoole_timer_free() };
+            }
+            0
+        }
+        // SAFETY: the thread's event loop.
+        OP_EVENT_WAIT => i64::from(unsafe { swoole_event_wait() }),
+        OP_WAITPID => {
+            let mut status = 0;
+            // SAFETY: `status` is writable.
+            i64::from(unsafe { swoole_waitpid(int, &raw mut status, 0) })
+        }
+        _ => return None,
+    })
+}
+
+/// `LOG_*`'s warning, under the `ProcessPool` method upstream logged it from.
+fn log(op: u32, arg: u64) {
+    use swoole_rs_corebase::log::{error_log, sys_warning, warning};
+    /// `SW_LOG_WARNING`, `SW_ERROR_OPERATION_NOT_SUPPORT`, `SW_ERROR_WRONG_OPERATION`.
+    const WARNING: c_int = 4;
+    const NOT_SUPPORT: c_int = 507;
+    const WRONG_OPERATION: c_int = 509;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the pid the operation widened from an int"
+    )]
+    let pid = arg as c_int;
+    match op {
+        LOG_NO_SYSVMSG => warning(
+            c"ProcessPool::create",
+            format_args!("current platform does not support `sysvmsg`"),
+        ),
+        LOG_ALLOC => sys_warning(
+            if arg == 0 {
+                c"ProcessPool::create"
+            } else {
+                c"ProcessPool::create_message_bus"
+            },
+            format_args!("malloc[1] failed"),
+        ),
+        LOG_NEEDS_UNIXSOCK => error_log(
+            WARNING,
+            NOT_SUPPORT,
+            if arg == 0 {
+                c"ProcessPool::create_message_bus"
+            } else {
+                c"ProcessPool::run_with_message_protocol"
+            },
+            format_args!("not support, ipc_mode must be SW_IPC_UNIXSOCK"),
+        ),
+        LOG_BUS_EXISTS => error_log(
+            WARNING,
+            WRONG_OPERATION,
+            c"ProcessPool::create_message_bus",
+            format_args!("the message bus has been created"),
+        ),
+        LOG_MUST_LISTEN => error_log(
+            WARNING,
+            WRONG_OPERATION,
+            c"ProcessPool::start_check",
+            format_args!("must first listen to an tcp port"),
+        ),
+        LOG_UNKNOWN_CHILD => warning(
+            c"ProcessPool::wait_detached_worker",
+            format_args!("received an exit signal from an unknown child process[pid={pid}]"),
+        ),
+        LOG_WAIT_FAILED => sys_warning(c"ProcessPool::wait", format_args!("wait() failed")),
+        LOG_KILL_FAILED => sys_warning(
+            c"ProcessPool::wait",
+            format_args!("kill({pid}, SIGTERM) failed"),
+        ),
+        _ => sys_warning(c"ProcessPool::wait", format_args!("waitpid({pid}) failed")),
     }
 }
 

@@ -186,12 +186,9 @@ void swr_v1_process_set_bailout(int (*trap)(void (*body)(void *), void *arg), vo
 void swr_v1_process_bailout(void);
 swr_v1_process_pool_ipc *swr_v1_process_pool_ipc_new(bool listener);
 void swr_v1_process_pool_ipc_free(swr_v1_process_pool_ipc *ipc, void (*close)(void *socket));
-bool swr_v1_process_pool_ipc_address(swr_v1_process_pool_ipc *ipc, const char *host, int port);
-void swr_v1_process_pool_ipc_set_listener(swr_v1_process_pool_ipc *ipc, void *socket);
 void *swr_v1_process_pool_ipc_listener(const swr_v1_process_pool_ipc *ipc);
 const char *swr_v1_process_pool_ipc_address_of(const swr_v1_process_pool_ipc *ipc, int *port);
 void *swr_v1_process_pool_ipc_connection(const swr_v1_process_pool_ipc *ipc);
-bool swr_v1_process_pool_ipc_respond(swr_v1_process_pool_ipc *ipc, const uint8_t *data, uint32_t length);
 char *swr_v1_process_pool_ipc_prepare(swr_v1_process_pool_ipc *ipc, uint32_t max_packet_size);
 char *swr_v1_process_pool_ipc_packet(swr_v1_process_pool_ipc *ipc);
 int swr_v1_process_pool_run(const swr_v1_pool_loop *pool_loop, int protocol);
@@ -200,7 +197,7 @@ bool swr_v1_process_pool_dispatch(const swr_v1_pool_hooks *hooks, void *pool, sw
 /* ProcessPool's lifecycle (crates/process/src/process_pool.rs). Rust reads and
  * writes the pool in place through swr_v1_pool_record, ProcessPool's layout (the
  * process patch static_asserts it), and asks native code for each effect through
- * `call` (SWR_POOL_OP_*, SWR_POOL_LOG_*; `worker` is null unless the op names
+ * `call` (SWR_POOL_OP_*; `worker` is null unless the op names
  * one). `callback` runs SWR_POOL_CB_* (the call's flags) inside the bailout trap.
  * An export returns SWR_POOL_RAISE when a callback bailed out: raise it again. */
 typedef struct {
@@ -242,7 +239,6 @@ typedef struct {
     int64_t (*call)(void *pool, void *worker, uint32_t op, uint64_t arg);
     swr_v1_pool_step callback;
     const swr_v1_pool_hooks *hooks;
-    swr_v1_process_reload_warn warn;
     size_t event_size;
 } swr_v1_pool_native;
 #define SWR_POOL_RAISE INT64_MIN
@@ -299,15 +295,6 @@ int swr_v1_process_reap_wait(void *_ctx, bool nonblock, int *status, int *error)
 #define SWR_POOL_OP_BOX_PUSH 45
 #define SWR_POOL_OP_STREAM_SEND 46
 #define SWR_POOL_OP_SYNC_SEND 47
-#define SWR_POOL_LOG_NO_SYSVMSG 48
-#define SWR_POOL_LOG_ALLOC 49
-#define SWR_POOL_LOG_NEEDS_UNIXSOCK 50
-#define SWR_POOL_LOG_BUS_EXISTS 51
-#define SWR_POOL_LOG_MUST_LISTEN 52
-#define SWR_POOL_LOG_UNKNOWN_CHILD 53
-#define SWR_POOL_LOG_WAIT_FAILED 54
-#define SWR_POOL_LOG_KILL_FAILED 55
-#define SWR_POOL_LOG_WAITPID_FAILED 56
 #define SWR_POOL_CB_START 1
 #define SWR_POOL_CB_BEFORE_RELOAD 2
 #define SWR_POOL_CB_SHUTDOWN 3
