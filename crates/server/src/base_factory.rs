@@ -6,7 +6,7 @@ use crate::ops::{
     LOG_BASE_ALLOC_CONNECTIONS, LOG_BASE_ALLOC_NUMS, LOG_BASE_ALLOC_PORT_NUMS, OP_ACCEPT_EVENT,
     OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_CONNECTIONS, OP_ALLOC_PORT_CONNECTION_NUMS, OP_BASE_PASS,
     OP_BASE_REACTORS, OP_CLOSE_SOCKET, OP_FORWARD, OP_HAS_ON_CLOSE, OP_NEW_BASE_FACTORY,
-    OP_ON_CLOSE, OP_OUT_EMPTY, OP_POP_PTR, OP_PORT_COUNT, OP_QUEUE_CLOSE, OP_SEND_HERE,
+    OP_ON_CLOSE, OP_ON_RECEIVE, OP_OUT_EMPTY, OP_PORT_COUNT, OP_QUEUE_CLOSE, OP_SEND_HERE,
 };
 use crate::records::{ConnectionRecord, swr_v1_server_connection, swr_v1_server_session};
 use crate::{Host, SW_OK};
@@ -14,6 +14,8 @@ use core::ffi::{c_char, c_int, c_long};
 use core::sync::atomic::Ordering;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::log;
+use swoole_rs_process::worker_globals::swr_v1_worker_globals;
+use swoole_rs_process::worker_record::{swr_v1_worker_add_request_count, swr_v1_worker_set_status};
 
 /// `swoole::SendData`.
 #[repr(C)]
@@ -26,8 +28,15 @@ pub(crate) struct SendData {
 pub(crate) const SEND_DATA: u8 = 2;
 const SEND_FILE: u8 = 3;
 const CLOSE_FORWARD: u8 = 7;
-/// `SW_EVENT_DATA_POP_PTR`; `Server::CLOSE_RESET`, `CLOSE_ACTIVELY`.
-const POP_PTR: u8 = 1 << 6;
+const RECV_DATA: u8 = 0;
+/// `SW_EVENT_DATA_PTR`: `MessageBus::pass`'s flags for a payload it points at.
+const DATA_PTR: u8 = 1 << 1;
+/// `swr_v1_server_connection`'s `get_connection_verify`.
+const VERIFIED_TLS: u32 = 3;
+/// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
+const WORKER_BUSY: u8 = 1;
+const WORKER_IDLE: u8 = 2;
+/// `Server::CLOSE_RESET`, `CLOSE_ACTIVELY`.
 const CLOSE_RESET: u64 = 1 << 1;
 const CLOSE_ACTIVELY: u64 = 1 << 2;
 /// `swLog_level`'s `SW_LOG_TRACE`, `SW_LOG_NOTICE`; the `SW_ERROR_SESSION_*` codes.
@@ -106,12 +115,15 @@ pub(crate) fn create<H: Host>(h: &mut H) -> crate::Effect<i64> {
 
 /// `BaseFactory::dispatch`: a stream event needs an active connection the server has
 /// not closed and goes out under its session id; the bus hands it to this worker.
-pub(crate) fn dispatch<H: Host>(h: &mut H, task: *mut SendData) -> crate::Effect<bool> {
+pub(crate) fn dispatch<H: Host>(
+    h: &mut H,
+    task: *mut SendData,
+    direct: bool,
+) -> crate::Effect<bool> {
     // SAFETY: native code lends a live `SendData` for the call.
     let info = unsafe { &mut (*task).info };
-    let mut conn = core::ptr::null_mut();
     if is_stream_event(info.kind) {
-        conn = connection(h, info.fd, 0)?;
+        let conn = connection(h, info.fd, 0)?;
         // SAFETY: a non-null lookup is a connection record.
         if conn.is_null() || unsafe { record(conn) }.active == 0 {
             log::warning(
@@ -139,11 +151,75 @@ pub(crate) fn dispatch<H: Host>(h: &mut H, task: *mut SendData) -> crate::Effect
         info.fd = c.session_id;
         info.server_fd = low16(c.server_fd);
     }
-    if info.len > 0 && !conn.is_null() && h.op(OP_POP_PTR, address(conn))? != 0 {
-        info.flags |= POP_PTR;
+    // Upstream marks a payload that is the whole receive buffer `SW_EVENT_DATA_POP_PTR`
+    // here, but `MessageBus::pass` replaces the flags of every payload with
+    // `SW_EVENT_DATA_PTR`, so no worker ever sees it.
+    // SAFETY: as above; no native op has run since.
+    if !direct || !receive_now(h, unsafe { &*task })? {
+        h.op(OP_BASE_PASS, address(task))?;
     }
-    h.op(OP_BASE_PASS, address(task))?;
     Ok(true)
+}
+
+/// `worker_accept_event` of a base-mode `RECV_DATA` without the message bus. When this
+/// worker has no request limit and the session's verified connection is open, Rust
+/// does what the event's `EVENT_BEGIN`, `RECV_CONN`, `DO_TASK` and `EVENT_END` did and
+/// only `onReceive` is native: it gets the bytes `MessageBus::pass` and `get_packet`
+/// would have handed it, under `SW_EVENT_DATA_PTR`, and nothing reads the bus after
+/// them in base mode. False leaves the event to `OP_BASE_PASS`, untouched.
+fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
+    if task.info.kind != RECV_DATA {
+        return Ok(false);
+    }
+    // SAFETY: this thread's worker globals; only the fields are read.
+    let globals = unsafe { &*swr_v1_worker_globals() };
+    let (worker, max_request) = (globals.worker, globals.max_request);
+    if worker.is_null() || max_request != 0 {
+        return Ok(false);
+    }
+    let conn = connection(h, task.info.fd, VERIFIED_TLS)?;
+    // SAFETY: a non-null lookup is a connection record.
+    if conn.is_null() || unsafe { record(conn) }.closed.load(Ordering::Relaxed) != 0 {
+        return Ok(false);
+    }
+    // SAFETY: the current worker's record, which this worker loop owns.
+    unsafe { swr_v1_worker_set_status(worker, WORKER_BUSY) };
+    // SAFETY: as above.
+    let c = unsafe { record(conn) };
+    if task.info.len > 0 {
+        c.recv_queued_bytes
+            .fetch_sub(task.info.len, Ordering::SeqCst);
+    }
+    c.last_dispatch_time = task.info.time;
+    let mut recv = SendData {
+        info: task.info,
+        data: task.data,
+    };
+    if task.info.len > 0 {
+        recv.info.flags = DATA_PTR;
+    }
+    if h.op(OP_ON_RECEIVE, address(&raw const recv))? != 0 {
+        // SAFETY: as above.
+        unsafe { swr_v1_worker_add_request_count(worker) };
+        count_request(h.state()?);
+    }
+    // SAFETY: as above.
+    unsafe { swr_v1_worker_set_status(worker, WORKER_IDLE) };
+    Ok(true)
+}
+
+/// `sw_atomic_fetch_add(&serv->gs->request_count, 1)`.
+fn count_request(state: &crate::ServerState) {
+    let config = state.config();
+    if config.is_null() {
+        return;
+    }
+    // SAFETY: a live state's configuration; its shared record stays mapped.
+    let gs = unsafe { (*config).gs }.cast::<crate::shared::ServerCounters>();
+    // SAFETY: a non-null `gs` is the server's shared counters.
+    if let Some(gs) = unsafe { gs.as_ref() } {
+        gs.request_count.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// `BaseFactory::notify`: only active stream connections the server has not closed.
@@ -336,6 +412,7 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
         RUN_BASE_DISPATCH => i64::from(dispatch(
             h,
             core::ptr::with_exposed_provenance_mut(pointer(arg)),
+            false,
         )?),
         RUN_BASE_NOTIFY => i64::from(notify(
             h,
@@ -430,48 +507,84 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_converts_stream_events_and_pops_the_receive_buffer() {
+    fn dispatch_converts_stream_events_to_their_session() {
         let mut t = Tables::new();
         let mut task = send(2, 0, 5);
-        let mut s = t.script(&[(OP_POP_PTR, 1)]);
-        assert!(dispatch(&mut s, &raw mut task).unwrap());
+        let mut s = t.script(&[]);
+        assert!(dispatch(&mut s, &raw mut task, true).unwrap());
         assert_eq!((task.info.fd, task.info.server_fd), (1, 7), "session id");
-        assert_eq!(task.info.flags, POP_PTR);
-        assert_eq!(s.called(OP_BASE_PASS), 1);
+        assert_eq!(task.info.flags, 0);
+        assert_eq!(s.called(OP_BASE_PASS), 1, "no worker here: the bus");
 
         let mut empty = send(2, 5, 0);
-        let mut s = t.script(&[(OP_POP_PTR, 1)]);
-        assert!(dispatch(&mut s, &raw mut empty).unwrap());
-        assert_eq!(
-            (empty.info.flags, s.called(OP_POP_PTR)),
-            (0, 0),
-            "no payload"
-        );
+        let mut s = t.script(&[]);
+        assert!(dispatch(&mut s, &raw mut empty, true).unwrap());
+        assert_eq!((empty.info.flags, s.called(OP_BASE_PASS)), (0, 1));
 
         let mut packet = send(9, 1, 5);
         let mut s = t.script(&[]);
         assert!(
-            dispatch(&mut s, &raw mut packet).unwrap(),
+            dispatch(&mut s, &raw mut packet, true).unwrap(),
             "datagrams need no connection"
         );
-        assert_eq!((packet.info.fd, s.called(OP_POP_PTR)), (9, 0));
+        assert_eq!((packet.info.fd, s.called(OP_ON_RECEIVE)), (9, 0));
 
         t.conn().closed = AtomicU32::new(1);
         let mut s = t.script(&[]);
         let mut task = send(2, 0, 5);
         assert!(
-            !dispatch(&mut s, &raw mut task).unwrap(),
+            !dispatch(&mut s, &raw mut task, true).unwrap(),
             "closed by server"
         );
         t.conn().active = 0;
-        assert!(!dispatch(&mut s, &raw mut task).unwrap(), "inactive");
+        assert!(!dispatch(&mut s, &raw mut task, true).unwrap(), "inactive");
         let mut far = send(3, 4, 0);
         assert!(
-            !dispatch(&mut s, &raw mut far).unwrap(),
+            !dispatch(&mut s, &raw mut far, true).unwrap(),
             "past max_connection"
         );
         assert_eq!(task.info.fd, 2, "unconverted");
         assert_eq!(s.called(OP_BASE_PASS), 0);
+    }
+
+    #[test]
+    fn base_mode_receives_without_the_bus() {
+        use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_status};
+        let mut t = Tables::new();
+        t.conn().recv_queued_bytes = AtomicU32::new(5);
+        // SAFETY: a worker record is plain data; zero is a fresh one.
+        let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
+        let globals = swr_v1_worker_globals();
+        // SAFETY: this test thread's worker globals.
+        unsafe { (*globals).worker = &raw mut worker };
+        let mut task = send(2, RECV_DATA, 5);
+        task.info.time = 1.5;
+        let mut s = t.script(&[(OP_ON_RECEIVE, 1)]);
+        assert!(dispatch(&mut s, &raw mut task, true).unwrap());
+        assert_eq!((s.called(OP_ON_RECEIVE), s.called(OP_BASE_PASS)), (1, 0));
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { swr_v1_worker_status(&raw const worker) },
+            WORKER_IDLE
+        );
+        let c = t.conn();
+        assert_eq!(c.recv_queued_bytes.load(Ordering::Relaxed), 0, "unqueued");
+        assert!((c.last_dispatch_time - 1.5).abs() < f64::EPSILON);
+
+        // A request limit, or a factory dispatch, takes the bus.
+        // SAFETY: as above.
+        unsafe { (*globals).max_request = 1 };
+        let mut task = send(2, RECV_DATA, 5);
+        let mut s = t.script(&[]);
+        assert!(dispatch(&mut s, &raw mut task, true).unwrap());
+        let mut again = send(2, RECV_DATA, 5);
+        assert!(dispatch(&mut s, &raw mut again, false).unwrap());
+        assert_eq!((s.called(OP_ON_RECEIVE), s.called(OP_BASE_PASS)), (0, 2));
+        // SAFETY: as above.
+        unsafe {
+            (*globals).max_request = 0;
+            (*globals).worker = core::ptr::null_mut();
+        }
     }
 
     #[test]
