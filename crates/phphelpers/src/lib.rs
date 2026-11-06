@@ -17,8 +17,6 @@ mod known_strings;
 mod owned;
 #[cfg(feature = "php")]
 mod private;
-#[cfg(feature = "php")]
-mod utilities;
 
 #[cfg(feature = "php")]
 pub use private::{Create, array_property_of, function_call, named_call};

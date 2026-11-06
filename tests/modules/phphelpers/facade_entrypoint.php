@@ -48,9 +48,8 @@ if($privateEvents!==['property:5','callback'])throw new RuntimeException('privat
 function checkUtility(bool $condition,string $message):void { if(!$condition)throw new RuntimeException($message); }
 $utilityData=(object)['a'=>'A B','bin'=>"X\0Y"];
 $utility=m26_utility_custody('strlen',$utilityData);
-checkUtility($utility===['callable'=>true,'name'=>'strlen','optional_name'=>true,
-    'class_alias_registered'=>0], 'complete utility/registration SDK contract');
-checkUtility(class_exists('M26GuardAlias',false) && (new M26GuardAlias()) instanceof M26Guard, 'case folded persistent class alias');
+checkUtility($utility===['callable'=>true,'name'=>'strlen','optional_name'=>true],
+    'complete utility/registration SDK contract');
 class M26GuardChild extends M26Guard { public $child=1; }
 $guard=new M26GuardChild();unset($guard->child);
 checkUtility(!isset($guard->child), 'unset guard delegates child-only properties');

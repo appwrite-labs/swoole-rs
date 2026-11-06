@@ -355,10 +355,7 @@ fn set_hook_flags(call: &Call, min: u32) -> Result<(), Bailout> {
 }
 
 /// `PHPCoroutine::enable_hook(flags)`; a trapped bailout is raised last.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole12PHPCoroutine11enable_hookEj")
-)]
+#[unsafe(export_name = "swr_v1_phpruntime_enable_hook")]
 #[must_use]
 pub extern "C" fn php_coroutine_enable_hook(flags: u32) -> bool {
     let enabled = enable_hook(flags);
@@ -368,10 +365,6 @@ pub extern "C" fn php_coroutine_enable_hook(flags: u32) -> bool {
 }
 
 /// `PHPCoroutine::disable_hook()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole12PHPCoroutine12disable_hookEv")
-)]
 #[must_use]
 pub extern "C" fn php_coroutine_disable_hook() -> bool {
     php_coroutine_enable_hook(0)
