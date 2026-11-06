@@ -237,8 +237,8 @@ fn number(serv: *mut c_void, id: u32) -> i64 {
         fact::THREAD_MODE => i64::from(i64::from(c.mode_) == MODE_THREAD),
         fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine),
         fact::SEND_YIELD => i64::from(c.send_yield),
-        // SAFETY: a live server.
         fact::HAS_ON_CLOSE => {
+            // SAFETY: a live server.
             i64::from(unsafe { view::has_callback(serv, swoole_rs_server::callbacks::CB_CLOSE) })
         }
         fact::UNSAFE_EVENTS => i64::from(hash_dispatch || c.enable_unsafe_event),
