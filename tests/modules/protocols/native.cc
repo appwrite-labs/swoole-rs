@@ -40,10 +40,26 @@ namespace reference {
 #include "reference.inc"
 #pragma GCC diagnostic pop
 }
+// Rust's export under upstream's symbol (crates/protocols/src/mqtt.rs).
+namespace swoole {
+struct Protocol;
+struct PacketLength;
+namespace network {
+struct Socket;
+}
+namespace mqtt {
+ssize_t get_package_length(const Protocol *protocol, network::Socket *socket, PacketLength *pl);
+}
+}  // namespace swoole
 namespace candidate {
 using ::swoole::RustStringView;
 #include "adapter.inc"
 #include "candidate.inc"
+namespace mqtt {
+ssize_t get_package_length(const Protocol *, network::Socket *, PacketLength *pl) {
+    return ::swoole::mqtt::get_package_length(nullptr, nullptr, reinterpret_cast<::swoole::PacketLength *>(pl));
+}
+}
 }
 // Execute the exact original PHP parser loop with only Zend allocation modeled.
 // Actual Zend callbacks, yielding and allocation are covered by request.py.
