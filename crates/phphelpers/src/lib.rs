@@ -6,8 +6,6 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-#[cfg(feature = "php")]
-mod array;
 mod asynchronous;
 #[cfg(feature = "php")]
 pub mod callable;

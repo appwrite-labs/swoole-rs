@@ -3,7 +3,7 @@
 function ensure(bool $condition, string $message): void {
     if (!$condition) throw new RuntimeException($message);
 }
-foreach (['swoole_typed_array', 'm26_bool_call', 'm26_owned_callable', 'm26_merge_strings'] as $function) {
+foreach (['swoole_typed_array', 'm26_bool_call', 'm26_owned_callable'] as $function) {
     if (!function_exists($function)) { fwrite(STDERR, "UNSUPPORTED: $function required\n"); exit(2); }
 }
 if (PHP_INT_SIZE !== 8) { fwrite(STDERR, "UNSUPPORTED: 64-bit PHP benchmark driver required\n"); exit(2); }
@@ -62,16 +62,13 @@ function once(string $name, int $seed): int {
         return m26_named_call('strlen', str_repeat('a', 16 + ($seed & 7)));
     case 'callable_release':
         return (int) m26_owned_callable('m26_bench_factory');
-    case 'merge_strings':
-        $array = m26_merge_strings([['color', str_repeat('r', 3 + ($seed & 7))], ['color', 'blue']]);
-        return count($array['color']) + strlen($array['color'][0]);
     default: throw new RuntimeException('Unknown workload');
     }
 }
 $workloads = ['typed_create', 'typed_normalize', 'typed_nested', 'typed_map_assign',
     'typed_list_append', 'typed_compound', 'typed_cow_push', 'typed_splice', 'alias_sum',
     'wrapper_map', 'json_array', 'pcre_single', 'bool_cached_direct', 'named_strlen',
-    'callable_release', 'merge_strings'];
+    'callable_release'];
 if (($argv[1] ?? '') === '--check' && count($argv) === 2) {
     $outputs = [];
     foreach ($workloads as $name) foreach ([0, 1, 7] as $seed) $outputs[$name][] = once($name, $seed);

@@ -1,14 +1,5 @@
 #include "shim.h"
 #include "shim_facade.h"
-int swr_zend_try_array_insert(zval *array, zend_ulong index, zval *value, bool append, int *result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY {
-        *result = append ? add_next_index_zval(array, value) : add_index_zval(array, index, value);
-    } SWR_ZEND_CATCH {
-        bailed = 1;
-    } SWR_ZEND_END_TRY();
-    return bailed;
-}
 int swr_zend_try_facade_truth(zval *value, bool *result) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { *result = zend_is_true(value); }

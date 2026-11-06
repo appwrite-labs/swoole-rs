@@ -33,7 +33,7 @@ PHP_FUNCTION(m26_facade_custody) {
         zval duplicates;array_init(&duplicates);
         for(const auto &input: {std::string(),std::string("plain"),std::string("a\0B",3)}) {
             zend::String text(input.data(),input.size());
-            char *native=text.dup(),*zend=text.edup();
+            char *native=text.dup(),*zend=text.len()?estrndup(text.val(),text.len()):nullptr;
             zval pair;array_init(&pair);
             if(native) {add_next_index_string(&pair,native);sw_free(native);}
             else add_next_index_null(&pair);
@@ -50,37 +50,6 @@ PHP_FUNCTION(m26_facade_custody) {
         zend::Variable moved(std::move(source));
         add_assoc_bool(return_value,"variable_copy",Z_TYPE(assigned.value)==IS_STRING && Z_TYPE(copied.value)==IS_STRING);
         add_assoc_bool(return_value,"variable_move",Z_ISUNDEF(source.value) && Z_TYPE(moved.value)==IS_STRING);
-    }
-    {
-        zval array;array_init(&array);
-        add_assoc_string(&array,"entry","first");
-        add_assoc_string(&array,"entry","second");
-        add_index_string(&array,7,"last");
-        add_assoc_string(&array,"drop","removed");
-        zend_hash_str_del(Z_ARRVAL(array),ZEND_STRL("drop"));
-        zend::Array facade(&array);
-        zval inserted;ZVAL_STRING(&inserted,"set");
-        bool set=facade.set(9,&inserted);if(set)ZVAL_UNDEF(&inserted);else zval_ptr_dtor(&inserted);
-        ZVAL_STRING(&inserted,"append");
-        bool append=facade.append(&inserted);if(append)ZVAL_UNDEF(&inserted);else zval_ptr_dtor(&inserted);
-        add_assoc_bool(return_value,"updates",set && append);
-        zval walk;array_init(&walk);
-        // Borrow native payloads while their owning array stays live. The
-        // initialized private sentinel gives both pinned constructors their
-        // documented modeled input domain; do not probe unused native buckets.
-        const auto used=Z_ARRVAL(array)->nNumUsed;
-        std::vector<Bucket> buckets(used+1);
-        memcpy(buckets.data(),Z_ARRVAL(array)->arData,used*sizeof(Bucket));
-        for(zend::ArrayIterator it(buckets.data(),buckets.data()+used),end(buckets.data()+used);it!=end;it++) {
-            zval entry;array_init(&entry);
-            if(it.ptr()->key) {auto name=it.key();add_assoc_stringl(&entry,"key",name.data(),name.size());}
-            else add_assoc_long(&entry,"key",it.index());
-            zval copied;ZVAL_COPY(&copied,it.value());add_assoc_zval(&entry,"value",&copied);
-            add_next_index_zval(&walk,&entry);
-        }
-        add_assoc_long(return_value,"array_count",facade.count());
-        add_assoc_zval(return_value,"walk",&walk);
-        add_assoc_zval(return_value,"map",&array);
     }
     {
         auto original=sw_callable_create(callback);
@@ -143,7 +112,11 @@ PHP_FUNCTION(m26_facade_oom) {
 static int class_alias_registered;
 static zend_object_handlers guard_handlers;
 static zend_object *guard_create(zend_class_entry *ce) {
-    return sw_zend_create_object(ce, &guard_handlers);
+    auto *object=static_cast<zend_object *>(zend_object_alloc(sizeof(zend_object),ce));
+    zend_object_std_init(object,ce);
+    object_properties_init(object,ce);
+    object->handlers=&guard_handlers;
+    return object;
 }
 ZEND_BEGIN_ARG_INFO_EX(arginfo_m26_utility,0,0,2)
     ZEND_ARG_INFO(0, callback)

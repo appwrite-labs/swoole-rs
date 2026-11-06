@@ -2,13 +2,11 @@
 
 M26 covers `ext-src/php_swoole_cxx.cc`, `ext-src/swoole_stdext.cc` and the
 common Zend owning facades in `ext-src/php_swoole_cxx.h` and shared property/call/value operations in `ext-src/php_swoole_private.h`. String, Variable
-and Callable own Rust handles; Rust also implements sparse ArrayIterator walks
-and Array updates. C++ keeps the
+and Callable own Rust handles. C++ keeps the
 source-compatible constructors and methods. The contract is
 [docs/phphelpers-abi-v1.md](../../../docs/phphelpers-abi-v1.md).
 
-`ext-src/swoole_stdext.cc` and the
-ArrayIterator/Array methods in `ext-src/php_swoole_cxx.h`.
+`ext-src/swoole_stdext.cc`.
 String, Variable, inline Callable methods and callable factories keep
 the upstream implementation until their state moves into Rust. The contract is
 [docs/phphelpers-abi-v1.md](../../../docs/phphelpers-abi-v1.md).
@@ -20,14 +18,13 @@ crates (docs/zend.md); only the `ASSIGN_DIM`/`ASSIGN_DIM_OP` handlers (PHP's
 
 Rust owns the facade values and their operations through typed Zend layouts.
 Version-dependent Zend leaf effects remain C; calls that can execute PHP trap
-bailouts there before returning to Rust. Function/merge calls and known-string allocation/publication also execute in Rust.
+bailouts there before returning to Rust. Function calls and known-string allocation/publication also execute in Rust.
 The C++ known-string global remains a borrowed ABI view.
 
 | Rust ownership / operations | Native leaf effects |
 | --- | --- |
 | String, Variable, Callable lifetimes and factories | Zend allocators/refcount macros; trapped PHP calls and diagnostics |
-| ArrayIterator sparse/indirect cursor; Array updates | Trapped hash insertion/replacement |
-| Function/merge operations; 64 known strings and their pointer cache | Trapped Zend invocation/hash effects; persistent allocation/interning |
+| Function calls; 64 known strings and their pointer cache | Trapped Zend invocation/hash effects; persistent allocation/interning |
 | `php_swoole_async` admission | `std::function` storage, native invocation/async/yield |
 
 Edit the three overlays with `tools/patches.py`; see
@@ -35,13 +32,12 @@ Edit the three overlays with `tools/patches.py`; see
 
 ## Common-helper qualification
 
-The common owning values, calls, merge and known-cache bodies execute in Rust.
+The common owning values, calls and known-cache bodies execute in Rust.
 Their old C++-body policy fixture is retired; copying deleted bodies into fake
 Zend layouts no longer qualifies production. `phphelpers-sdk` compiles the
 actual native and selected headers, and `phphelpers-facade-runtime`,
 `phphelpers-entrypoint` and `phphelpers-runtime` execute both engines against
-unchanged PHP observations. Rust tests cover all 4,681 bounded sparse/indirect
-walks against actual Zend layouts. The separate async body gate remains while
+unchanged PHP observations. The separate async body gate remains while
 its native closure/coroutine effects still use that boundary.
 
 ## SDK compile checks
@@ -132,13 +128,13 @@ None of these is a PHPT, Rust unit test or fuzz target.
 
 ## Owning Zend facades (#1063)
 
-String, Variable, Array/ArrayIterator and Callable now execute
+String, Variable and Callable now execute
 their ownership and operations in Rust against the actual Zend SDK. Their former
 modeled C++ fixtures (13/9/4681/14 cases) copied private class bodies and supplied
-fake Zend layouts; those assumptions are retired. All 4,681 bounded sparse/indirect walks now run as Rust unit tests against real
-Zend Bucket/zval layouts. The SDK compile and loaded facade runtime remain mandatory, with the original PHP expectations unchanged:
+fake Zend layouts; those assumptions are retired. Array/ArrayIterator, and the
+keyed merge, left with their last callers. The SDK compile and loaded facade runtime remain mandatory, with the original PHP expectations unchanged:
 copy/self-copy/move/self-move, binary duplication, PHP conversion reentry,
-sparse keys and updates, callback duplication/invocation and destructor timing.
+callback duplication/invocation and destructor timing.
 The obsolete call/merge/cache policy phase is retired after those complete operations move to Rust.
 
 The facade request-allocation probes exercise the original 16 MiB soft bailout and
