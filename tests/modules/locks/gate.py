@@ -57,13 +57,17 @@ inline void swoole_set_last_error(int e){errno=e;}
     base=original('src/core/base.cc');wait=base[base.index('bool sw_wait_for('):base.index('\nint swoole_itoa')]
     timer=original('src/os/timer.cc');realtime=timer[timer.index('void realtime_get('):timer.index('}  // namespace swoole')]
     misc=original('src/core/misc.cc');futex=misc[misc.index('#ifdef HAVE_FUTEX'):misc.index('/* {{{ DJBX33A')]
+    # The archive defines these symbols too, so the pinned ones go in namespace reference,
+    # with the futex headers they include hoisted out of it.
+    kernel='#ifdef HAVE_FUTEX\n#include <linux/futex.h>\n#include <sys/syscall.h>\n#endif\n'
+    futex=futex.replace('#include <linux/futex.h>\n','').replace('#include <sys/syscall.h>\n','')
     original_bodies='';ported_bodies=''
     for name in ['mutex','rw_lock','spin_lock','barrier']:
         path=f'src/lock/{name}.cc';original_bodies+=original(path).replace('#include "swoole_lock.h"','#include "reference.h"').replace('namespace swoole','namespace reference')+'\n';ported_bodies+=ported(path)+'\n'
     with tempfile.TemporaryDirectory(prefix='swr-locks-') as temp:
         tree=Path(temp);(tree/'reference').mkdir();(tree/'ported').mkdir();(tree/'support.h').write_text(support)
         (tree/'reference/reference.h').write_text(original('include/swoole_lock.h').replace('#include "swoole_memory.h"','#include "support.h"').replace('namespace swoole','namespace reference'))
-        (tree/'reference/original.inc').write_text(futex+'\nnamespace reference {\n'+wait+realtime+'}\n'+original_bodies)
+        (tree/'reference/original.inc').write_text(kernel+'\nnamespace reference {\n'+futex+wait+realtime+'}\n'+original_bodies)
         (tree/'ported/swoole_lock.h').write_text(ported('include/swoole_lock.h').replace('#include "swoole_memory.h"','#include "support.h"'))
         (tree/'ported/ported.inc').write_text(ported_bodies)
         # Two translation units: the reference side sees only pinned text, the ported side

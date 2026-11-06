@@ -97,10 +97,10 @@ void shared_barrier() { ::shared_barrier<reference::Barrier>(); }
 #endif
 size_t size(int kind) { return kind==3?sizeof(reference::MutexImpl):sizeof(reference::RWLockImpl); }
 size_t align(int kind) { return kind==3?alignof(reference::MutexImpl):alignof(reference::RWLockImpl); }
-int wait(uint32_t *word,double timeout) { return sw_atomic_futex_wait(word,timeout); }
-int wake(uint32_t *word,int count) { return sw_atomic_futex_wakeup(word,count); }
+int wait(uint32_t *word,double timeout) { return reference::sw_atomic_futex_wait(word,timeout); }
+int wake(uint32_t *word,int count) { return reference::sw_atomic_futex_wakeup(word,count); }
 #ifndef HAVE_FUTEX
-void wait_init() { sw_atomic_wait_init(); }
+void wait_init() { reference::sw_atomic_wait_init(); }
 #endif
 }
 #else
