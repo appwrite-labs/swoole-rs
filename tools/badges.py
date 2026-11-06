@@ -37,25 +37,30 @@ def git(*args, cwd):
     return subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
-def replaced(source, patches):
-    """(deleted, total) first-party upstream lines after applying `patches`, in order, to `source`."""
+def kept(source, patches):
+    """{path: (kept, total)} first-party upstream lines after applying `patches`, in order, to `source`."""
     with tempfile.TemporaryDirectory(prefix='swr-badges-') as directory:
         tree = Path(directory)
         shutil.copytree(source, tree, dirs_exist_ok=True, ignore=shutil.ignore_patterns('.git'))
         git('init', '-q', cwd=tree)
         git('add', '-A', cwd=tree)
         git('-c', 'user.name=badges', '-c', 'user.email=badges@localhost', 'commit', '-qm', 'pin', cwd=tree)
-        files = [path for path in git('ls-files', cwd=tree).splitlines() if first_party(path)]
-        total = sum(len((tree / path).read_bytes().splitlines()) for path in files)
+        total = {path: len((tree / path).read_bytes().splitlines())
+                 for path in git('ls-files', cwd=tree).splitlines() if first_party(path)}
+        files = {path: (lines, lines) for path, lines in total.items()}
         for patch in patches:
             apply_patch_verified(tree, ROOT / patch['path'], patch['upstream_paths'], patch['sha256'])
-        deleted = 0
         # Added glue must not earn credit by changing Git's greedy alignment.
         for line in git('diff', '--diff-algorithm=minimal', '--numstat', cwd=tree).splitlines():
             _, removed, path = line.split('\t')
-            if first_party(path) and removed != '-':
-                deleted += int(removed)
-        return deleted, total
+            if path in files and removed != '-':
+                files[path] = (total[path] - int(removed), total[path])
+        return files
+
+
+def replaced(files):
+    """(deleted, total) first-party upstream lines over `kept`'s files."""
+    return sum(total - lines for lines, total in files.values()), sum(total for _, total in files.values())
 
 
 def all_module_patches():
@@ -81,11 +86,16 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--phpt', type=Path, help="A merge-tier run's phpt.json (gate rows)")
     parser.add_argument('--commit', help='The commit that run measured')
+    parser.add_argument('--kept', action='store_true', help='Also list each file still built, with its kept upstream lines')
     args = parser.parse_args()
     if args.phpt and not args.commit:
         parser.error('--phpt needs --commit')
     args.output.mkdir(parents=True, exist_ok=True)
-    deleted, total = replaced(args.source, all_module_patches())
+    files = kept(args.source, all_module_patches())
+    for path, (lines, _) in sorted(files.items(), key=lambda item: -item[1][0]) if args.kept else ():
+        if lines:
+            print(f'{lines:6} {path}')
+    deleted, total = replaced(files)
     badges = {
         'replaced': endpoint('upstream C++ replaced', f'{100 * deleted / total:.1f}% of {total / 1000:.0f}k lines'),
         'graduated': endpoint('graduated', f'{sum(m in GRADUATED for m in LEAF)} / {len(LEAF)} leaf modules'),
