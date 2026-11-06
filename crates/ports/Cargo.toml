@@ -17,6 +17,8 @@ upstream-symbols = []
 [dependencies]
 swoole-rs-server = { path = "../server" }
 swoole-rs-http = { path = "../http" }
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-error = { path = "../error" }
 
 [lints]
 workspace = true

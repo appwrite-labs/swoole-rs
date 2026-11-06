@@ -122,6 +122,8 @@ SwrPortsFramingSettings swr_v1_ports_framing_settings(SwrPortsFramingInput);
 SwrPortsFramingSettings swr_v1_ports_stream_settings(void);
 uint32_t swr_v1_ports_protocol(uint32_t flags, uint8_t length_type);
 const char *swr_v1_ports_protocol_name(uint32_t flags);
+/* The SWR_PORTS_* protocol flags of a ListenPort's settings, with SWR_PORTS_DGRAM. */
+uint32_t swr_v1_ports_flags(void *port);
 typedef struct {
     uint32_t flags, length_type, eof_len, eof_max, http2_header_size, websocket_header_size, mqtt_header_size;
 } SwrPortsProtocolInput;
@@ -178,10 +180,8 @@ enum { SWR_PORTS_ON_READ_RAW=0, SWR_PORTS_ON_READ_LENGTH=1, SWR_PORTS_ON_READ_EO
        SWR_PORTS_OP_WEBSOCKET_ACTIVATE=17, SWR_PORTS_OP_HTTP2_ENABLED=18, SWR_PORTS_OP_HTTP2_START=19,
        SWR_PORTS_OP_SKIP_RECV=20, SWR_PORTS_OP_MAX_LENGTH=21, SWR_PORTS_OP_UPLOADS=22, SWR_PORTS_OP_STATIC=23,
        SWR_PORTS_OP_BUF_REDUCE=36, SWR_PORTS_OP_BUF_EXTEND=38, SWR_PORTS_OP_BUF_HEADER_END=39, SWR_PORTS_OP_REQ_INIT=50,
-       SWR_PORTS_OP_REQ_DESTROY=51, SWR_PORTS_OP_REQ_MULTIPART_INIT=63, SWR_PORTS_LOG_UNKNOWN_PROTOCOL=90,
-       SWR_PORTS_LOG_UNKNOWN_METHOD=91, SWR_PORTS_LOG_NO_HTTP2=92, SWR_PORTS_LOG_HEADER_TOO_LARGE=93, SWR_PORTS_LOG_CHUNKED_ERROR=94,
-       SWR_PORTS_LOG_CHUNKED_TOO_LARGE=95, SWR_PORTS_LOG_TOO_LARGE=96, SWR_PORTS_LOG_DISCARD=97, SWR_PORTS_TRACE_HEADER=98,
-       SWR_PORTS_TRACE_CHUNKED=99, SWR_PORTS_TRACE_POST_WAIT=100, SWR_PORTS_TRACE_CLOSE=101, SWR_PORTS_SEND_BAD_REQUEST=0,
+       SWR_PORTS_OP_REQ_DESTROY=51, SWR_PORTS_OP_REQ_MULTIPART_INIT=63, SWR_PORTS_OP_CLIENT=89,
+       SWR_PORTS_TRACE_HEADER=98, SWR_PORTS_TRACE_CHUNKED=99, SWR_PORTS_TRACE_POST_WAIT=100, SWR_PORTS_TRACE_CLOSE=101, SWR_PORTS_SEND_BAD_REQUEST=0,
        SWR_PORTS_SEND_TOO_LARGE=1, SWR_PORTS_SEND_UNAVAILABLE=2, SWR_PORTS_SEND_CONTINUE=3 };
 typedef uint64_t (*SwrPortsCall)(void *context, uint32_t op, uint64_t arg);
 int32_t swr_v1_ports_on_read(uint32_t kind, void *context, SwrPortsCall call);

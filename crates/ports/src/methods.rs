@@ -3,9 +3,12 @@
 //! the hybrid links this crate (`upstream-symbols`). port.cc registers its two
 //! runners once; each method calls one as its C++ forward did.
 
-use std::ffi::{c_int, c_void};
+use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::OnceLock;
+
+use swoole_rs_server::port_config::{self, PortConfig};
+use swoole_rs_server::view;
 
 use crate::lifecycle::{
     RUN_CLOSE, RUN_CONTEXT_CREATE, RUN_CONTEXT_INIT, RUN_IMPORT, RUN_SNI, RUN_SSL_CREATE,
@@ -159,6 +162,81 @@ pub unsafe extern "C" fn ssl_server_sni_callback(
     let null = ptr::null_mut();
     // SAFETY: as the caller guarantees; the SNI run finds the port from `ssl`.
     unsafe { run(RUN_SNI, null, null, null, ssl, 0) }
+}
+
+/// The `SWR_PORTS_*` protocol flags a port's settings turn on; `SWR_PORTS_DGRAM`
+/// too for a datagram port.
+fn protocol_flags(config: &PortConfig) -> u32 {
+    let datagram = matches!(config.r#type, 2 | 4 | 6);
+    [
+        (datagram, 1),
+        (config.open_eof_check, 4),
+        (config.open_length_check, 8),
+        (config.open_http_protocol, 16),
+        (config.open_http2_protocol, 32),
+        (config.open_websocket_protocol, 64),
+        (config.open_mqtt_protocol, 128),
+        (config.open_redis_protocol, 256),
+    ]
+    .into_iter()
+    .filter(|&(on, _)| on)
+    .fold(0, |flags, (_, flag)| flags | flag)
+}
+
+/// [`protocol_flags`] for `init_protocol`.
+///
+/// # Safety
+/// `port` is a live `ListenPort`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_ports_flags(port: *mut c_void) -> u32 {
+    // SAFETY: as the caller guarantees.
+    protocol_flags(unsafe { view::port(port) })
+}
+
+/// `ListenPort::get_protocols()`.
+///
+/// # Safety
+/// `port` is a live `ListenPort`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole10ListenPort13get_protocolsEv")
+)]
+pub unsafe extern "C" fn get_protocols(port: *mut c_void) -> *const c_char {
+    // SAFETY: as the caller guarantees.
+    crate::swr_v1_ports_protocol_name(unsafe { swr_v1_ports_flags(port) })
+}
+
+/// `ListenPort::clear_protocol()`.
+///
+/// # Safety
+/// `port` is a live `ListenPort` whose settings nothing else touches meanwhile.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort14clear_protocolEv")
+)]
+pub unsafe extern "C" fn clear_protocol(port: *mut c_void) {
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { port_config::of(port) };
+    config.open_eof_check = false;
+    config.open_length_check = false;
+    config.open_http_protocol = false;
+    config.open_websocket_protocol = false;
+    config.open_http2_protocol = false;
+    config.open_mqtt_protocol = false;
+    config.open_redis_protocol = false;
+}
+
+/// `ListenPort::get_connection_num()`, over `sw_server()`'s event workers.
+///
+/// # Safety
+/// `port` is a live `ListenPort` of the live `sw_server()`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole10ListenPort18get_connection_numEv")
+)]
+pub unsafe extern "C" fn get_connection_num(port: *mut c_void) -> usize {
+    // SAFETY: as the caller guarantees.
+    unsafe { view::port_connection_num(swoole_rs_corebase::swr_v1_core_server(), port) }
 }
 
 /// Each static `readable_callback_*`: its symbol, Rust name and readable kind.
