@@ -79,6 +79,8 @@ pub struct ServerConfig {
     pub recv_buffer_size: usize,
     pub manager_alarm: c_int,
     pub message_queue_key: u64,
+    /// `Server::Mode`, fixed by the constructor.
+    pub mode_: u8,
 }
 
 impl Drop for ServerConfig {
@@ -171,6 +173,7 @@ impl Default for ServerConfig {
             recv_buffer_size: 65_536,
             manager_alarm: 0,
             message_queue_key: 0,
+            mode_: 0,
         }
     }
 }
@@ -232,12 +235,13 @@ pub(crate) unsafe fn native_fact(
         FIELD_CPU_NUM, FIELD_DISPATCH_MODE, FIELD_HEARTBEAT_INTERVAL, FIELD_REACTOR_NUM,
         FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_UNSAFE_EVENT, FIELD_WORKER_NUM,
         OP_ACCEPT_TIMER_CLEAR, OP_CONNECTION_LIST, OP_DELAY_RECEIVE, OP_DISABLE_NOTIFY, OP_FIELD,
-        OP_LC_DAEMONIZE, OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_RUNNING, OP_SET_FIELD,
+        OP_LC_DAEMONIZE, OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_MODE, OP_RUNNING, OP_SET_FIELD,
         OP_SET_MAX_CONNECTION, OP_SET_RUNNING, OP_SET_WARNING, OP_SINGLE_THREAD,
     };
     if !matches!(
         op,
-        OP_SINGLE_THREAD
+        OP_MODE
+            | OP_SINGLE_THREAD
             | OP_LC_DAEMONIZE
             | OP_DELAY_RECEIVE
             | OP_DISABLE_NOTIFY
@@ -266,6 +270,7 @@ pub(crate) unsafe fn native_fact(
     // SAFETY: no native callback runs during this leaf table access.
     let tables = unsafe { &mut *tables };
     Some(match op {
+        OP_MODE => u64::from(config.mode_),
         OP_SINGLE_THREAD => u64::from(config.single_thread),
         OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),

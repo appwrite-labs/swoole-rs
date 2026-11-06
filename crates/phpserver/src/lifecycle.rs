@@ -13,6 +13,7 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_server::view;
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Message, Object, bailout, class_name, message, object_of, php_error,
     string::bytes,
@@ -215,13 +216,38 @@ pub(crate) struct Property {
 }
 
 fn fact(serv: *mut c_void, id: u32) -> bool {
-    // SAFETY: a live server.
-    unsafe { (host().fact)(serv, id) != 0 }
+    number(serv, id) != 0
 }
 
+/// The Server fact `id`: from its records, or C++ for what only it knows.
 fn number(serv: *mut c_void, id: u32) -> i64 {
     // SAFETY: a live server.
-    unsafe { (host().fact)(serv, id) }
+    let c = unsafe { view::config(serv) };
+    // `is_hash_dispatch_mode()`: DISPATCH_FDMOD, DISPATCH_IPMOD, DISPATCH_CO_CONN_LB.
+    let hash_dispatch = matches!(c.dispatch_mode, 2 | 4 | 8);
+    match id {
+        fact::MODE => i64::from(c.mode_),
+        // SAFETY: a live server.
+        fact::STARTED => i64::from(unsafe { view::is_started(serv) }),
+        // SAFETY: a live server.
+        fact::SHUTDOWN => i64::from(
+            unsafe { view::counters(serv) }
+                .shutdown
+                .load(Ordering::Relaxed)
+                != 0,
+        ),
+        fact::MASTER => i64::from(crate::server::worker_type() == crate::server::MASTER),
+        fact::THREAD_MODE => i64::from(i64::from(c.mode_) == MODE_THREAD),
+        fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine),
+        fact::SEND_YIELD => i64::from(c.send_yield),
+        fact::UNSAFE_EVENTS => i64::from(hash_dispatch || c.enable_unsafe_event),
+        fact::HASH_DISPATCH => i64::from(hash_dispatch),
+        fact::WORKER_NUM => i64::from(c.worker_num),
+        fact::TASK_WORKER_NUM => i64::from(c.task_worker_num),
+        fact::OUTPUT_BUFFER_SIZE => i64::from(c.output_buffer_size),
+        // SAFETY: a live server.
+        _ => unsafe { (host().fact)(serv, id) },
+    }
 }
 
 fn put(serv: *mut c_void, which: u32) {
