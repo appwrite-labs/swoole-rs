@@ -18,4 +18,5 @@ workspace = true
 
 [dependencies]
 swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-memory = { path = "../memory" }
 libc = "=0.2.191"

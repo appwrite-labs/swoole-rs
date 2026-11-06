@@ -536,23 +536,23 @@ pub unsafe extern "C" fn send_message(
     unsafe { bus_write(pool.message_bus, pipe, &raw mut task) }
 }
 
-/// `ProcessPool::pop_message(data, size)`: the next message in the master's box.
+/// `ProcessPool::pop_message(data, size)`: the next message in the master's box,
+/// under the box's lock.
 ///
 /// # Safety
-/// `pool` is a created `ProcessPool`; `data` is writable for `size` bytes.
-#[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZNK6swoole11ProcessPool11pop_messageEPvm")]
+/// `pool` is a created `ProcessPool` whose box, if any, was made with
+/// `SW_CHAN_LOCK`; `data` is writable for `size` bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole11ProcessPool11pop_messageEPvm")
+)]
 #[must_use]
 pub unsafe extern "C" fn pop_message(
     pool: *const PoolRecord,
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    // SAFETY: the shared-memory channel's C++ method.
-    unsafe extern "C" {
-        #[link_name = "_ZN6swoole7Channel3popEPvi"]
-        fn channel_pop(channel: *mut c_void, data: *mut c_void, size: c_int) -> c_int;
-    }
+    use swoole_rs_memory::channel::{swr_v1_memory_channel_lock, swr_v1_memory_channel_out};
     // SAFETY: the caller lends a live pool.
     let message_box = unsafe { (*pool).message_box };
     if message_box.is_null() {
@@ -564,8 +564,13 @@ pub unsafe extern "C" fn pop_message(
         reason = "Channel::pop takes upstream's int length"
     )]
     let size = size as c_int;
-    // SAFETY: the pool's channel and the caller's buffer.
-    unsafe { channel_pop(message_box, data, size) }
+    // SAFETY: the box is a live channel record with its mutex.
+    unsafe { swr_v1_memory_channel_lock(message_box.cast(), true) };
+    // SAFETY: the locked channel (its record's first field) and the caller's buffer.
+    let length = unsafe { swr_v1_memory_channel_out(message_box.cast(), data, size, 1) };
+    // SAFETY: this thread holds the lock.
+    unsafe { swr_v1_memory_channel_lock(message_box.cast(), false) };
+    length
 }
 
 /// `Worker::set_max_request(max_request, grace)`: this process's request limit.
@@ -846,6 +851,61 @@ mod tests {
         assert_eq!((address, port), (c"127.0.0.1", 9501), "and its address");
         // SAFETY: the pool's IPC state, not used again.
         unsafe { swr_v1_process_pool_ipc_free(pool.ipc, keep) };
+    }
+
+    #[test]
+    fn pop_message_takes_the_oldest_message_from_the_box() {
+        use swoole_rs_memory::channel::{
+            swr_v1_memory_channel_bytes, swr_v1_memory_channel_in, swr_v1_memory_channel_init,
+        };
+        // SAFETY: a zeroed record is a pool before `create`.
+        let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
+        let mut out = [0u8; 16];
+        // SAFETY: the pool is live and `out` writable.
+        let none = unsafe { pop_message(&raw const pool, out.as_mut_ptr().cast(), out.len()) };
+        assert_eq!(none, -1, "no box");
+        let mut memory = vec![0u64; swr_v1_memory_channel_bytes(256, 16).div_ceil(8)];
+        let record = memory.as_mut_ptr().cast();
+        // SAFETY: the buffer is aligned and as long as the record needs; 2 is SW_CHAN_LOCK.
+        assert_eq!(
+            unsafe { swr_v1_memory_channel_init(record, 256, 16, 2) },
+            0,
+            "a box"
+        );
+        pool.message_box = record.cast();
+        for message in [&b"first"[..], b"second"] {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                reason = "short"
+            )]
+            // SAFETY: the box's channel is its record's first field.
+            let pushed = unsafe {
+                swr_v1_memory_channel_in(
+                    record.cast(),
+                    message.as_ptr().cast(),
+                    message.len() as i32,
+                )
+            };
+            assert_eq!(pushed, 0, "pushed");
+        }
+        // SAFETY: as above.
+        let n = unsafe { pop_message(&raw const pool, out.as_mut_ptr().cast(), out.len()) };
+        assert_eq!(
+            &out[..usize::try_from(n).unwrap_or(0)],
+            b"first",
+            "oldest first"
+        );
+        // SAFETY: as above.
+        let n = unsafe { pop_message(&raw const pool, out.as_mut_ptr().cast(), out.len()) };
+        assert_eq!(
+            &out[..usize::try_from(n).unwrap_or(0)],
+            b"second",
+            "then the next"
+        );
+        // SAFETY: as above.
+        let n = unsafe { pop_message(&raw const pool, out.as_mut_ptr().cast(), out.len()) };
+        assert_eq!(n, -1, "then empty");
     }
 
     #[test]
