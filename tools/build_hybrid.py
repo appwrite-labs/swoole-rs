@@ -279,6 +279,11 @@ def overlay_hybrid_tree(archive, tree):
                     (Path(tree) / name).unlink(missing_ok=True)
                 elif (source / name).read_bytes() != (Path(tree) / name).read_bytes():
                     shutil.copyfile(source / name, Path(tree) / name)
+    # core-tests include a header the hybrid folded into another one; they include the survivor.
+    for path in (Path(tree) / 'core-tests').rglob('*'):
+        text = path.read_text() if path.suffix in ('.h', '.cpp') else ''
+        if '#include "swoole_process_pool.h"' in text:
+            path.write_text(text.replace('#include "swoole_process_pool.h"', '#include "swoole_server.h"'))
     # add_definitions and include_directories reach targets defined before them; add_compile_options does not.
     defines = ' '.join(flag for flag in flags if flag.startswith('-D'))
     includes = ' '.join(f'"{flag[2:]}"' for flag in flags if flag.startswith('-I'))
