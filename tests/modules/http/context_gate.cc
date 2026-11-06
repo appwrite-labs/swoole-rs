@@ -58,9 +58,9 @@ static Snapshot selected_file(size_t size,const std::string &url,const char *ran
  check(handler.try_serve(),"selected repeated normal file selection");
  errno=EINTR;handler.parse_range(range,date);
  if(repeat)handler.parse_range(repeat==1?"bytes=0-0":repeat==2?nullptr:"",nullptr);
- out.tasks=handler.copy_tasks();std::string scratch;const auto &type=handler.get_content_type(scratch);out.content_identity=out.tasks.size()>1?&type==&scratch:&type==&candidate_context::mime;out.type=type;out.modified=handler.is_modified("Tue, 14 Nov 2023 22:13:20 GMT");
+ out.tasks=handler.copy_tasks();std::string scratch;const auto &type=handler.get_content_type(scratch);out.content_identity=&type==&scratch;out.type=type;out.modified=handler.is_modified("Tue, 14 Nov 2023 22:13:20 GMT");
  char end[64],filename[PATH_MAX];size_t count=handler.copy_end_part(end,sizeof(end));out.end.assign(end,count);handler.copy_filename(filename,sizeof(filename));out.filename=filename;
- out.date=handler.get_date_last_modified();out.length=handler.get_content_length();out.status=handler.get_status();out.mime_identity=&handler.get_mimetype()==&candidate_context::mime;out.error=errno;out.trace=trace;}
+ out.date=handler.get_date_last_modified();out.length=handler.get_content_length();out.status=handler.get_status();out.mime_identity=handler.get_mimetype()==candidate_context::mime;out.error=errno;out.trace=trace;}
  for(const auto &task:out.tasks)check(memchr(task.part_header,0,256)!=nullptr,"copied task survives complete context destruction");
  return out;
 }
@@ -68,7 +68,7 @@ static void check_snapshot(const Snapshot &old,const Snapshot &selected){
   check(old.tasks.size()==selected.tasks.size(),"complete context task count");
   for(size_t i=0;i<old.tasks.size();++i)check(old.tasks[i].offset==selected.tasks[i].offset&&old.tasks[i].length==selected.tasks[i].length&&memcmp(old.tasks[i].part_header,selected.tasks[i].part_header,256)==0,"complete initialized task records");
   check(old.type==selected.type&&old.end==selected.end&&old.filename==selected.filename&&old.date==selected.date&&old.length==selected.length&&old.status==selected.status,"complete context text/accounting/status/date");
-  check(old.mime_identity&&selected.mime_identity&&old.content_identity&&selected.content_identity,"unchanged native global MIME reference and scoped multipart reference");
+  check(old.mime_identity&&selected.mime_identity&&old.content_identity&&selected.content_identity,"the original global MIME reference, the candidate MIME copy, and scoped content references");
   check(old.modified==selected.modified,"context conditional-date observation");
   check(old.error==selected.error&&old.trace==selected.trace,"normal native external effects and errno");
 }

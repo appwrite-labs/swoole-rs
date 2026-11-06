@@ -33,6 +33,15 @@ CONTEXT_EFFECTS(candidate_context)
 #undef CONTEXT_EFFECTS
 
 namespace candidate_context {
+// The candidate looks MIME types up in Rust's table; trace it as the original's mime_type calls.
+inline const char *swr_v1_framing_mime_get(const uint8_t *path, size_t length) {
+    trace.emplace_back("mime:" + std::string(reinterpret_cast<const char *>(path), length));
+    return mime.c_str();
+}
+inline bool swr_v1_framing_mime_exists(const uint8_t *path, size_t length) {
+    trace.emplace_back("mime-exists:" + std::string(reinterpret_cast<const char *>(path), length));
+    return true;
+}
 inline bool static_io_stat(const char *path, swr_v2_http_observation *out) noexcept {
     struct stat value{};
     if (candidate_context::lstat(path, &value) != 0) return false;
