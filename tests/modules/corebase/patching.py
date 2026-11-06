@@ -29,15 +29,15 @@ def check_git_environment():
 def hybrid_corebase(archive):
     """globals.cc as the hybrid build the archive came from staged it (what is left of base.cc
     and misc.cc), the flags its build compiled it with (its patched headers, Rust headers and
-    config.h) and a receipt. error.cc rides along: the log host globals.cc registers at load
-    calls its swoole_strerror and swoole_is_ignored_error."""
+    config.h) and a receipt. The native error shim (what is left of error.cc) rides along; the
+    swoole_strerror and swoole_is_ignored_error the log host calls are in the archive."""
     source, flags = hybrid_tree(archive)
     patched = (source / 'src/swoole_rs_corebase_globals.cc').read_bytes()
     if any(('swr_v1_corebase_' + name + '(').encode() not in patched for name in CALLS):
         raise ValueError('Required corebase caller absent')
     if b'swr_v1_core_init()' not in patched:
         raise ValueError('swoole_init does not take its guard and defaults from the Rust core record')
-    patched += b'\n' + (source / 'src/core/error.cc').read_bytes()
+    patched += b'\n' + (source / 'src/swoole_rs_error_error.cc').read_bytes()
     return patched, [*flags, '-DHAVE_CONFIG_H', '-I' + str(source)], {
         'hybrid_tree': str(source), 'required_callers': [*CALLS, 'core_init']}
 

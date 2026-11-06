@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Compile pinned error.cc and the hybrid build's error.cc and compare through the actual Rust ABI."""
+"""Compile pinned error.cc and compare it with the hybrid build's error facade: the Rust
+swoole_strerror and swoole_is_ignored_error and the native shim (native/error/error.cc)."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -23,7 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--output', type=Path, default=ROOT / 'target/reports/error-differential.json')
-    parser.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test; its error.cc and headers are the Rust side')
+    parser.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test; it, its native error shim and headers are the hybrid side')
     parser.add_argument('--allocator-faults', action='store_true', help='Link unchanged Rust compiled with a test allocator instead of the archive and check actual native bad_alloc translation')
     parser.add_argument('--sanitize', action='store_true', help='Instrument the native oracle, adapter and driver with ASan/UBSan')
     parser.add_argument('--benchmark', action='store_true', help='Requires an explicit exclusive benchmark lease; seven matched optimized trials')
@@ -77,7 +78,8 @@ def main():
         assert len(cases) == 130 and len(cases) == len(set(cases))
         hybrid, hybrid_flags = hybrid_tree(args.archive)
         report['hybrid_tree'] = str(hybrid)
-        patched = (hybrid / 'src/core/error.cc').read_text()
+        assert not (hybrid / 'src/core/error.cc').exists(), 'error.cc is Rust and native/error/error.cc'
+        patched = (hybrid / 'src/swoole_rs_error_error.cc').read_text()
         # The scratch source is deliberately outside every worktree, never the reference.
         with tempfile.TemporaryDirectory(prefix='swoole-error-') as temporary:
             work = Path(temporary)
@@ -103,7 +105,7 @@ extern char sw_error[1024];
             # the upstream TU and the hybrid build's (through its flags) in the hybrid TUs.
             (upstream / 'swoole.h').write_text(stub)
             (work / 'swoole.h').write_text(stub)
-            assert 'switch (code)' not in patched and 'swr_v1_error_strerror(code, swr_system_error)' in patched
+            assert 'switch (code)' not in patched and 'swoole_strerror(int code)' not in patched
             assert patched.split('void swoole_throw_error')[1].split('void swoole_ignore_error')[0] == original.split('void swoole_throw_error')[1].split('void swoole_ignore_error')[0]
             assert patched.split('void swoole_clear_last_error_msg')[1] == original.split('void swoole_clear_last_error_msg')[1]
             archive = args.archive.resolve()
@@ -116,6 +118,7 @@ extern char sw_error[1024];
                 (work / 'allocator.rs').write_text(wrapper)
                 archive = work / 'liberror.a'
                 run(['rustc', '--edition=2024', '--crate-name', 'swoole_rs_error', '--crate-type', 'staticlib',
+                     '--cfg', 'feature="upstream-symbols"',
                      '-C', 'opt-level=3', '-C', 'panic=abort', work / 'allocator.rs', '-o', archive])
             rename = ['swoole_strerror', 'swoole_throw_error', 'swoole_ignore_error',
                       'swoole_is_ignored_error', 'swoole_clear_last_error_msg', 'swoole_get_last_error_msg']
@@ -124,7 +127,7 @@ extern char sw_error[1024];
                 common += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
             run(['c++', *common, '-I', upstream, '-Dswoole=reference_swoole',
                  *[f'-D{name}=reference_{name}' for name in rename], '-c', upstream / 'original.cc', '-o', work / 'original.o'])
-            # The hybrid TUs (its error.cc and the driver) use the hybrid build's headers.
+            # The hybrid TUs (its native error shim and the driver) use the hybrid build's headers.
             flags = [*common, '-I', work, *hybrid_flags]
             run(['c++', *flags, '-c', work / 'patched.cc', '-o', work / 'patched.o'])
             if args.allocator_faults:
@@ -140,6 +143,7 @@ extern char sw_error[1024];
                  archive, '-o', work / 'probe'])
             symbols = run(['nm', '-g', work / 'probe'])
             assert re.search(r'\bT\s+_?swr_v1_error_message\b', symbols)
+            assert re.search(r'\bT\s+_?_Z15swoole_strerrori\b', symbols), 'swoole_strerror must be Rust'
             report['commands'][-1]['stdout'] = 'swr_v1_error_message defined'
             report['result'] = json.loads(run([work / 'probe']))
             report['native_lines_removed'] = len(original.splitlines()) - len(patched.splitlines())

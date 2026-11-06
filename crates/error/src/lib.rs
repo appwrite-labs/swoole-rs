@@ -182,6 +182,24 @@ pub extern "C" fn swr_v1_error_resolve(
     }
 }
 
+unsafe extern "C" {
+    safe fn strerror(code: i32) -> *const c_char;
+}
+
+extern "C" fn system_error(code: i32) -> *const c_char {
+    strerror(code)
+}
+
+/// `const char *swoole_strerror(int)`: system messages below 500, as upstream.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z15swoole_strerrori")
+)]
+pub extern "C" fn swoole_strerror(code: i32) -> *const c_char {
+    // SAFETY: the formatter is libc's message table; unknown-message use is serialized as upstream.
+    unsafe { swr_v1_error_strerror(code, Some(system_error)) }
+}
+
 /// Resolve system, known and unknown errors without heap allocation.
 /// # Safety
 /// Calls which return the mutable unknown-message buffer must be externally
