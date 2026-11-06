@@ -27,7 +27,7 @@ use swoole_rs_zend::{
     value,
 };
 
-/// `zend_swoole_globals` (`php_swoole.h`); `php_swoole_cxx.cc` asserts the layout.
+/// `zend_swoole_globals` (`php_swoole.h`); `native/phphelpers/module.cc` asserts the layout.
 #[repr(C)]
 pub struct Globals {
     pub(crate) display_errors: bool,
@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn globals_match_zend_swoole_globals() {
-        // php_swoole_cxx.cc asserts the same offsets on the C++ side.
+        // native/phphelpers/module.cc asserts the same offsets on the C++ side.
         assert_eq!(offset_of!(Globals, blocking_threshold), 8);
         assert_eq!(offset_of!(Globals, socket_buffer_size), 24);
         assert_eq!(offset_of!(Globals, req_status), 32);

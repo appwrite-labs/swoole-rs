@@ -1,7 +1,7 @@
 # Common PHP helpers and stdext boundary (M26)
 
 Feature value 16777216. Upstream targets:
-`ext-src/php_swoole_cxx.cc`, `ext-src/swoole_stdext.cc`, and in
+`ext-src/php_swoole_cxx.cc` (deleted; `native/phphelpers/module.cc` keeps its C++), `ext-src/swoole_stdext.cc`, and in
 `ext-src/php_swoole_cxx.h` only `zend::String`, `Variable`, the inline
 `Callable` helpers and `sw_callable_create`. Helpers nothing in the all-modules
 build calls (`KeyValue`, `CharPtr`, `ArrayIterator`, `Array`, `get_function`,

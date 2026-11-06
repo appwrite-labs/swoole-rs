@@ -67,7 +67,7 @@ unsafe extern "C" {
     fn swoole_signal_get_listener_num() -> u32;
     #[link_name = "_Z23swoole_signal_block_allv"]
     fn swoole_signal_block_all();
-    // ext-src/php_swoole_cxx.cc, crates/phpevents, crates/phpclients, crates/phphelpers and PHP.
+    // native/phphelpers/module.cc, crates/phpevents, crates/phpclients, crates/phphelpers and PHP.
     #[link_name = "_Z32php_swoole_call_original_handlerPKcmP18_zend_execute_dataP12_zval_struct"]
     fn php_swoole_call_original_handler(
         name: *const c_char,
