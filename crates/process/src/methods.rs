@@ -748,9 +748,11 @@ pub(crate) mod tests {
         swr_v1_process_pool_ipc_listener, swr_v1_process_pool_ipc_new,
     };
     use std::sync::Mutex;
+    use std::thread::{self, ThreadId};
 
-    /// A log line: kind, level, code, origin and message.
-    type Logged = (c_int, c_int, c_int, String, String);
+    /// A log line: kind, level, code, origin, message and the logging thread,
+    /// so a test sees only its own logs while others run in parallel.
+    type Logged = (c_int, c_int, c_int, String, String, ThreadId);
 
     static LOGGED: Mutex<Vec<Logged>> = Mutex::new(Vec::new());
 
@@ -764,19 +766,28 @@ pub(crate) mod tests {
         // SAFETY: the log host's NUL-terminated strings.
         let text = |s| unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
         if let Ok(mut logged) = LOGGED.lock() {
-            logged.push((kind, level, code, text(origin), text(message)));
+            logged.push((
+                kind,
+                level,
+                code,
+                text(origin),
+                text(message),
+                thread::current().id(),
+            ));
         }
     }
 
-    /// What `origin` logged: (kind, level, code, message).
+    /// What `origin` logged on this thread: (kind, level, code, message).
     pub(crate) fn logged(origin: &str) -> Vec<(c_int, c_int, c_int, String)> {
         LOGGED
             .lock()
             .map(|logged| {
                 logged
                     .iter()
-                    .filter(|entry| entry.3 == origin)
-                    .map(|(kind, level, code, _, message)| (*kind, *level, *code, message.clone()))
+                    .filter(|entry| entry.3 == origin && entry.5 == thread::current().id())
+                    .map(|(kind, level, code, _, message, _)| {
+                        (*kind, *level, *code, message.clone())
+                    })
                     .collect()
             })
             .unwrap_or_default()
