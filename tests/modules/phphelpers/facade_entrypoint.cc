@@ -109,6 +109,7 @@ PHP_FUNCTION(m26_facade_oom) {
     RETURN_TRUE;
 }
 
+static int class_alias_registered;
 static zend_object_handlers guard_handlers;
 static zend_object *guard_create(zend_class_entry *ce) {
     auto *object=static_cast<zend_object *>(zend_object_alloc(sizeof(zend_object),ce));
@@ -137,6 +138,7 @@ PHP_FUNCTION(m26_utility_custody) {
     sw_zend_is_callable_at_frame(callback,nullptr,execute_data,0,nullptr,&only_length,&cache,nullptr);
     add_assoc_bool(return_value,"optional_name",only_length==length);
     (void) data;
+    add_assoc_long(return_value,"class_alias_registered",class_alias_registered);
 }
 PHP_MINIT_FUNCTION(m26_facade) {
     (void) type; (void) module_number;
@@ -147,6 +149,7 @@ PHP_MINIT_FUNCTION(m26_facade) {
     auto *guard=zend_register_internal_class(&entry);
     guard->create_object=guard_create;
     zend_declare_property_null(guard,ZEND_STRL("fixed"),ZEND_ACC_PUBLIC);
+    class_alias_registered=sw_zend_register_class_alias(ZEND_STRL("M26GuArDAlias"),guard);
     return SUCCESS;
 }
 static const zend_function_entry functions[]={PHP_FE(m26_facade_custody,arginfo_m26_facade) PHP_FE(m26_private_custody,arginfo_m26_facade) PHP_FE(m26_facade_oom,arginfo_m26_oom) PHP_FE(m26_utility_custody,arginfo_m26_utility) PHP_FE_END};

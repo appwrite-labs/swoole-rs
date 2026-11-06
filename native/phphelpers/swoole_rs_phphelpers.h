@@ -83,6 +83,7 @@ void swr_v1_phpstdext_copy_type(struct _zval_struct *container, struct _zend_arr
  * if not, Zend has thrown. */
 bool swr_v1_phpstdext_operation(struct _zend_array *ht, bool concat);
 #endif
+int swr_v1_phphelpers_class_alias(const char *name, size_t length, struct _zend_class_entry *entry);
 #ifdef __cplusplus
 }
 #endif
