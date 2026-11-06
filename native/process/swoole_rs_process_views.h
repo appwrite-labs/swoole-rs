@@ -1,5 +1,5 @@
 #ifndef SWR_PROCESS_NATIVE_VIEW_CONTEXT
-#include "swoole_process_pool.h"
+#include "swoole_server.h"
 #else
 #ifndef SWOOLE_RS_PROCESS_VIEWS_H
 #define SWOOLE_RS_PROCESS_VIEWS_H

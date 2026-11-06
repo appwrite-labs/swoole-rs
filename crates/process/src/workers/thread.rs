@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn worker_types_are_upstreams() {
-        // swoole_process_pool.h: SW_EVENT_WORKER = 2, SW_TASK_WORKER = 4, SW_USER_WORKER = 5.
+        // swoole_server.h: SW_EVENT_WORKER = 2, SW_TASK_WORKER = 4, SW_USER_WORKER = 5.
         assert_eq!((EVENT_WORKER, TASK_WORKER, USER_WORKER), (2, 4, 5));
         assert_eq!((super::super::manager::worker_types()), (2, 4, 5));
     }
