@@ -1,15 +1,25 @@
 //! Server events into PHP callbacks: the arguments (`Swoole\Server\Event` and
-//! friends, or plain values), the call and its "handler error" warning. C++
-//! keeps the trampolines the Server calls and re-raises a bailout Rust reports
-//! (`native/process/swoole_rs_phpserver_dispatch.h`, docs/zend.md).
+//! friends, or plain values), the call and its "handler error" warning. The
+//! Server's on* slots hold this module's `extern "C"` fns (stored with a null
+//! `ctx`, see `swoole_rs_server::callbacks`); each re-raises a bailout it
+//! trapped last, from its outermost frame (docs/zend.md).
 use crate::server::{DATA, SERVER};
 use std::{
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_char, c_int, c_long, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_address_string};
+use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
 use swoole_rs_phphelpers::{callable, function_call};
+use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_id};
+use swoole_rs_server::callbacks::{
+    CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_BEFORE_SHUTDOWN, CB_BUFFER_EMPTY, CB_BUFFER_FULL,
+    CB_CLOSE, CB_CONNECT, CB_FINISH, CB_MANAGER_START, CB_MANAGER_STOP, CB_PACKET, CB_PIPE_MESSAGE,
+    CB_RECEIVE, CB_SHUTDOWN, CB_START, CB_TASK, CB_USER_WORKER_START, CB_WORKER_ERROR,
+    CB_WORKER_EXIT, CB_WORKER_START, CB_WORKER_STOP,
+};
 use swoole_rs_zend::{
     E_WARNING,
     bailout::{self, Bailout},
@@ -17,9 +27,9 @@ use swoole_rs_zend::{
     sys::{
         _zval_struct__bindgen_ty_1, IS_LONG, add_assoc_double_ex, add_assoc_long_ex,
         add_assoc_string_ex, swr_zend_array_init, swr_zend_callable_warning, zend_class_entry,
-        zend_object, zend_update_property, zend_update_property_bool, zend_update_property_double,
-        zend_update_property_long, zend_update_property_string, zend_update_property_stringl,
-        zend_value, zval, zval_ptr_dtor,
+        zend_object, zend_string, zend_update_property, zend_update_property_bool,
+        zend_update_property_double, zend_update_property_long, zend_update_property_string,
+        zend_update_property_stringl, zend_value, zval, zval_ptr_dtor,
     },
 };
 
@@ -39,9 +49,8 @@ struct Facts {
     task_worker: bool,
 }
 
-/// `swr_phpserver_packet`.
-#[repr(C)]
-pub struct Packet {
+/// A datagram's sender, for onPacket.
+struct Packet {
     data: *const c_char,
     length: usize,
     address: *const c_char,
@@ -254,29 +263,22 @@ fn dtor(value: &mut zval) {
     unsafe { zval_ptr_dtor(value) };
 }
 
-/// `php_swoole_server_onReceive`'s arguments, after `args[0]`, the server,
-/// which C++ set. The C++ trampoline calls the callback itself: the hot path
-/// needs no `zend_try`, since no Rust frame sits under the call. Returns argc.
-/// # Safety
-/// A live server and its `RecvData`; `args` has room for four zvals.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_receive_args(
+/// `php_swoole_server_onReceive`'s arguments after `args[0]`, the server.
+/// Returns argc.
+fn receive_args(
     server: *mut c_void,
     request: *mut c_void,
-    fd: i64,
-    reactor_id: i64,
-    time: f64,
+    info: &DataHead,
     event_object: bool,
-    args: *mut zval,
-) -> u32 {
-    // SAFETY: per the caller.
-    let args = unsafe { std::slice::from_raw_parts_mut(args, 4) };
+    args: &mut [zval; 4],
+) -> usize {
+    let (fd, reactor_id) = (info.fd, i64::from(info.reactor_id));
     let recv_data = host().recv_data;
     if event_object {
         let (ce, object) = object(&mut args[1], EVENT);
         set_long(ce, object, c"fd", fd);
         set_long(ce, object, c"reactor_id", reactor_id);
-        set_double(ce, object, c"dispatch_time", time);
+        set_double(ce, object, c"dispatch_time", info.time);
         let mut data = undef();
         // SAFETY: a live server and request; `data` receives the payload.
         unsafe { recv_data(server, &raw mut data, request) };
@@ -293,20 +295,9 @@ pub unsafe extern "C" fn swr_v1_phpserver_receive_args(
     }
 }
 
-/// After the trampoline's call: the warning and close of a failed call, and
-/// the arguments' release. True when the trampoline must re-raise a bailout.
-/// # Safety
-/// The server, and the arguments `swr_v1_phpserver_receive_args` built.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_receive_done(
-    server: *mut c_void,
-    succeeded: bool,
-    fd: i64,
-    args: *mut zval,
-    argc: u32,
-) -> bool {
-    // SAFETY: per the caller.
-    let args = unsafe { std::slice::from_raw_parts_mut(args, argc as usize) };
+/// After the call: the warning and close of a failed call, and the
+/// arguments' release. True on a bailout.
+fn receive_done(server: *mut c_void, succeeded: bool, fd: i64, args: &mut [zval]) -> bool {
     if !succeeded {
         if failed(&args[0], "onReceive") == Called::Bailout {
             return true;
@@ -318,11 +309,8 @@ pub unsafe extern "C" fn swr_v1_phpserver_receive_done(
     false
 }
 
-/// `php_swoole_server_onConnect`/`onClose`'s call, with the callback C++ chose.
-/// # Safety
-/// A live server and callable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_connection(
+/// `php_swoole_server_onConnect`/`onClose`'s call, with the chosen callback.
+fn on_connection(
     server: *mut c_void,
     cb: *mut c_void,
     close: bool,
@@ -354,15 +342,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_connection(
 }
 
 /// `php_swoole_server_onBufferFull`/`onBufferEmpty`'s call.
-/// # Safety
-/// A live server.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_buffer(
-    server: *mut c_void,
-    full: bool,
-    fd: i64,
-    server_fd: c_int,
-) -> bool {
+fn on_buffer(server: *mut c_void, full: bool, fd: i64, server_fd: c_int) -> bool {
     let (kind, event) = if full {
         (ON_BUFFER_FULL, "onBufferFull")
     } else {
@@ -382,18 +362,8 @@ fn assoc_long(array: &mut zval, key: &CStr, value: i64) {
     unsafe { add_assoc_long_ex(array, key.as_ptr(), key.count_bytes(), value) };
 }
 
-/// `php_swoole_server_onPacket`'s body after C++ read the datagram.
-/// # Safety
-/// A live server and a packet view whose strings live for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_packet(
-    server: *mut c_void,
-    packet: *const Packet,
-    server_fd: c_int,
-    time: f64,
-) -> bool {
-    // SAFETY: per the caller.
-    let packet = unsafe { &*packet };
+/// `php_swoole_server_onPacket`'s call, once the datagram is read.
+fn on_packet(server: *mut c_void, packet: &Packet, server_fd: c_int, time: f64) -> bool {
     let facts = facts(server);
     let mut args = [zserv(server), undef(), undef()];
     let argc = if facts.event_object {
@@ -469,16 +439,9 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_packet(
     false
 }
 
-/// `php_swoole_server_onPipeMessage`'s call with the unpacked `data`.
-/// # Safety
-/// A live server and a live `data`, which C++ still owns.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_pipe_message(
-    server: *mut c_void,
-    data: *mut zval,
-    source_worker_id: i64,
-    time: f64,
-) -> bool {
+/// `php_swoole_server_onPipeMessage`'s call with the unpacked `data`, which
+/// the caller still owns.
+fn on_pipe_message(server: *mut c_void, data: *mut zval, source_worker_id: i64, time: f64) -> bool {
     let cb = server_callback(server, ON_PIPE_MESSAGE);
     let facts = facts(server);
     let mut args = [zserv(server), undef(), undef()];
@@ -527,15 +490,9 @@ fn set_server_long(object: *mut zend_object, name: &CStr, value: i64) {
     set_long(SERVER.entry(), object, name, value);
 }
 
-/// The lifecycle events' bodies (`php_swoole_server_onStart` and friends).
-/// # Safety
-/// A live server; `worker_id` is the worker's for the worker events.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_lifecycle(
-    server: *mut c_void,
-    kind: c_int,
-    worker_id: i64,
-) -> bool {
+/// The lifecycle events' bodies (`php_swoole_server_onStart` and friends);
+/// `worker_id` is the worker's for the worker events.
+fn on_lifecycle(server: *mut c_void, kind: c_int, worker_id: i64) -> bool {
     let Some((event, helper_name, coroutine)) = lifecycle(kind) else {
         return false;
     };
@@ -582,10 +539,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_lifecycle(
 }
 
 /// `php_swoole_server_onWorkerError`'s body.
-/// # Safety
-/// A live server.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_worker_error(
+fn on_worker_error(
     server: *mut c_void,
     worker_id: i64,
     pid: i64,
@@ -621,6 +575,516 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_worker_error(
         dtor(&mut args[1]);
     }
     false
+}
+
+// The Server's on* slots. Each fn takes the slot's null `ctx`, then the
+// member's own arguments, and relays a trapped bailout last: its frame owns
+// nothing that needs a drop by then.
+
+/// Raise a bailout the event trapped, from this outermost Rust frame.
+fn relay(bailed: bool) {
+    if bailed {
+        bailout::raise(Err(Bailout));
+    }
+}
+
+/// `SW_OK` / `SW_ERR`.
+const SW_OK: c_int = 0;
+const SW_ERR: c_int = -1;
+/// Port-level callbacks the slots choose.
+const ON_CONNECT: c_int = 0;
+const ON_RECEIVE: c_int = 1;
+const ON_CLOSE: c_int = 2;
+const ON_DISCONNECT: c_int = 9;
+/// `SocketType`s of a datagram's sender.
+const UDP: c_int = 2;
+const UDP6: c_int = 4;
+const UNIX_DGRAM: c_int = 6;
+/// `websocket::STATUS_ACTIVE`.
+const WEBSOCKET_ACTIVE: u8 = 3;
+/// `SWR_PHPREDIS_BAILED`.
+const REDIS_BAILED: c_int = -2;
+
+/// `RecvData`: the event's head, then its payload.
+#[repr(C)]
+struct RecvData {
+    info: DataHead,
+    data: *const c_char,
+}
+
+/// `DgramPacket`'s head; the datagram follows.
+#[repr(C)]
+struct DgramPacket {
+    socket_type: c_int,
+    socket_addr: SocketAddress,
+    length: u32,
+}
+
+/// `ExitStatus`.
+#[repr(C)]
+struct ExitStatus {
+    pid: c_int,
+    status: c_int,
+}
+
+type Ctx = *mut c_void;
+
+unsafe extern "C" {
+    #[link_name = "_Z32php_swoole_http_server_onReceivePN6swoole6ServerEPNS_8RecvDataE"]
+    fn php_swoole_http_server_onReceive(server: *mut c_void, request: *mut c_void) -> c_int;
+    #[link_name = "_Z30php_swoole_http_server_onClosePN6swoole6ServerEPNS_8DataHeadE"]
+    fn php_swoole_http_server_onClose(server: *mut c_void, info: *mut DataHead);
+    #[link_name = "_Z31php_swoole_http2_server_onClosePN6swoole6ServerEl"]
+    fn php_swoole_http2_server_onClose(server: *mut c_void, session_id: c_long);
+    fn swr_v1_phpredis_receive(server: *mut c_void, request: *mut c_void) -> c_int;
+    fn swr_v1_phpprocess_start(worker: *mut c_void, object: *mut zval) -> c_int;
+}
+
+fn head<'a, T>(event: *mut T) -> &'a DataHead {
+    // SAFETY: every Server event (`DataHead`, `RecvData`, `EventData`) starts
+    // with its live head.
+    unsafe { &*event.cast::<DataHead>() }
+}
+
+fn port_callback(server: *mut c_void, server_fd: u16, kind: c_int) -> *mut c_void {
+    // SAFETY: a live server.
+    unsafe { (host().port_callback)(server, c_int::from(server_fd), kind) }
+}
+
+fn worker_id(worker: *mut WorkerRecord) -> i64 {
+    // SAFETY: the event's live worker.
+    i64::from(unsafe { swr_v1_worker_id(worker) })
+}
+
+macro_rules! lifecycle_slots {
+    ($($name:ident => $kind:expr;)*) => {$(
+        extern "C" fn $name(_: Ctx, server: *mut c_void) {
+            relay(on_lifecycle(server, $kind, 0));
+        }
+    )*};
+}
+
+lifecycle_slots! {
+    on_start => ON_START;
+    on_before_shutdown => ON_BEFORE_SHUTDOWN;
+    on_shutdown => ON_SHUTDOWN;
+    on_manager_start => ON_MANAGER_START;
+    on_manager_stop => ON_MANAGER_STOP;
+    on_before_reload => ON_BEFORE_RELOAD;
+    on_after_reload => ON_AFTER_RELOAD;
+}
+
+extern "C" fn on_worker_start(_: Ctx, server: *mut c_void, worker: *mut WorkerRecord) {
+    relay(on_lifecycle(server, ON_WORKER_START, worker_id(worker)));
+}
+
+extern "C" fn on_worker_stop(_: Ctx, server: *mut c_void, worker: *mut WorkerRecord) {
+    if swoole_rs_process::methods::worker_is_running() {
+        relay(on_lifecycle(server, ON_WORKER_STOP, worker_id(worker)));
+    }
+}
+
+extern "C" fn on_worker_exit(_: Ctx, server: *mut c_void, worker: *mut WorkerRecord) {
+    relay(on_lifecycle(server, ON_WORKER_EXIT, worker_id(worker)));
+}
+
+extern "C" fn on_worker_error_slot(
+    _: Ctx,
+    server: *mut c_void,
+    worker: *mut WorkerRecord,
+    exit: *const ExitStatus,
+) {
+    // SAFETY: the reaped worker's status, live for the call.
+    let ExitStatus { pid, status } = unsafe { exit.read() };
+    let (code, signal) = (libc::WEXITSTATUS(status), libc::WTERMSIG(status));
+    let id = worker_id(worker);
+    let error = |n: c_int| i64::from(n);
+    relay(on_worker_error(
+        server,
+        id,
+        error(pid),
+        error(status),
+        error(code),
+        error(signal),
+    ));
+}
+
+/// A task event's result, or its bailout raised.
+fn task_result(outcome: Result<c_int, Bailout>) -> c_int {
+    outcome.unwrap_or_else(|bailed| {
+        bailout::raise(Err(bailed));
+        SW_OK
+    })
+}
+
+extern "C" fn on_task(_: Ctx, server: *mut c_void, req: *mut c_void) -> c_int {
+    task_result(crate::task::on_task(server, req))
+}
+
+extern "C" fn on_finish(_: Ctx, server: *mut c_void, req: *mut c_void) -> c_int {
+    task_result(crate::task::on_finish(server, req))
+}
+
+extern "C" fn on_pipe_message_slot(_: Ctx, server: *mut c_void, req: *mut c_void) {
+    let mut data = undef();
+    let mut bailed = false;
+    // SAFETY: the live message and a writable zval and flag.
+    let unpacked =
+        unsafe { crate::task::swr_v1_phpserver_task_unpack(req, &raw mut data, &raw mut bailed) };
+    if unpacked {
+        let info = head(req);
+        // `Server::get_task_src_worker_id`.
+        let source = i64::from(info.reactor_id);
+        bailed = on_pipe_message(server, &raw mut data, source, info.time);
+    }
+    if !bailed {
+        dtor(&mut data);
+    }
+    relay(bailed);
+}
+
+/// `php_swoole_server_onReceive`: the port's `onReceive`, if any.
+/// # Safety
+/// `server` is the running server and `request` its `RecvData`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_on_receive(
+    server: *mut c_void,
+    request: *mut c_void,
+) -> c_int {
+    let info = head(request);
+    let cb = port_callback(server, info.server_fd, ON_RECEIVE);
+    if cb.is_null() {
+        return SW_OK;
+    }
+    // SAFETY: a live server.
+    let config = unsafe { view::config(server) };
+    let mut args = [zserv(server), undef(), undef(), undef()];
+    let argc = receive_args(server, request, info, config.event_object, &mut args);
+    let called = invoke(
+        cb,
+        &mut args[..argc],
+        ptr::null_mut(),
+        config.enable_coroutine,
+    );
+    relay(called.map_or(true, |succeeded| {
+        receive_done(server, succeeded, info.fd, &mut args[..argc])
+    }));
+    SW_OK
+}
+
+extern "C" fn on_receive(_: Ctx, server: *mut c_void, request: *mut c_void) -> c_int {
+    // SAFETY: the Server's own event.
+    unsafe { swr_v1_phpserver_on_receive(server, request) }
+}
+
+extern "C" fn on_http_receive(_: Ctx, server: *mut c_void, request: *mut c_void) -> c_int {
+    // SAFETY: the Server's own event.
+    unsafe { php_swoole_http_server_onReceive(server, request) }
+}
+
+/// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
+/// crates/phpredis, others take the plain `onReceive`.
+extern "C" fn on_redis_receive(_: Ctx, server: *mut c_void, request: *mut c_void) -> c_int {
+    let fd = head(request).fd;
+    // SAFETY: a live server.
+    let Some(conn) = (unsafe { view::by_session(server, fd) }) else {
+        log::warning(
+            c"php_swoole_redis_server_onReceive",
+            format_args!("connection[{fd}] is closed"),
+        );
+        return SW_ERR;
+    };
+    // SAFETY: a live server.
+    let port = unsafe { view::port_by_fd(server, conn.fd) };
+    // SAFETY: null, or the connection's live port.
+    if port.is_null() || !unsafe { view::port(port) }.open_redis_protocol {
+        // SAFETY: the Server's own event.
+        return unsafe { swr_v1_phpserver_on_receive(server, request) };
+    }
+    // SAFETY: as above; the handler runs inside zend_try.
+    let result = unsafe { swr_v1_phpredis_receive(server, request) };
+    relay(result == REDIS_BAILED);
+    result
+}
+
+extern "C" fn on_packet_slot(_: Ctx, server: *mut c_void, request: *mut c_void) -> c_int {
+    // SAFETY: an onPacket event's payload is its `DgramPacket`.
+    let packet = unsafe { (*request.cast::<RecvData>()).data };
+    #[expect(clippy::cast_ptr_alignment, reason = "read unaligned")]
+    let dgram = packet.cast::<DgramPacket>();
+    // SAFETY: as above.
+    let DgramPacket {
+        socket_type,
+        socket_addr,
+        length,
+    } = unsafe { dgram.read_unaligned() };
+    let info = head(request);
+    let mut sender = Packet {
+        data: packet.wrapping_add(size_of::<DgramPacket>()),
+        length: length as usize,
+        address: ptr::null(),
+        port: -1,
+        // SAFETY: a live server.
+        server_port: unsafe { view::at(server, c_int::from(info.server_fd)) }.map_or(-1, |sock| {
+            // SAFETY: the listening socket's own address record.
+            i64::from(unsafe { swr_v1_clients_address_port(&raw const sock.info) })
+        }),
+    };
+    let addr = &socket_addr.addr;
+    let text = |family, ip: *const c_void| {
+        // SAFETY: the address of `family` in the packet's sender.
+        unsafe { swr_v1_clients_address_string(family, ip) }
+    };
+    match socket_type {
+        UDP => {
+            // SAFETY: a UDP packet's sender is IPv4.
+            let sin = unsafe { addr.inet_v4 };
+            sender.address = text(libc::AF_INET, (&raw const sin.sin_addr).cast());
+            sender.port = i64::from(u16::from_be(sin.sin_port));
+        }
+        UDP6 => {
+            // SAFETY: a UDP6 packet's sender is IPv6.
+            let sin6 = unsafe { addr.inet_v6 };
+            sender.address = text(libc::AF_INET6, (&raw const sin6.sin6_addr).cast());
+            sender.port = i64::from(u16::from_be(sin6.sin6_port));
+        }
+        // SAFETY: a unix datagram's sender is a path, in this frame's copy.
+        UNIX_DGRAM => sender.address = unsafe { (&raw const addr.un.sun_path) }.cast(),
+        _ => {}
+    }
+    relay(on_packet(
+        server,
+        &sender,
+        c_int::from(info.server_fd),
+        info.time,
+    ));
+    SW_OK
+}
+
+extern "C" fn on_connect(_: Ctx, server: *mut c_void, info: *mut DataHead) {
+    let info = head(info);
+    let cb = port_callback(server, info.server_fd, ON_CONNECT);
+    if !cb.is_null() {
+        let reactor_id = i64::from(info.reactor_id);
+        relay(on_connection(
+            server, cb, false, info.fd, reactor_id, info.time,
+        ));
+    }
+}
+
+/// Wake the coroutines `send_yield` parked on a session: resume them when
+/// its output drained, or cancel them when it closed (each leaves the queue
+/// as it wakes).
+fn send_wake(server: *mut c_void, session_id: i64, cancel: bool) {
+    // Raw handles only: a woken coroutine may bail out across this frame.
+    let waiters = crate::lifecycle::send_waiters(server, session_id);
+    if waiters.is_null() {
+        return;
+    }
+    loop {
+        let co = crate::lifecycle::send_next(waiters, !cancel);
+        if co.is_null() {
+            break;
+        }
+        // SAFETY: a coroutine parked in `send_yield`, until it wakes.
+        unsafe { swoole_rs_phpcoroutines::wake(co, cancel) };
+    }
+    crate::lifecycle::send_waiters_free(waiters);
+}
+
+/// `php_swoole_server_onClose`: wake the session's senders, then `onClose`
+/// (`onDisconnect` for a WebSocket port's connection that never opened).
+/// # Safety
+/// `server` is the running server and `info` the closed session's.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_on_close(server: *mut c_void, info: *mut DataHead) {
+    let info = head(info);
+    let session_id = info.fd;
+    // SAFETY: a live server.
+    let config = unsafe { view::config(server) };
+    if config.enable_coroutine && config.send_yield {
+        send_wake(server, session_id, true);
+    }
+    let mut cb = port_callback(server, info.server_fd, ON_CLOSE);
+    // SAFETY: a live server.
+    let Some(conn) = (unsafe { view::by_session(server, session_id) }).map(ptr::from_mut) else {
+        return;
+    };
+    // SAFETY: the session's live connection slot.
+    if unsafe { (*conn).websocket_status } != WEBSOCKET_ACTIVE {
+        // SAFETY: a live server.
+        let port = unsafe { view::port_by_server_fd(server, c_int::from(info.server_fd)) };
+        // SAFETY: the session's live port.
+        let websocket = !port.is_null() && unsafe { view::port(port) }.open_websocket_protocol;
+        if websocket && crate::lifecycle::isset(server, port, ON_DISCONNECT) {
+            cb = port_callback(server, info.server_fd, ON_DISCONNECT);
+        }
+    }
+    let reactor_id = i64::from(info.reactor_id);
+    if !cb.is_null() {
+        relay(on_connection(
+            server, cb, true, session_id, reactor_id, info.time,
+        ));
+    }
+    // SAFETY: as above; the callback may have changed it.
+    let conn = unsafe { &*conn };
+    if conn.http2_stream != 0 {
+        // SAFETY: the closed session of a live server.
+        unsafe { php_swoole_http2_server_onClose(server, conn.session_id) };
+    }
+}
+
+extern "C" fn on_close(_: Ctx, server: *mut c_void, info: *mut DataHead) {
+    // SAFETY: the Server's own event.
+    unsafe { swr_v1_phpserver_on_close(server, info) };
+}
+
+extern "C" fn on_http_close(_: Ctx, server: *mut c_void, info: *mut DataHead) {
+    // SAFETY: the Server's own event.
+    unsafe { php_swoole_http_server_onClose(server, info) };
+}
+
+extern "C" fn on_buffer_full(_: Ctx, server: *mut c_void, info: *mut DataHead) {
+    let info = head(info);
+    relay(on_buffer(
+        server,
+        true,
+        info.fd,
+        c_int::from(info.server_fd),
+    ));
+}
+
+extern "C" fn on_buffer_empty(_: Ctx, server: *mut c_void, info: *mut DataHead) {
+    let info = head(info);
+    // SAFETY: a live server.
+    if unsafe { view::config(server) }.send_yield {
+        send_wake(server, info.fd, false);
+    }
+    relay(on_buffer(
+        server,
+        false,
+        info.fd,
+        c_int::from(info.server_fd),
+    ));
+}
+
+/// `php_swoole_server_onUserWorkerStart`: run the user process's callable in
+/// the worker `addProcess` added.
+extern "C" fn on_user_worker_start(_: Ctx, server: *mut c_void, worker: *mut WorkerRecord) {
+    let id = worker_id(worker);
+    // SAFETY: a live server.
+    let config = unsafe { view::config(server) };
+    let zserv = zserv(server);
+    // SAFETY: the server's object zval.
+    let server_object = unsafe { object_of(&raw const zserv) };
+    let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {
+        let index = id - i64::from(config.worker_num) - i64::from(config.task_worker_num);
+        let index = usize::try_from(index).unwrap_or(usize::MAX);
+        let process = crate::lifecycle::user_process(server_object, index);
+        // A user worker: just the message bus allocator.
+        // SAFETY: a live server.
+        unsafe { (host().worker_start)(server) };
+        process
+    } else {
+        // SAFETY: the worker `addProcess` made holds its process object.
+        unsafe { swoole_rs_process::worker_record::user_data(worker) }.cast::<zval>()
+    };
+    // SAFETY: the process object.
+    let object = unsafe { object_of(process) };
+    set_long(crate::lifecycle::process_class(), object, c"id", id);
+    // SAFETY: as in `facts`.
+    let gs = unsafe { view::counters(server) };
+    set_server_long(server_object, c"master_pid", i64::from(gs.master_pid));
+    set_server_long(server_object, c"manager_pid", i64::from(gs.manager_pid));
+    // SAFETY: the worker and its process object; this frame owns nothing that
+    // needs a drop, as the process exits through a bailout.
+    unsafe { swr_v1_phpprocess_start(worker.cast(), process) };
+}
+
+/// `SWR_PORTS_HOOK_*` of a port callback just set: install the Server's slot
+/// unless one is set.
+pub(crate) fn port_hook(server: *mut c_void, hook: u32) {
+    let (slot, invoke) = match hook {
+        1 => (CB_CONNECT, on_connect as *const c_void),
+        2 => (CB_PACKET, on_packet_slot as *const c_void),
+        3 => (CB_CLOSE, on_close as *const c_void),
+        4 => (CB_BUFFER_FULL, on_buffer_full as *const c_void),
+        5 => (CB_BUFFER_EMPTY, on_buffer_empty as *const c_void),
+        _ => return,
+    };
+    // SAFETY: a live server, configured before it starts.
+    if !unsafe { view::has_callback(server, slot) } {
+        // SAFETY: as above; the fn has the slot's signature.
+        unsafe { view::set_callback(server, slot, invoke) };
+    }
+}
+
+/// `SWR_PHPSERVER_INSTALL_*` that fills slots: whether `which` was one.
+pub(crate) fn install(server: *mut c_void, which: u32) -> bool {
+    use crate::lifecycle::install::{
+        BUFFER_EMPTY, CLOSE, CONTROL, HTTP_CLOSE, HTTP_RECEIVE, PIPE_MESSAGE, RECEIVE,
+        REDIS_RECEIVE, TASK, USER_WORKER_START,
+    };
+    let slots: &[(u32, *const c_void)] = match which {
+        CONTROL => &[
+            (CB_START, on_start as *const c_void),
+            (CB_BEFORE_SHUTDOWN, on_before_shutdown as *const c_void),
+            (CB_SHUTDOWN, on_shutdown as *const c_void),
+            (CB_WORKER_START, on_worker_start as *const c_void),
+            (CB_WORKER_STOP, on_worker_stop as *const c_void),
+            (CB_WORKER_EXIT, on_worker_exit as *const c_void),
+            (CB_BEFORE_RELOAD, on_before_reload as *const c_void),
+            (CB_AFTER_RELOAD, on_after_reload as *const c_void),
+            (CB_MANAGER_START, on_manager_start as *const c_void),
+            (CB_MANAGER_STOP, on_manager_stop as *const c_void),
+            (CB_WORKER_ERROR, on_worker_error_slot as *const c_void),
+        ],
+        TASK => &[
+            (CB_TASK, on_task as *const c_void),
+            (CB_FINISH, on_finish as *const c_void),
+        ],
+        PIPE_MESSAGE => &[(CB_PIPE_MESSAGE, on_pipe_message_slot as *const c_void)],
+        BUFFER_EMPTY => &[(CB_BUFFER_EMPTY, on_buffer_empty as *const c_void)],
+        CLOSE => &[(CB_CLOSE, on_close as *const c_void)],
+        HTTP_CLOSE => &[(CB_CLOSE, on_http_close as *const c_void)],
+        RECEIVE => &[(CB_RECEIVE, on_receive as *const c_void)],
+        HTTP_RECEIVE => &[(CB_RECEIVE, on_http_receive as *const c_void)],
+        REDIS_RECEIVE => &[(CB_RECEIVE, on_redis_receive as *const c_void)],
+        // SAFETY: a live server.
+        USER_WORKER_START if unsafe { view::has_callback(server, CB_USER_WORKER_START) } => &[],
+        USER_WORKER_START => &[(CB_USER_WORKER_START, on_user_worker_start as *const c_void)],
+        _ => return false,
+    };
+    for &(slot, invoke) in slots {
+        // SAFETY: a live server, configured before it starts; each fn has its
+        // slot's signature.
+        unsafe { view::set_callback(server, slot, invoke) };
+    }
+    true
+}
+
+/// `php_swoole_server_send_yield`, for the C++ WebSocket server.
+/// # Safety
+/// As `swr_v1_phpserver_send_yield`; `data` is a live string.
+#[unsafe(export_name = "_Z28php_swoole_server_send_yieldPN6swoole6ServerElP12_zend_string")]
+pub unsafe extern "C" fn php_swoole_server_send_yield(
+    server: *mut c_void,
+    session_id: c_long,
+    data: *mut zend_string,
+) -> bool {
+    // SAFETY: per the caller.
+    let text = unsafe { swoole_rs_zend::string::bytes(data) };
+    // SAFETY: per the caller; the string outlives the wait.
+    let sent = unsafe {
+        crate::lifecycle::swr_v1_phpserver_send_yield(
+            server,
+            session_id,
+            text.as_ptr().cast(),
+            text.len(),
+        )
+    };
+    relay(sent == 2);
+    sent == 1
 }
 
 /// The server's object zval, for task.rs's events.

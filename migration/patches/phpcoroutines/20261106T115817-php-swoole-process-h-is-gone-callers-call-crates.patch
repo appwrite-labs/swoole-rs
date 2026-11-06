@@ -70,11 +70,6 @@ index 7daaf6b..e5e6a26 100644
 -        settings_msgqueue_key_valid, settings_thread_options,
 +        settings_thread_options,
      };
-@@ -1993,3 +1989,3 @@ static void php_swoole_server_onUserWorkerStart(Server *serv, Worker *worker) {
- 
--    php_swoole_process_start(worker, object);
-+    swr_v1_phpprocess_start(worker, object);
- }
 @@ -2132,3 +2128,2 @@ void php_swoole_server_onBufferEmpty(Server *serv, DataHead *info) {
  #include "swoole_signal.h"
 -#include "swoole_rs_phpprocess.h"

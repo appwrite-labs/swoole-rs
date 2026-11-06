@@ -51,19 +51,19 @@ mod fact {
 }
 
 /// `SWR_PHPSERVER_INSTALL_*`.
-mod install {
-    pub(super) const CONTROL: u32 = 1;
-    pub(super) const TASK: u32 = 2;
-    pub(super) const PIPE_MESSAGE: u32 = 3;
-    pub(super) const BUFFER_EMPTY: u32 = 4;
-    pub(super) const CLOSE: u32 = 5;
-    pub(super) const HTTP_CLOSE: u32 = 6;
-    pub(super) const RECEIVE: u32 = 7;
-    pub(super) const HTTP_RECEIVE: u32 = 8;
-    pub(super) const REDIS_RECEIVE: u32 = 9;
-    pub(super) const USER_WORKER_START: u32 = 10;
-    pub(super) const ALLOCATORS: u32 = 11;
-    pub(super) const ADMIN_COMMANDS: u32 = 12;
+pub(crate) mod install {
+    pub(crate) const CONTROL: u32 = 1;
+    pub(crate) const TASK: u32 = 2;
+    pub(crate) const PIPE_MESSAGE: u32 = 3;
+    pub(crate) const BUFFER_EMPTY: u32 = 4;
+    pub(crate) const CLOSE: u32 = 5;
+    pub(crate) const HTTP_CLOSE: u32 = 6;
+    pub(crate) const RECEIVE: u32 = 7;
+    pub(crate) const HTTP_RECEIVE: u32 = 8;
+    pub(crate) const REDIS_RECEIVE: u32 = 9;
+    pub(crate) const USER_WORKER_START: u32 = 10;
+    pub(crate) const ALLOCATORS: u32 = 11;
+    pub(crate) const ADMIN_COMMANDS: u32 = 12;
 }
 
 /// `SWR_PHPSERVER_PROTOCOL_*`.
@@ -75,7 +75,7 @@ const REDIS: u32 = 8;
 /// `Server::MODE_*`.
 const MODE_BASE: i64 = 1;
 const MODE_PROCESS: i64 = 2;
-const MODE_THREAD: i64 = 3;
+pub(crate) const MODE_THREAD: i64 = 3;
 /// `SW_SOCK_TCP`.
 const SOCK_TCP: i64 = 1;
 /// `Server::Command::REACTOR_THREAD`.
@@ -237,6 +237,10 @@ fn number(serv: *mut c_void, id: u32) -> i64 {
         fact::THREAD_MODE => i64::from(i64::from(c.mode_) == MODE_THREAD),
         fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine),
         fact::SEND_YIELD => i64::from(c.send_yield),
+        fact::HAS_ON_CLOSE => {
+            // SAFETY: a live server.
+            i64::from(unsafe { view::has_callback(serv, swoole_rs_server::callbacks::CB_CLOSE) })
+        }
         fact::UNSAFE_EVENTS => i64::from(hash_dispatch || c.enable_unsafe_event),
         fact::HASH_DISPATCH => i64::from(hash_dispatch),
         fact::WORKER_NUM => i64::from(c.worker_num),
@@ -248,8 +252,16 @@ fn number(serv: *mut c_void, id: u32) -> i64 {
 }
 
 fn put(serv: *mut c_void, which: u32) {
-    // SAFETY: a live server.
-    unsafe { (host().install)(serv, which) };
+    if !crate::dispatch::install(serv, which) {
+        // SAFETY: a live server.
+        unsafe { (host().install)(serv, which) };
+    }
+}
+
+/// `swoole_process_ce`.
+pub(crate) fn process_class() -> *mut zend_class_entry {
+    // SAFETY: reads a class registered at MINIT.
+    unsafe { (host().process_class)() }
 }
 
 /// The Server object's data.
@@ -332,15 +344,9 @@ pub unsafe extern "C" fn swr_v1_phpserver_port(
     ports.get(index).copied().unwrap_or(ptr::null_mut())
 }
 
-/// The user process at `index`, or null.
-/// # Safety
-/// `object` is a live Server object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_user_process(
-    object: *mut zend_object,
-    index: usize,
-) -> *mut zval {
-    // SAFETY: per the caller.
+/// The user process at `index` of a live Server object, or null.
+pub(crate) fn user_process(object: *mut zend_object, index: usize) -> *mut zval {
+    // SAFETY: a live Server object.
     let processes = &unsafe { property(object) }.user_processes;
     processes.get(index).copied().unwrap_or(ptr::null_mut())
 }
@@ -919,7 +925,7 @@ fn port_facts(zport: *mut zval) -> PortFacts {
     facts
 }
 
-fn isset(serv: *mut c_void, port: *mut c_void, kind: c_int) -> bool {
+pub(crate) fn isset(serv: *mut c_void, port: *mut c_void, kind: c_int) -> bool {
     // SAFETY: a live server and one of its ports.
     unsafe { (host().isset_callback)(serv, port, kind) }
 }
@@ -1235,16 +1241,10 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
     }
 }
 
-/// Take the session's waiting coroutines out of the server for C++ to wake
+/// Take the session's waiting coroutines out of the running server to wake
 /// (`onBufferEmpty` resumes each, `onClose` cancels each): null when none
-/// wait. Release with `swr_v1_phpserver_send_waiters_free`.
-/// # Safety
-/// `server` is the running server.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_send_waiters(
-    server: *mut c_void,
-    session_id: i64,
-) -> *mut c_void {
+/// wait. Release with `send_waiters_free`.
+pub(crate) fn send_waiters(server: *mut c_void, session_id: i64) -> *mut c_void {
     // SAFETY: the running server's live object.
     let property = unsafe { property(instance(server)) };
     property
@@ -1257,13 +1257,8 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_waiters(
 
 /// The next coroutine to wake, or null: `pop` takes it off the queue (a
 /// resume), else it stays first until its `send_yield` leaves (a cancel).
-/// # Safety
-/// `waiters` is from `swr_v1_phpserver_send_waiters` and not yet freed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_send_next(
-    waiters: *mut c_void,
-    pop: bool,
-) -> *mut c_void {
+/// `waiters` is from `send_waiters` and not yet freed.
+pub(crate) fn send_next(waiters: *mut c_void, pop: bool) -> *mut c_void {
     // SAFETY: per the caller.
     let waiters = unsafe { &*waiters.cast::<Waiters>() };
     let mut queue = waiters.borrow_mut();
@@ -1275,11 +1270,8 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_next(
     next.map_or(ptr::null_mut(), |(_, co)| co)
 }
 
-/// Release what `swr_v1_phpserver_send_waiters` took.
-/// # Safety
-/// `waiters` is from `swr_v1_phpserver_send_waiters`, freed once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_send_waiters_free(waiters: *mut c_void) {
+/// Release what `send_waiters` took, once.
+pub(crate) fn send_waiters_free(waiters: *mut c_void) {
     // SAFETY: per the caller.
     drop(unsafe { Box::from_raw(waiters.cast::<Waiters>()) });
 }

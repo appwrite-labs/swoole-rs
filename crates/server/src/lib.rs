@@ -19,7 +19,7 @@ pub use commands::{
 
 mod admin;
 mod base_factory;
-mod callbacks;
+pub mod callbacks;
 mod commands;
 mod config;
 mod conn_io;

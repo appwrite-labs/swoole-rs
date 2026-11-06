@@ -19,24 +19,13 @@ struct _zend_class_entry;
 enum {
     SWR_PHPSERVER_FACT_WORKER_THREAD = 4,
     SWR_PHPSERVER_FACT_REACTOR = 8,   /* sw_reactor() != nullptr */
-    SWR_PHPSERVER_FACT_HAS_ON_CLOSE = 11,
     SWR_PHPSERVER_FACT_CACHE_SESSION_ADDR = 14, /* swoole_http_server_can_cache_session_addr() */
     SWR_PHPSERVER_FACT_MAX_CONNECTION = 18,
 };
 
-/* C++ callbacks `install` sets on the Server. */
+/* What `install` sets up on the Server in C++ (Rust fills the on* slots itself). */
 enum {
-    SWR_PHPSERVER_INSTALL_CONTROL = 1, /* onStart, onShutdown, onWorkerStart ... onWorkerError */
-    SWR_PHPSERVER_INSTALL_TASK = 2,    /* onTask and onFinish */
-    SWR_PHPSERVER_INSTALL_PIPE_MESSAGE = 3,
-    SWR_PHPSERVER_INSTALL_BUFFER_EMPTY = 4,
-    SWR_PHPSERVER_INSTALL_CLOSE = 5,
-    SWR_PHPSERVER_INSTALL_HTTP_CLOSE = 6,
-    SWR_PHPSERVER_INSTALL_RECEIVE = 7,
-    SWR_PHPSERVER_INSTALL_HTTP_RECEIVE = 8,
-    SWR_PHPSERVER_INSTALL_REDIS_RECEIVE = 9,
-    SWR_PHPSERVER_INSTALL_USER_WORKER_START = 10, /* unless one is set */
-    SWR_PHPSERVER_INSTALL_ALLOCATORS = 11,        /* the message bus's, and the recv buffers' in base/thread mode */
+    SWR_PHPSERVER_INSTALL_ALLOCATORS = 11, /* the message bus's, and the recv buffers' in base/thread mode */
     SWR_PHPSERVER_INSTALL_ADMIN_COMMANDS = 12,
 };
 
@@ -147,18 +136,11 @@ struct _zend_object *swr_v1_phpserver_create(struct _zend_class_entry *ce);
 void swr_v1_phpserver_free(struct _zend_object *object);
 /* add_port's Port object for `port`, kept by the Server object `server`. */
 struct _zval_struct *swr_v1_phpserver_add_port(struct _zend_object *object, void *port);
-/* The Server object's user process `index`, or null. */
-struct _zval_struct *swr_v1_phpserver_user_process(struct _zend_object *object, size_t index);
 /* A command handler's call: the callable's reply, written through `reply`; true if it bailed out. */
 bool swr_v1_phpserver_command_run(void *callable, void *server, const char *message, size_t length,
                                   swr_phpserver_reply reply, void *out);
 /* php_swoole_server_send_yield: 0 false, 1 true, 2 bailed out (re-raise it). */
 int swr_v1_phpserver_send_yield(void *server, int64_t session_id, const char *data, size_t length);
-/* send_yield's coroutines waiting on a session, taken from the server (null: none); wake each
- * swr_v1_phpserver_send_next returns (pop: resume, else cancel), then free them. */
-void *swr_v1_phpserver_send_waiters(void *server, int64_t session_id);
-void *swr_v1_phpserver_send_next(void *waiters, bool pop);
-void swr_v1_phpserver_send_waiters_free(void *waiters);
 /* The Port object at `index` of the Server object, or null. */
 struct _zval_struct *swr_v1_phpserver_port(struct _zend_object *object, size_t index);
 #ifdef __cplusplus

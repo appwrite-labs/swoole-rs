@@ -109,13 +109,12 @@ const MODE_PROCESS: u8 = 2;
 /// `Server::DISPATCH_FDMOD`.
 const DISPATCH_FDMOD: u8 = 2;
 
-// What stays C++: the TCP, WebSocket and HTTP/2 `onReceive`s and `onClose`
-// (ext-src), the port callbacks and the received data (swoole_server.cc), the
-// connection's addresses (master.cc) and its peer's port and loopback check
-// (crates/clients).
+// Elsewhere: the TCP `onReceive` and `onClose` (crates/phpserver), the
+// WebSocket and HTTP/2 `onReceive`s (ext-src), the port callbacks and the
+// received data (swoole_server.cc), the connection's addresses (master.cc) and
+// its peer's port and loopback check (crates/clients).
 unsafe extern "C" {
-    #[link_name = "_Z27php_swoole_server_onReceivePN6swoole6ServerEPNS_8RecvDataE"]
-    fn php_swoole_server_onReceive(server: *mut c_void, request: *mut c_void) -> c_int;
+    fn swr_v1_phpserver_on_receive(server: *mut c_void, request: *mut c_void) -> c_int;
     #[link_name = "_Z26swoole_websocket_onMessagePN6swoole6ServerEPNS_8RecvDataE"]
     fn swoole_websocket_onMessage(server: *mut c_void, request: *mut c_void) -> c_int;
     #[link_name = "_Z29swoole_http2_server_onReceivePN6swoole6ServerEPNS_10ConnectionEPNS_8RecvDataE"]
@@ -124,8 +123,7 @@ unsafe extern "C" {
         conn: *mut ConnectionRecord,
         request: *mut c_void,
     ) -> c_int;
-    #[link_name = "_Z25php_swoole_server_onClosePN6swoole6ServerEPNS_8DataHeadE"]
-    fn php_swoole_server_onClose(server: *mut c_void, info: *mut DataHead);
+    fn swr_v1_phpserver_on_close(server: *mut c_void, info: *mut DataHead);
     #[link_name = "_Z32php_swoole_server_isset_callbackPN6swoole6ServerEPNS_10ListenPortEi"]
     fn php_swoole_server_isset_callback(
         server: *mut c_void,
@@ -254,7 +252,7 @@ pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_
     match receive(server, request, info.fd, c_int::from(info.server_fd)) {
         CLOSED => -1,
         // SAFETY: the live server and its request.
-        TCP => unsafe { php_swoole_server_onReceive(server, request) },
+        TCP => unsafe { swr_v1_phpserver_on_receive(server, request) },
         // SAFETY: as above.
         WEBSOCKET => unsafe { swoole_websocket_onMessage(server, request) },
         HTTP2 => {
@@ -645,7 +643,7 @@ pub(crate) unsafe extern "C" fn on_close(server: *mut c_void, info: *mut DataHea
         release(addresses);
     }
     // SAFETY: per the caller.
-    unsafe { php_swoole_server_onClose(server, info) };
+    unsafe { swr_v1_phpserver_on_close(server, info) };
 }
 
 /// The counters of the worker serving requests.

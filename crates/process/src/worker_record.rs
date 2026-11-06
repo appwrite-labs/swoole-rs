@@ -175,6 +175,16 @@ pub(crate) unsafe fn pool_of(worker: *const WorkerRecord) -> *mut c_void {
     unsafe { (*worker).pool }
 }
 
+/// `Worker::ptr`: what its owner keeps there (a user worker's process object).
+///
+/// # Safety
+/// `worker` points to a live `Worker`/`WorkerRecord`.
+#[must_use]
+pub unsafe fn user_data(worker: *const WorkerRecord) -> *mut c_void {
+    // SAFETY: the caller lends a live worker record; only the field is read.
+    unsafe { (*worker).ptr }
+}
+
 /// Point the worker at its pool.
 ///
 /// # Safety

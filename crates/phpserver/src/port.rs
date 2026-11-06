@@ -60,7 +60,6 @@ pub struct PortHost {
     warn: unsafe extern "C" fn(c_int, *const c_char),
     callable_create: unsafe extern "C" fn(*mut zval) -> *mut c_void,
     callable_free: unsafe extern "C" fn(*mut c_void),
-    hook: unsafe extern "C" fn(*mut c_void, u32),
     settings: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut zend_array) -> bool,
     socket: unsafe extern "C" fn(*mut c_void, *mut zval),
 }
@@ -291,9 +290,8 @@ fn on(call: &Call) {
         return call.set_bool(false);
     }
     *slot = callable;
-    let hook = swr_v1_ports_callback_hook(event.index);
-    // SAFETY: the port's server.
-    unsafe { (host().hook)(serv, hook) };
+    #[cfg(feature = "server")]
+    crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event.index));
     call.set_bool(true);
 }
 

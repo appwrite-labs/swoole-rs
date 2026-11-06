@@ -719,22 +719,8 @@ fn unpack(req: *mut c_void) -> Result<Option<zval>, Bailout> {
     Ok(decode(req, &raw mut data)?.then_some(data))
 }
 
-/// `php_swoole_server_onTask`; true when C++ must re-raise a bailout.
-/// # Safety
-/// A live server and the task it received; `result` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_task(
-    server: *mut c_void,
-    req: *mut c_void,
-    result: *mut c_int,
-) -> bool {
-    let outcome = on_task(server, req);
-    // SAFETY: per the caller.
-    unsafe { result.write(*outcome.as_ref().unwrap_or(&SW_OK)) };
-    outcome.is_err()
-}
-
-fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
+/// `php_swoole_server_onTask`, for a live server and the task it received.
+pub(crate) fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
     // SAFETY: a live server.
     let counters = unsafe { swoole_rs_server::view::counters(server) };
     counters.tasking_num.fetch_sub(1, Ordering::SeqCst);
@@ -786,22 +772,8 @@ fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
     outcome.map(|()| SW_OK)
 }
 
-/// `php_swoole_server_onFinish`; true when C++ must re-raise a bailout.
-/// # Safety
-/// A live server and the result it received; `result` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_finish(
-    server: *mut c_void,
-    req: *mut c_void,
-    result: *mut c_int,
-) -> bool {
-    let outcome = on_finish(server, req);
-    // SAFETY: per the caller.
-    unsafe { result.write(*outcome.as_ref().unwrap_or(&SW_OK)) };
-    outcome.is_err()
-}
-
-fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
+/// `php_swoole_server_onFinish`, for a live server and the result it received.
+pub(crate) fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
     let host = host();
     let zserv = server_zval(server);
     let info = info(req);

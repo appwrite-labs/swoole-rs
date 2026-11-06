@@ -109,8 +109,10 @@ calls PHP code directly where it could bail out:
 - `Bailout` is `#[must_use]`: finish the Rust work (release what you hold),
   return it to the C/C++ caller as a flag, and let that caller call
   `zend_bailout()` once the Rust frames are gone. Callbacks driven by a C++
-  loop (timers, the reactor, Server's `onReceive`/`onRequest`) keep a C++
-  trampoline that does exactly this:
+  loop (timers, the reactor) keep a C++ trampoline that does exactly this.
+  A Rust fn the C++ loop calls directly (the Server's on* slots) does the
+  same with `bailout::raise` as its last step, from a frame that owns nothing
+  that needs a drop:
 
 ```cpp
 static void timer_callback(Timer *timer, TimerNode *tnode) {
