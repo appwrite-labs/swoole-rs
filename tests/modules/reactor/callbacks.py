@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='swr-callbacks-') as temporary:
             binary=tree/('callbacks-'+variant)
             command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/reactor'),str(ROOT/'tests/modules/reactor/callbacks.cc'),str(a.archive.resolve()),'-lpthread','-o',str(binary)]
             if a.sanitize:command+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
-            if sys.platform.startswith('linux'):command+=['-ldl','-lm']
+            if sys.platform.startswith('linux'):command+=['-Wl,--gc-sections','-ldl','-lm']
             for stage,cmd in [('compile',command),('execute',[str(binary)])]:
                 require_build_space(tree)
                 result=run_compiler(cmd, timeout=60) if stage=='compile' else vars(run_isolated(cmd,cwd=tree,timeout=60))
