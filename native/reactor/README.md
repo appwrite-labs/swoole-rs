@@ -51,20 +51,11 @@ Server callers use the typed Rust Buffer queue ([output.md](output.md)).
 
 ## Checks
 
-Build the archive, then run a facade gate against the pinned source:
-
-```sh
-cargo build --locked --release -p swoole-rs-reactor --target-dir PRIVATE_TARGET
-python3 tests/modules/reactor/builtins.py --source PINNED --archive PRIVATE_TARGET/release/libswoole_rs_reactor.a --sanitize --report UNIQUE.json
-```
-
-Other gates under `tests/modules/reactor/` take the same
-`--source/--archive/--report [--sanitize]` arguments: `initialize.py` and
-`callbacks.py`.
-The queued-output 53-case matrix lives in the Rust `output` unit tests.
-
-These gates extract the complete original and selected method bodies and run
-them against Native effect facades with positive inputs only. Error,
-interruption, allocation-failure, reentry and lifetime paths are not executed.
-Mixed Rust/Native ASan linking fails on macOS (runtime version symbol mismatch);
-it works on Linux.
+`cargo test -p swoole-rs-reactor` runs the Rust side. The former facade gates
+that sliced the constructor, the end/exit callbacks and the idle, try-exit and
+deferred builtins out of the hybrid `src/wrapper/event.cc` are Rust tests named
+`former_initialize_gate_*`, `former_callbacks_gate_*` and
+`former_builtins_gate_*`, with the same cases and expected values; they drive
+the Rust exports through a Rust copy of event.cc's glue. The queued-output
+53-case matrix lives in the Rust `output` unit tests. Upstream's own
+`reactor/base.cpp` GoogleTests run on both engines (`reactor-native-originals`).

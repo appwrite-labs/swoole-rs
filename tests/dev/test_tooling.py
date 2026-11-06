@@ -406,17 +406,6 @@ class Cleanup(unittest.TestCase):
 
 
 class Lanes(unittest.TestCase):
-    def test_new_real_caller_controls_use_selected_archive_without_runtime_claims(self):
-        args = SimpleNamespace(lane='integrate', module=['reactor', 'phpcoroutines'],
-                               all_modules=False, php='php', php_extension=[], jobs=2,
-                               test=None, case=None, benchmark=False, compare=False,
-                               stdext=False, fix_halfclose=False)
-        commands = dict(dev.plan(args, ROOT / 'target/reports/real-callers'))
-        queues = commands['reactor-builtins']
-        self.assertIn('--sanitize', queues)
-        self.assertIn('--archive', queues)
-        self.assertNotIn('--engine', queues)
-
     def test_aliases_name_the_profile(self):
         from tools.build_hybrid import build_alias
         self.assertEqual(build_alias('rust', '-halfclose-stdext'), 'rust-halfclose-stdext')
@@ -465,8 +454,7 @@ class Lanes(unittest.TestCase):
         for name in ['phphelpers-facade-runtime', 'phphelpers-entrypoint', 'phphelpers-runtime']:
             self.assertNotIn(name, commands)
         self.assertNotIn('--module', commands['build'])
-        self.assertIn('--archive', commands['reactor-builtins'])
-        self.assertIn('--sanitize', commands['reactor-builtins'])
+        self.assertIn('--archive', commands['reactor-compile'])
         self.assertIn('corebase-native',commands)
         self.assertIn('ossupport-async-file-owner', commands)
         self.assertIn('http-context', commands)

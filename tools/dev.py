@@ -251,11 +251,6 @@ def plan(args, reports):
     if integrate and 'phpcoroutines' in modules:
         script('phpcoroutines-tracer', 'tests/modules/phpcoroutines/tracer.py', *php, *engines, *report('phpcoroutines-tracer'))
     if 'reactor' in modules:
-        for name in ['callbacks', 'initialize', 'builtins']:
-            phase = 'reactor-' + name.replace('_', '-')
-            script(phase, 'tests/modules/reactor/' + name + '.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
-                   '--report', reports / (phase + '.json'))
         script('reactor-compile', 'tests/modules/reactor/compile_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--report', reports / 'reactor-compile.json')

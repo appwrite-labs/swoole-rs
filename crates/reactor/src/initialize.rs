@@ -184,4 +184,146 @@ mod tests {
             }
         }
     }
+
+    /// What event.cc's `Reactor::Reactor` did, as the former initialize gate traced it:
+    /// backend open `factory*100 + max_event`, hook observe 20 and call 21, main-thread
+    /// observe 30, end callback `40 + priority`, exit condition `50 + key`.
+    struct Constructed {
+        type_: i32,
+        ready: bool,
+        timeout_msec: i32,
+        fields: bool,
+        trace: Vec<u32>,
+        ends: Vec<u32>,
+        exits: Vec<u32>,
+    }
+
+    fn construct(
+        requested: i32,
+        caps: u32,
+        trim: u32,
+        kqueue: u32,
+        hook: u32,
+        mains: [u32; 2],
+    ) -> Constructed {
+        let mut plan = swr_v1_reactor_backend_type(requested, caps, 0, 0);
+        if caps & 2 != 0 && plan.observe_kqueue != 0 {
+            plan = swr_v1_reactor_backend_type(requested, caps, 1, kqueue);
+        }
+        let mut built = Constructed {
+            type_: plan.selected,
+            ready: true,
+            timeout_msec: 0,
+            fields: false,
+            trace: vec![plan.factory * 100 + 7],
+            ends: Vec::new(),
+            exits: Vec::new(),
+        };
+        let (mut state, mut hook_fact, mut main, mut observed) =
+            (ReactorInitState::default(), 0, 0, 0);
+        loop {
+            let action =
+                unsafe { swr_v1_reactor_init_next(&raw mut state, 1, hook_fact, main, trim) };
+            let (end, exit) = match action {
+                0 => return built,
+                1 => (None, None),
+                2 => {
+                    (built.timeout_msec, built.fields) = (-1, true);
+                    (None, None)
+                }
+                3 => {
+                    built.trace.push(20);
+                    hook_fact = hook;
+                    (None, None)
+                }
+                4 => {
+                    built.trace.push(21);
+                    (None, None)
+                }
+                8 | 11 => {
+                    built.trace.push(30);
+                    main = mains[observed];
+                    observed += 1;
+                    (None, None)
+                }
+                5 => (Some(1), None),
+                6 => (None, Some(1)),
+                7 => (Some(2), None),
+                9 => (Some(3), None),
+                10 => (Some(4), None),
+                12 => (Some(5), None),
+                13 => (None, Some(999)),
+                other => panic!("action {other}"),
+            };
+            if let Some(key) = end {
+                built.trace.push(40 + key);
+                built.ends.push(key);
+            }
+            if let Some(key) = exit {
+                built.trace.push(50 + key);
+                built.exits.push(key);
+            }
+        }
+    }
+
+    /// The former initialize gate: every requested type, kqueue enablement, create hook
+    /// and main-thread pair, under each epoll/kqueue capability and malloc-trim profile.
+    #[test]
+    fn former_initialize_gate_constructor_order() {
+        for caps in 0..4 {
+            for trim in 0..2 {
+                for requested in 0..4 {
+                    for kqueue in 0..2 {
+                        for hook in 0..2 {
+                            for mains in 0..4 {
+                                let (first, second) = (mains & 1, (mains >> 1) & 1);
+                                let r =
+                                    construct(requested, caps, trim, kqueue, hook, [first, second]);
+                                let chosen = match requested {
+                                    0 if caps & 1 != 0 => 1,
+                                    0 if caps & 2 != 0 && kqueue != 0 => 2,
+                                    0 => 3,
+                                    other => other,
+                                };
+                                assert_eq!(r.type_, chosen);
+                                assert!(r.ready && r.fields);
+                                assert_eq!(r.timeout_msec, -1);
+                                let mut expected = vec![match chosen {
+                                    1 if caps & 1 != 0 => 107,
+                                    2 if caps & 2 != 0 => 207,
+                                    _ => 307,
+                                }];
+                                expected.push(20);
+                                if hook != 0 {
+                                    expected.push(21);
+                                }
+                                expected.extend([41, 51, 42, 30]);
+                                if first != 0 {
+                                    expected.push(43);
+                                }
+                                expected.push(44);
+                                if trim != 0 {
+                                    expected.push(30);
+                                    if second != 0 {
+                                        expected.push(45);
+                                    }
+                                }
+                                expected.push(1049);
+                                assert_eq!(r.trace, expected);
+                                assert!([1, 2, 4].iter().all(|key| r.ends.contains(key)));
+                                assert!(r.exits.contains(&1) && r.exits.contains(&999));
+                                assert_eq!(r.ends.contains(&3), first != 0);
+                                // The installed exits: defer (no queue yet) and default (no events).
+                                let defer_exit =
+                                    crate::swr_v1_reactor_builtin_step(4, 0, 0, 0).action;
+                                let default_exit =
+                                    crate::swr_v1_reactor_builtin_step(5, 0, 0, 0).action;
+                                assert_eq!((defer_exit, default_exit), (9, 9));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
