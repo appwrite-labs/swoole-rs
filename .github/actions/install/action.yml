@@ -20,12 +20,23 @@ runs:
       shell: bash
       run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
     # Weekly key: packages stay current, and a stale index is refreshed by install.sh.
-    - uses: actions/cache@v4
+    # Only main saves (a PR's cache is visible to that PR alone), and any of main's caches
+    # from this week holds the base set, so a job with other extras downloads just those.
+    - id: apt
+      uses: actions/cache/restore@v4
       with:
         path: .apt-cache
         key: apt-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-${{ inputs.packages }}
+        restore-keys: |
+          apt-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-
+          apt-${{ runner.os }}-${{ steps.week.outputs.week }}-
     - shell: bash
       run: APT_CACHE="$PWD/.apt-cache" .devcontainer/install.sh ${{ inputs.packages }}
+    - if: github.ref == 'refs/heads/main' && steps.apt.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: .apt-cache
+        key: ${{ steps.apt.outputs.cache-primary-key }}
     # Jobs of one run can land on different runner images while GitHub rolls one out,
     # each with its own Ubuntu PHP release, and an extension built against one release
     # may not load in another's php (#522). The build takes the newest release (the only
