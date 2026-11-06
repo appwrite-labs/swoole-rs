@@ -9,27 +9,31 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use swoole_rs_corebase as corebase;
 
 #[repr(C)]
-pub(crate) struct Ops {
-    capabilities: unsafe extern "C" fn() -> u8,
-    available: unsafe extern "C" fn() -> bool,
-    has_reactor: unsafe extern "C" fn() -> bool,
-    native_handle: unsafe extern "C" fn() -> i32,
-    callback: signal::Callback,
-    descriptor: *const DescriptorOps,
-    invoke: unsafe extern "C" fn(usize, i32),
-    report: unsafe extern "C" fn(u8, i32, i32),
+pub struct Ops {
+    pub capabilities: unsafe extern "C" fn() -> u8,
+    pub available: unsafe extern "C" fn() -> bool,
+    pub has_reactor: unsafe extern "C" fn() -> bool,
+    pub native_handle: unsafe extern "C" fn() -> i32,
+    pub callback: signal::Callback,
+    pub descriptor: *const DescriptorOps,
+    pub invoke: unsafe extern "C" fn(usize, i32),
+    pub report: unsafe extern "C" fn(u8, i32, i32),
 }
 #[repr(C)]
-pub(crate) struct DescriptorOps {
-    make: unsafe extern "C" fn(i32) -> *mut c_void,
-    free: unsafe extern "C" fn(*mut c_void),
-    events: unsafe extern "C" fn(*mut c_void) -> i32,
-    add: unsafe extern "C" fn(*mut c_void, i32) -> i32,
-    del: unsafe extern "C" fn(*mut c_void),
-    installed: unsafe extern "C" fn() -> bool,
-    install: unsafe extern "C" fn(),
-    erase_end: unsafe extern "C" fn(),
+pub struct DescriptorOps {
+    pub make: unsafe extern "C" fn(i32) -> *mut c_void,
+    pub free: unsafe extern "C" fn(*mut c_void),
+    pub events: unsafe extern "C" fn(*mut c_void) -> i32,
+    pub add: unsafe extern "C" fn(*mut c_void, i32) -> i32,
+    pub del: unsafe extern "C" fn(*mut c_void),
+    pub installed: unsafe extern "C" fn() -> bool,
+    pub install: unsafe extern "C" fn(),
+    pub erase_end: unsafe extern "C" fn(),
 }
+// SAFETY: the tables are immutable statics of function pointers.
+unsafe impl Sync for Ops {}
+// SAFETY: as above.
+unsafe impl Sync for DescriptorOps {}
 #[cfg(target_os = "linux")]
 static SOCKET: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_os = "linux")]
@@ -60,8 +64,8 @@ fn errno() -> i32 {
 
 /// # Safety
 /// `ops` is the static SDK table; native callbacks preserve the owner's thread/context.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_signal_loop_set(
+#[must_use]
+pub unsafe extern "C" fn swr_v1_signal_loop_set(
     signo: i32,
     handler: usize,
     safety: bool,
@@ -104,8 +108,8 @@ pub(crate) unsafe extern "C" fn swr_v1_signal_loop_set(
 }
 /// # Safety
 /// The facade lends the static SDK table; lookup itself invokes no handler.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_signal_loop_get(signo: i32, ops: *const Ops) -> usize {
+#[must_use]
+pub unsafe extern "C" fn swr_v1_signal_loop_get(signo: i32, ops: *const Ops) -> usize {
     let lookup = signal::swr_v1_signal_lookup(signo);
     if lookup.status == 1 {
         // SAFETY: the facade provides a static SDK logging table.
@@ -115,8 +119,7 @@ pub(crate) unsafe extern "C" fn swr_v1_signal_loop_get(signo: i32, ops: *const O
 }
 /// # Safety
 /// The configured handler is invoked only in the same contexts as the native facade.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_signal_loop_callback(signo: i32, ops: *const Ops) {
+pub unsafe extern "C" fn swr_v1_signal_loop_callback(signo: i32, ops: *const Ops) {
     // SAFETY: the facade provides its static SDK table.
     let ops = unsafe { native(ops) };
     let lookup = signal::swr_v1_signal_lookup(signo);
@@ -131,8 +134,8 @@ pub(crate) unsafe extern "C" fn swr_v1_signal_loop_callback(signo: i32, ops: *co
     }
 }
 /// The original unsigned listener sum, including async waiters.
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn swr_v1_signal_loop_listener_num() -> u32 {
+#[must_use]
+pub extern "C" fn swr_v1_signal_loop_listener_num() -> u32 {
     corebase::swr_v1_core_signal_listener_num()
         .wrapping_add(corebase::swr_v1_core_signal_async_listener_num())
 }
@@ -186,8 +189,7 @@ fn close(ops: &Ops) {
 }
 /// # Safety
 /// The native facade lends its static SDK table on the signal owner's thread.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_signal_loop_clear(ops: *const Ops) {
+pub unsafe extern "C" fn swr_v1_signal_loop_clear(ops: *const Ops) {
     // SAFETY: the native facade provides its static table.
     let ops = unsafe { native(ops) };
     // SAFETY: configured SDK capabilities are immutable metadata.
@@ -229,8 +231,8 @@ pub(crate) unsafe extern "C" fn swr_v1_signal_loop_clear(ops: *const Ops) {
 #[cfg(target_os = "linux")]
 /// # Safety
 /// A signalfd event lends its live fd and the process-lifetime operations table.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_signal_loop_read(fd: i32, ops: *const Ops) -> i32 {
+#[must_use]
+pub unsafe extern "C" fn swr_v1_signal_loop_read(fd: i32, ops: *const Ops) -> i32 {
     // SAFETY: the native trampoline lends its static table.
     let ops = unsafe { native(ops) };
     #[cfg(target_os = "linux")]
@@ -252,8 +254,7 @@ pub(crate) unsafe extern "C" fn swr_v1_signal_loop_read(fd: i32, ops: *const Ops
 #[cfg(target_os = "linux")]
 /// # Safety
 /// Called by native reactor destruction with its static table on the owner thread.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_signal_loop_destroyed(ops: *const Ops) {
+pub unsafe extern "C" fn swr_v1_signal_loop_destroyed(ops: *const Ops) {
     #[cfg(target_os = "linux")]
     {
         let socket = SOCKET.load(Relaxed) as *mut c_void;
@@ -267,8 +268,7 @@ pub(crate) unsafe extern "C" fn swr_v1_signal_loop_destroyed(ops: *const Ops) {
 }
 /// # Safety
 /// A native exit-condition callback lends its writable event count for this call.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_signal_loop_exit(event_num: *mut usize) -> bool {
+pub unsafe extern "C" fn swr_v1_signal_loop_exit(event_num: *mut usize) -> bool {
     // SAFETY: this callback receives the reactor's live writable counter.
     let count = unsafe { event_num.read() };
     // SAFETY: preserve native unsigned decrement, including wrap, before returning true.

@@ -1,0 +1,16 @@
+diff --git a/src/wrapper/event.cc b/src/wrapper/event.cc
+index a4349cf..bcdf0d0 100644
+--- a/src/wrapper/event.cc
++++ b/src/wrapper/event.cc
+@@ -127,2 +127,11 @@ void *swr_v1_event_reactor() {
+ 
++void *swr_v1_event_current() {
++    return SwooleTG.reactor;
++}
++
++void swr_v1_event_set_exit_condition(int id, bool (*condition)(size_t *event_num)) {
++    SwooleTG.reactor->set_exit_condition(static_cast<Reactor::ExitCondition>(id),
++                                         [condition](Reactor *, size_t &event_num) { return condition(&event_num); });
++}
++
+ bool swoole_event_is_running() {
