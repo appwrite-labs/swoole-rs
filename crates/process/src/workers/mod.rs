@@ -63,7 +63,8 @@ struct Native {
 
 impl Host for Native {
     fn op(&mut self, op: u32, arg: u64) -> u64 {
-        #[cfg(feature = "upstream-symbols")]
+        // Unit tests link no upstream objects, so native does these ops there.
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
         if let Some(result) = effect(op) {
             return result;
         }
@@ -76,7 +77,7 @@ impl Host for Native {
 /// loop, the timer, the last error, the worker globals) rather than the objects
 /// in a context. They mean the same in every context, so Rust does them; `None`
 /// for the rest, which native code does.
-#[cfg(feature = "upstream-symbols")]
+#[cfg(all(feature = "upstream-symbols", not(test)))]
 fn effect(op: u32) -> Option<u64> {
     use core::ffi::c_int;
     use swoole_rs_corebase::log::{last_error, set_last_error};
