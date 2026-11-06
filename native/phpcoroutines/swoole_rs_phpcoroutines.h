@@ -10,8 +10,9 @@ extern "C" {
 /* PHP coroutines (Rust, crates/phpcoroutines): each coroutine's PHP context
  * and VM swap, activation, the preemptive scheduler, Swoole\Coroutine's
  * methods, go()/defer(), the exit and silence handlers and the autoload hook.
- * C++ lends the coroutine core's operations; Rust's zim_swoole_coroutine_* and
- * zif_* are the handlers its tables name. A coroutine's context is opaque. */
+ * php_swoole_coroutine_{minit,rinit,rshutdown} are Rust; native/phpcoroutines
+ * lends what needs C++ (coroutine.cc). Rust's zim_swoole_coroutine_* and zif_*
+ * are the handlers its tables name. A coroutine's context is opaque. */
 struct _zend_class_entry;
 struct _zend_execute_data;
 struct _zend_fcall_info_cache;
@@ -19,7 +20,7 @@ struct _zval_struct;
 struct _zend_array;
 struct _zend_string;
 
-/* The globals and server state the frontend reads (bits of `flags`). */
+/* The globals and server state the frontend reads (host flags). */
 enum {
     SWR_PHPCOROUTINES_CLI = 1,
     SWR_PHPCOROUTINES_SHORTNAME = 2,
@@ -50,109 +51,10 @@ struct swr_v1_phpcoroutines_stats {
     int64_t iouring_waiting_task_num;
 };
 
-struct swr_v1_phpcoroutines_ops {
-    /* the flags among `mask` that are set */
-    uint32_t (*flags)(uint32_t mask);
-    /* Coroutine statics */
-    void *(*current)(void);
-    /* get_current_safe(): a fatal error outside a coroutine */
-    void *(*current_safe)(void);
-    void *(*current_task)(void);
-    long (*current_cid)(void);
-    void *(*task_by_cid)(long cid);
-    void *(*by_cid)(long cid);
-    /* Coroutine::create(main_func, args) */
-    long (*create)(void *args);
-    size_t (*count)(void);
-    long (*elapsed)(long cid);
-    long (*execute_time)(long cid);
-    size_t (*list)(long *cids, size_t capacity);
-    void (*stats)(struct swr_v1_phpcoroutines_stats *stats);
-    /* swoole_test_kernel_coroutine's coroutine */
-    void (*kernel_coroutine)(long count, double sleep);
-    /* one coroutine */
-    void (*set_task)(void *co, void *task);
-    /* its origin's task, null for the main context */
-    void *(*origin_task)(void *co);
-    long (*cid)(void *co);
-    long (*origin_cid)(void *co);
-    int (*state)(void *co);
-    /* its C stack, or null under thread contexts */
-    void *(*stack)(void *co, size_t *size);
-    void (*yield)(void *co);
-    void (*yield_cancelable)(void *co, uint8_t (*cancel)(void *co));
-    uint8_t (*yield_ex)(void *co, double timeout);
-    void (*resume)(void *co);
-    uint8_t (*cancel)(void *co);
-    uint8_t (*is_canceled)(void *co);
-    uint8_t (*is_end)(void *co);
-    /* activation: the reactor; its destroy callback, Coroutine::activate and
-     * the switch callbacks; hooks and unsafe functions */
-    void (*check_reactor)(void);
-    void (*attach)(void (*on_yield)(void *), void (*on_resume)(void *), void (*on_close)(void *));
-    void (*detach)(void);
-    void (*deactivate)(void);
-    void (*hook)(uint32_t hook_flags);
-    void (*unhook)(void);
-    void (*signal_block_all)(void);
-    /* bodies for swr_zend_try: they run PHP */
-    void (*load_library)(void *arg);
-    void (*deadlock_check)(void *arg);
-    /* SW_GLOBAL_HOOK_ON_CORO_START or _STOP, when set */
-    void (*coro_hook)(uint8_t stop, void *task);
-    long (*absolute_msec)(void);
-    void (*defer)(void (*fn)(void *), void *data);
-    void *(*timer_add)(double timeout, long cid, void (*fn)(long cid));
-    void (*timer_del)(void *timer);
-    void (*set_last_error)(int code);
-    /* php_swoole_fatal_error(level, "%s", message) */
-    void (*fatal_error)(int level, const char *message);
-    /* php_swoole_error_ex(level, code, "%s", message) */
-    void (*error_ex)(int level, int code, const char *message);
-    /* PHP 8.4+ exit(): the original handler (0 if none), and its fallback */
-    uint8_t (*exit_original)(struct _zend_execute_data *execute_data, struct _zval_struct *return_value);
-    void (*exit_fallback)(const char *message, size_t length, long status);
-    /* Swoole\Coroutine\Scheduler and Co::set(): php_swoole_reactor_init(),
-     * php_swoole_event_wait(), php_swoole_set_global_option(), the coroutine
-     * stack size (php_swoole_parse_to_size), a name resolver, the DNS cache,
-     * installing (1) or clearing (0) the reactor's user exit condition, which
-     * calls swr_v1_phpcoroutines_can_exit, and sw_callable_warning */
-    int (*reactor_init)(void);
-    void (*event_wait)(void);
-    void (*set_global_option)(struct _zend_array *options);
-    void (*set_stack_size)(struct _zval_struct *size);
-    void (*add_name_resolver)(struct _zval_struct *resolver);
-    void (*set_dns_cache_expire)(long expire);
-    void (*set_dns_cache_capacity)(long capacity);
-    void (*set_exit_condition)(uint8_t set);
-    void (*warning)(const char *message);
-};
-
-/* MINIT: the classes, constants, opcode handlers and the autoload hook. */
-void swr_v1_phpcoroutines_minit(int32_t module_number,
-                                struct _zend_class_entry *exception, struct _zend_class_entry *array_iterator,
-                                struct _zend_class_entry *array_object,
-                                const struct swr_v1_phpcoroutines_ops *ops);
-void swr_v1_phpcoroutines_rinit(void);
-/* 1 if deactivation bailed out, which the caller re-raises. */
-uint8_t swr_v1_phpcoroutines_rshutdown(void);
-
 /* PHPCoroutine::create: the new cid or Coroutine::ERR_*; 1 in *bailout when
  * activation bailed out, which the caller re-raises. */
 long swr_v1_phpcoroutines_create(struct _zend_fcall_info_cache *fcc, uint32_t argc, struct _zval_struct *argv,
                                  struct _zval_struct *callable, uint8_t *bailout);
-/* The reactor's destroy callback: 1 if the deadlock check bailed out. */
-uint8_t swr_v1_phpcoroutines_deactivate(void);
-
-/* A coroutine's entry, from the C++ main function that traps its bailouts:
- * open the context (create_context), enter it (the start hook and fiber
- * notification; returns its zend::Function), pop its defer tasks, close it
- * (destroy_context). */
-void *swr_v1_phpcoroutines_open(void *args);
-void *swr_v1_phpcoroutines_enter(void *context);
-void *swr_v1_phpcoroutines_defer_next(void *context);
-void swr_v1_phpcoroutines_close(void *context);
-
 long swr_v1_phpcoroutines_cid(void);
 /* PHPCoroutine::config */
 uint32_t swr_v1_phpcoroutines_hook_flags(void);

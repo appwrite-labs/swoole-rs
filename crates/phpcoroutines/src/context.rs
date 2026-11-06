@@ -145,8 +145,7 @@ pub(crate) fn main() -> *mut Context {
 /// the main context.
 #[inline]
 pub(crate) fn current_task() -> *mut Context {
-    // SAFETY: C++ reads the running coroutine's task.
-    unsafe { (host::ops().current_task)() }.cast()
+    host::current_task().cast()
 }
 
 /// `PHPCoroutine::get_context()`: the running coroutine's, or the main one.
@@ -161,8 +160,7 @@ pub(crate) fn by_cid(cid: c_long) -> *mut Context {
     if cid == -1 {
         return main();
     }
-    // SAFETY: C++ looks the coroutine up.
-    unsafe { (host::ops().task_by_cid)(cid) }.cast()
+    host::task_by_cid(cid).cast()
 }
 
 /// `get_origin_context`: the context that resumed `ctx`'s coroutine.
@@ -170,8 +168,7 @@ pub(crate) fn by_cid(cid: c_long) -> *mut Context {
 fn origin(ctx: *mut Context) -> *mut Context {
     // SAFETY: a live coroutine context.
     let co = unsafe { at(ctx) }.co;
-    // SAFETY: a live coroutine.
-    let task = unsafe { (host::ops().origin_task)(co) }.cast::<Context>();
+    let task = host::origin_task(co).cast::<Context>();
     if task.is_null() { main() } else { task }
 }
 
@@ -260,13 +257,11 @@ pub(crate) unsafe extern "C" fn on_close(arg: *mut c_void) {
 /// `create_context`, on the new coroutine.
 /// # Safety
 /// `args` is the creator's live `Args`, and this runs on the new coroutine.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_open(args: *mut c_void) -> *mut c_void {
+pub(crate) unsafe fn open(args: *mut c_void) -> *mut c_void {
     // SAFETY: per the caller.
     let args = unsafe { &*args.cast::<Args>() };
     let co = host::current();
-    // SAFETY: the running coroutine.
-    let pcid = unsafe { (host::ops().origin_cid)(co) };
+    let pcid = host::origin_cid(co);
     // SAFETY: Zend's allocator, for one context.
     let ctx = unsafe { swr_zend_emalloc(size_of::<Context>()) }.cast::<Context>();
     let fresh = Context {
@@ -277,14 +272,11 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_open(args: *mut c_void) -> *mut c_
     };
     // SAFETY: fresh storage for one context.
     unsafe { ctx.write(fresh) };
-    // SAFETY: the running coroutine.
-    unsafe { (host::ops().set_task)(co, ctx.cast()) };
+    host::set_task(co, ctx.cast());
     if host::flag(host::FIBER_MOCK) {
         fiber_init(ctx);
     }
-    let mut size = 0;
-    // SAFETY: the running coroutine.
-    let stack = unsafe { (host::ops().stack)(co, &raw mut size) };
+    let (stack, size) = host::stack(co);
     // SAFETY: on the new coroutine, into its own context.
     unsafe { swr_zend_coroutine_start(vm(ctx), stack, size) };
     record_last_msec(ctx);
@@ -314,11 +306,9 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_open(args: *mut c_void) -> *mut c_
 /// callable, to call (`zend::Function *`).
 /// # Safety
 /// `context` came from `open` on the running coroutine.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_enter(context: *mut c_void) -> *mut c_void {
+pub(crate) unsafe fn enter(context: *mut c_void) -> *mut swr_zend_callable {
     let ctx = context.cast::<Context>();
-    // SAFETY: C++ runs its global hook, if set.
-    unsafe { (host::ops().coro_hook)(0, context) };
+    host::coro_hook(false, context);
     let (fiber, handler) = {
         // SAFETY: a live context.
         let this = unsafe { at(ctx) };
@@ -339,15 +329,14 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_enter(context: *mut c_void) -> *mu
         // SAFETY: as above.
         unsafe { swr_zend_coroutine_set_frame(previous) };
     }
-    call(ctx).cast()
+    call(ctx)
 }
 
 /// The next defer task (last in, first out), with the coroutine's return
 /// value as its argument when it has one; null when none are left.
 /// # Safety
 /// `context` came from `open` on the running coroutine.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_defer_next(context: *mut c_void) -> *mut c_void {
+pub(crate) unsafe fn defer_next(context: *mut c_void) -> *mut swr_zend_callable {
     // SAFETY: a live context; nothing switches below.
     let this = unsafe { at(context.cast()) };
     let Some(task) = this.defer.pop() else {
@@ -360,18 +349,16 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_defer_next(context: *mut c_void) -
         task.fci.param_count = 1;
         task.fci.params = &raw mut this.return_value;
     }
-    task.cast()
+    task
 }
 
 /// `destroy_context`. The coroutine's bailout address is null here, so a
 /// bailout in a destructor ends the process rather than longjmp.
 /// # Safety
 /// `context` came from `open` on the running, finishing coroutine.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_close(context: *mut c_void) {
+pub(crate) unsafe fn close(context: *mut c_void) {
     let ctx = context.cast::<Context>();
-    // SAFETY: C++ runs its global hook, if set.
-    unsafe { (host::ops().coro_hook)(1, context) };
+    host::coro_hook(true, context);
     // SAFETY: output state is the coroutine's own.
     unsafe { swr_zend_coroutine_output_reset() };
     // SAFETY: a live context; its defer tasks were kept and are not called.
@@ -409,8 +396,7 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_close(context: *mut c_void) {
     // SAFETY: a live context.
     let timer = mem::replace(&mut unsafe { at(ctx) }.timer_limit, ptr::null_mut());
     if !timer.is_null() {
-        // SAFETY: a pending timer this context owned.
-        unsafe { (host::ops().timer_del)(timer) };
+        host::timer_del(timer);
     }
     // SAFETY: the coroutine's own VM stack.
     unsafe { swr_zend_coroutine_vm_destroy() };
@@ -488,8 +474,7 @@ fn fiber_status(ctx: *mut Context) -> zend_fiber_status {
     if fiber == unsafe { at(main()) }.fiber {
         return zend_fiber_status_ZEND_FIBER_STATUS_RUNNING;
     }
-    // SAFETY: a coroutine's context.
-    match unsafe { (host::ops().state)(co) } {
+    match host::state_of(co) {
         STATE_INIT => zend_fiber_status_ZEND_FIBER_STATUS_INIT,
         STATE_WAITING => zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
         STATE_RUNNING => zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,

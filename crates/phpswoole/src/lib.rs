@@ -39,8 +39,8 @@ pub use ini::swr_v1_phpswoole_register_ini;
 pub use interfaces::sys_warning;
 pub use memory::sw_zend_string_allocator;
 pub use module::{
-    Globals, display_errors, enable_library, php_swoole_parse_to_size,
-    php_swoole_register_shutdown_function, swr_v1_phpswoole_init_globals,
+    CALL_USER_SHUTDOWNFUNC_BEGIN, Globals, display_errors, enable_library, globals,
+    php_swoole_parse_to_size, php_swoole_register_shutdown_function, swr_v1_phpswoole_init_globals,
     swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown,
     zif_swoole_set_process_name,
 };
@@ -254,6 +254,20 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
     }
     swoole_rs_zend::bailout::finish();
     0
+}
+
+/// `php_swoole_check_reactor()`.
+pub fn check_reactor() {
+    // SAFETY: C++'s check, after MINIT stored the table.
+    unsafe { (ops().check_reactor)() };
+}
+
+/// `php_swoole_load_library()`, inside `zend_try`.
+/// # Errors
+/// The library's code bailed out.
+pub fn load_library() -> Result<(), swoole_rs_zend::bailout::Bailout> {
+    // SAFETY: C++'s loader, a `zend_try` body.
+    unsafe { swoole_rs_zend::bailout::trap(ops().load_library, ptr::null_mut()) }
 }
 
 /// `sw_module_number()`: the number Zend gave the module at MINIT.

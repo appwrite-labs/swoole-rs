@@ -76,12 +76,7 @@ pub(crate) fn interrupt_running() -> bool {
 
 /// `PHPCoroutine::get_cid()`.
 pub(crate) fn cid() -> c_long {
-    if activated() {
-        // SAFETY: C++ reads the running coroutine.
-        unsafe { (host::ops().current_cid)() }
-    } else {
-        -1
-    }
+    if activated() { host::current_cid() } else { -1 }
 }
 
 /// `PHPCoroutine::create`: the new coroutine's id or `ERR_*`. Zend fatal
@@ -127,8 +122,7 @@ pub(crate) fn create(
     let ctx = context::current();
     // SAFETY: the running context.
     unsafe { swoole_rs_zend::sys::swr_zend_coroutine_save(context::vm(ctx)) };
-    // SAFETY: the new coroutine reads `args` before this frame resumes.
-    let cid = unsafe { (host::ops().create)((&raw mut args).cast()) };
+    let cid = host::create((&raw mut args).cast());
     bailout::trapped(0)?;
     Ok(cid)
 }
@@ -139,11 +133,9 @@ fn activate() -> Result<(), Bailout> {
     let library = unsafe { zend_get_constant_str(c"SWOOLE_LIBRARY".as_ptr(), 14) };
     // SAFETY: null or a live constant.
     if library.is_null() || !unsafe { swr_zval_is_true(library) } {
-        // SAFETY: C++'s loader, a body that runs PHP.
-        unsafe { bailout::trap(host::ops().load_library, ptr::null_mut()) }?;
+        swoole_rs_phpswoole::load_library()?;
     }
-    // SAFETY: C++ starts the reactor.
-    unsafe { (host::ops().check_reactor)() };
+    host::check_reactor();
     // SAFETY: replaces Zend's interrupt function, restored by `deactivate`.
     let original = unsafe { swr_zend_coroutine_set_interrupt(Some(interrupt_function)) };
     ORIGINAL_INTERRUPT.store(
@@ -155,36 +147,24 @@ fn activate() -> Result<(), Bailout> {
     }
     if host::flag(host::MAIN_THREAD) {
         let flags = CONFIG.with(|c| c.hook_flags.get());
-        // SAFETY: C++ enables the hooks and disables unsafe functions.
-        unsafe { (host::ops().hook)(flags) };
+        host::hook(flags);
     }
-    // SAFETY: C++ registers the reactor callback and the switch callbacks.
-    unsafe {
-        (host::ops().attach)(context::on_yield, context::on_resume, context::on_close);
-    }
+    host::attach(context::on_yield, context::on_resume, context::on_close);
     ACTIVATED.with(|a| a.set(true));
     Ok(())
 }
 
-/// `PHPCoroutine::deactivate`, the reactor's destroy callback: 1 if the
-/// deadlock check bailed out, which the C++ caller re-raises.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_deactivate() -> u8 {
-    u8::from(deactivate().is_err())
-}
-
-fn deactivate() -> Result<(), Bailout> {
+/// `PHPCoroutine::deactivate`, also the reactor's destroy callback.
+pub(crate) fn deactivate() -> Result<(), Bailout> {
     if !activated() {
         return Ok(());
     }
     ACTIVATED.with(|a| a.set(false));
     interrupt_stop();
     if host::flag(host::MAIN_THREAD) {
-        // SAFETY: C++ disables the hooks and restores unsafe functions.
-        unsafe { (host::ops().unhook)() };
+        host::unhook();
     }
-    // SAFETY: C++ clears the switch callbacks.
-    unsafe { (host::ops().detach)() };
+    host::detach();
     let original = ORIGINAL_INTERRUPT.load(Ordering::Relaxed);
     let original = (!original.is_null()).then(|| {
         // SAFETY: stored from a `swr_zend_interrupt_handler` by `activate`.
@@ -199,8 +179,7 @@ fn deactivate() -> Result<(), Bailout> {
     if CONFIG.with(|c| c.deadlock_check.get()) {
         deadlock_check()?;
     }
-    // SAFETY: C++ deactivates the core.
-    unsafe { (host::ops().deactivate)() };
+    host::deactivate();
     Ok(())
 }
 
@@ -216,8 +195,7 @@ fn deadlock_check() -> Result<(), Bailout> {
         return Ok(());
     }
     if host::flag(host::LIBRARY) {
-        // SAFETY: C++'s call of the library's checker, a body that runs PHP.
-        return unsafe { bailout::trap(host::ops().deadlock_check, ptr::null_mut()) };
+        return host::deadlock_check();
     }
     // Upstream's printf, so stdio buffers it as it did.
     // SAFETY: a format taking one unsigned long.
@@ -254,10 +232,8 @@ unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
         && enabled
         && host::absolute_msec() - last > MAX_EXEC_MSEC
     {
-        // SAFETY: C++ defers the resume to the event loop.
-        unsafe { (host::ops().defer)(interrupt_resume, co) };
-        // SAFETY: the running coroutine; no frame here owns anything.
-        unsafe { (host::ops().yield_)(co) };
+        host::defer(interrupt_resume, co);
+        host::yield_(co);
     }
     let original = ORIGINAL_INTERRUPT.load(Ordering::Relaxed);
     if !original.is_null() {
@@ -274,8 +250,7 @@ unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
 
 /// `coro_interrupt_resume`.
 unsafe extern "C" fn interrupt_resume(co: *mut c_void) {
-    // SAFETY: a coroutine that yielded to the scheduler.
-    if !co.is_null() && unsafe { (host::ops().is_end)(co) } == 0 {
+    if !co.is_null() && !host::is_end(co) {
         host::resume(co);
     }
 }
@@ -303,8 +278,7 @@ fn interrupt_start() {
     let shared = Arc::clone(&running);
     let spawned = thread::Builder::new().spawn(move || {
         let flag = flag;
-        // SAFETY: C++ blocks every signal on this thread.
-        unsafe { (host::ops().signal_block_all)() };
+        host::signal_block_all();
         let half = Duration::from_millis(MAX_EXEC_MSEC.unsigned_abs() / 2);
         while shared.load(Ordering::Acquire) {
             // SAFETY: the executor's flag, live until `interrupt_stop` joins.
