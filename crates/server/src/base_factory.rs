@@ -201,25 +201,13 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
     if h.op(OP_ON_RECEIVE, address(&raw const recv))? != 0 {
         // SAFETY: as above.
         unsafe { swr_v1_worker_add_request_count(worker) };
-        count_request(h.state()?);
+        if let Some(gs) = crate::shared::server_counters(h.state()?) {
+            gs.request_count.fetch_add(1, Ordering::SeqCst);
+        }
     }
     // SAFETY: as above.
     unsafe { swr_v1_worker_set_status(worker, WORKER_IDLE) };
     Ok(true)
-}
-
-/// `sw_atomic_fetch_add(&serv->gs->request_count, 1)`.
-fn count_request(state: &crate::ServerState) {
-    let config = state.config();
-    if config.is_null() {
-        return;
-    }
-    // SAFETY: a live state's configuration; its shared record stays mapped.
-    let gs = unsafe { (*config).gs }.cast::<crate::shared::ServerCounters>();
-    // SAFETY: a non-null `gs` is the server's shared counters.
-    if let Some(gs) = unsafe { gs.as_ref() } {
-        gs.request_count.fetch_add(1, Ordering::SeqCst);
-    }
 }
 
 /// `BaseFactory::notify`: only active stream connections the server has not closed.

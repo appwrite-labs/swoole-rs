@@ -861,10 +861,8 @@ pub const OP_ST_SOCK_FREE: u32 = 1027;
 /// fd arg is a valid connection; the callback visits it.
 pub const OP_ST_VALID_CONN: u32 = 1028;
 pub const OP_ST_VISIT: u32 = 1029;
-/// `factory_->finish` of the send; the response counts of the server, the session's
-/// port and the current worker.
+/// `factory_->finish` of the send.
 pub const OP_ST_FINISH: u32 = 1030;
-pub const OP_ST_COUNT_SEND: u32 = 1031;
 /// Timer arg (`master_timer`, `heartbeat_timer`, `enable_accept_timer`) is armed; it
 /// is deleted and cleared.
 pub const OP_ST_TIMER: u32 = 1032;

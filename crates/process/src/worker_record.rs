@@ -196,6 +196,17 @@ pub unsafe extern "C" fn swr_v1_worker_add_request_count(worker: *mut WorkerReco
     unsafe { (*worker).request_count = count.wrapping_add(1) };
 }
 
+/// `worker->response_count++`.
+///
+/// # Safety
+/// The caller owns this worker's counter update, as in its worker event loop.
+pub unsafe fn add_response_count(worker: *mut WorkerRecord) {
+    // SAFETY: as the caller guarantees; only the field is read.
+    let count = unsafe { (*worker).response_count };
+    // SAFETY: the same worker loop owns this write.
+    unsafe { (*worker).response_count = count.wrapping_add(1) };
+}
+
 /// Initializes the current worker's counters and local running state.
 ///
 /// # Safety

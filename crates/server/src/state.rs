@@ -8,14 +8,14 @@ use crate::ops::{
     FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_DTLS_BIND,
     LOG_ST_DTLS_CONNECT, LOG_ST_ROOT_MISSING, LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_IS_STARTED,
     OP_MAXFD, OP_MINFD, OP_MODE, OP_RT_HAS_PIPE_COMMAND, OP_SET_MAXFD, OP_SET_WARNING,
-    OP_ST_ABORT_COUNT, OP_ST_CMD_ADD, OP_ST_CMD_EXISTS, OP_ST_COUNT_SEND, OP_ST_DTLS_ADD,
-    OP_ST_DTLS_ASSERT, OP_ST_DTLS_BIND, OP_ST_DTLS_CLEANUP, OP_ST_DTLS_CONNECT, OP_ST_DTLS_PEER,
-    OP_ST_DTLS_SESSION, OP_ST_DTLS_SOCKET, OP_ST_DTLS_TYPE, OP_ST_DTLS_V6ONLY, OP_ST_FINISH,
-    OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB, OP_ST_GS_CONCURRENCY_ZERO, OP_ST_INIT_PIPE,
-    OP_ST_PIPE_BIND, OP_ST_PIPE_COMMAND_NEW, OP_ST_PIPE_FD, OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH,
-    OP_ST_SET_ROOT, OP_ST_SOCK_FREE, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_TIMER_DEL,
-    OP_ST_VALID_CONN, OP_ST_VISIT, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS,
-    OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE, TRACE_ST_SCHEDULE,
+    OP_ST_ABORT_COUNT, OP_ST_CMD_ADD, OP_ST_CMD_EXISTS, OP_ST_DTLS_ADD, OP_ST_DTLS_ASSERT,
+    OP_ST_DTLS_BIND, OP_ST_DTLS_CLEANUP, OP_ST_DTLS_CONNECT, OP_ST_DTLS_PEER, OP_ST_DTLS_SESSION,
+    OP_ST_DTLS_SOCKET, OP_ST_DTLS_TYPE, OP_ST_DTLS_V6ONLY, OP_ST_FINISH, OP_ST_GS_CONCURRENCY,
+    OP_ST_GS_CONCURRENCY_SUB, OP_ST_GS_CONCURRENCY_ZERO, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND,
+    OP_ST_PIPE_COMMAND_NEW, OP_ST_PIPE_FD, OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT,
+    OP_ST_SOCK_FREE, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_VALID_CONN,
+    OP_ST_VISIT, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS,
+    OP_WORKER_IDLE, TRACE_ST_SCHEDULE,
 };
 #[cfg(test)]
 use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
@@ -381,7 +381,9 @@ fn send<H: Host>(h: &mut H, data: *const SendData) -> crate::Effect<bool> {
     if !sent {
         return Ok(false);
     }
-    h.get(OP_ST_COUNT_SEND)?;
+    // SAFETY: as above.
+    let send = unsafe { &*data };
+    crate::shared::count_send(h.state()?, send.info.fd, send.info.len);
     Ok(true)
 }
 
@@ -646,10 +648,8 @@ mod tests {
         };
         let mut s = process(&[(OP_ST_FINISH, 1)]);
         assert!(send(&mut s, &raw const data).unwrap());
-        assert_eq!(s.called(OP_ST_COUNT_SEND), 1);
         let mut s = process(&[]);
         assert!(!send(&mut s, &raw const data).unwrap());
-        assert_eq!(s.called(OP_ST_COUNT_SEND), 0);
     }
 
     /// A 4-byte send to session 1.
@@ -676,17 +676,9 @@ mod tests {
             (OP_SC_WRITABLE, 1),
         ]);
         assert!(send(&mut s, &raw const data).unwrap());
-        assert_eq!(
-            (
-                s.called(OP_ST_FINISH),
-                s.called(OP_SC_SEND),
-                s.called(OP_ST_COUNT_SEND)
-            ),
-            (0, 1, 1)
-        );
+        assert_eq!((s.called(OP_ST_FINISH), s.called(OP_SC_SEND)), (0, 1));
         let mut s = Script::default();
         assert!(!send(&mut s, &raw const data).unwrap(), "no session");
-        assert_eq!(s.called(OP_ST_COUNT_SEND), 0);
     }
 
     #[test]
