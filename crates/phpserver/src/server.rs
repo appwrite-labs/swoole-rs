@@ -10,6 +10,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
+use swoole_rs_corebase::DataHead;
 use swoole_rs_ossupport::swr_v1_os_msg_queue_stat;
 use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_pid, swr_v1_worker_status};
@@ -134,12 +135,12 @@ struct Iterator {
 
 type IteratorObject = Object<Iterator>;
 
-/// `ServerTaskObject` before its `zend_object`: `Server *serv; DataHead info;`
-/// (C++ binds and reads them).
+/// Upstream's `ServerTaskObject` before its `zend_object`: the server and the
+/// task's head.
 #[repr(C)]
 struct TaskData {
     serv: *mut c_void,
-    info: [u64; 5],
+    info: DataHead,
 }
 
 type TaskObject = Object<TaskData>;
@@ -148,7 +149,26 @@ type TaskObject = Object<TaskData>;
 pub(crate) fn task_info(object: *mut zend_object) -> *mut c_void {
     // SAFETY: a `Server\Task` object, which this class creates.
     let data = unsafe { TaskObject::data(object) };
-    data.info.as_mut_ptr().cast()
+    (&raw mut data.info).cast()
+}
+
+/// Bind a new `Server\Task` to the server and the head of the task it carries.
+pub(crate) fn task_bind(object: *mut zend_object, serv: *mut c_void, info: &DataHead) {
+    // SAFETY: a `Server\Task` object, which this class creates.
+    let data = unsafe { TaskObject::data(object) };
+    data.serv = serv;
+    data.info = *info;
+}
+
+/// A `Server\Task`'s server; an `E_ERROR`, which does not return, when it has none.
+pub(crate) fn task_server(object: *mut zend_object) -> *mut c_void {
+    // SAFETY: a `Server\Task` object, which this class creates.
+    let serv = unsafe { TaskObject::data(object) }.serv;
+    if serv.is_null() {
+        // SAFETY: a live object.
+        unsafe { (host().invalid)(object) };
+    }
+    serv
 }
 
 unsafe extern "C" fn task_create(ce: *mut zend_class_entry) -> *mut zend_object {

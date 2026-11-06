@@ -21,6 +21,10 @@ int swr_zend_try_report_code(void (*report)(int code, int flag, const char *mess
 int swr_zend_try_report_flag(void (*report)(int level, bool flag, const char *message), int level,
                              bool flag, const char *message);
 
+/* Swoole's sw_callable_warning, php_swoole_fatal_error(E_WARNING, "%s", message): a
+ * reporter for the calls above and phphelpers' function_call, which run it in a trap. */
+void swr_zend_callable_warning(const char *message);
+
 /* zend_parse_arg_*_slow: coercions raise deprecations (null to a scalar,
  * float to int), which run the user error handler. *parsed is the result. */
 int swr_zend_try_parse_long(zval *arg, zend_long *out, uint32_t number, bool *parsed);

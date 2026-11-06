@@ -8,14 +8,16 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_zend::{
     E_WARNING,
-    bailout::Bailout,
+    bailout::{self, Bailout},
     class_name, init_object, message, object_of, php_error,
     sys::{
         _zval_struct__bindgen_ty_1, IS_LONG, add_assoc_double_ex, add_assoc_long_ex,
-        add_assoc_string_ex, swr_zend_array_init, zend_class_entry, zend_object,
-        zend_update_property, zend_update_property_bool, zend_update_property_double,
+        add_assoc_string_ex, swr_zend_array_init, swr_zend_callable_warning, zend_class_entry,
+        zend_object, zend_update_property, zend_update_property_bool, zend_update_property_double,
         zend_update_property_long, zend_update_property_string, zend_update_property_stringl,
         zend_value, zval, zval_ptr_dtor,
     },
@@ -52,7 +54,6 @@ pub struct Packet {
 pub struct DispatchHost {
     zserv: unsafe extern "C" fn(*mut c_void) -> *mut zval,
     port_callback: unsafe extern "C" fn(*mut c_void, c_int, c_int) -> *mut c_void,
-    call: unsafe extern "C" fn(*mut c_void, u32, *mut zval, bool) -> c_int,
     recv_data: unsafe extern "C" fn(*mut c_void, *mut zval, *mut c_void),
     close: unsafe extern "C" fn(*mut c_void, i64),
     worker_start: unsafe extern "C" fn(*mut c_void),
@@ -127,14 +128,46 @@ fn undef() -> zval {
 /// "`<class>->on<event> handler error`" (`php_swoole_error`) when it fails.
 #[inline]
 fn call(cb: *mut c_void, args: &mut [zval], coroutine: bool, event: &str) -> Called {
+    match invoke(cb, args, ptr::null_mut(), coroutine) {
+        Ok(true) => Called::Done,
+        Err(_) => Called::Bailout,
+        Ok(false) => failed(&args[0], event),
+    }
+}
+
+/// `zend::function::call(cb, argc, args, retval, coroutine)`: whether the
+/// callable ran (or its coroutine started), or the bailout it raised, which
+/// the caller re-raises or hands to C++ (it is no longer pending here).
+pub(crate) fn invoke(
+    cb: *mut c_void,
+    args: &mut [zval],
+    retval: *mut zval,
+    coroutine: bool,
+) -> Result<bool, Bailout> {
     #[expect(clippy::cast_possible_truncation, reason = "at most five arguments")]
     let argc = args.len() as u32;
-    // SAFETY: a live callable and `argc` initialised arguments.
-    match unsafe { (host().call)(cb, argc, args.as_mut_ptr(), coroutine) } {
-        1 => Called::Done,
-        2 => Called::Bailout,
-        _ => failed(&args[0], event),
-    }
+    // SAFETY: `cb` is a live `zend::Callable *`, whose one member is its
+    // `SwrPhpCallable *` (php_swoole_cxx.h).
+    let owned = unsafe { *cb.cast::<*mut callable::Callable>() };
+    // SAFETY: a live handle.
+    let cache = unsafe { callable::cache(owned) };
+    // SAFETY: a resolved cache, `argc` initialised arguments and the return
+    // slot or null; the coroutine leaf and the reporter run inside C traps.
+    let called = unsafe {
+        function_call(
+            cache,
+            argc,
+            args.as_mut_ptr(),
+            retval,
+            coroutine,
+            swr_v1_phpcoroutines_create,
+            swr_zend_callable_warning,
+        )
+    };
+    called.map_err(|bailout| {
+        let _relayed = bailout::relay_to_c(Err(bailout));
+        Bailout
+    })
 }
 
 /// The warning of a failed call; a user error handler that bails out ends

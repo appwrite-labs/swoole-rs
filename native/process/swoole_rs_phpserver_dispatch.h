@@ -26,9 +26,6 @@ typedef struct {
     struct _zval_struct *(*zserv)(void *server);
     /* php_swoole_server_get_callback(serv, server_fd, type), or null. */
     void *(*port_callback)(void *server, int server_fd, int type);
-    /* zend::function::call(cb, argc, args, nullptr, coroutine) in zend_try:
-     * 0 failed, 1 succeeded, 2 bailed out. */
-    int (*call)(void *callback, uint32_t argc, struct _zval_struct *args, bool coroutine);
     void (*recv_data)(void *server, struct _zval_struct *data, void *request);
     void (*close)(void *server, int64_t session_id);
     /* onWorkerStart's native preparation: hooks and the message bus allocator. */
