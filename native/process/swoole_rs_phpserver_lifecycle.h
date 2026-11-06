@@ -91,8 +91,6 @@ typedef struct {
     void (*set_protocols)(void *port, uint32_t protocols, bool clear);
     /* php_swoole_server_isset_callback(serv, port, type). */
     bool (*isset_callback)(void *server, void *port, int type);
-    /* Server\Port::set($setting) in zend_try: true if it bailed out. */
-    bool (*port_set)(struct _zval_struct *port_object, struct _zval_struct *setting);
     /* 0: Server, 1: Http\Server, 2: WebSocket\Server, 3: Redis\Server. */
     int (*kind)(struct _zend_object *object);
     /* serv->create(): null, or sw_error after a failure. */
@@ -132,9 +130,6 @@ typedef struct {
                     void *context);
     /* zend::function::call(callable, argc, args, retval, false) in zend_try: 0 failed, 1 ok, 2 bailed out. */
     int (*call)(void *callable, uint32_t argc, struct _zval_struct *args, struct _zval_struct *retval);
-    /* \Swoole\Server\Helper::onBeforeStart($server) when the library is enabled, in zend_try:
-     * true if it bailed out. */
-    bool (*before_start_helper)(struct _zval_struct *server);
     /* Coroutine::get_current_safe() in zend_try (*bailed when it bailed out), is_suspending() and
      * yield(). */
     void *(*co_current)(bool *bailed);

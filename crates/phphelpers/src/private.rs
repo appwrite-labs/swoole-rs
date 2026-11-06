@@ -376,21 +376,18 @@ pub unsafe fn function_call(
     }
 }
 
+/// `zend::function::call(name, argc, argv)` into `retval`, a bailout left
+/// pending.
 /// # Safety
 /// A borrowed binary function-name span, argument slots and writable owned return value.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_named_call(
-    name: *const c_char,
-    length: usize,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
-) {
+unsafe fn named(name: *const c_char, length: usize, argc: u32, argv: *mut zval, retval: *mut zval) {
     // SAFETY: zero initializes the function-name slot before its string allocation.
     let mut function: zval = unsafe { std::mem::zeroed() };
     // SAFETY: Zend copies the complete binary function name into its request string.
     bailed(unsafe { sys::swr_zend_try_facade_value_string(&raw mut function, name, length) });
-    bailout::finish();
+    if bailout::pending() {
+        return;
+    }
     let mut result = -1;
     // SAFETY: Zend's macro invocation is one leaf effect inside the C trap.
     bailed(unsafe {
@@ -412,7 +409,53 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_named_call(
             unsafe { fatal_exception() };
         }
     }
+}
+
+/// # Safety
+/// As [`named`].
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn swr_v1_phphelpers_named_call(
+    name: *const c_char,
+    length: usize,
+    argc: u32,
+    argv: *mut zval,
+    retval: *mut zval,
+) {
+    // SAFETY: per the caller.
+    unsafe { named(name, length, argc, argv, retval) };
     bailout::finish();
+}
+
+/// `zend::function::call(name, args)`, its result discarded as upstream's
+/// temporary `Variable` is.
+/// # Errors
+/// PHP bailed out; nothing is resumed while a Rust caller owns its state.
+/// # Safety
+/// `args` are live zvals.
+pub unsafe fn named_call(name: &[u8], args: &mut [zval]) -> Result<(), bailout::Bailout> {
+    #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
+    let argc = args.len() as u32;
+    // SAFETY: zero is an undefined return slot.
+    let mut retval: zval = unsafe { std::mem::zeroed() };
+    // SAFETY: the name's bytes, live arguments and a writable result.
+    unsafe {
+        named(
+            name.as_ptr().cast(),
+            name.len(),
+            argc,
+            args.as_mut_ptr(),
+            &raw mut retval,
+        );
+    };
+    if !bailout::pending() {
+        // SAFETY: the result this call owns.
+        unsafe { destroy(&raw mut retval) };
+    }
+    if bailout::relay_to_c(Ok(())) {
+        Err(bailout::Bailout)
+    } else {
+        Ok(())
+    }
 }
 
 /// [`function_call`] for C++: 1 when the call succeeded, 0 when it failed,

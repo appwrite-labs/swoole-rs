@@ -230,21 +230,28 @@ pub unsafe fn call(
     Ok(result != 0)
 }
 
-/// `zend_call_method(object, scope, NULL, method, ...)` with one argument (or
-/// none when `arg` is null) inside `zend_try`. A null `scope` is the object's
-/// class; otherwise the method is `scope`'s, called on `object`.
+/// `zend_call_method(object, scope, NULL, method, ...)` with `args` (at most
+/// two) inside `zend_try`. A null `scope` is the object's class; otherwise the
+/// method is `scope`'s, called on `object`. A null `retval` discards the result.
 /// # Errors
 /// The method bailed out.
 /// # Safety
 /// `object` is a live object, `scope` null or its class or an ancestor,
-/// `retval` writable and `arg` null or a live zval.
+/// `retval` null or writable and `args` live zvals.
 pub unsafe fn call_method(
     object: *mut zend_object,
     scope: *mut zend_class_entry,
     method: &[u8],
     retval: *mut zval,
-    arg: *mut zval,
+    args: &[*mut zval],
 ) -> Result<(), Bailout> {
+    debug_assert!(
+        args.len() <= 2,
+        "zend_call_method takes at most two arguments"
+    );
+    let arg = |n: usize| args.get(n).copied().unwrap_or(core::ptr::null_mut());
+    #[expect(clippy::cast_possible_truncation, reason = "at most two arguments")]
+    let argc = args.len() as u32;
     // SAFETY: per the caller; Zend runs in the C shim's frame.
     trapped(unsafe {
         swr_zend_try_call_method(
@@ -253,7 +260,9 @@ pub unsafe fn call_method(
             method.as_ptr().cast(),
             method.len(),
             retval,
-            arg,
+            argc,
+            arg(0),
+            arg(1),
         )
     })
 }

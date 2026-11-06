@@ -67,7 +67,7 @@ pub struct PortHost {
 }
 
 static HOST: AtomicPtr<PortHost> = AtomicPtr::new(ptr::null_mut());
-static PORT: Class = Class::new();
+pub(crate) static PORT: Class = Class::new();
 
 fn host() -> &'static PortHost {
     // SAFETY: MINIT stores C++'s static table before any object or method exists.

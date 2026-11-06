@@ -9,7 +9,7 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, message,
+    Call, E_ERROR, E_WARNING, bailout, message,
     string::bytes,
     sys::{
         IS_NULL, IS_STRING, IS_TRUE, swr_zend_string_release, swr_zval_copy, swr_zval_get_string,
@@ -22,8 +22,6 @@ use swoole_rs_zend::{
 #[repr(C)]
 pub struct IoHost {
     closed: unsafe extern "C" fn(*mut c_void) -> bool,
-    port_call:
-        unsafe extern "C" fn(*mut zend_object, c_int, *mut zval, *mut zval, *mut zval) -> bool,
     listen: unsafe extern "C" fn(*mut zend_object, *const c_char, i64, i64, *mut zval) -> bool,
     send_unix: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, usize, i64) -> c_int,
     send: unsafe extern "C" fn(*mut c_void, i64, *mut zend_string) -> bool,
@@ -96,16 +94,17 @@ fn lookup(name: *mut zval) -> Option<(c_int, &'static CStr)> {
 }
 
 /// Re-raise a bailout C++ trapped, from the handler, which owns nothing.
-fn raise(bailed: bool) {
-    if bailed {
-        // SAFETY: Zend's own `zend_bailout()`; see docs/zend.md.
-        unsafe {
-            swoole_rs_zend::sys::_zend_bailout(
-                c"crates/phpserver/src/io.rs".as_ptr().cast_mut(),
-                line!(),
-            )
-        };
-    }
+/// `method(args)` of the primary port (`Swoole\Server\Port`'s own), on the
+/// port object, as `sw_zend_call_method_with_*_params` calls it; a bailout is
+/// raised from the handler, which owns nothing.
+fn port_call(call: &Call, method: &[u8], retval: *mut zval, args: &[*mut zval]) {
+    // SAFETY: `$this` is a Server object.
+    let port = unsafe { crate::lifecycle::swr_v1_phpserver_port(call.this(), 0) };
+    // SAFETY: the primary port's object zval.
+    let object = unsafe { swoole_rs_zend::object_of(port) };
+    // SAFETY: a live Port object, its class, the result slot and the arguments.
+    let called = unsafe { bailout::call_method(object, crate::PORT.entry(), method, retval, args) };
+    bailout::raise(called);
 }
 
 fn on(call: &Call) {
@@ -125,10 +124,9 @@ fn on(call: &Call) {
     let Some((kind, property)) = lookup(name) else {
         // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
         let mut retval: zval = unsafe { std::mem::zeroed() };
-        // SAFETY: `$this`, the arguments and a writable result.
-        raise(unsafe { (host().port_call)(call.this(), 0, name, cb, &raw mut retval) });
+        port_call(call, b"on", &raw mut retval, &[name, cb]);
         // RETURN_BOOL(Z_BVAL_P(&retval))
-        // SAFETY: C++ wrote the method's result.
+        // SAFETY: Zend wrote the method's result.
         return call.set_bool(unsafe { type_of(&raw const retval) } == IS_TRUE);
     };
     // SAFETY: `$this` and the callback argument; Zend copies both.
@@ -171,10 +169,7 @@ fn get_callback(call: &Call) {
             return unsafe { swr_zval_copy(call.return_value(), value) };
         }
     }
-    // SAFETY: `$this`, the argument and the return slot.
-    raise(unsafe {
-        (host().port_call)(call.this(), 1, name, ptr::null_mut(), call.return_value())
-    });
+    port_call(call, b"getcallback", call.return_value(), &[name]);
 }
 
 fn listen(call: &Call) {
