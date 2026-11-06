@@ -13,7 +13,7 @@ use crate::{
 };
 use openssl_sys::{SSL, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, stack_st_X509};
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::{
     make_socket_typed, signal_dispatch, socket_cork, socket_set_fd_option, socket_uncork,
@@ -1457,25 +1457,16 @@ pub unsafe extern "C-unwind" fn socket_send_async(
     data: *const c_void,
     length: usize,
 ) -> isize {
-    // SAFETY: src/wrapper/event.cc's.
-    unsafe extern "C-unwind" {
-        #[link_name = "_Z25swoole_event_is_availablev"]
-        fn swoole_event_is_available() -> bool;
-        #[link_name = "_Z18swoole_event_writePN6swoole7network6SocketEPKvm"]
-        fn swoole_event_write(
-            socket: *mut SocketRecord,
-            data: *const c_void,
-            length: usize,
-        ) -> isize;
-    }
-    // SAFETY: no preconditions.
-    if unsafe { swoole_event_is_available() } {
+    let Some((reactor, prepared)) = swoole_rs_reactor::socket_upstream::event_reactor() else {
         // SAFETY: as the caller promises.
-        unsafe { swoole_event_write(socket, data, length) }
-    } else {
-        // SAFETY: as the caller promises.
-        unsafe { socket_send_sync(socket, data, length, 0) }
-    }
+        return unsafe { socket_send_sync(socket, data, length, 0) };
+    };
+    // SAFETY: `swoole_event_write`: the live reactor's `write`, set at construction.
+    let Some(write) = (unsafe { (*prepared.fields).write }) else {
+        return -1;
+    };
+    // SAFETY: as the caller promises, on the thread's reactor.
+    unsafe { write(reactor, socket, data, length) }
 }
 
 /// `bool Socket::ssl_shutdown()`.
@@ -1593,37 +1584,6 @@ pub unsafe extern "C" fn socket_ssl_create(
     -1
 }
 
-/// `void Socket::free()`, which native code registers: it defers the close to the
-/// event loop through a `std::function`.
-static SOCKET_FREE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-
-/// Registers `Socket::free`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_set_free(free: unsafe extern "C-unwind" fn(*mut SocketRecord)) {
-    SOCKET_FREE.store(free as *mut c_void, Ordering::Relaxed);
-}
-
-/// `void Socket::free()`: closes and frees the socket, deferred to the event loop
-/// when there is one. Unregistered (outside the hybrid), a socket without timers or
-/// buffers is released at once.
-///
-/// # Safety
-/// `socket` is a live record nothing else uses afterwards.
-unsafe fn socket_free(socket: *mut SocketRecord) {
-    let free = SOCKET_FREE.load(Ordering::Relaxed);
-    if free.is_null() {
-        // SAFETY: as the caller promises.
-        unsafe { swoole_rs_reactor::swr_v1_socket_release(socket) };
-        // SAFETY: as the caller promises.
-        unsafe { swoole_rs_reactor::swr_v1_socket_dealloc(socket) };
-        return;
-    }
-    // SAFETY: only `swr_v1_socket_set_free` stores it, from that function type.
-    let free: unsafe extern "C-unwind" fn(*mut SocketRecord) = unsafe { std::mem::transmute(free) };
-    // SAFETY: as the caller promises.
-    unsafe { free(socket) };
-}
-
 /// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
 /// when it is invalid.
 ///
@@ -1737,10 +1697,10 @@ pub unsafe extern "C-unwind" fn make_server_socket(
 /// Frees a socket `make_server_socket` gave up on.
 ///
 /// # Safety
-/// As `socket_free`.
+/// As `Socket::free`.
 unsafe fn discard(socket: *mut SocketRecord) -> *mut SocketRecord {
     // SAFETY: as the caller promises.
-    unsafe { socket_free(socket) };
+    unsafe { swoole_rs_reactor::socket_upstream::socket_free(socket) };
     std::ptr::null_mut()
 }
 
@@ -1952,7 +1912,7 @@ mod tests {
             0,
             "getsockname filled the port"
         );
-        unsafe { socket_free(socket) };
+        unsafe { swoole_rs_reactor::socket_upstream::socket_free(socket) };
         let invalid = unsafe { make_server_socket(1, c"not an address".as_ptr(), 0, 8) };
         assert!(invalid.is_null());
         assert_ne!(log::last_error(), 0);

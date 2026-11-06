@@ -74,9 +74,12 @@ swr_v1_reactor_backend_plan swr_v1_reactor_backend_type(int32_t, uint32_t, uint3
 int32_t swr_v1_reactor_init_next(swr_v1_reactor_init_state *, uint32_t, uint32_t, uint32_t, uint32_t);
 
 typedef struct swr_v1_reactor_deferred swr_v1_reactor_deferred;
-int32_t swr_v1_reactor_deferred_push(swr_v1_reactor_deferred **, uintptr_t);
-int32_t swr_v1_reactor_deferred_step(swr_v1_reactor_deferred *, uint32_t *, uintptr_t *);
-int32_t swr_v1_reactor_deferred_clear(swr_v1_reactor_deferred **, uintptr_t *);
+/* Reactor::defer_tasks and destroy_callbacks: FIFO (call, data) queues, created on first push.
+ * push is 0, or -2 when it cannot allocate; free disposes of the tasks that never ran. */
+int32_t swr_v1_reactor_deferred_push(swr_v1_reactor_deferred **, void (*call)(void *), void *data,
+                                     void (*dispose)(void *));
+void swr_v1_reactor_deferred_run(swr_v1_reactor_deferred *);
+void swr_v1_reactor_deferred_free(swr_v1_reactor_deferred **);
 
 /* End (0) and exit (1) callbacks by key. Rust keeps views[kind] current: that kind's
    entries in ascending key order, readable until the next change. Its other fields
@@ -151,7 +154,6 @@ const swr_v1_reactor_handler *swr_v1_reactor_handlers_default(const swr_v1_react
 /* Reactor::wait()'s native effects (swr_v1_reactor_wait); each receives the reactor. */
 typedef struct {
     void *reactor;               /* each handler runs as handler(reactor, event) */
-    void *const *deferred;       /* Reactor::defer_tasks, read before each kernel wait */
     void (*begin)(void *);
     void (*end)(void *, int timed_out);
     int (*interrupted)(void *); /* nullable: epoll io_uring builds only */
@@ -259,8 +261,10 @@ int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_
 int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);
 /* --fix-halfclose's close_notify and interrupted-sendfile repairs (SW_HALFCLOSE_TLS_SHUTDOWN). */
 void swr_v1_socket_set_halfclose_repairs(bool repaired);
-/* Socket::free, which defers through a std::function. */
-void swr_v1_socket_set_free(void (*free)(struct swr_v1_socket *));
+/* The thread's Reactor while swoole_event_is_available(), else null (src/wrapper/event.cc). */
+void *swr_v1_event_reactor(void);
+/* The swr_v1_reactor_change_log the C++ passes. */
+void swr_v1_reactor_log(const char *origin, int code, const char *message);
 /* An IOVector's cursor. */
 typedef struct {
     struct iovec *iterator;
@@ -356,7 +360,10 @@ typedef struct {
     swr_v1_reactor_write_fn write;
     swr_v1_reactor_writev_fn writev;
     swr_v1_reactor_close_fn close;
+    swr_v1_reactor_deferred *defer_tasks, *destroy_callbacks;
 } swr_v1_reactor_fields;
+/* The PRIORITY_DEFER_TASK end callback: detaches defer_tasks, runs and frees it. */
+void swr_v1_reactor_run_defer(swr_v1_reactor_deferred **slot);
 typedef struct {
     swr_v1_reactor_state *owner; swr_v1_reactor_fields *fields;
     swr_v1_reactor_registry *registry; swr_v1_reactor_handlers *handlers;

@@ -2,7 +2,7 @@
 
 Opt-in Rust policy for the Swoole reactor backends, callbacks, Socket I/O and
 output queues. The frozen ABI is `docs/reactor-abi-v1.md`; the module-local
-headers are `swoole_rs_reactor.h` and `swoole_rs_reactor_defer.h`. Rust sources
+header is `swoole_rs_reactor.h`. Rust sources
 are in `crates/reactor/src/`.
 
 General rule for every seam: Rust receives copied scalar facts and returns a

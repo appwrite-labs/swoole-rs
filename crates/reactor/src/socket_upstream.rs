@@ -6,7 +6,7 @@
 //! upstream (Itanium) symbols and `socket.cc` no longer defines them.
 use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketRecord};
-use std::ffi::{CStr, c_int};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::log;
 
 /// `SW_OK`, `SW_ERR`; `swReturnCode`'s `SW_WAIT`, `SW_ERROR` and `SW_READY`.
@@ -457,6 +457,117 @@ pub extern "C" fn make_socket_fd(fd: c_int, fd_type: c_int) -> *mut SocketRecord
 )]
 pub extern "C" fn socket(domain: c_int, kind: c_int, protocol: c_int, flags: c_int) -> c_int {
     crate::swr_v1_socket_open(domain, kind, protocol, flags)
+}
+
+/// `Reactor::change`'s log: `code` 0 is `swoole_sys_warning`, else
+/// `swoole_error_log(SW_LOG_WARNING, code, ...)`, as from `origin`; then the backtrace.
+///
+/// # Safety
+/// Both strings are NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_reactor_log(
+    origin: *const c_char,
+    code: c_int,
+    message: *const c_char,
+) {
+    // SAFETY: as the caller promises.
+    let origin = unsafe { CStr::from_ptr(origin) };
+    // SAFETY: as the caller promises.
+    let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+    if code == 0 {
+        log::sys_warning(origin, format_args!("{message}"));
+    } else {
+        log::error_log(log::LOG_WARNING, code, origin, format_args!("{message}"));
+    }
+    swoole_rs_corebase::swoole_print_backtrace_on_error();
+}
+
+/// base.cc's `socket_free_defer`: closes the descriptor and frees the record.
+///
+/// # Safety
+/// `socket` is a live record nothing uses afterwards.
+unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
+    let socket = socket.cast::<SocketRecord>();
+    // SAFETY: as the caller promises.
+    if !unsafe { crate::swr_v1_socket_release(socket) } {
+        // SAFETY: as above.
+        let fd = unsafe { (*socket).fd };
+        log::sys_warning(c"socket_free_defer", format_args!("close({fd}) failed"));
+    }
+    // SAFETY: as above.
+    unsafe { crate::swr_v1_socket_dealloc(socket) };
+}
+
+/// The thread's event loop while it is available (`SwooleTG.reactor`, unless null
+/// or destroyed), with the prepared state it begins with. src/wrapper/event.cc reads
+/// the C++ `thread_local`.
+#[cfg(feature = "upstream-symbols")]
+#[must_use]
+pub fn event_reactor() -> Option<(*mut c_void, crate::ReactorPrepared)> {
+    // SAFETY: src/wrapper/event.cc's.
+    unsafe extern "C" {
+        fn swr_v1_event_reactor() -> *mut c_void;
+    }
+    // SAFETY: no preconditions.
+    let reactor = unsafe { swr_v1_event_reactor() };
+    // SAFETY: null or a live `Reactor`, which begins with its prepared state.
+    let prepared = unsafe { reactor.cast::<crate::ReactorPrepared>().as_ref() }.copied();
+    prepared.map(|prepared| (reactor, prepared))
+}
+
+/// `void Socket::free()`: deletes the timers and buffers, then, while the thread's
+/// event loop is available, removes the socket from it and defers the close to it;
+/// otherwise closes at once. Outside the hybrid there are no timers, buffers or loop.
+///
+/// # Safety
+/// `socket` is a live record nothing uses afterwards.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")
+)]
+pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
+    #[cfg(feature = "upstream-symbols")]
+    {
+        // SAFETY: src/wrapper/timer.cc's, src/core/buffer.cc's and the C++ runtime's.
+        unsafe extern "C-unwind" {
+            #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
+            fn swoole_timer_del(node: *mut c_void) -> bool;
+            #[link_name = "_ZN6swoole6BufferD1Ev"]
+            fn buffer_drop(buffer: *mut c_void);
+            #[link_name = "_ZdlPv"]
+            fn operator_delete(storage: *mut c_void);
+        }
+        // SAFETY: as the caller promises.
+        let record = unsafe { &*socket };
+        for timer in [record.recv_timer, record.output.send_timer] {
+            if !timer.is_null() {
+                // SAFETY: the socket's live timer.
+                unsafe { swoole_timer_del(timer) };
+            }
+        }
+        for buffer in [record.in_buffer, record.output.out_buffer] {
+            if !buffer.is_null() {
+                // SAFETY: `delete buffer`: the socket owns each `new Buffer`.
+                unsafe { buffer_drop(buffer) };
+                // SAFETY: as above.
+                unsafe { operator_delete(buffer) };
+            }
+        }
+        if let Some((_, reactor)) = event_reactor() {
+            if record.fd != -1 && record.removed == 0 {
+                // SAFETY: `swoole_event_del(this)` on the thread's live reactor; del
+                // never allocates, and a failure is logged.
+                unsafe {
+                    crate::swr_v1_reactor_change(reactor.owner, socket, 2, 0, swr_v1_reactor_log)
+                };
+            }
+            // SAFETY: `swoole_event_defer(socket_free_defer, this)`.
+            unsafe { crate::deferred::defer(reactor.fields, socket_free_defer, socket.cast()) };
+            return;
+        }
+    }
+    // SAFETY: as the caller promises.
+    unsafe { socket_free_defer(socket.cast()) };
 }
 
 #[cfg(test)]
