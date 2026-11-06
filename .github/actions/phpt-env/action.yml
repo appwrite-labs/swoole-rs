@@ -12,7 +12,7 @@ runs:
   steps:
     - uses: ./.github/actions/install
       with:
-        packages: php-gmp php-bcmath php-mysql php-pgsql unixodbc odbc-mariadb libfbclient2 libssh2-1t64 openssh-server
+        packages: php-gmp php-bcmath php-mysql php-pgsql unixodbc odbc-mariadb libfbclient2 openssh-server
         php: ${{ inputs.php }}
     - shell: bash
       run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql' | sudo tee -a /etc/hosts
