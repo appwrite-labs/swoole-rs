@@ -86,6 +86,7 @@ struct ContextState {
     uint8_t websocket_settings;
     void * upload_tmp_dir_;
     void * compression_types_;
+    void * ws_buffer_;
 };
 #endif
 #endif

@@ -1382,8 +1382,7 @@ pub(crate) const SETTING_COMPRESSION: u8 = 1 << 4;
 /// `SW_WEBSOCKET_DEFAULT_BUFFER`.
 const DEFAULT_BUFFER: usize = 4096;
 
-// A coroutine socket and the message continuation buffer that goes with it
-// (`std::shared_ptr<String>`), both C++'s.
+// The coroutine socket, C++'s.
 unsafe extern "C" {
     fn swr_ws_host_sock_recv(
         sock: *mut c_void,
@@ -1393,12 +1392,18 @@ unsafe extern "C" {
     ) -> isize;
     fn swr_ws_host_sock_send(sock: *mut c_void, data: *const c_char, length: usize);
     fn swr_ws_host_sock_fd(sock: *mut c_void) -> c_int;
-    /// Null when there is no buffer; `offset` holds the message's ext flags.
-    fn swr_ws_host_buffer(slot: *mut c_void, length: *mut usize, offset: *mut usize) -> *const u8;
-    fn swr_ws_host_buffer_new(slot: *mut c_void, size: usize, offset: usize);
-    fn swr_ws_host_buffer_append(slot: *mut c_void, data: *const u8, length: usize);
-    fn swr_ws_host_buffer_reset(slot: *mut c_void);
 }
+
+/// A message being assembled from fragments: its payload so far, and the
+/// first frame's opcode and flags (`(opcode << 8) | flags`).
+pub(crate) struct Message {
+    data: Vec<u8>,
+    ext_flags: u16,
+}
+
+/// Where a message being assembled lives: a context's `ws_buffer`, or a
+/// client's `continue_frame_buffer` (null when none).
+pub(crate) type Assembly = Option<Box<Message>>;
 
 /// `websocket::send_frame`: answer a control frame the user did not ask for.
 fn reply(settings: u32, sock: *mut c_void, opcode: u8, payload: &[u8]) {
@@ -1463,9 +1468,9 @@ fn payload_zval(payload: &[u8], compressed: bool) -> Option<zval> {
 /// a frame object, answering pings and closes the settings leave to it.
 /// `false` when the socket read failed, `""` when it closed, `null` on any
 /// other error.
-fn recv(
+pub(crate) fn recv(
     settings: u32,
-    slot: *mut c_void,
+    slot: &mut Assembly,
     sock: *mut c_void,
     return_value: *mut zval,
     timeout: f64,
@@ -1519,12 +1524,8 @@ fn recv(
             deliver(return_value, sock, opcode, &mut zpayload, FLAG_FIN);
             return;
         }
-        let mut buffered = 0;
-        let mut ext_flags = 0;
-        // SAFETY: the caller's buffer slot and local outputs.
-        let started = unsafe { swr_ws_host_buffer(slot, &raw mut buffered, &raw mut ext_flags) };
         if opcode == OPCODE_CONTINUATION {
-            if started.is_null() {
+            let Some(message) = slot.as_mut() else {
                 warning(
                     func,
                     "A continuation frame cannot stand alone and MUST be preceded by an initial frame whose \
@@ -1532,24 +1533,16 @@ fn recv(
                 );
                 set_type(return_value, IS_NULL);
                 return;
-            }
-            if !payload.is_empty() {
-                // SAFETY: the started buffer and the frame's payload.
-                unsafe { swr_ws_host_buffer_append(slot, payload.as_ptr(), payload.len()) };
-            }
+            };
+            message.data.extend_from_slice(payload);
             if frame.flags & FLAG_FIN == 0 {
                 continue;
             }
-            // SAFETY: as above, after the append.
-            let message =
-                unsafe { swr_ws_host_buffer(slot, &raw mut buffered, &raw mut ext_flags) };
-            let [complete_opcode, complete_flags] =
-                u16::try_from(ext_flags).unwrap_or_default().to_be_bytes();
-            let Some(mut zpayload) =
-                payload_zval(bytes_of(message, buffered), complete_flags & FLAG_RSV1 != 0)
+            // The whole message is assembled: release its memory once delivered.
+            let Some(message) = slot.take() else { return };
+            let [complete_opcode, complete_flags] = message.ext_flags.to_be_bytes();
+            let Some(mut zpayload) = payload_zval(&message.data, complete_flags & FLAG_RSV1 != 0)
             else {
-                // SAFETY: the caller's buffer slot.
-                unsafe { swr_ws_host_buffer_reset(slot) };
                 protocol_error(return_value);
                 return;
             };
@@ -1560,12 +1553,9 @@ fn recv(
                 &mut zpayload,
                 complete_flags | FLAG_FIN,
             );
-            // The whole message is assembled: release its memory now.
-            // SAFETY: the caller's buffer slot.
-            unsafe { swr_ws_host_buffer_reset(slot) };
             return;
         }
-        if !started.is_null() {
+        if slot.is_some() {
             warning(
                 func,
                 "All fragments of a message, except for the initial frame, must use the continuation \
@@ -1587,31 +1577,46 @@ fn recv(
         } else {
             payload.len()
         };
-        let ext_flags = usize::from(u16::from_be_bytes([opcode, frame.flags]));
-        // SAFETY: the caller's buffer slot.
-        unsafe { swr_ws_host_buffer_new(slot, size, ext_flags) };
-        if !payload.is_empty() {
-            // SAFETY: the buffer just made and the frame's payload.
-            unsafe { swr_ws_host_buffer_append(slot, payload.as_ptr(), payload.len()) };
-        }
+        let mut data = Vec::with_capacity(size);
+        data.extend_from_slice(payload);
+        *slot = Some(Box::new(Message {
+            data,
+            ext_flags: u16::from_be_bytes([opcode, frame.flags]),
+        }));
     }
 }
 
 /// `websocket::recv_frame` for C++: `settings` packs `WebSocketSettings`'
 /// `in_server`, `open_ping_frame`, `open_pong_frame` and `open_close_frame`
-/// from bit 0; `slot` is the `std::shared_ptr<String>` of the message being assembled.
+/// from bit 0; `slot` holds the message being assembled (null when none).
 /// # Safety
 /// `slot` and `sock` are live; `return_value` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp_websocket_recv(
     settings: u32,
-    slot: *mut c_void,
+    slot: *mut *mut c_void,
     sock: *mut c_void,
     return_value: *mut zval,
     timeout: f64,
 ) {
-    recv(settings, slot, sock, return_value, timeout);
+    // SAFETY: per the caller; a null or filled slot is an `Assembly`.
+    recv(
+        settings,
+        unsafe { &mut *slot.cast::<Assembly>() },
+        sock,
+        return_value,
+        timeout,
+    );
     bailout::finish();
+}
+
+/// Release the message a client was assembling.
+/// # Safety
+/// `slot` is a live slot `swr_v1_phphttp_websocket_recv` filled.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_websocket_buffer_free(slot: *mut *mut c_void) {
+    // SAFETY: per the caller; a null or filled slot is an `Assembly`.
+    unsafe { *slot.cast::<Assembly>() = None };
 }
 
 #[cfg(test)]

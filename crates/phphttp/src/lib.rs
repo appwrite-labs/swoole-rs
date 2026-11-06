@@ -31,8 +31,9 @@ mod websocket;
 
 pub use context::{
     swr_v1_phphttp_close, swr_v1_phphttp_context, swr_v1_phphttp_context_bind,
-    swr_v1_phphttp_context_copy, swr_v1_phphttp_context_free, swr_v1_phphttp_context_objects,
-    swr_v1_phphttp_send, swr_v1_phphttp_set_context,
+    swr_v1_phphttp_context_copy, swr_v1_phphttp_context_free, swr_v1_phphttp_context_init,
+    swr_v1_phphttp_context_new, swr_v1_phphttp_context_objects, swr_v1_phphttp_send,
+    swr_v1_phphttp_set_context,
 };
 pub use cookie::*;
 pub use header::{swr_v1_phphttp_response_rshutdown, swr_v1_phphttp_set_compressed};

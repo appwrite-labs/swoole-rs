@@ -256,3 +256,11 @@ pub unsafe fn release_default(ctx: *mut Context) {
     // SAFETY: per the caller.
     unsafe { swr_v1_phphttp_context_free(ctx) };
 }
+
+/// `swoole_http_parse_cookie`: a `cookie` header's pairs into the request's
+/// `$cookie`.
+/// # Safety
+/// `array` is the request's live cookie array.
+pub unsafe fn cookie(array: *mut zval, value: &[u8]) {
+    parse::parse_cookie(array, value.as_ptr(), value.len());
+}

@@ -1,7 +1,9 @@
 //! What the methods ask of `swoole::http::Context`, implemented in ext-src
 //! (`native/httpbindings/swoole_rs_httpbindings.h`) until the context moves to
 //! Rust. `Context` is that object, opaque here.
+use std::cmp::Ordering;
 use std::ffi::{CString, c_char, c_int, c_void};
+use swoole_rs_corebase::log;
 use swoole_rs_zend::{
     bailout,
     sys::{zend_long, zend_string, zval},
@@ -37,11 +39,6 @@ pub(crate) const HEADER_KEY_SIZE: usize = 128;
 
 unsafe extern "C" {
     pub(crate) fn swr_http_host_error(code: c_int, always: c_int, message: *const c_char);
-    pub(crate) fn swr_http_host_request_free(context: *mut Context);
-    fn swr_http_host_log(level: c_int, error: c_int, func: *const c_char, message: *const c_char);
-    pub(crate) fn swr_http_host_treat_data(arg: c_int, text: *mut c_char, array: *mut zval);
-    pub(crate) fn swr_http_host_websocket_connection(context: *mut Context) -> c_int;
-    pub(crate) fn swr_http_host_tmpfile(path: *mut c_char) -> c_int;
     pub(crate) fn swr_http_host_after(context: *mut Context) -> bool;
     pub(crate) fn swr_http_host_http2(
         context: *mut Context,
@@ -62,7 +59,6 @@ unsafe extern "C" {
         code: zend_long,
         debug: *mut zend_string,
     ) -> bool;
-    pub(crate) fn swr_http_host_recv(context: *mut Context, timeout: f64, return_value: *mut zval);
 }
 
 /// Re-raise a bailout a host call trapped. Host calls that can run user code
@@ -111,13 +107,15 @@ pub(crate) fn report(code: c_int, always: bool, message: impl Into<Vec<u8>>) {
 /// when `error > 0`, `swoole_warning` when 0, `swoole_sys_warning` for `-errno`.
 /// The message ends at its first NUL, as `%s`/`%.*s` do.
 pub(crate) fn log(level: c_int, error: c_int, func: &std::ffi::CStr, message: impl Into<Vec<u8>>) {
-    let mut message = message.into();
-    if let Some(nul) = message.iter().position(|&byte| byte == 0) {
-        message.truncate(nul);
+    let message = message.into();
+    let message = String::from_utf8_lossy(&message);
+    match error.cmp(&0) {
+        Ordering::Greater => log::error_log(level, error, func, format_args!("{message}")),
+        Ordering::Equal => log::warning(func, format_args!("{message}")),
+        Ordering::Less => {
+            log::sys_warning_errno(error.wrapping_neg(), func, format_args!("{message}"));
+        }
     }
-    let message = CString::new(message).unwrap_or_default();
-    // SAFETY: NUL-terminated strings, printed through "%s".
-    unsafe { swr_http_host_log(level, error, func.as_ptr(), message.as_ptr()) };
 }
 
 /// The context's state bits.

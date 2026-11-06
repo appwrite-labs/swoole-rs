@@ -165,6 +165,8 @@ pub(crate) struct State {
     /// A coroutine server's `http_compression_types`; a server's context
     /// reads its server's.
     pub(crate) compression_types: Option<Rc<HashSet<Box<[u8]>>>>,
+    /// A coroutine server's WebSocket message being assembled from fragments.
+    pub(crate) ws_buffer: Option<Box<crate::websocket::Message>>,
 }
 
 /// `swoole::http::Response`.
@@ -182,7 +184,7 @@ pub(crate) struct Response {
 
 /// `SWR_PHPHTTP_PARSE_SIZE` and `SWR_PHPHTTP_STATE_SIZE`.
 const _: () = assert!(size_of::<Parse>() == 144, "ext-src/php_swoole_http.h");
-const _: () = assert!(size_of::<State>() == 760, "ext-src/php_swoole_http.h");
+const _: () = assert!(size_of::<State>() == 768, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Response>() == 120, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Llhttp>() == 96, "ext-src/php_swoole_http.h");
 const _: () = assert!(size_of::<Request>() == 272, "ext-src/php_swoole_http.h");
@@ -207,5 +209,6 @@ mod tests {
         assert_eq!(std::mem::offset_of!(State, websocket_settings), 738);
         assert_eq!(std::mem::offset_of!(State, upload_tmp_dir), 744);
         assert_eq!(std::mem::offset_of!(State, compression_types), 752);
+        assert_eq!(std::mem::offset_of!(State, ws_buffer), 760);
     }
 }

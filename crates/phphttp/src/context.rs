@@ -171,8 +171,37 @@ unsafe extern "C" {
     /// The server still holds the session's connection, neither closed nor
     /// closed by the peer.
     fn swr_http_host_connection_open(server: *mut c_void, fd: i64) -> bool;
-    /// Free what C++ owns of the context, and the context.
-    fn swr_http_host_context_delete(ctx: *mut Context);
+}
+
+/// `new Context()`: a value-initialised context, which
+/// `swr_v1_phphttp_context_free` releases.
+#[must_use]
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_phphttp_context_new() -> *mut Context {
+    // SAFETY: all zeroes is a valid `State`: null pointers, `None`s and
+    // `IS_UNDEF` zvals, as C++'s value-initialisation left it.
+    let state: Box<State> = unsafe { Box::new_zeroed().assume_init() };
+    Box::into_raw(state).cast()
+}
+
+/// `Context::init(Server *)`: the server's request settings, then bound to it.
+/// # Safety
+/// `ctx` is a live context and `server` the live server.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_context_init(ctx: *mut Context, server: *mut c_void) {
+    // SAFETY: per the caller.
+    let config = unsafe { swoole_rs_server::view::config(server) };
+    let state = send::state(ctx);
+    state.parse_cookie = u8::from(config.http_parse_cookie);
+    state.parse_body = u8::from(config.http_parse_post);
+    state.parse_files = u8::from(config.http_parse_files);
+    if parse::CAPABILITIES.load(Relaxed) & 8 != 0 {
+        state.enable_compression = u8::from(config.http_compression);
+        state.compression_level = i8::from_ne_bytes([config.http_compression_level]);
+        state.compression_min_length = config.compression_min_length;
+    }
+    // SAFETY: per the caller.
+    unsafe { swr_v1_phphttp_context_bind(ctx, server, ptr::null_mut()) };
 }
 
 /// `Context::is_co_socket`: bound to a coroutine socket rather than a server.
@@ -431,13 +460,8 @@ pub unsafe extern "C" fn swr_v1_phphttp_context_free(ctx: *mut Context) {
         // SAFETY: the context's reference to its socket.
         unsafe { zval_ptr_dtor(&raw mut state.zsocket) };
     }
-    state.write_buffer = None;
-    state.compressed = None;
-    state.request.h2_data = None;
-    state.upload_tmp_dir = None;
-    state.compression_types = None;
-    // SAFETY: nothing references the context any more.
-    unsafe { swr_http_host_context_delete(ctx) };
+    // SAFETY: `swr_v1_phphttp_context_new`'s, which nothing references any more.
+    drop(unsafe { Box::from_raw(ctx.cast::<State>()) });
 }
 
 #[cfg(test)]

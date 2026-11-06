@@ -8,6 +8,7 @@ use crate::state::{Slot, State};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
+use swoole_rs_corebase::log;
 use swoole_rs_http::{HttpSpan, swr_v1_http_boundary};
 use swoole_rs_httpbindings::{
     Text, Trimmed, UrlParts, swr_v1_httpbindings_body_prefix, swr_v1_httpbindings_compression,
@@ -15,13 +16,14 @@ use swoole_rs_httpbindings::{
     swr_v1_httpbindings_request_key, swr_v1_httpbindings_request_url, swr_v1_httpbindings_tokens,
     swr_v1_httpbindings_trim_quotes,
 };
+use swoole_rs_server::view;
 use swoole_rs_zend::sys::{
     IS_DOUBLE, IS_LONG, add_assoc_long_ex, add_assoc_stringl_ex, swr_zend_array_init,
     swr_zend_http_add_or_merge, swr_zend_http_estrndup, swr_zend_http_intern,
     swr_zend_http_max_input_vars, swr_zend_http_property_array, swr_zend_http_property_offset,
-    swr_zend_http_upload, swr_zval_str, swr_zval_stringl, zend_class_entry, zend_hash_add_new,
-    zend_hash_str_find, zend_hash_update, zend_object, zend_string, zend_value, zval,
-    zval_ptr_dtor,
+    swr_zend_http_treat_data, swr_zend_http_upload, swr_zval_str, swr_zval_stringl,
+    zend_class_entry, zend_hash_add_new, zend_hash_str_find, zend_hash_update, zend_object,
+    zend_string, zend_value, zval, zval_ptr_dtor,
 };
 use swoole_rs_zend::{string, type_of, value};
 
@@ -75,6 +77,7 @@ struct PartSettings {
 }
 
 unsafe extern "C" {
+    fn llhttp_init(parser: *mut crate::state::Llhttp, kind: c_int, settings: *const c_void);
     fn llhttp_execute(parser: *mut crate::state::Llhttp, data: *const c_char, len: usize) -> c_int;
     fn llhttp_get_error_pos(parser: *const crate::state::Llhttp) -> *const c_char;
     fn llhttp_resume(parser: *mut crate::state::Llhttp);
@@ -355,11 +358,31 @@ fn estrndup(bytes: *const u8, length: usize) -> *mut c_char {
 /// `swoole_php_treat_data(arg, estrndup(bytes), array)`, which frees the copy.
 fn treat_data(arg: c_int, bytes: *const u8, length: usize, array: *mut zval) {
     // SAFETY: a fresh request-memory string and a live array.
-    unsafe { host::swr_http_host_treat_data(arg, estrndup(bytes, length), array) };
+    if !unsafe { swr_zend_http_treat_data(arg, estrndup(bytes, length), array) } {
+        // SAFETY: reads an INI value.
+        let limit = unsafe { swr_zend_http_max_input_vars() };
+        log::warning(
+            c"swoole_php_treat_data",
+            format_args!(
+                "Input variables exceeded {limit}. To increase the limit change max_input_vars in php.ini."
+            ),
+        );
+    }
 }
 
+/// `swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, ctx)`.
+pub(crate) fn init_request_parser(ctx: *mut crate::host::Context) {
+    let state = crate::send::state(ctx);
+    // SAFETY: the context's own parser; llhttp keeps no settings pointer from init.
+    unsafe { llhttp_init(&raw mut state.parser, HTTP_REQUEST, ptr::null()) };
+    state.parser.data = ctx;
+}
+
+/// `HTTP_REQUEST`.
+const HTTP_REQUEST: c_int = 1;
+
 /// `swoole_http_parse_cookie`.
-fn parse_cookie(array: *mut zval, bytes: *const u8, length: usize) {
+pub(crate) fn parse_cookie(array: *mut zval, bytes: *const u8, length: usize) {
     if length != 0 {
         treat_data(PARSE_COOKIE, bytes, length, array);
     }
@@ -625,6 +648,29 @@ fn contains_websocket(at: *const u8, length: usize) -> i32 {
     i32::from(found == 1)
 }
 
+/// An Upgrade: websocket request on a server's WebSocket port starts its
+/// connection's handshake. False when the session is gone.
+fn websocket_connection(state: &State) -> bool {
+    if crate::context::co_socket(state) {
+        return true;
+    }
+    let server = state.private_data;
+    // SAFETY: the context's live server.
+    let Some(conn) = (unsafe { view::by_session(server, state.fd) }) else {
+        return false;
+    };
+    // SAFETY: as above.
+    let port = unsafe { view::port_by_server_fd(server, conn.server_fd) };
+    // SAFETY: the connection's live port.
+    if !port.is_null() && unsafe { view::port_websocket(port) } {
+        conn.websocket_status = STATUS_CONNECTION;
+    }
+    true
+}
+
+/// `WebSocket::STATUS_CONNECTION`.
+const STATUS_CONNECTION: u8 = 1;
+
 fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
     let name = Text {
         data: state.parse.header_name,
@@ -660,11 +706,7 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
                 }
                 1 => {
                     state.websocket = 1;
-                    // SAFETY: the live context.
-                    if unsafe {
-                        host::swr_http_host_websocket_connection(ptr::from_mut(state).cast())
-                    } < 0
-                    {
+                    if !websocket_connection(state) {
                         let message = format!("session[{}] is closed", state.fd);
                         host::log(
                             LOG_TRACE,
@@ -1370,7 +1412,7 @@ unsafe extern "C" fn on_part_headers_complete(parser: *mut Multipart) -> c_int {
     path.truncate(UPLOAD_TMPDIR_SIZE - 1);
     path.push(0);
     // SAFETY: a writable, NUL-terminated template.
-    let fd = unsafe { host::swr_http_host_tmpfile(path.as_mut_ptr().cast()) };
+    let fd = unsafe { swoole_rs_ossupport::swoole_tmpfile(path.as_mut_ptr().cast()) };
     path.pop();
     if fd < 0 {
         add_long(header, c"error", UPLOAD_NO_TMP_DIR);

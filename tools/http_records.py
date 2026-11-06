@@ -14,7 +14,7 @@ primitive = {'c_int': 'int', 'u32': 'uint32_t', 'u8': 'uint8_t', 'i8': 'int8_t',
 renames = {'h2_data': 'h2_data_', 'send_header': 'send_header_', 'end': 'end_',
            'send_trailer': 'send_trailer_', 'write_buffer': 'write_buffer_',
            'compressed': 'compressed_', 'upload_tmp_dir': 'upload_tmp_dir_',
-           'compression_types': 'compression_types_'}
+           'compression_types': 'compression_types_', 'ws_buffer': 'ws_buffer_'}
 text = '''// Generated from crates/phphttp/src/state.rs; native borrowed views only.
 #ifndef SWR_PHPHTTP_NATIVE_RECORD_CONTEXT
 #include "php_swoole_cxx.h"

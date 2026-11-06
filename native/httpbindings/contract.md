@@ -2,9 +2,10 @@
 
 Feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`
 and `swoole_rs_httpbindings.h`. Patched upstream files:
-`ext-src/swoole_http_cookie.cc`, `ext-src/swoole_http_request.cc`,
-`ext-src/swoole_http_response.cc`, `ext-src/swoole_http_server_coro.cc`. Public PHP headers, class layouts,
-stubs/arginfo and Context layout are unchanged.
+`ext-src/swoole_http_cookie.cc`, `ext-src/swoole_http_response.cc`,
+`ext-src/swoole_http_server_coro.cc`; `ext-src/swoole_http_request.cc` is gone.
+Public PHP headers, class layouts and stubs/arginfo are unchanged. Rust
+allocates and frees `swoole::http::Context`, whose layout is `ContextState`.
 
 Common rule: Rust returns before every native effect (Zend mutation, allocation,
 encoding, date/time, warnings, callbacks, IO, codecs, exceptions, bailout) and
