@@ -4,7 +4,7 @@
 //! family's hook is C (`php_swoole_private.h` declares them `extern "C"`) and
 //! runs inside `zend_try`: a bailout stops the phase there, as it did
 //! upstream, and is raised once this frame is the only Rust one left.
-use crate::ops;
+use crate::{Capability, ops};
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
@@ -118,7 +118,13 @@ unsafe extern "C" {
     fn php_swoole_client_async_minit(module_number: c_int);
     /// crates/phpclients' `Coroutine\Client`.
     fn swr_v1_phpclients_client_minit(shortname: bool, client_class: *mut *mut zend_class_entry);
-    fn php_swoole_http_client_coro_minit(module_number: c_int);
+    /// crates/phpclients' `Coroutine\Http\Client`.
+    fn swr_v1_phpclients_http_client_minit(
+        exception: *mut zend_class_entry,
+        shortname: bool,
+        module: c_int,
+        features: u32,
+    );
     /// crates/phphttp2's `Coroutine\Http2\Client`, `Http2\Request` and `Http2\Response`.
     fn swr_v1_phphttp2_client_minit(
         exception: *mut zend_class_entry,
@@ -215,7 +221,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_client_minit),
         M(php_swoole_client_async_minit),
         M(client_coro_minit),
-        M(php_swoole_http_client_coro_minit),
+        M(http_client_coro_minit),
         M(http2_client_coro_minit),
         M(ops.optional_client_minit),
         // server
@@ -281,6 +287,21 @@ unsafe extern "C" fn client_coro_minit(_module_number: c_int) {
     let mut class = ptr::null_mut();
     // SAFETY: Rust's MINIT, once, with a writable slot.
     unsafe { swr_v1_phpclients_client_minit(shortname, &raw mut class) };
+}
+
+/// `php_swoole_http_client_coro_minit`: the compression the build has.
+unsafe extern "C" fn http_client_coro_minit(module_number: c_int) {
+    // SAFETY: MINIT registered `Swoole\Exception` first and nothing writes it now.
+    let exception = unsafe { crate::swoole_exception_ce };
+    // SAFETY: the module's globals, live from MINIT.
+    let shortname = unsafe { (*globals()).use_shortname };
+    let features = [Capability::Zlib, Capability::Brotli, Capability::Zstd]
+        .iter()
+        .enumerate()
+        .filter(|(_, capability)| crate::built_with(**capability))
+        .fold(0, |features, (bit, _)| features | 1 << bit);
+    // SAFETY: Rust's MINIT, once.
+    unsafe { swr_v1_phpclients_http_client_minit(exception, shortname, module_number, features) };
 }
 
 /// `php_swoole_http2_client_coro_minit`.

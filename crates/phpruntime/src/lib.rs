@@ -45,7 +45,7 @@ use std::{
 use swoole_rs_phpstubs::runtime;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Message,
-    bailout::Bailout,
+    bailout::{self, Bailout},
     message, register_long_constant,
     sys::{
         swr_zend_module_loaded, swr_zend_runtime_find_class, swr_zend_stream_factory,
@@ -123,6 +123,7 @@ pub struct Ops {
     callable_free: unsafe extern "C" fn(callable: *mut c_void),
     /// `callable->dup()`.
     callable_dup: unsafe extern "C" fn(callable: *mut c_void) -> *mut c_void,
+    callable_call: unsafe extern "C" fn(call: *mut c_void),
     /// `callable->ptr()`.
     callable_fcc: unsafe extern "C" fn(callable: *mut c_void) -> *mut zend_fcall_info_cache,
     /// `sw_logger()->put(SW_LOG_WARNING, ..)` at that level.
@@ -190,6 +191,34 @@ pub unsafe fn callable_free(callable: *mut c_void) {
 pub unsafe fn callable_dup(callable: *mut c_void) -> *mut c_void {
     // SAFETY: per the caller.
     unsafe { (ops().callable_dup)(callable) }
+}
+
+/// `swr_v1_runtime_callable_call`.
+#[repr(C)]
+struct CallableCall {
+    callable: *mut c_void,
+    argc: u32,
+    argv: *mut zval,
+    result: bool,
+}
+
+/// `callable->call(args.len(), args, nullptr)` inside `zend_try`: whether the
+/// call succeeded.
+/// # Errors
+/// The callable bailed out.
+/// # Safety
+/// PHP is running, `callable` is live and `args` are live zvals.
+pub unsafe fn callable_call(callable: *mut c_void, args: &mut [zval]) -> Result<bool, Bailout> {
+    let mut call = CallableCall {
+        callable,
+        #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
+        argc: args.len() as u32,
+        argv: args.as_mut_ptr(),
+        result: false,
+    };
+    // SAFETY: per the caller; the host op is C++ and takes a `CallableCall`.
+    unsafe { bailout::trap(ops().callable_call, (&raw mut call).cast()) }?;
+    Ok(call.result)
 }
 
 const SW_ERROR_PHP_FATAL_ERROR: i64 = 503;
@@ -655,6 +684,7 @@ mod tests {
         callable,
         callable_free: free,
         callable_dup,
+        callable_call: free,
         callable_fcc: fcc,
         log_warning: log,
         fatal_error: error,
