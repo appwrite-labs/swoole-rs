@@ -4,7 +4,8 @@
 Every PHPT that passes on upstream must pass on every other engine; anything else
 exits 1. Tests failing on upstream too are reported, not hidden. Only the official
 runner's PASSED counts as passed. Prints a Markdown summary; --output writes every
-row as JSON.
+row as JSON, marking `rerun: passed` on an engine's row when the engine passed a re-run
+of a test the re-runs don't gate.
 
 A flagged test may be re-run (--recheck: up to 3 re-runs per engine, or one hybrid
 re-run when the hybrid's first failure timed out). If upstream fails a re-run, the test
@@ -182,6 +183,15 @@ def flaky_listing(tests, rechecked):
     return lines + ['', '</details>', '']
 
 
+def mark_reruns(results, rechecked):
+    """Mark `rerun: passed` on each non-upstream row whose engine passed a re-run of an ungated test."""
+    confirmed, _, _, inconclusive = recheck(flagged(results), rechecked)
+    runs = reruns(rechecked)
+    for row in results:
+        if row['engine'] != 'upstream' and row['test'] not in confirmed + inconclusive and 'passed' in runs[row['test']].get(row['engine'], []):
+            row['rerun'] = 'passed'
+
+
 def listing(title, tests):
     return [f'<details><summary>{len(tests)} {title}</summary>', '', *[f'- `{test}`' for test in tests], '', '</details>', '']
 
@@ -236,6 +246,8 @@ def main():
         print('\n'.join(pending(flagged(results), rechecked or [], args.print_pending, results)))
         return 0
     if args.output:
+        if rechecked is not None:
+            mark_reruns(results, rechecked)
         args.output.write_text(json.dumps(results, indent=1) + '\n')
     print(markdown(results, rechecked))
     if rechecked is not None:

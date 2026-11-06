@@ -93,9 +93,9 @@ def all_module_patches():
 
 
 def phpt_passing(rows):
-    """(hybrid passes, pinned PHPTs) from corpus/upstream/gate.py --output rows."""
+    """(hybrid passes, first run or ungated re-run, over pinned PHPTs) from corpus/upstream/gate.py --output rows."""
     tests = {row['test'] for row in rows}
-    passing = {row['test'] for row in rows if row['engine'] == 'hybrid' and row['status'] == 'passed'}
+    passing = {row['test'] for row in rows if row['engine'] == 'hybrid' and 'passed' in (row['status'], row.get('rerun'))}
     return len(passing), len(tests)
 
 
