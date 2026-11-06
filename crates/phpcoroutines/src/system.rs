@@ -1,73 +1,95 @@
-//! `Swoole\Coroutine\System` (`swoole_coroutine_system.cc`): argument
-//! parsing, validation and results in Rust; the coroutine-aware system calls
-//! stay the C++ `swoole::coroutine::System` the hooks module owns, lent as
-//! `swr_v1_phpcoroutines_system_ops`.
+//! `Swoole\Coroutine\System` (upstream's `swoole_coroutine_system.cc`):
+//! argument parsing, validation and results in Rust. The coroutine-aware
+//! system calls stay the C++ `swoole::coroutine::System`: its static members
+//! by their own symbols, and `swr_v1_system_*` (in `src/coroutine/system.cc`)
+//! where a C++ string or list carries the result.
 use crate::host;
 use std::{
-    ffi::{CStr, c_char, c_int, c_long},
-    mem, ptr,
-    sync::OnceLock,
+    ffi::{CStr, c_char, c_int, c_long, c_void},
+    mem, slice,
 };
 use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_zend::{
     Call, Class, E_WARNING,
-    sys::{IS_ARRAY, zend_array, zend_string, zend_value_error, zval},
+    sys::{IS_ARRAY, zend_array, zend_value_error, zval},
     type_of, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// The system operations and the platform constants they take.
-#[repr(C)]
-pub struct SystemOps {
-    pub(crate) af_inet: c_long,
-    pub(crate) af_inet6: c_long,
-    pub(crate) sock_stream: c_long,
-    pub(crate) ipproto_tcp: c_long,
-    pub(crate) event_read: c_long,
-    sleep: unsafe extern "C" fn(f64) -> c_int,
-    read_file: unsafe extern "C" fn(*const c_char, c_long, *mut zval) -> u8,
-    write_file: unsafe extern "C" fn(*const c_char, *const c_char, usize, c_long) -> isize,
-    gethostbyname: unsafe extern "C" fn(*const c_char, usize, c_long, f64, *mut zval) -> u8,
-    clear_dns_cache: unsafe extern "C" fn(),
-    getaddrinfo: unsafe extern "C" fn(
-        *const c_char,
-        c_long,
-        c_long,
-        c_long,
-        *const c_char,
-        f64,
-        *mut zval,
-    ) -> u8,
-    statvfs: unsafe extern "C" fn(*const c_char, *mut [c_long; 11]),
-    exec: unsafe extern "C" fn(
-        *const c_char,
-        u8,
-        *mut c_int,
-        *mut c_int,
-        *mut *mut zend_string,
-    ) -> u8,
-    main_thread: unsafe extern "C" fn() -> u8,
-    wait: unsafe extern "C" fn(c_long, f64, *mut c_int, *mut c_int) -> c_long,
-    wait_signal: unsafe extern "C" fn(*const c_long, usize, f64) -> c_int,
-    convert_to_fd: unsafe extern "C" fn(*mut zval) -> c_int,
-    wait_event: unsafe extern "C" fn(c_int, c_long, f64) -> c_long,
-}
+/// Copies one C++ string out to `out`.
+type Put = unsafe extern "C" fn(out: *mut c_void, data: *const c_char, length: usize);
 
-static OPS: OnceLock<&'static SystemOps> = OnceLock::new();
-static SYSTEM: Class = Class::new();
-
-fn ops() -> &'static SystemOps {
-    // Methods run only after MINIT stored the table.
-    OPS.get().copied().unwrap_or_else(|| std::process::abort())
-}
-
-// `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
 unsafe extern "C" {
+    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
+    fn system_sleep(seconds: f64) -> c_int;
+    #[link_name = "_ZN6swoole9coroutine6System10write_fileEPKcS3_mbi"]
+    fn system_write_file(
+        file: *const c_char,
+        data: *const c_char,
+        length: usize,
+        lock: bool,
+        flags: c_int,
+    ) -> isize;
+    #[link_name = "_ZN6swoole9coroutine6System10wait_eventEiid"]
+    fn system_wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int;
+    #[link_name = "_ZN6swoole9coroutine6System4waitEPid"]
+    fn system_wait(status: *mut c_int, timeout: f64) -> libc::pid_t;
+    #[link_name = "_ZN6swoole9coroutine6System7waitpidEiPiid"]
+    fn system_waitpid(
+        pid: libc::pid_t,
+        status: *mut c_int,
+        options: c_int,
+        timeout: f64,
+    ) -> libc::pid_t;
+    fn swr_v1_system_read_file(file: *const c_char, lock: bool, put: Put, out: *mut c_void)
+    -> bool;
+    fn swr_v1_system_gethostbyname(
+        host: *const c_char,
+        length: usize,
+        family: c_long,
+        timeout: f64,
+        put: Put,
+        out: *mut c_void,
+    ) -> bool;
+    fn swr_v1_system_getaddrinfo(
+        host: *const c_char,
+        family: c_long,
+        socktype: c_long,
+        protocol: c_long,
+        service: *const c_char,
+        timeout: f64,
+        put: Put,
+        out: *mut c_void,
+    ) -> bool;
+    fn swr_v1_system_exec(
+        command: *const c_char,
+        errors: bool,
+        status: *mut c_int,
+        put: Put,
+        out: *mut c_void,
+    ) -> bool;
+    fn swr_v1_system_wait_signal(signals: *const c_long, count: usize, timeout: f64) -> c_int;
+    fn swr_v1_hook_dns_cache_clear();
+    fn swoole_coroutine_statvfs(path: *const c_char, buf: *mut libc::statvfs) -> c_int;
+    fn swr_v1_phpevents_fd(value: *mut zval) -> c_int;
+    fn swr_v1_core_last_error() -> c_int;
+    // `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
     pub(crate) fn zif_swoole_async_dns_lookup_coro(
         frame: *mut z::zend_execute_data,
         value: *mut z::zval,
     );
 }
+
+/// `SW_EVENT_READ`.
+const EVENT_READ: c_long = 1 << 9;
+/// `SW_FILE_LOCK`, the `FILE_LOCK` constant.
+const FILE_LOCK: c_long = libc::LOCK_EX as c_long;
+/// `SW_FILE_APPEND`: PHP's `FILE_APPEND`.
+const FILE_APPEND: c_long = 1 << 3;
+/// `SW_ERROR_OPERATION_NOT_SUPPORT`.
+const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
+
+static SYSTEM: Class = Class::new();
 
 method_table! {
     static METHODS = [
@@ -86,37 +108,54 @@ method_table! {
     ];
 }
 
-/// MINIT: `Swoole\Coroutine\System` (`Co\System`), not instantiable.
+/// MINIT (upstream's symbol): `Swoole\Coroutine\System` (`Co\System`), not
+/// instantiable, and the `FILE_LOCK` constant.
 /// # Safety
-/// Called once, at MINIT, with a static operations table.
+/// Called once, at MINIT, with the extension's module number.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_system_minit(ops: *const SystemOps) {
-    // SAFETY: the native MINIT entry lends these original startup arguments.
-    let result = unsafe { init_phpcoroutines_system_minit(ops) };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-        }
-    }
-}
-
-unsafe fn init_phpcoroutines_system_minit(
-    ops: *const SystemOps,
-) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    // SAFETY: per the caller, a static table.
-    if let Some(ops) = unsafe { ops.as_ref() } {
-        OPS.get_or_init(|| ops);
-    }
+pub unsafe extern "C" fn php_swoole_coroutine_system_minit(module_number: c_int) {
     // SAFETY: MINIT, with a static table.
     unsafe { SYSTEM.register_static(c"Swoole\\Coroutine\\System", METHODS.as_ptr()) };
     if host::flag(host::SHORTNAME) {
         // SAFETY: MINIT, after registration.
-        unsafe { SYSTEM.alias(c"Co\\System") }?;
+        if let Err(error) = unsafe { SYSTEM.alias(c"Co\\System") } {
+            error.defer();
+            swoole_rs_zend::bailout::finish();
+        }
     }
+    // SAFETY: MINIT, with the module number.
+    unsafe { swoole_rs_zend::register_long_constant(c"FILE_LOCK", FILE_LOCK, module_number) };
+}
 
-    Ok(())
+/// `RETVAL_STRINGL`: `out` (an empty zval) takes a copy of the string.
+unsafe extern "C" fn put_string(out: *mut c_void, data: *const c_char, length: usize) {
+    // SAFETY: C++ lends `length` readable bytes.
+    let bytes = unsafe { slice::from_raw_parts(data.cast::<u8>(), length) };
+    // SAFETY: `out` holds nothing that needs releasing.
+    unsafe { value::set_str(out.cast(), swoole_rs_zend::string::copy(bytes)) };
+}
+
+/// `add_next_index_stringl`, after `array_init` if `out` is not yet an array.
+unsafe extern "C" fn push_string(out: *mut c_void, data: *const c_char, length: usize) {
+    let out = out.cast::<zval>();
+    // SAFETY: the return slot.
+    if unsafe { type_of(out) } != IS_ARRAY {
+        // SAFETY: an empty return slot.
+        unsafe { value::array_init(out) };
+    }
+    // SAFETY: C++ lends `length` readable bytes.
+    let bytes = unsafe { slice::from_raw_parts(data.cast::<u8>(), length) };
+    // SAFETY: an array; it takes the new string.
+    unsafe { swoole_rs_zend::push_string(out, swoole_rs_zend::string::copy(bytes)) };
+}
+
+/// C's implicit `long` to `int` conversion, as upstream's calls make it.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "upstream's implicit long to int conversion"
+)]
+fn int(value: c_long) -> c_int {
+    value as c_int
 }
 
 swoole_rs_zend::handlers! {
@@ -149,7 +188,7 @@ fn sleep(call: &Call) {
         return;
     }
     // SAFETY: C++ sleeps the running coroutine.
-    call.set_bool(unsafe { (ops().sleep)(seconds) } == 0);
+    call.set_bool(unsafe { system_sleep(seconds) } == 0);
 }
 
 /// `zend_value_error(message)`, then false.
@@ -172,8 +211,9 @@ fn read_file(call: &Call) {
         value_error(call, c"Filename cannot be empty");
         return;
     }
-    // SAFETY: a NUL-terminated path argument and the return slot.
-    if unsafe { (ops().read_file)(path.as_ptr().cast(), flags, call.return_value()) } == 0 {
+    let (lock, out) = (flags & FILE_LOCK != 0, call.return_value().cast());
+    // SAFETY: a NUL-terminated path argument and the empty return slot.
+    if !unsafe { swr_v1_system_read_file(path.as_ptr().cast(), lock, put_string, out) } {
         call.set_bool(false);
     }
 }
@@ -191,13 +231,19 @@ fn write_file(call: &Call) {
         value_error(call, c"Filename cannot be empty");
         return;
     }
+    let mode = if flags & FILE_APPEND != 0 {
+        libc::O_APPEND
+    } else {
+        libc::O_TRUNC
+    };
     // SAFETY: a NUL-terminated path and the data's bytes.
     let written = unsafe {
-        (ops().write_file)(
+        system_write_file(
             path.as_ptr().cast(),
             data.as_ptr().cast(),
             data.len(),
-            flags,
+            flags & FILE_LOCK != 0,
+            libc::O_CREAT | libc::O_WRONLY | libc::O_NOFOLLOW | mode,
         )
     };
     if written < 0 {
@@ -208,8 +254,10 @@ fn write_file(call: &Call) {
 }
 
 fn family_ok(family: c_long) -> bool {
-    family == ops().af_inet || family == ops().af_inet6
+    family == AF_INET || family == c_long::from(libc::AF_INET6)
 }
+
+const AF_INET: c_long = libc::AF_INET as c_long;
 
 /// `gethostbyname(string $domain, int $family = AF_INET, float $timeout = -1)`.
 fn gethostbyname(call: &Call) {
@@ -217,7 +265,7 @@ fn gethostbyname(call: &Call) {
     let parsed = call.arity(1, 3).and_then(|()| {
         Ok((
             call.string(1, b"")?,
-            call.long(2, ops().af_inet)?,
+            call.long(2, AF_INET)?,
             call.double(3, -1.0)?,
         ))
     });
@@ -238,37 +286,32 @@ fn gethostbyname(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: the domain's bytes and the return slot.
-    let found = unsafe {
-        (ops().gethostbyname)(
-            domain.as_ptr().cast(),
-            domain.len(),
-            family,
-            timeout,
-            call.return_value(),
-        )
-    };
-    if found == 0 {
+    let (name, length, out) = (
+        domain.as_ptr().cast(),
+        domain.len(),
+        call.return_value().cast(),
+    );
+    // SAFETY: the domain's bytes and the empty return slot.
+    if !unsafe { swr_v1_system_gethostbyname(name, length, family, timeout, put_string, out) } {
         call.set_bool(false);
     }
 }
 
 /// `swoole_clear_dns_cache()`.
 fn clear_dns_cache(_: &Call) {
-    // SAFETY: C++ clears the cache.
-    unsafe { (ops().clear_dns_cache)() };
+    // SAFETY: the hooks module clears the cache.
+    unsafe { swr_v1_hook_dns_cache_clear() };
 }
 
 /// `getaddrinfo(string $domain, int $family = AF_INET, int $socktype = SOCK_STREAM,
 /// int $protocol = IPPROTO_TCP, ?string $service = null, float $timeout = -1)`.
 fn getaddrinfo(call: &Call) {
-    let ops = ops();
     let parsed = call.arity(1, 6).and_then(|()| {
         Ok((
             call.string(1, b"")?,
-            call.long(2, ops.af_inet)?,
-            call.long(3, ops.sock_stream)?,
-            call.long(4, ops.ipproto_tcp)?,
+            call.long(2, AF_INET)?,
+            call.long(3, c_long::from(libc::SOCK_STREAM))?,
+            call.long(4, c_long::from(libc::IPPROTO_TCP))?,
             call.string(5, b"\0")?,
             call.double(6, -1.0)?,
         ))
@@ -290,21 +333,28 @@ fn getaddrinfo(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: NUL-terminated strings and the return slot.
+    // SAFETY: NUL-terminated strings and the empty return slot.
     let found = unsafe {
-        (ops.getaddrinfo)(
+        swr_v1_system_getaddrinfo(
             host_name.as_ptr().cast(),
             family,
             socktype,
             protocol,
             service.as_ptr().cast(),
             timeout,
-            call.return_value(),
+            push_string,
+            call.return_value().cast(),
         )
     };
-    if found == 0 {
+    if !found {
         call.set_bool(false);
     }
+}
+
+/// Upstream's `(long)` cast of each `statvfs` field.
+#[expect(clippy::cast_possible_wrap, reason = "upstream's (long) cast")]
+fn field(value: impl Into<u64>) -> c_long {
+    value.into() as c_long
 }
 
 /// `statvfs(string $path)`.
@@ -317,15 +367,25 @@ fn statvfs(call: &Call) {
         value_error(call, c"Path cannot be empty");
         return;
     }
-    let mut fields: [c_long; 11] = [0; 11];
-    // SAFETY: a NUL-terminated path and a writable array.
-    unsafe { (ops().statvfs)(path.as_ptr().cast(), &raw mut fields) };
+    // SAFETY: all-zero is a valid statvfs.
+    let mut stat: libc::statvfs = unsafe { mem::zeroed() };
+    // SAFETY: a NUL-terminated path and a writable struct; on failure it stays zeroed.
+    unsafe { swoole_coroutine_statvfs(path.as_ptr().cast(), &raw mut stat) };
     call.set_array();
-    let names = [
-        c"bsize", c"frsize", c"blocks", c"bfree", c"bavail", c"files", c"ffree", c"favail",
-        c"fsid", c"flag", c"namemax",
+    let fields = [
+        (c"bsize", field(stat.f_bsize)),
+        (c"frsize", field(stat.f_frsize)),
+        (c"blocks", field(stat.f_blocks)),
+        (c"bfree", field(stat.f_bfree)),
+        (c"bavail", field(stat.f_bavail)),
+        (c"files", field(stat.f_files)),
+        (c"ffree", field(stat.f_ffree)),
+        (c"favail", field(stat.f_favail)),
+        (c"fsid", field(stat.f_fsid)),
+        (c"flag", field(stat.f_flag)),
+        (c"namemax", field(stat.f_namemax)),
     ];
-    for (name, value) in names.into_iter().zip(fields) {
+    for (name, value) in fields {
         call.add_assoc_long(name, value);
     }
 }
@@ -339,63 +399,67 @@ fn exec(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let (mut code, mut signal, mut output) = (0, 0, ptr::null_mut());
+    let mut status = 0;
+    // SAFETY: all-zero is IS_UNDEF; C++ puts the output string into it.
+    let mut output: zval = unsafe { mem::zeroed() };
+    let out = (&raw mut output).cast();
     // SAFETY: a NUL-terminated command and writable outputs.
-    let ran = unsafe {
-        (ops().exec)(
+    if !unsafe {
+        swr_v1_system_exec(
             command.as_ptr().cast(),
-            u8::from(errors),
-            &raw mut code,
-            &raw mut signal,
-            &raw mut output,
+            errors,
+            &raw mut status,
+            put_string,
+            out,
         )
-    };
-    if ran == 0 {
+    } {
         call.set_bool(false);
         return;
     }
     call.set_array();
-    call.add_assoc_long(c"code", code.into());
-    call.add_assoc_long(c"signal", signal.into());
-    // SAFETY: all-zero is IS_UNDEF, then the output string.
-    let mut data: zval = unsafe { mem::zeroed() };
-    // SAFETY: the zval takes the new string's reference.
-    unsafe { value::set_str(&raw mut data, output) };
+    call.add_assoc_long(c"code", libc::WEXITSTATUS(status).into());
+    call.add_assoc_long(c"signal", libc::WTERMSIG(status).into());
     // SAFETY: the return array takes the string.
     unsafe {
         swoole_rs_zend::sys::add_assoc_zval_ex(
             call.return_value(),
             c"output".as_ptr(),
             6,
-            &raw mut data,
+            &raw mut output,
         );
     }
 }
 
-/// `SW_MUST_BE_MAIN_THREAD()`: off the main thread, the method returns true.
+/// `SW_MUST_BE_MAIN_THREAD_EX(RETURN_TRUE)`: with `SW_THREAD`, off the main
+/// thread, the method sets the last error and returns true.
 fn main_thread(call: &Call) -> bool {
-    // SAFETY: C++ checks the thread and sets the last error.
-    let main = unsafe { (ops().main_thread)() } != 0;
-    if !main {
+    if host::flag(host::THREAD) && !host::flag(host::MAIN_THREAD) {
+        host::set_last_error(SW_ERROR_OPERATION_NOT_SUPPORT);
         call.set_bool(true);
+        return false;
     }
-    main
+    true
 }
 
 /// `swoole_coroutine_system_wait`.
 fn wait_for(call: &Call, pid: c_long, timeout: f64) {
     host::current_safe();
-    let (mut code, mut signal) = (0, 0);
-    // SAFETY: C++ waits in the running coroutine.
-    let pid = unsafe { (ops().wait)(pid, timeout, &raw mut code, &raw mut signal) };
+    let mut status = 0;
+    let pid = c_long::from(if pid < 0 {
+        // SAFETY: waits in the running coroutine.
+        unsafe { system_wait(&raw mut status, timeout) }
+    } else {
+        // SAFETY: as above.
+        unsafe { system_waitpid(int(pid), &raw mut status, 0, timeout) }
+    });
     if pid <= 0 {
         call.set_bool(false);
         return;
     }
     call.set_array();
     call.add_assoc_long(c"pid", pid);
-    call.add_assoc_long(c"code", code.into());
-    call.add_assoc_long(c"signal", signal.into());
+    call.add_assoc_long(c"code", libc::WEXITSTATUS(status).into());
+    call.add_assoc_long(c"signal", libc::WTERMSIG(status).into());
 }
 
 /// `wait(float $timeout = -1)`.
@@ -423,6 +487,18 @@ fn wait_pid(call: &Call) {
         return;
     };
     wait_for(call, pid, timeout);
+}
+
+/// `errno = value`.
+fn set_errno(value: c_int) {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // SAFETY: the calling thread's errno slot.
+    let slot = unsafe { libc::__errno_location() };
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    // SAFETY: the calling thread's errno slot.
+    let slot = unsafe { libc::__error() };
+    // SAFETY: as above.
+    unsafe { *slot = value };
 }
 
 /// `waitSignal(int|array $signals, float $timeout = -1)`.
@@ -457,38 +533,51 @@ fn wait_signal(call: &Call) {
     // Held as a raw box while the coroutine waits, so no frame here owns a drop
     // if a fatal error ends the wait.
     let signals = Box::into_raw(signals.into_boxed_slice());
-    // SAFETY: C++ waits for one of the signals; on failure it warns and sets errno.
-    let signo = unsafe { (ops().wait_signal)(signals.cast::<c_long>(), signals.len(), timeout) };
+    // SAFETY: C++ waits for one of the signals.
+    let signo =
+        unsafe { swr_v1_system_wait_signal(signals.cast::<c_long>(), signals.len(), timeout) };
     // SAFETY: boxed above, not used again.
     drop(unsafe { Box::from_raw(signals) });
-    if signo == -1 {
-        call.set_bool(false);
-    } else {
+    if signo != -1 {
         call.set_long(signo.into());
+        return;
     }
+    // SAFETY: reads the thread's last error.
+    let error = unsafe { swr_v1_core_last_error() };
+    if error == libc::EBUSY {
+        host::fatal_error(
+            E_WARNING,
+            c"Unable to wait signal, async signal listener has been registered",
+        );
+    } else if error == libc::EINVAL {
+        host::fatal_error(E_WARNING, c"Invalid signal in the given list");
+    }
+    // SAFETY: as above.
+    set_errno(unsafe { swr_v1_core_last_error() });
+    call.set_bool(false);
 }
 
 /// `waitEvent(mixed $socket, int $events = SWOOLE_EVENT_READ, float $timeout = -1)`.
 fn wait_event(call: &Call) {
     let parsed = call
         .arity(1, 3)
-        .and_then(|()| Ok((call.long(2, ops().event_read)?, call.double(3, -1.0)?)));
+        .and_then(|()| Ok((call.long(2, EVENT_READ)?, call.double(3, -1.0)?)));
     let Ok((events, timeout)) = parsed else {
         call.set_bool(false);
         return;
     };
     // SAFETY: a passed argument.
-    let fd = unsafe { (ops().convert_to_fd)(call.zval(1)) };
+    let fd = unsafe { swr_v1_phpevents_fd(call.zval(1)) };
     if fd < 0 {
         host::fatal_error(E_WARNING, c"unknown fd type");
         call.set_bool(false);
         return;
     }
-    // SAFETY: C++ waits on the descriptor.
-    let events = unsafe { (ops().wait_event)(fd, events, timeout) };
+    // SAFETY: waits on the descriptor in the running coroutine.
+    let events = unsafe { system_wait_event(fd, int(events), timeout) };
     if events < 0 {
         call.set_bool(false);
     } else {
-        call.set_long(events);
+        call.set_long(events.into());
     }
 }

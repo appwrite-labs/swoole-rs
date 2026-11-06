@@ -103,6 +103,7 @@ pub(crate) const SERVER_STARTED: u32 = 64;
 pub(crate) const MAIN_THREAD: u32 = 128;
 pub(crate) const FATAL: u32 = 256;
 pub(crate) const CORO_TIME: u32 = 512;
+pub(crate) const THREAD: u32 = 1024;
 
 /// Swoole error codes (`include/swoole_error.h`).
 pub(crate) const SW_ERROR_INVALID_PARAMS: c_int = 505;
