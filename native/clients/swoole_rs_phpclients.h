@@ -182,9 +182,10 @@ const char *swoole_http_client_coro_mime(const char *path);
 void swoole_http_client_coro_sys_error(const char *message);
 void swoole_http_client_coro_inflate_warning(int method);
 
-/* PHP Swoole\Client and Swoole\Async\Client (crates/phpclients): MINIT, and
- * the async events network::Client raises, which re-raise a PHP callback's
- * bailout as their last step. For SWOOLE_CLIENT_ON_ERROR, `length` is
+/* PHP Swoole\Client and Swoole\Async\Client (crates/phpclients): MINIT
+ * (php_swoole_client_async_minit is Rust's), and the async events
+ * network::Client raises, which re-raise a PHP callback's bailout as their
+ * last step. For SWOOLE_CLIENT_ON_ERROR, `length` is
  * swoole_get_last_error(). */
 enum {
     SWOOLE_CLIENT_ON_CONNECT = 1,
@@ -198,68 +199,22 @@ void swr_v1_phpclients_net_minit(struct _zend_class_entry *exception,
                                  bool sockets,
                                  int module,
                                  struct _zend_class_entry **client_class);
-void swr_v1_phpclients_async_minit(struct _zend_class_entry *client_class,
-                                   struct _zend_class_entry **async_class);
 void swr_v1_phpclients_async_event(struct _zend_object *object, int kind, const char *data, size_t length);
 
 /* Defined by ext-src/swoole_client.cc: network::Client, one call per operation. */
 enum { SWOOLE_CLIENT_ERROR = 0, SWOOLE_CLIENT_ERROR_FATAL = 1, SWOOLE_CLIENT_ERROR_SYS = 2, SWOOLE_CLIENT_ERROR_CORE = 3 };
 /* php_swoole_error, _fatal_error, _sys_error or _core_error(level, "%s", message). */
 void swoole_client_php_error(int kind, int level, const char *message);
-void swoole_client_package_too_big(int length);
-int swoole_client_last_error(void);
 /* new Client(type, async); null, with errno in `error`, when it has no socket. */
 void *swoole_client_create(int type, bool async, int *error);
-int swoole_client_fd(void *cli);
 /* The client's Rust state (crates/clients' ClientState). */
 void *swoole_client_state(void *cli);
-bool swoole_client_has_socket(void *cli);
-int swoole_client_socket_type(void *cli);
-bool swoole_client_has_ssl(void *cli);
-bool swoole_client_check_liveness(void *cli);
-/* getsockopt(SO_ERROR): whether it succeeded. */
-bool swoole_client_socket_error(void *cli, int *error);
-/* socket->catch_error(error): SW_CLOSE and friends. */
-int swoole_client_catch_error(void *cli, int error);
-struct swoole_client_framing {
-    bool eof_check;
-    bool length_check;
-    uint8_t eof_length;
-    char eof[8];
-    uint32_t max_length;
-    uint16_t length_offset;
-    uint8_t length_size;
-};
-void swoole_client_framing(void *cli, struct swoole_client_framing *framing);
-/* getsockname: the address, with the port in `port`; null on failure (errno). */
-const char *swoole_client_sockname(void *cli, int *port);
-bool swoole_client_peername(void *cli, char *address, size_t size, int *port);
-struct _zend_string *swoole_client_peer_cert(void *cli);
 /* php_swoole_convert_to_socket(fd) into `zsocket`; false without ext/sockets. */
 bool swoole_client_export_socket(void *cli, struct _zval_struct *zsocket);
-void swoole_client_merge_setting(struct _zend_object *object, const struct _zval_struct *settings);
 /* Install the async callbacks in `events` (1 << SWOOLE_CLIENT_ON_*), raising them on `object`. */
 void swoole_client_async_listen(void *cli, struct _zend_object *object, uint32_t events);
 bool swoole_client_has_on_error(void *cli);
-void swoole_client_ssl_wait_stream(void *cli);
 
-/* What crates/phpclients' settings write into network::Client. */
-struct swoole_protocol_head;
-/* &cli->protocol, whose leading fields crates/framing mirrors (swoole::Protocol). */
-struct swoole_protocol_head *swoole_client_protocol(void *cli);
-enum {
-    SWOOLE_CLIENT_OPT_EOF_CHECK = 0,      /* value */
-    SWOOLE_CLIENT_OPT_LENGTH_CHECK = 1,   /* value; the default length function */
-    SWOOLE_CLIENT_OPT_MQTT = 2,           /* value: the length check, and MQTT framing when set */
-    SWOOLE_CLIENT_OPT_LENGTH_FUNC = 3,    /* text: the callable; returns the previous one */
-    SWOOLE_CLIENT_OPT_BUFFER_SIZE = 4,    /* value */
-    SWOOLE_CLIENT_OPT_HIGH_WATERMARK = 5, /* value */
-    SWOOLE_CLIENT_OPT_LOW_WATERMARK = 6,  /* value */
-    SWOOLE_CLIENT_OPT_BIND = 7,           /* text, length: address; value: port; returns bind() */
-    SWOOLE_CLIENT_OPT_TCP_NODELAY = 8,    /* returns false when setsockopt failed (errno) */
-    SWOOLE_CLIENT_OPT_OPEN_SSL = 9,       /* returns open_ssl */
-};
-int64_t swoole_client_option(void *cli, int option, int64_t value, const char *text, size_t length);
 /* The client's SSLContext owner, which crates/tls configures; NULL while TLS is off. */
 const struct swr_v1_tls_owner *swoole_client_ssl_context(void *cli);
 /* set_http_proxy (http) or set_socks5_proxy. */
