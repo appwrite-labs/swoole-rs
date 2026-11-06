@@ -15,9 +15,9 @@ use swoole_rs_zend::{
     sys::{
         IS_ARRAY, IS_OBJECT, IS_STRING, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         swr_zend_efree, swr_zend_emalloc, swr_zend_runtime_instanceof, swr_zend_string_init,
-        swr_zend_string_release, swr_zend_try_call_method, swr_zend_try_zval_dtor,
-        swr_zend_zval_release, swr_zval_str, swr_zval_try_addref, zend_class_entry,
-        zend_hash_str_find, zend_lookup_class, zend_object, zend_object_handlers, zval,
+        swr_zend_string_release, swr_zend_try_zval_dtor, swr_zend_zval_release, swr_zval_str,
+        swr_zval_try_addref, zend_class_entry, zend_hash_str_find, zend_lookup_class, zend_object,
+        zend_object_handlers, zval,
     },
     type_of, unset_property_deny, value,
 };
@@ -330,9 +330,7 @@ unsafe fn call_method(
     // SAFETY: per the caller.
     let object = unsafe { value::obj_of(object) };
     // SAFETY: as above; Zend writes `retval`.
-    trapped(unsafe {
-        swr_zend_try_call_method(object, method.as_ptr().cast(), method.len(), retval, arg)
-    })
+    unsafe { bailout::call_method(object, ptr::null_mut(), method, retval, arg) }
 }
 
 /// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` `resolver`

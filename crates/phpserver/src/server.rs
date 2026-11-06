@@ -7,19 +7,21 @@ use std::{
     cell::RefCell,
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
 };
+use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
+use swoole_rs_ossupport::swr_v1_os_msg_queue_stat;
 use swoole_rs_phpstubs::server;
+use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_pid, swr_v1_worker_status};
 use swoole_rs_server::{ConnectionRecord, server_methods, view};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Object, declare_bool, declare_long, declare_property_null,
     declare_string, php_error, register_long_constant,
     sys::{
-        _zend_bailout, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE,
-        ZEND_ACC_PUBLIC, add_assoc_double_ex, add_assoc_stringl_ex, add_next_index_long,
-        zend_ce_arrayaccess, zend_ce_countable, zend_ce_iterator, zend_class_entry,
-        zend_class_implements, zend_declare_property_double, zend_object, zend_object_handlers,
-        zval,
+        ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
+        add_assoc_double_ex, add_assoc_stringl_ex, add_next_index_long, zend_ce_arrayaccess,
+        zend_ce_countable, zend_ce_iterator, zend_class_entry, zend_class_implements,
+        zend_declare_property_double, zend_object, zend_object_handlers, zval,
     },
     throw_error, unset_property_deny,
 };
@@ -39,52 +41,13 @@ fn closed(conn: &ConnectionRecord) -> bool {
 }
 /// `SW_MAX_FIND_COUNT`.
 const MAX_FIND_COUNT: i64 = 100;
-/// `SWR_PHPSERVER_STATS_*`.
-const STATS_WORKER: usize = 19;
-const STATS_QUEUE: usize = 24;
-const STATS_TASKS: usize = 27;
-const STATS_COUNT: usize = 33;
-
-/// `swr_phpserver_client`.
-#[repr(C)]
-pub struct ServerClient {
-    uid: i64,
-    worker_id: i64,
-    websocket_status: i64,
-    server_port: i64,
-    server_fd: i64,
-    socket_fd: i64,
-    socket_type: i64,
-    remote_port: i64,
-    reactor_id: i64,
-    connect_time: i64,
-    last_time: i64,
-    close_errno: i64,
-    recv_queued_bytes: i64,
-    send_queued_bytes: i64,
-    last_recv_time: f64,
-    last_send_time: f64,
-    last_dispatch_time: f64,
-    remote_ip: *const c_char,
-    ssl_client_cert: *const c_char,
-    ssl_client_cert_length: usize,
-    uid_mode: bool,
-    co_conn_lb: bool,
-    websocket: bool,
-}
-
-type Each = unsafe extern "C" fn(*mut c_void, i64);
-
 /// `swr_v1_phpserver_host`.
 #[repr(C)]
 pub struct ServerHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
-    worker: unsafe extern "C" fn(*mut c_void, i64, *mut i64, *mut i64) -> bool,
-    client: unsafe extern "C" fn(*mut c_void, i64, *mut ServerClient) -> bool,
-    stats: unsafe extern "C" fn(*mut c_void, *mut i64),
-    heartbeat: unsafe extern "C" fn(*mut c_void, bool, Each, *mut c_void),
+    /// `Coroutine::count()` and `Coroutine::get_peak_num()`.
+    coroutines: unsafe extern "C" fn(*mut i64),
     socket: unsafe extern "C" fn(*mut c_void, i64, *mut zval),
-    call: unsafe extern "C" fn(*mut c_void, c_int, *mut zval, *mut zval) -> bool,
 }
 
 static HOST: AtomicPtr<ServerHost> = AtomicPtr::new(ptr::null_mut());
@@ -694,8 +657,8 @@ fn resume(call: &Call) {
     feedback(call, false);
 }
 
-/// `stats()` keys, by `SWR_PHPSERVER_STATS_*` index (flags hold no key).
-const STATS: [&CStr; STATS_COUNT] = [
+/// `Server::stats()`'s first keys, each a count of the server's.
+const STATS: [&CStr; 19] = [
     c"start_time",
     c"connection_num",
     c"abort_count",
@@ -715,46 +678,84 @@ const STATS: [&CStr; STATS_COUNT] = [
     c"session_round",
     c"min_fd",
     c"max_fd",
-    c"",
-    c"worker_request_count",
-    c"worker_response_count",
-    c"worker_dispatch_count",
-    c"worker_concurrency",
-    c"",
-    c"task_queue_num",
-    c"task_queue_bytes",
-    c"",
-    c"task_idle_worker_num",
-    c"tasking_num",
-    c"task_count",
-    c"coroutine_num",
-    c"coroutine_peek_num",
 ];
+/// `Server::TASK_IPC_UNIXSOCK`.
+const TASK_IPC_UNIXSOCK: u8 = 1;
 
 fn stats(call: &Call) {
     let Some(serv) = running(call) else { return };
-    let mut values = [0i64; STATS_COUNT];
-    // SAFETY: a live server and room for every value.
-    unsafe { (host().stats)(serv, values.as_mut_ptr()) };
+    // SAFETY: a live server.
+    let config = unsafe { view::config(serv) };
+    // SAFETY: a live server.
+    let gs = unsafe { view::counters(serv) };
+    let load = |count: &AtomicU64| count.load(Ordering::Relaxed).cast_signed();
+    let values = [
+        gs.start_time,
+        // SAFETY: a live server.
+        i64::try_from(unsafe { view::connection_num(serv) }).unwrap_or(i64::MAX),
+        load(&gs.abort_count),
+        load(&gs.accept_count),
+        load(&gs.close_count),
+        i64::from(config.worker_num),
+        i64::from(config.task_worker_num),
+        // SAFETY: a live server.
+        i64::try_from(unsafe { view::user_worker_num(serv) }).unwrap_or(i64::MAX),
+        // SAFETY: a live server.
+        i64::from(unsafe { server_methods::get_idle_worker_num(serv) }),
+        load(&gs.dispatch_count),
+        load(&gs.request_count),
+        load(&gs.response_count),
+        load(&gs.total_recv_bytes),
+        load(&gs.total_send_bytes),
+        load(&gs.pipe_packet_msg_id),
+        i64::from(gs.concurrency.load(Ordering::Relaxed)),
+        gs.session_round,
+        i64::from(gs.min_fd),
+        i64::from(gs.max_fd),
+    ];
     call.set_array();
-    let mut index = 0;
-    while index < STATS_COUNT {
-        let group = matches!(index, STATS_WORKER | STATS_QUEUE | STATS_TASKS);
-        if group {
-            let length = match index {
-                STATS_WORKER => 4,
-                STATS_QUEUE => 2,
-                _ => 3,
-            };
-            if values[index] == 0 {
-                index += length;
-            }
-            index += 1;
-            continue;
-        }
-        call.add_assoc_long(STATS[index], values[index]);
-        index += 1;
+    for (key, value) in STATS.into_iter().zip(values) {
+        call.add_assoc_long(key, value);
     }
+    let worker = swoole_rs_process::worker_globals::swr_v1_worker_globals();
+    // SAFETY: this thread's worker globals.
+    let worker = unsafe { (*worker).worker };
+    if !worker.is_null() {
+        // SAFETY: this process's live worker.
+        let [request, response, dispatch, concurrency] =
+            unsafe { swoole_rs_process::worker_record::counters(worker) };
+        call.add_assoc_long(c"worker_request_count", request);
+        call.add_assoc_long(c"worker_response_count", response);
+        call.add_assoc_long(c"worker_dispatch_count", dispatch);
+        call.add_assoc_long(c"worker_concurrency", concurrency);
+    }
+    // SAFETY: a live server.
+    let pool = unsafe { view::task_pool(serv) };
+    // SAFETY: its live task pool.
+    let queue = unsafe { (*pool).queue };
+    if config.task_ipc_mode > TASK_IPC_UNIXSOCK && !queue.is_null() {
+        let (mut num, mut bytes) = (usize::MAX, usize::MAX);
+        // SAFETY: the pool's live `MsgQueue`, whose one field is its record.
+        if unsafe { swr_v1_os_msg_queue_stat(queue.cast(), &raw mut num, &raw mut bytes) } {
+            // (zend_long) of each count, as upstream.
+            call.add_assoc_long(c"task_queue_num", num.cast_signed() as i64);
+            call.add_assoc_long(c"task_queue_bytes", bytes.cast_signed() as i64);
+        }
+    }
+    if config.task_worker_num > 0 {
+        // SAFETY: a live server.
+        let idle = unsafe { server_methods::get_idle_task_worker_num(serv) };
+        call.add_assoc_long(c"task_idle_worker_num", i64::from(idle));
+        // SAFETY: a live server.
+        let tasking = unsafe { server_methods::get_tasking_num(serv) };
+        call.add_assoc_long(c"tasking_num", i64::from(tasking));
+        call.add_assoc_long(c"task_count", load(&gs.task_count));
+    }
+    let mut coroutines = [0i64; 2];
+    // SAFETY: room for both counts.
+    unsafe { (host().coroutines)(coroutines.as_mut_ptr()) };
+    call.add_assoc_long(c"coroutine_num", coroutines[0]);
+    call.add_assoc_long(c"coroutine_peek_num", coroutines[1]);
 }
 
 fn reload(call: &Call) {
@@ -766,9 +767,11 @@ fn reload(call: &Call) {
     call.set_bool(unsafe { swoole_rs_process::workers::entry::reload(serv, !only_task_workers) });
 }
 
-unsafe extern "C" fn push_session(array: *mut c_void, session_id: i64) {
-    // SAFETY: `heartbeat` passes its return value, an array.
-    unsafe { add_next_index_long(array.cast(), session_id) };
+/// `microtime()`: the wall clock in seconds.
+fn microtime() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |now| now.as_secs_f64())
 }
 
 fn heartbeat(call: &Call) {
@@ -781,8 +784,28 @@ fn heartbeat(call: &Call) {
         return call.set_bool(false);
     }
     call.set_array();
-    // SAFETY: a live server; each session goes into the return array.
-    unsafe { (host().heartbeat)(serv, close, push_session, call.return_value().cast()) };
+    let now = microtime();
+    // `foreach_connection`: `max_fd` is read afresh for each fd.
+    // SAFETY: a live server.
+    let mut fd = unsafe { view::counters(serv) }.min_fd;
+    // SAFETY: as above.
+    while fd <= unsafe { view::counters(serv) }.max_fd {
+        // SAFETY: a live server.
+        if let Some(conn) = unsafe { view::iterated(serv, fd) } {
+            let session_id = conn.session_id;
+            // SAFETY: one of the server's connections.
+            if session_id > 0 && !unsafe { view::healthy(serv, now, conn) } {
+                if close {
+                    conn.close_force = 1;
+                    // SAFETY: a live server.
+                    unsafe { server_methods::close(serv, session_id, false) };
+                }
+                // SAFETY: the return slot holds an array.
+                unsafe { add_next_index_long(call.return_value(), session_id) };
+            }
+        }
+        fd += 1;
+    }
 }
 
 fn bind(call: &Call) {
@@ -850,6 +873,23 @@ fn add_bytes(call: &Call, key: &CStr, value: *const c_char, length: usize) {
     }
 }
 
+/// `Server::DISPATCH_UIDMOD` and `DISPATCH_CO_CONN_LB`.
+const DISPATCH_UIDMOD: u8 = 5;
+const DISPATCH_CO_CONN_LB: u8 = 8;
+
+/// `swoole::String`'s head: `length`, `size`, `offset`, then `str`.
+#[repr(C)]
+struct NativeString {
+    length: usize,
+    size: usize,
+    offset: libc::off_t,
+    str: *const c_char,
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "add_assoc_long of a double and (int) last_recv_time, as upstream"
+)]
 fn get_client_info(call: &Call) {
     let Some(serv) = running(call) else { return };
     let parsed = call.arity(1, 3).and_then(|()| {
@@ -859,49 +899,60 @@ fn get_client_info(call: &Call) {
     let Ok((fd, _, _)) = parsed else {
         return call.set_bool(false);
     };
-    // SAFETY: all-zero is a valid view for C++ to fill.
-    let mut client: ServerClient = unsafe { std::mem::zeroed() };
-    // SAFETY: a live server and a writable view.
-    if !unsafe { (host().client)(serv, fd, &raw mut client) } {
+    // SAFETY: a live server.
+    let Some(conn) = (unsafe { view::verified(serv, fd) }) else {
         return call.set_bool(false);
-    }
+    };
+    // SAFETY: a live server.
+    let dispatch_mode = unsafe { view::config(serv) }.dispatch_mode;
     call.set_array();
-    if client.uid > 0 || client.uid_mode {
-        call.add_assoc_long(c"uid", client.uid);
+    if conn.uid > 0 || dispatch_mode == DISPATCH_UIDMOD {
+        call.add_assoc_long(c"uid", i64::from(conn.uid));
     }
-    if client.worker_id > 0 || client.co_conn_lb {
-        call.add_assoc_long(c"worker_id", client.worker_id);
+    if conn.worker_id > 0 || dispatch_mode == DISPATCH_CO_CONN_LB {
+        call.add_assoc_long(c"worker_id", i64::from(conn.worker_id));
     }
-    if client.websocket {
-        call.add_assoc_long(c"websocket_status", client.websocket_status);
+    // SAFETY: a live server.
+    let port = unsafe { view::port_by_fd(serv, conn.fd) };
+    // SAFETY: the connection's live port.
+    if !port.is_null() && unsafe { view::port_websocket(port) } {
+        call.add_assoc_long(c"websocket_status", i64::from(conn.websocket_status));
     }
-    if !client.ssl_client_cert.is_null() {
-        add_bytes(
-            call,
-            c"ssl_client_cert",
-            client.ssl_client_cert,
-            client.ssl_client_cert_length,
-        );
+    let cert = conn.ssl_client_cert.cast::<NativeString>();
+    if !cert.is_null()
+        && conn.ssl_client_cert_pid == swoole_rs_process::methods::swoole_get_worker_pid()
+    {
+        // SAFETY: the connection's live certificate string.
+        let cert = unsafe { &*cert };
+        add_bytes(call, c"ssl_client_cert", cert.str, cert.length);
     }
-    if client.server_port >= 0 {
-        call.add_assoc_long(c"server_port", client.server_port);
+    // SAFETY: a live server.
+    if let Some(server_socket) = unsafe { view::at(serv, conn.server_fd) } {
+        // SAFETY: the listening socket's address.
+        let port = unsafe { swr_v1_clients_address_port(&raw const server_socket.info) };
+        call.add_assoc_long(c"server_port", i64::from(port));
     }
-    call.add_assoc_long(c"server_fd", client.server_fd);
-    call.add_assoc_long(c"socket_fd", client.socket_fd);
-    call.add_assoc_long(c"socket_type", client.socket_type);
-    call.add_assoc_long(c"remote_port", client.remote_port);
-    // SAFETY: the address C++ formatted, NUL-terminated.
-    let ip = unsafe { CStr::from_ptr(client.remote_ip) };
+    call.add_assoc_long(c"server_fd", i64::from(conn.server_fd));
+    call.add_assoc_long(c"socket_fd", i64::from(conn.fd));
+    call.add_assoc_long(c"socket_type", i64::from(conn.socket_type));
+    // SAFETY: the connection's address.
+    let remote_port = unsafe { swr_v1_clients_address_port(&raw const conn.info) };
+    call.add_assoc_long(c"remote_port", i64::from(remote_port));
+    // SAFETY: as above.
+    let ip = unsafe { swr_v1_clients_address_host(&raw const conn.info) };
+    // SAFETY: the address text, NUL-terminated.
+    let ip = unsafe { CStr::from_ptr(ip) };
     add_bytes(call, c"remote_ip", ip.as_ptr(), ip.count_bytes());
-    call.add_assoc_long(c"reactor_id", client.reactor_id);
-    call.add_assoc_long(c"connect_time", client.connect_time);
-    call.add_assoc_long(c"last_time", client.last_time);
-    add_double(call, c"last_recv_time", client.last_recv_time);
-    add_double(call, c"last_send_time", client.last_send_time);
-    add_double(call, c"last_dispatch_time", client.last_dispatch_time);
-    call.add_assoc_long(c"close_errno", client.close_errno);
-    call.add_assoc_long(c"recv_queued_bytes", client.recv_queued_bytes);
-    call.add_assoc_long(c"send_queued_bytes", client.send_queued_bytes);
+    call.add_assoc_long(c"reactor_id", i64::from(conn.reactor_id));
+    call.add_assoc_long(c"connect_time", conn.connect_time as i64);
+    call.add_assoc_long(c"last_time", i64::from(conn.last_recv_time as i32));
+    add_double(call, c"last_recv_time", conn.last_recv_time);
+    add_double(call, c"last_send_time", conn.last_send_time);
+    add_double(call, c"last_dispatch_time", conn.last_dispatch_time);
+    call.add_assoc_long(c"close_errno", i64::from(conn.close_errno));
+    let recv_queued = conn.recv_queued_bytes.load(Ordering::Relaxed);
+    call.add_assoc_long(c"recv_queued_bytes", i64::from(recv_queued));
+    call.add_assoc_long(c"send_queued_bytes", i64::from(conn.send_queued_bytes));
 }
 
 fn get_client_list(call: &Call) {
@@ -1016,7 +1067,7 @@ fn get_worker_id(call: &Call) {
 }
 
 /// The worker `get*` asks about: the argument, or this process's worker.
-fn worker(call: &Call, serv: *mut c_void) -> Option<(i64, i64)> {
+fn worker(call: &Call, serv: *mut c_void) -> Option<*mut WorkerRecord> {
     let Ok(worker_id) = call.arity(0, 1).and_then(|()| call.long(1, -1)) else {
         call.set_bool(false);
         return None;
@@ -1026,27 +1077,34 @@ fn worker(call: &Call, serv: *mut c_void) -> Option<(i64, i64)> {
     } else {
         worker_id
     };
-    let (mut pid, mut status) = (0, 0);
-    // SAFETY: a live server and writable locals.
-    if unsafe { (host().worker)(serv, worker_id, &raw mut pid, &raw mut status) } {
-        Some((pid, status))
-    } else {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "get_worker's uint16_t id, as upstream"
+    )]
+    let worker_id = worker_id as u16;
+    // SAFETY: a live server.
+    let worker = unsafe { view::worker(serv, worker_id) };
+    if worker.is_null() {
         call.set_bool(false);
-        None
+        return None;
     }
+    Some(worker)
 }
 
 fn get_worker_status(call: &Call) {
     let Some(serv) = running(call) else { return };
-    if let Some((_, status)) = worker(call, serv) {
-        call.set_long(status);
+    if let Some(worker) = worker(call, serv) {
+        // SAFETY: a live worker of the server.
+        call.set_long(i64::from(unsafe { swr_v1_worker_status(worker) }));
     }
 }
 
 fn get_worker_pid(call: &Call) {
     let serv = server(call);
-    if let Some((pid, _)) = worker(call, serv) {
-        call.set_long(pid);
+    if let Some(worker) = worker(call, serv) {
+        // SAFETY: a live worker of the server.
+        call.set_long(i64::from(unsafe { swr_v1_worker_pid(worker) }));
     }
 }
 
@@ -1157,28 +1215,34 @@ fn count(call: &Call) {
     call.set_long(i64::try_from(num).unwrap_or(i64::MAX));
 }
 
-/// `offsetExists`/`offsetGet`: the server's own method, called as PHP would.
-fn delegate(call: &Call, which: c_int) {
+/// `offsetExists`/`offsetGet`: `Swoole\Server`'s own method, called on the
+/// server object as PHP would.
+fn delegate(call: &Call, method: &[u8]) {
     let serv = iterator(call).serv;
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
+    let zserv = crate::dispatch::server_zval(serv);
     // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
     let mut retval: zval = unsafe { std::mem::zeroed() };
-    // SAFETY: a live server, the argument and a writable result.
-    let bailed = unsafe { (host().call)(serv, which, call.zval(1), &raw mut retval) };
-    if bailed {
-        // SAFETY: re-raise the trapped bailout from the handler, which owns nothing.
-        unsafe {
-            _zend_bailout(
-                c"crates/phpserver/src/server.rs".as_ptr().cast_mut(),
-                line!(),
-            )
-        };
+    // SAFETY: the server's object zval.
+    let object = unsafe { swoole_rs_zend::object_of(&raw const zserv) };
+    // SAFETY: the server's live object, its class, a writable result and the argument.
+    let called = unsafe {
+        swoole_rs_zend::bailout::call_method(
+            object,
+            SERVER.entry(),
+            method,
+            &raw mut retval,
+            call.zval(1),
+        )
+    };
+    if let Err(bailout) = called {
+        return swoole_rs_zend::bailout::raise(Err(bailout));
     }
-    if which == 0 {
+    if method == b"exists" {
         // RETVAL_BOOL(Z_BVAL_P(&retval)): only `true` is true.
-        // SAFETY: C++ wrote the method's result.
+        // SAFETY: Zend wrote the method's result.
         call.set_bool(
             unsafe { swoole_rs_zend::type_of(&raw const retval) } == swoole_rs_zend::sys::IS_TRUE,
         );
@@ -1189,11 +1253,11 @@ fn delegate(call: &Call, which: c_int) {
 }
 
 fn offset_exists(call: &Call) {
-    delegate(call, 0);
+    delegate(call, b"exists");
 }
 
 fn offset_get(call: &Call) {
-    delegate(call, 1);
+    delegate(call, b"getClientInfo");
 }
 
 fn nothing(_: &Call) {}
@@ -1246,14 +1310,5 @@ mod tests {
         assert_eq!(IteratorObject::OFFSET, 40);
         // ServerTaskObject { Server *; DataHead info; zend_object std; }
         assert_eq!(TaskObject::OFFSET, 48);
-    }
-
-    #[test]
-    fn stats_groups_cover_their_keys() {
-        for group in [STATS_WORKER, STATS_QUEUE, STATS_TASKS] {
-            assert!(STATS[group].is_empty());
-            assert!(!STATS[group + 1].is_empty());
-        }
-        assert_eq!(STATS.iter().filter(|key| key.is_empty()).count(), 3);
     }
 }
