@@ -405,7 +405,7 @@ size_t swr_v1_server_tcp_info(const void *info, swr_v1_server_fact *out, size_t 
 /*
  * The module host (crates/phpswoole): get_module() returns swr_v1_phpswoole_module, Rust's
  * module entry with its dependencies, function table, MINIT, MSHUTDOWN, RINIT, RSHUTDOWN and
- * MINFO. C++ (php_swoole_cxx.cc) keeps the module globals and lends what only it or
+ * MINFO. C++ (native/phphelpers/module.cc) keeps the module globals and lends what only it or
  * configure's #ifdefs reach: Swoole's core, error, logger and MIME state, the stdext/ssh2/ftp
  * handlers, the build's flags and library versions.
  */

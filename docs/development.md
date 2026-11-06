@@ -79,7 +79,7 @@ checkout).
 Plain ccache and cargo, with their usual settings (`CCACHE_DIR`, `CCACHE_MAXSIZE`,
 `CARGO_HOME`). The extension builders and C/C++ test harnesses compile through
 `ccache` when it is installed; `--no-ccache` disables it for a build.
-`php_swoole_cxx.cc` always misses because it embeds `__DATE__`/`__TIME__`. CI keeps
+`native/phphelpers/module.cc` always misses because it embeds `__DATE__`/`__TIME__`. CI keeps
 the cache in `.ccache`.
 
 ## PHPT runner
