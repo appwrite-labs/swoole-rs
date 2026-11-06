@@ -16,8 +16,6 @@ pub const KQUEUE: u32 = 2;
 pub struct WaitOps {
     /// The native `Reactor`; each handler runs as `handler(reactor, event)`.
     pub reactor: *mut c_void,
-    /// `Reactor::defer_tasks`, read fresh before each kernel wait: non-null waits without blocking.
-    pub deferred: *const *const c_void,
     pub begin: unsafe extern "C" fn(*mut c_void),
     pub end: unsafe extern "C" fn(*mut c_void, c_int),
     /// epoll with `io_uring` only: `interrupt` runs the EINTR handler when `interrupted`.
@@ -124,8 +122,8 @@ pub unsafe extern "C" fn swr_v1_reactor_wait(owner: *mut ReactorState, ops: *con
         // SAFETY: the native effect accepts `reactor`.
         unsafe { (ops.begin)(reactor) };
         let mut entries: c_int = 0;
-        // SAFETY: the native slot is live for the call.
-        let deferred = !unsafe { ops.deferred.read() }.is_null();
+        // SAFETY: a single field read of the live state; deferred work waits without blocking.
+        let deferred = !unsafe { (*fields).defer_tasks }.is_null();
         // SAFETY: the kernel wait runs no native effect.
         let ready = unsafe { kernel_wait(owner, deferred, &raw mut entries) };
         match ready.cmp(&0) {
@@ -498,15 +496,13 @@ mod tests {
             begin_stops,
             cycles: 0,
         };
-        let task = 1u8;
-        let pending: *const c_void = if deferred {
-            (&raw const task).cast()
-        } else {
-            std::ptr::null()
-        };
+        let mut task = crate::ReactorDeferred::default();
+        if deferred {
+            // SAFETY: the state's own field; the stack queue outlives the wait and is detached after.
+            unsafe { (*state.fields).defer_tasks = &raw mut task };
+        }
         let ops = WaitOps {
             reactor: (&raw mut probe).cast(),
-            deferred: &raw const pending,
             begin,
             end,
             interrupted: None,
@@ -523,6 +519,7 @@ mod tests {
         );
         unsafe {
             assert!((*state.fields).start);
+            (*state.fields).defer_tasks = std::ptr::null_mut();
             swr_v1_reactor_state_free(state.owner);
             libc::close(fds[0]);
             libc::close(fds[1]);

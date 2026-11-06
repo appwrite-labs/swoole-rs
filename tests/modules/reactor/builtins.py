@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix='swr-builtins-') as tmp:
             class Reactor {public:CallbackManager *defer_tasks=nullptr;DeferCallback idle_task{},future_task{};bool running=true,wait_exit=false,accepted=true,mutate_wait=false;unsigned queries=0;
             bool if_exit(){++queries;if(mutate_wait)wait_exit=false;return accepted;}
             void defer(const Callback&,void *data=nullptr);void execute_begin_callback()const;};\n'''
-            if variant!='original':cls+='\n'.join(block(base,base.index(sig))[0] for sig in ['static void swr_reactor_enqueue_defer(','static void swr_reactor_run_defer(','static void swr_reactor_run_task(','static void swr_reactor_try_exit(','static bool swr_reactor_exit_predicate('])+'\n'
+            if variant!='original':cls+='\n'.join(block(base,base.index(sig))[0] for sig in ['static void defer_into(','static void swr_reactor_run_task(','static void swr_reactor_try_exit(','static bool swr_reactor_exit_predicate('])+'\n'
             for sig in ['void Reactor::defer(','void Reactor::execute_begin_callback(']:cls+=block(base,base.index(sig))[0]+'\n'
             for sig,definition in [
                 ('set_end_callback(PRIORITY_DEFER_TASK','static void defer_end(Reactor *reactor)'),
@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix='swr-builtins-') as tmp:
                 start=base.index(sig);fragment,_=block(base,start);cls+=definition+fragment[fragment.index('{'):]+'\n'
             selected_header=(selected_tree/'include/swoole_reactor.h').read_text()
             source_header=header if variant=='original' else selected_header
-            field=('CallbackManager' if variant=='original' else 'ReactorDeferredQueue')+' *defer_tasks = nullptr;'
+            field=('CallbackManager' if variant=='original' else 'swr_v1_reactor_deferred')+' *defer_tasks = nullptr;'
             cls=cls.replace('CallbackManager *defer_tasks=nullptr;', '\n'+field+'\nint timeout_msec=17;'+block(source_header,source_header.index('int get_timeout_msec('))[0]+'\n')
             (t/'builtins.inc').write_text(cls+'}\n')
             for standard in ['c++14','c++17','c++20']:

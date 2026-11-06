@@ -45,45 +45,30 @@ ABI.
 `set_handler`, `isset_handler`, `get_handler` and `get_error_handler` are
 upstream's code (#336).
 
-## Builtin defer/begin/idle/exit scheduling
+## Builtin begin/idle/exit scheduling
 
-Rust owns the policy of `Reactor::defer`, `execute_begin_callback`, the deferred
-and idle end callbacks, try-exit, and the deferred/default exit predicates,
-through one scalar transition ABI. The reply is an 8-byte C value (phase at
-offset 0, action at 4). Roles: enqueue, deferred end, idle/future, try-exit,
-deferred exit, default exit. Actions: allocate/publish, append, detach, execute,
-delete, task invocation, exit query, stopped publication, Boolean result.
-Invalid replies abort in the Native adapter.
+Rust owns the policy of `execute_begin_callback`, the idle end callback,
+try-exit, and the deferred/default exit predicates, through one scalar
+transition ABI. The reply is an 8-byte C value (phase at offset 0, action at
+4). Roles: idle/future, try-exit, deferred exit, default exit. Actions: task
+invocation, exit query, stopped publication, Boolean result. Invalid replies
+abort in the Native adapter. Try-exit observes `wait_exit` once before
+`if_exit` and does not re-read it. Trim/time and signal callbacks stay Native.
 
-Enqueue publishes the new manager before append. Deferred execution captures
-the old manager, clears the Reactor field, executes, then deletes it. Callbacks
-that defer again therefore schedule a new manager for the next end pass.
-Try-exit observes `wait_exit` once before `if_exit` and does not re-read it. The
-event-count predicate receives a checked scalar. Trim/time and signal callbacks
-stay Native.
+## Deferred queues
 
-## Deferred queue ownership
+`defer_tasks` and `destroy_callbacks` are fields of the Rust reactor state:
+FIFO queues of C `(call, data, dispose)` entries (`crates/reactor/src/deferred.rs`),
+created on first push. Rust callers (`Socket::free`) push a function pointer
+directly. `Reactor::defer` and `add_destroy_callback` box the `std::function`
+with its data and push a trampoline that runs and frees it; `dispose` frees a box
+whose task never ran.
 
-`defer_tasks` is a `ReactorDeferredQueue` pointer and the embedded
-`destroy_callbacks` a typed queue; the public `CallbackManager` class is
-unchanged but no longer used by the Reactor. The facade holds one opaque Rust
-owner; Rust owns FIFO order and Native Task identities, with no Native list.
-
-- Native allocates/copies the `std::function`/data pair. Rust admission is
-  fallible and takes token custody only on success; Native throws `bad_alloc`
-  after return. The payload copy may precede an allocation refusal.
-- Execution: Rust selects the front token and returns; Native copies it onto
-  the stack. A second call detaches the current front; Native then deletes,
-  invokes and drops the scoped copy. The next queue observation follows these
-  effects. No extra per-invocation heap allocation.
-- `add_destroy_callback` and the Reactor destructor's execute call use the same
-  FIFO, with unchanged statement text.
-- Empty-owner release never drops or invokes a payload in Rust.
-
-Before the registry fold, the captured SDK measured the Reactor at 1008 B with
-the owned queue (Native 1064 B). `destroy_callbacks` stays at offset 840 but
-shrinks 24→8 B; later public offsets shift by 16 B. The Reactor is not
-copy-constructible, copy-assignable or movable.
+- The `PRIORITY_DEFER_TASK` end callback detaches `defer_tasks`, runs it and
+  frees it, so a task that defers again lands on the next end pass. A non-null
+  `defer_tasks` makes the kernel wait non-blocking.
+- The Reactor destructor runs `destroy_callbacks` until empty (callbacks it
+  adds run too); the state frees the queue.
 
 ## Shared owner allocation
 

@@ -13,7 +13,7 @@ use crate::{
 };
 use openssl_sys::{SSL, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, stack_st_X509};
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::{
     make_socket_typed, signal_dispatch, socket_cork, socket_set_fd_option, socket_uncork,
@@ -1445,25 +1445,16 @@ pub unsafe extern "C-unwind" fn socket_send_async(
     data: *const c_void,
     length: usize,
 ) -> isize {
-    // SAFETY: src/wrapper/event.cc's.
-    unsafe extern "C-unwind" {
-        #[link_name = "_Z25swoole_event_is_availablev"]
-        fn swoole_event_is_available() -> bool;
-        #[link_name = "_Z18swoole_event_writePN6swoole7network6SocketEPKvm"]
-        fn swoole_event_write(
-            socket: *mut SocketRecord,
-            data: *const c_void,
-            length: usize,
-        ) -> isize;
-    }
-    // SAFETY: no preconditions.
-    if unsafe { swoole_event_is_available() } {
+    let Some((reactor, prepared)) = swoole_rs_reactor::socket_upstream::event_reactor() else {
         // SAFETY: as the caller promises.
-        unsafe { swoole_event_write(socket, data, length) }
-    } else {
-        // SAFETY: as the caller promises.
-        unsafe { socket_send_sync(socket, data, length, 0) }
-    }
+        return unsafe { socket_send_sync(socket, data, length, 0) };
+    };
+    // SAFETY: `swoole_event_write`: the live reactor's `write`, set at construction.
+    let Some(write) = (unsafe { (*prepared.fields).write }) else {
+        return -1;
+    };
+    // SAFETY: as the caller promises, on the thread's reactor.
+    unsafe { write(reactor, socket, data, length) }
 }
 
 /// `bool Socket::ssl_shutdown()`.
@@ -1581,35 +1572,82 @@ pub unsafe extern "C" fn socket_ssl_create(
     -1
 }
 
-/// `void Socket::free()`, which native code registers: it defers the close to the
-/// event loop through a `std::function`.
-static SOCKET_FREE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-
-/// Registers `Socket::free`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_set_free(free: unsafe extern "C-unwind" fn(*mut SocketRecord)) {
-    SOCKET_FREE.store(free as *mut c_void, Ordering::Relaxed);
-}
-
-/// `void Socket::free()`: closes and frees the socket, deferred to the event loop
-/// when there is one. Unregistered (outside the hybrid), a socket without timers or
-/// buffers is released at once.
+/// base.cc's `socket_free_defer`: closes the descriptor and frees the record.
 ///
 /// # Safety
-/// `socket` is a live record nothing else uses afterwards.
-unsafe fn socket_free(socket: *mut SocketRecord) {
-    let free = SOCKET_FREE.load(Ordering::Relaxed);
-    if free.is_null() {
-        // SAFETY: as the caller promises.
-        unsafe { swoole_rs_reactor::swr_v1_socket_release(socket) };
-        // SAFETY: as the caller promises.
-        unsafe { swoole_rs_reactor::swr_v1_socket_dealloc(socket) };
-        return;
-    }
-    // SAFETY: only `swr_v1_socket_set_free` stores it, from that function type.
-    let free: unsafe extern "C-unwind" fn(*mut SocketRecord) = unsafe { std::mem::transmute(free) };
+/// `socket` is a live record nothing uses afterwards.
+unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
+    let socket = socket.cast::<SocketRecord>();
     // SAFETY: as the caller promises.
-    unsafe { free(socket) };
+    if !unsafe { swoole_rs_reactor::swr_v1_socket_release(socket) } {
+        // SAFETY: as above.
+        let fd = unsafe { (*socket).fd };
+        log::sys_warning(c"socket_free_defer", format_args!("close({fd}) failed"));
+    }
+    // SAFETY: as above.
+    unsafe { swoole_rs_reactor::swr_v1_socket_dealloc(socket) };
+}
+
+/// `void Socket::free()`: deletes the timers and buffers, then, while the thread's
+/// event loop is available, removes the socket from it and defers the close to it;
+/// otherwise closes at once. Outside the hybrid (and in this crate's tests, which
+/// link no C++) there are no timers, buffers or loop.
+///
+/// # Safety
+/// `socket` is a live record nothing uses afterwards.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")
+)]
+pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    {
+        // SAFETY: src/wrapper/timer.cc's, src/core/buffer.cc's and the C++ runtime's.
+        unsafe extern "C-unwind" {
+            #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
+            fn swoole_timer_del(node: *mut c_void) -> bool;
+            #[link_name = "_ZN6swoole6BufferD1Ev"]
+            fn buffer_drop(buffer: *mut c_void);
+            #[link_name = "_ZdlPv"]
+            fn operator_delete(storage: *mut c_void);
+        }
+        // SAFETY: as the caller promises.
+        let record = unsafe { &*socket };
+        for timer in [record.recv_timer, record.output.send_timer] {
+            if !timer.is_null() {
+                // SAFETY: the socket's live timer.
+                unsafe { swoole_timer_del(timer) };
+            }
+        }
+        for buffer in [record.in_buffer, record.output.out_buffer] {
+            if !buffer.is_null() {
+                // SAFETY: `delete buffer`: the socket owns each `new Buffer`.
+                unsafe { buffer_drop(buffer) };
+                // SAFETY: as above.
+                unsafe { operator_delete(buffer) };
+            }
+        }
+        if let Some((_, reactor)) = swoole_rs_reactor::socket_upstream::event_reactor() {
+            if record.fd != -1 && record.removed == 0 {
+                // SAFETY: `swoole_event_del(this)` on the thread's live reactor; del
+                // never allocates, and a failure is logged.
+                unsafe {
+                    swoole_rs_reactor::swr_v1_reactor_change(
+                        reactor.owner,
+                        socket,
+                        2,
+                        0,
+                        swoole_rs_reactor::socket_upstream::swr_v1_reactor_log,
+                    )
+                };
+            }
+            // SAFETY: `swoole_event_defer(socket_free_defer, this)`.
+            unsafe { swoole_rs_reactor::defer(reactor.fields, socket_free_defer, socket.cast()) };
+            return;
+        }
+    }
+    // SAFETY: as the caller promises.
+    unsafe { socket_free_defer(socket.cast()) };
 }
 
 /// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
@@ -1725,7 +1763,7 @@ pub unsafe extern "C-unwind" fn make_server_socket(
 /// Frees a socket `make_server_socket` gave up on.
 ///
 /// # Safety
-/// As `socket_free`.
+/// As `Socket::free`.
 unsafe fn discard(socket: *mut SocketRecord) -> *mut SocketRecord {
     // SAFETY: as the caller promises.
     unsafe { socket_free(socket) };

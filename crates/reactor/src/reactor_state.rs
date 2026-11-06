@@ -5,10 +5,10 @@ use libc::{c_int, c_void};
 use std::ptr;
 
 pub type ReactorWrite =
-    unsafe extern "C" fn(*mut c_void, *mut SocketRecord, *const c_void, usize) -> isize;
+    unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const c_void, usize) -> isize;
 pub type ReactorWritev =
-    unsafe extern "C" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
-pub type ReactorClose = unsafe extern "C" fn(*mut c_void, *mut SocketRecord) -> c_int;
+    unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
+pub type ReactorClose = unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord) -> c_int;
 
 #[repr(C)]
 pub struct ReactorFields {
@@ -31,6 +31,10 @@ pub struct ReactorFields {
     pub write: Option<ReactorWrite>,
     pub writev: Option<ReactorWritev>,
     pub close: Option<ReactorClose>,
+    /// `Reactor::defer_tasks`: null until a task is deferred; never freed unrun.
+    pub defer_tasks: *mut crate::ReactorDeferred,
+    /// `Reactor::destroy_callbacks`.
+    pub destroy_callbacks: *mut crate::ReactorDeferred,
 }
 
 pub struct ReactorState {
@@ -59,9 +63,12 @@ pub(crate) enum Backend {
 impl Drop for ReactorState {
     fn drop(&mut self) {
         self.close_backend();
+        // SAFETY: the queue slot is this state's own.
+        unsafe { crate::swr_v1_reactor_deferred_free(&raw mut self.fields.destroy_callbacks) };
     }
 }
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ReactorPrepared {
     pub owner: *mut ReactorState,
     pub fields: *mut ReactorFields,
@@ -91,6 +98,8 @@ pub extern "C" fn swr_v1_reactor_state_new() -> ReactorPrepared {
             write: None,
             writev: None,
             close: None,
+            defer_tasks: ptr::null_mut(),
+            destroy_callbacks: ptr::null_mut(),
         },
         registry: Registry::default(),
         handlers: Handlers::default(),

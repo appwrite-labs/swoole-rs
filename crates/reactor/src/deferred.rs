@@ -1,196 +1,234 @@
-//! Sole opt-in deferred-task queue. Native owns every payload and effect.
-use crate::owner::{publish, release};
+// SPDX-License-Identifier: Apache-2.0
+// Compatibility derived from Swoole v6.2.4 src/reactor/base.cc (Swoole contributors).
+//! The reactor's deferred queues (`Reactor::defer_tasks`, `Reactor::destroy_callbacks`):
+//! FIFO `(call, data)` pairs. A C++ `std::function` task enters as its own
+//! trampoline, with a `dispose` that deletes it when the queue is freed unrun.
+use crate::reactor_state::ReactorFields;
 use std::collections::VecDeque;
+use std::ffi::c_void;
 use std::ptr;
 
-pub struct ReactorDeferred {
-    tasks: VecDeque<usize>,
+/// A deferred call. `dispose`, when set, releases `data` if the call never runs.
+pub type DeferCall = unsafe extern "C-unwind" fn(*mut c_void);
+pub type DeferDispose = unsafe extern "C" fn(*mut c_void);
+
+#[derive(Clone, Copy)]
+struct Task {
+    call: DeferCall,
+    data: *mut c_void,
+    dispose: Option<DeferDispose>,
 }
-/// Append one Native-owned payload identity; publish only after fallible reserve.
-/// 0 committed, -2 allocation refusal, -1 invalid. Null owner is lazy empty.
+
+#[derive(Default)]
+pub struct ReactorDeferred {
+    tasks: VecDeque<Task>,
+}
+
+/// Appends `call(data)` to the queue in `slot`, creating it on first use: 0, or -2 when
+/// it cannot allocate (nothing is queued and `data` stays the caller's).
+///
 /// # Safety
-/// Slot is live/exclusive/aligned. Token is a stable nonzero Native Task identity,
-/// transferred only on success; no payload is dereferenced or dropped by Rust.
+/// `slot` is live and holds null or a queue from this module.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_reactor_deferred_push(
     slot: *mut *mut ReactorDeferred,
-    token: usize,
+    call: DeferCall,
+    data: *mut c_void,
+    dispose: Option<DeferDispose>,
 ) -> i32 {
-    // SAFETY: `slot` is null or live, aligned and exclusively lent for this call.
-    let Some(slot) = (unsafe { slot.as_mut() }) else {
-        return -1;
-    };
-    if token == 0 {
-        return -1;
+    // SAFETY: as the caller promises.
+    let slot = unsafe { &mut *slot };
+    if slot.is_null() {
+        let Some(owner) = crate::owner::try_owner(ReactorDeferred::default) else {
+            return -2;
+        };
+        *slot = Box::into_raw(owner);
     }
-    // SAFETY: the caller passes its live, exclusive slot, holding null or this owner type.
-    unsafe {
-        publish(
-            slot,
-            || ReactorDeferred {
-                tasks: VecDeque::new(),
-            },
-            |owner| {
-                owner.tasks.try_reserve(1).map_err(|_| -2)?;
-                owner.tasks.push_back(token);
-                Ok((0, true))
-            },
-        )
+    // SAFETY: a live queue from this module.
+    let tasks = unsafe { &mut (**slot).tasks };
+    if tasks.try_reserve(1).is_err() {
+        return -2;
     }
-    .unwrap_or_else(|status| status)
-}
-/// Select front for Native stack-copy, then freshly detach for Native deletion.
-/// Actions0done/1copyfront/2destroy-detached, -1 invalid. Native then performs
-/// the fixed original delete/invoke/scoped-copy-destruction effect recipe;
-/// no queue observation occurs until those effects finish.
-/// # Safety
-/// Owner is null/live/exclusive; phase/output aligned/exclusive/disjoint and
-/// phase initially zero. Native completes each action after return. Source
-/// payloads are live while copied; Rust never holds a span across any effect.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_deferred_step(
-    owner: *mut ReactorDeferred,
-    phase: *mut u32,
-    token: *mut usize,
-) -> i32 {
-    // SAFETY: `phase` is null or live, aligned and exclusively lent for this call.
-    let phase = unsafe { phase.as_mut() };
-    // SAFETY: `token` is null or live, aligned and exclusively lent for this call.
-    let token = unsafe { token.as_mut() };
-    let (Some(phase), Some(token)) = (phase, token) else {
-        return -1;
-    };
-    *token = 0;
-    match *phase {
-        0 => {
-            // SAFETY: `owner` is null or live and aligned for this call.
-            let Some(owner) = (unsafe { owner.as_ref() }) else {
-                return 0;
-            };
-            if let Some(front) = owner.tasks.front() {
-                *token = *front;
-                *phase = 1;
-                1
-            } else {
-                0
-            }
-        }
-        1 => {
-            // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-            let Some(owner) = (unsafe { owner.as_mut() }) else {
-                return -1;
-            };
-            if let Some(front) = owner.tasks.pop_front() {
-                *token = front;
-                *phase = 0;
-                2
-            } else {
-                -1
-            }
-        }
-        _ => -1,
-    }
-}
-/// Normal metadata cleanup: detach next token for Native deletion, or free empty
-/// metadata and publish null. 1delete/0complete/-1invalid. Never invokes a task.
-/// # Safety
-/// Live exclusive/disjoint slot/output. Native deletes each returned payload
-/// after Rust returns. Custom destruction/reentry/lifetime behavior unqualified.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_deferred_clear(
-    slot: *mut *mut ReactorDeferred,
-    token: *mut usize,
-) -> i32 {
-    // SAFETY: `slot` is null or live, aligned and exclusively lent for this call.
-    let slot = unsafe { slot.as_mut() };
-    // SAFETY: `token` is null or live, aligned and exclusively lent for this call.
-    let token = unsafe { token.as_mut() };
-    let (Some(slot), Some(token)) = (slot, token) else {
-        return -1;
-    };
-    *token = 0;
-    // SAFETY: the slot holds null or this module's live owner, exclusively accessed.
-    let Some(owner) = (unsafe { (*slot).as_mut() }) else {
-        return 0;
-    };
-    if let Some(front) = owner.tasks.pop_front() {
-        *token = front;
-        return 1;
-    }
-    // SAFETY: the emptied, live owner is released once; the slot is cleared next.
-    unsafe { release(*slot) };
-    *slot = ptr::null_mut();
+    tasks.push_back(Task {
+        call,
+        data,
+        dispose,
+    });
     0
+}
+
+/// Runs the queue's tasks in order, each popped before it is called, until it is empty;
+/// tasks a call appends run in this pass too. No borrow of the queue spans a call.
+///
+/// # Safety
+/// `owner` is null or a live queue from this module that no call frees.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn swr_v1_reactor_deferred_run(owner: *mut ReactorDeferred) {
+    if owner.is_null() {
+        return;
+    }
+    loop {
+        // SAFETY: as the caller promises; the borrow ends before the call.
+        let Some(task) = (unsafe { (*owner).tasks.pop_front() }) else {
+            return;
+        };
+        // SAFETY: the task's own contract.
+        unsafe { (task.call)(task.data) };
+    }
+}
+
+/// Frees the queue in `slot`, disposing of the tasks that never ran, and nulls the slot.
+///
+/// # Safety
+/// `slot` is live and holds null or a queue from this module, which nothing runs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_reactor_deferred_free(slot: *mut *mut ReactorDeferred) {
+    // SAFETY: as the caller promises.
+    let owner = std::mem::replace(unsafe { &mut *slot }, ptr::null_mut());
+    if owner.is_null() {
+        return;
+    }
+    // SAFETY: the queue was this module's; the slot no longer names it.
+    let owner = unsafe { Box::from_raw(owner) };
+    for task in &owner.tasks {
+        if let Some(dispose) = task.dispose {
+            // SAFETY: the task never ran, so its data is still the queue's.
+            unsafe { dispose(task.data) };
+        }
+    }
+}
+
+/// `Reactor::defer(fn, data)` on the reactor whose fields these are.
+///
+/// # Safety
+/// `fields` is a live reactor's.
+pub unsafe fn defer(fields: *mut ReactorFields, call: DeferCall, data: *mut c_void) {
+    // SAFETY: as the caller promises.
+    let slot = unsafe { &raw mut (*fields).defer_tasks };
+    // SAFETY: the live reactor's queue slot.
+    if unsafe { swr_v1_reactor_deferred_push(slot, call, data, None) } != 0 {
+        std::alloc::handle_alloc_error(std::alloc::Layout::new::<ReactorDeferred>());
+    }
+}
+
+/// The `PRIORITY_DEFER_TASK` end callback over `Reactor::defer_tasks`: the queue is
+/// detached first, so tasks it defers run on the next pass, then run and freed.
+///
+/// # Safety
+/// `slot` is a live reactor's `defer_tasks`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn swr_v1_reactor_run_defer(slot: *mut *mut ReactorDeferred) {
+    // SAFETY: as the caller promises.
+    let mut owner = std::mem::replace(unsafe { &mut *slot }, ptr::null_mut());
+    // SAFETY: the detached queue is ours alone.
+    unsafe { swr_v1_reactor_deferred_run(owner) };
+    // SAFETY: as above; every task ran.
+    unsafe { swr_v1_reactor_deferred_free(&raw mut owner) };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn deferred_positive_fifo_and_separate_round_identity() {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static TRACE: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+        static FIELDS: std::cell::Cell<*mut ReactorFields> = const { std::cell::Cell::new(ptr::null_mut()) };
+    }
+
+    unsafe extern "C-unwind" fn record(data: *mut c_void) {
+        TRACE.with_borrow_mut(|trace| trace.push(data as usize));
+    }
+
+    unsafe extern "C" fn disposed(data: *mut c_void) {
+        TRACE.with_borrow_mut(|trace| trace.push(1000 + data as usize));
+    }
+
+    /// Defers `record(4)` from inside a deferred task.
+    unsafe extern "C-unwind" fn defer_again(data: *mut c_void) {
+        TRACE.with_borrow_mut(|trace| trace.push(data as usize));
+        // SAFETY: the test's live fields; the running queue is detached.
         unsafe {
-            let mut first = ptr::null_mut();
-            let mut next = ptr::null_mut();
-            for value in [101, 102, 103] {
-                assert_eq!(swr_v1_reactor_deferred_push(&raw mut first, value), 0);
-            }
-            let mut phase = 0;
-            let mut token = 0;
-            let mut trace = Vec::new();
-            while swr_v1_reactor_deferred_step(first, &raw mut phase, &raw mut token) == 1 {
-                let copied = token;
-                assert_eq!(
-                    swr_v1_reactor_deferred_step(first, &raw mut phase, &raw mut token),
-                    2
-                );
-                assert_eq!(token, copied);
-                trace.push((2, token));
-                // Native invokes the copied Task only after the fresh pop;
-                // no Native payload is executed by this Rust token unit.
-                trace.push((3, copied));
-                if copied == 101 {
-                    assert_eq!(swr_v1_reactor_deferred_push(&raw mut next, 201), 0);
+            assert!((*FIELDS.get()).defer_tasks.is_null());
+            defer(FIELDS.get(), record, token(4));
+        }
+    }
+
+    fn take() -> Vec<usize> {
+        TRACE.with_borrow_mut(std::mem::take)
+    }
+
+    fn token(value: usize) -> *mut c_void {
+        ptr::without_provenance_mut(value)
+    }
+
+    /// base.cc's `Reactor::defer` and the defer end callback: FIFO, a task's own defer
+    /// lands on the next pass, and the queue is gone once run.
+    #[test]
+    fn deferred_tasks_run_in_order_and_reentrant_defers_wait_a_pass() {
+        let state = crate::swr_v1_reactor_state_new();
+        let fields = state.fields;
+        FIELDS.set(fields);
+        unsafe {
+            assert!((*fields).defer_tasks.is_null());
+            defer(fields, record, token(1));
+            defer(fields, record, token(2));
+            assert!(!(*fields).defer_tasks.is_null());
+            swr_v1_reactor_run_defer(&raw mut (*fields).defer_tasks);
+            assert_eq!(take(), [1, 2]);
+            assert!((*fields).defer_tasks.is_null());
+            defer(fields, defer_again, token(3));
+            swr_v1_reactor_run_defer(&raw mut (*fields).defer_tasks);
+            assert_eq!(take(), [3]);
+            assert!(!(*fields).defer_tasks.is_null());
+            swr_v1_reactor_run_defer(&raw mut (*fields).defer_tasks);
+            assert_eq!(take(), [4]);
+            assert!((*fields).defer_tasks.is_null());
+            swr_v1_reactor_run_defer(&raw mut (*fields).defer_tasks);
+            assert_eq!(take(), []);
+            crate::swr_v1_reactor_state_free(state.owner);
+        }
+    }
+
+    /// The former `callback_queues` gate (`add_destroy_callback` over the destroy queue):
+    /// for 0, 1, 17 and 65 callbacks nothing runs until the queue does, then all run in
+    /// order; a second run is empty, and one added afterwards runs on the next.
+    #[test]
+    fn destroy_queue_runs_in_order_and_again_after_an_append() {
+        for count in [0usize, 1, 17, 65] {
+            let mut queue = ptr::null_mut();
+            unsafe {
+                for i in 0..count {
+                    assert_eq!(
+                        swr_v1_reactor_deferred_push(&raw mut queue, record, token(i), None),
+                        0
+                    );
                 }
-                trace.push((4, copied));
+                assert_eq!(take(), []);
+                swr_v1_reactor_deferred_run(queue);
+                assert_eq!(take(), (0..count).collect::<Vec<_>>());
+                swr_v1_reactor_deferred_run(queue);
+                assert_eq!(take(), []);
+                swr_v1_reactor_deferred_push(&raw mut queue, record, token(99), None);
+                swr_v1_reactor_deferred_run(queue);
+                assert_eq!(take(), [99]);
+                swr_v1_reactor_deferred_free(&raw mut queue);
+                assert!(queue.is_null());
             }
-            assert_eq!(
-                trace,
-                [
-                    (2, 101),
-                    (3, 101),
-                    (4, 101),
-                    (2, 102),
-                    (3, 102),
-                    (4, 102),
-                    (2, 103),
-                    (3, 103),
-                    (4, 103)
-                ]
-            );
-            assert_eq!(
-                swr_v1_reactor_deferred_clear(&raw mut first, &raw mut token),
-                0
-            );
-            assert!(first.is_null());
-            assert_eq!(
-                swr_v1_reactor_deferred_step(next, &raw mut phase, &raw mut token),
-                1
-            );
-            assert_eq!(token, 201);
-            assert_eq!(
-                swr_v1_reactor_deferred_step(next, &raw mut phase, &raw mut token),
-                2
-            );
-            assert_eq!(token, 201);
-            assert_eq!(
-                swr_v1_reactor_deferred_step(next, &raw mut phase, &raw mut token),
-                0
-            );
-            assert_eq!(
-                swr_v1_reactor_deferred_clear(&raw mut next, &raw mut token),
-                0
-            );
-            assert!(next.is_null());
+        }
+    }
+
+    /// Freeing a queue disposes of each unrun task's data instead of calling it.
+    #[test]
+    fn free_disposes_unrun_tasks() {
+        let mut queue = ptr::null_mut();
+        unsafe {
+            swr_v1_reactor_deferred_push(&raw mut queue, record, token(99), Some(disposed));
+            swr_v1_reactor_deferred_push(&raw mut queue, record, token(7), None);
+            swr_v1_reactor_deferred_free(&raw mut queue);
+            assert_eq!(take(), [1099]);
+            assert!(queue.is_null());
+            swr_v1_reactor_deferred_free(&raw mut queue);
         }
     }
 }

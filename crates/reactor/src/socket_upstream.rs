@@ -6,7 +6,7 @@
 //! upstream (Itanium) symbols and `socket.cc` no longer defines them.
 use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketRecord};
-use std::ffi::{CStr, c_int};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::log;
 
 /// `SW_OK`, `SW_ERR`; `swReturnCode`'s `SW_WAIT`, `SW_ERROR` and `SW_READY`.
@@ -457,6 +457,46 @@ pub extern "C" fn make_socket_fd(fd: c_int, fd_type: c_int) -> *mut SocketRecord
 )]
 pub extern "C" fn socket(domain: c_int, kind: c_int, protocol: c_int, flags: c_int) -> c_int {
     crate::swr_v1_socket_open(domain, kind, protocol, flags)
+}
+
+/// `Reactor::change`'s log: `code` 0 is `swoole_sys_warning`, else
+/// `swoole_error_log(SW_LOG_WARNING, code, ...)`, as from `origin`; then the backtrace.
+///
+/// # Safety
+/// Both strings are NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_reactor_log(
+    origin: *const c_char,
+    code: c_int,
+    message: *const c_char,
+) {
+    // SAFETY: as the caller promises.
+    let origin = unsafe { CStr::from_ptr(origin) };
+    // SAFETY: as the caller promises.
+    let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+    if code == 0 {
+        log::sys_warning(origin, format_args!("{message}"));
+    } else {
+        log::error_log(log::LOG_WARNING, code, origin, format_args!("{message}"));
+    }
+    swoole_rs_corebase::swoole_print_backtrace_on_error();
+}
+
+/// The thread's event loop while it is available (`SwooleTG.reactor`, unless null
+/// or destroyed), with the prepared state it begins with. src/wrapper/event.cc reads
+/// the C++ `thread_local`.
+#[cfg(feature = "upstream-symbols")]
+#[must_use]
+pub fn event_reactor() -> Option<(*mut c_void, crate::ReactorPrepared)> {
+    // SAFETY: src/wrapper/event.cc's.
+    unsafe extern "C" {
+        fn swr_v1_event_reactor() -> *mut c_void;
+    }
+    // SAFETY: no preconditions.
+    let reactor = unsafe { swr_v1_event_reactor() };
+    // SAFETY: null or a live `Reactor`, which begins with its prepared state.
+    let prepared = unsafe { reactor.cast::<crate::ReactorPrepared>().as_ref() }.copied();
+    prepared.map(|prepared| (reactor, prepared))
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 Opt-in Rust policy for the Swoole reactor backends, callbacks, Socket I/O and
 output queues. The frozen ABI is `docs/reactor-abi-v1.md`; the module-local
-headers are `swoole_rs_reactor.h` and `swoole_rs_reactor_defer.h`. Rust sources
+header is `swoole_rs_reactor.h`. Rust sources
 are in `crates/reactor/src/`.
 
 General rule for every seam: Rust receives copied scalar facts and returns a
@@ -56,9 +56,8 @@ python3 tests/modules/reactor/builtins.py --source PINNED --archive PRIVATE_TARG
 ```
 
 Other gates under `tests/modules/reactor/` take the same
-`--source/--archive/--report [--sanitize]` arguments: `backend_storage.py`,
-`poll_snapshot.py`, `initialize.py`, `callbacks.py`,
-`callback_queues.py` and `flush.py`.
+`--source/--archive/--report [--sanitize]` arguments: `initialize.py`,
+`callbacks.py` and `flush.py`.
 The queued-output 53-case matrix lives in the Rust `output` unit tests.
 
 These gates extract the complete original and selected method bodies and run
