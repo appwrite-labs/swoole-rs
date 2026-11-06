@@ -4,6 +4,7 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
+use swoole_rs_reactor::SocketRecord;
 
 /// The independently configurable server fields and borrowed native handles.
 #[repr(C)]
@@ -235,8 +236,10 @@ pub(crate) unsafe fn native_fact(
         FIELD_CPU_NUM, FIELD_DISPATCH_MODE, FIELD_HEARTBEAT_INTERVAL, FIELD_REACTOR_NUM,
         FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_UNSAFE_EVENT, FIELD_WORKER_NUM,
         OP_ACCEPT_TIMER_CLEAR, OP_CONNECTION_LIST, OP_DELAY_RECEIVE, OP_DISABLE_NOTIFY, OP_FIELD,
-        OP_LC_DAEMONIZE, OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_MODE, OP_RUNNING, OP_SET_FIELD,
-        OP_SET_MAX_CONNECTION, OP_SET_RUNNING, OP_SET_WARNING, OP_SINGLE_THREAD,
+        OP_LAST_PORT_FD, OP_LC_DAEMONIZE, OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_MODE,
+        OP_PORT_COUNT, OP_PORT_DEFAULT_IDLE, OP_PORT_DGRAM, OP_PORT_FD, OP_PORT_IDLE,
+        OP_PORT_REMOVED, OP_PORT_SSL_AT, OP_PORT_STREAM, OP_PORT_WEBSOCKET, OP_RUNNING,
+        OP_SET_FIELD, OP_SET_MAX_CONNECTION, OP_SET_RUNNING, OP_SET_WARNING, OP_SINGLE_THREAD,
     };
     if !matches!(
         op,
@@ -255,6 +258,16 @@ pub(crate) unsafe fn native_fact(
             | OP_SET_MAX_CONNECTION
             | OP_CONNECTION_LIST
             | OP_ACCEPT_TIMER_CLEAR
+            | OP_PORT_COUNT
+            | OP_PORT_DGRAM
+            | OP_PORT_STREAM
+            | OP_PORT_SSL_AT
+            | OP_PORT_WEBSOCKET
+            | OP_PORT_IDLE
+            | OP_PORT_DEFAULT_IDLE
+            | OP_PORT_REMOVED
+            | OP_PORT_FD
+            | OP_LAST_PORT_FD
     ) {
         return None;
     }
@@ -279,6 +292,33 @@ pub(crate) unsafe fn native_fact(
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
         OP_MAX_CONNECTION => u64::from(tables.max_connection),
         OP_CONNECTION_LIST => u64::from(!tables.connection_list.is_null()),
+        OP_PORT_COUNT => u64::from(tables.ports.count),
+        OP_PORT_DGRAM | OP_PORT_STREAM | OP_PORT_SSL_AT | OP_PORT_WEBSOCKET | OP_PORT_IDLE
+        | OP_PORT_DEFAULT_IDLE | OP_PORT_REMOVED | OP_PORT_FD | OP_LAST_PORT_FD => {
+            let ports = tables.ports();
+            let port = if op == OP_LAST_PORT_FD {
+                ports.last()
+            } else {
+                ports.get(usize::try_from(arg).ok()?)
+            };
+            // SAFETY: a listed port is live, and no native callback runs while it is borrowed.
+            let port = unsafe { crate::port_config::of(*port?) };
+            // SAFETY: a port's socket is null or live.
+            let socket = unsafe { port.socket.cast::<SocketRecord>().as_ref() };
+            match op {
+                OP_PORT_DGRAM => u64::from(matches!(port.r#type, 2 | 4 | 6)),
+                OP_PORT_STREAM => u64::from(matches!(port.r#type, 1 | 3 | 5)),
+                OP_PORT_SSL_AT => u64::from(port.ssl),
+                OP_PORT_WEBSOCKET => u64::from(port.open_websocket_protocol),
+                OP_PORT_IDLE => u64::from(port.heartbeat_idle_time),
+                OP_PORT_DEFAULT_IDLE => {
+                    port.heartbeat_idle_time = config.heartbeat_check_interval.wrapping_mul(2);
+                    0
+                }
+                OP_PORT_REMOVED => u64::from(socket?.removed),
+                _ => i64::from(socket.map_or(-1, |socket| socket.fd)).cast_unsigned(),
+            }
+        }
         OP_SET_MAX_CONNECTION => {
             tables.max_connection = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
             0
@@ -363,6 +403,52 @@ mod tests {
             assert!(!(*config).running);
             assert_eq!(native_fact(state, OP_RUNNING, 0), Some(0));
             swr_v1_server_state_free(state);
+        }
+    }
+
+    #[test]
+    fn port_facts_read_the_pushed_ports() {
+        use crate::ops::{
+            OP_LAST_PORT_FD, OP_PORT_COUNT, OP_PORT_DEFAULT_IDLE, OP_PORT_DGRAM, OP_PORT_FD,
+            OP_PORT_IDLE, OP_PORT_REMOVED, OP_PORT_STREAM,
+        };
+        let state = swr_v1_server_state_new();
+        let mut socket = SocketRecord::new();
+        socket.fd = 7;
+        socket.removed = 1;
+        let ports: Vec<_> = [1, 2]
+            .into_iter()
+            .map(|kind| {
+                let config = crate::port_config::swr_v1_port_config_new(0);
+                unsafe {
+                    (*config).r#type = kind;
+                    (*config).socket = (&raw mut socket).cast();
+                }
+                // A `ListenPort` begins with its settings pointer.
+                Box::into_raw(Box::new(config))
+            })
+            .collect();
+        unsafe {
+            assert_eq!(native_fact(state, OP_PORT_COUNT, 0), Some(0));
+            assert_eq!(native_fact(state, OP_PORT_DGRAM, 0), None, "no port 0 yet");
+            for &port in &ports {
+                (*state).push_port(port.cast());
+            }
+            (*(*state).config()).heartbeat_check_interval = 5;
+            assert_eq!(native_fact(state, OP_PORT_COUNT, 0), Some(2));
+            assert_eq!((**ports[1]).object_id, 2);
+            assert_eq!(native_fact(state, OP_PORT_STREAM, 0), Some(1));
+            assert_eq!(native_fact(state, OP_PORT_DGRAM, 0), Some(0));
+            assert_eq!(native_fact(state, OP_PORT_DGRAM, 1), Some(1));
+            assert_eq!(native_fact(state, OP_PORT_REMOVED, 1), Some(1));
+            assert_eq!(native_fact(state, OP_PORT_FD, 1), Some(7));
+            assert_eq!(native_fact(state, OP_LAST_PORT_FD, 0), Some(7));
+            assert_eq!(native_fact(state, OP_PORT_DEFAULT_IDLE, 1), Some(0));
+            assert_eq!(native_fact(state, OP_PORT_IDLE, 1), Some(10));
+            swr_v1_server_state_free(state);
+            for port in ports {
+                crate::port_config::swr_v1_port_config_free(*Box::from_raw(port));
+            }
         }
     }
 }

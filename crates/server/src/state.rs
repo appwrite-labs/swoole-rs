@@ -38,6 +38,9 @@ pub struct ServerState {
     pub(crate) static_config:
         std::sync::OnceLock<std::sync::Mutex<crate::static_config::StaticConfig>>,
     pub(crate) commands: std::sync::Mutex<crate::commands::Commands>,
+    /// `Server::ports`, published to `ServerTables::ports` on each push.
+    /// The ports are native's to delete, in `~Server`.
+    ports: std::sync::Mutex<Vec<AtomicPtr<core::ffi::c_void>>>,
 }
 
 impl Default for ServerState {
@@ -55,6 +58,34 @@ impl ServerState {
             tables: AtomicPtr::new(core::ptr::null_mut()),
             static_config: std::sync::OnceLock::new(),
             commands: std::sync::Mutex::new(crate::commands::Commands::new()),
+            ports: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// `Server::ports.push_back(port)`; the port's `object_id` is the new count.
+    ///
+    /// # Safety
+    /// `port` is a live `ListenPort`, owned by this server from now on, and no
+    /// other thread reads the list during the push.
+    pub(crate) unsafe fn push_port(&self, port: *mut core::ffi::c_void) {
+        let mut ports = self
+            .ports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ports.push(AtomicPtr::new(port));
+        let count = u32::try_from(ports.len()).unwrap_or(u32::MAX);
+        // SAFETY: a live port's settings, per the caller.
+        unsafe { crate::port_config::of(port) }.object_id =
+            u16::try_from(count).unwrap_or(u16::MAX);
+        let tables = self.tables();
+        if !tables.is_null() {
+            // SAFETY: the state's table view; no reader runs during the push, per the caller.
+            let tables = unsafe { &mut *tables };
+            // `AtomicPtr` has the layout of the pointer it holds.
+            tables.ports = crate::records::PortList {
+                items: ports.as_ptr().cast(),
+                count,
+            };
         }
     }
 

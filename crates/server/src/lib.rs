@@ -172,14 +172,8 @@ impl<C: NativeCall> Host for Native<C> {
         }
         // Only the guarded runner lends master.cc's context; the hot runners skip the call.
         if !self.master.is_null() {
-            let (context, call) = (self.context, &self.call);
-            let port_count = || {
-                // SAFETY: the guarded runner's live context; `PORT_COUNT` is a native leaf fact.
-                unsafe { call.invoke(context, ops::OP_PORT_COUNT, 0) }.unwrap_or(0)
-            };
             // SAFETY: the guarded runner lends master.cc's live context with its state.
-            let answer =
-                unsafe { master_ops::answer(self.master, self.state, op, arg, port_count) };
+            let answer = unsafe { master_ops::answer(self.master, self.state, op, arg) };
             if let Some(value) = answer {
                 return Ok(value);
             }
