@@ -1,4 +1,5 @@
-//! Thread mode (`src/server/thread.cc`): every worker is a thread, and a manager
+//! Thread mode (upstream's `src/server/thread.cc`; process.cc's `ThreadContext`):
+//! every worker is a thread, and a manager
 //! thread rejoins and respawns each one that exits and walks reloads one worker
 //! at a time. Rust owns the manager's state ([`ThreadManager`]: its wait queue,
 //! the reload request and the reload's progress) and each thread's body; native
@@ -11,21 +12,26 @@ use std::time::Duration;
 
 use super::event_worker::EVENT_WORKER;
 use super::ops::{
-    LOG_CANNOT_RELOAD, LOG_MANAGER_ABNORMAL, LOG_NOTIFY_MANAGER, LOG_RELOADING, OP_ABORT,
-    OP_ALL_CORE_WORKER_NUM, OP_CALL_WORKER_ERROR, OP_CREATE_EVENT_WORKERS, OP_CREATE_MESSAGE_BUS,
-    OP_CREATE_USER_WORKERS, OP_CREATE_WORKER_PIPES, OP_DESTROY_MESSAGE_BUS, OP_EVENT_FREE,
-    OP_EVENT_INIT, OP_GET_WORKER, OP_HAS_TIMER, OP_IS_MANAGER, OP_JOIN_THREAD, OP_KILL_WORKER,
-    OP_MANAGER_THREAD_ID, OP_ON_AFTER_RELOAD, OP_ON_BEFORE_RELOAD, OP_ON_MANAGER_START,
-    OP_ON_MANAGER_STOP, OP_ON_USER_WORKER_START, OP_ON_WORKER_START, OP_ON_WORKER_STOP,
-    OP_POOL_MAIN_LOOP, OP_PORT_ADD, OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_LISTEN,
-    OP_REACTOR_THREAD_MAIN, OP_RUNNING, OP_SELECT_WORKER, OP_SET_MASTER_THREAD_ID,
-    OP_SET_NOT_SUPPORTED, OP_SPAWN_THREAD, OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET,
-    OP_TASK_START_CHECK, OP_TASK_WORKER_NUM, OP_TERMINATE_MANAGER_THREAD, OP_THREAD_ENTER,
-    OP_THREAD_EXIT, OP_THREAD_EXIT_STATUS, OP_THREAD_MANAGER, OP_TIMER_CREATE, OP_TIMER_FREE,
+    LOG_CALLOC_CONNECTIONS, LOG_CANNOT_RELOAD, LOG_MANAGER_ABNORMAL, LOG_NOTIFY_MANAGER,
+    LOG_RELOADING, LOG_THREAD_UNSUPPORTED, OP_ABORT, OP_ALL_CORE_WORKER_NUM, OP_ALL_WORKER_NUM,
+    OP_CALL_WORKER_ERROR, OP_CALLOC_CONNECTIONS, OP_CREATE_EVENT_WORKERS, OP_CREATE_MESSAGE_BUS,
+    OP_CREATE_USER_WORKERS, OP_CREATE_WORKER_PIPES, OP_DELETE_REACTOR_THREADS,
+    OP_DESTROY_MESSAGE_BUS, OP_EVENT_FREE, OP_EVENT_INIT, OP_FREE_THREAD_CONNECTIONS,
+    OP_GET_WORKER, OP_HAS_TIMER, OP_IS_MANAGER, OP_JOIN_THREAD, OP_KILL_WORKER,
+    OP_MANAGER_THREAD_ID, OP_NEW_REACTOR_THREADS, OP_NEW_THREAD_FACTORY, OP_ON_AFTER_RELOAD,
+    OP_ON_BEFORE_RELOAD, OP_ON_MANAGER_START, OP_ON_MANAGER_STOP, OP_ON_USER_WORKER_START,
+    OP_ON_WORKER_START, OP_ON_WORKER_STOP, OP_POOL_MAIN_LOOP, OP_PORT_ADD, OP_PORT_COUNT,
+    OP_PORT_DGRAM, OP_PORT_LISTEN, OP_REACTOR_THREAD_MAIN, OP_RUNNING, OP_SELECT_WORKER,
+    OP_SET_MASTER_THREAD_ID, OP_SET_NOT_SUPPORTED, OP_SINGLE_REACTOR_PIPE, OP_SPAWN_THREAD,
+    OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET, OP_TASK_START_CHECK, OP_TASK_WORKER_NUM,
+    OP_TERMINATE_MANAGER_THREAD, OP_THREAD_ENTER, OP_THREAD_EXIT, OP_THREAD_EXIT_STATUS,
+    OP_THREAD_MANAGER, OP_THREAD_REACTOR_NUM, OP_THREAD_SUPPORTED, OP_TIMER_CREATE, OP_TIMER_FREE,
     OP_TIMER_NEXT_MSEC, OP_TIMER_SELECT, OP_USER_WORKER_NUM, OP_WORKER_ID, OP_WORKER_NUM,
-    OP_WORKER_THREAD_START, OP_WORKER_TYPE, RUN_START_WORKER_THREADS, RUN_STOP_WORKER_THREADS,
-    RUN_THREAD_BODY, RUN_THREAD_FACTORY_START, RUN_THREAD_MAIN, RUN_THREAD_MANAGER_WAIT,
-    RUN_THREAD_RELOAD, RUN_THREAD_TERMINATE_MANAGER, TRACE_MANAGER_EXITED, TRACE_MANAGER_WAKE,
+    OP_WORKER_THREAD_START, OP_WORKER_TYPE, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY,
+    RUN_START_WORKER_THREADS, RUN_STOP_WORKER_THREADS, RUN_THREAD_BODY, RUN_THREAD_FACTORY_START,
+    RUN_THREAD_ID, RUN_THREAD_MAIN, RUN_THREAD_MANAGER_WAIT, RUN_THREAD_RELOAD,
+    RUN_THREAD_TERMINATE_MANAGER, TRACE_MANAGER_EXITED, TRACE_MANAGER_WAKE,
+    TRACE_NOTIFY_MANAGER_EXIT,
 };
 use super::{Host, SW_ERR, SW_OK};
 use crate::methods::{swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type};
@@ -262,6 +268,7 @@ pub(super) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         }
         RUN_THREAD_RELOAD => i64::from(reload(h, arg != 0)),
         RUN_THREAD_TERMINATE_MANAGER => {
+            h.get(TRACE_NOTIFY_MANAGER_EXIT);
             manager(h).push(Wake::Exit);
             // The manager thread may still be joining workers when the server stops:
             // reclaim it first, so it has surely exited.
@@ -287,8 +294,37 @@ pub(super) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
             }
             SW_OK
         }
+        RUN_CREATE_THREAD_FACTORY => create_factory(h),
+        RUN_DESTROY_THREAD_FACTORY => {
+            h.get(OP_FREE_THREAD_CONNECTIONS);
+            h.get(OP_DELETE_REACTOR_THREADS);
+            SW_OK
+        }
+        // The manager thread's id (`arg` 0) follows every worker's; the master's (1) is next.
+        RUN_THREAD_ID => i64::from(
+            u32::try_from(h.get(OP_ALL_WORKER_NUM))
+                .unwrap_or(u32::MAX)
+                .wrapping_add(u32::try_from(arg).unwrap_or(0)),
+        ),
         _ => SW_ERR,
     }
+}
+
+/// `Server::create_thread_factory`: one reactor per worker over a private
+/// connection list and one pipe each; null without thread support or memory.
+fn create_factory<H: Host>(h: &mut H) -> i64 {
+    if !h.is(OP_THREAD_SUPPORTED) {
+        h.get(LOG_THREAD_UNSUPPORTED);
+        return 0;
+    }
+    h.get(OP_THREAD_REACTOR_NUM);
+    if !h.is(OP_CALLOC_CONNECTIONS) {
+        h.get(LOG_CALLOC_CONNECTIONS);
+        return 0;
+    }
+    h.get(OP_NEW_REACTOR_THREADS);
+    h.get(OP_SINGLE_REACTOR_PIPE);
+    h.signed(OP_NEW_THREAD_FACTORY)
 }
 
 /// `ThreadFactory::wait`: the manager thread's loop.
@@ -511,6 +547,38 @@ mod tests {
     use super::*;
     use crate::worker_record::{swr_v1_worker_pid, swr_v1_worker_status, swr_v1_worker_type};
     use crate::workers::script::Script;
+
+    #[test]
+    fn the_thread_factory_needs_thread_support_and_its_connections() {
+        let reads = [OP_THREAD_SUPPORTED, OP_CALLOC_CONNECTIONS];
+        let mut h = Script::with(&[]);
+        assert_eq!(run(&mut h, RUN_CREATE_THREAD_FACTORY, 0), 0);
+        assert_eq!(h.effects(&reads), [LOG_THREAD_UNSUPPORTED]);
+        let mut h = Script::with(&[(OP_THREAD_SUPPORTED, 1)]);
+        assert_eq!(run(&mut h, RUN_CREATE_THREAD_FACTORY, 0), 0);
+        assert_eq!(
+            h.effects(&reads),
+            [OP_THREAD_REACTOR_NUM, LOG_CALLOC_CONNECTIONS]
+        );
+        let mut h = Script::with(&[
+            (OP_THREAD_SUPPORTED, 1),
+            (OP_CALLOC_CONNECTIONS, 1),
+            (OP_NEW_THREAD_FACTORY, 0x40),
+        ]);
+        assert_eq!(run(&mut h, RUN_CREATE_THREAD_FACTORY, 0), 0x40);
+        assert_eq!(
+            h.effects(&reads),
+            [
+                OP_THREAD_REACTOR_NUM,
+                OP_NEW_REACTOR_THREADS,
+                OP_SINGLE_REACTOR_PIPE,
+                OP_NEW_THREAD_FACTORY
+            ]
+        );
+        let mut h = Script::with(&[(OP_ALL_WORKER_NUM, 6)]);
+        assert_eq!(run(&mut h, RUN_THREAD_ID, 0), 6, "the manager thread");
+        assert_eq!(run(&mut h, RUN_THREAD_ID, 1), 7, "the master thread");
+    }
 
     #[test]
     fn a_task_thread_runs_as_its_worker_with_a_message_bus_and_reports_its_exit() {
