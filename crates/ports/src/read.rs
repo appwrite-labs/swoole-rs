@@ -1,10 +1,12 @@
 //! `ListenPort`'s readable callbacks (raw, length, EOF, Redis and HTTP) as whole
-//! operations. Native code keeps the socket, connection, logs and dispatch, and
+//! operations. Native code keeps the socket, connection, traces and dispatch, and
 //! performs each effect through one `call(context, op, arg)`. The receive buffer and
 //! the HTTP request are read and written in place through [`Shared`], the head of the
 //! context (layouts pinned by native `static_assert`s), as upstream's reader did; the
 //! request's own operations are `swoole_rs_http`'s.
-use core::ffi::c_void;
+use core::ffi::{CStr, c_char, c_int, c_void};
+use swoole_rs_corebase::log;
+use swoole_rs_error::ErrorCode;
 use swoole_rs_http::{HttpRequest as Request, HttpString as Buffer};
 
 /// One native fact or effect on the connection in `context`.
@@ -74,15 +76,22 @@ pub const OP_REQ_DESTROY: u32 = 51;
 /// `init_multipart_parser(serv)`, then its buffer becomes current.
 pub const OP_REQ_MULTIPART_INIT: u32 = 63;
 
-// Logs, in upstream's wording; arg is the one number a log needs beyond native state.
-pub const LOG_UNKNOWN_PROTOCOL: u32 = 90;
-pub const LOG_UNKNOWN_METHOD: u32 = 91;
-pub const LOG_NO_HTTP2: u32 = 92;
-pub const LOG_HEADER_TOO_LARGE: u32 = 93;
-pub const LOG_CHUNKED_ERROR: u32 = 94;
-pub const LOG_CHUNKED_TOO_LARGE: u32 = 95;
-pub const LOG_TOO_LARGE: u32 = 96;
-pub const LOG_DISCARD: u32 = 97;
+/// The client a log names: arg 0 `conn->session_id`, 1 `port->host.c_str()`, 2 `port->port`.
+pub const OP_CLIENT: u32 = 89;
+
+/// `readable_callback_http`'s logs, in upstream's wording.
+#[derive(Clone, Copy)]
+enum Log {
+    UnknownProtocol,
+    UnknownMethod,
+    NoHttp2,
+    HeaderTooLarge,
+    ChunkedError,
+    ChunkedTooLarge,
+    TooLarge,
+    /// The bytes discarded.
+    Discard(u64),
+}
 /// Trace logs, sent only when [`Shared::trace`] is set.
 pub const TRACE_HEADER: u32 = 98;
 pub const TRACE_CHUNKED: u32 = 99;
@@ -349,9 +358,78 @@ fn receive(n: &Native) -> Step {
     Step::Parse
 }
 
-fn bad(n: &Native, log: u32) -> Step {
-    n.get(log);
+fn bad(n: &Native, which: Log) -> Step {
+    log(n, which);
     Step::Reply(SEND_BAD_REQUEST)
+}
+
+/// `SW_LOG_TRACE` and `SW_LOG_WARNING`.
+const TRACE: c_int = 1;
+const WARNING: c_int = 4;
+
+/// One of `readable_callback_http`'s `swoole_error_log`s, naming the client.
+fn log(n: &Native, which: Log) {
+    let host = n.op(OP_CLIENT, 1) as *const c_char;
+    let host = if host.is_null() {
+        c""
+    } else {
+        // SAFETY: the port's host, NUL-terminated and unchanged during the call.
+        unsafe { CStr::from_ptr(host) }
+    };
+    let (session, port) = (n.op(OP_CLIENT, 0), n.op(OP_CLIENT, 2));
+    let from = format!(
+        " from session#{} on {}:{}",
+        session.cast_signed(),
+        host.to_string_lossy(),
+        port.cast_signed()
+    );
+    let max = || n.get(OP_MAX_LENGTH);
+    let (level, message) = match which {
+        Log::UnknownProtocol => (TRACE, "Bad Request: unknown protocol".to_owned()),
+        Log::UnknownMethod => (TRACE, "Bad Request: unknown HTTP method".to_owned()),
+        Log::NoHttp2 => (
+            TRACE,
+            "Bad Request: can not handle HTTP2 request".to_owned(),
+        ),
+        Log::HeaderTooLarge => (
+            TRACE,
+            "Bad Request: request header size is too large".to_owned(),
+        ),
+        Log::ChunkedError => (
+            TRACE,
+            "Bad Request: protocol error when parse chunked length".to_owned(),
+        ),
+        Log::ChunkedTooLarge => (
+            WARNING,
+            format!(
+                "Request Entity Too Large: request length (chunked) has already been greater \
+                 than the package_max_length({})",
+                max()
+            ),
+        ),
+        Log::TooLarge => {
+            let request = n.request();
+            let (header, content) = (request.header_length, request.content_length);
+            (
+                WARNING,
+                format!(
+                    "Request Entity Too Large: header-length ({header}) + content-length \
+                     ({content}) is greater than the package_max_length({})",
+                    max()
+                ),
+            )
+        }
+        Log::Discard(bytes) => (
+            TRACE,
+            format!("Invalid Request: {bytes} bytes has been discard"),
+        ),
+    };
+    log::error_log(
+        level,
+        ErrorCode::SW_ERROR_HTTP_INVALID_PROTOCOL as c_int,
+        c"ListenPort::readable_callback_http",
+        format_args!("{message}{from}"),
+    );
 }
 
 fn parse(n: &Native) -> Step {
@@ -372,11 +450,11 @@ fn head(n: &Native) -> Option<Step> {
         if !n.request().excepted && (n.buffer().length as u64) < HEADER_MAX_SIZE {
             return Some(Step::Done);
         }
-        return Some(bad(n, LOG_UNKNOWN_PROTOCOL));
+        return Some(bad(n, Log::UnknownProtocol));
     }
     let method = n.request().method;
     if method > HTTP_PRI {
-        return Some(bad(n, LOG_UNKNOWN_METHOD));
+        return Some(bad(n, Log::UnknownMethod));
     }
     if method == HTTP_PRI {
         return Some(preface(n));
@@ -384,7 +462,7 @@ fn head(n: &Native) -> Option<Step> {
     if n.request().header_length == 0 && n.request().get_header_length() < 0 {
         let buffer = n.buffer();
         if buffer.size == buffer.length {
-            return Some(bad(n, LOG_HEADER_TOO_LARGE));
+            return Some(bad(n, Log::HeaderTooLarge));
         }
         return Some(Step::Receive);
     }
@@ -414,7 +492,7 @@ fn head(n: &Native) -> Option<Step> {
 
 fn preface(n: &Native) -> Step {
     if !n.is(OP_HTTP2_ENABLED) {
-        return bad(n, LOG_NO_HTTP2);
+        return bad(n, Log::NoHttp2);
     }
     n.get(OP_HTTP2_START);
     if n.buffer().length as u64 == HTTP2_PREFACE {
@@ -499,11 +577,11 @@ fn body(n: &Native) -> Step {
     if n.request().chunked {
         if n.request().get_chunked_body_length() < 0 {
             if n.request().excepted {
-                return bad(n, LOG_CHUNKED_ERROR);
+                return bad(n, Log::ChunkedError);
             }
             let wanted = (n.buffer().size as u64).wrapping_add(BUFFER_SIZE_BIG);
             if wanted > max {
-                n.get(LOG_CHUNKED_TOO_LARGE);
+                log(n, Log::ChunkedTooLarge);
                 return Step::Reply(SEND_TOO_LARGE);
             }
             let buffer = n.buffer();
@@ -519,7 +597,7 @@ fn body(n: &Native) -> Step {
         let request = n.request();
         request_length = u64::from(request.header_length).wrapping_add(request.content_length);
         if request_length > max {
-            n.get(LOG_TOO_LARGE);
+            log(n, Log::TooLarge);
             return Step::Reply(SEND_TOO_LARGE);
         }
         if request_length > n.buffer().size as u64 {
@@ -536,7 +614,7 @@ fn body(n: &Native) -> Step {
     }
     let length = n.buffer().length as u64;
     if length > request_length {
-        n.op(LOG_DISCARD, length - request_length);
+        log(n, Log::Discard(length - request_length));
         n.buffer().length = size(request_length);
     }
     n.set_offset(request_length);
@@ -680,6 +758,7 @@ mod tests {
                     self.sent.push(arg);
                     0
                 }
+                OP_CLIENT => [7, c"127.0.0.1".as_ptr() as u64, 9501][at],
                 _ => {
                     self.effects.push(op);
                     0
@@ -693,7 +772,31 @@ mod tests {
         unsafe { &mut *context.cast::<Fake>() }.call(op, arg)
     }
 
+    std::thread_local! {
+        static LOGGED: std::cell::RefCell<Vec<(c_int, c_int, String)>> = const {
+            std::cell::RefCell::new(Vec::new())
+        };
+    }
+
+    unsafe extern "C" fn record(
+        _: c_int,
+        level: c_int,
+        code: c_int,
+        origin: *const c_char,
+        message: *const c_char,
+    ) {
+        let text = |p| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        assert_eq!(text(origin), "ListenPort::readable_callback_http");
+        LOGGED.with_borrow_mut(|logged| logged.push((level, code, text(message))));
+    }
+
+    /// The logs this thread's runs made since the last call.
+    fn logged() -> Vec<(c_int, c_int, String)> {
+        LOGGED.take()
+    }
+
     fn run(kind: u32, fake: &mut Fake) -> i32 {
+        log::swr_v1_core_set_log_host(record);
         fake.point();
         // SAFETY: `fake` is live for the call and starts with its `Shared`.
         unsafe { swr_v1_ports_on_read(kind, (&raw mut *fake).cast(), call) }
@@ -771,17 +874,31 @@ mod tests {
         let mut f = fake(&[b"POST / HTTP/1.1\r\nContent-Length: 2000\r\n\r\n"]);
         run(ON_READ_HTTP, &mut f);
         assert_eq!(f.sent, [SEND_TOO_LARGE], "413");
-        assert!(
-            f.effects.ends_with(&[LOG_TOO_LARGE, OP_CLOSE]),
-            "logged, then closed"
+        assert!(f.effects.ends_with(&[OP_CLOSE]), "closed");
+        assert_eq!(
+            logged(),
+            [(
+                WARNING,
+                7102,
+                "Request Entity Too Large: header-length (41) + content-length (2000) is \
+                 greater than the package_max_length(1024) from session#7 on 127.0.0.1:9501"
+                    .to_owned()
+            )],
+            "logged first"
         );
 
         let mut f = fake(&[b"BREW / HTTP/1.1\r\n\r\n"]);
         run(ON_READ_HTTP, &mut f);
         assert_eq!(f.sent, [SEND_BAD_REQUEST], "400 for an unknown method");
-        assert!(
-            f.effects.ends_with(&[LOG_UNKNOWN_PROTOCOL, OP_CLOSE]),
-            "logged as a bad request line, then closed"
+        assert!(f.effects.ends_with(&[OP_CLOSE]), "closed");
+        assert_eq!(
+            logged(),
+            [(
+                TRACE,
+                7102,
+                "Bad Request: unknown protocol from session#7 on 127.0.0.1:9501".to_owned()
+            )],
+            "logged as a bad request line"
         );
 
         let mut f = fake(&[b""]);
