@@ -44,7 +44,8 @@ def main():
                            str(archive), '-pthread', '-o', str(binary)]
                 if wrapped:
                     # --gc-sections: the archive's references to C++ (event.cc's swr_v1_event_reactor) are unreachable here.
-                    command += ['-DWRAP_FREE', '-Wl,--wrap=free', '-Wl,--gc-sections', '-ldl', '-lm']
+                    # OpenSSL: the server runner sends through crates/tls's Socket::send (crates/server/src/master_ops.rs).
+                    command += ['-DWRAP_FREE', '-Wl,--wrap=free', '-Wl,--gc-sections', '-lssl', '-lcrypto', '-ldl', '-lm']
                 if sanitize:
                     command += ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
                 row = dict(standard=standard, native_sanitized=sanitize, commands=[])
