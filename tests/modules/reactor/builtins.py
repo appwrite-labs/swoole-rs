@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix='swr-builtins-') as tmp:
                 binary=t/(variant+'-'+standard);cmd=['c++','-std='+standard,'-O1','-g','-I'+str(t),abi,ROOT/'tests/modules/reactor/builtins.cc',a.archive.resolve(),'-lpthread','-o',binary]
                 if variant!='original':cmd+=['-DSWOOLE_RS_REACTOR=1']
                 if a.sanitize:cmd+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
-                if sys.platform.startswith('linux'):cmd+=['-ldl','-lm']
+                if sys.platform.startswith('linux'):cmd+=['-Wl,--gc-sections','-ldl','-lm']
                 for stage,command in [('compile',cmd),('execute',[binary])]:
                     require_build_space(ROOT);require_build_space(t)
                     result=run_compiler(command, timeout=60) if stage=='compile' else vars(run_isolated(list(map(str,command)),cwd=t,timeout=60))
