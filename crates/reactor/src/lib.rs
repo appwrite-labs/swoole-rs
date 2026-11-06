@@ -98,6 +98,8 @@ mod socket_record;
 pub use socket_record::*;
 #[cfg(unix)]
 pub mod reactor_upstream;
+#[cfg(all(unix, feature = "upstream-symbols", not(test)))]
+pub mod signal_upstream;
 #[cfg(unix)]
 pub mod socket_upstream;
 

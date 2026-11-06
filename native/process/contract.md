@@ -42,12 +42,12 @@ which run after Rust returns.
   `length` bytes retrying EINTR/EAGAIN, close, unlink unless `SW_TASK_PEEK`.
   Native sizes the buffer first (upstream did so after a successful open), then
   logs the open/pread warnings and builds the packet.
-- The signal table (`src/os/signal.cc`) is Rust's `swr_v1_signals`, laid out as
+- The signal table (`src/os/signal.cc` at the pin; the file is gone, its facades are
+  `crates/reactor/src/signal_upstream.rs`) is Rust's `swr_v1_signals`, laid out as
   `swoole::Signal` so the native kqueue path (and kqueue's udata) still uses it. Rust registers handlers through sigaction, runs the deferred and
   immediate async handlers (atomic stores; the immediate one calls
   `swoole_signal_callback` in the signal frame as upstream), dispatches marked
-  signals and blocks/unblocks every signal. Native keeps the warnings and calls
-  the looked-up handler. Dispatch's callback may run PHP; no Rust value with a
+  signals and blocks/unblocks every signal. Dispatch's callback may run PHP; no Rust value with a
   destructor is live across it. Upstream's `pthread_sigmask(...) < 0` check never
   held, so blocking all signals has no warning.
 - The signalfd path (Linux) is Rust too: the routed-signal mask (atomics, no
