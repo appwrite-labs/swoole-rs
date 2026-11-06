@@ -12,9 +12,6 @@ extern "C" {
 /* Borrowed byte ranges; no allocation, callbacks, retained pointers or I/O. */
 int64_t swr_v1_mqtt_frame_length(const uint8_t *, size_t);
 typedef struct { uint8_t state, action, error, reply; } swr_socks_transition;
-typedef struct { int64_t size; int32_t diagnostic, last_error; } swr_v1_socks_owned_packet_result;
-swr_v1_socks_owned_packet_result swr_v1_socks_owned_packet(swr_v1_core_proxy *, uint32_t action);
-int32_t swr_v1_socks_owned_transition(swr_v1_core_proxy *, const uint8_t *, size_t, swr_socks_transition *);
 int32_t swr_v1_socks_transition(uint8_t state, uint8_t method, const uint8_t *, size_t, swr_socks_transition *);
 int64_t swr_v1_socks_negotiate(uint8_t has_user, uint8_t *method, uint8_t *output, size_t capacity);
 int64_t swr_v1_socks_auth(const uint8_t *user, size_t user_length, const uint8_t *password, size_t password_length, uint8_t *output, size_t capacity);
