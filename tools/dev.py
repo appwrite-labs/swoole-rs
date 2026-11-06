@@ -455,15 +455,6 @@ def plan(args, reports):
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--source-ref', utility_source, *report('utilities-public-storage'))
     if 'memory' in modules:
-        script('memory-fixed-native-construction', 'tests/modules/memory/fixed_native_construction.py',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               *report('memory-fixed-native-construction'))
-        script('memory-mapping-operation', 'tests/modules/memory/mapping_operation.py',
-               '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               *report('memory-mapping-operation'))
-        script('memory-table-compatibility', 'tests/modules/memory/table_compat.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('memory-table-compatibility'))
         script('memory-native', 'tests/modules/memory/gate.py', '--extension', hybrid, '--reference-extension', reference, *php,
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                *(['--sanitize'] if sys.platform == 'darwin' else []), *report('memory-native'))

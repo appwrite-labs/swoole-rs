@@ -11,6 +11,17 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+/// Defines each listed function under its upstream C++ symbol with
+/// `upstream-symbols`. `uint64_t` is `unsigned long long` on macOS and `unsigned long`
+/// on Linux, which the symbols spell.
+macro_rules! upstream {
+    ($($linux:literal, $macos:literal => $item:item)*) => {$(
+        #[cfg_attr(all(feature = "upstream-symbols", not(target_os = "macos")), unsafe(export_name = $linux))]
+        #[cfg_attr(all(feature = "upstream-symbols", target_os = "macos"), unsafe(export_name = $macos))]
+        $item
+    )*};
+}
+
 pub mod channel;
 pub mod fixed;
 pub mod global;
@@ -52,9 +63,9 @@ pub use ring::{
 };
 
 pub use mapping::{
-    MappingEffect, MappingOperation, swr_v1_memory_mapping_copy, swr_v1_memory_mapping_extent,
-    swr_v1_memory_mapping_initialize, swr_v1_memory_mapping_product,
-    swr_v1_memory_mapping_relocate, swr_v1_memory_mapping_size, swr_v2_memory_mapping_step,
+    swr_v1_memory_mapping_copy, swr_v1_memory_mapping_extent, swr_v1_memory_mapping_initialize,
+    swr_v1_memory_mapping_product, swr_v1_memory_mapping_relocate, swr_v1_memory_mapping_size,
 };
 
+pub mod members;
 pub mod table;

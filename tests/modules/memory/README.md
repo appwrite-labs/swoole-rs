@@ -106,38 +106,6 @@ instrumented.
 
 Linux PHP-loaded ASan is blocked by `RTLD_DEEPBIND`.
 
-## Compiler-only and model checks
-
-These run from `tools/dev.py` with the pinned source and, where shown, the hybrid
-build's `libswoole_rs_ffi.a`.
-
-```
-python3 tests/modules/memory/table_compat.py --source /absolute/pinned/upstream \
-  --archive /absolute/libswoole_rs_ffi.a [--fixed-pool] [--upstream-unused-parameter-policy] \
-  --output target/reports/memory/table-compat.json
-python3 tests/modules/memory/fixed_native_construction.py \
-  --archive /absolute/build/rust-prefix/lib/libswoole_rs_ffi.a --output target/reports/memory/fixed-construction.json
-python3 tests/modules/memory/mapping_operation.py --source /absolute/pinned/upstream \
-  --archive /absolute/libswoole_rs_ffi.a --output target/reports/memory/mapping-operation.json
-```
-
-The selected side always compiles against the hybrid build's fully patched
-headers (`<build>/src/include`, its Rust ABI headers and its module switches),
-the original side against the pin.
-
-- `table_compat.py`: compiles the original and selected `table.cc` (and `fixed_pool.cc` with `--fixed-pool`) at
-  C++14/17/20 with `-Werror`; any warning fails.
-- `fixed_native_construction.py`: compiles the selected `FixedPool` constructor
-  bodies with `fixed_native_construction.cc` under ASan/UBSan at C++14/17 and
-  checks exact owned/borrowed case counts.
-- `mapping_operation.py`: syntax-checks original and selected `shared_memory.cc`
-  for anonymous, file and no-`MAP_FAILED` backends, then runs the selected
-  `SharedMemory` bodies (`mapping_operation_model.cc`) and the C11 caller
-  (`mapping_operation.c`) under ASan/UBSan against the archive.
-
-`fixed_native_construction.py` and `mapping_operation.py` refuse to overwrite an
-existing output file and refuse to compile with less than 4 GiB free.
-
 ## Benchmark
 
 ```
@@ -163,16 +131,15 @@ python3 -m unittest tests/modules/memory/test_benchmark.py
 
 ## Gate audit (#488)
 
-All six phases are kept, none deleted:
+Three phases remain. `memory-fixed-native-construction`, `memory-mapping-operation`
+and `memory-table-compatibility` compiled the hybrid `src/memory` C++ bodies, and
+went with them (#1500):
 
 - `memory-native`: the FFI checksum differential of the pinned and overlaid
   pools, heap, channel, mapping and table. It also checks that every native
-  `assert` survives the overlays and that headers reject a build without the
-  memory feature.
-- `memory-fixed-native-construction`, `memory-mapping-operation`: the selected
-  C++ bodies under ASan/UBSan at C++14/17, including every mapping backend.
-- `memory-table-compatibility`: the only C++14/17/20 `-Werror` builds of
-  `table.cc`.
+  `assert` survives the overlays (a deleted source's as `// assert(...);`-marked
+  Rust asserts in `crates/memory/src/members.rs`) and that headers reject a
+  build without the memory feature.
 - `memory-table-witnesses`: table fork, grow, clear-batch and odd-width
   observations that must equal upstream's. No PHPT compares these across engines.
 

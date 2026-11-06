@@ -486,9 +486,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--core', commands['ports-options'])
         self.assertIn('--sanitize', commands['ports-tls-settings'])
         self.assertIn('--core', commands['ports-tls-settings'])
-        self.assertIn('--archive', commands['memory-fixed-native-construction'])
-        self.assertIn('--archive', commands['memory-mapping-operation'])
-        self.assertNotIn('--sanitize', commands['memory-mapping-operation'])
         for family in ['logger', 'hash', 'inline', 'global-logger', 'redirect']:
             command = commands['utilities-' + family + '-originals']
             self.assertIn('--' + family + '-originals', command)
@@ -508,7 +505,6 @@ class Lanes(unittest.TestCase):
         self.assertEqual(commands['api-surface'].count('--engine'), 2)
         self.assertLess(list(commands).index('build'), list(commands).index('api-surface'))
         self.assertIn('tests/modules/buffer/string/test_gate.py', commands['string-originals'])
-        self.assertIn('memory-table-compatibility', commands)
         self.assertIn('column-bytes', commands['phpcollections-column-bytes'])
         self.assertEqual(commands['phpcollections-column-bytes'].count('--engine'), 2)
         self.assertIn('--core', commands['ports-defaults'])
@@ -522,8 +518,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['utilities-php-logger'])
         self.assertIn('--source-ref', commands['utilities-php-logger'])
         self.assertNotIn('httpbindings-php', commands)
-        self.assertIn('--source', commands['memory-table-compatibility'])
-        self.assertIn('--archive', commands['memory-table-compatibility'])
         self.assertIn('--build-manifest', commands['phpcollections-runtime'])
         self.assertIn('--archive', commands['phpcollections-runtime'])
         for phase in ['ports-count', 'ports-settings']:

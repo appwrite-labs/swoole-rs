@@ -79,8 +79,8 @@ pub unsafe extern "C" fn swr_v1_memory_mapping_copy(
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Extent {
-    base: *mut std::ffi::c_void,
-    total: usize,
+    pub(crate) base: *mut std::ffi::c_void,
+    pub(crate) total: usize,
 }
 unsafe fn extent(payload: *const u8) -> Option<Extent> {
     if payload.is_null() || payload.addr() < 8 || !(payload.addr() - 8).is_multiple_of(8) {
@@ -168,10 +168,6 @@ pub unsafe extern "C" fn swr_v1_memory_mapping_relocate(old: *const u8, new: *mu
     unsafe { std::ptr::copy_nonoverlapping(old, new, source.total.min(destination.total) - 8) };
     0
 }
-
-#[path = "mapping_operation.rs"]
-mod operation;
-pub use operation::{MappingEffect, MappingOperation, swr_v2_memory_mapping_step};
 
 #[cfg(test)]
 #[path = "../../../tests/modules/memory/mapping.rs"]

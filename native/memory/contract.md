@@ -54,8 +54,7 @@ required. Invalid plans zero the 24-byte output and return -1.
 alignment/extent, then initializes the 48-byte header and slice links. The arena
 must be exclusively borrowed for its planned extent and disjoint from the plan.
 Payload and trailing bytes are untouched. Owned construction frees a supplied
-allocation if Rust rejects it; borrowed construction never takes custody. See
-[fixed-construction.md](fixed-construction.md).
+allocation if Rust rejects it; borrowed construction never takes custody.
 
 `fixed_usage` writes a 12-byte spare/total/width snapshot (spare subtraction uses
 defined unsigned wrap). `fixed_debug_step` uses a zero-initialized 16-byte cursor
@@ -191,9 +190,22 @@ Storage functions:
 - `mapping_relocate(old,new)` copies the minimum payload extent between two live,
   disjoint mappings; overlap/invalid metadata rejects before copying.
 
-Native keeps mmap/munmap/mprotect, platform flags or /dev/zero fallback, logging
-and rollback. `swr_v2_memory_mapping_step` drives the whole operation; see
-[mapping-operation.md](mapping-operation.md).
+The `sw_shm_*` functions are Rust (`members.rs`): an anonymous `MAP_SHARED`
+mapping, unmapped, protected or reallocated through these helpers.
+
+## Upstream members
+
+`crates/memory/src/members.rs` defines what `src/memory/*.cc` did, under the
+upstream C++ symbols with `upstream-symbols`: `FixedPool`'s, `RingBuffer`'s and
+`GlobalMemory`'s non-virtual members, `sw_shm_*`, `table_warning` and
+`Table::make`/`create`/`destroy`. `swoole_memory.h` keeps the constructors (they
+throw on the `swr_v1_memory_*_new` status: -1 `Exception(SW_ERROR_INVALID_PARAMS)`,
+-2 `std::bad_alloc`) and the virtual members, so each user emits the vtables.
+`Table::make` allocates through `sw_mem_pool()`'s vtable (slot 2 `alloc`, 3 `free`).
+These run allocators, mmap and logs with a Rust frame active.
+No native code calls the fixed, ring, global, arena or mapping functions this
+document describes any more, so `swoole_rs_memory.h` no longer declares them;
+#1515 makes them Rust-internal.
 
 ## Arena lifecycle
 

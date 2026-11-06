@@ -17,15 +17,15 @@ pub struct Slice {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Fixed {
-    memory: *mut u8,
-    size: usize,
+    pub(crate) memory: *mut u8,
+    pub(crate) size: usize,
     head: *mut Slice,
     tail: *mut Slice,
     slice_num: u32,
     slice_use: u32,
-    slice_size: u32,
-    shared: u8,
-    allocated: u8,
+    pub(crate) slice_size: u32,
+    pub(crate) shared: u8,
+    pub(crate) allocated: u8,
 }
 
 // The address of one field at `offset` inside `base`, computed without dereferencing it.
@@ -118,13 +118,13 @@ pub struct DebugCursor {
 #[repr(C)]
 #[derive(Default)]
 pub struct DebugRecord {
-    slice: *mut Slice,
-    prev: *mut Slice,
-    next: *mut Slice,
-    data: *mut u8,
-    line: u64,
-    lock: u8,
-    self_link: u8,
+    pub(crate) slice: *mut Slice,
+    pub(crate) prev: *mut Slice,
+    pub(crate) next: *mut Slice,
+    pub(crate) data: *mut u8,
+    pub(crate) line: u64,
+    pub(crate) lock: u8,
+    pub(crate) self_link: u8,
 }
 
 /// Serialized diagnostic traversal of actual linked storage, including odd widths.
@@ -185,7 +185,7 @@ pub unsafe extern "C" fn swr_v1_memory_fixed_debug_step(
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Layout {
-    total: usize,
+    pub(crate) total: usize,
     usable: usize,
     slices: u32,
     width: u32,
