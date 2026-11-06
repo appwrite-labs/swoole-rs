@@ -7,16 +7,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef struct {
-    bool blocking;
-    double timeout;
-    int socks[2];
-    void *master_socket;
-    void *worker_socket;
-} swr_v1_socket_pair_record;
-void swr_v1_process_socket_pair_init(swr_v1_socket_pair_record *, bool, double);
-int swr_v1_process_socket_pair_open(swr_v1_socket_pair_record *, bool, int);
-int swr_v1_process_socket_pair_control(swr_v1_socket_pair_record *, uint32_t, uint64_t, void *, int (*)(void *, void *, uint32_t, uint64_t));
 typedef struct { uint32_t status; int32_t error; } swr_v1_process_affinity_outcome;
 #if defined(__linux__) || defined(__FreeBSD__)
 swr_v1_process_affinity_outcome swr_v1_process_worker_affinity(uint32_t worker_id, const int32_t *available, int32_t available_len, bool thread);

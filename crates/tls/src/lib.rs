@@ -18,6 +18,8 @@ mod reactor_write;
 #[cfg(unix)]
 mod socket;
 #[cfg(unix)]
+pub mod socket_pair;
+#[cfg(unix)]
 pub mod upstream;
 #[cfg(unix)]
 pub use context::*;
