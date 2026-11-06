@@ -252,6 +252,8 @@ pub unsafe extern "C" fn swr_v1_reactor_state_backend(
 /// Actual kernel wait over the owner's stable arrays. No native callbacks run.
 /// # Safety
 /// owner is live/exclusive; entries is writable for one int.
+// Its one caller, the wait loop, runs it once per iteration (#1435).
+#[inline(always)]
 pub(crate) unsafe fn kernel_wait(
     owner: *mut ReactorState,
     deferred: bool,
