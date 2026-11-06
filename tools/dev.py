@@ -345,7 +345,7 @@ def plan(args, reports):
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ports-policy'))
         port_options = (['--openssl-root', subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()]
                         if sys.platform == 'darwin' else [])
-        for name in ['count', 'settings', 'defaults', 'callback_property', 'flags', 'packet_settings', 'options', 'tls_settings']:
+        for name in ['settings', 'defaults', 'callback_property', 'flags', 'packet_settings', 'options', 'tls_settings']:
             phase = 'ports-' + name.replace('_', '-')
             script(phase, 'tests/modules/ports/' + name + '.py', '--source', ROOT / 'target/upstream/src',
                    *(['--core', ROOT / 'target/hybrid' / native_variant / 'src'] if integrate else []), '--sanitize', *port_options,

@@ -118,32 +118,6 @@ pub extern "C" fn swr_v1_ports_framing_settings(input: PortsFramingInput) -> Por
     }
 }
 
-/// Reads the existing native shared counters; no owned or mirrored counter store.
-/// A non-null pointer must designate `count` writable, aligned, initialized u32 cells for
-/// this call, with stable lifetime and no concurrent non-atomic writes. Relaxed
-/// atomic loads give no aggregate snapshot or synchronization of other fields.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_connection_count(
-    counters: *mut u32,
-    count: u32,
-    fallback: u32,
-) -> u64 {
-    if counters.is_null() {
-        return u64::from(fallback);
-    }
-    let mut total = 0_u64;
-    for index in 0..count as usize {
-        // SAFETY: `index < count`, and the caller guarantees `count` cells from `counters`.
-        let cell = unsafe { counters.add(index) };
-        // SAFETY: the cell is aligned, initialized and has no concurrent non-atomic writes.
-        let counter = unsafe { std::sync::atomic::AtomicU32::from_ptr(cell) };
-        total = total.wrapping_add(u64::from(
-            counter.load(std::sync::atomic::Ordering::Relaxed),
-        ));
-    }
-    total
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_ports_number(kind: u32, value: i64) -> i64 {
     match kind {

@@ -520,7 +520,7 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('httpbindings-php', commands)
         self.assertIn('--build-manifest', commands['phpcollections-runtime'])
         self.assertIn('--archive', commands['phpcollections-runtime'])
-        for phase in ['ports-count', 'ports-settings']:
+        for phase in ['ports-settings']:
             self.assertIn('--core', commands[phase])
             self.assertIn('--archive', commands[phase])
             self.assertIn('--sanitize', commands[phase])
