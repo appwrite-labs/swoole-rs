@@ -93,7 +93,6 @@ mod text {
     pub(super) const GROUP: u32 = 3;
     pub(super) const PID_FILE: u32 = 4;
     pub(super) const TASK_TMPDIR: u32 = 5;
-    pub(super) const UPLOAD_TMP_DIR: u32 = 6;
     pub(super) const DOCUMENT_ROOT: u32 = 7;
     pub(super) const INDEX_FILE: u32 = 8;
     pub(super) const COMPRESSION_TYPE: u32 = 9;
@@ -671,7 +670,8 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
             // SAFETY: the directory's bytes.
             let created = unsafe { (host.create_dir)(dir.as_ptr().cast(), dir.len()) } >= 0;
             if created {
-                s.text(text::UPLOAD_TMP_DIR, dir);
+                // SAFETY: the live server.
+                unsafe { view::set_upload_tmp_dir(s.serv, dir) };
             } else {
                 let shown = dir.split(|&b| b == 0).next().unwrap_or_default();
                 let text = message!(

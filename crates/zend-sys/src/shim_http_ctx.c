@@ -1,6 +1,7 @@
 #include "shim_http_ctx.h"
 #include "SAPI.h"
 #include "main/php_variables.h"
+#include "main/rfc1867.h"
 #include "ext/standard/url.h"
 
 #include <unistd.h>
@@ -147,4 +148,18 @@ void swr_zend_http_uploads_release(zval *tmpfiles) {
         }
     }
     ZEND_HASH_FOREACH_END();
+}
+
+void swr_zend_http_uploads_rinit(void) {
+    if (!SG(rfc1867_uploaded_files)) {
+        ALLOC_HASHTABLE(SG(rfc1867_uploaded_files));
+        zend_hash_init(SG(rfc1867_uploaded_files), 8, NULL, NULL, 0);
+    }
+}
+
+void swr_zend_http_uploads_rshutdown(void) {
+    if (SG(rfc1867_uploaded_files)) {
+        destroy_uploaded_files_hash();
+        SG(rfc1867_uploaded_files) = NULL;
+    }
 }

@@ -3,7 +3,8 @@
 Feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`
 and `swoole_rs_httpbindings.h`. Patched upstream files:
 `ext-src/swoole_http_cookie.cc`, `ext-src/swoole_http_server_coro.cc`;
-`ext-src/swoole_http_request.cc` and `ext-src/swoole_http_response.cc` are gone.
+`ext-src/swoole_http_request.cc`, `ext-src/swoole_http_response.cc` and
+`ext-src/swoole_http_server.cc` are gone.
 Public PHP headers, class layouts and stubs/arginfo are unchanged. Rust
 allocates and frees `swoole::http::Context`, whose layout is `ContextState`.
 
@@ -60,9 +61,9 @@ negative lengths as a no-op.
 
 ## Coroutine server
 
-The normal server's receive path (`php_swoole_http_server_onReceive`) is upstream's:
-its protocol routing and callback sequencing own no data, so a Rust controller
-only added per-step calls (#366).
+The normal server's receive path (`php_swoole_http_server_onReceive`) is
+crates/phphttp's: it routes to the TCP, WebSocket and HTTP/2 `onReceive`s and
+reads the port callbacks and the received data from ext-src/swoole_server.cc.
 
 Coroutine handler matching uses the native `unordered_map` iteration and
 default-callback identity, skipping default entries before any context-path

@@ -28,6 +28,10 @@ bool swr_zend_http_treat_data(int arg, char *str, zval *array);
 /* Unlink the request's uploaded files and forget them in
  * SG(rfc1867_uploaded_files). */
 void swr_zend_http_uploads_release(zval *tmpfiles);
+/* Swoole\Http\Server's RINIT and RSHUTDOWN of SG(rfc1867_uploaded_files),
+ * the uploads is_uploaded_file() and move_uploaded_file() know. */
+void swr_zend_http_uploads_rinit(void);
+void swr_zend_http_uploads_rshutdown(void);
 /* zval_get_string, as a zend::bailout::trap body (it may run __toString):
  * `arg` is a swr_zend_http_string. */
 typedef struct {

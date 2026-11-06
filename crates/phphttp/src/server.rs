@@ -1,8 +1,8 @@
 //! `Swoole\Http\Server` from upstream's `swoole_http_server.cc`: `onReceive`'s
 //! routing and request parsing, the addresses cached for keep-alive sessions
 //! until they close, and the requests queued past `worker_max_concurrency`.
-//! The server, its connections and the worker stay C++ (`swr_http_host_*`),
-//! and so does the handler's call (no Rust frame under PHP code).
+//! The other protocols' `onReceive`, the port callbacks and the received data
+//! stay C++, and so does the handler's call (no Rust frame under PHP code).
 use crate::{
     context,
     host::{self, Context},
@@ -13,15 +13,47 @@ use crate::{
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
+use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::sys::{
-    HashTable, swr_zend_string_copy, swr_zend_string_init, swr_zend_string_release, swr_zval_str,
-    zend_hash_add_new, zend_long, zend_string, zval, zval_ptr_dtor,
+    HashTable, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit,
+    swr_zend_http_uploads_rshutdown, swr_zend_string_copy, swr_zend_string_init,
+    swr_zend_string_release, swr_zval_str, zend_class_entry, zend_hash_add_new, zend_long,
+    zend_string, zval, zval_ptr_dtor,
 };
-use swoole_rs_zend::{bailout, string, value};
+use swoole_rs_zend::{Class, bailout, string, value};
+
+/// `Swoole\Http\Server`: `Swoole\Server` with no methods of its own.
+static SERVER: Class = Class::new();
+
+/// `Swoole\Http\Server`, as C++ reads it; MINIT writes it.
+#[unsafe(no_mangle)]
+pub static mut swoole_http_server_ce: *mut zend_class_entry = ptr::null_mut();
+
+unsafe extern "C" {
+    static swoole_server_ce: *mut zend_class_entry;
+}
+
+/// `php_swoole_http_server_minit`, after `Swoole\Server`'s.
+/// # Safety
+/// Called once, at MINIT.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phphttp_server_minit() {
+    // SAFETY: MINIT, after the parent class's registration.
+    let parent = unsafe { swoole_server_ce };
+    // SAFETY: MINIT, with no methods.
+    unsafe {
+        SERVER.register_child(c"Swoole\\Http\\Server", ptr::null(), parent, |entry, _| {
+            entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
+        });
+    }
+    // SAFETY: MINIT, before any thread reads it.
+    unsafe { swoole_http_server_ce = SERVER.entry() };
+}
 
 /// `SW_HTTP_SERVICE_UNAVAILABLE_PACKET`.
 const SERVICE_UNAVAILABLE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\r\n";
@@ -36,8 +68,7 @@ const STATUS_HANDSHAKE: u8 = 2;
 const SESSION_NOT_EXIST: c_int = 1005;
 const LOG_TRACE: c_int = 1;
 
-/// What `swr_v1_phphttp_server_receive` tells its trampoline to do
-/// (`SWR_PHPHTTP_RECEIVE_*`).
+/// Where `onReceive` sends the data.
 const CLOSED: c_int = 0;
 const TCP: c_int = 1;
 const WEBSOCKET: c_int = 2;
@@ -45,8 +76,7 @@ const HTTP2: c_int = 3;
 const REQUEST: c_int = 4;
 const DONE: c_int = 5;
 
-/// `swr_http_receive`: the connection and its port, as `onReceive` routes by.
-#[repr(C)]
+/// The connection and its port, as `onReceive` routes by.
 struct Receive {
     last_recv_time: f64,
     local_port: i64,
@@ -64,52 +94,63 @@ struct Receive {
     coroutine: bool,
 }
 
-/// `swr_http_worker`: the counters of the worker serving requests.
-#[repr(C)]
-struct Worker {
-    /// `Worker::concurrency`.
-    concurrency: *mut u32,
-    /// `ServerGS::concurrency`, shared by every worker.
-    server_concurrency: *mut u32,
-    max_concurrency: u32,
-    shutdown: bool,
-}
+/// `SW_SERVER_CB_onRequest`, `onHandshake` and `onMessage`.
+const ON_REQUEST: c_int = 4;
+const ON_HANDSHAKE: c_int = 5;
+const ON_MESSAGE: c_int = 8;
+/// `PHP_SWOOLE_HOOK_BEFORE_REQUEST` (`SW_GLOBAL_HOOK_USER + 2`).
+const HOOK_BEFORE_REQUEST: c_int = 26;
+/// `SW_SOCK_TCP6`, `SW_MANAGER`, `SW_TASK_WORKER` and the server modes.
+const SOCK_TCP6: c_int = 3;
+const MANAGER: c_int = 3;
+const TASK_WORKER: c_int = 4;
+const MODE_BASE: u8 = 1;
+const MODE_PROCESS: u8 = 2;
+/// `Server::DISPATCH_FDMOD`.
+const DISPATCH_FDMOD: u8 = 2;
 
+// What stays C++: the TCP, WebSocket and HTTP/2 `onReceive`s and `onClose`
+// (ext-src), the port callbacks and the received data (swoole_server.cc), the
+// connection's addresses (master.cc) and its peer's port and loopback check
+// (crates/clients).
 unsafe extern "C" {
-    /// `Server::get_local_addr` (`local`) or `get_remote_addr`.
-    fn swr_http_host_address(server: *mut c_void, conn: *mut c_void, local: bool) -> *const c_char;
-    /// False when this process is no server worker.
-    fn swr_http_host_worker(worker: *mut Worker) -> bool;
-    /// `swoole_event_defer` of `swr_v1_phphttp_server_deferred`.
-    fn swr_http_host_defer(context: *mut Context);
-    /// `get_connection_verify_no_ssl` and the facts `route` reads (null: closed).
-    fn swr_http_host_receive(
+    #[link_name = "_Z27php_swoole_server_onReceivePN6swoole6ServerEPNS_8RecvDataE"]
+    fn php_swoole_server_onReceive(server: *mut c_void, request: *mut c_void) -> c_int;
+    #[link_name = "_Z26swoole_websocket_onMessagePN6swoole6ServerEPNS_8RecvDataE"]
+    fn swoole_websocket_onMessage(server: *mut c_void, request: *mut c_void) -> c_int;
+    #[link_name = "_Z29swoole_http2_server_onReceivePN6swoole6ServerEPNS_10ConnectionEPNS_8RecvDataE"]
+    fn swoole_http2_server_onReceive(
         server: *mut c_void,
-        session: i64,
-        server_fd: c_int,
-        out: *mut Receive,
-    ) -> *mut c_void;
-    /// A new context for the server's request, holding its data (`zdata`), and the
-    /// rest of the connection's facts.
-    fn swr_http_host_receive_context(
-        server: *mut c_void,
-        conn: *mut c_void,
-        session: i64,
+        conn: *mut ConnectionRecord,
         request: *mut c_void,
-        zdata: *mut *mut zval,
-        out: *mut Receive,
-    ) -> *mut Context;
-    /// `PHP_SWOOLE_HOOK_BEFORE_REQUEST`, when one is set, then the connection's
-    /// `websocket_status` (parsing an upgrade request sets it).
-    fn swr_http_host_before_request(context: *mut Context, conn: *mut c_void) -> u8;
-    /// The port's `onHandshake` (`handshake`) or `onRequest`, or null.
-    fn swr_http_host_callback(
+    ) -> c_int;
+    #[link_name = "_Z25php_swoole_server_onClosePN6swoole6ServerEPNS_8DataHeadE"]
+    fn php_swoole_server_onClose(server: *mut c_void, info: *mut DataHead);
+    #[link_name = "_Z32php_swoole_server_isset_callbackPN6swoole6ServerEPNS_10ListenPortEi"]
+    fn php_swoole_server_isset_callback(
+        server: *mut c_void,
+        port: *mut c_void,
+        kind: c_int,
+    ) -> bool;
+    #[link_name = "_Z30php_swoole_server_get_callbackPN6swoole6ServerEii"]
+    fn php_swoole_server_get_callback(
         server: *mut c_void,
         server_fd: c_int,
-        handshake: bool,
+        kind: c_int,
     ) -> *mut c_void;
-    /// `swoole_notice("%s", message)`.
-    fn swr_http_host_notice(message: *const c_char);
+    #[link_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE"]
+    fn php_swoole_get_recv_data(server: *mut c_void, zdata: *mut zval, request: *mut c_void);
+    #[link_name = "_ZN6swoole6Server14get_local_addrEPNS_10ConnectionE"]
+    fn get_local_addr(server: *mut c_void, conn: *mut ConnectionRecord) -> *const c_char;
+    #[link_name = "_ZN6swoole6Server15get_remote_addrEPNS_10ConnectionE"]
+    fn get_remote_addr(server: *mut c_void, conn: *mut ConnectionRecord) -> *const c_char;
+    fn swr_v1_clients_address_port(
+        address: *const swoole_rs_corebase::net_types::SocketAddress,
+    ) -> c_int;
+    fn swr_v1_clients_address_loopback(
+        address: *const swoole_rs_corebase::net_types::SocketAddress,
+    ) -> bool;
+    fn swr_v1_event_reactor() -> *mut c_void;
 }
 
 thread_local! {
@@ -140,9 +181,14 @@ pub(crate) fn add_long(table: *mut HashTable, name: Key, long: zend_long) {
     unsafe { zend_hash_add_new(table, key(name), &raw mut value) };
 }
 
-fn address(server: *mut c_void, conn: *mut c_void, local: bool) -> *mut zend_string {
+fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> *mut zend_string {
+    let get = if local {
+        get_local_addr
+    } else {
+        get_remote_addr
+    };
     // SAFETY: the live server and connection the caller passed.
-    let text = unsafe { swr_http_host_address(server, conn, local) };
+    let text = unsafe { get(server, conn) };
     // SAFETY: the server's NUL-terminated address text.
     let text = unsafe { CStr::from_ptr(text) };
     // SAFETY: a byte span of the address text.
@@ -151,15 +197,15 @@ fn address(server: *mut c_void, conn: *mut c_void, local: bool) -> *mut zend_str
 
 /// `swoole_http_server_populate_ip_and_port`: `$request->server`'s ports and
 /// addresses. `loopback` is 4 or 6 for a loopback peer, otherwise 0. With
-/// `cache`, a session's addresses are made once and kept until
-/// `swr_v1_phphttp_server_close`.
+/// `cache`, a session's addresses are made once and kept until the session
+/// closes.
 /// # Safety
 /// `server` and `conn` are the live server and the request's connection;
 /// `table` is the request's `server` array.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_server_addresses(
+#[expect(clippy::too_many_arguments, reason = "upstream's request facts")]
+unsafe fn addresses(
     server: *mut c_void,
-    conn: *mut c_void,
+    conn: *mut ConnectionRecord,
     table: *mut HashTable,
     session: i64,
     local_port: i64,
@@ -198,32 +244,33 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_addresses(
 
 /// `php_swoole_http_server_onReceive`: route the data to another protocol's
 /// `onReceive`, or parse it into a new context and run its handler. A
-/// bailout (a handshake's `onOpen`, the handler's `exit()`) is raised last,
-/// over this frame only.
+/// bailout (a handshake's `onOpen`, the handler's `exit()`) is raised last.
 /// # Safety
 /// `server` is the live server and `request` its `RecvData`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_server_receive(
-    server: *mut c_void,
-    request: *mut c_void,
-    session: i64,
-    server_fd: c_int,
-) -> c_int {
-    let mut facts = Receive {
-        last_recv_time: 0.0,
-        local_port: 0,
-        remote_port: 0,
-        loopback: 0,
-        websocket_status: 0,
-        http: false,
-        websocket: false,
-        http2: false,
-        cache: false,
-        coroutine: false,
-    };
-    // SAFETY: the live server; fills a local struct.
-    let conn = unsafe { swr_http_host_receive(server, session, server_fd, &raw mut facts) };
-    if conn.is_null() {
+#[unsafe(export_name = "_Z32php_swoole_http_server_onReceivePN6swoole6ServerEPNS_8RecvDataE")]
+pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_void) -> c_int {
+    // SAFETY: a `RecvData` begins with its `DataHead`.
+    let info = unsafe { *request.cast::<DataHead>() };
+    match receive(server, request, info.fd, c_int::from(info.server_fd)) {
+        CLOSED => -1,
+        // SAFETY: the live server and its request.
+        TCP => unsafe { php_swoole_server_onReceive(server, request) },
+        // SAFETY: as above.
+        WEBSOCKET => unsafe { swoole_websocket_onMessage(server, request) },
+        HTTP2 => {
+            // SAFETY: the live server.
+            let conn =
+                unsafe { view::verified(server, info.fd) }.map_or(ptr::null_mut(), ptr::from_mut);
+            // SAFETY: as above, with the session's connection.
+            unsafe { swoole_http2_server_onReceive(server, conn, request) }
+        }
+        _ => 0,
+    }
+}
+
+fn receive(server: *mut c_void, request: *mut c_void, session: i64, server_fd: c_int) -> c_int {
+    // SAFETY: the live server.
+    let Some(conn) = (unsafe { view::verified(server, session) }) else {
         host::log(
             LOG_TRACE,
             SESSION_NOT_EXIST,
@@ -231,23 +278,50 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_receive(
             format!("session[{session}] is closed"),
         );
         return CLOSED;
-    }
+    };
+    // SAFETY: the live server; a listening socket's record holds its port.
+    let port = unsafe { view::port_by_server_fd(server, server_fd) };
+    // SAFETY: the connection's live port.
+    let config = unsafe { view::port(port) };
+    // SAFETY: the live server and port.
+    let isset = |kind| unsafe { php_swoole_server_isset_callback(server, port, kind) };
+    // Only whether either is set routes the data, so onMessage is asked only without onRequest.
+    let http = config.open_http_protocol && isset(ON_REQUEST);
+    let websocket = !http && config.open_websocket_protocol && isset(ON_MESSAGE);
+    let mut facts = Receive {
+        last_recv_time: conn.last_recv_time,
+        local_port: i64::from(conn.local_port),
+        remote_port: 0,
+        loopback: 0,
+        websocket_status: conn.websocket_status,
+        http,
+        websocket,
+        http2: conn.http2_stream != 0,
+        cache: false,
+        coroutine: false,
+    };
     let route = route(&facts);
     if route != REQUEST {
         return route;
     }
-    let mut zdata = ptr::null_mut();
-    // SAFETY: as above, with the live connection; the request's data moves into the context.
-    let ctx = unsafe {
-        swr_http_host_receive_context(
-            server,
-            conn,
-            session,
-            request,
-            &raw mut zdata,
-            &raw mut facts,
-        )
-    };
+    // SAFETY: the connection's own address record.
+    facts.remote_port = i64::from(unsafe { swr_v1_clients_address_port(&raw const conn.info) });
+    // SAFETY: as above.
+    if unsafe { swr_v1_clients_address_loopback(&raw const conn.info) } {
+        facts.loopback = if conn.info.kind == SOCK_TCP6 { 6 } else { 4 };
+    }
+    facts.cache = can_cache(server);
+    facts.coroutine = enable_coroutine(server);
+    let ctx = context::context_new(session);
+    // SAFETY: a new context and the live server.
+    unsafe { context::swr_v1_phphttp_context_init(ctx, server) };
+    let state = state(ctx);
+    state.before_request = 1;
+    let zdata = &raw mut state.request.zdata;
+    // SAFETY: the live server and its request; the data moves into the context.
+    unsafe { php_swoole_get_recv_data(server, zdata, request) };
+    crate::parse::init_request_parser(ctx);
+    let conn = ptr::from_mut(conn);
     let result = handle(server, conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
         if route == REQUEST {
             // SAFETY: a live context; false leaves it queued.
@@ -261,6 +335,28 @@ pub unsafe extern "C" fn swr_v1_phphttp_server_receive(
     });
     bailout::raise(result);
     DONE
+}
+
+/// `swoole_http_server_can_cache_session_addr`: a keep-alive session's
+/// addresses stay cached until its close, so only when that close reaches
+/// the same worker.
+#[unsafe(export_name = "_Z41swoole_http_server_can_cache_session_addrPKN6swoole6ServerE")]
+pub(crate) extern "C" fn can_cache(server: *mut c_void) -> bool {
+    // SAFETY: the live server.
+    let config = unsafe { view::config(server) };
+    config.mode_ == MODE_BASE
+        || (config.mode_ == MODE_PROCESS && config.dispatch_mode == DISPATCH_FDMOD)
+}
+
+/// `Server::is_enable_coroutine`.
+fn enable_coroutine(server: *mut c_void) -> bool {
+    // SAFETY: the live server.
+    let config = unsafe { view::config(server) };
+    match swoole_rs_process::methods::swoole_get_worker_type() {
+        TASK_WORKER => config.task_enable_coroutine,
+        MANAGER => false,
+        _ => config.enable_coroutine,
+    }
 }
 
 /// `http_server_process_request`: the handler with the request's objects.
@@ -280,13 +376,13 @@ fn call(ctx: *mut Context, coroutine: bool) -> Result<(), bailout::Bailout> {
     Ok(())
 }
 
-/// A queued request's turn (`swr_http_host_defer`): run its handler, then
+/// A queued request's turn (`swoole_event_defer`): run its handler, then
 /// release its objects.
 /// # Safety
 /// `ctx` is a queued server request's live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_server_deferred(ctx: *mut Context, coroutine: bool) {
-    let result = call(ctx, coroutine);
+unsafe extern "C-unwind" fn deferred(ctx: *mut c_void) {
+    let ctx = ctx.cast::<Context>();
+    let result = call(ctx, enable_coroutine(state(ctx).private_data));
     if result.is_ok() {
         release_objects(ctx);
     }
@@ -307,15 +403,13 @@ fn route(facts: &Receive) -> c_int {
 }
 
 fn notice(message: &str) {
-    let message = CString::new(message).unwrap_or_default();
-    // SAFETY: a NUL-terminated message, printed through "%s".
-    unsafe { swr_http_host_notice(message.as_ptr()) };
+    log::notice(format_args!("{message}"));
 }
 
 /// Parse the request, fill `$request->server` and pick the handler.
 fn handle(
     server: *mut c_void,
-    conn: *mut c_void,
+    conn: *mut ConnectionRecord,
     ctx: *mut Context,
     zdata: *mut zval,
     session: i64,
@@ -350,7 +444,7 @@ fn handle(
     let table = unsafe { value::table(state.request.zserver.ptr) };
     // SAFETY: the live server and connection and the request's array.
     unsafe {
-        swr_v1_phphttp_server_addresses(
+        addresses(
             server,
             conn,
             table,
@@ -366,10 +460,16 @@ fn handle(
         reason = "upstream's (zend_long) cast"
     )]
     add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
-    // SAFETY: a live context and its connection.
-    let handshake = unsafe { swr_http_host_before_request(ctx, conn) } == STATUS_CONNECTION;
+    if swoole_rs_corebase::swoole_isset_hook(HOOK_BEFORE_REQUEST) {
+        // SAFETY: the hook's context argument.
+        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_BEFORE_REQUEST, ctx) };
+    }
+    // Parsing an upgrade request sets the connection's status.
+    // SAFETY: the request's live connection.
+    let handshake = unsafe { (*conn).websocket_status } == STATUS_CONNECTION;
+    let kind = if handshake { ON_HANDSHAKE } else { ON_REQUEST };
     // SAFETY: the live server.
-    let callback = unsafe { swr_http_host_callback(server, server_fd, handshake) };
+    let callback = unsafe { php_swoole_server_get_callback(server, server_fd, kind) };
     if callback.is_null() {
         if handshake {
             websocket::handshake_open(ctx)?;
@@ -423,7 +523,11 @@ const HTTP2_INTERNAL_ERROR: u32 = 2;
 
 unsafe extern "C" {
     /// `get_connection_by_session_id` (null: closed) and what onRequest reads.
-    fn swr_h2s_connection(server: *mut c_void, fd: i64, out: *mut Http2Connection) -> *mut c_void;
+    fn swr_h2s_connection(
+        server: *mut c_void,
+        fd: i64,
+        out: *mut Http2Connection,
+    ) -> *mut ConnectionRecord;
     /// `zend::function::call(callable, 2, args)`: 1 called, 0 failed, -1 bailed out.
     fn swr_hsc_call(callable: *mut c_void, args: *mut zval, coroutine: bool) -> c_int;
     /// The HTTP/2 server's (crates/phphttp2): the static handler, a whole
@@ -471,7 +575,7 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     let table = unsafe { value::table(state.request.zserver.ptr) };
     // SAFETY: the live server and connection and the request's array.
     unsafe {
-        swr_v1_phphttp_server_addresses(
+        addresses(
             server,
             conn,
             table,
@@ -490,7 +594,7 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
     add_protocol(state, Key::Http2);
     // SAFETY: the live server.
-    state.callback = unsafe { swr_http_host_callback(server, facts.server_fd, false) };
+    state.callback = unsafe { php_swoole_server_get_callback(server, facts.server_fd, ON_REQUEST) };
     if state.before_request != 0 {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
@@ -529,23 +633,51 @@ fn release_objects(ctx: *mut Context) {
     unsafe { zval_ptr_dtor(state(ctx).response.zobject.ptr) };
 }
 
-/// `php_swoole_http_server_onClose`: forget the session's addresses.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphttp_server_close(session: i64) {
+/// `php_swoole_http_server_onClose`: forget the session's addresses, then
+/// the server's `onClose`.
+/// # Safety
+/// `server` is the live server and `info` the closed session's.
+#[unsafe(export_name = "_Z30php_swoole_http_server_onClosePN6swoole6ServerEPNS_8DataHeadE")]
+pub(crate) unsafe extern "C" fn on_close(server: *mut c_void, info: *mut DataHead) {
+    // SAFETY: per the caller.
+    let session = unsafe { (*info).fd };
     if let Some(addresses) = ADDRESSES.with_borrow_mut(|cached| cached.remove(&session)) {
         release(addresses);
     }
+    // SAFETY: per the caller.
+    unsafe { php_swoole_server_onClose(server, info) };
 }
 
+/// The counters of the worker serving requests.
+struct Worker {
+    /// `Worker::concurrency`.
+    concurrency: *mut u32,
+    /// `ServerGS::concurrency`, shared by every worker.
+    server_concurrency: &'static AtomicU32,
+    max_concurrency: u32,
+    shutdown: bool,
+}
+
+/// `sw_server()` and `sw_worker()`'s counters; none when this process is no
+/// server worker.
 fn worker() -> Option<Worker> {
-    let mut worker = Worker {
-        concurrency: std::ptr::null_mut(),
-        server_concurrency: std::ptr::null_mut(),
-        max_concurrency: 0,
-        shutdown: false,
-    };
-    // SAFETY: fills a local struct.
-    unsafe { swr_http_host_worker(&raw mut worker) }.then_some(worker)
+    let server = swoole_rs_corebase::swr_v1_core_server();
+    let current = swoole_rs_process::worker_globals::swr_v1_worker_globals();
+    // SAFETY: this thread's worker record.
+    let current = unsafe { (*current).worker };
+    if server.is_null() || current.is_null() {
+        return None;
+    }
+    // SAFETY: the running server.
+    let config = unsafe { view::config(server) };
+    Some(Worker {
+        // SAFETY: the current worker's live record.
+        concurrency: unsafe { &raw mut (*current).concurrency },
+        // SAFETY: the running server's shared counters.
+        server_concurrency: &unsafe { view::counters(server) }.concurrency,
+        max_concurrency: config.worker_max_concurrency,
+        shutdown: swoole_rs_process::methods::worker_is_shutdown(current),
+    })
 }
 
 /// Mark a queued request answered and release its objects.
@@ -566,8 +698,7 @@ pub(crate) unsafe fn admit(ctx: *mut Context) -> bool {
     let Some(worker) = worker().filter(|worker| !worker.shutdown) else {
         return false;
     };
-    // SAFETY: `ServerGS::concurrency`, in shared memory and only touched atomically.
-    unsafe { AtomicU32::from_ptr(worker.server_concurrency) }.fetch_add(1, SeqCst);
+    worker.server_concurrency.fetch_add(1, SeqCst);
     // SAFETY: this worker's own counter.
     let concurrency = unsafe { &mut *worker.concurrency };
     *concurrency += 1;
@@ -593,21 +724,34 @@ pub(crate) fn release_request() {
         }
         return;
     }
-    // SAFETY: as in `swr_v1_phphttp_server_admit`.
-    unsafe { AtomicU32::from_ptr(worker.server_concurrency) }.fetch_sub(1, SeqCst);
+    worker.server_concurrency.fetch_sub(1, SeqCst);
     // SAFETY: this worker's own counter.
     let concurrency = unsafe { &mut *worker.concurrency };
     *concurrency = concurrency.wrapping_sub(1);
     if let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
+        // SAFETY: no preconditions.
+        let reactor = unsafe { swr_v1_event_reactor() };
+        // SAFETY: the thread's live reactor, which begins with its prepared state.
+        let fields = unsafe { (*reactor.cast::<swoole_rs_reactor::ReactorPrepared>()).fields };
         // SAFETY: a queued context, alive until its deferred request ends.
-        unsafe { swr_http_host_defer(ctx) };
+        unsafe { swoole_rs_reactor::defer(fields, deferred, ctx.cast()) };
     }
 }
 
-/// `php_swoole_http_server_rshutdown`: drop the cached addresses and the
-/// queued requests.
+/// `php_swoole_http_server_rinit`: the uploaded files `is_uploaded_file`
+/// and `move_uploaded_file` know.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_phphttp_server_rinit() {
+    // SAFETY: RINIT, on the request's thread.
+    unsafe { swr_zend_http_uploads_rinit() };
+}
+
+/// `php_swoole_http_server_rshutdown`: forget the uploaded files, then drop
+/// the cached addresses and the queued requests.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phphttp_server_rshutdown() {
+    // SAFETY: RSHUTDOWN, on the request's thread.
+    unsafe { swr_zend_http_uploads_rshutdown() };
     for addresses in ADDRESSES.with_borrow_mut(std::mem::take).into_values() {
         release(addresses);
     }
@@ -621,29 +765,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn worker_matches_the_c_struct() {
-        // `struct swr_http_worker { uint32_t *, uint32_t *, uint32_t, bool }`
-        assert_eq!(size_of::<Worker>(), 24);
-        assert_eq!(std::mem::offset_of!(Worker, max_concurrency), 16);
-        assert_eq!(std::mem::offset_of!(Worker, shutdown), 20);
-    }
-
-    #[test]
     fn http2_connection_matches_the_c_struct() {
         // `swr_h2s_connection_facts`, which C++ asserts is 40 bytes.
         assert_eq!(size_of::<Http2Connection>(), 40);
         assert_eq!(std::mem::offset_of!(Http2Connection, server_fd), 28);
         assert_eq!(std::mem::offset_of!(Http2Connection, coroutine), 35);
         assert_eq!(size_of::<Http2Request>(), 24);
-    }
-
-    #[test]
-    fn receive_matches_the_c_struct() {
-        // `swr_http_receive`, which C++ asserts is 40 bytes.
-        assert_eq!(size_of::<Receive>(), 40);
-        assert_eq!(std::mem::offset_of!(Receive, loopback), 24);
-        assert_eq!(std::mem::offset_of!(Receive, websocket_status), 28);
-        assert_eq!(std::mem::offset_of!(Receive, cache), 32);
     }
 
     fn facts(http: bool, websocket: bool, status: u8, http2: bool) -> Receive {

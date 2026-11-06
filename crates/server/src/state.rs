@@ -43,6 +43,9 @@ pub struct ServerState {
     ports: std::sync::Mutex<Vec<AtomicPtr<core::ffi::c_void>>>,
     /// The on* members and `dispatch_func` (`callbacks.rs`).
     pub(crate) callbacks: crate::callbacks::ServerCallbacks,
+    /// `upload_tmp_dir`, the HTTP server's directory for uploaded files
+    /// (`None`: `/tmp`).
+    pub(crate) upload_tmp_dir: std::sync::Mutex<Option<CString>>,
 }
 
 impl Default for ServerState {
@@ -62,6 +65,7 @@ impl ServerState {
             commands: std::sync::Mutex::new(crate::commands::Commands::new()),
             ports: std::sync::Mutex::new(Vec::new()),
             callbacks: crate::callbacks::ServerCallbacks::new(),
+            upload_tmp_dir: std::sync::Mutex::new(None),
         }
     }
 

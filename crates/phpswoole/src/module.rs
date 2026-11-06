@@ -138,7 +138,10 @@ unsafe extern "C" {
     fn swr_v1_phphttp_response_minit(codecs: u32);
     fn swr_v1_phphttp_response_rshutdown();
     fn php_swoole_http_cookie_minit(module_number: c_int);
-    fn php_swoole_http_server_minit(module_number: c_int);
+    /// crates/phphttp's `Swoole\Http\Server`, and its request state.
+    fn swr_v1_phphttp_server_minit();
+    fn swr_v1_phphttp_server_rinit();
+    fn swr_v1_phphttp_server_rshutdown();
     fn php_swoole_http_server_coro_minit(module_number: c_int);
     fn php_swoole_websocket_server_minit(module_number: c_int);
     fn php_swoole_redis_server_minit(module_number: c_int);
@@ -153,13 +156,11 @@ unsafe extern "C" {
 
     fn php_swoole_runtime_mshutdown();
 
-    fn php_swoole_http_server_rinit();
     fn php_swoole_coroutine_rinit();
     fn php_swoole_runtime_rinit();
     fn swr_v1_phpcoroutines_tracer_rinit();
 
     fn php_swoole_server_rshutdown();
-    fn php_swoole_http_server_rshutdown();
     fn php_swoole_redis_server_rshutdown();
     fn php_swoole_coroutine_rshutdown();
     fn php_swoole_coroutine_scheduler_rshutdown();
@@ -230,7 +231,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(http_request_minit),
         M(http_response_minit),
         M(php_swoole_http_cookie_minit),
-        M(php_swoole_http_server_minit),
+        M(http_server_minit),
         M(php_swoole_http_server_coro_minit),
         M(php_swoole_websocket_server_minit),
         M(php_swoole_redis_server_minit),
@@ -289,6 +290,12 @@ unsafe extern "C" fn http_response_minit(_module_number: c_int) {
     let codecs = u32::from(flags & ZLIB != 0) | u32::from(flags & COMPRESSION != 0) << 3;
     // SAFETY: Rust's MINIT, once, after the request class's.
     unsafe { swr_v1_phphttp_response_minit(codecs) };
+}
+
+/// `php_swoole_http_server_minit`.
+unsafe extern "C" fn http_server_minit(_module_number: c_int) {
+    // SAFETY: Rust's MINIT, once, after `Swoole\Server`'s.
+    unsafe { swr_v1_phphttp_server_minit() };
 }
 
 /// `php_swoole_client_coro_minit`.
@@ -416,7 +423,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
     // SAFETY: RINIT.
     unsafe { swr_zend_signals_uncheck() };
     let steps = [
-        Step::Hook(php_swoole_http_server_rinit),
+        Step::Hook(swr_v1_phphttp_server_rinit),
         Step::Hook(php_swoole_coroutine_rinit),
         Step::Hook(php_swoole_runtime_rinit),
         Step::Hook(ops.optional_rinit),
@@ -446,7 +453,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
     let ops = ops();
     let steps = [
         Step::Hook(php_swoole_server_rshutdown),
-        Step::Hook(php_swoole_http_server_rshutdown),
+        Step::Hook(swr_v1_phphttp_server_rshutdown),
         Step::Hook(swr_v1_phphttp_response_rshutdown),
         Step::Hook(crate::asynchronous::rshutdown),
         Step::Hook(php_swoole_redis_server_rshutdown),
