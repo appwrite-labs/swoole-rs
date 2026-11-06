@@ -12,7 +12,7 @@ index b1a0096..a0abfce 100644
 +    std::string get_mimetype() const;
      const std::string &get_content_type(std::string &scratch);
 diff --git a/src/server/static_handler.cc b/src/server/static_handler.cc
-index 863858a..c62129a 100644
+index 863858a..9e430a7 100644
 --- a/src/server/static_handler.cc
 +++ b/src/server/static_handler.cc
 @@ -17,2 +17,3 @@
@@ -33,7 +33,13 @@ index 863858a..c62129a 100644
 -            action = resume_path(4,mime_type::exists(filename));
 +            action = resume_path(4,swr_v1_framing_mime_exists(reinterpret_cast<const uint8_t *>(filename),strlen(filename)));
              break;
-@@ -411,4 +412,3 @@ static bool select_static_handler_impl(Server *server,const RequestView &request
+@@ -284,3 +285,4 @@ const std::string &StaticHandler::get_content_type(std::string &scratch) {
+     }
+-    return get_mimetype();
++    scratch=get_mimetype();
++    return scratch;
+ }
+@@ -411,4 +413,3 @@ static bool select_static_handler_impl(Server *server,const RequestView &request
      header.content_length = selection.head ? 0 : static_cast<long>(handler.get_content_length());
 -    // Native IO scratch remains live through header encoding and send. The
 -    // MIME getter itself still returns the unchanged global reference.
