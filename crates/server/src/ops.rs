@@ -408,7 +408,7 @@ pub const CB_TASK: u32 = 4;
 pub const CB_RECEIVE: u32 = 5;
 pub const CB_PACKET: u32 = 6;
 
-// Reactor threads. Ops 0-144 keep their meaning where reactor_thread.cc answers them.
+// Reactor threads. Ops 0-144 keep their meaning where master.cc's reactor-thread ops answer them.
 /// `swReturnCode` of `socket->ssl_accept()`.
 pub const OP_SSL_ACCEPT: u32 = 250;
 /// Runs the port's `onRead` (stamping and counting the bytes); its result in the low 32

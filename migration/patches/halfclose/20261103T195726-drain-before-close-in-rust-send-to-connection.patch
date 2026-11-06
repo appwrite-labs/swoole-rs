@@ -1,13 +1,16 @@
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 1e1ae64..2b7dca8 100644
+index 1e1ae64..ff25ea7 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -16,2 +16,4 @@
+@@ -16,2 +16,7 @@
  
 +// M15: send_to_connection (crates/server/src/send.rs) drains queued output before close.
 +#define SW_HALFCLOSE_DRAIN 1
++// M15: the reactor thread's read, write and close paths (crates/server/src/conn_io.rs)
++// keep a synchronous process worker's response after a clean FIN; see native/halfclose/prequeue.md.
++#define SW_HALFCLOSE_PREQUEUE 1
  #include "swoole_server.h"
-@@ -1487,3 +1489,7 @@ int Server::send_to_connection(const SendData *_send) const {
+@@ -1487,3 +1492,7 @@ int Server::send_to_connection(const SendData *_send) const {
          }
 -        return reactor->remove_read_event(_socket);
 +        if (_socket->events & SW_EVENT_WRITE) {
@@ -16,7 +19,7 @@ index 1e1ae64..2b7dca8 100644
 +            return reactor->del(conn->socket);
 +        }
      }
-@@ -1493,7 +1499,10 @@ int Server::send_to_connection(const SendData *_send) const {
+@@ -1493,7 +1502,10 @@ int Server::send_to_connection(const SendData *_send) const {
      else if (_send->info.type == SW_SERVER_EVENT_RESUME_RECV) {
 -        if (conn->closed || conn->peer_closed || conn->close_queued || _socket->close_notified ||
 -            (_socket->events & SW_EVENT_READ)) {
@@ -30,7 +33,7 @@ index 1e1ae64..2b7dca8 100644
 +            return reactor->add(_socket, SW_EVENT_READ);
 +        }
      }
-@@ -1543,3 +1552,2 @@ int Server::send_to_connection(const SendData *_send) const {
+@@ -1543,3 +1555,2 @@ int Server::send_to_connection(const SendData *_send) const {
          conn->close_queued = 1;
 -        reactor->remove_read_event(_socket);
      } else if (_send->info.type == SW_SERVER_EVENT_SEND_FILE) {
