@@ -55,9 +55,9 @@ typedef struct {
   uint32_t index;
 } swr_v1_core_config_copy_result;
 size_t swr_v1_core_format_result(char *, size_t, int formatted, bool zero_query);
-int32_t swr_v1_corebase_mkdir_complete(const uint8_t *, size_t, uint8_t *, size_t);
-typedef struct { int32_t status, mkdir_status; } swr_v1_core_task_path_result;
-swr_v1_core_task_path_result swr_v1_core_config_set_task_path(swr_v1_core_config *, const uint8_t *, size_t, uint8_t *, size_t);
+/* swoole_set_task_tmpdir under its lock, with upstream's warnings: 0 success, above 0
+ * a warned failure, below 0 the string store's status (RustStringView::check). */
+int32_t swr_v1_core_set_task_tmpdir(swr_v1_core_config *, const uint8_t *, size_t);
 swr_v1_core_config_prepared swr_v1_core_config_new(void);
 void swr_v1_core_config_free(swr_v1_core_config *);
 void swr_v1_core_config_allocator(swr_v1_core_config *);
@@ -74,13 +74,27 @@ void swr_v1_core_set_last_error(int);
  * 1 swoole_warning, 2 swoole_notice, 3 swoole_error_log(level, code); origin is __SW_FUNC__. */
 typedef void (*swr_v1_core_log_host)(int kind, int level, int code, const char *origin, const char *message);
 void swr_v1_core_set_log_host(swr_v1_core_log_host);
-/* base.cc's C++ functions Rust calls (crates/corebase/src/native.rs), registered
- * once with the log macros, so the Rust archive links without base.cc. */
+/* The C++ effects Rust's lifecycles run (crates/corebase/src/native.rs), which
+ * native/corebase/globals.cc's swoole_init registers, so the Rust archive links
+ * without C++. thread is this thread's SwooleTG; reset is SwooleG = {}; buffer
+ * allocates or deletes SwooleTG.buffer_stack; logger is 0 close, 1 reopen, 2 delete. */
 typedef struct {
-    pid_t (*fork)(int flags);
     bool (*get_env)(const char *name, int *value);
+    void *(*thread)(void);
+    void (*reset)(void);
+    void (*buffer)(bool allocate);
+    void *(*new_pool)(void);
+    void (*delete_pool)(void *pool);
+    void (*logger)(int operation);
+    void (*signal_clear)(void);
+    void (*signal_block_all)(void);
+    bool (*timer_available)(void);
+    void (*timer_free)(void);
+    bool (*event_available)(void);
+    int (*event_free)(void);
+    uint8_t (*coroutine_is_in)(void);
 } swr_v1_core_native_host;
-void swr_v1_core_set_native_host(swr_v1_core_native_host);
+void swr_v1_core_set_native_host(const swr_v1_core_native_host *);
 #ifdef __cplusplus
 }
 namespace swoole {

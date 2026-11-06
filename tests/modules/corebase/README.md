@@ -1,9 +1,10 @@
 # Core-base validation
 
-The corebase overlay patches `src/core/base.cc` so that helper policy (type
+The corebase overlay deletes `src/core/base.cc` and `src/core/misc.cc` so that helper policy (type
 size, gcd/lcm, stoi env parsing, itoa/radix/hex, version compare, dirname,
-recursive mkdir), lifecycle sequencing (clean, thread init/clean, fork, task
-tmpdir) and hook insertion decisions come from Rust. Rust owns `SwooleG`'s
+recursive mkdir), the lifecycles (clean, thread init/clean, fork, task
+tmpdir) and the hooks come from Rust, with `native/corebase/globals.cc` for what
+stable Rust can't express. Rust owns `SwooleG`'s
 scalars and native pointers (`crates/corebase/src/global.rs`), which
 `swoole::Global` exposes as `RustField` views under their upstream names;
 `swoole_init` calls it for their defaults. Native code keeps `SwooleG`'s C++
@@ -21,7 +22,7 @@ native-TU gates.
 
 - `differential.py --source CONFIGURED_PINNED --archive A --output R [--sanitize] [--signed-char | --unsigned-char] [--include DIR]`
   (`corebase-native`): compiles the complete original `base.cc` (pinned) and
-  the hybrid build's `misc.cc`, where base.cc's glue went (the build `A` comes from,
+  the hybrid build's `globals.cc`, where base.cc's glue went (the build `A` comes from,
   with its headers and `config.h`), into separate binaries with `driver.cc`, feeds
   both the corpus from `cases.py` and requires identical output/errno, plus the
   independently expected values. It also runs seven extracted upstream `TEST(base, ...)`
@@ -29,7 +30,7 @@ native-TU gates.
   itoa, type_size) and the `allocator.cc` strndup interposer. The hybrid
   binary must contain real calls to each Rust helper; the original none. For the
   helpers Rust defines under upstream's own symbols (gcd, lcm, version compare,
-  dec2hex) the hybrid misc.o must not define them and the archive must.
+  dec2hex) the hybrid globals.o must not define them and the archive must.
   `--unsigned-char` also covers bytes 128..255.
 - `mkdir_startup.py --engine native=... --engine rust=... --output R`
   (`corebase-startup`): PHP startup through `sys_temp_dir` (create, repeated
@@ -37,7 +38,7 @@ native-TU gates.
   build manifest must contain the current corebase patch.
 ## Helpers
 
-Rust unit tests: the task-directory policy in `crates/corebase/src/lifecycle.rs`,
+Rust unit tests: the task-directory policy in `crates/corebase/src/config_state.rs`,
 the hook policy in `hook.rs`, the core state record in `global.rs`.
 
 `core-tests/src/core/base.cpp` cases whose helpers #1384 deleted, and where

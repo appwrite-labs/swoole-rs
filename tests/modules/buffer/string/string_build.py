@@ -8,12 +8,13 @@ import sys
 import tarfile
 from pathlib import Path
 
-from tools.build_hybrid import hybrid_tree
+from tools.build_hybrid import hybrid_tree, native_sources
 from tools.build_upstream import COMMIT
 from tools.harness import ROOT, run_isolated
 
 HERE = Path(__file__).resolve().parent
-# The hybrid deletes string.cc (Rust defines String's methods) and base.cc (its glue is in misc.cc).
+# The hybrid deletes string.cc (Rust defines String's methods), base.cc and misc.cc (what is left
+# of them is native/corebase/globals.cc, which it stages with its other native sources).
 SOURCES = ['src/core/string.cc', 'src/core/base.cc', 'src/core/misc.cc', 'src/os/base.cc', 'src/core/base64.cc', 'src/core/log.cc',
            'src/core/error.cc']
 
@@ -43,7 +44,7 @@ def build(tree, engine, consumer, binary, archive=None, *, sanitize=False, optim
     if engine == 'rust':
         tree, headers = hybrid_tree(archive)
     command = ['c++', '-std=c++17', '-O3' if optimize else '-O1', '-g', '-ffunction-sections', '-fdata-sections',
-               '-I' + str(HERE), *headers, *[str(tree / name) for name in SOURCES if (tree / name).exists()], *map(str, extra), str(HERE / consumer)]
+               '-I' + str(HERE), *headers, *[str(tree / name) for name in [*SOURCES, *native_sources()] if (tree / name).exists()], *map(str, extra), str(HERE / consumer)]
     command += shlex.split(subprocess.check_output(['pkg-config', '--cflags', '--libs', 'openssl'], text=True))
     if engine == 'rust':
         command.append(str(archive))

@@ -267,6 +267,18 @@ def hybrid_tree(archive):
     return source, [*('-D' + name for name in switches), '-I' + str(source / 'include'), '-I' + str(abi)]
 
 
+def native_sources():
+    """Owned C++ (native/<module>/*.cc: what stable Rust can't express), by the path it compiles
+    at in the patched tree, where config.m4's and CMake's src/ globs find it."""
+    return {f'src/swoole_rs_{path.parent.name}_{path.name}': path for path in sorted((ROOT / 'native').glob('*/*.cc'))}
+
+
+def stage_native_sources(source):
+    for name, path in native_sources().items():
+        if not (source / name).exists() or (source / name).read_bytes() != path.read_bytes():
+            shutil.copyfile(path, source / name)
+
+
 def overlay_hybrid_tree(archive, tree):
     """Copy every file the archive's hybrid build patched over `tree`, a pinned checkout (such as
     one staged with upstream's core-tests), and delete the ones it deleted. Returns the CMake
@@ -279,6 +291,8 @@ def overlay_hybrid_tree(archive, tree):
                     (Path(tree) / name).unlink(missing_ok=True)
                 elif (source / name).read_bytes() != (Path(tree) / name).read_bytes():
                     shutil.copyfile(source / name, Path(tree) / name)
+    for name in native_sources():
+        shutil.copyfile(source / name, Path(tree) / name)
     # core-tests include a header the hybrid folded into another one; they include the survivor.
     for path in (Path(tree) / 'core-tests').rglob('*'):
         text = path.read_text() if path.suffix in ('.h', '.cpp') else ''
@@ -355,7 +369,7 @@ def configuration_key(inputs, development=False):
     configuration = inputs
     if development:
         configuration = {key: value for key, value in inputs.items()
-                         if key not in {'patches', 'rust_sources_sha256', *ARCHIVES.values()}}
+                         if key not in {'patches', 'rust_sources_sha256', 'native_sources_sha256', *ARCHIVES.values()}}
         # Module-local declarations affect consumer compilation, not configure.
         # Prefix staging below updates their mtimes; native dependency files rebuild callers.
         configuration['headers_sha256'] = {path: value for path, value in inputs.get('headers_sha256', {}).items()
@@ -444,6 +458,7 @@ def build(args, parser):
               **{key: digest(archives[name]) if args.backend == 'rust' else None for name, key in ARCHIVES.items()},
               'rust_sources_sha256': rust_inputs,
               'headers_sha256': {str(path.relative_to(ROOT)): digest(path) for path in headers},
+              'native_sources_sha256': {name: digest(path) for name, path in native_sources().items()} if args.backend == 'rust' else {},
               'php': output([args.php_config, '--version']),
               'php_config': output([args.php_config, '--configure-options']),
               'phpize': str(Path(shutil.which(args.phpize) or args.phpize).resolve()),
@@ -480,6 +495,8 @@ def build(args, parser):
             proof = apply_patch_verified(source, ROOT / patch['path'], patch['upstream_paths'], patch['sha256'])
             write_report(build / ('patch-' + Path(patch['path']).parent.name + '-' + Path(patch['path']).stem + '.json'), proof)
         diff_hash = hashlib.sha256(output(['git', 'diff', '--binary', 'HEAD'], source).encode()).hexdigest()
+    if args.backend == 'rust':
+        stage_native_sources(source)
     write_report(state_path, {'inputs': inputs, 'source_diff_sha256': diff_hash})
     prefix = build / 'rust-prefix'
     extra = ['--without-swoole-rs']

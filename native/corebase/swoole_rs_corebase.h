@@ -27,50 +27,10 @@ struct swr_v1_corebase_mkdir_state {
 };
 int32_t swr_v1_corebase_mkdir_next(const uint8_t *input, size_t input_length, uint8_t *output,
                                  size_t capacity, struct swr_v1_corebase_mkdir_state *state);
-/* Zeroed stack cursor, never a native owner/registry. Execute each returned
- * action after Rust returns, then supply a copied boolean when requested.
- * 0 finishes; UINT32_MAX rejects invalid cursor/operation. No retained pointer.
- * THREAD_INIT argument is main-thread bool; THREAD_CLEAN and CLEAN ignore it.
- * FORK/FORK_EXEC use pinned native flags; after FORK_CALL, observed is
- * 0=failure, 1=child, 2=parent. Other observations are copied booleans.
- * Preserve operation/argument and stop on DONE/invalid. No Rust frame spans
- * fork or native allocation/callback.  */
-struct swr_v1_corebase_lifecycle_state { uint32_t phase; uint32_t index; };
-enum swr_v1_corebase_lifecycle_operation {
-    SWR_COREBASE_THREAD_INIT = 1, SWR_COREBASE_THREAD_CLEAN = 2, SWR_COREBASE_CLEAN = 3,
-    SWR_COREBASE_FORK = 4, SWR_COREBASE_FORK_EXEC = 5
-};
-enum swr_v1_corebase_lifecycle_action {
-    SWR_COREBASE_DONE = 0, SWR_COREBASE_OBSERVE_BUFFER = 1,
-    SWR_COREBASE_ALLOCATE_BUFFER = 2, SWR_COREBASE_BLOCK_SIGNALS = 3,
-    SWR_COREBASE_PUBLISH_MAIN = 4, SWR_COREBASE_OBSERVE_TIMER = 5,
-    SWR_COREBASE_FREE_TIMER = 6, SWR_COREBASE_OBSERVE_REACTOR = 7,
-    SWR_COREBASE_FREE_REACTOR = 8, SWR_COREBASE_DELETE_BUFFER = 9,
-    SWR_COREBASE_CLEAR_SIGNALS = 12, SWR_COREBASE_CLEAN_THREAD = 13,
-    SWR_COREBASE_OBSERVE_LOGGER = 14, SWR_COREBASE_CLOSE_LOGGER = 15,
-    SWR_COREBASE_DELETE_LOGGER = 16, SWR_COREBASE_DELETE_POOL = 17,
-    SWR_COREBASE_RESET_GLOBAL = 18, SWR_COREBASE_OBSERVE_COROUTINE = 19,
-    SWR_COREBASE_REJECT_COROUTINE = 20, SWR_COREBASE_OBSERVE_ASYNC = 21,
-    SWR_COREBASE_REJECT_ASYNC = 22, SWR_COREBASE_FORK_CALL = 23,
-    SWR_COREBASE_WARN_FORK = 24, SWR_COREBASE_SLEEP_RETRY = 25,
-    SWR_COREBASE_REPLACE_POOL = 26, SWR_COREBASE_REOPEN_LOGGER = 27,
-    SWR_COREBASE_FREE_FORK_REACTOR = 28, SWR_COREBASE_OBSERVE_AFTER_FORK = 29,
-    SWR_COREBASE_CALL_AFTER_FORK = 30, SWR_COREBASE_EXEC_CALLBACK = 31,
-    SWR_COREBASE_EXIT_CHILD = 32, SWR_COREBASE_FAILED_EXEC = 33,
-    SWR_COREBASE_OBSERVE_TASK_BYTE = 47, SWR_COREBASE_WARN_TASK_ABSOLUTE = 48,
-    SWR_COREBASE_ACCESS_TASK = 49, SWR_COREBASE_MKDIR_TASK = 50,
-    SWR_COREBASE_WARN_TASK_CREATE = 51, SWR_COREBASE_PUBLISH_TASK = 52,
-    SWR_COREBASE_OBSERVE_TASK_LENGTH = 53, SWR_COREBASE_WARN_TASK_LONG = 54,
-    SWR_COREBASE_REJECT_TASK = 55, SWR_COREBASE_ACCEPT_TASK = 56
-};
-uint32_t swr_v1_corebase_lifecycle_next(uint32_t operation,
-    struct swr_v1_corebase_lifecycle_state *state, uint64_t observed, uint32_t argument);
-/* Task directory: zeroed exclusive cursor; copied observations are native at(0)
- * byte, access>=0 / mkdir success, then freshly published string length.
- * Native owns lock, IO, warning, format/assignment and exception effects.
- * Stop on ACCEPT_TASK/REJECT_TASK/UINT32_MAX; no Rust borrow spans effects. */
-uint32_t swr_v1_corebase_task_tmp_next(struct swr_v1_corebase_lifecycle_state *state,
-                                    uint64_t observed, uint32_t limit);
+/* swoole_fork_exec's fork: the child runs call(function) and exits 0; the parent
+ * gets the pid, 0 when fork fails. call may throw. Rust also defines swoole_fork,
+ * swoole_clean, swoole_thread_init/_clean and swoole_is_main_thread. */
+pid_t swr_v1_core_fork_exec(void (*call)(const void *function), const void *function);
 /* One character of swoole_random_string(std::string &, size_t), drawn with swoole_rand(0, 61). */
 char swr_v1_corebase_random_char(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and

@@ -1,9 +1,9 @@
 # Core base helpers
 
 Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. `src/core/base.cc`
-is gone: what is left of it (the globals, the native effects of the lifecycle
-sequences and the std::string/std::function APIs) sits at the end of
-`src/core/misc.cc`. Other callers are the readers of the `SwooleG` fields Rust owns. No
+and `src/core/misc.cc` are gone: what stable Rust can't express of them (the
+globals, C++ object lifetimes and the std::string/std::function APIs) is
+`native/corebase/globals.cc`. Other callers are the readers of the `SwooleG` fields Rust owns. No
 public C++ signature changes; `swoole::Global` loses the fields Rust owns.
 
 Rust holds numeric/byte/path comparison and formatting policy. Apart from the
@@ -57,38 +57,25 @@ embedded-NUL paths keep upstream's odd behavior. Repeated slashes and
 relative/root prefixes are not normalized. Empty input and a full `PATH_MAX-1`
 string needing an appended slash are undefined upstream; Rust rejects them.
 
-## `lifecycle_next`
+## Lifecycles (`lifecycle.rs`)
 
-Returns typed native actions from a zeroed 8-byte caller-stack phase/index
-cursor. Each reentrant call uses its own cursor. Invalid cursor/operation returns
-`UINT32_MAX`, which the native shim aborts on; callers zero-initialize and stop
-on DONE.
+Rust defines `swoole_thread_init`, `swoole_thread_clean`, `swoole_is_main_thread`,
+`swoole_clean` and `swoole_fork` under their C++ symbols, and `swoole_fork_exec`'s
+fork (`swr_v1_core_fork_exec`). Each C++ effect (`SwooleG = {}`, an object's
+`new`/`delete`, the timer, event, signal and coroutine leaves) is an entry of the
+host `swoole_init` registers (`swr_v1_core_native_host`); before that the
+sequences do nothing and `swoole_fork` returns -1.
 
-| Operation | Meaning | Argument |
-| --- | --- | --- |
-| 1 | thread init | is main thread |
-| 2 | thread cleanup | - |
-| 3 | Global cleanup | - |
-| 4 | `swoole_fork` | - |
-| 5 | `swoole_fork_exec` | - |
-
-Native shims perform exactly one requested effect per step.
-
-- Global cleanup releases the hook lists, then: clear signals, clean the thread,
-  conditionally close the current logger, delete the logger and memory pool, and
-  reset Global last. Pointers are re-read after each close/delete.
-- Thread init: observe the stack buffer, allocate when absent, block signals only
-  for non-main threads, then publish `main_thread`. An allocation exception stops
-  later effects.
-- Thread cleanup: observe/free timer, then reactor, then observe/delete/null the
-  buffer.
-- Fork: native flags are checked with `static_assert`. After the fork effect the
-  copied observation is 0 = failure, 1 = child, 2 = parent; Rust keeps no pid.
-  PRECHECK returns before fork; child DAEMON returns before timer observation and
-  overrides EXEC. Failed fork warns, sleeps once, then retries. Fork-exec failure
-  returns `pid_t(0)` without warning or retry; the child callback runs before
-  native `exit(0)`. A returning fatal handler resumes the sequence; throwing or
-  exiting handlers never re-enter Rust.
+- Clean releases the hook lists, then: clear signals, clean the thread,
+  close the logger when there is one, delete the logger and memory pool, and
+  reset Global last.
+- Thread init allocates the stack buffer when absent, blocks signals only for
+  non-main threads, then publishes `main_thread`. Thread clean frees the timer,
+  then the reactor, then the buffer, each when present.
+- Fork: PRECHECK returns before fork; child DAEMON returns before the timer and
+  overrides EXEC. A failed fork warns, sleeps a second and retries. Fork-exec
+  failure returns `pid_t(0)` without warning or retry; the child callback runs
+  before `exit(0)`. A returning fatal handler resumes the sequence.
 
 ## Core state (`global.rs`)
 

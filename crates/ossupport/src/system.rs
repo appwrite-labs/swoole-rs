@@ -60,15 +60,11 @@ const HOOK_AFTER_FORK: c_int = 12;
 #[unsafe(export_name = "_Z13swoole_daemonii")]
 #[must_use]
 pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
-    // base.cc's `swoole_fork`; without base.cc nothing can be forked.
-    let Some(host) = swoole_rs_corebase::native::host() else {
-        return -1;
-    };
     if !daemon_detach(nochdir != 0, noclose != 0) {
         return -1;
     }
-    // SAFETY: upstream's fork; it rejects a coroutine or async-thread caller itself.
-    let pid = unsafe { (host.fork)(FORK_DAEMON) };
+    // Upstream's fork; it rejects a coroutine or async-thread caller itself.
+    let pid = swoole_rs_corebase::swoole_fork(FORK_DAEMON);
     if pid < 0 {
         log::sys_warning(c"swoole_daemon", format_args!("fork() failed"));
         return -1;
@@ -92,12 +88,8 @@ pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
 #[unsafe(export_name = "_Z13swoole_daemonii")]
 #[must_use]
 pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
-    // base.cc's `swoole_fork`; without base.cc nothing can be forked.
-    let Some(host) = swoole_rs_corebase::native::host() else {
-        return -1;
-    };
-    // SAFETY: upstream's fork precheck; it forks nothing.
-    if unsafe { (host.fork)(FORK_PRECHECK) } < 0 {
+    // Upstream's fork precheck; it forks nothing (-1 before `swoole_init`).
+    if swoole_rs_corebase::swoole_fork(FORK_PRECHECK) < 0 {
         return -1;
     }
     // SAFETY: daemon has no memory preconditions.
