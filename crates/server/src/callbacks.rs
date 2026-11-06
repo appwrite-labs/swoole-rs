@@ -1,0 +1,215 @@
+//! `Server`'s callbacks: upstream's on* `std::function` members and `dispatch_func`.
+//! Rust owns the slots, and `Server` binds each member to its slot through
+//! `detail::Callback` (`native/include/swoole_rs_server_view.h`). That view boxes
+//! whatever native code assigns, so the slot holds `invoke(ctx, ...)` and the
+//! `drop(ctx)` that frees the box. Rust answers the presence facts and clears slots;
+//! native code still makes the calls.
+use crate::ServerState;
+use crate::ops::{
+    OP_CALLBACK, OP_CLEAR_CALLBACK, OP_HAS_DISPATCH_FUNC, OP_HAS_ON_CLOSE, OP_HAS_ON_CONNECT,
+};
+use core::ffi::c_void;
+use core::sync::atomic::AtomicPtr;
+use core::sync::atomic::Ordering::Relaxed;
+
+// Slots, in `SWR_SERVER_CB_*` order. The first seven are also `OP_CALLBACK`'s
+// argument and the callback its logs name.
+pub(crate) const CB_CONNECT: u32 = 0;
+pub(crate) const CB_CLOSE: u32 = 1;
+pub(crate) const CB_BUFFER_FULL: u32 = 2;
+pub(crate) const CB_BUFFER_EMPTY: u32 = 3;
+pub(crate) const CB_TASK: u32 = 4;
+pub(crate) const CB_RECEIVE: u32 = 5;
+pub(crate) const CB_PACKET: u32 = 6;
+pub(crate) const CB_DISPATCH_FUNC: u32 = 21;
+/// `SWR_SERVER_CB_COUNT`.
+pub(crate) const CB_COUNT: usize = 22;
+
+/// `swr_v1_server_callback`: `invoke` is a function pointer of the slot's own signature.
+#[repr(C)]
+pub(crate) struct CallbackSlot {
+    invoke: AtomicPtr<c_void>,
+    ctx: AtomicPtr<c_void>,
+    drop: AtomicPtr<c_void>,
+}
+
+type DropFn = unsafe extern "C" fn(*mut c_void);
+
+impl CallbackSlot {
+    const fn new() -> Self {
+        Self {
+            invoke: AtomicPtr::new(core::ptr::null_mut()),
+            ctx: AtomicPtr::new(core::ptr::null_mut()),
+            drop: AtomicPtr::new(core::ptr::null_mut()),
+        }
+    }
+
+    pub(crate) fn is_set(&self) -> bool {
+        !self.invoke.load(Relaxed).is_null()
+    }
+
+    /// `serv->onX = nullptr`: empties the slot, then frees what it held.
+    pub(crate) fn clear(&self) {
+        self.invoke.store(core::ptr::null_mut(), Relaxed);
+        let ctx = self.ctx.swap(core::ptr::null_mut(), Relaxed);
+        let drop = self.drop.swap(core::ptr::null_mut(), Relaxed);
+        if !drop.is_null() {
+            // SAFETY: native code stored a `void (*)(void *) noexcept` paired with `ctx`.
+            let drop = unsafe { core::mem::transmute::<*mut c_void, DropFn>(drop) };
+            // SAFETY: the box is this slot's alone, and the slot no longer names it.
+            unsafe { drop(ctx) };
+        }
+    }
+}
+
+/// Every slot of one server.
+#[repr(C)]
+pub(crate) struct ServerCallbacks([CallbackSlot; CB_COUNT]);
+
+impl ServerCallbacks {
+    pub(crate) const fn new() -> Self {
+        Self([const { CallbackSlot::new() }; CB_COUNT])
+    }
+
+    pub(crate) fn slot(&self, index: u32) -> &CallbackSlot {
+        &self.0[index as usize]
+    }
+}
+
+impl Drop for ServerCallbacks {
+    fn drop(&mut self) {
+        for slot in &self.0 {
+            slot.clear();
+        }
+    }
+}
+
+/// The first of `state`'s slots, which `Server`'s members bind to.
+///
+/// # Safety
+/// `state` came from `swr_v1_server_state_new` and is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_callbacks_get(state: *mut ServerState) -> *mut c_void {
+    // SAFETY: per the caller.
+    let state = unsafe { &*state };
+    state.callbacks.0.as_ptr().cast_mut().cast()
+}
+
+/// Answers the callback facts from the slots, else `None`.
+pub(crate) fn native_fact(state: &ServerState, op: u32, arg: u64) -> Option<u64> {
+    let set = |index| u64::from(state.callbacks.slot(index).is_set());
+    Some(match op {
+        OP_HAS_ON_CONNECT => set(CB_CONNECT),
+        OP_HAS_ON_CLOSE => set(CB_CLOSE),
+        OP_HAS_DISPATCH_FUNC => set(CB_DISPATCH_FUNC),
+        OP_CALLBACK => match u32::try_from(arg) {
+            Ok(index @ CB_CONNECT..=CB_PACKET) => set(index),
+            _ => 0,
+        },
+        OP_CLEAR_CALLBACK => {
+            if let Ok(index @ CB_CONNECT..=CB_BUFFER_EMPTY) = u32::try_from(arg) {
+                state.callbacks.slot(index).clear();
+            }
+            0
+        }
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::AtomicU32;
+
+    static DROPPED: AtomicU32 = AtomicU32::new(0);
+
+    unsafe extern "C" fn count_drop(ctx: *mut c_void) {
+        assert_eq!(ctx.addr(), 0x55, "the slot's ctx");
+        DROPPED.fetch_add(1, Relaxed);
+    }
+
+    unsafe extern "C" fn invoke() {}
+
+    fn fill(slot: &CallbackSlot) {
+        slot.invoke.store(invoke as *mut c_void, Relaxed);
+        slot.ctx
+            .store(core::ptr::without_provenance_mut(0x55), Relaxed);
+        slot.drop.store(count_drop as *mut c_void, Relaxed);
+    }
+
+    #[test]
+    fn facts_read_and_clear_the_slots() {
+        let state = ServerState::new();
+        assert_eq!(native_fact(&state, OP_HAS_ON_CONNECT, 0), Some(0));
+        fill(state.callbacks.slot(CB_CONNECT));
+        fill(state.callbacks.slot(CB_TASK));
+        fill(state.callbacks.slot(CB_DISPATCH_FUNC));
+        assert_eq!(native_fact(&state, OP_HAS_ON_CONNECT, 0), Some(1));
+        assert_eq!(native_fact(&state, OP_HAS_ON_CLOSE, 0), Some(0));
+        assert_eq!(native_fact(&state, OP_HAS_DISPATCH_FUNC, 0), Some(1));
+        assert_eq!(
+            native_fact(&state, OP_CALLBACK, u64::from(CB_TASK)),
+            Some(1)
+        );
+        assert_eq!(
+            native_fact(&state, OP_CALLBACK, u64::from(CB_DISPATCH_FUNC)),
+            Some(0),
+            "not a callback id"
+        );
+        // Only the four dispatch-only callbacks clear, as master.cc's switch did.
+        let before = DROPPED.load(Relaxed);
+        assert_eq!(
+            native_fact(&state, OP_CLEAR_CALLBACK, u64::from(CB_TASK)),
+            Some(0)
+        );
+        assert!(state.callbacks.slot(CB_TASK).is_set(), "onTask stays");
+        assert_eq!(
+            native_fact(&state, OP_CLEAR_CALLBACK, u64::from(CB_CONNECT)),
+            Some(0)
+        );
+        assert!(
+            !state.callbacks.slot(CB_CONNECT).is_set(),
+            "onConnect cleared"
+        );
+        assert_eq!(DROPPED.load(Relaxed), before + 1, "its box freed once");
+        assert_eq!(native_fact(&state, crate::ops::OP_MODE, 0), None);
+        drop(state);
+        assert_eq!(
+            DROPPED.load(Relaxed),
+            before + 3,
+            "the state frees the rest"
+        );
+    }
+
+    #[test]
+    fn header_enum_matches() {
+        let text = include_str!("../../../native/include/swoole_rs_server_state.h");
+        let body = text
+            .split("SWR_SERVER_CB_CONNECT")
+            .nth(1)
+            .and_then(|t| t.split("};").next())
+            .unwrap_or_default();
+        let names: Vec<&str> = core::iter::once("SWR_SERVER_CB_CONNECT")
+            .chain(body.split(',').map(str::trim).filter(|n| !n.is_empty()))
+            .collect();
+        let rust = [
+            ("CONNECT", CB_CONNECT as usize),
+            ("CLOSE", CB_CLOSE as usize),
+            ("BUFFER_FULL", CB_BUFFER_FULL as usize),
+            ("BUFFER_EMPTY", CB_BUFFER_EMPTY as usize),
+            ("TASK", CB_TASK as usize),
+            ("RECEIVE", CB_RECEIVE as usize),
+            ("PACKET", CB_PACKET as usize),
+            ("DISPATCH_FUNC", CB_DISPATCH_FUNC as usize),
+            ("COUNT", CB_COUNT),
+        ];
+        for (name, index) in rust {
+            let native = format!("SWR_SERVER_CB_{name}");
+            assert_eq!(
+                names.iter().position(|n| *n == native),
+                Some(index),
+                "{native}"
+            );
+        }
+    }
+}
