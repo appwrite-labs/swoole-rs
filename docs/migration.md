@@ -115,7 +115,6 @@ compile only under their configure switch.
 - `src/memory/` (271): fixed_pool.cc 70, shared_memory.cc 67, table.cc 51, global_memory.cc 46, ring_buffer.cc 37
 - `src/lock/` (163): coroutine_lock.cc 35, barrier.cc 33, rw_lock.cc 33, mutex.cc 31, spin_lock.cc 31
 - `src/os/` (152): async_thread.cc 152
-- `include/helper/` (125): kqueue.h 125
 
 References: [Rust FFI](https://doc.rust-lang.org/nomicon/ffi.html),
 [upstream CMake build](https://github.com/swoole/swoole-src/blob/v6.2.4/CMakeLists.txt),
