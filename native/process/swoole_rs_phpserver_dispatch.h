@@ -16,7 +16,6 @@ typedef struct {
     void *(*message_bus)(void *server);
     /* onWorkerStart's native preparation: hooks and the message bus allocator. */
     void (*worker_start)(void *server);
-    int64_t (*pid)(void);
 } swr_v1_phpserver_dispatch_host;
 
 void swr_v1_phpserver_dispatch_init(const swr_v1_phpserver_dispatch_host *table);

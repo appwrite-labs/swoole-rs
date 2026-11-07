@@ -25,7 +25,7 @@ typedef struct {
     void (*warn)(int kind, const char *name);
     /* getSocket() of a bound port. */
     void (*socket)(void *port, struct _zval_struct *return_value);
-    /* An SSL port's context's Rust owner (SSLContext::handle()). */
+    /* The port's TLS context's Rust owner (SSLContext::handle()), or null without one. */
     const void *(*ssl_owner)(void *port);
     /* dup_ssl_context(): a new SNI context, and its owner in `owner`. */
     void *(*sni_context)(void *port, const void **owner);

@@ -4,7 +4,7 @@
 //! wait for results (upstream's `ServerProperty::task_callbacks` and
 //! `task_coroutine_map`), and the task encoding (a string, or PHP's serialize
 //! with `SW_TASK_SERIALIZE`), packed and sent by crates/process's `Server`
-//! methods. C++ keeps `task_unpack`'s thread buffer, `taskWaitMulti`'s
+//! methods. C++ keeps `taskWaitMulti`'s
 //! `MultiTask`, the callables and the coroutine
 //! (`native/process/swoole_rs_phpserver_task.h`).
 use crate::dispatch::{handler_error, invoke, server_callback, server_zval, set_last_error};
@@ -12,7 +12,7 @@ use crate::server::{DATA, TASK, fatal, running};
 use std::{
     cell::RefCell,
     collections::HashMap,
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -80,7 +80,6 @@ struct Info {
 /// `swr_v1_phpserver_task_host`.
 #[repr(C)]
 pub struct TaskHost {
-    unpack: unsafe extern "C" fn(*mut c_void, *mut *const c_char, *mut usize, *mut u32) -> bool,
     dispatch_multi: unsafe extern "C" fn(*mut c_void, *mut zval, f64, *mut zval, *mut bool) -> bool,
 }
 
@@ -231,13 +230,12 @@ fn encode(data: *mut zval, buf: *mut c_void) -> Result<i64, Bailout> {
 
 /// `php_swoole_server_task_unpack`: the task in `buf` into `out`.
 fn decode(buf: *mut c_void, out: *mut zval) -> Result<bool, Bailout> {
-    let host = host();
-    let (mut data, mut length, mut flags) = (ptr::null(), 0, 0);
-    // SAFETY: a packed task and writable views of its payload.
-    if !unsafe { (host.unpack)(buf, &raw mut data, &raw mut length, &raw mut flags) } {
+    let buffer = swoole_rs_corebase::thread_buffer();
+    // SAFETY: a packed task and this thread's buffer.
+    let Some((data, length, flags)) = (unsafe { task_file::unpack(buf, buffer) }) else {
         return Ok(false);
-    }
-    if flags & SERIALIZE == 0 {
+    };
+    if u32::from(flags) & SERIALIZE == 0 {
         // SAFETY: a writable zval and the payload's bytes.
         unsafe { swr_zval_stringl(out, data, length) };
         return Ok(true);

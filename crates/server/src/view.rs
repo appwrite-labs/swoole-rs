@@ -313,6 +313,17 @@ pub unsafe fn port_connection_num(serv: *mut c_void, port: *mut c_void) -> usize
     unsafe { crate::swr_v1_server_port_connections(gs, workers) }
 }
 
+/// `Server::get_max_connection()`.
+///
+/// # Safety
+/// As [`config`].
+pub unsafe fn max_connection(serv: *mut c_void) -> u32 {
+    // SAFETY: per the caller.
+    let tables = unsafe { state(serv) }.tables();
+    // SAFETY: the tables live as long as the server.
+    unsafe { &*tables }.max_connection
+}
+
 /// `serv->get_task_worker_pool()`.
 ///
 /// # Safety

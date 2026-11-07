@@ -18,9 +18,7 @@ struct _zend_class_entry;
 /* Server facts `fact` answers, by id. */
 enum {
     SWR_PHPSERVER_FACT_WORKER_THREAD = 4,
-    SWR_PHPSERVER_FACT_REACTOR = 8,   /* sw_reactor() != nullptr */
     SWR_PHPSERVER_FACT_CACHE_SESSION_ADDR = 14, /* swoole_http_server_can_cache_session_addr() */
-    SWR_PHPSERVER_FACT_MAX_CONNECTION = 18,
 };
 
 /* What `install` sets up on the Server in C++ (Rust fills the on* slots itself). */
@@ -29,49 +27,17 @@ enum {
     SWR_PHPSERVER_INSTALL_ADMIN_COMMANDS = 12,
 };
 
-/* A ListenPort's protocol flags (`set_protocols`, `port_facts`). */
-enum {
-    SWR_PHPSERVER_PROTOCOL_HTTP = 1,
-    SWR_PHPSERVER_PROTOCOL_WEBSOCKET = 2,
-    SWR_PHPSERVER_PROTOCOL_HTTP2 = 4,
-    SWR_PHPSERVER_PROTOCOL_REDIS = 8,
-};
-
-typedef struct {
-    void *port; /* ListenPort * */
-    uint32_t protocols;
-    bool dgram;
-    bool stream;
-    bool ssl;
-    bool ssl_verify_without_ca; /* verify_peer with no client cert file, cafile or capath */
-} swr_phpserver_port_facts;
-
-typedef struct {
-    const char *host;
-    int64_t port;
-    int64_t type;
-    int64_t fd;
-    bool ssl;
-} swr_phpserver_port_info;
-
 typedef struct {
     int64_t (*fact)(void *server, uint32_t id);
     void (*install)(void *server, uint32_t which);
-    bool (*cli)(void);
-    int (*last_error)(void);
-    const char *(*strerror)(int code);
     /* 0: no server yet; 1: this worker thread's server, in *server; 2: not the main thread
      * (SW_THREAD); 3: a server already exists. */
     int (*admit)(void **server);
     void *(*create)(int64_t mode); /* new Server(mode) */
     int (*add_systemd_socket)(void *server);
     void *(*add_port)(void *server, int64_t type, const char *host, int64_t port);
-    void (*port_info)(void *port, swr_phpserver_port_info *info);
     /* A new Server\Port object (sw_malloc_zval) bound to `port` and its server. */
     struct _zval_struct *(*port_object)(void *server, void *port);
-    void (*port_facts)(struct _zval_struct *port_object, swr_phpserver_port_facts *facts);
-    /* Optionally clear_protocol(), then turn on each SWR_PHPSERVER_PROTOCOL_* flag. */
-    void (*set_protocols)(void *port, uint32_t protocols, bool clear);
     /* 0: Server, 1: Http\Server, 2: WebSocket\Server, 3: Redis\Server. */
     int (*kind)(struct _zend_object *object);
     /* serv->create(): null, or sw_error after a failure. */
@@ -100,9 +66,7 @@ typedef struct {
     struct _zend_string *(*json_encode)(struct _zval_struct *data, bool *bailed);
     /* json_decode($text, true) into `out`, or false. */
     void (*json_decode)(const char *text, size_t length, struct _zval_struct *out);
-    double (*send_timeout)(void *server);
     struct _zend_class_entry *(*process_class)(void);
-    struct _zend_class_entry *(*exception_class)(void);
 } swr_v1_phpserver_lifecycle_host;
 
 void swr_v1_phpserver_lifecycle_init(const swr_v1_phpserver_lifecycle_host *table);

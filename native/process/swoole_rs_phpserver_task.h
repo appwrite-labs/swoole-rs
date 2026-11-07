@@ -4,7 +4,7 @@
  * Swoole\Server\Task::pack/unpack, the onTask/onFinish dispatch and the task
  * encoding (crates/phpserver, task.rs). Rust owns the pending callbacks, the waiting
  * coroutines and the payload (a string, or serialized), packed, sent and finished through
- * crates/process; C++ keeps task_unpack and taskWaitMulti's MultiTask, reached through `host`. A `bool *bailed`
+ * crates/process; C++ keeps taskWaitMulti's MultiTask, reached through `host`. A `bool *bailed`
  * reports a trapped bailout (a user __serialize/__unserialize). */
 #include <stdbool.h>
 #include <stddef.h>
@@ -20,8 +20,6 @@ struct _zval_struct;
 #define SWR_PHPSERVER_EVENT_DATA_ALIGN 8
 
 typedef struct {
-    /* Server::task_unpack of `buf`: its payload and ext_flags. */
-    bool (*unpack)(void *buf, const char **data, size_t *length, uint32_t *flags);
     /* taskWaitMulti outside a coroutine: Server::MultiTask over `tasks` into the array `out`. */
     bool (*dispatch_multi)(void *server, struct _zval_struct *tasks, double timeout, struct _zval_struct *out,
                            bool *bailed);

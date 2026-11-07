@@ -742,6 +742,23 @@ pub unsafe fn has_files(owner: *const OwnedTlsContext) -> (bool, bool) {
     (set(4), set(5))
 }
 
+/// `verify_peer` with no client certificate file, cafile or capath.
+/// # Safety
+/// owner is live.
+pub unsafe fn verify_without_ca(owner: *const OwnedTlsContext) -> bool {
+    // SAFETY: the caller lends the live owner.
+    let state = unsafe { &*owner };
+    let empty = |index: usize| {
+        // SAFETY: a stable slot of the live owner.
+        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&state.strings[index])) }
+            .length
+            == 0
+    };
+    // SAFETY: the caller serializes field writes against this read.
+    let verify_peer = unsafe { &*state.fields.get() }.verify_peer != 0;
+    verify_peer && empty(7) && empty(9) && empty(10)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -69,7 +69,7 @@ pub(crate) mod install {
     pub(crate) const ADMIN_COMMANDS: u32 = 12;
 }
 
-/// `SWR_PHPSERVER_PROTOCOL_*`.
+/// Protocol flags (`protocols`, `PortFacts`).
 const HTTP: u32 = 1;
 const WEBSOCKET: u32 = 2;
 const HTTP2: u32 = 4;
@@ -101,8 +101,7 @@ const KIND_HTTP: c_int = 1;
 const KIND_WEBSOCKET: c_int = 2;
 const KIND_REDIS: c_int = 3;
 
-/// `swr_phpserver_port_facts`.
-#[repr(C)]
+/// What `start()` checks of a `ListenPort`.
 struct PortFacts {
     port: *mut c_void,
     protocols: u32,
@@ -112,14 +111,30 @@ struct PortFacts {
     ssl_verify_without_ca: bool,
 }
 
-/// `swr_phpserver_port_info`.
-#[repr(C)]
+/// What the Server and Port objects show of a `ListenPort`.
 struct PortInfo {
-    host: *const c_char,
+    host: swoole_rs_corebase::CoreStringView,
     port: i64,
     kind: i64,
     fd: i64,
     ssl: bool,
+}
+
+impl PortInfo {
+    /// # Safety
+    /// `port` is a live `ListenPort`.
+    unsafe fn of(port: *mut c_void) -> Self {
+        // SAFETY: per the caller.
+        let config = unsafe { view::port(port) };
+        Self {
+            host: config.host(),
+            port: config.port.into(),
+            kind: config.r#type.into(),
+            // SAFETY: per the caller.
+            fd: unsafe { view::port_fd(port) }.into(),
+            ssl: config.ssl != 0,
+        }
+    }
 }
 
 /// `swr_v1_phpserver_lifecycle_host`.
@@ -127,17 +142,11 @@ struct PortInfo {
 pub struct LifecycleHost {
     fact: unsafe extern "C" fn(*mut c_void, u32) -> i64,
     install: unsafe extern "C" fn(*mut c_void, u32),
-    cli: unsafe extern "C" fn() -> bool,
-    last_error: unsafe extern "C" fn() -> c_int,
-    strerror: unsafe extern "C" fn(c_int) -> *const c_char,
     admit: unsafe extern "C" fn(*mut *mut c_void) -> c_int,
     create: unsafe extern "C" fn(i64) -> *mut c_void,
     add_systemd_socket: unsafe extern "C" fn(*mut c_void) -> c_int,
     add_port: unsafe extern "C" fn(*mut c_void, i64, *const c_char, i64) -> *mut c_void,
-    port_info: unsafe extern "C" fn(*mut c_void, *mut PortInfo),
     port_object: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut zval,
-    port_facts: unsafe extern "C" fn(*mut zval, *mut PortFacts),
-    set_protocols: unsafe extern "C" fn(*mut c_void, u32, bool),
     kind: unsafe extern "C" fn(*mut zend_object) -> c_int,
     create_server: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     start: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> c_int,
@@ -151,9 +160,7 @@ pub struct LifecycleHost {
     add_process: unsafe extern "C" fn(*mut c_void, *mut zval) -> i64,
     json_encode: unsafe extern "C" fn(*mut zval, *mut bool) -> *mut zend_string,
     json_decode: unsafe extern "C" fn(*const c_char, usize, *mut zval),
-    send_timeout: unsafe extern "C" fn(*mut c_void) -> f64,
     process_class: unsafe extern "C" fn() -> *mut zend_class_entry,
-    exception_class: unsafe extern "C" fn() -> *mut zend_class_entry,
 }
 
 static HOST: AtomicPtr<LifecycleHost> = AtomicPtr::new(ptr::null_mut());
@@ -225,6 +232,9 @@ fn number(serv: *mut c_void, id: u32) -> i64 {
         fact::WORKER_NUM => i64::from(c.worker_num),
         fact::TASK_WORKER_NUM => i64::from(c.task_worker_num),
         fact::OUTPUT_BUFFER_SIZE => i64::from(c.output_buffer_size),
+        fact::REACTOR => i64::from(!swoole_rs_corebase::thread_reactor().is_null()),
+        // SAFETY: a live server.
+        fact::MAX_CONNECTION => i64::from(unsafe { view::max_connection(serv) }),
         // SAFETY: a live server.
         _ => unsafe { (host().fact)(serv, id) },
     }
@@ -409,16 +419,12 @@ pub unsafe extern "C" fn swr_v1_phpserver_add_port(
     let zport = unsafe { (host.port_object)(serv, port) };
     // SAFETY: per the caller.
     unsafe { property(object) }.ports.push(zport);
-    // SAFETY: C++ wrote every field.
-    let mut info: PortInfo = unsafe { std::mem::zeroed() };
-    // SAFETY: a live port and a writable view.
-    unsafe { (host.port_info)(port, &raw mut info) };
+    // SAFETY: a live port.
+    let info = unsafe { PortInfo::of(port) };
     // SAFETY: a new Port object.
     let port_object = unsafe { object_of(zport) };
     // SAFETY: as above.
     let port_ce = unsafe { (*port_object).ce };
-    // SAFETY: the port's NUL-terminated host.
-    let address = unsafe { CStr::from_ptr(info.host) };
     // SAFETY: the Port class and object, Zend copies the values.
     unsafe {
         zend_update_property_stringl(
@@ -426,8 +432,8 @@ pub unsafe extern "C" fn swr_v1_phpserver_add_port(
             port_object,
             c"host".as_ptr(),
             4,
-            address.as_ptr(),
-            address.count_bytes(),
+            info.host.data,
+            info.host.length,
         );
     }
     for (name, value) in [
@@ -484,7 +490,6 @@ unsafe fn connections(
 /// `server_ctor`: bind `object` to `serv` and describe its primary port.
 fn bind(call: &Call, serv: *mut c_void) {
     let object = call.this();
-    let host = host();
     // *php_swoole_server_zval_ptr(serv) = *zserv
     crate::dispatch::set_server_zval(serv, call.this_zval());
     // SAFETY: `$this` is a Server.
@@ -503,12 +508,8 @@ fn bind(call: &Call, serv: *mut c_void) {
     unsafe { connections(ce, object, serv, ptr::null_mut()) };
     // SAFETY: a live server; the primary port is the first.
     let primary = unsafe { view::port_at(serv, 0) };
-    // SAFETY: C++ writes every field.
-    let mut info: PortInfo = unsafe { std::mem::zeroed() };
-    // SAFETY: a live port and a writable view.
-    unsafe { (host.port_info)(primary, &raw mut info) };
-    // SAFETY: the port's NUL-terminated host.
-    let address = unsafe { CStr::from_ptr(info.host) };
+    // SAFETY: as above.
+    let info = unsafe { PortInfo::of(primary) };
     // SAFETY: the Server class and `$this`; Zend copies the values.
     unsafe { zend_update_property_long(ce, object, c"mode".as_ptr(), 4, number(serv, fact::MODE)) };
     // SAFETY: as above.
@@ -518,8 +519,8 @@ fn bind(call: &Call, serv: *mut c_void) {
             object,
             c"host".as_ptr(),
             4,
-            address.as_ptr(),
-            address.count_bytes(),
+            info.host.data,
+            info.host.length,
         );
     }
     // SAFETY: as above.
@@ -533,7 +534,7 @@ fn bind(call: &Call, serv: *mut c_void) {
 /// `zend_throw_exception_ex(swoole_exception_ce, code, message)`.
 fn exception(message: &CStr, code: i64) {
     // SAFETY: Swoole's exception class, registered at MINIT.
-    let ce = unsafe { (host().exception_class)() };
+    let ce = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
     // SAFETY: from a handler.
     unsafe { throw_exception(ce, message, code) };
 }
@@ -554,8 +555,8 @@ fn construct(call: &Call) {
         unsafe { throw_constructed_twice(object) };
         return call.set_bool(false);
     }
-    // SAFETY: reads a global.
-    if !unsafe { (host.cli)() } {
+    // SAFETY: this thread's live globals.
+    if !unsafe { (*swoole_rs_phpswoole::globals()).cli } {
         let text = message!("{} can only be used in CLI mode", class(object));
         exception(text.as_cstr(), -1);
         return call.set_bool(false);
@@ -611,12 +612,8 @@ fn construct(call: &Call) {
         }
     // SAFETY: a new server and the NUL-terminated `Z_PARAM_STRING` bytes.
     } else if unsafe { (host.add_port)(serv, kind, address.as_ptr().cast(), port) }.is_null() {
-        // SAFETY: plain state.
-        let code = unsafe { (host.last_error)() };
-        // SAFETY: plain state.
-        let reason = unsafe { (host.strerror)(code) };
-        // SAFETY: Swoole's static error strings.
-        let reason = unsafe { CStr::from_ptr(reason) };
+        let code = swoole_rs_corebase::log::last_error();
+        let reason = swoole_rs_phpruntime::strerror(code);
         let mut text = Message::new();
         text.push(b"failed to listen server port[");
         text.push(address);
@@ -922,11 +919,33 @@ fn register_callback(object: *mut zend_object, serv: *mut c_void) {
 }
 
 fn port_facts(zport: *mut zval) -> PortFacts {
-    // SAFETY: C++ writes every field.
-    let mut facts: PortFacts = unsafe { std::mem::zeroed() };
-    // SAFETY: a live Port object and a writable view.
-    unsafe { (host().port_facts)(zport, &raw mut facts) };
-    facts
+    // SAFETY: a live Port object.
+    let object = unsafe { object_of(zport) };
+    // SAFETY: a bound Port object.
+    let port = unsafe { crate::port::swr_v1_phpserver_port_port(object) };
+    // SAFETY: its live ListenPort.
+    let c = unsafe { view::port(port) };
+    // SAFETY: as above.
+    let owner = unsafe { (crate::port::host().ssl_owner)(port) };
+    PortFacts {
+        port,
+        protocols: [
+            (c.open_http_protocol, HTTP),
+            (c.open_websocket_protocol, WEBSOCKET),
+            (c.open_http2_protocol, HTTP2),
+            (c.open_redis_protocol, REDIS),
+        ]
+        .iter()
+        .filter(|(on, _)| *on)
+        .fold(0, |flags, (_, flag)| flags | flag),
+        dgram: crate::port_settings::is_dgram(c.r#type),
+        // `Socket::is_stream(type)`: TCP, TCP6 or a Unix stream socket.
+        stream: matches!(c.r#type, 1 | 3 | 5),
+        ssl: c.ssl != 0,
+        // SAFETY: null, or the port's live TLS context.
+        ssl_verify_without_ca: !owner.is_null()
+            && unsafe { swoole_rs_tls::verify_without_ca(owner) },
+    }
 }
 
 pub(crate) fn isset(serv: *mut c_void, port: *mut c_void, kind: c_int) -> bool {
@@ -934,9 +953,18 @@ pub(crate) fn isset(serv: *mut c_void, port: *mut c_void, kind: c_int) -> bool {
     unsafe { crate::instance::php_swoole_server_isset_callback(serv, port, kind) }
 }
 
+/// Optionally `clear_protocol()`, then turn on each protocol in `flags`.
 fn protocols(port: *mut c_void, flags: u32, clear: bool) {
-    // SAFETY: a live port.
-    unsafe { (host().set_protocols)(port, flags, clear) };
+    if clear {
+        // SAFETY: a live port, which only start() touches meanwhile.
+        unsafe { swoole_rs_ports::methods::clear_protocol(port) };
+    }
+    // SAFETY: as above.
+    let c = unsafe { swoole_rs_server::port_config::of(port) };
+    c.open_http_protocol |= flags & HTTP != 0;
+    c.open_websocket_protocol |= flags & WEBSOCKET != 0;
+    c.open_http2_protocol |= flags & HTTP2 != 0;
+    c.open_redis_protocol |= flags & REDIS != 0;
 }
 
 /// `add_assoc_bool(setting, key, value)`.
@@ -1210,7 +1238,6 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
     data: *const c_char,
     length: usize,
 ) -> c_int {
-    let host = host();
     if swoole_rs_phpruntime::coroutine_check().is_err() {
         return 2;
     }
@@ -1226,7 +1253,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
         let token = property.send_token;
         waiters.borrow_mut().push_back((token, co));
         // SAFETY: a live server.
-        let timeout = unsafe { (host.send_timeout)(server) };
+        let timeout = unsafe { view::config(server) }.send_timeout;
         // SAFETY: this call's coroutine; `onBufferEmpty` or `onClose` wakes it.
         if !unsafe { swoole_rs_phpcoroutines::suspend_for(co, timeout) } {
             waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
@@ -1239,8 +1266,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
         let narrowed = length as u32;
         // SAFETY: a live server and the caller's bytes.
         let sent = unsafe { server_methods::send(server, session_id, data.cast(), narrowed) };
-        // SAFETY: plain state.
-        let yielded = !sent && unsafe { (host.last_error)() } == SW_ERROR_OUTPUT_SEND_YIELD;
+        let yielded = !sent && swoole_rs_corebase::log::last_error() == SW_ERROR_OUTPUT_SEND_YIELD;
         if yielded && fact(server, fact::SEND_YIELD) {
             continue;
         }
@@ -1304,11 +1330,5 @@ mod tests {
         assert!(property.callbacks.iter().all(|cb| cb.is_null()));
         assert!(property.ports.is_empty() && property.user_processes.is_empty());
         assert_eq!(property.callbacks.len(), ON_PIPE_MESSAGE + 1);
-    }
-
-    #[test]
-    fn layouts_mirror_cxx() {
-        assert_eq!(size_of::<PortFacts>(), 16);
-        assert_eq!(size_of::<PortInfo>(), 40);
     }
 }
