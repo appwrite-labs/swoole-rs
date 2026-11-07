@@ -10,6 +10,8 @@
 )]
 
 pub mod address;
+#[cfg(feature = "upstream-symbols")]
+pub mod async_threads;
 pub mod buffered;
 pub mod co_io;
 pub mod co_socket;

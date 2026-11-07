@@ -1,0 +1,411 @@
+// SPDX-License-Identifier: Apache-2.0
+// Compatibility derived from Swoole v6.2.4 src/os/async_thread.cc (Swoole contributors).
+//! `AsyncThreads`, a reactor thread's handle on crates/ossupport's shared pool, and
+//! `async::dispatch`, under their upstream (Itanium) symbols. The pool runs an event
+//! on a worker and writes its address to the completion pipe; the reactor reads it
+//! back and runs its callback. `native/ossupport/async_event.cc` copies and frees the
+//! events, whose request is a `std::shared_ptr`. The ossupport patch deletes
+//! `src/os/async_thread.cc`.
+use crate::offload::AsyncEvent;
+use std::ffi::{c_int, c_void};
+use std::ptr;
+use swoole_rs_corebase::{
+    log, microtime, set_thread_async_threads, swoole_thread_clean, swoole_thread_init,
+    swr_v1_core_aio_core_worker_num, swr_v1_core_aio_default_socket, swr_v1_core_aio_max_idle_time,
+    swr_v1_core_aio_max_wait_time, swr_v1_core_aio_worker_num, swr_v1_core_cpu_num,
+    swr_v1_core_set_aio_default_socket, thread_async_threads,
+};
+use swoole_rs_ossupport::{
+    Pool, PoolHooks, swr_v1_os_pool_acquire, swr_v1_os_pool_complete, swr_v1_os_pool_dispatch,
+    swr_v1_os_pool_join, swr_v1_os_pool_notify_one, swr_v1_os_pool_queue_size,
+    swr_v1_os_pool_release, swr_v1_os_pool_task_id, swr_v1_os_pool_worker_num,
+};
+use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del, swr_v1_event_current};
+use swoole_rs_reactor::reactor_upstream::prepared;
+use swoole_rs_reactor::{SocketRecord, swr_v1_reactor_deferred_push};
+use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket_new};
+use swoole_rs_tls::upstream::socket_write_sync;
+
+/// `SW_FD_AIO`, `SW_EVENT_READ` and `Reactor::EXIT_CONDITION_AIO_TASK`.
+const FD_AIO: c_int = 5;
+const EVENT_READ: c_int = 1 << 9;
+const EXIT_CONDITION_AIO_TASK: c_int = 5;
+/// `SW_ERROR_SYSTEM_CALL_FAIL`, `SW_ERROR_WRONG_OPERATION`, `SW_ERROR_AIO_BAD_REQUEST`
+/// and `SW_ERROR_AIO_CANCELED`.
+const SYSTEM_CALL_FAIL: c_int = 502;
+const WRONG_OPERATION: c_int = 509;
+const AIO_BAD_REQUEST: c_int = 4001;
+const AIO_CANCELED: c_int = 4002;
+
+// SAFETY: native/ossupport/async_event.cc's and native/reactor/reactor.cc's.
+unsafe extern "C" {
+    fn swr_v1_os_async_event_copy(event: *const AsyncEvent) -> *mut AsyncEvent;
+    fn swr_v1_os_async_event_free(event: *mut AsyncEvent);
+    fn swr_v1_event_set_exit_condition(
+        id: c_int,
+        condition: unsafe extern "C" fn(*mut usize) -> bool,
+    );
+}
+
+/// `swoole::Event`'s leading descriptor.
+#[repr(C)]
+pub struct Event {
+    fd: c_int,
+}
+
+/// `swoole::AsyncThreads`, opaque to native code: the events in flight, the
+/// completion pipe (the master end writes, the worker end reads) and the pool.
+pub struct AsyncThreads {
+    task_num: usize,
+    pipe: SocketPair,
+    pool: *const Pool,
+}
+
+/// `SwooleTG.async_threads`.
+fn current() -> *mut AsyncThreads {
+    thread_async_threads().cast()
+}
+
+/// A heap copy of `event`, as `new AsyncEvent(*event)`.
+///
+/// # Safety
+/// `event` is a live event.
+unsafe fn copy(event: *const AsyncEvent) -> *mut AsyncEvent {
+    // SAFETY: as the caller promises.
+    let copy = unsafe { swr_v1_os_async_event_copy(event) };
+    if copy.is_null() {
+        std::alloc::handle_alloc_error(std::alloc::Layout::new::<AsyncEvent>());
+    }
+    copy
+}
+
+/// Hands `event` to the reactor thread that owns its pipe, or frees it if the write
+/// fails.
+///
+/// # Safety
+/// `event` is a heap event nothing else uses, with a live pipe socket.
+unsafe fn send_event(event: *mut AsyncEvent) {
+    let token = event.expose_provenance();
+    // SAFETY: as the caller promises.
+    let socket = unsafe { (*event).pipe_socket }.cast::<SocketRecord>();
+    // SAFETY: `token` is readable for its size; the socket is live.
+    let sent = unsafe { socket_write_sync(socket, (&raw const token).cast(), size_of::<usize>()) };
+    if sent <= 0 {
+        log::sys_warning(
+            c"ThreadPool::main_func",
+            format_args!("sendto swoole_aio_pipe_write failed"),
+        );
+        // SAFETY: the event never reached the reactor.
+        unsafe { swr_v1_os_async_event_free(event) };
+    }
+}
+
+/// The pool's worker: runs the event's handler unless it has none or was
+/// canceled, then sends it back.
+extern "C" fn execute(token: usize) {
+    let event = ptr::with_exposed_provenance_mut::<AsyncEvent>(token);
+    // SAFETY: the pool passes a dispatched event; the reactor thread only sets
+    // `canceled` until it reads the event back.
+    let handler = unsafe { (*event).handler };
+    // SAFETY: as above.
+    let canceled = unsafe { &raw const (*event).canceled };
+    // SAFETY: as above; the reactor thread may be setting it.
+    let canceled = unsafe { canceled.read_volatile() };
+    match handler {
+        None => {
+            // SAFETY: as above.
+            unsafe { (*event).error = AIO_BAD_REQUEST };
+            // SAFETY: as above.
+            unsafe { (*event).retval = -1 };
+        }
+        Some(_) if canceled != 0 => {
+            // SAFETY: as above.
+            unsafe { (*event).error = AIO_CANCELED };
+            // SAFETY: as above.
+            unsafe { (*event).retval = -1 };
+        }
+        // SAFETY: the dispatcher vouched for `handler(event)` on a pool thread.
+        Some(handler) => unsafe { handler(event) },
+    }
+    // SAFETY: the worker owns the event until it sends it.
+    unsafe { send_event(event) };
+}
+
+/// A retirement notice, back on the reactor thread: joins the idle worker.
+unsafe extern "C" fn release_callback(event: *mut AsyncEvent) {
+    // SAFETY: the completed notice; its object is the worker's key.
+    let key = unsafe { (*event).object }.addr();
+    // SAFETY: the reactor thread's live handle, which owns the pipe the notice came on.
+    let threads = unsafe { &mut *current() };
+    // SAFETY: an acquired, unreleased reference.
+    if !unsafe { swr_v1_os_pool_join(threads.pool, key) } {
+        log::warning(
+            c"ThreadPool::release_thread",
+            format_args!("AIO thread#{key} is missing"),
+        );
+    }
+    // Balances `complete`'s decrement: the notice was never dispatched.
+    threads.task_num += 1;
+}
+
+/// Asks the main thread to join idle worker `key`.
+extern "C" fn retire(key: usize) {
+    let notice = AsyncEvent::request(
+        ptr::without_provenance_mut(key),
+        None,
+        Some(release_callback),
+        swr_v1_core_aio_default_socket(),
+    );
+    // SAFETY: `notice` is a complete event with no request.
+    let event = unsafe { copy(&raw const notice) };
+    // SAFETY: a fresh heap event on the default pipe.
+    unsafe { send_event(event) };
+}
+
+extern "C" fn thread_init() {
+    swoole_thread_init(false);
+}
+
+extern "C" fn thread_clean() {
+    swoole_thread_clean(false);
+}
+
+extern "C" fn spawn_failed() {
+    let error = std::io::Error::last_os_error();
+    let code = error.raw_os_error().unwrap_or(0);
+    // SAFETY: no preconditions.
+    let text = unsafe { libc::strerror(code) };
+    // SAFETY: strerror returns a NUL-terminated message.
+    let text = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
+    log::set_last_error(code);
+    log::notice(format_args!(
+        "ThreadPool::create_thread(): create aio thread failed, please check your system configuration or adjust aio_worker_num, Error: {text}[{code}]"
+    ));
+}
+
+static HOOKS: PoolHooks = PoolHooks {
+    thread_init,
+    thread_clean,
+    execute,
+    retire,
+    spawn_failed,
+};
+
+/// The reactor's destroy callback: unregisters the pipe and frees the handle.
+unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
+    let threads = current();
+    if threads.is_null() {
+        return;
+    }
+    // SAFETY: the live handle.
+    let read = unsafe { (*threads).pipe.worker_socket };
+    // SAFETY: its read end, registered on the closing reactor.
+    unsafe { swoole_event_del(read) };
+    set_thread_async_threads(ptr::null_mut());
+    // SAFETY: `create` boxed it; nothing refers to it any more.
+    let mut threads = unsafe { Box::from_raw(threads) };
+    // SAFETY: the last reference this thread holds.
+    unsafe { swr_v1_os_pool_release(threads.pool) };
+    // SAFETY: the live pipe, closed and destroyed once.
+    unsafe { close(&raw mut threads.pipe, 0) };
+    // SAFETY: as above.
+    unsafe { drop(&raw mut threads.pipe) };
+}
+
+/// The reactor's exit condition: in-flight events keep it running.
+unsafe extern "C" fn pending(event_num: *mut usize) -> bool {
+    let threads = current();
+    // SAFETY: null or the live handle.
+    if !threads.is_null() && unsafe { (*threads).task_num } == 0 {
+        // SAFETY: the reactor passes its live count.
+        unsafe { *event_num -= 1 };
+    }
+    true
+}
+
+/// `new AsyncThreads()`: the pipe on the thread's reactor and a pool reference.
+/// Null, with the last error set, without a reactor or a pipe.
+fn create() -> *mut AsyncThreads {
+    let reactor = swr_v1_event_current();
+    if reactor.is_null() {
+        log::warning(
+            c"AsyncThreads::AsyncThreads",
+            format_args!("no event loop, cannot initialized"),
+        );
+        log::set_last_error(WRONG_OPERATION);
+        return ptr::null_mut();
+    }
+    let mut threads = Box::new(AsyncThreads {
+        task_num: 0,
+        pipe: SocketPair {
+            blocking: false,
+            timeout: 0.0,
+            socks: [0; 2],
+            master_socket: ptr::null_mut(),
+            worker_socket: ptr::null_mut(),
+        },
+        pool: ptr::null(),
+    });
+    // SAFETY: writable storage for the pair.
+    unsafe { unix_socket_new(&raw mut threads.pipe, false, libc::SOCK_STREAM) };
+    let pipe = &threads.pipe;
+    if pipe.master_socket.is_null() || pipe.worker_socket.is_null() {
+        // SAFETY: the pair's constructor ran; whatever it opened is freed once.
+        unsafe { drop(&raw mut threads.pipe) };
+        log::set_last_error(SYSTEM_CALL_FAIL);
+        return ptr::null_mut();
+    }
+    let (read, write) = (pipe.worker_socket, pipe.master_socket);
+    // SAFETY: both ends are live sockets.
+    unsafe { (*read).fd_type = FD_AIO };
+    // SAFETY: as above.
+    unsafe { (*write).fd_type = FD_AIO };
+    // SAFETY: a live socket on the thread's reactor.
+    unsafe { swoole_event_add(read, EVENT_READ) };
+    // SAFETY: the thread's live reactor.
+    let fields = unsafe { prepared(reactor) }.fields;
+    // SAFETY: its live fields.
+    let queue = unsafe { &raw mut (*fields).destroy_callbacks };
+    // SAFETY: the reactor's live destroy queue; the call keeps no data.
+    if unsafe { swr_v1_reactor_deferred_push(queue, destroyed, ptr::null_mut(), None) } != 0 {
+        std::alloc::handle_alloc_error(std::alloc::Layout::new::<usize>());
+    }
+    // SAFETY: the thread's live reactor.
+    unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_AIO_TASK, pending) };
+    threads.pool = swr_v1_os_pool_acquire(
+        HOOKS,
+        usize::from(swr_v1_core_cpu_num()),
+        swr_v1_core_aio_core_worker_num() as usize,
+        swr_v1_core_aio_worker_num() as usize,
+        swr_v1_core_aio_max_wait_time(),
+        swr_v1_core_aio_max_idle_time(),
+    );
+    swr_v1_core_set_aio_default_socket(write.cast());
+    let threads = Box::into_raw(threads);
+    set_thread_async_threads(threads.cast());
+    threads
+}
+
+/// `AsyncEvent *async::dispatch(const AsyncEvent *request)`: queues a copy of
+/// `request` on the pool and returns it, or null without a reactor or a pipe.
+///
+/// # Safety
+/// `request` is a live event whose handler may run on a pool thread.
+#[unsafe(export_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE")]
+#[must_use]
+pub unsafe extern "C" fn dispatch(request: *const AsyncEvent) -> *mut AsyncEvent {
+    let mut threads = current();
+    if threads.is_null() {
+        threads = create();
+        if threads.is_null() {
+            return ptr::null_mut();
+        }
+    }
+    // SAFETY: the thread's live handle.
+    let threads = unsafe { &mut *threads };
+    // SAFETY: as the caller promises.
+    let event = unsafe { copy(request) };
+    // SAFETY: the fresh copy, not yet shared.
+    let fields = unsafe { &mut *event };
+    // SAFETY: an acquired, unreleased reference.
+    fields.task_id = unsafe { swr_v1_os_pool_task_id(threads.pool) };
+    fields.timestamp = microtime();
+    fields.pipe_socket = threads.pipe.master_socket.cast();
+    // SAFETY: as above; the event stays live until a worker sends it back.
+    unsafe { swr_v1_os_pool_dispatch(threads.pool, event.expose_provenance()) };
+    threads.task_num += 1;
+    event
+}
+
+/// A completed event on its reactor thread: runs its callback unless canceled.
+extern "C" fn complete(token: usize) {
+    let event = ptr::with_exposed_provenance_mut::<AsyncEvent>(token);
+    // SAFETY: the worker sent the event back and no longer touches it.
+    let event_ref = unsafe { &*event };
+    let (canceled, callback) = (event_ref.canceled, event_ref.callback);
+    if canceled == 0
+        && let Some(callback) = callback
+    {
+        // SAFETY: the dispatcher's callback for this event.
+        unsafe { callback(event) };
+    }
+    // SAFETY: the callback may not free the handle that owns its pipe.
+    let threads = unsafe { &mut *current() };
+    threads.task_num = threads.task_num.wrapping_sub(1);
+    // SAFETY: done with; nothing else holds it.
+    unsafe { swr_v1_os_async_event_free(event) };
+}
+
+/// `static int AsyncThreads::callback(Reactor *, Event *)`: completes every event
+/// waiting on the pipe.
+///
+/// # Safety
+/// `event` is the reactor's live event for the pipe's read end.
+#[unsafe(export_name = "_ZN6swoole12AsyncThreads8callbackEPNS_7ReactorEPNS_5EventE")]
+pub unsafe extern "C" fn callback(_reactor: *mut c_void, event: *mut Event) -> c_int {
+    // SAFETY: as the caller promises.
+    if swr_v1_os_pool_complete(unsafe { (*event).fd }, complete) < 0 {
+        log::sys_warning(
+            c"AsyncThreads::callback",
+            format_args!("read() aio events failed"),
+        );
+        return -1;
+    }
+    0
+}
+
+/// `AsyncThreads *sw_async_threads()`.
+#[unsafe(export_name = "_Z16sw_async_threadsv")]
+#[must_use]
+pub extern "C" fn sw_async_threads() -> *mut AsyncThreads {
+    current()
+}
+
+/// `size_t AsyncThreads::get_task_num() const`.
+///
+/// # Safety
+/// `this` is a live handle.
+#[unsafe(export_name = "_ZNK6swoole12AsyncThreads12get_task_numEv")]
+#[must_use]
+pub unsafe extern "C" fn get_task_num(this: *const AsyncThreads) -> usize {
+    // SAFETY: as the caller promises.
+    unsafe { (*this).task_num }
+}
+
+/// `size_t AsyncThreads::get_worker_num() const`.
+///
+/// # Safety
+/// `this` is a live handle.
+#[unsafe(export_name = "_ZNK6swoole12AsyncThreads14get_worker_numEv")]
+#[must_use]
+pub unsafe extern "C" fn get_worker_num(this: *const AsyncThreads) -> usize {
+    // SAFETY: as the caller promises.
+    let pool = unsafe { (*this).pool };
+    // SAFETY: an acquired, unreleased reference.
+    unsafe { swr_v1_os_pool_worker_num(pool) }
+}
+
+/// `size_t AsyncThreads::get_queue_size() const`.
+///
+/// # Safety
+/// `this` is a live handle.
+#[unsafe(export_name = "_ZNK6swoole12AsyncThreads14get_queue_sizeEv")]
+#[must_use]
+pub unsafe extern "C" fn get_queue_size(this: *const AsyncThreads) -> usize {
+    // SAFETY: as the caller promises.
+    let pool = unsafe { (*this).pool };
+    // SAFETY: an acquired, unreleased reference.
+    unsafe { swr_v1_os_pool_queue_size(pool) }
+}
+
+/// `void AsyncThreads::notify_one() const`.
+///
+/// # Safety
+/// `this` is a live handle.
+#[unsafe(export_name = "_ZNK6swoole12AsyncThreads10notify_oneEv")]
+pub unsafe extern "C" fn notify_one(this: *const AsyncThreads) {
+    // SAFETY: as the caller promises.
+    let pool = unsafe { (*this).pool };
+    // SAFETY: an acquired, unreleased reference.
+    unsafe { swr_v1_os_pool_notify_one(pool) };
+}

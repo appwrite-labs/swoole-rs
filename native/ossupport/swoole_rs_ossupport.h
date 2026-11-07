@@ -8,28 +8,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* The process-wide async thread pool. Event tokens are native AsyncEvent
- * pointers: native runs, sends and frees them through the hooks. */
-typedef struct swr_v1_os_pool swr_v1_os_pool;
-typedef struct {
-    void (*thread_init)(void);
-    void (*thread_clean)(void);
-    void (*execute)(uintptr_t event);
-    void (*retire)(uintptr_t key);
-    void (*spawn_failed)(void);
-} swr_v1_os_pool_hooks;
-const swr_v1_os_pool *swr_v1_os_pool_acquire(swr_v1_os_pool_hooks hooks, size_t cpu, size_t core,
-                                             size_t workers, double wait, double idle);
-void swr_v1_os_pool_release(const swr_v1_os_pool *pool);
-size_t swr_v1_os_pool_task_id(const swr_v1_os_pool *pool);
-void swr_v1_os_pool_dispatch(const swr_v1_os_pool *pool, uintptr_t event);
-bool swr_v1_os_pool_join(const swr_v1_os_pool *pool, uintptr_t key);
-size_t swr_v1_os_pool_worker_num(const swr_v1_os_pool *pool);
-size_t swr_v1_os_pool_queue_size(const swr_v1_os_pool *pool);
-void swr_v1_os_pool_notify_one(const swr_v1_os_pool *pool);
-/* Reads up to 128 completed event tokens from the pipe and hands each to
- * complete; returns the count, or -1 with errno intact. */
-ssize_t swr_v1_os_pool_complete(int fd, void (*complete)(uintptr_t event));
 struct stat;
 /* AsyncFile owns its descriptor in Rust. The native close effect
  * ends before the owner is freed; all remaining IO uses the coroutine C ABI. */

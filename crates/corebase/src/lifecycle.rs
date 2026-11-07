@@ -55,10 +55,20 @@ pub fn thread_kind() -> u8 {
     native::host().map_or(0, |host| read(host, |thread| thread.kind))
 }
 
-/// `SwooleTG.async_threads != nullptr`.
+/// `SwooleTG.async_threads`: null before `swoole_init`.
 #[must_use]
-pub fn thread_async_threads() -> bool {
-    native::host().is_some_and(|host| read(host, |thread| !thread.async_threads.is_null()))
+pub fn thread_async_threads() -> *mut c_void {
+    native::host().map_or(std::ptr::null_mut(), |host| {
+        read(host, |thread| thread.async_threads)
+    })
+}
+
+/// Sets `SwooleTG.async_threads`; nothing before `swoole_init`.
+pub fn set_thread_async_threads(threads: *mut c_void) {
+    if let Some(host) = native::host() {
+        // SAFETY: this thread's live record, borrowed for the write alone.
+        unsafe { (*thread(host)).async_threads = threads };
+    }
 }
 
 /// `void swoole_thread_init(bool main_thread)`.
