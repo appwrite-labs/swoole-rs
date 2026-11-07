@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,6 +24,9 @@ typedef struct {
 } swr_v1_phpserver_dispatch_host;
 
 void swr_v1_phpserver_dispatch_init(const swr_v1_phpserver_dispatch_host *table);
+/* A port's package_length_func: Protocol::LengthFunc over the zend::Callable in
+ * protocol->private_data_1 (php_swoole_server_length_func). */
+ssize_t swr_v1_phpserver_length_func(const void *protocol, void *_socket, const void *packet);
 #ifdef __cplusplus
 }
 #endif

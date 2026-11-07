@@ -46,3 +46,23 @@ int swr_zend_try_array_merge(zval *dest, zval *src) {
     } SWR_ZEND_END_TRY();
     return bailed;
 }
+
+void swr_zend_stack_unlimit(void **saved) {
+#ifdef ZEND_CHECK_STACK_LIMIT
+    saved[0] = EG(stack_limit);
+    saved[1] = EG(stack_base);
+    EG(stack_base) = (void *) 0;
+    EG(stack_limit) = (void *) 0;
+#else
+    (void) saved;
+#endif
+}
+
+void swr_zend_stack_restore(void *const *saved) {
+#ifdef ZEND_CHECK_STACK_LIMIT
+    EG(stack_limit) = saved[0];
+    EG(stack_base) = saved[1];
+#else
+    (void) saved;
+#endif
+}

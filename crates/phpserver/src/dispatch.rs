@@ -11,26 +11,31 @@ use std::{
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_address_string};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
+use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, net_types::Protocol};
 use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_id};
+use swoole_rs_server::ConnectionRecord;
 use swoole_rs_server::callbacks::{
     CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_BEFORE_SHUTDOWN, CB_BUFFER_EMPTY, CB_BUFFER_FULL,
-    CB_CLOSE, CB_CONNECT, CB_FINISH, CB_MANAGER_START, CB_MANAGER_STOP, CB_PACKET, CB_PIPE_MESSAGE,
-    CB_RECEIVE, CB_SHUTDOWN, CB_START, CB_TASK, CB_USER_WORKER_START, CB_WORKER_ERROR,
-    CB_WORKER_EXIT, CB_WORKER_START, CB_WORKER_STOP,
+    CB_CLOSE, CB_CONNECT, CB_DISPATCH_FUNC, CB_FINISH, CB_MANAGER_START, CB_MANAGER_STOP,
+    CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE, CB_SHUTDOWN, CB_START, CB_TASK, CB_USER_WORKER_START,
+    CB_WORKER_ERROR, CB_WORKER_EXIT, CB_WORKER_START, CB_WORKER_STOP,
 };
 use swoole_rs_zend::{
     E_WARNING,
     bailout::{self, Bailout},
-    class_name, init_object, message, object_of, php_error,
+    class_name, init_object, message, object_of, php_error, string,
     sys::{
-        _zval_struct__bindgen_ty_1, IS_LONG, add_assoc_double_ex, add_assoc_long_ex,
-        add_assoc_string_ex, swr_zend_array_init, swr_zend_callable_warning, zend_class_entry,
+        _zval_struct__bindgen_ty_1, IS_LONG, IS_NULL, ZEND_ACC_VARIADIC, add_assoc_double_ex,
+        add_assoc_long_ex, add_assoc_string_ex, swr_zend_array_init, swr_zend_callable_warning,
+        swr_zend_stack_restore, swr_zend_stack_unlimit, zend_class_entry, zend_fcall_info_cache,
         zend_object, zend_string, zend_update_property, zend_update_property_bool,
         zend_update_property_double, zend_update_property_long, zend_update_property_string,
         zend_update_property_stringl, zend_value, zval, zval_ptr_dtor,
     },
+    type_of,
+    value::{get_long, set_str},
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
@@ -1061,6 +1066,197 @@ pub(crate) fn install(server: *mut c_void, which: u32) -> bool {
         unsafe { view::set_callback(server, slot, invoke) };
     }
     true
+}
+
+/// `SW_SERVER_EVENT_CLOSE`.
+const EVENT_CLOSE: u8 = 4;
+
+/// The `dispatch_func` setting: `handle` (a `callable::factory` handle) picks
+/// the worker of each event from now on, in the reactor's one thread.
+/// # Errors
+/// Releasing the previous callable bailed out.
+/// # Safety
+/// `server` is a live server, not started.
+pub(crate) unsafe fn set_dispatch_func(
+    server: *mut c_void,
+    handle: *mut callable::Callable,
+) -> Result<(), Bailout> {
+    // SAFETY: per the caller.
+    let config = unsafe { view::config(server) };
+    let previous = std::mem::replace(&mut config.private_data_3, handle.cast());
+    // SAFETY: per the caller; the slot fn has `dispatch_func`'s signature.
+    unsafe { view::set_callback(server, CB_DISPATCH_FUNC, on_dispatch as *const c_void) };
+    config.single_thread = true;
+    release_dispatch_func(previous)
+}
+
+/// Free the `dispatch_func` callable `set_dispatch_func` stored, if any.
+/// # Errors
+/// A destructor bailed out.
+pub(crate) fn release_dispatch_func(handle: *mut c_void) -> Result<(), Bailout> {
+    if handle.is_null() {
+        return Ok(());
+    }
+    // SAFETY: a handle `set_dispatch_func` owned, released once.
+    unsafe { callable::release(handle.cast()) }
+}
+
+/// `sw_zend_function_max_num_args`.
+fn max_num_args(cache: *mut zend_fcall_info_cache) -> u32 {
+    // SAFETY: a resolved cache.
+    let function = unsafe { (*cache).function_handler };
+    // SAFETY: its live function; every kind starts with `common`.
+    let common = unsafe { &raw const (*function).common };
+    // SAFETY: as above.
+    let common = unsafe { common.read() };
+    if common.fn_flags & ZEND_ACC_VARIADIC != 0 {
+        u32::MAX
+    } else {
+        common.num_args
+    }
+}
+
+/// `sw_zend_call_function_ex(nullptr, cache, args, retval)` under
+/// `HOOK_PHP_CALL_STACK`: the reactor thread's stack is not the VM's.
+fn call_unlimited(
+    cache: *mut zend_fcall_info_cache,
+    args: &mut [zval],
+    retval: &mut zval,
+) -> Result<bool, Bailout> {
+    let mut saved = [ptr::null_mut(); 2];
+    // SAFETY: two writable slots.
+    unsafe { swr_zend_stack_unlimit(saved.as_mut_ptr()) };
+    #[expect(clippy::cast_possible_truncation, reason = "at most four arguments")]
+    let argc = args.len() as u32;
+    // SAFETY: a resolved cache, initialised arguments and a return slot.
+    let called = unsafe {
+        function_call(
+            cache,
+            argc,
+            args.as_mut_ptr(),
+            retval,
+            false,
+            swr_v1_phpcoroutines_create,
+            swr_zend_callable_warning,
+        )
+    };
+    // SAFETY: what `swr_zend_stack_unlimit` saved.
+    unsafe { swr_zend_stack_restore(saved.as_ptr()) };
+    called
+}
+
+/// `php_swoole_server_dispatch_func`: `dispatch_func($server, $fd, $type[, $data])`'s
+/// worker id, or -1.
+extern "C" fn on_dispatch(
+    _: Ctx,
+    server: *mut c_void,
+    conn: *const ConnectionRecord,
+    data: *const RecvData,
+) -> c_int {
+    // SAFETY: a live server whose dispatch_func `set_dispatch_func` stored.
+    let config = unsafe { view::config(server) };
+    // SAFETY: as above.
+    let cache = unsafe { callable::cache(config.private_data_3.cast()) };
+    // SAFETY: a live server.
+    let zserv = unsafe { (host().zserv)(server) };
+    // SAFETY: its live object, copied without a reference as upstream.
+    let zserv = unsafe { zserv.read() };
+    // SAFETY: null, or the event's live `SendData` (a head and its payload).
+    let send = unsafe { data.as_ref() };
+    // SAFETY: null, or the event's live connection.
+    let session = match unsafe { conn.as_ref() } {
+        Some(conn) => conn.session_id,
+        None => send.map_or(0, |send| send.info.fd),
+    };
+    let kind = send.map_or(EVENT_CLOSE, |send| send.info.kind);
+    let mut args = [zserv, long(session), long(i64::from(kind)), undef()];
+    let mut argc = 3;
+    if let Some(send) = send.filter(|_| max_num_args(cache) > 3) {
+        let length = (send.info.len as usize).min(SW_IPC_BUFFER_SIZE);
+        // SAFETY: the payload holds `info.len` bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(send.data.cast::<u8>(), length) };
+        // SAFETY: an undefined slot takes the new string.
+        unsafe { set_str(&raw mut args[3], string::copy(bytes)) };
+        argc = 4;
+    }
+    let mut retval = undef();
+    let mut worker_id = -1;
+    match call_unlimited(cache, &mut args[..argc], &mut retval) {
+        Ok(false) => {
+            if failed(&args[0], "onDispatch") == Called::Bailout {
+                Bailout.defer();
+            }
+        }
+        // SAFETY: the call's return value.
+        Ok(true) if unsafe { type_of(&raw const retval) } != IS_NULL => {
+            // SAFETY: as above.
+            let id = unsafe { get_long(&raw const retval) };
+            if id >= i64::from(config.worker_num) {
+                let text = message!("invalid target worker-id[{id}]");
+                crate::server::fatal(E_WARNING, text.as_cstr());
+            } else {
+                worker_id = id;
+            }
+            dtor(&mut retval);
+        }
+        Ok(true) => {}
+        Err(_) => Bailout.defer(),
+    }
+    if argc == 4 {
+        dtor(&mut args[3]);
+    }
+    bailout::finish();
+    c_int::try_from(worker_id).unwrap_or(-1)
+}
+
+/// `PacketLength`'s head: the bytes read so far.
+#[repr(C)]
+struct PacketLength {
+    buf: *const c_char,
+    buf_size: u32,
+}
+
+/// `php_swoole_server_length_func`: a port's `package_length_func($data)`.
+/// # Safety
+/// `protocol` is a port's live protocol whose `private_data_1` is the
+/// `zend::Callable *` its settings made; `packet` the bytes so far.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_phpserver_length_func(
+    protocol: *const Protocol,
+    _socket: *mut c_void,
+    packet: *const c_void,
+) -> isize {
+    // SAFETY: per the caller.
+    let owner = unsafe { (*protocol).private_data_1 };
+    // SAFETY: a `zend::Callable`'s one member is its handle.
+    let handle = unsafe { owner.cast::<*mut callable::Callable>().read() };
+    // SAFETY: a live handle.
+    let cache = unsafe { callable::cache(handle) };
+    // SAFETY: per the caller.
+    let PacketLength {
+        buf,
+        buf_size: size,
+    } = unsafe { packet.cast::<PacketLength>().read() };
+    // SAFETY: as above.
+    let bytes = unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), size as usize) };
+    let mut data = undef();
+    // SAFETY: an undefined slot takes the new string.
+    unsafe { set_str(&raw mut data, string::copy(bytes)) };
+    let mut retval = undef();
+    let mut result = -1;
+    match call_unlimited(cache, std::slice::from_mut(&mut data), &mut retval) {
+        Ok(false) => crate::server::fatal(E_WARNING, c"length function handler error"),
+        Ok(true) => {
+            // SAFETY: the call's return value.
+            let value = unsafe { get_long(&raw const retval) };
+            result = isize::try_from(value).unwrap_or(-1);
+            dtor(&mut retval);
+        }
+        Err(_) => Bailout.defer(),
+    }
+    dtor(&mut data);
+    bailout::finish();
+    result
 }
 
 /// `php_swoole_server_send_yield`, for the C++ WebSocket server.

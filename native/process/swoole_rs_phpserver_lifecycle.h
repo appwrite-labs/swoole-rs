@@ -92,8 +92,8 @@ typedef struct {
     void (*thread_release)(void *state);
     /* Serialize `setting` for worker threads (SW_THREAD's copy_setting). */
     void (*copy_setting)(void *server, struct _zval_struct *setting);
-    /* Release the dispatch_func callable, or (`destroy`) delete the Server. */
-    void (*release)(void *server, bool destroy);
+    /* Delete the Server. */
+    void (*release)(void *server);
     void (*port_release)(struct _zval_struct *port_object);
     /* Whether `process` is a Swoole\Process. */
     bool (*is_process)(struct _zval_struct *process);

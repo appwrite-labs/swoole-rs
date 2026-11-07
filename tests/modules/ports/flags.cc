@@ -59,7 +59,9 @@ struct String {std::string bytes;explicit String(zval *v):bytes(v->bytes){trace<
 static void php_swoole_server_set_websocket_option(ListenPort *,HashTable *){trace<<"websocket-helper;";}
 static void *sw_callable_create(zval *){assert(false&&"callable settings omitted from normal inventory");return nullptr;}
 static void sw_callable_free(void *){assert(false&&"no callback lifecycle profiles");}
-static void php_swoole_server_length_func(){}
+[[maybe_unused]] static void php_swoole_server_length_func(){}
+struct Protocol { using LengthFunc = void (*)(); };
+[[maybe_unused]] static void swr_v1_phpserver_length_func(){}
 #define E_ERROR 1
 #define RETURN_FALSE return false
 static void php_swoole_fatal_error(int,const char *,...){assert(false&&"invalid/fatal settings omitted");}

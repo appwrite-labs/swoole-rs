@@ -8,13 +8,15 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_phphelpers::callable;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, bailout, message, php_error,
     string::bytes,
     sys::{
-        IS_ARRAY, IS_NULL, IS_REFERENCE, swr_zend_hash_foreach_key, swr_zend_string_release,
-        zend_hash_str_find, zend_is_true, zend_object, zend_string, zend_ulong, zval,
+        IS_ARRAY, IS_NULL, IS_REFERENCE, swr_zend_callable_warning, swr_zend_hash_foreach_key,
+        swr_zend_string_release, zend_hash_str_find, zend_is_true, zend_object, zend_string,
+        zend_ulong, zval,
     },
     type_of,
     value::{get_double, get_long, get_string, table},
@@ -106,7 +108,6 @@ pub struct SettingsHost {
     text: unsafe extern "C" fn(*mut c_void, u32, *const c_char, usize),
     parse_size: unsafe extern "C" fn(*mut zval) -> i64,
     global_options: unsafe extern "C" fn(*mut c_void) -> bool,
-    dispatch_func: unsafe extern "C" fn(*mut c_void, *mut zval) -> bool,
     cpu_affinity: unsafe extern "C" fn(*mut c_int, usize, *mut c_int) -> c_int,
     set_cpu_affinity: unsafe extern "C" fn(*mut c_void, *const c_int, usize),
     strerror: unsafe extern "C" fn(c_int) -> *const c_char,
@@ -489,9 +490,25 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
         None => s.set(f::SEND_YIELD, s.fact(f::ENABLE_COROUTINE)),
     }
     if let Some(value) = s.get(c"dispatch_func") {
-        // SAFETY: a live server and setting; true if a bailout was trapped.
-        if unsafe { (host.dispatch_func)(s.serv, value) } {
-            bailout::defer(Err(bailout::Bailout));
+        // SAFETY: a live setting; `sw_callable_create`, whose bailouts stay deferred.
+        let created = unsafe {
+            callable::factory(
+                value,
+                ptr::null(),
+                true,
+                ptr::null_mut(),
+                swr_zend_callable_warning,
+            )
+        };
+        let set = created.and_then(|handle| {
+            if handle.is_null() {
+                return Ok(());
+            }
+            // SAFETY: a live server, not started.
+            unsafe { crate::dispatch::set_dispatch_func(s.serv, handle) }
+        });
+        if set.is_err() {
+            bailout::defer(set);
             return Err(Stop);
         }
     }
