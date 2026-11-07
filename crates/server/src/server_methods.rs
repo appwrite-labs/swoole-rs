@@ -15,11 +15,11 @@ use crate::ops::{
 };
 use crate::ops::{
     RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_BASE_DISPATCH, RUN_BASE_END,
-    RUN_BASE_FINISH, RUN_BASE_NOTIFY, RUN_DISABLE_ACCEPT, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
-    RUN_IDLE_WORKERS, RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_REOPEN_LOGGER, RUN_SC_SEND,
-    RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN,
-    RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_FOREACH,
-    RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_STOP_MASTER_THREAD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_BASE_FINISH, RUN_BASE_NOTIFY, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
+    RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_REOPEN_LOGGER, RUN_SC_SEND, RUN_SCHEDULE_WORKER,
+    RUN_SENDFILE, RUN_SENDWAIT, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT,
+    RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_FOREACH, RUN_ST_SEND,
+    RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
 use crate::records::ConnectionRecord;
 use swoole_rs_corebase::DataHead;
@@ -155,10 +155,8 @@ impl Narrow for u32 {
 }
 
 plain_methods! {
-    "_ZN6swoole6Server14disable_acceptEv" fn disable_accept() -> () = RUN_DISABLE_ACCEPT;
     "_ZN6swoole6Server11clear_timerEv" fn clear_timer() -> () = RUN_ST_CLEAR_TIMER;
     "_ZN6swoole6Server8shutdownEv" fn shutdown() -> bool = RUN_SHUTDOWN;
-    "_ZN6swoole6Server18stop_master_threadEv" fn stop_master_thread() -> () = RUN_STOP_MASTER_THREAD;
     "_ZNK6swoole6Server28signal_handler_reopen_loggerEv" fn signal_handler_reopen_logger() -> bool = RUN_REOPEN_LOGGER;
     "_ZN6swoole6Server18add_systemd_socketEv" fn add_systemd_socket() -> c_int = RUN_SYSTEMD_SOCKETS;
     "_ZNK6swoole6Server19get_idle_worker_numEv" fn get_idle_worker_num() -> u32 = RUN_IDLE_WORKERS;
