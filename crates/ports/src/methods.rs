@@ -42,8 +42,12 @@ const SOCK_CLOEXEC: c_int = 1 << 3;
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::view;
 
+use swoole_rs_http::swr_v1_http_request_free;
+use swoole_rs_server::ConnectionRecord;
+
 use crate::lifecycle::{
     RUN_CLOSE, RUN_CONTEXT_CREATE, RUN_CONTEXT_INIT, RUN_IMPORT, RUN_SNI, RUN_SSL_CREATE,
+    RUN_SSL_INIT,
 };
 use crate::read::{ON_READ_EOF, ON_READ_HTTP, ON_READ_LENGTH, ON_READ_RAW, ON_READ_REDIS};
 
@@ -737,15 +741,45 @@ pub unsafe extern "C" fn get_connection_num(port: *mut c_void) -> usize {
     unsafe { view::port_connection_num(swoole_rs_corebase::swr_v1_core_server(), port) }
 }
 
-/// Each static `readable_callback_*`: its symbol, Rust name and readable kind.
+/// `ListenPort::ssl_init()`.
+///
+/// # Safety
+/// `port` is a live `ListenPort` with an SSL context.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole10ListenPort8ssl_initEv")
+)]
+#[must_use]
+pub unsafe extern "C" fn ssl_init(port: *const c_void) -> bool {
+    let null = ptr::null_mut();
+    // SAFETY: as the caller guarantees; a null target is the port's own context.
+    unsafe { run(RUN_SSL_INIT, port.cast_mut(), null, null, null, 0) != 0 }
+}
+
+/// `ListenPort::destroy_http_request(conn)`: frees the connection's request, if any.
+///
+/// # Safety
+/// `conn` is a live connection whose `object` is null or from `swr_v1_http_request_new`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort20destroy_http_requestEPNS_10ConnectionE")
+)]
+pub unsafe extern "C" fn destroy_http_request(_port: *mut c_void, conn: *mut ConnectionRecord) {
+    // SAFETY: as the caller guarantees.
+    let conn = unsafe { &mut *conn };
+    let request = std::mem::replace(&mut conn.object, ptr::null_mut());
+    // SAFETY: as the caller guarantees; nothing holds the request after.
+    unsafe { swr_v1_http_request_free(request.cast()) };
+}
+
+/// Each static `readable_callback_*`: its Rust name and readable kind.
 macro_rules! readable_callbacks {
-    ($($symbol:literal fn $name:ident = $kind:ident;)*) => {$(
-        #[doc = concat!("`", $symbol, "`.")]
+    ($(fn $name:ident = $kind:ident;)*) => {$(
+        /// One readable callback kind through port.cc's `port_read`.
         ///
         /// # Safety
         /// The reactor's readable event on a connection of `port`.
-        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
-        pub unsafe extern "C" fn $name(reactor: *mut c_void, port: *mut c_void, event: *mut c_void) -> c_int {
+        unsafe extern "C" fn $name(reactor: *mut c_void, port: *mut c_void, event: *mut c_void) -> c_int {
             // SAFETY: as the caller guarantees.
             unsafe { (native().1)(reactor, port, event, $kind) }
         }
@@ -753,15 +787,10 @@ macro_rules! readable_callbacks {
 }
 
 readable_callbacks! {
-    "_ZN6swoole10ListenPort21readable_callback_rawEPNS_7ReactorEPS0_PNS_5EventE"
     fn readable_callback_raw = ON_READ_RAW;
-    "_ZN6swoole10ListenPort24readable_callback_lengthEPNS_7ReactorEPS0_PNS_5EventE"
     fn readable_callback_length = ON_READ_LENGTH;
-    "_ZN6swoole10ListenPort22readable_callback_httpEPNS_7ReactorEPS0_PNS_5EventE"
     fn readable_callback_http = ON_READ_HTTP;
-    "_ZN6swoole10ListenPort23readable_callback_redisEPNS_7ReactorEPS0_PNS_5EventE"
     fn readable_callback_redis = ON_READ_REDIS;
-    "_ZN6swoole10ListenPort21readable_callback_eofEPNS_7ReactorEPS0_PNS_5EventE"
     fn readable_callback_eof = ON_READ_EOF;
 }
 
@@ -1340,5 +1369,25 @@ mod tests {
                 "type {kind}, dtls {dtls}"
             );
         }
+    }
+
+    #[test]
+    fn destroy_http_request_frees_and_clears() {
+        unsafe extern "C" fn no_effects(
+            _: u32,
+            _: *mut c_void,
+            _: *const u8,
+            _: u64,
+            _: u64,
+        ) -> u64 {
+            0
+        }
+        // SAFETY: an all-zero record is a closed connection with no object.
+        let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
+        conn.object = swoole_rs_http::swr_v1_http_request_new(no_effects).cast();
+        unsafe { destroy_http_request(ptr::null_mut(), &raw mut conn) };
+        assert!(conn.object.is_null(), "the request is freed and cleared");
+        unsafe { destroy_http_request(ptr::null_mut(), &raw mut conn) };
+        assert!(conn.object.is_null(), "no request: nothing to do");
     }
 }

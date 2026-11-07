@@ -52,10 +52,11 @@ mod request;
 pub use request::{
     HttpForm, HttpNative, HttpRequest, HttpString, destroy_multipart_parser, init_multipart_parser,
     parse_multipart_data, swr_v1_http_form_free, swr_v1_http_request_chunked_length,
-    swr_v1_http_request_expect, swr_v1_http_request_header, swr_v1_http_request_header_length,
-    swr_v1_http_request_multipart_destroy, swr_v1_http_request_multipart_init,
-    swr_v1_http_request_multipart_parse, swr_v1_http_request_parse_header,
-    swr_v1_http_request_protocol, swr_v3_http_request_clean, swr_v3_http_request_init,
+    swr_v1_http_request_expect, swr_v1_http_request_free, swr_v1_http_request_header,
+    swr_v1_http_request_header_length, swr_v1_http_request_multipart_destroy,
+    swr_v1_http_request_multipart_init, swr_v1_http_request_multipart_parse,
+    swr_v1_http_request_new, swr_v1_http_request_parse_header, swr_v1_http_request_protocol,
+    swr_v3_http_request_clean, swr_v3_http_request_init,
 };
 mod rewrite;
 pub use rewrite::RewriteRules;
