@@ -264,14 +264,19 @@ pub(crate) unsafe fn open(args: *mut c_void) -> *mut c_void {
     let pcid = host::origin_cid(co);
     // SAFETY: Zend's allocator, for one context.
     let ctx = unsafe { swr_zend_emalloc(size_of::<Context>()) }.cast::<Context>();
-    let fresh = Context {
-        co,
-        pcid,
-        enable_scheduler: true,
-        ..Context::EMPTY
-    };
+    // Built in place: a `Context::EMPTY` literal is staged on the stack and
+    // copied over. All-zero bytes are `Context::EMPTY` except `defer`.
     // SAFETY: fresh storage for one context.
-    unsafe { ctx.write(fresh) };
+    unsafe { ctx.write_bytes(0, 1) };
+    // SAFETY: a raw place in the storage above; nothing reads it.
+    let defer = unsafe { &raw mut (*ctx).defer };
+    // SAFETY: a write, so the zeroed `defer` is never read or dropped.
+    unsafe { defer.write(Vec::new()) };
+    // SAFETY: every field now holds a valid value.
+    let this = unsafe { at(ctx) };
+    this.co = co;
+    this.pcid = pcid;
+    this.enable_scheduler = true;
     host::set_task(co, ctx.cast());
     if host::flag(host::FIBER_MOCK) {
         fiber_init(ctx);
