@@ -34,7 +34,7 @@
     sw_atomic_long_t request_count; \
     sw_atomic_long_t response_count; \
     size_t coroutine_num; \
-    Mutex * lock; \
+    void * lock; \
     UnixSocket * pipe_object; \
     network::Socket * pipe_master; \
     network::Socket * pipe_worker; \

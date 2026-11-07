@@ -4,14 +4,14 @@
 //! alive for as long as the server can call it. Native code still invokes a
 //! handler whose reply it writes back to the requester.
 use crate::ops::{
-    FIELD_REACTOR_NUM, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, OP_FIELD, OP_IS_STARTED, OP_MODE,
-    OP_RT_HAS_PIPE_COMMAND, OP_ST_CMD_SEND, OP_ST_PIPE_COMMAND_NEW,
+    EVENT_COMMAND_RESPONSE, FIELD_REACTOR_NUM, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, OP_FIELD,
+    OP_IS_STARTED, OP_MODE, OP_RT_HAS_PIPE_COMMAND, OP_ST_CMD_SEND, OP_ST_PIPE_COMMAND_NEW,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, ServerState};
 use core::ffi::{CStr, c_char, c_int, c_void};
 use std::collections::BTreeMap;
 use std::sync::{MutexGuard, PoisonError};
-use swoole_rs_corebase::log;
+use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::command::{
     CommandInput, LOG_INVALID_TASK_WORKER, LOG_INVALID_THREAD, LOG_INVALID_WORKER, LOG_NOT_MASTER,
@@ -167,6 +167,96 @@ pub unsafe extern "C" fn swr_v1_server_command_result(
     };
     // SAFETY: a stored callback, called with its context and the caller's reply.
     unsafe { call(callback, serv, message, length) };
+}
+
+/// `MessageBus::get_packet()`: the packet the bus just reassembled.
+#[repr(C)]
+struct BusPacket {
+    length: usize,
+    data: *const c_char,
+}
+
+// SAFETY: crates/protocols' bus, linked into the same archive.
+unsafe extern "C" {
+    fn swr_v1_bus_buffer(bus: *mut c_void) -> *mut DataHead;
+    fn swr_v1_bus_packet(bus: *mut c_void) -> BusPacket;
+    fn swr_v1_bus_write(
+        bus: *mut c_void,
+        socket: *mut c_void,
+        head: *mut DataHead,
+        data: *const u8,
+    ) -> bool;
+}
+
+/// `Server::call_command_handler(mb, worker_id, sock)`: answers the command request
+/// in `mb`'s buffer with its handler and writes the reply back over `sock`.
+///
+/// # Safety
+/// `serv` is a live `Server`, `mb` a live `MessageBus` holding a command request
+/// packet, and `sock` the pipe the request came from.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(
+        export_name = "_ZN6swoole6Server20call_command_handlerERNS_10MessageBusEtPNS_7network6SocketE"
+    )
+)]
+pub unsafe extern "C-unwind" fn call_command_handler(
+    serv: *mut c_void,
+    mb: *mut c_void,
+    worker_id: u16,
+    sock: *mut c_void,
+) {
+    // SAFETY: `MessageBus` starts with its `swr_bus *`.
+    let bus = unsafe { mb.cast::<*mut c_void>().read() };
+    // SAFETY: the caller's bus, with its buffer set.
+    let buffer = unsafe { swr_v1_bus_buffer(bus) };
+    // SAFETY: the live buffer, holding the request's header.
+    let request = unsafe { buffer.read() };
+    let command_id = i32::from(request.server_fd);
+    // SAFETY: per the caller.
+    let state = unsafe { crate::view::state_ptr(serv) };
+    // SAFETY: the state lives as long as the server.
+    let Some(handler) = commands(unsafe { &*state })
+        .handlers
+        .get(&command_id)
+        .copied()
+    else {
+        let m = format_args!("Unknown command[command_id={command_id}]");
+        let origin = c"Server::call_command_handler";
+        return error(SW_LOG_ERROR, E::SW_ERROR_SERVER_INVALID_COMMAND, origin, m);
+    };
+    // SAFETY: the bus's reassembled packet.
+    let packet = unsafe { swr_v1_bus_packet(bus) };
+    // SAFETY: `invoke` is a `Handler`, as `add_command` stored it.
+    let invoke = unsafe { core::mem::transmute::<*const c_void, Handler>(handler.invoke) };
+    let mut reply = Vec::<u8>::new();
+    let out = (&raw mut reply).cast();
+    // SAFETY: a stored handler with its context, over the packet's bytes.
+    unsafe {
+        invoke(
+            handler.ctx,
+            serv,
+            packet.data,
+            packet.length,
+            reply_into,
+            out,
+        );
+    }
+    #[expect(
+        clippy::cast_possible_wrap,
+        clippy::cast_possible_truncation,
+        reason = "DataHead's reactor_id and len are upstream's int16_t and uint32_t"
+    )]
+    let mut head = DataHead {
+        fd: request.fd,
+        reactor_id: worker_id as i16,
+        server_fd: u16::MAX,
+        kind: EVENT_COMMAND_RESPONSE as u8,
+        len: reply.len() as u32,
+        ..DataHead::default()
+    };
+    // SAFETY: the caller's bus and pipe, and a header over the reply's bytes.
+    unsafe { swr_v1_bus_write(bus, sock, &raw mut head, reply.as_ptr()) };
 }
 
 /// # Safety

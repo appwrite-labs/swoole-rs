@@ -12,8 +12,8 @@
 use core::ffi::c_void;
 
 pub use commands::{
-    CommandFn, CommandInfo, CommandReply, swr_v1_server_command_at, swr_v1_server_command_handler,
-    swr_v1_server_command_result,
+    CommandFn, CommandInfo, CommandReply, call_command_handler, swr_v1_server_command_at,
+    swr_v1_server_command_handler, swr_v1_server_command_result,
 };
 pub use server_methods::{swr_v1_server_add_command, swr_v1_server_command};
 
