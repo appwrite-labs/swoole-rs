@@ -52,6 +52,16 @@ jobs:
           python3 tests/modules/clients/cares.py ${{ steps.extensions.outputs.args }} \
             --engine upstream=target/phpt/upstream.so --engine hybrid=target/phpt/hybrid.so \
             --output target/phpt/cares-runtime.json
+      # The original System DNS timeout case against a resolver that answers late (#1190).
+      # Its 712 comes from c-ares's own timeout; the thread-pool lookup reports 10018 on
+      # both engines, and the runner's resolver fails before the 1 ms deadline.
+      - run: >
+          sudo python3 tests/modules/corebase/slow_resolver.py --
+          python3 corpus/upstream/run.py
+          --manifest tests/modules/corebase/dns-timeout-originals.json --external-network --require-all
+          ${{ steps.extensions.outputs.args }}
+          --engine upstream=target/phpt/upstream.so --engine hybrid=target/phpt/hybrid.so
+          --output target/phpt/dns-timeout-originals.json
       - run: |
           families="--module swoole_coroutine --module swoole_coroutine_system --module swoole_client_coro --module swoole_http_client_coro --module swoole_socket_coro"
           mkdir -p target/phpt/cares
@@ -72,5 +82,7 @@ jobs:
           path: |
             phpt-cares.json
             target/phpt/cares-runtime.json
+            target/phpt/dns-timeout-originals.json
+            target/phpt/dns-timeout-originals-artifacts/
             target/phpt/cares/
             target/phpt/recheck/
