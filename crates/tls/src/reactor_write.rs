@@ -285,7 +285,7 @@ unsafe extern "C" fn flush_trigger_close(context: *mut c_void) -> c_int {
 }
 
 unsafe extern "C" fn flush_delete_timer(context: *mut c_void) {
-    // SAFETY: src/wrapper/timer.cc's.
+    // SAFETY: crates/timer's.
     unsafe extern "C-unwind" {
         #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
         fn swoole_timer_del(node: *mut c_void) -> bool;

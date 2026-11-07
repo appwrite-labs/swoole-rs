@@ -30,7 +30,7 @@ ssh2 = ["dep:swoole-rs-ssh2"]
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }
 swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
-swoole-rs-timer = { path = "../timer" }
+swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 swoole-rs-base64 = { path = "../base64" }
 swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-error = { path = "../error", features = ["upstream-symbols"] }

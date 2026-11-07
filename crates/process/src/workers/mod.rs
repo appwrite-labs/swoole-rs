@@ -81,7 +81,7 @@ impl Host for Native {
 fn effect(op: u32) -> Option<u64> {
     use core::ffi::c_int;
     use swoole_rs_corebase::log::{last_error, set_last_error};
-    // SAFETY: src/wrapper/event.cc's, src/wrapper/timer.cc's, src/core/error.cc's
+    // SAFETY: src/wrapper/event.cc's, crates/timer's, src/core/error.cc's
     // and crates/ossupport's functions, under their upstream symbols.
     unsafe extern "C" {
         #[link_name = "_Z17swoole_event_initi"]

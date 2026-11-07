@@ -1602,7 +1602,7 @@ unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
 pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     {
-        // SAFETY: src/wrapper/timer.cc's, src/core/buffer.cc's and the C++ runtime's.
+        // SAFETY: crates/timer's, src/core/buffer.cc's and the C++ runtime's.
         unsafe extern "C-unwind" {
             #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
             fn swoole_timer_del(node: *mut c_void) -> bool;

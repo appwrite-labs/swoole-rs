@@ -1,9 +1,0 @@
-diff --git a/src/wrapper/timer.cc b/src/wrapper/timer.cc
-index 016d6c13c..873351b08 100644
---- a/src/wrapper/timer.cc
-+++ b/src/wrapper/timer.cc
-@@ -107,3 +107,3 @@ bool swoole_timer_clear(long timer_id) {
-     }
--    return SwooleTG.timer->remove(SwooleTG.timer->get(timer_id));
-+    return SwooleTG.timer->remove(timer_id);
- }
