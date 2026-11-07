@@ -85,7 +85,7 @@ class Reactor : private ReactorStateOwner {
     int32_t &timeout_msec = state_.fields->timeout_msec;
     uint16_t &id = state_.fields->id;
     uint32_t &max_socket = state_.fields->max_socket;
-#ifdef SW_USE_MALLOC_TRIM
+#ifdef HAVE_MALLOC_TRIM
     time_t &last_malloc_trim_time = state_.fields->last_malloc_trim_time;
 #endif
     swr_v1_reactor_state *handle() const { return state_.owner; }

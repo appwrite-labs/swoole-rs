@@ -421,12 +421,7 @@ pub unsafe extern "C" fn send_to_connection(serv: *mut c_void, send: *const c_vo
     c_int::narrow(unsafe { run(RUN_SC_SEND, header.info.kind.into(), &mut ctx) })
 }
 
-/// `SW_IPC_BUFFER_SIZE`: `SW_IPC_MAX_SIZE` less a `DataHead` (master.cc asserts it).
-const IPC_BUFFER_SIZE: usize = if cfg!(target_os = "macos") {
-    2048
-} else {
-    8192
-} - 40;
+const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE as usize;
 
 /// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
 #[repr(C, align(8))]

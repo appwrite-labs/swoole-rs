@@ -6,9 +6,14 @@
 
 #include <new>
 
-swoole::Exception::Exception(const int code) noexcept : code(code) {
-    msg = swoole_strerror(code);
-}
+namespace swoole {
+// What swoole_throw_error throws: upstream include/swoole_error.h's Exception.
+struct Exception final : private std::exception {
+    int code;
+    const char *msg;
+    explicit Exception(const int code) noexcept : code(code), msg(swoole_strerror(code)) {}
+};
+}  // namespace swoole
 
 void swoole_throw_error(int code) {
     throw swoole::Exception(code);

@@ -296,8 +296,11 @@ def overlay_hybrid_tree(archive, tree):
     # core-tests include a header the hybrid folded into another one; they include the survivor.
     for path in (Path(tree) / 'core-tests').rglob('*'):
         text = path.read_text() if path.suffix in ('.h', '.cpp') else ''
-        if '#include "swoole_process_pool.h"' in text:
-            path.write_text(text.replace('#include "swoole_process_pool.h"', '#include "swoole_server.h"'))
+        folded = text
+        for header, survivor in (('swoole_process_pool.h', 'swoole_server.h'), ('swoole_config.h', 'swoole.h')):
+            folded = folded.replace(f'#include "{header}"', f'#include "{survivor}"')
+        if folded != text:
+            path.write_text(folded)
     # add_definitions and include_directories reach targets defined before them; add_compile_options does not.
     defines = ' '.join(flag for flag in flags if flag.startswith('-D'))
     includes = ' '.join(f'"{flag[2:]}"' for flag in flags if flag.startswith('-I'))
