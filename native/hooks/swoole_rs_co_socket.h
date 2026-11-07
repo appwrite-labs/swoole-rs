@@ -68,6 +68,8 @@ struct swr_v1_co_socket_extra_prepared {
     const swr_v1_core_string *error;
     const swr_v1_core_string *connect_host;
     const swr_v1_core_string *ssl_host_name;
+    /* The SSLContext's owner, which the TLS members read; set with the context. */
+    const void **tls;
 };
 extern "C" {
 swr_v1_co_socket_extra_prepared swr_v1_hook_socket_extra_new();
