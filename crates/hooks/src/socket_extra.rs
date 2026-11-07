@@ -8,7 +8,7 @@ pub struct SocketExtra {
 }
 #[repr(C)]
 pub struct PreparedSocketExtra {
-    owner: *mut SocketExtra,
+    pub(crate) owner: *mut SocketExtra,
     error: *const StringSlot,
     connect_host: *const StringSlot,
     ssl_host_name: *const StringSlot,

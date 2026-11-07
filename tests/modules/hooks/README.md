@@ -24,8 +24,9 @@ and kernel IO are faked; these are policy/order checks, not runtime proof.
   errno capture. The hybrid side's `async` is the patched one-liner over
   `swr_v1_hook_async` (`crates/hooks/src/offload.rs`), driven through the same
   facade with upstream's `AsyncEvent` layout.
-- `packet_gate.py` (624 cases): length/EOF/raw framing paths and vectored
-  all-transfer paths with EAGAIN/EINTR/error/partial progress.
+- `packet_gate.py` (240 cases): length/EOF/raw framing paths. Its 384
+  vectored all-transfer cases moved to Rust with `readv_all`/`writev_all`
+  (`ported_vector_all_matrix` in `crates/hooks/src/vector.rs`).
 - The socket policy gate's bodies (the bound-coroutine checks, `set_err`,
   `check_return_value`, `is_available`, `get_event_str` and
   `TimeoutController::has_timedout`) moved to Rust with their cases (`ported_*`

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare actual vector all-transfer and packet length/EOF/dispatch bodies with native buffers and protocol callbacks; no kernel/context proof."""
+"""Compare actual packet length/EOF/dispatch bodies with native buffers and protocol callbacks; no kernel/context proof."""
 import argparse
 import json
 import shlex
@@ -21,22 +21,17 @@ def main():
     p.add_argument('--report',type=Path,required=True)
     p.add_argument('--sanitize',action='store_true')
     a=p.parse_args()
-    # Upstream's socket.cc; the hybrid keeps the vector glue in system.cc.
-    unit,home='src/coroutine/socket.cc','src/coroutine/system.cc'
-    originals,selected,hybrid=sources(a.source,a.archive,[unit,home])
-    # Packet framing calls the record API through the recording native host;
-    # only the vector cases still use the selected tree's vector_all glue.
+    # Upstream's socket.cc; the selected packet framing calls the record API
+    # through the recording native host.
+    unit='src/coroutine/socket.cc'
+    originals,_,hybrid=sources(a.source,a.archive,[unit])
     helpers=['ssize_t Socket::recv_packet_with_length_protocol()', 'ssize_t Socket::recv_packet_with_eof_protocol()']
-    glue=['ssize_t Socket::vector_all(']
-    common=['ssize_t Socket::readv_all(', 'ssize_t Socket::writev_all(']
     a.report.parent.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='swr-hooks-packet-',dir=a.report.parent) as directory:
         tree=Path(directory)
         for variant in ['original','selected']:
-            text=originals[unit] if variant=='original' else selected[home]
-            signatures=common+(helpers+['ssize_t Socket::recv_packet(double timeout)'] if variant=='original' else glue)
-            bodies=[block(text,signature) for signature in signatures]
-            if variant=='selected':bodies.append('#include "packet_host.h"')
+            signatures=helpers+['ssize_t Socket::recv_packet(double timeout)']
+            bodies=[block(originals[unit],signature) for signature in signatures] if variant=='original' else ['#include "packet_host.h"']
             (tree/(variant+'-packet.inc')).write_text('\n'.join(bodies))
         # The pin's include/ precedes native/reactor, whose swoole_socket.h replaces it only in the hybrid.
         command=['c++','-std=c++14','-O1','-g','-I'+str(tree),'-I'+str(ROOT/'native/hooks'),'-I'+str(ROOT/'native/include'),'-I'+str(a.source/'include'),'-I'+str(a.source),'-I'+str(ROOT/'native/reactor'),*shlex.split(subprocess.check_output(['pkg-config','--cflags','openssl'],text=True)),'-I'+str(ROOT/'tests/modules/hooks'),str(ROOT/'tests/modules/hooks/packet_gate.cc'),str(a.archive.resolve()),'-lssl','-lcrypto','-lpthread','-o',str(tree/'packet')]
