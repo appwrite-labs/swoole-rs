@@ -64,7 +64,8 @@ def main():
         raw=extract(overlay.original('src/server/port.cc') if engine=='upstream' else overlay.selected(hybrid_tree(a.archive)[0],'src/server/port.cc'));(directory/'socket.inc').write_text(raw)
         command=['c++','-std=c++14','-O1','-UNDEBUG','-DSWOOLE_RS_PORTS','-DHAVE_CONFIG_H','-I'+str(ROOT/'native/ports'),'-I'+str(a.core),'-I'+str(a.core/'include'),'-I'+str(a.core/'thirdparty/llhttp'),*flags,'-I'+str(directory),str(Path(__file__).resolve().with_suffix('.cc')),*([str(a.archive)] if engine=='rust' else []),'-lpthread','-o',str(directory/'witness')]
         if a.openssl_root:command[1:1]=['-I'+str(a.openssl_root/'include')]
-        if sys.platform=='linux':command+=['-ldl','-lm']
+        # The archive members this pulls in reference the rest of the extension; drop the unused sections.
+        command+=['-Wl,--gc-sections','-ldl','-lm'] if sys.platform=='linux' else ['-Wl,-dead_strip']
         if a.sanitize:command+=['-fsanitize=address,undefined','-fno-sanitize-recover=all','-g']
         require_build_space(ROOT);r=run_isolated(command,cwd=a.core,timeout=90);row={'engine':engine,'compile':command,'compile_cwd':str(a.core),'compile_exit':r.returncode,'compile_stderr':r.stderr};report['results'].append(row)
         if r.returncode:write_report(a.output,report);return 1
