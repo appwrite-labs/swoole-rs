@@ -38,18 +38,9 @@ impl Writer {
         self.count = count;
         Some(())
     }
-    fn decimal(&mut self, mut number: usize) -> Option<()> {
+    fn decimal(&mut self, number: usize) -> Option<()> {
         let mut digits = [0_u8; usize::BITS as usize];
-        let mut offset = digits.len();
-        loop {
-            offset -= 1;
-            digits[offset] = b"0123456789"[number % 10];
-            number /= 10;
-            if number == 0 {
-                break;
-            }
-        }
-        self.append(&digits[offset..])
+        self.append(crate::format_into(&mut digits, format_args!("{number}"))?)
     }
     fn finish(self, error: u32) -> ClientsFormatResult {
         let overflow = error == 2 || self.count > i32::MAX as usize;
@@ -86,12 +77,6 @@ unsafe fn span<'a>(value: ClientsFormatSpan) -> Option<&'a [u8]> {
         Some(unsafe { std::slice::from_raw_parts(value.data, value.length) })
     }
 }
-fn c_string(bytes: &[u8]) -> &[u8] {
-    &bytes[..bytes
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(bytes.len())]
-}
 fn precision_string(bytes: &[u8]) -> &[u8] {
     // Both supported native hosts use32-bit int precision. Preserve their
     // explicit C++ size_t->int narrowing, including negative precision.
@@ -101,10 +86,12 @@ fn precision_string(bytes: &[u8]) -> &[u8] {
         reason = "the C++ size_t->int narrowing described above"
     )]
     let precision = bytes.len() as i32;
-    c_string(if precision < 0 {
+    crate::c_str(if precision < 0 {
         bytes
     } else {
-        &bytes[..precision.unsigned_abs() as usize]
+        bytes
+            .get(..precision.unsigned_abs() as usize)
+            .unwrap_or(bytes)
     })
 }
 /// # Safety
@@ -145,14 +132,14 @@ pub unsafe extern "C" fn swr_v1_clients_http_format(
                 // SAFETY: required spans name `length` initialized bytes, disjoint from the output.
                 let host = unsafe { span(first) }?;
                 writer.append(b"http://")?;
-                writer.append(c_string(host))?;
+                writer.append(crate::c_str(host))?;
                 // Native memchr scans the full binary host before printf %s.
                 if !host.contains(&b':') {
                     writer.append(b":")?;
                     writer.decimal(number)?;
                 }
                 // SAFETY: required spans name `length` initialized bytes, disjoint from the output.
-                writer.append(c_string(unsafe { span(second) }?))?;
+                writer.append(crate::c_str(unsafe { span(second) }?))?;
             }
             2 => {
                 writer.append(b"Content-Type: multipart/form-data; boundary=")?;

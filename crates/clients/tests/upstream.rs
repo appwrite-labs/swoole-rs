@@ -130,7 +130,9 @@ fn ip_hosts() -> Vec<Vec<u8>> {
         for position in 0..seed.len() {
             for byte in 0..=255u8 {
                 let mut host = seed.to_vec();
-                host[position] = byte;
+                if let Some(slot) = host.get_mut(position) {
+                    *slot = byte;
+                }
                 hosts.push(host);
             }
         }
@@ -251,7 +253,9 @@ fn rust_assign(kind: c_int, host: &[u8], port: c_int, resolve_name: bool) -> ups
     trace.last_error = if error == 0 { 11 } else { error };
     trace.dns_calls = dns_calls;
     trace.dns_host_length = dns_host.len();
-    trace.dns_host[..dns_host.len()].copy_from_slice(&dns_host);
+    for (slot, &byte) in trace.dns_host.iter_mut().zip(&dns_host) {
+        *slot = byte;
+    }
     trace.len = address.len;
     trace.kind = address.kind;
     // SAFETY: `address` is a whole record.
@@ -259,13 +263,18 @@ fn rust_assign(kind: c_int, host: &[u8], port: c_int, resolve_name: bool) -> ups
     // SAFETY: `addr` holds `size` bytes.
     let stored =
         unsafe { std::slice::from_raw_parts((&raw const address.addr).cast::<u8>(), size) };
-    trace.addr[..size].copy_from_slice(stored);
+    for (slot, &byte) in trace.addr.iter_mut().zip(stored) {
+        *slot = byte;
+    }
     trace
 }
 
 fn assign_fields(trace: &upstream::Assign) -> (&[u8], u32, [c_int; 6], &[u8]) {
     (
-        &trace.addr[..size_of::<AddressStorage>()],
+        trace
+            .addr
+            .get(..size_of::<AddressStorage>())
+            .unwrap_or_default(),
         trace.len,
         [
             trace.kind,
@@ -275,7 +284,10 @@ fn assign_fields(trace: &upstream::Assign) -> (&[u8], u32, [c_int; 6], &[u8]) {
             trace.dns_calls,
             trace.loopback,
         ],
-        &trace.dns_host[..trace.dns_host_length],
+        trace
+            .dns_host
+            .get(..trace.dns_host_length)
+            .unwrap_or_default(),
     )
 }
 
@@ -457,7 +469,9 @@ fn rust_url(url: &[u8], accept: bool) -> (c_int, c_int, Vec<u8>, c_int, c_int) {
         _ => (
             c_int::from(accept),
             plan.kind,
-            url[plan.host_offset..plan.host_offset + plan.host_length].to_vec(),
+            url.get(plan.host_offset..plan.host_offset + plan.host_length)
+                .unwrap_or_default()
+                .to_vec(),
             plan.port,
             0,
         ),
@@ -631,7 +645,7 @@ const QUESTION: usize = PACKET - 12;
 /// The bounds `swr_v1_clients_dns_query` puts on the Rust encoder, over `n` bytes
 /// of the NUL-terminated `source`.
 fn rust_encode(source: &[u8], n: usize, dest: &mut [u8]) -> c_int {
-    if n > QUESTION - 3 || source[n] == b'.' {
+    if n > QUESTION - 3 || source.get(n) == Some(&b'.') {
         return INVALID_DOMAIN;
     }
     // SAFETY: `source` holds `n` bytes and `dest` at least `QUESTION`; they don't overlap.

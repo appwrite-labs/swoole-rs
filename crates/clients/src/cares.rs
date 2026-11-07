@@ -179,8 +179,9 @@ unsafe extern "C" fn host(
                 swr_v1_clients_ip_text(if family == libc::AF_INET { 4 } else { 6 }, address.cast())
             };
             let length = usize::try_from(text.length).unwrap_or(0);
+            let text = text.bytes.get(..length).unwrap_or_default().to_vec();
             // SAFETY: copy SDK data into the Rust owner before the callback returns.
-            unsafe { query_mut(data).results.push(text.bytes[..length].to_vec()) };
+            unsafe { query_mut(data).results.push(text) };
             // SAFETY: the SDK address list has another slot or its terminating null.
             addresses = unsafe { addresses.add(1) };
         }

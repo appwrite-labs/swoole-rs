@@ -164,11 +164,10 @@ pub unsafe extern "C" fn swr_v1_clients_address_assign(
             // SAFETY: the caller passes a NUL-terminated host.
             let text = unsafe { std::ffi::CStr::from_ptr(host) }.to_bytes();
             // `swoole_strlcpy` and the forced final NUL.
-            let copied = text.len().min(path.len() - 1);
-            for (slot, &byte) in path.iter_mut().zip(&text[..copied]) {
+            let terminated = text.iter().copied().chain(std::iter::repeat(0));
+            for (slot, byte) in path.iter_mut().zip(terminated).take(text.len() + 1) {
                 *slot = c_char::from_ne_bytes([byte]);
             }
-            path[copied] = 0;
             *path.last_mut().unwrap_or(&mut 0) = 0;
             // SAFETY: as above.
             unsafe { *length = size(path.len()) };

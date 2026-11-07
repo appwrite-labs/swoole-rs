@@ -21,6 +21,19 @@ use address::{TCP, TCP6, UDP, UDP6, UNIX_DGRAM, UNIX_STREAM};
 use std::ffi::c_int;
 use std::ops::Range;
 
+/// The bytes before the first NUL, as a C string reads them.
+fn c_str(bytes: &[u8]) -> &[u8] {
+    bytes.split(|&byte| byte == 0).next().unwrap_or_default()
+}
+
+/// Formats `args` into `buffer` without allocating; `None` when it does not fit.
+fn format_into<'a>(buffer: &'a mut [u8], args: std::fmt::Arguments<'_>) -> Option<&'a [u8]> {
+    let mut rest = &mut *buffer;
+    std::io::Write::write_fmt(&mut rest, args).ok()?;
+    let unused = rest.len();
+    buffer.get(..buffer.len() - unused)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct UrlPlan {
     /// 0 invalid, 1 IPv4 or hostname, 2 IPv6, 3 Unix.
@@ -50,7 +63,10 @@ fn url_plan(url: &[u8]) -> UrlPlan {
     };
     if unix {
         // Pinned regex is /[^?#]+: a solitary slash does not match.
-        if rest.len() >= 2 && rest[0] == b'/' && !rest.iter().any(|b| matches!(b, b'?' | b'#')) {
+        if rest.len() >= 2
+            && rest.starts_with(b"/")
+            && !rest.iter().any(|b| matches!(b, b'?' | b'#'))
+        {
             plan.kind = 3;
             plan.host_length = rest.len();
         }
@@ -71,7 +87,7 @@ fn url_plan(url: &[u8]) -> UrlPlan {
         let Some(end) = rest.iter().position(|&b| b == b':') else {
             return UrlPlan::default();
         };
-        if end == 0 || rest[..end].contains(&b'[') || end + 1 == rest.len() {
+        if end == 0 || rest.iter().take(end).any(|&b| b == b'[') || end + 1 == rest.len() {
             return UrlPlan::default();
         }
         plan.kind = 1;
@@ -98,7 +114,7 @@ pub fn url(url: &[u8]) -> Result<(c_int, Range<usize>, c_int), c_int> {
         (0, _) => Err(URL_INVALID),
         (3, datagram) => Ok((if datagram { UNIX_DGRAM } else { UNIX_STREAM }, host, 0)),
         (family, datagram) => {
-            let digits = &url[plan.port_offset..];
+            let digits = url.get(plan.port_offset..).unwrap_or_default();
             if !digits.iter().all(u8::is_ascii_digit) {
                 return Err(URL_INVALID);
             }
@@ -167,11 +183,11 @@ pub struct HostMatch {
 }
 
 fn hosts_match(line: &[u8], search: &[u8], spaces: &[u8]) -> HostMatch {
-    if line.is_empty() || matches!(line[0], 0 | b'\r' | b'\n') {
+    if matches!(line.first(), None | Some(0 | b'\r' | b'\n')) {
         return HostMatch::default();
     }
     let mut tokens = line
-        .split(|b| spaces[usize::from(*b)] != 0)
+        .split(|b| spaces.get(usize::from(*b)).is_some_and(|&space| space != 0))
         .filter(|token| !token.is_empty());
     let Some(address) = tokens.next() else {
         return HostMatch::default();
@@ -242,8 +258,9 @@ pub unsafe extern "C" fn swr_v1_clients_cookie(data: *const u8, length: usize) -
     CookiePlan {
         key_length: equals.unwrap_or(0),
         value_offset,
-        value_length: bytes[value_offset..]
+        value_length: bytes
             .iter()
+            .skip(value_offset)
             .position(|&b| b == b';')
             .unwrap_or(length - value_offset),
     }
@@ -277,29 +294,25 @@ pub unsafe extern "C" fn swr_v1_clients_domain_encode(
     };
     // SAFETY: `output` is non-null and `required <= isize::MAX` (checked above); the caller lends `required` writable bytes for this call.
     let output = unsafe { std::slice::from_raw_parts_mut(output, required) };
-    output[1..=length].copy_from_slice(input);
-    output[length + 1] = b'.';
-    output[length + 2] = 0;
-    let mut position = 0;
-    for (index, byte) in input
-        .iter()
-        .copied()
-        .chain(std::iter::once(b'.'))
-        .enumerate()
-    {
-        if byte == b'.' {
-            let label_length = index - position;
-            // Upstream's (char) length byte: a label over 255 bytes wraps, as in C.
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "upstream's (char) label length"
-            )]
-            let length_byte = label_length as u8;
-            output[position] = length_byte;
-            position += label_length + 1;
-        }
+    // `[len]label[len]label` with each dot turned into the next label's length
+    // byte, then two NULs.
+    let mut start = 0;
+    for label in input.split(|&byte| byte == b'.') {
+        // Upstream's (char) length byte: a label over 255 bytes wraps, as in C.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "upstream's (char) label length"
+        )]
+        let length_byte = label.len() as u8;
+        let slot = output.get_mut(start..=start + label.len());
+        let Some((head, body)) = slot.and_then(<[u8]>::split_first_mut) else {
+            return -1;
+        };
+        *head = length_byte;
+        body.copy_from_slice(label);
+        start += label.len() + 1;
     }
-    output[position] = 0;
+    output.get_mut(start..).unwrap_or_default().fill(0);
     0
 }
 
@@ -325,28 +338,31 @@ pub unsafe extern "C" fn swr_v1_clients_domain_decode(
         if index >= end {
             break;
         }
+        let Some(&byte) = bytes.get(index) else {
+            return 0;
+        };
         let length = if signed_char != 0 {
-            i32::from(bytes[index].cast_signed()).cast_unsigned()
+            i32::from(byte.cast_signed()).cast_unsigned()
         } else {
-            u32::from(bytes[index])
+            u32::from(byte)
         };
         for _ in 0..length {
             let Some(next) = index.checked_add(1).filter(|&next| next < capacity) else {
                 return 0;
             };
-            bytes[index] = bytes[next];
+            bytes.copy_within(next..=next, index);
             index = next;
         }
-        if index >= capacity {
+        let Some(slot) = bytes.get_mut(index) else {
             return 0;
-        }
-        bytes[index] = b'.';
+        };
+        *slot = b'.';
         index += 1;
     }
-    if index == 0 {
+    let Some(last) = index.checked_sub(1).and_then(|last| bytes.get_mut(last)) else {
         return 0;
-    }
-    bytes[index - 1] = 0;
+    };
+    *last = 0;
     1
 }
 
@@ -414,10 +430,7 @@ pub struct ResolvLine {
 }
 
 fn resolv_line(line: &[u8]) -> ResolvLine {
-    let line = &line[..line
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(line.len())];
+    let line = c_str(line);
     if !line.starts_with(b"nameserver") {
         return ResolvLine::default();
     }
@@ -434,15 +447,11 @@ fn resolv_line(line: &[u8]) -> ResolvLine {
         return invalid;
     }
     let offset = separator + 1;
-    let rest = &line[offset..];
-    let start = rest
-        .iter()
-        .position(|&byte| byte != b'\n')
-        .unwrap_or(rest.len());
-    if start == rest.len() {
+    let rest = line.get(offset..).unwrap_or_default();
+    let Some(start) = rest.iter().position(|&byte| byte != b'\n') else {
         return invalid;
-    }
-    let rest = &rest[start..];
+    };
+    let rest = rest.get(start..).unwrap_or_default();
     let length = rest
         .iter()
         .position(|&byte| byte == b'\n')
@@ -490,10 +499,7 @@ pub unsafe extern "C" fn swr_v1_clients_dns_endpoint(
     }
     // SAFETY: `data` is non-null and `length <= isize::MAX` (checked above); the caller lends `length` initialized bytes for this call.
     let bytes = unsafe { std::slice::from_raw_parts(data, length) };
-    let bytes = &bytes[..bytes
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(bytes.len())];
+    let bytes = c_str(bytes);
     match bytes.iter().position(|&byte| byte == b':') {
         Some(colon) => DnsEndpoint {
             has_port: 1,

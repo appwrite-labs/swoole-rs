@@ -36,39 +36,21 @@ fn ipv6(text: &str, allow_zeroes: bool) -> Option<Ipv6Addr> {
         return text.parse().ok();
     }
     let colon = text.rfind(':')?;
-    let suffix = ipv4(&text[colon + 1..], allow_zeroes)?.octets();
+    let [a, b, c, d] = ipv4(text.get(colon + 1..)?, allow_zeroes)?.octets();
     // Replace the dotted tail with two hex groups in bounded caller-local
     // storage. This preserves native Apple decimal-leading-zero grammar without
-    // introducing an allocation/formatting effect into numeric parsing.
-    let prefix = &text.as_bytes()[..=colon];
+    // introducing an allocation effect into numeric parsing.
     let mut normalized = [0u8; 128];
-    if prefix.len() > normalized.len() - 9 {
-        return None;
-    }
-    normalized[..prefix.len()].copy_from_slice(prefix);
-    let mut end = prefix.len();
-    for (index, value) in [
-        u16::from_be_bytes([suffix[0], suffix[1]]),
-        u16::from_be_bytes([suffix[2], suffix[3]]),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        if index != 0 {
-            normalized[end] = b':';
-            end += 1;
-        }
-        let mut started = false;
-        for shift in [12, 8, 4, 0] {
-            let nibble = ((value >> shift) & 15) as usize;
-            if nibble != 0 || started || shift == 0 {
-                normalized[end] = b"0123456789abcdef"[nibble];
-                end += 1;
-                started = true;
-            }
-        }
-    }
-    std::str::from_utf8(&normalized[..end]).ok()?.parse().ok()
+    let normalized = crate::format_into(
+        &mut normalized,
+        format_args!(
+            "{}{:x}:{:x}",
+            text.get(..=colon)?,
+            u16::from_be_bytes([a, b]),
+            u16::from_be_bytes([c, d])
+        ),
+    )?;
+    std::str::from_utf8(normalized).ok()?.parse().ok()
 }
 /// # Safety
 /// Input denotes `length` initialized readable bytes, or null for length0. Native
@@ -90,8 +72,7 @@ pub unsafe extern "C" fn swr_v1_clients_ip(
     }
     // SAFETY: `data` is non-null and `length <= isize::MAX` (checked above); the caller lends `length` initialized bytes for this call.
     let input = unsafe { std::slice::from_raw_parts(data, length) };
-    let input = &input[..input.iter().position(|&b| b == 0).unwrap_or(input.len())];
-    let Ok(text) = std::str::from_utf8(input) else {
+    let Ok(text) = std::str::from_utf8(crate::c_str(input)) else {
         return result;
     };
     match version {
@@ -129,7 +110,7 @@ pub unsafe extern "C" fn swr_v1_clients_loopback(version: u8, address: *const u8
     u8::from(if version == 4 {
         bytes == [127, 0, 0, 1]
     } else {
-        bytes[..15].iter().all(|&b| b == 0) && bytes[15] == 1
+        bytes == Ipv6Addr::LOCALHOST.octets()
     })
 }
 
@@ -147,47 +128,31 @@ pub unsafe extern "C" fn swr_v1_clients_ip_text(version: u8, address: *const u8)
         bytes: [0; 40],
         length: 0,
     };
-    let length = match version {
-        4 => 4,
-        6 => 16,
-        _ => return output,
-    };
     if address.is_null() {
         return output;
     }
-    // SAFETY: non-null (checked above); the caller lends the 4- or 16-byte address for `version`.
-    let bytes = unsafe { std::slice::from_raw_parts(address, length) };
-    let mut end = 0;
-    if version == 4 {
-        for (index, &byte) in bytes.iter().enumerate() {
-            if index != 0 {
-                output.bytes[end] = b'.';
-                end += 1;
-            }
-            if byte >= 100 {
-                output.bytes[end] = b'0' + byte / 100;
-                end += 1;
-            }
-            if byte >= 10 {
-                output.bytes[end] = b'0' + byte / 10 % 10;
-                end += 1;
-            }
-            output.bytes[end] = b'0' + byte % 10;
-            end += 1;
+    let mut text = [0u8; 40];
+    let written = match version {
+        4 => {
+            // SAFETY: non-null (checked above); the caller lends the 4-byte address.
+            let v4 = unsafe { address.cast::<[u8; 4]>().read_unaligned() };
+            crate::format_into(&mut text, format_args!("{}", Ipv4Addr::from(v4)))
         }
-    } else {
-        for (index, &byte) in bytes.iter().enumerate() {
-            if index != 0 && index % 2 == 0 {
-                output.bytes[end] = b':';
-                end += 1;
-            }
-            output.bytes[end] = b"0123456789abcdef"[usize::from(byte >> 4)];
-            output.bytes[end + 1] = b"0123456789abcdef"[usize::from(byte & 15)];
-            end += 2;
+        6 => {
+            // SAFETY: non-null (checked above); the caller lends the 16-byte address.
+            let v6 = unsafe { address.cast::<[u8; 16]>().read_unaligned() };
+            let [a, b, c, d, e, f, g, h] = Ipv6Addr::from(v6).segments();
+            crate::format_into(
+                &mut text,
+                format_args!("{a:04x}:{b:04x}:{c:04x}:{d:04x}:{e:04x}:{f:04x}:{g:04x}:{h:04x}"),
+            )
         }
-    }
-    #[expect(clippy::cast_possible_truncation, reason = "end <= output.bytes.len()")]
-    let length = end as u32;
+        _ => None,
+    };
+    let written = written.unwrap_or_default();
+    #[expect(clippy::cast_possible_truncation, reason = "written fits output.bytes")]
+    let length = written.len() as u32;
     output.length = length;
+    output.bytes = text;
     output
 }
