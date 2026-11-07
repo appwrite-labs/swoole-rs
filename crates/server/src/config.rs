@@ -78,7 +78,6 @@ pub struct ServerConfig {
     pub compression_min_length: u32,
     pub recv_buffer_allocator: *const c_void,
     pub recv_buffer_size: usize,
-    pub manager_alarm: c_int,
     pub message_queue_key: u64,
     /// `Server::Mode`, fixed by the constructor.
     pub mode_: u8,
@@ -172,7 +171,6 @@ impl Default for ServerConfig {
             compression_min_length: 20,
             recv_buffer_allocator: core::ptr::null(),
             recv_buffer_size: 65_536,
-            manager_alarm: 0,
             message_queue_key: 0,
             mode_: 0,
         }
