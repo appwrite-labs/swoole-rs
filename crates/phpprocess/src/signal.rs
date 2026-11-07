@@ -1,7 +1,7 @@
 //! `Process::signal()`: the PHP callable registered for each signal, and the
 //! handler Swoole's signal layer runs for them.
 use crate::{
-    host::host,
+    host,
     report::{OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
 };
 use std::{
@@ -52,11 +52,9 @@ unsafe extern "C" fn on_signal(signo: c_int) {
         return;
     }
     let mut argv = long_zval(i64::from(signo));
-    let host = host();
-    // SAFETY: C++'s reader of the coroutine setting.
-    let coroutine = unsafe { (host.enable_coroutine)() };
+    let coroutine = host::enable_coroutine();
     // SAFETY: a live callable from `signal()`, with one argument.
-    let called = unsafe { (host.callable_call)(callable, 1, &raw mut argv, coroutine) };
+    let called = unsafe { host::callable_call(callable, 1, &raw mut argv, coroutine) };
     if !called {
         fatal(
             E_WARNING,
@@ -68,9 +66,7 @@ unsafe extern "C" fn on_signal(signo: c_int) {
 
 /// `Process::signal(int $signo, ?callable $callback = null): bool`.
 pub(crate) fn signal(call: &Call) {
-    let host = host();
-    // SAFETY: C++'s reader of the thread's identity.
-    if !unsafe { (host.main_thread)() } {
+    if !host::main_thread() {
         set_last_error(OPERATION_NOT_SUPPORT);
         call.set_bool(true);
         return;
@@ -118,14 +114,12 @@ pub(crate) fn signal(call: &Call) {
                 call.set_bool(false);
                 return;
             }
-            // SAFETY: C++ resets the handler, then frees the callable once the
-            // loop is past any dispatch using it.
-            unsafe {
-                (host.signal_set)(number, None, false);
-            }
+            // Reset the handler, then free the callable once the loop is past
+            // any dispatch using it.
+            host::signal_set(number, None, false);
             slot(signo).store(ptr::null_mut(), Ordering::Release);
-            // SAFETY: as above.
-            unsafe { (host.callable_defer_free)(old) };
+            // SAFETY: the callable this slot owned.
+            unsafe { host::callable_defer_free(old) };
             listeners(-1);
             call.set_bool(true);
             return;
@@ -136,7 +130,7 @@ pub(crate) fn signal(call: &Call) {
         }
         Some(value) => {
             // SAFETY: a passed argument.
-            let callable = unsafe { (host.callable_create)(value) };
+            let callable = unsafe { host::callable_create(value) };
             if callable.is_null() {
                 call.set_bool(false);
                 return;
@@ -144,24 +138,21 @@ pub(crate) fn signal(call: &Call) {
             (callable, Some(ours))
         }
     };
-    // SAFETY: C++'s reader of the server's mode.
-    let sync = unsafe { (host.sync_server)() };
+    let sync = host::sync_server();
     if !sync {
-        // SAFETY: C++ creates the reactor and its exit condition.
-        unsafe { (host.signal_listen)() };
+        host::signal_listen();
     }
     if old.is_null() {
         listeners(1);
     } else if sync {
         // SAFETY: the previous callable, no longer referenced.
-        unsafe { (host.callable_free)(old) };
+        unsafe { host::callable_free(old) };
     } else {
         // SAFETY: as above, freed once the loop is past any dispatch using it.
-        unsafe { (host.callable_defer_free)(old) };
+        unsafe { host::callable_defer_free(old) };
     }
     slot(signo).store(callable, Ordering::Release);
-    // SAFETY: a valid signal and handler.
-    unsafe { (host.signal_set)(number, handler, true) };
+    host::signal_set(number, handler, true);
     call.set_bool(true);
 }
 
@@ -172,28 +163,21 @@ fn is_ignore(value: *mut swoole_rs_zend::sys::zval) -> bool {
     unsafe { value.lval == SIG_IGN }
 }
 
-/// `php_swoole_signal_isset_handler`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpprocess_signal_isset(signo: c_int) -> bool {
-    if !(0..SIGNO_MAX).contains(&i64::from(signo)) {
-        fatal(E_WARNING, &message!("invalid signal number [{signo}]"));
-        return false;
-    }
-    !slot(i64::from(signo)).load(Ordering::Acquire).is_null()
-}
-
 /// `php_swoole_process_clean`: free every signal callable; outside thread
 /// builds, a process that is not a user worker forgets its worker type.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpprocess_clean() {
-    let host = host();
+pub(crate) fn clean() {
     for slot in &CALLABLES {
         let callable = slot.swap(ptr::null_mut(), Ordering::AcqRel);
         if !callable.is_null() {
             // SAFETY: a callable `signal()` created and nothing references now.
-            unsafe { (host.callable_free)(callable) };
+            unsafe { host::callable_free(callable) };
         }
     }
-    // SAFETY: C++'s worker-type reset.
-    unsafe { (host.reset_worker_type)() };
+    host::reset_worker_type();
+}
+
+/// `php_swoole_process_rshutdown`.
+#[unsafe(no_mangle)]
+pub extern "C" fn php_swoole_process_rshutdown() {
+    clean();
 }

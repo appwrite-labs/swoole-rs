@@ -27,7 +27,6 @@ mod worker;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use affinity::*;
-pub use host::Host;
 pub use pool::*;
 pub use process::*;
-pub use signal::{swr_v1_phpprocess_clean, swr_v1_phpprocess_signal_isset};
+pub use signal::php_swoole_process_rshutdown;

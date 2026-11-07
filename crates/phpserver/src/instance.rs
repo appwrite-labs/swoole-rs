@@ -6,7 +6,7 @@ use crate::port::PortProperty;
 use crate::server::{ServerData, THREAD};
 use std::{
     cell::UnsafeCell,
-    ffi::{c_char, c_int, c_long, c_void},
+    ffi::{CStr, c_char, c_int, c_long, c_void},
     mem::MaybeUninit,
     ptr,
     sync::atomic::Ordering,
@@ -14,11 +14,18 @@ use std::{
 use swoole_rs_corebase::{
     DataHead,
     constants::EventDataFlag::{SW_EVENT_DATA_OBJ_PTR, SW_EVENT_DATA_POP_PTR},
+    log,
+};
+use swoole_rs_process::{
+    methods::worker_is_running, worker_globals, worker_record, workers::entry,
 };
 use swoole_rs_server::{port_config, server_methods, view};
 use swoole_rs_zend::{
     Object, object_of, string,
-    sys::{swr_zend_mkdir_recursive, swr_zval_empty_string, swr_zval_stringl, zend_string, zval},
+    sys::{
+        swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_empty_string,
+        swr_zval_stringl, zend_string, zval,
+    },
     value::set_str,
 };
 
@@ -249,4 +256,62 @@ pub(crate) unsafe fn send(serv: *mut c_void, fd: c_long, data: *mut zend_string)
     }
     check_kernel_nobufs(serv, fd);
     sent
+}
+
+/// `SW_USER_WORKER`, `SW_LOG_NOTICE`, `SW_LOG_ERROR` and `SW_ERROR_SERVER_WORKER_TERMINATED`.
+const USER_WORKER: c_int = 5;
+const LOG_NOTICE: c_int = 3;
+const LOG_ERROR: c_int = 5;
+const SW_ERROR_SERVER_WORKER_TERMINATED: c_int = 9003;
+
+/// `php_swoole_server_rshutdown`: a worker whose request ended (`exit()`,
+/// `die()` or a fatal error) drains its pipe, shuts down and logs why.
+#[unsafe(no_mangle)]
+pub extern "C" fn php_swoole_server_rshutdown() {
+    let serv = swoole_rs_corebase::swr_v1_core_server();
+    let globals = worker_globals::swr_v1_worker_globals();
+    // SAFETY: this thread's worker globals.
+    let worker = unsafe { (*globals).worker };
+    if serv.is_null() || worker.is_null() {
+        return;
+    }
+    // SAFETY: the running server.
+    unsafe { entry::drain_worker_pipe(serv) };
+    let kind = crate::server::worker_type();
+    // SAFETY: the running server, past its shared-memory setup.
+    let started = unsafe { view::is_started(serv) };
+    if !started || !worker_is_running() || kind == USER_WORKER {
+        return;
+    }
+    // SAFETY: this thread's current worker.
+    unsafe { worker_record::swr_v1_worker_shutdown(worker) };
+    if kind == crate::server::EVENT_WORKER {
+        // SAFETY: the running server and its current worker.
+        unsafe { entry::clean_worker_connections(serv, worker.cast()) };
+    }
+    let (mut message, mut file, mut line) = (ptr::null(), ptr::null(), 0);
+    // SAFETY: writable outputs; PHP's globals during RSHUTDOWN.
+    if unsafe { swr_zend_last_fatal_error(&raw mut message, &raw mut file, &raw mut line) } {
+        // SAFETY: a NUL-terminated string PHP holds until the next error.
+        let message = unsafe { CStr::from_ptr(message) };
+        // SAFETY: as above.
+        let file = unsafe { CStr::from_ptr(file) };
+        log::error_log(
+            LOG_ERROR,
+            crate::server::SW_ERROR_PHP_FATAL_ERROR,
+            c"php_swoole_server_rshutdown",
+            format_args!(
+                "Fatal error: {} in {} on line {line}",
+                message.to_string_lossy(),
+                file.to_string_lossy()
+            ),
+        );
+    } else {
+        log::error_log(
+            LOG_NOTICE,
+            SW_ERROR_SERVER_WORKER_TERMINATED,
+            c"php_swoole_server_rshutdown",
+            format_args!("worker process is terminated by exit()/die()"),
+        );
+    }
 }

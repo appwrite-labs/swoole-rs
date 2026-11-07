@@ -23,4 +23,8 @@ void swr_zend_stack_restore(void *const *saved);
 
 /* php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS, NULL). */
 bool swr_zend_mkdir_recursive(const char *path);
+
+/* php_swoole_is_fatal_error(): the last error's message, file ("-" without one)
+ * and line when it was fatal (E_FATAL_ERRORS), else false. */
+bool swr_zend_last_fatal_error(const char **message, const char **file, int *line);
 #endif
