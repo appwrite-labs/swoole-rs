@@ -111,7 +111,6 @@ pub struct SettingsHost {
     cpu_affinity: unsafe extern "C" fn(*mut c_int, usize, *mut c_int) -> c_int,
     set_cpu_affinity: unsafe extern "C" fn(*mut c_void, *const c_int, usize),
     strerror: unsafe extern "C" fn(c_int) -> *const c_char,
-    create_dir: unsafe extern "C" fn(*const c_char, usize) -> c_int,
     thread_options: unsafe extern "C" fn(*mut zend_object, *mut c_void) -> bool,
 }
 
@@ -684,7 +683,9 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
     if let Some(value) = s.get(c"upload_tmp_dir") {
         let created = Settings::string(value, |dir| {
             // SAFETY: the directory's bytes.
-            let created = unsafe { (host.create_dir)(dir.as_ptr().cast(), dir.len()) } >= 0;
+            let created =
+                unsafe { crate::instance::php_swoole_create_dir(dir.as_ptr().cast(), dir.len()) }
+                    >= 0;
             if created {
                 // SAFETY: the live server.
                 unsafe { view::set_upload_tmp_dir(s.serv, dir) };

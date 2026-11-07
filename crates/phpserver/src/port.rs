@@ -43,6 +43,17 @@ pub struct PortProperty {
     zsetting: *mut zval,
 }
 
+impl PortProperty {
+    /// `callbacks[kind]`, or null.
+    pub(crate) fn callback(&self, kind: c_int) -> *mut c_void {
+        usize::try_from(kind)
+            .ok()
+            .and_then(|kind| self.callbacks.get(kind))
+            .copied()
+            .unwrap_or(ptr::null_mut())
+    }
+}
+
 /// `ServerPortObject` without its `zend_object`: the `ListenPort` and property.
 #[repr(C)]
 pub struct PortData {

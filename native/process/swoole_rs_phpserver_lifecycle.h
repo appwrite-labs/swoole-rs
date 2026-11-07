@@ -66,16 +66,12 @@ typedef struct {
     void *(*create)(int64_t mode); /* new Server(mode) */
     int (*add_systemd_socket)(void *server);
     void *(*add_port)(void *server, int64_t type, const char *host, int64_t port);
-    /* The listening port at `index` of serv->ports, or null. */
-    void *(*port_at)(void *server, size_t index);
     void (*port_info)(void *port, swr_phpserver_port_info *info);
     /* A new Server\Port object (sw_malloc_zval) bound to `port` and its server. */
     struct _zval_struct *(*port_object)(void *server, void *port);
     void (*port_facts)(struct _zval_struct *port_object, swr_phpserver_port_facts *facts);
     /* Optionally clear_protocol(), then turn on each SWR_PHPSERVER_PROTOCOL_* flag. */
     void (*set_protocols)(void *port, uint32_t protocols, bool clear);
-    /* php_swoole_server_isset_callback(serv, port, type). */
-    bool (*isset_callback)(void *server, void *port, int type);
     /* 0: Server, 1: Http\Server, 2: WebSocket\Server, 3: Redis\Server. */
     int (*kind)(struct _zend_object *object);
     /* serv->create(): null, or sw_error after a failure. */
@@ -104,8 +100,6 @@ typedef struct {
     struct _zend_string *(*json_encode)(struct _zval_struct *data, bool *bailed);
     /* json_decode($text, true) into `out`, or false. */
     void (*json_decode)(const char *text, size_t length, struct _zval_struct *out);
-    /* serv->send(session_id, data, length). */
-    bool (*send)(void *server, int64_t session_id, const char *data, size_t length);
     double (*send_timeout)(void *server);
     struct _zend_class_entry *(*process_class)(void);
     struct _zend_class_entry *(*exception_class)(void);

@@ -41,7 +41,10 @@ use swoole_rs_zend::{
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
 
-use swoole_rs_server::view;
+use crate::instance::{
+    php_swoole_get_recv_data, php_swoole_server_get_callback, php_swoole_server_zval_ptr,
+};
+use swoole_rs_server::{server_methods, view};
 
 /// What the dispatch reads of the Server, per event.
 struct Facts {
@@ -66,10 +69,7 @@ struct Packet {
 /// `swr_v1_phpserver_dispatch_host`.
 #[repr(C)]
 pub struct DispatchHost {
-    zserv: unsafe extern "C" fn(*mut c_void) -> *mut zval,
-    port_callback: unsafe extern "C" fn(*mut c_void, c_int, c_int) -> *mut c_void,
-    recv_data: unsafe extern "C" fn(*mut c_void, *mut zval, *mut c_void),
-    close: unsafe extern "C" fn(*mut c_void, i64),
+    message_bus: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     worker_start: unsafe extern "C" fn(*mut c_void),
     pid: unsafe extern "C" fn() -> i64,
 }
@@ -236,9 +236,14 @@ fn facts(server: *mut c_void) -> Facts {
     }
 }
 
-fn zserv(server: *mut c_void) -> zval {
+/// `serv->get_worker_message_bus()`.
+pub(crate) fn message_bus(server: *mut c_void) -> *mut c_void {
     // SAFETY: a live server.
-    let zserv = unsafe { (host().zserv)(server) };
+    unsafe { (host().message_bus)(server) }
+}
+
+fn zserv(server: *mut c_void) -> zval {
+    let zserv = php_swoole_server_zval_ptr(server);
     // SAFETY: the server's live object zval; copied without a reference, as
     // upstream's `args[0] = *zserv`.
     unsafe { *zserv }
@@ -278,7 +283,7 @@ fn receive_args(
     args: &mut [zval; 4],
 ) -> usize {
     let (fd, reactor_id) = (info.fd, i64::from(info.reactor_id));
-    let recv_data = host().recv_data;
+    let recv_data = php_swoole_get_recv_data;
     if event_object {
         let (ce, object) = object(&mut args[1], EVENT);
         set_long(ce, object, c"fd", fd);
@@ -308,7 +313,7 @@ fn receive_done(server: *mut c_void, succeeded: bool, fd: i64, args: &mut [zval]
             return true;
         }
         // SAFETY: a live server.
-        unsafe { (host().close)(server, fd) };
+        unsafe { server_methods::close(server, fd, false) };
     }
     dtor(&mut args[args.len() - 1]);
     false
@@ -354,7 +359,7 @@ fn on_buffer(server: *mut c_void, full: bool, fd: i64, server_fd: c_int) -> bool
         (ON_BUFFER_EMPTY, "onBufferEmpty")
     };
     // SAFETY: a live server.
-    let cb = unsafe { (host().port_callback)(server, server_fd, kind) };
+    let cb = unsafe { php_swoole_server_get_callback(server, server_fd, kind) };
     if cb.is_null() {
         return false;
     }
@@ -426,7 +431,7 @@ fn on_packet(server: *mut c_void, packet: &Packet, server_fd: c_int, time: f64) 
         3
     };
     // SAFETY: a live server.
-    let cb = unsafe { (host().port_callback)(server, server_fd, ON_PACKET) };
+    let cb = unsafe { php_swoole_server_get_callback(server, server_fd, ON_PACKET) };
     // Upstream names onPipeMessage in onPacket's warning.
     if call(
         cb,
@@ -653,7 +658,7 @@ fn head<'a, T>(event: *mut T) -> &'a DataHead {
 
 fn port_callback(server: *mut c_void, server_fd: u16, kind: c_int) -> *mut c_void {
     // SAFETY: a live server.
-    unsafe { (host().port_callback)(server, c_int::from(server_fd), kind) }
+    unsafe { php_swoole_server_get_callback(server, c_int::from(server_fd), kind) }
 }
 
 fn worker_id(worker: *mut WorkerRecord) -> i64 {
@@ -1157,8 +1162,7 @@ extern "C" fn on_dispatch(
     let config = unsafe { view::config(server) };
     // SAFETY: as above.
     let cache = unsafe { callable::cache(config.private_data_3.cast()) };
-    // SAFETY: a live server.
-    let zserv = unsafe { (host().zserv)(server) };
+    let zserv = php_swoole_server_zval_ptr(server);
     // SAFETY: its live object, copied without a reference as upstream.
     let zserv = unsafe { zserv.read() };
     // SAFETY: null, or the event's live `SendData` (a head and its payload).
@@ -1259,11 +1263,10 @@ pub unsafe extern "C" fn swr_v1_phpserver_length_func(
     result
 }
 
-/// `php_swoole_server_send_yield`, for the C++ WebSocket server.
+/// `php_swoole_server_send_yield`, for `Server::send`.
 /// # Safety
 /// As `swr_v1_phpserver_send_yield`; `data` is a live string.
-#[unsafe(export_name = "_Z28php_swoole_server_send_yieldPN6swoole6ServerElP12_zend_string")]
-pub unsafe extern "C" fn php_swoole_server_send_yield(
+pub(crate) unsafe fn php_swoole_server_send_yield(
     server: *mut c_void,
     session_id: c_long,
     data: *mut zend_string,
@@ -1295,8 +1298,7 @@ pub(crate) fn server_callback(server: *mut c_void, kind: c_int) -> *mut c_void {
 
 /// `*php_swoole_server_zval_ptr(serv) = *zserv`: no reference is taken.
 pub(crate) fn set_server_zval(server: *mut c_void, zserv: *mut zval) {
-    // SAFETY: a live server.
-    let slot = unsafe { (host().zserv)(server) };
+    let slot = php_swoole_server_zval_ptr(server);
     // SAFETY: the live object zval.
     let value = unsafe { *zserv };
     // SAFETY: the server's instance slot.

@@ -436,3 +436,32 @@ pub unsafe fn healthy(serv: *mut c_void, now: f64, conn: &ConnectionRecord) -> b
     let idle = unsafe { self::port(port) }.heartbeat_idle_time;
     idle == 0 || conn.last_recv_time > now - f64::from(idle)
 }
+
+/// `serv->ports[index]`: the `ListenPort`s in listen order, null past the last
+/// (index 0 is `Server::get_primary_port()`).
+///
+/// # Safety
+/// `serv` is a live `Server`.
+pub unsafe fn port_at(serv: *mut c_void, index: usize) -> *mut c_void {
+    // SAFETY: per the caller.
+    let tables = unsafe { state(serv) }.tables();
+    if tables.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: the live server's tables.
+    let ports = unsafe { &*tables }.ports();
+    ports.get(index).copied().unwrap_or(core::ptr::null_mut())
+}
+
+/// The connection socket's `recv_buffer` (a `swoole::String *`), or null.
+///
+/// # Safety
+/// `conn` is a live connection whose `socket` is null or live.
+pub unsafe fn recv_buffer(conn: &ConnectionRecord) -> *mut c_void {
+    let socket = conn.socket.cast::<SocketRecord>();
+    if socket.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: per the caller.
+    unsafe { &*socket }.recv_buffer
+}

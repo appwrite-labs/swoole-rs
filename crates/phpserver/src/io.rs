@@ -8,12 +8,13 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, server_methods, view};
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, bailout, message,
     string::bytes,
     sys::{
         IS_NULL, IS_STRING, IS_TRUE, swr_zend_string_release, swr_zval_copy, swr_zval_get_string,
-        zend_object, zend_read_property, zend_string, zend_update_property, zval,
+        zend_object, zend_read_property, zend_update_property, zval,
     },
     to_long, type_of,
 };
@@ -24,7 +25,6 @@ pub struct IoHost {
     closed: unsafe extern "C" fn(*mut c_void) -> bool,
     listen: unsafe extern "C" fn(*mut zend_object, *const c_char, i64, i64, *mut zval) -> bool,
     send_unix: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, usize, i64) -> c_int,
-    send: unsafe extern "C" fn(*mut c_void, i64, *mut zend_string) -> bool,
     sendto: unsafe extern "C" fn(
         *mut c_void,
         c_int,
@@ -34,10 +34,6 @@ pub struct IoHost {
         usize,
         i64,
     ) -> c_int,
-    sendfile: unsafe extern "C" fn(*mut c_void, i64, *const c_char, usize, i64, i64) -> bool,
-    has_pipe_message: unsafe extern "C" fn(*mut c_void) -> bool,
-    core_worker_num: unsafe extern "C" fn(*mut c_void) -> i64,
-    send_message: unsafe extern "C" fn(*mut c_void, *mut c_void, i64) -> bool,
 }
 
 static HOST: AtomicPtr<IoHost> = AtomicPtr::new(ptr::null_mut());
@@ -246,7 +242,7 @@ fn send(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: a live server and string.
-    call.set_bool(unsafe { (host.send)(serv, fd, data) });
+    call.set_bool(unsafe { crate::instance::send(serv, fd, data) });
 }
 
 fn sendto(call: &Call) {
@@ -308,7 +304,6 @@ fn sendfile(call: &Call) {
     let Ok((fd, filename, offset, length)) = parsed else {
         return call.set_bool(false);
     };
-    let host = host();
     if crate::server::worker_type() == crate::server::MASTER {
         // `%s`: the name up to its first NUL.
         let shown = filename.split(|&b| b == 0).next().unwrap_or_default();
@@ -319,24 +314,29 @@ fn sendfile(call: &Call) {
         fatal(E_WARNING, text.as_cstr());
         return call.set_bool(false);
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Server::sendfile's uint32_t name length and size_t size, as upstream's conversions"
+    )]
+    let (name_length, size) = (filename.len() as u32, length as usize);
     // SAFETY: a live server and the NUL-terminated name.
     call.set_bool(unsafe {
-        (host.sendfile)(
+        server_methods::sendfile(
             serv,
             fd,
             filename.as_ptr().cast(),
-            filename.len(),
+            name_length,
             offset,
-            length,
+            size,
         )
     });
 }
 
 fn send_message(call: &Call) {
     let Some(serv) = running(call) else { return };
-    let host = host();
     // SAFETY: a live server.
-    if !unsafe { (host.has_pipe_message)(serv) } {
+    if !unsafe { view::has_callback(serv, CB_PIPE_MESSAGE) } {
         fatal(E_WARNING, c"onPipeMessage is null, can't use sendMessage");
         return call.set_bool(false);
     }
@@ -348,7 +348,9 @@ fn send_message(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: a live server.
-    if worker_id < 0 || worker_id >= unsafe { (host.core_worker_num)(serv) } {
+    let config = unsafe { view::config(serv) };
+    let core_worker_num = i64::from(config.worker_num) + i64::from(config.task_worker_num);
+    if worker_id < 0 || worker_id >= core_worker_num {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "(int) worker_id, as upstream"
@@ -364,8 +366,14 @@ fn send_message(call: &Call) {
     if crate::task::pack(call.zval(1), &mut buf) < 0 {
         return call.set_bool(false);
     }
-    // SAFETY: a live server and the packed message.
-    call.set_bool(unsafe { (host.send_message)(serv, buf.ptr(), worker_id) });
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked against the core worker count above"
+    )]
+    let worker_id = worker_id as u32;
+    // SAFETY: a live server and the packed message, an `EventData`.
+    call.set_bool(unsafe { server_methods::send_pipe_message(serv, worker_id, buf.ptr().cast()) });
 }
 
 fn finish(call: &Call) {

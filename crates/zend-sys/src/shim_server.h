@@ -20,4 +20,7 @@ int swr_zend_try_array_merge(zval *dest, zval *src);
  * and put them back. Nothing without ZEND_CHECK_STACK_LIMIT. */
 void swr_zend_stack_unlimit(void **saved);
 void swr_zend_stack_restore(void *const *saved);
+
+/* php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS, NULL). */
+bool swr_zend_mkdir_recursive(const char *path);
 #endif
