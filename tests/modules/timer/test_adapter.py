@@ -1,10 +1,10 @@
-"""Instrument the selected native timer adapter; unchanged baseline probe goldens.
+"""Drive the hybrid extension's own timer from a native probe; unchanged baseline probe goldens.
 
-Builds the selected adapter and ID wrapper from an immutable --manifest build
-with the baseline probe and selected Rust archive (no heap.cc). --sanitize
-instruments the native caller and adapter only; the Rust archive, PHP and
-runtime dependencies are not. Each scenario is an isolated five-second process
-group. Original failed upstream baseline reports remain failures.
+The probe compiles against the immutable --manifest build's headers and takes the
+Timer, the swoole_timer_* wrappers and the Rust queue from the loaded extension,
+so it tests the code that ships wherever that code lives. --sanitize instruments
+the probe only; the extension, Rust and PHP are not. Each scenario is an isolated
+five-second process group. Original failed upstream baseline reports remain failures.
 """
 import hashlib
 import json
@@ -98,8 +98,7 @@ def probe(pytestconfig, tmp_path_factory):
     for name, checksum in manifest['inputs']['headers_sha256'].items():
         assert sha(prefix / 'include' / Path(name).name) == checksum, f'ABI header mismatch: {name}'
     tree = tmp_path_factory.mktemp('timer-adapter')
-    names = subprocess.check_output(['git', 'ls-files', 'include'], cwd=source, text=True).splitlines() + ['src/core/timer.cc', 'src/wrapper/timer.cc']
-    for name in names:
+    for name in subprocess.check_output(['git', 'ls-files', 'include'], cwd=source, text=True).splitlines():
         if (source / name).is_file():
             (tree / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source / name, tree / name)
@@ -113,7 +112,7 @@ def probe(pytestconfig, tmp_path_factory):
     for option in manifest['configure']:
         if option.startswith('--with-openssl-dir='):
             command += ['-I' + option.split('=', 1)[1] + '/include']
-    command += [str(tree / 'src/core/timer.cc'), str(tree / 'src/wrapper/timer.cc'), str(Path(__file__).with_name('probe.cc')), str(archive), '-lc', '-lm']
+    command += [str(Path(__file__).with_name('probe.cc')), '-lc', '-lm']
     if linux:
         command += ['-ldl', '-lpthread', '-lrt', '-lutil']
     command += ['-o', str(library)]

@@ -1,9 +1,9 @@
 # Selected native timer adapter gate
 
-`hybrid.py` links the selected build's `src/core/timer.cc` adapter and
-`src/wrapper/timer.cc`, the shared `probe.cc`, and the build's Rust FFI archive
-into a native probe loaded through PHP FFI (the selected Swoole extension
-supplies runtime dependencies). macOS or Linux:
+`test_adapter.py` compiles the shared `probe.cc` against the selected build's
+headers into a native probe loaded through PHP FFI. The probe takes the Timer,
+the `swoole_timer_*` wrappers and the Rust queue from the loaded extension, so it
+tests the shipped timer, whichever source defines it. macOS or Linux:
 
 ```sh
 python3 -m pytest tests/modules/timer/test_adapter.py --sanitize \
@@ -32,8 +32,8 @@ observation:
 - `wrapper-clear`: real `swoole_timer_clear(id)` for inactive, self, other,
   repeated and missing IDs, with exactly three destructions.
 
-`--sanitize` instruments the C++ adapter and probe with ASan/UBSan (leak
-checking off); the Rust archive and PHP are not instrumented. Any sanitizer log
+`--sanitize` instruments the probe with ASan/UBSan (leak
+checking off); the extension, Rust and PHP are not instrumented. Any sanitizer log
 fails the gate.
 
 ## Known failures
