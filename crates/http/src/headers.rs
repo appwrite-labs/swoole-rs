@@ -1,5 +1,5 @@
 //! Header metadata and cookie tokenization with native work between pure steps.
-use super::{HttpSpan, INVALID};
+use super::{HttpSpan, INVALID, tail};
 fn space(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t'..=b'\r')
 }
@@ -56,25 +56,32 @@ pub(crate) fn header_info(
     let length = input.len();
     *multipart = HttpSpan::default();
     state.number_errors = 0;
-    if state.cursor > length || end > length || (state.cursor < 2 && state.cursor < end) {
+    let Some(head) = input.get(..end) else {
+        return INVALID;
+    };
+    if state.cursor > length || (state.cursor < 2 && state.cursor < end) {
         return INVALID;
     }
     let mut at = state.cursor;
     while at < end {
-        // The next line start: just past a `\n` at `at - 1` or later.
-        let Some(newline) = memchr::memchr(b'\n', &input[at - 1..end - 1]) else {
+        // The next line start: just past a `\n` at `at - 1` or later (`at >= 2` here).
+        let Some(newline) = input
+            .get(at - 1..end - 1)
+            .and_then(|line| memchr::memchr(b'\n', line))
+        else {
             at = end;
             break;
         };
         at += newline;
-        if input[at - 2] == b'\r' {
-            let kind = if starts(&input[at..end], b"Content-Length:") {
+        if input.get(at - 2) == Some(&b'\r') {
+            let line = tail(head, at);
+            let kind = if starts(line, b"Content-Length:") {
                 Some((15, 1))
-            } else if starts(&input[at..end], b"Connection:") {
+            } else if starts(line, b"Connection:") {
                 Some((11, 2))
-            } else if starts(&input[at..end], b"Transfer-Encoding:") {
+            } else if starts(line, b"Transfer-Encoding:") {
                 Some((18, 3))
-            } else if starts(&input[at..end], b"Content-Type:") {
+            } else if starts(line, b"Content-Type:") {
                 Some((13, 4))
             } else {
                 None
@@ -87,7 +94,7 @@ pub(crate) fn header_info(
                 state.cursor = at + 1;
                 match kind {
                     1 => {
-                        let (value, overflow) = number(&input[at..]);
+                        let (value, overflow) = number(tail(input, at));
                         state.content_length = value;
                         state.flags |= 1;
                         if overflow == 1 {
@@ -97,23 +104,23 @@ pub(crate) fn header_info(
                         }
                     }
                     2 => {
-                        if at <= end && starts(&input[at..end], b"keep-alive") {
+                        if starts(tail(head, at), b"keep-alive") {
                             state.flags |= 2;
                         }
                     }
                     3 => {
-                        if at <= end && starts(&input[at..end], b"chunked") {
+                        if starts(tail(head, at), b"chunked") {
                             state.flags |= 4;
                         }
                     }
                     4 => {
-                        if at <= end && starts(&input[at..end], b"multipart/form-data") {
+                        if starts(tail(head, at), b"multipart/form-data") {
                             let Some(count) =
-                                input[at..].iter().position(|&b| matches!(b, b'\r' | 0))
+                                tail(input, at).iter().position(|&b| matches!(b, b'\r' | 0))
                             else {
                                 return INVALID;
                             };
-                            if input[at + count] == 0 {
+                            if input.get(at + count) == Some(&0) {
                                 return INVALID;
                             }
                             let begin = at + 19;

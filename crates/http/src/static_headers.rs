@@ -1,6 +1,6 @@
 //! Static response header encoding. Native retains allocation, dates and IO.
 use crate::proxy::{HttpProxyText, Prefix};
-use crate::{INVALID, OVERFLOW, bytes};
+use crate::{INVALID, OVERFLOW, bytes, c_text};
 use std::{fmt::Write, mem::MaybeUninit, slice};
 
 #[repr(C)]
@@ -22,7 +22,7 @@ pub struct HttpStaticHeaders {
 unsafe fn text<'a>(value: HttpProxyText) -> Result<&'a [u8], i32> {
     // SAFETY: callers pass a header text span naming `length` initialized bytes.
     let input = unsafe { bytes(value.data, value.length) }?;
-    Ok(&input[..input.iter().position(|&b| b == 0).unwrap_or(input.len())])
+    Ok(c_text(input))
 }
 /// Encode 0=404, 1=304, 2=autoindex, 3=file. Range kind: 0=none,
 /// 1=Content-Range, 2=Accept-Ranges. Native inputs are borrowed for this call only.

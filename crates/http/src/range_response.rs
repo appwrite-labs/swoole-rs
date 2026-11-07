@@ -1,6 +1,6 @@
 //! Range response assembly/commit policy. Native owns containers and date/IO work.
 use crate::proxy::{HttpProxyText, Prefix};
-use crate::{INVALID, OVERFLOW, bytes};
+use crate::{INVALID, OVERFLOW, bytes, c_text};
 use std::{fmt::Write, mem::MaybeUninit, slice};
 
 #[repr(C)]
@@ -97,8 +97,7 @@ pub unsafe extern "C" fn swr_v1_http_range_format(
             Ok(value) => value,
             Err(error) => return error,
         };
-        let c_string = |input: &[u8]| input.iter().position(|&b| b == 0).unwrap_or(input.len());
-        (&boundary[..c_string(boundary)], &mime[..c_string(mime)])
+        (c_text(boundary), c_text(mime))
     } else {
         (boundary, &[][..])
     };

@@ -1,5 +1,5 @@
 //! CONNECT request formatting and the pinned proxy response state machine.
-use crate::{INVALID, OVERFLOW, bytes};
+use crate::{INVALID, OVERFLOW, bytes, c_text, tail};
 use std::{
     fmt::{self, Write},
     mem::MaybeUninit,
@@ -28,17 +28,7 @@ pub(super) struct Prefix<'a> {
 }
 impl Prefix<'_> {
     pub(super) fn append(&mut self, input: &[u8]) -> fmt::Result {
-        let count = self
-            .output
-            .len()
-            .saturating_sub(self.length)
-            .min(input.len());
-        for (destination, byte) in self
-            .output
-            .iter_mut()
-            .skip(self.length)
-            .zip(&input[..count])
-        {
+        for (destination, byte) in self.output.iter_mut().skip(self.length).zip(input) {
             destination.write(*byte);
         }
         self.length = self.length.checked_add(input.len()).ok_or(fmt::Error)?;
@@ -68,7 +58,7 @@ unsafe fn text<'a>(value: HttpProxyText) -> Result<&'a [u8], i32> {
     };
     // SAFETY: callers pass a text span whose `length` (or precision) bytes are initialized.
     let input = unsafe { bytes(value.data, length) }?;
-    Ok(&input[..input.iter().position(|&b| b == 0).unwrap_or(input.len())])
+    Ok(c_text(input))
 }
 /// Format the pinned fixed256-byte username:password staging buffer. Native
 /// base64/return-string ownership follows after this call. The useful prefix
@@ -87,7 +77,7 @@ pub unsafe extern "C" fn swr_v1_http_proxy_credentials(
         return INVALID;
     }
     // SAFETY: non-null (checked above); the caller lends two initialized spans.
-    let credentials = unsafe { slice::from_raw_parts(credentials, 2) };
+    let credentials = unsafe { &*credentials.cast::<[HttpProxyText; 2]>() };
     for value in credentials {
         if value.length > isize::MAX as usize {
             return OVERFLOW;
@@ -162,7 +152,7 @@ pub unsafe extern "C" fn swr_v1_http_proxy_credentials(
             Ok(input) => input,
             Err(error) => return error,
         };
-        let input = &input[..input.iter().position(|&b| b == 0).unwrap_or(input.len())];
+        let input = c_text(input);
         #[expect(
             clippy::let_underscore_must_use,
             reason = "the 255-byte cap keeps the length from overflowing"
@@ -325,12 +315,14 @@ pub unsafe extern "C" fn swr_v1_http_proxy_handshake(data: *const u8, length: us
         return 0;
     }
     // The original loop skips index 8 after recognizing HTTP/1.x.
-    let Some(cursor) =
-        (9..input.len()).find(|&i| !matches!(input[i], b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c))
+    let Some(cursor) = tail(input, 9)
+        .iter()
+        .position(|b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c))
     else {
         return 0;
     };
-    if !input[cursor..].starts_with(b"200") {
+    let cursor = cursor + 9;
+    if !tail(input, cursor).starts_with(b"200") {
         return -2;
     }
     i32::from(input.len() - cursor > 4)

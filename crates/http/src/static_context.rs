@@ -105,7 +105,10 @@ impl HttpStaticContext {
             )
         };
         if result == 3 {
-            let value = match copied(&url[..self.path.url_length]) {
+            let Some(url) = url.get(..self.path.url_length) else {
+                return INVALID;
+            };
+            let value = match copied(url) {
                 Ok(value) => value,
                 Err(error) => return error,
             };
@@ -131,13 +134,7 @@ impl HttpStaticContext {
             ORIGINAL => &self.original,
             DIRECTORY => &self.directory_path,
             INDEX => &self.index,
-            FILENAME => {
-                &self.filename[..self
-                    .filename
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap_or(self.filename.len())]
-            }
+            FILENAME => crate::c_text(&self.filename),
             BOUNDARY => &self.boundary,
             CONTENT => &self.content,
             END => &self.end,
@@ -146,11 +143,15 @@ impl HttpStaticContext {
     }
     fn publish(&mut self, kind: u32, text: &[u8]) -> i32 {
         if kind == FILENAME {
-            if text.len() >= self.filename.len() {
+            let Some((nul, head)) = self
+                .filename
+                .get_mut(..=text.len())
+                .and_then(|slots| slots.split_last_mut())
+            else {
                 return OVERFLOW;
-            }
-            self.filename[..text.len()].copy_from_slice(text);
-            self.filename[text.len()] = 0;
+            };
+            head.copy_from_slice(text);
+            *nul = 0;
             self.path.filename_length = text.len();
             return 0;
         }
@@ -350,7 +351,7 @@ pub unsafe extern "C" fn swr_v2_http_context_boundary(
     {
         return ALLOCATION;
     }
-    boundary.extend_from_slice(&prefix[..prefix.len() - 1]);
+    boundary.extend_from_slice(crate::c_text(prefix));
     boundary.extend_from_slice(random);
     owner.boundary = boundary;
     0
