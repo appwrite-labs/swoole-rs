@@ -146,7 +146,6 @@ swr_v1_server_callback *swr_v1_server_callbacks_get(swr_v1_server_state *state);
     F(uint32_t, compression_min_length) \
     F(const SWR_SERVER_NATIVE(Allocator) *, recv_buffer_allocator) \
     F(size_t, recv_buffer_size) \
-    F(int, manager_alarm) \
     F(uint64_t, message_queue_key) \
     F(uint8_t, mode_)
 

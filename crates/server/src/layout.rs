@@ -71,7 +71,6 @@ const RECORD_0_OFFSETS: &[usize] = &[
     offset_of!(crate::config::ServerConfig, compression_min_length),
     offset_of!(crate::config::ServerConfig, recv_buffer_allocator),
     offset_of!(crate::config::ServerConfig, recv_buffer_size),
-    offset_of!(crate::config::ServerConfig, manager_alarm),
     offset_of!(crate::config::ServerConfig, message_queue_key),
     offset_of!(crate::config::ServerConfig, mode_),
 ];

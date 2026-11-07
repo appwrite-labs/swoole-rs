@@ -246,8 +246,6 @@ pub const OP_SIGNAL_REOPEN: u32 = 104;
 /// `swoole_signal_set(arg, nullptr)` and `swoole_signal_set(arg, master_signal_handler)`.
 pub const OP_SIGNAL_IGNORE: u32 = 105;
 pub const OP_SIGNAL_HANDLE: u32 = 106;
-/// `HOOK_MASTER_TIMER`, when set.
-pub const OP_MASTER_TIMER_HOOK: u32 = 107;
 /// `sw_reactor()->running = false`.
 pub const OP_REACTOR_STOP: u32 = 108;
 
@@ -344,7 +342,7 @@ pub const OP_REACTOR_BARRIER: u32 = 191;
 pub const OP_MANAGER_BARRIER: u32 = 192;
 /// `gs->master_pid = getpid()`.
 pub const OP_SET_MASTER_PID: u32 = 193;
-/// `HOOK_MASTER_START` then `onStart`, each when set.
+/// `onStart`, when set.
 pub const OP_MASTER_START: u32 = 194;
 /// `swoole_event_wait()`.
 pub const OP_EVENT_WAIT: u32 = 195;
@@ -363,7 +361,6 @@ pub const OP_FREE_USER_WORKERS: u32 = 203;
 pub const OP_MARK_SHUTDOWN: u32 = 204;
 /// `onShutdown`, when set.
 pub const OP_ON_SHUTDOWN: u32 = 205;
-pub const OP_FREE_HOOKS: u32 = 206;
 /// The base, thread or process factory's teardown for mode arg.
 pub const OP_DESTROY_FACTORY: u32 = 207;
 pub const OP_DESTROY_TASK_WORKERS: u32 = 208;
