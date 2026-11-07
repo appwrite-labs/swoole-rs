@@ -468,6 +468,29 @@ pub unsafe extern "C" fn task_unpack(
     true
 }
 
+/// `Server::task_unpack(task, sw_tg_buffer(), &packet)`: the payload's bytes
+/// and length, and the task's `ext_flags`; `None` if its temporary file can't be read.
+///
+/// # Safety
+/// `task` is a live `EventData` and `buffer` this thread's live `String`.
+pub unsafe fn unpack(
+    task: *mut c_void,
+    buffer: *mut c_void,
+) -> Option<(*const c_char, usize, u16)> {
+    let task = task.cast::<EventHead>();
+    let mut packet = PacketPtr {
+        length: 0,
+        data: ptr::null_mut(),
+    };
+    // SAFETY: per the caller.
+    if !unsafe { task_unpack(task, buffer.cast(), &raw mut packet) } {
+        return None;
+    }
+    // SAFETY: as above.
+    let flags = unsafe { (*task).ext_flags };
+    Some((packet.data, packet.length, flags))
+}
+
 #[cfg(target_os = "linux")]
 fn errno_location() -> *mut c_int {
     // SAFETY: always callable; returns this thread's errno.

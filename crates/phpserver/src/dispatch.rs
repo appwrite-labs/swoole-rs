@@ -71,7 +71,6 @@ struct Packet {
 pub struct DispatchHost {
     message_bus: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     worker_start: unsafe extern "C" fn(*mut c_void),
-    pid: unsafe extern "C" fn() -> i64,
 }
 
 static HOST: AtomicPtr<DispatchHost> = AtomicPtr::new(ptr::null_mut());
@@ -528,8 +527,7 @@ fn on_lifecycle(server: *mut c_void, kind: c_int, worker_id: i64) -> bool {
                 i64::from(facts.task_worker),
             );
         }
-        // SAFETY: reads the process id.
-        set_server_long(object, c"worker_pid", unsafe { (host.pid)() });
+        set_server_long(object, c"worker_pid", i64::from(std::process::id()));
         // SAFETY: a live server.
         unsafe { (host.worker_start)(server) };
     }

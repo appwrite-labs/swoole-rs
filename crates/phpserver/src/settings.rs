@@ -106,11 +106,8 @@ mod text {
 pub struct SettingsHost {
     get: unsafe extern "C" fn(*mut c_void, u32) -> i64,
     text: unsafe extern "C" fn(*mut c_void, u32, *const c_char, usize),
-    parse_size: unsafe extern "C" fn(*mut zval) -> i64,
     global_options: unsafe extern "C" fn(*mut c_void) -> bool,
     cpu_affinity: unsafe extern "C" fn(*mut c_int, usize, *mut c_int) -> c_int,
-    set_cpu_affinity: unsafe extern "C" fn(*mut c_void, *const c_int, usize),
-    strerror: unsafe extern "C" fn(c_int) -> *const c_char,
     thread_options: unsafe extern "C" fn(*mut zend_object, *mut c_void) -> bool,
 }
 
@@ -278,8 +275,8 @@ impl Settings {
     }
 
     pub(crate) fn size(value: *mut zval) -> Result<i64, Stop> {
-        // SAFETY: a live setting; C++'s `php_swoole_parse_to_size`.
-        let value = unsafe { (host().parse_size)(value) };
+        // SAFETY: a live setting.
+        let value = unsafe { swoole_rs_phpswoole::php_swoole_parse_to_size(value) };
         checked().map(|()| value)
     }
 
@@ -616,10 +613,7 @@ fn cpu_affinity_ignore(s: &Settings, value: *mut zval) -> Result<bool, Stop> {
         // php_swoole_sys_error(E_WARNING, "sched_getaffinity() failed")
         set_last_error(error);
         if display_errors() {
-            // SAFETY: plain state.
-            let reason = unsafe { (host.strerror)(error) };
-            // SAFETY: Swoole's static error strings.
-            let reason = unsafe { CStr::from_ptr(reason) };
+            let reason = swoole_rs_phpruntime::strerror(error);
             let text = message!(
                 "sched_getaffinity() failed, Error: {}[{error}]",
                 reason.to_string_lossy()
@@ -648,8 +642,16 @@ fn cpu_affinity_ignore(s: &Settings, value: *mut zval) -> Result<bool, Stop> {
         fatal(E_ERROR, c"cpu_affinity_ignore excludes all available CPUs");
         return Err(Stop);
     }
-    // SAFETY: a live server and the CPUs left.
-    unsafe { (host.set_cpu_affinity)(s.serv, cpus.as_ptr(), cpus.len()) };
+    let bytes = size_of_val(cpus.as_slice());
+    let available = swoole_rs_corebase::sw_malloc(bytes).cast::<c_int>();
+    // SAFETY: a fresh allocation of `bytes`, apart from `cpus`.
+    unsafe { ptr::copy_nonoverlapping(cpus.as_ptr(), available, cpus.len()) };
+    // SAFETY: a live server, not started (set() checked).
+    let c = unsafe { view::config(s.serv) };
+    c.cpu_affinity_available_num = c_int::try_from(cpus.len()).unwrap_or(c_int::MAX);
+    // SAFETY: null or the previous `sw_malloc` list, which nothing else holds.
+    unsafe { swoole_rs_corebase::sw_free(c.cpu_affinity_available.cast()) };
+    c.cpu_affinity_available = available;
     Ok(true)
 }
 

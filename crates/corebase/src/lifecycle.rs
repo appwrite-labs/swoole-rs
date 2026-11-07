@@ -196,3 +196,11 @@ pub unsafe extern "C-unwind" fn swr_v1_core_fork_exec(
         pid => pid,
     }
 }
+
+/// `sw_tg_buffer()`: `SwooleTG.buffer_stack`, null before `swoole_init`.
+#[must_use]
+pub fn thread_buffer() -> *mut c_void {
+    native::host().map_or(std::ptr::null_mut(), |host| {
+        read(host, |thread| thread.buffer_stack)
+    })
+}

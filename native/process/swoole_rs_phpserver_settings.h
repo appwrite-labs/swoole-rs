@@ -42,14 +42,10 @@ typedef struct {
     int64_t (*get)(void *server, uint32_t id);
     /* A string setting, or one item of a list (SWR_PHPSERVER_TEXT_*). */
     void (*text)(void *server, uint32_t id, const char *value, size_t length);
-    int64_t (*parse_size)(struct _zval_struct *value);
     /* php_swoole_set_global/coroutine/aio_option in zend_try: true if it bailed out. */
     bool (*global_options)(void *settings);
     /* This process's CPU affinity into `cpus`: the count, or -1 with *error = errno. */
     int (*cpu_affinity)(int *cpus, size_t capacity, int *error);
-    /* serv->cpu_affinity_available(_num) = a copy of `cpus`. */
-    void (*set_cpu_affinity)(void *server, const int *cpus, size_t count);
-    const char *(*strerror)(int code);
     /* SW_THREAD's bootstrap and init_arguments, in zend_try: true if it bailed out. */
     bool (*thread_options)(struct _zend_object *object, void *settings);
 } swr_v1_phpserver_settings_host;
