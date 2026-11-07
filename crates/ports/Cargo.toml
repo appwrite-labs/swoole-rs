@@ -21,6 +21,8 @@ swoole-rs-server = { path = "../server" }
 swoole-rs-http = { path = "../http" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-error = { path = "../error" }
+swoole-rs-clients = { path = "../clients" }
+swoole-rs-tls = { path = "../tls" }
 
 [lints]
 workspace = true

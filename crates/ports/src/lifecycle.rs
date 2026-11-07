@@ -14,8 +14,6 @@ pub const RUN_SNI: u32 = 4;
 pub const RUN_IMPORT: u32 = 5;
 pub const RUN_CLOSE: u32 = 6;
 pub const RUN_CONTEXT_CREATE: u32 = 7;
-/// `listen`'s failure warning, which names the native `host`.
-pub const RUN_WARN_LISTEN: u32 = 8;
 
 // The context being created (`ssl_context_create`): the SNI one or the port's.
 pub const OP_CERT_EMPTY: u32 = 0;
@@ -87,7 +85,6 @@ pub const OP_HAS_SOCKET: u32 = 54;
 pub const OP_FREE_SOCKET: u32 = 55;
 pub const OP_IS_UNIX: u32 = 56;
 pub const OP_UNLINK: u32 = 57;
-pub const OP_WARN_LISTEN: u32 = 58;
 
 /// `SSLContext` flags `ssl_context_init` sets.
 pub const CONTEXT_PREFER_SERVER_CIPHERS: u64 = 0;
@@ -194,10 +191,6 @@ fn run(
         }
         RUN_CLOSE => {
             close(&n);
-            0
-        }
-        RUN_WARN_LISTEN => {
-            n.effect(OP_WARN_LISTEN);
             0
         }
         _ => -1,

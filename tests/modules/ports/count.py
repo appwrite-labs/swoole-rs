@@ -6,13 +6,46 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import hashlib
 import overlay
-from socket_workflow import configured_flags
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
 from tools.build_hybrid import hybrid_tree
 from tools.harness import run_isolated,write_report
 from tools.build_upstream import require_build_space
+
+
+def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+
+def configured_flags(core):
+    """Read literal Make assignments only; never evaluate shell/functions/recipes."""
+    makefile=core/'Makefile'
+    if not makefile.is_file():
+        return [],{'scope':'No configured Makefile; explicit core/header/OpenSSL paths only'}
+    text=makefile.read_text().replace('\\\r\n',' ').replace('\\\n',' ')
+    variables={}
+    for line in text.splitlines():
+        match=re.match(r'^([A-Za-z_][A-Za-z0-9_]*)\s*(\+=|\?=|:=|=)\s*(.*)$',line)
+        if not match:continue
+        name,operator,value=match.groups()
+        if operator=='+=':variables[name]=variables.get(name,'')+' '+value
+        elif operator!='?=' or name not in variables:variables[name]=value
+    def expand(name,active=()):
+        if name in active or len(active)>=32:raise ValueError('Recursive Makefile flag variable: '+name)
+        if name not in variables:raise ValueError('Unknown Makefile flag variable: '+name)
+        value=re.sub(r'\$\(([A-Za-z_][A-Za-z0-9_]*)\)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}',
+                     lambda m:expand(m.group(1) or m.group(2),(*active,name)),variables[name])
+        if '$' in value or '`' in value:raise ValueError('Nonliteral Makefile flag expression: '+name)
+        return value
+    flags=[];selected={}
+    for name in ['INCLUDES','CPPFLAGS']:
+        if name in variables:
+            selected[name]={'raw':variables[name],'expanded':expand(name)}
+            flags+=shlex.split(selected[name]['expanded'],comments=True,posix=True)
+    return flags,{'makefile':str(makefile),'sha256':sha(makefile),'variables':selected,'argv':flags,
+                  'scope':'Literal configured INCLUDES/CPPFLAGS, compiler cwd is configured core; no shell evaluation'}
+
 
 def accessor(text,signature):
     start=text.index(signature);end=text.index('\n}\n',start)+3

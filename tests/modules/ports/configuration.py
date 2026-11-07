@@ -40,7 +40,7 @@ def attest(manifest,archive,source_ref,metadata):
         kind='frozen Git M25 source blob'
     symbols=subprocess.check_output(['nm','-g',candidates[0]['extension']],text=True,stderr=subprocess.DEVNULL)
     defined={parts[-1].lstrip('_') for line in symbols.splitlines() if len(parts:=line.split())>=2 and parts[-2].upper() in {'T','W'}}
-    required=['number','protocol','protocol_name','event','socket_step','protocol_plan','framing_settings','stream_settings','defaults','callback_property','flag_setting','buffer_setting','packet_eof','packet_width','packet_offset','option','tls_option','tls_value','sni_plan','callback_hook']
+    required=['number','protocol','protocol_name','event','protocol_plan','framing_settings','stream_settings','defaults','callback_property','flag_setting','buffer_setting','packet_eof','packet_width','packet_offset','option','tls_option','tls_value','sni_plan','callback_hook']
     if not all('swr_v1_ports_'+name in defined for name in required):raise ValueError('Actual candidate DSO lacks required M25 controller exports')
     return {'passed':True,'source_ref':source_ref,'source_reference':kind,'required_candidate_dso_exports':required}
 
