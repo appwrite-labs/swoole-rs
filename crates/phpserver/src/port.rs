@@ -72,7 +72,6 @@ const PROPERTY_BOOL: u32 = 3;
 #[repr(C)]
 pub struct PortHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
-    started: unsafe extern "C" fn(*mut c_void) -> bool,
     warn: unsafe extern "C" fn(c_int, *const c_char),
     socket: unsafe extern "C" fn(*mut c_void, *mut zval),
     pub(crate) ssl_owner: unsafe extern "C" fn(*mut c_void) -> *const OwnedTlsContext,
@@ -276,8 +275,7 @@ fn on(call: &Call) {
         invalid(call);
     }
     let serv = property.serv;
-    // SAFETY: the port's server.
-    if unsafe { (host().started)(serv) } {
+    if crate::io::closed(serv) {
         // SAFETY: a warning; no name.
         unsafe { (host().warn)(0, ptr::null()) };
         return call.set_bool(false);

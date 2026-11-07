@@ -523,6 +523,43 @@ fn body<H: Host>(h: &mut H, arg: u64) {
     h.op(OP_THREAD_EXIT, id);
 }
 
+/// A worker thread's body (`Server::worker_thread_start`'s `fn`).
+pub type WorkerMain = unsafe extern "C" fn(*mut c_void);
+
+/// What runs a thread-mode worker thread's body on its `swoole::Thread`.
+pub type WorkerThreadStart = unsafe fn(*mut c_void, WorkerMain, *mut c_void);
+
+static WORKER_THREAD_START: Mutex<Option<WorkerThreadStart>> = Mutex::new(None);
+
+/// `serv->worker_thread_start = start`; `None` restores upstream's default,
+/// which runs the body directly.
+pub fn set_worker_thread_start(start: Option<WorkerThreadStart>) {
+    *WORKER_THREAD_START
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = start;
+}
+
+/// `serv->worker_thread_start(thread, fn)`, from a `ThreadFactory` thread.
+///
+/// # Safety
+/// `thread` is the thread's live `swoole::Thread` and `run(context)` its body.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_workers_thread_start(
+    thread: *mut c_void,
+    run: WorkerMain,
+    context: *mut c_void,
+) {
+    let start = *WORKER_THREAD_START
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    match start {
+        // SAFETY: per the caller.
+        Some(start) => unsafe { start(thread, run, context) },
+        // SAFETY: per the caller.
+        None => unsafe { run(context) },
+    }
+}
+
 /// What a thread runs inside `worker_thread_start`.
 fn thread_main<H: Host>(h: &mut H, arg: u64) {
     match arg >> 32 {

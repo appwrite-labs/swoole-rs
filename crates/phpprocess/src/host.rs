@@ -7,7 +7,7 @@ use std::{
     ptr,
 };
 use swoole_rs_corebase::{
-    swr_v1_core_server, swr_v1_core_signal_listener_num, thread_async_threads, thread_kind,
+    swr_v1_core_server, swr_v1_core_signal_listener_num, thread_async_threads,
 };
 use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
 use swoole_rs_phphelpers::{callable, function_call};
@@ -47,9 +47,6 @@ const MASTER: c_int = 1;
 const TASK_WORKER: c_int = 4;
 const MANAGER: c_int = 3;
 const USER_WORKER: c_int = 5;
-/// `Server::MODE_THREAD` and `Server::THREAD_WORKER`.
-const MODE_THREAD: u8 = 3;
-const THREAD_WORKER: u8 = 4;
 /// `SW_SOCK_UNIX_STREAM` and `SW_SOCK_UNIX_DGRAM`.
 const SOCK_UNIX_STREAM: c_int = 5;
 const SOCK_UNIX_DGRAM: c_int = 6;
@@ -73,12 +70,6 @@ pub(crate) fn server_class() -> *mut zend_class_entry {
 fn server() -> Option<*mut c_void> {
     let serv = swr_v1_core_server();
     (!serv.is_null()).then_some(serv)
-}
-
-/// `Server::is_worker_thread()`.
-fn worker_thread(serv: *mut c_void) -> bool {
-    // SAFETY: the running server.
-    unsafe { view::config(serv) }.mode_ == MODE_THREAD && thread_kind() == THREAD_WORKER
 }
 
 /// Who may construct a Process: 0, or 1 in a started server's master, 2 once
@@ -109,7 +100,10 @@ thread_local! {
 /// # Safety
 /// `worker` is a writable `Worker`.
 pub(crate) unsafe fn worker_share(worker: *mut c_void) -> bool {
-    let Some(serv) = server().filter(|&serv| worker_thread(serv)) else {
+    let Some(serv) = server().filter(|&serv| {
+        // SAFETY: the running server.
+        unsafe { view::is_worker_thread(serv) }
+    }) else {
         return false;
     };
     let user = methods::swoole_get_worker_type() == USER_WORKER;

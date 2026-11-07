@@ -13,8 +13,6 @@ struct _zend_object;
 struct _zval_struct;
 
 typedef struct {
-    /* !serv->is_worker_thread() && serv->is_started() */
-    bool (*closed)(void *server);
     /* add_port (get_port in a worker thread) and its Port object into return_value; false if none. */
     bool (*listen)(struct _zend_object *object, const char *host, int64_t port, int64_t type,
                    struct _zval_struct *return_value);

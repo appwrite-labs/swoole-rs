@@ -18,8 +18,6 @@ struct _zval_struct;
 typedef struct {
     /* E_ERROR "Invalid instance of %s" (does not return). */
     void (*invalid)(struct _zend_object *object);
-    /* !serv->is_worker_thread() && serv->is_started() */
-    bool (*started)(void *server);
     /* 0: "can't register event callback function after server started";
      * 1: "unknown event types[%s]" with `name`. */
     void (*warn)(int kind, const char *name);
