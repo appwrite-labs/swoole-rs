@@ -65,21 +65,6 @@ unsafe fn parse_ip(family: c_int, host: *const c_char, destination: *mut u8) -> 
     true
 }
 
-/// `Address::verify_ip`: whether `host` is an IP literal of `family`, parsed into
-/// `destination` (native's scratch `tmp_address`).
-///
-/// # Safety
-/// `host` is NUL-terminated; `destination` holds any family's address.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_verify_ip(
-    family: c_int,
-    host: *const c_char,
-    destination: *mut u8,
-) -> bool {
-    // SAFETY: as the caller promises.
-    unsafe { parse_ip(family, host, destination) }
-}
-
 /// An IP family's literal, else (when `resolve` is given) its resolved address.
 ///
 /// # Safety
@@ -425,28 +410,16 @@ mod tests {
 
         assert_eq!(assign(TCP, c"127.0.0.1", 70000, None).0, BAD_PORT);
         assert_eq!(assign(9, c"127.0.0.1", 1, None).0, BAD_SOCKET_TYPE);
-        let mut scratch = [0u8; 46];
-        unsafe {
-            assert!(swr_v1_clients_verify_ip(
-                libc::AF_INET,
-                c"10.1.2.3".as_ptr(),
-                scratch.as_mut_ptr()
-            ));
-            assert!(!swr_v1_clients_verify_ip(
-                libc::AF_INET,
-                c"::1".as_ptr(),
-                scratch.as_mut_ptr()
-            ));
-            assert!(swr_v1_clients_verify_ip(
-                libc::AF_INET6,
-                c"fe80::1".as_ptr(),
-                scratch.as_mut_ptr()
-            ));
-            assert!(!swr_v1_clients_verify_ip(
-                libc::AF_UNIX,
-                c"10.1.2.3".as_ptr(),
-                scratch.as_mut_ptr()
-            ));
+        for (family, host, valid) in [
+            (libc::AF_INET, c"10.1.2.3", true),
+            (libc::AF_INET, c"::1", false),
+            (libc::AF_INET6, c"fe80::1", true),
+            (libc::AF_UNIX, c"10.1.2.3", false),
+        ] {
+            assert_eq!(
+                unsafe { swr_v1_clients_address_verify(family, host.as_ptr()) },
+                valid
+            );
         }
     }
 }

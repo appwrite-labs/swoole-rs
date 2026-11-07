@@ -4,7 +4,7 @@ Feature bit 1048576 (`clients`). ABI: `docs/clients-resolver-abi-v1.md`,
 `swoole_rs_clients.h`. Patched upstream files: `ext-src/swoole_client.cc`,
 `ext-src/swoole_client_async.cc`, `ext-src/swoole_client_coro.cc`,
 `ext-src/swoole_name_resolver.cc`,
-`src/network/address.cc`, `src/network/client.cc`, `src/network/dns.cc`.
+`src/network/client.cc`, `src/network/dns.cc` (`src/network/address.cc` is deleted).
 
 Production exports have the prefix `swr_v1_clients_`. A test-only allocation-budget
 symbol is excluded from production artifacts.
@@ -48,6 +48,9 @@ its own buffers on destruction, so allocation topology differs.
 
 ## Address and raw object
 
+`src/network/address.cc` is deleted: `network::Address`'s methods are inline calls
+into these exports in `native/reactor/swoole_socket.h`.
+
 - Numeric parsing stops at the first NUL of the span. Only successful 4/16-byte
   results are written into existing `sockaddr`/`tmp_address` storage.
 - Apple accepts decimal leading zeros; Linux is strict. Dotted IPv6 tails are
@@ -62,7 +65,8 @@ its own buffers on destruction, so allocation topology differs.
   ASCII port digits (the classic locale's `\d`) and `std::stoi`'s `int` range,
   which native throws as `std::out_of_range`. Native logs the invalid-URL notice
   and assigns the host span.
-- `Address::verify_ip` is `clients_verify_ip` into native `tmp_address`.
+- `Address::verify_ip` is `clients_address_verify`, parsing into the scratch
+  `addr_str` writes.
 - Unsupported families and Apple scoped-IPv6 parsing go to the platform's
   `inet_pton` from Rust, errno included.
 

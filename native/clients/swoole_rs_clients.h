@@ -17,7 +17,6 @@ bool swr_v1_clients_address_empty(const void *address);
 const char *swr_v1_clients_address_type(int kind);
 bool swr_v1_clients_address_loopback(const void *address);
 int swr_v1_clients_address_assign(void *address, uint32_t *length, int kind, const char *host, size_t host_length, int port, int (*resolve)(int family, const char *name, char *address));
-bool swr_v1_clients_verify_ip(int family, const char *host, void *destination);
 int swr_v1_clients_dns_query(const char *domain, int family, uint16_t request_id, void *context, bool (*send)(void *context, const uint8_t *data, size_t length), long (*recv)(void *context, uint8_t *data, size_t capacity), void (*push)(void *context, const uint8_t *text, size_t length), bool signed_char);
 int swr_v1_clients_gethostbyname(int flags, const char *name, char *addr);
 /* The resolver's configuration (SwooleG.dns_server and dns_hosts_path upstream). */
