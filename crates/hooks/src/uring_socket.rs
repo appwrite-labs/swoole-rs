@@ -621,8 +621,10 @@ pub(crate) unsafe fn accept(socket: *mut CoSocket, ops: &UringSocketOps) -> *mut
     }
     conn.fd = fd;
     conn.removed = 1;
-    // SAFETY: the live record's open network::Socket.
-    conn.info.kind = unsafe { (*network(socket)).socket_type };
+    // SAFETY: as the caller promises.
+    let listener = unsafe { network(socket) };
+    // SAFETY: its open network::Socket.
+    conn.info.kind = unsafe { (*listener).socket_type };
     conn.output.nonblock = 1;
     conn.cloexec = 1;
     let accepted = swr_v1_socket_alloc();
@@ -630,10 +632,9 @@ pub(crate) unsafe fn accept(socket: *mut CoSocket, ops: &UringSocketOps) -> *mut
     unsafe { accepted.write(conn) };
     // SAFETY: the listening socket and the record it accepted.
     let client = unsafe { (crate::co_io::host().accepted)(socket, accepted) };
+    let marked = crate::socket_members::record(client);
     // SAFETY: the new native socket's record.
-    unsafe {
-        crate::socket_extra::swr_v1_hook_co_socket_uring(crate::socket_members::record(client))
-    };
+    unsafe { crate::socket_extra::swr_v1_hook_co_socket_uring(marked) };
     client
 }
 
@@ -751,10 +752,12 @@ pub(crate) unsafe fn tls_session(socket: *mut CoSocket, create: impl FnOnce() ->
     let network = unsafe { network(socket) };
     // SAFETY: its open network::Socket, now with a session.
     let session = unsafe { (*network).ssl }.cast::<ssl::SSL>();
-    // SAFETY: OpenSSL's static memory BIO method (each call alike).
-    let rbio = unsafe { ssl::BIO_new(ssl::BIO_s_mem()) };
+    // SAFETY: OpenSSL's static memory BIO method.
+    let method = unsafe { ssl::BIO_s_mem() };
+    // SAFETY: as above (each call alike).
+    let rbio = unsafe { ssl::BIO_new(method) };
     // SAFETY: as above.
-    let wbio = unsafe { ssl::BIO_new(ssl::BIO_s_mem()) };
+    let wbio = unsafe { ssl::BIO_new(method) };
     // SAFETY: the live session takes both BIOs.
     unsafe { ssl::SSL_set_bio(session, rbio, wbio) };
     // SAFETY: the live record's extra record.

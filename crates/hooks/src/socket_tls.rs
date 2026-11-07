@@ -253,15 +253,19 @@ unsafe fn steps(socket: *mut CoSocket) -> (c_int, Step<bool>, Step<c_int>) {
 unsafe extern "C" fn uring_create(context: *mut c_void) -> bool {
     // SAFETY: the handshake's live socket.
     let socket = unsafe { handshake_socket(context) };
-    // SAFETY: as above; `tls_create` makes its session.
-    unsafe { crate::uring_socket::tls_session(socket, || tls_create(context)) }
+    // SAFETY: the handshake's live socket.
+    let create = || unsafe { tls_create(context) };
+    // SAFETY: as above; `create` makes its session.
+    unsafe { crate::uring_socket::tls_session(socket, create) }
 }
 
 /// A `UringSocket`'s step, through the ring.
 #[cfg(feature = "iouring")]
 unsafe extern "C" fn uring_step(context: *mut c_void) -> c_int {
-    // SAFETY: the handshake's live socket, with its session.
-    unsafe { crate::uring_socket::tls_step(handshake_socket(context)) }
+    // SAFETY: the handshake's live socket.
+    let socket = unsafe { handshake_socket(context) };
+    // SAFETY: as above, with its session.
+    unsafe { crate::uring_socket::tls_step(socket) }
 }
 
 unsafe extern "C" fn tls_wait(context: *mut c_void, fresh: bool) -> bool {

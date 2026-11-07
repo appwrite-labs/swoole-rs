@@ -1185,7 +1185,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_uring_sendto(
     if let Some(ops) = unsafe { ring::of(socket) } {
         // SAFETY: the live view; the caller's buffer and address.
         let result = unsafe {
-            ring::swr_v1_hook_uring_io(&ops, ring::SENDTO, buf, n, addr.cast(), length, 0)
+            ring::swr_v1_hook_uring_io(&raw const ops, ring::SENDTO, buf, n, addr.cast(), length, 0)
         };
         // SAFETY: the caller's slot.
         unsafe { *sent = result };

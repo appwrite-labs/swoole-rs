@@ -203,7 +203,9 @@ unsafe fn connect(
     // SAFETY: as the caller promises.
     if let Some(ops) = unsafe { crate::uring_socket::of(socket) } {
         // SAFETY: the live view and the caller's address.
-        return unsafe { crate::uring_socket::swr_v1_hook_uring_connect(&ops, addr, length) };
+        return unsafe {
+            crate::uring_socket::swr_v1_hook_uring_connect(&raw const ops, addr, length)
+        };
     }
     // SAFETY: as the caller promises.
     if !unsafe { available(socket, READ | WRITE) } {

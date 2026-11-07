@@ -225,6 +225,7 @@ impl Tls {
 ///
 /// # Safety
 /// `tls` describes a live socket, its session and BIOs.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_uring_tls_write(tls: Tls) -> bool {
     tls.bio_write()
 }
@@ -233,6 +234,7 @@ pub unsafe extern "C" fn swr_v1_uring_tls_write(tls: Tls) -> bool {
 ///
 /// # Safety
 /// As [`swr_v1_uring_tls_write`].
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_uring_tls_read(tls: Tls) -> bool {
     tls.bio_read()
 }
@@ -241,6 +243,7 @@ pub unsafe extern "C" fn swr_v1_uring_tls_read(tls: Tls) -> bool {
 ///
 /// # Safety
 /// As [`swr_v1_uring_tls_write`].
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_uring_tls_prepare(tls: Tls) -> bool {
     tls.prepare()
 }
@@ -249,6 +252,7 @@ pub unsafe extern "C" fn swr_v1_uring_tls_prepare(tls: Tls) -> bool {
 ///
 /// # Safety
 /// As [`swr_v1_uring_tls_write`]; `function` is a C string.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_uring_tls_perform(
     tls: Tls,
     rc: c_int,
@@ -261,6 +265,7 @@ pub unsafe extern "C" fn swr_v1_uring_tls_perform(
 ///
 /// # Safety
 /// As [`swr_v1_uring_tls_write`]; `buf` holds `n` bytes.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_uring_tls_recv(tls: Tls, buf: *mut c_void, n: usize) -> isize {
     // SAFETY: `buf` holds `n` bytes.
     tls.transfer(c"ssl_recv", || unsafe {
@@ -272,6 +277,7 @@ pub unsafe extern "C" fn swr_v1_uring_tls_recv(tls: Tls, buf: *mut c_void, n: us
 ///
 /// # Safety
 /// As [`swr_v1_uring_tls_write`]; `buf` holds `n` bytes.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_uring_tls_send(tls: Tls, buf: *const c_void, n: usize) -> isize {
     // SAFETY: `buf` holds `n` bytes.
     tls.transfer(c"ssl_send", || unsafe {
@@ -315,6 +321,7 @@ fn once(
 /// # Safety
 /// As [`swr_v1_uring_tls_write`]; `buf` holds `n` bytes and the callbacks take
 /// `tls.socket`.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_uring_tls_once(
     tls: Tls,
     buf: *mut c_void,
@@ -351,6 +358,7 @@ pub struct TlsSendfile {
 ///
 /// # Safety
 /// As [`swr_v1_uring_tls_write`]; `file` is open and `offset` writable.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_uring_tls_sendfile(
     tls: Tls,
     file: c_int,
