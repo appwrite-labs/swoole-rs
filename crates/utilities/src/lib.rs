@@ -10,10 +10,7 @@ mod bytes;
 mod frontdoor;
 pub use frontdoor::*;
 mod helpers;
-pub use helpers::{
-    Bitmap, swr_v1_utils_bitmap_clear, swr_v1_utils_bitmap_create, swr_v1_utils_bitmap_destroy,
-    swr_v1_utils_bitmap_get, swr_v1_utils_bitmap_set, swr_v1_utils_strlchr, swr_v1_utils_timezone,
-};
+pub use helpers::{swr_v1_utils_strlchr, swr_v1_utils_timezone};
 mod logger;
 pub mod misc;
 mod wait_registry;

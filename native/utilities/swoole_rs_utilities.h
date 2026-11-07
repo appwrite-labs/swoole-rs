@@ -39,14 +39,6 @@ size_t swr_v1_utils_wait_registry_size(void);
 bool swr_v1_utils_wait_registry_init(void *memory);
 int32_t swr_v1_utils_registry_wait(uint32_t *, double timeout, int32_t *error);
 int32_t swr_v1_utils_registry_wakeup(uint32_t *, int32_t n, int32_t *error);
-/* swoole::BitMap's storage: bits start clear; bits past the end are ignored
- * by set and read as clear. Null handles are no-ops. */
-typedef struct SwrUtilsBitmap SwrUtilsBitmap;
-SwrUtilsBitmap *swr_v1_utils_bitmap_create(size_t bits);
-void swr_v1_utils_bitmap_destroy(SwrUtilsBitmap *);
-void swr_v1_utils_bitmap_clear(SwrUtilsBitmap *);
-void swr_v1_utils_bitmap_set(SwrUtilsBitmap *, size_t bit, bool value);
-bool swr_v1_utils_bitmap_get(const SwrUtilsBitmap *, size_t bit);
 /* The local zone's current offset from UTC, in seconds. */
 long swr_v1_utils_timezone(void);
 /* First c in [p, last), or null. */

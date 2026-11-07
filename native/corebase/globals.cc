@@ -72,9 +72,9 @@ static uintptr_t effect(int effect, uintptr_t argument) {
         break;
     case 3: return reinterpret_cast<uintptr_t>(new swoole::GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true));
     case 4: delete reinterpret_cast<swoole::MemoryPool *>(argument); break;
-    case 5: SwooleG.logger->close(); break;
-    case 6: SwooleG.logger->reopen(); break;
-    case 7: delete SwooleG.logger; break;
+    case 5: sw_logger()->close(); break;
+    case 6: sw_logger()->reopen(); break;
+    case 7: delete sw_logger(); break;
     case 8: swoole_signal_clear(); break;
     case 9: swoole_signal_block_all(); break;
     case 10: return swoole_timer_is_available();
@@ -96,13 +96,13 @@ void swoole_init() {
     sw_memset_zero(sw_error, SW_ERROR_MSG_SIZE);
     swr_v1_core_config_allocator(SwooleG.config_handle());
     swr_v1_core_set_stdout(stdout);
-    SwooleG.fatal_error = fatal_error;
+    swr_v1_core_set_fatal_error(reinterpret_cast<void *>(fatal_error));
     SwooleG.dns_resolvconf_path = SW_DNS_RESOLV_CONF;
-    SwooleG.logger = new swoole::Logger();
+    swr_v1_core_set_logger(new swoole::Logger());
     swoole_thread_init(true);
 #ifdef SW_DEBUG
     sw_logger()->set_level(0);
-    SwooleG.trace_flags = 0x7fffffff;
+    swr_v1_core_set_trace_flags(0x7fffffff);
 #else
     sw_logger()->set_level(SW_LOG_INFO);
 #endif

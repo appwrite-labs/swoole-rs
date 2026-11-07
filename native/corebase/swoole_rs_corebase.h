@@ -79,8 +79,6 @@ int swr_v1_core_signal_fd(void);
 void swr_v1_core_set_signal_fd(int value);
 bool swr_v1_core_signal_alarm(void);
 void swr_v1_core_set_signal_alarm(bool value);
-bool swr_v1_core_signal_dispatch(void);
-void swr_v1_core_set_signal_dispatch(bool value);
 uint32_t swr_v1_core_signal_listener_num(void);
 void swr_v1_core_set_signal_listener_num(uint32_t value);
 uint32_t swr_v1_core_signal_async_listener_num(void);
