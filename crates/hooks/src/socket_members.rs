@@ -2,9 +2,10 @@
 //! operations, defined under their upstream (Itanium) symbols when the hybrid
 //! links this crate (`upstream-symbols`): the reactor callbacks, the
 //! local and peer names, the timeouts and options, the buffered and packet reads,
-//! `bind` of an address and `listen`, and the transfers (`recv`, `send`, their
-//! `_all` and `_once` forms, `read`, `write`, `readv`, `writev` and their `_all`
-//! forms, `recvmsg`, `sendmsg`, `recvfrom`), `peek` and `poll`.
+//! the read and write buffers, `bind` of an address, `listen` and `accept`, and the
+//! transfers (`recv`, `send`, their `_all` and `_once` forms, `read`, `write`,
+//! `readv`, `writev` and their `_all` forms, `recvmsg`, `sendmsg`, `recvfrom`),
+//! `peek` and `poll`.
 //! Upstream's `GoogleTest` suites call them through the class's own declarations.
 //!
 //! Each takes the native object (`this`). `Socket` is dynamic and its one base is
@@ -15,10 +16,12 @@ use crate::co_io::{
     Timer, available, check, errno, host, set_err, swr_v1_hook_co_socket_borrowed_err,
     swr_v1_hook_co_socket_default_err, swr_v1_hook_co_socket_owned_err,
 };
-use crate::co_socket::{CoSocket, swr_v1_hook_co_socket_peer_name};
+use crate::co_socket::{CoSocket, buffer, swr_v1_hook_co_socket_peer_name};
 use crate::packet::swr_v1_hook_co_socket_recv_packet;
 use crate::sendfile::{FAILED, ZERO, send_range};
+use crate::setup::{SetupOps, swr_v1_hook_accept};
 use crate::shutdown::READ;
+use crate::socket_tls::{owner, read_timeout, ssl_context_create};
 use crate::socket_wait::{
     swr_v1_hook_co_socket_error_event, swr_v1_hook_co_socket_poll, swr_v1_hook_socket_ready, wait,
 };
@@ -29,9 +32,11 @@ use core::mem::{align_of, size_of};
 use core::ptr::null_mut;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
-    Event, ReactorIov, SocketAddress, SocketRecord, swr_v1_reactor_iov_view, swr_v1_socket_bind,
-    swr_v1_socket_get_name, swr_v1_socket_listen, swr_v1_socket_set_timeout, swr_v1_socket_timeout,
+    Event, ReactorIov, SocketAddress, SocketRecord, swr_v1_reactor_iov_view,
+    swr_v1_socket_accept_new, swr_v1_socket_bind, swr_v1_socket_get_name, swr_v1_socket_listen,
+    swr_v1_socket_set_timeout, swr_v1_socket_timeout,
 };
+use swoole_rs_tls::owner_fields;
 use swoole_rs_tls::upstream::{
     sendfile as socket_sendfile_fd, socket_peek, socket_readv, socket_recv, socket_send,
     socket_writev,
@@ -390,6 +395,158 @@ pub unsafe extern "C" fn bind(
         return false;
     }
     true
+}
+
+/// What `accept`'s setup steps act on: the listening socket, its wait's timeout and
+/// the connection accepted.
+struct Accepting {
+    socket: *mut CoSocket,
+    timeout: f64,
+    conn: *mut SocketRecord,
+}
+
+/// # Safety
+/// `context` is the live [`Accepting`] of the call.
+unsafe fn accepting<'a>(context: *mut c_void) -> &'a mut Accepting {
+    // SAFETY: as the caller promises.
+    unsafe { &mut *context.cast::<Accepting>() }
+}
+
+unsafe extern "C" fn accept_available(context: *mut c_void, event: c_int) -> bool {
+    // SAFETY: the accept's live socket.
+    let socket = unsafe { accepting(context) }.socket;
+    // SAFETY: as above.
+    unsafe { available(socket, event.cast_unsigned()) }
+}
+
+unsafe extern "C" fn accept_fail(context: *mut c_void, error: c_int) {
+    // SAFETY: the accept's live socket.
+    let socket = unsafe { accepting(context) }.socket;
+    if error < 0 {
+        // SAFETY: as above.
+        unsafe { swr_v1_hook_co_socket_default_err(socket, log::last_error()) };
+    } else {
+        // SAFETY: as above.
+        unsafe { set_err(socket, error) };
+    }
+}
+
+unsafe extern "C" fn accept_wait(context: *mut c_void, event: c_int) -> bool {
+    // SAFETY: the accept of the call.
+    let state = unsafe { accepting(context) };
+    // SAFETY: the live record; the timer stops before this returns.
+    let mut timer = unsafe { Timer::new(state.socket, READ, state.timeout) };
+    // SAFETY: the live record's own wait for the current coroutine.
+    let ready =
+        timer.start() && unsafe { wait(state.socket, event.cast_unsigned(), None, null_mut(), 0) };
+    timer.stop();
+    ready
+}
+
+unsafe extern "C" fn accept_name(context: *mut c_void) -> c_int {
+    // SAFETY: the accept's live socket.
+    let socket = unsafe { accepting(context) }.socket;
+    // SAFETY: as above.
+    let network = unsafe { (*socket).socket };
+    // SAFETY: its live network::Socket.
+    unsafe { swr_v1_socket_get_name(network) }
+}
+
+unsafe extern "C" fn accept_call(context: *mut c_void, _: c_int) -> c_int {
+    // SAFETY: the accept of the call.
+    let state = unsafe { accepting(context) };
+    // SAFETY: the live listening socket.
+    let listener = unsafe { (*state.socket).socket };
+    // SAFETY: its live network::Socket.
+    state.conn = unsafe { swr_v1_socket_accept_new(listener) };
+    if state.conn.is_null() { -1 } else { 0 }
+}
+
+/// `Socket::accept(timeout)`: a connection as a new native socket (the accepting
+/// constructor, which shares the TLS context), or null. A zero timeout waits for the
+/// socket's read timeout; a TLS context is made before the first accept.
+///
+/// # Safety
+/// `this` is a live native socket, in a coroutine.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket6acceptEd")
+)]
+pub unsafe extern "C" fn accept(this: *mut c_void, timeout: f64) -> *mut c_void {
+    let socket = record(this);
+    // SAFETY: as the caller promises.
+    if !unsafe { available(socket, READ) } {
+        return null_mut();
+    }
+    // SAFETY: as the caller promises.
+    let owner = unsafe { owner(socket) };
+    // SAFETY: the live owner of the socket's context.
+    let needs_context = !owner.is_null() && unsafe { owner_fields(owner) }.context.is_null();
+    // SAFETY: as the caller promises; it has a context.
+    if needs_context && !unsafe { ssl_context_create(this) } {
+        return null_mut();
+    }
+    let timeout = if timeout == 0.0 {
+        read_timeout(socket)
+    } else {
+        timeout
+    };
+    let mut state = Accepting {
+        socket,
+        timeout,
+        conn: null_mut(),
+    };
+    let ops = SetupOps {
+        context: (&raw mut state).cast(),
+        available: accept_available,
+        fail: accept_fail,
+        wait: accept_wait,
+        name: accept_name,
+        call: accept_call,
+    };
+    // SAFETY: the table and its state are live for the call.
+    if !unsafe { swr_v1_hook_accept(&raw const ops) } {
+        return null_mut();
+    }
+    // SAFETY: the live listening socket and the connection it accepted.
+    let client = unsafe { (host().accepted)(socket, state.conn) };
+    // SAFETY: the new native socket.
+    if unsafe { (*record(client)).sock_fd } < 0 {
+        let error = errno();
+        log::sys_warning(c"Socket::accept", format_args!("new Socket() failed"));
+        // SAFETY: the live listening socket.
+        unsafe { set_err(socket, error) };
+        // SAFETY: the new native socket, used no more.
+        unsafe { (host().destroy)(client) };
+        return null_mut();
+    }
+    client
+}
+
+/// `Socket::get_read_buffer()`: the read buffer, made on first use.
+///
+/// # Safety
+/// `this` is a live native socket.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv")
+)]
+pub unsafe extern "C" fn get_read_buffer(this: *mut c_void) -> *mut c_void {
+    // SAFETY: as the caller promises.
+    unsafe { buffer(record(this), false) }
+}
+
+/// `Socket::get_write_buffer()`: the write buffer, made on first use.
+///
+/// # Safety
+/// `this` is a live native socket.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket16get_write_bufferEv")
+)]
+pub unsafe extern "C" fn get_write_buffer(this: *mut c_void) -> *mut c_void {
+    // SAFETY: as the caller promises.
+    unsafe { buffer(record(this), true) }
 }
 
 /// `Socket::listen(backlog)`: `SW_BACKLOG` for a non-positive backlog; a listening
@@ -1028,6 +1185,15 @@ mod tests {
         let name = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
         assert!(unsafe { sendfile(object.this(), name.as_ptr(), 0, 0) });
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn accept_reports_a_failed_accept_without_a_new_socket() {
+        install();
+        let mut object = Object::new();
+        assert!(unsafe { accept(object.this(), 0.0) }.is_null());
+        assert_eq!(object.0.record.err_code, libc::EBADF);
+        assert!(!take().iter().any(|entry| entry == "accepted"));
     }
 
     #[test]

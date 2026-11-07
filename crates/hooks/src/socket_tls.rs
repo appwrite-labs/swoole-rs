@@ -32,7 +32,7 @@ const SSL_CREATE_SESSION_FAILED: c_int = 1020;
 ///
 /// # Safety
 /// `socket` is a live record.
-unsafe fn owner(socket: *mut CoSocket) -> *const OwnedTlsContext {
+pub(crate) unsafe fn owner(socket: *mut CoSocket) -> *const OwnedTlsContext {
     // SAFETY: as the caller promises.
     let extra = unsafe { (*socket).extra };
     if extra.is_null() {
@@ -258,7 +258,7 @@ unsafe extern "C" fn tls_verify(context: *mut c_void) -> bool {
 }
 
 /// The `network::Socket`'s read timeout, or 0 without one.
-fn read_timeout(socket: *mut CoSocket) -> f64 {
+pub(crate) fn read_timeout(socket: *mut CoSocket) -> f64 {
     // SAFETY: the caller's live record.
     let record = unsafe { &*socket };
     if record.socket.is_null() {

@@ -1,7 +1,7 @@
 //! The coroutine socket's server setup as whole operations: `bind` of a host and
-//! `accept` (the would-block wait and retry). Native code keeps the availability
+//! `accept` (the would-block wait and retry). Their callers pass the availability
 //! check, the timer with its coroutine wait, `set_err` and the `network::Socket`
-//! calls that update that object's fields, and passes them in [`SetupOps`].
+//! calls in [`SetupOps`]: native code for `bind`, `Socket::accept` in Rust.
 use core::ffi::{c_int, c_void};
 
 /// `SW_EVENT_NULL`, `SW_EVENT_READ` and `SW_EVENT_WRITE`.
@@ -78,8 +78,7 @@ pub unsafe extern "C" fn swr_v1_hook_bind(ops: *const SetupOps) -> bool {
 ///
 /// # Safety
 /// `ops` is live for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_accept(ops: *const SetupOps) -> bool {
+pub(crate) unsafe fn swr_v1_hook_accept(ops: *const SetupOps) -> bool {
     // SAFETY: the caller passes a live table (see above).
     let ops = unsafe { &*ops };
     let mut accepted = ops.call(0) == 0;

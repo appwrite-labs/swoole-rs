@@ -75,9 +75,9 @@ extern "C" {
 swr_v1_co_socket_extra_prepared swr_v1_hook_socket_extra_new();
 void swr_v1_hook_socket_extra_free(swr_v1_co_socket_extra *owner);
 
-/* The constructors write the whole record first; fini releases what they made
- * (native code frees the buffers and the network::Socket). */
-void swr_v1_hook_co_socket_fini(swr_v1_co_socket *socket);
+/* ~Socket after its destructor callback: frees the buffers, the bound state and the
+ * network::Socket. */
+void swr_v1_hook_co_socket_release(swr_v1_co_socket *socket);
 void swr_v1_hook_co_socket_default_err(swr_v1_co_socket *socket, int last_error);
 void swr_v1_hook_co_socket_borrowed_err(swr_v1_co_socket *socket, int error, const char *message);
 int swr_v1_hook_co_socket_owned_err(swr_v1_co_socket *socket, int error, const char *bytes, size_t length);
@@ -136,6 +136,9 @@ typedef struct {
     /* The native protocol callback/trace and packet error diagnostics. */
     ssize_t (*package_length)(swr_v1_co_socket *, uint32_t size, uint32_t *header_length);
     void (*packet_fail)(swr_v1_co_socket *, uint32_t kind, ssize_t length);
+    /* new Socket(conn, server), the accepting constructor, and delete of a Socket. */
+    void *(*accepted)(swr_v1_co_socket *server, swr_v1_socket *conn);
+    void (*destroy)(void *socket);
 } swr_v1_hook_co_socket_host_t;
 /* Complete packet/buffer reads, including availability, buffer and timer. */
 ssize_t swr_v1_hook_co_socket_recv_packet(swr_v1_co_socket *socket, double timeout);

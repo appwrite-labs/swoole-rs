@@ -845,6 +845,18 @@ pub unsafe fn new_string(data: *const u8, length: usize) -> *mut CppString {
     unsafe { swr_string_from(storage, data, length) }
 }
 
+/// `new String(size, with)`: operator new's storage, so C++ `delete` frees it.
+///
+/// # Safety
+/// `with` is null or a live allocator.
+#[must_use]
+pub unsafe fn new_sized_string(size: usize, with: *const Allocator) -> *mut CppString {
+    // SAFETY: `new String`'s storage; a failed operator new aborts at this frame.
+    let storage = unsafe { operator_new(size_of::<CppString>()) }.cast::<CppString>();
+    // SAFETY: fresh storage for one String, and the caller's allocator.
+    unsafe { swr_string_new(storage, size, with) }
+}
+
 /// `delete string`.
 ///
 /// # Safety
