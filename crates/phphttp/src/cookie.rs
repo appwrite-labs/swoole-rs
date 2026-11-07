@@ -2,10 +2,9 @@
 //! the `Set-Cookie` line `Swoole\Http\Response::cookie()` sends. The line is
 //! built by `swr_v1_httpbindings_cookie`'s phases; this file runs their effects.
 use std::{
-    ffi::{CStr, c_char},
+    ffi::{CStr, c_int},
     mem::offset_of,
     ptr,
-    sync::OnceLock,
 };
 use swoole_rs_httpbindings::{
     APPEND, APPEND_AGE, APPEND_DATE, APPEND_ENCODED, Action, CookieInput, DONE, ENCODE,
@@ -13,7 +12,7 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_phpstubs::http_cookie;
 use swoole_rs_zend::{
-    Call, Class, Object, bailout,
+    Call, Class, Object,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, add_assoc_bool_ex, add_assoc_long_ex, add_assoc_str_ex,
         add_assoc_string_ex, php_format_date, php_time, php_url_encode, swr_zend_string_copy,
@@ -24,15 +23,9 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// What only C++ can reach, fixed at MINIT.
-struct Native {
-    /// `php_swoole_error(E_WARNING, "%s", message)`.
-    warning: unsafe extern "C" fn(message: *const c_char),
-    /// `swoole_set_last_error(SW_ERROR_HTTP_COOKIE_UNAVAILABLE)`.
-    unavailable: unsafe extern "C" fn(),
-}
+/// `SW_ERROR_HTTP_COOKIE_UNAVAILABLE`.
+const COOKIE_UNAVAILABLE: c_int = 7107;
 
-static NATIVE: OnceLock<Native> = OnceLock::new();
 static COOKIE: Class = Class::new();
 
 /// `swoole::http::Cookie`. String fields are null or non-empty and hold a
@@ -156,12 +149,9 @@ impl Cookie {
                     line.extend_from_slice(unsafe { text(&action.text) });
                 }
                 WARN => {
-                    if let Some(native) = NATIVE.get() {
-                        // SAFETY: a NUL-terminated static message.
-                        let message = unsafe { CStr::from_ptr(action.text.data.cast()) };
-                        // SAFETY: C++'s reporter.
-                        bailout::defer(unsafe { bailout::report(native.warning, message) });
-                    }
+                    // SAFETY: a NUL-terminated static message.
+                    let message = unsafe { CStr::from_ptr(action.text.data.cast()) };
+                    crate::host::notice(&message.to_string_lossy());
                     break ptr::null_mut();
                 }
                 ENCODE => {
@@ -311,20 +301,11 @@ method_table! {
     ];
 }
 
-/// MINIT: register the class as `php_swoole_http_cookie_minit` did.
+/// `php_swoole_http_cookie_minit`: register the class.
 /// # Safety
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_cookie_minit(
-    warning: Option<unsafe extern "C" fn(message: *const c_char)>,
-    unavailable: Option<unsafe extern "C" fn()>,
-) {
-    if let (Some(warning), Some(unavailable)) = (warning, unavailable) {
-        NATIVE.get_or_init(|| Native {
-            warning,
-            unavailable,
-        });
-    }
+pub unsafe extern "C" fn php_swoole_http_cookie_minit(_module_number: c_int) {
     // SAFETY: MINIT, with a static table.
     unsafe { COOKIE.register(c"Swoole\\Http\\Cookie", METHODS.as_ptr(), configure) };
 }
@@ -342,11 +323,8 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
 fn cookie<'a>(object: *mut zend_object) -> Option<&'a mut Cookie> {
     // SAFETY: a Cookie object (methods' `$this`, or Response's typed argument).
     let cookie = unsafe { CookieObject::data(object) }.as_deref_mut();
-    if cookie.is_none()
-        && let Some(native) = NATIVE.get()
-    {
-        // SAFETY: C++'s error state.
-        unsafe { (native.unavailable)() };
+    if cookie.is_none() {
+        crate::host::set_last_error(COOKIE_UNAVAILABLE);
     }
     cookie
 }

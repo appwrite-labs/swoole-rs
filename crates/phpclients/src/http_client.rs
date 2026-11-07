@@ -1167,7 +1167,7 @@ impl Client {
                 return false;
             }
             // SAFETY: a live socket.
-            unsafe { native::swoole_http_client_coro_ws_protocol(socket) };
+            unsafe { native::websocket_protocol(socket) };
         }
         if !self.websocket && (!self.keep_alive || self.connection_close) {
             self.close(true);

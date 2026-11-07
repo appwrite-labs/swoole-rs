@@ -439,6 +439,9 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
 #ifdef SW_STDEXT
         flags |= SWR_PHPSWOOLE_STDEXT;
 #endif
+#ifdef SW_THREAD
+        flags |= SWR_PHPSWOOLE_THREAD;
+#endif
         return flags;
     },
     [](swr_v1_phpswoole_info *info) {

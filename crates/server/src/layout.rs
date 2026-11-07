@@ -178,6 +178,8 @@ const RECORD_4_OFFSETS: &[usize] = &[
     ),
     offset_of!(crate::port_config::PortConfig, gs),
     offset_of!(crate::port_config::PortConfig, ptr),
+    offset_of!(crate::port_config::PortConfig, websocket_frames),
+    offset_of!(crate::port_config::PortConfig, websocket_protocol),
 ];
 
 const RECORD_5_OFFSETS: &[usize] = &[

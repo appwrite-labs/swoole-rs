@@ -18,18 +18,6 @@ struct _zend_string;
  * (crates/phpclients). */
 void swoole_rs_php_error(int level, bool fatal, const char *message);
 
-/* Coroutine\Http\Client's WebSocket state and framing (crates/phpclients;
- * defined in ext-src/swoole_websocket_server.cc): settings and continuation
- * buffer; push packs a frame into the write buffer and sends it (0, 1 if
- * packing failed, 2 if sending did). */
-void *swoole_http_client_coro_ws_new(void);
-void swoole_http_client_coro_ws_free(void *ws);
-void swoole_http_client_coro_ws_apply(void *ws, const struct _zval_struct *settings);
-bool swoole_http_client_coro_ws_compression(void *ws);
-int swoole_http_client_coro_ws_push(
-    void *socket, void *ws, struct _zval_struct *data, int64_t opcode, int flags, int64_t code, bool compress);
-void swoole_http_client_coro_ws_recv(void *socket, void *ws, struct _zval_struct *return_value, double timeout);
-
 /* PHP Swoole\Client and Swoole\Async\Client (crates/phpclients): MINIT
  * (php_swoole_client_minit and php_swoole_client_async_minit), and the async events
  * network::Client raises, which re-raise a PHP callback's bailout as their

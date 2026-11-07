@@ -115,8 +115,6 @@ const DISPATCH_FDMOD: u8 = 2;
 // its peer's port and loopback check (crates/clients).
 unsafe extern "C" {
     fn swr_v1_phpserver_on_receive(server: *mut c_void, request: *mut c_void) -> c_int;
-    #[link_name = "_Z26swoole_websocket_onMessagePN6swoole6ServerEPNS_8RecvDataE"]
-    fn swoole_websocket_onMessage(server: *mut c_void, request: *mut c_void) -> c_int;
     #[link_name = "_Z29swoole_http2_server_onReceivePN6swoole6ServerEPNS_10ConnectionEPNS_8RecvDataE"]
     fn swoole_http2_server_onReceive(
         server: *mut c_void,
@@ -254,7 +252,7 @@ pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_
         // SAFETY: the live server and its request.
         TCP => unsafe { swr_v1_phpserver_on_receive(server, request) },
         // SAFETY: as above.
-        WEBSOCKET => unsafe { swoole_websocket_onMessage(server, request) },
+        WEBSOCKET => websocket::on_message(server, request, &info),
         HTTP2 => {
             // SAFETY: the live server.
             let conn =
@@ -366,13 +364,13 @@ fn port_callable(callable: *mut c_void) -> *mut Callable {
     unsafe { *callable.cast::<*mut Callable>() }
 }
 
-/// `zend::function::call(callable, 2, args, nullptr, coroutine)`: whether
-/// the handler was called.
+/// `zend::function::call(callable, args.len(), args, nullptr, coroutine)`:
+/// whether the handler was called.
 /// # Errors
 /// It bailed out.
 pub(crate) fn call_handler(
     callable: *mut Callable,
-    args: &mut [zval; 2],
+    args: &mut [zval],
     coroutine: bool,
 ) -> Result<bool, bailout::Bailout> {
     // SAFETY: a live handle.
@@ -382,7 +380,7 @@ pub(crate) fn call_handler(
     let called = unsafe {
         swoole_rs_phphelpers::function_call(
             cache,
-            2,
+            u32::try_from(args.len()).unwrap_or(0),
             args.as_mut_ptr(),
             std::ptr::null_mut(),
             coroutine,
@@ -394,6 +392,30 @@ pub(crate) fn call_handler(
         let _relayed = bailout::relay_to_c(Err(bailout));
         bailout::Bailout
     })
+}
+
+/// The port callback `kind` with `args`: `None` when it is unset, otherwise
+/// whether it was called.
+/// # Errors
+/// It bailed out.
+pub(crate) fn call_port(
+    server: *mut c_void,
+    server_fd: c_int,
+    kind: c_int,
+    args: &mut [zval],
+) -> Result<Option<bool>, bailout::Bailout> {
+    // SAFETY: the live server.
+    let callback = unsafe { php_swoole_server_get_callback(server, server_fd, kind) };
+    if callback.is_null() {
+        return Ok(None);
+    }
+    call_handler(port_callable(callback), args, enable_coroutine(server)).map(Some)
+}
+
+/// `php_swoole_get_recv_data`: the request's payload into `zdata`.
+pub(crate) fn recv_data(server: *mut c_void, request: *mut c_void, zdata: *mut zval) {
+    // SAFETY: the live server, its request and an empty slot.
+    unsafe { php_swoole_get_recv_data(server, zdata, request) };
 }
 
 /// `http_server_process_request`: the handler with the request's objects.

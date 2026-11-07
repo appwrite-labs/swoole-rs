@@ -422,6 +422,7 @@ size_t swr_v1_server_tcp_info(const void *info, swr_v1_server_fact *out, size_t 
 #define SWR_PHPSWOOLE_SSL3 (1u << 9)
 #define SWR_PHPSWOOLE_IOURING (1u << 10)
 #define SWR_PHPSWOOLE_STDEXT (1u << 11)
+#define SWR_PHPSWOOLE_THREAD (1u << 12)
 struct _zval_struct;
 struct _zend_array;
 struct _zend_class_entry;

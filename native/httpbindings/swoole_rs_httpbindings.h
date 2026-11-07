@@ -26,13 +26,8 @@ enum {
     SWR_HTTPBINDINGS_DONE = 11
 };
 int32_t swr_v1_httpbindings_cookie(const swr_v1_httpbindings_cookie_input *, uint32_t *, swr_v1_httpbindings_action *);
-/* Swoole\Http\Cookie (Rust): Rust registers the class with its method table
- * (crates/phpstubs' arginfo); the methods are its zim_swoole_http_cookie_*.
- * `warning` is php_swoole_error(E_WARNING, "%s", message); `unavailable` sets
- * SW_ERROR_HTTP_COOKIE_UNAVAILABLE. */
 struct _zend_string;
 struct _zval_struct;
-void swr_v1_httpbindings_cookie_minit(void (*warning)(const char *message), void (*unavailable)(void));
 /* Response::cookie()'s Set-Cookie line from its arguments, or from a Cookie
  * object (reset when it cannot be sent); null after a warning. */
 struct _zend_string *swr_v1_httpbindings_cookie_line(uint8_t encode, struct _zend_string *name,
@@ -99,48 +94,6 @@ bool swr_v1_phphttp_send(void *ctx, const char *data, size_t length);
 bool swr_v1_phphttp_close(void *ctx);
 void swr_v1_phphttp_context_bind(void *ctx, void *server, struct _zval_struct *socket);
 void swr_v1_phphttp_context_copy(void *ctx, const void *from);
-
-/* Swoole\WebSocket\Server, Frame and CloseFrame (crates/phphttp/src/websocket.rs).
- * MINIT registers them and the constants, returning the server class and
- * filling `frame`. onMessage and FrameObject's members call the rest; each raises a bailout it
- * trapped once its Rust frames are done. `object` is a swoole::websocket::FrameObject. */
-struct _zend_class_entry *swr_v1_phphttp_websocket_minit(int module_number, struct _zend_class_entry *http_server,
-    bool serializable, bool zlib, struct _zend_class_entry **frame);
-/* swoole_websocket_onMessage: SW_OK/SW_ERR. It calls onMessage through swr_ws_host_call. */
-int swr_v1_phphttp_websocket_message(void *server, void *request, int64_t fd, int server_fd, uint16_t ext_flags);
-void swr_v1_phphttp_websocket_frame_object(void *object, struct _zval_struct *data, int64_t opcode, int64_t flags,
-    int64_t code);
-struct _zend_string *swr_v1_phphttp_websocket_pack(const void *object);
-/* websocket::recv_frame: `settings` packs in_server, open_ping_frame,
- * open_pong_frame and open_close_frame from bit 0; `slot` holds the message
- * being assembled (null when none; buffer_free releases it), `sock` is a
- * swoole::coroutine::Socket. */
-void swr_v1_phphttp_websocket_recv(uint32_t settings, void **slot, void *sock, struct _zval_struct *return_value,
-                                   double timeout);
-void swr_v1_phphttp_websocket_buffer_free(void **slot);
-/* What it asks of the Server (`server` is a swoole::Server, `context` a
- * swoole::http::Context): the checked server of `$this` (true when the check
- * bailed out), a connection's WebSocket state, sending (`wait`: yield on a
- * full buffer as Server::send does in a coroutine), closing, a port's frame
- * settings (close | ping << 1 | pong << 2, -1 without a port) and subprotocol,
- * the received data, and calling the server's callback for an event. */
-typedef struct { int status; int server_fd; bool compression; bool closed; } swr_ws_connection;
-enum { SWR_WS_ON_BEFORE_HANDSHAKE_RESPONSE = 0, SWR_WS_ON_OPEN = 1, SWR_WS_ON_MESSAGE = 2 };
-enum { SWR_WS_CALL_BAILED = -1, SWR_WS_CALL_DONE = 0, SWR_WS_CALL_FAILED = 1, SWR_WS_CALL_NONE = 2 };
-bool swr_ws_host_server(struct _zval_struct *object, void **server);
-bool swr_ws_host_started(void *server);
-bool swr_ws_host_connection(void *server, int64_t fd, bool verify, swr_ws_connection *out);
-void swr_ws_host_set_status(void *server, int64_t fd, int64_t status);
-bool swr_ws_host_send(void *server, int64_t fd, const char *data, size_t length, bool wait);
-bool swr_ws_host_close(void *server, int64_t fd, bool reset);
-int swr_ws_host_port_settings(void *server, int64_t fd);
-const char *swr_ws_host_protocol(void *server, int server_fd, size_t *length);
-void swr_ws_host_recv_data(void *server, void *request, struct _zval_struct *data);
-int swr_ws_host_call(void *server, int server_fd, int event, uint32_t argc, struct _zval_struct *args);
-struct _zval_struct *swr_ws_host_server_zval(void *server);
-bool swr_ws_host_server_compression(void *server);
-void swr_ws_host_set_compression(void *server, int64_t fd, bool compression);
-void swr_ws_host_co_protocol(void *context);
 
 #ifdef __cplusplus
 }

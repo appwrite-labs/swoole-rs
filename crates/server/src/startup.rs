@@ -19,12 +19,11 @@ use crate::ops::{
     OP_MASTER_THREAD, OP_MASTER_TIMER, OP_MASTER_WORKER, OP_MAX_CONNECTION, OP_MAX_SOCKETS,
     OP_MODE, OP_ON_SHUTDOWN, OP_PIPE_COMMAND_ADD, OP_PORT_CLOSE, OP_PORT_COUNT,
     OP_PORT_DEFAULT_IDLE, OP_PORT_DGRAM, OP_PORT_IDLE, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH,
-    OP_PORT_SSL_AT, OP_PORT_STREAM, OP_PORT_WEBSOCKET, OP_PORT_WS_COMPRESSION, OP_REACTOR_BARRIER,
-    OP_RELEASE_PIPE_BUFFERS, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SET_DISABLE_NOTIFY,
-    OP_SET_FIELD, OP_SET_MASTER_PID, OP_SET_MAX_CONNECTION, OP_SET_MAXFD, OP_SET_MINFD,
-    OP_SINGLE_THREAD, OP_STORE_LISTEN, OP_TASK_PIPE, OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN,
-    OP_TASK_POOL_SETUP, OP_TIMER_DETACHED, OP_TIMER_REINIT, TRACE_REACTOR_THREADS, TRACE_RELEASE,
-    TRACE_TASK_WORKERS,
+    OP_PORT_SSL_AT, OP_PORT_STREAM, OP_REACTOR_BARRIER, OP_RELEASE_PIPE_BUFFERS, OP_SEND_TIMEOUT,
+    OP_SEND_TIMEOUT_MIN, OP_SET_DISABLE_NOTIFY, OP_SET_FIELD, OP_SET_MASTER_PID,
+    OP_SET_MAX_CONNECTION, OP_SET_MAXFD, OP_SET_MINFD, OP_SINGLE_THREAD, OP_STORE_LISTEN,
+    OP_TASK_PIPE, OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN, OP_TASK_POOL_SETUP, OP_TIMER_DETACHED,
+    OP_TIMER_REINIT, TRACE_REACTOR_THREADS, TRACE_RELEASE, TRACE_TASK_WORKERS,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
 
@@ -288,9 +287,6 @@ fn check_port<H: Host>(h: &mut H, port: u64) -> crate::Effect<Result<(), ()>> {
         if interval == 0 || interval > expect {
             set_field(h, FIELD_HEARTBEAT_INTERVAL, expect)?;
         }
-    }
-    if h.op(OP_PORT_WEBSOCKET, port)? != 0 {
-        h.op(OP_PORT_WS_COMPRESSION, port)?;
     }
     Ok(Ok(()))
 }
@@ -697,7 +693,6 @@ mod tests {
                 (OP_PORT_STREAM, 1),
                 (OP_CALLBACK, 1),
                 (OP_PORT_MAX_LENGTH, 1024),
-                (OP_PORT_WEBSOCKET, 1),
                 (OP_SEND_TIMEOUT, 0.0001f64.to_bits()),
             ],
             [
@@ -721,11 +716,6 @@ mod tests {
             s.script.called(OP_PORT_MIN_LENGTH),
             2,
             "package length raised"
-        );
-        assert_eq!(
-            s.script.called(OP_PORT_WS_COMPRESSION),
-            2,
-            "websocket compression"
         );
         assert_eq!(
             s.script.called(OP_SEND_TIMEOUT_MIN),
