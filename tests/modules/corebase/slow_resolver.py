@@ -6,7 +6,7 @@ The command gets new mount and network namespaces: only loopback, with
 hosts through files and DNS alone. The server answers each name in --answer at
 once (A 127.0.0.1) and every other name NXDOMAIN after --delay seconds. The
 command runs as the invoking sudo user. Example, the original System DNS
-timeout case (#1190):
+timeout case on c-ares builds (#1190):
 
   sudo python3 tests/modules/corebase/slow_resolver.py -- python3 corpus/upstream/run.py \\
     --manifest tests/modules/corebase/dns-timeout-originals.json --external-network ...

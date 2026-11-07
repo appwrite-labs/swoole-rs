@@ -59,9 +59,12 @@ their assertions run now:
 `dns-timeout-originals.json` holds the original
 `swoole_coroutine_system/gethostbyname_timeout.phpt`. On an ordinary resolver the
 unknown name fails before its 1 ms deadline on both engines (last error 711, not
-712), so the PR tier's hybrid job runs it under `slow_resolver.py`: new mount and
-network namespaces whose local DNS server answers `www.github.com` at once and
-every other name NXDOMAIN after 0.5 s. The test and its assertions are unchanged.
+712), so the c-ares workflow (`cares.yml`) runs it under `slow_resolver.py`: new
+mount and network namespaces whose local DNS server answers `www.github.com` at
+once and every other name NXDOMAIN after 0.5 s. Only c-ares builds report 712 for
+a lookup that outlives its deadline; the thread-pool lookup reports
+`SW_ERROR_CO_TIMEDOUT` (10018) on both engines, so the case isn't run there. The
+test and its assertions are unchanged.
 
 ## Known failures and gaps
 

@@ -122,16 +122,6 @@ jobs:
           --php-extension curl --php-extension sockets --require-all --isolate-cases
           --engine hybrid=target/hybrid/rust-halfclose/modules/swoole.so
           --output target/reports/ports-sni-originals.json
-      # The original System DNS timeout case against a resolver that answers late (#1190);
-      # the runner's own resolver fails before the 1 ms deadline on both engines.
-      - run: >
-          sudo python3 tests/modules/corebase/slow_resolver.py --
-          python3 corpus/upstream/run.py
-          --manifest tests/modules/corebase/dns-timeout-originals.json --external-network
-          --php-extension curl --php-extension sockets --require-all
-          --engine hybrid=target/hybrid/rust-halfclose/modules/swoole.so
-          --engine upstream=target/upstream/src/modules/swoole.so
-          --output target/reports/dns-timeout-originals.json
       # 12-hyperf needs composer; it runs in the merge tier.
       - run: >
           python3 corpus/run.py
