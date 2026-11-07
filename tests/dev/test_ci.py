@@ -29,7 +29,7 @@ for prefix, count in data.get('flaky', {}).items():
         sys.exit(1)
 deleted = [branch for branch in data.get('deleted', []) if call.startswith('api repos/{owner}/{repo}/commits/' + branch)]
 if deleted:
-    sys.stderr.write('HTTP 422: No commit found for SHA\\n')
+    sys.stderr.write(f'gh: No commit found for SHA: {deleted[0]} (HTTP 422)\\n')
     sys.exit(1)
 elif args[:2] == ['api', '--paginate']:
     for issue in data.get('open_pulls' if '/pulls?' in args[2] else 'issues', []):
@@ -218,12 +218,12 @@ class Ci(unittest.TestCase):
         self.assertEqual(stderr.count('HTTP 502: Bad Gateway; retrying'), 3)
 
     def test_a_deleted_branch_resolves_through_its_pull_request(self):
-        code, result, _ = self.ci('wait', '--workflow', 'pr.yml', '--commit', 'merged-branch',
-                                  runs={'e' * 40: ['success']}, deleted=['merged-branch'])
+        code, result, _ = self.ci('wait', '--workflow', 'pr.yml', '--commit', 'socket-timeout',
+                                  runs={'e' * 40: ['success']}, deleted=['socket-timeout'])
         self.assertEqual((code, result['commit'], result['state']), (0, 'e' * 40, 'passed'))
-        self.assertIn('api repos/{owner}/{repo}/pulls?state=all&head={owner}:merged-branch -q .[0].head.sha // ""',
+        self.assertIn('api repos/{owner}/{repo}/pulls?state=all&head={owner}:socket-timeout -q .[0].head.sha // ""',
                       self.gh_calls)
-        # The 422 for the deleted branch is permanent: resolved once, not retried.
+        # The 422 is permanent, though the branch name contains 'timeout': resolved once, not retried.
         self.assertNotIn('retrying', _)
 
     def test_wait_pr_waits_for_the_merge_then_its_merge_tier(self):
