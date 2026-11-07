@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='swr-reactor-compile-') as tmp:
         for name in [*backends, 'stream']:
             source = root/(('src/network/' if name == 'stream' else 'src/reactor/')+name+'.cc')
             if variant != 'original' and not source.exists():
-                continue  # the hybrid deletes these units: the backends are Rust (#448), base.cc's rest is in event.cc
+                continue  # the hybrid deletes these units: the backends are Rust (#448), base.cc's rest is native/reactor/reactor.cc
             cmd = ['c++', *common, *flags, '-c', str(source), '-o', str(tree/(variant+'-'+name+'.o'))]
             result = subprocess.run(cmd, capture_output=True, text=True)
             passed = result.returncode == 0

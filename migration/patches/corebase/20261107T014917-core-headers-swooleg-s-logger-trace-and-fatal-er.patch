@@ -106,13 +106,3 @@ index f0f7978..64826bf 100644
 -};
 -
  namespace detail {
-diff --git a/src/wrapper/event.cc b/src/wrapper/event.cc
-index fbf34f2..256ff03 100644
---- a/src/wrapper/event.cc
-+++ b/src/wrapper/event.cc
-@@ -296,4 +296,3 @@ Reactor::Reactor(int max_event, Type _type) {
-     if (backend.observe_kqueue) {
--        uint32_t kqueue_enabled = SwooleG.enable_kqueue;
--        backend = swr_v1_reactor_backend_type(_type, caps, 1, kqueue_enabled);
-+        backend = swr_v1_reactor_backend_type(_type, caps, 1, swr_v1_core_enable_kqueue());
-     }

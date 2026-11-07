@@ -291,7 +291,7 @@ impl PoolHost for Native<'_> {
 #[cfg(feature = "upstream-symbols")]
 fn effect(op: u32, arg: u64) -> Option<i64> {
     use crate::methods::{swoole_get_worker_type, swoole_set_worker_type};
-    // SAFETY: crates/timer's and src/wrapper/event.cc's functions, and
+    // SAFETY: crates/timer's and native/reactor/reactor.cc's functions, and
     // crates/reactor's swoole_waitpid, under their upstream symbols.
     unsafe extern "C" {
         #[link_name = "_Z25swoole_timer_is_availablev"]

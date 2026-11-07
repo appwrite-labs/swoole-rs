@@ -1,7 +1,8 @@
 # Wrapper boundary
 
 Feature bit 2048 (`wrappers`). Header: `swoole_rs_wrappers.h`. Patched
-upstream files: `src/wrapper/event.cc`, `src/wrapper/http.cc`. Supported targets:
+upstream files: `src/wrapper/http.cc` (`src/wrapper/event.cc` is deleted; what is
+left of it is `native/reactor/reactor.cc`). Supported targets:
 macOS and Linux. No panic, C++ exception or Zend bailout may cross the ABI.
 
 ## HTTP request handle

@@ -3,7 +3,7 @@
 //! event.cc's `swoole_event_*` C API over the thread's `Reactor` (`SwooleTG.reactor`).
 //! With `upstream-symbols` each is defined under its upstream (Itanium) symbol.
 //! `swoole_event_init`, `swoole_event_free` and `swoole_event_defer` construct, delete
-//! and defer into C++ objects, so they stay in event.cc.
+//! and defer into C++ objects, so they are native/reactor/reactor.cc.
 use crate::handlers::Handler;
 use crate::reactor_upstream::{prepared, reactor_change, reactor_interest};
 use crate::{ReactorFields, SocketRecord};
@@ -230,7 +230,7 @@ pub unsafe extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
 #[unsafe(export_name = "_Z17swoole_event_waitv")]
 #[must_use]
 pub extern "C-unwind" fn swoole_event_wait() -> c_int {
-    // SAFETY: event.cc's Reactor members and swoole_event_free.
+    // SAFETY: native/reactor/reactor.cc's Reactor members and swoole_event_free.
     unsafe extern "C-unwind" {
         #[link_name = "_ZN6swoole7Reactor7if_exitEv"]
         fn reactor_if_exit(reactor: *mut c_void) -> bool;

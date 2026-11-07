@@ -185,7 +185,7 @@ mod tests {
         }
     }
 
-    /// What event.cc's `Reactor::Reactor` did, as the former initialize gate traced it:
+    /// What reactor.cc's `Reactor::Reactor` did, as the former initialize gate traced it:
     /// backend open `factory*100 + max_event`, hook observe 20 and call 21, main-thread
     /// observe 30, end callback `40 + priority`, exit condition `50 + key`.
     struct Constructed {

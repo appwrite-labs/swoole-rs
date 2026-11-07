@@ -483,12 +483,12 @@ pub unsafe extern "C" fn swr_v1_reactor_log(
 }
 
 /// The thread's event loop while it is available (`SwooleTG.reactor`, unless null
-/// or destroyed), with the prepared state it begins with. src/wrapper/event.cc reads
+/// or destroyed), with the prepared state it begins with. native/reactor/reactor.cc reads
 /// the C++ `thread_local`.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn event_reactor() -> Option<(*mut std::ffi::c_void, crate::ReactorPrepared)> {
-    // SAFETY: src/wrapper/event.cc's.
+    // SAFETY: native/reactor/reactor.cc's.
     unsafe extern "C" {
         fn swr_v1_event_reactor() -> *mut std::ffi::c_void;
     }
