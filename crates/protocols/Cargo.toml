@@ -9,7 +9,7 @@ name = "swoole_rs_protocols"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-# redis::recv_packet under its upstream symbol, over the server, tls and buffer crates.
+# redis::recv_packet and the bus's socket writes and frees under their upstream symbols, over the server, tls and buffer crates.
 upstream-symbols = ["dep:swoole-rs-buffer", "dep:swoole-rs-server", "dep:swoole-rs-tls"]
 
 [lints]
