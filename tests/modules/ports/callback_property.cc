@@ -65,9 +65,11 @@ zval *get_callback(zval *input) { return getCallback(input); }
 static uint32_t seed=0x81715;
 static uint32_t random_word(){seed^=seed<<13;seed^=seed>>17;seed^=seed<<5;return seed;}
 static unsigned long cases;
-static void compare(const std::string &name,bool null_properties) {
+static void fill_properties(bool null_properties) {
     unsigned id=1;properties.clear();
     for(const auto &event:server_port_event_map) properties.emplace("on"+event.second.name,zval{"callback",null_properties,id++});
+}
+static void compare(const std::string &name) {
     zval input{name,false,0};
     trace.str("");trace.clear();lowercase_calls=0;auto *expected=original::get_callback(&input);auto original=trace.str();assert(lowercase_calls==1);
     trace.str("");trace.clear();lowercase_calls=0;auto *actual=selected::get_callback(&input);assert(lowercase_calls==0);
@@ -89,7 +91,8 @@ int main() {
     for(const char *locale:{"C","","tr_TR.UTF-8"}) {
         if(!setlocale(LC_CTYPE,locale))continue;
         locales++;
-        for(const auto &name:names) for(bool null_properties:{false,true})compare(name,null_properties);
+        // Neither body writes the property table, so each model is built once per locale.
+        for(bool null_properties:{false,true}) {fill_properties(null_properties);for(const auto &name:names)compare(name);}
     }
     assert(locales>=1);
     printf("%lu exact normal getter comparisons; %u available locale settings; native lowercase allocation removed\n",cases,locales);
