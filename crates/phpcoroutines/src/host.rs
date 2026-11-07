@@ -289,7 +289,9 @@ pub(crate) fn origin_task(co: Co) -> *mut c_void {
     task(native(unsafe { (*state(co)).origin }))
 }
 
-pub(crate) fn cid(co: Co) -> c_long {
+/// `Coroutine::get_cid()` of a live coroutine.
+#[must_use]
+pub fn cid(co: Co) -> c_long {
     // SAFETY: a live coroutine.
     unsafe { (*state(co)).cid }
 }

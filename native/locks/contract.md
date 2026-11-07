@@ -1,10 +1,13 @@
 # Locks and atomics ABI
 
 Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. Patched upstream
-files: `ext-src/swoole_atomic.cc`, `ext-src/swoole_thread_atomic.cc`,
-`ext-src/swoole_thread_lock.cc`, `src/lock/barrier.cc`, `src/lock/coroutine_lock.cc`
-(the native coroutine host only), `src/lock/mutex.cc`. `src/lock/rw_lock.cc` and
+files: `ext-src/swoole_thread_atomic.cc`, `ext-src/swoole_thread_lock.cc`,
+`src/lock/barrier.cc`, `src/lock/mutex.cc`. `src/lock/rw_lock.cc` and
 `src/lock/spin_lock.cc` are deleted: no C++ caller has an RW or spin lock.
+`ext-src/swoole_atomic.cc`, `ext-src/swoole_lock.cc`, `ext-src/swoole_coroutine_lock.cc`
+and `src/lock/coroutine_lock.cc` are deleted: crates/phplocks exports their MINITs and
+builds `Coroutine\Lock`'s host itself (the global pool through its vtable, the
+coroutine from crates/phpcoroutines, `System::sleep`, or io_uring's futex).
 
 Native callers keep source-compatible C++ methods and PHP behavior. Recompile
 C++ consumers against their matching SDK: PHP object layouts

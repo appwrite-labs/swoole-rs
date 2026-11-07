@@ -685,7 +685,7 @@ fn set_errno(value: c_int) {
 
 /// `sw_mem_pool()->alloc(size)` and `->free(ptr)`: virtual calls through the pool's
 /// Itanium vtable, whose slots are the two destructors, `alloc`, then `free`.
-mod pool {
+pub mod pool {
     use std::ffi::c_void;
 
     type Alloc = unsafe extern "C" fn(this: *mut c_void, size: u32) -> *mut c_void;
@@ -703,7 +703,8 @@ mod pool {
 
     /// # Safety
     /// As `pool`.
-    pub(super) unsafe fn alloc(size: u32) -> *mut c_void {
+    #[must_use]
+    pub unsafe fn alloc(size: u32) -> *mut c_void {
         // SAFETY: as the caller promises.
         let (pool, vtable) = unsafe { pool() };
         // SAFETY: slot 2 is `MemoryPool::alloc`'s override.
@@ -714,7 +715,7 @@ mod pool {
 
     /// # Safety
     /// As `pool`; `ptr` came from `alloc`.
-    pub(super) unsafe fn free(ptr: *mut c_void) {
+    pub unsafe fn free(ptr: *mut c_void) {
         // SAFETY: as the caller promises.
         let (pool, vtable) = unsafe { pool() };
         // SAFETY: slot 3 is `MemoryPool::free`'s override.

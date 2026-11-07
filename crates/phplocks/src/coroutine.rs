@@ -1,13 +1,7 @@
 //! `Swoole\\Coroutine\\Lock`: PHP object ownership over the Rust coroutine lock.
-use std::{
-    ffi::c_void,
-    ptr,
-    sync::{
-        OnceLock,
-        atomic::{AtomicPtr, Ordering},
-    },
-};
+use std::ffi::{c_int, c_void};
 use swoole_rs_locks::coroutine::{self, CoroutineHost, CoroutineLock, CoroutineOutcome};
+use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::coroutine_lock;
 use swoole_rs_zend::{
     Call, Class, Object, bailout, method_table,
@@ -18,9 +12,92 @@ use swoole_rs_zend::{
     throw_constructed_twice, unset_property_deny,
 };
 
+/// `SW_ERROR_WRONG_OPERATION`.
+const WRONG_OPERATION: c_int = 509;
 static CLASS: Class = Class::new();
-static HOST: AtomicPtr<CoroutineHost> = AtomicPtr::new(ptr::null_mut());
-static UNCONSTRUCTED: OnceLock<unsafe extern "C" fn(*mut c_void)> = OnceLock::new();
+
+/// The lock's effects, as upstream's `CoroutineLock` reaches them: the current
+/// coroutine, the global pool for a shared word, and either `System::sleep`
+/// backoff or, with `io_uring` (whose engine always has futexes), the ring's futex.
+static HOST: CoroutineHost = CoroutineHost {
+    current: host::current,
+    cid: host::cid,
+    alloc_shared: host::alloc_shared,
+    free_shared: host::free_shared,
+    #[cfg(not(feature = "iouring"))]
+    sleep: Some(host::sleep),
+    #[cfg(feature = "iouring")]
+    sleep: None,
+    #[cfg(not(feature = "iouring"))]
+    wait: None,
+    #[cfg(feature = "iouring")]
+    wait: Some(host::wait),
+    #[cfg(not(feature = "iouring"))]
+    wake: None,
+    #[cfg(feature = "iouring")]
+    wake: Some(host::wake),
+    warning: host::warning,
+};
+
+mod host {
+    use super::{CoroutineOutcome, c_int, c_void, pool};
+
+    /// No leaf runs PHP, so none bails out.
+    const fn done(code: c_int) -> CoroutineOutcome {
+        CoroutineOutcome { code, bailed: 0 }
+    }
+    pub(super) extern "C" fn current() -> *mut c_void {
+        swoole_rs_phpcoroutines::current()
+    }
+    pub(super) extern "C" fn cid(co: *mut c_void) -> i64 {
+        swoole_rs_phpcoroutines::cid(co)
+    }
+    pub(super) extern "C" fn alloc_shared() -> *mut u32 {
+        // SAFETY: SwooleG.memory_pool lives from swoole_init, before MINIT.
+        unsafe { pool::alloc(4) }.cast()
+    }
+    pub(super) unsafe extern "C" fn free_shared(word: *mut u32) {
+        // SAFETY: the word came from `alloc_shared`.
+        unsafe { pool::free(word.cast()) };
+    }
+    #[cfg(not(feature = "iouring"))]
+    pub(super) extern "C" fn sleep(seconds: f64) -> CoroutineOutcome {
+        // SAFETY: src/coroutine/system.cc's.
+        unsafe extern "C" {
+            #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
+            fn system_sleep(seconds: f64) -> c_int;
+        }
+        // SAFETY: the lock sleeps only inside a coroutine.
+        done(unsafe { system_sleep(seconds) })
+    }
+    // SAFETY: crates/hooks's engine and src/coroutine/iouring.cc's static host.
+    #[cfg(feature = "iouring")]
+    unsafe extern "C" {
+        #[link_name = "_ZN6swoole7Iouring4hostE"]
+        static IOURING_HOST: c_void;
+        fn swr_v1_uring_futex_wait(host: *const c_void, futex: *mut u32) -> c_int;
+        fn swr_v1_uring_futex_wakeup(host: *const c_void, futex: *mut u32) -> c_int;
+    }
+    /// `Iouring::futex_wait`.
+    #[cfg(feature = "iouring")]
+    pub(super) unsafe extern "C" fn wait(word: *mut u32) -> CoroutineOutcome {
+        // SAFETY: the lock's live word, in a coroutine.
+        done(unsafe { swr_v1_uring_futex_wait(&raw const IOURING_HOST, word) })
+    }
+    /// `Iouring::futex_wakeup`.
+    #[cfg(feature = "iouring")]
+    pub(super) unsafe extern "C" fn wake(word: *mut u32) -> CoroutineOutcome {
+        // SAFETY: as in `wait`.
+        done(unsafe { swr_v1_uring_futex_wakeup(&raw const IOURING_HOST, word) })
+    }
+    pub(super) extern "C" fn warning() -> u8 {
+        swoole_rs_corebase::log::warning(
+            c"swoole::CoroutineLock::lock_impl",
+            format_args!("The coroutine lock can only be used in a coroutine environment"),
+        );
+        0
+    }
+}
 
 #[repr(C)]
 struct Held {
@@ -48,14 +125,12 @@ fn owner(call: &Call) -> *mut CoroutineLock {
 }
 fn constructed(call: &Call) -> Option<*mut CoroutineLock> {
     let lock = owner(call);
-    if !lock.is_null() {
-        return Some(lock);
+    if lock.is_null() {
+        // SAFETY: Swoole's fatal error hook; the handler's frames own nothing.
+        unsafe { swoole_rs_corebase::fatal_error(WRONG_OPERATION, c"must call constructor first") };
+        return None;
     }
-    if let Some(report) = UNCONSTRUCTED.get() {
-        // SAFETY: the C++ fatal reporter is contained below this Rust frame by Zend's C shim.
-        bailout::defer(unsafe { bailout::trap(*report, ptr::null_mut()) });
-    }
-    None
+    Some(lock)
 }
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
     entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
@@ -70,15 +145,11 @@ method_table! {
         c"unlock" => zim_swoole_coroutine_lock_unlock, &coroutine_lock::arginfo_class_Swoole_Coroutine_Lock_unlock, ZEND_ACC_PUBLIC;
     ];
 }
+/// `php_swoole_coroutine_lock_minit`.
 /// # Safety
-/// MINIT once, with a process-lived immutable host and a C++ fatal reporter.
+/// MINIT, once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phplocks_coroutine_minit(
-    host: *const CoroutineHost,
-    unconstructed: unsafe extern "C" fn(*mut c_void),
-) {
-    HOST.store(host.cast_mut(), Ordering::Relaxed);
-    UNCONSTRUCTED.get_or_init(|| unconstructed);
+pub unsafe extern "C" fn php_swoole_coroutine_lock_minit(_module_number: c_int) {
     // SAFETY: MINIT installs a static method table.
     unsafe { CLASS.register(c"Swoole\\Coroutine\\Lock", METHODS.as_ptr(), configure) };
     // SAFETY: the newly registered class owns this public default property.
@@ -95,8 +166,8 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: MINIT installed the immutable process-lived host.
-    let lock = unsafe { coroutine::coroutine_new(shared, HOST.load(Ordering::Relaxed)) };
+    // SAFETY: the host is a static whose leaves cannot unwind.
+    let lock = unsafe { coroutine::coroutine_new(shared, &raw const HOST) };
     // SAFETY: the constructor owns this object's currently empty Held slot.
     unsafe { Object::<Held>::data(call.this()) }.owner = lock;
     call.set_bool(true);

@@ -697,8 +697,12 @@ dependencies = [
 name = "swoole-rs-phplocks"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-corebase",
  "swoole-rs-locks",
+ "swoole-rs-memory",
+ "swoole-rs-phpcoroutines",
  "swoole-rs-phpstubs",
+ "swoole-rs-phpswoole",
  "swoole-rs-zend",
 ]
 
