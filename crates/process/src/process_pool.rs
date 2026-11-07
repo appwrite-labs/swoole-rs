@@ -112,8 +112,8 @@ const IPC_SOCKET: u8 = 3;
 
 /// `swoole::ProtocolType`; `MAIN_ASYNC` is `OP_MAIN_LOOP`'s `run_async`.
 const PROTOCOL_TASK: c_int = 1;
-const PROTOCOL_STREAM: c_int = 2;
-const PROTOCOL_MESSAGE: c_int = 3;
+pub const PROTOCOL_STREAM: c_int = 2;
+pub const PROTOCOL_MESSAGE: c_int = 3;
 const MAIN_ASYNC: u64 = 4;
 
 /// `swWorkerType`.

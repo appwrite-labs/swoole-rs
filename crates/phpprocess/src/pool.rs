@@ -14,8 +14,12 @@ use std::{
 use swoole_rs_corebase::DataHead;
 use swoole_rs_phpstubs::process_pool;
 use swoole_rs_process::{
-    methods, pool::swr_v1_process_pool_ipc_listener, process_pool::PoolRecord,
-    signal::swoole_signal_isset, worker_globals::swr_v1_worker_globals, worker_record,
+    methods,
+    pool::swr_v1_process_pool_ipc_listener,
+    process_pool::{PROTOCOL_MESSAGE, PROTOCOL_STREAM, PoolRecord},
+    signal::swoole_signal_isset,
+    worker_globals::swr_v1_worker_globals,
+    worker_record,
 };
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object, class_name, handlers, long_zval, message, object_of,
@@ -39,9 +43,6 @@ const IPC_SOCKET: i64 = 3;
 /// `SW_SOCK_TCP` and `SW_SOCK_UNIX_STREAM`.
 const SOCK_TCP: c_int = 1;
 const SOCK_UNIX_STREAM: c_int = 5;
-/// `SW_PROTOCOL_STREAM` and `SW_PROTOCOL_MESSAGE`.
-const PROTOCOL_STREAM: c_int = 0;
-const PROTOCOL_MESSAGE: c_int = 1;
 /// `SW_MASTER` and `SW_WORKER`.
 const MASTER: c_int = 1;
 const WORKER: c_int = 2;
