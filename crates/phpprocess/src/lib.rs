@@ -1,7 +1,8 @@
 //! PHP `Swoole\Process`: class registration, constants, objects and every
-//! method, and of `Swoole\Process\Pool` with its event callbacks. C++ keeps upstream's method table (built from the stub's arginfo) and
-//! the `Worker`, pipe and message-queue objects, which Server and Process\Pool
-//! share; the methods reach them through the [`Host`] table C++ passes at MINIT.
+//! method. C++ keeps the `Worker`, pipe and message-queue objects, which Server
+//! and Process\Pool share; the methods reach them through the [`Host`] table C++
+//! passes at MINIT. `Swoole\Process\Pool` and its event callbacks run over
+//! crates/process's `ProcessPool` directly.
 //! See docs/zend.md.
 //!
 //! Without the `php` feature the crate is empty.

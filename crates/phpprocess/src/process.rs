@@ -78,7 +78,7 @@ impl QueueMessage {
     }
 }
 
-fn entry() -> *mut zend_class_entry {
+pub(crate) fn entry() -> *mut zend_class_entry {
     PROCESS.entry()
 }
 

@@ -95,58 +95,8 @@ bool swr_v1_phpprocess_array_to_cpu_set(const struct _zval_struct *array, void *
 void swr_v1_phpprocess_cpu_set_to_array(struct _zval_struct *array, const void *set);
 #endif
 
-/* PHP Swoole\Process\Pool: as Process, over a C++ ProcessPool. */
-typedef struct {
-    bool started;
-    bool async;
-    uint8_t ipc_mode;
-    bool message_bus;
-    bool on_message; /* pool->onMessage is set */
-    uint32_t worker_num;
-} swr_phpprocess_pool_view;
-
-/* The pool's callbacks, as ProcessPool's onStart/onWorkerStart/... take them
- * (pool, worker or message pointers); null leaves one unset. */
-typedef struct {
-    void (*start)(void *pool);
-    void (*shutdown)(void *pool);
-    void (*worker_start)(void *pool, void *worker);
-    void (*worker_stop)(void *pool, void *worker);
-    void (*worker_exit)(void *pool, void *worker);
-    void (*message)(void *pool, void *message);
-} swr_v1_phpprocess_pool_events;
-
-typedef struct {
-    struct _zend_class_entry *exception;
-    struct _zend_class_entry **process; /* swoole_process_ce */
-    bool (*server_exists)(void);
-    int64_t (*worker_id)(void);
-    void *(*pool_new)(uint32_t worker_num, int32_t key, int ipc_type, struct _zval_struct *object, bool async);
-    void (*pool_free)(void *pool);
-    swr_phpprocess_pool_view (*pool_view)(const void *pool);
-    struct _zval_struct *(*pool_object)(const void *pool);
-    void (*pool_set_async)(void *pool, bool async);
-    void (*pool_configure)(void *pool, struct _zend_array *options);
-    int (*pool_listen)(void *pool, const char *host, int64_t port, int64_t backlog, bool unix_socket);
-    int (*pool_response)(void *pool, const char *data, size_t length);
-    bool (*pool_send)(void *pool, int64_t worker_id, const char *data, size_t length);
-    uintptr_t (*signal_swap)(int signo, void (*handler)(int));
-    int (*pool_protocol)(void *pool, bool message_bus);
-    int (*pool_run)(void *pool, const swr_v1_phpprocess_pool_events *events);
-    bool (*pool_detach)(void *pool);
-    bool (*pool_shutdown)(void *pool);
-    void (*pool_signal)(void *pool, void *worker, int signo);
-    void (*worker_signals)(bool term, void (*handler)(int));
-    void (*enter_worker)(bool coroutine);
-    void (*enter_master)(void);
-    void (*message_data)(void *pool, void *message, struct _zval_struct *target);
-    void (*worker_busy)(bool busy);
-    int32_t (*pool_worker_pid)(const void *pool, int64_t worker_id);
-    void (*worker_set_pid)(void *worker, int32_t pid);
-    void *(*worker_copy)(void *pool, int64_t worker_id, int *pipe);
-} swr_v1_phpprocess_pool_host;
-
-void swr_v1_phpprocess_pool_minit(const swr_v1_phpprocess_pool_host *table);
+/* PHP Swoole\Process\Pool (crates/phpprocess), over crates/process's ProcessPool. */
+void swr_v1_phpprocess_pool_minit(void);
 void *swr_v1_phpprocess_pool_current(void);
 #ifdef __cplusplus
 }

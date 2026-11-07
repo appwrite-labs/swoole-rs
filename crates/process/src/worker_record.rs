@@ -185,6 +185,52 @@ pub unsafe fn user_data(worker: *const WorkerRecord) -> *mut c_void {
     unsafe { (*worker).ptr }
 }
 
+/// `Swoole\Process\Pool::getProcess()`'s worker: `copy` becomes a copy of the
+/// pool's worker `id`, separated from shared memory. PHP may not close a pipe
+/// it shares with the pool, nor touch one the message bus owns; without
+/// `onMessage`, a message-queue pool's process pushes and pops the pool's
+/// queue. Returns the copy's pipe fd, or -1 unless the pool talks over unix
+/// sockets.
+///
+/// # Safety
+/// `pool` is a created pool with a worker `id`; `copy` is a writable record.
+pub unsafe fn copy_for_process(
+    pool: *const crate::process_pool::PoolRecord,
+    id: usize,
+    copy: *mut WorkerRecord,
+) -> c_int {
+    const IPC_UNIXSOCK: u8 = 1;
+    const IPC_MSGQUEUE: u8 = 2;
+    const MSGQUEUE_BALANCE: u8 = 2;
+    // SAFETY: the caller lends a created pool.
+    let pool = unsafe { &*pool };
+    // SAFETY: the pool's worker `id`, copied by value as upstream's `new Worker(...)` does.
+    let mut worker = unsafe { pool.workers.wrapping_add(id).read() };
+    let mut pipe = -1;
+    if pool.ipc_mode == IPC_UNIXSOCK {
+        worker.pipe_current = if worker.id == crate::methods::swoole_get_worker_id() {
+            worker.pipe_worker
+        } else {
+            worker.pipe_master
+        };
+        worker.pipe_object = core::ptr::null_mut();
+        // SAFETY: a unix-socket pool's worker pipes are live sockets, and
+        // `network::Socket` begins with its fd.
+        pipe = unsafe { worker.pipe_current.cast::<c_int>().read() };
+    }
+    if !pool.message_bus.is_null() {
+        worker.pipe_current = core::ptr::null_mut();
+        worker.pipe_object = core::ptr::null_mut();
+    }
+    if pool.ipc_mode == IPC_MSGQUEUE && pool.on_message.is_null() {
+        worker.queue = pool.queue;
+        worker.msgqueue_mode = MSGQUEUE_BALANCE;
+    }
+    // SAFETY: as the caller guarantees.
+    unsafe { copy.write(worker) };
+    pipe
+}
+
 /// Point the worker at its pool.
 ///
 /// # Safety
@@ -333,6 +379,51 @@ mod tests {
     // `swoole::Worker` against the `swr_v1_worker_record` mirror in swoole_rs_process.h,
     // which has these same `#[repr(C)]` fields. Here just sanity-check the Rust record's
     // alignment and that the accessors read/write the right field.
+    #[test]
+    fn a_pool_process_copies_the_worker_without_the_pipes_it_may_not_close() {
+        let mut fds = [7 as c_int, 9];
+        let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
+        workers[1].id = u32::MAX;
+        workers[1].pid = 41;
+        workers[1].pipe_master = (&raw mut fds[0]).cast();
+        workers[1].pipe_worker = (&raw mut fds[1]).cast();
+        workers[1].pipe_object = core::ptr::dangling_mut();
+        let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
+        pool.workers = workers.as_mut_ptr();
+        pool.ipc_mode = 1;
+        let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
+        // Another process's worker: the master's end of its pipe.
+        assert_eq!(
+            unsafe { copy_for_process(&raw const pool, 1, &raw mut copy) },
+            7
+        );
+        assert_eq!(
+            (copy.pid, copy.pipe_current, copy.pipe_object),
+            (41, workers[1].pipe_master, core::ptr::null_mut())
+        );
+        // The message bus owns the pipe.
+        pool.message_bus = core::ptr::dangling_mut();
+        assert_eq!(
+            unsafe { copy_for_process(&raw const pool, 1, &raw mut copy) },
+            7
+        );
+        assert!(copy.pipe_current.is_null());
+        // Without onMessage, a message-queue pool's process balances over the pool's queue.
+        pool.ipc_mode = 2;
+        pool.queue = 3 as *mut c_void;
+        assert_eq!(
+            unsafe { copy_for_process(&raw const pool, 1, &raw mut copy) },
+            -1
+        );
+        assert_eq!((copy.queue, copy.msgqueue_mode), (pool.queue, 2));
+        pool.on_message = 4 as *const c_void;
+        assert_eq!(
+            unsafe { copy_for_process(&raw const pool, 1, &raw mut copy) },
+            -1
+        );
+        assert!(copy.queue.is_null());
+    }
+
     #[test]
     fn retirement_resets_counters_preserving_identity_and_clamps_underflow() {
         let mut record: WorkerRecord = unsafe { core::mem::zeroed() };
