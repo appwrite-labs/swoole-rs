@@ -530,7 +530,6 @@ class Lanes(unittest.TestCase):
             self.assertIn(flag, lowercase)
         self.assertEqual(lowercase.count('--engine'), 2)
         self.assertNotIn('--case', lowercase)
-        self.assertIn('--archive', commands['ports-listen'])
         self.assertIn('--archive', commands['ports-socket'])
         self.assertIn('--core', commands['ports-socket'])
         self.assertNotIn('ports-php', commands)

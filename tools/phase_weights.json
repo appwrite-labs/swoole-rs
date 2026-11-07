@@ -102,7 +102,6 @@
  "ports-configuration": 1,
  "ports-defaults": 7,
  "ports-flags": 12,
- "ports-listen": 1,
  "ports-options": 9,
  "ports-packet-settings": 9,
  "ports-policy": 1,

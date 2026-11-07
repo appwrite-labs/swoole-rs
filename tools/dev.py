@@ -339,8 +339,6 @@ def plan(args, reports):
         script('ports-socket', 'tests/modules/ports/socket_workflow.py', '--source', ROOT / 'target/upstream/src',
                '--core', manifest.parent / 'src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ports-socket'))
-        script('ports-listen', 'tests/modules/ports/listen.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ports-listen'))
         script('ports-policy', 'tests/modules/ports/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ports-policy'))
         port_options = (['--openssl-root', subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()]

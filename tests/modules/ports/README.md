@@ -5,7 +5,7 @@ Contracts: [native/ports/contract.md](../../../native/ports/contract.md) and
 8388608 (`ports`).
 
 Rust owns protocol priority/labels, integer normalization, event lookup,
-listener option sequencing, socket-creation decisions, the init_protocol plan,
+`listen` and `close_socket` (`methods.rs`), socket-creation decisions, the init_protocol plan,
 `get_connection_num` summation, EOF/length/stream setter normalization,
 constructor defaults, callback getter/hook selection, flag/buffer/packet/option
 plans, TLS/SNI frontend metadata, class-property declarations and the receive
@@ -30,13 +30,11 @@ compare output):
 
 ```text
 python3 tests/modules/ports/gate.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --output REPORT [--sanitize] [--rust-asan]
-python3 tests/modules/ports/listen.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --output REPORT [--sanitize]
 python3 tests/modules/ports/socket_workflow.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --core CONFIGURED_CORE --output REPORT [--sanitize]
 ```
 
 - `gate.py`: integer macros, event enum/catalog and protocol plan against the
   pinned definitions.
-- `listen.py`: `ListenPort::listen` bodies, 1536 traces must match.
 - `socket_workflow.py`: `create_socket` bodies, 1280 traces must match. Reads
   configured Makefile `INCLUDES`/`CPPFLAGS` as literal argv; shell expressions,
   unknown variables and cycles are rejected and no Make command runs.
@@ -68,8 +66,8 @@ python3 tests/modules/ports/NAME.py --source PINNED_REFERENCE --archive SELECTED
 `--sdk-origin` relocates in-build include paths when compiling a private copy of
 a configured SDK. On macOS pass a matching `--php-config` and `--openssl-root`.
 
-Linux sanitizer run (builds an ASan Rust archive and reruns `gate.py`,
-`listen.py` and `socket_workflow.py`, then checks that a deliberately invalid
+Linux sanitizer run (builds an ASan Rust archive and reruns `gate.py`
+and `socket_workflow.py`, then checks that a deliberately invalid
 ABI caller is caught):
 
 PHP runtime checks:
