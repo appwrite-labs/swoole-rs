@@ -3,6 +3,8 @@
 cd "$SRC/swoole-rs/fuzz"
 # OSS-Fuzz compiles C++ against libc++; link the oracle the same way.
 export CXXSTDLIB=c++
+# libcrypto.a, so the fuzzers run without OpenSSL in the runner image.
+export OPENSSL_STATIC=1
 cargo fuzz build -O --debug-assertions
 for target in $(cargo fuzz list); do
     cp "target/x86_64-unknown-linux-gnu/release/$target" "$OUT/"
