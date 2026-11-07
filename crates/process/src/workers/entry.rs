@@ -216,9 +216,6 @@ thread_factory_methods! {
     "_ZN6swoole13ThreadFactory24terminate_manager_threadEv"
     fn terminate_manager_thread() -> () = RUN_THREAD_TERMINATE_MANAGER(0);
     #[must_use]
-    "_ZNK6swoole13ThreadFactory21get_manager_thread_idEv"
-    fn get_manager_thread_id() -> u32 = RUN_THREAD_ID(0);
-    #[must_use]
     "_ZNK6swoole13ThreadFactory20get_master_thread_idEv"
     fn get_master_thread_id() -> u32 = RUN_THREAD_ID(1);
 }
