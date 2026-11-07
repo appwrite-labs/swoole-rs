@@ -713,6 +713,8 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-process",
+ "swoole-rs-reactor",
+ "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 

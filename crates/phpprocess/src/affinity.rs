@@ -1,9 +1,6 @@
 //! `Process::setAffinity()`/`getAffinity()` and the cpu-set conversions
 //! `Thread` shares (`HAVE_CPU_AFFINITY`: Linux here).
-use crate::{
-    host::host,
-    report::{fatal, sys},
-};
+use crate::report::{fatal, sys};
 use std::ffi::c_void;
 use swoole_rs_zend::{
     Call, E_WARNING, add_next_index_long, each_value, message,
@@ -11,8 +8,7 @@ use swoole_rs_zend::{
 };
 
 fn cpu_num() -> usize {
-    // SAFETY: C++'s reader of `SwooleG.cpu_num`.
-    unsafe { (host().cpu_num)() as usize }
+    usize::from(swoole_rs_corebase::swr_v1_core_cpu_num())
 }
 
 /// `php_swoole_array_to_cpu_set`: false (after a warning for a bad id) when

@@ -1,8 +1,9 @@
 //! PHP `Swoole\Process`: class registration, constants, objects and every
-//! method. C++ keeps the `Worker`, pipe and message-queue objects, which Server
-//! and Process\Pool share; the methods reach them through the [`Host`] table C++
-//! passes at MINIT. `Swoole\Process\Pool` and its event callbacks run over
-//! crates/process's `ProcessPool` directly.
+//! method, over crates/process's `Worker` record and crates/tls's `UnixSocket`
+//! pipe. What is still C++ (the server, callables, the reactor and signals) the
+//! methods reach through the [`Host`] table C++ passes at MINIT.
+//! `Swoole\Process\Pool` and its event callbacks run over crates/process's
+//! `ProcessPool` directly.
 //! See docs/zend.md.
 //!
 //! Without the `php` feature the crate is empty.
@@ -22,10 +23,11 @@ mod pool;
 mod process;
 mod report;
 mod signal;
+mod worker;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use affinity::*;
-pub use host::{Host, WorkerView};
+pub use host::Host;
 pub use pool::*;
 pub use process::*;
 pub use signal::{swr_v1_phpprocess_clean, swr_v1_phpprocess_signal_isset};

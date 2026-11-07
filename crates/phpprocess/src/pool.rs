@@ -826,8 +826,8 @@ fn start(call: &Call) {
         return;
     }
     // The reactor must be cleaned up before registering signals.
-    // SAFETY: C++'s event loop teardown.
-    unsafe { (process_host().event_free)() };
+    // SAFETY: the event loop's teardown.
+    unsafe { crate::worker::swoole_event_free() };
     let signals = pool_signals();
     let mut previous = [0usize; 6];
     for (signo, old) in signals.iter().zip(previous.iter_mut()) {
@@ -959,8 +959,7 @@ fn get_process(call: &Call) {
         // SAFETY: a writable zval and a registered class.
         unsafe { object_init_ex(&raw mut object, process_ce) };
         // A worker C++ allocates, as the Process object frees it.
-        // SAFETY: C++'s `new Worker()`.
-        let worker = unsafe { (process_host().worker_new)() };
+        let worker = crate::worker::new();
         #[expect(
             clippy::cast_sign_loss,
             clippy::cast_possible_truncation,
