@@ -202,8 +202,8 @@ fn construct(call: &Call) {
                 host::exception(),
                 c"exec file name is empty",
                 INVALID_PARAMS,
-            )
-        };
+            );
+        }
         return;
     }
     let argv = if call.num_args() > 1 {

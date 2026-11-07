@@ -54,8 +54,10 @@ pub(crate) unsafe fn is_co_socket(object: *mut zval) -> bool {
     let std: *mut zend_object = unsafe { swoole_rs_zend::value::obj_of(object) };
     // SAFETY: written once by MINIT.
     let socket = unsafe { swoole_rs_phpclients::swoole_socket_coro_ce };
+    // SAFETY: a live object.
+    let ce = unsafe { (*std).ce };
     // SAFETY: a live object's class and a registered one.
-    !socket.is_null() && unsafe { swr_zend_instanceof((*std).ce, socket) }
+    !socket.is_null() && unsafe { swr_zend_instanceof(ce, socket) }
 }
 
 /// `php_swoole_thread_co_socket_cast`: a duplicate of the coroutine socket's
@@ -136,7 +138,9 @@ pub(crate) fn sys_error(level: c_int, message: &CStr) -> Result<(), Bailout> {
         return Ok(());
     }
     // SAFETY: no preconditions.
-    let text = unsafe { CStr::from_ptr(libc::strerror(errno)) };
+    let text = unsafe { libc::strerror(errno) };
+    // SAFETY: libc's NUL-terminated message.
+    let text = unsafe { CStr::from_ptr(text) };
     let full = std::ffi::CString::new(format!(
         "{}, Error: {}[{errno}]",
         message.to_string_lossy(),

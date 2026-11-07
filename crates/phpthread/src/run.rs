@@ -36,6 +36,7 @@ static THREADS: AtomicUsize = AtomicUsize::new(1);
 
 thread_local! {
     /// The thread's arguments (`Thread::getArguments()`), undef if none.
+    // SAFETY: an all-zero zval is undef.
     static ARGV: UnsafeCell<zval> = const { UnsafeCell::new(unsafe { std::mem::zeroed() }) };
     /// The jump buffer of the thread's `zend_first_try` while its script runs.
     static BAILOUT: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
@@ -49,8 +50,8 @@ struct Start {
     argv: *mut c_void,
 }
 
-/// `sw_active_thread_count()`.
-#[unsafe(export_name = "_Z22sw_active_thread_countv")]
+/// `sw_active_thread_count()`, declared `extern "C"` in `php_swoole_private.h`.
+#[unsafe(no_mangle)]
 pub extern "C" fn sw_active_thread_count() -> usize {
     THREADS.load(Ordering::SeqCst)
 }
@@ -256,7 +257,8 @@ pub extern "C" fn swr_v1_phpthread_rshutdown() {
         // SAFETY: this thread's slot, undef or a value it owns.
         unsafe { zval_ptr_dtor(argv) };
         // SAFETY: as above.
-        unsafe { (*argv).u1.type_info = IS_UNDEF };
+        let argv = unsafe { &mut *argv };
+        argv.u1.type_info = IS_UNDEF;
     });
     // SAFETY: no preconditions.
     if !unsafe { swr_zend_tsrm_is_main_thread() } {
@@ -280,8 +282,10 @@ pub(crate) fn arguments(out: *mut zval) {
         let argv = argv.get();
         // SAFETY: this thread's slot.
         if unsafe { type_of(argv) } == IS_ARRAY {
+            // SAFETY: this thread's slot, an array.
+            let value = unsafe { *argv };
             // SAFETY: the return slot takes a reference.
-            unsafe { *out = *argv };
+            unsafe { *out = value };
             // SAFETY: as above.
             unsafe { swr_zval_try_addref(out) };
         }
