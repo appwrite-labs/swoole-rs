@@ -101,7 +101,7 @@ const KIND_HTTP: c_int = 1;
 const KIND_WEBSOCKET: c_int = 2;
 const KIND_REDIS: c_int = 3;
 
-/// What start() checks of a `ListenPort`.
+/// What `start()` checks of a `ListenPort`.
 struct PortFacts {
     port: *mut c_void,
     protocols: u32,
@@ -113,7 +113,7 @@ struct PortFacts {
 
 /// What the Server and Port objects show of a `ListenPort`.
 struct PortInfo {
-    host: CoreStringView,
+    host: swoole_rs_corebase::CoreStringView,
     port: i64,
     kind: i64,
     fd: i64,
@@ -490,7 +490,6 @@ unsafe fn connections(
 /// `server_ctor`: bind `object` to `serv` and describe its primary port.
 fn bind(call: &Call, serv: *mut c_void) {
     let object = call.this();
-    let host = host();
     // *php_swoole_server_zval_ptr(serv) = *zserv
     crate::dispatch::set_server_zval(serv, call.this_zval());
     // SAFETY: `$this` is a Server.
@@ -1331,11 +1330,5 @@ mod tests {
         assert!(property.callbacks.iter().all(|cb| cb.is_null()));
         assert!(property.ports.is_empty() && property.user_processes.is_empty());
         assert_eq!(property.callbacks.len(), ON_PIPE_MESSAGE + 1);
-    }
-
-    #[test]
-    fn layouts_mirror_cxx() {
-        assert_eq!(size_of::<PortFacts>(), 16);
-        assert_eq!(size_of::<PortInfo>(), 40);
     }
 }

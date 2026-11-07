@@ -12,7 +12,7 @@ use crate::server::{DATA, TASK, fatal, running};
 use std::{
     cell::RefCell,
     collections::HashMap,
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -232,9 +232,7 @@ fn encode(data: *mut zval, buf: *mut c_void) -> Result<i64, Bailout> {
 fn decode(buf: *mut c_void, out: *mut zval) -> Result<bool, Bailout> {
     let buffer = swoole_rs_corebase::thread_buffer();
     // SAFETY: a packed task and this thread's buffer.
-    let Some((data, length, flags)) =
-        (unsafe { swoole_rs_process::task_file::unpack(buf, buffer) })
-    else {
+    let Some((data, length, flags)) = (unsafe { task_file::unpack(buf, buffer) }) else {
         return Ok(false);
     };
     if u32::from(flags) & SERIALIZE == 0 {
