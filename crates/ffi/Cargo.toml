@@ -36,7 +36,7 @@ swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-error = { path = "../error", features = ["upstream-symbols"] }
 swoole-rs-protocols = { path = "../protocols", features = ["upstream-symbols"] }
 swoole-rs-memory = { path = "../memory", features = ["upstream-symbols"] }
-swoole-rs-http = { path = "../http" }
+swoole-rs-http = { path = "../http", features = ["upstream-symbols"] }
 swoole-rs-utilities = { path = "../utilities", features = ["upstream-symbols"] }
 swoole-rs-locks = { path = "../locks" }
 swoole-rs-phplocks = { path = "../phplocks" }

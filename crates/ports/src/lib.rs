@@ -13,6 +13,7 @@
 use std::ffi::{CStr, c_char, c_int};
 use std::slice;
 
+pub mod http_routes;
 pub mod lifecycle;
 pub mod methods;
 pub mod read;

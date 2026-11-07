@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Actual HTTP dispatch/index/proxy creation boundary checks."""
+"""Actual HTTP proxy creation boundary checks. The transport routes are Rust's
+(crates/ports/src/http_routes.rs), tested there."""
 import argparse
 from pathlib import Path
 import sys
@@ -14,7 +15,7 @@ def main():
     parser.add_argument('--output', default='target/reports/http-dispatch.json')
     args = parser.parse_args()
     local = Path(__file__).resolve().parent
-    report = {'pin': PIN, 'scope': 'Pinned HTTP transport/factory/auth controls and actual Rust-owned candidate factory/auth; native allocation fault traces and supported candidate C++ faults. No physical allocation-layout or complete Rust OOM parity claim', 'native_sanitizers': True, 'rust_instrumented': args.rust_sanitize, 'rust_std_instrumented': False, 'passed': False,
+    report = {'pin': PIN, 'scope': 'Pinned HTTP factory/auth controls and actual Rust-owned candidate factory/auth; native allocation fault traces and supported candidate C++ faults. No physical allocation-layout or complete Rust OOM parity claim', 'native_sanitizers': True, 'rust_instrumented': args.rust_sanitize, 'rust_std_instrumented': False, 'passed': False,
               'allocation_contract': {
                   'physical_old_new_cpp_allocation_equality': 'not_applicable: ownership and native class layout changed',
                   'native_control_faults': 'Every observed C++ new position; partial fields, event-size prefix and explicit fixture cleanup',
@@ -30,17 +31,14 @@ def main():
         dependencies_paths = ['src/core/base.cc', 'src/core/base64.cc']
         sides = Sides(args.source, args.archive, tree, 'thirdparty/multipart_parser.h', *paths, *dependencies_paths)
         if not sides.native(report, paths[0]): write_report(args.output, report); return 1
-        route_signatures = ['ssize_t get_package_length(', 'uint8_t get_package_length_size(', 'int dispatch_frame(']
         proxy_signatures = ['HttpProxy *HttpProxy::create(', 'std::string HttpProxy::get_auth_str(']
         for namespace, text in [('upstream_dispatch', sides.original(paths[0])), ('candidate_dispatch', sides.selected(paths[0]))]:
-            parts = [body(text, signature) for signature in route_signatures]
             proxy = '\n'.join(body(text, signature) for signature in proxy_signatures)
             # Candidate definitions bind to the real production class and its Rust
             # record, never another three-std::string fixture layout.
             proxy_namespace = 'swoole' if namespace == 'candidate_dispatch' else namespace
             extracted = tree / (namespace + '.cc')
-            extracted.write_text('#include "dispatch_oracle.h"\nnamespace ' + namespace + ' {\n' +
-                                 '\n'.join(parts) + '\n}\nnamespace ' + proxy_namespace + ' {\n' + proxy + '\n}\n')
+            extracted.write_text('#include "dispatch_oracle.h"\nnamespace ' + proxy_namespace + ' {\n' + proxy + '\n}\n')
         base = sides.original(dependencies_paths[0])
         codec = sides.original(dependencies_paths[1])
         table = codec[codec.index('static char base64en[]'):codec.index('#define BASE64DE_FIRST')]
@@ -50,5 +48,5 @@ def main():
         binary = tree/'gate'
         units = [('upstream', tree/'upstream_dispatch.cc'), ('candidate', tree/'candidate_dispatch.cc'), ('candidate', local/'dispatch_gate.cc'), ('upstream', dependencies)]
         if not sides.build(binary, units, archive, report): write_report(args.output, report); return 1
-        return run(binary, ['swr_v1_http_transport_route', 'swr_v1_http_proxy_auth_enabled', 'swr_v1_http_proxy_owned_authorization'], args.output, report)
+        return run(binary, ['swr_v1_http_proxy_auth_enabled', 'swr_v1_http_proxy_owned_authorization'], args.output, report)
 if __name__ == '__main__': sys.exit(main())

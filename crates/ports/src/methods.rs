@@ -547,35 +547,21 @@ enum Callback {
 /// The address of `callback`.
 #[cfg(not(test))]
 fn callback(callback: Callback) -> *mut c_void {
+    use crate::http_routes::exports as http;
     unsafe extern "C" {
-        #[link_name = "_ZN6swoole6Server13dispatch_taskEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"]
-        fn dispatch_task();
-        #[link_name = "_ZN6swoole11http_server14dispatch_frameEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"]
-        fn http_dispatch_frame();
-        #[link_name = "_ZN6swoole9websocket14dispatch_frameEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"]
-        fn websocket_dispatch_frame();
         #[link_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"]
         fn default_length();
-        #[link_name = "_ZN6swoole11http_server18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
-        fn http_length();
-        #[link_name = "_ZN6swoole11http_server23get_package_length_sizeEPNS_7network6SocketE"]
-        fn http_length_size();
-        #[link_name = "_ZN6swoole5http216get_frame_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
-        fn http2_length();
-        #[link_name = "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
-        fn websocket_length();
     }
-    let function: unsafe extern "C" fn() = match callback {
-        Callback::DispatchTask => dispatch_task,
-        Callback::HttpDispatchFrame => http_dispatch_frame,
-        Callback::WebsocketDispatchFrame => websocket_dispatch_frame,
-        Callback::DefaultLength => default_length,
-        Callback::HttpLength => http_length,
-        Callback::HttpLengthSize => http_length_size,
-        Callback::Http2Length => http2_length,
-        Callback::WebsocketLength => websocket_length,
-    };
-    function as *mut c_void
+    match callback {
+        Callback::DispatchTask => http::dispatch_task as *mut c_void,
+        Callback::HttpDispatchFrame => http::dispatch_frame as *mut c_void,
+        Callback::WebsocketDispatchFrame => http::websocket_dispatch_frame as *mut c_void,
+        Callback::DefaultLength => default_length as *mut c_void,
+        Callback::HttpLength => http::get_package_length as *mut c_void,
+        Callback::HttpLengthSize => http::get_package_length_size as *mut c_void,
+        Callback::Http2Length => http::http2_length as *mut c_void,
+        Callback::WebsocketLength => http::websocket_length as *mut c_void,
+    }
 }
 
 /// Tests link no C++: each callback is a distinct non-null address.
