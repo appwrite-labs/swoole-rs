@@ -78,6 +78,8 @@
  "locks-state": 1,
  "locks-unit": 10,
  "memory-native": 38,
+ "memory-native-originals": 90,
+ "memory-rust-asan": 20,
  "memory-table-witnesses": 2,
  "memory-unit": 13,
  "ossupport-async-file-originals": 64,

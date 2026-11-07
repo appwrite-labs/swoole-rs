@@ -26,7 +26,7 @@ ASan stack-switch warnings yield `warned`, not `passed`. On macOS pass
 ```
 python3 tests/modules/coroutine/compile_gate.py --source PINNED_TREE --archive ARCHIVE [--timing] [--stack-usage] \
   [--backend asm|ucontext|thread] [--standard c++14|c++17] --report OUT.json
-python3 tests/modules/coroutine/rust_asan.py --report OUT.json
+python3 tools/cargo_asan.py --package swoole-rs-coroutine --report OUT.json
 python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --source-ref REF \
   --selected-export SELECTED/export.json --native-export NATIVE/export.json --output OUT.json
 ```
@@ -34,7 +34,7 @@ python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --sourc
 - `compile_gate.py` compiles `base`, `channel`, `context` and `thread_context`
   from the pin (original) and from the archive's hybrid tree with its switches
   (patched, `hybrid_tree`).
-- `rust_asan.py` runs crates/coroutine's unit tests under Rust ASan (the plain
+- `tools/cargo_asan.py` runs crates/coroutine's unit tests under Rust ASan (the plain
   run is `coroutine-unit`).
 - The scheduler, coroutine state, the live map, Channel and stacks
   (crates/coroutine) are covered by its Rust unit tests and, through real
