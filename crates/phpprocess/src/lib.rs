@@ -29,4 +29,4 @@ mod worker;
 pub use affinity::*;
 pub use pool::*;
 pub use process::*;
-pub use signal::php_swoole_process_rshutdown;
+pub use signal::{php_swoole_process_rshutdown, php_swoole_signal_isset_handler};

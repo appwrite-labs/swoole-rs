@@ -1,11 +1,3 @@
-diff --git a/ext-src/php_swoole_private.h b/ext-src/php_swoole_private.h
-index 18c7c98..672c82f 100644
---- a/ext-src/php_swoole_private.h
-+++ b/ext-src/php_swoole_private.h
-@@ -224,3 +224,2 @@ php_socket *php_swoole_convert_to_socket(int sock);
- 
--zend_bool php_swoole_signal_isset_handler(int signo);
- 
 diff --git a/ext-src/swoole_server.cc b/ext-src/swoole_server.cc
 index 31b8eff..cd556da 100644
 --- a/ext-src/swoole_server.cc

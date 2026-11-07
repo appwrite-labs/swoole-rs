@@ -163,6 +163,17 @@ fn is_ignore(value: *mut swoole_rs_zend::sys::zval) -> bool {
     unsafe { value.lval == SIG_IGN }
 }
 
+/// `php_swoole_signal_isset_handler`, which `proc_open`'s hook asks about
+/// SIGCHLD (`php_swoole_private.h` declares it inside `BEGIN_EXTERN_C`).
+#[unsafe(no_mangle)]
+pub extern "C" fn php_swoole_signal_isset_handler(signo: c_int) -> bool {
+    if !(0..SIGNO_MAX).contains(&i64::from(signo)) {
+        fatal(E_WARNING, &message!("invalid signal number [{signo}]"));
+        return false;
+    }
+    !slot(i64::from(signo)).load(Ordering::Acquire).is_null()
+}
+
 /// `php_swoole_process_clean`: free every signal callable; outside thread
 /// builds, a process that is not a user worker forgets its worker type.
 pub(crate) fn clean() {
