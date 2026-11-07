@@ -3,7 +3,7 @@
 use crate::{
     host::host as process_host,
     process::{entry as process_entry, set_worker_of, worker_pid, worker_view},
-    report::{INVALID_PARAMS, OPERATION_NOT_SUPPORT, fatal, notice, set_last_error},
+    report::{INVALID_PARAMS, OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
     signal::swr_v1_phpprocess_clean,
 };
 use std::{
@@ -502,7 +502,7 @@ fn construct(call: &Call) {
     // SAFETY: a live object.
     let name = unsafe { class_name(object) }.to_string_lossy().into_owned();
     // SAFETY: C++'s reader of an ini flag.
-    if !unsafe { (process_host().cli)() } {
+    if !cli() {
         return refuse(format!("{name} can only be used in PHP CLI mode"));
     }
     if !swoole_rs_corebase::swr_v1_core_server().is_null() {

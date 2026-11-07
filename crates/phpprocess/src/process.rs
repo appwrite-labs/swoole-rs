@@ -3,7 +3,7 @@
 //! the host table.
 use crate::{
     host::{Host, WorkerView, host, install},
-    report::{INVALID_PARAMS, errno, fatal, notice, set_errno, set_last_error, sys},
+    report::{INVALID_PARAMS, cli, errno, fatal, notice, set_errno, set_last_error, sys},
     signal::signal,
 };
 use std::{
@@ -11,7 +11,11 @@ use std::{
     ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
+use swoole_rs_ossupport::{
+    QueueRecord, swr_v1_os_msg_queue_free, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push,
+};
 use swoole_rs_phpstubs::process;
+use swoole_rs_process::worker_record;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object, add_assoc_long, class_name, declare_property_null,
     each_value, handlers, message, object_of, register_long_constant, set_object,
@@ -130,6 +134,12 @@ pub(crate) fn worker_view(worker: *mut c_void) -> WorkerView {
     view(worker)
 }
 
+/// A live worker's queue, or null.
+fn queue_of(worker: *mut c_void) -> *mut QueueRecord {
+    // SAFETY: a live worker.
+    unsafe { worker_record::queue(worker.cast()) }.cast()
+}
+
 fn view(worker: *mut c_void) -> WorkerView {
     // SAFETY: a live worker.
     unsafe { (host().worker_view)(worker) }
@@ -145,7 +155,9 @@ unsafe extern "C" fn free(object: *mut zend_object) {
     // SAFETY: Zend frees an object this class created.
     let process = unsafe { data(object) };
     if !process.worker.is_null() {
-        // SAFETY: the object owns its worker.
+        // SAFETY: the object owns its worker and the worker its queue.
+        unsafe { swr_v1_os_msg_queue_free(queue_of(process.worker)) };
+        // SAFETY: as above.
         unsafe { (host().worker_free)(process.worker) };
     }
     if !process.socket.is_null() {
@@ -430,7 +442,7 @@ fn construct(call: &Call) {
         return;
     }
     // SAFETY: C++'s reader of an ini flag.
-    if !unsafe { (host.cli)() } {
+    if !cli() {
         return refuse(format!("{name} can only be used in PHP CLI mode"));
     }
     // SAFETY: C++'s reader of server and thread state.
@@ -575,11 +587,30 @@ fn use_queue(call: &Call) {
         clippy::cast_possible_truncation,
         reason = "upstream converts to key_t"
     )]
-    // SAFETY: a live worker.
-    let id = unsafe { (host().queue_use)(worker, key as i32, mode, blocking, capacity) };
-    if id < 0 {
+    let mut queue = QueueRecord::new(key as i32, true, 0);
+    if !queue.ready() {
         call.set_bool(false);
         return;
+    }
+    if !blocking {
+        queue.set_blocking(false);
+    }
+    if let Ok(capacity) = usize::try_from(capacity)
+        && capacity > 0
+    {
+        queue.set_capacity(capacity);
+    }
+    let id = queue.id();
+    // SAFETY: a live worker; it owns the queue from here.
+    unsafe { worker_record::set_queue(worker.cast(), Box::into_raw(Box::new(queue)).cast()) };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "upstream stores the mode in a uint8_t"
+    )]
+    // SAFETY: as above.
+    unsafe {
+        worker_record::set_msgqueue_mode(worker.cast(), mode as u8);
     }
     let object = call.this();
     // SAFETY: `$this`.
@@ -591,7 +622,7 @@ fn use_queue(call: &Call) {
 
 fn stat_queue(call: &Call) {
     let worker = checked(this(call));
-    if !view(worker).queue {
+    if queue_of(worker).is_null() {
         fatal(
             E_WARNING,
             &message!("no queue, can't get stats of the queue"),
@@ -599,12 +630,11 @@ fn stat_queue(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let (mut num, mut bytes) = (usize::MAX, usize::MAX);
-    // SAFETY: a worker with a queue; both counters are writable locals.
-    if !unsafe { (host().queue_stat)(worker, &raw mut num, &raw mut bytes) } {
+    // SAFETY: a worker with a queue.
+    let Some((num, bytes)) = unsafe { &*queue_of(worker) }.stat() else {
         call.set_bool(false);
         return;
-    }
+    };
     call.set_array();
     #[expect(
         clippy::cast_possible_wrap,
@@ -623,8 +653,16 @@ fn stat_queue(call: &Call) {
 
 fn free_queue(call: &Call) {
     let worker = checked(this(call));
-    // SAFETY: a live worker.
-    call.set_bool(unsafe { (host().queue_free)(worker) });
+    let queue = queue_of(worker);
+    // SAFETY: the worker's live queue, if any.
+    let freed = !queue.is_null() && unsafe { &mut *queue }.destroy();
+    if freed {
+        // SAFETY: the worker's queue, freed once and forgotten.
+        unsafe { swr_v1_os_msg_queue_free(queue) };
+        // SAFETY: a live worker.
+        unsafe { worker_record::set_queue(worker.cast(), ptr::null_mut()) };
+    }
+    call.set_bool(freed);
 }
 
 fn kill(call: &Call) {
@@ -658,7 +696,7 @@ fn alarm(call: &Call) {
     };
     let host = host();
     // SAFETY: C++'s reader of an ini flag.
-    if !unsafe { (host.cli)() } {
+    if !cli() {
         fatal(E_ERROR, &message!("cannot use Swoole\\Process::alarm here"));
         call.set_bool(false);
         return;
@@ -841,7 +879,7 @@ fn push(call: &Call) {
     }
     let worker = checked(this(call));
     let view = view(worker);
-    if !view.queue {
+    if queue_of(worker).is_null() {
         fatal(E_WARNING, &message!("no msgqueue, cannot use push()"));
         call.set_bool(false);
         return;
@@ -849,7 +887,8 @@ fn push(call: &Call) {
     let mut message = QueueMessage::new(c_long::from(view.id) + 1);
     message.data()[..data.len()].copy_from_slice(data);
     // SAFETY: a worker with a queue, and a message with `data.len()` payload bytes.
-    let pushed = unsafe { (host().queue_push)(worker, message.as_ptr(), data.len()) };
+    let pushed =
+        unsafe { swr_v1_os_msg_queue_push(queue_of(worker), message.as_ptr(), data.len()) };
     call.set_bool(pushed);
 }
 
@@ -864,18 +903,21 @@ fn pop(call: &Call) {
         .unwrap_or(MSGMAX);
     let worker = checked(this(call));
     let view = view(worker);
-    if !view.queue {
+    if queue_of(worker).is_null() {
         fatal(E_WARNING, &message!("no msgqueue, cannot use pop()"));
         call.set_bool(false);
         return;
     }
-    let mut message = QueueMessage::new(if view.balance {
+    // SAFETY: a live worker.
+    let balance =
+        i64::from(unsafe { worker_record::msgqueue_mode(worker.cast()) }) == MSGQUEUE_BALANCE;
+    let mut message = QueueMessage::new(if balance {
         0
     } else {
         c_long::from(view.id) + 1
     });
     // SAFETY: a worker with a queue, and room for `size` payload bytes.
-    let received = unsafe { (host().queue_pop)(worker, message.as_ptr(), size) };
+    let received = unsafe { swr_v1_os_msg_queue_pop(queue_of(worker), message.as_ptr(), size) };
     let Ok(length) = usize::try_from(received) else {
         call.set_bool(false);
         return;

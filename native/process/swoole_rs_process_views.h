@@ -19,7 +19,7 @@
     int pid; \
     uint32_t id; \
     ProcessPool * pool; \
-    MsgQueue * queue; \
+    swr_v1_os_msg_queue * queue; \
     bool shared; \
     bool redirect_stdout; \
     bool redirect_stdin; \
@@ -81,7 +81,7 @@
     Worker * workers; \
     std::vector<std::shared_ptr<UnixSocket>> * pipes; \
     union { swr_v1_process_worker_registry *registry_; swr_v1_process_worker_registry *map_; }; \
-    MsgQueue * queue; \
+    swr_v1_os_msg_queue * queue; \
     swr_v1_process_pool_ipc * ipc_; \
     Channel * message_box = nullptr; \
     MessageBus * message_bus = nullptr; \

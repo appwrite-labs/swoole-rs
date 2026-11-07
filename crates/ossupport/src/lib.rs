@@ -39,10 +39,8 @@ pub use system::{
 };
 mod msg_queue;
 pub use msg_queue::{
-    MsgOpen, MsgPop, QueueRecord, swr_v1_os_msg_flags, swr_v1_os_msg_open, swr_v1_os_msg_pop,
-    swr_v1_os_msg_push, swr_v1_os_msg_queue_blocking, swr_v1_os_msg_queue_init,
-    swr_v1_os_msg_queue_remove, swr_v1_os_msg_queue_set_capacity, swr_v1_os_msg_queue_stat,
-    swr_v1_os_msg_remove,
+    QueueRecord, swr_v1_os_msg_queue_free, swr_v1_os_msg_queue_id, swr_v1_os_msg_queue_new,
+    swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push,
 };
 mod pool;
 pub use pool::{

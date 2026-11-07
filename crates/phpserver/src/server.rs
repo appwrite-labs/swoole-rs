@@ -11,7 +11,7 @@ use std::{
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
 use swoole_rs_corebase::DataHead;
-use swoole_rs_ossupport::swr_v1_os_msg_queue_stat;
+use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_pid, swr_v1_worker_status};
 use swoole_rs_server::{ConnectionRecord, server_methods, view};
@@ -752,9 +752,8 @@ fn stats(call: &Call) {
     // SAFETY: its live task pool.
     let queue = unsafe { (*pool).queue };
     if config.task_ipc_mode > TASK_IPC_UNIXSOCK && !queue.is_null() {
-        let (mut num, mut bytes) = (usize::MAX, usize::MAX);
-        // SAFETY: the pool's live `MsgQueue`, whose one field is its record.
-        if unsafe { swr_v1_os_msg_queue_stat(queue.cast(), &raw mut num, &raw mut bytes) } {
+        // SAFETY: the pool's live queue.
+        if let Some((num, bytes)) = unsafe { &*queue.cast::<QueueRecord>() }.stat() {
             // (zend_long) of each count, as upstream.
             call.add_assoc_long(c"task_queue_num", num.cast_signed() as i64);
             call.add_assoc_long(c"task_queue_bytes", bytes.cast_signed() as i64);

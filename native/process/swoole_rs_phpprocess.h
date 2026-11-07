@@ -1,10 +1,9 @@
 #ifndef SWOOLE_RS_PHPPROCESS_H
 #define SWOOLE_RS_PHPPROCESS_H
-/* PHP Swoole\Process (crates/phpprocess). C++ keeps the Worker, pipe and
- * message-queue objects; Rust registers the class with its method table, owns
- * its objects and runs every method, reaching
- * that C++ state through `host`. The methods are Rust's zim_swoole_process_*
- * exports. */
+/* PHP Swoole\Process (crates/phpprocess). C++ keeps the Worker and pipe
+ * objects; Rust registers the class with its method table, owns its objects,
+ * their message queues, and runs every method, reaching that C++ state through
+ * `host`. The methods are Rust's zim_swoole_process_* exports. */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -23,8 +22,6 @@ typedef struct {
     int32_t pid;
     int32_t pipe; /* pipe_current's fd, or -1 without one */
     bool pipe_object;
-    bool queue;
-    bool balance; /* msgqueue_mode == SW_MSGQUEUE_BALANCE */
     bool redirect_stdin;
     bool redirect_stdout;
     bool redirect_stderr;
@@ -33,9 +30,6 @@ typedef struct {
 typedef struct {
     struct _zend_class_entry *exception;
     struct _zend_class_entry **server; /* swoole_server_ce, registered later */
-    bool (*cli)(void);
-    bool (*display_errors)(void);
-    void (*set_last_error)(int error);
     int (*construct_guard)(void); /* 0, or 1 master process, 2 async-io threads */
     void (*unconstructed)(void);  /* fatal: "must call constructor first" */
     void *(*worker_new)(void);
@@ -46,11 +40,6 @@ typedef struct {
     void (*worker_set_id)(void *worker, uint32_t id);
     int (*worker_pipe)(void *worker, int socket_type); /* master fd, or -1 */
     swr_phpprocess_worker_view (*worker_view)(const void *worker);
-    int (*queue_use)(void *worker, int32_t key, int64_t mode, bool blocking, int64_t capacity);
-    bool (*queue_stat)(void *worker, size_t *num, size_t *bytes);
-    bool (*queue_free)(void *worker);
-    bool (*queue_push)(void *worker, const void *message, size_t length);
-    ssize_t (*queue_pop)(void *worker, void *message, size_t length);
     int (*fork)(void *worker);
     void (*child_enter)(void *worker);
     int (*reactor_init)(void);

@@ -237,7 +237,6 @@ int swr_v1_process_reap_wait(void *_ctx, bool nonblock, int *status, int *error)
 #define SWR_POOL_OP_HAVE_MSGQUEUE 0
 #define SWR_POOL_OP_ALLOC_WORKERS 1
 #define SWR_POOL_OP_NEW_MESSAGE_BOX 2
-#define SWR_POOL_OP_NEW_QUEUE 3
 #define SWR_POOL_OP_NEW_PIPES 4
 #define SWR_POOL_OP_NEW_PIPE 5
 #define SWR_POOL_OP_MAIN_LOOP 6
@@ -273,7 +272,6 @@ int swr_v1_process_reap_wait(void *_ctx, bool nonblock, int *status, int *error)
 #define SWR_POOL_OP_KILL_TIMER 36
 #define SWR_POOL_OP_WAITPID 37
 #define SWR_POOL_OP_FREE_PIPES 38
-#define SWR_POOL_OP_FREE_QUEUE 39
 #define SWR_POOL_OP_FREE_MESSAGE_BOX 40
 #define SWR_POOL_OP_FREE_MESSAGE_BUS 41
 #define SWR_POOL_OP_FREE_WORKERS 42

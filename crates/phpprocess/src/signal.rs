@@ -2,7 +2,7 @@
 //! handler Swoole's signal layer runs for them.
 use crate::{
     host::host,
-    report::{OPERATION_NOT_SUPPORT, fatal, notice, set_last_error},
+    report::{OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
 };
 use std::{
     ffi::{c_int, c_void},
@@ -65,7 +65,7 @@ pub(crate) fn signal(call: &Call) {
     };
     let callback = call.zval_or_null(2);
     // SAFETY: C++'s reader of an ini flag.
-    if !unsafe { (host.cli)() } {
+    if !cli() {
         fatal(
             E_ERROR,
             &message!("Swoole\\Process::signal can only be used in CLI mode"),

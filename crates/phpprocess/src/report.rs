@@ -1,5 +1,4 @@
 //! Swoole's PHP error macros (`php_swoole_private.h`).
-use crate::host::host;
 use std::ffi::CStr;
 use swoole_rs_zend::{E_ERROR, Message, bailout, php_error};
 
@@ -30,10 +29,12 @@ pub(crate) fn set_errno(value: i32) {
     }
 }
 
-/// `swoole_set_last_error`.
-pub(crate) fn set_last_error(error: i32) {
-    // SAFETY: C++'s setter of a thread-local int.
-    unsafe { (host().set_last_error)(error) };
+pub(crate) use swoole_rs_corebase::log::set_last_error;
+
+/// `SWOOLE_G(cli)`.
+pub(crate) fn cli() -> bool {
+    // SAFETY: the module's globals, live from MINIT.
+    unsafe { (*swoole_rs_phpswoole::globals()).cli }
 }
 
 /// `php_swoole_fatal_error`: always reported.
@@ -64,8 +65,7 @@ pub(crate) fn sys(level: i32, text: &Message) {
 }
 
 fn report(level: i32, text: &Message) {
-    // SAFETY: C++'s reader of an ini flag.
-    if level == E_ERROR || unsafe { (host().display_errors)() } {
+    if level == E_ERROR || swoole_rs_phpswoole::display_errors() {
         // SAFETY: from a handler; the message lives on the caller's stack.
         bailout::defer(unsafe { php_error(level, text.as_cstr()) });
     }

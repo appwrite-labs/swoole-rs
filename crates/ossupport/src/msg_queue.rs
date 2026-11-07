@@ -1,8 +1,9 @@
-//! `swoole::MsgQueue` (upstream `src/os/msg_queue.cc`): open, blocking flag,
-//! push, pop, stat and capacity over a `SysV` message queue. Rust defines and
-//! initializes the queue record; the inline methods in `swoole_msg_queue.h` keep
-//! the logs; each call returns right after a failing syscall with its errno intact.
-use libc::{c_int, c_long, c_void};
+//! `swoole::MsgQueue` (upstream `src/os/msg_queue.cc` and `include/swoole_msg_queue.h`):
+//! open, blocking flag, push, pop, stat, capacity and removal over a `SysV` message
+//! queue, with upstream's warnings. Rust allocates and frees the queue; native code
+//! holds only its pointer.
+use libc::{IPC_CREAT, IPC_NOWAIT, c_int, c_long, c_void};
+use swoole_rs_corebase::log;
 
 // The XSI message queue calls, declared here because libc omits them on Darwin.
 unsafe extern "C" {
@@ -12,10 +13,15 @@ unsafe extern "C" {
     fn msgctl(id: c_int, cmd: c_int, buf: *mut c_void) -> c_int;
 }
 
-use libc::{IPC_CREAT, IPC_NOWAIT};
-
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+/// `swoole_sys_warning`, which sets the last error to errno first.
+fn sys_warning(origin: &std::ffi::CStr, message: std::fmt::Arguments<'_>) {
+    let error = errno();
+    log::set_last_error(error);
+    log::sys_warning_errno(error, origin, message);
 }
 
 /// Permissions outside (0, 01000) default to 0666.
@@ -27,25 +33,8 @@ const fn permissions(perms: c_int) -> c_int {
     }
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MsgOpen {
-    pub id: c_int,
-    pub perms: c_int,
-}
-
-/// `msgget(key, IPC_CREAT | perms)` with the defaulted permissions.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_msg_open(key: libc::key_t, perms: c_int) -> MsgOpen {
-    let perms = permissions(perms);
-    // SAFETY: msgget has no memory preconditions.
-    let id = unsafe { msgget(key, IPC_CREAT | perms) };
-    MsgOpen { id, perms }
-}
-
-/// `MsgQueue::set_blocking`: only `IPC_NOWAIT` changes.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_msg_flags(flags: c_int, blocking: bool) -> c_int {
+/// Only `IPC_NOWAIT` follows `blocking`.
+const fn blocking_flags(flags: c_int, blocking: bool) -> c_int {
     if blocking {
         flags & !IPC_NOWAIT
     } else {
@@ -53,126 +42,226 @@ pub extern "C" fn swr_v1_os_msg_flags(flags: c_int, blocking: bool) -> c_int {
     }
 }
 
-/// `MsgQueue::push`: retries `EINTR`. 0 sent, 1 failed with `EAGAIN` (quiet),
-/// 2 failed (native warns).
-/// # Safety
-/// `msg` points to a message of `length` payload bytes after its `long` type.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_push(
-    id: c_int,
-    msg: *const c_void,
-    length: usize,
-    flags: c_int,
-) -> c_int {
-    loop {
-        // SAFETY: `msg` is a valid message per the contract.
-        if unsafe { msgsnd(id, msg, length, flags) } == 0 {
-            return 0;
-        }
-        match errno() {
-            libc::EINTR => {}
-            libc::EAGAIN => return 1,
-            _ => return 2,
-        }
-    }
-}
-
-/// `MsgQueue::destroy`: `msgctl(id, IPC_RMID)`; false leaves errno for the warning.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_msg_remove(id: c_int) -> bool {
-    // SAFETY: IPC_RMID takes no buffer.
-    unsafe { msgctl(id, libc::IPC_RMID, std::ptr::null_mut()) == 0 }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MsgPop {
-    pub result: isize,
-    pub warn: bool,
-}
-
-/// `MsgQueue::pop`: one `msgrcv`; failures other than `ENOMSG`/`EINTR` warn.
-/// # Safety
-/// `msg` points to writable room for a `long` type and `size` payload bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_pop(
-    id: c_int,
-    msg: *mut c_void,
-    size: usize,
-    kind: c_long,
-    flags: c_int,
-) -> MsgPop {
-    // SAFETY: `msg` is writable per the contract.
-    let result = unsafe { msgrcv(id, msg, size, kind, flags) };
-    MsgPop {
-        result,
-        warn: result < 0 && !matches!(errno(), libc::ENOMSG | libc::EINTR),
-    }
-}
-
-/// Canonical `MsgQueue` storage. Native owns the enclosing object's lifetime and
-/// borrows this POD record; ordinary C++ value copies preserve the original
-/// queue-ID copy behavior without introducing allocation or shared ownership.
+/// `swoole::MsgQueue`.
 #[repr(C)]
 pub struct QueueRecord {
-    pub blocking: bool,
-    pub id: c_int,
-    pub key: libc::key_t,
-    pub flags: c_int,
-    pub perms: c_int,
-}
-
-/// Initialize a queue and publish its exact opened ID, flags and permissions.
-/// # Safety
-/// `queue` is aligned writable storage for a new `QueueRecord`, not concurrently used.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_queue_init(
-    queue: *mut QueueRecord,
-    key: libc::key_t,
     blocking: bool,
+    id: c_int,
+    key: libc::key_t,
+    flags: c_int,
     perms: c_int,
-) -> bool {
-    let opened = swr_v1_os_msg_open(key, perms);
-    let flags = if opened.id < 0 {
-        0
-    } else {
-        swr_v1_os_msg_flags(0, blocking)
-    };
-    let record = QueueRecord {
-        blocking,
-        id: opened.id,
-        key,
-        flags,
-        perms: opened.perms,
-    };
-    // SAFETY: initialization owns this new native object's entire canonical storage.
-    unsafe { queue.write(record) };
-    opened.id >= 0
 }
 
-/// Change only `IPC_NOWAIT`, as the original method did; the constructor's blocking
-/// field is deliberately not rewritten by later flag changes.
-/// # Safety
-/// `queue` is live and exclusively loaned for this configuration update.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_queue_blocking(queue: *mut QueueRecord, blocking: bool) {
-    // SAFETY: the caller serializes this live queue's flag mutation.
-    let queue = unsafe { &mut *queue };
-    queue.flags = swr_v1_os_msg_flags(queue.flags, blocking);
-}
-
-/// Destroy the kernel queue; a failed removal preserves its ID and errno.
-/// # Safety
-/// `queue` is live and exclusively loaned for removal.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_queue_remove(queue: *mut QueueRecord) -> bool {
-    // SAFETY: the caller exclusively lends its live queue record for this leaf.
-    let queue = unsafe { &mut *queue };
-    if !swr_v1_os_msg_remove(queue.id) {
-        return false;
+impl QueueRecord {
+    /// `MsgQueue(key, blocking, perms)`: `msgget(key, IPC_CREAT | perms)`, warning
+    /// when it fails.
+    #[must_use]
+    pub fn new(key: libc::key_t, blocking: bool, perms: c_int) -> Self {
+        let perms = permissions(perms);
+        // SAFETY: msgget has no memory preconditions.
+        let id = unsafe { msgget(key, IPC_CREAT | perms) };
+        if id < 0 {
+            sys_warning(c"MsgQueue::MsgQueue", format_args!("msgget() failed"));
+        }
+        let flags = if id < 0 {
+            0
+        } else {
+            blocking_flags(0, blocking)
+        };
+        Self {
+            blocking,
+            id,
+            key,
+            flags,
+            perms,
+        }
     }
-    queue.id = -1;
-    true
+
+    #[must_use]
+    pub const fn ready(&self) -> bool {
+        self.id >= 0
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> c_int {
+        self.id
+    }
+
+    /// Change only `IPC_NOWAIT`; the constructor's `blocking` stays as it was.
+    pub const fn set_blocking(&mut self, blocking: bool) {
+        self.flags = blocking_flags(self.flags, blocking);
+    }
+
+    /// Set `msg_qbytes`; warns when `IPC_SET` fails, and is quiet when `IPC_STAT` does.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "Process::useQueue ignores it, as upstream does"
+    )]
+    pub fn set_capacity(&self, bytes: usize) -> bool {
+        let Some(mut stat) = queue_stat(self.id) else {
+            return false;
+        };
+        stat.msg_qbytes = libc::c_ulong::try_from(bytes).unwrap_or(libc::c_ulong::MAX);
+        // SAFETY: IPC_SET reads the `msqid_ds` IPC_STAT filled.
+        if unsafe { msgctl(self.id, libc::IPC_SET, (&raw mut stat).cast()) } == 0 {
+            return true;
+        }
+        sys_warning(
+            c"MsgQueue::set_capacity",
+            format_args!(
+                "msgctl(msqid={}, IPC_SET, msg_qbytes={bytes}) failed",
+                self.id
+            ),
+        );
+        false
+    }
+
+    /// Send a `QueueNode` with `length` payload bytes, retrying `EINTR`. A failure
+    /// leaves errno as the last error, and warns unless it is `EAGAIN`.
+    /// # Safety
+    /// `node` points to a `long` type followed by `length` payload bytes.
+    #[must_use]
+    pub unsafe fn push(&self, node: *const c_void, length: usize) -> bool {
+        loop {
+            // SAFETY: as the caller promises.
+            if unsafe { msgsnd(self.id, node, length, self.flags) } == 0 {
+                return true;
+            }
+            match errno() {
+                libc::EINTR => {}
+                libc::EAGAIN => break,
+                _ => {
+                    // SAFETY: the node begins with its `long` type.
+                    let kind = unsafe { node.cast::<c_long>().read_unaligned() };
+                    sys_warning(
+                        c"MsgQueue::push",
+                        format_args!("msgsnd({}, {length}, {kind}) failed", self.id),
+                    );
+                    break;
+                }
+            }
+        }
+        log::set_last_error(errno());
+        false
+    }
+
+    /// Receive into a `QueueNode` a message of the type it holds, up to `size`
+    /// payload bytes. A failure leaves errno as the last error, and warns unless
+    /// it is `ENOMSG` or `EINTR`.
+    /// # Safety
+    /// `node` points to a writable `long` type followed by `size` payload bytes.
+    pub unsafe fn pop(&self, node: *mut c_void, size: usize) -> isize {
+        // SAFETY: the node begins with its `long` type.
+        let kind = unsafe { node.cast::<c_long>().read_unaligned() };
+        // SAFETY: as the caller promises.
+        let result = unsafe { msgrcv(self.id, node, size, kind, self.flags) };
+        if result < 0 {
+            let error = errno();
+            log::set_last_error(error);
+            if !matches!(error, libc::ENOMSG | libc::EINTR) {
+                sys_warning(
+                    c"MsgQueue::pop",
+                    format_args!("msgrcv({}, {size}, {kind}) failed", self.id),
+                );
+            }
+        }
+        result
+    }
+
+    /// The queue's message count and bytes; `None` leaves errno.
+    #[must_use]
+    pub fn stat(&self) -> Option<(usize, usize)> {
+        let stat = queue_stat(self.id)?;
+        let (num, bytes) = (stat.msg_qnum, stat.__msg_cbytes);
+        Some((
+            usize::try_from(num).unwrap_or(usize::MAX),
+            usize::try_from(bytes).unwrap_or(usize::MAX),
+        ))
+    }
+
+    /// Remove the kernel queue; a failure warns and keeps the id.
+    pub fn destroy(&mut self) -> bool {
+        // SAFETY: IPC_RMID takes no buffer.
+        if unsafe { msgctl(self.id, libc::IPC_RMID, std::ptr::null_mut()) } != 0 {
+            sys_warning(
+                c"MsgQueue::destroy",
+                format_args!("msgctl({}, IPC_RMID) failed", self.id),
+            );
+            return false;
+        }
+        self.id = -1;
+        true
+    }
+}
+
+impl Drop for QueueRecord {
+    /// A private queue must be destroyed.
+    fn drop(&mut self) {
+        if self.key == libc::IPC_PRIVATE && self.id >= 0 {
+            self.destroy();
+        }
+    }
+}
+
+/// `new MsgQueue(key)`, or null (after msgget's warning) when it isn't ready.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_os_msg_queue_new(key: libc::key_t) -> *mut QueueRecord {
+    let queue = QueueRecord::new(key, true, 0);
+    if queue.ready() {
+        Box::into_raw(Box::new(queue))
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
+/// `delete queue`; null is a no-op.
+/// # Safety
+/// `queue` is null or from `swr_v1_os_msg_queue_new`, freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_os_msg_queue_free(queue: *mut QueueRecord) {
+    if !queue.is_null() {
+        // SAFETY: as the caller promises.
+        drop(unsafe { Box::from_raw(queue) });
+    }
+}
+
+/// `queue->get_id()`.
+/// # Safety
+/// `queue` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_os_msg_queue_id(queue: *const QueueRecord) -> c_int {
+    // SAFETY: as the caller promises.
+    unsafe { (*queue).id }
+}
+
+/// `queue->push(node, length)`.
+/// # Safety
+/// `queue` is live; `node` as [`QueueRecord::push`] requires.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_os_msg_queue_push(
+    queue: *const QueueRecord,
+    node: *const c_void,
+    length: usize,
+) -> bool {
+    // SAFETY: as the caller promises.
+    let queue = unsafe { &*queue };
+    // SAFETY: as the caller promises.
+    unsafe { queue.push(node, length) }
+}
+
+/// `queue->pop(node, size)`.
+/// # Safety
+/// `queue` is live; `node` as [`QueueRecord::pop`] requires.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_os_msg_queue_pop(
+    queue: *const QueueRecord,
+    node: *mut c_void,
+    size: usize,
+) -> isize {
+    // SAFETY: as the caller promises.
+    let queue = unsafe { &*queue };
+    // SAFETY: as the caller promises.
+    unsafe { queue.pop(node, size) }
 }
 
 /// `struct msqid_ds`, which libc omits on Darwin.
@@ -211,49 +300,6 @@ fn queue_stat(id: c_int) -> Option<MsqidDs> {
     (rc == 0).then(|| unsafe { stat.assume_init() })
 }
 
-/// `MsgQueue::stat`: the queue's message count and bytes; false leaves errno.
-/// # Safety
-/// `queue` is live; `num` and `bytes` are writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_queue_stat(
-    queue: *const QueueRecord,
-    num: *mut usize,
-    bytes: *mut usize,
-) -> bool {
-    // SAFETY: a live queue record.
-    let Some(stat) = queue_stat(unsafe { (*queue).id }) else {
-        return false;
-    };
-    // SAFETY: writable per the contract.
-    unsafe { num.write(usize::try_from(stat.msg_qnum).unwrap_or(usize::MAX)) };
-    // SAFETY: as above.
-    unsafe { bytes.write(usize::try_from(stat.__msg_cbytes).unwrap_or(usize::MAX)) };
-    true
-}
-
-/// `MsgQueue::set_capacity`: 0 set, 1 `IPC_STAT` failed (quiet), 2 `IPC_SET`
-/// failed (native warns); errno intact.
-/// # Safety
-/// `queue` is live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_queue_set_capacity(
-    queue: *const QueueRecord,
-    bytes: usize,
-) -> c_int {
-    // SAFETY: a live queue record.
-    let id = unsafe { (*queue).id };
-    let Some(mut stat) = queue_stat(id) else {
-        return 1;
-    };
-    stat.msg_qbytes = libc::c_ulong::try_from(bytes).unwrap_or(libc::c_ulong::MAX);
-    // SAFETY: IPC_SET reads the `msqid_ds` IPC_STAT filled.
-    if unsafe { msgctl(id, libc::IPC_SET, (&raw mut stat).cast()) } == 0 {
-        0
-    } else {
-        2
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,118 +315,119 @@ mod tests {
             assert_eq!(permissions(perms), expected, "perms {perms}");
         }
         for flags in -128..128 {
-            assert_eq!(
-                swr_v1_os_msg_flags(flags, true),
-                flags & !IPC_NOWAIT,
-                "blocking"
-            );
-            assert_eq!(
-                swr_v1_os_msg_flags(flags, false),
-                flags | IPC_NOWAIT,
-                "nonblocking"
-            );
+            assert_eq!(blocking_flags(flags, true), flags & !IPC_NOWAIT);
+            assert_eq!(blocking_flags(flags, false), flags | IPC_NOWAIT);
         }
     }
 
+    /// `swoole::QueueNode`.
     #[repr(C)]
-    struct Message {
-        kind: c_long,
-        data: [u8; 8],
+    struct QueueNode {
+        mtype: c_long,
+        mdata: [u8; 8192],
+    }
+
+    impl QueueNode {
+        fn ptr(&mut self) -> *mut c_void {
+            (&raw mut *self).cast()
+        }
+    }
+
+    fn mdata(node: &QueueNode) -> &[u8] {
+        let end = node.mdata.iter().position(|&b| b == 0).unwrap_or(0);
+        &node.mdata[..end]
+    }
+
+    // Upstream's core-tests/src/os/msg_queue.cpp, TEST(msg_queue, rbac): its
+    // inputs and every assertion. Like upstream's core-tests it runs on Linux:
+    // Darwin's default msgmnb (2048) is below its 8192, and raising it needs root.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn msg_queue_rbac() {
+        let mut q = QueueRecord::new(0x0095_0001, true, 0);
+        assert!(q.ready());
+        assert!(q.id() >= 0);
+        let mut input = QueueNode {
+            mtype: 999,
+            mdata: [0; 8192],
+        };
+        input.mdata[..11].copy_from_slice(b"hello world");
+        let len = mdata(&input).len();
+
+        assert!(q.set_capacity(8192));
+
+        // input data
+        assert!(unsafe { q.push(input.ptr(), len) });
+
+        let (queue_num, queue_bytes) = q.stat().expect("stat");
+        assert_eq!(queue_num, 1);
+        assert!(queue_bytes > 10);
+
+        // output data
+        let mut out = QueueNode {
+            mtype: 0,
+            mdata: [0; 8192],
+        };
+        assert!(unsafe { q.pop(out.ptr(), out.mdata.len()) } > 1);
+
+        let (queue_num, queue_bytes) = q.stat().expect("stat");
+        assert_eq!(queue_num, 0);
+        assert_eq!(queue_bytes, 0);
+
+        assert_eq!(out.mtype, input.mtype);
+        assert_eq!(mdata(&out), mdata(&input));
+
+        assert!(q.destroy());
+        assert!(!q.destroy());
+        assert_eq!(log::last_error(), libc::EINVAL);
+
+        q.set_blocking(false);
+
+        assert_eq!(unsafe { q.pop(out.ptr(), out.mdata.len()) }, -1);
+        assert_eq!(log::last_error(), libc::EINVAL);
+
+        assert!(!unsafe { q.push(input.ptr(), len) });
+        assert_eq!(log::last_error(), libc::EINVAL);
+
+        assert!(q.stat().is_none());
+        assert_eq!(log::last_error(), libc::EINVAL);
+
+        assert!(!q.set_capacity(8192));
+        assert_eq!(log::last_error(), libc::EINVAL);
     }
 
     #[test]
-    fn a_private_queue_round_trips_and_reports_empty_quietly() {
-        let queue = swr_v1_os_msg_open(libc::IPC_PRIVATE, 0);
+    fn a_private_queue_round_trips_reports_empty_quietly_and_is_removed_on_drop() {
+        let queue = QueueRecord::new(libc::IPC_PRIVATE, false, 0);
         assert_eq!(queue.perms, 0o666, "default permissions");
-        if queue.id < 0 {
+        if !queue.ready() {
             return; // SysV IPC unavailable in this sandbox.
         }
-        let sent = Message {
-            kind: 3,
-            data: *b"payload\0",
+        let mut sent = QueueNode {
+            mtype: 3,
+            mdata: [0; 8192],
         };
-        let flags = swr_v1_os_msg_flags(0, false);
-        assert_eq!(
-            unsafe { swr_v1_os_msg_push(queue.id, (&raw const sent).cast(), 8, flags) },
-            0,
-            "sent"
-        );
-        let mut got = Message {
-            kind: 3,
-            data: [0; 8],
+        sent.mdata[..7].copy_from_slice(b"payload");
+        assert!(unsafe { queue.push(sent.ptr(), 8) }, "sent");
+        let mut got = QueueNode {
+            mtype: 3,
+            mdata: [0; 8192],
         };
-        let pop = unsafe { swr_v1_os_msg_pop(queue.id, (&raw mut got).cast(), 8, 3, flags) };
-        assert_eq!(
-            (pop, got.data),
-            (
-                MsgPop {
-                    result: 8,
-                    warn: false
-                },
-                *b"payload\0"
-            ),
-            "received"
-        );
-        let pop = unsafe { swr_v1_os_msg_pop(queue.id, (&raw mut got).cast(), 8, 3, flags) };
-        assert_eq!(
-            pop,
-            MsgPop {
-                result: -1,
-                warn: false
-            },
-            "ENOMSG is quiet"
-        );
-        let record = QueueRecord {
-            blocking: false,
-            id: queue.id,
-            key: libc::IPC_PRIVATE,
-            flags,
-            perms: queue.perms,
-        };
-        assert_eq!(
-            unsafe { swr_v1_os_msg_push(queue.id, (&raw const sent).cast(), 8, flags) },
-            0,
-            "sent again"
-        );
-        let (mut num, mut bytes) = (0, 0);
-        assert!(
-            unsafe { swr_v1_os_msg_queue_stat(&raw const record, &raw mut num, &raw mut bytes) },
-            "stat"
-        );
-        assert_eq!((num, bytes), (1, 8), "one 8-byte message queued");
+        assert_eq!(unsafe { queue.pop(got.ptr(), 8) }, 8, "received");
+        assert_eq!(mdata(&got), b"payload");
+        assert_eq!(unsafe { queue.pop(got.ptr(), 8) }, -1, "ENOMSG");
+        assert_eq!(log::last_error(), libc::ENOMSG);
+        assert!(unsafe { queue.push(sent.ptr(), 8) }, "sent again");
+        assert_eq!(queue.stat(), Some((1, 8)), "one 8-byte message queued");
         // Lowering the limit needs no privilege.
-        assert_eq!(
-            unsafe { swr_v1_os_msg_queue_set_capacity(&raw const record, 1024) },
-            0,
-            "capacity"
-        );
+        assert!(queue.set_capacity(1024), "capacity");
         let limit = queue_stat(queue.id).map(|stat| stat.msg_qbytes);
         assert_eq!(limit, Some(1024), "msg_qbytes");
-        assert_eq!(
-            unsafe { swr_v1_os_msg_pop(queue.id, (&raw mut got).cast(), 8, 3, flags) }.result,
-            8,
-            "drained"
-        );
-        assert!(swr_v1_os_msg_remove(queue.id), "removed");
-        assert!(!swr_v1_os_msg_remove(queue.id), "already removed");
-        let pop = unsafe { swr_v1_os_msg_pop(queue.id, (&raw mut got).cast(), 8, 3, flags) };
-        assert_eq!(
-            pop,
-            MsgPop {
-                result: -1,
-                warn: true
-            },
-            "a removed queue warns"
-        );
-        let (mut num, mut bytes) = (0, 0);
+        let id = queue.id;
+        drop(queue);
         assert!(
-            !unsafe { swr_v1_os_msg_queue_stat(&raw const record, &raw mut num, &raw mut bytes) },
-            "a removed queue has no stat"
-        );
-        assert_eq!(
-            unsafe { swr_v1_os_msg_queue_set_capacity(&raw const record, 1024) },
-            1,
-            "nor a capacity"
+            queue_stat(id).is_none(),
+            "a private queue is removed on drop"
         );
     }
 }
