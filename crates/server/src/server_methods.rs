@@ -21,8 +21,13 @@ use crate::ops::{
     RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_FOREACH, RUN_ST_SEND,
     RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
+use crate::ops::{
+    RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_ST_INIT_PIPE_SOCKETS, RUN_START, RUN_START_CHECK,
+    RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
+};
 use crate::records::ConnectionRecord;
-use swoole_rs_corebase::DataHead;
+use crate::view;
+use swoole_rs_corebase::{DataHead, hook, log};
 
 /// master.cc's `ServerRustContext`, which asserts this layout.
 #[repr(C)]
@@ -111,7 +116,7 @@ macro_rules! plain_methods {
         /// # Safety
         /// `serv` is a live `Server`.
         #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
-        pub unsafe extern "C" fn $name(serv: *mut c_void) -> $r {
+        pub unsafe extern "C-unwind" fn $name(serv: *mut c_void) -> $r {
             // SAFETY: as the caller guarantees.
             Narrow::narrow(unsafe { run($op, 0, &mut NativeContext::new(serv)) })
         }
@@ -162,6 +167,149 @@ plain_methods! {
     "_ZNK6swoole6Server19get_idle_worker_numEv" fn get_idle_worker_num() -> u32 = RUN_IDLE_WORKERS;
     "_ZNK6swoole6Server24get_idle_task_worker_numEv" fn get_idle_task_worker_num() -> c_int = RUN_IDLE_TASK_WORKERS;
     "_ZNK6swoole6Server15get_tasking_numEv" fn get_tasking_num() -> c_int = RUN_TASKING;
+    "_ZN6swoole6Server5startEv" fn start() -> c_int = RUN_START;
+    "_ZN6swoole6Server11start_checkEv" fn start_check() -> c_int = RUN_START_CHECK;
+    "_ZN6swoole6Server19store_listen_socketEv" fn store_listen_socket() -> () = RUN_STORE_LISTEN_SOCKET;
+}
+
+/// `SW_GLOBAL_HOOK_BEFORE_SERVER_CREATE`.
+const HOOK_BEFORE_SERVER_CREATE: c_int = 10;
+
+/// `Server::create()`: `SW_ERR` once created, else the hook and then startup's create.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server6createEv")
+)]
+pub unsafe extern "C-unwind" fn create(serv: *mut c_void) -> c_int {
+    // SAFETY: as the caller guarantees.
+    if !unsafe { view::config(serv) }.factory_.is_null() {
+        return -1;
+    }
+    if hook::swoole_isset_hook(HOOK_BEFORE_SERVER_CREATE) {
+        // SAFETY: the hook's callbacks take the server.
+        unsafe { hook::swoole_call_hook(HOOK_BEFORE_SERVER_CREATE, serv) };
+    }
+    // SAFETY: as the caller guarantees.
+    c_int::narrow(unsafe { run(RUN_CREATE, 0, &mut NativeContext::new(serv)) })
+}
+
+/// `Server::destroy()`: nothing before the server is created.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server7destroyEv")
+)]
+pub unsafe extern "C-unwind" fn destroy(serv: *mut c_void) {
+    // SAFETY: as the caller guarantees.
+    if !unsafe { view::config(serv) }.factory_.is_null() {
+        // SAFETY: as the caller guarantees.
+        unsafe { run(RUN_DESTROY, 0, &mut NativeContext::new(serv)) };
+    }
+}
+
+/// `Server::start_master_thread(reactor)`.
+///
+/// # Safety
+/// `serv` is a live `Server` and `reactor` the master's reactor.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server19start_master_threadEPNS_7ReactorE")
+)]
+pub unsafe extern "C-unwind" fn start_master_thread(
+    serv: *mut c_void,
+    reactor: *mut c_void,
+) -> c_int {
+    let mut ctx = NativeContext::new(serv);
+    ctx.reactor = reactor;
+    // SAFETY: as the caller guarantees.
+    c_int::narrow(unsafe { run(RUN_START_MASTER_THREAD, 0, &mut ctx) })
+}
+
+/// `Server::init_pipe_sockets(mb)`, once the server has started.
+///
+/// # Safety
+/// `serv` is a live `Server` and `mb` a live `MessageBus`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Server17init_pipe_socketsEPNS_10MessageBusE")
+)]
+pub unsafe extern "C-unwind" fn init_pipe_sockets(serv: *mut c_void, mb: *mut c_void) {
+    // SAFETY: as the caller guarantees.
+    if !unsafe { view::is_started(serv) } {
+        // upstream's `assert(is_started())`.
+        std::process::abort();
+    }
+    let mut ctx = NativeContext::new(serv);
+    ctx.object = mb;
+    // SAFETY: as the caller guarantees.
+    unsafe { run(RUN_ST_INIT_PIPE_SOCKETS, 0, &mut ctx) };
+}
+
+/// `Server::connection_incoming(reactor, conn)`, over the port `conn` arrived on.
+///
+/// # Safety
+/// `serv` is a live `Server`, `reactor` its reactor and `conn` one of its connections.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Server19connection_incomingEPNS_7ReactorEPNS_10ConnectionE")
+)]
+pub unsafe extern "C-unwind" fn connection_incoming(
+    serv: *mut c_void,
+    reactor: *mut c_void,
+    conn: *mut ConnectionRecord,
+) -> c_int {
+    // SAFETY: as the caller guarantees.
+    let record = unsafe { &*conn };
+    let mut ctx = NativeContext::new(serv);
+    ctx.reactor = reactor;
+    // SAFETY: as the caller guarantees.
+    ctx.port = unsafe { view::port_by_server_fd(serv, record.server_fd) };
+    ctx.sock = record.socket;
+    ctx.conn = conn.cast();
+    // SAFETY: as the caller guarantees.
+    c_int::narrow(unsafe { run(RUN_INCOMING, 0, &mut ctx) })
+}
+
+/// `Server::is_healthy_connection(now, conn)`.
+///
+/// # Safety
+/// `serv` is a live `Server` and `conn` one of its connections.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Server21is_healthy_connectionEdPKNS_10ConnectionE")
+)]
+pub unsafe extern "C" fn is_healthy_connection(
+    serv: *mut c_void,
+    now: f64,
+    conn: *const ConnectionRecord,
+) -> bool {
+    // SAFETY: as the caller guarantees.
+    let conn = unsafe { &*conn };
+    // SAFETY: as the caller guarantees.
+    unsafe { view::healthy(serv, now, conn) }
+}
+
+unsafe extern "C" {
+    /// native/error/error.cc's `swoole_get_last_error_msg()`.
+    #[link_name = "_Z25swoole_get_last_error_msgv"]
+    fn swoole_get_last_error_msg() -> *const c_char;
+}
+
+/// `Server::get_startup_error_message()`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole6Server25get_startup_error_messageEv")
+)]
+pub extern "C" fn get_startup_error_message(_serv: *mut c_void) -> *const c_char {
+    // SAFETY: the calling thread's error text, always terminated.
+    let message = unsafe { swoole_get_last_error_msg() };
+    // SAFETY: as above.
+    unsafe { crate::swr_v1_server_startup_error(message, log::swr_v1_core_last_error()) }
 }
 
 /// `Server::set_max_connection(max)`.

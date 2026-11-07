@@ -4,16 +4,16 @@ use crate::ops::{
     LOG_MAX_CONNECTION_SOCKETS, LOG_NO_SESSION_SLOT, LOG_NODELAY, LOG_RCVBUF, LOG_SNDBUF,
     LOG_TOO_MANY_CONNECTIONS, OP_ABORT, OP_ACCEPT, OP_ACCEPT_TIMER, OP_ACCEPT_TIMER_CLEAR,
     OP_ADD_RECV_TIMER, OP_CHUNK_SIZE, OP_CLOSE_CONNECTION, OP_CONN_CLOSING, OP_CONN_INIT,
-    OP_CONN_LAST_RECV, OP_CONN_PROTECT, OP_CONN_RESET, OP_CONNECTION_LIST, OP_COUNT_ACCEPT,
-    OP_DELAY_RECEIVE, OP_DIRECT_SEND, OP_DISABLE_NOTIFY, OP_ERRNO, OP_EVENT_FD, OP_FORCE_CLOSE,
-    OP_HAS_ON_CONNECT, OP_HAS_PORT, OP_LAST_RECEIVED, OP_LAST_SENT, OP_LOCK, OP_MAX_CONNECTION,
-    OP_MAX_SOCKETS, OP_MAXFD, OP_MINFD, OP_NODELAY_ENABLED, OP_NOTIFY_CONNECT, OP_NOW_MS,
-    OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_EVENT_ADD, OP_PORT_EVENT_DEL, OP_PORT_HEARTBEAT,
-    OP_PORT_IDLE_TIME, OP_PORT_NODELAY, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL,
-    OP_REACTOR_ADD_READ, OP_SEND_INCOMING, OP_SESSION_BIND, OP_SESSION_CLAIM, OP_SESSION_ROUND,
-    OP_SET_MAX_CONNECTION, OP_SET_MAXFD, OP_SET_MINFD, OP_SET_NODELAY, OP_SET_RCVBUF,
-    OP_SET_SNDBUF, OP_SINGLE_THREAD, OP_SOCK_FD, OP_SOCK_SSL, OP_SPIN_LOCK, OP_SPIN_UNLOCK,
-    OP_SSL_CLEAR, OP_SSL_CREATE, OP_UNLOCK, TRACE_ACCEPT, TRACE_TIMEOUT,
+    OP_CONN_PROTECT, OP_CONN_RESET, OP_CONNECTION_LIST, OP_COUNT_ACCEPT, OP_DELAY_RECEIVE,
+    OP_DIRECT_SEND, OP_DISABLE_NOTIFY, OP_ERRNO, OP_EVENT_FD, OP_FORCE_CLOSE, OP_HAS_ON_CONNECT,
+    OP_LAST_RECEIVED, OP_LAST_SENT, OP_LOCK, OP_MAX_CONNECTION, OP_MAX_SOCKETS, OP_MAXFD, OP_MINFD,
+    OP_NODELAY_ENABLED, OP_NOTIFY_CONNECT, OP_NOW_MS, OP_PORT_COUNT, OP_PORT_DGRAM,
+    OP_PORT_EVENT_ADD, OP_PORT_EVENT_DEL, OP_PORT_IDLE_TIME, OP_PORT_NODELAY, OP_PORT_RCVBUF,
+    OP_PORT_SNDBUF, OP_PORT_SSL, OP_REACTOR_ADD_READ, OP_SEND_INCOMING, OP_SESSION_BIND,
+    OP_SESSION_CLAIM, OP_SESSION_ROUND, OP_SET_MAX_CONNECTION, OP_SET_MAXFD, OP_SET_MINFD,
+    OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF, OP_SINGLE_THREAD, OP_SOCK_FD, OP_SOCK_SSL,
+    OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR, OP_SSL_CREATE, OP_UNLOCK, TRACE_ACCEPT,
+    TRACE_TIMEOUT,
 };
 use crate::{Host, SW_ERR, SW_OK};
 
@@ -216,19 +216,6 @@ pub(crate) fn set_max_connection<H: Host>(h: &mut H, requested: u32) -> crate::E
     }
     h.op(OP_SET_MAX_CONNECTION, u64::from(value))?;
     Ok(())
-}
-
-/// `Server::is_healthy_connection`: received within the port's heartbeat idle time.
-pub(crate) fn healthy<H: Host>(h: &mut H, now: f64) -> crate::Effect<bool> {
-    if h.is(OP_CONN_PROTECT)? {
-        return Ok(true);
-    }
-    let last_recv = h.float(OP_CONN_LAST_RECV)?;
-    if last_recv == 0.0 || !h.is(OP_HAS_PORT)? {
-        return Ok(true);
-    }
-    let idle = h.float(OP_PORT_HEARTBEAT)?;
-    Ok(idle == 0.0 || last_recv > now - idle)
 }
 
 #[cfg(test)]
@@ -465,24 +452,5 @@ mod tests {
             (vec![], vec![LOG_MAX_CONNECTION_CREATED]),
             "too late"
         );
-    }
-
-    #[test]
-    fn health_by_heartbeat() {
-        let run = |protect, last: f64, port, idle: f64| {
-            let mut s = Script::with(&[
-                (OP_CONN_PROTECT, protect),
-                (OP_CONN_LAST_RECV, last.to_bits()),
-                (OP_HAS_PORT, port),
-                (OP_PORT_HEARTBEAT, idle.to_bits()),
-            ]);
-            healthy(&mut s, 100.0).unwrap()
-        };
-        assert!(run(1, 1.0, 1, 10.0), "protected");
-        assert!(run(0, 0.0, 1, 10.0), "never received");
-        assert!(run(0, 1.0, 0, 10.0), "no port");
-        assert!(run(0, 1.0, 1, 0.0), "no heartbeat");
-        assert!(run(0, 95.0, 1, 10.0), "recent");
-        assert!(!run(0, 80.0, 1, 10.0), "stale");
     }
 }
