@@ -104,8 +104,9 @@ def build_extension(source, log_path, args, extra=(), *, incremental=False, timi
                 # normal dependency graph recreates the missing object.
                 descriptor.unlink()
     commands = [] if incremental else [('phpize', [args.phpize]), ('configure', configure)]
-    # The static Rust archive is a linker flag, not a Makefile dependency.
-    commands.append(('make', ['make', f'-j{args.jobs}', *(['-W', 'ext-src/php_swoole.lo'] if incremental and (source / 'ext-src/php_swoole.lo').is_file() else []), 'swoole.la']))
+    # The static Rust archive is a linker flag, not a Makefile dependency: always relink.
+    (source / 'swoole.la').unlink(missing_ok=True)
+    commands.append(('make', ['make', f'-j{args.jobs}', 'swoole.la']))
     with log_path.open('w') as log:
         for phase, command in commands:
             require_build_space(source)
