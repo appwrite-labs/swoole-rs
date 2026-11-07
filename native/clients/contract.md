@@ -4,7 +4,7 @@ Feature bit 1048576 (`clients`). ABI: `docs/clients-resolver-abi-v1.md`,
 `swoole_rs_clients.h`. Patched upstream files: `ext-src/swoole_client.cc`,
 `ext-src/swoole_client_async.cc`, `ext-src/swoole_client_coro.cc`,
 `ext-src/swoole_name_resolver.cc`,
-`src/network/client.cc`, `src/network/dns.cc` (`src/network/address.cc` is deleted).
+`src/network/client.cc` (`src/network/address.cc` and `src/network/dns.cc` are deleted).
 
 Production exports have the prefix `swr_v1_clients_`. A test-only allocation-budget
 symbol is excluded from production artifacts.
@@ -70,19 +70,31 @@ into these exports in `native/reactor/swoole_socket.h`.
 - Unsupported families and Apple scoped-IPv6 parsing go to the platform's
   `inet_pton` from Rust, errno included.
 
-## DNS (`src/network/dns.cc`)
+## DNS (`native/clients/dns.cc`)
 
-- `dns_lookup_impl_with_socket` is `clients_dns_query`: query packet, one send and
-  one receive through native coroutine-socket function pointers, then the
-  answer's A/AAAA addresses as text. Native keeps `resolv.conf` loading before it,
-  the socket and its timeout, and maps `ECANCELED` for Rust.
+`src/network/dns.cc` is deleted. `native/clients/dns.cc` keeps what needs C++: the
+`std::string`/`std::list`/`std::function` signatures of swoole.h's DNS and name
+resolver API (the resolver list stays `SwooleG.name_resolvers`, whose iterators
+`swoole_name_resolver_each` hands out), the coroutine `Socket` and `Coroutine`
+calls, the C++ locale's space table and the `ResolverOwner` exception paths.
+
+- `dns_lookup_impl_with_socket` is `clients_dns_lookup`: the DNS server, read from
+  `resolv.conf` while none is set (`SW_ERROR_DNSLOOKUP_NO_SERVER` otherwise), the
+  request id, `clients_dns_query` (query packet, one send and one receive, then the
+  answer's A/AAAA addresses as text), the invalid-domain warning and the last
+  error. Native opens and deletes the UDP socket, sets its timeout, and maps
+  `ECANCELED` for Rust.
 - Both `network::gethostbyname` variants are `clients_gethostbyname`
   (`gethostbyname2_r` with a growing buffer on Linux, `gethostbyname2` under a
   lock elsewhere); `network::getaddrinfo` is `clients_getaddrinfo` into a native
   array of `SW_DNS_HOST_BUFFER_SIZE`.
-- `swoole_load_resolv_conf`'s file read is `clients_resolv_conf` (libc `fopen`
-  and `fgets`); `get_ip_by_hosts` is `clients_hosts_lookup`, with the native
-  locale's space table passed in. The c-ares path stays native.
+- `swoole_load_resolv_conf` is `clients_load_resolv_conf` (libc `fopen` and
+  `fgets`, and the `fopen` warning); `get_ip_by_hosts` is `clients_hosts_lookup`,
+  with the native locale's space table passed in.
+- With c-ares, `clients_cares_lookup` registers the `SW_FD_CARES` handlers and the
+  library cleanup, wraps and registers c-ares' descriptors, defers the resumes
+  and sets the last error itself; native passes the `Coroutine` calls, the
+  warnings and the trace lines.
 - `ip_text` writes into 40-byte caller-local storage and returns the length.
   IPv6 is emitted as eight four-digit lowercase groups (as the original DNS
   helper does, not compressed `inet_ntop` text). Native builds the
