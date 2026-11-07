@@ -30,19 +30,17 @@ compare output):
 
 ```text
 python3 tests/modules/ports/gate.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --output REPORT [--sanitize] [--rust-asan]
-python3 tests/modules/ports/socket_workflow.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --core CONFIGURED_CORE --output REPORT [--sanitize]
 ```
 
 - `gate.py`: integer macros, event enum/catalog and protocol plan against the
   pinned definitions.
-- `socket_workflow.py`: `create_socket` bodies, 1280 traces must match. Reads
-  configured Makefile `INCLUDES`/`CPPFLAGS` as literal argv; shell expressions,
-  unknown variables and cycles are rejected and no Make command runs.
 
 Exact-body model gates share the `count.py` runner (`main()`), which extracts the
 named bodies (original from the pin, selected from the hybrid build's tree), compiles
 each side's witness translation unit and links them to the archive. With `--core`
-(a configured pinned tree) it syntax checks the full original `port.cc` /
+(a configured pinned tree, whose Makefile `INCLUDES`/`CPPFLAGS` it reads as literal
+argv: shell expressions, unknown variables and cycles are rejected and no Make command
+runs) it syntax checks the full original `port.cc` /
 `swoole_server_port.cc` there and the selected ones in the hybrid build's tree
 (`overlay.selected` follows a deleted file to the one holding what is left of it):
 
@@ -66,8 +64,8 @@ python3 tests/modules/ports/NAME.py --source PINNED_REFERENCE --archive SELECTED
 `--sdk-origin` relocates in-build include paths when compiling a private copy of
 a configured SDK. On macOS pass a matching `--php-config` and `--openssl-root`.
 
-Linux sanitizer run (builds an ASan Rust archive and reruns `gate.py`
-and `socket_workflow.py`, then checks that a deliberately invalid
+Linux sanitizer run (builds an ASan Rust archive and reruns `gate.py`,
+then checks that a deliberately invalid
 ABI caller is caught):
 
 PHP runtime checks:

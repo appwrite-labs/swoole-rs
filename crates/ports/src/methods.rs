@@ -3,18 +3,46 @@
 //! the hybrid links this crate (`upstream-symbols`). port.cc registers its two
 //! runners once; each method calls one as its C++ forward did.
 
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 
-use swoole_rs_corebase::log;
-use swoole_rs_reactor::{SocketRecord, swr_v1_socket_dealloc, swr_v1_socket_listen};
+use swoole_rs_clients::address::{
+    swr_v1_clients_address_assign, swr_v1_clients_address_port, swr_v1_clients_address_type,
+};
+use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::{log, swr_v1_clients_gethostbyname};
+use swoole_rs_reactor::socket_upstream::make_socket_typed;
+use swoole_rs_reactor::{
+    SocketRecord, swr_v1_socket_bind, swr_v1_socket_dealloc, swr_v1_socket_get_name,
+    swr_v1_socket_listen,
+};
+#[cfg(not(test))]
+use swoole_rs_tls::upstream::socket_free;
+
+/// `Socket::free()` for a socket no loop, timer or buffer has seen: tests link no
+/// C++, which `socket_free` reaches under `upstream-symbols`.
+#[cfg(test)]
+unsafe fn socket_free(socket: *mut SocketRecord) {
+    // SAFETY: the caller's live record.
+    let fd = unsafe { (*socket).fd };
+    // SAFETY: close(2) has no memory preconditions.
+    unsafe { libc::close(fd) };
+    // SAFETY: Rust allocated the record and nothing uses it after.
+    unsafe { swr_v1_socket_dealloc(socket) };
+}
+
+/// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
+const FD_STREAM_SERVER: c_int = 1;
+const FD_DGRAM_SERVER: c_int = 2;
+/// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
+const SOCK_NONBLOCK: c_int = 1 << 2;
+const SOCK_CLOEXEC: c_int = 1 << 3;
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::view;
 
 use crate::lifecycle::{
     RUN_CLOSE, RUN_CONTEXT_CREATE, RUN_CONTEXT_INIT, RUN_IMPORT, RUN_SNI, RUN_SSL_CREATE,
-    RUN_WARN_LISTEN,
 };
 use crate::read::{ON_READ_EOF, ON_READ_HTTP, ON_READ_LENGTH, ON_READ_RAW, ON_READ_REDIS};
 
@@ -31,22 +59,38 @@ pub type NativeRun = unsafe extern "C-unwind" fn(
 /// port.cc's `port_read`: reactor, port, event and readable kind.
 pub type NativeRead =
     unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut c_void, u32) -> i32;
+/// A port fact native code owns: [`FACT_REUSE_PORT`] or [`FACT_DTLS`].
+pub type NativeFact = unsafe extern "C-unwind" fn(*mut c_void, u32) -> bool;
 
-static NATIVE: OnceLock<(NativeRun, NativeRead)> = OnceLock::new();
+/// The port's server's `enable_reuse_port`.
+pub const FACT_REUSE_PORT: u32 = 0;
+/// `ListenPort::is_dtls()`.
+pub const FACT_DTLS: u32 = 1;
+
+static NATIVE: OnceLock<(NativeRun, NativeRead, NativeFact)> = OnceLock::new();
 
 /// Registers port.cc's runners, which the methods below call.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ports_set_native(run: NativeRun, read: NativeRead) {
-    // A second registration is the same pair; keeping the first is equivalent.
-    NATIVE.get_or_init(|| (run, read));
+pub extern "C" fn swr_v1_ports_set_native(run: NativeRun, read: NativeRead, fact: NativeFact) {
+    // A second registration is the same triple; keeping the first is equivalent.
+    NATIVE.get_or_init(|| (run, read, fact));
 }
 
-fn native() -> (NativeRun, NativeRead) {
+fn native() -> (NativeRun, NativeRead, NativeFact) {
     match NATIVE.get() {
         Some(native) => *native,
         // port.cc registers before any ListenPort exists.
         None => std::process::abort(),
     }
+}
+
+/// A native fact of `port`.
+///
+/// # Safety
+/// `port` is a live `ListenPort`.
+unsafe fn fact(port: *mut c_void, which: u32) -> bool {
+    // SAFETY: as the caller guarantees.
+    unsafe { (native().2)(port, which) }
 }
 
 /// One lifecycle `kind` through port.cc's runner.
@@ -243,9 +287,15 @@ pub unsafe extern "C" fn listen(port: *mut c_void) -> c_int {
     // SAFETY: the port's live socket, as the caller guarantees.
     if !config.listening && unsafe { swr_v1_socket_listen(socket, c_int::from(config.backlog)) } < 0
     {
-        let null = ptr::null_mut();
-        // SAFETY: as the caller guarantees.
-        unsafe { run(RUN_WARN_LISTEN, port, null, null, null, 0) };
+        log::sys_warning(
+            c"ListenPort::listen",
+            format_args!(
+                "listen({}:{}, {}) failed",
+                host_text(config),
+                config.port,
+                config.backlog
+            ),
+        );
         return -1;
     }
     config.listening = true;
@@ -271,6 +321,135 @@ pub unsafe extern "C" fn listen(port: *mut c_void) -> c_int {
         config.buffer_high_watermark = watermark;
     }
     0
+}
+
+/// The host as `host.c_str()` prints it.
+fn host_text(config: &PortConfig) -> std::borrow::Cow<'_, str> {
+    // SAFETY: a slot's view is NUL-terminated and lives while `config` is borrowed.
+    unsafe { CStr::from_ptr(config.host().data) }.to_string_lossy()
+}
+
+/// An int option set to 1; 0 or -1 as setsockopt(2).
+fn set_option(fd: c_int, level: c_int, option: c_int) -> c_int {
+    let one: c_int = 1;
+    let size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
+    // SAFETY: `one` is a live c_int of `size` bytes.
+    unsafe { libc::setsockopt(fd, level, option, (&raw const one).cast(), size) }
+}
+
+/// `ListenPort::create_socket()`: keeps the port's socket unless the server
+/// reuses ports (Linux), else makes one, sets its options, binds it to the
+/// port's host and port, and takes the bound port. On failure it sets the last
+/// error to errno and frees the new socket, which the port still points at.
+///
+/// # Safety
+/// `port` is a live `ListenPort` of a live server.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort13create_socketEv")
+)]
+pub unsafe extern "C" fn create_socket(port: *mut c_void) -> c_int {
+    // SAFETY: as the caller guarantees.
+    let reuse_port = || cfg!(target_os = "linux") && unsafe { fact(port, FACT_REUSE_PORT) };
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { port_config::of(port) };
+    if !config.socket.is_null() {
+        if !reuse_port() {
+            return 0;
+        }
+        // SAFETY: the port's live socket, which nothing else uses now.
+        unsafe { close_socket(port) };
+    }
+    let kind = config.r#type;
+    let fd_type = if matches!(kind, 2 | 4 | 6) {
+        FD_DGRAM_SERVER
+    } else {
+        FD_STREAM_SERVER
+    };
+    let socket = make_socket_typed(kind, fd_type, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    config.socket = socket.cast();
+    if socket.is_null() {
+        log::set_last_error(errno());
+        return -1;
+    }
+    // SAFETY: the live record just made.
+    let fd = unsafe { (*socket).fd };
+    let kqueue = cfg!(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ));
+    // SAFETY: as the caller guarantees.
+    if kqueue && unsafe { fact(port, FACT_DTLS) } {
+        set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT);
+    }
+    let fail = || {
+        log::set_last_error(errno());
+        // SAFETY: the record just made, freed once, on this failure path.
+        unsafe { socket_free(socket) };
+        -1
+    };
+    if reuse_port() && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT) < 0 {
+        return fail();
+    }
+    let host = config.host();
+    let mut address = SocketAddress {
+        // SAFETY: the sockaddr union is plain data.
+        addr: unsafe { std::mem::zeroed() },
+        len: 0,
+        kind,
+    };
+    // SAFETY: the union and its length, and the host's NUL-terminated bytes.
+    let error = unsafe {
+        swr_v1_clients_address_assign(
+            (&raw mut address.addr).cast(),
+            &raw mut address.len,
+            kind,
+            host.data,
+            host.length,
+            config.port,
+            Some(swr_v1_clients_gethostbyname),
+        )
+    };
+    if error != 0 {
+        log::set_last_error(error);
+        // SAFETY: a static NUL-terminated name.
+        let name = unsafe { CStr::from_ptr(swr_v1_clients_address_type(kind)) };
+        log::warning(
+            c"ListenPort::create_socket",
+            format_args!(
+                "Invalid {} address '{}:{}'",
+                name.to_string_lossy(),
+                host_text(config),
+                config.port
+            ),
+        );
+        return fail();
+    }
+    if set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR) < 0 {
+        log::sys_warning(
+            c"ListenPort::create_socket",
+            format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),
+        );
+    }
+    // SAFETY: the live record and the address assigned above.
+    let bound =
+        unsafe { swr_v1_socket_bind(socket, (&raw const address.addr).cast(), address.len) };
+    // SAFETY: the live record.
+    if bound < 0 || unsafe { swr_v1_socket_get_name(socket) } < 0 {
+        return fail();
+    }
+    // SAFETY: the live record.
+    let info = unsafe { &raw const (*socket).info };
+    // SAFETY: get_name filled the record's address.
+    config.port = unsafe { swr_v1_clients_address_port(info) };
+    0
+}
+
+fn errno() -> c_int {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 /// `ListenPort::close_socket()`: closes and frees the port's socket.
@@ -441,6 +620,15 @@ mod tests {
             + i32::try_from(kind).unwrap_or_default()
     }
 
+    thread_local! {
+        /// The facts `fact_fake` answers on this thread: bit 0 reuse-port, bit 1 DTLS.
+        static FACTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    unsafe extern "C-unwind" fn fact_fake(_: *mut c_void, which: u32) -> bool {
+        FACTS.get() & (1 << which) != 0
+    }
+
     fn last() -> [usize; 6] {
         *SEEN
             .lock()
@@ -451,7 +639,7 @@ mod tests {
 
     #[test]
     fn methods_pass_what_their_forward_did() {
-        swr_v1_ports_set_native(run_fake, read_fake);
+        swr_v1_ports_set_native(run_fake, read_fake, fact_fake);
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
         unsafe {
             assert!(ssl_create(at(1), at(2)), "3 is true");
@@ -594,8 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_listen_warns_through_native_and_stays_unpublished() {
-        swr_v1_ports_set_native(run_fake, read_fake);
+    fn a_failed_listen_warns_and_stays_unpublished() {
         // listen(2) on a datagram socket fails (EOPNOTSUPP).
         let mut port = socket_port(libc::SOCK_DGRAM, false);
         let at = (&raw mut port).cast::<c_void>();
@@ -603,12 +790,126 @@ mod tests {
         let config = unsafe { port_config::of(at) };
         assert!(!config.listening, "not published");
         assert_eq!(config.buffer_high_watermark, 0, "options skipped");
-        let warned = SEEN
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&[RUN_WARN_LISTEN as usize, at.addr(), 0, 0, 0, 0]);
-        assert!(warned, "the host-naming warning runs natively");
         unsafe { close_socket(at) };
+        unsafe { port_config::swr_v1_port_config_free(port) };
+    }
+
+    /// A socketless port of `kind` on `host`:`number`, with the native facts `facts`.
+    fn unbound_port(kind: c_int, host: &str, number: c_int, facts: u32) -> *mut PortConfig {
+        swr_v1_ports_set_native(run_fake, read_fake, fact_fake);
+        FACTS.set(facts);
+        let config = port_config::swr_v1_port_config_new(1000);
+        unsafe {
+            (*config).r#type = kind;
+            (*config).port = number;
+            let set = swoole_rs_corebase::swr_v1_core_string_set(
+                &raw const *(*config).host,
+                host.as_ptr().cast(),
+                host.len(),
+            );
+            assert_eq!(set, 0, "host set");
+        }
+        config
+    }
+
+    fn record<'a>(config: &PortConfig) -> &'a SocketRecord {
+        unsafe { &*config.socket.cast::<SocketRecord>() }
+    }
+
+    #[test]
+    fn create_socket_binds_the_host_and_takes_the_bound_port() {
+        let mut port = unbound_port(1, "127.0.0.1", 0, 0);
+        let at = (&raw mut port).cast::<c_void>();
+        assert_eq!(unsafe { create_socket(at) }, 0, "created");
+        let config = unsafe { port_config::of(at) };
+        let socket = record(config);
+        assert_eq!(socket.fd_type, FD_STREAM_SERVER, "stream server fd");
+        assert_eq!(socket.bound, 1, "bound");
+        assert_ne!(config.port, 0, "the kernel's port");
+        assert_eq!(
+            unsafe { swr_v1_clients_address_port(&raw const socket.info) },
+            config.port,
+            "getsockname's port"
+        );
+        assert_ne!(
+            option(socket.fd, libc::SOL_SOCKET, libc::SO_REUSEADDR),
+            0,
+            "SO_REUSEADDR"
+        );
+        let flags = unsafe { libc::fcntl(socket.fd, libc::F_GETFL) };
+        assert_ne!(flags & libc::O_NONBLOCK, 0, "nonblocking");
+        let fd_flags = unsafe { libc::fcntl(socket.fd, libc::F_GETFD) };
+        assert_ne!(fd_flags & libc::FD_CLOEXEC, 0, "close-on-exec");
+        // A port with a socket keeps it unless the server reuses ports.
+        let kept = config.socket;
+        assert_eq!(unsafe { create_socket(at) }, 0, "kept");
+        assert_eq!(config.socket, kept, "same socket");
+        unsafe { close_socket(at) };
+        unsafe { port_config::swr_v1_port_config_free(port) };
+    }
+
+    #[test]
+    fn create_socket_makes_a_datagram_server_socket_for_udp() {
+        let mut port = unbound_port(2, "127.0.0.1", 0, 0);
+        let at = (&raw mut port).cast::<c_void>();
+        assert_eq!(unsafe { create_socket(at) }, 0, "created");
+        let config = unsafe { port_config::of(at) };
+        let socket = record(config);
+        assert_eq!(socket.fd_type, FD_DGRAM_SERVER, "datagram server fd");
+        assert_eq!(
+            option(socket.fd, libc::SOL_SOCKET, libc::SO_TYPE),
+            libc::SOCK_DGRAM,
+            "datagram"
+        );
+        unsafe { close_socket(at) };
+        unsafe { port_config::swr_v1_port_config_free(port) };
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn create_socket_replaces_the_socket_when_the_server_reuses_ports() {
+        let mut port = unbound_port(1, "127.0.0.1", 0, 1 << FACT_REUSE_PORT);
+        let at = (&raw mut port).cast::<c_void>();
+        assert_eq!(unsafe { create_socket(at) }, 0, "created");
+        let config = unsafe { port_config::of(at) };
+        let first = record(config).fd;
+        assert_ne!(
+            option(first, libc::SOL_SOCKET, libc::SO_REUSEPORT),
+            0,
+            "SO_REUSEPORT"
+        );
+        // Unmark the old record: only a new bind marks the port's record again.
+        unsafe { (*config.socket.cast::<SocketRecord>()).bound = 0 };
+        let bound_port = config.port;
+        assert_eq!(unsafe { create_socket(at) }, 0, "recreated");
+        assert_eq!(record(config).bound, 1, "a new socket, bound");
+        assert_eq!(config.port, bound_port, "on the same port");
+        assert_ne!(
+            option(record(config).fd, libc::SOL_SOCKET, libc::SO_REUSEPORT),
+            0,
+            "SO_REUSEPORT again"
+        );
+        unsafe { close_socket(at) };
+        unsafe { port_config::swr_v1_port_config_free(port) };
+    }
+
+    #[test]
+    fn create_socket_fails_on_an_address_it_cannot_assign_or_bind() {
+        // A Unix path longer than sun_path: the address is invalid.
+        let long = "p".repeat(200);
+        let port = unbound_port(5, &long, 0, 0);
+        let at = (&raw const port).cast_mut().cast::<c_void>();
+        assert_eq!(unsafe { create_socket(at) }, -1, "invalid address");
+        unsafe { port_config::swr_v1_port_config_free(port) };
+        // An address no local interface has: bind(2) fails.
+        let port = unbound_port(1, "203.0.113.1", 0, 0);
+        let at = (&raw const port).cast_mut().cast::<c_void>();
+        assert_eq!(unsafe { create_socket(at) }, -1, "bind failed");
+        assert_eq!(
+            log::last_error(),
+            libc::EADDRNOTAVAIL,
+            "errno as the last error"
+        );
         unsafe { port_config::swr_v1_port_config_free(port) };
     }
 }

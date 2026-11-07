@@ -15,6 +15,7 @@ struct HttpProxy;
 struct GethostbynameRequest;
 struct GetaddrinfoRequest;
 class Server;
+struct ListenPort;
 namespace coroutine {
 class Socket;
 }
@@ -30,6 +31,7 @@ class RustStringView {
   friend struct GetaddrinfoRequest;
   friend class coroutine::Socket;
   friend class Server;
+  friend struct ListenPort;
   const swr_v1_core_string *slot_;
   bool owned_ = false;
   struct Cache {

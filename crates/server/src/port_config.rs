@@ -1,5 +1,7 @@
 //! Rust-owned `ListenPort` settings and native socket/statistic loans.
 use core::ffi::{c_int, c_void};
+
+use swoole_rs_corebase::{CoreStringView, StringSlot, swr_v1_core_string_view};
 #[repr(C)]
 pub struct PortConfig {
     pub object_id: u16,
@@ -39,6 +41,17 @@ pub struct PortConfig {
     pub websocket_frames: u8,
     /// `websocket_subprotocol`, the handshake's `Sec-WebSocket-Protocol`.
     pub websocket_protocol: Option<Box<Vec<u8>>>,
+    /// `ListenPort::host`, which native code reads and writes through a `RustStringView`.
+    pub host: Box<StringSlot>,
+}
+
+impl PortConfig {
+    /// The host: its NUL-terminated bytes and their length.
+    #[must_use]
+    pub fn host(&self) -> CoreStringView {
+        // SAFETY: the slot lives as long as `self`, and `&self` keeps writers out.
+        unsafe { swr_v1_core_string_view(&raw const *self.host) }
+    }
 }
 
 /// The settings of a `ListenPort`, which begins with its `PortFields` pointer to them.
@@ -93,6 +106,7 @@ pub extern "C" fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig 
         ptr: core::ptr::null_mut(),
         websocket_frames: 0,
         websocket_protocol: None,
+        host: Box::default(),
     }))
 }
 /// # Safety

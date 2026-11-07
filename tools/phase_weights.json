@@ -107,7 +107,6 @@
  "ports-policy": 1,
  "ports-settings": 8,
  "ports-sni-originals": 2,
- "ports-socket": 3,
  "ports-tls-settings": 8,
  "ports-unit": 3,
  "process-signals": 1,

@@ -2,7 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from socket_workflow import configured_flags
+from count import configured_flags
 
 
 class ConfiguredFlags(unittest.TestCase):

@@ -336,9 +336,6 @@ def plan(args, reports):
                 script(name, 'tests/modules/ports/' + runner, *php_for('curl', 'sockets'), *engines,
                        '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        '--source-ref', 'HEAD', *report(name))
-        script('ports-socket', 'tests/modules/ports/socket_workflow.py', '--source', ROOT / 'target/upstream/src',
-               '--core', manifest.parent / 'src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ports-socket'))
         script('ports-policy', 'tests/modules/ports/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ports-policy'))
         port_options = (['--openssl-root', subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()]

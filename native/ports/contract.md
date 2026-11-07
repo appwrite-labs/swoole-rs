@@ -67,27 +67,18 @@ array, PHP properties, callable allocation/free and Server handlers stay native.
 
 Existing callback publication/free/error prefixes are not repaired.
 
-## Listening: `ListenPort::listen` and `close_socket`
+## Sockets: `ListenPort::create_socket`, `listen` and `close_socket`
 
-Both are Rust (`crates/ports/src/methods.rs`) under their upstream symbols, over the
+All three are Rust (`crates/ports/src/methods.rs`) under their upstream symbols, over the
 Rust-owned settings and socket record. Options are those the platform defines:
 `TCP_DEFER_ACCEPT`, `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` and
 `TCP_USER_TIMEOUT` on Linux, `TCP_FASTOPEN` and `SO_KEEPALIVE` on both supported
-hosts (`SO_ACCEPTFILTER` is BSD-only). The listen failure warning names the native
-`host`, so it is the lifecycle run `SWR_PORTS_RUN_WARN_LISTEN`.
-
-## Socket creation: `swr_v1_ports_socket_step`
-
-Controls `create_socket` decisions: existing socket/reuse, creation, DTLS reuse,
-address, bind/name and final publication. State 4 bytes, input 12 bytes, action
-8 bytes. Capability bit 1 = compiled Linux `HAVE_REUSEPORT`; bit 2 = compiled
-DTLS+Kqueue. Query actions read the cached Server pointer's `enable_reuse_port`
-and current `is_dtls` at their original points.
-
-Native code keeps make_socket/classification/flags, allocation, Address assignment,
-syscalls, warnings, last-error and free/close. Cleanup actions set last-error before
-native free and return immediately. Existing partial socket-member publication on
-failure is preserved. Known: on macOS, querying `SO_ACCEPTCONN` before listen
+hosts (`SO_ACCEPTFILTER` is BSD-only). `host` is a Rust string slot in the
+settings, which native code reads and writes through a `RustStringView`.
+`create_socket` asks native code (the third runner `swr_v1_ports_set_native`
+registers) for the two facts it does not own: the server's `enable_reuse_port`
+(Linux) and `is_dtls()` (kqueue hosts), each at its original point. On failure
+the port keeps pointing at the freed socket, as upstream's does. Known: on macOS, querying `SO_ACCEPTCONN` before listen
 returns `ENOPROTOOPT` for both native and Rust; import of an already-listening
 descriptor is untested.
 
