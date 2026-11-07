@@ -504,7 +504,7 @@ pub unsafe extern "C" fn swr_v1_uring_wakeup(uring: *mut Uring) -> bool {
                 return true;
             }
             let mut ready = mem::take(&mut engine.ready);
-            for &cqe in &engine.cqes[..count as usize] {
+            for &cqe in engine.cqes.iter().take(count as usize) {
                 // SAFETY: liburing filled the first `count` entries with live cqes.
                 let cqe = unsafe { &*cqe };
                 let (data, res) = (cqe.user_data, cqe.res);
