@@ -33,7 +33,7 @@ class Checkpoints(unittest.TestCase):
                     return Result()
                 argv=[str(HERE/'count.py'),'--source',str(root),'--archive',str(archive),'--core',str(core),'--output',str(output)]
                 with patch.object(sys,'argv',argv),patch.object(count.overlay,'original',return_value='size_t ListenPort::get_connection_num() const {\n}\n'),patch.object(count,'require_build_space',side_effect=guard),patch.object(count,'run_isolated',side_effect=runner),patch.object(count,'configured_flags',return_value=([],{})),patch.object(count.subprocess,'check_output',return_value=''),contextlib.redirect_stdout(io.StringIO()):
-                    with self.assertRaisesRegex(RuntimeError,'synthetic runner interruption'):count.main(['size_t ListenPort::get_connection_num() const'],HERE/'defaults.cc')
+                    with self.assertRaisesRegex(RuntimeError,'synthetic runner interruption'):count.main(['size_t ListenPort::get_connection_num() const'],HERE/'flags.cc')
                 data=json.loads(output.read_text());self.assertFalse(data['passed']);self.assertEqual(data['execution_status'],'blocked_build_space')
                 self.assertEqual(data['error'],'synthetic runner interruption')
                 self.assertEqual(len(data['sdk']),max(0,stop-2))

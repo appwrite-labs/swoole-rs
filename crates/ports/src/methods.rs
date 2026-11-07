@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 use swoole_rs_clients::address::{
     swr_v1_clients_address_assign, swr_v1_clients_address_port, swr_v1_clients_address_type,
 };
+use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{log, swr_v1_clients_gethostbyname};
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
@@ -497,16 +498,6 @@ fn protocol_flags(config: &PortConfig) -> u32 {
     .fold(0, |flags, (_, flag)| flags | flag)
 }
 
-/// [`protocol_flags`] for `init_protocol`.
-///
-/// # Safety
-/// `port` is a live `ListenPort`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_flags(port: *mut c_void) -> u32 {
-    // SAFETY: as the caller guarantees.
-    protocol_flags(unsafe { view::port(port) })
-}
-
 /// `ListenPort::get_protocols()`.
 ///
 /// # Safety
@@ -517,7 +508,7 @@ pub unsafe extern "C" fn swr_v1_ports_flags(port: *mut c_void) -> u32 {
 )]
 pub unsafe extern "C" fn get_protocols(port: *mut c_void) -> *const c_char {
     // SAFETY: as the caller guarantees.
-    crate::swr_v1_ports_protocol_name(unsafe { swr_v1_ports_flags(port) })
+    crate::swr_v1_ports_protocol_name(protocol_flags(unsafe { view::port(port) }))
 }
 
 /// `ListenPort::clear_protocol()`.
@@ -538,6 +529,213 @@ pub unsafe extern "C" fn clear_protocol(port: *mut c_void) {
     config.open_http2_protocol = false;
     config.open_mqtt_protocol = false;
     config.open_redis_protocol = false;
+}
+
+/// The C++ functions a port's protocol points at.
+#[derive(Clone, Copy)]
+enum Callback {
+    DispatchTask,
+    HttpDispatchFrame,
+    WebsocketDispatchFrame,
+    DefaultLength,
+    HttpLength,
+    HttpLengthSize,
+    Http2Length,
+    WebsocketLength,
+}
+
+/// The address of `callback`.
+#[cfg(not(test))]
+fn callback(callback: Callback) -> *mut c_void {
+    unsafe extern "C" {
+        #[link_name = "_ZN6swoole6Server13dispatch_taskEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"]
+        fn dispatch_task();
+        #[link_name = "_ZN6swoole11http_server14dispatch_frameEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"]
+        fn http_dispatch_frame();
+        #[link_name = "_ZN6swoole9websocket14dispatch_frameEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"]
+        fn websocket_dispatch_frame();
+        #[link_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"]
+        fn default_length();
+        #[link_name = "_ZN6swoole11http_server18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
+        fn http_length();
+        #[link_name = "_ZN6swoole11http_server23get_package_length_sizeEPNS_7network6SocketE"]
+        fn http_length_size();
+        #[link_name = "_ZN6swoole5http216get_frame_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
+        fn http2_length();
+        #[link_name = "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
+        fn websocket_length();
+    }
+    let function: unsafe extern "C" fn() = match callback {
+        Callback::DispatchTask => dispatch_task,
+        Callback::HttpDispatchFrame => http_dispatch_frame,
+        Callback::WebsocketDispatchFrame => websocket_dispatch_frame,
+        Callback::DefaultLength => default_length,
+        Callback::HttpLength => http_length,
+        Callback::HttpLengthSize => http_length_size,
+        Callback::Http2Length => http2_length,
+        Callback::WebsocketLength => websocket_length,
+    };
+    function as *mut c_void
+}
+
+/// Tests link no C++: each callback is a distinct non-null address.
+#[cfg(test)]
+fn callback(callback: Callback) -> *mut c_void {
+    ptr::without_provenance_mut(0x1000 + callback as usize)
+}
+
+/// A readable callback's address.
+fn reader(
+    function: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> c_int,
+) -> *mut c_void {
+    function as *mut c_void
+}
+
+/// `init_protocol` over the port's settings; `dtls` is `is_dtls()`, asked of a
+/// datagram port only.
+fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
+    let datagram = matches!(config.r#type, 2 | 4 | 6);
+    if datagram && !dtls() {
+        return;
+    }
+    let protocol = &mut config.protocol;
+    config.on_read = if config.open_eof_check {
+        if u32::from(protocol.package_eof_len) > SW_DATA_EOF_MAXLEN {
+            #[expect(clippy::cast_possible_truncation, reason = "SW_DATA_EOF_MAXLEN is 8")]
+            let max = SW_DATA_EOF_MAXLEN as u8;
+            protocol.package_eof_len = max;
+        }
+        protocol.on_package = callback(Callback::DispatchTask);
+        reader(readable_callback_eof)
+    } else if config.open_length_check {
+        if protocol.package_length_type != 0 {
+            protocol.get_package_length = callback(Callback::DefaultLength);
+        }
+        protocol.on_package = callback(Callback::DispatchTask);
+        reader(readable_callback_length)
+    } else if config.open_http_protocol {
+        if config.open_http2_protocol && config.open_websocket_protocol {
+            protocol.get_package_length = callback(Callback::HttpLength);
+            protocol.get_package_length_size = callback(Callback::HttpLengthSize);
+            protocol.on_package = callback(Callback::HttpDispatchFrame);
+        } else if config.open_http2_protocol {
+            protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
+            protocol.get_package_length = callback(Callback::Http2Length);
+            protocol.on_package = callback(Callback::DispatchTask);
+        } else if config.open_websocket_protocol {
+            protocol.package_length_size = WEBSOCKET_FRAME_HEADER_SIZE;
+            protocol.get_package_length = callback(Callback::WebsocketLength);
+            protocol.on_package = callback(Callback::WebsocketDispatchFrame);
+        }
+        protocol.package_length_offset = 0;
+        protocol.package_body_offset = 0;
+        reader(readable_callback_http)
+    } else if config.open_mqtt_protocol {
+        // SAFETY: the port's own protocol, borrowed for the call.
+        unsafe { swoole_rs_protocols::set_protocol(protocol) };
+        protocol.on_package = callback(Callback::DispatchTask);
+        reader(readable_callback_length)
+    } else if config.open_redis_protocol {
+        protocol.on_package = callback(Callback::DispatchTask);
+        reader(readable_callback_redis)
+    } else {
+        reader(readable_callback_raw)
+    };
+}
+
+/// `SW_HTTP2_FRAME_HEADER_SIZE`.
+const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
+/// `SW_WEBSOCKET_FRAME_HEADER_SIZE`: header, mask and a 64-bit length.
+const WEBSOCKET_FRAME_HEADER_SIZE: u8 = 2 + 4 + 8;
+
+/// `ListenPort::init_protocol()`.
+///
+/// # Safety
+/// `port` is a live `ListenPort` whose settings nothing else touches meanwhile.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort13init_protocolEv")
+)]
+pub unsafe extern "C" fn init_protocol(port: *mut c_void) {
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { port_config::of(port) };
+    // SAFETY: as the caller guarantees.
+    init_protocol_over(config, || unsafe { fact(port, FACT_DTLS) });
+}
+
+/// `ListenPort::set_eof_protocol(eof, find_from_right)`, given the string's bytes.
+///
+/// # Safety
+/// `port` is a live `ListenPort` whose settings nothing else touches meanwhile,
+/// and `eof` covers `length` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_ports_set_eof(
+    port: *mut c_void,
+    eof: *const u8,
+    length: usize,
+    find_from_right: bool,
+) {
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { port_config::of(port) };
+    config.open_eof_check = true;
+    let protocol = &mut config.protocol;
+    protocol.split_by_eof = !find_from_right;
+    let length = length.min(protocol.package_eof.len());
+    // SAFETY: `eof` covers `length` bytes, and `length` fits the EOF array.
+    unsafe { ptr::copy_nonoverlapping(eof, protocol.package_eof.as_mut_ptr(), length) };
+    #[expect(clippy::cast_possible_truncation, reason = "at most 8")]
+    let length = length as u8;
+    protocol.package_eof_len = length;
+}
+
+/// `ListenPort::set_length_protocol(length_offset, length_type, body_offset)`.
+///
+/// # Safety
+/// `port` is a live `ListenPort` whose settings nothing else touches meanwhile.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort19set_length_protocolEjcj")
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the narrowing stores of the C++ fields"
+)]
+pub unsafe extern "C" fn set_length_protocol(
+    port: *mut c_void,
+    length_offset: u32,
+    length_type: c_char,
+    body_offset: u32,
+) {
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { port_config::of(port) };
+    config.open_length_check = true;
+    let protocol = &mut config.protocol;
+    protocol.package_length_type = length_type as u8;
+    protocol.package_length_size = swoole_rs_corebase::swoole_type_size(length_type) as u8;
+    protocol.package_length_offset = length_offset as u16;
+    protocol.package_body_offset = body_offset as u16;
+}
+
+/// `ListenPort::set_stream_protocol()`: length framing as `Stream::set_protocol`
+/// sets it, a network-order u32 before the body.
+///
+/// # Safety
+/// `port` is a live `ListenPort` whose settings nothing else touches meanwhile.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort19set_stream_protocolEv")
+)]
+pub unsafe extern "C" fn set_stream_protocol(port: *mut c_void) {
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { port_config::of(port) };
+    config.open_length_check = true;
+    let protocol = &mut config.protocol;
+    protocol.get_package_length = callback(Callback::DefaultLength);
+    protocol.package_length_type = b'N';
+    protocol.package_length_size = 4;
+    protocol.package_body_offset = 4;
+    protocol.package_length_offset = 0;
 }
 
 /// `ListenPort::get_connection_num()`, over `sw_server()`'s event workers.
@@ -911,5 +1109,250 @@ mod tests {
             "errno as the last error"
         );
         unsafe { port_config::swr_v1_port_config_free(port) };
+    }
+
+    /// A fresh port: its settings, and the head pointer `ListenPort` methods take.
+    struct Fresh(Box<*mut PortConfig>);
+
+    impl Fresh {
+        fn new() -> Self {
+            Self(Box::new(port_config::swr_v1_port_config_new(1000)))
+        }
+        fn at(&mut self) -> *mut c_void {
+            (&raw mut *self.0).cast()
+        }
+        fn config<'a>(&mut self) -> &'a mut PortConfig {
+            unsafe { port_config::of(self.at()) }
+        }
+    }
+
+    impl Drop for Fresh {
+        fn drop(&mut self) {
+            unsafe { port_config::swr_v1_port_config_free(*self.0) };
+        }
+    }
+
+    /// The constructor's defaults (was tests/modules/ports/defaults.cc).
+    #[test]
+    fn a_new_port_has_the_constructor_defaults() {
+        let mut port = Fresh::new();
+        let config = port.config();
+        let p = &config.protocol;
+        assert_eq!(config.object_id, 0, "object id");
+        assert_eq!(p.package_length_type, b'N', "length type");
+        assert_eq!(p.package_length_size, 4, "length size");
+        assert_eq!(p.package_length_offset, 0, "length offset");
+        assert_eq!(p.package_body_offset, 4, "body offset");
+        assert_eq!(
+            p.package_max_length,
+            2 * 1024 * 1024,
+            "SW_INPUT_BUFFER_SIZE"
+        );
+        assert_eq!(p.package_eof_len, 4, "sizeof(SW_DATA_EOF) - 1");
+        assert_eq!(
+            &p.package_eof, b"\r\n\r\n\0\0\0\0",
+            "SW_DATA_EOF, then zeros"
+        );
+        assert!(
+            p.private_data_2.is_null(),
+            "the C++ constructor stores the server"
+        );
+        assert!(
+            !config.open_length_check && !config.open_eof_check,
+            "no framing"
+        );
+        assert!(config.on_read.is_null(), "no reader before init_protocol");
+    }
+
+    /// The EOF setter (was tests/modules/ports/settings.cc).
+    #[test]
+    #[expect(clippy::cast_possible_truncation, reason = "below 256")]
+    fn set_eof_protocol_copies_at_most_eight_bytes() {
+        for length in [0usize, 1, 2, 7, 8, 9, 16, 1024] {
+            for right in [false, true] {
+                let mut port = Fresh::new();
+                let config = port.config();
+                config.protocol.package_eof = *b"xxxxxxxx";
+                let value: Vec<u8> = (0..length).map(|i| (i % 256) as u8).collect();
+                unsafe { swr_v1_ports_set_eof(port.at(), value.as_ptr(), value.len(), right) };
+                let kept = length.min(8);
+                let mut eof = *b"xxxxxxxx";
+                eof[..kept].copy_from_slice(&value[..kept]);
+                let p = &config.protocol;
+                assert!(config.open_eof_check, "eof check on");
+                assert_eq!(p.split_by_eof, !right, "split unless from the right");
+                assert_eq!(usize::from(p.package_eof_len), kept, "length {length}");
+                assert_eq!(p.package_eof, eof, "copied bytes, the rest untouched");
+                assert!(!config.open_length_check, "length check untouched");
+            }
+        }
+    }
+
+    /// The length setter over every type and boundary offset (was settings.cc).
+    #[test]
+    #[expect(clippy::cast_possible_wrap, reason = "every C char, as a byte")]
+    fn set_length_protocol_narrows_as_the_cpp_fields_do() {
+        let edges = [0u32, 1, 255, 65535, 65536, 65537, 0x8000_0000, 0xffff_ffff];
+        let mut port = Fresh::new();
+        let config = port.config();
+        let sentinel = ptr::without_provenance_mut::<c_void>(17);
+        config.protocol.get_package_length = sentinel;
+        for kind in 0..=255u8 {
+            for offset in edges {
+                for body in edges {
+                    unsafe { set_length_protocol(port.at(), offset, kind as c_char, body) };
+                    let p = &config.protocol;
+                    let size = swoole_rs_corebase::swoole_type_size(kind as c_char);
+                    assert!(config.open_length_check, "length check on");
+                    assert_eq!(p.package_length_type, kind, "type");
+                    assert_eq!(i32::from(p.package_length_size), size & 0xff, "type size");
+                    assert_eq!(
+                        u32::from(p.package_length_offset),
+                        offset & 0xffff,
+                        "u16 offset"
+                    );
+                    assert_eq!(u32::from(p.package_body_offset), body & 0xffff, "u16 body");
+                    assert_eq!(p.get_package_length, sentinel, "length function untouched");
+                }
+            }
+        }
+    }
+
+    /// The stream setter after any length and EOF settings (was settings.cc).
+    #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "settings.cc's byte-wrapping iteration values"
+    )]
+    fn set_stream_protocol_sets_network_u32_framing() {
+        let mut port = Fresh::new();
+        let config = port.config();
+        for iteration in 0..256u32 {
+            config.protocol.get_package_length = ptr::without_provenance_mut(17);
+            let kind = iteration as u8 as c_char;
+            unsafe { set_length_protocol(port.at(), iteration * 257, kind, u32::MAX - iteration) };
+            let eof = vec![iteration as u8; (iteration % 17) as usize];
+            unsafe { swr_v1_ports_set_eof(port.at(), eof.as_ptr(), eof.len(), iteration % 2 == 1) };
+            let eof_before = (
+                config.protocol.split_by_eof,
+                config.protocol.package_eof_len,
+                config.protocol.package_eof,
+            );
+            unsafe { set_stream_protocol(port.at()) };
+            let p = &config.protocol;
+            assert!(
+                config.open_length_check && config.open_eof_check,
+                "both checks on"
+            );
+            assert_eq!(
+                p.get_package_length,
+                callback(Callback::DefaultLength),
+                "default length"
+            );
+            assert_eq!(p.package_length_type, b'N', "network u32");
+            assert_eq!(p.package_length_size, 4, "four bytes");
+            assert_eq!(p.package_length_offset, 0, "at the start");
+            assert_eq!(p.package_body_offset, 4, "body after it");
+            assert_eq!(
+                (p.split_by_eof, p.package_eof_len, p.package_eof),
+                eof_before,
+                "EOF untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn init_protocol_takes_upstreams_branches() {
+        use Callback::{
+            DefaultLength, DispatchTask as Task, Http2Length, HttpDispatchFrame, HttpLength,
+            HttpLengthSize, WebsocketDispatchFrame, WebsocketLength,
+        };
+        const EOF: u8 = 1;
+        const LENGTH: u8 = 2;
+        const HTTP: u8 = 4;
+        const HTTP2: u8 = 8;
+        const WS: u8 = 16;
+        const MQTT: u8 = 32;
+        const REDIS: u8 = 64;
+        const UNTYPED: u8 = 128;
+        let mqtt = swoole_rs_protocols::get_package_length as *mut c_void;
+        let address = |c: Option<Callback>| c.map_or(ptr::null_mut(), callback);
+        // Settings; reader; package, length and length-size callbacks; length size, offsets.
+        #[rustfmt::skip]
+        let branches = [
+            (EOF, reader(readable_callback_eof), Some(Task), None, None, (4, 0, 4)),
+            (EOF | LENGTH, reader(readable_callback_eof), Some(Task), None, None, (4, 0, 4)),
+            (LENGTH, reader(readable_callback_length), Some(Task), Some(DefaultLength), None, (4, 0, 4)),
+            (LENGTH | UNTYPED, reader(readable_callback_length), Some(Task), None, None, (4, 0, 4)),
+            (HTTP, reader(readable_callback_http), None, None, None, (4, 0, 0)),
+            (HTTP | HTTP2, reader(readable_callback_http), Some(Task), Some(Http2Length), None, (9, 0, 0)),
+            (HTTP | WS, reader(readable_callback_http), Some(WebsocketDispatchFrame), Some(WebsocketLength), None,
+             (14, 0, 0)),
+            (HTTP | HTTP2 | WS, reader(readable_callback_http), Some(HttpDispatchFrame), Some(HttpLength),
+             Some(HttpLengthSize), (4, 0, 0)),
+            (MQTT, reader(readable_callback_length), Some(Task), None, None, (4, 1, 0)),
+            (REDIS, reader(readable_callback_redis), Some(Task), None, None, (4, 0, 4)),
+            (0, reader(readable_callback_raw), None, None, None, (4, 0, 4)),
+        ];
+        for (flags, on_read, package, length, length_size, framing) in branches {
+            let mut port = Fresh::new();
+            let config = port.config();
+            config.open_eof_check = flags & EOF != 0;
+            config.open_length_check = flags & LENGTH != 0;
+            config.open_http_protocol = flags & HTTP != 0;
+            config.open_http2_protocol = flags & HTTP2 != 0;
+            config.open_websocket_protocol = flags & WS != 0;
+            config.open_mqtt_protocol = flags & MQTT != 0;
+            config.open_redis_protocol = flags & REDIS != 0;
+            if flags & UNTYPED != 0 {
+                config.protocol.package_length_type = 0;
+            }
+            init_protocol_over(config, || panic!("a stream port asks no DTLS fact"));
+            let p = &config.protocol;
+            let length = if flags == MQTT { mqtt } else { address(length) };
+            assert_eq!(config.on_read, on_read, "{flags}: reader");
+            assert_eq!(p.on_package, address(package), "{flags}: package callback");
+            assert_eq!(p.get_package_length, length, "{flags}: length function");
+            assert_eq!(
+                p.get_package_length_size,
+                address(length_size),
+                "{flags}: size function"
+            );
+            let actual = (
+                p.package_length_size,
+                p.package_length_offset,
+                p.package_body_offset,
+            );
+            assert_eq!(actual, framing, "{flags}: framing");
+        }
+    }
+
+    #[test]
+    fn init_protocol_clamps_the_eof_and_skips_plain_datagrams() {
+        for (eof_len, kept) in [(0, 0), (8, 8), (9, 8), (255, 8)] {
+            let mut port = Fresh::new();
+            let config = port.config();
+            config.open_eof_check = true;
+            config.protocol.package_eof_len = eof_len;
+            init_protocol_over(config, || panic!("a stream port asks no DTLS fact"));
+            assert_eq!(config.protocol.package_eof_len, kept, "SW_DATA_EOF_MAXLEN");
+        }
+        for (kind, dtls, initialized) in [
+            (2, false, false),
+            (4, false, false),
+            (6, false, false),
+            (2, true, true),
+        ] {
+            let mut port = Fresh::new();
+            let config = port.config();
+            config.r#type = kind;
+            init_protocol_over(config, || dtls);
+            assert_eq!(
+                !config.on_read.is_null(),
+                initialized,
+                "type {kind}, dtls {dtls}"
+            );
+        }
     }
 }

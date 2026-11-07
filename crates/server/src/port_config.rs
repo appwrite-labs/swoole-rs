@@ -1,6 +1,8 @@
 //! Rust-owned `ListenPort` settings and native socket/statistic loans.
 use core::ffi::{c_int, c_void};
 
+use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
+use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_corebase::{CoreStringView, StringSlot, swr_v1_core_string_view};
 #[repr(C)]
 pub struct PortConfig {
@@ -43,6 +45,10 @@ pub struct PortConfig {
     pub websocket_protocol: Option<Box<Vec<u8>>>,
     /// `ListenPort::host`, which native code reads and writes through a `RustStringView`.
     pub host: Box<StringSlot>,
+    /// `ListenPort::protocol`, which native code reads and writes by reference.
+    pub protocol: Protocol,
+    /// `ListenPort::onRead`, the readable callback `init_protocol` picks.
+    pub on_read: *mut c_void,
 }
 
 impl PortConfig {
@@ -64,6 +70,29 @@ pub unsafe fn of<'a>(port: *mut c_void) -> &'a mut PortConfig {
     let config = unsafe { *port.cast::<*mut PortConfig>() };
     // SAFETY: the port's settings live as long as it.
     unsafe { &mut *config }
+}
+
+/// The protocol `ListenPort(Server *)` starts with: network-u32 length framing
+/// and the default EOF; the C++ constructor then stores the server.
+fn default_protocol() -> Protocol {
+    let mut package_eof = [0; 8];
+    package_eof[..SW_DATA_EOF.len()].copy_from_slice(SW_DATA_EOF.as_bytes());
+    Protocol {
+        split_by_eof: false,
+        package_eof,
+        #[expect(clippy::cast_possible_truncation, reason = "a four-byte literal")]
+        package_eof_len: SW_DATA_EOF.len() as u8,
+        package_length_type: b'N',
+        package_length_size: 4,
+        package_length_offset: 0,
+        package_body_offset: 4,
+        package_max_length: SW_INPUT_BUFFER_SIZE,
+        private_data_1: core::ptr::null_mut(),
+        private_data_2: core::ptr::null_mut(),
+        on_package: core::ptr::null_mut(),
+        get_package_length: core::ptr::null_mut(),
+        get_package_length_size: core::ptr::null_mut(),
+    }
 }
 
 /// Allocates settings before the native port acquires any resources.
@@ -107,6 +136,8 @@ pub extern "C" fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig 
         websocket_frames: 0,
         websocket_protocol: None,
         host: Box::default(),
+        protocol: default_protocol(),
+        on_read: core::ptr::null_mut(),
     }))
 }
 /// # Safety

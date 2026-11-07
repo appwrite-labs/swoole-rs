@@ -507,8 +507,8 @@ class Lanes(unittest.TestCase):
         self.assertIn('tests/modules/buffer/string/test_gate.py', commands['string-originals'])
         self.assertIn('column-bytes', commands['phpcollections-column-bytes'])
         self.assertEqual(commands['phpcollections-column-bytes'].count('--engine'), 2)
-        self.assertIn('--core', commands['ports-defaults'])
-        self.assertIn('--sanitize', commands['ports-defaults'])
+        self.assertIn('--core', commands['ports-flags'])
+        self.assertIn('--sanitize', commands['ports-flags'])
         self.assertIn('--source-ref', commands['utilities-public-storage'])
         self.assertIn('--build-manifest', commands['utilities-public-storage'])
         self.assertIn('--archive', commands['utilities-public-storage'])
@@ -520,7 +520,7 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('httpbindings-php', commands)
         self.assertIn('--build-manifest', commands['phpcollections-runtime'])
         self.assertIn('--archive', commands['phpcollections-runtime'])
-        for phase in ['ports-settings']:
+        for phase in ['ports-flags']:
             self.assertIn('--core', commands[phase])
             self.assertIn('--archive', commands[phase])
             self.assertIn('--sanitize', commands[phase])

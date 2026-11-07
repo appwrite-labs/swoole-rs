@@ -5,9 +5,9 @@ Contracts: [native/ports/contract.md](../../../native/ports/contract.md) and
 8388608 (`ports`).
 
 Rust owns protocol priority/labels, integer normalization, event lookup,
-`listen` and `close_socket` (`methods.rs`), socket-creation decisions, the init_protocol plan,
-`get_connection_num` summation, EOF/length/stream setter normalization,
-constructor defaults, callback getter/hook selection, flag/buffer/packet/option
+`listen` and `close_socket` (`methods.rs`), socket-creation decisions, `init_protocol`,
+`get_connection_num` summation, the EOF/length/stream setters and the
+protocol defaults over the port's Rust-owned `protocol`, callback getter/hook selection, flag/buffer/packet/option
 plans, TLS/SNI frontend metadata, class-property declarations and the receive
 callbacks (`read.rs`, unit-tested with `cargo test -p swoole-rs-ports`). The PHP
 class `Swoole\Server\Port` (registration, objects, every method) is
@@ -50,8 +50,6 @@ python3 tests/modules/ports/NAME.py --source PINNED_REFERENCE --archive SELECTED
 
 | NAME | Checks |
 | --- | --- |
-| `settings` | EOF/length/stream setters: EOF capacity/direction, NUL bytes, every length-type byte, u16 offset truncation |
-| `defaults` | `ListenPort` constructor defaults |
 | `callback_property` | `getCallback` lowering using the real PHP binary's `zend_tolower_map` (read via FFI; needs `--php-config`) |
 | `callback_hooks` | post-registration hook binding over all slot masks and event indices |
 | `class_properties` | MINIT property declarations against inert Zend sinks |

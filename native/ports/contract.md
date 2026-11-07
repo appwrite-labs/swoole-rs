@@ -29,17 +29,13 @@ branch; `swr_v1_ports_protocol_name(flags)` returns its static label. Datagram/D
 distinctions and the priority EOF > length > HTTP > MQTT > Redis are preserved,
 including for contradictory flags.
 
-`swr_v1_ports_protocol_plan(SwrPortsProtocolInput)` (input 28 bytes, action 8 bytes,
-plan 52 bytes, up to 6 initialized actions) chooses the EOF clamp, protocol
-header/offset publications and callback binding IDs/order. Native code applies the
-writes through fixed native address tables. Binding IDs:
-
-- read: 1 EOF, 2 length, 3 HTTP, 4 Redis, 5 raw
-- package: 1 task, 2 HTTP frame, 3 websocket frame
-- length: 1 default, 2 HTTP, 3 HTTP2, 4 websocket, 5 MQTT
-
-This replaces the caller's four-store `mqtt::set_protocol` configuration, using the
-native MQTT size fact and existing MQTT length callback address.
+`ListenPort::protocol` and `onRead` live in the Rust-owned port settings
+(`PortConfig`); native code binds them by reference. `init_protocol`,
+`set_length_protocol` and `set_stream_protocol` are Rust symbols
+(`crates/ports/src/methods.rs`), and so is the body of the inline
+`set_eof_protocol` (`swr_v1_ports_set_eof(port, bytes, length, find_from_right)`).
+`swr_v1_port_config_new` gives the constructor's protocol defaults; the inline
+C++ constructor stores the server.
 
 ## Integer normalization
 
@@ -82,24 +78,9 @@ the port keeps pointing at the freed socket, as upstream's does. Known: on macOS
 returns `ENOPROTOOPT` for both native and Rust; import of an already-listening
 descriptor is untested.
 
-## Framing setters and defaults
-
-- `swr_v1_ports_framing_settings(SwrPortsFramingInput)` (40-byte input, 32-byte
-  output, no pointers). Kind `SWR_PORTS_EOF_SETTINGS` or `SWR_PORTS_LENGTH_SETTINGS`.
-  Rust owns EOF capacity/direction and length-field narrowing. Offset overflow keeps
-  the original u16 truncation (not clamping). Length width is the result of the pure
-  `swoole_type_size` helper (`include/swoole_protocol.h`, `src/core/base.cc`),
-  evaluated natively before publication. EOF memcpy stays native.
-- `swr_v1_ports_stream_settings()` returns fixed network-u32 framing: type `N`,
-  width 4, offset 0, body 4, enabled 1. Native binds the default-length callback in
-  the order of the pinned Stream helper; `src/network/stream.cc` is unchanged.
-- `swr_v1_ports_defaults(max_length, eof_length)` returns 24 bytes: object id 0,
-  network-u32 type/size/body defaults and narrowed fields. Native publishes them in
-  original order, copies the EOF literal, then stores the server pointer.
-
 ## `Port::set` helpers
 
-- `swr_v1_ports_flag_setting(kind, value, present)` reuses the 52-byte plan with at
+- `swr_v1_ports_flag_setting(kind, value, present)` returns a 52-byte plan with at
   most 2 writes (field IDs 9..19). Owns truth normalization, missing NODELAY = true,
   and the implications EOF-split -> EOF, WebSocket -> HTTP, HTTP2 -> HTTP.
 - `swr_v1_ports_buffer_setting(value)` returns `{u32 count, i32 first, i32 last}`:

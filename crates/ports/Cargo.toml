@@ -23,6 +23,7 @@ swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-tls = { path = "../tls" }
+swoole-rs-protocols = { path = "../protocols" }
 
 [lints]
 workspace = true
