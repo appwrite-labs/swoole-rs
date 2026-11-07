@@ -154,9 +154,31 @@ impl Drop for Bus {
             // SAFETY: a record `init_pipe_socket` made, used by nothing else now.
             unsafe { (*socket).fd = -1 };
             // SAFETY: as above.
-            unsafe { swoole_rs_tls::upstream::socket_free(socket) };
+            unsafe { free_socket(socket) };
         }
     }
+}
+
+// Outside the hybrid (and in tests, which link no C++) a record has no timers,
+// buffers or loop: `Socket::free` is the record's deallocation.
+#[cfg(not(all(feature = "upstream-symbols", not(test))))]
+use swoole_rs_reactor::swr_v1_socket_dealloc as free_socket;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+use swoole_rs_tls::upstream::socket_free as free_socket;
+#[cfg(feature = "upstream-symbols")]
+use swoole_rs_tls::upstream::socket_writev_sync as writev_sync;
+
+/// `Socket::writev_sync` outside the hybrid: one writev(2).
+///
+/// # Safety
+/// `socket` is a live record and `iov` denotes `count` readable iovecs.
+#[cfg(not(feature = "upstream-symbols"))]
+unsafe fn writev_sync(socket: *mut SocketRecord, iov: *const libc::iovec, count: usize) -> isize {
+    let count = c_int::try_from(count).unwrap_or(c_int::MAX);
+    // SAFETY: as the caller promises.
+    let fd = unsafe { (*socket).fd };
+    // SAFETY: as the caller promises.
+    unsafe { libc::writev(fd, iov, count) }
 }
 
 fn aligned(size: usize) -> usize {
@@ -807,7 +829,7 @@ pub unsafe extern "C" fn swr_v1_bus_write(
             unsafe { event_api::swoole_event_writev(socket.cast(), iov, count) }
         } else {
             // SAFETY: the write's live record and iovecs.
-            unsafe { swoole_rs_tls::upstream::socket_writev_sync(socket.cast(), iov, count) }
+            unsafe { writev_sync(socket.cast(), iov, count) }
         }
     }
     /// # Safety
