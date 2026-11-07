@@ -748,9 +748,13 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
+ "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-phpstubs",
+ "swoole-rs-phpswoole",
  "swoole-rs-reactor",
+ "swoole-rs-utilities",
  "swoole-rs-zend",
 ]
 
@@ -798,7 +802,11 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-framing",
+ "swoole-rs-http2",
  "swoole-rs-phpstubs",
+ "swoole-rs-reactor",
+ "swoole-rs-timer",
+ "swoole-rs-utilities",
  "swoole-rs-zend",
 ]
 

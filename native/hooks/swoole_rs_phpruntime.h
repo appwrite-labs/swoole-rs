@@ -32,14 +32,11 @@ struct swr_v1_phpruntime_ops {
     uint32_t features;
     struct _zend_class_entry *exception;
     uint8_t (*in_coroutine)(void);
-    uint8_t (*cli)(void);
     int32_t (*coroutine_sleep)(double seconds);
     void (*set_hook_flags)(uint32_t flags);
     uint32_t (*get_hook_flags)(void);
-    uint8_t (*enable_library)(void);
     uint8_t (*main_thread)(void);
     uint32_t (*active_threads)(void);
-    void (*call_hook)(uint8_t after, uint32_t *flags);
     void (*stream_ops)(uint8_t stdio, uint8_t hook);
     void (*pdo)(uint32_t flag, uint8_t blocking);
     void *(*callable)(struct _zval_struct *name);
@@ -48,7 +45,6 @@ struct swr_v1_phpruntime_ops {
     /* call->result = callable->call(argc, argv, nullptr); a bailout goes on. */
     void (*callable_call)(void *call);
     struct _zend_fcall_info_cache *(*callable_fcc)(void *callable);
-    void (*log_warning)(const char *message);
     void (*fatal_error)(int32_t level, const char *message);
     void (*error)(int32_t level, const char *message);
     swr_v1_phpruntime_handler proc_open;
@@ -64,7 +60,6 @@ struct swr_v1_phpruntime_ops {
     void (*coroutine_check)(void *unused);
     void (*convert_to_fd)(void *call); /* struct swr_v1_phpruntime_fd_call */
     void (*check_reactor)(void);
-    const char *(*strerror)(int code);
 };
 struct swr_v1_phpruntime_x509_call {
     const char *pem;

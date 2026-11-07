@@ -7,9 +7,16 @@ use crate::{
     ops,
 };
 use std::{
-    ffi::{CStr, c_char},
+    ffi::{CStr, c_char, c_int},
     ptr,
     sync::atomic::Ordering,
+};
+use swoole_rs_corebase::{
+    swr_v1_core_set_enable_kqueue, swr_v1_core_set_enable_signalfd, swr_v1_core_set_trace_flags,
+};
+use swoole_rs_utilities::{
+    Logger, LoggerSetting, process_logger, swoole_set_log_file, swoole_set_log_level,
+    swr_v1_logger_set, swr_v1_logger_set_date_format,
 };
 use swoole_rs_zend::{
     bailout, each_value,
@@ -24,17 +31,12 @@ use swoole_rs_zend::{
 };
 
 /// `swHttp2SettingId`.
-const HTTP2_HEADER_TABLE_SIZE: i32 = 1;
-const HTTP2_ENABLE_PUSH: i32 = 2;
-const HTTP2_MAX_CONCURRENT_STREAMS: i32 = 3;
-const HTTP2_INIT_WINDOW_SIZE: i32 = 4;
-const HTTP2_MAX_FRAME_SIZE: i32 = 5;
-const HTTP2_MAX_HEADER_LIST_SIZE: i32 = 6;
-/// `swr_v1_phpswoole_ops.set_socket_timeout` kinds.
-const DNS: i32 = 0;
-const CONNECT: i32 = 1;
-const READ: i32 = 2;
-const WRITE: i32 = 3;
+const HTTP2_HEADER_TABLE_SIZE: u32 = 1;
+const HTTP2_ENABLE_PUSH: u32 = 2;
+const HTTP2_MAX_CONCURRENT_STREAMS: u32 = 3;
+const HTTP2_INIT_WINDOW_SIZE: u32 = 4;
+const HTTP2_MAX_FRAME_SIZE: u32 = 5;
+const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 6;
 
 /// `php_swoole_array_get_value`: the value under `key`, unless absent or null.
 pub(crate) fn get(options: *mut zend_array, key: &CStr) -> Option<*mut zval> {
@@ -98,12 +100,9 @@ fn option<T>(
     }
 }
 
-/// The option under `key`, if set, as a string (`zend::String`) for C++'s `set`.
-fn text_option(
-    options: *mut zend_array,
-    key: &CStr,
-    set: unsafe extern "C" fn(*const c_char, usize),
-) {
+/// The option under `key`, if set, as a NUL-terminated string (`zend::String`)
+/// with its length, for `set`.
+fn text_option(options: *mut zend_array, key: &CStr, set: impl FnOnce(*const c_char, usize)) {
     let Some(value) = get(options, key) else {
         return;
     };
@@ -111,10 +110,23 @@ fn text_option(
     let string = unsafe { swr_zval_get_string(value) };
     // SAFETY: a live string, NUL-terminated after its bytes.
     let text = unsafe { bytes(string) };
-    // SAFETY: C++'s setter, with a string that lives for the call.
-    unsafe { set(text.as_ptr().cast(), text.len()) };
+    set(text.as_ptr().cast(), text.len());
     // SAFETY: the reference taken above.
     unsafe { swr_zend_string_release(string) };
+}
+
+/// C's implicit `zend_long` to `int` conversion.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "upstream passes the zend_long as int"
+)]
+const fn int(value: i64) -> c_int {
+    value as c_int
+}
+
+/// `sw_logger()`, which exists from MINIT on.
+fn logger() -> *const Logger {
+    process_logger().map_or(ptr::null(), ptr::from_ref)
 }
 
 /// `php_swoole_set_global_option(options)`. A size that does not parse stops
@@ -144,74 +156,88 @@ pub fn set_global(options: *mut zend_array) -> bool {
 fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> {
     let ops = ops();
     let size_of = |value| size(value).map_err(|error| (value, error));
-    // Every setter below is C++'s, taking a plain value.
-    let flag = |key, set: unsafe extern "C" fn(u8)| {
-        // SAFETY: as above.
-        option(options, key, truthy, |on| unsafe { set(on) });
-    };
-    let number = |key, set: unsafe extern "C" fn(i64)| {
-        // SAFETY: as above.
-        option(options, key, long, |n| unsafe { set(n) });
-    };
-    let seconds = |kind, value| {
-        // SAFETY: as above.
-        unsafe { (ops.set_socket_timeout)(kind, timeout(value)) };
-    };
+    let flag = |key, set: &dyn Fn(bool)| option(options, key, truthy, |on| set(on != 0));
+    let number = |key, set: &dyn Fn(i64)| option(options, key, long, set);
+    let defaults = &raw mut swoole_rs_reactor::swr_v1_socket_defaults;
+    // SAFETY: the process-wide socket defaults, which only this main-thread
+    // setter writes; native code reads them by name.
+    let timeouts = unsafe { &mut (*defaults).timeouts };
 
     if crate::FLAGS.load(Ordering::Relaxed) & DEBUG != 0
         && get(options, c"debug_mode").is_some_and(|value| truthy(value) != 0)
     {
-        // SAFETY: as above.
-        unsafe { (ops.set_log_level)(0) };
+        swoole_set_log_level(0);
     }
     // [EventLoop]
-    flag(c"enable_signalfd", ops.set_signalfd);
-    flag(c"enable_kqueue", ops.set_kqueue);
-    // [Logger]
-    number(c"trace_flags", ops.set_trace_flags);
-    text_option(options, c"log_file", ops.set_log_file);
-    number(c"log_level", ops.set_log_level);
-    text_option(options, c"log_date_format", ops.set_log_date_format);
-    flag(
-        c"log_date_with_microseconds",
-        ops.set_log_date_with_microseconds,
-    );
-    number(c"log_rotation", ops.set_log_rotation);
+    flag(c"enable_signalfd", &|on| {
+        swr_v1_core_set_enable_signalfd(on);
+    });
+    flag(c"enable_kqueue", &|on| swr_v1_core_set_enable_kqueue(on));
+    // [Logger]: the process logger, live from MINIT on.
+    number(c"trace_flags", &|flags| swr_v1_core_set_trace_flags(flags));
+    text_option(options, c"log_file", |file, _| {
+        // SAFETY: a NUL-terminated path.
+        unsafe { swoole_set_log_file(file) };
+    });
+    number(c"log_level", &|level| swoole_set_log_level(int(level)));
+    text_option(options, c"log_date_format", |format, _| {
+        // SAFETY: the live logger and a NUL-terminated format.
+        unsafe { swr_v1_logger_set_date_format(logger(), format) };
+    });
+    flag(c"log_date_with_microseconds", &|on| {
+        // SAFETY: the live logger.
+        unsafe { swr_v1_logger_set(logger(), LoggerSetting::Microseconds, c_int::from(on)) };
+    });
+    number(c"log_rotation", &|rotation| {
+        // SAFETY: the live logger.
+        unsafe { swr_v1_logger_set(logger(), LoggerSetting::Rotation, int(rotation)) };
+    });
     if let Some(value) = get(options, c"display_errors") {
         // SAFETY: this thread's live module globals.
         unsafe { (*globals()).display_errors = truthy(value) != 0 };
     }
-    flag(c"print_backtrace_on_error", ops.set_print_backtrace);
+    flag(c"print_backtrace_on_error", &|on| {
+        // SAFETY: C++'s setter (it throws when the build has no stack traces).
+        unsafe { (ops.set_print_backtrace)(u8::from(on)) };
+    });
     // [DNS]
-    text_option(options, c"dns_server", ops.set_dns_server);
+    text_option(options, c"dns_server", |server, length| {
+        // SAFETY: C++'s setter, with a string that lives for the call.
+        unsafe { (ops.set_dns_server)(server, length) };
+    });
     // [Socket]
     if let Some(value) = get(options, c"socket_dns_timeout") {
-        seconds(DNS, value);
+        timeouts.dns = timeout(value);
     }
     if let Some(value) = get(options, c"socket_connect_timeout") {
-        seconds(CONNECT, value);
+        timeouts.connect = timeout(value);
     }
     if let Some(value) =
         get(options, c"socket_write_timeout").or_else(|| get(options, c"socket_send_timeout"))
     {
-        seconds(WRITE, value);
+        timeouts.write = timeout(value);
     }
     if let Some(value) =
         get(options, c"socket_read_timeout").or_else(|| get(options, c"socket_recv_timeout"))
     {
-        seconds(READ, value);
+        timeouts.read = timeout(value);
     }
     if let Some(value) = get(options, c"socket_buffer_size") {
-        let size = size_of(value)?;
-        // SAFETY: as above.
-        unsafe { (ops.set_socket_buffer_size)(size) };
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "upstream assigns the size to a uint32_t"
+        )]
+        let size = size_of(value)? as u32;
+        // SAFETY: as for the timeouts.
+        unsafe { (*defaults).buffer_size = size };
     }
     if let Some(value) = get(options, c"socket_timeout") {
-        seconds(READ, value);
-        seconds(WRITE, value);
+        timeouts.read = timeout(value);
+        timeouts.write = timeouts.read;
     }
     // [HTTP2]: (key, setting, parsed as a size).
-    let http2: [(&CStr, i32, bool); 6] = [
+    let http2: [(&CStr, u32, bool); 6] = [
         (c"http2_header_table_size", HTTP2_HEADER_TABLE_SIZE, true),
         (c"http2_enable_push", HTTP2_ENABLE_PUSH, false),
         (
@@ -230,8 +256,12 @@ fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> 
     for (key, id, sized) in http2 {
         if let Some(value) = get(options, key) {
             let setting = if sized { size_of(value)? } else { long(value) };
-            // SAFETY: as above.
-            unsafe { (ops.set_http2_default)(id, setting) };
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "upstream passes the zend_long as uint32_t"
+            )]
+            swoole_rs_http2::put_default_setting(id, setting as u32);
         }
     }
     Ok(())

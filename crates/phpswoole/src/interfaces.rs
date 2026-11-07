@@ -1,6 +1,5 @@
 //! `swoole_get_local_ip()` and `swoole_get_local_mac()`: the host's non-loopback
 //! interface addresses, keyed by interface name.
-use crate::ops;
 use std::{
     ffi::{CStr, CString, c_char, c_int},
     io, ptr,
@@ -17,8 +16,7 @@ handlers! {
 /// warning is deferred.
 pub fn sys_warning(what: &[u8]) {
     let code = io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    // SAFETY: C++'s setter.
-    unsafe { (ops().set_last_error)(code) };
+    swoole_rs_corebase::log::set_last_error(code);
     // SAFETY: this thread's live module globals.
     if !unsafe { (*crate::module::globals()).display_errors } {
         return;

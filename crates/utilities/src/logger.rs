@@ -585,7 +585,8 @@ pub unsafe extern "C" fn swr_v1_logger_rotation_date(
 
 /// The process logger, `sw_logger()`: a `swoole::Logger`, whose only member is
 /// this crate's `Logger`, or null before `swoole_init`.
-fn process_logger() -> Option<&'static Logger> {
+#[must_use]
+pub fn process_logger() -> Option<&'static Logger> {
     let cpp = swoole_rs_corebase::swr_v1_core_logger().cast::<*const Logger>();
     // SAFETY: a live `swoole::Logger` whenever set.
     let member = unsafe { cpp.as_ref() }?;

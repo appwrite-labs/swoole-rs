@@ -2,9 +2,9 @@
 //! constants, `Swoole\Exception` and `Swoole\Error`, the global functions of
 //! `php_swoole.cc`, the module entry with its function table and lifecycle
 //! (MINIT, MSHUTDOWN, RINIT, RSHUTDOWN, MINFO), INI definitions, information rows
-//! and `SwooleG.fatal_error`. C++ keeps the module globals and Swoole's core,
-//! error, logger and MIME state, and lends them, with what only configure's
-//! `#ifdef`s decide, as a table of operations.
+//! and `SwooleG.fatal_error`. C++ keeps the module globals and lends them, with
+//! what only configure's `#ifdef`s decide or C++ objects hold, as a table of
+//! operations; Swoole's core, error and logger state are the Rust crates'.
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),
@@ -66,10 +66,6 @@ use swoole_rs_zend::{
 /// What only C++ can reach (`swr_v1_phpswoole_ops`).
 #[repr(C)]
 pub struct HostOps {
-    /// `swoole_get_last_error()`.
-    last_error: unsafe extern "C" fn() -> i32,
-    /// `swoole_set_last_error(code)`.
-    set_last_error: unsafe extern "C" fn(code: i32),
     /// `ZEND_MODULE_GLOBALS_BULK(swoole)`: this thread's module globals.
     globals: unsafe extern "C" fn() -> *mut module::Globals,
     /// MINIT, after the constants: `swoole_init()`, the after-fork hook and
@@ -87,24 +83,12 @@ pub struct HostOps {
     optional_mshutdown: unsafe extern "C" fn(),
     optional_rinit: unsafe extern "C" fn(),
     optional_rshutdown: unsafe extern "C" fn(),
-    /// `zend::known_strings_dtor()` and `swoole_clean()`.
+    /// `zend::known_strings_dtor()`.
     known_strings_dtor: unsafe extern "C" fn(),
-    clean: unsafe extern "C" fn(),
     /// `swoole_set_task_tmpdir(dir)`.
     set_task_tmpdir: unsafe extern "C" fn(dir: *const c_char),
     /// `php_swoole_load_library()`, a `zend_try` body.
     load_library: unsafe extern "C" fn(*mut c_void),
-    /// `swoole_event_free()`.
-    event_free: unsafe extern "C" fn(),
-    /// `SW_CPU_NUM`.
-    cpu_num: unsafe extern "C" fn() -> u32,
-    /// `sw_logger()->put(level, message, length)`.
-    log_put: unsafe extern "C" fn(level: i32, message: *const c_char, length: usize),
-    /// `swoole_error_log`'s tail: set the error, then put the formatted
-    /// message if the level passes and the error is not ignored.
-    error_log: unsafe extern "C" fn(level: i32, error: i32, message: *const c_char, length: usize),
-    /// `swoole_ignore_error(code)`.
-    ignore_error: unsafe extern "C" fn(code: i32),
     /// `zend::unserialize`.
     unserialize: unsafe extern "C" fn(
         value: *mut zval,
@@ -120,24 +104,10 @@ pub struct HostOps {
         options: i64,
         depth: i64,
     ),
-    // `php_swoole_set_global_option`'s effects, in its order.
-    set_signalfd: unsafe extern "C" fn(on: u8),
-    set_kqueue: unsafe extern "C" fn(on: u8),
-    set_trace_flags: unsafe extern "C" fn(flags: i64),
-    set_log_file: unsafe extern "C" fn(file: *const c_char, length: usize),
-    set_log_level: unsafe extern "C" fn(level: i64),
-    set_log_date_format: unsafe extern "C" fn(format: *const c_char, length: usize),
-    set_log_date_with_microseconds: unsafe extern "C" fn(on: u8),
-    set_log_rotation: unsafe extern "C" fn(rotation: i64),
     /// `SwooleG.print_backtrace_on_error`, or C++'s exception when the build
     /// has no stack traces.
     set_print_backtrace: unsafe extern "C" fn(on: u8),
     set_dns_server: unsafe extern "C" fn(server: *const c_char, length: usize),
-    /// `Socket::default_{dns,connect,read,write}_timeout` (`kind` 0..=3).
-    set_socket_timeout: unsafe extern "C" fn(kind: i32, seconds: f64),
-    set_socket_buffer_size: unsafe extern "C" fn(size: i64),
-    /// `http2::put_default_setting(id, value)`.
-    set_http2_default: unsafe extern "C" fn(id: i32, value: i64),
     // `swoole_async_set()` and the coroutine DNS cache's remaining native field.
     set_dns_cache_refresh_time: unsafe extern "C" fn(seconds: f64),
     dns_cache_refresh_time: unsafe extern "C" fn() -> f64,
@@ -149,10 +119,6 @@ pub struct HostOps {
     current_coroutine_safe: unsafe extern "C" fn(),
     /// `php_swoole_check_reactor()`.
     check_reactor: unsafe extern "C" fn(),
-    /// `Socket::default_dns_timeout`.
-    default_dns_timeout: unsafe extern "C" fn() -> f64,
-    /// `Timer::get_absolute_msec()`.
-    absolute_msec: unsafe extern "C" fn() -> i64,
     /// `swoole::coroutine::dns_lookup(domain, family, timeout)`, each address
     /// pushed onto `list` in order. The coroutine yields.
     dns_lookup: unsafe extern "C" fn(
@@ -177,8 +143,6 @@ pub struct HostOps {
     socket_bound_cid: unsafe extern "C" fn() -> i64,
     /// `php_swoole_thread_bailout()` (nothing without `SW_THREAD`).
     thread_bailout: unsafe extern "C" fn(),
-    /// `swoole_exit(status)`.
-    exit: unsafe extern "C" fn(status: i32),
 }
 
 // SAFETY: a static table of functions and static arrays, never written.
@@ -190,6 +154,21 @@ static FLAGS: AtomicU32 = AtomicU32::new(0);
 static MODULE_NUMBER: AtomicI32 = AtomicI32::new(0);
 static EXCEPTION: Class = Class::new();
 static ERROR: Class = Class::new();
+
+/// `sw_logger()->put(level, message)`; nothing before MINIT creates the logger.
+fn log_put(level: c_int, message: &[u8]) {
+    if let Some(logger) = swoole_rs_utilities::process_logger() {
+        // SAFETY: the live process logger, with the message's bytes.
+        unsafe {
+            swoole_rs_utilities::swr_v1_logger_put(
+                logger,
+                level,
+                message.as_ptr().cast(),
+                message.len(),
+            );
+        }
+    }
+}
 
 fn ops() -> &'static HostOps {
     // Functions run only after MINIT stored the table.

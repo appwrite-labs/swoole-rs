@@ -439,8 +439,6 @@ typedef struct swr_v1_phpswoole_info {
     char libpq[16];
 } swr_v1_phpswoole_info;
 typedef struct swr_v1_phpswoole_ops {
-    int32_t (*last_error)(void);
-    void (*set_last_error)(int32_t code);
     /* ZEND_MODULE_GLOBALS_BULK(swoole): this thread's zend_swoole_globals. */
     void *(*globals)(void);
     /* MINIT: swoole_init(), the after-fork hook, the bug report; and its end: the
@@ -455,34 +453,14 @@ typedef struct swr_v1_phpswoole_ops {
     void (*optional_rinit)(void);
     void (*optional_rshutdown)(void);
     void (*known_strings_dtor)(void);
-    void (*clean)(void);
     void (*set_task_tmpdir)(const char *dir);
     /* php_swoole_load_library(), a zend_try body. */
     void (*load_library)(void *);
-    void (*event_free)(void);
-    uint32_t (*cpu_num)(void);
-    /* sw_logger()->put */
-    void (*log_put)(int32_t level, const char *message, size_t length);
-    /* swoole_error_log's tail: set the error, then put if the level passes and it isn't ignored. */
-    void (*error_log)(int32_t level, int32_t error, const char *message, size_t length);
-    void (*ignore_error)(int32_t code);
     void (*unserialize)(struct _zval_struct *value, const char *buf, size_t length, struct _zend_array *options);
     void (*json_decode)(struct _zval_struct *value, const char *str, size_t length, int64_t options, int64_t depth);
-    /* php_swoole_set_global_option's effects, in its order. */
-    void (*set_signalfd)(uint8_t on);
-    void (*set_kqueue)(uint8_t on);
-    void (*set_trace_flags)(int64_t flags);
-    void (*set_log_file)(const char *file, size_t length);
-    void (*set_log_level)(int64_t level);
-    void (*set_log_date_format)(const char *format, size_t length);
-    void (*set_log_date_with_microseconds)(uint8_t on);
-    void (*set_log_rotation)(int64_t rotation);
+    /* php_swoole_set_global_option's C++ effects. */
     void (*set_print_backtrace)(uint8_t on);
     void (*set_dns_server)(const char *server, size_t length);
-    /* kind: 0 dns, 1 connect, 2 read, 3 write */
-    void (*set_socket_timeout)(int32_t kind, double seconds);
-    void (*set_socket_buffer_size)(int64_t size);
-    void (*set_http2_default)(int32_t id, int64_t value);
     /* swoole_async_set() and php_swoole_set_aio_option's SwooleG fields. */
     void (*set_dns_cache_refresh_time)(double seconds);
     double (*dns_cache_refresh_time)(void);
@@ -492,8 +470,6 @@ typedef struct swr_v1_phpswoole_ops {
     /* Coroutine::get_current_safe(): a fatal error outside a coroutine. */
     void (*current_coroutine_safe)(void);
     void (*check_reactor)(void);
-    double (*default_dns_timeout)(void);
-    int64_t (*absolute_msec)(void);
     /* swoole::coroutine::dns_lookup: each address pushed onto list in order. */
     void (*dns_lookup)(const char *domain, int32_t family, double timeout, void (*push)(void *list, const char *address),
                        void *list);
@@ -508,7 +484,6 @@ typedef struct swr_v1_phpswoole_ops {
     int64_t (*socket_bound_cid)(void);
     /* php_swoole_thread_bailout(), or nothing without SW_THREAD. */
     void (*thread_bailout)(void);
-    void (*exit)(int32_t status);
 } swr_v1_phpswoole_ops;
 struct _zend_module_entry *swr_v1_phpswoole_module(const swr_v1_phpswoole_ops *ops);
 /* ZEND_INIT_MODULE_GLOBALS' constructor of zend_swoole_globals. */

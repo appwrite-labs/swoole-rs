@@ -5,7 +5,7 @@
 // Rust can't express: zend::Callable and zend::function::call (C++ members other C++
 // files call), the module globals and get_module(), and the ops tables whose entries
 // configure's #ifdefs decide (the optional drivers, ssh2, ftp, stdext, Swoole\Thread,
-// the PDO hooks) or that reach C++ objects (Socket's defaults, the logger, SwooleG).
+// the PDO hooks) or that reach C++ objects (the module globals, the DNS settings).
 #include "php_swoole_cxx.h"
 #include "swoole_rs_phphelpers.h"
 #include "swoole_rs_phpruntime.h"
@@ -52,7 +52,6 @@ uint32_t Callable::refcount() const { return swr_v1_phphelpers_callable_refs(own
 #include "swoole_rs.h"
 #include "swoole_rs_phpswoole_info.h"
 #include "swoole_server.h"
-#include "swoole_http2.h"
 BEGIN_EXTERN_C()
 #include "ext/pcre/php_pcre.h"
 END_EXTERN_C()
@@ -272,8 +271,6 @@ static const zif_handler *swoole_ftp_handlers = nullptr;
 #endif
 
 static const swr_v1_phpswoole_ops phpswoole_ops = {
-    [] { return (int32_t) swoole_get_last_error(); },
-    [](int32_t code) { swoole_set_last_error(code); },
     [] { return (void *) ZEND_MODULE_GLOBALS_BULK(swoole); },
     [] {
         swoole_init();
@@ -359,33 +356,14 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
 #endif
     },
     [] { swr_v1_phphelpers_known_free(&sw_zend_known_strings); },
-    [] { swoole_clean(); },
     [](const char *dir) { swoole_set_task_tmpdir(dir); },
     [](void *) { php_swoole_load_library(); },
-    [] { swoole_event_free(); },
-    [] { return (uint32_t) SW_CPU_NUM; },
-    [](int32_t level, const char *message, size_t length) { sw_logger()->put(level, message, length); },
-    [](int32_t level, int32_t error, const char *message, size_t length) {
-        swoole_set_last_error(error);
-        if (level >= swoole_get_log_level() && !swoole_is_ignored_error(error)) {
-            sw_logger()->put(level, message, length);
-        }
-    },
-    [](int32_t code) { swoole_ignore_error(code); },
     [](zval *value, const char *buf, size_t length, HashTable *options) {
         zend::unserialize(value, buf, length, options);
     },
     [](zval *value, const char *str, size_t length, int64_t options, int64_t depth) {
         zend::json_decode(value, str, length, options, depth);
     },
-    [](uint8_t on) { SwooleG.enable_signalfd = on; },
-    [](uint8_t on) { swr_v1_core_set_enable_kqueue(on); },
-    [](int64_t flags) { swoole_set_trace_flags(flags); },
-    [](const char *file, size_t) { swoole_set_log_file(file); },
-    [](int64_t level) { swoole_set_log_level(level); },
-    [](const char *format, size_t) { sw_logger()->set_date_format(format); },
-    [](uint8_t on) { sw_logger()->set_date_with_microseconds(on); },
-    [](int64_t rotation) { sw_logger()->set_rotation(rotation); },
     [](uint8_t on) {
 #if !defined(HAVE_BOOST_STACKTRACE) && !defined(HAVE_EXECINFO)
         zend_throw_exception(
@@ -397,15 +375,6 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
 #endif
     },
     [](const char *server, size_t length) { swoole_set_dns_server(std::string(server, length)); },
-    [](int32_t kind, double seconds) {
-        double *timeouts[] = {&Socket::default_dns_timeout,
-                              &Socket::default_connect_timeout,
-                              &Socket::default_read_timeout,
-                              &Socket::default_write_timeout};
-        *timeouts[kind] = seconds;
-    },
-    [](int64_t size) { Socket::default_buffer_size = size; },
-    [](int32_t id, int64_t value) { swoole::http2::put_default_setting((enum swHttp2SettingId) id, value); },
     [](double seconds) { SwooleG.dns_cache_refresh_time = seconds; },
     [] { return SwooleG.dns_cache_refresh_time; },
 #ifdef SW_THREAD
@@ -416,8 +385,6 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
     [] { return (uint8_t) (sw_reactor() != nullptr); },
     [] { Coroutine::get_current_safe(); },
     [] { php_swoole_check_reactor(); },
-    [] { return Socket::default_dns_timeout; },
-    [] { return (int64_t) swoole::Timer::get_absolute_msec(); },
     [](const char *domain, int32_t family, double timeout, void (*push)(void *, const char *), void *list) {
         for (auto &address : swoole::coroutine::dns_lookup(domain, family, timeout)) {
             push(list, address.c_str());
@@ -527,7 +494,6 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
         php_swoole_thread_bailout();
 #endif
     },
-    [](int32_t status) { swoole_exit(status); },
 };
 
 #ifdef COMPILE_DL_SWOOLE
@@ -636,20 +602,11 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
         ,
         nullptr,
         []() -> uint8_t { return Coroutine::get_current() != nullptr; },
-        []() -> uint8_t { return SWOOLE_G(cli); },
         [](double seconds) -> int32_t { return swoole::coroutine::System::sleep(seconds); },
         swr_v1_phpcoroutines_set_hook_option,
         swr_v1_phpcoroutines_hook_flags,
-        []() -> uint8_t { return SWOOLE_G(enable_library); },
         []() -> uint8_t { return sw_is_main_thread(); },
         []() -> uint32_t { return sw_active_thread_count(); },
-        [](uint8_t after, uint32_t *flags) {
-            auto type =
-                (swGlobalHookType) (after ? PHP_SWOOLE_HOOK_AFTER_ENABLE_HOOK : PHP_SWOOLE_HOOK_BEFORE_ENABLE_HOOK);
-            if (swoole_isset_hook(type)) {
-                swoole_call_hook(type, flags);
-            }
-        },
         php_swoole_runtime_stream_ops,
         runtime_pdo,
         [](zval *name) -> void * { return sw_callable_create(name); },
@@ -660,11 +617,6 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
             c->result = static_cast<zend::Callable *>(c->callable)->call(c->argc, c->argv, nullptr);
         },
         [](void *callable) { return static_cast<zend::Callable *>(callable)->ptr(); },
-        [](const char *message) {
-            if (SW_LOG_WARNING >= swoole_get_log_level()) {
-                sw_logger()->put(SW_LOG_WARNING, message, strlen(message));
-            }
-        },
         [](int32_t level, const char *message) { php_swoole_fatal_error(level, "%s", message); },
         [](int32_t level, const char *message) { php_swoole_error(level, "%s", message); },
         PHP_FN(swoole_proc_open),
@@ -696,7 +648,6 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
             call->fd = php_swoole_convert_to_fd(call->value);
         },
         [] { php_swoole_check_reactor(); },
-        swoole_strerror,
     };
     ops.exception = swoole_exception_ce;
     return &ops;

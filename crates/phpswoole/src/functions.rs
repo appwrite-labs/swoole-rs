@@ -1,6 +1,7 @@
 //! The global functions of `php_swoole.cc`, each as upstream parses and answers.
 use crate::{
     constants::VERSION,
+    log_put,
     module::{CALL_USER_SHUTDOWNFUNC_BEGIN, RINIT_END},
     ops,
 };
@@ -8,6 +9,7 @@ use std::{
     ffi::{CStr, c_char, c_int},
     ptr,
 };
+use swoole_rs_corebase::log::{last_error as swoole_last_error, set_last_error};
 use swoole_rs_framing::mime;
 use swoole_rs_zend::{
     Call, E_WARNING, Invalid, handlers, php_error,
@@ -89,18 +91,15 @@ fn version(call: &Call) {
 }
 
 fn cpu_num(call: &Call) {
-    // SAFETY: C++'s getter.
-    call.set_long(i64::from(unsafe { (ops().cpu_num)() }));
+    call.set_long(i64::from(swoole_rs_corebase::swr_v1_core_cpu_num()));
 }
 
 fn last_error(call: &Call) {
-    // SAFETY: C++'s getter.
-    call.set_long(i64::from(unsafe { (ops().last_error)() }));
+    call.set_long(i64::from(swoole_last_error()));
 }
 
 fn clear_error(_: &Call) {
-    // SAFETY: C++'s setter.
-    unsafe { (ops().set_last_error)(0) };
+    set_last_error(0);
 }
 
 fn errno(call: &Call) {
@@ -181,8 +180,7 @@ fn error_log(call: &Call) {
         .arity(2, 2)
         .and_then(|()| Ok((call.long(1, 0)?, call.string(2, b"")?)));
     if let Some((level, message)) = or_false(call, parsed) {
-        // SAFETY: C++'s logger, with the argument's bytes.
-        unsafe { (ops().log_put)(int(level), message.as_ptr().cast(), message.len()) };
+        log_put(int(level), message);
     }
 }
 
@@ -201,15 +199,12 @@ fn error_log_ex(call: &Call) {
         .arity(3, 3)
         .and_then(|()| Ok((call.long(1, 0)?, call.long(2, 0)?, call.string(3, b"")?)));
     if let Some((level, error, message)) = or_false(call, parsed) {
-        let message = error_log_message(int(error), message);
-        // SAFETY: C++'s logger, with a live message.
-        unsafe {
-            (ops().error_log)(
-                int(level),
-                int(error),
-                message.as_ptr().cast(),
-                message.len(),
-            );
+        let (level, error) = (int(level), int(error));
+        set_last_error(error);
+        if level >= swoole_rs_utilities::swoole_get_log_level()
+            && !swoole_rs_error::swoole_is_ignored_error(error)
+        {
+            log_put(level, &error_log_message(error, message));
         }
     }
 }
@@ -217,8 +212,11 @@ fn error_log_ex(call: &Call) {
 fn ignore_error(call: &Call) {
     let parsed = call.arity(1, 1).and_then(|()| call.long(1, 0));
     if let Some(error) = or_false(call, parsed) {
-        // SAFETY: C++'s ignore list.
-        unsafe { (ops().ignore_error)(int(error)) };
+        // SAFETY: PHP calls in serially on the main thread; out of memory aborts, as
+        // C++'s std::bad_alloc did crossing Rust.
+        if unsafe { swoole_rs_error::swr_v1_error_ignore_global(int(error)) } != 0 {
+            std::process::abort();
+        }
     }
 }
 
