@@ -88,21 +88,6 @@ jobs:
             target/upstream/build.log
             target/hybrid/*/build-manifest.json
 
-  # The PR tier's rust job builds the dev profile with every feature and only restores,
-  # so this saves its dependencies from main under the key it restores. Warm-up only:
-  # the PR tier's rust job is the check.
-  rust-cache:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: dev
-      - uses: ./.github/actions/install
-      - run: cargo clippy --locked --workspace --all-targets --all-features
-      - run: cargo test --locked --workspace --all-features --no-run
-
   # Every merge-tier run saves a ccache of about 500 MB under its own sha, and the repo's
   # caches share 10 GB; jobs restore the newest, so keep two and delete the rest.
   ccache-prune:
