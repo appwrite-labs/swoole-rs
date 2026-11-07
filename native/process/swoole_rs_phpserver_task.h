@@ -4,8 +4,7 @@
  * Swoole\Server\Task::pack/unpack, the onTask/onFinish dispatch and the task
  * encoding (crates/phpserver, task.rs). Rust owns the pending callbacks, the waiting
  * coroutines and the payload (a string, or serialized), packed, sent and finished through
- * crates/process; C++ keeps task_unpack, taskWaitMulti's MultiTask, the callables and the
- * coroutine, reached through `host`. A `bool *bailed`
+ * crates/process; C++ keeps task_unpack and taskWaitMulti's MultiTask, reached through `host`. A `bool *bailed`
  * reports a trapped bailout (a user __serialize/__unserialize). */
 #include <stdbool.h>
 #include <stddef.h>
@@ -26,16 +25,6 @@ typedef struct {
     /* taskWaitMulti outside a coroutine: Server::MultiTask over `tasks` into the array `out`. */
     bool (*dispatch_multi)(void *server, struct _zval_struct *tasks, double timeout, struct _zval_struct *out,
                            bool *bailed);
-    /* sw_callable_create(zfn); null if not callable. */
-    void *(*callable_create)(struct _zval_struct *callable);
-    void (*callable_free)(void *callable);
-    /* Coroutine::get_current_safe(), its fatal error trapped. */
-    void *(*co_current)(bool *bailed);
-    /* swoole_coroutine_is_in() */
-    bool (*co_in)(void);
-    /* co->yield_ex(timeout), co->resume() */
-    bool (*co_yield)(void *co, double timeout);
-    void (*co_resume)(void *co);
 } swr_v1_phpserver_task_host;
 
 void swr_v1_phpserver_task_init(const swr_v1_phpserver_task_host *table);

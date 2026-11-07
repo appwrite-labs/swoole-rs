@@ -58,8 +58,6 @@ pub struct PortHost {
     length_slot: unsafe extern "C" fn(*mut c_void) -> *mut *mut c_void,
     started: unsafe extern "C" fn(*mut c_void) -> bool,
     warn: unsafe extern "C" fn(c_int, *const c_char),
-    callable_create: unsafe extern "C" fn(*mut zval) -> *mut c_void,
-    callable_free: unsafe extern "C" fn(*mut c_void),
     settings: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut zend_array) -> bool,
     socket: unsafe extern "C" fn(*mut c_void, *mut zval),
 }
@@ -144,7 +142,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_port_deref(object: *mut zend_object) {
 fn free_callable(slot: &mut *mut c_void) {
     if !slot.is_null() {
         // SAFETY: a callable C++ created for this port.
-        unsafe { (host().callable_free)(*slot) };
+        unsafe { swoole_rs_phpruntime::callable_free(*slot) };
         *slot = ptr::null_mut();
     }
 }
@@ -285,7 +283,7 @@ fn on(call: &Call) {
     let slot = &mut property.callbacks[index];
     free_callable(slot);
     // SAFETY: the callback argument.
-    let callable = unsafe { (host().callable_create)(cb) };
+    let callable = unsafe { swoole_rs_phpruntime::callable_create(cb) };
     if callable.is_null() {
         return call.set_bool(false);
     }

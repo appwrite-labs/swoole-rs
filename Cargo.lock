@@ -742,6 +742,7 @@ dependencies = [
  "swoole-rs-ossupport",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phphelpers",
+ "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-ports",

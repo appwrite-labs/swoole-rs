@@ -82,12 +82,6 @@ struct Info {
 pub struct TaskHost {
     unpack: unsafe extern "C" fn(*mut c_void, *mut *const c_char, *mut usize, *mut u32) -> bool,
     dispatch_multi: unsafe extern "C" fn(*mut c_void, *mut zval, f64, *mut zval, *mut bool) -> bool,
-    callable_create: unsafe extern "C" fn(*mut zval) -> *mut c_void,
-    callable_free: unsafe extern "C" fn(*mut c_void),
-    co_current: unsafe extern "C" fn(*mut bool) -> *mut c_void,
-    co_in: unsafe extern "C" fn() -> bool,
-    co_yield: unsafe extern "C" fn(*mut c_void, f64) -> bool,
-    co_resume: unsafe extern "C" fn(*mut c_void),
 }
 
 static HOST: AtomicPtr<TaskHost> = AtomicPtr::new(ptr::null_mut());
@@ -403,13 +397,13 @@ fn task(call: &Call) {
     } else if let Some(callback) = callback {
         flag(&mut buf, CALLBACK);
         // SAFETY: a live argument; C++ warns when it is not callable.
-        let cb = unsafe { (host().callable_create)(callback) };
+        let cb = unsafe { swoole_rs_phpruntime::callable_create(callback) };
         if cb.is_null() {
             return call.set_bool(false);
         }
         if let Some(old) = pending(serv, |p| p.callbacks.insert(id, cb)) {
             // SAFETY: a callable this module created.
-            unsafe { (host().callable_free)(old) };
+            unsafe { swoole_rs_phpruntime::callable_free(old) };
         }
     }
     flag(&mut buf, NONBLOCK);
@@ -449,9 +443,7 @@ fn taskwait(call: &Call) {
         reason = "upstream passes (int *) &dst_worker_id"
     )]
     let mut dst = dst as c_int;
-    let host = host();
-    // SAFETY: plain state.
-    if !unsafe { (host.co_in)() } {
+    if !swoole_rs_phpcoroutines::in_coroutine() {
         // SAFETY: a live server and a packed task.
         let sent = unsafe { task_sync::task_sync(serv, buf.ptr().cast(), &raw mut dst, timeout) };
         // `serv->get_task_result()`: this worker's slot of `task_results`.
@@ -478,9 +470,7 @@ fn taskwait(call: &Call) {
         return;
     }
     flag(&mut buf, NONBLOCK | COROUTINE);
-    let mut bailed = false;
-    // SAFETY: inside a coroutine.
-    let co = unsafe { (host.co_current)(&raw mut bailed) };
+    let co = swoole_rs_phpcoroutines::current();
     let mut task_co = TaskCo {
         co,
         result: call.return_value(),
@@ -493,7 +483,7 @@ fn taskwait(call: &Call) {
     }
     pending(serv, |p| p.coroutines.insert(id, &raw mut task_co));
     // SAFETY: the current coroutine; onFinish resumes it.
-    let done = unsafe { (host.co_yield)(task_co.co, timeout) };
+    let done = unsafe { swoole_rs_phpcoroutines::suspend_for(task_co.co, timeout) };
     pending(serv, |p| p.coroutines.remove(&id));
     if !done {
         call.set_bool(false);
@@ -501,8 +491,7 @@ fn taskwait(call: &Call) {
 }
 
 fn task_wait_multi(call: &Call) {
-    // SAFETY: plain state.
-    if unsafe { (host().co_in)() } {
+    if swoole_rs_phpcoroutines::in_coroutine() {
         return task_co(call, false);
     }
     let Some((serv, facts)) = worker(call, c"taskWaitMulti") else {
@@ -567,13 +556,10 @@ fn task_co(call: &Call, fill_false: bool) {
     if !check(&facts, -1) {
         return call.set_bool(false);
     }
-    let host = host();
-    let mut bailed = false;
-    // SAFETY: `Coroutine::get_current_safe()`, its fatal error trapped.
-    let co = unsafe { (host.co_current)(&raw mut bailed) };
-    if bailed {
-        return Bailout.defer();
+    if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
+        return bailout.defer();
     }
+    let co = swoole_rs_phpcoroutines::current();
     let result = call.return_value();
     // SAFETY: the return slot.
     unsafe { array_init(result) };
@@ -626,7 +612,7 @@ fn task_co(call: &Call, fill_false: bool) {
     task_co.list = list;
     task_co.count = n_task;
     // SAFETY: the current coroutine; onFinish resumes it.
-    if unsafe { (host.co_yield)(co, timeout) } {
+    if unsafe { swoole_rs_phpcoroutines::suspend_for(co, timeout) } {
         return;
     }
     for j in 0..n_task as usize {
@@ -774,7 +760,6 @@ pub(crate) fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Ba
 
 /// `php_swoole_server_onFinish`, for a live server and the result it received.
 pub(crate) fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
-    let host = host();
     let zserv = server_zval(server);
     let info = info(req);
     let id = info.id;
@@ -835,7 +820,7 @@ pub(crate) fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, 
         && let Some(cb) = pending(server, |p| p.callbacks.remove(&id))
     {
         // SAFETY: a callable `task()` created.
-        unsafe { (host.callable_free)(cb) };
+        unsafe { swoole_rs_phpruntime::callable_free(cb) };
     }
     if facts.event_object {
         dtor(&mut args[1]);
@@ -847,7 +832,6 @@ pub(crate) fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, 
 /// A coroutine task's result: into `taskwait`'s return value, or at its index
 /// in `taskCo`'s array; the waiting coroutine resumes once all arrived.
 fn resume(server: *mut c_void, id: i64, mut data: zval) -> Result<(), Bailout> {
-    let host = host();
     let Some(task_co) = pending(server, |p| p.coroutines.get(&id).copied()) else {
         log::error_log(
             SW_LOG_WARNING,
@@ -873,8 +857,8 @@ fn resume(server: *mut c_void, id: i64, mut data: zval) -> Result<(), Bailout> {
         // ZVAL_COPY_VALUE: the result takes the value.
         // SAFETY: the waiting call's return slot.
         unsafe { result.write(data) };
-        // SAFETY: the waiting coroutine.
-        unsafe { (host.co_resume)(co) };
+        // SAFETY: the waiting coroutine; this frame owns nothing that needs a drop.
+        unsafe { swoole_rs_phpcoroutines::wake(co, false) };
         return Ok(());
     }
     let Some(index) = index else {
@@ -890,8 +874,8 @@ fn resume(server: *mut c_void, id: i64, mut data: zval) -> Result<(), Bailout> {
     pending(server, |p| p.coroutines.remove(&id));
     // SAFETY: the result array.
     if unsafe { count(result) } == total {
-        // SAFETY: the waiting coroutine.
-        unsafe { (host.co_resume)(co) };
+        // SAFETY: the waiting coroutine; this frame owns nothing that needs a drop.
+        unsafe { swoole_rs_phpcoroutines::wake(co, false) };
     }
     Ok(())
 }

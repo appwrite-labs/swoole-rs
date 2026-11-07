@@ -46,8 +46,6 @@ const MAX_FIND_COUNT: i64 = 100;
 #[repr(C)]
 pub struct ServerHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
-    /// `Coroutine::count()` and `Coroutine::get_peak_num()`.
-    coroutines: unsafe extern "C" fn(*mut i64),
     socket: unsafe extern "C" fn(*mut c_void, i64, *mut zval),
 }
 
@@ -771,11 +769,12 @@ fn stats(call: &Call) {
         call.add_assoc_long(c"tasking_num", i64::from(tasking));
         call.add_assoc_long(c"task_count", load(&gs.task_count));
     }
-    let mut coroutines = [0i64; 2];
-    // SAFETY: room for both counts.
-    unsafe { (host().coroutines)(coroutines.as_mut_ptr()) };
-    call.add_assoc_long(c"coroutine_num", coroutines[0]);
-    call.add_assoc_long(c"coroutine_peek_num", coroutines[1]);
+    let (num, peak) = swoole_rs_phpcoroutines::counts();
+    call.add_assoc_long(c"coroutine_num", i64::try_from(num).unwrap_or(i64::MAX));
+    call.add_assoc_long(
+        c"coroutine_peek_num",
+        i64::try_from(peak).unwrap_or(i64::MAX),
+    );
 }
 
 fn reload(call: &Call) {

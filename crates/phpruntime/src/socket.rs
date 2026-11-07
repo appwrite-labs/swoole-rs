@@ -555,7 +555,7 @@ pub fn strerror(code: i32) -> &'static CStr {
 /// error.
 /// # Errors
 /// The fatal error bailed out.
-pub(crate) fn coroutine_check() -> Result<(), Bailout> {
+pub fn coroutine_check() -> Result<(), Bailout> {
     // SAFETY: called while PHP runs; the body ignores its argument.
     unsafe { bailout::trap(ops().coroutine_check, std::ptr::null_mut()) }
 }
