@@ -872,6 +872,26 @@ pub unsafe extern "C" fn swr_v1_http_request_multipart_destroy(request: *mut Htt
     unsafe { destroy_multipart_parser(request) };
 }
 
+/// `new http_server::Request()`: a request over `native` on Rust's heap.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_http_request_new(native: HttpNative) -> *mut HttpRequest {
+    Box::into_raw(Box::new(HttpRequest::new(native)))
+}
+
+/// `delete request` of one [`swr_v1_http_request_new`] made: the destructor, then the memory.
+///
+/// # Safety
+/// `request` is null or from [`swr_v1_http_request_new`], not used afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_http_request_free(request: *mut HttpRequest) {
+    if !request.is_null() {
+        // SAFETY: per the contract.
+        unsafe { destroy_multipart_parser(request) };
+        // SAFETY: per the contract: the request is boxed and nothing uses it after.
+        drop(unsafe { Box::from_raw(request) });
+    }
+}
+
 /// `delete form_data_` of a form no parser was made for: `FormData::operator delete`.
 ///
 /// # Safety
