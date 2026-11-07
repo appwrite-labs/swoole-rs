@@ -27,6 +27,7 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use swoole_rs_corebase::log;
 
 // SAFETY: libssl/libcrypto's own declarations; openssl-sys binds none of them.
 unsafe extern "C" {
@@ -670,9 +671,28 @@ fn new_ssl_index() -> c_int {
     unsafe { SSL_get_ex_new_index(0, ptr::null_mut(), None, None, None) }
 }
 
-/// `swoole_ssl_init`: 0 done (or already), 1 `OPENSSL_init_ssl` failed, 2 an index failed.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_init() -> c_int {
+/// `void swoole_ssl_init()`: once until `swoole_ssl_destroy`. A failure logs at
+/// error level and exits the process, as upstream's `swoole_error` does.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z15swoole_ssl_initv")
+)]
+pub extern "C" fn swoole_ssl_init() {
+    match swr_v1_tls_init() {
+        1 => log::error(
+            c"swoole_ssl_init",
+            format_args!("OPENSSL_init_ssl() failed"),
+        ),
+        2 => log::error(
+            c"swoole_ssl_init",
+            format_args!("SSL_get_ex_new_index() failed"),
+        ),
+        _ => {}
+    }
+}
+
+/// 0 done (or already), 1 `OPENSSL_init_ssl` failed, 2 an index failed.
+pub fn swr_v1_tls_init() -> c_int {
     if INITIALIZED.load(Ordering::Acquire) {
         return 0;
     }
@@ -694,19 +714,29 @@ pub extern "C" fn swr_v1_tls_init() -> c_int {
     0
 }
 
-/// `swoole_ssl_destroy`: the next init allocates fresh indexes.
-#[unsafe(no_mangle)]
+/// `void swoole_ssl_destroy()`: the next init allocates fresh indexes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z18swoole_ssl_destroyv")
+)]
 pub extern "C" fn swr_v1_tls_destroy() {
-    crate::swr_v1_tls_info_log(None);
     INITIALIZED.store(false, Ordering::Release);
 }
 
-#[unsafe(no_mangle)]
+/// `int swoole_ssl_get_ex_connection_index()`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z34swoole_ssl_get_ex_connection_indexv")
+)]
 pub extern "C" fn swr_v1_tls_connection_index() -> c_int {
     CONNECTION_INDEX.load(Ordering::Acquire)
 }
 
-#[unsafe(no_mangle)]
+/// `int swoole_ssl_get_ex_port_index()`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z28swoole_ssl_get_ex_port_indexv")
+)]
 pub extern "C" fn swr_v1_tls_port_index() -> c_int {
     PORT_INDEX.load(Ordering::Acquire)
 }
@@ -728,7 +758,10 @@ extern "C" fn keep_last_line(line: *const c_char, length: usize, _user: *mut c_v
 
 /// `swoole_ssl_get_error`: drains this thread's error queue and returns its last
 /// line ("" when empty), valid until the thread's next call.
-#[unsafe(no_mangle)]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z20swoole_ssl_get_errorv")
+)]
 pub extern "C" fn swr_v1_tls_error() -> *const c_char {
     ERROR_TEXT.with_borrow_mut(|text| {
         text.clear();

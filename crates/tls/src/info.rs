@@ -1,13 +1,8 @@
-//! OpenSSL info callback over the authoritative reactor Socket record. Native
-//! supplies only its nonthrowing debug-log leaf during TLS initialization.
+//! OpenSSL info callback over the authoritative reactor Socket record. Upstream's
+//! renegotiation `swoole_debug` exists only in `SW_DEBUG` builds, which the hybrid isn't.
 use openssl_sys::{SSL, SSL_CTX, SSL_get_ex_data, SSL_get_rbio, SSL_get_wbio};
-use std::{
-    ffi::{c_int, c_long},
-    sync::{Mutex, PoisonError},
-};
+use std::ffi::{c_int, c_long};
 use swoole_rs_reactor::SocketRecord;
-pub type InfoLog = extern "C" fn();
-static LOG: Mutex<Option<InfoLog>> = Mutex::new(None);
 // SAFETY: OpenSSL's declarations; openssl-sys does not bind these entry points.
 unsafe extern "C" {
     fn SSL_CTX_set_info_callback(
@@ -20,12 +15,6 @@ unsafe extern "C" {
         large: c_long,
         integer: c_int,
     ) -> c_long;
-}
-/// Install the module's debug leaf, or detach it during TLS teardown. The leaf
-/// does not throw/reenter and stays loaded until the matching teardown.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_info_log(callback: Option<InfoLog>) {
-    *LOG.lock().unwrap_or_else(PoisonError::into_inner) = callback;
 }
 /// # Safety
 /// ctx is live; each SSL's connection `ex_data` is a live, synchronized `SocketRecord`.
@@ -43,10 +32,6 @@ extern "C" fn info(ssl: *const SSL, where_: c_int, _result: c_int) {
         if state == crate::constants::SslState::SW_SSL_STATE_READY as u32 {
             // SAFETY: the socket is exclusively dispatched by its owning event loop.
             unsafe { (*socket).ssl_renegotiation = 1 };
-            let log = *LOG.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(log) = log {
-                log();
-            }
         }
     }
     if where_ & 0x2001 == 0x2001 {

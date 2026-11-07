@@ -86,7 +86,7 @@ fn set_errno(value: c_int) {
 ///
 /// # Safety
 /// `text` is null or NUL-terminated.
-unsafe fn text(text: *const c_char) -> String {
+pub(crate) unsafe fn text(text: *const c_char) -> String {
     if text.is_null() {
         return "(null)".into();
     }
@@ -97,7 +97,7 @@ unsafe fn text(text: *const c_char) -> String {
 }
 
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
-fn peer(info: &SocketAddress) -> (String, c_int) {
+pub(crate) fn peer(info: &SocketAddress) -> (String, c_int) {
     let mut buffer = [0 as c_char; 46];
     let (family, address, port): (c_int, *const c_void, u16) = match info.kind {
         // SAFETY: TCP, UDP and raw sockets hold the IPv4 union member.

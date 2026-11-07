@@ -51,6 +51,8 @@ pub const LOG_ERROR: c_int = 3;
 pub const LOG_INFO: c_int = 4;
 /// `swoole_sys_error`, with errno set to the code first; it exits the process.
 pub const LOG_SYS_ERROR: c_int = 5;
+/// `swoole_error`; it exits the process.
+pub const LOG_FATAL: c_int = 6;
 
 /// Native's log macros: `kind` is a `LOG_*`, `level` and `code` are what that
 /// macro takes, and `message` is the formatted text after `__SW_FUNC__`'s part.
@@ -113,6 +115,11 @@ pub fn info(message: fmt::Arguments<'_>) {
 /// process exits.
 pub fn sys_error(origin: &CStr, message: fmt::Arguments<'_>) {
     emit(LOG_SYS_ERROR, 0, errno(), origin, message);
+}
+
+/// `swoole_error` from `origin`; the process exits.
+pub fn error(origin: &CStr, message: fmt::Arguments<'_>) {
+    emit(LOG_FATAL, 0, 0, origin, message);
 }
 
 /// `swoole_error_log(level, code, ...)` from `origin`.

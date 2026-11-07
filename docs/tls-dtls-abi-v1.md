@@ -11,17 +11,16 @@ addressable fields and the live password binding.
 
 DTLS Session owns its datagram queue and canonical socket/listened/peek fields in
 Rust. Its native wrapper retains the shared `SSLContext`; queue cleanup returns
-before that shared context is destroyed. BIO read/control/listen operate over the
-actual queue and flags. Native code performs socket writes, diagnostics and
-OpenSSL method allocation/registration/free after Rust returns. Rust owns atomic
-method-table publication; a losing allocation and detached table are freed natively.
+before that shared context is destroyed. Rust builds the BIO method table, whose
+write/read/control operate over the socket and the actual queue and flags, and runs
+`Session::init`/`listen`. `ssl.cc` and `dtls.cc` have left the build.
 
 SDK consumers must rebuild against the selected headers. `Session::rxqueue` is
 opaque; std::deque layout/API compatibility is not claimed. Public socket,
 listened and peek aliases refer to stable canonical fields. Value copies hold
 independent datagram allocations while the SSLContext remains shared natively.
 
-No panic crosses the ABI. Returned strings: `swr_v1_tls_error` is valid until the
+No panic crosses the ABI. Returned strings: `swoole_ssl_get_error` is valid until the
 thread's next call.
 
 Upstream behavior kept:

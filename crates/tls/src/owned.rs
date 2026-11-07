@@ -61,35 +61,36 @@ pub struct OwnedTlsPrepared {
     pub fields: *mut OwnedTlsFields,
     pub strings: [*const StringSlot; STRING_COUNT],
 }
-#[repr(C)]
-pub struct OwnedTlsLayout {
-    pub size: usize,
-    pub alignment: usize,
-    pub offsets: [usize; 15],
-}
+// The layout native's swr_v1_tls_owner_fields asserts too (swoole_rs_tls_owner.h).
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(
+    size_of::<OwnedTlsFields>() == 32
+        && std::mem::offset_of!(OwnedTlsFields, allow_self_signed) == 11
+        && std::mem::offset_of!(OwnedTlsFields, protocols) == 12
+        && std::mem::offset_of!(OwnedTlsFields, create_flag) == 16
+        && std::mem::offset_of!(OwnedTlsFields, context) == 24,
+    "native swr_v1_tls_owner_fields' layout"
+);
+/// `SSLContext`'s warnings, `function(): message` at warning level.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_owner_layout() -> OwnedTlsLayout {
-    OwnedTlsLayout {
-        size: size_of::<OwnedTlsFields>(),
-        alignment: align_of::<OwnedTlsFields>(),
-        offsets: [
-            std::mem::offset_of!(OwnedTlsFields, http),
-            std::mem::offset_of!(OwnedTlsFields, http_v2),
-            std::mem::offset_of!(OwnedTlsFields, prefer_server_ciphers),
-            std::mem::offset_of!(OwnedTlsFields, session_tickets),
-            std::mem::offset_of!(OwnedTlsFields, stapling),
-            std::mem::offset_of!(OwnedTlsFields, stapling_verify),
-            std::mem::offset_of!(OwnedTlsFields, disable_tls_host_name),
-            std::mem::offset_of!(OwnedTlsFields, grease),
-            std::mem::offset_of!(OwnedTlsFields, verify_depth),
-            std::mem::offset_of!(OwnedTlsFields, disable_compress),
-            std::mem::offset_of!(OwnedTlsFields, verify_peer),
-            std::mem::offset_of!(OwnedTlsFields, allow_self_signed),
-            std::mem::offset_of!(OwnedTlsFields, protocols),
-            std::mem::offset_of!(OwnedTlsFields, create_flag),
-            std::mem::offset_of!(OwnedTlsFields, context),
-        ],
-    }
+#[expect(
+    clippy::not_unsafe_ptr_arg_deref,
+    reason = "a `Warn`, which owners call only with NUL-terminated text"
+)]
+pub extern "C" fn swr_v1_tls_warning(function: *const c_char, message: *const c_char) {
+    // SAFETY: the owner's callers pass NUL-terminated names.
+    let function = unsafe { CStr::from_ptr(function) };
+    // SAFETY: and NUL-terminated messages.
+    let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+    swoole_rs_corebase::log::warning(function, format_args!("{message}"));
+}
+/// The prepared owner an `SSLContext` begins with (its private `SSLContextOwner` base).
+///
+/// # Safety
+/// `context` is a live `SSLContext`.
+unsafe fn owner_of(context: *const OwnedTlsPrepared) -> *const OwnedTlsContext {
+    // SAFETY: as the caller promises.
+    unsafe { (*context).owner }
 }
 /// warn is a nonthrowing native logging leaf that outlives the shared owner.
 #[unsafe(no_mangle)]
@@ -303,12 +304,32 @@ pub unsafe extern "C" fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) 
     unsafe { *state.context_password.get() = retained_password };
     !ctx.is_null()
 }
+/// `bool SSLContext::create()`, which initializes OpenSSL first.
+///
+/// # Safety
+/// `context` is a live `SSLContext`, as for `swr_v1_tls_owner_create`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10SSLContext6createEv")
+)]
+#[must_use]
+pub unsafe extern "C" fn ssl_context_create(context: *const OwnedTlsPrepared) -> bool {
+    crate::swoole_ssl_init();
+    // SAFETY: as the caller promises.
+    let owner = unsafe { owner_of(context) };
+    // SAFETY: the context's live owner.
+    unsafe { swr_v1_tls_owner_create(owner) }
+}
 macro_rules! owned_method {
-    ($name:ident, $method:ident) => {
+    ($name:ident, $symbol:literal, $method:ident) => {
+        /// The `SSLContext` method; owner and borrowed OpenSSL context are synchronized.
+        ///
         /// # Safety
-        /// Owner and borrowed OpenSSL context are live and externally synchronized.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(owner: *const OwnedTlsContext) -> bool {
+        /// `context` is a live `SSLContext`.
+        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
+        pub unsafe extern "C" fn $name(context: *const OwnedTlsPrepared) -> bool {
+            // SAFETY: as the caller promises.
+            let owner = unsafe { owner_of(context) };
             // SAFETY: temporary raw views into the live, unchanged configuration.
             let config = unsafe { configuration(owner) };
             // SAFETY: borrow interior-mutable metadata, without an exclusive record reference.
@@ -321,14 +342,31 @@ macro_rules! owned_method {
         }
     };
 }
-owned_method!(swr_v1_tls_owner_set_capath, swr_v1_tls_set_capath);
-owned_method!(swr_v1_tls_owner_set_ciphers, swr_v1_tls_set_ciphers);
 owned_method!(
-    swr_v1_tls_owner_set_client_certificate,
+    ssl_context_set_capath,
+    "_ZNK6swoole10SSLContext10set_capathEv",
+    swr_v1_tls_set_capath
+);
+owned_method!(
+    ssl_context_set_ciphers,
+    "_ZNK6swoole10SSLContext11set_ciphersEv",
+    swr_v1_tls_set_ciphers
+);
+owned_method!(
+    ssl_context_set_client_certificate,
+    "_ZNK6swoole10SSLContext22set_client_certificateEv",
     swr_v1_tls_set_client_certificate
 );
-owned_method!(swr_v1_tls_owner_set_ecdh_curve, swr_v1_tls_set_ecdh_curve);
-owned_method!(swr_v1_tls_owner_set_dhparam, swr_v1_tls_set_dhparam);
+owned_method!(
+    ssl_context_set_ecdh_curve,
+    "_ZNK6swoole10SSLContext14set_ecdh_curveEv",
+    swr_v1_tls_set_ecdh_curve
+);
+owned_method!(
+    ssl_context_set_dhparam,
+    "_ZNK6swoole10SSLContext11set_dhparamEv",
+    swr_v1_tls_set_dhparam
+);
 /// Path access and assignment are one Rust operation. 1 access denied, otherwise
 /// `string_set`'s status; only cert(4), key(5) and client certificate(7) are accepted.
 /// # Safety

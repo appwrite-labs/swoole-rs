@@ -2,7 +2,13 @@
 #ifndef SWOOLE_RS_TLS_OWNER_H
 #define SWOOLE_RS_TLS_OWNER_H
 #include "swoole_rs_corebase_string_slot.h"
-#include "swoole_rs_tls.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <openssl/ssl.h>
+#if OPENSSL_VERSION_MAJOR < 3
+#error "OpenSSL 3 or later is required"
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,34 +22,32 @@ typedef struct {
   uint8_t create_flag;
   SSL_CTX *context;
 } swr_v1_tls_owner_fields;
+/* crates/tls/src/owned.rs asserts the same layout. */
+static_assert(sizeof(swr_v1_tls_owner_fields) == 32 &&
+                  offsetof(swr_v1_tls_owner_fields, allow_self_signed) == 11 &&
+                  offsetof(swr_v1_tls_owner_fields, protocols) == 12 &&
+                  offsetof(swr_v1_tls_owner_fields, create_flag) == 16 &&
+                  offsetof(swr_v1_tls_owner_fields, context) == 24,
+              "Rust OwnedTlsFields layout");
 typedef struct {
   const swr_v1_tls_owner *owner;
   swr_v1_tls_owner_fields *fields;
   const swr_v1_core_string *strings[11];
 } swr_v1_tls_owner_prepared;
-typedef struct {
-  size_t size, alignment, offsets[15];
-} swr_v1_tls_owner_layout_t;
-swr_v1_tls_owner_layout_t swr_v1_tls_owner_layout(void);
-void swr_v1_tls_info_log(void (*callback)(void));
+/* Logs "<function>(): <message>" at warning level. */
+void swr_v1_tls_warning(const char *function, const char *message);
 swr_v1_tls_owner_prepared swr_v1_tls_owner_new(void (*warn)(const char *,
                                                             const char *));
-const swr_v1_tls_owner *swr_v1_tls_owner_clone(const swr_v1_tls_owner *);
 void swr_v1_tls_owner_free(const swr_v1_tls_owner *);
 void swr_v1_tls_owner_bind(const swr_v1_tls_owner *, void *identity);
 void swr_v1_tls_owner_detach(const swr_v1_tls_owner *);
-bool swr_v1_tls_owner_create(const swr_v1_tls_owner *);
+/* status 0, -2 out of memory, or the failed string's status at index. */
 typedef struct {
   int32_t status;
   uint32_t index;
 } swr_v1_tls_owner_copy;
 swr_v1_tls_owner_copy swr_v1_tls_owner_assign(const swr_v1_tls_owner *,
                                               const swr_v1_tls_owner *);
-bool swr_v1_tls_owner_set_capath(const swr_v1_tls_owner *);
-bool swr_v1_tls_owner_set_ciphers(const swr_v1_tls_owner *);
-bool swr_v1_tls_owner_set_client_certificate(const swr_v1_tls_owner *);
-bool swr_v1_tls_owner_set_ecdh_curve(const swr_v1_tls_owner *);
-bool swr_v1_tls_owner_set_dhparam(const swr_v1_tls_owner *);
 int swr_v1_tls_owner_set_path(const swr_v1_tls_owner *, uint32_t, const char *,
                               size_t);
 struct swr_v1_socket;
