@@ -213,38 +213,6 @@ fn port_protocol<'a>(server: *mut Server, server_fd: c_int) -> &'a [u8] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// Apply `$server->set()`'s WebSocket keys to a port.
-/// # Safety
-/// `port` is a live `ListenPort` and `table` its settings array.
-#[unsafe(export_name = "_Z38php_swoole_server_set_websocket_optionPN6swoole10ListenPortEP11_zend_array")]
-pub unsafe extern "C" fn php_swoole_server_set_websocket_option(
-    port: *mut c_void,
-    table: *mut HashTable,
-) {
-    // SAFETY: per the caller.
-    let config = unsafe { swoole_rs_server::port_config::of(port) };
-    let mut frames = config.websocket_frames;
-    for (key, bit) in [
-        (&b"open_websocket_close_frame"[..], 1),
-        (b"open_websocket_ping_frame", 2),
-        (b"open_websocket_pong_frame", 4),
-    ] {
-        if let Some(on) = setting(table, key) {
-            frames = if on { frames | bit } else { frames & !bit };
-        }
-    }
-    config.websocket_frames = frames;
-    let key = b"websocket_subprotocol";
-    // SAFETY: the live settings table and the key's bytes.
-    let found = unsafe { zend_hash_str_find(table, key.as_ptr().cast(), key.len()) };
-    // SAFETY: a found entry is live.
-    if !found.is_null() && unsafe { type_of(found) } != IS_NULL {
-        // SAFETY: as above; the new reference is released on drop.
-        let protocol = Str(unsafe { get_string(found) });
-        config.websocket_protocol = Some(Box::new(protocol.bytes().to_vec()));
-    }
-}
-
 /// A boolean setting's value, when set and not null.
 pub(crate) fn setting(table: *mut HashTable, key: &[u8]) -> Option<bool> {
     // SAFETY: the live settings table and the key's bytes.

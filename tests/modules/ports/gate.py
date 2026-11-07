@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Integer/event differential and ordered protocol plan ABI contracts; not a PHP runtime gate."""
+"""Event catalog differential against the pinned definitions; not a PHP runtime gate."""
 import argparse
 import json
 from pathlib import Path
-import re
 import subprocess
 import sys
 import overlay
@@ -22,8 +21,7 @@ def main():
     enum=header[header.index('enum php_swoole_server_port_callback_type {'):];enum=enum[:enum.index('};')+2]
     catalog=php[php.index('struct ServerPortEvent {'):php.index('// clang-format on')]
     compare=native[native.index('static inline unsigned int swoole_strcaseeq('):];compare=compare[:compare.index('\n}')+2]
-    macros='\n'.join(line for line in native.splitlines() if re.match(r'#define SW_(MAX|MIN)\(',line))
-    reference=enum+'\n'+catalog+'\n'+compare+'\n'+macros+'\n';(folder/'reference.inc').write_text(reference)
+    reference=enum+'\n'+catalog+'\n'+compare+'\n';(folder/'reference.inc').write_text(reference)
     # The pinned reference against the hybrid build's Rust ABI.
     hybrid_source,hybrid_flags=hybrid_tree(a.archive)
     cmd=['c++','-std=c++17','-O1','-UNDEBUG',*hybrid_flags,'-I'+str(folder),str(Path(__file__).with_suffix('.cc')),str(a.archive.resolve()),'-lpthread','-o',str(folder/'gate')]

@@ -229,17 +229,17 @@ unsafe fn apply(serv: *mut c_void, id: u32, v: i64) {
 }
 
 /// The settings array and the Server being configured.
-struct Settings {
-    serv: *mut c_void,
-    vht: *mut zval,
+pub(crate) struct Settings {
+    pub(crate) serv: *mut c_void,
+    pub(crate) vht: *mut zval,
 }
 
 /// Stop: a bailout is pending (upstream never ran past it).
-struct Stop;
+pub(crate) struct Stop;
 
-type Step = Result<(), Stop>;
+pub(crate) type Step = Result<(), Stop>;
 
-fn checked() -> Step {
+pub(crate) fn checked() -> Step {
     if bailout::pending() {
         Err(Stop)
     } else {
@@ -249,7 +249,7 @@ fn checked() -> Step {
 
 impl Settings {
     /// `php_swoole_array_get_value(vht, key, ztmp)`: present and not null.
-    fn get(&self, key: &CStr) -> Option<*mut zval> {
+    pub(crate) fn get(&self, key: &CStr) -> Option<*mut zval> {
         // SAFETY: an array argument.
         let vht = unsafe { table(self.vht) };
         // SAFETY: a live table and a NUL-terminated key.
@@ -272,25 +272,25 @@ impl Settings {
         unsafe { apply(self.serv, id, value) };
     }
 
-    fn long(value: *mut zval) -> Result<i64, Stop> {
+    pub(crate) fn long(value: *mut zval) -> Result<i64, Stop> {
         // SAFETY: a live setting.
         let value = unsafe { get_long(value) };
         checked().map(|()| value)
     }
 
-    fn size(value: *mut zval) -> Result<i64, Stop> {
+    pub(crate) fn size(value: *mut zval) -> Result<i64, Stop> {
         // SAFETY: a live setting; C++'s `php_swoole_parse_to_size`.
         let value = unsafe { (host().parse_size)(value) };
         checked().map(|()| value)
     }
 
-    fn truth(value: *mut zval) -> i64 {
+    pub(crate) fn truth(value: *mut zval) -> i64 {
         // SAFETY: a live setting.
         i64::from(unsafe { zend_is_true(value) })
     }
 
     /// `zend::String(value)`, handed to `each` and released.
-    fn string<R>(value: *mut zval, each: impl FnOnce(&[u8]) -> R) -> Result<R, Stop> {
+    pub(crate) fn string<R>(value: *mut zval, each: impl FnOnce(&[u8]) -> R) -> Result<R, Stop> {
         // SAFETY: a live setting; an owned reference, released below.
         let string = unsafe { get_string(value) };
         // SAFETY: live until released.

@@ -759,6 +759,7 @@ dependencies = [
  "swoole-rs-ports",
  "swoole-rs-process",
  "swoole-rs-server",
+ "swoole-rs-tls",
  "swoole-rs-utilities",
  "swoole-rs-zend",
 ]

@@ -562,14 +562,16 @@ pub unsafe extern "C" fn swr_v1_tls_owner_socket_session(
     }
 }
 
-/// A text setting the clients' `SSLContext` setters (`set_ssl_*`) write, for
-/// `Swoole\Client`, `Coroutine\Client` and `Coroutine\Socket`.
+/// A text setting the `SSLContext` setters (`set_ssl_*`) write, for
+/// `Swoole\Client`, `Coroutine\Client`, `Coroutine\Socket` and `Server\Port`.
 #[derive(Clone, Copy)]
 pub enum Text {
     /// A readable file; a missing one is logged from `set_cert_file`.
     CertFile,
     /// As `CertFile`, from `set_key_file`.
     KeyFile,
+    /// As `CertFile`, from `set_client_cert_file`.
+    ClientCertFile,
     Passphrase,
     /// An empty name also turns the automatic one off.
     HostName,
@@ -577,6 +579,7 @@ pub enum Text {
     Capath,
     Ciphers,
     EcdhCurve,
+    DhParam,
 }
 
 /// A scalar setting, as [`Text`].
@@ -588,6 +591,7 @@ pub enum Value {
     AllowSelfSigned(bool),
     VerifyDepth(u8),
     Grease(u8),
+    PreferServerCiphers(bool),
 }
 
 /// `set_cert_file`/`set_key_file`: false, logged from `origin`, when the file
@@ -632,12 +636,17 @@ pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8])
         Text::CertFile => return unsafe { set_file(owner, 4, value, c"set_cert_file", "cert") },
         // SAFETY: as the caller promises.
         Text::KeyFile => return unsafe { set_file(owner, 5, value, c"set_key_file", "key") },
+        Text::ClientCertFile => {
+            // SAFETY: as the caller promises.
+            return unsafe { set_file(owner, 7, value, c"set_client_cert_file", "client cert") };
+        }
         Text::Passphrase => PASSPHRASE,
         Text::HostName => 8,
         Text::Cafile => 9,
         Text::Capath => 10,
         Text::Ciphers => 0,
         Text::EcdhCurve => 1,
+        Text::DhParam => 3,
     };
     // SAFETY: the caller lends the live owner.
     let state = unsafe { &*owner };
@@ -676,6 +685,7 @@ pub unsafe fn set_value(owner: *const OwnedTlsContext, value: Value) {
         Value::AllowSelfSigned(value) => fields.allow_self_signed = value.into(),
         Value::VerifyDepth(value) => fields.verify_depth = value,
         Value::Grease(value) => fields.grease = value,
+        Value::PreferServerCiphers(value) => fields.prefer_server_ciphers = value.into(),
     }
 }
 

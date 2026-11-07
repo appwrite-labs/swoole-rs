@@ -480,18 +480,12 @@ class Lanes(unittest.TestCase):
         self.assertIn('--reference', commands['abi'])
         self.assertNotIn('--startup-only', commands['abi'])
         self.assertIn('--sanitize', commands['buffer-posix-iovec'])
-        self.assertIn('--sanitize', commands['ports-flags'])
-        self.assertIn('--sanitize', commands['ports-packet-settings'])
-        self.assertIn('--sanitize', commands['ports-options'])
-        self.assertIn('--core', commands['ports-options'])
-        self.assertIn('--sanitize', commands['ports-tls-settings'])
-        self.assertIn('--core', commands['ports-tls-settings'])
+        self.assertIn('--sanitize', commands['ports-callback-property'])
         for family in ['logger', 'hash', 'inline', 'global-logger', 'redirect']:
             command = commands['utilities-' + family + '-originals']
             self.assertIn('--' + family + '-originals', command)
             self.assertTrue(any('selected-export/swoole.so' in arg for arg in command))
             self.assertNotEqual(command[command.index('--source-ref') + 1], 'HEAD')
-        self.assertIn('--core', commands['ports-flags'])
         self.assertLess(list(stdext).index('phphelpers-sdk'), list(stdext).index('phphelpers-facade-runtime'))
         self.assertNotIn('--prepare-only', stdext['phphelpers-facade-runtime'])
         self.assertEqual(stdext['phphelpers-facade-runtime'].count('--engine'), 2)
@@ -507,8 +501,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('tests/modules/buffer/string/test_gate.py', commands['string-originals'])
         self.assertIn('column-bytes', commands['phpcollections-column-bytes'])
         self.assertEqual(commands['phpcollections-column-bytes'].count('--engine'), 2)
-        self.assertIn('--core', commands['ports-flags'])
-        self.assertIn('--sanitize', commands['ports-flags'])
         self.assertIn('--source-ref', commands['utilities-public-storage'])
         self.assertIn('--build-manifest', commands['utilities-public-storage'])
         self.assertIn('--archive', commands['utilities-public-storage'])
@@ -520,7 +512,7 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('httpbindings-php', commands)
         self.assertIn('--build-manifest', commands['phpcollections-runtime'])
         self.assertIn('--archive', commands['phpcollections-runtime'])
-        for phase in ['ports-flags']:
+        for phase in ['ports-callback-property']:
             self.assertIn('--core', commands[phase])
             self.assertIn('--archive', commands[phase])
             self.assertIn('--sanitize', commands[phase])

@@ -1,6 +1,10 @@
 //! `Swoole\Server\Port`: registration, objects and every method. C++ keeps the
 //! `ListenPort` and Server these configure and reaches them for Rust through
 //! the host table (`native/ports/swoole_rs_phpserver.h`).
+use crate::{
+    port_settings,
+    settings::{Settings, Stop},
+};
 use std::{
     ffi::{c_char, c_int, c_void},
     mem::MaybeUninit,
@@ -12,12 +16,14 @@ use swoole_rs_ports::{
     swr_v1_ports_callback_hook, swr_v1_ports_callback_property, swr_v1_ports_class_property,
     swr_v1_ports_event,
 };
+use swoole_rs_server::port_config;
+use swoole_rs_tls::OwnedTlsContext;
 use swoole_rs_zend::{
     Call, Class, Object, bailout,
     string::bytes,
     sys::{
         IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        swr_zend_string_release, swr_zval_copy, swr_zval_get_string, zend_array, zend_class_entry,
+        swr_zend_string_release, swr_zval_copy, swr_zval_get_string, zend_class_entry,
         zend_declare_property_bool, zend_declare_property_long, zend_declare_property_null,
         zend_object, zend_object_handlers, zend_read_property, zend_update_property, zval,
     },
@@ -55,17 +61,21 @@ const PROPERTY_BOOL: u32 = 3;
 #[repr(C)]
 pub struct PortHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
-    length_slot: unsafe extern "C" fn(*mut c_void) -> *mut *mut c_void,
     started: unsafe extern "C" fn(*mut c_void) -> bool,
     warn: unsafe extern "C" fn(c_int, *const c_char),
-    settings: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut zend_array) -> bool,
     socket: unsafe extern "C" fn(*mut c_void, *mut zval),
+    pub(crate) ssl_owner: unsafe extern "C" fn(*mut c_void) -> *const OwnedTlsContext,
+    pub(crate) sni_context:
+        unsafe extern "C" fn(*mut c_void, *mut *const OwnedTlsContext) -> *mut c_void,
+    pub(crate) sni_add:
+        unsafe extern "C" fn(*mut c_void, *const c_char, usize, *mut c_void) -> bool,
+    pub(crate) ssl_init: unsafe extern "C" fn(*mut c_void) -> bool,
 }
 
 static HOST: AtomicPtr<PortHost> = AtomicPtr::new(ptr::null_mut());
 pub(crate) static PORT: Class = Class::new();
 
-fn host() -> &'static PortHost {
+pub(crate) fn host() -> &'static PortHost {
     // SAFETY: MINIT stores C++'s static table before any object or method exists.
     unsafe { &*HOST.load(Ordering::Acquire) }
 }
@@ -131,10 +141,12 @@ pub unsafe extern "C" fn swr_v1_phpserver_port_deref(object: *mut zend_object) {
         data.property.serv = ptr::null_mut();
     }
     if !data.port.is_null() {
-        // SAFETY: a bound port; C++ hands out its length callable's slot.
-        let slot = unsafe { (host().length_slot)(data.port) };
-        // SAFETY: the slot lives in the ListenPort, which outlives this call.
-        free_callable(unsafe { &mut *slot });
+        // SAFETY: a bound port, which outlives this call.
+        free_callable(
+            &mut unsafe { port_config::of(data.port) }
+                .protocol
+                .private_data_1,
+        );
         data.port = ptr::null_mut();
     }
 }
@@ -288,7 +300,6 @@ fn on(call: &Call) {
         return call.set_bool(false);
     }
     *slot = callable;
-    #[cfg(feature = "server")]
     crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event.index));
     call.set_bool(true);
 }
@@ -384,14 +395,28 @@ fn set(call: &Call) {
     if data.port.is_null() || data.property.serv.is_null() {
         invalid(call);
     }
-    let property = (&raw mut data.property).cast::<c_void>();
-    // SAFETY: an array argument.
-    let table = unsafe { swoole_rs_zend::value::table(settings) };
-    // SAFETY: a bound port, its property and the settings array.
-    if !unsafe { (host().settings)(data.port, property, table) } {
+    if apply_settings(data.port, data.property.serv, settings).is_err() {
         return call.set_bool(false);
     }
     bailout::raise(finish(call, settings, &mut data.property));
+}
+
+/// The `ListenPort` and TLS options of `set()`.
+fn apply_settings(port: *mut c_void, serv: *mut c_void, vht: *mut zval) -> Result<(), Stop> {
+    let source = port_settings::Zend {
+        settings: Settings { serv, vht },
+        port,
+    };
+    // SAFETY: a bound port; set() is its only user while it runs.
+    let config = unsafe { port_config::of(port) };
+    port_settings::apply(&source, config)?;
+    if config.ssl == 0 {
+        return Ok(());
+    }
+    let dgram = port_settings::is_dgram(config.r#type);
+    // SAFETY: an SSL port.
+    let owner = unsafe { (host().ssl_owner)(port) };
+    port_settings::tls(&source, owner, dgram)
 }
 
 swoole_rs_zend::handlers! {

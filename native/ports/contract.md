@@ -37,14 +37,6 @@ including for contradictory flags.
 `swr_v1_port_config_new` gives the constructor's protocol defaults; the inline
 C++ constructor stores the server.
 
-## Integer normalization
-
-`swr_v1_ports_number(kind, value)` implements five modes used by `Port::set`:
-`SWR_PORTS_U16`, `SWR_PORTS_BUFFER` (positive signed32), `SWR_PORTS_U32`,
-`SWR_PORTS_I32`, `SWR_PORTS_U8`. Unsupported kind returns 0. Zend conversion and
-option lookup order stay native. `max_idle_time` (`SW_MAX` on a double) stays
-native: Rust candidates differed from the C++ reference for a signaling NaN.
-
 ## Event catalog and callbacks
 
 One immutable 12-event catalog replaces native event metadata. The native callback
@@ -78,43 +70,14 @@ the port keeps pointing at the freed socket, as upstream's does. Known: on macOS
 returns `ENOPROTOOPT` for both native and Rust; import of an already-listening
 descriptor is untested.
 
-## `Port::set` helpers
+## `Port::set`
 
-- `swr_v1_ports_flag_setting(kind, value, present)` returns a 52-byte plan with at
-  most 2 writes (field IDs 9..19). Owns truth normalization, missing NODELAY = true,
-  and the implications EOF-split -> EOF, WebSocket -> HTTP, HTTP2 -> HTTP.
-- `swr_v1_ports_buffer_setting(value)` returns `{u32 count, i32 first, i32 last}`:
-  the I32-clamped store, followed by `INT_MAX` when nonpositive, in that order.
-- Packet preparation returns `SwrPortsPacketSetting {u32 value, u32 status, size_t copy_len}`:
-  - `packet_eof(length, capacity)`: status 1 empty (after native u8 publication),
-    2 over capacity, 0 bounded copy. Rejecting an over-capacity raw copy is a
-    deliberate safety correction over the original undefined copy.
-  - `packet_width(width)`: narrows the `swoole_type_size` result; status 1 on zero.
-  - `packet_offset(value, limit)`: U16 clamp plus IPC bound; status 1 too large.
-  Native field publication precedes the native diagnostic in each case.
-- `swr_v1_ports_option(index)` returns a 56-byte `SwrPortsOption` from an immutable
-  31-entry catalog: key/alias spans plus action/target/converter/number_kind/policy/
-  reserved (0). Out-of-range index returns all-zero (`SWR_PORTS_OPTION_END`). Native
-  code interprets one instruction at a time: Zend lookup (alias only when primary is
-  missing/null), conversion, Rust scalar plan, then field publication or a native
-  special effect. The catalog owns option order, converter selection, missing NODELAY,
-  the lazy body-start alias and WebSocket helper position.
-
-## TLS frontend
-
-No crypto behavior moves to Rust.
-
-- `swr_v1_ports_tls_option(group, index)`: group 0 = 2 context file keys,
-  group 1 = 12 Port method keys before SNI. Missing/null options skip.
-- `swr_v1_ports_tls_value(target, raw)`: compression inversion, boolean arguments,
-  raw protocol bits and the U8 verify-depth clamp.
-- `swr_v1_ports_sni_plan(stage, has_key, is_array)` returns 24 bytes
-  `{key span, u32 status, reserved 0}`. Stage 0 returns the `ssl_sni_certs` key;
-  stage 1 status 1 for a non-array mapping; stage 2 status 2 missing string key
-  (checked first), 3 item not an array. Other inputs return status 0, no span.
-
-Native iteration, context duplication, file checks, installation, diagnostics and
-certificate matching stay native.
+`Swoole\Server\Port::set()` is Rust (`crates/phpserver/src/port_settings.rs`): every
+option's lookup, conversion, bound and order, written into the Rust-owned
+`PortConfig` and, on an SSL port, the context's Rust TLS owner. An over-long
+`package_eof` is rejected rather than copied. Native code keeps the SNI contexts
+(`dup_ssl_context`, `ssl_add_sni_cert`) and `ssl_init`, which `set()` reaches through
+the port host table (`swoole_rs_phpserver.h`).
 
 ## Class properties: `swr_v1_ports_class_property(index)`
 

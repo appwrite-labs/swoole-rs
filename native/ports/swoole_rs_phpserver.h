@@ -6,6 +6,7 @@
  * zim_swoole_server_port_* exports. The object is laid out as
  * `struct { ListenPort *port; ServerPortProperty property; zend_object std; }`. */
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
@@ -13,22 +14,25 @@ extern "C" {
 struct _zend_class_entry;
 struct _zend_object;
 struct _zval_struct;
-struct _zend_array;
 
 typedef struct {
     /* E_ERROR "Invalid instance of %s" (does not return). */
     void (*invalid)(struct _zend_object *object);
-    /* &port->protocol.private_data_1: the package_length_func callable. */
-    void **(*length_slot)(void *port);
     /* !serv->is_worker_thread() && serv->is_started() */
     bool (*started)(void *server);
     /* 0: "can't register event callback function after server started";
      * 1: "unknown event types[%s]" with `name`. */
     void (*warn)(int kind, const char *name);
-    /* The ListenPort settings and TLS block of set(); false: return false. */
-    bool (*settings)(void *port, void *property, struct _zend_array *settings);
     /* getSocket() of a bound port. */
     void (*socket)(void *port, struct _zval_struct *return_value);
+    /* An SSL port's context's Rust owner (SSLContext::handle()). */
+    const void *(*ssl_owner)(void *port);
+    /* dup_ssl_context(): a new SNI context, and its owner in `owner`. */
+    void *(*sni_context)(void *port, const void **owner);
+    /* ssl_add_sni_cert(name, context), consuming the context; a null name only releases it. */
+    bool (*sni_add)(void *port, const char *name, size_t length, void *context);
+    /* ssl_init() */
+    bool (*ssl_init)(void *port);
 } swr_v1_phpserver_port_host;
 
 /* php_swoole_server_port_set_ptr and _get_property: the object's ListenPort and ServerPortProperty. */

@@ -64,7 +64,7 @@ swoole-rs-phphttp = { path = "../phphttp" }
 swoole-rs-http2 = { path = "../http2" }
 swoole-rs-phphttp2 = { path = "../phphttp2" }
 swoole-rs-ports = { path = "../ports", features = ["upstream-symbols"] }
-swoole-rs-phpserver = { path = "../phpserver", features = ["server", "port"] }
+swoole-rs-phpserver = { path = "../phpserver", features = ["server"] }
 swoole-rs-phphelpers = { path = "../phphelpers" }
 swoole-rs-phpstdext = { path = "../phpstdext" }
 swoole-rs-phpcollections = { path = "../phpcollections" }
