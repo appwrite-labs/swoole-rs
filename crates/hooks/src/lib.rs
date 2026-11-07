@@ -15,6 +15,7 @@ pub mod co_io;
 pub mod co_socket;
 pub mod connect;
 pub mod dns_cache;
+pub mod exec;
 pub mod fd_control;
 pub mod file_io;
 pub mod flock;

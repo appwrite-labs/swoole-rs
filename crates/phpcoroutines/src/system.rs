@@ -6,8 +6,10 @@
 use crate::host;
 use std::{
     ffi::{CStr, c_char, c_int, c_long, c_void},
-    mem, slice,
+    mem, ptr, slice,
 };
+use swoole_rs_buffer::string;
+use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_zend::{
     Call, Class, E_WARNING,
@@ -58,13 +60,6 @@ unsafe extern "C" {
         protocol: c_long,
         service: *const c_char,
         timeout: f64,
-        put: Put,
-        out: *mut c_void,
-    ) -> bool;
-    fn swr_v1_system_exec(
-        command: *const c_char,
-        errors: bool,
-        status: *mut c_int,
         put: Put,
         out: *mut c_void,
     ) -> bool;
@@ -400,19 +395,29 @@ fn exec(call: &Call) {
         return;
     };
     let mut status = 0;
-    // SAFETY: all-zero is IS_UNDEF; C++ puts the output string into it.
-    let mut output: zval = unsafe { mem::zeroed() };
-    let out = (&raw mut output).cast();
-    // SAFETY: a NUL-terminated command and writable outputs.
-    if !unsafe {
-        swr_v1_system_exec(
-            command.as_ptr().cast(),
-            errors,
-            &raw mut status,
-            put_string,
-            out,
-        )
-    } {
+    // SAFETY: a fresh String, freed below.
+    let buffer = unsafe { string::new_sized_string(1024, ptr::null()) };
+    // SAFETY: live until the delete below, and only this frame's.
+    let output = unsafe { &mut *buffer };
+    // SAFETY: a zend string is NUL-terminated.
+    let command = unsafe { CStr::from_ptr(command.as_ptr().cast()) };
+    // SAFETY: in a method call, which raises the fatal error outside a coroutine.
+    let done = unsafe { exec_into(command, errors, output, &mut status) };
+    // SAFETY: all-zero is IS_UNDEF.
+    let mut output_value: zval = unsafe { mem::zeroed() };
+    if done {
+        // SAFETY: the String's bytes, copied into an empty slot.
+        unsafe {
+            put_string(
+                (&raw mut output_value).cast(),
+                output.str.cast(),
+                output.length,
+            );
+        };
+    }
+    // SAFETY: from new_sized_string, not used again.
+    unsafe { string::delete_string(buffer) };
+    if !done {
         call.set_bool(false);
         return;
     }
@@ -425,7 +430,7 @@ fn exec(call: &Call) {
             call.return_value(),
             c"output".as_ptr(),
             6,
-            &raw mut output,
+            &raw mut output_value,
         );
     }
 }
