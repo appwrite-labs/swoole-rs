@@ -94,50 +94,17 @@ typedef struct { SwrPortsSpan key; uint32_t status, reserved; } SwrPortsSniPlan;
  * Native iteration/duplication/file/installation/matching execute outside Rust. */
 SwrPortsSniPlan swr_v1_ports_sni_plan(uint32_t stage, uint32_t has_key, uint32_t is_array);
 int64_t swr_v1_ports_number(uint32_t kind, int64_t value);
-typedef struct {
-    uint32_t object_id, length_type, length_size, body_offset, max_length, eof_length;
-} SwrPortsDefaults;
-/* Native build maximum and bounded EOF literal length; native copy/publication after return. */
-SwrPortsDefaults swr_v1_ports_defaults(uint32_t max_length, uint32_t eof_length);
-enum { SWR_PORTS_EOF_SETTINGS, SWR_PORTS_LENGTH_SETTINGS };
-typedef struct {
-    uint32_t kind, find_from_right;
-    size_t length, capacity;
-    uint32_t length_type;
-    int32_t length_size;
-    uint32_t length_offset, body_offset;
-} SwrPortsFramingInput;
-typedef struct {
-    size_t length;
-    uint32_t enabled, split, length_type, length_size, length_offset, body_offset;
-} SwrPortsFramingSettings;
-/* Native buffer/type-size facts in; initialized scalar field plan out. No pointers. */
-SwrPortsFramingSettings swr_v1_ports_framing_settings(SwrPortsFramingInput);
-/* Fixed network-u32 stream framing, native default-length callback binding. */
-SwrPortsFramingSettings swr_v1_ports_stream_settings(void);
 uint32_t swr_v1_ports_protocol(uint32_t flags, uint8_t length_type);
 const char *swr_v1_ports_protocol_name(uint32_t flags);
-/* The SWR_PORTS_* protocol flags of a ListenPort's settings, with SWR_PORTS_DGRAM. */
-uint32_t swr_v1_ports_flags(void *port);
-typedef struct {
-    uint32_t flags, length_type, eof_len, eof_max, http2_header_size, websocket_header_size, mqtt_header_size;
-} SwrPortsProtocolInput;
 typedef struct { uint32_t kind, value; } SwrPortsProtocolAction;
 typedef struct { uint32_t count; SwrPortsProtocolAction actions[6]; } SwrPortsProtocolPlan;
-enum { SWR_PORTS_SET_EOF_LEN=1, SWR_PORTS_SET_READ, SWR_PORTS_SET_PACKAGE,
-       SWR_PORTS_SET_LENGTH_FN, SWR_PORTS_SET_LENGTH_SIZE_FN, SWR_PORTS_SET_LENGTH_SIZE,
-       SWR_PORTS_SET_LENGTH_OFFSET, SWR_PORTS_SET_BODY_OFFSET,
-       SWR_PORTS_SET_NODELAY, SWR_PORTS_SET_KEEPALIVE, SWR_PORTS_SET_CHECK_EOF,
+enum { SWR_PORTS_SET_NODELAY=9, SWR_PORTS_SET_KEEPALIVE, SWR_PORTS_SET_CHECK_EOF,
        SWR_PORTS_SET_SPLIT_EOF, SWR_PORTS_SET_HTTP_FLAG, SWR_PORTS_SET_WEBSOCKET_FLAG,
        SWR_PORTS_SET_HTTP2_FLAG, SWR_PORTS_SET_MQTT_FLAG, SWR_PORTS_SET_REDIS_FLAG,
        SWR_PORTS_SET_FASTOPEN, SWR_PORTS_SET_CHECK_LENGTH };
 /* One native PHP conversion's scalar value/presence; no pointer or copied Port state.
  * At most two ordered writes, remaining actions zero. Missing NODELAY defaults true. */
 SwrPortsProtocolPlan swr_v1_ports_flag_setting(uint32_t kind, int64_t value, uint32_t present);
-/* Read bindings:1 EOF,2 length,3 HTTP,4 Redis,5 raw.
- * Package bindings:1 task,2 HTTP frame,3 websocket frame.
- * Length bindings:1 default,2 HTTP,3 HTTP2,4 websocket,5 MQTT. No address crosses Rust. */
-SwrPortsProtocolPlan swr_v1_ports_protocol_plan(SwrPortsProtocolInput);
 
 typedef struct { SwrPortsSpan name; int64_t value; uint32_t kind, is_private; } SwrPortsProperty;
 enum { SWR_PORTS_PROPERTY_END, SWR_PORTS_PROPERTY_NULL, SWR_PORTS_PROPERTY_LONG, SWR_PORTS_PROPERTY_BOOL };

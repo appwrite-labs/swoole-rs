@@ -29,22 +29,6 @@ static void event(const std::string &name,bool folded) {
 }
 int main() {
     static_assert(sizeof(SwrPortsSpan)==16&&sizeof(SwrPortsEvent)==24,"ports 64-bit span ABI");
-    static_assert(sizeof(SwrPortsProtocolInput)==28&&sizeof(SwrPortsProtocolAction)==8&&sizeof(SwrPortsProtocolPlan)==52,"protocol plan C ABI");
-    static_assert(offsetof(SwrPortsProtocolPlan,actions)==4,"protocol action alignment");
-    for(uint32_t flags=0;flags<512;flags++)for(uint32_t type:{0u,1u,255u})for(uint32_t eof:{0u,1u,8u,9u,255u}) {
-        auto plan=swr_v1_ports_protocol_plan({flags,type,eof,8,9,2,4});
-        check(plan.count<=6);
-        check((plan.count==0)==bool((flags&SWR_PORTS_DGRAM)&&!(flags&SWR_PORTS_DTLS)));
-        for(uint32_t n=0;n<6;n++) {
-            auto action=plan.actions[n];
-            if(n>=plan.count){check(action.kind==0&&action.value==0);continue;}
-            check(action.kind>=SWR_PORTS_SET_EOF_LEN&&action.kind<=SWR_PORTS_SET_BODY_OFFSET);
-            if(action.kind==SWR_PORTS_SET_READ)check(action.value>=1&&action.value<=5);
-            if(action.kind==SWR_PORTS_SET_PACKAGE)check(action.value>=1&&action.value<=3);
-            if(action.kind==SWR_PORTS_SET_LENGTH_FN)check(action.value>=1&&action.value<=5);
-            if(action.kind==SWR_PORTS_SET_LENGTH_SIZE_FN)check(action.value==0);
-        }
-    }
     for(uint64_t n=0;n<50000;n++) {
         int64_t value;auto raw=random_word();memcpy(&value,&raw,8);
         if(n<10)value=std::initializer_list<int64_t>{INT64_MIN,INT64_MAX,INT32_MIN,INT32_MAX,-1,0,1,255,65535,UINT32_MAX}.begin()[n];

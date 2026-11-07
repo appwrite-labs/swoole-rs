@@ -28,96 +28,6 @@ const _: () = {
     );
 };
 
-#[repr(C)]
-pub struct PortsDefaults {
-    pub object_id: u32,
-    pub length_type: u32,
-    pub length_size: u32,
-    pub body_offset: u32,
-    pub max_length: u32,
-    pub eof_length: u32,
-}
-
-/// Constructor scalar defaults; native literal bytes and server pointer stay native.
-#[unsafe(no_mangle)]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "native protocol-field narrowing, preserved deliberately"
-)]
-pub extern "C" fn swr_v1_ports_defaults(max_length: u32, eof_length: u32) -> PortsDefaults {
-    PortsDefaults {
-        object_id: 0,
-        length_type: u32::from(b'N'),
-        length_size: 4,
-        body_offset: 4,
-        max_length,
-        eof_length: u32::from(eof_length as u8),
-    }
-}
-
-/// Fixed network-u32 stream framing; callback addresses never cross this ABI.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ports_stream_settings() -> PortsFramingSettings {
-    PortsFramingSettings {
-        enabled: 1,
-        length_type: u32::from(b'N'),
-        length_size: 4,
-        body_offset: 4,
-        ..Default::default()
-    }
-}
-
-#[repr(C)]
-pub struct PortsFramingInput {
-    pub kind: u32,
-    pub find_from_right: u32,
-    pub length: usize,
-    pub capacity: usize,
-    pub length_type: u32,
-    pub length_size: i32,
-    pub length_offset: u32,
-    pub body_offset: u32,
-}
-
-#[repr(C)]
-#[derive(Default)]
-pub struct PortsFramingSettings {
-    pub length: usize,
-    pub enabled: u32,
-    pub split: u32,
-    pub length_type: u32,
-    pub length_size: u32,
-    pub length_offset: u32,
-    pub body_offset: u32,
-}
-
-/// EOF bounds/direction and native protocol-field narrowing, with no byte access.
-#[unsafe(no_mangle)]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "native protocol-field narrowing, preserved deliberately"
-)]
-pub extern "C" fn swr_v1_ports_framing_settings(input: PortsFramingInput) -> PortsFramingSettings {
-    match input.kind {
-        0 => PortsFramingSettings {
-            length: input.length.min(input.capacity),
-            enabled: 1,
-            split: u32::from(input.find_from_right == 0),
-            ..Default::default()
-        },
-        1 => PortsFramingSettings {
-            enabled: 1,
-            length_type: u32::from(input.length_type as u8),
-            length_size: u32::from(input.length_size as u8),
-            length_offset: u32::from(input.length_offset as u16),
-            body_offset: u32::from(input.body_offset as u16),
-            ..Default::default()
-        },
-        _ => PortsFramingSettings::default(),
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_ports_number(kind: u32, value: i64) -> i64 {
     match kind {
@@ -157,17 +67,6 @@ pub extern "C" fn swr_v1_ports_protocol(flags: u32, length_type: u8) -> u32 {
     }
 }
 
-/// Native layout facts only; no object, callback or pointer crosses this plan.
-#[repr(C)]
-pub struct PortsProtocolInput {
-    pub flags: u32,
-    pub length_type: u32,
-    pub eof_len: u32,
-    pub eof_max: u32,
-    pub http2_header_size: u32,
-    pub websocket_header_size: u32,
-    pub mqtt_header_size: u32,
-}
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct PortsProtocolAction {
@@ -182,15 +81,8 @@ pub struct PortsProtocolPlan {
 #[derive(Clone, Copy)]
 #[repr(u32)]
 enum ProtocolField {
-    EofLength = 1,
-    Reader,
-    Package,
-    LengthFunction,
-    LengthSizeFunction,
-    LengthSize,
-    LengthOffset,
-    BodyOffset,
-    NoDelay,
+    /// `SWR_PORTS_SET_NODELAY`.
+    NoDelay = 9,
     Keepalive,
     CheckEof,
     SplitEof,
@@ -639,69 +531,6 @@ pub extern "C" fn swr_v1_ports_flag_setting(
         n if n == FastOpen as u32 => protocol_plan([binding(FastOpen, value)]),
         n if n == CheckLength as u32 => protocol_plan([binding(CheckLength, value)]),
         _ => protocol_plan([]),
-    }
-}
-
-/// Ordered native publications. Callback IDs marshal existing native addresses.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ports_protocol_plan(input: PortsProtocolInput) -> PortsProtocolPlan {
-    use ProtocolField::{
-        BodyOffset, EofLength, LengthFunction, LengthOffset, LengthSize, LengthSizeFunction,
-        Package, Reader,
-    };
-    match swr_v1_ports_protocol(input.flags, u8::from(input.length_type != 0)) {
-        0 => protocol_plan([]),
-        1 if input.eof_len > input.eof_max => protocol_plan([
-            binding(EofLength, input.eof_max),
-            binding(Package, 1),
-            binding(Reader, 1),
-        ]),
-        1 => protocol_plan([binding(Package, 1), binding(Reader, 1)]),
-        2 => protocol_plan([
-            binding(LengthFunction, 1),
-            binding(Package, 1),
-            binding(Reader, 2),
-        ]),
-        10 => protocol_plan([binding(Package, 1), binding(Reader, 2)]),
-        3 => protocol_plan([
-            binding(LengthOffset, 0),
-            binding(BodyOffset, 0),
-            binding(Reader, 3),
-        ]),
-        4 => protocol_plan([
-            binding(LengthSize, input.http2_header_size),
-            binding(LengthFunction, 3),
-            binding(Package, 1),
-            binding(LengthOffset, 0),
-            binding(BodyOffset, 0),
-            binding(Reader, 3),
-        ]),
-        5 => protocol_plan([
-            binding(LengthSize, input.websocket_header_size),
-            binding(LengthFunction, 4),
-            binding(Package, 3),
-            binding(LengthOffset, 0),
-            binding(BodyOffset, 0),
-            binding(Reader, 3),
-        ]),
-        6 => protocol_plan([
-            binding(LengthFunction, 2),
-            binding(LengthSizeFunction, 0),
-            binding(Package, 2),
-            binding(LengthOffset, 0),
-            binding(BodyOffset, 0),
-            binding(Reader, 3),
-        ]),
-        7 => protocol_plan([
-            binding(LengthSize, input.mqtt_header_size),
-            binding(LengthOffset, 1),
-            binding(BodyOffset, 0),
-            binding(LengthFunction, 5),
-            binding(Package, 1),
-            binding(Reader, 2),
-        ]),
-        8 => protocol_plan([binding(Package, 1), binding(Reader, 4)]),
-        _ => protocol_plan([binding(Reader, 5)]),
     }
 }
 
