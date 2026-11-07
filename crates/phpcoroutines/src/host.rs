@@ -54,7 +54,7 @@ unsafe extern "C" {
         f: unsafe extern "C" fn(c_long),
     ) -> *mut c_void;
     fn swr_cpp_phpcoroutines_set_exit_condition(set: u8);
-    // src/coroutine/base.cc, src/wrapper/timer.cc, crates/reactor and crates/process.
+    // src/coroutine/base.cc, crates/timer, crates/reactor and crates/process.
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: Co, timeout: f64) -> bool;
     #[link_name = "_ZN6swoole9Coroutine6cancelEv"]

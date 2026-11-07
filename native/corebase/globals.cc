@@ -22,6 +22,10 @@ std::mutex sw_thread_lock;
 static_assert(offsetof(swoole::ThreadGlobal, main_thread) == 3 && offsetof(swoole::ThreadGlobal, buffer_stack) == 8 &&
                   offsetof(swoole::ThreadGlobal, async_threads) == 40,
               "the SwooleTG prefix crates/corebase/src/lifecycle.rs reads");
+// SwooleTG.timer, for crates/timer/src/wrapper.rs: Rust can't name a C++ thread_local.
+extern "C" swoole::Timer **swr_v1_core_timer_slot() {
+    return &SwooleTG.timer;
+}
 static_assert(sizeof(swoole::DataHead) == 40 && offsetof(swoole::DataHead, time) == 32, "Rust DataHead layout");
 
 // The log macros Rust emits through as an upstream function (crates/corebase/src/log.rs).

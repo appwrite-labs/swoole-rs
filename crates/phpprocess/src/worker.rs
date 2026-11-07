@@ -28,7 +28,7 @@ const CLOSE_WRITE: i64 = 4;
 const TIMEOUT_ALL: c_int = 15;
 
 // SAFETY: the C++ runtime's allocator, and src/wrapper/event.cc's and
-// src/wrapper/timer.cc's and crates/ossupport's functions, under their upstream symbols.
+// crates/timer's and crates/ossupport's functions, under their upstream symbols.
 unsafe extern "C" {
     #[link_name = "_Znwm"]
     fn operator_new(size: usize) -> *mut c_void;

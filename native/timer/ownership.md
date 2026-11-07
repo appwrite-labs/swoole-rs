@@ -8,7 +8,7 @@ Frozen queue ABI: `docs/timer-abi-v1.md`. Module-local clock/backend helpers:
 | 0001-timer-header | `include/swoole_timer.h` |
 | 0002-timer-body | `src/core/timer.cc` |
 | 0003-timer-php | `ext-src/swoole_timer.cc` |
-| 0004-timer-wrapper | `src/wrapper/timer.cc` |
+| 20261107T031810-timer-src-wrapper-… | deletes `src/wrapper/timer.cc` |
 | 0005-timer-clock | `src/os/timer.cc` |
 
 ## Queue
@@ -33,7 +33,7 @@ What Native keeps:
 | `select` | Call Rust begin/next/complete/end around callback execution; on a C++ exception, clean up selection while preserving the primary exception. |
 | header `update`/`delay` | Read caller-mutated metadata or the clock; refresh the token from Rust. |
 | header get/count/round/get_ids | Copy Rust views/stats/IDs; typed get filters by token type. |
-| `src/wrapper/timer.cc` | Thread-local timer access and lazy creation, unit conversion, warnings; clear removes by ID. |
+| `crates/timer/src/wrapper.rs` | The `swoole_timer_*` API (`src/wrapper/timer.cc` is deleted): `SwooleTG.timer` through `swr_v1_core_timer_slot`, lazy creation, unit conversion, warnings; clear removes by ID. Reads the `Timer`/`TimerNode` fields `timer.cc`'s `apply` asserts. |
 | `ext-src/swoole_timer.cc` clear-all, list | Snapshot IDs, resolve each again, filter PHP tokens; run destructors or build Zend values after Rust returns. |
 | PHP after/tick/info/stats/clear | Zend parsing/values, callable persistence, callback/destructor attachment. |
 
