@@ -1,5 +1,6 @@
 #include "shim.h"
 #include "shim_server.h"
+#include "main/php_globals.h"
 #include "ext/standard/php_array.h"
 #include "ext/standard/php_var.h"
 #include "zend_smart_str.h"
@@ -69,4 +70,14 @@ void swr_zend_stack_restore(void *const *saved) {
 
 bool swr_zend_mkdir_recursive(const char *path) {
     return php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS, NULL);
+}
+
+bool swr_zend_last_fatal_error(const char **message, const char **file, int *line) {
+    if (!PG(last_error_message) || !(PG(last_error_type) & E_FATAL_ERRORS)) {
+        return false;
+    }
+    *message = ZSTR_VAL(PG(last_error_message));
+    *file = PG(last_error_file) ? ZSTR_VAL(PG(last_error_file)) : "-";
+    *line = PG(last_error_lineno);
+    return true;
 }

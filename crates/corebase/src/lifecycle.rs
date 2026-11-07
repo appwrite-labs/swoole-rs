@@ -49,6 +49,18 @@ pub fn thread_reactor() -> *mut c_void {
     })
 }
 
+/// `swoole_get_thread_type()`: `SwooleTG.type`, 0 before `swoole_init`.
+#[must_use]
+pub fn thread_kind() -> u8 {
+    native::host().map_or(0, |host| read(host, |thread| thread.kind))
+}
+
+/// `SwooleTG.async_threads != nullptr`.
+#[must_use]
+pub fn thread_async_threads() -> bool {
+    native::host().is_some_and(|host| read(host, |thread| !thread.async_threads.is_null()))
+}
+
 /// `void swoole_thread_init(bool main_thread)`.
 #[cfg_attr(
     feature = "upstream-symbols",

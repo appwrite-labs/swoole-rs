@@ -2,7 +2,7 @@
 //! upstream's ZPP block and checks, then works on the object's `Worker` through
 //! the host table.
 use crate::{
-    host::{Host, host, install},
+    host,
     report::{INVALID_PARAMS, cli, errno, fatal, notice, set_errno, set_last_error, sys},
     signal::signal,
     worker::{self, WorkerView},
@@ -103,8 +103,7 @@ fn this<'a>(call: &Call) -> &'a mut Process {
 /// `php_swoole_process_get_and_check_worker`: fatal without a constructed worker.
 fn checked(process: &Process) -> *mut c_void {
     if process.worker.is_null() {
-        // SAFETY: C++ logs the fatal error and exits.
-        unsafe { (host().unconstructed)() };
+        host::unconstructed();
     }
     process.worker
 }
@@ -207,16 +206,16 @@ method_table! {
     ];
 }
 
-/// MINIT: register `Swoole\Process`, its constants and properties, and (when
-/// pcntl is absent) the signal constants, as `php_swoole_process_minit` did.
-/// # Safety
-/// Called once, at MINIT, with a host table that lives for the process.
+/// `swoole_process_ce`, which crates/phpevents and the Server read.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpprocess_minit(
-    table: *const Host,
-    module: c_int,
-) -> *mut zend_class_entry {
-    install(table);
+pub static mut swoole_process_ce: *mut zend_class_entry = ptr::null_mut();
+
+/// `php_swoole_process_minit`: register `Swoole\Process`, its constants and
+/// properties, and (when pcntl is absent) the signal constants.
+/// # Safety
+/// Called once, at MINIT.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn php_swoole_process_minit(module: c_int) {
     // SAFETY: MINIT, with a static table.
     unsafe { PROCESS.register(c"Swoole\\Process", METHODS.as_ptr(), configure) };
     for (name, value) in [
@@ -249,7 +248,8 @@ pub unsafe extern "C" fn swr_v1_phpprocess_minit(
     unsafe { register_long_constant(c"SWOOLE_MSGQUEUE_ORIENT", MSGQUEUE_ORIENT, module) };
     // SAFETY: as above.
     unsafe { register_long_constant(c"SWOOLE_MSGQUEUE_BALANCE", MSGQUEUE_BALANCE, module) };
-    entry()
+    // SAFETY: MINIT, before any reader.
+    unsafe { swoole_process_ce = entry() };
 }
 
 /// `SW_SET_CLASS_NOT_SERIALIZABLE`, clone and unset denied, custom object.
@@ -363,7 +363,6 @@ fn set_worker(
 /// `worker` is the live worker of the Process object `object`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *mut zval) -> c_int {
-    let host = host();
     // SAFETY: per the caller.
     let std = unsafe { object_of(object) };
     let mut slot = swoole_rs_zend::long_zval(0);
@@ -371,7 +370,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
     let callback =
         unsafe { zend_read_property(entry(), std, c"callback".as_ptr(), 8, true, &raw mut slot) };
     // SAFETY: a live zval.
-    let callable = unsafe { (host.callable_create)(callback) };
+    let callable = unsafe { host::callable_create(callback) };
     if callable.is_null() {
         return -1;
     }
@@ -387,7 +386,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
             sys(E_WARNING, &message!("dup2() failed"));
         }
     }
-    crate::signal::swr_v1_phpprocess_clean();
+    crate::signal::clean();
     // SAFETY: a Process object.
     unsafe { update_property_long(entry(), std, c"pid", i64::from(worker.pid)) };
     if worker.pipe >= 0 {
@@ -396,14 +395,13 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
     }
     // SAFETY: as above.
     let coroutine = unsafe { data(std) }.enable_coroutine;
-    // SAFETY: C++ creates the event loop.
-    if coroutine && unsafe { (host.reactor_init)() } < 0 {
+    if coroutine && host::reactor_init() < 0 {
         // SAFETY: the callable made above.
-        unsafe { (host.callable_free)(callable) };
+        unsafe { host::callable_free(callable) };
         return -1;
     }
     // SAFETY: the callable, with `$this` as its one argument.
-    if !unsafe { (host.callable_call)(callable, 1, object, coroutine) } {
+    if !unsafe { host::callable_call(callable, 1, object, coroutine) } {
         // SAFETY: a live object.
         let name = unsafe { class_name(std) };
         notice(
@@ -412,11 +410,10 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
         );
     }
     if coroutine {
-        // SAFETY: runs the loop to completion.
-        unsafe { (host.event_wait)() };
+        host::event_wait();
     }
     // SAFETY: the callable made above.
-    unsafe { (host.callable_free)(callable) };
+    unsafe { host::callable_free(callable) };
     swoole_rs_zend::bailout::finish();
     // SAFETY: equivalent to exit: Zend unwinds to its bailout point; this frame
     // owns nothing that needs a drop.
@@ -424,7 +421,6 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
 }
 
 fn construct(call: &Call) {
-    let host = host();
     let object = call.this();
     let process = this(call);
     // SAFETY: a live object.
@@ -444,8 +440,7 @@ fn construct(call: &Call) {
     if !cli() {
         return refuse(format!("{name} can only be used in PHP CLI mode"));
     }
-    // SAFETY: C++'s reader of server and thread state.
-    match unsafe { (host.construct_guard)() } {
+    match host::construct_guard() {
         1 => return refuse(format!("{name} can't be used in master process")),
         2 => return refuse(format!("unable to create {name} with async-io threads")),
         _ => {}
@@ -468,13 +463,12 @@ fn construct(call: &Call) {
         return;
     };
     // SAFETY: the worker made above.
-    if !unsafe { (host.worker_share)(worker) } {
+    if !unsafe { host::worker_share(worker) } {
         if redirect {
             worker::redirect(worker);
             pipe_type = PIPE_TYPE_STREAM;
         }
-        // SAFETY: C++'s reader of the server's worker count.
-        let base = unsafe { (host.worker_base)() };
+        let base = host::worker_base();
         if ROUND_ID.load(Ordering::Relaxed) == 0 {
             ROUND_ID.store(base, Ordering::Relaxed);
         }
@@ -491,7 +485,7 @@ fn construct(call: &Call) {
                 // SAFETY: in a handler, with Swoole's exception class.
                 unsafe {
                     throw_exception(
-                        host.exception,
+                        host::exception(),
                         c"failed to create unix soccket",
                         i64::from(errno()),
                     );
@@ -727,7 +721,6 @@ fn alarm(call: &Call) {
 }
 
 fn start(call: &Call) {
-    let host = host();
     let worker = checked(this(call));
     let pid = view(worker).pid;
     // SAFETY: kill(pid, 0) only probes.
@@ -743,8 +736,7 @@ fn start(call: &Call) {
             call.set_bool(false);
         }
         std::cmp::Ordering::Greater => {
-            // SAFETY: C++'s static class-entry global, filled at MINIT.
-            let server = unsafe { *host.server };
+            let server = host::server_class();
             // SAFETY: `$this`; upstream names Server as the scope of the public property.
             unsafe { update_property_long(server, call.this(), c"pid", i64::from(pid)) };
             call.set_long(i64::from(pid));
@@ -843,8 +835,7 @@ fn export_socket(call: &Call) {
     }
     if process.socket.is_null() {
         let stream = i64::from(process.pipe_type) == PIPE_TYPE_STREAM;
-        // SAFETY: C++ wraps a duplicate of the pipe in a Coroutine\Socket.
-        process.socket = unsafe { (host().dup_socket)(pipe, stream) };
+        process.socket = host::dup_socket(pipe, stream);
         if process.socket.is_null() {
             call.set_bool(false);
             return;
@@ -982,14 +973,13 @@ fn daemon(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let host = host();
     if let Some(pipes) = pipes {
         let mut fd = 0;
         let each = |value: *mut zval| {
             // SAFETY: a live element.
             if unsafe { type_of(value) } != IS_NULL {
                 // SAFETY: C++ resolves a stream, socket or int to its fd.
-                let from = unsafe { (host.convert_to_fd)(value) };
+                let from = unsafe { host::convert_to_fd(value) };
                 if from >= 0 {
                     worker::dup(from, fd);
                 }

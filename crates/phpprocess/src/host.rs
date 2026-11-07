@@ -1,57 +1,350 @@
-//! What C++ provides: `swr_v1_phpprocess_host` in `native/process/swoole_rs_phpprocess.h`.
+//! What `Process` and `Process\Pool` reach outside the crate: Swoole's globals, the
+//! server, callables, the reactor and signals (was `ext-src/swoole_server.cc`'s
+//! `process_host` table).
 use std::{
+    cell::Cell,
     ffi::{c_int, c_void},
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_zend::sys::{zend_class_entry, zend_object, zval};
+use swoole_rs_corebase::{
+    swr_v1_core_server, swr_v1_core_signal_listener_num, thread_async_threads, thread_kind,
+};
+use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phphelpers::{callable, function_call};
+use swoole_rs_phpswoole::{Capability, built_with};
+use swoole_rs_process::{methods, worker_record::WorkerRecord};
+use swoole_rs_server::view;
+use swoole_rs_zend::{
+    bailout::{self, Bailout},
+    sys::{
+        swr_zend_callable_warning, swr_zend_tsrm_is_main_thread, zend_class_entry, zend_object,
+        zval,
+    },
+};
 
-type Worker = *mut c_void;
+type Handler = Option<unsafe extern "C" fn(c_int)>;
 
-/// C++ state the methods reach: Swoole globals, the server, callables, the
-/// reactor and signals. Field for field the C struct.
-#[repr(C)]
-pub struct Host {
-    pub exception: *mut zend_class_entry,
-    pub server: *mut *mut zend_class_entry,
-    pub construct_guard: unsafe extern "C" fn() -> c_int,
-    pub unconstructed: unsafe extern "C" fn(),
-    pub worker_share: unsafe extern "C" fn(Worker) -> bool,
-    pub worker_base: unsafe extern "C" fn() -> u32,
-    pub reactor_init: unsafe extern "C" fn() -> c_int,
-    pub event_wait: unsafe extern "C" fn(),
-    pub dup_socket: unsafe extern "C" fn(fd: c_int, stream: bool) -> *mut zend_object,
-    pub convert_to_fd: unsafe extern "C" fn(value: *mut zval) -> c_int,
-    pub callable_create: unsafe extern "C" fn(callable: *mut zval) -> *mut c_void,
-    pub callable_free: unsafe extern "C" fn(callable: *mut c_void),
-    pub callable_defer_free: unsafe extern "C" fn(callable: *mut c_void),
-    pub callable_call: unsafe extern "C" fn(
-        callable: *mut c_void,
-        argc: u32,
-        argv: *mut zval,
-        coroutine: bool,
-    ) -> bool,
-    pub enable_coroutine: unsafe extern "C" fn() -> bool,
-    pub main_thread: unsafe extern "C" fn() -> bool,
-    pub signal_set: unsafe extern "C" fn(
-        signo: c_int,
-        handler: Option<unsafe extern "C" fn(c_int)>,
-        safety: bool,
-    ),
-    pub sync_server: unsafe extern "C" fn() -> bool,
-    pub signal_listen: unsafe extern "C" fn(),
-    pub reset_worker_type: unsafe extern "C" fn(),
+unsafe extern "C" {
+    static swoole_server_ce: *mut zend_class_entry;
+    fn swr_v1_phpevents_init() -> c_int;
+    fn swr_v1_phpevents_wait();
+    fn swr_v1_phpevents_fd(value: *mut zval) -> c_int;
+    fn swr_v1_event_current() -> *mut c_void;
+    fn swr_v1_event_set_exit_condition(
+        id: c_int,
+        condition: unsafe extern "C" fn(*mut usize) -> bool,
+    );
+    #[link_name = "_Z21php_swoole_dup_socketi12swSocketType"]
+    fn php_swoole_dup_socket(fd: c_int, kind: c_int) -> *mut zend_object;
+    #[link_name = "_Z30php_swoole_is_enable_coroutinev"]
+    fn php_swoole_is_enable_coroutine() -> bool;
+    #[link_name = "_Z17swoole_signal_setiPFviEb"]
+    fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
 }
 
-static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
+/// `SW_MASTER`, `SW_TASK_WORKER`, `SW_MANAGER` and `SW_USER_WORKER`.
+const MASTER: c_int = 1;
+const TASK_WORKER: c_int = 4;
+const MANAGER: c_int = 3;
+const USER_WORKER: c_int = 5;
+/// `Server::MODE_THREAD` and `Server::THREAD_WORKER`.
+const MODE_THREAD: u8 = 3;
+const THREAD_WORKER: u8 = 4;
+/// `SW_SOCK_UNIX_STREAM` and `SW_SOCK_UNIX_DGRAM`.
+const SOCK_UNIX_STREAM: c_int = 5;
+const SOCK_UNIX_DGRAM: c_int = 6;
+/// `Reactor::EXIT_CONDITION_SIGNAL_LISTENER` and `SW_ERROR_WRONG_OPERATION`.
+const EXIT_CONDITION_SIGNAL_LISTENER: c_int = 4;
+const WRONG_OPERATION: c_int = 509;
 
-pub(crate) fn install(host: *const Host) {
-    HOST.store(host.cast_mut(), Ordering::Release);
+/// `swoole_exception_ce`.
+pub(crate) fn exception() -> *mut zend_class_entry {
+    // SAFETY: phpswoole's class entry, registered at MINIT before Process's.
+    unsafe { swoole_rs_phpswoole::swoole_exception_ce }
 }
 
-/// The table MINIT installed.
-pub(crate) fn host() -> &'static Host {
-    // SAFETY: MINIT stores C++'s static table before any method or hook runs,
-    // and it lives for the process.
-    unsafe { &*HOST.load(Ordering::Acquire) }
+/// `swoole_server_ce`, registered after Process.
+pub(crate) fn server_class() -> *mut zend_class_entry {
+    // SAFETY: read after MINIT.
+    unsafe { swoole_server_ce }
+}
+
+/// The running server, unless it is null.
+fn server() -> Option<*mut c_void> {
+    let serv = swr_v1_core_server();
+    (!serv.is_null()).then_some(serv)
+}
+
+/// `Server::is_worker_thread()`.
+fn worker_thread(serv: *mut c_void) -> bool {
+    // SAFETY: the running server.
+    unsafe { view::config(serv) }.mode_ == MODE_THREAD && thread_kind() == THREAD_WORKER
+}
+
+/// Who may construct a Process: 0, or 1 in a started server's master, 2 once
+/// async-io threads exist.
+pub(crate) fn construct_guard() -> c_int {
+    // SAFETY: the running server.
+    if server().is_some_and(|serv| unsafe { view::is_started(serv) })
+        && methods::swoole_get_worker_type() == MASTER
+    {
+        return 1;
+    }
+    if thread_async_threads() { 2 } else { 0 }
+}
+
+/// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
+pub(crate) fn unconstructed() {
+    // SAFETY: the frames it may jump over own nothing.
+    unsafe { swoole_rs_corebase::fatal_error(WRONG_OPERATION, c"must call constructor first") };
+}
+
+thread_local! {
+    /// `server_user_worker_id`: the next user worker a thread-mode Process takes.
+    static USER_WORKER_ID: Cell<u32> = const { Cell::new(0) };
+}
+
+/// In a server worker thread, `worker` becomes a copy of its server worker
+/// (shared); false elsewhere.
+/// # Safety
+/// `worker` is a writable `Worker`.
+pub(crate) unsafe fn worker_share(worker: *mut c_void) -> bool {
+    let Some(serv) = server().filter(|&serv| worker_thread(serv)) else {
+        return false;
+    };
+    let user = methods::swoole_get_worker_type() == USER_WORKER;
+    let id = if user {
+        methods::swoole_get_worker_id()
+    } else {
+        // SAFETY: the running server.
+        let config = unsafe { view::config(serv) };
+        let id = USER_WORKER_ID.get();
+        USER_WORKER_ID.set(id + 1);
+        id + config.worker_num + config.task_worker_num
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Server::get_worker takes a uint16_t"
+    )]
+    // SAFETY: the running server.
+    let source = unsafe { view::worker(serv, id as u16) };
+    let process = worker.cast::<WorkerRecord>();
+    // SAFETY: two live, distinct worker records.
+    unsafe { ptr::copy_nonoverlapping(source, process, 1) };
+    // SAFETY: the record just written.
+    let process = unsafe { &mut *process };
+    process.pipe_current = if user {
+        process.pipe_worker
+    } else {
+        process.pipe_master
+    };
+    process.shared = true;
+    true
+}
+
+/// The id a Process takes after the server's workers: `get_all_worker_num()`
+/// once started, else 1.
+pub(crate) fn worker_base() -> u32 {
+    let Some(serv) = server() else { return 1 };
+    // SAFETY: the running server.
+    if !unsafe { view::is_started(serv) } {
+        return 1;
+    }
+    // SAFETY: as above.
+    let config = unsafe { view::config(serv) };
+    // SAFETY: as above.
+    let users = unsafe { view::user_worker_num(serv) };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "worker counts fit a uint32_t"
+    )]
+    let users = users as u32;
+    config.worker_num + config.task_worker_num + users
+}
+
+/// `php_swoole_reactor_init()`.
+pub(crate) fn reactor_init() -> c_int {
+    // SAFETY: phpevents' init, from a PHP call.
+    unsafe { swr_v1_phpevents_init() }
+}
+
+/// `php_swoole_event_wait()`.
+pub(crate) fn event_wait() {
+    // SAFETY: as above.
+    unsafe { swr_v1_phpevents_wait() };
+}
+
+/// `php_swoole_dup_socket(fd, SW_SOCK_UNIX_STREAM or _DGRAM)`.
+pub(crate) fn dup_socket(fd: c_int, stream: bool) -> *mut zend_object {
+    let kind = if stream {
+        SOCK_UNIX_STREAM
+    } else {
+        SOCK_UNIX_DGRAM
+    };
+    // SAFETY: phpclients' constructor, from a PHP call.
+    unsafe { php_swoole_dup_socket(fd, kind) }
+}
+
+/// `php_swoole_convert_to_fd(value)`.
+/// # Safety
+/// `value` is a live zval.
+pub(crate) unsafe fn convert_to_fd(value: *mut zval) -> c_int {
+    // SAFETY: per the caller.
+    unsafe { swr_v1_phpevents_fd(value) }
+}
+
+/// Raise a bailout now, as C++'s `zend_try`-less callers did.
+fn resume<T>(result: Result<T, Bailout>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            bailout::raise(Err(error));
+            None
+        }
+    }
+}
+
+/// `sw_callable_create(value)`: a callable, or null after a warning.
+/// # Safety
+/// `value` is a live zval; the frames a bailout jumps over own nothing.
+pub(crate) unsafe fn callable_create(value: *mut zval) -> *mut c_void {
+    // SAFETY: per the caller; the reporter is C.
+    let created = unsafe {
+        callable::factory(
+            value,
+            ptr::null(),
+            true,
+            exception(),
+            swr_zend_callable_warning,
+        )
+    };
+    resume(created).map_or(ptr::null_mut(), <*mut callable::Callable>::cast)
+}
+
+/// `sw_callable_free(callable)`.
+/// # Safety
+/// `callable` is one [`callable_create`] made, freed once.
+pub(crate) unsafe fn callable_free(callable: *mut c_void) {
+    // SAFETY: per the caller.
+    resume(unsafe { callable::release(callable.cast()) });
+}
+
+unsafe extern "C-unwind" fn deferred_free(callable: *mut c_void) {
+    // SAFETY: the callable `callable_defer_free` handed over.
+    unsafe { callable_free(callable) };
+}
+
+/// `swoole_event_defer(sw_callable_free, callable)`.
+/// # Safety
+/// As [`callable_free`], with an event loop on this thread.
+pub(crate) unsafe fn callable_defer_free(callable: *mut c_void) {
+    defer(deferred_free, callable);
+}
+
+/// `Reactor::defer(call, data)` on this thread's loop.
+fn defer(call: swoole_rs_reactor::DeferCall, data: *mut c_void) {
+    // SAFETY: no preconditions.
+    let reactor = unsafe { swr_v1_event_current() }.cast::<swoole_rs_reactor::ReactorPrepared>();
+    // SAFETY: the live loop, which begins with its prepared state.
+    let fields = unsafe { (*reactor).fields };
+    // SAFETY: the loop's live fields.
+    unsafe { swoole_rs_reactor::defer(fields, call, data) };
+}
+
+/// `zend::function::call(callable->ptr(), argc, argv, nullptr, coroutine)`: a
+/// bailout is raised from here.
+/// # Safety
+/// `callable` is live and `argv` holds `argc` zvals; the frames a bailout
+/// jumps over own nothing.
+pub(crate) unsafe fn callable_call(
+    callable: *mut c_void,
+    argc: u32,
+    argv: *mut zval,
+    coroutine: bool,
+) -> bool {
+    // SAFETY: per the caller.
+    let cache = unsafe { callable::cache(callable.cast()) };
+    // SAFETY: per the caller; the leaves are phpcoroutines' and C's.
+    let called = unsafe {
+        function_call(
+            cache,
+            argc,
+            argv,
+            ptr::null_mut(),
+            coroutine,
+            swr_v1_phpcoroutines_create,
+            swr_zend_callable_warning,
+        )
+    };
+    resume(called).unwrap_or(false)
+}
+
+/// `php_swoole_is_enable_coroutine()`.
+pub(crate) fn enable_coroutine() -> bool {
+    // SAFETY: phphelpers' reader of the server and Swoole globals.
+    unsafe { php_swoole_is_enable_coroutine() }
+}
+
+/// `tsrm_is_main_thread()`, true without threads.
+pub(crate) fn main_thread() -> bool {
+    !built_with(Capability::Thread) || {
+        // SAFETY: no preconditions.
+        unsafe { swr_zend_tsrm_is_main_thread() }
+    }
+}
+
+/// `swoole_signal_set(signo, handler, safety)`.
+fn set_signal(signo: c_int, handler: Handler, safety: bool) {
+    let handler = handler.map_or(0, |handler| handler as usize);
+    // SAFETY: a signal number and a handler or none.
+    unsafe { swoole_signal_set(signo, handler, safety) };
+}
+
+unsafe extern "C-unwind" fn deferred_signal(data: *mut c_void) {
+    // SAFETY: the box `signal_set` handed over.
+    let (signo, handler, safety) = *unsafe { Box::from_raw(data.cast::<(c_int, Handler, bool)>()) };
+    set_signal(signo, handler, safety);
+}
+
+/// `swoole_signal_set(signo, handler, safety)`, deferred to the event loop
+/// under the thread context.
+pub(crate) fn signal_set(signo: c_int, handler: Handler, safety: bool) {
+    if built_with(Capability::ThreadContext) {
+        defer(
+            deferred_signal,
+            Box::into_raw(Box::new((signo, handler, safety))).cast(),
+        );
+    } else {
+        set_signal(signo, handler, safety);
+    }
+}
+
+/// `Server::is_sync_process()` of the running server.
+pub(crate) fn sync_server() -> bool {
+    server().is_some_and(|serv| match methods::swoole_get_worker_type() {
+        MANAGER => true,
+        // SAFETY: the running server.
+        TASK_WORKER => !unsafe { view::config(serv) }.task_enable_coroutine,
+        _ => false,
+    })
+}
+
+unsafe extern "C" fn listening(_event_num: *mut usize) -> bool {
+    swr_v1_core_signal_listener_num() == 0 || !swoole_rs_corebase::swr_v1_core_wait_signal()
+}
+
+/// `php_swoole_check_reactor()`, then the loop runs while a signal listener
+/// waits (setting it again replaces it with the same condition).
+pub(crate) fn signal_listen() {
+    swoole_rs_phpswoole::check_reactor();
+    // SAFETY: the loop just checked; a static condition.
+    unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_SIGNAL_LISTENER, listening) };
+}
+
+/// Outside thread builds, a process that is not a user worker forgets its
+/// worker type.
+pub(crate) fn reset_worker_type() {
+    if !built_with(Capability::Thread) && methods::swoole_get_worker_type() != USER_WORKER {
+        methods::swoole_set_worker_type(0);
+    }
 }

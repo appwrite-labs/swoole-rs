@@ -1,10 +1,10 @@
 //! `Swoole\Process\Pool`: registration, objects, methods and the pool's event
 //! callbacks, over crates/process's `ProcessPool` (`PoolRecord`).
 use crate::{
-    host::host as process_host,
+    host,
     process::{entry as process_entry, set_worker_of, worker_pid, worker_view},
     report::{INVALID_PARAMS, OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
-    signal::swr_v1_phpprocess_clean,
+    signal::clean,
 };
 use std::{
     ffi::{c_char, c_int, c_void},
@@ -93,7 +93,7 @@ static CURRENT: AtomicPtr<PoolRecord> = AtomicPtr::new(ptr::null_mut());
 static CURRENT_WORKER: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 fn exception() -> *mut zend_class_entry {
-    process_host().exception
+    host::exception()
 }
 
 /// The fields of a pool this module created.
@@ -205,8 +205,7 @@ fn this<'a>(call: &Call) -> &'a mut PoolObject {
 /// `process_pool_get_and_check_pool`.
 fn checked(object: &PoolObject) -> Pool {
     if object.pool.is_null() {
-        // SAFETY: C++ logs the fatal error and exits.
-        unsafe { (process_host().unconstructed)() };
+        host::unconstructed();
     }
     object.pool
 }
@@ -237,7 +236,7 @@ unsafe extern "C" fn free(object: *mut zend_object) {
     ] {
         if !callable.is_null() {
             // SAFETY: the object owns its callables.
-            unsafe { (process_host().callable_free)(callable) };
+            unsafe { host::callable_free(callable) };
         }
     }
     // SAFETY: as above.
@@ -261,11 +260,27 @@ method_table! {
     ];
 }
 
-/// MINIT: register `Swoole\Process\Pool` as `php_swoole_process_pool_minit` did.
+/// The pool's Rust worker loops call PHP inside this trap and leave before re-raising.
+unsafe extern "C" fn trap(body: unsafe extern "C" fn(*mut c_void), arg: *mut c_void) -> c_int {
+    // SAFETY: a C body for `zend_try`.
+    unsafe { swoole_rs_zend::sys::swr_zend_try(Some(body), arg) }
+}
+
+/// `zend_bailout()`, from a frame that owns nothing.
+unsafe extern "C" fn raise() {
+    // SAFETY: Zend's bailout.
+    unsafe {
+        swoole_rs_zend::sys::_zend_bailout(c"crates/phpprocess/src/pool.rs".as_ptr(), line!())
+    };
+}
+
+/// `php_swoole_process_pool_minit`: register `Swoole\Process\Pool`.
 /// # Safety
 /// Called once, at MINIT, after the Process MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpprocess_pool_minit() {
+pub unsafe extern "C" fn php_swoole_process_pool_minit(_module: c_int) {
+    // SAFETY: a `zend_try` trap and Zend's bailout.
+    unsafe { swoole_rs_process::pool::swr_v1_process_set_bailout(trap, raise) };
     // SAFETY: MINIT, with a static table.
     unsafe { POOL.register(c"Swoole\\Process\\Pool", METHODS.as_ptr(), configure) };
     for name in [c"master_pid", c"workerPid", c"workerId"] {
@@ -338,8 +353,7 @@ fn dispatch(
     let mut args = [unsafe { *object }, long_zval(worker.unwrap_or(0))];
     let argc = if worker.is_some() { 2 } else { 1 };
     // SAFETY: a live callable and `argc` arguments.
-    let called =
-        unsafe { (process_host().callable_call)(callable, argc, args.as_mut_ptr(), coroutine) };
+    let called = unsafe { host::callable_call(callable, argc, args.as_mut_ptr(), coroutine) };
     if !called {
         // SAFETY: a live object zval.
         let std = unsafe { object_of(object) };
@@ -379,7 +393,7 @@ fn owner(pool: Pool) -> (*mut zval, *mut zend_object, &'static mut PoolObject) {
 
 unsafe extern "C" fn on_worker_start(pool: Pool, worker: *mut c_void) {
     let (object, std, this) = owner(pool);
-    swr_v1_phpprocess_clean();
+    clean();
     CURRENT.store(pool, Ordering::Release);
     CURRENT_WORKER.store(worker, Ordering::Release);
     let id = i64::from(worker_view(worker).id);
@@ -427,7 +441,7 @@ unsafe extern "C" fn on_message(pool: Pool, message: *mut c_void) {
     worker_busy(true);
     // SAFETY: the onMessage callable `start()` required, with two arguments.
     let called = unsafe {
-        (process_host().callable_call)(this.on_message, 2, args.as_mut_ptr(), this.enable_coroutine)
+        host::callable_call(this.on_message, 2, args.as_mut_ptr(), this.enable_coroutine)
     };
     if !called {
         // SAFETY: a live object zval.
@@ -514,8 +528,7 @@ fn construct(call: &Call) {
             "A process pool instance has already been created and cannot be created again".into(),
         );
     }
-    // SAFETY: C++'s reader of the thread's identity.
-    if !unsafe { (process_host().main_thread)() } {
+    if !host::main_thread() {
         set_last_error(OPERATION_NOT_SUPPORT);
         // SAFETY: in a handler, with Swoole's exception class.
         unsafe {
@@ -683,13 +696,12 @@ fn on(call: &Call) {
             return;
         }
     };
-    let process = process_host();
     if !slot.is_null() {
         // SAFETY: the callable this slot owned.
-        unsafe { (process.callable_free)(*slot) };
+        unsafe { host::callable_free(*slot) };
     }
     // SAFETY: a passed argument.
-    *slot = unsafe { (process.callable_create)(callback) };
+    *slot = unsafe { host::callable_create(callback) };
     call.set_bool(true);
 }
 
