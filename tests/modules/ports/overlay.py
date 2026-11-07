@@ -14,8 +14,10 @@ def original(path):
     return subprocess.check_output(['git', '-C', str(SOURCE), 'show', f'{PIN}:{path}'], text=True)
 
 
-# Upstream files the hybrid deleted, and the hybrid file holding what is left of each.
-MOVED = {'src/core/base.cc': 'src/swoole_rs_corebase_globals.cc', 'src/server/port.cc': 'src/server/master.cc', 'ext-src/swoole_server_port.cc': 'ext-src/swoole_server.cc'}
+# Upstream files the hybrid deleted, and the hybrid file holding what is left of each
+# (swoole_config.h's macros are the generated corebase constants in the build's ABI headers).
+MOVED = {'src/core/base.cc': 'src/swoole_rs_corebase_globals.cc', 'src/server/port.cc': 'src/server/master.cc', 'ext-src/swoole_server_port.cc': 'ext-src/swoole_server.cc',
+         'include/swoole_config.h': '../rust-prefix/include/swoole_rs_corebase_constants.h'}
 
 
 def selected(tree, path):

@@ -421,7 +421,7 @@ pub unsafe extern "C" fn send_to_connection(serv: *mut c_void, send: *const c_vo
     c_int::narrow(unsafe { run(RUN_SC_SEND, header.info.kind.into(), &mut ctx) })
 }
 
-const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE as usize;
+const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
 /// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
 #[repr(C, align(8))]

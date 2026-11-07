@@ -101,10 +101,10 @@ void swoole_clear_last_error_msg();
 const char *swoole_get_last_error_msg();
 extern char sw_error[1024];
 '''
-            # The stub stands in for swoole.h on both sides. Its swoole_error.h is the pinned one in
-            # the upstream TU and the hybrid build's (through its flags) in the hybrid TUs.
+            # The stub stands in for swoole.h on both sides: with the pinned swoole_error.h in the
+            # upstream TU, and with the hybrid build's generated swoole_rs_error.h in the hybrid TUs.
             (upstream / 'swoole.h').write_text(stub)
-            (work / 'swoole.h').write_text(stub)
+            (work / 'swoole.h').write_text(stub.replace('"swoole_error.h"', '"swoole_rs_error.h"'))
             assert 'switch (code)' not in patched and 'swoole_strerror(int code)' not in patched
             assert patched.split('void swoole_throw_error')[1].split('void swoole_ignore_error')[0] == original.split('void swoole_throw_error')[1].split('void swoole_ignore_error')[0]
             assert patched.split('void swoole_clear_last_error_msg')[1] == original.split('void swoole_clear_last_error_msg')[1]
@@ -138,6 +138,10 @@ extern char sw_error[1024];
             driver = (ROOT / 'tests/modules/error/driver.cc').read_text()
             driver = driver.replace('/* KNOWN_CASES */', ', '.join(cases))
             driver = driver.replace('/* ALL_ENUMS */', ', '.join(names))
+            # swoole::Exception is defined only next to swoole_throw_error now; the driver
+            # constructs and catches that same definition.
+            exception = patched[patched.index('namespace swoole {'):patched.index('}  // namespace swoole')]
+            driver = driver.replace('#include "swoole.h"\n', '#include "swoole.h"\n' + exception + '}\n', 1)
             (work / 'driver.cc').write_text(driver)
             run(['c++', *flags, '-pthread', work / 'driver.cc', work / 'original.o', work / 'patched.o',
                  archive, '-o', work / 'probe'])

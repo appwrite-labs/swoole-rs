@@ -65,7 +65,7 @@ const SW_EVENT_WRITE: c_int = 1 << 10;
 const SESSION_SIZE: usize = size_of::<SessionRecord>();
 const ATOMIC_SIZE: usize = 4;
 const SENDFILE_TASK_SIZE: usize = 16;
-const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE as usize;
+const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
 /// `SW_HOST_MAXSIZE`: `sizeof(sockaddr_un::sun_path)`.
 fn host_maxsize() -> usize {

@@ -107,11 +107,13 @@ def main():
                 fragments = [body(original.decode(), 'TEST(string, ' + name + ')') for name in names]
                 excerpt = ('using namespace std;\n' + '\n'.join(fragments)).encode()
                 expected = ['string.' + name for name in names]
-                # Native bodies from the pin, selected bodies from the hybrid build's headers.
+                # Native bodies from the pin, selected bodies from the hybrid build's headers, which
+                # leave out the helpers nothing in the build calls.
                 for name, signatures in SIGNATURES.items():
                     pinned = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':' + name]).decode()
                     for variant, content in [('native', pinned), ('selected', (hybrid / name).read_text())]:
-                        (work / (variant + '-' + Path(name).name + '.inc')).write_text('\n'.join(body(content, signature) for signature in signatures))
+                        (work / (variant + '-' + Path(name).name + '.inc')).write_text('\n'.join(
+                            body(content, signature) for signature in signatures if variant == 'native' or signature in content))
                 config = '#include <cassert>\n#include <cctype>\n#include <sys/types.h>\n#include <strings.h>\n' + public('#define SW_STRL(', '#define sw_likely(')
                 for index, variant in enumerate(['selected', 'native']):
                     config += ('#ifdef M14_SELECTED_INLINE\n#include "swoole_rs_utilities.h"\n' if index == 0 else '#else\n')

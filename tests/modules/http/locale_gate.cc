@@ -7,6 +7,8 @@
 namespace upstream_locale {
 int get_method(const char *, size_t);
 bool parse_multipart_boundary(const char *,size_t,size_t,char **,int *);
+// The pinned swoole_strcaseeq; the hybrid headers no longer carry it.
+unsigned strcaseeq(const char *,size_t,const char *,size_t);
 }
 int main() {
  size_t total=0,errors=0,available=0;
@@ -35,7 +37,7 @@ int main() {
   }
   for(unsigned mask=0;mask<256;++mask){
    std::string key="filename";for(size_t i=0;i<key.size();++i)if(mask&(1u<<i))key[i]=char(std::toupper(static_cast<unsigned char>(key[i])));
-   bool expected=swoole_strcaseeq(key.data(),key.size(),"filename",8);
+   bool expected=upstream_locale::strcaseeq(key.data(),key.size(),"filename",8);
    std::string scratch=key+"=x";scratch.push_back(0);
    compare(swr_v1_http_multipart_filename(reinterpret_cast<uint8_t *>(&scratch[0]),scratch.size())==int(expected),"filename:"+std::to_string(mask));
   }
@@ -47,7 +49,7 @@ int main() {
     int status=swr_v1_http_boundary(reinterpret_cast<const uint8_t *>(value.data()),value.size(),0,&span);
     compare(status==int(found)&&(!found||(span.offset==size_t(old-value.data())&&span.length==size_t(length))),"boundary:"+std::to_string(i)+":"+std::to_string(byte));
    }else{
-    bool expected=swoole_strcaseeq(value.data(),value.size(),name,strlen(name));
+    bool expected=upstream_locale::strcaseeq(value.data(),value.size(),name,strlen(name));
     compare(swr_v1_http_multipart_disposition(reinterpret_cast<const uint8_t *>(value.data()),value.size())==int(expected),"disposition:"+std::to_string(i)+":"+std::to_string(byte));
    }
   }
