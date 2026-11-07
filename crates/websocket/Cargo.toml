@@ -13,3 +13,4 @@ workspace = true
 
 [dependencies]
 swoole-rs-base64 = { path = "../base64" }
+openssl-sys = "=0.9.117"
