@@ -25,8 +25,7 @@ pub struct ServerWorkers {
 /// # Safety
 /// `view` loans initialized pool/array records exclusively during startup.
 /// `pending` loans `user_count` live worker pointers. `server` is an opaque loan.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_server_workers_start(
+pub unsafe fn swr_v1_process_server_workers_start(
     view: *const ServerWorkers,
     server: *mut c_void,
     pending: *const *mut WorkerRecord,
@@ -66,8 +65,8 @@ pub unsafe extern "C" fn swr_v1_process_server_workers_start(
 /// # Safety
 /// `view` loans live pools and arrays with the stated counts. The returned
 /// pointer remains a loan of the selected array, without extending its lifetime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_server_worker(
+#[must_use]
+pub unsafe fn swr_v1_process_server_worker(
     view: *const ServerWorkers,
     id: u16,
 ) -> *mut WorkerRecord {
@@ -100,8 +99,8 @@ pub unsafe extern "C" fn swr_v1_process_server_worker(
 /// # Safety
 /// `view` loans live canonical arrays and task pool storage; `registry` is the
 /// Server's live registry. Lookup is serialized with registry mutation.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_server_worker_by_pid(
+#[must_use]
+pub unsafe fn swr_v1_process_server_worker_by_pid(
     view: *const ServerWorkers,
     registry: *const crate::worker_registry::WorkerRegistry,
     pid: core::ffi::c_int,

@@ -30,6 +30,15 @@ unsafe fn fields<'a>(serv: *mut c_void) -> &'a Fields {
     unsafe { &*serv.cast::<Fields>() }
 }
 
+/// The server's Rust-owned state, as a pointer.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+pub(crate) unsafe fn state_ptr(serv: *mut c_void) -> *const ServerState {
+    // SAFETY: per the caller.
+    unsafe { fields(serv) }.state
+}
+
 /// The server's Rust-owned state.
 ///
 /// # Safety
@@ -330,17 +339,16 @@ pub unsafe fn user_worker_num(serv: *mut c_void) -> usize {
     }
 }
 
-/// `Server::get_worker(id)`: event workers, then task workers, then user
-/// workers; null past the last.
+/// The server's worker arrays and counts.
 ///
 /// # Safety
 /// As [`counters`].
-pub unsafe fn worker(serv: *mut c_void, id: u16) -> *mut WorkerRecord {
+pub unsafe fn workers(serv: *mut c_void) -> ServerWorkers {
     // SAFETY: per the caller.
     let task_pool = unsafe { task_pool(serv) };
     // SAFETY: per the caller.
     let config = unsafe { config(serv) };
-    let view = ServerWorkers {
+    ServerWorkers {
         event_pool: task_pool.wrapping_add(1),
         task_pool,
         event_workers: config.workers.cast(),
@@ -349,7 +357,17 @@ pub unsafe fn worker(serv: *mut c_void, id: u16) -> *mut WorkerRecord {
         task_count: config.task_worker_num,
         // SAFETY: per the caller.
         user_count: unsafe { user_worker_num(serv) },
-    };
+    }
+}
+
+/// `Server::get_worker(id)`: event workers, then task workers, then user
+/// workers; null past the last.
+///
+/// # Safety
+/// As [`counters`].
+pub unsafe fn worker(serv: *mut c_void, id: u16) -> *mut WorkerRecord {
+    // SAFETY: per the caller.
+    let view = unsafe { workers(serv) };
     // SAFETY: the server's live pools and worker arrays, with their counts.
     unsafe { swr_v1_process_server_worker(&raw const view, id) }
 }
