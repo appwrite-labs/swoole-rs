@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_socket.h, owned here: network::Address, IOVector and Socket's
- * methods over Rust's socket record (swoole_rs_socket.h). Upstream's file is deleted, so
+ * methods over Rust's socket record (swoole_rs_socket.h). Address's methods call crates/clients
+ * (upstream's src/network/address.cc is deleted). Upstream's file is deleted, so
  * `#include "swoole_socket.h"` finds this copy on the Rust prefix's include path. */
 #pragma once
 
@@ -10,6 +11,7 @@
 #include "swoole_file.h"
 
 #include "swoole_rs_reactor.h"
+#include "swoole_rs_clients.h"
 
 #include <poll.h>
 #include <sys/types.h>
@@ -23,6 +25,7 @@
 #include <netinet/udp.h>
 #include <arpa/inet.h>
 
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -55,14 +58,34 @@ struct Address {
     socklen_t len;
     SocketType type;
 
-    bool assign(SocketType _type, const std::string &_host, int _port = 0, bool _resolve_name = true);
-    bool assign(const std::string &url);
+    bool assign(SocketType _type, const std::string &_host, int _port = 0, bool _resolve_name = true) {
+        type = _type;
+        const int error = swr_v1_clients_address_assign(&addr, &len, _type, _host.c_str(), _host.length(), _port,
+                                                        _resolve_name ? swr_v1_clients_gethostbyname : nullptr);
+        if (error != 0) {
+            swoole_set_last_error(error);
+            return false;
+        }
+        return true;
+    }
+    bool assign(const std::string &url) {
+        const auto plan = swr_v1_clients_url(reinterpret_cast<const uint8_t *>(url.data()), url.size());
+        if (plan.outcome == SWR_CLIENTS_URL_PORT_RANGE) {
+            throw std::out_of_range("stoi");
+        }
+        if (plan.outcome == SWR_CLIENTS_URL_INVALID) {
+            swoole_error_log(SW_LOG_NOTICE, SW_ERROR_BAD_HOST_ADDR, "Invalid address '%s'", url.c_str());
+            return false;
+        }
+        type = static_cast<SocketType>(plan.kind);
+        return assign(type, url.substr(plan.host_offset, plan.host_length), plan.port);
+    }
 
-    int get_port() const;
-    void set_port(int _port);
-    const char *get_addr() const;
-    bool is_loopback_addr() const;
-    bool empty() const;
+    int get_port() const { return swr_v1_clients_address_port(this); }
+    void set_port(int _port) { swr_v1_clients_address_set_port(this, _port); }
+    const char *get_addr() const { return swr_v1_clients_address_host(this); }
+    bool is_loopback_addr() const { return swr_v1_clients_address_loopback(this); }
+    bool empty() const { return swr_v1_clients_address_empty(this); }
 
     in_addr *addr_v4() {
         return &addr.inet_v4.sin_addr;
@@ -72,11 +95,12 @@ struct Address {
         return &addr.inet_v6.sin6_addr;
     }
 
-    static const char *type_str(SocketType type);
-    static const char *addr_str(int family, const void *addr);
-    static bool verify_ip(int family, const std::string &str);
-    static bool verify_port(int port, bool for_connect = false);
+    static const char *type_str(SocketType type) { return swr_v1_clients_address_type(type); }
+    static const char *addr_str(int family, const void *addr) { return swr_v1_clients_address_string(family, addr); }
+    static bool verify_ip(int family, const std::string &str) { return swr_v1_clients_address_verify(family, str.c_str()); }
+    static bool verify_port(int port, bool for_connect = false) { return swr_v1_clients_port(port, for_connect); }
 };
+static_assert(INET6_ADDRSTRLEN == 46, "Rust Address scratch capacity");
 
 struct IOVector {
   private:
