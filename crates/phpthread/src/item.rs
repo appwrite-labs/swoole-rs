@@ -2,11 +2,11 @@
 //! thread can read it back. Strings and serialized objects are copied, arrays
 //! become shared tables, containers and thread resources are shared by
 //! reference, and sockets by a duplicated descriptor.
-use crate::{array::Array, barrier, classes, host::host, queue::Queue, request};
+use crate::{array::Array, barrier, classes, host, queue::Queue, request};
 use std::{cmp::Ordering, ffi::c_int, ptr, sync::Arc};
 use swoole_rs_phplocks::{self as phplocks, Resource, Shareable};
 use swoole_rs_zend::{
-    bailout::{self, Bailout},
+    bailout,
     string::bytes,
     sys::{
         _zval_struct__bindgen_ty_1, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT,
@@ -149,37 +149,29 @@ impl Item {
     /// The `IS_OBJECT` branch: sockets, containers and thread resources by
     /// reference, anything else serialized.
     unsafe fn store_object(value: *mut zval) -> Self {
-        let host = host();
         // SAFETY: a live object zval.
-        let foreign = unsafe { (host.object_kind)(value) };
-        match foreign {
-            IS_CO_SOCKET => {
-                let mut kind = 0;
-                // SAFETY: a coroutine socket object.
-                let fd = unsafe { (host.co_socket_cast)(value, &raw mut kind) };
-                if fd == -1 {
-                    socket_error(c"failed to convert to socket fd");
-                }
+        if unsafe { host::is_co_socket(value) } {
+            // SAFETY: a coroutine socket object.
+            let (fd, kind) = unsafe { host::co_socket_cast(value) };
+            if fd == -1 {
+                socket_error(c"failed to convert to socket fd");
+            }
+            return Self {
+                kind: IS_CO_SOCKET,
+                value: Value::Socket { fd, kind },
+            };
+        }
+        // SAFETY: a live object zval.
+        match unsafe { host::php_socket_cast(value) } {
+            -3 => {}
+            // upstream breaks out before setting the type.
+            -2 => return bare(IS_OBJECT),
+            fd => {
                 return Self {
-                    kind: IS_CO_SOCKET,
-                    value: Value::Socket { fd, kind },
+                    kind: IS_PHP_SOCKET,
+                    value: Value::Socket { fd, kind: 0 },
                 };
             }
-            IS_PHP_SOCKET => {
-                if let Some(cast) = host.php_socket_cast {
-                    // SAFETY: a Socket object.
-                    let fd = unsafe { cast(value) };
-                    // -2: upstream breaks out before setting the type.
-                    if fd == -2 {
-                        return bare(IS_OBJECT);
-                    }
-                    return Self {
-                        kind: IS_PHP_SOCKET,
-                        value: Value::Socket { fd, kind: 0 },
-                    };
-                }
-            }
-            _ => {}
         }
         // SAFETY: a live object zval.
         let std = unsafe { swoole_rs_zend::value::obj_of(value) };
@@ -209,12 +201,8 @@ impl Item {
 
     /// The default branch: `php_swoole_serialize`, or undef if it failed.
     unsafe fn serialize(value: *mut zval) -> Self {
-        let mut bailed = false;
-        // SAFETY: a live zval; C++ traps a bailout of `__serialize`.
-        let serialized = unsafe { (host().serialize)(value, &raw mut bailed) };
-        if bailed {
-            Bailout.defer();
-        }
+        // SAFETY: a live zval; a bailout of `__serialize` is deferred.
+        let serialized = unsafe { host::serialize(value) };
         if serialized.is_null() {
             return bare(IS_UNDEF);
         }
@@ -233,7 +221,6 @@ impl Item {
     /// # Safety
     /// In a request; `out` is writable and holds nothing.
     pub(crate) unsafe fn fetch(&self, out: *mut zval) -> bool {
-        let host = host();
         match &self.value {
             Value::Long(value) => set(out, IS_LONG, zend_value { lval: *value }),
             Value::Double(value) => set(out, IS_DOUBLE, zend_value { dval: *value }),
@@ -263,29 +250,24 @@ impl Item {
                 IS_STREAM_SOCKET => unsafe { request::stream_create(out, *fd) },
                 IS_CO_SOCKET => {
                     let create = |out, fd| {
-                        // SAFETY: C++ makes the object over the duplicate it takes.
-                        unsafe { (host.co_socket_create)(out, fd, *kind) }
+                        // SAFETY: the object is made over the duplicate it takes.
+                        unsafe { host::co_socket_create(out, fd, *kind) }
                     };
                     // SAFETY: per the caller.
                     unsafe { request::socket_create(out, *fd, create) };
                 }
                 _ => {
-                    let Some(create) = host.php_socket_create else {
-                        return false;
-                    };
                     let create = |out, fd| {
                         // SAFETY: as above.
-                        unsafe { create(out, fd) }
+                        unsafe { host::php_socket_create(out, fd) }
                     };
                     // SAFETY: per the caller.
                     unsafe { request::socket_create(out, *fd, create) };
                 }
             },
             Value::Serialized(data) => {
-                // SAFETY: per the caller; C++ traps a bailout of `__unserialize`.
-                if unsafe { (host.unserialize)(data.as_ptr().cast(), data.len(), out) } {
-                    Bailout.defer();
-                }
+                // SAFETY: per the caller; a bailout of `__unserialize` is deferred.
+                unsafe { host::unserialize(data, out) };
             }
         }
         true
@@ -490,7 +472,7 @@ impl Item {
 fn socket_error(message: &std::ffi::CStr) {
     let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     // SAFETY: in a request, with Swoole's exception class.
-    unsafe { throw_exception(host().exception, message, i64::from(errno)) };
+    unsafe { throw_exception(host::exception(), message, i64::from(errno)) };
 }
 
 /// `ZVAL_*`: write a scalar.

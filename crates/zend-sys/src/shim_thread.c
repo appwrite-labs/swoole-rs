@@ -1,5 +1,7 @@
 #include "shim.h"
 #include "shim_thread.h"
+#include "SAPI.h"
+#include "php_main.h"
 
 bool swr_zend_array_is_list(const zend_array *array) {
     return zend_array_is_list((zend_array *) array);
@@ -72,4 +74,98 @@ void swr_zend_register_stream_constant(const char *name, php_stream *stream) {
     ZEND_CONSTANT_SET_FLAGS(&constant, CONST_CS, 0);
     constant.name = zend_string_init_interned(name, strlen(name), false);
     zend_register_constant(&constant);
+}
+
+void swr_zend_thread_enter(void) {
+#ifdef ZTS
+    ts_resource(0);
+    PG(expose_php) = false;
+    PG(auto_globals_jit) = true;
+    PG(enable_dl) = false;
+#endif
+}
+
+int swr_zend_thread_request(const char *file, const char *path_translated, int argc, void (*prologue)(void *),
+                            void (*epilogue)(void *), void *context, void **bailout) {
+#ifdef ZTS
+    if (php_request_startup() != SUCCESS) {
+        EG(exit_status) = 1;
+        return 1;
+    }
+    PG(during_request_startup) = false;
+    SG(sapi_started) = false;
+    SG(headers_sent) = 1;
+    SG(request_info).no_headers = true;
+    SG(request_info).path_translated = (char *) path_translated;
+    SG(request_info).argc = argc;
+#if PHP_VERSION_ID >= 80500
+    refresh_memory_manager();
+#endif
+    zend_file_handle file_handle;
+    zend_stream_init_filename(&file_handle, file);
+    file_handle.primary_script = true;
+    zend_first_try {
+        *bailout = EG(bailout);
+        prologue(context);
+        php_execute_script(&file_handle);
+    }
+    zend_end_try();
+    *bailout = NULL;
+    epilogue(context);
+    zend_destroy_file_handle(&file_handle);
+    php_request_shutdown(NULL);
+    return EG(exit_status);
+#else
+    return 1;
+#endif
+}
+
+void swr_zend_thread_leave(void) {
+#ifdef ZTS
+    ts_free_thread();
+#endif
+}
+
+zval *swr_zend_thread_main_request(const char **path, int *argc) {
+    *path = SG(request_info).path_translated;
+    *argc = SG(request_info).argc;
+    return zend_hash_find_ind(&EG(symbol_table), ZSTR_KNOWN(ZEND_STR_ARGV));
+}
+
+bool swr_zend_tsrm_is_main_thread(void) {
+#ifdef ZTS
+    return tsrm_is_main_thread();
+#else
+    return true;
+#endif
+}
+
+bool swr_zend_tsrm_is_shutdown(void) {
+#ifdef ZTS
+    return tsrm_is_shutdown();
+#else
+    return false;
+#endif
+}
+
+const char *swr_zend_tsrm_api_name(void) {
+#ifdef ZTS
+    return tsrm_api_name();
+#else
+    return "";
+#endif
+}
+
+void swr_zend_thread_set_argv(zval *argv, zend_long argc) {
+    zval count;
+    ZVAL_LONG(&count, argc);
+    zend_hash_update(&EG(symbol_table), ZSTR_KNOWN(ZEND_STR_ARGV), argv);
+    zend_hash_update(&EG(symbol_table), ZSTR_KNOWN(ZEND_STR_ARGC), &count);
+}
+
+void swr_zend_bailout_to(void *target) {
+    if (target) {
+        EG(bailout) = (JMP_BUF *) target;
+    }
+    zend_bailout();
 }

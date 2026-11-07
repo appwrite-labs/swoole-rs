@@ -91,6 +91,44 @@ ZEND_DECLARE_MODULE_GLOBALS(swoole)
 ZEND_TSRMLS_CACHE_DEFINE()
 #endif
 
+// What crates/phpthread reaches only from here: this module's TSRM cache on a
+// new PHP thread, and ext/sockets' Socket objects a Thread container stores.
+extern "C" void swr_cpp_phpthread_tsrmls_update() {
+#if defined(COMPILE_DL_SWOOLE) && defined(ZTS)
+    ZEND_TSRMLS_CACHE_UPDATE();
+#endif
+}
+
+// A duplicate of a Socket's descriptor; -1 after throwing "failed to dup socket
+// fd", -2 after "invalid socket fd", -3 when `value` is no Socket.
+extern "C" int swr_cpp_phpthread_php_socket_cast(zval *value) {
+#ifdef SWOOLE_SOCKETS_SUPPORT
+    if (sw_zval_is_php_socket(value)) {
+        php_socket *php_sock = SW_Z_SOCKET_P(value);
+        if (php_sock->bsd_socket == -1) {
+            zend_throw_exception(swoole_exception_ce, "invalid socket fd", EBADF);
+            return -2;
+        }
+        int fd = dup(php_sock->bsd_socket);
+        if (fd == -1) {
+            zend_throw_exception(swoole_exception_ce, "failed to dup socket fd", errno);
+        }
+        return fd;
+    }
+#endif
+    return -3;
+}
+
+// A Socket over `fd`, which it takes; false on failure.
+extern "C" bool swr_cpp_phpthread_php_socket_create(zval *return_value, int fd) {
+#ifdef SWOOLE_SOCKETS_SUPPORT
+    object_init_ex(return_value, socket_ce);
+    return socket_import_file_descriptor(fd, Z_SOCKET_P(return_value));
+#else
+    return false;
+#endif
+}
+
 // crates/phpswoole mirrors zend_swoole_globals: its defaults, RINIT and RSHUTDOWN use the fields.
 static_assert(offsetof(zend_swoole_globals, cli) == 1 && offsetof(zend_swoole_globals, enable_library) == 4 &&
                   offsetof(zend_swoole_globals, blocking_threshold) == 8 &&
@@ -278,7 +316,7 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
         php_swoole_firebird_minit(module_number);
 #endif
 #ifdef SW_THREAD
-        php_swoole_thread_minit(module_number);
+        swr_v1_phpthread_minit();
         swr_v1_phplocks_thread_atomic_minit();
         swr_v1_phplocks_thread_lock_minit([](const char *message) { php_swoole_fatal_error(E_ERROR, "%s", message); });
         swr_v1_phpthread_barrier_minit();
@@ -312,12 +350,12 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
         php_swoole_oracle_rinit();
 #endif
 #ifdef SW_THREAD
-        php_swoole_thread_rinit();
+        swr_v1_phpthread_rinit();
 #endif
     },
     [] {
 #ifdef SW_THREAD
-        php_swoole_thread_rshutdown();
+        swr_v1_phpthread_rshutdown();
 #endif
     },
     [] { swr_v1_phphelpers_known_free(&sw_zend_known_strings); },

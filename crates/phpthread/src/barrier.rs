@@ -1,7 +1,7 @@
 //! `Swoole\Thread\Barrier`: a reusable barrier every thread holding the object
 //! (or a container value referring to it) waits on.
 use crate::{
-    host::{handlers, host},
+    host::{self, handlers},
     item::{IS_BARRIER, Item, Value},
 };
 use std::{
@@ -126,7 +126,7 @@ fn construct(call: &Call) {
         // SAFETY: in a handler, with Swoole's exception class.
         unsafe {
             throw_exception(
-                host().exception,
+                host::exception(),
                 c"The parameter $count must be greater than 1",
                 INVALID_PARAMS,
             );
@@ -141,8 +141,8 @@ fn wait(call: &Call) {
     // SAFETY: as in `construct`.
     let barrier = unsafe { *BarrierObject::data(call.this()) };
     if barrier.is_null() {
-        // SAFETY: Swoole's fatal error (which exits); this frame owns nothing.
-        unsafe { (host().unconstructed)(true) };
+        // Swoole's fatal error, which exits; this frame owns nothing.
+        host::unconstructed(true);
         return;
     }
     // SAFETY: the object holds a reference for as long as it lives.

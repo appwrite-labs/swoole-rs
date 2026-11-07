@@ -794,9 +794,17 @@ name = "swoole-rs-phpthread"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-error",
+ "swoole-rs-ossupport",
+ "swoole-rs-phpclients",
+ "swoole-rs-phpcoroutines",
  "swoole-rs-phplocks",
  "swoole-rs-phpprocess",
+ "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
+ "swoole-rs-phpswoole",
+ "swoole-rs-reactor",
  "swoole-rs-zend",
 ]
 

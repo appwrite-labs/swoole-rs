@@ -3,7 +3,7 @@
 //! queue (null until `__construct`, or when made by reading a value).
 use crate::{
     array::{Array, list_index, negate},
-    host::{handlers, host},
+    host::{self, handlers},
     item::{IS_ARRAYLIST, IS_MAP, IS_QUEUE, Item, Value},
     queue::Queue,
     table::Key,
@@ -314,8 +314,8 @@ fn slot<T>(call: &Call) -> &mut *const T {
 fn constructed<T>(call: &Call, list: bool) -> Option<&'static T> {
     let shared = *slot::<T>(call);
     if shared.is_null() {
-        // SAFETY: C++'s fatal error; this frame owns nothing.
-        unsafe { (host().unconstructed)(list) };
+        // The fatal error; this frame owns nothing.
+        host::unconstructed(list);
         return None;
     }
     // SAFETY: the object holds a reference for as long as it lives, which
@@ -591,7 +591,7 @@ handlers! {
 /// `throw new Swoole\Exception("out of range", -1)`.
 fn out_of_range() {
     // SAFETY: in a handler, with Swoole's exception class.
-    unsafe { throw_exception(host().exception, c"out of range", -1) };
+    unsafe { throw_exception(host::exception(), c"out of range", -1) };
 }
 
 /// Parse `(int $index)` and check the object.
@@ -767,8 +767,8 @@ fn queue_pop(call: &Call) {
         if item.is_none() {
             // All woken, and another thread took the item: null.
             call.set_null();
-            // SAFETY: Swoole's last error.
-            unsafe { (host().set_last_error)(NO_PAYLOAD) };
+            // Swoole's last error.
+            swoole_rs_corebase::log::set_last_error(NO_PAYLOAD);
         }
         item
     };
