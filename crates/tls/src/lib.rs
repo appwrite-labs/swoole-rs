@@ -165,8 +165,6 @@ pub use owned::*;
 
 #[cfg(unix)]
 mod info;
-#[cfg(unix)]
-pub use info::*;
 
 mod constants;
 pub use constants::*;
