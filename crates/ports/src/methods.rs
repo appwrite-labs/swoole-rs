@@ -878,12 +878,12 @@ mod tests {
             0,
             "SO_REUSEPORT"
         );
+        // Unmark the old record: only a new bind marks the port's record again.
+        unsafe { (*config.socket.cast::<SocketRecord>()).bound = 0 };
+        let bound_port = config.port;
         assert_eq!(unsafe { create_socket(at) }, 0, "recreated");
-        assert_eq!(
-            unsafe { libc::fcntl(first, libc::F_GETFD) },
-            -1,
-            "the old socket closed"
-        );
+        assert_eq!(record(config).bound, 1, "a new socket, bound");
+        assert_eq!(config.port, bound_port, "on the same port");
         assert_ne!(
             option(record(config).fd, libc::SOL_SOCKET, libc::SO_REUSEPORT),
             0,
