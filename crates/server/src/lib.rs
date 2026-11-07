@@ -315,10 +315,9 @@ pub unsafe extern "C" fn swr_v1_server_run_guarded(
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use ops::{
         RUN_ACCEPT, RUN_ADD_CONNECTION, RUN_CHILD_EXIT, RUN_CREATE, RUN_DESTROY,
-        RUN_DISABLE_ACCEPT, RUN_ENABLE_ACCEPT, RUN_HEALTHY, RUN_IDLE_TIMEOUT, RUN_INCOMING,
-        RUN_INIT_SIGNALS, RUN_MASTER_TIMER, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_SIGNAL,
-        RUN_SIGNAL_SHUTDOWN, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STOP_MASTER_THREAD,
-        RUN_STORE_LISTEN_SOCKET,
+        RUN_DISABLE_ACCEPT, RUN_ENABLE_ACCEPT, RUN_IDLE_TIMEOUT, RUN_INCOMING, RUN_MASTER_TIMER,
+        RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_SIGNAL, RUN_SIGNAL_SHUTDOWN, RUN_START_CHECK,
+        RUN_START_MASTER_THREAD, RUN_STOP_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
     };
     Ok(match operation {
         ops::RUN_NATIVE_OP => h
@@ -347,7 +346,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
             connection::set_max_connection(h, u32::try_from(arg).unwrap_or(u32::MAX))?;
             SW_OK
         }
-        RUN_HEALTHY => i64::from(connection::healthy(h, f64::from_bits(arg))?),
         RUN_SHUTDOWN => i64::from(control::shutdown(h)?),
         ops::RUN_REOPEN_LOGGER => {
             control::reopen_logger(h)?;
@@ -365,10 +363,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
         }
         RUN_MASTER_TIMER => {
             control::master_timer(h)?;
-            SW_OK
-        }
-        RUN_INIT_SIGNALS => {
-            control::init_signals(h)?;
             SW_OK
         }
         RUN_CREATE => startup::create(h)?,
