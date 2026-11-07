@@ -38,6 +38,8 @@ pub(crate) trait Source {
     fn release(&self, callable: *mut c_void);
     /// `serv->single_thread = true`.
     fn single_thread(&self);
+    /// `php_swoole_server_length_func`, the `Protocol::LengthFunc` that runs the callable.
+    fn length_func(&self) -> *mut c_void;
     /// `ssl_sni_certs`: a context per host name, configured and added.
     fn sni(&self) -> Step;
     /// `port->ssl_init()`.
@@ -228,7 +230,7 @@ fn framing(s: &impl Source, c: &mut PortConfig) -> Step {
         offset(s, v, &mut c.protocol.package_body_offset, error)?;
     }
     if let Some(callable) = s.callable(c"package_length_func")? {
-        c.protocol.get_package_length = crate::swr_v1_phpserver_length_func as *mut c_void;
+        c.protocol.get_package_length = s.length_func();
         let previous = std::mem::replace(&mut c.protocol.private_data_1, callable);
         if !previous.is_null() {
             s.release(previous);
@@ -408,6 +410,10 @@ impl Source for Zend {
         unsafe { view::config(self.settings.serv) }.single_thread = true;
     }
 
+    fn length_func(&self) -> *mut c_void {
+        crate::swr_v1_phpserver_length_func as *mut c_void
+    }
+
     fn sni(&self) -> Step {
         unsafe extern "C" fn each(
             _index: zend_ulong,
@@ -555,6 +561,9 @@ mod tests {
         }
         fn single_thread(&self) {
             self.trace.borrow_mut().push("single_thread".into());
+        }
+        fn length_func(&self) -> *mut c_void {
+            std::ptr::without_provenance_mut(11)
         }
         fn sni(&self) -> Step {
             self.trace.borrow_mut().push("sni".into());
@@ -876,7 +885,7 @@ mod tests {
             usize::from(c.protocol.package_length_offset),
             SW_IPC_BUFFER_SIZE
         );
-        assert!(!c.protocol.get_package_length.is_null());
+        assert_eq!(c.protocol.get_package_length.addr(), 11);
         let trace = table.trace.borrow().join(";");
         assert!(trace.contains("callable:package_length_func;release:7;single_thread"));
     }
