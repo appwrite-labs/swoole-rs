@@ -38,8 +38,6 @@ typedef struct {
     void *(*add_port)(void *server, int64_t type, const char *host, int64_t port);
     /* A new Server\Port object (sw_malloc_zval) bound to `port` and its server. */
     struct _zval_struct *(*port_object)(void *server, void *port);
-    /* 0: Server, 1: Http\Server, 2: WebSocket\Server, 3: Redis\Server. */
-    int (*kind)(struct _zend_object *object);
     /* serv->create(): null, or sw_error after a failure. */
     const char *(*create_server)(void *server);
     /* serv->start() in zend_try: 0 started and returned, -1 failed (*error is the reason),
@@ -56,9 +54,6 @@ typedef struct {
     void (*copy_setting)(void *server, struct _zval_struct *setting);
     /* Delete the Server. */
     void (*release)(void *server);
-    void (*port_release)(struct _zval_struct *port_object);
-    /* Whether `process` is a Swoole\Process. */
-    bool (*is_process)(struct _zval_struct *process);
     /* addProcess's worker: -3 bailed out, -2 a thread that is not a user worker, -1 add_worker failed,
      * else the id. */
     int64_t (*add_process)(void *server, struct _zval_struct *process);
@@ -66,7 +61,6 @@ typedef struct {
     struct _zend_string *(*json_encode)(struct _zval_struct *data, bool *bailed);
     /* json_decode($text, true) into `out`, or false. */
     void (*json_decode)(const char *text, size_t length, struct _zval_struct *out);
-    struct _zend_class_entry *(*process_class)(void);
 } swr_v1_phpserver_lifecycle_host;
 
 void swr_v1_phpserver_lifecycle_init(const swr_v1_phpserver_lifecycle_host *table);

@@ -226,14 +226,23 @@ fn facts(server: *mut c_void) -> Facts {
         manager_pid: i64::from(gs.manager_pid),
         event_object: config.event_object,
         enable_coroutine: config.enable_coroutine,
-        // `Server::is_enable_coroutine()`.
-        coroutine: if task_worker {
-            config.task_enable_coroutine
-        } else {
-            crate::server::worker_type() != crate::server::MANAGER && config.enable_coroutine
-        },
+        // SAFETY: as above.
+        coroutine: unsafe { is_enable_coroutine(server) },
         enable_library: swoole_rs_phpswoole::enable_library(),
         task_worker,
+    }
+}
+
+/// `Server::is_enable_coroutine()`.
+/// # Safety
+/// `server` is a live `Server`.
+pub unsafe fn is_enable_coroutine(server: *mut c_void) -> bool {
+    // SAFETY: per the caller.
+    let config = unsafe { view::config(server) };
+    match crate::server::worker_type() {
+        crate::server::TASK_WORKER => config.task_enable_coroutine,
+        crate::server::MANAGER => false,
+        _ => config.enable_coroutine,
     }
 }
 

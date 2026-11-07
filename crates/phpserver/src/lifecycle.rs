@@ -21,12 +21,12 @@ use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Message, Object, bailout, class_name, message, object_of, php_error,
     string::bytes,
     sys::{
-        IS_NULL, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree, swr_zend_property_array,
-        swr_zend_property_slot, swr_zend_separate_array, swr_zend_string_release, swr_zval_copy,
-        swr_zval_stringl, zend_class_entry, zend_hash_next_index_insert, zend_hash_str_find,
-        zend_object, zend_object_std_dtor, zend_string, zend_update_property,
-        zend_update_property_bool, zend_update_property_long, zend_update_property_stringl, zval,
-        zval_ptr_dtor,
+        IS_NULL, IS_OBJECT, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree,
+        swr_zend_instanceof, swr_zend_property_array, swr_zend_property_slot,
+        swr_zend_separate_array, swr_zend_string_release, swr_zval_copy, swr_zval_stringl,
+        zend_class_entry, zend_hash_next_index_insert, zend_hash_str_find, zend_object,
+        zend_object_std_dtor, zend_string, zend_update_property, zend_update_property_bool,
+        zend_update_property_long, zend_update_property_stringl, zval, zval_ptr_dtor,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of,
     value::table,
@@ -147,7 +147,6 @@ pub struct LifecycleHost {
     add_systemd_socket: unsafe extern "C" fn(*mut c_void) -> c_int,
     add_port: unsafe extern "C" fn(*mut c_void, i64, *const c_char, i64) -> *mut c_void,
     port_object: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut zval,
-    kind: unsafe extern "C" fn(*mut zend_object) -> c_int,
     create_server: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     start: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> c_int,
     thread_worker: unsafe extern "C" fn(*mut zend_object) -> c_int,
@@ -155,12 +154,50 @@ pub struct LifecycleHost {
     thread_release: unsafe extern "C" fn(*mut c_void),
     copy_setting: unsafe extern "C" fn(*mut c_void, *mut zval),
     release: unsafe extern "C" fn(*mut c_void),
-    port_release: unsafe extern "C" fn(*mut zval),
-    is_process: unsafe extern "C" fn(*mut zval) -> bool,
     add_process: unsafe extern "C" fn(*mut c_void, *mut zval) -> i64,
     json_encode: unsafe extern "C" fn(*mut zval, *mut bool) -> *mut zend_string,
     json_decode: unsafe extern "C" fn(*const c_char, usize, *mut zval),
-    process_class: unsafe extern "C" fn() -> *mut zend_class_entry,
+}
+
+unsafe extern "C" {
+    /// `Swoole\Process` (crates/phpprocess).
+    static swoole_process_ce: *mut zend_class_entry;
+    /// `Swoole\Http\Server` and `Swoole\WebSocket\Server` (crates/phphttp).
+    static swoole_http_server_ce: *mut zend_class_entry;
+    static swoole_websocket_server_ce: *mut zend_class_entry;
+    /// `Swoole\Redis\Server` (crates/phpredis).
+    static swoole_redis_server_ce: *mut zend_class_entry;
+}
+
+/// `instanceof_function(ce, parent)`.
+fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> bool {
+    // SAFETY: two registered classes.
+    unsafe { swr_zend_instanceof(ce, parent) }
+}
+
+/// What kind of Server `object` is: the most derived of `KIND_*`, else 0.
+/// # Safety
+/// `object` is a live object.
+unsafe fn kind(object: *mut zend_object) -> c_int {
+    // SAFETY: per the caller.
+    let ce = unsafe { (*object).ce };
+    // SAFETY: classes registered at MINIT, read-only since.
+    let (redis, websocket, http) = unsafe {
+        (
+            swoole_redis_server_ce,
+            swoole_websocket_server_ce,
+            swoole_http_server_ce,
+        )
+    };
+    if instance_of(ce, redis) {
+        KIND_REDIS
+    } else if instance_of(ce, websocket) {
+        KIND_WEBSOCKET
+    } else if instance_of(ce, http) {
+        KIND_HTTP
+    } else {
+        0
+    }
 }
 
 static HOST: AtomicPtr<LifecycleHost> = AtomicPtr::new(ptr::null_mut());
@@ -250,13 +287,13 @@ fn put(serv: *mut c_void, which: u32) {
 /// `swoole_process_ce`.
 pub(crate) fn process_class() -> *mut zend_class_entry {
     // SAFETY: reads a class registered at MINIT.
-    unsafe { (host().process_class)() }
+    unsafe { swoole_process_ce }
 }
 
 /// The Server object's data.
 /// # Safety
 /// `object` is a live Server object.
-unsafe fn data<'a>(object: *mut zend_object) -> &'a mut ServerData {
+pub(crate) unsafe fn data<'a>(object: *mut zend_object) -> &'a mut ServerData {
     // SAFETY: per the caller; C++ and Rust allocate Servers as `Object<ServerData>`.
     unsafe { Object::<ServerData>::data(object) }
 }
@@ -385,7 +422,11 @@ pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
         }
         for &port in &property.ports {
             // SAFETY: a Port zval `port_object` allocated.
-            unsafe { (host.port_release)(port) };
+            let object = unsafe { swoole_rs_zend::object_of(port) };
+            // SAFETY: its Port object.
+            unsafe { crate::port::swr_v1_phpserver_port_deref(object) };
+            // SAFETY: the emalloc'd zval, freed once.
+            unsafe { swr_zend_efree(port.cast()) };
         }
         data.serv = ptr::null_mut();
     }
@@ -638,7 +679,13 @@ fn add_process(call: &Call) {
     }
     let process = call.zval(1);
     // SAFETY: a passed argument.
-    if !unsafe { (host.is_process)(process) } {
+    let is_process = unsafe { type_of(process) } == IS_OBJECT && {
+        // SAFETY: an object zval.
+        let object = unsafe { object_of(process) };
+        // SAFETY: its live object.
+        instance_of(unsafe { (*object).ce }, process_class())
+    };
+    if !is_process {
         fatal(E_ERROR, c"object is not instanceof swoole_process");
         return call.set_bool(false);
     }
@@ -662,8 +709,7 @@ fn add_process(call: &Call) {
             call.set_bool(false);
         }
         id => {
-            // SAFETY: registered at MINIT.
-            let process_ce = unsafe { (host.process_class)() };
+            let process_ce = process_class();
             // SAFETY: a live process object.
             let process = unsafe { object_of(copy) };
             // SAFETY: `Swoole\Process` and its object.
@@ -1029,7 +1075,7 @@ fn before_start(object: *mut zend_object, serv: *mut c_void) -> Result<(), Stop>
         put(serv, install::ADMIN_COMMANDS);
     }
     // SAFETY: `$this`.
-    let kind = unsafe { (host.kind)(object) };
+    let kind = unsafe { kind(object) };
     let http_server = kind == KIND_HTTP || kind == KIND_WEBSOCKET;
     // SAFETY: `$this` is a Server.
     let ports = unsafe { property(object) }.ports.clone();

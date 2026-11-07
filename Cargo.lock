@@ -728,7 +728,13 @@ dependencies = [
 name = "swoole-rs-phpredis"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-phpcoroutines",
+ "swoole-rs-phphelpers",
+ "swoole-rs-phpserver",
  "swoole-rs-phpstubs",
+ "swoole-rs-phpswoole",
  "swoole-rs-protocols",
  "swoole-rs-zend",
 ]

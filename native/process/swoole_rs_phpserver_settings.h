@@ -10,7 +10,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-struct _zend_object;
 struct _zval_struct;
 
 enum {
@@ -42,12 +41,8 @@ typedef struct {
     int64_t (*get)(void *server, uint32_t id);
     /* A string setting, or one item of a list (SWR_PHPSERVER_TEXT_*). */
     void (*text)(void *server, uint32_t id, const char *value, size_t length);
-    /* php_swoole_set_global/coroutine/aio_option in zend_try: true if it bailed out. */
-    bool (*global_options)(void *settings);
     /* This process's CPU affinity into `cpus`: the count, or -1 with *error = errno. */
     int (*cpu_affinity)(int *cpus, size_t capacity, int *error);
-    /* SW_THREAD's bootstrap and init_arguments, in zend_try: true if it bailed out. */
-    bool (*thread_options)(struct _zend_object *object, void *settings);
 } swr_v1_phpserver_settings_host;
 
 void swr_v1_phpserver_settings_init(const swr_v1_phpserver_settings_host *table);
