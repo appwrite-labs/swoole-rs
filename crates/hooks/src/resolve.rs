@@ -1,7 +1,7 @@
-//! The address loop shared by the coroutine socket's `connect(host)` and
-//! `sendto(host)`: assign the address, and when that rejects a bad host address,
-//! resolve the name and try once more. Native code keeps the address, the
-//! resolver and the error text, and passes them in [`ResolveOps`].
+//! The coroutine socket's `connect(host)` address loop: assign the address, and
+//! when that rejects a bad host address, resolve the name and try once more. Native
+//! code keeps the address, the resolver and the error text, and passes them in
+//! [`ResolveOps`].
 use core::ffi::{c_int, c_void};
 
 /// Outcomes besides 0 (assigned, or the second try fell through as upstream's does).
@@ -25,8 +25,8 @@ pub struct ResolveOps {
 ///
 /// # Safety
 /// `ops` is live for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_resolve(ops: *const ResolveOps) -> c_int {
+#[must_use]
+pub unsafe fn swr_v1_hook_resolve(ops: *const ResolveOps) -> c_int {
     // SAFETY: the caller passes a live table (see above).
     let ops = unsafe { &*ops };
     for _ in 0..2 {

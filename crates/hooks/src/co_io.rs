@@ -387,40 +387,6 @@ impl Timer {
     }
 }
 
-/// `TimerController(socket, event, timeout)`.
-///
-/// # Safety
-/// `socket` is a live record; the timer does not outlive it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_timer_new(
-    socket: *mut CoSocket,
-    event: u32,
-    timeout: f64,
-) -> Timer {
-    // SAFETY: as the caller promises.
-    unsafe { Timer::new(socket, event, timeout) }
-}
-
-/// `TimerController::start`.
-///
-/// # Safety
-/// `timer` is live, made by [`swr_v1_hook_co_timer_new`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_timer_start(timer: *mut Timer) -> bool {
-    // SAFETY: as the caller promises.
-    unsafe { &mut *timer }.start()
-}
-
-/// `~TimerController`.
-///
-/// # Safety
-/// As [`swr_v1_hook_co_timer_start`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_timer_stop(timer: *mut Timer) {
-    // SAFETY: as the caller promises.
-    unsafe { &mut *timer }.stop();
-}
-
 /// `Socket::timer_callback`: the timer `node` fired. The socket's error becomes
 /// `ETIMEDOUT` and the coroutine waiting in the timer's direction resumes; a node
 /// neither slot holds aborts, as upstream does.

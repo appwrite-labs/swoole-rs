@@ -980,7 +980,7 @@ fn enable_crypto(
 /// `capture_peer_cert_chain` the `peer_certificate_chain`) context options;
 /// false without a peer certificate.
 fn capture_peer_certs(stream: *mut php_stream, socket: &Socket) -> Result<bool, Bailout> {
-    let cert = socket.peer_certs(false).pop().unwrap_or_default();
+    let cert = socket.peer_cert();
     if cert.is_empty() {
         return Ok(false);
     }
@@ -990,7 +990,7 @@ fn capture_peer_certs(stream: *mut php_stream, socket: &Socket) -> Result<bool, 
     unsafe { x509_read(&cert, &raw mut certificate) }?;
     set_context_option(stream, c"peer_certificate", &raw mut certificate);
     if option_true(stream, c"ssl", c"capture_peer_cert_chain") {
-        let chain = socket.peer_certs(true);
+        let chain = socket.peer_chain();
         // SAFETY: a null zval until it becomes the array.
         let mut array: zval = unsafe { std::mem::zeroed() };
         array.u1.type_info = IS_NULL;

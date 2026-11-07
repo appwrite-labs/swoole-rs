@@ -25,23 +25,24 @@ use crate::socket_tls::{owner, read_timeout, ssl_context_create};
 use crate::socket_wait::{
     swr_v1_hook_co_socket_error_event, swr_v1_hook_co_socket_poll, swr_v1_hook_socket_ready, wait,
 };
-use crate::transfer::{ALL, RETRY_INTERRUPTED, swr_v1_hook_co_socket_transfer};
+use crate::transfer::{ALL, CHECKED, RETRY_INTERRUPTED, swr_v1_hook_co_socket_transfer};
 #[cfg(feature = "iouring")]
 use crate::uring_socket as ring;
 use crate::vector::vector_all;
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{align_of, size_of};
 use core::ptr::null_mut;
+use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
-    Event, ReactorIov, SocketAddress, SocketRecord, swr_v1_reactor_iov_view,
+    CLASS_DGRAM, Event, ReactorIov, SocketAddress, SocketRecord, swr_v1_reactor_iov_view,
     swr_v1_socket_accept_new, swr_v1_socket_bind, swr_v1_socket_get_name, swr_v1_socket_listen,
-    swr_v1_socket_set_timeout, swr_v1_socket_timeout,
+    swr_v1_socket_set_timeout, swr_v1_socket_timeout, type_is,
 };
 use swoole_rs_tls::owner_fields;
 use swoole_rs_tls::upstream::{
     sendfile as socket_sendfile_fd, socket_peek, socket_readv, socket_recv, socket_send,
-    socket_writev,
+    socket_ssl_get_peer_certificate_pem, socket_writev,
 };
 
 /// `SW_EVENT_WRITE`.
@@ -438,13 +439,6 @@ unsafe fn accepting<'a>(context: *mut c_void) -> &'a mut Accepting {
     unsafe { &mut *context.cast::<Accepting>() }
 }
 
-unsafe extern "C" fn accept_available(context: *mut c_void, event: c_int) -> bool {
-    // SAFETY: the accept's live socket.
-    let socket = unsafe { accepting(context) }.socket;
-    // SAFETY: as above.
-    unsafe { available(socket, event.cast_unsigned()) }
-}
-
 unsafe extern "C" fn accept_fail(context: *mut c_void, error: c_int) {
     // SAFETY: the accept's live socket.
     let socket = unsafe { accepting(context) }.socket;
@@ -467,15 +461,6 @@ unsafe extern "C" fn accept_wait(context: *mut c_void, event: c_int) -> bool {
         timer.start() && unsafe { wait(state.socket, event.cast_unsigned(), None, null_mut(), 0) };
     timer.stop();
     ready
-}
-
-unsafe extern "C" fn accept_name(context: *mut c_void) -> c_int {
-    // SAFETY: the accept's live socket.
-    let socket = unsafe { accepting(context) }.socket;
-    // SAFETY: as above.
-    let network = unsafe { (*socket).socket };
-    // SAFETY: its live network::Socket.
-    unsafe { swr_v1_socket_get_name(network) }
 }
 
 unsafe extern "C" fn accept_call(context: *mut c_void, _: c_int) -> c_int {
@@ -548,10 +533,8 @@ unsafe fn accepted(socket: *mut CoSocket, timeout: f64) -> *mut c_void {
     };
     let ops = SetupOps {
         context: (&raw mut state).cast(),
-        available: accept_available,
         fail: accept_fail,
         wait: accept_wait,
-        name: accept_name,
         call: accept_call,
     };
     // SAFETY: the table and its state are live for the call.
@@ -675,6 +658,260 @@ unsafe fn transfer<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
             context,
         )
     }
+}
+
+// SAFETY: crates/clients' `Address::assign` body and src/coroutine/system.cc's
+// `System::gethostbyname` adapter, both linked into the hybrid with this crate.
+unsafe extern "C" {
+    fn swr_v1_clients_address_assign(
+        address: *mut c_void,
+        length: *mut libc::socklen_t,
+        kind: c_int,
+        host: *const c_char,
+        host_length: usize,
+        port: c_int,
+        resolve: Option<unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_int>,
+    ) -> c_int;
+    fn swr_v1_system_gethostbyname(
+        host: *const c_char,
+        length: usize,
+        family: core::ffi::c_long,
+        timeout: f64,
+        put: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
+        out: *mut c_void,
+    ) -> bool;
+}
+
+/// `SW_ERROR_BAD_HOST_ADDR` and `SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE`.
+const BAD_HOST_ADDR: c_int = 722;
+const SSL_EMPTY_PEER_CERTIFICATE: c_int = 1013;
+
+/// `Address::assign(type, host, port, false)` into `address`; false with the last
+/// error set.
+///
+/// # Safety
+/// `host` holds `length` bytes followed by a NUL.
+unsafe fn assign(
+    address: &mut SocketAddress,
+    kind: c_int,
+    host: *const c_char,
+    length: usize,
+    port: c_int,
+) -> bool {
+    address.kind = kind;
+    // SAFETY: the address's own union and length; the host as the caller promises.
+    let error = unsafe {
+        swr_v1_clients_address_assign(
+            (&raw mut address.addr).cast(),
+            &raw mut address.len,
+            kind,
+            host,
+            length,
+            port,
+            None,
+        )
+    };
+    if error != 0 {
+        log::set_last_error(error);
+    }
+    error == 0
+}
+
+/// `Socket::bind(host, port)`: `SO_REUSEADDR` (a failure is only logged), bind to the
+/// host's literal address, then record the local name; false with the error set.
+///
+/// # Safety
+/// `this` is a live native socket and `host` holds `length` bytes followed by a NUL.
+pub unsafe fn bind_host(
+    this: *mut c_void,
+    host: *const c_char,
+    length: usize,
+    port: c_int,
+) -> bool {
+    let socket = record(this);
+    // SAFETY: as the caller promises.
+    if !unsafe { available(socket, 0) } {
+        return false;
+    }
+    log::set_last_error(0);
+    // SAFETY: the live record's network::Socket.
+    let network = unsafe { (*socket).socket };
+    // SAFETY: as above.
+    let record = unsafe { &*network };
+    let (fd, kind) = (record.fd, record.socket_type);
+    let enable: c_int = 1;
+    // SAFETY: setsockopt(2) of an int on the socket's descriptor.
+    let reuse = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            (&raw const enable).cast(),
+            INT_LENGTH,
+        )
+    };
+    if reuse < 0 {
+        // SAFETY: as the caller promises.
+        let fd = unsafe { (*socket).sock_fd };
+        log::sys_warning(
+            c"bind",
+            format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),
+        );
+    }
+    // SAFETY: an all-zero address, as `Address` starts.
+    let mut address: SocketAddress = unsafe { core::mem::zeroed() };
+    // SAFETY: as the caller promises.
+    let mut bound = unsafe { assign(&mut address, kind, host, length, port) };
+    // SAFETY: the network::Socket and the address just assigned.
+    bound = bound
+        && unsafe { swr_v1_socket_bind(network, (&raw const address.addr).cast(), address.len) }
+            >= 0;
+    // SAFETY: the live network::Socket.
+    bound = bound && unsafe { swr_v1_socket_get_name(network) } >= 0;
+    if !bound {
+        // SAFETY: as the caller promises.
+        unsafe { swr_v1_hook_co_socket_default_err(socket, log::last_error()) };
+    }
+    bound
+}
+
+/// `bool Socket::bind(const char *address, int port)`.
+///
+/// # Safety
+/// As [`bind_host`], with `host` NUL-terminated.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket4bindEPKci")
+)]
+pub unsafe extern "C" fn bind_cstr(this: *mut c_void, host: *const c_char, port: c_int) -> bool {
+    // SAFETY: as the caller promises.
+    let length = unsafe { CStr::from_ptr(host) }.count_bytes();
+    // SAFETY: as above.
+    unsafe { bind_host(this, host, length, port) }
+}
+
+unsafe extern "C" fn put_host(out: *mut c_void, data: *const c_char, length: usize) {
+    // SAFETY: `data` holds `length` bytes.
+    let data = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), length) };
+    // SAFETY: `out` is the caller's Vec, live for the call.
+    unsafe { &mut *out.cast::<Vec<u8>>() }.extend_from_slice(data);
+}
+
+/// `Socket::sendto(host, port, buf, n)`: an available datagram socket sends to the
+/// host's address, resolving its name when it is not an address; -1 with the error
+/// set.
+///
+/// # Safety
+/// `this` is a live native socket in a coroutine, `host` holds `length` bytes followed
+/// by a NUL and `buf` holds `n` bytes.
+pub unsafe fn sendto_host(
+    this: *mut c_void,
+    host: *const c_char,
+    length: usize,
+    port: c_int,
+    buf: *const c_void,
+    n: usize,
+) -> isize {
+    let socket = record(this);
+    // SAFETY: as the caller promises.
+    if !unsafe { available(socket, WRITE) } {
+        return -1;
+    }
+    // SAFETY: the live record.
+    let record = unsafe { &*socket };
+    let (kind, domain) = (record.kind, record.sock_domain);
+    // SAFETY: its live network::Socket.
+    let network = unsafe { &*record.socket };
+    let (socket_type, timeout) = (network.socket_type, network.timeouts.dns);
+    if !type_is(socket_type, CLASS_DGRAM) {
+        // SAFETY: as the caller promises.
+        unsafe { set_err(socket, libc::EPROTONOSUPPORT) };
+        return -1;
+    }
+    // Zeroed whole: a stale scope id misroutes an interface-local IPv6 destination.
+    // SAFETY: an all-zero address.
+    let mut address: SocketAddress = unsafe { core::mem::zeroed() };
+    // SAFETY: as the caller promises.
+    let mut assigned = unsafe { assign(&mut address, kind, host, length, port) };
+    if !assigned && log::last_error() == BAD_HOST_ADDR {
+        let mut ip = Vec::new();
+        let out = (&raw mut ip).cast();
+        // SAFETY: the host's bytes; `put_host` appends to `ip`, live for the call.
+        if unsafe {
+            swr_v1_system_gethostbyname(host, length, domain.into(), timeout, put_host, out)
+        } {
+            let resolved = ip.len();
+            ip.push(0);
+            // SAFETY: the resolved address, NUL-terminated.
+            assigned = unsafe { assign(&mut address, kind, ip.as_ptr().cast(), resolved, port) };
+        }
+    }
+    if !assigned {
+        // SAFETY: as the caller promises.
+        unsafe { swr_v1_hook_co_socket_default_err(socket, log::last_error()) };
+        return -1;
+    }
+    let mut sent = 0;
+    let to = (&raw mut address.addr).cast::<libc::sockaddr>();
+    let length = &raw mut address.len;
+    // SAFETY: the live record, the caller's buffer and the local address.
+    if unsafe { uring_sendto(socket, buf.cast_mut(), n, to, length, &raw mut sent) } {
+        return sent;
+    }
+    let to_length = address.len;
+    let call = call!(|s, at, len| libc::sendto((*s).fd, at.cast(), len, 0, to, to_length));
+    // SAFETY: as the caller promises; availability was checked above.
+    unsafe {
+        transfer(
+            this,
+            WRITE,
+            RETRY_INTERRUPTED | CHECKED,
+            buf.cast_mut().cast(),
+            n,
+            call,
+        )
+    }
+}
+
+/// `ssize_t Socket::sendto(const char *host, int port, const void *buf, size_t n)`.
+///
+/// # Safety
+/// As [`sendto_host`], with `host` NUL-terminated.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket6sendtoEPKciPKvm")
+)]
+pub unsafe extern "C" fn sendto_cstr(
+    this: *mut c_void,
+    host: *const c_char,
+    port: c_int,
+    buf: *const c_void,
+    n: usize,
+) -> isize {
+    // SAFETY: as the caller promises.
+    let length = unsafe { CStr::from_ptr(host) }.count_bytes();
+    // SAFETY: as above.
+    unsafe { sendto_host(this, host, length, port, buf, n) }
+}
+
+/// The peer certificate's PEM, or empty with the error set when there is none.
+///
+/// # Safety
+/// `this` is a live native socket.
+pub unsafe fn peer_cert(this: *mut c_void) -> Vec<u8> {
+    let mut pem = vec![0_u8; SW_STACK_BUFFER_SIZE as usize];
+    // SAFETY: as the caller promises.
+    let socket = unsafe { network(this) };
+    // SAFETY: the live network::Socket and the local buffer.
+    let length =
+        unsafe { socket_ssl_get_peer_certificate_pem(socket, pem.as_mut_ptr().cast(), pem.len()) };
+    if let Ok(length) = usize::try_from(length) {
+        pem.truncate(length);
+        return pem;
+    }
+    // SAFETY: as the caller promises.
+    unsafe { set_err(record(this), SSL_EMPTY_PEER_CERTIFICATE) };
+    Vec::new()
 }
 
 /// `Socket::recv(buf, n)`.
@@ -1165,14 +1402,13 @@ pub unsafe extern "C" fn poll(this: *mut c_void, event: u32, timeout: f64) -> bo
     unsafe { swr_v1_hook_co_socket_poll(record(this), event, timeout) }
 }
 
-/// `UringSocket::sendto`'s transfer to the address native code resolved: false,
+/// `UringSocket::sendto`'s transfer to the resolved address: false,
 /// leaving `*sent` alone, unless the socket is a `UringSocket`.
 ///
 /// # Safety
 /// `socket` is a live record; `buf` holds `n` bytes, `addr` holds `*length` and
 /// `sent` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_uring_sendto(
+unsafe fn uring_sendto(
     socket: *mut CoSocket,
     buf: *mut c_void,
     n: usize,

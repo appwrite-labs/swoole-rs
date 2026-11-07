@@ -167,28 +167,6 @@ void swr_v1_hook_socket_state_free(swr_v1_hook_socket_state *state);
 swr_v1_hook_socket_flags_t swr_v1_hook_socket_flags(const swr_v1_hook_socket_state *state);
 void swr_v1_hook_socket_set_flags(swr_v1_hook_socket_state *state, swr_v1_hook_socket_flags_t flags);
 void swr_v1_hook_socket_connect(swr_v1_hook_socket_state *state);
-/* Server setup (crates/hooks/src/setup.rs): bind (host: availability first, then
- * record the name), listen (SW_BACKLOG for a non-positive backlog, stored in
- * *stored). fail(-1) is set_err(); call is the operation's network::Socket call. */
-typedef struct {
-    void *context;
-    bool (*available)(void *, int event);
-    void (*fail)(void *, int error);
-    bool (*wait)(void *, int event);
-    int (*name)(void *);
-    int (*call)(void *, int argument);
-} swr_v1_hook_setup_ops;
-bool swr_v1_hook_bind(const swr_v1_hook_setup_ops *ops);
-/* connect(host)/sendto(host)'s address loop: up to two assigns with a resolve
- * between them on SW_ERROR_BAD_HOST_ADDR. 0 assigned (or fell through), 1 an
- * assign failed otherwise, 2 the resolve failed. */
-typedef struct {
-    void *context;
-    bool (*assign)(void *);
-    bool (*bad_host)(void);
-    bool (*resolve)(void *);
-} swr_v1_hook_resolve_ops;
-int swr_v1_hook_resolve(const swr_v1_hook_resolve_ops *ops);
 /* Socket::connect(host, port), whole (crates/hooks/src/connect.rs). family is AF_INET/AF_INET6
  * for an IPv4/IPv6 socket, else 0; proxy 0 none, 1 SOCKS5, 2 HTTP. set_err(-1) is set_err();
  * set_err_text with null text uses swoole_strerror(code). set_host stores the connect target
