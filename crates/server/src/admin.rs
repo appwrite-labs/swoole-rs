@@ -389,10 +389,9 @@ fn all_commands<F: Facts>(f: &mut F) -> Json {
 /// `sw_atoi`: `strtol` base 10, saturating, truncated to `int`.
 fn atoi(text: &str) -> i32 {
     let text = text.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
-    let (negative, digits) = match text.as_bytes().first() {
-        Some(b'-') => (true, &text[1..]),
-        Some(b'+') => (false, &text[1..]),
-        _ => (false, text),
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(digits) => (true, digits),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
     };
     let mut value: i64 = 0;
     for byte in digits.bytes().take_while(u8::is_ascii_digit) {

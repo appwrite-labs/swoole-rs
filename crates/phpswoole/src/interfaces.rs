@@ -206,8 +206,10 @@ fn local_mac(call: &Call) {
     for entry in buffer.iter().take(count) {
         // SAFETY: plain data; all-zero is valid.
         let mut request: libc::ifreq = unsafe { zeroed() };
-        let end = libc::IFNAMSIZ - 1;
-        request.ifr_name[..end].copy_from_slice(&entry.ifr_name[..end]);
+        let name = request.ifr_name.iter_mut().zip(&entry.ifr_name);
+        for (slot, byte) in name.take(libc::IFNAMSIZ - 1) {
+            *slot = *byte;
+        }
         // SAFETY: a socket and a named request.
         if unsafe { libc::ioctl(sock, SIOCGIFFLAGS, &raw mut request) } < 0 {
             continue;
