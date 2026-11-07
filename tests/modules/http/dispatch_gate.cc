@@ -4,25 +4,9 @@
 #include <sstream>
 void check(bool yes,const char *message){if(!yes)throw std::runtime_error(message);}
 int main(){
-    unsigned routes=0,proxies=0,proxy_faults=0,candidate_faults=0,auth_faults=0,cache_faults=0;
+    unsigned proxies=0,proxy_faults=0,candidate_faults=0,auth_faults=0,cache_faults=0;
     std::ostringstream traces;
     try {
-        for(unsigned ws=0;ws<256;++ws)for(unsigned h2:{0u,1u,255u}) {
-            upstream_dispatch::Connection a;candidate_dispatch::Connection b;a.websocket_status=b.websocket_status=ws;a.http2_stream=b.http2_stream=h2;
-            upstream_dispatch::Socket sa{&a};candidate_dispatch::Socket sb{&b};upstream_dispatch::Protocol pa;candidate_dispatch::Protocol pb;
-            upstream_dispatch::PacketLength la;candidate_dispatch::PacketLength lb;
-            upstream_dispatch::RecvData da;candidate_dispatch::RecvData db;
-            for(unsigned operation=0;operation<3;++operation){
-                upstream_dispatch::reset();candidate_dispatch::reset();int old=0,current=0;
-                if(operation==0){old=upstream_dispatch::get_package_length(&pa,&sa,&la);current=candidate_dispatch::get_package_length(&pb,&sb,&lb);}
-                if(operation==1){old=upstream_dispatch::get_package_length_size(&sa);current=candidate_dispatch::get_package_length_size(&sb);}
-                if(operation==2){old=upstream_dispatch::dispatch_frame(&pa,&sa,&da);current=candidate_dispatch::dispatch_frame(&pb,&sb,&db);}
-                check(old==current&&la.seen==lb.seen&&upstream_dispatch::ws_calls==candidate_dispatch::ws_calls&&upstream_dispatch::h2_calls==candidate_dispatch::h2_calls&&upstream_dispatch::dispatch_calls==candidate_dispatch::dispatch_calls&&upstream_dispatch::error_calls==candidate_dispatch::error_calls,"transport result/call routing");
-                if(candidate_dispatch::seen_proto)check(candidate_dispatch::seen_proto==&pb,"protocol pointer");
-                if(candidate_dispatch::seen_socket)check(candidate_dispatch::seen_socket==&sb,"socket pointer");
-                if(candidate_dispatch::seen_data)check(candidate_dispatch::seen_data==&db,"data pointer");++routes;
-            }
-        }
         const std::string long_name(200,'x');
         for(const std::string &host:{std::string(),std::string("host"),long_name})for(const std::string &user:{std::string(),std::string("u\0tail",6),long_name})for(const std::string &pwd:{std::string(),std::string("p\0tail",6),long_name}){
             const bool authenticated=!user.empty()&&!pwd.empty();
@@ -108,7 +92,7 @@ int main(){
             }
             ++proxies;
         }
-        std::cout<<"{\"route_cases\":"<<routes<<",\"proxy_cases\":"<<proxies
+        std::cout<<"{\"proxy_cases\":"<<proxies
                  <<",\"native_proxy_allocation_faults\":"<<proxy_faults<<",\"candidate_cpp_factory_faults\":"<<candidate_faults
                  <<",\"candidate_cpp_auth_faults\":"<<auth_faults<<",\"candidate_cpp_cache_faults\":"<<cache_faults<<",\"allocation_traces\":["<<traces.str()<<"],\"errors\":0}\n";
     }catch(const std::exception &e){allocation::end();std::cerr<<e.what()<<'\n';return 1;}

@@ -74,6 +74,7 @@ pub use static_meta::{
 };
 mod status_buffer;
 pub use status_buffer::{NATIVE_STATUS_CODES, swr_v2_http_status_message};
+pub mod http_server;
 mod static_headers;
 mod static_path;
 pub use maps::{swr_v1_http_method, swr_v1_http_method_string, swr_v1_http_status};
