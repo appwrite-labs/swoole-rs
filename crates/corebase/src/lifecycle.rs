@@ -41,6 +41,14 @@ fn read<T: Copy>(host: &NativeHost, field: impl FnOnce(&ThreadGlobal) -> T) -> T
     field(unsafe { &*thread(host) })
 }
 
+/// `SwooleTG.reactor`: null before `swoole_init`, as `SwooleTG` is then.
+#[must_use]
+pub fn thread_reactor() -> *mut c_void {
+    native::host().map_or(std::ptr::null_mut(), |host| {
+        read(host, |thread| thread.reactor)
+    })
+}
+
 /// `void swoole_thread_init(bool main_thread)`.
 #[cfg_attr(
     feature = "upstream-symbols",

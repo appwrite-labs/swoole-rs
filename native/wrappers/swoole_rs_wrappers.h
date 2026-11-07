@@ -60,8 +60,6 @@ typedef uint64_t (*SwrWrapperNative)(void *context, uint32_t op, void *object, c
 void swr_v1_wrappers_request_bind(SwrWrapperRequest *, void *context, SwrWrapperNative native);
 /* The llhttp_settings_t of those callbacks. */
 const void *swr_v1_wrappers_http_settings(void);
-uint8_t swr_v1_wrappers_event_wait(uint8_t wait_exit, uint8_t exit);
-int32_t swr_v1_wrappers_event_direction(int32_t event);
 #ifdef __cplusplus
 }
 #endif

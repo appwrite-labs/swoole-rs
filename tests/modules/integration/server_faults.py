@@ -43,7 +43,7 @@ def main():
                            '-Wall', '-Wextra', '-Werror', *flags, str(fixture),
                            str(archive), '-pthread', '-o', str(binary)]
                 if wrapped:
-                    # --gc-sections: the archive's references to C++ (event.cc's swr_v1_event_reactor) are unreachable here.
+                    # --gc-sections: the archive's references to C++ (event.cc's Reactor::wait) are unreachable here.
                     # OpenSSL: the server runner sends through crates/tls's Socket::send (crates/server/src/master_ops.rs).
                     command += ['-DWRAP_FREE', '-Wl,--wrap=free', '-Wl,--gc-sections', '-lssl', '-lcrypto', '-ldl', '-lm']
                 if sanitize:

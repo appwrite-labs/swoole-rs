@@ -261,11 +261,8 @@ int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_
 int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);
 /* --fix-halfclose's close_notify and interrupted-sendfile repairs (SW_HALFCLOSE_TLS_SHUTDOWN). */
 void swr_v1_socket_set_halfclose_repairs(bool repaired);
-/* The thread's Reactor while swoole_event_is_available(), else null (src/wrapper/event.cc). */
-void *swr_v1_event_reactor(void);
-/* The thread's Reactor, available or not (sw_reactor()), and Reactor::set_exit_condition of
- * a plain function, for Rust's signal backends (src/wrapper/event.cc). */
-void *swr_v1_event_current(void);
+/* Reactor::set_exit_condition of a plain function, for Rust's signal backends
+ * (src/wrapper/event.cc). */
 void swr_v1_event_set_exit_condition(int id, bool (*condition)(size_t *event_num));
 /* The swr_v1_reactor_change_log the C++ passes. */
 void swr_v1_reactor_log(const char *origin, int code, const char *message);

@@ -441,20 +441,6 @@ pub unsafe extern "C" fn swr_v1_wrappers_header_wire(
     }
     n
 }
-// Preserve native short-circuiting: if_exit is evaluated natively only for wait_exit.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_wrappers_event_wait(wait_exit: u8, exit: u8) -> u8 {
-    u8::from(wait_exit == 0 || exit == 0)
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_wrappers_event_direction(event: i32) -> i32 {
-    match event {
-        512 => 1,
-        1024 => 2,
-        _ => 0,
-    }
-}
-
 #[cfg(test)]
 mod tests;
 

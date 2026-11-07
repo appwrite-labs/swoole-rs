@@ -35,25 +35,7 @@ fn view(p: *const Request) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, u32) {
 }
 
 #[test]
-fn event_direction_wait_and_init_match_the_native_expressions() {
-    // SW_EVENT_READ is 512 and SW_EVENT_WRITE 1024.
-    for event in -2048..=2048 {
-        let expected = match event {
-            512 => 1,
-            1024 => 2,
-            _ => 0,
-        };
-        assert_eq!(swr_v1_wrappers_event_direction(event), expected, "{event}");
-    }
-    // `!(wait_exit && if_exit())`, with if_exit evaluated only under wait_exit.
-    for wait in 0..2 {
-        for exit in 0..2 {
-            assert_eq!(
-                swr_v1_wrappers_event_wait(wait, exit),
-                u8::from(wait == 0 || exit == 0)
-            );
-        }
-    }
+fn event_init_matches_the_native_expressions() {
     let refused = swr_v1_wrappers_event_init(u32::MAX, u32::MAX, 0);
     assert_eq!(
         (refused.accepted, refused.wait_exit, refused.initializers),
