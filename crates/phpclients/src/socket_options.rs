@@ -287,15 +287,6 @@ pub unsafe extern "C" fn php_swoole_socket_set_protocol(
     unsafe { swr_v1_phpclients_socket_settings(socket, settings, PROTOCOL) }
 }
 
-/// `php_swoole_socket_set_ssl(socket, settings)`.
-/// # Safety
-/// As [`swr_v1_phpclients_socket_settings`].
-#[unsafe(export_name = "_Z25php_swoole_socket_set_sslPN6swoole9coroutine6SocketEPK12_zval_struct")]
-pub unsafe extern "C" fn php_swoole_socket_set_ssl(socket: Socket, settings: *const zval) -> bool {
-    // SAFETY: per the caller.
-    unsafe { swr_v1_phpclients_socket_settings(socket, settings, SSL) }
-}
-
 /// `php_swoole_socket_set_protocol`.
 fn set_protocol(s: &Settings, socket: Socket) -> Result<bool, Stop> {
     let mut ret = true;

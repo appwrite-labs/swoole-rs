@@ -113,6 +113,13 @@ struct SocketOps {
 
 unsafe extern "C" {
     static swr_v1_runtime_socket: SocketOps;
+    /// crates/phpclients' settings over a coroutine socket; `which` 2 applies
+    /// the SSL ones (`php_swoole_socket_set_ssl`). Raises a bailout it caught.
+    fn swr_v1_phpclients_socket_settings(
+        socket: *mut c_void,
+        settings: *const zval,
+        which: c_int,
+    ) -> bool;
 }
 
 /// The native table: static and read-only.
@@ -121,8 +128,7 @@ fn native() -> &'static SocketOps {
     unsafe { &swr_v1_runtime_socket }
 }
 
-/// `swr_v1_phpruntime_ssl_call`.
-#[repr(C)]
+/// [`set_ssl_body`]'s call.
 struct SslCall {
     socket: *mut c_void,
     settings: *mut zval,
@@ -490,10 +496,19 @@ impl Socket {
             settings,
             result: false,
         };
-        // SAFETY: per the caller; `set_ssl` takes an `SslCall`.
-        unsafe { trap(ops().set_ssl, &mut call) }?;
+        // SAFETY: per the caller; `set_ssl_body` takes an `SslCall`.
+        unsafe { trap(set_ssl_body, &mut call) }?;
         Ok(call.result)
     }
+}
+
+/// `php_swoole_socket_set_ssl` over an [`SslCall`], a `bailout::trap` body.
+/// The socket is a `SocketImpl`, whose `coroutine::Socket` base is at its address.
+unsafe extern "C" fn set_ssl_body(call: *mut c_void) {
+    // SAFETY: `Socket::set_ssl` passes a live `SslCall`.
+    let call = unsafe { &mut *call.cast::<SslCall>() };
+    // SAFETY: a live socket and settings array, per `Socket::set_ssl`.
+    call.result = unsafe { swr_v1_phpclients_socket_settings(call.socket, call.settings, 2) };
 }
 
 /// `openssl_x509_read(pem)` into `retval`, which the caller then owns.
