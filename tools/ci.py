@@ -27,6 +27,7 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -53,7 +54,9 @@ def gh(*args):
         result = subprocess.run(['gh', *args], capture_output=True, text=True)
         if result.returncode == 0:
             return result.stdout
-        transient = any(text.lower() in result.stderr.lower() for text in TRANSIENT)
+        # A 4xx is permanent even when its message (say, a branch name) contains a TRANSIENT word.
+        transient = (not re.search(r'HTTP 4\d\d', result.stderr)
+                     and any(text.lower() in result.stderr.lower() for text in TRANSIENT))
         if not transient or time.monotonic() + delay > RETRY_DEADLINE:
             raise subprocess.CalledProcessError(result.returncode, ['gh', *args], result.stdout, result.stderr)
         say(f"gh {args[0]} {args[1] if len(args) > 1 else ''}: {result.stderr.strip()[:80]}; retrying in {delay:g}s")
