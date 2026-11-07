@@ -169,8 +169,7 @@ void swr_v1_hook_socket_set_flags(swr_v1_hook_socket_state *state, swr_v1_hook_s
 void swr_v1_hook_socket_connect(swr_v1_hook_socket_state *state);
 /* Server setup (crates/hooks/src/setup.rs): bind (host: availability first, then
  * record the name), listen (SW_BACKLOG for a non-positive backlog, stored in
- * *stored) and accept (wait and accept again when it would block). fail(-1) is
- * set_err(); call is the operation's network::Socket call. */
+ * *stored). fail(-1) is set_err(); call is the operation's network::Socket call. */
 typedef struct {
     void *context;
     bool (*available)(void *, int event);
@@ -180,7 +179,6 @@ typedef struct {
     int (*call)(void *, int argument);
 } swr_v1_hook_setup_ops;
 bool swr_v1_hook_bind(const swr_v1_hook_setup_ops *ops);
-bool swr_v1_hook_accept(const swr_v1_hook_setup_ops *ops);
 /* connect(host)/sendto(host)'s address loop: up to two assigns with a resolve
  * between them on SW_ERROR_BAD_HOST_ADDR. 0 assigned (or fell through), 1 an
  * assign failed otherwise, 2 the resolve failed. */

@@ -10,7 +10,9 @@ use crate::shutdown::{
 use core::ffi::{c_char, c_int, c_void};
 use core::mem::{offset_of, size_of};
 use core::ptr;
+use swoole_rs_buffer::string::{delete_string, new_sized_string};
 use swoole_rs_reactor::{SocketAddress, SocketRecord};
+use swoole_rs_tls::upstream::{socket_free, socket_ssl_close};
 
 pub use swoole_rs_corebase::net_types::Protocol;
 
@@ -255,18 +257,66 @@ pub(crate) unsafe fn init(socket: *mut CoSocket) -> &'static mut CoSocket {
     unsafe { &mut *socket }
 }
 
-/// Release what a constructor made. Native code frees the buffers
-/// and the `network::Socket`.
+/// Release the bound state a constructor made.
 ///
 /// # Safety
 /// `socket` is a live record, not used afterwards.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_fini(socket: *mut CoSocket) {
+pub unsafe fn swr_v1_hook_co_socket_fini(socket: *mut CoSocket) {
     // SAFETY: as the caller promises.
     let socket = unsafe { &mut *socket };
     // SAFETY: the record's own handle, released once.
     unsafe { swr_v1_hook_socket_state_free(socket.state) };
     socket.state = ptr::null_mut();
+}
+
+/// `~Socket()` after its destructor callback: the buffers, the bound state, then the
+/// `network::Socket`, its TLS session closed first.
+///
+/// # Safety
+/// `socket` is a live record, not used afterwards; its buffers came from `new String`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
+    // SAFETY: as the caller promises.
+    let record = unsafe { &mut *socket };
+    for buffer in [record.read_buffer, record.write_buffer] {
+        if !buffer.is_null() {
+            // SAFETY: the socket's own `new String`, deleted once.
+            unsafe { delete_string(buffer.cast()) };
+        }
+    }
+    // SAFETY: as the caller promises.
+    unsafe { swr_v1_hook_co_socket_fini(socket) };
+    let network = record.socket;
+    if network.is_null() {
+        return;
+    }
+    // SAFETY: the socket's live network record.
+    if !unsafe { (*network).ssl }.is_null() {
+        // SAFETY: the live record holds an SSL.
+        unsafe { socket_ssl_close(network) };
+    }
+    // SAFETY: the live record, which nothing uses afterwards.
+    unsafe { socket_free(network) };
+}
+
+/// `get_read_buffer()` / `get_write_buffer()`: the buffer, made on first use.
+///
+/// # Safety
+/// `socket` is a live record.
+pub unsafe fn buffer(socket: *mut CoSocket, write: bool) -> *mut c_void {
+    // SAFETY: as the caller promises.
+    let record = unsafe { &mut *socket };
+    let allocator = record.buffer_allocator.cast();
+    let slot = if write {
+        &mut record.write_buffer
+    } else {
+        &mut record.read_buffer
+    };
+    if slot.is_null() {
+        // SAFETY: the socket's allocator is null or live.
+        *slot = unsafe { new_sized_string(BUFFER_SIZE_BIG, allocator) }.cast();
+    }
+    *slot
 }
 
 /// The public constructors, which initialise the record first:
