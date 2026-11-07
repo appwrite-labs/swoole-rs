@@ -19,10 +19,10 @@ SERIAL = 0
 def run(args):
     global SERIAL
     command = list(map(str, args))
-    # A program linking the Rust archive needs the system zlib its libz-sys binding
-    # (#583) uses, as the extension build already links it.
+    # A program linking the Rust archive needs the system zlib and OpenSSL its libz-sys
+    # (#583) and openssl-sys (#1541) bindings use, as the extension build already links them.
     if command[0] in ('c++', 'cc') and any(part.endswith('.a') for part in command):
-        command += subprocess.check_output(['pkg-config', '--libs', 'zlib'], text=True).split()
+        command += subprocess.check_output(['pkg-config', '--libs', 'zlib', 'openssl'], text=True).split()
     result = subprocess.run(command, capture_output=True)
     record = {"command": command, "returncode": result.returncode}
     for name in ("stdout", "stderr"):
