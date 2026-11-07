@@ -788,15 +788,13 @@ pub unsafe fn has_files(owner: *const OwnedTlsContext) -> (bool, bool) {
 pub unsafe fn verify_without_ca(owner: *const OwnedTlsContext) -> bool {
     // SAFETY: the caller lends the live owner.
     let state = unsafe { &*owner };
-    let empty = |index: usize| {
+    let empty = |slot: &Arc<StringSlot>| {
         // SAFETY: a stable slot of the live owner.
-        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&state.strings[index])) }
-            .length
-            == 0
+        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(slot)) }.length == 0
     };
     // SAFETY: the caller serializes field writes against this read.
     let verify_peer = unsafe { &*state.fields.get() }.verify_peer != 0;
-    verify_peer && empty(7) && empty(9) && empty(10)
+    verify_peer && empty(&state.strings[7]) && empty(&state.strings[9]) && empty(&state.strings[10])
 }
 
 #[cfg(test)]
