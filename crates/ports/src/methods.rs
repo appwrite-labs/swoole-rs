@@ -17,7 +17,20 @@ use swoole_rs_reactor::{
     SocketRecord, swr_v1_socket_bind, swr_v1_socket_dealloc, swr_v1_socket_get_name,
     swr_v1_socket_listen,
 };
+#[cfg(not(test))]
 use swoole_rs_tls::upstream::socket_free;
+
+/// `Socket::free()` for a socket no loop, timer or buffer has seen: tests link no
+/// C++, which `socket_free` reaches under `upstream-symbols`.
+#[cfg(test)]
+unsafe fn socket_free(socket: *mut SocketRecord) {
+    // SAFETY: the caller's live record.
+    let fd = unsafe { (*socket).fd };
+    // SAFETY: close(2) has no memory preconditions.
+    unsafe { libc::close(fd) };
+    // SAFETY: Rust allocated the record and nothing uses it after.
+    unsafe { swr_v1_socket_dealloc(socket) };
+}
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
 const FD_STREAM_SERVER: c_int = 1;
