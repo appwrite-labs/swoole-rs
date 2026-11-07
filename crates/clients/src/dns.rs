@@ -45,6 +45,14 @@ fn u16_at(packet: &[u8], at: usize) -> u16 {
     u16::from_be_bytes([byte(at), byte(at + 1)])
 }
 
+/// Copies `bytes` into `buffer` at `at`, as far as `buffer` reaches.
+fn put(buffer: &mut [u8], at: usize, bytes: &[u8]) {
+    let slots = buffer.iter_mut().skip(at);
+    for (slot, &byte) in slots.zip(bytes) {
+        *slot = byte;
+    }
+}
+
 fn c_len(bytes: &[u8]) -> usize {
     bytes
         .iter()
@@ -83,8 +91,8 @@ fn set_dns_server(server: &[u8]) {
     let plan = unsafe { swr_v1_clients_dns_endpoint(server.as_ptr(), server.len()) };
     let mut port = DNS_PORT;
     if plan.has_port != 0 {
-        let digits = &server[plan.port_offset..];
-        let mut text = digits[..c_len(digits)].to_vec();
+        let digits = server.get(plan.port_offset..).unwrap_or_default();
+        let mut text = crate::c_str(digits).to_vec();
         text.push(0);
         // SAFETY: NUL-terminated.
         let parsed = unsafe { libc::strtol(text.as_ptr().cast(), std::ptr::null_mut(), 10) };
@@ -98,7 +106,7 @@ fn set_dns_server(server: &[u8]) {
         }
     }
     let mut config = config();
-    config.host = server[..plan.host_length].to_vec();
+    config.host = server.get(..plan.host_length).unwrap_or_default().to_vec();
     config.port = port;
 }
 
@@ -171,9 +179,9 @@ pub unsafe extern "C" fn swr_v1_clients_dns_query(
     signed_char: bool,
 ) -> c_int {
     let mut packet = vec![0u8; PACKET];
-    packet[0..2].copy_from_slice(&request_id.to_be_bytes());
-    packet[2] = 1; // RD
-    packet[4..6].copy_from_slice(&1u16.to_be_bytes());
+    let [id_high, id_low] = request_id.to_be_bytes();
+    // ID, RD, one question.
+    put(&mut packet, 0, &[id_high, id_low, 1, 0, 0, 1]);
 
     // SAFETY: the caller passes a NUL-terminated domain.
     let name = unsafe { CStr::from_ptr(domain) }.to_bytes();
@@ -181,8 +189,9 @@ pub unsafe extern "C" fn swr_v1_clients_dns_query(
     if name.len() > capacity - 3 {
         return INVALID_DOMAIN;
     }
-    let question = &mut packet[HEADER..];
-    // SAFETY: `name` and `question` are separate buffers of the given lengths.
+    let question = packet.get_mut(HEADER..).unwrap_or_default();
+    // SAFETY: `name` and `question` are separate buffers, `question` at least
+    // `capacity` bytes long.
     if unsafe {
         swr_v1_clients_domain_encode(name.as_ptr(), name.len(), question.as_mut_ptr(), capacity)
     } < 0
@@ -190,9 +199,9 @@ pub unsafe extern "C" fn swr_v1_clients_dns_query(
         return INVALID_DOMAIN;
     }
     let mut steps = HEADER + c_len(question) + 1;
-    let qtype = if family == libc::AF_INET6 { AAAA } else { A };
-    packet[steps..steps + 2].copy_from_slice(&qtype.to_be_bytes());
-    packet[steps + 2..steps + 4].copy_from_slice(&1u16.to_be_bytes());
+    let [type_high, type_low] = if family == libc::AF_INET6 { AAAA } else { A }.to_be_bytes();
+    // QTYPE, QCLASS IN.
+    put(&mut packet, steps, &[type_high, type_low, 0, 1]);
     steps += 4;
     let query_initialized = PACKET.min(steps.max(HEADER + name.len() + 3));
 
@@ -210,15 +219,15 @@ pub unsafe extern "C" fn swr_v1_clients_dns_query(
         };
     };
     let received = received.min(PACKET - 1);
-    packet[received] = 0;
+    put(&mut packet, received, &[0]);
     let initialized = query_initialized.max(received + 1);
 
-    let question = &mut packet[HEADER..initialized.max(HEADER)];
+    let question = packet.get_mut(HEADER..initialized).unwrap_or_default();
     // SAFETY: `question` is initialized and writable for its length.
     unsafe {
         swr_v1_clients_domain_decode(question.as_mut_ptr(), question.len(), u8::from(signed_char))
     };
-    let mut steps = HEADER + c_len(&packet[HEADER..]) + 2 + 4;
+    let mut steps = HEADER + c_len(packet.get(HEADER..).unwrap_or_default()) + 2 + 4;
 
     let answers = usize::from(u16_at(&packet, 6)).min(MAX_ANSWERS);
     let mut records = Vec::with_capacity(answers);
@@ -229,9 +238,9 @@ pub unsafe extern "C" fn swr_v1_clients_dns_query(
         let length = usize::from(u16_at(&packet, steps + 8));
         steps += RECORD;
         let mut data = [0u8; RDATA];
-        let end = PACKET.min(steps.saturating_add(length.min(RDATA)));
-        if let Some(source) = packet.get(steps..end) {
-            data[..source.len()].copy_from_slice(source);
+        let source = packet.get(steps..).unwrap_or_default();
+        for (slot, &byte) in data.iter_mut().zip(source).take(length) {
+            *slot = byte;
         }
         records.push((kind, data));
         steps = steps.saturating_add(length);
@@ -288,8 +297,8 @@ unsafe fn resolv_conf(path: *const c_char, server: *mut c_char) -> c_int {
             let token = text
                 .get(plan.offset..plan.offset + plan.length)
                 .unwrap_or_default();
-            server[..token.len()].copy_from_slice(token);
-            server[token.len()] = 0;
+            put(server, 0, token);
+            put(server, token.len(), &[0]);
             found = c_int::from(plan.length != 0);
         }
         break;
@@ -331,8 +340,8 @@ pub unsafe extern "C" fn swr_v1_clients_hosts_lookup(
     }
     for line in lines {
         let mut line = line.to_vec();
-        if let Some(comment) = line.iter().position(|&byte| byte == b'#') {
-            line[comment] = 0;
+        if let Some(comment) = line.iter_mut().find(|byte| **byte == b'#') {
+            *comment = 0;
         }
         // SAFETY: `line` and `domain` are initialized; `spaces` holds 256 entries.
         let found = unsafe {

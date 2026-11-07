@@ -19,16 +19,14 @@ const ACCEPT_LEN: usize = 28;
 /// so the key stops at its first NUL and the concatenation is truncated to 127
 /// bytes before hashing. Both quirks are reproduced here for byte-exactness.
 fn expected_accept(key: &[u8]) -> [u8; ACCEPT_LEN] {
-    let key_end = key.iter().position(|&b| b == 0).unwrap_or(key.len());
-    let key = &key[..key_end];
-
     let mut input = [0u8; 127];
-    let key_len = key.len().min(input.len());
-    input[..key_len].copy_from_slice(&key[..key_len]);
-    let guid_len = (input.len() - key_len).min(GUID.len());
-    input[key_len..key_len + guid_len].copy_from_slice(&GUID[..guid_len]);
+    let mut used = 0;
+    for (slot, &byte) in input.iter_mut().zip(crate::c_str(key).iter().chain(GUID)) {
+        *slot = byte;
+        used += 1;
+    }
 
-    let digest = sha1::digest(&input[..key_len + guid_len]);
+    let digest = sha1::digest(input.get(..used).unwrap_or_default());
 
     // swr_v1_base64_encode needs 4*ceil(20/3)+1 = 29 output bytes and writes a
     // trailing NUL past the 28 it counts.
@@ -40,8 +38,9 @@ fn expected_accept(key: &[u8]) -> [u8; ACCEPT_LEN] {
         unsafe { swr_v1_base64_encode(digest.as_ptr(), digest.len(), encoded.as_mut_ptr()) };
 
     let mut accept = [0u8; ACCEPT_LEN];
-    let copied = written.min(ACCEPT_LEN);
-    accept[..copied].copy_from_slice(&encoded[..copied]);
+    for (slot, &byte) in accept.iter_mut().zip(&encoded).take(written) {
+        *slot = byte;
+    }
     accept
 }
 
