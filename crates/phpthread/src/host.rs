@@ -1,69 +1,150 @@
-//! What C++ provides (`swr_v1_phpthread_host` in
-//! `native/process/swoole_rs_phpthread.h`), and the deferred bailouts and
-//! fatal errors the outermost Rust frame raises.
+//! What the thread classes reach outside this crate (Swoole's exception class,
+//! serialization, the coroutine and ext/sockets sockets a container may hold,
+//! Swoole's errors), and the deferred bailouts and fatal errors the outermost
+//! Rust frame raises.
 use std::{
     cell::Cell,
-    ffi::{c_char, c_int, c_void},
-    ptr,
-    sync::atomic::{AtomicPtr, Ordering},
+    ffi::{CStr, c_int},
 };
-use swoole_rs_zend::sys::{zend_class_entry, zend_string, zval};
+use swoole_rs_error::ErrorCode::{
+    SW_ERROR_PHP_FATAL_ERROR, SW_ERROR_PHP_RUNTIME_NOTICE, SW_ERROR_WRONG_OPERATION,
+};
+use swoole_rs_zend::{
+    E_ERROR,
+    bailout::{self, Bailout},
+    sys::{swr_zend_instanceof, zend_class_entry, zend_object, zend_string, zval},
+};
 
-/// Field for field the C struct.
-#[repr(C)]
-pub struct Host {
-    pub exception: *mut zend_class_entry,
-    pub serialize: unsafe extern "C" fn(value: *mut zval, bailed: *mut bool) -> *mut zend_string,
-    pub unserialize:
-        unsafe extern "C" fn(data: *const c_char, length: usize, out: *mut zval) -> bool,
-    pub object_kind: unsafe extern "C" fn(object: *mut zval) -> u32,
-    pub co_socket_cast: unsafe extern "C" fn(object: *mut zval, kind: *mut c_int) -> c_int,
-    pub php_socket_cast: Option<unsafe extern "C" fn(object: *mut zval) -> c_int>,
-    /// A coroutine socket over `fd`, which it takes; false on failure.
-    pub co_socket_create:
-        unsafe extern "C" fn(return_value: *mut zval, fd: c_int, kind: c_int) -> bool,
-    /// An ext/sockets Socket over `fd`, which it takes; false on failure.
-    pub php_socket_create: Option<unsafe extern "C" fn(return_value: *mut zval, fd: c_int) -> bool>,
-    pub set_last_error: unsafe extern "C" fn(error: c_int),
-    pub unconstructed: unsafe extern "C" fn(list: bool),
-    /// Swoole\Thread's body on the new thread (`php_swoole_thread_start`):
-    /// TSRM, request startup and the script; `enter` and `exit` report its life.
-    pub thread_run: unsafe extern "C" fn(
-        file: *const c_char,
-        length: usize,
-        argv: *mut c_void,
-        context: *mut c_void,
-        enter: extern "C" fn(*mut c_void),
-        exit: extern "C" fn(*mut c_void, c_int),
-    ),
-    pub thread_arguments: unsafe extern "C" fn(return_value: *mut zval),
-    pub thread_info: unsafe extern "C" fn(return_value: *mut zval),
-    pub thread_count: unsafe extern "C" fn() -> usize,
-    pub thread_set_name: unsafe extern "C" fn(name: *const c_char) -> bool,
-    pub thread_native_id: unsafe extern "C" fn() -> i64,
-    /// `php_swoole_error(level, "%s", message)`.
-    pub error: unsafe extern "C" fn(level: c_int, message: *const c_char),
-    /// `php_swoole_sys_error(level, "%s", message)`.
-    pub sys_error: unsafe extern "C" fn(level: c_int, message: *const c_char),
-    /// Swoole's warning log of a message that names its function.
-    pub warning: unsafe extern "C" fn(message: *const c_char),
+unsafe extern "C" {
+    // native/phphelpers/module.cc: ext/sockets, behind configure's switch.
+    fn swr_cpp_phpthread_php_socket_cast(value: *mut zval) -> c_int;
+    fn swr_cpp_phpthread_php_socket_create(return_value: *mut zval, fd: c_int) -> bool;
 }
 
-static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
+/// `swoole_exception_ce`.
+pub(crate) fn exception() -> *mut zend_class_entry {
+    // SAFETY: written once by MINIT, before any method runs.
+    unsafe { swoole_rs_phpswoole::swoole_exception_ce }
+}
 
-/// MINIT (`php_swoole_thread_minit`): C++'s static table, before any class.
+/// `php_swoole_serialize`: a persistent string or null; a bailout is deferred.
 /// # Safety
-/// `host` is a complete table that lives for the process.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_minit(host: *const Host) {
-    HOST.store(host.cast_mut(), Ordering::Release);
+/// In a request, with a live zval.
+pub(crate) unsafe fn serialize(value: *mut zval) -> *mut zend_string {
+    // SAFETY: per the caller.
+    let (serialized, bailed) = unsafe { swoole_rs_phpswoole::serialize(value) };
+    bailout::defer(bailed);
+    serialized
 }
 
-/// The table MINIT installed.
-pub(crate) fn host() -> &'static Host {
-    // SAFETY: MINIT stores C++'s static table before any method runs, and it
-    // lives for the process.
-    unsafe { &*HOST.load(Ordering::Acquire) }
+/// `php_swoole_unserialize` into `out`; a bailout is deferred.
+/// # Safety
+/// In a request; `out` is writable.
+pub(crate) unsafe fn unserialize(data: &[u8], out: *mut zval) {
+    // SAFETY: per the caller.
+    let (_, bailed) = unsafe { swoole_rs_phpswoole::unserialize(data, out) };
+    bailout::defer(bailed);
+}
+
+/// `sw_zval_is_co_socket`.
+/// # Safety
+/// `object` is a live object zval.
+pub(crate) unsafe fn is_co_socket(object: *mut zval) -> bool {
+    // SAFETY: per the caller.
+    let std: *mut zend_object = unsafe { swoole_rs_zend::value::obj_of(object) };
+    // SAFETY: written once by MINIT.
+    let socket = unsafe { swoole_rs_phpclients::swoole_socket_coro_ce };
+    // SAFETY: a live object's class and a registered one.
+    !socket.is_null() && unsafe { swr_zend_instanceof((*std).ce, socket) }
+}
+
+/// `php_swoole_thread_co_socket_cast`: a duplicate of the coroutine socket's
+/// descriptor and its type, or -1.
+/// # Safety
+/// `object` is a live Coroutine\Socket zval.
+pub(crate) unsafe fn co_socket_cast(object: *mut zval) -> (c_int, c_int) {
+    // SAFETY: per the caller.
+    let socket = unsafe { swoole_rs_phpclients::php_swoole_get_socket(object) };
+    if socket.is_null() {
+        return (-1, 0);
+    }
+    // SAFETY: a live socket.
+    let record = unsafe { swoole_rs_phpruntime::co::record(socket) };
+    if record.sock_fd < 0 {
+        return (-1, 0);
+    }
+    // SAFETY: the socket's own descriptor.
+    let fd = unsafe { libc::dup(record.sock_fd) };
+    if fd < 0 {
+        return (-1, 0);
+    }
+    (fd, record.kind)
+}
+
+/// A coroutine socket of type `kind` over `fd`, which it takes; false on failure.
+/// # Safety
+/// In a request; `out` is writable.
+pub(crate) unsafe fn co_socket_create(out: *mut zval, fd: c_int, kind: c_int) -> bool {
+    // SAFETY: per the caller.
+    let object = unsafe { swoole_rs_phpclients::php_swoole_create_socket_from_fd(fd, kind) };
+    if object.is_null() {
+        return false;
+    }
+    crate::item::set(
+        out,
+        swoole_rs_zend::sys::IS_OBJECT_EX,
+        swoole_rs_zend::sys::zend_value { obj: object },
+    );
+    true
+}
+
+/// A duplicate of an ext/sockets Socket's descriptor: -1 after throwing
+/// "failed to dup socket fd", -2 after "invalid socket fd", -3 when `object`
+/// is no Socket (or Swoole was built without ext/sockets).
+/// # Safety
+/// `object` is a live object zval.
+pub(crate) unsafe fn php_socket_cast(object: *mut zval) -> c_int {
+    // SAFETY: per the caller.
+    unsafe { swr_cpp_phpthread_php_socket_cast(object) }
+}
+
+/// An ext/sockets Socket over `fd`, which it takes; false on failure.
+/// # Safety
+/// In a request; `out` is writable.
+pub(crate) unsafe fn php_socket_create(out: *mut zval, fd: c_int) -> bool {
+    // SAFETY: per the caller.
+    unsafe { swr_cpp_phpthread_php_socket_create(out, fd) }
+}
+
+/// `php_swoole_error(level, "%s", message)`: reported when
+/// `swoole.display_errors` is on, or for `E_ERROR`.
+pub(crate) fn error(level: c_int, message: &CStr) -> Result<(), Bailout> {
+    swoole_rs_corebase::log::set_last_error(SW_ERROR_PHP_RUNTIME_NOTICE as c_int);
+    if swoole_rs_phpswoole::display_errors() || level == E_ERROR {
+        // SAFETY: a warning, printed through "%s".
+        return unsafe { swoole_rs_zend::php_error(level, message) };
+    }
+    Ok(())
+}
+
+/// `php_swoole_sys_error(level, "%s", message)`: [`error`] with errno's
+/// message and number appended, and errno as Swoole's last error.
+pub(crate) fn sys_error(level: c_int, message: &CStr) -> Result<(), Bailout> {
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    swoole_rs_corebase::log::set_last_error(errno);
+    if !swoole_rs_phpswoole::display_errors() && level != E_ERROR {
+        return Ok(());
+    }
+    // SAFETY: no preconditions.
+    let text = unsafe { CStr::from_ptr(libc::strerror(errno)) };
+    let full = std::ffi::CString::new(format!(
+        "{}, Error: {}[{errno}]",
+        message.to_string_lossy(),
+        text.to_string_lossy()
+    ))
+    .unwrap_or_default();
+    // SAFETY: as in `error`.
+    unsafe { swoole_rs_zend::php_error(level, &full) }
 }
 
 /// What the outermost Rust frame must raise once everything it holds is
@@ -87,15 +168,27 @@ pub(crate) fn defer(pending: Pending) {
     });
 }
 
+/// The fatal "must call constructor first": Swoole's for an `ArrayList` (or a
+/// Barrier), PHP's for a Map or Queue. Neither returns.
+pub(crate) fn unconstructed(list: bool) {
+    let message = c"must call constructor first";
+    if list {
+        // SAFETY: from the outermost Rust frame, which owns nothing.
+        unsafe { swoole_rs_corebase::fatal_error(SW_ERROR_WRONG_OPERATION as c_int, message) };
+    } else {
+        swoole_rs_corebase::log::set_last_error(SW_ERROR_PHP_FATAL_ERROR as c_int);
+        // SAFETY: an error printed through "%s".
+        bailout::raise(unsafe { swoole_rs_zend::php_error(E_ERROR, message) });
+    }
+}
+
 /// Raise what was deferred: a bailout PHP code (`__serialize`,
 /// `__unserialize`, a user error handler) left, then the fatal error. Called
 /// last by every handler and export, whose frame owns nothing by then.
 pub(crate) fn finish() {
     swoole_rs_zend::bailout::finish();
     if let Some(Pending::Unconstructed { list }) = PENDING.with(Cell::take) {
-        // SAFETY: C++'s fatal error, from the outermost Rust frame, which owns
-        // nothing that needs a drop.
-        unsafe { (host().unconstructed)(list) };
+        unconstructed(list);
     }
 }
 

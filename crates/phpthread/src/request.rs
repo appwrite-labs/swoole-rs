@@ -3,7 +3,7 @@
 //! each thread's STDIN/STDOUT/STDERR, stream descriptors stored in containers
 //! and `Swoole\Thread\Error`, the value a descriptor that cannot be read back
 //! becomes.
-use crate::{host::host, item::set};
+use crate::{host, item::set};
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_char, c_int},
@@ -18,8 +18,8 @@ use swoole_rs_zend::{
         IS_RESOURCE_EX, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, object_init_ex,
         swr_zend_register_stream_constant, swr_zend_stream_close, swr_zend_stream_expose,
         swr_zend_stream_fd, swr_zend_stream_from_zval, swr_zend_stream_no_close,
-        swr_zend_stream_open, swr_zend_stream_select_fd, swr_zend_string_release, zend_string,
-        zend_value, zval,
+        swr_zend_stream_open, swr_zend_stream_select_fd, swr_zend_string_release,
+        swr_zend_thread_main_request, zend_string, zend_value, zval,
     },
     update_property_long,
 };
@@ -140,8 +140,7 @@ thread_local! {
 /// the request; their descriptors are kept to close afterwards.
 /// # Safety
 /// In a thread's request, inside its `zend_try`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_stdio_open() {
+pub(crate) unsafe fn stdio_open() {
     let names = [
         (c"php://stdin", c"rb", c"STDIN"),
         (c"php://stdout", c"wb", c"STDOUT"),
@@ -167,12 +166,10 @@ pub unsafe extern "C" fn swr_v1_phpthread_stdio_open() {
     }
     STDIO.set(fds);
     if !casted {
-        // SAFETY: C++'s logger.
-        unsafe {
-            (host().warning)(
-                c"failed to cast the stdio streams to fd, the file descriptors may leak".as_ptr(),
-            );
-        }
+        swoole_rs_corebase::log::warning(
+            c"thread_register_stdio_file_handles",
+            format_args!("failed to cast the stdio streams to fd, the file descriptors may leak"),
+        );
     }
     for (stream, (_, _, name)) in streams.into_iter().zip(names) {
         // SAFETY: a stream opened above; Zend takes the constant's value.
@@ -181,9 +178,8 @@ pub unsafe extern "C" fn swr_v1_phpthread_stdio_open() {
 }
 
 /// `thread_unregister_stdio_file_handles`: close the descriptors
-/// [`swr_v1_phpthread_stdio_open`] kept, after request shutdown.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpthread_stdio_close() {
+/// [`stdio_open`] kept, after request shutdown.
+pub(crate) fn stdio_close() {
     for fd in STDIO.replace([-1; 3]).into_iter().filter(|fd| *fd >= 0) {
         // SAFETY: a descriptor this thread's streams left open.
         unsafe { libc::close(fd) };
@@ -216,61 +212,45 @@ fn request() -> std::sync::MutexGuard<'static, Request> {
 }
 
 /// The main thread's RINIT: keep its script path, and `$argv` (when set)
-/// serialized with `argc`. True if serializing bailed out.
+/// serialized with `argc`. A bailout while serializing is deferred.
 /// # Safety
-/// The main thread's RINIT; `path` is null or a C string, `argv` null or a
-/// live zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_rinit(
-    path: *const c_char,
-    argc: c_int,
-    argv: *mut zval,
-) -> bool {
+/// The main thread's RINIT.
+pub(crate) unsafe fn keep() {
+    let (mut path, mut argc) = (ptr::null(), 0);
+    // SAFETY: the main thread's request.
+    let argv = unsafe { swr_zend_thread_main_request(&raw mut path, &raw mut argc) };
     let mut request = request();
     if !path.is_null() {
-        // SAFETY: per the caller.
+        // SAFETY: SAPI's NUL-terminated script path.
         request.path = Some(unsafe { CStr::from_ptr(path) }.to_owned());
     }
     if argv.is_null() {
-        return false;
+        return;
     }
-    let mut bailed = false;
-    // SAFETY: a live zval; C++ traps a bailout.
-    request.argv = unsafe { (host().serialize)(argv, &raw mut bailed) };
+    // SAFETY: a live zval; a bailout is deferred.
+    request.argv = unsafe { host::serialize(argv) };
     request.argc = argc;
-    bailed
 }
 
-/// What a new thread's request starts with: the script path (null if none)
-/// and `argc`, and `$argv` serialized (null if none). Valid until the main
+/// What a new thread's request starts with: the script path (null if none),
+/// `argc`, and `$argv` serialized (null if none). Valid until the main
 /// thread's RSHUTDOWN.
-/// # Safety
-/// `path` and `argc` are writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_request(
-    path: *mut *const c_char,
-    argc: *mut c_int,
-) -> *mut zend_string {
+pub(crate) fn main_request() -> (*const c_char, c_int, *mut zend_string) {
     let request = request();
     let script = request
         .path
         .as_ref()
         .map_or(ptr::null(), |path| path.as_ptr());
-    // SAFETY: per the caller.
-    unsafe { *path = script };
-    // SAFETY: as above.
-    unsafe { *argc = request.argc };
-    request.argv
+    (script, request.argc, request.argv)
 }
 
 /// The main thread's RSHUTDOWN: release what RINIT kept.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpthread_rshutdown() {
+pub(crate) fn release() {
     let mut request = request();
     request.path = None;
     let argv = std::mem::replace(&mut request.argv, ptr::null_mut());
     if !argv.is_null() {
-        // SAFETY: the reference `swr_v1_phpthread_rinit` kept.
+        // SAFETY: the reference `keep` kept.
         unsafe { swr_zend_string_release(argv) };
     }
 }

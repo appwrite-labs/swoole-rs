@@ -38,4 +38,28 @@ bool swr_zend_stream_fd(php_stream *stream, int *fd);
 void swr_zend_stream_no_close(php_stream *stream);
 /* Register `stream` as the case-sensitive constant `name` (STDIN and friends). */
 void swr_zend_register_stream_constant(const char *name, php_stream *stream);
+
+/* A PHP thread's request (ZTS; elsewhere these do nothing). `enter` takes this
+ * thread's TSRM resources (ts_resource(0)) and sets the INI a thread's request
+ * starts with: expose_php and enable_dl off, auto_globals_jit on. */
+void swr_zend_thread_enter(void);
+/* php_request_startup with the main request's script path and argc and no
+ * headers; then, inside zend_first_try with *bailout holding its jump buffer,
+ * prologue(context) and `file` as the primary script; then, *bailout cleared,
+ * epilogue(context) and request shutdown. EG(exit_status), 1 if startup failed. */
+int swr_zend_thread_request(const char *file, const char *path_translated, int argc, void (*prologue)(void *),
+                            void (*epilogue)(void *), void *context, void **bailout);
+/* ts_free_thread(). */
+void swr_zend_thread_leave(void);
+/* $argv and $argc in the global symbol table, which takes `argv`. */
+void swr_zend_thread_set_argv(zval *argv, zend_long argc);
+/* The main request's script (SG(request_info).path_translated), argc and global
+ * $argv (null if none). */
+zval *swr_zend_thread_main_request(const char **path, int *argc);
+/* tsrm_is_main_thread(), tsrm_is_shutdown() and tsrm_api_name(). */
+bool swr_zend_tsrm_is_main_thread(void);
+bool swr_zend_tsrm_is_shutdown(void);
+const char *swr_zend_tsrm_api_name(void);
+/* EG(bailout) = target unless null, then zend_bailout(). */
+void swr_zend_bailout_to(void *target);
 #endif

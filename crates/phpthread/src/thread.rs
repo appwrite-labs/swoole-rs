@@ -1,9 +1,9 @@
 //! `Swoole\Thread`: the object, its OS thread and every method. The thread's
-//! body (TSRM, request startup, running the script) stays C++ glue, reached
-//! through `Host::thread_run`; C++ also declares the class constants.
+//! body (TSRM, request startup, running the script) is [`crate::run`].
 use crate::{
     array::{Array, handle},
-    host::{handlers, host},
+    host::{self, handlers},
+    run,
 };
 use std::{
     ffi::{CStr, c_int, c_void},
@@ -105,12 +105,10 @@ method_table! {
     ];
 }
 
-/// `php_swoole_thread_minit`'s class registration, then `Swoole\Thread\Error`;
-/// C++ adds the constants.
+/// `php_swoole_thread_minit`'s class registration, then `Swoole\Thread\Error`.
 /// # Safety
-/// MINIT, after `swr_v1_phpthread_minit`, with a static method table.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_thread_minit() -> *mut zend_class_entry {
+/// MINIT, with a static method table.
+pub(crate) unsafe fn register() -> *mut zend_class_entry {
     // SAFETY: MINIT, with a static table.
     unsafe {
         THREAD.register(c"Swoole\\Thread", METHODS.as_ptr(), |entry, handlers| {
@@ -166,15 +164,15 @@ struct Start {
 }
 
 /// The OS thread's entry, as `std::thread` would run upstream's lambda: straight
-/// into C++'s body, which marks the thread alive before anything allocates (a
+/// into the thread's body, which marks the thread alive before anything allocates (a
 /// new thread's first malloc can map an arena, and `yield.phpt` gives it 10 µs).
 extern "C" fn start(start: *mut c_void) -> *mut c_void {
     // SAFETY: `construct` boxed it for this thread alone.
     let start = unsafe { Box::from_raw(start.cast::<Start>()) };
     let context = Arc::as_ptr(&start.state).cast_mut().cast();
-    // SAFETY: C++'s thread body; `start` outlives it.
+    // SAFETY: the thread's body; `start` outlives it.
     unsafe {
-        (host().thread_run)(
+        run::swr_v1_phpthread_run(
             start.file.as_ptr().cast(),
             start.file.len(),
             start.argv,
@@ -199,7 +197,13 @@ fn construct(call: &Call) {
     }
     if file.is_empty() {
         // SAFETY: in a handler, with Swoole's exception class.
-        unsafe { throw_exception(host().exception, c"exec file name is empty", INVALID_PARAMS) };
+        unsafe {
+            throw_exception(
+                host::exception(),
+                c"exec file name is empty",
+                INVALID_PARAMS,
+            )
+        };
         return;
     }
     let argv = if call.num_args() > 1 {
@@ -230,7 +234,7 @@ fn construct(call: &Call) {
         // `std::system_error::what()`: the OS message.
         let text = std::ffi::CString::new(strerror(errno)).unwrap_or_default();
         // SAFETY: in a handler, with Swoole's exception class.
-        unsafe { throw_exception(host().exception, &text, SYSTEM_CALL_FAIL) };
+        unsafe { throw_exception(host::exception(), &text, SYSTEM_CALL_FAIL) };
         return;
     }
     // SAFETY: `pthread_create` succeeded, so it wrote the id.
@@ -282,8 +286,7 @@ fn get_exit_status(call: &Call) {
 }
 
 fn get_arguments(call: &Call) {
-    // SAFETY: the return slot.
-    unsafe { (host().thread_arguments)(call.return_value()) };
+    run::arguments(call.return_value());
 }
 
 fn get_id(call: &Call) {
@@ -297,13 +300,11 @@ fn get_id(call: &Call) {
 }
 
 fn get_info(call: &Call) {
-    // SAFETY: the return slot.
-    unsafe { (host().thread_info)(call.return_value()) };
+    run::info(call.return_value());
 }
 
 fn active_count(call: &Call) {
-    // SAFETY: C++'s thread counter.
-    let count = unsafe { (host().thread_count)() };
+    let count = run::sw_active_thread_count();
     call.set_long(i64::try_from(count).unwrap_or(i64::MAX));
 }
 
@@ -316,13 +317,12 @@ fn set_name(call: &Call) {
         return;
     };
     // SAFETY: the parsed string is NUL-terminated and lives for the call.
-    call.set_bool(unsafe { (host().thread_set_name)(name.as_ptr().cast()) });
+    call.set_bool(unsafe { swoole_rs_ossupport::swoole_thread_set_name(name.as_ptr().cast()) });
 }
 
-/// `php_swoole_error(level, "%s", message)`.
+/// `php_swoole_error(E_WARNING, "%s", message)`.
 fn warn(message: &Message) {
-    // SAFETY: C++'s reporter, in a handler.
-    bailout::defer(unsafe { bailout::report_level(host().error, E_WARNING, message.as_cstr()) });
+    bailout::defer(host::error(E_WARNING, message.as_cstr()));
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -408,14 +408,10 @@ fn set_priority(call: &Call) {
     if unsafe { libc::pthread_setschedparam(me, sched_policy, &raw const param) } == 0 {
         call.set_bool(true);
     } else {
-        // SAFETY: C++'s reporter, in a handler.
-        bailout::defer(unsafe {
-            bailout::report_level(
-                host().sys_error,
-                E_WARNING,
-                c"pthread_setschedparam() failed",
-            )
-        });
+        bailout::defer(host::sys_error(
+            E_WARNING,
+            c"pthread_setschedparam() failed",
+        ));
         call.set_bool(false);
     }
 }
@@ -449,8 +445,7 @@ fn get_priority(call: &Call) {
 }
 
 fn get_native_id(call: &Call) {
-    // SAFETY: C++'s `swoole_thread_get_native_id`.
-    call.set_long(unsafe { (host().thread_native_id)() });
+    call.set_long(swoole_rs_ossupport::swr_v1_os_thread_native_id());
 }
 
 handlers! {

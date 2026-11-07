@@ -316,7 +316,7 @@ pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
 
 /// Switch out of `co`, the running coroutine. The caller's frames must own
 /// nothing that needs a drop, as for [`resume`].
-pub(crate) fn yield_(co: Co) {
+pub fn yield_(co: Co) {
     // SAFETY: this thread's scheduler and its running coroutine.
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_yield(scheduler(), state(co)) };
 }

@@ -57,7 +57,10 @@ pub use classes::*;
 mod context;
 pub use context::*;
 mod host;
-pub use host::{counts, current, in_coroutine, is_suspending, park, suspend, suspend_for, wake};
+pub use host::{
+    counts, current, in_coroutine, is_suspending, park, suspend, suspend_for, wake,
+    yield_ as yield_coroutine,
+};
 mod methods;
 pub use methods::*;
 mod runtime;

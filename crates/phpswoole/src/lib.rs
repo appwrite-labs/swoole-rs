@@ -45,7 +45,7 @@ pub use module::{
     zif_swoole_set_process_name,
 };
 pub use options::{php_swoole_set_global_option, sw_zval_is_serializable};
-pub use serialize::{php_swoole_serialize, php_swoole_unserialize};
+pub use serialize::{php_swoole_serialize, php_swoole_unserialize, serialize, unserialize};
 
 use std::{
     ffi::{c_char, c_int, c_void},
