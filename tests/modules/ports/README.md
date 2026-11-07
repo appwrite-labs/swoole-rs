@@ -7,15 +7,14 @@ Contracts: [native/ports/contract.md](../../../native/ports/contract.md) and
 Rust owns protocol priority/labels, integer normalization, event lookup,
 `listen` and `close_socket` (`methods.rs`), socket-creation decisions, `init_protocol`,
 `get_connection_num` summation, the EOF/length/stream setters and the
-protocol defaults over the port's Rust-owned `protocol`, callback getter/hook selection, flag/buffer/packet/option
-plans, TLS/SNI frontend metadata, class-property declarations and the receive
+protocol defaults over the port's Rust-owned `protocol`, callback getter/hook selection,
+class-property declarations and the receive
 callbacks (`read.rs`, unit-tested with `cargo test -p swoole-rs-ports`). The PHP
 class `Swoole\Server\Port` (registration, objects, every method) is
-`crates/phpserver`; its `set()` reaches the ListenPort/TLS block that stays C++
-(`port_apply_settings`) through `native/ports/swoole_rs_phpserver.h`. The
-`flags`, `options`, `packet_settings` and `tls_settings` gates extract that block;
+`crates/phpserver`; `set()`'s options are `port_settings.rs`, unit-tested there, and
+reach the SNI contexts and `ssl_init` through `native/ports/swoole_rs_phpserver.h`.
 `callback_property` compares the original getter with the Rust one's body. Native
-code keeps allocation, Zend storage and conversions, syscalls, callbacks,
+code keeps allocation, Zend storage, syscalls, callbacks,
 warnings, cleanup, crypto, the HTTP request parser and request destruction.
 
 ## Running checks
@@ -32,8 +31,7 @@ compare output):
 python3 tests/modules/ports/gate.py --source PINNED_REFERENCE --archive SELECTED_ARCHIVE --output REPORT [--sanitize] [--rust-asan]
 ```
 
-- `gate.py`: integer macros, event enum/catalog and protocol plan against the
-  pinned definitions.
+- `gate.py`: event enum/catalog against the pinned definitions.
 
 Exact-body model gates share the `count.py` runner (`main()`), which extracts the
 named bodies (original from the pin, selected from the hybrid build's tree), compiles
@@ -53,11 +51,6 @@ python3 tests/modules/ports/NAME.py --source PINNED_REFERENCE --archive SELECTED
 | `callback_property` | `getCallback` lowering using the real PHP binary's `zend_tolower_map` (read via FFI; needs `--php-config`) |
 | `callback_hooks` | post-registration hook binding over all slot masks and event indices |
 | `class_properties` | MINIT property declarations against inert Zend sinks |
-| `flags` | non-TLS `set` prefix: flag settings and buffer clamp/fallback order |
-| `packet_settings` | same prefix plus binary EOF, width and offset plans |
-| `options` | same prefix through the ordinary option catalog |
-| `tls_settings` | TLS option order against successful native models |
-| `sni_settings` | SNI mapping admission against successful native models |
 
 `--sdk-origin` relocates in-build include paths when compiling a private copy of
 a configured SDK. On macOS pass a matching `--php-config` and `--openssl-root`.
@@ -93,11 +86,9 @@ cd tests/modules/ports && python3 -m unittest test_configured_flags test_count_c
 
 - `configuration.py` fails in both engines: a throwing package-length
   Stringable makes both warn and fatally reject the length type instead of
-  propagating the exception. The conversion block is still native.
+  propagating the exception.
 - On macOS the original `heartbeat_3` PHPT (upstream TODO) and the Linux-only
   length big-packet PHPT skip, so the strict Mac originals gate stays false.
-- A Rust float conversion for `max_idle_time` failed on signaling NaN with Apple
-  Clang and was dropped; that conversion stays native.
 
 Open: broader Server originals, getSocket/platform/real TLS coverage,
 exceptions/bailout/teardown, production sanitizer runs and benchmarks.

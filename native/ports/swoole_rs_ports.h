@@ -6,7 +6,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-enum { SWR_PORTS_U16, SWR_PORTS_BUFFER, SWR_PORTS_U32, SWR_PORTS_I32, SWR_PORTS_U8 };
 enum { SWR_PORTS_DGRAM=1, SWR_PORTS_DTLS=2, SWR_PORTS_EOF=4, SWR_PORTS_LENGTH=8,
        SWR_PORTS_HTTP=16, SWR_PORTS_HTTP2=32, SWR_PORTS_WEBSOCKET=64, SWR_PORTS_MQTT=128, SWR_PORTS_REDIS=256 };
 enum { SWR_PORTS_NONE, SWR_PORTS_READ_EOF, SWR_PORTS_LENGTH_DEFAULT, SWR_PORTS_HTTP_ONLY,
@@ -21,90 +20,8 @@ SwrPortsSpan swr_v1_ports_callback_property(const uint8_t *, size_t);
 enum { SWR_PORTS_HOOK_NONE, SWR_PORTS_HOOK_CONNECT, SWR_PORTS_HOOK_PACKET,
        SWR_PORTS_HOOK_CLOSE, SWR_PORTS_HOOK_BUFFER_FULL, SWR_PORTS_HOOK_BUFFER_EMPTY };
 uint32_t swr_v1_ports_callback_hook(int32_t index);
-typedef struct { uint32_t count; int32_t first, last; } SwrPortsBufferSetting;
-/* Signed clamped first store; optional second INT_MAX store. No pointers or state. */
-SwrPortsBufferSetting swr_v1_ports_buffer_setting(int64_t value);
-typedef struct { uint32_t value, status; size_t copy_len; } SwrPortsPacketSetting;
-/* EOF: status1 empty after u8 publication,2 over-capacity,0 bounded copy.
- * Width/offset: status1 invalid/too-large. Native field publication precedes errors.
- * Width is the existing pure M19 helper result; no type table or pointer is copied. */
-SwrPortsPacketSetting swr_v1_ports_packet_eof(size_t length, uint32_t capacity);
-SwrPortsPacketSetting swr_v1_ports_packet_width(int32_t width);
-SwrPortsPacketSetting swr_v1_ports_packet_offset(int64_t value, uint32_t limit);
-enum { SWR_PORTS_OPTION_END, SWR_PORTS_OPTION_NUMBER, SWR_PORTS_OPTION_BUFFER,
-       SWR_PORTS_OPTION_FLAG, SWR_PORTS_OPTION_SPECIAL };
-enum { SWR_PORTS_CONVERT_LONG, SWR_PORTS_CONVERT_SIZE, SWR_PORTS_CONVERT_TRUTH, SWR_PORTS_CONVERT_STRING };
-enum { SWR_PORTS_MISSING_SKIP, SWR_PORTS_MISSING_DEFAULT, SWR_PORTS_OPTION_ALWAYS };
-enum {
-    SWR_PORTS_NUMBER_BACKLOG = 1,
-    SWR_PORTS_NUMBER_SOCKET_BUFFER = 2,
-    SWR_PORTS_NUMBER_KERNEL_RECV = 3,
-    SWR_PORTS_NUMBER_KERNEL_SEND = 4,
-    SWR_PORTS_NUMBER_HEARTBEAT = 5,
-    SWR_PORTS_NUMBER_HIGH_WATERMARK = 6,
-    SWR_PORTS_NUMBER_LOW_WATERMARK = 7,
-    SWR_PORTS_NUMBER_DEFER_ACCEPT = 8,
-    SWR_PORTS_NUMBER_KEEP_IDLE = 9,
-    SWR_PORTS_NUMBER_KEEP_INTERVAL = 10,
-    SWR_PORTS_NUMBER_KEEP_COUNT = 11,
-    SWR_PORTS_NUMBER_USER_TIMEOUT = 12,
-    SWR_PORTS_NUMBER_MAX_LENGTH = 13,
-};
-enum {
-    SWR_PORTS_SPECIAL_PACKET_EOF = 1,
-    SWR_PORTS_SPECIAL_WEBSOCKET_OPTIONS = 2,
-    SWR_PORTS_SPECIAL_MAX_IDLE = 3,
-    SWR_PORTS_SPECIAL_PACKET_TYPE = 4,
-    SWR_PORTS_SPECIAL_LENGTH_OFFSET = 5,
-    SWR_PORTS_SPECIAL_BODY_OFFSET = 6,
-    SWR_PORTS_SPECIAL_LENGTH_CALLBACK = 7,
-};
-typedef struct {
-    SwrPortsSpan key, alias;
-    uint32_t action, target, converter, number_kind, policy, reserved;
-} SwrPortsOption;
-/* Static immutable NUL-terminated key bytes, len excludes NUL. No PHP value/store.
- * action0 terminates; policy selects lazy missing/default/always handling.
- * Every instruction returns before native lookup/conversion/effects. */
-SwrPortsOption swr_v1_ports_option(size_t index);
-enum { SWR_PORTS_TLS_CONTEXT_FILES, SWR_PORTS_TLS_PORT };
-enum { SWR_PORTS_TLS_CERT_FILE = 1, SWR_PORTS_TLS_KEY_FILE };
-enum {
-    SWR_PORTS_TLS_COMPRESS = 1,
-    SWR_PORTS_TLS_PROTOCOLS = 2,
-    SWR_PORTS_TLS_VERIFY_PEER = 3,
-    SWR_PORTS_TLS_ALLOW_SELF_SIGNED = 4,
-    SWR_PORTS_TLS_CLIENT_CERT = 5,
-    SWR_PORTS_TLS_CAFILE = 6,
-    SWR_PORTS_TLS_CAPATH = 7,
-    SWR_PORTS_TLS_VERIFY_DEPTH = 8,
-    SWR_PORTS_TLS_PREFER_CIPHERS = 9,
-    SWR_PORTS_TLS_CIPHERS = 10,
-    SWR_PORTS_TLS_ECDH_CURVE = 11,
-    SWR_PORTS_TLS_DH_PARAM = 12,
-};
-/* group0: context file frontend, group1: Port method frontend before protected SNI.
- * Alias/number_kind/policy are unused zero/empty; no context or PHP value pointer. */
-SwrPortsOption swr_v1_ports_tls_option(uint32_t group, size_t index);
-/* Native-converted scalar for group1 only; native methods/crypto execute after return. */
-int64_t swr_v1_ports_tls_value(uint32_t target, int64_t value);
-typedef struct { SwrPortsSpan key; uint32_t status, reserved; } SwrPortsSniPlan;
-/* stage0 static key; stage1 top-array admission; stage2 key-before-item-array admission.
- * status1 top not array,2 missing string key,3 item not array. No name/context pointer.
- * Native iteration/duplication/file/installation/matching execute outside Rust. */
-SwrPortsSniPlan swr_v1_ports_sni_plan(uint32_t stage, uint32_t has_key, uint32_t is_array);
-int64_t swr_v1_ports_number(uint32_t kind, int64_t value);
 uint32_t swr_v1_ports_protocol(uint32_t flags, uint8_t length_type);
 const char *swr_v1_ports_protocol_name(uint32_t flags);
-typedef struct { uint32_t kind, value; } SwrPortsProtocolAction;
-typedef struct { uint32_t count; SwrPortsProtocolAction actions[6]; } SwrPortsProtocolPlan;
-enum { SWR_PORTS_SET_NODELAY=9, SWR_PORTS_SET_KEEPALIVE, SWR_PORTS_SET_CHECK_EOF,
-       SWR_PORTS_SET_SPLIT_EOF, SWR_PORTS_SET_HTTP_FLAG, SWR_PORTS_SET_WEBSOCKET_FLAG,
-       SWR_PORTS_SET_HTTP2_FLAG, SWR_PORTS_SET_MQTT_FLAG, SWR_PORTS_SET_REDIS_FLAG,
-       SWR_PORTS_SET_FASTOPEN, SWR_PORTS_SET_CHECK_LENGTH };
-/* One native PHP conversion's scalar value/presence; no pointer or copied Port state.
- * At most two ordered writes, remaining actions zero. Missing NODELAY defaults true. */
-SwrPortsProtocolPlan swr_v1_ports_flag_setting(uint32_t kind, int64_t value, uint32_t present);
 
 typedef struct { SwrPortsSpan name; int64_t value; uint32_t kind, is_private; } SwrPortsProperty;
 enum { SWR_PORTS_PROPERTY_END, SWR_PORTS_PROPERTY_NULL, SWR_PORTS_PROPERTY_LONG, SWR_PORTS_PROPERTY_BOOL };

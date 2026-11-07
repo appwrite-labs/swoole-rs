@@ -14,10 +14,13 @@
     )
 )]
 
-#[cfg(feature = "port")]
+#[cfg(feature = "server")]
 mod port;
 
-#[cfg(feature = "port")]
+#[cfg(feature = "server")]
+mod port_settings;
+
+#[cfg(feature = "server")]
 pub use port::*;
 
 #[cfg(feature = "server")]
