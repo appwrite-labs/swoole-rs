@@ -26,6 +26,8 @@ use crate::socket_wait::{
     swr_v1_hook_co_socket_error_event, swr_v1_hook_co_socket_poll, swr_v1_hook_socket_ready, wait,
 };
 use crate::transfer::{ALL, RETRY_INTERRUPTED, swr_v1_hook_co_socket_transfer};
+#[cfg(feature = "iouring")]
+use crate::uring_socket as ring;
 use crate::vector::vector_all;
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{align_of, size_of};
@@ -57,6 +59,30 @@ pub(crate) fn record(this: *const c_void) -> *mut CoSocket {
     this.wrapping_byte_add(size_of::<*const c_void>())
         .cast_mut()
         .cast()
+}
+
+/// With `io_uring`, a `UringSocket`'s member takes the ring's path
+/// (`crate::uring_socket`, as `ring`) and returns its result.
+macro_rules! uring {
+    ($socket:expr, |$ops:ident| $body:expr) => {
+        #[cfg(feature = "iouring")]
+        // SAFETY: the member's live record.
+        if let Some($ops) = unsafe { crate::uring_socket::of($socket) } {
+            let $ops = &$ops;
+            // SAFETY: the socket's live view, with the member's arguments.
+            return unsafe { $body };
+        }
+    };
+}
+
+/// The owner of the live `network::IOVector` at `vector`.
+///
+/// # Safety
+/// `vector` is a live `IOVector`, whose first member is its owner.
+#[cfg(feature = "iouring")]
+unsafe fn iov_owner(vector: *mut c_void) -> crate::uring_socket::IoVector {
+    // SAFETY: as the caller promises.
+    crate::uring_socket::IoVector(unsafe { *vector.cast::<*mut ReactorIov>() })
 }
 
 /// The `network::Socket` a reactor event came from.
@@ -486,6 +512,30 @@ pub unsafe extern "C" fn accept(this: *mut c_void, timeout: f64) -> *mut c_void 
     if needs_context && !unsafe { ssl_context_create(this) } {
         return null_mut();
     }
+    // SAFETY: the live listening socket, as the caller promises.
+    let client = unsafe { accepted(socket, timeout) };
+    if client.is_null() {
+        return null_mut();
+    }
+    // SAFETY: the new native socket.
+    if unsafe { (*record(client)).sock_fd } < 0 {
+        let error = errno();
+        log::sys_warning(c"Socket::accept", format_args!("new Socket() failed"));
+        // SAFETY: the live listening socket.
+        unsafe { set_err(socket, error) };
+        // SAFETY: the new native socket, used no more.
+        unsafe { (host().destroy)(client) };
+        return null_mut();
+    }
+    client
+}
+
+/// `accept`'s connection as a new native socket, or null.
+///
+/// # Safety
+/// `socket` is a live, available record in a coroutine.
+unsafe fn accepted(socket: *mut CoSocket, timeout: f64) -> *mut c_void {
+    uring!(socket, |ops| ring::accept(socket, ops));
     let timeout = if timeout == 0.0 {
         read_timeout(socket)
     } else {
@@ -509,18 +559,7 @@ pub unsafe extern "C" fn accept(this: *mut c_void, timeout: f64) -> *mut c_void 
         return null_mut();
     }
     // SAFETY: the live listening socket and the connection it accepted.
-    let client = unsafe { (host().accepted)(socket, state.conn) };
-    // SAFETY: the new native socket.
-    if unsafe { (*record(client)).sock_fd } < 0 {
-        let error = errno();
-        log::sys_warning(c"Socket::accept", format_args!("new Socket() failed"));
-        // SAFETY: the live listening socket.
-        unsafe { set_err(socket, error) };
-        // SAFETY: the new native socket, used no more.
-        unsafe { (host().destroy)(client) };
-        return null_mut();
-    }
-    client
+    unsafe { (host().accepted)(socket, state.conn) }
 }
 
 /// `Socket::get_read_buffer()`: the read buffer, made on first use.
@@ -647,6 +686,7 @@ unsafe fn transfer<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
     unsafe(export_name = "_ZN6swoole9coroutine6Socket4recvEPvm")
 )]
 pub unsafe extern "C" fn recv(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    uring!(record(this), |ops| ring::plain(ops, ring::RECV, buf, n));
     let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
     // SAFETY: as the caller promises; each try receives into the transfer's buffer.
     unsafe { transfer(this, READ, 0, buf.cast(), n, call) }
@@ -661,6 +701,12 @@ pub unsafe extern "C" fn recv(this: *mut c_void, buf: *mut c_void, n: usize) -> 
     unsafe(export_name = "_ZN6swoole9coroutine6Socket4sendEPKvm")
 )]
 pub unsafe extern "C" fn send(this: *mut c_void, buf: *const c_void, n: usize) -> isize {
+    uring!(record(this), |ops| ring::plain(
+        ops,
+        ring::SEND,
+        buf.cast_mut(),
+        n
+    ));
     let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
     // SAFETY: as the caller promises; each try sends from the transfer's buffer.
     unsafe { transfer(this, WRITE, 0, buf.cast_mut().cast(), n, call) }
@@ -675,6 +721,9 @@ pub unsafe extern "C" fn send(this: *mut c_void, buf: *const c_void, n: usize) -
     unsafe(export_name = "_ZN6swoole9coroutine6Socket8recv_allEPvm")
 )]
 pub unsafe extern "C" fn recv_all(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    uring!(record(this), |ops| ring::swr_v1_hook_uring_io_all(
+        ops, false, buf, n
+    ));
     let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
     // SAFETY: as the caller promises; each try receives into the transfer's buffer.
     unsafe { transfer(this, READ, ALL, buf.cast(), n, call) }
@@ -689,6 +738,12 @@ pub unsafe extern "C" fn recv_all(this: *mut c_void, buf: *mut c_void, n: usize)
     unsafe(export_name = "_ZN6swoole9coroutine6Socket8send_allEPKvm")
 )]
 pub unsafe extern "C" fn send_all(this: *mut c_void, buf: *const c_void, n: usize) -> isize {
+    uring!(record(this), |ops| ring::swr_v1_hook_uring_io_all(
+        ops,
+        true,
+        buf.cast_mut(),
+        n
+    ));
     let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
     // SAFETY: as the caller promises; each try sends from the transfer's buffer.
     unsafe { transfer(this, WRITE, ALL, buf.cast_mut().cast(), n, call) }
@@ -703,6 +758,7 @@ pub unsafe extern "C" fn send_all(this: *mut c_void, buf: *const c_void, n: usiz
     unsafe(export_name = "_ZN6swoole9coroutine6Socket4readEPvm")
 )]
 pub unsafe extern "C" fn read(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    uring!(record(this), |ops| ring::plain(ops, ring::READ, buf, n));
     let call = call!(|s, at, len| libc::read((*s).fd, at.cast(), len));
     // SAFETY: as the caller promises; each try reads into the transfer's buffer.
     unsafe { transfer(this, READ, 0, buf.cast(), n, call) }
@@ -717,6 +773,12 @@ pub unsafe extern "C" fn read(this: *mut c_void, buf: *mut c_void, n: usize) -> 
     unsafe(export_name = "_ZN6swoole9coroutine6Socket5writeEPKvm")
 )]
 pub unsafe extern "C" fn write(this: *mut c_void, buf: *const c_void, n: usize) -> isize {
+    uring!(record(this), |ops| ring::plain(
+        ops,
+        ring::WRITE,
+        buf.cast_mut(),
+        n
+    ));
     let call = call!(|s, at, len| libc::write((*s).fd, at.cast(), len));
     // SAFETY: as the caller promises; each try writes from the transfer's buffer.
     unsafe { transfer(this, WRITE, 0, buf.cast_mut().cast(), n, call) }
@@ -731,6 +793,12 @@ pub unsafe extern "C" fn write(this: *mut c_void, buf: *const c_void, n: usize) 
     unsafe(export_name = "_ZN6swoole9coroutine6Socket5readvEPNS_7network8IOVectorE")
 )]
 pub unsafe extern "C" fn readv(this: *mut c_void, vector: *mut c_void) -> isize {
+    uring!(record(this), |ops| ring::swr_v1_hook_uring_vector(
+        ops,
+        &iov_owner(vector),
+        false,
+        false
+    ));
     let call = call!(|s, _, _| socket_readv(s, vector));
     // SAFETY: as the caller promises.
     unsafe { transfer(this, READ, 0, null_mut(), 0, call) }
@@ -745,6 +813,12 @@ pub unsafe extern "C" fn readv(this: *mut c_void, vector: *mut c_void) -> isize 
     unsafe(export_name = "_ZN6swoole9coroutine6Socket6writevEPNS_7network8IOVectorE")
 )]
 pub unsafe extern "C" fn writev(this: *mut c_void, vector: *mut c_void) -> isize {
+    uring!(record(this), |ops| ring::swr_v1_hook_uring_vector(
+        ops,
+        &iov_owner(vector),
+        true,
+        false
+    ));
     let call = call!(|s, _, _| socket_writev(s, vector));
     // SAFETY: as the caller promises.
     unsafe { transfer(this, WRITE, 0, null_mut(), 0, call) }
@@ -771,6 +845,12 @@ unsafe fn remaining(vector: *const c_void) -> usize {
     unsafe(export_name = "_ZN6swoole9coroutine6Socket9readv_allEPNS_7network8IOVectorE")
 )]
 pub unsafe extern "C" fn readv_all(this: *mut c_void, vector: *mut c_void) -> isize {
+    uring!(record(this), |ops| ring::swr_v1_hook_uring_vector(
+        ops,
+        &iov_owner(vector),
+        false,
+        true
+    ));
     let call = || {
         // SAFETY: as the caller promises.
         let socket = unsafe { network(this) };
@@ -792,6 +872,12 @@ pub unsafe extern "C" fn readv_all(this: *mut c_void, vector: *mut c_void) -> is
     unsafe(export_name = "_ZN6swoole9coroutine6Socket10writev_allEPNS_7network8IOVectorE")
 )]
 pub unsafe extern "C" fn writev_all(this: *mut c_void, vector: *mut c_void) -> isize {
+    uring!(record(this), |ops| ring::swr_v1_hook_uring_vector(
+        ops,
+        &iov_owner(vector),
+        true,
+        true
+    ));
     let call = || {
         // SAFETY: as the caller promises.
         let socket = unsafe { network(this) };
@@ -890,6 +976,7 @@ pub unsafe extern "C" fn sendfile(
     } else {
         length.wrapping_add(usize::try_from(offset).unwrap_or(0))
     };
+    uring!(socket, |ops| ring::sendfile(ops, file.0, offset, end));
     // SAFETY: the live record.
     let record_ref = unsafe { &*socket };
     // SAFETY: an available record is open; the read ends here.
@@ -943,6 +1030,15 @@ pub unsafe extern "C" fn recvfrom(
     addr: *mut libc::sockaddr,
     addrlen: *mut libc::socklen_t,
 ) -> isize {
+    uring!(record(this), |ops| ring::swr_v1_hook_uring_io(
+        ops,
+        ring::RECVFROM,
+        buf,
+        n,
+        addr.cast(),
+        addrlen,
+        0
+    ));
     let call = call!(|_, at, len| libc::recvfrom(
         (*record(this)).sock_fd,
         at.cast(),
@@ -964,6 +1060,15 @@ pub unsafe extern "C" fn recvfrom(
     unsafe(export_name = "_ZN6swoole9coroutine6Socket7recvmsgEP6msghdri")
 )]
 pub unsafe extern "C" fn recvmsg(this: *mut c_void, msg: *mut libc::msghdr, flags: c_int) -> isize {
+    uring!(record(this), |ops| ring::swr_v1_hook_uring_io(
+        ops,
+        ring::RECVMSG,
+        null_mut(),
+        0,
+        msg.cast(),
+        null_mut(),
+        flags
+    ));
     let call = call!(|_, _, _| libc::recvmsg((*record(this)).sock_fd, msg, flags));
     // SAFETY: as the caller promises.
     unsafe { transfer(this, READ, 0, null_mut(), 0, call) }
@@ -982,6 +1087,15 @@ pub unsafe extern "C" fn sendmsg(
     msg: *const libc::msghdr,
     flags: c_int,
 ) -> isize {
+    uring!(record(this), |ops| ring::swr_v1_hook_uring_io(
+        ops,
+        ring::SENDMSG,
+        null_mut(),
+        0,
+        msg.cast_mut().cast(),
+        null_mut(),
+        flags
+    ));
     let call = call!(|_, _, _| libc::sendmsg((*record(this)).sock_fd, msg, flags));
     // SAFETY: as the caller promises.
     unsafe { transfer(this, WRITE, 0, null_mut(), 0, call) }
@@ -996,6 +1110,7 @@ pub unsafe extern "C" fn sendmsg(
     unsafe(export_name = "_ZN6swoole9coroutine6Socket9recv_onceEPvm")
 )]
 pub unsafe extern "C" fn recv_once(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    uring!(record(this), |ops| ring::once(ops, buf, n, false));
     // SAFETY: as the caller promises.
     let socket = unsafe { network(this) };
     // SAFETY: its network::Socket, into the caller's buffer.
@@ -1011,6 +1126,7 @@ pub unsafe extern "C" fn recv_once(this: *mut c_void, buf: *mut c_void, n: usize
     unsafe(export_name = "_ZN6swoole9coroutine6Socket9send_onceEPKvm")
 )]
 pub unsafe extern "C" fn send_once(this: *mut c_void, buf: *const c_void, n: usize) -> isize {
+    uring!(record(this), |ops| ring::once(ops, buf.cast_mut(), n, true));
     // SAFETY: as the caller promises.
     let socket = unsafe { network(this) };
     // SAFETY: its network::Socket, from the caller's buffer.
@@ -1044,8 +1160,40 @@ pub unsafe extern "C" fn peek(this: *mut c_void, buf: *mut c_void, n: usize) -> 
     unsafe(export_name = "_ZN6swoole9coroutine6Socket4pollE11swEventTyped")
 )]
 pub unsafe extern "C" fn poll(this: *mut c_void, event: u32, timeout: f64) -> bool {
+    uring!(record(this), |ops| ring::poll(ops, event, timeout));
     // SAFETY: as the caller promises.
     unsafe { swr_v1_hook_co_socket_poll(record(this), event, timeout) }
+}
+
+/// `UringSocket::sendto`'s transfer to the address native code resolved: false,
+/// leaving `*sent` alone, unless the socket is a `UringSocket`.
+///
+/// # Safety
+/// `socket` is a live record; `buf` holds `n` bytes, `addr` holds `*length` and
+/// `sent` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_uring_sendto(
+    socket: *mut CoSocket,
+    buf: *mut c_void,
+    n: usize,
+    addr: *mut libc::sockaddr,
+    length: *mut libc::socklen_t,
+    sent: *mut isize,
+) -> bool {
+    #[cfg(feature = "iouring")]
+    // SAFETY: as the caller promises.
+    if let Some(ops) = unsafe { ring::of(socket) } {
+        // SAFETY: the live view; the caller's buffer and address.
+        let result = unsafe {
+            ring::swr_v1_hook_uring_io(&raw const ops, ring::SENDTO, buf, n, addr.cast(), length, 0)
+        };
+        // SAFETY: the caller's slot.
+        unsafe { *sent = result };
+        return true;
+    }
+    #[cfg(not(feature = "iouring"))]
+    let _ = (socket, buf, n, addr, length, sent);
+    false
 }
 
 #[cfg(test)]

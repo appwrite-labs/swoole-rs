@@ -100,6 +100,13 @@ uint32_t swr_v1_hook_co_socket_accepted(swr_v1_co_socket *socket,
                                         const swr_v1_co_socket *server);
 /* pop_read_buffer / pop_write_buffer. */
 void *swr_v1_hook_co_socket_pop_buffer(swr_v1_co_socket *socket, bool write);
+/* UringSocket's constructors (swoole_socket_impl.h): with io_uring, Rust runs the socket's
+ * members through the ring (crates/hooks/src/uring_socket.rs). */
+void swr_v1_hook_co_socket_uring(swr_v1_co_socket *socket);
+/* UringSocket::sendto's transfer to the resolved address: false, leaving *sent, unless the
+ * socket is a UringSocket. */
+bool swr_v1_hook_co_socket_uring_sendto(
+    swr_v1_co_socket *socket, void *buf, size_t n, sockaddr *addr, socklen_t *length, ssize_t *sent);
 
 /* What the Rust operations need from C++ (crates/hooks/src/co_io.rs), installed once. */
 typedef struct {

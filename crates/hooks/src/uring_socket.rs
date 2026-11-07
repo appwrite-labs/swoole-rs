@@ -2,21 +2,45 @@
 //! current coroutine to the direction, the `io_uring` request (or the TLS transfer
 //! over it), the result check, and the loops built on them (`recv_all`,
 //! `send_all`, `readv`/`writev` and their `_all` forms, the TLS vector loops),
-//! plus `accept`'s request, `connect` and `poll`. Native code keeps the socket's availability, its
-//! result check and `get_name`, and passes them in [`UringSocketOps`].
+//! plus `accept`, `connect`, `poll`, `sendfile`, `send_once`/`recv_once` and the
+//! TLS handshake's steps. A `UringSocket` is a `coroutine::Socket` its
+//! constructors mark ([`crate::socket_extra::swr_v1_hook_co_socket_uring`]); the
+//! socket's own members (`socket_members.rs`, `socket_tls.rs`, `lifecycle.rs`)
+//! take these paths for it.
+use crate::co_io::{available, check, set_err, swr_v1_hook_co_socket_owned_err};
+use crate::co_socket::CoSocket;
 use crate::shutdown::{SocketState, swr_v1_hook_socket_bind, swr_v1_hook_socket_connect};
 use crate::uring::{
     Host, swr_v1_uring_accept, swr_v1_uring_connect, swr_v1_uring_poll, swr_v1_uring_read,
     swr_v1_uring_readv, swr_v1_uring_recv, swr_v1_uring_recvfrom, swr_v1_uring_recvmsg,
-    swr_v1_uring_send, swr_v1_uring_sendmsg, swr_v1_uring_sendto, swr_v1_uring_write,
-    swr_v1_uring_writev,
+    swr_v1_uring_send, swr_v1_uring_sendfile, swr_v1_uring_sendmsg, swr_v1_uring_sendto,
+    swr_v1_uring_write, swr_v1_uring_writev,
 };
-use crate::uring_tls::{Tls, swr_v1_uring_tls_recv, swr_v1_uring_tls_send};
-use core::ffi::{c_int, c_void};
+use crate::uring_tls::{
+    Tls, TlsHost, swr_v1_uring_tls_once, swr_v1_uring_tls_perform, swr_v1_uring_tls_recv,
+    swr_v1_uring_tls_send, swr_v1_uring_tls_sendfile,
+};
+use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
+use openssl_sys as ssl;
+use std::sync::OnceLock;
+use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::log;
+use swoole_rs_reactor::{
+    ReactorIov, SocketRecord, swr_v1_reactor_iov_advance, swr_v1_reactor_iov_view,
+    swr_v1_socket_alloc, swr_v1_socket_get_name,
+};
+use swoole_rs_tls::upstream::{socket_recv, socket_send};
+
+unsafe extern "C" {
+    fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
+}
 
 const EVENT_READ: u32 = 1 << 9;
 const EVENT_WRITE: u32 = 1 << 10;
 const EVENT_RDWR: u32 = EVENT_READ | EVENT_WRITE;
+/// `SW_ERROR_SSL_BAD_PROTOCOL` and `SW_ERROR_SSL_RESET`.
+const SSL_BAD_PROTOCOL: c_int = 1016;
+const SSL_RESET: c_int = 1017;
 
 /// The socket's view and effects.
 #[repr(C)]
@@ -37,27 +61,163 @@ pub struct UringSocketOps {
     pub name: unsafe extern "C" fn(*mut c_void),
 }
 
-/// A native `network::IOVector`: its current iovec and how many remain, and
+/// A `network::IOVector`'s owner: its current iovec and how many remain, and
 /// advancing it past a result.
-#[repr(C)]
-pub struct IoVectorOps {
-    pub vector: *mut c_void,
-    pub current: unsafe extern "C" fn(*mut c_void, *mut c_int) -> *const libc::iovec,
-    pub update: unsafe extern "C" fn(*mut c_void, isize),
-}
+pub struct IoVector(pub *mut ReactorIov);
 
-impl IoVectorOps {
+impl IoVector {
     fn current(&self) -> (*const libc::iovec, c_int) {
-        let mut count = 0;
         // SAFETY: the caller's live vector.
-        let iov = unsafe { (self.current)(self.vector, &raw mut count) };
-        (iov, count)
+        let view = unsafe { swr_v1_reactor_iov_view(self.0) };
+        (view.iterator, view.remain_count)
     }
 
     fn update(&self, result: isize) {
         // SAFETY: the caller's live vector.
-        unsafe { (self.update)(self.vector, result) };
+        unsafe { swr_v1_reactor_iov_advance(self.0, result) };
     }
+}
+
+/// The record a callback's socket pointer is.
+fn record(socket: *mut c_void) -> *mut CoSocket {
+    socket.cast()
+}
+
+unsafe extern "C" fn socket_available(socket: *mut c_void, event: u32) -> bool {
+    // SAFETY: the live record of the operation.
+    unsafe { available(record(socket), event) }
+}
+
+unsafe extern "C" fn socket_check(socket: *mut c_void, result: isize) {
+    // SAFETY: the live record of the operation.
+    unsafe { check(record(socket), result) };
+}
+
+unsafe extern "C" fn socket_set_err(socket: *mut c_void, code: c_int) {
+    // SAFETY: the live record of the operation.
+    unsafe { set_err(record(socket), code) };
+}
+
+/// The live record's open `network::Socket`.
+///
+/// # Safety
+/// `socket` is a live, open record.
+unsafe fn network(socket: *mut CoSocket) -> *mut SocketRecord {
+    // SAFETY: as the caller promises.
+    unsafe { (*socket).socket }
+}
+
+unsafe extern "C" fn socket_name(socket: *mut c_void) {
+    // SAFETY: the live record of the operation.
+    let network = unsafe { network(record(socket)) };
+    // SAFETY: its open network::Socket; a failure is ignored, as upstream does.
+    unsafe { swr_v1_socket_get_name(network) };
+}
+
+unsafe extern "C" fn tls_check_failure(socket: *mut c_void) {
+    // SAFETY: the live record of the operation.
+    unsafe { check(record(socket), -1) };
+}
+
+unsafe extern "C" fn tls_buffer(socket: *mut c_void, write: bool, size: *mut usize) -> *mut c_char {
+    // SAFETY: the live record of the operation.
+    let buffer = unsafe { crate::co_socket::buffer(record(socket), write) }.cast::<CppString>();
+    // SAFETY: the socket's live String.
+    let buffer = unsafe { &*buffer };
+    // SAFETY: the caller's size slot.
+    unsafe { *size = buffer.size };
+    buffer.str.cast()
+}
+
+/// `ssl_bio_perform`'s failure: OpenSSL's text for `code`, logged with the peer
+/// and set as the socket's error.
+unsafe extern "C" fn tls_ssl_error(
+    socket: *mut c_void,
+    function: *const c_char,
+    error: c_int,
+    code: c_ulong,
+) {
+    let socket = record(socket);
+    let mut text = [0 as c_char; 512];
+    // SAFETY: at most the buffer's length, NUL-terminated.
+    unsafe { ERR_error_string_n(code, text.as_mut_ptr(), text.len()) };
+    // SAFETY: NUL-terminated by ERR_error_string_n.
+    let text = unsafe { CStr::from_ptr(text.as_ptr()) };
+    // SAFETY: the caller's function name.
+    let function = unsafe { CStr::from_ptr(function) }.to_string_lossy();
+    // SAFETY: the live record of the operation.
+    let network = unsafe { network(socket) };
+    // SAFETY: its open network::Socket.
+    let network = unsafe { &*network };
+    let (host, port) = swoole_rs_tls::upstream::peer(&network.info);
+    let message = text.to_string_lossy();
+    log::notice(format_args!(
+        "{function}(fd={}) to server[{host}:{port}] failed. Error: {message}[{error}|{}]",
+        network.fd,
+        swoole_rs_tls::error_reason(code)
+    ));
+    let bytes = text.to_bytes();
+    // SAFETY: the live record; the text is readable for the call.
+    unsafe {
+        swr_v1_hook_co_socket_owned_err(
+            socket,
+            SSL_BAD_PROTOCOL,
+            bytes.as_ptr().cast(),
+            bytes.len(),
+        )
+    };
+}
+
+/// Every `UringSocket`'s TLS host, over the ring's.
+static TLS_HOST: OnceLock<TlsHost> = OnceLock::new();
+
+/// The ring's view of the socket at `socket` when it is a `UringSocket`, else none.
+///
+/// # Safety
+/// `socket` is a live record.
+pub(crate) unsafe fn of(socket: *mut CoSocket) -> Option<UringSocketOps> {
+    // SAFETY: as the caller promises.
+    let record = unsafe { &*socket };
+    if record.extra.is_null() || record.socket.is_null() {
+        return None;
+    }
+    // SAFETY: the record's live extra record.
+    let extra = unsafe { &*record.extra };
+    let (uring, [rbio, wbio]) = (extra.uring, extra.bio);
+    if uring.is_null() {
+        return None;
+    }
+    let host = TLS_HOST.get_or_init(|| TlsHost {
+        // SAFETY: the native ring host, a static table.
+        uring: unsafe { &*uring.cast::<Host>() },
+        set_err: socket_set_err,
+        check_failure: tls_check_failure,
+        buffer: tls_buffer,
+        ssl_error: tls_ssl_error,
+        bad_protocol: SSL_BAD_PROTOCOL,
+        reset: SSL_RESET,
+    });
+    // SAFETY: the record's open network::Socket.
+    let network = unsafe { &*record.socket };
+    Some(UringSocketOps {
+        socket: socket.cast(),
+        state: record.state,
+        tls: Tls {
+            host,
+            socket: socket.cast(),
+            ssl: network.ssl.cast(),
+            rbio: rbio.cast(),
+            wbio: wbio.cast(),
+            fd: network.fd,
+            read_timeout: network.timeouts.read,
+            write_timeout: network.timeouts.write,
+        },
+        connect_timeout: network.timeouts.connect,
+        available: socket_available,
+        check: socket_check,
+        set_err: socket_set_err,
+        name: socket_name,
+    })
 }
 
 /// The scalar operations of [`swr_v1_hook_uring_io`].
@@ -179,7 +339,7 @@ impl UringSocketOps {
     }
 
     /// `ssl_readv`/`ssl_writev`: TLS transfers over each iovec while they move data.
-    fn tls_vector(&self, vector: &IoVectorOps, write: bool) -> isize {
+    fn tls_vector(&self, vector: &IoVector, write: bool) -> isize {
         let mut total = 0isize;
         loop {
             let (iov, _) = vector.current();
@@ -201,7 +361,7 @@ impl UringSocketOps {
     }
 
     /// `readv`/`writev`.
-    fn vector(&self, vector: &IoVectorOps, write: bool) -> isize {
+    fn vector(&self, vector: &IoVector, write: bool) -> isize {
         let event = if write { EVENT_WRITE } else { EVENT_READ };
         if !self.available(event) {
             return -1;
@@ -239,8 +399,7 @@ impl UringSocketOps {
 ///
 /// # Safety
 /// `ops` is live; the buffers are valid as for the system call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_uring_io(
+pub(crate) unsafe fn swr_v1_hook_uring_io(
     ops: *const UringSocketOps,
     op: c_int,
     buf: *mut c_void,
@@ -255,13 +414,21 @@ pub unsafe extern "C" fn swr_v1_hook_uring_io(
     unsafe { ops.io(op, buf, n, extra, extra_length, flags) }
 }
 
+/// [`swr_v1_hook_uring_io`] without an address or flags.
+///
+/// # Safety
+/// As [`swr_v1_hook_uring_io`].
+pub(crate) unsafe fn plain(ops: &UringSocketOps, op: c_int, buf: *mut c_void, n: usize) -> isize {
+    // SAFETY: as the caller promises.
+    unsafe { ops.io(op, buf, n, core::ptr::null_mut(), core::ptr::null_mut(), 0) }
+}
+
 /// `recv_all` (`write` false) or `send_all`: recv/send until `n` bytes moved, it
 /// failed, or (receiving) the peer closed.
 ///
 /// # Safety
 /// `ops` is live and `buf` holds `n` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_uring_io_all(
+pub(crate) unsafe fn swr_v1_hook_uring_io_all(
     ops: *const UringSocketOps,
     write: bool,
     buf: *mut c_void,
@@ -307,17 +474,14 @@ fn transfer_result(result: isize, total: usize) -> isize {
 ///
 /// # Safety
 /// `ops` and `vector` are live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_uring_vector(
+pub(crate) unsafe fn swr_v1_hook_uring_vector(
     ops: *const UringSocketOps,
-    vector: *const IoVectorOps,
+    vector: &IoVector,
     write: bool,
     all: bool,
 ) -> isize {
     // SAFETY: the caller's live table.
     let ops = unsafe { &*ops };
-    // SAFETY: the caller's live vector.
-    let vector = unsafe { &*vector };
     if !all {
         return ops.vector(vector, write);
     }
@@ -342,8 +506,7 @@ pub unsafe extern "C" fn swr_v1_hook_uring_vector(
 ///
 /// # Safety
 /// `ops` is live; `addr`/`length` are valid as for accept(2).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_uring_accept(
+pub(crate) unsafe fn swr_v1_hook_uring_accept(
     ops: *const UringSocketOps,
     addr: *mut libc::sockaddr,
     length: *mut libc::socklen_t,
@@ -367,8 +530,7 @@ pub unsafe extern "C" fn swr_v1_hook_uring_accept(
 ///
 /// # Safety
 /// `ops` is live and `addr` holds `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_uring_connect(
+pub(crate) unsafe fn swr_v1_hook_uring_connect(
     ops: *const UringSocketOps,
     addr: *const libc::sockaddr,
     length: libc::socklen_t,
@@ -402,8 +564,7 @@ pub unsafe extern "C" fn swr_v1_hook_uring_connect(
 ///
 /// # Safety
 /// `ops` is live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_uring_poll(
+pub(crate) unsafe fn swr_v1_hook_uring_poll(
     ops: *const UringSocketOps,
     event: u32,
     events: libc::c_short,
@@ -440,6 +601,208 @@ pub unsafe extern "C" fn swr_v1_hook_uring_poll(
     true
 }
 
+/// `UringSocket::accept`'s connection: the ring's accept (under the read timeout,
+/// not the caller's, as upstream) as a new `UringSocket`, or null with the error set.
+///
+/// # Safety
+/// `socket` is a live, available record in a coroutine and `ops` its view.
+pub(crate) unsafe fn accept(socket: *mut CoSocket, ops: &UringSocketOps) -> *mut c_void {
+    let mut conn = SocketRecord::new();
+    // SAFETY: the live view, into the new record's address.
+    let fd = unsafe {
+        swr_v1_hook_uring_accept(
+            ops,
+            (&raw mut conn.info.addr).cast(),
+            &raw mut conn.info.len,
+        )
+    };
+    if fd < 0 {
+        return core::ptr::null_mut();
+    }
+    conn.fd = fd;
+    conn.removed = 1;
+    // SAFETY: as the caller promises.
+    let listener = unsafe { network(socket) };
+    // SAFETY: its open network::Socket.
+    conn.info.kind = unsafe { (*listener).socket_type };
+    conn.output.nonblock = 1;
+    conn.cloexec = 1;
+    let accepted = swr_v1_socket_alloc();
+    // SAFETY: fresh storage for one record.
+    unsafe { accepted.write(conn) };
+    // SAFETY: the listening socket and the record it accepted.
+    let client = unsafe { (crate::co_io::host().accepted)(socket, accepted) };
+    let marked = crate::socket_members::record(client);
+    // SAFETY: the new native socket's record.
+    unsafe { crate::socket_extra::swr_v1_hook_co_socket_uring(marked) };
+    client
+}
+
+/// `catch_write_error(error)` of the operation's socket.
+unsafe extern "C" fn catch_write_error(socket: *mut c_void, error: c_int) -> c_int {
+    // SAFETY: the live record of the operation.
+    let network = unsafe { network(record(socket)) };
+    // SAFETY: its open network::Socket.
+    unsafe { (*network).catch_error(error) }
+}
+
+/// `UringSocket::sendfile`'s transfer once the file is open: as upstream, `end`
+/// bytes from `offset`, through the TLS session when there is one.
+///
+/// # Safety
+/// `ops` is a live socket's view in a coroutine; `file` is open.
+pub(crate) unsafe fn sendfile(
+    ops: &UringSocketOps,
+    file: c_int,
+    offset: libc::off_t,
+    end: usize,
+) -> bool {
+    let mut offset = offset;
+    let sent = ops.bound(EVENT_WRITE, || {
+        if !ops.ssl() {
+            // MSG_SPLICE_PAGES is kernel-internal: the build's headers lack it, so
+            // upstream splices through a pipe.
+            // SAFETY: the open socket and file, and the local offset.
+            return unsafe {
+                swr_v1_uring_sendfile(
+                    ops.host(),
+                    ops.tls.fd,
+                    file,
+                    &raw mut offset,
+                    end,
+                    ops.tls.write_timeout,
+                    0,
+                )
+            };
+        }
+        // SAFETY: the live TLS view, the open file and the local offset.
+        let result = unsafe {
+            swr_v1_uring_tls_sendfile(ops.tls, file, &raw mut offset, end, catch_write_error)
+        };
+        match result.warn {
+            1 => log::sys_warning(c"UringSocket::ssl_sendfile", format_args!("pread() failed")),
+            2 => log::sys_warning(c"UringSocket::ssl_sendfile", format_args!("write() failed")),
+            _ => {}
+        }
+        result.total.cast_signed()
+    });
+    sent == end.cast_signed()
+}
+
+unsafe extern "C" fn network_send(socket: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    // SAFETY: the live record of the operation.
+    let network = unsafe { network(record(socket)) };
+    // SAFETY: its open network::Socket, from the caller's buffer.
+    unsafe { socket_send(network, buf, n, 0) }
+}
+
+unsafe extern "C" fn network_recv(socket: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    // SAFETY: the live record of the operation.
+    let network = unsafe { network(record(socket)) };
+    // SAFETY: its open network::Socket, into the caller's buffer.
+    unsafe { socket_recv(network, buf, n, 0) }
+}
+
+/// The socket's `ssl_want_read` (bit 0) and `ssl_want_write` (bit 1).
+unsafe extern "C" fn want(socket: *mut c_void) -> c_int {
+    // SAFETY: the live record of the operation.
+    let network = unsafe { network(record(socket)) };
+    // SAFETY: its open network::Socket.
+    let tls = unsafe { (*network).tls };
+    c_int::from(tls.want_read == 1) | (c_int::from(tls.want_write == 1) << 1)
+}
+
+/// `UringSocket::send_once` (`write`) or `recv_once`: one attempt on the
+/// `network::Socket`, the TLS BIOs pumped through the ring until it moves bytes.
+///
+/// # Safety
+/// `ops` is a live, open socket's view; `buf` holds `n` bytes.
+pub(crate) unsafe fn once(ops: &UringSocketOps, buf: *mut c_void, n: usize, write: bool) -> isize {
+    let io = if write { network_send } else { network_recv };
+    // SAFETY: as the caller promises; the callbacks take the view's record.
+    unsafe { swr_v1_uring_tls_once(ops.tls, buf, n, io, want) }
+}
+
+/// `UringSocket::poll(event, timeout)`.
+///
+/// # Safety
+/// `ops` is a live socket's view in a coroutine.
+pub(crate) unsafe fn poll(ops: &UringSocketOps, event: u32, timeout: f64) -> bool {
+    let mut events = 0;
+    if event & EVENT_READ != 0 {
+        events |= libc::POLLIN;
+    }
+    if event & EVENT_WRITE != 0 {
+        events |= libc::POLLOUT;
+    }
+    // SAFETY: as the caller promises.
+    unsafe { swr_v1_hook_uring_poll(ops, event, events, timeout) }
+}
+
+/// `UringSocket::ssl_handshake`'s session: `create` makes the socket's own, then
+/// it runs over a pair of memory BIOs the ring pumps, on the socket's side.
+///
+/// # Safety
+/// `socket` is a live, open record with an `SSLContext`.
+pub(crate) unsafe fn tls_session(socket: *mut CoSocket, create: impl FnOnce() -> bool) -> bool {
+    if !create() {
+        return false;
+    }
+    // SAFETY: as the caller promises.
+    let network = unsafe { network(socket) };
+    // SAFETY: its open network::Socket, now with a session.
+    let session = unsafe { (*network).ssl }.cast::<ssl::SSL>();
+    // SAFETY: OpenSSL's static memory BIO method.
+    let method = unsafe { ssl::BIO_s_mem() };
+    // SAFETY: as above (each call alike).
+    let rbio = unsafe { ssl::BIO_new(method) };
+    // SAFETY: as above.
+    let wbio = unsafe { ssl::BIO_new(method) };
+    // SAFETY: the live session takes both BIOs.
+    unsafe { ssl::SSL_set_bio(session, rbio, wbio) };
+    // SAFETY: the live record's extra record.
+    let extra = unsafe { (*socket).extra };
+    // SAFETY: as above.
+    unsafe { (*extra).bio = [rbio.cast(), wbio.cast()] };
+    // SAFETY: as above.
+    if unsafe { (*socket).ssl_is_server } {
+        // SAFETY: the live session.
+        unsafe { ssl::SSL_set_accept_state(session) };
+    } else {
+        // SAFETY: the live session.
+        unsafe { ssl::SSL_set_connect_state(session) };
+    }
+    true
+}
+
+/// One `UringSocket` handshake step through the ring: 1 done, 0 again, -1 failed.
+///
+/// # Safety
+/// `socket` is a live `UringSocket`'s record with a session from [`tls_session`].
+pub(crate) unsafe fn tls_step(socket: *mut CoSocket) -> c_int {
+    // SAFETY: as the caller promises.
+    let Some(ops) = (unsafe { of(socket) }) else {
+        return -1;
+    };
+    // SAFETY: the live session.
+    let rc = unsafe { ssl::SSL_do_handshake(ops.tls.ssl) };
+    if rc == 1 {
+        return 1;
+    }
+    // SAFETY: as the caller promises.
+    let function = if unsafe { (*socket).ssl_is_server } {
+        c"ssl_accept"
+    } else {
+        c"ssl_connect"
+    };
+    // SAFETY: the live TLS view.
+    if unsafe { swr_v1_uring_tls_perform(ops.tls, rc, function.as_ptr()) } {
+        0
+    } else {
+        -1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +811,13 @@ mod tests {
     };
     use crate::uring::testing::{HOST, with_engine};
     use crate::uring_tls::TlsHost;
+
+    /// `operator new` for this test binary, which links no C++ runtime: [`of`]'s TLS
+    /// host reaches the socket buffers' allocation.
+    #[unsafe(export_name = "_Znwm")]
+    extern "C" fn operator_new(size: usize) -> *mut c_void {
+        unsafe { libc::malloc(size) }
+    }
     use core::ffi::{c_char, c_ulong};
     use std::cell::RefCell;
 

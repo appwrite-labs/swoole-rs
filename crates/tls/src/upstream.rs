@@ -97,7 +97,8 @@ pub(crate) unsafe fn text(text: *const c_char) -> String {
 }
 
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
-pub(crate) fn peer(info: &SocketAddress) -> (String, c_int) {
+#[must_use]
+pub fn peer(info: &SocketAddress) -> (String, c_int) {
     let mut buffer = [0 as c_char; 46];
     let (family, address, port): (c_int, *const c_void, u16) = match info.kind {
         // SAFETY: TCP, UDP and raw sockets hold the IPv4 union member.

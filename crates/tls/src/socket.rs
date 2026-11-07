@@ -403,7 +403,8 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_pem(
 
 /// OpenSSL 3's `ERR_GET_REASON`: a system error's reason is its errno.
 /// openssl-sys's port returns `ERR_LIB_SYS` (2) for those instead.
-pub(crate) fn error_reason(error: std::os::raw::c_ulong) -> c_int {
+#[must_use]
+pub fn error_reason(error: std::os::raw::c_ulong) -> c_int {
     const SYSTEM_FLAG: std::os::raw::c_ulong = 1 << 31;
     if error & SYSTEM_FLAG == 0 {
         openssl_sys::ERR_GET_REASON(error)
