@@ -1,5 +1,5 @@
 diff --git a/include/swoole_memory.h b/include/swoole_memory.h
-index a713c6e..b0be269 100644
+index a713c6e..5df1922 100644
 --- a/include/swoole_memory.h
 +++ b/include/swoole_memory.h
 @@ -20,2 +20,5 @@
@@ -35,7 +35,7 @@ index a713c6e..b0be269 100644
 +    ~FixedPool() override {
 +        swr_v1_memory_fixed_pool_delete(impl);
 +    }
-+    void *alloc(uint32_t size) override {
++    void *alloc(uint32_t) override {
 +        return swr_v1_memory_fixed_pool_alloc(impl);
 +    }
 +    void free(void *ptr) override {
