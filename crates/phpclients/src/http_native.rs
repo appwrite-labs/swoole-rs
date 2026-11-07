@@ -1,8 +1,7 @@
 //! What `Coroutine\Http\Client` needs from the coroutine socket, its buffers
 //! and timeouts, files and callables, over `swoole_rs_phpruntime::co` and the
-//! socket's record. WebSocket framing is still C++ (defined in the patched
-//! `ext-src/swoole_websocket_server.cc`, declared in
-//! `native/clients/swoole_rs_phpclients.h`), as is the name resolver's context.
+//! socket's record. WebSocket framing is crates/phphttp's, linked by symbol;
+//! the name resolver's context is still C++.
 use crate::native::Socket;
 use libc::{c_char, c_int, c_void, mode_t, off_t, size_t, ssize_t};
 use std::ffi::CStr;
@@ -21,13 +20,12 @@ unsafe extern "C" {
     /// `*context = {}` with `with_port`.
     pub(crate) fn swoole_name_resolver_context_reset(context: *mut c_void, with_port: bool);
     pub(crate) fn swoole_name_resolver_context_free(context: *mut c_void);
-    /// WebSocket settings and continuation buffer.
+    /// WebSocket settings and continuation buffer (crates/phphttp).
     pub(crate) fn swoole_http_client_coro_ws_new() -> *mut c_void;
     pub(crate) fn swoole_http_client_coro_ws_free(ws: *mut c_void);
     pub(crate) fn swoole_http_client_coro_ws_apply(ws: *mut c_void, settings: *const zval);
     pub(crate) fn swoole_http_client_coro_ws_compression(ws: *mut c_void) -> bool;
-    /// Pack a frame into the write buffer and send it: 0, 1 if packing failed,
-    /// 2 if sending did.
+    /// Pack a frame and send it: 0, 1 if packing failed, 2 if sending did.
     pub(crate) fn swoole_http_client_coro_ws_push(
         socket: Socket,
         ws: *mut c_void,
@@ -319,7 +317,9 @@ pub(crate) unsafe fn swoole_http_client_coro_timeout_end(controller: *mut c_void
 }
 
 /// The socket frames WebSocket packets from now on.
-pub(crate) unsafe fn swoole_http_client_coro_ws_protocol(socket: Socket) {
+/// # Safety
+/// `socket` is a live coroutine socket.
+pub unsafe fn websocket_protocol(socket: Socket) {
     // SAFETY: the caller's live socket.
     let record = unsafe { co::record(socket) };
     record.open_length_check = true;

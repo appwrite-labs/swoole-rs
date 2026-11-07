@@ -35,6 +35,10 @@ pub struct PortConfig {
     pub kernel_socket_send_buffer_size: c_int,
     pub gs: *mut c_void,
     pub ptr: *mut c_void,
+    /// `open_websocket_{close,ping,pong}_frame` as bits 0, 1 and 2.
+    pub websocket_frames: u8,
+    /// `websocket_subprotocol`, the handshake's `Sec-WebSocket-Protocol`.
+    pub websocket_protocol: Option<Box<Vec<u8>>>,
 }
 
 /// The settings of a `ListenPort`, which begins with its `PortFields` pointer to them.
@@ -87,6 +91,8 @@ pub extern "C" fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig 
         kernel_socket_send_buffer_size: 0,
         gs: core::ptr::null_mut(),
         ptr: core::ptr::null_mut(),
+        websocket_frames: 0,
+        websocket_protocol: None,
     }))
 }
 /// # Safety

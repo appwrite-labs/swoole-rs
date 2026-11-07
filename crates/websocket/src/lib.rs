@@ -34,23 +34,6 @@ pub fn accept(key: &[u8]) -> [u8; 28] {
     accept
 }
 
-/// `php_swoole_sha1`: the 20-byte digest of `length` bytes at `data`.
-/// # Safety
-/// `data` covers `length` readable bytes (null only when 0); `digest` 20
-/// writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ws_sha1(data: *const u8, length: usize, digest: *mut u8) {
-    let input = if length == 0 {
-        &[][..]
-    } else {
-        // SAFETY: per the caller.
-        unsafe { std::slice::from_raw_parts(data, length) }
-    };
-    let hash = sha1::digest(input);
-    // SAFETY: per the caller, 20 writable bytes disjoint from the local digest.
-    unsafe { std::ptr::copy_nonoverlapping(hash.as_ptr(), digest, hash.len()) };
-}
-
 /// Query header plus payload length, preserving upstream's incremental output.
 ///
 /// # Safety

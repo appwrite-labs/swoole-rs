@@ -56,8 +56,6 @@ typedef struct {
 } swr_ws_decision;
 /* Pure pinned dispatch policy; caller executes allocations, dispatch and I/O.
  * Frame must describe a complete decoded frame within wire_length. */
-/* php_swoole_sha1: the 20-byte SHA-1 digest of `length` bytes. */
-void swr_v1_ws_sha1(const uint8_t *data, size_t length, uint8_t *digest);
 int32_t swr_v1_ws_decide(const swr_ws_decoded *frame, size_t wire_length,
                         const swr_ws_context *context, swr_ws_decision *output);
 /* PHP-facing pure policy; Zend/zlib/socket operations remain native.

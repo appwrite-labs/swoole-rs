@@ -786,11 +786,10 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
         // SAFETY: the classes MINIT registered.
         let (server_ce, socket_ce) = unsafe { (swoole_server_ce, swoole_socket_coro_ce) };
         if instance_of(object, server_ce) {
-            // SAFETY: a `Swoole\Server` and a local output.
-            if unsafe { websocket::swr_ws_host_server(object, &raw mut server) } {
-                Bailout.defer();
+            let Some(checked) = websocket::server_of(object) else {
                 return;
-            }
+            };
+            server = checked;
             if !websocket::server_connection(server, fd) {
                 return refuse(
                     call,
@@ -814,8 +813,7 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
         fd = unsafe { z::swr_zval_get_long(object) };
         server = swoole_rs_corebase::swr_v1_core_server();
     }
-    // SAFETY: a live server.
-    if !server.is_null() && !unsafe { websocket::swr_ws_host_started(server) } {
+    if !server.is_null() && !websocket::started(server) {
         return refuse(call, "server is not running");
     }
     if server.is_null() && socket.is_null() {

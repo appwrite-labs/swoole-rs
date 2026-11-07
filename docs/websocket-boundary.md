@@ -15,8 +15,9 @@ Still upstream C++:
 - `pack_close_frame`: close code/reason bounds.
 - `dispatch_frame`: fragment accumulation, message-size limits, opcode
   decisions, control dispatch, close response.
-- `ext-src/swoole_websocket_server.cc`: handshake, PHP Frame mapping,
-  compression, automatic ping responses, disconnect lifecycle.
+- crates/phphttp (`websocket.rs`): handshake, PHP Frame mapping,
+  compression, automatic ping responses, disconnect lifecycle;
+  `ext-src/swoole_websocket_server.cc` is gone.
 - Generic protocol/reactor code: receive buffering, package limits, readiness,
   writes, socket close.
 

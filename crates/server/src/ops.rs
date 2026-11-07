@@ -322,7 +322,7 @@ pub const OP_PORT_MIN_LENGTH: u32 = 176;
 pub const OP_PORT_STREAM: u32 = 177;
 pub const OP_PORT_SSL_AT: u32 = 178;
 pub const OP_PORT_WEBSOCKET: u32 = 179;
-/// The port's WebSocket compression from the server's.
+/// Unused: the port's WebSocket compression, which nothing read.
 pub const OP_PORT_WS_COMPRESSION: u32 = 180;
 /// `swoole_set_thread_type(THREAD_MASTER)`, `swoole_set_thread_id(arg)`.
 pub const OP_MASTER_THREAD: u32 = 181;

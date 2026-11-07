@@ -33,6 +33,7 @@ mod socket_options;
 pub use async_net::*;
 pub use client::*;
 pub use http_client::*;
+pub use http_native::websocket_protocol;
 pub use net::*;
 pub use resolver::*;
 pub use select::*;

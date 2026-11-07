@@ -1,10 +1,9 @@
 # PHP HTTP binding policy
 
 Feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`
-and `swoole_rs_httpbindings.h`. Patched upstream files:
-`ext-src/swoole_http_cookie.cc`; `ext-src/swoole_http_request.cc`,
-`ext-src/swoole_http_response.cc`, `ext-src/swoole_http_server.cc` and
-`ext-src/swoole_http_server_coro.cc` are gone.
+and `swoole_rs_httpbindings.h`. `ext-src/swoole_http_cookie.cc`,
+`swoole_http_request.cc`, `swoole_http_response.cc`, `swoole_http_server.cc`,
+`swoole_http_server_coro.cc` and `swoole_websocket_server.cc` are gone.
 Public PHP headers, class layouts and stubs/arginfo are unchanged. Rust
 allocates and frees `swoole::http::Context`, whose layout is `ContextState`.
 

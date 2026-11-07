@@ -149,7 +149,8 @@ unsafe extern "C" {
         short_name: bool,
         compression: bool,
     ) -> *mut zend_class_entry;
-    fn php_swoole_websocket_server_minit(module_number: c_int);
+    /// crates/phphttp's `Swoole\WebSocket\Server`, `Frame` and `CloseFrame`.
+    fn swr_v1_phphttp_websocket_minit(module_number: c_int, serializable: bool, zlib: bool);
     fn php_swoole_redis_server_minit(module_number: c_int);
     fn php_swoole_name_resolver_minit(module_number: c_int);
     /// crates/phpcoroutines' tracer, with its INI switches.
@@ -239,7 +240,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_http_cookie_minit),
         M(http_server_minit),
         M(http_server_coro_minit),
-        M(php_swoole_websocket_server_minit),
+        M(websocket_server_minit),
         M(php_swoole_redis_server_minit),
         M(php_swoole_name_resolver_minit),
         M(ops.optional_minit),
@@ -296,6 +297,15 @@ unsafe extern "C" fn http_response_minit(_module_number: c_int) {
     let codecs = u32::from(flags & ZLIB != 0) | u32::from(flags & COMPRESSION != 0) << 3;
     // SAFETY: Rust's MINIT, once, after the request class's.
     unsafe { swr_v1_phphttp_response_minit(codecs) };
+}
+
+/// `php_swoole_websocket_server_minit`: serializable with `SW_THREAD`.
+unsafe extern "C" fn websocket_server_minit(module_number: c_int) {
+    use crate::constants::{THREAD, ZLIB};
+    let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
+    let (serializable, zlib) = (flags & THREAD != 0, flags & ZLIB != 0);
+    // SAFETY: Rust's MINIT, once, after `Swoole\Http\Server`'s.
+    unsafe { swr_v1_phphttp_websocket_minit(module_number, serializable, zlib) };
 }
 
 /// `php_swoole_http_server_minit`.

@@ -221,7 +221,12 @@ unsafe extern "C" {
 /// is full. A bailout while waiting is left for the handler to raise.
 /// # Safety
 /// `server` is the live server and `data` holds `length` bytes.
-unsafe fn server_send(server: *mut c_void, fd: i64, data: *const c_char, length: usize) -> bool {
+pub(crate) unsafe fn server_send(
+    server: *mut c_void,
+    fd: i64,
+    data: *const c_char,
+    length: usize,
+) -> bool {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Server::send's uint32_t length"
