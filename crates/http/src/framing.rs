@@ -26,6 +26,10 @@ impl HttpFrame {
 fn c_space(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t'..=b'\r')
 }
+/// `input[at..]`, or empty past the end.
+fn tail(input: &[u8], at: usize) -> &[u8] {
+    input.get(at..).unwrap_or_default()
+}
 fn starts(input: &[u8], needle: &[u8]) -> bool {
     super::case_prefix(input, needle)
 }
@@ -43,12 +47,14 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> i32 {
     }
     // Every method but the trailing PRI, which is matched below.
     let pri = METHODS.len() - 1;
-    let mut at = if let Some(index) = METHODS[..pri]
+    let mut at = if let Some((index, method)) = METHODS
         .iter()
-        .position(|m| input.starts_with(m.to_bytes()))
+        .take(pri)
+        .enumerate()
+        .find(|(_, m)| input.starts_with(m.to_bytes()))
     {
         frame.method = u32::try_from(index + 1).unwrap_or(0);
-        METHODS[index].to_bytes().len()
+        method.to_bytes().len()
     } else if input.starts_with(b"PRI") {
         frame.method = u32::try_from(METHODS.len()).unwrap_or(0);
         if input.starts_with(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n") {
@@ -62,15 +68,15 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> i32 {
         return INVALID;
     };
     let mut state = 0;
-    while at < input.len() {
+    while let Some(&byte) = input.get(at) {
         match state {
             0 => {
-                if input[at] != b' ' {
+                if byte != b' ' {
                     frame.url_offset = field(at);
                     state = 1;
                 }
             }
-            1 => match input[at] {
+            1 => match byte {
                 b' ' => {
                     frame.url_length = field(at).wrapping_sub(frame.url_offset);
                     state = 2;
@@ -82,14 +88,12 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> i32 {
                 _ => {}
             },
             2 => {
-                if input[at] != b' ' {
-                    if input.len() - at < 8 {
-                        return INVALID;
-                    }
-                    frame.version = match &input[at..at + 8] {
-                        b"HTTP/1.1" => 2,
-                        b"HTTP/1.0" => 1,
-                        _ => {
+                if byte != b' ' {
+                    frame.version = match input.get(at..at + 8) {
+                        None => return INVALID,
+                        Some(b"HTTP/1.1") => 2,
+                        Some(b"HTTP/1.0") => 1,
+                        Some(_) => {
                             frame.excepted = 1;
                             return INVALID;
                         }
@@ -108,12 +112,11 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> i32 {
     INVALID
 }
 fn header_end(input: &[u8], frame: &mut HttpFrame) -> i32 {
-    if frame.offset > input.len() {
-        return INVALID;
-    }
     // Jump to each '\r' and test the four bytes there. Upstream's get_header_length
     // compares at every position; both find the first "\r\n\r\n".
-    let rest = &input[frame.offset..];
+    let Some(rest) = input.get(frame.offset..) else {
+        return INVALID;
+    };
     let mut from = 0;
     while let Some(found) = rest
         .get(from..)
@@ -222,12 +225,12 @@ pub unsafe extern "C" fn swr_v1_http_expect(data: *const u8, length: usize) -> i
     // The native byte loop, jumping between CRs: with a body attached (echo-64k) the
     // scan runs over the whole request, so per-byte cost dominates (#338).
     let mut at = 0;
-    while let Some(cr) = memchr::memchr(b'\r', &input[at..]) {
+    while let Some(cr) = memchr::memchr(b'\r', tail(input, at)) {
         at += cr;
         if length - at > 9 {
             at += 2;
-            if starts(&input[at..], b"Expect: ") {
-                return i32::from(starts(&input[at + 8..], b"100-continue"));
+            if starts(tail(input, at), b"Expect: ") {
+                return i32::from(starts(tail(input, at + 8), b"100-continue"));
             }
             at += 1;
         }
@@ -242,23 +245,22 @@ pub(crate) fn header_value(
     name: &[u8],
     output: &mut HttpSpan,
 ) -> i32 {
-    let length = input.len();
     let name_length = name.len();
     *output = HttpSpan::default();
-    if start > end || end > length {
+    let Some(input) = input.get(..end).filter(|_| start <= end) else {
         return INVALID;
-    }
+    };
     let (mut at, mut state, mut index, mut buffer, mut error) = (start, 0, 0usize, 0, false);
-    while at < end {
+    while let Some(&byte) = input.get(at) {
         match state {
             0 => {
-                if input[at..end].starts_with(b"\r\n") {
+                if tail(input, at).starts_with(b"\r\n") {
                     index = 0;
                     error = false;
                     at += 1;
                     continue;
                 }
-                if !error && starts(&input[at..end], name) {
+                if !error && starts(tail(input, at), name) {
                     let colon = at + name_length;
                     if input.get(colon) != Some(&b':') || colon >= end || index > 1 {
                         error = true;
@@ -271,13 +273,13 @@ pub(crate) fn header_value(
                 index += 1;
             }
             1 => {
-                if !c_space(input[at]) {
+                if !c_space(byte) {
                     buffer = at;
                     state = 2;
                 }
             }
             2 => {
-                if input[at..end].starts_with(b"\r\n") {
+                if tail(input, at).starts_with(b"\r\n") {
                     *output = HttpSpan {
                         offset: buffer,
                         length: at - buffer,

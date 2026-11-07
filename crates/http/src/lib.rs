@@ -88,6 +88,14 @@ pub use static_path::{
 
 /// # Safety
 /// Nonempty input is readable and initialized for its length; no borrow escapes.
+/// `input` up to its first NUL, or all of it.
+fn c_text(input: &[u8]) -> &[u8] {
+    input.split(|&b| b == 0).next().unwrap_or_default()
+}
+/// `input[at..]`, or empty past the end.
+fn tail(input: &[u8], at: usize) -> &[u8] {
+    input.get(at..).unwrap_or_default()
+}
 unsafe fn bytes<'a>(data: *const u8, length: usize) -> Result<&'a [u8], i32> {
     if length > isize::MAX as usize {
         return Err(OVERFLOW);
@@ -210,30 +218,41 @@ pub unsafe extern "C" fn swr_v1_http_url_encode(
     }
     // SAFETY: non-null, `needed <= capacity`; the caller lends writable, disjoint storage.
     let output = unsafe { slice::from_raw_parts_mut(output.cast::<MaybeUninit<u8>>(), needed) };
-    let at = if needed == input.len() + 1 {
+    if needed == input.len() + 1 {
         // Exact capacity proves every byte is unreserved, so emission can copy
         // the entire initialized input without reclassifying each byte.
         // SAFETY: `input.len() < needed` slots in the disjoint output.
         unsafe {
             std::ptr::copy_nonoverlapping(input.as_ptr(), output.as_mut_ptr().cast(), input.len());
         };
-        input.len()
     } else {
-        let mut at = 0;
+        let mut slots = output.iter_mut();
+        let mut put = |byte: u8| {
+            if let Some(slot) = slots.next() {
+                slot.write(byte);
+            }
+        };
+        let digit = |nibble: u8| {
+            if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            }
+        };
         for &byte in input {
             if unreserved(byte) {
-                output[at].write(byte);
-                at += 1;
+                put(byte);
             } else {
-                output[at].write(b'%');
-                output[at + 1].write(b"0123456789ABCDEF"[usize::from(byte >> 4)]);
-                output[at + 2].write(b"0123456789ABCDEF"[usize::from(byte & 15)]);
-                at += 3;
+                put(b'%');
+                put(digit(byte >> 4));
+                put(digit(byte & 15));
             }
         }
-        at
-    };
-    output[at].write(0);
+    }
+    let at = needed - 1;
+    if let Some(slot) = output.get_mut(at) {
+        slot.write(0);
+    }
     // SAFETY: `written` is non-null (checked above), aligned and writable.
     unsafe {
         written.write(at);
@@ -276,14 +295,14 @@ pub unsafe extern "C" fn swr_v1_http_url_decode(
     // SAFETY: non-null, `length + 1 <= isize::MAX` (checked above), writable initialized bytes.
     let input = unsafe { slice::from_raw_parts_mut(data, length) };
     let (mut read, mut write) = (0, 0);
-    while read < length {
-        let byte = input[read];
-        let pair = if byte == b'%' && length - read >= 3 {
-            hex(input[read + 1]).zip(hex(input[read + 2]))
+    while let Some(&byte) = input.get(read) {
+        let pair = if byte == b'%' {
+            let digit = |at: usize| input.get(at).copied().and_then(hex);
+            digit(read + 1).zip(digit(read + 2))
         } else {
             None
         };
-        input[write] = if let Some((high, low)) = pair {
+        let decoded = if let Some((high, low)) = pair {
             read += 2;
             (high << 4) | low
         } else if byte == b'+' {
@@ -291,6 +310,9 @@ pub unsafe extern "C" fn swr_v1_http_url_decode(
         } else {
             byte
         };
+        if let Some(slot) = input.get_mut(write) {
+            *slot = decoded;
+        }
         read += 1;
         write += 1;
     }
@@ -330,16 +352,16 @@ pub unsafe extern "C" fn swr_v1_http_boundary(
         Ok(v) => v,
         Err(e) => return e,
     };
-    while offset < length {
-        if matches!(input[offset], b' ' | b';') {
+    while let Some(&byte) = input.get(offset) {
+        if matches!(byte, b' ' | b';') {
             offset += 1;
             continue;
         }
-        if case_prefix(&input[offset..], b"boundary=") {
+        if case_prefix(tail(input, offset), b"boundary=") {
             offset += 9;
             break;
         }
-        let Some(next) = input[offset..].iter().position(|&b| b == b';') else {
+        let Some(next) = tail(input, offset).iter().position(|&b| b == b';') else {
             return 0;
         };
         offset += next;
@@ -347,11 +369,10 @@ pub unsafe extern "C" fn swr_v1_http_boundary(
     if offset >= length {
         return 0;
     }
-    let mut count = input[offset..]
-        .iter()
-        .position(|&b| b == b';')
-        .unwrap_or(length - offset);
-    if count >= 2 && input[offset] == b'"' && input[offset + count - 1] == b'"' {
+    let rest = tail(input, offset);
+    let mut count = rest.iter().position(|&b| b == b';').unwrap_or(rest.len());
+    let value = rest.get(..count).unwrap_or_default();
+    if count >= 2 && value.first() == Some(&b'"') && value.last() == Some(&b'"') {
         offset += 1;
         count -= 2;
     }

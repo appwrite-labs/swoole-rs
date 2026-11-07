@@ -12,29 +12,28 @@ pub type HookFn = unsafe extern "C" fn(*mut c_void);
 static HOOKS: Mutex<[Vec<HookFn>; SW_MAX_HOOK_TYPE as usize]> =
     Mutex::new([const { Vec::new() }; SW_MAX_HOOK_TYPE as usize]);
 
-fn slot(kind: c_int) -> Option<usize> {
-    usize::try_from(kind)
-        .ok()
-        .filter(|&kind| kind < SW_MAX_HOOK_TYPE as usize)
-}
-
 fn table() -> std::sync::MutexGuard<'static, [Vec<HookFn>; SW_MAX_HOOK_TYPE as usize]> {
     HOOKS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Run `f` on hook type `kind`'s list, or return `None` for an unknown type.
+fn with<R>(kind: c_int, f: impl FnOnce(&mut Vec<HookFn>) -> R) -> Option<R> {
+    let kind = usize::try_from(kind).ok()?;
+    table().get_mut(kind).map(f)
+}
+
 /// `void swoole_add_hook(swGlobalHookType, swHookFunc, int push_back)`.
 #[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
 pub extern "C" fn swoole_add_hook(kind: c_int, func: HookFn, push_back: c_int) {
-    if let Some(kind) = slot(kind) {
-        let list = &mut table()[kind];
+    with(kind, |list| {
         if push_back != 0 {
             list.push(func);
         } else {
             list.insert(0, func);
         }
-    }
+    });
 }
 
 /// `void swoole_call_hook(swGlobalHookType, void *arg)`: each callback in turn,
@@ -44,8 +43,7 @@ pub extern "C" fn swoole_add_hook(kind: c_int, func: HookFn, push_back: c_int) {
 /// The callbacks accept `arg`.
 #[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
 pub unsafe extern "C" fn swoole_call_hook(kind: c_int, arg: *mut c_void) {
-    let Some(kind) = slot(kind) else { return };
-    let list = table()[kind].clone();
+    let list = with(kind, |list| list.clone()).unwrap_or_default();
     for func in list {
         // SAFETY: the caller's contract.
         unsafe { func(arg) };
@@ -56,7 +54,7 @@ pub unsafe extern "C" fn swoole_call_hook(kind: c_int, arg: *mut c_void) {
 #[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
 #[must_use]
 pub extern "C" fn swoole_isset_hook(kind: c_int) -> bool {
-    slot(kind).is_some_and(|kind| !table()[kind].is_empty())
+    with(kind, |list| !list.is_empty()).unwrap_or(false)
 }
 
 /// `swoole_clean`'s release of every hook list.

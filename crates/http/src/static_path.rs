@@ -235,8 +235,7 @@ pub(crate) unsafe fn path_step(
         }
         4 => {
             if facts & CANONICAL_OK == 0
-                || filename.len() <= root.len()
-                || filename[root.len()] != b'/'
+                || filename.get(root.len()) != Some(&b'/')
                 || !prefix(filename, root, false)
             {
                 state.phase = 8;

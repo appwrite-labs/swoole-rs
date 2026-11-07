@@ -14,9 +14,14 @@ pub struct HttpDirectory {
 }
 const ALLOCATION: i32 = -3;
 
+/// The bytes a stored span names; spans are in range by construction.
+fn at<'a>(bytes: &'a [u8], span: &std::ops::Range<usize>) -> &'a [u8] {
+    bytes.get(span.clone()).unwrap_or_default()
+}
+
 impl HttpDirectory {
     fn name(&self, index: usize) -> Option<&[u8]> {
-        self.names.get(index).map(|span| &self.bytes[span.clone()])
+        self.names.get(index).map(|span| at(&self.bytes, span))
     }
     fn copy_name(&mut self, name: &[u8]) -> Result<std::ops::Range<usize>, i32> {
         self.names.try_reserve(1).map_err(|_| ALLOCATION)?;
@@ -34,7 +39,7 @@ impl HttpDirectory {
         }
         Ok(self
             .names
-            .binary_search_by(|entry| self.bytes[entry.clone()].cmp(name))
+            .binary_search_by(|entry| at(&self.bytes, entry).cmp(name))
             .is_ok())
     }
     pub(crate) fn scan_append(&mut self, name: &[u8]) -> Result<(), i32> {
@@ -47,9 +52,8 @@ impl HttpDirectory {
         if self.pending {
             let bytes = &self.bytes;
             self.names
-                .sort_unstable_by(|a, b| bytes[a.clone()].cmp(&bytes[b.clone()]));
-            self.names
-                .dedup_by(|a, b| bytes[a.clone()] == bytes[b.clone()]);
+                .sort_unstable_by(|a, b| at(bytes, a).cmp(at(bytes, b)));
+            self.names.dedup_by(|a, b| at(bytes, a) == at(bytes, b));
             self.pending = false;
         }
     }
@@ -149,7 +153,7 @@ pub unsafe extern "C" fn swr_v2_http_directory_insert(
     }
     let Err(index) = owner
         .names
-        .binary_search_by(|entry| owner.bytes[entry.clone()].cmp(name))
+        .binary_search_by(|entry| at(&owner.bytes, entry).cmp(name))
     else {
         return 0;
     };

@@ -334,7 +334,7 @@ impl HttpRequest {
                 return;
             }
             self.form = Some(Box::new(HttpForm {
-                boundary: input[boundary.offset..].as_ptr(),
+                boundary: input.as_ptr().wrapping_add(boundary.offset),
                 boundary_length: u32::try_from(boundary.length).unwrap_or(u32::MAX),
                 parser: ptr::null_mut(),
                 saved: ptr::null_mut(),
@@ -364,7 +364,7 @@ impl HttpRequest {
             }
             self.trace(
                 TRACE_CHUNK,
-                input[step.line_offset..].as_ptr(),
+                input.as_ptr().wrapping_add(step.line_offset),
                 step.line_length as u64,
                 step.chunk_length as u64,
             );

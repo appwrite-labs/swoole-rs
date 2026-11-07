@@ -1,6 +1,6 @@
 //! Directory-index markup and filtering; native retains directory IO and storage.
 use crate::proxy::{HttpProxyText, Prefix};
-use crate::{INVALID, OVERFLOW, bytes};
+use crate::{INVALID, OVERFLOW, bytes, c_text};
 use std::{mem::MaybeUninit, slice};
 
 #[repr(C)]
@@ -10,9 +10,6 @@ pub struct HttpIndexPage {
     pub css: HttpProxyText,
     pub powered: HttpProxyText,
     pub part: u32,
-}
-fn c_text(input: &[u8]) -> &[u8] {
-    &input[..input.iter().position(|&b| b == 0).unwrap_or(input.len())]
 }
 /// Encode one page part:0=open,1=directory entry,2=close. Zero capacity queries
 /// required bytes; other capacities receive the prefix without a NUL terminator.

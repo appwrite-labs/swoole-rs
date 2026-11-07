@@ -1,6 +1,6 @@
 //! Inline static handler policy; native owns strings, RNG and MIME references.
 use crate::proxy::HttpProxyText;
-use crate::{INVALID, OVERFLOW, bytes};
+use crate::{INVALID, OVERFLOW, bytes, c_text};
 use std::{mem::MaybeUninit, slice};
 pub(crate) const BOUNDARY: &[u8] = b"SwooleBoundary\0";
 const CONTENT_TYPE: &[u8] = b"multipart/byteranges; boundary=\0";
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn swr_v1_http_static_content_type(
         Ok(v) => v,
         Err(e) => return e,
     };
-    let prefix = &CONTENT_TYPE[..CONTENT_TYPE.len() - 1];
+    let prefix = c_text(CONTENT_TYPE);
     let Some(length) = prefix
         .len()
         .checked_add(boundary.len())
