@@ -83,8 +83,13 @@ jobs:
         if: always()
         with:
           name: validation-reports-${{ matrix.shard }}
+          # Logs and JSON only: the exported swoole.so and Rust archives were ~140 MB of
+          # each shard's ~158 MB and are rebuilt from the commit.
           path: |
             target/reports/
+            !target/reports/**/*.so
+            !target/reports/**/*.a
+            !target/reports/**/*.o
             target/upstream/build.log
             target/hybrid/*/build-manifest.json
 
