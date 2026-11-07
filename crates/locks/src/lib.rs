@@ -626,3 +626,212 @@ pub extern "C" fn swr_v1_locks_coroutine_backoff(second: f64, initial: f64, maxi
         maximum
     }
 }
+
+// core-tests/src/lock/lock.cpp's TESTs over the ABI that Mutex and Swoole\Lock call (the
+// RWLock and SpinLock classes left the build), with the same inputs and expected values.
+// The coroutine-lock TESTs are in coroutine.rs.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        ptr,
+        sync::Barrier,
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    // What configure finds: Linux has pthread_mutex_timedlock and pthread_rwlock_timed*.
+    const CAPABILITIES: u32 = if cfg!(target_os = "linux") { 3 } else { 0 };
+    const RW_LOCK: i32 = 1;
+    const MUTEX: i32 = 3;
+    #[cfg(target_os = "linux")]
+    const SPIN_LOCK: i32 = 5;
+
+    // A lock in its own page; a shared one survives fork, as sw_mem_pool's does.
+    struct Lock {
+        storage: *mut c_void,
+        kind: i32,
+    }
+    // SAFETY: pthread locks are made to be used from any thread.
+    unsafe impl Sync for Lock {}
+    impl Lock {
+        fn new(kind: i32, shared: bool) -> Self {
+            let storage = page(shared);
+            assert!(swr_v1_locks_size(kind) <= 4096);
+            assert_eq!(
+                unsafe { swr_v1_locks_init(storage, kind, i32::from(shared)) },
+                0
+            );
+            Self { storage, kind }
+        }
+        fn lock(&self, operation: i32, timeout: i32) -> i32 {
+            unsafe { swr_v1_locks_lock(self.storage, self.kind, operation, timeout, CAPABILITIES) }
+        }
+        fn unlock(&self) -> i32 {
+            unsafe { swr_v1_locks_unlock(self.storage, self.kind) }
+        }
+    }
+    impl Drop for Lock {
+        fn drop(&mut self) {
+            unsafe { swr_v1_locks_destroy(self.storage, self.kind) };
+            unsafe { munmap(self.storage, 4096) };
+        }
+    }
+    fn page(shared: bool) -> *mut c_void {
+        let flags = MAP_ANON | if shared { MAP_SHARED } else { MAP_PRIVATE };
+        let page = unsafe { mmap(ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, flags, -1, 0) };
+        assert_ne!(page, MAP_FAILED);
+        page
+    }
+    fn millis() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    }
+
+    fn test_func(lock: &Lock) {
+        const N: i64 = 100_000;
+        // A plain read-modify-write: only the lock keeps the two threads' increments apart.
+        let count = AtomicI64::new(0);
+        thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| {
+                    for _ in 0..N {
+                        assert_eq!(lock.lock(LOCK_EX, -1), 0);
+                        count.store(count.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+                        assert_eq!(lock.unlock(), 0);
+                    }
+                });
+            }
+        });
+        assert_eq!(count.into_inner(), N * 2);
+    }
+
+    fn test_lock_rd_func(lock: &Lock) {
+        thread::scope(|s| {
+            s.spawn(|| {
+                assert_eq!(lock.lock(LOCK_SH, -1), 0);
+                thread::sleep(Duration::from_micros(2000));
+                lock.unlock();
+            });
+            s.spawn(|| {
+                thread::sleep(Duration::from_micros(1000));
+                assert!(lock.lock(LOCK_SH | LOCK_NB, -1) >= 0);
+            });
+        });
+    }
+
+    fn test_share_lock_fun(lock: &Lock) {
+        lock.lock(LOCK_EX, -1);
+        let magic_num = 100_000 + (millis() % (9_999_999 - 100_000)) as i32;
+        let num = page(true).cast::<i32>();
+        unsafe { *num = 0 };
+        let pid = unsafe { fork() };
+        if pid == 0 {
+            lock.lock(LOCK_EX, -1);
+            unsafe { *num = magic_num };
+            unsafe { usleep(1) };
+            unsafe { _exit(0) };
+        }
+        thread::sleep(Duration::from_micros(10_000));
+        lock.unlock();
+        let mut status = 0;
+        assert_eq!(unsafe { waitpid(pid, &raw mut status, 0) }, pid);
+        assert_eq!(unsafe { *num }, magic_num);
+        unsafe { munmap(num.cast(), 4096) };
+    }
+
+    #[test]
+    fn lock_mutex() {
+        test_func(&Lock::new(MUTEX, false));
+    }
+
+    // Without pthread_mutex_timedlock (macOS) the 10 ms wait polls as sw_wait_for does, and its
+    // last attempt can come before the unlock; upstream runs this case on Linux.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lock_lockwait() {
+        const TIMEOUT_1: i32 = 2;
+        const TIMEOUT_2: i32 = 10;
+        let lock = Lock::new(MUTEX, false);
+        lock.lock(LOCK_EX, -1);
+        thread::scope(|s| {
+            s.spawn(|| {
+                let ms1 = millis();
+                assert_eq!(lock.lock(LOCK_EX, TIMEOUT_1), ETIMEDOUT);
+                let ms2 = millis();
+                assert!(ms2 - ms1 >= TIMEOUT_1 as u128);
+                assert_eq!(lock.lock(LOCK_EX, TIMEOUT_2), 0);
+                let ms3 = millis();
+                assert!(ms3 - ms2 <= TIMEOUT_2 as u128);
+            });
+            thread::sleep(Duration::from_millis(10));
+            lock.unlock();
+        });
+    }
+
+    #[test]
+    fn lock_shared() {
+        test_share_lock_fun(&Lock::new(MUTEX, true));
+    }
+
+    #[test]
+    fn lock_try_rd() {
+        test_lock_rd_func(&Lock::new(MUTEX, false));
+    }
+
+    #[test]
+    fn lock_rwlock_shared() {
+        test_share_lock_fun(&Lock::new(RW_LOCK, true));
+    }
+
+    #[test]
+    fn lock_rwlock() {
+        test_func(&Lock::new(RW_LOCK, false));
+    }
+
+    #[test]
+    fn lock_rwlock_try_rd() {
+        test_lock_rd_func(&Lock::new(RW_LOCK, false));
+    }
+
+    // Upstream orders the two threads with 1 ms and 2 ms sleeps and fails now and then on
+    // either engine; barriers keep the write lock held across the try instead.
+    #[test]
+    fn lock_rw_try_wr() {
+        let lock = Lock::new(RW_LOCK, false);
+        let (held, tried) = (Barrier::new(2), Barrier::new(2));
+        thread::scope(|s| {
+            s.spawn(|| {
+                assert_eq!(lock.lock(LOCK_EX, -1), 0);
+                held.wait();
+                tried.wait();
+                lock.unlock();
+            });
+            s.spawn(|| {
+                held.wait();
+                assert!(lock.lock(LOCK_NB, -1) > 0);
+                tried.wait();
+            });
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lock_spinlock_shared() {
+        test_share_lock_fun(&Lock::new(SPIN_LOCK, true));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lock_spinlock() {
+        test_func(&Lock::new(SPIN_LOCK, false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lock_spinlock_try_rd() {
+        test_lock_rd_func(&Lock::new(SPIN_LOCK, false));
+    }
+}

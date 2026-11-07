@@ -63,7 +63,9 @@ inline void swoole_set_last_error(int e){errno=e;}
     futex=futex.replace('#include <linux/futex.h>\n','').replace('#include <sys/syscall.h>\n','')
     original_bodies='';ported_bodies=''
     for name in ['mutex','rw_lock','spin_lock','barrier']:
-        path=f'src/lock/{name}.cc';original_bodies+=original(path).replace('#include "swoole_lock.h"','#include "reference.h"').replace('namespace swoole','namespace reference')+'\n';ported_bodies+=ported(path)+'\n'
+        path=f'src/lock/{name}.cc';original_bodies+=original(path).replace('#include "swoole_lock.h"','#include "reference.h"').replace('namespace swoole','namespace reference')+'\n'
+    # The hybrid has no RWLock or SpinLock class; gate.cc drives Rust's lock ABI for those.
+    for name in ['mutex','barrier']:ported_bodies+=ported(f'src/lock/{name}.cc')+'\n'
     with tempfile.TemporaryDirectory(prefix='swr-locks-') as temp:
         tree=Path(temp);(tree/'reference').mkdir();(tree/'ported').mkdir();(tree/'support.h').write_text(support)
         (tree/'reference/reference.h').write_text(original('include/swoole_lock.h').replace('#include "swoole_memory.h"','#include "support.h"').replace('namespace swoole','namespace reference'))

@@ -35,17 +35,12 @@ template<class L> static void one(const char *engine,int kind,bool shared,bool f
     // Test-only reclamation AFTER recording the actual constructor's leaked ownership.
     for(auto &p:pointers)if(p){std::free(p);p=nullptr;}
 }
-// The reference side's entry point: one upstream constructor of the given kind.
-void upstream(int kind,bool shared,bool fail);
+// The reference side's entry point: the upstream Mutex constructor. RW and spin locks have
+// no C++ class in the hybrid; direct() faults their Rust init.
+void upstream(bool shared,bool fail);
 
 #ifdef LOCKS_REFERENCE
-void upstream(int kind,bool shared,bool fail) {
-    if(kind==3)one<reference::Mutex>("upstream",3,shared,fail);
-    if(kind==1)one<reference::RWLock>("upstream",1,shared,fail);
-#ifdef __linux__
-    if(kind==5)one<reference::SpinLock>("upstream",5,shared,fail);
-#endif
-}
+void upstream(bool shared,bool fail) { one<reference::Mutex>("upstream",3,shared,fail); }
 #else
 static void remember(void *p) {
     if(!watching||!p)return;
@@ -143,18 +138,12 @@ int main() {
     real_spin_init=next_symbol<decltype(real_spin_init)>("pthread_spin_init");
 #endif
     for(bool shared:{false,true})for(bool fail:{false,true}) {
-        upstream(3,shared,fail);one<swoole::Mutex>("rust",3,shared,fail);
-        upstream(1,shared,fail);one<swoole::RWLock>("rust",1,shared,fail);
-#ifdef __linux__
-        upstream(5,shared,fail);one<swoole::SpinLock>("rust",5,shared,fail);
-#endif
+        upstream(shared,fail);one<swoole::Mutex>("rust",3,shared,fail);
     }
     // Failed attribute-stage shims reject follow-up calls before touching storage.
     // Never run the original unsafe continuation against real pthread storage.
-    for(bool shared:{false,true}) {
-        one<swoole::Mutex>("rust",3,shared,true,1);one<swoole::RWLock>("rust",1,shared,true,1);
-    }
-    one<swoole::Mutex>("rust",3,true,true,2);one<swoole::RWLock>("rust",1,true,true,2);
+    for(bool shared:{false,true})one<swoole::Mutex>("rust",3,shared,true,1);
+    one<swoole::Mutex>("rust",3,true,true,2);
     for(int kind:{1,3}) {
         for(bool shared:{false,true})for(int stage:{0,1})direct(kind,shared,stage);
         direct(kind,true,2);

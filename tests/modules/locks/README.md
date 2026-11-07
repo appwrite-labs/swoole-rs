@@ -20,8 +20,9 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
 ## Native gate
 
 - `gate.py --source S --archive A [--sanitize] [--rust-asan] [--output R]`
-  (`locks-native`): compiles the pinned pthread bodies and the Rust overlay
-  facades into one driver (`gate.cc`) and compares thread/fork/RW/timeout/
+  (`locks-native`): compiles the pinned pthread bodies, the hybrid's Mutex and
+  Barrier and the Rust lock ABI (RW and spin locks have no C++ class in the hybrid)
+  into one driver (`gate.cc`) and compares thread/fork/RW/timeout/
   barrier/atomic/futex behaviour (about 160,000 checks). `--rust-asan` also
   requires the archive's ASan imports to detect a deliberate one-past pointer
   passed to `swr_v1_locks_coroutine_try`. For a Rust-ASan archive on Linux:
@@ -37,9 +38,6 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
 
 ## Other gates
 
-- `core.py --source S --config CONFIG_H --archive A --build-root DIR --output R`:
-  builds the upstream tree and the archive's hybrid tree (Linux) and runs the 14 unchanged
-  lock GTests one process each.
 - `state.py --engine ... [--require-zts]` (`locks-state`, integrate lane): paired PHP witness (`state.php`) for
   integer wrap, CAS, lock behaviour, coroutine mutual exclusion, owner reentrancy,
   nonblocking contention, cancellation, constructor/clone/serialization rules; under ZTS
@@ -48,15 +46,12 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
   barrier, 20,000 increments per Thread Atomic width and 2,000 mutex-protected
   updates. Requires ZTS engines; also used by `tests/modules/integration/zts.py`.
 - `constructor.py --source S --archive A --output R [--sanitize] [--rust-asan]` (`locks-constructor`):
-  lock constructors with faults injected at the native pthread init/attribute/
+  Mutex constructors (and Rust's init for every kind) with faults injected at the native pthread init/attribute/
   pshared boundaries; checks no leaked storage, attribute cleanup, exception
   code/message and first-error propagation through the direct ABI.
 - `platforms.py --source S --output R` (`locks-platforms`): compiles the header as C11/C++14 on the
   host and checks synthetic FreeBSD/Android (and Apple mobile on macOS) macros
   are rejected.
-- `benchmark.py --prepare DIR --core-root CORE`, then `benchmark.py --prepared DIR`:
-  mutex, rw-read, spin and atomic32 against both native libraries (Linux).
-  Run timings with no other workload.
 - `zts/Dockerfile` and `zts/build.py`: PHP 8.5 ZTS image and a build of
   reference and Rust thread-enabled extensions inside it (expects the repo at
   `/work`, the pinned upstream at `/reference` and a prior Linux
@@ -64,10 +59,6 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
 
 ## Known failures
 
-- `core.py` `rw_try_wr`: the upstream test relies on 1ms/2ms sleeps to make a
-  try-lock contend with a held write lock, with no synchronisation. It fails
-  intermittently in either engine (latest: reference failed, Rust passed).
-  `gate.py` covers the same operations deterministically.
 - `constructor.py`: the native baseline leaks on failed construction and is
   reported as `native_baseline_passed: false`; the gate checks the Rust rows.
 
@@ -88,4 +79,30 @@ Three scripts that no phase ran now are phases:
 are `swoole_atomic/atomic.phpt` and `swoole_lock/{mutex,lock_read}.phpt`, which
 the PHPT gate runs on both engines.
 
-`core.py` (the 14 upstream lock GTests) still runs in no CI lane. That is #736.
+## Ported GoogleTests
+
+`core-tests/src/lock/lock.cpp` no longer builds: the `RWLock`, `SpinLock` and
+`CoroutineLock` classes left the build (Swoole\Lock and Coroutine\Lock call the
+Rust lock ABI directly). Its 14 TESTs are Rust tests in `crates/locks`
+(`cargo test -p swoole-rs-locks`), with the same inputs and expected values, so they
+run in the PR tier's `rust` job:
+
+| Upstream TEST | Rust test |
+| --- | --- |
+| `lock.mutex` | `tests::lock_mutex` |
+| `lock.lockwait` | `tests::lock_lockwait` (Linux: without `pthread_mutex_timedlock` the wait polls) |
+| `lock.shared` | `tests::lock_shared` |
+| `lock.try_rd` | `tests::lock_try_rd` |
+| `lock.coroutine_lock` | `coroutine::tests::lock_coroutine_lock` |
+| `lock.coroutine_lock_cancel` | `coroutine::tests::lock_coroutine_lock_cancel` |
+| `lock.coroutine_lock_rd` | `coroutine::tests::lock_coroutine_lock_rd` |
+| `lock.rwlock_shared` | `tests::lock_rwlock_shared` |
+| `lock.rwlock` | `tests::lock_rwlock` |
+| `lock.rwlock_try_rd` | `tests::lock_rwlock_try_rd` |
+| `lock.rw_try_wr` | `tests::lock_rw_try_wr` (barriers in place of upstream's 1 ms/2 ms sleeps, which failed now and then on both engines) |
+| `lock.spinlock_shared` | `tests::lock_spinlock_shared` (Linux) |
+| `lock.spinlock` | `tests::lock_spinlock` (Linux) |
+| `lock.spinlock_try_rd` | `tests::lock_spinlock_try_rd` (Linux) |
+
+The coroutine TESTs run against a scripted host: a contended lock's sleep runs the
+other coroutines' steps in upstream's order.
