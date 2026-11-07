@@ -808,9 +808,11 @@ dependencies = [
 name = "swoole-rs-ports"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-http",
+ "swoole-rs-reactor",
  "swoole-rs-server",
 ]
 

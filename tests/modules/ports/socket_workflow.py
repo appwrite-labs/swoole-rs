@@ -48,7 +48,7 @@ def configured_flags(core):
 
 
 def extract(text):
-    start=text.index('int ListenPort::create_socket()');end=text.index('\nvoid ListenPort::close_socket()',start)
+    start=text.index('int ListenPort::create_socket()');end=text.index('\n}\n',start)+2
     return text[start:end]
 
 

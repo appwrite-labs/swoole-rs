@@ -145,13 +145,6 @@ enum { SWR_PORTS_PROPERTY_END, SWR_PORTS_PROPERTY_NULL, SWR_PORTS_PROPERTY_LONG,
  * promised or ownership transfer; each native Zend call follows Rust return. */
 SwrPortsProperty swr_v1_ports_class_property(size_t index);
 SwrPortsEvent swr_v1_ports_event(const uint8_t *, size_t, uint8_t native_casefold);
-typedef struct { uint32_t phase; } SwrPortsListenState;
-typedef struct {
-    uint32_t capabilities, listening, keepalive, high_watermark;
-    int32_t defer_accept, fastopen, keepidle, keepinterval, keepcount, user_timeout, result;
-} SwrPortsListenInput;
-typedef struct { uint32_t kind; int32_t value, status; } SwrPortsListenAction;
-SwrPortsListenAction swr_v1_ports_listen_step(SwrPortsListenState *, const SwrPortsListenInput *);
 typedef struct { uint32_t phase; } SwrPortsSocketState;
 typedef struct { uint32_t capabilities, socket_present; int32_t result; } SwrPortsSocketInput;
 typedef struct { uint32_t kind; int32_t status; } SwrPortsSocketAction;
@@ -182,7 +175,7 @@ typedef uint64_t (*SwrPortsCall)(void *context, uint32_t op, uint64_t arg);
 int32_t swr_v1_ports_on_read(uint32_t kind, void *context, SwrPortsCall call);
 /* TLS setup, SNI, import and close (crates/ports/src/lifecycle.rs), over the same call. */
 enum { SWR_PORTS_RUN_SNI_ADD=0, SWR_PORTS_RUN_SSL_INIT=1, SWR_PORTS_RUN_SSL_CREATE=2, SWR_PORTS_RUN_CONTEXT_INIT=3,
-       SWR_PORTS_RUN_SNI=4, SWR_PORTS_RUN_IMPORT=5, SWR_PORTS_RUN_CLOSE=6, SWR_PORTS_RUN_CONTEXT_CREATE=7, SWR_PORTS_LC_OP_CERT_EMPTY=0,
+       SWR_PORTS_RUN_SNI=4, SWR_PORTS_RUN_IMPORT=5, SWR_PORTS_RUN_CLOSE=6, SWR_PORTS_RUN_CONTEXT_CREATE=7, SWR_PORTS_RUN_WARN_LISTEN=8, SWR_PORTS_LC_OP_CERT_EMPTY=0,
        SWR_PORTS_LC_OP_KEY_EMPTY=1, SWR_PORTS_LC_OP_LOG_REQUIRE_CERT=2, SWR_PORTS_LC_OP_OPEN_HTTP=3, SWR_PORTS_LC_OP_OPEN_HTTP2=4,
        SWR_PORTS_LC_OP_SET_HTTP=5, SWR_PORTS_LC_OP_SET_HTTP2=6, SWR_PORTS_LC_OP_CREATE=7, SWR_PORTS_LC_OP_WARN_CREATE=8,
        SWR_PORTS_LC_OP_SNI_EMPLACE=9, SWR_PORTS_LC_OP_HAS_SNI=10, SWR_PORTS_LC_OP_SET_SNI_CALLBACK=11, SWR_PORTS_LC_OP_SOCKET_SSL=12,
@@ -193,7 +186,7 @@ enum { SWR_PORTS_RUN_SNI_ADD=0, SWR_PORTS_RUN_SSL_INIT=1, SWR_PORTS_RUN_SSL_CREA
        SWR_PORTS_LC_OP_GET_TYPE=41, SWR_PORTS_LC_OP_GET_NAME=42, SWR_PORTS_LC_OP_GET_ACCEPTCONN=43, SWR_PORTS_LC_OP_ACCEPTCONN=44,
        SWR_PORTS_LC_OP_WARN_IMPORT=45, SWR_PORTS_LC_OP_SOCKET_FAIL=46, SWR_PORTS_LC_OP_ADOPT=47, SWR_PORTS_LC_OP_SSL_ON=50,
        SWR_PORTS_LC_OP_HAS_CONTEXT=51, SWR_PORTS_LC_OP_RESET_CONTEXT=52, SWR_PORTS_LC_OP_DELETE_DTLS=53, SWR_PORTS_LC_OP_HAS_SOCKET=54,
-       SWR_PORTS_LC_OP_FREE_SOCKET=55, SWR_PORTS_LC_OP_IS_UNIX=56, SWR_PORTS_LC_OP_UNLINK=57, SWR_PORTS_CONTEXT_PREFER_SERVER_CIPHERS=0,
+       SWR_PORTS_LC_OP_FREE_SOCKET=55, SWR_PORTS_LC_OP_IS_UNIX=56, SWR_PORTS_LC_OP_UNLINK=57, SWR_PORTS_LC_OP_WARN_LISTEN=58, SWR_PORTS_CONTEXT_PREFER_SERVER_CIPHERS=0,
        SWR_PORTS_CONTEXT_SESSION_TICKETS=1, SWR_PORTS_CONTEXT_STAPLING=2, SWR_PORTS_CONTEXT_STAPLING_VERIFY=3, SWR_PORTS_IMPORT_TYPE=0,
        SWR_PORTS_IMPORT_NAME=1, SWR_PORTS_IMPORT_ACCEPTCONN=2, SWR_PORTS_IMPORT_NOT_LISTENING=3 };
 int32_t swr_v1_ports_run(uint32_t kind, void *context, SwrPortsCall call);

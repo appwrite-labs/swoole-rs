@@ -7,11 +7,14 @@ use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 
+use swoole_rs_corebase::log;
+use swoole_rs_reactor::{SocketRecord, swr_v1_socket_dealloc, swr_v1_socket_listen};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::view;
 
 use crate::lifecycle::{
     RUN_CLOSE, RUN_CONTEXT_CREATE, RUN_CONTEXT_INIT, RUN_IMPORT, RUN_SNI, RUN_SSL_CREATE,
+    RUN_WARN_LISTEN,
 };
 use crate::read::{ON_READ_EOF, ON_READ_HTTP, ON_READ_LENGTH, ON_READ_RAW, ON_READ_REDIS};
 
@@ -162,6 +165,138 @@ pub unsafe extern "C" fn ssl_server_sni_callback(
     let null = ptr::null_mut();
     // SAFETY: as the caller guarantees; the SNI run finds the port from `ssl`.
     unsafe { run(RUN_SNI, null, null, null, ssl, 0) }
+}
+
+/// The listening socket's options `ListenPort::listen` sets where the platform
+/// defines them: (level, option, its name, the value) for each enabled one.
+fn listen_options(config: &PortConfig) -> Vec<(c_int, c_int, &'static str, c_int)> {
+    let mut options = Vec::new();
+    #[cfg(target_os = "linux")]
+    if config.tcp_defer_accept != 0 {
+        let defer = config.tcp_defer_accept;
+        options.push((
+            libc::IPPROTO_TCP,
+            libc::TCP_DEFER_ACCEPT,
+            "TCP_DEFER_ACCEPT",
+            defer,
+        ));
+    }
+    if config.tcp_fastopen != 0 {
+        let fastopen = config.tcp_fastopen;
+        options.push((
+            libc::IPPROTO_TCP,
+            libc::TCP_FASTOPEN,
+            "TCP_FASTOPEN",
+            fastopen,
+        ));
+    }
+    if config.open_tcp_keepalive {
+        options.push((libc::SOL_SOCKET, libc::SO_KEEPALIVE, "SO_KEEPALIVE", 1));
+        #[cfg(target_os = "linux")]
+        options.extend([
+            (
+                libc::IPPROTO_TCP,
+                libc::TCP_KEEPIDLE,
+                "TCP_KEEPIDLE",
+                config.tcp_keepidle,
+            ),
+            (
+                libc::IPPROTO_TCP,
+                libc::TCP_KEEPINTVL,
+                "TCP_KEEPINTVL",
+                config.tcp_keepinterval,
+            ),
+            (
+                libc::IPPROTO_TCP,
+                libc::TCP_KEEPCNT,
+                "TCP_KEEPCNT",
+                config.tcp_keepcount,
+            ),
+        ]);
+        #[cfg(target_os = "linux")]
+        if config.tcp_user_timeout > 0 {
+            let timeout = config.tcp_user_timeout;
+            options.push((
+                libc::IPPROTO_TCP,
+                libc::TCP_USER_TIMEOUT,
+                "TCP_USER_TIMEOUT",
+                timeout,
+            ));
+        }
+    }
+    options
+}
+
+/// `ListenPort::listen()`: listens unless already listening, then sets the
+/// socket options and the default high watermark. A failed option only warns.
+///
+/// # Safety
+/// `port` is a live `ListenPort` with a live socket.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort6listenEv")
+)]
+pub unsafe extern "C" fn listen(port: *mut c_void) -> c_int {
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { port_config::of(port) };
+    let socket = config.socket.cast::<SocketRecord>();
+    // SAFETY: the port's live socket, as the caller guarantees.
+    if !config.listening && unsafe { swr_v1_socket_listen(socket, c_int::from(config.backlog)) } < 0
+    {
+        let null = ptr::null_mut();
+        // SAFETY: as the caller guarantees.
+        unsafe { run(RUN_WARN_LISTEN, port, null, null, null, 0) };
+        return -1;
+    }
+    config.listening = true;
+    // SAFETY: as above.
+    let fd = unsafe { (*socket).fd };
+    let size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
+    for (level, option, name, value) in listen_options(config) {
+        // SAFETY: `value` is a live c_int of `size` bytes.
+        if unsafe { libc::setsockopt(fd, level, option, (&raw const value).cast(), size) } != 0 {
+            log::sys_warning(
+                c"ListenPort::listen",
+                format_args!("setsockopt({name}) failed"),
+            );
+        }
+    }
+    if config.buffer_high_watermark == 0 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "upstream's implicit double-to-uint32_t conversion of `socket_buffer_size * 0.8`"
+        )]
+        let watermark = (f64::from(config.socket_buffer_size) * 0.8) as u32;
+        config.buffer_high_watermark = watermark;
+    }
+    0
+}
+
+/// `ListenPort::close_socket()`: closes and frees the port's socket.
+///
+/// # Safety
+/// `port` is a live `ListenPort` with a live socket nothing else uses.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort12close_socketEv")
+)]
+pub unsafe extern "C" fn close_socket(port: *mut c_void) {
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { port_config::of(port) };
+    let socket = config.socket.cast::<SocketRecord>();
+    // SAFETY: as the caller guarantees.
+    let fd = unsafe { (*socket).fd };
+    // SAFETY: close(2) has no memory preconditions.
+    if unsafe { libc::close(fd) } < 0 {
+        log::sys_warning(
+            c"ListenPort::close_socket",
+            format_args!("close({fd}) failed"),
+        );
+    }
+    // SAFETY: `delete socket`: Rust allocated the record and nothing uses it after.
+    unsafe { swr_v1_socket_dealloc(socket) };
+    config.socket = ptr::null_mut();
 }
 
 /// The `SWR_PORTS_*` protocol flags a port's settings turn on; `SWR_PORTS_DGRAM`
@@ -356,5 +491,124 @@ mod tests {
                 "eof kind"
             );
         }
+    }
+
+    /// A port whose settings own a fresh `kind` socket on 127.0.0.1, unbound
+    /// unless `bind`.
+    fn socket_port(kind: c_int, bind: bool) -> *mut PortConfig {
+        let config = port_config::swr_v1_port_config_new(1000);
+        let socket = swoole_rs_reactor::swr_v1_socket_alloc();
+        unsafe {
+            socket.write(SocketRecord::new());
+            (*socket).fd = libc::socket(libc::AF_INET, kind, 0);
+            assert!((*socket).fd >= 0, "socket(2)");
+            if bind {
+                let mut addr: libc::sockaddr_in = std::mem::zeroed();
+                addr.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap();
+                addr.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
+                let size = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
+                assert_eq!(
+                    libc::bind((*socket).fd, (&raw const addr).cast(), size),
+                    0,
+                    "bind(2)"
+                );
+            }
+            (*config).socket = socket.cast();
+        }
+        config
+    }
+
+    fn option(fd: c_int, level: c_int, name: c_int) -> c_int {
+        let mut value: c_int = -1;
+        let mut size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap();
+        let got =
+            unsafe { libc::getsockopt(fd, level, name, (&raw mut value).cast(), &raw mut size) };
+        assert_eq!(got, 0, "getsockopt(2)");
+        value
+    }
+
+    #[test]
+    fn listen_listens_sets_keepalive_and_the_default_watermark() {
+        let mut port = socket_port(libc::SOCK_STREAM, true);
+        let at = (&raw mut port).cast::<c_void>();
+        let config = unsafe { port_config::of(at) };
+        config.open_tcp_keepalive = true;
+        config.tcp_user_timeout = 5;
+        assert_eq!(unsafe { listen(at) }, 0, "listened");
+        let fd = unsafe { view::port_fd(at) };
+        assert!(config.listening, "published");
+        assert_eq!(
+            unsafe { (*config.socket.cast::<SocketRecord>()).listened },
+            1,
+            "listen(2) succeeded"
+        );
+        assert_ne!(
+            option(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE),
+            0,
+            "keepalive"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                option(fd, libc::SOL_SOCKET, libc::SO_ACCEPTCONN),
+                1,
+                "listening socket"
+            );
+            assert_eq!(
+                option(fd, libc::IPPROTO_TCP, libc::TCP_KEEPIDLE),
+                3600,
+                "keepidle default"
+            );
+            assert_eq!(
+                option(fd, libc::IPPROTO_TCP, libc::TCP_KEEPINTVL),
+                60,
+                "keepinterval default"
+            );
+            assert_eq!(
+                option(fd, libc::IPPROTO_TCP, libc::TCP_KEEPCNT),
+                5,
+                "keepcount default"
+            );
+            assert_eq!(
+                option(fd, libc::IPPROTO_TCP, libc::TCP_USER_TIMEOUT),
+                5,
+                "user timeout"
+            );
+        }
+        assert_eq!(
+            config.buffer_high_watermark, 800,
+            "socket_buffer_size * 0.8"
+        );
+        // A second listen keeps a set watermark and does not listen again.
+        config.buffer_high_watermark = 7;
+        assert_eq!(unsafe { listen(at) }, 0, "already listening");
+        assert_eq!(config.buffer_high_watermark, 7, "kept");
+        unsafe { close_socket(at) };
+        assert!(config.socket.is_null(), "socket released");
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_GETFD) },
+            -1,
+            "descriptor closed"
+        );
+        unsafe { port_config::swr_v1_port_config_free(port) };
+    }
+
+    #[test]
+    fn a_failed_listen_warns_through_native_and_stays_unpublished() {
+        swr_v1_ports_set_native(run_fake, read_fake);
+        // listen(2) on a datagram socket fails (EOPNOTSUPP).
+        let mut port = socket_port(libc::SOCK_DGRAM, false);
+        let at = (&raw mut port).cast::<c_void>();
+        assert_eq!(unsafe { listen(at) }, -1, "failed");
+        let config = unsafe { port_config::of(at) };
+        assert!(!config.listening, "not published");
+        assert_eq!(config.buffer_high_watermark, 0, "options skipped");
+        let warned = SEEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&[RUN_WARN_LISTEN as usize, at.addr(), 0, 0, 0, 0]);
+        assert!(warned, "the host-naming warning runs natively");
+        unsafe { close_socket(at) };
+        unsafe { port_config::swr_v1_port_config_free(port) };
     }
 }
