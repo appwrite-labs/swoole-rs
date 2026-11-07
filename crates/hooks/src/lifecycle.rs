@@ -199,6 +199,12 @@ unsafe fn connect(
     length: libc::socklen_t,
     sys: Sys,
 ) -> bool {
+    #[cfg(feature = "iouring")]
+    // SAFETY: as the caller promises.
+    if let Some(ops) = unsafe { crate::uring_socket::of(socket) } {
+        // SAFETY: the live view and the caller's address.
+        return unsafe { crate::uring_socket::swr_v1_hook_uring_connect(&ops, addr, length) };
+    }
     // SAFETY: as the caller promises.
     if !unsafe { available(socket, READ | WRITE) } {
         return false;

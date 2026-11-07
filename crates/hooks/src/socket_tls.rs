@@ -229,6 +229,41 @@ unsafe extern "C" fn tls_step(context: *mut c_void) -> c_int {
     c_int::try_from(unsafe { (*network).tls.state }).unwrap_or(c_int::MAX)
 }
 
+/// A handshake step's callback.
+type Step<T> = unsafe extern "C" fn(*mut c_void) -> T;
+
+/// The handshake's mode with its session and step callbacks; a `UringSocket`'s
+/// run through the ring.
+///
+/// # Safety
+/// `socket` is a live record.
+unsafe fn steps(socket: *mut CoSocket) -> (c_int, Step<bool>, Step<c_int>) {
+    #[cfg(feature = "iouring")]
+    // SAFETY: as the caller promises.
+    if unsafe { crate::uring_socket::of(socket) }.is_some() {
+        return (2, uring_create, uring_step);
+    }
+    // SAFETY: as the caller promises.
+    let server = unsafe { (*socket).ssl_is_server };
+    (c_int::from(server), tls_create, tls_step)
+}
+
+/// A `UringSocket`'s session, over the ring's memory BIOs.
+#[cfg(feature = "iouring")]
+unsafe extern "C" fn uring_create(context: *mut c_void) -> bool {
+    // SAFETY: the handshake's live socket.
+    let socket = unsafe { handshake_socket(context) };
+    // SAFETY: as above; `tls_create` makes its session.
+    unsafe { crate::uring_socket::tls_session(socket, || tls_create(context)) }
+}
+
+/// A `UringSocket`'s step, through the ring.
+#[cfg(feature = "iouring")]
+unsafe extern "C" fn uring_step(context: *mut c_void) -> c_int {
+    // SAFETY: the handshake's live socket, with its session.
+    unsafe { crate::uring_socket::tls_step(handshake_socket(context)) }
+}
+
 unsafe extern "C" fn tls_wait(context: *mut c_void, fresh: bool) -> bool {
     // SAFETY: the handshake of the call.
     let state = unsafe { handshake(context) };
@@ -290,10 +325,11 @@ pub unsafe extern "C" fn ssl_handshake(this: *mut c_void) -> bool {
         // SAFETY: the live owner.
         unsafe { owner_fields(owner) }
     };
+    // SAFETY: as the caller promises.
+    let (mode, create, step) = unsafe { steps(socket) };
     let ops = TlsOps {
         socket: (&raw mut state).cast(),
-        // SAFETY: the live record.
-        mode: c_int::from(unsafe { (*socket).ssl_is_server }),
+        mode,
         // SAFETY: as above.
         handshaked: unsafe { (*socket).ssl_handshaked },
         context_ready: !fields.context.is_null(),
@@ -301,8 +337,8 @@ pub unsafe extern "C" fn ssl_handshake(this: *mut c_void) -> bool {
         available: tls_available,
         set_err: tls_set_err,
         context_create: tls_context_create,
-        create: tls_create,
-        step: tls_step,
+        create,
+        step,
         wait: tls_wait,
         verify: tls_verify,
     };
