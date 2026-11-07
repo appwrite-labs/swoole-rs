@@ -1,9 +1,8 @@
 //! PHP `Swoole\Redis\Server` in Rust: registration, constants,
 //! `setHandler`/`getHandler`/`format` and the request dispatch over the
-//! protocols crate's RESP walk and reply framing. C++ keeps the Server and
-//! answers through `swr_redis_host_*` (`ext-src/swoole_server.cc`); a
-//! handler runs there inside `zend_try`, and its trampoline re-raises a
-//! bailout once the Rust frames are gone (docs/zend.md).
+//! protocols crate's RESP walk and reply framing. A handler runs inside a C
+//! trap, and crates/phpserver's onReceive slot re-raises its bailout once the
+//! Rust frames are gone (docs/zend.md).
 //!
 //! Without the `php` feature the crate is empty.
 #![cfg(feature = "php")]
@@ -20,19 +19,23 @@ mod format;
 use std::{
     cell::RefCell,
     collections::HashMap,
-    ffi::{CString, c_char, c_int, c_void},
+    ffi::{CString, c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
+use swoole_rs_corebase::log::set_last_error;
+use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpstubs::redis_server as stubs;
 use swoole_rs_protocols::{RespPhpState, RespSpan, swr_v1_resp_handler_key, swr_v1_resp_php_next};
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, bailout, handlers, method_table,
+    Call, Class, E_ERROR, E_WARNING, bailout, handlers, method_table, php_error,
     string::{self, bytes},
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, add_next_index_long,
-        add_next_index_null, add_next_index_stringl, swr_zval_copy, zend_class_entry, zend_long,
-        zend_object, zend_read_property, zval, zval_ptr_dtor,
+        add_next_index_null, add_next_index_stringl, swr_zend_callable_warning,
+        swr_zend_try_facade_update, swr_zval_copy, zend_class_entry, zend_long, zend_read_property,
+        zval, zval_ptr_dtor,
     },
     value,
 };
@@ -58,9 +61,9 @@ const REPLY_TYPES: [(&std::ffi::CStr, zend_long); 7] = [
 const OK: c_int = 0;
 const ERR: c_int = -1;
 const BAILED: c_int = -2;
-/// `swr_redis_host_call`'s results.
-const CALL_BAILED: c_int = -1;
-const CALL_FAILED: c_int = 0;
+/// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
+const PHP_FATAL_ERROR: c_int = 503;
+const PHP_RUNTIME_NOTICE: c_int = 510;
 
 /// `swoole::Server` and `swoole::RecvData`, opaque.
 type Server = c_void;
@@ -76,29 +79,12 @@ unsafe extern "C" {
     /// `Server::close` (crates/server).
     #[link_name = "_ZNK6swoole6Server5closeElb"]
     fn server_close(server: *mut Server, fd: zend_long, reset: bool) -> bool;
-    fn swr_redis_host_call(
-        server: *mut Server,
-        callable: *mut c_void,
-        args: *mut zval,
-        retval: *mut zval,
-    ) -> c_int;
-    fn swr_redis_host_callable(callback: *mut zval, callable: *mut *mut c_void) -> bool;
-    fn swr_redis_host_callable_free(callable: *mut c_void);
-    fn swr_redis_host_update_property(
-        scope: *mut zend_class_entry,
-        object: *mut zend_object,
-        name: *const c_char,
-        length: usize,
-        value: *mut zval,
-    ) -> bool;
-    fn swr_redis_host_erange();
-    fn swr_redis_host_error(level: c_int, message: *const c_char);
-    fn swr_redis_host_fatal_error(level: c_int, message: *const c_char);
 }
 
 thread_local! {
-    /// `redis_handlers`: each command key's `zend::Callable` (C++'s).
-    static HANDLERS: RefCell<HashMap<Vec<u8>, usize>> = RefCell::new(HashMap::new());
+    /// `redis_handlers`: each command key's callable.
+    static HANDLERS: RefCell<HashMap<Vec<u8>, *mut callable::Callable>> =
+        RefCell::new(HashMap::new());
 }
 
 method_table! {
@@ -158,18 +144,13 @@ pub unsafe extern "C" fn php_swoole_redis_server_minit(_module_number: c_int) {
 /// RSHUTDOWN: free the handlers, then re-raise a destructor's bailout.
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_redis_server_rshutdown() {
-    let handlers: Vec<usize> =
-        HANDLERS.with_borrow_mut(|map| map.drain().map(|(_, h)| h).collect());
-    let mut result = Ok(());
+    let handlers: Vec<_> = HANDLERS.with_borrow_mut(|map| map.drain().map(|(_, h)| h).collect());
     for handler in handlers {
-        // SAFETY: a callable `swr_redis_host_callable` made, freed once; the
-        // body is C++.
-        let freed = unsafe { bailout::trap(swr_redis_host_callable_free, handler as *mut c_void) };
-        if freed.is_err() {
-            result = freed;
-        }
+        // SAFETY: a callable `set_handler` made, freed once; a destructor's
+        // bailout stays pending.
+        let _freed = unsafe { callable::release(handler) };
     }
-    bailout::raise(result);
+    bailout::finish();
 }
 
 /// `redis_handler_key`: `_handler_` and the command, lowercased.
@@ -189,14 +170,17 @@ fn until_nul(text: &[u8]) -> &[u8] {
 /// `php_swoole_error(level, "%s", message)` (or the fatal variant): a user
 /// error handler runs, and may bail out.
 fn report(fatal: bool, level: c_int, message: &[u8]) -> Result<(), bailout::Bailout> {
-    let message = CString::new(until_nul(message)).unwrap_or_default();
-    let reporter = if fatal {
-        swr_redis_host_fatal_error
+    set_last_error(if fatal {
+        PHP_FATAL_ERROR
     } else {
-        swr_redis_host_error
-    };
-    // SAFETY: C++'s reporter, printing the message through "%s".
-    unsafe { bailout::report_level(reporter, level, &message) }
+        PHP_RUNTIME_NOTICE
+    });
+    if !fatal && level != E_ERROR && !swoole_rs_phpswoole::display_errors() {
+        return Ok(());
+    }
+    let message = CString::new(until_nul(message)).unwrap_or_default();
+    // SAFETY: from a handler or a callback Zend runs.
+    unsafe { php_error(level, &message) }
 }
 
 fn set_handler(call: &Call) {
@@ -212,37 +196,45 @@ fn set_handler(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let mut callable = ptr::null_mut();
-    // SAFETY: the passed callback and a local output; C++ traps a bailout.
-    if !unsafe { swr_redis_host_callable(callback, &raw mut callable) } {
-        bailout::Bailout.defer();
-        return;
-    }
+    // SAFETY: the passed callback; `sw_callable_create`, whose bailout stays
+    // pending for the handler's last step.
+    let created = unsafe {
+        callable::factory(
+            callback,
+            ptr::null(),
+            true,
+            ptr::null_mut(),
+            swr_zend_callable_warning,
+        )
+    };
+    let Ok(callable) = created else { return };
     if callable.is_null() {
         return;
     }
     let key = handler_key(command);
     // SAFETY: `$this` of the class, the key's bytes and the passed callback,
-    // which the property copies; C++ traps a bailout (the dynamic property's
-    // deprecation runs the user error handler).
-    if !unsafe {
-        swr_redis_host_update_property(
+    // which the property copies; the shim traps a bailout (the dynamic
+    // property's deprecation runs the user error handler).
+    let bailed = unsafe {
+        swr_zend_try_facade_update(
             SERVER.entry(),
             call.this(),
             key.as_ptr().cast(),
             key.len(),
             callback,
         )
-    } {
+    };
+    if bailed != 0 {
         // SAFETY: the callable just made, never stored.
-        unsafe { swr_redis_host_callable_free(callable) };
+        let _freed = unsafe { callable::release(callable) };
         bailout::Bailout.defer();
         return;
     }
-    let old = HANDLERS.with_borrow_mut(|map| map.insert(key, callable as usize));
+    let old = HANDLERS.with_borrow_mut(|map| map.insert(key, callable));
     if let Some(old) = old {
-        // SAFETY: the callable this one replaces, freed once; the body is C++.
-        bailout::defer(unsafe { bailout::trap(swr_redis_host_callable_free, old as *mut c_void) });
+        // SAFETY: the callable this one replaces, freed once; a destructor's
+        // bailout stays pending.
+        let _freed = unsafe { callable::release(old) };
     }
     call.set_bool(true);
 }
@@ -272,7 +264,7 @@ fn get_handler(call: &Call) {
 
 /// `php_swoole_redis_server_onReceive` on a Redis port: parse the request,
 /// then run its command's handler and send back a string it returns. `SW_OK`
-/// or `SW_ERR`, or -2 if PHP bailed out (the C++ caller re-raises it).
+/// or `SW_ERR`, or -2 if PHP bailed out (the caller re-raises it).
 /// # Safety
 /// A live server and its received request.
 #[unsafe(no_mangle)]
@@ -333,8 +325,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
             )
         };
         if range != 0 {
-            // SAFETY: sets the thread's errno.
-            unsafe { swr_redis_host_erange() };
+            set_errno(libc::ERANGE);
         }
         if next <= 0 {
             break next;
@@ -387,20 +378,24 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
     let mut args = [swoole_rs_zend::long_zval(fd), params];
     // SAFETY: a zval is plain data (IS_UNDEF).
     let mut retval = unsafe { std::mem::zeroed::<zval>() };
-    // SAFETY: a live server, the handler's callable, two arguments and a
-    // return slot; C++ traps a bailout.
+    // SAFETY: a live server.
+    let coroutine = unsafe { swoole_rs_phpserver::is_enable_coroutine(server) };
+    // SAFETY: a handler `set_handler` stored.
+    let cache = unsafe { callable::cache(callable) };
+    // SAFETY: its resolved cache, two arguments and a return slot; the
+    // coroutine leaf and the reporter run inside C traps.
     let called = unsafe {
-        swr_redis_host_call(
-            server,
-            callable as *mut c_void,
+        function_call(
+            cache,
+            2,
             args.as_mut_ptr(),
             &raw mut retval,
+            coroutine,
+            swr_v1_phpcoroutines_create,
+            swr_zend_callable_warning,
         )
-    };
-    if called == CALL_BAILED {
-        return Err(bailout::Bailout);
-    }
-    if called == CALL_FAILED {
+    }?;
+    if !called {
         let mut message = b"Swoole\\Redis\\Server->onRequest with command '".to_vec();
         message.extend_from_slice(until_nul(command));
         message.extend_from_slice(b"' handler error");
@@ -416,6 +411,18 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
     let [_, mut params] = args;
     release(&mut zdata, &mut params);
     Ok(OK)
+}
+
+/// `errno = value`.
+fn set_errno(value: c_int) {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // SAFETY: this thread's errno slot, live for the thread.
+    let slot = unsafe { libc::__errno_location() };
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    // SAFETY: as above.
+    let slot = unsafe { libc::__error() };
+    // SAFETY: `slot` is this thread's errno.
+    unsafe { slot.write(value) };
 }
 
 /// `string::copy`, re-exported for `format`.

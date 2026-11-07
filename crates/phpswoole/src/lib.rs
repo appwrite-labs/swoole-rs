@@ -44,7 +44,7 @@ pub use module::{
     swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown,
     zif_swoole_set_process_name,
 };
-pub use options::{php_swoole_set_global_option, sw_zval_is_serializable};
+pub use options::{php_swoole_set_global_option, set_global, sw_zval_is_serializable};
 pub use serialize::{php_swoole_serialize, php_swoole_unserialize, serialize, unserialize};
 
 use std::{

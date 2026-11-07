@@ -130,7 +130,7 @@ pub unsafe extern "C" fn php_swoole_set_global_option(options: *mut zend_array) 
 
 /// `php_swoole_set_global_option`'s body: false after a size that does not
 /// parse, whose fatal error is deferred.
-pub(crate) fn set_global(options: *mut zend_array) -> bool {
+pub fn set_global(options: *mut zend_array) -> bool {
     let Err((value, error)) = apply(options) else {
         return true;
     };

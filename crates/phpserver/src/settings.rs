@@ -15,8 +15,8 @@ use swoole_rs_zend::{
     string::bytes,
     sys::{
         IS_ARRAY, IS_NULL, IS_REFERENCE, swr_zend_callable_warning, swr_zend_hash_foreach_key,
-        swr_zend_string_release, zend_hash_str_find, zend_is_true, zend_object, zend_string,
-        zend_ulong, zval,
+        swr_zend_string_release, swr_zend_try_facade_update, zend_hash_str_find, zend_is_true,
+        zend_object, zend_string, zend_ulong, zval,
     },
     type_of,
     value::{get_double, get_long, get_string, table},
@@ -106,9 +106,7 @@ mod text {
 pub struct SettingsHost {
     get: unsafe extern "C" fn(*mut c_void, u32) -> i64,
     text: unsafe extern "C" fn(*mut c_void, u32, *const c_char, usize),
-    global_options: unsafe extern "C" fn(*mut c_void) -> bool,
     cpu_affinity: unsafe extern "C" fn(*mut c_int, usize, *mut c_int) -> c_int,
-    thread_options: unsafe extern "C" fn(*mut zend_object, *mut c_void) -> bool,
 }
 
 static HOST: AtomicPtr<SettingsHost> = AtomicPtr::new(ptr::null_mut());
@@ -420,13 +418,17 @@ fn finish(this: *mut zend_object, settings: *mut zval) -> Result<(), bailout::Ba
 /// The options, in upstream's order. `Ok(false)`: return false.
 fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
     use field as f;
-    let host = host();
-    // php_swoole_set_global_option, _coroutine_option and _aio_option.
+    // php_swoole_set_global_option, _coroutine_option and _aio_option; the
+    // first defers its fatal error for a size that does not parse.
     // SAFETY: the settings argument.
-    if unsafe { (host.global_options)(s.vht.cast()) } {
-        bailout::defer(Err(bailout::Bailout));
+    let vht = unsafe { table(s.vht) };
+    if !swoole_rs_phpswoole::set_global(vht) {
         return Err(Stop);
     }
+    // SAFETY: as above.
+    unsafe { swoole_rs_phpcoroutines::php_swoole_set_coroutine_option(vht) };
+    // SAFETY: as above.
+    unsafe { swoole_rs_phpswoole::php_swoole_set_aio_option(vht) };
     s.string_option(c"chroot", text::CHROOT)?;
     s.string_option(c"user", text::USER)?;
     s.string_option(c"group", text::GROUP)?;
@@ -510,6 +512,30 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
     }
     workers(s)?;
     http(s, this)
+}
+
+/// `bootstrap` into `$this->bootstrap`, and `init_arguments` kept on the object
+/// (uncounted, as upstream's `server_object->init_arguments = *ztmp`).
+fn thread_options(s: &Settings, this: *mut zend_object) -> Step {
+    if let Some(value) = s.get(c"bootstrap") {
+        // SAFETY: `$this`, a live object.
+        let ce = unsafe { (*this).ce };
+        // SAFETY: `$this` of its class and a live value, which the property
+        // copies; the shim traps a bailout.
+        let bailed =
+            unsafe { swr_zend_try_facade_update(ce, this, c"bootstrap".as_ptr(), 9, value) };
+        if bailed != 0 {
+            bailout::Bailout.defer();
+            return Err(Stop);
+        }
+    }
+    if let Some(value) = s.get(c"init_arguments") {
+        // SAFETY: a live value.
+        let value = unsafe { value.read() };
+        // SAFETY: `$this` is a Server object.
+        unsafe { crate::lifecycle::data(this) }.init_arguments = value;
+    }
+    Ok(())
 }
 
 /// The task, worker and connection options.
@@ -658,7 +684,6 @@ fn cpu_affinity_ignore(s: &Settings, value: *mut zval) -> Result<bool, Stop> {
 /// The HTTP, buffer, queue and thread options, and the final checks.
 fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
     use field as f;
-    let host = host();
     s.flag(c"http_parse_cookie", f::HTTP_PARSE_COOKIE);
     s.flag(c"http_parse_post", f::HTTP_PARSE_POST);
     s.flag(c"http_parse_files", f::HTTP_PARSE_FILES);
@@ -775,12 +800,7 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
         s.set(f::MESSAGE_QUEUE_KEY, v.max(0));
     }
     if s.fact(f::THREAD) != 0 {
-        // bootstrap and init_arguments.
-        // SAFETY: `$this` and the settings.
-        if unsafe { (host.thread_options)(this, s.vht.cast()) } {
-            bailout::defer(Err(bailout::Bailout));
-            return Err(Stop);
-        }
+        thread_options(s, this)?;
     }
     let ipc = s.fact(f::TASK_IPC_MODE);
     let queue = ipc == 2 || ipc == 3;
