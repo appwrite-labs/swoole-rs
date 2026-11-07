@@ -326,14 +326,12 @@ typedef struct {
     size_t result_size;
 } swr_v1_task_server;
 /* For the Rust task methods (crates/process/src/task_file.rs, task_sync.rs):
- * SwooleG.task_tmpfile, String::extend, the server's task state for a MultiTask
- * (or null; this worker's result slot when with_result; returns its count), and
- * make_tmpfile() closed, its path copied into SW_TASK_TMP_PATH_SIZE bytes. */
+ * SwooleG.task_tmpfile, String::extend and the server's task state for a MultiTask
+ * (or null; this worker's result slot when with_result; returns its count). */
 typedef struct {
     const char *(*tmpfile)(void);
     void (*extend)(void *string, size_t size);
     uint16_t (*server)(void *serv, void *mtask, bool with_result, swr_v1_task_server *out);
-    bool (*make_tmpfile)(char *path);
 } swr_v1_task_native;
 void swr_v1_process_task_set_native(const swr_v1_task_native *native);
 enum { SWR_TASK_WARN_PACK = 1, SWR_TASK_WARN_DISPATCH = 2 };

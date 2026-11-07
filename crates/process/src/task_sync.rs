@@ -10,14 +10,14 @@ use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use std::ffi::{CStr, c_char};
+use std::ffi::CStr;
 use std::mem::MaybeUninit;
 use std::ptr;
 
 use swoole_rs_corebase::log::set_last_error;
 
 use crate::pool::{BAILED, Bailed, DONE, PoolCall, Step, run, swr_v1_process_bailout};
-use crate::task_file::{TASK_TMP_PATH_SIZE, errno, native};
+use crate::task_file::{TASK_TMP_PATH_SIZE, errno, make_tmpfile, native};
 
 /// `swoole::DataHead`: `fd` (the task id) at 0, `len` at 16, `ext_flags` at 26.
 const HEAD: usize = 40;
@@ -487,14 +487,21 @@ pub unsafe extern "C" fn task_sync_many(
     let (state, count) = unsafe { task_server(serv, mtask, true) };
     // SAFETY: the result slot starts with its `DataHead`.
     unsafe { state.result.write_bytes(0, HEAD) };
-    let mut path = [0 as c_char; TASK_TMP_PATH_SIZE];
-    // SAFETY: `path` holds `SW_TASK_TMP_PATH_SIZE` bytes.
-    if !unsafe { (native().make_tmpfile)(path.as_mut_ptr()) } {
+    let mut path = [0; TASK_TMP_PATH_SIZE];
+    // SAFETY: native's table returns `SwooleG.task_tmpfile`'s NUL-terminated text.
+    let template = unsafe { (native().tmpfile)() };
+    // SAFETY: as above.
+    let template = unsafe { CStr::from_ptr(template) };
+    let fd = make_tmpfile(template, &mut path);
+    if fd < 0 {
         set_last_error(errno());
         return false;
     }
-    // SAFETY: `make_tmpfile` NUL-terminated it.
-    let path = unsafe { CStr::from_ptr(path.as_ptr()) };
+    // SAFETY: `fd` is open and owned here; upstream keeps only the path.
+    unsafe { libc::close(fd) };
+    let Ok(path) = CStr::from_bytes_until_nul(&path) else {
+        return false;
+    };
     let server = server(&state);
     let mut ok = 0;
     raise(outcome(
