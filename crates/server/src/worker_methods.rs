@@ -196,11 +196,55 @@ pub unsafe extern "C" fn destroy_task_workers(serv: *mut c_void) {
     unsafe { swoole_rs_process::methods::destroy(pool) };
 }
 
-#[cfg(feature = "upstream-symbols")]
-unsafe extern "C" {
-    /// `Server::create_worker(worker)` (master.cc): the worker's lock is a C++ `Mutex`.
-    #[link_name = "_ZN6swoole6Server13create_workerEPNS_6WorkerE"]
-    fn create_worker(serv: *mut c_void, worker: *mut WorkerRecord);
+/// `Lock::MUTEX`: the kind of a worker's lock.
+const MUTEX: i32 = 3;
+
+/// `Server::create_worker(worker)`: the worker's process-shared mutex, from the
+/// global memory pool as upstream's `new Mutex(true)` took it, and its pipe's fds.
+///
+/// # Safety
+/// `serv` is a live `Server` and `worker` one of its workers.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server13create_workerEPNS_6WorkerE")
+)]
+pub unsafe extern "C" fn create_worker(serv: *mut c_void, worker: *mut WorkerRecord) {
+    let size = u32::try_from(swoole_rs_locks::swr_v1_locks_size(MUTEX)).unwrap_or(u32::MAX);
+    // SAFETY: the server's global memory pool is live.
+    let lock = unsafe { swoole_rs_memory::members::pool::alloc(size) };
+    // SAFETY: `size` fresh bytes, aligned by the pool; nothing else sees them yet.
+    if lock.is_null() || unsafe { swoole_rs_locks::swr_v1_locks_init(lock, MUTEX, 1) } != 0 {
+        // Upstream's `Mutex` constructor throws, which ends the process here.
+        std::process::abort();
+    }
+    // SAFETY: per the caller.
+    let worker = unsafe { &mut *worker };
+    worker.lock = lock;
+    if !worker.pipe_object.is_null() {
+        // SAFETY: per the caller; the worker's live pipe.
+        unsafe { crate::server_methods::store_pipe_fd(serv, worker.pipe_object) };
+    }
+}
+
+/// `Server::destroy_worker(worker)`: frees the lock [`create_worker`] gave it.
+///
+/// # Safety
+/// `worker` is a worker [`create_worker`] set up, whose lock nobody holds.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server14destroy_workerEPNS_6WorkerE")
+)]
+pub unsafe extern "C" fn destroy_worker(_serv: *mut c_void, worker: *mut WorkerRecord) {
+    // SAFETY: per the caller.
+    let worker = unsafe { &mut *worker };
+    let lock = core::mem::replace(&mut worker.lock, core::ptr::null_mut());
+    if lock.is_null() {
+        return;
+    }
+    // SAFETY: an initialized mutex nobody holds.
+    unsafe { swoole_rs_locks::swr_v1_locks_destroy(lock, MUTEX) };
+    // SAFETY: the pool block `create_worker` took.
+    unsafe { swoole_rs_memory::members::pool::free(lock) };
 }
 
 /// `Server::create_event_workers()`.

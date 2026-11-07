@@ -32,7 +32,7 @@ pub struct WorkerRecord {
     pub request_count: i64,
     pub response_count: i64,
     pub coroutine_num: usize,
-    lock: *mut c_void,
+    pub lock: *mut c_void,
     pub pipe_object: *mut c_void,
     pub pipe_master: *mut c_void,
     pub pipe_worker: *mut c_void,

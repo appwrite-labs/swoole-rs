@@ -882,6 +882,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-http",
+ "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
