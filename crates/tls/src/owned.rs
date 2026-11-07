@@ -129,6 +129,45 @@ pub unsafe extern "C" fn swr_v1_tls_owner_free(owner: *const OwnedTlsContext) {
         unsafe { drop(Arc::from_raw(owner)) };
     }
 }
+/// OpenSSL's reason text for `error`, or `(null)` as printf shows a missing one.
+#[must_use]
+pub fn reason_text(error: std::os::raw::c_ulong) -> String {
+    // SAFETY: OpenSSL's static string table (null for an unknown code).
+    let reason = unsafe { openssl_sys::ERR_reason_error_string(error) };
+    if reason.is_null() {
+        return "(null)".to_owned();
+    }
+    // SAFETY: a NUL-terminated static string.
+    unsafe { std::ffi::CStr::from_ptr(reason) }
+        .to_string_lossy()
+        .into_owned()
+}
+/// `tls_host_name`'s slot.
+const TLS_HOST_NAME: usize = 8;
+/// The owner's scalar fields, copied.
+/// # Safety
+/// owner is live and no field write runs during the call.
+#[must_use]
+pub unsafe fn owner_fields(owner: *const OwnedTlsContext) -> OwnedTlsFields {
+    // SAFETY: as the caller promises.
+    let owner = unsafe { &*owner };
+    // SAFETY: as the caller promises; a copy, no borrow is kept.
+    unsafe { *owner.fields.get() }
+}
+/// `tls_host_name`'s NUL-terminated bytes.
+/// # Safety
+/// owner is live; the name does not change while the view is used.
+#[must_use]
+pub unsafe fn owner_tls_host_name(
+    owner: *const OwnedTlsContext,
+) -> swoole_rs_corebase::CoreStringView {
+    // SAFETY: as the caller promises.
+    let owner = unsafe { &*owner };
+    // SAFETY: the owner's stable slot, unchanged while the view is used.
+    unsafe {
+        swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner.strings[TLS_HOST_NAME]))
+    }
+}
 /// Bind the native compatibility identity used by OpenSSL's public userdata API.
 /// # Safety
 /// owner is live/exclusive. identity's first pointer is this owner; the native
