@@ -1211,7 +1211,7 @@ extern "C" fn on_dispatch(
 
 /// `PacketLength`'s head: the bytes read so far.
 #[repr(C)]
-pub struct PacketLength {
+struct PacketLength {
     buf: *const c_char,
     buf_size: u32,
 }
@@ -1224,7 +1224,7 @@ pub struct PacketLength {
 pub unsafe extern "C" fn swr_v1_phpserver_length_func(
     protocol: *const Protocol,
     _socket: *mut c_void,
-    packet: *const PacketLength,
+    packet: *const c_void,
 ) -> isize {
     // SAFETY: per the caller.
     let owner = unsafe { (*protocol).private_data_1 };
@@ -1236,7 +1236,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_length_func(
     let PacketLength {
         buf,
         buf_size: size,
-    } = unsafe { packet.read() };
+    } = unsafe { packet.cast::<PacketLength>().read() };
     // SAFETY: as above.
     let bytes = unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), size as usize) };
     let mut data = undef();
