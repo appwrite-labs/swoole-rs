@@ -6,10 +6,30 @@
 use crate::coroutine::{Coroutine, STATE_END, STATE_INIT, STATE_RUNNING, STATE_WAITING, Scheduler};
 use core::ffi::{c_char, c_long, c_void};
 use core::ptr;
-use std::collections::BTreeMap;
 
-/// The map behind [`Scheduler::live`], allocated with the first coroutine.
-pub type Live = BTreeMap<c_long, *mut Coroutine>;
+/// The registry behind [`Scheduler::live`], allocated with the first coroutine:
+/// entries sorted by id (ids come in rising order, so an insert appends), with a
+/// removed coroutine's entry nulled until half the entries are null. Lookups are
+/// a binary search over one allocation; a `BTreeMap` cost a node per coroutine.
+#[derive(Debug, Default)]
+pub struct Live {
+    entries: Vec<(c_long, *mut Coroutine)>,
+    count: usize,
+}
+
+impl Live {
+    /// The index of the first entry whose id is not below `cid`.
+    fn at(&self, cid: c_long) -> usize {
+        self.entries.partition_point(|&(id, _)| id < cid)
+    }
+
+    fn get(&self, cid: c_long) -> Option<*mut Coroutine> {
+        match self.entries.get(self.at(cid)) {
+            Some(&(id, co)) if id == cid && !co.is_null() => Some(co),
+            _ => None,
+        }
+    }
+}
 
 impl Scheduler {
     fn live(&self) -> Option<&Live> {
@@ -22,17 +42,41 @@ impl Scheduler {
             self.live = Box::into_raw(Box::default());
         }
         // SAFETY: just allocated, or the box from an earlier insert.
-        unsafe { (*self.live).insert(cid, co) };
+        let live = unsafe { &mut *self.live };
+        let at = live.at(cid);
+        match live.entries.get_mut(at) {
+            Some(entry) if entry.0 == cid => {
+                live.count += usize::from(entry.1.is_null());
+                entry.1 = co;
+            }
+            _ => {
+                live.entries.insert(at, (cid, co));
+                live.count += 1;
+            }
+        }
     }
 
     pub(crate) fn remove(&mut self, cid: c_long) {
         // SAFETY: as for `live`.
-        if let Some(live) = unsafe { self.live.as_mut() } {
-            live.remove(&cid);
+        let Some(live) = (unsafe { self.live.as_mut() }) else {
+            return;
+        };
+        let at = live.at(cid);
+        let Some(entry) = live
+            .entries
+            .get_mut(at)
+            .filter(|e| e.0 == cid && !e.1.is_null())
+        else {
+            return;
+        };
+        entry.1 = ptr::null_mut();
+        live.count -= 1;
+        if live.count * 2 <= live.entries.len() {
+            live.entries.retain(|e| !e.1.is_null());
         }
     }
 
-    /// Frees the map once no coroutine is live (on deactivation).
+    /// Frees the registry once no coroutine is live (on deactivation).
     pub(crate) fn release_live(&mut self) {
         if self.count() == 0 && !self.live.is_null() {
             // SAFETY: the box `insert` leaked; nothing else refers to it.
@@ -42,16 +86,20 @@ impl Scheduler {
     }
 
     /// How many coroutines are live.
+    #[must_use]
     pub fn count(&self) -> usize {
-        self.live().map_or(0, BTreeMap::len)
+        self.live().map_or(0, |live| live.count)
     }
 
     /// The newest live coroutine older than `before`, with its id.
     fn older(&self, before: c_long) -> Option<(c_long, *mut Coroutine)> {
-        self.live()?
-            .range(..before)
-            .next_back()
-            .map(|(cid, co)| (*cid, *co))
+        let live = self.live()?;
+        live.entries
+            .get(..live.at(before))?
+            .iter()
+            .rev()
+            .find(|e| !e.1.is_null())
+            .copied()
     }
 }
 
@@ -87,7 +135,7 @@ export! {
     fn swr_v1_coroutine_get(s: *const Scheduler, cid: c_long) -> *mut c_void {
         // SAFETY: the caller lends the scheduler.
         let s = unsafe { &*s };
-        s.live().and_then(|live| live.get(&cid).copied()).map_or(ptr::null_mut(), native)
+        s.live().and_then(|live| live.get(cid)).map_or(ptr::null_mut(), native)
     }
 }
 
