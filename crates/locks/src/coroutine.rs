@@ -286,7 +286,11 @@ mod tests {
         freed: usize,
         wakes: usize,
     }
-    thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
+    thread_local! {
+        static STATE: RefCell<State> = RefCell::new(State::default());
+        // What the other coroutines do while the sleeping one is suspended.
+        static ON_SLEEP: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
     unsafe extern "C" fn current() -> *mut c_void {
         STATE.with(|state| state.borrow().current as *mut c_void)
     }
@@ -310,6 +314,11 @@ mod tests {
         // Model the old owner resuming while the contender is suspended.
         if releases {
             unsafe { coroutine_unlock(lock) };
+        }
+        if let Some(others) = ON_SLEEP.with(|f| f.borrow_mut().take()) {
+            let (current, cid) = STATE.with(|state| (state.borrow().current, state.borrow().cid));
+            others();
+            switch(current, cid);
         }
         CoroutineOutcome {
             code: result,
@@ -373,6 +382,83 @@ mod tests {
             state.lock = lock;
         });
     }
+    fn switch(current: usize, cid: i64) {
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.current = current;
+            state.cid = cid;
+        });
+    }
+    fn lock(lock: *mut CoroutineLock, operation: i32) -> i32 {
+        unsafe { swr_v1_locks_coroutine_lock(lock, operation) }.code
+    }
+    fn unlock(lock: *mut CoroutineLock) -> i32 {
+        unsafe { swr_v1_locks_coroutine_unlock(lock) }.code
+    }
+
+    // core-tests/src/lock/lock.cpp's coroutine TESTs (the C++ CoroutineLock left the build),
+    // with the same calls and expected values. Coroutine `n` is current `n`, cid `n`. Three
+    // coroutines start in order; a contended lock's sleep runs the others until it can go on.
+    const OUT_OF_COROUTINE: i32 = ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32;
+
+    fn three_coroutines(operation: i32) {
+        reset();
+        switch(0, 0);
+        let lock = unsafe { coroutine_new(false, &raw const SLEEP) };
+        assert_eq!(self::lock(lock, operation), OUT_OF_COROUTINE);
+        if operation == libc::LOCK_EX {
+            assert_eq!(unlock(lock), OUT_OF_COROUTINE);
+        }
+        // Coroutine 1 takes the lock twice and sleeps.
+        switch(1, 1);
+        assert_eq!(self::lock(lock, operation), 0);
+        assert_eq!(self::lock(lock, operation), 0);
+        // Coroutine 2 waits for it: coroutine 3 fails to take it without blocking, then
+        // coroutine 1 wakes and unlocks.
+        ON_SLEEP.with(|f| {
+            *f.borrow_mut() = Some(Box::new(move || {
+                switch(3, 3);
+                assert_eq!(self::lock(lock, operation | libc::LOCK_NB), libc::EBUSY);
+                switch(1, 1);
+                assert_eq!(unlock(lock), 0);
+            }));
+        });
+        switch(2, 2);
+        assert_eq!(self::lock(lock, operation), 0);
+        assert!(ON_SLEEP.with(|f| f.borrow().is_none()));
+        // Coroutine 2 sleeps, then unlocks twice; the second has no effect.
+        assert_eq!(unlock(lock), 0);
+        if operation == libc::LOCK_EX {
+            assert_eq!(unlock(lock), 0);
+        }
+        unsafe { coroutine_free(lock) };
+    }
+
+    #[test]
+    fn lock_coroutine_lock() {
+        three_coroutines(libc::LOCK_EX);
+    }
+
+    #[test]
+    fn lock_coroutine_lock_rd() {
+        three_coroutines(libc::LOCK_SH);
+    }
+
+    #[test]
+    fn lock_coroutine_lock_cancel() {
+        reset();
+        let lock = unsafe { coroutine_new(true, &raw const SLEEP) };
+        assert_eq!(self::lock(lock, libc::LOCK_EX), 0);
+        // The child's wait is cancelled by a timer: the host's sleep fails.
+        contender(lock);
+        STATE.with(|state| state.borrow_mut().result = -1);
+        assert_eq!(
+            self::lock(lock, libc::LOCK_EX),
+            ErrorCode::SW_ERROR_CO_CANCELED as i32
+        );
+        unsafe { coroutine_free(lock) };
+    }
+
     #[test]
     fn ownership_reentry_and_recycled_coroutine_identity() {
         reset();

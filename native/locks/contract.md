@@ -2,11 +2,12 @@
 
 Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. Patched upstream
 files: `ext-src/swoole_atomic.cc`, `ext-src/swoole_thread_atomic.cc`,
-`ext-src/swoole_thread_lock.cc`, `src/lock/barrier.cc`, `src/lock/coroutine_lock.cc`,
-`src/lock/mutex.cc`, `src/lock/rw_lock.cc`, `src/lock/spin_lock.cc`.
+`ext-src/swoole_thread_lock.cc`, `src/lock/barrier.cc`, `src/lock/coroutine_lock.cc`
+(the native coroutine host only), `src/lock/mutex.cc`. `src/lock/rw_lock.cc` and
+`src/lock/spin_lock.cc` are deleted: no C++ caller has an RW or spin lock.
 
 Native callers keep source-compatible C++ methods and PHP behavior. Recompile
-C++ consumers against their matching SDK: CoroutineLock and PHP object layouts
+C++ consumers against their matching SDK: PHP object layouts
 now contain Rust owners rather than native lock state. Allocation provenance,
 reference counts and exception behavior are preserved. The module adds no scheduler,
 registry or thread. The one Rust heap is ZTS builds' thread resources: a

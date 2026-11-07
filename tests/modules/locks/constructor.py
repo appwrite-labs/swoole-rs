@@ -44,8 +44,7 @@ inline Pool *sw_mem_pool(){static Pool pool;return &pool;}
         if side=='reference':
             base=read('src/core/base.cc');start=base.index('bool sw_wait_for(')
             text='namespace reference {\n'+base[start:base.index('\n}\n',start)+3]+'}\n'
-        for name in ['mutex','rw_lock','spin_lock']:
-            body=read('src/lock/'+name+'.cc');text+=(body.replace('#include "swoole_lock.h"','#include "reference.h"').replace('namespace swoole','namespace reference') if side=='reference' else body)+'\n'
+        body=read('src/lock/mutex.cc');text+=(body.replace('#include "swoole_lock.h"','#include "reference.h"').replace('namespace swoole','namespace reference') if side=='reference' else body)+'\n'
         if side=='reference':(folder/side/'reference.h').write_text(header.replace('namespace swoole','namespace reference'));(folder/side/'original.inc').write_text(text)
         else:(folder/side/'swoole_lock.h').write_text(header);(folder/side/'ported.inc').write_text(text)
     # Two translation units: the reference side sees only pinned text, the ported side and
@@ -68,8 +67,8 @@ inline Pool *sw_mem_pool(){static Pool pool;return &pool;}
             rows=[row for row in all_rows if not row.get('direct') and row['stage']==0];report['observations']=rows
             errors=[row for row in all_rows if not row.get('direct') and row['stage']!=0];report['first_error_observations']=errors
             for row in errors:
-                row['passed']=row['engine']=='rust' and row['live']==0 and row['threw']==1 and row['code']==errno.EBUSY and row['init_calls']==0 and row['attr_init_calls']==1 and row['attr_destroyed']==int(row['stage']==2) and row['shared_calls']==int(row['stage']==2) and row['message'].startswith('pthread_'+('mutex' if row['kind']==3 else 'rwlock')+'_init() failed:')
-            report['first_error_complete']=len(errors)==6 and len({(row['kind'],row['shared'],row['stage']) for row in errors})==6
+                row['passed']=row['engine']=='rust' and row['live']==0 and row['threw']==1 and row['code']==errno.EBUSY and row['init_calls']==0 and row['attr_init_calls']==1 and row['attr_destroyed']==int(row['stage']==2) and row['shared_calls']==int(row['stage']==2) and row['message'].startswith('pthread_mutex_init() failed:')
+            report['first_error_complete']=len(errors)==3 and len({(row['kind'],row['shared'],row['stage']) for row in errors})==3
             report['first_error_passed']=report['first_error_complete'] and all(row['passed'] for row in errors)
             report['first_error_native_baseline']='Not executed: original continues after failed attribute init; source-only unsafe-domain evidence, not a native parity pass'
             direct=[row for row in all_rows if row.get('direct')];report['direct_abi_observations']=direct
@@ -83,7 +82,7 @@ inline Pool *sw_mem_pool(){static Pool pool;return &pool;}
             native={(row['kind'],row['shared'],row['failed_init']):row for row in rows if row['engine']=='upstream'}
             report['exception_results_match']=all(all(row[key]==native[(row['kind'],row['shared'],row['failed_init'])][key] for key in ['threw','code','message']) for row in rows if row['engine']=='rust')
             report['native_baseline_passed']=all(row['ownership_passed'] and row['result_passed'] for row in rows if row['engine']=='upstream')
-            report['expected_row_count']=24 if sys.platform=='linux' else 16
+            report['expected_row_count']=8
             report['complete_inventory']=len(rows)==report['expected_row_count'] and len({(r['engine'],r['kind'],r['shared'],r['failed_init']) for r in rows})==report['expected_row_count']
             report['passed']=report['direct_abi_passed'] and report['first_error_passed'] and report['complete_inventory'] and report['exception_results_match'] and all(row['ownership_passed'] and row['result_passed'] for row in rows if row['engine']=='rust')
     write_report(a.output,report);print(json.dumps({'passed':report['passed'],'native_baseline_passed':report['native_baseline_passed'],'rows':len(report.get('observations',[])),'compile_stderr':report['compile_stderr']}));return int(not report['passed'])

@@ -17,6 +17,26 @@
 inline int checks;
 #define CHECK(x) do { ++checks; if (!(x)) { std::cerr << "failed: " << #x << " line " << __LINE__ << std::endl; std::abort(); } } while(0)
 
+#ifndef LOCKS_REFERENCE
+// The hybrid's RW and spin locks: Swoole\Lock calls Rust's lock ABI directly.
+template<int Kind> struct RustLock {
+    alignas(64) unsigned char storage[512];
+    explicit RustLock(bool shared) { CHECK(swr_v1_locks_size(Kind)<=sizeof(storage)); CHECK(swr_v1_locks_init(storage,Kind,shared)==0); }
+    ~RustLock() { swr_v1_locks_destroy(storage,Kind); }
+    int lock(int operation=LOCK_EX,int timeout=-1) {
+        uint32_t capabilities=0;
+#ifdef HAVE_MUTEX_TIMEDLOCK
+        capabilities|=1;
+#endif
+#ifdef HAVE_RWLOCK_TIMEDRDLOCK
+        capabilities|=2;
+#endif
+        return swr_v1_locks_lock(storage,Kind,operation,timeout,capabilities);
+    }
+    int unlock() { return swr_v1_locks_unlock(storage,Kind); }
+};
+#endif
+
 template<class Mutex, class RW, class Barrier>
 std::vector<int> exercise() {
     std::vector<int> results;
@@ -175,9 +195,9 @@ int main() {
     CHECK(swr_v1_locks_align(3)==entry::align(3));
     CHECK(swr_v1_locks_size(1)==entry::size(1));
     CHECK(swr_v1_locks_align(1)==entry::align(1));
-    CHECK((entry::exercise()==exercise<swoole::Mutex,swoole::RWLock,swoole::Barrier>()));
+    CHECK((entry::exercise()==exercise<swoole::Mutex,RustLock<1>,swoole::Barrier>()));
 #ifdef HAVE_SPINLOCK
-    auto reference_spin=entry::spin(),rust_spin=spin<swoole::SpinLock>();
+    auto reference_spin=entry::spin(),rust_spin=spin<RustLock<5>>();
     for(size_t i=0;i<reference_spin.size();i++)CHECK(reference_spin[i]==rust_spin[i]);
 #endif
     CHECK(swr_v1_locks_init(nullptr,3,0)==EINVAL);CHECK(swr_v1_locks_size(99)==0);
