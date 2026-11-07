@@ -58,19 +58,13 @@ struct swr_v1_phpruntime_ops {
     swr_v1_phpruntime_handler gethostbyname;
     swr_v1_phpruntime_handler exit;
     swr_v1_phpruntime_handler putenv;
-    /* Bodies for swr_zend_try: php_swoole_socket_set_ssl, openssl_x509_read,
-     * Coroutine::get_current_safe() and php_swoole_convert_to_fd. */
-    void (*set_ssl)(void *call);      /* struct swr_v1_phpruntime_ssl_call */
+    /* Bodies for swr_zend_try: openssl_x509_read, Coroutine::get_current_safe()
+     * and php_swoole_convert_to_fd. */
     void (*x509_read)(void *call);    /* struct swr_v1_phpruntime_x509_call */
     void (*coroutine_check)(void *unused);
     void (*convert_to_fd)(void *call); /* struct swr_v1_phpruntime_fd_call */
     void (*check_reactor)(void);
     const char *(*strerror)(int code);
-};
-struct swr_v1_phpruntime_ssl_call {
-    void *socket;
-    struct _zval_struct *settings;
-    bool result;
 };
 struct swr_v1_phpruntime_x509_call {
     const char *pem;

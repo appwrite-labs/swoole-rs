@@ -683,10 +683,6 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
         nullptr,
 #endif
         [](void *arg) {
-            auto *call = static_cast<swr_v1_phpruntime_ssl_call *>(arg);
-            call->result = php_swoole_socket_set_ssl(static_cast<SocketImpl *>(call->socket), call->settings);
-        },
-        [](void *arg) {
             auto *call = static_cast<swr_v1_phpruntime_x509_call *>(arg);
             zval argv[1];
             ZVAL_STRINGL(&argv[0], call->pem, call->length);

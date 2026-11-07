@@ -141,10 +141,9 @@ pub struct Ops {
     gethostbyname: zif_handler,
     exit: zif_handler,
     putenv: zif_handler,
-    /// Bodies for `bailout::trap`: `php_swoole_socket_set_ssl`,
-    /// `openssl_x509_read`, `Coroutine::get_current_safe()` and
-    /// `php_swoole_convert_to_fd`, over the calls in `socket`.
-    set_ssl: unsafe extern "C" fn(call: *mut c_void),
+    /// Bodies for `bailout::trap`: `openssl_x509_read`,
+    /// `Coroutine::get_current_safe()` and `php_swoole_convert_to_fd`, over
+    /// the calls in `socket`.
     x509_read: unsafe extern "C" fn(call: *mut c_void),
     coroutine_check: unsafe extern "C" fn(unused: *mut c_void),
     convert_to_fd: unsafe extern "C" fn(call: *mut c_void),
@@ -689,7 +688,6 @@ mod tests {
         gethostbyname: None,
         exit: None,
         putenv: None,
-        set_ssl: free,
         x509_read: free,
         coroutine_check: free,
         convert_to_fd: free,
