@@ -49,8 +49,6 @@ use crate::ops::{
     OP_FREE_USER_WORKERS, OP_LC_BEFORE_START, OP_MASTER_REACTOR, OP_MASTER_WORKER,
     OP_SIGNAL_ACTIVE,
 };
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-use crate::ops::{OP_LC_CLEAR_ERROR, OP_MARK_SHUTDOWN, OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE};
 use crate::port_config::PortConfig;
 use crate::records::{ConnectionRecord, SessionRecord};
 use crate::server_methods::NativeContext;
@@ -60,17 +58,6 @@ use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::hook;
 use swoole_rs_memory::members::{sw_shm_calloc, sw_shm_free};
 use swoole_rs_process::worker_record::WorkerRecord;
-
-// crates/reactor's signal functions and native/error/error.cc's, under their upstream symbols.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-unsafe extern "C" {
-    #[link_name = "_Z27swoole_clear_last_error_msgv"]
-    fn swoole_clear_last_error_msg();
-    #[link_name = "_Z19swoole_signal_clearv"]
-    fn swoole_signal_clear();
-    #[link_name = "_Z17swoole_signal_setiPFviEb"]
-    fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
-}
 
 const SW_LOG_TRACE: c_int = 1;
 const SW_LOG_NOTICE: c_int = 3;
@@ -1122,15 +1109,8 @@ pub(crate) unsafe fn answer(
             unsafe { name.wrapping_add(length).write(0) };
             name.expose_provenance() as u64
         }
-        // Lifecycle effects over process-wide state Rust owns: hooks, signals,
-        // the worker globals and the server's shared allocations.
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        OP_LC_CLEAR_ERROR => {
-            log::set_last_error(0);
-            // SAFETY: this thread's error message.
-            unsafe { swoole_clear_last_error_msg() };
-            0
-        }
+        // Lifecycle effects over process-wide state Rust owns: hooks, the
+        // worker globals, the master reactor and the server's shared allocations.
         OP_LC_BEFORE_START => {
             call_hook(HOOK_BEFORE_SERVER_START, o.ctx.serv);
             0
@@ -1145,27 +1125,6 @@ pub(crate) unsafe fn answer(
         }
         OP_SIGNAL_ACTIVE => {
             u64::from(swoole_rs_corebase::swr_v1_core_running() && o.config().running)
-        }
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        OP_SIGNAL_IGNORE | OP_SIGNAL_HANDLE => {
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
-            let signo = arg as c_int;
-            let handler = if op == OP_SIGNAL_HANDLE {
-                crate::server_methods::master_signal_handler as *const () as usize
-            } else {
-                0
-            };
-            // SAFETY: null or a handler of this library, which stays loaded.
-            let _previous = unsafe { swoole_signal_set(signo, handler, false) };
-            0
-        }
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        OP_MARK_SHUTDOWN => {
-            // SAFETY: the master's signal handlers, cleared on its thread.
-            unsafe { swoole_signal_clear() };
-            o.gs().start.store(0, SeqCst);
-            o.gs().shutdown.store(1, SeqCst);
-            0
         }
         OP_MASTER_WORKER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_MASTER);

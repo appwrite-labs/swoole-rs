@@ -305,20 +305,6 @@ pub unsafe extern "C" fn accept_connection(reactor: *mut c_void, event: *mut c_v
     c_int::narrow(unsafe { run(RUN_ACCEPT, 0, &mut ctx) })
 }
 
-/// `Server::master_signal_handler(signo)`: the signal operation over `sw_server()`.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) extern "C" fn master_signal_handler(signo: c_int) {
-    let mut ctx = NativeContext::new(swoole_rs_corebase::swr_v1_core_server());
-    // SAFETY: the running server, or null, which the operation checks.
-    unsafe {
-        run(
-            crate::ops::RUN_SIGNAL,
-            i64::from(signo).cast_unsigned(),
-            &mut ctx,
-        )
-    };
-}
-
 /// `Server::is_healthy_connection(now, conn)`.
 ///
 /// # Safety
