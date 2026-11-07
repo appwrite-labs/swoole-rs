@@ -231,6 +231,44 @@ pub unsafe fn copy_for_process(
     pipe
 }
 
+/// The worker's message queue, or null.
+///
+/// # Safety
+/// `worker` points to a live `Worker`/`WorkerRecord`.
+#[must_use]
+pub unsafe fn queue(worker: *const WorkerRecord) -> *mut c_void {
+    // SAFETY: the caller lends a live worker record; only the field is read.
+    unsafe { (*worker).queue }
+}
+
+/// Give the worker a message queue, or null.
+///
+/// # Safety
+/// `worker` points to a live, writable `Worker`/`WorkerRecord`.
+pub unsafe fn set_queue(worker: *mut WorkerRecord, queue: *mut c_void) {
+    // SAFETY: the caller lends a live, writable worker record; only the field is written.
+    unsafe { (*worker).queue = queue };
+}
+
+/// The worker's `msgqueue_mode`.
+///
+/// # Safety
+/// `worker` points to a live `Worker`/`WorkerRecord`.
+#[must_use]
+pub unsafe fn msgqueue_mode(worker: *const WorkerRecord) -> u8 {
+    // SAFETY: the caller lends a live worker record; only the field is read.
+    unsafe { (*worker).msgqueue_mode }
+}
+
+/// Set the worker's `msgqueue_mode`.
+///
+/// # Safety
+/// `worker` points to a live, writable `Worker`/`WorkerRecord`.
+pub unsafe fn set_msgqueue_mode(worker: *mut WorkerRecord, mode: u8) {
+    // SAFETY: the caller lends a live, writable worker record; only the field is written.
+    unsafe { (*worker).msgqueue_mode = mode };
+}
+
 /// Point the worker at its pool.
 ///
 /// # Safety

@@ -141,7 +141,6 @@ const HEAD_SIZE: u32 = 40;
 pub const OP_HAVE_MSGQUEUE: u32 = 0;
 pub const OP_ALLOC_WORKERS: u32 = 1;
 pub const OP_NEW_MESSAGE_BOX: u32 = 2;
-pub const OP_NEW_QUEUE: u32 = 3;
 pub const OP_NEW_PIPES: u32 = 4;
 pub const OP_NEW_PIPE: u32 = 5;
 pub const OP_MAIN_LOOP: u32 = 6;
@@ -177,7 +176,6 @@ pub const OP_ON_AFTER_RELOAD: u32 = 35;
 pub const OP_KILL_TIMER: u32 = 36;
 pub const OP_WAITPID: u32 = 37;
 pub const OP_FREE_PIPES: u32 = 38;
-pub const OP_FREE_QUEUE: u32 = 39;
 pub const OP_FREE_MESSAGE_BOX: u32 = 40;
 pub const OP_FREE_MESSAGE_BUS: u32 = 41;
 pub const OP_FREE_WORKERS: u32 = 42;
@@ -593,9 +591,11 @@ impl<H: PoolHost> Pool<H> {
             IPC_MSGQUEUE => {
                 self.set_use_msgqueue(1);
                 self.set_msgqueue_key(key);
-                if self.op(OP_NEW_QUEUE, 0) == 0 {
+                let queue = swoole_rs_ossupport::swr_v1_os_msg_queue_new(key);
+                if queue.is_null() {
                     return SW_ERR;
                 }
+                self.set_queue(queue.cast());
             }
             IPC_UNIXSOCK => {
                 self.op(OP_NEW_PIPES, 0);
@@ -1131,10 +1131,9 @@ impl<H: PoolHost> Pool<H> {
             self.op(OP_FREE_PIPES, 0);
             self.set_pipes(ptr::null_mut());
         }
-        if !self.queue().is_null() {
-            self.op(OP_FREE_QUEUE, 0);
-            self.set_queue(ptr::null_mut());
-        }
+        // SAFETY: the pool's queue (or null), freed once.
+        unsafe { swoole_rs_ossupport::swr_v1_os_msg_queue_free(self.queue().cast()) };
+        self.set_queue(ptr::null_mut());
         // SAFETY: the pool's IPC state, freed once; the native close frees its listener.
         unsafe { swr_v1_process_pool_ipc_free(self.ipc(), self.h.close()) };
         self.set_ipc(ptr::null_mut());

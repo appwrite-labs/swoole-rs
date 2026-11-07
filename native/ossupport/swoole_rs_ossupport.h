@@ -5,7 +5,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <sys/types.h>
-#include "swoole_rs_ossupport_msg_queue.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -68,22 +67,15 @@ bool swr_v1_os_file_get_contents(const char *path, void *content);
 bool swr_v1_os_file_put_contents(const char *path, const void *data, size_t length);
 bool swr_v1_os_file_exists(const char *path);
 void swr_v1_os_file_read_content(swr_v1_os_file_record *owner, void *content);
-bool swr_v1_os_msg_queue_init(swr_v1_os_msg_queue *, key_t, bool, int);
-void swr_v1_os_msg_queue_blocking(swr_v1_os_msg_queue *, bool);
-bool swr_v1_os_msg_queue_remove(swr_v1_os_msg_queue *);
-/* stat: false leaves errno. set_capacity: 0 set, 1 IPC_STAT failed (quiet),
- * 2 IPC_SET failed (warn). */
-bool swr_v1_os_msg_queue_stat(const swr_v1_os_msg_queue *, size_t *num, size_t *bytes);
-int swr_v1_os_msg_queue_set_capacity(const swr_v1_os_msg_queue *, size_t bytes);
-/* SysV message queue. open defaults perms outside (0, 01000) to 0666; push
- * retries EINTR: 0 sent, 1 EAGAIN (quiet), 2 failed (warn); errno intact. */
-typedef struct { int id; int perms; } swr_v1_os_msg_open_t;
-swr_v1_os_msg_open_t swr_v1_os_msg_open(key_t key, int perms);
-int swr_v1_os_msg_flags(int flags, bool blocking);
-bool swr_v1_os_msg_remove(int id);
-int swr_v1_os_msg_push(int id, const void *msg, size_t length, int flags);
-typedef struct { ssize_t result; bool warn; } swr_v1_os_msg_pop_t;
-swr_v1_os_msg_pop_t swr_v1_os_msg_pop(int id, void *msg, size_t size, long kind, int flags);
+/* swoole::MsgQueue, a SysV message queue with upstream's warnings. new returns
+ * null unless msgget succeeded; free removes a private queue first. A message is
+ * a QueueNode: its long type, then the payload. */
+typedef struct swr_v1_os_msg_queue swr_v1_os_msg_queue;
+swr_v1_os_msg_queue *swr_v1_os_msg_queue_new(key_t key);
+void swr_v1_os_msg_queue_free(swr_v1_os_msg_queue *queue);
+int swr_v1_os_msg_queue_id(const swr_v1_os_msg_queue *queue);
+bool swr_v1_os_msg_queue_push(const swr_v1_os_msg_queue *queue, const void *node, size_t length);
+ssize_t swr_v1_os_msg_queue_pop(const swr_v1_os_msg_queue *queue, void *node, size_t size);
 #ifdef __cplusplus
 }
 static_assert(sizeof(uintptr_t) == sizeof(void *), "opaque token width");

@@ -15,9 +15,6 @@ pub struct WorkerView {
     /// `pipe_current`'s fd, or -1 without one.
     pub pipe: i32,
     pub pipe_object: bool,
-    pub queue: bool,
-    /// `msgqueue_mode == SW_MSGQUEUE_BALANCE`.
-    pub balance: bool,
     pub redirect_stdin: bool,
     pub redirect_stdout: bool,
     pub redirect_stderr: bool,
@@ -26,14 +23,11 @@ pub struct WorkerView {
 type Worker = *mut c_void;
 
 /// C++ state the methods reach: Swoole globals, `Worker`, `UnixSocket`,
-/// `MsgQueue`, callables, the reactor and signals. Field for field the C struct.
+/// callables, the reactor and signals. Field for field the C struct.
 #[repr(C)]
 pub struct Host {
     pub exception: *mut zend_class_entry,
     pub server: *mut *mut zend_class_entry,
-    pub cli: unsafe extern "C" fn() -> bool,
-    pub display_errors: unsafe extern "C" fn() -> bool,
-    pub set_last_error: unsafe extern "C" fn(error: c_int),
     pub construct_guard: unsafe extern "C" fn() -> c_int,
     pub unconstructed: unsafe extern "C" fn(),
     pub worker_new: unsafe extern "C" fn() -> Worker,
@@ -44,12 +38,6 @@ pub struct Host {
     pub worker_set_id: unsafe extern "C" fn(Worker, id: u32),
     pub worker_pipe: unsafe extern "C" fn(Worker, socket_type: c_int) -> c_int,
     pub worker_view: unsafe extern "C" fn(Worker) -> WorkerView,
-    pub queue_use:
-        unsafe extern "C" fn(Worker, key: i32, mode: i64, blocking: bool, capacity: i64) -> c_int,
-    pub queue_stat: unsafe extern "C" fn(Worker, num: *mut usize, bytes: *mut usize) -> bool,
-    pub queue_free: unsafe extern "C" fn(Worker) -> bool,
-    pub queue_push: unsafe extern "C" fn(Worker, message: *const c_void, length: usize) -> bool,
-    pub queue_pop: unsafe extern "C" fn(Worker, message: *mut c_void, length: usize) -> isize,
     pub fork: unsafe extern "C" fn(Worker) -> c_int,
     pub child_enter: unsafe extern "C" fn(Worker),
     pub reactor_init: unsafe extern "C" fn() -> c_int,

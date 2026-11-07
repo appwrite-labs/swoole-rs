@@ -57,11 +57,14 @@ so the native `swoole_sys_warning` sees its errno.
 
 ## SysV message queue
 
-`msg_queue.rs`: `swr_v1_os_msg_open` defaults permissions outside (0, 01000) to
-0666 and calls `msgget(key, IPC_CREAT | perms)`; `swr_v1_os_msg_flags` changes
-only `IPC_NOWAIT`; push retries `EINTR` and stays quiet on `EAGAIN`; pop does not
-retry and is quiet on `ENOMSG`/`EINTR`. `swr_v1_os_msg_remove` is `IPC_RMID`. Stat and capacity stay native (`msqid_ds`).
-Module tests use a private queue and remove it.
+`msg_queue.rs` is `swoole::MsgQueue` (upstream `src/os/msg_queue.cc` and
+`include/swoole_msg_queue.h`, both deleted): Rust allocates and frees the queue,
+and native code holds an opaque `swr_v1_os_msg_queue *`. The constructor defaults
+permissions outside (0, 01000) to 0666 and calls `msgget(key, IPC_CREAT | perms)`;
+`set_blocking` changes only `IPC_NOWAIT`; push retries `EINTR` and stays quiet on
+`EAGAIN`; pop does not retry and is quiet on `ENOMSG`/`EINTR`; a private queue is
+removed when freed. Warnings and the last error follow upstream's order. Upstream's
+`core-tests/src/os/msg_queue.cpp` is the module test `msg_queue_rbac`.
 
 ## Process and thread identity
 
@@ -81,8 +84,3 @@ Unused upstream helpers left with the file: `swoole_set_cpu_affinity` and
 `swoole_thread_id_to_str`.
 
 Still native: File storage and UnixSocket construction.
-
-`QueueRecord` is the canonical inline `MsgQueue` record, emitted by cbindgen.
-Initialization and blocking-flag/removal updates run in Rust without adding an
-allocation or changing native value-copy behavior. Native code retains the
-platform-specific `msqid_ds` view and original warning/last-error ordering.
