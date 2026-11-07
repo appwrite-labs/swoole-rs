@@ -23,7 +23,7 @@ const SW_LOG_NOTICE: c_int = 3;
 const SW_LOG_ERROR: c_int = 5;
 /// `SW_MASTER`.
 const SW_MASTER: c_int = 1;
-const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE as usize;
+const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
 /// Writes a handler's reply into `out`.
 pub type CommandReply = unsafe extern "C" fn(out: *mut c_void, data: *const c_char, length: usize);

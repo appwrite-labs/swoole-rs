@@ -62,7 +62,12 @@ template<size_t N> void emit(const char *name, const char (&value)[N]) {
         driver = pp_probe + '\nint main(){\n' + ''.join(f'emit("{name}", {name});\n' for name in names) + ('emit("SW_SSL_ALL#if", native_ssl_mask_pp);\n' if args.include_tls else '') + '}\n'
         with tempfile.TemporaryDirectory(prefix='constants-', dir=args.output.parent) as directory:
             work = Path(directory)
-            (work / 'original_config.h').write_text(original('include/swoole_config.h'))
+            # SW_IPC_BUFFER_SIZE subtracts sizeof(swoole::DataHead): the pinned struct comes first.
+            swoole = original('include/swoole.h')
+            start = swoole.index('struct DataHead {')
+            head = 'typedef long SessionId;\n' + swoole[start:swoole.index('\n};', start) + 3]
+            assert 'typedef long SessionId;' in swoole
+            (work / 'original_config.h').write_text('namespace swoole {\n' + head + '\n}\n' + original('include/swoole_config.h'))
             for apple in [False, True]:
                 platform = '\n#undef __MACH__\n' + ('#define __MACH__ 1\n' if apple else '')
                 observations = {}

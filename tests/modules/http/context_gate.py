@@ -50,6 +50,11 @@ def main():
         original_class=body(original_header,'class StaticHandler')+';\n'
         typed=body(selected_header,'class StaticHandler')+';\n'
         headers='#pragma once\n#include "context_oracle.h"\n#include "swoole_rs_server_state.h"\n'
+        # Pinned names the hybrid headers dropped: the original class's prefix test and the
+        # facade's index page style.
+        config=sides.original('include/swoole_config.h');start=config.index('#define SW_HTTP_PAGE_CSS')
+        headers+='#ifndef SW_HTTP_PAGE_CSS\n'+config[start:config.index('</style>"',start)+9]+'\n#endif\n'
+        headers+='namespace upstream_context {\n'+body(sides.original('include/swoole.h'),'static inline unsigned int swoole_str_starts_with(')+'\n}\n'
         headers+='namespace upstream_context {using swoole::starts_with; class StaticHandler;\n'+server+original_class+'}\n'
         headers+='namespace candidate_context {using swoole::starts_with; class StaticHandler;\n'+candidate_server+typed+'}\n'
         (tree/'context_candidate.h').write_text(headers)
