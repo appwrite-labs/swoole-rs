@@ -27,7 +27,8 @@ def main():
     # The pinned reference against the hybrid build's Rust ABI.
     hybrid_source,hybrid_flags=hybrid_tree(a.archive)
     cmd=['c++','-std=c++17','-O1','-UNDEBUG',*hybrid_flags,'-I'+str(folder),str(Path(__file__).with_suffix('.cc')),str(a.archive.resolve()),'-lpthread','-o',str(folder/'gate')]
-    if sys.platform=='linux':cmd+=['-ldl','-lm']
+    # The archive members this pulls in reference the rest of the extension; drop the unused sections.
+    cmd+=['-Wl,--gc-sections','-ldl','-lm'] if sys.platform=='linux' else ['-Wl,-dead_strip']
     if a.sanitize:cmd+=['-fsanitize=address,undefined','-fno-sanitize-recover=all','-g']
     report={'scope':__doc__,'pin':overlay.PIN,'hybrid_tree':str(hybrid_source),'compile':cmd,'passed':False,'native_instrumented':a.sanitize,'rust_instrumented':a.rust_asan}
     require_build_space(ROOT);r=run_isolated(cmd,timeout=90);report.update(compile_exit=r.returncode,compile_stderr=r.stderr)
