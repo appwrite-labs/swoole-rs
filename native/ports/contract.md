@@ -67,22 +67,6 @@ array, PHP properties, callable allocation/free and Server handlers stay native.
 
 Existing callback publication/free/error prefixes are not repaired.
 
-## Listener options: `swr_v1_ports_listen_step`
-
-Drives admission/order for listen, listening publication, TCP defer/accept-filter/
-fastopen, keepalive, user timeout and default high-watermark publication. State is
-a stack-local phase (4 bytes, initialized to 0); input 44 bytes; action 12 bytes.
-Each call borrows a live, non-aliasing state/input pair; native snapshots are
-refreshed after each action and option values are re-read at their original points.
-
-Capability bits: 1 `TCP_DEFER_ACCEPT`, 2 `SO_ACCEPTFILTER`, 4 `TCP_FASTOPEN`,
-8 `SO_KEEPALIVE`, 16 `TCP_KEEPIDLE`, 32 `TCP_USER_TIMEOUT`.
-
-Actions: 0 complete; 1/2 listen/publish; 3..10 the original ordered option effects;
-11 publish the watermark. Null inputs or invalid phase return -1. Native code keeps
-option constants, `<0` vs nonzero warning predicates, errno effects, accept-filter
-bytes and the integer `*0.8` watermark arithmetic. Rust does no floating arithmetic.
-
 ## Socket creation: `swr_v1_ports_socket_step`
 
 Controls `create_socket` decisions: existing socket/reuse, creation, DTLS reuse,

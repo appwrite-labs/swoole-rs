@@ -1,12 +1,15 @@
 //! The `ListenPort` methods of `src/server/port.cc` that were one lifecycle run
 //! or one readable callback, defined under their upstream (Itanium) symbols when
 //! the hybrid links this crate (`upstream-symbols`). port.cc registers its two
-//! runners once; each method calls one as its C++ forward did.
+//! runners once; each method calls one as its C++ forward did. `listen` and
+//! `close_socket` run here whole, over the Rust-owned settings and socket record.
 
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 
+use swoole_rs_corebase::log;
+use swoole_rs_reactor::{SocketRecord, swr_v1_socket_dealloc, swr_v1_socket_listen};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::view;
 
@@ -239,6 +242,157 @@ pub unsafe extern "C" fn get_connection_num(port: *mut c_void) -> usize {
     unsafe { view::port_connection_num(swoole_rs_corebase::swr_v1_core_server(), port) }
 }
 
+/// `setsockopt(fd, level, option, &value)` for `ListenPort::listen`, warning
+/// `setsockopt(<name>) failed` when `failed` holds of its result.
+fn listen_option(
+    fd: c_int,
+    (level, option, name): (c_int, c_int, &str),
+    value: c_int,
+    failed: fn(c_int) -> bool,
+) {
+    let size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
+    // SAFETY: `value` is a live c_int of `size` bytes.
+    let result = unsafe { libc::setsockopt(fd, level, option, (&raw const value).cast(), size) };
+    if failed(result) {
+        log::sys_warning(
+            c"ListenPort::listen",
+            format_args!("setsockopt({name}) failed"),
+        );
+    }
+}
+
+/// `ListenPort::listen()`: listens unless already listening, then applies the
+/// TCP options this platform has and defaults the high watermark.
+///
+/// # Safety
+/// `port` is a live `ListenPort` with a socket.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort6listenEv")
+)]
+pub unsafe extern "C" fn listen(port: *mut c_void) -> c_int {
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { port_config::of(port) };
+    let socket = config.socket.cast::<SocketRecord>();
+    // SAFETY: the port's socket is live.
+    if !config.listening && unsafe { swr_v1_socket_listen(socket, config.backlog.into()) } < 0 {
+        log::sys_warning(
+            c"ListenPort::listen",
+            format_args!(
+                "listen({}:{}, {}) failed",
+                config.host(),
+                config.port,
+                config.backlog
+            ),
+        );
+        return -1;
+    }
+    config.listening = true;
+    // SAFETY: the port's socket is live.
+    let fd = unsafe { (*socket).fd };
+    let nonzero = |result: c_int| result != 0;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if config.tcp_defer_accept != 0 {
+        let option = (
+            libc::IPPROTO_TCP,
+            libc::TCP_DEFER_ACCEPT,
+            "TCP_DEFER_ACCEPT",
+        );
+        listen_option(fd, option, config.tcp_defer_accept, nonzero);
+    }
+    #[cfg(any(target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd"))]
+    if config.tcp_defer_accept != 0 {
+        // SAFETY: an all-zero accept_filter_arg is valid.
+        let mut filter: libc::accept_filter_arg = unsafe { std::mem::zeroed() };
+        for (to, from) in filter.af_name.iter_mut().zip(b"httpready") {
+            *to = c_char::try_from(*from).unwrap_or_default();
+        }
+        let size =
+            libc::socklen_t::try_from(size_of::<libc::accept_filter_arg>()).unwrap_or_default();
+        let filter = (&raw const filter).cast();
+        // SAFETY: `filter` is a live accept_filter_arg of `size` bytes.
+        let result =
+            unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_ACCEPTFILTER, filter, size) };
+        if result != 0 {
+            log::sys_warning(
+                c"ListenPort::listen",
+                format_args!("setsockopt(SO_ACCEPTFILTER) failed"),
+            );
+        }
+    }
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "freebsd"
+    ))]
+    if config.tcp_fastopen != 0 {
+        let option = (libc::IPPROTO_TCP, libc::TCP_FASTOPEN, "TCP_FASTOPEN");
+        listen_option(fd, option, config.tcp_fastopen, nonzero);
+    }
+    if config.open_tcp_keepalive {
+        let option = (libc::SOL_SOCKET, libc::SO_KEEPALIVE, "SO_KEEPALIVE");
+        listen_option(fd, option, 1, nonzero);
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+        {
+            let negative = |result: c_int| result < 0;
+            let tcp = libc::IPPROTO_TCP;
+            let keepidle = (tcp, libc::TCP_KEEPIDLE, "TCP_KEEPIDLE");
+            listen_option(fd, keepidle, config.tcp_keepidle, negative);
+            let keepinterval = (tcp, libc::TCP_KEEPINTVL, "TCP_KEEPINTVL");
+            listen_option(fd, keepinterval, config.tcp_keepinterval, negative);
+            let keepcount = (tcp, libc::TCP_KEEPCNT, "TCP_KEEPCNT");
+            listen_option(fd, keepcount, config.tcp_keepcount, negative);
+        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if config.tcp_user_timeout > 0 {
+            let option = (
+                libc::IPPROTO_TCP,
+                libc::TCP_USER_TIMEOUT,
+                "TCP_USER_TIMEOUT",
+            );
+            listen_option(fd, option, config.tcp_user_timeout, nonzero);
+        }
+    }
+    if config.buffer_high_watermark == 0 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "upstream's `socket_buffer_size * 0.8` converts to uint32_t, truncating"
+        )]
+        let watermark = (f64::from(config.socket_buffer_size) * 0.8) as u32;
+        config.buffer_high_watermark = watermark;
+    }
+    0
+}
+
+/// `ListenPort::close_socket()`: closes the descriptor, warning on failure, and
+/// deletes the socket record without `Socket::free`'s deferral.
+///
+/// # Safety
+/// `port` is a live `ListenPort` with a socket nothing uses afterwards.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole10ListenPort12close_socketEv")
+)]
+pub unsafe extern "C" fn close_socket(port: *mut c_void) {
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { port_config::of(port) };
+    let socket = config.socket.cast::<SocketRecord>();
+    // SAFETY: the port's socket is live.
+    let fd = unsafe { (*socket).fd };
+    // SAFETY: close(2) has no memory preconditions.
+    if unsafe { libc::close(fd) } < 0 {
+        log::sys_warning(
+            c"ListenPort::close_socket",
+            format_args!("close({fd}) failed"),
+        );
+    }
+    // SAFETY: `delete socket`: the record has no destructor, and nothing uses it after.
+    unsafe { swr_v1_socket_dealloc(socket) };
+    config.socket = ptr::null_mut();
+}
+
 /// Each static `readable_callback_*`: its symbol, Rust name and readable kind.
 macro_rules! readable_callbacks {
     ($($symbol:literal fn $name:ident = $kind:ident;)*) => {$(
@@ -312,6 +466,58 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .last()
             .unwrap_or(&[0; 6])
+    }
+
+    fn option(fd: c_int, level: c_int, name: c_int) -> c_int {
+        let (mut value, mut size) = (0, libc::socklen_t::try_from(size_of::<c_int>()).unwrap());
+        let got =
+            unsafe { libc::getsockopt(fd, level, name, (&raw mut value).cast(), &raw mut size) };
+        assert_eq!(got, 0, "getsockopt");
+        value
+    }
+
+    #[test]
+    fn listen_applies_keepalive_and_the_watermark_then_close_socket_deletes() {
+        let config = port_config::swr_v1_port_config_new(1000);
+        let mut port = config.cast::<c_void>();
+        let port = (&raw mut port).cast::<c_void>();
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        let socket = swoole_rs_reactor::swr_v1_socket_make(fd, 0);
+        unsafe {
+            (*config).socket = socket.cast();
+            (*config).open_tcp_keepalive = true;
+            assert_eq!(listen(port), 0, "listens");
+            assert!((*config).listening, "listening");
+            assert_eq!(
+                (*config).buffer_high_watermark,
+                800,
+                "socket_buffer_size * 0.8"
+            );
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                option(fd, libc::SOL_SOCKET, libc::SO_ACCEPTCONN),
+                1,
+                "listening socket"
+            );
+            assert_ne!(
+                option(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE),
+                0,
+                "keepalive"
+            );
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                option(fd, libc::IPPROTO_TCP, libc::TCP_KEEPIDLE),
+                3600,
+                "keepidle"
+            );
+            (*config).buffer_high_watermark = 7;
+            assert_eq!(listen(port), 0, "already listening");
+            assert_eq!((*config).buffer_high_watermark, 7, "kept");
+            close_socket(port);
+            assert!((*config).socket.is_null(), "socket deleted");
+            assert_eq!(libc::fcntl(fd, libc::F_GETFD), -1, "descriptor closed");
+            port_config::swr_v1_port_config_free(config);
+        }
     }
 
     #[test]

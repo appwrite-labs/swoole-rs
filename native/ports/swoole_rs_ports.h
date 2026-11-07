@@ -145,13 +145,6 @@ enum { SWR_PORTS_PROPERTY_END, SWR_PORTS_PROPERTY_NULL, SWR_PORTS_PROPERTY_LONG,
  * promised or ownership transfer; each native Zend call follows Rust return. */
 SwrPortsProperty swr_v1_ports_class_property(size_t index);
 SwrPortsEvent swr_v1_ports_event(const uint8_t *, size_t, uint8_t native_casefold);
-typedef struct { uint32_t phase; } SwrPortsListenState;
-typedef struct {
-    uint32_t capabilities, listening, keepalive, high_watermark;
-    int32_t defer_accept, fastopen, keepidle, keepinterval, keepcount, user_timeout, result;
-} SwrPortsListenInput;
-typedef struct { uint32_t kind; int32_t value, status; } SwrPortsListenAction;
-SwrPortsListenAction swr_v1_ports_listen_step(SwrPortsListenState *, const SwrPortsListenInput *);
 typedef struct { uint32_t phase; } SwrPortsSocketState;
 typedef struct { uint32_t capabilities, socket_present; int32_t result; } SwrPortsSocketInput;
 typedef struct { uint32_t kind; int32_t status; } SwrPortsSocketAction;
