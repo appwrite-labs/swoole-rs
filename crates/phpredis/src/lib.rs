@@ -67,15 +67,15 @@ type Server = c_void;
 type RecvData = c_void;
 
 unsafe extern "C" {
-    fn swr_redis_host_recv_data(server: *mut Server, request: *mut RecvData, data: *mut zval);
-    fn swr_redis_host_fd(request: *const RecvData) -> zend_long;
-    fn swr_redis_host_send(
-        server: *mut Server,
-        fd: zend_long,
-        data: *const c_char,
-        length: usize,
-    ) -> bool;
-    fn swr_redis_host_close(server: *mut Server, fd: zend_long);
+    /// `php_swoole_get_recv_data` (crates/phpserver).
+    #[link_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE"]
+    fn recv_data(server: *mut Server, data: *mut zval, request: *mut RecvData);
+    /// `Server::send` (crates/server).
+    #[link_name = "_ZNK6swoole6Server4sendElPKvj"]
+    fn server_send(server: *mut Server, fd: zend_long, data: *const c_void, length: u32) -> bool;
+    /// `Server::close` (crates/server).
+    #[link_name = "_ZNK6swoole6Server5closeElb"]
+    fn server_close(server: *mut Server, fd: zend_long, reset: bool) -> bool;
     fn swr_redis_host_call(
         server: *mut Server,
         callable: *mut c_void,
@@ -285,13 +285,26 @@ pub unsafe extern "C" fn swr_v1_phpredis_receive(
     receive(server, request).unwrap_or(BAILED)
 }
 
+/// `serv->send(fd, reply, reply.length())`: the length narrowed to `uint32_t`, as C++ did.
+/// # Safety
+/// `server` is the live server.
+unsafe fn send(server: *mut Server, fd: zend_long, reply: &[u8]) -> bool {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Server::send takes a uint32_t length, as upstream's implicit conversion"
+    )]
+    let length = reply.len() as u32;
+    // SAFETY: per the caller; `length` bytes at `reply`.
+    unsafe { server_send(server, fd, reply.as_ptr().cast(), length) }
+}
+
 fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout::Bailout> {
-    // SAFETY: the live request.
-    let fd = unsafe { swr_redis_host_fd(request) };
+    // SAFETY: the live request, which starts with its `DataHead` and its `fd`.
+    let fd = unsafe { *request.cast::<zend_long>() };
     // SAFETY: a zval is plain data.
     let mut zdata = unsafe { std::mem::zeroed::<zval>() };
     // SAFETY: a live server and request; `zdata` takes the payload string.
-    unsafe { swr_redis_host_recv_data(server, request, &raw mut zdata) };
+    unsafe { recv_data(server, &raw mut zdata, request) };
     // SAFETY: `php_swoole_get_recv_data` leaves a string.
     let payload = unsafe { value::str_of(&raw const zdata) };
     // SAFETY: the payload, live until `release`.
@@ -348,7 +361,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
     if result < 0 {
         release(&mut zdata, &mut params);
         // SAFETY: a live server.
-        unsafe { swr_redis_host_close(server, fd) };
+        unsafe { server_close(server, fd, false) };
         return Ok(OK);
     }
     if command.len() >= MAX_COMMAND_SIZE {
@@ -359,7 +372,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         release(&mut zdata, &mut params);
         report(false, E_WARNING, &message)?;
         // SAFETY: a live server.
-        unsafe { swr_redis_host_close(server, fd) };
+        unsafe { server_close(server, fd, false) };
         return Ok(OK);
     }
     let key = handler_key(command);
@@ -369,7 +382,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         reply.extend_from_slice(b"'\r\n");
         release(&mut zdata, &mut params);
         // SAFETY: a live server and the reply's bytes.
-        let sent = unsafe { swr_redis_host_send(server, fd, reply.as_ptr().cast(), reply.len()) };
+        let sent = unsafe { send(server, fd, &reply) };
         return Ok(if sent { OK } else { ERR });
     };
     let mut args = [swoole_rs_zend::long_zval(fd), params];
@@ -397,7 +410,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
     // SAFETY: the handler's return value.
     if let Some(reply) = unsafe { swoole_rs_zend::string_of(&raw const retval) } {
         // SAFETY: a live server and the reply's bytes.
-        unsafe { swr_redis_host_send(server, fd, reply.as_ptr().cast(), reply.len()) };
+        unsafe { send(server, fd, reply) };
     }
     // SAFETY: the return value, released once.
     unsafe { zval_ptr_dtor(&raw mut retval) };

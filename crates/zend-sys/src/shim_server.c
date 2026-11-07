@@ -66,3 +66,7 @@ void swr_zend_stack_restore(void *const *saved) {
     (void) saved;
 #endif
 }
+
+bool swr_zend_mkdir_recursive(const char *path) {
+    return php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS, NULL);
+}

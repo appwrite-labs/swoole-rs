@@ -11,7 +11,6 @@ extern "C" {
 #endif
 struct _zend_object;
 struct _zval_struct;
-struct _zend_string;
 
 typedef struct {
     /* !serv->is_worker_thread() && serv->is_started() */
@@ -21,16 +20,9 @@ typedef struct {
                    struct _zval_struct *return_value);
     /* A unix datagram send to `path` when the server has one: -1 none, else the result. */
     int (*send_unix)(void *server, const char *path, const char *data, size_t length, int64_t server_socket);
-    /* serv->send(), then the send_yield wait or the kernel-nobufs pause. */
-    bool (*send)(void *server, int64_t fd, struct _zend_string *data);
     /* sendto on the UDP (1), UDP6 (2) or unix datagram (3) socket: -1 no such listener, else 0/1. */
     int (*sendto)(void *server, int kind, const char *address, int64_t port, const char *data, size_t length,
                   int64_t server_socket);
-    bool (*sendfile)(void *server, int64_t fd, const char *filename, size_t length, int64_t offset, int64_t size);
-    bool (*has_pipe_message)(void *server);
-    int64_t (*core_worker_num)(void *server);
-    /* send_pipe_message of the packed message (an EventData). */
-    bool (*send_message)(void *server, void *message, int64_t worker_id);
 } swr_v1_phpserver_io_host;
 
 void swr_v1_phpserver_io_init(const swr_v1_phpserver_io_host *table);

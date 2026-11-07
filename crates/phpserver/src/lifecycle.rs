@@ -14,7 +14,8 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_server::{
-    CommandFn, CommandReply as Reply, swr_v1_server_add_command, swr_v1_server_command, view,
+    CommandFn, CommandReply as Reply, server_methods, swr_v1_server_add_command,
+    swr_v1_server_command, view,
 };
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Message, Object, bailout, class_name, message, object_of, php_error,
@@ -133,12 +134,10 @@ pub struct LifecycleHost {
     create: unsafe extern "C" fn(i64) -> *mut c_void,
     add_systemd_socket: unsafe extern "C" fn(*mut c_void) -> c_int,
     add_port: unsafe extern "C" fn(*mut c_void, i64, *const c_char, i64) -> *mut c_void,
-    port_at: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
     port_info: unsafe extern "C" fn(*mut c_void, *mut PortInfo),
     port_object: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut zval,
     port_facts: unsafe extern "C" fn(*mut zval, *mut PortFacts),
     set_protocols: unsafe extern "C" fn(*mut c_void, u32, bool),
-    isset_callback: unsafe extern "C" fn(*mut c_void, *mut c_void, c_int) -> bool,
     kind: unsafe extern "C" fn(*mut zend_object) -> c_int,
     create_server: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     start: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> c_int,
@@ -152,7 +151,6 @@ pub struct LifecycleHost {
     add_process: unsafe extern "C" fn(*mut c_void, *mut zval) -> i64,
     json_encode: unsafe extern "C" fn(*mut zval, *mut bool) -> *mut zend_string,
     json_decode: unsafe extern "C" fn(*const c_char, usize, *mut zval),
-    send: unsafe extern "C" fn(*mut c_void, i64, *const c_char, usize) -> bool,
     send_timeout: unsafe extern "C" fn(*mut c_void) -> f64,
     process_class: unsafe extern "C" fn() -> *mut zend_class_entry,
     exception_class: unsafe extern "C" fn() -> *mut zend_class_entry,
@@ -493,7 +491,7 @@ fn bind(call: &Call, serv: *mut c_void) {
     unsafe { data(object) }.serv = serv;
     let mut index = 0;
     // SAFETY: a live server.
-    while let port = unsafe { (host.port_at)(serv, index) }
+    while let port = unsafe { view::port_at(serv, index) }
         && !port.is_null()
     {
         // SAFETY: `$this`, bound above, and one of its ports.
@@ -504,7 +502,7 @@ fn bind(call: &Call, serv: *mut c_void) {
     // SAFETY: the Server class and `$this`.
     unsafe { connections(ce, object, serv, ptr::null_mut()) };
     // SAFETY: a live server; the primary port is the first.
-    let primary = unsafe { (host.port_at)(serv, 0) };
+    let primary = unsafe { view::port_at(serv, 0) };
     // SAFETY: C++ writes every field.
     let mut info: PortInfo = unsafe { std::mem::zeroed() };
     // SAFETY: a live port and a writable view.
@@ -933,7 +931,7 @@ fn port_facts(zport: *mut zval) -> PortFacts {
 
 pub(crate) fn isset(serv: *mut c_void, port: *mut c_void, kind: c_int) -> bool {
     // SAFETY: a live server and one of its ports.
-    unsafe { (host().isset_callback)(serv, port, kind) }
+    unsafe { crate::instance::php_swoole_server_isset_callback(serv, port, kind) }
 }
 
 fn protocols(port: *mut c_void, flags: u32, clear: bool) {
@@ -1197,7 +1195,7 @@ fn start(call: &Call) {
 }
 
 /// `SW_ERROR_OUTPUT_SEND_YIELD`.
-const SW_ERROR_OUTPUT_SEND_YIELD: c_int = 1010;
+pub(crate) const SW_ERROR_OUTPUT_SEND_YIELD: c_int = 1010;
 
 /// `php_swoole_server_send_yield`: wait in the session's queue until its
 /// output buffer drains, then send; repeat while the send asks to yield again.
@@ -1234,8 +1232,13 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
             waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
             return 0;
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Server::send takes a uint32_t length, as upstream's ZSTR_LEN narrowing"
+        )]
+        let narrowed = length as u32;
         // SAFETY: a live server and the caller's bytes.
-        let sent = unsafe { (host.send)(server, session_id, data, length) };
+        let sent = unsafe { server_methods::send(server, session_id, data.cast(), narrowed) };
         // SAFETY: plain state.
         let yielded = !sent && unsafe { (host.last_error)() } == SW_ERROR_OUTPUT_SEND_YIELD;
         if yielded && fact(server, fact::SEND_YIELD) {

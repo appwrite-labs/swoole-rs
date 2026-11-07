@@ -27,6 +27,9 @@ pub use port::*;
 mod dispatch;
 
 #[cfg(feature = "server")]
+mod instance;
+
+#[cfg(feature = "server")]
 mod io;
 
 #[cfg(feature = "server")]
@@ -43,6 +46,9 @@ mod task;
 
 #[cfg(feature = "server")]
 pub use dispatch::*;
+
+#[cfg(feature = "server")]
+pub use instance::*;
 
 #[cfg(feature = "server")]
 pub use io::*;

@@ -50,7 +50,6 @@ typedef struct {
     /* serv->cpu_affinity_available(_num) = a copy of `cpus`. */
     void (*set_cpu_affinity)(void *server, const int *cpus, size_t count);
     const char *(*strerror)(int code);
-    int (*create_dir)(const char *path, size_t length);
     /* SW_THREAD's bootstrap and init_arguments, in zend_try: true if it bailed out. */
     bool (*thread_options)(struct _zend_object *object, void *settings);
 } swr_v1_phpserver_settings_host;
