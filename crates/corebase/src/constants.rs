@@ -330,3 +330,5 @@ pub const SW_CORO_BAILOUT_EXIT_CODE: u32 = 1;
 pub const SW_IPC_MAX_SIZE: u32 = 2048;
 #[cfg(not(target_vendor = "apple"))]
 pub const SW_IPC_MAX_SIZE: u32 = 8192;
+/// `SW_IPC_MAX_SIZE - sizeof(DataHead)`: an `EventData`'s payload (master.cc asserts it).
+pub const SW_IPC_BUFFER_SIZE: u32 = SW_IPC_MAX_SIZE - 40;

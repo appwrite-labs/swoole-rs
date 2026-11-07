@@ -187,6 +187,8 @@
 #define SW_IPC_MAX_SIZE 8192
 #endif
 
+#define SW_IPC_BUFFER_SIZE (SW_IPC_MAX_SIZE - 40)
+
 typedef enum swPipeType {
   SW_PIPE_WORKER = 0,
   SW_PIPE_MASTER = 1,
