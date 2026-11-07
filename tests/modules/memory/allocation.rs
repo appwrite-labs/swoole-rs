@@ -94,46 +94,20 @@ fn heap_oom_is_transactional_and_removal_never_allocates() {
 }
 
 #[test]
-fn global_registry_oom_retains_native_page_custody_and_alloc_never_allocates() {
-    use crate::global::*;
-    unsafe {
-        let mut state = ptr::dangling_mut();
-        FAIL_AFTER.set(Some(0));
-        let status = swr_v1_memory_global_create(64, &raw mut state);
-        FAIL_AFTER.set(None);
-        assert_eq!(status, -1);
-        assert!(state.is_null());
-        FAIL_AFTER.set(Some(0));
-        let opened = swr_v1_memory_global_open(4096, 4096, 1, 41, &raw mut state);
-        FAIL_AFTER.set(None);
-        assert_eq!(opened, -1);
-        assert!(state.is_null());
-        assert_eq!(swr_v1_memory_global_create(64, &raw mut state), 0);
-        let mut page = [0u64; 8];
-        let pointer = page.as_mut_ptr().cast();
-        FAIL_AFTER.set(Some(0));
-        let failed = swr_v1_memory_global_add_page(state, pointer);
-        FAIL_AFTER.set(None);
-        assert_eq!(failed, -1);
-        assert_eq!(swr_v1_memory_global_memory_size(state), 0);
-        assert_eq!(swr_v1_memory_global_add_page(state, pointer), 0);
-        let mut output = ptr::null_mut();
-        FAIL_AFTER.set(Some(0));
-        let allocated = swr_v1_memory_global_alloc(state, 1, &raw mut output);
-        let no_allocation = FAIL_AFTER.replace(None);
-        assert_eq!(allocated, 0);
-        assert_eq!(no_allocation, Some(0));
-        let mut effect = GlobalEffect::default();
-        FAIL_AFTER.set(Some(0));
-        let checked = swr_v1_memory_global_step(state, 1, 41, 1, &raw mut effect);
-        let drained = swr_v1_memory_global_step(state, 2, 0, 0, &raw mut effect);
-        let released = swr_v1_memory_global_release(state);
-        let no_lifecycle_allocation = FAIL_AFTER.replace(None);
-        assert_eq!((checked, drained, released), (0, 0, 0));
-        assert_eq!(effect.page, pointer);
-        assert_eq!(effect.action, 3);
-        assert_eq!(no_lifecycle_allocation, Some(0));
-    }
+fn global_page_oom_fails_cleanly_and_bump_allocation_never_allocates() {
+    use crate::global::Global;
+    let mut pages = Global::new(64, false, 41);
+    FAIL_AFTER.set(Some(0));
+    let added = pages.add_page();
+    FAIL_AFTER.set(None);
+    assert!(!added);
+    assert_eq!(pages.memory_size(), 0);
+    assert!(pages.add_page());
+    FAIL_AFTER.set(Some(0));
+    let block = pages.alloc(1);
+    let no_allocation = FAIL_AFTER.replace(None);
+    assert!(!block.is_null());
+    assert_eq!(no_allocation, Some(0));
 }
 
 #[test]

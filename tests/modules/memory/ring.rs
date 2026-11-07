@@ -2,17 +2,9 @@ use super::*;
 #[test]
 fn ring_layout_headers_wrap_and_multi_releaser_publication() {
     unsafe {
-        let (mut total, mut payload) = (0, 0);
-        assert_eq!(
-            swr_v1_memory_ring_layout(1025, &raw mut total, &raw mut payload),
-            0
-        );
-        assert_eq!((total, payload), (1032, 1000));
-        assert_eq!(
-            swr_v1_memory_ring_layout(u32::MAX, &raw mut total, &raw mut payload),
-            -1
-        );
-        assert_eq!((total, payload), (0, 0));
+        assert_eq!(layout(1025), Some(1032));
+        assert_eq!(layout(40), None);
+        assert_eq!(layout(u32::MAX), None);
         let mut memory = [0u64; 128];
         let count = AtomicU32::new(0);
         let mut ring = Ring {
@@ -24,27 +16,18 @@ fn ring_layout_headers_wrap_and_multi_releaser_publication() {
             status: 0,
             free_count: count.as_ptr(),
         };
-        let first = swr_v1_memory_ring_alloc(&raw mut ring, 7);
+        let first = allocate(&mut ring, 7);
         assert_eq!(first.cast::<u8>(), ring.memory.add(8));
         assert_eq!(ring.memory.add(2).cast::<u16>().read(), u16::MAX);
         assert_eq!(ring.memory.add(4).cast::<u32>().read(), 8);
         assert_eq!(ring.alloc_count, 0);
-        assert_eq!(
-            swr_v1_memory_ring_free(ring.memory.cast(), ring.size, ring.free_count, first),
-            0
-        );
-        assert_eq!(
-            swr_v1_memory_ring_free(ring.memory.cast(), ring.size, ring.free_count, first),
-            -1
-        );
+        assert!(free(ring.memory.cast(), ring.size, ring.free_count, first));
+        assert!(!free(ring.memory.cast(), ring.size, ring.free_count, first));
         for _ in 0..10000 {
-            let item = swr_v1_memory_ring_alloc(&raw mut ring, 113);
+            let item = allocate(&mut ring, 113);
             if !item.is_null() {
                 ptr::write_bytes(item, 42, 113);
-                assert_eq!(
-                    swr_v1_memory_ring_free(ring.memory.cast(), ring.size, ring.free_count, item),
-                    0
-                );
+                assert!(free(ring.memory.cast(), ring.size, ring.free_count, item));
             }
         }
         assert!(ring.alloc_count > 1000);
@@ -115,8 +98,8 @@ fn actual_shared_storage_matches_frozen_snapshot_abi_without_whole_header_borrow
                 1 => u32::MAX,
                 _ => step % 129 + 1,
             };
-            let before = swr_v1_memory_ring_alloc(&raw mut state, requested);
-            let after = swr_v1_memory_ring_storage_alloc(pointer, requested);
+            let before = allocate(&mut state, requested);
+            let after = storage_alloc(pointer, requested);
             assert_eq!(before.is_null(), after.is_null());
             assert_eq!(
                 (
@@ -137,27 +120,19 @@ fn actual_shared_storage_matches_frozen_snapshot_abi_without_whole_header_borrow
                     before.addr() - state.memory.addr(),
                     after.addr() - storage.memory.addr()
                 );
-                assert_eq!(
-                    swr_v1_memory_ring_free(
-                        state.memory.cast(),
-                        state.size,
-                        state.free_count,
-                        before
-                    ),
-                    0
-                );
-                assert_eq!(
-                    swr_v1_memory_ring_free(storage.memory.cast(), storage.size, released, after),
-                    0
-                );
+                assert!(free(
+                    state.memory.cast(),
+                    state.size,
+                    state.free_count,
+                    before
+                ));
+                assert!(free(storage.memory.cast(), storage.size, released, after));
             }
             assert_eq!(
                 counter.load(Ordering::SeqCst),
                 AtomicU32::from_ptr(released).load(Ordering::SeqCst)
             );
         }
-        assert!(swr_v1_memory_ring_storage_alloc(ptr::null_mut(), 1).is_null());
-        assert!(swr_v1_memory_ring_storage_alloc(pointer.cast::<u8>().add(1).cast(), 1).is_null());
     }
 }
 
@@ -175,13 +150,10 @@ fn collection_bound_can_come_from_a_later_record_with_an_earlier_release_in_flig
             status: 0,
             free_count: count.as_ptr(),
         };
-        let first = swr_v1_memory_ring_alloc(&raw mut ring, 8);
-        let second = swr_v1_memory_ring_alloc(&raw mut ring, 8);
+        let first = allocate(&mut ring, 8);
+        let second = allocate(&mut ring, 8);
         assert!(!first.is_null() && !second.is_null());
-        assert_eq!(
-            swr_v1_memory_ring_free(ring.memory.cast(), ring.size, ring.free_count, second),
-            0
-        );
+        assert!(free(ring.memory.cast(), ring.size, ring.free_count, second));
         // A later record's completed release cannot reclaim the still-live head.
         assert!(ring.collect());
         assert_eq!((ring.collect_offset, count.load(Ordering::SeqCst)), (0, 1));
@@ -201,17 +173,17 @@ fn collection_bound_can_come_from_a_later_record_with_an_earlier_release_in_flig
 fn constructor_initializes_only_the_real_header_before_shared_publication() {
     assert_eq!(std::mem::size_of::<Storage>(), 32);
     for total in [48u32, 64, 1024, 1032] {
-        for shared in [0, 1] {
+        for shared in [false, true] {
             let mut arena = vec![0xabab_abab_abab_ababu64; total as usize / 8];
             let storage = arena.as_mut_ptr().cast::<Storage>();
             unsafe {
-                assert_eq!(swr_v1_memory_ring_construct(storage, total, shared), 0);
+                construct(storage, total, shared);
                 assert_eq!(
                     ptr::addr_of!((*storage).memory).read(),
                     storage.cast::<u8>().add(32)
                 );
                 assert_eq!(ptr::addr_of!((*storage).size).read(), total - 32);
-                assert_eq!(ptr::addr_of!((*storage).shared).read(), shared as u8);
+                assert_eq!(ptr::addr_of!((*storage).shared).read(), u8::from(shared));
                 assert_eq!(
                     (
                         ptr::addr_of!((*storage).status).read(),
@@ -226,30 +198,11 @@ fn constructor_initializes_only_the_real_header_before_shared_publication() {
                     std::slice::from_raw_parts(storage.cast::<u8>().add(32), total as usize - 32),
                     vec![0xab; total as usize - 32]
                 );
-                let record = swr_v1_memory_ring_storage_alloc(storage, 1);
+                let record = storage_alloc(storage, 1);
                 if total >= 64 {
                     assert!(!record.is_null());
                 }
             }
         }
     }
-    let mut arena = [0xabab_abab_abab_ababu64; 8];
-    for (total, shared) in [(0, 0), (40, 0), (49, 0), (64, 2), (u32::MAX, 0)] {
-        assert_eq!(
-            unsafe { swr_v1_memory_ring_construct(arena.as_mut_ptr().cast(), total, shared) },
-            -1
-        );
-        assert_eq!(arena, [0xabab_abab_abab_abab; 8]);
-    }
-    assert_eq!(
-        unsafe { swr_v1_memory_ring_construct(ptr::null_mut(), 64, 0) },
-        -1
-    );
-    assert_eq!(
-        unsafe {
-            swr_v1_memory_ring_construct(arena.as_mut_ptr().cast::<u8>().add(1).cast(), 48, 0)
-        },
-        -1
-    );
-    assert_eq!(arena, [0xabab_abab_abab_abab; 8]);
 }

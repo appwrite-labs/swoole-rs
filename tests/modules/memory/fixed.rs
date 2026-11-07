@@ -1,26 +1,28 @@
 use super::*;
+
+/// A pool over a fresh `0xa5`-filled buffer of `plan.total` bytes plus one word.
+fn pool_in(plan: Layout, shared: bool, owned: bool) -> (Vec<u64>, *mut Fixed) {
+    let mut memory = vec![0xa5a5_a5a5_a5a5_a5a5u64; plan.total.div_ceil(8) + 1];
+    let pool = memory.as_mut_ptr().cast::<Fixed>();
+    assert!(unsafe { construct(pool, plan, shared, owned) });
+    (memory, pool)
+}
+
+fn borrowed(width: u32, slices: usize) -> Layout {
+    let available = mem::size_of::<Fixed>() + slices * (mem::size_of::<Slice>() + width as usize);
+    Layout::new(0, width, available, false).unwrap()
+}
+
 #[test]
 fn fixed_pool_preserves_lifo_reuse_at_aligned_and_odd_table_widths() {
     for width in [1u32, 7, 8, 31, 256] {
         let stride = mem::size_of::<Slice>() + width as usize;
-        let mut memory = vec![0u64; (stride * 17).div_ceil(8)];
-        let base = memory.as_mut_ptr().cast::<u8>();
-        let mut p = Fixed {
-            memory: base,
-            size: stride * 17,
-            head: ptr::null_mut(),
-            tail: ptr::null_mut(),
-            slice_num: 17,
-            slice_use: 0,
-            slice_size: width,
-            shared: 1,
-            allocated: 0,
-        };
+        let (_memory, pool) = pool_in(borrowed(width, 17), true, false);
         unsafe {
-            assert_eq!(swr_v1_memory_fixed_init(&raw mut p), 0);
+            let base = (*pool).memory;
             let mut entries = Vec::new();
             for index in (0..17).rev() {
-                let data = swr_v1_memory_fixed_alloc(&raw mut p);
+                let data = alloc(pool);
                 assert_eq!(
                     data.cast::<u8>(),
                     base.add(index * stride + mem::size_of::<Slice>())
@@ -28,20 +30,17 @@ fn fixed_pool_preserves_lifo_reuse_at_aligned_and_odd_table_widths() {
                 ptr::write_bytes(data, index as u8, width as usize);
                 entries.push(data);
             }
-            assert!(swr_v1_memory_fixed_alloc(&raw mut p).is_null());
-            assert_eq!(p.slice_use, 17);
+            assert!(alloc(pool).is_null());
+            assert_eq!((*pool).slice_use, 17);
             for &i in &[3, 10, 0] {
-                assert_eq!(swr_v1_memory_fixed_free(&raw mut p, entries[i]), 0);
+                assert!(free(pool, entries[i]));
             }
-            assert_eq!(swr_v1_memory_fixed_free(&raw mut p, entries[0]), -1);
-            assert_eq!(
-                swr_v1_memory_fixed_free(&raw mut p, entries[0].cast::<u8>().add(1).cast()),
-                -1
-            );
+            assert!(!free(pool, entries[0]));
+            assert!(!free(pool, entries[0].cast::<u8>().add(1).cast()));
             for &i in &[0, 10, 3] {
-                assert_eq!(swr_v1_memory_fixed_alloc(&raw mut p), entries[i]);
+                assert_eq!(alloc(pool), entries[i]);
             }
-            assert_eq!(p.slice_use, 17);
+            assert_eq!((*pool).slice_use, 17);
         }
     }
 }
@@ -49,87 +48,45 @@ fn fixed_pool_preserves_lifo_reuse_at_aligned_and_odd_table_widths() {
 #[test]
 fn fixed_construction_plans_own_alignment_and_borrowed_floor_counts() {
     for width in [0u32, 1, 7, 8, 31, 256] {
-        let mut plan = Layout::default();
-        unsafe {
-            assert_eq!(
-                swr_v1_memory_fixed_layout(17, width, 0, 1, &raw mut plan),
-                0
-            );
-        }
+        let plan = Layout::new(17, width, 0, true).unwrap();
         let aligned = (width + 7) & !7;
         assert_eq!(plan.width, aligned);
         assert_eq!(plan.slices, 17);
         assert_eq!(plan.usable, 17 * (24 + aligned as usize));
         assert_eq!(plan.total, 48 + plan.usable);
-        let borrowed = 48 + 17 * (24 + width as usize) + 3;
-        unsafe {
-            assert_eq!(
-                swr_v1_memory_fixed_layout(0, width, borrowed, 0, &raw mut plan),
-                0
-            );
-        }
+        let available = 48 + 17 * (24 + width as usize) + 3;
+        let plan = Layout::new(0, width, available, false).unwrap();
         assert_eq!(
             (plan.total, plan.usable, plan.slices, plan.width),
-            (borrowed, borrowed - 48, 17, width)
+            (available, available - 48, 17, width)
         );
     }
-    // Scalar invalid/overflow plans are rejected without requesting an arena.
+    // Invalid and overflowing plans are rejected without requesting an arena.
     for (count, width, available, owned) in [
-        (0, 8, 0, 1),
-        (1, 8, 0, 1),
-        (2, u32::MAX, 0, 1),
-        (2, 8, 1, 1),
-        (0, 8, 0, 0),
-        (0, 8, usize::MAX, 0),
-        (2, 8, 0, 2),
-        (1, 8, 128, 0),
+        (0, 8, 0, true),
+        (1, 8, 0, true),
+        (2, u32::MAX, 0, true),
+        (2, 8, 1, true),
+        (0, 8, 0, false),
+        (0, 8, usize::MAX, false),
+        (1, 8, 128, false),
     ] {
-        let mut plan = Layout {
-            total: 1,
-            usable: 1,
-            slices: 1,
-            width: 1,
-        };
-        unsafe {
-            assert_eq!(
-                swr_v1_memory_fixed_layout(count, width, available, owned, &raw mut plan),
-                -1
-            );
-        }
-        assert_eq!(plan, Layout::default());
+        assert_eq!(Layout::new(count, width, available, owned), None);
     }
 }
 
 #[test]
 fn fixed_constructs_complete_real_header_and_links_without_touching_payload_or_tail() {
-    for owned in [0u32, 1] {
-        for shared in [0u32, 1] {
+    for owned in [false, true] {
+        for shared in [false, true] {
             for width in [0u32, 1, 7, 8, 31, 256] {
-                let mut plan = Layout::default();
-                let available = if owned == 0 {
-                    48 + 17 * (24 + width as usize) + 3
+                let plan = if owned {
+                    Layout::new(17, width, 0, true).unwrap()
                 } else {
-                    0
+                    Layout::new(0, width, 48 + 17 * (24 + width as usize) + 3, false).unwrap()
                 };
+                let (memory, arena) = pool_in(plan, shared, owned);
                 unsafe {
-                    assert_eq!(
-                        swr_v1_memory_fixed_layout(
-                            if owned == 1 { 17 } else { 0 },
-                            width,
-                            available,
-                            owned,
-                            &raw mut plan
-                        ),
-                        0
-                    );
-                }
-                let mut memory = vec![0xa5a5_a5a5_a5a5_a5a5u64; plan.total.div_ceil(8) + 1];
-                let arena = memory.as_mut_ptr().cast::<Fixed>();
-                unsafe {
-                    assert_eq!(
-                        swr_v1_memory_fixed_construct(arena, &raw const plan, shared, owned),
-                        0
-                    );
                     let pool = &*arena;
                     assert_eq!(pool.memory, arena.cast::<u8>().add(48));
                     assert_eq!(
@@ -141,22 +98,22 @@ fn fixed_constructs_complete_real_header_and_links_without_touching_payload_or_t
                             pool.shared,
                             pool.allocated
                         ),
-                        (plan.usable, 17, 0, plan.width, shared as u8, owned as u8)
+                        (plan.usable, 17, 0, plan.width, shared.into(), owned.into())
                     );
                     let stride = 24 + plan.width as usize;
                     for index in (0..17).rev() {
-                        let data = swr_v1_memory_fixed_alloc(arena).cast::<u8>();
+                        let data = alloc(arena).cast::<u8>();
                         assert_eq!(data, arena.cast::<u8>().add(48 + index * stride + 24));
                         assert!(
                             std::slice::from_raw_parts(data, plan.width as usize)
                                 .iter()
                                 .all(|&b| b == 0xa5)
                         );
-                        assert_eq!(swr_v1_memory_fixed_free(arena, data.cast()), 0);
+                        assert!(free(arena, data.cast()));
                         // Reuse consumes the same node; leave it live before the next allocation.
-                        assert_eq!(swr_v1_memory_fixed_alloc(arena), data.cast());
+                        assert_eq!(alloc(arena), data.cast());
                     }
-                    assert!(swr_v1_memory_fixed_alloc(arena).is_null());
+                    assert!(alloc(arena).is_null());
                     let end = 48 + 17 * stride;
                     assert!(
                         std::slice::from_raw_parts(
@@ -173,74 +130,27 @@ fn fixed_constructs_complete_real_header_and_links_without_touching_payload_or_t
 }
 
 #[test]
-fn fixed_construction_rejects_inconsistent_plan_before_publication() {
-    let mut plan = Layout::default();
-    unsafe {
-        assert_eq!(swr_v1_memory_fixed_layout(2, 8, 0, 1, &raw mut plan), 0);
-    }
+fn fixed_construction_rejects_a_misaligned_arena_before_writing() {
+    let plan = Layout::new(2, 8, 0, true).unwrap();
     let mut memory = [0xa5a5_a5a5_a5a5_a5a5u64; 32];
     let before = memory;
-    plan.usable += 1;
-    unsafe {
-        assert_eq!(
-            swr_v1_memory_fixed_construct(memory.as_mut_ptr().cast(), &raw const plan, 1, 1),
-            -1
-        );
-    }
+    let arena = memory.as_mut_ptr().cast::<u8>().wrapping_add(1).cast();
+    assert!(!unsafe { construct(arena, plan, true, true) });
     assert_eq!(memory, before);
-}
-
-#[test]
-fn ownership_actions_preserve_owned_borrowed_heap_shared_order() {
-    for shared in 0..=1 {
-        for owned in 0..=1 {
-            for phase in 0..=1 {
-                assert_eq!(
-                    swr_v1_memory_arena_lifecycle(shared, owned, phase),
-                    if owned == 0 {
-                        0
-                    } else {
-                        (1 + shared + 2 * phase) as i32
-                    }
-                );
-            }
-        }
-    }
-    for (shared, owned, phase) in [(2, 1, 0), (0, 2, 0), (0, 1, 2)] {
-        assert_eq!(swr_v1_memory_arena_lifecycle(shared, owned, phase), -1);
-    }
 }
 
 #[test]
 fn diagnostic_cursor_matches_live_odd_links_and_original_postprint_limit() {
     unsafe {
-        assert_eq!(mem::size_of::<DebugCursor>(), 16);
-        assert_eq!(mem::size_of::<DebugRecord>(), 48);
         for width in [1u32, 8, 31] {
-            let mut plan = Layout::default();
-            let total = mem::size_of::<Fixed>() + 5 * (mem::size_of::<Slice>() + width as usize);
-            assert_eq!(
-                swr_v1_memory_fixed_layout(0, width, total, 0, &raw mut plan),
-                0
-            );
-            let mut arena = vec![0u64; total.div_ceil(8)];
-            let pool = arena.as_mut_ptr().cast::<Fixed>();
-            assert_eq!(
-                swr_v1_memory_fixed_construct(pool, &raw const plan, 0, 0),
-                0
-            );
-            let allocated = swr_v1_memory_fixed_alloc(pool);
-            assert!(!allocated.is_null());
+            let (_arena, pool) = pool_in(borrowed(width, 5), false, false);
+            assert!(!alloc(pool).is_null());
             for (max, expected) in [(-2, 1), (-1, 1), (0, 2), (1, 3), (3, 5), (99, 5)] {
                 let mut cursor = DebugCursor::default();
-                let mut record = DebugRecord::default();
                 let mut next = (*pool).head;
                 for line in 0..expected {
                     let actual = next.read_unaligned();
-                    assert_eq!(
-                        swr_v1_memory_fixed_debug_step(pool, &raw mut cursor, max, &raw mut record),
-                        1
-                    );
+                    let record = debug_step(&*pool, &mut cursor, max).unwrap();
                     assert_eq!(
                         (
                             record.slice,
@@ -252,14 +162,10 @@ fn diagnostic_cursor_matches_live_odd_links_and_original_postprint_limit() {
                         (next, actual.prev, actual.next, line, actual.lock)
                     );
                     assert_eq!(record.data, next.cast::<u8>().add(mem::size_of::<Slice>()));
-                    assert_eq!(record.self_link, 0);
+                    assert!(!record.self_link);
                     next = actual.next;
                 }
-                assert_eq!(
-                    swr_v1_memory_fixed_debug_step(pool, &raw mut cursor, max, &raw mut record),
-                    0
-                );
-                assert!(record.slice.is_null());
+                assert!(debug_step(&*pool, &mut cursor, max).is_none());
             }
             // The original diagnostic explicitly marks self-links and bounds them.
             let head = (*pool).head;
@@ -269,59 +175,16 @@ fn diagnostic_cursor_matches_live_odd_links_and_original_postprint_limit() {
                 ..original
             });
             let mut cursor = DebugCursor::default();
-            let mut record = DebugRecord::default();
             for line in 0..2 {
-                assert_eq!(
-                    swr_v1_memory_fixed_debug_step(pool, &raw mut cursor, 0, &raw mut record),
-                    1
-                );
+                let record = debug_step(&*pool, &mut cursor, 0).unwrap();
                 assert_eq!(
                     (record.line, record.self_link, record.slice),
-                    (line, 1, head)
+                    (line, true, head)
                 );
             }
-            assert_eq!(
-                swr_v1_memory_fixed_debug_step(pool, &raw mut cursor, 0, &raw mut record),
-                0
-            );
+            assert!(debug_step(&*pool, &mut cursor, 0).is_none());
             head.write_unaligned(original);
         }
-    }
-}
-
-#[test]
-fn usage_snapshot_preserves_public_scalar_queries_and_unsigned_wrap() {
-    unsafe {
-        assert_eq!(mem::size_of::<Usage>(), 12);
-        let mut pool = Fixed {
-            memory: ptr::null_mut(),
-            size: 0,
-            head: ptr::null_mut(),
-            tail: ptr::null_mut(),
-            slice_num: 0,
-            slice_use: 0,
-            slice_size: 0,
-            shared: 0,
-            allocated: 0,
-        };
-        let mut usage = Usage::default();
-        for total in [0u32, 5, u32::MAX] {
-            for used in [0u32, 3, u32::MAX] {
-                pool.slice_num = total;
-                pool.slice_use = used;
-                pool.slice_size = 31;
-                assert_eq!(
-                    swr_v1_memory_fixed_usage(&raw const pool, &raw mut usage),
-                    0
-                );
-                assert_eq!(
-                    (usage.spare, usage.total, usage.width),
-                    (total.wrapping_sub(used), total, 31)
-                );
-            }
-        }
-        assert_eq!(swr_v1_memory_fixed_usage(ptr::null(), &raw mut usage), -1);
-        assert_eq!((usage.spare, usage.total, usage.width), (0, 0, 0));
     }
 }
 
@@ -329,52 +192,31 @@ fn usage_snapshot_preserves_public_scalar_queries_and_unsigned_wrap() {
 fn normal_queue_changes_publish_only_mutable_header_fields() {
     unsafe {
         for count in [2, 3, 8, 17] {
-            let mut layout = Layout::default();
-            assert_eq!(
-                swr_v1_memory_fixed_layout(count, 16, 0, 1, &raw mut layout),
-                0
-            );
-            let mut arena = vec![0u64; layout.total.div_ceil(8)];
-            let pool = arena.as_mut_ptr().cast::<Fixed>();
-            assert_eq!(
-                swr_v1_memory_fixed_construct(pool, &raw const layout, 0, 1),
-                0
-            );
+            let (_arena, pool) = pool_in(Layout::new(count, 16, 0, true).unwrap(), false, true);
             let original = pool.read();
+            let fixed = |current: Fixed| {
+                (
+                    current.memory,
+                    current.size,
+                    current.slice_num,
+                    current.slice_size,
+                    current.shared,
+                    current.allocated,
+                )
+            };
+            let expected = (original.memory, original.size, count, 16, 0, 1);
             let mut live = Vec::new();
             for _ in 0..count {
-                let value = swr_v1_memory_fixed_alloc(pool);
+                let value = alloc(pool);
                 assert!(!value.is_null());
                 live.push(value);
-                let current = pool.read();
-                assert_eq!(
-                    (
-                        current.memory,
-                        current.size,
-                        current.slice_num,
-                        current.slice_size,
-                        current.shared,
-                        current.allocated
-                    ),
-                    (original.memory, original.size, count, 16, 0, 1)
-                );
-                assert_eq!(current.slice_use, live.len() as u32);
+                assert_eq!(fixed(pool.read()), expected);
+                assert_eq!(pool.read().slice_use, live.len() as u32);
             }
             for (index, value) in live.iter().enumerate() {
-                assert_eq!(swr_v1_memory_fixed_free(pool, *value), 0);
-                let current = pool.read();
-                assert_eq!(
-                    (
-                        current.memory,
-                        current.size,
-                        current.slice_num,
-                        current.slice_size,
-                        current.shared,
-                        current.allocated
-                    ),
-                    (original.memory, original.size, count, 16, 0, 1)
-                );
-                assert_eq!(current.slice_use, count - index as u32 - 1);
+                assert!(free(pool, *value));
+                assert_eq!(fixed(pool.read()), expected);
+                assert_eq!(pool.read().slice_use, count - index as u32 - 1);
             }
         }
     }
@@ -385,25 +227,14 @@ fn normal_queue_changes_publish_only_mutable_header_fields() {
 #[test]
 fn initialized_fixed_headers_keep_native_zero_padding_through_normal_operations() {
     for width in [1, 7, 8, 17] {
-        for owned in [0, 1] {
-            let layout = Layout::new(
-                if owned == 1 { 3 } else { 0 },
-                width,
-                if owned == 0 {
-                    48 + 3 * (24 + width as usize)
-                } else {
-                    0
-                },
-                owned,
-            )
-            .unwrap();
-            let mut storage = vec![0xa5a5_a5a5_a5a5_a5a5u64; layout.total.div_ceil(8) + 2];
-            let pool = storage.as_mut_ptr().cast::<Fixed>();
+        for owned in [false, true] {
+            let layout = if owned {
+                Layout::new(3, width, 0, true).unwrap()
+            } else {
+                borrowed(width, 3)
+            };
+            let (storage, pool) = pool_in(layout, false, owned);
             unsafe {
-                assert_eq!(
-                    swr_v1_memory_fixed_construct(pool, &raw const layout, 0, owned),
-                    0
-                );
                 let verify = || {
                     let base = pool.cast::<u8>();
                     for i in mem::offset_of!(Fixed, allocated) + 1..mem::size_of::<Fixed>() {
@@ -424,12 +255,12 @@ fn initialized_fixed_headers_keep_native_zero_padding_through_normal_operations(
                     }
                 };
                 verify();
-                let first = swr_v1_memory_fixed_alloc(pool);
-                let second = swr_v1_memory_fixed_alloc(pool);
+                let first = alloc(pool);
+                let second = alloc(pool);
                 assert!(!first.is_null() && !second.is_null());
                 verify();
-                assert_eq!(swr_v1_memory_fixed_free(pool, second), 0);
-                assert_eq!(swr_v1_memory_fixed_free(pool, first), 0);
+                assert!(free(pool, second));
+                assert!(free(pool, first));
                 verify();
             }
         }

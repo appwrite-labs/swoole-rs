@@ -10,21 +10,12 @@
 //! Each `// assert(...)` comment is the upstream assertion the `assert!` under it
 //! carries; tests/modules/memory/gate.py checks every one is still here.
 
-use crate::fixed::{DebugCursor, DebugRecord, Fixed, Layout, Slice};
-use crate::ring::Storage;
+use crate::fixed::{self, DebugCursor, Fixed, Layout, Slice};
+use crate::global::{self, Global};
+use crate::ring::{self, Storage};
 use crate::table::Table;
-use crate::{
-    swr_v1_memory_arena_lifecycle, swr_v1_memory_fixed_alloc, swr_v1_memory_fixed_construct,
-    swr_v1_memory_fixed_debug_step, swr_v1_memory_fixed_free, swr_v1_memory_fixed_layout,
-    swr_v1_memory_global_add_page, swr_v1_memory_global_alloc, swr_v1_memory_global_capacity,
-    swr_v1_memory_global_memory_size, swr_v1_memory_global_open, swr_v1_memory_global_release,
-    swr_v1_memory_global_step, swr_v1_memory_mapping_extent, swr_v1_memory_mapping_initialize,
-    swr_v1_memory_mapping_product, swr_v1_memory_mapping_relocate, swr_v1_memory_mapping_size,
-    swr_v1_memory_ring_construct, swr_v1_memory_ring_free, swr_v1_memory_ring_layout,
-    swr_v1_memory_ring_storage_alloc,
-};
 use std::ffi::{c_char, c_int, c_void};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::{mem, ptr};
 use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_corebase::{sw_free, sw_malloc};
@@ -37,24 +28,24 @@ const MALLOC_FAIL: c_int = 501;
 const MIN_PAGE_SIZE: u32 = 4096;
 
 /// An arena of `size` bytes from `sw_shm_malloc` (`shared`) or `sw_malloc`.
-fn arena(shared: bool, size: usize) -> *mut c_void {
-    if swr_v1_memory_arena_lifecycle(u32::from(shared), 1, 0) == 2 {
+pub(crate) fn arena(shared: bool, size: usize) -> *mut c_void {
+    if shared {
         sw_shm_malloc(size)
     } else {
         sw_malloc(size)
     }
 }
 
-/// Frees what `arena` returned, or what an owned pool's lifecycle says to free.
+/// Frees what `arena(shared, ..)` returned.
 ///
 /// # Safety
-/// `memory` is live and came from the allocator `action` names.
-unsafe fn release(action: i32, memory: *mut c_void) {
-    match action {
-        2 | 4 => sw_shm_free(memory),
+/// `memory` is live and came from `arena(shared, ..)`.
+pub(crate) unsafe fn release(shared: bool, memory: *mut c_void) {
+    if shared {
+        sw_shm_free(memory);
+    } else {
         // SAFETY: as the caller promises.
-        1 | 3 => unsafe { sw_free(memory) },
-        _ => {}
+        unsafe { sw_free(memory) };
     }
 }
 
@@ -71,23 +62,15 @@ pub unsafe extern "C" fn swr_v1_memory_fixed_pool_new(
     shared: bool,
     output: *mut *mut Fixed,
 ) -> i32 {
-    let mut plan = Layout::default();
-    // SAFETY: `plan` is a writable local.
-    if unsafe { swr_v1_memory_fixed_layout(slices, width, 0, 1, &raw mut plan) } != 0 {
+    let Some(plan) = Layout::new(slices, width, 0, true) else {
         return INVALID;
-    }
+    };
     let memory = arena(shared, plan.total);
     if memory.is_null() {
         return NO_MEMORY;
     }
-    // SAFETY: a fresh arena of `plan.total` bytes.
-    if unsafe { swr_v1_memory_fixed_construct(memory.cast(), &raw const plan, shared.into(), 1) }
-        != 0
-    {
-        // SAFETY: `arena` just allocated it.
-        unsafe { release(swr_v1_memory_arena_lifecycle(shared.into(), 1, 0), memory) };
-        return INVALID;
-    }
+    // SAFETY: a fresh, malloc-aligned arena of `plan.total` bytes.
+    unsafe { fixed::construct(memory.cast(), plan, shared, true) };
     // SAFETY: as the caller promises.
     unsafe { output.write(memory.cast()) };
     0
@@ -106,19 +89,14 @@ pub unsafe extern "C" fn swr_v1_memory_fixed_pool_borrow(
     shared: bool,
     output: *mut *mut Fixed,
 ) -> i32 {
-    let mut plan = Layout::default();
-    // SAFETY: `plan` is a writable local.
-    if unsafe { swr_v1_memory_fixed_layout(0, width, size, 0, &raw mut plan) } != 0
-        || memory.is_null()
-        || !memory.addr().is_multiple_of(mem::align_of::<Fixed>())
-        || memory.addr().checked_add(plan.total).is_none()
-    {
+    let Some(plan) = Layout::new(0, width, size, false) else {
+        return INVALID;
+    };
+    if memory.is_null() || memory.addr().checked_add(plan.total).is_none() {
         return INVALID;
     }
     // SAFETY: as the caller promises, `size` (at least `plan.total`) writable bytes.
-    if unsafe { swr_v1_memory_fixed_construct(memory.cast(), &raw const plan, shared.into(), 0) }
-        != 0
-    {
+    if unsafe { !fixed::construct(memory.cast(), plan, shared, false) } {
         return INVALID;
     }
     // SAFETY: as the caller promises.
@@ -134,10 +112,10 @@ pub unsafe extern "C" fn swr_v1_memory_fixed_pool_borrow(
 pub unsafe extern "C" fn swr_v1_memory_fixed_pool_delete(pool: *mut Fixed) {
     // SAFETY: as the caller promises.
     let header = unsafe { &*pool };
-    let (shared, owned) = (header.shared, header.allocated);
-    let action = swr_v1_memory_arena_lifecycle(shared.into(), owned.into(), 1);
-    // SAFETY: an owned pool's arena came from the allocator its lifecycle names.
-    unsafe { release(action, pool.cast()) };
+    if header.allocated != 0 {
+        // SAFETY: an owned pool's arena came from `arena(shared, ..)`.
+        unsafe { release(header.shared != 0, pool.cast()) };
+    }
 }
 
 /// `void *FixedPool::alloc(uint32_t size)`: the slice width was fixed at construction.
@@ -150,7 +128,7 @@ pub unsafe extern "C" fn swr_v1_memory_fixed_pool_delete(pool: *mut Fixed) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_memory_fixed_pool_alloc(pool: *mut Fixed) -> *mut c_void {
     // SAFETY: as the caller promises.
-    let result = unsafe { swr_v1_memory_fixed_alloc(pool) };
+    let result = unsafe { fixed::alloc(pool) };
     if result.is_null() {
         set_last_error(MALLOC_FAIL);
         // SAFETY: as the caller promises.
@@ -188,8 +166,8 @@ pub unsafe extern "C" fn swr_v1_memory_fixed_pool_free(pool: *mut Fixed, data: *
     // assert(slice->lock == 1);
     assert_eq!(lock, 1, "an allocated slice");
     // SAFETY: as the caller promises.
-    let status = unsafe { swr_v1_memory_fixed_free(pool, data) };
-    assert_eq!(status, 0, "a live slice of this pool");
+    let freed = unsafe { fixed::free(pool, data) };
+    assert!(freed, "a live slice of this pool");
 }
 
 /// `FixedPool`'s `impl`: its first member.
@@ -244,8 +222,8 @@ upstream! {
     /// `void FixedPool::debug(int max_lines) const`: the slices on stdout.
     pub unsafe extern "C" fn swr_fixed_pool_debug(this: *const c_void, max_lines: c_int) {
         // SAFETY: `this` is a constructed FixedPool.
-        let pool = ptr::from_ref(unsafe { fixed(this) });
-        let (mut cursor, mut record) = (DebugCursor::default(), DebugRecord::default());
+        let pool = unsafe { fixed(this) };
+        let mut cursor = DebugCursor::default();
         // SAFETY: the format takes one string.
         unsafe {
             libc::printf(
@@ -253,9 +231,9 @@ upstream! {
                 c"debug".as_ptr(),
             )
         };
-        // SAFETY: `pool` is live; `cursor` and `record` are writable locals.
-        while unsafe { swr_v1_memory_fixed_debug_step(pool, &raw mut cursor, max_lines, &raw mut record) } == 1 {
-            if record.self_link != 0 {
+        // SAFETY: `pool` is live.
+        while let Some(record) = unsafe { fixed::debug_step(pool, &mut cursor, max_lines) } {
+            if record.self_link {
                 // SAFETY: a literal format with no arguments.
                 unsafe { libc::printf(c"-------------------@@@@@@@@@@@@@@@@@@@@@@----------------\n".as_ptr()) };
             }
@@ -287,21 +265,15 @@ pub unsafe extern "C" fn swr_v1_memory_ring_buffer_new(
     shared: bool,
     output: *mut *mut Storage,
 ) -> i32 {
-    let (mut total, mut payload) = (0, 0);
-    // SAFETY: both are writable locals.
-    if unsafe { swr_v1_memory_ring_layout(size, &raw mut total, &raw mut payload) } != 0 {
+    let Some(total) = ring::layout(size) else {
         return INVALID;
-    }
+    };
     let memory = arena(shared, total as usize);
     if memory.is_null() {
         return NO_MEMORY;
     }
-    // SAFETY: a fresh arena of `total` bytes.
-    if unsafe { swr_v1_memory_ring_construct(memory.cast(), total, shared.into()) } != 0 {
-        // SAFETY: `arena` just allocated it.
-        unsafe { release(swr_v1_memory_arena_lifecycle(shared.into(), 1, 0), memory) };
-        return INVALID;
-    }
+    // SAFETY: a fresh, malloc-aligned arena of `total` bytes.
+    unsafe { ring::construct(memory.cast(), total, shared) };
     // SAFETY: as the caller promises.
     unsafe { output.write(memory.cast()) };
     0
@@ -314,10 +286,9 @@ pub unsafe extern "C" fn swr_v1_memory_ring_buffer_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_memory_ring_buffer_delete(ring: *mut Storage) {
     // SAFETY: as the caller promises.
-    let shared = unsafe { &*ring }.shared;
-    let action = swr_v1_memory_arena_lifecycle(shared.into(), 1, 1);
-    // SAFETY: the ring's arena came from the allocator its lifecycle names.
-    unsafe { release(action, ring.cast()) };
+    let shared = unsafe { &*ring }.shared != 0;
+    // SAFETY: the ring's arena came from `arena(shared, ..)`.
+    unsafe { release(shared, ring.cast()) };
 }
 
 /// `void *RingBuffer::alloc(uint32_t size)`.
@@ -335,7 +306,7 @@ pub unsafe extern "C" fn swr_v1_memory_ring_buffer_alloc(
     // assert(size > 0);
     assert!(size > 0, "a non-empty record");
     // SAFETY: as the caller promises.
-    unsafe { swr_v1_memory_ring_storage_alloc(ring, size) }
+    unsafe { ring::storage_alloc(ring, size) }
 }
 
 /// `void RingBuffer::free(void *ptr)`.
@@ -372,68 +343,35 @@ pub unsafe extern "C" fn swr_v1_memory_ring_buffer_free(ring: *mut Storage, data
     // assert(item->lock == 1);
     assert_eq!(lock, 1, "an allocated record");
     // SAFETY: as the caller promises.
-    let status = unsafe { swr_v1_memory_ring_free(memory.cast(), size, free_count, data) };
-    assert_eq!(status, 0, "a live record of this ring");
+    let freed = unsafe { ring::free(memory.cast(), size, free_count, data) };
+    assert!(freed, "a live record of this ring");
 }
 
 // ---------------------------------------------------------------- GlobalMemory
 
-/// `GlobalMemoryImpl`: the page registry and the lock `alloc` holds.
+/// `GlobalMemoryImpl`: the pages, under the lock `alloc` holds.
 pub struct GlobalImpl {
-    lock: Mutex<()>,
-    registry: *mut c_void,
+    pages: Mutex<Global>,
 }
 
 impl GlobalImpl {
     /// `new GlobalMemoryImpl(size, shared)`, with its first page.
     fn new(size: u32, shared: bool) -> Result<*mut Self, i32> {
-        let mut registry = ptr::null_mut();
-        let page = swoole_rs_corebase::swr_v1_core_pagesize();
+        let page =
+            global::page_size(size, swoole_rs_corebase::swr_v1_core_pagesize()).ok_or(INVALID)?;
         // SAFETY: getpid has no preconditions.
-        let pid = i64::from(unsafe { libc::getpid() });
-        // SAFETY: `registry` is a writable local.
-        let status =
-            unsafe { swr_v1_memory_global_open(size, page, shared.into(), pid, &raw mut registry) };
-        match status {
-            0 => {}
-            -2 => return Err(INVALID),
-            _ => return Err(NO_MEMORY),
-        }
-        // SAFETY: `registry` is the live registry `open` made.
-        if unsafe { !new_page(registry) } {
-            // SAFETY: it has no pages to drain.
-            unsafe { swr_v1_memory_global_release(registry) };
+        let mut pages = Global::new(page, shared, unsafe { libc::getpid() });
+        if !pages.add_page() {
             return Err(NO_MEMORY);
         }
         Ok(Box::into_raw(Box::new(Self {
-            lock: Mutex::new(()),
-            registry,
+            pages: Mutex::new(pages),
         })))
     }
-}
 
-/// `GlobalMemoryImpl::new_page()`: one more page in `registry`.
-///
-/// # Safety
-/// `registry` is live.
-unsafe fn new_page(registry: *mut c_void) -> bool {
-    let mut effect = crate::global::GlobalEffect::default();
-    // SAFETY: `registry` is live; `effect` is a writable local.
-    if unsafe { swr_v1_memory_global_step(registry, 0, 0, 0, &raw mut effect) } != 0 {
-        return false;
+    fn pages(&self) -> MutexGuard<'_, Global> {
+        self.pages.lock().unwrap_or_else(PoisonError::into_inner)
     }
-    let shared = effect.action == 2;
-    let page = arena(shared, effect.page_size as usize);
-    if page.is_null() {
-        return false;
-    }
-    // SAFETY: `registry` is live and `page` a fresh page of its size.
-    if unsafe { swr_v1_memory_global_add_page(registry, page) } != 0 {
-        // SAFETY: `arena` just allocated it.
-        unsafe { release(if shared { 2 } else { 1 }, page) };
-        return false;
-    }
-    true
 }
 
 /// `GlobalMemory(pagesize, shared)`.
@@ -473,19 +411,8 @@ pub unsafe extern "C" fn swr_v1_memory_global_memory_new(
 /// `pool` came from `swr_v1_memory_global_memory_new` or `alloc`'s reset, destroyed once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_memory_global_memory_delete(pool: *mut GlobalImpl) {
-    // SAFETY: as the caller promises.
-    let this = unsafe { Box::from_raw(pool) };
-    let mut effect = crate::global::GlobalEffect::default();
-    // SAFETY: the registry is live; `effect` is a writable local.
-    while unsafe { swr_v1_memory_global_step(this.registry, 2, 0, 0, &raw mut effect) } == 0
-        && effect.action != 0
-    {
-        // SAFETY: each drained page came from the allocator its action names.
-        unsafe { release(if effect.action == 4 { 2 } else { 1 }, effect.page) };
-    }
-    // SAFETY: the registry is drained.
-    let status = unsafe { swr_v1_memory_global_release(this.registry) };
-    assert_eq!(status, 0, "a drained registry");
+    // SAFETY: as the caller promises; dropping it frees its pages.
+    drop(unsafe { Box::from_raw(pool) });
 }
 
 /// `void *GlobalMemory::alloc(uint32_t size)`. In a process forked from the one that
@@ -507,50 +434,40 @@ pub unsafe extern "C" fn swr_v1_memory_global_memory_alloc(
     let current = unsafe { pool.read() };
     // SAFETY: as above.
     let current = unsafe { &*current };
-    let _guard = current.lock.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut effect = crate::global::GlobalEffect::default();
-    // SAFETY: getpid has no preconditions.
-    let pid = i64::from(unsafe { libc::getpid() });
-    // SAFETY: the registry is live; `effect` is a writable local.
-    if unsafe { swr_v1_memory_global_step(current.registry, 1, pid, size, &raw mut effect) } != 0 {
+    let mut guard = current.pages();
+    if !guard.fits(size) {
         log::warning(
             c"GlobalMemory::alloc",
             format_args!(
                 "failed to alloc {} bytes, exceed the maximum size[{}]",
-                effect.aligned.cast_signed(),
-                effect.page_size.cast_signed()
+                size.checked_add(7).map_or(0, |n| n & !7).cast_signed(),
+                guard.page_size.cast_signed()
             ),
         );
         return 0;
     }
-    let mut registry = current.registry;
-    if effect.action == 5 {
-        match GlobalImpl::new(effect.page_size, true) {
-            Ok(fresh) => {
-                // SAFETY: as the caller promises; `fresh` is live.
-                unsafe { pool.write(fresh) };
-                // SAFETY: as above.
-                registry = unsafe { (*fresh).registry };
-            }
+    // SAFETY: getpid has no preconditions.
+    let pages = if guard.inherited(unsafe { libc::getpid() }) {
+        let fresh = match GlobalImpl::new(guard.page_size, true) {
+            Ok(fresh) => fresh,
             Err(status) => return status,
-        }
-    }
-    let mut result = ptr::null_mut();
-    // SAFETY: the registry is live; `result` is a writable local.
-    let mut status = unsafe { swr_v1_memory_global_alloc(registry, size, &raw mut result) };
-    if status == 1 {
-        // SAFETY: the registry is live.
-        if unsafe { !new_page(registry) } {
-            log::warning(c"GlobalMemory::alloc", format_args!("alloc memory error"));
-            return 0;
-        }
-        // SAFETY: as above.
-        status = unsafe { swr_v1_memory_global_alloc(registry, size, &raw mut result) };
-    }
-    if status == 0 {
+        };
         // SAFETY: as the caller promises.
-        unsafe { output.write(result) };
+        unsafe { pool.write(fresh) };
+        // SAFETY: `fresh` is live and not yet shared.
+        unsafe { &mut *fresh }
+            .pages
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+    } else {
+        &mut guard
+    };
+    let result = pages.alloc(size);
+    if result.is_null() {
+        log::warning(c"GlobalMemory::alloc", format_args!("alloc memory error"));
     }
+    // SAFETY: as the caller promises.
+    unsafe { output.write(result) };
     0
 }
 
@@ -571,34 +488,41 @@ upstream! {
     #[must_use]
     pub unsafe extern "C" fn swr_global_memory_capacity(this: *const c_void) -> usize {
         // SAFETY: `this` is a constructed GlobalMemory.
-        let registry = unsafe { global(this) }.registry;
-        // SAFETY: its live registry.
-        unsafe { swr_v1_memory_global_capacity(registry) }
+        unsafe { global(this) }.pages().capacity()
     }
     "_ZNK6swoole12GlobalMemory15get_memory_sizeEv", "_ZNK6swoole12GlobalMemory15get_memory_sizeEv" =>
     /// `size_t GlobalMemory::get_memory_size() const`.
     #[must_use]
     pub unsafe extern "C" fn swr_global_memory_size(this: *const c_void) -> usize {
         // SAFETY: `this` is a constructed GlobalMemory.
-        let registry = unsafe { global(this) }.registry;
-        // SAFETY: its live registry.
-        unsafe { swr_v1_memory_global_memory_size(registry) }
+        unsafe { global(this) }.pages().memory_size()
     }
 }
 
 // ---------------------------------------------------------------- sw_shm_*
 
+/// Mapping invariant: a shared mapping is `total` bytes, 8-aligned, whose first 8
+/// bytes hold `total`; its payload follows.
+///
+/// The mapping whose payload is `payload`: its base and total.
+///
+/// # Safety
+/// `payload` is a live mapping's payload.
+unsafe fn extent(payload: *mut c_void) -> (*mut c_void, usize) {
+    let base = payload.cast::<usize>().wrapping_sub(1);
+    // SAFETY: as the caller promises, the header precedes the payload.
+    (base.cast(), unsafe { base.read() })
+}
+
 /// `SharedMemory::free`: unmaps the mapping `payload` heads.
 fn unmap(payload: *mut c_void) {
-    let mut extent = crate::mapping::Extent::default();
-    // SAFETY: `extent` is a writable local; the caller passes a live mapping's payload.
-    let status = unsafe { swr_v1_memory_mapping_extent(payload.cast(), &raw mut extent) };
-    assert!(status == 0, "a live shared mapping");
-    // SAFETY: the mapping `extent` read from its header.
-    if unsafe { libc::munmap(extent.base, extent.total) } < 0 {
+    // SAFETY: the caller passes a live mapping's payload.
+    let (base, total) = unsafe { extent(payload) };
+    // SAFETY: the mapping its header describes.
+    if unsafe { libc::munmap(base, total) } < 0 {
         log::sys_warning(
             c"SharedMemory::free",
-            format_args!("munmap({:p}, {}) failed", extent.base, extent.total),
+            format_args!("munmap({base:p}, {total}) failed"),
         );
     }
 }
@@ -608,11 +532,13 @@ upstream! {
     /// `void *sw_shm_malloc(size_t size)`: an anonymous shared mapping whose size heads it.
     #[must_use]
     pub extern "C" fn sw_shm_malloc(size: usize) -> *mut c_void {
-        let mut total = 0;
-        // SAFETY: `total` is a writable local.
-        if unsafe { swr_v1_memory_mapping_size(size, &raw mut total) } != 0 {
+        let Some(total) = size
+            .checked_add(7)
+            .and_then(|n| (n & !7).checked_add(8))
+            .filter(|&n| isize::try_from(n).is_ok())
+        else {
             return ptr::null_mut();
-        }
+        };
         let flags = libc::MAP_SHARED | libc::MAP_ANONYMOUS;
         // SAFETY: a fresh anonymous mapping.
         let memory = unsafe { libc::mmap(ptr::null_mut(), total, libc::PROT_READ | libc::PROT_WRITE, flags, -1, 0) };
@@ -620,19 +546,15 @@ upstream! {
             log::sys_warning(c"SharedMemory::alloc", format_args!("mmap({total}) failed"));
             return ptr::null_mut();
         }
-        // SAFETY: `memory` is a fresh, page-aligned mapping of `total` bytes.
-        unsafe { swr_v1_memory_mapping_initialize(memory.cast(), total) }.cast()
+        // SAFETY: `memory` is a fresh, page-aligned mapping of `total >= 8` bytes.
+        unsafe { memory.cast::<usize>().write(total) };
+        memory.wrapping_byte_add(8)
     }
     "_Z13sw_shm_callocmm", "_Z13sw_shm_callocmm" =>
     /// `void *sw_shm_calloc(size_t num, size_t size)`: mappings start zeroed.
     #[must_use]
     pub extern "C" fn sw_shm_calloc(count: usize, size: usize) -> *mut c_void {
-        let mut requested = 0;
-        // SAFETY: `requested` is a writable local.
-        if unsafe { swr_v1_memory_mapping_product(count, size, &raw mut requested) } != 0 {
-            return ptr::null_mut();
-        }
-        sw_shm_malloc(requested)
+        count.checked_mul(size).map_or(ptr::null_mut(), |size| sw_shm_malloc(size))
     }
     "_Z11sw_shm_freePv", "_Z11sw_shm_freePv" =>
     /// `void sw_shm_free(void *ptr)`.
@@ -641,44 +563,37 @@ upstream! {
     }
     "_Z14sw_shm_protectPvi", "_Z14sw_shm_protectPvi" =>
     /// `int sw_shm_protect(void *ptr, int flags)`.
+    #[expect(
+        clippy::not_unsafe_ptr_arg_deref,
+        reason = "upstream's C signature; callers pass a live sw_shm_malloc payload"
+    )]
     pub extern "C" fn sw_shm_protect(payload: *mut c_void, flags: c_int) -> c_int {
-        let mut extent = crate::mapping::Extent::default();
-        // SAFETY: `extent` is a writable local; a bad header is rejected.
-        if unsafe { swr_v1_memory_mapping_extent(payload.cast(), &raw mut extent) } != 0 {
-            set_errno(libc::EINVAL);
-            return -1;
-        }
-        // SAFETY: the mapping `extent` read from its header.
-        unsafe { libc::mprotect(extent.base, extent.total, flags) }
+        // SAFETY: `payload` is a live mapping's payload.
+        let (base, total) = unsafe { extent(payload) };
+        // SAFETY: the mapping its header describes.
+        unsafe { libc::mprotect(base, total, flags) }
     }
     "_Z14sw_shm_reallocPvm", "_Z14sw_shm_reallocPvm" =>
     /// `void *sw_shm_realloc(void *ptr, size_t new_size)`: copies what fits.
     #[must_use]
+    #[expect(
+        clippy::not_unsafe_ptr_arg_deref,
+        reason = "upstream's C signature; callers pass a live sw_shm_malloc payload"
+    )]
     pub extern "C" fn sw_shm_realloc(payload: *mut c_void, size: usize) -> *mut c_void {
         let fresh = sw_shm_malloc(size);
         if fresh.is_null() {
             return ptr::null_mut();
         }
-        // SAFETY: both are live mapping payloads; relocate rejects overlap.
-        if unsafe { swr_v1_memory_mapping_relocate(payload.cast(), fresh.cast()) } != 0 {
-            sw_shm_free(fresh);
-            return ptr::null_mut();
-        }
+        // SAFETY: `payload` is a live mapping's payload.
+        let old = unsafe { extent(payload) }.1;
+        // SAFETY: `fresh` is a new one.
+        let new = unsafe { extent(fresh) }.1;
+        // SAFETY: two disjoint live payloads, each `total - 8` bytes.
+        unsafe { ptr::copy_nonoverlapping(payload.cast::<u8>(), fresh.cast::<u8>(), old.min(new) - 8) };
         unmap(payload);
         fresh
     }
-}
-
-/// Sets this thread's errno.
-fn set_errno(value: c_int) {
-    #[cfg(target_os = "linux")]
-    // SAFETY: no preconditions.
-    let errno = unsafe { libc::__errno_location() };
-    #[cfg(target_os = "macos")]
-    // SAFETY: no preconditions.
-    let errno = unsafe { libc::__error() };
-    // SAFETY: this thread's errno.
-    unsafe { errno.write(value) };
 }
 
 // ---------------------------------------------------------------- Table
