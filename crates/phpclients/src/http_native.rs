@@ -442,7 +442,7 @@ pub(crate) unsafe fn swoole_http_client_coro_mime(path: *const c_char) -> *const
 
 /// Upstream's `decompress_response` warnings: unknown `method`, or failed (-1).
 pub(crate) unsafe fn swoole_http_client_coro_inflate_warning(method: c_int) {
-    let origin = c"decompress_response";
+    let origin = c"Client::decompress_response";
     if method < 0 {
         log::warning(
             origin,
