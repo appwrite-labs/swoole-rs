@@ -123,9 +123,14 @@ def run(binary, symbols, output, report, timeout=30):
     """Require the Rust symbols in the gate binary, run it and record its last JSON line."""
     present = subprocess.check_output(['nm', '-g', str(binary)], text=True)
     assert all(name in present for name in symbols)
-    result = run_isolated([str(binary)], timeout=timeout)
-    report['run'] = {'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
-    if result.returncode: write_report(output, report); print(result.stderr, file=sys.stderr); return 1
+    try:
+        result = run_isolated([str(binary)], timeout=timeout)
+    except subprocess.TimeoutExpired as expired:
+        # communicate() hands back the partial output as bytes, even in text mode.
+        text = lambda data: data.decode(errors='replace') if isinstance(data, bytes) else data or ''
+        result = subprocess.CompletedProcess(expired.cmd, None, text(expired.stdout), text(expired.stderr) + f'\nTimed out after {timeout} s\n')
+    report['run'] = {'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr, 'timeout': timeout}
+    if result.returncode != 0: report['passed'] = False; write_report(output, report); print(result.stderr, file=sys.stderr); return 1
     report['outcome'] = json.loads(result.stdout.splitlines()[-1]); report['passed'] = True
     write_report(output, report); print(json.dumps(report['outcome']))
     return 0
