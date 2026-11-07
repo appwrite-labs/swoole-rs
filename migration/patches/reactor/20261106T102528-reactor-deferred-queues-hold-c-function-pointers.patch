@@ -147,14 +147,3 @@ index ca461d9..a89c944 100644
 -    destroy_callbacks.execute();
 +    swr_v1_reactor_deferred_run(destroy_callbacks);
      swr_v1_reactor_state_close_backend(handle());
-diff --git a/src/wrapper/event.cc b/src/wrapper/event.cc
-index 9ee92fe..bdd1f2f 100644
---- a/src/wrapper/event.cc
-+++ b/src/wrapper/event.cc
-@@ -112,2 +112,6 @@ bool swoole_event_is_available() {
- 
-+void *swr_v1_event_reactor() {
-+    return swoole_event_is_available() ? SwooleTG.reactor : nullptr;
-+}
-+
- bool swoole_event_is_running() {

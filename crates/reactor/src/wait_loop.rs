@@ -1,11 +1,15 @@
 //! `Reactor::wait()` for every backend in one call: upstream's `ReactorEpoll`, `ReactorKqueue`
 //! and `ReactorPoll::wait` over the Rust reactor state (#336, #391). Rust owns the loop, the
-//! kernel wait and the readiness order; native code supplies the effects upstream reaches
-//! through `Reactor`'s callbacks, and the warnings.
+//! kernel wait, the readiness order and the warnings; native code supplies the effects
+//! upstream reaches through `Reactor`'s callbacks.
 use crate::SocketRecord;
 use crate::handlers::{self, Handlers};
-use crate::reactor_state::{ReactorState, before_wait, kernel_wait, swr_v1_reactor_state_backend};
+use crate::reactor_state::{
+    ReactorFields, ReactorState, before_wait, kernel_wait, swr_v1_reactor_state_backend,
+    swr_v1_reactor_state_descriptor, swr_v1_reactor_state_socket,
+};
 use std::ffi::{c_int, c_void};
+use swoole_rs_corebase::log;
 
 pub const POLL: u32 = 0;
 pub const EPOLL: u32 = 1;
@@ -21,15 +25,6 @@ pub struct WaitOps {
     /// epoll with `io_uring` only: `interrupt` runs the EINTR handler when `interrupted`.
     pub interrupted: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
     pub interrupt: Option<unsafe extern "C" fn(*mut c_void)>,
-    /// Warns about an uncaught kernel wait failure; `entries` is poll's entry count.
-    pub wait_failed: unsafe extern "C" fn(*mut c_void, c_int),
-    /// Warns that the read (0), write (1) or error (2) handler failed for `event`.
-    pub handler_failed: unsafe extern "C" fn(*mut c_void, u32, *const Event),
-    /// The oneshot removal of a socket.
-    pub remove: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    /// kqueue only: dispatch a signal entry, and warn about an unknown filter.
-    pub signal: Option<unsafe extern "C" fn(*mut c_void)>,
-    pub unknown: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
 }
 
 /// Upstream's `swoole::Event`.
@@ -44,6 +39,8 @@ pub struct Event {
 /// One `wait()`: its native effects and what it reads from the state.
 struct Loop<'a> {
     ops: &'a WaitOps,
+    owner: *mut ReactorState,
+    fields: *const ReactorFields,
     backend: u32,
     /// The backend's result array: `pollfd`, `epoll_event` or `kevent` entries.
     events: *const c_void,
@@ -104,6 +101,8 @@ pub unsafe extern "C" fn swr_v1_reactor_wait(owner: *mut ReactorState, ops: *con
     };
     let run = Loop {
         ops,
+        owner,
+        fields,
         backend: view.backend,
         events: view.events,
         sockets: view.sockets,
@@ -130,8 +129,7 @@ pub unsafe extern "C" fn swr_v1_reactor_wait(owner: *mut ReactorState, ops: *con
             core::cmp::Ordering::Less => {
                 // upstream's Reactor::catch_error()
                 if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-                    // SAFETY: the native effect accepts `reactor` and reads this thread's errno.
-                    unsafe { (ops.wait_failed)(reactor, entries) };
+                    wait_failed(&run, entries);
                     return if run.backend == POLL { 0 } else { -1 };
                 }
                 if let (EPOLL, Some(interrupted), Some(interrupt)) =
@@ -230,13 +228,11 @@ unsafe fn entry(ops: &Loop<'_>, index: usize) {
 
 /// poll and epoll: read, write, error (unless read or write already ran), then a oneshot removal.
 fn ready(ops: &Loop<'_>, socket: *mut c_void, fd: c_int, mask: u32) {
-    let reactor = ops.ops.reactor;
     let fd_type = prepare(ops, socket, fd, mask & HANGUP != 0);
     let live = || registered(socket);
     for (kind, bit) in [(0, READ), (1, WRITE)] {
         if mask & bit != 0 && live() && handle(ops, kind, fd_type) < 0 {
-            // SAFETY: the native effect accepts `reactor` and the prepared event.
-            unsafe { (ops.ops.handler_failed)(reactor, kind, ops.event) };
+            handler_failed(ops, kind);
         }
     }
     if mask & HANGUP != 0 && live() {
@@ -245,8 +241,7 @@ fn ready(ops: &Loop<'_>, socket: *mut c_void, fd: c_int, mask: u32) {
             return;
         }
         if handle(ops, 2, fd_type) < 0 {
-            // SAFETY: the native effect accepts `reactor` and the prepared event.
-            unsafe { (ops.ops.handler_failed)(reactor, 2, ops.event) };
+            handler_failed(ops, 2);
         }
     }
     oneshot(ops, socket, live);
@@ -261,7 +256,6 @@ fn ready(ops: &Loop<'_>, socket: *mut c_void, fd: c_int, mask: u32) {
     target_os = "dragonfly"
 ))]
 fn kqueue(ops: &Loop<'_>, udata: *mut c_void, filter: c_int) {
-    let reactor = ops.ops.reactor;
     if udata.is_null() {
         return;
     }
@@ -273,19 +267,153 @@ fn kqueue(ops: &Loop<'_>, udata: *mut c_void, filter: c_int) {
         }
         let kind = u32::from(filter != c_int::from(libc::EVFILT_READ));
         if handle(ops, kind, fd_type) < 0 {
-            // SAFETY: the native effect accepts `reactor` and the prepared event.
-            unsafe { (ops.ops.handler_failed)(reactor, kind, ops.event) };
+            handler_failed(ops, kind);
         }
         oneshot(ops, udata, live);
     } else if filter == c_int::from(libc::EVFILT_SIGNAL) {
-        if let Some(signal) = ops.ops.signal {
-            // SAFETY: `udata` is the registered native signal; the effect accepts it.
-            unsafe { signal(udata) };
-        }
-    } else if let Some(unknown) = ops.ops.unknown {
-        // SAFETY: the native effect accepts `reactor`.
-        unsafe { unknown(reactor, filter) };
+        // SAFETY: a signal entry's udata is its registered `swoole::Signal`.
+        unsafe { dispatch_signal(udata.cast()) };
+    } else {
+        log::error_log(
+            LOG_WARNING,
+            EVENT_UNKNOWN_DATA,
+            c"ReactorKqueue::wait",
+            format_args!("unknown event filter[{filter}]"),
+        );
     }
+}
+
+/// kqueue delivers signals and unknown filters through the reactor.
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+mod kqueue_signal {
+    use super::{c_int, log};
+
+    /// `SW_LOG_WARNING`, `SW_ERROR_UNREGISTERED_SIGNAL` and `SW_ERROR_EVENT_UNKNOWN_DATA`.
+    pub(super) const LOG_WARNING: c_int = 4;
+    const UNREGISTERED_SIGNAL: c_int = 721;
+    pub(super) const EVENT_UNKNOWN_DATA: c_int = 803;
+
+    /// Upstream's `swoole::Signal`.
+    #[repr(C)]
+    pub(super) struct Signal {
+        pub handler: Option<unsafe extern "C" fn(c_int)>,
+        pub signo: u16,
+        pub activated: bool,
+    }
+
+    /// `ReactorKqueue::wait`'s signal entry: an activated signal runs its handler unless that is
+    /// `SIG_IGN`, and warns when it has none.
+    /// # Safety
+    /// `signal` is a live `swoole::Signal`.
+    pub(super) unsafe fn dispatch_signal(signal: *const Signal) {
+        // SAFETY: as the caller promises.
+        let signal = unsafe { &*signal };
+        if !signal.activated {
+            return;
+        }
+        let signo = c_int::from(signal.signo);
+        match signal.handler {
+            None => {
+                // SAFETY: a static NUL-terminated buffer.
+                let name = unsafe {
+                    std::ffi::CStr::from_ptr(swoole_rs_process::signal::swoole_signal_to_str(signo))
+                };
+                log::error_log(
+                    LOG_WARNING,
+                    UNREGISTERED_SIGNAL,
+                    c"ReactorKqueue::wait",
+                    format_args!(
+                        "Unable to find callback function for signal {}",
+                        name.to_string_lossy()
+                    ),
+                );
+            }
+            Some(handler) if handler as usize != libc::SIG_IGN => {
+                // SAFETY: the signal's registered handler.
+                unsafe { handler(signo) };
+            }
+            Some(_) => {}
+        }
+    }
+}
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+use kqueue_signal::{EVENT_UNKNOWN_DATA, LOG_WARNING, dispatch_signal};
+
+/// Warns about an uncaught kernel wait failure (errno is the kernel's); `entries` is poll's.
+fn wait_failed(ops: &Loop<'_>, entries: c_int) {
+    // SAFETY: the live state's fields; no native effect runs during the warning.
+    let fields = unsafe { &*ops.fields };
+    // SAFETY: a single read of the live state.
+    let epfd = unsafe { swr_v1_reactor_state_descriptor(ops.owner) };
+    let id = fields.id;
+    // `Reactor::get_timeout_msec()`.
+    let timeout = if fields.defer_tasks.is_null() {
+        fields.timeout_msec
+    } else {
+        0
+    };
+    match ops.backend {
+        EPOLL => log::sys_warning(
+            c"ReactorEpoll::wait",
+            format_args!(
+                "[Reactor#{id}] epoll_wait(epfd={epfd}, max_events={}, timeout={timeout}) failed",
+                fields.max_event_num
+            ),
+        ),
+        KQUEUE => log::sys_warning(
+            c"ReactorKqueue::wait",
+            format_args!("kevent(epfd={epfd}) failed "),
+        ),
+        _ => log::sys_warning(
+            c"ReactorPoll::wait",
+            format_args!("[Reactor#{id}] poll(nfds={entries}, timeout={timeout}) failed"),
+        ),
+    }
+}
+
+/// Warns that the read (0), write (1) or error (2) handler failed for the prepared event.
+fn handler_failed(ops: &Loop<'_>, kind: u32) {
+    // SAFETY: the event the loop just prepared, not otherwise borrowed now.
+    let event = unsafe { &*ops.event };
+    let fd = event.fd;
+    let name = |names: [&'static str; 3]| names.get(kind as usize).copied().unwrap_or_default();
+    match ops.backend {
+        EPOLL => {
+            let name = name(["EPOLLIN", "EPOLLOUT", "EPOLLERR"]);
+            log::sys_warning(
+                c"ReactorEpoll::wait",
+                format_args!("{name} handle failed [fd={fd}, type={}]", event.fd_type),
+            );
+            return;
+        }
+        KQUEUE => {
+            let name = if kind == 0 { "read" } else { "write" };
+            log::sys_warning(
+                c"ReactorKqueue::wait",
+                format_args!("kqueue event {name} socket#{fd} handler failed"),
+            );
+        }
+        _ => {
+            let name = name(["POLLIN", "POLLOUT", "POLLERR"]);
+            log::sys_warning(
+                c"ReactorPoll::wait",
+                format_args!("{name} handle failed. fd={fd}"),
+            );
+        }
+    }
+    swoole_rs_corebase::swoole_print_backtrace_on_error();
 }
 
 /// Runs the prepared event's read (0), write (1) or error (2) handler, as upstream's
@@ -341,8 +469,23 @@ fn registered(socket: *mut c_void) -> bool {
 fn oneshot(ops: &Loop<'_>, socket: *mut c_void, live: impl Fn() -> bool) {
     // SAFETY: `socket` stays live until its removal below.
     if live() && unsafe { (*socket.cast::<SocketRecord>()).events } & SW_EVENT_ONCE != 0 {
-        // SAFETY: the native effect accepts `reactor` and the socket.
-        unsafe { (ops.ops.remove)(ops.ops.reactor, socket) };
+        let socket = socket.cast::<SocketRecord>();
+        if ops.backend == EPOLL {
+            // SAFETY: the live state and a registered socket; no native effect is active.
+            // epoll's oneshot entry is already disarmed, so only the registry forgets it.
+            unsafe { swr_v1_reactor_state_socket(ops.owner, socket, 2, 0) };
+        } else {
+            // SAFETY: as above; poll and kqueue run `Reactor::del`.
+            unsafe {
+                crate::swr_v1_reactor_change(
+                    ops.owner,
+                    socket,
+                    2,
+                    0,
+                    crate::socket_upstream::swr_v1_reactor_log,
+                )
+            };
+        }
     }
 }
 
@@ -360,7 +503,6 @@ mod tests {
     }
 
     struct Probe {
-        owner: *mut ReactorState,
         running: *mut bool,
         begin_stops: bool,
         cycles: u32,
@@ -395,20 +537,6 @@ mod tests {
         0
     }
 
-    unsafe extern "C" fn remove(reactor: *mut c_void, socket: *mut c_void) {
-        effect("remove");
-        let probe = unsafe { &*reactor.cast::<Probe>() };
-        unsafe { swr_v1_reactor_state_socket(probe.owner, socket.cast(), 2, 0) };
-    }
-
-    unsafe extern "C" fn unexpected(_: *mut c_void, _: c_int) {
-        panic!("the kernel wait failed or reported an unknown entry");
-    }
-
-    unsafe extern "C" fn handler_failed(_: *mut c_void, _: u32, _: *const Event) {
-        panic!("a handler failed");
-    }
-
     /// The pinned loops' before/begin/wait/dispatch/end frame, `once`, `running` and the
     /// deferred zero timeout, over the actual kernel wait of poll and the native backend.
     #[test]
@@ -423,13 +551,10 @@ mod tests {
                     for socket_once in [false, true] {
                         for deferred in [false, true] {
                             // SAFETY: each run owns its state, pipe and socket.
-                            let effects =
+                            let (effects, removed) =
                                 unsafe { run(kind, [once, begin_stops, socket_once, deferred]) };
-                            let mut expected = vec!["begin", "read"];
-                            if socket_once {
-                                expected.push("remove");
-                            }
-                            expected.push("end");
+                            assert_eq!(removed, socket_once, "the oneshot socket is removed");
+                            let mut expected = vec!["begin", "read", "end"];
                             if !once && !begin_stops {
                                 expected.extend(["begin", "end-timeout"]);
                             }
@@ -445,7 +570,7 @@ mod tests {
     }
 
     /// `flags`: the reactor's `once`, a begin callback that stops it, a ONCE socket, deferred work.
-    unsafe fn run(kind: c_int, flags: [bool; 4]) -> Vec<&'static str> {
+    unsafe fn run(kind: c_int, flags: [bool; 4]) -> (Vec<&'static str>, bool) {
         let [once, begin_stops, socket_once, deferred] = flags;
         EFFECTS.with(|effects| effects.borrow_mut().clear());
         let state = swr_v1_reactor_state_new();
@@ -490,7 +615,6 @@ mod tests {
             (*state.fields).once = once;
         }
         let mut probe = Probe {
-            owner: state.owner,
             // SAFETY: the state's own field slot.
             running: unsafe { &raw mut (*state.fields).running },
             begin_stops,
@@ -507,16 +631,12 @@ mod tests {
             end,
             interrupted: None,
             interrupt: None,
-            wait_failed: unexpected,
-            handler_failed,
-            remove,
-            signal: None,
-            unknown: Some(unexpected),
         };
         assert_eq!(
             unsafe { swr_v1_reactor_wait(state.owner, &raw const ops) },
             0
         );
+        let removed = socket.removed != 0;
         unsafe {
             assert!((*state.fields).start);
             (*state.fields).defer_tasks = std::ptr::null_mut();
@@ -524,6 +644,40 @@ mod tests {
             libc::close(fds[0]);
             libc::close(fds[1]);
         }
-        EFFECTS.with(|effects| effects.borrow().clone())
+        (EFFECTS.with(|effects| effects.borrow().clone()), removed)
+    }
+
+    /// kqueue's signal entry: inactive does nothing, no handler warns, `SIG_IGN` is skipped,
+    /// any other handler runs with the signal number.
+    #[test]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    fn signal_entries_run_their_handler_as_upstreams_kqueue_wait() {
+        static SEEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+        unsafe extern "C" fn handler(signo: c_int) {
+            SEEN.store(signo, std::sync::atomic::Ordering::SeqCst);
+        }
+        // SAFETY: `SIG_IGN` is the address 1, which is never called.
+        let ignore: unsafe extern "C" fn(c_int) = unsafe { std::mem::transmute(libc::SIG_IGN) };
+        for (handler, activated, seen) in [
+            (Some(handler as unsafe extern "C" fn(c_int)), false, 0),
+            (None, true, 0),
+            (Some(ignore), true, 0),
+            (Some(handler), true, libc::SIGUSR1),
+        ] {
+            SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
+            let signal = kqueue_signal::Signal {
+                handler,
+                signo: u16::try_from(libc::SIGUSR1).unwrap(),
+                activated,
+            };
+            unsafe { dispatch_signal(&raw const signal) };
+            assert_eq!(SEEN.load(std::sync::atomic::Ordering::SeqCst), seen);
+        }
     }
 }

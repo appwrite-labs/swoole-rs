@@ -5,7 +5,7 @@ Covers `Reactor` construction and the poll/epoll/kqueue backends
 write path, handler tables, `change`, `interest` and `_close` are Rust
 (`crates/reactor/src/reactor_upstream.rs`, `crates/tls/src/reactor_write.rs`), and
 the members over C++ objects (the `std::function` callbacks and tasks, the
-constructor, destructor and `wait()`) are at the end of `src/wrapper/event.cc`.
+constructor, destructor and `wait()`) are `native/reactor/reactor.cc`.
 
 ## Construction
 

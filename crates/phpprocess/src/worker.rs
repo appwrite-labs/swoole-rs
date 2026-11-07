@@ -27,7 +27,7 @@ const CLOSE_READ: i64 = 3;
 const CLOSE_WRITE: i64 = 4;
 const TIMEOUT_ALL: c_int = 15;
 
-// SAFETY: the C++ runtime's allocator, and src/wrapper/event.cc's and
+// SAFETY: the C++ runtime's allocator, and native/reactor/reactor.cc's and
 // crates/timer's and crates/ossupport's functions, under their upstream symbols.
 unsafe extern "C" {
     #[link_name = "_Znwm"]

@@ -202,9 +202,6 @@ mod iov_owned;
 #[cfg(unix)]
 pub use iov_owned::*;
 
-mod signal_dispatch;
-pub use signal_dispatch::*;
-
 #[cfg(unix)]
 mod reactor_state;
 #[cfg(unix)]

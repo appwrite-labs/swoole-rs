@@ -63,8 +63,6 @@ swr_v1_reactor_iov_progress_reply swr_v1_reactor_iov_owned_progress(struct iovec
 struct pollfd;
 struct epoll_event;
 struct kevent;
-typedef struct { uint32_t phase; } swr_v1_reactor_signal_state;
-int32_t swr_v1_reactor_signal_workflow(swr_v1_reactor_signal_state *, int32_t);
 typedef struct { uint32_t phase; int32_t action; } swr_v1_reactor_builtin_reply;
 swr_v1_reactor_builtin_reply swr_v1_reactor_builtin_step(uint32_t, uint32_t, uint32_t, uint64_t);
 
@@ -158,11 +156,6 @@ typedef struct {
     void (*end)(void *, int timed_out);
     int (*interrupted)(void *); /* nullable: epoll io_uring builds only */
     void (*interrupt)(void *);  /* nullable */
-    void (*wait_failed)(void *, int entries); /* entries: poll's */
-    void (*handler_failed)(void *, uint32_t kind, const swr_v1_reactor_event *event);
-    void (*remove)(void *, void *socket);
-    void (*signal)(void *signal);      /* nullable: kqueue only */
-    void (*unknown)(void *, int filter); /* kqueue only */
 } swr_v1_reactor_wait_ops;
 typedef struct { size_t size, alignment, fields[6]; } swr_v1_reactor_backend_layout;
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -262,7 +255,7 @@ int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t lengt
 /* --fix-halfclose's close_notify and interrupted-sendfile repairs (SW_HALFCLOSE_TLS_SHUTDOWN). */
 void swr_v1_socket_set_halfclose_repairs(bool repaired);
 /* Reactor::set_exit_condition of a plain function, for Rust's signal backends
- * (src/wrapper/event.cc). */
+ * (native/reactor/reactor.cc). */
 void swr_v1_event_set_exit_condition(int id, bool (*condition)(size_t *event_num));
 /* The swr_v1_reactor_change_log the C++ passes. */
 void swr_v1_reactor_log(const char *origin, int code, const char *message);

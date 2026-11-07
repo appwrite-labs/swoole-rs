@@ -6,7 +6,7 @@ module is selected. Scripts can also be run directly from the repo root.
 ## Former facades
 
 The `callbacks`, `initialize` and `builtins` gates sliced function bodies out of
-the hybrid `src/wrapper/event.cc`. Their cases are `crates/reactor` tests named
+the former hybrid `src/wrapper/event.cc`. Their cases are `crates/reactor` tests named
 `former_callbacks_gate_*`, `former_initialize_gate_*` and
 `former_builtins_gate_*` (`callbacks.rs`, `initialize.rs`, `builtins.rs`).
 The 53 ordinary queued-output compositions formerly in `output.cc` now call the

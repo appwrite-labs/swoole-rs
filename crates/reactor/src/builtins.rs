@@ -89,7 +89,7 @@ mod tests {
 
     type Task = (Box<dyn Fn(*mut c_void)>, *mut c_void);
 
-    /// The fields event.cc's glue reads, with the former builtins gate's `if_exit`
+    /// The fields reactor.cc's glue reads, with the former builtins gate's `if_exit`
     /// facade: it counts queries and may clear `wait_exit`.
     struct Reactor {
         defer_tasks: *mut ReactorDeferred,
@@ -140,7 +140,7 @@ mod tests {
     unsafe extern "C" fn dispose(task: *mut c_void) {
         drop(unsafe { Box::from_raw(task.cast::<Task>()) });
     }
-    /// event.cc's `Reactor::defer` (`defer_into`).
+    /// reactor.cc's `Reactor::defer` (`defer_into`).
     fn defer(r: *mut Reactor, callback: impl Fn(*mut c_void) + 'static, data: *mut c_void) {
         let task: Box<Task> = Box::new((Box::new(callback), data));
         let task = Box::into_raw(task).cast();

@@ -33,7 +33,7 @@ const PRIORITY_SIGNAL_CALLBACK: c_int = 3;
 
 type SignalHandler = unsafe extern "C" fn(c_int);
 
-// SAFETY: src/wrapper/event.cc's.
+// SAFETY: native/reactor/reactor.cc's.
 unsafe extern "C" {
     fn swr_v1_event_reactor() -> *mut c_void;
     fn swr_v1_event_current() -> *mut c_void;

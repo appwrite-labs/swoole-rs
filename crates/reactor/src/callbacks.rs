@@ -365,7 +365,7 @@ mod tests {
         TRACE.with_borrow_mut(std::mem::take)
     }
 
-    /// event.cc's `ReactorCallbacks` glue over these exports, on the former callbacks
+    /// reactor.cc's `ReactorCallbacks` glue over these exports, on the former callbacks
     /// gate's Reactor facade (`get_event_num()` is 5). Payloads are boxed
     /// `Option<End>`/`Option<Exit>`, the empty `std::function` a new entry starts as.
     struct Reactor {
@@ -488,7 +488,7 @@ mod tests {
             }
         }
     }
-    /// event.cc's `swr_reactor_callbacks_walk`: entries in key order, re-read after
+    /// reactor.cc's `swr_reactor_callbacks_walk`: entries in key order, re-read after
     /// each call, stopping at the first false.
     fn walk(r: *mut Reactor, kind: u32, mut call: impl FnMut(i32, usize) -> bool) -> bool {
         let mut i = 0;

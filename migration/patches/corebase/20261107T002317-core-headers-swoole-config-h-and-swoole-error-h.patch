@@ -256,22 +256,3 @@ index 096c5f5..1547694 100644
 -        throw Exception(SW_ERROR_WRONG_OPERATION);
 +        swoole_throw_error(SW_ERROR_WRONG_OPERATION);
      }
-diff --git a/src/wrapper/event.cc b/src/wrapper/event.cc
-index bcdf0d0..fbf34f2 100644
---- a/src/wrapper/event.cc
-+++ b/src/wrapper/event.cc
-@@ -27,3 +27,3 @@ static_assert(SW_EVENT_READ == 512 && SW_EVENT_WRITE == 1024, "wrapper event ABI
- #include <memory>
--#ifdef SW_USE_MALLOC_TRIM
-+#ifdef HAVE_MALLOC_TRIM
- #ifdef __APPLE__
-@@ -290,3 +290,3 @@ Reactor::Reactor(int max_event, Type _type) {
- #endif
--#ifdef SW_USE_MALLOC_TRIM
-+#ifdef HAVE_MALLOC_TRIM
-     trim_compiled = 1;
-@@ -339,3 +339,3 @@ Reactor::Reactor(int max_event, Type _type) {
-         case 11: main_thread = swoole_is_main_thread(); break;
--#ifdef SW_USE_MALLOC_TRIM
-+#ifdef HAVE_MALLOC_TRIM
-         case 12: set_end_callback(PRIORITY_MALLOC_TRIM, [](Reactor *reactor) {
