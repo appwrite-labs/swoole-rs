@@ -825,6 +825,37 @@ pub unsafe extern "C" fn swr_v1_string_split(
     unsafe { string.split(delimiter, delimiter_length, call, handler) }
 }
 
+// SAFETY: the C++ runtime's allocation functions.
+unsafe extern "C" {
+    #[link_name = "_Znwm"]
+    fn operator_new(size: usize) -> *mut c_void;
+    #[link_name = "_ZdlPv"]
+    fn operator_delete(storage: *mut c_void);
+}
+
+/// `new String(data, length)`: operator new's storage, so C++ `delete` frees it.
+///
+/// # Safety
+/// `data` holds `length` readable bytes.
+#[must_use]
+pub unsafe fn new_string(data: *const u8, length: usize) -> *mut CppString {
+    // SAFETY: `new String`'s storage; a failed operator new aborts at this frame.
+    let storage = unsafe { operator_new(size_of::<CppString>()) }.cast::<CppString>();
+    // SAFETY: fresh storage for one String, and the caller's bytes.
+    unsafe { swr_string_from(storage, data, length) }
+}
+
+/// `delete string`.
+///
+/// # Safety
+/// `string` came from `new String` (C++ or [`new_string`]) and is not used again.
+pub unsafe fn delete_string(string: *mut CppString) {
+    // SAFETY: as the caller promises.
+    unsafe { of(string) }.dispose();
+    // SAFETY: operator new's storage, destroyed above.
+    unsafe { operator_delete(string.cast()) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

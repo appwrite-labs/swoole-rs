@@ -9,6 +9,7 @@
 )]
 
 mod codec;
+pub mod frame_api;
 pub mod sha1;
 pub use codec::*;
 

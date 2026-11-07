@@ -829,6 +829,7 @@ name = "swoole-rs-ports"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-error",
@@ -837,6 +838,7 @@ dependencies = [
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
+ "swoole-rs-websocket",
 ]
 
 [[package]]
@@ -951,8 +953,11 @@ dependencies = [
 name = "swoole-rs-websocket"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "openssl-sys",
  "swoole-rs-base64",
+ "swoole-rs-buffer",
+ "swoole-rs-corebase",
 ]
 
 [[package]]
