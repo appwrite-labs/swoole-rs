@@ -56,6 +56,13 @@ their assertions run now:
 
 `patching.py` and `cases.py` are shared helpers.
 
+`dns-timeout-originals.json` holds the original
+`swoole_coroutine_system/gethostbyname_timeout.phpt`. On an ordinary resolver the
+unknown name fails before its 1 ms deadline on both engines (last error 711, not
+712), so the PR tier's hybrid job runs it under `slow_resolver.py`: new mount and
+network namespaces whose local DNS server answers `www.github.com` at once and
+every other name NXDOMAIN after 0.5 s. The test and its assertions are unchanged.
+
 ## Known failures and gaps
 
 - Locales missing on the host are reported as unavailable, not passed.
