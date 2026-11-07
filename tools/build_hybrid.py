@@ -273,6 +273,12 @@ def native_sources():
     return {f'src/swoole_rs_{path.parent.name}_{path.name}': path for path in sorted((ROOT / 'native').glob('*/*.cc'))}
 
 
+def zend_free_native_sources():
+    """native_sources() without the extension's own glue, which includes PHP's headers: it belongs
+    in swoole.so, not in a Zend-free libswoole such as core-tests and the SDK consumers link."""
+    return {name: path for name, path in native_sources().items() if b'#include "php_swoole' not in path.read_bytes()}
+
+
 def stage_native_sources(source):
     for name, path in native_sources().items():
         if not (source / name).exists() or (source / name).read_bytes() != path.read_bytes():
@@ -291,11 +297,8 @@ def overlay_hybrid_tree(archive, tree):
                     (Path(tree) / name).unlink(missing_ok=True)
                 elif (source / name).read_bytes() != (Path(tree) / name).read_bytes():
                     shutil.copyfile(source / name, Path(tree) / name)
-    # The extension's own glue includes PHP's headers; it belongs in swoole.so, not in a
-    # Zend-free libswoole such as core-tests link.
-    for name, path in native_sources().items():
-        if b'#include "php_swoole' not in path.read_bytes():
-            shutil.copyfile(source / name, Path(tree) / name)
+    for name in zend_free_native_sources():
+        shutil.copyfile(source / name, Path(tree) / name)
     # core-tests include a header the hybrid folded into another one; they include the survivor.
     for path in (Path(tree) / 'core-tests').rglob('*'):
         text = path.read_text() if path.suffix in ('.h', '.cpp') else ''

@@ -8,7 +8,7 @@ import sys
 import tarfile
 from pathlib import Path
 
-from tools.build_hybrid import hybrid_tree, native_sources
+from tools.build_hybrid import hybrid_tree, zend_free_native_sources
 from tools.build_upstream import COMMIT
 from tools.harness import ROOT, run_isolated
 
@@ -44,7 +44,7 @@ def build(tree, engine, consumer, binary, archive=None, *, sanitize=False, optim
     if engine == 'rust':
         tree, headers = hybrid_tree(archive)
     command = ['c++', '-std=c++17', '-O3' if optimize else '-O1', '-g', '-ffunction-sections', '-fdata-sections',
-               '-I' + str(HERE), *headers, *[str(tree / name) for name in [*SOURCES, *native_sources()] if (tree / name).exists()], *map(str, extra), str(HERE / consumer)]
+               '-I' + str(HERE), *headers, *[str(tree / name) for name in [*SOURCES, *zend_free_native_sources()] if (tree / name).exists()], *map(str, extra), str(HERE / consumer)]
     command += shlex.split(subprocess.check_output(['pkg-config', '--cflags', '--libs', 'openssl'], text=True))
     if engine == 'rust':
         command.append(str(archive))
