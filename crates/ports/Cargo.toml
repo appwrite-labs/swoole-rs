@@ -24,6 +24,8 @@ swoole-rs-error = { path = "../error" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-tls = { path = "../tls" }
 swoole-rs-protocols = { path = "../protocols" }
+swoole-rs-websocket = { path = "../websocket" }
+swoole-rs-buffer = { path = "../buffer" }
 
 [lints]
 workspace = true

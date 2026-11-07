@@ -28,7 +28,7 @@ curl = ["dep:swoole-rs-curl"]
 ssh2 = ["dep:swoole-rs-ssh2"]
 
 [dependencies]
-swoole-rs-websocket = { path = "../websocket" }
+swoole-rs-websocket = { path = "../websocket", features = ["upstream-symbols"] }
 swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
 swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 swoole-rs-base64 = { path = "../base64" }

@@ -564,7 +564,9 @@ fn callback(callback: Callback) -> *mut c_void {
         Callback::HttpLength => http::get_package_length as *mut c_void,
         Callback::HttpLengthSize => http::get_package_length_size as *mut c_void,
         Callback::Http2Length => http::http2_length as *mut c_void,
-        Callback::WebsocketLength => http::websocket_length as *mut c_void,
+        Callback::WebsocketLength => {
+            swoole_rs_websocket::frame_api::get_package_length as *mut c_void
+        }
     }
 }
 
