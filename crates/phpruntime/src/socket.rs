@@ -9,6 +9,7 @@ use swoole_rs_hooks::{
     co_io::swr_v1_hook_co_socket_set_err,
     co_socket::CoSocket,
     lifecycle::{swr_v1_hook_co_socket_check_liveness, swr_v1_hook_co_socket_shutdown},
+    socket_members,
 };
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_timeout};
 use swoole_rs_zend::{
@@ -49,7 +50,6 @@ struct SocketOps {
         *mut socklen_t,
     ) -> ssize_t,
     option: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, bool),
-    bind: unsafe extern "C" fn(*mut c_void, *const c_char, size_t, c_int) -> bool,
     connect: unsafe extern "C" fn(*mut c_void, *const c_char, size_t, c_int, c_int) -> bool,
     listen: unsafe extern "C" fn(*mut c_void, c_int) -> bool,
     accept: unsafe extern "C" fn(*mut c_void, f64) -> *mut c_void,
@@ -57,9 +57,8 @@ struct SocketOps {
     ssl_encrypt: unsafe extern "C" fn(*mut c_void),
     ssl_handshake: unsafe extern "C" fn(*mut c_void) -> bool,
     ssl_close: unsafe extern "C" fn(*mut c_void),
-    peer_certs: unsafe extern "C" fn(
+    peer_chain: unsafe extern "C" fn(
         *mut c_void,
-        bool,
         unsafe extern "C" fn(*mut c_void, *const c_char, size_t),
         *mut c_void,
     ),
@@ -88,14 +87,6 @@ struct SocketOps {
         *mut size_t,
     ) -> ssize_t,
     sendfile: unsafe extern "C" fn(*mut c_void, *const c_char, i64, i64) -> bool,
-    sendto: unsafe extern "C" fn(
-        *mut c_void,
-        *const c_char,
-        size_t,
-        c_int,
-        *const c_char,
-        size_t,
-    ) -> ssize_t,
     proxy: unsafe extern "C" fn(
         *mut c_void,
         bool,
@@ -391,8 +382,8 @@ impl Socket {
     }
 
     pub(crate) fn bind(&self, host: &CStr, port: i32) -> bool {
-        // SAFETY: a live socket and its host's bytes.
-        unsafe { (native().bind)(self.raw(), host.as_ptr(), host.count_bytes(), port) }
+        // SAFETY: a live socket and its NUL-terminated host.
+        unsafe { socket_members::bind_host(self.raw(), host.as_ptr(), host.count_bytes(), port) }
     }
 
     pub(crate) fn connect(&self, host: &CStr, port: i32) -> bool {
@@ -468,8 +459,14 @@ impl Socket {
         unsafe { (native().ssl_close)(self.raw()) };
     }
 
-    /// The peer certificate (one PEM, maybe empty), or its chain.
-    pub(crate) fn peer_certs(&self, chain: bool) -> Vec<Vec<u8>> {
+    /// The peer certificate's PEM, empty without one.
+    pub(crate) fn peer_cert(&self) -> Vec<u8> {
+        // SAFETY: a live socket.
+        unsafe { socket_members::peer_cert(self.raw()) }
+    }
+
+    /// The peer's certificate chain.
+    pub(crate) fn peer_chain(&self) -> Vec<Vec<u8>> {
         unsafe extern "C" fn each(arg: *mut c_void, pem: *const c_char, length: size_t) {
             // SAFETY: `pem` holds `length` bytes.
             let pem = unsafe { std::slice::from_raw_parts(pem.cast::<u8>(), length) };
@@ -480,7 +477,7 @@ impl Socket {
         let mut certs: Vec<Vec<u8>> = Vec::new();
         // SAFETY: a live socket; `each` gets the vector, live for the call.
         unsafe {
-            (native().peer_certs)(self.raw(), chain, each, (&raw mut certs).cast());
+            (native().peer_chain)(self.raw(), each, (&raw mut certs).cast());
         }
         certs
     }
@@ -786,7 +783,7 @@ pub mod co {
 
     /// `sendto(std::string(host, length), port, data, size)`.
     /// # Safety
-    /// `socket` is live; `host` and `data` hold their bytes.
+    /// `socket` is live, in a coroutine; `host` and `data` hold their bytes.
     pub unsafe fn sendto(
         socket: Socket,
         host: *const c_char,
@@ -796,7 +793,28 @@ pub mod co {
         size: usize,
     ) -> isize {
         // SAFETY: per the caller.
-        unsafe { (native().sendto)(socket, host, length, port, data, size) }
+        let host = unsafe { terminated(host, length) };
+        // SAFETY: per the caller, with the host's NUL-terminated copy.
+        unsafe {
+            socket_members::sendto_host(
+                socket,
+                host.as_ptr().cast(),
+                length,
+                port,
+                data.cast(),
+                size,
+            )
+        }
+    }
+
+    /// `std::string(host, length)`: the bytes, NUL-terminated.
+    /// # Safety
+    /// `host` holds `length` bytes.
+    unsafe fn terminated(host: *const c_char, length: usize) -> Vec<u8> {
+        // SAFETY: per the caller.
+        let mut copy = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), length) }.to_vec();
+        copy.push(0);
+        copy
     }
 
     /// `sendfile(file, offset, length)`.
@@ -812,7 +830,9 @@ pub mod co {
     /// `socket` is live and `host` holds `length` bytes.
     pub unsafe fn bind(socket: Socket, host: *const c_char, length: usize, port: c_int) -> bool {
         // SAFETY: per the caller.
-        unsafe { (native().bind)(socket, host, length, port) }
+        let host = unsafe { terminated(host, length) };
+        // SAFETY: per the caller, with the host's NUL-terminated copy.
+        unsafe { socket_members::bind_host(socket, host.as_ptr().cast(), length, port) }
     }
 
     /// `listen(backlog)`.
@@ -1131,16 +1151,8 @@ pub mod co {
     /// `socket` is live and has TLS.
     #[must_use]
     pub unsafe fn peer_cert(socket: Socket) -> Vec<u8> {
-        unsafe extern "C" fn each(arg: *mut c_void, pem: *const c_char, length: usize) {
-            // SAFETY: `pem` holds `length` bytes and `arg` is the vector below.
-            let pem = unsafe { std::slice::from_raw_parts(pem.cast::<u8>(), length) };
-            // SAFETY: as above.
-            unsafe { &mut *arg.cast::<Vec<u8>>() }.extend_from_slice(pem);
-        }
-        let mut cert = Vec::new();
-        // SAFETY: per the caller; `each` runs once, synchronously.
-        unsafe { (native().peer_certs)(socket, false, each, (&raw mut cert).cast()) };
-        cert
+        // SAFETY: per the caller.
+        unsafe { socket_members::peer_cert(socket) }
     }
 
     /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.

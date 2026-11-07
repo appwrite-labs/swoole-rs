@@ -103,10 +103,6 @@ void *swr_v1_hook_co_socket_pop_buffer(swr_v1_co_socket *socket, bool write);
 /* UringSocket's constructors (swoole_socket_impl.h): with io_uring, Rust runs the socket's
  * members through the ring (crates/hooks/src/uring_socket.rs). */
 void swr_v1_hook_co_socket_uring(swr_v1_co_socket *socket);
-/* UringSocket::sendto's transfer to the resolved address: false, leaving *sent, unless the
- * socket is a UringSocket. */
-bool swr_v1_hook_co_socket_uring_sendto(
-    swr_v1_co_socket *socket, void *buf, size_t n, sockaddr *addr, socklen_t *length, ssize_t *sent);
 
 /* What the Rust operations need from C++ (crates/hooks/src/co_io.rs), installed once. */
 typedef struct {
@@ -171,16 +167,6 @@ long swr_v1_hook_co_socket_bound_cid(const swr_v1_co_socket *socket, uint32_t ev
 void swr_v1_hook_co_socket_check_bound(const swr_v1_co_socket *socket, uint32_t event);
 const char *swr_v1_hook_co_socket_event_str(const swr_v1_co_socket *socket, uint32_t event);
 bool swr_v1_hook_co_socket_timed_out(swr_v1_co_socket *socket, double timeout, double *startup, double now, int kind);
-/* TimerController: one wait's timer in the socket's slot for its direction. */
-typedef struct {
-    swr_v1_co_socket *socket;
-    void **slot;
-    double timeout;
-    bool enabled;
-} swr_v1_hook_co_timer_t;
-swr_v1_hook_co_timer_t swr_v1_hook_co_timer_new(swr_v1_co_socket *socket, uint32_t event, double timeout);
-bool swr_v1_hook_co_timer_start(swr_v1_hook_co_timer_t *timer);
-void swr_v1_hook_co_timer_stop(swr_v1_hook_co_timer_t *timer);
 /* Socket::timer_callback: node, one of the socket's timers, fired. */
 void swr_v1_hook_co_socket_timer_fired(swr_v1_co_socket *socket, void *node);
 /* wait_event for the current coroutine: barrier (when given) stays installed for the wait;
@@ -191,16 +177,6 @@ bool swr_v1_hook_co_socket_wait(swr_v1_co_socket *socket,
                                 void *barrier_state,
                                 char **buffer,
                                 size_t length);
-/* One transfer in event's direction, retried while it would block; flags: 1 all
-   (recv_all/send_all), 2 retry EINTR at once, 4 availability checked already. call
-   (with context) is the network::Socket call and must not throw. */
-ssize_t swr_v1_hook_co_socket_transfer(swr_v1_co_socket *socket,
-                                       uint32_t event,
-                                       uint32_t flags,
-                                       char *buffer,
-                                       size_t length,
-                                       ssize_t (*call)(void *, char *, size_t),
-                                       void *context);
 }
 
 static_assert(sizeof(swoole::Protocol) == 64 && offsetof(swoole::Protocol, package_max_length) == 16 &&

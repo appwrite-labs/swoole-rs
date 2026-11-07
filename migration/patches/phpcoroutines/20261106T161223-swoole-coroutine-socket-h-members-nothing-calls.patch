@@ -91,7 +91,7 @@ index ea38748..03a636d 100644
 -    Coroutine *event_co(uint32_t event) const { return static_cast<Coroutine *>(swr_v1_hook_socket_co(state_, event)); }
      void bind_co(uint32_t event, Coroutine *co) { swr_v1_hook_socket_bind(state_, event, co); }
 @@ -428,21 +367,2 @@ class Socket : public swr_v1_co_socket {
-     struct Setup;
+     }
 -
 -  public:
 -    class TimeoutSetter : protected swr_v1_co_timeout_scope {

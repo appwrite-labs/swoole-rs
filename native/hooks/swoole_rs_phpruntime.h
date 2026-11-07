@@ -119,8 +119,6 @@ struct swr_v1_runtime_socket_ops {
     ssize_t (*recvfrom)(void *socket, char *buf, size_t length, struct sockaddr *addr, socklen_t *addrlen);
     /* setsockopt(level, name, value); logged: the coroutine socket's, which logs a failure. */
     void (*option)(void *socket, int level, int name, int value, bool logged);
-    /* bind(std::string(host, length), port). */
-    bool (*bind)(void *socket, const char *host, size_t length, int port);
     /* connect(std::string(host, length), port, flags). */
     bool (*connect)(void *socket, const char *host, size_t length, int port, int flags);
     bool (*listen)(void *socket, int backlog);
@@ -129,8 +127,8 @@ struct swr_v1_runtime_socket_ops {
     void (*ssl_encrypt)(void *socket);
     bool (*ssl_handshake)(void *socket);
     void (*ssl_close)(void *socket);
-    /* each(arg, pem, length) of the peer certificate, or of its chain. */
-    void (*peer_certs)(void *socket, bool chain, void (*each)(void *, const char *, size_t), void *arg);
+    /* each(arg, pem, length) of each certificate in the peer's chain. */
+    void (*peer_chain)(void *socket, void (*each)(void *, const char *, size_t), void *arg);
     /* poll(SW_EVENT_WRITE or SW_EVENT_READ, timeout). */
     bool (*poll)(void *socket, bool write, double timeout);
     /* System::socket_poll of count (fd, events) rows, merged by fd as stream_select
@@ -143,7 +141,6 @@ struct swr_v1_runtime_socket_ops {
     /* op: 0 readv, 1 readv_all, 2 writev, 3 writev_all; where it stopped into index and offset. */
     ssize_t (*vector)(void *socket, int op, const struct iovec *vectors, int count, int *index, size_t *offset);
     bool (*sendfile)(void *socket, const char *file, int64_t offset, int64_t length);
-    ssize_t (*sendto)(void *socket, const char *host, size_t length, int port, const char *data, size_t size);
     /* set_http_proxy (http) or set_socks5_proxy. */
     void (*proxy)(void *socket, bool http, const char *host, size_t host_length, int port, const char *user,
                   size_t user_length, const char *password, size_t password_length);
