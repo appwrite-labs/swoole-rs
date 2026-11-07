@@ -146,7 +146,7 @@ pub struct LifecycleHost {
     thread_prepare: unsafe extern "C" fn(*mut zend_object, *mut *mut c_void) -> bool,
     thread_release: unsafe extern "C" fn(*mut c_void),
     copy_setting: unsafe extern "C" fn(*mut c_void, *mut zval),
-    release: unsafe extern "C" fn(*mut c_void, bool),
+    release: unsafe extern "C" fn(*mut c_void),
     port_release: unsafe extern "C" fn(*mut zval),
     is_process: unsafe extern "C" fn(*mut zval) -> bool,
     add_process: unsafe extern "C" fn(*mut c_void, *mut zval) -> i64,
@@ -359,8 +359,12 @@ pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
     data.property = ptr::null_mut();
     let serv = data.serv;
     if !serv.is_null() {
-        // SAFETY: a live server: its dispatch_func callable.
-        unsafe { (host.release)(serv, false) };
+        // SAFETY: a live server.
+        let dispatch = std::mem::replace(
+            &mut unsafe { view::config(serv) }.private_data_3,
+            ptr::null_mut(),
+        );
+        bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         for &callable in property.callbacks.iter().filter(|cb| !cb.is_null()) {
             // SAFETY: a callable the property owned.
             unsafe { swoole_rs_phpruntime::callable_free(callable) };
@@ -386,8 +390,9 @@ pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
     unsafe { zend_object_std_dtor(object) };
     if !serv.is_null() && fact(serv, fact::MASTER) {
         // SAFETY: the master owns the Server; nothing refers to it now.
-        unsafe { (host.release)(serv, true) };
+        unsafe { (host.release)(serv) };
     }
+    bailout::finish();
 }
 
 /// `php_swoole_server_add_port`: a Port object for `port`, kept by the Server

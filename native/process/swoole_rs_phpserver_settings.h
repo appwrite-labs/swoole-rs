@@ -45,8 +45,6 @@ typedef struct {
     int64_t (*parse_size)(struct _zval_struct *value);
     /* php_swoole_set_global/coroutine/aio_option in zend_try: true if it bailed out. */
     bool (*global_options)(void *settings);
-    /* dispatch_func: the callable and its hook, in zend_try: true if it bailed out. */
-    bool (*dispatch_func)(void *server, struct _zval_struct *value);
     /* This process's CPU affinity into `cpus`: the count, or -1 with *error = errno. */
     int (*cpu_affinity)(int *cpus, size_t capacity, int *error);
     /* serv->cpu_affinity_available(_num) = a copy of `cpus`. */
