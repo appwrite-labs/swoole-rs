@@ -501,12 +501,15 @@ pub unsafe extern "C" fn send_message(
     message: *const c_char,
     length: usize,
 ) -> bool {
-    use crate::workers::factory_methods::SendData;
     use swoole_rs_corebase::DataHead;
-    // SAFETY: src/protocol/message_bus.cc's method and crates/tls's.
+    // SAFETY: crates/protocols' bus write and crates/tls's.
     unsafe extern "C" {
-        #[link_name = "_ZNK6swoole10MessageBus5writeEPNS_7network6SocketEPNS_8SendDataE"]
-        fn bus_write(bus: *mut c_void, socket: *mut c_void, data: *mut SendData) -> bool;
+        fn swr_v1_bus_write(
+            bus: *mut c_void,
+            socket: *mut c_void,
+            head: *mut DataHead,
+            data: *const c_char,
+        ) -> bool;
         #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
         fn send_async(socket: *mut c_void, data: *const c_void, length: usize) -> isize;
     }
@@ -524,16 +527,15 @@ pub unsafe extern "C" fn send_message(
         clippy::cast_possible_truncation,
         reason = "DataHead's reactor_id and len are upstream's int16_t and uint32_t"
     )]
-    let mut task = SendData {
-        info: DataHead {
-            reactor_id: swoole_get_worker_id() as i16,
-            len: length as u32,
-            ..DataHead::default()
-        },
-        data: message.cast(),
+    let mut head = DataHead {
+        reactor_id: swoole_get_worker_id() as i16,
+        len: length as u32,
+        ..DataHead::default()
     };
-    // SAFETY: the pool's bus, the worker's pipe and a task over the caller's bytes.
-    unsafe { bus_write(pool.message_bus, pipe, &raw mut task) }
+    // SAFETY: `MessageBus` starts with its `swr_bus *`.
+    let bus = unsafe { *pool.message_bus.cast::<*mut c_void>() };
+    // SAFETY: the pool's bus, the worker's pipe and a header over the caller's bytes.
+    unsafe { swr_v1_bus_write(bus, pipe, &raw mut head, message) }
 }
 
 /// `ProcessPool::pop_message(data, size)`: the next message in the master's box,

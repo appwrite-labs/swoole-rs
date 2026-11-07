@@ -101,12 +101,17 @@ void swr_v1_bus_pass(swr_bus *, const void *info, const char *data);
 swr_bus_packet swr_v1_bus_packet(swr_bus *);
 char *swr_v1_bus_move_packet(swr_bus *);
 void swr_v1_bus_pop(swr_bus *);
-/* On SWR_BUS_ALLOCATE: allocate state->size bytes, adopt them, call again. */
+/* On SWR_BUS_ALLOCATE: allocate state->size bytes, adopt them, call again.
+ * The other events are logged before it returns. */
 ssize_t swr_v1_bus_read(swr_bus *, int fd, bool dgram, bool *nobufs, swr_bus_read *state);
 void swr_v1_bus_adopt(swr_bus *, void *data, size_t size, const void *allocator);
-bool swr_v1_bus_write(swr_bus *, void *socket, void *head, const char *data,
-                      ssize_t (*send)(void *socket, const struct iovec *, size_t),
-                      bool (*reduce)(void *socket));
+/* next(context) numbers each message swr_v1_bus_write sends. */
+void swr_v1_bus_set_id_source(swr_bus *, uint64_t (*next)(void *context), void *context);
+/* socket is a swoole::network::Socket. */
+bool swr_v1_bus_write(swr_bus *, void *socket, void *head, const char *data);
+/* The bus's own records of its pipes, freed (not closed) with it. */
+void swr_v1_bus_init_pipe_socket(swr_bus *, int fd);
+void *swr_v1_bus_pipe_socket(swr_bus *, int fd);
 #ifdef __cplusplus
 }
 #endif

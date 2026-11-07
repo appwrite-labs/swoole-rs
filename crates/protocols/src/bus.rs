@@ -2,16 +2,19 @@
 //! Rust owns the receive buffer's bookkeeping, the chunked packets being
 //! reassembled, and the read and write loops over the pipe's file descriptor.
 //!
-//! Native code keeps three things. Allocation: the allocator may be Zend's, whose
-//! `emalloc` can bail out (longjmp), so `swr_v1_bus_read` returns to its caller to
-//! allocate a packet and is called again to resume. Logging: the read reports an
-//! event and native code logs it. Socket writes: `write` calls the caller's
-//! `send`, which never bails out. Freeing a packet calls its allocator's `free`,
-//! which never bails out either.
+//! It also owns the bus's own records of its pipes (`init_pipe_socket`), and logs
+//! what a read reports.
+//!
+//! Native code keeps allocation: the allocator may be Zend's, whose `emalloc` can
+//! bail out (longjmp), so `swr_v1_bus_read` returns to its caller to allocate a
+//! packet and is called again to resume. Freeing a packet calls its allocator's
+//! `free`, which never bails out.
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr;
+use swoole_rs_corebase::log;
+use swoole_rs_reactor::SocketRecord;
 
 /// `SW_EVENT_DATA_*`.
 const PTR: u8 = 1 << 1;
@@ -27,6 +30,8 @@ const IPC_MSG_MIN: u32 = 2048 - 40;
 const _: () = assert!(HEAD == 40, "sizeof(DataHead)");
 /// `swReturnCode`'s `SW_WAIT`.
 const WAIT: c_int = 2;
+/// `swReturnCode`'s `SW_REDUCE_SIZE`.
+const REDUCE_SIZE: c_int = 7;
 /// `SW_DEFAULT_ALIGNMENT`.
 const ALIGNMENT: usize = size_of::<std::ffi::c_ulong>();
 
@@ -90,6 +95,8 @@ pub struct BusRead {
 /// Writes `count` iovecs to `socket`; never bails out.
 pub type BusSend =
     unsafe extern "C" fn(socket: *mut c_void, iov: *const libc::iovec, count: usize) -> isize;
+/// The next message id (`MessageBus`'s `id_generator_`).
+pub type BusNextId = unsafe extern "C" fn(context: *mut c_void) -> u64;
 /// Whether the failed write's errno asks for smaller chunks (`SW_REDUCE_SIZE`).
 pub type BusReduce = unsafe extern "C" fn(socket: *mut c_void) -> bool;
 
@@ -134,6 +141,22 @@ pub struct Bus {
     buffer_size: usize,
     always_chunked: bool,
     packets: HashMap<u64, Packet, BuildHasherDefault<IdHasher>>,
+    /// `pipe_sockets_`: by descriptor, this bus's own records of the pipes.
+    pipe_sockets: Vec<*mut SocketRecord>,
+    /// `id_generator_`: what numbers each written message.
+    next_id: Option<(BusNextId, *mut c_void)>,
+}
+
+impl Drop for Bus {
+    /// `~MessageBus`: the pipe records go, their descriptors stay open.
+    fn drop(&mut self) {
+        for &socket in self.pipe_sockets.iter().filter(|socket| !socket.is_null()) {
+            // SAFETY: a record `init_pipe_socket` made, used by nothing else now.
+            unsafe { (*socket).fd = -1 };
+            // SAFETY: as above.
+            unsafe { swoole_rs_tls::upstream::socket_free(socket) };
+        }
+    }
 }
 
 fn aligned(size: usize) -> usize {
@@ -160,6 +183,8 @@ impl Bus {
             buffer_size,
             always_chunked: false,
             packets: HashMap::default(),
+            pipe_sockets: Vec::new(),
+            next_id: None,
         }
     }
 
@@ -697,7 +722,37 @@ pub unsafe extern "C" fn swr_v1_bus_read(
     // SAFETY: the caller lends a writable state.
     let state = unsafe { &mut *state };
     // SAFETY: the caller's contract.
-    unsafe { bus.read(fd, dgram, state, nobufs) }
+    let n = unsafe { bus.read(fd, dgram, state, nobufs) };
+    let origin = if dgram {
+        c"MessageBus::read_with_buffer"
+    } else {
+        c"MessageBus::read"
+    };
+    match state.event {
+        BUS_CLOSED => log::warning(
+            origin,
+            format_args!("receive data from socket#{fd} returns 0"),
+        ),
+        BUS_READV_CLOSED => log::warning(
+            origin,
+            format_args!(
+                "receive pipeline data error, pipe_fd={fd}, reactor_id={}",
+                bus.head().reactor_id
+            ),
+        ),
+        BUS_ABNORMAL => log::error_log(
+            /* SW_LOG_WARNING */ 4,
+            /* SW_ERROR_SERVER_WORKER_ABNORMAL_PIPE_DATA */ 9102,
+            origin,
+            format_args!(
+                "abnormal pipeline data, msg_id={}, pipe_fd={fd}, reactor_id={}",
+                bus.head().msg_id,
+                bus.head().reactor_id
+            ),
+        ),
+        _ => {}
+    }
+    n
 }
 
 /// Hands the block `BUS_ALLOCATE` asked for to the current packet.
@@ -716,26 +771,104 @@ pub unsafe extern "C" fn swr_v1_bus_adopt(
     unsafe { self::bus(bus) }.adopt(data.cast(), size, allocator.cast());
 }
 
-/// `MessageBus::write` once `head.msg_id` is set: false if the pipe failed.
+/// `MessageBus::set_id_generator`: `next(context)` numbers each message written.
 ///
 /// # Safety
-/// As `bus`; `head` is writable; `data` covers `head.len` bytes or is null;
-/// `send` and `reduce` are valid for `socket`.
+/// As `bus`; `next` may be called with `context` while the bus lives.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_bus_set_id_source(
+    bus: *mut Bus,
+    next: BusNextId,
+    context: *mut c_void,
+) {
+    // SAFETY: the caller's contract.
+    unsafe { self::bus(bus) }.next_id = Some((next, context));
+}
+
+/// `MessageBus::write`: numbers the message, then writes it through the event loop
+/// while one is available, else synchronously. False if the pipe failed.
+///
+/// # Safety
+/// As `bus`; `socket` is a live record; `head` is writable; `data` covers
+/// `head.len` bytes or is null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_bus_write(
     bus: *mut Bus,
-    socket: *mut c_void,
+    socket: *mut SocketRecord,
     head: *mut BusHead,
     data: *const c_char,
-    send: BusSend,
-    reduce: BusReduce,
 ) -> bool {
+    /// # Safety
+    /// `socket` is a live record and `iov` denotes `count` readable iovecs.
+    unsafe extern "C" fn send(socket: *mut c_void, iov: *const libc::iovec, count: usize) -> isize {
+        use swoole_rs_reactor::event_api;
+        if event_api::swoole_event_is_available() {
+            // SAFETY: the write's live record and iovecs, on the thread's live loop.
+            unsafe { event_api::swoole_event_writev(socket.cast(), iov, count) }
+        } else {
+            // SAFETY: the write's live record and iovecs.
+            unsafe { swoole_rs_tls::upstream::socket_writev_sync(socket.cast(), iov, count) }
+        }
+    }
+    /// # Safety
+    /// `socket` is a live record.
+    unsafe extern "C" fn reduce(socket: *mut c_void) -> bool {
+        // SAFETY: the write's live record.
+        let nobufs = unsafe { &raw mut (*socket.cast::<SocketRecord>()).kernel_nobufs };
+        // SAFETY: `nobufs` is the record's writable field.
+        unsafe { swoole_rs_reactor::swr_v1_socket_catch_pipe_error(errno(), nobufs) == REDUCE_SIZE }
+    }
     // SAFETY: the caller's contract.
     let bus = unsafe { self::bus(bus) };
     // SAFETY: the caller lends a writable header.
     let head = unsafe { &mut *head };
+    if let Some((next, context)) = bus.next_id {
+        // SAFETY: the source the caller set for this bus.
+        head.msg_id = unsafe { next(context) };
+    }
     // SAFETY: the caller's contract.
-    unsafe { bus.write(socket, head, data.cast(), send, reduce) }
+    unsafe { bus.write(socket.cast(), head, data.cast(), send, reduce) }
+}
+
+/// `MessageBus::init_pipe_socket`: this bus's own nonblocking record of the pipe
+/// `fd`, with no send-buffer limit.
+///
+/// # Safety
+/// As `bus`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_bus_init_pipe_socket(bus: *mut Bus, fd: c_int) {
+    // SAFETY: the caller's contract.
+    let bus = unsafe { self::bus(bus) };
+    let Ok(index) = usize::try_from(fd) else {
+        return;
+    };
+    if index >= bus.pipe_sockets.len() {
+        bus.pipe_sockets.resize(index + 1, ptr::null_mut());
+    }
+    // SAFETY: `make_socket` returns a new record, which nothing else holds yet.
+    let socket = unsafe {
+        &mut *swoole_rs_reactor::swr_v1_socket_make(fd, /* SW_FD_PIPE */ 3)
+    };
+    socket.output.buffer_size = u32::MAX;
+    if socket.output.nonblock == 0 {
+        // SAFETY: the live record just made.
+        unsafe { swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1) };
+    }
+    bus.pipe_sockets[index] = socket;
+}
+
+/// `MessageBus::get_pipe_socket`: the record `init_pipe_socket` made for `fd`.
+///
+/// # Safety
+/// As `bus`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_bus_pipe_socket(bus: *mut Bus, fd: c_int) -> *mut SocketRecord {
+    // SAFETY: the caller's contract.
+    let bus = unsafe { self::bus(bus) };
+    usize::try_from(fd)
+        .ok()
+        .and_then(|index| bus.pipe_sockets.get(index).copied())
+        .unwrap_or(ptr::null_mut())
 }
 
 #[cfg(test)]
