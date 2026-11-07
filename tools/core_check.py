@@ -31,7 +31,7 @@ def main():
     # The differential reads its patched sources and headers from this archive's build.
     if sha(archive) != manifest['inputs']['rust_archive_sha256']:
         parser.error('Archive differs from selected build')
-    return subprocess.run([sys.executable, str(ROOT / 'tests/modules' / args.module / 'differential.py'),
+    return subprocess.run([sys.executable, str(ROOT / 'tests/modules/error/differential.py'),
                            '--source', str(ROOT / 'target/upstream/src'), '--archive', str(archive),
                            '--output', str(args.output), *(['--sanitize'] if args.sanitize else [])], cwd=ROOT).returncode
 
