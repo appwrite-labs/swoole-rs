@@ -99,20 +99,14 @@ pub struct Ops {
     exception: *mut zend_class_entry,
     /// `Coroutine::get_current() != nullptr`.
     in_coroutine: unsafe extern "C" fn() -> u8,
-    /// `SWOOLE_G(cli)`.
-    cli: unsafe extern "C" fn() -> u8,
     /// `System::sleep(seconds)`.
     coroutine_sleep: unsafe extern "C" fn(seconds: f64) -> i32,
     /// `PHPCoroutine::set_hook_flags` and `get_hook_flags`.
     set_hook_flags: unsafe extern "C" fn(flags: u32),
     get_hook_flags: unsafe extern "C" fn() -> u32,
-    /// `SWOOLE_G(enable_library)`.
-    enable_library: unsafe extern "C" fn() -> u8,
     /// `sw_is_main_thread()`, and `sw_active_thread_count()`.
     main_thread: unsafe extern "C" fn() -> u8,
     active_threads: unsafe extern "C" fn() -> u32,
-    /// The before (0) or after (1) enable-hook global hook, if set.
-    call_hook: unsafe extern "C" fn(after: u8, flags: *mut u32),
     /// Swap the plain-files wrapper (0) or the stdio ops (1).
     stream_ops: unsafe extern "C" fn(stdio: u8, hook: u8),
     /// `swoole_<driver>_set_blocking(blocking)` for a `HOOK_PDO_*` bit.
@@ -126,8 +120,6 @@ pub struct Ops {
     callable_call: unsafe extern "C" fn(call: *mut c_void),
     /// `callable->ptr()`.
     callable_fcc: unsafe extern "C" fn(callable: *mut c_void) -> *mut zend_fcall_info_cache,
-    /// `sw_logger()->put(SW_LOG_WARNING, ..)` at that level.
-    log_warning: unsafe extern "C" fn(message: *const c_char),
     /// `php_swoole_fatal_error(level, "%s", message)`.
     fatal_error: unsafe extern "C" fn(level: i32, message: *const c_char),
     /// `php_swoole_error(level, "%s", message)`.
@@ -149,8 +141,6 @@ pub struct Ops {
     convert_to_fd: unsafe extern "C" fn(call: *mut c_void),
     /// `php_swoole_check_reactor()`.
     check_reactor: unsafe extern "C" fn(),
-    /// `swoole_strerror(code)`.
-    strerror: unsafe extern "C" fn(code: i32) -> *const c_char,
 }
 
 // SAFETY: a static table of function pointers and a class entry, both
@@ -323,8 +313,8 @@ fn set_hook_flags_method(call: &Call) {
 
 /// `runtime_set_hook_flags`: CLI only, then `min` to one flags argument.
 fn set_hook_flags(call: &Call, min: u32) -> Result<(), Bailout> {
-    // SAFETY: C++'s accessor.
-    if unsafe { (ops().cli)() } == 0 {
+    // SAFETY: this thread's module globals, live from MINIT.
+    if !unsafe { (*swoole_rs_phpswoole::globals()).cli } {
         let reported = socket::report(
             socket::Report::Fatal,
             swoole_rs_zend::E_ERROR,
@@ -381,15 +371,13 @@ pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
         );
         return Ok(false);
     }
-    // SAFETY: a writable flags word.
-    unsafe { (ops.call_hook)(0, &raw mut requested) };
+    call_hook(BEFORE_ENABLE_HOOK, &mut requested);
     let mut unavailable = 0;
     // SAFETY: a name and its length.
     if !unsafe { swr_zend_module_loaded(c"sockets".as_ptr(), 7) } {
         unavailable |= flags::SOCKETS;
     }
-    // SAFETY: C++'s accessor.
-    if unsafe { (ops.enable_library)() } == 0 {
+    if !swoole_rs_phpswoole::enable_library() {
         unavailable |= flags::NET_FUNCTION | flags::MONGODB;
     }
     requested &= !unavailable;
@@ -402,10 +390,21 @@ pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     functions::hook_all(requested, installed)?;
     mongodb(requested, installed)?;
 
-    // SAFETY: as above.
-    unsafe { (ops.call_hook)(1, &raw mut requested) };
+    call_hook(BEFORE_ENABLE_HOOK + 1, &mut requested);
     HOOKED.store(requested, Ordering::Relaxed);
     Ok(true)
+}
+
+/// `PHP_SWOOLE_HOOK_BEFORE_ENABLE_HOOK` (`SW_GLOBAL_HOOK_USER`); the after
+/// hook follows it.
+const BEFORE_ENABLE_HOOK: i32 = 24;
+
+/// `swoole_call_hook(kind, flags)` if a hook of `kind` is set.
+fn call_hook(kind: i32, flags: &mut u32) {
+    if swoole_rs_corebase::swoole_isset_hook(kind) {
+        // SAFETY: the enable-hook callbacks take the flags word.
+        unsafe { swoole_rs_corebase::swoole_call_hook(kind, std::ptr::from_mut(flags).cast()) };
+    }
 }
 
 /// `Some(true)` when `bit` is requested and not installed, `Some(false)` when
@@ -510,9 +509,21 @@ fn throw(message: &Message, code: i64) {
     ));
 }
 
+/// `sw_logger()->put(SW_LOG_WARNING, message)`, which the level filters.
 fn log_warning(message: &CStr) {
-    // SAFETY: a NUL-terminated message.
-    unsafe { (ops().log_warning)(message.as_ptr()) };
+    const SW_LOG_WARNING: i32 = 4;
+    if let Some(logger) = swoole_rs_utilities::process_logger() {
+        let message = message.to_bytes();
+        // SAFETY: the live process logger, with the message's bytes.
+        unsafe {
+            swoole_rs_utilities::swr_v1_logger_put(
+                logger,
+                SW_LOG_WARNING,
+                message.as_ptr().cast(),
+                message.len(),
+            );
+        }
+    }
 }
 
 fn in_coroutine() -> bool {
@@ -640,7 +651,6 @@ mod tests {
         0
     }
     unsafe extern "C" fn flags_in(_: u32) {}
-    unsafe extern "C" fn hook(_: u8, _: *mut u32) {}
     unsafe extern "C" fn stream_ops(stdio: u8, hook: u8) {
         record(format!("stream:{stdio}:{hook}"));
     }
@@ -657,7 +667,6 @@ mod tests {
     unsafe extern "C" fn fcc(_: *mut c_void) -> *mut zend_fcall_info_cache {
         std::ptr::null_mut()
     }
-    unsafe extern "C" fn log(_: *const c_char) {}
     unsafe extern "C" fn error(_: i32, _: *const c_char) {}
 
     /// Two PDO drivers built in, no native curl.
@@ -665,14 +674,11 @@ mod tests {
         features: flags::PDO_PGSQL | flags::PDO_SQLITE,
         exception: std::ptr::null_mut(),
         in_coroutine: no,
-        cli: no,
         coroutine_sleep: sleep,
         set_hook_flags: flags_in,
         get_hook_flags: zero,
-        enable_library: no,
         main_thread: no,
         active_threads: zero,
-        call_hook: hook,
         stream_ops,
         pdo,
         callable,
@@ -680,7 +686,6 @@ mod tests {
         callable_dup,
         callable_call: free,
         callable_fcc: fcc,
-        log_warning: log,
         fatal_error: error,
         error,
         proc_open: None,
@@ -694,12 +699,8 @@ mod tests {
         coroutine_check: free,
         convert_to_fd: free,
         check_reactor: unchecked,
-        strerror,
     };
     unsafe extern "C" fn unchecked() {}
-    unsafe extern "C" fn strerror(_: i32) -> *const c_char {
-        c"".as_ptr()
-    }
 
     fn run(requested: u32, installed: u32) -> (u32, Vec<String>) {
         OPS.get_or_init(|| &FAKE);

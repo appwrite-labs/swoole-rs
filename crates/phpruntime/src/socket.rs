@@ -560,10 +560,8 @@ pub fn check_reactor() {
 /// `swoole_strerror(code)`.
 #[must_use]
 pub fn strerror(code: i32) -> &'static CStr {
-    // SAFETY: a lookup.
-    let message = unsafe { (ops().strerror)(code) };
     // SAFETY: Swoole's static message table or strerror's text.
-    unsafe { CStr::from_ptr(message) }
+    unsafe { CStr::from_ptr(swoole_rs_error::swoole_strerror(code)) }
 }
 
 /// `Coroutine::get_current_safe()`: outside a coroutine Swoole raises a fatal

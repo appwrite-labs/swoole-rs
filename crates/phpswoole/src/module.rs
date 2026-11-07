@@ -9,7 +9,9 @@ use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
 };
-use swoole_rs_corebase::{swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace};
+use swoole_rs_corebase::{
+    log::set_last_error, swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace,
+};
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING,
     bailout::{self, Bailout},
@@ -400,6 +402,23 @@ pub unsafe extern "C" fn swr_v1_phpswoole_init_globals(globals: *mut Globals) {
     }
 }
 
+unsafe extern "C" {
+    /// `int swoole_event_free()`.
+    #[link_name = "_Z17swoole_event_freev"]
+    fn swoole_event_free() -> c_int;
+}
+
+/// MSHUTDOWN's `swoole_clean()`.
+extern "C" fn clean() {
+    swoole_rs_corebase::swoole_clean();
+}
+
+/// RSHUTDOWN's `swoole_event_free()`.
+extern "C" fn event_free() {
+    // SAFETY: the request's end, on the thread that owns the event loop.
+    unsafe { swoole_event_free() };
+}
+
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's MSHUTDOWN.
@@ -410,7 +429,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number:
         Step::Hook(ops.known_strings_dtor),
         Step::Hook(php_swoole_runtime_mshutdown),
         Step::Hook(ops.optional_mshutdown),
-        Step::Hook(ops.clean),
+        Step::Hook(clean),
     ];
     bailout::raise(run(&steps, module_number));
     SUCCESS
@@ -497,7 +516,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
         Step::Hook(php_swoole_process_rshutdown),
         Step::Hook(ops.optional_rshutdown),
         Step::Hook(swr_v1_phpcoroutines_tracer_rshutdown),
-        Step::Hook(ops.event_free),
+        Step::Hook(event_free),
     ];
     if let Err(bailed) = run(&steps, module_number) {
         bailout::raise(Err(bailed));
@@ -536,8 +555,7 @@ pub(crate) unsafe fn size_error(failed: *const zend_string, error: *mut zend_str
     let reason = c_str(unsafe { bytes(error) });
     // SAFETY: per the caller; Zend's error string, owned here.
     unsafe { swr_zend_string_release(error) };
-    // SAFETY: C++'s setter.
-    unsafe { (ops().set_last_error)(PHP_FATAL_ERROR) };
+    set_last_error(PHP_FATAL_ERROR);
     let message = [
         b"failed to parse '",
         &failed[..],
@@ -585,8 +603,7 @@ pub unsafe extern "C" fn zif_swoole_set_process_name(
     // SAFETY: this request's function table.
     let function = unsafe { swr_zend_function_find(name.as_ptr(), name.count_bytes()) };
     if function.is_null() {
-        // SAFETY: C++'s setter.
-        unsafe { (ops().set_last_error)(PHP_FATAL_ERROR) };
+        set_last_error(PHP_FATAL_ERROR);
         // SAFETY: an error from Rust, through the shim.
         bailout::defer(unsafe {
             php_error(

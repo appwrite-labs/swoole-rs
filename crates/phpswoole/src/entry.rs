@@ -145,6 +145,5 @@ pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
         // SAFETY: the thread's bailout; this frame owns nothing.
         unsafe { (ops.thread_bailout)() };
     }
-    // SAFETY: Swoole's exit.
-    unsafe { (ops.exit)(255) };
+    swoole_rs_corebase::swoole_exit(255);
 }
