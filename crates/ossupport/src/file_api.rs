@@ -4,7 +4,9 @@
 //! `File::write_all` and `File::read_all` under their upstream symbols (with
 //! `upstream-symbols`), and the `std::string` helpers, which the header calls with
 //! the string's `c_str()`. Logs name the function as upstream's `__SW_FUNC__` did.
-use crate::file::{FileIo, swr_v1_os_file_open, swr_v1_os_file_size, swr_v1_os_tmpfile};
+use crate::file::{
+    FileIo, swr_v1_os_file_open, swr_v1_os_file_size, swr_v1_os_file_write_all, swr_v1_os_tmpfile,
+};
 use crate::file_record::{FileRecord, swr_v1_os_file_record_all, swr_v1_os_file_record_stat};
 use libc::{c_char, c_int, c_void};
 use std::ffi::CStr;
@@ -60,6 +62,19 @@ unsafe fn transfer(owner: *mut FileRecord, write: bool, data: *mut c_void, lengt
     } else {
         warn_io(c"File::read_all", "pread", fd, data, length, io);
     }
+    io.done
+}
+
+/// `File::write_all` on a bare descriptor opened without `APPEND`: the bytes
+/// written, with upstream's `pwrite` warning on an IO error.
+///
+/// # Safety
+/// `data` spans `length` readable bytes.
+#[must_use]
+pub unsafe fn fd_write_all(fd: c_int, data: *const c_void, length: usize) -> usize {
+    // SAFETY: as the caller promises.
+    let io = unsafe { swr_v1_os_file_write_all(fd, false, data, length) };
+    warn_io(c"File::write_all", "pwrite", fd, data, length, io);
     io.done
 }
 

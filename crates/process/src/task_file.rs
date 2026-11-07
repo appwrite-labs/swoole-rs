@@ -13,6 +13,8 @@ use swoole_rs_corebase::{
     datahead_dump, log, microtime, swr_v1_core_current_task_id, swr_v1_core_set_current_task_id,
 };
 
+use swoole_rs_ossupport::{fd_write_all, swoole_tmpfile};
+
 use crate::process_pool::SW_IPC_MAX_SIZE;
 use crate::task_sync::TaskServer;
 use crate::worker_globals::swr_v1_worker_global_get;
@@ -105,7 +107,7 @@ struct PacketTask {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TaskPack {
-    /// false on a temp-file create or write failure.
+    /// false when the temp file could not be created or written (already warned).
     pub ok: bool,
     /// true when the payload spilled to a temp file and `dest` holds a `PacketTask`.
     pub tmpfile: bool,
@@ -113,37 +115,37 @@ pub struct TaskPack {
     pub info_len: usize,
 }
 
-fn write_all(fd: c_int, data: *const u8, len: usize) -> bool {
-    let mut written = 0;
-    while written < len {
-        // SAFETY: `data` lends `len` readable bytes and `written < len`.
-        let rest = unsafe { data.add(written) };
-        // SAFETY: `fd` is open; `rest` lends `len - written` readable bytes.
-        let n = unsafe { libc::write(fd, rest.cast(), len - written) };
-        if let Ok(n @ 1..) = usize::try_from(n) {
-            written += n;
-            continue;
-        }
-        let error = errno();
-        if n < 0 && [libc::EINTR, libc::EAGAIN, libc::EWOULDBLOCK].contains(&error) {
-            continue;
-        }
-        return false;
+/// `make_tmpfile`: `template` cut to `SW_TASK_TMP_PATH_SIZE - 1` bytes into `path`
+/// and created there by `swoole_tmpfile`, which warns on failure. Returns the fd,
+/// or negative.
+pub(crate) fn make_tmpfile(template: &CStr, path: &mut [u8; TASK_TMP_PATH_SIZE]) -> c_int {
+    *path = [0; TASK_TMP_PATH_SIZE];
+    for (byte, &pattern) in path
+        .iter_mut()
+        .take(TASK_TMP_PATH_SIZE - 1)
+        .zip(template.to_bytes())
+    {
+        *byte = pattern;
     }
-    true
+    // SAFETY: `path` is a writable NUL-terminated template.
+    unsafe { swoole_tmpfile(path.as_mut_ptr().cast()) }
 }
 
-/// mkstemp (mkostemp on Linux, matching `swoole_tmpfile`) over the pattern in `buf`,
-/// which is rewritten in place to the created path. Returns the fd, or negative.
-fn make_tmpfile(buf: &mut [u8; TASK_TMP_PATH_SIZE]) -> c_int {
-    let pattern = buf.as_mut_ptr().cast::<c_char>();
-    #[cfg(target_os = "linux")]
-    // SAFETY: `pattern` is a NUL-terminated mkstemp pattern buffer in `buf`.
-    let fd = unsafe { libc::mkostemp(pattern, libc::O_WRONLY | libc::O_CREAT) };
-    #[cfg(not(target_os = "linux"))]
-    // SAFETY: `pattern` is a NUL-terminated mkstemp pattern buffer in `buf`.
-    let fd = unsafe { libc::mkstemp(pattern) };
-    fd
+/// Writes the payload to the temp file as `File::write_all` does (warning on an
+/// IO error), then warns `write to tmpfile failed` on a short write.
+///
+/// # Safety
+/// `data` lends `len` readable bytes.
+unsafe fn spill(fd: c_int, data: *const u8, len: usize) -> bool {
+    // SAFETY: as the caller promises.
+    let wrote = unsafe { fd_write_all(fd, data.cast(), len) } == len;
+    if !wrote {
+        log::warning(
+            c"Server::task_pack",
+            format_args!("write to tmpfile failed"),
+        );
+    }
+    wrote
 }
 
 /// `Server::task_pack`'s payload placement: inline into `dest` when it fits in
@@ -177,18 +179,13 @@ pub unsafe fn swr_v1_process_task_pack(
         tmpfile: [0; TASK_TMP_PATH_SIZE],
     };
     // SAFETY: `template` is a NUL-terminated string.
-    let pattern = unsafe { CStr::from_ptr(template) }.to_bytes();
-    if pattern.len() >= pkg.tmpfile.len() {
-        return TaskPack::default();
-    }
-    for (byte, &pattern) in pkg.tmpfile.iter_mut().zip(pattern) {
-        *byte = pattern;
-    }
-    let fd = make_tmpfile(&mut pkg.tmpfile);
+    let template = unsafe { CStr::from_ptr(template) };
+    let fd = make_tmpfile(template, &mut pkg.tmpfile);
     if fd < 0 {
         return TaskPack::default();
     }
-    let wrote = write_all(fd, data, len);
+    // SAFETY: `data` lends `len` bytes.
+    let wrote = unsafe { spill(fd, data, len) };
     // SAFETY: `fd` is open and owned here.
     unsafe { libc::close(fd) };
     if !wrote {
@@ -239,7 +236,7 @@ pub struct PacketPtr {
 }
 
 /// What the task methods borrow from native: `SwooleG.task_tmpfile`,
-/// `String::extend`, the server's task state and `make_tmpfile`.
+/// `String::extend` and the server's task state.
 #[repr(C)]
 pub struct TaskNative {
     pub tmpfile: unsafe extern "C" fn() -> *const c_char,
@@ -252,9 +249,6 @@ pub struct TaskNative {
         with_result: bool,
         out: *mut TaskServer,
     ) -> u16,
-    /// `make_tmpfile()`, closed, its path copied into the `SW_TASK_TMP_PATH_SIZE`
-    /// bytes at `path`: false when it could not be created (`errno` says why).
-    pub make_tmpfile: unsafe extern "C" fn(path: *mut c_char) -> bool,
 }
 
 static NATIVE: AtomicPtr<TaskNative> = AtomicPtr::new(ptr::null_mut());
@@ -381,10 +375,6 @@ pub unsafe extern "C" fn task_pack(
     let packed =
         unsafe { swr_v1_process_task_pack(payload(task), capacity, data.cast(), length, template) };
     if !packed.ok {
-        log::warning(
-            c"Server::task_pack",
-            format_args!("write to tmpfile failed"),
-        );
         return false;
     }
     #[expect(
@@ -493,8 +483,10 @@ fn errno_location() -> *mut c_int {
 #[cfg(test)]
 mod tests {
     use super::{
-        PacketTask, TaskFileRead, TaskPack, swr_v1_process_task_file_read, swr_v1_process_task_pack,
+        PacketTask, TaskFileRead, TaskPack, spill, swr_v1_process_task_file_read,
+        swr_v1_process_task_pack,
     };
+    use crate::methods::tests::{install, logged};
     use std::ffi::CString;
 
     fn read(path: &CString, length: usize, peek: bool) -> (TaskFileRead, Vec<u8>) {
@@ -593,6 +585,72 @@ mod tests {
         std::fs::remove_file(path).ok();
     }
 
+    fn pack_large(template: &CString) -> TaskPack {
+        let payload = vec![0xAB_u8; 500];
+        let mut dest = vec![0u8; 300];
+        unsafe {
+            swr_v1_process_task_pack(
+                dest.as_mut_ptr(),
+                dest.len(),
+                payload.as_ptr(),
+                payload.len(),
+                template.as_ptr(),
+            )
+        }
+    }
+
+    #[test]
+    fn a_failed_mkstemp_warns_as_swoole_tmpfile_and_nothing_more() {
+        install();
+        let template = CString::new("/swr-no-such-dir/task-XXXXXX").unwrap();
+        assert_eq!(pack_large(&template), TaskPack::default());
+        // mkstemp may have filled in the Xs before failing, as upstream logs it.
+        let warned = logged("swoole_tmpfile");
+        assert_eq!(warned.len(), 1);
+        assert_eq!((warned[0].0, warned[0].2), (0, libc::ENOENT));
+        assert!(warned[0].3.starts_with("mkstemp('/swr-no-such-dir/task-"));
+        assert!(warned[0].3.ends_with("') failed"));
+        assert_eq!(
+            warned[0].3.len(),
+            "mkstemp('/swr-no-such-dir/task-XXXXXX') failed".len()
+        );
+        assert_eq!(logged("Server::task_pack"), []);
+    }
+
+    #[test]
+    fn an_over_long_template_is_cut_and_mkstemp_warns() {
+        install();
+        let long = format!("/swr-no-such-dir/{}XXXXXX", "a".repeat(300));
+        let template = CString::new(long.clone()).unwrap();
+        assert_eq!(pack_large(&template), TaskPack::default());
+        // The cut pattern has no Xs left: EINVAL on Linux, ENOENT where the
+        // directory is checked first.
+        let warned = logged("swoole_tmpfile");
+        assert_eq!(warned.len(), 1);
+        assert!([libc::EINVAL, libc::ENOENT].contains(&warned[0].2));
+        assert_eq!(warned[0].3, format!("mkstemp('{}') failed", &long[..255]));
+    }
+
+    #[test]
+    fn a_failed_write_warns_pwrite_then_the_task() {
+        install();
+        let fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
+        let data = [1u8; 4];
+        assert!(!unsafe { spill(fd, data.as_ptr(), data.len()) });
+        let warned = logged("File::write_all");
+        assert_eq!(warned.len(), 1);
+        assert_eq!((warned[0].0, warned[0].2), (0, libc::EBADF));
+        assert_eq!(
+            warned[0].3,
+            format!("pwrite({fd}, {:p}, 4, 0) failed", data.as_ptr())
+        );
+        assert_eq!(
+            logged("Server::task_pack"),
+            [(1, 0, 0, "write to tmpfile failed".into())]
+        );
+        unsafe { libc::close(fd) };
+    }
+
     mod methods {
         use super::super::*;
 
@@ -614,14 +672,10 @@ mod tests {
         ) -> u16 {
             0
         }
-        unsafe extern "C" fn make_tmpfile(_: *mut c_char) -> bool {
-            false
-        }
         static NATIVE_TABLE: TaskNative = TaskNative {
             tmpfile,
             extend,
             server,
-            make_tmpfile,
         };
 
         /// `task_pack` draws from the process-wide task id, so its tests take turns.

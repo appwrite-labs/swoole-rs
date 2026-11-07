@@ -823,6 +823,7 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-memory",
+ "swoole-rs-ossupport",
 ]
 
 [[package]]
