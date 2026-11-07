@@ -1049,8 +1049,8 @@ unsafe fn ssl_sendfile(
 /// SSL, else the platform's sendfile.
 ///
 /// # Safety
-/// `socket` is a live record and `offset` writable.
-unsafe fn sendfile(
+/// `socket` is a live record, `fd` an open file and `offset` writable.
+pub unsafe fn sendfile(
     socket: *mut SocketRecord,
     fd: c_int,
     offset: *mut libc::off_t,

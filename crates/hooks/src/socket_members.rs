@@ -3,31 +3,39 @@
 //! links this crate (`upstream-symbols`): the reactor callbacks, the
 //! local and peer names, the timeouts and options, the buffered and packet reads,
 //! `bind` of an address and `listen`, and the transfers (`recv`, `send`, their
-//! `_all` and `_once` forms, `read`, `write`, `readv`, `writev`, `recvmsg`,
-//! `sendmsg`), `peek` and `poll`.
+//! `_all` and `_once` forms, `read`, `write`, `readv`, `writev` and their `_all`
+//! forms, `recvmsg`, `sendmsg`, `recvfrom`), `peek` and `poll`.
 //! Upstream's `GoogleTest` suites call them through the class's own declarations.
 //!
 //! Each takes the native object (`this`). `Socket` is dynamic and its one base is
 //! the record (`swr_v1_co_socket`, not dynamic, pointer-aligned), so under the
 //! Itanium ABI the record follows the vtable pointer; system.cc asserts that shape.
 use crate::buffered::{swr_v1_hook_co_socket_recv_buffered, swr_v1_hook_recv_line};
-use crate::co_io::{available, check, errno, host, set_err, swr_v1_hook_co_socket_default_err};
+use crate::co_io::{
+    Timer, available, check, errno, host, set_err, swr_v1_hook_co_socket_borrowed_err,
+    swr_v1_hook_co_socket_default_err, swr_v1_hook_co_socket_owned_err,
+};
 use crate::co_socket::{CoSocket, swr_v1_hook_co_socket_peer_name};
 use crate::packet::swr_v1_hook_co_socket_recv_packet;
+use crate::sendfile::{FAILED, ZERO, send_range};
 use crate::shutdown::READ;
 use crate::socket_wait::{
-    swr_v1_hook_co_socket_error_event, swr_v1_hook_co_socket_poll, swr_v1_hook_socket_ready,
+    swr_v1_hook_co_socket_error_event, swr_v1_hook_co_socket_poll, swr_v1_hook_socket_ready, wait,
 };
-use crate::transfer::{ALL, swr_v1_hook_co_socket_transfer};
-use core::ffi::{c_int, c_void};
+use crate::transfer::{ALL, RETRY_INTERRUPTED, swr_v1_hook_co_socket_transfer};
+use crate::vector::vector_all;
+use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{align_of, size_of};
 use core::ptr::null_mut;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
-    Event, SocketAddress, SocketRecord, swr_v1_socket_bind, swr_v1_socket_get_name,
-    swr_v1_socket_listen, swr_v1_socket_set_timeout, swr_v1_socket_timeout,
+    Event, ReactorIov, SocketAddress, SocketRecord, swr_v1_reactor_iov_view, swr_v1_socket_bind,
+    swr_v1_socket_get_name, swr_v1_socket_listen, swr_v1_socket_set_timeout, swr_v1_socket_timeout,
 };
-use swoole_rs_tls::upstream::{socket_peek, socket_readv, socket_recv, socket_send, socket_writev};
+use swoole_rs_tls::upstream::{
+    sendfile as socket_sendfile_fd, socket_peek, socket_readv, socket_recv, socket_send,
+    socket_writev,
+};
 
 /// `SW_EVENT_WRITE`.
 const WRITE: u32 = 1 << 10;
@@ -585,6 +593,211 @@ pub unsafe extern "C" fn writev(this: *mut c_void, vector: *mut c_void) -> isize
     unsafe { transfer(this, WRITE, 0, null_mut(), 0, call) }
 }
 
+/// The remaining count of the live `IOVector` at `vector`.
+///
+/// # Safety
+/// `vector` is a live `IOVector`, whose first member is its owner.
+unsafe fn remaining(vector: *const c_void) -> usize {
+    // SAFETY: as the caller promises.
+    let owner = unsafe { *vector.cast::<*const ReactorIov>() };
+    // SAFETY: the vector's live owner.
+    let count = unsafe { swr_v1_reactor_iov_view(owner) }.remain_count;
+    usize::try_from(count).unwrap_or(0)
+}
+
+/// `Socket::readv_all(io_vector)`.
+///
+/// # Safety
+/// As [`readv`].
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket9readv_allEPNS_7network8IOVectorE")
+)]
+pub unsafe extern "C" fn readv_all(this: *mut c_void, vector: *mut c_void) -> isize {
+    let call = || {
+        // SAFETY: as the caller promises.
+        let socket = unsafe { network(this) };
+        // SAFETY: the socket's current network::Socket, over the live vector.
+        unsafe { socket_readv(socket, vector) }
+    };
+    // SAFETY: as the caller promises.
+    let left = || unsafe { remaining(vector) };
+    // SAFETY: as the caller promises.
+    unsafe { vector_all(record(this), READ, call, left) }
+}
+
+/// `Socket::writev_all(io_vector)`.
+///
+/// # Safety
+/// As [`readv`].
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket10writev_allEPNS_7network8IOVectorE")
+)]
+pub unsafe extern "C" fn writev_all(this: *mut c_void, vector: *mut c_void) -> isize {
+    let call = || {
+        // SAFETY: as the caller promises.
+        let socket = unsafe { network(this) };
+        // SAFETY: the socket's current network::Socket, over the live vector.
+        unsafe { socket_writev(socket, vector) }
+    };
+    // SAFETY: as the caller promises.
+    let left = || unsafe { remaining(vector) };
+    // SAFETY: as the caller promises.
+    unsafe { vector_all(record(this), WRITE, call, left) }
+}
+
+/// `set_err(error, message)` with owned text.
+///
+/// # Safety
+/// `socket` is a live record, not borrowed elsewhere for the call.
+unsafe fn set_err_text(socket: *mut CoSocket, error: c_int, message: &str) {
+    // SAFETY: as the caller promises; the text is readable for the call. A failed
+    // copy (allocation) leaves the previous message, as the code and errno are set.
+    unsafe {
+        swr_v1_hook_co_socket_owned_err(socket, error, message.as_ptr().cast(), message.len())
+    };
+}
+
+/// libc's `strerror(error)`.
+fn strerror(error: c_int) -> String {
+    // SAFETY: strerror returns a NUL-terminated message for any code.
+    let message = unsafe { libc::strerror(error) };
+    // SAFETY: as above.
+    unsafe { CStr::from_ptr(message) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// A descriptor `Socket::sendfile` opened, closed when it goes.
+struct OpenFile(c_int);
+
+impl Drop for OpenFile {
+    fn drop(&mut self) {
+        if self.0 != -1 {
+            // SAFETY: the descriptor this owns.
+            unsafe { libc::close(self.0) };
+        }
+    }
+}
+
+/// `Socket::sendfile(filename, offset, length)`: `length` bytes from `offset`, or
+/// the rest of the file when `length` is 0.
+///
+/// # Safety
+/// `this` is a live native socket and `filename` a NUL-terminated path.
+#[cfg_attr(
+    all(feature = "upstream-symbols", target_os = "macos"),
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket8sendfileEPKcxm")
+)]
+#[cfg_attr(
+    all(feature = "upstream-symbols", not(target_os = "macos")),
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket8sendfileEPKclm")
+)]
+pub unsafe extern "C" fn sendfile(
+    this: *mut c_void,
+    filename: *const c_char,
+    offset: libc::off_t,
+    length: usize,
+) -> bool {
+    /// `SW_ERROR_SYSTEM_CALL_FAIL`.
+    const SYSTEM_CALL_FAIL: c_int = 502;
+    let socket = record(this);
+    // SAFETY: as the caller promises.
+    if !unsafe { available(socket, WRITE) } {
+        return false;
+    }
+    // SAFETY: as the caller promises.
+    let file = OpenFile(unsafe { libc::open(filename, libc::O_RDONLY) });
+    // SAFETY: as the caller promises.
+    let name = unsafe { CStr::from_ptr(filename) }.to_string_lossy();
+    if file.0 == -1 {
+        let error = errno();
+        let message = format!("open({name}) failed, {}", strerror(error));
+        // SAFETY: the live record.
+        unsafe { set_err_text(socket, error, &message) };
+        return false;
+    }
+    let end = if length == 0 {
+        // SAFETY: a stat record is plain data.
+        let mut stat: libc::stat = unsafe { core::mem::zeroed() };
+        // SAFETY: the open descriptor, into the local record.
+        if unsafe { libc::fstat(file.0, &raw mut stat) } != 0 {
+            let error = errno();
+            let message = format!("fstat({name}) failed, {}", strerror(error));
+            // SAFETY: the live record.
+            unsafe { set_err_text(socket, error, &message) };
+            return false;
+        }
+        usize::try_from(stat.st_size).unwrap_or(0)
+    } else {
+        length.wrapping_add(usize::try_from(offset).unwrap_or(0))
+    };
+    // SAFETY: the live record.
+    let record_ref = unsafe { &*socket };
+    // SAFETY: an available record is open; the read ends here.
+    let timeout = unsafe { record_ref.record() }.timeouts.write;
+    // SAFETY: the live record; the timer stops before this returns.
+    let mut timer = unsafe { Timer::new(socket, WRITE, timeout) };
+    let mut offset = offset;
+    let send = |offset: &mut libc::off_t, length| {
+        // SAFETY: as the caller promises.
+        let socket = unsafe { network(this) };
+        // SAFETY: the socket's current network::Socket and the open file.
+        unsafe { socket_sendfile_fd(socket, file.0, offset, length) }
+    };
+    // SAFETY: the live record.
+    let ready = || timer.start() && unsafe { wait(socket, WRITE, None, null_mut(), 0) };
+    let outcome = send_range(&mut offset, end, send, ready);
+    let error = errno();
+    timer.stop();
+    match outcome {
+        0 => return true,
+        ZERO => {
+            let message = c"sendfile return zero".as_ptr();
+            // SAFETY: the live record; the message is static.
+            unsafe { swr_v1_hook_co_socket_borrowed_err(socket, SYSTEM_CALL_FAIL, message) };
+        }
+        FAILED => {
+            // SAFETY: the live record.
+            let fd = unsafe { (*socket).sock_fd };
+            let message = format!("sendfile({fd}, {name}) failed, {}", strerror(error));
+            // SAFETY: the live record.
+            unsafe { set_err_text(socket, error, &message) };
+        }
+        _ => {}
+    }
+    false
+}
+
+/// `Socket::recvfrom(buf, n, addr, addrlen)`, retrying `EINTR` at once.
+///
+/// # Safety
+/// `this` is a live native socket, `buf` holds `n` writable bytes and `addr` and
+/// `addrlen` are as recvfrom(2) takes them.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket8recvfromEPvmP8sockaddrPj")
+)]
+pub unsafe extern "C" fn recvfrom(
+    this: *mut c_void,
+    buf: *mut c_void,
+    n: usize,
+    addr: *mut libc::sockaddr,
+    addrlen: *mut libc::socklen_t,
+) -> isize {
+    let call = call!(|_, at, len| libc::recvfrom(
+        (*record(this)).sock_fd,
+        at.cast(),
+        len,
+        0,
+        addr,
+        addrlen
+    ));
+    // SAFETY: as the caller promises; each try receives into the transfer's buffer.
+    unsafe { transfer(this, READ, RETRY_INTERRUPTED, buf.cast(), n, call) }
+}
+
 /// `Socket::recvmsg(msg, flags)`.
 ///
 /// # Safety
@@ -783,6 +996,38 @@ mod tests {
             take(),
             ["last-error:0", "resume:2", "last-error:0", "resume:1"]
         );
+    }
+
+    #[test]
+    fn sendfile_reports_a_file_it_cannot_open() {
+        install();
+        let mut object = Object::new();
+        let extra = crate::socket_extra::swr_v1_hook_socket_extra_new();
+        object.0.record.extra = extra.owner;
+        let path = c"/nonexistent/swoole-rs-sendfile";
+        assert!(!unsafe { sendfile(object.this(), path.as_ptr(), 0, 0) });
+        assert_eq!(object.0.record.err_code, libc::ENOENT);
+        let message = unsafe { CStr::from_ptr(object.0.record.err_msg) };
+        assert_eq!(
+            message.to_str().unwrap(),
+            format!(
+                "open({}) failed, {}",
+                path.to_str().unwrap(),
+                strerror(libc::ENOENT)
+            )
+        );
+        unsafe { crate::socket_extra::swr_v1_hook_socket_extra_free(extra.owner) };
+    }
+
+    #[test]
+    fn sendfile_of_an_empty_file_sends_nothing() {
+        install();
+        let mut object = Object::new();
+        let path = std::env::temp_dir().join(format!("swoole-rs-sendfile-{}", std::process::id()));
+        std::fs::write(&path, b"").unwrap();
+        let name = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert!(unsafe { sendfile(object.this(), name.as_ptr(), 0, 0) });
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -156,19 +156,8 @@ bool swr_v1_hook_async_job(void (*job)(void *), void *context, const swr_v1_hook
 int32_t swr_v1_hook_dns_error(int32_t error, int32_t asynchronous_timeout, int32_t resolve_timeout);
 double swr_v1_hook_sleep_timeout(double seconds, double minimum);
 typedef struct { size_t length, size; int64_t offset; char *str; } swr_v1_hook_read_buffer;
-/* Socket::readv_all/writev_all after the availability check and the timer's creation.
-   wait installs barrier (called with barrier_state) and runs timer.start() && wait_event. */
+/* A wait barrier: retries the transfer once the socket is ready; true to keep waiting. */
 typedef bool (*swr_v1_hook_barrier)(void *barrier_state);
-typedef struct {
-    void *context;
-    ssize_t (*transfer)(void *, bool first);
-    bool (*would_block)(void *);
-    size_t (*remaining)(void *);
-    void (*fail)(void *);
-    bool (*wait)(void *, swr_v1_hook_barrier barrier, void *barrier_state);
-    void (*check)(void *, ssize_t);
-} swr_v1_hook_vector_ops;
-ssize_t swr_v1_hook_vector_all(const swr_v1_hook_vector_ops *ops);
 /* The coroutine Socket's connection state, Rust-owned behind an opaque handle (#439) in its record. */
 typedef struct swr_v1_hook_socket_state swr_v1_hook_socket_state;
 typedef struct { bool connected, read, write; } swr_v1_hook_socket_flags_t;
@@ -192,14 +181,6 @@ typedef struct {
 } swr_v1_hook_setup_ops;
 bool swr_v1_hook_bind(const swr_v1_hook_setup_ops *ops);
 bool swr_v1_hook_accept(const swr_v1_hook_setup_ops *ops);
-/* Coroutine Socket::sendfile's loop over [*offset, end): 0 all sent, 1 a send
- * returned zero, 2 one failed (errno set), 3 the wait failed. */
-typedef struct {
-    void *context;
-    ssize_t (*send)(void *, off_t *offset, size_t length);
-    bool (*wait)(void *);
-} swr_v1_hook_sendfile_ops;
-int swr_v1_hook_sendfile(const swr_v1_hook_sendfile_ops *ops, off_t *offset, size_t end);
 /* connect(host)/sendto(host)'s address loop: up to two assigns with a resolve
  * between them on SW_ERROR_BAD_HOST_ADDR. 0 assigned (or fell through), 1 an
  * assign failed otherwise, 2 the resolve failed. */
