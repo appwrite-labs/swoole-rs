@@ -1,0 +1,3 @@
+tests/modules/memory/core.py
+tests/modules/memory/rust_asan.py
+tests/modules/zend/run.py

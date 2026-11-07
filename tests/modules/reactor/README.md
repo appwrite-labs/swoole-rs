@@ -21,10 +21,9 @@ cover them, so the `forwarding.py` facade is gone.
 `reactor-native-originals` (`tools/core_tests.py`) runs upstream's own
 `network/socket.cpp` and `network/stream.cpp` GoogleTests on both engines.
 
-Compile and declaration gates:
+Compile gate:
 
 - `compile_gate.py --source S --archive A --report R`: original and hybrid backend translation units compile as C++14.
-- `declarations.py --archive A --report R`: every `swr_v1_reactor_*`/`swr_v1_stream_*` declaration in the header is defined in the archive.
 
 
 ## Unit tests

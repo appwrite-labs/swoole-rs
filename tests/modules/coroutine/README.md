@@ -44,18 +44,6 @@ python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --sourc
 - `production_stack.py` builds the Context constructor/destructor/query into a
   private PHP addon against each engine's SDK and checks marker observations.
 
-## Benchmarks
-
-```
-python3 tests/modules/coroutine/prepare_benchmark.py --core-build CORE_PAIR_DIR --output NEW_DIR
-python3 tests/modules/coroutine/benchmark.py --prepared NEW_DIR --exclusive-host-lease ID --output OUT.json
-```
-
-`prepare_benchmark.py` copies an optimized, assertion-enabled native core pair
-(`core-upstream`, `core-rust`), links `benchmark.cc` and runs untimed
-ten-operation checks for create/yield/channel/cancel/fanin. `benchmark.py`
-verifies the prepared binary/library hashes and runs alternating timed trials.
-
 ## Known failures and blocked activation
 
 - `core.py --ucontext` on macOS fails all 32 originals per engine, including a

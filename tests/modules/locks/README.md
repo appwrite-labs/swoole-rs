@@ -52,10 +52,6 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
 - `platforms.py --source S --output R` (`locks-platforms`): compiles the header as C11/C++14 on the
   host and checks synthetic FreeBSD/Android (and Apple mobile on macOS) macros
   are rejected.
-- `zts/Dockerfile` and `zts/build.py`: PHP 8.5 ZTS image and a build of
-  reference and Rust thread-enabled extensions inside it (expects the repo at
-  `/work`, the pinned upstream at `/reference` and a prior Linux
-  `dev-rust` build).
 
 ## Known failures
 
