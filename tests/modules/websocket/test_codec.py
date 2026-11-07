@@ -98,7 +98,9 @@ uint8_t message_policy(uint8_t opcode, uint8_t settings) {
     command = shlex.split(os.environ.get('CXX', 'c++')) + [
         '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
         '-I' + str(tmp_path), '-I' + str(ROOT / 'native/websocket'),
-        str(local / 'codec.cc'), str(archive), '-lc', '-lm']
+        str(local / 'codec.cc'), str(archive), '-lc', '-lm',
+        # The archive's SHA-1 comes from OpenSSL (#1541).
+        *subprocess.check_output(['pkg-config', '--libs', 'openssl'], text=True).split()]
     if sys.platform.startswith('linux'):
         command += ['-ldl', '-lpthread', '-lrt', '-lutil']
     if sanitize:
