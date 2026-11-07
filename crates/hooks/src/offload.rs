@@ -16,11 +16,34 @@ pub struct AsyncEvent {
     /// `std::shared_ptr<AsyncRequest>`, opaque here.
     data: [usize; 2],
     pub retval: isize,
-    pipe_socket: *mut c_void,
-    timestamp: f64,
+    pub pipe_socket: *mut c_void,
+    pub timestamp: f64,
     pub object: *mut c_void,
     pub handler: Option<Handler>,
     pub callback: Option<Handler>,
+}
+
+impl AsyncEvent {
+    /// An event with no request (an empty `shared_ptr`).
+    pub(crate) const fn request(
+        object: *mut c_void,
+        handler: Option<Handler>,
+        callback: Option<Handler>,
+        pipe_socket: *mut c_void,
+    ) -> Self {
+        Self {
+            task_id: 0,
+            canceled: 0,
+            error: 0,
+            data: [0; 2],
+            retval: 0,
+            pipe_socket,
+            timestamp: 0.0,
+            object,
+            handler,
+            callback,
+        }
+    }
 }
 
 #[cfg(target_pointer_width = "64")]
@@ -169,18 +192,12 @@ pub unsafe extern "C" fn swr_v1_hook_async_job(
         resume: ops.resume,
         job: Some((job, context)),
     };
-    let event = AsyncEvent {
-        task_id: 0,
-        canceled: 0,
-        error: 0,
-        data: [0; 2],
-        retval: 0,
-        pipe_socket: core::ptr::null_mut(),
-        timestamp: 0.0,
-        object: (&raw mut task).cast(),
-        handler: Some(run_job),
-        callback: Some(completed),
-    };
+    let event = AsyncEvent::request(
+        (&raw mut task).cast(),
+        Some(run_job),
+        Some(completed),
+        core::ptr::null_mut(),
+    );
     // SAFETY: `event` is complete (an empty request); the pool copies it.
     let dispatched = unsafe { (ops.dispatch)(&raw const event) };
     if dispatched.is_null() {

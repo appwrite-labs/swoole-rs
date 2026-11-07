@@ -81,7 +81,11 @@ pub(crate) fn construct_guard() -> c_int {
     {
         return 1;
     }
-    if thread_async_threads() { 2 } else { 0 }
+    if thread_async_threads().is_null() {
+        0
+    } else {
+        2
+    }
 }
 
 /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.

@@ -16,12 +16,14 @@ restarted after a full shutdown), its queue, `std::thread` workers, growth
 scheduling and idle retirement. Each `AsyncThreads` holds one reference; the last
 release shuts the pool down and joins every worker, as upstream's `use_count() == 1`.
 
-Event tokens are native `AsyncEvent` pointers that Rust never dereferences. Native
-hooks (`swr_v1_os_pool_hooks`) run on worker threads: `execute` runs the handler
+Event tokens are `AsyncEvent` pointers the pool never dereferences. Its hooks
+(`PoolHooks`) are `crates/hooks/src/async_threads.rs`, which is also `AsyncThreads`
+and `async::dispatch` under their upstream symbols: `execute` runs the handler
 (missing handler wins over canceled) and writes the event to its pipe; `retire`
 sends the idle worker's key to the default pipe, whose callback joins it with
 `swr_v1_os_pool_join`. `swr_v1_os_pool_complete` reads up to 128 tokens from the
-reactor's end of the pipe and hands each to native's completion callback. Defaults, scheduling and the whole-second idle wait match
+reactor's end of the pipe and hands each to the completion callback. Copying and
+freeing an event (its request is a `std::shared_ptr`) is `async_event.cc`. Defaults, scheduling and the whole-second idle wait match
 upstream v6.2.4. Workers get an 8 MiB stack. Known remaining issues: the
 unsynchronized `canceled` field and the retirement leak in
 [retirement-shutdown-gap.md](retirement-shutdown-gap.md).
