@@ -341,7 +341,7 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
         zend::json_decode(value, str, length, options, depth);
     },
     [](uint8_t on) { SwooleG.enable_signalfd = on; },
-    [](uint8_t on) { SwooleG.enable_kqueue = on; },
+    [](uint8_t on) { swr_v1_core_set_enable_kqueue(on); },
     [](int64_t flags) { swoole_set_trace_flags(flags); },
     [](const char *file, size_t) { swoole_set_log_file(file); },
     [](int64_t level) { swoole_set_log_level(level); },

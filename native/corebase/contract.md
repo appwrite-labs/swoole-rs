@@ -82,7 +82,7 @@ sequences do nothing and `swoole_fork` returns -1.
 Rust owns `SwooleG`'s scalars in one process-wide record of atomics: the init
 guard, `cpu_num`, `dns_tries`, the flags (`running`, `enable_signalfd`,
 `enable_kqueue`, `enable_coroutine`, `print_backtrace_on_error`, `wait_signal`,
-`dns_lookup_random`, `signal_alarm`, `signal_dispatch`), the counters and limits (`current_task_id`,
+`dns_lookup_random`, `signal_alarm`), the counters and limits (`current_task_id`,
 `signal_fd`, `signal_listener_num`, `signal_async_listener_num`, `trace_flags`,
 `pagesize`, `max_file_content`, the AIO and io_uring sizes and times), the
 bug-report text, and native pointers Rust only holds (memory pool, stdout,

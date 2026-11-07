@@ -47,6 +47,10 @@ The Logger is Rust (`crates/utilities/src/logger.rs`); its crate tests cover
 files, rotation, diagnostics and concurrent `put` with `reopen`. The upstream
 `log.cpp` GoogleTests run against it through `storage.py`'s originals families below.
 
+`core-tests/src/core/util.cpp`'s one case, `util.bitmap`, has no Rust test:
+`swoole::BitMap` had no user in the hybrid, so it left `swoole_util.h` with its
+Rust storage and there is no bitmap left to test.
+
 ## Loaded PHP consumers
 
 `storage.py` takes `--source`, `--engine native=DSO --engine selected=DSO`,
