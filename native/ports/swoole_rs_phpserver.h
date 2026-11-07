@@ -25,8 +25,6 @@ typedef struct {
     /* 0: "can't register event callback function after server started";
      * 1: "unknown event types[%s]" with `name`. */
     void (*warn)(int kind, const char *name);
-    void *(*callable_create)(struct _zval_struct *callable);
-    void (*callable_free)(void *callable);
     /* The ListenPort settings and TLS block of set(); false: return false. */
     bool (*settings)(void *port, void *property, struct _zend_array *settings);
     /* getSocket() of a bound port. */

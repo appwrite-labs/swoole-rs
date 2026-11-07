@@ -148,16 +148,10 @@ pub struct LifecycleHost {
     copy_setting: unsafe extern "C" fn(*mut c_void, *mut zval),
     release: unsafe extern "C" fn(*mut c_void, bool),
     port_release: unsafe extern "C" fn(*mut zval),
-    callable_create: unsafe extern "C" fn(*mut zval) -> *mut c_void,
-    callable_free: unsafe extern "C" fn(*mut c_void),
     is_process: unsafe extern "C" fn(*mut zval) -> bool,
     add_process: unsafe extern "C" fn(*mut c_void, *mut zval) -> i64,
     json_encode: unsafe extern "C" fn(*mut zval, *mut bool) -> *mut zend_string,
     json_decode: unsafe extern "C" fn(*const c_char, usize, *mut zval),
-    co_current: unsafe extern "C" fn(*mut bool) -> *mut c_void,
-    co_suspending: unsafe extern "C" fn(*mut c_void) -> bool,
-    co_yield: unsafe extern "C" fn(*mut c_void),
-    co_yield_ex: unsafe extern "C" fn(*mut c_void, f64) -> bool,
     send: unsafe extern "C" fn(*mut c_void, i64, *const c_char, usize) -> bool,
     send_timeout: unsafe extern "C" fn(*mut c_void) -> f64,
     process_class: unsafe extern "C" fn() -> *mut zend_class_entry,
@@ -303,14 +297,13 @@ pub(crate) unsafe fn set_callback(
     else {
         return false;
     };
-    let host = host();
     if !slot.is_null() {
         // SAFETY: a callable this property owns.
-        unsafe { (host.callable_free)(*slot) };
+        unsafe { swoole_rs_phpruntime::callable_free(*slot) };
         *slot = ptr::null_mut();
     }
     // SAFETY: a live argument.
-    let callable = unsafe { (host.callable_create)(callable) };
+    let callable = unsafe { swoole_rs_phpruntime::callable_create(callable) };
     if callable.is_null() {
         return false;
     }
@@ -370,7 +363,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
         unsafe { (host.release)(serv, false) };
         for &callable in property.callbacks.iter().filter(|cb| !cb.is_null()) {
             // SAFETY: a callable the property owned.
-            unsafe { (host.callable_free)(callable) };
+            unsafe { swoole_rs_phpruntime::callable_free(callable) };
         }
         for &process in &property.user_processes {
             // SAFETY: `sw_zval_free`: an emalloc'd zval holding a reference.
@@ -386,7 +379,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
     }
     for &callable in &property.commands {
         // SAFETY: a callable the property owned.
-        unsafe { (host.callable_free)(callable) };
+        unsafe { swoole_rs_phpruntime::callable_free(callable) };
     }
     drop(property);
     // SAFETY: the object Zend is freeing.
@@ -682,7 +675,6 @@ fn add_process(call: &Call) {
 
 fn add_command(call: &Call) {
     let serv = server(call);
-    let host = host();
     if fact(serv, fact::STARTED) {
         fatal(E_WARNING, c"server is running, can't add command");
         return call.set_bool(false);
@@ -698,7 +690,7 @@ fn add_command(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: a passed argument.
-    let callable = unsafe { (host.callable_create)(call.zval(3)) };
+    let callable = unsafe { swoole_rs_phpruntime::callable_create(call.zval(3)) };
     if callable.is_null() {
         return call.set_bool(false);
     }
@@ -713,7 +705,7 @@ fn add_command(call: &Call) {
     if !unsafe { swr_v1_server_add_command(serv, name.as_ptr().cast(), name.len(), types, handler) }
     {
         // SAFETY: the callable created above.
-        unsafe { (host.callable_free)(callable) };
+        unsafe { swoole_rs_phpruntime::callable_free(callable) };
         return call.set_bool(false);
     }
     // SAFETY: `$this` is a Server.
@@ -802,7 +794,7 @@ unsafe extern "C" fn command_done(
         unsafe { swr_zval_stringl(wait.return_value, message, length) };
     }
     // SAFETY: the waiting coroutine.
-    if unsafe { (host.co_suspending)(wait.coroutine) } {
+    if unsafe { swoole_rs_phpcoroutines::is_suspending(wait.coroutine) } {
         // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
         unsafe { swoole_rs_phpcoroutines::wake(wait.coroutine, false) };
     } else {
@@ -833,13 +825,12 @@ fn command(call: &Call) {
     if encoded.is_null() {
         return call.set_bool(false);
     }
-    // SAFETY: a writable flag.
-    let coroutine = unsafe { (host.co_current)(&raw mut bailed) };
-    if bailed {
+    if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
         // SAFETY: the string encoded above.
         unsafe { swr_zend_string_release(encoded) };
-        return bailout::defer(Err(bailout::Bailout));
+        return bailout.defer();
     }
+    let coroutine = swoole_rs_phpcoroutines::current();
     let mut wait = Wait {
         return_value: call.return_value(),
         json_decode,
@@ -881,7 +872,7 @@ fn command(call: &Call) {
     }
     if !wait.replied {
         // SAFETY: this call's coroutine; `command_done` resumes it.
-        unsafe { (host.co_yield)(coroutine) };
+        unsafe { swoole_rs_phpcoroutines::suspend(coroutine) };
     }
 }
 
@@ -1217,12 +1208,10 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
     length: usize,
 ) -> c_int {
     let host = host();
-    let mut bailed = false;
-    // SAFETY: a writable flag.
-    let co = unsafe { (host.co_current)(&raw mut bailed) };
-    if bailed {
+    if swoole_rs_phpruntime::coroutine_check().is_err() {
         return 2;
     }
+    let co = swoole_rs_phpcoroutines::current();
     if length == 0 {
         return 0;
     }
@@ -1236,7 +1225,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
         // SAFETY: a live server.
         let timeout = unsafe { (host.send_timeout)(server) };
         // SAFETY: this call's coroutine; `onBufferEmpty` or `onClose` wakes it.
-        if !unsafe { (host.co_yield_ex)(co, timeout) } {
+        if !unsafe { swoole_rs_phpcoroutines::suspend_for(co, timeout) } {
             waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
             return 0;
         }

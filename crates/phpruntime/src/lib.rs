@@ -32,7 +32,7 @@ mod stream;
 mod transport;
 pub use connect::*;
 pub use putenv::*;
-pub use socket::{Report, check_reactor, co, report, strerror};
+pub use socket::{Report, check_reactor, co, coroutine_check, report, strerror};
 pub use stream::*;
 
 use std::{

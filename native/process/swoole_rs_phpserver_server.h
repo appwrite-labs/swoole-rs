@@ -18,9 +18,6 @@ struct _zend_object_handlers;
 typedef struct {
     /* E_ERROR "Invalid instance of %s" (does not return). */
     void (*invalid)(struct _zend_object *object);
-
-    /* Coroutine::count() and Coroutine::get_peak_num(). */
-    void (*coroutines)(int64_t *counts);
     void (*socket)(void *server, int64_t port, struct _zval_struct *return_value);
 } swr_v1_phpserver_host;
 

@@ -171,7 +171,9 @@ pub(crate) fn count() -> usize {
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_count(scheduler()) }
 }
 
-pub(crate) fn current() -> Co {
+/// `Coroutine::get_current()`: null outside a coroutine.
+#[must_use]
+pub fn current() -> Co {
     // SAFETY: this thread's scheduler.
     native(unsafe { (*scheduler()).current })
 }
@@ -329,6 +331,35 @@ pub(crate) fn yield_cancelable(co: Co, cancel: unsafe extern "C" fn(Co) -> u8) {
 pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
     // SAFETY: as above.
     unsafe { coroutine_yield_ex(co, timeout) }
+}
+
+/// `Coroutine::count()` and `Coroutine::get_peak_num()`.
+#[must_use]
+pub fn counts() -> (usize, u64) {
+    // SAFETY: this thread's scheduler.
+    (count(), unsafe { (*scheduler()).peak_num })
+}
+
+/// `co->is_suspending()`.
+/// # Safety
+/// `co` is a live coroutine.
+pub unsafe fn is_suspending(co: Co) -> bool {
+    // SAFETY: per the caller.
+    unsafe { (*state(co)).state == swoole_rs_coroutine::STATE_WAITING }
+}
+
+/// `co->yield()`, as [`yield_`]: the caller's frames own nothing that needs a drop.
+/// # Safety
+/// `co` is the running coroutine.
+pub unsafe fn suspend(co: Co) {
+    yield_(co);
+}
+
+/// `co->yield_ex(timeout)`, as [`yield_ex`].
+/// # Safety
+/// As [`suspend`].
+pub unsafe fn suspend_for(co: Co, timeout: f64) -> bool {
+    yield_ex(co, timeout)
 }
 
 /// Switch to `co`. The caller's frames must own nothing that needs a drop: a

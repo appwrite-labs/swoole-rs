@@ -95,8 +95,6 @@ typedef struct {
     /* Release the dispatch_func callable, or (`destroy`) delete the Server. */
     void (*release)(void *server, bool destroy);
     void (*port_release)(struct _zval_struct *port_object);
-    void *(*callable_create)(struct _zval_struct *callable);
-    void (*callable_free)(void *callable);
     /* Whether `process` is a Swoole\Process. */
     bool (*is_process)(struct _zval_struct *process);
     /* addProcess's worker: -3 bailed out, -2 a thread that is not a user worker, -1 add_worker failed,
@@ -106,12 +104,6 @@ typedef struct {
     struct _zend_string *(*json_encode)(struct _zval_struct *data, bool *bailed);
     /* json_decode($text, true) into `out`, or false. */
     void (*json_decode)(const char *text, size_t length, struct _zval_struct *out);
-    /* Coroutine::get_current_safe() in zend_try (*bailed when it bailed out), is_suspending() and
-     * yield(). */
-    void *(*co_current)(bool *bailed);
-    bool (*co_suspending)(void *co);
-    void (*co_yield)(void *co);
-    bool (*co_yield_ex)(void *co, double timeout);
     /* serv->send(session_id, data, length). */
     bool (*send)(void *server, int64_t session_id, const char *data, size_t length);
     double (*send_timeout)(void *server);
