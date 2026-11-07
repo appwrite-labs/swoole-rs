@@ -47,6 +47,7 @@ uint32_t Callable::refcount() const { return swr_v1_phphelpers_callable_refs(own
 // or C++ can reach.
 #include "php_swoole_library.h"
 #include "php_swoole_thread.h"
+#include "swoole_rs_locks.h"
 #include "swoole_rs_native_effect.h"
 #include "swoole_rs.h"
 #include "swoole_rs_phpswoole_info.h"
@@ -278,12 +279,12 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
 #endif
 #ifdef SW_THREAD
         php_swoole_thread_minit(module_number);
-        php_swoole_thread_atomic_minit(module_number);
-        php_swoole_thread_lock_minit(module_number);
-        php_swoole_thread_barrier_minit(module_number);
-        php_swoole_thread_queue_minit(module_number);
-        php_swoole_thread_map_minit(module_number);
-        php_swoole_thread_arraylist_minit(module_number);
+        swr_v1_phplocks_thread_atomic_minit();
+        swr_v1_phplocks_thread_lock_minit([](const char *message) { php_swoole_fatal_error(E_ERROR, "%s", message); });
+        swr_v1_phpthread_barrier_minit();
+        swr_v1_phpthread_queue_minit();
+        swr_v1_phpthread_map_minit();
+        swr_v1_phpthread_arraylist_minit();
 #endif
 #ifdef SW_STDEXT
         php_swoole_stdext_minit(module_number);
