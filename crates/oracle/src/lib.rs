@@ -525,6 +525,9 @@ pub mod http_static_context {
 
     unsafe extern "C" {
         pub fn swr_oracle_static_script(fs: *const Fs);
+        /// Whether the shim's compiler evaluates `sw_snprintf`'s arguments left to
+        /// right (clang) rather than right to left (GCC); C++ leaves it unspecified.
+        pub fn swr_oracle_static_arguments_left_to_right() -> c_int;
         /// `count` outputs of `std::mt19937(seed)`.
         pub fn swr_oracle_mt19937(seed: u32, out: *mut u32, count: usize);
         pub fn swr_oracle_static_trace(line: Line, out: *mut c_void);

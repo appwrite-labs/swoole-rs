@@ -511,7 +511,17 @@ impl FileCase<'_> {
             identity,
             "the original global MIME reference and scoped content references"
         );
-        lines.extend(upstream_trace());
+        let mut trace = upstream_trace();
+        // SAFETY: no arguments.
+        if unsafe { oracle::swr_oracle_static_arguments_left_to_right() } == 0 {
+            // The first part header's boundary and MIME type, in source order.
+            for i in 1..trace.len() {
+                if trace[i].starts_with(b"random:") && trace[i - 1].starts_with(b"mime:") {
+                    trace.swap(i - 1, i);
+                }
+            }
+        }
+        lines.extend(trace);
         lines
     }
     fn candidate(&self) -> Vec<Vec<u8>> {

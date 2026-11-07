@@ -350,6 +350,17 @@ void swr_oracle_static_script(const swr_oracle_static_fs *fs) {
     trace.clear();
     calendar_events.clear();
 }
+// Whether this compiler evaluates parse_range's sw_snprintf arguments
+// (`get_boundary().c_str(), get_mimetype().c_str()`) left to right. C++ leaves
+// the order unspecified: clang goes left to right, GCC right to left.
+int swr_oracle_static_arguments_left_to_right() {
+    std::string order;
+    auto first = [&]() -> const std::string & { return order += 'b', order; };
+    auto second = [&]() -> const std::string & { return order += 'm', order; };
+    char buffer[8];
+    sw_snprintf(buffer, sizeof(buffer), "%s%s", first().c_str(), second().c_str());
+    return order[0] == 'b';
+}
 // `count` outputs of std::mt19937(seed).
 void swr_oracle_mt19937(uint32_t seed, uint32_t *out, size_t count) {
     std::mt19937 rng(seed);
