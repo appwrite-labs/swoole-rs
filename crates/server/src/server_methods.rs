@@ -14,16 +14,16 @@ use crate::ops::{
     OP_CONN_MAX_LENGTH, OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER, OP_TASK_PACK,
 };
 use crate::ops::{
+    RUN_ACCEPT, RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_ST_INIT_PIPE_SOCKETS, RUN_START,
+    RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
+};
+use crate::ops::{
     RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_BASE_DISPATCH, RUN_BASE_END,
     RUN_BASE_FINISH, RUN_BASE_NOTIFY, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
     RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_REOPEN_LOGGER, RUN_SC_SEND, RUN_SCHEDULE_WORKER,
     RUN_SENDFILE, RUN_SENDWAIT, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT,
     RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_FOREACH, RUN_ST_SEND,
     RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
-};
-use crate::ops::{
-    RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_ST_INIT_PIPE_SOCKETS, RUN_START, RUN_START_CHECK,
-    RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
 };
 use crate::records::ConnectionRecord;
 use crate::view;
@@ -273,6 +273,50 @@ pub unsafe extern "C-unwind" fn connection_incoming(
     ctx.conn = conn.cast();
     // SAFETY: as the caller guarantees.
     c_int::narrow(unsafe { run(RUN_INCOMING, 0, &mut ctx) })
+}
+
+/// `Server::accept_connection(reactor, event)`: the master reactor's read handler
+/// for listening sockets, over the server the reactor carries.
+///
+/// # Safety
+/// `reactor` is the server's live reactor and `event` a read event on a listening socket.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server17accept_connectionEPNS_7ReactorEPNS_5EventE")
+)]
+pub unsafe extern "C" fn accept_connection(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: as the caller guarantees.
+    let fields = unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) }.fields;
+    // SAFETY: as above.
+    let mut ctx = NativeContext::new(unsafe { (*fields).ptr });
+    // SAFETY: as the caller guarantees.
+    let event_record = unsafe { &*event.cast::<swoole_rs_reactor::Event>() };
+    ctx.reactor = reactor;
+    ctx.event = event;
+    // SAFETY: a listening socket's object is its port.
+    ctx.port = unsafe {
+        (*event_record
+            .socket
+            .cast::<swoole_rs_reactor::SocketRecord>())
+        .object
+    };
+    ctx.server_fd = event_record.fd;
+    // SAFETY: as the caller guarantees.
+    c_int::narrow(unsafe { run(RUN_ACCEPT, 0, &mut ctx) })
+}
+
+/// `Server::master_signal_handler(signo)`: the signal operation over `sw_server()`.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) extern "C" fn master_signal_handler(signo: c_int) {
+    let mut ctx = NativeContext::new(swoole_rs_corebase::swr_v1_core_server());
+    // SAFETY: the running server, or null, which the operation checks.
+    unsafe {
+        run(
+            crate::ops::RUN_SIGNAL,
+            i64::from(signo).cast_unsigned(),
+            &mut ctx,
+        )
+    };
 }
 
 /// `Server::is_healthy_connection(now, conn)`.

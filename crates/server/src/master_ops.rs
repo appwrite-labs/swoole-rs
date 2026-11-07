@@ -43,12 +43,34 @@ use crate::ops::{
     OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
     OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
 };
+use crate::ops::{
+    OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
+    OP_ALLOC_PORT_GS, OP_ALLOC_SESSIONS, OP_ALLOC_TASK_RESULTS, OP_ALLOC_WORKERS,
+    OP_FREE_USER_WORKERS, OP_LC_BEFORE_START, OP_MASTER_REACTOR, OP_MASTER_WORKER,
+    OP_SIGNAL_ACTIVE,
+};
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+use crate::ops::{OP_LC_CLEAR_ERROR, OP_MARK_SHUTDOWN, OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE};
 use crate::port_config::PortConfig;
 use crate::records::{ConnectionRecord, SessionRecord};
 use crate::server_methods::NativeContext;
 use crate::shared::{PortCounters, ServerCounters};
-use crate::{MODE_BASE, MODE_PROCESS, ServerState};
+use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
+use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
+use swoole_rs_corebase::hook;
+use swoole_rs_memory::members::{sw_shm_calloc, sw_shm_free};
 use swoole_rs_process::worker_record::WorkerRecord;
+
+// crates/reactor's signal functions and native/error/error.cc's, under their upstream symbols.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+unsafe extern "C" {
+    #[link_name = "_Z27swoole_clear_last_error_msgv"]
+    fn swoole_clear_last_error_msg();
+    #[link_name = "_Z19swoole_signal_clearv"]
+    fn swoole_signal_clear();
+    #[link_name = "_Z17swoole_signal_setiPFviEb"]
+    fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
+}
 
 const SW_LOG_TRACE: c_int = 1;
 const SW_LOG_NOTICE: c_int = 3;
@@ -59,11 +81,22 @@ const SW_SOCK_TCP6: c_int = 3;
 /// `SW_MASTER`, the master's worker type.
 const SW_MASTER: c_int = 1;
 const SW_EVENT_READ: c_int = 1 << 9;
+/// `SW_FD_STREAM_SERVER`.
+const SW_FD_STREAM_SERVER: c_int = 1;
+/// `SW_GLOBAL_HOOK_BEFORE_SERVER_START`, `_AFTER_SERVER_SHUTDOWN` and `_AFTER_SERVER_CREATE`.
+const HOOK_BEFORE_SERVER_START: c_int = 0;
+const HOOK_AFTER_SERVER_SHUTDOWN: c_int = 7;
+const HOOK_AFTER_SERVER_CREATE: c_int = 11;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 /// `sizeof(Session)`, `sizeof(sw_atomic_t)` and `sizeof(SendfileTask)`.
 const SESSION_SIZE: usize = size_of::<SessionRecord>();
 const ATOMIC_SIZE: usize = 4;
 const SENDFILE_TASK_SIZE: usize = 16;
+// master.cc asserts the native sizes of the arrays allocated here.
+const _: () = assert!(
+    SESSION_SIZE == 16 && size_of::<PortCounters>() == 80,
+    "master.cc sizeof(Session), sizeof(ServerPortGS)"
+);
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
 /// `SW_HOST_MAXSIZE`: `sizeof(sockaddr_un::sun_path)`.
@@ -87,6 +120,30 @@ unsafe fn text<'a>(text: *const c_char) -> std::borrow::Cow<'a, str> {
     }
     // SAFETY: per the caller.
     unsafe { CStr::from_ptr(text) }.to_string_lossy()
+}
+
+/// `if (swoole_isset_hook(kind)) swoole_call_hook(kind, serv)`.
+fn call_hook(kind: c_int, serv: *mut core::ffi::c_void) {
+    if hook::swoole_isset_hook(kind) {
+        // SAFETY: the server hooks take the server.
+        unsafe { hook::swoole_call_hook(kind, serv) };
+    }
+}
+
+/// A `ListenPort`'s settings.
+///
+/// # Safety
+/// `port` is a live `ListenPort`.
+unsafe fn port_config<'a>(port: *mut core::ffi::c_void) -> &'a mut PortConfig {
+    // SAFETY: a `ListenPort` starts with its settings pointer (shared.rs).
+    let config = unsafe { *port.cast::<*mut PortConfig>() };
+    // SAFETY: the port's settings live as long as it.
+    unsafe { &mut *config }
+}
+
+/// `sw_shm_calloc(count, size)` as a typed pointer.
+fn shm_calloc<T>(count: usize, size: usize) -> *mut T {
+    sw_shm_calloc(count, size).cast()
 }
 
 fn sign(value: impl Into<i64>) -> u64 {
@@ -1065,6 +1122,130 @@ pub(crate) unsafe fn answer(
             unsafe { name.wrapping_add(length).write(0) };
             name.expose_provenance() as u64
         }
+        // Lifecycle effects over process-wide state Rust owns: hooks, signals,
+        // the worker globals and the server's shared allocations.
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        OP_LC_CLEAR_ERROR => {
+            log::set_last_error(0);
+            // SAFETY: this thread's error message.
+            unsafe { swoole_clear_last_error_msg() };
+            0
+        }
+        OP_LC_BEFORE_START => {
+            call_hook(HOOK_BEFORE_SERVER_START, o.ctx.serv);
+            0
+        }
+        OP_AFTER_CREATE => {
+            call_hook(HOOK_AFTER_SERVER_CREATE, o.ctx.serv);
+            0
+        }
+        OP_AFTER_SHUTDOWN => {
+            call_hook(HOOK_AFTER_SERVER_SHUTDOWN, o.ctx.serv);
+            0
+        }
+        OP_SIGNAL_ACTIVE => {
+            u64::from(swoole_rs_corebase::swr_v1_core_running() && o.config().running)
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        OP_SIGNAL_IGNORE | OP_SIGNAL_HANDLE => {
+            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
+            let signo = arg as c_int;
+            let handler = if op == OP_SIGNAL_HANDLE {
+                crate::server_methods::master_signal_handler as *const () as usize
+            } else {
+                0
+            };
+            // SAFETY: null or a handler of this library, which stays loaded.
+            let _previous = unsafe { swoole_signal_set(signo, handler, false) };
+            0
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        OP_MARK_SHUTDOWN => {
+            // SAFETY: the master's signal handlers, cleared on its thread.
+            unsafe { swoole_signal_clear() };
+            o.gs().start.store(0, SeqCst);
+            o.gs().shutdown.store(1, SeqCst);
+            0
+        }
+        OP_MASTER_WORKER => {
+            swoole_rs_process::methods::swoole_set_worker_type(SW_MASTER);
+            if arg == MODE_THREAD {
+                #[expect(clippy::cast_possible_truncation, reason = "C++'s pid_t parameter")]
+                let tid = swoole_rs_ossupport::swr_v1_os_thread_native_id() as c_int;
+                swoole_rs_process::methods::swoole_set_worker_pid(tid);
+            } else if arg == MODE_PROCESS {
+                // SAFETY: getpid has no preconditions.
+                swoole_rs_process::methods::swoole_set_worker_pid(unsafe { libc::getpid() });
+            }
+            0
+        }
+        OP_MASTER_REACTOR => {
+            // SAFETY: the master's live reactor.
+            let fields = unsafe { reactor_upstream::prepared(o.ctx.reactor) }.fields;
+            // SAFETY: as above.
+            unsafe { (*fields).ptr = o.ctx.serv };
+            let accept: swoole_rs_reactor::Handler = crate::server_methods::accept_connection;
+            // SAFETY: as above.
+            unsafe {
+                reactor_upstream::reactor_set_handler(
+                    o.ctx.reactor,
+                    SW_FD_STREAM_SERVER,
+                    SW_EVENT_READ,
+                    Some(accept),
+                );
+            };
+            0
+        }
+        OP_FREE_USER_WORKERS => {
+            let workers = core::mem::replace(&mut o.config().user_workers, core::ptr::null_mut());
+            if !workers.is_null() {
+                sw_shm_free(workers);
+            }
+            0
+        }
+        OP_ALLOC_SESSIONS => {
+            let list = shm_calloc(SW_SESSION_LIST_SIZE as usize, SESSION_SIZE);
+            o.tables().session_list = list;
+            u64::from(!list.is_null())
+        }
+        OP_ALLOC_PORT_GS => {
+            let ports = o.tables().ports();
+            let list = shm_calloc::<PortCounters>(ports.len(), size_of::<PortCounters>());
+            o.tables().port_gs_list = list.cast();
+            if list.is_null() {
+                return Some(0);
+            }
+            for (index, &port) in ports.iter().enumerate() {
+                // SAFETY: one of the server's live ports.
+                unsafe { port_config(port) }.gs = list.wrapping_add(index).cast();
+            }
+            1
+        }
+        OP_ALLOC_WORKERS => {
+            let workers = shm_calloc(o.config().worker_num as usize, size_of::<WorkerRecord>());
+            o.config().workers = workers;
+            u64::from(!workers.is_null())
+        }
+        OP_ALLOC_TASK_RESULTS => {
+            let size = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
+            let results = shm_calloc(o.config().worker_num as usize, size);
+            o.config().task_results = results;
+            u64::from(!results.is_null())
+        }
+        OP_ALLOC_CONNECTION_NUMS => {
+            let nums = shm_calloc(o.config().worker_num as usize, ATOMIC_SIZE);
+            o.gs().connection_nums = nums;
+            u64::from(!nums.is_null())
+        }
+        OP_ALLOC_PORT_CONNECTION_NUMS => {
+            let port = o.tables().ports()[usize::try_from(arg).unwrap_or(usize::MAX)];
+            // SAFETY: one of the server's live ports.
+            let gs = unsafe { port_config(port) }.gs.cast::<PortCounters>();
+            // SAFETY: the port's slot in `port_gs_list`, allocated at create.
+            let gs = unsafe { &mut *gs };
+            gs.connection_nums = shm_calloc(o.config().worker_num as usize, ATOMIC_SIZE);
+            u64::from(!gs.connection_nums.is_null())
+        }
         _ => return None,
     })
 }
@@ -1190,5 +1371,44 @@ mod tests {
         unsafe { crate::swr_v1_server_state_free(state) };
         assert_eq!(name, Some(buffer.as_ptr().wrapping_add(16).addr() as u64));
         assert_eq!(&buffer[16..23], b"/tmp/a\0");
+    }
+
+    #[test]
+    fn allocation_ops_fill_the_config_tables_and_counters() {
+        let state = crate::swr_v1_server_state_new();
+        let mut ctx = context();
+        let mut gs = ServerCounters::default();
+        // SAFETY: a fresh state; every pointer the ops write is checked and freed below.
+        unsafe {
+            let config = &mut *(*state).config();
+            config.worker_num = 3;
+            config.gs = (&raw mut gs).cast();
+            assert_eq!(answer(&raw mut ctx, state, OP_SIGNAL_ACTIVE, 0), Some(0));
+            for op in [
+                OP_ALLOC_WORKERS,
+                OP_ALLOC_TASK_RESULTS,
+                OP_ALLOC_CONNECTION_NUMS,
+                OP_ALLOC_SESSIONS,
+            ] {
+                assert_eq!(answer(&raw mut ctx, state, op, 0), Some(1), "op {op}");
+            }
+            assert_eq!((*gs.connection_nums.add(2)).load(Relaxed), 0, "zeroed");
+            let tables = &mut *(*state).tables();
+            assert_eq!((*tables.session_list.add(5)).fd, 0, "zeroed");
+            config.user_workers = sw_shm_calloc(1, 8);
+            answer(&raw mut ctx, state, OP_FREE_USER_WORKERS, 0);
+            assert!(config.user_workers.is_null());
+            answer(&raw mut ctx, state, OP_FREE_USER_WORKERS, 0);
+            for allocation in [
+                config.workers,
+                config.task_results,
+                gs.connection_nums.cast(),
+                tables.session_list.cast(),
+            ] {
+                sw_shm_free(allocation);
+            }
+            tables.session_list = core::ptr::null_mut();
+            crate::swr_v1_server_state_free(state);
+        }
     }
 }
