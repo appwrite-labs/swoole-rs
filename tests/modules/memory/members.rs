@@ -17,7 +17,22 @@ fn shared_mappings_are_zeroed_resized_protected_and_freed() {
         sw_shm_protect(grown.cast(), libc::PROT_READ | libc::PROT_WRITE),
         0
     );
-    sw_shm_free(grown.cast());
+    // Shrinking copies only what fits.
+    let shrunk = sw_shm_realloc(grown.cast(), 9).cast::<u8>();
+    assert!(!shrunk.is_null());
+    unsafe { assert!((0..16).all(|i| shrunk.add(i).read() == 7)) };
+    assert_eq!(
+        unsafe {
+            shrunk
+                .cast::<c_void>()
+                .wrapping_byte_sub(8)
+                .cast::<usize>()
+                .read()
+        },
+        24
+    );
+    sw_shm_free(shrunk.cast());
+    assert!(sw_shm_malloc(usize::MAX).is_null());
     assert!(sw_shm_calloc(usize::MAX, 2).is_null());
 }
 

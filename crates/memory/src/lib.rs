@@ -24,9 +24,8 @@ macro_rules! upstream {
 
 pub mod channel;
 pub mod fixed;
-pub mod global;
+mod global;
 pub mod heap;
-pub mod mapping;
 mod pool;
 pub mod ring;
 
@@ -39,31 +38,10 @@ pub use channel::{
     swr_v1_memory_channel_in, swr_v1_memory_channel_init, swr_v1_memory_channel_lock,
     swr_v1_memory_channel_out, swr_v1_memory_channel_print, swr_v1_memory_channel_signal,
 };
-pub use fixed::{
-    swr_v1_memory_arena_lifecycle, swr_v1_memory_fixed_alloc, swr_v1_memory_fixed_construct,
-    swr_v1_memory_fixed_debug_step, swr_v1_memory_fixed_free, swr_v1_memory_fixed_init,
-    swr_v1_memory_fixed_layout, swr_v1_memory_fixed_usage,
-};
-pub use global::{
-    swr_v1_memory_global_add_page, swr_v1_memory_global_alloc, swr_v1_memory_global_capacity,
-    swr_v1_memory_global_create, swr_v1_memory_global_memory_size, swr_v1_memory_global_open,
-    swr_v1_memory_global_page_size, swr_v1_memory_global_pop_page, swr_v1_memory_global_release,
-    swr_v1_memory_global_request_valid, swr_v1_memory_global_step,
-};
 pub use heap::{
     swr_v1_memory_heap_at, swr_v1_memory_heap_count, swr_v1_memory_heap_create,
     swr_v1_memory_heap_pop, swr_v1_memory_heap_push, swr_v1_memory_heap_release,
     swr_v1_memory_heap_remove, swr_v1_memory_heap_update,
-};
-
-pub use ring::{
-    swr_v1_memory_ring_alloc, swr_v1_memory_ring_construct, swr_v1_memory_ring_free,
-    swr_v1_memory_ring_layout, swr_v1_memory_ring_storage_alloc,
-};
-
-pub use mapping::{
-    swr_v1_memory_mapping_copy, swr_v1_memory_mapping_extent, swr_v1_memory_mapping_initialize,
-    swr_v1_memory_mapping_product, swr_v1_memory_mapping_relocate, swr_v1_memory_mapping_size,
 };
 
 pub mod members;

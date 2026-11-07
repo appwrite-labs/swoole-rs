@@ -14,10 +14,7 @@
 //! Row locks are upstream's spin locks, with its recovery from a dead owner
 //! (`kill(pid, 0)` fails with `ESRCH`) and from an owner that holds a lock for
 //! more than two seconds.
-use crate::fixed::{Fixed, Layout, Slice, swr_v1_memory_fixed_construct};
-use crate::fixed::{
-    swr_v1_memory_fixed_alloc, swr_v1_memory_fixed_free, swr_v1_memory_fixed_layout,
-};
+use crate::fixed::{self, Fixed, Layout, Slice};
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
@@ -666,13 +663,11 @@ impl Table {
         let Ok(width) = u32::try_from(plan.stride) else {
             return false;
         };
-        let mut layout = Layout::default();
-        // SAFETY: a writable layout.
-        if unsafe { swr_v1_memory_fixed_layout(0, width, pool_bytes, 0, &raw mut layout) } != 0 {
+        let Some(layout) = Layout::new(0, width, pool_bytes, false) else {
             return false;
-        }
+        };
         // SAFETY: the arena's last `pool_bytes`, per the caller.
-        if unsafe { swr_v1_memory_fixed_construct(pool, &raw const layout, 1, 0) } != 0 {
+        if unsafe { !fixed::construct(pool, layout, true, false) } {
             return false;
         }
         self.cursor = Box::into_raw(Box::new(Cursor {
@@ -937,7 +932,7 @@ impl Table {
     fn alloc_row(&self) -> Option<Live> {
         self.mutex.lock();
         // SAFETY: a created table's pool, under its mutex.
-        let row = unsafe { swr_v1_memory_fixed_alloc(self.pool) }.cast::<Row>();
+        let row = unsafe { fixed::alloc(self.pool) }.cast::<Row>();
         self.mutex.unlock();
         (!row.is_null()).then_some(Live(row))
     }
@@ -947,7 +942,7 @@ impl Table {
         self.mutex.lock();
         row.zero(offset_of!(Row, lock_pid));
         // SAFETY: a row this pool allocated, under its mutex.
-        unsafe { swr_v1_memory_fixed_free(self.pool, row.0.cast()) };
+        unsafe { fixed::free(self.pool, row.0.cast()) };
         self.mutex.unlock();
     }
 

@@ -92,77 +92,36 @@ impl Ring {
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_ring_layout(
-    requested: u32,
-    total: *mut u32,
-    payload: *mut u32,
-) -> i32 {
-    if total.is_null() || payload.is_null() {
-        return -1;
-    }
-    // SAFETY: both are non-null (checked above), aligned and writable.
-    unsafe { total.write(0) };
-    // SAFETY: as above.
-    unsafe { payload.write(0) };
-    let Some(size) = requested
+/// A ring's whole arena for `requested` bytes, 8-aligned: its 32-byte header, then
+/// at least 16 bytes of records.
+pub(crate) fn layout(requested: u32) -> Option<u32> {
+    requested
         .checked_add(7)
         .map(|n| n & !7)
         .filter(|&n| n >= 48)
-    else {
-        return -1;
-    };
-    // SAFETY: as above.
-    unsafe { total.write(size) };
-    // SAFETY: as above.
-    unsafe { payload.write(size - 32) };
-    0
 }
-/// Initialize fresh exclusive declared C arena storage before any consumer exists.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_ring_construct(
-    storage: *mut Storage,
-    total: u32,
-    shared: u32,
-) -> i32 {
-    if storage.is_null()
-        || !storage.is_aligned()
-        || shared > 1
-        || total < 48
-        || !total.is_multiple_of(8)
-        || storage.addr().checked_add(total as usize).is_none()
-    {
-        return -1;
-    }
-    // `storage` is non-null, aligned, and fresh exclusive arena storage of `total >= 48`
-    // bytes (checked above); the 32-byte header precedes the payload.
-    // SAFETY: as above.
+
+/// Initializes a fresh ring's header in `storage`, before any consumer exists.
+///
+/// # Safety
+/// `storage` is aligned and covers `total` exclusive bytes, a `layout` result.
+pub(crate) unsafe fn construct(storage: *mut Storage, total: u32, shared: bool) {
+    // SAFETY: as the caller promises; the 32-byte header precedes the payload.
     unsafe { ptr::write_bytes(storage.cast::<u8>(), 0, std::mem::size_of::<Storage>()) };
-    // SAFETY: as above; the header is now initialized, so the field writes are in bounds.
+    // SAFETY: as above; the header is now initialized.
     let header = unsafe { &mut *storage };
     header.memory = storage.cast::<u8>().wrapping_add(32);
     header.size = total - 32;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "a native uint8_t flag field"
-    )]
-    let flag = shared as u8;
-    header.shared = flag;
-    0
+    header.shared = shared.into();
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_ring_alloc(state: *mut Ring, requested: u32) -> *mut c_void {
-    // SAFETY: forwards the caller's exclusive ring state.
-    unsafe { allocate(state, requested) }
-}
+
+/// A record of `requested` bytes, or null.
+///
+/// # Safety
+/// `c`'s `free_count` is the ring's shared, aligned, atomic-only counter.
 #[inline(always)]
-unsafe fn allocate(state: *mut Ring, requested: u32) -> *mut c_void {
-    if state.is_null() || requested == 0 {
-        return ptr::null_mut();
-    }
-    // SAFETY: `state` is non-null (checked above), aligned and exclusive per the caller contract.
-    let c = unsafe { &mut *state };
-    if !c.valid() {
+unsafe fn allocate(c: &mut Ring, requested: u32) -> *mut c_void {
+    if requested == 0 || !c.valid() {
         return ptr::null_mut();
     }
     let Some(size) = requested.checked_add(7).map(|n| n & !7) else {
@@ -238,19 +197,12 @@ unsafe fn allocate(state: *mut Ring, requested: u32) -> *mut c_void {
     c.alloc_count = c.alloc_count.wrapping_add(1);
     item.wrapping_add(8).cast()
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_ring_storage_alloc(
-    storage: *mut Storage,
-    requested: u32,
-) -> *mut c_void {
-    if storage.is_null()
-        || !storage
-            .addr()
-            .is_multiple_of(std::mem::align_of::<Storage>())
-    {
-        return ptr::null_mut();
-    }
-    // `storage` is non-null and aligned (checked above). Consumers update `free_count`
+/// `RingBuffer::alloc`: a record of `requested` bytes, or null.
+///
+/// # Safety
+/// `storage` is a constructed ring, allocated from by one producer.
+pub(crate) unsafe fn storage_alloc(storage: *mut Storage, requested: u32) -> *mut c_void {
+    // As the caller promises, `storage` is live and aligned. Consumers update `free_count`
     // concurrently, so only the producer-owned cursor fields are read and written, by
     // raw field pointer, and `free_count` stays a raw pointer for atomic access.
     // SAFETY: as above.
@@ -276,8 +228,8 @@ pub unsafe extern "C" fn swr_v1_memory_ring_storage_alloc(
         status,
         free_count,
     };
-    // SAFETY: `state` is a local snapshot of the producer cursor.
-    let result = unsafe { allocate(&raw mut state, requested) };
+    // SAFETY: `state` is a snapshot of the producer cursor over the live counter.
+    let result = unsafe { allocate(&mut state, requested) };
     // A failed allocation can still collect/wrap, exactly as the snapshot ABI.
     // SAFETY: as for the reads above.
     unsafe { field::<u32>(storage, offset_of!(Storage, alloc_offset)).write(state.alloc_offset) };
@@ -310,15 +262,18 @@ fn release_offset(memory: usize, size: u32, count: usize, data: usize) -> Option
     valid.then_some(offset)
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_ring_free(
+/// Releases the live record `data`; false if it is no allocated record of the ring.
+///
+/// # Safety
+/// `memory`, `size` and `free_count` are a constructed ring's.
+pub(crate) unsafe fn free(
     memory: *mut c_void,
     size: u32,
     free_count: *mut u32,
     data: *mut c_void,
-) -> i32 {
+) -> bool {
     let Some(offset) = release_offset(memory.addr(), size, free_count.addr(), data.addr()) else {
-        return -1;
+        return false;
     };
     // `release_offset` checked the record header lies inside the 8-aligned arena.
     let item = memory.cast::<u8>().wrapping_add(offset);
@@ -329,19 +284,18 @@ pub unsafe extern "C" fn swr_v1_memory_ring_free(
     // Keep the sequential duplicate-release check; the release store publishes
     // completed payload access to the producer's acquire collection load.
     if lock.load(Ordering::Relaxed) != 1 {
-        return -1;
+        return false;
     }
     lock.store(0, Ordering::Release);
     // SAFETY: `free_count` is non-null and 4-aligned (checked by `release_offset`), shared and
     // only accessed atomically.
     unsafe { AtomicU32::from_ptr(free_count) }.fetch_add(1, Ordering::SeqCst);
-    0
+    true
 }
 
 #[cfg(test)]
 #[path = "../../../tests/modules/memory/ring.rs"]
 #[expect(
-    clippy::cast_possible_truncation,
     clippy::cast_ptr_alignment,
     reason = "tests drive the native integer interfaces with literal and loop values"
 )]
