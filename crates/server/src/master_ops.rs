@@ -464,7 +464,7 @@ pub(crate) unsafe fn answer(
             // `%.8s`: at most 8 bytes of the name.
             // SAFETY: sendfile's name is a NUL-terminated string.
             let name = unsafe { CStr::from_ptr(o.ctx.data.cast()) }.to_bytes();
-            let head = String::from_utf8_lossy(&name[..name.len().min(8)]);
+            let head = String::from_utf8_lossy(name.get(..8).unwrap_or(name));
             let (length, max) = (o.ctx.length, IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1);
             let m = format_args!(
                 "sendfile name[{head}...] length {length} is exceed the max name len {max}"
@@ -1197,7 +1197,10 @@ pub(crate) unsafe fn answer(
             u64::from(!nums.is_null())
         }
         OP_ALLOC_PORT_CONNECTION_NUMS => {
-            let port = o.tables().ports()[usize::try_from(arg).unwrap_or(usize::MAX)];
+            let index = usize::try_from(arg).unwrap_or(usize::MAX);
+            let Some(&port) = o.tables().ports().get(index) else {
+                return Some(0);
+            };
             // SAFETY: one of the server's live ports.
             let gs = unsafe { port_config(port) }.gs.cast::<PortCounters>();
             // SAFETY: the port's slot in `port_gs_list`, allocated at create.

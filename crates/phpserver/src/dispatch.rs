@@ -23,7 +23,7 @@ use swoole_rs_server::callbacks::{
     CB_WORKER_ERROR, CB_WORKER_EXIT, CB_WORKER_START, CB_WORKER_STOP,
 };
 use swoole_rs_zend::{
-    E_WARNING,
+    Class, E_WARNING,
     bailout::{self, Bailout},
     class_name, init_object, message, object_of, php_error, string,
     sys::{
@@ -144,7 +144,9 @@ fn call(cb: *mut c_void, args: &mut [zval], coroutine: bool, event: &str) -> Cal
     match invoke(cb, args, ptr::null_mut(), coroutine) {
         Ok(true) => Called::Done,
         Err(_) => Called::Bailout,
-        Ok(false) => failed(&args[0], event),
+        Ok(false) => args
+            .first()
+            .map_or(Called::Failed, |server| failed(server, event)),
     }
 }
 
@@ -249,8 +251,8 @@ fn zserv(server: *mut c_void) -> zval {
 }
 
 /// `object_init_ex(target, ce)` and the object.
-fn object(target: &mut zval, class: usize) -> (*mut zend_class_entry, *mut zend_object) {
-    let ce = DATA[class].entry();
+fn object(target: &mut zval, class: &Class) -> (*mut zend_class_entry, *mut zend_object) {
+    let ce = class.entry();
     // SAFETY: a writable zval and a registered data class.
     unsafe { init_object(target, ce) };
     // SAFETY: an object zval.
@@ -284,7 +286,7 @@ fn receive_args(
     let (fd, reactor_id) = (info.fd, i64::from(info.reactor_id));
     let recv_data = php_swoole_get_recv_data;
     if event_object {
-        let (ce, object) = object(&mut args[1], EVENT);
+        let (ce, object) = object(&mut args[1], &DATA[EVENT]);
         set_long(ce, object, c"fd", fd);
         set_long(ce, object, c"reactor_id", reactor_id);
         set_double(ce, object, c"dispatch_time", info.time);
@@ -308,13 +310,18 @@ fn receive_args(
 /// arguments' release. True on a bailout.
 fn receive_done(server: *mut c_void, succeeded: bool, fd: i64, args: &mut [zval]) -> bool {
     if !succeeded {
-        if failed(&args[0], "onReceive") == Called::Bailout {
+        if args
+            .first()
+            .is_some_and(|server| failed(server, "onReceive") == Called::Bailout)
+        {
             return true;
         }
         // SAFETY: a live server.
         unsafe { server_methods::close(server, fd, false) };
     }
-    dtor(&mut args[args.len() - 1]);
+    if let Some(last) = args.last_mut() {
+        dtor(last);
+    }
     false
 }
 
@@ -330,7 +337,7 @@ fn on_connection(
     let facts = facts(server);
     let mut args = [zserv(server), undef(), undef()];
     let argc = if facts.event_object {
-        let (ce, object) = object(&mut args[1], EVENT);
+        let (ce, object) = object(&mut args[1], &DATA[EVENT]);
         set_long(ce, object, c"fd", fd);
         set_long(ce, object, c"reactor_id", reactor_id);
         set_double(ce, object, c"dispatch_time", time);
@@ -341,7 +348,13 @@ fn on_connection(
         3
     };
     let event = if close { "onClose" } else { "onConnect" };
-    if call(cb, &mut args[..argc], facts.enable_coroutine, event) == Called::Bailout {
+    if call(
+        cb,
+        args.get_mut(..argc).unwrap_or_default(),
+        facts.enable_coroutine,
+        event,
+    ) == Called::Bailout
+    {
         return true;
     }
     if facts.event_object {
@@ -376,7 +389,7 @@ fn on_packet(server: *mut c_void, packet: &Packet, server_fd: c_int, time: f64) 
     let facts = facts(server);
     let mut args = [zserv(server), undef(), undef()];
     let argc = if facts.event_object {
-        let (ce, object) = object(&mut args[1], PACKET);
+        let (ce, object) = object(&mut args[1], &DATA[PACKET]);
         set_long(ce, object, c"server_socket", i64::from(server_fd));
         set_double(ce, object, c"dispatch_time", time);
         if packet.server_port >= 0 {
@@ -434,7 +447,7 @@ fn on_packet(server: *mut c_void, packet: &Packet, server_fd: c_int, time: f64) 
     // Upstream names onPipeMessage in onPacket's warning.
     if call(
         cb,
-        &mut args[..argc],
+        args.get_mut(..argc).unwrap_or_default(),
         facts.enable_coroutine,
         "onPipeMessage",
     ) == Called::Bailout
@@ -455,7 +468,7 @@ fn on_pipe_message(server: *mut c_void, data: *mut zval, source_worker_id: i64, 
     let facts = facts(server);
     let mut args = [zserv(server), undef(), undef()];
     let argc = if facts.event_object {
-        let (ce, object) = object(&mut args[1], PIPE_MESSAGE);
+        let (ce, object) = object(&mut args[1], &DATA[PIPE_MESSAGE]);
         set_long(ce, object, c"worker_id", source_worker_id);
         set_long(ce, object, c"source_worker_id", source_worker_id);
         set_double(ce, object, c"dispatch_time", time);
@@ -468,7 +481,13 @@ fn on_pipe_message(server: *mut c_void, data: *mut zval, source_worker_id: i64, 
         args[2] = unsafe { *data };
         3
     };
-    if call(cb, &mut args[..argc], facts.coroutine, "onPipeMessage") == Called::Bailout {
+    if call(
+        cb,
+        args.get_mut(..argc).unwrap_or_default(),
+        facts.coroutine,
+        "onPipeMessage",
+    ) == Called::Bailout
+    {
         return true;
     }
     if facts.event_object {
@@ -536,14 +555,23 @@ fn on_lifecycle(server: *mut c_void, kind: c_int, worker_id: i64) -> bool {
     } else {
         1
     };
-    if helper(&facts, helper_name, &mut args[..argc]) {
+    if helper(
+        &facts,
+        helper_name,
+        args.get_mut(..argc).unwrap_or_default(),
+    ) {
         return true;
     }
     if cb.is_null() {
         return false;
     }
     let coroutine = coroutine && facts.coroutine;
-    call(cb, &mut args[..argc], coroutine, event) == Called::Bailout
+    call(
+        cb,
+        args.get_mut(..argc).unwrap_or_default(),
+        coroutine,
+        event,
+    ) == Called::Bailout
 }
 
 /// `php_swoole_server_onWorkerError`'s body.
@@ -559,7 +587,7 @@ fn on_worker_error(
     let facts = facts(server);
     let mut args = [zserv(server), undef(), undef(), undef(), undef()];
     let argc = if facts.event_object {
-        let (ce, object) = object(&mut args[1], STATUS_INFO);
+        let (ce, object) = object(&mut args[1], &DATA[STATUS_INFO]);
         set_long(ce, object, c"worker_id", worker_id);
         set_long(ce, object, c"worker_pid", pid);
         set_long(ce, object, c"status", status);
@@ -573,10 +601,21 @@ fn on_worker_error(
         args[4] = long(signal);
         5
     };
-    if helper(&facts, c"onWorkerError", &mut args[..1]) {
+    if helper(
+        &facts,
+        c"onWorkerError",
+        args.get_mut(..1).unwrap_or_default(),
+    ) {
         return true;
     }
-    if !cb.is_null() && call(cb, &mut args[..argc], false, "onWorkerError") == Called::Bailout {
+    if !cb.is_null()
+        && call(
+            cb,
+            args.get_mut(..argc).unwrap_or_default(),
+            false,
+            "onWorkerError",
+        ) == Called::Bailout
+    {
         return true;
     }
     if facts.event_object {
@@ -770,12 +809,17 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_receive(
     let argc = receive_args(server, request, info, config.event_object, &mut args);
     let called = invoke(
         cb,
-        &mut args[..argc],
+        args.get_mut(..argc).unwrap_or_default(),
         ptr::null_mut(),
         config.enable_coroutine,
     );
     relay(called.map_or(true, |succeeded| {
-        receive_done(server, succeeded, info.fd, &mut args[..argc])
+        receive_done(
+            server,
+            succeeded,
+            info.fd,
+            args.get_mut(..argc).unwrap_or_default(),
+        )
     }));
     SW_OK
 }
@@ -1183,7 +1227,7 @@ extern "C" fn on_dispatch(
     }
     let mut retval = undef();
     let mut worker_id = -1;
-    match call_unlimited(cache, &mut args[..argc], &mut retval) {
+    match call_unlimited(cache, args.get_mut(..argc).unwrap_or_default(), &mut retval) {
         Ok(false) => {
             if failed(&args[0], "onDispatch") == Called::Bailout {
                 Bailout.defer();

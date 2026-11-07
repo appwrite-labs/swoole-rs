@@ -361,7 +361,7 @@ fn substr_unserialize(call: &Call) {
     unsafe {
         (ops().unserialize)(
             call.return_value(),
-            buf[offset..].as_ptr().cast(),
+            buf.as_ptr().wrapping_add(offset).cast(),
             length,
             options,
         );
@@ -426,7 +426,7 @@ fn substr_json_decode(call: &Call) {
             unsafe {
                 (ops().json_decode)(
                     call.return_value(),
-                    text[offset..].as_ptr().cast(),
+                    text.as_ptr().wrapping_add(offset).cast(),
                     length,
                     options,
                     depth,

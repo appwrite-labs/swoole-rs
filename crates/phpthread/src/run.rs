@@ -77,11 +77,8 @@ pub unsafe extern "C" fn swr_v1_phpthread_run(
     // SAFETY: per the caller.
     let bytes = unsafe { std::slice::from_raw_parts(file.cast::<u8>(), length) };
     // A C string, as Zend opens it.
-    let end = bytes
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(bytes.len());
-    let file = CString::new(&bytes[..end]).unwrap_or_default();
+    let text = bytes.split(|byte| *byte == 0).next().unwrap_or_default();
+    let file = CString::new(text).unwrap_or_default();
     // SAFETY: a new thread, before anything of PHP's runs on it.
     unsafe { swr_zend_thread_enter() };
     // SAFETY: after its TSRM resources exist.

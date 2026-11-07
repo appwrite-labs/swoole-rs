@@ -99,7 +99,12 @@ pub unsafe extern "C" fn swr_v1_phpstdext_method_call(frame: *mut zend_execute_d
             op1_type: op.op1_type,
         });
     }
-    let method = METHODS[receiver as usize].load(Ordering::Relaxed);
+    let method = match receiver {
+        Receiver::Array => &METHODS[0],
+        Receiver::String => &METHODS[1],
+        Receiver::Stream => &METHODS[2],
+    }
+    .load(Ordering::Relaxed);
     // SAFETY: a registered function; the frame passes `object` as upstream does.
     let call = unsafe { swr_zend_push_nested_call(method, op.extended_value, object.cast()) };
     // SAFETY: the frame just pushed.

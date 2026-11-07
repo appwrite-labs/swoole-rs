@@ -400,9 +400,10 @@ pub(crate) unsafe fn swoole_socket_coro_getpeername(
     let host = unsafe { CStr::from_ptr(host) }.to_bytes();
     // SAFETY: the caller's `size` (> 0) writable bytes.
     let out = unsafe { std::slice::from_raw_parts_mut(address.cast::<u8>(), size) };
-    let n = host.len().min(size - 1);
-    out[..n].copy_from_slice(&host[..n]);
-    out[n] = 0;
+    let terminated = host.iter().copied().take(size - 1).chain([0]);
+    for (slot, byte) in out.iter_mut().zip(terminated) {
+        *slot = byte;
+    }
     // SAFETY: as above.
     let number = unsafe { swoole_rs_clients::address::swr_v1_clients_address_port(&raw const sa) };
     // SAFETY: the caller's slot.
@@ -635,7 +636,7 @@ pub(crate) unsafe fn peer_cert(socket: *mut SocketRecord) -> *mut zend_string {
         )
     };
     match usize::try_from(length) {
-        Ok(length) => swoole_rs_zend::string::copy(&buffer[..length]),
+        Ok(length) => swoole_rs_zend::string::copy(buffer.get(..length).unwrap_or(&buffer)),
         Err(_) => std::ptr::null_mut(),
     }
 }

@@ -67,8 +67,8 @@ struct QueueMessage(Vec<c_long>);
 
 impl QueueMessage {
     fn new(kind: c_long) -> Self {
-        let mut words = vec![0; 1 + MSGMAX / size_of::<c_long>()];
-        words[0] = kind;
+        let mut words = vec![0; MSGMAX / size_of::<c_long>()];
+        words.insert(0, kind);
         Self(words)
     }
 
@@ -870,7 +870,9 @@ fn push(call: &Call) {
         return;
     }
     let mut message = QueueMessage::new(c_long::from(view.id) + 1);
-    message.data()[..data.len()].copy_from_slice(data);
+    if let Some(payload) = message.data().get_mut(..data.len()) {
+        payload.copy_from_slice(data);
+    }
     // SAFETY: a worker with a queue, and a message with `data.len()` payload bytes.
     let pushed =
         unsafe { swr_v1_os_msg_queue_push(queue_of(worker), message.as_ptr(), data.len()) };
@@ -907,7 +909,8 @@ fn pop(call: &Call) {
         call.set_bool(false);
         return;
     };
-    call.set_bytes(&message.data()[..length.min(MSGMAX)]);
+    let data = message.data();
+    call.set_bytes(data.get(..length).unwrap_or(data));
 }
 
 fn exec(call: &Call) {

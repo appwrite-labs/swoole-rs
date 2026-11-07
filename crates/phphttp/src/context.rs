@@ -399,11 +399,8 @@ pub(crate) fn upload_tmp_dir(state: &State) -> Cow<'_, CStr> {
 
 /// A directory as `std::string::c_str()` reads it: up to its first NUL.
 pub(crate) fn directory(bytes: &[u8]) -> Rc<CString> {
-    let end = bytes
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(bytes.len());
-    Rc::new(CString::new(&bytes[..end]).unwrap_or_default())
+    let text = bytes.split(|&byte| byte == 0).next().unwrap_or_default();
+    Rc::new(CString::new(text).unwrap_or_default())
 }
 
 /// A coroutine server's `http_compression_types`.

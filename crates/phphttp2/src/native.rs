@@ -130,8 +130,9 @@ pub(crate) unsafe fn swoole_http2_client_coro_create_socket(
     let kind = unsafe { swoole_rs_reactor::swr_v1_socket_host_type(host.cast(), length) };
     // SAFETY: as above; `erase` never exceeds the length.
     let name = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), length) };
+    let name = swoole_rs_zend::string::copy(name.get(kind.erase..).unwrap_or_default());
     // SAFETY: a writable out-parameter.
-    unsafe { *converted = swoole_rs_zend::string::copy(&name[kind.erase..]) };
+    unsafe { *converted = name };
     // SAFETY: crates/phpclients' constructor.
     let object = unsafe { swr_v1_phpclients_socket_create(kind.socket_type) };
     if object.is_null() {

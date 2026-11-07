@@ -129,7 +129,7 @@ fn encode(header: &HttpStaticHeaders) -> Vec<u8> {
             &raw mut written,
         )
     };
-    output[..written.min(output.len())].to_vec()
+    output.get(..written).unwrap_or(&output).to_vec()
 }
 
 fn status_message(status: i32) -> Vec<u8> {
@@ -281,9 +281,11 @@ impl SendfileTask {
 
     /// The task's bytes for one range.
     fn at(&mut self, task: &HttpStaticTask) -> &[u8] {
-        if let Some(head) = self.0.get_mut(..Self::HEAD) {
-            head[..8].copy_from_slice(&task.offset.to_ne_bytes());
-            head[8..].copy_from_slice(&task.length.to_ne_bytes());
+        if let Some((offset, rest)) = self.0.split_first_chunk_mut::<8>()
+            && let Some((length, _)) = rest.split_first_chunk_mut::<8>()
+        {
+            *offset = task.offset.to_ne_bytes();
+            *length = task.length.to_ne_bytes();
         }
         &self.0
     }

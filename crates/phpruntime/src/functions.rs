@@ -657,8 +657,10 @@ fn native_curl(requested: &mut u32, installed: u32) {
     }
     let change = transition(*requested, installed, flags::NATIVE_CURL);
     for native in NATIVE_CURL {
-        let name = &native.to_bytes_with_nul()[b"swoole_native_".len()..];
-        let name = CStr::from_bytes_with_nul(name).unwrap_or(c"");
+        let name = native.to_bytes_with_nul().strip_prefix(b"swoole_native_");
+        let name = name
+            .and_then(|name| CStr::from_bytes_with_nul(name).ok())
+            .unwrap_or(c"");
         match change {
             Some(true) => {
                 let replacement = function(native.to_bytes());

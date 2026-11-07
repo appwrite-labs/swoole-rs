@@ -32,7 +32,9 @@ fn putenv(call: &Call) {
     // as C reads it: up to the first NUL
     let text = setting.split(|&b| b == 0).next().unwrap_or_default();
     let assignment = text.iter().position(|&b| b == b'=');
-    let key = assignment.map_or(setting, |end| &setting[..end]);
+    let key = assignment
+        .and_then(|end| setting.get(..end))
+        .unwrap_or(setting);
     let stored = CString::new(text).unwrap_or_default();
 
     // SAFETY: PHP's environment lock, released below.

@@ -76,7 +76,9 @@ pub unsafe fn of<'a>(port: *mut c_void) -> &'a mut PortConfig {
 /// and the default EOF; the C++ constructor then stores the server.
 fn default_protocol() -> Protocol {
     let mut package_eof = [0; 8];
-    package_eof[..SW_DATA_EOF.len()].copy_from_slice(SW_DATA_EOF.as_bytes());
+    for (slot, byte) in package_eof.iter_mut().zip(SW_DATA_EOF.as_bytes()) {
+        *slot = *byte;
+    }
     Protocol {
         split_by_eof: false,
         package_eof,

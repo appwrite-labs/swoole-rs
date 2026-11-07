@@ -318,7 +318,7 @@ fn content(path: &[u8]) -> Option<Vec<u8>> {
         if n == 0 {
             break;
         }
-        content.extend_from_slice(&buf[..n]);
+        content.extend_from_slice(buf.get(..n).unwrap_or(&buf));
     }
     Some(content)
 }
@@ -338,7 +338,11 @@ fn send_content(ctx: *mut c_void, path: &[u8], content: &[u8], offset: i64, leng
             .unwrap_or_default()
             .min(content.len());
         let end = start.saturating_add(wanted).min(content.len());
-        if !body(ctx, &content[start..end], trailer == 0) {
+        if !body(
+            ctx,
+            content.get(start..end).unwrap_or_default(),
+            trailer == 0,
+        ) {
             error = true;
         }
     }

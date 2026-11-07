@@ -178,14 +178,12 @@ fn handler_key(command: &[u8]) -> Vec<u8> {
     // SAFETY: `command` is readable; `key` has the 64 bytes the export writes.
     let length =
         unsafe { swr_v1_resp_handler_key(command.as_ptr(), command.len(), key.as_mut_ptr()) };
-    key[..length].to_vec()
+    key.get(..length).unwrap_or(&key).to_vec()
 }
 
 /// `%.*s`: up to the first NUL.
 fn until_nul(text: &[u8]) -> &[u8] {
-    text.iter()
-        .position(|&b| b == 0)
-        .map_or(text, |nul| &text[..nul])
+    text.split(|&b| b == 0).next().unwrap_or(text)
 }
 
 /// `php_swoole_error(level, "%s", message)` (or the fatal variant): a user
@@ -341,7 +339,8 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         if next <= 0 {
             break next;
         }
-        let text = &data[span.offset..span.offset + span.length];
+        let text = data.get(span.offset..span.offset + span.length);
+        let text = text.unwrap_or_default();
         match span.kind {
             // SAFETY: the live parameter array; Zend copies the bytes.
             0 => unsafe {
@@ -365,7 +364,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         return Ok(OK);
     }
     if command.len() >= MAX_COMMAND_SIZE {
-        let head = &command[..8];
+        let head = command.get(..8).unwrap_or(command);
         let mut message = b"command [".to_vec();
         message.extend_from_slice(until_nul(head));
         message.extend_from_slice(format!("...](length={}) is too long", command.len()).as_bytes());

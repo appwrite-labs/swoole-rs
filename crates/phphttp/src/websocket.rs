@@ -463,13 +463,15 @@ fn not_null(object: *mut zend_object, name: &CStr) -> Option<*mut zval> {
     if bailout::pending() {
         return None;
     }
-    let slot = match name.to_bytes() {
-        b"code" => 0,
-        b"reason" => 1,
-        b"data" => 2,
-        _ => 3,
-    };
-    let rv = RV.with(|rv| rv[slot].get());
+    let rv = RV.with(|rv| {
+        match name.to_bytes() {
+            b"code" => &rv[0],
+            b"reason" => &rv[1],
+            b"data" => &rv[2],
+            _ => &rv[3],
+        }
+        .get()
+    });
     let mut bailed = 0;
     // SAFETY: a live object of the class; the shim traps a bailout in __get.
     let found = unsafe {
@@ -699,13 +701,13 @@ fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags:
         let data = unsafe { value::str_of(payload) };
         // SAFETY: a live string.
         let data = unsafe { bytes(data) };
-        if data.len() >= 2 {
+        if let [high, low, reason @ ..] = data {
             // `(payload[0] << 8) ^ (payload[1] & 0xFF)` over a signed char.
-            let code = (i64::from(data[0].cast_signed()) << 8) ^ i64::from(data[1]);
+            let code = (i64::from(high.cast_signed()) << 8) ^ i64::from(*low);
             // SAFETY: a live CloseFrame.
             unsafe { value::update_long(class, object, c"code", code) };
-            if data.len() > 2 {
-                let reason = string::copy(&data[2..]);
+            if !reason.is_empty() {
+                let reason = string::copy(reason);
                 let mut reason_zval = zval_of(reason);
                 // SAFETY: as above; the property takes its own reference.
                 unsafe {
@@ -825,7 +827,8 @@ fn unpack(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let payload = &data[frame.header_length..frame.header_length + frame.payload_length];
+    let payload = data.get(frame.header_length..frame.header_length + frame.payload_length);
+    let payload = payload.unwrap_or_default();
     // SAFETY: a zval is plain data.
     let mut zpayload: zval = unsafe { std::mem::zeroed() };
     if frame.flags & FLAG_RSV1 != 0 {

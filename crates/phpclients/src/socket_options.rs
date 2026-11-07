@@ -105,11 +105,11 @@ unsafe extern "C" fn fastcgi_length(
         return 0;
     }
     // SAFETY: at least `HEADER` bytes are buffered.
-    let p = unsafe { std::slice::from_raw_parts(pl.buf, HEADER as usize) };
+    let p = unsafe { pl.buf.cast::<[u8; HEADER as usize]>().read() };
     fastcgi_record_length(p)
 }
 
-fn fastcgi_record_length(p: &[u8]) -> isize {
+fn fastcgi_record_length(p: [u8; 8]) -> isize {
     let length = ((isize::from(p[4]) << 8) | isize::from(p[5])) + isize::from(p[6]);
     if length > 0xffff { -1 } else { length + 8 }
 }
@@ -138,8 +138,7 @@ pub(crate) fn checked() -> Result<(), Stop> {
 
 /// `bytes` as C text, cut at a NUL as `%s` reads it.
 pub(crate) fn text(bytes: &[u8]) -> CString {
-    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    CString::new(&bytes[..end]).unwrap_or_default()
+    CString::new(bytes.split(|&b| b == 0).next().unwrap_or_default()).unwrap_or_default()
 }
 
 /// `php_swoole_fatal_error(level, "%s", message)`.
@@ -325,7 +324,9 @@ fn set_protocol(s: &Settings, socket: Socket) -> Result<bool, Stop> {
         } else {
             edit(socket, |p| {
                 p.package_eof_len = u8::try_from(eof.len()).unwrap_or(0);
-                p.package_eof[..eof.len()].copy_from_slice(&eof);
+                for (slot, byte) in p.package_eof.iter_mut().zip(&eof) {
+                    *slot = *byte;
+                }
             });
         }
     }
@@ -1145,12 +1146,12 @@ mod tests {
     #[test]
     fn fastcgi_lengths() {
         // content 0x0102, padding 3: 258 + 3 + header 8.
-        assert_eq!(fastcgi_record_length(&[1, 6, 0, 1, 1, 2, 3, 0]), 269);
+        assert_eq!(fastcgi_record_length([1, 6, 0, 1, 1, 2, 3, 0]), 269);
         assert_eq!(
-            fastcgi_record_length(&[1, 6, 0, 1, 0xff, 0xff, 0, 0]),
+            fastcgi_record_length([1, 6, 0, 1, 0xff, 0xff, 0, 0]),
             0xffff + 8
         );
-        assert_eq!(fastcgi_record_length(&[1, 6, 0, 1, 0xff, 0xff, 1, 0]), -1);
+        assert_eq!(fastcgi_record_length([1, 6, 0, 1, 0xff, 0xff, 1, 0]), -1);
     }
 
     #[test]

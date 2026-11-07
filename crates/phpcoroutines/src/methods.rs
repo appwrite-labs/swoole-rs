@@ -679,7 +679,7 @@ fn list(call: &Call) {
     let mut ids: zval = unsafe { mem::zeroed() };
     // SAFETY: a writable zval.
     unsafe { swr_zend_array_init(&raw mut ids) };
-    for &cid in &cids[..count] {
+    for &cid in cids.iter().take(count) {
         // SAFETY: an array.
         unsafe { add_next_index_long(&raw mut ids, cid) };
     }

@@ -93,15 +93,10 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_string_trim(handle: *const Str
     let value = unsafe { swr_v1_phphelpers_string_get(handle) };
     // SAFETY: a live string; the borrow ends before mutation below.
     let bytes = unsafe { string::bytes(value) };
-    let mut length = bytes.len();
-    while length != 0
-        && matches!(
-            bytes[length - 1],
-            b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c
-        )
-    {
-        length -= 1;
-    }
+    let length = bytes
+        .iter()
+        .rposition(|byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+        .map_or(0, |last| last + 1);
     // SAFETY: upstream rtrim zeroes each removed byte, including the terminator.
     let end = string::val(value).wrapping_add(length);
     // SAFETY: the remaining span lies within the string allocation.

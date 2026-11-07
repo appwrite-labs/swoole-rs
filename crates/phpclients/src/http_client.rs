@@ -180,8 +180,7 @@ fn strerror<'a>(code: c_int) -> &'a CStr {
 }
 
 fn c_bytes(bytes: &[u8]) -> CString {
-    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    CString::new(&bytes[..end]).unwrap_or_default()
+    CString::new(bytes.split(|&b| b == 0).next().unwrap_or_default()).unwrap_or_default()
 }
 
 /// `php_swoole_error(E_WARNING, ...)`, or with `fatal` `php_swoole_fatal_error`.
@@ -594,7 +593,8 @@ impl Client {
                 encoded.as_mut_ptr(),
             )
         };
-        self.basic_auth = [&b"Basic "[..], &encoded[..written]].concat();
+        let encoded = encoded.get(..written).unwrap_or(&encoded);
+        self.basic_auth = [b"Basic ".as_slice(), encoded].concat();
     }
 
     fn connect(&mut self) -> bool {
@@ -1095,7 +1095,8 @@ impl Client {
                 unsafe { native::swoole_http_client_coro_read_buffer_set(socket, length) };
                 // SAFETY: the buffer's first `length` bytes are received data.
                 let data = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), length) };
-                if request::header_end(&data[header_offset..]).is_none() {
+                let unparsed = data.get(header_offset..).unwrap_or_default();
+                if request::header_end(unparsed).is_none() {
                     if length == size {
                         // SAFETY: as above.
                         unsafe {
@@ -1267,7 +1268,7 @@ impl Client {
         add(c"Connection", c"Upgrade");
         add(c"Upgrade", c"websocket");
         add(c"Sec-WebSocket-Version", c"13");
-        let key = string::copy(&key[..written]);
+        let key = string::copy(key.get(..written).unwrap_or(&key));
         // SAFETY: as above; the array takes the key string's reference.
         unsafe { add_assoc_str_ex(headers, c"Sec-WebSocket-Key".as_ptr(), 17, key) };
         // SAFETY: the client's WebSocket state.
@@ -2097,7 +2098,8 @@ fn add_file(call: &Call) {
         let path = c_path.to_bytes();
         path.iter()
             .rposition(|&b| b == b'/')
-            .map_or(path, |slash| &path[slash + 1..])
+            .and_then(|slash| path.get(slash + 1..))
+            .unwrap_or(path)
     };
     add_upload(
         call,
@@ -2332,7 +2334,7 @@ fn get_header_out(call: &Call) {
     match request::header_end(data) {
         Some(end) if end > 0 => {
             // SAFETY: the return slot takes the new string's reference.
-            unsafe { call.set_string(string::copy(&data[..end])) };
+            unsafe { call.set_string(string::copy(data.get(..end).unwrap_or(data))) };
         }
         _ => call.set_bool(false),
     }

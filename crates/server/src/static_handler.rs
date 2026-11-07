@@ -204,7 +204,7 @@ impl StaticHandler {
         let mut value = [0u8; 64];
         // SAFETY: a null mtime asks for now; a local output.
         let length = unsafe { swr_v3_http_date(ptr::null(), value.as_mut_ptr(), value.len()) };
-        value[..length.min(value.len())].to_vec()
+        value.get(..length).unwrap_or(&value).to_vec()
     }
 
     #[must_use]
@@ -212,7 +212,7 @@ impl StaticHandler {
         let mut value = [0u8; 64];
         // SAFETY: the context's mtime slot and a local output.
         let length = unsafe { swr_v3_http_date(self.mtime, value.as_mut_ptr(), value.len()) };
-        value[..length.min(value.len())].to_vec()
+        value.get(..length).unwrap_or(&value).to_vec()
     }
 
     fn conditional(&self, date: &[u8], kind: u32, timezone: *const libc::c_long) -> bool {

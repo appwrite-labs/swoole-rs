@@ -181,7 +181,7 @@ fn format_bytes(size: u64) -> String {
         adjusted /= 1024.0;
         unit += 1;
     }
-    format!("{adjusted:.2} {}", UNITS[unit])
+    format!("{adjusted:.2} {}", UNITS.get(unit).unwrap_or(&"YB"))
 }
 
 /// `zend_fetch_debug_backtrace(.., 0, options, 0)`.

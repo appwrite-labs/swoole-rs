@@ -269,7 +269,8 @@ fn parse_address(name: &[u8], error: Option<*mut *mut zend_string>) -> Option<(C
         }
         return None;
     }
-    let host = c_str(&name[plan.host_offset..plan.host_offset + plan.host_length]);
+    let host = name.get(plan.host_offset..plan.host_offset + plan.host_length);
+    let host = c_str(host.unwrap_or_default());
     Some((CString::new(host).unwrap_or_default(), plan.port))
 }
 
