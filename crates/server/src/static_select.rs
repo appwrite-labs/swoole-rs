@@ -1,7 +1,7 @@
 //! Upstream's `Server::select_static_handler` (`src/server/static_handler.cc`):
 //! the HTTP/1 server's static responses, a 404 page, a 304, a directory
 //! listing or the file's ranges, sent to the connection.
-use crate::static_handler::{StaticHandler, page_404};
+use crate::static_handler::{Effects, StaticHandler, page_404};
 use core::ffi::c_void;
 use core::ptr;
 use swoole_rs_http::{HttpProxyText, HttpStaticHeaders, HttpStaticTask};
@@ -27,7 +27,7 @@ pub trait Handler {
     fn end_part(&self) -> Vec<u8>;
 }
 
-impl Handler for StaticHandler {
+impl<E: Effects> Handler for StaticHandler<E> {
     fn try_serve(&self) -> bool {
         Self::try_serve(self)
     }

@@ -82,4 +82,4 @@ operation after Rust returns. No Rust frame or borrow spans an effect.
 Known difference: allocation, publication and destruction order differ from the
 legacy handler.
 
-Tests: `tests/modules/http/context_gate.py`.
+Tests: `crates/server/src/static_handler/tests.rs`.

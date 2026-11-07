@@ -478,6 +478,111 @@ pub mod http_static_select {
     }
 }
 
+/// The pinned `StaticHandler` over a scripted filesystem, MIME table and random
+/// strings (see `shim/http_static_context.cc`), and the libc calendar calls it and
+/// a candidate make, recorded in order.
+pub mod http_static_context {
+    use std::ffi::{c_char, c_int, c_long, c_void};
+
+    pub use super::http_static_select::Line;
+
+    #[repr(C)]
+    pub struct Rule {
+        pub pattern: *const c_char,
+        pub replacement: *const c_char,
+        pub is_regex: c_int,
+    }
+
+    /// The server: `http_autoindex`, a `/` location, `http_index_files` (when
+    /// `has_index`), the timezone and the rewrite rules. Strings are NUL-terminated.
+    #[repr(C)]
+    pub struct Server {
+        pub autoindex: c_int,
+        pub location: c_int,
+        pub has_index: c_int,
+        pub timezone: c_long,
+        pub index: *const *const c_char,
+        pub index_count: usize,
+        pub rules: *const Rule,
+        pub rule_count: usize,
+    }
+
+    /// What the scripted filesystem answers: every stat gives `file_size` and
+    /// `file_time`, a symlink at `link`, a directory at `directory`, else a file;
+    /// `canonical` (or the path itself when empty) resolves every path; every
+    /// directory lists `names`. `mime` is every MIME type. Strings are NUL-terminated.
+    #[repr(C)]
+    pub struct Fs {
+        pub file_size: usize,
+        pub file_time: i64,
+        pub directory: *const c_char,
+        pub link: *const c_char,
+        pub canonical: *const c_char,
+        pub mime: *const c_char,
+        pub names: *const *const c_char,
+        pub name_count: usize,
+    }
+
+    unsafe extern "C" {
+        pub fn swr_oracle_static_script(fs: *const Fs);
+        /// Whether the shim's compiler evaluates `sw_snprintf`'s arguments left to
+        /// right (clang) rather than right to left (GCC); C++ leaves it unspecified.
+        pub fn swr_oracle_static_arguments_left_to_right() -> c_int;
+        /// `count` outputs of `std::mt19937(seed)`.
+        pub fn swr_oracle_mt19937(seed: u32, out: *mut u32, count: usize);
+        pub fn swr_oracle_static_trace(line: Line, out: *mut c_void);
+        pub fn swr_oracle_calendar_events(line: Line, out: *mut c_void);
+        pub fn swr_oracle_calendar_parse(
+            text: *const c_char,
+            format: *const c_char,
+            value: *mut c_void,
+        ) -> bool;
+        pub fn swr_oracle_calendar_time(value: *mut c_void) -> i64;
+        pub fn swr_oracle_calendar_gmt(time: i64) -> *mut c_void;
+        pub fn swr_oracle_static_new(
+            server: *const Server,
+            url: *const c_char,
+            length: usize,
+        ) -> *mut c_void;
+        pub fn swr_oracle_static_free(handle: *mut c_void);
+        pub fn swr_oracle_static_try_serve(handle: *mut c_void) -> c_int;
+        pub fn swr_oracle_static_try_serve_index_file(handle: *mut c_void) -> c_int;
+        pub fn swr_oracle_static_get_dir_files(handle: *mut c_void) -> c_int;
+        pub fn swr_oracle_static_parse_range(
+            handle: *mut c_void,
+            range: *const c_char,
+            if_range: *const c_char,
+        );
+        pub fn swr_oracle_static_is_modified(
+            handle: *mut c_void,
+            date: *const c_char,
+            length: usize,
+        ) -> c_int;
+        pub fn swr_oracle_static_is_modified_range(
+            handle: *mut c_void,
+            date: *const c_char,
+            length: usize,
+        ) -> c_int;
+        pub fn swr_oracle_static_filename(handle: *mut c_void, line: Line, out: *mut c_void);
+        pub fn swr_oracle_static_buffer_new(capacity: usize) -> *mut c_void;
+        pub fn swr_oracle_static_buffer_free(buffer: *mut c_void);
+        /// `make_index_page` into the buffer; the bytes it appended go to `line`.
+        pub fn swr_oracle_static_index_page(
+            handle: *mut c_void,
+            buffer: *mut c_void,
+            line: Line,
+            out: *mut c_void,
+        ) -> usize;
+        /// The handler's state as lines; nonzero when its MIME and content-type
+        /// references are upstream's.
+        pub fn swr_oracle_static_snapshot(
+            handle: *mut c_void,
+            line: Line,
+            out: *mut c_void,
+        ) -> c_int;
+    }
+}
+
 pub mod protocols {
     use std::ffi::c_char;
 

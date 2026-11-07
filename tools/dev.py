@@ -236,9 +236,7 @@ def plan(args, reports):
     if 'http' in modules:
         script('http-server-config-owners', 'tests/modules/http/server_config_owners.py',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-server-config-owners'))
-        script('http-context', 'tests/modules/http/context_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-context'))
-        for name, runner in [('http-proxy', 'tests/modules/http/proxy_gate.py'), ('http-conditionals', 'tests/modules/http/conditional_gate.py'),
+        for name, runner in [('http-proxy', 'tests/modules/http/proxy_gate.py'),
                              ('http-rewrites', 'tests/modules/http/rewrite_gate.py'), ('http-dispatch', 'tests/modules/http/dispatch_gate.py'),
                              ('http-locales', 'tests/modules/http/locale_gate.py')]:
             script(name, runner, '--source', ROOT / 'target/upstream/src',

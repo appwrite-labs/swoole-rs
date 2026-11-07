@@ -59,8 +59,6 @@
  "hooks-ordered": 2,
  "hooks-packet-policy": 7,
  "hooks-unit": 3,
- "http-conditionals": 32,
- "http-context": 55,
  "http-cookie-flow-positive": 7,
  "http-dispatch": 20,
  "http-locales": 3,
