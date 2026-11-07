@@ -11,6 +11,22 @@ use std::{
 };
 use swoole_rs_zend::{Call, E_ERROR, E_WARNING, long_zval, message, sys::IS_LONG, type_of};
 
+// SAFETY: crates/reactor's `swoole_signal_get_handler`, under its upstream symbol.
+unsafe extern "C" {
+    #[link_name = "_Z25swoole_signal_get_handleri"]
+    fn swoole_signal_get_handler(signo: c_int) -> usize;
+}
+
+/// `SwooleG.signal_listener_num += delta`.
+fn listeners(delta: i32) {
+    use swoole_rs_corebase::{
+        swr_v1_core_set_signal_listener_num, swr_v1_core_signal_listener_num,
+    };
+    swr_v1_core_set_signal_listener_num(
+        swr_v1_core_signal_listener_num().wrapping_add_signed(delta),
+    );
+}
+
 /// `SW_SIGNO_MAX`.
 const SIGNO_MAX: i64 = 128;
 const SLOTS: usize = 128;
@@ -81,7 +97,7 @@ pub(crate) fn signal(call: &Call) {
     #[expect(clippy::cast_possible_truncation, reason = "0 <= signo < 128")]
     let number = signo as c_int;
     // SAFETY: a valid signal number.
-    let current = unsafe { (host.signal_handler)(number) };
+    let current = unsafe { swoole_signal_get_handler(number) };
     let ours: unsafe extern "C" fn(c_int) = on_signal;
     if current != 0 && current != ours as usize {
         fatal(
@@ -110,8 +126,7 @@ pub(crate) fn signal(call: &Call) {
             slot(signo).store(ptr::null_mut(), Ordering::Release);
             // SAFETY: as above.
             unsafe { (host.callable_defer_free)(old) };
-            // SAFETY: a counter of listeners.
-            unsafe { (host.signal_listeners)(-1) };
+            listeners(-1);
             call.set_bool(true);
             return;
         }
@@ -136,8 +151,7 @@ pub(crate) fn signal(call: &Call) {
         unsafe { (host.signal_listen)() };
     }
     if old.is_null() {
-        // SAFETY: a counter of listeners.
-        unsafe { (host.signal_listeners)(1) };
+        listeners(1);
     } else if sync {
         // SAFETY: the previous callable, no longer referenced.
         unsafe { (host.callable_free)(old) };

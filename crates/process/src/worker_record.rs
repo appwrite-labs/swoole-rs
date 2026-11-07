@@ -18,14 +18,14 @@ pub struct WorkerRecord {
     id: u32,
     pool: *mut c_void,
     queue: *mut c_void,
-    shared: bool,
-    redirect_stdout: bool,
-    redirect_stdin: bool,
-    redirect_stderr: bool,
+    pub shared: bool,
+    pub redirect_stdout: bool,
+    pub redirect_stdin: bool,
+    pub redirect_stderr: bool,
     status: u8,
     kind: u8,
     msgqueue_mode: u8,
-    child_process: u8,
+    pub child_process: u8,
     pub concurrency: u32,
     start_time: i64,
     pub dispatch_count: i64,
@@ -33,11 +33,21 @@ pub struct WorkerRecord {
     pub response_count: i64,
     pub coroutine_num: usize,
     lock: *mut c_void,
-    pipe_object: *mut c_void,
-    pipe_master: *mut c_void,
-    pipe_worker: *mut c_void,
-    pipe_current: *mut c_void,
+    pub pipe_object: *mut c_void,
+    pub pipe_master: *mut c_void,
+    pub pipe_worker: *mut c_void,
+    pub pipe_current: *mut c_void,
     ptr: *mut c_void,
+}
+
+impl WorkerRecord {
+    /// `new Worker()`: a zeroed record (no pipe, no queue, id 0, pid 0).
+    #[must_use]
+    pub fn boxed() -> Box<Self> {
+        // SAFETY: every field is an integer, a bool or a raw pointer, for which
+        // all-zero is a valid value.
+        Box::new(unsafe { core::mem::zeroed() })
+    }
 }
 
 /// First event worker with this pid, preserving array order and public raw writes.

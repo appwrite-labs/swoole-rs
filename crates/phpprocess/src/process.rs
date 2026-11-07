@@ -2,9 +2,10 @@
 //! upstream's ZPP block and checks, then works on the object's `Worker` through
 //! the host table.
 use crate::{
-    host::{Host, WorkerView, host, install},
+    host::{Host, host, install},
     report::{INVALID_PARAMS, cli, errno, fatal, notice, set_errno, set_last_error, sys},
     signal::signal,
+    worker::{self, WorkerView},
 };
 use std::{
     ffi::{CStr, c_char, c_int, c_long, c_void},
@@ -141,8 +142,7 @@ fn queue_of(worker: *mut c_void) -> *mut QueueRecord {
 }
 
 fn view(worker: *mut c_void) -> WorkerView {
-    // SAFETY: a live worker.
-    unsafe { (host().worker_view)(worker) }
+    worker::view(worker)
 }
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
@@ -158,7 +158,7 @@ unsafe extern "C" fn free(object: *mut zend_object) {
         // SAFETY: the object owns its worker and the worker its queue.
         unsafe { swr_v1_os_msg_queue_free(queue_of(process.worker)) };
         // SAFETY: as above.
-        unsafe { (host().worker_free)(process.worker) };
+        unsafe { worker::free(process.worker) };
     }
     if !process.socket.is_null() {
         // SAFETY: the object holds one reference to its exported socket.
@@ -375,8 +375,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
     if callable.is_null() {
         return -1;
     }
-    // SAFETY: per the caller.
-    unsafe { (host.child_enter)(worker) };
+    worker::child_enter(worker);
     let worker = view(worker);
     for (redirect, target) in [
         (worker.redirect_stdin, libc::STDIN_FILENO),
@@ -453,8 +452,8 @@ fn construct(call: &Call) {
     }
     drop(name);
     // Upstream makes the worker before parsing, so a failed parse leaves it set.
-    // SAFETY: a new worker the object owns from here.
-    let worker = unsafe { (host.worker_new)() };
+    // A new worker the object owns from here.
+    let worker = worker::new();
     process.worker = worker;
     let parsed = call.arity(1, 4).and_then(|()| {
         call.func(1)?;
@@ -471,8 +470,7 @@ fn construct(call: &Call) {
     // SAFETY: the worker made above.
     if !unsafe { (host.worker_share)(worker) } {
         if redirect {
-            // SAFETY: as above.
-            unsafe { (host.worker_redirect)(worker) };
+            worker::redirect(worker);
             pipe_type = PIPE_TYPE_STREAM;
         }
         // SAFETY: C++'s reader of the server's worker count.
@@ -481,16 +479,14 @@ fn construct(call: &Call) {
             ROUND_ID.store(base, Ordering::Relaxed);
         }
         let id = ROUND_ID.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: as above.
-        unsafe { (host.worker_set_id)(worker, id) };
+        worker::set_id(worker, id);
         if pipe_type > 0 {
             let socket_type = if pipe_type == PIPE_TYPE_STREAM {
                 libc::SOCK_STREAM
             } else {
                 libc::SOCK_DGRAM
             };
-            // SAFETY: as above.
-            let fd = unsafe { (host.worker_pipe)(worker, socket_type) };
+            let fd = worker::open_pipe(worker, socket_type);
             if fd < 0 {
                 // SAFETY: in a handler, with Swoole's exception class.
                 unsafe {
@@ -694,15 +690,14 @@ fn alarm(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let host = host();
     // SAFETY: C++'s reader of an ini flag.
     if !cli() {
         fatal(E_ERROR, &message!("cannot use Swoole\\Process::alarm here"));
         call.set_bool(false);
         return;
     }
-    // SAFETY: C++'s reader of the thread's timer.
-    if unsafe { (host.has_timer)() } {
+    // SAFETY: `SwooleTG.timer != nullptr`.
+    if unsafe { worker::swoole_timer_is_available() } {
         fatal(
             E_WARNING,
             &message!("cannot use both 'timer' and 'alarm' at the same time"),
@@ -741,8 +736,7 @@ fn start(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: a live worker.
-    let pid = unsafe { (host.fork)(worker) };
+    let pid = worker::fork(worker);
     match pid.cmp(&0) {
         std::cmp::Ordering::Less => {
             sys(E_WARNING, &message!("fork() failed"));
@@ -785,7 +779,7 @@ fn read(call: &Call) {
     let buffer = unsafe { swr_zend_string_alloc(size) };
     let start = string_data(buffer);
     // SAFETY: the string has room for `size` bytes and a NUL.
-    let read = unsafe { (host().pipe_read)(worker, start, size, process.blocking) };
+    let read = unsafe { worker::pipe_read(worker, start, size, process.blocking) };
     let Ok(length) = usize::try_from(read) else {
         // SAFETY: the string made above, never shared.
         unsafe { swr_zend_string_free(buffer) };
@@ -826,7 +820,7 @@ fn write(call: &Call) {
     }
     // SAFETY: the argument's bytes.
     let written =
-        unsafe { (host().pipe_write)(worker, data.as_ptr().cast(), data.len(), process.blocking) };
+        unsafe { worker::pipe_write(worker, data.as_ptr().cast(), data.len(), process.blocking) };
     if written < 0 {
         sys(E_WARNING, &message!("write() failed"));
         call.set_bool(false);
@@ -997,8 +991,7 @@ fn daemon(call: &Call) {
                 // SAFETY: C++ resolves a stream, socket or int to its fd.
                 let from = unsafe { (host.convert_to_fd)(value) };
                 if from >= 0 {
-                    // SAFETY: dup2 with a warning on failure.
-                    unsafe { (host.daemon_dup)(from, fd) };
+                    worker::dup(from, fd);
                 }
             }
             let more = fd != 2;
@@ -1008,8 +1001,10 @@ fn daemon(call: &Call) {
         // SAFETY: the array argument, which the loop does not modify.
         unsafe { each_value(pipes, each) };
     }
-    // SAFETY: C++'s daemon().
-    call.set_bool(unsafe { (host.daemon)(c_int::from(nochdir), c_int::from(noclose)) } == 0);
+    // SAFETY: crates/ossupport's daemon().
+    call.set_bool(
+        unsafe { worker::swoole_daemon(c_int::from(nochdir), c_int::from(noclose)) } == 0,
+    );
 }
 
 fn exit(call: &Call) {
@@ -1033,11 +1028,10 @@ fn exit(call: &Call) {
         );
         1
     };
-    let host = host();
-    // SAFETY: C++'s event loop teardown.
-    if unsafe { (host.event_available)() } {
+    // SAFETY: the event loop's teardown.
+    if unsafe { worker::swoole_event_is_available() } {
         // SAFETY: as above.
-        unsafe { (host.event_free)() };
+        unsafe { worker::swoole_event_free() };
     }
     #[expect(clippy::cast_possible_truncation, reason = "0..=255")]
     // SAFETY: exits the process, as upstream does.
@@ -1064,7 +1058,7 @@ fn close(call: &Call) {
         return;
     }
     // SAFETY: a worker owning its pipe.
-    if unsafe { (host().pipe_close)(worker, which) } < 0 {
+    if unsafe { worker::pipe_close(worker, which) } < 0 {
         sys(E_WARNING, &message!("close() failed"));
         call.set_bool(false);
         return;
@@ -1101,7 +1095,7 @@ fn set_timeout(call: &Call) {
         return;
     }
     // SAFETY: a worker with a pipe.
-    call.set_bool(unsafe { (host().pipe_timeout)(worker, seconds) });
+    call.set_bool(unsafe { worker::pipe_timeout(worker, seconds) });
 }
 
 fn set_blocking(call: &Call) {
@@ -1117,7 +1111,7 @@ fn set_blocking(call: &Call) {
     }
     process.blocking = blocking;
     // SAFETY: a worker with a pipe.
-    call.set_bool(unsafe { (host().pipe_blocking)(process.worker, blocking) });
+    call.set_bool(unsafe { worker::pipe_blocking(process.worker, blocking) });
 }
 
 /// `SW_CHECK_PRIORITY_WHO`: a null `$who` means this process for
