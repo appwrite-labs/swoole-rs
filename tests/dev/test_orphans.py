@@ -2,11 +2,14 @@
 by its stem as a quoted string or an import. A file beside a same-stem .py (the
 C++ a gate compiles with Path(__file__).with_suffix) is referenced when it is.
 Markdown does not count, so a file only a README mentions is an orphan. orphans.txt lists the ones not yet wired into
-a gate or deleted (#47); it may only shrink."""
+a gate or deleted (#47); it may only shrink. dev.py names every tests/modules script its plans run in full,
+so a path it built from parts could not hide a live script as an orphan (#645)."""
 from collections import Counter
+import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +49,16 @@ class Orphans(unittest.TestCase):
         found = orphans()
         self.assertEqual(sorted(set(found) - set(allowed)), [], 'wire these into a gate or delete them')
         self.assertEqual(sorted(set(allowed) - set(found)), [], 'no longer orphans: remove them from orphans.txt')
+
+    def test_dev_py_names_every_script_its_plans_run(self):
+        source = (ROOT / 'tools/dev.py').read_text()
+        paths = set()
+        for mode in ['candidate', 'integrate']:
+            rows = json.loads(subprocess.check_output([sys.executable, 'tools/dev.py', mode, '--all-modules', '--plan'],
+                                                      cwd=ROOT, text=True))
+            paths.update(arg for row in rows for arg in row['command'] if arg.startswith('tests/modules/'))
+        self.assertTrue(paths)
+        self.assertEqual(sorted(path for path in paths if repr(path) not in source), [], 'spell these paths out in dev.py')
 
 
 if __name__ == '__main__':

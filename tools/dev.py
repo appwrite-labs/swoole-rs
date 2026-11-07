@@ -213,13 +213,13 @@ def plan(args, reports):
         reference_identity = reports / 'reference-identity.json'
         script('reference-identity', 'tools/extension_identity.py', '--source', ROOT / 'target/upstream/src',
                '--extension', reference, *php, '--output', reference_identity)
-        for module, runner in [('base64', 'consumers.py'), ('crc32', 'consumer.py')]:
+        for module, runner in [('base64', 'tests/modules/base64/consumers.py'), ('crc32', 'tests/modules/crc32/consumer.py')]:
             if module in modules:
                 consumer_php = php_for('curl') if module == 'base64' else php
                 for label, extension, identity in [('upstream', reference, reference_identity),
                                                     ('hybrid', hybrid, manifest)]:
                     name = module + '-consumers-' + label
-                    script(name, 'tests/modules/' + module + '/' + runner, '--extension', extension,
+                    script(name, runner, '--extension', extension,
                            '--manifest', identity, *consumer_php, *report(name))
     if 'error' in modules:
         script('error-native', 'tools/core_check.py', '--module', 'error',
@@ -235,8 +235,10 @@ def plan(args, reports):
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-server-config-owners'))
         script('http-context', 'tests/modules/http/context_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-context'))
-        for name, runner in [('http-proxy', 'proxy_gate.py'), ('http-conditionals', 'conditional_gate.py'), ('http-rewrites', 'rewrite_gate.py'), ('http-dispatch', 'dispatch_gate.py'), ('http-locales', 'locale_gate.py')]:
-            script(name, 'tests/modules/http/' + runner, '--source', ROOT / 'target/upstream/src',
+        for name, runner in [('http-proxy', 'tests/modules/http/proxy_gate.py'), ('http-conditionals', 'tests/modules/http/conditional_gate.py'),
+                             ('http-rewrites', 'tests/modules/http/rewrite_gate.py'), ('http-dispatch', 'tests/modules/http/dispatch_gate.py'),
+                             ('http-locales', 'tests/modules/http/locale_gate.py')]:
+            script(name, runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(name))
         script('http-cookie-flow-positive', 'tests/modules/http/cookie_flow_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-cookie-flow-positive'))
@@ -269,9 +271,9 @@ def plan(args, reports):
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options,
                    '--report', reports / (phase + '.json'))
     if 'hooks' in modules:
-        for name, runner in [('hooks-ordered', 'ordered_gate.py'), ('hooks-async-policy', 'async_gate.py'),
-                             ('hooks-packet-policy', 'packet_gate.py')]:
-            script(name, 'tests/modules/hooks/' + runner, '--source', ROOT / 'target/upstream/src',
+        for name, runner in [('hooks-ordered', 'tests/modules/hooks/ordered_gate.py'), ('hooks-async-policy', 'tests/modules/hooks/async_gate.py'),
+                             ('hooks-packet-policy', 'tests/modules/hooks/packet_gate.py')]:
+            script(name, runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
                    '--report', reports / (name + '.json'))
         script('hooks-compile', 'tests/modules/hooks/compile_gate.py', '--source', ROOT / 'target/upstream/src',
@@ -281,13 +283,16 @@ def plan(args, reports):
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
                *report('clients-http-format'))
         if integrate:
-            for family, runner in [('http', 'php_http.py'), ('dns', 'php_dns.py'), ('lifecycle', 'php_lifecycle.py'),
-                                   ('socket-custody', 'socket_custody.py'),
-                                   ('pool', 'php_pool.py'), ('resolver', 'php_resolver.py'), ('pool_fork', 'php_pool_fork.py'),
-                                   ('http_connection', 'php_http_connection.py'), ('http_format', 'php_http_format.py'),
-                                   ('coro', 'php_coro.py'), ('async', 'php_async.py'), ('coro_io', 'php_coro_io.py')]:
+            for family, runner in [('http', 'tests/modules/clients/php_http.py'), ('dns', 'tests/modules/clients/php_dns.py'),
+                                   ('lifecycle', 'tests/modules/clients/php_lifecycle.py'),
+                                   ('socket-custody', 'tests/modules/clients/socket_custody.py'),
+                                   ('pool', 'tests/modules/clients/php_pool.py'), ('resolver', 'tests/modules/clients/php_resolver.py'),
+                                   ('pool_fork', 'tests/modules/clients/php_pool_fork.py'),
+                                   ('http_connection', 'tests/modules/clients/php_http_connection.py'),
+                                   ('http_format', 'tests/modules/clients/php_http_format.py'), ('coro', 'tests/modules/clients/php_coro.py'),
+                                   ('async', 'tests/modules/clients/php_async.py'), ('coro_io', 'tests/modules/clients/php_coro_io.py')]:
                 name = 'clients-php-' + family
-                script(name, 'tests/modules/clients/' + runner, '--build-manifest', manifest,
+                script(name, runner, '--build-manifest', manifest,
                        *php_for('curl', 'sockets'), *engines, *report(name))
     if 'phpevents' in modules:
         script('phpevents-lifecycle', 'tests/modules/phpevents/lifecycle.py', *php_for('curl', 'sockets'), *engines,
@@ -332,19 +337,17 @@ def plan(args, reports):
                '--manifest', 'tests/modules/ports/sni-originals.json', *php_for('curl', 'sockets'), *sni_engines,
                '--require-all', '--isolate-cases', *report('ports-sni-originals'))
         if integrate:
-            for name, runner in [('ports-configuration', 'configuration.py')]:
-                script(name, 'tests/modules/ports/' + runner, *php_for('curl', 'sockets'), *engines,
-                       '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       '--source-ref', 'HEAD', *report(name))
+            script('ports-configuration', 'tests/modules/ports/configuration.py', *php_for('curl', 'sockets'), *engines,
+                   '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+                   '--source-ref', 'HEAD', *report('ports-configuration'))
         script('ports-policy', 'tests/modules/ports/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ports-policy'))
         port_options = (['--openssl-root', subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()]
                         if sys.platform == 'darwin' else [])
-        for name in ['callback_property']:
-            phase = 'ports-' + name.replace('_', '-')
-            script(phase, 'tests/modules/ports/' + name + '.py', '--source', ROOT / 'target/upstream/src',
-                   *(['--core', ROOT / 'target/hybrid' / native_variant / 'src'] if integrate else []), '--sanitize', *port_options,
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(phase))
+        phase = 'ports-callback-property'
+        script(phase, 'tests/modules/ports/callback_property.py', '--source', ROOT / 'target/upstream/src',
+               *(['--core', ROOT / 'target/hybrid' / native_variant / 'src'] if integrate else []), '--sanitize', *port_options,
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(phase))
     if 'coroutine' in modules and integrate:
         native_options = ['--php-prefix', subprocess.check_output(['php-config', '--prefix'], text=True).strip()] if sys.platform == 'darwin' else []
         native_options += ['--dns-requests']
@@ -464,11 +467,10 @@ def plan(args, reports):
         if integrate:
             reference_first = ['--engine', f'upstream={reference}',
                                '--engine', f'hybrid={hybrid}']
-            for name in ['reply', 'request', 'handlers', 'bailout']:
-                script('protocols-' + name, 'tests/modules/protocols/' + name + '.py',
-                       *php, *reference_first, *report('protocols-' + name))
-            script('protocols-lifecycle', 'tests/modules/protocols/lifecycle.py',
-                   *php, *reference_first, *report('protocols-lifecycle'))
+            for runner in ['tests/modules/protocols/reply.py', 'tests/modules/protocols/request.py', 'tests/modules/protocols/handlers.py',
+                           'tests/modules/protocols/bailout.py', 'tests/modules/protocols/lifecycle.py']:
+                name = 'protocols-' + Path(runner).stem
+                script(name, runner, *php, *reference_first, *report(name))
             # Upstream's own redis/message_bus/mqtt GoogleTests on the reference and the overlay
             # (Linux trees). mqtt.echo needs Node's mqtt/pino and is reported unsupported without them.
             if sys.platform.startswith('linux'):
