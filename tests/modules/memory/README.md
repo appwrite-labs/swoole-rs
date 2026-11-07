@@ -57,54 +57,14 @@ engines (18/19 pass). The child's OOM is delayed by Zend
 (`zend_handle_delayed_oom()`) until after the table row is unlocked, so the
 expected dead-owner warning never appears. macOS emits the warning.
 
-## Original native GoogleTests
+## Original native GoogleTests and Rust ASan
 
-```
-python3 tests/modules/memory/core.py --source /absolute/pinned/upstream \
-  --inventory-only --output /private/reports/memory-core-inventory.json
-python3 tests/modules/memory/core.py --source /absolute/pinned/upstream \
-  --config /private/snapshot/config.h --archive /private/libmemory.a \
-  --build-root /private/memory-build --output /private/reports/memory-core.json
-```
-
-Runs the 19 unchanged original fixed_pool/global_memory/ringbuffer/table/channel
-GoogleTests against both the full native library and the memory overlay.
-Linux only; needs CMake, GTest, PHP headers and the upstream native dependencies.
-The build root must be outside the reference and the repository. Original test
-sources are checked against their pinned hashes after overlays, native assertions
-stay enabled (`-O2 -UNDEBUG`), and each test runs in its own bounded process.
-Timeouts, missing XML, skips and failures fail.
-
-- `--case group.name` (repeatable) runs a subset; `whole_inventory_passed` is
-  then false.
-- `--model` also builds `probe.cc`/`standalone.cc` against each library and runs
-  the collection, mapping, metadata, odd-row, creation and clearing models.
-- `--sanitize` enables native ASan (not UBSan: the packed original C++ has known
-  alignment UB). `--rust-asan` additionally requires the archive to have been
-  built with `RUSTFLAGS=-Zsanitizer=address`, checked via `nm`.
-
-Known failures:
-
-- With `--sanitize`, `table.size_limit` fails in both engines: the original test
-  never destroys its two tables, and LeakSanitizer reports the leaked metadata.
-- With `--model --sanitize`, the upstream model leaks duplicate-column metadata
-  (fixed in the Rust overlay), so the combined comparison fails.
-- Native packed-row locks on odd-width rows fault on ARM64 (32-bit CAS
-  alignment). Models use aligned rows; this remains an open gap.
-
-## Rust ASan
-
-```
-python3 tests/modules/memory/rust_asan.py --output target/reports/memory/rust-asan.json
-```
-
-Builds the crate's unit tests with `-Zsanitizer=address` (via
-`RUSTC_BOOTSTRAP=1`), checks the LLVM IR contains ASan instrumentation, and
-requires every listed test to pass with none ignored or filtered. Leak detection
-is on for Linux, off for macOS. The precompiled standard library is not
-instrumented.
-
-Linux PHP-loaded ASan is blocked by `RTLD_DEEPBIND`.
+`memory-native-originals` runs upstream's 19 fixed_pool, global_memory,
+ringbuffer, table and channel GoogleTests unchanged on the reference and
+the hybrid tree (`CORE_TESTS` in tools/dev.py, via tools/core_tests.py; Linux,
+integrate). `memory-rust-asan` runs the crate's unit tests under Rust ASan
+(`tools/cargo_asan.py --package swoole-rs-memory`). `heap.random` is a Rust test
+in `heap.rs` (#1513).
 
 ## Benchmark
 
@@ -142,6 +102,4 @@ went with them (#1500):
   build without the memory feature.
 - `memory-table-witnesses`: table fork, grow, clear-batch and odd-width
   observations that must equal upstream's. No PHPT compares these across engines.
-
-`core.py` and `rust_asan.py` run in no CI lane: #738.
 

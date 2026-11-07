@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""crates/coroutine's unit tests under Rust ASan: the scheduler's origin tree,
-the channel's effect-driven operations and the stack allocator all handle raw
-pointers. The plain run is the coroutine-unit phase."""
+"""A crate's unit tests under Rust ASan (coroutine-rust-asan, memory-rust-asan): they handle raw
+pointers. The plain run is the crate's ordinary cargo test."""
 import argparse
 import json
 import os
@@ -9,20 +8,21 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools.harness import run_isolated, write_report  # noqa: E402
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--package', required=True)
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
     host = next(line.split()[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines()
                 if line.startswith('host:'))
     # --target keeps build scripts and proc macros uninstrumented; its own target
     # directory keeps the ordinary build cache intact.
-    command = ['cargo', 'test', '--locked', '-p', 'swoole-rs-coroutine', '--target', host,
+    command = ['cargo', 'test', '--locked', '-p', args.package, '--target', host,
                '--target-dir', str(ROOT / 'target/asan')]
     env = {**os.environ, 'RUSTC_BOOTSTRAP': '1', 'RUSTFLAGS': '-Zsanitizer=address',
            'RUSTDOCFLAGS': '-Zsanitizer=address'}

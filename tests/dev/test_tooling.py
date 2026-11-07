@@ -459,7 +459,8 @@ class Lanes(unittest.TestCase):
         self.assertIn('ossupport-async-file-owner', commands)
         self.assertIn('http-context', commands)
         self.assertIn('coroutine-compile',commands)
-        self.assertIn('tests/modules/coroutine/rust_asan.py', commands['coroutine-rust-asan'])
+        self.assertIn('swoole-rs-coroutine', commands['coroutine-rust-asan'])
+        self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
         for name in ['hooks-ordered','hooks-async-policy','hooks-packet-policy','hooks-compile']:
             self.assertIn(name,commands)
