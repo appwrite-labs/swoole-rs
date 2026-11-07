@@ -128,7 +128,7 @@ jobs:
           sudo python3 tests/modules/corebase/slow_resolver.py --
           python3 corpus/upstream/run.py
           --manifest tests/modules/corebase/dns-timeout-originals.json --external-network
-          --php-extension sockets --require-all
+          --php-extension curl --php-extension sockets --require-all
           --engine hybrid=target/hybrid/rust-halfclose/modules/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/reports/dns-timeout-originals.json
