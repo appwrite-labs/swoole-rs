@@ -141,6 +141,8 @@ unsafe fn fact(serv: *mut c_void, id: u32) -> i64 {
     match id {
         // SAFETY: per the caller.
         f::STARTED => i64::from(unsafe { view::is_started(serv) }),
+        // SAFETY: per the caller.
+        f::WORKER_THREAD => i64::from(unsafe { view::is_worker_thread(serv) }),
         f::WORKER_MAX_CONCURRENCY => i64::from(config.worker_max_concurrency),
         // SAFETY: per the caller.
         f::MAX_CONCURRENCY => i64::from(unsafe { view::counters(serv) }.max_concurrency),

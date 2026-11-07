@@ -45,6 +45,9 @@ mod settings;
 mod task;
 
 #[cfg(feature = "server")]
+mod thread;
+
+#[cfg(feature = "server")]
 pub use dispatch::*;
 
 #[cfg(feature = "server")]

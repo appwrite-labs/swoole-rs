@@ -17,7 +17,6 @@ struct _zend_class_entry;
 
 /* Server facts `fact` answers, by id. */
 enum {
-    SWR_PHPSERVER_FACT_WORKER_THREAD = 4,
     SWR_PHPSERVER_FACT_CACHE_SESSION_ADDR = 14, /* swoole_http_server_can_cache_session_addr() */
 };
 
@@ -30,12 +29,8 @@ enum {
 typedef struct {
     int64_t (*fact)(void *server, uint32_t id);
     void (*install)(void *server, uint32_t which);
-    /* 0: no server yet; 1: this worker thread's server, in *server; 2: not the main thread
-     * (SW_THREAD); 3: a server already exists. */
-    int (*admit)(void **server);
     void *(*create)(int64_t mode); /* new Server(mode) */
     int (*add_systemd_socket)(void *server);
-    void *(*add_port)(void *server, int64_t type, const char *host, int64_t port);
     /* A new Server\Port object (sw_malloc_zval) bound to `port` and its server. */
     struct _zval_struct *(*port_object)(void *server, void *port);
     /* serv->create(): null, or sw_error after a failure. */
@@ -43,15 +38,6 @@ typedef struct {
     /* serv->start() in zend_try: 0 started and returned, -1 failed (*error is the reason),
      * 1 bailed out. */
     int (*start)(void *server, const char **error);
-    /* SW_THREAD: a worker thread's start() (settings, coroutine options, the worker loop):
-     * 0 not a worker thread, 1 ran, 2 bailed out. */
-    int (*thread_worker)(struct _zend_object *object);
-    /* SW_THREAD in thread mode: bootstrap, init_arguments and the thread starter, in zend_try;
-     * *state is what `thread_release` frees. True if it bailed out. */
-    bool (*thread_prepare)(struct _zend_object *object, void **state);
-    void (*thread_release)(void *state);
-    /* Serialize `setting` for worker threads (SW_THREAD's copy_setting). */
-    void (*copy_setting)(void *server, struct _zval_struct *setting);
     /* Delete the Server. */
     void (*release)(void *server);
     /* addProcess's worker: -3 bailed out, -2 a thread that is not a user worker, -1 add_worker failed,

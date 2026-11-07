@@ -208,6 +208,19 @@ pub unsafe fn is_started(serv: *mut c_void) -> bool {
     unsafe { counters(serv) }.start.load(Ordering::Relaxed) != 0
 }
 
+/// `Server::is_worker_thread()`: thread mode, on a worker thread.
+///
+/// # Safety
+/// As [`config`].
+pub unsafe fn is_worker_thread(serv: *mut c_void) -> bool {
+    /// `Server::MODE_THREAD` and `THREAD_WORKER`.
+    const MODE_THREAD: u8 = 3;
+    const THREAD_WORKER: u8 = 4;
+    // SAFETY: per the caller.
+    unsafe { config(serv) }.mode_ == MODE_THREAD
+        && swoole_rs_corebase::thread_kind() == THREAD_WORKER
+}
+
 /// `Server::get_connection_num()`: the per-worker cells when there are any.
 ///
 /// # Safety

@@ -370,7 +370,9 @@ pub extern "C" fn php_coroutine_disable_hook() -> bool {
 }
 
 /// `PHPCoroutine::enable_hook`.
-fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
+/// # Errors
+/// A hook's setup bailed out.
+pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     let ops = ops();
     // SAFETY: C++'s thread checks.
     if unsafe { (ops.main_thread)() } == 0 || unsafe { (ops.active_threads)() } > 1 {

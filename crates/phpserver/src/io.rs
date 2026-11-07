@@ -22,7 +22,6 @@ use swoole_rs_zend::{
 /// `swr_v1_phpserver_io_host`.
 #[repr(C)]
 pub struct IoHost {
-    closed: unsafe extern "C" fn(*mut c_void) -> bool,
     listen: unsafe extern "C" fn(*mut zend_object, *const c_char, i64, i64, *mut zval) -> bool,
     send_unix: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, usize, i64) -> c_int,
     sendto: unsafe extern "C" fn(
@@ -49,6 +48,14 @@ fn host() -> &'static IoHost {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpserver_io_init(table: *const IoHost) {
     HOST.store(table.cast_mut(), Ordering::Release);
+}
+
+/// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
+pub(crate) fn closed(serv: *mut c_void) -> bool {
+    // SAFETY: a live server.
+    let worker_thread = unsafe { view::is_worker_thread(serv) };
+    // SAFETY: as above.
+    !worker_thread && unsafe { view::is_started(serv) }
 }
 
 /// `server_event_map`: lower-case event name, callback type and property.
@@ -104,8 +111,7 @@ fn port_call(call: &Call, method: &[u8], retval: *mut zval, args: &[*mut zval]) 
 
 fn on(call: &Call) {
     let serv = server(call);
-    // SAFETY: a live server.
-    if unsafe { (host().closed)(serv) } {
+    if closed(serv) {
         fatal(
             E_WARNING,
             c"server is running, unable to register event callback function",
@@ -169,8 +175,7 @@ fn get_callback(call: &Call) {
 
 fn listen(call: &Call) {
     let serv = server(call);
-    // SAFETY: a live server.
-    if unsafe { (host().closed)(serv) } {
+    if closed(serv) {
         fatal(E_WARNING, c"server is running, cannot add listener");
         return call.set_bool(false);
     }

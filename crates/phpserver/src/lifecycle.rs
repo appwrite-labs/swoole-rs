@@ -142,17 +142,11 @@ impl PortInfo {
 pub struct LifecycleHost {
     fact: unsafe extern "C" fn(*mut c_void, u32) -> i64,
     install: unsafe extern "C" fn(*mut c_void, u32),
-    admit: unsafe extern "C" fn(*mut *mut c_void) -> c_int,
     create: unsafe extern "C" fn(i64) -> *mut c_void,
     add_systemd_socket: unsafe extern "C" fn(*mut c_void) -> c_int,
-    add_port: unsafe extern "C" fn(*mut c_void, i64, *const c_char, i64) -> *mut c_void,
     port_object: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut zval,
     create_server: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     start: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> c_int,
-    thread_worker: unsafe extern "C" fn(*mut zend_object) -> c_int,
-    thread_prepare: unsafe extern "C" fn(*mut zend_object, *mut *mut c_void) -> bool,
-    thread_release: unsafe extern "C" fn(*mut c_void),
-    copy_setting: unsafe extern "C" fn(*mut c_void, *mut zval),
     release: unsafe extern "C" fn(*mut c_void),
     add_process: unsafe extern "C" fn(*mut c_void, *mut zval) -> i64,
     json_encode: unsafe extern "C" fn(*mut zval, *mut bool) -> *mut zend_string,
@@ -247,6 +241,8 @@ fn number(serv: *mut c_void, id: u32) -> i64 {
     let hash_dispatch = matches!(c.dispatch_mode, 2 | 4 | 8);
     match id {
         fact::MODE => i64::from(c.mode_),
+        // SAFETY: a live server.
+        fact::WORKER_THREAD => i64::from(unsafe { view::is_worker_thread(serv) }),
         // SAFETY: a live server.
         fact::STARTED => i64::from(unsafe { view::is_started(serv) }),
         // SAFETY: a live server.
@@ -438,6 +434,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
     // SAFETY: the object Zend is freeing.
     unsafe { zend_object_std_dtor(object) };
     if !serv.is_null() && fact(serv, fact::MASTER) {
+        crate::thread::free_setting(serv);
         // SAFETY: the master owns the Server; nothing refers to it now.
         unsafe { (host.release)(serv) };
     }
@@ -626,8 +623,7 @@ fn construct(call: &Call) {
         return call.set_bool(false);
     }
     let mut existing = ptr::null_mut();
-    // SAFETY: a writable out-parameter.
-    match unsafe { (host.admit)(&raw mut existing) } {
+    match crate::thread::admit(&mut existing) {
         0 => {}
         1 => return bind(call, existing),
         2 => {
@@ -652,7 +648,15 @@ fn construct(call: &Call) {
             return call.set_bool(false);
         }
     // SAFETY: a new server and the NUL-terminated `Z_PARAM_STRING` bytes.
-    } else if unsafe { (host.add_port)(serv, kind, address.as_ptr().cast(), port) }.is_null() {
+    } else if unsafe {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "add_port((SocketType) type, host, (int) port), as upstream"
+        )]
+        server_methods::add_port(serv, kind as c_int, address.as_ptr().cast(), port as c_int)
+    }
+    .is_null()
+    {
         let code = swoole_rs_corebase::log::last_error();
         let reason = swoole_rs_phpruntime::strerror(code);
         let mut text = Message::new();
@@ -1201,9 +1205,12 @@ fn before_start(object: *mut zend_object, serv: *mut c_void) -> Result<(), Stop>
             put(serv, install::HTTP_CLOSE);
         }
     }
-    if crate::server::THREAD.load(Ordering::Relaxed) && fact(serv, fact::THREAD_MODE) {
-        // SAFETY: a live server and the settings array.
-        unsafe { (host.copy_setting)(serv, setting) };
+    if crate::server::THREAD.load(Ordering::Relaxed)
+        && fact(serv, fact::THREAD_MODE)
+        && let Err(bailout) = crate::thread::copy_setting(serv, setting)
+    {
+        bailout.defer();
+        return Err(Stop);
     }
     if !swoole_rs_phpswoole::enable_library() {
         return Ok(());
@@ -1220,11 +1227,10 @@ fn start(call: &Call) {
     let serv = server(call);
     let object = call.this();
     let host = host();
-    // SAFETY: `$this`.
-    match unsafe { (host.thread_worker)(object) } {
-        1 => return call.set_bool(true),
-        2 => return bailout::defer(Err(bailout::Bailout)),
-        _ => {}
+    match crate::thread::worker(object, serv) {
+        Some(Ok(())) => return call.set_bool(true),
+        Some(Err(bailout)) => return bailout.defer(),
+        None => {}
     }
     let refusal = if fact(serv, fact::STARTED) {
         Some("The server is running, unable to execute {}->start()")
@@ -1240,10 +1246,8 @@ fn start(call: &Call) {
         fatal(E_WARNING, text.as_cstr());
         return call.set_bool(false);
     }
-    let mut state = ptr::null_mut();
-    // SAFETY: `$this` and a writable out-parameter.
-    if unsafe { (host.thread_prepare)(object, &raw mut state) } {
-        return bailout::defer(Err(bailout::Bailout));
+    if let Err(bailout) = crate::thread::prepare(object, serv) {
+        return bailout.defer();
     }
     register_callback(object, serv);
     if before_start(object, serv).is_err() {
@@ -1266,8 +1270,7 @@ fn start(call: &Call) {
         }
         _ => {}
     }
-    // SAFETY: what `thread_prepare` made, or null.
-    unsafe { (host.thread_release)(state) };
+    crate::thread::release();
     call.set_bool(true);
 }
 
