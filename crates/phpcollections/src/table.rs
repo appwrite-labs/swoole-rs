@@ -211,7 +211,7 @@ fn table_key(key: &[u8]) -> &[u8] {
         reason = "upstream passes size_t keys as uint16_t"
     )]
     let length = key.len() as u16;
-    &key[..usize::from(length)]
+    key.get(..usize::from(length)).unwrap_or(key)
 }
 
 /// `__construct(int $table_size, float $conflict_proportion = 0.2)`.

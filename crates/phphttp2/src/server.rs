@@ -158,16 +158,13 @@ fn warn(func: &CStr, message: &str) {
 
 /// `php_swoole_error_ex(E_WARNING, code, ...)`, or `php_swoole_fatal_error` when `always`.
 fn report(code: c_int, always: bool, message: &[u8]) {
-    let end = message
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(message.len());
     if bailout::pending() {
         return;
     }
     swoole_rs_corebase::log::set_last_error(code);
     if always || swoole_rs_phpswoole::display_errors() {
-        let message = CString::new(&message[..end]).unwrap_or_default();
+        let text = message.split(|&byte| byte == 0).next().unwrap_or_default();
+        let message = CString::new(text).unwrap_or_default();
         // SAFETY: a warning, printed through "%s".
         bailout::defer(unsafe { swoole_rs_zend::php_error(swoole_rs_zend::E_WARNING, &message) });
     }
@@ -339,7 +336,9 @@ impl Headers {
         if buffers.slots.len() < self.size {
             let start = buffers.bytes.len();
             buffers.bytes.extend_from_slice(name);
-            buffers.bytes[start..].make_ascii_lowercase();
+            if let Some(added) = buffers.bytes.get_mut(start..) {
+                added.make_ascii_lowercase();
+            }
             buffers.bytes.extend_from_slice(value);
             buffers.slots.push((start, name.len(), value.len()));
         } else {
@@ -405,7 +404,9 @@ impl Headers {
     fn seal(&mut self, kind: u32, flags: u32, stream_id: u32) -> &[u8] {
         let frame = &mut self.buffers.frame;
         let header = frame_header(kind, frame.len() - FRAME_HEADER, flags, stream_id);
-        frame[..FRAME_HEADER].copy_from_slice(&header);
+        if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
+            *head = header;
+        }
         frame
     }
 }
@@ -509,7 +510,7 @@ fn rtrim(value: &[u8]) -> &[u8] {
         .iter()
         .rposition(|&byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r'))
         .map_or(0, |last| last + 1);
-    &value[..end]
+    value.get(..end).unwrap_or(value)
 }
 
 /// `swoole_http_has_crlf`, with its warnings.
@@ -699,7 +700,7 @@ fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
     // Twenty bytes hold any i64.
     write!(cursor, "{value}").unwrap_or_default();
     let length = usize::try_from(cursor.position()).unwrap_or(0);
-    &buffer[..length]
+    buffer.get(..length).unwrap_or_default()
 }
 
 /// `Stream::send_header`.
@@ -767,26 +768,28 @@ pub(crate) fn send_body(
             }
         }
         let header = frame_header(TYPE_DATA, send_n, send_flags, stream.id);
-        let part = &rest[..send_n];
+        let (part, tail) = rest.split_at(send_n.min(rest.len()));
         if send_n < page {
             // One send of header and payload, on the stack when it fits.
             let mut small = [0; FRAME_HEADER + SMALL_FRAME];
             let mut large = Vec::new();
-            let frame = if send_n <= SMALL_FRAME {
-                &mut small[..FRAME_HEADER + send_n]
+            let frame = if let Some(frame) = small.get_mut(..FRAME_HEADER + part.len()) {
+                frame
             } else {
-                large.resize(FRAME_HEADER + send_n, 0);
-                &mut large[..]
+                large.resize(FRAME_HEADER + part.len(), 0);
+                large.as_mut_slice()
             };
-            frame[..FRAME_HEADER].copy_from_slice(&header);
-            frame[FRAME_HEADER..].copy_from_slice(part);
+            if let Some((head, body)) = frame.split_first_chunk_mut::<FRAME_HEADER>() {
+                *head = header;
+                body.copy_from_slice(part);
+            }
             if !send(ctx, frame) {
                 return false;
             }
         } else if !send(ctx, &header) || !send(ctx, part) {
             return false;
         }
-        rest = &rest[send_n..];
+        rest = tail;
         #[expect(
             clippy::cast_possible_truncation,
             reason = "native uint32_t window arithmetic"
@@ -1490,17 +1493,15 @@ fn request_header(
 /// `:path`: `request_uri`, `path_info` (decoded), `query_string` and `$get`.
 fn path(ctx: *mut c_void, zserver: *mut zval, value: &[u8]) {
     // `strchr`: the value ends at its first NUL.
-    let text = &value[..value
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(value.len())];
-    let path = match text.iter().position(|&byte| byte == b'?') {
-        Some(question) => {
-            let query = &value[question + 1..];
+    let text = value.split(|&byte| byte == 0).next().unwrap_or_default();
+    let question = text.iter().position(|&byte| byte == b'?');
+    let path = match question.and_then(|question| value.split_at_checked(question)) {
+        Some((path, query)) => {
+            let query = query.get(1..).unwrap_or_default();
             add_string(zserver, b"query_string", query);
             // SAFETY: the request's `$get`.
             unsafe { swoole_rs_phphttp::http2::treat_query(zval_of(ctx, Value::Get), query) };
-            &value[..question]
+            path
         }
         None => value,
     };
@@ -1519,11 +1520,7 @@ fn path(ctx: *mut c_void, zserver: *mut zval, value: &[u8]) {
 
 /// `std::strtol(value, &end, 10)` and whether it consumed the whole value.
 fn strtol(value: &[u8]) -> (i64, bool) {
-    let end = value
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(value.len());
-    let text = &value[..end];
+    let text = value.split(|&byte| byte == 0).next().unwrap_or_default();
     let mut at = text
         .iter()
         .take_while(|&&byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r'))
@@ -1532,7 +1529,8 @@ fn strtol(value: &[u8]) -> (i64, bool) {
     if matches!(text.get(at), Some(b'-' | b'+')) {
         at += 1;
     }
-    let digits = text[at.min(text.len())..]
+    let unsigned = text.get(at..).unwrap_or_default();
+    let digits = unsigned
         .iter()
         .take_while(|byte| byte.is_ascii_digit())
         .count();
@@ -1540,7 +1538,7 @@ fn strtol(value: &[u8]) -> (i64, bool) {
         return (0, value.is_empty());
     }
     let mut parsed: i64 = 0;
-    for &digit in &text[at..at + digits] {
+    for &digit in unsigned.iter().take(digits) {
         let digit = i64::from(digit - b'0');
         parsed = if negative {
             parsed.saturating_mul(10).saturating_sub(digit)

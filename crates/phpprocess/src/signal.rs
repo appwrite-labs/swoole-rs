@@ -28,7 +28,6 @@ fn listeners(delta: i32) {
 }
 
 /// `SW_SIGNO_MAX`.
-const SIGNO_MAX: i64 = 128;
 const SLOTS: usize = 128;
 /// `(zend_long) SIG_IGN`.
 pub(crate) const SIG_IGN: i64 = 1;
@@ -36,18 +35,17 @@ pub(crate) const SIG_IGN: i64 = 1;
 /// `signal_fci_caches`: the `zend::Callable` per signal (null: none).
 static CALLABLES: [AtomicPtr<c_void>; SLOTS] = [const { AtomicPtr::new(ptr::null_mut()) }; SLOTS];
 
-fn slot(signo: i64) -> &'static AtomicPtr<c_void> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "callers checked 0 <= signo < SIGNO_MAX"
-    )]
-    &CALLABLES[signo as usize]
+/// The slot of `signo`, or `None` outside `0..SW_SIGNO_MAX`.
+fn slot(signo: i64) -> Option<&'static AtomicPtr<c_void>> {
+    CALLABLES.get(usize::try_from(signo).ok()?)
 }
 
 /// `php_swoole_onSignal`: call the signal's callable with its number.
 unsafe extern "C" fn on_signal(signo: c_int) {
-    let callable = slot(i64::from(signo)).load(Ordering::Acquire);
+    let Some(slot) = slot(i64::from(signo)) else {
+        return;
+    };
+    let callable = slot.load(Ordering::Acquire);
     if callable.is_null() {
         return;
     }
@@ -85,11 +83,11 @@ pub(crate) fn signal(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if !(0..SIGNO_MAX).contains(&signo) {
+    let Some(slot) = slot(signo) else {
         fatal(E_WARNING, &message!("invalid signal number [{signo}]"));
         call.set_bool(false);
         return;
-    }
+    };
     #[expect(clippy::cast_possible_truncation, reason = "0 <= signo < 128")]
     let number = signo as c_int;
     // SAFETY: a valid signal number.
@@ -103,7 +101,7 @@ pub(crate) fn signal(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let old = slot(signo).load(Ordering::Acquire);
+    let old = slot.load(Ordering::Acquire);
     let (callable, handler) = match callback {
         None => {
             if old.is_null() {
@@ -117,7 +115,7 @@ pub(crate) fn signal(call: &Call) {
             // Reset the handler, then free the callable once the loop is past
             // any dispatch using it.
             host::signal_set(number, None, false);
-            slot(signo).store(ptr::null_mut(), Ordering::Release);
+            slot.store(ptr::null_mut(), Ordering::Release);
             // SAFETY: the callable this slot owned.
             unsafe { host::callable_defer_free(old) };
             listeners(-1);
@@ -151,7 +149,7 @@ pub(crate) fn signal(call: &Call) {
         // SAFETY: as above, freed once the loop is past any dispatch using it.
         unsafe { host::callable_defer_free(old) };
     }
-    slot(signo).store(callable, Ordering::Release);
+    slot.store(callable, Ordering::Release);
     host::signal_set(number, handler, true);
     call.set_bool(true);
 }
@@ -167,11 +165,11 @@ fn is_ignore(value: *mut swoole_rs_zend::sys::zval) -> bool {
 /// SIGCHLD (`php_swoole_private.h` declares it inside `BEGIN_EXTERN_C`).
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_signal_isset_handler(signo: c_int) -> bool {
-    if !(0..SIGNO_MAX).contains(&i64::from(signo)) {
+    let Some(slot) = slot(i64::from(signo)) else {
         fatal(E_WARNING, &message!("invalid signal number [{signo}]"));
         return false;
-    }
-    !slot(i64::from(signo)).load(Ordering::Acquire).is_null()
+    };
+    !slot.load(Ordering::Acquire).is_null()
 }
 
 /// `php_swoole_process_clean`: free every signal callable; outside thread

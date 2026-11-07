@@ -43,14 +43,17 @@ pub(crate) fn remember() {
 /// Register `coroutine` (`hook`) or the original factory for transport `index`;
 /// an ssl or tls transport PHP never had is unregistered. `SUCCESS` or `FAILURE`.
 pub(crate) fn register(index: usize, hook: bool, coroutine: *mut c_void) -> i32 {
-    let original = ORIGINAL[index].load(Ordering::Relaxed);
+    let (Some(slot), Some(name)) = (ORIGINAL.get(index), NAMES.get(index)) else {
+        return -1;
+    };
+    let original = slot.load(Ordering::Relaxed);
     let (factory, remove) = if hook {
         (coroutine, false)
     } else {
         (original, index >= 4 && original.is_null())
     };
     // SAFETY: a transport name and a factory (or null) of PHP's or C++'s.
-    unsafe { swr_zend_runtime_set_transport(NAMES[index].as_ptr(), factory, remove) }
+    unsafe { swr_zend_runtime_set_transport(name.as_ptr(), factory, remove) }
 }
 
 /// The original, process-lived PHP factory for an exact borrowed protocol name,
@@ -58,9 +61,10 @@ pub(crate) fn register(index: usize, hook: bool, coroutine: *mut c_void) -> i32 
 pub(crate) fn original(proto: &[u8]) -> *mut c_void {
     NAMES
         .iter()
-        .position(|name| name.to_bytes() == proto)
-        .map_or(std::ptr::null_mut(), |index| {
-            ORIGINAL[index].load(Ordering::Relaxed)
+        .zip(&ORIGINAL)
+        .find(|(name, _)| name.to_bytes() == proto)
+        .map_or(std::ptr::null_mut(), |(_, slot)| {
+            slot.load(Ordering::Relaxed)
         })
 }
 

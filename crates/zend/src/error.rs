@@ -59,8 +59,11 @@ impl Message {
     pub fn push(&mut self, bytes: &[u8]) {
         let room = self.buffer.len() - 1 - self.length;
         let take = bytes.len().min(room);
-        self.buffer[self.length..self.length + take].copy_from_slice(&bytes[..take]);
-        self.length += take;
+        let free = self.buffer.get_mut(self.length..self.length + take);
+        if let (Some(free), Some(bytes)) = (free, bytes.get(..take)) {
+            free.copy_from_slice(bytes);
+            self.length += take;
+        }
     }
 
     /// The text so far, NUL-terminated.

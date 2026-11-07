@@ -231,7 +231,10 @@ impl Headers {
     }
 
     fn set(&mut self, index: usize, name: &[u8], value: &[u8]) {
-        self.slots[index] = Some(self.store(name, &[value]));
+        let stored = self.store(name, &[value]);
+        if let Some(slot) = self.slots.get_mut(index) {
+            *slot = Some(stored);
+        }
     }
 
     /// The `nghttp2_nv` list over the arena, valid until the next change.
@@ -579,7 +582,7 @@ impl Client {
         let length = unsafe {
             sw_rs_http2_pack_settings(frame.as_mut_ptr(), frame.len(), &raw const self.local, 0)
         };
-        self.send(&frame[..length.min(SETTING_FRAME)])
+        self.send(frame.get(..length).unwrap_or(&frame))
     }
 
     fn send_window_update(&mut self, stream: u32, size: u32) -> bool {
@@ -601,13 +604,13 @@ impl Client {
             unsafe {
                 sw_rs_http2_chunk(data.len(), self.local.max_frame_size, flag, &raw mut chunk);
             };
-            let length = chunk.length.min(data.len());
-            if !self.send(&frame_header(TYPE_DATA, length, chunk.flags, stream))
-                || !self.send(&data[..length])
+            let (part, rest) = data.split_at(chunk.length.min(data.len()));
+            if !self.send(&frame_header(TYPE_DATA, part.len(), chunk.flags, stream))
+                || !self.send(part)
             {
                 return false;
             }
-            data = &data[length..];
+            data = rest;
         }
         true
     }
@@ -673,12 +676,8 @@ impl Client {
             let authority = if self.port == if self.ssl { 443 } else { 80 } {
                 self.host.clone()
             } else {
-                let end = self
-                    .host
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap_or(self.host.len());
-                [&self.host[..end], format!(":{}", self.port).as_bytes()].concat()
+                let host = self.host.split(|&b| b == 0).next().unwrap_or_default();
+                [host, format!(":{}", self.port).as_bytes()].concat()
             };
             set.set(AUTHORITY, b":authority", &authority);
         }
@@ -780,7 +779,9 @@ impl Client {
         self.create_stream(id, flags);
         let header_flags = sw_rs_http2_headers_flags(u32::from(empty), 1, flags);
         let header = frame_header(TYPE_HEADERS, frame.len() - FRAME_HEADER, header_flags, id);
-        frame[..FRAME_HEADER].copy_from_slice(&header);
+        if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
+            *head = header;
+        }
         if !self.send(&frame) {
             return 0;
         }
@@ -895,7 +896,9 @@ impl Client {
             ACTION_SETTINGS => {
                 for setting in payload.chunks(6) {
                     let mut raw = [0_u8; 6];
-                    raw[..setting.len()].copy_from_slice(setting);
+                    for (slot, byte) in raw.iter_mut().zip(setting) {
+                        *slot = *byte;
+                    }
                     let key = u16::from_be_bytes([raw[0], raw[1]]);
                     let number = u32::from_be_bytes([raw[2], raw[3], raw[4], raw[5]]);
                     if !self.apply_remote_setting(key, number) {
@@ -935,8 +938,8 @@ impl Client {
             }
             ACTION_GOAWAY => {
                 let server_last = read_u32(payload);
-                let code = read_u32(&payload[4.min(length)..]);
-                let debug = &payload[GOAWAY_SIZE.min(length)..];
+                let code = read_u32(payload.get(4..).unwrap_or_default());
+                let debug = payload.get(GOAWAY_SIZE..).unwrap_or_default();
                 set_long(self.object, ce(), c"errCode", i64::from(code));
                 set_bytes(self.object, ce(), c"errMsg", debug);
                 set_long(
@@ -1103,7 +1106,7 @@ impl Client {
     /// `parse_header`: HPACK-decode a HEADERS block onto the stream's response.
     fn parse_header(&mut self, id: u32, flags: u32, mut input: &[u8]) {
         if flags & FLAG_PRIORITY != 0 {
-            input = &input[5.min(input.len())..];
+            input = input.get(5..).unwrap_or_default();
         }
         let Some(stream) = self.streams.get_mut(&id) else {
             return;
@@ -1146,7 +1149,7 @@ impl Client {
                 self.nghttp2_error(read as c_int, "nghttp2_hd_inflate_hd failed");
                 return;
             }
-            input = &input[read.unsigned_abs().min(input.len())..];
+            input = input.get(read.unsigned_abs()..).unwrap_or_default();
             if inflate_flags & INFLATE_EMIT != 0 {
                 // SAFETY: nghttp2's header, live until the next inflate call.
                 let name = unsafe { std::slice::from_raw_parts(header.name, header.name_length) };
@@ -1240,18 +1243,16 @@ fn warn(message: &CStr) {
 
 fn read_u32(bytes: &[u8]) -> u32 {
     let mut raw = [0_u8; 4];
-    let n = bytes.len().min(4);
-    raw[..n].copy_from_slice(&bytes[..n]);
+    for (slot, byte) in raw.iter_mut().zip(bytes) {
+        *slot = *byte;
+    }
     u32::from_be_bytes(raw)
 }
 
 /// `sw_atol`.
 fn atol(text: &[u8]) -> i64 {
-    let digits = text
-        .iter()
-        .position(|b| !b.is_ascii_digit())
-        .unwrap_or(text.len());
-    std::str::from_utf8(&text[..digits])
+    let digits = text.split(|b| !b.is_ascii_digit()).next();
+    std::str::from_utf8(digits.unwrap_or_default())
         .ok()
         .and_then(|text| text.parse().ok())
         .unwrap_or(0)
@@ -1261,7 +1262,7 @@ fn atol(text: &[u8]) -> i64 {
 fn fold(bytes: &[u8]) -> ([u8; 33], usize) {
     let mut folded = [0_u8; 33];
     let n = bytes.len().min(folded.len());
-    for (slot, byte) in folded.iter_mut().zip(&bytes[..n]) {
+    for (slot, byte) in folded.iter_mut().zip(bytes) {
         *slot = byte.to_ascii_lowercase();
     }
     (folded, n)

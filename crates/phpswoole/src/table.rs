@@ -343,7 +343,13 @@ pub(crate) unsafe fn functions(
         (FTP_ROWS.0.as_slice(), ftp),
     ];
     // SAFETY: Native lends the matching arrays or null for disabled families.
-    unsafe { join(&HEAD.0[..HEAD.0.len() - 1], &families, &TAIL.0) }
+    unsafe {
+        join(
+            HEAD.0.split_last().map_or(&[], |(_, head)| head),
+            &families,
+            &TAIL.0,
+        )
+    }
 }
 
 /// MINIT's `go`, `defer` and (with stdext) `typed_array`, when short names are on.
@@ -371,7 +377,7 @@ pub(crate) unsafe fn register_aliases(flags: u32) -> Result<(), swoole_rs_zend::
         ),
     ];
     let count = if flags & STDEXT == 0 { 2 } else { 3 };
-    for (origin, alias, arg_info) in &aliases[..count] {
+    for (origin, alias, arg_info) in aliases.iter().take(count) {
         // SAFETY: Zend initializes the compiler function table before MINIT.
         let target = unsafe { z::swr_zend_facade_compiler_functions() };
         // SAFETY: at MINIT, these static binary names and arginfo remain live

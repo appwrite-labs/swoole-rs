@@ -1033,7 +1033,10 @@ fn before_start(object: *mut zend_object, serv: *mut c_void) -> Result<(), Stop>
     let http_server = kind == KIND_HTTP || kind == KIND_WEBSOCKET;
     // SAFETY: `$this` is a Server.
     let ports = unsafe { property(object) }.ports.clone();
-    let primary = port_facts(ports[0]);
+    let Some((&first, others)) = ports.split_first() else {
+        return Ok(());
+    };
+    let primary = port_facts(first);
     let mut find_http_port = false;
     if kind == KIND_REDIS {
         add_bool(setting, c"open_redis_protocol", true);
@@ -1078,7 +1081,7 @@ fn before_start(object: *mut zend_object, serv: *mut c_void) -> Result<(), Stop>
         }
         put(serv, install::RECEIVE);
     }
-    for &zport in &ports[1..] {
+    for &zport in others {
         // SAFETY: a live Port object.
         let port_object = unsafe { object_of(zport) };
         // SAFETY: as above; the Port class declares `setting`.

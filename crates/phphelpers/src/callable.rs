@@ -83,11 +83,8 @@ pub unsafe fn create(value: *mut zval, report: Report) -> Result<*mut Callable, 
                 // SAFETY: callable_name is an owned Zend string produced by the shim.
                 let name = unsafe { string::bytes(state.name) };
                 let message = [b"function '".as_slice(), name, b"' is not callable"].concat();
-                let end = message
-                    .iter()
-                    .position(|byte| *byte == 0)
-                    .unwrap_or(message.len());
-                let message = CString::new(&message[..end]).unwrap_or_default();
+                let text = message.split(|byte| *byte == 0).next().unwrap_or_default();
+                let message = CString::new(text).unwrap_or_default();
                 // SAFETY: the native warning reporter runs inside zend_try.
                 bailout::defer(unsafe { bailout::report(report, &message) });
             }

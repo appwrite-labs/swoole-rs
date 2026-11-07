@@ -108,10 +108,11 @@ fn add(array: *mut zval, fds: &mut Vec<pollfd>, count: usize, event: c_short) ->
         if fd < 0 {
             return true;
         }
-        match (event != POLLIN).then(|| slot(fds, count, fd)).flatten() {
-            Some(index) => {
-                fds[index].fd = fd;
-                fds[index].events |= event;
+        let index = (event != POLLIN).then(|| slot(fds, count, fd)).flatten();
+        match index.and_then(|index| fds.get_mut(index)) {
+            Some(entry) => {
+                entry.fd = fd;
+                entry.events |= event;
             }
             None => fds.push(pollfd {
                 fd,
@@ -144,7 +145,10 @@ fn keep_ready(array: *mut zval, fds: &[pollfd], count: usize, revent: c_short) -
             warn(ErrorKind::Fatal, &format!("bad fd[{fd}]"));
             return true;
         };
-        if fds[polled].revents & revent == 0 {
+        if fds
+            .get(polled)
+            .is_none_or(|entry| entry.revents & revent == 0)
+        {
             return true;
         }
         let added = if key.is_null() {

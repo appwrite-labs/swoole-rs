@@ -303,7 +303,9 @@ fn on(call: &Call) {
             cb,
         );
     }
-    let slot = &mut property.callbacks[index];
+    let Some(slot) = property.callbacks.get_mut(index) else {
+        return call.set_bool(false);
+    };
     free_callable(slot);
     // SAFETY: the callback argument.
     let callable = unsafe { swoole_rs_phpruntime::callable_create(cb) };

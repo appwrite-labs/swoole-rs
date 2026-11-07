@@ -181,12 +181,8 @@ pub(crate) unsafe fn swoole_http_client_coro_proxy_auth(socket: Socket) -> *mut 
     let mut value = b"Basic ".to_vec();
     if result >= 0 {
         // `std::string(encode_buf)`: up to the first NUL.
-        let encoded = &encoded[..length.min(encoded.len())];
-        let end = encoded
-            .iter()
-            .position(|&byte| byte == 0)
-            .unwrap_or(encoded.len());
-        value.extend_from_slice(&encoded[..end]);
+        let encoded = encoded.get(..length).unwrap_or(&encoded);
+        value.extend_from_slice(encoded.split(|&byte| byte == 0).next().unwrap_or_default());
     }
     string::copy(&value)
 }

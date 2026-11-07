@@ -161,8 +161,10 @@ fn object_zval(object: *mut zend_object) -> zval {
 fn execute(object: *mut zend_object, slot: usize) -> Result<(), Bailout> {
     // SAFETY: a live client object.
     let class = unsafe { class_name(object) }.to_string_lossy();
-    let name = NAMES[slot].to_string_lossy();
-    let callable = callbacks(net::data(object)).map_or(ptr::null_mut(), |slots| slots[slot]);
+    let name = NAMES.get(slot).copied().unwrap_or(c"").to_string_lossy();
+    let callable = callbacks(net::data(object))
+        .and_then(|slots| slots.get(slot).copied())
+        .unwrap_or(ptr::null_mut());
     if callable.is_null() {
         warn(ErrorKind::Fatal, &format!("{class} has no {name} callback"));
         return Ok(());
@@ -370,7 +372,7 @@ fn connect(call: &Call) {
     let Some(slots) = callbacks(net::this(call)).map(|slots| *slots) else {
         return call.set_bool(false);
     };
-    let set = |slot: usize| !slots[slot].is_null();
+    let set = |slot: usize| slots.get(slot).is_some_and(|callable| !callable.is_null());
     if !set(RECEIVE) {
         report(
             ErrorKind::Fatal,
@@ -492,7 +494,8 @@ fn on(call: &Call) {
         data.callbacks = Box::into_raw(Box::new([ptr::null_mut(); 7]));
     }
     let name = name.split(|&b| b == 0).next().unwrap_or_default();
-    let Some(slot) = event_slot(name) else {
+    let found = event_slot(name).and_then(|slot| Some((slot, *NAMES.get(slot)?)));
+    let Some((slot, property)) = found else {
         let message = format!(
             "Unknown event callback type name '{}'",
             String::from_utf8_lossy(name)
@@ -502,7 +505,7 @@ fn on(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: `$this` is live; Zend copies the value.
-    unsafe { update_property(ASYNC.entry(), object, NAMES[slot], zcallback) };
+    unsafe { update_property(ASYNC.entry(), object, property, zcallback) };
     replace(object, slot, callable);
     call.set_bool(true);
 }
@@ -521,10 +524,10 @@ fn event_slot(name: &[u8]) -> Option<usize> {
 
 /// Put `callable` in `slot`, freeing what was there.
 fn replace(object: *mut zend_object, slot: usize, callable: *mut c_void) {
-    let Some(slots) = callbacks(net::data(object)) else {
+    let Some(entry) = callbacks(net::data(object)).and_then(|slots| slots.get_mut(slot)) else {
         return;
     };
-    let previous = std::mem::replace(&mut slots[slot], callable);
+    let previous = std::mem::replace(entry, callable);
     if !previous.is_null() {
         bailed(callable_free(previous));
     }

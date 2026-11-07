@@ -622,8 +622,9 @@ fn task_co(call: &Call, fill_false: bool) {
                 // SAFETY: as above.
                 unsafe { add_index_bool(result, j as u64, false) };
             }
-            let id = task_co.list[j];
-            pending(serv, |p| p.coroutines.remove(&id));
+            if let Some(&id) = task_co.list.get(j) {
+                pending(serv, |p| p.coroutines.remove(&id));
+            }
         }
     }
 }
@@ -736,7 +737,12 @@ pub(crate) fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Ba
     };
     let mut retval = undef();
     let cb = server_callback(server, ON_TASK);
-    let outcome = match invoke(cb, &mut args[..argc], &raw mut retval, facts.task_coroutine) {
+    let outcome = match invoke(
+        cb,
+        args.get_mut(..argc).unwrap_or_default(),
+        &raw mut retval,
+        facts.task_coroutine,
+    ) {
         Ok(false) => handler_error(&zserv, "onTask"),
         called => called.map(drop),
     };
@@ -807,7 +813,7 @@ pub(crate) fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, 
     };
     let outcome = match invoke(
         cb,
-        &mut args[..argc],
+        args.get_mut(..argc).unwrap_or_default(),
         ptr::null_mut(),
         facts.enable_coroutine,
     ) {

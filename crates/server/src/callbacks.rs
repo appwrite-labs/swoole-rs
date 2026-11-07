@@ -92,8 +92,8 @@ impl ServerCallbacks {
         Self([const { CallbackSlot::new() }; CB_COUNT])
     }
 
-    pub(crate) fn slot(&self, index: u32) -> &CallbackSlot {
-        &self.0[index as usize]
+    pub(crate) fn slot(&self, index: u32) -> Option<&CallbackSlot> {
+        self.0.get(index as usize)
     }
 }
 
@@ -118,7 +118,14 @@ pub unsafe extern "C" fn swr_v1_server_callbacks_get(state: *mut ServerState) ->
 
 /// Answers the callback facts from the slots, else `None`.
 pub(crate) fn native_fact(state: &ServerState, op: u32, arg: u64) -> Option<u64> {
-    let set = |index| u64::from(state.callbacks.slot(index).is_set());
+    let set = |index| {
+        u64::from(
+            state
+                .callbacks
+                .slot(index)
+                .is_some_and(CallbackSlot::is_set),
+        )
+    };
     Some(match op {
         OP_HAS_ON_CONNECT => set(CB_CONNECT),
         OP_HAS_ON_CLOSE => set(CB_CLOSE),
@@ -128,8 +135,10 @@ pub(crate) fn native_fact(state: &ServerState, op: u32, arg: u64) -> Option<u64>
             _ => 0,
         },
         OP_CLEAR_CALLBACK => {
-            if let Ok(index @ CB_CONNECT..=CB_BUFFER_EMPTY) = u32::try_from(arg) {
-                state.callbacks.slot(index).clear();
+            if let Ok(index @ CB_CONNECT..=CB_BUFFER_EMPTY) = u32::try_from(arg)
+                && let Some(slot) = state.callbacks.slot(index)
+            {
+                slot.clear();
             }
             0
         }
@@ -162,9 +171,9 @@ mod tests {
     fn facts_read_and_clear_the_slots() {
         let state = ServerState::new();
         assert_eq!(native_fact(&state, OP_HAS_ON_CONNECT, 0), Some(0));
-        fill(state.callbacks.slot(CB_CONNECT));
-        fill(state.callbacks.slot(CB_TASK));
-        fill(state.callbacks.slot(CB_DISPATCH_FUNC));
+        fill(state.callbacks.slot(CB_CONNECT).unwrap());
+        fill(state.callbacks.slot(CB_TASK).unwrap());
+        fill(state.callbacks.slot(CB_DISPATCH_FUNC).unwrap());
         assert_eq!(native_fact(&state, OP_HAS_ON_CONNECT, 0), Some(1));
         assert_eq!(native_fact(&state, OP_HAS_ON_CLOSE, 0), Some(0));
         assert_eq!(native_fact(&state, OP_HAS_DISPATCH_FUNC, 0), Some(1));
@@ -183,13 +192,16 @@ mod tests {
             native_fact(&state, OP_CLEAR_CALLBACK, u64::from(CB_TASK)),
             Some(0)
         );
-        assert!(state.callbacks.slot(CB_TASK).is_set(), "onTask stays");
+        assert!(
+            state.callbacks.slot(CB_TASK).unwrap().is_set(),
+            "onTask stays"
+        );
         assert_eq!(
             native_fact(&state, OP_CLEAR_CALLBACK, u64::from(CB_CONNECT)),
             Some(0)
         );
         assert!(
-            !state.callbacks.slot(CB_CONNECT).is_set(),
+            !state.callbacks.slot(CB_CONNECT).unwrap().is_set(),
             "onConnect cleared"
         );
         assert_eq!(DROPPED.load(Relaxed), before + 1, "its box freed once");

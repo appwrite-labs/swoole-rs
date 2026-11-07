@@ -82,12 +82,14 @@ impl Cookie {
 
     /// `HTTP_COOKIE_WITH_STR`: keep a reference to a non-empty string, else none.
     fn set(&mut self, field: usize, string: Option<*mut zend_string>) {
-        let old = self.fields[field];
-        if !old.is_null() {
+        let Some(slot) = self.fields.get_mut(field) else {
+            return;
+        };
+        if !slot.is_null() {
             // SAFETY: the field holds a reference.
-            unsafe { swr_zend_string_release(old) };
+            unsafe { swr_zend_string_release(*slot) };
         }
-        self.fields[field] = match string {
+        *slot = match string {
             // SAFETY: a live string; the field takes a reference.
             Some(string) if !unsafe { bytes(string) }.is_empty() => unsafe {
                 swr_zend_string_copy(string)

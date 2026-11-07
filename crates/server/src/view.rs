@@ -6,6 +6,7 @@
 //! (`native/include/swoole_rs_server_view.h`). `ListenPort` likewise starts
 //! with `detail::PortFields { port_config_ }`. `ServerGS` puts the task and
 //! event worker pools right after the shared counters.
+use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
 use crate::{ConnectionRecord, PortCounters, ServerConfig, ServerCounters, ServerState};
 use core::ffi::{c_int, c_long, c_void};
@@ -58,7 +59,9 @@ unsafe fn state<'a>(serv: *mut c_void) -> &'a ServerState {
 /// `invoke` has the slot's signature.
 pub unsafe fn set_callback(serv: *mut c_void, index: u32, invoke: *const c_void) {
     // SAFETY: per the caller.
-    unsafe { state(serv) }.callbacks.slot(index).set(invoke);
+    if let Some(slot) = unsafe { state(serv) }.callbacks.slot(index) {
+        slot.set(invoke);
+    }
 }
 
 /// `serv->onX != nullptr` of callback slot `index`.
@@ -67,7 +70,10 @@ pub unsafe fn set_callback(serv: *mut c_void, index: u32, invoke: *const c_void)
 /// `serv` is a live `Server`.
 pub unsafe fn has_callback(serv: *mut c_void, index: u32) -> bool {
     // SAFETY: per the caller.
-    unsafe { state(serv) }.callbacks.slot(index).is_set()
+    unsafe { state(serv) }
+        .callbacks
+        .slot(index)
+        .is_some_and(CallbackSlot::is_set)
 }
 
 /// The server's configuration.

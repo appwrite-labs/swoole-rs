@@ -35,9 +35,11 @@ fn append(buffer: &mut Vec<u8>, kind: u8, present: bool, number: u64, data: &[u8
     let Some(parts) = reply_parts(kind, present, number, data) else {
         return;
     };
-    buffer.extend_from_slice(&parts.prefix[..parts.prefix_length as usize]);
-    buffer.extend_from_slice(&data[..parts.body_length]);
-    buffer.extend_from_slice(&b"\r\n"[..parts.suffix_length as usize]);
+    let prefix = parts.prefix.get(..parts.prefix_length as usize);
+    buffer.extend_from_slice(prefix.unwrap_or_default());
+    buffer.extend_from_slice(data.get(..parts.body_length).unwrap_or_default());
+    let suffix = b"\r\n".get(..parts.suffix_length as usize);
+    buffer.extend_from_slice(suffix.unwrap_or_default());
 }
 
 fn throw(message: &CStr) {

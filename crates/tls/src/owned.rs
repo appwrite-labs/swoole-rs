@@ -708,7 +708,9 @@ unsafe fn set_file(
 /// # Safety
 /// owner is live and exclusive; native caches catch exceptions and do not reenter.
 pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8]) -> bool {
-    let index = match which {
+    // SAFETY: the caller lends the live owner.
+    let state = unsafe { &*owner };
+    let slot = match which {
         // SAFETY: as the caller promises.
         Text::CertFile => return unsafe { set_file(owner, 4, value, c"set_cert_file", "cert") },
         // SAFETY: as the caller promises.
@@ -717,20 +719,21 @@ pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8])
             // SAFETY: as the caller promises.
             return unsafe { set_file(owner, 7, value, c"set_client_cert_file", "client cert") };
         }
-        Text::Passphrase => PASSPHRASE,
-        Text::HostName => 8,
-        Text::Cafile => 9,
-        Text::Capath => 10,
-        Text::Ciphers => 0,
-        Text::EcdhCurve => 1,
-        Text::DhParam => 3,
+        Text::Passphrase => &state.strings[PASSPHRASE],
+        Text::HostName => &state.strings[8],
+        Text::Cafile => &state.strings[9],
+        Text::Capath => &state.strings[10],
+        Text::Ciphers => &state.strings[0],
+        Text::EcdhCurve => &state.strings[1],
+        Text::DhParam => &state.strings[3],
     };
-    // SAFETY: the caller lends the live owner.
-    let state = unsafe { &*owner };
-    let slot = Arc::as_ptr(&state.strings[index]);
     // SAFETY: a stable slot of the exclusive owner; its cache catches exceptions.
     let status = unsafe {
-        swoole_rs_corebase::swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len())
+        swoole_rs_corebase::swr_v1_core_string_set(
+            Arc::as_ptr(slot),
+            value.as_ptr().cast(),
+            value.len(),
+        )
     };
     if status != 0 {
         std::process::abort();
@@ -772,13 +775,11 @@ pub unsafe fn set_value(owner: *const OwnedTlsContext, value: Value) {
 pub unsafe fn has_files(owner: *const OwnedTlsContext) -> (bool, bool) {
     // SAFETY: the caller lends the live owner.
     let state = unsafe { &*owner };
-    let set = |index: usize| {
+    let set = |slot: &Arc<StringSlot>| {
         // SAFETY: a stable slot of the live owner.
-        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&state.strings[index])) }
-            .length
-            != 0
+        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(slot)) }.length != 0
     };
-    (set(4), set(5))
+    (set(&state.strings[4]), set(&state.strings[5]))
 }
 
 /// `verify_peer` with no client certificate file, cafile or capath.
@@ -787,15 +788,13 @@ pub unsafe fn has_files(owner: *const OwnedTlsContext) -> (bool, bool) {
 pub unsafe fn verify_without_ca(owner: *const OwnedTlsContext) -> bool {
     // SAFETY: the caller lends the live owner.
     let state = unsafe { &*owner };
-    let empty = |index: usize| {
+    let empty = |slot: &Arc<StringSlot>| {
         // SAFETY: a stable slot of the live owner.
-        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&state.strings[index])) }
-            .length
-            == 0
+        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(slot)) }.length == 0
     };
     // SAFETY: the caller serializes field writes against this read.
     let verify_peer = unsafe { &*state.fields.get() }.verify_peer != 0;
-    verify_peer && empty(7) && empty(9) && empty(10)
+    verify_peer && empty(&state.strings[7]) && empty(&state.strings[9]) && empty(&state.strings[10])
 }
 
 #[cfg(test)]

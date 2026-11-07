@@ -150,8 +150,7 @@ fn parse_to_size(value: *mut zval) -> i64 {
 
 /// What `%s` prints of `bytes`: up to the first NUL.
 fn c_text(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
+    String::from_utf8_lossy(bytes.split(|&b| b == 0).next().unwrap_or_default()).into_owned()
 }
 
 fn clamp(value: i64, low: i64, high: i64) -> i64 {
@@ -268,7 +267,10 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
             return Some(false);
         }
         let length = usize::from(length);
-        record(cli).protocol.package_eof[..length].copy_from_slice(&eof[..length]);
+        let package_eof = &mut record(cli).protocol.package_eof;
+        for (slot, byte) in package_eof.iter_mut().zip(eof).take(length) {
+            *slot = *byte;
+        }
     }
     if let Some(on) = options.truthy("open_mqtt_protocol") {
         length_check(cli, on, true);

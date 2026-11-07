@@ -960,9 +960,7 @@ unsafe extern "C" fn start_fail(data: *mut c_void, warning: swoole_rs_httpbindin
 
 /// `%s` of a ZPP string: up to its first NUL.
 fn nul_terminated(text: &[u8]) -> &[u8] {
-    text.iter()
-        .position(|&b| b == 0)
-        .map_or(text, |nul| &text[..nul])
+    text.split(|&b| b == 0).next().unwrap_or(text)
 }
 
 /// `SO_REUSEPORT`, as `set_reuse_port()`; a failure is ignored.

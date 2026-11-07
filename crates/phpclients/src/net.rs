@@ -907,8 +907,10 @@ fn recv_failed(call: &Call, error: c_int) {
 /// `recv` under `open_eof_check`: one package up to and including the EOF,
 /// keeping what follows for the next call.
 fn recv_eof(call: &Call, conn: &mut Conn, framing: &Protocol) {
-    let eof =
-        &framing.package_eof[..usize::from(framing.package_eof_len).min(framing.package_eof.len())];
+    let eof = &framing.package_eof;
+    let eof = eof
+        .get(..usize::from(framing.package_eof_len))
+        .unwrap_or(eof);
     let max = framing.package_max_length as usize;
     if conn.buffer_size == 0 {
         conn.buffer_size = BUFFER_SIZE_BIG;
@@ -943,7 +945,7 @@ fn recv_eof(call: &Call, conn: &mut Conn, framing: &Protocol) {
         find = false;
         if let Some(at) = position(&conn.buffer, eof) {
             let end = at + eof.len();
-            let package = string::copy(&conn.buffer[..end]);
+            let package = string::copy(conn.buffer.get(..end).unwrap_or_default());
             if conn.buffer.len() > end {
                 conn.buffer.drain(..end);
                 conn.buffer_size = BUFFER_SIZE_BIG;
@@ -1024,7 +1026,7 @@ fn recv_length(
         return None;
     } else if length == header_length {
         conn.buffer.resize(header.max(buffered), 0);
-        let package = string::copy(&conn.buffer[..header]);
+        let package = string::copy(conn.buffer.get(..header).unwrap_or_default());
         // SAFETY: a fresh string whose reference the return slot takes.
         unsafe { call.set_string(package) };
         return None;
@@ -1042,8 +1044,9 @@ fn recv_length(
         return None;
     } else if length < have {
         let end = usize::try_from(length).unwrap_or(0);
+        let package = conn.buffer.get(..end).unwrap_or_default();
         // SAFETY: a fresh string whose reference the return slot takes.
-        unsafe { call.set_string(string::copy(&conn.buffer[..end])) };
+        unsafe { call.set_string(string::copy(package)) };
         conn.buffer.drain(..end);
         return None;
     }

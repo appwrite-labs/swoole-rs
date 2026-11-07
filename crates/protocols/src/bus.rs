@@ -876,7 +876,9 @@ pub unsafe extern "C" fn swr_v1_bus_init_pipe_socket(bus: *mut Bus, fd: c_int) {
         // SAFETY: the live record just made.
         unsafe { swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1) };
     }
-    bus.pipe_sockets[index] = socket;
+    if let Some(slot) = bus.pipe_sockets.get_mut(index) {
+        *slot = socket;
+    }
 }
 
 /// `MessageBus::get_pipe_socket`: the record `init_pipe_socket` made for `fd`.

@@ -92,7 +92,8 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
     if slot.ptr.is_null() {
         // SAFETY: the response's live object zval.
         let object: *mut zend_object = unsafe { value::obj_of(response.zobject.ptr) };
-        let offset = OFFSETS[usize::try_from(which).unwrap_or(2).min(2)].load(Relaxed);
+        let index = usize::try_from(which).unwrap_or(2).min(2);
+        let offset = OFFSETS.get(index).map_or(0, |offset| offset.load(Relaxed));
         // SAFETY: a declared property slot of that object.
         let array = unsafe { swoole_rs_zend::sys::swr_zend_http_property_array(object, offset, 8) };
         // SAFETY: the array zval just initialised.
@@ -106,7 +107,7 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 fn property(state: &State, which: usize) -> *mut zval {
     // SAFETY: the response's live object zval.
     let object: *mut zend_object = unsafe { value::obj_of(state.response.zobject.ptr) };
-    let offset = OFFSETS[which].load(Relaxed) as usize;
+    let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
     // OBJ_PROP: a declared slot of that object.
     object.cast::<u8>().wrapping_add(offset).cast()
 }
@@ -505,17 +506,15 @@ pub(crate) fn trailer<R>(
                     return Ok(());
                 }
                 let (text, owned) = to_string(value_)?;
-                // `%.*s` stops at a NUL, and sw_snprintf at its buffer.
-                let until_nul =
-                    |bytes: &[u8]| bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
                 // SAFETY: a live key and string.
                 let name = unsafe { string::bytes(key) };
                 // SAFETY: as above.
                 let value_ = unsafe { string::bytes(text) };
                 let mut line = Vec::with_capacity(name.len() + value_.len() + 4);
-                line.extend_from_slice(&name[..until_nul(name)]);
+                // `%.*s` stops at a NUL, and sw_snprintf at its buffer.
+                line.extend_from_slice(name.split(|&b| b == 0).next().unwrap_or_default());
                 line.extend_from_slice(b": ");
-                line.extend_from_slice(&value_[..until_nul(value_)]);
+                line.extend_from_slice(value_.split(|&b| b == 0).next().unwrap_or_default());
                 line.extend_from_slice(b"\r\n");
                 line.truncate(TRAILER_LINE - 1);
                 out.extend_from_slice(&line);

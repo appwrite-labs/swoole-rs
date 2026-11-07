@@ -121,7 +121,7 @@ impl SessionState {
     }
 
     pub(crate) fn local(&self, field: usize) -> u32 {
-        self.local[field]
+        self.local.get(field).copied().unwrap_or(0)
     }
 
     /// `get_stream`, or `create_stream` when `create`.

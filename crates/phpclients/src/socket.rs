@@ -949,21 +949,22 @@ fn read_vector(call: &Call, socket: Socket, op: c_int, array: *mut zval, timeout
         // The read stopped `offset` bytes into vector `stopped`: keep that
         // much of it and free the vectors after it.
         let stopped = usize::try_from(stopped).unwrap_or(0);
-        filled = stopped + 1;
-        let vector = &mut vectors[stopped];
-        // SAFETY: a buffer string allocated above, `offset` bytes of it filled.
-        let kept = unsafe {
-            recycle(
-                string::from_val(vector.iov_base.cast()),
-                vector.iov_len,
-                offset,
-            )
-        };
-        vector.iov_base = string::val(kept).cast();
-        vector.iov_len = offset;
-        release(&vectors[filled..]);
+        if let Some(vector) = vectors.get_mut(stopped) {
+            filled = stopped + 1;
+            // SAFETY: a buffer string allocated above, `offset` bytes of it filled.
+            let kept = unsafe {
+                recycle(
+                    string::from_val(vector.iov_base.cast()),
+                    vector.iov_len,
+                    offset,
+                )
+            };
+            vector.iov_base = string::val(kept).cast();
+            vector.iov_len = offset;
+        }
+        release(vectors.get(filled..).unwrap_or_default());
     }
-    for vector in &vectors[..filled] {
+    for vector in vectors.iter().take(filled) {
         let buffer = string::from_val(vector.iov_base.cast());
         // SAFETY: an unshared buffer string of at least `iov_len` bytes.
         unsafe { string::truncate(buffer, vector.iov_len) };

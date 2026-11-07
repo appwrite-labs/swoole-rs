@@ -255,7 +255,8 @@ static OFFSETS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
 pub(crate) static CAPABILITIES: AtomicU32 = AtomicU32::new(0);
 
 pub(crate) fn key(key: Key) -> *mut zend_string {
-    KEYS[key as usize].load(Relaxed)
+    KEYS.get(key as usize)
+        .map_or(ptr::null_mut(), |key| key.load(Relaxed))
 }
 
 /// The request's array properties, read (and created) on first use.
@@ -312,7 +313,9 @@ pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
     if slot.ptr.is_null() {
         // SAFETY: the request's live object zval.
         let object: *mut zend_object = unsafe { value::obj_of(request.zobject.ptr) };
-        let offset = OFFSETS[which as usize].load(Relaxed);
+        let offset = OFFSETS
+            .get(which as usize)
+            .map_or(0, |offset| offset.load(Relaxed));
         // SAFETY: a declared property slot of that object.
         let size = if matches!(which, Property::Server) {
             HT_MIN_SIZE << 1
@@ -1153,26 +1156,25 @@ fn add_bytes(array: *mut zval, key: &CStr, bytes: &[u8]) {
 fn string_value<'a>(found: *mut zval) -> Option<(&'a [u8], usize)> {
     // SAFETY: a live zval from a live array.
     let bytes = unsafe { swoole_rs_zend::string_of(found) }?;
-    let end = bytes
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(bytes.len());
-    Some((&bytes[..end], bytes.len()))
+    let text = bytes.split(|&byte| byte == 0).next().unwrap_or_default();
+    Some((text, bytes.len()))
 }
 
 /// `swoole_strlcpy` into a `SW_HTTP_FORM_KEYLEN` buffer, then
 /// `http_trim_double_quote` over `length` bytes of it.
 fn trimmed(text: &[u8], length: usize) -> Box<[u8]> {
     let mut buffer = [0u8; FORM_KEYLEN];
-    let copied = text.len().min(FORM_KEYLEN - 1);
-    buffer[..copied].copy_from_slice(&text[..copied]);
+    for (slot, byte) in buffer.iter_mut().zip(text).take(FORM_KEYLEN - 1) {
+        *slot = *byte;
+    }
     let mut result = Trimmed::default();
     // SAFETY: the buffer holds `length` (< FORM_KEYLEN) writable bytes.
     if unsafe { swr_v1_httpbindings_trim_quotes(buffer.as_mut_ptr(), length, &raw mut result) } != 0
     {
         result = Trimmed { offset: 0, length };
     }
-    buffer[result.offset..result.offset + result.length].into()
+    let trimmed = buffer.get(result.offset..result.offset + result.length);
+    trimmed.unwrap_or_default().into()
 }
 
 /// A NUL-terminated copy (`estrndup`).
@@ -1229,7 +1231,11 @@ unsafe extern "C" fn on_part_header_value(
         let mut fields = new_zval();
         // SAFETY: an empty zval.
         unsafe { swr_zend_array_init(&raw mut fields) };
-        parse_cookie(&raw mut fields, value_[offset..].as_ptr(), length - offset);
+        parse_cookie(
+            &raw mut fields,
+            value_.as_ptr().wrapping_add(offset),
+            length - offset,
+        );
 
         let Some((form_name, form_name_len)) = string_value(find(&raw mut fields, b"name")) else {
             return 0;
@@ -1479,16 +1485,16 @@ unsafe extern "C" fn on_part_data_end(parser: *mut Multipart) -> c_int {
     let files = property(state, Property::Files);
     let header = &raw mut state.parse.multipart_header;
     // `input_name` holds its NUL; C sees it up to the first one.
-    let text = &input_name[..input_name
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(input_name.len())];
-    match text.iter().position(|&byte| byte == b'[') {
-        Some(at) if state.parse_files != 0 && at > 0 => {
+    let text = input_name
+        .split(|&byte| byte == 0)
+        .next()
+        .unwrap_or_default();
+    let bracket = text.iter().position(|&byte| byte == b'[');
+    match bracket.and_then(|at| text.split_at_checked(at)) {
+        Some((name, input_path)) if state.parse_files != 0 && !name.is_empty() => {
             const META: usize = FORM_KEYLEN + b"[tmp_name]".len() - 1;
-            let input_path = &text[at..];
             for field in ["name", "type", "tmp_name", "error", "size"] {
-                let mut meta = text[..at.min(META - 1)].to_vec();
+                let mut meta = name.get(..META - 1).unwrap_or(name).to_vec();
                 meta.extend_from_slice(format!("[{field}]").as_bytes());
                 meta.extend_from_slice(input_path);
                 meta.truncate(META - 1);

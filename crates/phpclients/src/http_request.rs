@@ -52,7 +52,7 @@ fn format(out: &mut Vec<u8>, kind: Format, spans: [&[u8]; 4], number: usize, cap
             capacity,
         )
     };
-    out.extend_from_slice(&buffer[..result.written.min(capacity)]);
+    out.extend_from_slice(buffer.get(..result.written).unwrap_or(&buffer));
 }
 
 /// `Key: value\r\n` (`add_headers`).
@@ -88,8 +88,7 @@ pub(crate) fn host_value(host: &[u8], port: u16, ssl: bool) -> Vec<u8> {
         return host.to_vec();
     }
     // std_string::format("%s:%u"): the host stops at a NUL.
-    let end = host.iter().position(|&b| b == 0).unwrap_or(host.len());
-    let mut value = host[..end].to_vec();
+    let mut value = host.split(|&b| b == 0).next().unwrap_or_default().to_vec();
     value.push(b':');
     value.extend_from_slice(port.to_string().as_bytes());
     value
@@ -113,12 +112,15 @@ pub(crate) fn socket_type(host: &mut Vec<u8>) -> i64 {
 /// A multipart boundary: the prefix and 21 random alphanumerics.
 pub(crate) fn boundary() -> [u8; BOUNDARY_SIZE] {
     const CHARACTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut out = [0_u8; BOUNDARY_SIZE];
-    out[..BOUNDARY_PREFIX.len()].copy_from_slice(BOUNDARY_PREFIX);
     let mut random = [0_u8; BOUNDARY_SIZE];
     fill_random(&mut random);
-    for (slot, byte) in out[BOUNDARY_PREFIX.len()..].iter_mut().zip(random) {
-        *slot = CHARACTERS[usize::from(byte) % CHARACTERS.len()];
+    let mut characters = random.iter().map(|&byte| pick(CHARACTERS, byte));
+    let mut out = [0_u8; BOUNDARY_SIZE];
+    for (index, slot) in out.iter_mut().enumerate() {
+        *slot = match BOUNDARY_PREFIX.get(index) {
+            Some(&prefix) => prefix,
+            None => characters.next().unwrap_or(b'0'),
+        };
     }
     out
 }
@@ -129,7 +131,13 @@ pub(crate) fn token<const N: usize>() -> [u8; N] {
         b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"\xc2\xa7$%&/()=[]{}";
     let mut random = [0_u8; N];
     fill_random(&mut random);
-    random.map(|byte| CHARACTERS[usize::from(byte) % CHARACTERS.len()])
+    random.map(|byte| pick(CHARACTERS, byte))
+}
+
+/// `characters[byte % characters.len()]`.
+fn pick(characters: &[u8], byte: u8) -> u8 {
+    let index = usize::from(byte) % characters.len();
+    characters.get(index).copied().unwrap_or_default()
 }
 
 // libc declares getentropy for glibc but not musl, which has had it since 1.1.20.
@@ -149,8 +157,9 @@ fn fill_random(out: &mut [u8]) {
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |time| time.as_nanos());
-            for (index, byte) in chunk.iter_mut().enumerate() {
-                *byte = seed.to_le_bytes()[index % 16] ^ u8::try_from(index & 0xff).unwrap_or(0);
+            let seed = seed.to_le_bytes();
+            for ((index, byte), seed) in chunk.iter_mut().enumerate().zip(seed.iter().cycle()) {
+                *byte = seed ^ u8::try_from(index & 0xff).unwrap_or(0);
             }
         }
     }
@@ -239,8 +248,10 @@ pub(crate) fn token_list_contains(list: &[u8], value: &[u8]) -> i32 {
         return 1;
     }
     // strtok over a NUL-terminated copy: the list stops at its first NUL.
-    let end = list.iter().position(|&b| b == 0).unwrap_or(list.len());
-    let found = list[..end]
+    let found = list
+        .split(|&b| b == 0)
+        .next()
+        .unwrap_or_default()
         .split(|&b| b == b',')
         .filter(|token| !token.is_empty())
         .any(|token| trim(token).eq_ignore_ascii_case(value));
@@ -250,18 +261,24 @@ pub(crate) fn token_list_contains(list: &[u8], value: &[u8]) -> i32 {
 /// `swoole::ltrim` then `swoole::rtrim` (C `isspace`).
 fn trim(mut token: &[u8]) -> &[u8] {
     let space = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r');
-    while token.first().is_some_and(space) {
-        token = &token[1..];
+    while let Some((first, rest)) = token.split_first()
+        && space(first)
+    {
+        token = rest;
     }
-    while token.last().is_some_and(space) {
-        token = &token[..token.len() - 1];
+    while let Some((last, rest)) = token.split_last()
+        && space(last)
+    {
+        token = rest;
     }
     token
 }
 
 /// `SW_STR_ISTARTS_WITH`.
 pub(crate) fn starts_with_ignore_case(value: &[u8], prefix: &[u8]) -> bool {
-    value.len() >= prefix.len() && value[..prefix.len()].eq_ignore_ascii_case(prefix)
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 /// `swoole_strncasestr(value, needle)`.

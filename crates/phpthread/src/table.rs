@@ -51,12 +51,12 @@ impl<V> Table<V> {
 
     pub(crate) fn get(&self, key: &Key) -> Option<&V> {
         let slot = self.slot(key)?;
-        self.slots[slot].as_ref().map(|(_, value)| value)
+        self.slots.get(slot)?.as_ref().map(|(_, value)| value)
     }
 
     pub(crate) fn get_mut(&mut self, key: &Key) -> Option<&mut V> {
         let slot = self.slot(key)?;
-        self.slots[slot].as_mut().map(|(_, value)| value)
+        self.slots.get_mut(slot)?.as_mut().map(|(_, value)| value)
     }
 
     pub(crate) fn contains(&self, key: &Key) -> bool {
@@ -68,7 +68,7 @@ impl<V> Table<V> {
     pub(crate) fn update(&mut self, key: Key, value: V) {
         match self.slot(&key) {
             Some(slot) => {
-                if let Some(entry) = self.slots[slot].as_mut() {
+                if let Some(Some(entry)) = self.slots.get_mut(slot) {
                     entry.1 = value;
                 }
             }
@@ -117,7 +117,11 @@ impl<V> Table<V> {
             Key::Int(index) => self.ints.remove(index),
             Key::Str(name) => self.strs.remove(name),
         }?;
-        let removed = self.slots[slot].take().map(|(_, value)| value);
+        let removed = self
+            .slots
+            .get_mut(slot)
+            .and_then(Option::take)
+            .map(|(_, value)| value);
         if self.slots.len() > 8 && self.len() * 2 < self.slots.len() {
             self.compact();
         }
@@ -163,16 +167,15 @@ impl<V> Table<V> {
             return;
         }
         if let Ok(start) = usize::try_from(index)
-            && start < count
+            && let Some(mut rest) = self.slots.get_mut(start..)
         {
             // Rotate the values (not the keys) of positions start.. down by one,
             // so the removed value ends up last.
-            for position in start..count - 1 {
-                let (current, next) = self.slots.split_at_mut(position + 1);
-                if let (Some((_, a)), Some((_, b))) = (current[position].as_mut(), next[0].as_mut())
-                {
+            while let Some((current, tail)) = rest.split_first_mut() {
+                if let (Some((_, a)), Some(Some((_, b)))) = (current.as_mut(), tail.first_mut()) {
                     std::mem::swap(a, b);
                 }
+                rest = tail;
             }
         }
         if let Some((key, _)) = self.slots.pop().flatten() {

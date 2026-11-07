@@ -734,7 +734,9 @@ fn listen(call: &Call) {
     if i64::from(view.ipc_mode) != IPC_SOCKET {
         return unsupported(call, view);
     }
-    let unix = address.len() >= 6 && address[..6].eq_ignore_ascii_case(b"unix:/");
+    let unix = address
+        .get(..6)
+        .is_some_and(|head| head.eq_ignore_ascii_case(b"unix:/"));
     // The argument string is NUL-terminated in place; a unix path skips "unix:".
     let host_ptr = address.as_ptr().wrapping_add(if unix { 5 } else { 0 });
     let kind = if unix { SOCK_UNIX_STREAM } else { SOCK_TCP };
