@@ -4,7 +4,7 @@
 //! (crates/phpthread) share between threads through [`shared`] and
 //! [`shared_object`].
 use crate::{
-    lock::{LOCK_EX, MUTEX, NATIVE, RW_LOCK, SPIN_LOCK, check, milliseconds},
+    lock::{CAPABILITIES, KINDS, LOCK_EX, MUTEX, RW_LOCK, SPIN_LOCK, check, milliseconds},
     word::{self, Word, methods},
 };
 use std::{
@@ -360,8 +360,8 @@ method_table! {
     ];
 }
 
-/// MINIT (`php_swoole_thread_lock_minit`), after `swr_v1_phplocks_lock_minit`,
-/// whose lock types and capabilities it shares: register the class, its
+/// MINIT (`php_swoole_thread_lock_minit`), sharing `Swoole\Lock`'s
+/// lock types and capabilities: register the class, its
 /// constants and `errCode`.
 /// # Safety
 /// Called once, at MINIT, with C++'s fatal-error reporter.
@@ -378,14 +378,13 @@ pub unsafe extern "C" fn swr_v1_phplocks_thread_lock_minit(
             configure(e, h, create_lock);
         });
     }
-    let kinds = NATIVE.get().map_or(0, |native| native.kinds);
     let types = [
         (c"MUTEX", MUTEX),
         (c"RWLOCK", RW_LOCK),
         (c"SPINLOCK", SPIN_LOCK),
     ];
     for (name, kind) in types {
-        if kind == MUTEX || kinds & (1 << kind) != 0 {
+        if KINDS & (1 << kind) != 0 {
             // SAFETY: MINIT, after registration.
             unsafe { LOCK.constant_long(name, kind) };
         }
@@ -430,8 +429,7 @@ fn lock_construct(call: &Call) {
     let Ok(requested) = call.arity(0, 1).and_then(|()| call.long(1, MUTEX)) else {
         return;
     };
-    let kinds = NATIVE.get().map_or(0, |native| native.kinds);
-    let resource = Arc::new(Resource::Lock(ThreadLock::new(lock_kind(requested, kinds))));
+    let resource = Arc::new(Resource::Lock(ThreadLock::new(lock_kind(requested, KINDS))));
     *shared = Shared {
         word: resource.word(),
         resource: Arc::into_raw(resource),
@@ -450,7 +448,6 @@ fn lock(call: &Call) {
     let Some(lock) = constructed(call) else {
         return;
     };
-    let capabilities = NATIVE.get().map_or(0, |native| native.capabilities);
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
     // SAFETY: a lock `ThreadLock::new` initialised.
     let result = unsafe {
@@ -459,7 +456,7 @@ fn lock(call: &Call) {
             lock.kind,
             operation as i32,
             milliseconds(timeout),
-            capabilities,
+            CAPABILITIES,
         )
     };
     check(call, result);

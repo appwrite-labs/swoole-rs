@@ -1,14 +1,8 @@
 //! `Swoole\Atomic` and `Swoole\Atomic\Long`: a word in Swoole's global memory
 //! pool, so processes forked after construction share it.
 use crate::word::{self, Word, methods};
-use std::{
-    ffi::c_void,
-    ptr,
-    sync::{
-        OnceLock,
-        atomic::{AtomicPtr, Ordering},
-    },
-};
+use std::ffi::c_int;
+use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::atomic;
 use swoole_rs_zend::{
     Call, Class, Object, method_table,
@@ -19,14 +13,6 @@ use swoole_rs_zend::{
 /// `SW_ERROR_MALLOC_FAIL`.
 const MALLOC_FAIL: i64 = 501;
 
-/// `sw_mem_pool()->alloc` and `->free`, which only C++ can call.
-struct Pool {
-    alloc: unsafe extern "C" fn(size: u32) -> *mut c_void,
-    release: unsafe extern "C" fn(word: *mut c_void),
-}
-
-static POOL: OnceLock<Pool> = OnceLock::new();
-static EXCEPTION: AtomicPtr<zend_class_entry> = AtomicPtr::new(ptr::null_mut());
 static ATOMIC: Class = Class::new();
 static LONG: Class = Class::new();
 
@@ -53,21 +39,15 @@ unsafe extern "C" fn create<W: Kind>(ce: *mut zend_class_entry) -> *mut zend_obj
     // SAFETY: Zend calls `create_object` with this class or a subclass of it;
     // a null pointer is valid zeroed data.
     let std = unsafe { Atomic::<W>::create(W::class(), ce) };
-    let word = POOL.get().map_or(ptr::null_mut(), |pool| {
-        #[expect(clippy::cast_possible_truncation, reason = "a word is 4 or 8 bytes")]
-        // SAFETY: the pool's allocator, called at object creation as upstream does.
-        unsafe {
-            (pool.alloc)(size_of::<W>() as u32)
-        }
-    });
+    #[expect(clippy::cast_possible_truncation, reason = "a word is 4 or 8 bytes")]
+    // SAFETY: the global pool lives from swoole_init, before MINIT.
+    let word = unsafe { pool::alloc(size_of::<W>() as u32) };
     if word.is_null() {
+        // SAFETY: MINIT set Swoole's exception class before any handler runs.
+        let exception = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
         // SAFETY: in a handler, with Swoole's exception class.
         unsafe {
-            throw_exception(
-                EXCEPTION.load(Ordering::Relaxed),
-                c"global memory allocation failure",
-                MALLOC_FAIL,
-            );
+            throw_exception(exception, c"global memory allocation failure", MALLOC_FAIL);
         }
     }
     // SAFETY: `std` is the object just created.
@@ -78,10 +58,8 @@ unsafe extern "C" fn create<W: Kind>(ce: *mut zend_class_entry) -> *mut zend_obj
 unsafe extern "C" fn free<W: Kind>(std: *mut zend_object) {
     // SAFETY: Zend frees an object this class created.
     let word = unsafe { *Atomic::<W>::data(std) };
-    if let Some(pool) = POOL.get() {
-        // SAFETY: the word came from this pool, as upstream frees it.
-        unsafe { (pool.release)(word.cast()) };
-    }
+    // SAFETY: the word came from the pool, as upstream frees it.
+    unsafe { pool::free(word.cast()) };
     // SAFETY: as above.
     unsafe { Atomic::<W>::dtor(std) };
 }
@@ -115,20 +93,11 @@ method_table! {
     ];
 }
 
-/// MINIT: register both classes as `php_swoole_atomic_minit` did.
+/// `php_swoole_atomic_minit`: register both classes.
 /// # Safety
-/// Called once, at MINIT, with Swoole's exception class and the global pool's
-/// allocator.
+/// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phplocks_atomic_minit(
-    exception: *mut zend_class_entry,
-    alloc: Option<unsafe extern "C" fn(size: u32) -> *mut c_void>,
-    release: Option<unsafe extern "C" fn(word: *mut c_void)>,
-) {
-    if let (Some(alloc), Some(release)) = (alloc, release) {
-        POOL.get_or_init(|| Pool { alloc, release });
-    }
-    EXCEPTION.store(exception, Ordering::Relaxed);
+pub unsafe extern "C" fn php_swoole_atomic_minit(_module_number: c_int) {
     // SAFETY: MINIT, with static tables.
     unsafe { ATOMIC.register(c"Swoole\\Atomic", ATOMIC_METHODS.as_ptr(), configure::<u32>) };
     // SAFETY: as above.

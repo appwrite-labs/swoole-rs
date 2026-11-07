@@ -58,7 +58,7 @@ mod context;
 pub use context::*;
 mod host;
 pub use host::{
-    counts, current, in_coroutine, is_suspending, park, suspend, suspend_for, wake,
+    cid, counts, current, in_coroutine, is_suspending, park, suspend, suspend_for, wake,
     yield_ as yield_coroutine,
 };
 mod methods;
