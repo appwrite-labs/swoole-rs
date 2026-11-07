@@ -7,16 +7,16 @@ use crate::view;
 use core::ffi::c_void;
 use core::ptr;
 use swoole_rs_http::{
-    HttpContextPageBuffer, HttpContextRangeObservation, HttpContextServeObservation, HttpIndexPage,
-    HttpProxyText, HttpStaticContext, HttpStaticObservation, HttpStaticTask,
-    swr_v1_http_static_boundary, swr_v1_http_static_content_prefix, swr_v2_http_context_boundary,
-    swr_v2_http_context_drop, swr_v2_http_context_format, swr_v2_http_context_index,
-    swr_v2_http_context_new, swr_v2_http_context_observe, swr_v2_http_context_page_emit,
-    swr_v2_http_context_page_step, swr_v2_http_context_path, swr_v2_http_context_range_begin,
-    swr_v2_http_context_range_resume, swr_v2_http_context_range_step, swr_v2_http_context_tasks,
-    swr_v2_http_context_text, swr_v3_http_conditional, swr_v3_http_context_directory,
-    swr_v3_http_context_mtime, swr_v3_http_context_serve, swr_v3_http_context_stat,
-    swr_v3_http_date,
+    HttpCalendar, HttpContextPageBuffer, HttpContextRangeObservation, HttpContextServeObservation,
+    HttpIndexPage, HttpProxyText, HttpStaticContext, HttpStaticIo, HttpStaticObservation,
+    HttpStaticTask, swr_v1_http_static_boundary, swr_v1_http_static_content_prefix,
+    swr_v2_http_context_boundary, swr_v2_http_context_drop, swr_v2_http_context_format,
+    swr_v2_http_context_index, swr_v2_http_context_new, swr_v2_http_context_observe,
+    swr_v2_http_context_page_emit, swr_v2_http_context_page_step, swr_v2_http_context_path,
+    swr_v2_http_context_range_begin, swr_v2_http_context_range_resume,
+    swr_v2_http_context_range_step, swr_v2_http_context_tasks, swr_v2_http_context_text,
+    swr_v3_http_conditional, swr_v3_http_context_directory, swr_v3_http_context_mtime,
+    swr_v3_http_context_serve, swr_v3_http_context_stat, swr_v3_http_date,
 };
 
 /// `SWR_HTTP_CONTEXT_*`: the context's texts.
@@ -65,15 +65,50 @@ fn text_of(bytes: &[u8]) -> HttpProxyText {
     }
 }
 
+/// What a handler asks of the world. [`Native`]'s: the filesystem, the MIME
+/// table, random characters and libc's calendar.
+pub trait Effects {
+    /// The filesystem; null is libc's.
+    fn io(&self) -> *const HttpStaticIo {
+        ptr::null()
+    }
+    /// The calendar; null is libc's.
+    fn calendar(&self) -> *const HttpCalendar {
+        ptr::null()
+    }
+    /// `mime_type::get`.
+    fn mime(&self, filename: &[u8]) -> Vec<u8> {
+        let kind = swoole_rs_framing::mime::get(filename);
+        // SAFETY: the table's NUL-terminated type, copied before it can change.
+        unsafe { core::ffi::CStr::from_ptr(kind) }
+            .to_bytes()
+            .to_vec()
+    }
+    /// `mime_type::exists`.
+    fn mime_exists(&self, filename: &[u8]) -> bool {
+        swoole_rs_framing::mime::exists(filename)
+    }
+    /// `swoole_random_string`: `count` (below `BOUNDARY_SIZE`) characters and a NUL.
+    fn random(&self, out: &mut [u8; BOUNDARY_SIZE], count: usize) {
+        // SAFETY: `count` characters and a NUL fit.
+        unsafe { swoole_rs_corebase::swoole_random_string(out.as_mut_ptr().cast(), count) };
+    }
+}
+
+/// Production's effects.
+pub struct Native;
+impl Effects for Native {}
+
 /// A `StaticHandler` for one request URI on one server.
-pub struct StaticHandler {
+pub struct StaticHandler<E: Effects = Native> {
     server: *mut c_void,
     context: *mut HttpStaticContext,
     /// The context's modification-time slot.
     mtime: *const i64,
+    effects: E,
 }
 
-impl Drop for StaticHandler {
+impl<E: Effects> Drop for StaticHandler<E> {
     fn drop(&mut self) {
         // SAFETY: the context `new` made, dropped once.
         unsafe { swr_v2_http_context_drop(self.context) };
@@ -85,6 +120,16 @@ impl StaticHandler {
     /// `server` is a live `Server` that outlives the handler.
     #[must_use]
     pub unsafe fn new(server: *mut c_void, url: &[u8]) -> Option<Self> {
+        // SAFETY: per the caller.
+        unsafe { Self::with_effects(server, url, Native) }
+    }
+}
+
+impl<E: Effects> StaticHandler<E> {
+    /// # Safety
+    /// `server` is a live `Server` that outlives the handler.
+    #[must_use]
+    pub unsafe fn with_effects(server: *mut c_void, url: &[u8], effects: E) -> Option<Self> {
         // SAFETY: the URL's bytes, copied by the context.
         let context = unsafe { swr_v2_http_context_new(url.as_ptr(), url.len(), PATH_MAX) };
         if context.is_null() {
@@ -96,6 +141,7 @@ impl StaticHandler {
             server,
             context,
             mtime,
+            effects,
         })
     }
 
@@ -175,11 +221,7 @@ impl StaticHandler {
 
     #[must_use]
     pub fn mimetype(&self) -> Vec<u8> {
-        let kind = swoole_rs_framing::mime::get(&self.filename());
-        // SAFETY: the table's NUL-terminated type, copied before it can change.
-        unsafe { core::ffi::CStr::from_ptr(kind) }
-            .to_bytes()
-            .to_vec()
+        self.effects.mime(&self.filename())
     }
 
     fn ensure_boundary(&self) -> u32 {
@@ -190,8 +232,7 @@ impl StaticHandler {
         {
             let mut random = [0u8; BOUNDARY_SIZE];
             let count = count.min(BOUNDARY_SIZE - 1);
-            // SAFETY: `count` characters and a NUL fit.
-            unsafe { swoole_rs_corebase::swoole_random_string(random.as_mut_ptr().cast(), count) };
+            self.effects.random(&mut random, count);
             // SAFETY: the live context and `count` initialized bytes.
             unsafe { swr_v2_http_context_boundary(self.context, random.as_ptr(), count) };
         }
@@ -216,15 +257,17 @@ impl StaticHandler {
     }
 
     fn conditional(&self, date: &[u8], kind: u32, timezone: *const libc::c_long) -> bool {
-        // SAFETY: the date's bytes, the context's mtime slot and the timezone (or null).
+        // strptime reads the date up to a NUL, as upstream's `c_str()`.
+        let text = [date, b"\0"].concat();
+        // SAFETY: the date's bytes and its NUL, the context's mtime slot and the timezone (or null).
         unsafe {
             swr_v3_http_conditional(
-                date.as_ptr().cast(),
+                text.as_ptr().cast(),
                 date.len(),
                 kind,
                 self.mtime,
                 timezone,
-                ptr::null(),
+                self.effects.calendar(),
             ) == 1
         }
     }
@@ -239,7 +282,7 @@ impl StaticHandler {
 
     fn serve_step(&self, root: &HttpProxyText, observation: &HttpContextServeObservation) -> i32 {
         // SAFETY: the live context and local descriptors.
-        unsafe { swr_v3_http_context_serve(self.context, root, observation, ptr::null()) }
+        unsafe { swr_v3_http_context_serve(self.context, root, observation, self.effects.io()) }
     }
 
     /// Whether the static handler answers the request.
@@ -286,8 +329,7 @@ impl StaticHandler {
                 }
                 PATH_MIME => {
                     observation.event = 4;
-                    observation.observed =
-                        u32::from(swoole_rs_framing::mime::exists(&self.filename()));
+                    observation.observed = u32::from(self.effects.mime_exists(&self.filename()));
                 }
                 _ => return false,
             }
@@ -297,7 +339,7 @@ impl StaticHandler {
 
     fn scan_directory(&self) -> bool {
         // SAFETY: the live context.
-        unsafe { swr_v3_http_context_directory(self.context, ptr::null()) == 1 }
+        unsafe { swr_v3_http_context_directory(self.context, self.effects.io()) == 1 }
     }
 
     fn set_filename(&self) -> bool {
@@ -306,7 +348,7 @@ impl StaticHandler {
             return false;
         }
         // SAFETY: as above.
-        let stat = unsafe { swr_v3_http_context_stat(self.context, ptr::null()) } == 1;
+        let stat = unsafe { swr_v3_http_context_stat(self.context, self.effects.io()) } == 1;
         stat && self.observe().kind & PATH_FILE != 0
     }
 
@@ -497,15 +539,4 @@ mod errno {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn the_404_page_is_upstreams() {
-        assert_eq!(
-            super::page_404(),
-            b"<html><body><style> body { padding: 0.5em; line-height: 2; } h1 { font-size: 1.5em; \
-              padding-bottom: 0.3em; border-bottom: 1px solid #ccc; } ul { list-style-type: disc; } \
-              footer { border-top: 1px solid #ccc; } a { color: #0969da; } </style><h1>HTTP 404 Not \
-              Found</h1><footer><i>Powered by Swoole</i></footer></body></html>"
-        );
-    }
-}
+mod tests;

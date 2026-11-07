@@ -457,7 +457,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['reactor-compile'])
         self.assertIn('corebase-native',commands)
         self.assertIn('ossupport-async-file-owner', commands)
-        self.assertIn('http-context', commands)
+        self.assertIn('http-proxy', commands)
         self.assertIn('coroutine-compile',commands)
         self.assertIn('swoole-rs-coroutine', commands['coroutine-rust-asan'])
         self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])

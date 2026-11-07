@@ -69,7 +69,7 @@ class ArtifactReuse(unittest.TestCase):
 
     def test_loaded_minimal_profiles_capture_both_producers(self):
         for modules, phase in [(['coroutine'], 'coroutine-production-stack'),
-                               (['http'], 'http-context')]:
+                               (['http'], 'http-proxy')]:
             with self.subTest(modules=modules):
                 args=SimpleNamespace(lane='integrate', module=modules, all_modules=False,
                     stdext=False, fix_halfclose=False, php='php', php_extension=[], jobs=1,

@@ -233,6 +233,46 @@ fn http_static_select() {
     .unwrap();
 }
 
+/// The `StaticHandler` class from the pinned `swoole_static_handler.h`, its method
+/// bodies and `Server::apply_rewrite_rules` from the pinned `static_handler.cc`, and
+/// `url_decode` from the pinned http.cc, copied unchanged for `shim/http_static_context.cc`.
+fn http_static_context() {
+    let header = fs::read_to_string("upstream/include/swoole_static_handler.h")
+        .expect("vendored swoole_static_handler.h");
+    fs::write(
+        out("http_static_context_class.inc"),
+        slice(
+            &header,
+            "struct RewriteRule {",
+            "};  // namespace http_server",
+        ),
+    )
+    .unwrap();
+    let http = fs::read_to_string("upstream/src/protocol/http.cc").expect("vendored http.cc");
+    let handler = fs::read_to_string("upstream/src/server/static_handler.cc")
+        .expect("vendored static_handler.cc");
+    let mut parts = vec![
+        definition(&http, "static int url_htoi("),
+        definition(&http, "size_t url_decode("),
+    ];
+    for signature in [
+        "bool StaticHandler::is_modified(",
+        "bool StaticHandler::is_modified_range(",
+        "std::string StaticHandler::get_date_last_modified(",
+        "bool StaticHandler::get_absolute_path(",
+        "bool StaticHandler::try_serve(",
+        "bool StaticHandler::try_serve_index_file(",
+        "size_t StaticHandler::make_index_page(",
+        "bool StaticHandler::get_dir_files(",
+        "bool StaticHandler::set_filename(",
+        "void StaticHandler::parse_range(",
+        "bool Server::apply_rewrite_rules(",
+    ] {
+        parts.push(definition(&handler, signature));
+    }
+    fs::write(out("http_static_context.inc"), parts.join("\n") + "\n").unwrap();
+}
+
 /// MQTT's length decoder and RESP's parse from the pinned mqtt.cc and redis.cc
 /// (upstream) and from them with the protocols overlay patch applied (candidate,
 /// calling Rust), copied unchanged for shim/protocols.cc, with redis's states.
@@ -530,6 +570,7 @@ fn main() {
     http_frame();
     http_range();
     http_static_select();
+    http_static_context();
     protocols();
     resp_stream();
     clients();
@@ -562,6 +603,10 @@ fn main() {
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/http_static_select.cc")
         .compile("swoole_upstream_http_static_select");
+    cpp()
+        .include(env::var("OUT_DIR").unwrap())
+        .file("shim/http_static_context.cc")
+        .compile("swoole_upstream_http_static_context");
     cpp()
         .define("SWR_FRAME_ENGINE", "upstream")
         .define("SWR_FRAME_INC", "\"http_frame_upstream.inc\"")

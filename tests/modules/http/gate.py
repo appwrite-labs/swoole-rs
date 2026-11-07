@@ -135,11 +135,3 @@ def run(binary, symbols, output, report, timeout=30):
     write_report(output, report); print(json.dumps(report['outcome']))
     return 0
 
-
-def prepare_index_buffer(sides):
-    """Each side's native String facade, with the format_impl of that side's own swoole_string.h."""
-    output = '#pragma once\n'
-    for namespace, root in [('upstream_context', sides.pin), ('candidate_context', sides.hybrid)]:
-        template = body((root/'include/swoole_string.h').read_text(), 'size_t format_impl(')
-        output += 'namespace '+namespace+' {\nclass IndexBuffer { public:\n std::vector<unsigned char> storage;char *str=nullptr;size_t size=0,length=6,offset=7;unsigned calls=0,fail=0;std::vector<size_t> events;\n enum FormatFlag{FORMAT_APPEND=1,FORMAT_GROW=2};\n explicit IndexBuffer(size_t capacity):storage(capacity,0xa5),size(capacity){str=reinterpret_cast<char*>(storage.data());if(capacity>=6)memcpy(str,"prefix",6);events.reserve(32);}\n void reserve(size_t requested){events.push_back(requested);if(++calls==fail)throw std::bad_alloc();size_t count=size==0?requested:SW_MEM_ALIGNED_SIZE(requested);storage.resize(count,0xa5);size=count;str=reinterpret_cast<char*>(storage.data());}\n void extend_align(size_t minimum){size_t count=SW_MEM_ALIGNED_SIZE(size*2);while(count<minimum)count*=2;reserve(count);}\n void append(const char *input,size_t count){if(length+count>size)reserve(length+count);memcpy(str+length,input,count);length+=count;}\n template <typename... Args>\n'+template+'\n};\n}\n'
-    (sides.tree/'index_buffer.h').write_text(output)

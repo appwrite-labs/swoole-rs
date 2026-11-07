@@ -46,6 +46,6 @@ continuation; V2 queries again on each call.
 Known difference: allocation cadence, peak memory and destruction order differ
 from native set nodes.
 
-Tests: `tests/modules/http/context_gate.py`. C++20 builds of the pinned SDK fail
+Tests: `crates/server/src/static_handler/tests.rs`. C++20 builds of the pinned SDK fail
 `-Werror` on a deprecated volatile increment in `swoole_process_pool.h`
 (upstream). Use C++14/17.
