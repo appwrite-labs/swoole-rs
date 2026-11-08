@@ -80,7 +80,8 @@ through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and th
 `set_ssl_*` setters write the `SSLContext` owner (`swr_v1_tls_owner_new`,
 `_set_path` and its string slots and fields); `TimeoutSetter` and
 `TimeoutController` are `swr_v1_hook_timeout_scope` and
-`swr_v1_hook_co_socket_timed_out`; `pop_read_buffer`/`pop_write_buffer` are
+`swr_v1_hook_co_socket_timed_out` (the `rust_socket_scopes.selected_timeout_restore_and_copy`
+witness, whose `TimeoutSetter` left the hybrid header, is a Rust case there too); `pop_read_buffer`/`pop_write_buffer` are
 `swr_v1_hook_co_socket_pop_buffer`; `ssl_handshake` and `ssl_verify` are exported
 under their upstream symbols for this. The `Server` fixture `recv_success` and
 `recv_fail` fork is a std echo (or close-on-receive) server: those cases assert only

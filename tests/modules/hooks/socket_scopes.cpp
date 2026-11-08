@@ -37,31 +37,6 @@ TEST(rust_socket_scopes, protocol_snapshot_and_copy_restore) {
     });
 }
 
-TEST(rust_socket_scopes, selected_timeout_restore_and_copy) {
-    swoole::test::coroutine::run([](void *) {
-        Socket socket(SW_SOCK_TCP);
-        socket.set_timeout(3.5);
-        {
-            Socket::TimeoutSetter scope(&socket, 0.25, SW_TIMEOUT_RDWR);
-            auto copy = scope;
-            ASSERT_EQ(socket.get_timeout(SW_TIMEOUT_DNS), 3.5);
-            ASSERT_EQ(socket.get_timeout(SW_TIMEOUT_READ), 0.25);
-            {
-                Socket::TimeoutSetter nested(&socket, -1, SW_TIMEOUT_READ);
-                ASSERT_EQ(socket.get_timeout(SW_TIMEOUT_READ), -1);
-            }
-            ASSERT_EQ(socket.get_timeout(SW_TIMEOUT_READ), 0.25);
-        }
-        ASSERT_EQ(socket.get_timeout(SW_TIMEOUT_READ), 3.5);
-        ASSERT_EQ(socket.get_timeout(SW_TIMEOUT_WRITE), 3.5);
-        {
-            Socket::TimeoutSetter zero(&socket, 0, SW_TIMEOUT_ALL);
-            socket.set_timeout(8, SW_TIMEOUT_CONNECT);
-        }
-        ASSERT_EQ(socket.get_timeout(SW_TIMEOUT_CONNECT), 8);
-    });
-}
-
 TEST(rust_socket_scopes, error_text_publication_and_cache_exception) {
     swoole::test::coroutine::run([](void *) {
         Socket socket(SW_SOCK_TCP);

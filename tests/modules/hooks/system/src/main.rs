@@ -881,6 +881,7 @@ const SUITES: &[(&str, Cases)] = &[
     ("coroutine_system", CASES),
     ("coroutine_hook", hook::CASES),
     ("coroutine_socket", socket::CASES),
+    ("rust_socket_scopes", socket::SCOPE_CASES),
 ];
 
 fn main() {

@@ -71,7 +71,7 @@ def main():
     parser.add_argument('--archive', type=Path, help='Same-platform real coroutine Rust static archive')
     parser.add_argument('--build-root', type=Path, help='Private writable cache outside reference/repository')
     parser.add_argument('--dns-requests', action='store_true', help='Execute the unchanged local DNS no-service original and five real request/async/vector witnesses')
-    parser.add_argument('--socket-scopes', action='store_true', help='Also execute the three scoped-state socket witnesses (socket.cpp itself is Rust: hooks-system-rust)')
+    parser.add_argument('--socket-scopes', action='store_true', help='Also execute the two scoped-state socket witnesses (socket.cpp and the timeout-scope witness are Rust: hooks-system-rust)')
     parser.add_argument('--async-file', action='store_true', help='Also compile and execute the unchanged original coroutine AsyncFile unit')
     parser.add_argument('--lifetime-only', action='store_true', help='Execute only the supplemental real-context lifetime witness; the originals remain unmeasured')
     parser.add_argument('--rust-asan', action='store_true', help='Verify the coroutine archive contains actual Rust ASan imports')
