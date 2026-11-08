@@ -126,8 +126,8 @@ typedef struct {
     swr_v1_process_reload_warn warn;
 } swr_v1_process_reap_host;
 void swr_v1_process_reap_loop(const swr_v1_process_reap_host *host);
-/* ProcessPool's IPC (crates/process/src/pool.rs): the stream listener, its
- * connection, the reply and packet buffers, the worker loops and dispatch. */
+/* ProcessPool's IPC (crates/process/src/pool.rs): the stream connection a task
+ * worker replies on. */
 typedef struct swr_v1_process_pool_ipc swr_v1_process_pool_ipc;
 typedef struct {
     void *pool;
@@ -140,65 +140,9 @@ typedef struct {
     int error;
 } swr_v1_pool_call;
 typedef void (*swr_v1_pool_step)(void *call);
-typedef struct {
-    bool (*running)(void *pool, void *worker);
-    swr_v1_pool_step end;
-    swr_v1_pool_step queue_pop;
-    swr_v1_pool_step queue_push;
-    swr_v1_pool_step accept;
-    swr_v1_pool_step recv;
-    swr_v1_pool_step send;
-    void (*close)(void *socket);
-    swr_v1_pool_step pipe_read;
-    swr_v1_pool_step pipe_wait;
-    swr_v1_pool_step bus_read;
-    swr_v1_pool_step bus_deliver;
-    swr_v1_pool_step task;
-    swr_v1_pool_step message;
-    void (*shutdown)(void *worker);
-    swr_v1_pool_step pipe_write;
-    void (*warn)(void *pool, void *worker, int kind, int64_t a, int64_t b);
-} swr_v1_pool_hooks;
-typedef struct {
-    const swr_v1_pool_hooks *hooks;
-    swr_v1_process_pool_ipc *ipc;
-    void *pool;
-    void *worker;
-    uint32_t worker_id;
-    uint8_t ipc_mode;
-    bool schedule_by_sysvmsg;
-    uint32_t max_packet_size;
-    size_t event_size;
-} swr_v1_pool_loop;
-enum {
-    SWR_POOL_WARN_MSGRCV = 1,
-    SWR_POOL_WARN_ACCEPT = 2,
-    SWR_POOL_WARN_READ = 3,
-    SWR_POOL_WARN_BAD_PACKET = 4,
-    SWR_POOL_WARN_TASK_FAILED = 5,
-    SWR_POOL_WARN_PIPE = 6,
-    SWR_POOL_TRACE_POP = 7,
-    SWR_POOL_WARN_SEND = 8,
-    SWR_POOL_TRACE_PUSH = 9,
-};
-#define SWR_POOL_BAILED 1
-void swr_v1_process_set_bailout(int (*trap)(void (*body)(void *), void *arg), void (*raise)(void));
-void swr_v1_process_bailout(void);
-swr_v1_process_pool_ipc *swr_v1_process_pool_ipc_new(bool listener);
-void swr_v1_process_pool_ipc_free(swr_v1_process_pool_ipc *ipc, void (*close)(void *socket));
-void *swr_v1_process_pool_ipc_listener(const swr_v1_process_pool_ipc *ipc);
 void *swr_v1_process_pool_ipc_connection(const swr_v1_process_pool_ipc *ipc);
-char *swr_v1_process_pool_ipc_prepare(swr_v1_process_pool_ipc *ipc, uint32_t max_packet_size);
-char *swr_v1_process_pool_ipc_packet(swr_v1_process_pool_ipc *ipc);
-int swr_v1_process_pool_run(const swr_v1_pool_loop *pool_loop, int protocol);
-uint32_t swr_v1_process_pool_schedule(const swr_v1_worker_record *workers, uint32_t count, uint32_t *round_id, uint8_t *warning);
-bool swr_v1_process_pool_dispatch(const swr_v1_pool_hooks *hooks, void *pool, swr_v1_worker_record *workers, uint32_t count, uint16_t start_id, uint32_t *round_id, uint8_t *warning, bool schedule_by_sysvmsg, bool queue, int *worker_id, const uint8_t *event, uint32_t size, bool blocking);
-/* ProcessPool's lifecycle (crates/process/src/process_pool.rs). Rust reads and
- * writes the pool in place through swr_v1_pool_record, ProcessPool's layout (the
- * process patch static_asserts it), and asks native code for each effect through
- * `call` (SWR_POOL_OP_*; `worker` is null unless the op names
- * one). `callback` runs SWR_POOL_CB_* (the call's flags) inside the bailout trap.
- * An export returns SWR_POOL_RAISE when a callback bailed out: raise it again. */
+/* ProcessPool's layout (crates/process/src/process_pool.rs), which the process
+ * patch static_asserts; crates/server/src/pool_native.rs holds its objects. */
 typedef struct {
     bool running, reload_init, read_message, started, schedule_by_sysvmsg, async;
     uint8_t ipc_mode;
@@ -220,70 +164,8 @@ typedef struct {
     uint32_t round_id;
     void *workers, *pipes, *registry, *queue, *ipc, *message_box, *message_bus, *reload_task, *ptr;
 } swr_v1_pool_record;
-
-typedef struct {
-    int64_t (*call)(void *pool, void *worker, uint32_t op, uint64_t arg);
-    swr_v1_pool_step callback;
-    const swr_v1_pool_hooks *hooks;
-    size_t event_size;
-} swr_v1_pool_native;
-#define SWR_POOL_RAISE INT64_MIN
-/* Native's table for the ProcessPool methods crates/process/src/methods.rs defines. */
-void swr_v1_process_pool_set_native(const swr_v1_pool_native *native);
-int64_t swr_v1_process_pool_run_op(const swr_v1_pool_native *native, void *pool, void *worker, uint32_t operation, uint64_t arg);
 /* The reap loop's wait: wait(), or waitpid(-1, WNOHANG) when `nonblock`. */
 int swr_v1_process_reap_wait(void *_ctx, bool nonblock, int *status, int *error);
-#define SWR_POOL_OP_HAVE_MSGQUEUE 0
-#define SWR_POOL_OP_ALLOC_WORKERS 1
-#define SWR_POOL_OP_NEW_MESSAGE_BOX 2
-#define SWR_POOL_OP_NEW_PIPES 4
-#define SWR_POOL_OP_NEW_PIPE 5
-#define SWR_POOL_OP_MAIN_LOOP 6
-#define SWR_POOL_OP_NEW_MESSAGE_BUS 7
-#define SWR_POOL_OP_SNDBUF 8
-#define SWR_POOL_OP_BUS_BUFFER 9
-#define SWR_POOL_OP_WORKER_TYPE 10
-#define SWR_POOL_OP_UNLIMIT_PIPES 11
-#define SWR_POOL_OP_FORK 12
-#define SWR_POOL_OP_WORKER_SHUTDOWN 13
-#define SWR_POOL_OP_EVENT_AVAILABLE 14
-#define SWR_POOL_OP_REMOVE_PIPE 15
-#define SWR_POOL_OP_EXIT_CALLBACK 16
-#define SWR_POOL_OP_REOPEN_LOGGER 17
-#define SWR_POOL_OP_IS_MASTER 18
-#define SWR_POOL_OP_RELOAD_TIMER 19
-#define SWR_POOL_OP_TIMER_DEL 20
-#define SWR_POOL_OP_DONT_RESTART 21
-#define SWR_POOL_OP_TIMER_INIT 22
-#define SWR_POOL_OP_TIMER_FREE 23
-#define SWR_POOL_OP_ADD_PIPE 24
-#define SWR_POOL_OP_PIPE_HANDLER 25
-#define SWR_POOL_OP_EVENT_WAIT 26
-#define SWR_POOL_OP_CURRENT_WORKER 27
-#define SWR_POOL_OP_PUSH_STOP 28
-#define SWR_POOL_OP_SIGNAL_DISPATCH 29
-#define SWR_POOL_OP_TIMER_SELECT 30
-#define SWR_POOL_OP_POP_MESSAGE 31
-#define SWR_POOL_OP_ON_WORKER_MESSAGE 32
-#define SWR_POOL_OP_ON_WORKER_NOT_FOUND 33
-#define SWR_POOL_OP_WORKER_ERROR 34
-#define SWR_POOL_OP_ON_AFTER_RELOAD 35
-#define SWR_POOL_OP_KILL_TIMER 36
-#define SWR_POOL_OP_WAITPID 37
-#define SWR_POOL_OP_FREE_PIPES 38
-#define SWR_POOL_OP_FREE_MESSAGE_BOX 40
-#define SWR_POOL_OP_FREE_MESSAGE_BUS 41
-#define SWR_POOL_OP_FREE_WORKERS 42
-#define SWR_POOL_OP_WORKER_INIT 43
-#define SWR_POOL_OP_EVENT_INIT 44
-#define SWR_POOL_OP_BOX_PUSH 45
-#define SWR_POOL_CB_START 1
-#define SWR_POOL_CB_BEFORE_RELOAD 2
-#define SWR_POOL_CB_SHUTDOWN 3
-#define SWR_POOL_CB_WORKER_START 4
-#define SWR_POOL_CB_MAIN_LOOP 5
-#define SWR_POOL_CB_WORKER_STOP 6
-#define SWR_POOL_RUN_MAIN 13
 /* Server::task and Server::task_sync (crates/process/src/task_sync.rs). Each
  * hook takes a swr_v1_pool_call whose pool is the Server and worker the MultiTask. */
 typedef struct {

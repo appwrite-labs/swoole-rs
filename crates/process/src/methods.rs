@@ -1,11 +1,10 @@
 //! The `ProcessPool` and `Worker` methods (once `src/os/process_pool.cc`) that are
 //! whole Rust operations, defined under their upstream (Itanium) symbols when
-//! the hybrid links this crate (`upstream-symbols`). Native code registers its
-//! [`PoolNative`] table once; each method runs over it as its C++ forward did.
+//! the hybrid links this crate (`upstream-symbols`). Each runs over crates/server's
+//! [`PoolNative`] table as its C++ forward did.
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::pool::{
     swr_v1_process_bailout, swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_respond,
@@ -32,19 +31,21 @@ use crate::worker_registry::{
     swr_v1_process_worker_registry_unregister,
 };
 
-static NATIVE: AtomicPtr<PoolNative> = AtomicPtr::new(ptr::null_mut());
-
-/// Registers native's table, which the methods below lend every export.
-///
-/// # Safety
-/// `native` lives as long as the process.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_set_native(native: *const PoolNative) {
-    NATIVE.store(native.cast_mut(), Ordering::Release);
-}
-
+/// crates/server's table, which every method below lends its export
+/// (`crates/server/src/pool_native.rs`); null in tests, which drive the exports
+/// with their own hosts.
 fn native() -> *const PoolNative {
-    NATIVE.load(Ordering::Acquire)
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    {
+        // SAFETY: crates/server's, in the same archive.
+        unsafe extern "C" {
+            fn swr_v1_process_pool_native() -> *const PoolNative;
+        }
+        // SAFETY: no preconditions.
+        unsafe { swr_v1_process_pool_native() }
+    }
+    #[cfg(not(all(feature = "upstream-symbols", not(test))))]
+    ptr::null()
 }
 
 /// A method's C++ return type, from the `i64` an export returns.
@@ -596,6 +597,13 @@ pub extern "C" fn worker_set_max_request(_worker: *mut WorkerRecord, max_request
 pub struct ExitStatus {
     pid: c_int,
     status: c_int,
+}
+
+impl ExitStatus {
+    #[must_use]
+    pub fn new(pid: c_int, status: c_int) -> Self {
+        Self { pid, status }
+    }
 }
 
 /// `Worker::report_error(exit_status)`: the abnormal exit warning.
