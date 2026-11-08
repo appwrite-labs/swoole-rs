@@ -182,7 +182,6 @@ pub const OP_FREE_WORKERS: u32 = 42;
 pub const OP_WORKER_INIT: u32 = 43;
 pub const OP_EVENT_INIT: u32 = 44;
 pub const OP_BOX_PUSH: u32 = 45;
-pub const OP_STREAM_SEND: u32 = 46;
 pub const CB_START: c_int = 1;
 pub const CB_BEFORE_RELOAD: c_int = 2;
 pub const CB_SHUTDOWN: c_int = 3;
@@ -1089,15 +1088,13 @@ impl<H: PoolHost> Pool<H> {
         // SAFETY: the caller's EventData.
         let size =
             unsafe { event.wrapping_add(EVENT_LEN).cast::<u32>().read_unaligned() } + HEAD_SIZE;
-        if self.use_socket() != 0 && blocking {
+        if self.use_socket() != 0 {
             // SAFETY: the caller's EventData holds `size` bytes.
             let data = unsafe { std::slice::from_raw_parts(event, size as usize) };
             // SAFETY: a socket pool's IPC state.
-            let sent = unsafe { crate::pool::swr_v1_process_pool_ipc_send_sync(self.ipc(), data) };
+            let sent =
+                unsafe { crate::pool::swr_v1_process_pool_ipc_send(self.ipc(), data, blocking) };
             return if sent { SW_OK } else { SW_ERR };
-        }
-        if self.use_socket() != 0 {
-            return self.op(OP_STREAM_SEND, event as u64);
         }
         let p = self.p;
         // SAFETY: the pool's shared counter, in place.
@@ -1730,18 +1727,7 @@ mod tests {
     }
 
     #[test]
-    fn a_socket_pool_dispatches_to_its_stream() {
-        let mut fixture = Fixture::new(0);
-        let mut pool = fixture.pool(Script::default());
-        record(&mut pool).use_socket = 1;
-        let mut event = [0u8; 64];
-        let mut worker_id = -1;
-        pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, false);
-        assert_eq!(ops(&pool), [OP_STREAM_SEND]);
-    }
-
-    #[test]
-    fn a_socket_pool_sends_a_blocking_dispatch_length_prefixed() {
+    fn a_socket_pool_sends_a_dispatch_length_prefixed() {
         use std::io::Read;
         let path = std::env::temp_dir().join(format!("swr-pool-sync-{}.sock", std::process::id()));
         std::fs::remove_file(&path).ok();
@@ -1758,19 +1744,22 @@ mod tests {
         event[EVENT_LEN] = 3;
         event[HEAD_SIZE as usize..][..3].copy_from_slice(b"abc");
         let mut worker_id = -1;
-        assert_eq!(
-            pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, true),
-            SW_OK
-        );
-        let mut received = Vec::new();
-        listener
-            .accept()
-            .unwrap()
-            .0
-            .read_to_end(&mut received)
-            .unwrap();
-        assert_eq!(received[..4], 43u32.to_be_bytes());
-        assert_eq!(received[4..], event[..43]);
+        // Blocking, then over a stream (upstream's async dispatch).
+        for blocking in [true, false] {
+            assert_eq!(
+                pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, blocking),
+                SW_OK
+            );
+            let mut received = Vec::new();
+            listener
+                .accept()
+                .unwrap()
+                .0
+                .read_to_end(&mut received)
+                .unwrap();
+            assert_eq!(received[..4], 43u32.to_be_bytes());
+            assert_eq!(received[4..], event[..43]);
+        }
         assert_eq!(ops(&pool), [] as [u32; 0]);
         std::fs::remove_file(&path).unwrap();
         record(&mut pool).ipc = ptr::null_mut();
@@ -1781,10 +1770,12 @@ mod tests {
         // SAFETY: as above.
         unsafe { crate::pool::swr_v1_process_pool_ipc_address(ipc, file.as_ptr(), 0) };
         record(&mut pool).ipc = ipc;
-        assert_eq!(
-            pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, true),
-            SW_ERR
-        );
+        for blocking in [true, false] {
+            assert_eq!(
+                pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, blocking),
+                SW_ERR
+            );
+        }
         record(&mut pool).ipc = ptr::null_mut();
         // SAFETY: as above.
         unsafe { swr_v1_process_pool_ipc_free(ipc, close) };

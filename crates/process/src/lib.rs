@@ -26,6 +26,7 @@ pub mod signal_kqueue;
 pub mod signal_loop;
 #[cfg(target_os = "linux")]
 pub mod signalfd;
+pub mod stream;
 pub mod task_file;
 pub mod task_sync;
 pub mod wait;

@@ -19,7 +19,21 @@ del and constructors are `swr_v1_reactor_change` and `swr_v1_reactor_state_open`
 cover them, so the `forwarding.py` facade is gone.
 
 `reactor-native-originals` (`tools/core_tests.py`) runs upstream's own
-`network/socket.cpp` and `network/stream.cpp` GoogleTests on both engines.
+`network/socket.cpp` GoogleTests on both engines.
+
+`network/stream.cpp`'s TESTs are Rust tests of `network::Stream`, which is Rust
+(`crates/process/src/stream.rs`: `cargo test -p swoole-rs-process stream::`). A
+socket pool's dispatch was its only production user; `src/network/stream.cc` and
+the TESTs left the build (#1674).
+
+| Upstream TEST | Rust test | Same input | Assertions |
+| --- | --- | --- | --- |
+| `recv_sync_rejects_truncated_packet` | `recv_sync_rejects_truncated_packet` | a Unix socket pair: 3 bytes of a 2048 length, then length 8 and `ab`, each then `SHUT_WR`; a 2048-byte buffer | `recv_sync` is `SW_ERR` both times |
+| `send` | `send` | 64 KiB of bytes; a regular file as the Unix path, TCP port 39999 with nothing listening, a length-checked TCP listener | the file's stream is null; port 39999's is created, then its response is `nullptr` with `errCode` `ECONNREFUSED`; the server reads the body sent and the response is `"Server: "` + body |
+
+The server in `send` is a plain TCP listener replying as upstream's `Server`
+`onReceive` does (`"Server: "` + body, framed, then a zero-length frame). The
+Rust test also checks that each response callback runs exactly once.
 
 Compile gate:
 

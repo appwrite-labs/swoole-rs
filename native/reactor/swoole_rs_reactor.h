@@ -217,10 +217,6 @@ typedef struct {
 } swr_v1_reactor_flush_ops;
 int swr_v1_reactor_flush(swr_v1_socket_output *output, swr_v1_buffer *buffer, const swr_v1_reactor_flush_ops *ops);
 void swr_v1_reactor_drain(swr_v1_socket_output *output, swr_v1_buffer *buffer, const swr_v1_reactor_flush_ops *ops);
-typedef struct { uint32_t offset, length, close_wait; } swr_v1_stream_view_action;
-int32_t swr_v1_stream_prepare(uint8_t *, size_t);
-int32_t swr_v1_stream_length(const uint8_t *, size_t);
-swr_v1_stream_view_action swr_v1_stream_view(uint32_t);
 /* network::Socket's buffer sizes, setsockopt included. */
 bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
@@ -388,7 +384,6 @@ int swr_v1_reactor_interest(swr_v1_reactor_state *, void *socket, uint32_t kind,
 static_assert(sizeof(swr_v1_reactor_builtin_reply) == 8, "reactor builtin reply ABI");
 static_assert(sizeof(swr_v1_reactor_init_state) == 4, "reactor init state ABI");
 static_assert(sizeof(swr_v1_reactor_backend_plan) == 12, "reactor backend plan ABI");
-static_assert(sizeof(swr_v1_stream_view_action) == 12, "stream view ABI");
 #include <functional>
 namespace swoole {
 class Reactor;

@@ -666,13 +666,20 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_address(
     true
 }
 
-/// `ProcessPool::dispatch_sync(data, len)`: connect to the stream listener, send
+/// `ProcessPool::dispatch_sync(data, len)` (`blocking`): connect to the stream listener, send
 /// `data` length-prefixed (big-endian) and close; false on any failure. A unix
 /// listener records port 0, which a TCP one can't be reached on.
 ///
+/// `ProcessPool::dispatch(data)`: the same over a [`crate::stream::Stream`], which, as upstream's,
+/// connects a Unix socket whatever the listener's port, and fails only when that connect does.
+///
 /// # Safety
 /// `ipc` is null or a live handle.
-pub(crate) unsafe fn swr_v1_process_pool_ipc_send_sync(ipc: *const PoolIpc, data: &[u8]) -> bool {
+pub(crate) unsafe fn swr_v1_process_pool_ipc_send(
+    ipc: *const PoolIpc,
+    data: &[u8],
+    blocking: bool,
+) -> bool {
     use std::io::Write;
     fn send(mut socket: impl Write, data: &[u8]) -> std::io::Result<()> {
         let len = u32::try_from(data.len()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
@@ -686,6 +693,16 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_send_sync(ipc: *const PoolIpc, data
     let Some(file) = &stream.file else {
         return false;
     };
+    if !blocking {
+        let Some(mut stream) =
+            crate::stream::Stream::create(&crate::stream::Peer::Unix(file.as_bytes()))
+        else {
+            return false;
+        };
+        stream.send(data);
+        stream.flush();
+        return true;
+    }
     if stream.port == 0 {
         use std::os::unix::ffi::OsStrExt;
         let path = std::ffi::OsStr::from_bytes(file.as_bytes());
@@ -729,8 +746,8 @@ pub unsafe extern "C" fn swr_v1_process_pool_ipc_listener(ipc: *const PoolIpc) -
 ///
 /// # Safety
 /// `ipc` is a live handle; `port` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_ipc_address_of(
+#[cfg(test)]
+pub(crate) unsafe fn swr_v1_process_pool_ipc_address_of(
     ipc: *const PoolIpc,
     port: *mut c_int,
 ) -> *const c_char {
