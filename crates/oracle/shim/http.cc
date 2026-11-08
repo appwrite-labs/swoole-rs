@@ -41,8 +41,10 @@ size_t swr_oracle_http_url_encode(const char *data, size_t length, char *output)
 }
 
 // Serializes each callback as u32 key length, key, u32 value length, value into
-// output (capacity 8 * length + 16 suffices); returns the bytes written.
-size_t swr_oracle_http_cookies(const char *data, size_t length, char *output) {
+// output (capacity 8 * length + 16 suffices); returns the bytes written. The callback
+// returns false after the first record when `first_only`. When `scratch` is not
+// null, the length + 1 bytes parse_cookie tokenized in place are copied into it.
+size_t swr_oracle_http_cookies(const char *data, size_t length, char *output, bool first_only, char *scratch) {
     oracle_http::cookie_storage.assign(length + 1, 0);
     size_t at = 0;
     auto put = [&](const char *bytes, size_t size) {
@@ -54,8 +56,11 @@ size_t swr_oracle_http_cookies(const char *data, size_t length, char *output) {
     oracle_http::parse_cookie(data, length, [&](char *key, size_t key_len, char *value, size_t value_len) {
         put(key, key_len);
         put(value, value_len);
-        return true;
+        return !first_only;
     });
+    if (scratch) {
+        memcpy(scratch, oracle_http::cookie_storage.data(), length + 1);
+    }
     return at;
 }
 }

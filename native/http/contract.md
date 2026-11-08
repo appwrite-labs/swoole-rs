@@ -88,10 +88,7 @@ token and returns key/value spans plus whether `=` was present. Start the cursor
 NUL. It keeps semicolon/NUL termination, leading C-space trimming, trailing key
 spaces, splitting on the first `=` and skipping empty keys. 1 = native calls the
 callback, 0 = done, negative = missing terminator or bad bounds. Native may change
-or reuse the scratch between steps, including for reentrant parsing. The native
-adapter reserves room for the NUL and rebases the input across growth, which
-fixes upstream's out-of-capacity termination. See [cookie-flow.md](cookie-flow.md)
-for the full flow entry `swr_v2_http_cookie_flow`.
+or reuse the scratch between steps, including for reentrant parsing.
 
 ## CONNECT proxy
 
@@ -241,4 +238,4 @@ progress instead of looping.
 - [static-context-v2.md](static-context-v2.md): `swr_v2_http_context_*`
 
 Tests: `tests/modules/http/` (for example `gate.py`,
-`proxy_gate.py`, `cookie_flow_gate.py`).
+`proxy_gate.py`).

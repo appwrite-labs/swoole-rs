@@ -75,9 +75,17 @@ pub mod http {
         #[link_name = "swr_oracle_http_url_encode"]
         pub fn url_encode(data: *const u8, length: usize, output: *mut u8) -> usize;
         /// Every `http_server::parse_cookie` callback as u32 key length, key,
-        /// u32 value length, value, into `output` (capacity `8 * length + 16`).
+        /// u32 value length, value, into `output` (capacity `8 * length + 16`);
+        /// the callback stops it after the first when `first_only`. A non-null
+        /// `scratch` receives the `length + 1` bytes it tokenized in place.
         #[link_name = "swr_oracle_http_cookies"]
-        pub fn cookies(data: *const u8, length: usize, output: *mut u8) -> usize;
+        pub fn cookies(
+            data: *const u8,
+            length: usize,
+            output: *mut u8,
+            first_only: bool,
+            scratch: *mut u8,
+        ) -> usize;
     }
 }
 

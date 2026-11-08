@@ -37,7 +37,6 @@ marked `[R]` also take `--rust-sanitize`. `tools/dev.py` registers each as an
 | `rewrite_gate.py` [R] | Pinned `add_rewrite_rule`/`apply_rewrite_rules` (std::regex) against the server's Rust rules (`swr_v1_server_static_rewrite`) |
 | `dispatch_gate.py` [R] | Proxy-init bodies |
 | `locale_gate.py` | Case-insensitive helpers against libc `strncasecmp` across available locales |
-| `cookie_flow_gate.py` [R] | Cookie callback flow |
 
 Locale semantic runs must be unsanitized: under ASan the macOS interceptor
 compares `C0`/`E0` with ASCII rules where libc in `en_US.ISO8859-1` treats them
@@ -81,8 +80,10 @@ Rust unit test or fuzz target reaches:
 `http-native` (also the five original core-test bodies), `-framing`,
 `-headers`, `-proxy`, `-static`, `-conditionals`,
 `-multipart`, `-multipart-headers`, `-multipart-emit`, `-rewrites`,
-`-dispatch`, `-locales` (libc locales), `-context`, `-request-lifecycle`,
-and `-cookie-flow-positive`. (`-boundary-rng` became a crates/corebase unit test, #995.)
+`-dispatch`, `-locales` (libc locales), `-context` and `-request-lifecycle`.
+`-cookie-flow-positive` went with `parse_cookie` (dead once crates/phphttp parsed
+cookies); its cases compare `swr_v1_http_cookie_next` with the pinned `parse_cookie`
+in `crates/http/src/headers.rs` (`ported_cookie_flow_gate`). (`-boundary-rng` became a crates/corebase unit test, #995.)
 `-status-buffer-positive` covers the TLS status buffer across threads.
 `-status-codes-positive` covers the public `int[128]` ABI.
 

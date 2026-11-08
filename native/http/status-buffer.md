@@ -10,5 +10,6 @@ leave it untouched. Each thread has its own buffer. A returned pointer stays val
 until the thread exits and is overwritten by that thread's next unknown call. Do
 not share it across threads.
 
-Tests: `tests/modules/http/cookie_flow_gate.py --status-only`. The public
+Tests: `crates/http/src/pin_helpers.rs` (`status_messages_and_errno_match_the_pin`,
+`unknown_status_fallback_is_per_thread`). The public
 status-code array is covered in [status-codes.md](status-codes.md).

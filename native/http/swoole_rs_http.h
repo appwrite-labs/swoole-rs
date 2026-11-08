@@ -56,9 +56,6 @@ int32_t swr_v1_http_multipart_disposition(const uint8_t *, size_t);
 int32_t swr_v1_http_multipart_filename(uint8_t *, size_t);
 typedef struct { size_t key_offset, key_length, value_offset, value_length; uint32_t has_value; } swr_v1_http_cookie;
 int32_t swr_v1_http_cookie_next(uint8_t *, size_t, size_t *, swr_v1_http_cookie *);
-// Invocation-local Rust policy state; no resource owner or pointer is retained.
-typedef struct { uint32_t phase, source_inside; size_t source_offset, required, cursor; swr_v1_http_cookie cookie; } swr_v2_http_cookie_flow_state;
-int32_t swr_v2_http_cookie_flow(swr_v2_http_cookie_flow_state *, const uint8_t *, size_t, uint8_t *, size_t, uint32_t, uint32_t);
 typedef struct { const uint8_t *data; size_t length; } swr_v1_http_proxy_text;
 typedef struct {
     swr_v1_http_proxy_text target, host, version, authorization;
