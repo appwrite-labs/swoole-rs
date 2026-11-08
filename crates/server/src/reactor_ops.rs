@@ -3,14 +3,21 @@
 //! tables and callbacks, the reactor's fields and the context's connection,
 //! socket, event and pipe message. Rust answers them before any native call, so
 //! master.cc no longer has a case for them. Logs name the upstream function that
-//! wrote them.
+//! wrote them. Its effects over the reactor, the context's sockets and the
+//! server's counters are Rust calls too.
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::SeqCst;
 
-use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_empty, swr_cpp_buffer_length};
+use swoole_rs_buffer::cpp::{
+    CppBuffer, new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_pop,
+    swr_cpp_buffer_typed_close, swr_cpp_buffer_typed_front,
+};
+use swoole_rs_buffer::string::delete_string;
+use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, SocketRecord, reactor_upstream};
+use swoole_rs_reactor::{Event, SocketRecord, cpp_socket_what_event_want, reactor_upstream};
+use swoole_rs_tls::upstream as tls;
 
 use crate::callbacks::CB_BUFFER_EMPTY;
 use crate::conn_io::{
@@ -28,15 +35,30 @@ use crate::ops::{
     OP_WAITING_TIME, OP_WORKER_NUM, OP_WR_CLEAR_OVERFLOW, OP_WR_QUEUED, OP_WR_STATE,
     OP_WR_TIMER_DEL, OP_WR_WAIT,
 };
-use crate::port_config::PortConfig;
+use crate::ops::{
+    OP_CC_HTTP_OBJECT, OP_CC_LINGER, OP_CC_QUEUE_CLOSE, OP_CC_RECV_FREE, OP_CC_REDIS_FREE,
+    OP_CC_REDIS_OBJECT, OP_CC_SSL_CLOSE, OP_CC_SSL_SHUTDOWN, OP_CC_WATCH_WRITE,
+    OP_CC_WEBSOCKET_FREE, OP_CONN_UNREAD, OP_HEARTBEAT_TIMER_CLEAR, OP_KILL_SELF,
+    OP_MASTER_REACTOR_ID, OP_NOTIFY_CONNECT, OP_PORT_DEL, OP_RD_UNREAD, OP_REACTOR_CLOSE,
+    OP_REACTOR_DEL, OP_RT_DGRAM_BIND, OP_RT_POP, OP_RT_REMOVE_WRITE, OP_SSL_ACCEPT,
+    OP_WR_BUFFER_EMPTY, OP_WR_CLOSE, OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE,
+    OP_WR_READ_ONLY,
+};
+use crate::port_config::{self, PortConfig};
 use crate::records::{ConnectionRecord, swr_v1_server_connection, swr_v1_server_session};
-use crate::{ServerConfig, ServerState};
+use crate::{ServerConfig, ServerState, ServerTables};
 
 const SW_LOG_TRACE: c_int = 1;
 const SW_LOG_NOTICE: c_int = 3;
 const SW_LOG_WARNING: c_int = 4;
 /// `SW_FD_SESSION`.
 const FD_SESSION: c_int = 0;
+const SW_EVENT_READ: c_int = 1 << 9;
+const SW_EVENT_WRITE: c_int = 1 << 10;
+/// `SW_SERVER_EVENT_CLOSE`, `_CONNECT` and `_BUFFER_EMPTY`, which master.cc asserts.
+const EVENT_CLOSE: c_int = 4;
+const EVENT_CONNECT: c_int = 5;
+const EVENT_BUFFER_EMPTY: c_int = 14;
 
 unsafe extern "C-unwind" {
     /// crates/timer's `swoole_timer_del`.
@@ -124,6 +146,10 @@ impl Objects<'_> {
         // SAFETY: a live server's config.
         unsafe { &*self.state.config() }
     }
+    fn tables(&self) -> &ServerTables {
+        // SAFETY: a live server's tables.
+        unsafe { &*self.state.tables() }
+    }
     fn conn(&self) -> &mut ConnectionRecord {
         // SAFETY: the ops reading it run with a live connection in the context.
         unsafe { &mut *self.ctx.conn }
@@ -203,7 +229,7 @@ pub(crate) unsafe fn answer(
     if state.config().is_null() || state.tables().is_null() {
         return None;
     }
-    let o = Objects { ctx, state };
+    let mut o = Objects { ctx, state };
     Some(match op {
         LOG_RECVFROM => {
             let m = format_args!("recvfrom({}) failed", o.event().fd);
@@ -369,8 +395,300 @@ pub(crate) unsafe fn answer(
             unsafe { (*session).fd = 0 };
             0
         }
+        // SAFETY: per the caller.
+        op => return unsafe { effects(&mut o, op, arg) },
+    })
+}
+
+/// `ReactorThread` up to its heartbeat timer; master.cc asserts this layout.
+#[repr(C)]
+struct ThreadRecord {
+    id: c_int,
+    notify_pipe: *mut SocketRecord,
+    dispatch_count: u64,
+    pipe_command: *mut SocketRecord,
+    heartbeat_timer: *mut c_void,
+}
+
+const _: () = assert!(
+    core::mem::offset_of!(ThreadRecord, heartbeat_timer) == 32,
+    "master.cc ReactorThread layout"
+);
+
+/// The ops over the context's reactor, sockets, connection, port and thread
+/// and the server's counters; else `None`. Inlined, as [`answer`] is.
+///
+/// # Safety
+/// As [`answer`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per op, as master.cc's switch was"
+)]
+#[inline(always)]
+unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    let reactor = o.ctx.reactor.cast_const();
+    // `reactor->add/set/del(socket)`.
+    let change = |socket, kind, events| {
+        // SAFETY: the context's live reactor; each caller passes a live socket.
+        sign(unsafe { reactor_upstream::reactor_change(reactor, socket, kind, events) })
+    };
+    // `reactor->remove_read_event(socket)` (4) and `remove_write_event` (5).
+    let interest = |socket, kind| {
+        // SAFETY: as above.
+        sign(unsafe { reactor_upstream::reactor_interest(reactor, socket, kind, 0) })
+    };
+    // `reactor->close(reactor, socket)`.
+    let close = |socket: *mut SocketRecord| {
+        let close = o.reactor().close;
+        close.map_or(0, |close| {
+            // SAFETY: the context's live reactor and a live socket of it.
+            sign(unsafe { close(o.ctx.reactor, socket.cast()) })
+        })
+    };
+    let conn_socket = || o.conn().socket.cast::<SocketRecord>();
+    let event_socket = || o.event().socket.cast::<SocketRecord>();
+    let port = || {
+        let &port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
+        Some(port)
+    };
+    Some(match op {
+        OP_REACTOR_DEL => change(o.ctx.sock, 2, 0),
+        OP_PORT_DEL => {
+            // SAFETY: one of the server's live ports.
+            change(unsafe { port_config::of(port()?) }.socket.cast(), 2, 0);
+            0
+        }
+        OP_RT_DGRAM_BIND => {
+            // listen UDP port
+            let port = port()?;
+            // SAFETY: one of the server's live ports.
+            let config = unsafe { port_config::of(port) };
+            let socket = config.socket.cast::<SocketRecord>();
+            // SAFETY: the port's live listening socket.
+            let fd = unsafe { (*socket).fd };
+            // SAFETY: the connection table's slot for the listening fd.
+            let serv_sock = unsafe { &mut *o.connection(c_long::from(fd), 0) };
+            serv_sock.fd = fd;
+            serv_sock.socket_type = config.r#type;
+            serv_sock.object = port;
+            // SAFETY: the calling thread's own id.
+            config.thread_id = unsafe { libc::pthread_self() };
+            change(socket, 0, SW_EVENT_READ)
+        }
+        OP_CONN_UNREAD => interest(conn_socket(), 4),
+        OP_RD_UNREAD => interest(o.ctx.sock, 4),
+        OP_RT_REMOVE_WRITE => interest(event_socket(), 5),
+        OP_WR_READ_ONLY => {
+            change(o.ctx.sock, 1, SW_EVENT_READ);
+            0
+        }
+        OP_REACTOR_CLOSE => {
+            close(conn_socket());
+            0
+        }
+        OP_WR_CLOSE => close(o.ctx.sock),
+        OP_WR_CLOSE_ERRNO => {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "C++'s uint16_t close_errno"
+            )]
+            let errno = errno as u16;
+            o.conn().close_errno = errno;
+            // SAFETY: the context's live reactor and event.
+            sign(unsafe {
+                reactor_upstream::trigger_close_event(o.ctx.reactor, o.ctx.event.cast())
+            })
+        }
+        OP_HEARTBEAT_TIMER_CLEAR => {
+            // SAFETY: the context's live reactor thread.
+            let thread = unsafe { &mut *o.ctx.thread.cast::<ThreadRecord>() };
+            if !thread.heartbeat_timer.is_null() {
+                // SAFETY: the thread's live heartbeat timer.
+                unsafe { swoole_timer_del(thread.heartbeat_timer) };
+                thread.heartbeat_timer = core::ptr::null_mut();
+            }
+            0
+        }
+        OP_KILL_SELF => {
+            let pid = std::process::id().cast_signed();
+            // SAFETY: signals this process.
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+            0
+        }
+        OP_MASTER_REACTOR_ID => {
+            // a special id for the master thread
+            let id = o.config().reactor_num;
+            o.reactor().id = id;
+            swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
+            0
+        }
+        OP_RT_POP => {
+            // SAFETY: the event's live socket, whose output buffer holds the front.
+            let buffer = unsafe { (*event_socket()).output.out_buffer };
+            // SAFETY: as above.
+            unsafe { swr_cpp_buffer_pop(buffer.cast()) };
+            0
+        }
+        OP_WR_FRONT => {
+            let buffer = o.sock().output.out_buffer;
+            // SAFETY: the socket's output buffer is null or live.
+            if unsafe { empty(buffer) } {
+                return Some(0);
+            }
+            // SAFETY: a live, non-empty buffer.
+            1 + u64::from(unsafe { swr_cpp_buffer_typed_front(buffer.cast()) }.kind)
+        }
+        OP_CC_QUEUE_CLOSE => {
+            let output = &mut o.sock().output;
+            if output.out_buffer.is_null() {
+                output.out_buffer = new_buffer(SW_SEND_BUFFER_SIZE).cast();
+            }
+            // SAFETY: the socket's live output buffer.
+            unsafe { swr_cpp_buffer_typed_close(output.out_buffer.cast()) };
+            o.conn().close_queued = 1;
+            0
+        }
+        OP_CC_WATCH_WRITE => {
+            // SAFETY: the context's live socket.
+            let events = unsafe { cpp_socket_what_event_want(o.ctx.sock, SW_EVENT_WRITE) };
+            // arg: the socket is out of the reactor
+            change(o.ctx.sock, u32::from(arg == 0), events)
+        }
+        OP_CC_WEBSOCKET_FREE => {
+            let conn = o.conn();
+            // SAFETY: the connection's `new String`, not used again.
+            unsafe { delete_string(conn.websocket_buffer.cast()) };
+            conn.websocket_buffer = core::ptr::null_mut();
+            0
+        }
+        OP_CC_RECV_FREE => {
+            // free the reception memory buffer
+            let sock = o.sock();
+            // SAFETY: the socket's `new String`, not used again.
+            unsafe { delete_string(sock.recv_buffer.cast()) };
+            sock.recv_buffer = core::ptr::null_mut();
+            0
+        }
+        OP_CC_HTTP_OBJECT => u64::from(o.port().open_http_protocol && !o.conn().object.is_null()),
+        OP_CC_REDIS_OBJECT => u64::from(o.port().open_redis_protocol && !o.conn().object.is_null()),
+        OP_CC_REDIS_FREE => {
+            // SAFETY: the redis request the connection owns, not used again.
+            unsafe { swoole_rs_corebase::sw_free(o.conn().object) };
+            0
+        }
+        OP_CC_LINGER => {
+            let linger = libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            // SAFETY: the connection's live socket.
+            let fd = unsafe { (*conn_socket()).fd };
+            #[expect(clippy::cast_possible_truncation, reason = "sizeof(struct linger)")]
+            let size = size_of::<libc::linger>() as libc::socklen_t;
+            let value = (&raw const linger).cast();
+            // SAFETY: a valid SO_LINGER value.
+            let ret =
+                unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_LINGER, value, size) };
+            u64::from(ret != 0)
+        }
+        OP_NOTIFY_CONNECT | OP_WR_NOTIFY_CLOSE | OP_WR_BUFFER_EMPTY => {
+            let (conn, event) = match op {
+                // A session socket's object is its connection.
+                OP_NOTIFY_CONNECT => (o.sock().object.cast(), EVENT_CONNECT),
+                OP_WR_NOTIFY_CLOSE => (o.ctx.conn, EVENT_CLOSE),
+                _ => {
+                    o.conn().high_watermark = 0;
+                    (o.ctx.conn, EVENT_BUFFER_EMPTY)
+                }
+            };
+            // SAFETY: the context's live server and one of its connections.
+            unsafe { crate::server_methods::notify(o.ctx.serv, conn, event) };
+            if op == OP_WR_NOTIFY_CLOSE {
+                o.conn().close_notify = 0;
+            }
+            0
+        }
+        // SAFETY: a TLS socket's live record.
+        OP_SSL_ACCEPT => sign(unsafe { tls::socket_ssl_accept(o.ctx.sock) }),
+        // SAFETY: as above.
+        OP_CC_SSL_SHUTDOWN => u64::from(unsafe { tls::socket_ssl_shutdown(o.ctx.sock) }),
+        OP_CC_SSL_CLOSE => {
+            let socket = conn_socket();
+            // SAFETY: the connection's live TLS socket.
+            unsafe { (*socket).ssl_quiet_shutdown = o.conn().peer_closed };
+            // SAFETY: as above.
+            unsafe { tls::socket_ssl_close(socket) };
+            0
+        }
+        // SAFETY: per the caller.
+        op => return unsafe { native(o, op, arg) },
+    })
+}
+
+/// The ops that call the timer, event loop and `Reactor::_close` under their
+/// upstream symbols; else `None`.
+///
+/// # Safety
+/// As [`answer`].
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[inline(always)]
+unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
+    use crate::ops::{OP_CC_FINISH, OP_EVENT_INIT, OP_RESUME_READ, OP_WR_TIMER_DELAY};
+    // SAFETY: crates/timer's, native/reactor's and crates/tls's, under their upstream symbols.
+    unsafe extern "C-unwind" {
+        #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
+        fn swoole_timer_delay(node: *mut c_void, delay_ms: c_long);
+        fn swr_v1_timer_owner_reactor(timer: *const c_void) -> *mut c_void;
+        #[link_name = "_Z17swoole_event_initi"]
+        fn swoole_event_init(flags: c_int) -> c_int;
+        #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
+        fn reactor_close(reactor: *mut c_void, socket: *mut SocketRecord) -> c_int;
+    }
+    Some(match op {
+        OP_WR_TIMER_DELAY => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "C++'s implicit double to long"
+            )]
+            let delay = o.port().max_idle_time as c_long;
+            // SAFETY: the socket's live send timer.
+            unsafe { swoole_timer_delay(o.sock().output.send_timer, delay) };
+            0
+        }
+        OP_RESUME_READ => {
+            // SAFETY: the firing timer, whose owner reactor is live.
+            let reactor = unsafe { swr_v1_timer_owner_reactor(o.ctx.timer) };
+            // SAFETY: as above, and the timer's live socket.
+            unsafe { reactor_upstream::reactor_interest(reactor, o.ctx.sock, 2, 0) };
+            o.conn().timer = core::ptr::null_mut();
+            0
+        }
+        OP_EVENT_INIT => {
+            // SAFETY: this thread's event loop.
+            let ret = unsafe { swoole_event_init(0) };
+            o.ctx.reactor = swoole_rs_corebase::thread_reactor();
+            sign(ret)
+        }
+        OP_CC_FINISH => {
+            let conn = o.conn();
+            conn.active = 0;
+            conn.closed.store(1, SeqCst);
+            conn.socket = core::ptr::null_mut();
+            conn.object = core::ptr::null_mut();
+            // SAFETY: the closing socket, which nothing uses afterwards.
+            sign(unsafe { reactor_close(o.ctx.reactor, o.ctx.sock) })
+        }
         _ => return None,
     })
+}
+
+/// Outside the hybrid, whose unit tests link no C++, native code keeps these.
+#[cfg(not(all(feature = "upstream-symbols", not(test))))]
+#[inline(always)]
+unsafe fn native(_: &mut Objects<'_>, _: u32, _: u64) -> Option<u64> {
+    None
 }
 
 /// `ReactorThread_onWrite`'s state after flushing.
