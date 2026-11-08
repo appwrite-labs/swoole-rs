@@ -1,16 +1,15 @@
 # Timer queue ABI v1
 
-Declarations: `native/include/swoole_rs_timer.h` (14 exports). Feature value 4.
-Reference: Swoole v6.2.4,
-`c7e514509451beafd4d70ce5b78943d51e76381c`.
+Declarations: `native/include/swoole_rs_timer.h` (15 exports). Feature value 4.
+Callers: `swoole::Timer` (`crates/timer/src/owner.rs`, see
+[ownership.md](../native/timer/ownership.md)) and `tests/modules/timer/kernel.cc`.
 
 ## Ownership
 
 Rust owns one indexed min-heap with ID lookup, scheduling fields, next ID,
-selection round, captured time, active ID and closing state. No C++ heap or map
-remains in the adapter. Native `TimerNode` objects, user data, PHP types,
-callbacks and destructors, monotonic clock reads, OS wakeups and reactor
-integration stay in C++. Time is injected as signed 64-bit relative monotonic
+selection round, captured time, active ID and closing state. `TimerNode`
+objects, their callbacks and destructors are C++ (`native/timer/timer.cc`); the
+queue sees them only as tokens. Time is injected as signed 64-bit relative monotonic
 milliseconds; Rust creates no clock, runtime or thread.
 
 - One owner thread per handle; no concurrent calls.
@@ -30,11 +29,11 @@ caller must not pass a token twice, delete it while retained, or delete the
 Timer during an active callback: teardown during a callback means request
 `close`, then delete after the callback completes and selection ends.
 
-Fork: the native owner records its creator PID. Destroying a copy in another
+Fork: the owner records its creator PID. Destroying a copy in another
 process may close, complete the copied active ID, end the copied selection,
 dispose detached tokens and drain/release. The parent is unaffected.
 
-Zend bailout: the PHP callback marks the native selection abandoned and
+Zend bailout: the PHP callback marks the selection abandoned and
 propagates. Owner destruction then uses the same close/complete/end/drain/
 release sequence, keeping timer metadata visible to PHP shutdown until teardown.
 No callback, Zend jump or bailout continuation runs under a Rust frame
@@ -85,8 +84,8 @@ defaults to -1. ID 0 means no active node; real IDs start at 1.
 - **stats**: count (including active removed), round, active, selecting, closing.
 - **ids**: sets count to the retained count. Insufficient capacity returns
   `CAPACITY` without writing IDs; `NULL`/0 is a sizing query. IDs come in
-  unspecified order. Native code snapshots IDs before running callbacks and
-  resolves each again; `TYPE_PHP` filtering is in C++.
+  unspecified order. Callers snapshot IDs before running callbacks and
+  resolve each again.
 - **close**: idempotent; marks the active node removed; rejects add/update/begin
   but allows get/remove/stats/ids/complete/end/drain.
 - **drain**: requires closing. Detaches one inactive entry (`RELEASE`), returns

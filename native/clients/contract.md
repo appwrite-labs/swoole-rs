@@ -1,6 +1,6 @@
 # Clients local ABI
 
-Feature bit 1048576 (`clients`). ABI: `docs/clients-resolver-abi-v1.md`,
+Feature bit 1048576 (`clients`). ABI:
 `swoole_rs_clients.h`. Upstream's client, address, DNS and name-resolver sources
 have left the build; `native/clients/name_resolver.cc` keeps the resolver list's
 C++ glue, and `native/clients/swoole_client.h` is the owned `network::Client` header.
@@ -97,8 +97,7 @@ calls, the C++ locale's space table and the `ResolverOwner` exception paths.
 ## Client (`native/clients/network_client.cc`)
 
 `network::Client`'s state (flags, server host and port, connect timer,
-watermarks) and operations are Rust's; see
-[the boundary](../../docs/clients-resolver-abi-v1.md#clients). The C++ half is
+watermarks) and operations are Rust's (`crates/clients/src/client.rs`). The C++ half is
 the `swr_v1_clients_native` table over the members of C++ types, and the
 warnings, emitted from functions named as upstream's so the log lines match.
 It is Zend-free so core-tests' `SyncClient` and `AsyncClient` link it. The last error is corebase's, which Rust sets directly.

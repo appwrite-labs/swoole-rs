@@ -1,6 +1,6 @@
 # M06 coroutine core
 
-Implements `docs/coroutine-abi-v1.md`. Header: `swoole_rs_coroutine.h`.
+Header: `swoole_rs_coroutine.h`.
 
 | Patch | Upstream files |
 | --- | --- |

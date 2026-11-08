@@ -1,6 +1,6 @@
 # PHP HTTP binding tests
 
-ABI: [docs/http-bindings-abi-v1.md](../../../docs/http-bindings-abi-v1.md).
+Contract: [native/httpbindings/contract.md](../../../native/httpbindings/contract.md).
 
 The PHP HTTP classes are Rust: `crates/phphttp` (cookies, request parser,
 response headers and trailers, server and coroutine server, WebSocket) over the

@@ -27,14 +27,14 @@ length 0; output must be non-null.
 - **Decode** needs `length + 1` output bytes and disjoint buffers. Keeps the
   pinned byte classifier, stops at the first `=`, accepts incomplete groups,
   writes a NUL on normal completion and returns 0 on invalid data while leaving
-  the partial writes upstream makes. No pinned production code calls the decoder.
+  the partial writes upstream makes.
 
 ## M10 CRC32 (`native/include/swoole_rs_crc32.h`, crate `swoole-rs-crc32`)
 
 IEEE CRC32: reflected polynomial `0xedb88320`, initial value and final XOR
 `0xffffffff`. Empty input may be null and returns 0. The table is a compile-time
-constant (upstream lazily fills a mutable table, which races). The overlay
-deletes `src/core/crc32.cc` and defines the `swoole_crc32` symbol in Rust.
+constant (upstream lazily fills a mutable table, which races). Rust also defines
+`swoole_crc32` under its upstream symbol.
 
 ## M11 error messages (`native/include/swoole_rs_error.h`, crate `swoole-rs-error`)
 

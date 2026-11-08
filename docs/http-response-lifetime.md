@@ -2,7 +2,7 @@
 
 M15's synchronous non-TLS PROCESS-mode early-FIN fix does not cover responses
 held by a suspended coroutine; that case still fails. No design is chosen yet.
-Constraints found in the pinned source:
+Constraints:
 
 - Pipelined requests and coroutine concurrency must keep working. Serializing to
   one request per connection can deadlock an app whose first callback waits for
@@ -20,13 +20,10 @@ Constraints found in the pinned source:
 - Port parsing can return on removal before consuming a dispatched prefix and
   always calls `recv()` before parsing buffered data, so pause/resume can
   duplicate a request or strand a buffered tail.
-- Worker death: `manager.cc` respawns after `process.cc` checks exit status, and
-  only nonzero exits run the error callback. `master.cc` `abort_worker` clears
-  BASE-mode session state, not PROCESS-mode response ownership. RSHUTDOWN does
+- Worker death: the manager respawns after checking exit status, and only
+  nonzero exits run the error callback. `Server::abort_worker`
+  (`crates/server/src/worker_methods.rs`) clears BASE-mode session state, not PROCESS-mode response ownership. RSHUTDOWN does
   not run on SIGKILL/`_exit`. Response accounting must cancel a dead worker
   generation's tokens and keep healthy idle sessions.
 
-Likely change sites: `src/server/port.cc`, the PHP HTTP server/response sources,
-and Context/Connection declarations in `php_swoole_http.h` and
-`swoole_server.h`. The sendfile/FIN loss and the `EINTR` chunk-loss fixes are
-separate bugs.
+The sendfile/FIN loss and the `EINTR` chunk-loss fixes are separate bugs.
