@@ -910,4 +910,43 @@ mod tests {
             (0, true)
         );
     }
+
+    /// `redis::format`, as `tests/modules/protocols/redis_reply.inc` builds it.
+    fn format(kind: u8, value: &[u8]) -> Vec<u8> {
+        let (data, length) = (value.as_ptr(), value.len());
+        let size = unsafe { swr_v1_resp_format(kind, data, length, 0, std::ptr::null_mut(), 0) };
+        let mut out = vec![0; size];
+        let written = unsafe { swr_v1_resp_format(kind, data, length, 0, out.as_mut_ptr(), size) };
+        assert_eq!(written, size);
+        out
+    }
+
+    /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, format)`: `REPLY_STATUS` (2)
+    /// and `REPLY_ERROR` (0) of an empty value.
+    #[test]
+    fn format_empty_status_and_error() {
+        assert_eq!(format(2, b""), b"+OK\r\n");
+        assert_eq!(format(0, b""), b"-ERR\r\n");
+    }
+
+    /// `TEST(redis, parse)`: `redis::parse(":3\r\n")[0] == "3"`. `redis_reply.inc`'s
+    /// `parse` prints an integer span (kind 1) in decimal.
+    #[test]
+    fn parse_integer_reply() {
+        let wire = b":3\r\n";
+        let mut spans = [RespSpan::default(); 16];
+        let mut range = 0;
+        let count = unsafe {
+            swr_v1_resp_scan(
+                wire.as_ptr(),
+                wire.len(),
+                spans.as_mut_ptr(),
+                16,
+                &raw mut range,
+            )
+        };
+        assert_eq!((count, range), (1, 0));
+        assert_eq!(spans[0].kind, 1);
+        assert_eq!(spans[0].integer.to_string(), "3");
+    }
 }

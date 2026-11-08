@@ -1169,4 +1169,177 @@ mod tests {
         assert_eq!(writer.mode, COMPLETE);
         assert_eq!(size_of::<BusHead>(), 40);
     }
+
+    type Received = Vec<(i64, Vec<u8>)>;
+
+    /// `core-tests/src/server/message_bus.cpp`'s `DATA_SIZE`.
+    const DATA_SIZE: usize = 2_000_000;
+
+    /// `MB_SEND`'s `String pkt(s)`: `s` aligned to 8 (`SW_MEM_ALIGNED_SIZE`), all but
+    /// the last byte random, then a NUL.
+    fn mb_packet(s: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut packet: Vec<u8> = (1..aligned(s))
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.to_le_bytes()[0]
+            })
+            .collect();
+        packet.push(0);
+        packet
+    }
+
+    /// `swr_v1_bus_write`'s classifier: `catch_pipe_error(errno) == SW_REDUCE_SIZE`.
+    unsafe extern "C" fn pipe_reduce(_: *mut c_void) -> bool {
+        let mut nobufs = false;
+        let code =
+            unsafe { swoole_rs_reactor::swr_v1_socket_catch_pipe_error(errno(), &raw mut nobufs) };
+        code == REDUCE_SIZE
+    }
+
+    /// `MessageBus::read` (`dgram == false`) or `read_with_buffer`: one read,
+    /// allocating as the native facade's `receive` does.
+    fn mb_read(bus: &mut Bus, fd: RawFd, dgram: bool) -> isize {
+        let mut state = BusRead {
+            received: 0,
+            size: 0,
+            data: ptr::null_mut(),
+            allocator: ptr::null(),
+            chunks: 0,
+            resume: false,
+            event: 0,
+        };
+        let mut nobufs = false;
+        loop {
+            let n = unsafe { bus.read(fd, dgram, &mut state, &raw mut nobufs) };
+            if state.event != BUS_ALLOCATE {
+                return n;
+            }
+            let data = unsafe { libc::realloc(state.data, state.size) };
+            bus.adopt(data.cast(), state.size, &raw const ALLOCATOR.0);
+        }
+    }
+
+    /// Both `message_bus` TESTs: a socket pair with 64KiB buffers and a bus of 64KiB;
+    /// packets of `DATA_SIZE`, the bus's buffer size and 2341 bytes to sessions 1-3, then
+    /// `send_empty_packet`'s two (`hello world` with length 0 to session 4, null with
+    /// length 10 to session 5), read until five arrive. Upstream's reactor flushes the
+    /// writes while it reads; here a thread writes them, blocking, and the nonblocking
+    /// reader polls. Packets are never popped, as upstream's `TestMB::read` never pops.
+    /// The bus, the packets it read (session, data) and the three packets sent.
+    fn message_bus(kind: c_int, dgram: bool) -> (Bus, Received, Vec<Vec<u8>>) {
+        let mut fds = [0; 2];
+        assert_eq!(
+            unsafe { libc::socketpair(libc::AF_UNIX, kind, 0, fds.as_mut_ptr()) },
+            0
+        );
+        for fd in fds {
+            let buffer: c_int = 65536;
+            for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+                unsafe {
+                    libc::setsockopt(
+                        fd,
+                        libc::SOL_SOCKET,
+                        option,
+                        ptr::from_ref(&buffer).cast(),
+                        4,
+                    )
+                };
+            }
+        }
+        let flags = unsafe { libc::fcntl(fds[1], libc::F_GETFL) };
+        unsafe { libc::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        let mut bus = Bus::new(65536);
+        let mut buffer = vec![0u64; 65536 / 8];
+        bus.buffer = buffer.as_mut_ptr().cast();
+        let sent = vec![
+            mb_packet(DATA_SIZE, 1),
+            mb_packet(bus.buffer_size, 2),
+            mb_packet(2341, 3),
+        ];
+        let packets = sent.clone();
+        let writer = std::thread::spawn(move || {
+            let writer = Bus::new(65536);
+            let socket = fds[0].cast_unsigned() as usize as *mut c_void;
+            let mut msg_id = 0;
+            let mut write = |fd: i64, data: *const u8, len: usize| {
+                let mut head = BusHead {
+                    fd,
+                    msg_id,
+                    len: u32::try_from(len).unwrap(),
+                    ..BusHead::default()
+                };
+                msg_id += 1;
+                unsafe { writer.write(socket, &mut head, data, send, pipe_reduce) }
+            };
+            for (fd, packet) in (1..).zip(&packets) {
+                assert!(write(fd, packet.as_ptr(), packet.len()));
+            }
+            assert!(write(4, b"hello world".as_ptr(), 0));
+            assert!(write(5, ptr::null(), 10));
+        });
+        let mut q = Vec::new();
+        while q.len() < 5 {
+            let mut poll = libc::pollfd {
+                fd: fds[1],
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(
+                unsafe { libc::poll(&raw mut poll, 1, 10_000) },
+                1,
+                "readable"
+            );
+            let n = mb_read(&mut bus, fds[1], dgram);
+            assert!(n >= 0);
+            if n > 0 {
+                let packet = bus.packet();
+                let data = if packet.length == 0 {
+                    Vec::new()
+                } else {
+                    unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) }
+                        .to_vec()
+                };
+                q.push((bus.head().fd, data));
+            }
+        }
+        writer.join().unwrap();
+        for fd in fds {
+            unsafe { libc::close(fd) };
+        }
+        bus.buffer = ptr::null_mut();
+        drop(buffer);
+        (bus, q, sent)
+    }
+
+    /// `MB_ASSERT(1..3)` and the empty packets' asserts. `ASSERT_STREQ` compares up to
+    /// the first NUL; the whole packet is compared here.
+    fn assert_packets(q: &Received, sent: &[Vec<u8>]) {
+        for ((fd, packet), (got_fd, got)) in (1..).zip(sent).zip(q) {
+            assert_eq!(*got_fd, fd);
+            assert!(got == packet, "packet {fd}");
+        }
+        assert_eq!((q[3].0, q[3].1.as_slice()), (4, &b""[..]));
+        assert_eq!((q[4].0, q[4].1.as_slice()), (5, &b""[..]));
+    }
+
+    /// `TEST(message_bus, read)`: a stream pair, `MessageBus::read`.
+    #[test]
+    fn message_bus_read() {
+        let (_bus, q, sent) = message_bus(libc::SOCK_STREAM, false);
+        assert_packets(&q, &sent);
+    }
+
+    /// `TEST(message_bus, read_with_buffer)`: a datagram pair, `read_with_buffer`. Linux, as
+    /// upstream's core-tests: the 64KiB chunks need ENOBUFS to ask for smaller ones, and
+    /// only Linux's `catch_pipe_error` reads ENOBUFS that way (macOS caps datagrams at 2KiB).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn message_bus_read_with_buffer() {
+        let (bus, q, sent) = message_bus(libc::SOCK_DGRAM, true);
+        assert_packets(&q, &sent);
+        assert!(bus.memory_size() > 1024 * 1024 * 2);
+    }
 }

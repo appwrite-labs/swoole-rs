@@ -373,13 +373,14 @@ def plan(args, reports):
                '--package', ROOT / 'tests/modules/reactor/base', '--fixture', ROOT / 'tests/modules/reactor/base/fixture.cc',
                *report('reactor-base-rust'))
     if integrate and 'http' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/server/http_server.cpp's and protocol/base.cpp's server TESTs, ported to Rust over the
-        # hybrid's libswoole.so.
+        # core-tests/src/server/http_server.cpp's, protocol/base.cpp's and redis.cpp's and server/mqtt.cpp's server
+        # TESTs, ported to Rust over the hybrid's libswoole.so.
         script('http-server-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--build-root', ROOT / 'target/native-originals/http-server', '--jobs', args.jobs,
                '--package', ROOT / 'tests/modules/http/server', '--fixture', ROOT / 'tests/modules/http/server/fixture.cc',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
+               '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
                *report('http-server-rust'))
     if integrate and 'process' in modules and sys.platform.startswith('linux'):
         script('process-worker-retirement', 'tests/modules/process/worker_retirement.py',
@@ -433,14 +434,6 @@ def plan(args, reports):
                            'tests/modules/protocols/bailout.py', 'tests/modules/protocols/lifecycle.py']:
                 name = 'protocols-' + Path(runner).stem
                 script(name, runner, *php, *reference_first, *report(name))
-            # Upstream's own redis/message_bus/mqtt GoogleTests on the reference and the overlay
-            # (Linux trees). mqtt.echo needs Node's mqtt/pino and is reported unsupported without them.
-            if sys.platform.startswith('linux'):
-                script('protocols-native-originals', 'tests/modules/protocols/core.py', '--source', ROOT / 'target/upstream/src',
-                       '--config', manifest.parent / 'src/config.h',
-                       '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       '--build-root', ROOT / 'target/native-originals/protocols', '--jobs', args.jobs,
-                       *report('protocols-native-originals'))
     if 'timer' in modules:
         pytest('timer-fork-active', 'tests/modules/timer/test_fork.py', *php, *engines)
         if integrate:

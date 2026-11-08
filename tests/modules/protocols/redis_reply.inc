@@ -1,7 +1,6 @@
 // redis::format and redis::parse over Rust's RESP codec (crates/protocols/src/redis.rs).
-// The build has no callers of them, so they are not built; upstream's
-// core-tests/src/protocol/redis.cpp (core.py) and protocols-native (native.cc)
-// include this inside their `redis` namespace, over their own `String`.
+// The build has no callers of them, so they are not built; protocols-native (native.cc)
+// includes this inside its `redis` namespace, over its own `String`.
 static void append_reply(String *buffer, uint8_t kind, const char *data, size_t length, int64_t integer = 0) {
     const auto *input = reinterpret_cast<const uint8_t *>(data);
     const size_t size = swr_v1_resp_format(kind, input, length, integer, nullptr, 0);

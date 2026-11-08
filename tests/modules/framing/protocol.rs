@@ -51,7 +51,7 @@ fn rand(min: c_int, max: c_int) -> usize {
 }
 
 /// `String::append_random_bytes(length, base64)` on an empty String.
-fn random_bytes(length: usize, base64: bool) -> Vec<u8> {
+pub(super) fn random_bytes(length: usize, base64: bool) -> Vec<u8> {
     let mut str = string(64);
     // SAFETY: the live String; then its destructor, once.
     unsafe { string_append_random_bytes(&mut str, length, base64) };
@@ -75,7 +75,7 @@ fn connect(port: c_int) -> TcpStream {
 }
 
 /// Starts the created server; `body` runs in a thread once the worker starts.
-fn serve(serv: *mut Server, body: fn(*mut Server)) {
+pub(super) fn serve(serv: *mut Server, body: fn(*mut Server)) {
     *BODY.lock().unwrap() = Some(body);
     // SAFETY: the created server.
     unsafe { swr_case_start(serv) };
