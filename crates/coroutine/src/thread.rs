@@ -74,6 +74,12 @@ pub extern "C" fn swr_v1_thread_context_init() {
     CURRENT.store(ptr::from_ref(&MAIN).cast_mut(), Ordering::Release);
 }
 
+/// Whether coroutines run on threads of their own (`SW_USE_THREAD_CONTEXT`, active).
+#[must_use]
+pub fn thread_context_active() -> bool {
+    !CURRENT.load(Ordering::Acquire).is_null()
+}
+
 /// `thread_context_clean`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_thread_context_clean() {

@@ -20,4 +20,6 @@ pub use live::*;
 mod stack;
 pub use stack::*;
 mod thread;
-pub use thread::{THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
+pub use thread::{
+    THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init, thread_context_active,
+};
