@@ -885,6 +885,14 @@ impl Drop for TimeoutSetter {
     }
 }
 
+impl TimeoutSetter {
+    /// A bitwise copy of the scope (`auto copy = scope;`): both restore on drop.
+    fn copy(&self) -> Self {
+        // SAFETY: the scope is plain data; a copy restores the same originals.
+        Self(unsafe { std::ptr::read(&raw const self.0) })
+    }
+}
+
 /// `delete conn`.
 fn delete(conn: ManuallyDrop<Sock>) {
     drop(ManuallyDrop::into_inner(conn));
@@ -2375,6 +2383,36 @@ fn reinit() {
         assert_eq!(sock.record().sock_domain, AF_INET);
     });
 }
+
+/// `rust_socket_scopes.selected_timeout_restore_and_copy` (was socket_scopes.cpp).
+fn selected_timeout_restore_and_copy() {
+    run(|| {
+        let sock = Sock::new(SW_SOCK_TCP);
+        sock.set_timeout(3.5, SW_TIMEOUT_ALL);
+        {
+            let scope = TimeoutSetter::new(&sock, 0.25, SW_TIMEOUT_RDWR);
+            let _copy = scope.copy();
+            assert_eq!(sock.get_timeout(SW_TIMEOUT_DNS), 3.5);
+            assert_eq!(sock.get_timeout(SW_TIMEOUT_READ), 0.25);
+            {
+                let _nested = TimeoutSetter::new(&sock, -1.0, SW_TIMEOUT_READ);
+                assert_eq!(sock.get_timeout(SW_TIMEOUT_READ), -1.0);
+            }
+            assert_eq!(sock.get_timeout(SW_TIMEOUT_READ), 0.25);
+        }
+        assert_eq!(sock.get_timeout(SW_TIMEOUT_READ), 3.5);
+        assert_eq!(sock.get_timeout(SW_TIMEOUT_WRITE), 3.5);
+        {
+            let _zero = TimeoutSetter::new(&sock, 0.0, SW_TIMEOUT_ALL);
+            sock.set_timeout(8.0, SW_TIMEOUT_CONNECT);
+        }
+        assert_eq!(sock.get_timeout(SW_TIMEOUT_CONNECT), 8.0);
+    });
+}
+
+/// `rust_socket_scopes.<name>`, the cases whose C++ API left the hybrid header.
+pub(super) const SCOPE_CASES: super::Cases =
+    &[("selected_timeout_restore_and_copy", selected_timeout_restore_and_copy)];
 
 /// `coroutine_socket.<name>`, in upstream's order.
 pub(super) const CASES: super::Cases = &[

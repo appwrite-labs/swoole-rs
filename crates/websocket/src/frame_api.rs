@@ -250,9 +250,12 @@ upstream! {
         let [first, second] = frame.header;
         #[expect(clippy::cast_possible_wrap, reason = "upstream prints a size_t with %ld")]
         let length = frame.payload_length as libc::c_long;
-        // SAFETY: the arguments match the format.
+        // `sw_printf`: Swoole's stdout stream, which swoole_set_stdout_stream replaces.
+        let out = swoole_rs_corebase::swoole_get_stdout_stream().cast::<libc::FILE>();
+        // SAFETY: the stream is live and the arguments match the format.
         unsafe {
-            libc::printf(
+            libc::fprintf(
+                out,
                 c"FIN: %x, RSV1: %d, RSV2: %d, RSV3: %d, opcode: %d, MASK: %d, length: %ld\n".as_ptr(),
                 c_int::from(first >> 7),
                 c_int::from((first >> 6) & 1),
@@ -271,7 +274,7 @@ upstream! {
             )]
             let precision = frame.payload_length as c_int;
             // SAFETY: the payload holds `payload_length` bytes.
-            unsafe { libc::printf(c"payload: %.*s\n".as_ptr(), precision, frame.payload) };
+            unsafe { libc::fprintf(out, c"payload: %.*s\n".as_ptr(), precision, frame.payload) };
         }
     }
 }

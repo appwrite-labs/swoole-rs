@@ -19,7 +19,9 @@ del and constructors are `swr_v1_reactor_change` and `swr_v1_reactor_state_open`
 cover them, so the `forwarding.py` facade is gone.
 
 `reactor-native-originals` (`tools/core_tests.py`) runs upstream's own
-`network/socket.cpp` GoogleTests on both engines.
+`network/socket.cpp` GoogleTests on both engines. `socket.connect_sync` and
+`socket.fail` are excluded: each connects to `TEST_HTTP_DOMAIN:80` within 0.3s, which
+the CI runner's external network doesn't reliably allow.
 
 `network/stream.cpp`'s TESTs are Rust tests of `network::Stream`, which is Rust
 (`crates/process/src/stream.rs`: `cargo test -p swoole-rs-process stream::`). A
