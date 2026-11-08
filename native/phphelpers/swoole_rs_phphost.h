@@ -88,6 +88,7 @@ extern zend_class_entry *swoole_server_ce;
 extern zend_object_handlers swoole_server_handlers;
 extern zend_class_entry *swoole_server_port_ce;
 extern zend_class_entry *swoole_exception_ce;
+extern zend_object_handlers swoole_exception_handlers;
 extern zend_class_entry *swoole_error_ce;
 
 // Module hooks Rust's MINIT/RINIT/MSHUTDOWN sequence calls, defined in C++ here.
