@@ -1,0 +1,24 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Swoole's include/swoole_signal.h, owned here: the signal functions C++ still calls.
+ * They are Rust under their upstream symbols (crates/reactor/src/signal_upstream.rs,
+ * crates/process/src/signal.rs). */
+#pragma once
+
+#include "swoole.h"
+
+#include <csignal>
+
+namespace swoole {
+typedef void (*SignalHandler)(int);
+}  // namespace swoole
+
+#ifdef HAVE_SIGNALFD
+void swoole_signalfd_init();
+#endif
+
+/* `safety` defers the handler to swoole_signal_dispatch(), outside the signal frame. */
+SW_API swoole::SignalHandler swoole_signal_set(int signo, swoole::SignalHandler func, bool safety = false);
+SW_API swoole::SignalHandler swoole_signal_set(int signo, swoole::SignalHandler func, int restart, int mask);
+SW_API void swoole_signal_clear();
+SW_API void swoole_signal_block_all();
+SW_API void swoole_signal_dispatch();

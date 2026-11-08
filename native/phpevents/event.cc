@@ -4,7 +4,6 @@
 // a bailout Rust reports, and the PHP SDK leaves.
 #include "swoole_rs_phphost.h"
 #include "swoole_server.h"
-#include "swoole_signal.h"
 
 #include "swoole_rs_phpevents.h"
 #include "swoole_rs_phptimer.h"

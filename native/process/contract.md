@@ -43,8 +43,9 @@ which run after Rust returns.
   Native sizes the buffer first (upstream did so after a successful open), then
   logs the open/pread warnings and builds the packet.
 - The signal table (`src/os/signal.cc` at the pin; the file is gone, its facades are
-  `crates/reactor/src/signal_upstream.rs`) is Rust's `swr_v1_signals`, laid out as
-  `swoole::Signal` so the native kqueue path (and kqueue's udata) still uses it. Rust registers handlers through sigaction, runs the deferred and
+  `crates/reactor/src/signal_upstream.rs`) is Rust's `swr_v1_signals`, which the Rust kqueue path
+  shares (a slot is the kqueue event's udata); upstream's `include/swoole_signal.h` is
+  deleted and `native/process/swoole_signal.h` keeps the signal functions C++ still calls. Rust registers handlers through sigaction, runs the deferred and
   immediate async handlers (atomic stores; the immediate one calls
   `swoole_signal_callback` in the signal frame as upstream), dispatches marked
   signals and blocks/unblocks every signal. Dispatch's callback may run PHP; no Rust value with a
