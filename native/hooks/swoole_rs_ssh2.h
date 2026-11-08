@@ -98,13 +98,15 @@ SWR_SSH2_FUNCTIONS(SWR_SSH2_DECLARE)
 int php_swoole_ssh2_minit(int module_number);
 int php_swoole_ssh2_mshutdown(void);
 void php_swoole_ssh2_minfo(void);
-/* Rust (crates/hooks/src/ssh2.rs): the ops for session's socket once no other
- * coroutine is bound to it, and the socket's timeout, whole seconds of
- * timeout_ms. */
+/* Rust (crates/hooks/src/ssh2.rs, built with --with-swoole-ssh2): the ops for
+ * session's socket once no other coroutine is bound to it, and the socket's
+ * timeout, whole seconds of timeout_ms. */
+#ifdef SW_HAVE_SSH2LIB
 const struct swr_v1_ssh2_ops *swr_v1_ssh2_bound(LIBSSH2_SESSION *session);
 void swr_v1_ssh2_set_socket_timeout(LIBSSH2_SESSION *session, int timeout_ms);
 #define ssh2_bound swr_v1_ssh2_bound
 #define ssh2_set_socket_timeout swr_v1_ssh2_set_socket_timeout
+#endif
 #endif
 #ifdef __cplusplus
 }
