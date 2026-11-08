@@ -6,8 +6,8 @@ Upstream targets: `src/core/buffer.cc` (deleted), `include/swoole_buffer.h` (del
 `src/core/string.cc`, `include/swoole_string.h`.
 
 Rust owns one queue and its data allocations. Entries are Rust data, sendfile
-tokens or CLOSE markers; the front cursor (offset and generation) is Rust's too
-([typed-queue.md](../native/buffer/typed-queue.md)). The C++ `Buffer` holds only the
+tokens or CLOSE markers; the front cursor (offset and generation) is Rust's too.
+The C++ `Buffer` holds only the
 Rust handle, and its methods are Rust under their upstream symbols
 (`crates/buffer/src/cpp.rs`). There is no second queue or side map.
 

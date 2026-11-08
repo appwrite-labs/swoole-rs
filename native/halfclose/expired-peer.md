@@ -11,7 +11,7 @@ because it premarks both shutdown bits, so the upstream test sees no warning.
 substitutes `no OpenSSL reason available`. The fatal warning and failure/retry
 state are unchanged; a failed write is not treated as a delivered alert.
 
-`crates/tls`'s `closed_peer` test reproduces terminal EPIPE with a completed TLS
+`crates/tls/src/socket.rs`'s `closed_peer` test reproduces terminal EPIPE with a completed TLS
 handshake over a nonblocking socketpair and a closed peer, with the non-null
 reason checks.
 
@@ -21,7 +21,6 @@ With the repair, `verify_02` and `verify_03` print an extra shutdown warning
 (reason 32 plus the fallback text): repair-enabled builds pass 2/4 ordinary
 certificate originals, repair-disabled builds pass 4/4. The raw warnings do not
 record `sslerr` or errno, so reason 32 must not be read as either.
-`tests/modules/halfclose/expired-peer/` holds the diagnostic artifacts.
 
 No correction follows yet: restoring the premarked bits would discard the
 alert-delivery fix, and hiding the warning would not make shutdown succeed.

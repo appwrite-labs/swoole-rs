@@ -92,9 +92,8 @@ member names as `swoole::RustField` views over those pairs, so upstream's
 `SwooleG.field` code (other modules' patched lines and the upstream core-tests
 alike) compiles unchanged. A view can't be copied, so passing one through `...`
 fails to compile instead of printing garbage. `SwooleG = {}` leaves the record
-alone; `swr_v1_core_reset` clears it. `max_sockets` stays native because the
-core-tests copy it with `auto`; `std_allocator` (its address is taken), the
-strings, containers and `user_exit_condition` are C++ objects.
+alone; `swr_v1_core_reset` clears it. The allocator, limits and task/resolver
+paths are `config_state.rs`; containers and `user_exit_condition` are C++ objects.
 
 `swr_v1_core_init` is `swoole_init`'s guard: false when already initialised,
 otherwise it resets the record and sets running, coroutines on, the page size,
@@ -104,11 +103,9 @@ upstream's order. `swr_v1_core_bug_report_init` writes base.cc's bug-report
 banner, `uname` and compiler lines around the TLS line native code passes.
 `swr_v1_core_max_sockets` is the `RLIMIT_NOFILE` soft limit as `uint32_t`,
 capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept. `swoole_clean` resets
-the record after the native `Global`. The unused `uname`, `use_async_resolver`
-and `use_name_resolver` fields are gone.
+the record after the native `Global`.
 
-Upstream's own C++ symbols defined in Rust (`export_name`), with no body left in
-base.cc: `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
+Upstream's own C++ symbols defined in Rust (`export_name`): `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
 `swoole_version_compare`, `swoole_dump_ascii`/`_hex`, `swoole::microtime`,
 `swoole_set_trace_flags`, `swoole_set_print_backtrace_on_error`, `sw_logger`,
 `swoole_set_stdout_stream`/`swoole_get_stdout_stream` (`FILE` mangles as its libc's
@@ -117,8 +114,7 @@ struct tag), `swoole_hex2dec` (in the target's plain-char mode), `swoole_dump_bi
 `DataHead::dump`, both `swoole_rand` overloads, `swoole_random_int`, and
 `swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names), and
 `sw_malloc`/`sw_free`/`sw_calloc`/`sw_realloc`, which call libc's allocator
-directly (`SwooleG.std_allocator` only ever held it). The `corebase-native` gate
-checks the hybrid base.o leaves the first four to the Rust archive.
+directly. The `corebase-native` gate compares them with the pinned `base.cc`.
 
 Whole operations in Rust (`host.rs`), with native code keeping only their
 warnings: `swoole_shell_exec`, `swoole_dump_ascii`/`_hex`, `swoole_print_backtrace` without Boost,
@@ -134,17 +130,7 @@ and other runtime operations.
 
 The lower `swoole::Thread` (`native/corebase/swoole_thread.h`; upstream's header is
 deleted) owns a generated `CoreThread` record: Rust controls
-its pthread handle, status publication, moves, joins and detaches. The C++ SDK
-keeps its callable's standard C++ copy and destruction semantics. pthread starts
+its pthread handle, status publication, moves, joins and detaches. pthread starts
 the native callable trampoline directly, so C++ exceptions and pthread forced
-unwind do not cross a Rust child-entry frame. The libc++ SDK supplies its own
-native proxy and TLS context,
-so at-thread-exit futures retain the standard library's lifecycle. The carrier
-remains writable for atomic status access through const C++ getters. The
-cancellable `pthread_join` primitive also runs in native code after Rust
-validation returns; Rust commits successful handle consumption afterward. Native
-`std::system_error` and termination effects run after Rust returns. Existing Thread
-methods remain source
-compatible; consumers must recompile against the matching SDK after this class
-layout change. PHP Thread request/bootstrap remains native pending the composed
-custom-exit guard contract; the lower owner does not add a Rust frame around it.
+unwind do not cross a Rust child-entry frame. The cancellable `pthread_join` and
+`std::system_error` run in native code after Rust returns.

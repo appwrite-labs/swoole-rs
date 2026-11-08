@@ -10,10 +10,9 @@
   with only the input integer, and returns its result. A null formatter returns
   null on a miss. The formatter must not throw, unwind, call Zend/PHP, bail out
   or retain state. It owns the bytes it returns; Rust neither reads nor frees them.
-- `swr_v1_error_strerror` is the entry used by the real C++ caller. Rust
-  classifies the code, does the known lookup and formats unknown codes. Codes
-  below the pinned 500 boundary go to the native formatter, which calls system
-  `strerror`. C++ exceptions and the shared `sw_error` buffer stay native; any
+- `swr_v1_error_strerror` is `swoole_strerror`'s body. Rust classifies the
+  code, does the known lookup and formats unknown codes. Codes below the pinned
+  500 boundary go to the native formatter, which calls system `strerror`. C++ exceptions and the shared `sw_error` buffer stay native; any
   throw happens after Rust returns.
 
 Unknown messages are formatted without allocating into one 32-byte static

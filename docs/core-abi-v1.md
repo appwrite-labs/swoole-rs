@@ -23,8 +23,7 @@ length 0; output must be non-null.
   padding. Input and output may overlap: the encoder keeps upstream's exact
   read/store order, including rereads after earlier stores. Disjoint input uses
   a faster path (48-byte NEON blocks on little-endian AArch64). Empty input
-  writes a NUL and returns 0; upstream underflows and reads out of bounds there.
-  See `native/base64/overlap-contract.md`.
+  writes a NUL and returns 0.
 - **Decode** needs `length + 1` output bytes and disjoint buffers. Keeps the
   pinned byte classifier, stops at the first `=`, accepts incomplete groups,
   writes a NUL on normal completion and returns 0 on invalid data while leaving

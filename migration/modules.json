@@ -137,8 +137,7 @@
         "src/protocol/http.cc",
         "src/server/static_handler.cc",
         "include/swoole_static_handler.h"
-      ],
-      "abi_contract": "native/http/contract.md"
+      ]
     },
     {
       "id": "M05",
