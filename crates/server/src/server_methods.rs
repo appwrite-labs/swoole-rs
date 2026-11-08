@@ -356,6 +356,22 @@ pub unsafe extern "C-unwind" fn connection_incoming(
     c_int::narrow(unsafe { run(RUN_INCOMING, 0, &mut ctx) })
 }
 
+/// The accept-retry timer's callback: re-enables accepting on the server.
+///
+/// # Safety
+/// `serv` is a live `Server`, on the thread that armed the timer.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) unsafe extern "C" fn enable_accept(serv: *mut c_void) {
+    // SAFETY: as the caller guarantees.
+    unsafe {
+        run(
+            crate::ops::RUN_ENABLE_ACCEPT,
+            0,
+            &mut NativeContext::new(serv),
+        )
+    };
+}
+
 /// `Server::accept_connection(reactor, event)`: the master reactor's read handler
 /// for listening sockets, over the server the reactor carries.
 ///

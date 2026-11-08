@@ -103,6 +103,32 @@ impl CallbackSlot {
         }
     }
 
+    /// `serv->dispatch_func(serv, conn, send)`; 0 when the slot is empty.
+    ///
+    /// # Safety
+    /// The slot is `dispatch_func`'s, and the pointers are what it takes.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) unsafe fn dispatch(
+        &self,
+        serv: *mut c_void,
+        conn: *mut c_void,
+        send: *mut c_void,
+    ) -> core::ffi::c_int {
+        type Invoke = unsafe extern "C-unwind" fn(
+            *mut c_void,
+            *mut c_void,
+            *mut c_void,
+            *mut c_void,
+        ) -> core::ffi::c_int;
+        let invoke = self.invoke.load(Relaxed);
+        // SAFETY: the slot holds null or an `int (*)(void *, Server *, Connection *, SendData *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        // SAFETY: per the caller, with the slot's own context.
+        invoke.map_or(0, |invoke| unsafe {
+            invoke(self.ctx.load(Relaxed), serv, conn, send)
+        })
+    }
+
     /// `serv->onX = nullptr`: empties the slot, then frees what it held.
     pub(crate) fn clear(&self) {
         self.invoke.store(core::ptr::null_mut(), Relaxed);
