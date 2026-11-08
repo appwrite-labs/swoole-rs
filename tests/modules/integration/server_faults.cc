@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -18,6 +19,13 @@ extern "C" void __wrap_free(void *pointer) {
     __real_free(pointer);
 }
 #endif
+// The archive alone lacks native/timer and native/corebase. The reactor-thread ops reach
+// swoole_timer_del, but this fixture runs no reactor context, so they are never called.
+extern "C" {
+__attribute__((weak)) void *swr_cpp_timer_node_release(void *) { std::abort(); }
+[[noreturn]] __attribute__((weak)) void swr_cpp_timer_rethrow(void *) { std::abort(); }
+__attribute__((weak)) void *swr_v1_core_timer_slot() { std::abort(); }
+}
 struct Marker : std::runtime_error {
     explicit Marker(int value) : std::runtime_error("native marker"), value(value) {}
     int value;
