@@ -10,7 +10,8 @@ of a test the re-runs don't gate.
 A flagged test may be re-run (--recheck: up to 3 re-runs per engine, or one hybrid
 re-run when the hybrid's first failure timed out). If upstream fails a re-run, the test
 is flaky on upstream if the hybrid passes one of its re-runs (up to 9 then), or if
-upstream fails up to 9 re-runs as well (a test both engines almost always fail, #998);
+upstream then passes fewer than a third of 9 re-runs (a test both engines almost always
+fail, #998, #1948: 2 passes in 9 against the hybrid's 0 is no evidence of a regression);
 otherwise it is a regression. If upstream passes every re-run, any failed hybrid re-run is a regression
 and passing them all is a pass on re-run. The hybrid re-runs until it has both passed and
 failed, so one failed re-run of a test racy on both engines doesn't decide it. A hybrid that both passed and failed its
@@ -46,7 +47,7 @@ TIMED_OUT = re.compile(r'process timed out|exceeded its isolated group deadline'
 ABORTED = re.compile(r'corrupted double-linked list[\s\S]*Aborted')
 RERUNS = 3
 # Upstream re-runs for a test the hybrid failed every re-run of after upstream failed
-# one (#998), and for a test the hybrid both passed and failed on re-run (#1285: an
+# one (#998, #1948), and for a test the hybrid both passed and failed on re-run (#1285: an
 # upstream race failing 5-10% of runs shows in 24 runs far more often than in 9).
 EXTENDED_RERUNS = 9
 MIXED_RERUNS = 24
@@ -211,8 +212,8 @@ def recheck(tests, rechecked):
         others = [status for engine, statuses in runs[test].items() if engine != 'upstream' for status in conclusive(statuses)]
         if any(status != 'passed' for status in upstream):
             # Upstream is noisy; a hybrid pass shows the hybrid isn't simply broken, and so does
-            # upstream failing all its extended re-runs: the first run's pass was the outlier.
-            outlier = others and len(upstream) >= EXTENDED_RERUNS and 'passed' not in upstream
+            # upstream failing most of its extended re-runs: the first run's pass was the outlier.
+            outlier = others and len(upstream) >= EXTENDED_RERUNS and 3 * upstream.count('passed') < len(upstream)
             (flaky if 'passed' in others or outlier else regressions).append(test)
         elif not upstream or not others or any(status != 'passed' for status in others):
             regressions.append(test)
@@ -225,7 +226,7 @@ def pending(tests, rechecked, engine='upstream', results=()):
     """Flagged tests still worth re-running on `engine`. Upstream stops at its first failed
     re-run; `upstream-extended` continues upstream, to 24 re-runs for a test the hybrid
     both passed and failed, or to 9 for one it failed every re-run of after upstream
-    failed one, until upstream passes one. Another engine stops once its verdict is settled (a pass after an upstream
+    failed one. Another engine stops once its verdict is settled (a pass after an upstream
     failure, otherwise both a pass and a failure, which earns those upstream re-runs) or its
     budget is spent: one re-run if its first failure timed out, nine once upstream failed a
     re-run (a test racy on both engines may fail several hybrid re-runs before one passes),
@@ -246,7 +247,7 @@ def pending(tests, rechecked, engine='upstream', results=()):
             upstream = conclusive(runs[test].get('upstream', []))
             if 'failed' not in upstream:
                 return MIXED_RERUNS if 'passed' in hybrid and 'failed' in hybrid else 0
-            return EXTENDED_RERUNS if hybrid and 'passed' not in hybrid and 'passed' not in upstream else 0
+            return EXTENDED_RERUNS if hybrid and 'passed' not in hybrid else 0
         return [test for test in tests if within(runs[test]['upstream'], budget(test))]
     timed_out = {row['test'] for row in results if row['engine'] == engine and row.get('timed_out')}
     left = []
@@ -262,7 +263,7 @@ def pending(tests, rechecked, engine='upstream', results=()):
 
 def flaky_listing(tests, rechecked):
     runs = reruns(rechecked)
-    lines = [f'<details><summary>{len(tests)} flaky on upstream (failed an upstream re-run; hybrid passed one, or upstream passed none; not gated)</summary>', '']
+    lines = [f'<details><summary>{len(tests)} flaky on upstream (failed an upstream re-run; hybrid passed one, or upstream passed under a third of 9; not gated)</summary>', '']
     for test in tests:
         lines.append(f'- `{test}`: ' + '; '.join(f'{engine} {", ".join(statuses)}' for engine, statuses in sorted(runs[test].items())))
     return lines + ['', '</details>', '']

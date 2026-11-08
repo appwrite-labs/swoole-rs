@@ -6,7 +6,7 @@
 # An inconclusive re-run (the #200 runner abort) is replaced, up to twice the budget in all.
 # A test the hybrid both passed and failed then gets more upstream re-runs (up to 24 in all),
 # so a test racy on both engines isn't counted as a hybrid regression; so does one whose
-# re-runs both engines failed (up to 9), until upstream passes one.
+# re-runs both engines failed (up to 9).
 #   recheck.sh RESULTS_DIR ENGINES_DIR RECHECK_DIR [run.py arguments...]
 # ENGINES_DIR holds upstream.so and hybrid.so; RECHECK_DIR receives <engine>-<attempt>.json.
 set -eo pipefail

@@ -43,8 +43,9 @@ class PhptGate(unittest.TestCase):
     def test_thread_context_racy_original_runs_without_thread_context(self):
         from corpus.upstream.run import racy, verdict_failed
         case = {'path': 'tests/swoole_coroutine/cancel/throw_exception.phpt'}
-        self.assertIsNotNone(racy(case, {'capabilities': ['thread_context']}))
-        self.assertIsNone(racy(case, {'capabilities': []}))
+        for path in ['tests/swoole_coroutine/cancel/throw_exception.phpt', 'tests/swoole_coroutine/stats.phpt']:
+            self.assertIsNotNone(racy({'path': path}, {'capabilities': ['thread_context']}))
+            self.assertIsNone(racy({'path': path}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_server/shutdown_in_master.phpt'}, {'capabilities': []}))
         self.assertTrue(verdict_failed({'test': case['path'], 'status': 'failed'}, True))
 
@@ -180,13 +181,21 @@ class PhptGate(unittest.TestCase):
         rechecked = [row('rare', 'upstream', 'failed')] + [row('rare', 'hybrid', 'failed')] * 9
         self.assertEqual(pending(['rare'], rechecked, 'upstream-extended'), ['rare'])
         self.assertEqual(recheck(['rare'], rechecked), (['rare'], [], [], []))
-        # Upstream keeps re-running to nine in all, and stops at its first pass: that pass gates it.
+        # Upstream keeps re-running to nine in all, past a pass.
         allfail = rechecked + [row('rare', 'upstream', 'failed')] * 8
         self.assertEqual(pending(['rare'], allfail, 'upstream-extended'), [])
         self.assertEqual(recheck(['rare'], allfail), ([], ['rare'], [], []))
         passed = rechecked + [row('rare', 'upstream', 'failed'), row('rare', 'upstream', 'passed')]
-        self.assertEqual(pending(['rare'], passed, 'upstream-extended'), [])
+        self.assertEqual(pending(['rare'], passed, 'upstream-extended'), ['rare'])
         self.assertEqual(recheck(['rare'], passed), (['rare'], [], [], []))
+        # Two upstream passes in nine against none of the hybrid's is a race on both (#1948);
+        # three is a third, and gates it.
+        racy = passed + [row('rare', 'upstream', 'failed')] * 5 + [row('rare', 'upstream', 'passed')]
+        self.assertEqual(pending(['rare'], racy, 'upstream-extended'), [])
+        self.assertEqual(recheck(['rare'], racy), ([], ['rare'], [], []))
+        solid = passed + [row('rare', 'upstream', 'failed')] * 4 + [row('rare', 'upstream', 'passed')] * 2
+        self.assertEqual(pending(['rare'], solid, 'upstream-extended'), [])
+        self.assertEqual(recheck(['rare'], solid), (['rare'], [], [], []))
 
     def test_the_runner_abort_is_inconclusive_on_either_engine(self):
         abort = 'PASS x [tests/x.phpt]\n...\ncorrupted double-linked list\nAborted (core dumped)\n'

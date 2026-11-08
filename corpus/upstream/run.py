@@ -126,7 +126,11 @@ RACY = {'tests/swoole_websocket_server/send_close_frame.phpt':
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "
                        'it, printing a third "co 2 running" on both engines with the same diff '
-                       '(merge tier: upstream 4 of 7 runs, hybrid 11 of 13, #1864)'}
+                       '(merge tier: upstream 4 of 7 runs, hybrid 11 of 13, #1864)',
+                       'tests/swoole_coroutine/stats.phpt':
+                       "two coroutines both sleep 0.5 s and assert who wakes first, which varies on "
+                       'both engines with the same diff (merge tier: upstream failed 21 of 27 runs, '
+                       'hybrid 37 of 40, #1948)'}
 
 
 def racy(case, metadata):
