@@ -442,7 +442,6 @@ class Lanes(unittest.TestCase):
                 self.assertIn('--require-all', matched[name])
         self.assertGreater(direct, 0)
         self.assertNotIn('--match-child-php', matched['build'])
-        self.assertNotIn('--match-child-php', matched['coroutine-native-originals'])
 
     def test_all_registered_modules_share_one_plan_and_close_gate(self):
         args = SimpleNamespace(lane='integrate', module=None, all_modules=True, php='php', php_extension=[],
@@ -466,10 +465,9 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive',commands['hooks-compile'])
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-hybrid',
                      'crc32-consumers-upstream','crc32-consumers-hybrid',
-                     'coroutine-native-originals','corebase-startup','corebase-record-views']:
+                     'corebase-startup','corebase-record-views']:
             self.assertIn(name,commands)
-        self.assertIn('--sanitize',commands['coroutine-native-originals'])
-        self.assertNotIn('--inventory-only',commands['coroutine-native-originals'])
+        self.assertNotIn('coroutine-native-originals', commands)
         # Upstream PHPTs run in the merge tier's phpt-* jobs, not as per-module phases (#83).
         self.assertNotIn('phpt', commands)
         self.assertEqual([name for name in commands if name.endswith(('-full-originals', '-originals-manifest'))], [])

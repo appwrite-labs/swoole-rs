@@ -84,9 +84,16 @@ DNS and network) and `dns.cancel` (a lookup that misses the resolver cache).
 `address.record` is the former repo-owned `address_record.cc` check, with the
 same assertions: the record's fields and value copies, and the per-thread scratch
 `get_addr` and `verify_ip` share.
-The repo-owned `dns_request_owner.cpp` witness stays C++ in
-`coroutine-native-originals` (`--dns-requests`): it checks the C++ request views'
-copies and `std::bad_alloc` containment, which only C++ can exercise.
+The repo-owned C++ witnesses of copies and `std::bad_alloc` containment, which only
+C++ can throw, are the same binary's cases with bodies in `system/fixture.cc`
+(compiled into the hybrid's lib-swoole with `--fixture`), unchanged but for plain
+assertion macros in place of GoogleTest's: `rust_socket_scopes.protocol_snapshot_and_copy_restore`
+and `.error_text_publication_and_cache_exception` (formerly `socket_scopes.cpp`),
+the five `rust_dns_request.*` cases (formerly `dns_request_owner.cpp`) and
+`rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait` (formerly
+tests/modules/coroutine/lifetime.cpp). The fixture also holds the allocation fault
+oracle they share. coroutine/base.cpp and file.cpp run here too
+(tests/modules/coroutine/README.md).
 
 `core-tests/src/memory/lru_cache.cpp` no longer builds (`include/swoole_lru_cache.h`
 is deleted). Its TESTs are Rust tests over the DNS cache's `Lru` in

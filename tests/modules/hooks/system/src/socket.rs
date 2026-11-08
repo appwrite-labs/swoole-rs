@@ -2422,11 +2422,91 @@ fn selected_timeout_restore_and_copy() {
     });
 }
 
-/// `rust_socket_scopes.<name>`, the cases whose C++ API left the hybrid header.
-pub(super) const SCOPE_CASES: super::Cases = &[(
-    "selected_timeout_restore_and_copy",
-    selected_timeout_restore_and_copy,
-)];
+// The repo-owned witnesses of C++ copies and std::bad_alloc containment, whose bodies are
+// ../fixture.cc's (formerly tests/modules/hooks/socket_scopes.cpp and dns_request_owner.cpp).
+#[link(name = "swoole")]
+unsafe extern "C-unwind" {
+    fn swr_case_protocol_snapshot_and_copy_restore();
+    fn swr_case_error_text_publication_and_cache_exception();
+    fn swr_case_numeric_host_owner_and_independent_copies();
+    fn swr_case_hints_vectors_and_failure_publication();
+    fn swr_case_native_output_append_exception_is_contained();
+    fn swr_case_actual_async_numeric_results();
+    fn swr_case_owned_address_cache_exception();
+}
+
+fn protocol_snapshot_and_copy_restore() {
+    // SAFETY: in a coroutine.
+    run(|| unsafe { swr_case_protocol_snapshot_and_copy_restore() });
+}
+
+fn error_text_publication_and_cache_exception() {
+    // SAFETY: in a coroutine.
+    run(|| unsafe { swr_case_error_text_publication_and_cache_exception() });
+}
+
+fn numeric_host_owner_and_independent_copies() {
+    // SAFETY: the fixture's case.
+    unsafe { swr_case_numeric_host_owner_and_independent_copies() };
+}
+
+fn hints_vectors_and_failure_publication() {
+    // SAFETY: the fixture's case.
+    unsafe { swr_case_hints_vectors_and_failure_publication() };
+}
+
+fn native_output_append_exception_is_contained() {
+    // SAFETY: the fixture's case.
+    unsafe { swr_case_native_output_append_exception_is_contained() };
+}
+
+fn actual_async_numeric_results() {
+    // SAFETY: in a coroutine.
+    run(|| unsafe { swr_case_actual_async_numeric_results() });
+}
+
+fn owned_address_cache_exception() {
+    // SAFETY: the fixture's case.
+    unsafe { swr_case_owned_address_cache_exception() };
+}
+
+/// `rust_socket_scopes.<name>`: the timeout scope, whose C++ API left the hybrid
+/// header, and the two C++ witnesses.
+pub(super) const SCOPE_CASES: super::Cases = &[
+    (
+        "protocol_snapshot_and_copy_restore",
+        protocol_snapshot_and_copy_restore,
+    ),
+    (
+        "error_text_publication_and_cache_exception",
+        error_text_publication_and_cache_exception,
+    ),
+    (
+        "selected_timeout_restore_and_copy",
+        selected_timeout_restore_and_copy,
+    ),
+];
+
+/// `rust_dns_request.<name>`, the C++ witnesses.
+pub(super) const DNS_REQUEST_CASES: super::Cases = &[
+    (
+        "numeric_host_owner_and_independent_copies",
+        numeric_host_owner_and_independent_copies,
+    ),
+    (
+        "hints_vectors_and_failure_publication",
+        hints_vectors_and_failure_publication,
+    ),
+    (
+        "native_output_append_exception_is_contained",
+        native_output_append_exception_is_contained,
+    ),
+    ("actual_async_numeric_results", actual_async_numeric_results),
+    (
+        "owned_address_cache_exception",
+        owned_address_cache_exception,
+    ),
+];
 
 /// `coroutine_socket.<name>`, in upstream's order.
 pub(super) const CASES: super::Cases = &[
