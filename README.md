@@ -2,19 +2,20 @@
 
 [![Merge tier](https://github.com/loks0n/swoole-rs/actions/workflows/merge.yml/badge.svg?branch=main)](https://github.com/loks0n/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain)
 [![Upstream C++ replaced](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Freplaced.json)](docs/migration.md#upstream-files-still-in-the-build)
-[![Graduated leaf modules](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fgraduated.json)](https://github.com/loks0n/swoole-rs/issues/125)
 [![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/loks0n/swoole-rs/issues/58)
 [![Speed vs upstream](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fspeed.json)](https://github.com/loks0n/swoole-rs/blob/badges/speed.md)
 [![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/loks0n/swoole-rs/issues/1902)
 
-Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 3 and 5 are done; open are
-[Phase 4, deepen thin modules](https://github.com/loks0n/swoole-rs/issues/439),
-[speed](https://github.com/loks0n/swoole-rs/issues/366) and
-[differential fuzzing](https://github.com/loks0n/swoole-rs/issues/100). The badges come from `tools/badges.py`
+Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 5 are done and nothing is
+compiled from upstream; open are [dropping upstream from the build](https://github.com/loks0n/swoole-rs/issues/1921),
+[every applicable PHPT passing](https://github.com/loks0n/swoole-rs/issues/1957),
+[faster than upstream](https://github.com/loks0n/swoole-rs/issues/1894) and
+[a hardened runtime](https://github.com/loks0n/swoole-rs/issues/1893). The badges come from `tools/badges.py`
 (`.github/workflows/badges.yml`): upstream C++ replaced counts upstream first-party
 lines the all-modules patch set deletes, and the PHPT badge counts tests the hybrid
 passes in any of a merge-tier run's PHPT jobs, over those that can apply to 64-bit Linux
-(`corpus/upstream/not_applicable.json` lists the rest), naming the commit it measured. The unsafe badge counts `unsafe` blocks, fns and impls in
+(`corpus/upstream/not_applicable.json` lists the rest), naming the commit it measured. The speed badge links to the latest merge-tier callgrind
+results, per workload, against upstream. The unsafe badge counts `unsafe` blocks, fns and impls in
 non-test crate code; `tools/unsafe_budget.py` (PR tier) fails a PR that raises any
 crate above `tools/unsafe_baseline.json`, and `--update` lowers the baseline.
 

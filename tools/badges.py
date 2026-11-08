@@ -7,7 +7,6 @@ replaced.json  upstream first-party lines (src/, ext-src/, include/; not the emb
                PHP library) that the all-modules patch set deletes, over the pinned total:
                the minimal net diff after applying every patch, so glue a patch adds and a later
                one removes never counts.
-graduated.json leaf modules that are always on (Phase 3).
 unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/unsafe_budget.py);
                the per-crate table goes to the step summary.
 speed.json     callgrind instructions per request, hybrid over upstream, from a merge-tier
@@ -29,10 +28,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import GRADUATED, MODULES, apply_patch_verified, patches_for  # noqa: E402
+from tools.build_hybrid import MODULES, apply_patch_verified, patches_for  # noqa: E402
 from tools import unsafe_budget  # noqa: E402
 
-LEAF = ('crc32', 'base64', 'error', 'framing', 'websocket', 'timer', 'protocols', 'buffer', 'http')
 FIRST_PARTY = ('src/', 'ext-src/', 'include/')
 NOT_COUNTED = {'ext-src/php_swoole_library.h'}  # generated embedded PHP library
 SOURCE_SUFFIXES = ('.c', '.cc', '.cpp', '.h')
@@ -172,7 +170,6 @@ def main():
                       f'| PHPT not applicable | reason |\n| --- | --- |\n{excluded}')
     badges = {
         'replaced': endpoint('upstream C++ replaced', f'{100 * deleted / total:.1f}% of {total / 1000:.0f}k lines'),
-        'graduated': endpoint('graduated', f'{sum(m in GRADUATED for m in LEAF)} / {len(LEAF)} leaf modules'),
         'unsafe': endpoint('unsafe blocks', f'{sum(unsafe.values()):,}'),
     }
     if args.phpt:

@@ -1,4 +1,4 @@
-"""tools/badges.py counts upstream lines the patch set deletes (net), graduated leaves and passing PHPTs."""
+"""tools/badges.py counts upstream lines the patch set deletes (net), passing PHPTs and speed."""
 from pathlib import Path
 import subprocess
 import os
@@ -101,9 +101,6 @@ class Badges(unittest.TestCase):
         self.assertIn('| websocket | 120 | 100 | 1.2000× | 1.1× | ❌ |', table)
         self.assertIn('| timer | 80 | 100 | 0.8000× |  | ✅ |', table)
         self.assertIn('`abcdef0`', table)
-
-    def test_every_leaf_is_a_module(self):
-        self.assertLessEqual(set(badges.LEAF), set(badges.MODULES))
 
 
 if __name__ == '__main__':
