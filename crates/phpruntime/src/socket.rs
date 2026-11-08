@@ -1,6 +1,6 @@
 //! The coroutine socket (`SocketImpl`): the streams call its Rust members
 //! directly, and what is still C++ of it is `swr_v1_runtime_socket`, a table
-//! `src/coroutine/system.cc` defines; what they need of Swoole's PHP side is
+//! `native/hooks/system.cc` defines; what they need of Swoole's PHP side is
 //! in the runtime's [`Ops`](crate::Ops). Both are declared in
 //! `native/hooks/swoole_rs_phpruntime.h`.
 use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};

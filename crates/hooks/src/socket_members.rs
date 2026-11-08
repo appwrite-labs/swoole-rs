@@ -650,7 +650,7 @@ unsafe fn transfer<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
     }
 }
 
-// SAFETY: crates/clients' `Address::assign` body and src/coroutine/system.cc's
+// SAFETY: crates/clients' `Address::assign` body and native/hooks/system.cc's
 // `System::gethostbyname` adapter, both linked into the hybrid with this crate.
 unsafe extern "C" {
     fn swr_v1_clients_address_assign(

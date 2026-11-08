@@ -97,7 +97,7 @@ void php_swoole_runtime_rinit(void);
 void php_swoole_runtime_stream_ops(uint8_t stdio, uint8_t hook);
 
 /* What the coroutine streams and client classes need of the native coroutine socket (a SocketImpl *)
- * beyond its Rust members, defined by src/coroutine/system.cc. make and close are
+ * beyond its Rust members, defined by native/hooks/system.cc. make and close are
  * bodies for swr_zend_try over a swr_v1_runtime_socket_call. */
 struct swr_v1_core_proxy;
 struct swr_v1_runtime_socket_call {

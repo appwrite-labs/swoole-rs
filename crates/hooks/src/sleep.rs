@@ -179,6 +179,40 @@ pub extern "C" fn swr_v1_hooks_sleep_until(
     SleepOutcome::default()
 }
 
+/// `int System::sleep(double sec)`: parks the current coroutine for `sec`, at least
+/// the timer's millisecond (in the ring's timer with `io_uring`); -1 when it was
+/// canceled.
+///
+/// # Safety
+/// In a coroutine (outside one it raises upstream's fatal error, which does not
+/// return), with the thread's reactor running.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_ZN6swoole9coroutine6System5sleepEd")]
+#[must_use]
+pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
+    #[cfg(feature = "iouring")]
+    {
+        // SAFETY: the engine's host, in a coroutine as the caller promises.
+        unsafe { crate::uring::swr_v1_uring_sleep(&raw const crate::iouring::HOST, sec) }
+    }
+    #[cfg(not(feature = "iouring"))]
+    {
+        use crate::wait_event::native::{coroutine_yield_ex, current};
+        /// `SW_ERROR_CO_CANCELED`: what `yield_ex` sets when the coroutine was canceled.
+        const CANCELED: i32 = 10017;
+        // SAFETY: in a coroutine, as the caller promises.
+        let co = unsafe { current() };
+        // SAFETY: `co` is the running coroutine.
+        let resumed =
+            unsafe { coroutine_yield_ex(co, crate::swr_v1_hook_sleep_timeout(sec, 0.001)) };
+        if !resumed && swoole_rs_corebase::log::last_error() == CANCELED {
+            -1
+        } else {
+            0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
