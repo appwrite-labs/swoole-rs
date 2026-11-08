@@ -30,7 +30,7 @@ def attest(manifest_path, archive, identity, source_ref, expected_bit, *, root=R
     if sha(archive) != inputs['rust_archive_sha256']:
         raise ValueError('Selected archive differs from compiled build receipt')
     artifact = manifest['rust_compilation']['artifact']
-    if (artifact['target']['kind'] != ['staticlib'] or artifact['profile']['opt_level'] != '3'
+    if ('staticlib' not in artifact['target']['kind'] or artifact['profile']['opt_level'] != '3'
             or artifact['profile']['test'] or artifact['profile']['debug_assertions']):
         raise ValueError('Actual Cargo artifact is not the production static library')
     sources = inputs['rust_sources_sha256']
