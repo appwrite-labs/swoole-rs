@@ -15,6 +15,8 @@
     )
 )]
 
+#[macro_use]
+mod local;
 mod context;
 mod cookie;
 mod header;

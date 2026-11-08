@@ -33,7 +33,7 @@
  "phpcoroutines": 513,
  "phpevents": 159,
  "phphelpers": 163,
- "phphttp": 834,
+ "phphttp": 828,
  "phphttp2": 400,
  "phplocks": 115,
  "phpprocess": 354,
@@ -58,7 +58,7 @@
  "tls": 767,
  "uring-sys": 0,
  "utilities": 155,
- "websocket": 50,
+ "websocket": 46,
  "wrappers": 0,
  "zend": 334,
  "zend-sys": 0
