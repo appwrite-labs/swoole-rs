@@ -6,8 +6,14 @@ Implements `docs/coroutine-abi-v1.md`. Header: `swoole_rs_coroutine.h`.
 | --- | --- |
 | 0001-channel, …-channel-cc-and-swoole-co | `include/swoole_coroutine_channel.h`, `src/coroutine/channel.cc` (deleted) |
 | 0003-context-stack-markers, …-context-is-rust | `src/coroutine/context.cc`, `include/swoole_asm_context.h` (deleted) |
-| 0004-coroutine-core, …-coroutine-operations-are-rust | `include/swoole_coroutine.h`, `src/coroutine/base.cc` (deleted) |
-| 0005-context-asan-fibers | `include/swoole_coroutine_context.h` |
+| 0004-coroutine-core, …-coroutine-operations-are-rust | `src/coroutine/base.cc` (deleted) |
+| phpcoroutines' …-swoole-coroutine-h-swoole-coroutine-co | `include/swoole_coroutine{,_context,_api,_system}.h` (deleted) |
+
+`swoole_coroutine.h` here is upstream's `Coroutine` and `Context` facades, and
+`swoole_coroutine_system.h` and `swoole_coroutine_api.h` the `System` members and
+`swoole_coroutine_*` exports, each keeping only what native/, the vendored code
+and the compiled core-tests call. The deletion is in phpcoroutines' patch set
+because hooks' and phpcoroutines' patches edit the headers first.
 
 Rust frames that span a swap callback, context switch, timer or destructor
 own nothing with a destructor, so a stack the bailout abandons, or PHP's longjmp
