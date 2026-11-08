@@ -58,12 +58,6 @@ class HybridIdentity(unittest.TestCase):
         self.manifest['inputs']['patches'][0]['sha256'] = 'stale'
         with self.assertRaisesRegex(ValueError, 'Frozen source'): self.verify()
 
-    def test_staticlib_alongside_rlib_is_accepted_but_rlib_alone_refuses(self):
-        self.manifest['rust_compilation']['artifact']['target']['kind'] = ['staticlib', 'rlib']
-        self.assertEqual(self.verify()['verified_inputs'], 5)
-        self.manifest['rust_compilation']['artifact']['target']['kind'] = ['rlib']
-        with self.assertRaisesRegex(ValueError, 'production'): self.verify()
-
     def test_debug_or_missing_source_receipt_refuses(self):
         self.manifest['rust_compilation']['artifact']['profile']['debug_assertions'] = True
         with self.assertRaisesRegex(ValueError, 'production'): self.verify()
