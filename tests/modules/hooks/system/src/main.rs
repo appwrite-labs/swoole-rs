@@ -1,7 +1,8 @@
-//! Upstream's `core-tests/src/coroutine/system.cpp`, one Rust function per TEST with
-//! the same inputs and expected values, over the hybrid's libswoole.so: the Rust
-//! `System` operations under their upstream symbols, and `swr_v1_system_*` and
-//! `swr_v1_hook_socket_poll` where upstream's signature carries C++ library types.
+//! Upstream's `core-tests/src/coroutine/system.cpp` (and hook.cpp, in hook.rs), one
+//! Rust function per TEST with the same inputs and expected values, over the
+//! hybrid's libswoole.so: the Rust `System` operations under their upstream
+//! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
+//! signature carries C++ library types.
 //!
 //! `main --list` prints the cases; `main NAME` runs one, in this process, as
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`). It exits 0 when
@@ -10,6 +11,8 @@
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+
+mod hook;
 
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
@@ -847,7 +850,7 @@ fn write_file_fail() {
 }
 
 /// `coroutine_system.<name>`, in upstream's order.
-const CASES: &[(&str, fn())] = &[
+const CASES: Cases = &[
     ("file", file),
     ("flock", flock),
     ("flock_nb", flock_nb),
@@ -870,16 +873,27 @@ const CASES: &[(&str, fn())] = &[
     ("write_file_fail", write_file_fail),
 ];
 
+type Cases = &'static [(&'static str, fn())];
+
+/// Each suite and its cases.
+const SUITES: &[(&str, Cases)] = &[("coroutine_system", CASES), ("coroutine_hook", hook::CASES)];
+
 fn main() {
     let name = std::env::args().nth(1).expect("usage: main --list | NAME");
     if name == "--list" {
-        for (case, _) in CASES {
-            println!("coroutine_system.{case}");
+        for (suite, cases) in SUITES {
+            for (case, _) in *cases {
+                println!("{suite}.{case}");
+            }
         }
         return;
     }
-    let case = name.strip_prefix("coroutine_system.").unwrap_or(&name);
-    let (_, body) = CASES
+    let (suite, case) = name.split_once('.').expect("SUITE.NAME");
+    let (_, cases) = SUITES
+        .iter()
+        .find(|(known, _)| *known == suite)
+        .expect("unknown suite");
+    let (_, body) = cases
         .iter()
         .find(|(known, _)| *known == case)
         .expect("unknown case");
@@ -889,6 +903,9 @@ fn main() {
     unsafe { setrlimit(RLIMIT_NOFILE, &[20000, 20000]) };
     // SAFETY: once per process, before any other Swoole call.
     unsafe { swoole_init() };
+    if suite == "coroutine_hook" {
+        hook::prepare();
+    }
     body();
     // SAFETY: after the case, as core-tests' main.
     unsafe { swoole_clean() };

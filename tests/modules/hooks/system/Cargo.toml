@@ -1,6 +1,6 @@
-# Upstream's core-tests/src/coroutine/system.cpp GoogleTests as Rust, linked against the
+# Upstream's core-tests/src/coroutine/{system,hook}.cpp GoogleTests as Rust, linked against the
 # hybrid tree's libswoole.so (SWOOLE_LIB_DIR). Not a workspace member: it needs that
-# Linux build, which tools/core_tests.py --rust makes.
+# Linux build, which system.py makes.
 [package]
 name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
