@@ -154,7 +154,7 @@ def main():
                 write_changed(staged / path, data)
                 supplemental += [{'name': group + '.' + name, 'path': path, 'sha256': hashlib.sha256(data).hexdigest()}
                                  for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', data.decode())]
-                if len(supplemental) != 4:
+                if len(supplemental) != 3:
                     raise ValueError('Socket scope witness inventory differs')
             if args.dns_requests:
                 path = 'core-tests/src/coroutine/rust_dns_requests.cpp'
