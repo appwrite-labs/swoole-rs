@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Normal exact Port getter policy; real Zend lowercase table, native models, no callback execution/lifetime profiles."""
+import argparse
 from pathlib import Path
 import json
 import subprocess
 import sys
-from count import main,accessor
 import overlay
+ROOT=Path(__file__).resolve().parents[3]
+sys.path.insert(0,str(ROOT))
+from tools.build_hybrid import hybrid_tree
+from tools.harness import run_isolated,write_report
 
 
-def zend_map(folder, args, read):
-    php=subprocess.check_output([args.php_config,'--php-binary'],text=True).strip()
+def zend_map(folder, php_config):
+    php=subprocess.check_output([php_config,'--php-binary'],text=True).strip()
     # Read exactly the exported 256-byte initialized immutable Zend table.
     script='$f=FFI::cdef("extern const unsigned char zend_tolower_map[256];");$s="";for($i=0;$i<256;$i++)$s.=chr($f->zend_tolower_map[$i]);echo json_encode(["php"=>PHP_VERSION,"zts"=>PHP_ZTS,"hex"=>bin2hex($s)]);'
     command=[php,'-r',script];p=subprocess.run(command,capture_output=True,text=True,check=True)
@@ -48,11 +52,27 @@ RUST_GET_CALLBACK='''static PHP_METHOD(swoole_server_port, getCallback) {
 '''
 
 
-def body(text, signature):
-    return accessor(text, signature) if signature in text else RUST_GET_CALLBACK
+def main():
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True,help='Rust archive of the hybrid build under test');p.add_argument('--output',type=Path,required=True);p.add_argument('--php-config',default='php-config');p.add_argument('--sanitize',action='store_true');a=p.parse_args();overlay.SOURCE=a.source
+    folder=a.output.resolve().with_suffix('');folder.mkdir(parents=True,exist_ok=True)
+    # The original getter from the pin; the selected one is the Rust getter above, linked from the archive.
+    native=overlay.original('ext-src/swoole_server_port.cc');start=native.index('static PHP_METHOD(swoole_server_port, getCallback) {')
+    report={'scope':__doc__,'pin':overlay.PIN,'passed':False}
+    for side,body in [('original',native[start:native.index('\n}\n',start)+3]),('selected',RUST_GET_CALLBACK)]:
+        (folder/side).mkdir(exist_ok=True);(folder/side/'body.inc').write_text(body)
+        report['zend_map']=zend_map(folder/side,a.php_config)
+    # Two translation units: the original side sees only pinned text, the selected side and the driver the hybrid build's flags.
+    common=['c++','-std=c++17','-O1','-UNDEBUG']
+    if a.sanitize:common+=['-fsanitize=address,undefined','-fno-sanitize-recover=all','-g']
+    witness=str(Path(__file__).with_suffix('.cc'))
+    original=[*common,'-c','-DPORTS_SIDE=original','-I'+str(folder/'original'),witness,'-o',str(folder/'original.o')]
+    command=[*common,'-DPORTS_SIDE=selected','-DPORTS_DRIVER','-I'+str(folder/'selected'),*hybrid_tree(a.archive)[1],witness,str(folder/'original.o'),str(a.archive.resolve()),'-lpthread',*(['-Wl,--gc-sections','-ldl','-lm'] if sys.platform=='linux' else []),'-o',str(folder/'gate')]
+    r=run_isolated(original,timeout=90)
+    if not r.returncode:r=run_isolated(command,timeout=90)
+    report['compile']={'commands':[original,command],'exit':r.returncode,'stdout':r.stdout,'stderr':r.stderr}
+    if not r.returncode:
+        r=run_isolated([str(folder/'gate')],timeout=30);report['run']={'exit':r.returncode,'stdout':r.stdout,'stderr':r.stderr};report['passed']=r.returncode==0
+    write_report(a.output,report);print(json.dumps({'passed':report['passed'],'stdout':r.stdout,'stderr':r.stderr}));return int(not report['passed'])
 
 
-if __name__=='__main__':
-    sys.exit(main(signatures=['static PHP_METHOD(swoole_server_port, getCallback) {'],
-                  witness=Path(__file__).with_suffix('.cc'),scope=__doc__,
-                  source_path='ext-src/swoole_server_port.cc',extra_support=zend_map,body_extractor=body))
+if __name__=='__main__':sys.exit(main())

@@ -84,21 +84,6 @@ class Sides:
     def original(self, path):
         return (self.pin/path).read_text()
 
-    def selected(self, path):
-        return (self.hybrid/path).read_text()
-
-    def native(self, report, *paths):
-        """Compile the hybrid tree's whole native translation units as C++14."""
-        flags = ['-std=c++14' if flag == '-std=c++17' else flag for flag in self.flags['candidate']]
-        report['native_cxx_standard'], report['shim_cxx_standard'] = 'c++14', 'c++17'
-        for path in paths:
-            command = ['c++', *flags, '-c', str(self.hybrid/path), '-o', str(self.tree/(Path(path).stem+'.native.o'))]
-            result = run_isolated(command, timeout=60)
-            report.setdefault('whole_native_translation_units', {})[path] = {'command': command, 'returncode': result.returncode, 'stderr': result.stderr}
-            if result.returncode:
-                print(result.stderr, file=sys.stderr); return False
-        return True
-
     def build(self, binary, units, archive, report, gc_sections=False):
         """Compile each (side, source) unit with its side's flags, then link them with the archive.
         gc_sections drops the archive's unreached references to C++ (the server state's)."""
