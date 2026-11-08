@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Upstream's core-tests/src/coroutine/{system,hook,socket}.cpp, ported to Rust (tests/modules/hooks/system/),
-against the hybrid tree's libswoole.so (Linux). Builds lib-swoole as tools/core_tests.py builds
-the hybrid engine, links the case binary to it, and runs each case in its own process group.
+"""Upstream's core-tests ported to Rust (by default core-tests/src/coroutine/{system,hook,socket}.cpp,
+tests/modules/hooks/system/; --package names another case package), against the hybrid tree's
+libswoole.so (Linux). Builds lib-swoole as tools/core_tests.py builds the hybrid engine, with
+--fixture compiled in, links the case binary to it, and runs each case in its own process group.
 --exclude NAME=REASON reports a case `excluded` with its reason; it never counts as passed."""
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -26,6 +28,8 @@ def main():
     parser.add_argument('--config', type=Path, required=True, help="The hybrid build's configured config.h")
     parser.add_argument('--archive', type=Path, required=True, help='<build>/rust-prefix/lib/libswoole_rs_ffi.a of the hybrid build')
     parser.add_argument('--build-root', type=Path, required=True, help='Private writable build directory')
+    parser.add_argument('--package', type=Path, default=PACKAGE, help='The case package (Cargo.toml and a --list binary)')
+    parser.add_argument('--fixture', type=Path, help="An owned C++ fixture compiled into lib-swoole for the cases")
     parser.add_argument('--exclude', action='append', default=[], metavar='SUITE.NAME=REASON')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--timeout', type=int, default=90, help='Seconds per case')
@@ -48,17 +52,19 @@ def main():
                     write_changed(tree / path.relative_to(staged), path.read_bytes())
         write_changed(tree / 'config.h', args.config.read_bytes())
         cmake = (tree / 'CMakeLists.txt').read_text()
-        write_changed(tree / 'CMakeLists.txt', f'{cmake}\n{hybrid_cmake}target_link_libraries(lib-swoole "{args.archive.resolve()}")\n'.encode())
+        fixture = f'target_sources(lib-swoole PRIVATE "{args.fixture.resolve()}")\n' if args.fixture else ''
+        write_changed(tree / 'CMakeLists.txt', f'{cmake}\n{hybrid_cmake}target_link_libraries(lib-swoole "{args.archive.resolve()}")\n{fixture}'.encode())
         env = {**os.environ, 'SWOOLE_LIB_DIR': str(tree / 'lib'), 'CARGO_TARGET_DIR': str(args.build_root.resolve() / 'cargo')}
         for step, command in [('configure', ['cmake', '-S', str(tree), '-B', str(tree / 'build'), '-Dphp_dir=/usr', '-DCMAKE_BUILD_TYPE=Release',
                                              '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -UNDEBUG', '-DCMAKE_C_FLAGS_RELEASE=-O2 -UNDEBUG']),
                               ('build', ['cmake', '--build', str(tree / 'build'), '--target', 'lib-swoole', '-j' + str(args.jobs)]),
-                              ('cargo', ['cargo', 'build', '--locked', '--manifest-path', str(PACKAGE / 'Cargo.toml')])]:
+                              ('cargo', ['cargo', 'build', '--locked', '--manifest-path', str(args.package / 'Cargo.toml')])]:
             result = run_isolated(command, timeout=900, env=env)
             (logs / (step + '.log')).write_text(result.stdout + result.stderr)
             if result.returncode:
                 raise RuntimeError(f'{step} failed: {logs / (step + ".log")}')
-        binary = args.build_root.resolve() / 'cargo/debug/swoole-rs-hooks-system-tests'
+        name = re.search(r'^name = "(.+)"$', (args.package / 'Cargo.toml').read_text(), re.M).group(1)
+        binary = args.build_root.resolve() / 'cargo/debug' / name
         inventory = subprocess.check_output([str(binary), '--list'], text=True).split()
         if not inventory or len(set(inventory)) != len(inventory) or set(excluded) - set(inventory):
             raise ValueError('Empty or duplicate inventory, or an exclusion names no case')

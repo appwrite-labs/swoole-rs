@@ -1,0 +1,11 @@
+# Upstream's core-tests/src/server/http_server.cpp TESTs that start a server, as Rust, linked
+# against the hybrid tree's libswoole.so (SWOOLE_LIB_DIR) with fixture.cc compiled in. Not a
+# workspace member: it needs that Linux build, which tests/modules/hooks/system.py makes. build.rs
+# links it; Cargo.lock pins the (empty) dependency set for --locked.
+[package]
+name = "swoole-rs-http-server-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
