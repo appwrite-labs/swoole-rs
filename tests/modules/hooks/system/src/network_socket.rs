@@ -762,6 +762,7 @@ fn sendto_unix() {
 
     let mut buf = [0_u8; 1024];
     let mut sa = Address::new();
+    sa.kind = SW_SOCK_UNIX_DGRAM;
     assert!(sock2.recvfrom(&mut buf, &mut sa) > 0);
     assert_eq!(test_data(), c_str(&buf));
     // SAFETY: the address's per-thread text.
@@ -792,6 +793,7 @@ fn test_sendto(sock_type: c_int) {
 
     let mut buf = [0_u8; 1024];
     let mut sa = Address::new();
+    sa.kind = sock_type;
     assert!(sock2.recvfrom(&mut buf, &mut sa) > 0);
 
     assert_eq!(test_data(), c_str(&buf));

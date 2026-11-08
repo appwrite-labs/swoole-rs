@@ -83,7 +83,7 @@ unsafe extern "C" {
 pub(super) struct Address {
     pub(super) addr: [u32; 28],
     pub(super) len: u32,
-    kind: c_int,
+    pub(super) kind: c_int,
 }
 
 impl Address {
