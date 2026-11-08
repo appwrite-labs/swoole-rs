@@ -11,45 +11,15 @@ extern "C" {
  * and VM swap, activation, the preemptive scheduler, Swoole\Coroutine's
  * methods, go()/defer(), the exit and silence handlers and the autoload hook.
  * php_swoole_coroutine_{minit,rinit,rshutdown} are Rust; native/phpcoroutines
- * lends what needs C++ (coroutine.cc). Rust's zim_swoole_coroutine_* and zif_*
- * are the handlers its tables name. A coroutine's context is opaque. */
+ * lends what needs C++ (coroutine.cc: std::function members and the
+ * Context). Rust's zim_swoole_coroutine_* and zif_* are the handlers its
+ * tables name. A coroutine's context is opaque. */
 struct _zend_class_entry;
 struct _zend_execute_data;
 struct _zend_fcall_info_cache;
 struct _zval_struct;
 struct _zend_array;
 struct _zend_string;
-
-/* The globals and server state the frontend reads (host flags). */
-enum {
-    SWR_PHPCOROUTINES_CLI = 1,
-    SWR_PHPCOROUTINES_SHORTNAME = 2,
-    SWR_PHPCOROUTINES_LIBRARY = 4,
-    SWR_PHPCOROUTINES_FIBER_MOCK = 8,
-    SWR_PHPCOROUTINES_PREEMPTIVE = 16,
-    SWR_PHPCOROUTINES_SHUTDOWN_FUNCTIONS = 32,
-    SWR_PHPCOROUTINES_SERVER_STARTED = 64,
-    SWR_PHPCOROUTINES_MAIN_THREAD = 128,
-    SWR_PHPCOROUTINES_FATAL = 256,
-    SWR_PHPCOROUTINES_CORO_TIME = 512, /* built with SW_CORO_TIME */
-    SWR_PHPCOROUTINES_THREAD = 1024,   /* built with SW_THREAD */
-};
-
-struct swr_v1_phpcoroutines_stats {
-    int64_t event_num;
-    int64_t signal_listener_num;
-    int64_t aio_task_num;
-    int64_t aio_worker_num;
-    int64_t aio_queue_size;
-    int64_t c_stack_size;
-    int64_t coroutine_num;
-    int64_t coroutine_peak_num;
-    int64_t coroutine_last_cid;
-    uint8_t iouring;
-    int64_t iouring_task_num;
-    int64_t iouring_sq_usage_percent;
-    int64_t iouring_waiting_task_num;
-};
 
 /* PHPCoroutine::create: the new cid or Coroutine::ERR_*; 1 in *bailout when
  * activation bailed out, which the caller re-raises. */

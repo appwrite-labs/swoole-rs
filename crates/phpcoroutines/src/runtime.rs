@@ -249,7 +249,7 @@ unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
 }
 
 /// `coro_interrupt_resume`.
-unsafe extern "C" fn interrupt_resume(co: *mut c_void) {
+unsafe extern "C-unwind" fn interrupt_resume(co: *mut c_void) {
     if !co.is_null() && !host::is_end(co) {
         host::resume(co);
     }

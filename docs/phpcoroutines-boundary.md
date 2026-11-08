@@ -16,8 +16,10 @@ zend-sys shim that runs the user callable and its defer tasks inside
 scheduler and each coroutine's record) and calls the module host, the runtime
 hooks and the event loop directly. Rust callers start coroutines with
 `swr_v1_phpcoroutines_create`. `native/phpcoroutines/coroutine.cc` keeps what
-needs C++: a `Coroutine`'s context and `std::function` members (timer, defer,
-bailout, the user exit condition), and reads of `Server`, `Reactor` and io_uring.
+needs C++: a `Coroutine`'s context, whose record follows a `std::function`, and
+the `std::function`s `Coroutine::bailout` and `SwooleG.user_exit_condition` take
+(`native/phpevents/event.cc` reads the latter). The server, reactor and io_uring
+reads, deferred tasks, timers and the build's switches are Rust (`host.rs`).
 
 `Swoole\Coroutine\Scheduler`, the coroutine options and the reactor's user exit
 condition are Rust (`scheduler.rs`), under upstream's

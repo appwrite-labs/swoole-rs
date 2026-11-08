@@ -1,8 +1,8 @@
 //! What PHP coroutines ask of the rest of Swoole: the coroutine core's
 //! scheduler (crates/coroutine's state, which C++ keeps thread-local), the
-//! module host, the runtime hooks and the event loop, and
-//! native/phpcoroutines/coroutine.cc for the C++ objects (a Coroutine's
-//! construction and context, `std::function` members, Server, Reactor).
+//! module host, the runtime hooks, the event loop and the server, and
+//! native/phpcoroutines/coroutine.cc for what takes a `std::function` or reads
+//! a Coroutine's C++ context.
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use swoole_rs_coroutine::{RC_CANCELED, Scheduler};
 use swoole_rs_zend::{
@@ -10,8 +10,7 @@ use swoole_rs_zend::{
     sys::{swr_zend_callable, zend_array, zend_execute_data, zval},
 };
 
-/// `swr_v1_phpcoroutines_stats`.
-#[repr(C)]
+/// `Co::stats()`'s native counts.
 #[derive(Default)]
 pub(crate) struct Stats {
     pub(crate) event_num: i64,
@@ -45,24 +44,23 @@ unsafe extern "C" {
         cancel: unsafe extern "C-unwind" fn(Co, *mut c_void) -> bool,
         data: *mut c_void,
     );
-    fn swr_cpp_phpcoroutines_host_flags(mask: u32) -> u32;
     fn swr_cpp_phpcoroutines_bailout();
-    fn swr_cpp_phpcoroutines_kernel_coroutine(count: c_long, sleep: f64);
-    fn swr_cpp_phpcoroutines_stats(stats: *mut Stats);
+    fn swr_cpp_phpcoroutines_stack(co: Co, size: *mut usize) -> *mut c_void;
+    fn swr_cpp_phpcoroutines_set_exit_condition(set: u8);
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
-    fn swr_cpp_phpcoroutines_stack(co: Co, size: *mut usize) -> *mut c_void;
-    fn swr_cpp_phpcoroutines_is_end(co: Co) -> u8;
-    fn swr_cpp_phpcoroutines_activate(deactivate: unsafe extern "C" fn(*mut c_void));
-    fn swr_cpp_phpcoroutines_defer(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void);
-    fn swr_cpp_phpcoroutines_set_exit_condition(set: u8);
-    // crates/coroutine, native/coroutine/coroutine.cc, crates/timer, crates/reactor and crates/process.
+    // crates/coroutine, native/coroutine/coroutine.cc, crates/timer, crates/reactor,
+    // crates/process and crates/hooks.
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: Co, timeout: f64) -> bool;
     #[link_name = "_ZN6swoole9Coroutine6cancelEv"]
     fn coroutine_cancel(co: Co) -> bool;
+    #[link_name = "_ZN6swoole9Coroutine8activateEv"]
+    fn coroutine_activate();
     #[link_name = "_ZN6swoole9Coroutine10deactivateEv"]
     fn coroutine_deactivate();
+    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
+    fn system_sleep(seconds: f64) -> c_int;
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
     fn swoole_timer_del(timer: *mut c_void) -> bool;
     fn swr_v1_timer_add_plain_sec(
@@ -93,7 +91,7 @@ unsafe extern "C" {
     fn swr_v1_phphelpers_cache_free(fcc: *mut swoole_rs_zend::sys::zend_fcall_info_cache);
 }
 
-/// `swr_v1_phpcoroutines_*` flag bits.
+/// The globals, server state and build switches [`flag`] reads.
 pub(crate) const CLI: u32 = 1;
 pub(crate) const SHORTNAME: u32 = 2;
 pub(crate) const LIBRARY: u32 = 4;
@@ -127,8 +125,67 @@ pub(crate) fn flag(bit: u32) -> bool {
         FIBER_MOCK => g.enable_fiber_mock,
         PREEMPTIVE => g.enable_preemptive_scheduler,
         SHUTDOWN_FUNCTIONS => g.req_status == swoole_rs_phpswoole::CALL_USER_SHUTDOWNFUNC_BEGIN,
-        // SAFETY: C++ reads the server, the reactor and the build's switches.
-        _ => (unsafe { swr_cpp_phpcoroutines_host_flags(bit) }) != 0,
+        SERVER_STARTED => {
+            let serv = swoole_rs_corebase::swr_v1_core_server();
+            // SAFETY: the process's live server.
+            !serv.is_null() && unsafe { swoole_rs_server::view::is_started(serv) }
+        }
+        FATAL => last_error_fatal() || reactor().is_some_and(|(fields, _)| fields.bailout),
+        // `sw_is_main_thread()`.
+        // SAFETY: no preconditions.
+        MAIN_THREAD => !cfg!(zts) || unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() },
+        // Only SW_CORO_TIME builds give the scheduler a clock.
+        CORO_TIME => sched().hooks.clock.is_some(),
+        THREAD => swoole_rs_phpswoole::built_with(swoole_rs_phpswoole::Capability::Thread),
+        _ => false,
+    }
+}
+
+/// `php_swoole_is_fatal_error()`: the last PHP error was fatal.
+fn last_error_fatal() -> bool {
+    let (mut message, mut file, mut line) = (std::ptr::null(), std::ptr::null(), 0);
+    // SAFETY: writable out-parameters.
+    unsafe {
+        swoole_rs_zend::sys::swr_zend_last_fatal_error(
+            &raw mut message,
+            &raw mut file,
+            &raw mut line,
+        )
+    }
+}
+
+/// The thread's event loop (`sw_reactor()`), if it has one: its fields and its
+/// socket registry. Callers hold the borrow only for one read or push.
+fn reactor() -> Option<(
+    &'static mut swoole_rs_reactor::ReactorFields,
+    *mut swoole_rs_reactor::Registry,
+)> {
+    let reactor = swoole_rs_corebase::thread_reactor();
+    if reactor.is_null() {
+        return None;
+    }
+    // SAFETY: the thread's live loop, which begins with its prepared state.
+    let prepared = unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) };
+    // SAFETY: the loop's fields, live until `swoole_event_free`.
+    unsafe { prepared.fields.as_mut() }.map(|fields| (fields, prepared.registry))
+}
+
+/// Queue `f(data)` on the running loop: on its deferred tasks, or (`destroy`)
+/// on the callbacks its free runs.
+fn reactor_push(destroy: bool, f: swoole_rs_reactor::DeferCall, data: *mut c_void) {
+    // Upstream dereferences `sw_reactor()` here unchecked.
+    let Some((fields, _)) = reactor() else {
+        std::process::abort()
+    };
+    let queue = if destroy {
+        &raw mut fields.destroy_callbacks
+    } else {
+        &raw mut fields.defer_tasks
+    };
+    // SAFETY: the loop's live queue; `data` stays with the task.
+    if unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, f, data, None) } != 0 {
+        // Upstream throws std::bad_alloc, which no frame here could catch.
+        std::process::abort();
     }
 }
 
@@ -161,9 +218,21 @@ fn scheduler() -> *mut Scheduler {
     unsafe { swr_cpp_coroutine_scheduler() }.cast()
 }
 
+/// This thread's scheduler, borrowed for one read.
+fn sched() -> &'static Scheduler {
+    // SAFETY: this thread's scheduler, which lives as long as the thread.
+    unsafe { &*scheduler() }
+}
+
 /// The Rust state `co` starts with.
 fn state(co: Co) -> *mut swoole_rs_coroutine::Coroutine {
     co.cast()
+}
+
+/// The Rust state of `co`, a live coroutine, borrowed for one read.
+fn live(co: Co) -> &'static swoole_rs_coroutine::Coroutine {
+    // SAFETY: callers pass a live coroutine, which starts with its state.
+    unsafe { &*state(co) }
 }
 
 /// The facade of `co`'s Rust state, null for none.
@@ -180,8 +249,7 @@ pub(crate) fn count() -> usize {
 /// `Coroutine::get_current()`: null outside a coroutine.
 #[must_use]
 pub fn current() -> Co {
-    // SAFETY: this thread's scheduler.
-    native(unsafe { (*scheduler()).current })
+    native(sched().current)
 }
 
 /// `Coroutine::get_current_safe()`: outside a coroutine it raises a fatal
@@ -270,8 +338,13 @@ pub(crate) fn list(cids: &mut [c_long]) -> usize {
 
 /// `Co::stats()`.
 pub(crate) fn stats(stats: &mut Stats) {
-    // SAFETY: C++ fills in the reactor and io_uring counts.
-    unsafe { swr_cpp_phpcoroutines_stats(stats) };
+    if let Some((_, registry)) = reactor() {
+        // SAFETY: the live loop's registry.
+        let count = unsafe { swoole_rs_reactor::swr_v1_reactor_registry_count(registry) };
+        stats.event_num = i64::try_from(count).unwrap_or(i64::MAX);
+    }
+    #[cfg(feature = "iouring")]
+    iouring_stats(stats);
     // SAFETY: plain out-parameters.
     unsafe {
         swr_v1_async_threads_stats(
@@ -282,18 +355,57 @@ pub(crate) fn stats(stats: &mut Stats) {
     };
     // SAFETY: crates/reactor counts this thread's listeners.
     stats.signal_listener_num = i64::from(unsafe { swoole_signal_get_listener_num() });
-    // SAFETY: this thread's scheduler.
-    let s = unsafe { &*scheduler() };
+    let s = sched();
     stats.c_stack_size = i64::try_from(s.stack_size).unwrap_or(i64::MAX);
     stats.coroutine_num = i64::try_from(count()).unwrap_or(i64::MAX);
     stats.coroutine_peak_num = i64::try_from(s.peak_num).unwrap_or(i64::MAX);
     stats.coroutine_last_cid = s.last_cid;
 }
 
-/// `swoole_test_kernel_coroutine`'s coroutine.
+/// The `io_uring` engine's counts, once the thread has one.
+#[cfg(feature = "iouring")]
+fn iouring_stats(stats: &mut Stats) {
+    // SAFETY: crates/hooks's engine, read with no other access.
+    unsafe extern "C" {
+        fn swr_v1_uring_current() -> *mut c_void;
+        fn swr_v1_uring_task_num(uring: *const c_void) -> u32;
+        fn swr_v1_uring_waiting_num(uring: *const c_void) -> usize;
+        fn swr_v1_uring_sq_usage_percent(uring: *const c_void) -> f32;
+    }
+    // SAFETY: no preconditions.
+    let uring = unsafe { swr_v1_uring_current() };
+    if uring.is_null() {
+        return;
+    }
+    stats.iouring = 1;
+    // SAFETY: the thread's live engine.
+    stats.iouring_task_num = i64::from(unsafe { swr_v1_uring_task_num(uring) });
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "upstream stores the float percentage in an integer"
+    )]
+    // SAFETY: as above.
+    let percent = unsafe { swr_v1_uring_sq_usage_percent(uring) } as i64;
+    stats.iouring_sq_usage_percent = percent;
+    // SAFETY: as above.
+    let waiting = unsafe { swr_v1_uring_waiting_num(uring) };
+    stats.iouring_waiting_task_num = i64::try_from(waiting).unwrap_or(i64::MAX);
+}
+
+/// `swoole_test_kernel_coroutine`'s coroutine: sleeps `count` times.
 pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
-    // SAFETY: C++ creates a coroutine that sleeps.
-    unsafe { swr_cpp_phpcoroutines_kernel_coroutine(count, sleep) };
+    /// The coroutine's body, which copies its arguments before its first switch.
+    extern "C" fn sleeper(args: *mut c_void) {
+        // SAFETY: the creator's arguments, live until this coroutine first yields.
+        let (count, sleep) = unsafe { *args.cast::<(c_long, f64)>() };
+        for _ in 0..count {
+            // SAFETY: in a coroutine.
+            unsafe { system_sleep(sleep) };
+        }
+    }
+    let mut args = (count, sleep);
+    // SAFETY: the coroutine runs at once and reads `args` before it yields.
+    unsafe { swr_cpp_coroutine_create(sleeper, (&raw mut args).cast(), std::ptr::null()) };
 }
 
 pub(crate) fn set_task(co: Co, task: *mut c_void) {
@@ -303,27 +415,23 @@ pub(crate) fn set_task(co: Co, task: *mut c_void) {
 
 /// The task of `co`'s origin, null for the main context.
 pub(crate) fn origin_task(co: Co) -> *mut c_void {
-    // SAFETY: a live coroutine, whose origin is live or null.
-    task(native(unsafe { (*state(co)).origin }))
+    task(native(live(co).origin))
 }
 
 /// `Coroutine::get_cid()` of a live coroutine.
 #[must_use]
 pub fn cid(co: Co) -> c_long {
-    // SAFETY: a live coroutine.
-    unsafe { (*state(co)).cid }
+    live(co).cid
 }
 
 pub(crate) fn origin_cid(co: Co) -> c_long {
-    // SAFETY: a live coroutine.
-    let origin = unsafe { (*state(co)).origin };
+    let origin = live(co).origin;
     // SAFETY: its origin is live or null.
     unsafe { origin.as_ref() }.map_or(-1, |origin| origin.cid)
 }
 
 pub(crate) fn state_of(co: Co) -> c_int {
-    // SAFETY: a live coroutine.
-    unsafe { (*state(co)).state }
+    live(co).state
 }
 
 /// `co`'s C stack and its size, null under thread contexts.
@@ -362,16 +470,14 @@ pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.
 #[must_use]
 pub fn counts() -> (usize, u64) {
-    // SAFETY: this thread's scheduler.
-    (count(), unsafe { (*scheduler()).peak_num })
+    (count(), sched().peak_num)
 }
 
 /// `co->is_suspending()`.
 /// # Safety
 /// `co` is a live coroutine.
 pub unsafe fn is_suspending(co: Co) -> bool {
-    // SAFETY: per the caller.
-    unsafe { (*state(co)).state == swoole_rs_coroutine::STATE_WAITING }
+    live(co).state == swoole_rs_coroutine::STATE_WAITING
 }
 
 /// `co->yield()`, as [`yield_`]: the caller's frames own nothing that needs a drop.
@@ -432,13 +538,13 @@ pub(crate) fn cancel(co: Co) -> bool {
 /// `co->is_canceled()` of a live coroutine.
 #[must_use]
 pub fn is_canceled(co: Co) -> bool {
-    // SAFETY: a live coroutine.
-    unsafe { (*state(co)).resume_code == RC_CANCELED }
+    live(co).resume_code == RC_CANCELED
 }
 
+/// `co->is_end()`: a context that ended is closed and freed before anything
+/// else runs, so a live coroutine has ended only while it closes.
 pub(crate) fn is_end(co: Co) -> bool {
-    // SAFETY: a live coroutine.
-    unsafe { swr_cpp_phpcoroutines_is_end(co) != 0 }
+    state_of(co) == swoole_rs_coroutine::STATE_END
 }
 
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
@@ -508,8 +614,9 @@ pub(crate) fn attach(
     on_resume: unsafe extern "C" fn(*mut c_void),
     on_close: unsafe extern "C" fn(*mut c_void),
 ) {
-    // SAFETY: the reactor is running.
-    unsafe { swr_cpp_phpcoroutines_activate(deactivate_on_free) };
+    reactor_push(true, deactivate_on_free, std::ptr::null_mut());
+    // SAFETY: the core's activation, on a running loop.
+    unsafe { coroutine_activate() };
     set_callbacks([Some(on_yield), Some(on_resume), Some(on_close)]);
 }
 
@@ -530,7 +637,7 @@ fn set_callbacks(callbacks: [swoole_rs_coroutine::SwapCallback; 3]) {
 }
 
 /// The reactor's destroy callback.
-unsafe extern "C" fn deactivate_on_free(_: *mut c_void) {
+unsafe extern "C-unwind" fn deactivate_on_free(_: *mut c_void) {
     bailout::raise(crate::runtime::deactivate());
 }
 
@@ -588,9 +695,8 @@ pub(crate) fn absolute_msec() -> c_long {
 }
 
 /// `swoole_event_defer(f, data)`.
-pub(crate) fn defer(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void) {
-    // SAFETY: C++ queues the call on the running loop.
-    unsafe { swr_cpp_phpcoroutines_defer(f, data) };
+pub(crate) fn defer(f: swoole_rs_reactor::DeferCall, data: *mut c_void) {
+    reactor_push(false, f, data);
 }
 
 /// A one-shot timer calling `f(data)` after `timeout` seconds.
