@@ -376,10 +376,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
             SW_OK
         }
         RUN_SHUTDOWN => i64::from(control::shutdown(h)?),
-        ops::RUN_REOPEN_LOGGER => {
-            control::reopen_logger(h)?;
-            1
-        }
         RUN_SIGNAL => {
             control::signal(h, i32::try_from(arg).unwrap_or(0))?;
             SW_OK

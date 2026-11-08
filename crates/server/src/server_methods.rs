@@ -18,10 +18,10 @@ use crate::ops::{
 use crate::ops::{
     RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_BASE_DISPATCH, RUN_BASE_END,
     RUN_BASE_FINISH, RUN_BASE_NOTIFY, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
-    RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_REOPEN_LOGGER, RUN_SC_SEND, RUN_SCHEDULE_WORKER,
-    RUN_SENDFILE, RUN_SENDWAIT, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT,
-    RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_FOREACH,
-    RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT,
+    RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER,
+    RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_FOREACH, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
+    RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
 use crate::records::ConnectionRecord;
 use crate::view;
@@ -105,15 +105,15 @@ unsafe fn run(op: u32, arg: u64, ctx: &mut NativeContext) -> i64 {
     unsafe { native(op, arg, ctx) }
 }
 
-/// Each method that is one operation over the server alone: its symbol, Rust
+/// Each method that is one operation over the server alone: its symbol if C++ calls it, Rust
 /// name, return type and operation. `bool` and `int` returns narrow like C++.
 macro_rules! plain_methods {
-    ($($symbol:literal fn $name:ident() -> $r:ty = $op:ident;)*) => {$(
-        #[doc = concat!("`", $symbol, "`.")]
+    ($($($symbol:literal)? fn $name:ident() -> $r:ty = $op:ident;)*) => {$(
+        #[doc = concat!("`Server::", stringify!($name), "`.")]
         ///
         /// # Safety
         /// `serv` is a live `Server`.
-        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
+        $(#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))])?
         pub unsafe extern "C-unwind" fn $name(serv: *mut c_void) -> $r {
             // SAFETY: as the caller guarantees.
             Narrow::narrow(unsafe { run($op, 0, &mut NativeContext::new(serv)) })
@@ -158,26 +158,21 @@ impl Narrow for u32 {
 }
 
 plain_methods! {
-    "_ZN6swoole6Server11clear_timerEv" fn clear_timer() -> () = RUN_ST_CLEAR_TIMER;
+    fn clear_timer() -> () = RUN_ST_CLEAR_TIMER;
     "_ZN6swoole6Server8shutdownEv" fn shutdown() -> bool = RUN_SHUTDOWN;
-    "_ZNK6swoole6Server28signal_handler_reopen_loggerEv" fn signal_handler_reopen_logger() -> bool = RUN_REOPEN_LOGGER;
-    "_ZN6swoole6Server18add_systemd_socketEv" fn add_systemd_socket() -> c_int = RUN_SYSTEMD_SOCKETS;
+    fn add_systemd_socket() -> c_int = RUN_SYSTEMD_SOCKETS;
     "_ZNK6swoole6Server19get_idle_worker_numEv" fn get_idle_worker_num() -> u32 = RUN_IDLE_WORKERS;
-    "_ZNK6swoole6Server24get_idle_task_worker_numEv" fn get_idle_task_worker_num() -> c_int = RUN_IDLE_TASK_WORKERS;
-    "_ZNK6swoole6Server15get_tasking_numEv" fn get_tasking_num() -> c_int = RUN_TASKING;
+    fn get_idle_task_worker_num() -> c_int = RUN_IDLE_TASK_WORKERS;
+    fn get_tasking_num() -> c_int = RUN_TASKING;
     "_ZN6swoole6Server5startEv" fn start() -> c_int = RUN_START;
     "_ZN6swoole6Server11start_checkEv" fn start_check() -> c_int = RUN_START_CHECK;
-    "_ZN6swoole6Server19store_listen_socketEv" fn store_listen_socket() -> () = RUN_STORE_LISTEN_SOCKET;
+    fn store_listen_socket() -> () = RUN_STORE_LISTEN_SOCKET;
 }
 
 /// `Server::master_signal_handler(signo)`: the signal over `SwooleG.server`.
 ///
 /// # Safety
 /// Runs as a signal handler while `SwooleG.server` is live.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server21master_signal_handlerEi")
-)]
 pub unsafe extern "C-unwind" fn master_signal_handler(signo: c_int) {
     let mut ctx = NativeContext::new(swoole_rs_corebase::swr_v1_core_server());
     // SAFETY: as the caller guarantees.
@@ -342,10 +337,6 @@ pub unsafe extern "C-unwind" fn init_pipe_sockets(serv: *mut c_void, mb: *mut c_
 ///
 /// # Safety
 /// `serv` is a live `Server`, `reactor` its reactor and `conn` one of its connections.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server19connection_incomingEPNS_7ReactorEPNS_10ConnectionE")
-)]
 pub unsafe extern "C-unwind" fn connection_incoming(
     serv: *mut c_void,
     reactor: *mut c_void,
@@ -484,10 +475,6 @@ pub unsafe extern "C" fn feedback(serv: *mut c_void, conn: *mut c_void, event: c
 ///
 /// # Safety
 /// `serv` is a live `Server` and `pipe` a live `UnixSocket`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server13store_pipe_fdEPNS_10UnixSocketE")
-)]
 pub unsafe extern "C" fn store_pipe_fd(serv: *mut c_void, pipe: *mut c_void) {
     let mut ctx = NativeContext::new(serv);
     ctx.object = pipe;
@@ -499,10 +486,6 @@ pub unsafe extern "C" fn store_pipe_fd(serv: *mut c_void, pipe: *mut c_void) {
 ///
 /// # Safety
 /// `serv` is a live `Server`; `data` null or a live `SendData`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server15schedule_workerEiPNS_8SendDataE")
-)]
 pub unsafe extern "C" fn schedule_worker(serv: *mut c_void, fd: c_int, data: *mut c_void) -> c_int {
     let mut ctx = NativeContext::new(serv);
     ctx.server_fd = fd;
@@ -676,10 +659,6 @@ pub(crate) unsafe extern "C" fn master_timer_tick(serv: *mut c_void) {
 ///
 /// # Safety
 /// `serv` is a live `Server`; `data` holds `length` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server8sendwaitElPKvj")
-)]
 pub unsafe extern "C" fn sendwait(
     serv: *mut c_void,
     session_id: c_long,
@@ -698,10 +677,6 @@ pub unsafe extern "C" fn sendwait(
 ///
 /// # Safety
 /// `serv` is a live `Server`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server23has_kernel_nobufs_errorEl")
-)]
 pub unsafe extern "C" fn has_kernel_nobufs_error(serv: *mut c_void, session_id: c_long) -> bool {
     let mut ctx = NativeContext::new(serv);
     // SAFETY: as the caller guarantees.
@@ -936,10 +911,6 @@ const EVENT_PIPE_MESSAGE: u8 = 10;
 ///
 /// # Safety
 /// `serv` is a live `Server`, `worker_id` one of its workers and `msg` a live `EventData`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server17send_pipe_messageEjPNS_9EventDataE")
-)]
 pub unsafe extern "C" fn send_pipe_message(
     serv: *mut c_void,
     worker_id: u32,
@@ -965,10 +936,6 @@ struct EventData([u8; IPC_BUFFER_SIZE + 40]);
 ///
 /// # Safety
 /// `serv` is a live `Server` and `worker_id` one of its workers; `data` holds `len` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server17send_pipe_messageEjPKcm")
-)]
 pub unsafe extern "C" fn send_pipe_message_data(
     serv: *mut c_void,
     worker_id: u32,

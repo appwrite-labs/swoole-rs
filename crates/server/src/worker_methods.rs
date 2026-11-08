@@ -146,10 +146,6 @@ pub unsafe extern "C" fn abort_worker(serv: *mut c_void, worker: *mut WorkerReco
 ///
 /// # Safety
 /// `serv` is a live `Server`; `worker` the current process's worker.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server17init_event_workerEPNS_6WorkerE")
-)]
 pub unsafe extern "C" fn init_event_worker(serv: *mut c_void, worker: *mut WorkerRecord) {
     // SAFETY: per the caller.
     unsafe { swr_v1_worker_init(worker) };
@@ -166,10 +162,6 @@ pub unsafe extern "C" fn init_event_worker(serv: *mut c_void, worker: *mut Worke
 ///
 /// # Safety
 /// `serv` is a live `Server`, not started.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server17init_ipc_max_sizeEv")
-)]
 pub unsafe extern "C" fn init_ipc_max_size(serv: *mut c_void) {
     // SAFETY: per the caller.
     unsafe { view::config(serv) }.ipc_max_size =
@@ -180,10 +172,6 @@ pub unsafe extern "C" fn init_ipc_max_size(serv: *mut c_void) {
 ///
 /// # Safety
 /// `serv` is a live `Server` with its shared memory, shutting down.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server20destroy_task_workersEv")
-)]
 pub unsafe extern "C" fn destroy_task_workers(serv: *mut c_void) {
     // SAFETY: per the caller.
     let results = unsafe { view::config(serv) }.task_results;
@@ -252,7 +240,6 @@ pub unsafe extern "C" fn destroy_worker(_serv: *mut c_void, worker: *mut WorkerR
 /// # Safety
 /// `serv` is a live `Server`, being created, with its worker arrays.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZN6swoole6Server20create_event_workersEv")]
 pub unsafe extern "C" fn create_event_workers(serv: *mut c_void) -> bool {
     // SAFETY: per the caller.
     let count = unsafe { view::config(serv) }.worker_num;
@@ -273,7 +260,6 @@ pub unsafe extern "C" fn create_event_workers(serv: *mut c_void) -> bool {
 /// # Safety
 /// `serv` is a live `Server`, in the manager's startup.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZN6swoole6Server19create_user_workersEv")]
 pub unsafe extern "C" fn create_user_workers(serv: *mut c_void) -> bool {
     let size = size_of::<WorkerRecord>();
     // SAFETY: per the caller.
