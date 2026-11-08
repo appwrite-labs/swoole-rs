@@ -5,7 +5,7 @@
 //! (native `async`, through the hooks' host). With `php`, MINIT ([`minit`])
 //! registers the driver with PDO.
 //!
-//! The exports keep upstream's names: `php_swoole_sqlite.h` declares them and
+//! The exports keep upstream's names: `native/hooks/php_swoole_sqlite.h` declares them and
 //! the driver's macros call them. The extension links the system `libsqlite3`
 //! itself (configure's `pkg-config sqlite3`); nothing here links it.
 #![cfg_attr(
