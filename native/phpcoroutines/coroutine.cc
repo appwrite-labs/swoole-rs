@@ -103,8 +103,8 @@ void swr_cpp_phpcoroutines_defer(void (*fn)(void *), void *data) {
     swoole_event_defer(fn, data);
 }
 
-void *swr_cpp_phpcoroutines_timer_add(double timeout, long cid, void (*fn)(long)) {
-    return swoole_timer_add(timeout, false, [cid, fn](swoole::Timer *, TimerNode *) { fn(cid); });
+void *swr_cpp_phpcoroutines_timer_add(double timeout, void *data, void (*fn)(void *)) {
+    return swoole_timer_add(timeout, false, [data, fn](swoole::Timer *, TimerNode *) { fn(data); });
 }
 
 // Co::set(['exit_condition' => ...]): Rust owns the callable.

@@ -4,11 +4,12 @@
 //! operations in `Coroutines`, keeps the SIGCHLD and reactor registration and sets
 //! errno and the last error on a timeout.
 //!
-//! Waiting, like upstream, is for the main thread only; signals reach the reaper
-//! through `swoole_signal_dispatch`, never in a signal frame.
-use std::cell::RefCell;
+//! The registry is process-wide, as upstream's statics are: under thread contexts
+//! a coroutine waits on its own thread and the loop's thread reaps. Signals reach
+//! the reaper through `swoole_signal_dispatch`, never in a signal frame.
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{c_int, c_void};
+use std::sync::{Mutex, PoisonError};
 
 /// A coroutine waiting for a child (upstream's `WaitTask`). It lives on the waiting
 /// coroutine's stack while it is registered.
@@ -18,19 +19,24 @@ struct Task {
     status: c_int,
 }
 
-#[derive(Default)]
 struct Waits {
     any: VecDeque<*mut Task>,
     by_pid: BTreeMap<libc::pid_t, *mut Task>,
     exited: BTreeMap<libc::pid_t, c_int>,
 }
 
-thread_local! {
-    static WAITS: RefCell<Waits> = RefCell::new(Waits::default());
-}
+// SAFETY: each task pointer is used only by the thread holding the coroutine
+// baton, while its coroutine is suspended.
+unsafe impl Send for Waits {}
+
+static WAITS: Mutex<Waits> = Mutex::new(Waits {
+    any: VecDeque::new(),
+    by_pid: BTreeMap::new(),
+    exited: BTreeMap::new(),
+});
 
 fn waits<T>(f: impl FnOnce(&mut Waits) -> T) -> T {
-    WAITS.with_borrow_mut(f)
+    f(&mut WAITS.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
 /// The native coroutine operations a wait needs.
