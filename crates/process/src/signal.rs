@@ -6,6 +6,7 @@
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
+use std::sync::{Mutex, PoisonError};
 
 /// `SW_SIGNO_MAX`.
 const SIGNO_MAX: usize = 128;
@@ -40,6 +41,35 @@ impl Slot {
 /// The handler table (upstream's `signals`).
 #[unsafe(no_mangle)]
 pub static swr_v1_signals: [Slot; SIGNO_MAX] = [const { Slot::empty() }; SIGNO_MAX];
+/// Each signal's action from before Swoole first registered it (upstream's
+/// `origin_actions`; none: `SIG_DFL`), put back when its handler is removed.
+static ORIGIN: Mutex<[Option<libc::sigaction>; SIGNO_MAX]> =
+    Mutex::new([const { None }; SIGNO_MAX]);
+
+fn origin(signo: c_int, f: impl FnOnce(&mut Option<libc::sigaction>)) {
+    let mut origin = ORIGIN.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(action) = usize::try_from(signo).ok().and_then(|i| origin.get_mut(i)) {
+        f(action);
+    }
+}
+
+/// Records `previous`, the action a first registration of `signo` replaced.
+pub(crate) fn save_origin(signo: c_int, previous: Option<libc::sigaction>) {
+    origin(signo, |action| *action = previous);
+}
+
+/// Puts back the action [`save_origin`] recorded for `signo`.
+pub(crate) fn restore_origin(signo: c_int) {
+    origin(signo, |action| {
+        if let Some(action) = action.take() {
+            // SAFETY: an action sigaction returned.
+            unsafe { libc::sigaction(signo, &raw const action, std::ptr::null_mut()) };
+        } else {
+            install(signo, SIG_DFL, false, false);
+        }
+    });
+}
+
 static TRIGGERED: [AtomicBool; SIGNO_MAX] = [const { AtomicBool::new(false) }; SIGNO_MAX];
 /// `SwooleG.signal_dispatch`: some signal is waiting for `swr_v1_signal_dispatch`.
 static PENDING: AtomicBool = AtomicBool::new(false);
@@ -83,6 +113,17 @@ fn set_action(signo: c_int, func: usize, restart: bool, mask: bool) -> usize {
         slot.handler.store(SIG_DFL, Relaxed);
         slot.activated.store(false, Relaxed);
     }
+    install(signo, func, restart, mask).map_or(0, |previous| previous.sa_sigaction)
+}
+
+/// Installs `func` (a handler, `SIG_IGN` or `SIG_DFL`) with sigaction; returns the
+/// previous action, or none if sigaction failed.
+pub(crate) fn install(
+    signo: c_int,
+    func: usize,
+    restart: bool,
+    mask: bool,
+) -> Option<libc::sigaction> {
     // SAFETY: sigaction is plain data; all zeroes is an empty action.
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
     // SAFETY: as above.
@@ -97,15 +138,14 @@ fn set_action(signo: c_int, func: usize, restart: bool, mask: bool) -> usize {
     unsafe { fill(&raw mut action.sa_mask) };
     action.sa_flags = if restart { libc::SA_RESTART } else { 0 };
     // SAFETY: both actions are valid; `func` is a handler or SIG_IGN/SIG_DFL.
-    if unsafe { libc::sigaction(signo, &raw const action, &raw mut previous) } < 0 {
-        return 0;
-    }
-    previous.sa_sigaction
+    let installed = unsafe { libc::sigaction(signo, &raw const action, &raw mut previous) };
+    (installed == 0).then_some(previous)
 }
 
 /// `swoole_signal_set(signo, handler, safety)` without signalfd or kqueue: registers
 /// `handler` and installs the safe (deferred) or simple (immediate unless a reactor
-/// runs) async handler, with every signal masked while it runs.
+/// runs) async handler, with every signal masked while it runs. A null `handler`
+/// removes a registered signal and puts back the action it replaced.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_signal_set(
     signo: c_int,
@@ -117,9 +157,21 @@ pub extern "C" fn swr_v1_signal_set(
     CALLBACK.store(callback as usize, Relaxed);
     HAS_REACTOR.store(has_reactor as usize, Relaxed);
     if let Some(slot) = slot(signo) {
+        if handler == 0 && slot.activated.load(Relaxed) {
+            slot.reset();
+            restore_origin(signo);
+            return 0;
+        }
+        let first = !slot.activated.load(Relaxed);
         slot.handler.store(handler, Relaxed);
         slot.activated.store(true, Relaxed);
         slot.signo.store(u16::try_from(signo).unwrap_or(0), Relaxed);
+        let async_handler: extern "C" fn(c_int) = if safety { deferred } else { immediate };
+        let previous = install(signo, async_handler as usize, false, true);
+        if first {
+            save_origin(signo, previous);
+        }
+        return previous.map_or(0, |previous| previous.sa_sigaction);
     }
     let async_handler: extern "C" fn(c_int) = if safety { deferred } else { immediate };
     set_action(signo, async_handler as usize, false, true)
@@ -377,6 +429,17 @@ mod tests {
         assert_eq!(SEEN.load(Relaxed), 0);
         swoole_signal_dispatch();
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR2);
+
+        // Removing a handler puts back the action from before its registration.
+        set_action(libc::SIGUSR2, 0, false, false);
+        swr_v1_signal_set(libc::SIGUSR2, handler, true, record, with_reactor);
+        swr_v1_signal_set(libc::SIGUSR2, handler, false, record, with_reactor);
+        assert_eq!(
+            swr_v1_signal_set(libc::SIGUSR2, 0, false, record, with_reactor),
+            0
+        );
+        assert!(!swoole_signal_isset(libc::SIGUSR2));
+        assert_eq!(set_action(libc::SIGUSR2, usize::MAX, false, false), SIG_IGN);
 
         swr_v1_signal_clear();
         assert!(!swoole_signal_isset(libc::SIGUSR1));

@@ -22,7 +22,8 @@ use swoole_rs_zend::{
     },
 };
 
-type Handler = Option<unsafe extern "C" fn(c_int)>;
+/// A `swSignalHandler`: a function's address, `SIG_IGN` or 0 (none).
+type Handler = usize;
 
 unsafe extern "C" {
     static swoole_server_ce: *mut zend_class_entry;
@@ -293,7 +294,6 @@ pub(crate) fn main_thread() -> bool {
 
 /// `swoole_signal_set(signo, handler, safety)`.
 fn set_signal(signo: c_int, handler: Handler, safety: bool) {
-    let handler = handler.map_or(0, |handler| handler as usize);
     // SAFETY: a signal number and a handler or none.
     unsafe { swoole_signal_set(signo, handler, safety) };
 }

@@ -58,10 +58,11 @@ typedef struct { uint64_t total; bool again; } swr_v1_hook_transfer_plan;
 swr_v1_hook_transfer_plan swr_v1_hook_transfer(int64_t result, uint64_t total, uint64_t requested, bool wait);
 typedef struct { uint32_t revents; bool wake; } swr_v1_hook_event_plan;
 swr_v1_hook_event_plan swr_v1_hook_event_waiter(uint32_t received, uint32_t event);
+typedef struct { uintptr_t handler; bool registered; } swr_v1_hook_previous_signal;
 typedef struct {
     void *(*current)(void);
     bool (*busy)(void);
-    void (*listen)(int signo, bool on);
+    void (*listen)(int signo, swr_v1_hook_previous_signal *previous, bool on);
     void (*waiting)(bool on);
     bool (*yield_for)(void *co, double timeout);
     void (*resume)(void *co);

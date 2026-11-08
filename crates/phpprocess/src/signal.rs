@@ -31,6 +31,8 @@ fn listeners(delta: i32) {
 const SLOTS: usize = 128;
 /// `(zend_long) SIG_IGN`.
 pub(crate) const SIG_IGN: i64 = 1;
+/// `SIG_IGN` as a `swSignalHandler`.
+const IGNORE: usize = 1;
 
 /// `signal_fci_caches`: the `zend::Callable` per signal (null: none).
 static CALLABLES: [AtomicPtr<c_void>; SLOTS] = [const { AtomicPtr::new(ptr::null_mut()) }; SLOTS];
@@ -92,8 +94,8 @@ pub(crate) fn signal(call: &Call) {
     let number = signo as c_int;
     // SAFETY: a valid signal number.
     let current = unsafe { swoole_signal_get_handler(number) };
-    let ours: unsafe extern "C" fn(c_int) = on_signal;
-    if current != 0 && current != ours as usize {
+    let ours = on_signal as *const () as usize;
+    if current != 0 && current != ours && current != IGNORE {
         fatal(
             E_WARNING,
             &message!("signal [{signo}] processor has been registered by the system"),
@@ -114,7 +116,7 @@ pub(crate) fn signal(call: &Call) {
             }
             // Reset the handler, then free the callable once the loop is past
             // any dispatch using it.
-            host::signal_set(number, None, false);
+            host::signal_set(number, 0, false);
             slot.store(ptr::null_mut(), Ordering::Release);
             // SAFETY: the callable this slot owned.
             unsafe { host::callable_defer_free(old) };
@@ -124,7 +126,7 @@ pub(crate) fn signal(call: &Call) {
         }
         // SAFETY: a passed argument.
         Some(value) if unsafe { type_of(value) } == IS_LONG && is_ignore(value) => {
-            (ptr::null_mut(), None)
+            (ptr::null_mut(), IGNORE)
         }
         Some(value) => {
             // SAFETY: a passed argument.
@@ -133,21 +135,25 @@ pub(crate) fn signal(call: &Call) {
                 call.set_bool(false);
                 return;
             }
-            (callable, Some(ours))
+            (callable, ours)
         }
     };
     let sync = host::sync_server();
     if !sync {
         host::signal_listen();
     }
-    if old.is_null() {
+    if !old.is_null() {
+        if sync {
+            // SAFETY: the previous callable, no longer referenced.
+            unsafe { host::callable_free(old) };
+        } else {
+            // SAFETY: as above, freed once the loop is past any dispatch using it.
+            unsafe { host::callable_defer_free(old) };
+        }
+        listeners(-1);
+    }
+    if !callable.is_null() {
         listeners(1);
-    } else if sync {
-        // SAFETY: the previous callable, no longer referenced.
-        unsafe { host::callable_free(old) };
-    } else {
-        // SAFETY: as above, freed once the loop is past any dispatch using it.
-        unsafe { host::callable_defer_free(old) };
     }
     slot.store(callable, Ordering::Release);
     host::signal_set(number, handler, true);
@@ -172,9 +178,10 @@ pub extern "C" fn php_swoole_signal_isset_handler(signo: c_int) -> bool {
     !slot.load(Ordering::Acquire).is_null()
 }
 
-/// `php_swoole_process_clean`: free every signal callable; outside thread
-/// builds, a process that is not a user worker forgets its worker type.
-pub(crate) fn clean() {
+/// `php_swoole_process_signal_clean`: free every signal callable and forget the
+/// listeners, as after a fork, whose `swoole_fork()` removed the inherited handlers.
+#[unsafe(no_mangle)]
+pub extern "C" fn php_swoole_process_signal_clean() {
     for slot in &CALLABLES {
         let callable = slot.swap(ptr::null_mut(), Ordering::AcqRel);
         if !callable.is_null() {
@@ -182,6 +189,13 @@ pub(crate) fn clean() {
             unsafe { host::callable_free(callable) };
         }
     }
+    swoole_rs_corebase::swr_v1_core_set_signal_listener_num(0);
+}
+
+/// `php_swoole_process_clean`: [`php_swoole_process_signal_clean`]; outside thread
+/// builds, a process that is not a user worker forgets its worker type.
+pub(crate) fn clean() {
+    php_swoole_process_signal_clean();
     host::reset_worker_type();
 }
 

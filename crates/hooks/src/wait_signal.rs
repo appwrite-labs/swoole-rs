@@ -27,14 +27,26 @@ pub struct SignalOps {
     pub current: unsafe extern "C" fn() -> *mut c_void,
     /// Whether a non-coroutine signal listener exists (`signal_listener_num > 0`).
     pub busy: unsafe extern "C" fn() -> bool,
-    /// Installs `swr_v1_hook_signal_wake` for `signo` (true) or removes it (false).
-    pub listen: unsafe extern "C" fn(i32, bool),
+    /// On the loop's thread under thread contexts: with `true`, unless the record says
+    /// so already, records `signo`'s handler in it and installs `swr_v1_hook_signal_wake`;
+    /// with `false`, puts the recorded handler back.
+    pub listen: unsafe extern "C" fn(i32, *mut Previous, bool),
     /// The reactor exit condition and `signal_async_listener_num++` (true), or `--`.
     pub waiting: unsafe extern "C" fn(bool),
     /// `co->yield_ex(timeout)`: false on timeout or cancellation.
     pub yield_for: unsafe extern "C" fn(*mut c_void, f64) -> bool,
     /// `co->resume()`.
     pub resume: unsafe extern "C" fn(*mut c_void),
+}
+
+/// A signal's handler from before a wait installed its own (upstream's `PreviousSignal`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Previous {
+    /// The `SignalHandler`, or 0.
+    pub handler: usize,
+    /// Whether the wait's handler is installed.
+    pub registered: bool,
 }
 
 /// What `wait_signal` returns.
@@ -49,6 +61,12 @@ pub struct Signalled {
 
 fn listener(signo: i32) -> Option<&'static AtomicPtr<Listener>> {
     LISTENERS.get(usize::try_from(signo).ok()?)
+}
+
+/// `signo`'s table index and listener slot.
+fn slot(signo: i32) -> Option<(usize, &'static AtomicPtr<Listener>)> {
+    let index = usize::try_from(signo).ok()?;
+    Some((index, LISTENERS.get(index)?))
 }
 
 /// The signal handler: wakes the coroutine listening for `signo`, once.
@@ -99,14 +117,23 @@ pub unsafe extern "C" fn swr_v1_hook_wait_signal(
         // SAFETY: the caller passes `count` numbers at `signals`.
         unsafe { std::slice::from_raw_parts(signals, count) }
     };
+    if signals
+        .iter()
+        .any(|&signo| signo == libc::SIGCHLD || listener(signo).is_none())
+    {
+        return failed(libc::EINVAL);
+    }
     RESUME.store(ops.resume as usize, Relaxed);
+    // Lives on the parked coroutine's stack, where deferred registrations record into it.
+    let mut previous = [Previous::default(); SIGNO_MAX as usize];
+    let records = previous.as_mut_ptr();
     for &signo in signals {
-        let Some(slot) = listener(signo).filter(|_| signo != libc::SIGCHLD) else {
-            return failed(libc::EINVAL);
-        };
-        slot.store(&raw mut waiting, Relaxed);
-        // SAFETY: as above.
-        unsafe { (ops.listen)(signo, true) };
+        if let Some((index, slot)) = slot(signo) {
+            slot.store(&raw mut waiting, Relaxed);
+            // SAFETY: as above; the record, inside the table-long `previous`, outlives
+            // the wait.
+            unsafe { (ops.listen)(signo, records.wrapping_add(index), true) };
+        }
     }
     // SAFETY: as above.
     unsafe { (ops.waiting)(true) };
@@ -114,11 +141,16 @@ pub unsafe extern "C" fn swr_v1_hook_wait_signal(
     // this frame is parked here.
     let woken = unsafe { (ops.yield_for)(co, timeout) };
     for &signo in signals {
+        let Some((index, slot)) = slot(signo) else {
+            continue;
+        };
+        let Some(record) = previous.get_mut(index).filter(|record| record.registered) else {
+            continue;
+        };
+        record.registered = false;
         // SAFETY: as above.
-        unsafe { (ops.listen)(signo, false) };
-        if let Some(slot) = listener(signo) {
-            slot.store(std::ptr::null_mut(), Relaxed);
-        }
+        unsafe { (ops.listen)(signo, record, false) };
+        slot.store(std::ptr::null_mut(), Relaxed);
     }
     // SAFETY: as above.
     unsafe { (ops.waiting)(false) };
@@ -148,8 +180,15 @@ mod tests {
     unsafe extern "C" fn busy() -> bool {
         true
     }
-    unsafe extern "C" fn listen(signo: i32, on: bool) {
-        log(format!("listen {signo} {on}"));
+    unsafe extern "C" fn listen(signo: i32, previous: *mut Previous, on: bool) {
+        let previous = unsafe { &mut *previous };
+        if !on {
+            log(format!("restore {signo} {}", previous.handler));
+        } else if !previous.registered {
+            previous.handler = 7;
+            previous.registered = true;
+            log(format!("listen {signo}"));
+        }
     }
     unsafe extern "C" fn waiting(on: bool) {
         log(format!("waiting {on}"));
@@ -189,7 +228,10 @@ mod tests {
 
     #[test]
     fn wakes_once_and_unregisters() {
-        let (result, log) = wait(&[libc::SIGUSR1, libc::SIGUSR2], &ops(idle, signalled));
+        let (result, log) = wait(
+            &[libc::SIGUSR1, libc::SIGUSR2, libc::SIGUSR1],
+            &ops(idle, signalled),
+        );
         assert_eq!(
             result,
             Signalled {
@@ -199,12 +241,12 @@ mod tests {
         );
         let (one, two) = (libc::SIGUSR1, libc::SIGUSR2);
         let expected = [
-            format!("listen {one} true"),
-            format!("listen {two} true"),
+            format!("listen {one}"),
+            format!("listen {two}"),
             "waiting true".into(),
             "resume".into(),
-            format!("listen {one} false"),
-            format!("listen {two} false"),
+            format!("restore {one} 7"),
+            format!("restore {two} 7"),
             "waiting false".into(),
         ];
         assert_eq!(log, expected);
@@ -224,5 +266,9 @@ mod tests {
             wait(&[SIGNO_MAX], &ops(idle, timed_out)).0.last_error,
             libc::EINVAL
         );
+        // An invalid signal anywhere in the list registers none of them.
+        let (result, log) = wait(&[libc::SIGUSR1, libc::SIGCHLD], &ops(idle, timed_out));
+        assert_eq!(result.last_error, libc::EINVAL);
+        assert_eq!(log, Vec::<String>::new());
     }
 }
