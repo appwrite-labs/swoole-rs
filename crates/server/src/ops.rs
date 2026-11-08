@@ -768,6 +768,9 @@ pub const OP_CC_FINISH: u32 = 976;
 pub const LOG_CC_LINGER: u32 = 990;
 /// Traces the new max fd arg.
 pub const TRACE_CC_MAXFD: u32 = 991;
+/// Traces the context's event, a write's connection or a peer close's fd.
+pub const TRACE_RT_WRITE: u32 = 992;
+pub const TRACE_RT_CLOSE: u32 = 993;
 
 // Rust-owned state and the rest of `master.cc` (`crates/server/src/state.rs`).
 /// `Server::add_command`: arg a `commands::AddCommand`.

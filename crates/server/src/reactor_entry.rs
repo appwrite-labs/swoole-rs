@@ -1,0 +1,371 @@
+//! The reactor-thread entry points that were master.cc's: the reactor handlers
+//! (`ReactorThread_on*`) and the `Server` and `ReactorThread` methods that build a
+//! context and run one operation over it. With `upstream-symbols` the methods are
+//! defined under their upstream (Itanium) symbols. Native code registers its op
+//! call (`reactor_thread_hot_call`) and `sizeof(ReactorThread)` once.
+use core::ffi::{c_int, c_long, c_void};
+use core::ptr;
+use std::sync::OnceLock;
+
+use swoole_rs_corebase::DataHead;
+use swoole_rs_corebase::net_types::Protocol;
+use swoole_rs_reactor::{SocketRecord, reactor_upstream};
+
+use crate::ops::{
+    RUN_CLOSE_CONNECTION, RUN_DISPATCH_TASK, RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS,
+    RUN_PACKET_RECEIVED, RUN_PEER_CLOSE, RUN_PIPE_READ, RUN_REACTOR_THREAD_MAIN, RUN_RT_INIT,
+    RUN_RT_PIPE_WRITE, RUN_RT_READ, RUN_RT_WRITE, RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE,
+    RUN_THREAD_SHUTDOWN,
+};
+use crate::reactor_ops::{Facts, ReactorContext, facts};
+use crate::records::{ConnectionRecord, swr_v1_server_connection};
+use crate::{ServerCall, view};
+
+/// `swoole::RecvData`.
+#[repr(C)]
+pub struct RecvData {
+    info: DataHead,
+    data: *const c_void,
+}
+
+static NATIVE: OnceLock<(ServerCall, usize)> = OnceLock::new();
+
+/// Registers master.cc's op call and `sizeof(ReactorThread)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_server_set_reactor_native(call: ServerCall, thread_size: usize) {
+    // A second registration is the same pair; keeping the first is equivalent.
+    NATIVE.get_or_init(|| (call, thread_size));
+}
+
+fn native() -> (ServerCall, usize) {
+    match NATIVE.get() {
+        Some(native) => *native,
+        // master.cc registers before any Server exists.
+        None => std::process::abort(),
+    }
+}
+
+/// Runs `op` over `ctx`.
+///
+/// # Safety
+/// `ctx.serv` is a live `Server` and the context's other objects are what `op` reads.
+unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
+    // SAFETY: per the caller.
+    let state = unsafe { view::state_ptr(ctx.serv) };
+    let context = ptr::from_mut(ctx).cast();
+    // SAFETY: per the caller; the call is native code's.
+    unsafe { crate::swr_v1_server_run_reactor(op, arg, context, native().0, state) }
+}
+
+/// Runs `op` over `ctx` with the `which` facts.
+///
+/// # Safety
+/// As [`run`].
+unsafe fn run_with(op: u32, which: Facts, ctx: &mut ReactorContext) -> c_int {
+    // SAFETY: per the caller.
+    let state = unsafe { state(ctx.serv) };
+    // SAFETY: per the caller.
+    let facts = unsafe { facts(ctx, state, which) };
+    // SAFETY: per the caller.
+    int(unsafe { run(op, facts, ctx) })
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "C++'s implicit int64_t to int"
+)]
+fn int(value: i64) -> c_int {
+    value as c_int
+}
+
+/// The server's Rust-owned state.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+unsafe fn state<'a>(serv: *mut c_void) -> &'a crate::ServerState {
+    // SAFETY: per the caller.
+    let state = unsafe { view::state_ptr(serv) };
+    // SAFETY: the state lives as long as the server.
+    unsafe { &*state }
+}
+
+/// The reactor's fields.
+///
+/// # Safety
+/// `reactor` is a live `Reactor`.
+unsafe fn fields<'a>(reactor: *mut c_void) -> &'a swoole_rs_reactor::ReactorFields {
+    // SAFETY: per the caller.
+    let fields = unsafe { reactor_upstream::prepared(reactor) }.fields;
+    // SAFETY: the live reactor's fields.
+    unsafe { &*fields }
+}
+
+/// `reactor->ptr`, a reactor thread's server.
+///
+/// # Safety
+/// `reactor` is a live `Reactor`.
+unsafe fn server(reactor: *mut c_void) -> *mut c_void {
+    // SAFETY: per the caller.
+    unsafe { fields(reactor) }.ptr
+}
+
+/// A context over the reactor, its server and the event and its socket.
+///
+/// # Safety
+/// `reactor` is a live server `Reactor` and `event` one of its live events.
+unsafe fn event_context(reactor: *mut c_void, event: *mut c_void) -> ReactorContext {
+    // SAFETY: per the caller.
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
+    ctx.event = event.cast();
+    // SAFETY: per the caller.
+    ctx.sock = unsafe { (*ctx.event).socket }.cast();
+    ctx
+}
+
+/// `ReactorThread_onPacketReceived`: a UDP port's datagram.
+///
+/// # Safety
+/// `reactor` is a live server `Reactor` and `event` one of its live events.
+pub unsafe extern "C" fn on_packet_received(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: per the caller.
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
+    ctx.event = event.cast();
+    // SAFETY: per the caller.
+    int(unsafe { run(RUN_PACKET_RECEIVED, 0, &mut ctx) })
+}
+
+/// `ReactorThread_onClose`: the peer closed.
+///
+/// # Safety
+/// As [`on_packet_received`].
+pub unsafe extern "C" fn on_close(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: per the caller.
+    let mut ctx = unsafe { event_context(reactor, event) };
+    // SAFETY: per the caller.
+    unsafe { run_with(RUN_PEER_CLOSE, Facts::PeerClose, &mut ctx) }
+}
+
+/// `ReactorThread_onPipeRead`: a worker's message.
+///
+/// # Safety
+/// As [`on_packet_received`], on a reactor thread's reactor.
+pub unsafe extern "C" fn on_pipe_read(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: per the caller.
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
+    ctx.event = event.cast();
+    // SAFETY: per the caller.
+    let id = usize::from(unsafe { fields(reactor) }.id);
+    // SAFETY: per the caller, a live server's.
+    let tables = unsafe { state(ctx.serv) }.tables();
+    // SAFETY: the live server's tables.
+    let threads = unsafe { &*tables }.reactor_threads;
+    // `serv->get_thread(reactor->id)`.
+    ctx.thread = threads.wrapping_byte_add(id * native().1);
+    // SAFETY: per the caller.
+    int(unsafe { run(RUN_PIPE_READ, 0, &mut ctx) })
+}
+
+/// `ReactorThread_onPipeWrite`: a worker pipe can be written.
+///
+/// # Safety
+/// As [`on_packet_received`].
+pub unsafe extern "C" fn on_pipe_write(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: per the caller.
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
+    ctx.event = event.cast();
+    // SAFETY: per the caller.
+    int(unsafe { run(RUN_RT_PIPE_WRITE, 0, &mut ctx) })
+}
+
+/// `ReactorThread_onRead`: a connection is readable.
+///
+/// # Safety
+/// As [`on_packet_received`].
+pub unsafe extern "C" fn on_read(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: per the caller.
+    let mut ctx = unsafe { event_context(reactor, event) };
+    // SAFETY: per the caller.
+    let fd = c_long::from(unsafe { (*ctx.event).fd });
+    // SAFETY: per the caller, a live server's state.
+    let state = unsafe { view::state_ptr(ctx.serv) };
+    // SAFETY: the fd's slot in the connection table.
+    ctx.conn = unsafe { swr_v1_server_connection(state, fd, 0) };
+    // SAFETY: per the caller.
+    unsafe { run_with(RUN_RT_READ, Facts::Read, &mut ctx) }
+}
+
+/// `ReactorThread_onWrite`: a connection is writable.
+///
+/// # Safety
+/// As [`on_packet_received`].
+pub unsafe extern "C" fn on_write(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: per the caller.
+    let mut ctx = unsafe { event_context(reactor, event) };
+    // SAFETY: per the caller.
+    unsafe { run_with(RUN_RT_WRITE, Facts::Write, &mut ctx) }
+}
+
+/// `static int Server::close_connection(Reactor *, Socket *)`.
+///
+/// # Safety
+/// `reactor` is a live server `Reactor` and `socket` a live session socket of it.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server16close_connectionEPNS_7ReactorEPNS_7network6SocketE")
+)]
+pub unsafe extern "C-unwind" fn close_connection(
+    reactor: *mut c_void,
+    socket: *mut SocketRecord,
+) -> c_int {
+    // SAFETY: per the caller.
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
+    ctx.sock = socket;
+    // SAFETY: per the caller.
+    int(unsafe { run(RUN_CLOSE_CONNECTION, 0, &mut ctx) })
+}
+
+/// `void ReactorThread::shutdown(Reactor *)`.
+///
+/// # Safety
+/// `thread` is the live `ReactorThread` that `reactor` belongs to.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole13ReactorThread8shutdownEPNS_7ReactorE")
+)]
+pub unsafe extern "C-unwind" fn thread_shutdown(thread: *mut c_void, reactor: *mut c_void) {
+    // SAFETY: per the caller.
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
+    ctx.thread = thread;
+    // SAFETY: per the caller.
+    unsafe { run(RUN_THREAD_SHUTDOWN, 0, &mut ctx) };
+}
+
+/// `int ReactorThread::close_connection(Reactor *, SessionId)`.
+///
+/// # Safety
+/// As [`thread_shutdown`].
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole13ReactorThread16close_connectionEPNS_7ReactorEl")
+)]
+pub unsafe extern "C-unwind" fn thread_close_connection(
+    thread: *mut c_void,
+    reactor: *mut c_void,
+    session_id: c_long,
+) -> c_int {
+    // SAFETY: per the caller.
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
+    ctx.thread = thread;
+    // SAFETY: per the caller.
+    int(unsafe { run(RUN_THREAD_CLOSE, session_id.cast_unsigned(), &mut ctx) })
+}
+
+/// `int ReactorThread::init(Server *, Reactor *, uint16_t)`.
+///
+/// # Safety
+/// `thread` is `serv`'s live `ReactorThread` and `reactor` its new reactor.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole13ReactorThread4initEPNS_6ServerEPNS_7ReactorEt")
+)]
+pub unsafe extern "C-unwind" fn thread_init(
+    thread: *mut c_void,
+    serv: *mut c_void,
+    reactor: *mut c_void,
+    reactor_id: u16,
+) -> c_int {
+    let mut ctx = ReactorContext::new(serv, reactor);
+    ctx.thread = thread;
+    // SAFETY: per the caller.
+    int(unsafe { run(RUN_RT_INIT, u64::from(reactor_id), &mut ctx) })
+}
+
+/// `void Server::init_reactor(Reactor *)`.
+///
+/// # Safety
+/// `serv` is a live `Server` and `reactor` a live reactor of it.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server12init_reactorEPNS_7ReactorE")
+)]
+pub unsafe extern "C-unwind" fn init_reactor(serv: *mut c_void, reactor: *mut c_void) {
+    // SAFETY: per the caller.
+    unsafe { run(RUN_INIT_REACTOR, 0, &mut ReactorContext::new(serv, reactor)) };
+}
+
+/// `int Server::start_reactor_threads()`.
+///
+/// # Safety
+/// `serv` is a live `Server`, in its master.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server21start_reactor_threadsEv")
+)]
+pub unsafe extern "C-unwind" fn start_reactor_threads(serv: *mut c_void) -> c_int {
+    let mut ctx = ReactorContext::new(serv, ptr::null_mut());
+    // SAFETY: per the caller.
+    int(unsafe { run(RUN_START_REACTOR_THREADS, 0, &mut ctx) })
+}
+
+/// `static void Server::reactor_thread_main_loop(Server *, int)`.
+///
+/// # Safety
+/// `serv` is a live `Server`, on the reactor thread `reactor_id`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server24reactor_thread_main_loopEPS0_i")
+)]
+pub unsafe extern "C-unwind" fn reactor_thread_main_loop(serv: *mut c_void, reactor_id: c_int) {
+    let mut ctx = ReactorContext::new(serv, ptr::null_mut());
+    let id = i64::from(reactor_id).cast_unsigned();
+    // SAFETY: per the caller.
+    unsafe { run(RUN_REACTOR_THREAD_MAIN, id, &mut ctx) };
+}
+
+/// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
+/// a data frame to the workers.
+///
+/// # Safety
+/// `proto` is a live server port's protocol, `socket` a live session socket and
+/// `rdata` the frame.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(
+        export_name = "_ZN6swoole6Server13dispatch_taskEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"
+    )
+)]
+pub unsafe extern "C-unwind" fn dispatch_task(
+    proto: *const Protocol,
+    socket: *mut SocketRecord,
+    rdata: *const RecvData,
+) -> c_int {
+    // SAFETY: per the caller; a port's protocol keeps its server.
+    let serv = unsafe { (*proto).private_data_2 };
+    let mut ctx = ReactorContext::new(serv, ptr::null_mut());
+    ctx.sock = socket;
+    // SAFETY: a session socket's object is its live connection.
+    ctx.conn = unsafe { (*socket).object }.cast::<ConnectionRecord>();
+    // SAFETY: the live connection.
+    let fd = unsafe { (*ctx.conn).fd };
+    // SAFETY: per the caller, a live server's.
+    ctx.port = crate::reactor_ops::port_by_fd(unsafe { state(serv) }, fd);
+    ctx.rdata = rdata.cast();
+    // SAFETY: per the caller.
+    let length = unsafe { (*rdata).info.len };
+    // SAFETY: per the caller.
+    int(unsafe { run(RUN_DISPATCH_TASK, u64::from(length), &mut ctx) })
+}
+
+/// `void Server::join_reactor_thread()`.
+///
+/// # Safety
+/// `serv` is a live `Server`, in its master.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server19join_reactor_threadEv")
+)]
+pub unsafe extern "C-unwind" fn join_reactor_thread(serv: *mut c_void) {
+    let mut ctx = ReactorContext::new(serv, ptr::null_mut());
+    // SAFETY: per the caller.
+    unsafe { run(RUN_JOIN_REACTOR_THREADS, 0, &mut ctx) };
+}

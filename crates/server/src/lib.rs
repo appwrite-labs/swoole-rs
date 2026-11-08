@@ -32,6 +32,7 @@ pub mod local_addr;
 mod master_ops;
 pub mod ops;
 pub mod port_config;
+pub mod reactor_entry;
 mod reactor_io;
 mod reactor_ops;
 mod reactor_thread;

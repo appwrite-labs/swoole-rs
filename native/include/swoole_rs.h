@@ -34,6 +34,9 @@ ServerReply swr_v1_server_run_guarded(uint32_t operation, uint64_t arg, void *co
     ServerGuardedCall call, const struct swr_v1_server_state *state, void *master);
 /* master.cc's guarded runner, which the Server methods crates/server/src/server_methods.rs defines call. */
 void swr_v1_server_set_native(int64_t (*run)(uint32_t operation, uint64_t arg, void *context));
+/* master.cc's reactor-thread op call and sizeof(ReactorThread), which the entry points
+ * crates/server/src/reactor_entry.rs defines run with. */
+void swr_v1_server_set_reactor_native(swr_v1_server_call call, size_t thread_size);
 
 
 enum {
@@ -233,46 +236,12 @@ enum {
     SWR_SERVER_OP_CC_RECV_FREE, SWR_SERVER_OP_CC_HTTP_OBJECT, SWR_SERVER_OP_CC_HTTP_DESTROY,
     SWR_SERVER_OP_CC_REDIS_OBJECT, SWR_SERVER_OP_CC_REDIS_FREE, SWR_SERVER_OP_CC_LINGER,
     SWR_SERVER_OP_CC_SESSION_CLEAR, SWR_SERVER_OP_CC_VALID, SWR_SERVER_OP_CC_FINISH,
-    SWR_SERVER_LOG_CC_LINGER = 990, SWR_SERVER_TRACE_CC_MAXFD,
+    SWR_SERVER_LOG_CC_LINGER = 990, SWR_SERVER_TRACE_CC_MAXFD, SWR_SERVER_TRACE_RT_WRITE, SWR_SERVER_TRACE_RT_CLOSE,
 };
-/* Their fact bits (crates/server/src/conn_io.rs). */
-#define SWR_CN_FOUND (1ull << 0)
-#define SWR_CN_CLOSE_NOTIFIED (1ull << 1)
-#define SWR_CN_CLOSE_QUEUED (1ull << 2)
-#define SWR_CN_SSL_WANT_READ (1ull << 3)
-#define SWR_CN_SSL_PENDING (1ull << 4)
-#define SWR_CN_DTLS_PORT (1ull << 5)
-#define SWR_CN_DTLS_SOCKET (1ull << 6)
-#define SWR_CN_PREQUEUE (1ull << 7)
-#define SWR_CN_PROCESS (1ull << 8)
-#define SWR_CN_CLOSE_NOTIFY (1ull << 9)
-#define SWR_CN_DISABLE_NOTIFY (1ull << 10)
-#define SWR_CN_CLOSE_FORCE (1ull << 11)
-#define SWR_CN_CLOSE_RESET (1ull << 12)
-#define SWR_CN_PEER_CLOSED (1ull << 13)
-#define SWR_CN_HASH_DISPATCH (1ull << 14)
-#define SWR_CN_DISPATCH_FUNC (1ull << 15)
-#define SWR_CN_COROUTINE (1ull << 16)
-#define SWR_CN_CONN_SSL (1ull << 17)
-#define SWR_CN_SOCKET_SSL (1ull << 18)
-#define SWR_CN_CLOSE_ERRNO (1ull << 19)
-#define SWR_CN_TIMER (1ull << 20)
-#define SWR_CN_WEBSOCKET_BUFFER (1ull << 21)
-#define SWR_CN_REMOVED (1ull << 22)
-#define SWR_CN_BASE (1ull << 23)
-#define SWR_CN_RECV_BUFFER (1ull << 24)
-#define SWR_CN_LINGER (1ull << 25)
-#define SWR_CN_TLS_READY_STREAM (1ull << 26)
-#define SWR_CN_SSL_CLOSED (1ull << 27)
-#define SWR_CN_OVERFLOW_DRAINED (1ull << 28)
-#define SWR_CN_LOW_WATERMARK (1ull << 29)
-#define SWR_CN_SEND_TIMER (1ull << 30)
-#define SWR_CN_OUT_EMPTY (1ull << 31)
+/* OP_RD_PORT_READ's bits above its result (crates/server/src/conn_io.rs). */
 #define SWR_CN_ACTIVE (1ull << 32)
 #define SWR_CN_QUEUE_OVER (1ull << 33)
 #define SWR_CN_READ_NOTIFIED (1ull << 34)
-#define SWR_CN_CLOSE_WAIT (1ull << 35)
-#define SWR_CN_SEND_WAIT (1ull << 36)
 
 /* Rust-owned server state and the rest of master.cc (crates/server/src/state.rs). */
 enum {

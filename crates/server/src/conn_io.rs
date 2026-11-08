@@ -18,45 +18,46 @@ use crate::ops::{
     OP_SET_WAITING_TIME, OP_UNLOCK, OP_WR_BUFFER_EMPTY, OP_WR_CLEAR_OVERFLOW, OP_WR_CLOSE,
     OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE, OP_WR_QUEUED, OP_WR_READ_ONLY, OP_WR_SEND,
     OP_WR_SENDFILE, OP_WR_STATE, OP_WR_TIMER_DEL, OP_WR_TIMER_DELAY, OP_WR_WAIT, TRACE_CC_MAXFD,
+    TRACE_RT_CLOSE, TRACE_RT_WRITE,
 };
 use crate::reactor_thread::{SW_CONTINUE, SW_ERROR, SW_READY, SW_WAIT, verify_ssl};
 use crate::{Host, SW_ERR, SW_OK};
 
 // The fact bits, `SWR_CN_*` in `native/include/swoole_rs.h`.
 /// The connection exists (and, for a read, belongs to a port; else is active).
-const FOUND: u64 = 1 << 0;
-const CLOSE_NOTIFIED: u64 = 1 << 1;
-const CLOSE_QUEUED: u64 = 1 << 2;
+pub(crate) const FOUND: u64 = 1 << 0;
+pub(crate) const CLOSE_NOTIFIED: u64 = 1 << 1;
+pub(crate) const CLOSE_QUEUED: u64 = 1 << 2;
 /// The socket has TLS that wants to read.
-const SSL_WANT_READ: u64 = 1 << 3;
+pub(crate) const SSL_WANT_READ: u64 = 1 << 3;
 /// The socket has TLS whose handshake is not finished.
-const SSL_PENDING: u64 = 1 << 4;
-const DTLS_PORT: u64 = 1 << 5;
-const DTLS_SOCKET: u64 = 1 << 6;
+pub(crate) const SSL_PENDING: u64 = 1 << 4;
+pub(crate) const DTLS_PORT: u64 = 1 << 5;
+pub(crate) const DTLS_SOCKET: u64 = 1 << 6;
 /// Built with `SW_HALFCLOSE_PREQUEUE`.
-const PREQUEUE: u64 = 1 << 7;
-const PROCESS: u64 = 1 << 8;
-const CLOSE_NOTIFY: u64 = 1 << 9;
-const DISABLE_NOTIFY: u64 = 1 << 10;
-const CLOSE_FORCE: u64 = 1 << 11;
-const CLOSE_RESET: u64 = 1 << 12;
+pub(crate) const PREQUEUE: u64 = 1 << 7;
+pub(crate) const PROCESS: u64 = 1 << 8;
+pub(crate) const CLOSE_NOTIFY: u64 = 1 << 9;
+pub(crate) const DISABLE_NOTIFY: u64 = 1 << 10;
+pub(crate) const CLOSE_FORCE: u64 = 1 << 11;
+pub(crate) const CLOSE_RESET: u64 = 1 << 12;
 pub(crate) const PEER_CLOSED: u64 = 1 << 13;
-const HASH_DISPATCH: u64 = 1 << 14;
-const DISPATCH_FUNC: u64 = 1 << 15;
-const COROUTINE: u64 = 1 << 16;
-const CONN_SSL: u64 = 1 << 17;
-const SOCKET_SSL: u64 = 1 << 18;
-const CLOSE_ERRNO: u64 = 1 << 19;
-const TIMER: u64 = 1 << 20;
-const WEBSOCKET_BUFFER: u64 = 1 << 21;
+pub(crate) const HASH_DISPATCH: u64 = 1 << 14;
+pub(crate) const DISPATCH_FUNC: u64 = 1 << 15;
+pub(crate) const COROUTINE: u64 = 1 << 16;
+pub(crate) const CONN_SSL: u64 = 1 << 17;
+pub(crate) const SOCKET_SSL: u64 = 1 << 18;
+pub(crate) const CLOSE_ERRNO: u64 = 1 << 19;
+pub(crate) const TIMER: u64 = 1 << 20;
+pub(crate) const WEBSOCKET_BUFFER: u64 = 1 << 21;
 pub(crate) const REMOVED: u64 = 1 << 22;
-const BASE: u64 = 1 << 23;
-const RECV_BUFFER: u64 = 1 << 24;
+pub(crate) const BASE: u64 = 1 << 23;
+pub(crate) const RECV_BUFFER: u64 = 1 << 24;
 /// Built with `SW_USE_SOCKET_LINGER`.
 const LINGER: u64 = 1 << 25;
 /// The socket's TLS is ready and it is a stream.
-const TLS_READY_STREAM: u64 = 1 << 26;
-const SSL_CLOSED: u64 = 1 << 27;
+pub(crate) const TLS_READY_STREAM: u64 = 1 << 26;
+pub(crate) const SSL_CLOSED: u64 = 1 << 27;
 /// `overflow` is set and the output is below the socket's buffer size.
 pub(crate) const OVERFLOW_DRAINED: u64 = 1 << 28;
 /// `onBufferEmpty` is set, the connection is over its high watermark and the output
@@ -144,6 +145,7 @@ pub(crate) fn write<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
     if facts & FOUND == 0 {
         return Ok(SW_ERR);
     }
+    h.get(TRACE_RT_WRITE)?;
     if facts & CLOSE_NOTIFY != 0 {
         if facts & SSL_PENDING != 0 {
             return h.signed(OP_CLOSE);
@@ -205,6 +207,7 @@ pub(crate) fn write<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
 /// `ReactorThread_onClose`: the peer closed. Close now when nobody is told or a
 /// close is already queued, else mark the connection and notify the worker once.
 pub(crate) fn peer_close<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
+    h.get(TRACE_RT_CLOSE)?;
     if facts & FOUND == 0 {
         return Ok(SW_ERR);
     }
