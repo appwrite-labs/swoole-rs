@@ -3,8 +3,8 @@
  * read. Rust defines swoole_version() and swoole_version_id(). */
 #pragma once
 
-#define SWOOLE_VERSION "6.2.4"
-#define SWOOLE_VERSION_ID 60204
+#define SWOOLE_VERSION "6.2.5"
+#define SWOOLE_VERSION_ID 60205
 #define SWOOLE_API_VERSION_ID 0x202208a
 
 #define SWOOLE_BUG_REPORT                                                                                              \
