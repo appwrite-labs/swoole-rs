@@ -46,6 +46,27 @@ URL and boundary helpers are Rust behind thin facades, so the crate's
 `http_server`, `http_parser` and `multipart_parser` GoogleTests run unchanged on
 the reference and the hybrid tree in the merge tier's `http-native-originals`.
 
+### Ported GoogleTests
+
+Four `http_server` TESTs drove a request through the `http_server::listen` SDK
+(`src/wrapper/http.cc`), which nothing else used; the SDK left the build (#1672) and
+the TESTs left `http_server.cpp`. Their Rust ports, in `http_server.rs` (included by
+`crates/ports/src/read.rs`'s tests: `cargo test -p swoole-rs-ports http_server`), send
+the same request through the server's HTTP reader under the same port settings, with
+the request's effects running the bundled multipart parser and real temp files. The
+recorded requests come from `crates/oracle/upstream/core-tests/fuzz/cases`.
+
+| Upstream TEST | Rust test | Same input | Assertions |
+| --- | --- | --- | --- |
+| `parser1` | `parser1` | `req1.bin`, default `package_max_length` | `form_data.size() == 3`; `200 OK` as no error response and the request dispatched whole |
+| `parser2` | `parser2` | `req2.bin`, `package_max_length` 64 KiB, `upload_max_filesize` 1 MiB | `form_data.size() == 3`; `200 OK` as above; also that the upload streamed to disk is `test.jpg` |
+| `upload` | `upload` | curl's chunked `-F file=@test.jpg` to `/upload?test=curl`, 2 MiB | `files.size() == 1`, `request_path` `/upload`, `query_string` `test=curl`; the server sends nothing itself |
+| `max_request_size` | `max_request_size` | curl's `-F file=@test.jpg`, 128 KiB | `413 Request Entity Too Large`, the request never dispatched |
+
+The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
+`upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
+covered by the PHPTs.
+
 ## PHP checks
 
 The merge tier's `api-surface` phase (`tools/capability_inventory.py

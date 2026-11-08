@@ -27,5 +27,8 @@ swoole-rs-protocols = { path = "../protocols" }
 swoole-rs-websocket = { path = "../websocket" }
 swoole-rs-buffer = { path = "../buffer" }
 
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
 [lints]
 workspace = true
