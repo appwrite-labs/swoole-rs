@@ -306,6 +306,7 @@ def zend_free_native_sources():
 def stage_native_sources(source):
     for name, path in native_sources().items():
         if not (source / name).exists() or (source / name).read_bytes() != path.read_bytes():
+            (source / name).parent.mkdir(exist_ok=True)  # the patched tree may have no src/ left
             shutil.copyfile(path, source / name)
 
 
