@@ -18,6 +18,24 @@ pub unsafe fn prepared(reactor: *const c_void) -> ReactorPrepared {
     unsafe { *reactor.cast::<ReactorPrepared>() }
 }
 
+/// `int Reactor::trigger_close_event(Event *)`: the default error handler, or `-1`
+/// when none is set.
+///
+/// # Safety
+/// `reactor` is a live `Reactor` and `event` an event its handler accepts.
+pub unsafe fn trigger_close_event(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: as the caller promises.
+    let handlers = unsafe { prepared(reactor) }.handlers;
+    // SAFETY: the live reactor's error default slot.
+    let slot = unsafe { crate::swr_v1_reactor_handlers_default(handlers, 2) };
+    // SAFETY: as above.
+    match unsafe { *slot } {
+        // SAFETY: as the caller promises.
+        Some(handler) => unsafe { handler(reactor, event) },
+        None => -1,
+    }
+}
+
 /// A change's status: `-2` (add could not allocate) is upstream's `bad_alloc`.
 fn changed(result: c_int) -> c_int {
     if result == -2 {
