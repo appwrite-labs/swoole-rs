@@ -129,13 +129,19 @@ unsafe fn key(domain: i32, name: *const u8, length: usize) -> Vec<u8> {
 
 /// `System::set_dns_cache_expire`: entries stored from now on live `expire` seconds
 /// (none: forever).
-#[unsafe(no_mangle)]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6System20set_dns_cache_expireEl")
+)]
 pub extern "C" fn swr_v1_hook_dns_cache_expire(expire: i64) {
     cache().expire = expire;
 }
 
 /// `System::set_dns_cache_capacity`: clears and drops the cache; 0 disables it.
-#[unsafe(no_mangle)]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6System22set_dns_cache_capacityEm")
+)]
 pub extern "C" fn swr_v1_hook_dns_cache_capacity(capacity: usize) {
     let mut cache = cache();
     cache.capacity = capacity;
@@ -145,7 +151,10 @@ pub extern "C" fn swr_v1_hook_dns_cache_capacity(capacity: usize) {
 }
 
 /// `System::clear_dns_cache`.
-#[unsafe(no_mangle)]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6System15clear_dns_cacheEv")
+)]
 pub extern "C" fn swr_v1_hook_dns_cache_clear() {
     let mut cache = cache();
     if let Some(lru) = &mut cache.lru {
@@ -156,7 +165,11 @@ pub extern "C" fn swr_v1_hook_dns_cache_clear() {
 }
 
 /// `System::get_dns_cache_hit_ratio`.
-#[unsafe(no_mangle)]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6System23get_dns_cache_hit_ratioEv")
+)]
+#[must_use]
 pub extern "C" fn swr_v1_hook_dns_cache_hit_ratio() -> f32 {
     let cache = cache();
     let total = cache.hits + cache.misses;

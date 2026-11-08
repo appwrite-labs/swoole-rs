@@ -4,11 +4,9 @@
 use core::ffi::{CStr, c_char, c_int};
 use swoole_rs_buffer::string::CppString;
 
-// SAFETY: src/coroutine/system.cc's and crates/reactor's (upstream symbols).
+// SAFETY: src/coroutine/base.cc's and crates/reactor's (upstream symbols).
 unsafe extern "C" {
     fn swr_v1_coroutine_current() -> *mut core::ffi::c_void;
-    #[link_name = "_ZN6swoole9coroutine6System10wait_eventEiid"]
-    fn system_wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12waitpid_safeEiPii"]
     fn system_waitpid_safe(pid: libc::pid_t, status: *mut c_int, options: c_int) -> libc::pid_t;
 }
@@ -72,7 +70,7 @@ pub unsafe fn exec(
             Some(libc::EINTR) => continue,
             // SAFETY: waits on a descriptor this function owns.
             Some(libc::EAGAIN) => unsafe {
-                system_wait_event(fd, crate::wait_event::READ, timeout)
+                crate::wait_event::system_wait_event(fd, crate::wait_event::READ, timeout)
             },
             _ => break,
         };
