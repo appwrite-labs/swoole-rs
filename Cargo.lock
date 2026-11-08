@@ -883,6 +883,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-memory",
  "swoole-rs-ossupport",
+ "swoole-rs-utilities",
 ]
 
 [[package]]

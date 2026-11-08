@@ -128,6 +128,20 @@ pub unsafe extern "C" fn swr_v1_crc32(input: *const u8, length: usize) -> u32 {
     crc32(unsafe { core::slice::from_raw_parts(input, length) })
 }
 
+/// `uint32_t swoole_crc32(const char *data, size_t size)` under upstream's symbol.
+///
+/// # Safety
+/// As [`swr_v1_crc32`].
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z12swoole_crc32PKcm")
+)]
+#[must_use]
+pub unsafe extern "C" fn swoole_crc32(data: *const core::ffi::c_char, size: usize) -> u32 {
+    // SAFETY: as the caller promises.
+    unsafe { swr_v1_crc32(data.cast(), size) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::portable::TABLES;

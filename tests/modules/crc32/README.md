@@ -1,9 +1,8 @@
 # CRC32
 
 ABI: `docs/core-abi-v1.md`, `native/include/swoole_rs_crc32.h`. Feature
-bit 16. The overlay removes the whole algorithm from `src/core/crc32.cc`; the
-native `swoole_crc32` entry point forwards borrowed bytes to Rust. Omit the
-overlay to keep the original for comparison.
+bit 16. The overlay deletes `src/core/crc32.cc`; `crates/crc32` defines
+`swoole_crc32` under its upstream symbol (feature `upstream-symbols`).
 
 The Rust crate implements reflected IEEE CRC32 without allocation or mutable
 global state. With `target_arch=aarch64` and `target_feature=crc` it uses the
@@ -32,10 +31,9 @@ cargo test -p swoole-rs-crc32
 `crates/crc32/tests/upstream.rs` compares `swr_v1_crc32` with the pinned
 `src/core/crc32.cc` (vendored unchanged in `crates/oracle/upstream/`, symbol
 renamed) on the empty input, every one- and two-byte input, every length up to
-64 and proptest input up to 4 KiB, each at seven unaligned offsets. It also runs
-the original `TEST(hash, crc32)` from `core-tests/src/core/hash.cpp` against the
-adapter `crates/oracle/build.rs` rebuilds by applying the overlay patch to the
-vendored original.
+64 and proptest input up to 4 KiB, each at seven unaligned offsets. The
+original `TEST(hash, crc32)` from `core-tests/src/core/hash.cpp` is ported there
+as `hash_crc32`, with the same input and expected value.
 
 ## Consumers
 
@@ -46,7 +44,7 @@ worker, and that eight empty datagrams get no callback (pinned recvfrom's
 `ret <= 0` branch).
 
 Gate audit (#471/#477): `crc32-consumers-*` is **kept**. The algorithm is covered
-by the `cargo test -p swoole-rs-crc32` differential and the original core-test
+by the `cargo test -p swoole-rs-crc32` differential and the ported core test
 above. The one production caller — `reactor_thread.cc`'s non-IPv4 datagram
 worker dispatch (`crc32(peer) % worker_num`) — is reached by no PHPT with a real
 dispatch choice: `swoole_server/{unsock_dgram,sendto_timeout}.phpt` run a

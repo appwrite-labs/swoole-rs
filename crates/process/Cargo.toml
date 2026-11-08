@@ -20,4 +20,5 @@ workspace = true
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-memory = { path = "../memory" }
 swoole-rs-ossupport = { path = "../ossupport" }
+swoole-rs-utilities = { path = "../utilities" }
 libc = "=0.2.191"

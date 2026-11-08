@@ -1,7 +1,7 @@
 //! Differential tests against the pinned upstream C++ (`swoole-rs-oracle`).
 
 use proptest::prelude::*;
-use swoole_rs_crc32::swr_v1_crc32;
+use swoole_rs_crc32::{swoole_crc32, swr_v1_crc32};
 use swoole_rs_oracle::crc32 as upstream;
 
 /// Compare on input read one byte past an allocation start, so neither side
@@ -22,10 +22,15 @@ fn compare(bytes: &[u8]) {
     }
 }
 
+/// `TEST(hash, crc32)` from `core-tests/src/core/hash.cpp`.
 #[test]
-fn original_core_test_assertion() {
-    // SAFETY: this binary links the Rust export the adapter forwards to.
-    assert_eq!(unsafe { upstream::original_test_failures() }, 0);
+fn hash_crc32() {
+    let data = c"hello world, PHP  the best.";
+    // SAFETY: `data` is a live C string of `count_bytes()` bytes.
+    assert_eq!(
+        unsafe { swoole_crc32(data.as_ptr(), data.count_bytes()) },
+        2_962_796_788
+    );
 }
 
 #[test]

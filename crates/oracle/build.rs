@@ -67,33 +67,6 @@ fn apply(original: &str, patch: &str) -> String {
     output.iter().flat_map(|line| [*line, "\n"]).collect()
 }
 
-/// Apply an overlay patch to its vendored original, so the adapter compiled here
-/// is exactly the file the hybrid build compiles.
-fn patched(original: &str, patch: &str, name: &str) -> PathBuf {
-    println!("cargo:rerun-if-changed={patch}");
-    let patch = fs::read_to_string(patch).expect("overlay patch");
-    let original = fs::read_to_string(original).expect("vendored original");
-    let path = out(name);
-    fs::write(&path, apply(&original, &patch)).unwrap();
-    path
-}
-
-/// One `TEST(suite, name) { ... }` from an upstream core-test file, plus the
-/// file-scope `static const` fixtures it may use.
-fn original_test(file: &str, test: &str, name: &str) -> PathBuf {
-    let source = fs::read_to_string(file).expect("vendored core test");
-    let fixtures = source
-        .lines()
-        .filter(|line| line.starts_with("static const "));
-    let start = source.find(test).expect("original test");
-    let end = start + source[start..].find("\n}\n").expect("test body") + 3;
-    let text: String =
-        fixtures.flat_map(|line| [line, "\n"]).collect::<String>() + &source[start..end];
-    let path = out(name);
-    fs::write(&path, text).unwrap();
-    path
-}
-
 /// The text of `text` from `start` up to (not including) `end`, unchanged.
 fn slice(text: &str, start: &str, end: &str) -> String {
     let from = text.find(start).expect(start);
@@ -680,33 +653,6 @@ fn main() {
         .file("shim/http.cc")
         .file("shim/framing.cc")
         .compile("swoole_oracle");
-
-    // The original core-test assertions, run against the adapters that forward
-    // to the Rust exports. Those symbols are resolved by the test binary.
-    original_test(
-        "upstream/core-tests/src/core/hash.cpp",
-        "TEST(hash, crc32)",
-        "crc32_test.cpp",
-    );
-    cpp()
-        .include("shim")
-        .include("upstream")
-        .include("upstream/include")
-        .include("../../native/include")
-        .include(env::var("OUT_DIR").unwrap())
-        .file(patched(
-            "upstream/src/core/base64.cc",
-            "../../migration/patches/base64/0001-rust-base64.patch",
-            "base64_adapter.cc",
-        ))
-        .file(patched(
-            "upstream/src/core/crc32.cc",
-            "../../migration/patches/crc32/0001-rust-crc32.patch",
-            "crc32_adapter.cc",
-        ))
-        .file("shim/original.cc")
-        .file("shim/original_crc32.cc")
-        .compile("swoole_original_tests");
 
     for engine in ["upstream", "candidate"] {
         cpp()
