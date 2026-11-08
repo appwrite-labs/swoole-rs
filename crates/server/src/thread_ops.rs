@@ -238,7 +238,7 @@ pub(crate) unsafe fn answer(
     let conn_ref = || unsafe { &mut *conn };
     Some(match op {
         OP_REACTOR_BARRIER => {
-            // SAFETY: the live server, whose barrier master.cc still holds.
+            // SAFETY: the live server, whose barrier native/integration/server.cc lends.
             unsafe { methods::reactor_barrier(serv) };
             0
         }

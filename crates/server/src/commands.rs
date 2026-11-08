@@ -317,14 +317,14 @@ pub(crate) struct SendCommand<'a> {
 
 /// `swr_v1_server_command_send`: what `OP_ST_CMD_SEND` writes to the target process.
 #[repr(C)]
-struct CommandSend {
+pub(crate) struct CommandSend {
     /// `swr_v1_process_command_route::action`.
-    action: i32,
-    process_id: u32,
-    command_id: i32,
-    request_id: i64,
-    message: *const u8,
-    length: usize,
+    pub(crate) action: i32,
+    pub(crate) process_id: u32,
+    pub(crate) command_id: i32,
+    pub(crate) request_id: i64,
+    pub(crate) message: *const u8,
+    pub(crate) length: usize,
 }
 
 unsafe extern "C" fn reply_into(out: *mut c_void, data: *const c_char, length: usize) {

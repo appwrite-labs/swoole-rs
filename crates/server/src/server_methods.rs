@@ -27,7 +27,7 @@ use crate::records::ConnectionRecord;
 use crate::view;
 use swoole_rs_corebase::{DataHead, hook, log};
 
-/// master.cc's `ServerRustContext`, which asserts this layout.
+/// native/integration/server.cc's `ServerRustContext`, which asserts this layout.
 #[repr(C)]
 pub struct NativeContext {
     pub(crate) serv: *mut c_void,
@@ -52,7 +52,7 @@ pub struct NativeContext {
 
 const _: () = assert!(
     size_of::<NativeContext>() == 136 && core::mem::offset_of!(NativeContext, object) == 128,
-    "master.cc ServerRustContext layout"
+    "server.cc ServerRustContext layout"
 );
 
 impl NativeContext {
@@ -80,12 +80,12 @@ impl NativeContext {
     }
 }
 
-/// master.cc's `server_run`: one operation over a context, native exception custody included.
+/// native/integration/server.cc's `server_run`: one operation over a context, native exception custody included.
 pub type NativeRun = unsafe extern "C-unwind" fn(u32, u64, *mut NativeContext) -> i64;
 
 static NATIVE: OnceLock<NativeRun> = OnceLock::new();
 
-/// Registers master.cc's runner, which the methods below call.
+/// Registers native/integration/server.cc's runner, which the methods below call.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_set_native(run: NativeRun) {
     // A second registration is the same function; keeping the first is equivalent.
@@ -98,7 +98,7 @@ pub extern "C" fn swr_v1_server_set_native(run: NativeRun) {
 /// `ctx.serv` is a live `Server`, and the other fields are what `op` reads.
 unsafe fn run(op: u32, arg: u64, ctx: &mut NativeContext) -> i64 {
     let Some(native) = NATIVE.get() else {
-        // master.cc registers before any Server exists.
+        // server.cc registers before any Server exists.
         std::process::abort()
     };
     // SAFETY: as the caller guarantees.
@@ -672,6 +672,27 @@ pub(crate) unsafe extern "C" fn master_timer_tick(serv: *mut c_void) {
     };
 }
 
+/// `Server::get_timeout_callback`'s timer, a plain timer callback over the
+/// connection: the idle check runs over its port and this thread's reactor, the
+/// one that added the timer.
+///
+/// # Safety
+/// `conn` is a live connection of `SwooleG.server`, on this thread's reactor.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) unsafe extern "C" fn idle_timeout_tick(conn: *mut c_void) {
+    let serv = swoole_rs_corebase::swr_v1_core_server();
+    let mut ctx = NativeContext::new(serv);
+    // SAFETY: as the caller guarantees.
+    let record = unsafe { &*conn.cast::<ConnectionRecord>() };
+    // SAFETY: the live server and the connection's listening fd.
+    ctx.port = unsafe { view::port_by_server_fd(serv, record.server_fd) };
+    ctx.reactor = swoole_rs_corebase::thread_reactor();
+    ctx.sock = record.socket;
+    ctx.conn = conn;
+    // SAFETY: as the caller guarantees.
+    unsafe { run(crate::ops::RUN_IDLE_TIMEOUT, 0, &mut ctx) };
+}
+
 /// `Server::sendwait(session_id, data, length)`.
 ///
 /// # Safety
@@ -755,7 +776,7 @@ pub unsafe extern "C" fn sendfile(
     length: usize,
 ) -> bool {
     let mut buffer = SendfileBuffer([0; IPC_BUFFER_SIZE]);
-    // `SendfileTask::length` follows its `off_t offset` (master.cc asserts it).
+    // `SendfileTask::length` follows its `off_t offset` (server.cc asserts it).
     buffer.0[8..16].copy_from_slice(&length.to_ne_bytes());
     let mut ctx = NativeContext::new(serv);
     ctx.session_id = session_id;
@@ -808,7 +829,7 @@ pub extern "C" fn base_factory_shutdown(_factory: *mut c_void) -> bool {
 /// # Safety
 /// `factory` is a live `Factory`; `send` null or what `op` reads.
 unsafe fn on_base(factory: *mut c_void, send: *mut c_void, op: u32, arg: u64) -> bool {
-    // `Factory::server_`, the one member after the vtable pointer (master.cc asserts it).
+    // `Factory::server_`, the one member after the vtable pointer (server.cc asserts it).
     // SAFETY: as the caller guarantees.
     let serv = unsafe { *factory.cast::<*mut c_void>().wrapping_add(1) };
     let mut ctx = NativeContext::new(serv);
@@ -839,7 +860,7 @@ base_methods! {
     "_ZN6swoole11BaseFactory6notifyEPNS_8DataHeadE" fn base_factory_notify(info) = RUN_BASE_NOTIFY, lend false;
 }
 
-/// `serv->reactor_thread_barrier.wait()`, which master.cc still holds.
+/// `serv->reactor_thread_barrier.wait()`.
 ///
 /// # Safety
 /// `serv` is a live `Server`.
@@ -929,7 +950,7 @@ pub unsafe extern "C" fn notify(
     unsafe { native_op(OP_FACTORY_NOTIFY, &mut ctx) }
 }
 
-/// `SW_SERVER_EVENT_PIPE_MESSAGE` (master.cc asserts it).
+/// `SW_SERVER_EVENT_PIPE_MESSAGE` (server.cc asserts it).
 const EVENT_PIPE_MESSAGE: u8 = 10;
 
 /// `Server::send_pipe_message(worker_id, msg)`: `msg` to that worker, through the master.
@@ -957,7 +978,7 @@ pub unsafe extern "C" fn send_pipe_message(
     unsafe { native_op(OP_PIPE_TO_WORKER, &mut ctx) }
 }
 
-/// An `EventData`: `SW_IPC_MAX_SIZE` bytes (master.cc asserts it), aligned for its head.
+/// An `EventData`: `SW_IPC_MAX_SIZE` bytes (server.cc asserts it), aligned for its head.
 #[repr(C, align(8))]
 struct EventData([u8; IPC_BUFFER_SIZE + 40]);
 

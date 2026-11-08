@@ -74,7 +74,7 @@ fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<
         return None;
     }
     // SAFETY: a `ListenPort` starts with its settings pointer (`PortFields::port_config_`;
-    // master.cc asserts it has no vtable), whose `gs` is the port's shared counters.
+    // native/integration/server.cc asserts it has no vtable), whose `gs` is the port's shared counters.
     let config = unsafe { *port.cast::<*const crate::port_config::PortConfig>() };
     // SAFETY: a port's settings live as long as the port.
     let gs = unsafe { config.as_ref() }?.gs;
