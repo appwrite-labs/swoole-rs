@@ -46,8 +46,11 @@ use crate::ops::{
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
     OP_ALLOC_PORT_GS, OP_ALLOC_SESSIONS, OP_ALLOC_TASK_RESULTS, OP_ALLOC_WORKERS,
-    OP_DESTROY_FACTORY, OP_FREE_USER_WORKERS, OP_INIT_LOCAL_ADDRS, OP_LC_BEFORE_START,
-    OP_MASTER_REACTOR, OP_MASTER_WORKER, OP_SIGNAL_ACTIVE,
+    OP_CREATE_FACTORY, OP_DESTROY_FACTORY, OP_DESTROY_WORKER, OP_FREE_USER_WORKERS,
+    OP_INIT_LOCAL_ADDRS, OP_INIT_TASK_WORKERS, OP_LC_BEFORE_START, OP_LC_CHECK,
+    OP_LC_PREPARE_WORKERS, OP_LC_START_BASE, OP_LC_START_THREAD, OP_MASTER_REACTOR,
+    OP_MASTER_WORKER, OP_SIGNAL_ACTIVE, OP_SIGNAL_READ_MESSAGE, OP_STOP_SINGLE_WORKER,
+    OP_STOP_WORKER_THREADS,
 };
 use crate::port_config::PortConfig;
 use crate::records::{ConnectionRecord, SessionRecord};
@@ -57,7 +60,9 @@ use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::hook;
 use swoole_rs_memory::members::{sw_shm_calloc, sw_shm_free};
+use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::workers::entry;
 
 const SW_LOG_TRACE: c_int = 1;
 const SW_LOG_NOTICE: c_int = 3;
@@ -182,6 +187,16 @@ impl Objects<'_> {
     fn port_gs(&self) -> &PortCounters {
         // SAFETY: the port's slot in `port_gs_list`, once the server is created.
         unsafe { &*self.port().gs.cast::<PortCounters>() }
+    }
+    /// `serv->get_task_worker_pool()`.
+    fn task_pool(&self) -> *mut PoolRecord {
+        // SAFETY: a live server's shared record, which holds the pools.
+        unsafe { crate::view::task_pool(self.ctx.serv) }
+    }
+    /// `serv->get_event_worker_pool()`, right after the task pool.
+    fn event_pool(&self) -> &mut PoolRecord {
+        // SAFETY: as `task_pool`; the server's live event pool.
+        unsafe { &mut *self.task_pool().wrapping_add(1) }
     }
     fn worker(&self) -> &mut WorkerRecord {
         // SAFETY: the ops reading it run with a live worker as the context's object.
@@ -676,12 +691,28 @@ pub(crate) unsafe fn answer(
             log::set_last_error(E::SW_ERROR_WRONG_OPERATION as c_int);
             0
         }
-        // The task pool's are native.
+        // arg 1 (bit 0 for the reset) names the task pool's.
         OP_WARNING if arg == 0 => u64::from(o.config().scheduler_warning),
         OP_WARNING_TIME if arg == 0 => sign(o.config().warning_time),
         OP_WARNING_RESET if arg & 1 == 0 => {
             o.config().scheduler_warning = false;
             o.config().warning_time = (arg >> 1).cast_signed() as libc::time_t;
+            0
+        }
+        // SAFETY: the server's live task pool.
+        OP_WARNING => u64::from(unsafe { (*o.task_pool()).scheduler_warning }),
+        // SAFETY: as above.
+        OP_WARNING_TIME => sign(unsafe { (*o.task_pool()).warning_time }),
+        OP_WARNING_RESET => {
+            let pool = o.task_pool();
+            // SAFETY: as above.
+            unsafe { (*pool).scheduler_warning = 0 };
+            // SAFETY: as above.
+            unsafe { (*pool).warning_time = (arg >> 1).cast_signed() };
+            0
+        }
+        OP_SIGNAL_READ_MESSAGE => {
+            o.event_pool().read_message = true;
             0
         }
         OP_SET_DISABLE_NOTIFY => {
@@ -1192,8 +1223,73 @@ pub(crate) unsafe fn answer(
             u64::from(!results.is_null())
         }
         OP_INIT_LOCAL_ADDRS => u64::from(crate::local_addr::init(o.state)),
-        // Native destroys the other factories.
-        OP_DESTROY_FACTORY if arg == MODE_BASE => destroy_base_factory(&o),
+        // SAFETY: each lifecycle call below runs on the context's live server, at
+        // the point of startup or shutdown where upstream's Server makes it.
+        op => return unsafe { lifecycle(&o, op, arg) },
+    })
+}
+
+/// The ops that call a `Server` method crates/server or crates/process defines,
+/// or else `None`. `ProcessPool`'s methods and the process factory stay native:
+/// their runners link the C++ event loop and timer into whatever reaches them,
+/// and the server's fault fixture and unit tests link no C++.
+///
+/// # Safety
+/// As [`answer`]; the server is at the point of its life where it makes `op`.
+unsafe fn lifecycle(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    let serv = o.ctx.serv;
+    Some(match op {
+        // SAFETY: per the caller, for this and each call below.
+        OP_LC_CHECK => sign(unsafe { crate::server_methods::start_check(serv) }),
+        OP_LC_PREPARE_WORKERS => {
+            // SAFETY: as above.
+            unsafe { crate::worker_methods::swr_v1_server_workers_start(serv) };
+            0
+        }
+        // SAFETY: as above.
+        OP_LC_START_BASE => sign(unsafe { entry::start_reactor_processes(serv) }),
+        // SAFETY: as above.
+        OP_LC_START_THREAD => sign(unsafe { entry::start_worker_threads(serv) }),
+        OP_STOP_WORKER_THREADS => {
+            // SAFETY: as above.
+            unsafe { entry::stop_worker_threads(serv) };
+            0
+        }
+        OP_STOP_SINGLE_WORKER => {
+            o.event_pool().running = false;
+            // SAFETY: this thread's worker globals.
+            let worker =
+                unsafe { (*swoole_rs_process::worker_globals::swr_v1_worker_globals()).worker };
+            // SAFETY: as above; base mode's single worker, which this process runs.
+            unsafe { entry::stop_async_worker(serv, worker.cast()) };
+            0
+        }
+        OP_CREATE_FACTORY if u64::from(o.config().mode_) != MODE_PROCESS => {
+            let factory = if u64::from(o.config().mode_) == MODE_BASE {
+                // SAFETY: as above.
+                unsafe { crate::server_methods::create_base_factory(serv) }
+            } else {
+                // SAFETY: as above.
+                unsafe { entry::create_thread_factory(serv) }
+            };
+            o.config().factory_ = factory;
+            u64::from(!factory.is_null())
+        }
+        // SAFETY: as above.
+        OP_INIT_TASK_WORKERS => u64::from(unsafe { entry::init_task_workers(serv) }),
+        OP_DESTROY_WORKER => {
+            let at = usize::try_from(arg).unwrap_or(usize::MAX);
+            let worker = o.config().workers.cast::<WorkerRecord>().wrapping_add(at);
+            // SAFETY: an event worker of the server's array, which shutdown indexes.
+            unsafe { crate::worker_methods::destroy_worker(serv, worker) };
+            0
+        }
+        OP_DESTROY_FACTORY if arg == MODE_BASE => destroy_base_factory(o),
+        OP_DESTROY_FACTORY if arg == MODE_THREAD => {
+            // SAFETY: as above.
+            unsafe { entry::destroy_thread_factory(serv) };
+            0
+        }
         OP_ALLOC_CONNECTION_NUMS => {
             let nums = shm_calloc(o.config().worker_num as usize, ATOMIC_SIZE);
             o.gs().connection_nums = nums;
@@ -1291,8 +1387,6 @@ mod tests {
             answer(&raw mut ctx, state, OP_WARNING_RESET, 7 << 1);
             assert!(!config.scheduler_warning);
             assert_eq!(answer(&raw mut ctx, state, OP_WARNING_TIME, 0), Some(7));
-            // The task pool's warning stays native.
-            assert_eq!(answer(&raw mut ctx, state, OP_WARNING, 1), None);
             crate::swr_v1_server_state_free(state);
         }
     }
