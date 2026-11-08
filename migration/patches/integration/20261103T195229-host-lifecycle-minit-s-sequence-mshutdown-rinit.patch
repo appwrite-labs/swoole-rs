@@ -1,5 +1,5 @@
 diff --git a/ext-src/php_swoole.cc b/ext-src/php_swoole.cc
-index 3ab3189..cf02597 100644
+index c1f4061..c3dd0de 100644
 --- a/ext-src/php_swoole.cc
 +++ b/ext-src/php_swoole.cc
 @@ -285,54 +285,9 @@ PHP_INI_END()
@@ -207,19 +207,21 @@ index 3ab3189..cf02597 100644
      [](int64_t rotation) { sw_logger()->set_rotation(rotation); },
 -    [](uint8_t on) { SWOOLE_G(display_errors) = on; },
      [](uint8_t on) {
-@@ -501,11 +528,2 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
+@@ -501,13 +528,2 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
  
 -static void sw_after_fork(void *args) {
 -#if PHP_VERSION_ID >= 80500
 -    refresh_memory_manager();
 -#endif
+-    // swoole_fork() has removed the inherited signal handlers
+-    php_swoole_process_signal_clean();
 -#ifdef ZEND_MAX_EXECUTION_TIMERS
 -    zend_max_execution_timer_init();
 -#endif
 -}
 -
  /* {{{ PHP_MINIT_FUNCTION
-@@ -638,8 +656,6 @@ PHP_MINIT_FUNCTION(swoole) {
+@@ -526,8 +542,6 @@ PHP_MINIT_FUNCTION(swoole) {
  #endif
 -    ZEND_INIT_MODULE_GLOBALS(swoole, php_swoole_init_globals, nullptr);
 +    ZEND_INIT_MODULE_GLOBALS(swoole, swr_v1_phpswoole_init_globals, nullptr);
@@ -230,7 +232,7 @@ index 3ab3189..cf02597 100644
 -    // Constants, Swoole\Exception and Swoole\Error (crates/phpswoole).
 +    // Constants, Swoole\Exception and Swoole\Error, then Swoole's core and every family (crates/phpswoole).
      uint32_t flags = SWOOLE_G(use_shortname) ? SWR_PHPSWOOLE_SHORTNAME : 0;
-@@ -681,90 +697,2 @@ PHP_MINIT_FUNCTION(swoole) {
+@@ -569,90 +583,2 @@ PHP_MINIT_FUNCTION(swoole) {
  
 -    swoole_init();
 -    swoole_add_hook(SW_GLOBAL_HOOK_AFTER_FORK, sw_after_fork, 0);
@@ -321,7 +323,7 @@ index 3ab3189..cf02597 100644
 -    zend::known_strings_init();
 -
      return SUCCESS;
-@@ -773,29 +701,14 @@ PHP_MINIT_FUNCTION(swoole) {
+@@ -661,29 +587,14 @@ PHP_MINIT_FUNCTION(swoole) {
  
 -/* {{{ PHP_MSHUTDOWN_FUNCTION
 - */
@@ -359,7 +361,7 @@ index 3ab3189..cf02597 100644
  }
 -/* }}} */
  
-@@ -958,62 +871,4 @@ PHP_MINFO_FUNCTION(swoole) {
+@@ -846,62 +757,4 @@ PHP_MINFO_FUNCTION(swoole) {
  
 -static void *sw_emalloc(size_t size) {
 -    return emalloc(size);
@@ -423,12 +425,12 @@ index 3ab3189..cf02597 100644
 -    return &php_allocator;
 +    return reinterpret_cast<const swoole::Allocator *>(&swr_v1_phpswoole_php_allocator);
  }
-@@ -1021,3 +876,3 @@ const swoole::Allocator *sw_php_allocator() {
+@@ -909,3 +762,3 @@ const swoole::Allocator *sw_php_allocator() {
  const swoole::Allocator *sw_zend_string_allocator() {
 -    return &zend_string_allocator;
 +    return reinterpret_cast<const swoole::Allocator *>(&swr_v1_phpswoole_zend_string_allocator);
  }
-@@ -1033,121 +888,2 @@ void sw_php_exit(int status) {
+@@ -921,121 +774,2 @@ void sw_php_exit(int status) {
  
 -PHP_RINIT_FUNCTION(swoole) {
 -    if (!SWOOLE_G(cli)) {

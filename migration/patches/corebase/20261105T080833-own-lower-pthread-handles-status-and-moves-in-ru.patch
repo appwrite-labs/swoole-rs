@@ -1,15 +1,17 @@
 diff --git a/include/swoole_thread.h b/include/swoole_thread.h
-index 324f30e..5a689be 100644
+index 9faeab5..5a689be 100644
 --- a/include/swoole_thread.h
 +++ b/include/swoole_thread.h
-@@ -19,2 +19,6 @@
+@@ -19,4 +19,6 @@
  #include "swoole_lock.h"
+-#include "swoole_signal.h"
+-#include "swoole_util.h"
 +#include "swoole_rs_corebase_thread.h"
 +#include <memory>
 +#include <system_error>
 +#include <tuple>
  
-@@ -30,45 +34,67 @@ namespace swoole {
+@@ -32,51 +34,67 @@ namespace swoole {
  class Thread {
 -    int exit_status = 0;
 -    bool living = false;
@@ -79,6 +81,12 @@ index 324f30e..5a689be 100644
 -
 -    template <typename Callable>
 -    void start(Callable fn) {
+-        const bool restore_signal_mask = swoole_signal_block_all();
+-        ON_SCOPE_EXIT {
+-            if (restore_signal_mask) {
+-                swoole_signal_unblock_all();
+-            }
+-        };
 -        thread = std::thread(fn);
 +        return swr_v1_core_thread_id(&state_);
      }

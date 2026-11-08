@@ -8,7 +8,7 @@ index 0446c11..3591f36 100644
 +        if (serv->is_base_mode() && sw_worker() && conn->reactor_id != sw_worker()->get_id()) {
              return;
 diff --git a/ext-src/swoole_process.cc b/ext-src/swoole_process.cc
-index bc47f65..1a4d3f9 100644
+index 2e1aee2..bca9157 100644
 --- a/ext-src/swoole_process.cc
 +++ b/ext-src/swoole_process.cc
 @@ -325,3 +325,3 @@ static PHP_METHOD(swoole_process, __construct) {
@@ -21,46 +21,46 @@ index bc47f65..1a4d3f9 100644
 -    zend_update_property_long(swoole_process_ce, SW_Z8_OBJ_P(ZEND_THIS), ZEND_STRL("id"), process->id);
 +    zend_update_property_long(swoole_process_ce, SW_Z8_OBJ_P(ZEND_THIS), ZEND_STRL("id"), process->get_id());
      zend_update_property(
-@@ -673,3 +673,3 @@ int php_swoole_process_start(Worker *process, zval *zobject) {
+@@ -682,3 +682,3 @@ int php_swoole_process_start(Worker *process, zval *zobject) {
      php_swoole_process_clean();
 -    swoole_set_worker_id(process->id);
 +    swoole_set_worker_id(process->get_id());
      swoole_set_worker_pid(getpid());
-@@ -845,3 +845,3 @@ static PHP_METHOD(swoole_process, push) {
+@@ -854,3 +854,3 @@ static PHP_METHOD(swoole_process, push) {
  
 -    message.type = process->id + 1;
 +    message.type = process->get_id() + 1;
      memcpy(message.data, data, length);
-@@ -880,3 +880,3 @@ static PHP_METHOD(swoole_process, pop) {
+@@ -889,3 +889,3 @@ static PHP_METHOD(swoole_process, pop) {
      } else {
 -        message.type = process->id + 1;
 +        message.type = process->get_id() + 1;
      }
 diff --git a/ext-src/swoole_process_pool.cc b/ext-src/swoole_process_pool.cc
-index c7f42b8..ded6fe3 100644
+index 5f6d1f8..aab2653 100644
 --- a/ext-src/swoole_process_pool.cc
 +++ b/ext-src/swoole_process_pool.cc
-@@ -169,3 +169,3 @@ static void process_pool_onWorkerStart(ProcessPool *pool, Worker *worker) {
+@@ -170,3 +170,3 @@ static void process_pool_onWorkerStart(ProcessPool *pool, Worker *worker) {
      zend_update_property_long(swoole_process_pool_ce, SW_Z8_OBJ_P(zobject), ZEND_STRL("workerPid"), getpid());
 -    zend_update_property_long(swoole_process_pool_ce, SW_Z8_OBJ_P(zobject), ZEND_STRL("workerId"), worker->id);
 +    zend_update_property_long(swoole_process_pool_ce, SW_Z8_OBJ_P(zobject), ZEND_STRL("workerId"), worker->get_id());
  
-@@ -177,3 +177,3 @@ static void process_pool_onWorkerStart(ProcessPool *pool, Worker *worker) {
+@@ -178,3 +178,3 @@ static void process_pool_onWorkerStart(ProcessPool *pool, Worker *worker) {
          args[0] = *zobject;
 -        ZVAL_LONG(&args[1], worker->id);
 +        ZVAL_LONG(&args[1], worker->get_id());
          if (UNEXPECTED(!zend::function::call(pp->onWorkerStart->ptr(), 2, args, nullptr, pp->enable_coroutine))) {
-@@ -237,3 +237,3 @@ static void process_pool_onWorkerStop(ProcessPool *pool, Worker *worker) {
+@@ -238,3 +238,3 @@ static void process_pool_onWorkerStop(ProcessPool *pool, Worker *worker) {
      args[0] = *zobject;
 -    ZVAL_LONG(&args[1], worker->id);
 +    ZVAL_LONG(&args[1], worker->get_id());
  
-@@ -257,3 +257,3 @@ static void process_pool_onWorkerExit(ProcessPool *pool, Worker *worker) {
+@@ -258,3 +258,3 @@ static void process_pool_onWorkerExit(ProcessPool *pool, Worker *worker) {
      args[0] = *zobject;
 -    ZVAL_LONG(&args[1], worker->id);
 +    ZVAL_LONG(&args[1], worker->get_id());
  
-@@ -704,3 +704,3 @@ static PHP_METHOD(swoole_process_pool, getProcess) {
+@@ -706,3 +706,3 @@ static PHP_METHOD(swoole_process_pool, getProcess) {
              // current process
 -            if (worker->id == swoole_get_worker_id()) {
 +            if (worker->get_id() == swoole_get_worker_id()) {
@@ -110,7 +110,7 @@ index 6439612..8f925a9 100644
 +        ZVAL_LONG(&args[1], worker->get_id());
          ZVAL_LONG(&args[2], exit_status.get_pid());
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index 2436314..a3670a8 100644
+index 2c18530..6d57a0c 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -149,7 +149,7 @@ struct WorkerGlobal {
@@ -138,95 +138,120 @@ index 2436314..a3670a8 100644
 +    }
  };
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index 9c9c117..22fc05b 100644
+index eac3204..43b8a4c 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
-@@ -237,3 +237,3 @@ int ProcessPool::start_check() {
+@@ -235,3 +235,3 @@ int ProcessPool::start_check() {
          workers[i].pool = this;
 -        workers[i].id = start_id + i;
 +        workers[i].set_id(start_id + i);
          workers[i].set_type(type);
-@@ -487,3 +487,3 @@ pid_t ProcessPool::spawn(Worker *worker) {
+@@ -485,3 +485,3 @@ pid_t ProcessPool::spawn(Worker *worker) {
          swoole_set_worker_type(SW_WORKER);
 -        swoole_set_worker_id(worker->id);
 +        swoole_set_worker_id(worker->get_id());
          swoole_set_worker_pid(worker->get_pid());
-@@ -551,3 +551,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
+@@ -549,3 +549,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
  
 -    out.buf.info.server_fd = worker->id;
 +    out.buf.info.server_fd = worker->get_id();
  
-@@ -556,3 +556,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
+@@ -554,3 +554,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
      } else {
 -        out.mtype = worker->id + 1;
 +        out.mtype = worker->get_id() + 1;
      }
-@@ -567,3 +567,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
+@@ -565,3 +565,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
              if (n < 0 && catch_system_error(errno) == SW_ERROR) {
 -                swoole_sys_warning("[Worker#%d] msgrcv(%d) failed", worker->id, pool->queue->get_id());
 +                swoole_sys_warning("[Worker#%d] msgrcv(%d) failed", worker->get_id(), pool->queue->get_id());
                  break;
-@@ -575,3 +575,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
+@@ -573,3 +573,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
                      swoole_sys_warning(
 -                        "[Worker#%d] accept(%d) failed", worker->id, pool->stream_info_->socket->get_fd());
 +                        "[Worker#%d] accept(%d) failed", worker->get_id(), pool->stream_info_->socket->get_fd());
                      break;
-@@ -591,3 +591,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
+@@ -589,3 +589,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
              if (n < 0 && catch_system_error(errno) == SW_ERROR) {
 -                swoole_sys_warning("[Worker#%d] read(%d) failed", worker->id, worker->pipe_worker->fd);
 +                swoole_sys_warning("[Worker#%d] read(%d) failed", worker->get_id(), worker->pipe_worker->fd);
                  break;
-@@ -602,3 +602,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
-                            "packet-length[%ld]",
--                           worker->id,
-+                           worker->get_id(),
-                            n,
-@@ -607,3 +607,3 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
-         if (pool->onTask(pool, worker, &out.buf) < 0) {
--            swoole_warning("[Worker#%d] the execution of task#%ld has failed", worker->id, pool->get_task_id(&out.buf));
-+            swoole_warning("[Worker#%d] the execution of task#%ld has failed", worker->get_id(), pool->get_task_id(&out.buf));
+@@ -597,17 +597,12 @@ int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
          }
-@@ -694,3 +694,3 @@ int ProcessPool::run_with_stream_protocol(ProcessPool *pool, Worker *worker) {
-             if (n < 0 && catch_system_error(errno) == SW_ERROR) {
--                swoole_sys_warning("[Worker#%d] msgrcv(%d) failed", worker->id, pool->queue->get_id());
+-        do {
+-            uint64_t packet_size = sizeof(out.buf.info) + (uint64_t) out.buf.info.len;
+-            if ((uint64_t) n != packet_size ||
+-                ((out.buf.info.ext_flags & SW_TASK_TMPFILE) && out.buf.info.len != sizeof(PacketTask))) {
+-                swoole_error_log(SW_LOG_WARNING,
+-                                 SW_ERROR_PROTOCOL_ERROR,
+-                                 "[Worker#%d] bad task packet, received data length[%zd], packet length[%" PRIu64 "]",
+-                                 worker->id,
+-                                 n,
+-                                 packet_size);
+-            } else if (pool->onTask(pool, worker, &out.buf) < 0) {
+-                swoole_warning(
+-                    "[Worker#%d] the execution of task#%ld has failed", worker->id, pool->get_task_id(&out.buf));
+-            }
+-        } while (0);
++        if (n != (ssize_t) out.buf.size()) {
++            swoole_warning("[Worker#%d] bad task packet, The received data-length[%ld] is inconsistent with the "
++                           "packet-length[%ld]",
++                           worker->get_id(),
++                           n,
++                           out.buf.info.len + sizeof(out.buf.info));
++        }
++        if (pool->onTask(pool, worker, &out.buf) < 0) {
++            swoole_warning("[Worker#%d] the execution of task#%ld has failed", worker->get_id(), pool->get_task_id(&out.buf));
++        }
+         if (pool->use_socket && pool->stream_info_->last_connection) {
+@@ -701,8 +696,5 @@ int ProcessPool::run_with_stream_protocol(ProcessPool *pool, Worker *worker) {
+              */
+-            if (n < 0) {
+-                if (catch_system_error(errno) == SW_ERROR) {
+-                    swoole_sys_warning("[Worker#%d] msgrcv(%d) failed", worker->id, pool->queue->get_id());
+-                    break;
+-                }
+-                goto _end;
++            if (n < 0 && catch_system_error(errno) == SW_ERROR) {
 +                swoole_sys_warning("[Worker#%d] msgrcv(%d) failed", worker->get_id(), pool->queue->get_id());
-                 break;
-@@ -706,3 +706,3 @@ int ProcessPool::run_with_stream_protocol(ProcessPool *pool, Worker *worker) {
++                break;
+             }
+@@ -716,3 +708,3 @@ int ProcessPool::run_with_stream_protocol(ProcessPool *pool, Worker *worker) {
                      swoole_sys_warning(
 -                        "[Worker#%d] accept(%d) failed", worker->id, pool->stream_info_->socket->get_fd());
 +                        "[Worker#%d] accept(%d) failed", worker->get_id(), pool->stream_info_->socket->get_fd());
                      break;
-@@ -737,3 +737,3 @@ int ProcessPool::run_with_stream_protocol(ProcessPool *pool, Worker *worker) {
+@@ -747,3 +739,3 @@ int ProcessPool::run_with_stream_protocol(ProcessPool *pool, Worker *worker) {
              if (n < 0 && catch_system_error(errno) == SW_ERROR) {
 -                swoole_sys_warning("[Worker#%d] read(%d) failed", worker->id, worker->pipe_worker->fd);
 +                swoole_sys_warning("[Worker#%d] read(%d) failed", worker->get_id(), worker->pipe_worker->fd);
                  break;
-@@ -813,3 +813,3 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
+@@ -822,3 +814,3 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
          default:
 -            swoole_sys_warning("[Worker #%d]failed to read data from pipe", worker->id);
 +            swoole_sys_warning("[Worker #%d]failed to read data from pipe", worker->get_id());
              worker->shutdown();
-@@ -845,3 +845,3 @@ void ProcessPool::set_start_id(int _start_id) {
+@@ -854,3 +846,3 @@ void ProcessPool::set_start_id(int _start_id) {
      for (uint32_t i = 0; i < worker_num; i++) {
 -        workers[i].id = start_id + i;
 +        workers[i].set_id(start_id + i);
      }
-@@ -872,3 +872,3 @@ bool ProcessPool::detach() {
+@@ -881,3 +873,3 @@ bool ProcessPool::detach() {
      msg.pid = worker->get_pid();
 -    msg.worker_id = worker->id;
 +    msg.worker_id = worker->get_id();
      if (push_message(SW_WORKER_MESSAGE_STOP, &msg, sizeof(msg)) < 0) {
-@@ -1107,3 +1107,3 @@ ssize_t Worker::send_pipe_message(const void *buf, size_t n, int flags) const {
+@@ -1116,3 +1108,3 @@ ssize_t Worker::send_pipe_message(const void *buf, size_t n, int flags) const {
  
 -        msg.mtype = id + 1;
 +        msg.mtype = get_id() + 1;
          memcpy(&msg.buf, buf, n);
-@@ -1126,3 +1126,3 @@ void Worker::report_error(const ExitStatus &exit_status) const {
+@@ -1135,3 +1127,3 @@ void Worker::report_error(const ExitStatus &exit_status) const {
                     exit_status.get_pid(),
 -                   id,
 +                   get_id(),
                     exit_status.get_code(),
-@@ -1171,5 +1171,5 @@ void ReloadTask::kill_all(int signal_number) {
+@@ -1180,5 +1172,5 @@ void ReloadTask::kill_all(int signal_number) {
          } else if (action == 2) {
 -            swoole_sys_warning("failed to kill(%d, SIGTERM) worker#[%d]", kv.first, kv.second->id);
 +            swoole_sys_warning("failed to kill(%d, SIGTERM) worker#[%d]", kv.first, kv.second->get_id());
@@ -234,31 +259,31 @@ index 9c9c117..22fc05b 100644
 -            swoole_warning("force kill worker process(pid=%d, id=%d)", kv.first, kv.second->id);
 +            swoole_warning("force kill worker process(pid=%d, id=%d)", kv.first, kv.second->get_id());
          }
-@@ -1195,3 +1195,3 @@ void ReloadTask::kill_one(int signal_number) {
+@@ -1204,3 +1196,3 @@ void ReloadTask::kill_one(int signal_number) {
          } else if (action == 2) {
 -            swoole_sys_warning("kill(%d, SIGTERM) [%d] failed", pid, iter->second->id);
 +            swoole_sys_warning("kill(%d, SIGTERM) [%d] failed", pid, iter->second->get_id());
          }
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 0245871..bd3d836 100644
+index 3f5e4c2..0505687 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -325,3 +325,3 @@ int Server::start() {
+@@ -334,3 +334,3 @@ int Server::start() {
          pool->workers[i].pool = pool;
 -        pool->workers[i].id = i;
 +        pool->workers[i].set_id(i);
          pool->workers[i].set_type(SW_WORKER);
-@@ -332,3 +332,3 @@ int Server::start() {
+@@ -341,3 +341,3 @@ int Server::start() {
          for (auto worker : user_worker_list) {
 -            worker->id = worker_num + task_worker_num + i;
 +            worker->set_id(worker_num + task_worker_num + i);
              i++;
-@@ -504,3 +504,3 @@ bool Server::command(WorkerId process_id,
+@@ -489,3 +489,3 @@ bool Server::command(WorkerId process_id,
          return false;
 -    } else if (is_base_mode() && sw_worker()->id != 0) {
 +    } else if (is_base_mode() && sw_worker()->get_id() != 0) {
          swoole_error_log(SW_LOG_NOTICE, SW_ERROR_INVALID_PARAMS, "command() can only be used in worker process 0");
-@@ -732,5 +732,5 @@ int Server::add_worker(Worker *worker) {
+@@ -699,5 +699,5 @@ int Server::add_worker(Worker *worker) {
      user_worker_list.push_back(worker);
 -    worker->id = user_worker_list.size() - 1;
 +    worker->set_id(user_worker_list.size() - 1);
@@ -266,7 +291,7 @@ index 0245871..bd3d836 100644
 -    return worker->id;
 +    return worker->get_id();
  }
-@@ -806,3 +806,3 @@ void Server::abort_worker(Worker *worker) const {
+@@ -746,3 +746,3 @@ void Server::abort_worker(Worker *worker) const {
              Session *session = get_session(i);
 -            if (session->reactor_id == worker->id) {
 +            if (session->reactor_id == worker->get_id()) {
@@ -348,15 +373,15 @@ index 0a4316b..38529a0 100644
 +        hook_args[1] = (void *) (uintptr_t) worker->get_id();
          serv->call_hook(HOOK_WORKER_CLOSE, hook_args);
 diff --git a/src/server/task_worker.cc b/src/server/task_worker.cc
-index a87d464..9fb7776 100644
+index df97183..9498ee1 100644
 --- a/src/server/task_worker.cc
 +++ b/src/server/task_worker.cc
-@@ -83,3 +83,3 @@ static int TaskWorker_call_command_handler(const ProcessPool *pool, const Worker
+@@ -80,3 +80,3 @@ static int TaskWorker_call_command_handler(const ProcessPool *pool, const Worker
      task.info.fd = serv->get_task_id(req);
 -    task.info.reactor_id = worker->id;
 +    task.info.reactor_id = worker->get_id();
      task.info.server_fd = -1;
-@@ -357,3 +357,3 @@ static void TaskWorker_onStart(ProcessPool *pool, Worker *worker) {
+@@ -354,3 +354,3 @@ static void TaskWorker_onStart(ProcessPool *pool, Worker *worker) {
  
 -    swoole_set_worker_id(worker->id);
 +    swoole_set_worker_id(worker->get_id());
@@ -403,25 +428,25 @@ index eae6ec8..11ddef0 100644
 +                spawn_user_worker(exited_worker->get_id());
                  break;
 diff --git a/src/server/worker.cc b/src/server/worker.cc
-index fe0ad16..9052239 100644
+index de3f3b5..d296294 100644
 --- a/src/server/worker.cc
 +++ b/src/server/worker.cc
-@@ -180,3 +180,3 @@ void Server::worker_accept_event(DataHead *info) {
+@@ -177,3 +177,3 @@ void Server::worker_accept_event(DataHead *info) {
      case SW_SERVER_EVENT_COMMAND_REQUEST: {
 -        call_command_handler(message_bus, worker->id, pipe_command->get_socket(false));
 +        call_command_handler(message_bus, worker->get_id(), pipe_command->get_socket(false));
          break;
-@@ -211,3 +211,3 @@ void Server::worker_start_callback(Worker *worker) {
+@@ -208,3 +208,3 @@ void Server::worker_start_callback(Worker *worker) {
      SW_LOOP_N(worker_num + task_worker_num) {
 -        if (worker->id == i) {
 +        if (worker->get_id() == i) {
              continue;
-@@ -236,3 +236,3 @@ static void Worker_set_cpu_affinity(const Server *serv, const Worker *worker) {
+@@ -233,3 +233,3 @@ static void Worker_set_cpu_affinity(const Server *serv, const Worker *worker) {
      const auto outcome = swr_v1_process_worker_affinity(
 -        worker->id, serv->cpu_affinity_available, serv->cpu_affinity_available_num, serv->is_thread_mode());
 +        worker->get_id(), serv->cpu_affinity_available, serv->cpu_affinity_available_num, serv->is_thread_mode());
      if (outcome.error != 0) {
-@@ -241,7 +241,7 @@ static void Worker_set_cpu_affinity(const Server *serv, const Worker *worker) {
+@@ -238,7 +238,7 @@ static void Worker_set_cpu_affinity(const Server *serv, const Worker *worker) {
      if (outcome.status == 1) {
 -        swoole_sys_warning("get CPU affinity for worker#%d failed", worker->id);
 +        swoole_sys_warning("get CPU affinity for worker#%d failed", worker->get_id());
@@ -432,32 +457,32 @@ index fe0ad16..9052239 100644
 -        swoole_sys_warning("set CPU affinity for worker#%d failed", worker->id);
 +        swoole_sys_warning("set CPU affinity for worker#%d failed", worker->get_id());
      }
-@@ -258,3 +258,3 @@ void Server::call_worker_start_callback(Worker *worker) {
+@@ -255,3 +255,3 @@ void Server::call_worker_start_callback(Worker *worker) {
      hook_args[0] = this;
 -    hook_args[1] = (void *) (uintptr_t) worker->id;
 +    hook_args[1] = (void *) (uintptr_t) worker->get_id();
  
-@@ -278,3 +278,3 @@ void Server::call_worker_stop_callback(Worker *worker) {
+@@ -275,3 +275,3 @@ void Server::call_worker_stop_callback(Worker *worker) {
      hook_args[0] = this;
 -    hook_args[1] = (void *) (uintptr_t) worker->id;
 +    hook_args[1] = (void *) (uintptr_t) worker->get_id();
  
-@@ -367,3 +367,3 @@ void Server::stop_async_worker(Worker *worker) {
+@@ -364,3 +364,3 @@ void Server::stop_async_worker(Worker *worker) {
          if (is_event_worker()) {
 -            if (worker->id == 0 && get_event_worker_pool()->running == 0) {
 +            if (worker->get_id() == 0 && get_event_worker_pool()->running == 0) {
                  if (swoole_isset_hook(SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN)) {
-@@ -391,3 +391,3 @@ void Server::stop_async_worker(Worker *worker) {
+@@ -388,3 +388,3 @@ void Server::stop_async_worker(Worker *worker) {
          msg.pid = getpid();
 -        msg.worker_id = worker->id;
 +        msg.worker_id = worker->get_id();
  
-@@ -488,3 +488,3 @@ void Server::clean_worker_connections(Worker *worker) {
+@@ -485,3 +485,3 @@ void Server::clean_worker_connections(Worker *worker) {
          foreach_connection([worker](Connection *conn) {
 -            if (conn->reactor_id == worker->id) {
 +            if (conn->reactor_id == worker->get_id()) {
                  close_connection(sw_reactor(), conn->socket);
-@@ -500,3 +500,3 @@ void Server::clean_worker_connections(Worker *worker) {
+@@ -497,3 +497,3 @@ void Server::clean_worker_connections(Worker *worker) {
  int Server::start_event_worker(Worker *worker) {
 -    swoole_set_worker_id(worker->id);
 +    swoole_set_worker_id(worker->get_id());

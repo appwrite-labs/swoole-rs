@@ -1,12 +1,13 @@
 diff --git a/ext-src/swoole_process_pool.cc b/ext-src/swoole_process_pool.cc
-index ded6fe3..a840d59 100644
+index aab2653..a840d59 100644
 --- a/ext-src/swoole_process_pool.cc
 +++ b/ext-src/swoole_process_pool.cc
-@@ -21,2 +21,3 @@
+@@ -21,3 +21,3 @@
  #include "swoole_signal.h"
+-#include "swoole_util.h"
 +#include "swoole_rs_phpprocess.h"
  
-@@ -28,95 +29,19 @@ using namespace swoole;
+@@ -29,95 +29,19 @@ using namespace swoole;
  
 -static zend_class_entry *swoole_process_pool_ce;
 -static zend_object_handlers swoole_process_pool_handlers;
@@ -118,7 +119,7 @@ index ded6fe3..a840d59 100644
 +PHP_METHOD(swoole_process_pool, stop);
 +PHP_METHOD(swoole_process_pool, shutdown);
  SW_EXTERN_C_END
-@@ -142,101 +67,36 @@ static const zend_function_entry swoole_process_pool_methods[] =
+@@ -143,101 +67,36 @@ static const zend_function_entry swoole_process_pool_methods[] =
  
 -void php_swoole_process_pool_minit(int module_number) {
 -    SW_INIT_CLASS_ENTRY(swoole_process_pool, "Swoole\\Process\\Pool", nullptr, swoole_process_pool_methods);
@@ -246,7 +247,7 @@ index ded6fe3..a840d59 100644
 +        zend_long v = zval_get_long(ztmp);
 +        pool_of(pool)->max_wait_time = SW_MAX(0, SW_MIN(v, UINT32_MAX));
      }
-@@ -244,66 +104,45 @@ static void process_pool_onWorkerStop(ProcessPool *pool, Worker *worker) {
+@@ -245,66 +104,45 @@ static void process_pool_onWorkerStop(ProcessPool *pool, Worker *worker) {
  
 -static void process_pool_onWorkerExit(ProcessPool *pool, Worker *worker) {
 -    zval *zobject = (zval *) pool->ptr;
@@ -347,14 +348,14 @@ index ded6fe3..a840d59 100644
 +static void host_pool_signal(void *pool, void *worker, int signo) {
 +    ProcessPool *current_pool = pool_of(pool);
      switch (signo) {
-@@ -311,4 +150,4 @@ static void process_pool_signal_handler(int signo) {
+@@ -312,4 +150,4 @@ static void process_pool_signal_handler(int signo) {
          current_pool->running = false;
 -        if (current_worker) {
 -            current_pool->stop(current_worker);
 +        if (worker) {
 +            current_pool->stop(static_cast<Worker *>(worker));
          }
-@@ -335,428 +174,118 @@ static void process_pool_signal_handler(int signo) {
+@@ -336,429 +174,118 @@ static void process_pool_signal_handler(int signo) {
  
 -ProcessPool *sw_process_pool() {
 -    return current_pool;
@@ -469,7 +470,8 @@ index ded6fe3..a840d59 100644
 -        pp->enable_message_bus = zval_is_true(ztmp);
 -    }
 -    if (php_swoole_array_get_value(vht, "max_package_size", ztmp)) {
--        pool->set_max_packet_size(php_swoole_parse_to_size(ztmp));
+-        zend_long v = php_swoole_parse_to_size(ztmp);
+-        pool->set_max_packet_size(swoole::clamp<int64_t>(v, 1, UINT32_MAX));
 -    }
 -    if (php_swoole_array_get_value(vht, "max_wait_time", ztmp)) {
 -        zend_long v = zval_get_long(ztmp);

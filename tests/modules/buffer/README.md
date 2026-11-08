@@ -3,7 +3,7 @@
 Gates for the Rust `swoole::Buffer` queue (`crates/buffer`) and `swoole::String`
 (`crates/buffer/src/string.rs`, gates in [string/](string/)).
 Native runners compile the upstream side from pinned upstream
-`c7e514509451beafd4d70ce5b78943d51e76381c`, extracted into a disposable tree, and
+`76c657d88be39b7af6bf85e46bcbac0da7387760`, extracted into a disposable tree, and
 the Rust side from the patched tree and headers of the hybrid build the supplied
 Rust archive comes from (`tools.build_hybrid.hybrid_tree`); the String gates link that
 build's own native objects with the archive (`hybrid_link`). They never rebuild the
@@ -37,7 +37,7 @@ checkout (`target/upstream/src`).
 - `lifecycle.py --engine NAME=SO ... [--php-extension EXT]`: slow readers,
   stream/sendfile cancellation, half-close, churn and pending-write shutdown
   (corpus project `11-buffer-lifecycle`).
-- Original PHPTs (`originals.json`, seven Swoole v6.2.4 tests plus
+- Original PHPTs (`originals.json`, seven Swoole v6.2.5 tests plus
   `examples/test.jpg`):
   `python3 corpus/upstream/run.py --manifest tests/modules/buffer/originals.json --source S --engine upstream=SO --engine hybrid=SO --require-all --isolate-cases`.
   On Linux PHP 8.2 add `--php-extension curl --php-extension sockets` for both engines.

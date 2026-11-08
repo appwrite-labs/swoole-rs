@@ -51,6 +51,88 @@ RERUNS = 3
 EXTENDED_RERUNS = 9
 MIXED_RERUNS = 24
 STATUSES = ['passed', 'failed', 'skipped', 'excluded']
+# Pinned tests of upstream fixes to code that is Rust now, by the open issue porting them
+# (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
+# failing on them, and lists those the hybrid already passes so their entries go.
+PENDING_PORTS = {
+    1936: [
+        'swoole_http_server/100-continue.phpt',
+        'swoole_http_server/body_pipeline_request_base.phpt',
+        'swoole_http_server/chunked_package_max_length.phpt',
+        'swoole_http_server/chunked_pipeline_request.phpt',
+        'swoole_http_server/content_length_package_max_length.phpt',
+    ],
+    1937: [
+        'swoole_http2_server/duplicate_content_type.phpt',
+        'swoole_http2_server/ignore_request_trailers.phpt',
+        'swoole_http_server/create_request_trailer.phpt',
+        'swoole_http_server/request_trailer.phpt',
+    ],
+    1938: [
+        'swoole_http2_server/upload_reserved_header.phpt',
+        'swoole_http_server/upload_reserved_header_lifecycle.phpt',
+        'swoole_http_server/upload_reserved_header_request_shutdown.phpt',
+        'swoole_http_server/upload_reserved_header_split.phpt',
+    ],
+    1939: [
+        'swoole_http2_client_coro/data_peer_frame_size.phpt',
+        'swoole_http2_client_coro/settings_frame_size_compat.phpt',
+        'swoole_http2_server/data_peer_frame_size.phpt',
+        'swoole_http2_server/data_peer_frame_size_update.phpt',
+        'swoole_http2_server/empty_trailer.phpt',
+        'swoole_http2_server/header_buffer_bounds.phpt',
+        'swoole_http2_server/header_path_bounds.phpt',
+        'swoole_http2_server/settings_frame_size_compat.phpt',
+        'swoole_http2_server/flow_control_close.phpt',
+        'swoole_http2_server/flow_control_reset.phpt',
+        'swoole_http2_server/flow_control_sendfile.phpt',
+        'swoole_http2_server/sendfile_stream_termination.phpt',
+    ],
+    1940: [
+        'swoole_client_sync/keep_shutdown.phpt',
+        'swoole_client_sync/keep_socket_state.phpt',
+        'swoole_http_client_coro/close_preserves_request_error.phpt',
+    ],
+    1941: [
+        'swoole_process/signal_listener_after_fork.phpt',
+        'swoole_server/signal_listener_after_reload.phpt',
+        'swoole_coroutine_system/waitSignal_ignored.phpt',
+        'swoole_process/signal_restore_action.phpt',
+        'swoole_coroutine_system/waitPid_exit_before_loop.phpt',
+        'swoole_runtime/proc/thread_start_waitpid.phpt',
+        'swoole_thread/signal_mask.phpt',
+    ],
+    1942: [
+        'swoole_process_pool/msgqueue_ignores_package_size.phpt',
+        'swoole_process_pool/message_bus_sync_timer.phpt',
+        'swoole_process_pool/message_bus_sync_timer_send.phpt',
+        'swoole_process_pool/sync_timer_worker_stop.phpt',
+    ],
+    1943: [
+        'swoole_pdo_pgsql/connect_pending_failover.phpt',
+        'swoole_pdo_pgsql/connect_timeout.phpt',
+        'swoole_pdo_pgsql/connect_timeout_delayed_failover.phpt',
+        'swoole_pdo_pgsql/connect_timeout_duplicate_target.phpt',
+        'swoole_pdo_pgsql/connect_timeout_interrupted.phpt',
+        'swoole_pdo_pgsql/connect_timeout_minimum.phpt',
+        'swoole_pdo_pgsql/connect_timeout_pending.phpt',
+        'swoole_pdo_pgsql/connect_timeout_per_address.phpt',
+        'swoole_pdo_pgsql/connect_timeout_per_host.phpt',
+        'swoole_pdo_pgsql/cancel.phpt',
+        'swoole_pdo_pgsql/cancel_persistent.phpt',
+        'swoole_pdo_pgsql/cancel_send.phpt',
+        'swoole_pdo_pgsql/connect_cancel_empty_message.phpt',
+        'swoole_pdo_pgsql/persistent_reconnect.phpt',
+        'swoole_pdo_pgsql/poll_error.phpt',
+        'swoole_pdo_pgsql/split_reply.phpt',
+        'swoole_pdo_pgsql/split_reply_local.phpt',
+    ],
+    1944: [
+        'swoole_curl/multi/free_pending_resume.phpt',
+        'swoole_curl/fatal_error_while_suspended.phpt',
+    ],
+}
+PENDING = {f'tests/{test}': issue for issue, tests in PENDING_PORTS.items() for test in tests}
 
 
 def skip_reason(detail):
@@ -91,7 +173,8 @@ def compare(results):
         status[row['test']][row['engine']] = row['status']
     others = sorted({row['engine'] for row in results} - {'upstream'})
     regressions = sorted(f'{test} ({engine}: {engines.get(engine, "missing")})' for test, engines in status.items()
-                         if engines.get('upstream') == 'passed' for engine in others if engines.get(engine) != 'passed')
+                         if engines.get('upstream') == 'passed' and test not in PENDING
+                         for engine in others if engines.get(engine) != 'passed')
     both = sorted(test for test, engines in status.items() if others and engines.get('upstream') == 'failed'
                   and all(engines.get(engine) == 'failed' for engine in others))
     return regressions, both
@@ -211,6 +294,11 @@ def markdown(results, rechecked=None):
     if exclusions:
         lines += listing('named originals excluded (not passed)', exclusions)
     regressions, both = compare(results)
+    hybrid = {row['test']: row['status'] for row in results if row['engine'] != 'upstream' and row['test'] in PENDING}
+    lines += listing('pending a port (not gated)', [f'{test} (#{PENDING[test]}): {hybrid[test]}' for test in sorted(hybrid)
+                                                    if hybrid[test] != 'passed'])
+    lines += listing('pending a port but passing here: drop them from PENDING_PORTS',
+                     [test for test in sorted(hybrid) if hybrid[test] == 'passed'])
     if len(engines) > 1 and rechecked is not None:
         confirmed, flaky, recovered, inconclusive = recheck(flagged(results), rechecked)
         lines += listing('regressions: pass on upstream, fail on a re-run here', confirmed)

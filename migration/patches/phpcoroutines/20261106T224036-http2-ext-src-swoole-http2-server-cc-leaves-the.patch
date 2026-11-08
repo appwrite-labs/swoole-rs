@@ -146,10 +146,10 @@ index 90bafdf..1a5acd1 100644
 -}
 diff --git a/ext-src/swoole_http2_server.cc b/ext-src/swoole_http2_server.cc
 deleted file mode 100644
-index 4480925..0000000
+index 3d2c2ef..0000000
 --- a/ext-src/swoole_http2_server.cc
 +++ /dev/null
-@@ -1,247 +0,0 @@
+@@ -1,248 +0,0 @@
 -/*
 -  +----------------------------------------------------------------------+
 -  | Swoole                                                               |
@@ -172,6 +172,7 @@ index 4480925..0000000
 -#include <memory>
 -
 -#include "swoole_static_handler.h"
+-#include "swoole_util.h"
 -
 -#include "main/php_variables.h"
 -
@@ -419,10 +420,10 @@ index a70d3b6..101324c 100644
 -    }
      // Copies into native scratch; no Rust pointer escapes.
 diff --git a/src/server/master.cc b/src/server/master.cc
-index 265bcce..ca11ef6 100644
+index 457796b..b100ace 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
-@@ -824,2 +824,4 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
+@@ -817,2 +817,4 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
          return serv->ports[arg]->protocol.package_max_length;
 +    case SWR_SERVER_OP_CONN_MAX_LENGTH:
 +        return serv->get_package_max_length(conn);

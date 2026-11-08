@@ -16,7 +16,7 @@ index 7e83e32..8dd9df1 100644
 -#include "swoole_process_pool.h"
  #include "swoole_rs.h"
 diff --git a/ext-src/swoole_http_server.cc b/ext-src/swoole_http_server.cc
-index f1cfec2..adec1ba 100644
+index 47e19df..068b76f 100644
 --- a/ext-src/swoole_http_server.cc
 +++ b/ext-src/swoole_http_server.cc
 @@ -17,3 +17,2 @@
@@ -25,10 +25,10 @@ index f1cfec2..adec1ba 100644
  
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
 deleted file mode 100644
-index c79d39e..0000000
+index 08d4c79..0000000
 --- a/include/swoole_process_pool.h
 +++ /dev/null
-@@ -1,267 +0,0 @@
+@@ -1,268 +0,0 @@
 -/*
 -  +----------------------------------------------------------------------+
 -  | Swoole                                                               |
@@ -232,7 +232,8 @@ index c79d39e..0000000
 -    }
 -
 -    void set_max_packet_size(uint32_t _max_packet_size) {
--        max_packet_size_ = _max_packet_size;
+-        // SysV message queues have a fixed receive limit and ignore max_package_size.
+-        max_packet_size_ = use_msgqueue ? SW_MSGMAX : _max_packet_size;
 -    }
 -
 -    bool is_master() const {
@@ -297,7 +298,7 @@ index c79d39e..0000000
 -    return SwooleWG.worker;
 -}
 diff --git a/include/swoole_server.h b/include/swoole_server.h
-index 4b7a915..4deabd4 100644
+index 1bd2a16..4424a09 100644
 --- a/include/swoole_server.h
 +++ b/include/swoole_server.h
 @@ -24,3 +24,252 @@
@@ -564,7 +565,7 @@ index 9030051..e8ec357 100644
 +#include "swoole_server.h"
  
 diff --git a/src/os/wait.cc b/src/os/wait.cc
-index a2bdb22..600d4a9 100644
+index 92c9622..fb97a4d 100644
 --- a/src/os/wait.cc
 +++ b/src/os/wait.cc
 @@ -16,3 +16,3 @@
@@ -582,7 +583,7 @@ index 3d47698..faa3ffe 100644
 +#include "swoole_server.h"
  
 diff --git a/src/server/process.cc b/src/server/process.cc
-index 357c683..6c00730 100644
+index 6908f00..f1ecf20 100644
 --- a/src/server/process.cc
 +++ b/src/server/process.cc
 @@ -30,3 +30,2 @@

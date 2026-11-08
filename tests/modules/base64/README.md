@@ -2,7 +2,7 @@
 
 ABI: [`docs/core-abi-v1.md`](../../../docs/core-abi-v1.md) and
 `native/include/swoole_rs_base64.h`. Upstream pin:
-`c7e514509451beafd4d70ce5b78943d51e76381c` (Swoole v6.2.4).
+`76c657d88be39b7af6bf85e46bcbac0da7387760` (Swoole v6.2.5).
 
 `crates/base64` replaces both low-level algorithms with allocation-free Rust.
 The overlay deletes `src/core/base64.cc` and `include/swoole_base64.h`: no

@@ -12,7 +12,7 @@ cargo build --locked -p swoole-rs-ffi --release
 
 ## Native differential gates
 
-Each gate compiles pinned (v6.2.4) bodies against the hybrid build `--archive`
+Each gate compiles pinned (v6.2.5) bodies against the hybrid build `--archive`
 comes from and compares outcomes. The two sides compile apart (`Sides` in
 `gate.py`): upstream fragments against the pin's headers only, the rest against
 the hybrid build's patched tree (`hybrid_tree`). Native code runs under ASan/UBSan;

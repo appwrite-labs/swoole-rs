@@ -1,8 +1,8 @@
 diff --git a/ext-src/swoole_http_request.cc b/ext-src/swoole_http_request.cc
-index 26c1f52..d1f983a 100644
+index bfb7dc8..ca3d503 100644
 --- a/ext-src/swoole_http_request.cc
 +++ b/ext-src/swoole_http_request.cc
-@@ -64,10 +64,2 @@ static int multipart_body_on_data_end(multipart_parser *p);
+@@ -61,10 +61,2 @@ static int multipart_body_on_data_end(multipart_parser *p);
  
 -static HttpContext *http_request_get_and_check_context(const zval *zobject) {
 -    auto *ctx = php_swoole_http_request_get_context(zobject);
@@ -13,7 +13,7 @@ index 26c1f52..d1f983a 100644
 -}
 -
  static inline char *http_trim_double_quote(char *ptr, size_t *len) {
-@@ -175,16 +167,10 @@ bool HttpContext::parse_multipart_data(const char *at, size_t length) const {
+@@ -172,16 +164,10 @@ bool HttpContext::parse_multipart_data(const char *at, size_t length) const {
  
 +// The class, its objects and every method are Rust (crates/phphttp); the
 +// handlers keep their zim_ names so this table, built from the stub's arginfo,
@@ -35,7 +35,7 @@ index 26c1f52..d1f983a 100644
 -    return http_request_fetch_object(Z_OBJ_P(zobject))->ctx;
 +    return static_cast<HttpContext *>(swr_v1_phphttp_context(Z_OBJ_P(zobject)));
  }
-@@ -192,37 +178,3 @@ HttpContext *php_swoole_http_request_get_context(const zval *zobject) {
+@@ -189,43 +175,3 @@ HttpContext *php_swoole_http_request_get_context(const zval *zobject) {
  void php_swoole_http_request_set_context(const zval *zobject, HttpContext *ctx) {
 -    http_request_fetch_object(Z_OBJ_P(zobject))->ctx = ctx;
 -}
@@ -45,7 +45,13 @@ index 26c1f52..d1f983a 100644
 -    auto *ctx = request->ctx;
 -
 -    if (ctx) {
--        zval *ztmpfiles = ctx->request.ztmpfiles;
+-        zval *ztmpfiles = nullptr;
+-        if (ctx->request.ztmpfiles) {
+-            // User code may have replaced the array, invalidating the cached property value.
+-            ztmpfiles = sw_zend_read_property_ex(
+-                swoole_http_request_ce, ctx->request.zobject, SW_ZSTR_KNOWN(SW_ZEND_STR_TMPFILES), 1);
+-            ZVAL_DEREF(ztmpfiles);
+-        }
 -        if (ztmpfiles && ZVAL_IS_ARRAY(ztmpfiles)) {
 -            zval *z_file_path;
 -            SW_HASHTABLE_FOREACH_START(Z_ARRVAL_P(ztmpfiles), z_file_path) {
@@ -74,7 +80,7 @@ index 26c1f52..d1f983a 100644
 -    return &request->std;
 +    swr_v1_phphttp_set_context(Z_OBJ_P(zobject), ctx);
  }
-@@ -230,8 +182,8 @@ static zend_object *http_request_create_object(zend_class_entry *ce) {
+@@ -233,8 +179,8 @@ static zend_object *http_request_create_object(zend_class_entry *ce) {
  SW_EXTERN_C_BEGIN
 -static PHP_METHOD(swoole_http_request, getData);
 -static PHP_METHOD(swoole_http_request, create);
@@ -89,7 +95,7 @@ index 26c1f52..d1f983a 100644
 +PHP_METHOD(swoole_http_request, getMethod);
 +PHP_METHOD(swoole_http_request, getContent);
  SW_EXTERN_C_END
-@@ -253,18 +205,3 @@ const zend_function_entry swoole_http_request_methods[] =
+@@ -256,18 +202,3 @@ const zend_function_entry swoole_http_request_methods[] =
  void php_swoole_http_request_minit(int module_number) {
 -    SW_INIT_CLASS_ENTRY(swoole_http_request, "Swoole\\Http\\Request", nullptr, swoole_http_request_methods);
 -    SW_SET_CLASS_NOT_SERIALIZABLE(swoole_http_request);
@@ -109,7 +115,7 @@ index 26c1f52..d1f983a 100644
 -    zend_declare_property_null(swoole_http_request_ce, ZEND_STRL("tmpfiles"), ZEND_ACC_PUBLIC);
 +    swoole_http_request_ce = swr_v1_phphttp_request_minit(swoole_http_request_methods);
  }
-@@ -932,47 +869,42 @@ const char *HttpContext::get_content_encoding() const {
+@@ -951,47 +882,42 @@ const char *HttpContext::get_content_encoding() const {
  
 -static PHP_METHOD(swoole_http_request, getContent) {
 -    HttpContext *ctx = http_request_get_and_check_context(ZEND_THIS);
@@ -156,15 +162,15 @@ index 26c1f52..d1f983a 100644
 -    HttpContext *ctx = http_request_get_and_check_context(ZEND_THIS);
 -    if (UNEXPECTED(!ctx)) {
 -        RETURN_FALSE;
--    }
--
--    if (ctx->http2) {
--        php_swoole_fatal_error(E_WARNING, "unable to get data from HTTP2 request");
--        RETURN_FALSE;
 +    if (req->chunked_body && req->chunked_body->length != 0) {
 +        *length = req->chunked_body->length;
 +        return req->chunked_body->str;
      }
+-
+-    if (ctx->http2) {
+-        php_swoole_fatal_error(E_WARNING, "unable to get data from HTTP2 request");
+-        RETURN_FALSE;
+-    }
 -
 -    if (Z_TYPE(ctx->request.zdata) == IS_STRING) {
 -        RETURN_ZVAL(&ctx->request.zdata, 1, 0);
@@ -188,7 +194,7 @@ index 26c1f52..d1f983a 100644
  
 +void swr_http_host_request_create(zval *return_value, zval *zoptions) {
      auto *ctx = new HttpContext();
-@@ -1035,15 +967,4 @@ static PHP_METHOD(swoole_http_request, create) {
+@@ -1056,15 +982,4 @@ static PHP_METHOD(swoole_http_request, create) {
  
 -static PHP_METHOD(swoole_http_request, parse) {
 -    HttpContext *ctx = http_request_get_and_check_context(ZEND_THIS);
@@ -206,7 +212,7 @@ index 26c1f52..d1f983a 100644
 +int64_t swr_http_host_request_parse(void *context, const char *str, size_t l_str) {
 +    auto *ctx = static_cast<HttpContext *>(context);
      if (Z_TYPE(ctx->request.zdata) != IS_STRING) {
-@@ -1060,14 +981,10 @@ static PHP_METHOD(swoole_http_request, parse) {
+@@ -1081,14 +996,10 @@ static PHP_METHOD(swoole_http_request, parse) {
      }
 -
 -    RETURN_LONG(swoole_llhttp_parser_execute(&ctx->parser,
@@ -227,7 +233,7 @@ index 26c1f52..d1f983a 100644
 +void swr_http_host_request_method(void *context, zval *return_value) {
 +    auto *ctx = static_cast<HttpContext *>(context);
      if (ctx->http2) {
-@@ -1075,14 +992,4 @@ static PHP_METHOD(swoole_http_request, getMethod) {
+@@ -1096,14 +1007,4 @@ static PHP_METHOD(swoole_http_request, getMethod) {
          RETURN_ZVAL(zmethod, 1, 0);
 -    } else {
 -        const char *method = llhttp_method_name((enum llhttp_method)(ctx->parser).method);
@@ -244,14 +250,14 @@ index 26c1f52..d1f983a 100644
 +    RETURN_STRING(llhttp_method_name((enum llhttp_method)(ctx->parser).method));
  }
 diff --git a/ext-src/swoole_http_response.cc b/ext-src/swoole_http_response.cc
-index 7f299a3..d0baaa1 100644
+index 6cc797e..d9e5585 100644
 --- a/ext-src/swoole_http_response.cc
 +++ b/ext-src/swoole_http_response.cc
-@@ -45,3 +45,2 @@ namespace HttpServer = swoole::http_server;
+@@ -42,3 +42,2 @@ namespace HttpServer = swoole::http_server;
  zend_class_entry *swoole_http_response_ce;
 -static zend_object_handlers swoole_http_response_handlers;
  
-@@ -67,13 +66,4 @@ String *HttpContext::get_write_buffer() {
+@@ -64,13 +63,4 @@ String *HttpContext::get_write_buffer() {
  
 -struct HttpResponseObject {
 -    HttpContext *ctx;
@@ -266,7 +272,7 @@ index 7f299a3..d0baaa1 100644
 -    return http_response_fetch_object(Z_OBJ_P(zobject))->ctx;
 +    return static_cast<HttpContext *>(swr_v1_phphttp_context(Z_OBJ_P(zobject)));
  }
-@@ -81,58 +71,21 @@ HttpContext *php_swoole_http_response_get_context(const zval *zobject) {
+@@ -78,58 +68,21 @@ HttpContext *php_swoole_http_response_get_context(const zval *zobject) {
  void php_swoole_http_response_set_context(const zval *zobject, HttpContext *ctx) {
 -    http_response_fetch_object(Z_OBJ_P(zobject))->ctx = ctx;
 -}
@@ -341,7 +347,7 @@ index 7f299a3..d0baaa1 100644
 +PHP_METHOD(swoole_http_response, detach);
 +PHP_METHOD(swoole_http_response, create);
  /**
-@@ -140,11 +93,11 @@ static PHP_METHOD(swoole_http_response, create);
+@@ -137,11 +90,11 @@ static PHP_METHOD(swoole_http_response, create);
   */
 -static PHP_METHOD(swoole_http_response, upgrade);
 -static PHP_METHOD(swoole_http_response, push);
@@ -362,7 +368,7 @@ index 7f299a3..d0baaa1 100644
 +PHP_METHOD(swoole_http_response, status);
 +PHP_METHOD(swoole_http_response, disconnect);
  SW_EXTERN_C_END
-@@ -185,21 +138,15 @@ const zend_function_entry swoole_http_response_methods[] =
+@@ -182,21 +135,15 @@ const zend_function_entry swoole_http_response_methods[] =
  
 +static_assert(SW_ERROR_PHP_FATAL_ERROR == 503 && SW_ERROR_PHP_RUNTIME_NOTICE == 510 && SW_ERROR_SESSION_CLOSED == 1004 &&
 +                  SW_ERROR_HTTP_CONTEXT_UNAVAILABLE == 7106 && SW_ERROR_SERVER_IS_NOT_REGULAR_FILE == 9013 &&
@@ -394,7 +400,7 @@ index 7f299a3..d0baaa1 100644
 +    if (message && (always || SWOOLE_G(display_errors))) {
 +        php_error_docref(nullptr, E_WARNING, "%s", message);
      }
-@@ -207,14 +154,57 @@ void php_swoole_http_response_rshutdown() {
+@@ -204,14 +151,57 @@ void php_swoole_http_response_rshutdown() {
  
 -static PHP_METHOD(swoole_http_response, write) {
 -    zend_string *sdata;
@@ -460,11 +466,11 @@ index 7f299a3..d0baaa1 100644
 +void swr_http_host_write(void *context, zend_string *sdata, zval *return_value) {
 +    auto *ctx = static_cast<HttpContext *>(context);
  #ifdef SW_HAVE_COMPRESSION
-@@ -228,3 +218,2 @@ static PHP_METHOD(swoole_http_response, write) {
+@@ -225,3 +215,2 @@ static PHP_METHOD(swoole_http_response, write) {
  #endif
 -
      ctx->write(sdata, return_value);
-@@ -613,46 +602,21 @@ bool HttpContext::compress(const char *data, size_t length) {
+@@ -610,46 +599,21 @@ bool HttpContext::compress(const char *data, size_t length) {
  
 -static PHP_METHOD(swoole_http_response, initHeader) {
 -    HttpContext *ctx = http_response_get_and_check_context(ZEND_THIS);
@@ -526,7 +532,7 @@ index 7f299a3..d0baaa1 100644
 +    auto *ctx = static_cast<HttpContext *>(context);
 +    http_response_after(ctx);
      ctx->end(sdata, return_value);
-@@ -926,334 +890,77 @@ bool HttpContext::set_header(const char *k, size_t klen, zval *zvalue, bool form
+@@ -923,334 +887,77 @@ bool HttpContext::set_header(const char *k, size_t klen, zval *zvalue, bool form
  
 -static PHP_METHOD(swoole_http_response, sendfile) {
 -    HttpContext *ctx = http_response_get_and_check_context(ZEND_THIS);
@@ -906,7 +912,7 @@ index 7f299a3..d0baaa1 100644
 +    auto *ctx = static_cast<HttpContext *>(context);
 +    return ctx->close(ctx);
  }
-@@ -1417,20 +1124,4 @@ void WebSocket::recv_frame(const WebSocketSettings &settings,
+@@ -1414,20 +1121,4 @@ void WebSocket::recv_frame(const WebSocketSettings &settings,
  
 -static PHP_METHOD(swoole_http_response, recv) {
 -    HttpContext *ctx = php_swoole_http_response_get_context(ZEND_THIS);
@@ -929,7 +935,7 @@ index 7f299a3..d0baaa1 100644
 +void swr_http_host_recv(void *context, double timeout, zval *return_value) {
 +    auto *ctx = static_cast<HttpContext *>(context);
      WebSocket::recv_frame(
-@@ -1446,16 +1137,5 @@ static PHP_METHOD(swoole_http_response, recv) {
+@@ -1443,16 +1134,5 @@ static PHP_METHOD(swoole_http_response, recv) {
  
 -static PHP_METHOD(swoole_http_response, detach) {
 -    HttpContext *ctx = http_response_get_and_check_context(ZEND_THIS);
@@ -947,7 +953,7 @@ index 7f299a3..d0baaa1 100644
      zval *zsocket = nullptr;
 -    zend_long fd = -1;
      Server *serv = nullptr;
-@@ -1463,8 +1143,2 @@ static PHP_METHOD(swoole_http_response, create) {
+@@ -1460,8 +1140,2 @@ static PHP_METHOD(swoole_http_response, create) {
  
 -    ZEND_PARSE_PARAMETERS_START(1, 2)
 -    Z_PARAM_ZVAL(zobject)
@@ -956,7 +962,7 @@ index 7f299a3..d0baaa1 100644
 -    ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE);
 -
      if (ZVAL_IS_OBJECT(zobject)) {
-@@ -1548,24 +1222,5 @@ static PHP_METHOD(swoole_http_response, create) {
+@@ -1545,24 +1219,5 @@ static PHP_METHOD(swoole_http_response, create) {
  
 -static PHP_METHOD(swoole_http_response, redirect) {
 -    zval *zurl;

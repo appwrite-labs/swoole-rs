@@ -12,10 +12,10 @@ index eb0d5a5..b4888a4 100644
 -    ZVAL_LONG(property, fd);
 -}
 diff --git a/ext-src/swoole_http_response.cc b/ext-src/swoole_http_response.cc
-index 94899ea..61731a3 100644
+index 06b2efd..bff1f86 100644
 --- a/ext-src/swoole_http_response.cc
 +++ b/ext-src/swoole_http_response.cc
-@@ -42,11 +42,2 @@ zend_class_entry *swoole_http_response_ce;
+@@ -39,11 +39,2 @@ zend_class_entry *swoole_http_response_ce;
  
 -static SW_THREAD_LOCAL struct {
 -    time_t time;
@@ -27,7 +27,7 @@ index 94899ea..61731a3 100644
 -}
 -
  String *HttpContext::get_write_buffer() {
-@@ -137,6 +128,3 @@ static void http_response_after(HttpContext *ctx) {
+@@ -134,6 +125,3 @@ static void http_response_after(HttpContext *ctx) {
  void php_swoole_http_response_rshutdown() {
 -    if (date_cache.date) {
 -        zend_string_release(date_cache.date);
@@ -35,7 +35,7 @@ index 94899ea..61731a3 100644
 -    }
 +    swr_v1_phphttp_response_rshutdown();
  }
-@@ -144,11 +132,3 @@ void php_swoole_http_response_rshutdown() {
+@@ -141,11 +129,3 @@ void php_swoole_http_response_rshutdown() {
  zend_string *php_swoole_http_get_date() {
 -    time_t now = time(nullptr);
 -    if (now != date_cache.time) {
@@ -48,18 +48,18 @@ index 94899ea..61731a3 100644
 -    return date_cache.date;
 +    return swr_v1_phphttp_date();
  }
-@@ -281,6 +261,2 @@ bool swr_http_host_compression_type(const void *context, const char *type, size_
+@@ -279,6 +259,2 @@ bool swr_http_host_compression_type(const void *context, const char *type, size_
  
 -zend_string *swr_http_host_date(void) {
 -    return php_swoole_http_get_date();
 -}
 -
  zval *swr_http_host_response_property(void *context, int which) {
-@@ -355,2 +331,3 @@ int swr_http_host_http2(void *context, int op, zend_string *data, int64_t offset
+@@ -353,2 +329,3 @@ int swr_http_host_http2(void *context, int op, zend_string *data, int64_t offset
          case SWR_PHPHTTP_HTTP2_WRITE: done = swoole_http2_server_write(ctx, data); break;
 +        case SWR_PHPHTTP_HTTP2_PING: done = swoole_http2_server_ping(ctx); break;
          default: done = swoole_http2_server_send_file(ctx, data, offset, length); break;
-@@ -427,50 +404,3 @@ bool HttpContext::set_header(const char *k, size_t klen, const std::string &v, b
+@@ -425,50 +402,3 @@ bool HttpContext::set_header(const char *k, size_t klen, const std::string &v, b
  bool HttpContext::set_header(const char *k, size_t klen, zval *zvalue, bool format) {
 -    if (UNEXPECTED(klen > SW_HTTP_HEADER_KEY_SIZE - 1)) {
 -        php_swoole_error(E_WARNING, "header key is too long");
@@ -111,7 +111,7 @@ index 94899ea..61731a3 100644
 -    RETURN_BOOL(ctx->send(ctx, buffer->str, buffer->length));
 +    return swr_v1_phphttp_set_header(this, k, klen, zvalue, format);
  }
-@@ -656,47 +586,21 @@ void swr_http_host_recv(void *context, double timeout, zval *return_value) {
+@@ -557,47 +487,21 @@ void swr_http_host_recv(void *context, double timeout, zval *return_value) {
  
 -void swr_http_host_response_create(zval *zobject, zend_long fd, zval *return_value) {
 -    zval *zrequest = nullptr;
@@ -175,7 +175,7 @@ index 94899ea..61731a3 100644
 +    auto *ctx = static_cast<HttpContext *>(context);
 +    auto *serv = static_cast<Server *>(server);
      if (!ctx) {
-@@ -704,37 +608,14 @@ void swr_http_host_response_create(zval *zobject, zend_long fd, zval *return_val
+@@ -605,37 +509,14 @@ void swr_http_host_response_create(zval *zobject, zend_long fd, zval *return_val
          ctx->keepalive = 1;
 -
          if (serv) {
@@ -219,11 +219,13 @@ index 94899ea..61731a3 100644
 +    return ctx;
  }
 diff --git a/ext-src/swoole_http_server.cc b/ext-src/swoole_http_server.cc
-index a53ccfb..24b9913 100644
+index de06c27..3900e43 100644
 --- a/ext-src/swoole_http_server.cc
 +++ b/ext-src/swoole_http_server.cc
-@@ -204,26 +204,3 @@ HttpContext *swoole_http_context_new(SessionId fd) {
+@@ -190,28 +190,3 @@ HttpContext *swoole_http_context_new(SessionId fd) {
      auto *ctx = new HttpContext();
+-    // Only the reactor-to-worker dispatch may set this flag; every other entry point parses client input.
+-    ctx->upload_preprocessed = 0;
 -
 -    zval *zrequest_object = &ctx->request._zobject;
 -    ctx->request.zobject = zrequest_object;

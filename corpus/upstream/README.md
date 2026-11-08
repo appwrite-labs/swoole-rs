@@ -1,7 +1,7 @@
 # Original upstream Swoole tests
 
-The default selection (`manifest.json`) runs original PHPT tests from Swoole **v6.2.4**, commit
-`c7e514509451beafd4d70ce5b78943d51e76381c`. The manifest records each source path,
+The default selection (`manifest.json`) runs original PHPT tests from Swoole **v6.2.5**, commit
+`76c657d88be39b7af6bf85e46bcbac0da7387760`. The manifest records each source path,
 SHA-256, subsystem, and required PHP APIs. The PHPT files are extracted with
 `git archive` from the pinned Git object and checked against these hashes before
 execution. Local checkout edits cannot silently change the selected tests.
@@ -134,7 +134,9 @@ python3 corpus/upstream/gate.py upstream-*.json hybrid-*.json --output phpt.json
 and every other file under `tests/` as a support file. `gate.py` fails if any test
 that passes on upstream does not pass on the hybrid, including when its result is
 missing, and refuses interrupted shards. Tests failing on both are listed, not
-hidden. It records each result and, for skips, the SKIPIF reason and a category
+hidden. Tests of upstream fixes to code that is Rust now and not yet ported
+(`PENDING_PORTS`, each under its open issue) are listed as pending, not gated;
+any of them the hybrid passes is listed so its entry is dropped. It records each result and, for skips, the SKIPIF reason and a category
 (service, network, ZTS, stdext, platform, extension, other). Only the runner's
 PASSED counts as passed.
 

@@ -13,7 +13,7 @@ index 945a689..a926abe 100644
 +    const swr_v1_os_pool *pool = nullptr;
      network::Socket *read_socket = nullptr;
 diff --git a/src/os/async_thread.cc b/src/os/async_thread.cc
-index 096c5f5..75d78fc 100644
+index 6bbc50b..e9af428 100644
 --- a/src/os/async_thread.cc
 +++ b/src/os/async_thread.cc
 @@ -17,2 +17,4 @@
@@ -21,9 +21,10 @@ index 096c5f5..75d78fc 100644
 +
 +#include "swoole_rs_ossupport.h"
  #include "swoole_reactor.h"
-@@ -21,15 +23,2 @@
+@@ -21,16 +23,2 @@
  #include "swoole_util.h"
 -#include "swoole_thread.h"
+-#include "swoole_signal.h"
 -
 -#include <thread>
 -#include <atomic>
@@ -37,7 +38,7 @@ index 096c5f5..75d78fc 100644
 -static std::mutex async_thread_lock;
 -static std::shared_ptr<swoole::async::ThreadPool> async_thread_pool;
  
-@@ -42,269 +31,54 @@ namespace async {
+@@ -43,269 +31,54 @@ namespace async {
  //-------------------------------------------------------------------------------
 -class EventQueue {
 -  public:
@@ -351,9 +352,16 @@ index 096c5f5..75d78fc 100644
 -    }
 +static void thread_clean() {
      swoole_thread_clean(false);
-@@ -312,10 +86,4 @@ void ThreadPool::main_func(const bool is_core_worker) {
+@@ -313,17 +86,4 @@ void ThreadPool::main_func(const bool is_core_worker) {
  
 -void ThreadPool::create_thread(const bool is_core_worker) {
+-    const bool restore_signal_mask = swoole_signal_block_all();
+-    ON_SCOPE_EXIT {
+-        if (restore_signal_mask) {
+-            swoole_signal_unblock_all();
+-        }
+-    };
+-
 -    try {
 -        auto *_thread = new std::thread([this, is_core_worker]() { main_func(is_core_worker); });
 -        std::lock_guard<std::mutex> lock(threads_mutex);
@@ -364,7 +372,7 @@ index 096c5f5..75d78fc 100644
 +static void spawn_failed() {
 +    swoole_sys_notice("create aio thread failed, please check your system configuration or adjust aio_worker_num");
  }
-@@ -326,6 +94,8 @@ AsyncEvent *dispatch(const AsyncEvent *request) {
+@@ -334,6 +94,8 @@ AsyncEvent *dispatch(const AsyncEvent *request) {
      }
 -    AsyncEvent *event = SwooleTG.async_threads->pool->dispatch(request);
 -    if (sw_likely(event)) {
@@ -377,7 +385,7 @@ index 096c5f5..75d78fc 100644
 +    swr_v1_os_pool_dispatch(SwooleTG.async_threads->pool, reinterpret_cast<uintptr_t>(event));
 +    SwooleTG.async_threads->task_num++;
      return event;
-@@ -336,6 +106,14 @@ AsyncEvent *dispatch(const AsyncEvent *request) {
+@@ -344,6 +106,14 @@ AsyncEvent *dispatch(const AsyncEvent *request) {
  
 +static void complete(uintptr_t token) {
 +    auto *_event = reinterpret_cast<AsyncEvent *>(token);
@@ -395,7 +403,7 @@ index 096c5f5..75d78fc 100644
 +    static_assert(SW_AIO_EVENT_NUM == 128, "the Rust completion read takes 128 tokens");
 +    if (swr_v1_os_pool_complete(event->socket->fd, complete) < 0) {
          swoole_sys_warning("read() aio events failed");
-@@ -343,11 +121,2 @@ int AsyncThreads::callback(Reactor *reactor, Event *event) {
+@@ -351,11 +121,2 @@ int AsyncThreads::callback(Reactor *reactor, Event *event) {
      }
 -    for (size_t i = 0; i < n / sizeof(AsyncEvent *); i++) {
 -        AsyncEvent *_event = events[i];
@@ -407,24 +415,24 @@ index 096c5f5..75d78fc 100644
 -    }
 -
      return SW_OK;
-@@ -356,3 +125,3 @@ int AsyncThreads::callback(Reactor *reactor, Event *event) {
+@@ -364,3 +125,3 @@ int AsyncThreads::callback(Reactor *reactor, Event *event) {
  size_t AsyncThreads::get_worker_num() const {
 -    return pool ? pool->get_worker_num() : 0;
 +    return swr_v1_os_pool_worker_num(pool);
  }
-@@ -360,3 +129,3 @@ size_t AsyncThreads::get_worker_num() const {
+@@ -368,3 +129,3 @@ size_t AsyncThreads::get_worker_num() const {
  size_t AsyncThreads::get_queue_size() const {
 -    return pool ? pool->get_queue_size() : 0;
 +    return swr_v1_os_pool_queue_size(pool);
  }
-@@ -364,5 +133,3 @@ size_t AsyncThreads::get_queue_size() const {
+@@ -372,5 +133,3 @@ size_t AsyncThreads::get_queue_size() const {
  void AsyncThreads::notify_one() const {
 -    if (pool) {
 -        pool->notify_one();
 -    }
 +    swr_v1_os_pool_notify_one(pool);
  }
-@@ -406,12 +173,10 @@ AsyncThreads::AsyncThreads() {
+@@ -414,12 +173,10 @@ AsyncThreads::AsyncThreads() {
  
 -    async_thread_lock.lock();
 -    if (!async_thread_pool) {
@@ -445,7 +453,7 @@ index 096c5f5..75d78fc 100644
 +                                  SwooleG.aio_max_wait_time,
 +                                  SwooleG.aio_max_idle_time);
  
-@@ -422,12 +187,5 @@ AsyncThreads::AsyncThreads() {
+@@ -430,12 +187,5 @@ AsyncThreads::AsyncThreads() {
  AsyncThreads::~AsyncThreads() {
 -    pool.reset();
 -    async_thread_lock.lock();

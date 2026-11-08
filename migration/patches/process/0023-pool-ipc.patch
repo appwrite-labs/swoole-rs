@@ -18,7 +18,7 @@ index 9666d58..3bc5179 100644
 +    swr_v1_process_set_bailout(swr_zend_try, []() { zend_bailout(); });
      host.exception = swoole_exception_ce;
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index b07ea84..dc0ba89 100644
+index 6995bd4..8d70be9 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
 @@ -251,10 +251,2 @@ struct Worker {
@@ -42,7 +42,7 @@ index b07ea84..dc0ba89 100644
 +    // The stream listener, its connection, the reply and the packet buffer (Rust).
 +    swr_v1_process_pool_ipc *ipc_;
      Channel *message_box = nullptr;
-@@ -440,5 +432,6 @@ struct ProcessPool {
+@@ -441,5 +433,6 @@ struct ProcessPool {
      int listen(const char *host, int port, int backlog) const;
 -    int schedule();
      bool is_worker_running(Worker *worker) const;
@@ -50,22 +50,23 @@ index b07ea84..dc0ba89 100644
 +    void at_worker_enter(Worker *worker) const;
 +    void at_worker_exit(Worker *worker);
  
-@@ -451,4 +444,2 @@ struct ProcessPool {
+@@ -452,4 +445,2 @@ struct ProcessPool {
      static int run_async(ProcessPool *pool, Worker *worker);
 -    void at_worker_enter(Worker *worker) const;
 -    void at_worker_exit(Worker *worker);
  };
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index 67b2f16..e93d4fd 100644
+index 6f196ca..692becf 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
-@@ -38,13 +38,2 @@ using network::Stream;
+@@ -35,14 +35,2 @@ using network::Stream;
  
 -static inline swReturnCode catch_system_error(int error) {
 -    switch (error) {
 -    case SW_SUCCESS:
 -    case EAGAIN:
 -    case EINTR:
+-    case ETIMEDOUT:
 -        return SW_CONTINUE;
 -    default:
 -        return SW_ERROR;
@@ -73,7 +74,7 @@ index 67b2f16..e93d4fd 100644
 -}
 -
  // The warnings keep upstream's ReloadTask::kill_all/kill_one log prefixes.
-@@ -84,2 +73,185 @@ static inline void worker_end_callback() {
+@@ -82,2 +70,185 @@ static inline void worker_end_callback() {
  
 +static void deliver_bus_message(ProcessPool *pool) {
 +    auto pipe_buffer = pool->message_bus->get_buffer();
@@ -259,22 +260,22 @@ index 67b2f16..e93d4fd 100644
 +}
 +
  /**
-@@ -134,3 +306,2 @@ int ProcessPool::create(uint32_t _worker_num, key_t _msgqueue_key, swIPCMode _ip
+@@ -132,3 +303,2 @@ int ProcessPool::create(uint32_t _worker_num, key_t _msgqueue_key, swIPCMode _ip
          use_socket = 1;
 -        stream_info_ = new StreamInfo();
      } else {
-@@ -140,2 +311,3 @@ int ProcessPool::create(uint32_t _worker_num, key_t _msgqueue_key, swIPCMode _ip
+@@ -138,2 +308,3 @@ int ProcessPool::create(uint32_t _worker_num, key_t _msgqueue_key, swIPCMode _ip
      registry_ = swr_v1_process_worker_registry_new();
 +    ipc_ = swr_v1_process_pool_ipc_new(_ipc_mode == SW_IPC_SOCKET);
      ipc_mode = _ipc_mode;
-@@ -199,4 +371,4 @@ int ProcessPool::create_message_bus() {
+@@ -197,4 +368,4 @@ int ProcessPool::create_message_bus() {
  
 -int ProcessPool::listen(const char *socket_file, int backlog) const {
 -    if (ipc_mode != SW_IPC_SOCKET) {
 +static int listen_stream(const ProcessPool *pool, SocketType type, const char *host, int port, int backlog) {
 +    if (pool->ipc_mode != SW_IPC_SOCKET) {
          swoole_error_log(SW_LOG_WARNING, SW_ERROR_OPERATION_NOT_SUPPORT, "not support, ipc_mode must be SW_IPC_SOCKET");
-@@ -204,11 +376,8 @@ int ProcessPool::listen(const char *socket_file, int backlog) const {
+@@ -202,11 +373,8 @@ int ProcessPool::listen(const char *socket_file, int backlog) const {
      }
 -    stream_info_->socket_file = sw_strdup(socket_file);
 -    if (stream_info_->socket_file == nullptr) {
@@ -290,7 +291,7 @@ index 67b2f16..e93d4fd 100644
      }
 +    swr_v1_process_pool_ipc_set_listener(pool->ipc_, socket);
      return SW_OK;
-@@ -216,17 +385,8 @@ int ProcessPool::listen(const char *socket_file, int backlog) const {
+@@ -214,17 +382,8 @@ int ProcessPool::listen(const char *socket_file, int backlog) const {
  
 +int ProcessPool::listen(const char *socket_file, int backlog) const {
 +    return listen_stream(this, SW_SOCK_UNIX_STREAM, socket_file, 0, backlog);
@@ -313,12 +314,12 @@ index 67b2f16..e93d4fd 100644
 -    return SW_OK;
 +    return listen_stream(this, SW_SOCK_TCP, host, port, backlog);
  }
-@@ -252,3 +412,3 @@ void ProcessPool::set_protocol(ProtocolType _protocol_type) {
+@@ -250,3 +409,3 @@ void ProcessPool::set_protocol(ProtocolType _protocol_type) {
  int ProcessPool::start_check() {
 -    if (ipc_mode == SW_IPC_SOCKET && (stream_info_ == nullptr || stream_info_->socket == nullptr)) {
 +    if (ipc_mode == SW_IPC_SOCKET && pool_listener(this) == nullptr) {
          swoole_error_log(SW_LOG_WARNING, SW_ERROR_WRONG_OPERATION, "must first listen to an tcp port");
-@@ -301,27 +461,4 @@ int ProcessPool::start() {
+@@ -299,27 +458,4 @@ int ProcessPool::start() {
  
 -int ProcessPool::schedule() {
 -    // schedule by system message queue
@@ -347,17 +348,17 @@ index 67b2f16..e93d4fd 100644
 -        stream_info_->response_buffer == nullptr) {
 +    if (!swr_v1_process_pool_ipc_respond(ipc_, reinterpret_cast<const uint8_t *>(data), length)) {
          swoole_set_last_error(SW_ERROR_INVALID_PARAMS);
-@@ -329,3 +466,2 @@ int ProcessPool::response(const char *data, uint32_t length) const {
+@@ -327,3 +463,2 @@ int ProcessPool::response(const char *data, uint32_t length) const {
      }
 -    stream_info_->response_buffer->append(data, length);
      return SW_OK;
-@@ -378,3 +514,4 @@ swResultCode ProcessPool::dispatch(EventData *data, int *dst_worker_id) {
+@@ -376,3 +511,4 @@ swResultCode ProcessPool::dispatch(EventData *data, int *dst_worker_id) {
      if (use_socket) {
 -        Stream *stream = Stream::create(stream_info_->socket_file, 0, SW_SOCK_UNIX_STREAM);
 +        int port;
 +        Stream *stream = Stream::create(swr_v1_process_pool_ipc_address_of(ipc_, &port), 0, SW_SOCK_UNIX_STREAM);
          if (!stream) {
-@@ -390,16 +527,3 @@ swResultCode ProcessPool::dispatch(EventData *data, int *dst_worker_id) {
+@@ -388,16 +524,3 @@ swResultCode ProcessPool::dispatch(EventData *data, int *dst_worker_id) {
      }
 -
 -    if (*dst_worker_id < 0) {
@@ -375,19 +376,19 @@ index 67b2f16..e93d4fd 100644
 -    return SW_OK;
 +    return dispatch_event(this, data, dst_worker_id, false);
  }
-@@ -409,3 +533,5 @@ swResultCode ProcessPool::dispatch_sync(const char *data, uint32_t len) const {
+@@ -407,3 +530,5 @@ swResultCode ProcessPool::dispatch_sync(const char *data, uint32_t len) const {
  
 -    network::Client client(stream_info_->socket->socket_type, false);
 +    int port;
 +    const char *address = swr_v1_process_pool_ipc_address_of(ipc_, &port);
 +    network::Client client(pool_listener(this)->socket_type, false);
      if (!client.ready()) {
-@@ -413,3 +539,3 @@ swResultCode ProcessPool::dispatch_sync(const char *data, uint32_t len) const {
+@@ -411,3 +536,3 @@ swResultCode ProcessPool::dispatch_sync(const char *data, uint32_t len) const {
      }
 -    if (client.connect(stream_info_->socket_file, stream_info_->socket_port, -1, 0) < 0) {
 +    if (client.connect(address, port, -1, 0) < 0) {
          return SW_ERR;
-@@ -431,15 +557,3 @@ swResultCode ProcessPool::dispatch_sync(EventData *data, int *dst_worker_id) {
+@@ -429,15 +554,3 @@ swResultCode ProcessPool::dispatch_sync(EventData *data, int *dst_worker_id) {
      }
 -
 -    if (*dst_worker_id < 0) {
@@ -404,7 +405,7 @@ index 67b2f16..e93d4fd 100644
 -    return SW_OK;
 +    return dispatch_event(this, data, dst_worker_id, true);
  }
-@@ -587,80 +701,3 @@ void ProcessPool::at_worker_exit(Worker *worker) {
+@@ -585,80 +698,3 @@ void ProcessPool::at_worker_exit(Worker *worker) {
  int ProcessPool::run_with_task_protocol(ProcessPool *pool, Worker *worker) {
 -    struct {
 -        long mtype;
@@ -486,18 +487,18 @@ index 67b2f16..e93d4fd 100644
 -    return SW_OK;
 +    return run_protocol(pool, worker, SW_PROTOCOL_TASK);
  }
-@@ -669,3 +706,4 @@ int ProcessPool::recv_packet(Reactor *reactor, Event *event) {
+@@ -667,3 +703,4 @@ int ProcessPool::recv_packet(Reactor *reactor, Event *event) {
      auto *pool = static_cast<ProcessPool *>(reactor->ptr);
 -    ssize_t n = event->socket->read(pool->packet_buffer, pool->max_packet_size_);
 +    char *packet = swr_v1_process_pool_ipc_packet(pool->ipc_);
 +    ssize_t n = event->socket->read(packet, pool->max_packet_size_);
      if (n < 0 && errno != EINTR) {
-@@ -676,3 +714,3 @@ int ProcessPool::recv_packet(Reactor *reactor, Event *event) {
+@@ -674,3 +711,3 @@ int ProcessPool::recv_packet(Reactor *reactor, Event *event) {
      msg.info.len = n;
 -    msg.data = pool->packet_buffer;
 +    msg.data = packet;
      pool->onMessage(pool, &msg);
-@@ -683,13 +721,5 @@ int ProcessPool::recv_message(Reactor *reactor, Event *event) {
+@@ -681,13 +718,5 @@ int ProcessPool::recv_message(Reactor *reactor, Event *event) {
      auto *pool = static_cast<ProcessPool *>(reactor->ptr);
 -    if (pool->message_bus->read(event->socket) <= 0) {
 -        return SW_OK;
@@ -513,7 +514,7 @@ index 67b2f16..e93d4fd 100644
 -    pool->onMessage(pool, &msg);
 -    pool->message_bus->pop();
      return SW_OK;
-@@ -703,6 +733,3 @@ int ProcessPool::run_async(ProcessPool *pool, Worker *worker) {
+@@ -701,6 +730,3 @@ int ProcessPool::run_async(ProcessPool *pool, Worker *worker) {
          } else {
 -            pool->packet_buffer = new char[pool->max_packet_size_];
 -            if (pool->stream_info_) {
@@ -521,19 +522,24 @@ index 67b2f16..e93d4fd 100644
 -            }
 +            swr_v1_process_pool_ipc_prepare(pool->ipc_, pool->max_packet_size_);
              swoole_event_set_handler(SW_FD_PIPE, SW_EVENT_READ, recv_packet);
-@@ -714,99 +741,3 @@ int ProcessPool::run_async(ProcessPool *pool, Worker *worker) {
+@@ -712,103 +738,3 @@ int ProcessPool::run_async(ProcessPool *pool, Worker *worker) {
  int ProcessPool::run_with_stream_protocol(ProcessPool *pool, Worker *worker) {
 -    ssize_t n;
 -    RecvData msg{};
 -    msg.info.reactor_id = -1;
 -
--    pool->packet_buffer = new char[pool->max_packet_size_];
+-    QueueNode *outbuf = nullptr;
+-    if (pool->use_msgqueue) {
+-        // msgrcv() also writes the message type prefix before the payload.
+-        pool->packet_buffer = new char[offsetof(QueueNode, mdata) + pool->max_packet_size_];
+-        outbuf = reinterpret_cast<QueueNode *>(pool->packet_buffer);
+-        outbuf->mtype = 0;
+-    } else {
+-        pool->packet_buffer = new char[pool->max_packet_size_];
+-    }
 -    if (pool->stream_info_) {
 -        pool->stream_info_->response_buffer = new String(SW_BUFFER_SIZE_STD);
 -    }
--
--    auto *outbuf = reinterpret_cast<QueueNode *>(pool->packet_buffer);
--    outbuf->mtype = 0;
 -
 -    pool->at_worker_enter(worker);
 -    while (pool->is_worker_running(worker)) {
@@ -541,7 +547,7 @@ index 67b2f16..e93d4fd 100644
 -         * fetch task
 -         */
 -        if (pool->use_msgqueue) {
--            n = pool->queue->pop(outbuf, SW_MSGMAX);
+-            n = pool->queue->pop(outbuf, pool->max_packet_size_);
 -            /**
 -             * A fatal error has occurred; the message queue is no longer available, and the loop must be exited.
 -             */
@@ -550,9 +556,8 @@ index 67b2f16..e93d4fd 100644
 -                break;
 -            }
 -            swoole_trace_log(SW_TRACE_WORKER, "pop from MsgQ#%d %lu bytes", pool->queue->get_id(), (ulong_t) n);
--            msg.info.len = n - sizeof(msg.info);
--            msg.data = outbuf->mdata;
 -            outbuf->mtype = 0;
+-            msg.data = outbuf->mdata;
 -        } else if (pool->use_socket) {
 -            Socket *conn = pool->stream_info_->socket->accept();
 -            if (conn == nullptr) {
@@ -622,13 +627,13 @@ index 67b2f16..e93d4fd 100644
 -    return SW_OK;
 +    return run_protocol(pool, worker, SW_PROTOCOL_STREAM);
  }
-@@ -819,25 +750,2 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
+@@ -821,25 +747,2 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
      }
 -
 -    auto fn = [&]() -> ReturnCode {
 -        while (true) {
 -            if (worker->pipe_worker->wait_event(swoole_timer_get_next_msec(), SW_EVENT_READ) < 0) {
--                return errno == EINTR ? SW_CONTINUE : SW_ERROR;
+-                return catch_system_error(errno);
 -            }
 -            auto rv = pool->message_bus->read(worker->pipe_worker);
 -            if (rv < 0) {
@@ -648,16 +653,15 @@ index 67b2f16..e93d4fd 100644
 -    };
 -
      if (pool->message_bus == nullptr) {
-@@ -845,21 +753,3 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
+@@ -847,20 +750,3 @@ int ProcessPool::run_with_message_protocol(ProcessPool *pool, Worker *worker) {
      }
 -
 -    pool->at_worker_enter(worker);
 -    while (pool->is_worker_running(worker)) {
 -        switch (fn()) {
 -        case SW_CONTINUE:
--            worker_end_callback();
--            break;
 -        case SW_READY:
+-            worker_end_callback();
 -            break;
 -        case SW_ERROR:
 -        default:
@@ -671,7 +675,7 @@ index 67b2f16..e93d4fd 100644
 -    return SW_OK;
 +    return run_protocol(pool, worker, SW_PROTOCOL_MESSAGE);
  }
-@@ -1048,20 +938,4 @@ void ProcessPool::destroy() {
+@@ -1049,20 +935,4 @@ void ProcessPool::destroy() {
  
 -    if (stream_info_) {
 -        if (stream_info_->socket) {
@@ -694,7 +698,7 @@ index 67b2f16..e93d4fd 100644
 +    swr_v1_process_pool_ipc_free(ipc_, [](void *socket) { static_cast<Socket *>(socket)->free(); });
 +    ipc_ = nullptr;
  
-@@ -1116,30 +990,10 @@ bool Worker::is_running() {
+@@ -1117,30 +987,10 @@ bool Worker::is_running() {
  ssize_t Worker::send_pipe_message(const void *buf, size_t n, int flags) const {
 -    Socket *pipe_sock;
 -
@@ -734,10 +738,10 @@ index 67b2f16..e93d4fd 100644
 +                                      flags);
  }
 diff --git a/src/server/task_worker.cc b/src/server/task_worker.cc
-index 9fb7776..9883a83 100644
+index 9498ee1..18800ad 100644
 --- a/src/server/task_worker.cc
 +++ b/src/server/task_worker.cc
-@@ -479,7 +479,8 @@ bool Server::finish(const char *data, size_t data_len, int flags, const EventDat
+@@ -476,7 +476,8 @@ bool Server::finish(const char *data, size_t data_len, int flags, const EventDat
  
 -        if (worker->pool->use_socket && worker->pool->stream_info_->last_connection) {
 +        auto *connection = static_cast<Socket *>(swr_v1_process_pool_ipc_connection(worker->pool->ipc_));

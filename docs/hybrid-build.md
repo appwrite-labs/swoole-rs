@@ -5,8 +5,8 @@ extension through [ABI v1](abi-v1.md). Every Rust build applies every module's
 patches; there are no partial builds. One Swoole extension is loaded per PHP
 process.
 
-The reference is Swoole v6.2.4, commit
-`c7e514509451beafd4d70ce5b78943d51e76381c`, at `target/upstream/src/`. The
+The reference is Swoole v6.2.5, commit
+`76c657d88be39b7af6bf85e46bcbac0da7387760`, at `target/upstream/src/`. The
 builder refuses a different commit or tracked modifications there, and applies
 checksum-verified patches from `migration/patches/<module>/` to a separate Git
 clone. Do not edit the reference to develop a patch.

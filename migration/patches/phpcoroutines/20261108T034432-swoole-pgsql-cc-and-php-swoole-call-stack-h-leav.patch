@@ -35,10 +35,10 @@ index 14d1555..0000000
 -#endif
 diff --git a/ext-src/swoole_pgsql.cc b/ext-src/swoole_pgsql.cc
 deleted file mode 100644
-index 12111b3..0000000
+index b317d0d..0000000
 --- a/ext-src/swoole_pgsql.cc
 +++ /dev/null
-@@ -1,86 +0,0 @@
+@@ -1,96 +0,0 @@
 -/*
 - +----------------------------------------------------------------------+
 - | Swoole                                                               |
@@ -63,6 +63,9 @@ index 12111b3..0000000
 -#include "swoole_socket_impl.h"
 -#include "swoole_coroutine.h"
 -
+-#include <algorithm>
+-#include <unordered_map>
+-
 -#ifdef SW_USE_PGSQL
 -
 -using swoole::Coroutine;
@@ -77,7 +80,14 @@ index 12111b3..0000000
 -    sock.get_socket()->nonblock = 1;
 -    bool retval = sock.poll((EventType) event, timeout);
 -    sock.move_fd();
--    return retval ? 1 : sock.errCode == ETIMEDOUT ? 0 : -1;
+-    if (retval) {
+-        return 1;
+-    }
+-    if (error == ETIMEDOUT) {
+-        return 0;
+-    }
+-    pgsql_io_errors.emplace(conn, PgsqlIoError{error ? error : EIO, false});
+-    return -1;
 -}
 -
 -static bool swoole_pgsql_in_coroutine() {

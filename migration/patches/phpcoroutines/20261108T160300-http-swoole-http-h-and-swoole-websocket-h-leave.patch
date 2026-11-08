@@ -1,9 +1,9 @@
 diff --git a/include/swoole_http.h b/include/swoole_http.h
 deleted file mode 100644
-index fefdd9d..0000000
+index 404ea6c..0000000
 --- a/include/swoole_http.h
 +++ /dev/null
-@@ -1,229 +0,0 @@
+@@ -1,233 +0,0 @@
 -/*
 - +----------------------------------------------------------------------+
 - | Swoole                                                               |
@@ -173,6 +173,10 @@ index fefdd9d..0000000
 -    uint32_t request_line_length_; /* without \r\n  */
 -    uint32_t header_length_;       /* include request_line_length + \r\n */
 -    uint64_t content_length_;
+-    uint8_t chunk_state_;
+-    size_t chunk_length_;
+-    size_t chunk_offset_;
+-    size_t chunk_scan_offset_;
 -
 -    FormData *form_data_;
 -    String *buffer_;

@@ -282,21 +282,26 @@ index 09ce9a1..b46acae 100644
 -
      char *pop(size_t init_size);
 diff --git a/include/swoole_util.h b/include/swoole_util.h
-index 052f6c8..f0f7978 100644
+index 46b3eb0..f0f7978 100644
 --- a/include/swoole_util.h
 +++ b/include/swoole_util.h
-@@ -36,10 +36,3 @@
+@@ -36,15 +36,3 @@
  
 -#define SW_STRUCT_MEMBER_SIZE(_s, _m) sizeof(std::declval<struct _s>()._m)
 -
  namespace swoole {
+-template <typename T>
+-constexpr T clamp(T value, T lower, T upper) {
+-    return (std::min) ((std::max) (value, lower), upper);
+-}
+-
 -template <typename T>
 -bool in_range(T value, std::initializer_list<T> allowed_values) {
 -    return std::find(allowed_values.begin(), allowed_values.end(), value) != allowed_values.end();
 -}
 -
  namespace std_string {
-@@ -52,12 +45,2 @@ inline std::string format(const char *format, Args... args) {
+@@ -57,12 +45,2 @@ inline std::string format(const char *format, Args... args) {
  }
 -
 -inline std::string vformat(const char *format, va_list args) {
@@ -309,7 +314,7 @@ index 052f6c8..f0f7978 100644
 -    return {buf.get(), buf.get() + size - 1};  // We don't want the '\0' inside
 -}
  }  // namespace std_string
-@@ -80,19 +63,2 @@ static inline long get_timezone() {
+@@ -85,19 +63,2 @@ static inline long get_timezone() {
  
 -class DeferTask {
 -    std::stack<Callback> list_;

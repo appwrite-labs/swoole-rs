@@ -1,6 +1,6 @@
 # Core primitives ABI v1: Base64, CRC32, error messages
 
-Reference: Swoole v6.2.4, `c7e514509451beafd4d70ce5b78943d51e76381c`. Feature
+Reference: Swoole v6.2.5, `76c657d88be39b7af6bf85e46bcbac0da7387760`. Feature
 values: base64 8, CRC32 16, error messages 32.
 
 The primitive exports allocate nothing, retain no pointer, invoke no callback,

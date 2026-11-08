@@ -1,8 +1,8 @@
 diff --git a/include/swoole_http.h b/include/swoole_http.h
-index e14bfae..4dd77ca 100644
+index bcc7278..c7f7ea0 100644
 --- a/include/swoole_http.h
 +++ b/include/swoole_http.h
-@@ -233,45 +233,2 @@ int dispatch_frame(const Protocol *protocol, network::Socket *conn, const RecvDa
+@@ -237,45 +237,2 @@ int dispatch_frame(const Protocol *protocol, network::Socket *conn, const RecvDa
  
 -struct ContextImpl;
 -
@@ -50,10 +50,10 @@ index e14bfae..4dd77ca 100644
  //-----------------------------------------------------------------
 diff --git a/src/wrapper/http.cc b/src/wrapper/http.cc
 deleted file mode 100644
-index dc9533f..0000000
+index 6151b10..0000000
 --- a/src/wrapper/http.cc
 +++ /dev/null
-@@ -1,239 +0,0 @@
+@@ -1,240 +0,0 @@
 -/**
 -  +----------------------------------------------------------------------+
 -  | Swoole                                                               |
@@ -274,6 +274,7 @@ index dc9533f..0000000
 -            return SW_OK;
 -        }
 -        ContextImpl impl;
+-        impl.upload_preprocessed = (req->info.ext_flags & SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED) != 0;
 -        Context ctx(server, session_id, &impl);
 -        if (impl.parse(ctx, req->data, req->info.len)) {
 -            http_server_on_request(ctx);

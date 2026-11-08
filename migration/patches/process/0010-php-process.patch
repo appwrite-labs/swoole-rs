@@ -1,5 +1,5 @@
 diff --git a/ext-src/swoole_process.cc b/ext-src/swoole_process.cc
-index 1a4d3f9..b73bea1 100644
+index bca9157..b73bea1 100644
 --- a/ext-src/swoole_process.cc
 +++ b/ext-src/swoole_process.cc
 @@ -22,2 +22,3 @@
@@ -246,13 +246,13 @@ index 1a4d3f9..b73bea1 100644
      if (server && server->is_started() && server->is_master()) {
 -        zend_throw_error(nullptr, "%s can't be used in master process", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
 -        RETURN_FALSE;
--    }
++        return 1;
+     }
 -
 -    if (SwooleTG.async_threads) {
 -        zend_throw_error(nullptr, "unable to create %s with async-io threads", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
 -        RETURN_FALSE;
-+        return 1;
-     }
+-    }
 -
 -    zend::Function func;
 -    zend_bool redirect_stdin_and_stdout = false;
@@ -465,7 +465,7 @@ index 1a4d3f9..b73bea1 100644
 +static bool host_queue_free(void *worker) {
 +    Worker *process = worker_of(worker);
      if (process->queue && process->queue->destroy()) {
-@@ -437,96 +190,54 @@ static PHP_METHOD(swoole_process, freeQueue) {
+@@ -437,98 +190,54 @@ static PHP_METHOD(swoole_process, freeQueue) {
          process->queue = nullptr;
 -        RETURN_TRUE;
 -    } else {
@@ -523,7 +523,7 @@ index 1a4d3f9..b73bea1 100644
 -    }
 -
 -    swSignalHandler handler = swoole_signal_get_handler(signo);
--    if (handler && handler != php_swoole_onSignal) {
+-    if (handler && handler != php_swoole_onSignal && handler != SIG_IGN) {
 -        php_swoole_fatal_error(
 -            E_WARNING, "signal [" ZEND_LONG_FMT "] processor has been registered by the system", signo);
 -        RETURN_FALSE;
@@ -554,7 +554,7 @@ index 1a4d3f9..b73bea1 100644
 -            RETURN_FALSE;
 -        }
 -    } else if (Z_TYPE_P(zcallback) == IS_LONG && Z_LVAL_P(zcallback) == (zend_long) SIG_IGN) {
--        handler = nullptr;
+-        handler = SIG_IGN;
 +static int host_pipe_close(void *worker, int64_t which) {
 +    Worker *process = worker_of(worker);
 +    int ret;
@@ -569,19 +569,21 @@ index 1a4d3f9..b73bea1 100644
 -        }
 -        handler = php_swoole_onSignal;
 +        ret = process->pipe_object->close(which);
-     }
++    }
 +    if (ret >= 0 && which == 0) {
 +        delete process->pipe_object;
 +        process->pipe_object = nullptr;
 +        process->pipe_current = nullptr;
-+    }
+     }
 +    return ret;
 +}
  
 -    if (sw_server() && sw_server()->is_sync_process()) {
 -        if (signal_fci_caches[signo]) {
 -            sw_callable_free(signal_fci_caches[signo]);
--        } else {
+-            SwooleG.signal_listener_num--;
+-        }
+-        if (fci_cache) {
 -            SwooleG.signal_listener_num++;
 -        }
 -        signal_fci_caches[signo] = fci_cache;
@@ -599,13 +601,15 @@ index 1a4d3f9..b73bea1 100644
  
 +static void host_signal_listen() {
      php_swoole_check_reactor();
-@@ -538,424 +249,138 @@ static PHP_METHOD(swoole_process, signal) {
+@@ -540,431 +249,138 @@ static PHP_METHOD(swoole_process, signal) {
      }
 -
 -    if (signal_fci_caches[signo]) {
 -        // free the old fci_cache
 -        swoole_event_defer(sw_callable_free, signal_fci_caches[signo]);
--    } else {
+-        SwooleG.signal_listener_num--;
+-    }
+-    if (fci_cache) {
 -        SwooleG.signal_listener_num++;
 -    }
 -    signal_fci_caches[signo] = fci_cache;
@@ -740,7 +744,7 @@ index 1a4d3f9..b73bea1 100644
 -    return signal_fci_caches[signo] != nullptr;
 -}
 -
--void php_swoole_process_clean() {
+-void php_swoole_process_signal_clean() {
 -    for (auto &signal_fci_cache : signal_fci_caches) {
 -        const auto fci_cache = signal_fci_cache;
 -        if (fci_cache) {
@@ -764,6 +768,11 @@ index 1a4d3f9..b73bea1 100644
 +            swoole_sys_warning("dup2(%d, %d) failed", from, to);
          }
 -    }
+-    SwooleG.signal_listener_num = 0;
+-}
+-
+-void php_swoole_process_clean() {
+-    php_swoole_process_signal_clean();
 -#ifndef SW_THREAD
 -    if (swoole_get_worker_type() != SW_USER_WORKER) {
 -        swoole_set_worker_type(0);
@@ -1138,7 +1147,7 @@ index 1a4d3f9..b73bea1 100644
 +zend_bool php_swoole_signal_isset_handler(int signo) {
 +    return swr_v1_phpprocess_signal_isset(signo);
  }
-@@ -964,24 +389,3 @@ static PHP_METHOD(swoole_process, daemon) {
+@@ -973,24 +389,3 @@ static PHP_METHOD(swoole_process, daemon) {
  bool php_swoole_array_to_cpu_set(const zval *array, cpu_set_t *cpu_set) {
 -    if (php_swoole_array_length(array) == 0) {
 -        return false;
@@ -1164,7 +1173,7 @@ index 1a4d3f9..b73bea1 100644
 -    return true;
 +    return swr_v1_phpprocess_array_to_cpu_set(array, cpu_set);
  }
-@@ -989,207 +393,4 @@ bool php_swoole_array_to_cpu_set(const zval *array, cpu_set_t *cpu_set) {
+@@ -998,207 +393,4 @@ bool php_swoole_array_to_cpu_set(const zval *array, cpu_set_t *cpu_set) {
  void php_swoole_cpu_set_to_array(zval *array, cpu_set_t *cpu_set) {
 -    array_init(array);
 -
