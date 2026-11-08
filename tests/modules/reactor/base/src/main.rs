@@ -1,7 +1,8 @@
 //! Upstream's `core-tests/src/reactor/base.cpp`, one Rust function per TEST with the same
 //! inputs and expected values, over the hybrid's libswoole.so. `fixture.cc` gives the
 //! Reactor, SocketPair and C++-linkage APIs C entry points; the handlers, callbacks and every
-//! assertion are here.
+//! assertion are here. Cargo.toml keeps the package out of the workspace: it links the
+//! Linux hybrid build.
 //!
 //! `main --list` prints the cases; `main NAME` runs one in this process, as core-tests' main
 //! does (`swoole_init`, the case, `swoole_clean`), and exits 0 when every assertion held.
