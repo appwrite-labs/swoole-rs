@@ -269,11 +269,9 @@ def plan(args, reports):
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options,
                    '--report', reports / (phase + '.json'))
     if 'hooks' in modules:
-        for name, runner in [('hooks-async-policy', 'tests/modules/hooks/async_gate.py'),
-                             ('hooks-packet-policy', 'tests/modules/hooks/packet_gate.py')]:
-            script(name, runner, '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
-                   '--report', reports / (name + '.json'))
+        script('hooks-packet-policy', 'tests/modules/hooks/packet_gate.py', '--source', ROOT / 'target/upstream/src',
+               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
+               '--report', reports / 'hooks-packet-policy.json')
         script('hooks-compile', 'tests/modules/hooks/compile_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--report', reports / 'hooks-compile.json')
     if 'clients' in modules:

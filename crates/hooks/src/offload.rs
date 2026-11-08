@@ -211,6 +211,9 @@ pub unsafe extern "C" fn swr_v1_hook_async_job(
 }
 
 #[cfg(test)]
+mod ported;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};

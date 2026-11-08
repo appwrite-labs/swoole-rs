@@ -26,5 +26,8 @@ swoole-rs-tls = { path = "../tls" }
 openssl-sys = { version = "=0.9.117", optional = true }
 swoole-rs-uring-sys = { path = "../uring-sys", optional = true }
 
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
 [lints]
 workspace = true

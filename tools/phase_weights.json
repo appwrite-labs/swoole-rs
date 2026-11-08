@@ -53,7 +53,6 @@
  "framing-native-originals": 78,
  "framing-unit": 1,
  "framing-versioned-expectation": 1,
- "hooks-async-policy": 1,
  "hooks-compile": 38,
  "hooks-native-originals": 132,
  "hooks-packet-policy": 7,

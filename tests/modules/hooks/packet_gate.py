@@ -8,11 +8,29 @@ import subprocess
 import sys
 import tempfile
 
-from async_gate import block, sources
-
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from tools.build_hybrid import hybrid_tree
 from tools.build_upstream import COMMIT as PIN
+
+
+def sources(source, archive, paths):
+    """Each path at the pin, and each the hybrid keeps in the fully patched tree its build ARCHIVE comes from."""
+    hybrid = hybrid_tree(archive)[0]
+    return ({path: subprocess.check_output(['git', '-C', str(source), 'show', PIN+':'+path], text=True) for path in paths},
+            {path: (hybrid/path).read_text() for path in paths if (hybrid/path).exists()}, str(hybrid))
+
+
+def block(text, signature):
+    start = text.index(signature)
+    opening = text.index('{', start)
+    end, depth = opening + 1, 1
+    while depth:
+        if end >= len(text):
+            raise ValueError('Unbalanced body '+signature)
+        depth += (text[end] == '{') - (text[end] == '}')
+        end += 1
+    return text[start:end]
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)

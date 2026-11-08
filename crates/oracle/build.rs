@@ -449,6 +449,34 @@ fn websocket() {
     fs::write(out("websocket.inc"), text).unwrap();
 }
 
+/// `coroutine::async`, `async(fn)`, `System::sleep`, `gethostbyname_impl_with_async` and
+/// `System::getaddrinfo` from the pinned system.cc, copied unchanged for `shim/hooks_async.cc`.
+fn hooks_async() {
+    let text = fs::read_to_string("upstream/src/coroutine/system.cc").expect("vendored system.cc");
+    let mut parts = vec![
+        // Its only preprocessor branch is io_uring's, off here.
+        slice(&text, "int System::sleep(", "\n}\n") + "\n}",
+    ];
+    for signature in [
+        "static void async_task_completed(",
+        "bool async(async::Handler handler,",
+        "struct AsyncLambdaTask {",
+        "static void async_lambda_handler(",
+        "static void async_lambda_callback(",
+        "bool async(const std::function<void()> &fn)",
+        "std::string gethostbyname_impl_with_async(",
+        "std::vector<std::string> System::getaddrinfo(",
+    ] {
+        let body = definition(&text, signature);
+        parts.push(if signature.starts_with("struct ") {
+            body + ";"
+        } else {
+            body
+        });
+    }
+    fs::write(out("hooks_async.inc"), parts.join("\n") + "\n").unwrap();
+}
+
 /// A C++ build that matches the Rust side's sanitizer, so `cargo fuzz`'s `ASan`
 /// also checks the upstream code.
 fn cpp() -> cc::Build {
@@ -587,6 +615,11 @@ fn main() {
     protocols();
     resp_stream();
     clients();
+    hooks_async();
+    cpp()
+        .include(env::var("OUT_DIR").unwrap())
+        .file("shim/hooks_async.cc")
+        .compile("swoole_oracle_hooks_async");
     cpp()
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/clients.cc")

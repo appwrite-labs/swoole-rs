@@ -5,13 +5,13 @@ Pin `c7e514509451beafd4d70ce5b78943d51e76381c`.
 ## Native-facade gates
 
 ```sh
-python3 tests/modules/hooks/async_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --sanitize --report OWN/async.json
+python3 tests/modules/hooks/packet_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --sanitize --report OWN/packet.json
 python3 tests/modules/hooks/compile_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --report OWN/compile.json
 ```
 
-`packet_gate.py` takes the same arguments. Each `*_gate.py` extracts the pinned function bodies and
+`packet_gate.py` extracts the pinned function bodies and
 the patched ones from the hybrid build `--archive` comes from (`hybrid_tree`), compiles both
-against a deterministic native facade (`*_fixture.h`) and runs identical
+against a deterministic native facade (`packet_fixture.h`) and runs identical
 scenarios through each, comparing effects and order. Syscalls, contexts, TLS
 and kernel IO are faked; these are policy/order checks, not runtime proof.
 `--sanitize` adds ASan/UBSan to C++ only, not the Rust archive.
@@ -21,11 +21,14 @@ and kernel IO are faked; these are policy/order checks, not runtime proof.
   `crates/hooks/src/flock.rs`, over the same retry loop. The coroutine Socket's transfers and
   `TimerController` moved to Rust with their cases (`ported_*` tests in
   `crates/hooks/src/transfer.rs` and `co_io.rs`).
-- `async_gate.py` (426 cases): async event/lambda/sleep/DNS bodies, including
-  dispatch rejection, timeout/cancel completion, late canceled completion and
-  errno capture. The hybrid side's `async` is the patched one-liner over
-  `swr_v1_hook_async` (`crates/hooks/src/offload.rs`), driven through the same
-  facade with upstream's `AsyncEvent` layout.
+- The async gate is gone. Its 426 async event/lambda/sleep/DNS cases (dispatch
+  rejection, timeout/cancel completion, late canceled completion and errno
+  capture) are `ported_async_gate` in `crates/hooks/src/offload/ported.rs`:
+  upstream's `async`, `async(fn)`, `System::sleep`,
+  `gethostbyname_impl_with_async` and `System::getaddrinfo` run unchanged in
+  `swoole-rs-oracle` (`shim/hooks_async.cc`) over the gate's recording facade,
+  and the Rust offload, composed as the hybrid's system.cc composes it, runs over
+  the same facade in Rust; every scenario's effects must match.
 - `packet_gate.py` (240 cases): length/EOF/raw framing paths. Its 384
   vectored all-transfer cases moved to Rust with `readv_all`/`writev_all`
   (`ported_vector_all_matrix` in `crates/hooks/src/vector.rs`).
@@ -78,13 +81,12 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 
 ## Gate audit (#481)
 
-All three phases are kept. They compile the pinned and patched C++ bodies against
+Both phases are kept. They compile the pinned and patched C++ bodies against
 fakes and inject what a running server can't reliably produce: EAGAIN, EINTR,
 partial IO, timer and dispatch failures, cancel races and destructor reentry, all
 under ASan/UBSan. Neither a PHPT nor the Rust unit tests reach that C++ glue.
 
-- `hooks-async-policy`, `hooks-packet-policy`: the two fault/order matrices
-  above.
+- `hooks-packet-policy`: the fault/order matrix above.
 - `hooks-compile`: the only C++14 build of the eight patched units.
 
 A body these gates slice may move into Rust: the PR that moves it ports the
