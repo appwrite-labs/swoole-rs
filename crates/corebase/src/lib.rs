@@ -52,8 +52,8 @@ unsafe extern "C" {
 
 /// `SWOOLE_VERSION`, `SWOOLE_VERSION_ID` and `SWOOLE_API_VERSION_ID` of the pin;
 /// core-tests' `base.version` compares the functions below with the header's.
-const VERSION: &std::ffi::CStr = c"6.2.4";
-const VERSION_ID: c_int = 60204;
+const VERSION: &std::ffi::CStr = c"6.2.5";
+const VERSION_ID: c_int = 60205;
 const API_VERSION_ID: c_int = 0x0202_208a;
 
 /// `const char *swoole_version(void)`.
