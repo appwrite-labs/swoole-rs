@@ -16,6 +16,7 @@ use std::slice;
 pub mod framing_recv;
 pub mod http_routes;
 pub mod lifecycle;
+pub mod lifecycle_native;
 pub mod methods;
 pub mod read;
 #[cfg(not(test))]

@@ -49,6 +49,11 @@ pub struct PortConfig {
     pub protocol: Protocol,
     /// `ListenPort::onRead`, the readable callback `init_protocol` picks.
     pub on_read: *mut c_void,
+    /// `ListenPort::ssl_context`: the port's `SSLContext`, or null.
+    pub ssl_context: *mut c_void,
+    /// The TLS state crates/ports owns (the context's holder, the SNI contexts and
+    /// the DTLS sessions); `ListenPort`'s destructor releases it.
+    pub tls: *mut c_void,
 }
 
 impl PortConfig {
@@ -140,6 +145,8 @@ pub extern "C" fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig 
         host: Box::default(),
         protocol: default_protocol(),
         on_read: core::ptr::null_mut(),
+        ssl_context: core::ptr::null_mut(),
+        tls: core::ptr::null_mut(),
     }))
 }
 /// # Safety
