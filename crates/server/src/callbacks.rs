@@ -69,6 +69,23 @@ impl CallbackSlot {
         self.invoke.store(invoke.cast_mut(), Relaxed);
     }
 
+    /// `serv->onX(serv, data)`, for a slot of a `(Server *, EventData *)` signature
+    /// whose result the caller ignores; nothing when the slot is empty.
+    ///
+    /// # Safety
+    /// The slot holds that signature, and `serv` and `data` are what it takes.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) unsafe fn call(&self, serv: *mut c_void, data: *mut c_void) {
+        type Invoke = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut c_void);
+        let invoke = self.invoke.load(Relaxed);
+        // SAFETY: the slot holds null or an `R (*)(void *, Server *, EventData *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        if let Some(invoke) = invoke {
+            // SAFETY: per the caller, with the slot's own context.
+            unsafe { invoke(self.ctx.load(Relaxed), serv, data) };
+        }
+    }
+
     /// `serv->onX = nullptr`: empties the slot, then frees what it held.
     pub(crate) fn clear(&self) {
         self.invoke.store(core::ptr::null_mut(), Relaxed);

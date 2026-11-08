@@ -86,19 +86,18 @@ pub(crate) struct ReactorContext {
     pub(crate) port: *mut c_void,
     pub(crate) sock: *mut SocketRecord,
     pub(crate) conn: *mut ConnectionRecord,
-    pub(crate) timer: *mut c_void,
     pub(crate) rdata: *const c_void,
     /// The `PipeBuffer` read from a worker, which starts with its head.
-    resp: *const DataHead,
+    pub(crate) resp: *const DataHead,
     pkt: *mut c_void,
     /// The worker-pipe message at the front of the output buffer.
-    front: *const DataHead,
-    front_length: usize,
+    pub(crate) front: *const DataHead,
+    pub(crate) front_length: usize,
     task: SendData,
 }
 
 const _: () = assert!(
-    core::mem::offset_of!(ReactorContext, front_length) == 96 && size_of::<ReactorContext>() == 152,
+    core::mem::offset_of!(ReactorContext, front_length) == 88 && size_of::<ReactorContext>() == 144,
     "master.cc ReactorThreadContext layout"
 );
 
@@ -114,7 +113,6 @@ impl ReactorContext {
             port: null,
             sock: null.cast(),
             conn: null.cast(),
-            timer: null,
             rdata: core::ptr::null(),
             resp: core::ptr::null(),
             pkt: null,
@@ -129,13 +127,13 @@ impl ReactorContext {
 }
 
 /// The low 32 bits of `arg`, as native code passes a C `int`.
-fn int(arg: u64) -> c_int {
+pub(crate) fn int(arg: u64) -> c_int {
     u32::try_from(arg & u64::from(u32::MAX))
         .unwrap_or_default()
         .cast_signed()
 }
 
-fn sign(value: impl Into<i64>) -> u64 {
+pub(crate) fn sign(value: impl Into<i64>) -> u64 {
     value.into().cast_unsigned()
 }
 
@@ -614,18 +612,22 @@ pub(crate) unsafe fn answer(
     })
 }
 
-/// `ReactorThread` up to its heartbeat timer; master.cc asserts this layout.
+/// `ReactorThread` up to its message bus's allocator; master.cc asserts this layout.
 #[repr(C)]
-struct ThreadRecord {
-    id: c_int,
-    notify_pipe: *mut SocketRecord,
+pub(crate) struct ThreadRecord {
+    pub(crate) id: c_int,
+    pub(crate) notify_pipe: *mut SocketRecord,
     dispatch_count: u64,
-    pipe_command: *mut SocketRecord,
-    heartbeat_timer: *mut c_void,
+    pub(crate) pipe_command: *mut SocketRecord,
+    pub(crate) heartbeat_timer: *mut c_void,
+    /// `message_bus`: its Rust bus, then the allocator of its buffer and packets.
+    pub(crate) bus: *mut c_void,
+    pub(crate) allocator: *const swoole_rs_corebase::CoreAllocator,
 }
 
 const _: () = assert!(
-    core::mem::offset_of!(ThreadRecord, heartbeat_timer) == 32,
+    core::mem::offset_of!(ThreadRecord, heartbeat_timer) == 32
+        && core::mem::offset_of!(ThreadRecord, bus) == 40,
     "master.cc ReactorThread layout"
 );
 
@@ -874,7 +876,7 @@ unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// As [`answer`].
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[inline(always)]
-unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
+unsafe fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_RESUME_READ,
         OP_WR_TIMER_DELAY,
@@ -884,7 +886,6 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
     unsafe extern "C-unwind" {
         #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
         fn swoole_timer_delay(node: *mut c_void, delay_ms: c_long);
-        fn swr_v1_timer_owner_reactor(timer: *const c_void) -> *mut c_void;
         #[link_name = "_Z17swoole_event_initi"]
         fn swoole_event_init(flags: c_int) -> c_int;
         #[link_name = "_Z17swoole_event_waitv"]
@@ -909,9 +910,9 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
             0
         }
         OP_RESUME_READ => {
-            // SAFETY: the firing timer, whose owner reactor is live.
-            let reactor = unsafe { swr_v1_timer_owner_reactor(o.ctx.timer) };
-            // SAFETY: as above, and the timer's live socket.
+            // The firing timer's reactor: this thread's.
+            let reactor = swoole_rs_corebase::thread_reactor();
+            // SAFETY: this thread's live reactor and the timer's live socket.
             unsafe { reactor_upstream::reactor_interest(reactor, o.ctx.sock, 2, 0) };
             o.conn().timer = core::ptr::null_mut();
             0
@@ -970,7 +971,8 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
             // SAFETY: the closing socket, which nothing uses afterwards.
             sign(unsafe { reactor_close(o.ctx.reactor, o.ctx.sock) })
         }
-        _ => return None,
+        // SAFETY: per the caller.
+        op => return unsafe { crate::thread_ops::answer(o.ctx, o.state, op, arg) },
     })
 }
 

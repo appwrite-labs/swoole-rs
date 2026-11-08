@@ -47,6 +47,8 @@ mod state;
 mod static_config;
 pub mod static_handler;
 pub mod static_select;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+mod thread_ops;
 pub mod view;
 pub mod worker_methods;
 pub use static_config::{
