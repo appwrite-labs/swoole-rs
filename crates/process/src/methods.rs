@@ -742,6 +742,25 @@ pub extern "C" fn swoole_get_worker_symbol() -> std::ffi::c_char {
     swr_v1_worker_symbol(swoole_get_worker_type())
 }
 
+/// The logger's native effects, the table `swoole::Logger` hands
+/// `swr_v1_logger_new` (once `src/core/log.cc`).
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(no_mangle)]
+pub static swr_logger_host: swoole_rs_utilities::LoggerHost = swoole_rs_utilities::LoggerHost {
+    redirect: swoole_rs_corebase::swoole_redirect_stdout,
+    backtrace: swoole_rs_corebase::swoole_print_backtrace,
+    identity: logger_identity,
+};
+
+#[cfg(feature = "upstream-symbols")]
+unsafe extern "C" fn logger_identity(identity: *mut swoole_rs_utilities::LoggerIdentity) {
+    // SAFETY: the logger passes its own live identity.
+    let identity = unsafe { &mut *identity };
+    identity.worker_id = swoole_get_worker_id().cast_signed();
+    identity.worker_pid = swoole_get_worker_pid();
+    identity.worker_symbol = swoole_get_worker_symbol();
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

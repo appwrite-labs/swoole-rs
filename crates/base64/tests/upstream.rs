@@ -48,10 +48,28 @@ fn compare(bytes: &[u8], encode: bool) {
     }
 }
 
+/// `TEST(base64, encode)` from `core-tests/src/protocol/base64.cpp`, with a
+/// deterministic fixture in place of `swoole_random_bytes`.
 #[test]
-fn original_core_test_assertions() {
-    // SAFETY: this binary links the Rust exports the adapter forwards to.
-    assert_eq!(unsafe { upstream::original_test_failures() }, 0);
+fn base64_encode() {
+    let inbuf: Vec<u8> = (0..1023u32)
+        .map(|i| (i * 37 + 19).to_le_bytes()[0])
+        .collect();
+    let mut outbuf = [0u8; 2048];
+    let n = inbuf.len();
+    // SAFETY: 1023 readable bytes in, room for their 1364 encoded bytes and NUL out.
+    let n2 = unsafe { swr_v1_base64_encode(inbuf.as_ptr(), n, outbuf.as_mut_ptr()) };
+    assert!(n2 > n);
+}
+
+/// `TEST(base64, decode)` from `core-tests/src/protocol/base64.cpp`.
+#[test]
+fn base64_decode() {
+    let inbuf = b"aGVsbG8gd29ybGQ=";
+    let mut outbuf = [0u8; 2048];
+    // SAFETY: the input's readable bytes in, ample room out.
+    let n2 = unsafe { swr_v1_base64_decode(inbuf.as_ptr(), inbuf.len(), outbuf.as_mut_ptr()) };
+    assert_eq!(&outbuf[..n2], b"hello world");
 }
 
 #[test]

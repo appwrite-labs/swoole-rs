@@ -5,9 +5,8 @@ ABI: [`docs/core-abi-v1.md`](../../../docs/core-abi-v1.md) and
 `c7e514509451beafd4d70ce5b78943d51e76381c` (Swoole v6.2.4).
 
 `crates/base64` replaces both low-level algorithms with allocation-free Rust.
-The optional overlay removes the old algorithms and mutable alphabet tables from
-`src/core/base64.cc`; its native adapter only forwards existing C++ symbols to
-the Rust exports.
+The overlay deletes `src/core/base64.cc` and `include/swoole_base64.h`: no
+compiled C++ calls `swoole::base64_encode` or `base64_decode` any more.
 
 The decoder intentionally accepts incomplete quartets, stops at the first `=`,
 and preserves provisional writes before invalid data returns zero. It does not
@@ -52,9 +51,16 @@ upstream C++, which `crates/oracle` compiles from unmodified copies under its
 sentinels, 17-byte red zones and unaligned input: all one- and two-byte inputs,
 all strings through length five over eleven byte classes, every byte in every
 position through two quartets, and proptest cases for binary encode, base64-like
-decode and truncated valid encodings. The two unmodified original core-test
-assertions (`core-tests/src/protocol/base64.cpp`) run against the native adapter that
-the base64 patch installs, with a deterministic random-byte fixture.
+decode and truncated valid encodings.
+
+The two original core tests (`core-tests/src/protocol/base64.cpp`) are ported
+to Rust in the same file, one test each, with the same inputs and expected
+values:
+
+| Upstream TEST | Rust test |
+| --- | --- |
+| `base64.encode` | `base64_encode` (a deterministic fixture replaces `swoole_random_bytes`) |
+| `base64.decode` | `base64_decode` |
 
 Rust's own bounds checks replace the previous ASan/UBSan build. The Rust codec has
 no mutable state, so the earlier concurrency and fork runs are not carried over.
@@ -75,7 +81,7 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 
 Gate audit (#471/#472): `base64-consumers-*` is **kept**. The codec itself is
 covered by the `cargo test -p swoole-rs-base64` differential, the `base64_encode`
-/`base64_decode` fuzz targets and the two original core-test assertions above;
+/`base64_decode` fuzz targets and the two ported core tests above;
 `Client::set_basic_auth` by `swoole_http_client_coro/set_basic_auth.phpt` and the
 handshake accept by the `swoole_websocket_server` PHPTs. But the `HttpProxy::
 get_auth_str` proxy-auth path (its `%.*s` embedded-NUL truncation and 255-byte

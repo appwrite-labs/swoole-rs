@@ -1,7 +1,7 @@
 //! `swoole::Logger` (upstream `src/core/log.cc`): level, date format, log file,
 //! rotation, stdout redirection and `put`, behind one lock. Diagnostics go out
 //! through corebase's log host; worker identity, `swoole_redirect_stdout` and
-//! backtraces are native (`LoggerHost`, from `src/core/log.cc`). Both run after
+//! backtraces go through `LoggerHost` (`swr_logger_host`, in crates/process). Both run after
 //! the lock is released, so a diagnostic can log through this logger again.
 use crate::{
     swr_v1_utils_log_level, swr_v1_utils_log_line, swr_v1_utils_log_micros,
