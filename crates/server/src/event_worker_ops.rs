@@ -29,7 +29,7 @@ use swoole_rs_process::workers::ops::{
     OP_REOPEN_LOGGER, OP_RESET_WORKER_COUNTER, OP_SIGNAL_LIVE, OP_SIGNAL_SET, OP_STOP_ASYNC,
     OP_WORKER_ENTER, OP_WORKER_EXISTS, OP_WORKER_ID, OP_WORKER_NUM, OP_WORKER_SHUTDOWN,
     OP_WORKER_SIGNAL_INIT, OP_WORKER_START_CALLBACK, OP_WORKER_STATUS, OP_WORKER_STOP_CALLBACK,
-    OP_WORKER_TYPE,
+    OP_WORKER_TYPE, STATUS_IDLE,
 };
 use swoole_rs_reactor::SocketRecord;
 
@@ -59,6 +59,9 @@ const SW_GLOBAL_HOOK_BEFORE_WORKER_STOP: c_int = 8;
 /// `swoole::WorkerType::SW_EVENT_WORKER`, `SW_WORKER_MESSAGE_STOP`.
 const SW_EVENT_WORKER: c_int = 2;
 const SW_WORKER_MESSAGE_STOP: u8 = 1;
+/// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
+const SW_WORKER_BUSY: u8 = 1;
+const SW_WORKER_IDLE: u8 = 2;
 /// `Server::DISPATCH_CO_CONN_LB`, `DISPATCH_CO_REQ_LB`.
 const DISPATCH_CO_CONN_LB: u8 = 8;
 const DISPATCH_CO_REQ_LB: u8 = 9;
@@ -211,8 +214,15 @@ unsafe fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_STOP_ASYNC => unsafe { entry::stop_async_worker(serv, worker.cast()) },
         // SAFETY: the context's live worker.
         OP_WORKER_SHUTDOWN => unsafe { swr_v1_worker_shutdown(worker) },
-        // SAFETY: as above.
-        OP_WORKER_STATUS => unsafe { swr_v1_worker_set_status(worker, u8::from(arg != 0)) },
+        OP_WORKER_STATUS => {
+            let status = if arg == STATUS_IDLE {
+                SW_WORKER_IDLE
+            } else {
+                SW_WORKER_BUSY
+            };
+            // SAFETY: the context's live worker.
+            unsafe { swr_v1_worker_set_status(worker, status) }
+        }
         OP_REOPEN_LOGGER => {
             if let Some(logger) = swoole_rs_utilities::process_logger() {
                 // SAFETY: the process logger, live while the process runs.
