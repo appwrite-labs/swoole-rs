@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // swoole_lock.h's Mutex and Barrier, which the server and core-tests construct, over the
-// Rust lock ABI (swoole_rs_locks.h). A throwing constructor and a vtable are what stable
-// Rust can't express.
+// Rust lock ABI (swoole_rs_locks.h). A throwing constructor is what stable Rust can't
+// express.
 #include "swoole_lock.h"
 #include "swoole_rs_locks.h"
 #include <cstddef>
+#include <system_error>
 
 namespace swoole {
-Mutex::Mutex(bool shared) : Lock(MUTEX, shared) {
-    const size_t size = swr_v1_locks_size(MUTEX);
-    if (!size || swr_v1_locks_align(MUTEX) > alignof(std::max_align_t)) {
+Mutex::Mutex(bool shared) : shared_(shared) {
+    const size_t size = swr_v1_locks_size(Lock::MUTEX);
+    if (!size || swr_v1_locks_align(Lock::MUTEX) > alignof(std::max_align_t)) {
         throw std::system_error(EINVAL, std::generic_category(), "unsupported Rust lock storage");
     }
     impl = reinterpret_cast<MutexImpl *>(shared ? sw_mem_pool()->alloc(size) : ::operator new(size));
     if (!impl) { throw std::bad_alloc(); }
-    if (swr_v1_locks_init((void *) impl, MUTEX, shared) != 0) {
+    if (swr_v1_locks_init((void *) impl, Lock::MUTEX, shared) != 0) {
         const int error = errno;
         if (shared) { sw_mem_pool()->free((void *) impl); } else { ::operator delete((void *) impl); }
         throw std::system_error(error, std::generic_category(), "pthread_mutex_init() failed");
@@ -28,11 +29,11 @@ int Mutex::lock(int operation, int timeout_msec) {
 #ifdef HAVE_RWLOCK_TIMEDRDLOCK
     capabilities |= 2;
 #endif
-    return swr_v1_locks_lock((void *) impl, MUTEX, operation, timeout_msec, capabilities);
+    return swr_v1_locks_lock((void *) impl, Lock::MUTEX, operation, timeout_msec, capabilities);
 }
-int Mutex::unlock() { return swr_v1_locks_unlock((void *) impl, MUTEX); }
+int Mutex::unlock() { return swr_v1_locks_unlock((void *) impl, Lock::MUTEX); }
 Mutex::~Mutex() {
-    swr_v1_locks_destroy((void *) impl, MUTEX);
+    swr_v1_locks_destroy((void *) impl, Lock::MUTEX);
     if (shared_) { sw_mem_pool()->free((void *) impl); } else { ::operator delete((void *) impl); }
 }
 

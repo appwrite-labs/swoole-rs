@@ -22,8 +22,8 @@ def main():
         symbols=subprocess.check_output(['nm','-u',str(a.archive)],text=True,stderr=subprocess.DEVNULL)
         if '__asan_report_' not in symbols:p.error('Archive lacks Rust ASan report imports')
     pin=overlay.PIN;original=overlay.original
-    # Reference side from the pin; ported side native/locks/lock.cc over the hybrid's swoole_lock.h.
-    hybrid_source,hybrid_flags=hybrid_tree(a.archive);ported=lambda path:(hybrid_source/path).read_text()
+    # Reference side from the pin; ported side native/locks/lock.cc over native/locks/swoole_lock.h.
+    hybrid_source,hybrid_flags=hybrid_tree(a.archive)
     report={'upstream_commit':pin,'hybrid_tree':str(hybrid_source),'rust_asan_declared':a.rust_asan,'scope':'Actual pinned pthread bodies vs real Rust overlay facades; thread/fork/RW/timeout/barrier/atomic/futex witnesses. C++ sanitizer; Rust instructions instrumented only when rust_asan_declared=true; prebuilt Rust stdlib and OS code excluded. Coroutine lifecycle, PHP/ZTS and optimized performance are separate gates.','passed':False}
     support='''#pragma once
 #include <cstdint>
@@ -71,7 +71,7 @@ inline void swoole_set_last_error(int e){errno=e;}
         tree=Path(temp);(tree/'reference').mkdir();(tree/'ported').mkdir();(tree/'support.h').write_text(support)
         (tree/'reference/reference.h').write_text(original('include/swoole_lock.h').replace('#include "swoole_memory.h"','#include "support.h"').replace('namespace swoole','namespace reference'))
         (tree/'reference/original.inc').write_text(kernel+'\nnamespace reference {\n'+futex+wait+realtime+'}\n'+original_bodies)
-        (tree/'ported/swoole_lock.h').write_text(ported('include/swoole_lock.h').replace('#include "swoole_memory.h"','#include "support.h"'))
+        (tree/'ported/swoole_lock.h').write_text((ROOT/'native/locks/swoole_lock.h').read_text().replace('#include "swoole_memory.h"','#include "support.h"'))
         (tree/'ported/ported.inc').write_text(ported_bodies)
         # Two translation units: the reference side sees only pinned text, the ported side
         # and the driver the hybrid build's flags.

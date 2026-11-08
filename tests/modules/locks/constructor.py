@@ -31,13 +31,13 @@ using sw_atomic_t=volatile uint32_t;
 struct Pool { void *alloc(size_t);void free(void *); };
 inline Pool *sw_mem_pool(){static Pool pool;return &pool;}
 '''
-    # Reference side from the pin; ported side native/locks/lock.cc over the hybrid's swoole_lock.h.
+    # Reference side from the pin; ported side native/locks/lock.cc over native/locks/swoole_lock.h.
     hybrid_source,hybrid_flags=hybrid_tree(a.archive)
-    sides={'reference':overlay.original,'ported':lambda path:(hybrid_source/path).read_text()}
+    sides={'reference':overlay.original,'ported':None}
     (folder/'support.h').write_text(support)
     for side,read in sides.items():
         (folder/side).mkdir(exist_ok=True)
-        header=read('include/swoole_lock.h').replace('#include "swoole_memory.h"','#include "support.h"')
+        header=(read('include/swoole_lock.h') if side=='reference' else (ROOT/'native/locks/swoole_lock.h').read_text()).replace('#include "swoole_memory.h"','#include "support.h"')
         # The pinned lock bodies poll through base.cc's sw_wait_for; the hybrid ones wait in
         # Rust and call nothing in base.cc, so only the reference side carries that body.
         text=''

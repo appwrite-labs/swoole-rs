@@ -137,7 +137,7 @@ min(old_total-8, new_total-8) payload bytes.
 `crates/memory/src/members.rs` defines what `src/memory/*.cc` did. With
 `upstream-symbols`, `GlobalMemory`'s non-virtual members and `sw_shm_malloc`,
 `sw_shm_calloc`, `sw_shm_free` and `sw_shm_protect` are under their upstream C++
-symbols. `swoole_memory.h` keeps `GlobalMemory`'s constructor (it throws on the
+symbols. `native/memory/swoole_memory.h` (upstream's is deleted) keeps `GlobalMemory`'s constructor (it throws on the
 `swr_v1_memory_global_memory_new` status: -1 `Exception(SW_ERROR_INVALID_PARAMS)`,
 -2 `std::bad_alloc`) and its virtual members, so each user emits the vtable.
 `FixedPool`, `RingBuffer` and `sw_shm_realloc` have no C++ caller left; their members

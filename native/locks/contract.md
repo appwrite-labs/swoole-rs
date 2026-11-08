@@ -3,7 +3,8 @@
 Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. Patched upstream
 files: `ext-src/swoole_thread_atomic.cc`, `ext-src/swoole_thread_lock.cc`.
 `src/lock/barrier.cc` and `src/lock/mutex.cc` are deleted: `native/locks/lock.cc`
-holds the `Mutex` and `Barrier` methods over this ABI. `src/lock/rw_lock.cc` and
+holds the `Mutex` and `Barrier` methods over this ABI, and `native/locks/swoole_lock.h`
+and `swoole_atomic.h` replace the deleted upstream headers. `src/lock/rw_lock.cc` and
 `src/lock/spin_lock.cc` are deleted: no C++ caller has an RW or spin lock.
 `ext-src/swoole_atomic.cc`, `ext-src/swoole_lock.cc`, `ext-src/swoole_coroutine_lock.cc`
 and `src/lock/coroutine_lock.cc` are deleted: crates/phplocks exports their MINITs and
