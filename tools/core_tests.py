@@ -29,6 +29,19 @@ SELECTION = 'file(GLOB_RECURSE core_test_files core-tests/src/*.cpp thirdparty/l
 # Upstream's test helpers (not assertions) that write state the hybrid moved behind accessors.
 ADAPTATIONS = {
     'core-tests/src/_lib/process.cpp': [('worker.pid = pid;', 'worker.set_pid(pid);')],
+    # The hybrid has no swoole_http2.h: the case reads its two constants and crates/http2's settings codec.
+    'core-tests/src/server/http_server.cpp': [('#include "swoole_http2.h"\n', '''\
+#define SW_HTTP2_PRI_STRING "PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n"
+#define SW_HTTP2_FRAME_HEADER_SIZE 9
+namespace swoole { namespace http2 {
+struct Settings { uint32_t header_table_size, enable_push, max_concurrent_streams, init_window_size, max_frame_size, max_header_list_size; };
+size_t pack_setting_frame(char *buf, const Settings &settings, bool server_side);
+}}
+extern "C" swoole::http2::Settings sw_rs_http2_default_settings();
+namespace swoole { namespace http2 {
+static inline void init_settings(Settings *settings) { *settings = sw_rs_http2_default_settings(); }
+}}
+''')],
     # Failure cleanup still shuts down the actual listener after a failed sender.
     'core-tests/src/os/process_pool.cpp': [
         ('pool.stream_info_->socket->shutdown(SHUT_RDWR);',

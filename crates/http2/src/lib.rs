@@ -734,8 +734,142 @@ pub extern "C" fn get_type_color(kind: i32) -> i32 {
 )]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// The process-wide defaults are shared by every test in this binary.
+    static DEFAULTS: Mutex<()> = Mutex::new(());
+
+    /// `swoole_rand(1, 100000)`.
+    fn rand() -> u32 {
+        use std::hash::{BuildHasher, RandomState};
+        (RandomState::new().hash_one(0u8) % 100_000) as u32 + 1
+    }
+
+    // Upstream core-tests/src/protocol/http2.cpp, one test per TEST. `http2.ssl` is not
+    // ported: it needs the nghttp2 client, so the native lane excluded it too.
+
+    /// `TEST(http2, default_settings)`.
+    #[test]
+    fn http2_default_settings() {
+        let _defaults = DEFAULTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            get_default_setting(1),
+            4096,
+            "SW_HTTP2_DEFAULT_HEADER_TABLE_SIZE"
+        );
+        assert_eq!(get_default_setting(2), 0, "SW_HTTP2_DEFAULT_ENABLE_PUSH");
+        assert_eq!(
+            get_default_setting(3),
+            u32::MAX,
+            "SW_HTTP2_DEFAULT_MAX_CONCURRENT_STREAMS"
+        );
+        assert_eq!(
+            get_default_setting(4),
+            65535,
+            "SW_HTTP2_DEFAULT_INIT_WINDOW_SIZE"
+        );
+        assert_eq!(
+            get_default_setting(5),
+            16384,
+            "SW_HTTP2_DEFAULT_MAX_FRAME_SIZE"
+        );
+        assert_eq!(
+            get_default_setting(6),
+            u32::MAX,
+            "SW_HTTP2_DEFAULT_MAX_HEADER_LIST_SIZE"
+        );
+
+        let original = sw_rs_http2_default_settings();
+        let settings = [rand(), rand(), rand(), rand(), rand(), rand()];
+        for (id, value) in (1..).zip(settings) {
+            put_default_setting(id, value);
+        }
+        for (id, value) in (1..).zip(settings) {
+            assert_eq!(get_default_setting(id), value);
+        }
+        // Each upstream case runs in its own process; these share one.
+        for (id, value) in (1..).zip([
+            original.header_table_size,
+            original.enable_push,
+            original.max_concurrent_streams,
+            original.init_window_size,
+            original.max_frame_size,
+            original.max_header_list_size,
+        ]) {
+            put_default_setting(id, value);
+        }
+    }
+
+    /// `TEST(http2, pack_setting_frame)`.
+    #[test]
+    fn http2_pack_setting_frame() {
+        let _defaults = DEFAULTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SW_HTTP2_SETTING_FRAME_SIZE + SW_HTTP2_FRAME_HEADER_SIZE
+        let mut frame = [0u8; 45 + 9];
+        let settings_1 = sw_rs_http2_default_settings();
+        let n = unsafe { pack_setting_frame(frame.as_mut_ptr(), &raw const settings_1, false) };
+
+        assert!(n > 16);
+
+        // unpack_setting_data over n bytes after the header, stopping at an unknown id.
+        let mut settings_2 = Http2Settings::default();
+        for item in frame[9..].chunks(6).take(n.div_ceil(6)) {
+            let mut padded = [0u8; 6];
+            padded[..item.len()].copy_from_slice(item);
+            let (mut id, mut value) = (0, 0);
+            unsafe { sw_rs_http2_unpack_setting(padded.as_ptr(), &raw mut id, &raw mut value) };
+            match id {
+                1 => settings_2.header_table_size = value,
+                2 => settings_2.enable_push = value,
+                3 => settings_2.max_concurrent_streams = value,
+                4 => settings_2.init_window_size = value,
+                5 => settings_2.max_frame_size = value,
+                6 => settings_2.max_header_list_size = value,
+                _ => break,
+            }
+        }
+
+        assert_eq!(settings_1, settings_2);
+    }
+
+    /// `TEST(http2, get_type)`.
+    #[test]
+    fn http2_get_type() {
+        let names = [
+            c"DATA",
+            c"HEADERS",
+            c"PRIORITY",
+            c"RST_STREAM",
+            c"SETTINGS",
+            c"PUSH_PROMISE",
+            c"PING",
+            c"GOAWAY",
+            c"WINDOW_UPDATE",
+            c"CONTINUATION",
+        ];
+        for (kind, name) in (0..).zip(names) {
+            assert_eq!(unsafe { std::ffi::CStr::from_ptr(get_type(kind)) }, name);
+        }
+    }
+
+    /// `TEST(http2, get_type_color)`.
+    #[test]
+    fn http2_get_type_color() {
+        // SW_LOOP_N(SW_HTTP2_TYPE_GOAWAY + 2)
+        for i in 0..7 + 2 {
+            assert!(get_type_color(i) >= 0);
+        }
+    }
+
     #[test]
     fn default_settings_round_trip() {
+        let _defaults = DEFAULTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
             sw_rs_http2_default_settings(),
             Http2Settings {
