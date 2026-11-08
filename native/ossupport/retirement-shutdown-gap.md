@@ -1,11 +1,8 @@
 # Known bug: idle-retirement event leaked at reactor shutdown
 
-Native Swoole can leak one 80-byte `AsyncEvent` and its 8-byte `std::thread::id`
-(88 bytes under LSan) allocated in the idle-retirement branch of
-`src/os/async_thread.cc` (lines 277-278 at the pin); with the Rust pool the leaked
-retirement event is the 80-byte `AsyncEvent` alone.
-It is unrelated to Rust queue storage and to queued ordinary events at shutdown.
-It blocks default activation.
+The idle-retirement notice (an 80-byte `AsyncEvent` from the `retire` hook in
+`crates/hooks/src/async_threads.rs`) can leak at reactor shutdown, as upstream's
+does. It is unrelated to queued ordinary events at shutdown.
 
 Cause (confirmed with test-only scheduling barriers on macOS and Linux, both
 engines): the idle worker's `retire` hook creates the retirement event, sets

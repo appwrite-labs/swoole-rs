@@ -42,8 +42,8 @@ ABI.
 
 ## Handlers
 
-`set_handler`, `isset_handler`, `get_handler` and `get_error_handler` are
-upstream's code (#336).
+`set_handler`, `isset_handler`, `get_handler` and `get_error_handler` are Rust
+tables (`swr_v1_reactor_handlers_*`, `crates/reactor/src/handlers.rs`).
 
 ## Builtin begin/idle/exit scheduling
 
@@ -69,13 +69,3 @@ whose task never ran.
   `defer_tasks` makes the kernel wait non-blocking.
 - The Reactor destructor runs `destroy_callbacks` until empty (callbacks it
   adds run too); the state frees the queue.
-
-## Shared owner allocation
-
-Socket registries, snapshots, callback metadata, deferred queues, poll storage
-and backend event arrays share one private fallible boxed-owner helper. It
-allocates `Layout<T>` with the global allocator before initialization and wraps
-it in a `Box`. Vector reservation precedes owner allocation; lazy owners skip
-allocation; new owners publish only after their operation succeeds and commits.
-All admitted owner types are nonzero-sized and have no Native or custom `Drop`.
-An RAII capsule frees the allocation if an initializer panics.

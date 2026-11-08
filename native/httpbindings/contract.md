@@ -1,17 +1,12 @@
 # PHP HTTP binding policy
 
-Feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`. `ext-src/swoole_http_cookie.cc`,
-`swoole_http_request.cc`, `swoole_http_response.cc`, `swoole_http_server.cc`,
-`swoole_http_server_coro.cc`, `swoole_websocket_server.cc`, `php_swoole_http.h` and
-`php_swoole_http_server.h` are gone.
-Public PHP headers, class layouts and stubs/arginfo are unchanged. Rust
-allocates, lays out and frees the HTTP context (crates/phphttp/src/state.rs).
-
-Common rule: Rust returns before every native effect (Zend mutation, allocation,
-encoding, date/time, warnings, callbacks, IO, codecs, exceptions, bailout) and
-retains no context, buffer, Zend value or pointer. Fields are re-observed after
-each native effect; there is no second store. Cursors are plain caller-local
-values.
+Feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`.
+crates/httpbindings is policy: each call returns a decision and retains no
+context, buffer, Zend value or pointer. crates/phphttp (the PHP HTTP classes,
+whose context it allocates in `src/state.rs`) performs every effect (Zend
+mutation, allocation, encoding, date/time, warnings, callbacks, IO, codecs)
+after the call returns and re-observes fields afterwards. Cursors are plain
+caller-local values.
 
 ## Cookie::toString
 
@@ -25,20 +20,11 @@ objects/spans return -1 with no effect requested. Append text points at current
 input storage or Rust static literals and is consumed immediately; warnings are
 NUL-terminated static text.
 
-Preserved: warning positions, partial `smart_str` contents, date/encoding/free
-order, per-option validation, NUL-terminated `strpbrk` behavior inside binary
-`zend_string` values, and expiry bounds. `php_url_encode` (RFC1738),
-`php_format_date`, `php_time` and `difftime` stay native; `smart_str` owns every
-allocation and `zend_string_free` every temporary. A warning returns after its
-callback with no further field access; a bailout leaves no Rust cleanup.
-
 ## Request headers and Response header keys
 
 Request header classification returns append/cookie/upgrade/form/multipart/
-compression/chunked decisions. Native code still does Zend mutation, parser init,
-session lookup, logging and publication (including websocket flag publication
-before a failed session lookup). Known-name selection runs after native
-`ZVAL_STRINGL`. Known-key indices 0..7 = host, user-agent, accept, content-type,
+compression/chunked decisions; crates/phphttp publishes the websocket flag before
+a failed session lookup, as upstream. Known-key indices 0..7 = host, user-agent, accept, content-type,
 content-length, authorization, connection, accept-encoding; 8 = unknown (merge).
 Pinned llhttp method numbers 0/3/4/28 are compile-asserted at the caller.
 
@@ -57,17 +43,6 @@ Quote trimming keeps the original shrinking bound: three opening quotes then `a`
 trim to one quote then `a`. Response header-key case formatting keeps the
 leading/consecutive-hyphen state machine, bounded binary/NUL behavior, and treats
 negative lengths as a no-op.
-
-## Coroutine server
-
-The normal server's receive path (`php_swoole_http_server_onReceive`) is
-crates/phphttp's: it routes to the TCP, WebSocket and HTTP/2 `onReceive`s and
-reads the port callbacks and the received data from ext-src/swoole_server.cc.
-
-Coroutine handler matching uses the native `unordered_map` iteration and
-default-callback identity, skipping default entries before any context-path
-read. Accept policy consumes native errno constants, connection result and the
-signed coroutine ID after native creation/release.
 
 ## Payload options, compression and multipart
 
@@ -89,12 +64,8 @@ signed coroutine ID after native creation/release.
 
 The Response known-header classifier keeps the pinned flag values and libc case
 semantics (static-asserted at the caller): it maps each known header name to its
-original native flag, and unknown headers keep the custom path. The header-emission
-tail — the Server / date / upgrade / Connection / type / chunked / compression /
-length / final-publication sequence — is upstream C++ again: #372 restored
-`build_header`'s tail and deleted the Rust phase machine, so Rust no longer drives
-that sequence. What Rust still owns in the response is this classifier and the codec
-policy below.
+original native flag, and unknown headers keep the custom path. Header emission
+is crates/phphttp (`src/header.rs`).
 
 Codec selection happens only after the original acceptance/minimum-length checks.
 Declined compression stays a silent false; unknown/unavailable methods take the
@@ -103,6 +74,3 @@ clamp (min first) are Rust scalar policy. Zstd keeps its captured local level,
 native max-then-min query order and local clamp without writing the Context field.
 Codec implementations, allocation, warnings and buffer formulas stay native.
 
-Not converted: object setters/reset/refcounts, array/property/GC/destruction,
-`getContent`/`getData` string/COW behavior, remaining multipart and Response
-methods, HTTP/2 and WebSocket.
