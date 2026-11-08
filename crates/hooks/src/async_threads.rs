@@ -17,8 +17,8 @@ use swoole_rs_corebase::{
 };
 use swoole_rs_ossupport::{
     Pool, PoolHooks, swr_v1_os_pool_acquire, swr_v1_os_pool_complete, swr_v1_os_pool_dispatch,
-    swr_v1_os_pool_join, swr_v1_os_pool_notify_one, swr_v1_os_pool_queue_size,
-    swr_v1_os_pool_release, swr_v1_os_pool_task_id, swr_v1_os_pool_worker_num,
+    swr_v1_os_pool_join, swr_v1_os_pool_queue_size, swr_v1_os_pool_release, swr_v1_os_pool_task_id,
+    swr_v1_os_pool_worker_num,
 };
 use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del, swr_v1_event_current};
 use swoole_rs_reactor::reactor_upstream::prepared;
@@ -342,12 +342,11 @@ extern "C" fn complete(token: usize) {
     unsafe { swr_v1_os_async_event_free(event) };
 }
 
-/// `static int AsyncThreads::callback(Reactor *, Event *)`: completes every event
+/// Upstream's `AsyncThreads::callback`, the pipe's reactor handler: completes every event
 /// waiting on the pipe.
 ///
 /// # Safety
 /// `event` is the reactor's live event for the pipe's read end.
-#[unsafe(export_name = "_ZN6swoole12AsyncThreads8callbackEPNS_7ReactorEPNS_5EventE")]
 pub unsafe extern "C" fn callback(_reactor: *mut c_void, event: *mut Event) -> c_int {
     // SAFETY: as the caller promises.
     if swr_v1_os_pool_complete(unsafe { (*event).fd }, complete) < 0 {
@@ -360,58 +359,24 @@ pub unsafe extern "C" fn callback(_reactor: *mut c_void, event: *mut Event) -> c
     0
 }
 
-/// `AsyncThreads *sw_async_threads()`.
-#[unsafe(export_name = "_Z16sw_async_threadsv")]
-#[must_use]
-pub extern "C" fn sw_async_threads() -> *mut AsyncThreads {
-    current()
-}
-
-/// `size_t AsyncThreads::get_task_num() const`.
-///
-/// # Safety
-/// `this` is a live handle.
-#[unsafe(export_name = "_ZNK6swoole12AsyncThreads12get_task_numEv")]
-#[must_use]
-pub unsafe extern "C" fn get_task_num(this: *const AsyncThreads) -> usize {
-    // SAFETY: as the caller promises.
-    unsafe { (*this).task_num }
-}
-
-/// `size_t AsyncThreads::get_worker_num() const`.
-///
-/// # Safety
-/// `this` is a live handle.
-#[unsafe(export_name = "_ZNK6swoole12AsyncThreads14get_worker_numEv")]
-#[must_use]
-pub unsafe extern "C" fn get_worker_num(this: *const AsyncThreads) -> usize {
-    // SAFETY: as the caller promises.
-    let pool = unsafe { (*this).pool };
+/// `Co::stats()`'s AIO counts for this thread: events in flight, the pool's
+/// workers and its queue; left as they are when the thread has no pool.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_async_threads_stats(
+    task_num: &mut i64,
+    worker_num: &mut i64,
+    queue_size: &mut i64,
+) {
+    let threads = current();
+    if threads.is_null() {
+        return;
+    }
+    // SAFETY: the thread's live handle.
+    let threads = unsafe { &*threads };
+    let pool = threads.pool;
+    *task_num = i64::try_from(threads.task_num).unwrap_or(i64::MAX);
     // SAFETY: an acquired, unreleased reference.
-    unsafe { swr_v1_os_pool_worker_num(pool) }
-}
-
-/// `size_t AsyncThreads::get_queue_size() const`.
-///
-/// # Safety
-/// `this` is a live handle.
-#[unsafe(export_name = "_ZNK6swoole12AsyncThreads14get_queue_sizeEv")]
-#[must_use]
-pub unsafe extern "C" fn get_queue_size(this: *const AsyncThreads) -> usize {
-    // SAFETY: as the caller promises.
-    let pool = unsafe { (*this).pool };
-    // SAFETY: an acquired, unreleased reference.
-    unsafe { swr_v1_os_pool_queue_size(pool) }
-}
-
-/// `void AsyncThreads::notify_one() const`.
-///
-/// # Safety
-/// `this` is a live handle.
-#[unsafe(export_name = "_ZNK6swoole12AsyncThreads10notify_oneEv")]
-pub unsafe extern "C" fn notify_one(this: *const AsyncThreads) {
-    // SAFETY: as the caller promises.
-    let pool = unsafe { (*this).pool };
-    // SAFETY: an acquired, unreleased reference.
-    unsafe { swr_v1_os_pool_notify_one(pool) };
+    *worker_num = i64::try_from(unsafe { swr_v1_os_pool_worker_num(pool) }).unwrap_or(i64::MAX);
+    // SAFETY: as above.
+    *queue_size = i64::try_from(unsafe { swr_v1_os_pool_queue_size(pool) }).unwrap_or(i64::MAX);
 }

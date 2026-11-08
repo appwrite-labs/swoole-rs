@@ -18,7 +18,8 @@ release shuts the pool down and joins every worker, as upstream's `use_count() =
 
 Event tokens are `AsyncEvent` pointers the pool never dereferences. Its hooks
 (`PoolHooks`) are `crates/hooks/src/async_threads.rs`, which is also `AsyncThreads`
-and `async::dispatch` under their upstream symbols: `execute` runs the handler
+and `async::dispatch` (under its upstream symbol; `Co::stats()` reads the counts
+through `swr_v1_async_threads_stats`): `execute` runs the handler
 (missing handler wins over canceled) and writes the event to its pipe; `retire`
 sends the idle worker's key to the default pipe, whose callback joins it with
 `swr_v1_os_pool_join`. `swr_v1_os_pool_complete` reads up to 128 tokens from the
@@ -81,7 +82,9 @@ and thread names. `swoole_set_isolation` is an inline header call with each
 
 `swr_v1_os_file_open`/`close` and `swr_v1_os_tmpfile` back `File::open`,
 `File::close` and `swoole_tmpfile`. The resolver request constructors and the
-`gethostbyname`/`getaddrinfo` async handlers are inline in `swoole_async.h`.
+`gethostbyname`/`getaddrinfo` async handlers are inline in the owned `swoole_async.h`
+(upstream's is deleted): `AsyncEvent`, whose layout `crates/hooks/src/offload.rs`
+mirrors, and the requests, views of the Rust resolver record.
 Unused upstream helpers left with the file: `swoole_set_cpu_affinity` and
 `swoole_thread_id_to_str`.
 
