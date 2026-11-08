@@ -46,8 +46,8 @@ use crate::ops::{
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
     OP_ALLOC_PORT_GS, OP_ALLOC_SESSIONS, OP_ALLOC_TASK_RESULTS, OP_ALLOC_WORKERS,
-    OP_FREE_USER_WORKERS, OP_LC_BEFORE_START, OP_MASTER_REACTOR, OP_MASTER_WORKER,
-    OP_SIGNAL_ACTIVE,
+    OP_DESTROY_FACTORY, OP_FREE_USER_WORKERS, OP_INIT_LOCAL_ADDRS, OP_LC_BEFORE_START,
+    OP_MASTER_REACTOR, OP_MASTER_WORKER, OP_SIGNAL_ACTIVE,
 };
 use crate::port_config::PortConfig;
 use crate::records::{ConnectionRecord, SessionRecord};
@@ -1191,6 +1191,9 @@ pub(crate) unsafe fn answer(
             o.config().task_results = results;
             u64::from(!results.is_null())
         }
+        OP_INIT_LOCAL_ADDRS => u64::from(crate::local_addr::init(o.state)),
+        // Native destroys the other factories.
+        OP_DESTROY_FACTORY if arg == MODE_BASE => destroy_base_factory(&o),
         OP_ALLOC_CONNECTION_NUMS => {
             let nums = shm_calloc(o.config().worker_num as usize, ATOMIC_SIZE);
             o.gs().connection_nums = nums;
@@ -1210,6 +1213,22 @@ pub(crate) unsafe fn answer(
         }
         _ => return None,
     })
+}
+
+/// `Server::destroy_base_factory()`: the connection list and the connection counts.
+fn destroy_base_factory(o: &Objects<'_>) -> u64 {
+    let tables = o.tables();
+    // SAFETY: the base factory's `sw_calloc`ed connection list, freed once.
+    unsafe { swoole_rs_corebase::sw_free(tables.connection_list.cast()) };
+    sw_shm_free(o.gs().connection_nums.cast());
+    for &port in tables.ports() {
+        // SAFETY: one of the server's live ports.
+        let gs = unsafe { port_config(port) }.gs.cast::<PortCounters>();
+        // SAFETY: the port's slot in `port_gs_list`, allocated at create.
+        sw_shm_free(unsafe { &*gs }.connection_nums.cast());
+    }
+    o.gs().connection_nums = core::ptr::null_mut();
+    0
 }
 
 #[cfg(target_os = "linux")]
