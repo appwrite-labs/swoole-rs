@@ -12,7 +12,8 @@ runs:
   steps:
     - uses: ./.github/actions/install
       with:
-        packages: php-gmp php-bcmath php-mysql php-pgsql unixodbc odbc-mariadb libfbclient2 libaio1t64 openssh-server
+        # nghttp2-client and -server: the HTTP/2 tests' skip_if_no_nghttp and nghttpd checks.
+        packages: php-gmp php-bcmath php-mysql php-pgsql unixodbc odbc-mariadb libfbclient2 libaio1t64 openssh-server nghttp2-client nghttp2-server
         php: ${{ inputs.php }}
     # The engines link the Instant Client (--with-swoole-oracle).
     - uses: ./.github/actions/instantclient
