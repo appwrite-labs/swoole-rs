@@ -1,6 +1,6 @@
 # Original upstream Swoole tests
 
-This selection runs **92 original PHPT tests** from Swoole **v6.2.4**, commit
+The default selection (`manifest.json`) runs original PHPT tests from Swoole **v6.2.4**, commit
 `c7e514509451beafd4d70ce5b78943d51e76381c`. The manifest records each source path,
 SHA-256, subsystem, and required PHP APIs. The PHPT files are extracted with
 `git archive` from the pinned Git object and checked against these hashes before
@@ -8,14 +8,9 @@ execution. Local checkout edits cannot silently change the selected tests.
 
 The selection covers incremental HTTP request parsing, channel payloads/closure/
 stats, typed Table rows and deletion, timer ordering/cancellation, coroutine
-lifecycle/defer, atomics, and WebSocket frame encoding/decoding. All 33 original
-WebSocket tests exercise receive decoding, send encoding, fragmented messages,
-ping/pong, malformed data, close flags/status/reasons, handshake token order
-and callback/property registration. Some retain upstream randomized server modes
-or close-code branches; failures are recorded without retries to green. Network cases use ephemeral local loopback
-listeners; no external databases or internet services are required. The frame test includes
-1,000 randomized round trips with invariant assertions; this is not the whole
-upstream suite and does not replace its larger regression/stress suites.
+lifecycle/defer, atomics, and the original WebSocket tests. Failures are
+recorded without retries to green. Network cases use ephemeral local loopback
+listeners. The merge tier runs the whole pinned suite (below).
 
 ```sh
 python3 tools/build_upstream.py
@@ -53,9 +48,7 @@ not used: it contains failure cleanup that can kill unrelated listeners by port.
 The wrapper instead cleans up only each test's isolated process group. Its `-W` result ledger is parsed; only `PASSED`
 counts as a pass. Failures, unexpected statuses, runner errors, and timeouts fail
 the command. Unsupported APIs are reported separately; `--require-all` also
-fails on unsupported and skipped cases. Rust currently cannot run this selection
-because its APIs and upstream bootstrap prerequisites are missing. Those
-unsupported results are compatibility gaps, not passes.
+fails on unsupported and skipped cases.
 
 There are two explicit **test-support adaptations** in the disposable copy:
 
@@ -95,11 +88,6 @@ and `shutdown_in_master.phpt`, which calls `shutdown()` from `onStart` before it
 random 1–4 workers are up and sometimes hangs until the deadline: upstream 2 of 8
 runs, hybrid 3 of 8 in the dev container (#438).
 
-The expanded audit registers all 33 original WebSocket PHPTs, plus timer `info`,
-`stats`, `clearAll`, `after_fork`, `reinit_1` and `reinit_2`. Original timer assertions
-run through the official runner before any M03 rewrite. `memory.phpt` retains its original
-`skip_if_no_top()` and is counted as skipped on macOS; skips never become passes.
-
 Module owners can pass `--manifest /absolute/selection.json` to select additional
 original PHPTs without changing the central selection. Use the same pinned
 `commit` and test fields (`path`, `sha256`, `module`, `requires`). Original bytes
@@ -129,17 +117,6 @@ untouched and retains every first failed/skipped/warned/unsupported outcome. A
 passing adapted case is not a passing untouched original or whole inventory;
 those report fields stay false. Unknown/duplicate or competing assertion sections
 are not silently discarded to get a pass.
-
-
-`tree.py --source PINNED --group swoole_stdext --module phphelpers --requires
-stdext --output PRIVATE_MANIFEST` inventories every original PHPT and support
-blob from the pinned tree, without exclusions or assertion changes. It rejects
-changed tracked originals/support, wrong source heads and traversal groups.
-The shared Git blob reader batches content extraction. The31 stdext cases require
-actual loaded stdext functions; disabled builds report unsupported. A syntax-only
-SDK profile does not establish actual stdext runtime support. The canonical
-`tools/dev.py integrate --module phphelpers --stdext` plan builds genuine enabled
-native and all-modules worlds before running the official original runner.
 
 ## Every PHPT, gated on upstream
 
@@ -202,20 +179,11 @@ python3 corpus/upstream/run.py --source target/upstream/src \
   --engine hybrid=target/hybrid/rust/modules/swoole.so
 ```
 
-Add `--external-network` for tests that need outside services, and repeat with
-the next candidate module until the failure follows one.
+Add `--external-network` for tests that need outside services.
 
-The ZTS original `swoole_thread/server/exit.phpt` remains registered with its
-unchanged source and expectation. Its two startup echo operands interleave on
-native and hybrid (#1120: native attempt 44 and hybrid attempts 4/17/30/32 of the
-paired 45-run stress). Only a verified ZTS runtime with the Thread class records
-this named original as `excluded`, separately from passed, skipped and unsupported.
-The ZTS workflow requires `tests/modules/integration/server_exit.py` instead: its
-repository-owned companion retains the exit-235, failed HTTP request, replacement
-worker, final count and exact output assertions, writes complete lines before
-readiness, waits for replacement readiness explicitly and retains the original
-200 ms shutdown delay. A separate process requests master shutdown with SIGTERM;
-it does not call shutdown from a participating Server Thread. This avoids the
-distinct native shutdown hang reproduced by the earlier companion. The companion
-retains the original exit/restart assertions; it does not qualify the added-process
-shutdown calling context. Its report does not claim the original passed. WARNED original runs remain failed.
+The ZTS original `swoole_thread/server/exit.phpt` stays registered unchanged, but
+its startup output interleaves on both engines (#1120), so on a verified ZTS
+runtime it is recorded as `excluded`. The ZTS workflow runs the repository-owned
+companion `tests/modules/integration/server_exit.py` instead, which keeps the
+original's exit, restart and output assertions; its report does not claim the
+original passed.

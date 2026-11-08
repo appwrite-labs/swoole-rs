@@ -66,23 +66,14 @@ per-project outcomes, reasons, and durations. Each server runs in its own proces
 group, data directory, and port. Cleanup terminates the full group, including
 upstream workers. The restart test explicitly reuses only its database directory.
 
-Add real third-party
-applications later with pinned dependencies, license/provenance, deterministic
-external services, and a complete user flow. The synthetic fixtures alone are not
-a release gate for replacing production Swoole.
-
 ## Original Swoole PHPT tests
 
-A separate [upstream selection](upstream/README.md) runs 92 original tests through
-PHP's official PHPT runner, with source checksums and unchanged assertions.
-Use `python3 corpus/upstream/run.py --engine upstream=target/upstream/src/modules/swoole.so --require-all`.
-This complements the twelve external application e2e projects for 81 total cases; unsupported APIs and
-upstream skips remain visible. See [migration modules](../docs/migration-modules.md)
-for ownership and test gates.
+The [upstream selection](upstream/README.md) runs original Swoole PHPTs through
+PHP's official runner, with source checksums and unchanged assertions; the merge
+tier runs every pinned PHPT.
 
-Prepare the independent application before running project 12:
+Prepare the Hyperf application before running project 12:
 `python3 corpus/thirdparty/hyperf.py --prepare`. Source and Composer dependency
-identities are pinned; runtime tests do not resolve dependencies. Application
-projects count once each in the overall denominator, including project 11's
-strict half-close failure. Native model tests, timer specifications and Autobahn
-RFC results remain separately reported, rather than inflating application passes.
+identities are pinned; runtime tests do not resolve dependencies. Project 11
+needs a `--fix-halfclose` build: upstream truncates queued responses after a
+client half-close.

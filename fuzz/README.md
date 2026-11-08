@@ -51,7 +51,9 @@ For MQTT and RESP, `mqtt_length` compares `mqtt::get_package_length` over any
 received bytes and `resp_parse` compares `redis::parse` (every string and, on
 glibc, `ERANGE`), each against the same body after
 `migration/patches/protocols/0001-rust-packet-protocols.patch`. Outside the compared domain only the candidate runs; `resp_parse` models upstream's walk
-without reading memory to find those inputs.
+without reading memory to find those inputs. `resp_stream` runs `redis::recv_packet`
+over a chunked stream and `socks5` drives `Socks5Proxy` from `create` through
+arbitrary server replies, each against the Rust candidate.
 
 For packet framing (`open_length_check`), `framing_unpack` compares
 `swr_v1_framing_unpack` with `swoole_unpack` for every length type, and

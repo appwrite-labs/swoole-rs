@@ -84,7 +84,7 @@ python3 tools/build_hybrid.py --backend upstream   # bridge patch only, Rust bri
 Shared options (also on `build_upstream.py`): `--jobs N`, `--php-config PATH`,
 `--phpize PATH`, `--openssl-dir PREFIX`, `--stdext`, `--php-sockets`,
 `--ccache PATH` / `--no-ccache` (ccache is auto-detected and uses its own
-settings). The runners' `--php` must match the build
+settings), and repeatable `--configure=ARG` for extra `./configure` arguments. The runners' `--php` must match the build
 toolchain. Neither builder installs the extension or edits php.ini.
 
 Stable paths point to the latest build of each variant:
@@ -117,19 +117,9 @@ rejected with `--dev`.
 
 `--dev` uses an incremental tree; see [development](development.md).
 
-## Optional build switches
-
-All default off and get their own alias suffix and manifest input.
-
-| Switch | Requires | Effect |
-| --- | --- | --- |
-| `--fix-halfclose` | — | M15 native patches: drain queued output before close. No Rust feature bit. Changes behavior relative to the reference; does not make general TCP half-close work. |
-
-## Timer module
-
-The timer queue has feature value 4.
-`tests/modules/timer/test_fork.py` checks forking from an active timer callback,
-which aborted the child in the first adapter; it passes on Linux and macOS.
+`--fix-halfclose` (default off, alias suffix `-halfclose`) adds the M15 native
+patches: drain queued output before close. It changes behavior relative to the
+reference and does not make general TCP half-close work.
 
 ## Running the corpus and PHPTs against builds
 
@@ -152,13 +142,5 @@ to every command. Do not pass these for modules built into PHP (Homebrew):
 duplicate-module warnings break PHPT output. PHPTs run through PHP's official
 runner; never use upstream's custom runner or `tests/start.sh`.
 
-Benchmarks, after builds and tests have finished, count instructions per request
-under callgrind (`benchmarks/README.md`):
-
-```sh
-python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --workload json \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so \
-  --engine upstream=target/upstream/src/modules/swoole.so
-```
-
-Module-specific gates are in [validation](validation-suite.md).
+Benchmarks are in [benchmarks/README.md](../benchmarks/README.md) and
+module-specific gates in [validation](validation-suite.md).

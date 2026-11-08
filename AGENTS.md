@@ -161,7 +161,7 @@ warm) and the merge tier (`merge.yml`, on `main`). `main`'s ruleset requires a
 pull request and the PR tier's `rust`, `tooling` and `hybrid` checks, so renaming
 those jobs means updating the ruleset in the same PR. `hybrid` (the all-modules
 build, the only one there is, extension load and corpus, a few minutes cached) runs only when a PR
-touches patches, `native/`, the build tools, `.github/` or `.devcontainer/`, and
+touches patches, `native/`, the build tools, `crates/phpstubs/`, `.github/` or `.devcontainer/`, and
 is skipped, which counts as passing, otherwise. Checks run against `main` as of
 the PR's last push, and a PR merged meanwhile can make this one's patches stop
 applying, so `tooling` applies the all-modules patch set to the pin

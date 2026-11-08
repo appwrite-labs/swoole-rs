@@ -22,9 +22,7 @@ runners, and that changes how much of it the Expect-header scan walks (#338).
 
 The same job also runs `websocket` (a WebSocket echo against `06-websocket`) and
 `timer` (an endpoint in `08-timers/server.php` that adds and clears a batch of
-far-future timers per request): the workloads that exercise those two modules
-most, for graduation criterion 3 (#117, #118). They ride the same ratchet in
-`callgrind_limits.json`; the fixed +5% graduation ceiling moves to Phase 6 (#430).
+far-future timers per request), on the same ratchet.
 
 ```sh
 python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --workload echo-1k --limits benchmarks/callgrind_limits.json \
@@ -54,10 +52,8 @@ git worktree remove --force target/worktrees/base
 
 ## Module microbenchmarks
 
-Native buffer and PHP WebSocket codec microbenchmarks are documented in [the hybrid handoff](../docs/hybrid-build.md). No CPU, RSS, TLS,
-coroutine, or database-throughput benchmarks are implemented yet.
-
-For native buffer comparisons, retain both pop-only and `--peek-front` reports
+`dev.py candidate --benchmark` runs the timer, buffer and WebSocket
+microbenchmarks of the modules it selects. For native buffer comparisons, retain both pop-only and `--peek-front` reports
 from `tests/modules/buffer/benchmark.py`. The latter reads one byte per DATA
 front before pop, exercising repeated cached-front calls and verifying a checksum
 outside timing. They are different workloads, not a before/after speedup ratio.

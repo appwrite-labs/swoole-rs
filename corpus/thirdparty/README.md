@@ -35,9 +35,7 @@ python3 corpus/thirdparty/hyperf.py \
 PDO/SQLite and tokenizer where these are not compiled into PHP. Requirements include Swoole's
 HTTP server, coroutines, coroutine HTTP client, PDO SQLite and the framework's
 PHP extensions from the lock. Swoole short names are explicitly disabled as
-required by Hyperf. The driver uses the common `Engine.command` and process-group
-cleanup helpers. It does not substitute the prototype's HTTP API for Swoole's
-framework integration.
+required by Hyperf.
 
 ## What executes
 
@@ -51,7 +49,7 @@ edited. Dependency contents rely on Composer's installation; the installed
 metadata comparison is not a full vendor-content attestation.
 
 1. Start the normal `bin/hyperf.php start` entry point. The unchanged server binds
-   `0.0.0.0:9501` and uses `swoole_cpu_num()` workers (14 on the measured Mac).
+   `0.0.0.0:9501` and uses `swoole_cpu_num()` workers.
    The driver refuses to start if that port is already occupied. Run this corpus
    serially on an isolated test host/container because the application fixes its
    listening port and worker count.
@@ -79,26 +77,3 @@ therefore **do not** claim end-to-end controller-to-database coverage, MySQL/
 Redis integration, SQLite coroutine hook coverage, production load, all-worker
 health, or general resource-leak detection. Hook flags zero still exercise
 Hyperf's coroutine HTTP handler; PDO SQLite operations are synchronous.
-
-The initial attempted `DB_DRIVER=sqlite` probe failed because this pinned
-Hyperf database factory supports MySQL, not SQLite. That failure is retained in
-`target/reports/hyperf-probe-initial.json`; using the framework's already supplied
-SQLite cache driver is an external persistence probe with the narrower scope
-above. No assertion in an original application/upstream test was changed.
-`hyperf-initial.json` preserves an earlier Python-version extraction API error.
-
-## Local evidence
-
-`target/reports/thirdparty-hyperf.json` records the application/lock, driver/probe
-hashes, exact PHP/extension identities, six HTTP cases, framework I/O/persistence
-checks, graceful shutdown and post-shutdown persistence. The final macOS run
-passes against pinned upstream and immutable hybrid build
-`eabd353e98e260652f576c59240f0d457b9a25b492e1e18499ae27cd89c8a612`.
-Application corpus registration and result counting belong to the integrator.
-
-Linux PHP 8.2.35 validation also passes against upstream and the selected combined
-dev hybrid: `target/linux-dev/target/reports/thirdparty-hyperf-linux.json`.
-The first Linux attempt without `--php-extension tokenizer` failed during
-classloader startup and is preserved as `thirdparty-hyperf-linux-initial.json`.
-Prepared pure-PHP source/vendor inputs were copied from the same verified lock;
-no Linux dependency re-resolution or application changes were made.
