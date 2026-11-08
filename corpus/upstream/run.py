@@ -83,11 +83,17 @@ def verdict_failed(row, require_all):
 
 
 # Originals whose verdict is decided by something outside the engine, on upstream too: a
-# race in the test itself, the runner's network, or a file PHP's runner can't read. They are
-# recorded unsupported, never run or counted as passed.
+# race in the test itself, the runner's network, or a file or tool the runner can't use. They
+# are recorded unsupported, never run or counted as passed.
 RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'the file starts with a blank line, so PHP\'s runner BORKs it ("tests must start with '
         '--TEST--") on every engine (#1964)',
+        'tests/swoole_process/process_exec.phpt':
+        "it execs /usr/bin/python on echo.py, which is Python 2 (raw_input, the print "
+        'statement); Python 3 rejects it with a SyntaxError on every engine (#1974)',
+        'tests/swoole_runtime/exec/exec.phpt':
+        "it pings www.gov.cn three times through each exec function; GitHub's hosted runners "
+        'drop ICMP, so ping never answers and the case times out on every engine (#1974)',
         'tests/swoole_websocket_server/send_close_frame.phpt':
         'the parent kills the server as soon as its pushes return, usually before the server '
         'handles the second frame (#111)',

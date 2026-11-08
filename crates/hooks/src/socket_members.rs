@@ -759,8 +759,15 @@ pub unsafe fn bind_host(
     // SAFETY: the live network::Socket.
     bound = bound && unsafe { swr_v1_socket_get_name(network) } >= 0;
     if !bound {
+        // The last error carries it too, as the Socket calls that set_err(int) do, so the
+        // hooked socket_create_listen() leaves it for socket_last_error().
+        let error = match log::last_error() {
+            0 => errno(),
+            error => error,
+        };
+        log::set_last_error(error);
         // SAFETY: as the caller promises.
-        unsafe { swr_v1_hook_co_socket_default_err(socket, log::last_error()) };
+        unsafe { swr_v1_hook_co_socket_default_err(socket, error) };
     }
     bound
 }
