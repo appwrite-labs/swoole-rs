@@ -3,7 +3,7 @@
 #include "swoole_rs_server_state.h"
 #include "swoole_rs_corebase_string_slot.h"
 #include <cstdlib>
-namespace swoole { struct ServerPortGS; struct SSLContext; class Reactor; struct Event; struct ListenPort;
+namespace swoole { class Server; struct ServerPortGS; struct SSLContext; class Reactor; struct Event; struct ListenPort;
 typedef int (*PortReadFn)(Reactor *, ListenPort *, Event *); }
 #define SWR_PORT_CONFIG_FIELDS(X) \
     X(uint16_t, object_id) \
@@ -79,5 +79,47 @@ class PortFields {
  PortFields(const PortFields &)=delete;
  PortFields &operator=(const PortFields &)=delete;
 };
-} }
+}
+struct ServerPortGS : PortCounters {
+ ServerPortGS() { swr_v1_server_port_shared_init(this); }
+};
+/* Upstream's ListenPort: its state is the Rust-owned PortFields and its other members are crates/ports
+ * exports. The inline members are those native/ and the http_server.cpp GoogleTests still call. */
+struct ListenPort : detail::PortFields {
+ RustStringView host{port_config_->host_slot};
+ explicit ListenPort(Server *server) { protocol.private_data_2 = server; }
+ std::shared_ptr<SSLContext> dup_ssl_context() const {
+  auto new_ctx = std::make_shared<SSLContext>();
+  *new_ctx = *ssl_context;
+  return new_ctx;
+ }
+ void set_package_max_length(uint32_t max_length) { protocol.package_max_length = max_length; }
+ void init_protocol();
+ const char *get_protocols() const;
+ size_t get_connection_num() const;
+ int get_port() const { return port; }
+ int get_fd() const { return socket ? socket->fd : -1; }
+ bool ssl_add_sni_cert(const std::string &name, const std::shared_ptr<SSLContext> &ctx) {
+  return swr_v1_ports_sni_add(this, name.data(), name.length(), new std::shared_ptr<SSLContext>(ctx), ctx.get());
+ }
+ bool ssl_init() const;
+ bool set_ssl_key_file(const std::string &file) const { return ssl_context->set_key_file(file); }
+ bool set_ssl_cert_file(const std::string &file) const { return ssl_context->set_cert_file(file); }
+ void set_ssl_cafile(const std::string &file) const { ssl_context->cafile = file; }
+ void set_ssl_verify_peer(bool value) const { ssl_context->verify_peer = value; }
+ void set_ssl_allow_self_signed(bool value) const { ssl_context->allow_self_signed = value; }
+ void set_ssl_protocols(long protocols) const {
+  if (protocols & SW_SSL_DTLS) {
+#ifndef SW_SUPPORT_DTLS
+   protocols ^= SW_SSL_DTLS;
+#else
+   if (network::Socket::is_dgram(type)) {
+    protocols ^= SW_SSL_DTLS;
+   }
+#endif
+  }
+  ssl_context->protocols = protocols;
+ }
+};
+}
 #endif
