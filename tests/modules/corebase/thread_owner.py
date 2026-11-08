@@ -45,7 +45,7 @@ def main():
                 binary=work/(engine+'-'+standard)
                 command=['c++','-std='+standard,'-O1','-g','-Wall','-Wextra','-Werror','-pthread',
                          '-DHAVE_CONFIG_H','-I'+str(source),'-I'+str(source/'include'),'-I'+str(source/'thirdparty'),
-                         *extra,str(Path(__file__).with_suffix('.cc')),
+                         *extra,*(['-DTHREAD_OWNER_NATIVE'] if engine=='native' else []),str(Path(__file__).with_suffix('.cc')),
                          *([str(args.archive.resolve())] if engine=='hybrid' else []),
                          '-fsanitize=address,undefined','-fno-sanitize-recover=all','-o',str(binary)]
                 if sys.platform.startswith('linux'):command+=['-ldl','-lm']

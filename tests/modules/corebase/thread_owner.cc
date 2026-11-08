@@ -11,6 +11,24 @@
 #include <utility>
 
 using swoole::Thread;
+
+#ifdef THREAD_OWNER_NATIVE
+// Since v6.2.5 the pinned Thread::start blocks every signal around std::thread's
+// construction through src/os/signal.cc, which this header-only SDK build doesn't
+// link. These are that file's two functions, with their own thread-local state in
+// place of SwooleTG; signal masks are #1941's to compare, not this ownership gate's.
+static thread_local bool blocking_all = false;
+static thread_local sigset_t previous_mask;
+bool swoole_signal_block_all() {
+    sigset_t mask;
+    sigfillset(&mask);
+    if (blocking_all || pthread_sigmask(SIG_BLOCK, &mask, &previous_mask) != 0) return false;
+    return blocking_all = true;
+}
+void swoole_signal_unblock_all() {
+    if (blocking_all && pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr) == 0) blocking_all = false;
+}
+#endif
 static_assert(!std::is_copy_constructible<Thread>::value, "Thread is move-only");
 static_assert(!std::is_copy_assignable<Thread>::value, "Thread is move-only");
 static_assert(std::is_nothrow_default_constructible<Thread>::value, "default construction cannot allocate");
