@@ -12,6 +12,7 @@ use swoole_rs_buffer::cpp::{
     CppBuffer, new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_pop,
     swr_cpp_buffer_typed_close, swr_cpp_buffer_typed_front,
 };
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_buffer::string::delete_string;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
@@ -21,6 +22,7 @@ use swoole_rs_reactor::{
     swr_v1_reactor_handlers_set_default,
 };
 use swoole_rs_tls::upstream as tls;
+use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared};
 
 use crate::base_factory::SendData;
 use crate::callbacks::{CB_BUFFER_EMPTY, CB_DISPATCH_FUNC};
@@ -32,13 +34,14 @@ use crate::conn_io::{
 use crate::ops::{
     LOG_CC_LINGER, LOG_NO_SESSION, LOG_RECVFROM, LOG_RT_CLOSED_BY_SERVER, LOG_RT_DISCARD,
     LOG_RT_SET_WRITE, OP_CC_FACTS, OP_CC_SESSION_CLEAR, OP_CC_SSL_WANT, OP_CC_TIMER_DEL,
-    OP_CC_VALID, OP_CONN_AT, OP_CONN_FD, OP_CONN_FORCE, OP_CONN_HANDSHAKING, OP_CONN_REACTOR,
-    OP_CONN_READING, OP_CONN_SESSION, OP_HAVE_DGRAM, OP_MICROTIME, OP_PIPE_FD, OP_PIPE_TYPE,
-    OP_QUEUE_FULL, OP_QUEUE_SUB, OP_RD_WRITE_FACTS, OP_REACTOR_ID, OP_REACTOR_NUM, OP_RT_BUF_EMPTY,
-    OP_RT_DISCARD_TIMEOUT, OP_RT_FRONT_CONN, OP_RT_FRONT_CONN_CLOSED, OP_RT_FRONT_STREAM,
-    OP_RT_HAS_PIPE_COMMAND, OP_RT_TOUCH_SEND, OP_SERVER, OP_SESSION_CONN, OP_SET_WAITING_TIME,
-    OP_SSL_READY, OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM, OP_WR_CLEAR_OVERFLOW, OP_WR_QUEUED,
-    OP_WR_STATE, OP_WR_TIMER_DEL, OP_WR_WAIT,
+    OP_CC_VALID, OP_CERT_TASK, OP_CLIENT_CERT, OP_CONN_AT, OP_CONN_FD, OP_CONN_FORCE,
+    OP_CONN_HANDSHAKING, OP_CONN_REACTOR, OP_CONN_READING, OP_CONN_SESSION, OP_HAVE_DGRAM,
+    OP_MICROTIME, OP_PEER_CERT, OP_PIPE_FD, OP_PIPE_TYPE, OP_QUEUE_FULL, OP_QUEUE_SUB,
+    OP_RD_WRITE_FACTS, OP_REACTOR_ID, OP_REACTOR_NUM, OP_RT_BUF_EMPTY, OP_RT_DISCARD_TIMEOUT,
+    OP_RT_FRONT_CONN, OP_RT_FRONT_CONN_CLOSED, OP_RT_FRONT_STREAM, OP_RT_HAS_PIPE_COMMAND,
+    OP_RT_TOUCH_SEND, OP_SERVER, OP_SESSION_CONN, OP_SET_WAITING_TIME, OP_SSL_READY, OP_SSL_VERIFY,
+    OP_VERIFY_PEER, OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM, OP_WR_CLEAR_OVERFLOW,
+    OP_WR_QUEUED, OP_WR_STATE, OP_WR_TIMER_DEL, OP_WR_WAIT,
 };
 use crate::ops::{
     OP_CC_HTTP_OBJECT, OP_CC_LINGER, OP_CC_QUEUE_CLOSE, OP_CC_RECV_FREE, OP_CC_REDIS_FREE,
@@ -213,6 +216,15 @@ impl Objects<'_> {
     fn port(&self) -> &PortConfig {
         // SAFETY: the context's live port.
         unsafe { crate::port_config::of(self.ctx.port) }
+    }
+    /// The TLS port's `SSLContext`, which begins with its prepared Rust owner.
+    fn ssl(&self) -> &OwnedTlsPrepared {
+        // SAFETY: the ops reading it run on a TLS port, whose context is live.
+        unsafe { &*self.port().ssl_context.cast::<OwnedTlsPrepared>() }
+    }
+    fn ssl_fields(&self) -> &OwnedTlsFields {
+        // SAFETY: the owner's fields live as long as the context.
+        unsafe { &*self.ssl().fields }
     }
     /// `get_connection(fd)` (kind 0) or a verified session's (kind 2, 3).
     fn connection(&self, key: c_long, kind: u32) -> *mut ConnectionRecord {
@@ -492,6 +504,38 @@ pub(crate) unsafe fn answer(
         OP_SSL_READY => {
             // SAFETY: a session socket's object is its live connection.
             unsafe { (*o.sock().object.cast::<ConnectionRecord>()).ssl_ready = 1 };
+            0
+        }
+        OP_CLIENT_CERT => {
+            // `client_cert_file`'s slot.
+            let slot = o.ssl().strings[7];
+            // SAFETY: a stable slot of the port's live owner.
+            u64::from(unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) }.length != 0)
+        }
+        OP_VERIFY_PEER => u64::from(o.ssl_fields().verify_peer != 0),
+        OP_PEER_CERT => {
+            let buffer = swoole_rs_corebase::thread_buffer();
+            // SAFETY: a TLS socket's live record and this thread's live buffer.
+            u64::from(unsafe { tls::socket_ssl_get_peer_certificate_string(o.ctx.sock, buffer) })
+        }
+        OP_SSL_VERIFY => {
+            let allow_self_signed = o.ssl_fields().allow_self_signed != 0;
+            // SAFETY: a TLS socket's live record.
+            u64::from(unsafe { tls::socket_ssl_verify(o.ctx.sock, allow_self_signed) })
+        }
+        OP_CERT_TASK => {
+            // SAFETY: OP_PEER_CERT filled this thread's live buffer.
+            let buffer = unsafe { &*swoole_rs_corebase::thread_buffer().cast::<CppString>() };
+            o.ctx.task = SendData {
+                info: DataHead {
+                    fd: o.sock().fd.into(),
+                    kind: u8::try_from(EVENT_CONNECT).unwrap_or_default(),
+                    reactor_id: o.reactor().id.cast_signed(),
+                    len: u32::try_from(buffer.length).unwrap_or(u32::MAX),
+                    ..DataHead::default()
+                },
+                data: buffer.str.cast_const().cast(),
+            };
             0
         }
         OP_HAVE_DGRAM => u64::from(o.config().have_dgram_sock),

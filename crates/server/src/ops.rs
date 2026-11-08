@@ -401,8 +401,9 @@ pub const OP_VERIFY_PEER: u32 = 254;
 /// `ssl_get_peer_certificate` into the thread buffer; `ssl_verify`.
 pub const OP_PEER_CERT: u32 = 255;
 pub const OP_SSL_VERIFY: u32 = 256;
-/// Dispatches `SW_SERVER_EVENT_CONNECT` with the peer certificate.
-pub const OP_DISPATCH_CERT: u32 = 257;
+/// Fills the context's task with `SW_SERVER_EVENT_CONNECT` and the peer
+/// certificate, for `OP_FACTORY_DISPATCH`.
+pub const OP_CERT_TASK: u32 = 257;
 /// `reactor->del(socket)`.
 pub const OP_REACTOR_DEL: u32 = 258;
 /// Fills the datagram task header.
