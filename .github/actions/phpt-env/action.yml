@@ -12,8 +12,10 @@ runs:
   steps:
     - uses: ./.github/actions/install
       with:
-        packages: php-gmp php-bcmath php-mysql php-pgsql unixodbc odbc-mariadb libfbclient2 openssh-server
+        packages: php-gmp php-bcmath php-mysql php-pgsql unixodbc odbc-mariadb libfbclient2 libaio1t64 openssh-server
         php: ${{ inputs.php }}
+    # The engines link the Instant Client (--with-swoole-oracle).
+    - uses: ./.github/actions/instantclient
     - shell: bash
       run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql' | sudo tee -a /etc/hosts
     # The ODBC driver and the mysql-test DSN, as upstream's tests/init writes them, with the
