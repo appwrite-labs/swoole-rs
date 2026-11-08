@@ -15,6 +15,8 @@ use swoole_rs_httpbindings::{
     response_header, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level,
     swr_v1_httpbindings_encoding,
 };
+use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
+use swoole_rs_inflate::zstd;
 use swoole_rs_zend::sys::php_format_date;
 use swoole_rs_zend::sys::{
     HashPosition, IS_ARRAY, IS_NULL, IS_STRING, swr_zend_efree, swr_zend_emalloc,
@@ -38,13 +40,13 @@ const HEAD: u8 = 2;
 /// `SW_LOG_WARNING`, `SW_ERROR_HTTP_CONFLICT_HEADER`.
 const LOG_WARNING: c_int = 4;
 const CONFLICT_HEADER: c_int = 7105;
-/// MINIT's codec bits (`parse.rs`): zlib, and any codec built.
-const ZLIB: u32 = 1;
+/// MINIT's codec bits (`parse.rs`): zlib, Brotli and zstd, and any codec built.
 const CODECS: u32 = 7;
 const COMPRESSION: u32 = 8;
-/// `HTTP_COMPRESS_GZIP` and `HTTP_COMPRESS_DEFLATE`.
+/// `HTTP_COMPRESS_GZIP`, `HTTP_COMPRESS_BR` and `HTTP_COMPRESS_ZSTD`.
 const METHOD_GZIP: i32 = 1;
-const METHOD_DEFLATE: i32 = 2;
+const METHOD_BR: i32 = 3;
+const METHOD_ZSTD: i32 = 4;
 /// `sw_tg_buffer()`'s size, which bounds one trailer line.
 const TRAILER_LINE: usize = 65536;
 /// `HASH_KEY_IS_STRING`, `HASH_KEY_IS_LONG`.
@@ -559,42 +561,58 @@ fn compress(state: &mut State, data: *const c_char, length: usize) -> bool {
         compress_warning("Unknown compression method");
         return false;
     }
-    if capabilities & ZLIB == 0 {
-        return false;
-    }
-    let window_bits = match method {
-        METHOD_GZIP => GZIP,
-        METHOD_DEFLATE => DEFLATE,
-        _ => 0,
-    };
-    let level = swr_v1_httpbindings_codec_level(method, i32::from(state.compression_level), 0, 0);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Context::compression_level is int8_t"
-    )]
-    let level = level as i8;
-    state.compression_level = level;
-    let out = state.compressed.insert(Box::new(vec![0; bound(length)]));
     let input: &[u8] = if length == 0 {
         &[]
     } else {
         // SAFETY: the body's span.
         unsafe { std::slice::from_raw_parts(data.cast(), length) }
     };
-    match deflate(input, out, window_bits, c_int::from(level), zalloc, zfree) {
-        Ok(compressed) => {
-            out.truncate(compressed);
+    let level = i32::from(state.compression_level);
+    let compressed = match method {
+        METHOD_BR => {
+            let quality = swr_v1_httpbindings_codec_level(method, level, MIN_QUALITY, MAX_QUALITY);
+            // The Brotli quality is stored back, as upstream's clamp does; it fits int8_t.
+            state.compression_level = i8::try_from(quality).unwrap_or(0);
+            brotli::compress(input, quality)
+                .ok_or_else(|| "BrotliEncoderCompress() failed".to_owned())
+        }
+        METHOD_ZSTD => {
+            let (minimum, maximum) = zstd::levels();
+            zstd::compress(
+                input,
+                swr_v1_httpbindings_codec_level(method, level, minimum, maximum),
+            )
+        }
+        _ => zlib(state, input, method, level),
+    };
+    match compressed {
+        Ok(out) => {
+            state.compressed = Some(Box::new(out));
             state.content_compressed = 1;
             true
         }
-        Err(Failure::Init(status)) => {
-            compress_warning(&format!("deflateInit2() failed, Error: [{status}]"));
+        Err(message) => {
+            compress_warning(&message);
             false
         }
-        Err(Failure::Deflate(status)) => {
-            compress_warning(&format!("deflate() failed, Error: [{status}]"));
-            false
+    }
+}
+
+/// `Context::compress`'s gzip and deflate: one `deflate(Z_FINISH)` into a
+/// buffer of `bound(length)`, at the clamped level stored back.
+fn zlib(state: &mut State, input: &[u8], method: i32, level: i32) -> Result<Vec<u8>, String> {
+    let window_bits = if method == METHOD_GZIP { GZIP } else { DEFLATE };
+    let level = swr_v1_httpbindings_codec_level(method, level, 0, 0);
+    // zlib's clamp lands in -1..=9, which fits int8_t.
+    state.compression_level = i8::try_from(level).unwrap_or(-1);
+    let mut out = vec![0; bound(input.len())];
+    match deflate(input, &mut out, window_bits, level, zalloc, zfree) {
+        Ok(compressed) => {
+            out.truncate(compressed);
+            Ok(out)
         }
+        Err(Failure::Init(status)) => Err(format!("deflateInit2() failed, Error: [{status}]")),
+        Err(Failure::Deflate(status)) => Err(format!("deflate() failed, Error: [{status}]")),
     }
 }
 

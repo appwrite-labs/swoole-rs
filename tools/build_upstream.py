@@ -47,7 +47,7 @@ def add_build_arguments(parser):
 def extension_configuration(args, extra=()):
     if args.jobs < 1:
         raise ValueError('--jobs must be positive')
-    configure = ['./configure', f'--with-php-config={args.php_config}', '--disable-brotli', '--disable-zstd', *extra]
+    configure = ['./configure', f'--with-php-config={args.php_config}', '--enable-brotli', '--enable-zstd', *extra]
     configure.append('--enable-sockets' if getattr(args, 'php_sockets', False) else '--disable-sockets')
     if getattr(args, 'stdext', False):
         configure.append('--enable-swoole-stdext')

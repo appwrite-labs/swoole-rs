@@ -1,8 +1,7 @@
-//! HTTP response decompression (gzip/deflate) as a whole Rust operation over a
-//! per-`Client` zlib inflate stream. Brotli and zstd are disabled in every build
-//! (`tools/build_upstream.py` passes `--disable-brotli --disable-zstd`), so zlib is
-//! the only live codec. Native owns the `body` buffer and appends what each chunk
-//! produces; the `z_stream`, the encoding and the raw-deflate retry are Rust's.
+//! HTTP body codecs over the system libraries the PHP build links: response
+//! decompression (gzip/deflate over a per-`Client` zlib stream, with the raw-deflate
+//! retry; Brotli and zstd streams in [`brotli`] and [`zstd`]), their compression for
+//! the server, and permessage-deflate inflation.
 
 #![cfg_attr(
     not(test),
@@ -11,6 +10,9 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+
+pub mod brotli;
+pub mod zstd;
 
 use std::ffi::c_int;
 
@@ -74,13 +76,6 @@ pub struct Inflate {
     first_chunk: bool,
     gzip: bool,
     out: Vec<u8>,
-}
-
-/// View into the bytes produced by the latest [`swr_v1_clients_http_inflate_chunk`].
-#[repr(C)]
-pub struct InflateView {
-    pub data: *const u8,
-    pub length: usize,
 }
 
 impl Inflate {
@@ -192,61 +187,6 @@ impl Drop for Inflate {
     }
 }
 
-/// Create a gzip (or deflate) response decompressor. Returns null on allocation
-/// failure; the caller treats that as a compression error.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_http_inflate_new(gzip: bool) -> *mut Inflate {
-    Box::into_raw(Box::new(Inflate::new(gzip)))
-}
-
-/// Inflate one response-body chunk. On success writes the produced bytes' view
-/// (valid until the next chunk or free) into `view` and returns true. An empty
-/// input or a decompression error returns false, matching the pinned method.
-///
-/// # Safety
-/// `handle` is a live pointer from [`swr_v1_clients_http_inflate_new`]; `input` denotes
-/// `len` readable bytes or is null when `len` is 0; `view` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_http_inflate_chunk(
-    handle: *mut Inflate,
-    input: *const u8,
-    len: usize,
-    view: *mut InflateView,
-) -> bool {
-    if len == 0 {
-        return false;
-    }
-    // SAFETY: the caller lends a live decompressor handle.
-    let inflate = unsafe { &mut *handle };
-    // SAFETY: the caller lends `len` readable input bytes at non-null `input`.
-    let bytes = unsafe { std::slice::from_raw_parts(input, len) };
-    if !inflate.chunk(bytes) {
-        return false;
-    }
-    // SAFETY: the caller lends a writable InflateView.
-    unsafe {
-        *view = InflateView {
-            data: inflate.out.as_ptr(),
-            length: inflate.out.len(),
-        };
-    }
-    true
-}
-
-/// Release a decompressor (and its zlib stream). Null is ignored.
-///
-/// # Safety
-/// `handle` is null or a live pointer from [`swr_v1_clients_http_inflate_new`] not freed before.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_http_inflate_free(handle: *mut Inflate) {
-    if handle.is_null() {
-        return;
-    }
-    // SAFETY: the caller lends a live handle previously leaked by `_new`;
-    // dropping it ends its stream.
-    drop(unsafe { Box::from_raw(handle) });
-}
-
 /// Why [`message`] failed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum MessageFailure {
@@ -317,7 +257,6 @@ pub fn error(status: c_int) -> &'static std::ffi::CStr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ptr;
 
     fn deflate(bytes: &[u8], window_bits: c_int) -> Vec<u8> {
         // Produce a reference stream with zlib's own deflate, matching window bits.
@@ -350,27 +289,7 @@ mod tests {
     }
 
     fn inflate_all(gzip: bool, compressed: &[u8]) -> Option<Vec<u8>> {
-        let handle = swr_v1_clients_http_inflate_new(gzip);
-        let mut view = InflateView {
-            data: ptr::null(),
-            length: 0,
-        };
-        let ok = unsafe {
-            swr_v1_clients_http_inflate_chunk(
-                handle,
-                compressed.as_ptr(),
-                compressed.len(),
-                &raw mut view,
-            )
-        };
-        let result = if ok {
-            // SAFETY: view points into the handle's output buffer, still alive.
-            Some(unsafe { std::slice::from_raw_parts(view.data, view.length) }.to_vec())
-        } else {
-            None
-        };
-        unsafe { swr_v1_clients_http_inflate_free(handle) };
-        result
+        Inflate::new(gzip).decode(compressed).map(<[u8]>::to_vec)
     }
 
     #[test]
@@ -402,25 +321,11 @@ mod tests {
     fn chunked_input_reassembles() {
         let payload = b"chunk boundaries must not corrupt the inflate stream".repeat(8);
         let compressed = deflate(&payload, 31);
-        let handle = swr_v1_clients_http_inflate_new(true);
+        let mut inflate = Inflate::new(true);
         let mut got = Vec::new();
         for piece in compressed.chunks(7) {
-            let mut view = InflateView {
-                data: ptr::null(),
-                length: 0,
-            };
-            let ok = unsafe {
-                swr_v1_clients_http_inflate_chunk(
-                    handle,
-                    piece.as_ptr(),
-                    piece.len(),
-                    &raw mut view,
-                )
-            };
-            assert!(ok, "chunk inflates");
-            got.extend_from_slice(unsafe { std::slice::from_raw_parts(view.data, view.length) });
+            got.extend_from_slice(inflate.decode(piece).expect("chunk inflates"));
         }
-        unsafe { swr_v1_clients_http_inflate_free(handle) };
         assert_eq!(got, payload);
     }
 

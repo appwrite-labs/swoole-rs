@@ -27,7 +27,7 @@ use std::{
     },
 };
 use swoole_rs_error::swr_v1_error_strerror;
-use swoole_rs_inflate::Inflate;
+use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_phptable::{self as table, Owned};
@@ -135,7 +135,7 @@ struct Client {
     body: Vec<u8>,
     compress: Compress,
     compression_error: bool,
-    inflate: Option<Inflate>,
+    decoder: Option<Decoder>,
     chunked: bool,
     connection_close: bool,
     completed: bool,
@@ -470,7 +470,7 @@ impl Client {
             body: Vec::new(),
             compress: Compress::None,
             compression_error: false,
-            inflate: None,
+            decoder: None,
             chunked: false,
             connection_close: false,
             completed: false,
@@ -1348,7 +1348,7 @@ impl Client {
         self.event_stream = false;
         self.compress = Compress::None;
         self.compression_error = false;
-        self.inflate = None;
+        self.decoder = None;
         if self.has_upload_files {
             props::null(self.object, c"uploadFiles");
         }
@@ -1389,30 +1389,49 @@ impl Client {
         true
     }
 
-    /// `decompress_response`: inflate a body chunk onto `body`.
+    /// `decompress_response`: decode a body chunk onto `body`.
     fn decompress(&mut self, input: &[u8]) -> bool {
         if input.is_empty() {
             return false;
         }
-        if self.inflate.is_none() {
-            if !matches!(self.compress, Compress::Gzip | Compress::Deflate) {
-                // SAFETY: a warning with a small integer.
-                unsafe { native::swoole_http_client_coro_inflate_warning(self.compress as c_int) };
-                return false;
+        if self.decoder.is_none() {
+            let decoder = match self.compress {
+                Compress::Gzip | Compress::Deflate => {
+                    Ok(Decoder::Zlib(Inflate::new(self.compress == Compress::Gzip)))
+                }
+                Compress::Br => Ok(Decoder::Brotli(Box::default())),
+                Compress::Zstd => zstd::Decoder::new().map(Decoder::Zstd),
+                Compress::None => Err(format!(
+                    "HttpClient::decompress_response unknown compress method [{}]",
+                    self.compress as c_int
+                )),
+            };
+            match decoder {
+                Ok(decoder) => self.decoder = Some(decoder),
+                Err(message) => {
+                    native::swoole_http_client_coro_inflate_warning(&message);
+                    return false;
+                }
             }
-            self.inflate = Some(Inflate::new(self.compress == Compress::Gzip));
         }
-        let Some(output) = self
-            .inflate
-            .as_mut()
-            .and_then(|inflate| inflate.decode(input))
-        else {
-            // SAFETY: as above.
-            unsafe { native::swoole_http_client_coro_inflate_warning(-1) };
-            return false;
+        let output = match self.decoder.as_mut() {
+            Some(Decoder::Zlib(inflate)) => inflate
+                .decode(input)
+                .ok_or_else(|| "HttpClient::decompress_response failed".to_owned()),
+            Some(Decoder::Brotli(decoder)) => decoder.decode(input),
+            Some(Decoder::Zstd(decoder)) => decoder.decode(input),
+            None => return false,
         };
-        self.body.extend_from_slice(output);
-        true
+        match output {
+            Ok(output) => {
+                self.body.extend_from_slice(output);
+                true
+            }
+            Err(message) => {
+                native::swoole_http_client_coro_inflate_warning(&message);
+                false
+            }
+        }
     }
 
     fn add_header(&self, key: &[u8], data: &[u8]) {
@@ -1423,6 +1442,13 @@ impl Client {
         // SAFETY: a live array property takes the element.
         unsafe { table::add_or_merge(headers, key, element.as_mut_ptr()) };
     }
+}
+
+/// A response's decoder, made on its first compressed chunk.
+enum Decoder {
+    Zlib(Inflate),
+    Brotli(Box<brotli::Decoder>),
+    Zstd(zstd::Decoder),
 }
 
 impl Drop for Client {
