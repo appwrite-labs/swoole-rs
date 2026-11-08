@@ -5,7 +5,8 @@ Gates for the Rust `swoole::Buffer` queue (`crates/buffer`) and `swoole::String`
 Native runners compile the upstream side from pinned upstream
 `c7e514509451beafd4d70ce5b78943d51e76381c`, extracted into a disposable tree, and
 the Rust side from the patched tree and headers of the hybrid build the supplied
-Rust archive comes from (`tools.build_hybrid.hybrid_tree`). They never rebuild the
+Rust archive comes from (`tools.build_hybrid.hybrid_tree`); the String gates link that
+build's own native objects with the archive (`hybrid_link`). They never rebuild the
 archive. The `test_*.py` gates run under pytest (`python3 -m pytest tests/modules/buffer/<file>`) with the
 shared options in `tests/conftest.py` and read sources from `target/upstream/src`. `--sanitize` adds C++ ASan/UBSan; the Rust archive is not instrumented
 unless built that way and declared with `--rust-asan` (see below).
