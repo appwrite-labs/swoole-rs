@@ -919,6 +919,7 @@ name = "swoole-rs-server"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-framing",

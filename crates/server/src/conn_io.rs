@@ -40,7 +40,7 @@ const CLOSE_NOTIFY: u64 = 1 << 9;
 const DISABLE_NOTIFY: u64 = 1 << 10;
 const CLOSE_FORCE: u64 = 1 << 11;
 const CLOSE_RESET: u64 = 1 << 12;
-const PEER_CLOSED: u64 = 1 << 13;
+pub(crate) const PEER_CLOSED: u64 = 1 << 13;
 const HASH_DISPATCH: u64 = 1 << 14;
 const DISPATCH_FUNC: u64 = 1 << 15;
 const COROUTINE: u64 = 1 << 16;
@@ -49,7 +49,7 @@ const SOCKET_SSL: u64 = 1 << 18;
 const CLOSE_ERRNO: u64 = 1 << 19;
 const TIMER: u64 = 1 << 20;
 const WEBSOCKET_BUFFER: u64 = 1 << 21;
-const REMOVED: u64 = 1 << 22;
+pub(crate) const REMOVED: u64 = 1 << 22;
 const BASE: u64 = 1 << 23;
 const RECV_BUFFER: u64 = 1 << 24;
 /// Built with `SW_USE_SOCKET_LINGER`.
@@ -58,12 +58,12 @@ const LINGER: u64 = 1 << 25;
 const TLS_READY_STREAM: u64 = 1 << 26;
 const SSL_CLOSED: u64 = 1 << 27;
 /// `overflow` is set and the output is below the socket's buffer size.
-const OVERFLOW_DRAINED: u64 = 1 << 28;
+pub(crate) const OVERFLOW_DRAINED: u64 = 1 << 28;
 /// `onBufferEmpty` is set, the connection is over its high watermark and the output
 /// is down to the port's low watermark.
-const LOW_WATERMARK: u64 = 1 << 29;
-const SEND_TIMER: u64 = 1 << 30;
-const OUT_EMPTY: u64 = 1 << 31;
+pub(crate) const LOW_WATERMARK: u64 = 1 << 29;
+pub(crate) const SEND_TIMER: u64 = 1 << 30;
+pub(crate) const OUT_EMPTY: u64 = 1 << 31;
 /// `OP_RD_PORT_READ`'s bits above its result: the connection is still active, then
 /// (only while it is) the workers hold more than `max_queued_bytes` and the read
 /// notified the close.
@@ -71,8 +71,8 @@ const ACTIVE: u64 = 1 << 32;
 const QUEUE_OVER: u64 = 1 << 33;
 const READ_NOTIFIED: u64 = 1 << 34;
 /// `OP_WR_WAIT`'s bits.
-const CLOSE_WAIT: u64 = 1 << 35;
-const SEND_WAIT: u64 = 1 << 36;
+pub(crate) const CLOSE_WAIT: u64 = 1 << 35;
+pub(crate) const SEND_WAIT: u64 = 1 << 36;
 
 /// The low 32 bits, where native code packs a C `int`.
 fn low(bits: u64) -> u32 {
