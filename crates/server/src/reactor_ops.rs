@@ -16,43 +16,52 @@ use swoole_rs_buffer::string::delete_string;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, SocketRecord, cpp_socket_what_event_want, reactor_upstream};
+use swoole_rs_reactor::{
+    Event, SocketRecord, cpp_socket_what_event_want, reactor_upstream,
+    swr_v1_reactor_handlers_set_default,
+};
 use swoole_rs_tls::upstream as tls;
 
-use crate::callbacks::CB_BUFFER_EMPTY;
+use crate::base_factory::SendData;
+use crate::callbacks::{CB_BUFFER_EMPTY, CB_DISPATCH_FUNC};
+use crate::conn_io as cn;
 use crate::conn_io::{
     CLOSE_WAIT, LOW_WATERMARK, OUT_EMPTY, OVERFLOW_DRAINED, PEER_CLOSED, REMOVED, SEND_TIMER,
     SEND_WAIT,
 };
 use crate::ops::{
     LOG_CC_LINGER, LOG_NO_SESSION, LOG_RECVFROM, LOG_RT_CLOSED_BY_SERVER, LOG_RT_DISCARD,
-    LOG_RT_SET_WRITE, OP_CC_SESSION_CLEAR, OP_CC_SSL_WANT, OP_CC_TIMER_DEL, OP_CC_VALID,
-    OP_CONN_AT, OP_CONN_FD, OP_CONN_FORCE, OP_CONN_HANDSHAKING, OP_CONN_REACTOR, OP_CONN_READING,
-    OP_CONN_SESSION, OP_HAVE_DGRAM, OP_MICROTIME, OP_PIPE_FD, OP_PIPE_TYPE, OP_QUEUE_FULL,
-    OP_QUEUE_SUB, OP_REACTOR_ID, OP_REACTOR_NUM, OP_RT_BUF_EMPTY, OP_RT_DISCARD_TIMEOUT,
-    OP_RT_FRONT_CONN, OP_RT_FRONT_CONN_CLOSED, OP_RT_FRONT_STREAM, OP_RT_HAS_PIPE_COMMAND,
-    OP_RT_TOUCH_SEND, OP_SERVER, OP_SESSION_CONN, OP_SET_WAITING_TIME, OP_SSL_READY, OP_WAIT_EXIT,
-    OP_WAITING_TIME, OP_WORKER_NUM, OP_WR_CLEAR_OVERFLOW, OP_WR_QUEUED, OP_WR_STATE,
-    OP_WR_TIMER_DEL, OP_WR_WAIT,
+    LOG_RT_SET_WRITE, OP_CC_FACTS, OP_CC_SESSION_CLEAR, OP_CC_SSL_WANT, OP_CC_TIMER_DEL,
+    OP_CC_VALID, OP_CONN_AT, OP_CONN_FD, OP_CONN_FORCE, OP_CONN_HANDSHAKING, OP_CONN_REACTOR,
+    OP_CONN_READING, OP_CONN_SESSION, OP_HAVE_DGRAM, OP_MICROTIME, OP_PIPE_FD, OP_PIPE_TYPE,
+    OP_QUEUE_FULL, OP_QUEUE_SUB, OP_RD_WRITE_FACTS, OP_REACTOR_ID, OP_REACTOR_NUM, OP_RT_BUF_EMPTY,
+    OP_RT_DISCARD_TIMEOUT, OP_RT_FRONT_CONN, OP_RT_FRONT_CONN_CLOSED, OP_RT_FRONT_STREAM,
+    OP_RT_HAS_PIPE_COMMAND, OP_RT_TOUCH_SEND, OP_SERVER, OP_SESSION_CONN, OP_SET_WAITING_TIME,
+    OP_SSL_READY, OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM, OP_WR_CLEAR_OVERFLOW, OP_WR_QUEUED,
+    OP_WR_STATE, OP_WR_TIMER_DEL, OP_WR_WAIT,
 };
 use crate::ops::{
     OP_CC_HTTP_OBJECT, OP_CC_LINGER, OP_CC_QUEUE_CLOSE, OP_CC_RECV_FREE, OP_CC_REDIS_FREE,
     OP_CC_REDIS_OBJECT, OP_CC_SSL_CLOSE, OP_CC_SSL_SHUTDOWN, OP_CC_WATCH_WRITE,
     OP_CC_WEBSOCKET_FREE, OP_CONN_UNREAD, OP_HEARTBEAT_TIMER_CLEAR, OP_KILL_SELF,
     OP_MASTER_REACTOR_ID, OP_NOTIFY_CONNECT, OP_PORT_DEL, OP_RD_UNREAD, OP_REACTOR_CLOSE,
-    OP_REACTOR_DEL, OP_RT_DGRAM_BIND, OP_RT_POP, OP_RT_REMOVE_WRITE, OP_SSL_ACCEPT,
+    OP_REACTOR_DEL, OP_RT_DGRAM_BIND, OP_RT_POP, OP_RT_REMOVE_WRITE, OP_RT_SETUP, OP_SSL_ACCEPT,
     OP_WR_BUFFER_EMPTY, OP_WR_CLOSE, OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE,
     OP_WR_READ_ONLY,
 };
 use crate::port_config::{self, PortConfig};
+use crate::reactor_entry as entry;
 use crate::records::{ConnectionRecord, swr_v1_server_connection, swr_v1_server_session};
 use crate::{ServerConfig, ServerState, ServerTables};
 
 const SW_LOG_TRACE: c_int = 1;
 const SW_LOG_NOTICE: c_int = 3;
 const SW_LOG_WARNING: c_int = 4;
-/// `SW_FD_SESSION`.
+/// `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER` and `SW_FD_PIPE`.
 const FD_SESSION: c_int = 0;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+const FD_DGRAM_SERVER: c_int = 2;
+const FD_PIPE: c_int = 3;
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 /// `SW_SERVER_EVENT_CLOSE`, `_CONNECT` and `_BUFFER_EMPTY`, which master.cc asserts.
@@ -66,31 +75,58 @@ unsafe extern "C-unwind" {
     fn swoole_timer_del(node: *mut c_void) -> bool;
 }
 
-/// master.cc's `ReactorThreadContext` up to its task, which Rust doesn't read;
-/// master.cc asserts this layout.
+/// master.cc's `ReactorThreadContext`, which asserts this layout. The entry points
+/// (`reactor_entry`) build it; native code reads and writes its task.
 #[repr(C)]
 pub(crate) struct ReactorContext {
-    serv: *mut c_void,
-    reactor: *mut c_void,
-    thread: *mut c_void,
-    event: *mut Event,
-    port: *mut c_void,
-    sock: *mut SocketRecord,
-    conn: *mut ConnectionRecord,
-    timer: *mut c_void,
-    rdata: *const c_void,
+    pub(crate) serv: *mut c_void,
+    pub(crate) reactor: *mut c_void,
+    pub(crate) thread: *mut c_void,
+    pub(crate) event: *mut Event,
+    pub(crate) port: *mut c_void,
+    pub(crate) sock: *mut SocketRecord,
+    pub(crate) conn: *mut ConnectionRecord,
+    pub(crate) timer: *mut c_void,
+    pub(crate) rdata: *const c_void,
     /// The `PipeBuffer` read from a worker, which starts with its head.
     resp: *const DataHead,
     pkt: *mut c_void,
     /// The worker-pipe message at the front of the output buffer.
     front: *const DataHead,
     front_length: usize,
+    task: SendData,
 }
 
 const _: () = assert!(
-    core::mem::offset_of!(ReactorContext, front_length) == 96,
+    core::mem::offset_of!(ReactorContext, front_length) == 96 && size_of::<ReactorContext>() == 152,
     "master.cc ReactorThreadContext layout"
 );
+
+impl ReactorContext {
+    /// A context over `serv` and `reactor` with nothing else set.
+    pub(crate) fn new(serv: *mut c_void, reactor: *mut c_void) -> Self {
+        let null = core::ptr::null_mut();
+        Self {
+            serv,
+            reactor,
+            thread: null,
+            event: null.cast(),
+            port: null,
+            sock: null.cast(),
+            conn: null.cast(),
+            timer: null,
+            rdata: core::ptr::null(),
+            resp: core::ptr::null(),
+            pkt: null,
+            front: core::ptr::null(),
+            front_length: 0,
+            task: SendData {
+                info: DataHead::default(),
+                data: core::ptr::null(),
+            },
+        }
+    }
+}
 
 /// The low 32 bits of `arg`, as native code passes a C `int`.
 fn int(arg: u64) -> c_int {
@@ -184,6 +220,182 @@ impl Objects<'_> {
     fn connection(&self, key: c_long, kind: u32) -> *mut ConnectionRecord {
         // SAFETY: the server's live tables.
         unsafe { swr_v1_server_connection(self.state, key, kind) }
+    }
+    /// `get_port_by_fd(fd)`: the port whose listening socket accepted `fd`.
+    fn port_by_fd(&self, fd: c_int) -> *mut c_void {
+        port_by_fd(self.state, fd)
+    }
+    fn mode(&self) -> u64 {
+        u64::from(self.config().mode_)
+    }
+}
+
+/// `Server::get_port_by_fd(fd)`: the port whose listening socket accepted `fd`.
+pub(crate) fn port_by_fd(state: &ServerState, fd: c_int) -> *mut c_void {
+    let slot = |fd: c_int| {
+        // SAFETY: fd's slot in the live connection table.
+        let conn = unsafe { swr_v1_server_connection(state, c_long::from(fd), 0) };
+        // SAFETY: as above.
+        unsafe { &*conn }
+    };
+    // The listening socket's slot, whose object is its port.
+    slot(slot(fd).server_fd).object
+}
+
+/// `bit` when `set`.
+fn flag(set: bool, bit: u64) -> u64 {
+    if set { bit } else { 0 }
+}
+
+/// `SW_SSL_STATE_READY`.
+const SSL_READY: u32 = 1;
+
+/// `Socket::is_stream(type)` and `is_dgram(type)`.
+fn is_stream(kind: c_int) -> bool {
+    matches!(kind, 1 | 3 | 5)
+}
+fn is_dgram(kind: c_int) -> bool {
+    matches!(kind, 2 | 4 | 6)
+}
+
+/// `ReactorThread_onRead`'s facts over the context's connection; sets the context's
+/// port. A session socket that is a datagram is a DTLS port's (UDP ports take
+/// their packets on the listening socket).
+fn read_facts(o: &mut Objects<'_>) -> u64 {
+    // SAFETY: the context's connection is null or a live table slot.
+    let Some(conn) = (unsafe { o.ctx.conn.as_ref() }) else {
+        return 0;
+    };
+    if conn.server_fd == 0 {
+        return 0;
+    }
+    o.ctx.port = o.port_by_fd(o.event().fd);
+    let sock = o.sock();
+    let ssl = !sock.ssl.is_null();
+    cn::FOUND
+        | cn::PREQUEUE
+        | flag(sock.close_notified != 0, cn::CLOSE_NOTIFIED)
+        | flag(conn.close_queued != 0, cn::CLOSE_QUEUED)
+        | flag(ssl && sock.tls.want_read != 0, cn::SSL_WANT_READ)
+        | flag(ssl && sock.tls.state != SSL_READY, cn::SSL_PENDING)
+        | flag(is_dgram(sock.socket_type), cn::DTLS_PORT)
+        | flag(sock.dtls != 0, cn::DTLS_SOCKET)
+        | flag(o.mode() == crate::MODE_PROCESS, cn::PROCESS)
+}
+
+/// `ReactorThread_onWrite`'s facts; sets the context's port and connection.
+fn write_facts(o: &mut Objects<'_>) -> u64 {
+    let fd = o.event().fd;
+    o.ctx.port = o.port_by_fd(fd);
+    if o.mode() == crate::MODE_PROCESS {
+        debug_assert_eq!(
+            fd % c_int::from(o.config().reactor_num),
+            c_int::from(o.reactor().id),
+            "a reactor thread writes only its own fds"
+        );
+    }
+    o.ctx.conn = o.connection(c_long::from(fd), 0);
+    // SAFETY: a table slot.
+    let Some(conn) = (unsafe { o.ctx.conn.as_ref() }) else {
+        return 0;
+    };
+    if conn.active == 0 {
+        return 0;
+    }
+    let sock = o.sock();
+    cn::FOUND
+        | cn::PREQUEUE
+        | flag(conn.close_notify != 0, cn::CLOSE_NOTIFY)
+        | flag(
+            !sock.ssl.is_null() && sock.tls.state != SSL_READY,
+            cn::SSL_PENDING,
+        )
+        | flag(o.config().disable_notify, cn::DISABLE_NOTIFY)
+        | flag(conn.close_force != 0, cn::CLOSE_FORCE)
+}
+
+/// `ReactorThread_onClose`'s facts over the context's event: what decides whether
+/// a clean FIN leaves the write side usable (native/halfclose/prequeue.md). Sets
+/// the context's connection.
+fn peer_close_facts(o: &mut Objects<'_>) -> u64 {
+    let fd = o.event().fd;
+    o.ctx.conn = o.connection(c_long::from(fd), 0);
+    // SAFETY: a table slot.
+    let Some(conn) = (unsafe { o.ctx.conn.as_ref() }) else {
+        return 0;
+    };
+    if conn.active == 0 {
+        return 0;
+    }
+    let config = o.config();
+    let dispatch_func = o
+        .state
+        .callbacks
+        .slot(CB_DISPATCH_FUNC)
+        .is_some_and(crate::callbacks::CallbackSlot::is_set);
+    // SAFETY: the event's live socket.
+    let notified = unsafe { (*o.event().socket.cast::<SocketRecord>()).close_notified } != 0;
+    cn::FOUND
+        | cn::PREQUEUE
+        | flag(config.disable_notify, cn::DISABLE_NOTIFY)
+        | flag(conn.close_queued != 0, cn::CLOSE_QUEUED)
+        | flag(notified, cn::CLOSE_NOTIFIED)
+        | flag(o.mode() == crate::MODE_PROCESS, cn::PROCESS)
+        | flag(matches!(config.dispatch_mode, 2 | 4 | 8), cn::HASH_DISPATCH)
+        | flag(dispatch_func, cn::DISPATCH_FUNC)
+        | flag(config.enable_coroutine, cn::COROUTINE)
+        | flag(conn.ssl != 0, cn::CONN_SSL)
+        | flag(conn.close_errno != 0, cn::CLOSE_ERRNO)
+        | flag(conn.close_force != 0, cn::CLOSE_FORCE)
+        | flag(conn.close_reset != 0, cn::CLOSE_RESET)
+}
+
+/// `Server::close_connection`'s facts, the socket's fd above bit 32; sets the
+/// context's connection and port.
+fn close_facts(o: &mut Objects<'_>) -> u64 {
+    let (object, fd) = (o.sock().object, o.sock().fd);
+    o.ctx.conn = object.cast();
+    o.ctx.port = o.port_by_fd(fd);
+    let (sock, conn) = (o.sock(), o.conn());
+    let ssl = !sock.ssl.is_null();
+    cn::PREQUEUE
+        | flag(!conn.timer.is_null(), cn::TIMER)
+        | flag(!conn.websocket_buffer.is_null(), cn::WEBSOCKET_BUFFER)
+        | flag(sock.removed != 0, cn::REMOVED)
+        | flag(o.mode() == crate::MODE_BASE, cn::BASE)
+        | flag(ssl, cn::SOCKET_SSL)
+        | flag(sock.dtls != 0, cn::DTLS_SOCKET)
+        | flag(!sock.recv_buffer.is_null(), cn::RECV_BUFFER)
+        | flag(conn.close_force != 0, cn::CLOSE_FORCE)
+        | flag(conn.close_reset != 0, cn::CLOSE_RESET)
+        | flag(conn.peer_closed != 0, cn::PEER_CLOSED)
+        | flag(conn.close_queued != 0, cn::CLOSE_QUEUED)
+        | flag(sock.ssl_closed != 0, cn::SSL_CLOSED)
+        | flag(
+            ssl && sock.tls.state == SSL_READY && is_stream(sock.socket_type),
+            cn::TLS_READY_STREAM,
+        )
+        | (u64::from(sock.fd.cast_unsigned()) << 32)
+}
+
+/// Which facts [`facts`] builds.
+#[derive(Clone, Copy)]
+pub(crate) enum Facts {
+    Read,
+    Write,
+    PeerClose,
+}
+
+/// The facts an entry point passes its run.
+///
+/// # Safety
+/// As [`answer`], with a live server state.
+pub(crate) unsafe fn facts(ctx: &mut ReactorContext, state: &ServerState, which: Facts) -> u64 {
+    let mut o = Objects { ctx, state };
+    match which {
+        Facts::Read => read_facts(&mut o),
+        Facts::Write => write_facts(&mut o),
+        Facts::PeerClose => peer_close_facts(&mut o),
     }
 }
 
@@ -370,6 +582,8 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_WR_STATE => write_state(&o),
+        OP_RD_WRITE_FACTS => write_facts(&mut o),
+        OP_CC_FACTS => close_facts(&mut o),
         OP_WR_TIMER_DEL => {
             let output = &mut o.sock().output;
             // SAFETY: the socket's live send timer.
@@ -524,6 +738,31 @@ unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
             0
         }
+        OP_RT_SETUP => {
+            let fields = o.reactor();
+            fields.ptr = o.ctx.serv;
+            fields.id = u16::try_from(arg & 0xffff).unwrap_or_default();
+            fields.wait_exit = false;
+            fields.max_socket = o.tables().max_connection;
+            fields.close = Some(crate::reactor_entry::close_connection);
+            // SAFETY: the context's live reactor.
+            let handlers = unsafe { reactor_upstream::prepared(reactor) }.handlers;
+            // SAFETY: its live handler tables.
+            unsafe { swr_v1_reactor_handlers_set_default(handlers, 2, Some(entry::on_close)) };
+            for (event, handler) in [
+                (
+                    SW_EVENT_READ,
+                    entry::on_pipe_read as swoole_rs_reactor::Handler,
+                ),
+                (SW_EVENT_WRITE, entry::on_pipe_write),
+            ] {
+                // SAFETY: the context's live reactor.
+                unsafe {
+                    reactor_upstream::reactor_set_handler(reactor, FD_PIPE, event, Some(handler));
+                }
+            }
+            0
+        }
         OP_RT_POP => {
             // SAFETY: the event's live socket, whose output buffer holds the front.
             let buffer = unsafe { (*event_socket()).output.out_buffer };
@@ -636,6 +875,7 @@ unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 #[inline(always)]
 unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
     use crate::ops::{OP_CC_FINISH, OP_EVENT_INIT, OP_RESUME_READ, OP_WR_TIMER_DELAY};
+    use crate::ops::{OP_SESSION_HANDLERS, OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET};
     // SAFETY: crates/timer's, native/reactor's and crates/tls's, under their upstream symbols.
     unsafe extern "C-unwind" {
         #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
@@ -645,6 +885,9 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
         fn swoole_event_init(flags: c_int) -> c_int;
         #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
         fn reactor_close(reactor: *mut c_void, socket: *mut SocketRecord) -> c_int;
+        /// crates/ports' `ListenPort::init_protocol`.
+        #[link_name = "_ZN6swoole10ListenPort13init_protocolEv"]
+        fn init_protocol(port: *mut c_void);
     }
     Some(match op {
         OP_WR_TIMER_DELAY => {
@@ -664,6 +907,38 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
             unsafe { reactor_upstream::reactor_interest(reactor, o.ctx.sock, 2, 0) };
             o.conn().timer = core::ptr::null_mut();
             0
+        }
+        OP_SESSION_HANDLERS => {
+            let reactor = o.ctx.reactor.cast_const();
+            for (fd_type, event, handler) in [
+                (
+                    FD_DGRAM_SERVER,
+                    SW_EVENT_READ,
+                    entry::on_packet_received as swoole_rs_reactor::Handler,
+                ),
+                (FD_SESSION, SW_EVENT_WRITE, entry::on_write),
+                (FD_SESSION, SW_EVENT_READ, entry::on_read),
+            ] {
+                // SAFETY: the context's live reactor.
+                unsafe {
+                    reactor_upstream::reactor_set_handler(reactor, fd_type, event, Some(handler));
+                }
+            }
+            for &port in o.tables().ports() {
+                // SAFETY: one of the server's live ports.
+                unsafe { init_protocol(port) };
+            }
+            0
+        }
+        OP_STORE_LISTEN_SOCKET => {
+            // SAFETY: the context's live server.
+            unsafe { crate::server_methods::store_listen_socket(o.ctx.serv) };
+            0
+        }
+        OP_START_MASTER_THREAD => {
+            let (serv, reactor) = (o.ctx.serv, o.ctx.reactor);
+            // SAFETY: the context's live server and the master's reactor.
+            sign(unsafe { crate::server_methods::start_master_thread(serv, reactor) })
         }
         OP_EVENT_INIT => {
             // SAFETY: this thread's event loop.
