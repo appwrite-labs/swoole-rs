@@ -4,7 +4,7 @@
 //! patch deletes) under its upstream symbols: this thread's `SwooleTG.timer`, its
 //! lazy creation, unit conversion and warnings, over the Rust-owned timer
 //! (`owner.rs`).
-use crate::owner::{Owner as Timer, TimerNode, swr_v1_timer_owner_free};
+use crate::owner::{Owner as Timer, TimerNode, swr_v1_timer_owner_free, uncaught};
 use crate::swr_v1_timer_token;
 use std::ffi::{CStr, c_long, c_void};
 use swoole_rs_corebase::{log, swoole_print_backtrace};
@@ -222,7 +222,9 @@ unsafe extern "C-unwind" fn swoole_timer_del(node: *mut c_void) -> bool {
         return false;
     };
     // SAFETY: this thread's live timer.
-    unsafe { &*timer }.remove(node.id)
+    let (removed, failure) = unsafe { &*timer }.remove(node.id);
+    uncaught(failure);
+    removed
 }
 
 /// `void swoole_timer_delay(TimerNode *, long delay_ms)`: `Timer::delay`, which
@@ -268,7 +270,9 @@ extern "C-unwind" fn swoole_timer_clear(timer_id: c_long) -> bool {
         return false;
     };
     // SAFETY: this thread's live timer.
-    unsafe { &*timer }.remove(timer_id)
+    let (removed, failure) = unsafe { &*timer }.remove(timer_id);
+    uncaught(failure);
+    removed
 }
 
 /// `TimerNode *swoole_timer_get(long timer_id)`.
@@ -298,6 +302,6 @@ extern "C-unwind" fn swoole_timer_select() {
     let timer = timer();
     if !timer.is_null() {
         // SAFETY: this thread's live timer.
-        unsafe { &*timer }.select();
+        uncaught(unsafe { &*timer }.select());
     }
 }

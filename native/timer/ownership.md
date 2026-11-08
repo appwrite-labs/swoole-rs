@@ -30,7 +30,7 @@ What C++ keeps (`native/timer/timer.cc`):
 
 | Shim | Why |
 | --- | --- |
-| `swr_cpp_timer_node_new`, `_call`, `_release` | A `TimerNode` holds `std::function` callback and destructor. A C++ exception they throw comes back to Rust as an `exception_ptr`; `select` detaches the active node and ends the selection before `swr_cpp_timer_rethrow` rethrows the first one. |
+| `swr_cpp_timer_node_new`, `_call`, `_release` | A `TimerNode` holds `std::function` callback and destructor. A C++ exception they throw comes back to Rust as an `exception_ptr`; `select` detaches the active node, ends the selection and returns the first one, which the C++ view's `select` or `remove` rethrows with `swr_cpp_timer_rethrow`: an exception can't unwind through Rust frames under `panic = "abort"`. The Rust `swoole_timer_*` exports have no C++ frame to rethrow in, so they abort, as an uncaught exception would. |
 | `swr_cpp_timer_reactor_timeout`, `swr_cpp_timer_attach` | `Reactor::timeout_msec`, and the timer-priority select, exit condition and destroy callback, which the reactor takes as `std::function`. |
 
 A Zend bailout longjmps out of a callback over `select`'s Rust frames, which hold
