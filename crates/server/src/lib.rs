@@ -33,6 +33,8 @@ pub mod event_worker_ops;
 mod json;
 mod layout;
 pub mod local_addr;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub mod manager_ops;
 mod master_ops;
 pub mod ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
