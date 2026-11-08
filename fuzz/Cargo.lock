@@ -185,11 +185,13 @@ version = "0.1.0"
 name = "swoole-rs-fuzz"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "libfuzzer-sys",
  "swoole-rs-base64",
  "swoole-rs-clients",
  "swoole-rs-framing",
  "swoole-rs-http",
+ "swoole-rs-http2",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
  "swoole-rs-websocket",
@@ -203,8 +205,14 @@ dependencies = [
  "memchr",
  "regex-automata",
  "swoole-rs-base64",
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-ossupport",
 ]
+
+[[package]]
+name = "swoole-rs-http2"
+version = "0.1.0"
 
 [[package]]
 name = "swoole-rs-locks"
@@ -249,6 +257,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-memory",
  "swoole-rs-ossupport",
+ "swoole-rs-utilities",
 ]
 
 [[package]]
@@ -286,8 +295,11 @@ dependencies = [
 name = "swoole-rs-websocket"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "openssl-sys",
  "swoole-rs-base64",
+ "swoole-rs-buffer",
+ "swoole-rs-corebase",
 ]
 
 [[package]]

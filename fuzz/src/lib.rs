@@ -16,7 +16,9 @@ use swoole_rs_oracle::{
     http_frame::{self, Engine, UPSTREAM},
     http_range, protocols, resp_stream, socks5, websocket as upstream_ws,
 };
-use swoole_rs_protocols as _;
+
+mod network;
+pub use network::{dns_reply, http_chunked, http2_frame, multipart, resp_server};
 use swoole_rs_websocket::{DecodedFrame, swr_v1_ws_decode, swr_v1_ws_frame_length, swr_v1_ws_mask};
 
 const RED_ZONE: usize = 17;

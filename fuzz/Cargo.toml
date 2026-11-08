@@ -14,6 +14,8 @@ swoole-rs-base64 = { path = "../crates/base64" }
 swoole-rs-clients = { path = "../crates/clients" }
 swoole-rs-framing = { path = "../crates/framing" }
 swoole-rs-http = { path = "../crates/http" }
+swoole-rs-http2 = { path = "../crates/http2" }
+libc = "=0.2.191"
 swoole-rs-oracle = { path = "../crates/oracle" }
 swoole-rs-protocols = { path = "../crates/protocols" }
 swoole-rs-websocket = { path = "../crates/websocket" }
@@ -168,6 +170,41 @@ bench = false
 [[bin]]
 name = "http_range"
 path = "fuzz_targets/http_range.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http2_frame"
+path = "fuzz_targets/http2_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clients_dns_reply"
+path = "fuzz_targets/clients_dns_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_multipart"
+path = "fuzz_targets/http_multipart.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_chunked"
+path = "fuzz_targets/http_chunked.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "resp_server"
+path = "fuzz_targets/resp_server.rs"
 test = false
 doc = false
 bench = false
