@@ -59,7 +59,7 @@ const SSL_READY: u32 = 1;
 // their upstream symbols.
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole10ListenPort6listenEv"]
-    fn port_listen(port: *mut c_void) -> c_int;
+    pub(crate) fn port_listen(port: *mut c_void) -> c_int;
     #[link_name = "_ZN6swoole10ListenPort13create_socketEv"]
     fn port_create_socket(port: *mut c_void) -> c_int;
     #[link_name = "_ZN6swoole10ListenPort12close_socketEv"]
@@ -95,7 +95,7 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_process_call(
 ///
 /// # Safety
 /// `serv` is a live `Server`.
-unsafe fn ports<'a>(serv: *mut c_void) -> &'a [*mut c_void] {
+pub(crate) unsafe fn ports<'a>(serv: *mut c_void) -> &'a [*mut c_void] {
     // SAFETY: per the caller.
     let state = unsafe { view::state_ptr(serv) };
     // SAFETY: its state and tables live as long as it.

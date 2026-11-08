@@ -243,7 +243,7 @@ index ad0504e..ca3ee2d 100644
 --- a/src/server/process.cc
 +++ b/src/server/process.cc
 @@ -1676,7 +1676,13 @@ uint64_t ThreadContext::call(void *context, uint32_t op, uint64_t arg) {
-         return (uintptr_t) ctx->worker;
+         return 0;
 -    case SWR_WORKERS_OP_WORKER_THREAD_START:
 -        serv->worker_thread_start(factory->thread_at(arg & UINT32_MAX), [serv, factory, worker, arg]() {
 -            ThreadContext{serv, factory, worker}.run(SWR_WORKERS_RUN_THREAD_MAIN, arg);
