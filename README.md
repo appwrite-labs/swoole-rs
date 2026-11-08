@@ -4,6 +4,7 @@
 [![Upstream C++ replaced](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Freplaced.json)](docs/migration.md#upstream-files-still-in-the-build)
 [![Graduated leaf modules](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fgraduated.json)](https://github.com/loks0n/swoole-rs/issues/125)
 [![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/loks0n/swoole-rs/issues/58)
+[![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/loks0n/swoole-rs/issues/1902)
 
 Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 3 and 5 are done; open are
 [Phase 4, deepen thin modules](https://github.com/loks0n/swoole-rs/issues/439),
@@ -11,7 +12,9 @@ Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 3 and 5 are done; o
 [differential fuzzing](https://github.com/loks0n/swoole-rs/issues/100). The badges come from `tools/badges.py`
 (`.github/workflows/badges.yml`): upstream C++ replaced counts upstream first-party
 lines the all-modules patch set deletes, and the PHPT badge names the commit its
-merge-tier run measured.
+merge-tier run measured. The unsafe badge counts `unsafe` blocks, fns and impls in
+non-test crate code; `tools/unsafe_budget.py` (PR tier) fails a PR that raises any
+crate above `tools/unsafe_baseline.json`, and `--update` lowers the baseline.
 
 A gradual C/C++ to Rust migration of the [Swoole](https://github.com/swoole/swoole-src)
 PHP extension. Rust is linked into the build of upstream Swoole v6.2.4 (pinned at

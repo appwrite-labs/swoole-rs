@@ -9,6 +9,7 @@ cargo clippy --locked --workspace --all-targets -q -- -D warnings
 python3 tools/check_migration.py > /dev/null
 git diff --cached --quiet -- migration/patches || python3 tools/patches.py check > /dev/null
 git diff --cached --quiet -- native crates || tools/headers.sh --check
+git diff --cached --quiet -- crates || python3 tools/unsafe_budget.py > /dev/null
 # Zend families add shims in parallel; a helper defined twice only fails at link
 # time in builds macOS can't run, so catch it here.
 dups=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_ *]* \*?swr_[a-z0-9_]+\(' crates/zend-sys/src/*.c | grep -oE 'swr_[a-z0-9_]+' | sort | uniq -d)
