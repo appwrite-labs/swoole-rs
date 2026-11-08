@@ -90,9 +90,6 @@ enum { SWR_CO_SOCKET_BY_FAMILY, SWR_CO_SOCKET_BY_TYPE, SWR_CO_SOCKET_FD_BY_TYPE,
 enum { SWR_CO_SOCKET_OPENED = 1, SWR_CO_SOCKET_NODELAY_FAILED = 2 };
 uint32_t swr_v1_hook_co_socket_new(
     swr_v1_co_socket *socket, void *owner, int how, int fd, int socket_type, int domain, int kind, int protocol);
-/* reinit_sock: false (errno set, nothing changed) if socket(2) failed; else *old is
- * the replaced network::Socket for native code to free. */
-bool swr_v1_hook_co_socket_reinit(swr_v1_co_socket *socket, void *owner, int socket_type, swr_v1_socket **old);
 /* The accepting constructor's fields; native code shares the TLS context. */
 uint32_t swr_v1_hook_co_socket_accepted(swr_v1_co_socket *socket,
                                         void *owner,
@@ -140,7 +137,15 @@ typedef struct {
     /* new Socket(conn, server), the accepting constructor, and delete of a Socket. */
     void *(*accepted)(swr_v1_co_socket *server, swr_v1_socket *conn);
     void (*destroy)(void *socket);
+    /* swoole_name_resolver_lookup(host, context) with the context's type and timeout set
+     * first: put(out, address); returns the context's with_port. */
+    bool (*lookup)(void *context, int type, double timeout, const char *host, size_t length, void *out,
+                   void (*put)(void *, const char *, size_t));
 } swr_v1_hook_co_socket_host_t;
+/* Socket::connect(host, port) of the native socket (crates/hooks/src/connect.rs): context is the
+ * NameResolver::Context its lookup uses, socks5 and http its proxies' owners or null. */
+bool swr_v1_hook_co_socket_connect_host(void *socket, const char *host, size_t length, int port, void *context,
+                                        struct swr_v1_core_proxy *socks5, struct swr_v1_core_proxy *http);
 /* Complete packet/buffer reads, including availability, buffer and timer. */
 ssize_t swr_v1_hook_co_socket_recv_packet(swr_v1_co_socket *socket, double timeout);
 /* The lifecycle (crates/hooks/src/lifecycle.rs): shutdown(how), cancel(event), close()

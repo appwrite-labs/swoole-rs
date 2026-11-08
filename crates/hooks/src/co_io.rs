@@ -62,6 +62,18 @@ pub struct Host {
     pub accepted: unsafe extern "C" fn(*mut CoSocket, *mut SocketRecord) -> *mut c_void,
     /// `delete socket` of a native socket.
     pub destroy: unsafe extern "C" fn(*mut c_void),
+    /// `swoole_name_resolver_lookup(name, context)` with the context's type and
+    /// timeout set first: the address goes to `put(out, ..)`; returns the context's
+    /// `with_port`.
+    pub lookup: unsafe extern "C" fn(
+        *mut c_void,
+        c_int,
+        f64,
+        *const c_char,
+        usize,
+        *mut c_void,
+        unsafe extern "C" fn(*mut c_void, *const c_char, usize),
+    ) -> bool,
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
@@ -559,6 +571,18 @@ pub(crate) mod test_host {
     unsafe extern "C" fn destroy(_: *mut c_void) {
         log("destroy");
     }
+    unsafe extern "C" fn lookup(
+        _: *mut c_void,
+        _: c_int,
+        _: f64,
+        _: *const c_char,
+        _: usize,
+        _: *mut c_void,
+        _: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
+    ) -> bool {
+        log("lookup");
+        false
+    }
 
     static HOST_TABLE: Host = Host {
         set_last_error,
@@ -582,6 +606,7 @@ pub(crate) mod test_host {
         packet_fail: crate::packet::tests::failure,
         accepted,
         destroy,
+        lookup,
     };
 }
 
