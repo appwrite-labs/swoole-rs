@@ -97,9 +97,8 @@ struct swoole_client_call {
 };
 void swoole_client_run(void *call);
 
-/* Swoole\NameResolver\Context and the swoole_name_resolver_* functions
- * (crates/phpclients/src/resolver.rs). */
-void swr_v1_phpclients_name_resolver_minit(void);
+/* Swoole\NameResolver\Context and the swoole_name_resolver_* functions are
+ * crates/phpclients/src/resolver.rs; its MINIT is php_swoole_name_resolver_minit. */
 /* The PHP resolver's lookup of name; writes a non-empty result through assign
  * (out is a std::string), then raises a bailout its PHP code caused. */
 void swr_v1_phpclients_name_resolver_lookup(struct _zval_struct *resolver,
@@ -108,7 +107,7 @@ void swr_v1_phpclients_name_resolver_lookup(struct _zval_struct *resolver,
                                             void *context,
                                             void *out,
                                             void (*assign)(void *out, const char *text, size_t length));
-/* Defined by ext-src/swoole_name_resolver.cc. context is a NameResolver::Context *. */
+/* Defined by native/clients/name_resolver.cc. context is a NameResolver::Context *. */
 void swoole_name_resolver_php_add(struct _zval_struct *resolver);
 struct _zval_struct *swoole_name_resolver_php_remove(bool (*same)(struct _zval_struct *kept,
                                                                   struct _zval_struct *resolver),

@@ -30,7 +30,7 @@ const RESOLVER_CLASS: &[u8] = b"Swoole\\NameResolver";
 static CONTEXT: Class = Class::new();
 
 /// What C++ does to a `NameResolver::Context` and the resolver list, defined in
-/// the patched `ext-src/swoole_name_resolver.cc`.
+/// in `native/clients/name_resolver.cc`.
 mod native {
     use std::ffi::{c_char, c_void};
     use swoole_rs_zend::sys::zval;
@@ -138,11 +138,11 @@ method_table! {
     ];
 }
 
-/// MINIT: register `Swoole\NameResolver\Context` as `php_swoole_name_resolver_minit` did.
+/// MINIT: register `Swoole\NameResolver\Context`.
 /// # Safety
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_name_resolver_minit() {
+pub unsafe extern "C" fn php_swoole_name_resolver_minit(_module_number: c_int) {
     // SAFETY: MINIT, with a static table.
     unsafe {
         CONTEXT.register(
