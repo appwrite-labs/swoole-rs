@@ -285,6 +285,13 @@ pub unsafe extern "C-unwind" fn swr_v1_server_close(
         // SAFETY: a live port, deleted once.
         unsafe { delete_port(port) };
     }
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    {
+        // SAFETY: as the caller guarantees.
+        let state = unsafe { view::state_ptr(serv) };
+        // SAFETY: the server's state, which outlives this call.
+        unsafe { &*state }.close_task_pipes();
+    }
     // SAFETY: as the caller guarantees.
     let config = unsafe { view::config(serv) };
     // SAFETY: the list settings.rs allocated, or null.
