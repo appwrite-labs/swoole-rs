@@ -10,7 +10,8 @@
 
 For a pull request: `ci.py wait --workflow pr.yml --commit BRANCH` for its PR tier (a branch
 auto-merge deleted resolves through its PR), or `ci.py wait --pr N` to wait for it to merge and
-then for the merge tier on its merge commit. Transient gh failures (5xx, network) are retried
+then for the merge tier on its merge commit. Both return at once (exit 4, state `conflicts`) when
+the PR conflicts with main, since neither a PR-tier run nor auto-merge happens until it's rebased. Transient gh failures (5xx, network) are retried
 until the deadline.
 
 For the merge tier, failed phases come from its `phases` artifact, with new and fixed ones
@@ -33,7 +34,7 @@ import sys
 import tempfile
 import time
 
-EXIT = {'passed': 0, 'failed': 1, 'closed': 1, 'none': 2, 'running': 2, 'cancelled': 3}
+EXIT = {'passed': 0, 'failed': 1, 'closed': 1, 'none': 2, 'running': 2, 'cancelled': 3, 'conflicts': 4}
 LOG_LINES = 40
 GATE_JOB = 'phpt-gate'
 # The merge-tier jobs (full-gates, or its shards "full-gates (N)") whose dev.py phases the
@@ -94,6 +95,9 @@ def wait_pr(number, deadline, poll):
             return {**wait('merge.yml', pr['merge_commit_sha'], deadline, poll), 'pr': number, 'pr_state': 'merged'}
         if state == 'closed':
             return {'workflow': 'merge.yml', 'commit': '', 'state': 'closed', 'pr': number, 'pr_state': 'closed'}
+        if pr.get('mergeable_state') == 'dirty':
+            # Auto-merge can't land it and GitHub runs no PR tier until it's rebased.
+            return {'workflow': 'merge.yml', 'commit': '', 'state': 'conflicts', 'pr': number, 'pr_state': 'open'}
         if time.monotonic() > deadline:
             return {'workflow': 'merge.yml', 'commit': '', 'state': 'running', 'timed_out': True, 'pr': number,
                     'pr_state': 'open'}
@@ -134,6 +138,16 @@ def successor(workflow, sha):
     return None
 
 
+def conflicting(sha):
+    """The open PR whose head is sha and conflicts with main, if any: GitHub runs no pull_request
+    workflow for it, so waiting for one is pointless."""
+    for number in json.loads(gh('api', f'repos/{{owner}}/{{repo}}/commits/{sha}/pulls',
+                                '-q', '[.[] | select(.state == "open") | .number]') or '[]'):
+        if json.loads(gh('api', f'repos/{{owner}}/{{repo}}/pulls/{number}')).get('mergeable_state') == 'dirty':
+            return number
+    return None
+
+
 def wait(workflow, sha, deadline, poll):
     """Wait for the run on sha to finish, reporting each job as its state changes. A run
     replaced by a newer push to main follows the newer run, which also covers sha."""
@@ -152,6 +166,9 @@ def wait(workflow, sha, deadline, poll):
                 say(f"{workflow} {sha[:7]} {job['name']}: {job['state']}{took}")
         if result['state'] not in ('running', 'none'):
             return result
+        if result['state'] == 'none' and workflow != 'merge.yml' and (number := conflicting(sha)):
+            say(f'PR #{number} conflicts with main: rebase it; no {workflow} run starts until then')
+            return {**result, 'state': 'conflicts', 'pr': number, 'pr_state': 'open'}
         if result['state'] == 'none' and time.monotonic() > appear_by:
             return result
         if time.monotonic() > deadline:

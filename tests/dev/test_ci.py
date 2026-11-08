@@ -34,6 +34,8 @@ if deleted:
 elif args[:2] == ['api', '--paginate']:
     for issue in data.get('open_pulls' if '/pulls?' in args[2] else 'issues', []):
         print(json.dumps(issue))
+elif args[0] == 'api' and args[1].endswith('/pulls'):
+    print(json.dumps(data.get('commit_pulls', [])))
 elif args[0] == 'api' and '/pulls?' in args[1]:
     print('e' * 40)
 elif args[0] == 'api' and '/pulls/' in args[1]:
@@ -236,6 +238,16 @@ class Ci(unittest.TestCase):
         self.assertIn('PR #9: merged', stderr)
         code, result, _ = self.ci('wait', '--pr', '9', runs={}, pulls={'9': [{'state': 'closed'}]})
         self.assertEqual((code, result['pr_state'], result['state']), (1, 'closed', 'closed'))
+
+    def test_a_conflicting_pr_returns_at_once(self):
+        pulls = {'9': [{'state': 'open', 'mergeable_state': 'dirty'}]}
+        code, result, _ = self.ci('wait', '--pr', '9', runs={}, pulls=pulls)
+        self.assertEqual((code, result['pr_state'], result['state']), (4, 'open', 'conflicts'))
+        # The PR tier never starts for a conflicting head: no five-minute wait for it to appear.
+        code, result, stderr = self.ci('wait', '--workflow', 'pr.yml', '--commit', 'a' * 40, runs={},
+                                       pulls=pulls, commit_pulls=[9])
+        self.assertEqual((code, result['state'], result['pr']), (4, 'conflicts', 9))
+        self.assertIn('PR #9 conflicts with main', stderr)
 
     def test_status_without_a_run_is_none(self):
         code, result, _ = self.ci('status', '--commit', 'abc1234', runs={})
