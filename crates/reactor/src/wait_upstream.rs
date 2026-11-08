@@ -130,9 +130,9 @@ unsafe fn iouring_waitpid(
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
-    // SAFETY: crates/hooks's, and src/coroutine/iouring.cc's `Iouring::host`.
+    // SAFETY: crates/hooks's engine and its static host.
     unsafe extern "C" {
-        #[link_name = "_ZN6swoole7Iouring4hostE"]
+        #[link_name = "swr_v1_uring_native"]
         static IOURING_HOST: c_void;
         fn swr_v1_uring_waitpid(
             host: *const c_void,

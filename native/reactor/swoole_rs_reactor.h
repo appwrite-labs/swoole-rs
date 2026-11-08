@@ -257,6 +257,8 @@ void swr_v1_socket_set_halfclose_repairs(bool repaired);
 /* Reactor::set_exit_condition of a plain function, for Rust's signal backends
  * (native/reactor/reactor.cc). */
 void swr_v1_event_set_exit_condition(int id, bool (*condition)(size_t *event_num));
+/* Reactor::set_end_callback of a plain function, for the io_uring submit (crates/hooks). */
+void swr_v1_event_set_end_callback(int id, void (*callback)(void));
 /* The swr_v1_reactor_change_log the C++ passes. */
 void swr_v1_reactor_log(const char *origin, int code, const char *message);
 /* An IOVector's cursor. */

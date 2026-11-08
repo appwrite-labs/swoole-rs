@@ -113,10 +113,6 @@ class Reactor : private ReactorStateOwner {
     DeferCallback idle_task;
     DeferCallback future_task;
 
-#ifdef SW_USE_IOURING
-    std::function<void(Reactor *)> iouring_interrupt_handler;
-#endif
-
     using Write = ssize_t (*)(Reactor *, network::Socket *, const void *, size_t);
     using Writev = ssize_t (*)(Reactor *, network::Socket *, const iovec *, size_t);
     using Close = int (*)(Reactor *, network::Socket *);

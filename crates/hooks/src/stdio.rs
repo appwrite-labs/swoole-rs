@@ -50,12 +50,14 @@ pub struct Host {
     pub offload: Offload,
     /// `System::sleep`.
     pub sleep: unsafe extern "C" fn(f64) -> c_int,
-    /// `Iouring::host` with `io_uring`, else null: then the file calls go to the ring.
+    /// `swr_v1_uring_native` with `io_uring`, else null: then the file calls go to the ring.
     pub uring: *const c_void,
     /// `HAVE_IOURING_STATX`: `fstat`, `stat` and `lstat` go to the ring too.
     pub uring_statx: bool,
     /// `HAVE_IOURING_FTRUNCATE`: so does `ftruncate`.
     pub uring_ftruncate: bool,
+    /// `HAVE_IOURING_FUTEX`: the engine probes the futex opcodes.
+    pub uring_futex: bool,
     /// `swoole_set_last_error`.
     pub set_last_error: unsafe extern "C" fn(c_int),
     /// `System`'s coroutine poll table, for the hooked `poll`.
@@ -327,6 +329,7 @@ pub(crate) mod tests {
         uring: std::ptr::null(),
         uring_statx: false,
         uring_ftruncate: false,
+        uring_futex: false,
         set_last_error,
         poll: std::ptr::null(),
         socket: crate::hooked::tests::OPS,

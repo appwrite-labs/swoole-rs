@@ -95,15 +95,19 @@ pub unsafe extern "C" fn system_init_reactor(reactor: *mut c_void) {
     // SAFETY: as above.
     unsafe { set_handler(reactor, FdType::SW_FD_AIO as c_int, READ, aio_ready) };
     #[cfg(feature = "iouring")]
-    {
-        // SAFETY: src/coroutine/iouring.cc's.
-        unsafe extern "C" {
-            #[link_name = "_ZN6swoole7Iouring8callbackEPNS_7ReactorEPNS_5EventE"]
-            fn iouring_ready(reactor: *mut c_void, event: *mut c_void) -> c_int;
-        }
-        // SAFETY: as above.
-        unsafe { set_handler(reactor, FdType::SW_FD_IOURING as c_int, READ, iouring_ready) };
+    // SAFETY: as above.
+    unsafe {
+        set_handler(reactor, FdType::SW_FD_IOURING as c_int, READ, iouring_ready);
     }
+}
+
+/// `Iouring::callback`.
+#[cfg(all(feature = "upstream-symbols", feature = "iouring"))]
+unsafe extern "C" fn iouring_ready(_: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: a `SW_FD_IOURING` socket, whose object is its instance.
+    let (iouring, _) = unsafe { fired(event) };
+    // SAFETY: as above.
+    unsafe { crate::iouring::ready(iouring) }
 }
 
 /// `Reactor::set_handler`.
