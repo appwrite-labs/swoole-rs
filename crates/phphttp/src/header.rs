@@ -54,8 +54,8 @@ const KEY_LONG: i64 = 2;
 /// `Swoole\Http\Response`'s `header`, `cookie` and `trailer` slots.
 static OFFSETS: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
 
-thread_local! {
-    static OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+php_local! {
+    static OUT: RefCell<Vec<u8>> = RefCell::new(Vec::new());
 }
 
 /// Each send owns its bytes across yields and reentry; only an idle buffer is cached.
@@ -176,10 +176,10 @@ fn each<E>(
     }
 }
 
-thread_local! {
+php_local! {
     /// `php_swoole_http_get_date`'s per-second cache: the time and its text.
     static DATE_CACHE: std::cell::Cell<(libc::time_t, *mut zend_string)> =
-        const { std::cell::Cell::new((0, ptr::null_mut())) };
+        std::cell::Cell::new((0, ptr::null_mut()));
 }
 
 /// The `Date` header for now, formatted at most once a second.

@@ -12,7 +12,7 @@ use crate::{
 };
 use std::{
     cell::RefCell,
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, VecDeque},
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
@@ -148,14 +148,15 @@ unsafe extern "C" {
     fn swr_v1_event_reactor() -> *mut c_void;
 }
 
-thread_local! {
+php_local! {
     /// A keep-alive session's server and remote address, until it closes.
-    static ADDRESSES: RefCell<HashMap<i64, [*mut zend_string; 2]>> = RefCell::new(HashMap::new());
+    static ADDRESSES: RefCell<BTreeMap<i64, [*mut zend_string; 2]>> = RefCell::new(BTreeMap::new());
     /// Requests waiting for the worker's concurrency to drop.
-    static QUEUED: RefCell<VecDeque<*mut Context>> = const { RefCell::new(VecDeque::new()) };
+    static QUEUED: RefCell<VecDeque<*mut Context>> = RefCell::new(VecDeque::new());
 }
 
-fn new_zval() -> zval {
+/// An `IS_UNDEF` zval.
+pub(crate) fn new_zval() -> zval {
     // SAFETY: all zeroes is `IS_UNDEF`.
     unsafe { std::mem::zeroed() }
 }

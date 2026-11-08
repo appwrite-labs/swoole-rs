@@ -4,6 +4,7 @@
 //! `swoole_http_request.cc` did. llhttp and the multipart parser stay the
 //! bundled C (third-party); what Swoole itself owns goes through `host`.
 use crate::host;
+use crate::server::new_zval;
 use crate::state::{Slot, State};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
@@ -330,11 +331,6 @@ fn add_server(state: &State, key_: Key, value_: &mut zval) {
     let table = unsafe { value::table(state.request.zserver.ptr) };
     // SAFETY: a live table, an interned key and a value it takes over.
     unsafe { zend_hash_add_new(table, key(key_), value_) };
-}
-
-fn new_zval() -> zval {
-    // SAFETY: all zeroes is `IS_UNDEF`.
-    unsafe { std::mem::zeroed() }
 }
 
 fn stringl(bytes: *const u8, length: usize) -> zval {

@@ -3,6 +3,7 @@
 //! push family, the handshake and the `onOpen`/`onMessage` dispatch, over the
 //! server's Rust-owned connections and ports (crates/server), and
 //! `Coroutine\Http\Client`'s WebSocket state.
+use crate::server::new_zval;
 use crate::{
     context,
     host::{self, CO_SOCKET, Context},
@@ -771,8 +772,7 @@ fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags:
 
 /// A zval holding `string`'s reference.
 pub(crate) fn zval_of(string: *mut zend_string) -> zval {
-    // SAFETY: a zval is plain data.
-    let mut out: zval = unsafe { std::mem::zeroed() };
+    let mut out = new_zval();
     // SAFETY: an empty slot takes the reference.
     unsafe { swr_zval_str(&raw mut out, string) };
     out
@@ -857,8 +857,7 @@ fn unpack(call: &Call) {
     };
     let payload = data.get(frame.header_length..frame.header_length + frame.payload_length);
     let payload = payload.unwrap_or_default();
-    // SAFETY: a zval is plain data.
-    let mut zpayload: zval = unsafe { std::mem::zeroed() };
+    let mut zpayload = new_zval();
     if frame.flags & FLAG_RSV1 != 0 {
         if !uncompress(&raw mut zpayload, payload) {
             host::set_last_error(PROTOCOL_ERROR);
@@ -1084,8 +1083,7 @@ fn message(
     let Some(settings) = port_frames(server, fd) else {
         return Ok(ERR);
     };
-    // SAFETY: a zval is plain data.
-    let mut data: zval = unsafe { std::mem::zeroed() };
+    let mut data = new_zval();
     crate::server::recv_data(server, request, &raw mut data);
     let [opcode, flags] = ext_flags.to_be_bytes();
     let delivery = swr_v1_ws_message_policy(opcode, settings);
@@ -1102,8 +1100,7 @@ fn message(
     }
     // RFC 7692: the payload is deflated.
     if flags & FLAG_RSV1 != 0 {
-        // SAFETY: a zval is plain data.
-        let mut plain: zval = unsafe { std::mem::zeroed() };
+        let mut plain = new_zval();
         let ok = uncompress(&raw mut plain, string_bytes(&data));
         // SAFETY: the reference recv_data made.
         unsafe { zval_ptr_dtor(&raw mut data) };
@@ -1112,8 +1109,7 @@ fn message(
         }
         data = plain;
     }
-    // SAFETY: a zval is plain data.
-    let mut args = [server_zval(server), unsafe { std::mem::zeroed() }];
+    let mut args = [server_zval(server), new_zval()];
     construct(
         &raw mut args[1],
         zend_long::from(opcode),
@@ -1602,11 +1598,6 @@ fn set_type(target: *mut zval, kind: u32) {
 fn protocol_error(return_value: *mut zval) {
     host::set_last_error(PROTOCOL_ERROR);
     set_type(return_value, IS_NULL);
-}
-
-fn new_zval() -> zval {
-    // SAFETY: all zeroes is `IS_UNDEF`.
-    unsafe { std::mem::zeroed() }
 }
 
 /// The payload as a string zval, inflated when `compressed`.
