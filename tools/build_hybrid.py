@@ -164,7 +164,7 @@ def rust_sources(extra=()):
             raise ValueError('First-party Rust dependency is outside the source snapshot: ' + str(manifest))
         files.add(manifest)
         files.update(path for path in (manifest.parent / 'src').rglob('*') if path.is_file())
-        files.update(Path(target['src_path']) for target in package['targets'] if 'custom-build' in target['kind'])
+        files.update(Path(target['src_path']).resolve() for target in package['targets'] if 'custom-build' in target['kind'])
     return {str(path.relative_to(ROOT)): digest(path) for path in sorted(files)}
 
 
