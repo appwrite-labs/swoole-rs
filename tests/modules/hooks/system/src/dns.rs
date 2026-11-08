@@ -219,7 +219,7 @@ struct StringView {
 
 #[link(name = "swoole")]
 unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole9coroutine10dns_lookupEPKcid"]
+    #[link_name = "_ZN6swoole9coroutine10dns_lookupB5cxx11EPKcid"]
     fn dns_lookup(domain: *const c_char, family: c_int, timeout: f64) -> CxxVector;
     #[link_name = "_ZN6swoole9coroutine15get_ip_by_hostsERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"]
     fn get_ip_by_hosts(domain: *const CxxString) -> CxxString;
