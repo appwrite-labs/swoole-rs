@@ -51,7 +51,7 @@ HTTP1_SERVER_RUST = ['get', 'reset_connection', 'heartbeat_check_interval', 'idl
                      'dispatch_func_return_error_worker_id', 'http_range', 'http_range2', 'fail']
 NODE_WS = 'needs Node.js and its ws package'
 CORE_TESTS = {
-    'reactor': (['reactor/base.cpp', 'network/socket.cpp'],
+    'reactor': (['network/socket.cpp'],
                 {'socket.make_server_socket': "expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's kernel returns EPROTONOSUPPORT",
                  'socket.connect_sync': NETWORK, 'socket.fail': NETWORK}),
     'http': (['server/http_server.cpp'],
@@ -406,6 +406,13 @@ def plan(args, reports):
                '--exclude', 'client.async_tcp_socks5_proxy_handshake_fail=expects www.baidu.com:80 to time out a SOCKS5 greeting',
                *[arg for name in CLIENT_PROXY for arg in ['--exclude', f'client.{name}={PROXY}']],
                *report('hooks-system-rust'))
+    if integrate and 'reactor' in modules and sys.platform.startswith('linux'):
+        # core-tests/src/reactor/base.cpp, ported to Rust over the hybrid's libswoole.so.
+        script('reactor-base-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
+               '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--build-root', ROOT / 'target/native-originals/reactor-base', '--jobs', args.jobs,
+               '--package', ROOT / 'tests/modules/reactor/base', '--fixture', ROOT / 'tests/modules/reactor/base/fixture.cc',
+               *report('reactor-base-rust'))
     if integrate and 'http' in modules and sys.platform.startswith('linux'):
         # core-tests/src/server/http_server.cpp's server TESTs, ported to Rust over the hybrid's libswoole.so.
         script('http-server-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',

@@ -53,23 +53,6 @@ static inline void init_settings(Settings *settings) { *settings = sw_rs_http2_d
         ('pool.dispatch_sync(data.str, data.length);', '(swr_v1_process_pool_ipc_send_sync(pool.ipc_, data.str, data.length) ? SW_OK : SW_ERR);'),
         ('pool.stream_info_->socket->shutdown(SHUT_RDWR);',
          'static_cast<swoole::network::Socket *>(swr_v1_process_pool_ipc_listener(pool.ipc_))->shutdown(SHUT_RDWR);')],
-    # The global hook table is Rust's, not SwooleG.hooks. Each case runs in its own process, which
-    # starts with no hooks and ends in swoole_clean, so the save, reset and restore have nothing to do.
-    'core-tests/src/reactor/base.cpp': [
-        ('''    void *previous_hook = SwooleG.hooks[SW_GLOBAL_HOOK_ON_REACTOR_DESTROY];
-    SwooleG.hooks[SW_GLOBAL_HOOK_ON_REACTOR_DESTROY] = nullptr;
-    ON_SCOPE_EXIT {
-        delete static_cast<std::list<Callback> *>(SwooleG.hooks[SW_GLOBAL_HOOK_ON_REACTOR_DESTROY]);
-        SwooleG.hooks[SW_GLOBAL_HOOK_ON_REACTOR_DESTROY] = previous_hook;
-    };
-''', ''),
-        ('''    ON_SCOPE_EXIT {
-        delete static_cast<std::list<Callback> *>(SwooleG.hooks[SW_GLOBAL_HOOK_ON_REACTOR_CREATE]);
-        delete static_cast<std::list<Callback> *>(SwooleG.hooks[SW_GLOBAL_HOOK_ON_REACTOR_DESTROY]);
-        SwooleG.hooks[SW_GLOBAL_HOOK_ON_REACTOR_CREATE] = nullptr;
-        SwooleG.hooks[SW_GLOBAL_HOOK_ON_REACTOR_DESTROY] = nullptr;
-    };
-''', '')],
 }
 def write_changed(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
