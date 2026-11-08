@@ -667,7 +667,7 @@ const SSL_EMPTY_PEER_CERTIFICATE: c_int = 1013;
 ///
 /// # Safety
 /// `host` holds `length` bytes followed by a NUL.
-unsafe fn assign(
+pub(crate) unsafe fn assign(
     address: &mut SocketAddress,
     kind: c_int,
     host: *const c_char,
@@ -766,7 +766,7 @@ pub unsafe extern "C" fn bind_cstr(this: *mut c_void, host: *const c_char, port:
     unsafe { bind_host(this, host, length, port) }
 }
 
-unsafe extern "C" fn put_host(out: *mut c_void, data: *const c_char, length: usize) {
+pub(crate) unsafe extern "C" fn put_host(out: *mut c_void, data: *const c_char, length: usize) {
     // SAFETY: `data` holds `length` bytes.
     let data = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), length) };
     // SAFETY: `out` is the caller's Vec, live for the call.

@@ -81,6 +81,16 @@ impl ProxyState {
         // SAFETY: the caller lends the stable, synchronized inline string slot.
         unsafe { swr_v1_core_string_view(slot) }
     }
+    /// Sets the string at `index` (0 host, 1 username, 2 password, 3 target host):
+    /// `swr_v1_core_string_set`'s status, or -2 past the four slots.
+    /// # Safety
+    /// self is live and exclusively lent; no view of that string is in use.
+    pub unsafe fn set_string(&self, index: usize, value: &[u8]) -> i32 {
+        self.strings.get(index).map_or(-2, |slot| {
+            // SAFETY: the caller lends the slot exclusively; `value` is readable.
+            unsafe { swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len()) }
+        })
+    }
     /// # Safety
     /// self is a SOCKS owner, exclusively lent for packet writes.
     pub unsafe fn buffer(&self) -> *mut u8 {

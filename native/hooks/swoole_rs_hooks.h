@@ -157,53 +157,6 @@ void swr_v1_hook_socket_state_free(swr_v1_hook_socket_state *state);
 swr_v1_hook_socket_flags_t swr_v1_hook_socket_flags(const swr_v1_hook_socket_state *state);
 void swr_v1_hook_socket_set_flags(swr_v1_hook_socket_state *state, swr_v1_hook_socket_flags_t flags);
 void swr_v1_hook_socket_connect(swr_v1_hook_socket_state *state);
-/* Socket::connect(host, port), whole (crates/hooks/src/connect.rs). family is AF_INET/AF_INET6
- * for an IPv4/IPv6 socket, else 0; proxy 0 none, 1 SOCKS5, 2 HTTP. set_err(-1) is set_err();
- * set_err_text with null text uses swoole_strerror(code). set_host stores the connect target
- * (0), the TLS host name (1) or the proxy's target, making the proxy the connect target (2).
- * socks5_step: -1 failed, 0 continue, 1 ready. */
-typedef struct {
-    void *context;
-    int domain, family, proxy;
-    bool http_handshake, ssl;
-    bool (*available)(void *);
-    void (*set_err)(void *, int code);
-    void (*set_err_text)(void *, int code, const char *text, size_t length);
-    int (*last_error)(void);
-    void (*set_host)(void *, int which, const char *host, size_t length, int port);
-    const char *(*connect_host)(void *, size_t *length);
-    bool (*reinit)(void *, int type);
-    bool (*assign)(void *);
-    bool (*bad_host)(void);
-    bool (*lookup)(void *);
-    bool (*connect)(void *);
-    ssize_t (*send)(void *, const char *buffer, size_t length);
-    ssize_t (*recv)(void *, char *buffer, size_t length);
-    ssize_t (*socks5_negotiate)(void *, const char **buffer);
-    int (*socks5_step)(void *, const char *reply, size_t length);
-    size_t (*http_request)(void *, const char **buffer);
-    ssize_t (*http_response)(void *, bool *accepted);
-    void (*http_done)(void *, bool received);
-    void (*client)(void *);
-    bool (*handshake)(void *);
-} swr_v1_hook_connect_ops;
-bool swr_v1_hook_connect_host(const swr_v1_hook_connect_ops *ops, const char *host, size_t length, int port);
-/* Socket::ssl_handshake up to marking it handshaked. mode 0 client (step: ssl_connect() < 0 ? -1
- * : ssl_state), 1 server (step: ssl_accept()), 2 a step that finishes by itself (1 done, 0 again,
- * -1 failed). wait(fresh) waits to read under a timer of its own, else the handshake's one timer. */
-typedef struct {
-    void *context;
-    int mode;
-    bool handshaked, context_ready, verify_peer;
-    bool (*available)(void *);
-    void (*set_err)(void *, int code);
-    bool (*context_create)(void *);
-    bool (*create)(void *);
-    int (*step)(void *);
-    bool (*wait)(void *, bool fresh);
-    bool (*verify)(void *);
-} swr_v1_hook_tls_ops;
-bool swr_v1_hook_ssl_handshake(const swr_v1_hook_tls_ops *ops);
 /* TimeoutSetter: save and set (restore false), or restore, each SW_TIMEOUT_* type in types;
  * original holds timeout_type_list's four entries. */
 typedef struct {
