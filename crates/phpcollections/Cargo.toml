@@ -11,12 +11,15 @@ crate-type = ["rlib"]
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-memory", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-memory", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php",
+       "dep:swoole-rs-corebase", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php"]
 
 [dependencies]
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 swoole-rs-memory = { path = "../memory", optional = true }
+swoole-rs-corebase = { path = "../corebase", optional = true }
+swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 
 [lints]
 workspace = true

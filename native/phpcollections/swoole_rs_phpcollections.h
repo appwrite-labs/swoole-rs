@@ -5,11 +5,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Swoole\Coroutine\Channel and Swoole\Table (Rust): C++ lends the coroutine
- * Channel's operations and the Table's allocation, hash and error reports;
- * Rust registers the classes and its zim_swoole_channel_coro_* and
- * zim_swoole_table_* methods are the tables' handlers. */
-struct _zend_class_entry;
+/* Swoole\Coroutine\Channel (Rust): C++ lends the coroutine Channel's
+ * operations; Rust registers the class and its zim_swoole_channel_coro_*
+ * methods are its handlers. Swoole\Table is all Rust (php_swoole_table_minit). */
 struct swr_v1_phpcollections_channel_ops {
     void *(*create)(size_t capacity);
     void (*destroy)(void *chan);
@@ -28,18 +26,6 @@ struct swr_v1_phpcollections_channel_ops {
 void swr_v1_phpcollections_channel_minit(int32_t module_number,
                                          uint8_t use_shortname,
                                          const struct swr_v1_phpcollections_channel_ops *ops);
-struct swr_v1_phpcollections_table_ops {
-    void *(*make)(uint32_t rows, float conflict);
-    uint8_t (*create)(void *table);
-    void (*destroy)(void *table);
-    void (*unconstructed)(void);
-    void (*fatal)(int32_t level, const char *message);
-    void (*key_too_long)(const char *key);
-    void (*set_failed)(const char *key, int32_t length);
-    void (*no_column)(const char *column);
-};
-void swr_v1_phpcollections_table_minit(struct _zend_class_entry *exception,
-                                       const struct swr_v1_phpcollections_table_ops *ops);
 #ifdef __cplusplus
 }
 #endif
