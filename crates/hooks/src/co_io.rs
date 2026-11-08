@@ -206,7 +206,7 @@ unsafe fn event_str(socket: *const CoSocket, event: u32) -> &'static CStr {
 ///
 /// # Safety
 /// `socket` is a live record.
-unsafe fn check_bound(socket: *const CoSocket, event: u32) {
+pub(crate) unsafe fn check_bound(socket: *const CoSocket, event: u32) {
     // SAFETY: as the caller promises.
     let cid = unsafe { bound_cid(socket, event) };
     if cid != 0 {

@@ -26,7 +26,7 @@ odbc = ["dep:swoole-rs-odbc"]
 firebird = ["dep:swoole-rs-firebird"]
 sqlite = ["dep:swoole-rs-sqlite"]
 curl = ["dep:swoole-rs-curl"]
-ssh2 = ["dep:swoole-rs-ssh2"]
+ssh2 = ["dep:swoole-rs-ssh2", "swoole-rs-hooks/ssh2"]
 
 [dependencies]
 swoole-rs-websocket = { path = "../websocket", features = ["upstream-symbols"] }

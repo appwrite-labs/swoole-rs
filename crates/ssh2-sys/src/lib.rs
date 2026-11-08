@@ -54,6 +54,7 @@ pub type KbdintResponse = unsafe extern "C" fn(
 );
 
 unsafe extern "C" {
+    pub fn libssh2_session_abstract(session: *mut LIBSSH2_SESSION) -> *mut *mut c_void;
     pub fn libssh2_session_block_directions(session: *mut LIBSSH2_SESSION) -> c_int;
     pub fn libssh2_session_last_errno(session: *mut LIBSSH2_SESSION) -> c_int;
     pub fn libssh2_session_handshake(session: *mut LIBSSH2_SESSION, sock: c_int) -> c_int;

@@ -38,6 +38,8 @@ pub mod socket_map;
 pub mod socket_members;
 pub mod socket_tls;
 pub mod socket_wait;
+#[cfg(feature = "ssh2")]
+pub mod ssh2;
 pub mod stdio;
 pub mod timers;
 pub mod transfer;

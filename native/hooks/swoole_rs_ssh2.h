@@ -1,6 +1,8 @@
 #ifndef SWOOLE_RS_SSH2_H
 #define SWOOLE_RS_SSH2_H
 #include <stdbool.h>
+#include <libssh2.h>
+#include <libssh2_sftp.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -8,8 +10,7 @@ extern "C" {
  * blocking libssh2 call the bundled ext/ssh2 makes, retried while libssh2 says
  * EAGAIN, the coroutine waiting on the session's socket in between.
  * php_swoole_ssh2_hook.h calls swoole_<function>(ops, session, arguments...)
- * once no other coroutine is bound to the socket. Include after libssh2.h and
- * libssh2_sftp.h. */
+ * once no other coroutine is bound to the socket. */
 struct swr_v1_ssh2_ops {
     /* Park the coroutine until event (SW_EVENT_READ/WRITE) on the session's
      * socket: false if the wait failed. */
@@ -79,7 +80,43 @@ int swoole_libssh2_sftp_mkdir(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION
 int swoole_libssh2_sftp_rmdir(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SFTP * sftp, const char * path);
 int swoole_libssh2_userauth_publickey_fromfile(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION * session, const char * username, const char * publickey, const char * privatekey, const char * passphrase);
 int swoole_libssh2_userauth_keyboard_interactive(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION * session, const char * username, LIBSSH2_USERAUTH_KBDINT_RESPONSE_FUNC((*response_callback)));
+#ifdef PHP_FUNCTION
+/* What the bundled ext/ssh2 and native/phphelpers/module.cc share: its PHP
+ * functions, in crates/phpstubs' order, and its module hooks. */
+#define SWR_SSH2_FUNCTIONS(X) \
+    X(ssh2_connect) X(ssh2_disconnect) X(ssh2_methods_negotiated) X(ssh2_fingerprint) \
+    X(ssh2_auth_none) X(ssh2_auth_password) X(ssh2_auth_pubkey_file) X(ssh2_auth_pubkey) \
+    X(ssh2_auth_hostbased_file) X(ssh2_forward_listen) X(ssh2_forward_accept) X(ssh2_shell) \
+    X(ssh2_shell_resize) X(ssh2_exec) X(ssh2_tunnel) X(ssh2_scp_recv) \
+    X(ssh2_scp_send) X(ssh2_fetch_stream) X(ssh2_send_eof) X(ssh2_sftp) \
+    X(ssh2_sftp_rename) X(ssh2_sftp_unlink) X(ssh2_sftp_mkdir) X(ssh2_sftp_rmdir) \
+    X(ssh2_sftp_chmod) X(ssh2_sftp_stat) X(ssh2_sftp_lstat) X(ssh2_sftp_symlink) \
+    X(ssh2_sftp_readlink) X(ssh2_sftp_realpath) X(ssh2_publickey_init) X(ssh2_publickey_add) \
+    X(ssh2_publickey_remove) X(ssh2_publickey_list) X(ssh2_auth_agent)
+#define SWR_SSH2_DECLARE(name) PHP_FUNCTION(name);
+SWR_SSH2_FUNCTIONS(SWR_SSH2_DECLARE)
+int php_swoole_ssh2_minit(int module_number);
+int php_swoole_ssh2_mshutdown(void);
+void php_swoole_ssh2_minfo(void);
+/* Rust (crates/hooks/src/ssh2.rs): the ops for session's socket once no other
+ * coroutine is bound to it, and the socket's timeout, whole seconds of
+ * timeout_ms. */
+const struct swr_v1_ssh2_ops *swr_v1_ssh2_bound(LIBSSH2_SESSION *session);
+void swr_v1_ssh2_set_socket_timeout(LIBSSH2_SESSION *session, int timeout_ms);
+#define ssh2_bound swr_v1_ssh2_bound
+#define ssh2_set_socket_timeout swr_v1_ssh2_set_socket_timeout
+#endif
 #ifdef __cplusplus
 }
+#endif
+#if defined(__cplusplus) && defined(PHP_FUNCTION)
+/* An ext/ssh2 session's abstract: its userspace callbacks and its socket. */
+struct php_ssh2_session_data {
+    zval *ignore_cb;
+    zval *debug_cb;
+    zval *macerror_cb;
+    zval *disconnect_cb;
+    SocketImpl *socket;
+};
 #endif
 #endif
