@@ -1,6 +1,6 @@
 // What the Rust cases in src/ can't express, compiled into the hybrid tree's lib-swoole by
 // tests/modules/hooks/system.py (--fixture): the std::function arguments of
-// coroutine::run, Coroutine::bailout and swoole_event_defer, and the repo-owned witnesses
+// coroutine::run, Coroutine::bailout, swoole_event_defer and the timer, and the repo-owned witnesses
 // that check C++ copies and std::bad_alloc containment, which only C++ can throw (formerly
 // tests/modules/coroutine/lifetime.cpp, tests/modules/hooks/socket_scopes.cpp and
 // dns_request_owner.cpp, unchanged but for these macros in place of GoogleTest's).
@@ -8,6 +8,7 @@
 #include "swoole_coroutine_system.h"
 #include "swoole_rs_coroutine_socket.h"
 #include "swoole_async.h"
+#include "swoole_timer.h"
 
 #include <arpa/inet.h>
 #include <cstdio>
@@ -131,6 +132,33 @@ void swr_case_bailout(void (*fn)(void *), void *data) {
 // `swoole_event_defer(fn, data)`.
 void swr_case_event_defer(void (*fn)(void *), void *data) {
     swoole_event_defer(fn, data);
+}
+
+// The std::function arguments of swoole_timer_add/after/tick and TimerNode::destructor
+// (timer.rs), and SwooleTG.timer, a C++ thread_local.
+typedef void (*swr_case_timer_fn)(void *, TimerNode *);
+TimerNode *swr_case_timer_add(long ms, bool persistent, swr_case_timer_fn fn, void *data) {
+    return swoole_timer_add(ms, persistent, [fn, data](Timer *, TimerNode *tnode) { fn(data, tnode); }, nullptr);
+}
+long swr_case_timer_after(long ms, swr_case_timer_fn fn, void *data) {
+    return swoole_timer_after(ms, [fn, data](Timer *, TimerNode *tnode) { fn(data, tnode); }, nullptr);
+}
+long swr_case_timer_tick(long ms, swr_case_timer_fn fn, void *data) {
+    return swoole_timer_tick(ms, [fn, data](Timer *, TimerNode *tnode) { fn(data, tnode); }, nullptr);
+}
+void swr_case_timer_set_destructor(TimerNode *tnode, swr_case_timer_fn fn, void *data) {
+    tnode->destructor = [fn, data](TimerNode *node) { fn(data, node); };
+}
+Timer *swr_case_timer_exchange(Timer *timer) {
+    Timer *previous = SwooleTG.timer;
+    SwooleTG.timer = timer;
+    return previous;
+}
+size_t swr_case_timer_count() {
+    return sw_timer()->count();
+}
+void swr_case_timer_reinit() {
+    sw_timer()->reinit();
 }
 
 // rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait, in a coroutine.

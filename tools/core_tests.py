@@ -27,9 +27,6 @@ SELECTION = 'file(GLOB_RECURSE core_test_files core-tests/src/*.cpp thirdparty/l
 # Upstream's test helpers (not assertions) that write state the hybrid moved behind accessors.
 ADAPTATIONS = {
     'core-tests/src/_lib/process.cpp': [('worker.pid = pid;', 'swr_v1_worker_set_pid(reinterpret_cast<swr_v1_worker_record *>(&worker), pid);')],
-    # swoole::realtime_add is Rust's (crates/timer); the hybrid's swoole.h no longer declares it.
-    'core-tests/src/os/timer.cpp': [('TEST(timer, realtime_add) {',
-                                     'namespace swoole { void realtime_add(timespec *time, int64_t add_msec); }\nTEST(timer, realtime_add) {')],
     # The raw-bytes dispatch_sync overload and the stream listener are crates/process exports, not members.
     'core-tests/src/os/process_pool.cpp': [
         ('TEST(process_pool, tcp_raw) {', 'extern "C" bool swr_v1_process_pool_ipc_send_sync(const swr_v1_process_pool_ipc *, const char *, uint32_t);\n'

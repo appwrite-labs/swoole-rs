@@ -278,7 +278,7 @@ unsafe extern "C" {
 }
 
 /// `ERR_put_error(lib, func, reason, __FILE__, __LINE__)`, OpenSSL 3's macro.
-fn err_put_error(lib: c_int, reason: c_int) {
+pub(super) fn err_put_error(lib: c_int, reason: c_int) {
     // SAFETY: OpenSSL's per-thread error queue; static strings and no format.
     unsafe {
         ERR_new();

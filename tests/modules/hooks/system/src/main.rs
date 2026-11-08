@@ -1,6 +1,7 @@
 //! Upstream's `core-tests/src/coroutine/system.cpp` (hook.cpp in hook.rs, socket.cpp in socket.rs,
 //! network/client.cpp in tests/modules/clients/client.rs, network/dns.cpp in dns.rs,
-//! network/address.cpp in address.rs and network/socket.cpp in network_socket.rs), one
+//! network/address.cpp in address.rs, network/socket.cpp in network_socket.rs, os/timer.cpp
+//! in timer.rs and protocol/ssl.cpp in ssl.rs), one
 //! Rust function per TEST with the same inputs and expected values, over the
 //! hybrid's libswoole.so: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
@@ -29,6 +30,8 @@ mod base;
 mod hook;
 mod network_socket;
 mod socket;
+mod ssl;
+mod timer;
 
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
@@ -905,6 +908,8 @@ const SUITES: &[(&str, Cases)] = &[
     ("rust_coroutine_lifetime", base::LIFETIME_CASES),
     ("rust_dns_request", socket::DNS_REQUEST_CASES),
     ("socket", network_socket::CASES),
+    ("timer", timer::CASES),
+    ("ssl", ssl::CASES),
 ];
 
 fn main() {

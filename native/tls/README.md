@@ -2,11 +2,10 @@
 
 Feature bit 262144 (`tls`). `crates/tls` defines `swoole_ssl_init`/`destroy`/`get_error`
 and `SSLContext::create` under their upstream symbols, and `dtls::Session` is a Rust
-record. [swoole_ssl.h](swoole_ssl.h) keeps the `SSLContext` members C++ and the
-compiled core-tests still use; the C declarations are in
+record. [swoole_ssl.h](swoole_ssl.h) keeps the `SSLContext` members C++ still uses; the C declarations are in
 [swoole_rs_tls_owner.h](swoole_rs_tls_owner.h).
-Tests: `crates/tls` unit tests, upstream's `protocol/ssl.cpp` GoogleTests on both engines
-(`tls-native-originals`) and the ssl/dtls PHPT families. Requires OpenSSL 3 (rejected at compile
+Tests: `crates/tls` unit tests, upstream's `protocol/ssl.cpp` TESTs ported to Rust
+(`ssl.*` in `hooks-system-rust`, tests/modules/hooks/README.md) and the ssl/dtls PHPT families. Requires OpenSSL 3 (rejected at compile
 time otherwise).
 
 ## SSLContext (`crates/tls/src/context.rs`, `owned.rs`)
