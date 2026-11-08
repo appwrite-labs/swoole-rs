@@ -1328,13 +1328,13 @@ unsafe fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The ops that call a `Server` method crates/server or crates/process defines,
-/// or else `None`. `ProcessPool`'s methods and the process factory stay native:
-/// their runners link the C++ event loop and timer into whatever reaches them,
-/// and the server's fault fixture and unit tests link no C++.
+/// or else `None`. `ProcessPool`'s methods and the process factory are
+/// [`factory_ops`]', which only the hybrid builds: their runners link the C++
+/// event loop and timer, and the server's fault fixture and unit tests link no C++.
 ///
 /// # Safety
 /// As [`answer`]; the server is at the point of its life where it makes `op`.
-unsafe fn lifecycle(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+unsafe fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let serv = o.ctx.serv;
     Some(match op {
         // SAFETY: per the caller, for this and each call below.
@@ -1432,7 +1432,7 @@ unsafe fn lifecycle(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 ///
 /// # Safety
 /// As [`answer`].
-unsafe fn effects(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     /// `THREAD_MASTER`.
     const THREAD_MASTER: u8 = 1;
     let reactor = swoole_rs_corebase::thread_reactor;
@@ -1601,7 +1601,7 @@ struct DgramPacket {
 ///
 /// # Safety
 /// As [`answer`].
-unsafe fn sockets(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+unsafe fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     /// `SW_WORKER_IDLE`.
     const WORKER_IDLE: u8 = 2;
     Some(match op {
@@ -1692,7 +1692,7 @@ unsafe fn sockets(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// # Safety
 /// As [`answer`].
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-unsafe fn native(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+unsafe fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_COMMAND_HANDLER, OP_EVENT_FREE, OP_EVENT_WAIT, OP_LC_CLEAR_ERROR, OP_MARK_SHUTDOWN,
         OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SSL_CREATE, OP_ST_SOCK_FREE, OP_ST_TIMER_DEL,
@@ -1822,7 +1822,7 @@ unsafe fn native(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// # Safety
 /// As [`answer`]; the server is at the point of its startup where it makes `op`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-unsafe fn startup(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::callbacks::CB_START;
     use crate::ops::{
         OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_LC_DAEMON, OP_LC_FACTORY_START,
@@ -2005,7 +2005,7 @@ unsafe fn startup(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     clippy::too_many_lines,
     reason = "one arm per op, as master.cc's switch was"
 )]
-unsafe fn closing(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+unsafe fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::callbacks::{CB_BEFORE_SHUTDOWN, CB_DISPATCH_FUNC, CB_SHUTDOWN};
     use crate::ops::{
         OP_ACCEPT_TIMER, OP_BEFORE_SHUTDOWN, OP_CLOSE_CONNECTION, OP_CLOSE_SOCKET, OP_CONN_INIT,
@@ -2326,7 +2326,7 @@ struct SendfileTask {
 /// # Safety
 /// As [`answer`].
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-unsafe fn sends(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+unsafe fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_ACCEPT_EVENT, OP_BASE_PASS, OP_FEEDBACK_SEND, OP_FEEDBACK_THREAD, OP_FORWARD,
         OP_SC_NOTIFY_FULL, OP_SC_SENDFILE, OP_SEND_HERE, OP_SEND_INCOMING, OP_SEND_SHUTDOWN,
@@ -2461,7 +2461,8 @@ unsafe fn sends(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             };
             u64::from(factory_finish(o, &mut send))
         }
-        _ => return None,
+        // SAFETY: per the caller.
+        op => return unsafe { factory_ops(o, op, arg) },
     })
 }
 
@@ -2503,9 +2504,151 @@ fn factory_finish(o: &Objects<'_>, send: &mut SendData) -> bool {
     }
 }
 
+/// The ops over the server's factory and task pool: the process factory's and
+/// `ProcessPool`'s methods (crates/process), the factory's virtual members and
+/// the task notify pipes; else `None`.
+///
+/// # Safety
+/// As [`answer`].
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+unsafe fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    use crate::ops::{
+        OP_DESTROY_TASK_WORKERS, OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_FACTORY_SHUTDOWN,
+        OP_NEW_BASE_FACTORY, OP_PIPE_TO_WORKER, OP_TASK_PACK, OP_TASK_PIPE, OP_TASK_POOL_CREATE,
+        OP_TASK_POOL_LISTEN, OP_TASK_POOL_SETUP,
+    };
+    use crate::thread_ops::{FACTORY_NOTIFY, factory_call, factory_end, factory_shutdown};
+    use swoole_rs_process::{methods as pool, task_file, workers::factory_methods as process};
+    /// `SW_IPC_MSGQUEUE`, `SW_TASK_WORKER`, `SW_PIPE_MASTER | SW_PIPE_NONBLOCK` and
+    /// `sizeof(BaseFactory)`.
+    const IPC_MSGQUEUE: u64 = 2;
+    const SW_TASK_WORKER: c_int = 4;
+    const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
+    const BASE_FACTORY_SIZE: usize = 2 * size_of::<usize>();
+    // SAFETY: the C++ runtime's and master.cc's.
+    unsafe extern "C-unwind" {
+        #[link_name = "_Znwm"]
+        fn operator_new(size: usize) -> *mut core::ffi::c_void;
+        #[link_name = "_ZN6swoole11BaseFactoryC1EPNS_6ServerE"]
+        fn base_factory_new(this: *mut core::ffi::c_void, serv: *mut core::ffi::c_void);
+        /// crates/process' `ProcessPool::listen(socket_file, backlog)`.
+        #[link_name = "_ZNK6swoole11ProcessPool6listenEPKci"]
+        fn pool_listen(
+            pool: *const core::ffi::c_void,
+            file: *const c_char,
+            backlog: c_int,
+        ) -> c_int;
+    }
+    let serv = o.ctx.serv;
+    let config = o.config();
+    Some(match op {
+        OP_CREATE_FACTORY => {
+            // SAFETY: the live server, at startup.
+            config.factory_ = unsafe { process::create_process_factory(serv) };
+            u64::from(!config.factory_.is_null())
+        }
+        OP_DESTROY_FACTORY => {
+            // SAFETY: the live server, whose process factory shutdown destroys.
+            unsafe { process::destroy_process_factory(serv) };
+            0
+        }
+        OP_DESTROY_TASK_WORKERS => {
+            // SAFETY: as above.
+            unsafe { crate::worker_methods::destroy_task_workers(serv) };
+            0
+        }
+        OP_TASK_POOL_CREATE => {
+            let task_pool = o.task_pool();
+            // SAFETY: the server's task pool, reset to `{}` (no member has an initializer).
+            unsafe { task_pool.write_bytes(0, 1) };
+            #[expect(clippy::cast_possible_truncation, reason = "C++'s key_t conversion")]
+            let key = if arg == IPC_MSGQUEUE {
+                config.message_queue_key as c_int
+            } else {
+                0
+            };
+            #[expect(clippy::cast_possible_truncation, reason = "an swIPCMode")]
+            // SAFETY: the reset pool.
+            let created =
+                unsafe { pool::create(task_pool, config.task_worker_num, key, arg as c_int) };
+            u64::from(created >= 0)
+        }
+        OP_TASK_POOL_SETUP => {
+            let task_pool = o.task_pool();
+            // SAFETY: the created task pool, for each call.
+            unsafe {
+                pool::set_max_request(
+                    task_pool,
+                    config.task_max_request,
+                    config.task_max_request_grace,
+                );
+            };
+            // SAFETY: as above.
+            unsafe { pool::set_start_id(task_pool, config.worker_num.cast_signed()) };
+            // SAFETY: as above.
+            unsafe { pool::set_type(task_pool, SW_TASK_WORKER) };
+            0
+        }
+        OP_TASK_POOL_LISTEN => {
+            // SAFETY: the created task pool and the NUL-terminated path `arg` lends.
+            sign(unsafe { pool_listen(o.task_pool().cast(), ptr_of(arg), 2048) })
+        }
+        OP_TASK_PIPE => {
+            let ready = o.state.push_task_pipe();
+            if !ready {
+                sw_shm_free(config.task_results);
+            }
+            u64::from(ready)
+        }
+        OP_FACTORY_SHUTDOWN => {
+            factory_shutdown(o.state);
+            0
+        }
+        OP_NEW_BASE_FACTORY => {
+            // SAFETY: `new BaseFactory(serv)`: fresh storage, constructed once.
+            let factory = unsafe { operator_new(BASE_FACTORY_SIZE) };
+            // SAFETY: as above.
+            unsafe { base_factory_new(factory, serv) };
+            o.ctx.object = factory;
+            0
+        }
+        OP_FACTORY_END => u64::from(factory_end(o.state, o.ctx.session_id, o.ctx.number)),
+        OP_FACTORY_NOTIFY => u64::from(factory_call(o.state, FACTORY_NOTIFY, o.ctx.object)),
+        OP_TASK_PACK => {
+            let length = usize::try_from(o.ctx.offset).unwrap_or(0);
+            // SAFETY: the `EventData` and the bytes `Server::send_pipe_message` lends.
+            u64::from(unsafe { task_file::task_pack(o.ctx.object.cast(), o.ctx.data, length) })
+        }
+        OP_PIPE_TO_WORKER => {
+            // SAFETY: the live server and the worker id the caller passes.
+            let worker = unsafe {
+                crate::view::worker(serv, u16::try_from(o.ctx.number).unwrap_or(u16::MAX))
+            };
+            // SAFETY: a live worker and the message `send_pipe_message` lends.
+            let sent = unsafe {
+                swoole_rs_process::workers::entry::send_to_worker_from_worker(
+                    serv,
+                    worker,
+                    o.ctx.object.cast(),
+                    o.ctx.length as usize,
+                    PIPE_MASTER_NONBLOCK,
+                )
+            };
+            u64::from(sent > 0)
+        }
+        _ => return None,
+    })
+}
+
+/// A pointer an op passes in its argument.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+fn ptr_of<T>(arg: u64) -> *const T {
+    core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0))
+}
+
 /// Outside the hybrid, whose unit tests link no C++, native code keeps these.
 #[cfg(not(all(feature = "upstream-symbols", not(test))))]
-unsafe fn native(_: &Objects<'_>, _: u32, _: u64) -> Option<u64> {
+unsafe fn native(_: &mut Objects<'_>, _: u32, _: u64) -> Option<u64> {
     None
 }
 
