@@ -1,10 +1,9 @@
-//! `swoole::redis::recv_packet` under its upstream symbol: [`swr_v1_resp_recv`] over
-//! the connection's own records. Behind `upstream-symbols`, since the socket's
-//! receive is tls's (OpenSSL), which builds without it (the fuzzers) don't link.
-use crate::resp_recv::{ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespIo, swr_v1_resp_recv};
+//! `swoole::redis::recv_packet`, the redis port's read: [`swr_v1_resp_recv`] over
+//! the connection's own records.
 use core::ffi::{c_int, c_void};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
+use swoole_rs_protocols::{ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespIo, swr_v1_resp_recv};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_server::ConnectionRecord;
 
@@ -81,19 +80,25 @@ unsafe extern "C" fn connection_dispatch(context: *mut c_void, length: usize) ->
     c_int::from(unsafe { (*c.socket).removed } != 0)
 }
 
-/// `int redis::recv_packet(Protocol *, Connection *, String *)`.
+/// `int redis::recv_packet(Protocol *, Connection *, String *)`. Only upstream's
+/// core-tests (protocol/redis.cpp) call it by its upstream symbol.
 ///
 /// # Safety
 /// `protocol`, `conn` and its socket, and `buffer` are live; `conn->object` is
 /// null or this receive's request.
-#[unsafe(export_name = "_ZN6swoole5redis11recv_packetEPNS_8ProtocolEPNS_10ConnectionEPNS_6StringE")]
-pub unsafe extern "C" fn recv_packet(
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(
+        export_name = "_ZN6swoole5redis11recv_packetEPNS_8ProtocolEPNS_10ConnectionEPNS_6StringE"
+    )
+)]
+pub(crate) unsafe extern "C" fn recv_packet(
     protocol: *const Protocol,
-    conn: *mut ConnectionRecord,
+    conn: *mut c_void,
     buffer: *mut CppString,
 ) -> c_int {
     // SAFETY: as the caller promises.
-    let conn = unsafe { &mut *conn };
+    let conn = unsafe { &mut *conn.cast::<ConnectionRecord>() };
     let mut context = Connection {
         protocol,
         socket: conn.socket.cast(),
@@ -124,7 +129,7 @@ pub unsafe extern "C" fn recv_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resp_recv::SW_ERR;
+    use swoole_rs_protocols::SW_ERR;
 
     /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, recv_packet_with_partially_filled_buffer)`.
     #[test]
@@ -153,7 +158,7 @@ mod tests {
         let buffer_size = buffer.size;
 
         assert_eq!(
-            unsafe { recv_packet(&raw const protocol, &raw mut conn, &raw mut buffer) },
+            unsafe { recv_packet(&raw const protocol, (&raw mut conn).cast(), &raw mut buffer) },
             SW_ERR
         );
         assert_eq!(buffer.length, 1);

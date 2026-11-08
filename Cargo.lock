@@ -899,11 +899,9 @@ name = "swoole-rs-protocols"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-reactor",
- "swoole-rs-server",
  "swoole-rs-tls",
 ]
 

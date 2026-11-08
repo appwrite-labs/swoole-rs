@@ -45,12 +45,6 @@ unsafe extern "C" {
         socket: *mut c_void,
         buffer: *mut CppString,
     ) -> c_int;
-    #[link_name = "_ZN6swoole5redis11recv_packetEPNS_8ProtocolEPNS_10ConnectionEPNS_6StringE"]
-    fn redis_recv_packet(
-        protocol: *const Protocol,
-        conn: *mut c_void,
-        buffer: *mut CppString,
-    ) -> c_int;
 }
 
 /// `websocket::STATUS_HANDSHAKE` and `STATUS_ACTIVE`.
@@ -282,7 +276,7 @@ fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
             .as_bytes(),
         ),
         OP_RECV_EOF => receive(c, recv_with_eof_protocol, c.socket.cast()),
-        OP_RECV_REDIS => receive(c, redis_recv_packet, c.conn.cast()),
+        OP_RECV_REDIS => receive(c, crate::resp_recv::recv_packet, c.conn.cast()),
         OP_DISPATCH_TASK | OP_DISPATCH_REQUEST => dispatch(c, op, arg),
         OP_WEBSOCKET_ACTIVATE => {
             let conn = conn();

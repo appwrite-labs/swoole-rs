@@ -285,6 +285,12 @@ def stage_native_sources(source):
             shutil.copyfile(path, source / name)
 
 
+# Headers the hybrid deletes that core-tests still include: the pinned copy stays for them.
+# protocol/{redis,base}.cpp include swoole_redis.h for redis::format/parse, which only the
+# protocols gates' adapter (tests/modules/protocols/redis_reply.inc) defines.
+CORE_TEST_HEADERS = {'include/swoole_redis.h'}
+
+
 def overlay_hybrid_tree(archive, tree):
     """Copy every file the archive's hybrid build patched over `tree`, a pinned checkout (such as
     one staged with upstream's core-tests), and delete the ones it deleted. Returns the CMake
@@ -293,6 +299,8 @@ def overlay_hybrid_tree(archive, tree):
     for directory in (ROOT / 'migration/patches').iterdir():
         for patch in module_patches(directory):
             for name in patch['upstream_paths']:
+                if name in CORE_TEST_HEADERS:
+                    continue
                 if not (source / name).exists():
                     (Path(tree) / name).unlink(missing_ok=True)
                 elif (source / name).read_bytes() != (Path(tree) / name).read_bytes():
