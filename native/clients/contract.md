@@ -4,8 +4,9 @@ Feature bit 1048576 (`clients`). ABI: `docs/clients-resolver-abi-v1.md`,
 `swoole_rs_clients.h`. Patched upstream files: `ext-src/swoole_client.cc`,
 `ext-src/swoole_client_async.cc` and `ext-src/swoole_client_coro.cc`
 (`src/network/client.cc`, `ext-src/php_swoole_client.h`, `src/network/address.cc`,
-`src/network/dns.cc` and `ext-src/swoole_name_resolver.cc` are deleted;
-`native/clients/name_resolver.cc` keeps the resolver list's C++ glue).
+`src/network/dns.cc`, `ext-src/swoole_name_resolver.cc` and `include/swoole_client.h`
+are deleted; `native/clients/name_resolver.cc` keeps the resolver list's C++ glue, and
+`native/clients/swoole_client.h` is the owned `network::Client` header).
 
 Production exports have the prefix `swr_v1_clients_`. A test-only allocation-budget
 symbol is excluded from production artifacts.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real Rust C ABI + native facades: the hybrid build's protocol bodies (hybrid_tree, #796)
+"""Real Rust C ABI + native facades: the hybrid build's protocol bodies (#796)
 versus unchanged pinned ones."""
 import argparse
 from datetime import datetime, timezone
@@ -10,7 +10,6 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.build_hybrid import hybrid_tree
 from tools.harness import ROOT, run_isolated, write_report
 from tools.harness import run_compiler
 
@@ -38,9 +37,8 @@ def main():
     args = parser.parse_args()
     sources = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in TARGETS}
     headers = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in ['include/swoole_proxy.h', 'include/swoole_redis.h']}
-    candidate = hybrid_tree(args.archive)[0]
-    # Only the pinned protocol bodies are read: the candidate's are Rust, which native.cc calls.
-    candidate_proxy_header = (candidate / 'include/swoole_proxy.h').read_text()
+    # Only the pinned protocol bodies are read: the candidate's are Rust, which native.cc calls
+    # through native/protocols/swoole_proxy.h.
     archive = args.archive.resolve(strict=True)
     local = Path(__file__).resolve().parent
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'upstream_pin': PIN,
@@ -70,13 +68,12 @@ def main():
         for name, selected in [('reference', sources), ('candidate', {})]:
             value = bodies(selected, name == 'candidate')
             (tree / f'{name}.inc').write_text(value)
-        (tree/'proxy-candidate.h').write_text(candidate_proxy_header)
         php = sources['ext-src/swoole_redis_server.cc']
         php_loop = php[php.index('    const char *p = Z_STRVAL(zdata);'):php.index('\n    if (command_len >=')]
         (tree / 'php-request-original.inc').write_text(php_loop)
         binary = tree / 'native'
         command = ['c++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unused-function',
-                   '-I' + str(tree), '-I' + str(local), '-I' + str(ROOT / 'native/protocols'), '-I'+str(ROOT/'native/include'),
+                   '-I' + str(tree), '-I' + str(local), '-I' + str(ROOT / 'native/protocols'), '-I'+str(ROOT/'native/include'), '-I' + str(ROOT / 'native/http'),
                    str(local / 'native.cc'), str(archive), '-lc', '-lm']
         if sys.platform.startswith('linux'):
             command += ['-ldl', '-lpthread', '-lrt', '-lutil', '-Wl,--gc-sections']
