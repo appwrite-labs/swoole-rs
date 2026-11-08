@@ -1,8 +1,10 @@
 //! A coroutine's context: its stack and the switch onto it through boost.context's
 //! fcontext (thirdparty/boost/asm). `AddressSanitizer` follows a stack switch only through its
-//! fiber annotations, so they run whenever the process has its runtime.
+//! fiber annotations, so they run whenever the process has its runtime. With
+//! [`THREAD`] in its flags the context is a thread instead (`thread.rs`).
 
 use crate::stack::{swr_v1_context_stack_alloc, swr_v1_context_stack_free};
+use crate::thread::{self, THREAD};
 use core::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::OnceLock;
@@ -12,17 +14,40 @@ use std::sync::OnceLock;
 /// through raw pointers, and neither holds a borrow across a switch.
 #[repr(C)]
 pub struct Context {
-    fctx: *mut c_void,
+    /// The suspended context, or the [`THREAD`] context's thread.
+    pub(crate) fctx: *mut c_void,
     swap_fctx: *mut c_void,
     stack: *mut u8,
     stack_size: u32,
     flags: u32,
-    entry: unsafe extern "C" fn(*mut c_void),
-    data: *mut c_void,
+    pub(crate) entry: unsafe extern "C" fn(*mut c_void),
+    pub(crate) data: *mut c_void,
     /// The stack that last switched in, which `swap_out` returns to (`AddressSanitizer` only).
     asan_bottom: *const c_void,
     asan_size: usize,
-    end: bool,
+    pub(crate) end: bool,
+}
+
+impl Context {
+    /// A [`THREAD`] context's record before its thread starts: no stack.
+    pub(crate) const fn threaded(
+        flags: u32,
+        entry: unsafe extern "C" fn(*mut c_void),
+        data: *mut c_void,
+    ) -> Self {
+        Self {
+            fctx: ptr::null_mut(),
+            swap_fctx: ptr::null_mut(),
+            stack: ptr::null_mut(),
+            stack_size: 0,
+            flags,
+            entry,
+            data,
+            asan_bottom: ptr::null(),
+            asan_size: 0,
+            end: false,
+        }
+    }
 }
 
 #[repr(C)]
@@ -68,7 +93,8 @@ fn asan() -> Option<(StartSwitch, FinishSwitch)> {
 }
 
 /// Allocates the stack and makes the context that runs `entry(data)` on it. Out of
-/// memory is upstream's fatal error, then exit 254.
+/// memory is upstream's fatal error, then exit 254. A [`THREAD`] context starts
+/// its thread instead and returns the errno when that fails, else 0.
 ///
 /// # Safety
 /// `ctx` is writable and stays at this address until [`swr_v1_context_free`].
@@ -79,7 +105,13 @@ pub unsafe extern "C" fn swr_v1_context_init(
     flags: u32,
     entry: unsafe extern "C" fn(*mut c_void),
     data: *mut c_void,
-) {
+) -> c_int {
+    if flags & THREAD != 0 {
+        // SAFETY: `ctx` is writable, as the caller promises.
+        unsafe { ctx.write(Context::threaded(flags, entry, data)) };
+        // SAFETY: initialized above; it stays put until free.
+        return unsafe { thread::start(ctx) };
+    }
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream keeps the size as uint32_t"
@@ -114,12 +146,18 @@ pub unsafe extern "C" fn swr_v1_context_init(
     };
     // SAFETY: `ctx` is writable, as the caller promises.
     unsafe { ctx.write(context) };
+    0
 }
 
 /// # Safety
 /// `ctx` came from [`swr_v1_context_init`] and is not running.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_context_free(ctx: *mut Context) {
+    // SAFETY: a live context, as the caller promises.
+    if unsafe { (*ctx).flags } & THREAD != 0 {
+        // SAFETY: a started thread context.
+        return unsafe { thread::free(ctx) };
+    }
     // SAFETY: a live context, as the caller promises.
     let ctx = unsafe { &mut *ctx };
     if !ctx.stack.is_null() {
@@ -135,6 +173,11 @@ pub unsafe extern "C" fn swr_v1_context_free(ctx: *mut Context) {
 /// `ctx` came from [`swr_v1_context_init`], has not ended, and is not running.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_context_swap_in(ctx: *mut Context) {
+    // SAFETY: a live context, as the caller promises.
+    if unsafe { (*ctx).flags } & THREAD != 0 {
+        // SAFETY: as above.
+        return unsafe { thread::swap_in(ctx) };
+    }
     let asan = asan();
     let mut fake_stack = ptr::null_mut();
     let fctx = {
@@ -168,6 +211,11 @@ pub unsafe extern "C" fn swr_v1_context_swap_in(ctx: *mut Context) {
 /// `ctx` is the running context.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_context_swap_out(ctx: *mut Context) {
+    // SAFETY: the running context, as the caller promises.
+    if unsafe { (*ctx).flags } & THREAD != 0 {
+        // SAFETY: as above.
+        return unsafe { thread::swap_out(ctx) };
+    }
     let asan = asan();
     let mut fake_stack = ptr::null_mut();
     let swap_fctx = {

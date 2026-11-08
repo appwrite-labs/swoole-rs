@@ -28,7 +28,9 @@ pub use host::{
     swoole_random_int, swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec,
     swoole_system_random, swr_v1_core_format_result,
 };
-pub use lifecycle::thread_buffer;
+pub use lifecycle::{
+    SharedThread, adopt_shared_thread, shared_thread, signal_block_all, thread_buffer,
+};
 pub use lifecycle::{
     set_thread, set_thread_async_threads, swoole_clean, swoole_fork, swoole_is_main_thread,
     swoole_thread_clean, swoole_thread_init, swr_v1_core_fork_exec, thread_async_threads,

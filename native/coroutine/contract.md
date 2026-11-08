@@ -82,8 +82,18 @@ upstream's fatal error and exit 254), swap_in/swap_out jump with
 through one C entry, sets `end` and switches out. ASan's fiber annotations run
 when `dlsym` finds `__sanitizer_{start,finish}_switch_fiber`. ucontext and
 valgrind stack registration are not kept; config.m4 fails on a CPU without
-boost asm unless the thread backend is chosen. The thread backend is upstream's,
-unchanged.
+boost asm unless the thread backend is chosen.
+
+With `SWR_CTX_THREAD` (`--enable-thread-context`) the record has no stack and
+`fctx` owns a thread (`crates/coroutine/src/thread.rs`; `thread_context.cc` is
+gone). A switch hands a baton, a binary semaphore, from one thread to the next,
+where upstream unlocks `std::mutex`es from threads that didn't lock them. init
+returns the errno of a failed spawn, which the view throws as upstream's
+`std::system_error`. `activate` adds the keep-alive timer and async threads as
+upstream did, then `swr_v1_thread_context_init` records the reactor, timer,
+buffer stack and async threads that each coroutine thread adopts once it first
+holds the baton. The `threadcontext` workflow compares the coroutine PHPT
+families against upstream built the same way.
 
 ## Channel
 

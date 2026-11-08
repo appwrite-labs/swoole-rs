@@ -286,6 +286,15 @@ fn create() -> *mut AsyncThreads {
     threads
 }
 
+/// The thread's pool, created first when it has none: null, with the last error
+/// set, when that fails.
+#[unsafe(no_mangle)]
+#[must_use]
+pub extern "C" fn swr_v1_async_threads_ensure() -> *mut AsyncThreads {
+    let threads = current();
+    if threads.is_null() { create() } else { threads }
+}
+
 /// `AsyncEvent *async::dispatch(const AsyncEvent *request)`: queues a copy of
 /// `request` on the pool and returns it, or null without a reactor or a pipe.
 ///
@@ -294,12 +303,9 @@ fn create() -> *mut AsyncThreads {
 #[unsafe(export_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE")]
 #[must_use]
 pub unsafe extern "C" fn dispatch(request: *const AsyncEvent) -> *mut AsyncEvent {
-    let mut threads = current();
+    let threads = swr_v1_async_threads_ensure();
     if threads.is_null() {
-        threads = create();
-        if threads.is_null() {
-            return ptr::null_mut();
-        }
+        return ptr::null_mut();
     }
     // SAFETY: the thread's live handle.
     let threads = unsafe { &mut *threads };

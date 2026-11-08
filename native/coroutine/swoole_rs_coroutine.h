@@ -88,7 +88,12 @@ size_t swr_v1_context_stack_usage(const uint8_t *stack, size_t size);
  * its runtime is loaded. init runs entry(data) on the first swap_in and exits
  * with upstream's fatal error when out of memory; the record must not move until
  * free. swap_out from the running context returns to its last swap_in; end is
- * set once entry returns. */
+ * set once entry returns. With SWR_CTX_THREAD the context is a thread with no
+ * stack (crates/coroutine/src/thread.rs) and init returns the errno of a failed
+ * spawn, else 0; thread_context_init/clean bracket the activating thread. */
+enum { SWR_CTX_THREAD = 4 };
+void swr_v1_thread_context_init(void);
+void swr_v1_thread_context_clean(void);
 typedef struct {
     void *fctx, *swap_fctx;
     uint8_t *stack;
@@ -99,7 +104,7 @@ typedef struct {
     size_t asan_size;
     bool end;
 } swr_v1_context;
-void swr_v1_context_init(swr_v1_context *, size_t stack_size, uint32_t flags, void (*entry)(void *), void *data);
+int swr_v1_context_init(swr_v1_context *, size_t stack_size, uint32_t flags, void (*entry)(void *), void *data);
 void swr_v1_context_free(swr_v1_context *);
 void swr_v1_context_swap_in(swr_v1_context *);
 void swr_v1_context_swap_out(swr_v1_context *);
