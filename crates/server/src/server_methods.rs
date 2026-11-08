@@ -212,6 +212,75 @@ pub unsafe extern "C-unwind" fn destroy(serv: *mut c_void) {
     }
 }
 
+/// `Server::Server(mode)` after native/integration/server.cc has built the C++
+/// members: maps the `gs_size`-byte shared record, sets the mode and makes this
+/// `SwooleG.server`. False when the record can't be mapped.
+///
+/// # Safety
+/// `serv` is a `Server` under construction whose `ServerFields` are built.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_open(
+    serv: *mut c_void,
+    mode: c_int,
+    gs_size: usize,
+) -> bool {
+    let gs = swoole_rs_memory::members::sw_shm_malloc(gs_size);
+    if gs.is_null() {
+        log::sys_warning(
+            c"Server",
+            format_args!("[Master] Fatal Error: failed to allocate memory for Server->gs"),
+        );
+        return false;
+    }
+    // SAFETY: a fresh mapping of a whole `ServerGS`, which starts with the counters.
+    unsafe { crate::swr_v1_server_shared_init(gs) };
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { view::config(serv) };
+    config.gs = gs;
+    config.mode_ = u8::try_from(mode).unwrap_or_default();
+    swoole_rs_corebase::swr_v1_core_set_server(serv);
+    true
+}
+
+/// `Server::~Server()` before native/integration/server.cc destroys the C++
+/// members: destroys a server still running in its master, deletes each port
+/// with `delete_port`, then frees the CPU list and the shared record.
+///
+/// # Safety
+/// `serv` is a `Server` that [`swr_v1_server_open`] opened, being destroyed;
+/// `delete_port` deletes a `ListenPort`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn swr_v1_server_close(
+    serv: *mut c_void,
+    delete_port: unsafe extern "C" fn(*mut c_void),
+) {
+    // SAFETY: as the caller guarantees.
+    let counters = unsafe { view::counters(serv) };
+    // SAFETY: getpid has no preconditions.
+    let master = unsafe { libc::getpid() } == counters.master_pid;
+    if master
+        && counters
+            .shutdown
+            .load(core::sync::atomic::Ordering::Relaxed)
+            == 0
+    {
+        // SAFETY: as the caller guarantees.
+        unsafe { destroy(serv) };
+    }
+    // SAFETY: as the caller guarantees; deleting a port leaves the list as it is.
+    let ports = (0..).map(|index| unsafe { view::port_at(serv, index) });
+    for port in ports.take_while(|port| !port.is_null()) {
+        // SAFETY: a live port, deleted once.
+        unsafe { delete_port(port) };
+    }
+    // SAFETY: as the caller guarantees.
+    let config = unsafe { view::config(serv) };
+    // SAFETY: the list settings.rs allocated, or null.
+    unsafe { swoole_rs_corebase::sw_free(config.cpu_affinity_available.cast()) };
+    config.cpu_affinity_available = ptr::null_mut();
+    swoole_rs_memory::members::sw_shm_free(config.gs);
+}
+
 /// `Server::start_master_thread(reactor)`.
 ///
 /// # Safety
