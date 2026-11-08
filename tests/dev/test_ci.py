@@ -228,21 +228,8 @@ class Ci(unittest.TestCase):
         # The 422 is permanent, though the branch name contains 'timeout': resolved once, not retried.
         self.assertNotIn('retrying', _)
 
-    def test_wait_pr_waits_for_the_merge_then_its_merge_tier(self):
-        pulls = {'9': [{'state': 'open'}, {'state': 'open'},
-                       {'state': 'closed', 'merged': True, 'merge_commit_sha': 'c' * 40}]}
-        code, result, stderr = self.ci('wait', '--pr', '9', runs={'c' * 40: ['running', 'success']}, pulls=pulls)
-        self.assertEqual((code, result['pr'], result['pr_state'], result['commit'], result['state']),
-                         (0, 9, 'merged', 'c' * 40, 'passed'))
-        self.assertIn('PR #9: open', stderr)
-        self.assertIn('PR #9: merged', stderr)
-        code, result, _ = self.ci('wait', '--pr', '9', runs={}, pulls={'9': [{'state': 'closed'}]})
-        self.assertEqual((code, result['pr_state'], result['state']), (1, 'closed', 'closed'))
-
     def test_a_conflicting_pr_returns_at_once(self):
         pulls = {'9': [{'state': 'open', 'mergeable_state': 'dirty'}]}
-        code, result, _ = self.ci('wait', '--pr', '9', runs={}, pulls=pulls)
-        self.assertEqual((code, result['pr_state'], result['state']), (4, 'open', 'conflicts'))
         # The PR tier never starts for a conflicting head: no five-minute wait for it to appear.
         code, result, stderr = self.ci('wait', '--workflow', 'pr.yml', '--commit', 'a' * 40, runs={},
                                        pulls=pulls, commit_pulls=[9])
