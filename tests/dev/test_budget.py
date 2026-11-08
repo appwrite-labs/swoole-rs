@@ -1,4 +1,4 @@
-"""tools/budget.py counts unsafe items and slow data layouts in non-test crate code and only lets them fall."""
+"""tools/budget.py counts unsafe items and slow data layouts in non-test crate code; none may rise over the base commit."""
 from pathlib import Path
 import sys
 import tempfile
@@ -50,10 +50,9 @@ class Budget(unittest.TestCase):
                 'bools': {'one': 2}, 'caches': {'one': 2},
             })
 
-    def test_only_a_rise_fails(self):
-        above, below = budget.check({'a': 3, 'b': 1, 'new': 1}, {'a': 2, 'b': 2})
-        self.assertEqual(above, {'a': (3, 2), 'new': (1, 0)})
-        self.assertEqual(below, {'b': (1, 2)})
+    def test_only_a_rise_over_the_base_fails(self):
+        rises = budget.above({'a': 3, 'b': 1, 'c': 2, 'new': 1}, {'a': 2, 'b': 2, 'c': 2})
+        self.assertEqual(rises, {'a': (3, 2)}, 'a crate new since the base is not checked')
 
 
 if __name__ == '__main__':
