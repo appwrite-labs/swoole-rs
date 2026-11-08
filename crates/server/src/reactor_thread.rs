@@ -405,9 +405,9 @@ pub(crate) fn heartbeat_thread<H: Host>(h: &mut H) -> crate::Effect<()> {
 /// The reactor-thread operations of `swr_v1_server_run`.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use crate::ops::{
-        RUN_DISPATCH_TASK, RUN_HEARTBEAT_CHECK, RUN_HEARTBEAT_THREAD, RUN_INIT_REACTOR,
-        RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED, RUN_PIPE_READ, RUN_REACTOR_THREAD_MAIN,
-        RUN_RESUME_RECEIVING, RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE, RUN_THREAD_SHUTDOWN,
+        RUN_HEARTBEAT_CHECK, RUN_HEARTBEAT_THREAD, RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS,
+        RUN_PACKET_RECEIVED, RUN_PIPE_READ, RUN_REACTOR_THREAD_MAIN, RUN_RESUME_RECEIVING,
+        RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE, RUN_THREAD_SHUTDOWN,
     };
     Ok(match operation {
         RUN_PACKET_RECEIVED => packet_received(h)?,
@@ -434,7 +434,6 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
             resume_receiving(h)?;
             SW_OK
         }
-        RUN_DISPATCH_TASK => dispatch_task(h, arg)?,
         RUN_JOIN_REACTOR_THREADS => {
             join_reactor_threads(h)?;
             SW_OK
