@@ -43,12 +43,26 @@ as equal. Unavailable locales are reported as unsupported.
 `gate.py` holds the helpers these share (`body`, `Sides`, `run`). The status, method,
 URL and boundary helpers are Rust behind thin facades, so the crate's
 `pin_helpers` tests compare them with v6.2.4's bodies instead. Upstream's own
-`http_server`, `http_parser` and `multipart_parser` GoogleTests run on the reference
-and the hybrid tree in the merge tier's `http-native-originals`; on the hybrid the
-static-handler setup calls fill `Server::locations` and `http_index_files` directly
-(`tools/core_tests.py` ADAPTATIONS), and the four ported TESTs below are excluded there.
+`http_server` GoogleTests run on the reference and the hybrid tree in the merge tier's
+`http-native-originals`; on the hybrid the static-handler setup calls fill
+`Server::locations` and `http_index_files` directly (`tools/core_tests.py`
+ADAPTATIONS), and the four ported TESTs below are excluded there.
 
 ### Ported GoogleTests
+
+`http_parser.cpp` and `multipart_parser.cpp` tested only the bundled third-party
+parsers, so they left the lane (#1756) and with them `include/swoole_llhttp.h`.
+Their ports drive crates/oracle's unmodified copies of `thirdparty/llhttp` and
+`thirdparty/multipart_parser.c` with the same inputs, callbacks and expected values,
+one Rust test per TEST under the TEST's own name: `cargo test -p swoole-rs-oracle
+--test http_parser --test multipart_parser`.
+
+| Upstream file | Rust test file | TESTs |
+| --- | --- | --- |
+| `http_parser.cpp` | `http_parser.rs` | `get_request`, `version`, `incomplete`, `method`, `websocket`, `http2`, `header_field_and_value`, `query_string`, `chunk`, `response`, `request_error_case` (54 protocols and reasons), `response_error_case` (22), `request_success_case` (72), `response_success_case` (45) |
+| `multipart_parser.cpp` | `multipart_parser.rs` | `error_message`, `header_field`, `header_error`, `data` (random part data from upstream's `base64_encode`, as `append_random_bytes(n, true)`) |
+
+`swoole_llhttp_parser_execute` is reproduced in `http_parser.rs` (`Http::execute`).
 
 Four `http_server` TESTs drove a request through the `http_server::listen` SDK
 (`src/wrapper/http.cc`), which nothing else used; the SDK left the build (#1672) and

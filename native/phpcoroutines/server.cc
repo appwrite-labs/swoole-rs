@@ -7,7 +7,7 @@
 // zend_try frames around calls that bail out (start(), addProcess's worker).
 #include "swoole_rs_phphost.h"
 #include "swoole_server.h"
-#include "swoole_llhttp.h"
+#include "thirdparty/llhttp/llhttp.h"
 #include "swoole_rs_phpserver_server.h"
 #include "swoole_rs_phpserver_settings.h"
 #include "swoole_rs_phpserver_dispatch.h"

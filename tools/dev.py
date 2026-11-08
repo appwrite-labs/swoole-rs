@@ -45,7 +45,7 @@ CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_
 CORE_TESTS = {
     'reactor': (['reactor/base.cpp', 'network/socket.cpp'],
                 {'socket.make_server_socket': "expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's kernel returns EPROTONOSUPPORT"}),
-    'http': (['server/http_server.cpp', 'server/http_parser.cpp', 'server/multipart_parser.cpp'],
+    'http': (['server/http_server.cpp'],
              {'http_server.node_websocket_client_1': 'needs Node.js and its ws package',
               'http_server.node_websocket_client_2': 'needs Node.js and its ws package',
               **{'http_server.' + name: 'a Rust test (tests/modules/http/http_server.rs); the http_server::listen SDK it drove is deleted'
