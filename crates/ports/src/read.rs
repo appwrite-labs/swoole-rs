@@ -870,7 +870,7 @@ mod tests {
     }
 
     std::thread_local! {
-        static LOGGED: std::cell::RefCell<Vec<(c_int, c_int, String)>> = const {
+        static LOGGED: std::cell::RefCell<Vec<(String, c_int, c_int, String)>> = const {
             std::cell::RefCell::new(Vec::new())
         };
     }
@@ -882,14 +882,22 @@ mod tests {
         origin: *const c_char,
         message: *const c_char,
     ) {
+        // The log host is process-wide and other tests' threads log through it too, so this
+        // only records; `logged` checks the origin on the thread that ran the case.
         let text = |p| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
-        assert_eq!(text(origin), "ListenPort::readable_callback_http");
-        LOGGED.with_borrow_mut(|logged| logged.push((level, code, text(message))));
+        LOGGED.with_borrow_mut(|logged| logged.push((text(origin), level, code, text(message))));
     }
 
     /// The logs this thread's runs made since the last call.
     fn logged() -> Vec<(c_int, c_int, String)> {
-        LOGGED.take()
+        LOGGED
+            .take()
+            .into_iter()
+            .map(|(origin, level, code, message)| {
+                assert_eq!(origin, "ListenPort::readable_callback_http");
+                (level, code, message)
+            })
+            .collect()
     }
 
     fn run(kind: u32, fake: &mut Fake) -> i32 {
