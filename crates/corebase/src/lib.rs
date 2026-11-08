@@ -30,7 +30,7 @@ pub use host::{
 };
 pub use lifecycle::thread_buffer;
 pub use lifecycle::{
-    set_thread_async_threads, swoole_clean, swoole_fork, swoole_is_main_thread,
+    set_thread, set_thread_async_threads, swoole_clean, swoole_fork, swoole_is_main_thread,
     swoole_thread_clean, swoole_thread_init, swr_v1_core_fork_exec, thread_async_threads,
     thread_kind, thread_reactor,
 };
