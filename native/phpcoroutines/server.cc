@@ -4,7 +4,7 @@
 // (sockets, thread mode, the features set() checks), the C++ objects a Server holds
 // (`new`/`delete Server`, its MessageBus, MultiTask's std::function
 // members, ListenPort's shared_ptr<SSLContext>), the variadic PHP error reporters and the
-// zend_try frames around calls that bail out (start(), addProcess's worker, json_encode).
+// zend_try frames around calls that bail out (start(), addProcess's worker).
 #include "php_swoole_cxx.h"
 #include "swoole_server.h"
 #include "swoole_llhttp.h"
@@ -16,12 +16,6 @@
 #include "swoole_rs_phpserver.h"
 #include "swoole_rs_phpprocess.h"
 #include "swoole_rs_phpruntime.h"
-
-#include "zend_smart_str.h"
-
-BEGIN_EXTERN_C()
-#include "ext/json/php_json.h"
-END_EXTERN_C()
 
 using namespace swoole;
 
@@ -161,9 +155,6 @@ void *lifecycle_create(int64_t mode) {
     }
     return serv;
 }
-const char *lifecycle_create_server(void *server) {
-    return as_server(server)->create() < 0 ? sw_error : nullptr;
-}
 int lifecycle_start(void *server, const char **error) {
     Server *serv = as_server(server);
     int result = 0;
@@ -204,25 +195,6 @@ int64_t lifecycle_add_process(void *server, zval *process) {
         worker_id = -3;
     } zend_end_try();
     return worker_id;
-}
-zend_string *lifecycle_json_encode(zval *data, bool *bailed) {
-    smart_str buf = {};
-    bool encoded = false;
-    zend_try {
-        encoded = php_json_encode(&buf, data, 0) != FAILURE && buf.s;
-    } zend_catch {
-        *bailed = true;
-    } zend_end_try();
-    if (!encoded) {
-        smart_str_free(&buf);
-        return nullptr;
-    }
-    return buf.s;
-}
-void lifecycle_json_decode(const char *text, size_t length, zval *out) {
-    if (php_json_decode(out, text, (int) length, true, 0) == FAILURE) {
-        ZVAL_FALSE(out);
-    }
 }
 }  // namespace
 
@@ -292,8 +264,7 @@ void php_swoole_server_minit(int module_number) {
     static const swr_v1_phpserver_settings_host settings = {settings_get};
     swr_v1_phpserver_settings_init(&settings);
     static const swr_v1_phpserver_lifecycle_host lifecycle = {
-        lifecycle_install, lifecycle_create, lifecycle_create_server, lifecycle_start,
-        lifecycle_release, lifecycle_add_process, lifecycle_json_encode, lifecycle_json_decode,
+        lifecycle_install, lifecycle_create, lifecycle_start, lifecycle_release, lifecycle_add_process,
     };
     swr_v1_phpserver_lifecycle_init(&lifecycle);
     static const swr_v1_phpserver_port_host port = {

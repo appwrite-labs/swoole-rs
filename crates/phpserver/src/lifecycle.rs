@@ -22,10 +22,10 @@ use swoole_rs_zend::{
     string::bytes,
     sys::{
         IS_NULL, IS_OBJECT, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree,
-        swr_zend_instanceof, swr_zend_property_array, swr_zend_property_slot,
-        swr_zend_separate_array, swr_zend_string_release, swr_zval_copy, swr_zval_stringl,
-        zend_class_entry, zend_hash_next_index_insert, zend_hash_str_find, zend_object,
-        zend_object_std_dtor, zend_string, zend_update_property, zend_update_property_bool,
+        swr_zend_instanceof, swr_zend_json_decode, swr_zend_property_array, swr_zend_property_slot,
+        swr_zend_separate_array, swr_zend_string_release, swr_zend_try_json_encode, swr_zval_copy,
+        swr_zval_stringl, zend_class_entry, zend_hash_next_index_insert, zend_hash_str_find,
+        zend_object, zend_object_std_dtor, zend_update_property, zend_update_property_bool,
         zend_update_property_long, zend_update_property_stringl, zval, zval_ptr_dtor,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of,
@@ -142,12 +142,9 @@ impl PortInfo {
 pub struct LifecycleHost {
     install: unsafe extern "C" fn(*mut c_void, u32),
     create: unsafe extern "C" fn(i64) -> *mut c_void,
-    create_server: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     start: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> c_int,
     release: unsafe extern "C" fn(*mut c_void),
     add_process: unsafe extern "C" fn(*mut c_void, *mut zval) -> i64,
-    json_encode: unsafe extern "C" fn(*mut zval, *mut bool) -> *mut zend_string,
-    json_decode: unsafe extern "C" fn(*const c_char, usize, *mut zval),
 }
 
 unsafe extern "C" {
@@ -161,6 +158,9 @@ unsafe extern "C" {
     /// crates/phphttp's `swoole_http_server_can_cache_session_addr(serv)`.
     #[link_name = "_Z41swoole_http_server_can_cache_session_addrPKN6swoole6ServerE"]
     fn can_cache_session_addr(serv: *const c_void) -> bool;
+    /// native/error/error.cc's `swoole_get_last_error_msg()`: `sw_error`.
+    #[link_name = "_Z25swoole_get_last_error_msgv"]
+    fn swoole_get_last_error_msg() -> *const c_char;
 }
 
 /// `instanceof_function(ce, parent)`.
@@ -835,10 +835,9 @@ unsafe extern "C" fn command_done(
 ) {
     // SAFETY: `command` passes its live `Wait`.
     let wait = unsafe { &mut *context.cast::<Wait>() };
-    let host = host();
     if wait.json_decode {
         // SAFETY: the reply's bytes and the call's return slot.
-        unsafe { (host.json_decode)(message, length, wait.return_value) };
+        unsafe { swr_zend_json_decode(message, length, wait.return_value) };
     } else {
         // SAFETY: as above.
         unsafe { swr_zval_stringl(wait.return_value, message, length) };
@@ -865,11 +864,9 @@ fn command(call: &Call) {
     let Ok((name, process_id, process_type, json_decode)) = parsed else {
         return call.set_bool(false);
     };
-    let host = host();
-    let mut bailed = false;
-    // SAFETY: a passed argument and a writable flag.
-    let encoded = unsafe { (host.json_encode)(call.zval(4), &raw mut bailed) };
-    if bailed {
+    let mut encoded = ptr::null_mut();
+    // SAFETY: a passed argument and a writable slot.
+    if unsafe { swr_zend_try_json_encode(call.zval(4), &raw mut encoded) } != 0 {
         return bailout::defer(Err(bailout::Bailout));
     }
     if encoded.is_null() {
@@ -1033,12 +1030,12 @@ fn has_key(setting: *mut zval, key: &CStr) -> bool {
 /// `ServerObject::on_before_start`.
 #[expect(clippy::too_many_lines, reason = "upstream's checks, in its order")]
 fn before_start(object: *mut zend_object, serv: *mut c_void) -> Result<(), Stop> {
-    let host = host();
     // SAFETY: a live server.
-    let error = unsafe { (host.create_server)(serv) };
-    if !error.is_null() {
-        // SAFETY: `sw_error`, NUL-terminated.
-        let reason = unsafe { CStr::from_ptr(error) };
+    if unsafe { server_methods::create(serv) } < 0 {
+        // SAFETY: the calling thread's `sw_error`.
+        let reason = unsafe { swoole_get_last_error_msg() };
+        // SAFETY: always NUL-terminated.
+        let reason = unsafe { CStr::from_ptr(reason) };
         let mut text = Message::new();
         text.push(b"failed to create the server. Error: ");
         text.push(reason.to_bytes());
