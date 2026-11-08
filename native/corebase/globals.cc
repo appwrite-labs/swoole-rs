@@ -7,6 +7,7 @@
 #include "swoole_memory.h"
 #include "swoole_string.h"
 #include "swoole_signal.h"
+#include "swoole_timer.h"
 #include "swoole_ssl.h"
 #include "swoole_coroutine_api.h"
 #include "swoole_rs_corebase.h"

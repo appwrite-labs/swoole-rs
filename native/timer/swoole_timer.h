@@ -20,6 +20,31 @@
 #define SW_TIMER_MAX_MS LONG_MAX
 #define SW_TIMER_MAX_SEC ((double) LONG_MAX / 1000)
 
+/**
+ * manually_trigger:
+ * Once enabled, the timer will no longer be triggered by event polling or the operating system's timer;
+ * instead, it will be managed directly at the user space.
+ */
+SW_API swoole::Timer *swoole_timer_create(bool manually_trigger = false);
+SW_API long swoole_timer_after(long ms, const swoole::TimerCallback &callback, void *private_data = nullptr);
+SW_API long swoole_timer_tick(long ms, const swoole::TimerCallback &callback, void *private_data = nullptr);
+SW_API swoole::TimerNode *swoole_timer_add(double ms,
+                                           bool persistent,
+                                           const swoole::TimerCallback &callback,
+                                           void *private_data = nullptr);
+SW_API swoole::TimerNode *swoole_timer_add(long ms,
+                                           bool persistent,
+                                           const swoole::TimerCallback &callback,
+                                           void *private_data = nullptr);
+SW_API bool swoole_timer_del(swoole::TimerNode *tnode);
+SW_API bool swoole_timer_exists(long timer_id);
+SW_API void swoole_timer_delay(swoole::TimerNode *tnode, long delay_ms);
+SW_API swoole::TimerNode *swoole_timer_get(long timer_id);
+SW_API bool swoole_timer_clear(long timer_id);
+SW_API void swoole_timer_free();
+SW_API void swoole_timer_select();
+SW_API bool swoole_timer_is_available();
+
 namespace swoole {
 static_assert(sizeof(long) == 8, "Timer ABI v1 requires a 64-bit native long");
 typedef std::function<void(TimerNode *)> TimerDestructor;

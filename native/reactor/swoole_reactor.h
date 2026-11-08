@@ -263,3 +263,18 @@ inline int translate_events_from_poll(int16_t events) {
     return swr_v1_reactor_poll_events_from(events);
 }
 }  // namespace swoole
+
+SW_API int swoole_event_init(int flags);
+SW_API int swoole_event_add(swoole::network::Socket *socket, int events);
+SW_API int swoole_event_set(swoole::network::Socket *socket, int events);
+SW_API int swoole_event_add_or_update(swoole::network::Socket *socket, int event);
+SW_API int swoole_event_del(swoole::network::Socket *socket);
+SW_API void swoole_event_defer(const swoole::Callback &cb, void *private_data);
+SW_API ssize_t swoole_event_write(swoole::network::Socket *socket, const void *data, size_t len);
+SW_API ssize_t swoole_event_writev(swoole::network::Socket *socket, const iovec *iov, size_t iovcnt);
+SW_API swoole::network::Socket *swoole_event_get_socket(int fd);
+SW_API int swoole_event_wait();
+SW_API int swoole_event_free();
+SW_API void swoole_event_set_handler(int fd_type, int event, swoole::ReactorHandler handler);
+SW_API bool swoole_event_isset_handler(int fd_type, int event);
+SW_API bool swoole_event_is_available();
