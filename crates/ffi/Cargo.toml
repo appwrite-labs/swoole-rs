@@ -49,7 +49,7 @@ swoole-rs-framing = { path = "../framing" }
 swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
 swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
-swoole-rs-coroutine = { path = "../coroutine" }
+swoole-rs-coroutine = { path = "../coroutine", features = ["upstream-symbols"] }
 swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
 swoole-rs-phpruntime = { path = "../phpruntime", features = ["upstream-symbols"] }
 swoole-rs-ossupport = { path = "../ossupport", features = ["upstream-symbols"] }

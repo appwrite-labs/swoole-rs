@@ -48,10 +48,13 @@ with tempfile.TemporaryDirectory(prefix='swr-coroutine-compile-') as tmp:
     trees = {'original': (tree, ['-I' + str(tree / 'include'), '-I' + str(tree)]),
              'patched': (hybrid_source, [*hybrid_flags, '-I' + str(hybrid_source)])}
     for variant, (root, flags) in trees.items():
-        # The patch set deletes context.cc; only the units the hybrid still builds compile.
-        for name in [name for name in units if (root / ('src/coroutine/' + name + '.cc')).exists()]:
-            cmd = ['c++', *common, *flags, '-c', str(root / ('src/coroutine/' + name + '.cc')),
-                   '-o', str(tree / (variant + '-' + name + '.o'))]
+        # The patch set deletes base.cc and context.cc; the hybrid compiles the units it still
+        # builds, and native/coroutine's shim (staged as src/swoole_rs_coroutine_coroutine.cc) in base.cc's place.
+        paths = {name: 'src/coroutine/' + name + '.cc' for name in units}
+        if variant == 'patched':
+            paths['native'] = 'src/swoole_rs_coroutine_coroutine.cc'
+        for name, path in [(name, path) for name, path in paths.items() if (root / path).exists()]:
+            cmd = ['c++', *common, *flags, '-c', str(root / path), '-o', str(tree / (variant + '-' + name + '.o'))]
             result = subprocess.run(cmd, capture_output=True, text=True)
             passed = result.returncode == 0
             print(variant, name, result.returncode, 'PASS' if passed else 'FAIL', flush=True)

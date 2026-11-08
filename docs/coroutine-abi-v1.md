@@ -20,8 +20,10 @@ Sequence points kept exactly:
 - `run` saves the CID before possible synchronous deletion.
 - `resume` runs its callback before changing current/origin.
 - `yield` publishes `WAITING`/`RC_OK` before its callback.
-- `cancel` copies the native function before clearing it, sets `RC_CANCELED`
+- `cancel` copies the cancel function before clearing it, sets `RC_CANCELED`
   before invoking it, and does not touch the coroutine afterwards.
+- `yield_ex` deletes its timer only after a wake that was not the timeout, then
+  reports cancellation.
 - `close` calls `on_close` before registry removal, current restore and delete.
 - `SW_CORO_BAILOUT_EXIT_CODE` is used by name.
 
@@ -48,6 +50,12 @@ runtime. `swoole::coroutine::Context` is an inline view that keeps the
 `CoroutineFunc` and calls it from Rust's entry. ucontext and valgrind stack
 registration are gone: config.m4 rejects a CPU without boost asm unless
 `--enable-thread-context` is given.
+
+`src/coroutine/base.cc` left the build: Rust defines `Coroutine::yield_ex`,
+`cancel`, `print_list`, `print_socket_bound_error`, `coroutine::run` and the
+`swoole_coroutine_*` C API under their upstream symbols; native/coroutine keeps
+the thread-local scheduler, the facade's construction and delete, and the
+`std::function` arguments.
 
 Execution-time accounting (`get_execute_usec`, `calc_execute_usec`) is in Rust;
 C++ reads the clocks and passes them in.

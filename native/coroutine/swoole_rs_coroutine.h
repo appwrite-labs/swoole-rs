@@ -22,6 +22,12 @@ struct swr_v1_coroutine {
     swr_v1_coroutine *origin, *first_child, *prev_sibling, *next_sibling;
     long init_msec, switch_usec, execute_usec;
 };
+/* A yield's cancel function (cancel_fn points to one): call(native, data) wakes
+ * the canceled coroutine and returns whether it did. */
+typedef struct {
+    bool (*call)(void *native, void *data);
+    void *data;
+} swr_v1_coroutine_canceler;
 typedef void (*swr_v1_coroutine_swap_function)(void *);
 typedef struct {
     bool (*swap_in)(void *); /* returns whether the coroutine ended */
@@ -47,7 +53,7 @@ bool swr_v1_coroutine_register(swr_v1_coroutine_scheduler *, swr_v1_coroutine *,
 long swr_v1_coroutine_run(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
 void swr_v1_coroutine_resume(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
 void swr_v1_coroutine_yield(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
-void swr_v1_coroutine_yield_cancelable(swr_v1_coroutine_scheduler *, swr_v1_coroutine *, void *cancel_fn);
+void swr_v1_coroutine_yield_cancelable(swr_v1_coroutine_scheduler *, swr_v1_coroutine *, swr_v1_coroutine_canceler *);
 void swr_v1_coroutine_bailout(swr_v1_coroutine_scheduler *);
 /* The live coroutines; the void pointers are swoole::Coroutine facades. get:
  * null if cid is not live. older: the newest live coroutine older than `before`

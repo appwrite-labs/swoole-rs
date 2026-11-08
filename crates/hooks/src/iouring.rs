@@ -25,18 +25,17 @@ const EVENT_READ: c_int = 1 << 9;
 const EXIT_CONDITION_IOURING: c_int = 9;
 const PRIORITY_IOURING_SUBMIT: c_int = 7;
 
-// SAFETY: src/coroutine/base.cc's, native/phpcoroutines/coroutine.cc's and
-// native/reactor/reactor.cc's.
+// SAFETY: crates/coroutine's and native/reactor/reactor.cc's.
 unsafe extern "C-unwind" {
     fn swr_v1_coroutine_native_resume(co: *mut c_void);
+    fn swr_v1_coroutine_yield_with_cancel(
+        co: *mut c_void,
+        cancel: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool,
+        data: *mut c_void,
+    );
 }
 // SAFETY: as above.
 unsafe extern "C" {
-    fn swr_cpp_phpcoroutines_yield_cancelable(
-        co: *mut c_void,
-        cancel: unsafe extern "C" fn(*mut c_void, *mut c_void) -> u8,
-        data: *mut c_void,
-    );
     fn swr_v1_event_set_exit_condition(
         id: c_int,
         condition: unsafe extern "C" fn(*mut usize) -> bool,
@@ -89,12 +88,12 @@ unsafe extern "C" fn instance() -> *mut Uring {
 
 /// `co->yield(&cancel_fn)`, where cancelling cancels `event`'s request.
 unsafe extern "C" fn suspend(co: *mut c_void, event: *mut c_void) {
-    unsafe extern "C" fn cancel(_co: *mut c_void, event: *mut c_void) -> u8 {
+    unsafe extern "C-unwind" fn cancel(_co: *mut c_void, event: *mut c_void) -> bool {
         // SAFETY: the event stays suspended in its operation while its coroutine is.
-        u8::from(unsafe { swr_v1_uring_cancel(&raw const HOST, event) })
+        unsafe { swr_v1_uring_cancel(&raw const HOST, event) }
     }
     // SAFETY: the current coroutine, suspended in `event`'s operation.
-    unsafe { swr_cpp_phpcoroutines_yield_cancelable(co, cancel, event) };
+    unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, event) };
 }
 
 unsafe extern "C" fn resume(co: *mut c_void) {

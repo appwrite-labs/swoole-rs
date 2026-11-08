@@ -75,9 +75,9 @@ unsafe extern "C" fn on_timeout(cid: c_long) {
     wake(cid, true);
 }
 
-unsafe extern "C" fn on_cancel(parked: *mut c_void, _: *mut c_void) -> u8 {
+unsafe extern "C-unwind" fn on_cancel(parked: *mut c_void, _: *mut c_void) -> bool {
     wake(co::cid(parked), false);
-    1
+    true
 }
 
 /// PHP's coroutines for one operation; `co` is null for close.

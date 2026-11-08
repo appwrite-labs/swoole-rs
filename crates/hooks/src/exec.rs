@@ -4,7 +4,7 @@
 use core::ffi::{CStr, c_char, c_int};
 use swoole_rs_buffer::string::CppString;
 
-// SAFETY: src/coroutine/base.cc's and crates/reactor's (upstream symbols).
+// SAFETY: crates/coroutine's and crates/reactor's (upstream symbols).
 unsafe extern "C" {
     fn swr_v1_coroutine_current() -> *mut core::ffi::c_void;
     #[link_name = "_ZN6swoole9coroutine6System12waitpid_safeEiPii"]

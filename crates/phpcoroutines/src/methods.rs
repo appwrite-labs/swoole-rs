@@ -174,11 +174,11 @@ fn yield_(call: &Call) {
     call.set_bool(true);
 }
 
-unsafe extern "C" fn cancel_yield(co: *mut c_void, _: *mut c_void) -> u8 {
+unsafe extern "C-unwind" fn cancel_yield(co: *mut c_void, _: *mut c_void) -> bool {
     let cid = host::cid(co);
     YIELDED.with(|y| y.borrow_mut().remove(&cid));
     host::resume(co);
-    1
+    true
 }
 
 /// `Co::resume(int $cid)`.

@@ -7,6 +7,10 @@ publish = false
 [lib]
 crate-type = ["rlib", "staticlib"]
 
+[features]
+# The upstream symbols of base.cc (facade.rs); only the extension's archive links them.
+upstream-symbols = []
+
 [lints]
 workspace = true
 

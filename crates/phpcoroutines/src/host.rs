@@ -33,23 +33,24 @@ pub(crate) struct Stats {
 type Co = *mut c_void;
 
 unsafe extern "C" {
-    // native/phpcoroutines/coroutine.cc
+    // native/coroutine/coroutine.cc, crates/coroutine and native/phpcoroutines/coroutine.cc
     fn swr_cpp_coroutine_scheduler() -> *mut c_void;
-    fn swr_cpp_phpcoroutines_host_flags(mask: u32) -> u32;
-    fn swr_cpp_phpcoroutines_create(
+    fn swr_cpp_coroutine_create(
         entry: unsafe extern "C" fn(*mut c_void),
         args: *mut c_void,
+        func: *const c_void,
     ) -> c_long;
+    fn swr_v1_coroutine_yield_with_cancel(
+        co: Co,
+        cancel: unsafe extern "C-unwind" fn(Co, *mut c_void) -> bool,
+        data: *mut c_void,
+    );
+    fn swr_cpp_phpcoroutines_host_flags(mask: u32) -> u32;
     fn swr_cpp_phpcoroutines_bailout();
     fn swr_cpp_phpcoroutines_kernel_coroutine(count: c_long, sleep: f64);
     fn swr_cpp_phpcoroutines_stats(stats: *mut Stats);
     fn swr_cpp_phpcoroutines_stack(co: Co, size: *mut usize) -> *mut c_void;
     fn swr_cpp_phpcoroutines_is_end(co: Co) -> u8;
-    fn swr_cpp_phpcoroutines_yield_cancelable(
-        co: Co,
-        cancel: unsafe extern "C" fn(Co, *mut c_void) -> u8,
-        data: *mut c_void,
-    );
     fn swr_cpp_phpcoroutines_activate(deactivate: unsafe extern "C" fn(*mut c_void));
     fn swr_cpp_phpcoroutines_defer(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void);
     fn swr_cpp_phpcoroutines_timer_add(
@@ -58,7 +59,7 @@ unsafe extern "C" {
         f: unsafe extern "C" fn(c_long),
     ) -> *mut c_void;
     fn swr_cpp_phpcoroutines_set_exit_condition(set: u8);
-    // src/coroutine/base.cc, crates/timer, crates/reactor and crates/process.
+    // crates/coroutine, native/coroutine/coroutine.cc, crates/timer, crates/reactor and crates/process.
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: Co, timeout: f64) -> bool;
     #[link_name = "_ZN6swoole9Coroutine6cancelEv"]
@@ -334,9 +335,12 @@ pub fn yield_(co: Co) {
 /// [`yield_`], cancelable through `cancel`.
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
-pub unsafe fn yield_cancelable(co: Co, cancel: unsafe extern "C" fn(Co, *mut c_void) -> u8) {
+pub unsafe fn yield_cancelable(
+    co: Co,
+    cancel: unsafe extern "C-unwind" fn(Co, *mut c_void) -> bool,
+) {
     // SAFETY: as the caller promises.
-    unsafe { swr_cpp_phpcoroutines_yield_cancelable(co, cancel, std::ptr::null_mut()) };
+    unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, std::ptr::null_mut()) };
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
@@ -430,7 +434,7 @@ pub(crate) fn is_end(co: Co) -> bool {
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
 pub(crate) fn create(args: *mut c_void) -> c_long {
     // SAFETY: the coroutine's entry, with the creator's live arguments.
-    unsafe { swr_cpp_phpcoroutines_create(main, args) }
+    unsafe { swr_cpp_coroutine_create(main, args, std::ptr::null()) }
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside

@@ -139,7 +139,7 @@ unsafe extern "C" fn aio_ready(reactor: *mut c_void, event: *mut c_void) -> c_in
 /// `sw_reactor()->defer([co] { co->resume(); })`.
 #[cfg(feature = "upstream-symbols")]
 unsafe extern "C" fn defer_resume(co: *mut c_void) {
-    // SAFETY: src/coroutine/base.cc's.
+    // SAFETY: crates/coroutine's.
     unsafe extern "C-unwind" {
         fn swr_v1_coroutine_native_resume(co: *mut c_void);
     }

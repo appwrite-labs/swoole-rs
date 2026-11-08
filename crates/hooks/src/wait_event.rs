@@ -166,7 +166,7 @@ pub(crate) mod native {
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del};
 
-    // SAFETY: src/coroutine/base.cc's.
+    // SAFETY: crates/coroutine's.
     unsafe extern "C" {
         fn swr_v1_coroutine_current() -> *mut c_void;
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
