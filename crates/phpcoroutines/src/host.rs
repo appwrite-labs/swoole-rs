@@ -181,7 +181,11 @@ pub fn current() -> Co {
 /// `Coroutine::get_current_safe()`: outside a coroutine it raises a fatal
 /// error and does not return, so the caller's frames must own nothing that
 /// needs a drop.
-pub(crate) fn current_safe() -> Co {
+#[expect(
+    clippy::must_use_candidate,
+    reason = "some callers want only its fatal error outside a coroutine"
+)]
+pub fn current_safe() -> Co {
     let co = current();
     if co.is_null() {
         // SAFETY: Swoole's fatal error hook; the frames own nothing.
@@ -324,8 +328,10 @@ pub fn yield_(co: Co) {
 }
 
 /// [`yield_`], cancelable through `cancel`.
-pub(crate) fn yield_cancelable(co: Co, cancel: unsafe extern "C" fn(Co) -> u8) {
-    // SAFETY: as above.
+/// # Safety
+/// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
+pub unsafe fn yield_cancelable(co: Co, cancel: unsafe extern "C" fn(Co) -> u8) {
+    // SAFETY: as the caller promises.
     unsafe { swr_cpp_phpcoroutines_yield_cancelable(co, cancel) };
 }
 
@@ -405,7 +411,9 @@ pub(crate) fn cancel(co: Co) -> bool {
     unsafe { coroutine_cancel(co) }
 }
 
-pub(crate) fn is_canceled(co: Co) -> bool {
+/// `co->is_canceled()` of a live coroutine.
+#[must_use]
+pub fn is_canceled(co: Co) -> bool {
     // SAFETY: a live coroutine.
     unsafe { (*state(co)).resume_code == RC_CANCELED }
 }
@@ -573,12 +581,16 @@ pub(crate) fn defer(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void) {
 }
 
 /// A one-shot timer calling `f(cid)` after `timeout` seconds.
-pub(crate) fn timer_add(timeout: f64, cid: c_long, f: unsafe extern "C" fn(c_long)) -> *mut c_void {
+#[must_use]
+pub fn timer_add(timeout: f64, cid: c_long, f: unsafe extern "C" fn(c_long)) -> *mut c_void {
     // SAFETY: C++ adds the timer.
     unsafe { swr_cpp_phpcoroutines_timer_add(timeout, cid, f) }
 }
 
-pub(crate) fn timer_del(timer: *mut c_void) {
+/// `swoole_timer_del`.
+/// # Safety
+/// `timer` is live.
+pub unsafe fn timer_del(timer: *mut c_void) {
     // SAFETY: a live timer.
     unsafe { swoole_timer_del(timer) };
 }

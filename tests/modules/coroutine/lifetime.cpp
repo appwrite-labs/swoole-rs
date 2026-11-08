@@ -1,45 +1,6 @@
 #include "test_coroutine.h"
 #include <new>
 using swoole::Coroutine;
-using swoole::coroutine::Channel;
-
-TEST(rust_coroutine_lifetime, pop_waiter_deletes_channel) {
-    Channel *channel = new Channel(1);
-    int value = 17;
-    bool deleted = false;
-    swoole::test::coroutine::run([&](void *) {
-        Coroutine::create([&](void *) {
-            ASSERT_TRUE(channel->push(&value));
-            ASSERT_TRUE(channel->push(&value));
-            delete channel;
-            channel = nullptr;
-            deleted = true;
-        });
-        void *result = channel->pop();
-        ASSERT_EQ(result, &value);
-        ASSERT_TRUE(deleted);
-        ASSERT_EQ(channel, nullptr);
-    });
-    ASSERT_EQ(Coroutine::count(), 0);
-}
-
-TEST(rust_coroutine_lifetime, push_waiter_deletes_channel) {
-    Channel *channel = new Channel(1);
-    int value = 17;
-    bool deleted = false;
-    swoole::test::coroutine::run([&](void *) {
-        Coroutine::create([&](void *) {
-            ASSERT_EQ(channel->pop(), &value);
-            delete channel;
-            channel = nullptr;
-            deleted = true;
-        });
-        ASSERT_TRUE(channel->push(&value));
-        ASSERT_TRUE(deleted);
-        ASSERT_EQ(channel, nullptr);
-    });
-    ASSERT_EQ(Coroutine::count(), 0);
-}
 
 struct ThrowingCancelCopy {
     bool *fail;

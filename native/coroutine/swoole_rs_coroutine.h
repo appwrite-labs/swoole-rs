@@ -69,37 +69,6 @@ void swr_v1_coroutine_cancel(swr_v1_coroutine *);
 void swr_v1_coroutine_timeout(swr_v1_coroutine *);
 long swr_v1_coroutine_execute_usec(const swr_v1_coroutine *, long now);
 long swr_v1_coroutine_execute_usec(const swr_v1_coroutine *, long now);
-/* swoole::coroutine::Channel (crates/coroutine/src/channel.rs): an owned
- * handle with whole pop/push/close operations that call back into C++ for the
- * timer, yield and resume. Rust never touches a channel after a resume that ends
- * its operation, and holds no reference to it across an effect. */
-typedef struct swr_v1_channel swr_v1_channel;
-typedef struct {
-    size_t length, producers, consumers;
-    int32_t error;
-    bool closed, full, empty;
-} swr_v1_channel_view;
-enum { SWR_CH_CANCELED = 1, SWR_CH_TIMEDOUT = 2 };
-enum { SWR_CH_TRACE_PUSHED = 0, SWR_CH_TRACE_CLOSED = 1 };
-enum { SWR_CH_ALLOCATION_REFUSED = -5 };
-typedef struct {
-    void *ctx;
-    void *current;
-    void (*arm_timer)(void *);
-    void (*delete_timer)(void *);
-    uint32_t (*suspend)(void *, uint32_t role); /* returns SWR_CH_CANCELED | SWR_CH_TIMEDOUT */
-    void (*resume)(void *, uint32_t role, void *co);
-    void (*trace)(void *, uint32_t what, size_t length);
-} swr_v1_channel_effects;
-typedef struct { int32_t status; void *data; } swr_v1_channel_outcome;
-swr_v1_channel *swr_v1_channel_new(size_t capacity);
-void swr_v1_channel_free(swr_v1_channel *);
-swr_v1_channel_view swr_v1_channel_read(const swr_v1_channel *);
-void *swr_v1_channel_pop_data(swr_v1_channel *);
-void swr_v1_channel_remove(swr_v1_channel *, uint32_t role, void *co);
-swr_v1_channel_outcome swr_v1_channel_pop(swr_v1_channel *, bool positive_timeout, const swr_v1_channel_effects *);
-int32_t swr_v1_channel_push(swr_v1_channel *, bool positive_timeout, void *data, const swr_v1_channel_effects *);
-bool swr_v1_channel_close(swr_v1_channel *, const swr_v1_channel_effects *);
 /* Coroutine stacks (crates/coroutine/src/stack.rs). PROTECT maps the stack and
  * makes its lowest page inaccessible (SW_CONTEXT_PROTECT_STACK_PAGE); MARK
  * writes the usage markers (SW_CONTEXT_DETECT_STACK_USAGE). Free with the same
