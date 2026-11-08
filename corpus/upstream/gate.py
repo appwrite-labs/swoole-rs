@@ -95,15 +95,9 @@ PENDING_PORTS = {
         'swoole_http_client_coro/close_preserves_request_error.phpt',
     ],
     1941: [
-        'swoole_coroutine_system/wait.phpt',
-        'swoole_coroutine_system/waitPid.phpt',
         'swoole_process/signal_listener_after_fork.phpt',
         'swoole_server/signal_listener_after_reload.phpt',
-        'swoole_coroutine_system/waitSignal_ignored.phpt',
         'swoole_process/signal_restore_action.phpt',
-        'swoole_coroutine_system/waitPid_exit_before_loop.phpt',
-        'swoole_runtime/proc/thread_start_waitpid.phpt',
-        'swoole_thread/signal_mask.phpt',
     ],
     1942: [
         'swoole_process_pool/msgqueue_ignores_package_size.phpt',
