@@ -55,11 +55,14 @@ void *swr_v1_timer_owner_reactor(const swoole::Timer *timer);
 void swr_v1_timer_owner_reinit(swoole::Timer *timer, bool manually_trigger);
 swoole::TimerNode *swr_v1_timer_owner_add(
     swoole::Timer *timer, long msec, bool persistent, void *data, const swoole::TimerCallback *callback);
-bool swr_v1_timer_owner_remove(swoole::Timer *timer, long id);
+bool swr_v1_timer_owner_remove(swoole::Timer *timer, long id, void **failure);
 void swr_v1_timer_owner_update(swoole::Timer *timer, const swoole::TimerNode *node);
 void swr_v1_timer_owner_delay(swoole::Timer *timer, const swoole::TimerNode *node, long delay_ms);
-void swr_v1_timer_owner_select(swoole::Timer *timer);
+void *swr_v1_timer_owner_select(swoole::Timer *timer);
 void swr_v1_timer_owner_abandon(swoole::Timer *timer, void (*bailout)());
+// A C++ exception can't unwind through Rust frames (panic = "abort"), so Rust
+// returns a callback's or destructor's and the view rethrows it here.
+[[noreturn]] void swr_cpp_timer_rethrow(void *failure);
 }
 
 namespace swoole {
@@ -88,7 +91,10 @@ class Timer {
         return swr_v1_timer_owner_add(this, msec, persistent, data, &callback);
     }
     bool remove(long id) {
-        return swr_v1_timer_owner_remove(this, id);
+        void *failure = nullptr;
+        const bool removed = swr_v1_timer_owner_remove(this, id, &failure);
+        if (failure) swr_cpp_timer_rethrow(failure);
+        return removed;
     }
     bool remove(TimerNode *tnode) {
         return tnode && remove(tnode->id);
@@ -103,7 +109,7 @@ class Timer {
         swr_v1_timer_owner_reinit(this, manually_trigger);
     }
     void select() {
-        swr_v1_timer_owner_select(this);
+        if (void *failure = swr_v1_timer_owner_select(this)) swr_cpp_timer_rethrow(failure);
     }
     // Only after a caught Zend bailout whose native selection will never resume.
     void abandon_selection(void (*bailout)() = nullptr) {

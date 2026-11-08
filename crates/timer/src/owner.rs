@@ -51,7 +51,6 @@ unsafe extern "C-unwind" {
     fn swr_cpp_timer_node_new(data: *mut c_void, callback: *const c_void) -> *mut TimerNode;
     fn swr_cpp_timer_node_call(timer: *const Owner, node: *mut TimerNode) -> Failure;
     fn swr_cpp_timer_node_release(node: *mut TimerNode) -> Failure;
-    fn swr_cpp_timer_rethrow(failure: Failure) -> !;
     fn swr_cpp_timer_forget(failure: Failure);
     fn swr_cpp_timer_reactor_timeout(reactor: *mut c_void, msec: i64);
     fn swr_cpp_timer_attach(reactor: *mut c_void, timer: *const Owner);
@@ -89,11 +88,12 @@ fn apply(view: &TimerView) -> *mut TimerNode {
     node
 }
 
-/// Fails over to the C++ caller: rethrows `failure`, if there is one.
-fn rethrow(failure: Failure) {
+/// A C++ exception for a caller with no C++ frame to rethrow it in: a C++
+/// exception can't unwind through Rust frames (`panic = "abort"`), so it aborts,
+/// as an uncaught exception would. The C++ view rethrows instead.
+pub(crate) fn uncaught(failure: Failure) {
     if !failure.is_null() {
-        // SAFETY: a caught exception, rethrown once.
-        unsafe { swr_cpp_timer_rethrow(failure) };
+        std::process::abort();
     }
 }
 
@@ -225,8 +225,7 @@ impl Owner {
                 format_args!("Rust timer add failed: status={status}"),
             );
             // SAFETY: the node was never handed to the queue; it has no destructor.
-            let failure = unsafe { swr_cpp_timer_node_release(node) };
-            rethrow(failure);
+            uncaught(unsafe { swr_cpp_timer_node_release(node) });
             return std::ptr::null_mut();
         }
         let node = apply(&view);
@@ -238,19 +237,17 @@ impl Owner {
         node
     }
 
-    pub(crate) fn remove(&self, id: c_long) -> bool {
+    /// Whether `id` was removed, and its destructor's exception, if it threw.
+    pub(crate) fn remove(&self, id: c_long) -> (bool, Failure) {
         let mut view = TimerView::default();
         // SAFETY: the live queue and a writable view.
         match unsafe { swr_v1_timer_remove(self.queue, id, &raw mut view) } {
             DEFERRED => {
                 apply(&view);
-                true
+                (true, std::ptr::null_mut())
             }
-            RELEASE => {
-                rethrow(self.release(apply(&view)));
-                true
-            }
-            _ => false,
+            RELEASE => (true, self.release(apply(&view))),
+            _ => (false, std::ptr::null_mut()),
         }
     }
 
@@ -322,8 +319,8 @@ impl Owner {
     }
 
     /// A callback or destructor threw: detach the active node, end the
-    /// selection, and rethrow the first exception.
-    fn fail(&self, primary: Failure) {
+    /// selection, and return the first exception.
+    fn fail(&self, primary: Failure) -> Failure {
         let mut stats = TimerStats::default();
         // SAFETY: the live queue and writable stats.
         if unsafe { swr_v1_timer_stats_get(self.queue, &raw mut stats) } == OK
@@ -336,16 +333,17 @@ impl Owner {
             }
         }
         self.end();
-        rethrow(primary);
+        primary
     }
 
-    /// Runs every due node. A Zend bailout longjmps out of a callback over these
-    /// frames, which hold nothing to drop.
-    pub(crate) fn select(&self) {
+    /// Runs every due node; the first callback or destructor exception ends the
+    /// selection and comes back. A Zend bailout longjmps out of a callback over
+    /// these frames, which hold nothing to drop.
+    pub(crate) fn select(&self) -> Failure {
         // SAFETY: the live queue.
         let begin = unsafe { swr_v1_timer_begin(self.queue, self.relative_msec()) };
         if begin == BUSY || begin == CLOSING {
-            return;
+            return std::ptr::null_mut();
         }
         check(begin);
         loop {
@@ -362,17 +360,18 @@ impl Owner {
                 // SAFETY: as above.
                 let failure = unsafe { swr_cpp_timer_node_call(self, node) };
                 if !failure.is_null() {
-                    self.fail(failure);
+                    return self.fail(failure);
                 }
             }
             let failure = self.complete(view.id);
             if !failure.is_null() {
-                self.fail(failure);
+                return self.fail(failure);
             }
         }
         if !self.end() {
             check(CLOSING);
         }
+        std::ptr::null_mut()
     }
 
     /// `~Timer`: releases every node, then the queue. A forked child or terminal
@@ -496,14 +495,22 @@ unsafe extern "C-unwind" fn swr_v1_timer_owner_add(
     unsafe { owner(timer) }.add(msec, persistent, data, callback)
 }
 
-/// `Timer::remove(id)`.
+/// `Timer::remove(id)`; `*failure` is the destructor's exception, for the C++
+/// view to rethrow.
 ///
 /// # Safety
-/// `timer` is live.
+/// `timer` is live and `failure` writable.
 #[unsafe(no_mangle)]
-unsafe extern "C-unwind" fn swr_v1_timer_owner_remove(timer: *mut Owner, id: c_long) -> bool {
+unsafe extern "C-unwind" fn swr_v1_timer_owner_remove(
+    timer: *mut Owner,
+    id: c_long,
+    failure: *mut *mut c_void,
+) -> bool {
     // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.remove(id)
+    let (removed, caught) = unsafe { owner(timer) }.remove(id);
+    // SAFETY: as the caller promises.
+    unsafe { failure.write(caught) };
+    removed
 }
 
 /// `Timer::update(node)`.
@@ -536,14 +543,14 @@ unsafe extern "C" fn swr_v1_timer_owner_delay(
     }
 }
 
-/// `Timer::select()`.
+/// `Timer::select()`: the exception for the C++ view to rethrow, or null.
 ///
 /// # Safety
 /// `timer` is live.
 #[unsafe(no_mangle)]
-unsafe extern "C-unwind" fn swr_v1_timer_owner_select(timer: *mut Owner) {
+unsafe extern "C-unwind" fn swr_v1_timer_owner_select(timer: *mut Owner) -> *mut c_void {
     // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.select();
+    unsafe { owner(timer) }.select()
 }
 
 /// `Timer::abandon_selection(bailout)`: only after a caught Zend bailout whose
