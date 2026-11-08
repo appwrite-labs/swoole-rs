@@ -38,7 +38,7 @@ callback that can bail out runs beneath a Rust frame.
   packet (the allocator may be Zend's, which can bail out) and to log; it calls
   the packet allocator's `free`, and the write calls native `send`, neither of
   which bails out. `cargo test -p swoole-rs-protocols` round-trips packets over
-  real socketpairs; upstream's `message_bus` GoogleTests run through `core.py`.
+  real socketpairs, upstream's `message_bus` TESTs among them (see below).
 
 Undefined legacy overreads/overflows are not replayed: empty MQTT asks for more,
 invalid/truncated RESP fails, oversized SOCKS output is rejected before overflow.
@@ -60,7 +60,7 @@ with modeled String allocation/socket I/O and compares their MQTT, SOCKS, RESP a
 receive traces with the build's Rust: the upstream-symbol exports, the hybrid
 `Socks5Proxy` header over them, and `swr_v1_resp_recv` over the modeled socket.
 The build has no `redis::format`/`parse`; `redis_reply.inc` gives them over Rust's
-codec to this gate and to `core.py`, whose `redis.*` GTests still call them. A seeded 10,000-wire RESP corpus also runs the exact original PHP
+codec to this gate. A seeded 10,000-wire RESP corpus also runs the exact original PHP
 request-parser loop with modeled Zend parameters against Rust typed events. C++
 ASan/UBSan does not instrument Rust. Failing cases print trial/seed.
 
@@ -98,28 +98,25 @@ so the outcome isn't decided by the engine.
 
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
-## Original core GTests (Linux)
+## Original core GTests
 
-Runs the eight unchanged `redis.*`, `message_bus.*` and `mqtt.echo` GTests (dev.py phase
-`protocols-native-originals`, Linux) against
-upstream and the archive's hybrid tree (every module's patches, `overlay_hybrid_tree`). Build `core.Dockerfile` on the repo dev image
-(`dev.py docker` builds it the first time), under one fixed tag so a rebuild replaces it:
+Upstream's `core-tests/src/protocol/redis.cpp`, `server/message_bus.cpp` and
+`server/mqtt.cpp` TESTs are Rust, one test per TEST with the same inputs and
+expected values:
 
-```sh
-docker build -f tests/modules/protocols/core.Dockerfile -t swoole-protocols-core \
-  --build-arg BASE_IMAGE=$(python3 -c 'import tools.dev; print(tools.dev.docker_image())') .
-```
+| TEST | Rust test |
+| --- | --- |
+| `redis.get` | `redis.get` in `server.rs` |
+| `redis.server` | `redis.server` in `server.rs` |
+| `redis.format` | `format_empty_status_and_error` in `crates/protocols/src/redis.rs` |
+| `redis.parse` | `parse_integer_reply` in `crates/protocols/src/redis.rs` |
+| `redis.recv_packet_with_partially_filled_buffer` | `recv_packet_with_partially_filled_buffer` in `crates/ports/src/resp_recv.rs` |
+| `message_bus.read` | `message_bus_read` in `crates/protocols/src/bus.rs` |
+| `message_bus.read_with_buffer` | `message_bus_read_with_buffer` in `crates/protocols/src/bus.rs` (Linux) |
+| `mqtt.echo` | `mqtt.echo` in `server.rs` |
 
-`mqtt.echo` needs Node with mqtt 4.3.8 and pino 6.14.0. Mount the repo at /repo
-and pinned source at /ref read-only, private targets at /work, and a configured
-Linux config.h at /configured.h:
-
-```sh
-python3 /repo/tests/modules/protocols/core.py --source /ref \
-  --config /configured.h --archive /work/target/hybrid/<build>/rust-prefix/lib/libswoole_rs_ffi.a \
-  --build-root /work --node-modules /work/node-fixture/node_modules \
-  --require-all --output /work/reports/protocols-core.json
-```
-
-It needs an isolated network (Redis 6379, MQTT 9501) and refuses an existing
-Redis service. Without Node, `mqtt.echo` is unsupported and `--require-all` exits 1.
+`server.rs` is built into the http server case binary (`tests/modules/http/server`,
+the merge tier's `http-server-rust` phase), whose `fixture.cc` builds the redis and
+mqtt Servers. That phase excludes `redis.get`, which needs a Redis server on
+127.0.0.1:6379, and `mqtt.echo`, which needs Node with the mqtt and pino packages
+(`core-tests/js/mqtt.js`).

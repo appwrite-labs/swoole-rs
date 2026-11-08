@@ -6,7 +6,8 @@
 //! (`core-tests/src/_lib/http.cpp`): the same upgrade request, and frames from the
 //! hybrid's `websocket::encode`, `mask`, `get_package_length` and `decode`.
 //!
-//! protocol.rs (tests/modules/framing) adds `core-tests/src/protocol/base.cpp`'s server TESTs.
+//! protocol.rs (tests/modules/framing) adds `core-tests/src/protocol/base.cpp`'s server TESTs,
+//! server.rs (tests/modules/protocols) `protocol/redis.cpp`'s and `server/mqtt.cpp`'s.
 //!
 //! `main --list` prints the cases; `main NAME` runs one, in this process, as
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`), from the tree
@@ -14,6 +15,8 @@
 
 #[path = "../../../framing/protocol.rs"]
 mod protocol;
+#[path = "../../../protocols/server.rs"]
+mod protocols;
 
 use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_long, c_void};
@@ -1124,6 +1127,8 @@ const SUITES: &[(&str, Cases)] = &[
     ("http_server", http1::CASES),
     ("http_server", CASES),
     ("protocol", protocol::CASES),
+    ("redis", protocols::REDIS),
+    ("mqtt", protocols::MQTT),
 ];
 
 fn main() {

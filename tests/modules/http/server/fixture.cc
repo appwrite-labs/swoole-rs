@@ -1,7 +1,8 @@
 // The Servers upstream's core-tests/src/server/http_server.cpp builds (test_base_server,
 // test_http_server, test_ssl_http, abort_connection's and get_package_length's) and
 // core-tests/src/protocol/base.cpp builds, for the Rust cases in src/main.rs and
-// tests/modules/framing/protocol.rs. Building a Server, its std::string setters, its callback
+// tests/modules/framing/protocol.rs, and protocol/redis.cpp's and server/mqtt.cpp's for
+// tests/modules/protocols/server.rs. Building a Server, its std::string setters, its callback
 // slots, a timer callback and get_package_length's fake socket need C++; every assertion and
 // callback body is Rust's. Compiled into the hybrid tree's lib-swoole by tests/modules/hooks/system.py.
 #include "swoole_server.h"
@@ -46,6 +47,45 @@ Server *swr_case_protocol_server(int framing, Hook on_worker_start, Receive on_r
     serv->onWorkerStart = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
     serv->onReceive = on_receive;
     return serv;
+}
+
+// core-tests/src/protocol/redis.cpp's redis.server Server, created: one worker in base mode, its TCP
+// port on the redis protocol.
+Server *swr_case_redis_server(Hook on_worker_start, Receive on_receive) {
+    auto serv = new Server(Server::MODE_BASE);
+    serv->worker_num = 1;
+    serv->enable_static_handler = true;
+    swoole_set_log_level(SW_LOG_WARNING);
+    listen_port(serv, SW_SOCK_TCP, 0)->open_redis_protocol = true;
+    serv->create();
+    serv->onWorkerStart = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
+    serv->onReceive = on_receive;
+    return serv;
+}
+
+// core-tests/src/server/mqtt.cpp's test_mqtt_server, created: one worker in base mode, port 9501 on
+// the mqtt protocol.
+Server *swr_case_mqtt_server(Hook on_worker_start, Closed on_connect, Closed on_close, Receive on_receive) {
+    auto serv = new Server(Server::MODE_BASE);
+    serv->worker_num = 1;
+    serv->enable_reuse_port = true;
+    swoole_set_log_level(SW_LOG_WARNING);
+    listen_port(serv, SW_SOCK_TCP, 9501)->open_mqtt_protocol = true;
+    serv->create();
+    serv->onWorkerStart = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
+    serv->onClose = on_close;
+    serv->onConnect = on_connect;
+    serv->onReceive = on_receive;
+    return serv;
+}
+
+// swoole_timer_tick(ms): `tick(serv, session_id)` until it returns false.
+void swr_case_tick(Server *serv, long ms, bool (*tick)(Server *, SessionId), SessionId session_id) {
+    swoole_timer_tick(ms, [serv, tick, session_id](Timer *, TimerNode *tnode) {
+        if (!tick(serv, session_id)) {
+            swoole_timer_del(tnode);
+        }
+    });
 }
 
 // test_base_server's Server, created: null when set_document_root fails.
