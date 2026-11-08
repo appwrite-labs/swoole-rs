@@ -133,9 +133,9 @@ def rehash(old, new):
     shutil.rmtree(work)
 
 
-def check():
-    """The all-modules patch set, in the order build_hybrid applies it, applies cleanly to the pin."""
-    work = ROOT / 'target/patches/.check'
+def apply(work):
+    """Clone the pin to `work` and apply the all-modules patch set, in the order build_hybrid
+    applies it; return how many patches applied."""
     shutil.rmtree(work, ignore_errors=True)
     clone_pin(work)
     git(work, 'checkout', '-q', COMMIT)
@@ -145,8 +145,15 @@ def check():
         result = subprocess.run(['git', '-C', str(work), 'apply', str(ROOT / patch['path'])], capture_output=True, text=True)
         if result.returncode:
             raise SystemExit(f"{patch['path']} does not apply over the patches before it:\n{result.stderr}")
+    return len(patches)
+
+
+def check():
+    """The all-modules patch set applies cleanly to the pin."""
+    work = ROOT / 'target/patches/.check'
+    count = apply(work)
     shutil.rmtree(work)
-    print(f'{len(patches)} patches apply to {COMMIT[:12]}')
+    print(f'{count} patches apply to {COMMIT[:12]}')
 
 
 def main():

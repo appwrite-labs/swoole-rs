@@ -1,0 +1,29 @@
+[package]
+name = "swoole-rs-ext"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "swoole.so built by Cargo: the module crates linked with native/ and the bundled C, compiled by build.rs"
+
+[lib]
+name = "swoole"
+crate-type = ["cdylib"]
+test = false
+doctest = false
+
+[features]
+# Build the extension for the PHP that `$PHP_CONFIG` names, from the patched
+# tree `$SWOOLE_SRC` (tools/build_ext.py prepares both). Without it the crate is empty.
+php = ["swoole-rs-ffi/php", "dep:cc", "dep:openssl-sys"]
+
+[dependencies]
+swoole-rs-ffi = { path = "../ffi" }
+# Only for DEP_OPENSSL_INCLUDE: native/tls includes the OpenSSL the Rust side links.
+openssl-sys = { version = "=0.9.117", optional = true }
+
+[build-dependencies]
+cc = { version = "=1.10.0", optional = true }
+
+[lints]
+workspace = true

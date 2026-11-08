@@ -419,6 +419,15 @@ name = "swoole-rs-error"
 version = "0.1.0"
 
 [[package]]
+name = "swoole-rs-ext"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "openssl-sys",
+ "swoole-rs-ffi",
+]
+
+[[package]]
 name = "swoole-rs-ffi"
 version = "0.1.0"
 dependencies = [

@@ -434,9 +434,14 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
     },
 };
 
+// The Cargo-built extension (crates/ext) exports get_module() from Rust, which calls this.
+extern "C" zend_module_entry *swr_cpp_phpswoole_module() {
+    return swr_v1_phpswoole_module(&phpswoole_ops);
+}
+
 #ifdef COMPILE_DL_SWOOLE
 extern "C" ZEND_DLEXPORT zend_module_entry *get_module() {
-    return swr_v1_phpswoole_module(&phpswoole_ops);
+    return swr_cpp_phpswoole_module();
 }
 #endif
 
