@@ -647,7 +647,6 @@ dependencies = [
 name = "swoole-rs-phphelpers"
 version = "0.1.0"
 dependencies = [
- "libc",
  "swoole-rs-zend",
 ]
 

@@ -10,11 +10,10 @@ name = "swoole_rs_phphelpers"
 crate-type = ["rlib"]
 
 [features]
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
 
 [dependencies]
 swoole-rs-zend = { path = "../zend", optional = true }
-libc = { version = "=0.2.191", optional = true }
 
 [lints]
 workspace = true
