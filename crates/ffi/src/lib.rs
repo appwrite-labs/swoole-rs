@@ -132,6 +132,9 @@ pub use swoole_rs_firebird as firebird;
 #[cfg(feature = "sqlite")]
 pub use swoole_rs_sqlite as sqlite;
 
+#[cfg(feature = "oci")]
+pub use swoole_rs_oci as oci;
+
 #[cfg(feature = "curl")]
 pub use swoole_rs_curl as curl;
 

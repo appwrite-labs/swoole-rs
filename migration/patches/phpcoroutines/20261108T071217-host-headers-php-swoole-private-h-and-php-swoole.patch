@@ -488,16 +488,6 @@ index 59692c6..0000000
 -END_EXTERN_C()
 -
 -#endif /* PHP_SWOOLE_PRIVATE_H */
-diff --git a/ext-src/swoole_oracle.cc b/ext-src/swoole_oracle.cc
-index e9d6654..e231636 100644
---- a/ext-src/swoole_oracle.cc
-+++ b/ext-src/swoole_oracle.cc
-@@ -17,4 +17,3 @@
-  */
--#include "php_swoole_private.h"
--#include "php_swoole_cxx.h"
-+#include "swoole_rs_phphost.h"
- #include "swoole_coroutine.h"
 diff --git a/package.xml b/package.xml
 index 9a64134..bc3be42 100644
 --- a/package.xml

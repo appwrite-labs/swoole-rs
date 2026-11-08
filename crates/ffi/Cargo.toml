@@ -14,10 +14,11 @@ default = []
 # archive has PHP; the native gates' archive leaves it off so it holds no Zend
 # references (docs/zend.md).
 php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpredis", "swoole-rs-phpredis/php",
-       "swoole-rs-phplocks/php", "swoole-rs-phpruntime/php", "swoole-rs-phpserver/php", "swoole-rs-phpprocess/php", "swoole-rs-phpthread/php", "swoole-rs-phpclients/php", "swoole-rs-phphttp/php", "swoole-rs-phphttp2/php", "swoole-rs-phpstdext/php", "swoole-rs-phphelpers/php", "swoole-rs-phpcollections/php", "swoole-rs-phpevents/php", "swoole-rs-phpcoroutines/php", "swoole-rs-pgsql?/php", "swoole-rs-odbc?/php", "swoole-rs-firebird?/php", "swoole-rs-sqlite?/php"]
+       "swoole-rs-phplocks/php", "swoole-rs-phpruntime/php", "swoole-rs-phpserver/php", "swoole-rs-phpprocess/php", "swoole-rs-phpthread/php", "swoole-rs-phpclients/php", "swoole-rs-phphttp/php", "swoole-rs-phphttp2/php", "swoole-rs-phpstdext/php", "swoole-rs-phphelpers/php", "swoole-rs-phpcollections/php", "swoole-rs-phpevents/php", "swoole-rs-phpcoroutines/php", "swoole-rs-pgsql?/php", "swoole-rs-odbc?/php", "swoole-rs-firebird?/php", "swoole-rs-sqlite?/php", "swoole-rs-oci?/php"]
 # Not modules: the hybrid adds each when configured with its switch (--enable-iouring,
 # --enable-cares, --enable-swoole-stdext, --enable-swoole-pgsql, --with-swoole-odbc,
-# --with-swoole-firebird, --enable-swoole-sqlite, --enable-swoole-curl, --with-swoole-ssh2).
+# --with-swoole-firebird, --enable-swoole-sqlite, --with-swoole-oracle, --enable-swoole-curl,
+# --with-swoole-ssh2).
 iouring = ["swoole-rs-hooks/iouring", "swoole-rs-reactor/iouring", "swoole-rs-phplocks/iouring"]
 cares = ["swoole-rs-clients/cares"]
 stdext = ["swoole-rs-phpstdext/active"]
@@ -25,6 +26,7 @@ pgsql = ["dep:swoole-rs-pgsql"]
 odbc = ["dep:swoole-rs-odbc"]
 firebird = ["dep:swoole-rs-firebird"]
 sqlite = ["dep:swoole-rs-sqlite"]
+oci = ["dep:swoole-rs-oci"]
 curl = ["dep:swoole-rs-curl"]
 ssh2 = ["dep:swoole-rs-ssh2", "swoole-rs-hooks/ssh2"]
 
@@ -75,6 +77,7 @@ swoole-rs-pgsql = { path = "../pgsql", optional = true }
 swoole-rs-odbc = { path = "../odbc", optional = true }
 swoole-rs-firebird = { path = "../firebird", optional = true }
 swoole-rs-sqlite = { path = "../sqlite", optional = true }
+swoole-rs-oci = { path = "../oci", optional = true }
 swoole-rs-curl = { path = "../curl", optional = true }
 swoole-rs-ssh2 = { path = "../ssh2", optional = true }
 

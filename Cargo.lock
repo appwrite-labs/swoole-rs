@@ -439,6 +439,7 @@ dependencies = [
  "swoole-rs-inflate",
  "swoole-rs-locks",
  "swoole-rs-memory",
+ "swoole-rs-oci",
  "swoole-rs-odbc",
  "swoole-rs-ossupport",
  "swoole-rs-pgsql",
@@ -553,6 +554,14 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-locks",
  "swoole-rs-utilities",
+]
+
+[[package]]
+name = "swoole-rs-oci"
+version = "0.1.0"
+dependencies = [
+ "swoole-rs-hooks",
+ "swoole-rs-zend",
 ]
 
 [[package]]
