@@ -507,6 +507,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn get() {
         let _serial = serial();
         let result = text(super::get(b"test.html.json"));
@@ -514,12 +515,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn exists() {
         let _serial = serial();
         assert!(super::exists(b"test.html.json"));
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn set() {
         let _serial = serial();
         let test_mime_type = c"application/swoole-core-test";
@@ -530,6 +533,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn add() {
         let _serial = serial();
         let test_mime_type = c"application/swoole-core-test2";
@@ -541,6 +545,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn del() {
         let _serial = serial();
         assert!(super::del(b"json"));
@@ -549,6 +554,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn suffix_is_the_last_one_through_tolower() {
         assert_eq!(suffix(b"a.B.JSON"), b"json");
         assert_eq!(suffix(b"noDot"), b"nodot");

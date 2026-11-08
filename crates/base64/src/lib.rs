@@ -403,10 +403,14 @@ mod tests {
         let offsets = [0, 1, 2, 7, 15, 16, 31, 47, 48, 63, 96, 223];
         let mut overlaps = 0;
         let mut disjoint = 0;
-        for length in 1..=160 {
+        // Miri checks the aliasing at the block and tail edges with one seed.
+        let lengths =
+            (1..=160).filter(|length| !cfg!(miri) || [1, 2, 3, 48, 49, 160].contains(length));
+        let seeds: &[u8] = if cfg!(miri) { &[0] } else { &[0, 1, 127, 255] };
+        for length in lengths {
             for input in offsets {
                 for output in offsets {
-                    for seed in [0u8, 1, 127, 255] {
+                    for &seed in seeds {
                         let mut actual = [0u8; 512];
                         for (i, byte) in actual.iter_mut().enumerate() {
                             *byte = i.to_le_bytes()[0].wrapping_mul(37).wrapping_add(seed);
@@ -462,6 +466,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "megabytes of encoding are too slow to interpret")]
     fn encode_blocks_tails_and_canaries_match_bitstream_oracle() {
         // Independent bitstream extraction, without the triplet implementation.
         for length in (0..130).chain([255, 256, 257, 1023, 1024, 1025, 65536]) {
@@ -514,6 +519,7 @@ mod tests {
         target_feature = "neon"
     ))]
     #[test]
+    #[cfg_attr(miri, ignore = "196,608 encodes are too slow to interpret")]
     fn encode_lane_order_and_each_input_byte_match_portable() {
         for offset in 0..16 {
             for position in 0..48 {
@@ -552,6 +558,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "megabytes of decoding are too slow to interpret")]
     fn canonical_decode_preserves_full_output_and_canaries() {
         for length in (1..130).chain([255, 256, 257, 1023, 1024, 1025, 65536]) {
             let input: Vec<_> = (0..length)
@@ -603,8 +610,22 @@ mod tests {
                     function(input.as_ptr(), isize::MAX as usize, output.as_mut_ptr()),
                     0
                 );
-                assert_eq!(function(usize::MAX as *const u8, 1, output.as_mut_ptr()), 0);
-                assert_eq!(function(input.as_ptr(), 1, usize::MAX as *mut u8), 0);
+                assert_eq!(
+                    function(
+                        std::ptr::without_provenance(usize::MAX),
+                        1,
+                        output.as_mut_ptr()
+                    ),
+                    0
+                );
+                assert_eq!(
+                    function(
+                        input.as_ptr(),
+                        1,
+                        std::ptr::without_provenance_mut(usize::MAX)
+                    ),
+                    0
+                );
             }
             assert_eq!(output, [0xa5; 8]);
             unsafe {

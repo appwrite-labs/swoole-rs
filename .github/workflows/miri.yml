@@ -1,0 +1,36 @@
+name: Miri
+# The unit tests of the crates without native dependencies, interpreted by Miri for
+# undefined behaviour in their unsafe code. Tests Miri can't run in reasonable time
+# carry #[cfg_attr(miri, ignore = "...")]. Nightly, and on PRs that change a listed crate.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/miri.yml
+      - crates/base64/**
+      - crates/crc32/**
+      - crates/error/**
+      - crates/framing/**
+      - crates/http2/**
+      - crates/httpbindings/**
+      - crates/wrappers/**
+concurrency:
+  group: miri-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  miri:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TOOLCHAIN: nightly-2026-10-24
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install $TOOLCHAIN --profile minimal --component miri,rust-src
+      - run: cargo +$TOOLCHAIN miri setup
+      - run: >
+          cargo +$TOOLCHAIN miri test --locked --lib
+          -p swoole-rs-base64 -p swoole-rs-crc32 -p swoole-rs-error -p swoole-rs-framing
+          -p swoole-rs-http2 -p swoole-rs-httpbindings -p swoole-rs-wrappers
