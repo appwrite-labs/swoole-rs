@@ -11,7 +11,7 @@
 
 #include "swoole_signal.h"
 #include "swoole_rs_uring.h"
-#include "swoole_socket_impl.h"
+#include "swoole_rs_coroutine_socket.h"
 
 namespace swoole {
 namespace coroutine {

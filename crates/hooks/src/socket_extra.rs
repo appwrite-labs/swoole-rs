@@ -62,7 +62,7 @@ pub extern "C" fn swr_v1_hook_socket_extra_new() -> PreparedSocketExtra {
         tls: unsafe { &raw const (*owner).tls },
     }
 }
-/// `UringSocket`'s constructors (`swoole_socket_impl.h`): with `io_uring`, Rust runs
+/// `UringSocket`'s constructors (`swoole_rs_coroutine_socket.h`): with `io_uring`, Rust runs
 /// the socket's operations through the ring (`crate::uring_socket`).
 ///
 /// # Safety
