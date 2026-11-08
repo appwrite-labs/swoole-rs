@@ -1,13 +1,14 @@
-# M15 native half-close correction
+# M15 half-close correction
 
-An opt-in Native correction enabled by `--fix-halfclose`; it is not a Rust
-conversion. It adds no public ABI or layout, Rust feature bit, connection field,
+An opt-in correction enabled by `--fix-halfclose`; it is not a conversion of upstream
+code. It adds no public ABI or layout, feature bit, connection field,
 timer, allocator or second output queue. Without the flag the pinned behavior is
 unchanged.
 
-| Patch | Upstream files |
-| --- | --- |
-| 20261108T154800-m15-defines-its-switches-in-config-h | `config.m4`: defines `SW_HALFCLOSE_DRAIN` and `SW_HALFCLOSE_PREQUEUE` in config.h. The drain and the synchronous prequeue run in `crates/server/src/send.rs`, `base_factory.rs` and `conn_io.rs`; [repairs.cc](repairs.cc) registers the TLS repairs in [tls.md](tls.md) with Rust under `SW_HALFCLOSE_PREQUEUE`. |
+`--fix-halfclose` builds the Rust archive with crates/ffi's `halfclose` feature; it
+patches no upstream file and compiles no native code. crates/server's feature runs the
+drain and the synchronous prequeue (`send.rs`, `base_factory.rs`, `conn_io.rs`), and
+crates/tls's the TLS repairs in [tls.md](tls.md).
 
 ## Queued close
 

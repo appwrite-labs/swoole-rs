@@ -742,7 +742,7 @@ class ChangedModules(unittest.TestCase):
         self.assertEqual(self.changed('.github/workflows/pr.yml', 'tests/dev/test_tooling.py'), [])
         self.assertEqual(self.changed('crates/ffi/src/lib.rs'), sorted(dev.MODULES))
         self.assertEqual(self.changed('crates/oracle/build.rs', 'fuzz/src/lib.rs'), [])
-        self.assertEqual(self.changed('migration/patches/halfclose/0003-send-tls-close-notify.patch'), sorted(dev.MODULES))
+        self.assertEqual(self.changed('native/halfclose/contract.md'), sorted(dev.MODULES))
 
 
 class FocusedPhases(unittest.TestCase):

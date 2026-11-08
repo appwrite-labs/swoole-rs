@@ -471,14 +471,12 @@
       ],
       "owned_paths": [
         "native/halfclose/",
-        "migration/patches/halfclose/",
         "tests/modules/halfclose/"
       ],
       "phpt_families": [
         "swoole_server_port"
       ],
-      "upstream_patch_targets": [],
-      "applies_first": true
+      "upstream_patch_targets": []
     },
     {
       "id": "M16",

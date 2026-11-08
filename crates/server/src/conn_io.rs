@@ -4,8 +4,8 @@
 //! (the fact bits below), so the hot read path makes no call besides the port's
 //! own `onRead`.
 //!
-//! `--fix-halfclose` (M15) builds define `SW_HALFCLOSE_PREQUEUE`, reported as
-//! `PREQUEUE`: a synchronous process worker keeps its ordered response after a
+//! `--fix-halfclose` (M15) builds have the `halfclose` feature, which reports
+//! `PREQUEUE` (upstream's `SW_HALFCLOSE_PREQUEUE`): a synchronous process worker keeps its ordered response after a
 //! clean FIN, `close_notified` is the terminal read state, and a TLS close notify
 //! still owed is queued behind the output (`native/halfclose/prequeue.md`).
 use crate::ops::{
@@ -33,7 +33,7 @@ pub(crate) const SSL_WANT_READ: u64 = 1 << 3;
 pub(crate) const SSL_PENDING: u64 = 1 << 4;
 pub(crate) const DTLS_PORT: u64 = 1 << 5;
 pub(crate) const DTLS_SOCKET: u64 = 1 << 6;
-/// Built with `SW_HALFCLOSE_PREQUEUE`.
+/// Built with the `halfclose` feature.
 pub(crate) const PREQUEUE: u64 = 1 << 7;
 pub(crate) const PROCESS: u64 = 1 << 8;
 pub(crate) const CLOSE_NOTIFY: u64 = 1 << 9;

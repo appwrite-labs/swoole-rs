@@ -248,8 +248,6 @@ int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_
 /* _ssl_read_x509_file: a certificate as PEM into at most length bytes, warning and
  * returning -1 on failure; frees cert when consume. */
 int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);
-/* --fix-halfclose's close_notify and interrupted-sendfile repairs (SW_HALFCLOSE_TLS_SHUTDOWN). */
-void swr_v1_socket_set_halfclose_repairs(bool repaired);
 /* Reactor::set_exit_condition of a plain function, for Rust's signal backends
  * (native/reactor/reactor.cc). */
 void swr_v1_event_set_exit_condition(int id, bool (*condition)(size_t *event_num));

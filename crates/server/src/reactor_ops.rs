@@ -58,6 +58,13 @@ use crate::reactor_entry as entry;
 use crate::records::{ConnectionRecord, swr_v1_server_connection, swr_v1_server_session};
 use crate::{ServerConfig, ServerState, ServerTables};
 
+/// `PREQUEUE` in builds with `--fix-halfclose` (`SW_HALFCLOSE_PREQUEUE`), else nothing.
+const BUILT_PREQUEUE: u64 = if cfg!(feature = "halfclose") {
+    cn::PREQUEUE
+} else {
+    0
+};
+
 const SW_LOG_TRACE: c_int = 1;
 const SW_LOG_NOTICE: c_int = 3;
 const SW_LOG_WARNING: c_int = 4;
@@ -285,7 +292,7 @@ fn read_facts(o: &mut Objects<'_>) -> u64 {
     let sock = o.sock();
     let ssl = !sock.ssl.is_null();
     cn::FOUND
-        | cn::PREQUEUE
+        | BUILT_PREQUEUE
         | flag(sock.close_notified != 0, cn::CLOSE_NOTIFIED)
         | flag(conn.close_queued != 0, cn::CLOSE_QUEUED)
         | flag(ssl && sock.tls.want_read != 0, cn::SSL_WANT_READ)
@@ -316,7 +323,7 @@ fn write_facts(o: &mut Objects<'_>) -> u64 {
     }
     let sock = o.sock();
     cn::FOUND
-        | cn::PREQUEUE
+        | BUILT_PREQUEUE
         | flag(conn.close_notify != 0, cn::CLOSE_NOTIFY)
         | flag(
             !sock.ssl.is_null() && sock.tls.state != SSL_READY,
@@ -348,7 +355,7 @@ fn peer_close_facts(o: &mut Objects<'_>) -> u64 {
     // SAFETY: the event's live socket.
     let notified = unsafe { (*o.event().socket.cast::<SocketRecord>()).close_notified } != 0;
     cn::FOUND
-        | cn::PREQUEUE
+        | BUILT_PREQUEUE
         | flag(config.disable_notify, cn::DISABLE_NOTIFY)
         | flag(conn.close_queued != 0, cn::CLOSE_QUEUED)
         | flag(notified, cn::CLOSE_NOTIFIED)
@@ -370,7 +377,7 @@ fn close_facts(o: &mut Objects<'_>) -> u64 {
     o.ctx.port = o.port_by_fd(fd);
     let (sock, conn) = (o.sock(), o.conn());
     let ssl = !sock.ssl.is_null();
-    cn::PREQUEUE
+    BUILT_PREQUEUE
         | flag(!conn.timer.is_null(), cn::TIMER)
         | flag(!conn.websocket_buffer.is_null(), cn::WEBSOCKET_BUFFER)
         | flag(sock.removed != 0, cn::REMOVED)
