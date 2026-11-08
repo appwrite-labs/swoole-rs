@@ -26,7 +26,7 @@ from tools.harness import run_isolated, write_report  # noqa: E402
 SELECTION = 'file(GLOB_RECURSE core_test_files core-tests/src/*.cpp thirdparty/llhttp/*.c)'
 # Upstream's test helpers (not assertions) that write state the hybrid moved behind accessors.
 ADAPTATIONS = {
-    'core-tests/src/_lib/process.cpp': [('worker.pid = pid;', 'worker.set_pid(pid);')],
+    'core-tests/src/_lib/process.cpp': [('worker.pid = pid;', 'swr_v1_worker_set_pid(reinterpret_cast<swr_v1_worker_record *>(&worker), pid);')],
     # The hybrid has no swoole_http2.h: the case reads its two constants and crates/http2's settings codec.
     'core-tests/src/server/http_server.cpp': [('#include "swoole_http2.h"\n', '''\
 #define SW_HTTP2_PRI_STRING "PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n"
