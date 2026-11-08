@@ -6,7 +6,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Module-local extension of ABI v1. See tests/modules/websocket/codec.md.
+/* Module-local extension of ABI v1, differentially tested by tests/modules/websocket/test_codec.py.
  * All pointers are borrowed for the call. No allocation or callbacks. */
 typedef struct {
     size_t payload_length;

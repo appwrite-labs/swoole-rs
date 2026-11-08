@@ -1,16 +1,9 @@
-# Utility and logging validation (M14)
+# Utility and logging tests
 
-M14 is opt-in (feature bit 512, ABI in
-[native/utilities/contract.md](../../../native/utilities/contract.md)). Rust owns
-defined LP64 PHP/Jenkins/Austin hash arithmetic, shared spin acquisition, M16
-wait/wake calls, pretty-name slicing, log thresholds/labels/rotation formats,
-line/microsecond formatting, Logger action sequencing, scoped filename
-construction/comparison/reopen capture and 16 shared inline helpers. The
-selected Logger (state ABI 2) keeps its nine persistent logical/string fields in
-one Rust context, so selected consumers must rebuild against the selected SDK;
-there is no binary layout compatibility with native. Native code keeps FILE/fd/
-mutex custody, clock/calendar/libc, identity, descriptor, diagnostic and
-backtrace effects after Rust returns.
+ABI: [native/utilities/contract.md](../../../native/utilities/contract.md). Rust
+owns the hash arithmetic, shared spin acquisition, the locks module's wait/wake
+calls, pretty-name slicing, the Logger (`crates/utilities/src/logger.rs`) and 16
+shared inline helpers.
 
 Use a release archive matching the current utility sources, headers and overlays.
 
@@ -129,5 +122,3 @@ without concurrent workloads; none has run.
 - Unqualified originals: Austin signed-shift UB, `log.date_format` (null scanf
   destinations) and `open_fail` (uncontrolled path, no assertion).
 - Native macOS open of an invalid UTF-8 filename fails; that domain is untested.
-- Allocation/exception/lifetime failures, concurrent calendar/configuration/
-  open-close, other platforms, matched performance and default activation remain open.

@@ -42,8 +42,8 @@ waits, not a second queue. Rust `end` computes the next delay.
 Zend bailout: a fatal longjmp from a PHP callback used to leave selection active
 and abort at shutdown. The PHP callback now marks the selection as abandoned
 before propagating bailout; the owner destructor then uses the normal exact-ID
-close/complete/end/drain path. Active self-deletion is still rejected. Details:
-`tests/modules/timer/bailout.md`.
+close/complete/end/drain path. Active self-deletion is still rejected. Tested by
+`tests/modules/timer/test_bailout.py`.
 
 ## Clock and backend helpers
 
@@ -87,6 +87,5 @@ External callers any replacement must preserve:
 ## Known failures
 
 The unchanged 200-trial signal test fails on both engines: upstream 94 PASS /
-4 WARNED / 2 FAILED, Rust 94 PASS / 6 WARNED. See `tests/modules/timer/UPSTREAM.md`
-and `tests/modules/timer/RUST_ASAN.md` for original-suite and sanitizer runs.
+4 WARNED / 2 FAILED, Rust 94 PASS / 6 WARNED. See `tests/modules/timer/README.md`.
 Combined macOS Native/Rust ASan needs a compatible compiler/runtime pair.

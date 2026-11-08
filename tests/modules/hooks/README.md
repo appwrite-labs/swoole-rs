@@ -16,32 +16,11 @@ scenarios through each, comparing effects and order. Syscalls, contexts, TLS
 and kernel IO are faked; these are policy/order checks, not runtime proof.
 `--sanitize` adds ASan/UBSan to C++ only, not the Rust archive.
 
-- The ordered gate is gone. `wait_for` lost its last callers (flock and `waitpid_safe` are
-  Rust) and left the build; its 22 retry and cancel cases are `ported_wait_for_matrix` in
-  `crates/hooks/src/flock.rs`, over the same retry loop. The coroutine Socket's transfers and
-  `TimerController` moved to Rust with their cases (`ported_*` tests in
-  `crates/hooks/src/transfer.rs` and `co_io.rs`).
-- The async gate is gone. Its 426 async event/lambda/sleep/DNS cases (dispatch
-  rejection, timeout/cancel completion, late canceled completion and errno
-  capture) are `ported_async_gate` in `crates/hooks/src/offload/ported.rs`:
-  upstream's `async`, `async(fn)`, `System::sleep`,
-  `gethostbyname_impl_with_async` and `System::getaddrinfo` run unchanged in
-  `swoole-rs-oracle` (`shim/hooks_async.cc`) over the gate's recording facade,
-  and the Rust offload, composed as the hybrid's system.cc composes it, runs over
-  the same facade in Rust; every scenario's effects must match.
-- `packet_gate.py` (240 cases): length/EOF/raw framing paths. Its 384
-  vectored all-transfer cases moved to Rust with `readv_all`/`writev_all`
-  (`ported_vector_all_matrix` in `crates/hooks/src/vector.rs`).
-- The socket policy gate's bodies (the bound-coroutine checks, `set_err`,
-  `check_return_value`, `is_available`, `get_event_str` and
-  `TimeoutController::has_timedout`) moved to Rust with their cases (`ported_*`
-  tests in `crates/hooks/src/co_io.rs`).
-- The lifecycle gate's bodies (`shutdown`, `cancel`, `close`,
-  `connect(addr)` and `check_liveness`) moved to Rust with their cases
-  (`ported_*` tests in `crates/hooks/src/lifecycle.rs`, each comparing Rust
-  with upstream's body transcribed over the same fakes).
+`packet_gate.py` (`hooks-packet-policy`, 240 cases) covers the length/EOF/raw
+framing paths. Gates whose bodies moved to Rust became `ported_*` tests in
+`crates/hooks`.
 
-`compile_gate.py` compiles all eight original and patched translation units as
+`compile_gate.py` (`hooks-compile`) compiles all eight original and patched translation units as
 C++14: the pinned ones, then the pin with every file the hybrid build patched
 (`overlay_hybrid_tree`) under that build's `config.h`. io_uring units are
 reported UNSUPPORTED when the config does not enable `SW_USE_IOURING`.
@@ -98,11 +77,6 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 
 ## Known failures
 
-- PHPTs (229), PASS/FAIL/SKIP: Linux reference 183/14/32 vs Rust 181/16/32;
-  macOS reference 165/19/45 vs Rust 161/23/45. Rust has candidate-only
-  failures on both platforms; base/async_file failures reproduce in the native
-  control on macOS. Redis, external services and PHP deprecations account for
-  further failures and skips.
 - `hooks-system-rust`: 18 of system.cpp's 20 cases pass; the two `getaddrinfo`
   network cases are excluded. socket.cpp: 49 of 54 pass (Linux aarch64, docker).
   `coroutine_hook.sendmsg_and_recvmsg` is excluded:
@@ -112,19 +86,3 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   network.
 - macOS (clang): `packet_gate.py` stops at a narrowing error in the selected
   `recv_packet` initializer. It passes on Linux, which is where CI runs it.
-- Not run: enabled io_uring runtime, ZTS/thread mode, the PHP originals after
-  the latest wait/poll, retry, datagram and curl/MongoDB policy moves, and
-  performance.
-
-## Gate audit (#481)
-
-Both phases are kept. They compile the pinned and patched C++ bodies against
-fakes and inject what a running server can't reliably produce: EAGAIN, EINTR,
-partial IO, timer and dispatch failures, cancel races and destructor reentry, all
-under ASan/UBSan. Neither a PHPT nor the Rust unit tests reach that C++ glue.
-
-- `hooks-packet-policy`: the fault/order matrix above.
-- `hooks-compile`: the only C++14 build of the eight patched units.
-
-A body these gates slice may move into Rust: the PR that moves it ports the
-gate's cases for it into a `crates/hooks` test and drops the body from the gate.

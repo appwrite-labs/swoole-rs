@@ -1,7 +1,7 @@
 # Error handling
 
 Reference: Swoole v6.2.4, commit `c7e514509451beafd4d70ce5b78943d51e76381c`.
-The opt-in error overlay (feature bit 32) replaces first-party message lookup,
+The error overlay replaces first-party message lookup,
 error classification, unknown-message formatting and ignored-error membership
 in `src/core/error.cc`.
 
@@ -67,14 +67,8 @@ differ across platforms.
 
 `--sanitize` instruments C++ only, not the Rust archive.
 
-Gate audit (#471/#478): both phases are **kept**. `error-native` runs the native
-error allocator/state facades under C++ sanitizers — coverage no PHPT, Rust unit
-test or fuzz target reaches (rule 1, sanitizers). `error-php` uniquely checks the
-43-case `swoole_strerror` integer-narrowing corpus (64-bit PHP int → C error code
-across the FFI) under four selectors on both engines, which no PHPT exercises.
-(The two unchanged originals it also runs, `swoole_function/swoole_strerror.phpt`
-and `swoole_error_log.phpt`, are already run by the merge-tier PHPT gate, so only
-the narrowing corpus is unique to this phase.)
+`error-native` (`tools/core_check.py --module error`, which runs
+`differential.py` on the build's archive) and `error-php` run these.
 
 ## Benchmarks
 
@@ -100,10 +94,3 @@ hit/miss/duplicate at 8 and 4096 entries, fresh insertion at 4096 and 65536
 entries, and four-thread read-only hit/miss at 4096 entries; each sample forks
 from the same empty parent. `--latency` reports p50/p95/p99 of batch-mean
 nanoseconds per operation (about 128 batches), not per-call tail latency.
-
-## Known gaps
-
-- The last published throughput (ten-module build, before full Rust formatting
-  and state) was 0.82x upstream on macOS and 1.04x on Linux. The macOS
-  regression blocks default activation; current state/unknown timings have not
-  been measured.

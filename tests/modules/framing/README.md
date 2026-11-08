@@ -1,8 +1,7 @@
-# M18 framing and MIME
+# Framing and MIME tests
 
-Packet framing and the MIME table behind the optional framing feature
-(bit4096). The native IO/callback/storage ABI shims are described in [native/framing/contract.md](../../../native/framing/contract.md).
-Default activation is not claimed.
+Packet framing and the MIME table (`crates/framing`); the ABI is in
+[native/framing/contract.md](../../../native/framing/contract.md).
 
 ## Gates
 
@@ -44,12 +43,6 @@ swoole-rs-framing`), with the same inputs and expected values:
 
 ## Known failures
 
-- PHP originals: macOS has 43 pass, 2 skip and 2 fail; Linux has 45 pass,
-  1 skip and 1 fail. Both engines get the same results.
-- On macOS, `If_Modified_Since.phpt` returns 200 instead of 304 in both engines.
-- The SMTP online test skips. macOS also skips the Linux-only large-packet test.
+- `If_Modified_Since.phpt` returns 200 instead of 304 on macOS in both engines.
 - Under the 128-byte allocation ceiling, both engines throw for a 1MiB filename
-  prefix, because the reference copies the whole filename too. This is not a
-  migration regression. The uncapped control matches on both platforms.
-- Still open: optimized measurements, broader platform/feature/combined
-  activation, and the remaining original failures.
+  prefix, because the reference copies the whole filename too.

@@ -1,6 +1,6 @@
 # Memory subsystem validation
 
-Opt-in checks for the Rust-backed memory module (fixed/global/ring pools, heap,
+Checks for the Rust memory module (fixed/global/ring pools, heap,
 channel, shared mapping and table). ABI lifetimes and native contracts are in
 [native/memory/contract.md](../../../native/memory/contract.md).
 
@@ -71,13 +71,3 @@ status.
 
 `memory-unit` runs them; `memory-rust-asan` runs them under Rust ASan
 (`tools/cargo_asan.py --package swoole-rs-memory`).
-
-## Gate audit (#488)
-
-`memory-native`, the FFI checksum differential of the pinned and overlaid pools,
-channel, mapping and table facades, and its benchmark went with the facades
-(#1665): with the table, fixed pool and ring buffer Rust-only, there was nothing
-left on the hybrid side to compile against the pinned C++. One phase remains:
-
-- `memory-table-witnesses`: table fork, grow, clear-batch and odd-width
-  observations that must equal upstream's. No PHPT compares these across engines.

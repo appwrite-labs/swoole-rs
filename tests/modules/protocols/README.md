@@ -2,8 +2,7 @@
 
 `crates/protocols` implements MQTT framing, SOCKS5 wire/state/configuration
 policy, RESP command/receive/reply policy and MessageBus chunking/fairness/
-membership. The feature is opt-in (bit 128); the C contract is
-`native/protocols/swoole_rs_protocols.h`.
+membership. The C contract is `native/protocols/swoole_rs_protocols.h`.
 
 ## Boundaries and compatibility
 
@@ -90,7 +89,7 @@ done
 - `lifecycle.py`: MQTT/RESP in base/process modes, eight concurrent 2MiB requests,
   exact response hashes, graceful master exit 0, no worker-error callbacks.
 
-`bailout.py` has no request-side out-of-memory scenario (#506). After PHP logs
+`bailout.py` has no request-side out-of-memory scenario. After PHP logs
 allocator exhaustion in a worker, upstream stays alive and unresponsive (base
 process waits in `epoll_pwait`) instead of exiting 255 or restarting the worker,
 so the outcome isn't decided by the engine.

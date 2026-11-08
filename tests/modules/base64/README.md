@@ -1,4 +1,4 @@
-# M09 base64 conversion
+# Base64 tests
 
 ABI: [`docs/core-abi-v1.md`](../../../docs/core-abi-v1.md) and
 `native/include/swoole_rs_base64.h`. Upstream pin:
@@ -24,21 +24,6 @@ The encoder processes full three-byte groups without padding decisions; one tail
 step supplies padding. The decoder classifies each byte with an immutable
 256-byte table generated from the canonical alphabet.
 
-## Caller audit
-
-Production low-level encoder calls in the pinned source:
-
-| Caller | Input and output ownership |
-| --- | --- |
-| `src/protocol/http.cc`, `HttpProxy::get_auth_str` | Native stack buffers, formatted `username:password` |
-| `src/core/string.cc`, `String::append_random_bytes` | Native random input and separately allocated encoded output; zero requested length is not guarded here |
-| `ext-src/swoole_http_client_coro.cc`, `Client::set_basic_auth` | Native `std::string` `username:password`, separate Zend allocation |
-| `ext-src/swoole_websocket_server.cc` | 20-byte SHA1 digest, separate native handshake output |
-
-No production code calls the low-level `swoole::base64_decode`; only its original
-core test does. The `swoole_stdext.cc` aliases, the embedded PHP library and the
-client handshake's `php_base64_encode` use PHP's own base64, not this code.
-
 ## Differential tests
 
 ```sh
@@ -62,9 +47,6 @@ values:
 | `base64.encode` | `base64_encode` (a deterministic fixture replaces `swoole_random_bytes`) |
 | `base64.decode` | `base64_decode` |
 
-Rust's own bounds checks replace the previous ASan/UBSan build. The Rust codec has
-no mutable state, so the earlier concurrency and fork runs are not carried over.
-
 ## PHP consumers
 
 `consumers.py --extension EXTENSION --manifest BUILD_MANIFEST --output REPORT`
@@ -79,19 +61,5 @@ bound; the checks expect that behavior.
 
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
-Gate audit (#471/#472): `base64-consumers-*` is **kept**. The codec itself is
-covered by the `cargo test -p swoole-rs-base64` differential, the `base64_encode`
-/`base64_decode` fuzz targets and the two ported core tests above;
-`Client::set_basic_auth` by `swoole_http_client_coro/set_basic_auth.phpt` and the
-handshake accept by the `swoole_websocket_server` PHPTs. But the `HttpProxy::
-get_auth_str` proxy-auth path (its `%.*s` embedded-NUL truncation and 255-byte
-bound) has no PHPT, Rust or fuzz coverage, and all three are C++-caller
-integration checks that cannot move to a Rust unit test — so the phase stays.
-
-## Other probes
-
-## Open gates
-
-Linux runs of the positive-only and preparation profiles, native x86 C++/PHP
-integration, MemorySanitizer/Miri, matched optimized performance and default
-activation remain open.
+The `HttpProxy::get_auth_str` path these phases check has no PHPT, Rust or fuzz
+coverage.

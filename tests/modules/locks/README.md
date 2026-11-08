@@ -1,20 +1,17 @@
 # Locks validation
 
-Opt-in Rust implementations (feature bit 1024) cover mutex, reader/writer,
-spin, barrier and complete coroutine-lock ownership. PHP Lock, Coroutine Lock,
+Rust implements mutex, reader/writer, spin, barrier and coroutine locks. PHP Lock, Coroutine Lock,
 Thread Lock, Atomic/Long and Thread Atomic/Long are Rust classes (`crates/phplocks`, see
 [docs/zend.md](../../../docs/zend.md)) over the same atomic words. See
 [native/locks/contract.md](../../../native/locks/contract.md) for geometry,
-ownership, timeout, ordering, fork and coroutine contracts, and
-[PLATFORMS.md](PLATFORMS.md) for the macOS/Linux platform guard.
+ownership, timeout, ordering, fork, coroutine and platform contracts.
 
 `overlay.py` reads the pinned sources for the gates' reference side; the ported side is
 `native/locks/lock.cc` (the hybrid's `Mutex` and `Barrier`) over `native/locks/swoole_lock.h`. Edit `migration/patches/locks/` with `tools/patches.py`.
 
 ```sh
-python3 tools/build_hybrid.py --dev --jobs 2
 python3 tests/modules/locks/gate.py --source target/upstream/src \
-  --archive target/release/libswoole_rs_ffi.a --sanitize
+  --archive <hybrid build>/rust-prefix/lib/libswoole_rs_ffi.a --sanitize
 ```
 
 ## Native gate
@@ -38,7 +35,7 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
 
 ## Other gates
 
-- `state.py --engine ... [--require-zts]` (`locks-state`, integrate lane): paired PHP witness (`state.php`) for
+- `state.py --engine ... [--require-zts]` (`locks-state`): paired PHP witness (`state.php`) for
   integer wrap, CAS, lock behaviour, coroutine mutual exclusion, owner reentrancy,
   nonblocking contention, cancellation, constructor/clone/serialization rules; under ZTS
   also real threads sharing 32/64-bit atomics. Observations must match.
@@ -57,23 +54,6 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
 
 - `constructor.py`: the native baseline leaks on failed construction and is
   reported as `native_baseline_passed: false`; the gate checks the Rust rows.
-
-## Gate audit (#487)
-
-`locks-native` is kept. It is a thread, fork, futex and timeout differential of
-the pinned pthread bodies against the Rust overlay under ASan/UBSan, with about
-160,000 checks no PHPT reaches.
-
-Three scripts that no phase ran now are phases:
-
-- `locks-constructor`: fault injection at pthread init, attribute and pshared calls.
-- `locks-platforms`: the platform guard compile.
-- `locks-state`: wrap at `PHP_INT_MAX`, CAS and lock observations, which must
-  match upstream.
-
-`owned.py` is deleted. Its ordinary add, sub, cmpset, set and lock round trips
-are `swoole_atomic/atomic.phpt` and `swoole_lock/{mutex,lock_read}.phpt`, which
-the PHPT gate runs on both engines.
 
 ## Ported GoogleTests
 

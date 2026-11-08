@@ -45,7 +45,7 @@ python3 tools/cargo_asan.py --package swoole-rs-coroutine --report OUT.json
   timers; and by the `swoole_channel_coro` and `swoole_coroutine/cancel` PHPTs. The live map lists newest first, the order `Coroutine::list()`
   shows from upstream's `std::unordered_map` (#357).
 
-## Known failures and blocked activation
+## Known failures
 
 - Optional thread-context is unsupported; `core.py` rejects a config defining
   `SW_USE_THREAD_CONTEXT`.

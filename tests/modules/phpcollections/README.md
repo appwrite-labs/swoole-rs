@@ -1,13 +1,8 @@
-# PHP collection facades (M27)
+# PHP collection tests
 
-M27 covers the `Swoole\Table` and coroutine `Channel` PHP classes. Both are Rust
-over the zend crates (docs/zend.md, `crates/phpcollections`): C++ keeps their
-arginfo method tables and lends the coroutine module's queue as a table of
-operations. Table runs over the memory crate's table, called from Rust; C++
-lends its shared allocation, Zend's string hash and PHP's error reports.
-
-Edit both overlays in `migration/patches/phpcollections/` with `tools/patches.py`
-(see [hybrid build](../../../docs/hybrid-build.md#editing-patches)).
+These cover the `Swoole\Table` and coroutine `Channel` PHP classes, which are
+Rust (`crates/phpcollections`, over the zend crates; see docs/zend.md). Table
+runs over the memory crate's table.
 
 ## Loaded PHP runtime (`php_runtime.py`)
 
@@ -18,7 +13,7 @@ python3 tests/modules/phpcollections/php_runtime.py \
   --source-ref EXACT_SOURCE_COMMIT --output target/runtime.json
 ```
 
-Copies the DSOs, requires M27 bit 33554432 on exactly one engine, attests the
+Copies the DSOs, requires the phpcollections feature bit on exactly one engine, attests the
 selected build, then runs `php_collections.php` on both. The `complete` profile
 requires exactly 324 checks and identical summaries: binary/null/partial writes,
 defined arithmetic, object/resource custody, COW isolation, suspended FIFO
@@ -48,27 +43,3 @@ read-only and reports remaining eligibility blockers. No measurement mode has ru
 ```sh
 for t in tests/modules/phpcollections/test_*.py; do python3 -m unittest "$t"; done
 ```
-
-## Gate audit (#490)
-
-Kept (2):
-
-- `phpcollections-runtime` and `phpcollections-column-bytes`: 324 and 16 loaded-PHP
-  checks whose summaries must match upstream exactly. They cover COW isolation,
-  object and resource custody, suspended FIFO transfer and binary column names,
-  which the PHPTs only pass or fail.
-
-Deleted (3):
-
-- `phpcollections-policy` traced the extracted Table bodies against scripted
-  effect doubles; the bodies are Rust now and the runtime checks and PHPTs
-  cover what PHP sees.
-
-Each a duplicate:
-
-- `phpcollections-global-handlers` reran `phpcollections-runtime`, then three
-  `swoole_global` PHPTs that the PHPT gate already runs on both engines.
-- `phpcollections-prerequisites` reran the 63 Table/Channel PHPTs that the PHPT
-  gate already runs, with Redis services. It ran only under `--redis-extension`,
-  which no CI lane passed, so that option and `--redis-image` are gone too.
-
