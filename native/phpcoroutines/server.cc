@@ -5,7 +5,9 @@
 // (`new`/`delete Server`, its MessageBus, std::string settings, MultiTask's std::function
 // members, ListenPort's shared_ptr<SSLContext>), the variadic PHP error reporters and the
 // zend_try frames around calls that bail out (start(), addProcess's worker, json_encode).
-#include "php_swoole_http_server.h"
+#include "php_swoole_cxx.h"
+#include "swoole_server.h"
+#include "swoole_llhttp.h"
 #include "swoole_rs_phpserver_server.h"
 #include "swoole_rs_phpserver_settings.h"
 #include "swoole_rs_phpserver_dispatch.h"
@@ -276,12 +278,18 @@ static_assert(offsetof(RecvData, data) == sizeof(DataHead) && offsetof(DgramPack
               "the event layouts crates/phpserver's slots read");
 static_assert(offsetof(swoole::String, length) == 0 && offsetof(swoole::String, str) == 3 * sizeof(size_t),
               "the swoole::String head crates/phpserver reads");
-static_assert(SW_SERVER_CB_onConnect == 0 && SW_SERVER_CB_onReceive == 1 && SW_SERVER_CB_onClose == 2 &&
-                  SW_SERVER_CB_onPacket == 3 && SW_SERVER_CB_onRequest == 4 && SW_SERVER_CB_onHandshake == 5 &&
-                  SW_SERVER_CB_onBeforeHandshakeResponse == 6 && SW_SERVER_CB_onOpen == 7 &&
-                  SW_SERVER_CB_onMessage == 8 && SW_SERVER_CB_onDisconnect == 9 && SW_SERVER_CB_onBufferFull == 10 &&
-                  SW_SERVER_CB_onBufferEmpty == 11,
-              "ports callback ABI");
+// The constants crates/phphttp mirrors.
+static_assert(HTTP_DELETE == 0 && HTTP_POST == 3 && HTTP_PUT == 4 && HTTP_PATCH == 28, "Pinned llhttp method mapping changed");
+static_assert(SW_LOG_TRACE == 1 && SW_LOG_NOTICE == 3 && SW_LOG_WARNING == 4, "crates/phphttp/src/parse.rs log levels");
+static_assert(SW_ERROR_SESSION_CLOSED == 1004 && SW_ERROR_SERVER_INVALID_REQUEST == 9010,
+              "crates/phphttp/src/parse.rs error codes");
+static_assert(SW_HTTP_FORM_KEYLEN == 512 && SW_HTTP_UPLOAD_TMPDIR_SIZE == 256 && SW_STACK_BUFFER_SIZE == 65536,
+              "crates/phphttp/src/parse.rs limits");
+static_assert(SW_ERROR_PHP_FATAL_ERROR == 503 && SW_ERROR_PHP_RUNTIME_NOTICE == 510 && SW_ERROR_NO_PAYLOAD == 550 &&
+                  SW_ERROR_HTTP_CONTEXT_UNAVAILABLE == 7106 && SW_ERROR_SERVER_IS_NOT_REGULAR_FILE == 9013 &&
+                  SW_HTTP_HEADER_KEY_SIZE == 128 && SW_HTTP_MAX_APPEND_DATA == 16384,
+              "crates/phphttp/src/host.rs codes");
+static_assert(PHP_SWOOLE_HOOK_AFTER_RESPONSE == 27, "crates/phphttp/src/response.rs hook");
 static_assert(Server::MODE_BASE == 1 && Server::MODE_PROCESS == 2 && Server::MODE_THREAD == 3 &&
                   Server::TASK_IPC_UNIXSOCK == 1 && Server::TASK_IPC_MSGQUEUE == 2 &&
                   Server::TASK_IPC_PREEMPTIVE == 3,

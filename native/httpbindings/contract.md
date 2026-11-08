@@ -1,11 +1,11 @@
 # PHP HTTP binding policy
 
-Feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`
-and `swoole_rs_httpbindings.h`. `ext-src/swoole_http_cookie.cc`,
+Feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`. `ext-src/swoole_http_cookie.cc`,
 `swoole_http_request.cc`, `swoole_http_response.cc`, `swoole_http_server.cc`,
-`swoole_http_server_coro.cc` and `swoole_websocket_server.cc` are gone.
+`swoole_http_server_coro.cc`, `swoole_websocket_server.cc`, `php_swoole_http.h` and
+`php_swoole_http_server.h` are gone.
 Public PHP headers, class layouts and stubs/arginfo are unchanged. Rust
-allocates and frees `swoole::http::Context`, whose layout is `ContextState`.
+allocates, lays out and frees the HTTP context (crates/phphttp/src/state.rs).
 
 Common rule: Rust returns before every native effect (Zend mutation, allocation,
 encoding, date/time, warnings, callbacks, IO, codecs, exceptions, bailout) and
