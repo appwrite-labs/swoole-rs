@@ -3,10 +3,9 @@
 // What crates/phpcoroutines needs of C++ that stable Rust can't express: a
 // Coroutine's context and std::function members (timer, defer, bailout and the
 // user exit condition), and the C++ objects it reads
-// (Server, Reactor, AsyncThreads, io_uring) and the build's #ifdefs.
+// (Server, Reactor, io_uring) and the build's #ifdefs.
 #include "swoole_rs_phphost.h"
 #include "swoole_server.h"
-#include "swoole_async.h"
 #include "swoole_rs_uring.h"
 
 using swoole::Coroutine;
@@ -69,11 +68,6 @@ void swr_cpp_phpcoroutines_kernel_coroutine(long count, double sleep_time) {
 
 void swr_cpp_phpcoroutines_stats(swr_v1_phpcoroutines_stats *stats) {
     stats->event_num = sw_reactor() ? sw_reactor()->get_event_num() : 0;
-    if (sw_async_threads()) {
-        stats->aio_task_num = sw_async_threads()->get_task_num();
-        stats->aio_worker_num = sw_async_threads()->get_worker_num();
-        stats->aio_queue_size = sw_async_threads()->get_queue_size();
-    }
 #ifdef SW_USE_IOURING
     if (auto iouring = swr_v1_uring_current()) {
         stats->iouring = 1;

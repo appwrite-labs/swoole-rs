@@ -49,6 +49,8 @@ unsafe extern "C" {
     fn swr_cpp_phpcoroutines_bailout();
     fn swr_cpp_phpcoroutines_kernel_coroutine(count: c_long, sleep: f64);
     fn swr_cpp_phpcoroutines_stats(stats: *mut Stats);
+    // crates/hooks/src/async_threads.rs.
+    fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
     fn swr_cpp_phpcoroutines_stack(co: Co, size: *mut usize) -> *mut c_void;
     fn swr_cpp_phpcoroutines_is_end(co: Co) -> u8;
     fn swr_cpp_phpcoroutines_activate(deactivate: unsafe extern "C" fn(*mut c_void));
@@ -269,8 +271,16 @@ pub(crate) fn list(cids: &mut [c_long]) -> usize {
 
 /// `Co::stats()`.
 pub(crate) fn stats(stats: &mut Stats) {
-    // SAFETY: C++ fills in the reactor, AIO and io_uring counts.
+    // SAFETY: C++ fills in the reactor and io_uring counts.
     unsafe { swr_cpp_phpcoroutines_stats(stats) };
+    // SAFETY: plain out-parameters.
+    unsafe {
+        swr_v1_async_threads_stats(
+            &mut stats.aio_task_num,
+            &mut stats.aio_worker_num,
+            &mut stats.aio_queue_size,
+        );
+    };
     // SAFETY: crates/reactor counts this thread's listeners.
     stats.signal_listener_num = i64::from(unsafe { swoole_signal_get_listener_num() });
     // SAFETY: this thread's scheduler.
