@@ -93,7 +93,7 @@ member names as `swoole::RustField` views over those pairs, so upstream's
 alike) compiles unchanged. A view can't be copied, so passing one through `...`
 fails to compile instead of printing garbage. `SwooleG = {}` leaves the record
 alone; `swr_v1_core_reset` clears it. The allocator, limits and task/resolver
-paths are `config_state.rs`; containers and `user_exit_condition` are C++ objects.
+paths are `config_state.rs`; the containers are C++ objects.
 
 `swr_v1_core_init` is `swoole_init`'s guard: false when already initialised,
 otherwise it resets the record and sets running, coroutines on, the page size,

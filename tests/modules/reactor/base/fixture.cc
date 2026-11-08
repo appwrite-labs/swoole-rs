@@ -114,8 +114,8 @@ void swr_case_reactor_defer(Reactor *r, Plain fn, void *data) {
 }
 // which: 0 future_task, 1 idle_task.
 void swr_case_reactor_set_task(Reactor *r, int which, Plain fn, void *data) {
-    DeferCallback &task = which == 0 ? r->future_task : r->idle_task;
-    task.callback = [fn](void *d) { fn(d); };
+    swr_v1_reactor_task &task = which == 0 ? r->future_task : r->idle_task;
+    task.callback = fn;
     task.data = data;
 }
 void swr_case_reactor_drain_write_buffer(Reactor *r, Socket *socket) {

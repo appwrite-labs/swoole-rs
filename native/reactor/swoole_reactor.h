@@ -104,6 +104,8 @@ class Reactor : private ReactorStateOwner {
 
     swr_v1_reactor_deferred *&defer_tasks = state_.fields->defer_tasks;
     swr_v1_reactor_deferred *&destroy_callbacks = state_.fields->destroy_callbacks;
+    swr_v1_reactor_task &idle_task = state_.fields->idle_task;
+    swr_v1_reactor_task &future_task = state_.fields->future_task;
 
     using Write = ssize_t (*)(Reactor *, network::Socket *, const void *, size_t);
     using Writev = ssize_t (*)(Reactor *, network::Socket *, const iovec *, size_t);

@@ -251,7 +251,7 @@ Reactor::Reactor(int max_event, Type _type) {
         case 5: set_end_callback(PRIORITY_DEFER_TASK, [](Reactor *reactor) { swr_v1_reactor_run_defer(&reactor->defer_tasks); }); break;
         case 6: set_exit_condition(EXIT_CONDITION_DEFER_TASK,
                        [](Reactor *reactor, size_t &event_num) -> bool { return swr_reactor_exit_predicate(4, reactor->defer_tasks != nullptr, 0); }); break;
-        case 7: set_end_callback(PRIORITY_IDLE_TASK, [](Reactor *reactor) { swr_reactor_run_task(reactor->state_.fields->idle_task); }); break;
+        case 7: set_end_callback(PRIORITY_IDLE_TASK, [](Reactor *reactor) { swr_reactor_run_task(reactor->idle_task); }); break;
         case 8: main_thread = swoole_is_main_thread(); break;
         case 9: set_end_callback(PRIORITY_SIGNAL_CALLBACK, [](Reactor *) { swoole_signal_dispatch(); }); break;
         case 10: set_end_callback(PRIORITY_TRY_EXIT, [](Reactor *reactor) { swr_reactor_try_exit(reactor); }); break;
@@ -344,9 +344,8 @@ void Reactor::execute_end_callbacks(bool _timed_out) {
 }
 
 void Reactor::execute_begin_callback() const {
-    const swr_v1_reactor_task &task = state_.fields->future_task;
-    if (task.callback) {
-        task.callback(task.data);
+    if (future_task.callback) {
+        future_task.callback(future_task.data);
     }
 }
 
