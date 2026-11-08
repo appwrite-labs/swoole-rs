@@ -54,7 +54,7 @@ pub struct ServerState {
     /// The interface addresses `Server::create` read (`local_addr`); null before.
     pub(crate) local_addrs: AtomicPtr<crate::local_addr::LocalAddrs>,
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
-    /// `task_sync` waits on; closed with the state, as `~Server` closed them.
+    /// `task_sync` waits on; `swr_v1_server_close` closes them, as `~Server` did.
     task_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
 }
 
@@ -112,6 +112,22 @@ impl ServerState {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(AtomicPtr::new(pipe));
         true
+    }
+
+    /// `~Server`'s close of `task_notify_pipes`. Not the state's drop: an archive
+    /// user that never runs a server links no C++ for `Socket::free`.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn close_task_pipes(&self) {
+        let pipes = core::mem::take(
+            &mut *self
+                .task_pipes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for pipe in pipes {
+            // SAFETY: a pipe `push_task_pipe` boxed, now out of the list.
+            unsafe { free_pipe(pipe.into_inner()) };
+        }
     }
 
     /// `task_notify_pipes.at(index)`, or null past the end.
@@ -421,16 +437,6 @@ pub unsafe extern "C" fn swr_v1_server_task_pipe(
 
 impl Drop for ServerState {
     fn drop(&mut self) {
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        for pipe in self
-            .task_pipes
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain(..)
-        {
-            // SAFETY: a pipe `push_task_pipe` boxed; nothing reads it after the state.
-            unsafe { free_pipe(pipe.into_inner()) };
-        }
         // SAFETY: the table `local_addr::init` boxed, if any; nothing reads it after the state.
         unsafe { crate::local_addr::free(*self.local_addrs.get_mut()) };
         let tables = *self.tables.get_mut();
