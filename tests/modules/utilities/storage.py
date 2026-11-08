@@ -198,7 +198,7 @@ def main():
         native_identity = next(row for row in report['engines'] if not row['rust_feature_bits'] & 512)
         report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parent, args.source, args.source_ref, ROOT),
                                   'selected': dict(hybrid_tree=str(hybrid), flags=hybrid_flags,
-                                                   string_header_sha256=sha(hybrid / 'include/swoole_string.h'))}
+                                                   string_header_sha256=sha(ROOT / 'native/buffer/swoole_string.h'))}
         (work / 'selected').mkdir()
         shutil.copyfile(hybrid / 'config.h', work / 'selected/config.h')
         sdk_headers = {'native': ['-I' + str(work / 'native/include')], 'selected': ['-I' + str(work / 'selected'), *hybrid_flags]}

@@ -130,7 +130,7 @@ unsafe fn allocator<'a>(allocator: *const Allocator) -> &'a Allocator {
     unsafe { &*allocator }
 }
 
-/// The C++ side of `String::split`: calls the `StringExplodeHandler` it lends.
+/// The C++ side of `String::split`: calls the handler it lends.
 pub type SplitCall = unsafe extern "C" fn(*const c_void, *const c_char, usize) -> bool;
 
 impl CppString {
@@ -314,14 +314,6 @@ impl CppString {
         if self.length == self.size {
             self.reserve(self.size.wrapping_mul(2));
         }
-    }
-
-    pub fn extend_align(&mut self, new_size: usize) {
-        let mut size = aligned(self.size.wrapping_mul(2));
-        while size < new_size {
-            size = size.wrapping_mul(2);
-        }
-        self.reserve(size);
     }
 
     pub fn release(&mut self) -> *mut u8 {
@@ -676,13 +668,6 @@ upstream! {
     pub unsafe extern "C" fn swr_string_extend(this: *mut CppString, new_size: usize) {
         // SAFETY: as the caller promises.
         unsafe { of(this) }.extend(new_size);
-    }
-    "_ZN6swoole6String12extend_alignEm", "_ZN6swoole6String12extend_alignEm" =>
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_extend_align(this: *mut CppString, new_size: usize) {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.extend_align(new_size);
     }
     "_ZN6swoole6String7reserveEm", "_ZN6swoole6String7reserveEm" =>
     /// # Safety
