@@ -3,6 +3,6 @@
   "echo-1k": 1.04,
   "json": 1.03,
   "service-health": 1.02,
-  "websocket": 1.25,
+  "websocket": 1.18,
   "timer": 0.83
 }
