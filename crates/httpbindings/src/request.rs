@@ -42,67 +42,62 @@ pub(crate) unsafe fn bytes<'a>(text: Text) -> Option<&'a [u8]> {
     }
 }
 
-/// # Safety
-/// Both spans contain initialized readable bytes for this call; invalid spans
-/// return-1. Method is the pinned llhttp method number; flags: cookie/compression.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_request_header(
-    name: Text,
-    value: Text,
-    method: u32,
-    flags: u32,
-) -> i32 {
-    // SAFETY: `name` spans `length` initialized bytes (null only when empty) for this call.
-    let name = unsafe { bytes(name) };
-    // SAFETY: `value` spans `length` initialized bytes (null only when empty) for this call.
-    let value = unsafe { bytes(value) };
-    let (Some(name), Some(value)) = (name, value) else {
-        return -1;
-    };
-    if flags & 1 != 0 && case_equal(name, b"cookie") {
-        return 1;
+/// What the parser does with a request header beyond storing it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RequestHeader {
+    Append,
+    Cookie,
+    Upgrade,
+    Form,
+    Multipart,
+    Compression,
+}
+
+/// The header's action. Method is the pinned llhttp method number.
+#[must_use]
+pub fn request_header(
+    name: &[u8],
+    value: &[u8],
+    method: u8,
+    cookie: bool,
+    compression: bool,
+) -> RequestHeader {
+    if cookie && case_equal(name, b"cookie") {
+        return RequestHeader::Cookie;
     }
     if case_equal(name, b"upgrade") {
-        return 2;
+        return RequestHeader::Upgrade;
     }
     // DELETE, POST, PUT, PATCH and QUERY (llhttp 46, upstream cf66ff7e8) carry form bodies.
     if matches!(method, 0 | 3 | 4 | 28 | 46) && case_equal(name, b"content-type") {
         if case_prefix(value, b"application/x-www-form-urlencoded") {
-            return 3;
+            return RequestHeader::Form;
         }
         if case_prefix(value, b"multipart/form-data") {
-            return 4;
+            return RequestHeader::Multipart;
         }
-    } else if flags & 2 != 0 && case_equal(name, b"accept-encoding") {
-        return 5;
+    } else if compression && case_equal(name, b"accept-encoding") {
+        return RequestHeader::Compression;
     }
-    0
+    RequestHeader::Append
 }
 
-/// # Safety
-/// Name is an initialized readable span. The return is a native known-key index;
-/// 8 denotes the original unknown-name merge path. Invalid input returns-1.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_request_key(name: Text) -> i32 {
-    const KEYS: [&[u8]; 8] = [
-        b"host",
-        b"user-agent",
-        b"accept",
-        b"content-type",
-        b"content-length",
-        b"authorization",
-        b"connection",
-        b"accept-encoding",
-    ];
-    // SAFETY: `name` spans `length` initialized bytes (null only when empty) for this call.
-    let Some(name) = (unsafe { bytes(name) }) else {
-        return -1;
-    };
-    let index = KEYS
-        .iter()
-        .position(|key| case_equal(name, key))
-        .unwrap_or(KEYS.len());
-    i32::try_from(index).unwrap_or(-1)
+/// The known header keys, in the order `request_key` numbers them.
+pub const REQUEST_KEYS: [&[u8]; 8] = [
+    b"host",
+    b"user-agent",
+    b"accept",
+    b"content-type",
+    b"content-length",
+    b"authorization",
+    b"connection",
+    b"accept-encoding",
+];
+
+/// The name's index in `REQUEST_KEYS`, or `None` for the unknown-name merge path.
+#[must_use]
+pub fn request_key(name: &[u8]) -> Option<usize> {
+    REQUEST_KEYS.iter().position(|key| case_equal(name, key))
 }
 
 /// Native first calls mode0 on the original span, preserving its no-copy fast
@@ -292,22 +287,11 @@ pub unsafe extern "C" fn swr_v1_httpbindings_trim_quotes(
     0
 }
 
-/// # Safety
-/// Data is initialized/writable for length bytes. ASCII transformations retain
-/// the original state machine, including leading/consecutive hyphen behavior.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_response_key(data: *mut u8, length: usize) -> i32 {
-    if length > isize::MAX as usize || (data.is_null() && length != 0) {
-        return -1;
-    }
-    let input = if length == 0 {
-        &mut []
-    } else {
-        // SAFETY: non-null, `length <= isize::MAX`, initialized and exclusively writable.
-        unsafe { core::slice::from_raw_parts_mut(data, length) }
-    };
+/// Canonical header case (`content-type` to `Content-Type`), keeping the
+/// original state machine's leading and consecutive hyphen behaviour.
+pub fn canonical_case(name: &mut [u8]) {
     let mut initial = true;
-    for byte in input {
+    for byte in name {
         if initial {
             *byte = byte.to_ascii_uppercase();
             initial = false;
@@ -317,5 +301,4 @@ pub unsafe extern "C" fn swr_v1_httpbindings_response_key(data: *mut u8, length:
             *byte = byte.to_ascii_lowercase();
         }
     }
-    0
 }

@@ -15,7 +15,7 @@ use std::{
     ptr,
     sync::atomic::Ordering::Relaxed,
 };
-use swoole_rs_httpbindings::{swr_v1_httpbindings_file_range, swr_v1_httpbindings_response_key};
+use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_zend::{
     Call, Class, Invalid, declare_long, declare_null, handlers, init_object, push_string, set_key,
@@ -699,15 +699,20 @@ pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, for
         return false;
     }
     let header = property(ctx, HEADER);
-    let mut name = key.to_vec();
-    if format {
-        if host::flags(ctx) & HTTP2 != 0 {
-            name.make_ascii_lowercase();
-        } else if !name.is_empty() {
-            // SAFETY: the name's own bytes.
-            unsafe { swr_v1_httpbindings_response_key(name.as_mut_ptr(), name.len()) };
+    let mut buffer = [0; HEADER_KEY_SIZE];
+    // Formatted in a stack copy, as upstream does in its thread buffer.
+    let name = match buffer.get_mut(..key.len()) {
+        Some(name) if format => {
+            name.copy_from_slice(key);
+            if host::flags(ctx) & HTTP2 != 0 {
+                name.make_ascii_lowercase();
+            } else {
+                canonical_case(name);
+            }
+            &*name
         }
-    }
+        _ => key,
+    };
     // SAFETY: the value the array now also references.
     unsafe { z::swr_zval_try_addref(value) };
     // SAFETY: the live header array and the name's bytes, which Zend copies.

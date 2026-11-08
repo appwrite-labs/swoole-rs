@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
 use swoole_rs_http::swr_v2_http_status_message;
 use swoole_rs_httpbindings::{
-    Text, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level, swr_v1_httpbindings_encoding,
-    swr_v1_httpbindings_response_header,
+    response_header, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level,
+    swr_v1_httpbindings_encoding,
 };
 use swoole_rs_zend::sys::php_format_date;
 use swoole_rs_zend::sys::{
@@ -292,13 +292,7 @@ fn header_key(key: Result<*mut zend_string, i64>) -> (*mut zend_string, bool, i3
     };
     // SAFETY: a live string.
     let bytes = unsafe { string::bytes(key) };
-    // SAFETY: the key's bytes.
-    let flag = unsafe {
-        swr_v1_httpbindings_response_header(Text {
-            data: bytes.as_ptr(),
-            length: bytes.len(),
-        })
-    };
+    let flag = response_header(bytes);
     (key, owned, flag)
 }
 
