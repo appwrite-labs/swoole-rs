@@ -85,7 +85,7 @@ struct swoole_name_resolver_lookup_call {
     void (*assign)(void *out, const char *text, size_t length);
 };
 /* swoole_name_resolver_lookup over a swoole_name_resolver_lookup_call; a
- * bailout::trap body. */
+ * bailout::trap body. Defined by native/clients/dns.cc. */
 void swoole_name_resolver_lookup_run(void *call);
 void *swoole_name_resolver_context_new(void);
 void swoole_name_resolver_context_free(void *context);

@@ -13,8 +13,8 @@ The persistent client pool is also Rust-owned.
 `verify_port`, both `assign`s, `is_loopback_addr`), the hosts-file lookup, the DNS
 name codec, the DNS address text and the socket DNS lookup
 (`dns_lookup_impl_with_socket` over a UDP socket double).
-`clients-native-originals` runs upstream's own `network/dns.cpp` and
-`address.cpp` GoogleTests on the hybrid tree.
+`network/dns.cpp` and `address.cpp` are Rust cases in `hooks-system-rust` (see
+[the hooks README](../hooks/README.md)).
 
 ## network/client.cpp in Rust
 

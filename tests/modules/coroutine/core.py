@@ -70,7 +70,7 @@ def main():
     parser.add_argument('--config', type=Path, help='Read-only same-platform configured baseline config.h')
     parser.add_argument('--archive', type=Path, help='Same-platform real coroutine Rust static archive')
     parser.add_argument('--build-root', type=Path, help='Private writable cache outside reference/repository')
-    parser.add_argument('--dns-requests', action='store_true', help='Execute the unchanged local DNS no-service original and five real request/async/vector witnesses')
+    parser.add_argument('--dns-requests', action='store_true', help='Execute the five real DNS request/async/vector witnesses (network/dns.cpp is Rust: hooks-system-rust)')
     parser.add_argument('--socket-scopes', action='store_true', help='Also execute the two scoped-state socket witnesses (socket.cpp and the timeout-scope witness are Rust: hooks-system-rust)')
     parser.add_argument('--async-file', action='store_true', help='Also compile and execute the unchanged original coroutine AsyncFile unit')
     parser.add_argument('--lifetime-only', action='store_true', help='Execute only the supplemental real-context lifetime witness; the originals remain unmeasured')
@@ -90,7 +90,7 @@ def main():
         selected_units += ['core-tests/src/_lib/server.cpp', 'core-tests/src/_lib/process.cpp',
                            'core-tests/src/coroutine/rust_socket_scopes.cpp']
     if args.dns_requests:
-        selected_units += ['core-tests/src/network/dns.cpp', 'core-tests/src/coroutine/rust_dns_requests.cpp']
+        selected_units += ['core-tests/src/coroutine/rust_dns_requests.cpp']
     if args.socket_scopes or args.dns_requests:
         selected_units += ['core-tests/src/coroutine/rust_fault_allocation.cpp']
     if args.jobs < 1 or args.timeout < 1:
@@ -133,16 +133,6 @@ def main():
                     raise ValueError('Original AsyncFile inventory differs')
                 inventory += extra
                 report['scope'] = 'Unchanged 26 coroutine originals plus AsyncFile and the supplemental lifetime witness; full native reference vs the exact production archive overlay. No PHP or performance claim.'
-            if args.dns_requests:
-                path = 'core-tests/src/network/dns.cpp'
-                all_dns = [{'name': f'{group}.{name}', 'path': path, 'sha256': sha(staged / path)}
-                           for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', (staged / path).read_text())]
-                selected_dns = [case for case in all_dns if case['name'] == 'dns.getaddrinfo_without_service']
-                if len(selected_dns) != 1:
-                    raise ValueError('Original DNS no-service inventory differs')
-                inventory += selected_dns
-                report['unmeasured_dns_originals'] = [case['name'] for case in all_dns if case not in selected_dns]
-                report['scope'] = 'Unchanged coroutine originals and local DNS no-service original, plus lifetime and owner witnesses; actual production overlay. Other DNS originals explicitly unmeasured.'
             report['original_inventory'] = inventory.copy()
             report['unmeasured_originals'] = [case['name'] for case in inventory] if args.lifetime_only else []
             supplemental = [{'name': group + '.' + name, 'path': LIFETIME, 'sha256': hashlib.sha256(lifetime).hexdigest()} for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', lifetime.decode())]
