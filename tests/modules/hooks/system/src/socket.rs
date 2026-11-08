@@ -439,7 +439,7 @@ pub(super) fn get_random_port() -> c_int {
     TEST_PORT + c_int::try_from(unsafe { swoole_random_int() } % 10000).unwrap()
 }
 
-fn get_ssl_dir() -> String {
+pub(super) fn get_ssl_dir() -> String {
     std::env::current_dir().unwrap().display().to_string() + "/tests/include/ssl_certs"
 }
 

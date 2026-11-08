@@ -105,7 +105,6 @@
  "timer-fork-active": 1,
  "timer-kernel": 4,
  "timer-native": 5,
- "timer-native-originals": 92,
  "timer-unit": 3,
  "tls-constants": 2,
  "tls-unit": 3,

@@ -19,5 +19,5 @@ python3 -m pytest tests/modules/timer/test_bailout.py \
 The original timer PHPTs run in the PHPT gate (`corpus/upstream/run.py --module
 timers`); the network-dependent ones run only with `--external-network`.
 `bug_4794_4` prints from two processes without an ordering guarantee and is
-flaky on both engines. `core-tests/src/os/timer.cpp` runs as
-`timer-native-originals`.
+flaky on both engines. `core-tests/src/os/timer.cpp` is Rust:
+the `timer.*` cases of `hooks-system-rust` (tests/modules/hooks/README.md).

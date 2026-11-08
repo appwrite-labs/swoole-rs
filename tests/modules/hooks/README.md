@@ -157,3 +157,31 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   network.
 - macOS (clang): `packet_gate.py` stops at a narrowing error in the selected
   `recv_packet` initializer. It passes on Linux, which is where CI runs it.
+
+`core-tests/src/os/timer.cpp` and `protocol/ssl.cpp` are Rust: `system/src/timer.rs`
+and `ssl.rs`, one function per TEST (`timer.<name>`, `ssl.<name>`), run by
+`hooks-system-rust`; the `timer-native-originals` and `tls-native-originals` lanes,
+the last two that compiled core-tests files on their own, are gone. The timer cases
+call crates/timer under its upstream symbols; the fixture wraps their
+`std::function` callbacks and reads `SwooleTG.timer`. Upstream's shared-memory
+counters become `Cell`s (the callbacks run in the case's process), and its
+`uint64_t` elapsed-time subtractions wrap as they do in C++. The ssl cases call
+`swoole_ssl_*` and `SSLContext::create` under their upstream symbols and build the
+context through the `swr_v1_tls_owner_*` and `swr_v1_core_string_set` calls
+native/tls/swoole_ssl.h makes; `ERR_put_error` is network_socket.rs's.
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `timer.sys` | `timer.sys` |
+| `timer.async` | `timer.async` |
+| `timer.exists` | `timer.exists` |
+| `timer.clear` | `timer.clear` |
+| `timer.get` | `timer.get` |
+| `timer.delay` | `timer.delay` |
+| `timer.error` | `timer.error` |
+| `timer.reinit` | `timer.reinit` |
+| `timer.realtime_add` | `timer.realtime_add` |
+| `ssl.destroy` | `ssl.destroy` |
+| `ssl.get_error` | `ssl.get_error` |
+| `ssl.password` | `ssl.password` |
+| `ssl.failed_create` | `ssl.failed_create` |
