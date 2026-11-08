@@ -13,7 +13,7 @@ use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_reactor::{SocketRecord, reactor_upstream};
 
 use crate::base_factory::SendData;
-use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
+use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE, CB_RECEIVE};
 use crate::ops::{
     EVENT_SHUTDOWN, OP_CLOSE, OP_COMMAND_REQUEST, OP_COMMAND_RESPONSE, OP_CONN_HEALTHY,
     OP_DGRAM_BUFFER, OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER, OP_INCOMING, OP_ON_FINISH,
@@ -31,6 +31,9 @@ use crate::ops::{
     OP_PACKET_DISPATCH, OP_PACKET_INIT, OP_PC_NOTIFY, OP_REACTOR_BARRIER, OP_RECVFROM, OP_WR_SEND,
     OP_WR_SENDFILE, RUN_CLOSE_REACTOR_CONNECTIONS,
 };
+use crate::ops::{
+    OP_COUNT_DISPATCH, OP_FACTORY_DISPATCH, OP_ON_RECEIVE, OP_RD_PORT_READ, OP_TASK_INIT,
+};
 use crate::reactor_entry::{self as entry, run, thread};
 use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign};
 use crate::records::ConnectionRecord;
@@ -43,6 +46,8 @@ const SW_WAIT: c_int = 2;
 /// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_SERVER_EVENT_CLOSE`, `SW_SOCK_UDP`,
 /// `Server::CLOSE_ACTIVELY` and `SW_SOCKET_RETRY_COUNT`.
 const EVENT_RECV_DGRAM: u8 = 1;
+/// `SW_SERVER_EVENT_RECV_DATA`.
+const EVENT_RECV_DATA: u8 = 0;
 const EVENT_CLOSE: u8 = 4;
 const SOCK_UDP: c_int = 2;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
@@ -665,8 +670,117 @@ pub(crate) unsafe fn answer(
             buffer.extend(buffer.size.wrapping_mul(2));
             0
         }
+        OP_RD_PORT_READ => {
+            use core::sync::atomic::Ordering::SeqCst;
+            let (event, port) = (ctx.event, ctx.port);
+            conn_ref().last_recv_time = swoole_rs_corebase::microtime();
+            // SAFETY: the context's live event, whose socket the read may close.
+            let sock = unsafe { (*event).socket }.cast::<SocketRecord>();
+            // SAFETY: as above, live until the read.
+            let last_recv_bytes = unsafe { (*sock).total_recv_bytes };
+            // SAFETY: the context's live port.
+            let port_config = unsafe { crate::port_config::of(port) };
+            let (on_read, gs) = (port_config.on_read, port_config.gs);
+            // SAFETY: `init_protocol` set `int (*onRead)(Reactor *, ListenPort *, Event *)`.
+            let on_read: unsafe extern "C-unwind" fn(
+                *mut c_void,
+                *mut c_void,
+                *mut c_void,
+            ) -> c_int = unsafe { core::mem::transmute(on_read) };
+            // SAFETY: this thread's reactor, the port and its event.
+            let retval = unsafe { on_read(reactor, port, event.cast()) };
+            // SAFETY: upstream reads the socket after the read too.
+            let received = unsafe { (*sock).total_recv_bytes }.wrapping_sub(last_recv_bytes);
+            if received.cast_signed() > 0 {
+                let received = received as u64;
+                // SAFETY: the port's live counters.
+                unsafe { &*gs.cast::<crate::shared::PortCounters>() }
+                    .total_recv_bytes
+                    .fetch_add(received, SeqCst);
+                if let Some(gs) = crate::shared::server_counters(state) {
+                    gs.total_recv_bytes.fetch_add(received, SeqCst);
+                }
+            }
+            let mut result = u64::from(retval.cast_unsigned());
+            let conn = conn_ref();
+            if conn.active != 0 {
+                let max = config().max_queued_bytes;
+                let flag = |set: bool, bit: u64| if set { bit } else { 0 };
+                // SAFETY: an active connection's socket.
+                let notified = unsafe { (*sock).close_notified } != 0;
+                result |= crate::conn_io::ACTIVE
+                    | flag(notified, crate::conn_io::READ_NOTIFIED)
+                    | flag(
+                        max != 0 && conn.recv_queued_bytes.load(SeqCst) > max,
+                        crate::conn_io::QUEUE_OVER,
+                    );
+            }
+            result
+        }
+        OP_TASK_INIT => {
+            // SAFETY: the frame the dispatch lends.
+            let rdata = unsafe { &*ctx.rdata.cast::<entry::RecvData>() };
+            let conn = conn_ref();
+            ctx.task.info = DataHead {
+                server_fd: low16(conn.server_fd),
+                reactor_id: conn.reactor_id.into(),
+                ext_flags: rdata.info.ext_flags,
+                kind: EVENT_RECV_DATA,
+                time: conn.last_recv_time,
+                fd: conn.fd.into(),
+                len: rdata.info.len,
+                ..DataHead::default()
+            };
+            ctx.task.data = rdata.data.cast();
+            // arg: the bytes to queue for the worker, if any
+            if arg != 0 {
+                let queued = u32::try_from(arg).unwrap_or(u32::MAX);
+                conn.recv_queued_bytes
+                    .fetch_add(queued, core::sync::atomic::Ordering::SeqCst);
+            }
+            (&raw mut ctx.task).expose_provenance() as u64
+        }
+        OP_ON_RECEIVE => {
+            let slot = state.callbacks.slot(CB_RECEIVE)?;
+            // SAFETY: the slot's `int (Server *, RecvData *)` callback over the frame at arg.
+            u64::from(unsafe { slot.receive(serv, arg as *mut c_void) } == 0)
+        }
+        OP_FACTORY_DISPATCH => u64::from(factory_call(
+            state,
+            FACTORY_DISPATCH,
+            (&raw mut ctx.task).cast(),
+        )),
+        OP_COUNT_DISPATCH => {
+            use core::sync::atomic::Ordering::SeqCst;
+            if u64::from(config().mode_) == crate::MODE_PROCESS {
+                let id = usize::from(conn_ref().reactor_id);
+                let thread = thread(state, id).cast::<ThreadRecord>();
+                // SAFETY: the connection's live reactor thread.
+                unsafe { (*thread).dispatch_count += 1 };
+            }
+            if let Some(gs) = crate::shared::server_counters(state) {
+                gs.dispatch_count.fetch_add(1, SeqCst);
+            }
+            // SAFETY: the context's live port, whose counters live as long as it.
+            let port = unsafe { crate::port_config::of(ctx.port) }.gs;
+            // SAFETY: as above.
+            unsafe { &*port.cast::<crate::shared::PortCounters>() }
+                .dispatch_count
+                .fetch_add(1, SeqCst);
+            0
+        }
         _ => return None,
     })
+}
+
+/// C++'s implicit `int` to `uint16_t`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "C++'s implicit int to uint16_t"
+)]
+fn low16(value: c_int) -> u16 {
+    value as u16
 }
 
 /// The datagram `OP_PACKET_INIT` points the context at.

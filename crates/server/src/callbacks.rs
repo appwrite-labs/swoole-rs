@@ -86,6 +86,24 @@ impl CallbackSlot {
         }
     }
 
+    /// `serv->onReceive(serv, data)`, for a slot of an `int (Server *, RecvData *)`
+    /// signature; -1 when the slot is empty.
+    ///
+    /// # Safety
+    /// The slot holds that signature, and `serv` and `data` are what it takes.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) unsafe fn receive(&self, serv: *mut c_void, data: *mut c_void) -> core::ffi::c_int {
+        type Invoke =
+            unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut c_void) -> core::ffi::c_int;
+        let invoke = self.invoke.load(Relaxed);
+        // SAFETY: the slot holds null or an `int (*)(void *, Server *, RecvData *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        // SAFETY: per the caller, with the slot's own context.
+        invoke.map_or(-1, |invoke| unsafe {
+            invoke(self.ctx.load(Relaxed), serv, data)
+        })
+    }
+
     /// `serv->onX(serv)`, for a slot of a `(Server *)` signature; nothing when
     /// the slot is empty.
     ///
