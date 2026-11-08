@@ -22,7 +22,7 @@ pub mod worker_registry;
 pub use global::*;
 pub use hook::{swoole_add_hook, swoole_call_hook, swoole_isset_hook};
 pub use host::{
-    DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, sw_realloc,
+    DataHead, datahead_dump, microtime, set_errno, sw_calloc, sw_free, sw_malloc, sw_realloc,
     swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_hex2dec,
     swoole_print_backtrace, swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any,
     swoole_random_int, swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec,
