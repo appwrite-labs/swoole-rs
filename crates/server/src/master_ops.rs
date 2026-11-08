@@ -1591,8 +1591,8 @@ unsafe fn sockets(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 unsafe fn native(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_COMMAND_HANDLER, OP_EVENT_FREE, OP_EVENT_WAIT, OP_LC_CLEAR_ERROR, OP_MARK_SHUTDOWN,
-        OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_ST_SOCK_FREE, OP_ST_TIMER_DEL, OP_TIMER_DETACHED,
-        OP_TIMER_REINIT,
+        OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SSL_CREATE, OP_ST_SOCK_FREE, OP_ST_TIMER_DEL,
+        OP_TIMER_DETACHED, OP_TIMER_REINIT,
     };
     use core::ffi::c_void;
     /// `SW_FD_PIPE`.
@@ -1620,6 +1620,9 @@ unsafe fn native(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     unsafe extern "C" {
         #[link_name = "_ZN6swoole6Server21accept_command_resultEPNS_7ReactorEPNS_5EventE"]
         fn accept_command_result(reactor: *mut c_void, event: *mut c_void) -> c_int;
+        /// crates/ports' `ListenPort::ssl_create`.
+        #[link_name = "_ZN6swoole10ListenPort10ssl_createEPNS_7network6SocketE"]
+        fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool;
     }
     // `SwooleTG.timer`.
     let timer = || {
@@ -1688,6 +1691,8 @@ unsafe fn native(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { swoole_rs_tls::upstream::socket_free(o.ctx.sock.cast()) };
             0
         }
+        // SAFETY: the context's live port and the socket it accepted.
+        OP_SSL_CREATE => u64::from(unsafe { ssl_create(o.ctx.port, o.ctx.sock) }),
         OP_COMMAND_HANDLER => {
             let reactor = o.ctx.reactor.cast_const();
             let handler: swoole_rs_reactor::Handler = accept_command_result;
