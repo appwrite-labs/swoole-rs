@@ -110,9 +110,7 @@ static const std::function<void(Client *)> &callback(const Client *cli, int whic
 }
 
 static const swr_v1_clients_native native = {
-    [](void *, int type, int fd_type, int flags) -> swr_v1_socket * {
-        return make_socket(static_cast<SocketType>(type), static_cast<FdType>(fd_type), flags);
-    },
+    swr_v1_clients_make_socket,
     [](void *cli, bool deferred) {
         if (deferred) {
             of(cli)->socket->free();
@@ -144,18 +142,9 @@ static const swr_v1_clients_native native = {
         default: Client_udp_connect(of(cli), which); break;
         }
     },
-    [](void *cli, double timeout) { of(cli)->socket->set_kernel_timeout(timeout); },
-    [](void *cli, const char *host, int port, bool resolve) -> bool {
-        return of(cli)->server_addr.assign(of(cli)->socket->socket_type, host, port, resolve);
-    },
-    [](void *cli, int mode) -> int {
-        Socket *socket = of(cli)->socket;
-        switch (mode) {
-        case SWR_CLIENTS_CONNECT_ASYNC: return socket->connect_async(of(cli)->server_addr);
-        case SWR_CLIENTS_CONNECT_SYNC: return socket->connect_sync(of(cli)->server_addr);
-        default: return socket->connect(of(cli)->server_addr);
-        }
-    },
+    swr_v1_clients_kernel_timeout,
+    swr_v1_clients_assign,
+    swr_v1_clients_connect_socket,
     [](void *cli, int op, char *data, size_t length, int flags) -> ssize_t {
         Socket *socket = of(cli)->socket;
         switch (op) {
@@ -176,15 +165,7 @@ static const swr_v1_clients_native native = {
         }
         return SW_OK;
     },
-    [](void *cli, int op, int events) -> int {
-        Socket *socket = of(cli)->socket;
-        switch (op) {
-        case SWR_CLIENTS_EVENT_ADD: return swoole_event_add(socket, events);
-        case SWR_CLIENTS_EVENT_SET: return swoole_event_set(socket, events);
-        case SWR_CLIENTS_EVENT_DEL: return swoole_event_del(socket);
-        default: return swoole_event_add_or_update(socket, events);
-        }
-    },
+    swr_v1_clients_event,
     [](void *cli, const char *data, size_t length) -> int {
         return swoole_event_write(of(cli)->socket, data, length);
     },
@@ -192,7 +173,7 @@ static const swr_v1_clients_native native = {
     [](void *reactor, void *event) -> int {
         return Reactor::_writable_callback(static_cast<Reactor *>(reactor), static_cast<Event *>(event));
     },
-    [](void *cli, int *error) -> int { return of(cli)->socket->get_option(SOL_SOCKET, SO_ERROR, error); },
+    swr_v1_clients_socket_error,
     [](void *cli, double timeout) -> void * { return swoole_timer_add(timeout, false, Client_onTimeout, cli); },
     [](void *timer) { swoole_timer_del(static_cast<TimerNode *>(timer)); },
     [](void *cli, const char *host, int domain) -> int {

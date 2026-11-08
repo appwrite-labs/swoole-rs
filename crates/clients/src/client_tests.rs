@@ -35,12 +35,7 @@ fn taken() -> Vec<String> {
     mock(|m| std::mem::take(&mut m.log))
 }
 
-extern "C" fn make_socket(
-    _: *mut c_void,
-    kind: c_int,
-    fd_type: c_int,
-    flags: c_int,
-) -> *mut SocketRecord {
+extern "C" fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> *mut SocketRecord {
     log(format!("make {kind} {fd_type} {flags}"));
     if mock(|m| m.fail_socket) {
         set_errno(libc::EMFILE);
@@ -69,10 +64,15 @@ extern "C" fn call(_: *mut c_void, which: c_int, _: *const c_char, length: usize
 extern "C" fn warn(_: *mut c_void, which: c_int) {
     log(format!("warn {which}"));
 }
-extern "C" fn kernel_timeout(_: *mut c_void, timeout: f64) {
+extern "C" fn kernel_timeout(_: *mut ClientRecord, timeout: f64) {
     log(format!("kernel {timeout}"));
 }
-extern "C" fn assign(_: *mut c_void, host: *const c_char, port: c_int, resolve: bool) -> bool {
+extern "C" fn assign(
+    _: *mut ClientRecord,
+    host: *const c_char,
+    port: c_int,
+    resolve: bool,
+) -> bool {
     // SAFETY: the operations pass NUL-terminated hosts.
     let host = unsafe { CStr::from_ptr(host) }
         .to_string_lossy()
@@ -84,7 +84,7 @@ extern "C" fn assign(_: *mut c_void, host: *const c_char, port: c_int, resolve: 
     }
     true
 }
-extern "C" fn connect_socket(_: *mut c_void, mode: c_int) -> c_int {
+extern "C" fn connect_socket(_: *mut ClientRecord, mode: c_int) -> c_int {
     log(format!("connect {mode}"));
     let ret = mock(|m| m.connect.pop()).unwrap_or(0);
     if ret < 0 {
@@ -106,7 +106,7 @@ extern "C" fn sendfile(
     log(format!("sendfile {is_async}"));
     OK
 }
-extern "C" fn event(_: *mut c_void, op: c_int, events: c_int) -> c_int {
+extern "C" fn event(_: *mut ClientRecord, op: c_int, events: c_int) -> c_int {
     log(format!("event {op} {events}"));
     OK
 }
@@ -125,7 +125,7 @@ extern "C" fn writable(_: *mut c_void, _: *mut c_void) -> c_int {
     log("writable");
     OK
 }
-extern "C" fn socket_error(_: *mut c_void, error: *mut c_int) -> c_int {
+extern "C" fn socket_error(_: *mut ClientRecord, error: *mut c_int) -> c_int {
     // SAFETY: the operation passes a writable int.
     unsafe { *error = mock(|m| m.socket_error) };
     OK

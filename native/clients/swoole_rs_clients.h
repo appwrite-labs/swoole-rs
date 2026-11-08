@@ -68,7 +68,8 @@ int32_t swr_v1_clients_domain_encode(const uint8_t *, size_t, uint8_t *, size_t)
 uint8_t swr_v1_clients_domain_decode(uint8_t *, size_t, uint8_t signed_char);
 /* network::Client: its state and every operation are Rust's (crates/clients/src/client.rs).
  * The C++ Client holds the state and its members of C++ types, and gives Rust one static
- * table of what it needs of them, swr_v1_clients_native; each entry takes the Client *. */
+ * table of what it needs of them, swr_v1_clients_native. Most entries take the Client *;
+ * those over the record alone are Rust's own, declared after the table. */
 typedef struct swr_v1_clients swr_v1_clients;
 struct swr_v1_socket;
 enum {
@@ -113,24 +114,25 @@ enum {
     SWR_CLIENTS_BUFFER_CLEAR, SWR_CLIENTS_BUFFER_FREE, SWR_CLIENTS_BUFFER_SHARED,
 };
 typedef struct { char *str; size_t length, size; } swr_v1_clients_buffer_view;
+struct swr_v1_clients_record;
 typedef struct {
-    struct swr_v1_socket *(*make_socket)(void *cli, int type, int fd_type, int flags);
+    struct swr_v1_socket *(*make_socket)(int kind, int fd_type, int flags);
     void (*free_socket)(void *cli, bool deferred);
     bool (*has)(void *cli, int which);
     /* false when the callback threw; the client may be gone afterwards. */
     bool (*call)(void *cli, int which, const char *data, size_t length);
     void (*warn)(void *cli, int which);
-    void (*kernel_timeout)(void *cli, double timeout);
-    bool (*assign)(void *cli, const char *host, int port, bool resolve);
-    int (*connect)(void *cli, int mode);
+    void (*kernel_timeout)(struct swr_v1_clients_record *record, double timeout);
+    bool (*assign)(struct swr_v1_clients_record *record, const char *host, int port, bool resolve);
+    int (*connect)(struct swr_v1_clients_record *record, int mode);
     ssize_t (*io)(void *cli, int op, char *data, size_t length, int flags);
     /* 0, or -1 with the last error set to errno. */
     int (*sendfile)(void *cli, const char *file, int64_t offset, size_t length, bool is_async);
-    int (*event)(void *cli, int op, int events);
+    int (*event)(struct swr_v1_clients_record *record, int op, int events);
     int (*event_write)(void *cli, const char *data, size_t length);
     uint32_t (*out_buffer_length)(void *cli);
     int (*writable)(void *reactor, void *event);
-    int (*socket_error)(void *cli, int *error);
+    int (*socket_error)(struct swr_v1_clients_record *record, int *error);
     void *(*timer_add)(void *cli, double timeout);
     void (*timer_del)(void *timer);
     int (*dns_lookup)(void *cli, const char *host, int domain);
@@ -150,8 +152,13 @@ typedef struct {
      * released the client or threw. */
     ssize_t (*recv_framed)(void *cli, bool eof);
 } swr_v1_clients_native;
+struct swr_v1_socket *swr_v1_clients_make_socket(int kind, int fd_type, int flags);
+void swr_v1_clients_kernel_timeout(struct swr_v1_clients_record *record, double timeout);
+bool swr_v1_clients_assign(struct swr_v1_clients_record *record, const char *host, int port, bool resolve);
+int swr_v1_clients_connect_socket(struct swr_v1_clients_record *record, int mode);
+int swr_v1_clients_event(struct swr_v1_clients_record *record, int op, int events);
+int swr_v1_clients_socket_error(struct swr_v1_clients_record *record, int *error);
 /* Client::Client: the state, with cli->socket made (null when socket() failed, errno kept). */
-struct swr_v1_clients_record;
 swr_v1_clients *swr_v1_clients_new(void *cli, const swr_v1_clients_native *native, struct swr_v1_clients_record *record, void *on_package, int kind, bool is_async);
 /* Client::~Client, then the state's release. */
 void swr_v1_clients_free(swr_v1_clients *client);
