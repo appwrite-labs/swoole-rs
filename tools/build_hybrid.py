@@ -262,7 +262,7 @@ def hybrid_tree(archive):
     compiles against these, never against the pinned headers; its upstream side uses the pin."""
     build = Path(archive).resolve().parents[2]
     source, abi = build / 'src', build / 'rust-prefix/include'
-    if not (source / 'include/swoole.h').is_file() or not abi.is_dir():
+    if not (source / 'config.h').is_file() or not abi.is_dir():
         raise ValueError(f'Not a hybrid build archive (<build>/rust-prefix/lib/): {archive}')
     switches = re.findall(r'^#define (SWOOLE_RS_\w+) 1$', (source / 'config.h').read_text(), re.M)
     return source, [*('-D' + name for name in switches), '-I' + str(source / 'include'), '-I' + str(abi)]

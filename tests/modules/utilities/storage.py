@@ -32,6 +32,12 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def owned(hybrid, name):
+    """The hybrid build's copy of an upstream header: the patched one, or the owned native/ one
+    that replaced it once the patch set deleted upstream's."""
+    return hybrid / name if (hybrid / name).is_file() else next(ROOT.glob('native/*/' + Path(name).name))
+
+
 def public(*prefixes, count=None):
     """A placeholder for the lines of an engine's own swoole.h that start with prefixes,
     filled in per engine when the originals config is written."""
@@ -112,7 +118,7 @@ def main():
                 # helpers nothing in the build calls.
                 for name, signatures in SIGNATURES.items():
                     pinned = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':' + name]).decode()
-                    selected = hybrid / name if (hybrid / name).is_file() else ROOT / 'native/utilities' / Path(name).name
+                    selected = owned(hybrid, name)
                     for variant, content in [('native', pinned), ('selected', selected.read_text())]:
                         (work / (variant + '-' + Path(name).name + '.inc')).write_text('\n'.join(
                             body(content, signature) for signature in signatures if variant == 'native' or signature in content))
@@ -149,7 +155,7 @@ def main():
                 config += '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
             # Each engine's config takes its declarations from its own swoole.h.
             headers = {'native': subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole.h'], text=True),
-                       'selected': (hybrid / 'include/swoole.h').read_text()}
+                       'selected': owned(hybrid, 'include/swoole.h').read_text()}
             for name, text in headers.items():
                 def declared(match):
                     prefixes, count = json.loads(match.group(1))
