@@ -48,8 +48,8 @@ stack-usage sampling (original marker bytes and placement; `<=` on init versus
 the ASan fiber annotations, which run whenever `dlsym` finds the sanitizer
 runtime. `swoole::coroutine::Context` is an inline view that keeps the
 `CoroutineFunc` and calls it from Rust's entry. ucontext and valgrind stack
-registration are gone: config.m4 rejects a CPU without boost asm unless
-`--enable-thread-context` is given.
+registration are gone: config.m4 rejects a CPU without boost asm, and links it
+under `--enable-thread-context` too.
 
 `src/coroutine/base.cc` left the build: Rust defines `Coroutine::yield_ex`,
 `print_list`, `print_socket_bound_error`, `coroutine::run` and the
