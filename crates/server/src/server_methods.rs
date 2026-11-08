@@ -22,8 +22,8 @@ use crate::ops::{
     RUN_BASE_FINISH, RUN_BASE_NOTIFY, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
     RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_REOPEN_LOGGER, RUN_SC_SEND, RUN_SCHEDULE_WORKER,
     RUN_SENDFILE, RUN_SENDWAIT, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT,
-    RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_FOREACH, RUN_ST_SEND,
-    RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_FOREACH,
+    RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
 use crate::records::ConnectionRecord;
 use crate::view;
@@ -539,6 +539,17 @@ pub unsafe extern "C" fn send(
     let arg = ctx.send.expose_provenance() as u64;
     // SAFETY: as the caller guarantees; the SendData lives for the call.
     unsafe { run(RUN_ST_SEND, arg, &mut ctx) != 0 }
+}
+
+/// `Server::set_document_root(path)`.
+///
+/// # Safety
+/// `serv` is a live `Server`, not started.
+pub unsafe fn set_document_root(serv: *mut c_void, path: &[u8]) -> bool {
+    let mut ctx = NativeContext::new(serv);
+    ctx.data = path.as_ptr().cast();
+    // SAFETY: as the caller guarantees; the path lives for the call.
+    unsafe { run(RUN_ST_DOCUMENT_ROOT, path.len() as u64, &mut ctx) != 0 }
 }
 
 /// `Server::sendwait(session_id, data, length)`.
