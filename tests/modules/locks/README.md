@@ -9,7 +9,7 @@ ownership, timeout, ordering, fork and coroutine contracts, and
 [PLATFORMS.md](PLATFORMS.md) for the macOS/Linux platform guard.
 
 `overlay.py` reads the pinned sources for the gates' reference side; the ported side is
-`native/locks/lock.cc` (the hybrid's `Mutex` and `Barrier`) over the hybrid's `swoole_lock.h`. Edit `migration/patches/locks/` with `tools/patches.py`.
+`native/locks/lock.cc` (the hybrid's `Mutex` and `Barrier`) over `native/locks/swoole_lock.h`. Edit `migration/patches/locks/` with `tools/patches.py`.
 
 ```sh
 python3 tools/build_hybrid.py --dev --jobs 2

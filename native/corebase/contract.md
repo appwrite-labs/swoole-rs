@@ -132,7 +132,8 @@ shim in the Rust archive (`crates/corebase/src/format.c`, C linkage).
 Still native: the rest of `SwooleG` and TLS, C++ containers/objects, filesystem IO
 and other runtime operations.
 
-The lower `swoole::Thread` owns a generated `CoreThread` record: Rust controls
+The lower `swoole::Thread` (`native/corebase/swoole_thread.h`; upstream's header is
+deleted) owns a generated `CoreThread` record: Rust controls
 its pthread handle, status publication, moves, joins and detaches. The C++ SDK
 keeps its callable's standard C++ copy and destruction semantics. pthread starts
 the native callable trampoline directly, so C++ exceptions and pthread forced

@@ -2,7 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 src/memory/{fixed_pool,ring_buffer,global_memory,
 // shared_memory,table}.cc (Swoole contributors).
 //! The upstream members of `FixedPool`, `RingBuffer`, `GlobalMemory`, the `sw_shm_*`
-//! functions and `Table`'s shared-memory lifecycle. `include/swoole_memory.h` keeps
+//! functions and `Table`'s shared-memory lifecycle. `native/memory/swoole_memory.h` keeps
 //! `GlobalMemory`'s constructor, which throws, and its virtual members, whose vtables
 //! every user emits; they call the `swr_v1_memory_global_memory_*` functions below. A
 //! constructor returns 0, -1 for upstream's `Exception(SW_ERROR_INVALID_PARAMS)` or -2

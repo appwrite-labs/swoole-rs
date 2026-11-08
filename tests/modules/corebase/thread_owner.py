@@ -38,7 +38,9 @@ def main():
         if symbols.returncode or symbols.stderr or not all(exports.values()):raise ValueError('Production extension omits a public Thread SDK operation')
         for engine,source,extra in [('native',args.reference.resolve(),[]),('hybrid',selected,flags)]:
             if not (source/'config.h').is_file():raise ValueError('Require a configured matching SDK')
-            report['sdk'][engine]={str(path.relative_to(source)):sha(path) for path in [source/'config.h',source/'include/swoole_thread.h']}
+            # The hybrid's swoole_thread.h is native/corebase's, on its prefix's include path.
+            header=source/'include/swoole_thread.h' if engine=='native' else ROOT/'native/corebase/swoole_thread.h'
+            report['sdk'][engine]={'config.h':sha(source/'config.h'),'swoole_thread.h':sha(header)}
             for standard in ['c++14','c++17']:
                 binary=work/(engine+'-'+standard)
                 command=['c++','-std='+standard,'-O1','-g','-Wall','-Wextra','-Werror','-pthread',
