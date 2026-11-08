@@ -16,85 +16,78 @@ fn take() -> Vec<String> {
     LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
 }
 
-/// A fake reactor socket: its events and whether it is out of the reactor.
-type Fake = [i32; 2];
+/// The fake host the multi calls instead of `host.rs`'s.
+pub(crate) mod host {
+    use super::{LOOP, Multi, log};
+    use std::ffi::{c_int, c_long, c_void};
+    use std::{cell::Cell, ptr};
 
-unsafe extern "C" fn event_available() -> bool {
-    LOOP.with(Cell::get)
-}
-unsafe extern "C" fn install_handlers() {}
-unsafe extern "C" fn socket_new(fd: c_int, _object: *mut c_void) -> *mut c_void {
-    log(format!("new {fd}"));
-    Box::into_raw(Box::new([0, 1] as Fake)).cast()
-}
-unsafe extern "C" fn socket_events(socket: *mut c_void, removed: *mut bool) -> c_int {
-    let state = unsafe { *socket.cast::<Fake>() };
-    if let Some(removed) = unsafe { removed.as_mut() } {
-        *removed = state[1] != 0;
+    /// A fake reactor socket: its events and whether it is out of the reactor.
+    #[derive(Clone, Copy)]
+    pub(crate) struct ReactorSocket(*mut [i32; 2]);
+
+    impl ReactorSocket {
+        pub(crate) fn new(fd: c_int) -> Self {
+            log(format!("new {fd}"));
+            Self(Box::into_raw(Box::new([0, 1])))
+        }
+        #[expect(
+            clippy::unused_self,
+            reason = "the fake reports events without an object"
+        )]
+        pub(crate) fn set_object(self, _object: *mut c_void) {}
+        pub(crate) fn events(self) -> c_int {
+            unsafe { (*self.0)[0] }
+        }
+        pub(crate) fn removed(self) -> bool {
+            unsafe { (*self.0)[1] != 0 }
+        }
+        pub(crate) fn add(self, events: c_int) -> c_int {
+            log(format!("add {events}"));
+            unsafe { *self.0 = [events, 0] };
+            0
+        }
+        pub(crate) fn set(self, events: c_int) -> c_int {
+            log(format!("set {events}"));
+            unsafe { (*self.0)[0] = events };
+            0
+        }
+        pub(crate) fn del(self) -> c_int {
+            log("del".into());
+            unsafe { *self.0 = [0, 1] };
+            0
+        }
+        pub(crate) unsafe fn free(self) {
+            log("free".into());
+            drop(unsafe { Box::from_raw(self.0) });
+        }
     }
-    state[0]
-}
-unsafe extern "C" fn event_add(socket: *mut c_void, events: c_int) -> c_int {
-    log(format!("add {events}"));
-    unsafe { *socket.cast::<Fake>() = [events, 0] };
-    0
-}
-unsafe extern "C" fn event_set(socket: *mut c_void, events: c_int) -> c_int {
-    log(format!("set {events}"));
-    unsafe { (*socket.cast::<Fake>())[0] = events };
-    0
-}
-unsafe extern "C" fn event_del(socket: *mut c_void) -> c_int {
-    log("del".into());
-    unsafe { *socket.cast::<Fake>() = [0, 1] };
-    0
-}
-unsafe extern "C" fn socket_free(socket: *mut c_void) {
-    log("free".into());
-    drop(unsafe { Box::from_raw(socket.cast::<Fake>()) });
-}
-unsafe extern "C" fn timer_available() -> bool {
-    true
-}
-unsafe extern "C" fn timer_add(ms: c_long, _multi: *mut c_void) -> *mut c_void {
-    log(format!("timer {ms}"));
-    ptr::dangling_mut::<u8>().cast()
-}
-unsafe extern "C" fn timer_del(_timer: *mut c_void) {
-    log("timer del".into());
-}
-unsafe extern "C" fn current() -> *mut c_void {
-    ptr::null_mut()
-}
-unsafe extern "C" fn yield_(_co: *mut c_void, _timeout: f64) -> bool {
-    false
-}
-unsafe extern "C" fn resume(_co: *mut c_void) {}
-unsafe extern "C" fn defer(_multi: *mut c_void) {
-    log("defer".into());
-}
-unsafe extern "C" fn set_canceled() {}
-unsafe extern "C" fn warn_message() {}
 
-static OPS: Ops = Ops {
-    event_available,
-    install_handlers,
-    socket_new,
-    socket_events,
-    event_add,
-    event_set,
-    event_del,
-    socket_free,
-    timer_available,
-    timer_add,
-    timer_del,
-    current,
-    yield_,
-    resume,
-    defer,
-    set_canceled,
-    warn_message,
-};
+    pub(crate) fn event_available() -> bool {
+        LOOP.with(Cell::get)
+    }
+    pub(crate) fn install_handlers() {}
+    pub(crate) fn timer_available() -> bool {
+        true
+    }
+    pub(crate) fn timer_add(ms: c_long, _multi: &Multi) -> *mut c_void {
+        log(format!("timer {ms}"));
+        ptr::dangling_mut::<u8>().cast()
+    }
+    pub(crate) unsafe fn timer_del(_timer: *mut c_void) {
+        log("timer del".into());
+    }
+    pub(crate) fn current() -> *mut c_void {
+        ptr::null_mut()
+    }
+    pub(crate) unsafe fn yield_(_co: *mut c_void, _timeout: f64) -> bool {
+        false
+    }
+    pub(crate) unsafe fn resume(_co: *mut c_void) {}
+    pub(crate) unsafe fn defer(_multi: *const Multi) {
+        log("defer".into());
+    }
+}
 
 /// An easy handle for `url`, with its Swoole handle.
 fn easy(url: &str) -> *mut CURL {
@@ -112,7 +105,7 @@ fn close(cp: *mut CURL) {
 }
 
 fn new_multi() -> &'static Multi {
-    unsafe { &*swr_v1_curl_multi_new(&raw const OPS) }
+    unsafe { &*Multi::create() }
 }
 
 fn free(multi: &Multi) {
@@ -164,7 +157,7 @@ fn exec_without_a_coroutine_asks_cxx_for_the_fatal_error() {
     let handle = unsafe { swr_v1_curl_get_handle(cp) };
     let multi = new_multi();
     assert_eq!(
-        unsafe { swr_v1_curl_multi_exec(raw(multi), handle) },
+        swr_v1_curl_multi_exec(multi, unsafe { &mut *handle }),
         EXEC_NEEDS_COROUTINE,
         "needs one"
     );
@@ -174,7 +167,11 @@ fn exec_without_a_coroutine_asks_cxx_for_the_fatal_error() {
         Some("timer 1"),
         "curl's immediate timeout"
     );
-    assert_eq!(multi.remove_handle(handle), CURLM_OK, "removed");
+    assert_eq!(
+        multi.remove_handle(unsafe { &mut *handle }),
+        CURLM_OK,
+        "removed"
+    );
     assert!(unsafe { (*handle).multi }.is_null(), "detached");
     free(multi);
     close(cp);
@@ -196,7 +193,7 @@ fn transfer() -> Transfer {
     let cp = easy(&format!("http://{}/", listener.local_addr().unwrap()));
     let handle = unsafe { swr_v1_curl_get_handle(cp) };
     let multi = new_multi();
-    assert_eq!(multi.add_handle(handle), CURLM_OK, "added");
+    assert_eq!(multi.add_handle(unsafe { &mut *handle }), CURLM_OK, "added");
     for _ in 0..100 {
         assert_eq!(multi.perform(), CURLM_OK, "performed");
         if !multi.sockets.borrow().is_empty() {
@@ -205,11 +202,7 @@ fn transfer() -> Transfer {
         std::thread::sleep(std::time::Duration::from_millis(5));
         multi.timer_callback.set(true);
     }
-    assert_eq!(
-        unsafe { swr_v1_curl_multi_running(raw(multi)) },
-        1,
-        "running"
-    );
+    assert_eq!(swr_v1_curl_multi_running(multi), 1, "running");
     assert_eq!(multi.sockets.borrow().len(), 1, "one socket");
     assert!(
         take().iter().any(|entry| entry.starts_with("new ")),
@@ -225,7 +218,11 @@ fn transfer() -> Transfer {
 
 impl Transfer {
     fn finish(self) {
-        assert_eq!(self.multi.remove_handle(self.handle), CURLM_OK, "removed");
+        assert_eq!(
+            self.multi.remove_handle(unsafe { &mut *self.handle }),
+            CURLM_OK,
+            "removed"
+        );
         assert!(
             take().contains(&"free".to_string()),
             "socket freed with the transfer"
@@ -247,13 +244,13 @@ fn a_waiterless_socket_event_leaves_the_reactor() {
     let transfer = transfer();
     let multi = transfer.multi;
     let socket = *multi.sockets.borrow().values().next().unwrap();
-    unsafe { swr_v1_curl_socket_event(socket.cast(), CURL_CSELECT_IN) };
+    unsafe { socket_event(socket.cast(), CURL_CSELECT_IN) };
     assert_eq!(take(), ["del"], "no waiter: out of the reactor");
     multi.selector_prepare();
     assert_eq!(take().len(), 1, "back in before waiting");
     multi.co.set(ptr::dangling_mut::<u8>().cast());
-    unsafe { swr_v1_curl_socket_event(socket.cast(), CURL_CSELECT_IN) };
-    unsafe { swr_v1_curl_socket_event(socket.cast(), CURL_CSELECT_OUT) };
+    unsafe { socket_event(socket.cast(), CURL_CSELECT_IN) };
+    unsafe { socket_event(socket.cast(), CURL_CSELECT_OUT) };
     assert_eq!(take(), ["defer"], "one deferred wake-up");
     assert_eq!(multi.ready(), 1, "one active socket");
     assert_eq!(
@@ -262,7 +259,7 @@ fn a_waiterless_socket_event_leaves_the_reactor() {
         "both events"
     );
     multi.co.set(ptr::null_mut());
-    unsafe { swr_v1_curl_multi_deferred(raw(multi)) };
+    multi_deferred(multi);
     assert!(!multi.defer_callback.get(), "wake-up done");
     transfer.finish();
 }
