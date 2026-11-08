@@ -119,7 +119,7 @@ bool task_dispatch_multi(void *server, zval *ztasks, double timeout, zval *retur
 }
 
 const void *port_ssl_owner(void *port) {
-    SSLContext *context = as_port(port)->get_ssl_context();
+    SSLContext *context = as_port(port)->ssl_context;
     return context ? context->handle() : nullptr;
 }
 void *port_sni_context(void *port, const void **owner) {
