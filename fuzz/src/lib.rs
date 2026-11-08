@@ -40,7 +40,7 @@ mod request {
         static ERRNO: Cell<u32> = const { Cell::new(0) };
     }
 
-    /// src/protocol/http.cc's `request_native`, for the one effect framing has.
+    /// The request's effects (crates/http's `effects`), for the one framing has.
     unsafe extern "C" fn native(op: u32, _: *mut c_void, _: *const u8, n: u64, _: u64) -> u64 {
         const NUMBER_ERRORS: u32 = 12;
         // glibc's strtoull leaves errno alone without digits; Darwin's sets EINVAL.

@@ -11,8 +11,8 @@ end.
 
 ## General rules
 
-- No Rust function allocates through a native allocator or calls a native
-  callback, Zend function, parser or IO operation. Native allocation, exceptions,
+- Apart from the request's effects (below), no Rust function allocates through a
+  native allocator or calls a native callback, Zend function, parser or IO operation. Native allocation, exceptions,
   bailouts, libc calendar/RNG, MIME storage, `std::regex`, IO and PHP work happen
   after Rust returns. No Rust borrow outlives a call.
 - Outputs and initialized input ranges must be valid, aligned and disjoint, except
@@ -64,10 +64,13 @@ place: `swr_v1_http_request_protocol`, `_header_length`, `_chunked_length`,
 back (`swr_v1_http_form_free`). The ports module's reader calls the Rust methods
 directly.
 
-The multipart parser stays the third-party C one, with Rust callbacks. Native
-effects go through `request_native(op, a, b, n, m)` (`SWR_HTTP_NATIVE_*`):
+The multipart parser stays the third-party C one, with Rust callbacks. Rust runs
+the request's effects itself (`effects` in request.rs; tests swap in their own):
 `swoole::String` allocation and appends, the parser, `swoole_tmpfile`, stdio, the
-`strtoull` errno, and upstream's logs, under their original function names.
+`strtoull` errno, and upstream's logs, under their original function names. Trace
+logs are compiled out, as in upstream's builds without `--enable-trace-log`.
+`src/protocol/http.cc` has left the build; native/http/layout.cc keeps its layout
+asserts.
 
 Framing keeps upstream's permissive rules (case-sensitive method prefixes, partial
 fields published on error, C-locale `strtoul` chunk lengths, first-match header

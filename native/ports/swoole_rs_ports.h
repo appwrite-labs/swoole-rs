@@ -53,7 +53,7 @@ enum { SWR_PORTS_ON_READ_RAW=0, SWR_PORTS_ON_READ_LENGTH=1, SWR_PORTS_ON_READ_EO
        SWR_PORTS_SEND_TOO_LARGE=1, SWR_PORTS_SEND_UNAVAILABLE=2, SWR_PORTS_SEND_CONTINUE=3 };
 typedef uint64_t (*SwrPortsCall)(void *context, uint32_t op, uint64_t arg);
 /* `new http_server::Request()` on Rust's heap; ListenPort::destroy_http_request (Rust) frees it. */
-void *swr_v1_http_request_new(uint64_t (*native)(uint32_t, void *, const uint8_t *, uint64_t, uint64_t));
+void *swr_v1_http_request_new(void);
 int32_t swr_v1_ports_on_read(uint32_t kind, void *context, SwrPortsCall call);
 /* TLS setup, SNI, import and close (crates/ports/src/lifecycle.rs), over the same call. */
 enum { SWR_PORTS_RUN_SNI_ADD=0, SWR_PORTS_RUN_SSL_INIT=1, SWR_PORTS_RUN_SSL_CREATE=2, SWR_PORTS_RUN_CONTEXT_INIT=3,

@@ -1398,7 +1398,9 @@ mod tests {
         }
         // SAFETY: an all-zero record is a closed connection with no object.
         let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
-        conn.object = swoole_rs_http::swr_v1_http_request_new(no_effects).cast();
+        // `swr_v1_http_request_new`'s boxed request, without the native effects it links.
+        let request = swoole_rs_http::HttpRequest::new(no_effects);
+        conn.object = Box::into_raw(Box::new(request)).cast();
         unsafe { destroy_http_request(ptr::null_mut(), &raw mut conn) };
         assert!(conn.object.is_null(), "the request is freed and cleared");
         unsafe { destroy_http_request(ptr::null_mut(), &raw mut conn) };

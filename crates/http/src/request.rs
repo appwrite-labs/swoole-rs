@@ -1,13 +1,17 @@
 //! `http_server::Request`, the HTTP/1 request a `ListenPort` parses (#931): its layout
 //! and every operation over it. Native code keeps the struct's fields, because
 //! upstream's own `ListenPort` reads them whenever the ports module is off, but each
-//! method is a call into this module, and its `FormData` is a Rust [`HttpForm`]. The
-//! effects Rust can't run go through the request's [`HttpNative`] call
-//! (`http_server::request_native`): `swoole::String` allocation, the third-party
-//! multipart parser, stdio, `swoole_tmpfile` and logs.
+//! method is a call into this module, and its `FormData` is a Rust [`HttpForm`]. Its
+//! effects go through the request's [`HttpNative`] call, `effects` outside tests:
+//! `swoole::String` allocation, the third-party multipart parser, stdio,
+//! `swoole_tmpfile` and logs. Trace logs are compiled out, as in upstream's builds
+//! without `--enable-trace-log`.
 use crate::{HttpFrame, HttpHeaderInfo, HttpSpan, case_equal, framing, headers};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
+use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string, new_string};
+use swoole_rs_corebase::{log, set_errno};
+use swoole_rs_ossupport::swoole_tmpfile;
 
 const SW_OK: i32 = 0;
 const SW_ERR: i32 = -1;
@@ -105,16 +109,153 @@ const LOG_FOPEN: u32 = 14;
 const LOG_WRITE: u32 = 15;
 const LOG_PARSE_REASON: u32 = 16;
 const LOG_PARSE_PARTIAL: u32 = 17;
-/// Trace logs, sent only when the request was made with `trace`.
-const TRACE_CHUNK: u32 = 18;
-const TRACE_HEADER_FIELD: u32 = 19;
-const TRACE_HEADER_VALUE: u32 = 20;
-const TRACE_DATA: u32 = 21;
-const TRACE_HEADERS_COMPLETE: u32 = 22;
-const TRACE_DATA_END: u32 = 23;
-const TRACE_PART_BEGIN: u32 = 24;
-const TRACE_BODY_END: u32 = 25;
-const TRACE_EXECUTE: u32 = 26;
+
+// The third-party multipart parser (thirdparty/multipart_parser.c), linked into the
+// extension beside this crate.
+unsafe extern "C" {
+    fn multipart_parser_init(
+        boundary: *const c_char,
+        length: usize,
+        settings: *const ParserSettings,
+    ) -> *mut Parser;
+    fn multipart_parser_execute(parser: *mut Parser, data: *const c_char, length: usize) -> isize;
+    fn multipart_parser_free(parser: *mut Parser);
+    fn multipart_parser_error_msg(parser: *mut Parser, buffer: *mut c_char, length: usize)
+    -> c_int;
+}
+
+/// `SW_LOG_NOTICE` and `SW_ERROR_SERVER_INVALID_REQUEST`.
+const NOTICE: c_int = 3;
+const INVALID_REQUEST: c_int = 9010;
+
+fn errno() -> c_int {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+/// The errno libc's `strtoull` leaves when no digits convert; libcs differ.
+fn no_digits_errno() -> c_int {
+    static VALUE: std::sync::OnceLock<c_int> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        let saved = errno();
+        set_errno(0);
+        let mut end = ptr::null_mut();
+        // SAFETY: a NUL-terminated literal and a writable end pointer.
+        unsafe { libc::strtoull(c"x".as_ptr(), &raw mut end, 10) };
+        let value = errno();
+        set_errno(saved);
+        value
+    })
+}
+
+/// The request's effects outside tests: each `op` is a direct call. Effects with no
+/// result answer 0.
+///
+/// # Safety
+/// The arguments are what the `op`'s constant documents, each live for the call.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "lengths, descriptors and ssize_t results native code carried as u64"
+)]
+unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, m: u64) -> u64 {
+    let length = n as usize;
+    let parser = a.cast::<Parser>();
+    let file = a.cast::<libc::FILE>();
+    match op {
+        STRING_NEW if b.is_null() => {
+            // SAFETY: a null allocator is the default one.
+            return unsafe { new_sized_string(length, ptr::null()) as u64 };
+        }
+        // SAFETY: `b` holds `n` bytes.
+        STRING_NEW => return unsafe { new_string(b, length) as u64 },
+        // SAFETY: a string from `STRING_NEW`, not used again.
+        STRING_FREE => unsafe { delete_string(a.cast()) },
+        STRING_APPEND => {
+            // SAFETY: a live `swoole::String`.
+            let string = unsafe { &mut *a.cast::<CppString>() };
+            // SAFETY: `n` readable bytes at `b`.
+            unsafe { string.append(b, length) };
+        }
+        // SAFETY: the boundary's `n` bytes and the parser's settings.
+        PARSER_NEW => return unsafe { multipart_parser_init(b.cast(), length, a.cast()) as u64 },
+        PARSER_EXECUTE => {
+            // SAFETY: a live parser and `n` bytes at `b`.
+            return unsafe { multipart_parser_execute(parser, b.cast(), length) as u64 };
+        }
+        // SAFETY: a parser from `PARSER_NEW`, or null, not used again.
+        PARSER_FREE => unsafe { multipart_parser_free(parser) },
+        // SAFETY: a writable, NUL-terminated `XXXXXX` template.
+        TMPFILE => return i64::from(unsafe { swoole_tmpfile(a.cast()) }).cast_unsigned(),
+        // SAFETY: a descriptor and a NUL-terminated mode.
+        FDOPEN => return unsafe { libc::fdopen(n as c_int, c"wb+".as_ptr()) as u64 },
+        // SAFETY: a live stream and `n` bytes at `b`.
+        FWRITE => return unsafe { libc::fwrite(b.cast(), 1, length, file) as u64 },
+        FFLUSH => {
+            // SAFETY: a live stream.
+            unsafe { libc::fflush(file) };
+        }
+        FCLOSE => {
+            // SAFETY: a live stream, not used again.
+            unsafe { libc::fclose(file) };
+        }
+        UNLINK => {
+            // SAFETY: a NUL-terminated path.
+            unsafe { libc::unlink(a.cast()) };
+        }
+        NUMBER_ERRORS => {
+            if n & 1 != 0 {
+                set_errno(libc::ERANGE);
+            }
+            if n & 2 != 0 && no_digits_errno() != 0 {
+                set_errno(no_digits_errno());
+            }
+        }
+        LOG_PARSER_NEW => log::warning(
+            c"Request::init_multipart_parser",
+            format_args!("multipart_parser_init() failed"),
+        ),
+        LOG_FOPEN => {
+            // SAFETY: the upload's NUL-terminated name.
+            let name = unsafe { core::ffi::CStr::from_ptr(a.cast()) }.to_string_lossy();
+            log::sys_warning(
+                c"http_server::multipart_on_header_value",
+                format_args!("fopen({name}) failed"),
+            );
+        }
+        LOG_WRITE => log::sys_warning(
+            c"http_server::multipart_on_data",
+            format_args!("failed to write upload file"),
+        ),
+        LOG_PARSE_REASON => {
+            let mut text = [0u8; 256];
+            // SAFETY: a live parser and a writable buffer of that size.
+            let written =
+                unsafe { multipart_parser_error_msg(parser, text.as_mut_ptr().cast(), text.len()) };
+            // `%.*s`: at most `written` bytes, up to the NUL.
+            let text = text.split(|&byte| byte == 0).next().unwrap_or_default();
+            let text = text
+                .get(..usize::try_from(written).unwrap_or(0))
+                .unwrap_or(text);
+            log::error_log(
+                NOTICE,
+                INVALID_REQUEST,
+                c"Request::parse_multipart_data",
+                format_args!(
+                    "parse multipart body failed, reason: {}",
+                    String::from_utf8_lossy(text)
+                ),
+            );
+        }
+        LOG_PARSE_PARTIAL => log::error_log(
+            NOTICE,
+            INVALID_REQUEST,
+            c"Request::parse_multipart_data",
+            format_args!("parse multipart body failed, {n}/{m} bytes processed"),
+        ),
+        _ => std::process::abort(),
+    }
+    0
+}
 
 /// `SW_HTTP_UPLOAD_FILE`.
 const UPLOAD_FILE: &[u8] = b"Swoole-Upload-File";
@@ -175,14 +316,14 @@ pub struct HttpRequest {
     pub native: HttpNative,
 }
 
-/// Initialize native in-place storage without allocating another request.
+/// `Request()`: initializes native in-place storage without allocating another request.
 /// # Safety
 /// `request` is writable, aligned uninitialized storage, with no live previous owner.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v3_http_request_init(request: *mut HttpRequest, native: HttpNative) {
+pub unsafe extern "C" fn swr_v3_http_request_init(request: *mut HttpRequest) {
     if !request.is_null() {
         // SAFETY: the caller provides exclusive uninitialized storage.
-        unsafe { request.write(HttpRequest::new(native)) };
+        unsafe { request.write(HttpRequest::new(effects)) };
     }
 }
 /// Reset parser fields while retaining the form, receive buffer and immutable effect table.
@@ -228,11 +369,6 @@ impl HttpRequest {
     fn op(&self, op: u32, a: *mut c_void, b: *const u8, n: u64, m: u64) -> u64 {
         // SAFETY: the native call runs one effect over its arguments.
         unsafe { (self.native)(op, a, b, n, m) }
-    }
-
-    /// Native code drops traces unless they are compiled in.
-    fn trace(&self, op: u32, b: *const u8, n: u64, m: u64) {
-        self.op(op, ptr::null_mut(), b, n, m);
     }
 
     /// The buffer being parsed.
@@ -362,12 +498,6 @@ impl HttpRequest {
                 }
                 return SW_ERR;
             }
-            self.trace(
-                TRACE_CHUNK,
-                input.as_ptr().wrapping_add(step.line_offset),
-                step.line_length as u64,
-                step.chunk_length as u64,
-            );
             if status == 2 {
                 self.known_length = true;
                 self.content_length = step.body_length;
@@ -535,12 +665,6 @@ pub unsafe fn parse_multipart_data(request: *mut HttpRequest, buffer: *mut HttpS
         unsafe { native(PARSER_EXECUTE, parser.cast(), data, length as u64, 0) }.cast_signed();
     // SAFETY: per the contract.
     let r = unsafe { &*request };
-    r.trace(
-        TRACE_EXECUTE,
-        ptr::null(),
-        length as u64,
-        processed.cast_unsigned(),
-    );
     match crate::swr_v1_http_multipart_result(processed, length, r.excepted.into()) {
         outcome if outcome < 0 => {
             r.op(LOG_PARSE_REASON, parser.cast(), ptr::null(), 0, 0);
@@ -596,7 +720,6 @@ unsafe extern "C" fn on_header_field(
     let (_, request) = unsafe { parts(parser) };
     let form = form_of(request);
     (form.header_name, form.header_name_length) = (at.cast(), length);
-    request.trace(TRACE_HEADER_FIELD, at.cast(), length as u64, 0);
     0
 }
 
@@ -607,7 +730,6 @@ unsafe extern "C" fn on_header_value(
 ) -> c_int {
     // SAFETY: the parser calls back with itself, set up by `init_multipart_parser`.
     let (parser, request) = unsafe { parts(parser) };
-    request.trace(TRACE_HEADER_VALUE, at.cast(), length as u64, 0);
     let form = form_of(request);
     let (saved, name, name_length) = (form.saved, form.header_name, form.header_name_length);
     request.append(saved, name, name_length);
@@ -655,7 +777,6 @@ unsafe extern "C" fn on_header_value(
 unsafe extern "C" fn on_part_data(parser: *mut Parser, at: *const c_char, length: usize) -> c_int {
     // SAFETY: the parser calls back with itself, set up by `init_multipart_parser`.
     let (parser, request) = unsafe { parts(parser) };
-    request.trace(TRACE_DATA, ptr::null(), length as u64, 0);
     let max_length = u64::from(request.max_length);
     let form = form_of(request);
     let saved = form.saved;
@@ -687,7 +808,6 @@ unsafe extern "C" fn on_part_data(parser: *mut Parser, at: *const c_char, length
 unsafe extern "C" fn on_headers_complete(parser: *mut Parser) -> c_int {
     // SAFETY: the parser calls back with itself, set up by `init_multipart_parser`.
     let (parser, request) = unsafe { parts(parser) };
-    request.trace(TRACE_HEADERS_COMPLETE, ptr::null(), 0, 0);
     let form = form_of(request);
     let (saved, upload) = (form.saved, form.upload);
     if !parser.fp.is_null() {
@@ -710,7 +830,6 @@ unsafe extern "C" fn on_headers_complete(parser: *mut Parser) -> c_int {
 unsafe extern "C" fn on_part_data_end(parser: *mut Parser) -> c_int {
     // SAFETY: the parser calls back with itself, set up by `init_multipart_parser`.
     let (parser, request) = unsafe { parts(parser) };
-    request.trace(TRACE_DATA_END, ptr::null(), 0, 0);
     request.multipart_header_parsed = false;
     let saved = form_of(request).saved;
     if !parser.fp.is_null() {
@@ -730,7 +849,6 @@ unsafe extern "C" fn on_part_data_end(parser: *mut Parser) -> c_int {
 unsafe extern "C" fn on_part_data_begin(parser: *mut Parser) -> c_int {
     // SAFETY: the parser calls back with itself, set up by `init_multipart_parser`.
     let (parser, request) = unsafe { parts(parser) };
-    request.trace(TRACE_PART_BEGIN, ptr::null(), 0, 0);
     let saved = form_of(request).saved;
     request.append(
         saved,
@@ -755,7 +873,6 @@ unsafe extern "C" fn on_body_end(parser: *mut Parser) -> c_int {
     let saved = unsafe { &*saved };
     request.content_length = (saved.length as u64).wrapping_sub(u64::from(request.header_length));
     request.tried_to_dispatch = true;
-    request.trace(TRACE_BODY_END, saved.str, saved.length as u64, 0);
     0
 }
 
@@ -872,10 +989,10 @@ pub unsafe extern "C" fn swr_v1_http_request_multipart_destroy(request: *mut Htt
     unsafe { destroy_multipart_parser(request) };
 }
 
-/// `new http_server::Request()`: a request over `native` on Rust's heap.
+/// `new http_server::Request()`: a request on Rust's heap.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_http_request_new(native: HttpNative) -> *mut HttpRequest {
-    Box::into_raw(Box::new(HttpRequest::new(native)))
+pub extern "C" fn swr_v1_http_request_new() -> *mut HttpRequest {
+    Box::into_raw(Box::new(HttpRequest::new(effects)))
 }
 
 /// `delete request` of one [`swr_v1_http_request_new`] made: the destructor, then the memory.
