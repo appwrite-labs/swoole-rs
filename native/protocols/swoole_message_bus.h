@@ -53,7 +53,7 @@ class MessageBus {
     }
 
   public:
-    MessageBus() : bus_(swr_v1_bus_create(SW_BUFFER_SIZE_STD)), allocator_(sw_std_allocator()) {}
+    MessageBus() : bus_(swr_v1_bus_create(SW_BUFFER_SIZE_STD)), allocator_(&SwooleG.std_allocator) {}
     MessageBus(const MessageBus &) = delete;
     MessageBus &operator=(const MessageBus &) = delete;
     ~MessageBus() {

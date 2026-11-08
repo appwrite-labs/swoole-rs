@@ -37,7 +37,7 @@ pub use lifecycle::{
     swr_v1_core_fork_exec, thread_async_threads, thread_id, thread_kind, thread_message_bus,
     thread_reactor,
 };
-pub use random::{swoole_random_string, swr_v1_corebase_random_char, swr_v1_os_random_bytes};
+pub use random::{swoole_random_string, swr_v1_os_random_bytes};
 pub use thread::*;
 
 use std::ffi::{c_char, c_int, c_long, c_ulong};
