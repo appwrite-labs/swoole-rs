@@ -297,20 +297,6 @@ pub unsafe extern "C" fn swr_v1_os_file_record_control(
         _ => -1,
     }
 }
-/// fstat with errno left intact for the caller's warning.
-/// # Safety
-/// `owner` is live and `output` is writable for a native stat record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_record_stat(
-    owner: *const FileRecord,
-    output: *mut libc::stat,
-) -> bool {
-    // SAFETY: live caller-owned descriptor.
-    let fd = unsafe { (*owner).fd };
-    // SAFETY: output is writable for a stat record.
-    unsafe { libc::fstat(fd, output) == 0 }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

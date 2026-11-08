@@ -30,10 +30,8 @@ proven synchronization.
 
 - `file_put_contents` treats a partial positive write as success. Append mode
   uses `write`; non-append uses `pwrite` at offset 0.
-- `read_line` includes the NUL/newline as upstream; a full chunk skips one byte
-  at `offset + read_bytes + 1`.
 - Close invalidates the fd before the syscall and never retries on `EINTR`.
-- `File::exists` checks `R_OK`; `file_exists` checks `F_OK`.
+- `File::exists` checks `R_OK`.
 - MsgQueue: one kernel id, automatic removal only for private queues, default
   mode `0666` for out-of-range permissions, `set_blocking` changes only flags,
   `EINTR` retry only on push. Tests use a private IPC namespace or a reserved key.

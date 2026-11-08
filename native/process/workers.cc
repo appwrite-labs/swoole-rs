@@ -15,7 +15,6 @@
 #include "swoole_util.h"
 #include "swoole_memory.h"
 #include "swoole_coroutine.h"
-#include "swoole_api.h"
 #include "swoole_pipe.h"
 
 namespace swoole {

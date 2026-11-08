@@ -21,8 +21,8 @@ mod file_record;
 pub use file::swr_v1_os_sendfile;
 pub use file::{
     FileIo, FileSize, Sendfile, swoole_sendfile, swr_v1_os_file_close, swr_v1_os_file_open,
-    swr_v1_os_file_read_all, swr_v1_os_file_read_line, swr_v1_os_file_size,
-    swr_v1_os_file_write_all, swr_v1_os_sendfile_copy, swr_v1_os_tmpfile,
+    swr_v1_os_file_read_all, swr_v1_os_file_size, swr_v1_os_file_write_all,
+    swr_v1_os_sendfile_copy, swr_v1_os_tmpfile,
 };
 pub use file_api::*;
 pub use file_record::*;

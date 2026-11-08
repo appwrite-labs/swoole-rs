@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/os/file.cc (Swoole contributors).
-//! The bodies of `src/os/file.cc`: `swoole_tmpfile`, `file_get_size`, `File::stat`,
-//! `File::write_all` and `File::read_all` under their upstream symbols (with
-//! `upstream-symbols`), and the `std::string` helpers, which the header calls with
-//! the string's `c_str()`. Logs name the function as upstream's `__SW_FUNC__` did.
+//! The bodies of `src/os/file.cc` that Rust and `native/ossupport/swoole_file.h` still
+//! call: `swoole_tmpfile` (under its upstream symbol with `upstream-symbols`),
+//! `File::read_content`, `file_get_contents` and `file_put_contents`. Logs name the
+//! function as upstream's `__SW_FUNC__` did.
 use crate::file::{
     FileIo, swr_v1_os_file_open, swr_v1_os_file_size, swr_v1_os_file_write_all, swr_v1_os_tmpfile,
 };
-use crate::file_record::{FileRecord, swr_v1_os_file_record_all, swr_v1_os_file_record_stat};
+use crate::file_record::{FileRecord, swr_v1_os_file_record_all};
 use libc::{c_char, c_int, c_void};
 use std::ffi::CStr;
 use swoole_rs_buffer::string::CppString;
@@ -20,12 +20,6 @@ const FILE_TOO_LARGE: c_int = 701;
 const FILE_EMPTY: c_int = 702;
 /// `SW_BUFFER_SIZE_STD`.
 const BUFFER_SIZE_STD: usize = 8192;
-
-/// `swoole::File`, whose first member is its Rust record (the header keeps it first).
-#[repr(C)]
-pub struct CppFile {
-    pub owner: *mut FileRecord,
-}
 
 /// # Safety
 /// `path` is a NUL-terminated string.
@@ -107,93 +101,6 @@ pub unsafe extern "C" fn swoole_tmpfile(filename: *mut c_char) -> c_int {
     fd
 }
 
-/// `ssize_t swoole::file_get_size(int fd)`.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole13file_get_sizeEi")
-)]
-pub extern "C" fn file_get_size(fd: c_int) -> isize {
-    size_of_fd(fd)
-}
-
-/// `ssize_t swoole::file_get_size(FILE *fp)`: flushed first.
-///
-/// # Safety
-/// `fp` is an open stream.
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_os = "macos"),
-    unsafe(export_name = "_ZN6swoole13file_get_sizeEP7__sFILE")
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_os = "macos")),
-    unsafe(export_name = "_ZN6swoole13file_get_sizeEP8_IO_FILE")
-)]
-pub unsafe extern "C" fn file_get_size_stream(fp: *mut libc::FILE) -> isize {
-    // SAFETY: as the caller promises.
-    unsafe { libc::fflush(fp) };
-    // SAFETY: as above.
-    size_of_fd(unsafe { libc::fileno(fp) })
-}
-
-/// `bool File::stat(FileStatus *) const`.
-///
-/// # Safety
-/// `this` is a live File; `output` is writable.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole4File4statEP4stat")
-)]
-pub unsafe extern "C" fn file_stat(this: *const CppFile, output: *mut libc::stat) -> bool {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { &*this }.owner;
-    // SAFETY: as above.
-    if unsafe { swr_v1_os_file_record_stat(owner, output) } {
-        return true;
-    }
-    log::sys_warning(c"File::stat", format_args!("fstat() failed"));
-    false
-}
-
-/// `size_t File::write_all(const void *, size_t) const`.
-///
-/// # Safety
-/// `this` is a live File; `data` holds `length` bytes.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole4File9write_allEPKvm")
-)]
-pub unsafe extern "C" fn file_write_all(
-    this: *const CppFile,
-    data: *const c_void,
-    length: usize,
-) -> usize {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { &*this }.owner;
-    // SAFETY: as above.
-    unsafe { transfer(owner, true, data.cast_mut(), length) }
-}
-
-/// `size_t File::read_all(void *, size_t) const`.
-///
-/// # Safety
-/// `this` is a live File; `data` has `length` writable bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole4File8read_allEPvm")
-)]
-pub unsafe extern "C" fn file_read_all(
-    this: *const CppFile,
-    data: *mut c_void,
-    length: usize,
-) -> usize {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { &*this }.owner;
-    // SAFETY: as above.
-    unsafe { transfer(owner, false, data, length) }
-}
-
 /// `File::read_content`: reads to EOF into `content`, a fresh `String(SW_BUFFER_SIZE_STD)`.
 ///
 /// # Safety
@@ -217,24 +124,6 @@ pub unsafe extern "C" fn swr_v1_os_file_read_content(
         }
         content.grow(n.unsigned_abs());
     }
-}
-
-/// `file_get_size(const std::string &)`.
-///
-/// # Safety
-/// `path` is NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_get_size_path(path: *const c_char) -> isize {
-    // SAFETY: as the caller promises.
-    let fd = unsafe { libc::open(path, libc::O_RDONLY) };
-    if fd < 0 {
-        log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
-        return -1;
-    }
-    let size = size_of_fd(fd);
-    // SAFETY: the descriptor opened above.
-    unsafe { libc::close(fd) };
-    size
 }
 
 /// `file_get_contents`: true with the file's bytes, NUL-terminated, in `content`
@@ -330,14 +219,4 @@ pub unsafe extern "C" fn swr_v1_os_file_put_contents(
     let mut record = FileRecord::adopt(fd, flags);
     // SAFETY: a live record over the open descriptor; `data` holds `length` bytes.
     unsafe { transfer(&raw mut record, true, data.cast_mut(), length) != 0 }
-}
-
-/// `file_exists`.
-///
-/// # Safety
-/// `path` is NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_exists(path: *const c_char) -> bool {
-    // SAFETY: as the caller promises.
-    unsafe { libc::access(path, libc::F_OK) == 0 }
 }

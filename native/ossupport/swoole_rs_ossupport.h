@@ -37,13 +37,9 @@ int swr_v1_os_file_record_open(swr_v1_os_file_record *owner, const char *path, s
 int swr_v1_os_file_record_assign(swr_v1_os_file_record *owner, const swr_v1_os_file_record *source, swr_v1_os_file_path_update update, void *context);
 ssize_t swr_v1_os_file_record_io(const swr_v1_os_file_record *owner, uint32_t operation, void *buffer, size_t length, off_t offset);
 off_t swr_v1_os_file_record_control(const swr_v1_os_file_record *owner, uint32_t operation, off_t value);
-ssize_t swr_v1_os_file_read_line(int fd, void *buf, size_t n);
-/* src/os/file.cc's std::string helpers and File::read_content; `content` is a
+/* file_get_contents and File::read_content; `content` is a
  * swoole::String (default-constructed, or File's fresh one). */
-ssize_t swr_v1_os_file_get_size_path(const char *path);
 bool swr_v1_os_file_get_contents(const char *path, void *content);
-bool swr_v1_os_file_put_contents(const char *path, const void *data, size_t length);
-bool swr_v1_os_file_exists(const char *path);
 void swr_v1_os_file_read_content(swr_v1_os_file_record *owner, void *content);
 /* swoole::MsgQueue, a SysV message queue with upstream's warnings. new returns
  * null unless msgget succeeded; free removes a private queue first. A message is

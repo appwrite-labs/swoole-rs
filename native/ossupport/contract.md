@@ -38,9 +38,6 @@ so the native `swoole_sys_warning` sees its errno.
 - `swr_v1_os_file_write_all` / `read_all` (`File::write_all` / `read_all`):
   `write` in append mode, otherwise `pwrite`/`pread` at the progress; zero stops,
   `EINTR`/`EAGAIN` retry, other errors set `failed` for the upstream warning.
-- `swr_v1_os_file_read_line`: reads `n - 1` bytes, keeps the first NUL/newline,
-  NUL-terminates and seeks past the line; without one it seeks one byte past the
-  data read, as upstream.
 - `swr_v1_os_file_size`: `fstat` errno or `EISDIR` for non-regular files.
 - `swr_v1_os_sendfile` (Darwin, FreeBSD): retries `EINTR`, advancing the offset by
   each call's progress; Darwin retries with the length the interrupted call
@@ -50,13 +47,13 @@ so the native `swoole_sys_warning` sees its errno.
   it): `getrandom` on Linux/Android (retrying `EINTR`/`EAGAIN`, a zero result
   repeats), `arc4random_buf` elsewhere.
 
-- `file_api.rs` is the rest of `src/os/file.cc`, which the patch deletes:
-  `swoole_tmpfile`, both `file_get_size` overloads, `File::stat`, `write_all` and
-  `read_all` under their upstream symbols (File keeps its Rust record as its first
-  member), and the `std::string` helpers (`file_get_contents`, `file_put_contents`,
-  `file_get_size(filename)`, `file_exists`) plus `File::read_content`, which the
-  header calls with `c_str()` and the String to fill. Logs name the function as
-  upstream's `__SW_FUNC__` does.
+- `file_api.rs` is the rest of `src/os/file.cc` that is still called:
+  `swoole_tmpfile` under its upstream symbol, `file_get_contents`,
+  `file_put_contents` (Rust's only caller is the server) and `File::read_content`.
+  `native/ossupport/swoole_file.h`, which replaced upstream's
+  `include/swoole_file.h`, keeps only the File and AsyncFile members the
+  compiled C++, core-tests and the ossupport gates call. Logs name the function
+  as upstream's `__SW_FUNC__` does.
 
 ## SysV message queue
 
