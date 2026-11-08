@@ -89,10 +89,10 @@ delete ([#125](https://github.com/loks0n/swoole-rs/issues/125)) and the Zend sur
 
 ### Upstream files still in the build
 
-After #1465 (2026-11-08) 99.6% of 90k lines are replaced. What remains, from
-`tools/badges.py --source target/upstream/src --output target/badges --kept`:
-`include/swoole.h` (355 lines). `include/swoole_server.h` left in #1465; what native/ still
-needs of it is the owned `native/process/swoole_server.h`.
+None, since #959 (2026-11-08): `tools/badges.py --source target/upstream/src --output
+target/badges --kept` lists no upstream first-party file. The last two headers left as owned
+copies trimmed to what C++ still uses: `include/swoole_server.h` in #1465
+(`native/process/swoole_server.h`) and `include/swoole.h` in #959 (`native/corebase/swoole.h`).
 
 References: [Rust FFI](https://doc.rust-lang.org/nomicon/ffi.html),
 [upstream CMake build](https://github.com/swoole/swoole-src/blob/v6.2.5/CMakeLists.txt),
