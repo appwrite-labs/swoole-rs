@@ -34,6 +34,9 @@ uint64_t swr_v1_manager_call(void *context, uint32_t op, uint64_t arg);
 /* The process factory's ops over Rust-owned records, for the FactoryContext (`WorkersNative<4>`)
  * at `context`: crates/server's factory_ops.rs. */
 uint64_t swr_v1_factory_call(void *context, uint32_t op, uint64_t arg);
+/* Thread mode's ops over Rust-owned records, for the ThreadContext (`WorkersNative<5>`)
+ * at `context`: crates/server's thread_mode_ops.rs. */
+uint64_t swr_v1_thread_mode_call(void *context, uint32_t op, uint64_t arg);
 /* A thread-mode worker thread's body, run(context): directly, or inside the PHP thread
  * crates/phpserver starts on `thread` (the ThreadFactory's swoole::Thread). */
 void swr_v1_workers_thread_start(void *thread, void (*run)(void *context), void *context);
