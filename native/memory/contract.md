@@ -63,10 +63,9 @@ upstream's `HeapNode` fields and 1-based position.
 
 ## Core channel
 
-`swr_v1_memory_channel` is `swoole::Channel`'s whole record: the queue state, a
-process-shared mutex and the notification pipe (read end first). The C++ struct
-derives from it and adds only inline methods, which keep upstream's assertions
-and diagnostics. Native allocates `channel_bytes(size,maxlen)` bytes (the record
+`swr_v1_memory_channel` is the whole record of upstream's `swoole::Channel` (whose
+header is deleted; the server's message box is its one user): the queue state, a
+process-shared mutex and the notification pipe (read end first). The owner allocates `channel_bytes(size,maxlen)` bytes (the record
 plus the ring and its maxlen+4 overflow space) from the heap or, for
 `SW_CHAN_SHM`, a shared mapping, and frees them after `channel_close`. Rust owns
 the payload and unaligned 32-bit length coding, head/tail wrap tags, message/byte
@@ -75,7 +74,7 @@ accounting, the mutex and the pipe.
 - `channel_bytes` returns 0 for `size < maxlen`, `maxlen > INT32_MAX` or overflow.
 - `channel_init(record,size,maxlen,flags)`: 0, -1 invalid, 1 `pipe()` failed
   (errno intact), 2 mutex failed; nothing to release on failure. Flag values
-  2/4/8 are compile-time checked; other bits are ignored.
+  2/4/8 are upstream's `SW_CHAN_LOCK`/`NOTIFY`/`SHM`; other bits are ignored.
 - in returns 0/-1; out returns length/-1. Zero-length messages are valid.
 - consume=0 peeks without mutation; consume=1 pops.
 - Too-short output, invalid lengths and wrap tags outside 0/1 fail without

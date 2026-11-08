@@ -96,7 +96,7 @@ pub unsafe fn swr_v1_process_task_file_read(
 pub(crate) const TASK_TMP_PATH_SIZE: usize = 256;
 
 /// The payload descriptor written into `EventData::data` when a task spills to a
-/// temp file (matches `swoole::PacketTask`).
+/// temp file (upstream's `swoole::PacketTask`).
 #[repr(C)]
 struct PacketTask {
     length: usize,

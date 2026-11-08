@@ -83,7 +83,7 @@
     union { swr_v1_process_worker_registry *registry_; swr_v1_process_worker_registry *map_; }; \
     swr_v1_os_msg_queue * queue; \
     swr_v1_process_pool_ipc * ipc_; \
-    Channel * message_box = nullptr; \
+    void * message_box = nullptr; \
     void * message_bus = nullptr; \
     swr_v1_process_reload_task * reload_task = nullptr; \
     void * ptr;

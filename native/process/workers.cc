@@ -14,6 +14,7 @@
 #include "swoole_rs_locks.h"
 #include "swoole_util.h"
 #include "swoole_memory.h"
+#include "swoole_rs_memory.h"
 #include "swoole_coroutine.h"
 #include "swoole_api.h"
 #include "swoole_pipe.h"
@@ -90,9 +91,13 @@ uint64_t FactoryContext::call(void *context, uint32_t op, uint64_t arg) {
         serv->reactor_thread_barrier.destroy();
         serv->gs->manager_barrier.destroy();
         return 0;
-    case SWR_WORKERS_OP_DESTROY_MESSAGE_BOX:
-        serv->get_event_worker_pool()->message_box->destroy();
+    case SWR_WORKERS_OP_DESTROY_MESSAGE_BOX: {
+        // A shared mapping crates/server's new_message_box made.
+        auto *box = static_cast<swr_v1_memory_channel *>(serv->get_event_worker_pool()->message_box);
+        swr_v1_memory_channel_close(box);
+        sw_shm_free(box);
         return 0;
+    }
     case SWR_WORKERS_OP_CREATE_WORKER_PIPE: {
         auto _sock = new UnixSocket(true, SOCK_DGRAM);
         if (!_sock->ready()) {
@@ -690,8 +695,7 @@ static_assert(offsetof(TaskWorkerContext, file) == 72 && SW_SERVER_EVENT_FINISH 
               "crates/server/src/task_worker_ops.rs layout and constants");
 
 // Server::task_pack, task_unpack and task_dump are Rust's (crates/process/src/task_file.rs).
-static_assert(sizeof(DataHead) == 40 && offsetof(EventData, data) == sizeof(DataHead) && sizeof(String) == 40 &&
-                  sizeof(PacketTask) == sizeof(size_t) + SW_TASK_TMP_PATH_SIZE,
+static_assert(sizeof(DataHead) == 40 && offsetof(EventData, data) == sizeof(DataHead) && sizeof(String) == 40,
               "crates/process/src/task_file.rs layouts");
 
 // The task calls run in Rust (crates/process/src/task_sync.rs) over these hooks;

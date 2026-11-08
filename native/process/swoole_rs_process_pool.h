@@ -12,7 +12,6 @@
 #include "swoole_protocol.h"
 #include "swoole_lock.h"
 #include "swoole_pipe.h"
-#include "swoole_channel.h"
 #include "swoole_rs_ossupport.h"
 #include "swoole_message_bus.h"
 #include "swoole_rs_corebase_worker_registry.h"
