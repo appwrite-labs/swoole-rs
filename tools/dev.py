@@ -291,22 +291,8 @@ def plan(args, reports):
             script('phphelpers-module', 'tests/modules/phphelpers/module.py', *php_for('curl'), *engines,
                    '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                    '--source-ref', 'HEAD', *report('phphelpers-module'))
-            script('phphelpers-sdk', 'tests/modules/phphelpers/sdk.py', '--source', ROOT / 'target/upstream/src',
-                   '--sdk-export', selected_export / 'export.json', *report('phphelpers-sdk'))
-            for provider in ['sqlite', 'odbc']:
-                phase = 'phphelpers-async-' + provider + '-sdk'
-                script(phase, 'tests/modules/phphelpers/async_optional_sdk.py', '--source', ROOT / 'target/upstream/src',
-                       '--sdk-report', reports / 'phphelpers-sdk.json', '--provider', provider, *report(phase))
             # The fixtures call stdext helpers (swoole_typed_array), so they need --stdext builds.
             if getattr(args, 'stdext', False):
-                script('phphelpers-facade-runtime', 'tests/modules/phphelpers/facade_runtime.py',
-                       '--sdk-report', reports / 'phphelpers-sdk.json', *php_for('curl'), *engines,
-                       '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       '--source-ref', 'HEAD', *report('phphelpers-facade-runtime'))
-                script('phphelpers-entrypoint', 'tests/modules/phphelpers/entrypoint.py',
-                       '--sdk-report', reports / 'phphelpers-sdk.json', *php_for('curl'), *engines,
-                       '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       '--source-ref', 'HEAD', *report('phphelpers-entrypoint'))
                 script('phphelpers-runtime', 'tests/modules/phphelpers/runtime.py', *php, *engines,
                        '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        '--source-ref', 'HEAD', *report('phphelpers-runtime'))

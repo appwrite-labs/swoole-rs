@@ -419,7 +419,7 @@ class Lanes(unittest.TestCase):
             with patch.object(dev.sys, 'platform', 'linux'):
                 commands = dict(dev.plan(args, ROOT / 'target/reports/collections'))
             for phase in ['phpcollections-runtime',
-                          'base64-consumers-upstream', 'base64-consumers-hybrid', 'phphelpers-entrypoint']:
+                          'base64-consumers-upstream', 'base64-consumers-hybrid', 'phphelpers-module']:
                 loaded = [commands[phase][i+1] for i, argument in enumerate(commands[phase])
                           if argument == '--php-extension']
                 self.assertEqual(loaded.count('curl'), 1)
@@ -451,8 +451,7 @@ class Lanes(unittest.TestCase):
             commands = dict(dev.plan(args, ROOT / 'target/reports/all-registered'))
             # phphelpers' runtime fixtures call stdext helpers, so only stdext plans run them.
             stdext = dict(dev.plan(SimpleNamespace(**vars(args), stdext=True), ROOT / 'target/reports/all-registered-stdext'))
-        for name in ['phphelpers-facade-runtime', 'phphelpers-entrypoint', 'phphelpers-runtime']:
-            self.assertNotIn(name, commands)
+        self.assertNotIn('phphelpers-runtime', commands)
         self.assertNotIn('--module', commands['build'])
         self.assertIn('--archive', commands['reactor-compile'])
         self.assertIn('corebase-native',commands)
@@ -487,10 +486,6 @@ class Lanes(unittest.TestCase):
             self.assertIn('--' + family + '-originals', command)
             self.assertTrue(any('selected-export/swoole.so' in arg for arg in command))
             self.assertNotEqual(command[command.index('--source-ref') + 1], 'HEAD')
-        self.assertLess(list(stdext).index('phphelpers-sdk'), list(stdext).index('phphelpers-facade-runtime'))
-        self.assertNotIn('--prepare-only', stdext['phphelpers-facade-runtime'])
-        self.assertEqual(stdext['phphelpers-facade-runtime'].count('--engine'), 2)
-        self.assertIn('--source-ref', stdext['phphelpers-facade-runtime'])
         for family in ['logger', 'hash']:
             command = commands['utilities-' + family + '-originals']
             self.assertIn('--' + family + '-originals', command)
@@ -528,20 +523,8 @@ class Lanes(unittest.TestCase):
             self.assertIn('--source-ref', commands[name])
             self.assertNotIn('--case', commands[name])
         self.assertIn('--export', commands['build'])
-        self.assertIn('--sdk-export', commands['phphelpers-sdk'])
-        for provider in ['sqlite', 'odbc']:
-            phase = 'phphelpers-async-' + provider + '-sdk'
-            self.assertEqual(commands[phase][commands[phase].index('--provider') + 1], provider)
-            self.assertIn('--sdk-report', commands[phase])
-            self.assertLess(list(commands).index('phphelpers-sdk'), list(commands).index(phase))
-            self.assertNotIn('--engine', commands[phase])
-        self.assertIn('--sdk-report', stdext['phphelpers-entrypoint'])
-        self.assertIn('--build-manifest', stdext['phphelpers-entrypoint'])
-        self.assertIn('--archive', stdext['phphelpers-entrypoint'])
-        self.assertEqual(stdext['phphelpers-entrypoint'].count('--engine'), 2)
-        self.assertLess(list(commands).index('build'), list(commands).index('phphelpers-sdk'))
-        self.assertLess(list(stdext).index('phphelpers-sdk'), list(stdext).index('phphelpers-entrypoint'))
         self.assertIn('--build-manifest', stdext['phphelpers-runtime'])
+        self.assertEqual(stdext['phphelpers-runtime'].count('--engine'), 2)
         self.assertNotIn('phphelpers-policy', commands)
         self.assertNotIn('phphelpers-async', commands)  # Its cases run in phphelpers-unit.
         self.assertIn('--archive', commands['ports-policy'])

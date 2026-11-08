@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Actual PHP stdext copied arrays, native callbacks, autoload and object lifetime witnesses."""
+"""Actual PHP stdext copied arrays, native callbacks, autoload, object lifetime and bailout witnesses."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -28,6 +28,7 @@ def main():
     args = parser.parse_args()
     fixture = Path(__file__).with_suffix('.php')
     bailout = Path(__file__).with_name('bailout.php')
+    vm_bailout = Path(__file__).with_name('vm_bailout.php')
     report = dict(created_utc=datetime.now(timezone.utc).isoformat(), passed=False,
                   scope=__doc__, engines=[], results=[], bailout_results=[])
     try:
@@ -74,6 +75,18 @@ def main():
                     except (ValueError,IndexError): pass
         if not all(row['passed'] for row in report['bailout_results']):
             raise ValueError('Isolated native Zend callback/bailout witness failed; all first outputs retained')
+        # exit() from a PCRE/JSON warning handler or a VM destructor inside a stdext call.
+        report['vm_bailout_results'] = []
+        for engine, identity in zip(engines, report['engines']):
+            for mode, expected in [('pcre-exit', 37), ('vm-exit', 38), ('json-exit', 39)]:
+                result = run_isolated(engine.command(str(vm_bailout), mode), timeout=30)
+                row = dict(engine=engine.name, mode=mode, exit=result.returncode, stdout=result.stdout, stderr=result.stderr,
+                           extension_sha256_after=sha(identity['extension']))
+                row['passed'] = (result.returncode == expected and result.stdout == 'before\nexit\n' and not result.stderr
+                                 and row['extension_sha256_after'] == identity['sha256'])
+                report['vm_bailout_results'].append(row)
+        if not all(row['passed'] for row in report['vm_bailout_results']):
+            raise ValueError('Actual VM/PCRE/JSON bailout witness failed; original outputs retained')
         receipt = report['source_attestation']
         if sha(args.build_manifest) != receipt['manifest_sha256'] or sha(args.archive) != receipt['archive_sha256']:
             raise ValueError('Build receipt/archive changed during the fixture')
